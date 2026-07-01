@@ -92,6 +92,11 @@ suite('ActivitybarPart', () => {
 		const part = disposables.add(new ActivitybarPart(
 			ViewContainerLocation.Sidebar,
 			new StubPaneCompositePart(),
+			// PARA-PATCH: activity bar part id + storage keys (parameterized to support a second, auxiliary activity bar)
+			Parts.ACTIVITYBAR_PART,
+			ActivitybarPart.pinnedViewContainersKey,
+			ActivitybarPart.placeholderViewContainersKey,
+			ActivitybarPart.viewContainersWorkspaceStateKey,
 			stubInstantiationService,
 			layoutService,
 			themeService,

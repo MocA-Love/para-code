@@ -270,6 +270,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 	private titleBarPartView!: ISerializableView;
 	private bannerPartView!: ISerializableView;
 	private activityBarPartView!: ISerializableView;
+	private auxiliaryActivityBarPartView!: ISerializableView; // PARA-PATCH: vertical activity bar for the auxiliary side bar
 	private sideBarPartView!: ISerializableView;
 	private panelPartView!: ISerializableView;
 	private auxiliaryBarPartView!: ISerializableView;
@@ -634,6 +635,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		const activityBar = this.getPart(Parts.ACTIVITYBAR_PART);
 		const sideBar = this.getPart(Parts.SIDEBAR_PART);
 		const auxiliaryBar = this.getPart(Parts.AUXILIARYBAR_PART);
+		const auxiliaryActivityBar = this.getPart(Parts.AUXILIARY_ACTIVITYBAR_PART); // PARA-PATCH
 		const newPositionValue = (position === Position.LEFT) ? 'left' : 'right';
 		const oldPositionValue = (position === Position.RIGHT) ? 'left' : 'right';
 		const panelAlignment = this.getPanelAlignment();
@@ -645,6 +647,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		const activityBarContainer = assertReturnsDefined(activityBar.getContainer());
 		const sideBarContainer = assertReturnsDefined(sideBar.getContainer());
 		const auxiliaryBarContainer = assertReturnsDefined(auxiliaryBar.getContainer());
+		const auxiliaryActivityBarContainer = assertReturnsDefined(auxiliaryActivityBar.getContainer()); // PARA-PATCH
 		activityBarContainer.classList.remove(oldPositionValue);
 		sideBarContainer.classList.remove(oldPositionValue);
 		activityBarContainer.classList.add(newPositionValue);
@@ -654,10 +657,15 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		auxiliaryBarContainer.classList.remove(newPositionValue);
 		auxiliaryBarContainer.classList.add(oldPositionValue);
 
+		// PARA-PATCH: the auxiliary activity bar sits on the same (opposite) side as the auxiliary bar
+		auxiliaryActivityBarContainer.classList.remove(newPositionValue);
+		auxiliaryActivityBarContainer.classList.add(oldPositionValue);
+
 		// Update Styles
 		activityBar.updateStyles();
 		sideBar.updateStyles();
 		auxiliaryBar.updateStyles();
+		auxiliaryActivityBar.updateStyles(); // PARA-PATCH
 
 		// Move activity bar and side bars
 		this.adjustPartPositions(position, panelAlignment, panelPosition);
@@ -1300,6 +1308,9 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			case Parts.ACTIVITYBAR_PART:
 				(this.getPart(Parts.SIDEBAR_PART) as SidebarPart).focusActivityBar();
 				break;
+			case Parts.AUXILIARY_ACTIVITYBAR_PART: // PARA-PATCH: focus the auxiliary bar's vertical activity bar
+				(this.getPart(Parts.AUXILIARYBAR_PART) as AuxiliaryBarPart).focusActivityBar();
+				break;
 			case Parts.STATUSBAR_PART:
 				this.statusBarService.getPart(container).focus();
 				break;
@@ -1359,6 +1370,9 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			case Parts.STATUSBAR_PART:
 				return !this.stateModel.getRuntimeValue(LayoutStateKeys.STATUSBAR_HIDDEN);
 			case Parts.ACTIVITYBAR_PART:
+			// PARA-PATCH: the auxiliary activity bar shares the activity bar's hidden state (both toggle with the
+			// activity bar location: shown for the default vertical position, hidden for top/bottom/hidden)
+			case Parts.AUXILIARY_ACTIVITYBAR_PART:
 				return !this.stateModel.getRuntimeValue(LayoutStateKeys.ACTIVITYBAR_HIDDEN);
 			case Parts.EDITOR_PART:
 				return !this.stateModel.getRuntimeValue(LayoutStateKeys.EDITOR_HIDDEN);
@@ -1400,6 +1414,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			const isPanelHorizontal = isHorizontal(this.getPanelPosition());
 			const takenWidth =
 				(this.isVisible(Parts.ACTIVITYBAR_PART) ? this.activityBarPartView.minimumWidth : 0) +
+				(this.isVisible(Parts.AUXILIARY_ACTIVITYBAR_PART) ? this.auxiliaryActivityBarPartView.minimumWidth : 0) + // PARA-PATCH
 				(this.isVisible(Parts.SIDEBAR_PART) ? this.sideBarPartView.minimumWidth : 0) +
 				(this.isVisible(Parts.PANEL_PART) && !isPanelHorizontal ? this.panelPartView.minimumWidth : 0) +
 				(this.isVisible(Parts.AUXILIARYBAR_PART) ? this.auxiliaryBarPartView.minimumWidth : 0);
@@ -1624,6 +1639,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		const bannerPart = this.getPart(Parts.BANNER_PART);
 		const editorPart = this.getPart(Parts.EDITOR_PART);
 		const activityBar = this.getPart(Parts.ACTIVITYBAR_PART);
+		const auxiliaryActivityBar = this.getPart(Parts.AUXILIARY_ACTIVITYBAR_PART); // PARA-PATCH
 		const panelPart = this.getPart(Parts.PANEL_PART);
 		const auxiliaryBarPart = this.getPart(Parts.AUXILIARYBAR_PART);
 		const sideBar = this.getPart(Parts.SIDEBAR_PART);
@@ -1634,6 +1650,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		this.bannerPartView = bannerPart;
 		this.sideBarPartView = sideBar;
 		this.activityBarPartView = activityBar;
+		this.auxiliaryActivityBarPartView = auxiliaryActivityBar; // PARA-PATCH
 		this.editorPartView = editorPart;
 		this.panelPartView = panelPart;
 		this.auxiliaryBarPartView = auxiliaryBarPart;
@@ -1641,6 +1658,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		const viewMap: Record<string, ISerializableView> = {
 			[Parts.ACTIVITYBAR_PART]: this.activityBarPartView,
+			[Parts.AUXILIARY_ACTIVITYBAR_PART]: this.auxiliaryActivityBarPartView, // PARA-PATCH
 			[Parts.BANNER_PART]: this.bannerPartView,
 			[Parts.TITLEBAR_PART]: this.titleBarPartView,
 			[Parts.EDITOR_PART]: this.editorPartView,
@@ -1662,7 +1680,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		this.workbenchGrid = workbenchGrid;
 		this.workbenchGrid.edgeSnapping = this.state.runtime.mainWindowFullscreen;
 
-		for (const part of [titleBar, editorPart, activityBar, panelPart, sideBar, statusBar, auxiliaryBarPart, bannerPart]) {
+		for (const part of [titleBar, editorPart, activityBar, auxiliaryActivityBar, panelPart, sideBar, statusBar, auxiliaryBarPart, bannerPart]) { // PARA-PATCH: include the aux activity bar
 			this._register(part.onDidVisibilityChange(visible => {
 				if (!this.inMaximizedAuxiliaryBarTransition) {
 
@@ -1863,6 +1881,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 	private setActivityBarHidden(hidden: boolean): void {
 		this.stateModel.setRuntimeValue(LayoutStateKeys.ACTIVITYBAR_HIDDEN, hidden);
 		this.workbenchGrid.setViewVisible(this.activityBarPartView, !hidden);
+		this.workbenchGrid.setViewVisible(this.auxiliaryActivityBarPartView, !hidden); // PARA-PATCH: keep the aux activity bar in sync with the primary one
 	}
 
 	private setBannerHidden(hidden: boolean): void {
@@ -1987,6 +2006,11 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 				this.workbenchGrid.moveViewTo(this.auxiliaryBarPartView, [2, 0]);
 			}
 		}
+
+		// PARA-PATCH: keep the auxiliary activity bar on the outermost edge of the auxiliary bar. When the side bar is on
+		// the left the aux bar (and its activity bar) live on the right, so the activity bar goes to the right of the aux
+		// bar; when the side bar is on the right they live on the left, so the activity bar goes to the left of the aux bar.
+		this.workbenchGrid.moveView(this.auxiliaryActivityBarPartView, this.auxiliaryActivityBarPartView.minimumWidth, this.auxiliaryBarPartView, sideBarPosition === Position.LEFT ? Direction.Right : Direction.Left);
 
 		// Maintain focus after moving parts
 		if (focusedPart) {
@@ -2481,7 +2505,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		for (const neighborView of neighborViews) {
 			const neighborPart =
-				[Parts.ACTIVITYBAR_PART, Parts.EDITOR_PART, Parts.PANEL_PART, Parts.AUXILIARYBAR_PART, Parts.SIDEBAR_PART, Parts.STATUSBAR_PART, Parts.TITLEBAR_PART]
+				[Parts.ACTIVITYBAR_PART, Parts.AUXILIARY_ACTIVITYBAR_PART, Parts.EDITOR_PART, Parts.PANEL_PART, Parts.AUXILIARYBAR_PART, Parts.SIDEBAR_PART, Parts.STATUSBAR_PART, Parts.TITLEBAR_PART] // PARA-PATCH: include aux activity bar
 					.find(partId => this.getPart(partId) === neighborView && this.isVisible(partId, mainWindow));
 
 			if (neighborPart !== undefined) {
@@ -2539,8 +2563,10 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		};
 	}
 
-	private arrangeMiddleSectionNodes(nodes: { editor: ISerializedNode; panel: ISerializedNode; activityBar: ISerializedNode; sideBar: ISerializedNode; auxiliaryBar: ISerializedNode }, availableWidth: number, availableHeight: number): ISerializedNode[] {
+	private arrangeMiddleSectionNodes(nodes: { editor: ISerializedNode; panel: ISerializedNode; activityBar: ISerializedNode; auxiliaryActivityBar: ISerializedNode; sideBar: ISerializedNode; auxiliaryBar: ISerializedNode }, availableWidth: number, availableHeight: number): ISerializedNode[] {
 		const activityBarSize = this.stateModel.getRuntimeValue(LayoutStateKeys.ACTIVITYBAR_HIDDEN) ? 0 : nodes.activityBar.size;
+		// PARA-PATCH: the aux activity bar shares the activity bar's hidden state and always sits full-height on the aux edge
+		const auxiliaryActivityBarSize = this.stateModel.getRuntimeValue(LayoutStateKeys.ACTIVITYBAR_HIDDEN) ? 0 : nodes.auxiliaryActivityBar.size;
 		const sideBarSize = this.stateModel.getRuntimeValue(LayoutStateKeys.SIDEBAR_HIDDEN) ? 0 : nodes.sideBar.size;
 		const auxiliaryBarSize = this.stateModel.getRuntimeValue(LayoutStateKeys.AUXILIARYBAR_HIDDEN) ? 0 : nodes.auxiliaryBar.size;
 		const panelSize = this.stateModel.getInitializationValue(LayoutStateKeys.PANEL_SIZE) ? 0 : nodes.panel.size;
@@ -2551,7 +2577,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		const result = [] as ISerializedNode[];
 		if (!isHorizontal(panelPostion)) {
 			result.push(nodes.editor);
-			nodes.editor.size = availableWidth - activityBarSize - sideBarSize - panelSize - auxiliaryBarSize;
+			nodes.editor.size = availableWidth - activityBarSize - auxiliaryActivityBarSize - sideBarSize - panelSize - auxiliaryBarSize; // PARA-PATCH: reserve the aux activity bar width
 			if (panelPostion === Position.RIGHT) {
 				result.push(nodes.panel);
 			} else {
@@ -2559,11 +2585,15 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			}
 
 			if (sideBarPosition === Position.LEFT) {
+				// PARA-PATCH: aux bar + its activity bar are on the right; the activity bar is outermost (rightmost)
 				result.push(nodes.auxiliaryBar);
+				result.push(nodes.auxiliaryActivityBar);
 				result.splice(0, 0, nodes.sideBar);
 				result.splice(0, 0, nodes.activityBar);
 			} else {
+				// PARA-PATCH: aux bar + its activity bar are on the left; the activity bar is outermost (leftmost)
 				result.splice(0, 0, nodes.auxiliaryBar);
+				result.splice(0, 0, nodes.auxiliaryActivityBar);
 				result.push(nodes.sideBar);
 				result.push(nodes.activityBar);
 			}
@@ -2572,7 +2602,8 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			const sideBarNextToEditor = !(panelAlignment === 'center' || (sideBarPosition === Position.LEFT && panelAlignment === 'right') || (sideBarPosition === Position.RIGHT && panelAlignment === 'left'));
 			const auxiliaryBarNextToEditor = !(panelAlignment === 'center' || (sideBarPosition === Position.RIGHT && panelAlignment === 'right') || (sideBarPosition === Position.LEFT && panelAlignment === 'left'));
 
-			const editorSectionWidth = availableWidth - activityBarSize - (sideBarNextToEditor ? 0 : sideBarSize) - (auxiliaryBarNextToEditor ? 0 : auxiliaryBarSize);
+			// PARA-PATCH: the aux activity bar is always full-height on the aux edge (outside the editor section), like the primary activity bar
+			const editorSectionWidth = availableWidth - activityBarSize - auxiliaryActivityBarSize - (sideBarNextToEditor ? 0 : sideBarSize) - (auxiliaryBarNextToEditor ? 0 : auxiliaryBarSize);
 
 			const editorNodes = this.arrangeEditorNodes({
 				editor: nodes.editor,
@@ -2606,8 +2637,10 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 			if (sideBarPosition === Position.LEFT) {
 				result.splice(0, 0, nodes.activityBar);
+				result.push(nodes.auxiliaryActivityBar); // PARA-PATCH: aux activity bar on the opposite (right) outer edge
 			} else {
 				result.push(nodes.activityBar);
+				result.splice(0, 0, nodes.auxiliaryActivityBar); // PARA-PATCH: aux activity bar on the opposite (left) outer edge
 			}
 		}
 
@@ -2648,6 +2681,14 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			visible: !this.stateModel.getRuntimeValue(LayoutStateKeys.ACTIVITYBAR_HIDDEN)
 		};
 
+		// PARA-PATCH: the auxiliary activity bar uses the same fixed width and hidden state as the primary activity bar
+		const auxiliaryActivityBarNode: ISerializedLeafNode = {
+			type: 'leaf',
+			data: { type: Parts.AUXILIARY_ACTIVITYBAR_PART },
+			size: this.auxiliaryActivityBarPartView.minimumWidth,
+			visible: !this.stateModel.getRuntimeValue(LayoutStateKeys.ACTIVITYBAR_HIDDEN)
+		};
+
 		const sideBarNode: ISerializedLeafNode = {
 			type: 'leaf',
 			data: { type: Parts.SIDEBAR_PART },
@@ -2678,6 +2719,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		const middleSection: ISerializedNode[] = this.arrangeMiddleSectionNodes({
 			activityBar: activityBarNode,
+			auxiliaryActivityBar: auxiliaryActivityBarNode, // PARA-PATCH
 			auxiliaryBar: auxiliaryBarNode,
 			editor: editorNode,
 			panel: panelNode,
