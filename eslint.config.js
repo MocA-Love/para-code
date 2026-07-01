@@ -1837,6 +1837,8 @@ export default defineConfig(
 						// PARA-PATCH: terminalGroupService.ts が 2D グリッドターミナルグループ
 						// (SessionTerminalGridGroup) に差し替えるための唯一の逆方向 import
 						'vs/sessions/contrib/terminalGrid/~',
+						// PARA-PATCH: terminalInstanceService.ts がペイントークンenv注入ヘルパー(paradisPrepareTerminalPaneEnv)を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/agentBrowser/~',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import
@@ -1867,6 +1869,8 @@ export default defineConfig(
 						'vs/workbench/~',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
+						// PARA-PATCH: paradis contrib 内の layer 間 import（electron-browser→browser/common 等）を許可
+						'vs/paradis/contrib/*/~',
 					]
 				},
 				{
@@ -1909,6 +1913,8 @@ export default defineConfig(
 						'vs/editor/~',
 						'vs/editor/contrib/*/~',
 						'vs/code/~',
+						// PARA-PATCH: sharedProcessMain.ts が fork独自の agentBrowser サービス（MCPサーバー）を登録するための import
+						'vs/paradis/contrib/*/~',
 						{
 							'when': 'hasBrowser',
 							'pattern': 'vs/workbench/workbench.web.main.js'

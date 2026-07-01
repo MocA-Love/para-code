@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 
 import { ITerminalInstance, ITerminalInstanceService } from './terminal.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -17,6 +18,8 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { promiseWithResolvers } from '../../../../base/common/async.js';
 import { hasKey } from '../../../../base/common/types.js';
+// PARA-PATCH: ペイントークンenv注入（ブラウザページ⇔ターミナル上のエージェントCLI紐付け）。ロジック本体は paradisPaneTokenService.ts 側
+import { paradisPrepareTerminalPaneEnv } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneTokenService.js';
 
 export class TerminalInstanceService extends Disposable implements ITerminalInstanceService {
 	declare _serviceBrand: undefined;
@@ -47,6 +50,7 @@ export class TerminalInstanceService extends Disposable implements ITerminalInst
 	createInstance(shellLaunchConfig: IShellLaunchConfig, target: TerminalLocation): ITerminalInstance;
 	createInstance(config: IShellLaunchConfig | ITerminalProfile, target: TerminalLocation): ITerminalInstance {
 		const shellLaunchConfig = this.convertProfileToShellLaunchConfig(config);
+		paradisPrepareTerminalPaneEnv(this._instantiationService, shellLaunchConfig); // PARA-PATCH: PTY起動前にペイントークンenvを注入（全ターミナル生成経路のチョークポイント）
 		const instance = this._instantiationService.createInstance(TerminalInstance, this._terminalShellTypeContextKey, shellLaunchConfig);
 		instance.target = target;
 		this._onDidCreateInstance.fire(instance);

@@ -12,3 +12,4 @@
 // web/desktop 両対応の contribution は paradis.common.contribution.ts 側に追加すること。
 
 import './contrib/windowTransparency/electron-browser/paradisWindowTransparency.contribution.js';
+import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
