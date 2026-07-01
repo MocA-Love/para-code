@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 
 import { Orientation } from '../../../../base/browser/ui/sash/sash.js';
 import { timeout } from '../../../../base/common/async.js';
@@ -15,7 +16,12 @@ import { IViewDescriptorService } from '../../../common/views.js';
 import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { ITerminalGroup, ITerminalGroupService, ITerminalInstance } from './terminal.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
-import { TerminalGroup } from './terminalGroup.js';
+// PARA-PATCH: 2Dグリッドターミナルグループへの差し替え（詳細はsessionTerminalGridGroup.ts参照）
+import { SessionTerminalGridGroup } from '../../../../sessions/contrib/terminalGrid/browser/sessionTerminalGridGroup.js';
+// PARA-PATCH: 分割コマンド(上下左右)の登録。sessions.common.main.ts経由だとisSessionsWindow専用の
+// エントリでしか読み込まれず通常ウィンドウで一切実行されないため、常にロードされるこのファイルから
+// 副作用importする（詳細はCLAUDE.mdの「sessions配下の既知の落とし穴」を参照）
+import '../../../../sessions/contrib/terminalGrid/browser/sessionTerminalGrid.contribution.js';
 import { getInstanceFromResource } from './terminalUri.js';
 import { TerminalViewPane } from './terminalView.js';
 import { TERMINAL_VIEW_ID } from '../common/terminal.js';
@@ -160,7 +166,8 @@ export class TerminalGroupService extends Disposable implements ITerminalGroupSe
 	}
 
 	createGroup(slcOrInstance?: IShellLaunchConfig | ITerminalInstance): ITerminalGroup {
-		const group = this._instantiationService.createInstance(TerminalGroup, this._container, slcOrInstance);
+		// PARA-PATCH: 2Dグリッドターミナルグループへの差し替え（詳細はsessionTerminalGridGroup.ts参照）
+		const group = this._instantiationService.createInstance(SessionTerminalGridGroup, this._container, slcOrInstance);
 		this.groups.push(group);
 		group.addDisposable(Event.forward(group.onPanelOrientationChanged, this._onDidChangePanelOrientation));
 		group.addDisposable(Event.forward(group.onDidDisposeInstance, this._onDidDisposeInstance));
