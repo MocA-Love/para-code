@@ -1,0 +1,90 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Fixes the "double border" visual bug caused by combining the 2D `SessionTerminalGridGroup`
+ * (`sessionTerminalGridGroup.ts`) with upstream's per-split-view border rule in
+ * `workbench/contrib/terminal/browser/media/terminal.css` (around line 184):
+ *
+ *   .terminal-group .monaco-split-view2.horizontal .split-view-view:not(:first-child) { border-left... }
+ *   .terminal-group .monaco-split-view2.vertical   .split-view-view:not(:first-child) { border-top...  }
+ *
+ * That rule matches `.monaco-split-view2`/`.split-view-view` at ANY nesting depth. The base
+ * `Grid`/`GridView` (`base/browser/ui/grid/gridview.ts`) implements arbitrary 2D layouts as a tree
+ * of nested `SplitView`s, so a single visual boundary between two terminal panes can be
+ * `:not(:first-child)` at more than one level of that tree simultaneously, and the rule above then
+ * draws its border once per matching level, i.e. a duplicated ("double") line on top of itself.
+ *
+ * `terminal.css` is upstream-owned and intentionally not edited (see CLAUDE.md); instead this
+ * resets the per-split-view-level border for our grid groups specifically and redraws it exactly
+ * once per leaf cell (`.session-terminal-grid-cell`) below, which is nesting-depth independent.
+ */
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-group .split-view-view {
+	/* !important is required to win over upstream's rule above, which is more specific
+	 * (`.terminal-group .monaco-split-view2.<axis> .split-view-view:not(:first-child)`) than
+	 * anything we could write against `.split-view-view` without duplicating that selector here
+	 * (which would make future upstream merges to terminal.css riskier to reconcile). */
+	border-width: 0 !important;
+}
+
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-cell {
+	/* The `Grid`/`SplitView` machinery sizes its own `.split-view-view` wrapper (our direct parent)
+	 * correctly via inline styles, but never touches this cell's own size — without an explicit
+	 * 100%/100% here a block-level div only auto-fills its parent's *width* (normal CSS block flow),
+	 * never its height, so the cell collapses to near-zero height (just its own border) and the
+	 * terminal attached inside it renders invisible even though the layout math above it is correct. */
+	position: relative;
+	width: 100%;
+	height: 100%;
+	box-sizing: border-box;
+	border-left-width: 1px;
+	border-left-style: solid;
+	border-top-width: 1px;
+	border-top-style: solid;
+	border-color: var(--vscode-terminal-border);
+}
+
+/*
+ * Directional drop overlay shown while dragging a terminal tab over a grid cell, see
+ * `SessionTerminalGridCell._updateDropOverlay` in `sessionTerminalGridGroup.ts`. Mirrors the
+ * look of upstream's own `.terminal-drop-overlay` (terminal.css) but supports all 4 directions
+ * instead of only a before/after split.
+ */
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-drop-overlay {
+	position: absolute;
+	pointer-events: none;
+	z-index: 34;
+	background-color: var(--vscode-terminal-dropBackground, var(--vscode-editorGroup-dropBackground));
+}
+
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-drop-overlay.drop-up {
+	left: 0;
+	right: 0;
+	top: 0;
+	height: 50%;
+}
+
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-drop-overlay.drop-down {
+	left: 0;
+	right: 0;
+	bottom: 0;
+	height: 50%;
+}
+
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-drop-overlay.drop-left {
+	top: 0;
+	bottom: 0;
+	left: 0;
+	width: 50%;
+}
+
+.monaco-workbench .pane-body.integrated-terminal .session-terminal-grid-drop-overlay.drop-right {
+	top: 0;
+	bottom: 0;
+	right: 0;
+	width: 50%;
+}

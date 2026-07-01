@@ -741,6 +741,10 @@
 			"project": "vscode-sessions"
 		},
 		{
+			"name": "vs/sessions/contrib/terminalGrid",
+			"project": "vscode-sessions"
+		},
+		{
 			"name": "vs/sessions/contrib/welcome",
 			"project": "vscode-sessions"
 		},

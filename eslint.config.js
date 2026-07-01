@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH comments)
 // @ts-check
 import { defineConfig } from 'eslint/config';
 import fs from 'fs';
@@ -1833,6 +1834,9 @@ export default defineConfig(
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
 						'vs/sessions/~',
+						// PARA-PATCH: terminalGroupService.ts が 2D グリッドターミナルグループ
+						// (SessionTerminalGridGroup) に差し替えるための唯一の逆方向 import
+						'vs/sessions/contrib/terminalGrid/~',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import
