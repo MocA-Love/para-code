@@ -28,7 +28,12 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'monaco-dialog-modal-block', type: BrowserOverlayType.Dialog },
 	{ className: 'monaco-modal-editor-block', type: BrowserOverlayType.Dialog },
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
-	{ className: 'notification-toast-container', type: BrowserOverlayType.Notification },
+	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
+	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),
+	// but that interrupts browsing every time a toast pops up. In Para Code the toast is simply hidden
+	// behind the browser instead; notifications remain reachable via the status bar bell. The
+	// notifications-center entry above is kept: that panel is user-invoked and interactive.
+	// { className: 'notification-toast-container', type: BrowserOverlayType.Notification },
 	// Context view is very generic, so treat the content as unknown
 	{ className: 'context-view', type: BrowserOverlayType.Unknown }
 ];
