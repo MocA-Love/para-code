@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 
 //#region --- editor/workbench core
 
@@ -476,3 +477,6 @@ import './contrib/editTelemetry/browser/editTelemetry.contribution.js';
 import './contrib/opener/browser/opener.contribution.js';
 
 //#endregion
+
+// PARA-PATCH: fork独自機能（通常ウィンドウ向け）の集約import入り口。以後このファイル自体への追記は不要、src/vs/paradis/paradis.common.contribution.ts側にimportを追記していく
+import '../paradis/paradis.common.contribution.js';
