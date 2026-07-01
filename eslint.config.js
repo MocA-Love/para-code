@@ -1856,6 +1856,20 @@ export default defineConfig(
 					]
 				},
 				{
+					// PARA-PATCH: Paradis独自contribution（src/vs/paradis/contrib/<feature>/{browser,electron-browser}/**）のlayer定義
+					'target': 'src/vs/paradis/contrib/*/~',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/editor/~',
+						'vs/editor/contrib/*/~',
+						'vs/workbench/~',
+						'vs/workbench/services/*/~',
+						'vs/workbench/contrib/*/~',
+					]
+				},
+				{
 					'target': 'src/vs/workbench/contrib/terminalContrib/*/~',
 					'restrictions': [
 						'vs/base/~',
@@ -1975,7 +1989,8 @@ export default defineConfig(
 						'vs/workbench/contrib/*/~',
 						'vs/workbench/contrib/terminal/terminal.all.js',
 						'vs/sessions/common/theme.js', // side-effect import for color registry
-						'vs/sessions/common/sizes.js' // side-effect import for size registry
+						'vs/sessions/common/sizes.js', // side-effect import for size registry
+						'vs/paradis/paradis.common.contribution.js' // PARA-PATCH: fork独自機能（通常ウィンドウ向け）の集約import入り口
 					]
 				},
 				{
@@ -2026,7 +2041,24 @@ export default defineConfig(
 						'vs/workbench/api/~',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
-						'vs/workbench/workbench.common.main.js'
+						'vs/workbench/workbench.common.main.js',
+						'vs/paradis/paradis.electron-browser.contribution.js' // PARA-PATCH: fork独自機能（Electron専用API依存）の集約import入り口
+					]
+				},
+				{
+					// PARA-PATCH: 通常ウィンドウ向け fork独自機能の集約import入り口（web/desktop共通、workbench.common.main.tsから読み込まれる）
+					'target': 'src/vs/paradis/paradis.common.contribution.ts',
+					'layer': 'browser',
+					'restrictions': [
+						'vs/paradis/contrib/*/~'
+					]
+				},
+				{
+					// PARA-PATCH: 通常ウィンドウ向け fork独自機能の集約import入り口（Electron専用API依存、workbench.desktop.main.tsからのみ読み込まれる）
+					'target': 'src/vs/paradis/paradis.electron-browser.contribution.ts',
+					'layer': 'electron-browser',
+					'restrictions': [
+						'vs/paradis/contrib/*/~'
 					]
 				},
 				{
