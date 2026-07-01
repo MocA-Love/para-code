@@ -8,7 +8,7 @@ import './media/activityaction.css';
 import { localize, localize2 } from '../../../../nls.js';
 import { ActionsOrientation } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { Part } from '../../part.js';
-import { ActivityBarPosition, IWorkbenchLayoutService, LayoutSettings, Parts, Position, FLOATING_PANEL_MARGIN } from '../../../services/layout/browser/layoutService.js';
+import { ActivityBarPosition, IWorkbenchLayoutService, LayoutSettings, Parts, Position, FLOATING_PANEL_MARGIN, SINGLE_WINDOW_PARTS } from '../../../services/layout/browser/layoutService.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ToggleSidebarPositionAction, ToggleSidebarVisibilityAction } from '../../actions/layoutActions.js';
@@ -85,13 +85,19 @@ export class ActivitybarPart extends Part {
 	constructor(
 		private readonly location: ViewContainerLocation,
 		private readonly paneCompositePart: IPaneCompositePart,
+		// PARA-PATCH: parameterize the part id / storage keys so a second activity bar can be created for the auxiliary bar
+		// without colliding with the primary activity bar (same class instantiated twice). Defaults keep existing callers working.
+		private readonly partId: SINGLE_WINDOW_PARTS = Parts.ACTIVITYBAR_PART,
+		private readonly pinnedViewContainersStorageKey: string = ActivitybarPart.pinnedViewContainersKey,
+		private readonly placeholderViewContainersStorageKey: string = ActivitybarPart.placeholderViewContainersKey,
+		private readonly viewContainersWorkspaceStateStorageKey: string = ActivitybarPart.viewContainersWorkspaceStateKey,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IThemeService themeService: IThemeService,
 		@IStorageService storageService: IStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
-		super(Parts.ACTIVITYBAR_PART, { hasTitle: false }, themeService, storageService, layoutService);
+		super(partId, { hasTitle: false }, themeService, storageService, layoutService); // PARA-PATCH: use the parameterized part id
 
 		this._isCompact = this.configurationService.getValue<boolean>(LayoutSettings.ACTIVITY_BAR_COMPACT) ?? false;
 
@@ -141,9 +147,10 @@ export class ActivitybarPart extends Part {
 
 		return this.instantiationService.createInstance(ActivityBarCompositeBar, this.location, {
 			partContainerClass: 'activitybar',
-			pinnedViewContainersKey: ActivitybarPart.pinnedViewContainersKey,
-			placeholderViewContainersKey: ActivitybarPart.placeholderViewContainersKey,
-			viewContainersWorkspaceStateKey: ActivitybarPart.viewContainersWorkspaceStateKey,
+			// PARA-PATCH: use the parameterized storage keys so primary/auxiliary activity bars keep independent pinned state
+			pinnedViewContainersKey: this.pinnedViewContainersStorageKey,
+			placeholderViewContainersKey: this.placeholderViewContainersStorageKey,
+			viewContainersWorkspaceStateKey: this.viewContainersWorkspaceStateStorageKey,
 			orientation: ActionsOrientation.VERTICAL,
 			icon: true,
 			iconSize,
@@ -165,7 +172,8 @@ export class ActivitybarPart extends Part {
 				activeBackgroundColor: undefined, inactiveBackgroundColor: undefined, activeBorderBottomColor: undefined,
 			}),
 			overflowActionSize: actionHeight,
-		}, Parts.ACTIVITYBAR_PART, this.paneCompositePart, true);
+			// PARA-PATCH: pass the parameterized part id; only the primary activity bar shows global activities (accounts/settings)
+		}, this.partId, this.paneCompositePart, this.partId === Parts.ACTIVITYBAR_PART);
 	}
 
 	protected override createContentArea(parent: HTMLElement): HTMLElement {
@@ -174,7 +182,7 @@ export class ActivitybarPart extends Part {
 
 		this.updateCompactStyle();
 
-		if (this.layoutService.isVisible(Parts.ACTIVITYBAR_PART)) {
+		if (this.layoutService.isVisible(this.partId)) { // PARA-PATCH: track this part's own visibility (primary or auxiliary)
 			this.show();
 		}
 
@@ -265,7 +273,7 @@ export class ActivitybarPart extends Part {
 
 	toJSON(): object {
 		return {
-			type: Parts.ACTIVITYBAR_PART
+			type: this.partId // PARA-PATCH: serialize this part's own id (primary or auxiliary)
 		};
 	}
 }
@@ -357,6 +365,11 @@ export class ActivityBarCompositeBar extends PaneCompositeBar {
 	}
 
 	private installMenubar() {
+		// PARA-PATCH: only the primary activity bar hosts the compact menu bar; the auxiliary activity bar must not duplicate it
+		if (this.part !== Parts.ACTIVITYBAR_PART) {
+			return;
+		}
+
 		if (this.menuBar.value) {
 			return; // prevent menu bar from installing twice #110720
 		}

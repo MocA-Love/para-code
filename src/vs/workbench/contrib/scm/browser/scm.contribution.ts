@@ -62,7 +62,8 @@ const viewContainer = Registry.as<IViewContainersRegistry>(ViewContainerExtensio
 	alwaysUseContainerInfo: true,
 	order: 2,
 	hideIfEmpty: true,
-}, ViewContainerLocation.Sidebar, { doNotRegisterOpenCommand: true });
+	// PARA-PATCH: default Source Control into the auxiliary (secondary) side bar so it appears in its new vertical activity bar
+}, ViewContainerLocation.AuxiliaryBar, { doNotRegisterOpenCommand: true });
 
 const viewsRegistry = Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry);
 const containerTitle = localize('source control view', "Source Control");

@@ -22,6 +22,8 @@ export const enum Parts {
 	TITLEBAR_PART = 'workbench.parts.titlebar',
 	BANNER_PART = 'workbench.parts.banner',
 	ACTIVITYBAR_PART = 'workbench.parts.activitybar',
+	// PARA-PATCH: vertical activity bar for the auxiliary (secondary) side bar, mirroring ACTIVITYBAR_PART on the opposite edge
+	AUXILIARY_ACTIVITYBAR_PART = 'workbench.parts.auxiliaryactivitybar',
 	SIDEBAR_PART = 'workbench.parts.sidebar',
 	PANEL_PART = 'workbench.parts.panel',
 	AUXILIARYBAR_PART = 'workbench.parts.auxiliarybar',
@@ -151,6 +153,8 @@ export function getFloatingOuterEdgeOwners(layoutService: IWorkbenchLayoutServic
 	// bar that spans the full content width) is skipped and the spanning card is detected on
 	// both edges.
 	const sideBarGroup: Parts[] = [Parts.ACTIVITYBAR_PART, Parts.SIDEBAR_PART];
+	// PARA-PATCH: the auxiliary bar carries its own vertical activity bar on the outermost edge (mirrors sideBarGroup)
+	const auxBarGroup: Parts[] = [Parts.AUXILIARYBAR_PART, Parts.AUXILIARY_ACTIVITYBAR_PART];
 	const panelGroup: Parts[] = [Parts.PANEL_PART];
 	const fullOrder: Parts[] = sideBarLeft
 		? [
@@ -158,10 +162,10 @@ export function getFloatingOuterEdgeOwners(layoutService: IWorkbenchLayoutServic
 			...(panelInLeftSequence ? panelGroup : []),
 			Parts.EDITOR_PART,
 			...(panelInRightSequence ? panelGroup : []),
-			Parts.AUXILIARYBAR_PART
+			...auxBarGroup // PARA-PATCH: aux activity bar is outermost on the right edge
 		]
 		: [
-			Parts.AUXILIARYBAR_PART,
+			...[...auxBarGroup].reverse(), // PARA-PATCH: aux activity bar is outermost on the left edge
 			...(panelInLeftSequence ? panelGroup : []),
 			Parts.EDITOR_PART,
 			...(panelInRightSequence ? panelGroup : []),
@@ -192,7 +196,8 @@ function resolveFloatingOuterOwner(layoutService: IWorkbenchLayoutService, order
 		}
 
 		// The activity bar hugs the window edge but is not a floating card.
-		return part === Parts.ACTIVITYBAR_PART ? undefined : part;
+		// PARA-PATCH: the auxiliary activity bar hugs the opposite edge the same way.
+		return (part === Parts.ACTIVITYBAR_PART || part === Parts.AUXILIARY_ACTIVITYBAR_PART) ? undefined : part;
 	}
 
 	return undefined;
@@ -253,7 +258,8 @@ function getFloatingHorizontalPanelOuterEdges(layoutService: IWorkbenchLayoutSer
 	const { sideBar: sideBarSiblingToEditor, auxBar: auxSiblingToEditor } = getFloatingSidebarSiblingToEditorStatus(layoutService);
 
 	const sideBarSideReached = !layoutService.isVisible(Parts.ACTIVITYBAR_PART) && (!layoutService.isVisible(Parts.SIDEBAR_PART) || sideBarSiblingToEditor);
-	const auxSideReached = !layoutService.isVisible(Parts.AUXILIARYBAR_PART) || auxSiblingToEditor;
+	// PARA-PATCH: the auxiliary activity bar also hugs the aux-side edge, so account for it here
+	const auxSideReached = !layoutService.isVisible(Parts.AUXILIARY_ACTIVITYBAR_PART) && (!layoutService.isVisible(Parts.AUXILIARYBAR_PART) || auxSiblingToEditor);
 
 	return sideBarLeft
 		? { left: sideBarSideReached, right: auxSideReached }

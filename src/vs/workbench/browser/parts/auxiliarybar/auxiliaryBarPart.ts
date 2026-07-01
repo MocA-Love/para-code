@@ -26,6 +26,7 @@ import { LayoutPriority } from '../../../../base/browser/ui/splitview/splitview.
 import { ToggleSidebarPositionAction } from '../../actions/layoutActions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { AbstractPaneCompositePart, CompositeBarPosition } from '../paneCompositePart.js';
+import { ActivitybarPart } from '../activitybar/activitybarPart.js'; // PARA-PATCH: reuse the activity bar for a vertical composite bar on the aux side
 import { ActionsOrientation } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { IPaneCompositeBarOptions } from '../paneCompositeBar.js';
 import { IMenuService, MenuId } from '../../../../platform/actions/common/actions.js';
@@ -80,6 +81,18 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 
 	private configuration: IAuxiliaryBarPartConfiguration;
 	private readonly visibleViewContainersTracker: VisibleViewContainersTracker;
+
+	// PARA-PATCH: a dedicated vertical activity bar for the auxiliary side bar, mirroring the primary side bar's activity bar.
+	// Uses AUXILIARY_ACTIVITYBAR_PART and the aux bar's own storage keys so it stays independent of the primary activity bar.
+	private readonly activityBarPart = this._register(this.instantiationService.createInstance(
+		ActivitybarPart,
+		this.location,
+		this,
+		Parts.AUXILIARY_ACTIVITYBAR_PART,
+		AuxiliaryBarPart.pinnedViewsKey,
+		AuxiliaryBarPart.placeholdeViewContainersKey,
+		AuxiliaryBarPart.viewContainersWorkspaceStateKey,
+	));
 
 	constructor(
 		@INotificationService notificationService: INotificationService,
@@ -170,12 +183,29 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 	}
 
 	private onDidChangeActivityBarLocation(): void {
+		// PARA-PATCH: hide/show the vertical activity bar in lock-step with the composite bar position, mirroring SidebarPart
+		this.activityBarPart.hide();
+
 		this.updateCompositeBar();
 
 		const id = this.getActiveComposite()?.getId();
 		if (id) {
 			this.onTitleAreaUpdate(id);
 		}
+
+		if (this.shouldShowActivityBar()) {
+			this.activityBarPart.show();
+		}
+	}
+
+	// PARA-PATCH: the vertical activity bar is shown when the composite bar is not rendered inline (top/bottom) and the
+	// activity bar is not hidden entirely — mirrors SidebarPart.shouldShowActivityBar.
+	private shouldShowActivityBar(): boolean {
+		if (this.shouldShowCompositeBar()) {
+			return false;
+		}
+
+		return this.configuration.position !== ActivityBarPosition.HIDDEN;
 	}
 
 	override updateStyles(): void {
@@ -261,26 +291,50 @@ export class AuxiliaryBarPart extends AbstractPaneCompositePart {
 	}
 
 	protected shouldShowCompositeBar(): boolean {
-		if (this.configuration.position === ActivityBarPosition.HIDDEN) {
+		// PARA-PATCH: only render the inline (title/top/bottom) composite bar for the top/bottom positions. For the
+		// default/hidden positions the vertical activity bar (AUXILIARY_ACTIVITYBAR_PART) is shown instead, mirroring
+		// how SidebarPart delegates to its activity bar. This is what gives the aux bar a real left/right icon column.
+		if (this.configuration.position !== ActivityBarPosition.TOP && this.configuration.position !== ActivityBarPosition.BOTTOM) {
 			return false;
 		}
 
 		// Check if auto-hide is enabled and there's only one visible view container
 		// while the activity bar is configured to be top or bottom.
-		if (this.configuration.position === ActivityBarPosition.TOP || this.configuration.position === ActivityBarPosition.BOTTOM) {
-			const autoHide = this.configurationService.getValue<boolean>(LayoutSettings.ACTIVITY_BAR_AUTO_HIDE);
-			if (autoHide) {
-				// Use visible composite count from the composite bar if available (considers pinned state),
-				// otherwise fall back to the tracker's count (based on active view descriptors).
-				// Note: We access paneCompositeBar directly to avoid circular calls with getVisiblePaneCompositeIds()
-				const visibleCount = this.visibleViewContainersTracker.visibleCount;
-				if (visibleCount <= 1) {
-					return false;
-				}
+		const autoHide = this.configurationService.getValue<boolean>(LayoutSettings.ACTIVITY_BAR_AUTO_HIDE);
+		if (autoHide) {
+			// Use visible composite count from the composite bar if available (considers pinned state),
+			// otherwise fall back to the tracker's count (based on active view descriptors).
+			// Note: We access paneCompositeBar directly to avoid circular calls with getVisiblePaneCompositeIds()
+			const visibleCount = this.visibleViewContainersTracker.visibleCount;
+			if (visibleCount <= 1) {
+				return false;
 			}
 		}
 
 		return true;
+	}
+
+	// PARA-PATCH: when the vertical activity bar owns the composite bar, delegate the pinned/visible id lookups to it
+	// (mirrors SidebarPart) so consumers see the correct set of view containers.
+	override getPinnedPaneCompositeIds(): string[] {
+		return this.shouldShowCompositeBar() ? super.getPinnedPaneCompositeIds() : this.activityBarPart.getPinnedPaneCompositeIds();
+	}
+
+	override getVisiblePaneCompositeIds(): string[] {
+		return this.shouldShowCompositeBar() ? super.getVisiblePaneCompositeIds() : this.activityBarPart.getVisiblePaneCompositeIds();
+	}
+
+	override getPaneCompositeIds(): string[] {
+		return this.shouldShowCompositeBar() ? super.getPaneCompositeIds() : this.activityBarPart.getPaneCompositeIds();
+	}
+
+	// PARA-PATCH: focus the aux side bar's composite bar, whether it is the inline bar or the vertical activity bar
+	focusActivityBar(): void {
+		if (this.shouldShowCompositeBar()) {
+			this.focusCompositeBar();
+		} else {
+			this.activityBarPart.show(true);
+		}
 	}
 
 	protected getCompositeBarPosition(): CompositeBarPosition {

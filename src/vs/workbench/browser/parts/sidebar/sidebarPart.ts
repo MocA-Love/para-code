@@ -64,7 +64,9 @@ export class SidebarPart extends AbstractPaneCompositePart {
 		return Math.max(width, 300);
 	}
 
-	private readonly activityBarPart = this._register(this.instantiationService.createInstance(ActivitybarPart, this.location, this));
+	// PARA-PATCH: pass the primary activity bar's id / storage keys explicitly so the (now parameterized) ActivitybarPart
+	// constructor's leading argument count matches and no service-argument mismatch trace is logged at startup.
+	private readonly activityBarPart = this._register(this.instantiationService.createInstance(ActivitybarPart, this.location, this, Parts.ACTIVITYBAR_PART, ActivitybarPart.pinnedViewContainersKey, ActivitybarPart.placeholderViewContainersKey, ActivitybarPart.viewContainersWorkspaceStateKey));
 	private readonly visibleViewContainersTracker: VisibleViewContainersTracker;
 
 	//#endregion
