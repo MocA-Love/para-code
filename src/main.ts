@@ -355,6 +355,14 @@ function configureCommandlineSwitchesSync(cliArgs: NativeParsedArgs) {
 		app.commandLine.appendSwitch('js-flags', jsFlags);
 	}
 
+	// PARA-PATCH: always enable Chromium remote debugging on a dynamic loopback-only port for the
+	// agentBrowser CDP gateway (shared process reads <userDataDir>/DevToolsActivePort; see NOTES.md).
+	// An explicit `remote-debugging-port` from argv.json / CLI takes precedence.
+	if (!app.commandLine.hasSwitch('remote-debugging-port') && !app.commandLine.hasSwitch('remote-debugging-pipe')) {
+		app.commandLine.appendSwitch('remote-debugging-port', '0');
+		app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
+	}
+
 	// Use portal version 4 that supports current_folder option
 	// to address https://github.com/microsoft/vscode/issues/213780
 	// Runtime sets the default version to 3, refs https://github.com/electron/electron/pull/44426
