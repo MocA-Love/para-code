@@ -113,6 +113,9 @@ export interface IProductConfiguration {
 
 	readonly downloadUrl?: string;
 	readonly updateUrl?: string;
+	// PARA-PATCH: Cloudflare Access service token headers for the self-hosted update feed. Stamped at release build time only (see CLAUDE.md).
+	readonly updateAccessClientId?: string;
+	readonly updateAccessClientSecret?: string;
 	readonly webUrl?: string;
 	readonly webEndpointUrlTemplate?: string;
 	readonly webviewContentExternalBaseUrlTemplate?: string;

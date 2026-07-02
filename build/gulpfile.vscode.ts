@@ -312,6 +312,15 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 				if (Object.keys(agentSdks).length > 0) {
 					json.agentSdks = agentSdks;
 				}
+				// PARA-PATCH: stamp Cloudflare Access service token credentials for the
+				// self-hosted update feed from CI secrets (see CLAUDE.md). Absent outside
+				// release builds, so local/PR builds never carry these values.
+				const updateAccessClientId = process.env['PARA_UPDATE_ACCESS_CLIENT_ID'];
+				const updateAccessClientSecret = process.env['PARA_UPDATE_ACCESS_CLIENT_SECRET'];
+				if (updateAccessClientId && updateAccessClientSecret) {
+					json.updateAccessClientId = updateAccessClientId;
+					json.updateAccessClientSecret = updateAccessClientSecret;
+				}
 				return json;
 			}))
 			.pipe(es.through(function (file) {

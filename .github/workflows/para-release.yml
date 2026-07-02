@@ -1,0 +1,323 @@
+# PARA-CODE: fork-owned workflow (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+#
+# Builds signed (macOS) / unsigned (Windows, phase 1 — see NOTES.md) / unsigned
+# (Linux) release packages for Para Code and publishes them:
+#   1. Build artifacts upload to Cloudflare R2 (not GitHub Releases — this repo
+#      is private and browser_download_url requires auth we don't want to give
+#      end-user machines).
+#   2. Release metadata (version/commit/url/sha256hash) is written to the
+#      RELEASES KV namespace consumed by cloudflare/update-server, which is
+#      what src/vs/platform/update/electron-main/*.ts polls.
+#
+# Required secrets (none of these exist yet — see NOTES.md release-infra
+# section for the Cloudflare-side setup checklist):
+#   APPLE_CERTIFICATE_P12_BASE64, APPLE_CERTIFICATE_PASSWORD,
+#     APPLE_CODESIGN_IDENTITY, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
+#     APPLE_TEAM_ID                        — macOS signing + notarization
+#   CF_API_TOKEN, CF_ACCOUNT_ID            — wrangler r2/kv access (CI, not OAuth)
+#   CF_R2_BUCKET                            — R2 bucket name for artifacts
+#   CF_KV_NAMESPACE_ID                      — RELEASES KV namespace id
+#   PARA_UPDATE_ACCESS_CLIENT_ID/_SECRET    — stamped into product.json by
+#     build/gulpfile.vscode.ts so the client sends Cloudflare Access service
+#     token headers (see abstractUpdateService.ts getUpdateAccessHeaders)
+#
+# Windows code signing is intentionally deferred (unsigned builds ship first,
+# see NOTES.md) — Azure Trusted Signing wiring is a follow-up phase.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+env:
+  PARA_UPDATE_ACCESS_CLIENT_ID: ${{ secrets.PARA_UPDATE_ACCESS_CLIENT_ID }}
+  PARA_UPDATE_ACCESS_CLIENT_SECRET: ${{ secrets.PARA_UPDATE_ACCESS_CLIENT_SECRET }}
+
+jobs:
+  build-darwin:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    runs-on: macos-14
+    env:
+      NPM_ARCH: ${{ matrix.arch }}
+      VSCODE_ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install dependencies
+        run: |
+          set -e
+          for i in {1..5}; do
+            npm ci && break
+            if [ $i -eq 5 ]; then
+              echo "Npm install failed too many times" >&2
+              exit 1
+            fi
+            echo "Npm install failed $i, trying again..."
+          done
+        env:
+          npm_config_arch: ${{ env.NPM_ARCH }}
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download built-in extensions
+        run: node build/lib/builtInExtensions.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package (vscode-darwin-${{ matrix.arch }}-min)
+        run: npm run gulp "vscode-darwin-${{ matrix.arch }}-min"
+
+      - name: Import signing certificate
+        env:
+          CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -e
+          echo "$CERTIFICATE_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "" "$RUNNER_TEMP/buildagent.keychain"
+          security default-keychain -s "$RUNNER_TEMP/buildagent.keychain"
+          security unlock-keychain -p "" "$RUNNER_TEMP/buildagent.keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/buildagent.keychain" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" "$RUNNER_TEMP/buildagent.keychain"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Code sign app (build/darwin/sign.ts, reused as-is — see CLAUDE.md)
+        env:
+          AGENT_TEMPDIRECTORY: ${{ runner.temp }}
+          CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
+        run: node build/darwin/sign.ts "$(dirname "$GITHUB_WORKSPACE")"
+
+      - name: Zip signed app
+        run: |
+          set -e
+          cd "$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}"
+          ditto -c -k --sequesterRsrc --keepParent "$(node -p "require('${{ github.workspace }}/product.json').nameLong").app" "$GITHUB_WORKSPACE/darwin-${{ matrix.arch }}.zip"
+
+      - name: Notarize + staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -e
+          xcrun notarytool submit "darwin-${{ matrix.arch }}.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          APP_DIR="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}"
+          xcrun stapler staple "$APP_DIR/$(node -p "require('./product.json').nameLong").app"
+          # Re-zip so the shipped artifact carries the stapled ticket.
+          cd "$APP_DIR"
+          ditto -c -k --sequesterRsrc --keepParent "$(node -p "require('${{ github.workspace }}/product.json').nameLong").app" "$GITHUB_WORKSPACE/darwin-${{ matrix.arch }}.zip"
+
+      - name: Compute sha256
+        run: shasum -a 256 "darwin-${{ matrix.arch }}.zip" | cut -d' ' -f1 > "darwin-${{ matrix.arch }}.zip.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin-${{ matrix.arch }}
+          path: |
+            darwin-${{ matrix.arch }}.zip
+            darwin-${{ matrix.arch }}.zip.sha256
+          retention-days: 7
+
+  build-win32:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    runs-on: windows-latest
+    env:
+      NPM_ARCH: ${{ matrix.arch }}
+      VSCODE_ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          npm_config_arch: ${{ env.NPM_ARCH }}
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download built-in extensions
+        run: node build/lib/builtInExtensions.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package (vscode-win32-${{ matrix.arch }}-min)
+        run: npm run gulp "vscode-win32-${{ matrix.arch }}-min"
+
+      - name: Build Inno Setup updater helper + user installer
+        run: |
+          npm run gulp "vscode-win32-${{ matrix.arch }}-inno-updater"
+          npm run gulp "vscode-win32-${{ matrix.arch }}-user-setup"
+
+      # NOTE: unsigned on purpose for the first release phase (see NOTES.md).
+      # SmartScreen will warn on first run and some AV heuristics may flag the
+      # background updater; Azure Trusted Signing is a planned follow-up once
+      # regional eligibility is confirmed.
+
+      - name: Compute sha256
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path "$(Split-Path $env:GITHUB_WORKSPACE)\VSCode-win32-${{ matrix.arch }}-user\*.exe" | Select-Object -First 1
+          Copy-Item $setup.FullName "win32-${{ matrix.arch }}-user-setup.exe"
+          (Get-FileHash "win32-${{ matrix.arch }}-user-setup.exe" -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii "win32-${{ matrix.arch }}-user-setup.exe.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win32-${{ matrix.arch }}
+          path: |
+            win32-${{ matrix.arch }}-user-setup.exe
+            win32-${{ matrix.arch }}-user-setup.exe.sha256
+          retention-days: 7
+
+  build-linux:
+    runs-on: ubuntu-latest
+    env:
+      VSCODE_ARCH: x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download built-in extensions
+        run: node build/lib/builtInExtensions.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package (vscode-linux-x64-min)
+        run: npm run gulp "vscode-linux-x64-min"
+
+      - name: Build .deb
+        run: |
+          npm run gulp "vscode-linux-x64-prepare-deb"
+          npm run gulp "vscode-linux-x64-build-deb"
+
+      - name: Compute sha256
+        run: |
+          set -e
+          deb="$(find .build/linux/deb -name '*.deb' | head -n1)"
+          cp "$deb" linux-x64.deb
+          sha256sum linux-x64.deb | cut -d' ' -f1 > linux-x64.deb.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x64
+          path: |
+            linux-x64.deb
+            linux-x64.deb.sha256
+          retention-days: 7
+
+  publish:
+    needs: [build-darwin, build-win32, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install wrangler
+        run: npm install -g wrangler@4
+
+      - name: Resolve version/commit
+        id: meta
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "timestamp=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # Upload each artifact to R2 under an unguessable, commit-scoped path
+      # and stamp its KV record. Object upload happens before the KV write so
+      # the feed never advertises a URL that isn't live yet (see NOTES.md).
+      - name: Publish darwin-x64
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          set -e
+          KEY="stable/darwin-x64/${{ steps.meta.outputs.commit }}/darwin-x64.zip"
+          wrangler r2 object put "${{ secrets.CF_R2_BUCKET }}/$KEY" --file artifacts/darwin-x64/darwin-x64.zip --remote
+          HASH=$(cat artifacts/darwin-x64/darwin-x64.zip.sha256)
+          wrangler kv key put --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote \
+            "stable:darwin" "{\"commit\":\"${{ steps.meta.outputs.commit }}\",\"version\":\"${{ steps.meta.outputs.version }}\",\"productVersion\":\"${{ steps.meta.outputs.version }}\",\"url\":\"${{ secrets.CF_R2_PUBLIC_BASE_URL }}/$KEY\",\"sha256hash\":\"$HASH\",\"timestamp\":${{ steps.meta.outputs.timestamp }}}"
+
+      - name: Publish darwin-arm64
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          set -e
+          KEY="stable/darwin-arm64/${{ steps.meta.outputs.commit }}/darwin-arm64.zip"
+          wrangler r2 object put "${{ secrets.CF_R2_BUCKET }}/$KEY" --file artifacts/darwin-arm64/darwin-arm64.zip --remote
+          HASH=$(cat artifacts/darwin-arm64/darwin-arm64.zip.sha256)
+          wrangler kv key put --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote \
+            "stable:darwin-arm64" "{\"commit\":\"${{ steps.meta.outputs.commit }}\",\"version\":\"${{ steps.meta.outputs.version }}\",\"productVersion\":\"${{ steps.meta.outputs.version }}\",\"url\":\"${{ secrets.CF_R2_PUBLIC_BASE_URL }}/$KEY\",\"sha256hash\":\"$HASH\",\"timestamp\":${{ steps.meta.outputs.timestamp }}}"
+
+      - name: Publish win32-x64 / win32-arm64
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          set -e
+          for arch in x64 arm64; do
+            KEY="stable/win32-$arch-user/${{ steps.meta.outputs.commit }}/win32-$arch-user-setup.exe"
+            wrangler r2 object put "${{ secrets.CF_R2_BUCKET }}/$KEY" --file "artifacts/win32-$arch/win32-$arch-user-setup.exe" --remote
+            HASH=$(cat "artifacts/win32-$arch/win32-$arch-user-setup.exe.sha256")
+            wrangler kv key put --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote \
+              "stable:win32-$arch-user" "{\"commit\":\"${{ steps.meta.outputs.commit }}\",\"version\":\"${{ steps.meta.outputs.version }}\",\"productVersion\":\"${{ steps.meta.outputs.version }}\",\"url\":\"${{ secrets.CF_R2_PUBLIC_BASE_URL }}/$KEY\",\"sha256hash\":\"$HASH\",\"timestamp\":${{ steps.meta.outputs.timestamp }}}"
+          done
+
+      - name: Publish linux-x64
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          set -e
+          KEY="stable/linux-x64/${{ steps.meta.outputs.commit }}/linux-x64.deb"
+          wrangler r2 object put "${{ secrets.CF_R2_BUCKET }}/$KEY" --file artifacts/linux-x64/linux-x64.deb --remote
+          HASH=$(cat artifacts/linux-x64/linux-x64.deb.sha256)
+          wrangler kv key put --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote \
+            "stable:linux-x64" "{\"commit\":\"${{ steps.meta.outputs.commit }}\",\"version\":\"${{ steps.meta.outputs.version }}\",\"productVersion\":\"${{ steps.meta.outputs.version }}\",\"url\":\"${{ secrets.CF_R2_PUBLIC_BASE_URL }}/$KEY\",\"sha256hash\":\"$HASH\",\"timestamp\":${{ steps.meta.outputs.timestamp }}}"
