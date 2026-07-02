@@ -491,4 +491,8 @@ import '../workbench/contrib/onboarding/browser/onboarding.contribution.js';
 import './contrib/onboardingTours/browser/onboardingTours.contribution.js';
 
 import './services/sessions/browser/sessionsManagementService.js';
+
+// allow-any-unicode-next-line
+// PARA-PATCH: Sessionsウィンドウでもwatermark(トップページ)の画像差し替え・クリックスタイルCSSを適用する
+import '../paradis/contrib/watermark/browser/paradisWatermark.contribution.js';
 //#endregion

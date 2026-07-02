@@ -800,7 +800,9 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
 				'type': 'boolean',
 				'default': true,
 				'description': localize('tips.enabled', "When enabled, will show the watermark tips when no editor is open."),
-				agentsWindow: { default: false },
+				// PARA-PATCH: keep watermark tips (Open Chat, Toggle Terminal, Toggle Browser, ...) visible
+				// in the Agents window too, since splitting an editor there now also lands on this empty state.
+				agentsWindow: { default: true },
 			},
 			[LayoutSettings.SHADOWS]: {
 				'type': 'boolean',
