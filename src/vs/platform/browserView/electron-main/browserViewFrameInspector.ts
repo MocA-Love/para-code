@@ -11,6 +11,8 @@ import { ICDPConnection } from '../common/cdp/types.js';
 
 export interface IFrameElementHandle extends IDisposable {
 	addToChat(): Promise<void>;
+	// PARA-PATCH: expose the element's outerHTML so the context menu can offer "Copy Element" (plain clipboard copy, independent of chat)
+	getOuterHTML(): Promise<string>;
 	highlight(): Promise<void>;
 	hideHighlight(): Promise<void>;
 }
@@ -327,6 +329,11 @@ export class BrowserViewFrameInspector extends Disposable {
 			addToChat: async () => {
 				const nodeData = await this.extractNodeDataById(elementId);
 				this._onDidInspectElement.fire(nodeData);
+			},
+			// PARA-PATCH: plain outerHTML access for the "Copy Element" context menu item (reuses the same extraction path as addToChat)
+			getOuterHTML: async () => {
+				const nodeData = await this.extractNodeDataById(elementId);
+				return nodeData.outerHTML;
 			},
 			highlight: async () => {
 				this.frame.postMessage('vscode:browserView:highlightElement', { elementId });

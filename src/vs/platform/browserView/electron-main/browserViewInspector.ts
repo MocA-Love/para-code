@@ -15,6 +15,8 @@ interface IActiveSelection extends IDisposable {
 
 export interface IElementHandle extends IDisposable {
 	addToChat(): Promise<void>;
+	// PARA-PATCH: expose the element's outerHTML so the context menu can offer "Copy Element" (plain clipboard copy, independent of chat)
+	getOuterHTML(): Promise<string>;
 	highlight(): Promise<void>;
 	hideHighlight(): Promise<void>;
 }
