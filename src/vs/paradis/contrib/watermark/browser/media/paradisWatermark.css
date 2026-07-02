@@ -1,0 +1,37 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* Replace the default letterpress artwork on the empty editor group watermark
+	with the Para Code artwork, for every theme variant (hence !important, which
+	also overrides the theme-specific rules in editorgroupview.css). */
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .letterpress {
+	background-image: url('./paradisWatermark.png') !important;
+}
+
+/* Watermark shortcut entries are clickable in Para Code (see the PARA-PATCH in
+	editorGroupWatermark.ts). */
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .shortcuts .watermark-box dl.para-watermark-entry {
+	cursor: pointer;
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .shortcuts .watermark-box dl.para-watermark-entry:hover dt {
+	color: var(--vscode-textLink-foreground);
+}
+
+/* allow-any-unicode-next-line */
+/* Split先(他グループにエディタがある状態)でも watermark のショートカット一覧を表示する。 */
+/* allow-any-unicode-next-line */
+/* upstream (editorgroupview.css) は .content:not(.empty) で .shortcuts を隠すが、Para Code では常に出す */
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container > .editor-group-watermark-wrapper .editor-group-watermark .shortcuts {
+	display: block;
+}
+
+/* allow-any-unicode-next-line */
+/* 同条件で watermark が 200px に絞られるのを、単一空グループ時と同じ基底幅 (272px) に戻す */
+.monaco-workbench .part.editor > .content:not(.empty) .editor-group-container.empty > .editor-group-watermark-wrapper > .editor-group-watermark {
+	max-width: 272px;
+}

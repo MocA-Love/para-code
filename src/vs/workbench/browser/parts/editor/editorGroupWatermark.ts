@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { $, append, clearNode, h } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, EventType, h } from '../../../../base/browser/dom.js'; // PARA-PATCH: addDisposableListener/EventType for clickable entries
 import { KeybindingLabel } from '../../../../base/browser/ui/keybindingLabel/keybindingLabel.js';
 import { coalesce, shuffle } from '../../../../base/common/arrays.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -11,7 +11,7 @@ import { isMacintosh, isWeb, OS } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { MenuId } from '../../../../platform/actions/common/actions.js';
 import { HiddenItemStrategy, MenuWorkbenchToolBar } from '../../../../platform/actions/browser/toolbar.js';
-import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js'; // PARA-PATCH: +ICommandService (run entry commands on click)
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, ContextKeyExpression, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -40,7 +40,10 @@ const openFileOrFolder: WatermarkEntry = { text: localize('watermark.openFileFol
 const openRecent: WatermarkEntry = { text: localize('watermark.openRecent', "Open Recent"), id: 'workbench.action.openRecent' };
 const newUntitledFile: WatermarkEntry = { text: localize('watermark.newUntitledFile', "New Untitled Text File"), id: 'workbench.action.files.newUntitledFile' };
 const findInFiles: WatermarkEntry = { text: localize('watermark.findInFiles', "Find in Files"), id: 'workbench.action.findInFiles' };
-const toggleTerminal: WatermarkEntry = { text: localize({ key: 'watermark.toggleTerminal', comment: ['toggle is a verb here'] }, "Toggle Terminal"), id: 'workbench.action.terminal.toggleTerminal', when: { web: ContextKeyExpr.equals('terminalProcessSupported', true) } };
+// PARA-PATCH: open the terminal in the editor area (same surface as the browser toggle) instead of the bottom panel
+const toggleTerminal: WatermarkEntry = { text: localize({ key: 'watermark.toggleTerminal', comment: ['toggle is a verb here'] }, "Toggle Terminal"), id: 'paradis.terminal.toggleEditorTerminal', when: { web: ContextKeyExpr.equals('terminalProcessSupported', true) } };
+// PARA-PATCH: expose the integrated browser next to the terminal entry (command only registers on Electron, so it naturally disappears on web via the command-existence filter)
+const toggleBrowser: WatermarkEntry = { text: localize({ key: 'watermark.toggleBrowser', comment: ['toggle is a verb here'] }, "Toggle Browser"), id: 'workbench.action.browser.openOrList' };
 const startDebugging: WatermarkEntry = { text: localize('watermark.startDebugging', "Start Debugging"), id: 'workbench.action.debug.start', when: { web: ContextKeyExpr.equals('terminalProcessSupported', true) } };
 const openSettings: WatermarkEntry = { text: localize('watermark.openSettings', "Open Settings"), id: 'workbench.action.openSettings' };
 
@@ -54,10 +57,17 @@ const emptyWindowEntries: WatermarkEntry[] = coalesce([
 	openRecent,
 	...(isMacintosh && !isWeb ? [openFileOrFolder] : [openFile, openFolder]),
 	isMacintosh && !isWeb ? newUntitledFile : undefined, // fill in one more on macOS to get to 5 entries
+	// PARA-PATCH: always show the terminal/browser toggles instead of leaving them
+	// to the random top-up from otherEntries below
+	toggleTerminal,
+	toggleBrowser,
 ]);
 
 const workspaceEntries: WatermarkEntry[] = [
 	...baseEntries,
+	// PARA-PATCH: same as above
+	toggleTerminal,
+	toggleBrowser,
 ];
 
 const otherEntries: WatermarkEntry[] = [
@@ -65,6 +75,7 @@ const otherEntries: WatermarkEntry[] = [
 	findInFiles,
 	startDebugging,
 	toggleTerminal,
+	toggleBrowser,
 	openSettings,
 ];
 
@@ -91,7 +102,8 @@ export class EditorGroupWatermark extends Disposable {
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IStorageService private readonly storageService: IStorageService,
-		@IInstantiationService private readonly instantiationService: IInstantiationService
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@ICommandService private readonly commandService: ICommandService // PARA-PATCH: run entry commands on click
 	) {
 		super();
 
@@ -187,6 +199,10 @@ export class EditorGroupWatermark extends Disposable {
 				const dl = append(box, $('dl'));
 				const dt = append(dl, $('dt'));
 				dt.textContent = entry.text;
+
+				// PARA-PATCH: clicking an entry runs its command (styles in paradisWatermark.css)
+				dl.classList.add('para-watermark-entry');
+				this.keybindingLabels.add(addDisposableListener(dl, EventType.CLICK, () => this.commandService.executeCommand(entry.id)));
 
 				const dd = append(dl, $('dd'));
 
