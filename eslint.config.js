@@ -1852,6 +1852,8 @@ export default defineConfig(
 						// PARA-PATCH: relauncher.contribution.ts がワークスペース切替時の拡張ホスト再起動抑止フラグ
 						// (isParadisManagedWorkspaceWindow) を読むための唯一の逆方向 import
 						'vs/paradis/contrib/workspaceSwitch/~',
+						// PARA-PATCH: xtermTerminal.ts がウィンドウ透過時のターミナル背景透明化ヘルパーを呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/windowTransparency/~',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import
@@ -1887,6 +1889,15 @@ export default defineConfig(
 						'vs/workbench/contrib/terminalContrib/*/~',
 						// PARA-PATCH: paradis contrib 内の layer 間 import（electron-browser→browser/common 等）を許可
 						'vs/paradis/contrib/*/~',
+						// PARA-PATCH: paradisTerminalTransparency.ts が xterm のテーマ型とWebGLアドオン型を type import するための許可
+						{
+							'when': 'hasBrowser',
+							'pattern': '@xterm/xterm'
+						},
+						{
+							'when': 'hasBrowser',
+							'pattern': '@xterm/addon-webgl'
+						},
 					]
 				},
 				{

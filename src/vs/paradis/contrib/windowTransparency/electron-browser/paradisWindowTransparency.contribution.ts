@@ -17,6 +17,7 @@ import { INativeHostService } from '../../../../platform/native/common/native.js
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS } from '../common/paradisTransparency.js';
 
@@ -62,12 +63,17 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 		@INativeWorkbenchEnvironmentService environmentService: INativeWorkbenchEnvironmentService,
 	) {
 		super();
 
 		this.nativeTransparent = environmentService.window.paradisTransparentWindow === true;
 		this.applyStyles();
+
+		// BlockStartup時点ではtitle bar/status barのパートDOMやinline背景がまだ無いことがあるため、
+		// 復元完了後にもう一度applyStylesして背景ミラー(MutationObserver)を張り直す。
+		lifecycleService.when(LifecyclePhase.Restored).then(() => this.applyStyles());
 
 		// 「設定はONだがウィンドウは不透明のまま」（例: 設定ON後にリロードだけした、workspace設定に書いた等）の
 		// 場合、起動時に再起動が必要である旨を案内する。
@@ -169,4 +175,7 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 	}
 }
 
-registerWorkbenchContribution2(ParadisWindowTransparencyContribution.ID, ParadisWindowTransparencyContribution, WorkbenchPhase.AfterRestored);
+// BlockStartup必須: `paradis-transparent` クラスはセッション復元で生成されるターミナル(xterm)より先に
+// 付与されていなければならない。xtermは生成時に `allowTransparency` を確定するため、AfterRestored（エディタ
+// 復元より後）だと、復元されたエディタ内ターミナルが不透明のままWebGLレンダラを初期化してしまう。
+registerWorkbenchContribution2(ParadisWindowTransparencyContribution.ID, ParadisWindowTransparencyContribution, WorkbenchPhase.BlockStartup);

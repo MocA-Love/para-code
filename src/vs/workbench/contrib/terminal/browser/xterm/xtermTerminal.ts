@@ -48,6 +48,8 @@ import type { CommandDetectionCapability } from '../../../../../platform/termina
 import { URI } from '../../../../../base/common/uri.js';
 import { isNumber } from '../../../../../base/common/types.js';
 import { clamp } from '../../../../../base/common/numbers.js';
+// PARA-PATCH: helpers to make the terminal background translucent under window transparency (fork-owned, see vs/paradis)
+import { installParadisWebglBackgroundAlphaPatch, isParadisTransparentActive, paradisXtermBackground } from '../../../../../paradis/contrib/windowTransparency/browser/paradisTerminalTransparency.js';
 
 const enum RenderConstants {
 	SmoothScrollDuration = 125
@@ -262,7 +264,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 				kittyKeyboard: config.enableKittyKeyboardProtocol,
 				win32InputMode: config.enableWin32InputMode,
 			},
-			allowTransparency: config.enableImages,
+			// PARA-PATCH: enable allowTransparency so xterm honors the theme background alpha when window transparency is active (fork-owned)
+			allowTransparency: config.enableImages || isParadisTransparentActive(),
 			windowOptions: {
 				getWinSizePixels: true,
 				getCellSizePixels: true,
@@ -566,7 +569,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		this.raw.options.wordSeparator = config.wordSeparators;
 		this.raw.options.ignoreBracketedPasteMode = config.ignoreBracketedPasteMode;
 		this.raw.options.rescaleOverlappingGlyphs = config.rescaleOverlappingGlyphs;
-		this.raw.options.allowTransparency = config.enableImages;
+		// PARA-PATCH: enable allowTransparency so xterm honors the theme background alpha when window transparency is active (fork-owned)
+		this.raw.options.allowTransparency = config.enableImages || isParadisTransparentActive();
 		this.raw.options.vtExtensions = {
 			kittyKeyboard: config.enableKittyKeyboardProtocol,
 			win32InputMode: config.enableWin32InputMode,
@@ -861,6 +865,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		});
 		try {
 			this.raw.loadAddon(this._webglAddon);
+			// PARA-PATCH: make the WebGL renderer honor the theme background alpha when window transparency is active (fork-owned, see vs/paradis)
+			installParadisWebglBackgroundAlphaPatch(this._webglAddon);
 			this._logService.trace('Webgl was loaded');
 			this._store.add(this._webglAddon.onContextLoss(() => {
 				this._logService.info(`Webgl lost context, disposing of webgl renderer`);
@@ -1019,7 +1025,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		const selectionForegroundColor = theme.getColor(TERMINAL_SELECTION_FOREGROUND_COLOR) || undefined;
 
 		return {
-			background: backgroundColor?.toString(),
+			// PARA-PATCH: keep the background RGB but drop alpha to 0 when window transparency is active (fork-owned, see vs/paradis)
+			background: paradisXtermBackground(backgroundColor),
 			foreground: foregroundColor?.toString(),
 			cursor: cursorColor?.toString(),
 			cursorAccent: cursorAccentColor?.toString(),

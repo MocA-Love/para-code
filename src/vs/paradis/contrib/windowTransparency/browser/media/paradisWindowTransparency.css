@@ -66,10 +66,8 @@
 	background-color: transparent !important;
 }
 
-/* Panel-hosted monaco editors (output, debug console, etc.). Same treatment as the main editor so
-	the translucent panel background shows through; zone widgets are likewise left untouched. The
-	terminal (xterm) renders its cells on a GPU surface and stays an opaque rectangle (documented in
-	the setting description as a known limitation). */
+/* Panel-hosted monaco editors (output, debug console input, etc.). Same treatment as the main editor
+	so the translucent panel background shows through; zone widgets are likewise left untouched. */
 .monaco-workbench.paradis-transparent .part.panel .monaco-editor:not(.zone-widget *),
 .monaco-workbench.paradis-transparent .part.panel .monaco-editor-background:not(.zone-widget *),
 .monaco-workbench.paradis-transparent .part.panel .monaco-editor .margin:not(.zone-widget *) {
@@ -109,6 +107,50 @@
 
 .monaco-workbench.paradis-transparent .notifications-list-container {
 	background: linear-gradient(var(--vscode-notifications-background, var(--vscode-editor-background)), var(--vscode-notifications-background, var(--vscode-editor-background))), var(--vscode-editor-background) !important;
+}
+
+/* Editor part content backdrop. editorPart.ts paints an opaque editorBackground on the part's */
+/* `.content` element via inline style, hiding the translucent `.part.editor` layer underneath for */
+/* the entire editor area. Clear it; `!important` outranks the inline style. */
+.monaco-workbench.paradis-transparent .part.editor > .content {
+	background-color: transparent !important;
+}
+
+/* Editor group backdrop. editorGroupView.ts paints an opaque editorBackground on `.editor-container` */
+/* via inline style, which blocks the translucent `.part.editor` layer behind every editor kind */
+/* (text editors, md/html Raw viewers, terminals opened as editors). Clear it so the part's single */
+/* translucent layer shows through; `!important` outranks the inline style. The Para Code spreadsheet */
+/* editor (Excel viewer) is excluded so its sheet backdrop keeps today's opaque rendering; webview */
+/* based editors (browser tabs, md/html Rendered) composite above this layer and are unaffected. */
+.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-spreadsheet, .paradis-spreadsheet-diff)) {
+	background-color: transparent !important;
+}
+
+/* Terminal (xterm). Under window transparency the xterm theme background alpha is dropped to 0 while */
+/* the RGB is kept (see xtermTerminal.ts PARA-PATCH), so the GPU surface itself renders see-through; */
+/* the WebGL renderer is also patched to honor per-cell background alpha so TUI (Claude Code / codex) */
+/* dark blocks stop painting as opaque bars. Here we clear the opaque container/wrapper backgrounds */
+/* that terminal.css paints (terminal.background -> panel / editorPane / sideBar background) so the */
+/* translucent host part shows through. `.terminal-outer-container` covers the panel, side bar and */
+/* auxiliary bar terminal views; `.terminal-editor .terminal-wrapper` covers terminals opened as */
+/* editors. The sticky scroll overlay keeps its own opaque background for readability (it is not one */
+/* of these elements) and is intentionally left untouched. */
+.monaco-workbench.paradis-transparent .terminal-outer-container,
+.monaco-workbench.paradis-transparent .terminal-editor .terminal-wrapper {
+	background-color: transparent !important;
+}
+
+/* Lists and trees hosted in the side bar / auxiliary bar / panel (Explorer files, Source Control */
+/* changes, debug console rows, output/problems lists, ...). The virtualized `.monaco-list-rows` */
+/* container paints an opaque list background (the host part's theme color) over the translucent */
+/* part; clear it so the part shows through. Per-row selection/hover/focus backgrounds live on the */
+/* individual `.monaco-list-row` elements and are unaffected. Floating list consumers (quick input, */
+/* suggest, context menus) live outside the parts, so this scoped rule never touches them. The tree */
+/* sticky container keeps its own opaque background for readability (it overlays scrolled rows). */
+.monaco-workbench.paradis-transparent .part.sidebar .monaco-list-rows,
+.monaco-workbench.paradis-transparent .part.auxiliarybar .monaco-list-rows,
+.monaco-workbench.paradis-transparent .part.panel .monaco-list-rows {
+	background-color: transparent !important;
 }
 
 /* Resource monitor severity dot (Para Code). paradisResourceMonitor.css draws a "cut-out" ring
