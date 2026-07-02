@@ -15,6 +15,7 @@
 import './contrib/windowTransparency/browser/paradisSettings.contribution.js';
 import './contrib/workspaceSwitch/browser/paradisWorkspaceSwitch.contribution.js';
 import './contrib/terminalHistorySuggest/browser/paradisTerminalHistoryCompletion.contribution.js';
+import './contrib/terminalHistorySuggest/browser/paradisTerminalSuggestDownKey.contribution.js';
 import './contrib/watermark/browser/paradisWatermark.contribution.js';
 import './contrib/notifications/browser/paradisNotificationsSettings.js';
 import './contrib/resourceMonitor/browser/paradisResourceMonitorSettings.contribution.js';

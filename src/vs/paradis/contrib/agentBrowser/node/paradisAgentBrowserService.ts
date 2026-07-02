@@ -24,7 +24,8 @@ import { join } from '../../../../base/common/path.js';
 import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisAgentPaneStatus, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
+import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 
@@ -81,10 +82,16 @@ const TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code. Point chrome-devtools-mcp (--browserUrl) or browser-use (CDP URL) at the returned httpBase to drive the browser page shared with this terminal pane.',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code. Point chrome-devtools-mcp (--browserUrl) or browser-use (CDP URL) at the returned httpBase to drive the browser page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 ] as const;
+
+/**
+ * get_cdp_endpoint 応答に添える、CDPゲートウェイの制約ガイダンス（LLM向け・英語）。
+ * chrome-devtools-mcp のツールが「なぜ失敗するか」を接続前に伝えるためのもの。
+ */
+const CDP_LIMITATIONS_NOTE = 'The gateway exposes exactly one page (the one shared with this terminal pane). new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - ask the user to open or close pages from the Para Code UI instead. resize_page is not supported because the embedded browser is laid out by the workbench - use the emulate tool (viewport emulation) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
 
 /**
  * バインディングレジストリ + MCP HTTPサーバー + CDPゲートウェイ。
@@ -134,6 +141,8 @@ export class ParadisAgentBrowserService extends Disposable {
 					}
 					return undefined;
 				},
+				captureBoundPageScreenshot: (token, options) => this._captureBoundPageScreenshot(token, options),
+				focusBoundPage: token => this._focusBoundPage(token),
 			},
 			new ParadisCdpUpstream(userDataPath, logService),
 			logService,
@@ -142,11 +151,15 @@ export class ParadisAgentBrowserService extends Disposable {
 		// そのウィンドウ由来のバインディングをまとめて破棄して整合させる。
 		this._register(ipcServer.onDidRemoveConnection(connection => this.removeBindingsForWindow(connection.ctx)));
 		void this._startServer();
+		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
+		// (Superset の setupAgentHooks 相当。失敗しても起動は妨げない)。
+		paradisSetupAgentHooks(logService).catch(error => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
 	}
 
 	// --- バインディングレジストリ（workbenchからIPCチャネル経由で呼ばれる） ---
 
 	async bind(windowCtx: string, token: string, pageId: string, pageInfo: IParadisSharedPageInfo): Promise<void> {
+		const previous = this._bindings.get(token);
 		this._bindings.set(token, { windowCtx, pageId, pageInfo, boundAt: Date.now() });
 		this.logService.debug(`[ParadisAgentBrowser] Bound pane ${token} -> page ${pageId} (${pageInfo.url}) in ${windowCtx}`);
 		// 既存のCDP接続は古いページのスコープスナップショットを持つため強制切断する
@@ -154,12 +167,24 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._cdpGateway.closeConnectionsForToken(token);
 		// targetIdを先行解決してキャッシュを温める（ゲートウェイの同期クロージャ用）。
 		void this._ensureBoundTargetId(token);
+		// バインド中は backgroundThrottling を無効化する（非表示状態でも rAF/タイマーが
+		// 抑制されず、MCPの navigate / wait_for が停滞しない。Superset知見の移植）。
+		// 同じペインの旧バインドページは、他のペインからも参照されていなければ既定へ戻す。
+		this._setBackgroundThrottling(pageId, false);
+		if (previous && previous.pageId !== pageId && !this._isPageBound(previous.pageId)) {
+			this._setBackgroundThrottling(previous.pageId, true);
+		}
 	}
 
 	async unbind(token: string): Promise<void> {
+		const entry = this._bindings.get(token);
 		if (this._bindings.delete(token)) {
 			this.logService.debug(`[ParadisAgentBrowser] Unbound pane ${token}`);
 			this._cdpGateway.closeConnectionsForToken(token);
+			// 他のペインからも参照されていなければ backgroundThrottling をElectron既定（true）へ戻す
+			if (entry && !this._isPageBound(entry.pageId)) {
+				this._setBackgroundThrottling(entry.pageId, true);
+			}
 		}
 	}
 
@@ -201,10 +226,19 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/** ウィンドウ切断時に、そのウィンドウのバインディングとシェルPID表をまとめて破棄する。 */
 	removeBindingsForWindow(windowCtx: string): void {
+		const removedPageIds = new Set<string>();
 		for (const [token, entry] of [...this._bindings]) {
 			if (entry.windowCtx === windowCtx) {
 				this._bindings.delete(token);
 				this._cdpGateway.closeConnectionsForToken(token);
+				removedPageIds.add(entry.pageId);
+			}
+		}
+		// バインドが完全に消えたページは backgroundThrottling を既定へ戻す
+		// （ウィンドウリロード時はビュー自体も破棄されるため、単にno-opになる）
+		for (const pageId of removedPageIds) {
+			if (!this._isPageBound(pageId)) {
+				this._setBackgroundThrottling(pageId, true);
 			}
 		}
 		for (const [token, entry] of [...this._paneShells]) {
@@ -238,6 +272,54 @@ export class ParadisAgentBrowserService extends Disposable {
 			this.logService.warn(`[ParadisAgentBrowser] Failed to resolve CDP targetId for page ${binding.pageId}`, error);
 			return undefined;
 		}
+	}
+
+	/**
+	 * CDPゲートウェイからの `Page.captureScreenshot` 委譲。electron-mainの
+	 * {@link PARADIS_CDP_TARGET_CHANNEL} 経由でupstream実装（非表示時の回避策付き）を呼び、
+	 * base64画像データを返す。失敗時はundefined（ゲートウェイが上流へフォールバックする）。
+	 */
+	private async _captureBoundPageScreenshot(token: string, options: IParadisCdpScreenshotOptions): Promise<string | undefined> {
+		const binding = this._bindings.get(token);
+		if (!binding) {
+			return undefined;
+		}
+		try {
+			const data = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+				.call<string | null>('captureScreenshot', [binding.pageId, options]);
+			return data ?? undefined;
+		} catch (error) {
+			this.logService.warn(`[ParadisAgentBrowser] Delegated screenshot failed for page ${binding.pageId}`, error);
+			return undefined;
+		}
+	}
+
+	/** CDPゲートウェイからの `Input.*` 直前フォーカス強制（fire-and-forget、失敗は握りつぶす）。 */
+	private _focusBoundPage(token: string): void {
+		const binding = this._bindings.get(token);
+		if (!binding) {
+			return;
+		}
+		this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+			.call('focusView', [binding.pageId])
+			.then(undefined, () => undefined);
+	}
+
+	/** 指定ページがいずれかのペインにバインドされているか。 */
+	private _isPageBound(pageId: string): boolean {
+		for (const entry of this._bindings.values()) {
+			if (entry.pageId === pageId) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** バインド済みページの backgroundThrottling 切り替え（fire-and-forget）。 */
+	private _setBackgroundThrottling(pageId: string, enabled: boolean): void {
+		this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+			.call('setBackgroundThrottling', [pageId, enabled])
+			.then(undefined, error => this.logService.debug(`[ParadisAgentBrowser] setBackgroundThrottling(${enabled}) failed for page ${pageId}`, error));
 	}
 
 	// --- MCP HTTPサーバー ---
@@ -626,6 +708,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				httpBase,
 				// allow-any-unicode-next-line
 				note: 'chrome-devtools-mcp の --browserUrl や browser-use の CDP URL にこの httpBase を指定してください。操作できるのはこのターミナルペインに共有されたページのみです。',
+				limitations: CDP_LIMITATIONS_NOTE,
 				boundPage: boundEntry ? { url: boundEntry.pageInfo.url, title: boundEntry.pageInfo.title } : null,
 				...(boundEntry ? {} : { hint: NOT_BOUND_MESSAGE }),
 			}, null, 2));
