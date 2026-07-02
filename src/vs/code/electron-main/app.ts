@@ -41,6 +41,9 @@ import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/commo
 // PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway
 import { PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpTargetService } from '../../paradis/contrib/agentBrowser/electron-main/paradisCdpTargetService.js';
+// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator
+import { PARADIS_RESOURCE_MONITOR_CHANNEL } from '../../paradis/contrib/resourceMonitor/common/paradisResourceMonitor.js';
+import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourceMonitor/electron-main/paradisResourceMonitorMainService.js';
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
 import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
 import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
@@ -1315,6 +1318,10 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway (shared process only)
 		const paradisCdpTargetChannel = ProxyChannel.fromService(new ParadisCdpTargetService(accessor.get(IBrowserViewMainService)), disposables);
 		sharedProcessClient.then(client => client.registerChannel(PARADIS_CDP_TARGET_CHANNEL, paradisCdpTargetChannel));
+
+		// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator (main process only)
+		const paradisResourceMonitorChannel = ProxyChannel.fromService(new ParadisResourceMonitorMainService(), disposables);
+		mainProcessElectronServer.registerChannel(PARADIS_RESOURCE_MONITOR_CHANNEL, paradisResourceMonitorChannel);
 
 		// Signing
 		const signChannel = ProxyChannel.fromService(accessor.get(ISignService), disposables);

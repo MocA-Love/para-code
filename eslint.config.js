@@ -1692,6 +1692,9 @@ export default defineConfig(
 						'vs/base/~',
 						'vs/base/parts/*/~',
 						'vs/platform/*/~',
+						// PARA-PATCH: windowsMainService.ts が起動時デフォルトワークスペース注入
+						// (paradisEnsureDefaultWorkspace) を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/workspaceSwitch/~',
 						'tas-client', // node module allowed even in /common/
 						'@microsoft/1ds-core-js', // node module allowed even in /common/
 						'@microsoft/1ds-post-js', // node module allowed even in /common/
@@ -1775,6 +1778,9 @@ export default defineConfig(
 						'vs/editor/contrib/*/~',
 						'vs/workbench/~',
 						'vs/workbench/services/*/~',
+						// PARA-PATCH: electron-browser/parts/titlebar/titlebarPart.ts が CPU/RAMモニタの
+						// タイトルバーウィジェット(createParadisResourceMonitorWidget)を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/resourceMonitor/~',
 						'assert',
 						{
 							'when': 'test',
@@ -1872,6 +1878,9 @@ export default defineConfig(
 						'vs/workbench/~',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
+						// PARA-PATCH: terminalContribは1階層深いため上の 'vs/workbench/contrib/*/~' に一致しない。
+						// ターミナル履歴補完プロバイダ(terminalHistorySuggest)が history/suggest の内部APIを使うための許可
+						'vs/workbench/contrib/terminalContrib/*/~',
 						// PARA-PATCH: paradis contrib 内の layer 間 import（electron-browser→browser/common 等）を許可
 						'vs/paradis/contrib/*/~',
 					]
@@ -2119,6 +2128,8 @@ export default defineConfig(
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
 						'vs/workbench/contrib/terminal/terminal.all.js',
+						// PARA-PATCH: SessionsウィンドウでもparadisのwatermarkスタイルCSSを読み込むための許可
+						'vs/paradis/contrib/*/~',
 					]
 				},
 				{
