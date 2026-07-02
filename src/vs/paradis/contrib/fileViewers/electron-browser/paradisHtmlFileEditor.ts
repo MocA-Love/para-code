@@ -23,6 +23,7 @@ import { ITelemetryService } from '../../../../platform/telemetry/common/telemet
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
@@ -50,17 +51,16 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@IWebviewService webviewService: IWebviewService,
 		@ITextFileService textFileService: ITextFileService,
 		@IFileService fileService: IFileService,
+		@IEditorService editorService: IEditorService,
 	) {
-		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService);
+		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, editorService);
 	}
 
 	protected override get allowScripts(): boolean {
 		return true;
 	}
 
-	protected override onCreateOverlay(rootElement: HTMLElement): void {
-		const toolbar = dom.append(rootElement, dom.$('.paradis-html-zoom-toolbar'));
-
+	protected override onCreateToolbar(toolbar: HTMLElement): void {
 		this._zoomOutButton = this._createIconButton(toolbar, Codicon.zoomOut, localize('paradis.html.zoomOut', "Zoom Out"));
 		this._register(dom.addDisposableListener(this._zoomOutButton, dom.EventType.CLICK, () => this._applyZoom(this._zoomLevel - 1)));
 

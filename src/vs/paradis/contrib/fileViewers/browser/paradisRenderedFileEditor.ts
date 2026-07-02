@@ -16,12 +16,14 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { DEFAULT_EDITOR_ASSOCIATION, IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IWebviewElement, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
@@ -39,6 +41,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	private _rootElement: HTMLElement | undefined;
 	private _contentElement: HTMLElement | undefined;
+	private _toolbarRightElement: HTMLElement | undefined;
 	private _webview: IWebviewElement | undefined;
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
@@ -53,6 +56,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@IWebviewService private readonly _webviewService: IWebviewService,
 		@ITextFileService private readonly _textFileService: ITextFileService,
 		@IFileService private readonly _fileService: IFileService,
+		@IEditorService private readonly _editorService: IEditorService,
 	) {
 		super(id, group, telemetryService, themeService, storageService);
 	}
@@ -66,8 +70,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	/** webview 要素の生成直後に呼ばれるフック（サブクラスがメッセージ購読等を行う）。 */
 	protected onWebviewCreated(_webview: IWebviewElement): void { }
 
-	/** オーバーレイツールバー等をルート要素へ追加するためのフック。 */
-	protected onCreateOverlay(_rootElement: HTMLElement): void { }
+	/** ツールバー右側（トグルの隣）へサブクラス固有のコントロール（HTMLズーム等）を追加するためのフック。 */
+	protected onCreateToolbar(_toolbarRight: HTMLElement): void { }
 
 	/** 現在アクティブな webview（存在すれば）。 */
 	protected get webview(): IWebviewElement | undefined {
@@ -76,8 +80,32 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	protected override createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.paradis-file-viewer'));
+
+		// ペイン内ツールバー（常時表示）。左=Rendered/Raw セグメントトグル、右=サブクラス固有（HTMLズーム等）。
+		// エディタタイトルのアクションが「…」に畳まれても切り替えられるよう、ペイン内に常設する（Superset同等）。
+		const toolbar = dom.append(this._rootElement, dom.$('.paradis-file-viewer-toolbar'));
+		const toggle = dom.append(toolbar, dom.$('.paradis-file-viewer-toggle'));
+		const renderedBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item.active')) as HTMLButtonElement;
+		renderedBtn.textContent = localize('paradis.fileViewer.rendered', "Rendered");
+		const rawBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
+		rawBtn.textContent = localize('paradis.fileViewer.raw', "Raw");
+		this._register(dom.addDisposableListener(rawBtn, dom.EventType.CLICK, () => this._openSource()));
+
+		this._toolbarRightElement = dom.append(toolbar, dom.$('.paradis-file-viewer-toolbar-right'));
+		this.onCreateToolbar(this._toolbarRightElement);
+
 		this._contentElement = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
-		this.onCreateOverlay(this._rootElement);
+	}
+
+	/** 現在のリソースを通常のテキストエディタ（Raw）で開き直す。 */
+	private _openSource(): void {
+		if (!this._currentResource) {
+			return;
+		}
+		void this._editorService.openEditor({
+			resource: this._currentResource,
+			options: { override: DEFAULT_EDITOR_ASSOCIATION.id }
+		}, this.group);
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {

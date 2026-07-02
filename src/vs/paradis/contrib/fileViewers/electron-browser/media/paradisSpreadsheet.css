@@ -40,7 +40,7 @@
 .paradis-spreadsheet-table {
 	border-collapse: collapse;
 	table-layout: fixed;
-	font-family: 'Calibri', 'Segoe UI', 'Meiryo', sans-serif;
+	font-family: 'Calibri', 'MS PGothic', 'Meiryo', 'Segoe UI', sans-serif;
 	font-size: 11pt;
 	color: #000000;
 	background-color: #ffffff;
@@ -152,6 +152,7 @@
 }
 
 .paradis-spreadsheet-diff-pane {
+	position: relative;
 	flex: 1 1 0;
 	min-width: 0;
 	overflow: auto;
@@ -203,4 +204,24 @@
 	background-color: rgba(239, 68, 68, 0.3);
 	text-decoration: line-through;
 	border-radius: 2px;
+}
+
+/* Diagonal cell border and drawing-shape overlays. */
+.paradis-spreadsheet-diagonal {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+}
+
+.paradis-spreadsheet-shapes {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	overflow: visible;
+	z-index: 5;
 }

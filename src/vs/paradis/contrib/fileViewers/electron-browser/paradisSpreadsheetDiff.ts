@@ -11,7 +11,7 @@
 // 各セルに diffStatus(added/removed/modified)と文字レベル差分(diffSegments)を付与する。
 // 文字レベル差分は依存を増やさないため LCS ベースで自前実装している(Superset は `diff` パッケージの diffChars)。
 
-import { IParadisCellData, IParadisSheetData } from '../common/paradisSpreadsheet.js';
+import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
 
 export type ParadisDiffStatus = 'added' | 'removed' | 'modified';
 
@@ -28,6 +28,8 @@ export interface IParadisDiffCell extends IParadisCellData {
 export interface IParadisDiffRow {
 	readonly cells: readonly IParadisDiffCell[];
 	readonly height: number;
+	/** この行に対応する元の Excel 行番号(図形の位置合わせ用。空行は undefined)。 */
+	readonly excelRow?: number;
 }
 
 export interface IParadisDiffSheet {
@@ -37,6 +39,12 @@ export interface IParadisDiffSheet {
 	readonly columnCount: number;
 	readonly columnWidths: readonly number[];
 	readonly sheetStatus?: 'added' | 'removed';
+	/** 各版シートの図形(斜線コネクタ等)。左=original / 右=modified で個別に描画する。 */
+	readonly originalShapes?: readonly IParadisRenderShape[];
+	readonly modifiedShapes?: readonly IParadisRenderShape[];
+	/** 図形描画時の Excel 行番号→Y座標の基準に使う、各版シートの行メタ(excelRow, height)。 */
+	readonly originalMinCol?: number;
+	readonly modifiedMinCol?: number;
 }
 
 // 文字レベル差分が大きすぎる場合の粗いフォールバック閾値(n*m)。
@@ -138,6 +146,7 @@ function computeDiffSegments(oldValue: string, newValue: string, side: 'original
 function markRow(row: IParadisSheetData['rows'][number], status: ParadisDiffStatus): IParadisDiffRow {
 	return {
 		height: row.height,
+		excelRow: row.excelRow,
 		cells: row.cells.map(c => ({ ...c, diffStatus: c.value ? status : undefined })),
 	};
 }
@@ -161,6 +170,8 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				columnCount: mod.columnCount,
 				columnWidths: mod.columnWidths,
 				sheetStatus: 'added',
+				modifiedShapes: mod.shapes,
+				modifiedMinCol: mod.minCol,
 			});
 			continue;
 		}
@@ -172,6 +183,8 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				columnCount: orig.columnCount,
 				columnWidths: orig.columnWidths,
 				sheetStatus: 'removed',
+				originalShapes: orig.shapes,
+				originalMinCol: orig.minCol,
 			});
 			continue;
 		}
@@ -221,11 +234,21 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				}
 			}
 
-			origRows.push({ cells: origCells, height: origRow?.height ?? modRow?.height ?? 20 });
-			modRows.push({ cells: modCells, height: modRow?.height ?? origRow?.height ?? 20 });
+			origRows.push({ cells: origCells, height: origRow?.height ?? modRow?.height ?? 20, excelRow: origRow?.excelRow });
+			modRows.push({ cells: modCells, height: modRow?.height ?? origRow?.height ?? 20, excelRow: modRow?.excelRow });
 		}
 
-		result.push({ name, originalRows: origRows, modifiedRows: modRows, columnCount: maxCols, columnWidths: colWidths });
+		result.push({
+			name,
+			originalRows: origRows,
+			modifiedRows: modRows,
+			columnCount: maxCols,
+			columnWidths: colWidths,
+			originalShapes: orig.shapes,
+			modifiedShapes: mod.shapes,
+			originalMinCol: orig.minCol,
+			modifiedMinCol: mod.minCol,
+		});
 	}
 
 	return result;

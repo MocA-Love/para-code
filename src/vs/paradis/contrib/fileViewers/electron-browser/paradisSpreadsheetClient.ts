@@ -14,12 +14,16 @@ import { encodeBase64 } from '../../../../base/common/buffer.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { IParadisSheetData, IParadisWorkbookData, PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { parseDrawingShapes } from './paradisSpreadsheetDrawings.js';
 
 /** ビューア/差分が扱う最大ファイルサイズ(これを超える xlsx はエラー表示にする)。 */
 export const PARADIS_SPREADSHEET_MAX_BYTES = 20 * 1024 * 1024;
 
-/** 指定リソースの xlsx を読み込み、shared process でパースした構造化データを返す。 */
+/**
+ * 指定リソースの xlsx を読み込み、shared process でパースした構造化データを返す。
+ * 図形(斜線コネクタ等)は shared process から渡る drawing XML を renderer 側の DOMParser で解析して各シートに付与する。
+ */
 export async function parseSpreadsheetResource(
 	fileService: IFileService,
 	sharedProcessService: ISharedProcessService,
@@ -27,5 +31,16 @@ export async function parseSpreadsheetResource(
 ): Promise<IParadisWorkbookData> {
 	const content = await fileService.readFile(resource, { limits: { size: PARADIS_SPREADSHEET_MAX_BYTES } });
 	const base64 = encodeBase64(content.value);
-	return sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64]);
+	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64]);
+
+	const drawing = raw.drawingXmlBySheet;
+	if (!drawing) {
+		return raw;
+	}
+	// drawing は「sheetN.xml のシート番号(1始まり)」でキーされている(Superset同様 eachSheet 順=シート番号と仮定)。
+	const sheets: IParadisSheetData[] = raw.sheets.map((sheet, idx) => {
+		const shapes = parseDrawingShapes(drawing[idx + 1]);
+		return shapes.length > 0 ? { ...sheet, shapes } : sheet;
+	});
+	return { sheets };
 }
