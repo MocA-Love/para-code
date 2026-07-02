@@ -122,6 +122,30 @@ export function appendDiagonalOverlay(td: HTMLElement, diagonal: IParadisDiagona
 	td.appendChild(svg);
 }
 
+/**
+ * 図形アンカー(セル基準 + EMU オフセット)→ 表示座標(px)の解決関数を作る。
+ * ビューア・差分・ハイライトで**同一の式**を使うため共通化している(精度の食い違いを避ける)。
+ * x = 行番号列幅 + 列 a.c の左端(自然列幅の累積) + colOff(EMU→px)。
+ * y = Excel行 a.r の上端(実測rowY) + rowOff(EMU→px)。a.c は0始まり絶対列、minCol は1始まり先頭データ列。
+ */
+export function makeAnchorResolver(
+	rowYByExcelRow: Map<number, number>,
+	columnWidths: readonly number[],
+	minCol: number,
+): (a: IParadisRenderAnchor) => { x: number; y: number } {
+	const cumCol: number[] = [0];
+	for (let i = 0; i < columnWidths.length; i++) {
+		cumCol.push(cumCol[i] + columnWidths[i]);
+	}
+	return (a: IParadisRenderAnchor) => {
+		const colIdx = Math.max(0, Math.min(a.c - (minCol - 1), cumCol.length - 1));
+		return {
+			x: PARADIS_ROW_NUM_COL_WIDTH + cumCol[colIdx] + emuToPx(a.co),
+			y: (rowYByExcelRow.get(a.r + 1) ?? 0) + emuToPx(a.ro),
+		};
+	};
+}
+
 /** Excel の行番号(1始まり)→ 表示Y座標(px)のマップと列幅から、図形(直線/矩形)の SVG オーバーレイを生成する。 */
 export function buildShapeOverlay(
 	shapes: readonly IParadisRenderShape[],
@@ -133,16 +157,7 @@ export function buildShapeOverlay(
 	if (shapes.length === 0) {
 		return undefined;
 	}
-	const cumCol: number[] = [0];
-	for (let i = 0; i < columnWidths.length; i++) {
-		cumCol.push(cumCol[i] + columnWidths[i]);
-	}
-	const anchorPos = (a: IParadisRenderAnchor): { x: number; y: number } => {
-		const colIdx = Math.max(0, Math.min(a.c - (minCol - 1), cumCol.length - 1));
-		const x = PARADIS_ROW_NUM_COL_WIDTH + cumCol[colIdx] + emuToPx(a.co);
-		const y = (rowYByExcelRow.get(a.r + 1) ?? 0) + emuToPx(a.ro);
-		return { x, y };
-	};
+	const anchorPos = makeAnchorResolver(rowYByExcelRow, columnWidths, minCol);
 
 	const svg = doc.createElementNS(SVG_NS, 'svg') as SVGElement;
 	svg.setAttribute('class', 'paradis-spreadsheet-shapes');
@@ -226,6 +241,138 @@ export function applyShrinkToFit(items: readonly { readonly td: HTMLElement; rea
 			m.span.style.display = 'inline-block';
 			m.span.style.transformOrigin = m.align === 'right' ? 'right center' : m.align === 'center' ? 'center center' : 'left center';
 			m.span.style.transform = `scaleX(${scale})`;
+		}
+	}
+}
+
+// ── セルまたぎのはみ出し(空セルへのオーバーフロー) ──
+// Excel は wrap でも shrink でもないテキストセルの内容が列幅を超えると、隣の「空セル」へはみ出して全文表示する。
+// 左寄せ/general(文字)は右へ、右寄せは左へ、中央は両側へ。最初の非空セルで止まり、結合セルは対象外。
+
+/** そのセルがはみ出し先になれる「空セル」か(値が空で、結合に関与しない)。 */
+function isOverflowEmpty(cell: IParadisCellData): boolean {
+	if (cell.hidden || cell.colSpan || cell.rowSpan) {
+		return false;
+	}
+	if (cell.value && cell.value.length > 0) {
+		return false;
+	}
+	return !(cell.richText && cell.richText.some(p => p.text.length > 0));
+}
+
+/** セルの内容が非空か(はみ出しの発生源になり得るか)。 */
+function hasContent(cell: IParadisCellData): boolean {
+	if (cell.value && cell.value.length > 0) {
+		return true;
+	}
+	return !!(cell.richText && cell.richText.some(p => p.text.length > 0));
+}
+
+/** セルがどちら側へはみ出すか。'none' なら対象外。 */
+export function overflowToward(cell: IParadisCellData): 'left' | 'right' | 'center' | 'none' {
+	if (cell.wrapText || cell.verticalText || cell.shrinkToFit || cell.hidden || cell.colSpan || cell.rowSpan) {
+		return 'none';
+	}
+	if (!hasContent(cell)) {
+		return 'none';
+	}
+	const align = (cell.style.textAlign as string | undefined) || '';
+	if (align === 'right') {
+		return 'left';
+	}
+	if (align === 'center') {
+		return 'center';
+	}
+	// left/justify/general(未指定の文字。数値 general は service 側で right に落ちている) → 右へ。
+	return 'right';
+}
+
+/** 指定セルの左右にある連続した空セルの合計幅(px)。最初の非空セルで打ち切る。 */
+export function computeOverflowRoom(cells: readonly IParadisCellData[], index: number, columnWidths: readonly number[]): { readonly left: number; readonly right: number } {
+	let right = 0;
+	for (let j = index + 1; j < cells.length; j++) {
+		if (!isOverflowEmpty(cells[j])) {
+			break;
+		}
+		right += columnWidths[j] || 0;
+	}
+	let left = 0;
+	for (let j = index - 1; j >= 0; j--) {
+		if (!isOverflowEmpty(cells[j])) {
+			break;
+		}
+		left += columnWidths[j] || 0;
+	}
+	return { left, right };
+}
+
+/** はみ出し候補セルの内容を計測用 span に包んで返す(通常時は普通のインライン span として描画される)。 */
+export function createOverflowSpan(td: HTMLElement, cell: IParadisCellData): HTMLElement {
+	const span = td.ownerDocument.createElement('span');
+	span.className = 'paradis-spreadsheet-overflow';
+	if (cell.richText && cell.richText.length > 0) {
+		for (const part of cell.richText) {
+			const inner = span.ownerDocument.createElement('span');
+			inner.textContent = part.text;
+			applyStyleObject(inner, part.style);
+			span.appendChild(inner);
+		}
+	} else {
+		span.textContent = cell.value;
+	}
+	td.appendChild(span);
+	return span;
+}
+
+/** はみ出し候補の1件。 */
+export interface IParadisOverflowItem {
+	readonly td: HTMLElement;
+	readonly span: HTMLElement;
+	readonly toward: 'left' | 'right' | 'center';
+	readonly leftRoom: number;
+	readonly rightRoom: number;
+	readonly valign: string;
+}
+
+/** はみ出し候補を計測し、列幅を超えるものだけ隣の空セルへ広げる(read→write の2パス)。 */
+export function applyOverflow(items: readonly IParadisOverflowItem[]): void {
+	// pass 1: 計測(read)のみ。td は overflow:hidden なので scrollWidth が内容全幅を返す。
+	const measures = items.map(it => ({ it, need: it.td.scrollWidth, avail: it.td.clientWidth }));
+	// pass 2: 反映(write)のみ。
+	for (const { it, need, avail } of measures) {
+		if (avail <= 0 || need <= avail) {
+			continue;
+		}
+		const extraRight = it.toward === 'left' ? 0 : it.rightRoom;
+		const extraLeft = it.toward === 'right' ? 0 : it.leftRoom;
+		if (extraRight <= 0 && extraLeft <= 0) {
+			continue;
+		}
+		it.td.style.overflow = 'visible';
+		it.td.style.position = 'relative';
+		const span = it.span;
+		span.style.position = 'absolute';
+		span.style.top = '0';
+		span.style.bottom = '0';
+		span.style.display = 'flex';
+		span.style.alignItems = it.valign === 'top' ? 'flex-start' : it.valign === 'middle' ? 'center' : 'flex-end';
+		span.style.whiteSpace = 'nowrap';
+		span.style.overflow = 'hidden';
+		span.style.pointerEvents = 'none';
+		span.style.boxSizing = 'border-box';
+		span.style.padding = '0 3px';
+		if (it.toward === 'right') {
+			span.style.left = '0';
+			span.style.width = `${avail + extraRight}px`;
+			span.style.justifyContent = 'flex-start';
+		} else if (it.toward === 'left') {
+			span.style.right = '0';
+			span.style.width = `${avail + extraLeft}px`;
+			span.style.justifyContent = 'flex-end';
+		} else {
+			span.style.left = `${-extraLeft}px`;
+			span.style.width = `${avail + extraLeft + extraRight}px`;
+			span.style.justifyContent = 'center';
 		}
 	}
 }
@@ -332,14 +479,7 @@ export function buildShapeDiffOverlay(
 	if (renders.length === 0) {
 		return undefined;
 	}
-	const cumCol: number[] = [0];
-	for (let i = 0; i < columnWidths.length; i++) {
-		cumCol.push(cumCol[i] + columnWidths[i]);
-	}
-	const anchorPos = (a: IParadisRenderAnchor): { x: number; y: number } => {
-		const colIdx = Math.max(0, Math.min(a.c - (minCol - 1), cumCol.length - 1));
-		return { x: PARADIS_ROW_NUM_COL_WIDTH + cumCol[colIdx] + emuToPx(a.co), y: (rowYByExcelRow.get(a.r + 1) ?? 0) + emuToPx(a.ro) };
-	};
+	const anchorPos = makeAnchorResolver(rowYByExcelRow, columnWidths, minCol);
 
 	const svg = doc.createElementNS(SVG_NS, 'svg') as SVGElement;
 	svg.setAttribute('class', 'paradis-spreadsheet-shapes');
@@ -412,14 +552,7 @@ export function buildShapeDiffOverlay(
 
 /** 図形のバウンディングボックス(px)を、測定済み行Yと列幅から計算する(現在位置ハイライト用)。 */
 export function computeShapeBBox(shape: IParadisRenderShape, rowYByExcelRow: Map<number, number>, columnWidths: readonly number[], minCol: number): { x: number; y: number; w: number; h: number } {
-	const cumCol: number[] = [0];
-	for (let i = 0; i < columnWidths.length; i++) {
-		cumCol.push(cumCol[i] + columnWidths[i]);
-	}
-	const anchorPos = (a: IParadisRenderAnchor): { x: number; y: number } => {
-		const colIdx = Math.max(0, Math.min(a.c - (minCol - 1), cumCol.length - 1));
-		return { x: PARADIS_ROW_NUM_COL_WIDTH + cumCol[colIdx] + emuToPx(a.co), y: (rowYByExcelRow.get(a.r + 1) ?? 0) + emuToPx(a.ro) };
-	};
+	const anchorPos = makeAnchorResolver(rowYByExcelRow, columnWidths, minCol);
 	const tl = anchorPos(shape.from);
 	if (shape.ext) {
 		return { x: tl.x, y: tl.y, w: emuToPx(shape.ext.cx), h: emuToPx(shape.ext.cy) };
