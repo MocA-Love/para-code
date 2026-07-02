@@ -1595,7 +1595,9 @@ export default defineConfig(
 						'yauzl',
 						'yazl',
 						'zlib',
-						'chrome-remote-interface'
+						'chrome-remote-interface',
+						// PARA-PATCH: Excelビューア/差分の xlsx パース（fork独自、shared processで動作。src/vs/paradis/contrib/fileViewers/ 参照）
+						'exceljs'
 					]
 				},
 				{

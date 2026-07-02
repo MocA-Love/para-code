@@ -147,6 +147,8 @@ import { PlaywrightChannel } from '../../../platform/browserView/node/playwright
 import { registerParadisAgentBrowser } from '../../../paradis/contrib/agentBrowser/node/paradisAgentBrowserChannel.js';
 // PARA-PATCH: 通知サウンド/Aivis読み上げ用バックエンド（fork独自、src/vs/paradis/contrib/notifications/ 参照）
 import { registerParadisNotifications } from '../../../paradis/contrib/notifications/node/paradisNotificationsChannel.js';
+// PARA-PATCH: Excelビューア/差分用の xlsx パースバックエンド（fork独自、src/vs/paradis/contrib/fileViewers/ 参照）
+import { registerParadisSpreadsheet } from '../../../paradis/contrib/fileViewers/node/paradisSpreadsheetChannel.js';
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
 import { LocalGitService } from '../../../platform/git/node/localGitService.js';
@@ -512,6 +514,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: 通知サウンド/Aivis読み上げバックエンド（カスタム音源管理・YouTube取込・Aivis Cloud APIクライアント）
 		this._register(registerParadisNotifications(this.server, accessor.get(ILogService)));
+
+		// PARA-PATCH: Excelビューア/差分の xlsx パースバックエンド（exceljs。rendererでは動かないためshared processで実行）
+		this._register(registerParadisSpreadsheet(this.server));
 
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);
