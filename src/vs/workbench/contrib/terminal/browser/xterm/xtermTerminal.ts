@@ -254,12 +254,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			scrollSensitivity: config.mouseWheelScrollSensitivity,
 			scrollOnEraseInDisplay: true,
 			wordSeparator: config.wordSeparators,
-			scrollbar: options.disableOverviewRuler ? undefined : {
-				width: 14,
-				overviewRuler: {
-					showTopBorder: true,
-				},
-			},
+			// PARA-PATCH: no persistent terminal scrollbar / overview ruler (match stable VS Code's minimal look)
+			scrollbar: undefined,
 			ignoreBracketedPasteMode: config.ignoreBracketedPasteMode,
 			rescaleOverlappingGlyphs: config.rescaleOverlappingGlyphs,
 			vtExtensions: {

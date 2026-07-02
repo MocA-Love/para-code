@@ -87,6 +87,8 @@ export interface IParadisRingtoneEditState {
 
 export const PARADIS_MAX_CLIP_DURATION_SECONDS = 30;
 export const PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES = 20 * 1024 * 1024;
+/** リモート音声(Aivisモデルのサンプル音声等)を shared process 経由で取得する際の上限サイズ。 */
+export const PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES = 10 * 1024 * 1024;
 
 // --- YouTube取込 --------------------------------------------------------------------------------
 

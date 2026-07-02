@@ -5,12 +5,10 @@
 
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
-/*
 /* allow-any-unicode-next-line */
- * 通知設定ダイアログ（Notifications / Aivis Voice Announcement / ユーザー辞書 / 使用量）。
+/* 通知設定ダイアログ（Notifications / Aivis Voice Announcement / ユーザー辞書 / 使用量）。 */
 /* allow-any-unicode-next-line */
- * paradisBindingDialog.css と同じ方式: 自前backdrop+モーダル、色は全て --vscode-* テーマトークン。
- */
+/* paradisBindingDialog.css と同じ方式: 自前backdrop+モーダル、色は全て --vscode-* テーマトークン。 */
 
 .paradis-notif-settings-backdrop {
 	position: absolute;
@@ -184,20 +182,19 @@
 	cursor: default;
 }
 
-/* ---------- form controls ----------
+/* ---------- form controls ---------- */
 /* allow-any-unicode-next-line */
- * `input[type="..."]` のような個別type列挙は、type属性を明示していない <input>（既定でtext扱い
+/* `input[type="..."]` のような個別type列挙は、type属性を明示していない <input>（既定でtext扱い */
 /* allow-any-unicode-next-line */
- * だがHTML属性としては存在しない）を取りこぼす（実際にModel UUID等の入力欄が素通りしていた
+/* だがHTML属性としては存在しない）を取りこぼす（実際にModel UUID等の入力欄が素通りしていた */
 /* allow-any-unicode-next-line */
- * 原因）。type非依存の包括セレクタに統一し、checkbox(.pns-toggle)やrange等の専用スタイルは
+/* 原因）。type非依存の包括セレクタに統一し、checkbox(.pns-toggle)やrange等の専用スタイルは */
 /* allow-any-unicode-next-line */
- * より詳細度の高いセレクタで後から上書きする。
+/* より詳細度の高いセレクタで後から上書きする。 */
 /* allow-any-unicode-next-line */
- * ネストダイアログ(YouTube取込・辞書編集等)は `.paradis-notif-settings` の子孫ではなく
+/* ネストダイアログ(YouTube取込・辞書編集等)は `.paradis-notif-settings` の子孫ではなく */
 /* allow-any-unicode-next-line */
- * `.paradis-notif-nested-dialog` 配下に独立して存在するため、同じルールを両方に適用する。
- */
+/* `.paradis-notif-nested-dialog` 配下に独立して存在するため、同じルールを両方に適用する。 */
 
 .paradis-notif-settings input,
 .paradis-notif-settings select,
@@ -384,10 +381,11 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
+/* allow-any-unicode-next-line */
+/* Superset同様「▶ ⇔ ■(Stop)」のアイコントグルのみで再生状態を示す（塗りつぶし色は使わない）。 */
 .paradis-notif-settings .pns-ringtone-play.playing {
-	background: var(--vscode-errorForeground);
-	border-color: var(--vscode-errorForeground);
-	color: var(--vscode-editor-background);
+	border-color: var(--vscode-focusBorder);
+	color: var(--vscode-textLink-foreground);
 }
 
 /* ---------- preset tiles (Aivis) ---------- */
@@ -633,16 +631,14 @@
 
 /* ---------- nested dialog (YouTube import / dictionary editor) ---------- */
 
-/*
 /* allow-any-unicode-next-line */
- * 注意: このbackdropは常に layoutService.activeContainer の直下（設定ダイアログのbackdropとは
+/* 注意: このbackdropは常に layoutService.activeContainer の直下（設定ダイアログのbackdropとは */
 /* allow-any-unicode-next-line */
- * 兄弟関係）に追加される（自身のオープン元が既に閉じられていてもダイアログ自体は独立して
+/* 兄弟関係）に追加される（自身のオープン元が既に閉じられていてもダイアログ自体は独立して */
 /* allow-any-unicode-next-line */
- * 機能する必要があるため）。よって親セレクタに依存させず、単独ルールとしてz-indexで
+/* 機能する必要があるため）。よって親セレクタに依存させず、単独ルールとしてz-indexで */
 /* allow-any-unicode-next-line */
- * 設定ダイアログ（2700）より上に重ねる。
- */
+/* 設定ダイアログ（2700）より上に重ねる。 */
 .paradis-notif-nested-backdrop {
 	position: absolute;
 	inset: 0;

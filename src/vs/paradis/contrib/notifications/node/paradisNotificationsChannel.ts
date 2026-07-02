@@ -40,6 +40,7 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 			case 'downloadYouTubeAudio': return this.service.downloadYouTubeAudio(String(args[0])) as Promise<T>;
 			case 'readTempAudioFile': return this.service.readTempAudioFile(String(args[0])) as Promise<T>;
 			case 'cleanupTempAudio': return this.service.cleanupTempAudio(String(args[0])) as Promise<T>;
+			case 'fetchAudio': return this.service.fetchAudio(String(args[0])) as Promise<T>;
 			case 'renderClip': return this.service.renderClip(args[0] as Parameters<ParadisNotificationsService['renderClip']>[0]) as Promise<T>;
 
 			case 'getAivisModel': return this.service.getAivisModel(String(args[0]), String(args[1])) as Promise<T>;
