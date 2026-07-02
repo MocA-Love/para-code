@@ -19,7 +19,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { ParadisFileViewerInput, ParadisFileViewerInputSerializer } from '../browser/paradisFileViewerInput.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID, PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_EDITOR_ID, PARADIS_SPREADSHEET_INPUT_TYPE_ID } from '../browser/paradisFileViewers.js';
 
-/** Excel ビューア(単一ファイル)の EditorInput。 */
+/** Excel ビューア(単一ファイル)の EditorInput。Excel には Raw テキストモードが無いので読み取り専用。 */
 export class ParadisSpreadsheetInput extends ParadisFileViewerInput {
 
 	override get typeId(): string {
@@ -30,13 +30,17 @@ export class ParadisSpreadsheetInput extends ParadisFileViewerInput {
 		return PARADIS_SPREADSHEET_EDITOR_ID;
 	}
 
+	override get capabilities(): EditorInputCapabilities {
+		return EditorInputCapabilities.Readonly;
+	}
+
 	override getIcon(): ThemeIcon {
 		return Codicon.table;
 	}
 }
 
 export class ParadisSpreadsheetInputSerializer extends ParadisFileViewerInputSerializer {
-	protected override createInput(instantiationService: IInstantiationService, resource: URI): EditorInput {
+	protected override createInput(instantiationService: IInstantiationService, resource: URI): ParadisFileViewerInput {
 		return instantiationService.createInstance(ParadisSpreadsheetInput, resource);
 	}
 }

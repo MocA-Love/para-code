@@ -35,6 +35,16 @@
 	min-height: 0;
 }
 
+/* allow-any-unicode-next-line */
+/* Rendered(webview) と Raw(埋め込みエディタ) の両コンテナ。表示/非表示で切り替える(内容は保持)。 */
+.paradis-file-viewer-webview,
+.paradis-file-viewer-editor {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+}
+
 /* Segmented Rendered/Raw toggle (Superset FileViewerToolbar ToggleGroup equivalent). */
 .paradis-file-viewer-toggle {
 	display: inline-flex;
@@ -105,32 +115,5 @@
 
 .paradis-html-zoom-percent:hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
-}
-
-/* Overlay Rendered/Raw toggle shown in the text (Raw) editor for .md/.html, matching the pane toolbar tone. */
-.paradis-editor-toggle {
-	display: inline-flex;
-	align-items: center;
-	gap: 1px;
-	padding: 1px;
-	border-radius: 5px;
-	background-color: var(--vscode-editorWidget-background);
-	border: 1px solid var(--vscode-editorWidget-border, transparent);
-	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-	z-index: 4;
-	opacity: 0.6;
-	transition: opacity 0.12s ease-in-out;
-}
-
-.paradis-editor-toggle:hover,
-.paradis-editor-toggle:focus-within {
-	opacity: 1;
-}
-
-/* Compact button sizing for the overlay pill (smaller than the pane toolbar). */
-.paradis-editor-toggle .paradis-file-viewer-toggle-item {
-	padding: 0 7px;
-	font-size: 10px;
-	line-height: 15px;
 }
 

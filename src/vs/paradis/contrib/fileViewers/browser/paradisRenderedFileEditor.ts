@@ -6,46 +6,64 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Markdown / HTML の Rendered ビューアが共有する EditorPane 基底クラス。
-// 対象ファイルを読み込み、サブクラスが生成する完全な HTML ドキュメント文字列を
-// IWebviewService の webview 要素に流し込んで表示する。ディスク上でファイルが
-// 更新されたら correlated watcher（fileService.createWatcher）経由で自動再レンダリングする。
+// Markdown / HTML ビューアが共有する EditorPane 基底クラス（単一ペイン内蔵方式）。
+// 1つのペイン内に Rendered（webview）と Raw（埋め込み CodeEditorWidget = フル機能のテキストエディタ）を内蔵し、
+// 上部ツールバーの Rendered/Raw トグルで内部切替する（エディタを開き直さないのでタブは常に1つ）。
+// Raw は ITextModelService のモデル参照で言語機能/ハイライトが効き、編集可能・保存可能（dirty は EditorInput が委譲）。
+// ディスク上の変更は correlated watcher で Rendered を自動再レンダリングする。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
+import { CodeEditorWidget } from '../../../../editor/browser/widget/codeEditor/codeEditorWidget.js';
+import { IEditorConstructionOptions } from '../../../../editor/browser/config/editorConfiguration.js';
+import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { DEFAULT_EDITOR_ASSOCIATION, IEditorOpenContext } from '../../../../workbench/common/editor.js';
+import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IWebviewElement, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
-import { ParadisFileViewerInput } from './paradisFileViewerInput.js';
+import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 
 import './media/paradisFileViewer.css';
 
+const RAW_EDITOR_OPTIONS: IEditorConstructionOptions = {
+	automaticLayout: true,
+	scrollBeyondLastLine: false,
+	readOnly: false,
+};
+
 /**
- * Rendered ビューア共通の EditorPane。webview 要素のライフサイクル管理・ファイル読込・
- * 自動再レンダリングを担い、実際のドキュメント生成はサブクラスの {@link renderDocument} に委ねる。
+ * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
+ * ファイル読込・自動再レンダリング・モード切替を担い、Rendered の HTML 生成はサブクラスの {@link renderDocument} に委ねる。
  */
 export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	private _rootElement: HTMLElement | undefined;
-	private _contentElement: HTMLElement | undefined;
+	private _webviewContainer: HTMLElement | undefined;
+	private _editorContainer: HTMLElement | undefined;
 	private _toolbarRightElement: HTMLElement | undefined;
+	private _renderedBtn: HTMLButtonElement | undefined;
+	private _rawBtn: HTMLButtonElement | undefined;
+
 	private _webview: IWebviewElement | undefined;
+	private _codeEditor: ICodeEditor | undefined;
+	private readonly _modelRef = this._register(new MutableDisposable<IReference<IResolvedTextEditorModel>>());
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private _currentResource: URI | undefined;
+	private _mode: ParadisFileViewerMode = 'rendered';
 
 	constructor(
 		id: string,
@@ -56,7 +74,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@IWebviewService private readonly _webviewService: IWebviewService,
 		@ITextFileService private readonly _textFileService: ITextFileService,
 		@IFileService private readonly _fileService: IFileService,
-		@IEditorService private readonly _editorService: IEditorService,
+		@ITextModelService private readonly _textModelService: ITextModelService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super(id, group, telemetryService, themeService, storageService);
 	}
@@ -81,43 +100,40 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.paradis-file-viewer'));
 
-		// ペイン内ツールバー（常時表示）。左=Rendered/Raw セグメントトグル、右=サブクラス固有（HTMLズーム等）。
-		// エディタタイトルのアクションが「…」に畳まれても切り替えられるよう、ペイン内に常設する（Superset同等）。
+		// ペイン内ツールバー（常時表示・両モード共通位置）。左=Rendered/Raw セグメントトグル、右=サブクラス固有（HTMLズーム等）。
 		const toolbar = dom.append(this._rootElement, dom.$('.paradis-file-viewer-toolbar'));
 		const toggle = dom.append(toolbar, dom.$('.paradis-file-viewer-toggle'));
-		const renderedBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item.active')) as HTMLButtonElement;
-		renderedBtn.textContent = localize('paradis.fileViewer.rendered', "Rendered");
-		const rawBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
-		rawBtn.textContent = localize('paradis.fileViewer.raw', "Raw");
-		this._register(dom.addDisposableListener(rawBtn, dom.EventType.CLICK, () => this._openSource()));
+		this._renderedBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
+		this._renderedBtn.textContent = localize('paradis.fileViewer.rendered', "Rendered");
+		this._register(dom.addDisposableListener(this._renderedBtn, dom.EventType.CLICK, () => this.setViewMode('rendered')));
+		this._rawBtn = dom.append(toggle, dom.$('button.paradis-file-viewer-toggle-item')) as HTMLButtonElement;
+		this._rawBtn.textContent = localize('paradis.fileViewer.raw', "Raw");
+		this._register(dom.addDisposableListener(this._rawBtn, dom.EventType.CLICK, () => this.setViewMode('raw')));
 
 		this._toolbarRightElement = dom.append(toolbar, dom.$('.paradis-file-viewer-toolbar-right'));
 		this.onCreateToolbar(this._toolbarRightElement);
 
-		this._contentElement = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
-	}
-
-	/** 現在のリソースを通常のテキストエディタ（Raw）で開き直す。 */
-	private _openSource(): void {
-		if (!this._currentResource) {
-			return;
-		}
-		void this._editorService.openEditor({
-			resource: this._currentResource,
-			options: { override: DEFAULT_EDITOR_ASSOCIATION.id }
-		}, this.group);
+		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
+		this._webviewContainer = dom.append(content, dom.$('.paradis-file-viewer-webview'));
+		this._editorContainer = dom.append(content, dom.$('.paradis-file-viewer-editor'));
+		// 既定は Rendered。Raw エディタコンテナは初期非表示にして初回のちらつきを避ける。
+		this._editorContainer.style.display = 'none';
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
 
-		const resource = (input as ParadisFileViewerInput).resource;
+		const viewerInput = input as ParadisFileViewerInput;
+		const resource = viewerInput.resource;
 		this._currentResource = resource;
+		// 別ファイルに切り替わったので前のモデル参照を解放する。
+		this._modelRef.clear();
+		this._codeEditor?.setModel(null);
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
 
-		// ディスク上のファイル変更を監視し、変更されたら自動再レンダリングする。
+		// ディスク上のファイル変更を監視し、Rendered を自動再レンダリングする（Raw は同一モデルなので自動反映）。
 		try {
 			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
 			store.add(watcher);
@@ -131,15 +147,25 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		}
 
 		await this.renderResource(resource, token);
+		if (token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
+			return;
+		}
+		await this._applyViewMode(viewerInput.viewMode, resource);
 	}
 
 	private async renderResource(resource: URI, token: CancellationToken): Promise<void> {
 		let text: string;
-		try {
-			const content = await this._textFileService.read(resource, { acceptTextOnly: false });
-			text = content.value;
-		} catch {
-			text = '';
+		// Raw で開いたモデルがあれば、その現在値(未保存の編集を含む)から Rendered を作る。
+		const model = this._modelRef.value?.object.textEditorModel;
+		if (model && !model.isDisposed() && isEqual(model.uri, resource)) {
+			text = model.getValue();
+		} else {
+			try {
+				const content = await this._textFileService.read(resource, { acceptTextOnly: false });
+				text = content.value;
+			} catch {
+				text = '';
+			}
 		}
 		if (token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
 			return;
@@ -177,21 +203,90 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		});
 		this._webview = webview;
 		this._register(webview);
-		webview.mountTo(this._contentElement!, this.window);
+		webview.mountTo(this._webviewContainer!, this.window);
 		this.onWebviewCreated(webview);
 		return webview;
+	}
+
+	/** Rendered/Raw を内部切替する（エディタは開き直さない）。 */
+	setViewMode(mode: ParadisFileViewerMode): void {
+		if (this.input instanceof ParadisFileViewerInput) {
+			this.input.setViewMode(mode);
+		}
+		const resource = this._currentResource;
+		if (!resource) {
+			return;
+		}
+		// Rendered へ戻るときは Raw で編集された現在値を反映するため再レンダリングする。
+		if (mode === 'rendered' && this._modelRef.value) {
+			void this.renderResource(resource, CancellationToken.None);
+		}
+		void this._applyViewMode(mode, resource);
+	}
+
+	/** 現在の表示モード。 */
+	getViewMode(): ParadisFileViewerMode {
+		return this._mode;
+	}
+
+	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI): Promise<void> {
+		this._mode = mode;
+		this._renderedBtn?.classList.toggle('active', mode === 'rendered');
+		this._rawBtn?.classList.toggle('active', mode === 'raw');
+
+		if (mode === 'raw') {
+			await this._ensureRawEditor(resource);
+		}
+		if (this._webviewContainer) {
+			this._webviewContainer.style.display = mode === 'rendered' ? '' : 'none';
+		}
+		if (this._editorContainer) {
+			this._editorContainer.style.display = mode === 'raw' ? '' : 'none';
+		}
+		if (mode === 'raw') {
+			this._codeEditor?.focus();
+		} else {
+			this._webview?.focus();
+		}
+	}
+
+	private async _ensureRawEditor(resource: URI): Promise<void> {
+		if (!this._codeEditor) {
+			this._codeEditor = this._register(this._instantiationService.createInstance(CodeEditorWidget, this._editorContainer!, RAW_EDITOR_OPTIONS, {}));
+		}
+		// 既に同じモデルを表示していれば何もしない。
+		if (this._modelRef.value && isEqual(this._modelRef.value.object.textEditorModel.uri, resource)) {
+			return;
+		}
+		const ref = await this._textModelService.createModelReference(resource);
+		if (!isEqual(this._currentResource, resource)) {
+			ref.dispose();
+			return;
+		}
+		this._modelRef.value = ref;
+		this._codeEditor.setModel(ref.object.textEditorModel);
 	}
 
 	override clearInput(): void {
 		this._inputDisposables.clear();
 		this._currentResource = undefined;
+		this._codeEditor?.setModel(null);
+		this._modelRef.clear();
 		this._webview?.setHtml('');
 		super.clearInput();
 	}
 
+	override getControl(): ICodeEditor | undefined {
+		return this._mode === 'raw' ? this._codeEditor : undefined;
+	}
+
 	override focus(): void {
 		super.focus();
-		this._webview?.focus();
+		if (this._mode === 'raw') {
+			this._codeEditor?.focus();
+		} else {
+			this._webview?.focus();
+		}
 	}
 
 	override layout(dimension: dom.Dimension): void {
@@ -199,5 +294,6 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			this._rootElement.style.width = `${dimension.width}px`;
 			this._rootElement.style.height = `${dimension.height}px`;
 		}
+		// CodeEditorWidget は automaticLayout: true なので自動追従する。
 	}
 }

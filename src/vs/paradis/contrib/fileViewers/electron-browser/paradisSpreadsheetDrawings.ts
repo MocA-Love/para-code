@@ -10,7 +10,7 @@
 // Superset apps/desktop の parseWorkbook.ts の drawing 解析部の移植。重要事項説明書等の「斜線」はこの直線コネクタで表現される。
 
 import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
-import { IParadisRenderAnchor, IParadisRenderShape } from '../common/paradisSpreadsheet.js';
+import { IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape } from '../common/paradisSpreadsheet.js';
 
 // VS Code workbench は Trusted Types を強制しており、DOMParser.parseFromString に生文字列を渡すとブロックされる。
 // upstream の htmlToMarkdown.ts と同じく、専用ポリシーで文字列を Trusted 化してから渡す。
@@ -66,12 +66,40 @@ function resolveXmlColor(el: Element | null): string {
 	return '#000000';
 }
 
-function parseShapeFromAnchor(anchor: Element): IParadisRenderShape | null {
+function cNvPrOf(container: Element | null): { name?: string; shapeId?: string } {
+	const cNvPr = container ? xmlChild(container, 'cNvPr') : null;
+	if (!cNvPr) {
+		return {};
+	}
+	return { name: xmlAttr(cNvPr, 'name') || undefined, shapeId: xmlAttr(cNvPr, 'id') || undefined };
+}
+
+function parseShapeFromAnchor(anchor: Element, media: { readonly [rid: string]: string }): IParadisRenderShape | null {
 	const from = xmlChild(anchor, 'from');
-	const to = xmlChild(anchor, 'to');
-	if (!from || !to) {
+	if (!from) {
 		return null;
 	}
+	const toEl = xmlChild(anchor, 'to');
+	const extEl = xmlChild(anchor, 'ext');
+	const fromAnchor = parseAnchorPosition(from);
+	const toAnchor = toEl ? parseAnchorPosition(toEl) : fromAnchor;
+	const ext = extEl ? { cx: Number.parseInt(xmlAttr(extEl, 'cx') || '0', 10), cy: Number.parseInt(xmlAttr(extEl, 'cy') || '0', 10) } : undefined;
+
+	// 画像(xdr:pic)
+	const pic = xmlChild(anchor, 'pic');
+	if (pic) {
+		const blipFill = xmlChild(pic, 'blipFill');
+		const blip = blipFill ? xmlChild(blipFill, 'blip') : null;
+		const rid = blip ? (blip.getAttribute('r:embed') || blip.getAttribute('embed') || '') : '';
+		const href = rid ? media[rid] : undefined;
+		if (!href) {
+			return null;
+		}
+		const { name, shapeId } = cNvPrOf(xmlChild(pic, 'nvPicPr'));
+		return { type: 'image', flipV: false, flipH: false, from: fromAnchor, to: toAnchor, outlineWidth: 0, outlineColor: '#000', dash: 'solid', href, ext, name, shapeId };
+	}
+
+	// 図形(sp/cxnSp): 直線コネクタ・矩形
 	const sp = xmlChild(anchor, 'sp') || xmlChild(anchor, 'cxnSp');
 	if (!sp) {
 		return null;
@@ -108,26 +136,29 @@ function parseShapeFromAnchor(anchor: Element): IParadisRenderShape | null {
 		}
 	}
 
+	const { name, shapeId } = cNvPrOf(xmlChild(sp, 'nvSpPr') || xmlChild(sp, 'nvCxnSpPr'));
 	return {
 		type: isLine ? 'line' : 'rect',
 		flipV,
 		flipH,
-		from: parseAnchorPosition(from),
-		to: parseAnchorPosition(to),
+		from: fromAnchor,
+		to: toAnchor,
 		outlineWidth: lineWidth,
 		outlineColor: lineColor,
 		dash: lineDash,
+		name,
+		shapeId,
 	};
 }
 
-/** drawing XML 文字列群を解析して図形配列を返す。 */
-export function parseDrawingShapes(xmlStrings: readonly string[] | undefined): IParadisRenderShape[] {
-	if (!xmlStrings || xmlStrings.length === 0) {
+/** drawing(XML + 埋め込みメディア)群を解析して図形配列(直線/矩形/画像)を返す。 */
+export function parseDrawingShapes(drawings: readonly IParadisDrawingData[] | undefined): IParadisRenderShape[] {
+	if (!drawings || drawings.length === 0) {
 		return [];
 	}
 	const parser = new DOMParser();
 	const shapes: IParadisRenderShape[] = [];
-	for (const xml of xmlStrings) {
+	for (const { xml, media } of drawings) {
 		let doc: Document;
 		try {
 			const trusted = ttPolicy?.createHTML(xml) ?? xml;
@@ -135,12 +166,14 @@ export function parseDrawingShapes(xmlStrings: readonly string[] | undefined): I
 		} catch {
 			continue;
 		}
-		// eslint-disable-next-line no-restricted-syntax -- DOMParser で生成した分離ドキュメントの走査(ライブDOMではない)
-		const anchors = doc.getElementsByTagNameNS('*', 'twoCellAnchor');
-		for (let i = 0; i < anchors.length; i++) {
-			const shape = parseShapeFromAnchor(anchors[i]);
-			if (shape) {
-				shapes.push(shape);
+		for (const tag of ['twoCellAnchor', 'oneCellAnchor']) {
+			// eslint-disable-next-line no-restricted-syntax -- DOMParser で生成した分離ドキュメントの走査(ライブDOMではない)
+			const anchors = doc.getElementsByTagNameNS('*', tag);
+			for (let i = 0; i < anchors.length; i++) {
+				const shape = parseShapeFromAnchor(anchors[i], media);
+				if (shape) {
+					shapes.push(shape);
+				}
 			}
 		}
 	}

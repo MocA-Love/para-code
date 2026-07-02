@@ -44,9 +44,9 @@ export interface IParadisRenderAnchor {
 	readonly ro: number;
 }
 
-/** シート上に描画された図形(直線コネクタ/矩形)。重説等の斜線はこの直線コネクタで表現される。 */
+/** シート上に描画された図形(直線コネクタ/矩形/画像)。重説等の斜線はこの直線コネクタで表現される。 */
 export interface IParadisRenderShape {
-	readonly type: 'line' | 'rect';
+	readonly type: 'line' | 'rect' | 'image';
 	readonly flipV: boolean;
 	readonly flipH: boolean;
 	readonly from: IParadisRenderAnchor;
@@ -54,6 +54,27 @@ export interface IParadisRenderShape {
 	readonly outlineWidth: number;
 	readonly outlineColor: string;
 	readonly dash: string;
+	/** 画像(type='image')の data URI。 */
+	readonly href?: string;
+	/** oneCellAnchor 画像のサイズ(EMU)。to が無い場合に from + ext で矩形化する。 */
+	readonly ext?: { readonly cx: number; readonly cy: number };
+	/** 図形の安定キー(diff用)。cNvPr の name/id。 */
+	readonly name?: string;
+	readonly shapeId?: string;
+}
+
+/** shared process が drawing ごとに渡す XML と埋め込みメディア(rId→dataURI)。 */
+export interface IParadisDrawingData {
+	readonly xml: string;
+	readonly media: { readonly [rid: string]: string };
+}
+
+/** 印刷範囲などの矩形領域(Excel の1始まり行列)。 */
+export interface IParadisCellRange {
+	readonly minR: number;
+	readonly maxR: number;
+	readonly minC: number;
+	readonly maxC: number;
 }
 
 /** 1セルの表示データ。 */
@@ -66,6 +87,7 @@ export interface IParadisCellData {
 	readonly hidden?: boolean;
 	readonly wrapText?: boolean;
 	readonly verticalText?: boolean;
+	readonly shrinkToFit?: boolean;
 	readonly richText?: readonly IParadisRichTextPart[];
 	readonly diagonal?: IParadisDiagonalBorder;
 }
@@ -89,16 +111,30 @@ export interface IParadisSheetData {
 	readonly minCol: number;
 	/** このシートの図形(renderer 側で drawing XML から解析して付与)。 */
 	readonly shapes?: readonly IParadisRenderShape[];
+	/** 画面グリッド線を表示するか(sheetView.showGridLines、既定 true)。 */
+	readonly showGridLines?: boolean;
+	/** 保存時のズーム倍率(sheetView.zoomScale、100=等倍)。 */
+	readonly zoomScale?: number;
+	/** シートタブの色(hex)。 */
+	readonly tabColor?: string;
+	/** シート保護が有効か(sheetProtection.sheet===true)。 */
+	readonly protectedSheet?: boolean;
+	/** 手動改ページの行(その行の下端で改ページ。Excelの1始まり行番号)。 */
+	readonly rowBreaks?: readonly number[];
+	/** 手動改ページの列(その列の右端で改ページ。Excelの1始まり列番号)。 */
+	readonly colBreaks?: readonly number[];
+	/** 印刷範囲(あれば)。 */
+	readonly printArea?: IParadisCellRange;
 }
 
 /** パース結果のワークブック全体。 */
 export interface IParadisWorkbookData {
 	readonly sheets: readonly IParadisSheetData[];
 	/**
-	 * シート番号(1始まり、eachSheet 順)→ そのシートが参照する drawing XML 文字列の配列。
-	 * 図形の解析には DOMParser が必要で node 層では使えないため、XML 文字列だけを渡し renderer で解析する。
+	 * シート番号(1始まり、eachSheet=表示順)→ そのシートが参照する drawing(XML + 埋め込みメディア)の配列。
+	 * 図形/画像の解析には DOMParser が必要で node 層では使えないため、XML と media(rId→dataURI)を渡し renderer で解析する。
 	 */
-	readonly drawingXmlBySheet?: { readonly [sheetIndex: number]: readonly string[] };
+	readonly drawingsBySheet?: { readonly [sheetIndex: number]: readonly IParadisDrawingData[] };
 }
 
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */

@@ -270,3 +270,100 @@ export function getDiffRowIndices(sheet: IParadisDiffSheet): number[] {
 	}
 	return indices;
 }
+
+// ── 図形(drawing)の差分 ──
+
+export type ParadisShapeDiffStatus = 'unchanged' | 'added' | 'removed' | 'moved' | 'changed';
+
+/** 各版で描画する図形とその差分ステータス。 */
+export interface IParadisShapeRender {
+	readonly shape: IParadisRenderShape;
+	readonly status: ParadisShapeDiffStatus;
+}
+
+/** Prev/Next のナビ対象になる図形の変更1件。 */
+export interface IParadisShapeChange {
+	readonly key: string;
+	readonly status: 'added' | 'removed' | 'moved' | 'changed';
+	/** ナビ位置合わせ用の Excel 行番号(1始まり)。 */
+	readonly anchorRow: number;
+	/** ハイライト対象の図形と表示側(削除=original / それ以外=modified)。 */
+	readonly shape: IParadisRenderShape;
+	readonly side: 'original' | 'modified';
+}
+
+export interface IParadisShapeDiff {
+	readonly originalRenders: readonly IParadisShapeRender[];
+	readonly modifiedRenders: readonly IParadisShapeRender[];
+	readonly changes: readonly IParadisShapeChange[];
+}
+
+// 安定キー: cNvPr name → id → 幾何ハッシュ。
+function shapeKey(s: IParadisRenderShape): string {
+	return s.name || s.shapeId || `${s.type}:${s.from.c},${s.from.co},${s.from.r},${s.from.ro},${s.to.c},${s.to.r}`;
+}
+
+function sameGeometry(a: IParadisRenderShape, b: IParadisRenderShape): boolean {
+	return a.from.c === b.from.c && a.from.co === b.from.co && a.from.r === b.from.r && a.from.ro === b.from.ro
+		&& a.to.c === b.to.c && a.to.co === b.to.co && a.to.r === b.to.r && a.to.ro === b.to.ro
+		&& (a.ext?.cx ?? -1) === (b.ext?.cx ?? -1) && (a.ext?.cy ?? -1) === (b.ext?.cy ?? -1);
+}
+
+function sameStyle(a: IParadisRenderShape, b: IParadisRenderShape): boolean {
+	return a.type === b.type && a.outlineWidth === b.outlineWidth && a.outlineColor === b.outlineColor
+		&& a.dash === b.dash && (a.href ?? '') === (b.href ?? '');
+}
+
+/** 旧版/新版の図形を安定キーで突き合わせ、各版の描画リストと変更一覧を返す。 */
+export function buildShapeDiff(original: readonly IParadisRenderShape[] | undefined, modified: readonly IParadisRenderShape[] | undefined): IParadisShapeDiff {
+	const orig = original ?? [];
+	const mod = modified ?? [];
+	const origByKey = new Map<string, IParadisRenderShape>();
+	for (const s of orig) {
+		origByKey.set(shapeKey(s), s);
+	}
+	const modByKey = new Map<string, IParadisRenderShape>();
+	for (const s of mod) {
+		modByKey.set(shapeKey(s), s);
+	}
+
+	const originalRenders: IParadisShapeRender[] = [];
+	const modifiedRenders: IParadisShapeRender[] = [];
+	const changes: IParadisShapeChange[] = [];
+
+	// original 側(左)。変更のカウントは削除のみここで、移動/スタイル変更は modified 側で1回だけ数える。
+	for (const s of orig) {
+		const key = shapeKey(s);
+		const m = modByKey.get(key);
+		if (!m) {
+			originalRenders.push({ shape: s, status: 'removed' });
+			changes.push({ key, status: 'removed', anchorRow: s.from.r + 1, shape: s, side: 'original' });
+		} else if (!sameGeometry(s, m)) {
+			originalRenders.push({ shape: s, status: 'moved' });
+		} else if (!sameStyle(s, m)) {
+			originalRenders.push({ shape: s, status: 'changed' });
+		} else {
+			originalRenders.push({ shape: s, status: 'unchanged' });
+		}
+	}
+
+	// modified 側(右)。追加/移動/スタイル変更をここでカウント。
+	for (const s of mod) {
+		const key = shapeKey(s);
+		const o = origByKey.get(key);
+		if (!o) {
+			modifiedRenders.push({ shape: s, status: 'added' });
+			changes.push({ key, status: 'added', anchorRow: s.from.r + 1, shape: s, side: 'modified' });
+		} else if (!sameGeometry(o, s)) {
+			modifiedRenders.push({ shape: s, status: 'moved' });
+			changes.push({ key, status: 'moved', anchorRow: s.from.r + 1, shape: s, side: 'modified' });
+		} else if (!sameStyle(o, s)) {
+			modifiedRenders.push({ shape: s, status: 'changed' });
+			changes.push({ key, status: 'changed', anchorRow: s.from.r + 1, shape: s, side: 'modified' });
+		} else {
+			modifiedRenders.push({ shape: s, status: 'unchanged' });
+		}
+	}
+
+	return { originalRenders, modifiedRenders, changes };
+}

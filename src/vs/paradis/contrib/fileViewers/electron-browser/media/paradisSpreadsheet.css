@@ -46,6 +46,19 @@
 	background-color: #ffffff;
 }
 
+/* allow-any-unicode-next-line */
+/* Excel の薄いグリッド線(showGridLines 有効時)。セル明示 border はインラインで上書きされ優先される。 */
+.paradis-spreadsheet-table.grid td:not(.paradis-spreadsheet-rowhead):not(.paradis-spreadsheet-colhead):not(.paradis-spreadsheet-corner) {
+	border: 1px solid #d4d4d4;
+}
+
+/* allow-any-unicode-next-line */
+/* shrinkToFit セルの内容 span(applyShrinkToFit で scaleX を掛ける)。 */
+.paradis-spreadsheet-shrink {
+	display: inline-block;
+	white-space: nowrap;
+}
+
 .paradis-spreadsheet-head {
 	position: sticky;
 	top: 0;
@@ -177,6 +190,37 @@
 	border-bottom: 1px solid #d0d0d0;
 }
 
+/* allow-any-unicode-next-line */
+/* テーブル+オーバーレイ+ハイライトの位置基準(スクロールに追従)。 */
+.paradis-spreadsheet-diff-content {
+	position: relative;
+	width: fit-content;
+	min-width: 100%;
+}
+
+/* allow-any-unicode-next-line */
+/* 現在フォーカス中の変更(セル行/図形)の強調枠。 */
+.paradis-spreadsheet-diff-highlight {
+	position: absolute;
+	display: none;
+	pointer-events: none;
+	z-index: 7;
+	box-sizing: border-box;
+	border: 2px solid #f59e0b;
+	border-radius: 2px;
+	background-color: rgba(245, 158, 11, 0.12);
+}
+
+.paradis-spreadsheet-diff-highlight.pulse {
+	animation: paradis-diff-pulse 1.1s ease-out 2;
+}
+
+@keyframes paradis-diff-pulse {
+	0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.6); }
+	70% { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0); }
+	100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+
 .paradis-spreadsheet-table td.diff-added {
 	background-color: rgba(34, 197, 94, 0.25);
 	outline: 2px solid #22c55e;
@@ -224,4 +268,100 @@
 	pointer-events: none;
 	overflow: visible;
 	z-index: 5;
+}
+
+/* Header bar (viewer). Same tone as the diff toolbar. */
+.paradis-spreadsheet-header {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 3px 10px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+	background-color: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+}
+
+.paradis-spreadsheet-header-left {
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+.paradis-spreadsheet-header-right {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.paradis-spreadsheet-iconbtn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+}
+
+.paradis-spreadsheet-iconbtn:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-spreadsheet-percent {
+	min-width: 44px;
+	height: 22px;
+	padding: 0 4px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-size: 11px;
+	cursor: pointer;
+	text-align: center;
+}
+
+.paradis-spreadsheet-percent:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-spreadsheet-openapp {
+	display: flex;
+	align-items: center;
+	margin-left: 4px;
+}
+
+/* Manual page break lines (blue) + print area outer border, over the table (SVG). */
+.paradis-spreadsheet-pagebreaks {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	overflow: visible;
+	z-index: 6;
+}
+
+.paradis-pagebreak-line {
+	stroke: #2e75b6;
+	stroke-width: 1.5;
+}
+
+.paradis-printarea-border {
+	fill: none;
+	stroke: #1f4e79;
+	stroke-width: 2.5;
+}
+
+/* Protected-sheet lock icon in the tab. */
+.paradis-spreadsheet-tab-lock {
+	margin-right: 4px;
+	font-size: 10px;
+	opacity: 0.8;
+	vertical-align: middle;
 }

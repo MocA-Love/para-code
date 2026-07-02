@@ -33,13 +33,13 @@ export async function parseSpreadsheetResource(
 	const base64 = encodeBase64(content.value);
 	const raw = await sharedProcessService.getChannel(PARADIS_SPREADSHEET_CHANNEL).call<IParadisWorkbookData>('parseWorkbook', [base64]);
 
-	const drawing = raw.drawingXmlBySheet;
-	if (!drawing) {
+	const drawings = raw.drawingsBySheet;
+	if (!drawings) {
 		return raw;
 	}
-	// drawing は「sheetN.xml のシート番号(1始まり)」でキーされている(Superset同様 eachSheet 順=シート番号と仮定)。
+	// drawings は「表示順(1始まり)」でキーされている。renderer 側 DOMParser で図形/画像へ変換して付与する。
 	const sheets: IParadisSheetData[] = raw.sheets.map((sheet, idx) => {
-		const shapes = parseDrawingShapes(drawing[idx + 1]);
+		const shapes = parseDrawingShapes(drawings[idx + 1]);
 		return shapes.length > 0 ? { ...sheet, shapes } : sheet;
 	});
 	return { sheets };

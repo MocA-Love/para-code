@@ -20,6 +20,7 @@ import { localize } from '../../../../nls.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -28,11 +29,12 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, buildShapeOverlay, setCellContent } from './paradisSpreadsheetRender.js';
+import { PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, buildShapeDiffOverlay, computeShapeBBox, setCellContent } from './paradisSpreadsheetRender.js';
 import { IParadisRenderShape } from '../common/paradisSpreadsheet.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
-import { IParadisDiffCell, IParadisDiffRow, IParadisDiffSheet, buildDiffSheets, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
+import { IParadisDiffCell, IParadisDiffRow, IParadisDiffSheet, IParadisShapeDiff, IParadisShapeRender, buildDiffSheets, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
+import { appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 
 import './media/paradisSpreadsheet.css';
 
@@ -40,7 +42,10 @@ const $ = dom.$;
 
 interface IDiffLocation {
 	readonly sheetIndex: number;
+	/** スクロール対象の差分行インデックス。 */
 	readonly rowIndex: number;
+	/** 図形の変更なら、ハイライト対象の図形と表示側。 */
+	readonly shape?: { readonly render: IParadisRenderShape; readonly side: 'original' | 'modified' };
 }
 
 export class ParadisSpreadsheetDiffEditor extends EditorPane {
@@ -56,6 +61,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _rightScroll: HTMLElement | undefined;
 	private _leftRows: HTMLElement[] = [];
 	private _rightRows: HTMLElement[] = [];
+	private _leftHighlight: HTMLElement | undefined;
+	private _rightHighlight: HTMLElement | undefined;
+	private _leftRowY = new Map<number, number>();
+	private _rightRowY = new Map<number, number>();
+	private _scaledWidths: number[] = [];
+	private _openAppEl: HTMLElement | undefined;
 	private _syncing = false;
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
@@ -63,6 +74,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _originalResource: URI | undefined;
 	private _modifiedResource: URI | undefined;
 	private _diffSheets: IParadisDiffSheet[] = [];
+	private _shapeDiffs: IParadisShapeDiff[] = [];
 	private _diffLocations: IDiffLocation[] = [];
 	private _activeSheetIndex = 0;
 	private _currentDiffIdx = 0;
@@ -74,6 +86,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IFileService private readonly _fileService: IFileService,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
+		@INativeHostService private readonly _nativeHostService: INativeHostService,
 	) {
 		super(PARADIS_SPREADSHEET_DIFF_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
@@ -91,6 +104,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		nextBtn.textContent = localize('paradis.spreadsheet.next', "Next");
 		this._register(dom.addDisposableListener(prevBtn, dom.EventType.CLICK, () => this._navigate(-1)));
 		this._register(dom.addDisposableListener(nextBtn, dom.EventType.CLICK, () => this._navigate(1)));
+		this._openAppEl = dom.append(nav, $('.paradis-spreadsheet-openapp'));
 
 		this._bodyEl = dom.append(this._root, $('.paradis-spreadsheet-diff-body'));
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
@@ -107,6 +121,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
+
+		if (this._openAppEl) {
+			dom.clearNode(this._openAppEl);
+			appendOpenInAppButton(this._openAppEl, this._modifiedResource, this._nativeHostService, store);
+		}
+
 		// 新版がワーキングコピー(file:)の場合はディスク更新で自動再描画する。
 		if (this._modifiedResource.scheme === Schemas.file || this._modifiedResource.scheme === Schemas.vscodeRemote) {
 			try {
@@ -141,8 +161,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				return;
 			}
 			this._diffSheets = buildDiffSheets(origWb.sheets, modWb.sheets);
-			this._diffLocations = this._diffSheets.flatMap((sheet, sheetIndex) =>
-				getDiffRowIndices(sheet).map(rowIndex => ({ sheetIndex, rowIndex })));
+			this._shapeDiffs = this._diffSheets.map(s => buildShapeDiff(s.originalShapes, s.modifiedShapes));
+			this._diffLocations = this._diffSheets.flatMap((sheet, sheetIndex) => this._buildSheetLocations(sheet, sheetIndex));
 			if (this._activeSheetIndex >= this._diffSheets.length) {
 				this._activeSheetIndex = 0;
 			}
@@ -154,6 +174,28 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._renderMessage(localize('paradis.spreadsheet.errorDiff', "Failed to open spreadsheet diff: {0}", err instanceof Error ? err.message : String(err)));
 			}
 		}
+	}
+
+	/** 1シート分の変更位置(セル行 + 図形)を行位置順にまとめて返す。 */
+	private _buildSheetLocations(sheet: IParadisDiffSheet, sheetIndex: number): IDiffLocation[] {
+		const locs: IDiffLocation[] = [];
+		for (const rowIndex of getDiffRowIndices(sheet)) {
+			locs.push({ sheetIndex, rowIndex });
+		}
+		const maxRows = Math.max(sheet.originalRows.length, sheet.modifiedRows.length);
+		const rowIndexByExcel = new Map<number, number>();
+		for (let i = 0; i < maxRows; i++) {
+			const er = sheet.modifiedRows[i]?.excelRow ?? sheet.originalRows[i]?.excelRow;
+			if (er !== undefined && !rowIndexByExcel.has(er)) {
+				rowIndexByExcel.set(er, i);
+			}
+		}
+		for (const change of this._shapeDiffs[sheetIndex].changes) {
+			const rowIndex = rowIndexByExcel.get(change.anchorRow) ?? Math.max(0, Math.min(change.anchorRow - 1, maxRows - 1));
+			locs.push({ sheetIndex, rowIndex, shape: { render: change.shape, side: change.side } });
+		}
+		locs.sort((a, b) => a.rowIndex - b.rowIndex);
+		return locs;
 	}
 
 	private _renderMessage(message: string): void {
@@ -179,28 +221,35 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 
+		const shapeDiff = this._shapeDiffs[this._activeSheetIndex];
 		const available = Math.max(0, Math.floor(this._bodyEl.clientWidth / 2) - 1);
-		const left = this._buildDiffPane(sheet.originalRows, sheet.columnWidths, localize('paradis.spreadsheet.original', "Original"), available, sheet.originalShapes, sheet.originalMinCol);
+		this._scaledWidths = this._scaleWidths(sheet.columnWidths, available);
+
+		const left = this._buildDiffPane(sheet.originalRows, localize('paradis.spreadsheet.original', "Original"), shapeDiff?.originalRenders, sheet.originalMinCol, 'original');
 		this._leftScroll = left.pane;
 		this._leftRows = left.rows;
+		this._leftHighlight = left.highlight;
 		dom.append(this._bodyEl, left.pane);
 		dom.append(this._bodyEl, $('.paradis-spreadsheet-diff-separator'));
-		const right = this._buildDiffPane(sheet.modifiedRows, sheet.columnWidths, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"), available, sheet.modifiedShapes, sheet.modifiedMinCol);
+		const right = this._buildDiffPane(sheet.modifiedRows, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"), shapeDiff?.modifiedRenders, sheet.modifiedMinCol, 'modified');
 		this._rightScroll = right.pane;
 		this._rightRows = right.rows;
+		this._rightHighlight = right.highlight;
 		dom.append(this._bodyEl, right.pane);
 
 		this._wireSyncScroll(this._leftScroll, this._rightScroll);
 		this._wireSyncScroll(this._rightScroll, this._leftScroll);
 	}
 
-	private _buildDiffPane(rows: readonly IParadisDiffRow[], columnWidths: readonly number[], label: string, containerWidth: number, shapes: readonly IParadisRenderShape[] | undefined, minCol: number | undefined): { pane: HTMLElement; rows: HTMLElement[] } {
+	private _buildDiffPane(rows: readonly IParadisDiffRow[], label: string, shapeRenders: readonly IParadisShapeRender[] | undefined, minCol: number | undefined, side: 'original' | 'modified'): { pane: HTMLElement; rows: HTMLElement[]; highlight: HTMLElement } {
 		const pane = $('.paradis-spreadsheet-diff-pane');
 		const labelEl = dom.append(pane, $('.paradis-spreadsheet-diff-label'));
 		labelEl.textContent = label;
+		// テーブルとオーバーレイ/ハイライトを内包する位置基準(スクロールに追従させる)。
+		const contentEl = dom.append(pane, $('.paradis-spreadsheet-diff-content'));
 
-		const scaledWidths = this._scaleWidths(columnWidths, containerWidth);
-		const table = dom.append(pane, $('table.paradis-spreadsheet-table')) as HTMLTableElement;
+		const scaledWidths = this._scaledWidths;
+		const table = dom.append(contentEl, $('table.paradis-spreadsheet-table.grid')) as HTMLTableElement;
 
 		const colgroup = dom.append(table, $('colgroup'));
 		const rowNumCol = dom.append(colgroup, $('col')) as HTMLTableColElement;
@@ -232,8 +281,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 		});
 
-		// 図形(斜線コネクタ等)はレイアウト確定後に行位置を測定して SVG を重ねる。
-		if (shapes && shapes.length > 0 && minCol !== undefined) {
+		// 現在位置ハイライト用の要素(ナビ時に配置)。
+		const highlight = dom.append(contentEl, $('.paradis-spreadsheet-diff-highlight'));
+
+		// 図形は差分ステータス色で描画。レイアウト確定後に行位置を測定して SVG を重ねる。
+		if (shapeRenders && shapeRenders.length > 0 && minCol !== undefined) {
 			const handle = dom.scheduleAtNextAnimationFrame(dom.getWindow(pane), () => {
 				const rowY = new Map<number, number>();
 				for (const { excelRow, tr } of rowMeta) {
@@ -243,15 +295,20 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				if (last) {
 					rowY.set(last.excelRow + 1, last.tr.offsetTop + last.tr.offsetHeight);
 				}
-				const overlay = buildShapeOverlay(shapes, rowY, scaledWidths, minCol, pane.ownerDocument);
+				if (side === 'original') {
+					this._leftRowY = rowY;
+				} else {
+					this._rightRowY = rowY;
+				}
+				const overlay = buildShapeDiffOverlay(shapeRenders, side, rowY, scaledWidths, minCol, contentEl.ownerDocument);
 				if (overlay) {
-					pane.appendChild(overlay);
+					contentEl.appendChild(overlay);
 				}
 			});
 			this._renderDisposables.add(handle);
 		}
 
-		return { pane, rows: rowEls };
+		return { pane, rows: rowEls, highlight };
 	}
 
 	private _buildDiffCell(tr: HTMLElement, cell: IParadisDiffCell): void {
@@ -376,6 +433,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		this._updateNav();
 		this._scrollToRow(location.rowIndex);
+		// レイアウト確定後(図形の rowY 測定 rAF の後)に現在位置をハイライトする。
+		this._renderDisposables.add(dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation(location)));
 	}
 
 	private _scrollToRow(rowIndex: number): void {
@@ -392,17 +451,70 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		scrollTo(this._rightScroll, this._rightRows);
 	}
 
+	/** Prev/Next でフォーカス中の変更(セル行 or 図形)を強調表示する。 */
+	private _highlightLocation(location: IDiffLocation): void {
+		this._clearHighlight(this._leftHighlight);
+		this._clearHighlight(this._rightHighlight);
+		const sheet = this._diffSheets[this._activeSheetIndex];
+		if (location.shape && sheet) {
+			const side = location.shape.side;
+			const el = side === 'original' ? this._leftHighlight : this._rightHighlight;
+			const rowY = side === 'original' ? this._leftRowY : this._rightRowY;
+			const minCol = side === 'original' ? sheet.originalMinCol : sheet.modifiedMinCol;
+			if (el && minCol !== undefined) {
+				const b = computeShapeBBox(location.shape.render, rowY, this._scaledWidths, minCol);
+				this._showHighlight(el, b.x - 3, b.y - 3, b.w + 6, b.h + 6);
+			}
+			return;
+		}
+		// セル: 両ペインの該当行を帯で強調。
+		this._highlightRow(this._leftHighlight, this._leftRows[location.rowIndex]);
+		this._highlightRow(this._rightHighlight, this._rightRows[location.rowIndex]);
+	}
+
+	private _highlightRow(el: HTMLElement | undefined, tr: HTMLElement | undefined): void {
+		if (!el || !tr) {
+			return;
+		}
+		this._showHighlight(el, 0, tr.offsetTop, Math.max(tr.offsetWidth, PARADIS_ROW_NUM_COL_WIDTH), tr.offsetHeight);
+	}
+
+	private _showHighlight(el: HTMLElement, x: number, y: number, w: number, h: number): void {
+		el.style.left = `${x}px`;
+		el.style.top = `${y}px`;
+		el.style.width = `${w}px`;
+		el.style.height = `${h}px`;
+		el.style.display = 'block';
+		// パルスアニメーションを再トリガー(class を付け直してリフローを挟む)。
+		el.classList.remove('pulse');
+		void el.offsetWidth;
+		el.classList.add('pulse');
+	}
+
+	private _clearHighlight(el: HTMLElement | undefined): void {
+		if (el) {
+			el.style.display = 'none';
+			el.classList.remove('pulse');
+		}
+	}
+
 	override clearInput(): void {
 		this._inputDisposables.clear();
 		this._renderDisposables.clear();
 		this._originalResource = undefined;
 		this._modifiedResource = undefined;
 		this._diffSheets = [];
+		this._shapeDiffs = [];
 		this._diffLocations = [];
 		this._leftScroll = undefined;
 		this._rightScroll = undefined;
 		this._leftRows = [];
 		this._rightRows = [];
+		this._leftHighlight = undefined;
+		this._rightHighlight = undefined;
+		this._leftRowY = new Map();
+		this._rightRowY = new Map();
+		this._scaledWidths = [];
 		if (this._bodyEl) {
 			dom.clearNode(this._bodyEl);
 		}
