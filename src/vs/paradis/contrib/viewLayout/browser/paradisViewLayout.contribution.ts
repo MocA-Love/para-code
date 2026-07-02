@@ -7,24 +7,24 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { IViewDescriptorService, ViewContainer, ViewContainerLocation } from '../../../../workbench/common/views.js';
+import { IViewDescriptorService, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../../workbench/common/views.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 
-/** 配置の指定方法。'left' = 左サイドバー / 'right' = 右セカンダリサイドバー / 'hidden' = コンテナ内全ビューを非表示。 */
+/** 配置の指定方法。'left' = 左サイドバー / 'right' = 右セカンダリサイドバー / 'hidden' = 指定ビューを非表示。 */
 type ParadisViewPlacement = 'left' | 'right' | 'hidden';
 
 interface IParadisContainerPlacement {
 	readonly containerId: string;
 	readonly placement: ParadisViewPlacement;
-	/** 'hidden' 指定時、非表示にするビューID。標準コンテナ（scm/explorer 等）への差し込みビューはこれを使って個別に隠す。 */
+	/** 'hidden' 指定時に非表示にするビューID。独自コンテナは全ビュー、標準コンテナ（scm/explorer）は差し込みビューだけを列挙する。 */
 	readonly viewIds?: readonly string[];
 }
 
 /**
  * Para Code の既定ビュー配置。初回起動時に一度だけ適用し、以後はユーザーの操作を尊重する。
- * mock で決定した配置指定に対応。Claude/Codex のように環境で排他表示されるコンテナは、
- * 実在するものだけ適用される（存在しないIDは黙ってスキップ）。
+ * mock で決定した配置指定に対応。存在しないコンテナ/ビューは黙ってスキップする。
  */
 const DEFAULT_PLACEMENTS: readonly IParadisContainerPlacement[] = [
 	// GitLens: すべて非表示
@@ -48,13 +48,12 @@ const DEFAULT_PLACEMENTS: readonly IParadisContainerPlacement[] = [
 	{ containerId: 'workbench.view.explorer', placement: 'hidden', viewIds: ['houston.hello'] }
 ];
 
-// コンテナ単位で「既定配置を適用済み」を記録するストレージキー。
-// 全体フラグではなくコンテナ個別に記録するのが要点: 自動インストールが重く（例: IntelliCode 68MB）
-// 今回の起動で登場しなかった拡張のコンテナは「未適用」のまま残り、次回起動時に改めて配置される。
-// これにより購読の打ち切り時間を短く保っても取りこぼしが起きない。
-const APPLIED_IDS_STORAGE_KEY = 'paradis.viewLayout.appliedContainerIds';
-// この起動で遅れて登録されるコンテナ（拡張アクティベーション直後の分）を拾うための購読時間。
-// ここで拾えなかった分は未適用のまま残り次回起動で再試行されるため、短めでも安全。
+// 移動系（left/right）はコンテナ単位、非表示系はビュー単位で「適用済み」を記録する。
+// 拡張のアクティベーションでコンテナやビューが遅れて登録されるため、両者を別々に追跡し、
+// 取りこぼした分は未適用のまま残して次回起動で再試行する（全体フラグを立てない）。
+const APPLIED_CONTAINERS_KEY = 'paradis.viewLayout.appliedContainerIds';
+const APPLIED_VIEWS_KEY = 'paradis.viewLayout.appliedViewIds';
+// この起動で遅れて登録されるコンテナ/ビューを拾うための購読時間。ここで拾えなかった分は次回起動で再試行される。
 const WATCH_DURATION_MS = 90_000;
 
 /**
@@ -65,8 +64,12 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 
 	static readonly ID = 'workbench.contrib.paradisViewLayout';
 
-	private readonly pending = new Map<string, IParadisContainerPlacement>();
-	private readonly appliedIds: Set<string>;
+	private readonly appliedContainers: Set<string>;
+	private readonly appliedViews: Set<string>;
+	/** 未処理のコンテナ移動: containerId -> 目的ロケーション */
+	private readonly pendingMoves = new Map<string, ViewContainerLocation>();
+	/** 未処理の非表示ビューID */
+	private readonly pendingHides = new Set<string>();
 
 	constructor(
 		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
@@ -74,45 +77,84 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 	) {
 		super();
 
-		this.appliedIds = this.readAppliedIds();
+		this.appliedContainers = this.readSet(APPLIED_CONTAINERS_KEY);
+		this.appliedViews = this.readSet(APPLIED_VIEWS_KEY);
 
-		// まだ適用していないコンテナだけを対象にする
 		for (const p of DEFAULT_PLACEMENTS) {
-			if (!this.appliedIds.has(p.containerId)) {
-				this.pending.set(p.containerId, p);
+			if (p.placement === 'hidden') {
+				for (const viewId of p.viewIds ?? []) {
+					if (!this.appliedViews.has(viewId)) {
+						this.pendingHides.add(viewId);
+					}
+				}
+			} else if (!this.appliedContainers.has(p.containerId)) {
+				this.pendingMoves.set(p.containerId, p.placement === 'left' ? ViewContainerLocation.Sidebar : ViewContainerLocation.AuxiliaryBar);
 			}
 		}
 
-		if (this.pending.size === 0) {
+		if (this.pendingMoves.size === 0 && this.pendingHides.size === 0) {
 			return; // 全て適用済み。以後はユーザーの配置を尊重する
 		}
 
-		// 既に登録済みのコンテナをまず処理
-		for (const p of [...this.pending.values()]) {
-			const container = this.viewDescriptorService.getViewContainerById(p.containerId);
+		// 起動時点で既に登録済みのコンテナ/ビューをまず処理（storage書き込みは最後に1回だけ）
+		for (const [containerId, location] of [...this.pendingMoves]) {
+			const container = this.viewDescriptorService.getViewContainerById(containerId);
 			if (container) {
-				this.applyPlacement(container, p);
-				this.pending.delete(p.containerId);
+				this.moveContainer(container, location);
+				this.pendingMoves.delete(containerId);
+				this.appliedContainers.add(containerId);
 			}
 		}
+		for (const viewId of [...this.pendingHides]) {
+			if (this.tryHideView(viewId)) {
+				this.pendingHides.delete(viewId);
+				this.appliedViews.add(viewId);
+			}
+		}
+		this.flush();
 
-		if (this.pending.size === 0) {
+		if (this.pendingMoves.size === 0 && this.pendingHides.size === 0) {
 			return;
 		}
 
-		// 遅れて登録されるコンテナ（拡張アクティベーション後）を一定期間だけ待つ。
-		// 期限内に登場しなかったコンテナは未適用のまま残し、次回起動で再試行する。
+		// 遅れて登場するコンテナ/ビューを一定期間だけ購読する。
 		const watchStore = this._register(new DisposableStore());
+
+		// コンテナの増減 → 未処理の移動を適用
 		watchStore.add(this.viewDescriptorService.onDidChangeViewContainers(({ added }) => {
+			let changed = false;
 			for (const { container } of added) {
-				const p = this.pending.get(container.id);
-				if (p) {
-					this.applyPlacement(container, p);
-					this.pending.delete(container.id);
+				const location = this.pendingMoves.get(container.id);
+				if (location !== undefined) {
+					this.moveContainer(container, location);
+					this.pendingMoves.delete(container.id);
+					this.appliedContainers.add(container.id);
+					changed = true;
 				}
 			}
-			if (this.pending.size === 0) {
-				watchStore.dispose();
+			if (changed) {
+				this.flush();
+				this.disposeIfDone(watchStore);
+			}
+		}));
+
+		// 既存コンテナへのビュー追加は onDidChangeViewContainers では発火しないため、
+		// ビュー登録イベント（グローバル）を購読して未処理の非表示を適用する。
+		const viewsRegistry = Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry);
+		watchStore.add(viewsRegistry.onViewsRegistered(groups => {
+			let changed = false;
+			for (const { views } of groups) {
+				for (const view of views) {
+					if (this.pendingHides.has(view.id) && this.tryHideView(view.id)) {
+						this.pendingHides.delete(view.id);
+						this.appliedViews.add(view.id);
+						changed = true;
+					}
+				}
+			}
+			if (changed) {
+				this.flush();
+				this.disposeIfDone(watchStore);
 			}
 		}));
 
@@ -120,41 +162,56 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 		this._register({ dispose: () => clearTimeout(timer) });
 	}
 
-	private readAppliedIds(): Set<string> {
+	private readSet(key: string): Set<string> {
 		try {
-			return new Set<string>(JSON.parse(this.storageService.get(APPLIED_IDS_STORAGE_KEY, StorageScope.APPLICATION, '[]')));
+			return new Set<string>(JSON.parse(this.storageService.get(key, StorageScope.APPLICATION, '[]')));
 		} catch {
 			return new Set<string>();
 		}
 	}
 
-	private markContainerApplied(containerId: string): void {
-		this.appliedIds.add(containerId);
-		this.storageService.store(APPLIED_IDS_STORAGE_KEY, JSON.stringify([...this.appliedIds]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+	private flush(): void {
+		this.storageService.store(APPLIED_CONTAINERS_KEY, JSON.stringify([...this.appliedContainers]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this.storageService.store(APPLIED_VIEWS_KEY, JSON.stringify([...this.appliedViews]), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
-	private applyPlacement(container: ViewContainer, placement: IParadisContainerPlacement): void {
+	private disposeIfDone(watchStore: DisposableStore): void {
+		if (this.pendingMoves.size === 0 && this.pendingHides.size === 0) {
+			watchStore.dispose();
+		}
+	}
+
+	private moveContainer(container: ViewContainer, location: ViewContainerLocation): void {
 		try {
-			if (placement.placement === 'hidden') {
-				const model = this.viewDescriptorService.getViewContainerModel(container);
-				const targetIds = placement.viewIds ?? model.allViewDescriptors.map(v => v.id);
-				for (const id of targetIds) {
-					if (model.isVisible(id)) {
-						model.setVisible(id, false);
-					}
-				}
-			} else {
-				const location = placement.placement === 'left' ? ViewContainerLocation.Sidebar : ViewContainerLocation.AuxiliaryBar;
-				if (this.viewDescriptorService.getViewContainerLocation(container) !== location) {
-					this.viewDescriptorService.moveViewContainerToLocation(container, location, undefined, 'paradisDefaultViewLayout');
-				}
+			if (this.viewDescriptorService.getViewContainerLocation(container) !== location) {
+				this.viewDescriptorService.moveViewContainerToLocation(container, location, undefined, 'paradisDefaultViewLayout');
 			}
 		} catch {
-			// 移動不可・非表示不可のコンテナは黙ってスキップ（fork の既定配置は best-effort）
+			// 移動不可のコンテナは黙ってスキップ（fork の既定配置は best-effort）
 		}
+	}
 
-		// 適用を試みたコンテナは（best-effort の成否によらず）記録し、次回起動で再処理しない
-		this.markContainerApplied(container.id);
+	/**
+	 * 指定ビューを非表示にする。ビューがまだ登録されていない・非表示にできない場合は false を返し、
+	 * 呼び出し側は未処理のまま残す（後続のビュー登録イベントで再試行される）。
+	 */
+	private tryHideView(viewId: string): boolean {
+		const container = this.viewDescriptorService.getViewContainerByViewId(viewId);
+		if (!container) {
+			return false;
+		}
+		const model = this.viewDescriptorService.getViewContainerModel(container);
+		if (!model.allViewDescriptors.some(v => v.id === viewId)) {
+			return false;
+		}
+		try {
+			if (model.isVisible(viewId)) {
+				model.setVisible(viewId, false);
+			}
+		} catch {
+			// 非表示にできないビューはスキップ扱い（下の判定で false を返し次回再試行に委ねる）
+		}
+		return !model.isVisible(viewId);
 	}
 }
 
