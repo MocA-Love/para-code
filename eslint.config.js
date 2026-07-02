@@ -1597,7 +1597,9 @@ export default defineConfig(
 						'zlib',
 						'chrome-remote-interface',
 						// PARA-PATCH: Excelビューア/差分の xlsx パース（fork独自、shared processで動作。src/vs/paradis/contrib/fileViewers/ 参照）
-						'exceljs'
+						'exceljs',
+						// PARA-PATCH: Excelの図形(斜線コネクタ)を xlsx(ZIP)の drawing XML から取り出すため（shared processで解凍のみ。fork独自）
+						'jszip'
 					]
 				},
 				{

@@ -25,6 +25,37 @@ export interface IParadisRichTextPart {
 	readonly style: IParadisCellStyle;
 }
 
+/** セルの対角罫線(border.diagonal)。 */
+export interface IParadisDiagonalBorder {
+	/** 左下→右上。 */
+	readonly up: boolean;
+	/** 左上→右下。 */
+	readonly down: boolean;
+	/** CSS 罫線の太さ・種別(例 "1px solid")。 */
+	readonly style: string;
+	readonly color: string;
+}
+
+/** 図形のアンカー位置(セル基準 + EMU オフセット。col/row は0始まり)。 */
+export interface IParadisRenderAnchor {
+	readonly c: number;
+	readonly co: number;
+	readonly r: number;
+	readonly ro: number;
+}
+
+/** シート上に描画された図形(直線コネクタ/矩形)。重説等の斜線はこの直線コネクタで表現される。 */
+export interface IParadisRenderShape {
+	readonly type: 'line' | 'rect';
+	readonly flipV: boolean;
+	readonly flipH: boolean;
+	readonly from: IParadisRenderAnchor;
+	readonly to: IParadisRenderAnchor;
+	readonly outlineWidth: number;
+	readonly outlineColor: string;
+	readonly dash: string;
+}
+
 /** 1セルの表示データ。 */
 export interface IParadisCellData {
 	readonly value: string;
@@ -36,6 +67,7 @@ export interface IParadisCellData {
 	readonly wrapText?: boolean;
 	readonly verticalText?: boolean;
 	readonly richText?: readonly IParadisRichTextPart[];
+	readonly diagonal?: IParadisDiagonalBorder;
 }
 
 /** 1行(Excelの行番号1始まり、表示高さpx、セル配列)。 */
@@ -55,11 +87,18 @@ export interface IParadisSheetData {
 	readonly truncated: boolean;
 	/** データ先頭列(Excelの1始まり)。 */
 	readonly minCol: number;
+	/** このシートの図形(renderer 側で drawing XML から解析して付与)。 */
+	readonly shapes?: readonly IParadisRenderShape[];
 }
 
 /** パース結果のワークブック全体。 */
 export interface IParadisWorkbookData {
 	readonly sheets: readonly IParadisSheetData[];
+	/**
+	 * シート番号(1始まり、eachSheet 順)→ そのシートが参照する drawing XML 文字列の配列。
+	 * 図形の解析には DOMParser が必要で node 層では使えないため、XML 文字列だけを渡し renderer で解析する。
+	 */
+	readonly drawingXmlBySheet?: { readonly [sheetIndex: number]: readonly string[] };
 }
 
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */

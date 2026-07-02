@@ -28,7 +28,8 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { PARADIS_ROW_NUM_COL_WIDTH, applyBaseCellStyle, setCellContent } from './paradisSpreadsheetRender.js';
+import { PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, buildShapeOverlay, setCellContent } from './paradisSpreadsheetRender.js';
+import { IParadisRenderShape } from '../common/paradisSpreadsheet.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
 import { IParadisDiffCell, IParadisDiffRow, IParadisDiffSheet, buildDiffSheets, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
@@ -179,12 +180,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 
 		const available = Math.max(0, Math.floor(this._bodyEl.clientWidth / 2) - 1);
-		const left = this._buildDiffPane(sheet.originalRows, sheet.columnWidths, localize('paradis.spreadsheet.original', "Original"), available);
+		const left = this._buildDiffPane(sheet.originalRows, sheet.columnWidths, localize('paradis.spreadsheet.original', "Original"), available, sheet.originalShapes, sheet.originalMinCol);
 		this._leftScroll = left.pane;
 		this._leftRows = left.rows;
 		dom.append(this._bodyEl, left.pane);
 		dom.append(this._bodyEl, $('.paradis-spreadsheet-diff-separator'));
-		const right = this._buildDiffPane(sheet.modifiedRows, sheet.columnWidths, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"), available);
+		const right = this._buildDiffPane(sheet.modifiedRows, sheet.columnWidths, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"), available, sheet.modifiedShapes, sheet.modifiedMinCol);
 		this._rightScroll = right.pane;
 		this._rightRows = right.rows;
 		dom.append(this._bodyEl, right.pane);
@@ -193,7 +194,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._wireSyncScroll(this._rightScroll, this._leftScroll);
 	}
 
-	private _buildDiffPane(rows: readonly IParadisDiffRow[], columnWidths: readonly number[], label: string, containerWidth: number): { pane: HTMLElement; rows: HTMLElement[] } {
+	private _buildDiffPane(rows: readonly IParadisDiffRow[], columnWidths: readonly number[], label: string, containerWidth: number, shapes: readonly IParadisRenderShape[] | undefined, minCol: number | undefined): { pane: HTMLElement; rows: HTMLElement[] } {
 		const pane = $('.paradis-spreadsheet-diff-pane');
 		const labelEl = dom.append(pane, $('.paradis-spreadsheet-diff-label'));
 		labelEl.textContent = label;
@@ -213,9 +214,13 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 		const tbody = dom.append(table, $('tbody'));
 		const rowEls: HTMLElement[] = [];
+		const rowMeta: { excelRow: number; tr: HTMLElement }[] = [];
 		rows.forEach((row, rowIdx) => {
 			const tr = dom.append(tbody, $('tr')) as HTMLTableRowElement;
 			rowEls.push(tr);
+			if (row.excelRow !== undefined) {
+				rowMeta.push({ excelRow: row.excelRow, tr });
+			}
 			tr.style.height = `${row.height}px`;
 			const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
 			rowHead.textContent = String(rowIdx + 1);
@@ -226,6 +231,25 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._buildDiffCell(tr, cell);
 			}
 		});
+
+		// 図形(斜線コネクタ等)はレイアウト確定後に行位置を測定して SVG を重ねる。
+		if (shapes && shapes.length > 0 && minCol !== undefined) {
+			const handle = dom.scheduleAtNextAnimationFrame(dom.getWindow(pane), () => {
+				const rowY = new Map<number, number>();
+				for (const { excelRow, tr } of rowMeta) {
+					rowY.set(excelRow, tr.offsetTop);
+				}
+				const last = rowMeta[rowMeta.length - 1];
+				if (last) {
+					rowY.set(last.excelRow + 1, last.tr.offsetTop + last.tr.offsetHeight);
+				}
+				const overlay = buildShapeOverlay(shapes, rowY, scaledWidths, minCol, pane.ownerDocument);
+				if (overlay) {
+					pane.appendChild(overlay);
+				}
+			});
+			this._renderDisposables.add(handle);
+		}
 
 		return { pane, rows: rowEls };
 	}
@@ -254,6 +278,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 		} else {
 			setCellContent(td, cell);
+		}
+		if (cell.diagonal) {
+			appendDiagonalOverlay(td, cell.diagonal);
 		}
 	}
 

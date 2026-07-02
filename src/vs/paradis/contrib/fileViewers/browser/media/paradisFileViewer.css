@@ -6,53 +6,78 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 .paradis-file-viewer {
-	position: relative;
+	display: flex;
+	flex-direction: column;
 	overflow: hidden;
 }
 
-.paradis-file-viewer-content {
-	position: absolute;
-	inset: 0;
-	width: 100%;
-	height: 100%;
+/* Always-visible in-pane toolbar (top). Left: Rendered/Raw segmented toggle. Right: subclass controls (HTML zoom). */
+.paradis-file-viewer-toolbar {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 3px 8px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, #454545);
+	background-color: var(--vscode-editorWidget-background);
 }
 
-/* Floating zoom toolbar shown in the top-right of the HTML rendered view. */
-.paradis-html-zoom-toolbar {
-	position: absolute;
-	top: 8px;
-	right: 8px;
-	z-index: 10;
+.paradis-file-viewer-toolbar-right {
 	display: flex;
 	align-items: center;
 	gap: 2px;
-	padding: 2px;
+}
+
+.paradis-file-viewer-content {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+/* Segmented Rendered/Raw toggle (Superset FileViewerToolbar ToggleGroup equivalent). */
+.paradis-file-viewer-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 1px;
+	padding: 1px;
 	border-radius: 6px;
-	background-color: var(--vscode-editorWidget-background);
-	border: 1px solid var(--vscode-editorWidget-border, transparent);
-	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-	color: var(--vscode-editorWidget-foreground);
-	opacity: 0.35;
-	transition: opacity 0.15s ease-in-out;
+	background-color: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
 }
 
-.paradis-file-viewer:hover .paradis-html-zoom-toolbar,
-.paradis-html-zoom-toolbar:hover,
-.paradis-html-zoom-toolbar:focus-within {
-	opacity: 1;
+.paradis-file-viewer-toggle-item {
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	padding: 1px 10px;
+	font-size: 11px;
+	line-height: 18px;
+	cursor: pointer;
 }
 
+.paradis-file-viewer-toggle-item:hover {
+	color: var(--vscode-foreground);
+}
+
+.paradis-file-viewer-toggle-item.active {
+	background-color: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+	color: var(--vscode-foreground);
+	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* HTML zoom controls (now hosted in the toolbar-right container). */
 .paradis-html-zoom-button {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 24px;
-	height: 24px;
+	width: 22px;
+	height: 22px;
 	padding: 0;
 	border: none;
 	border-radius: 4px;
 	background: transparent;
-	color: inherit;
+	color: var(--vscode-foreground);
 	cursor: pointer;
 }
 
@@ -66,14 +91,14 @@
 }
 
 .paradis-html-zoom-percent {
-	min-width: 44px;
-	height: 24px;
+	min-width: 42px;
+	height: 22px;
 	padding: 0 4px;
 	border: none;
 	border-radius: 4px;
 	background: transparent;
-	color: inherit;
-	font-size: 12px;
+	color: var(--vscode-foreground);
+	font-size: 11px;
 	cursor: pointer;
 	text-align: center;
 }
@@ -81,3 +106,31 @@
 .paradis-html-zoom-percent:hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
+
+/* Overlay Rendered/Raw toggle shown in the text (Raw) editor for .md/.html, matching the pane toolbar tone. */
+.paradis-editor-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 1px;
+	padding: 1px;
+	border-radius: 5px;
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, transparent);
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+	z-index: 4;
+	opacity: 0.6;
+	transition: opacity 0.12s ease-in-out;
+}
+
+.paradis-editor-toggle:hover,
+.paradis-editor-toggle:focus-within {
+	opacity: 1;
+}
+
+/* Compact button sizing for the overlay pill (smaller than the pane toolbar). */
+.paradis-editor-toggle .paradis-file-viewer-toggle-item {
+	padding: 0 7px;
+	font-size: 10px;
+	line-height: 15px;
+}
+

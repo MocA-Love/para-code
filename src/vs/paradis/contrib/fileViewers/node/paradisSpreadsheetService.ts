@@ -12,9 +12,11 @@
 // exceljs は Buffer/stream 依存のため workbench(renderer, sandbox)では動かず、node層で実行する必要がある。
 
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 import {
 	IParadisCellData,
 	IParadisCellStyle,
+	IParadisDiagonalBorder,
 	IParadisRichTextPart,
 	IParadisRowData,
 	IParadisSheetData,
@@ -219,6 +221,22 @@ function getCellStyle(cell: ExcelJS.Cell): IParadisCellStyle {
 	return style;
 }
 
+function getCellDiagonal(cell: ExcelJS.Cell): IParadisDiagonalBorder | undefined {
+	const bd = cell.border as { diagonal?: { up?: boolean; down?: boolean; style?: string; color?: IExcelColor } } | undefined;
+	const dg = bd?.diagonal;
+	if (!dg?.style) {
+		return undefined;
+	}
+	const up = dg.up === true;
+	const down = dg.down === true;
+	if (!up && !down) {
+		return undefined;
+	}
+	const base = BORDER_STYLES[dg.style] || '1px solid';
+	const color = resolveColor(dg.color) || '#000';
+	return { up, down, style: base, color };
+}
+
 function getMergedCellBorders(ws: ExcelJS.Worksheet, r: number, c: number, rowspan: number, colspan: number): Record<string, string> {
 	const borders: Record<string, string> = {};
 	const getBorder = (row: number, col: number) => ws.getRow(row).getCell(col).border;
@@ -362,6 +380,87 @@ function getSheetDimensions(ws: ExcelJS.Worksheet): ISheetDims {
 	return { minR: 1, maxR: ws.rowCount || 1, minC: 1, maxC: ws.columnCount || 1 };
 }
 
+// exceljs 4.4.0 は図形(drawing)を読めないため、xlsx(ZIP)を jszip で解いて drawing XML 文字列を取り出す。
+// XML の解析には DOMParser が要るが node 層には無いので、ここでは「どのシート(表示順)がどの drawing を参照するか」だけ
+// 特定し、生の XML 文字列を renderer へ渡す(renderer が DOMParser で図形化する)。
+// 注意: sheetN.xml の「ファイル番号」は表示順とは一致しない(workbook.xml の <sheets> 並びが表示順)。
+// exceljs の eachSheet は表示順なので、drawing のキーは「表示順(1始まり)」に正規化して返す。
+async function extractDrawingXmlBySheet(buffer: Buffer): Promise<{ [sheetIndex: number]: string[] }> {
+	const result: { [sheetIndex: number]: string[] } = {};
+	try {
+		const zip = await JSZip.loadAsync(buffer as unknown as Parameters<typeof JSZip.loadAsync>[0]);
+		const files = zip.files;
+
+		// 1. rId -> sheetN.xml のファイル番号(workbook.xml.rels)
+		const ridToFile = new Map<string, number>();
+		const wbRels = files['xl/_rels/workbook.xml.rels'];
+		if (wbRels) {
+			const relsXml = await wbRels.async('text');
+			for (const rel of relsXml.match(/<Relationship[^>]*>/g) ?? []) {
+				const id = rel.match(/Id="([^"]+)"/);
+				const t = rel.match(/Target="[^"]*worksheets\/sheet(\d+)\.xml"/);
+				if (id && t) {
+					ridToFile.set(id[1], Number.parseInt(t[1], 10));
+				}
+			}
+		}
+
+		// 2. workbook.xml の <sheet> 並び(表示順)-> ファイル番号 -> 表示インデックス(0始まり)
+		const fileToDisplay = new Map<number, number>();
+		const wb = files['xl/workbook.xml'];
+		if (wb) {
+			const wbXml = await wb.async('text');
+			let display = 0;
+			for (const st of wbXml.match(/<sheet [^>]*?\/?>/g) ?? []) {
+				const rid = st.match(/r:id="([^"]+)"/);
+				const fileNum = rid ? ridToFile.get(rid[1]) : undefined;
+				if (fileNum !== undefined) {
+					fileToDisplay.set(fileNum, display);
+				}
+				display++;
+			}
+		}
+
+		// 3. drawingN -> それを参照する sheetN.xml のファイル番号(worksheets/_rels)
+		const drawingToFile = new Map<string, number>();
+		for (const name of Object.keys(files)) {
+			const m = name.match(/xl\/worksheets\/_rels\/sheet(\d+)\.xml\.rels$/);
+			if (!m || files[name].dir) {
+				continue;
+			}
+			const fileNum = Number.parseInt(m[1], 10);
+			const relsXml = await files[name].async('text');
+			for (const dm of relsXml.match(/drawing(\d+)\.xml/g) ?? []) {
+				const idm = dm.match(/drawing(\d+)\.xml/);
+				if (idm) {
+					drawingToFile.set(`drawing${idm[1]}`, fileNum);
+				}
+			}
+		}
+
+		// 4. drawing XML を「表示順(1始まり)」でキーして格納
+		for (const name of Object.keys(files)) {
+			const m = name.match(/xl\/drawings\/(drawing\d+)\.xml$/);
+			if (!m || files[name].dir) {
+				continue;
+			}
+			const fileNum = drawingToFile.get(m[1]);
+			if (fileNum === undefined) {
+				continue;
+			}
+			const displayIndex = fileToDisplay.get(fileNum);
+			const key = (displayIndex !== undefined ? displayIndex : fileNum - 1) + 1;
+			if (!result[key]) {
+				result[key] = [];
+			}
+			result[key].push(await files[name].async('text'));
+		}
+	} catch {
+		// 図形は任意要素。抽出に失敗しても表・値の表示は継続する。
+	}
+	return result;
+}
+
 export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 	async parseWorkbook(base64Content: string): Promise<IParadisWorkbookData> {
@@ -369,6 +468,8 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		const buffer = Buffer.from(base64Content, 'base64');
 		// exceljs の Buffer 型定義が現行 @types/node の Buffer と食い違うため、load の期待型そのものへ interop キャストする。
 		await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+
+		const drawingXmlBySheet = await extractDrawingXmlBySheet(buffer);
 
 		const sheets: IParadisSheetData[] = [];
 
@@ -421,6 +522,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 					const al = cell.alignment;
 					const wrapText = al?.wrapText === true || (typeof val === 'string' && val.includes('\n'));
 					const verticalText = al?.textRotation === 'vertical' || al?.textRotation === 255;
+					const diagonal = getCellDiagonal(cell);
 
 					const parsed: IParadisCellData = {
 						value: val,
@@ -429,6 +531,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 						...(wrapText ? { wrapText: true } : {}),
 						...(verticalText ? { verticalText: true } : {}),
 						...(richText ? { richText } : {}),
+						...(diagonal ? { diagonal } : {}),
 					};
 					cells.push(parsed);
 				}
@@ -446,6 +549,6 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			});
 		});
 
-		return { sheets };
+		return { sheets, drawingXmlBySheet };
 	}
 }

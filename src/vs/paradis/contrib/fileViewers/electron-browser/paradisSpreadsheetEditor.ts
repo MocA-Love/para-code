@@ -27,7 +27,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { PARADIS_ROW_NUM_COL_WIDTH, applyBaseCellStyle, getColumnLabel, setCellContent } from './paradisSpreadsheetRender.js';
+import { PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, buildShapeOverlay, getColumnLabel, setCellContent } from './paradisSpreadsheetRender.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 
@@ -44,8 +44,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _tabsEl: HTMLElement | undefined;
 	private _innerEl: HTMLElement | undefined;
 	private _naturalTableWidth = 0;
+	private _dataRowEls: { excelRow: number; tr: HTMLElement }[] = [];
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
+	private readonly _shapeRaf = this._register(new MutableDisposable());
 	private _currentResource: URI | undefined;
 	private _sheets: readonly IParadisSheetData[] = [];
 	private _activeSheetIndex = 0;
@@ -151,7 +153,35 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
 		}
 
+		this._renderShapes(sheet, inner);
 		this._applyScale();
+	}
+
+	// 図形(斜線コネクタ等)は行の実描画位置が要るため、レイアウト確定後(rAF)に測定してSVGオーバーレイを重ねる。
+	private _renderShapes(sheet: IParadisSheetData, inner: HTMLElement): void {
+		this._shapeRaf.clear();
+		if (!sheet.shapes || sheet.shapes.length === 0) {
+			return;
+		}
+		const rows = this._dataRowEls;
+		const shapes = sheet.shapes;
+		const columnWidths = sheet.columnWidths;
+		const minCol = sheet.minCol;
+		const handle = dom.scheduleAtNextAnimationFrame(dom.getWindow(inner), () => {
+			const rowY = new Map<number, number>();
+			for (const { excelRow, tr } of rows) {
+				rowY.set(excelRow, tr.offsetTop);
+			}
+			const last = rows[rows.length - 1];
+			if (last) {
+				rowY.set(last.excelRow + 1, last.tr.offsetTop + last.tr.offsetHeight);
+			}
+			const overlay = buildShapeOverlay(shapes, rowY, columnWidths, minCol, inner.ownerDocument);
+			if (overlay) {
+				inner.appendChild(overlay);
+			}
+		});
+		this._shapeRaf.value = handle;
 	}
 
 	private _buildSheetTable(sheet: IParadisSheetData): { table: HTMLTableElement; naturalWidth: number } {
@@ -178,11 +208,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 
 		const tbody = dom.append(table, $('tbody'));
+		this._dataRowEls = [];
 		let displayRowNum = 0;
 		for (const row of sheet.rows) {
 			displayRowNum++;
 			const tr = dom.append(tbody, $('tr')) as HTMLTableRowElement;
 			tr.style.height = `${row.height}px`;
+			this._dataRowEls.push({ excelRow: row.excelRow, tr });
 			const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
 			rowHead.textContent = String(displayRowNum);
 			for (const cell of row.cells) {
@@ -198,6 +230,9 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				}
 				applyBaseCellStyle(td, cell);
 				setCellContent(td, cell);
+				if (cell.diagonal) {
+					appendDiagonalOverlay(td, cell.diagonal);
+				}
 			}
 		}
 
@@ -245,6 +280,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	override clearInput(): void {
 		this._inputDisposables.clear();
+		this._shapeRaf.clear();
+		this._dataRowEls = [];
 		this._currentResource = undefined;
 		this._sheets = [];
 		if (this._bodyEl) {
