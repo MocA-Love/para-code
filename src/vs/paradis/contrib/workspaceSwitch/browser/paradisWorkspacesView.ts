@@ -8,25 +8,84 @@
 
 import './media/paradisWorkspaceSwitch.css';
 import * as DOM from '../../../../base/browser/dom.js';
-import { IListRenderer, IListVirtualDelegate } from '../../../../base/browser/ui/list/list.js';
-import { Action } from '../../../../base/common/actions.js';
+import { IListVirtualDelegate } from '../../../../base/browser/ui/list/list.js';
+import { IObjectTreeElement, ITreeNode, ITreeRenderer, ObjectTreeElementCollapseState } from '../../../../base/browser/ui/tree/tree.js';
+import { Action, IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { FuzzyScore } from '../../../../base/common/filters.js';
+import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
-import { WorkbenchList } from '../../../../platform/list/browser/listService.js';
+import { WorkbenchObjectTree } from '../../../../platform/list/browser/listService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 
 export const PARADIS_WORKSPACES_VIEW_ID = 'workbench.view.paradisWorkspaces.repositories';
+
+type WorkspaceTreeElement = IParadisWorkspaceRepository | IParadisWorktree;
+
+function isWorktree(element: WorkspaceTreeElement): element is IParadisWorktree {
+	return (element as IParadisWorktree).repositoryId !== undefined;
+}
+
+/** パレットIDの表示名 (Superset の12色) */
+function colorLabel(colorId: string): string {
+	switch (colorId) {
+		case 'red': return localize('paradis.color.red', "Red");
+		case 'orange': return localize('paradis.color.orange', "Orange");
+		case 'yellow': return localize('paradis.color.yellow', "Yellow");
+		case 'lime': return localize('paradis.color.lime', "Lime");
+		case 'green': return localize('paradis.color.green', "Green");
+		case 'teal': return localize('paradis.color.teal', "Teal");
+		case 'cyan': return localize('paradis.color.cyan', "Cyan");
+		case 'blue': return localize('paradis.color.blue', "Blue");
+		case 'indigo': return localize('paradis.color.indigo', "Indigo");
+		case 'purple': return localize('paradis.color.purple', "Purple");
+		case 'pink': return localize('paradis.color.pink', "Pink");
+		case 'slate': return localize('paradis.color.slate', "Slate");
+		default: return colorId;
+	}
+}
+
+/** OSごとの「Finder/Explorerで表示」ラベル (upstream の revealFileInOS と同じ出し分け) */
+function revealLabel(): string {
+	return isWindows
+		? localize('paradis.workspaceSwitch.revealWindows', "Reveal in File Explorer")
+		: isMacintosh
+			? localize('paradis.workspaceSwitch.revealMac', "Reveal in Finder")
+			: localize('paradis.workspaceSwitch.revealLinux', "Open Containing Folder");
+}
+
+/**
+ * エージェント実行状態に応じたアイコンを適用する (Superset の WorkspaceIcon 相当)。
+ * working = スピナー / permission = 赤の脈動ドット / review = 緑ドット / なし = 通常アイコン
+ */
+function applyStatusIcon(iconElement: HTMLElement, status: ParadisAgentStatus | undefined, fallback: ThemeIcon): void {
+	const icon = status === 'working' ? Codicon.loading
+		: status === 'permission' || status === 'review' ? Codicon.circleFilled
+			: fallback;
+	iconElement.className = `codicon ${ThemeIcon.asClassName(icon).replace('codicon ', '')}`;
+	if (status === 'working') {
+		iconElement.classList.add('codicon-modifier-spin', 'paradis-status-working');
+	} else if (status === 'permission') {
+		iconElement.classList.add('paradis-status-permission');
+	} else if (status === 'review') {
+		iconElement.classList.add('paradis-status-review');
+	}
+}
 
 interface IRepositoryTemplateData {
 	readonly row: HTMLElement;
@@ -35,22 +94,32 @@ interface IRepositoryTemplateData {
 	readonly path: HTMLElement;
 }
 
-class RepositoryDelegate implements IListVirtualDelegate<IParadisWorkspaceRepository> {
-	getHeight(): number {
-		return 44;
+interface IWorktreeTemplateData {
+	readonly row: HTMLElement;
+	readonly icon: HTMLElement;
+	readonly name: HTMLElement;
+	readonly branch: HTMLElement;
+}
+
+class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement> {
+	getHeight(element: WorkspaceTreeElement): number {
+		return isWorktree(element) ? 30 : 44;
 	}
 
-	getTemplateId(): string {
-		return RepositoryRenderer.TEMPLATE_ID;
+	getTemplateId(element: WorkspaceTreeElement): string {
+		return isWorktree(element) ? WorktreeRenderer.TEMPLATE_ID : RepositoryRenderer.TEMPLATE_ID;
 	}
 }
 
-class RepositoryRenderer implements IListRenderer<IParadisWorkspaceRepository, IRepositoryTemplateData> {
+class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, FuzzyScore, IRepositoryTemplateData> {
 
 	static readonly TEMPLATE_ID = 'paradisRepository';
 	readonly templateId = RepositoryRenderer.TEMPLATE_ID;
 
-	constructor(private readonly isActive: (repository: IParadisWorkspaceRepository) => boolean) { }
+	constructor(
+		private readonly isActive: (repository: IParadisWorkspaceRepository) => boolean,
+		private readonly getStatus: (stateKey: string) => ParadisAgentStatus | undefined,
+	) { }
 
 	renderTemplate(container: HTMLElement): IRepositoryTemplateData {
 		const row = DOM.append(container, DOM.$('.paradis-workspace-row'));
@@ -61,26 +130,71 @@ class RepositoryRenderer implements IListRenderer<IParadisWorkspaceRepository, I
 		return { row, icon, name, path };
 	}
 
-	renderElement(repository: IParadisWorkspaceRepository, _index: number, templateData: IRepositoryTemplateData): void {
+	renderElement(node: ITreeNode<IParadisWorkspaceRepository, FuzzyScore>, _index: number, templateData: IRepositoryTemplateData): void {
+		const repository = node.element;
 		const active = this.isActive(repository);
-		templateData.icon.className = `codicon ${active ? ThemeIcon.asClassName(Codicon.check).replace('codicon ', '') : ThemeIcon.asClassName(Codicon.repo).replace('codicon ', '')}`;
+		const status = this.getStatus(repository.id);
+		applyStatusIcon(templateData.icon, status, active ? Codicon.check : Codicon.repo);
 		templateData.name.textContent = repository.name;
 		templateData.path.textContent = repository.uri.fsPath;
 		templateData.row.classList.toggle('active', active);
+
+		// Superset と同じ固定パレットの色をアイコンと行の左ボーダーに反映。
+		// 状態表示中はアイコン色を状態色 (CSSクラス) に譲る
+		const colorHex = paradisWorkspaceColorHex(repository.color);
+		templateData.icon.style.color = status !== undefined ? '' : colorHex ?? '';
+		templateData.row.style.borderLeftColor = colorHex ?? 'transparent';
 	}
 
 	disposeTemplate(_templateData: IRepositoryTemplateData): void {
-		// テンプレートDOMはリスト側が破棄する
+		// テンプレートDOMはツリー側が破棄する
+	}
+}
+
+class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IWorktreeTemplateData> {
+
+	static readonly TEMPLATE_ID = 'paradisWorktree';
+	readonly templateId = WorktreeRenderer.TEMPLATE_ID;
+
+	constructor(
+		private readonly isActive: (worktree: IParadisWorktree) => boolean,
+		private readonly getStatus: (stateKey: string) => ParadisAgentStatus | undefined,
+	) { }
+
+	renderTemplate(container: HTMLElement): IWorktreeTemplateData {
+		const row = DOM.append(container, DOM.$('.paradis-worktree-row'));
+		const icon = DOM.append(row, DOM.$('.codicon'));
+		const name = DOM.append(row, DOM.$('.paradis-worktree-name'));
+		const branch = DOM.append(row, DOM.$('.paradis-worktree-branch'));
+		return { row, icon, name, branch };
+	}
+
+	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
+		const worktree = node.element;
+		const active = this.isActive(worktree);
+		const status = worktree.missing ? undefined : this.getStatus(paradisWorktreeStateKey(worktree.uri));
+		const fallback = worktree.missing ? Codicon.warning : active ? Codicon.check : Codicon.gitBranch;
+		applyStatusIcon(templateData.icon, status, fallback);
+		templateData.name.textContent = worktree.name;
+		templateData.branch.textContent = worktree.missing
+			? localize('paradis.workspaceSwitch.worktreeMissing', "missing")
+			: worktree.branch ?? '';
+		templateData.row.classList.toggle('active', active);
+		templateData.row.classList.toggle('missing', !!worktree.missing);
+	}
+
+	disposeTemplate(_templateData: IWorktreeTemplateData): void {
+		// テンプレートDOMはツリー側が破棄する
 	}
 }
 
 /**
- * FleetView 風のリポジトリ一覧ビュー (機能1 Phase 4)。クリックで即座にワークスペースを
- * 切り替える。アクティブなリポジトリにはチェックアイコンを表示する。
+ * FleetView 風のリポジトリ一覧ビュー (機能1 Phase 4 / Phase B)。
+ * リポジトリを親、git worktree を子とする2階層ツリー。クリックで即座に切り替える。
  */
 export class ParadisWorkspacesView extends ViewPane {
 
-	private list: WorkbenchList<IParadisWorkspaceRepository> | undefined;
+	private tree: WorkbenchObjectTree<WorkspaceTreeElement, FuzzyScore> | undefined;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -94,79 +208,214 @@ export class ParadisWorkspacesView extends ViewPane {
 		@IThemeService themeService: IThemeService,
 		@IHoverService hoverService: IHoverService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
+		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
+		@IQuickInputService private readonly quickInputService: IQuickInputService,
+		@ICommandService private readonly commandService: ICommandService,
+		@IClipboardService private readonly clipboardService: IClipboardService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
-		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => this.updateList()));
-		this._register(this.workspaceSwitchService.onDidSwitchRepository(() => this.updateList()));
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => this.updateTree()));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.updateTree()));
+		this._register(this.worktreeService.onDidChangeWorktrees(() => this.updateTree()));
+		// 注意: 引数なしの tree.rerender() は行の renderElement を再実行しないため、
+		// setChildren で作り直す (identityProvider により選択/折りたたみ状態は保持される)
+		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.updateTree()));
 	}
 
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 
-		const listContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
-		const renderer = new RepositoryRenderer(repository => this.workspaceSwitchService.activeRepository?.id === repository.id);
-		this.list = this._register(this.instantiationService.createInstance(
-			WorkbenchList<IParadisWorkspaceRepository>,
+		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
+		const getStatus = (stateKey: string) => this.agentStatusStore.getScopeStatus(stateKey);
+		const repositoryRenderer = new RepositoryRenderer(repository => this.workspaceSwitchService.activeStateKey === repository.id, getStatus);
+		const worktreeRenderer = new WorktreeRenderer(worktree => this.workspaceSwitchService.activeStateKey === paradisWorktreeStateKey(worktree.uri), getStatus);
+
+		this.tree = this._register(this.instantiationService.createInstance(
+			WorkbenchObjectTree<WorkspaceTreeElement, FuzzyScore>,
 			'ParadisWorkspaces',
-			listContainer,
-			new RepositoryDelegate(),
-			[renderer],
+			treeContainer,
+			new WorkspaceTreeDelegate(),
+			[repositoryRenderer, worktreeRenderer],
 			{
-				identityProvider: { getId: (repository: IParadisWorkspaceRepository) => repository.id },
+				identityProvider: {
+					getId: (element: WorkspaceTreeElement) => isWorktree(element) ? paradisWorktreeStateKey(element.uri) : element.id
+				},
 				horizontalScrolling: false,
 				accessibilityProvider: {
-					getAriaLabel: (repository: IParadisWorkspaceRepository) => repository.name,
+					getAriaLabel: (element: WorkspaceTreeElement) => element.name,
 					getWidgetAriaLabel: () => localize('paradisWorkspaces', "Workspaces")
 				}
 			}
 		));
 
 		// クリック / Enter で切り替え
-		this._register(this.list.onDidOpen(e => {
-			if (e.element) {
-				this.workspaceSwitchService.switchRepository(e.element.id);
+		this._register(this.tree.onDidOpen(e => {
+			const element = e.element;
+			if (!element) {
+				return;
+			}
+			if (isWorktree(element)) {
+				if (!element.missing) {
+					this.workspaceSwitchService.switchToWorktree(element);
+				}
+			} else {
+				this.workspaceSwitchService.switchRepository(element.id);
 			}
 		}));
 
-		// 右クリックでリストから削除
-		this._register(this.list.onContextMenu(e => {
-			const repository = e.element;
-			if (!repository) {
+		this._register(this.tree.onContextMenu(e => {
+			const element = e.element;
+			if (!element) {
 				return;
 			}
 			this.contextMenuService.showContextMenu({
 				getAnchor: () => e.anchor,
-				getActions: () => [
-					new Action(
-						'paradis.workspaceSwitch.removeFromList',
-						localize('paradis.workspaceSwitch.removeContext', "Remove from List"),
-						undefined,
-						true,
-						() => this.workspaceSwitchService.removeRepository(repository.id)
-					)
-				]
+				getActions: () => isWorktree(element)
+					? this.buildWorktreeContextMenuActions(element)
+					: this.buildRepositoryContextMenuActions(element)
 			});
 		}));
 
-		this.updateList();
+		this.updateTree();
 	}
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		this.list?.layout(height, width);
+		this.tree?.layout(height, width);
 	}
 
 	override shouldShowWelcome(): boolean {
 		return this.workspaceSwitchService.repositories.length === 0;
 	}
 
-	private updateList(): void {
-		if (!this.list) {
+	private updateTree(): void {
+		if (!this.tree) {
 			return;
 		}
-		const repositories = [...this.workspaceSwitchService.repositories];
-		this.list.splice(0, this.list.length, repositories);
+
+		const elements: IObjectTreeElement<WorkspaceTreeElement>[] = this.workspaceSwitchService.repositories.map(repository => {
+			const worktrees = this.worktreeService.getWorktrees(repository.id);
+			return {
+				element: repository,
+				children: worktrees.map(worktree => ({ element: worktree as WorkspaceTreeElement })),
+				collapsible: worktrees.length > 0,
+				collapsed: ObjectTreeElementCollapseState.PreserveOrExpanded
+			};
+		});
+		this.tree.setChildren(null, elements);
 		this._onDidChangeViewWelcomeState.fire();
+	}
+
+	private buildRepositoryContextMenuActions(repository: IParadisWorkspaceRepository): IAction[] {
+		// 注意: コンテキストメニューの項目は icon なしで生成される (menu.ts の menuItemOptions が
+		// icon を落とす) ため action.class は DOM に反映されない。vs/base は改変禁止 (CLAUDE.md) なので、
+		// 色スウォッチは CSS の aria-label 属性セレクタで描画する (media/paradisWorkspaceSwitch.css)
+		const colorActions: IAction[] = PARADIS_WORKSPACE_COLORS.map(color => {
+			const action = new Action(
+				`paradis.workspaceSwitch.color.${color.id}`,
+				colorLabel(color.id),
+				undefined,
+				true,
+				() => this.workspaceSwitchService.setRepositoryColor(repository.id, color.id)
+			);
+			action.checked = repository.color === color.id;
+			return action;
+		});
+		const defaultColorAction = new Action(
+			'paradis.workspaceSwitch.color.default',
+			localize('paradis.workspaceSwitch.colorDefault', "Default"),
+			undefined,
+			true,
+			() => this.workspaceSwitchService.setRepositoryColor(repository.id, undefined)
+		);
+		defaultColorAction.checked = repository.color === undefined;
+
+		return [
+			new Action(
+				'paradis.workspaceSwitch.rename',
+				localize('paradis.workspaceSwitch.renameContext', "Rename..."),
+				undefined,
+				true,
+				() => this.promptRename(repository)
+			),
+			new SubmenuAction(
+				'paradis.workspaceSwitch.setColor',
+				localize('paradis.workspaceSwitch.setColor', "Set Color"),
+				[...colorActions, new Separator(), defaultColorAction]
+			),
+			new Separator(),
+			new Action(
+				'paradis.workspaceSwitch.reveal',
+				revealLabel(),
+				undefined,
+				true,
+				() => this.commandService.executeCommand('revealFileInOS', repository.uri)
+			),
+			new Action(
+				'paradis.workspaceSwitch.copyPath',
+				localize('paradis.workspaceSwitch.copyPath', "Copy Path"),
+				undefined,
+				true,
+				() => this.clipboardService.writeText(repository.uri.fsPath)
+			),
+			new Separator(),
+			new Action(
+				'paradis.workspaceSwitch.removeFromList',
+				localize('paradis.workspaceSwitch.removeContext', "Remove from List"),
+				undefined,
+				true,
+				() => this.workspaceSwitchService.removeRepository(repository.id)
+			)
+		];
+	}
+
+	private buildWorktreeContextMenuActions(worktree: IParadisWorktree): IAction[] {
+		const actions: IAction[] = [
+			new Action(
+				'paradis.workspaceSwitch.worktree.reveal',
+				revealLabel(),
+				undefined,
+				!worktree.missing,
+				() => this.commandService.executeCommand('revealFileInOS', worktree.uri)
+			),
+			new Action(
+				'paradis.workspaceSwitch.worktree.copyPath',
+				localize('paradis.workspaceSwitch.copyPath', "Copy Path"),
+				undefined,
+				true,
+				() => this.clipboardService.writeText(worktree.uri.fsPath)
+			)
+		];
+
+		if (worktree.missing) {
+			actions.push(
+				new Separator(),
+				new Action(
+					'paradis.workspaceSwitch.worktree.removeFromList',
+					localize('paradis.workspaceSwitch.removeContext', "Remove from List"),
+					undefined,
+					true,
+					async () => this.worktreeService.removeKnownWorktree(worktree)
+				)
+			);
+		}
+
+		return actions;
+	}
+
+	private async promptRename(repository: IParadisWorkspaceRepository): Promise<void> {
+		const name = await this.quickInputService.input({
+			value: repository.name,
+			valueSelection: [0, repository.name.length],
+			prompt: localize('paradis.workspaceSwitch.renamePrompt', "Enter a new name for this repository"),
+			validateInput: async value => value.trim()
+				? undefined
+				: localize('paradis.workspaceSwitch.renameEmpty', "Name cannot be empty")
+		});
+		if (name !== undefined && name.trim()) {
+			await this.workspaceSwitchService.renameRepository(repository.id, name.trim());
+		}
 	}
 }

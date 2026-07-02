@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese comments) */
 
 .paradis-workspaces-list {
 	height: 100%;
@@ -13,9 +14,10 @@
 	align-items: center;
 	gap: 8px;
 	height: 100%;
-	padding: 0 12px;
+	padding: 0 12px 0 10px;
 	box-sizing: border-box;
 	cursor: pointer;
+	border-left: 2px solid transparent;
 }
 
 .paradis-workspaces-list .paradis-workspace-row > .codicon {
@@ -46,3 +48,98 @@
 	font-size: 0.85em;
 	opacity: 0.7;
 }
+
+/* エージェント実行状態 (Superset の StatusIndicator / AsciiSpinner 相当) */
+.paradis-workspaces-list .codicon.paradis-status-working {
+	color: #f59e0b;
+}
+
+.paradis-workspaces-list .codicon.paradis-status-review {
+	color: #22c55e;
+}
+
+.paradis-workspaces-list .codicon.paradis-status-permission {
+	color: #ef4444;
+	animation: paradis-status-pulse 1s ease-in-out infinite;
+}
+
+@keyframes paradis-status-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.25; }
+}
+
+/* worktree の入れ子行 */
+.paradis-workspaces-list .paradis-worktree-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 100%;
+	padding-right: 12px;
+	box-sizing: border-box;
+	cursor: pointer;
+	overflow: hidden;
+}
+
+.paradis-workspaces-list .paradis-worktree-row > .codicon {
+	flex-shrink: 0;
+}
+
+.paradis-workspaces-list .paradis-worktree-row > .codicon.codicon-check {
+	color: var(--vscode-charts-blue);
+}
+
+.paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-branch {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-size: 0.85em;
+	opacity: 0.7;
+}
+
+.paradis-workspaces-list .paradis-worktree-row.missing {
+	opacity: 0.5;
+}
+
+/* Set Color サブメニューの色スウォッチ (Superset と同一の固定12色パレット)。 */
+/* コンテキストメニュー項目は icon なしで生成され action.class が DOM に出ないため、 */
+/* aria-label 属性セレクタで ::before に色ドットを描画する (paradisWorkspacesView.ts 参照)。 */
+/* ラベル文字列 (colorLabel) を変える場合はここも合わせて更新すること */
+.monaco-menu .action-label[aria-label='Red']::before,
+.monaco-menu .action-label[aria-label='Orange']::before,
+.monaco-menu .action-label[aria-label='Yellow']::before,
+.monaco-menu .action-label[aria-label='Lime']::before,
+.monaco-menu .action-label[aria-label='Green']::before,
+.monaco-menu .action-label[aria-label='Teal']::before,
+.monaco-menu .action-label[aria-label='Cyan']::before,
+.monaco-menu .action-label[aria-label='Blue']::before,
+.monaco-menu .action-label[aria-label='Indigo']::before,
+.monaco-menu .action-label[aria-label='Purple']::before,
+.monaco-menu .action-label[aria-label='Pink']::before,
+.monaco-menu .action-label[aria-label='Slate']::before {
+	content: '';
+	display: inline-block;
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	margin-right: 8px;
+	vertical-align: -1px;
+}
+
+.monaco-menu .action-label[aria-label='Red']::before { background-color: #ef4444; }
+.monaco-menu .action-label[aria-label='Orange']::before { background-color: #f97316; }
+.monaco-menu .action-label[aria-label='Yellow']::before { background-color: #eab308; }
+.monaco-menu .action-label[aria-label='Lime']::before { background-color: #84cc16; }
+.monaco-menu .action-label[aria-label='Green']::before { background-color: #22c55e; }
+.monaco-menu .action-label[aria-label='Teal']::before { background-color: #14b8a6; }
+.monaco-menu .action-label[aria-label='Cyan']::before { background-color: #06b6d4; }
+.monaco-menu .action-label[aria-label='Blue']::before { background-color: #3b82f6; }
+.monaco-menu .action-label[aria-label='Indigo']::before { background-color: #6366f1; }
+.monaco-menu .action-label[aria-label='Purple']::before { background-color: #a855f7; }
+.monaco-menu .action-label[aria-label='Pink']::before { background-color: #ec4899; }
+.monaco-menu .action-label[aria-label='Slate']::before { background-color: #64748b; }

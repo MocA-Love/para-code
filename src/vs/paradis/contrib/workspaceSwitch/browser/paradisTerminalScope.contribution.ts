@@ -12,7 +12,8 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroup, ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 
 interface ISerializedTerminalRepositoryEntry {
 	readonly persistentProcessId: number;
@@ -31,9 +32,9 @@ interface ISerializedTerminalRepositoryEntry {
  *   一旦復元される。{persistentProcessId → repositoryId} の保存済みマッピングから
  *   再接続完了時に再タグ付け・再 park する
  */
-class ParadisTerminalWorkspaceScope extends Disposable implements IWorkbenchContribution {
+class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTerminalScopeService {
 
-	static readonly ID = 'workbench.contrib.paradisTerminalWorkspaceScope';
+	declare readonly _serviceBrand: undefined;
 
 	private static readonly MAPPING_STORAGE_KEY = 'paradis.workspaceSwitch.terminalRepositories';
 
@@ -61,7 +62,7 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IWorkbenchCont
 		this._restoredMapping = this.loadMapping();
 
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
-		this._register(this.workspaceSwitchService.onDidSwitchRepository(repository => this.applyScope(repository)));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(stateKey => this.applyScope(stateKey)));
 		this._register(this.terminalGroupService.onDidDisposeGroup(group => this.discardGroup(group)));
 
 		// park 中のグループも terminalService のレイアウト永続化に含まれる (PARA-PATCH) ため、
@@ -69,6 +70,15 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IWorkbenchCont
 		// マッピングに基づいて park し直す。再接続完了後に取りこぼし (persistentProcessId が
 		// タグ付け時点で未確定だったグループ) を掃除する
 		terminalService.whenConnected.then(() => this.sweepRestoredGroups());
+	}
+
+	getStateKeyForInstance(instanceId: number): string | undefined {
+		for (const [group, stateKey] of this._groupRepositories) {
+			if (group.terminalInstances.some(instance => instance.instanceId === instanceId)) {
+				return stateKey;
+			}
+		}
+		return undefined;
 	}
 
 	/** 保存済みマッピングからグループの所属リポジトリを引く (リロード直後の復元グループ用) */
@@ -90,7 +100,7 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IWorkbenchCont
 			return;
 		}
 
-		const activeRepository = this.workspaceSwitchService.activeRepository;
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
 		let changed = false;
 		for (const group of [...groupService.groups]) {
 			if (this._groupRepositories.has(group)) {
@@ -98,17 +108,17 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IWorkbenchCont
 			}
 
 			// リロードで復元されたグループは保存済みマッピングの対応を優先し、
-			// マッピングに無いもの (新規作成) はアクティブリポジトリ所属とする
-			const repositoryId = this.lookupRestoredRepository(group) ?? activeRepository?.id;
-			if (!repositoryId) {
+			// マッピングに無いもの (新規作成) はアクティブエントリ所属とする
+			const stateKey = this.lookupRestoredRepository(group) ?? activeStateKey;
+			if (!stateKey) {
 				continue;
 			}
 
-			this._groupRepositories.set(group, repositoryId);
+			this._groupRepositories.set(group, stateKey);
 			changed = true;
 
-			if (repositoryId !== activeRepository?.id) {
-				this.parkGroup(groupService, group, repositoryId);
+			if (stateKey !== activeStateKey) {
+				this.parkGroup(groupService, group, stateKey);
 			}
 		}
 		if (changed) {
@@ -126,24 +136,24 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IWorkbenchCont
 		parked.push(group);
 	}
 
-	private applyScope(target: IParadisWorkspaceRepository): void {
+	private applyScope(targetStateKey: string): void {
 		const groupService = this.terminalGroupService;
 		if (!(groupService instanceof TerminalGroupService)) {
 			return;
 		}
 
-		// 他リポジトリのグループを退避
+		// 他エントリのグループを退避
 		for (const group of [...groupService.groups]) {
-			const repositoryId = this._groupRepositories.get(group);
-			if (repositoryId !== undefined && repositoryId !== target.id) {
-				this.parkGroup(groupService, group, repositoryId);
+			const stateKey = this._groupRepositories.get(group);
+			if (stateKey !== undefined && stateKey !== targetStateKey) {
+				this.parkGroup(groupService, group, stateKey);
 			}
 		}
 
 		// 切り替え先のグループを復帰
-		const parked = this._parkedGroups.get(target.id);
+		const parked = this._parkedGroups.get(targetStateKey);
 		if (parked) {
-			this._parkedGroups.delete(target.id);
+			this._parkedGroups.delete(targetStateKey);
 			for (const group of parked) {
 				groupService.paradisUnparkGroup(group);
 			}
@@ -179,19 +189,19 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IWorkbenchCont
 			return;
 		}
 
-		const activeRepositoryId = this.workspaceSwitchService.activeRepository?.id;
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
 		let changed = false;
 		for (const group of [...groupService.groups]) {
-			const restoredRepositoryId = this.lookupRestoredRepository(group);
-			if (!restoredRepositoryId || this._groupRepositories.get(group) === restoredRepositoryId) {
+			const restoredStateKey = this.lookupRestoredRepository(group);
+			if (!restoredStateKey || this._groupRepositories.get(group) === restoredStateKey) {
 				continue;
 			}
 
-			this._groupRepositories.set(group, restoredRepositoryId);
+			this._groupRepositories.set(group, restoredStateKey);
 			changed = true;
 
-			if (restoredRepositoryId !== activeRepositoryId) {
-				this.parkGroup(groupService, group, restoredRepositoryId);
+			if (restoredStateKey !== activeStateKey) {
+				this.parkGroup(groupService, group, restoredStateKey);
 			}
 		}
 		if (changed) {
@@ -230,4 +240,12 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IWorkbenchCont
 	}
 }
 
-registerWorkbenchContribution2(ParadisTerminalWorkspaceScope.ID, ParadisTerminalWorkspaceScope, WorkbenchPhase.AfterRestored);
+registerSingleton(IParadisTerminalScopeService, ParadisTerminalWorkspaceScope, InstantiationType.Delayed);
+
+/** シングルトンを AfterRestored で確実に起動させるためのスターター */
+class ParadisTerminalScopeStarter implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.paradisTerminalScopeStarter';
+	constructor(@IParadisTerminalScopeService _service: IParadisTerminalScopeService) { }
+}
+
+registerWorkbenchContribution2(ParadisTerminalScopeStarter.ID, ParadisTerminalScopeStarter, WorkbenchPhase.AfterRestored);

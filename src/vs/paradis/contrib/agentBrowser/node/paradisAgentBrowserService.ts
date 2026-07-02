@@ -22,7 +22,7 @@ import { join } from '../../../../base/common/path.js';
 import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentPaneStatus, IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 
@@ -99,6 +99,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * バインディングダイアログの「MCP未接続」表示に使う（shared processの生存期間のみ保持）。
 	 */
 	private readonly _seenTokens = new Set<string>();
+	/**
+	 * エージェントCLIのhook通知 (GET /agent-hook) で更新される、ペインごとの実行状態。
+	 * workbench が listPaneStatuses でポーリングし、Workspaces ビューのスピナー表示に使う。
+	 */
+	private readonly _paneStatuses = new Map<string, { status: ParadisAgentStatus; changedAt: number }>();
 	private readonly _portFilePath: string;
 	private readonly _cdpGateway: ParadisCdpGateway;
 	private _httpServer: http.Server | undefined;
@@ -305,6 +310,13 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._cdpGateway.handleRequest(req, res);
 		}
 
+		// エージェントCLIのhook通知 (GET /agent-hook?pane=<token>&event=<eventType>)。
+		// Claude Code / Codex の hooks に登録した curl 1行から叩かれる (Superset の
+		// GET /hook/complete 方式の移植。ペイントークンで認証)
+		if (req.method === 'GET' && (req.url ?? '').startsWith('/agent-hook')) {
+			return this._handleAgentHook(req, res);
+		}
+
 		if (req.method !== 'POST') {
 			res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'POST' });
 			res.end(JSON.stringify({ error: 'Method not allowed. This is a Para Code MCP endpoint (Streamable HTTP, POST only) with a CDP gateway under /cdp (GET /cdp/json/version etc.).' }));
@@ -366,6 +378,48 @@ export class ParadisAgentBrowserService extends Disposable {
 			} else {
 				this._sendJsonRpc(res, { jsonrpc: '2.0', id: rpc.id, error: { code: -32603, message: `Internal error: ${error instanceof Error ? error.message : String(error)}` } });
 			}
+		}
+	}
+
+	private _handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): void {
+		const token = this._extractToken(req);
+		if (!token) {
+			res.writeHead(401, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'Missing pane token. Provide it via the "?pane=<token>" query parameter.' }));
+			return;
+		}
+
+		const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+		const eventType = url.searchParams.get('event') ?? '';
+		const normalized = paradisNormalizeAgentHookEvent(eventType);
+
+		if (normalized === undefined) {
+			res.writeHead(200, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ ok: false, reason: `unknown event: ${eventType}` }));
+			return;
+		}
+
+		if (normalized === 'idle') {
+			this._paneStatuses.delete(token);
+		} else {
+			this._paneStatuses.set(token, { status: normalized, changedAt: Date.now() });
+		}
+		this.logService.trace(`[ParadisAgentBrowser] agent-hook: ${eventType} -> ${normalized}`);
+
+		res.writeHead(200, { 'Content-Type': 'application/json' });
+		res.end(JSON.stringify({ ok: true }));
+	}
+
+	/** workbench のポーリング用: 現在のペイン実行状態一覧 */
+	async listPaneStatuses(): Promise<IParadisAgentPaneStatus[]> {
+		return [...this._paneStatuses].map(([token, entry]) => ({ token, status: entry.status, changedAt: entry.changedAt }));
+	}
+
+	/** review 状態の確認遷移 (スコープを開いた時に workbench から呼ばれる) */
+	async acknowledgePaneStatus(token: string): Promise<void> {
+		const entry = this._paneStatuses.get(token);
+		if (entry && entry.status === 'review') {
+			this._paneStatuses.delete(token);
 		}
 	}
 

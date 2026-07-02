@@ -431,8 +431,10 @@ class ParadisPaneShellSyncContribution extends Disposable implements IWorkbenchC
 	private _handleChange(): void {
 		// processId は PTY 起動後に確定するため、各インスタンスの processReady 後にも再同期する
 		// （解決済みPromiseへの then は蓄積しないので毎回回して問題ない）。
+		// 注意: dispose 中のインスタンスは processReady が undefined になり得る (実機で確認) ため
+		// optional chaining で防御する
 		for (const instance of this.terminalService.instances) {
-			void instance.processReady.then(() => this._scheduleSync(), () => { /* 起動失敗は無視 */ });
+			void instance.processReady?.then(() => this._scheduleSync(), () => { /* 起動失敗は無視 */ });
 		}
 		this._scheduleSync();
 	}

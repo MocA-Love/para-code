@@ -74,3 +74,59 @@ export interface IParadisPaneBinding {
 	/** バインドされた時刻（epoch ms）。バインディングダイアログの「共有開始 N分前」表示に使う。 */
 	readonly boundAt: number;
 }
+
+// --- エージェント実行状態 (workspaceSwitch のスピナー表示用、Superset 移植) ---------------------
+
+/**
+ * ペインで動くエージェントCLIの実行状態。Superset (apps/desktop の shared/tabs-types.ts
+ * PaneStatus) と同じ4状態モデル。idle は「エントリなし」で表現する。
+ * - working: エージェントがターン実行中 (スピナー表示)
+ * - permission: 人間の対応が必要 (許可待ち/質問。赤の脈動表示)
+ * - review: ターン完了、確認待ち (緑の静止ドット。スコープを開いたら idle へ確認遷移)
+ */
+export type ParadisAgentStatus = 'working' | 'permission' | 'review';
+
+export interface IParadisAgentPaneStatus {
+	readonly token: string;
+	readonly status: ParadisAgentStatus;
+	/** 最終更新 (epoch ms) */
+	readonly changedAt: number;
+}
+
+/**
+ * 各エージェントCLIのhookイベント名を状態へ正規化する。Superset の
+ * main/lib/notifications/map-event-type.ts の正規化テーブル移植 + Claude Code の
+ * Notification イベント対応。undefined = 未知イベント (無視)、'idle' = エントリ削除。
+ */
+export function paradisNormalizeAgentHookEvent(eventType: string): ParadisAgentStatus | 'idle' | undefined {
+	switch (eventType) {
+		// 完了系: Claude Code / Codex / OpenCode
+		case 'Stop':
+		case 'SubagentStop':
+		case 'agent-turn-complete':
+		case 'task_complete':
+		case 'SessionEnd':
+			return 'review';
+		// 要対応系: 許可要求・ユーザー入力要求
+		case 'Notification':
+		case 'PermissionRequest':
+		case 'PreToolUse':
+		case 'exec_approval_request':
+		case 'apply_patch_approval_request':
+		case 'request_user_input':
+		case 'permission.ask':
+			return 'permission';
+		// 実行中系
+		case 'SessionStart':
+		case 'UserPromptSubmit':
+		case 'PostToolUse':
+		case 'task_started':
+		case 'Start':
+			return 'working';
+		// 終了 (プロセス消滅)
+		case 'TerminalExit':
+			return 'idle';
+		default:
+			return undefined;
+	}
+}

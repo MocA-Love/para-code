@@ -50,7 +50,7 @@ class ParadisBrowserWorkspaceScope extends Disposable implements IWorkbenchContr
 
 		// 切り替え完了で contextual filter の結果が変わったことを通知する
 		const filterChanged = this._register(new Emitter<void>());
-		this._register(this.workspaceSwitchService.onDidSwitchRepository(() => filterChanged.fire()));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => filterChanged.fire()));
 		this._register(this.browserViewWorkbenchService.registerContextualFilter({
 			include: input => this.isInActiveScope(input),
 			onDidChange: filterChanged.event
@@ -58,12 +58,12 @@ class ParadisBrowserWorkspaceScope extends Disposable implements IWorkbenchContr
 	}
 
 	private isInActiveScope(input: BrowserEditorInput): boolean {
-		const repositoryId = this._viewRepositories.get(input.serialize().id);
-		return repositoryId === undefined || repositoryId === this.workspaceSwitchService.activeRepository?.id;
+		const stateKey = this._viewRepositories.get(input.serialize().id);
+		return stateKey === undefined || stateKey === this.workspaceSwitchService.activeStateKey;
 	}
 
 	private hookAndTagViews(): void {
-		const activeRepository = this.workspaceSwitchService.activeRepository;
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
 
 		for (const [id, input] of this.browserViewWorkbenchService.getKnownBrowserViews()) {
 			if (!this._inputListeners.has(id)) {
@@ -81,8 +81,8 @@ class ParadisBrowserWorkspaceScope extends Disposable implements IWorkbenchContr
 				));
 			}
 
-			if (!this._viewRepositories.has(id) && activeRepository) {
-				this._viewRepositories.set(id, activeRepository.id);
+			if (!this._viewRepositories.has(id) && activeStateKey !== undefined) {
+				this._viewRepositories.set(id, activeStateKey);
 			}
 		}
 	}
@@ -91,8 +91,10 @@ class ParadisBrowserWorkspaceScope extends Disposable implements IWorkbenchContr
 		const repositoryIds = new Set(this.workspaceSwitchService.repositories.map(repository => repository.id));
 
 		for (const [id, input] of [...this.browserViewWorkbenchService.getKnownBrowserViews()]) {
-			const repositoryId = this._viewRepositories.get(id);
-			if (repositoryId !== undefined && !repositoryIds.has(repositoryId)) {
+			const stateKey = this._viewRepositories.get(id);
+			// worktree スコープ ('worktree:' プレフィックス) はリポジトリ削除の対象外
+			// (worktree の増減は頻繁なので、ページはユーザーが閉じるまで生かしておく)
+			if (stateKey !== undefined && !stateKey.startsWith('worktree:') && !repositoryIds.has(stateKey)) {
 				this._viewRepositories.delete(id);
 				input.dispose(true); // veto を通さず破棄
 			}

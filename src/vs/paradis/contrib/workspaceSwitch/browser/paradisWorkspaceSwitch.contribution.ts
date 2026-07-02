@@ -13,6 +13,7 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -25,17 +26,45 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation } from '../../../../workbench/common/views.js';
+import { ITerminalEditorService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
+import { ParadisWorktreeService } from './paradisWorktreeService.js';
 import './paradisTerminalScope.contribution.js';
 import './paradisScmInputScope.contribution.js';
 
 registerSingleton(IParadisWorkspaceSwitchService, ParadisWorkspaceSwitchService, InstantiationType.Delayed);
+registerSingleton(IParadisWorktreeService, ParadisWorktreeService, InstantiationType.Delayed);
+registerSingleton(IParadisAgentStatusStore, ParadisAgentStatusStore, InstantiationType.Delayed);
+
+// worktree 自動同期の Paradis 設定 (セクションは windowTransparency 側と同じ 'paradis' に相乗り)
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'paradis',
+	order: 999,
+	title: localize('paradisConfigurationTitle', "Paradis"),
+	type: 'object',
+	properties: {
+		'paradis.workspaceSwitch.autoImportWorktrees': {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.WINDOW,
+			description: localize('paradis.workspaceSwitch.autoImportWorktrees', "Automatically add newly created git worktrees of registered repositories to the Workspaces view.")
+		},
+		'paradis.workspaceSwitch.autoRemoveMissingWorktrees': {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.WINDOW,
+			description: localize('paradis.workspaceSwitch.autoRemoveMissingWorktrees', "Automatically remove deleted git worktrees from the Workspaces view. When disabled, missing worktrees stay in the list and can be removed manually.")
+		}
+	}
+});
 
 const CATEGORY = localize2('paradis.category', "Paradis");
 
@@ -229,6 +258,40 @@ registerAction2(ParadisInitializeWorkspaceAction);
 registerAction2(ParadisAddRepositoryAction);
 registerAction2(ParadisSwitchRepositoryAction);
 registerAction2(ParadisRemoveRepositoryAction);
+
+// エディタ領域でターミナルを開く/フォーカスする (watermark の Toggle Terminal から使用。
+// パネルではなく Toggle Browser と同じ場所 = エディタ内にターミナルを出す)
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'paradis.terminal.toggleEditorTerminal',
+			title: localize2('paradis.terminal.toggleEditorTerminal', "Toggle Terminal in Editor Area"),
+			category: CATEGORY,
+			f1: true,
+			// watermark はキーバインドの無いコマンドを表示しないため必須。
+			// ⌥⌘T は upstream (editorCommands.ts) と衝突するため ctrl+cmd+T を使う
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.KeyT,
+				mac: { primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.KeyT }
+			}
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const terminalService = accessor.get(ITerminalService);
+		const terminalEditorService = accessor.get(ITerminalEditorService);
+
+		const existing = terminalService.instances.find(instance => instance.target === TerminalLocation.Editor);
+		if (existing) {
+			await terminalEditorService.openEditor(existing);
+			existing.focus(true);
+		} else {
+			const instance = await terminalService.createTerminal({ location: TerminalLocation.Editor });
+			instance.focus(true);
+		}
+	}
+});
 
 // --- FleetView 風サイドバービュー ---------------------------------------------------------------
 

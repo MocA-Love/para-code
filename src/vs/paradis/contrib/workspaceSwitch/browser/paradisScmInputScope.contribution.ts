@@ -10,9 +10,9 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ISCMRepository, ISCMService } from '../../../../workbench/contrib/scm/common/scm.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 
-/** リポジトリID → { SCMルートURI文字列 → 入力途中のコミットメッセージ } */
+/** 状態キー (リポジトリID or worktreeキー) → { SCMルートURI文字列 → 入力途中のコミットメッセージ } */
 type ISerializedScmInputs = Record<string, Record<string, string>>;
 
 /**
@@ -39,15 +39,15 @@ class ParadisScmInputScope extends Disposable implements IWorkbenchContribution 
 	) {
 		super();
 
-		this._register(this.workspaceSwitchService.onWillSwitchRepository(previous => this.stashInputs(previous)));
-		this._register(this.workspaceSwitchService.onDidSwitchRepository(target => this.beginRestore(target)));
+		this._register(this.workspaceSwitchService.onWillSwitchScope(previousKey => this.stashInputs(previousKey)));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(targetKey => this.beginRestore(targetKey)));
 
 		// Git 拡張の再スキャンは非同期なので、SCM リポジトリの再登録を待って復元する
 		this._register(this.scmService.onDidAddRepository(repository => this.tryRestoreFor(repository)));
 	}
 
-	private stashInputs(previous: IParadisWorkspaceRepository | undefined): void {
-		if (!previous) {
+	private stashInputs(previousKey: string | undefined): void {
+		if (previousKey === undefined) {
 			return;
 		}
 
@@ -61,15 +61,15 @@ class ParadisScmInputScope extends Disposable implements IWorkbenchContribution 
 
 		const all = this.loadAll();
 		if (Object.keys(entries).length > 0) {
-			all[previous.id] = entries;
+			all[previousKey] = entries;
 		} else {
-			delete all[previous.id];
+			delete all[previousKey];
 		}
 		this.storageService.store(ParadisScmInputScope.STORAGE_KEY, JSON.stringify(all), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
-	private beginRestore(target: IParadisWorkspaceRepository): void {
-		this._pendingRestore = this.loadAll()[target.id];
+	private beginRestore(targetKey: string): void {
+		this._pendingRestore = this.loadAll()[targetKey];
 		if (!this._pendingRestore) {
 			return;
 		}
