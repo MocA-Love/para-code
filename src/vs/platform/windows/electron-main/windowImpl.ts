@@ -712,7 +712,15 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 				webPreferences.backgroundThrottling = false; // keep agents window responsive when in background
 			}
 
-			const options = instantiationService.invokeFunction(defaultBrowserWindowOptions, this.windowState, undefined, webPreferences);
+			// PARA-PATCH: opt the native window into `transparent: true` when Paradis window transparency
+			// is enabled, so the renderer can make only the workbench chrome translucent while dialogs stay
+			// opaque. `transparent` is a creation-time flag, so toggling the setting requires a window reload
+			// (the renderer contribution shows a reload prompt). See src/vs/paradis/contrib/windowTransparency.
+			// Restricted to normal Para Code windows: the translucency CSS ships only with the desktop
+			// workbench contribution, not the Agent Sessions window entry, so only normal windows should
+			// opt into a transparent native surface.
+			const paradisTransparencyEnabled = !config.isSessionsWindow && this.configurationService.getValue<boolean>('paradis.window.transparency.enabled') === true;
+			const options = instantiationService.invokeFunction(defaultBrowserWindowOptions, this.windowState, paradisTransparencyEnabled ? { transparent: true } : undefined, webPreferences);
 
 			// Create the browser window
 			mark('code/willCreateCodeBrowserWindow');
