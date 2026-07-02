@@ -27,7 +27,8 @@ import { ITextModelService } from '../../../../editor/common/services/resolverSe
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
-import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
@@ -47,17 +48,18 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		@IFileService fileService: IFileService,
 		@ITextModelService textModelService: ITextModelService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 		@IExtensionService private readonly _extensionService: IExtensionService,
 		@ILanguageService private readonly _languageService: ILanguageService,
 	) {
-		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService);
+		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService);
 	}
 
 	protected override get allowScripts(): boolean {
 		return false;
 	}
 
-	protected override async renderDocument(text: string, resource: URI, _webview: IWebviewElement): Promise<string> {
+	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview): Promise<string> {
 		const rendered = await renderMarkdownDocument(text, this._extensionService, this._languageService, {
 			sanitizerConfig: {
 				allowRelativeMediaPaths: true,

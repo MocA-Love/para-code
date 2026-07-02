@@ -11,6 +11,12 @@
 // 上部ツールバーの Rendered/Raw トグルで内部切替する（エディタを開き直さないのでタブは常に1つ）。
 // Raw は ITextModelService のモデル参照で言語機能/ハイライトが効き、編集可能・保存可能（dirty は EditorInput が委譲）。
 // ディスク上の変更は correlated watcher で Rendered を自動再レンダリングする。
+//
+// Rendered は upstream の webviewPanel と同じ WebviewOverlay + claim/release 方式で表示する
+// （src/vs/workbench/contrib/webviewPanel/browser/webviewEditor.ts 参照）。overlay は workbench の
+// webview レイヤーに生き続けるため、タブ切替・ペインの hide/再表示・グループ移動でも webview のコンテンツ
+// プロセスが破棄されない。ペインが可視かつ Rendered のときだけ claim + setAnchorElement でアンカーへ重ね、
+// Raw / 非可視のときは release する。claim 直後は下地が作り直され内容が失われ得るため、復帰時は必ず再 setHtml する。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -31,7 +37,8 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
-import { IWebviewElement, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
@@ -57,7 +64,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	private _renderedBtn: HTMLButtonElement | undefined;
 	private _rawBtn: HTMLButtonElement | undefined;
 
-	private _webview: IWebviewElement | undefined;
+	private _webview: IOverlayWebview | undefined;
+	private _webviewClaimed = false;
+	private _editorVisible = false;
 	private _codeEditor: ICodeEditor | undefined;
 	private readonly _modelRef = this._register(new MutableDisposable<IReference<IResolvedTextEditorModel>>());
 
@@ -76,6 +85,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@ITextModelService private readonly _textModelService: ITextModelService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
+		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 	) {
 		super(id, group, telemetryService, themeService, storageService);
 	}
@@ -84,16 +94,16 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	protected abstract get allowScripts(): boolean;
 
 	/** 読み込んだテキストから webview に表示する完全な HTML ドキュメント文字列を生成する。 */
-	protected abstract renderDocument(text: string, resource: URI, webview: IWebviewElement): Promise<string> | string;
+	protected abstract renderDocument(text: string, resource: URI, webview: IOverlayWebview): Promise<string> | string;
 
 	/** webview 要素の生成直後に呼ばれるフック（サブクラスがメッセージ購読等を行う）。 */
-	protected onWebviewCreated(_webview: IWebviewElement): void { }
+	protected onWebviewCreated(_webview: IOverlayWebview): void { }
 
 	/** ツールバー右側（トグルの隣）へサブクラス固有のコントロール（HTMLズーム等）を追加するためのフック。 */
 	protected onCreateToolbar(_toolbarRight: HTMLElement): void { }
 
 	/** 現在アクティブな webview（存在すれば）。 */
-	protected get webview(): IWebviewElement | undefined {
+	protected get webview(): IOverlayWebview | undefined {
 		return this._webview;
 	}
 
@@ -114,10 +124,11 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		this.onCreateToolbar(this._toolbarRightElement);
 
 		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
+		// webview コンテナは overlay webview を重ねる「アンカー(位置合わせ用の空要素)」。overlay 自身は
+		// workbench の webview レイヤーに属し、ここには描画されない。常にレイアウトさせておく(矩形が必要)。
 		this._webviewContainer = dom.append(content, dom.$('.paradis-file-viewer-webview'));
 		this._editorContainer = dom.append(content, dom.$('.paradis-file-viewer-editor'));
-		// 既定は Rendered。Raw エディタコンテナは初期非表示にして初回のちらつきを避ける。
-		this._editorContainer.style.display = 'none';
+		// 既定は Rendered。Raw エディタコンテナは active クラス(visibility)でのみ切り替える。
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -133,12 +144,13 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
 
-		// ディスク上のファイル変更を監視し、Rendered を自動再レンダリングする（Raw は同一モデルなので自動反映）。
+		// ディスク上のファイル変更を監視し、Rendered 表示中なら自動再レンダリングする（Raw は同一モデルなので自動反映。
+		// 非表示/Raw のときは再描画不要 — 次に Rendered へ復帰(claim)する際に最新内容で描き直す）。
 		try {
 			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
 			store.add(watcher);
 			store.add(watcher.onDidChange(e => {
-				if (e.contains(resource) && isEqual(this._currentResource, resource)) {
+				if (e.contains(resource) && isEqual(this._currentResource, resource) && this._webviewClaimed && this._mode === 'rendered') {
 					void this.renderResource(resource, CancellationToken.None);
 				}
 			}));
@@ -146,10 +158,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			// watcher の生成に失敗しても表示自体は継続できるため致命的ではない。
 		}
 
-		await this.renderResource(resource, token);
-		if (token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
-			return;
-		}
+		// Rendered の実描画は _applyViewMode → _updateWebviewPlacement(claim+setHtml)が担う。
 		await this._applyViewMode(viewerInput.viewMode, resource);
 	}
 
@@ -184,11 +193,11 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		webview.setHtml(html);
 	}
 
-	private ensureWebview(resource: URI): IWebviewElement {
+	private ensureWebview(resource: URI): IOverlayWebview {
 		if (this._webview) {
 			return this._webview;
 		}
-		const webview = this._webviewService.createWebviewElement({
+		const webview = this._webviewService.createWebviewOverlay({
 			title: undefined,
 			options: {
 				purpose: WebviewContentPurpose.CustomEditor,
@@ -203,9 +212,35 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		});
 		this._webview = webview;
 		this._register(webview);
-		webview.mountTo(this._webviewContainer!, this.window);
 		this.onWebviewCreated(webview);
 		return webview;
+	}
+
+	/**
+	 * overlay webview を「可視 かつ Rendered」のときだけ claim してアンカーへ重ね、それ以外では release する。
+	 * claim で下地要素が作り直され内容が失われ得るため、claim した直後は必ず setHtml を貼り直す（冪等）。
+	 */
+	private _updateWebviewPlacement(): void {
+		const resource = this._currentResource;
+		const shouldShow = this._editorVisible && this._mode === 'rendered' && !!resource;
+		if (!shouldShow) {
+			if (this._webview && this._webviewClaimed) {
+				this._webview.release(this);
+				this._webviewClaimed = false;
+			}
+			return;
+		}
+		const webview = this.ensureWebview(resource);
+		const justClaimed = !this._webviewClaimed;
+		if (justClaimed) {
+			webview.claim(this, this.window, undefined);
+			this._webviewClaimed = true;
+		}
+		dom.setParentFlowTo(webview.container, this._webviewContainer!);
+		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
+		if (justClaimed) {
+			void this.renderResource(resource, CancellationToken.None);
+		}
 	}
 
 	/** Rendered/Raw を内部切替する（エディタは開き直さない）。 */
@@ -217,8 +252,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (!resource) {
 			return;
 		}
-		// Rendered へ戻るときは Raw で編集された現在値を反映するため再レンダリングする。
-		if (mode === 'rendered' && this._modelRef.value) {
+		// Rendered へ戻るときは Raw で編集された現在値を反映するため再レンダリングする（既に claim 済みの場合。
+		// 未 claim なら _applyViewMode → _updateWebviewPlacement の claim 時に描き直される）。
+		if (mode === 'rendered' && this._modelRef.value && this._webviewClaimed) {
 			void this.renderResource(resource, CancellationToken.None);
 		}
 		void this._applyViewMode(mode, resource);
@@ -237,12 +273,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (mode === 'raw') {
 			await this._ensureRawEditor(resource);
 		}
-		if (this._webviewContainer) {
-			this._webviewContainer.style.display = mode === 'rendered' ? '' : 'none';
-		}
-		if (this._editorContainer) {
-			this._editorContainer.style.display = mode === 'raw' ? '' : 'none';
-		}
+		// Raw エディタは active クラス(visibility)で表示切替。Rendered(webview overlay)は claim/release で制御する。
+		this._editorContainer?.classList.toggle('active', mode === 'raw');
+		this._updateWebviewPlacement();
 		if (mode === 'raw') {
 			this._codeEditor?.focus();
 		} else {
@@ -272,8 +305,21 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		this._currentResource = undefined;
 		this._codeEditor?.setModel(null);
 		this._modelRef.clear();
-		this._webview?.setHtml('');
+		// overlay の所有権を手放す（内容プロセスは webview レイヤー側で管理される）。
+		if (this._webview && this._webviewClaimed) {
+			this._webview.release(this);
+			this._webviewClaimed = false;
+		}
 		super.clearInput();
+	}
+
+	protected override setEditorVisible(visible: boolean): void {
+		if (visible !== this._editorVisible) {
+			this._editorVisible = visible;
+			// 可視 かつ Rendered のときだけ overlay を claim、非可視では release する（webviewEditor と同じ挙動）。
+			this._updateWebviewPlacement();
+		}
+		super.setEditorVisible(visible);
 	}
 
 	override getControl(): ICodeEditor | undefined {
@@ -294,6 +340,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			this._rootElement.style.width = `${dimension.width}px`;
 			this._rootElement.style.height = `${dimension.height}px`;
 		}
+		// 可視性は寸法からも判定する（タブ切替でペインが 0x0 に畳まれる経路を確実に拾うため。webviewEditor と同方式）。
+		this.setEditorVisible(dimension.width > 0 && dimension.height > 0);
 		// CodeEditorWidget は automaticLayout: true なので自動追従する。
 	}
 }
