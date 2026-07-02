@@ -1,0 +1,239 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { Emitter } from '../../../../base/common/event.js';
+import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { basename, joinPath } from '../../../../base/common/resources.js';
+import { URI } from '../../../../base/common/uri.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+
+interface ISerializedKnownWorktree {
+	readonly repositoryId: string;
+	/** worktree ディレクトリの URI 文字列 */
+	readonly path: string;
+	readonly name: string;
+}
+
+/**
+ * IParadisWorktreeService の実装。
+ *
+ * `git worktree list` は呼ばず、upstream の git 拡張 (extensions/git/src/git.ts の
+ * getWorktreesFS) と同じアルゴリズムで `<repo>/.git/worktrees/<name>/gitdir` を直接読む。
+ * `.git/worktrees` を correlated watcher で監視し、worktree の作成/削除に自動追従する。
+ *
+ * 自動反映は Paradis 設定で制御できる:
+ * - `paradis.workspaceSwitch.autoImportWorktrees`: 新しく検出した worktree をリストへ自動追加
+ * - `paradis.workspaceSwitch.autoRemoveMissingWorktrees`: 消えた worktree をリストから自動削除
+ *   (OFF の場合は missing フラグ付きで残り、手動で removeKnownWorktree できる)
+ * 既知リストは WORKSPACE スコープ storage に永続化する。
+ */
+export class ParadisWorktreeService extends Disposable implements IParadisWorktreeService {
+
+	declare readonly _serviceBrand: undefined;
+
+	private static readonly KNOWN_WORKTREES_STORAGE_KEY = 'paradis.workspaceSwitch.knownWorktrees';
+
+	private readonly _onDidChangeWorktrees = this._register(new Emitter<void>());
+	readonly onDidChangeWorktrees = this._onDidChangeWorktrees.event;
+
+	private _worktrees = new Map<string, IParadisWorktree[]>();
+	private _known: ISerializedKnownWorktree[];
+
+	/** リポジトリID → .git/worktrees 監視の disposable */
+	private readonly _watchers = this._register(new DisposableMap<string>());
+
+	private readonly _refreshScheduler = this._register(new RunOnceScheduler(() => this.refresh(), 500));
+
+	constructor(
+		@IFileService private readonly fileService: IFileService,
+		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IStorageService private readonly storageService: IStorageService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+	) {
+		super();
+
+		this._known = this.loadKnown();
+
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => {
+			this.installWatchers();
+			this._refreshScheduler.schedule();
+		}));
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration('paradis.workspaceSwitch')) {
+				this._refreshScheduler.schedule();
+			}
+		}));
+
+		this.installWatchers();
+		this.refresh();
+	}
+
+	getWorktrees(repositoryId: string): readonly IParadisWorktree[] {
+		return this._worktrees.get(repositoryId) ?? [];
+	}
+
+	removeKnownWorktree(worktree: IParadisWorktree): void {
+		const before = this._known.length;
+		this._known = this._known.filter(known => !(known.repositoryId === worktree.repositoryId && known.path === worktree.uri.toString()));
+		if (this._known.length !== before) {
+			this.saveKnown();
+			this._refreshScheduler.schedule();
+		}
+	}
+
+	private installWatchers(): void {
+		const seen = new Set<string>();
+		for (const repository of this.workspaceSwitchService.repositories) {
+			seen.add(repository.id);
+			if (this._watchers.has(repository.id)) {
+				continue;
+			}
+
+			const gitDir = joinPath(repository.uri, '.git');
+			const worktreesDir = joinPath(gitDir, 'worktrees');
+			const store = new DisposableStore();
+			// worktree の追加/削除 (= worktrees/ 直下のディレクトリ増減) を監視。
+			// correlated watcher は非再帰限定なので、worktrees/ 自体の作成/削除は
+			// 親の .git/ の監視で拾う
+			const worktreesWatcher = this.fileService.createWatcher(worktreesDir, { recursive: false, excludes: [] });
+			store.add(worktreesWatcher);
+			store.add(worktreesWatcher.onDidChange(() => this._refreshScheduler.schedule()));
+			const gitDirWatcher = this.fileService.createWatcher(gitDir, { recursive: false, excludes: [] });
+			store.add(gitDirWatcher);
+			store.add(gitDirWatcher.onDidChange(e => {
+				if (e.affects(worktreesDir)) {
+					this._refreshScheduler.schedule();
+				}
+			}));
+			this._watchers.set(repository.id, store);
+		}
+
+		// 登録解除されたリポジトリの監視を破棄
+		for (const key of [...this._watchers.keys()]) {
+			if (!seen.has(key)) {
+				this._watchers.deleteAndDispose(key);
+			}
+		}
+	}
+
+	private async refresh(): Promise<void> {
+		const autoImport = this.configurationService.getValue<boolean>('paradis.workspaceSwitch.autoImportWorktrees') !== false;
+		const autoRemove = this.configurationService.getValue<boolean>('paradis.workspaceSwitch.autoRemoveMissingWorktrees') !== false;
+
+		const repositories = this.workspaceSwitchService.repositories;
+		const result = new Map<string, IParadisWorktree[]>();
+		let knownChanged = false;
+
+		for (const repository of repositories) {
+			const scanned = await this.scanWorktrees(repository);
+			const scannedPaths = new Set(scanned.map(worktree => worktree.uri.toString()));
+			const knownForRepository = this._known.filter(known => known.repositoryId === repository.id);
+			const list: IParadisWorktree[] = [];
+
+			// ディスク上に存在するもの: 既知なら常に表示、新規は autoImport 時のみ追加
+			for (const worktree of scanned) {
+				const isKnown = knownForRepository.some(known => known.path === worktree.uri.toString());
+				if (isKnown || autoImport) {
+					list.push(worktree);
+					if (!isKnown) {
+						this._known.push({ repositoryId: repository.id, path: worktree.uri.toString(), name: worktree.name });
+						knownChanged = true;
+					}
+				}
+			}
+
+			// 既知だがディスクから消えたもの: autoRemove ならリストから外し、
+			// OFF なら missing として残す (手動 removeKnownWorktree 可能)
+			for (const known of knownForRepository) {
+				if (!scannedPaths.has(known.path)) {
+					if (autoRemove) {
+						this._known = this._known.filter(candidate => candidate !== known);
+						knownChanged = true;
+					} else {
+						list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), missing: true });
+					}
+				}
+			}
+
+			list.sort((a, b) => a.name.localeCompare(b.name));
+			result.set(repository.id, list);
+		}
+
+		// 登録解除されたリポジトリの既知エントリを掃除
+		const repositoryIds = new Set(repositories.map(repository => repository.id));
+		const beforeCount = this._known.length;
+		this._known = this._known.filter(known => repositoryIds.has(known.repositoryId));
+		if (this._known.length !== beforeCount) {
+			knownChanged = true;
+		}
+
+		if (knownChanged) {
+			this.saveKnown();
+		}
+		this._worktrees = result;
+		this._onDidChangeWorktrees.fire();
+	}
+
+	private async scanWorktrees(repository: IParadisWorkspaceRepository): Promise<IParadisWorktree[]> {
+		const result: IParadisWorktree[] = [];
+		try {
+			const worktreesDir = joinPath(repository.uri, '.git', 'worktrees');
+			const stat = await this.fileService.resolve(worktreesDir);
+			for (const child of stat.children ?? []) {
+				if (!child.isDirectory) {
+					continue;
+				}
+				try {
+					// gitdir の中身は "<worktree>/.git"。upstream (getWorktreesFS) と同じく
+					// /.git 以降を除去して作業ツリーパスを復元する
+					const gitdirContent = (await this.fileService.readFile(joinPath(child.resource, 'gitdir'))).value.toString().trim();
+					const worktreePath = gitdirContent.replace(/\/\.git.*$/, '');
+					const uri = URI.file(worktreePath);
+					if (!(await this.fileService.exists(uri))) {
+						continue; // prune 可能な残骸
+					}
+
+					let branch: string | undefined;
+					try {
+						const head = (await this.fileService.readFile(joinPath(child.resource, 'HEAD'))).value.toString().trim();
+						branch = head.startsWith('ref: refs/heads/') ? head.substring('ref: refs/heads/'.length) : head.substring(0, 8);
+					} catch {
+						// HEAD 未書込みは branch なしで続行
+					}
+
+					result.push({ repositoryId: repository.id, name: basename(uri), branch, uri });
+				} catch {
+					// worktree 作成直後で gitdir 未書込み等はスキップ (upstream 同様)
+				}
+			}
+		} catch {
+			// .git/worktrees が存在しない (worktree なし)
+		}
+		return result;
+	}
+
+	private loadKnown(): ISerializedKnownWorktree[] {
+		const raw = this.storageService.get(ParadisWorktreeService.KNOWN_WORKTREES_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return [];
+		}
+		try {
+			return JSON.parse(raw);
+		} catch {
+			return [];
+		}
+	}
+
+	private saveKnown(): void {
+		this.storageService.store(ParadisWorktreeService.KNOWN_WORKTREES_STORAGE_KEY, JSON.stringify(this._known), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+}
