@@ -15,5 +15,6 @@ import './contrib/windowTransparency/electron-browser/paradisWindowTransparency.
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisBrowserScope.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisAgentStatus.contribution.js';
+import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationTrigger.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationSettingsDialog.contribution.js';
