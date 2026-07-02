@@ -18,6 +18,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -51,6 +52,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
+		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
@@ -105,20 +107,34 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		if (instanceId === undefined) {
 			return; // ペインが別ウィンドウ or 終了済み
 		}
+
+		const isVisibleAndFocused = !document.hidden && this.hostService.hasFocus;
 		const stateKey = this.terminalScopeService.getStateKeyForInstance(instanceId);
+
 		if (stateKey === undefined) {
-			return; // スコープ外のターミナル
+			// スコープ外のターミナル (Workspacesビュー未登録フォルダ / エディタ領域ターミナル)。
+			// アイコン変化はスコープ概念に紐づくため対象外だが、音 + OS通知 + Aivis は
+			// ワークスペースフォルダ名をプレースホルダにして発火させる。
+			// 抑制条件は「このウィンドウが可視かつフォーカス中」のみ。
+			if (isVisibleAndFocused) {
+				return;
+			}
+			await this._notify(undefined, status, this._resolveFallbackPlaceholders(status));
+			return;
 		}
 
 		// 抑制ルール: 対象スコープが見えていて (アクティブ) かつウィンドウがフォーカスされている場合は鳴らさない。
 		// document.hidden (最小化・別スペース) の場合は常に鳴らす。
 		const isActiveScope = stateKey === this.workspaceSwitchService.activeStateKey;
-		const isVisibleAndFocused = !document.hidden && this.hostService.hasFocus;
 		if (isActiveScope && isVisibleAndFocused) {
 			return;
 		}
 
-		const placeholders = this._resolvePlaceholders(stateKey, status);
+		await this._notify(stateKey, status, this._resolvePlaceholders(stateKey, status));
+	}
+
+	/** 音 + OS通知 + Aivis を発火する (stateKey === undefined はスコープ外フォールバック)。 */
+	private async _notify(stateKey: string | undefined, status: 'review' | 'permission', placeholders: IParadisAivisPlaceholders): Promise<void> {
 		const muted = this.settingsService.getSoundsMuted();
 		if (!muted) {
 			void this._player.play(this.settingsService.getSelectedRingtoneId(), this.settingsService.getVolume());
@@ -164,12 +180,23 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		return { event };
 	}
 
-	private _showOsNotification(stateKey: string, status: 'review' | 'permission', placeholders: IParadisAivisPlaceholders): void {
+	/** スコープ外ターミナル用フォールバック: ワークスペースフォルダ名をプレースホルダにする。 */
+	private _resolveFallbackPlaceholders(status: 'review' | 'permission'): IParadisAivisPlaceholders {
+		const event = status === 'permission' ? 'PermissionRequest' : 'Stop';
+		const folder = this.contextService.getWorkspace().folders[0];
+		if (folder) {
+			return { workspace: folder.name, project: folder.name, event };
+		}
+		return { event };
+	}
+
+	private _showOsNotification(stateKey: string | undefined, status: 'review' | 'permission', placeholders: IParadisAivisPlaceholders): void {
 		const title = status === 'permission' ? STR_TITLE_PERMISSION : STR_TITLE_REVIEW;
 		const body = placeholders.worktree ? `${placeholders.workspace ?? ''} (${placeholders.worktree})` : placeholders.workspace;
 
 		this.hostService.showToast({ title, body, silent: true }, CancellationToken.None).then(result => {
-			if (result.clicked) {
+			// スコープ外フォールバック (stateKey === undefined) はクリックでの切り替え先が無い
+			if (result.clicked && stateKey !== undefined) {
 				void this._switchToScope(stateKey);
 			}
 		}, () => { /* 通知の権限が無い等は無視 */ });

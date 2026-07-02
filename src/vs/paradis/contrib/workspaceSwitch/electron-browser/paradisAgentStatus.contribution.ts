@@ -16,8 +16,10 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 
 /** 集計時の優先度 (Superset の STATUS_PRIORITY と同じ: permission 最強) */
@@ -34,8 +36,10 @@ const POLL_INTERVAL = 2000;
  * トークン → ターミナルインスタンス → スコープ (状態キー) に解決して集計、
  * IParadisAgentStatusStore へ書き込む (機能1 Phase C)。
  *
- * - review 状態はアクティブスコープなら即確認遷移 (acknowledge) して表示しない
- *   (Superset の「可視なら Stop→idle、不可視なら review」と同じ挙動)
+ * - review 状態は「アクティブスコープ かつ ウィンドウが可視+フォーカス中」の場合のみ
+ *   即確認遷移 (acknowledge) して表示しない (Superset の「可視なら Stop→idle、不可視なら
+ *   review 維持」と同じ挙動)。非フォーカス時に acknowledge すると ParadisNotificationTrigger
+ *   の遷移検知 (音+OS通知+Aivis) を先食いして握り潰してしまうため
  * - スコープ内に複数エージェントが居る場合は優先度 permission > working > review で畳み込む
  */
 class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribution {
@@ -48,6 +52,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisAgentStatusStore private readonly statusStore: IParadisAgentStatusStore,
+		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -85,8 +90,10 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 				continue; // スコープ外のターミナル
 			}
 
-			if (paneStatus.status === 'review' && stateKey === activeStateKey) {
-				// 見えているスコープの完了は確認済み扱い (fire-and-forget)
+			if (paneStatus.status === 'review' && stateKey === activeStateKey && !document.hidden && this.hostService.hasFocus) {
+				// 見えているスコープの完了は、ウィンドウが可視かつフォーカス中の場合のみ確認済み扱い
+				// (fire-and-forget)。非フォーカス時は review を維持し、ParadisNotificationTrigger
+				// の完了通知に先食いされないようにする
 				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 					.call('acknowledgePaneStatus', [paneStatus.token])
 					.then(undefined, () => { /* ignore */ });
@@ -107,17 +114,6 @@ registerWorkbenchContribution2(ParadisAgentStatusPoller.ID, ParadisAgentStatusPo
 
 // --- hooks セットアップスニペット ----------------------------------------------------------------
 
-/** 指定イベント名を /agent-hook へ通知する hook コマンド (sh 1行) を生成する */
-function hookCommand(eventName: string): string {
-	// シェル側で展開させる変数参照 (${VAR:-}) を組み立てる
-	const portFileRef = '${' + PARADIS_MCP_PORT_FILE_ENV_VAR + ':-}';
-	const tokenRef = '${' + PARADIS_PANE_TOKEN_ENV_VAR + ':-}';
-	// ポートファイル ({"port":12345,"pid":...}) から port を抜き出して curl で通知。
-	// 失敗してもエージェント本体を止めない (|| true)
-	const sedScript = 's/.*"port":([0-9]+).*/\\1/p';
-	return `sh -c 'f="${portFileRef}"; t="${tokenRef}"; [ -n "$f" ] && [ -n "$t" ] || exit 0; p=$(sed -nE ${JSON.stringify(sedScript)} "$f" 2>/dev/null); [ -n "$p" ] && curl -fsS --max-time 2 "http://127.0.0.1:$p/agent-hook?pane=$t&event=${eventName}" >/dev/null 2>&1 || true'`;
-}
-
 class ParadisCopyAgentHooksSetupAction extends Action2 {
 	constructor() {
 		super({
@@ -132,12 +128,13 @@ class ParadisCopyAgentHooksSetupAction extends Action2 {
 		const clipboardService = accessor.get(IClipboardService);
 		const notificationService = accessor.get(INotificationService);
 
-		// ~/.claude/settings.json の "hooks" にマージするスニペット。
-		// イベント種別ごとに固定の event クエリで /agent-hook を叩く (stdin パース不要)
-		const events = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SessionEnd'];
+		// ~/.claude/settings.json の "hooks" にマージするスニペット。通常は shared process 起動時に
+		// 自動マージされる (agentBrowser/node/paradisAgentHooksSetup.ts) ため、このアクションは
+		// 自動設置が使えない環境向けの手動フォールバック。イベント一覧・コマンドは自動設置と
+		// 完全に同一 (~/.para-code/hooks/notify.sh 参照方式。PreToolUse は誤通知源になるため登録しない)。
 		const hooks: Record<string, unknown> = {};
-		for (const event of events) {
-			hooks[event] = [{ hooks: [{ type: 'command', command: hookCommand(event) }] }];
+		for (const event of PARADIS_CLAUDE_HOOK_EVENTS) {
+			hooks[event.eventName] = [paradisManagedHookDefinition(event)];
 		}
 
 		await clipboardService.writeText(JSON.stringify({ hooks }, undefined, 2));
