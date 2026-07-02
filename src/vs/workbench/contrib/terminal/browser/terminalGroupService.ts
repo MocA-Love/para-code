@@ -219,6 +219,12 @@ export class TerminalGroupService extends Disposable implements ITerminalGroupSe
 	}
 
 	private _removeGroup(group: ITerminalGroup) {
+		// PARA-PATCH: 退避中に破棄されたグループはパーキングリストから外すだけでよい
+		const paradisParkedIndex = this._paradisParkedGroups.indexOf(group);
+		if (paradisParkedIndex !== -1) {
+			this._paradisParkedGroups.splice(paradisParkedIndex, 1);
+		}
+
 		// Get the index of the group and remove it from the list
 		const activeGroup = this.activeGroup;
 		const wasActiveGroup = group === activeGroup;
@@ -519,6 +525,59 @@ export class TerminalGroupService extends Disposable implements ITerminalGroupSe
 	updateVisibility() {
 		const visible = this._viewsService.isViewVisible(TERMINAL_VIEW_ID);
 		this.groups.forEach((g, i) => g.setVisible(visible && i === this.activeGroupIndex));
+	}
+
+	// PARA-PATCH: Paradisワークスペース切り替え(機能1)用の非破壊park/unpark。
+	// 退避中のグループは groups から外れるためタブリスト/パネル/コンテキストキーから消えるが、
+	// グループ・インスタンス・PTYは破棄されず生存する(_removeGroupの非破壊版)。
+	// terminalService.ts のレイアウト永続化 (_saveState / _onWillShutdown) には
+	// paradisParkedGroups 経由で参加し続ける(でないとリロードで退避中グループが消える)。
+	// 呼び出し元: src/vs/paradis/contrib/workspaceSwitch/browser/paradisTerminalScope.contribution.ts
+	private readonly _paradisParkedGroups: ITerminalGroup[] = [];
+	get paradisParkedGroups(): readonly ITerminalGroup[] { return this._paradisParkedGroups; }
+
+	paradisParkGroup(group: ITerminalGroup): void {
+		const wasActiveGroup = group === this.activeGroup;
+		const index = this.groups.indexOf(group);
+		if (index === -1) {
+			return;
+		}
+		this.groups.splice(index, 1);
+		this._paradisParkedGroups.push(group);
+		if (!wasActiveGroup && this.activeGroupIndex > index) {
+			this.activeGroupIndex--;
+		}
+		if (this.activeGroupIndex >= this.groups.length) {
+			this.activeGroupIndex = this.groups.length - 1;
+		}
+		group.setVisible(false);
+		this._onDidChangeInstances.fire();
+		this._onDidChangeGroups.fire();
+		this._onDidChangeActiveGroup.fire(this.activeGroup);
+		this._onDidChangeActiveInstance.fire(this.activeInstance);
+	}
+
+	// PARA-PATCH: paradisParkGroup で退避したグループを groups へ復帰させる(上記参照)
+	paradisUnparkGroup(group: ITerminalGroup): void {
+		const parkedIndex = this._paradisParkedGroups.indexOf(group);
+		if (parkedIndex !== -1) {
+			this._paradisParkedGroups.splice(parkedIndex, 1);
+		}
+		if (this.groups.includes(group)) {
+			return;
+		}
+		this.groups.push(group);
+		if (this._container) {
+			// 退避中にパネルが再作成されていた場合に備えて現在のコンテナへ付け直す
+			group.attachToElement(this._container);
+		}
+		this._onDidChangeInstances.fire();
+		this._onDidChangeGroups.fire();
+		if (this.groups.length === 1) {
+			this.setActiveGroupByIndex(0, true);
+		} else {
+			this.updateVisibility();
+		}
 	}
 }
 

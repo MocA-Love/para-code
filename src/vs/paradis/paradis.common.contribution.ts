@@ -13,3 +13,4 @@
 // ここではなく paradis.electron-browser.contribution.ts に追加すること。
 
 import './contrib/windowTransparency/browser/paradisSettings.contribution.js';
+import './contrib/workspaceSwitch/browser/paradisWorkspaceSwitch.contribution.js';

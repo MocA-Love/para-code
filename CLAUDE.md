@@ -68,4 +68,4 @@ upstreamを定期的に取り込み続ける前提のため、「どこが独自
 
 ## 未検証・要確認事項
 
-- 機能1（ワークスペース切り替え）で`IWorkspaceEditingService.updateFolders(0, 1, ...)`を呼ぶ際、`isSessionsWindow`フラグ（Extension Host再起動をスキップする特権）が実際にどの条件で有効になるか未検証。通常のworkbenchウィンドウで動くのか、実際に「Sessions Window」モード（`WindowEnablement.Sessions`）を有効にしたウィンドウでしか機能しないのか、機能1のネイティブ実装に着手する際に実機で確認すること
+- ~~機能1で`isSessionsWindow`フラグがどの条件で有効になるか未検証~~ → **検証済み（2026-07-02）**: `isSessionsWindow` は「開くworkspaceのconfigPathが専用の`agentSessionsWorkspace`と一致するか」で自動決定され、trueだとHTMLエントリ自体が切り替わるため通常ウィンドウには転用不可。機能1は `relauncher.contribution.ts` への1行PARA-PATCH（`isParadisManagedWorkspaceWindow()`）で解決済み。詳細は `NOTES.md` の「機能1: ワークスペース即時切り替え」参照

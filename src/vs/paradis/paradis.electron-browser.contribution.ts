@@ -13,3 +13,4 @@
 
 import './contrib/windowTransparency/electron-browser/paradisWindowTransparency.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
+import './contrib/workspaceSwitch/electron-browser/paradisBrowserScope.contribution.js';

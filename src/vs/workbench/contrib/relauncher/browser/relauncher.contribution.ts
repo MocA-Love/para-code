@@ -22,6 +22,8 @@ import { IExtensionService } from '../../../services/extensions/common/extension
 import { IHostService } from '../../../services/host/browser/host.js';
 import { LifecyclePhase } from '../../../services/lifecycle/common/lifecycle.js';
 import { IUserDataSyncWorkbenchService } from '../../../services/userDataSync/common/userDataSync.js';
+// PARA-PATCH: import the ext-host restart suppression flag for Paradis multi-repo workspace switching (see paradisWorkspaceSwitch.ts)
+import { isParadisManagedWorkspaceWindow } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 interface IConfiguration extends IWindowsConfiguration {
 	update?: { mode?: string };
@@ -300,7 +302,7 @@ export class WorkspaceChangeExtHostRelauncher extends Disposable implements IWor
 				return; // no restart when in tests: see https://github.com/microsoft/vscode/issues/66936
 			}
 
-			if (environmentService.isSessionsWindow) {
+			if (environmentService.isSessionsWindow || isParadisManagedWorkspaceWindow()) { // PARA-PATCH: also skip the restart for Paradis multi-repo workspace switching
 				return; // no restart for sessions window
 			}
 
