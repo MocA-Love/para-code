@@ -6,6 +6,9 @@
 import { Event } from '../../../../base/common/event.js';
 import { getZoomFactor } from '../../../../base/browser/browser.js';
 import { $, addDisposableListener, append, EventType, getWindow, getWindowId, hide, show } from '../../../../base/browser/dom.js';
+import { IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
+import { createParadisResourceMonitorWidget } from '../../../../paradis/contrib/resourceMonitor/electron-browser/paradisResourceMonitorWidget.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -56,6 +59,9 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 
 	private maxRestoreControl: HTMLElement | undefined;
 	private resizer: HTMLElement | undefined;
+
+	// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
+	private readonly paradisResourceMonitorWidget = this._register(new MutableDisposable<IDisposable>());
 
 	private cachedWindowControlStyles: { bgColor: string; fgColor: string } | undefined;
 	private cachedWindowControlHeight: number | undefined;
@@ -159,6 +165,9 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 		const result = super.createContentArea(parent);
 		const targetWindow = getWindow(parent);
 		const targetWindowId = getWindowId(targetWindow);
+
+		// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
+		this.paradisResourceMonitorWidget.value = createParadisResourceMonitorWidget(this.instantiationService, this.leftContent);
 
 		// Native menu controller
 		if (isMacintosh || hasNativeMenu(this.configurationService)) {

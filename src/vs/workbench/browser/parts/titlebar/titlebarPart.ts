@@ -260,7 +260,9 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 	protected dragRegion: HTMLElement | undefined;
 	private title!: HTMLElement;
 
-	private leftContent!: HTMLElement;
+	// PARA-PATCH: protected instead of private so NativeTitlebarPart (electron-browser) can append
+	// the CPU/RAM resource monitor widget to the title bar's left side without duplicating layout logic
+	protected leftContent!: HTMLElement;
 	private centerContent!: HTMLElement;
 	private rightContent!: HTMLElement;
 
