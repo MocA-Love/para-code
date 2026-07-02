@@ -18,3 +18,5 @@ import './contrib/terminalHistorySuggest/browser/paradisTerminalHistoryCompletio
 import './contrib/watermark/browser/paradisWatermark.contribution.js';
 import './contrib/notifications/browser/paradisNotificationsSettings.js';
 import './contrib/resourceMonitor/browser/paradisResourceMonitorSettings.contribution.js';
+import './contrib/defaultExtensions/browser/paradisDefaultSettings.contribution.js';
+import './contrib/viewLayout/browser/paradisViewLayout.contribution.js';

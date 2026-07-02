@@ -444,6 +444,10 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 				...(platform === 'win32' ? ['!**/electron_proxy.exe'] : []),
 			], { dot: true }));
 
+		// PARA-PATCH: bundle Para Code default extension .vsix files into the product (all platforms).
+		// At runtime they are resolved relative to appRoot at resources/paradis/extensions/*.vsix and installed.
+		result = es.merge(result, gulp.src('resources/paradis/extensions/*.vsix', { base: '.', allowEmpty: true }));
+
 		if (platform === 'linux') {
 			result = es.merge(result, gulp.src('resources/completions/bash/code', { base: '.' })
 				.pipe(replace('@@APPNAME@@', product.applicationName))
