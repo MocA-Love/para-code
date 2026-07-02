@@ -127,6 +127,24 @@ function charWidthToPx(w: number | undefined): number {
 	return Math.max(4, Math.round(w * 10));
 }
 
+// Windows 由来の日本語フォント名(ＭＳ Ｐ明朝/HGP明朝B/游明朝/ＭＳ Ｐゴシック 等)は macOS/Linux に存在せず、
+// 単純に font-family へ出すと総称フォント(sans-serif)へ落ちて字形が変わる(明朝がゴシックになる等)。
+// 元名を先頭に残しつつ、名前から明朝系/ゴシック系を判定して OS 標準の同系フォントを続けるフォールバックを付ける。
+// allow-any-unicode-next-line
+const MINCHO_MARKERS = ['明朝', '明體', 'Mincho', 'mincho'];
+// allow-any-unicode-next-line
+const GOTHIC_MARKERS = ['ゴシック', 'Gothic', 'gothic', 'Meiryo', 'メイリオ'];
+
+function fontFamilyStack(name: string): string {
+	if (MINCHO_MARKERS.some(m => name.includes(m))) {
+		return `'${name}', 'Hiragino Mincho ProN', 'Yu Mincho', 'MS PMincho', serif`;
+	}
+	if (GOTHIC_MARKERS.some(m => name.includes(m))) {
+		return `'${name}', 'Hiragino Kaku Gothic ProN', 'Yu Gothic', 'MS PGothic', sans-serif`;
+	}
+	return `'${name}', sans-serif`;
+}
+
 function fontToStyle(font: IExcelFont | undefined, into: Record<string, string>): void {
 	if (!font) {
 		return;
@@ -135,7 +153,7 @@ function fontToStyle(font: IExcelFont | undefined, into: Record<string, string>)
 		into.fontSize = `${font.size}pt`;
 	}
 	if (font.name) {
-		into.fontFamily = `'${font.name}', sans-serif`;
+		into.fontFamily = fontFamilyStack(font.name);
 	}
 	if (font.bold) {
 		into.fontWeight = 'bold';

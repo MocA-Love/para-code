@@ -45,6 +45,10 @@ export interface IParadisDiffSheet {
 	/** 図形描画時の Excel 行番号→Y座標の基準に使う、各版シートの行メタ(excelRow, height)。 */
 	readonly originalMinCol?: number;
 	readonly modifiedMinCol?: number;
+	/** シートタブの色(hex)。新版優先、無ければ旧版。 */
+	readonly tabColor?: string;
+	/** シート保護が有効か(新版優先、無ければ旧版)。 */
+	readonly protectedSheet?: boolean;
 }
 
 // 文字レベル差分が大きすぎる場合の粗いフォールバック閾値(n*m)。
@@ -172,6 +176,8 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				sheetStatus: 'added',
 				modifiedShapes: mod.shapes,
 				modifiedMinCol: mod.minCol,
+				...(mod.tabColor ? { tabColor: mod.tabColor } : {}),
+				...(mod.protectedSheet ? { protectedSheet: true } : {}),
 			});
 			continue;
 		}
@@ -185,6 +191,8 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				sheetStatus: 'removed',
 				originalShapes: orig.shapes,
 				originalMinCol: orig.minCol,
+				...(orig.tabColor ? { tabColor: orig.tabColor } : {}),
+				...(orig.protectedSheet ? { protectedSheet: true } : {}),
 			});
 			continue;
 		}
@@ -199,6 +207,11 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 		const origRows: IParadisDiffRow[] = [];
 		const modRows: IParadisDiffRow[] = [];
 
+		// 既知の弱点(2026-07-03、検証済み): 行の対応付けは「位置(index)ペアリング」である(LCS等の行アライメントはしていない)。
+		// 実セル編集で行が挿入/削除されると以降の行が全体的にズレ、塗り付き結合行が短い/空の行と対になって
+		// 片側(通常は modified)が emptyCell(白・style空)になり、背景/枠線が非対称に見えることがある。
+		// 現状のフィクスチャ(図形XMLのみ差分=両版セル同一)では発生しないが、実編集diffで顕在化する。
+		// 顕在化した場合は、ここを LCS ベースの行アライメントに置き換えること。
 		for (let r = 0; r < maxRows; r++) {
 			const origRow = orig.rows[r];
 			const modRow = mod.rows[r];
@@ -248,6 +261,8 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 			modifiedShapes: mod.shapes,
 			originalMinCol: orig.minCol,
 			modifiedMinCol: mod.minCol,
+			...((mod.tabColor ?? orig.tabColor) ? { tabColor: mod.tabColor ?? orig.tabColor } : {}),
+			...((mod.protectedSheet || orig.protectedSheet) ? { protectedSheet: true } : {}),
 		});
 	}
 

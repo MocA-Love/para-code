@@ -11,9 +11,10 @@
 // シート下部タブで切替、コンテナ幅超過時は CSS transform:scale で全体縮小、ディスク更新で自動再描画(correlated watcher)。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isEqual } from '../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -31,7 +32,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyShrinkToFit, buildPageBreakOverlay, buildShapeOverlay, createShrinkSpan, getColumnLabel, setCellContent } from './paradisSpreadsheetRender.js';
+import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildShapeOverlay, computeOverflowRoom, createOverflowSpan, createShrinkSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
@@ -52,9 +53,16 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _bodyEl: HTMLElement | undefined;
 	private _tabsEl: HTMLElement | undefined;
 	private _innerEl: HTMLElement | undefined;
+	private _tableEl: HTMLElement | undefined;
 	private _naturalTableWidth = 0;
 	private _dataRowEls: { excelRow: number; tr: HTMLElement }[] = [];
 	private _shrinkCells: { td: HTMLElement; span: HTMLElement }[] = [];
+	private _overflowCells: IParadisOverflowItem[] = [];
+	private _activeSheet: IParadisSheetData | undefined;
+	private _shapeOverlay: SVGElement | undefined;
+	private _pageBreakOverlay: SVGElement | undefined;
+	// フォント反映等の再フローで行高が変わると図形/改ページ線の固定Y座標が古くなるため、再測定・再配置トリガを張る。
+	private _replaceToken: object = {};
 
 	private _scale = 1;
 	private _userAdjusted = false;
@@ -62,6 +70,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private readonly _headerDisposables = this._register(new DisposableStore());
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _overlayRaf = this._register(new MutableDisposable());
+	private readonly _overlayTriggers = this._register(new MutableDisposable<DisposableStore>());
 	private _currentResource: URI | undefined;
 	private _sheets: readonly IParadisSheetData[] = [];
 	private _activeSheetIndex = 0;
@@ -185,8 +194,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const outer = dom.append(this._bodyEl, $('.paradis-spreadsheet-outer'));
 		const inner = dom.append(outer, $('.paradis-spreadsheet-inner'));
 		this._innerEl = inner;
+		this._activeSheet = sheet;
 
 		const { table, naturalWidth } = this._buildSheetTable(sheet);
+		this._tableEl = table;
 		this._naturalTableWidth = naturalWidth;
 		inner.style.width = `${naturalWidth}px`;
 		dom.append(inner, table);
@@ -203,33 +214,83 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	// 図形/改ページ/shrinkToFit は行の実描画位置が要るため、レイアウト確定後(rAF)にまとめて処理する。
 	private _renderOverlays(sheet: IParadisSheetData, inner: HTMLElement): void {
 		this._overlayRaf.clear();
-		const rows = this._dataRowEls;
 		const shrinkCells = this._shrinkCells;
+		const overflowCells = this._overflowCells;
 		const handle = dom.scheduleAtNextAnimationFrame(dom.getWindow(inner), () => {
 			// shrinkToFit(read→write 2パスは applyShrinkToFit 内)。
 			if (shrinkCells.length > 0) {
 				applyShrinkToFit(shrinkCells);
 			}
-			const rowY = new Map<number, number>();
-			for (const { excelRow, tr } of rows) {
-				rowY.set(excelRow, tr.offsetTop);
+			// セルまたぎのはみ出し(空セルへのオーバーフロー。read→write 2パスは applyOverflow 内)。
+			if (overflowCells.length > 0) {
+				applyOverflow(overflowCells);
 			}
-			const last = rows[rows.length - 1];
-			if (last) {
-				rowY.set(last.excelRow + 1, last.tr.offsetTop + last.tr.offsetHeight);
-			}
-			if (sheet.shapes && sheet.shapes.length > 0) {
-				const overlay = buildShapeOverlay(sheet.shapes, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
-				if (overlay) {
-					inner.appendChild(overlay);
-				}
-			}
-			const breaks = buildPageBreakOverlay(sheet.rowBreaks, sheet.colBreaks, sheet.printArea, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
-			if (breaks) {
-				inner.appendChild(breaks);
-			}
+			this._placeGeometryOverlays();
+			this._setupReplaceTriggers();
 		});
 		this._overlayRaf.value = handle;
+	}
+
+	/**
+	 * 図形・改ページ線を行位置を測り直して配置し直す(idempotent)。
+	 * transform:scale は offsetTop に影響しないため、測定は自然座標のまま。フォント反映等の再フロー後にも呼ばれる。
+	 */
+	private _placeGeometryOverlays(): void {
+		const sheet = this._activeSheet;
+		const inner = this._innerEl;
+		if (!sheet || !inner) {
+			return;
+		}
+		if (this._shapeOverlay) {
+			this._shapeOverlay.remove();
+			this._shapeOverlay = undefined;
+		}
+		if (this._pageBreakOverlay) {
+			this._pageBreakOverlay.remove();
+			this._pageBreakOverlay = undefined;
+		}
+		const rowY = new Map<number, number>();
+		for (const { excelRow, tr } of this._dataRowEls) {
+			rowY.set(excelRow, tr.offsetTop);
+		}
+		const last = this._dataRowEls[this._dataRowEls.length - 1];
+		if (last) {
+			rowY.set(last.excelRow + 1, last.tr.offsetTop + last.tr.offsetHeight);
+		}
+		if (sheet.shapes && sheet.shapes.length > 0) {
+			const overlay = buildShapeOverlay(sheet.shapes, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
+			if (overlay) {
+				inner.appendChild(overlay);
+				this._shapeOverlay = overlay;
+			}
+		}
+		const breaks = buildPageBreakOverlay(sheet.rowBreaks, sheet.colBreaks, sheet.printArea, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
+		if (breaks) {
+			inner.appendChild(breaks);
+			this._pageBreakOverlay = breaks;
+		}
+	}
+
+	/** フォント読み込み完了 + テーブルのサイズ変化(再フロー)で図形/改ページ線を配置し直すトリガを張る。 */
+	private _setupReplaceTriggers(): void {
+		if (!this._tableEl) {
+			return;
+		}
+		const store = new DisposableStore();
+		this._overlayTriggers.value = store;
+		const targetWindow = dom.getWindow(this._tableEl);
+		const scheduler = new RunOnceScheduler(() => this._placeGeometryOverlays(), 80);
+		store.add(scheduler);
+		const observer = new targetWindow.ResizeObserver(() => scheduler.schedule());
+		observer.observe(this._tableEl);
+		store.add(toDisposable(() => observer.disconnect()));
+		const token = {};
+		this._replaceToken = token;
+		targetWindow.document.fonts.ready.then(() => {
+			if (this._replaceToken === token) {
+				scheduler.schedule();
+			}
+		}, () => { /* フォント待ち失敗は無視 */ });
 	}
 
 	private _buildSheetTable(sheet: IParadisSheetData): { table: HTMLTableElement; naturalWidth: number } {
@@ -261,6 +322,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const tbody = dom.append(table, $('tbody'));
 		this._dataRowEls = [];
 		this._shrinkCells = [];
+		this._overflowCells = [];
 		let displayRowNum = 0;
 		for (const row of sheet.rows) {
 			displayRowNum++;
@@ -269,7 +331,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			this._dataRowEls.push({ excelRow: row.excelRow, tr });
 			const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
 			rowHead.textContent = String(displayRowNum);
-			for (const cell of row.cells) {
+			for (let ci = 0; ci < row.cells.length; ci++) {
+				const cell = row.cells[ci];
 				if (cell.hidden) {
 					continue;
 				}
@@ -284,7 +347,13 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				if (cell.shrinkToFit && !cell.wrapText && !cell.verticalText) {
 					this._shrinkCells.push({ td, span: createShrinkSpan(td, cell) });
 				} else {
-					setCellContent(td, cell);
+					const toward = overflowToward(cell);
+					const room = toward !== 'none' ? computeOverflowRoom(row.cells, ci, sheet.columnWidths) : undefined;
+					if (toward !== 'none' && room && (room.left > 0 || room.right > 0)) {
+						this._overflowCells.push({ td, span: createOverflowSpan(td, cell), toward, leftRoom: room.left, rightRoom: room.right, valign: (cell.style.verticalAlign as string) || 'bottom' });
+					} else {
+						setCellContent(td, cell);
+					}
 				}
 				if (cell.diagonal) {
 					appendDiagonalOverlay(td, cell.diagonal);
@@ -370,8 +439,15 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	override clearInput(): void {
 		this._inputDisposables.clear();
 		this._overlayRaf.clear();
+		this._overlayTriggers.clear();
 		this._dataRowEls = [];
 		this._shrinkCells = [];
+		this._overflowCells = [];
+		this._activeSheet = undefined;
+		this._tableEl = undefined;
+		this._shapeOverlay = undefined;
+		this._pageBreakOverlay = undefined;
+		this._replaceToken = {};
 		this._currentResource = undefined;
 		this._sheets = [];
 		if (this._bodyEl) {

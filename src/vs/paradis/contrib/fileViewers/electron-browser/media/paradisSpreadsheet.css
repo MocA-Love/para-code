@@ -59,6 +59,12 @@
 	white-space: nowrap;
 }
 
+/* allow-any-unicode-next-line */
+/* セルまたぎのはみ出し span(applyOverflow で絶対配置し隣の空セルへ広げる)。グリッド線より前面に置く。 */
+.paradis-spreadsheet-overflow {
+	z-index: 1;
+}
+
 .paradis-spreadsheet-head {
 	position: sticky;
 	top: 0;
@@ -131,6 +137,18 @@
 	font-size: 12px;
 }
 
+.paradis-spreadsheet-diff-toolbar-right {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.paradis-spreadsheet-diff-zoom {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+}
+
 .paradis-spreadsheet-diff-nav {
 	display: flex;
 	align-items: center;
@@ -191,7 +209,13 @@
 }
 
 /* allow-any-unicode-next-line */
-/* テーブル+オーバーレイ+ハイライトの位置基準(スクロールに追従)。 */
+/* 縮尺後のフットプリントを確保してスクロール量を正す枠(content は transform:scale で拡縮する)。 */
+.paradis-spreadsheet-diff-sizer {
+	overflow: hidden;
+}
+
+/* allow-any-unicode-next-line */
+/* テーブル+オーバーレイ+ハイライトの位置基準(自然座標。transform:scale で拡縮)。 */
 .paradis-spreadsheet-diff-content {
 	position: relative;
 	width: fit-content;
