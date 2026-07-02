@@ -18,3 +18,4 @@ import './contrib/workspaceSwitch/electron-browser/paradisAgentStatus.contributi
 import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationTrigger.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationSettingsDialog.contribution.js';
+import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';
