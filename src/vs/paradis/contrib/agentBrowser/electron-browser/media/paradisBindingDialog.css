@@ -657,6 +657,90 @@
 	color: var(--vscode-textLink-foreground);
 }
 
+/* ---------- right: one-click MCP setup ---------- */
+
+.paradis-binding-dialog .pbd-auto-setup {
+	margin-bottom: 12px;
+}
+
+.paradis-binding-dialog .pbd-auto-setup-btn {
+	width: 100%;
+	padding: 8px;
+	border-radius: 6px;
+	border: 1px solid var(--vscode-button-border, var(--vscode-button-background));
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font-size: 11.5px;
+	font-family: inherit;
+	font-weight: 600;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+}
+
+.paradis-binding-dialog .pbd-auto-setup-btn:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.paradis-binding-dialog .pbd-auto-setup-btn[disabled] {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.paradis-binding-dialog .pbd-auto-setup-btn .codicon {
+	font-size: 13px;
+}
+
+.paradis-binding-dialog .pbd-auto-setup-hint {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.5;
+	margin-top: 6px;
+}
+
+.paradis-binding-dialog .pbd-setup-result {
+	margin-top: 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.paradis-binding-dialog .pbd-setup-result-target {
+	font-size: 10px;
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--monaco-monospace-font);
+	word-break: break-all;
+	margin-bottom: 2px;
+}
+
+.paradis-binding-dialog .pbd-setup-result-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 6px;
+	font-size: 10.5px;
+	line-height: 1.5;
+}
+
+.paradis-binding-dialog .pbd-setup-result-row .codicon {
+	font-size: 12px;
+	flex-shrink: 0;
+	margin-top: 1px;
+}
+
+.paradis-binding-dialog .pbd-setup-result-row.success {
+	color: var(--vscode-charts-green);
+}
+
+.paradis-binding-dialog .pbd-setup-result-row.already {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-binding-dialog .pbd-setup-result-row.error {
+	color: var(--vscode-errorForeground);
+}
+
 .paradis-binding-dialog .pbd-code-block {
 	background: var(--vscode-textCodeBlock-background);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));

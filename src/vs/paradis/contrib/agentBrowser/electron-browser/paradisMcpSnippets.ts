@@ -14,7 +14,7 @@ import { FileAccess } from '../../../../base/common/network.js';
 import { PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 
 /** stdioシム（毎起動時にポートファイルから実ポートを解決する）の絶対パス。 */
-function getShimPath(): string {
+export function getParadisShimPath(): string {
 	return FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js').fsPath;
 }
 
@@ -37,8 +37,8 @@ export function getParadisMcpEndpointForToken(token: string): string {
 export function getParadisClaudeSetupSnippet(): string {
 	const cdpUrl = getParadisCdpUrl();
 	return [
-		`claude mcp add para-browser -- node "${getShimPath()}"`,
-		`claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --browserUrl='\${${PARADIS_CDP_URL_ENV_VAR}:-${cdpUrl}}'`,
+		`claude mcp add -s user para-browser -- node "${getParadisShimPath()}"`,
+		`claude mcp add -s user chrome-devtools -- npx -y chrome-devtools-mcp@latest --browserUrl='\${${PARADIS_CDP_URL_ENV_VAR}:-${cdpUrl}}'`,
 		'',
 	].join('\n');
 }
@@ -49,7 +49,7 @@ export function getParadisClaudeSetupSnippet(): string {
  */
 export function getParadisCodexSetupSnippet(): string {
 	// TOML basic string ではバックスラッシュがエスケープ扱いになるため、Windowsパスを考慮して二重化する
-	const shimPathToml = getShimPath().replace(/\\/g, '\\\\');
+	const shimPathToml = getParadisShimPath().replace(/\\/g, '\\\\');
 	const cdpUrl = getParadisCdpUrl();
 	return [
 		'# Add to ~/.codex/config.toml',

@@ -15,6 +15,10 @@
 // - トークン: PARA_CODE_TERMINAL_PANE_ID（PTY env経由で継承）を Bearer として全リクエストに付与
 // - ポート: PARA_CODE_MCP_PORT_FILE のポートファイルを毎リクエスト読み直して解決
 //   （shared process再起動によるポート変化への追従）
+//
+// Para Code外（ペイン外・Para Code未起動）から起動された場合でも、シムはMCPサーバーとして
+// 正常に起動し、initialize / tools/list には応答する（＝CLIのMCP接続自体は成功させる）。
+// 実際のツール呼び出し時のみ、LLMが読んで状況を理解できる明確なエラーメッセージを返す。
 
 import type * as http from 'http';
 import { readFileSync } from 'fs';
@@ -28,20 +32,54 @@ const TOKEN_ENV = 'PARA_CODE_TERMINAL_PANE_ID';
 const portFilePath = process.env[PORT_FILE_ENV];
 const paneToken = process.env[TOKEN_ENV];
 
-if (!portFilePath || !paneToken) {
+// 起動時にenvが欠けていても process.exit(1) しない（＝MCPサーバーとしては起動する）。
+// ここで落とすと CLI 側の MCP 接続自体が失敗し、ツール一覧すら得られなくなるため。
+// 状況は stderr に1行残すだけに留め、ツール呼び出し時に guidance を返す。
+if (!paneToken || !portFilePath) {
 	process.stderr.write(
-		`[para-browser-mcp-shim] Missing required environment variables: ` +
-		`${!portFilePath ? PORT_FILE_ENV + ' ' : ''}${!paneToken ? TOKEN_ENV : ''}\n` +
-		`This shim must be launched from a shell inside a Para Code terminal pane ` +
-		`(the variables are injected into the terminal environment by Para Code).\n`
+		`[para-browser-mcp-shim] Not running inside a Para Code terminal pane ` +
+		`(${!paneToken ? TOKEN_ENV + ' ' : ''}${!portFilePath ? PORT_FILE_ENV + ' ' : ''}missing). ` +
+		`The MCP server will start, but its tools will report as unavailable until launched from a Para Code pane.\n`
 	);
-	process.exit(1);
 }
+
+// Para Code に接続できないときに LLM へ返す文言（英語。LLM が状況+推奨アクションを読める簡潔さ）。
+const OUTSIDE_PANE_MESSAGE =
+	`This tool is unavailable because it was not launched from a terminal pane inside Para Code ` +
+	`(the ${TOKEN_ENV} environment variable is not set). Para Code shares each browser page only with ` +
+	`the specific pane its agent CLI runs in. Re-launch your agent CLI from a terminal inside Para Code ` +
+	`to use this tool, or simply continue working without this MCP server.`;
+
+const NO_SERVER_MESSAGE =
+	`This tool is unavailable because Para Code does not appear to be running (its MCP port file could ` +
+	`not be read). Start Para Code and re-launch your agent CLI from a terminal pane inside it to use ` +
+	`this tool, or simply continue working without this MCP server.`;
+
+// オフライン時の tools/list 応答に使うツール定義（shared process側の TOOLS と同一内容の複製。
+// このシムは vs/* を import できないためインラインで持つ）。
+const LOCAL_TOOLS = [
+	{
+		name: 'get_shared_page',
+		description: 'Get the URL and title of the browser page currently shared with this terminal pane in Para Code. Returns an error message if no page is shared yet.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'read_page',
+		description: 'Read the current content of the browser page shared with this terminal pane in Para Code, as an accessibility snapshot (includes element references, text and structure).',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'get_cdp_endpoint',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code. Point chrome-devtools-mcp (--browserUrl) or browser-use (CDP URL) at the returned httpBase to drive the browser page shared with this terminal pane.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+] as const;
 
 interface IJsonRpcMessage {
 	jsonrpc?: string;
 	id?: number | string | null;
 	method?: string;
+	params?: unknown;
 }
 
 function resolvePort(): number {
@@ -53,8 +91,42 @@ function resolvePort(): number {
 	return (parsed as { port: number }).port;
 }
 
+/**
+ * Para Code に接続できない理由を判定する。undefined = 接続可能。
+ * ペイン外（トークン無し）と Para Code 未起動（ポートファイル読めない）を区別する。
+ */
+function getUnavailableMessage(): string | undefined {
+	if (!paneToken) {
+		return OUTSIDE_PANE_MESSAGE;
+	}
+	if (!portFilePath) {
+		return NO_SERVER_MESSAGE;
+	}
+	try {
+		resolvePort();
+	} catch {
+		return NO_SERVER_MESSAGE;
+	}
+	return undefined;
+}
+
+function localInitializeResult(params: unknown): unknown {
+	const requested = params && typeof params === 'object' && typeof (params as { protocolVersion?: unknown }).protocolVersion === 'string'
+		? (params as { protocolVersion: string }).protocolVersion
+		: '2025-03-26';
+	return {
+		protocolVersion: requested,
+		capabilities: { tools: { listChanged: false } },
+		serverInfo: { name: 'para-code-agent-browser', version: '1.0.0' },
+	};
+}
+
 function writeResponse(payload: unknown): void {
 	process.stdout.write(JSON.stringify(payload) + '\n');
+}
+
+function writeResult(id: number | string | null, result: unknown): void {
+	writeResponse({ jsonrpc: '2.0', id, result });
 }
 
 function writeErrorResponse(id: number | string | null, message: string): void {
@@ -91,15 +163,49 @@ async function postToServer(port: number, line: string): Promise<{ status: numbe
 
 async function forwardLine(line: string): Promise<void> {
 	let id: number | string | null = null;
+	let method: string | undefined;
+	let params: unknown;
 	let isRequest = false;
 	try {
 		const message = JSON.parse(line) as IJsonRpcMessage;
-		if (message && typeof message === 'object' && message.id !== undefined && message.id !== null && typeof message.method === 'string') {
-			id = message.id;
-			isRequest = true;
+		if (message && typeof message === 'object') {
+			method = typeof message.method === 'string' ? message.method : undefined;
+			if (message.id !== undefined && message.id !== null && typeof message.method === 'string') {
+				id = message.id;
+				params = message.params;
+				isRequest = true;
+			}
 		}
 	} catch {
-		// パースできない行はそのままサーバーに送って判断させる
+		// パースできない行はそのままサーバーに送って判断させる（接続可能な場合のみ）
+	}
+
+	// Para Code に接続できない場合はローカルで応答して MCP 接続自体は成立させる。
+	// initialize / tools/list は正常応答し、ツール呼び出しだけ guidance を返す。
+	const unavailable = getUnavailableMessage();
+	if (unavailable !== undefined) {
+		if (!isRequest) {
+			// idの無いnotification/レスポンスは応答不要（サーバーへも送れないため破棄）
+			return;
+		}
+		switch (method) {
+			case 'initialize':
+				writeResult(id, localInitializeResult(params));
+				return;
+			case 'ping':
+				writeResult(id, {});
+				return;
+			case 'tools/list':
+				writeResult(id, { tools: LOCAL_TOOLS });
+				return;
+			case 'tools/call':
+				// ツール実行エラーは JSON-RPC エラーではなく isError 付きの結果で返す（LLMが本文を読める）
+				writeResult(id, { content: [{ type: 'text', text: unavailable }], isError: true });
+				return;
+			default:
+				writeErrorResponse(id, unavailable);
+				return;
+		}
 	}
 
 	let port: number;
