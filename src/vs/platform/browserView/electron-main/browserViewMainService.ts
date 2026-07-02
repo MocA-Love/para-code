@@ -593,6 +593,12 @@ export class BrowserViewMainService extends Disposable implements IBrowserViewMa
 				label: localize('browser.contextMenu.addElementToChat', 'Add Element to Chat'),
 				click: () => inspectTarget.addToChat()
 			}));
+			// PARA-PATCH: plain clipboard copy of the element's outerHTML — for when the user just wants
+			// the markup, without sending it to the built-in chat like "Add Element to Chat" does
+			menu.append(new MenuItem({
+				label: localize('browser.contextMenu.copyElement', 'Copy Element'),
+				click: () => void inspectTarget.getOuterHTML().then(outerHTML => clipboard.writeText(outerHTML)).catch(() => { })
+			}));
 			void inspectTarget.highlight().catch(() => { });
 			menu.on('menu-will-close', () => inspectTarget.dispose());
 		}
