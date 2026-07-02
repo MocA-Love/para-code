@@ -1,0 +1,691 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+/* allow-any-unicode-next-line */
+ * 通知設定ダイアログ（Notifications / Aivis Voice Announcement / ユーザー辞書 / 使用量）。
+/* allow-any-unicode-next-line */
+ * paradisBindingDialog.css と同じ方式: 自前backdrop+モーダル、色は全て --vscode-* テーマトークン。
+ */
+
+.paradis-notif-settings-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.45);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 2700;
+}
+
+.paradis-notif-settings {
+	width: 760px;
+	max-width: 94vw;
+	height: 780px;
+	max-height: 92vh;
+	background: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 12px;
+	display: flex;
+	flex-direction: column;
+	box-shadow: 0 10px 40px var(--vscode-widget-shadow);
+	overflow: hidden;
+	font-size: 13px;
+	outline: none;
+}
+
+.paradis-notif-settings .codicon {
+	font-size: 14px;
+}
+
+/* ---------- header ---------- */
+
+.paradis-notif-settings .pns-header {
+	padding: 14px 20px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	flex-shrink: 0;
+}
+
+.paradis-notif-settings .pns-header h2 {
+	margin: 0;
+	font-size: 14.5px;
+	font-weight: 600;
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-notif-settings .pns-close {
+	cursor: pointer;
+	color: var(--vscode-icon-foreground);
+	border-radius: 4px;
+	padding: 4px;
+	display: flex;
+}
+
+.paradis-notif-settings .pns-close:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+/* ---------- body ---------- */
+
+.paradis-notif-settings .pns-body {
+	flex: 1;
+	overflow-y: auto;
+	padding: 20px;
+}
+
+.paradis-notif-settings .pns-section {
+	padding-top: 22px;
+	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	margin-top: 22px;
+}
+
+.paradis-notif-settings .pns-section:first-child {
+	padding-top: 0;
+	border-top: none;
+	margin-top: 0;
+}
+
+.paradis-notif-settings .pns-section-title {
+	font-size: 13.5px;
+	font-weight: 600;
+	margin: 0 0 3px 0;
+}
+
+.paradis-notif-settings .pns-section-desc {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	margin: 0 0 14px 0;
+	line-height: 1.5;
+}
+
+.paradis-notif-settings .pns-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 12px;
+}
+
+.paradis-notif-settings .pns-row-label {
+	font-size: 12.5px;
+	font-weight: 500;
+}
+
+.paradis-notif-settings .pns-row-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+.paradis-notif-settings .pns-field {
+	margin-bottom: 14px;
+}
+
+.paradis-notif-settings label.pns-label {
+	display: block;
+	font-size: 12px;
+	font-weight: 500;
+	margin-bottom: 5px;
+}
+
+/* ---------- toggle switch ---------- */
+
+.paradis-notif-settings .pns-toggle {
+	position: relative;
+	width: 34px;
+	height: 18px;
+	flex-shrink: 0;
+	padding: 0;
+	appearance: none;
+	-webkit-appearance: none;
+	background: var(--vscode-checkbox-background, var(--vscode-input-background));
+	border: 1px solid var(--vscode-checkbox-border, var(--vscode-input-border));
+	border-radius: 10px;
+	cursor: pointer;
+	outline: none;
+	transition: background-color .12s;
+}
+
+.paradis-notif-settings .pns-toggle::after {
+	content: '';
+	position: absolute;
+	top: 1px;
+	left: 1px;
+	width: 14px;
+	height: 14px;
+	border-radius: 50%;
+	background: var(--vscode-foreground);
+	opacity: .6;
+	transition: transform .12s;
+}
+
+.paradis-notif-settings .pns-toggle:checked {
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-background);
+}
+
+.paradis-notif-settings .pns-toggle:checked::after {
+	transform: translateX(16px);
+	background: var(--vscode-button-foreground);
+	opacity: 1;
+}
+
+.paradis-notif-settings .pns-toggle:disabled {
+	opacity: .5;
+	cursor: default;
+}
+
+/* ---------- form controls ----------
+/* allow-any-unicode-next-line */
+ * `input[type="..."]` のような個別type列挙は、type属性を明示していない <input>（既定でtext扱い
+/* allow-any-unicode-next-line */
+ * だがHTML属性としては存在しない）を取りこぼす（実際にModel UUID等の入力欄が素通りしていた
+/* allow-any-unicode-next-line */
+ * 原因）。type非依存の包括セレクタに統一し、checkbox(.pns-toggle)やrange等の専用スタイルは
+/* allow-any-unicode-next-line */
+ * より詳細度の高いセレクタで後から上書きする。
+/* allow-any-unicode-next-line */
+ * ネストダイアログ(YouTube取込・辞書編集等)は `.paradis-notif-settings` の子孫ではなく
+/* allow-any-unicode-next-line */
+ * `.paradis-notif-nested-dialog` 配下に独立して存在するため、同じルールを両方に適用する。
+ */
+
+.paradis-notif-settings input,
+.paradis-notif-settings select,
+.paradis-notif-settings textarea,
+.paradis-notif-nested-dialog input,
+.paradis-notif-nested-dialog select,
+.paradis-notif-nested-dialog textarea {
+	width: 100%;
+	box-sizing: border-box;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	padding: 5px 8px;
+	font-size: 12.5px;
+	font-family: inherit;
+}
+
+.paradis-notif-settings textarea,
+.paradis-notif-nested-dialog textarea {
+	resize: vertical;
+	min-height: 44px;
+}
+
+.paradis-notif-settings input:focus,
+.paradis-notif-settings select:focus,
+.paradis-notif-settings textarea:focus,
+.paradis-notif-nested-dialog input:focus,
+.paradis-notif-nested-dialog select:focus,
+.paradis-notif-nested-dialog textarea:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-notif-settings input[type="range"],
+.paradis-notif-nested-dialog input[type="range"] {
+	width: 100%;
+	background: transparent;
+	border: none;
+	padding: 0;
+	accent-color: var(--vscode-button-background);
+}
+
+.paradis-notif-settings .pns-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 4px 10px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	cursor: pointer;
+	font-size: 12px;
+	white-space: nowrap;
+}
+
+.paradis-notif-settings .pns-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-notif-settings .pns-btn:disabled {
+	opacity: .5;
+	cursor: default;
+}
+
+.paradis-notif-settings .pns-btn-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border-color: transparent;
+}
+
+.paradis-notif-settings .pns-btn-primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.paradis-notif-settings .pns-btn-icon {
+	padding: 4px 6px;
+}
+
+.paradis-notif-settings .pns-btn-danger:hover {
+	color: var(--vscode-errorForeground);
+	border-color: var(--vscode-errorForeground);
+}
+
+/* allow-any-unicode-next-line */
+/* input + 付随ボタン（APIキーの表示/非表示切り替え等）を横並びにするラッパー */
+.paradis-notif-settings .pns-input-group {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.paradis-notif-settings .pns-input-group input {
+	flex: 1;
+	min-width: 0;
+}
+
+/* ---------- ringtone list ---------- */
+
+.paradis-notif-settings .pns-ringtone-list {
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.paradis-notif-settings .pns-ringtone-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	cursor: pointer;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+}
+
+.paradis-notif-settings .pns-ringtone-row:last-child {
+	border-bottom: none;
+}
+
+.paradis-notif-settings .pns-ringtone-row:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-notif-settings .pns-ringtone-row.selected {
+	background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
+}
+
+.paradis-notif-settings .pns-ringtone-emoji {
+	font-size: 17px;
+	width: 22px;
+	text-align: center;
+	flex-shrink: 0;
+}
+
+.paradis-notif-settings .pns-ringtone-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-notif-settings .pns-ringtone-name {
+	font-size: 12.5px;
+	font-weight: 500;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.paradis-notif-settings .pns-ringtone-duration {
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-notif-settings .pns-ringtone-desc {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-notif-settings .pns-ringtone-check {
+	width: 16px;
+	flex-shrink: 0;
+	color: var(--vscode-textLink-foreground);
+	display: flex;
+	justify-content: center;
+}
+
+.paradis-notif-settings .pns-ringtone-play {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	flex-shrink: 0;
+	color: var(--vscode-foreground);
+	background: transparent;
+}
+
+.paradis-notif-settings .pns-ringtone-play:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-notif-settings .pns-ringtone-play.playing {
+	background: var(--vscode-errorForeground);
+	border-color: var(--vscode-errorForeground);
+	color: var(--vscode-editor-background);
+}
+
+/* ---------- preset tiles (Aivis) ---------- */
+
+.paradis-notif-settings .pns-preset-grid {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: 8px;
+}
+
+.paradis-notif-settings .pns-preset-tile {
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	padding: 8px;
+	cursor: pointer;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.paradis-notif-settings .pns-preset-tile:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-notif-settings .pns-preset-tile.selected {
+	border-color: var(--vscode-focusBorder);
+	background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
+}
+
+.paradis-notif-settings .pns-preset-icon {
+	width: 28px;
+	height: 28px;
+	border-radius: 6px;
+	background: var(--vscode-input-background);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 15px;
+	overflow: hidden;
+	flex-shrink: 0;
+}
+
+.paradis-notif-settings .pns-preset-icon img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.paradis-notif-settings .pns-preset-name {
+	font-size: 12px;
+	font-weight: 500;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-notif-settings .pns-preset-author {
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-notif-settings .pns-preset-actions {
+	display: flex;
+	gap: 6px;
+	margin-top: 2px;
+}
+
+/* ---------- placeholder chips ---------- */
+
+.paradis-notif-settings .pns-chip-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+/* ---------- waveform editor ---------- */
+
+.paradis-notif-settings .pns-waveform {
+	width: 100%;
+	height: 80px;
+	border-radius: 6px;
+	background: var(--vscode-input-background);
+	cursor: col-resize;
+	display: block;
+}
+
+.paradis-notif-settings .pns-waveform-times {
+	display: flex;
+	justify-content: space-between;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 3px;
+}
+
+/* ---------- install log console ---------- */
+
+.paradis-notif-settings .pns-log-console {
+	max-height: 180px;
+	overflow-y: auto;
+	background: color-mix(in srgb, var(--vscode-editorWidget-background) 60%, black 8%);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	padding: 8px 10px;
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+	line-height: 1.5;
+}
+
+.paradis-notif-settings .pns-log-line.warn {
+	color: var(--vscode-editorWarning-foreground);
+}
+
+.paradis-notif-settings .pns-log-line.error {
+	color: var(--vscode-editorError-foreground);
+}
+
+/* ---------- dictionary cards ---------- */
+
+.paradis-notif-settings .pns-dict-card {
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	padding: 10px 12px;
+	margin-bottom: 8px;
+}
+
+.paradis-notif-settings .pns-dict-card.active {
+	border-color: var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
+}
+
+.paradis-notif-settings .pns-dict-badge-active {
+	font-size: 9.5px;
+	font-weight: 600;
+	padding: 1px 6px;
+	border-radius: 3px;
+	border: 1px solid var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
+	color: var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
+}
+
+.paradis-notif-settings .pns-dict-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 11.5px;
+}
+
+.paradis-notif-settings .pns-dict-table th,
+.paradis-notif-settings .pns-dict-table td {
+	text-align: left;
+	padding: 4px 6px;
+}
+
+/* ---------- usage stat cards / bar chart ---------- */
+
+.paradis-notif-settings .pns-stat-grid {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: 10px;
+	margin-bottom: 14px;
+}
+
+.paradis-notif-settings .pns-stat-card {
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	padding: 10px 12px;
+}
+
+.paradis-notif-settings .pns-stat-label {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: .04em;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-notif-settings .pns-stat-value {
+	font-size: 19px;
+	font-weight: 600;
+	margin-top: 2px;
+}
+
+.paradis-notif-settings .pns-stat-sub {
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+.paradis-notif-settings .pns-bar-chart {
+	display: flex;
+	align-items: flex-end;
+	gap: 2px;
+	height: 130px;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	padding: 8px;
+}
+
+.paradis-notif-settings .pns-bar {
+	flex: 1;
+	background: var(--vscode-charts-green, var(--vscode-button-background));
+	border-radius: 2px 2px 0 0;
+	min-height: 2px;
+}
+
+.paradis-notif-settings .pns-usage-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 11px;
+}
+
+.paradis-notif-settings .pns-usage-table th {
+	text-align: left;
+	color: var(--vscode-descriptionForeground);
+	font-weight: 500;
+	padding: 4px 8px;
+	background: var(--vscode-keybindingTable-headerBackground, transparent);
+}
+
+.paradis-notif-settings .pns-usage-table td {
+	padding: 3px 8px;
+}
+
+.paradis-notif-settings .pns-usage-table td.num {
+	text-align: right;
+}
+
+/* ---------- misc ---------- */
+
+.paradis-notif-settings .pns-error {
+	color: var(--vscode-errorForeground);
+	font-size: 11.5px;
+	margin-top: 6px;
+}
+
+.paradis-notif-settings .pns-empty {
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+	font-size: 12px;
+	padding: 20px;
+	border: 1px dashed var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+}
+
+/* ---------- nested dialog (YouTube import / dictionary editor) ---------- */
+
+/*
+/* allow-any-unicode-next-line */
+ * 注意: このbackdropは常に layoutService.activeContainer の直下（設定ダイアログのbackdropとは
+/* allow-any-unicode-next-line */
+ * 兄弟関係）に追加される（自身のオープン元が既に閉じられていてもダイアログ自体は独立して
+/* allow-any-unicode-next-line */
+ * 機能する必要があるため）。よって親セレクタに依存させず、単独ルールとしてz-indexで
+/* allow-any-unicode-next-line */
+ * 設定ダイアログ（2700）より上に重ねる。
+ */
+.paradis-notif-nested-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.45);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 2800;
+}
+
+.paradis-notif-nested-dialog {
+	width: 560px;
+	max-width: 92vw;
+	max-height: 88vh;
+	overflow-y: auto;
+	background: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 10px;
+	box-shadow: 0 10px 40px var(--vscode-widget-shadow);
+	padding: 18px 20px;
+	font-size: 13px;
+}
+
+.paradis-notif-nested-dialog.wide {
+	width: 860px;
+}
+
+.paradis-notif-nested-dialog h3 {
+	margin: 0 0 4px 0;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.paradis-notif-nested-dialog .pns-nested-desc {
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	margin: 0 0 14px 0;
+}
+
+.paradis-notif-nested-dialog .pns-nested-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 16px;
+}
