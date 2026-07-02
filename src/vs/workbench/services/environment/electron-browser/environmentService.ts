@@ -34,6 +34,8 @@ export interface INativeWorkbenchEnvironmentService extends IBrowserWorkbenchEnv
 		isInitialStartup?: boolean;
 		isCodeCaching?: boolean;
 		perfMarks: PerformanceMark[];
+		// PARA-PATCH: whether the native window was created with `transparent: true` (Paradis window transparency)
+		paradisTransparentWindow?: boolean;
 	};
 
 	// --- Main
@@ -95,7 +97,9 @@ export class NativeWorkbenchEnvironmentService extends AbstractNativeEnvironment
 			accessibilitySupport: this.configuration.accessibilitySupport,
 			perfMarks: this.configuration.perfMarks,
 			isInitialStartup: this.configuration.isInitialStartup,
-			isCodeCaching: typeof this.configuration.codeCachePath === 'string'
+			isCodeCaching: typeof this.configuration.codeCachePath === 'string',
+			// PARA-PATCH: whether the native window was created with `transparent: true` (Paradis window transparency)
+			paradisTransparentWindow: this.configuration.paradisTransparentWindow
 		};
 	}
 

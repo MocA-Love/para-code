@@ -25,8 +25,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'paradis.window.transparency.enabled': {
 			type: 'boolean',
 			default: false,
-			scope: ConfigurationScope.WINDOW,
-			markdownDescription: localize('paradis.window.transparency.enabled', "Controls whether the workbench background is made translucent so the desktop shows through. Only the workbench chrome (editor, side bar, panel, title bar, etc.) becomes translucent; dialogs, menus and notifications stay opaque. The integrated terminal renders on a GPU surface and stays opaque. Changing this requires reloading the window to take effect.")
+			// APPLICATIONスコープ: ネイティブウィンドウの生成時フラグはmainプロセスがdefaultプロファイルの
+			// user settings.json だけを読んで決めるため、Workspace/プロファイルスコープでの上書きを許すと
+			// mainとレンダラで値が食い違い「クラスは付くが透けない」状態になる。
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.window.transparency.enabled', "Controls whether the workbench background is made translucent so the desktop shows through. Only the workbench chrome (editor, side bar, panel, title bar, etc.) becomes translucent; dialogs, menus and notifications stay opaque. The integrated terminal renders on a GPU surface and stays opaque. Changing this requires restarting the application to take effect.")
 		},
 		'paradis.window.transparency.opacity': {
 			type: 'number',

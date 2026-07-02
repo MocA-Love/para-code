@@ -20,7 +20,7 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { DisposableStore, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -28,6 +28,7 @@ import { ICodeEditor } from '../../../../editor/browser/editorBrowser.js';
 import { CodeEditorWidget } from '../../../../editor/browser/widget/codeEditor/codeEditorWidget.js';
 import { IEditorConstructionOptions } from '../../../../editor/browser/config/editorConfiguration.js';
 import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -41,6 +42,7 @@ import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../.
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
+import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS } from '../../windowTransparency/common/paradisTransparency.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 
 import './media/paradisFileViewer.css';
@@ -86,8 +88,53 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@ITextModelService private readonly _textModelService: ITextModelService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super(id, group, telemetryService, themeService, storageService);
+
+		// ウィンドウ透過（paradis.window.transparency.*）の状態変化に追従して Rendered を描き直す。
+		// 透過背景は renderDocument が HTML へ焼き込む（webview 内からは --paradis-* カスタムプロパティを
+		// 参照できないため）ので、設定変更時は再レンダリングが必要。
+		this._register(this._configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PARADIS_TRANSPARENCY_ENABLED_KEY) || e.affectsConfiguration(PARADIS_TRANSPARENCY_OPACITY_KEY)) {
+				this._rerenderIfShowingRendered();
+			}
+		}));
+
+		// セッション復元時はエディタのレンダリングが透過contribution（AfterRestored）による
+		// `paradis-transparent` クラス付与より先に走ることがあるため、クラスの後付けも監視して描き直す。
+		let lastTransparent = this._layoutService.mainContainer.classList.contains(PARADIS_TRANSPARENT_CLASS);
+		const classObserver = new MutationObserver(() => {
+			const transparent = this._layoutService.mainContainer.classList.contains(PARADIS_TRANSPARENT_CLASS);
+			if (transparent !== lastTransparent) {
+				lastTransparent = transparent;
+				this._rerenderIfShowingRendered();
+			}
+		});
+		classObserver.observe(this._layoutService.mainContainer, { attributes: true, attributeFilter: ['class'] });
+		this._register(toDisposable(() => classObserver.disconnect()));
+	}
+
+	/** 透過状態の変化時、Rendered 表示中なら現在のリソースを描き直す。 */
+	private _rerenderIfShowingRendered(): void {
+		const resource = this._currentResource;
+		if (resource && this._webviewClaimed && this._mode === 'rendered') {
+			void this.renderResource(resource, CancellationToken.None);
+		}
+	}
+
+	/**
+	 * ウィンドウ透過が実際に有効なとき（設定ON かつ ネイティブウィンドウが透過生成済み＝workbenchルートに
+	 * `paradis-transparent` クラスが付いているとき）、webview 内の HTML へ焼き込む半透明背景CSSルールを返す。
+	 * 無効時は空文字。`--vscode-editor-background` は webview 内へエクスポートされるテーマ変数なのでそのまま
+	 * 参照でき、opacity（パーセント値）だけを焼き込めばワークベンチ側の color-mix と同じ見た目になる。
+	 */
+	protected getTransparencyBackgroundCssRule(bodySelector: string): string {
+		if (!this._layoutService.mainContainer.classList.contains(PARADIS_TRANSPARENT_CLASS)) {
+			return '';
+		}
+		const percentage = Math.round(clampParadisTransparencyOpacity(this._configurationService.getValue<number>(PARADIS_TRANSPARENCY_OPACITY_KEY)) * 100);
+		return `${bodySelector} { background-color: color-mix(in srgb, var(--vscode-editor-background) ${percentage}%, transparent); }`;
 	}
 
 	/** webview 内でスクリプト実行を許可するか（HTML=true / Markdown=false）。 */
