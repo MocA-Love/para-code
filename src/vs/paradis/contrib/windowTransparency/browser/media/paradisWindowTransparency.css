@@ -76,6 +76,20 @@
 	background-color: transparent !important;
 }
 
+/* Side bar / auxiliary bar hosted monaco editors (chat input and inline chat editors, SCM commit
+	input, etc.). Same treatment as the main editor: clear the opaque editor.background layers so
+	the translucent bar background shows through; zone widgets are likewise left untouched. Opaque
+	wrappers that use their own theme colors (e.g. the chat input box painting input.background)
+	are intentionally not overridden so text entry areas keep their designed contrast. */
+.monaco-workbench.paradis-transparent .part.sidebar .monaco-editor:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.sidebar .monaco-editor-background:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.sidebar .monaco-editor .margin:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.auxiliarybar .monaco-editor:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.auxiliarybar .monaco-editor-background:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.auxiliarybar .monaco-editor .margin:not(.zone-widget *) {
+	background-color: transparent !important;
+}
+
 /* Overlay backstops. With the workbench root no longer fully opaque, floating overlays that live in
 	the light DOM must not depend on it for opacity. Force each to composite its own (possibly alpha)
 	theme background over an opaque base: the top gradient layer is the overlay color (exact in every

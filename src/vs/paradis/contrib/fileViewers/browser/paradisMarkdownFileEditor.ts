@@ -18,6 +18,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -49,10 +50,11 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		@ITextModelService textModelService: ITextModelService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
+		@IConfigurationService configurationService: IConfigurationService,
 		@IExtensionService private readonly _extensionService: IExtensionService,
 		@ILanguageService private readonly _languageService: ILanguageService,
 	) {
-		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService);
+		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService);
 	}
 
 	protected override get allowScripts(): boolean {
@@ -84,6 +86,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		<style nonce="${nonce}">
 			${DEFAULT_MARKDOWN_STYLES}
 			${tokenCss}
+			${this.getTransparencyBackgroundCssRule('body.paradis-markdown-body')}
 		</style>
 	</head>
 	<body class="paradis-markdown-body">

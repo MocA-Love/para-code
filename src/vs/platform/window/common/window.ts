@@ -467,6 +467,11 @@ export interface INativeWindowConfiguration extends IWindowConfiguration, Native
 	policiesData?: IStringDictionary<{ definition: PolicyDefinition; value: PolicyValue }>;
 
 	isSessionsWindow?: boolean;
+
+	// PARA-PATCH: whether the native BrowserWindow was actually created with `transparent: true`
+	// (Paradis window transparency, a creation-time flag). Lets the renderer gate its translucency
+	// CSS on the real native state instead of the current setting value. See src/vs/paradis/contrib/windowTransparency.
+	paradisTransparentWindow?: boolean;
 }
 
 /**

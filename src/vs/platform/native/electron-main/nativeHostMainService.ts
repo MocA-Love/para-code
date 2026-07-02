@@ -459,7 +459,12 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 	async saveWindowSplash(windowId: number | undefined, splash: IPartsSplash): Promise<void> {
 		const window = this.codeWindowById(windowId);
 
-		this.themeMainService.saveWindowSplash(windowId, window?.openedWorkspace, splash);
+		// PARA-PATCH: 透過生成されたウィンドウ（paradis.window.transparency）に対して partsSplash 由来の
+		// 不透明背景色を window.setBackgroundColor されると、macOSではcontentView layerが不透明に塗られて
+		// 透過が失われる。windowId を渡さないことで themeMainService 側の背景色更新だけをスキップする
+		// （splash情報の保存自体は次回起動時のスプラッシュ描画に必要なので継続する）。
+		const backgroundColorTargetWindowId = window?.config?.paradisTransparentWindow === true ? undefined : windowId;
+		this.themeMainService.saveWindowSplash(backgroundColorTargetWindowId, window?.openedWorkspace, splash);
 	}
 
 	async setBackgroundThrottling(windowId: number | undefined, allowed: boolean): Promise<void> {

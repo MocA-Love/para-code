@@ -13,20 +13,14 @@ import { sharedMutationObserver } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS } from '../common/paradisTransparency.js';
 
-const CONFIG_KEY_ENABLED = 'paradis.window.transparency.enabled';
-const CONFIG_KEY_OPACITY = 'paradis.window.transparency.opacity';
-
-const TRANSPARENT_CLASS = 'paradis-transparent';
 const OPACITY_CUSTOM_PROPERTY = '--paradis-transparency-opacity';
-
-// 背景が透けすぎて前景の可読性が失われないための下限。設定値がこれを下回る場合はクランプする。
-const MIN_OPACITY = 0.3;
-const MAX_OPACITY = 1;
 
 // 状態依存の背景色（フォルダ未オープン/デバッグ中/ウィンドウ非アクティブ）を持つパートは、固定テーマ変数ではなく
 // パートが実際にinline styleへ塗った背景色をミラーし、その色をCSS側で透過させる。[パート, ミラー先カスタムプロパティ]。
@@ -46,15 +40,19 @@ const MIRRORED_PARTS: readonly [part: Parts, cssProperty: string][] = [
  * 状態依存の背景色を持つ title bar / status bar は、パートが実際に塗った背景色（デバッグ中オレンジ等）を
  * MutationObserver でミラーし、その実背景色を透過させる（固定テーマ変数を上書きしない）。
  *
- * `enabled` の切り替えはネイティブウィンドウの生成時フラグに依存するため、実際に反映するにはウィンドウの再読み込みが必要。
+ * `transparent` はBrowserWindowの生成時専用フラグで、ウィンドウの再読み込み（同一BrowserWindowへのloadURL）では
+ * 決して反映されない。そのため `enabled` の切り替えを実際に反映するには**アプリの再起動**が必要で、切り替え時は
+ * 再起動を促す通知を出す。ネイティブウィンドウが実際に透過生成されたかは main プロセスから
+ * `INativeWindowConfiguration.paradisTransparentWindow`（windowImpl.ts のPARA-PATCH参照）で渡され、
+ * CSSクラスの付与はこの実状態でゲートする（設定ONでもウィンドウが不透明なら付与しない）。
  * `opacity` の変更はCSSカスタムプロパティの更新だけで即時反映される。
  */
 class ParadisWindowTransparencyContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisWindowTransparency';
 
-	// 起動時点（＝ネイティブウィンドウ生成時点）の enabled 状態。ランタイムでのトグルと区別して再読み込み案内を出すために使う。
-	private lastEnabled: boolean;
+	// ネイティブウィンドウが実際に `transparent: true` で生成されたか（生成時に確定し、以後不変）。
+	private readonly nativeTransparent: boolean;
 
 	// 透過が有効な間だけ張るパート背景ミラー用のオブザーバ群。applyStyles のたびに張り替える。
 	private readonly mirrorDisposables = this._register(new DisposableStore());
@@ -63,40 +61,46 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 		@INotificationService private readonly notificationService: INotificationService,
-		@IHostService private readonly hostService: IHostService,
+		@INativeHostService private readonly nativeHostService: INativeHostService,
+		@INativeWorkbenchEnvironmentService environmentService: INativeWorkbenchEnvironmentService,
 	) {
 		super();
 
-		this.lastEnabled = this.isEnabled();
+		this.nativeTransparent = environmentService.window.paradisTransparentWindow === true;
 		this.applyStyles();
 
+		// 「設定はONだがウィンドウは不透明のまま」（例: 設定ON後にリロードだけした、workspace設定に書いた等）の
+		// 場合、起動時に再起動が必要である旨を案内する。
+		if (this.isEnabled() && !this.nativeTransparent) {
+			this.promptRestart(true);
+		}
+
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(CONFIG_KEY_ENABLED)) {
+			if (e.affectsConfiguration(PARADIS_TRANSPARENCY_ENABLED_KEY)) {
 				this.onEnabledChanged();
-			} else if (e.affectsConfiguration(CONFIG_KEY_OPACITY)) {
+			} else if (e.affectsConfiguration(PARADIS_TRANSPARENCY_OPACITY_KEY)) {
 				this.applyStyles();
 			}
 		}));
 	}
 
 	private isEnabled(): boolean {
-		return this.configurationService.getValue<boolean>(CONFIG_KEY_ENABLED) === true;
+		return this.configurationService.getValue<boolean>(PARADIS_TRANSPARENCY_ENABLED_KEY) === true;
 	}
 
 	private getOpacity(): number {
-		const raw = this.configurationService.getValue<number>(CONFIG_KEY_OPACITY);
-		const value = typeof raw === 'number' && !isNaN(raw) ? raw : 0.9;
-		return Math.min(MAX_OPACITY, Math.max(MIN_OPACITY, value));
+		return clampParadisTransparencyOpacity(this.configurationService.getValue<number>(PARADIS_TRANSPARENCY_OPACITY_KEY));
 	}
 
 	private applyStyles(): void {
 		const container = this.layoutService.mainContainer;
 		const enabled = this.isEnabled();
 
-		// パート背景の半透明化CSSが効くのは、ネイティブウィンドウが透過生成されている場合（起動時 enabled=true）のみ。
-		// 起動後に enabled を切り替えた場合はウィンドウが不透明なままなので、再読み込みまではクラスを付けない。
-		const active = enabled && this.lastEnabled;
-		container.classList.toggle(TRANSPARENT_CLASS, active);
+		// パート背景の半透明化CSSが効くのは、ネイティブウィンドウが実際に透過生成されている場合のみ。
+		// 設定ONでもウィンドウが不透明なら、同色の不透明ネイティブ背景にブレンドされるだけで視覚効果が無い
+		// （どころかパート間の色ずれだけ起きる）ため、クラスは付けず再起動の案内に任せる。
+		const active = enabled && this.nativeTransparent;
+		container.classList.toggle(PARADIS_TRANSPARENT_CLASS, active);
 
 		this.mirrorDisposables.clear();
 
@@ -144,21 +148,22 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 		const enabled = this.isEnabled();
 		this.applyStyles();
 
-		// 起動時の状態と現在の設定が食い違う＝ネイティブウィンドウの透過状態を反映するには再読み込みが必要。
-		if (enabled !== this.lastEnabled) {
-			this.promptReload(enabled);
+		// ネイティブウィンドウの実状態と現在の設定が食い違う＝透過状態を反映するにはアプリの再起動が必要
+		// （`transparent` は生成時フラグで、ウィンドウの再読み込みでは決して反映されない）。
+		if (enabled !== this.nativeTransparent) {
+			this.promptRestart(enabled);
 		}
 	}
 
-	private promptReload(enabled: boolean): void {
+	private promptRestart(enabled: boolean): void {
 		const message = enabled
-			? localize('paradis.window.transparency.reloadToEnable', "Window transparency will take effect after the window is reloaded.")
-			: localize('paradis.window.transparency.reloadToDisable', "Window transparency will be fully removed after the window is reloaded.");
+			? localize('paradis.window.transparency.restartToEnable', "Window transparency will take effect after the application is restarted. Reloading the window is not sufficient.")
+			: localize('paradis.window.transparency.restartToDisable', "Window transparency will be fully removed after the application is restarted.");
 
 		this.notificationService.prompt(Severity.Info, message, [
 			{
-				label: localize('paradis.window.transparency.reloadWindow', "Reload Window"),
-				run: () => this.hostService.reload()
+				label: localize('paradis.window.transparency.restartToApply', "Restart to Apply"),
+				run: () => this.nativeHostService.relaunch()
 			}
 		]);
 	}
