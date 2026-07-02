@@ -31,6 +31,7 @@ import type { Duplex } from 'stream';
 import type * as wsTypes from 'ws';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
 import { IParadisBoundContext, IParadisWsModule, paradisProxyBrowserUpgrade, paradisProxyPageUpgrade } from './paradisCdpFilterProxy.js';
 import { paradisResolvePaneTokenForPeerPort } from './paradisCdpPeerResolver.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -43,6 +44,14 @@ export interface IParadisCdpGatewayDelegate {
 	ensureBoundTargetId(token: string): Promise<string | undefined>;
 	/** workbenchから同期された シェルPID → ペイントークン 表の参照。 */
 	getTokenForShellPid(pid: number): string | undefined;
+	/**
+	 * バインド済みページのスクリーンショットをelectron-mainのupstream実装
+	 * （BrowserView.captureScreenshot: 非表示時の回避策付き）で撮り、base64を返す。
+	 * バインド無し・ビュー消滅・キャプチャ失敗時はundefined（呼び出し元がフォールバックする）。
+	 */
+	captureBoundPageScreenshot(token: string, options: IParadisCdpScreenshotOptions): Promise<string | undefined>;
+	/** バインド済みページのwebContentsへフォーカスを強制する（fire-and-forget、失敗は無視）。 */
+	focusBoundPage(token: string): void;
 }
 
 function isLoopback(address: string | undefined): boolean {
@@ -240,6 +249,12 @@ export class ParadisCdpGateway extends Disposable {
 			boundTargetIds: () => {
 				const tid = token ? this.delegate.getBoundTargetId(token) : undefined;
 				return tid ? new Set([tid]) : new Set<string>();
+			},
+			captureBoundPageScreenshot: options => token ? this.delegate.captureBoundPageScreenshot(token, options) : Promise.resolve(undefined),
+			focusBoundPage: () => {
+				if (token) {
+					this.delegate.focusBoundPage(token);
+				}
 			},
 			onOpen: ws => {
 				if (!token) {

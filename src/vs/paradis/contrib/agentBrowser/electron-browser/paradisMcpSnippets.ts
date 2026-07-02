@@ -33,6 +33,11 @@ export function getParadisMcpEndpointForToken(token: string): string {
  * （コメント行はzshの既定で interactivecomments が無効だとエラーになるため一切含めない）。
  * `${VAR:-default}` はClaude Codeが接続時に展開する（Para Codeペイン外では固定ポートに
  * フォールバックするので設定パースが壊れない）。シェルの事前展開を防ぐシングルクォート必須。
+ *
+ * 注記（CDPゲートウェイの制約）: ゲートウェイが見せるのは「このペインに共有された1ページ」
+ * のみで、chrome-devtools-mcp の new_page / close_page / resize_page は非対応
+ * （ページの開閉はPara Code UI側で行い、ビューポート変更は emulate ツールを使う）。
+ * 詳細は接続後に get_cdp_endpoint ツールの応答（limitations）でLLM自身にも伝わる。
  */
 export function getParadisClaudeSetupSnippet(): string {
 	const cdpUrl = getParadisCdpUrl();
@@ -53,6 +58,7 @@ export function getParadisCodexSetupSnippet(): string {
 	const cdpUrl = getParadisCdpUrl();
 	return [
 		'# Add to ~/.codex/config.toml',
+		'# Note: the Para Code CDP gateway exposes a single shared page; new_page / close_page / resize_page are not supported.',
 		'[mcp_servers.para-browser]',
 		'command = "node"',
 		`args = ["${shimPathToml}"]`,

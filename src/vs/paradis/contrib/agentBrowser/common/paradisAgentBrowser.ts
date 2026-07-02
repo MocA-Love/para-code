@@ -56,6 +56,24 @@ export const PARADIS_AGENT_BROWSER_CHANNEL = 'paradisAgentBrowser';
 export const PARADIS_CDP_TARGET_CHANNEL = 'paradisCdpTarget';
 
 /**
+ * CDPゲートウェイ経由のスクリーンショット委譲リクエスト
+ * （shared process → electron-main、{@link PARADIS_CDP_TARGET_CHANNEL} の
+ * `captureScreenshot` メソッド引数）。
+ * upstream の `IBrowserViewCaptureScreenshotOptions`（vs/platform/browserView/common/browserView.ts）
+ * のサブセット。CDP `Page.captureScreenshot` のパラメータから
+ * paradisCdpFilterProxy.ts がマッピングして生成する。
+ */
+export interface IParadisCdpScreenshotOptions {
+	readonly format?: 'jpeg' | 'png';
+	/** JPEG品質（0-100、formatが'jpeg'のときのみ）。 */
+	readonly quality?: number;
+	/** CDP `clip` 由来のページ内矩形（CSSピクセル）。 */
+	readonly pageRect?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	/** CDP `captureBeyondViewport`（clipなし）由来のフルページ指定。 */
+	readonly fullPage?: boolean;
+}
+
+/**
  * バインド時に記録される共有ページの情報。
  */
 export interface IParadisSharedPageInfo {
