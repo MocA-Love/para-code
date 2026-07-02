@@ -19,3 +19,5 @@ import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contri
 import './contrib/notifications/electron-browser/paradisNotificationTrigger.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationSettingsDialog.contribution.js';
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';
+import './contrib/fileViewers/electron-browser/paradisHtmlViewer.contribution.js';
+import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribution.js';
