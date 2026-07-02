@@ -17,7 +17,8 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { CUSTOM_RINGTONE_ID, getRingtoneFilename, isBuiltInRingtoneId, PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 
-function base64ToBlobUrl(base64: string, mimeType: string): string {
+/** base64音声データをBlob URLへ変換する（workbench CSPの media-src には blob: を許可済み）。 */
+export function base64ToBlobUrl(base64: string, mimeType: string): string {
 	const binary = atob(base64);
 	const bytes = new Uint8Array(binary.length);
 	for (let i = 0; i < binary.length; i++) {

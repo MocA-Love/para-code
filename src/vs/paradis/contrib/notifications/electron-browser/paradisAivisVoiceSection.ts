@@ -28,6 +28,7 @@ import {
 } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { base64ToBlobUrl } from './paradisNotificationSoundPlayer.js';
 
 const $ = dom.$;
 
@@ -68,14 +69,18 @@ const STR_MODEL_INFO_INVALID = localize('paradis.notif.aivis.modelInfoInvalid', 
 
 // allow-any-unicode-next-line
 const STR_PRESET_ICON_PLACEHOLDER = '🎙️';
+// allow-any-unicode-next-line
+const STR_PLAY_SAMPLE_ARIA = localize('paradis.notif.aivis.playSampleAria', "サンプル音声を再生");
+// allow-any-unicode-next-line
+const STR_STOP_SAMPLE_ARIA = localize('paradis.notif.aivis.stopSampleAria', "サンプル音声を停止");
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Aivisモデルプリセットのアイコン取得結果キャッシュ (uuid → iconUrl、無ければ null)。
+ * Aivisモデルプリセットのモデル情報(アイコン・サンプル音声URL等)取得結果キャッシュ。
  * モジュールスコープに置くことで、設定ダイアログを閉じて再度開いても再フェッチを避ける。
  */
-const presetIconCache = new Map<string, string | null>();
+const presetModelInfoCache = new Map<string, IParadisAivisModelSummary | null>();
 
 const SAMPLE_PLACEHOLDER_VALUES: Readonly<Record<string, string>> = Object.freeze({
 	// allow-any-unicode-next-line
@@ -99,6 +104,11 @@ export class ParadisAivisVoiceSection extends Disposable {
 	private _formatInput: HTMLTextAreaElement | undefined;
 	private _formatPermissionInput: HTMLTextAreaElement | undefined;
 
+	private _sampleAudio: HTMLAudioElement | undefined;
+	private _sampleBlobUrl: string | undefined;
+	private _playingSampleUuid: string | undefined;
+	private _playingSampleButton: HTMLButtonElement | undefined;
+
 	constructor(
 		private readonly container: HTMLElement,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -108,6 +118,16 @@ export class ParadisAivisVoiceSection extends Disposable {
 		super();
 		this._register(this.settingsService.onDidChange(() => this._render()));
 		this._render();
+	}
+
+	override dispose(): void {
+		this._sampleAudio?.pause();
+		this._sampleAudio = undefined;
+		if (this._sampleBlobUrl) {
+			URL.revokeObjectURL(this._sampleBlobUrl);
+			this._sampleBlobUrl = undefined;
+		}
+		super.dispose();
 	}
 
 	private _render(): void {
@@ -230,50 +250,147 @@ export class ParadisAivisVoiceSection extends Disposable {
 			}
 			const iconWrap = dom.append(tile, $('.pns-preset-icon'));
 			iconWrap.textContent = STR_PRESET_ICON_PLACEHOLDER;
-			this._renderPresetIcon(iconWrap, preset.uuid, apiKey);
 			dom.append(tile, $('.pns-preset-name')).textContent = preset.name;
 			dom.append(tile, $('.pns-preset-author')).textContent = preset.authorName;
+
+			const actions = dom.append(tile, $('.pns-preset-actions'));
+			const sampleBtn = dom.append(actions, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
+			sampleBtn.disabled = true; // サンプルURLが判明するまでは無効
+			sampleBtn.setAttribute('aria-label', STR_PLAY_SAMPLE_ARIA);
+			sampleBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.play)}`));
+
 			this._renderDisposables.add(dom.addDisposableListener(tile, 'click', () => {
 				this.settingsService.setAivisSettings({ modelUuid: preset.uuid });
 			}));
+			this._renderDisposables.add(dom.addDisposableListener(sampleBtn, 'click', e => {
+				e.stopPropagation(); // タイル選択(モデル切り替え)を誘発しない
+				this._toggleSamplePlayback(preset.uuid, sampleBtn);
+			}));
+
+			this._renderPresetModelInfo(iconWrap, sampleBtn, preset.uuid, apiKey);
 		}
 	}
 
 	/**
-	 * プリセットタイルのアイコンをAivis API (`getAivisModel`)から取得して表示する。
-	 * 取得結果（成功・失敗いずれも）はモジュールスコープの `presetIconCache` にキャッシュし、
+	 * プリセットタイルのアイコン・サンプル音声URLをAivis API (`getAivisModel`)から取得して適用する。
+	 * 取得結果（成功・失敗いずれも）はモジュールスコープの `presetModelInfoCache` にキャッシュし、
 	 * ダイアログの再オープンやセクションの再描画をまたいで再取得を避ける。
 	 */
-	private _renderPresetIcon(iconWrap: HTMLElement, uuid: string, apiKey: string): void {
+	private _renderPresetModelInfo(iconWrap: HTMLElement, sampleBtn: HTMLButtonElement, uuid: string, apiKey: string): void {
 		if (!apiKey) {
-			return; // プレースホルダのまま
+			return; // アイコンはプレースホルダのまま、サンプルボタンは無効のまま
 		}
-		const cached = presetIconCache.get(uuid);
+		const cached = presetModelInfoCache.get(uuid);
 		if (cached !== undefined) {
-			this._applyPresetIcon(iconWrap, cached);
+			this._applyPresetModelInfo(iconWrap, sampleBtn, uuid, cached);
 			return;
 		}
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisAivisModelSummary | null>('getAivisModel', [apiKey, uuid]).then(model => {
-			const iconUrl = model?.iconUrl ?? null;
-			presetIconCache.set(uuid, iconUrl);
+			presetModelInfoCache.set(uuid, model);
 			if (!this._store.isDisposed && iconWrap.isConnected) {
-				this._applyPresetIcon(iconWrap, iconUrl);
+				this._applyPresetModelInfo(iconWrap, sampleBtn, uuid, model);
 			}
 		}, error => {
-			presetIconCache.set(uuid, null);
-			this.logService.trace('[ParadisNotifications] failed to fetch Aivis preset icon', error);
+			presetModelInfoCache.set(uuid, null);
+			this.logService.trace('[ParadisNotifications] failed to fetch Aivis preset info', error);
 		});
 	}
 
-	private _applyPresetIcon(iconWrap: HTMLElement, iconUrl: string | null): void {
+	private _applyPresetModelInfo(iconWrap: HTMLElement, sampleBtn: HTMLButtonElement, uuid: string, model: IParadisAivisModelSummary | null): void {
 		dom.clearNode(iconWrap);
-		if (iconUrl) {
+		if (model?.iconUrl) {
 			const img = dom.append(iconWrap, $('img')) as HTMLImageElement;
-			img.src = iconUrl;
+			img.src = model.iconUrl;
 			img.alt = '';
 		} else {
 			iconWrap.textContent = STR_PRESET_ICON_PLACEHOLDER;
 		}
+
+		sampleBtn.disabled = !model?.sampleUrl;
+		// 再描画をまたいでサンプル再生中だったタイルを復元する（再生自体は継続しているため
+		// ボタン表示だけを追従させる。paradisNotificationSettingsDialog.ts の着信音試聴と同じ考え方）。
+		if (this._playingSampleUuid === uuid) {
+			this._playingSampleButton = sampleBtn;
+			this._setSampleButtonPlaying(sampleBtn, true);
+		}
+	}
+
+	private _setSampleButtonPlaying(btn: HTMLButtonElement, playing: boolean): void {
+		dom.clearNode(btn);
+		btn.appendChild($(`span${ThemeIcon.asCSSSelector(playing ? Codicon.primitiveSquare : Codicon.play)}`));
+		btn.setAttribute('aria-label', playing ? STR_STOP_SAMPLE_ARIA : STR_PLAY_SAMPLE_ARIA);
+	}
+
+	private _toggleSamplePlayback(uuid: string, btn: HTMLButtonElement): void {
+		if (this._playingSampleUuid === uuid) {
+			this._stopSamplePlayback();
+			return;
+		}
+		const sampleUrl = presetModelInfoCache.get(uuid)?.sampleUrl;
+		if (!sampleUrl) {
+			return;
+		}
+		this._stopSamplePlayback();
+		// フェッチ中の二重クリック・他タイル選択との競合防止のため先に確保しておく。
+		this._playingSampleUuid = uuid;
+		void this._playSampleFromUrl(uuid, sampleUrl, btn);
+	}
+
+	/**
+	 * サンプル音声はAivis側の外部httpsホストから配信されるため、workbenchのCSP (`media-src`)
+	 * では直接 `<audio src="https://...">` を再生できない。shared process 経由でバイト列を
+	 * 取得し、カスタム着信音の再生と同じくBlob URL化してから再生する。
+	 */
+	private async _playSampleFromUrl(uuid: string, sampleUrl: string, btn: HTMLButtonElement): Promise<void> {
+		let result: { base64: string; mimeType: string } | null;
+		try {
+			result = await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<{ base64: string; mimeType: string } | null>('fetchAudio', [sampleUrl]);
+		} catch (error) {
+			this.logService.warn('[ParadisNotifications] failed to fetch Aivis sample audio', error);
+			result = null;
+		}
+		if (this._store.isDisposed || this._playingSampleUuid !== uuid) {
+			return; // 取得中に停止された、または別のサンプルが選択された
+		}
+		if (!result) {
+			this._playingSampleUuid = undefined;
+			return;
+		}
+
+		const blobUrl = base64ToBlobUrl(result.base64, result.mimeType);
+		const audio = new Audio(blobUrl);
+		this._sampleAudio = audio;
+		this._sampleBlobUrl = blobUrl;
+		this._playingSampleButton = btn;
+		this._setSampleButtonPlaying(btn, true);
+		audio.addEventListener('ended', () => this._stopSamplePlayback());
+		audio.addEventListener('error', () => {
+			this.logService.warn('[ParadisNotifications] Aivis sample playback error', audio.error);
+			this._stopSamplePlayback();
+		});
+		try {
+			await audio.play();
+		} catch (error) {
+			this.logService.warn('[ParadisNotifications] failed to play Aivis sample', error);
+			this._stopSamplePlayback();
+		}
+	}
+
+	private _stopSamplePlayback(): void {
+		if (this._sampleAudio) {
+			this._sampleAudio.pause();
+			this._sampleAudio.src = '';
+			this._sampleAudio = undefined;
+		}
+		if (this._sampleBlobUrl) {
+			URL.revokeObjectURL(this._sampleBlobUrl);
+			this._sampleBlobUrl = undefined;
+		}
+		if (this._playingSampleButton) {
+			this._setSampleButtonPlaying(this._playingSampleButton, false);
+		}
+		this._playingSampleUuid = undefined;
+		this._playingSampleButton = undefined;
 	}
 
 	private _renderModelInfo(container: HTMLElement, uuid: string, apiKey: string): void {

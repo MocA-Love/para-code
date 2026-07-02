@@ -61,6 +61,10 @@ const STR_REPLACE_CUSTOM = localize('paradis.notif.replaceCustom', "カスタム
 const STR_FROM_YOUTUBE = localize('paradis.notif.fromYouTube', "YouTubeから取り込み");
 // allow-any-unicode-next-line
 const STR_IMPORT_TITLE = localize('paradis.notif.importDialogTitle', "通知音を選択");
+// allow-any-unicode-next-line
+const STR_PLAY_PREVIEW_ARIA = localize('paradis.notif.playPreviewAria', "試聴を再生");
+// allow-any-unicode-next-line
+const STR_STOP_PREVIEW_ARIA = localize('paradis.notif.stopPreviewAria', "試聴を停止");
 
 const VOLUME_LEVELS: readonly { readonly value: number; readonly label: string }[] = [
 	// allow-any-unicode-next-line
@@ -86,6 +90,8 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	private readonly _player: ParadisNotificationSoundPlayer;
 
 	private _playingRingtoneId: string | undefined;
+	private _playingButton: HTMLButtonElement | undefined;
+	private _playingAutoStopTimer: ReturnType<typeof setTimeout> | undefined;
 
 	constructor(
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
@@ -140,7 +146,10 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	}
 
 	override dispose(): void {
-		void this._player.stop();
+		if (this._playingAutoStopTimer !== undefined) {
+			clearTimeout(this._playingAutoStopTimer);
+		}
+		this._player.stop();
 		this._backdrop.remove();
 		super.dispose();
 	}
@@ -289,24 +298,63 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 		const playBtn = dom.append(row, $('button.pns-ringtone-play')) as HTMLButtonElement;
 		const isPlaying = this._playingRingtoneId === ringtone.id;
-		playBtn.classList.toggle('playing', isPlaying);
-		playBtn.appendChild($(`span${ThemeIcon.asCSSSelector(isPlaying ? Codicon.debugStop : Codicon.play)}`));
+		this._setPlayButtonPlaying(playBtn, isPlaying);
+		if (isPlaying) {
+			this._playingButton = playBtn;
+		}
 
 		this._renderDisposables.add(dom.addDisposableListener(row, 'click', () => {
 			this.settingsService.setSelectedRingtoneId(ringtone.id);
 		}));
+		// 試聴の再生/停止は一過性の状態変化であり、セクション全体を再描画すると
+		// クリックされたボタン自身がDOMから外れてフォーカスが失われ、.pns-bodyが
+		// 先頭までスクロールされてしまう（paradisPreserveScroll適用対象外の経路）。
+		// そのため該当ボタンのアイコン/クラスだけを直接更新し、再描画は行わない。
 		this._renderDisposables.add(dom.addDisposableListener(playBtn, 'click', e => {
 			e.stopPropagation();
-			if (this._playingRingtoneId === ringtone.id) {
-				this._player.stop();
-				this._playingRingtoneId = undefined;
-				this._renderNotificationsSection();
-				return;
-			}
-			this._playingRingtoneId = ringtone.id;
-			void this._player.play(ringtone.id, volume);
-			this._renderNotificationsSection();
+			this._togglePreview(playBtn, ringtone.id, ringtone.duration, volume);
 		}));
+	}
+
+	private _setPlayButtonPlaying(playBtn: HTMLButtonElement, playing: boolean): void {
+		playBtn.classList.toggle('playing', playing);
+		dom.clearNode(playBtn);
+		playBtn.appendChild($(`span${ThemeIcon.asCSSSelector(playing ? Codicon.primitiveSquare : Codicon.play)}`));
+		playBtn.setAttribute('aria-label', playing ? STR_STOP_PREVIEW_ARIA : STR_PLAY_PREVIEW_ARIA);
+	}
+
+	private _stopPreview(): void {
+		if (this._playingAutoStopTimer !== undefined) {
+			clearTimeout(this._playingAutoStopTimer);
+			this._playingAutoStopTimer = undefined;
+		}
+		this._player.stop();
+		if (this._playingButton) {
+			this._setPlayButtonPlaying(this._playingButton, false);
+		}
+		this._playingButton = undefined;
+		this._playingRingtoneId = undefined;
+	}
+
+	private _togglePreview(playBtn: HTMLButtonElement, ringtoneId: string, duration: number | undefined, volume: number): void {
+		const wasPlayingSame = this._playingRingtoneId === ringtoneId;
+		this._stopPreview();
+		if (wasPlayingSame) {
+			return; // 同じ行を再クリック: 停止のみ
+		}
+
+		this._playingRingtoneId = ringtoneId;
+		this._playingButton = playBtn;
+		this._setPlayButtonPlaying(playBtn, true);
+		void this._player.play(ringtoneId, volume);
+
+		// 着信音の実際の長さ(+0.5秒の余裕)で自動的に再生中表示を解除する(Superset同様の挙動)。
+		const durationMs = ((duration ?? 5) + 0.5) * 1000;
+		this._playingAutoStopTimer = setTimeout(() => {
+			if (this._playingRingtoneId === ringtoneId) {
+				this._stopPreview();
+			}
+		}, durationMs);
 	}
 
 	private async _importCustomAudio(): Promise<void> {

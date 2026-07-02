@@ -38,6 +38,7 @@ import {
 	IParadisYouTubeDownloadResult,
 	PARADIS_MAX_CLIP_DURATION_SECONDS,
 	PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES,
+	PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES,
 } from '../common/paradisNotifications.js';
 
 const AIVIS_BASE_URL = 'https://api.aivis-project.com';
@@ -45,6 +46,7 @@ const AIVIS_SYNTHESIZE_TIMEOUT_MS = 30_000;
 const YT_DLP_TIMEOUT_MS = 120_000;
 const FULL_DOWNLOAD_TIMEOUT_MS = 300_000;
 const MAX_FULL_DOWNLOAD_DURATION_SECONDS = 600;
+const FETCH_AUDIO_TIMEOUT_MS = 15_000;
 const REQUIRED_BINARIES = ['yt-dlp', 'ffmpeg', 'ffprobe'] as const;
 
 const ALLOWED_AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg']);
@@ -559,6 +561,62 @@ export class ParadisNotificationsService extends Disposable {
 		this._tempAudio.delete(tempId);
 		if (entry) {
 			await rm(entry.dir, { recursive: true, force: true }).catch(() => { /* ignore */ });
+		}
+	}
+
+	/**
+	 * リモート音声（Aivisモデルのサンプル音声等）を取得してbase64で返す。renderer側の
+	 * workbench CSP (`media-src`) は `<audio>` の再生元として https を許可していないため、
+	 * shared process 側でバイト列を取得し、rendererはBlob URL化して再生する
+	 * （カスタム音源のreadCustomAudioFileと同じパターン）。https以外・サイズ超過・タイムアウトは
+	 * すべて null を返す（呼び出し元は再生をスキップする想定）。
+	 */
+	async fetchAudio(url: string): Promise<{ base64: string; mimeType: string } | null> {
+		let parsed: URL;
+		try {
+			parsed = new URL(url);
+		} catch {
+			return null;
+		}
+		if (parsed.protocol !== 'https:') {
+			// allow-any-unicode-next-line
+			this.logService.warn(`[ParadisNotifications] fetchAudio: https以外のURLは許可していません (${parsed.protocol})`);
+			return null;
+		}
+
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), FETCH_AUDIO_TIMEOUT_MS);
+		try {
+			const response = await fetch(parsed, { signal: controller.signal });
+			if (!response.ok) {
+				this.logService.warn(`[ParadisNotifications] fetchAudio: HTTP ${response.status} (${url})`);
+				return null;
+			}
+			const contentLength = Number(response.headers.get('content-length') ?? '0');
+			if (contentLength > PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES) {
+				// allow-any-unicode-next-line
+				this.logService.warn(`[ParadisNotifications] fetchAudio: レスポンスが大きすぎます (${contentLength} bytes)`);
+				return null;
+			}
+			const buffer = Buffer.from(await response.arrayBuffer());
+			if (buffer.byteLength > PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES) {
+				// allow-any-unicode-next-line
+				this.logService.warn(`[ParadisNotifications] fetchAudio: レスポンスが大きすぎます (${buffer.byteLength} bytes)`);
+				return null;
+			}
+			const contentType = response.headers.get('content-type');
+			const mimeType = contentType?.startsWith('audio/') ? contentType.split(';')[0].trim() : mimeTypeFor(parsed.pathname);
+			return { base64: buffer.toString('base64'), mimeType };
+		} catch (error) {
+			if (error instanceof Error && error.name === 'AbortError') {
+				// allow-any-unicode-next-line
+				this.logService.warn(`[ParadisNotifications] fetchAudio: タイムアウトしました (${url})`);
+			} else {
+				this.logService.warn(`[ParadisNotifications] fetchAudio failed (${url})`, error);
+			}
+			return null;
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 
