@@ -28,7 +28,7 @@ import { ActiveGroupEditorsByMostRecentlyUsedQuickAccess } from './editorQuickAc
 import { SideBySideEditor } from './sideBySideEditor.js';
 import { TextDiffEditor } from './textDiffEditor.js';
 import { ActiveEditorCanSplitInGroupContext, ActiveEditorGroupEmptyContext, ActiveEditorGroupLockedContext, ActiveEditorStickyContext, EditorPartModalContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, IsSessionsWindowContext, MultipleEditorGroupsContext, SideBySideEditorActiveContext, TextCompareEditorActiveContext } from '../../../common/contextkeys.js';
-import { CloseDirection, EditorInputCapabilities, EditorsOrder, IResourceDiffEditorInput, IUntitledTextResourceEditorInput, isDiffEditorInput, isEditorInputWithOptionsAndGroup } from '../../../common/editor.js';
+import { CloseDirection, EditorsOrder, IResourceDiffEditorInput, IUntitledTextResourceEditorInput, isDiffEditorInput, isEditorInputWithOptionsAndGroup } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
 import { EditorGroupColumn, columnToEditorGroup } from '../../../services/editor/common/editorGroupColumn.js';
@@ -752,17 +752,11 @@ export function splitEditor(editorGroupsService: IEditorGroupsService, direction
 	}
 
 	// Only support splitting from one source group
-	const { group, editors } = resolvedContext.groupedEditors[0];
-	const preserveFocus = resolvedContext.preserveFocus;
+	const { group } = resolvedContext.groupedEditors[0];
 	const newGroup = editorGroupsService.addGroup(group, direction);
 
-	for (const editorToCopy of editors) {
-
-		// Split editor (if it can be split)
-		if (editorToCopy && !editorToCopy.hasCapability(EditorInputCapabilities.Singleton)) {
-			group.copyEditor(editorToCopy, newGroup, { preserveFocus });
-		}
-	}
+	// PARA-PATCH: leave the new group empty (showing the watermark/start page)
+	// instead of copying the source editor over, regardless of editor kind.
 
 	// Focus
 	newGroup.focus();

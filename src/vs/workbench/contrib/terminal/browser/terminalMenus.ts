@@ -720,8 +720,9 @@ export function setupTerminalMenus(): void {
 				icon: Codicon.splitHorizontal
 			},
 			group: 'navigation',
-			order: 0,
-			when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal)
+			order: 0
+			// PARA-PATCH: show the "New Terminal" button next to the split buttons regardless
+			// of the active editor kind, not only while a terminal editor is active.
 		});
 		MenuRegistry.appendMenuItem(menuId, {
 			command: {
