@@ -26,7 +26,8 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
-import { IWebviewElement, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
+import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { ParadisRenderedFileEditor } from '../browser/paradisRenderedFileEditor.js';
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
@@ -54,8 +55,9 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		@IFileService fileService: IFileService,
 		@ITextModelService textModelService: ITextModelService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IWorkbenchLayoutService layoutService: IWorkbenchLayoutService,
 	) {
-		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService);
+		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService);
 	}
 
 	protected override get allowScripts(): boolean {
@@ -113,7 +115,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		}
 	}
 
-	protected override renderDocument(text: string, resource: URI, _webview: IWebviewElement): string {
+	protected override renderDocument(text: string, resource: URI, _webview: IOverlayWebview): string {
 		const dir = dirname(resource);
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
 		const baseHref = asWebviewUri(dir, remoteInfo).toString(true);

@@ -36,13 +36,30 @@
 }
 
 /* allow-any-unicode-next-line */
-/* Rendered(webview) と Raw(埋め込みエディタ) の両コンテナ。表示/非表示で切り替える(内容は保持)。 */
+/* Rendered(webview overlay のアンカー) と Raw(埋め込みエディタ) の両コンテナ。重ねて配置する。 */
 .paradis-file-viewer-webview,
 .paradis-file-viewer-editor {
 	position: absolute;
 	inset: 0;
 	width: 100%;
 	height: 100%;
+}
+
+/* allow-any-unicode-next-line */
+/* webview アンカーは常にレイアウトさせる(overlay の位置合わせに矩形が要る)。overlay 自体が上に重なる。 */
+.paradis-file-viewer-webview {
+	z-index: 0;
+}
+
+/* allow-any-unicode-next-line */
+/* Raw エディタは visibility で表示切替(Rendered 時は非表示)。overlay webview はこの上に重なる。 */
+.paradis-file-viewer-editor {
+	visibility: hidden;
+	z-index: 1;
+}
+
+.paradis-file-viewer-editor.active {
+	visibility: visible;
 }
 
 /* Segmented Rendered/Raw toggle (Superset FileViewerToolbar ToggleGroup equivalent). */
