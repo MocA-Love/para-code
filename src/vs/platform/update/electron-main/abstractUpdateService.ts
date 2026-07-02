@@ -69,6 +69,26 @@ export function getUpdateRequestHeaders(productVersion: string): Record<string, 
 	return undefined;
 }
 
+/**
+ * PARA-PATCH: builds Cloudflare Access service token headers for the self-hosted
+ * update feed (see CLAUDE.md). Returns undefined when the running build was not
+ * stamped with Access credentials (e.g. local/out-of-sources or non-release CI
+ * builds), in which case callers should send no extra headers.
+ */
+export function getUpdateAccessHeaders(productService: IProductService): Record<string, string> | undefined {
+	const clientId = productService.updateAccessClientId;
+	const clientSecret = productService.updateAccessClientSecret;
+
+	if (!clientId || !clientSecret) {
+		return undefined;
+	}
+
+	return {
+		'CF-Access-Client-Id': clientId,
+		'CF-Access-Client-Secret': clientSecret
+	};
+}
+
 export type UpdateErrorClassification = {
 	owner: 'joaomoreno';
 	messageHash: { classification: 'SystemMetaData'; purpose: 'FeatureInsight'; comment: 'The hash of the error message.' };
@@ -427,7 +447,8 @@ export abstract class AbstractUpdateService implements IUpdateService {
 			return undefined;
 		}
 
-		const headers = getUpdateRequestHeaders(this.productService.version);
+		// PARA-PATCH: merge Cloudflare Access service token headers (see CLAUDE.md).
+		const headers = { ...getUpdateRequestHeaders(this.productService.version), ...getUpdateAccessHeaders(this.productService) };
 		this.logService.trace('update#isLatestVersion() - checking update server', { url, headers });
 
 		try {

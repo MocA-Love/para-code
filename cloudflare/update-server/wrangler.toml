@@ -1,0 +1,22 @@
+# PARA-CODE: fork-owned config (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+name = "para-code-update-server"
+main = "src/index.ts"
+compatibility_date = "2026-07-01"
+account_id = "979dbe0328e903a34bb6291b06cca0da" # CROUTECH
+
+[[kv_namespaces]]
+binding = "RELEASES"
+id = "95abfbef8a784048975904f37347daac" # title: para-code-update-releases
+
+[[routes]]
+pattern = "paracode-updates.paradis.ltd"
+custom_domain = true
+
+[vars]
+# Optional Cloudflare Access Application Audience (AUD) tag for this route.
+# When set, the worker requires a Cf-Access-Jwt-Assertion header to be present
+# as a defense-in-depth check. The primary access control is the Access
+# Application (Service Auth) policy configured separately in the Cloudflare
+# Zero Trust dashboard — this worker should never see unauthenticated traffic
+# in production regardless of this setting.
+# CF_ACCESS_AUD = ""
