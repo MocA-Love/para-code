@@ -22,7 +22,6 @@ import { IEditorResolverService, RegisteredEditorPriority } from '../../../../wo
 import { ParadisMarkdownFileEditor } from './paradisMarkdownFileEditor.js';
 import { ParadisMarkdownFileInput, ParadisMarkdownFileInputSerializer } from './paradisFileViewerInput.js';
 import { registerParadisFileViewerActions } from './paradisFileViewerActions.js';
-import './paradisFileViewerEditorToggle.js';
 import { PARADIS_MARKDOWN_EDITOR_ID, PARADIS_MARKDOWN_EXTENSIONS, PARADIS_MARKDOWN_INPUT_TYPE_ID, isParadisMarkdownResource, paradisGlobForExtension } from './paradisFileViewers.js';
 
 // allow-any-unicode-next-line

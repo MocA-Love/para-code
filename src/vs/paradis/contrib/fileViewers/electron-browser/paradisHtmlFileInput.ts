@@ -12,7 +12,6 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { ParadisFileViewerInput, ParadisFileViewerInputSerializer } from '../browser/paradisFileViewerInput.js';
 import { PARADIS_HTML_EDITOR_ID, PARADIS_HTML_INPUT_TYPE_ID } from '../browser/paradisFileViewers.js';
 
@@ -33,7 +32,7 @@ export class ParadisHtmlFileInput extends ParadisFileViewerInput {
 }
 
 export class ParadisHtmlFileInputSerializer extends ParadisFileViewerInputSerializer {
-	protected override createInput(instantiationService: IInstantiationService, resource: URI): EditorInput {
+	protected override createInput(instantiationService: IInstantiationService, resource: URI): ParadisFileViewerInput {
 		return instantiationService.createInstance(ParadisHtmlFileInput, resource);
 	}
 }

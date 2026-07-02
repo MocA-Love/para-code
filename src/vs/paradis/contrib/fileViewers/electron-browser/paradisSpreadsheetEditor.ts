@@ -7,17 +7,21 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // Excel(スプレッドシート)ビューアの EditorPane。xlsx を shared process でパースし、HTMLテーブルとして描画する。
+// グリッド線・手動改ページ線・印刷範囲・図形/画像・shrinkToFit・tabColor/保護タブ・ズーム・既定アプリで開く に対応。
 // シート下部タブで切替、コンテナ幅超過時は CSS transform:scale で全体縮小、ディスク更新で自動再描画(correlated watcher)。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { isEqual } from '../../../../base/common/resources.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -27,27 +31,37 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, buildShapeOverlay, getColumnLabel, setCellContent } from './paradisSpreadsheetRender.js';
+import { PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyShrinkToFit, buildPageBreakOverlay, buildShapeOverlay, createShrinkSpan, getColumnLabel, setCellContent } from './paradisSpreadsheetRender.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
+import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 
 import './media/paradisSpreadsheet.css';
 
 const $ = dom.$;
+const ZOOM_MIN = 0.2;
+const ZOOM_MAX = 4;
 
 export class ParadisSpreadsheetEditor extends EditorPane {
 
 	static readonly ID = PARADIS_SPREADSHEET_EDITOR_ID;
 
 	private _root: HTMLElement | undefined;
+	private _openAppEl: HTMLElement | undefined;
+	private _percentBtn: HTMLButtonElement | undefined;
 	private _bodyEl: HTMLElement | undefined;
 	private _tabsEl: HTMLElement | undefined;
 	private _innerEl: HTMLElement | undefined;
 	private _naturalTableWidth = 0;
 	private _dataRowEls: { excelRow: number; tr: HTMLElement }[] = [];
+	private _shrinkCells: { td: HTMLElement; span: HTMLElement }[] = [];
 
+	private _scale = 1;
+	private _userAdjusted = false;
+
+	private readonly _headerDisposables = this._register(new DisposableStore());
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
-	private readonly _shapeRaf = this._register(new MutableDisposable());
+	private readonly _overlayRaf = this._register(new MutableDisposable());
 	private _currentResource: URI | undefined;
 	private _sheets: readonly IParadisSheetData[] = [];
 	private _activeSheetIndex = 0;
@@ -59,12 +73,28 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IFileService private readonly _fileService: IFileService,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
+		@INativeHostService private readonly _nativeHostService: INativeHostService,
 	) {
 		super(PARADIS_SPREADSHEET_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
 		this._root = dom.append(parent, $('.paradis-spreadsheet'));
+
+		const header = dom.append(this._root, $('.paradis-spreadsheet-header'));
+		dom.append(header, $('.paradis-spreadsheet-header-left'));
+		const right = dom.append(header, $('.paradis-spreadsheet-header-right'));
+
+		// ズーム −/%/＋（HTMLビューアと同じUI）。
+		appendIconButton(right, Codicon.zoomOut, localize('paradis.spreadsheet.zoomOut', "Zoom Out"), this._headerDisposables, () => this._zoom(1 / 1.2));
+		this._percentBtn = dom.append(right, $('button.paradis-spreadsheet-percent')) as HTMLButtonElement;
+		this._percentBtn.title = localize('paradis.spreadsheet.resetZoom', "Reset Zoom");
+		this._register(dom.addDisposableListener(this._percentBtn, dom.EventType.CLICK, () => this._resetZoom()));
+		appendIconButton(right, Codicon.zoomIn, localize('paradis.spreadsheet.zoomIn', "Zoom In"), this._headerDisposables, () => this._zoom(1.2));
+
+		// 「既定のアプリで開く」ボタンは resource 依存なので入力ごとに作り直す。
+		this._openAppEl = dom.append(right, $('.paradis-spreadsheet-openapp'));
+
 		this._bodyEl = dom.append(this._root, $('.paradis-spreadsheet-body'));
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
 	}
@@ -75,9 +105,16 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const resource = (input as ParadisSpreadsheetInput).resource;
 		this._currentResource = resource;
 		this._activeSheetIndex = 0;
+		this._userAdjusted = false;
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
+
+		if (this._openAppEl) {
+			dom.clearNode(this._openAppEl);
+			appendOpenInAppButton(this._openAppEl, resource, this._nativeHostService, store);
+		}
+
 		try {
 			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
 			store.add(watcher);
@@ -139,6 +176,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 
+		// 保存時ズームがあれば初期倍率に反映(以後の手動操作を優先)。
+		if (!this._userAdjusted && sheet.zoomScale && sheet.zoomScale !== 100) {
+			this._scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, sheet.zoomScale / 100));
+			this._userAdjusted = true;
+		}
+
 		const outer = dom.append(this._bodyEl, $('.paradis-spreadsheet-outer'));
 		const inner = dom.append(outer, $('.paradis-spreadsheet-inner'));
 		this._innerEl = inner;
@@ -153,21 +196,20 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			notice.textContent = localize('paradis.spreadsheet.truncated', "Showing first 2,000 rows. The full file contains more rows.");
 		}
 
-		this._renderShapes(sheet, inner);
+		this._renderOverlays(sheet, inner);
 		this._applyScale();
 	}
 
-	// 図形(斜線コネクタ等)は行の実描画位置が要るため、レイアウト確定後(rAF)に測定してSVGオーバーレイを重ねる。
-	private _renderShapes(sheet: IParadisSheetData, inner: HTMLElement): void {
-		this._shapeRaf.clear();
-		if (!sheet.shapes || sheet.shapes.length === 0) {
-			return;
-		}
+	// 図形/改ページ/shrinkToFit は行の実描画位置が要るため、レイアウト確定後(rAF)にまとめて処理する。
+	private _renderOverlays(sheet: IParadisSheetData, inner: HTMLElement): void {
+		this._overlayRaf.clear();
 		const rows = this._dataRowEls;
-		const shapes = sheet.shapes;
-		const columnWidths = sheet.columnWidths;
-		const minCol = sheet.minCol;
+		const shrinkCells = this._shrinkCells;
 		const handle = dom.scheduleAtNextAnimationFrame(dom.getWindow(inner), () => {
+			// shrinkToFit(read→write 2パスは applyShrinkToFit 内)。
+			if (shrinkCells.length > 0) {
+				applyShrinkToFit(shrinkCells);
+			}
 			const rowY = new Map<number, number>();
 			for (const { excelRow, tr } of rows) {
 				rowY.set(excelRow, tr.offsetTop);
@@ -176,16 +218,25 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			if (last) {
 				rowY.set(last.excelRow + 1, last.tr.offsetTop + last.tr.offsetHeight);
 			}
-			const overlay = buildShapeOverlay(shapes, rowY, columnWidths, minCol, inner.ownerDocument);
-			if (overlay) {
-				inner.appendChild(overlay);
+			if (sheet.shapes && sheet.shapes.length > 0) {
+				const overlay = buildShapeOverlay(sheet.shapes, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
+				if (overlay) {
+					inner.appendChild(overlay);
+				}
+			}
+			const breaks = buildPageBreakOverlay(sheet.rowBreaks, sheet.colBreaks, sheet.printArea, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
+			if (breaks) {
+				inner.appendChild(breaks);
 			}
 		});
-		this._shapeRaf.value = handle;
+		this._overlayRaf.value = handle;
 	}
 
 	private _buildSheetTable(sheet: IParadisSheetData): { table: HTMLTableElement; naturalWidth: number } {
 		const table = $('table.paradis-spreadsheet-table') as HTMLTableElement;
+		if (sheet.showGridLines !== false) {
+			table.classList.add('grid');
+		}
 		const naturalWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((sum, w) => sum + w, 0);
 		table.style.width = `${naturalWidth}px`;
 
@@ -209,6 +260,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 		const tbody = dom.append(table, $('tbody'));
 		this._dataRowEls = [];
+		this._shrinkCells = [];
 		let displayRowNum = 0;
 		for (const row of sheet.rows) {
 			displayRowNum++;
@@ -229,7 +281,11 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 					td.rowSpan = cell.rowSpan;
 				}
 				applyBaseCellStyle(td, cell);
-				setCellContent(td, cell);
+				if (cell.shrinkToFit && !cell.wrapText && !cell.verticalText) {
+					this._shrinkCells.push({ td, span: createShrinkSpan(td, cell) });
+				} else {
+					setCellContent(td, cell);
+				}
 				if (cell.diagonal) {
 					appendDiagonalOverlay(td, cell.diagonal);
 				}
@@ -251,8 +307,21 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._tabsEl.style.display = '';
 		this._sheets.forEach((sheet, idx) => {
 			const tab = dom.append(this._tabsEl!, $('button.paradis-spreadsheet-tab')) as HTMLButtonElement;
-			tab.textContent = sheet.name;
 			tab.classList.toggle('active', idx === this._activeSheetIndex);
+			if (sheet.tabColor) {
+				tab.style.borderBottomColor = sheet.tabColor;
+				tab.style.borderBottomWidth = '3px';
+				tab.style.borderBottomStyle = 'solid';
+				if (idx === this._activeSheetIndex) {
+					tab.style.color = sheet.tabColor;
+				}
+			}
+			if (sheet.protectedSheet) {
+				const lock = dom.append(tab, $(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
+				lock.title = localize('paradis.spreadsheet.protected', "This sheet is protected");
+			}
+			const label = dom.append(tab, $('span'));
+			label.textContent = sheet.name;
 			this._inputDisposables.value?.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
 				if (this._activeSheetIndex === idx) {
 					return;
@@ -264,24 +333,45 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		});
 	}
 
+	private _zoom(factor: number): void {
+		this._userAdjusted = true;
+		this._scale = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, this._scale * factor));
+		this._applyScale();
+	}
+
+	private _resetZoom(): void {
+		this._userAdjusted = false;
+		this._applyScale();
+	}
+
+	private _computeFitScale(): number {
+		const available = this._bodyEl?.clientWidth ?? 0;
+		return available > 0 && this._naturalTableWidth > available ? available / this._naturalTableWidth : 1;
+	}
+
 	private _applyScale(): void {
-		if (!this._innerEl || !this._bodyEl || this._naturalTableWidth <= 0) {
-			return;
+		const target = this._userAdjusted ? this._scale : this._computeFitScale();
+		if (!this._userAdjusted) {
+			this._scale = target;
 		}
-		const available = this._bodyEl.clientWidth;
-		const scale = available > 0 && this._naturalTableWidth > available ? available / this._naturalTableWidth : 1;
-		if (scale < 1) {
-			this._innerEl.style.transform = `scale(${scale})`;
-			this._innerEl.style.transformOrigin = 'top left';
-		} else {
-			this._innerEl.style.transform = '';
+		if (this._innerEl) {
+			if (target !== 1) {
+				this._innerEl.style.transform = `scale(${target})`;
+				this._innerEl.style.transformOrigin = 'top left';
+			} else {
+				this._innerEl.style.transform = '';
+			}
+		}
+		if (this._percentBtn) {
+			this._percentBtn.textContent = `${Math.round(target * 100)}%`;
 		}
 	}
 
 	override clearInput(): void {
 		this._inputDisposables.clear();
-		this._shapeRaf.clear();
+		this._overlayRaf.clear();
 		this._dataRowEls = [];
+		this._shrinkCells = [];
 		this._currentResource = undefined;
 		this._sheets = [];
 		if (this._bodyEl) {
