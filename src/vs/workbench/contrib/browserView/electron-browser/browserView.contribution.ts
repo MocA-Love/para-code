@@ -23,7 +23,7 @@ import { BrowserViewCDPService } from './browserViewCDPService.js';
 import './features/webContentsViewRendererFeature.js';
 import './features/browserNavigationFeatures.js';
 import './features/browserWelcomeFeature.js';
-import './features/browserFavoritesFeature.js';
+// import './features/browserFavoritesFeature.js'; // PARA-PATCH: disabled in favor of the fork's bookmark bar (vs/paradis/contrib/browserBookmarks); keeping both would double the URL-bar star and clash on Cmd+D
 import './features/browserHistoryFeature.js';
 import './features/browserPermissionsFeature.js';
 import './features/browserDataStorageFeatures.js';

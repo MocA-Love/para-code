@@ -30,6 +30,8 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	// PARA-PATCH: the fork's agent-browser binding dialog (paradisBindingDialog.ts) must also pause
 	// the native WebContentsView, otherwise the DOM modal renders behind the browser page.
 	{ className: 'paradis-binding-dialog-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: same for the fork's bookmark edit/folder dialogs (vs/paradis/contrib/browserBookmarks).
+	{ className: 'paradis-bookmark-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),
