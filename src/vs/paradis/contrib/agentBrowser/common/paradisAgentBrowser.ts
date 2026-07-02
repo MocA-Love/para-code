@@ -71,4 +71,6 @@ export interface IParadisPaneBinding {
 	/** ブラウザビューのID（PlaywrightService の pageId / viewId に相当）。 */
 	readonly pageId: string;
 	readonly pageInfo: IParadisSharedPageInfo;
+	/** バインドされた時刻（epoch ms）。バインディングダイアログの「共有開始 N分前」表示に使う。 */
+	readonly boundAt: number;
 }

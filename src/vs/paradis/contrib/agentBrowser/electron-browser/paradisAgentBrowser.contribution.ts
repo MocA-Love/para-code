@@ -6,29 +6,44 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// ブラウザページ⇔ターミナルペイン紐付けの最小UI（コマンドパレットのみ、Phase A+B）。
-// リッチなUI（モーダル等）はPhase Cで別途実装する。
+// ブラウザページ⇔ターミナルペイン紐付けUIのエントリポイント集約。
+//  - コマンドパレット: Share / Unshare / Copy MCP Setup / Open Agent Browser Binding
+//  - ブラウザエディタのツールバーボタン（MenuId.BrowserActionsToolbar、upstreamファイル変更なし）
+//  - ステータスバー項目（バインドが1件以上あるときのみ表示）
+//  - ターミナルグリッドセルのペインインジケータへの状態供給（paradisPaneIndicator.ts のホスト登録）
+// バインド/解除の実処理は paradisAgentBrowserBindingModel.ts に集約されている。
 // ISharedProcessService（electron-browser専用）に依存するため、
 // paradis.electron-browser.contribution.ts 経由でデスクトップworkbenchにのみ登録される。
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
-import { FileAccess } from '../../../../base/common/network.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ContextKeyExpr, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
-import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
-import { IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { setParadisPaneIndicatorHost } from '../browser/paradisPaneIndicator.js';
+import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
+import { ParadisBindingDialog } from './paradisBindingDialog.js';
+import { getParadisCdpUrl, getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 
 const CATEGORY = localize2('paradis.category', "Paradis");
+
+/** アクティブなブラウザエディタのページが1つ以上のペインと共有中かどうか。 */
+const PARADIS_ACTIVE_PAGE_SHARED = new RawContextKey<boolean>('paradisActivePageShared', false, localize('paradis.activePageShared', "Whether the active integrated browser page is shared with a terminal pane."));
+
+const BROWSER_EDITOR_ACTIVE = ContextKeyExpr.equals('activeEditor', BrowserEditorInput.EDITOR_ID);
 
 interface ITerminalPanePickItem extends IQuickPickItem {
 	readonly token: string;
@@ -42,6 +57,76 @@ function getActiveBrowserViewModel(accessor: ServicesAccessor): IBrowserViewMode
 		return input.model;
 	}
 	return undefined;
+}
+
+/**
+ * バインディングダイアログの対象ページを解決する。優先順:
+ * アクティブなブラウザエディタ → 指定ペインにバインド済みのページ → 既知のブラウザビュー。
+ */
+function resolveDialogPageModel(accessor: ServicesAccessor, instanceId?: number): IBrowserViewModel | undefined {
+	const active = getActiveBrowserViewModel(accessor);
+	if (active) {
+		return active;
+	}
+
+	const browserViewWorkbenchService = accessor.get(IBrowserViewWorkbenchService);
+	const knownViews = [...browserViewWorkbenchService.getKnownBrowserViews().values()];
+
+	if (instanceId !== undefined) {
+		const bindingModel = accessor.get(IParadisAgentBrowserBindingModel);
+		const paneTokenService = accessor.get(IParadisPaneTokenService);
+		const token = paneTokenService.getTokenForInstance(instanceId);
+		const binding = token ? bindingModel.getBindingForToken(token) : undefined;
+		if (binding) {
+			const boundModel = knownViews.find(input => input.model?.id === binding.pageId)?.model;
+			if (boundModel) {
+				return boundModel;
+			}
+		}
+	}
+
+	return knownViews.find(input => !!input.model)?.model;
+}
+
+// --- ダイアログのオープン管理（同時に1つだけ） ---
+
+let activeDialog: ParadisBindingDialog | undefined;
+
+function openBindingDialog(accessor: ServicesAccessor, instanceId?: number): void {
+	const notificationService = accessor.get(INotificationService);
+	const instantiationService = accessor.get(IInstantiationService);
+
+	const model = resolveDialogPageModel(accessor, instanceId);
+	if (!model) {
+		notificationService.warn(localize('paradis.dialog.noBrowserPage', "Open an integrated browser page first, then run this command again."));
+		return;
+	}
+
+	activeDialog?.dispose();
+	activeDialog = instantiationService.createInstance(
+		ParadisBindingDialog,
+		model,
+		instanceId !== undefined ? { selectInstanceId: instanceId } : undefined,
+	);
+}
+
+// --- コマンドパレット ---
+
+class ParadisOpenBindingDialogAction extends Action2 {
+	static readonly ID = 'paradis.agentBrowser.openBindingDialog';
+
+	constructor() {
+		super({
+			id: ParadisOpenBindingDialogAction.ID,
+			title: localize2('paradis.openBindingDialog', "Open Agent Browser Binding"),
+			category: CATEGORY,
+			f1: true,
+		});
+	}
+
+	run(accessor: ServicesAccessor, instanceId?: unknown): void {
+		openBindingDialog(accessor, typeof instanceId === 'number' ? instanceId : undefined);
+	}
 }
 
 class ParadisShareBrowserPageWithTerminalPaneAction extends Action2 {
@@ -61,7 +146,7 @@ class ParadisShareBrowserPageWithTerminalPaneAction extends Action2 {
 		const paneTokenService = accessor.get(IParadisPaneTokenService);
 		const quickInputService = accessor.get(IQuickInputService);
 		const notificationService = accessor.get(INotificationService);
-		const sharedProcessService = accessor.get(ISharedProcessService);
+		const bindingModel = accessor.get(IParadisAgentBrowserBindingModel);
 
 		const model = getActiveBrowserViewModel(accessor);
 		if (!model) {
@@ -92,15 +177,10 @@ class ParadisShareBrowserPageWithTerminalPaneAction extends Action2 {
 			return;
 		}
 
-		// 既存の共有フロー（確認ダイアログ + startTrackingPage）をそのまま使う。
-		// ダイアログが二重に出ないよう、独自の確認は挟まない。
-		const shared = await model.setSharedWithAgent(true);
+		const shared = await bindingModel.bindPageToPane(model, pick.token);
 		if (!shared) {
 			return;
 		}
-
-		await sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
-			.call('bind', [pick.token, model.id, { url: model.url, title: model.title }]);
 
 		notificationService.info(localize(
 			'paradis.share.done',
@@ -125,7 +205,7 @@ class ParadisUnshareBrowserPageAction extends Action2 {
 
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const notificationService = accessor.get(INotificationService);
-		const sharedProcessService = accessor.get(ISharedProcessService);
+		const bindingModel = accessor.get(IParadisAgentBrowserBindingModel);
 
 		const model = getActiveBrowserViewModel(accessor);
 		if (!model) {
@@ -133,18 +213,10 @@ class ParadisUnshareBrowserPageAction extends Action2 {
 			return;
 		}
 
-		const channel = sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
-		const bindings = await channel.call<IParadisPaneBinding[]>('listBindings');
-		const matching = bindings.filter(binding => binding.pageId === model.id);
-		for (const binding of matching) {
-			await channel.call('unbind', [binding.token]);
-		}
+		const removed = await bindingModel.unbindPage(model);
 
-		// どのペインにもバインドされなくなったらエージェント共有自体も解除する。
-		await model.setSharedWithAgent(false);
-
-		notificationService.info(matching.length > 0
-			? localize('paradis.unshare.done', "Removed {0} terminal pane binding(s) and stopped sharing the page with the agent.", matching.length)
+		notificationService.info(removed > 0
+			? localize('paradis.unshare.done', "Removed {0} terminal pane binding(s) and stopped sharing the page with the agent.", removed)
 			: localize('paradis.unshare.noBindings', "The page had no terminal pane bindings. Stopped sharing it with the agent."));
 	}
 }
@@ -166,35 +238,7 @@ class ParadisCopyMcpSetupCommandAction extends Action2 {
 		const notificationService = accessor.get(INotificationService);
 		const quickInputService = accessor.get(IQuickInputService);
 
-		const shimPath = FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js').fsPath;
-		// TOML basic string ではバックスラッシュがエスケープ扱いになるため、Windowsパスを考慮して二重化する
-		const shimPathToml = shimPath.replace(/\\/g, '\\\\');
-		const cdpUrl = `http://127.0.0.1:${PARADIS_MCP_DEFAULT_PORT}/cdp`;
-
-		// Claude Code向け: シェルにそのまま貼れる純粋なコマンドのみ（コメント行はzshの既定で
-		// interactivecomments が無効だとエラーになるため一切含めない）。
-		// `${VAR:-default}` はClaude Codeが接続時に展開する（Para Codeペイン外では固定ポートに
-		// フォールバックするので設定パースが壊れない）。シェルの事前展開を防ぐシングルクォート必須。
-		const claudeSnippet = [
-			`claude mcp add para-browser -- node "${shimPath}"`,
-			`claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest --browserUrl='\${${PARADIS_CDP_URL_ENV_VAR}:-${cdpUrl}}'`,
-			'',
-		].join('\n');
-
-		// Codex向け: config.toml に貼るスニペット（TOMLは#コメント可、シェルには貼らない前提）。
-		const codexSnippet = [
-			'# Add to ~/.codex/config.toml',
-			'[mcp_servers.para-browser]',
-			'command = "node"',
-			`args = ["${shimPathToml}"]`,
-			`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}"]`,
-			'',
-			'[mcp_servers.chrome-devtools]',
-			'command = "npx"',
-			`args = ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "${cdpUrl}"]`,
-			`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}", "${PARADIS_CDP_URL_ENV_VAR}"]`,
-			'',
-		].join('\n');
+		const cdpUrl = getParadisCdpUrl();
 
 		interface ISetupPickItem extends IQuickPickItem {
 			readonly snippet: string;
@@ -205,14 +249,14 @@ class ParadisCopyMcpSetupCommandAction extends Action2 {
 				label: 'Claude Code',
 				description: localize('paradis.copyMcpSetup.claude.description', "Shell commands — paste into a Para Code terminal pane"),
 				detail: localize('paradis.copyMcpSetup.claude.detail', "Registers para-browser (page reading) and chrome-devtools-mcp (full automation via the CDP gateway). One-time setup."),
-				snippet: claudeSnippet,
+				snippet: getParadisClaudeSetupSnippet(),
 				doneMessage: localize('paradis.copyMcpSetup.claude.done', "Copied Claude Code setup commands. Paste them into a terminal pane. If a server is already registered, remove it first with \"claude mcp remove <name>\"."),
 			},
 			{
 				label: 'Codex',
 				description: localize('paradis.copyMcpSetup.codex.description', "TOML snippet — paste into ~/.codex/config.toml (not into a shell)"),
 				detail: localize('paradis.copyMcpSetup.codex.detail', "Adds para-browser and chrome-devtools-mcp entries with the required env_vars forwarding."),
-				snippet: codexSnippet,
+				snippet: getParadisCodexSetupSnippet(),
 				doneMessage: localize('paradis.copyMcpSetup.codex.done', "Copied the Codex config.toml snippet. Paste it into ~/.codex/config.toml (do not paste it into a shell)."),
 			},
 			{
@@ -233,6 +277,134 @@ class ParadisCopyMcpSetupCommandAction extends Action2 {
 
 		await clipboardService.writeText(picked.snippet);
 		notificationService.info(picked.doneMessage);
+	}
+}
+
+// --- ブラウザエディタのツールバーボタン ---
+// upstreamの browserEditorChatFeatures.ts と同様、MenuId.BrowserActionsToolbar へ
+// menu 付き Action2 を登録するだけで済む（upstreamファイルは変更しない）。
+// 動的ラベルはメニュー登録では表現できないため、未共有/共有中で `when` の異なる2つの
+// アクションを登録し、共有中側は toggled でハイライト表示する。
+
+class ParadisToolbarShareAction extends Action2 {
+	static readonly ID = 'paradis.agentBrowser.toolbarShare';
+
+	constructor() {
+		super({
+			id: ParadisToolbarShareAction.ID,
+			title: localize2('paradis.toolbarShare', "Share with Agent (Agent Browser Binding)"),
+			icon: Codicon.plug,
+			menu: {
+				id: MenuId.BrowserActionsToolbar,
+				group: '3_tools',
+				order: 0,
+				when: PARADIS_ACTIVE_PAGE_SHARED.negate(),
+			},
+			precondition: BROWSER_EDITOR_ACTIVE,
+		});
+	}
+
+	run(accessor: ServicesAccessor): void {
+		openBindingDialog(accessor);
+	}
+}
+
+class ParadisToolbarSharedAction extends Action2 {
+	static readonly ID = 'paradis.agentBrowser.toolbarShared';
+
+	constructor() {
+		super({
+			id: ParadisToolbarSharedAction.ID,
+			title: localize2('paradis.toolbarShared', "Shared with Agent (Agent Browser Binding)"),
+			icon: Codicon.plug,
+			toggled: PARADIS_ACTIVE_PAGE_SHARED,
+			menu: {
+				id: MenuId.BrowserActionsToolbar,
+				group: '3_tools',
+				order: 0,
+				when: PARADIS_ACTIVE_PAGE_SHARED,
+			},
+			precondition: BROWSER_EDITOR_ACTIVE,
+		});
+	}
+
+	run(accessor: ServicesAccessor): void {
+		openBindingDialog(accessor);
+	}
+}
+
+// --- ステータスバー + コンテキストキー + ペインインジケータのホスト ---
+
+class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.paradisAgentBrowserStatus';
+
+	private readonly _statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+
+	constructor(
+		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
+		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
+		@IStatusbarService private readonly statusbarService: IStatusbarService,
+		@IEditorService private readonly editorService: IEditorService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IContextKeyService contextKeyService: IContextKeyService,
+	) {
+		super();
+
+		const activePageShared = PARADIS_ACTIVE_PAGE_SHARED.bindTo(contextKeyService);
+		const update = () => {
+			this._updateStatusbar();
+			const model = this.editorService.activeEditor instanceof BrowserEditorInput ? this.editorService.activeEditor.model : undefined;
+			activePageShared.set(!!model && this.bindingModel.getBindingsForPage(model.id).length > 0);
+		};
+
+		this._register(this.bindingModel.onDidChange(update));
+		this._register(this.editorService.onDidActiveEditorChange(update));
+		update();
+
+		// ターミナルグリッドセルの接続インジケータへ状態を供給する（vs/sessions側はこのホスト
+		// 経由でのみ状態を知る。デスクトップ以外ではホスト未登録のままインジケータ非表示）。
+		setParadisPaneIndicatorHost({
+			getPaneIndicatorState: instanceId => {
+				const token = this.paneTokenService.getTokenForInstance(instanceId);
+				return token && this.bindingModel.getBindingForToken(token) ? 'bound' : 'unbound';
+			},
+			getPaneIndicatorTooltip: instanceId => {
+				const token = this.paneTokenService.getTokenForInstance(instanceId);
+				const binding = token ? this.bindingModel.getBindingForToken(token) : undefined;
+				return binding
+					// allow-any-unicode-next-line
+					? localize('paradis.paneIndicator.bound', "このペインは「{0}」を共有中 — クリックで管理", binding.pageInfo.title || binding.pageInfo.url)
+					// allow-any-unicode-next-line
+					: localize('paradis.paneIndicator.unbound', "ブラウザページ未共有 — クリックでエージェント共有を設定");
+			},
+			onDidChangeState: this.bindingModel.onDidChange,
+			openBindingDialog: instanceId => {
+				this.instantiationService.invokeFunction(accessor => openBindingDialog(accessor, instanceId));
+			},
+		});
+		this._register({ dispose: () => setParadisPaneIndicatorHost(undefined) });
+	}
+
+	private _updateStatusbar(): void {
+		const count = this.bindingModel.bindings.length;
+		if (count === 0) {
+			this._statusbarEntry.clear();
+			return;
+		}
+		const text = `$(plug) ${localize('paradis.statusbar.text', "Agent Browser: {0} active", count)}`;
+		const entry = {
+			name: localize('paradis.statusbar.name', "Agent Browser Binding"),
+			text,
+			ariaLabel: text,
+			// allow-any-unicode-next-line
+			tooltip: localize('paradis.statusbar.tooltip', "ブラウザページ⇔ターミナルペインのバインディング（クリックで管理）"),
+			command: ParadisOpenBindingDialogAction.ID,
+		};
+		if (this._statusbarEntry.value) {
+			this._statusbarEntry.value.update(entry);
+		} else {
+			this._statusbarEntry.value = this.statusbarService.addEntry(entry, 'paradis.agentBrowser', StatusbarAlignment.RIGHT, 50);
+		}
 	}
 }
 
@@ -302,7 +474,11 @@ class ParadisPaneShellSyncContribution extends Disposable implements IWorkbenchC
 	}
 }
 
+registerAction2(ParadisOpenBindingDialogAction);
 registerAction2(ParadisShareBrowserPageWithTerminalPaneAction);
 registerAction2(ParadisUnshareBrowserPageAction);
 registerAction2(ParadisCopyMcpSetupCommandAction);
+registerAction2(ParadisToolbarShareAction);
+registerAction2(ParadisToolbarSharedAction);
+registerWorkbenchContribution2(ParadisAgentBrowserStatusContribution.ID, ParadisAgentBrowserStatusContribution, WorkbenchPhase.AfterRestored);
 registerWorkbenchContribution2(ParadisPaneShellSyncContribution.ID, ParadisPaneShellSyncContribution, WorkbenchPhase.AfterRestored);

@@ -35,6 +35,8 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				return this.service.unbind(String(args[0])) as Promise<T>;
 			case 'listBindings':
 				return this.service.listBindings(ctx) as Promise<T>;
+			case 'listSeenTokens':
+				return this.service.listSeenTokens() as Promise<T>;
 			case 'syncPaneShells':
 				return this.service.syncPaneShells(ctx, Array.isArray(args[0]) ? args[0] as { token: string; shellPid: number }[] : []) as Promise<T>;
 			default:

@@ -39,6 +39,8 @@ interface IBindingEntry {
 	readonly windowCtx: string;
 	readonly pageId: string;
 	readonly pageInfo: IParadisSharedPageInfo;
+	/** バインドされた時刻（epoch ms）。 */
+	readonly boundAt: number;
 	/** バインド済みページのChromium DevTools targetId（electron-mainへの問い合わせ結果のキャッシュ）。 */
 	cdpTargetId?: string;
 }
@@ -92,6 +94,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _bindings = new Map<string, IBindingEntry>();
 	/** workbenchから同期される「ペイントークン ⇔ シェルPID」表（CDPゲートウェイの呼び出し元識別用）。 */
 	private readonly _paneShells = new Map<string, IPaneShellEntry>();
+	/**
+	 * MCPリクエスト（またはCDPゲートウェイのPID識別）で実際に接続実績のあったペイントークンの集合。
+	 * バインディングダイアログの「MCP未接続」表示に使う（shared processの生存期間のみ保持）。
+	 */
+	private readonly _seenTokens = new Set<string>();
 	private readonly _portFilePath: string;
 	private readonly _cdpGateway: ParadisCdpGateway;
 	private _httpServer: http.Server | undefined;
@@ -113,6 +120,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				getTokenForShellPid: pid => {
 					for (const entry of this._paneShells.values()) {
 						if (entry.shellPid === pid) {
+							// CDPゲートウェイがPID経由で呼び出し元ペインを識別できた＝接続実績あり。
+							this._seenTokens.add(entry.token);
 							return entry.token;
 						}
 					}
@@ -131,7 +140,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	// --- バインディングレジストリ（workbenchからIPCチャネル経由で呼ばれる） ---
 
 	async bind(windowCtx: string, token: string, pageId: string, pageInfo: IParadisSharedPageInfo): Promise<void> {
-		this._bindings.set(token, { windowCtx, pageId, pageInfo });
+		this._bindings.set(token, { windowCtx, pageId, pageInfo, boundAt: Date.now() });
 		this.logService.debug(`[ParadisAgentBrowser] Bound pane ${token} -> page ${pageId} (${pageInfo.url}) in ${windowCtx}`);
 		// 既存のCDP接続は古いページのスコープスナップショットを持つため強制切断する
 		// （クライアントは次のツール呼び出しで再接続し、新しいバインドを拾う）。
@@ -169,10 +178,18 @@ export class ParadisAgentBrowserService extends Disposable {
 		const result: IParadisPaneBinding[] = [];
 		for (const [token, entry] of this._bindings) {
 			if (entry.windowCtx === windowCtx) {
-				result.push({ token, pageId: entry.pageId, pageInfo: entry.pageInfo });
+				result.push({ token, pageId: entry.pageId, pageInfo: entry.pageInfo, boundAt: entry.boundAt });
 			}
 		}
 		return result;
+	}
+
+	/**
+	 * MCP/CDP経由で接続実績のあるペイントークンの一覧を返す。
+	 * トークンはウィンドウをまたいで一意（UUID）なので、windowCtxでの絞り込みは行わない。
+	 */
+	async listSeenTokens(): Promise<string[]> {
+		return [...this._seenTokens];
 	}
 
 	/** ウィンドウ切断時に、そのウィンドウのバインディングとシェルPID表をまとめて破棄する。 */
@@ -300,6 +317,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			res.end(JSON.stringify({ error: 'Missing pane token. Provide it via "Authorization: Bearer <token>" or the "?pane=<token>" query parameter.' }));
 			return;
 		}
+		// MCPリクエストが届いた＝このペインのエージェントCLIはMCP接続済み（listSeenTokens用）。
+		this._seenTokens.add(token);
 
 		let body: string;
 		try {

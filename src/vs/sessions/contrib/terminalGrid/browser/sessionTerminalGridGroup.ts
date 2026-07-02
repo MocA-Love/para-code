@@ -23,6 +23,7 @@ import { hasKey, isNumber, type SingleOrMany } from '../../../../base/common/typ
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { Grid, Direction as GridDirection, Sizing as GridSizing, IView as IGridCellView, IViewSize } from '../../../../base/browser/ui/grid/grid.js';
 import { containsDragType } from '../../../../platform/dnd/browser/dnd.js';
+import { createParadisPaneIndicator } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneIndicator.js';
 
 const enum Constants {
 	/**
@@ -136,6 +137,7 @@ class SessionTerminalGridCell implements IGridCellView {
 
 	private readonly _dndDisposables = new DisposableStore();
 	private _dropOverlay: HTMLElement | undefined;
+	private readonly _paneIndicator: IDisposable;
 
 	constructor(
 		readonly instance: ITerminalInstance,
@@ -146,6 +148,14 @@ class SessionTerminalGridCell implements IGridCellView {
 		this.element.className = 'session-terminal-grid-cell';
 		this.instance.attachToElement(this.element);
 		this._registerDragAndDrop();
+		// Fork feature: small agent-browser-binding indicator in the cell's top-right corner
+		// (green when this pane has a browser page bound, gray otherwise; click opens the binding
+		// dialog). This is a DI-free helper; the actual state is supplied by the electron-browser
+		// contribution via `setParadisPaneIndicatorHost` (see paradisPaneIndicator.ts), so the
+		// indicator stays hidden when no host is registered (e.g. web builds).
+		const indicator = createParadisPaneIndicator(this.instance.instanceId);
+		this.element.appendChild(indicator.element);
+		this._paneIndicator = indicator;
 	}
 
 	private _registerDragAndDrop(): void {
@@ -233,6 +243,7 @@ class SessionTerminalGridCell implements IGridCellView {
 
 	dispose(): void {
 		this._clearDropOverlay();
+		this._paneIndicator.dispose();
 		this._dndDisposables.dispose();
 		this.instance.detachFromElement();
 	}
