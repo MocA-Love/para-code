@@ -16,7 +16,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'string',
 			enum: [BROWSER_SEARCH_NONE, ...BROWSER_SEARCH_ENGINES.map(e => e.id)],
 			enumItemLabels: [localize('browser.search.engine.none', "None"), ...BROWSER_SEARCH_ENGINES.map(e => e.label)],
-			default: BrowserSearchEngineId.Bing,
+			default: BrowserSearchEngineId.Google, // PARA-PATCH: default integrated-browser search engine to Google instead of Bing
 			experiment: { mode: 'startup' },
 			markdownDescription: localize(
 				'browser.searchEngine',
