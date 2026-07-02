@@ -145,6 +145,8 @@ import { MeteredConnectionChannelClient, METERED_CONNECTION_CHANNEL } from '../.
 import { PlaywrightChannel } from '../../../platform/browserView/node/playwrightChannel.js';
 // PARA-PATCH: ブラウザページ⇔エージェントCLI紐付け用のバインディングレジストリ+MCPサーバー（fork独自、src/vs/paradis/contrib/agentBrowser/ 参照）
 import { registerParadisAgentBrowser } from '../../../paradis/contrib/agentBrowser/node/paradisAgentBrowserChannel.js';
+// PARA-PATCH: 通知サウンド/Aivis読み上げ用バックエンド（fork独自、src/vs/paradis/contrib/notifications/ 参照）
+import { registerParadisNotifications } from '../../../paradis/contrib/notifications/node/paradisNotificationsChannel.js';
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
 import { LocalGitService } from '../../../platform/git/node/localGitService.js';
@@ -507,6 +509,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: ブラウザページ⇔エージェントCLI紐付け（バインディングレジストリ+MCP/CDPゲートウェイサーバーの生成とチャネル登録）
 		this._register(registerParadisAgentBrowser(this.server, playwrightChannel, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService)));
+
+		// PARA-PATCH: 通知サウンド/Aivis読み上げバックエンド（カスタム音源管理・YouTube取込・Aivis Cloud APIクライアント）
+		this._register(registerParadisNotifications(this.server, accessor.get(ILogService)));
 
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);

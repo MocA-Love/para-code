@@ -14,3 +14,4 @@
 
 import './contrib/windowTransparency/browser/paradisSettings.contribution.js';
 import './contrib/workspaceSwitch/browser/paradisWorkspaceSwitch.contribution.js';
+import './contrib/notifications/browser/paradisNotificationsSettings.js';
