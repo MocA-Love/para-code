@@ -26,7 +26,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.WINDOW,
-			description: localize('paradis.window.transparency.enabled', "Controls whether window transparency is enabled.")
+			markdownDescription: localize('paradis.window.transparency.enabled', "Controls whether the workbench background is made translucent so the desktop shows through. Only the workbench chrome (editor, side bar, panel, title bar, etc.) becomes translucent; dialogs, menus and notifications stay opaque. The integrated terminal renders on a GPU surface and stays opaque. Changing this requires reloading the window to take effect.")
 		},
 		'paradis.window.transparency.opacity': {
 			type: 'number',
@@ -34,7 +34,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			minimum: 0.3,
 			maximum: 1,
 			scope: ConfigurationScope.WINDOW,
-			markdownDescription: localize('paradis.window.transparency.opacity', "Controls the window opacity when {0} is enabled. Values closer to `1` are more opaque.", '`#paradis.window.transparency.enabled#`')
+			markdownDescription: localize('paradis.window.transparency.opacity', "Controls the opacity of the workbench background when {0} is enabled. Accepts any decimal between `0.3` and `1` (for example `0.95`) for fine-grained control; values closer to `1` are more opaque. Only backgrounds are affected, so text stays fully readable. Changes apply immediately without reloading.", '`#paradis.window.transparency.enabled#`')
 		}
 	}
 });

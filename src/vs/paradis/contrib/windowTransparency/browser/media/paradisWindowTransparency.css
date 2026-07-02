@@ -1,0 +1,106 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* Window transparency (Para Code). The native BrowserWindow is created with `transparent: true`
+	(see windowImpl.ts PARA-PATCH), so the desktop shows through wherever the renderer paints
+	nothing. These rules make the workbench chrome backgrounds translucent while keeping text and
+	overlays opaque. `--paradis-transparency-opacity` (a <percentage>) is supplied by the renderer
+	contribution; `--paradis-titlebar-bg` / `--paradis-statusbar-bg` mirror the parts' real (state
+	dependent) inline background colors so translucency preserves the empty-folder / debugging /
+	window-inactive tints instead of freezing them to the active theme color.
+
+	Every color-mix sources the part's own theme variable but falls back to `--vscode-editor-background`
+	so that High Contrast themes (where most `*-background` variables are intentionally undefined) never
+	collapse the mix to an invalid value and leave a part fully see-through. */
+
+/* Workbench root. Upstream's theming participant (src/vs/workbench/browser/style.ts) always paints
+	an opaque WORKBENCH_BACKGROUND on `.monaco-workbench`; without overriding it the transparent
+	native window is never revealed (the whole feature is a no-op). Applying the same color-mix keeps
+	an opaque-enough backstop under floating overlays (quick input, menus, hovers, notifications,
+	shadow-DOM dialogs) so they never leak the desktop, while still letting it show through. */
+.monaco-workbench.paradis-transparent {
+	background-color: color-mix(in srgb, var(--vscode-editor-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent .part.titlebar {
+	background-color: color-mix(in srgb, var(--paradis-titlebar-bg, var(--vscode-titleBar-activeBackground, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent .part.statusbar {
+	background-color: color-mix(in srgb, var(--paradis-statusbar-bg, var(--vscode-statusBar-background, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent .part.activitybar {
+	background-color: color-mix(in srgb, var(--vscode-activityBar-background, var(--vscode-editor-background)) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent .part.sidebar {
+	background-color: color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent .part.auxiliarybar {
+	background-color: color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent .part.panel {
+	background-color: color-mix(in srgb, var(--vscode-panel-background, var(--vscode-editor-background)) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+/* Editor area. The visible background is painted by a nested stack: the `.part.editor` container,
+	the `.monaco-editor` root (editor.css paints editor.background over the whole editor), the
+	`.monaco-editor-background` lines layer and the `.margin` gutter. Carry one translucent layer on
+	the container and clear the inner opaque layers so that single layer shows through. The
+	`:not(.zone-widget *)` guard limits the clear to the main editor so embedded editors hosted in
+	zone widgets (peek references, call/type hierarchy, etc.) keep their own peekViewEditor colors. */
+.monaco-workbench.paradis-transparent .part.editor {
+	background-color: color-mix(in srgb, var(--vscode-editor-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent .part.editor .monaco-editor:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.editor .monaco-editor-background:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.editor .monaco-editor .margin:not(.zone-widget *) {
+	background-color: transparent !important;
+}
+
+/* Panel-hosted monaco editors (output, debug console, etc.). Same treatment as the main editor so
+	the translucent panel background shows through; zone widgets are likewise left untouched. The
+	terminal (xterm) renders its cells on a GPU surface and stays an opaque rectangle (documented in
+	the setting description as a known limitation). */
+.monaco-workbench.paradis-transparent .part.panel .monaco-editor:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.panel .monaco-editor-background:not(.zone-widget *),
+.monaco-workbench.paradis-transparent .part.panel .monaco-editor .margin:not(.zone-widget *) {
+	background-color: transparent !important;
+}
+
+/* Overlay backstops. With the workbench root no longer fully opaque, floating overlays that live in
+	the light DOM must not depend on it for opacity. Force each to composite its own (possibly alpha)
+	theme background over an opaque base: the top gradient layer is the overlay color (exact in every
+	built-in theme, where it is already opaque) and the background-color is an opaque fallback so the
+	desktop can never show through. Dialogs render inside a shadow root and are already isolated. */
+.monaco-workbench.paradis-transparent .quick-input-widget {
+	background: linear-gradient(var(--vscode-quickInput-background, var(--vscode-editor-background)), var(--vscode-quickInput-background, var(--vscode-editor-background))), var(--vscode-editor-background) !important;
+}
+
+.monaco-workbench.paradis-transparent .monaco-menu {
+	background: linear-gradient(var(--vscode-menu-background, var(--vscode-editor-background)), var(--vscode-menu-background, var(--vscode-editor-background))), var(--vscode-editor-background) !important;
+}
+
+.monaco-workbench.paradis-transparent .monaco-hover {
+	background: linear-gradient(var(--vscode-editorHoverWidget-background, var(--vscode-editor-background)), var(--vscode-editorHoverWidget-background, var(--vscode-editor-background))), var(--vscode-editor-background) !important;
+}
+
+.monaco-workbench.paradis-transparent .notifications-list-container {
+	background: linear-gradient(var(--vscode-notifications-background, var(--vscode-editor-background)), var(--vscode-notifications-background, var(--vscode-editor-background))), var(--vscode-editor-background) !important;
+}
+
+/* Resource monitor severity dot (Para Code). paradisResourceMonitor.css draws a "cut-out" ring
+	around the dot with an opaque titleBar-colored box-shadow; in transparent mode the title bar is
+	translucent, so match the ring to the same translucent title bar color (via the mirrored
+	`--paradis-titlebar-bg`) instead of an opaque disc floating over the bar. */
+.monaco-workbench.paradis-transparent .paradis-resource-monitor-trigger-dot {
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--paradis-titlebar-bg, var(--vscode-titleBar-activeBackground, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent);
+}
