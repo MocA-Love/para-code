@@ -706,7 +706,9 @@ export class TerminalService extends Disposable implements ITerminalService {
 		// Don't touch processes if the shutdown was a result of reload as they will be reattached
 		const shouldPersistTerminals = this._terminalConfigurationService.config.enablePersistentSessions && e.reason === ShutdownReason.RELOAD;
 
-		for (const instance of [...this._terminalGroupService.instances, ...this._backgroundedTerminalInstances.map(bg => bg.instance)]) {
+		// PARA-PATCH: include Paradis-parked groups so their terminals persist/dispose like visible ones
+		const paradisParkedInstances = (this._terminalGroupService.paradisParkedGroups ?? []).flatMap(g => g.terminalInstances);
+		for (const instance of [...this._terminalGroupService.instances, ...paradisParkedInstances, ...this._backgroundedTerminalInstances.map(bg => bg.instance)]) {
 			if (shouldPersistTerminals && instance.shouldPersist) {
 				instance.detachProcessAndDispose(TerminalExitReason.Shutdown);
 			} else {
@@ -729,7 +731,8 @@ export class TerminalService extends Disposable implements ITerminalService {
 		if (!this._terminalConfigurationService.config.enablePersistentSessions) {
 			return;
 		}
-		const tabs = this._terminalGroupService.groups.map(g => g.getLayoutInfo(g === this._terminalGroupService.activeGroup));
+		// PARA-PATCH: include Paradis-parked groups so they survive window reloads
+		const tabs = [...this._terminalGroupService.groups, ...(this._terminalGroupService.paradisParkedGroups ?? [])].map(g => g.getLayoutInfo(g === this._terminalGroupService.activeGroup));
 		const state: ITerminalsLayoutInfoById = { tabs, background: this._backgroundedTerminalInstances.map(bg => bg.instance).filter(i => i.shellLaunchConfig.forcePersist).map(i => i.persistentProcessId).filter((e): e is number => e !== undefined) };
 		this._primaryBackend?.setTerminalLayoutInfo(state);
 	}

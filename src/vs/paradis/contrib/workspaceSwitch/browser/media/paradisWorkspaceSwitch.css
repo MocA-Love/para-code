@@ -1,0 +1,48 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+.paradis-workspaces-list {
+	height: 100%;
+}
+
+.paradis-workspaces-list .paradis-workspace-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 100%;
+	padding: 0 12px;
+	box-sizing: border-box;
+	cursor: pointer;
+}
+
+.paradis-workspaces-list .paradis-workspace-row > .codicon {
+	flex-shrink: 0;
+}
+
+.paradis-workspaces-list .paradis-workspace-row > .codicon.codicon-check {
+	color: var(--vscode-charts-blue);
+}
+
+.paradis-workspaces-list .paradis-workspace-labels {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	line-height: 1.4;
+}
+
+.paradis-workspaces-list .paradis-workspace-labels > .paradis-workspace-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-workspaces-list .paradis-workspace-labels > .paradis-workspace-path {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-size: 0.85em;
+	opacity: 0.7;
+}

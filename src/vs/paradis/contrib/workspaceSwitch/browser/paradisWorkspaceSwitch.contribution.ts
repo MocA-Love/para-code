@@ -1,0 +1,361 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { joinPath } from '../../../../base/common/resources.js';
+import { localize, localize2 } from '../../../../nls.js';
+import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
+import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
+import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js';
+import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
+import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
+import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation } from '../../../../workbench/common/views.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
+import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
+import './paradisTerminalScope.contribution.js';
+import './paradisScmInputScope.contribution.js';
+
+registerSingleton(IParadisWorkspaceSwitchService, ParadisWorkspaceSwitchService, InstantiationType.Delayed);
+
+const CATEGORY = localize2('paradis.category', "Paradis");
+
+const INITIALIZE_COMMAND_ID = 'paradis.workspaceSwitch.initialize';
+
+/**
+ * マルチルート (WORKSPACE) 状態であることを確認し、そうでなければ初期化コマンドへの
+ * 誘導つき警告を出す。切り替え機能はワークスペース identity 固定が前提のため、
+ * 単一フォルダ / empty 状態では動かさない (詳細は paradisWorkspaceSwitchService.ts)。
+ */
+function ensureParadisWorkspace(accessor: ServicesAccessor): boolean {
+	const contextService = accessor.get(IWorkspaceContextService);
+	if (contextService.getWorkbenchState() === WorkbenchState.WORKSPACE) {
+		return true;
+	}
+
+	const notificationService = accessor.get(INotificationService);
+	const commandService = accessor.get(ICommandService);
+	notificationService.prompt(
+		Severity.Warning,
+		localize('paradis.workspaceSwitch.requiresWorkspace', "Paradis repository switching requires a multi-root workspace. Initialize the Para Code workspace first."),
+		[{
+			label: localize('paradis.workspaceSwitch.initializeAction', "Initialize Workspace"),
+			run: () => commandService.executeCommand(INITIALIZE_COMMAND_ID)
+		}]
+	);
+	return false;
+}
+
+interface IRepositoryQuickPickItem extends IQuickPickItem {
+	readonly repository: IParadisWorkspaceRepository;
+}
+
+function toRepositoryPicks(service: IParadisWorkspaceSwitchService): IRepositoryQuickPickItem[] {
+	const active = service.activeRepository;
+	return service.repositories.map(repository => ({
+		repository,
+		label: repository.name,
+		description: active?.id === repository.id
+			? localize('paradis.workspaceSwitch.currentRepository', "Current")
+			: undefined,
+		detail: repository.uri.fsPath
+	}));
+}
+
+class ParadisInitializeWorkspaceAction extends Action2 {
+	constructor() {
+		super({
+			id: INITIALIZE_COMMAND_ID,
+			title: localize2('paradis.workspaceSwitch.initialize', "Initialize Multi-Repo Workspace"),
+			category: CATEGORY,
+			f1: true
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const contextService = accessor.get(IWorkspaceContextService);
+		const notificationService = accessor.get(INotificationService);
+		const pathService = accessor.get(IPathService);
+		const fileService = accessor.get(IFileService);
+		const hostService = accessor.get(IHostService);
+
+		if (contextService.getWorkbenchState() === WorkbenchState.WORKSPACE) {
+			notificationService.info(localize('paradis.workspaceSwitch.alreadyWorkspace', "This window is already using a multi-root workspace. Use 'Paradis: Add Repository' to register repositories."));
+			return;
+		}
+
+		// configPath 固定の .code-workspace を用意して開く。workspace id は configPath から
+		// 決まるため、このファイルを使い続ける限り WORKSPACE スコープの状態が安定して共有される。
+		const userHome = await pathService.userHome();
+		const workspaceFile = joinPath(userHome, '.para-code', 'para.code-workspace');
+		if (!(await fileService.exists(workspaceFile))) {
+			await fileService.createFile(workspaceFile, VSBuffer.fromString(JSON.stringify({ folders: [] }, undefined, '\t')));
+		}
+
+		await hostService.openWindow([{ workspaceUri: workspaceFile }], { forceReuseWindow: true });
+	}
+}
+
+class ParadisAddRepositoryAction extends Action2 {
+	constructor() {
+		super({
+			id: 'paradis.workspaceSwitch.addRepository',
+			title: localize2('paradis.workspaceSwitch.addRepository', "Add Repository..."),
+			category: CATEGORY,
+			f1: true
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		if (!ensureParadisWorkspace(accessor)) {
+			return;
+		}
+
+		const service = accessor.get(IParadisWorkspaceSwitchService);
+		const fileDialogService = accessor.get(IFileDialogService);
+		const contextService = accessor.get(IWorkspaceContextService);
+
+		const uris = await fileDialogService.showOpenDialog({
+			title: localize('paradis.workspaceSwitch.addRepositoryDialog', "Add Repository"),
+			openLabel: localize('paradis.workspaceSwitch.addRepositoryLabel', "Add Repository"),
+			canSelectFiles: false,
+			canSelectFolders: true,
+			canSelectMany: true
+		});
+		if (!uris || uris.length === 0) {
+			return;
+		}
+
+		const added: IParadisWorkspaceRepository[] = [];
+		for (const uri of uris) {
+			added.push(await service.addRepository(uri));
+		}
+
+		// まだ何も開いていない (初期化直後の空ワークスペース) なら、最初の登録先へそのまま切り替える
+		if (contextService.getWorkspace().folders.length === 0 && added.length > 0) {
+			await service.switchRepository(added[0].id);
+		}
+	}
+}
+
+class ParadisSwitchRepositoryAction extends Action2 {
+	constructor() {
+		super({
+			id: 'paradis.workspaceSwitch.switchRepository',
+			title: localize2('paradis.workspaceSwitch.switchRepository', "Switch Repository..."),
+			category: CATEGORY,
+			f1: true
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		if (!ensureParadisWorkspace(accessor)) {
+			return;
+		}
+
+		const service = accessor.get(IParadisWorkspaceSwitchService);
+		const quickInputService = accessor.get(IQuickInputService);
+		const notificationService = accessor.get(INotificationService);
+		const commandService = accessor.get(ICommandService);
+
+		if (service.repositories.length === 0) {
+			notificationService.prompt(
+				Severity.Info,
+				localize('paradis.workspaceSwitch.noRepositories', "No repositories are registered yet."),
+				[{
+					label: localize('paradis.workspaceSwitch.addRepositoryAction', "Add Repository"),
+					run: () => commandService.executeCommand('paradis.workspaceSwitch.addRepository')
+				}]
+			);
+			return;
+		}
+
+		const pick = await quickInputService.pick(toRepositoryPicks(service), {
+			placeHolder: localize('paradis.workspaceSwitch.switchPlaceholder', "Select a repository to switch to")
+		});
+		if (pick) {
+			await service.switchRepository(pick.repository.id);
+		}
+	}
+}
+
+class ParadisRemoveRepositoryAction extends Action2 {
+	constructor() {
+		super({
+			id: 'paradis.workspaceSwitch.removeRepository',
+			title: localize2('paradis.workspaceSwitch.removeRepository', "Remove Repository from List..."),
+			category: CATEGORY,
+			f1: true
+		});
+	}
+
+	async run(accessor: ServicesAccessor): Promise<void> {
+		const service = accessor.get(IParadisWorkspaceSwitchService);
+		const quickInputService = accessor.get(IQuickInputService);
+
+		if (service.repositories.length === 0) {
+			return;
+		}
+
+		const pick = await quickInputService.pick(toRepositoryPicks(service), {
+			placeHolder: localize('paradis.workspaceSwitch.removePlaceholder', "Select a repository to remove from the list")
+		});
+		if (pick) {
+			await service.removeRepository(pick.repository.id);
+		}
+	}
+}
+
+registerAction2(ParadisInitializeWorkspaceAction);
+registerAction2(ParadisAddRepositoryAction);
+registerAction2(ParadisSwitchRepositoryAction);
+registerAction2(ParadisRemoveRepositoryAction);
+
+// --- FleetView 風サイドバービュー ---------------------------------------------------------------
+
+const paradisWorkspacesViewIcon = registerIcon('paradis-workspaces-view-icon', Codicon.folderLibrary, localize('paradisWorkspacesViewIcon', 'View icon of the Paradis workspaces view.'));
+
+const PARADIS_WORKSPACES_CONTAINER_ID = 'workbench.view.paradisWorkspaces';
+
+const paradisWorkspacesViewContainer: ViewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
+	id: PARADIS_WORKSPACES_CONTAINER_ID,
+	title: localize2('paradis.workspaceSwitch.viewContainer', "Workspaces"),
+	icon: paradisWorkspacesViewIcon,
+	order: 0,
+	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [PARADIS_WORKSPACES_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: true }]),
+	storageId: `${PARADIS_WORKSPACES_CONTAINER_ID}.state`,
+	hideIfEmpty: false
+}, ViewContainerLocation.Sidebar);
+
+Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([{
+	id: PARADIS_WORKSPACES_VIEW_ID,
+	name: localize2('paradis.workspaceSwitch.viewName', "Repositories"),
+	containerIcon: paradisWorkspacesViewIcon,
+	canMoveView: true,
+	canToggleVisibility: false,
+	ctorDescriptor: new SyncDescriptor(ParadisWorkspacesView),
+	openCommandActionDescriptor: {
+		id: 'paradis.workspaceSwitch.showWorkspacesView',
+		order: 0
+	}
+}], paradisWorkspacesViewContainer);
+
+Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViewWelcomeContent(PARADIS_WORKSPACES_VIEW_ID, {
+	content: localize({ key: 'paradis.workspaceSwitch.welcome', comment: ['{Locked="](command:paradis.workspaceSwitch.addRepository)"}'] }, "No repositories registered yet.\n[Add Repository](command:paradis.workspaceSwitch.addRepository)")
+});
+
+// ビュータイトルの「+」ボタン
+MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
+	command: {
+		id: 'paradis.workspaceSwitch.addRepository',
+		title: localize2('paradis.workspaceSwitch.addRepositoryMenu', "Add Repository..."),
+		icon: Codicon.add
+	},
+	when: ContextKeyExpr.equals('view', PARADIS_WORKSPACES_VIEW_ID),
+	group: 'navigation',
+	order: 1
+});
+
+// --- キーバインド (Superset 風のリポジトリ即時切り替え) ------------------------------------------
+// mac: ctrl+cmd+1..9 / ctrl+cmd+[ ] (cmd+1..9 はエディタグループ、cmd+alt+矢印はカーソル追加と
+// 衝突するため避ける)。win/linux: ctrl+alt+1..9 / ctrl+alt+[ ]。
+// 注意: mac の ctrl+cmd+1 / ctrl+cmd+9 は upstream の Move Editor into First/Last Group が
+// 使っているため、weight を +1 して 1..9 を一貫してリポジトリ切り替えに割り当てる
+// (エディタ移動はメニュー/コマンドパレットから実行可能、必要ならリバインドで戻せる)。
+
+for (let index = 1; index <= 9; index++) {
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: `paradis.workspaceSwitch.switchToRepository${index}`,
+				title: localize2('paradis.workspaceSwitch.switchToRepositoryN', "Switch to Repository {0}", index),
+				category: CATEGORY,
+				f1: false,
+				keybinding: {
+					weight: KeybindingWeight.WorkbenchContrib + 1,
+					primary: KeyMod.CtrlCmd | KeyMod.Alt | (KeyCode.Digit0 + index),
+					mac: { primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | (KeyCode.Digit0 + index) }
+				}
+			});
+		}
+
+		async run(accessor: ServicesAccessor): Promise<void> {
+			const service = accessor.get(IParadisWorkspaceSwitchService);
+			const repository = service.repositories[index - 1];
+			if (repository) {
+				await service.switchRepository(repository.id);
+			}
+		}
+	});
+}
+
+async function switchRelative(accessor: ServicesAccessor, delta: number): Promise<void> {
+	const service = accessor.get(IParadisWorkspaceSwitchService);
+	const repositories = service.repositories;
+	if (repositories.length === 0) {
+		return;
+	}
+
+	const activeIndex = repositories.findIndex(repository => repository.id === service.activeRepository?.id);
+	const nextIndex = activeIndex === -1 ? 0 : (activeIndex + delta + repositories.length) % repositories.length;
+	await service.switchRepository(repositories[nextIndex].id);
+}
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'paradis.workspaceSwitch.nextRepository',
+			title: localize2('paradis.workspaceSwitch.nextRepository', "Switch to Next Repository"),
+			category: CATEGORY,
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.BracketRight,
+				mac: { primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.BracketRight }
+			}
+		});
+	}
+
+	run(accessor: ServicesAccessor): Promise<void> {
+		return switchRelative(accessor, 1);
+	}
+});
+
+registerAction2(class extends Action2 {
+	constructor() {
+		super({
+			id: 'paradis.workspaceSwitch.previousRepository',
+			title: localize2('paradis.workspaceSwitch.previousRepository', "Switch to Previous Repository"),
+			category: CATEGORY,
+			f1: true,
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.BracketLeft,
+				mac: { primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | KeyCode.BracketLeft }
+			}
+		});
+	}
+
+	run(accessor: ServicesAccessor): Promise<void> {
+		return switchRelative(accessor, -1);
+	}
+});
