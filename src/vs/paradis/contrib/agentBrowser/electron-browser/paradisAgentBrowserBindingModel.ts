@@ -21,7 +21,8 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
-import { IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisMcpSetupRequest, IParadisMcpSetupResult, ParadisMcpCli, IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { getParadisCdpUrl, getParadisShimPath } from './paradisMcpSnippets.js';
 
 export const IParadisAgentBrowserBindingModel = createDecorator<IParadisAgentBrowserBindingModel>('paradisAgentBrowserBindingModel');
 
@@ -81,6 +82,12 @@ export interface IParadisAgentBrowserBindingModel {
 	 * @returns 解除したバインディング数
 	 */
 	unbindPage(model: IBrowserViewModel): Promise<number>;
+
+	/**
+	 * 指定CLI（Claude Code / Codex）にpara-browser・chrome-devtools MCPをユーザーレベルで
+	 * 自動登録する（shared process経由）。実行結果を返す。
+	 */
+	setupMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult>;
 }
 
 /** shared processへのポーリング間隔（ms）。IPC1往復の軽い呼び出しのみ。 */
@@ -184,6 +191,16 @@ class ParadisAgentBrowserBindingModel extends Disposable implements IParadisAgen
 		if (this.getBindingsForPage(model.id).length === 0) {
 			await model.setSharedWithAgent(false);
 		}
+	}
+
+	async setupMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
+		const request: IParadisMcpSetupRequest = {
+			cli,
+			shimPath: getParadisShimPath(),
+			cdpUrl: getParadisCdpUrl(),
+		};
+		return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+			.call<IParadisMcpSetupResult>('setupMcp', [request]);
 	}
 
 	async unbindPage(model: IBrowserViewModel): Promise<number> {

@@ -15,7 +15,7 @@ import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisMcpSetupRequest, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisPlaywrightInvoker, ParadisAgentBrowserService } from './paradisAgentBrowserService.js';
 
 export class ParadisAgentBrowserChannel implements IServerChannel<string> {
@@ -43,6 +43,8 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				return this.service.acknowledgePaneStatus(String(args[0])) as Promise<T>;
 			case 'syncPaneShells':
 				return this.service.syncPaneShells(ctx, Array.isArray(args[0]) ? args[0] as { token: string; shellPid: number }[] : []) as Promise<T>;
+			case 'setupMcp':
+				return this.service.setupMcp(args[0] as IParadisMcpSetupRequest) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}

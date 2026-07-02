@@ -98,6 +98,45 @@ export interface IParadisAgentPaneStatus {
  * main/lib/notifications/map-event-type.ts の正規化テーブル移植 + Claude Code の
  * Notification イベント対応。undefined = 未知イベント (無視)、'idle' = エントリ削除。
  */
+// --- ワンボタンMCPセットアップ（バインディングダイアログの「自動セットアップ」用） -----------------
+
+/** セットアップ対象のエージェントCLI種別。 */
+export type ParadisMcpCli = 'claude' | 'codex';
+
+/** 1つのMCPサーバー登録の結果。 */
+export type ParadisMcpSetupOutcome = 'success' | 'already' | 'error';
+
+/**
+ * ワンボタンMCPセットアップの要求。実行はshared process（node層）で行うが、
+ * shimの絶対パスとCDP URLはelectron-browser側でFileAccessから解決して渡す
+ * （表示スニペットと同一のパスを使い、二重解決による齟齬を防ぐ）。
+ */
+export interface IParadisMcpSetupRequest {
+	readonly cli: ParadisMcpCli;
+	/** paradisBrowserMcpShim.js の絶対パス。 */
+	readonly shimPath: string;
+	/** CDPゲートウェイの既定URL（`http://127.0.0.1:<port>/cdp`）。 */
+	readonly cdpUrl: string;
+}
+
+/** 各MCPサーバー（para-browser / chrome-devtools）ごとのセットアップ結果。 */
+export interface IParadisMcpSetupServerResult {
+	readonly server: string;
+	readonly outcome: ParadisMcpSetupOutcome;
+	/** outcome==='error' のときの詳細（stderr/例外メッセージ、表示用）。 */
+	readonly detail?: string;
+}
+
+/** ワンボタンMCPセットアップの結果全体。 */
+export interface IParadisMcpSetupResult {
+	readonly cli: ParadisMcpCli;
+	/** claude CLIがPATH上に見つかったか（codexでは常にtrue）。falseなら手動セットアップへ誘導する。 */
+	readonly cliAvailable: boolean;
+	/** 設定を書き込んだ先の説明（例: config.tomlの絶対パス。表示用、任意）。 */
+	readonly target?: string;
+	readonly servers: readonly IParadisMcpSetupServerResult[];
+}
+
 export function paradisNormalizeAgentHookEvent(eventType: string): ParadisAgentStatus | 'idle' | undefined {
 	switch (eventType) {
 		// 完了系: Claude Code / Codex / OpenCode

@@ -16,13 +16,15 @@
 // upstreamの playwrightService.ts（_trackedPages等）は一切改造しない。
 
 import type * as http from 'http';
+import { spawn } from 'child_process';
 import { promises as fs, unlinkSync } from 'fs';
+import { homedir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisAgentPaneStatus, IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentPaneStatus, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 
@@ -421,6 +423,167 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (entry && entry.status === 'review') {
 			this._paneStatuses.delete(token);
 		}
+	}
+
+	// --- ワンボタンMCPセットアップ（バインディングダイアログの「自動セットアップ」から呼ばれる） ---
+
+	/**
+	 * ユーザーレベル（-s user / ~/.codex/config.toml）にpara-browserとchrome-devtoolsのMCPを登録する。
+	 * Claudeは `claude mcp add` をログインシェル経由で実行（GUIアプリのPATH問題回避）、
+	 * Codexは config.toml へセクション追記（既存セクションはスキップ）。
+	 */
+	async setupMcp(request: IParadisMcpSetupRequest): Promise<IParadisMcpSetupResult> {
+		if (request.cli === 'claude') {
+			return this._setupClaudeMcp(request);
+		}
+		return this._setupCodexMcp(request);
+	}
+
+	private async _setupClaudeMcp(request: IParadisMcpSetupRequest): Promise<IParadisMcpSetupResult> {
+		// claude がPATH上にあるか確認（無ければ手動セットアップへ誘導させる）。
+		const probeCommand = process.platform === 'win32' ? 'where claude' : 'command -v claude';
+		const probe = await this._runLoginShellCommand(probeCommand);
+		if (probe.code !== 0) {
+			return { cli: 'claude', cliAvailable: false, servers: [] };
+		}
+
+		const shimArg = `"${request.shimPath}"`;
+		// browserUrlはシングルクォートで囲み、`${VAR:-default}` をClaude Codeが接続時に展開できる
+		// 文字列としてそのまま登録する（ログインシェルのシングルクォートは中身を展開しない）。
+		const cdpArg = `--browserUrl='\${${PARADIS_CDP_URL_ENV_VAR}:-${request.cdpUrl}}'`;
+		const commands: { readonly server: string; readonly command: string }[] = [
+			{ server: 'para-browser', command: `claude mcp add -s user para-browser -- node ${shimArg}` },
+			{ server: 'chrome-devtools', command: `claude mcp add -s user chrome-devtools -- npx -y chrome-devtools-mcp@latest ${cdpArg}` },
+		];
+
+		const servers: IParadisMcpSetupServerResult[] = [];
+		for (const { server, command } of commands) {
+			const { code, output } = await this._runLoginShellCommand(command);
+			if (code === 0) {
+				servers.push({ server, outcome: 'success' });
+			} else if (/already exists/i.test(output)) {
+				servers.push({ server, outcome: 'already' });
+			} else {
+				servers.push({ server, outcome: 'error', detail: output.trim().slice(0, 500) || `exit code ${code}` });
+			}
+		}
+		return { cli: 'claude', cliAvailable: true, servers };
+	}
+
+	private async _setupCodexMcp(request: IParadisMcpSetupRequest): Promise<IParadisMcpSetupResult> {
+		const configDir = join(homedir(), '.codex');
+		const configPath = join(configDir, 'config.toml');
+
+		let existing = '';
+		try {
+			existing = await fs.readFile(configPath, 'utf8');
+		} catch {
+			existing = '';
+		}
+		// TOMLの完全パースはせず、`[mcp_servers.<name>]` のセクション見出し行の存在だけで判定する。
+		const hasSection = (name: string) => existing.split(/\r?\n/).some(line => line.trim() === `[mcp_servers.${name}]`);
+
+		// TOML basic string ではバックスラッシュがエスケープ扱いになるため、Windowsパスを考慮して二重化する。
+		const shimPathToml = request.shimPath.replace(/\\/g, '\\\\');
+		const sections: { readonly server: string; readonly text: string }[] = [
+			{
+				server: 'para-browser',
+				text: [
+					'[mcp_servers.para-browser]',
+					'command = "node"',
+					`args = ["${shimPathToml}"]`,
+					`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}"]`,
+				].join('\n'),
+			},
+			{
+				server: 'chrome-devtools',
+				text: [
+					'[mcp_servers.chrome-devtools]',
+					'command = "npx"',
+					`args = ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "${request.cdpUrl}"]`,
+					`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}", "${PARADIS_CDP_URL_ENV_VAR}"]`,
+				].join('\n'),
+			},
+		];
+
+		const plan = sections.map(section => ({ ...section, present: hasSection(section.server) }));
+		const toAppend = plan.filter(entry => !entry.present);
+
+		let writeError: string | undefined;
+		if (toAppend.length > 0) {
+			try {
+				await fs.mkdir(configDir, { recursive: true });
+				let content = existing;
+				if (content.length > 0 && !content.endsWith('\n')) {
+					content += '\n';
+				}
+				if (content.length > 0) {
+					content += '\n';
+				}
+				content += toAppend.map(entry => entry.text).join('\n\n') + '\n';
+				await fs.writeFile(configPath, content);
+			} catch (error) {
+				writeError = error instanceof Error ? error.message : String(error);
+			}
+		}
+
+		const servers: IParadisMcpSetupServerResult[] = plan.map(entry => {
+			if (entry.present) {
+				return { server: entry.server, outcome: 'already' };
+			}
+			if (writeError !== undefined) {
+				return { server: entry.server, outcome: 'error', detail: writeError };
+			}
+			return { server: entry.server, outcome: 'success' };
+		});
+		return { cli: 'codex', cliAvailable: true, target: configPath, servers };
+	}
+
+	/**
+	 * コマンドをログインインタラクティブシェル（`/bin/zsh -lic ...`、Windowsは `cmd /c`）で実行し、
+	 * 標準出力+標準エラーを結合して返す。ログインシェル経由にすることで、GUIアプリ由来の
+	 * shared processでも `claude`/`npx` 等のPATHが正しく解決される。
+	 */
+	private _runLoginShellCommand(command: string, timeoutMs = 30000): Promise<{ code: number; output: string }> {
+		return new Promise<{ code: number; output: string }>(resolve => {
+			const isWindows = process.platform === 'win32';
+			const shell = isWindows ? (process.env.ComSpec || 'cmd.exe') : (process.env.SHELL || '/bin/zsh');
+			const args = isWindows ? ['/c', command] : ['-lic', command];
+
+			let output = '';
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const finish = (code: number) => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				if (timer !== undefined) {
+					clearTimeout(timer);
+				}
+				resolve({ code, output });
+			};
+
+			try {
+				const child = spawn(shell, args, { env: process.env });
+				timer = setTimeout(() => {
+					output += `\n[para-browser-mcp] command timed out after ${timeoutMs}ms`;
+					try {
+						child.kill();
+					} catch {
+						// 既に終了している場合は無視
+					}
+					finish(124);
+				}, timeoutMs);
+				child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
+				child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString('utf8'); });
+				child.on('error', (error: Error) => { output += String(error); finish(127); });
+				child.on('close', (code: number | null) => finish(code ?? 0));
+			} catch (error) {
+				output += String(error);
+				finish(127);
+			}
+		});
 	}
 
 	private async _dispatch(token: string, rpc: IJsonRpcRequest): Promise<unknown> {

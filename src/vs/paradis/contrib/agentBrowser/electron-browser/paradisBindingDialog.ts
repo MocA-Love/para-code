@@ -24,7 +24,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
-import { PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet, getParadisMcpEndpointForToken } from './paradisMcpSnippets.js';
 
@@ -88,6 +88,24 @@ const STR_SETUP_CODEX_LABEL = localize('paradis.bindingDialog.setupCodexLabel', 
 // allow-any-unicode-next-line
 const STR_SETUP_ENDPOINT_LABEL = localize('paradis.bindingDialog.setupEndpointLabel', "このペインのエンドポイント（参考）");
 // allow-any-unicode-next-line
+const STR_AUTO_SETUP = localize('paradis.bindingDialog.autoSetup', "自動セットアップ");
+// allow-any-unicode-next-line
+const STR_AUTO_SETUP_HINT = localize('paradis.bindingDialog.autoSetupHint', "para-browser と chrome-devtools をユーザーレベルで自動登録します（下のコマンドを手で実行するのと同じ）。");
+// allow-any-unicode-next-line
+const STR_SETUP_RUNNING = localize('paradis.bindingDialog.setupRunning', "セットアップを実行中…");
+// allow-any-unicode-next-line
+const STR_SETUP_CLAUDE_UNAVAILABLE = localize('paradis.bindingDialog.setupClaudeUnavailable', "claude CLI が PATH 上に見つかりませんでした。下のコマンドをターミナルにコピーして手動で登録してください。");
+// allow-any-unicode-next-line
+const strSetupChannelError = (detail: string) => localize('paradis.bindingDialog.setupChannelError', "セットアップの実行に失敗しました: {0}", detail);
+// allow-any-unicode-next-line
+const strSetupCodexTarget = (path: string) => localize('paradis.bindingDialog.setupCodexTarget', "設定ファイル: {0}", path);
+// allow-any-unicode-next-line
+const strSetupServerSuccess = (server: string) => localize('paradis.bindingDialog.setupServerSuccess', "{0} を登録しました", server);
+// allow-any-unicode-next-line
+const strSetupServerAlready = (server: string) => localize('paradis.bindingDialog.setupServerAlready', "{0} は既に設定済みです", server);
+// allow-any-unicode-next-line
+const strSetupServerError = (server: string, detail: string) => localize('paradis.bindingDialog.setupServerError', "{0} の登録に失敗しました: {1}", server, detail);
+// allow-any-unicode-next-line
 const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "共有中は該当ペインの接続アイコンが緑色になります");
 // allow-any-unicode-next-line
 const STR_BTN_CLOSE = localize('paradis.bindingDialog.btnClose', "閉じる");
@@ -122,6 +140,15 @@ const STR_PERM_ISOLATION_DESC = localize('paradis.bindingDialog.permIsolationDes
 
 type DialogTab = 'panes' | 'setup' | 'perms';
 
+/** 「自動セットアップ」ボタンの実行状態（現在選択中のCLIについてのみ保持する）。 */
+interface IParadisSetupState {
+	readonly cli: 'claude' | 'codex';
+	readonly busy: boolean;
+	readonly result?: IParadisMcpSetupResult;
+	/** IPC呼び出し自体が失敗したときのメッセージ（shared process未起動等）。 */
+	readonly error?: string;
+}
+
 export interface IParadisBindingDialogOptions {
 	/** 開いた時点で選択状態にするペインのターミナルインスタンスID。 */
 	readonly selectInstanceId?: number;
@@ -145,6 +172,7 @@ export class ParadisBindingDialog extends Disposable {
 	private _activeCli: 'claude' | 'codex' = 'claude';
 	private _selectedToken: string | undefined;
 	private _filterText = '';
+	private _setupState: IParadisSetupState | undefined;
 
 	constructor(
 		private readonly pageModel: IBrowserViewModel,
@@ -498,12 +526,17 @@ export class ParadisBindingDialog extends Disposable {
 			element.classList.toggle('active', this._activeCli === kind);
 			dom.append(element, $('span')).textContent = label;
 			this._renderDisposables.add(dom.addDisposableListener(element, 'click', () => {
+				// CLIを切り替えたら前のCLIのセットアップ結果表示はクリアする。
+				this._setupState = undefined;
 				this._activeCli = kind;
 				this._render();
 			}));
 		};
 		cliTab('claude', 'Claude Code CLI');
 		cliTab('codex', 'Codex CLI');
+
+		// ワンボタンMCPセットアップ（ユーザーレベル導入）。
+		this._renderAutoSetup(card);
 
 		// snippet
 		const label = this._activeCli === 'claude' ? STR_SETUP_CLAUDE_LABEL : STR_SETUP_CODEX_LABEL;
@@ -521,6 +554,84 @@ export class ParadisBindingDialog extends Disposable {
 			dom.append(endpointRow, $('.pbd-url')).textContent = endpoint;
 			this._appendCopyButton(endpointRow, endpoint, 'pbd-icon-btn');
 		}
+	}
+
+	private _renderAutoSetup(card: HTMLElement): void {
+		const wrap = dom.append(card, $('.pbd-auto-setup'));
+		const busy = this._setupState?.busy === true && this._setupState.cli === this._activeCli;
+
+		const button = dom.append(wrap, $('button.pbd-auto-setup-btn')) as HTMLButtonElement;
+		const icon = button.appendChild($(`span${ThemeIcon.asCSSSelector(busy ? Codicon.loading : Codicon.zap)}`));
+		if (busy) {
+			icon.classList.add('codicon-modifier-spin');
+		}
+		dom.append(button, $('span')).textContent = busy ? STR_SETUP_RUNNING : STR_AUTO_SETUP;
+		button.disabled = busy;
+		this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => void this._runAutoSetup()));
+
+		dom.append(wrap, $('.pbd-auto-setup-hint')).textContent = STR_AUTO_SETUP_HINT;
+
+		const state = this._setupState;
+		if (state && state.cli === this._activeCli && !state.busy) {
+			this._renderSetupResult(card, state);
+		}
+	}
+
+	private _renderSetupResult(card: HTMLElement, state: IParadisSetupState): void {
+		const container = dom.append(card, $('.pbd-setup-result'));
+		if (state.error !== undefined) {
+			this._appendSetupResultRow(container, 'error', strSetupChannelError(state.error));
+			return;
+		}
+		const result = state.result;
+		if (!result) {
+			return;
+		}
+		if (result.cli === 'claude' && !result.cliAvailable) {
+			this._appendSetupResultRow(container, 'error', STR_SETUP_CLAUDE_UNAVAILABLE);
+			return;
+		}
+		if (result.target) {
+			dom.append(container, $('.pbd-setup-result-target')).textContent = strSetupCodexTarget(result.target);
+		}
+		for (const server of result.servers) {
+			if (server.outcome === 'success') {
+				this._appendSetupResultRow(container, 'success', strSetupServerSuccess(server.server));
+			} else if (server.outcome === 'already') {
+				this._appendSetupResultRow(container, 'already', strSetupServerAlready(server.server));
+			} else {
+				this._appendSetupResultRow(container, 'error', strSetupServerError(server.server, server.detail ?? ''));
+			}
+		}
+	}
+
+	private _appendSetupResultRow(container: HTMLElement, kind: 'success' | 'already' | 'error', text: string): void {
+		const row = dom.append(container, $(`.pbd-setup-result-row.${kind}`));
+		const icon = kind === 'success' ? Codicon.check : kind === 'already' ? Codicon.info : Codicon.error;
+		row.appendChild($(`span${ThemeIcon.asCSSSelector(icon)}`));
+		dom.append(row, $('span')).textContent = text;
+	}
+
+	private async _runAutoSetup(): Promise<void> {
+		if (this._setupState?.busy) {
+			return;
+		}
+		const cli = this._activeCli;
+		this._setupState = { cli, busy: true };
+		this._render();
+		try {
+			const result = await this.bindingModel.setupMcp(cli);
+			if (this._store.isDisposed) {
+				return;
+			}
+			this._setupState = { cli, busy: false, result };
+		} catch (error) {
+			if (this._store.isDisposed) {
+				return;
+			}
+			this._setupState = { cli, busy: false, error: error instanceof Error ? error.message : String(error) };
+		}
+		this._render();
 	}
 
 	private _appendCopyButton(container: HTMLElement, text: string, className: string): void {
