@@ -27,6 +27,9 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'suggest-details-container', type: BrowserOverlayType.Hover },
 	{ className: 'monaco-dialog-modal-block', type: BrowserOverlayType.Dialog },
 	{ className: 'monaco-modal-editor-block', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's agent-browser binding dialog (paradisBindingDialog.ts) must also pause
+	// the native WebContentsView, otherwise the DOM modal renders behind the browser page.
+	{ className: 'paradis-binding-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),

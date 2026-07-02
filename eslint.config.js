@@ -2259,6 +2259,8 @@ export default defineConfig(
 						'vs/sessions/~',
 						'vs/sessions/contrib/*/~',
 						'vs/sessions/services/*/~',
+						// PARA-PATCH: terminalGrid のセルが agentBrowser のペインインジケータ（DIフリーなヘルパー）を使うための import
+						'vs/paradis/contrib/agentBrowser/~',
 					]
 				},
 				{
