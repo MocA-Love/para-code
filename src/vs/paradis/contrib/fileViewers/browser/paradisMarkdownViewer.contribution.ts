@@ -103,7 +103,7 @@ class ParadisMarkdownViewerResolverContribution implements IWorkbenchContributio
 						const original = diffEditorInput.original.resource;
 						const modified = diffEditorInput.modified.resource;
 						if (!original || !modified) {
-							throw new Error('Paradis file diff requires both original and modified resources');
+							throw new Error('Para Code file diff requires both original and modified resources');
 						}
 						return {
 							editor: instantiationService.createInstance(ParadisFileDiffInput, original, modified, diffEditorInput.label)

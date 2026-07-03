@@ -44,11 +44,11 @@ registerSingleton(IParadisWorkspaceSwitchService, ParadisWorkspaceSwitchService,
 registerSingleton(IParadisWorktreeService, ParadisWorktreeService, InstantiationType.Delayed);
 registerSingleton(IParadisAgentStatusStore, ParadisAgentStatusStore, InstantiationType.Delayed);
 
-// worktree 自動同期の Paradis 設定 (セクションは windowTransparency 側と同じ 'paradis' に相乗り)
+// worktree 自動同期の Para Code 設定 (セクションは windowTransparency 側と同じ 'paradis' に相乗り)
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
 	order: 999,
-	title: localize('paradisConfigurationTitle', "Paradis"),
+	title: localize('paradisConfigurationTitle', "Para Code"),
 	type: 'object',
 	properties: {
 		'paradis.workspaceSwitch.autoImportWorktrees': {
@@ -66,7 +66,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	}
 });
 
-const CATEGORY = localize2('paradis.category', "Paradis");
+const CATEGORY = localize2('paradis.category', "Para Code");
 
 const INITIALIZE_COMMAND_ID = 'paradis.workspaceSwitch.initialize';
 
@@ -85,7 +85,7 @@ function ensureParadisWorkspace(accessor: ServicesAccessor): boolean {
 	const commandService = accessor.get(ICommandService);
 	notificationService.prompt(
 		Severity.Warning,
-		localize('paradis.workspaceSwitch.requiresWorkspace', "Paradis repository switching requires a multi-root workspace. Initialize the Para Code workspace first."),
+		localize('paradis.workspaceSwitch.requiresWorkspace', "Para Code repository switching requires a multi-root workspace. Initialize the Para Code workspace first."),
 		[{
 			label: localize('paradis.workspaceSwitch.initializeAction', "Initialize Workspace"),
 			run: () => commandService.executeCommand(INITIALIZE_COMMAND_ID)
@@ -128,7 +128,7 @@ class ParadisInitializeWorkspaceAction extends Action2 {
 		const hostService = accessor.get(IHostService);
 
 		if (contextService.getWorkbenchState() === WorkbenchState.WORKSPACE) {
-			notificationService.info(localize('paradis.workspaceSwitch.alreadyWorkspace', "This window is already using a multi-root workspace. Use 'Paradis: Add Repository' to register repositories."));
+			notificationService.info(localize('paradis.workspaceSwitch.alreadyWorkspace', "This window is already using a multi-root workspace. Use 'Para Code: Add Repository' to register repositories."));
 			return;
 		}
 
@@ -295,7 +295,7 @@ registerAction2(class extends Action2 {
 
 // --- FleetView 風サイドバービュー ---------------------------------------------------------------
 
-const paradisWorkspacesViewIcon = registerIcon('paradis-workspaces-view-icon', Codicon.folderLibrary, localize('paradisWorkspacesViewIcon', 'View icon of the Paradis workspaces view.'));
+const paradisWorkspacesViewIcon = registerIcon('paradis-workspaces-view-icon', Codicon.folderLibrary, localize('paradisWorkspacesViewIcon', 'View icon of the Para Code workspaces view.'));
 
 const PARADIS_WORKSPACES_CONTAINER_ID = 'workbench.view.paradisWorkspaces';
 

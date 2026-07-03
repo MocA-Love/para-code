@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // エージェントCLI（Claude Code / Codex）向けMCPセットアップスニペットの生成ロジック。
-// 「Paradis: Copy MCP Setup Command」コマンドとバインディングダイアログの両方から使われる
+// 「Para Code: Copy MCP Setup Command」コマンドとバインディングダイアログの両方から使われる
 // （挙動の二重実装を避けるための共通化モジュール）。
 
 import { FileAccess } from '../../../../base/common/network.js';

@@ -665,7 +665,7 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 	private wasLoaded = false;
 
 	// PARA-PATCH: remembers whether this BrowserWindow was created with `transparent: true`
-	// (Paradis window transparency). Forwarded to the renderer via INativeWindowConfiguration.
+	// (Para Code window transparency). Forwarded to the renderer via INativeWindowConfiguration.
 	private paradisTransparentWindow = false;
 
 	private readonly jsCallStackMap: Map<string, number>;
@@ -716,7 +716,7 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 				webPreferences.backgroundThrottling = false; // keep agents window responsive when in background
 			}
 
-			// PARA-PATCH: opt the native window into `transparent: true` when Paradis window transparency
+			// PARA-PATCH: opt the native window into `transparent: true` when Para Code window transparency
 			// is enabled, so the renderer can make only the workbench chrome translucent while dialogs stay
 			// opaque. `transparent` is a creation-time flag, so toggling the setting requires an application
 			// restart (the renderer contribution shows a restart prompt). See src/vs/paradis/contrib/windowTransparency.
@@ -1293,7 +1293,7 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 		}
 		configuration.fullscreen = this.isFullScreen;
 		configuration.maximized = this._win.isMaximized();
-		// PARA-PATCH: forward the actual native transparency creation state to the renderer (Paradis window transparency)
+		// PARA-PATCH: forward the actual native transparency creation state to the renderer (Para Code window transparency)
 		configuration.paradisTransparentWindow = this.paradisTransparentWindow;
 		configuration.partsSplash = this.themeMainService.getWindowSplash(configuration.workspace);
 		configuration.zoomLevel = this.getZoomLevel();

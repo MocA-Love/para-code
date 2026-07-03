@@ -21,7 +21,7 @@
 	"win32arm64AppId": "{{A1B2C3D4-1111-4222-9333-000000000002}",
 	"win32x64UserAppId": "{{A1B2C3D4-1111-4222-9333-000000000003}",
 	"win32arm64UserAppId": "{{A1B2C3D4-1111-4222-9333-000000000004}",
-	"win32AppUserModelId": "Paradis.ParaCode",
+	"win32AppUserModelId": "ParaCode.ParaCode",
 	"win32ShellNameShort": "Para &Code",
 	"win32TunnelServiceMutex": "paracode-tunnelservice",
 	"win32TunnelMutex": "paracode-tunnel",

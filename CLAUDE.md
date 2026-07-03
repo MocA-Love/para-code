@@ -1,6 +1,6 @@
 # Para Code — 実装ルール（厳守）
 
-このリポジトリは `microsoft/vscode` を fork した社内向けエディタ（Para Code）です。**今後も定期的にupstreamを取り込み続ける前提**なので、以下のルールは全ての実装作業で厳守してください。背景・経緯は `NOTES.md` を参照。
+このリポジトリは `microsoft/vscode` を fork した独自エディタ（Para Code）です。**今後も定期的にupstreamを取り込み続ける前提**なので、以下のルールは全ての実装作業で厳守してください。背景・経緯は `NOTES.md` を参照。
 
 ## 大前提
 

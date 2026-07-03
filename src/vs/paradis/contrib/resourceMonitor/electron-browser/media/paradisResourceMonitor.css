@@ -8,7 +8,7 @@
  * CPU/RAM usage indicator (title bar trigger, see paradisResourceMonitorWidget.ts) and its
  * click-to-open breakdown panel (see paradisResourceMonitorPanel.ts). Layout/structure mirrors
  * Superset apps/desktop's TopBar ResourceConsumption widget; all colors come from --vscode-*
- * theme tokens except the fixed severity accents (amber/red), which match the rest of Paradis
+ * theme tokens except the fixed severity accents (amber/red), which match the rest of Para Code
  * (see paradisWorkspaceSwitch.css agent status colors).
  */
 

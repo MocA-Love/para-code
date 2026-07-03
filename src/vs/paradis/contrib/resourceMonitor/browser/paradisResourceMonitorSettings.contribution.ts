@@ -18,7 +18,7 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
 	order: 999,
-	title: localize('paradisConfigurationTitle', "Paradis"),
+	title: localize('paradisConfigurationTitle', "Para Code"),
 	type: 'object',
 	properties: {
 		'paradis.resourceMonitor.enabled': {

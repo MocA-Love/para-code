@@ -30,7 +30,7 @@ interface ISerializedKnownWorktree {
  * getWorktreesFS) と同じアルゴリズムで `<repo>/.git/worktrees/<name>/gitdir` を直接読む。
  * `.git/worktrees` を correlated watcher で監視し、worktree の作成/削除に自動追従する。
  *
- * 自動反映は Paradis 設定で制御できる:
+ * 自動反映は Para Code 設定で制御できる:
  * - `paradis.workspaceSwitch.autoImportWorktrees`: 新しく検出した worktree をリストへ自動追加
  * - `paradis.workspaceSwitch.autoRemoveMissingWorktrees`: 消えた worktree をリストから自動削除
  *   (OFF の場合は missing フラグ付きで残り、手動で removeKnownWorktree できる)
