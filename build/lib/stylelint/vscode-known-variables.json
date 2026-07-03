@@ -1001,6 +1001,7 @@
 		"--paradis-statusbar-bg",
 		"--paradis-titlebar-bg",
 		"--paradis-transparency-opacity",
+		"--paradis-workspace-color",
 		"--part-background",
 		"--part-border-color",
 		"--reveal-button-size",
