@@ -116,6 +116,14 @@
 	background-color: transparent !important;
 }
 
+/* Empty editor group (watermark page). editorGroupView.ts paints EDITOR_GROUP_EMPTY_BACKGROUND as an */
+/* opaque inline background on the group container while the group has no editors, hiding the */
+/* translucent `.part.editor` layer for the whole watermark area. Clear it so the empty group is as */
+/* translucent as the rest of the editor area; `!important` outranks the inline style. */
+.monaco-workbench.paradis-transparent .part.editor .editor-group-container.empty {
+	background-color: transparent !important;
+}
+
 /* Editor group backdrop. editorGroupView.ts paints an opaque editorBackground on `.editor-container` */
 /* via inline style, which blocks the translucent `.part.editor` layer behind every editor kind */
 /* (text editors, md/html Raw viewers, terminals opened as editors). Clear it so the part's single */
