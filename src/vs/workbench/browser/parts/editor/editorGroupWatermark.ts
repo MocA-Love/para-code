@@ -75,7 +75,7 @@ const otherEntries: WatermarkEntry[] = [
 	findInFiles,
 	startDebugging,
 	toggleTerminal,
-	toggleBrowser,
+	toggleBrowser, // PARA-PATCH: include the browser toggle in the top-up pool too
 	openSettings,
 ];
 
