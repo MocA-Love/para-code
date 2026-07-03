@@ -11,6 +11,8 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IViewDescriptorService, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../../workbench/common/views.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
+import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 
 /** 配置の指定方法。'left' = 左サイドバー / 'right' = 右セカンダリサイドバー / 'hidden' = 指定ビューを非表示。 */
 type ParadisViewPlacement = 'left' | 'right' | 'hidden';
@@ -53,8 +55,16 @@ const DEFAULT_PLACEMENTS: readonly IParadisContainerPlacement[] = [
 // 取りこぼした分は未適用のまま残して次回起動で再試行する（全体フラグを立てない）。
 const APPLIED_CONTAINERS_KEY = 'paradis.viewLayout.appliedContainerIds';
 const APPLIED_VIEWS_KEY = 'paradis.viewLayout.appliedViewIds';
+const APPLIED_INITIAL_COMPOSITES_KEY = 'paradis.viewLayout.appliedInitialComposites';
+
+// 初回起動時に開いておくコンポジット: 左サイドバー = Workspaces / 右(セカンダリ)サイドバー = エクスプローラー。
+// Explorer コンテナは explorerViewlet.ts の PARA-PATCH で AuxiliaryBar 既定になっている。
+const INITIAL_SIDEBAR_COMPOSITE_ID = 'workbench.view.paradisWorkspaces';
+const INITIAL_AUXILIARYBAR_COMPOSITE_ID = 'workbench.view.explorer';
 // この起動で遅れて登録されるコンテナ/ビューを拾うための購読時間。ここで拾えなかった分は次回起動で再試行される。
-const WATCH_DURATION_MS = 90_000;
+// 初回起動ではデフォルト拡張の一括インストール完了(数分)後にGitLens等がビューを登録して
+// サイドバーを奪うため、それを同一セッション内で確実に拾えるよう10分に設定している。
+const WATCH_DURATION_MS = 600_000;
 
 /**
  * 初回起動時に既定のビュー配置（左右移動・非表示）を適用する contribution。
@@ -74,8 +84,12 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 	constructor(
 		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
 		@IStorageService private readonly storageService: IStorageService,
+		@IPaneCompositePartService private readonly paneCompositePartService: IPaneCompositePartService,
+		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 	) {
 		super();
+
+		this.applyInitialComposites();
 
 		this.appliedContainers = this.readSet(APPLIED_CONTAINERS_KEY);
 		this.appliedViews = this.readSet(APPLIED_VIEWS_KEY);
@@ -160,6 +174,29 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 
 		const timer = setTimeout(() => watchStore.dispose(), WATCH_DURATION_MS);
 		this._register({ dispose: () => clearTimeout(timer) });
+	}
+
+	/**
+	 * 初回起動時に一度だけ、左サイドバーに Workspaces、右(セカンダリ)サイドバーにエクスプローラーを
+	 * 開いた状態にする。以後はユーザーのレイアウト操作を尊重する。失敗分は次回起動で再試行する。
+	 */
+	private async applyInitialComposites(): Promise<void> {
+		if (this.storageService.getBoolean(APPLIED_INITIAL_COMPOSITES_KEY, StorageScope.APPLICATION, false)) {
+			return;
+		}
+		let allApplied = true;
+		try {
+			this.layoutService.setPartHidden(false, Parts.AUXILIARYBAR_PART);
+			this.layoutService.setPartHidden(false, Parts.SIDEBAR_PART);
+			const auxComposite = await this.paneCompositePartService.openPaneComposite(INITIAL_AUXILIARYBAR_COMPOSITE_ID, ViewContainerLocation.AuxiliaryBar, false);
+			const sidebarComposite = await this.paneCompositePartService.openPaneComposite(INITIAL_SIDEBAR_COMPOSITE_ID, ViewContainerLocation.Sidebar, false);
+			allApplied = !!auxComposite && !!sidebarComposite;
+		} catch {
+			allApplied = false; // best-effort: 次回起動時に再試行
+		}
+		if (allApplied) {
+			this.storageService.store(APPLIED_INITIAL_COMPOSITES_KEY, true, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		}
 	}
 
 	private readSet(key: string): Set<string> {
