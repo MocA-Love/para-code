@@ -340,7 +340,7 @@ export class ExtensionManagementService extends AbstractExtensionManagementServi
 	private async downloadExtension(extension: IGalleryExtension, operation: InstallOperation, verifySignature: boolean, clientTargetPlatform?: TargetPlatform): Promise<{ readonly location: URI; readonly verificationStatus: ExtensionSignatureVerificationCode | undefined }> {
 		if (verifySignature) {
 			const value = this.configurationService.getValue(VerifyExtensionSignatureConfigKey);
-			verifySignature = isBoolean(value) ? value : true;
+			verifySignature = isBoolean(value) ? value : false; // PARA-PATCH: default to no signature verification. OSS builds ship without @vscode/vsce-sign (distro-injected in official builds), so verification can never execute and every Open VSX install would fail with SignatureVerificationInternal
 		}
 		const { location, verificationStatus } = await this.extensionsDownloader.download(extension, operation, verifySignature, clientTargetPlatform);
 		const shouldRequireSignature = shouldRequireRepositorySignatureFor(extension.private, await this.extensionGalleryManifestService.getExtensionGalleryManifest());

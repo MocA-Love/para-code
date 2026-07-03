@@ -12,7 +12,7 @@ import { language } from '../../../../base/common/platform.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { IExtensionGalleryService, InstallExtensionInfo } from '../../../../platform/extensionManagement/common/extensionManagement.js';
+import { EXTENSION_INSTALL_SKIP_PUBLISHER_TRUST_CONTEXT, IExtensionGalleryService, InstallExtensionInfo } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { areSameExtensions } from '../../../../platform/extensionManagement/common/extensionManagementUtil.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILanguagePackService } from '../../../../platform/languagePacks/common/languagePacks.js';
@@ -224,9 +224,18 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 			CancellationToken.None
 		);
 
+		// Para Code が選定した既定拡張なので、初回起動時にパブリッシャー信頼ダイアログは出さない。
+		// このバッチはコンテキストでダイアログをスキップしつつ、パブリッシャー自体も信頼済みとして
+		// 登録する（以後ユーザーが同パブリッシャーの拡張を手動インストールする際にも出さない）。
+		const publishers = new Map<string, { publisher: string; publisherDisplayName: string }>();
+		for (const gallery of galleryExtensions) {
+			publishers.set(gallery.publisher.toLowerCase(), { publisher: gallery.publisher, publisherDisplayName: gallery.publisherDisplayName });
+		}
+		this.extensionManagementService.trustPublishers(...publishers.values());
+
 		const toInstall: InstallExtensionInfo[] = [];
 		for (const gallery of galleryExtensions) {
-			toInstall.push({ extension: gallery, options: { isMachineScoped: false } });
+			toInstall.push({ extension: gallery, options: { isMachineScoped: false, context: { [EXTENSION_INSTALL_SKIP_PUBLISHER_TRUST_CONTEXT]: true } } });
 		}
 		for (const id of remaining) {
 			if (!galleryExtensions.some(gallery => areSameExtensions(gallery.identifier, { id }))) {
