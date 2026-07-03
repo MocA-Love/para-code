@@ -330,7 +330,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
 			[VerifyExtensionSignatureConfigKey]: {
 				type: 'boolean',
 				description: localize('extensions.verifySignature', "When enabled, extensions are verified to be signed before getting installed."),
-				default: true,
+				default: false, // PARA-PATCH: keep the surfaced default in sync with the node-layer default (no @vscode/vsce-sign in OSS/fork builds)
 				scope: ConfigurationScope.APPLICATION,
 				included: isNative
 			},
