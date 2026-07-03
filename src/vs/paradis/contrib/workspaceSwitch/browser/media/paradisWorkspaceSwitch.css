@@ -51,7 +51,7 @@
 	text-overflow: ellipsis;
 }
 
-.paradis-workspaces-list .paradis-workspace-labels > .paradis-workspace-path {
+.paradis-workspaces-list .paradis-workspace-labels > .paradis-workspace-branch {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;

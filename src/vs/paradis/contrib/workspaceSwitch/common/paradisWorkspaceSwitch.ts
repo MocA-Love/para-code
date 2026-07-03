@@ -80,6 +80,8 @@ export interface IParadisWorktreeService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeWorktrees: Event<void>;
 	getWorktrees(repositoryId: string): readonly IParadisWorktree[];
+	/** リポジトリ本体 (main checkout) のブランチ名 (detached HEAD なら短縮SHA)。git 管理外なら undefined */
+	getRepositoryBranch(repositoryId: string): string | undefined;
 	/** 自動削除OFFで残った missing エントリを手動でリストから外す */
 	removeKnownWorktree(worktree: IParadisWorktree): void;
 }
