@@ -603,6 +603,21 @@ function patchWin32DependenciesTask(destinationFolderName: string) {
 			const basename = path.basename(dep);
 			const fullPath = path.join(cwd, dep);
 
+			// PARA-PATCH: the copilot extension ships @anthropic-ai/claude-agent-sdk
+			// vendor prebuilds for every platform (e.g. arm64-darwin audio-capture.node);
+			// rcedit/signtool only understand PE files, so skip anything without an MZ
+			// header instead of failing the win32 packaging.
+			const fd = await fs.promises.open(fullPath, 'r');
+			try {
+				const header = Buffer.alloc(2);
+				await fd.read(header, 0, 2, 0);
+				if (header.toString('latin1') !== 'MZ') {
+					return;
+				}
+			} finally {
+				await fd.close();
+			}
+
 			await stripAuthenticodeSignature(fullPath);
 			await rcedit(fullPath, {
 				'file-version': baseVersion,
