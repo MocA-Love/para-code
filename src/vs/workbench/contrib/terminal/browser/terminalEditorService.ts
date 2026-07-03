@@ -14,6 +14,7 @@ import { IEditorPane } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IDeserializedTerminalEditorInput, ITerminalEditorService, ITerminalInstance, ITerminalInstanceService, TerminalEditorLocation } from './terminal.js';
 import { TerminalEditorInput } from './terminalEditorInput.js';
+import { paradisTakeParkedTerminalEditorInstance } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalEditorPark.js'; // PARA-PATCH: see reviveInput
 import { getInstanceFromResource } from './terminalUri.js';
 import { TerminalContextKeys } from '../common/terminalContextKey.js';
 import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
@@ -236,6 +237,13 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 	}
 
 	reviveInput(deserializedInput: IDeserializedTerminalEditorInput): EditorInput {
+		// PARA-PATCH: reuse a live instance parked during Paradis workspace switching instead of re-attaching by pty id (see paradisTerminalEditorPark.ts)
+		const parkedInstance = paradisTakeParkedTerminalEditorInstance(deserializedInput.id);
+		if (parkedInstance) {
+			const parkedInput = this._instantiationService.createInstance(TerminalEditorInput, parkedInstance.resource, parkedInstance);
+			this._registerInstance(parkedInstance.resource.path, parkedInput, parkedInstance);
+			return parkedInput;
+		}
 		const newDeserializedInput = { ...deserializedInput, findRevivedId: true };
 		const instance = this._terminalInstanceService.createInstance({ attachPersistentProcess: newDeserializedInput }, TerminalLocation.Editor);
 		const input = this._instantiationService.createInstance(TerminalEditorInput, instance.resource, instance);
