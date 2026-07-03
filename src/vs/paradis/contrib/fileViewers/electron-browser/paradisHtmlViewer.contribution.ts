@@ -21,6 +21,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IEditorResolverService, RegisteredEditorPriority } from '../../../../workbench/services/editor/common/editorResolverService.js';
 import { ParadisHtmlFileEditor } from './paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput, ParadisHtmlFileInputSerializer } from './paradisHtmlFileInput.js';
+import { ParadisFileDiffInput } from '../browser/paradisFileDiffInput.js';
 import { PARADIS_HTML_EDITOR_ID, PARADIS_HTML_EXTENSIONS, PARADIS_HTML_INPUT_TYPE_ID, isParadisHtmlResource, paradisGlobForExtension } from '../browser/paradisFileViewers.js';
 
 const HTML_PREVIEW_LABEL = localize('paradis.htmlPreview', "HTML Preview");
@@ -59,15 +60,27 @@ class ParadisHtmlViewerResolverContribution implements IWorkbenchContribution {
 					priority: RegisteredEditorPriority.exclusive
 				},
 				{
+					// git: は差分オープン(SCM の Open Changes)の旧版スキーム(Markdown 側と同じ扱い)。
 					canSupportResource: resource =>
-						(resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote) && isParadisHtmlResource(resource),
+						(resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote || resource.scheme === 'git') && isParadisHtmlResource(resource),
 					singlePerResource: true
 				},
 				{
 					createEditorInput: ({ resource, options }) => ({
 						editor: instantiationService.createInstance(ParadisHtmlFileInput, resource),
 						options
-					})
+					}),
+					// 差分は MD/HTML 共用のテキスト差分ペイン(pane/シリアライザは Markdown 側 contribution で登録済み)で開く。
+					createDiffEditorInput: diffEditorInput => {
+						const original = diffEditorInput.original.resource;
+						const modified = diffEditorInput.modified.resource;
+						if (!original || !modified) {
+							throw new Error('Paradis file diff requires both original and modified resources');
+						}
+						return {
+							editor: instantiationService.createInstance(ParadisFileDiffInput, original, modified, diffEditorInput.label)
+						};
+					}
 				}
 			);
 		}
