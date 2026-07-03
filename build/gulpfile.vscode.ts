@@ -509,7 +509,11 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 			result = es.merge(result, gulp.src('.build/policies/win32/**', { base: '.build/policies/win32' })
 				.pipe(rename(f => f.dirname = `policies/${f.dirname}`)));
 
-			if (quality === 'stable' || quality === 'insider') {
+			// PARA-PATCH: additionally require product.win32ContextMenu — the Windows 11
+			// Explorer context-menu appx assets and CLSIDs come from Microsoft's internal
+			// distro mixin, which this fork doesn't have; without the guard this branch
+			// dereferences win32ContextMenu![arch] and crashes for quality "stable".
+			if ((quality === 'stable' || quality === 'insider') && (product as { win32ContextMenu?: Record<string, { clsid: string }> }).win32ContextMenu) {
 				result = es.merge(result, gulp.src('.build/win32/appx/**', { base: '.build/win32' }));
 				const rawVersion = version.replace(/-\w+$/, '').split('.');
 				const appxVersion = `${rawVersion[0]}.0.${rawVersion[1]}.${rawVersion[2]}`;
