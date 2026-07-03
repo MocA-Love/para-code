@@ -21,8 +21,10 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IEditorResolverService, RegisteredEditorPriority } from '../../../../workbench/services/editor/common/editorResolverService.js';
 import { ParadisMarkdownFileEditor } from './paradisMarkdownFileEditor.js';
 import { ParadisMarkdownFileInput, ParadisMarkdownFileInputSerializer } from './paradisFileViewerInput.js';
+import { ParadisFileDiffEditor } from './paradisFileDiffEditor.js';
+import { ParadisFileDiffInput, ParadisFileDiffInputSerializer } from './paradisFileDiffInput.js';
 import { registerParadisFileViewerActions } from './paradisFileViewerActions.js';
-import { PARADIS_MARKDOWN_EDITOR_ID, PARADIS_MARKDOWN_EXTENSIONS, PARADIS_MARKDOWN_INPUT_TYPE_ID, isParadisMarkdownResource, paradisGlobForExtension } from './paradisFileViewers.js';
+import { PARADIS_FILE_DIFF_EDITOR_ID, PARADIS_FILE_DIFF_INPUT_TYPE_ID, PARADIS_MARKDOWN_EDITOR_ID, PARADIS_MARKDOWN_EXTENSIONS, PARADIS_MARKDOWN_INPUT_TYPE_ID, isParadisMarkdownResource, paradisGlobForExtension } from './paradisFileViewers.js';
 
 // allow-any-unicode-next-line
 const MARKDOWN_PREVIEW_LABEL = localize('paradis.markdownPreview', "Markdown プレビュー");
@@ -41,6 +43,28 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
 	PARADIS_MARKDOWN_INPUT_TYPE_ID,
 	ParadisMarkdownFileInputSerializer
+);
+
+// MD/HTML 共用のテキスト差分エディタ(共通ヘッダー + DiffEditorWidget)。pane/シリアライザの登録はここ
+// (browser 層、web/desktop 両方から読み込まれる)で一度だけ行い、HTML 側の contribution は
+// createDiffEditorInput で同じ Input を生成するだけにする。
+// allow-any-unicode-next-line
+const FILE_DIFF_LABEL = localize('paradis.fileViewerDiff', "テキスト差分");
+
+Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
+	EditorPaneDescriptor.create(
+		ParadisFileDiffEditor,
+		PARADIS_FILE_DIFF_EDITOR_ID,
+		FILE_DIFF_LABEL
+	),
+	[
+		new SyncDescriptor(ParadisFileDiffInput)
+	]
+);
+
+Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).registerEditorSerializer(
+	PARADIS_FILE_DIFF_INPUT_TYPE_ID,
+	ParadisFileDiffInputSerializer
 );
 
 class ParadisMarkdownViewerResolverContribution implements IWorkbenchContribution {
@@ -62,15 +86,29 @@ class ParadisMarkdownViewerResolverContribution implements IWorkbenchContributio
 					priority: RegisteredEditorPriority.exclusive
 				},
 				{
+					// git: は差分オープン(SCM の Open Changes)の旧版スキーム。差分解決では両サイドが
+					// 同一 editor に解決される必要があるため許可する(Excel ビューアと同じ扱い)。
 					canSupportResource: resource =>
-						(resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote) && isParadisMarkdownResource(resource),
+						(resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote || resource.scheme === 'git') && isParadisMarkdownResource(resource),
 					singlePerResource: true
 				},
 				{
 					createEditorInput: ({ resource, options }) => ({
 						editor: instantiationService.createInstance(ParadisMarkdownFileInput, resource),
 						options
-					})
+					}),
+					// 差分は「共通ヘッダー + 標準テキスト diff 埋め込み」の独自ペインで開く(これを登録しないと
+					// resolver が本ビューアをスキップし、ヘッダーなしの標準 diff にフォールバックする)。
+					createDiffEditorInput: diffEditorInput => {
+						const original = diffEditorInput.original.resource;
+						const modified = diffEditorInput.modified.resource;
+						if (!original || !modified) {
+							throw new Error('Paradis file diff requires both original and modified resources');
+						}
+						return {
+							editor: instantiationService.createInstance(ParadisFileDiffInput, original, modified, diffEditorInput.label)
+						};
+					}
 				}
 			);
 		}

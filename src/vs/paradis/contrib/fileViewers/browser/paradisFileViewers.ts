@@ -21,6 +21,10 @@ export const PARADIS_MARKDOWN_INPUT_TYPE_ID = 'paradis.input.markdownPreview';
 export const PARADIS_HTML_EDITOR_ID = 'paradis.editor.htmlPreview';
 export const PARADIS_HTML_INPUT_TYPE_ID = 'paradis.input.htmlPreview';
 
+/** MD/HTML ビューア共用のテキスト差分エディタ(共通ヘッダー + 標準 DiffEditorWidget 埋め込み)の識別子。 */
+export const PARADIS_FILE_DIFF_EDITOR_ID = 'paradis.editor.fileViewerDiff';
+export const PARADIS_FILE_DIFF_INPUT_TYPE_ID = 'paradis.input.fileViewerDiff';
+
 /** Excel(スプレッドシート)ビューアの EditorPane / EditorInput 識別子。 */
 export const PARADIS_SPREADSHEET_EDITOR_ID = 'paradis.editor.spreadsheet';
 export const PARADIS_SPREADSHEET_INPUT_TYPE_ID = 'paradis.input.spreadsheet';
