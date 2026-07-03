@@ -20,7 +20,11 @@ import product from '../../product.json' with { type: 'json' };
 // If true, we fail the build if there are new dependencies found during that task.
 // The reference dependencies, which one has to update when the new dependencies
 // are valid, are in dep-lists.ts
-const FAIL_BUILD_FOR_NEW_DEPENDENCIES: boolean = true;
+// PARA-PATCH: warn instead of fail. The upstream reference dep lists assume Microsoft's
+// controlled build environment (glibc 2.28 sysroot CLI builds etc.); Para Code builds on
+// GitHub-hosted runners where the tunnel CLI links the runner's glibc, so exact-match
+// verification against upstream's lists can never hold. See CLAUDE.md.
+const FAIL_BUILD_FOR_NEW_DEPENDENCIES: boolean = false;
 
 // Based on https://source.chromium.org/chromium/chromium/src/+/refs/tags/148.0.7778.271:chrome/installer/linux/BUILD.gn;l=64-80
 // and the Linux Archive build

@@ -28,7 +28,12 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Comma-separated subset to build for debugging (darwin,win32,linux). Empty = all + publish.'
+        required: false
+        default: ''
 
 env:
   PARA_UPDATE_ACCESS_CLIENT_ID: ${{ secrets.PARA_UPDATE_ACCESS_CLIENT_ID }}
@@ -36,6 +41,7 @@ env:
 
 jobs:
   build-darwin:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'darwin') }}
     strategy:
       fail-fast: false
       matrix:
@@ -77,8 +83,38 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Fail fast if the copilot extension postinstall didn't materialize the SDK
+      # payload — packaging would otherwise die much later in
+      # prepareBuiltInCopilotRipgrepShim with less context (seen once on arm64,
+      # run 28631291130; source tree was proven identical to the passing x64 job,
+      # so instrument rather than guess).
+      - name: Verify copilot SDK layout
+        run: |
+          if [ ! -f "extensions/copilot/node_modules/@github/copilot/sdk/index.d.ts" ] && [ ! -d "extensions/copilot/node_modules/@github/copilot/sdk" ]; then
+            echo "::error::@github/copilot SDK was not materialized by the extension postinstall"
+            ls -la extensions/copilot/node_modules/@github/ 2>/dev/null || echo "(no @github dir in extension node_modules)"
+            ls -la node_modules/@github/ 2>/dev/null || echo "(no @github dir in root node_modules)"
+            exit 1
+          fi
+          echo "SDK OK:"
+          ls extensions/copilot/node_modules/@github/copilot/sdk | head
+
       - name: Package (vscode-darwin-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-darwin-${{ matrix.arch }}-min"
+
+      - name: Packaging failure diagnostics
+        if: failure()
+        run: |
+          echo "--- source extension @github ---"
+          ls -la extensions/copilot/node_modules/@github/ 2>/dev/null || echo missing
+          echo "--- .build/extensions/copilot @github ---"
+          ls -la .build/extensions/copilot/node_modules/@github/ 2>/dev/null || echo missing
+          ls .build/extensions/copilot/node_modules/@github/copilot/ 2>/dev/null | head -40 || true
+          echo "--- packaged app extension @github ---"
+          APP_DIR="$(dirname "$GITHUB_WORKSPACE")/VSCode-darwin-${{ matrix.arch }}"
+          ls "$APP_DIR/$(node -p "require('./product.json').nameLong").app/Contents/Resources/app/extensions/copilot/node_modules/@github/" 2>/dev/null || echo missing
+          echo "--- disk space ---"
+          df -h . || true
 
       - name: Import signing certificate
         env:
@@ -133,11 +169,15 @@ jobs:
           retention-days: 7
 
   build-win32:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'win32') }}
     strategy:
       fail-fast: false
       matrix:
         arch: [x64, arm64]
-    runs-on: windows-latest
+    # windows-latest switched to the VS 2026 image in June 2026, which
+    # build/npm/preinstall.ts's toolchain check (VS 2022/2019 only) rejects.
+    # windows-2022 is GitHub's documented label for staying on VS 2022.
+    runs-on: windows-2022
     env:
       NPM_ARCH: ${{ matrix.arch }}
       VSCODE_ARCH: ${{ matrix.arch }}
@@ -194,6 +234,7 @@ jobs:
           retention-days: 7
 
   build-linux:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.platforms == '' || contains(github.event.inputs.platforms, 'linux') }}
     runs-on: ubuntu-latest
     env:
       VSCODE_ARCH: x64
@@ -212,7 +253,18 @@ jobs:
         run: |
           set -e
           ./build/azure-pipelines/linux/apt-retry.sh sudo apt-get update
-          ./build/azure-pipelines/linux/apt-retry.sh sudo apt-get install -y pkg-config libkrb5-dev libxkbfile-dev rpm
+          ./build/azure-pipelines/linux/apt-retry.sh sudo apt-get install -y pkg-config libkrb5-dev libxkbfile-dev libssl-dev rpm
+
+      # GitHub-hosted images no longer ship a Rust toolchain; the tunnel CLI
+      # (cli/, cargo bin "code") is required by the .deb: dpkg-shlibdeps in
+      # build/linux/dependencies-generator.ts hard-codes bin/<tunnelApplicationName>
+      # into its dependency scan. Upstream builds it in a separate pipeline
+      # (build/azure-pipelines/cli/cli-compile.yml) and drops it into
+      # VSCode-linux-<arch>/bin — replicated inline here.
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Install dependencies
         run: npm ci
@@ -226,8 +278,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build tunnel CLI
+        run: cargo build --release --bin=code
+        working-directory: cli
+        env:
+          VSCODE_CLI_PRODUCT_JSON: ${{ github.workspace }}/product.json
+
       - name: Package (vscode-linux-x64-min)
         run: npm run gulp "vscode-linux-x64-min"
+
+      - name: Place tunnel CLI into client build
+        run: |
+          set -e
+          TUNNEL_NAME="$(node -p "require('./product.json').tunnelApplicationName")"
+          CLIENT_DIR="$(dirname "$GITHUB_WORKSPACE")/VSCode-linux-x64"
+          mkdir -p "$CLIENT_DIR/bin"
+          cp cli/target/release/code "$CLIENT_DIR/bin/$TUNNEL_NAME"
+          chmod +x "$CLIENT_DIR/bin/$TUNNEL_NAME"
+          "$CLIENT_DIR/bin/$TUNNEL_NAME" --version
 
       - name: Build .deb
         run: |
