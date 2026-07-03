@@ -19,14 +19,6 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'workbench.colorTheme': 'Houston',
 		'sqlite.recordsPerPage': 500,
 		'githubPullRequests.createOnPublishBranch': 'never',
-		// Blockman が初回起動時に出す「推奨7設定を変更しますか?」モーダルを抑制する。
-		// （このフラグは applyAllBlockmanSettings() でプロンプト判定より前に読まれるため初回から有効）
-		'blockman.n35A01DisableRecommendationDialog': true,
-		'blockman.n04ColorComboPreset': 'Classic Dark Oppo (Solid colors)',
-		'blockman.n04Sub02ColorComboPresetForLightTheme': 'none',
-		'blockman.n04Sub04RightSideBaseOfBlocks': 'Rightmost Edge Of Viewport',
-		'blockman.n18CustomColorOfFocusedBlockBorder': '#345e91',
-		'blockman.n21BorderRadius': 4,
 		'indentRainbow.colors': [
 			'rgba(3, 4, 94,0.15)',
 			'rgba(2, 62, 138,0.15)',
