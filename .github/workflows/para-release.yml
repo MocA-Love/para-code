@@ -221,7 +221,9 @@ jobs:
       - name: Compute sha256
         shell: pwsh
         run: |
-          $setup = Get-ChildItem -Path "$(Split-Path $env:GITHUB_WORKSPACE)\VSCode-win32-${{ matrix.arch }}-user\*.exe" | Select-Object -First 1
+          # buildWin32Setup (build/gulpfile.vscode.win32.ts setupDir) writes the
+          # installer to .build/win32-<arch>/user-setup/ inside the repo.
+          $setup = Get-ChildItem -Path ".build\win32-${{ matrix.arch }}\user-setup\*.exe" | Select-Object -First 1
           Copy-Item $setup.FullName "win32-${{ matrix.arch }}-user-setup.exe"
           (Get-FileHash "win32-${{ matrix.arch }}-user-setup.exe" -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii "win32-${{ matrix.arch }}-user-setup.exe.sha256"
 
