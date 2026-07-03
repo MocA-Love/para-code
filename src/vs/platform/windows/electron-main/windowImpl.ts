@@ -724,7 +724,9 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 			// workbench contribution, not the Agent Sessions window entry, so only normal windows should
 			// opt into a transparent native surface. The actual creation state is remembered and forwarded
 			// to the renderer (see updateConfiguration) so it can gate its CSS on the real native state.
-			const paradisTransparencyEnabled = !config.isSessionsWindow && this.configurationService.getValue<boolean>('paradis.window.transparency.enabled') === true;
+			// Default ON (`!== false`): the setting's registry default (true) lives in the renderer-side
+			// configuration registry which the main process cannot see, so "unset" must mean enabled here too.
+			const paradisTransparencyEnabled = !config.isSessionsWindow && this.configurationService.getValue<boolean>('paradis.window.transparency.enabled') !== false;
 			this.paradisTransparentWindow = paradisTransparencyEnabled;
 			const options = instantiationService.invokeFunction(defaultBrowserWindowOptions, this.windowState, paradisTransparencyEnabled ? { transparent: true } : undefined, webPreferences);
 
