@@ -284,3 +284,20 @@ export interface IParadisPlayAivisRequest {
 	readonly userDictionaryUuid?: string;
 	readonly volume?: number;
 }
+
+/**
+ * 通知1回分の音声要求。shared process 側の AudioScheduler が ringtone → (合成は並行) → Aivis再生
+ * の順で調停する。複数ウィンドウからの呼び出しも単一スケジューラで直列化される。
+ */
+export interface IParadisNotifyAudioRequest {
+	/** 通知音。ミュート時は undefined（＝鳴らさず Aivis のみ調停する）。 */
+	readonly ringtone?: {
+		readonly id: string;
+		/** 0-100 */
+		readonly volume: number;
+	};
+	/** Aivis 読み上げ。無効・未設定・空テキスト時は undefined。 */
+	readonly aivis?: IParadisPlayAivisRequest;
+	/** 'high' は要対応（PermissionRequest）。待機中の完了通知より前に割り込む。 */
+	readonly priority: 'normal' | 'high';
+}
