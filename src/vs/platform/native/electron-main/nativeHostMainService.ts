@@ -11,7 +11,7 @@ import { arch, cpus, freemem, loadavg, platform, release, totalmem, type } from 
 import { promisify } from 'util';
 import { memoize } from '../../../base/common/decorators.js';
 import { Emitter, Event } from '../../../base/common/event.js';
-import { clamp } from '../../../base/common/numbers.js';
+import { clamp } from '../../../base/common/numbers.js'; // PARA-PATCH: setWindowOpacity のクランプ用（ウィンドウ透明度設定、下記参照）
 import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
 import { matchesSomeScheme, Schemas } from '../../../base/common/network.js';
 import { dirname, join, posix, resolve, win32 } from '../../../base/common/path.js';

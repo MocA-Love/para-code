@@ -15,7 +15,7 @@ import { asJson, IRequestService } from '../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { AvailableForDownload, IUpdate, State, UpdateType } from '../common/update.js';
-import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, IUpdateURLOptions } from './abstractUpdateService.js';
+import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, IUpdateURLOptions } from './abstractUpdateService.js'; // PARA-PATCH: +getUpdateAccessHeaders/getUpdateRequestHeaders (Cloudflare Access service token headers, see CLAUDE.md)
 
 export class LinuxUpdateService extends AbstractUpdateService {
 
