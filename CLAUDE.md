@@ -60,6 +60,15 @@ upstreamを定期的に取り込み続ける前提のため、「どこが独自
 - `git rerere` を有効化しておく（`git config rerere.enabled true`）。過去に解消したコンフリクトパターンをupstream取り込み時に自動再適用させるため
 - `product.json`への変更（`extensionsGallery`追加など）は本家の`gulpfile.hygiene.js`のhygieneチェックに意図的に抵触する。この場合のみ理由を明記した上で`--no-verify`を使ってよい。詳細は`NOTES.md`の「hygieneチェックとproduct.jsonの既知の衝突」を参照。**それ以外の通常の実装コミットではhygieneチェックを飛ばさないこと**
 
+## 更新履歴（アプリ内changelog）の運用（2026-07-03整備、厳守）
+
+歯車メニュー（左下）→「更新履歴」で、forkが加えた変更の一覧をユーザーがアプリ内で確認できる（`paradis.showChangelog` コマンド、`src/vs/paradis/contrib/releaseNotes/`）。
+
+- 実体は `src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md`（Markdownプレビューで表示される）。パッケージ版への同梱は `build/gulpfile.vscode.ts` の `vscodeResources` にPARA-PATCH済み
+- **ユーザー向けの機能追加・改善・修正を実装したら、その作業の中で `## 未リリース` セクションに箇条書きを1行追記する**（コミットに含める）。内部整備のみ（ビルド修正・リファクタ等）は書かない
+- **リリースタグ（`v1.x.y-paracode-N`）を打つ前に、`## 未リリース` を `## paracode-N（YYYY-MM-DD）` に改名して確定する**（新しいバージョンが上）
+- 書き方: ユーザー視点で「何ができるようになったか / 何が直ったか」を日本語の箇条書きで書く。項目が多いリリースは `### 新機能` / `### 改善` / `### 修正` に分ける。ファイル名・クラス名など内部実装の用語は書かない
+
 ## 実装前に必ず確認すること
 
 - 実装する機能が「新規ファイル＋集約ファイルへの1行import」だけで完結できないか、まず検討する（機能1のワークスペース管理、機能3のブラウザビューは実例としてこのパターンで完結している）
