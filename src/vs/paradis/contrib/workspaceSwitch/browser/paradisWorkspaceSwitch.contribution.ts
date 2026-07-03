@@ -41,6 +41,7 @@ import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.j
 import { ParadisWorktreeService } from './paradisWorktreeService.js';
 import './paradisTerminalScope.contribution.js';
 import './paradisScmInputScope.contribution.js';
+import './paradisScmRepoScope.contribution.js';
 
 registerSingleton(IParadisWorkspaceSwitchService, ParadisWorkspaceSwitchService, InstantiationType.Delayed);
 registerSingleton(IParadisWorktreeService, ParadisWorktreeService, InstantiationType.Delayed);
@@ -64,6 +65,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.WINDOW,
 			description: localize('paradis.workspaceSwitch.autoRemoveMissingWorktrees', "削除された git worktree を Workspaces ビューから自動的に取り除きます。無効にした場合、見つからない worktree はリストに残り、手動で削除できます。")
+		},
+		'paradis.workspaceSwitch.scopeScmRepositories': {
+			type: 'boolean',
+			default: true,
+			scope: ConfigurationScope.WINDOW,
+			description: localize('paradis.workspaceSwitch.scopeScmRepositories', "ソース管理ビューの表示を、現在開いているスペース（ワークスペースフォルダ）に関係するリポジトリだけに自動的に絞ります。git 拡張が裏で開いたままの他スペースや worktree の親リポジトリは非表示になります（リポジトリ自体は閉じられないため、ガター差分などの機能はそのまま使えます）。")
 		}
 	}
 });
