@@ -17,11 +17,23 @@ import { randomUUID } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import { basename, delimiter, dirname, extname, join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
+	AivisError,
+	AivisRateLimit,
+	AivisSynthesizeResult,
+	AivisTaskRunner,
+	AudioScheduler,
+} from './paradisAudioScheduler.js';
+import {
 	CUSTOM_RINGTONE_ID,
+	getRingtoneFilename,
+	IParadisNotifyAudioRequest,
+	isBuiltInRingtoneId,
 	IParadisAivisDictionaryDetail,
 	IParadisAivisDictionaryListItem,
 	IParadisAivisDictionaryWord,
@@ -83,6 +95,64 @@ class AivisApiError extends Error {
 	}
 }
 
+// --- Aivis レート制限 / エラー分類（Superset main/lib/notifications/aivis-tts.ts 移植） --------
+
+function parseIntHeader(value: string | null): number | undefined {
+	if (value === null) {
+		return undefined;
+	}
+	const parsed = Number.parseInt(value, 10);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function extractRateLimit(headers: Headers): AivisRateLimit | undefined {
+	const remaining = parseIntHeader(headers.get('X-Aivis-RateLimit-Requests-Remaining'));
+	const resetSeconds = parseIntHeader(headers.get('X-Aivis-RateLimit-Requests-Reset'));
+	if (remaining === undefined || resetSeconds === undefined) {
+		return undefined;
+	}
+	return { remaining, resetSeconds, capturedAt: Date.now() };
+}
+
+function classifyAivisStatus(status: number): 'retryable' | 'fatal' | 'item-specific' {
+	if (status === 401 || status === 402 || status === 404) {
+		return 'fatal';
+	}
+	if (status === 422) {
+		return 'item-specific';
+	}
+	if (status === 429) {
+		return 'retryable';
+	}
+	if (status >= 500 && status < 600) {
+		return 'retryable';
+	}
+	// 未知の 4xx は叩き続けず item-specific 扱い。
+	return 'item-specific';
+}
+
+function reasonForAivisStatus(status: number, bodyHint: string): string {
+	switch (status) {
+		// allow-any-unicode-next-line
+		case 401: return 'Aivis API キーが無効です。設定画面でキーを確認してください';
+		// allow-any-unicode-next-line
+		case 402: return 'Aivis のクレジット残高が不足しています';
+		// allow-any-unicode-next-line
+		case 404: return 'Aivis の音声合成モデルが見つかりません';
+		// allow-any-unicode-next-line
+		case 422: return `Aivis リクエスト形式が不正です: ${bodyHint.slice(0, 120)}`;
+		// allow-any-unicode-next-line
+		case 429: return 'Aivis API のレート制限に到達しました';
+		case 500:
+		case 502:
+		case 503:
+		// allow-any-unicode-next-line
+		case 504: return `Aivis サーバー側の一時障害 (HTTP ${status})`;
+		// allow-any-unicode-next-line
+		default: return `Aivis API エラー (HTTP ${status}) ${bodyHint.slice(0, 120)}`;
+	}
+}
+
 /**
  * 通知サウンド機能のバックエンド本体。カスタム音源の保存 (`~/.para-code/assets/ringtones/`)、
  * YouTube取込 (yt-dlp/ffmpeg 呼び出し)、Aivis Cloud APIクライアント、TTS再生を担う。
@@ -96,8 +166,89 @@ export class ParadisNotificationsService extends Disposable {
 	private readonly _tempAudio = new Map<string, { readonly path: string; readonly dir: string }>();
 	private readonly _installStates = new Map<string, IInstallState>();
 
+	/** fatal エラーで Aivis を一時停止した際に理由を通知する（renderer が INotificationService で提示）。 */
+	private readonly _onAivisPaused = this._register(new Emitter<string>());
+	readonly onAivisPaused: Event<string> = this._onAivisPaused.event;
+
+	/** notifyAudio の直近要求で鳴らすべき通知音。scheduler.playRingtone() の直前に同期でセットする。 */
+	private _currentRingtone: { readonly id: string; readonly volume: number } | undefined;
+
+	/** 通知音と Aivis 再生の重なりを調停する単一スケジューラ。 */
+	private readonly _scheduler: AudioScheduler;
+
 	constructor(private readonly logService: ILogService) {
 		super();
+		this._scheduler = new AudioScheduler({
+			playRingtone: onComplete => {
+				const ringtone = this._currentRingtone;
+				if (!ringtone) {
+					onComplete();
+					return;
+				}
+				void this._playRingtoneFile(ringtone.id, ringtone.volume).finally(() => onComplete());
+			},
+			notifyAivisPaused: reason => this._onAivisPaused.fire(reason),
+			onError: err => this.logService.warn(`[ParadisNotifications] Aivis scheduler error (${err.kind}): ${err.reason}`),
+			logWarn: message => this.logService.warn(message),
+			logInfo: message => this.logService.info(message),
+		});
+		this._register({ dispose: () => this._scheduler.dispose() });
+	}
+
+	// === 通知音 + Aivis の再生調停 ================================================================
+
+	/**
+	 * 通知1回分の音声（通知音 + Aivis 読み上げ）をスケジューラへ渡す。トリガー(renderer)から
+	 * 通知ごとに1回呼ばれる。通知音はビジー時に捨てられ、Aivis は FIFO キューで失われない。
+	 */
+	notifyAudio(request: IParadisNotifyAudioRequest): void {
+		if (request.ringtone) {
+			// scheduler.playRingtone() は同期で deps.playRingtone を呼ぶため、直前セットで取り違えは起きない。
+			this._currentRingtone = request.ringtone;
+			this._scheduler.playRingtone();
+		}
+		if (request.aivis) {
+			const aivis = request.aivis;
+			const text = aivis.text.trim();
+			if (text && aivis.apiKey && aivis.modelUuid) {
+				const runner: AivisTaskRunner = {
+					synthesize: () => this._synthesizeAivis({ ...aivis, text }),
+					play: audio => this._playAivisAudio(audio, aivis.volume ?? 100),
+				};
+				this._scheduler.enqueueAivis(runner, request.priority === 'high' ? 'high' : 'normal');
+			}
+		}
+	}
+
+	/** Aivis の一時停止状態を解除する（ユーザーが APIキー等を修正して設定を保存した時に呼ばれる）。 */
+	resumeAivis(): void {
+		this._scheduler.resume();
+	}
+
+	/** ringtoneId から実ファイルパスを解決して再生し、完了を待つ。解決不可なら即 resolve（＝スキップ）。 */
+	private async _playRingtoneFile(ringtoneId: string, volume: number): Promise<void> {
+		const path = this._resolveRingtonePath(ringtoneId);
+		if (!path) {
+			return;
+		}
+		await this._playSoundFile(path, volume);
+	}
+
+	/** ビルトイン音源は out 配下の media から、カスタム音源は ~/.para-code の保存先から解決する。 */
+	private _resolveRingtonePath(ringtoneId: string): string | null {
+		if (ringtoneId === CUSTOM_RINGTONE_ID) {
+			const filename = this._findFileByStem(CUSTOM_STEM, ALLOWED_AUDIO_EXTENSIONS);
+			return filename ? join(this._assetsDir, filename) : null;
+		}
+		if (isBuiltInRingtoneId(ringtoneId)) {
+			const filename = getRingtoneFilename(ringtoneId);
+			if (!filename) {
+				return null;
+			}
+			const path = FileAccess.asFileUri(`vs/paradis/contrib/notifications/browser/media/sounds/${filename}`).fsPath;
+			return existsSync(path) ? path : null;
+		}
+		return null;
 	}
 
 	// === カスタム音源 ============================================================================
@@ -852,13 +1003,25 @@ export class ParadisNotificationsService extends Disposable {
 
 	// --- TTS再生 -----------------------------------------------------------------------------
 
+	/**
+	 * 単発の合成 + 再生（設定画面の「音声テスト」ボタン用。スケジューラを意図的にバイパスする）。
+	 * 通知経路は notifyAudio 経由でスケジューラに乗せるため、こちらはプレビュー専用。
+	 */
 	async playAivis(request: IParadisPlayAivisRequest): Promise<void> {
 		const text = request.text.trim();
 		if (!text || !request.apiKey || !request.modelUuid) {
 			return;
 		}
+		const { audio } = await this._synthesizeAivis({ ...request, text });
+		await this._playAivisAudio(audio, request.volume ?? 100);
+	}
 
-		const body: Record<string, unknown> = { model_uuid: request.modelUuid, text, output_format: 'mp3' };
+	/**
+	 * 低レベルの合成呼び出し。音声 + レート制限スナップショットを返すか、分類済みの AivisError を throw
+	 * する（Superset aivis-tts.ts の synthesizeAivisAudio 相当）。スケジューラのリトライ判定に使われる。
+	 */
+	private async _synthesizeAivis(request: IParadisPlayAivisRequest): Promise<AivisSynthesizeResult> {
+		const body: Record<string, unknown> = { model_uuid: request.modelUuid, text: request.text, output_format: 'mp3' };
 		if (request.userDictionaryUuid) {
 			body.user_dictionary_uuid = request.userDictionaryUuid;
 		}
@@ -868,33 +1031,46 @@ export class ParadisNotificationsService extends Disposable {
 
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), AIVIS_SYNTHESIZE_TIMEOUT_MS);
-		let audio: Buffer;
 		try {
-			const response = await fetch(new URL('/v1/tts/synthesize', AIVIS_BASE_URL), {
-				method: 'POST',
-				headers: { Authorization: `Bearer ${request.apiKey}`, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
-				body: JSON.stringify(body),
-				signal: controller.signal,
-			});
+			let response: Response;
+			try {
+				response = await fetch(new URL('/v1/tts/synthesize', AIVIS_BASE_URL), {
+					method: 'POST',
+					headers: { Authorization: `Bearer ${request.apiKey}`, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+					body: JSON.stringify(body),
+					signal: controller.signal,
+				});
+			} catch (error) {
+				if (error instanceof Error && error.name === 'AbortError') {
+					// allow-any-unicode-next-line
+					throw new AivisError('retryable', 'Aivis API のリクエストがタイムアウトしました', undefined, undefined, error);
+				}
+				throw new AivisError('retryable', error instanceof Error ? error.message : String(error), undefined, undefined, error);
+			}
+
 			if (!response.ok) {
 				const bodyText = await response.text().catch(() => '');
-				throw new AivisApiError(response.status, bodyText);
+				const kind = classifyAivisStatus(response.status);
+				const reason = reasonForAivisStatus(response.status, bodyText);
+				const rateLimitReset = response.status === 429
+					? parseIntHeader(response.headers.get('X-Aivis-RateLimit-Requests-Reset'))
+					: undefined;
+				throw new AivisError(kind, reason, response.status, rateLimitReset);
 			}
-			audio = Buffer.from(await response.arrayBuffer());
-		} catch (error) {
-			if (error instanceof Error && error.name === 'AbortError') {
-				// allow-any-unicode-next-line
-				throw new Error('Aivis APIのリクエストがタイムアウトしました');
-			}
-			throw this._wrapAivisError(error);
+
+			const audio = Buffer.from(await response.arrayBuffer());
+			return { audio, rateLimit: extractRateLimit(response.headers) };
 		} finally {
 			clearTimeout(timer);
 		}
+	}
 
+	/** 合成済み音声を一時ファイルへ書き出して再生し、完了後に削除する。 */
+	private async _playAivisAudio(audio: Buffer, volume: number): Promise<void> {
 		const tempPath = join(tmpdir(), `paradis-aivis-${Date.now()}-${randomUUID().slice(0, 8)}.mp3`);
 		await writeFile(tempPath, audio);
 		try {
-			await this._playSoundFile(tempPath, request.volume ?? 100);
+			await this._playSoundFile(tempPath, volume);
 		} finally {
 			unlink(tempPath).catch(() => { /* ignore */ });
 		}

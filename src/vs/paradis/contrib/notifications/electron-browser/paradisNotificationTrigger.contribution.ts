@@ -15,9 +15,9 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
@@ -25,8 +25,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
-import { IParadisAivisPlaceholders, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
-import { ParadisNotificationSoundPlayer } from './paradisNotificationSoundPlayer.js';
+import { IParadisAivisPlaceholders, IParadisNotifyAudioRequest, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
 
 const POLL_INTERVAL = 2000;
 
@@ -44,7 +43,6 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 
 	/** token → 直近確認したステータス（遷移検知用。エントリが消えた=idleに戻ったとみなす）。 */
 	private readonly _previousStatus = new Map<string, ParadisAgentStatus>();
-	private readonly _player: ParadisNotificationSoundPlayer;
 
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -55,12 +53,22 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 		@IHostService private readonly hostService: IHostService,
+		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
-		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 
-		this._player = this._register(instantiationService.createInstance(ParadisNotificationSoundPlayer));
+		// fatal エラーで Aivis が一時停止された時、shared process からのイベントを受けて可視通知を出す。
+		this._register(this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL)
+			.listen<string>('onAivisPaused')(reason => {
+				this.notificationService.notify({ severity: Severity.Warning, message: reason });
+			}));
+
+		// Aivis設定（APIキー等）が変更・保存されたら一時停止を解除する。onDidChange は音量等の変更でも
+		// 発火するが、resume は冪等なので毎回呼んで問題ない。
+		this._register(this.settingsService.onDidChange(() => {
+			void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('resumeAivis').catch(() => { /* shared process 未起動時は無視 */ });
+		}));
 
 		const timer = this._register(new IntervalTimer());
 		timer.cancelAndSet(() => this._poll(), POLL_INTERVAL);
@@ -135,31 +143,42 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 
 	/** 音 + OS通知 + Aivis を発火する (stateKey === undefined はスコープ外フォールバック)。 */
 	private async _notify(stateKey: string | undefined, status: 'review' | 'permission', placeholders: IParadisAivisPlaceholders): Promise<void> {
-		const muted = this.settingsService.getSoundsMuted();
-		if (!muted) {
-			void this._player.play(this.settingsService.getSelectedRingtoneId(), this.settingsService.getVolume());
-		}
-
+		// OS通知は従来どおり即時。通知音と Aivis は shared process の AudioScheduler で調停する
+		// （通知音 → 完了後に Aivis の順。重複通知音は捨て、Aivis は FIFO で失わない）。
 		this._showOsNotification(stateKey, status, placeholders);
+
+		const muted = this.settingsService.getSoundsMuted();
+		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; priority: IParadisNotifyAudioRequest['priority'] } = {
+			priority: status === 'permission' ? 'high' : 'normal',
+		};
+		if (!muted) {
+			request.ringtone = { id: this.settingsService.getSelectedRingtoneId(), volume: this.settingsService.getVolume() };
+		}
 
 		const aivis = this.settingsService.getAivisSettings();
 		if (aivis.enabled && aivis.apiKey && aivis.modelUuid) {
 			const template = status === 'permission' ? aivis.formatPermission : aivis.format;
 			const text = renderParadisAivisTemplate(template, placeholders).trim();
 			if (text) {
-				try {
-					await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('playAivis', [{
-						apiKey: aivis.apiKey,
-						modelUuid: aivis.modelUuid,
-						text,
-						speakingRate: aivis.speakingRate,
-						userDictionaryUuid: aivis.userDictionaryUuid || undefined,
-						volume: aivis.volume,
-					}]);
-				} catch (error) {
-					this.logService.warn('[ParadisNotifications] Aivis playback failed', error);
-				}
+				request.aivis = {
+					apiKey: aivis.apiKey,
+					modelUuid: aivis.modelUuid,
+					text,
+					speakingRate: aivis.speakingRate,
+					userDictionaryUuid: aivis.userDictionaryUuid || undefined,
+					volume: aivis.volume,
+				};
 			}
+		}
+
+		if (!request.ringtone && !request.aivis) {
+			return; // ミュート かつ Aivis 無効なら何もしない
+		}
+
+		try {
+			await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('notifyAudio', [request]);
+		} catch (error) {
+			this.logService.warn('[ParadisNotifications] notifyAudio failed', error);
 		}
 	}
 

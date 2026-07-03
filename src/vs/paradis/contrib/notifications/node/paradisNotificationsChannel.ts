@@ -21,7 +21,11 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 	constructor(private readonly service: ParadisNotificationsService) { }
 
 	listen<T>(_ctx: string, event: string): Event<T> {
-		throw new Error(`Event not found: ${event}`);
+		switch (event) {
+			case 'onAivisPaused': return this.service.onAivisPaused as Event<T>;
+			default:
+				throw new Error(`Event not found: ${event}`);
+		}
 	}
 
 	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
@@ -54,6 +58,8 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 			case 'getAivisUsageDaily': return this.service.getAivisUsageDaily(String(args[0]), String(args[1]), String(args[2])) as Promise<T>;
 			case 'getAivisMe': return this.service.getAivisMe(String(args[0])) as Promise<T>;
 			case 'playAivis': return this.service.playAivis(args[0] as Parameters<ParadisNotificationsService['playAivis']>[0]) as Promise<T>;
+			case 'notifyAudio': { this.service.notifyAudio(args[0] as Parameters<ParadisNotificationsService['notifyAudio']>[0]); return Promise.resolve(undefined as T); }
+			case 'resumeAivis': { this.service.resumeAivis(); return Promise.resolve(undefined as T); }
 
 			default:
 				throw new Error(`Method not found: ${command}`);
