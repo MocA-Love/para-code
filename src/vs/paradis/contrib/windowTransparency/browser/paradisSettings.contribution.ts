@@ -24,7 +24,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	properties: {
 		'paradis.window.transparency.enabled': {
 			type: 'boolean',
-			default: false,
+			// 既定ON。mainプロセス側の生成時判定 (windowImpl.ts の PARA-PATCH) はこのレジストリ既定値が
+			// 見えないため、あちらは `!== false` で同じ「既定ON」を表現している。変える場合は両方揃えること。
+			default: true,
 			// APPLICATIONスコープ: ネイティブウィンドウの生成時フラグはmainプロセスがdefaultプロファイルの
 			// user settings.json だけを読んで決めるため、Workspace/プロファイルスコープでの上書きを許すと
 			// mainとレンダラで値が食い違い「クラスは付くが透けない」状態になる。
@@ -33,7 +35,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		'paradis.window.transparency.opacity': {
 			type: 'number',
-			default: 0.9,
+			default: 0.62,
 			minimum: 0.3,
 			maximum: 1,
 			scope: ConfigurationScope.WINDOW,

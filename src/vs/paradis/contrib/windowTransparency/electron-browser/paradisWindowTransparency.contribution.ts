@@ -91,7 +91,9 @@ class ParadisWindowTransparencyContribution extends Disposable implements IWorkb
 	}
 
 	private isEnabled(): boolean {
-		return this.configurationService.getValue<boolean>(PARADIS_TRANSPARENCY_ENABLED_KEY) === true;
+		// 既定ON。レジストリ既定値 (true) が解決されるため通常 `=== true` でも同じだが、
+		// mainプロセス側の生成時判定 (windowImpl.ts) と同じ「未設定=有効」の式に揃えておく。
+		return this.configurationService.getValue<boolean>(PARADIS_TRANSPARENCY_ENABLED_KEY) !== false;
 	}
 
 	private getOpacity(): number {
