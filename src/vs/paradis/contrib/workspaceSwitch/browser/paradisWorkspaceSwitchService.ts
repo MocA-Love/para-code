@@ -19,7 +19,9 @@ import { IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/s
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
+import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, markParadisManagedWorkspaceWindow, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { paradisParkTerminalEditorInstance } from './paradisTerminalEditorPark.js';
 
 interface ISerializedRepository {
 	readonly id: string;
@@ -90,6 +92,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
+		@ITerminalEditorService private readonly terminalEditorService: ITerminalEditorService,
 	) {
 		super();
 
@@ -228,6 +231,17 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				if (previousKey !== undefined) {
 					this.saveWorkingSetFor(previousKey);
 					this.savePanelVisibilityFor(previousKey);
+
+					// エディタターミナルは working set の保存後・適用前にインスタンスを input から
+					// 切り離して生かしたままパークする。切り離さないと applyWorkingSet のエディタ close で
+					// PTY ごと破棄され、戻ってきた際に死んだ pty への再接続で壊れたターミナルが復元される
+					// (詳細は paradisTerminalEditorPark.ts のコメント参照)。working set を保存して
+					// いない場合 (previousKey なし) は復元先が無くインスタンスが孤児化するためパークしない。
+					for (const instance of [...this.terminalEditorService.instances]) {
+						if (paradisParkTerminalEditorInstance(instance)) {
+							this.terminalEditorService.detachInstance(instance);
+						}
+					}
 				}
 
 				// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
