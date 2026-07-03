@@ -30,6 +30,8 @@ import { TerminalLocation } from '../../../../platform/terminal/common/terminal.
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation } from '../../../../workbench/common/views.js';
 import { ITerminalEditorService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
@@ -281,13 +283,22 @@ registerAction2(class extends Action2 {
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const terminalService = accessor.get(ITerminalService);
 		const terminalEditorService = accessor.get(ITerminalEditorService);
+		const editorGroupsService = accessor.get(IEditorGroupsService);
 
-		const existing = terminalService.instances.find(instance => instance.target === TerminalLocation.Editor);
+		// 「アクティブグループ内の」ターミナルだけを再利用対象にする。ウィンドウ全体から探すと、
+		// split 直後の空グループで押したとき他グループの既存ターミナルへフォーカスが飛ぶだけになる
+		// (TerminalEditorInput は ForceReveal capability を持つため、viewColumn 未指定の openEditor は
+		// 既に開かれているグループ側で再表示される)。新規作成時は viewColumn を明示して
+		// 確実にアクティブグループへ開く
+		const activeGroup = editorGroupsService.activeGroup;
+		const existing = terminalService.instances.find(instance =>
+			instance.target === TerminalLocation.Editor &&
+			activeGroup.editors.some(editor => editor.resource?.toString() === instance.resource.toString()));
 		if (existing) {
 			await terminalEditorService.openEditor(existing);
 			existing.focus(true);
 		} else {
-			const instance = await terminalService.createTerminal({ location: TerminalLocation.Editor });
+			const instance = await terminalService.createTerminal({ location: { viewColumn: editorGroupToColumn(editorGroupsService, activeGroup) } });
 			instance.focus(true);
 		}
 	}
