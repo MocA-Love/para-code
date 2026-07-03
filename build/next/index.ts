@@ -296,6 +296,10 @@ const desktopResourcePatterns = [
 	// Sessions - built-in prompts and skills
 	'vs/sessions/prompts/*.prompt.md',
 	'vs/sessions/skills/**/SKILL.md',
+
+	// Paradis (Para Code)
+	// PARA-PATCH: ship the fork changelog shown by the paradis.showChangelog command
+	'vs/paradis/contrib/releaseNotes/electron-browser/media/*.md',
 ];
 
 // Resources for server target (minimal - no UI)
