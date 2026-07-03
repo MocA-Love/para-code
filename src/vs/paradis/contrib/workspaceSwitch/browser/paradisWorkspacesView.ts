@@ -10,11 +10,12 @@ import './media/paradisWorkspaceSwitch.css';
 import * as DOM from '../../../../base/browser/dom.js';
 import { IListVirtualDelegate } from '../../../../base/browser/ui/list/list.js';
 import { IObjectTreeElement, ITreeNode, ITreeRenderer, ObjectTreeElementCollapseState } from '../../../../base/browser/ui/tree/tree.js';
-import { Action, IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js';
+import { Action, IAction, Separator } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { FuzzyScore } from '../../../../base/common/filters.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -26,7 +27,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { WorkbenchObjectTree } from '../../../../platform/list/browser/listService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
@@ -139,11 +140,13 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		templateData.path.textContent = repository.uri.fsPath;
 		templateData.row.classList.toggle('active', active);
 
-		// Superset と同じ固定パレットの色をアイコンと行の左ボーダーに反映。
-		// 状態表示中はアイコン色を状態色 (CSSクラス) に譲る
+		// Superset と同じ固定パレットの色をアイコンと行左端の色バーに反映。
+		// 状態表示中はアイコン色を状態色 (CSSクラス) に譲る。
+		// 色バーは chevron より左に置くため .monaco-tl-row の ::before で描画し、
+		// 色はカスタムプロパティで渡す (media/paradisWorkspaceSwitch.css 参照)
 		const colorHex = paradisWorkspaceColorHex(repository.color);
 		templateData.icon.style.color = status !== undefined ? '' : colorHex ?? '';
-		templateData.row.style.borderLeftColor = colorHex ?? 'transparent';
+		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--paradis-workspace-color', colorHex ?? 'transparent');
 	}
 
 	disposeTemplate(_templateData: IRepositoryTemplateData): void {
@@ -243,6 +246,8 @@ export class ParadisWorkspacesView extends ViewPane {
 					getId: (element: WorkspaceTreeElement) => isWorktree(element) ? paradisWorktreeStateKey(element.uri) : element.id
 				},
 				horizontalScrolling: false,
+				// 行本体のクリックは「切り替え」専用にし、worktree の開閉は左端の chevron でのみ行う
+				expandOnlyOnTwistieClick: true,
 				accessibilityProvider: {
 					getAriaLabel: (element: WorkspaceTreeElement) => element.name,
 					getWidgetAriaLabel: () => localize('paradisWorkspaces', "Workspaces")
@@ -309,29 +314,6 @@ export class ParadisWorkspacesView extends ViewPane {
 	}
 
 	private buildRepositoryContextMenuActions(repository: IParadisWorkspaceRepository): IAction[] {
-		// 注意: コンテキストメニューの項目は icon なしで生成される (menu.ts の menuItemOptions が
-		// icon を落とす) ため action.class は DOM に反映されない。vs/base は改変禁止 (CLAUDE.md) なので、
-		// 色スウォッチは CSS の aria-label 属性セレクタで描画する (media/paradisWorkspaceSwitch.css)
-		const colorActions: IAction[] = PARADIS_WORKSPACE_COLORS.map(color => {
-			const action = new Action(
-				`paradis.workspaceSwitch.color.${color.id}`,
-				colorLabel(color.id),
-				undefined,
-				true,
-				() => this.workspaceSwitchService.setRepositoryColor(repository.id, color.id)
-			);
-			action.checked = repository.color === color.id;
-			return action;
-		});
-		const defaultColorAction = new Action(
-			'paradis.workspaceSwitch.color.default',
-			localize('paradis.workspaceSwitch.colorDefault', "Default"),
-			undefined,
-			true,
-			() => this.workspaceSwitchService.setRepositoryColor(repository.id, undefined)
-		);
-		defaultColorAction.checked = repository.color === undefined;
-
 		return [
 			new Action(
 				'paradis.workspaceSwitch.rename',
@@ -340,10 +322,16 @@ export class ParadisWorkspacesView extends ViewPane {
 				true,
 				() => this.promptRename(repository)
 			),
-			new SubmenuAction(
+			// 色選択は QuickPick で行う。以前はコンテキストメニューのサブメニュー + CSS の
+			// aria-label 属性セレクタでスウォッチを描画していたが、macOS のコンテキストメニューは
+			// ネイティブ (HTML でない) ため色が一切表示されなかった。QuickPick なら全プラットフォームで
+			// SVG data URI のスウォッチを表示できる
+			new Action(
 				'paradis.workspaceSwitch.setColor',
-				localize('paradis.workspaceSwitch.setColor', "Set Color"),
-				[...colorActions, new Separator(), defaultColorAction]
+				localize('paradis.workspaceSwitch.setColorPick', "Set Color..."),
+				undefined,
+				true,
+				() => this.promptColor(repository)
 			),
 			new Separator(),
 			new Action(
@@ -403,6 +391,38 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 
 		return actions;
+	}
+
+	/**
+	 * 色選択 QuickPick。スウォッチ (色見本) は SVG の data URI を iconPath として渡して描画する
+	 * (QuickPick は HTML 描画なので macOS でも確実に色が見える)。
+	 */
+	private async promptColor(repository: IParadisWorkspaceRepository): Promise<void> {
+		type ColorPickItem = IQuickPickItem & { readonly colorId: string | undefined };
+		const swatchIcon = (hex: string): { dark: URI } => {
+			const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="5" fill="${hex}"/></svg>`;
+			return { dark: URI.parse(`data:image/svg+xml;base64,${btoa(svg)}`) };
+		};
+		const items: ColorPickItem[] = PARADIS_WORKSPACE_COLORS.map(color => ({
+			colorId: color.id,
+			label: colorLabel(color.id),
+			iconPath: swatchIcon(color.hex),
+			description: repository.color === color.id ? localize('paradis.workspaceSwitch.colorCurrent', "current") : undefined
+		}));
+		items.push({
+			colorId: undefined,
+			label: localize('paradis.workspaceSwitch.colorDefault', "Default"),
+			iconClass: ThemeIcon.asClassName(Codicon.circleSlash),
+			description: repository.color === undefined ? localize('paradis.workspaceSwitch.colorCurrent', "current") : undefined
+		});
+
+		const picked = await this.quickInputService.pick(items, {
+			placeHolder: localize('paradis.workspaceSwitch.setColorPlaceholder', "Select a color for '{0}'", repository.name),
+			activeItem: items.find(item => item.colorId === repository.color)
+		});
+		if (picked) {
+			await this.workspaceSwitchService.setRepositoryColor(repository.id, picked.colorId);
+		}
 	}
 
 	private async promptRename(repository: IParadisWorkspaceRepository): Promise<void> {

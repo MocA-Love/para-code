@@ -9,6 +9,17 @@
 	height: 100%;
 }
 
+/* allow-any-unicode-next-line */
+/* 行左端の色バー。chevron (.monaco-tl-twistie) より左に置くため、flex コンテナである
+ * .monaco-tl-row の ::before (先頭の flex アイテム) として描画する。色はレンダラが
+ * カスタムプロパティで供給する (paradisWorkspacesView.ts の renderElement 参照)。 */
+.paradis-workspaces-list .monaco-tl-row::before {
+	content: '';
+	flex: 0 0 3px;
+	align-self: stretch;
+	background-color: var(--paradis-workspace-color, transparent);
+}
+
 .paradis-workspaces-list .paradis-workspace-row {
 	display: flex;
 	align-items: center;
@@ -17,7 +28,6 @@
 	padding: 0 12px 0 10px;
 	box-sizing: border-box;
 	cursor: pointer;
-	border-left: 2px solid transparent;
 }
 
 .paradis-workspaces-list .paradis-workspace-row > .codicon {
@@ -106,40 +116,7 @@
 	opacity: 0.5;
 }
 
-/* Set Color サブメニューの色スウォッチ (Superset と同一の固定12色パレット)。 */
-/* コンテキストメニュー項目は icon なしで生成され action.class が DOM に出ないため、 */
-/* aria-label 属性セレクタで ::before に色ドットを描画する (paradisWorkspacesView.ts 参照)。 */
-/* ラベル文字列 (colorLabel) を変える場合はここも合わせて更新すること */
-.monaco-menu .action-label[aria-label='Red']::before,
-.monaco-menu .action-label[aria-label='Orange']::before,
-.monaco-menu .action-label[aria-label='Yellow']::before,
-.monaco-menu .action-label[aria-label='Lime']::before,
-.monaco-menu .action-label[aria-label='Green']::before,
-.monaco-menu .action-label[aria-label='Teal']::before,
-.monaco-menu .action-label[aria-label='Cyan']::before,
-.monaco-menu .action-label[aria-label='Blue']::before,
-.monaco-menu .action-label[aria-label='Indigo']::before,
-.monaco-menu .action-label[aria-label='Purple']::before,
-.monaco-menu .action-label[aria-label='Pink']::before,
-.monaco-menu .action-label[aria-label='Slate']::before {
-	content: '';
-	display: inline-block;
-	width: 10px;
-	height: 10px;
-	border-radius: 50%;
-	margin-right: 8px;
-	vertical-align: -1px;
-}
-
-.monaco-menu .action-label[aria-label='Red']::before { background-color: #ef4444; }
-.monaco-menu .action-label[aria-label='Orange']::before { background-color: #f97316; }
-.monaco-menu .action-label[aria-label='Yellow']::before { background-color: #eab308; }
-.monaco-menu .action-label[aria-label='Lime']::before { background-color: #84cc16; }
-.monaco-menu .action-label[aria-label='Green']::before { background-color: #22c55e; }
-.monaco-menu .action-label[aria-label='Teal']::before { background-color: #14b8a6; }
-.monaco-menu .action-label[aria-label='Cyan']::before { background-color: #06b6d4; }
-.monaco-menu .action-label[aria-label='Blue']::before { background-color: #3b82f6; }
-.monaco-menu .action-label[aria-label='Indigo']::before { background-color: #6366f1; }
-.monaco-menu .action-label[aria-label='Purple']::before { background-color: #a855f7; }
-.monaco-menu .action-label[aria-label='Pink']::before { background-color: #ec4899; }
-.monaco-menu .action-label[aria-label='Slate']::before { background-color: #64748b; }
+/* allow-any-unicode-next-line */
+/* 色選択のスウォッチは QuickPick の iconPath (SVG data URI) で描画する
+ * (paradisWorkspacesView.ts の promptColor 参照)。以前ここにあったコンテキストメニュー用の
+ * aria-label 属性セレクタ方式は、macOS のネイティブメニューでは効かないため廃止した。 */
