@@ -28,7 +28,7 @@ function workspaceConfigPathOf(path: IParadisWorkspaceLikePath): URI | undefined
  * (機能1 Phase E)。windowsMainService の PARA-PATCH 1点から呼ばれる。
  *
  * - 復元セットに既に含まれていれば何もしない (重複ウィンドウを開かない)
- * - ワークスペースファイル未作成 (Paradis: Initialize Multi-Repo Workspace 未実行) なら何もしない
+ * - ワークスペースファイル未作成 (Para Code: Initialize Multi-Repo Workspace 未実行) なら何もしない
  * - 明示的な CLI / API オープンや2枚目以降のウィンドウはこの関数を通らず従来挙動
  */
 export async function paradisEnsureDefaultWorkspace<T extends IParadisWorkspaceLikePath>(

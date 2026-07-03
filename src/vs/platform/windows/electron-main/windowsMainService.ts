@@ -59,7 +59,7 @@ import { IAuxiliaryWindow } from '../../auxiliaryWindow/electron-main/auxiliaryW
 import { ICSSDevelopmentService } from '../../cssDev/node/cssDevService.js';
 import { ResourceSet } from '../../../base/common/map.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
-// PARA-PATCH: default Paradis multi-repo workspace on startup (see paradisDefaultWorkspace.ts)
+// PARA-PATCH: default Para Code multi-repo workspace on startup (see paradisDefaultWorkspace.ts)
 import { paradisEnsureDefaultWorkspace } from '../../../paradis/contrib/workspaceSwitch/electron-main/paradisDefaultWorkspace.js';
 
 //#region Helper Interfaces
@@ -855,7 +855,7 @@ export class WindowsMainService extends Disposable implements IWindowsMainServic
 		else {
 			pathsToOpen = await this.doGetPathsFromLastSession();
 
-			// PARA-PATCH: on plain initial startup, always include the Paradis default multi-repo
+			// PARA-PATCH: on plain initial startup, always include the Para Code default multi-repo
 			// workspace window like Superset does (logic lives in fork-owned paradisDefaultWorkspace.ts)
 			if (openConfig.initialStartup) {
 				pathsToOpen = await paradisEnsureDefaultWorkspace<IPathToOpen>(pathsToOpen, openable => this.resolveOpenable(openable));

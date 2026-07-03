@@ -90,7 +90,7 @@ class ParadisSpreadsheetViewerResolverContribution implements IWorkbenchContribu
 						const original = diffEditorInput.original.resource;
 						const modified = diffEditorInput.modified.resource;
 						if (!original || !modified) {
-							throw new Error('Paradis spreadsheet diff requires both original and modified resources');
+							throw new Error('Para Code spreadsheet diff requires both original and modified resources');
 						}
 						return {
 							editor: instantiationService.createInstance(ParadisSpreadsheetDiffInput, original, modified, diffEditorInput.label)

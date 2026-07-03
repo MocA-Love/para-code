@@ -58,7 +58,7 @@ registerSingleton(IParadisBookmarksService, ParadisBookmarksService, Instantiati
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
 	order: 999,
-	title: localize('paradisConfigurationTitle', "Paradis"),
+	title: localize('paradisConfigurationTitle', "Para Code"),
 	type: 'object',
 	properties: {
 		[PARADIS_BOOKMARK_BAR_VISIBLE_SETTING]: {

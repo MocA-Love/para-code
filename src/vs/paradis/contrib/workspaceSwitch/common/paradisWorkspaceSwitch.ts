@@ -185,9 +185,9 @@ export interface IParadisWorkspaceSwitchService {
 //
 // upstream の WorkspaceChangeExtHostRelauncher (relauncher.contribution.ts) は folders[0] の
 // 変化を検知すると Extension Host を全再起動する。根拠は非推奨 workspace.rootPath 互換のみ。
-// Paradis のワークスペース切り替えは folders を丸ごと入れ替えるため、この再起動が起きると
+// Para Code のワークスペース切り替えは folders を丸ごと入れ替えるため、この再起動が起きると
 // 切り替えのたびに全拡張機能が落ちて「瞬時の切り替え」が成立しない。
-// このウィンドウが Paradis 管理下 (リポジトリ切り替え運用中) になった時点でフラグを立て、
+// このウィンドウが Para Code 管理下 (リポジトリ切り替え運用中) になった時点でフラグを立て、
 // relauncher 側の PARA-PATCH がこれを読んで再起動をスキップする。
 // module スコープの変数で持つのは、relauncher (upstream ファイル) 側の変更を
 // 「import 1行 + 条件 1語」に抑えるため (DI サービス注入はコンフリクト面が広がる)。
@@ -195,7 +195,7 @@ export interface IParadisWorkspaceSwitchService {
 let paradisManagedWorkspaceWindow = false;
 
 /**
- * このウィンドウを Paradis 管理下 (リポジトリ切り替え運用中) として記録する。
+ * このウィンドウを Para Code 管理下 (リポジトリ切り替え運用中) として記録する。
  * 一度立てたらウィンドウの生存中は下ろさない。
  */
 export function markParadisManagedWorkspaceWindow(): void {

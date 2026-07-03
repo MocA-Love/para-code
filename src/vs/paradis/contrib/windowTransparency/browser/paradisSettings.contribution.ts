@@ -15,7 +15,7 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 const paradisConfigurationNodeBase = Object.freeze<IConfigurationNode>({
 	id: 'paradis',
 	order: 999,
-	title: localize('paradisConfigurationTitle', "Paradis"),
+	title: localize('paradisConfigurationTitle', "Para Code"),
 	type: 'object'
 });
 

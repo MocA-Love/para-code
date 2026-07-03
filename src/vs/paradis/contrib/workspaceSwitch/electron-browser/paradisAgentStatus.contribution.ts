@@ -119,7 +119,7 @@ class ParadisCopyAgentHooksSetupAction extends Action2 {
 		super({
 			id: 'paradis.workspaceSwitch.copyAgentHooksSetup',
 			title: localize2('paradis.workspaceSwitch.copyAgentHooksSetup', "Copy Agent Hooks Setup (Claude Code)"),
-			category: localize2('paradis.category', "Paradis"),
+			category: localize2('paradis.category', "Para Code"),
 			f1: true
 		});
 	}

@@ -38,7 +38,7 @@ import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingMo
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
 import { getParadisCdpUrl, getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 
-const CATEGORY = localize2('paradis.category', "Paradis");
+const CATEGORY = localize2('paradis.category', "Para Code");
 
 /** アクティブなブラウザエディタのページが1つ以上のペインと共有中かどうか。 */
 const PARADIS_ACTIVE_PAGE_SHARED = new RawContextKey<boolean>('paradisActivePageShared', false, localize('paradis.activePageShared', "Whether the active integrated browser page is shared with a terminal pane."));
@@ -184,7 +184,7 @@ class ParadisShareBrowserPageWithTerminalPaneAction extends Action2 {
 
 		notificationService.info(localize(
 			'paradis.share.done',
-			"Shared \"{0}\" with terminal pane \"{1}\". Agent CLIs in that pane can now access the page via the para-browser MCP server (see \"Paradis: Copy MCP Setup Command\").",
+			"Shared \"{0}\" with terminal pane \"{1}\". Agent CLIs in that pane can now access the page via the para-browser MCP server (see \"Para Code: Copy MCP Setup Command\").",
 			model.title || model.url,
 			pick.label,
 		));

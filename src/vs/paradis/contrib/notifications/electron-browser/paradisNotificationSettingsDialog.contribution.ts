@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// コマンドパレット「Paradis: Open Notification Settings」の登録。paradisAgentBrowser.contribution.ts
+// コマンドパレット「Para Code: Open Notification Settings」の登録。paradisAgentBrowser.contribution.ts
 // の openBindingDialog と同じ「同時に1つだけ」パターンでダイアログを開く。
 // 併せて、設定エディタの既存 'paradis' セクション（windowTransparency/workspaceSwitch と同じIDへの
 // 相乗り、registerConfigurationは複数回呼んでも1セクションにマージされる）へ、このコマンドを
@@ -20,7 +20,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ParadisNotificationSettingsDialog } from './paradisNotificationSettingsDialog.js';
 
-const CATEGORY = localize2('paradis.category', "Paradis");
+const CATEGORY = localize2('paradis.category', "Para Code");
 
 let activeDialog: ParadisNotificationSettingsDialog | undefined;
 
@@ -47,7 +47,7 @@ registerAction2(ParadisOpenNotificationSettingsAction);
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
 	order: 999,
-	title: localize('paradisConfigurationTitle', "Paradis"),
+	title: localize('paradisConfigurationTitle', "Para Code"),
 	type: 'object',
 	properties: {
 		'paradis.notifications.openSettings': {

@@ -750,7 +750,7 @@ export interface ITerminalGroupService extends ITerminalInstanceHost {
 	/** Gets all _terminal view_ instances, ie. instances contained within terminal groups. */
 	readonly instances: readonly ITerminalInstance[];
 	readonly groups: readonly ITerminalGroup[];
-	// PARA-PATCH: Paradis workspace switching — groups parked (hidden but alive) for inactive
+	// PARA-PATCH: Para Code workspace switching — groups parked (hidden but alive) for inactive
 	// repositories. Excluded from `groups`/`instances` but must still take part in layout persistence.
 	readonly paradisParkedGroups?: readonly ITerminalGroup[];
 	activeGroup: ITerminalGroup | undefined;

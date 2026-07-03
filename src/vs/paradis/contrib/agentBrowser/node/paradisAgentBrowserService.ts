@@ -67,7 +67,7 @@ const MCP_PLAYWRIGHT_SESSION_ID = 'paradis-agent-browser';
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 // allow-any-unicode-next-line
-const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。Para Code側でブラウザページを開き、コマンドパレットから「Paradis: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。';
+const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。';
 
 const TOOLS = [
 	{

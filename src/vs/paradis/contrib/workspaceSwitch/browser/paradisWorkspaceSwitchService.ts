@@ -98,7 +98,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		this._activeEntry = this.loadActiveEntry();
 
 		// リロード後も relauncher 側の再起動抑止を効かせる。登録済みリポジトリが
-		// 読めた時点でこのウィンドウは Paradis 管理下のワークスペースと判断できる
+		// 読めた時点でこのウィンドウは Para Code 管理下のワークスペースと判断できる
 		// (登録は switchRepository と同様マルチルート状態でのみ許可しているため)。
 		if (this._repositories.length > 0 && this.contextService.getWorkbenchState() === WorkbenchState.WORKSPACE) {
 			markParadisManagedWorkspaceWindow();
@@ -141,7 +141,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 
 		// 切り替え先が未信頼だと Restricted Mode 化して拡張機能が制限されるため、
-		// 登録時点で信頼済みにしておく (社内利用前提のリポジトリリストなので妥当)。
+		// 登録時点で信頼済みにしておく (ユーザー自身が明示的に追加したリポジトリリストなので妥当)。
 		await this.trustUris(uri);
 
 		const repository: IParadisWorkspaceRepository = {
@@ -190,7 +190,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	async switchRepository(id: string): Promise<void> {
 		const repository = this._repositories.find(candidate => candidate.id === id);
 		if (!repository) {
-			throw new Error(`Unknown Paradis repository: ${id}`);
+			throw new Error(`Unknown Para Code repository: ${id}`);
 		}
 
 		return this.switchToTarget(repository.id, repository.uri);
@@ -198,7 +198,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	async switchToWorktree(worktree: IParadisWorktree): Promise<void> {
 		if (worktree.missing) {
-			throw new Error(`Paradis worktree is missing on disk: ${worktree.uri.fsPath}`);
+			throw new Error(`Para Code worktree is missing on disk: ${worktree.uri.fsPath}`);
 		}
 
 		return this.switchToTarget(paradisWorktreeStateKey(worktree.uri), worktree.uri);
@@ -340,7 +340,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 */
 	private ensureMultiRootWorkspace(): void {
 		if (this.contextService.getWorkbenchState() !== WorkbenchState.WORKSPACE) {
-			throw new Error('Paradis workspace switching requires a multi-root workspace');
+			throw new Error('Para Code workspace switching requires a multi-root workspace');
 		}
 	}
 

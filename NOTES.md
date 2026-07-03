@@ -1,6 +1,6 @@
 # Para Code - fork運用メモ
 
-Paradis社内向けVS Codeフォーク。`microsoft/vscode`を`upstream`としてfork。
+Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upstream`としてfork。
 
 ## 経緯（サマリ）
 
@@ -157,9 +157,9 @@ win/mac/linuxへの配布と自動アップデートの実装。設計の経緯�
 
 **GitHub Actions secrets（2026-07-03、`MocA-Love/para-code`リポジトリに全13個登録済み）**:
 - `CF_ACCOUNT_ID` / `CF_API_TOKEN`（トークン名: `para-code-deploy`。`/user/tokens/verify`でactiveと確認済み） / `CF_R2_BUCKET` / `CF_R2_PUBLIC_BASE_URL` / `CF_KV_NAMESPACE_ID`
-- `APPLE_TEAM_ID`(`WB4G82C384`) / `APPLE_CODESIGN_IDENTITY`(`Developer ID Application: Paradis KK (WB4G82C384)`) / `APPLE_CERTIFICATE_P12_BASE64` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_ID`(`apple-id@example.com`) / `APPLE_APP_SPECIFIC_PASSWORD`
+- `APPLE_TEAM_ID` / `APPLE_CODESIGN_IDENTITY` / `APPLE_CERTIFICATE_P12_BASE64` / `APPLE_CERTIFICATE_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD`（値はGitHub Secretsのみに保持。ここには書かない）
 - `PARA_UPDATE_ACCESS_CLIENT_ID` / `PARA_UPDATE_ACCESS_CLIENT_SECRET`（Service Token名: `para-code-update-client`、Non-expiring。ただしAccess Applicationは未設定なので現状はまだ何も強制していない、下記参照）
-- 証明書について: 元の`cert.p12`はパスワード不明のため未使用。同じ秘密鍵がこのMacのログインキーチェーンに残っていたため、Keychain Accessから新パスワードで再書き出し（`/Users/example/Downloads/para-code.p12`）したものを使用。**このファイルはDownloadsに残ったままなので、登録完了後は削除または安全な場所への移動を検討**（ユーザー自身での対応。エージェントからは削除しない方針）
+- 証明書について: 元の書き出し済みp12はパスワード不明のため未使用。同じ秘密鍵がこのMacのログインキーチェーンに残っていたため、Keychain Accessから新パスワードで再書き出し（`/Users/example/Downloads/para-code.p12`）したものを使用。**このファイルはDownloadsに残ったままなので、登録完了後は削除または安全な場所への移動を検討**（ユーザー自身での対応。エージェントからは削除しない方針）
 
 **Cloudflare Access Application（2026-07-03、完了）**:
 - ダッシュボードではなく、Cloudflare API（`curl`、一時的に発行した`Access: Apps and Policies`+`Access: Service Tokens`権限のAPIトークン経由）で作成した。`wrangler`はAccess関連のリソースを一切扱えないため不可避
