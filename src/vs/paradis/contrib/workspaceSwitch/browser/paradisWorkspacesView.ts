@@ -92,7 +92,7 @@ interface IRepositoryTemplateData {
 	readonly row: HTMLElement;
 	readonly icon: HTMLElement;
 	readonly name: HTMLElement;
-	readonly path: HTMLElement;
+	readonly branch: HTMLElement;
 }
 
 interface IWorktreeTemplateData {
@@ -104,7 +104,7 @@ interface IWorktreeTemplateData {
 
 class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement> {
 	getHeight(element: WorkspaceTreeElement): number {
-		return isWorktree(element) ? 30 : 44;
+		return isWorktree(element) ? 30 : 55;
 	}
 
 	getTemplateId(element: WorkspaceTreeElement): string {
@@ -120,6 +120,7 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 	constructor(
 		private readonly isActive: (repository: IParadisWorkspaceRepository) => boolean,
 		private readonly getStatus: (stateKey: string) => ParadisAgentStatus | undefined,
+		private readonly getBranch: (repository: IParadisWorkspaceRepository) => string | undefined,
 	) { }
 
 	renderTemplate(container: HTMLElement): IRepositoryTemplateData {
@@ -127,8 +128,8 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		const icon = DOM.append(row, DOM.$('.codicon'));
 		const labels = DOM.append(row, DOM.$('.paradis-workspace-labels'));
 		const name = DOM.append(labels, DOM.$('.paradis-workspace-name'));
-		const path = DOM.append(labels, DOM.$('.paradis-workspace-path'));
-		return { row, icon, name, path };
+		const branch = DOM.append(labels, DOM.$('.paradis-workspace-branch'));
+		return { row, icon, name, branch };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorkspaceRepository, FuzzyScore>, _index: number, templateData: IRepositoryTemplateData): void {
@@ -137,7 +138,9 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		const status = this.getStatus(repository.id);
 		applyStatusIcon(templateData.icon, status, active ? Codicon.check : Codicon.repo);
 		templateData.name.textContent = repository.name;
-		templateData.path.textContent = repository.uri.fsPath;
+		// Superset に合わせ、名前の下にはパスではなく main checkout のブランチ名を出す
+		// (git 管理外などブランチが取れない場合のみパスにフォールバック)
+		templateData.branch.textContent = this.getBranch(repository) ?? repository.uri.fsPath;
 		templateData.row.classList.toggle('active', active);
 
 		// Superset と同じ固定パレットの色をアイコンと行左端の色バーに反映。
@@ -232,7 +235,11 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
 		const getStatus = (stateKey: string) => this.agentStatusStore.getScopeStatus(stateKey);
-		const repositoryRenderer = new RepositoryRenderer(repository => this.workspaceSwitchService.activeStateKey === repository.id, getStatus);
+		const repositoryRenderer = new RepositoryRenderer(
+			repository => this.workspaceSwitchService.activeStateKey === repository.id,
+			getStatus,
+			repository => this.worktreeService.getRepositoryBranch(repository.id)
+		);
 		const worktreeRenderer = new WorktreeRenderer(worktree => this.workspaceSwitchService.activeStateKey === paradisWorktreeStateKey(worktree.uri), getStatus);
 
 		this.tree = this._register(this.instantiationService.createInstance(

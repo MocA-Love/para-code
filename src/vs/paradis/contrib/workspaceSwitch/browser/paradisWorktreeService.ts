@@ -46,6 +46,8 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	readonly onDidChangeWorktrees = this._onDidChangeWorktrees.event;
 
 	private _worktrees = new Map<string, IParadisWorktree[]>();
+	/** リポジトリID → main checkout のブランチ名 (.git/HEAD 由来) */
+	private _branches = new Map<string, string>();
 	private _known: ISerializedKnownWorktree[];
 
 	/** リポジトリID → .git/worktrees 監視の disposable */
@@ -81,6 +83,10 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		return this._worktrees.get(repositoryId) ?? [];
 	}
 
+	getRepositoryBranch(repositoryId: string): string | undefined {
+		return this._branches.get(repositoryId);
+	}
+
 	removeKnownWorktree(worktree: IParadisWorktree): void {
 		const before = this._known.length;
 		this._known = this._known.filter(known => !(known.repositoryId === worktree.repositoryId && known.path === worktree.uri.toString()));
@@ -107,10 +113,12 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			const worktreesWatcher = this.fileService.createWatcher(worktreesDir, { recursive: false, excludes: [] });
 			store.add(worktreesWatcher);
 			store.add(worktreesWatcher.onDidChange(() => this._refreshScheduler.schedule()));
+			const headFile = joinPath(gitDir, 'HEAD');
 			const gitDirWatcher = this.fileService.createWatcher(gitDir, { recursive: false, excludes: [] });
 			store.add(gitDirWatcher);
 			store.add(gitDirWatcher.onDidChange(e => {
-				if (e.affects(worktreesDir)) {
+				// worktrees/ の増減に加え、main checkout のブランチ切り替え (.git/HEAD) にも追従する
+				if (e.affects(worktreesDir) || e.affects(headFile)) {
 					this._refreshScheduler.schedule();
 				}
 			}));
@@ -131,9 +139,14 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 		const repositories = this.workspaceSwitchService.repositories;
 		const result = new Map<string, IParadisWorktree[]>();
+		const branches = new Map<string, string>();
 		let knownChanged = false;
 
 		for (const repository of repositories) {
+			const branch = await this.readRepositoryBranch(repository);
+			if (branch !== undefined) {
+				branches.set(repository.id, branch);
+			}
 			const scanned = await this.scanWorktrees(repository);
 			const scannedPaths = new Set(scanned.map(worktree => worktree.uri.toString()));
 			const knownForRepository = this._known.filter(known => known.repositoryId === repository.id);
@@ -180,7 +193,22 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			this.saveKnown();
 		}
 		this._worktrees = result;
+		this._branches = branches;
 		this._onDidChangeWorktrees.fire();
+	}
+
+	/**
+	 * リポジトリ本体 (main checkout) の `.git/HEAD` からブランチ名を読む。
+	 * worktree の HEAD (.git/worktrees/<name>/HEAD) と同じパース。
+	 * git 管理外や `.git` がファイル (このリポジトリ自体が worktree 等) の場合は undefined
+	 */
+	private async readRepositoryBranch(repository: IParadisWorkspaceRepository): Promise<string | undefined> {
+		try {
+			const head = (await this.fileService.readFile(joinPath(repository.uri, '.git', 'HEAD'))).value.toString().trim();
+			return head.startsWith('ref: refs/heads/') ? head.substring('ref: refs/heads/'.length) : head.substring(0, 8);
+		} catch {
+			return undefined;
+		}
 	}
 
 	private async scanWorktrees(repository: IParadisWorkspaceRepository): Promise<IParadisWorktree[]> {
