@@ -286,8 +286,17 @@ task.task(compileNativeExtensionsBuildTask);
 /**
  * Compiles the built-in copilot extension for the build.
  * Used by non-CI local builds where copilot is not downloaded as a VSIX.
+ *
+ * PARA-PATCH: split into two sequential gulp pipelines (bundle, then production
+ * node_modules copy) so each dest stream's completion is awaited individually —
+ * the previous single es.merge()d stream could report completion before the
+ * dependency copy finished flushing, yielding half-written .build output on CI.
+ * See packageCopilotExtensionStream in build/lib/extensions.ts and NOTES.md.
  */
-export const compileCopilotExtensionBuildTask = task.define('compile-copilot-extension-build', () => ext.packageCopilotExtensionStream(false).pipe(gulp.dest('.build')));
+export const compileCopilotExtensionBuildTask = task.define('compile-copilot-extension-build', task.series(
+	task.define('bundle-copilot-extension-build', () => ext.packageCopilotExtensionStream(false).pipe(gulp.dest('.build'))),
+	task.define('copy-copilot-extension-dependencies-build', () => ext.packageCopilotExtensionDependenciesStream().pipe(gulp.dest('.build')))
+));
 task.task(compileCopilotExtensionBuildTask);
 
 /**
