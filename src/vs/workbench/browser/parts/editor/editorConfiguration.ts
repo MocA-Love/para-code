@@ -23,7 +23,7 @@ export class DynamicEditorConfigurations extends Disposable implements IWorkbenc
 	static readonly ID = 'workbench.contrib.dynamicEditorConfigurations';
 
 	private static readonly AUTO_LOCK_DEFAULT_ENABLED = new Set<string>([
-		'terminalEditor',
+		// PARA-PATCH: don't auto-lock terminal editor groups by default (Superset-like UX; the manual Lock Group feature stays available)
 		'mainThreadWebview-simpleBrowser.view',
 		'mainThreadWebview-browserPreview',
 		'workbench.editor.processExplorer'
