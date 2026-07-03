@@ -35,7 +35,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		'paradis.window.transparency.opacity': {
 			type: 'number',
-			default: 0.62,
+			default: 0.8,
 			minimum: 0.3,
 			maximum: 1,
 			scope: ConfigurationScope.WINDOW,

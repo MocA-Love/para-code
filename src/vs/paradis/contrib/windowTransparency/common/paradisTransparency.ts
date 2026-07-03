@@ -18,7 +18,7 @@ export const PARADIS_TRANSPARENT_CLASS = 'paradis-transparent';
 /** 背景が透けすぎて前景の可読性が失われないための下限。設定値がこれを下回る場合はクランプする。 */
 export const PARADIS_TRANSPARENCY_MIN_OPACITY = 0.3;
 export const PARADIS_TRANSPARENCY_MAX_OPACITY = 1;
-export const PARADIS_TRANSPARENCY_DEFAULT_OPACITY = 0.62;
+export const PARADIS_TRANSPARENCY_DEFAULT_OPACITY = 0.8;
 
 /**
  * 設定から読んだ opacity 値を有効範囲（0.3〜1）へクランプする。数値でない場合は既定値を返す。
