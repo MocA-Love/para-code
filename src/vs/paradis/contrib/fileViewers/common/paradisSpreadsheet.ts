@@ -135,6 +135,8 @@ export interface IParadisWorkbookData {
 	 * 図形/画像の解析には DOMParser が必要で node 層では使えないため、XML と media(rId→dataURI)を渡し renderer で解析する。
 	 */
 	readonly drawingsBySheet?: { readonly [sheetIndex: number]: readonly IParadisDrawingData[] };
+	/** theme1.xml の clrScheme 色(scheme名 lt1/dk1/accent1... → hex)。図形の schemeClr 解決に renderer 側で使う。 */
+	readonly themeColors?: { readonly [schemeName: string]: string };
 }
 
 /** shared process 側サービスのインターフェース(チャネル越しに呼ばれる)。 */

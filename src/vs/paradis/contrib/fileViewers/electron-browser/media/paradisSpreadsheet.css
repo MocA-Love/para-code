@@ -12,11 +12,66 @@
 	overflow: hidden;
 }
 
-.paradis-spreadsheet-body {
+/* allow-any-unicode-next-line */
+/* スクロールしない位置基準。固定ヘッダー帯(列ラベル/行番号/角)を body(スクローラ)の兄弟として重ねる。 */
+.paradis-spreadsheet-bodywrap {
+	position: relative;
 	flex: 1 1 auto;
 	min-height: 0;
+}
+
+.paradis-spreadsheet-body {
+	position: absolute;
+	inset: 0;
 	overflow: auto;
 	background-color: #ffffff;
+}
+
+/* allow-any-unicode-next-line */
+/* 固定ヘッダー帯。inner の transform:scale 下では position:sticky が効かないため、スクロールに transform で追従する。 */
+.paradis-spreadsheet-colstrip,
+.paradis-spreadsheet-rowstrip,
+.paradis-spreadsheet-stickycorner {
+	position: absolute;
+	overflow: hidden;
+	z-index: 10;
+	pointer-events: none;
+	display: none;
+	background-color: #f3f3f3;
+}
+
+.paradis-spreadsheet-colstrip {
+	top: 0;
+	right: 0;
+	/* allow-any-unicode-next-line */
+	/* left / height は倍率に応じてインラインで設定される */
+}
+
+.paradis-spreadsheet-rowstrip {
+	left: 0;
+	bottom: 0;
+	/* allow-any-unicode-next-line */
+	/* top / width は倍率に応じてインラインで設定される */
+}
+
+.paradis-spreadsheet-stickycorner {
+	top: 0;
+	left: 0;
+	box-sizing: border-box;
+}
+
+.paradis-spreadsheet-strip-inner {
+	position: relative;
+	transform-origin: top left;
+}
+
+.paradis-spreadsheet-strip-cell {
+	position: absolute;
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
 }
 
 .paradis-spreadsheet-outer {
@@ -65,9 +120,9 @@
 	z-index: 1;
 }
 
+/* allow-any-unicode-next-line */
+/* 表内ヘッダー行。transform:scale 配下では position:sticky が効かないため、固定表示は colstrip/rowstrip が担う。 */
 .paradis-spreadsheet-head {
-	position: sticky;
-	top: 0;
 	z-index: 2;
 }
 

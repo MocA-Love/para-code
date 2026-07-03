@@ -16,12 +16,16 @@ import { IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape } from '
 // upstream の htmlToMarkdown.ts と同じく、専用ポリシーで文字列を Trusted 化してから渡す。
 const ttPolicy = createTrustedTypesPolicy('paradisSpreadsheetDrawings', { createHTML: value => value });
 
-// 図形の schemeClr 用の標準Officeテーマ色。
+// 図形の schemeClr 用の標準Officeテーマ色(Office 2013+ の既定)。ブック固有の theme1.xml 由来パレット
+// (IParadisWorkbookData.themeColors)が渡されればそちらを優先し、これはフォールバックとして使う。
 const SHAPE_THEME_COLORS: Record<string, string> = {
 	lt1: '#FFFFFF', dk1: '#000000', lt2: '#E7E6E6', dk2: '#44546A',
 	accent1: '#4472C4', accent2: '#ED7D31', accent3: '#A5A5A5',
 	accent4: '#FFC000', accent5: '#5B9BD5', accent6: '#70AD47',
 };
+
+/** 図形の schemeClr 解決に使うテーマ色(scheme名→hex)。 */
+export type ParadisShapeThemeColors = { readonly [schemeName: string]: string };
 
 function xmlAttr(el: Element, name: string): string {
 	return el.getAttribute(name) || '';
@@ -51,7 +55,7 @@ function parseAnchorPosition(el: Element): IParadisRenderAnchor {
 	};
 }
 
-function resolveXmlColor(el: Element | null): string {
+function resolveXmlColor(el: Element | null, themeColors: ParadisShapeThemeColors | undefined): string {
 	if (!el) {
 		return '#000000';
 	}
@@ -61,7 +65,8 @@ function resolveXmlColor(el: Element | null): string {
 	}
 	const scheme = xmlChild(el, 'schemeClr');
 	if (scheme) {
-		return SHAPE_THEME_COLORS[xmlAttr(scheme, 'val')] || '#000000';
+		const name = xmlAttr(scheme, 'val');
+		return themeColors?.[name] || SHAPE_THEME_COLORS[name] || '#000000';
 	}
 	return '#000000';
 }
@@ -74,7 +79,7 @@ function cNvPrOf(container: Element | null): { name?: string; shapeId?: string }
 	return { name: xmlAttr(cNvPr, 'name') || undefined, shapeId: xmlAttr(cNvPr, 'id') || undefined };
 }
 
-function parseShapeFromAnchor(anchor: Element, media: { readonly [rid: string]: string }): IParadisRenderShape | null {
+function parseShapeFromAnchor(anchor: Element, media: { readonly [rid: string]: string }, themeColors: ParadisShapeThemeColors | undefined): IParadisRenderShape | null {
 	const from = xmlChild(anchor, 'from');
 	if (!from) {
 		return null;
@@ -128,7 +133,7 @@ function parseShapeFromAnchor(anchor: Element, media: { readonly [rid: string]: 
 		}
 		const fill = xmlChild(ln, 'solidFill');
 		if (fill) {
-			lineColor = resolveXmlColor(fill);
+			lineColor = resolveXmlColor(fill, themeColors);
 		}
 		const dash = xmlChild(ln, 'prstDash');
 		if (dash) {
@@ -152,7 +157,7 @@ function parseShapeFromAnchor(anchor: Element, media: { readonly [rid: string]: 
 }
 
 /** drawing(XML + 埋め込みメディア)群を解析して図形配列(直線/矩形/画像)を返す。 */
-export function parseDrawingShapes(drawings: readonly IParadisDrawingData[] | undefined): IParadisRenderShape[] {
+export function parseDrawingShapes(drawings: readonly IParadisDrawingData[] | undefined, themeColors?: ParadisShapeThemeColors): IParadisRenderShape[] {
 	if (!drawings || drawings.length === 0) {
 		return [];
 	}
@@ -170,7 +175,7 @@ export function parseDrawingShapes(drawings: readonly IParadisDrawingData[] | un
 			// eslint-disable-next-line no-restricted-syntax -- DOMParser で生成した分離ドキュメントの走査(ライブDOMではない)
 			const anchors = doc.getElementsByTagNameNS('*', tag);
 			for (let i = 0; i < anchors.length; i++) {
-				const shape = parseShapeFromAnchor(anchors[i], media);
+				const shape = parseShapeFromAnchor(anchors[i], media, themeColors);
 				if (shape) {
 					shapes.push(shape);
 				}
