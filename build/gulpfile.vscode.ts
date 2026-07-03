@@ -551,7 +551,11 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 function hasAuthenticodeSignature(filePath: string): Promise<boolean> {
 	return new Promise((resolve, reject) => {
 		const proc = cp.spawn('signtool.exe', ['verify', '/pa', filePath]);
-		proc.on('error', reject);
+		// PARA-PATCH: signtool.exe ships with the Windows SDK but is not on PATH on
+		// GitHub-hosted runners. Signature stripping only matters as preparation for
+		// re-signing (which this fork doesn't do yet — unsigned Windows builds), so
+		// treat a missing signtool as "no signature present" instead of failing.
+		proc.on('error', err => (err as NodeJS.ErrnoException).code === 'ENOENT' ? resolve(false) : reject(err));
 		proc.on('exit', code => resolve(code === 0));
 	});
 }
