@@ -51,7 +51,6 @@ const DEFAULT_EXTENSION_IDS: readonly string[] = [
 	'fill-labs.dependi',
 	// 装飾
 	'oderwat.indent-rainbow',
-	'leodevbro.blockman',
 	// 趣味・ビューア
 	'pixl-garden.BongoCat',
 	'ngtystr.ppm-pgm-viewer-for-vscode',
