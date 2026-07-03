@@ -65,7 +65,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.browser.bookmarkBar.visible', "Controls whether the bookmarks bar is shown below the address bar in the integrated browser.")
+			description: localize('paradis.browser.bookmarkBar.visible', "内蔵ブラウザのアドレスバーの下にブックマークバーを表示するかどうかを制御します。")
 		}
 	}
 });

@@ -25,7 +25,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.WINDOW,
-			description: localize('paradis.resourceMonitor.enabled', "Controls whether the CPU/RAM usage indicator is shown in the title bar.")
+			description: localize('paradis.resourceMonitor.enabled', "タイトルバーに CPU / メモリ使用率のインジケーターを表示するかどうかを制御します。")
 		}
 	}
 });

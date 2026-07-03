@@ -29,7 +29,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// user settings.json だけを読んで決めるため、Workspace/プロファイルスコープでの上書きを許すと
 			// mainとレンダラで値が食い違い「クラスは付くが透けない」状態になる。
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.window.transparency.enabled', "Controls whether the workbench background is made translucent so the desktop shows through. Only the workbench chrome (editor, side bar, panel, title bar, etc.) becomes translucent; dialogs, menus and notifications stay opaque. The integrated terminal renders on a GPU surface and stays opaque. Changing this requires restarting the application to take effect.")
+			markdownDescription: localize('paradis.window.transparency.enabled', "ワークベンチの背景を半透明にしてデスクトップを透かして表示するかどうかを制御します。半透明になるのはワークベンチ本体（エディタ、サイドバー、パネル、タイトルバーなど）のみで、ダイアログ・メニュー・通知は不透明のままです。統合ターミナルはGPUサーフェスで描画されるため不透明のままです。変更の反映にはアプリケーションの再起動が必要です。")
 		},
 		'paradis.window.transparency.opacity': {
 			type: 'number',
@@ -37,7 +37,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			minimum: 0.3,
 			maximum: 1,
 			scope: ConfigurationScope.WINDOW,
-			markdownDescription: localize('paradis.window.transparency.opacity', "Controls the opacity of the workbench background when {0} is enabled. Accepts any decimal between `0.3` and `1` (for example `0.95`) for fine-grained control; values closer to `1` are more opaque. Only backgrounds are affected, so text stays fully readable. Changes apply immediately without reloading.", '`#paradis.window.transparency.enabled#`')
+			markdownDescription: localize('paradis.window.transparency.opacity', "{0} が有効なときのワークベンチ背景の不透明度を制御します。`0.3`〜`1` の任意の小数（例: `0.95`）を指定でき、`1` に近いほど不透明になります。背景のみが対象なので文字の読みやすさは保たれます。変更はリロード不要で即座に反映されます。", '`#paradis.window.transparency.enabled#`')
 		}
 	}
 });

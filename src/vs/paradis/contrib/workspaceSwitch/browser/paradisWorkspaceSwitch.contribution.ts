@@ -57,13 +57,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.WINDOW,
-			description: localize('paradis.workspaceSwitch.autoImportWorktrees', "Automatically add newly created git worktrees of registered repositories to the Workspaces view.")
+			description: localize('paradis.workspaceSwitch.autoImportWorktrees', "登録済みリポジトリに新しく作成された git worktree を、Workspaces ビューへ自動的に追加します。")
 		},
 		'paradis.workspaceSwitch.autoRemoveMissingWorktrees': {
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.WINDOW,
-			description: localize('paradis.workspaceSwitch.autoRemoveMissingWorktrees', "Automatically remove deleted git worktrees from the Workspaces view. When disabled, missing worktrees stay in the list and can be removed manually.")
+			description: localize('paradis.workspaceSwitch.autoRemoveMissingWorktrees', "削除された git worktree を Workspaces ビューから自動的に取り除きます。無効にした場合、見つからない worktree はリストに残り、手動で削除できます。")
 		}
 	}
 });
