@@ -52,9 +52,21 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _percentBtn: HTMLButtonElement | undefined;
 	private _bodyEl: HTMLElement | undefined;
 	private _tabsEl: HTMLElement | undefined;
+	private _outerEl: HTMLElement | undefined;
 	private _innerEl: HTMLElement | undefined;
 	private _tableEl: HTMLElement | undefined;
+	private _theadEl: HTMLElement | undefined;
+	private _headCellEls: HTMLElement[] = [];
+	// 列ラベル(A,B,C...)/行番号の固定ヘッダー帯。inner に transform:scale が掛かると position:sticky は
+	// 効かない(transform が包含ブロックを作る)ため、スクロールしない兄弟要素として重ね、scroll に追従させる。
+	private _colStripEl: HTMLElement | undefined;
+	private _colStripInner: HTMLElement | undefined;
+	private _rowStripEl: HTMLElement | undefined;
+	private _rowStripInner: HTMLElement | undefined;
+	private _cornerEl: HTMLElement | undefined;
+	private _headHeight = 0;
 	private _naturalTableWidth = 0;
+	private _naturalTableHeight = 0;
 	private _dataRowEls: { excelRow: number; tr: HTMLElement }[] = [];
 	private _shrinkCells: { td: HTMLElement; span: HTMLElement }[] = [];
 	private _overflowCells: IParadisOverflowItem[] = [];
@@ -104,7 +116,17 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		// 「既定のアプリで開く」ボタンは resource 依存なので入力ごとに作り直す。
 		this._openAppEl = dom.append(right, $('.paradis-spreadsheet-openapp'));
 
-		this._bodyEl = dom.append(this._root, $('.paradis-spreadsheet-body'));
+		// bodywrap はスクロールしない位置基準。固定ヘッダー帯(列ラベル/行番号/角)を body(スクローラ)の
+		// 兄弟として重ね、body の scroll イベントで transform だけ更新する。
+		const bodyWrap = dom.append(this._root, $('.paradis-spreadsheet-bodywrap'));
+		this._bodyEl = dom.append(bodyWrap, $('.paradis-spreadsheet-body'));
+		this._colStripEl = dom.append(bodyWrap, $('.paradis-spreadsheet-colstrip'));
+		this._colStripInner = dom.append(this._colStripEl, $('.paradis-spreadsheet-strip-inner'));
+		this._rowStripEl = dom.append(bodyWrap, $('.paradis-spreadsheet-rowstrip'));
+		this._rowStripInner = dom.append(this._rowStripEl, $('.paradis-spreadsheet-strip-inner'));
+		this._cornerEl = dom.append(bodyWrap, $('.paradis-spreadsheet-stickycorner.paradis-spreadsheet-corner'));
+		this._register(dom.addDisposableListener(this._bodyEl, dom.EventType.SCROLL, () => this._updateStickyStripTransforms()));
+
 		this._tabsEl = dom.append(this._root, $('.paradis-spreadsheet-tabs'));
 	}
 
@@ -166,6 +188,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		dom.clearNode(this._bodyEl);
+		this._setStickyStripsVisible(false);
 		if (this._tabsEl) {
 			dom.clearNode(this._tabsEl);
 		}
@@ -178,6 +201,8 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		dom.clearNode(this._bodyEl);
+		// 前のシートのヘッダー帯が残らないよう一旦隠す(行位置の実測後 _rebuildStickyStrips が再表示する)。
+		this._setStickyStripsVisible(false);
 
 		const sheet = this._sheets[this._activeSheetIndex];
 		if (!sheet) {
@@ -192,6 +217,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 
 		const outer = dom.append(this._bodyEl, $('.paradis-spreadsheet-outer'));
+		this._outerEl = outer;
 		const inner = dom.append(outer, $('.paradis-spreadsheet-inner'));
 		this._innerEl = inner;
 		this._activeSheet = sheet;
@@ -199,6 +225,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const { table, naturalWidth } = this._buildSheetTable(sheet);
 		this._tableEl = table;
 		this._naturalTableWidth = naturalWidth;
+		this._naturalTableHeight = 0; // レイアウト確定後(_placeGeometryOverlays)に実測する
 		inner.style.width = `${naturalWidth}px`;
 		dom.append(inner, table);
 
@@ -269,6 +296,78 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			inner.appendChild(breaks);
 			this._pageBreakOverlay = breaks;
 		}
+
+		// 実レイアウトの測定値で固定ヘッダー帯とスクロール footprint(outer)を更新する。
+		this._naturalTableHeight = this._tableEl?.offsetHeight ?? 0;
+		this._rebuildStickyStrips();
+		this._applyScale();
+	}
+
+	/**
+	 * 固定ヘッダー帯(列ラベル/行番号)を実 DOM の測定値から作り直す。
+	 * セル位置は colgroup の幅指定ではなく th/tr の実測(offsetLeft/offsetTop)を使い、
+	 * border-collapse による端数ズレを避ける。倍率・スクロール追従は transform のみで行う。
+	 */
+	private _rebuildStickyStrips(): void {
+		const colInner = this._colStripInner;
+		const rowInner = this._rowStripInner;
+		const thead = this._theadEl;
+		if (!colInner || !rowInner || !thead || !this._tableEl) {
+			return;
+		}
+		dom.clearNode(colInner);
+		dom.clearNode(rowInner);
+		this._headHeight = thead.offsetHeight;
+
+		// 列ラベル(A,B,C...)。corner th は含まれない(角は固定の別要素)。
+		for (const th of this._headCellEls) {
+			const cell = dom.append(colInner, $('.paradis-spreadsheet-colhead.paradis-spreadsheet-strip-cell'));
+			cell.style.left = `${th.offsetLeft - PARADIS_ROW_NUM_COL_WIDTH}px`;
+			cell.style.top = '0';
+			cell.style.width = `${th.offsetWidth}px`;
+			cell.style.height = `${this._headHeight}px`;
+			cell.textContent = th.textContent;
+		}
+
+		// 行番号。データ行の実測位置(thead 分を差し引いた自然座標)に合わせる。
+		for (let i = 0; i < this._dataRowEls.length; i++) {
+			const tr = this._dataRowEls[i].tr;
+			const cell = dom.append(rowInner, $('.paradis-spreadsheet-rowhead.paradis-spreadsheet-strip-cell'));
+			cell.style.left = '0';
+			cell.style.top = `${tr.offsetTop - this._headHeight}px`;
+			cell.style.width = `${PARADIS_ROW_NUM_COL_WIDTH}px`;
+			cell.style.height = `${tr.offsetHeight}px`;
+			cell.textContent = String(i + 1);
+		}
+
+		this._setStickyStripsVisible(this._dataRowEls.length > 0);
+	}
+
+	private _setStickyStripsVisible(visible: boolean): void {
+		const display = visible ? 'block' : 'none';
+		if (this._colStripEl) {
+			this._colStripEl.style.display = display;
+		}
+		if (this._rowStripEl) {
+			this._rowStripEl.style.display = display;
+		}
+		if (this._cornerEl) {
+			this._cornerEl.style.display = display;
+		}
+	}
+
+	/** 固定ヘッダー帯の transform を現在のスクロール位置・倍率に合わせる(scroll イベントごとに呼ばれる軽量処理)。 */
+	private _updateStickyStripTransforms(): void {
+		if (!this._bodyEl) {
+			return;
+		}
+		const scale = this._scale;
+		if (this._colStripInner) {
+			this._colStripInner.style.transform = `translateX(${-this._bodyEl.scrollLeft}px) scale(${scale})`;
+		}
+		if (this._rowStripInner) {
+			this._rowStripInner.style.transform = `translateY(${-this._bodyEl.scrollTop}px) scale(${scale})`;
+		}
 	}
 
 	/** フォント読み込み完了 + テーブルのサイズ変化(再フロー)で図形/改ページ線を配置し直すトリガを張る。 */
@@ -312,11 +411,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		}
 
 		const thead = dom.append(table, $('thead.paradis-spreadsheet-head'));
+		this._theadEl = thead;
+		this._headCellEls = [];
 		const headRow = dom.append(thead, $('tr'));
 		dom.append(headRow, $('th.paradis-spreadsheet-corner'));
 		for (let i = 0; i < sheet.columnCount; i++) {
 			const th = dom.append(headRow, $('th.paradis-spreadsheet-colhead'));
 			th.textContent = getColumnLabel(i);
+			this._headCellEls.push(th);
 		}
 
 		const tbody = dom.append(table, $('tbody'));
@@ -431,6 +533,30 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				this._innerEl.style.transform = '';
 			}
 		}
+		// outer を縮尺後サイズにして body のスクロール量を実表示に一致させる(差分ビューアの sizer と同方式。
+		// これが無いと縮小時に見た目より大きな空白スクロール領域が残る)。高さはレイアウト実測後のみ設定する。
+		if (this._outerEl) {
+			this._outerEl.style.width = `${Math.round(this._naturalTableWidth * target)}px`;
+			this._outerEl.style.height = this._naturalTableHeight > 0 ? `${Math.round(this._naturalTableHeight * target)}px` : '';
+		}
+		// 固定ヘッダー帯のコンテナ位置・サイズを倍率に合わせる。
+		if (this._headHeight > 0) {
+			const headH = Math.round(this._headHeight * target);
+			const rowW = Math.round(PARADIS_ROW_NUM_COL_WIDTH * target);
+			if (this._colStripEl) {
+				this._colStripEl.style.left = `${rowW}px`;
+				this._colStripEl.style.height = `${headH}px`;
+			}
+			if (this._rowStripEl) {
+				this._rowStripEl.style.top = `${headH}px`;
+				this._rowStripEl.style.width = `${rowW}px`;
+			}
+			if (this._cornerEl) {
+				this._cornerEl.style.width = `${rowW}px`;
+				this._cornerEl.style.height = `${headH}px`;
+			}
+		}
+		this._updateStickyStripTransforms();
 		if (this._percentBtn) {
 			this._percentBtn.textContent = `${Math.round(target * 100)}%`;
 		}
@@ -445,6 +571,12 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._overflowCells = [];
 		this._activeSheet = undefined;
 		this._tableEl = undefined;
+		this._theadEl = undefined;
+		this._headCellEls = [];
+		this._outerEl = undefined;
+		this._setStickyStripsVisible(false);
+		this._headHeight = 0;
+		this._naturalTableHeight = 0;
 		this._shapeOverlay = undefined;
 		this._pageBreakOverlay = undefined;
 		this._replaceToken = {};

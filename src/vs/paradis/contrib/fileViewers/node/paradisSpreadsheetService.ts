@@ -54,11 +54,38 @@ interface IExcelRichTextRun {
 	readonly font?: IExcelFont;
 }
 
-// ── Excel標準テーマ色(Office) ──
-const THEME_COLORS: Record<number, string> = {
+// ── Excel標準テーマ色(Office 2013+ の既定)。theme1.xml が読めない場合のフォールバック ──
+// 古いブック(例: "Office 2007 - 2010" テーマは accent6 がオレンジ #F79646)ではパレットが異なるため、
+// 実際の解決は theme1.xml の clrScheme から構築した activeThemeColors で行う。
+const DEFAULT_THEME_COLORS: Record<number, string> = {
 	0: '#FFFFFF', 1: '#000000', 2: '#E7E6E6', 3: '#44546A', 4: '#4472C4',
 	5: '#ED7D31', 6: '#A5A5A5', 7: '#FFC000', 8: '#5B9BD5', 9: '#70AD47',
+	10: '#0563C1', 11: '#954F72',
 };
+
+// styles.xml の theme インデックス → clrScheme 要素名。仕様上 0/1 と 2/3 は clrScheme の並び(dk1,lt1,dk2,lt2)と
+// 入れ替わる(theme=0 が lt1=白、theme=1 が dk1=黒)。
+const THEME_INDEX_TO_SCHEME_NAME: readonly string[] = ['lt1', 'dk1', 'lt2', 'dk2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+
+// 現在パース中のワークブックのテーマパレット。parseWorkbook が同期処理区間(eachSheet ループ)の直前に設定し、
+// ループ内の resolveColor だけが参照する。ループ内に await は無いため、並行する parseWorkbook 呼び出しと混線しない。
+let activeThemeColors: Record<number, string> = DEFAULT_THEME_COLORS;
+
+/** theme1.xml の clrScheme からテーマ色(scheme名→hex)を抽出する。srgbClr は val、sysClr は lastClr を使う。 */
+function parseThemeScheme(themeXml: string): { [name: string]: string } {
+	const byName: { [name: string]: string } = {};
+	for (const name of THEME_INDEX_TO_SCHEME_NAME) {
+		const block = themeXml.match(new RegExp(`<(?:\\w+:)?${name}>([\\s\\S]*?)</(?:\\w+:)?${name}>`));
+		if (!block) {
+			continue;
+		}
+		const val = block[1].match(/(?:srgbClr[^>]*\bval|sysClr[^>]*\blastClr)="([0-9A-Fa-f]{6})"/);
+		if (val) {
+			byName[name] = `#${val[1].toUpperCase()}`;
+		}
+	}
+	return byName;
+}
 
 const BORDER_STYLES: Record<string, string> = {
 	thin: '1px solid', medium: '2px solid', thick: '3px solid', dotted: '1px dotted',
@@ -71,11 +98,11 @@ function argbToHex(argb: string | undefined): string | null {
 	if (!argb || argb.length < 6) {
 		return null;
 	}
-	const hex = argb.length === 8 ? argb.slice(2) : argb;
-	if (/^0+$/.test(hex)) {
+	// 8桁(AARRGGBB)でアルファ 00 は完全透明なので「色なし」扱い。それ以外は下6桁を使う(黒 FF000000 も有効な色)。
+	if (argb.length === 8 && argb.slice(0, 2) === '00') {
 		return null;
 	}
-	return `#${hex}`;
+	return `#${argb.slice(-6)}`;
 }
 
 function applyTint(hex: string, tint: number): string {
@@ -95,7 +122,7 @@ function resolveColor(color: IExcelColor | undefined): string | null {
 		return argbToHex(color.argb);
 	}
 	if (color.theme !== undefined) {
-		const base = THEME_COLORS[color.theme] || '#000000';
+		const base = activeThemeColors[color.theme] || '#000000';
 		return color.tint ? applyTint(base, color.tint) : base;
 	}
 	if (color.indexed !== undefined) {
@@ -113,18 +140,29 @@ function borderToCSS(b: IExcelBorderSide | undefined): string | null {
 	return `${base} ${col}`;
 }
 
-function rowHeightToPx(h: number | undefined): number {
-	if (!h || h <= 0) {
-		return 20;
-	}
-	return Math.round((h * 96) / 72);
+function rowHeightToPx(h: number | undefined, defaultRowHeightPt: number | undefined): number {
+	// 行に明示高が無ければシートの既定行高(sheetFormatPr defaultRowHeight、pt)を使う。最後の 15pt は 20px 相当(旧既定)。
+	const pt = h && h > 0 ? h : (defaultRowHeightPt && defaultRowHeightPt > 0 ? defaultRowHeightPt : 15);
+	return Math.round((pt * 96) / 72);
 }
 
-function charWidthToPx(w: number | undefined): number {
-	if (!w || w <= 0) {
-		return 64;
-	}
-	return Math.max(4, Math.round(w * 10));
+// Excel の列幅は「既定フォントの最大数字幅(mdw)を1とする文字数」単位で保存される。
+// px 換算は px ≈ round(文字数 * mdw) + 5(セル左右パディング)。Calibri 11pt の既定幅 8.43 → 64px、
+// 日本語 Excel(ＭＳ Ｐゴシック 11pt, mdw=8)の 2.5 → 25px。
+function charWidthToPx(w: number | undefined, defaultColWidth: number | undefined, maxDigitWidth: number): number {
+	// 列に明示幅が無ければシートの既定列幅(sheetFormatPr defaultColWidth)へフォールバックする。
+	// これを見ずに固定値へ落とすと、全列が既定幅のシート(方眼紙レイアウトの表紙等)が数倍幅で描かれる。
+	const chars = w && w > 0 ? w : (defaultColWidth && defaultColWidth > 0 ? defaultColWidth : 8.43);
+	return Math.max(4, Math.round(chars * maxDigitWidth) + 5);
+}
+
+/** 既定フォント(styles.xml の先頭 font)から最大数字幅(px)を推定する。日本語フォントは 8px、それ以外は 7px(いずれも 11pt 時)。 */
+function estimateMaxDigitWidth(fontName: string | undefined, fontSize: number | undefined): number {
+	const name = fontName ?? '';
+	const isJapanese = MINCHO_MARKERS.some(m => name.includes(m)) || GOTHIC_MARKERS.some(m => name.includes(m)) || /[^\x00-\x7F]/.test(name);
+	const base = isJapanese ? 8 : 7;
+	const size = fontSize && fontSize > 0 ? fontSize : 11;
+	return Math.max(4, Math.round((base * size) / 11));
 }
 
 // Windows 由来の日本語フォント名(ＭＳ Ｐ明朝/HGP明朝B/游明朝/ＭＳ Ｐゴシック 等)は macOS/Linux に存在せず、
@@ -171,8 +209,9 @@ function fontToStyle(font: IExcelFont | undefined, into: Record<string, string>)
 	if (decor.length) {
 		into.textDecoration = decor.join(' ');
 	}
+	// 白フォントも忠実に適用する(濃色塗り+白文字のセルで文字が黒く出てしまうため。白背景に白文字は Excel でも不可視)。
 	const fc = resolveColor(font.color);
-	if (fc && fc !== '#FFFFFF') {
+	if (fc) {
 		into.color = fc;
 	}
 	if (font.vertAlign === 'superscript') {
@@ -221,26 +260,52 @@ function getCellStyle(cell: ExcelJS.Cell): IParadisCellStyle {
 			style.backgroundColor = bg;
 		}
 	}
-	const bd = cell.border;
-	if (bd) {
-		const bt = borderToCSS(bd.top as IExcelBorderSide | undefined);
-		if (bt) {
-			style.borderTop = bt;
-		}
-		const bb = borderToCSS(bd.bottom as IExcelBorderSide | undefined);
-		if (bb) {
-			style.borderBottom = bb;
-		}
-		const bl = borderToCSS(bd.left as IExcelBorderSide | undefined);
-		if (bl) {
-			style.borderLeft = bl;
-		}
-		const br = borderToCSS(bd.right as IExcelBorderSide | undefined);
-		if (br) {
-			style.borderRight = br;
-		}
-	}
+	// 罫線は隣接セルとの「共有辺」解決が必要なため、呼び出し側で resolveEdgeBorders / getMergedCellBorders が付与する。
 	return style;
+}
+
+interface IExcelBorders {
+	readonly top?: IExcelBorderSide;
+	readonly bottom?: IExcelBorderSide;
+	readonly left?: IExcelBorderSide;
+	readonly right?: IExcelBorderSide;
+}
+
+/** (r,c) のセル罫線(exceljs)。行/列が範囲外(0以下)なら undefined。 */
+function borderAt(ws: ExcelJS.Worksheet, r: number, c: number): IExcelBorders | undefined {
+	if (r < 1 || c < 1) {
+		return undefined;
+	}
+	return ws.getRow(r).getCell(c).border as IExcelBorders | undefined;
+}
+
+// Excel の罫線は隣接セルと共有され、見た目上の1本の線がどちらのセルに保存されるかは不定
+// (例: セルの「下線」が下のセルの top 罫線として保存されるのは普通にある)。HTML の border-collapse は
+// 太さ・スタイルが同じ線同士の競合を「上/左のセルの色」で解決するため、線を持たない側のセルが
+// CSS の薄いグリッド線を持っていると、そちらが勝って実線が消えたように見える。
+// そこで4辺すべてを「自セルの辺 || 隣接セルの対向辺」で解決し、共有辺の両側のセルに同じ線を持たせる。
+
+/** セル(r,c) の4辺を隣接セルの対向辺と合成して CSS 罫線にする。 */
+function resolveEdgeBorders(ws: ExcelJS.Worksheet, r: number, c: number): Record<string, string> {
+	const own = borderAt(ws, r, c);
+	const borders: Record<string, string> = {};
+	const top = borderToCSS(own?.top) || borderToCSS(borderAt(ws, r - 1, c)?.bottom);
+	if (top) {
+		borders.borderTop = top;
+	}
+	const bottom = borderToCSS(own?.bottom) || borderToCSS(borderAt(ws, r + 1, c)?.top);
+	if (bottom) {
+		borders.borderBottom = bottom;
+	}
+	const left = borderToCSS(own?.left) || borderToCSS(borderAt(ws, r, c - 1)?.right);
+	if (left) {
+		borders.borderLeft = left;
+	}
+	const right = borderToCSS(own?.right) || borderToCSS(borderAt(ws, r, c + 1)?.left);
+	if (right) {
+		borders.borderRight = right;
+	}
+	return borders;
 }
 
 function getCellDiagonal(cell: ExcelJS.Cell): IParadisDiagonalBorder | undefined {
@@ -259,42 +324,40 @@ function getCellDiagonal(cell: ExcelJS.Cell): IParadisDiagonalBorder | undefined
 	return { up, down, style: base, color };
 }
 
+/**
+ * 結合セルの外周罫線。各辺を構成セル全体でスキャンし(原点セルだけを見ると原点以外に付いた線が落ちる)、
+ * それぞれ隣接セルの対向辺との共有辺解決(resolveEdgeBorders と同じ規則)で最初に見つかった線を辺全体へ使う。
+ */
 function getMergedCellBorders(ws: ExcelJS.Worksheet, r: number, c: number, rowspan: number, colspan: number): Record<string, string> {
 	const borders: Record<string, string> = {};
-	const getBorder = (row: number, col: number) => ws.getRow(row).getCell(col).border;
-	const topBd = getBorder(r, c);
-	if (topBd?.top) {
-		const v = borderToCSS(topBd.top as IExcelBorderSide);
+	const bottomRow = r + rowspan - 1;
+	const rightCol = c + colspan - 1;
+	for (let cc = c; cc <= rightCol; cc++) {
+		const v = borderToCSS(borderAt(ws, r, cc)?.top) || borderToCSS(borderAt(ws, r - 1, cc)?.bottom);
 		if (v) {
 			borders.borderTop = v;
+			break;
 		}
 	}
-	if (topBd?.left) {
-		const v = borderToCSS(topBd.left as IExcelBorderSide);
+	for (let cc = c; cc <= rightCol; cc++) {
+		const v = borderToCSS(borderAt(ws, bottomRow, cc)?.bottom) || borderToCSS(borderAt(ws, bottomRow + 1, cc)?.top);
+		if (v) {
+			borders.borderBottom = v;
+			break;
+		}
+	}
+	for (let rr = r; rr <= bottomRow; rr++) {
+		const v = borderToCSS(borderAt(ws, rr, c)?.left) || borderToCSS(borderAt(ws, rr, c - 1)?.right);
 		if (v) {
 			borders.borderLeft = v;
+			break;
 		}
 	}
-	const bottomRow = r + rowspan - 1;
-	for (let cc = c; cc < c + colspan; cc++) {
-		const bd = getBorder(bottomRow, cc);
-		if (bd?.bottom) {
-			const v = borderToCSS(bd.bottom as IExcelBorderSide);
-			if (v) {
-				borders.borderBottom = v;
-				break;
-			}
-		}
-	}
-	const rightCol = c + colspan - 1;
-	for (let rr = r; rr < r + rowspan; rr++) {
-		const bd = getBorder(rr, rightCol);
-		if (bd?.right) {
-			const v = borderToCSS(bd.right as IExcelBorderSide);
-			if (v) {
-				borders.borderRight = v;
-				break;
-			}
+	for (let rr = r; rr <= bottomRow; rr++) {
+		const v = borderToCSS(borderAt(ws, rr, rightCol)?.right) || borderToCSS(borderAt(ws, rr, rightCol + 1)?.left);
+		if (v) {
+			borders.borderRight = v;
+			break;
 		}
 	}
 	return borders;
@@ -429,6 +492,10 @@ interface IXlsxExtras {
 	drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] };
 	rowBreaksBySheet: { [sheetIndex: number]: number[] };
 	colBreaksBySheet: { [sheetIndex: number]: number[] };
+	/** theme1.xml の clrScheme 色(scheme名→hex)。読めなければ undefined(既定パレットを使う)。 */
+	themeColorsByName?: { [name: string]: string };
+	/** 既定フォントの最大数字幅(px)。列幅の文字数→px 換算に使う。 */
+	maxDigitWidth: number;
 }
 
 function mediaMime(fileName: string): string | undefined {
@@ -468,9 +535,33 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
+	let themeColorsByName: { [name: string]: string } | undefined;
+	let maxDigitWidth = 7;
 	try {
 		const zip = await JSZip.loadAsync(buffer as unknown as Parameters<typeof JSZip.loadAsync>[0]);
 		const files = zip.files;
+
+		// テーマパレット(セルのテーマ色・図形の schemeClr の解決に使う)。
+		const theme = files['xl/theme/theme1.xml'];
+		if (theme) {
+			const byName = parseThemeScheme(await theme.async('text'));
+			if (Object.keys(byName).length > 0) {
+				themeColorsByName = byName;
+			}
+		}
+
+		// 既定フォント(styles.xml の先頭 <font>)から列幅換算用の最大数字幅を推定する。
+		const styles = files['xl/styles.xml'];
+		if (styles) {
+			const stylesXml = await styles.async('text');
+			const fontsBlock = stylesXml.match(/<fonts[^>]*>([\s\S]*?)<\/fonts>/);
+			const firstFont = fontsBlock && fontsBlock[1].match(/<font\b[^>]*>([\s\S]*?)<\/font>/);
+			if (firstFont) {
+				const name = firstFont[1].match(/<name val="([^"]+)"/);
+				const sz = firstFont[1].match(/<sz val="([\d.]+)"/);
+				maxDigitWidth = estimateMaxDigitWidth(name?.[1], sz ? Number.parseFloat(sz[1]) : undefined);
+			}
+		}
 
 		// rId -> sheetN.xml のファイル番号(workbook.xml.rels)
 		const ridToFile = new Map<string, number>();
@@ -568,9 +659,9 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 			drawingsBySheet[key].push({ xml, media });
 		}
 	} catch {
-		// 図形/改ページは任意要素。抽出に失敗しても表・値の表示は継続する。
+		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
 	}
-	return { drawingsBySheet, rowBreaksBySheet, colBreaksBySheet };
+	return { drawingsBySheet, rowBreaksBySheet, colBreaksBySheet, themeColorsByName, maxDigitWidth };
 }
 
 export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
@@ -583,6 +674,19 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 		const extras = await extractXlsxExtras(buffer);
 
+		// このブックのテーマパレットを組み立てて有効化する(以降の eachSheet ループは同期なので、
+		// 並行する parseWorkbook 呼び出しがあってもループ中に差し替わることはない)。
+		const themeColors = { ...DEFAULT_THEME_COLORS };
+		if (extras.themeColorsByName) {
+			THEME_INDEX_TO_SCHEME_NAME.forEach((name, i) => {
+				const hex = extras.themeColorsByName![name];
+				if (hex) {
+					themeColors[i] = hex;
+				}
+			});
+		}
+		activeThemeColors = themeColors;
+
 		const sheets: IParadisSheetData[] = [];
 		let sheetIndex = 0;
 
@@ -591,10 +695,12 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			const dims = getSheetDimensions(worksheet);
 			const mergeMap = buildMergeMap(worksheet);
 			const colCount = dims.maxC - dims.minC + 1;
+			const sheetProps = worksheet.properties as { defaultColWidth?: number; defaultRowHeight?: number } | undefined;
+			const showGridLines = (worksheet.views?.[0] as { showGridLines?: boolean } | undefined)?.showGridLines ?? true;
 			const columnWidths: number[] = [];
 			for (let c = dims.minC; c <= dims.maxC; c++) {
 				const col = worksheet.getColumn(c);
-				columnWidths.push(col.hidden ? 0 : charWidthToPx(col.width));
+				columnWidths.push(col.hidden ? 0 : charWidthToPx(col.width, sheetProps?.defaultColWidth, extras.maxDigitWidth));
 			}
 
 			const rows: IParadisRowData[] = [];
@@ -618,7 +724,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 
 					const cell = worksheet.getRow(r).getCell(c);
 					const val = getCellDisplayValue(cell);
-					let style: Record<string, string> = getCellStyle(cell) as Record<string, string>;
+					const style: Record<string, string> = getCellStyle(cell) as Record<string, string>;
 					// general 配置(明示指定なし)の数値は右寄せにする。
 					if (!style.textAlign && isNumericCell(cell)) {
 						style.textAlign = 'right';
@@ -627,9 +733,19 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 					const colspan = mergeInfo?.colspan ?? 1;
 					const rowspan = mergeInfo?.rowspan ?? 1;
 
-					if (mergeInfo) {
-						const { borderTop, borderBottom, borderLeft, borderRight, ...rest } = style;
-						style = { ...rest, ...getMergedCellBorders(worksheet, r, c, rowspan, colspan) };
+					// 罫線(共有辺解決)。結合セルは外周を辺全体でスキャンする。
+					Object.assign(style, mergeInfo
+						? getMergedCellBorders(worksheet, r, c, rowspan, colspan)
+						: resolveEdgeBorders(worksheet, r, c));
+
+					// Excel は塗りつぶしセルの上にグリッド線を描かない。罫線の無い辺を塗り色の線にして
+					// CSS のグリッド線(border-collapse で競合する薄灰色)を打ち消す。
+					if (showGridLines && style.backgroundColor) {
+						for (const side of ['borderTop', 'borderBottom', 'borderLeft', 'borderRight']) {
+							if (!style[side]) {
+								style[side] = `1px solid ${style.backgroundColor}`;
+							}
+						}
 					}
 
 					const runs = getRichTextRuns(cell);
@@ -656,10 +772,10 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 					cells.push(parsed);
 				}
 
-				rows.push({ excelRow: r, cells, height: rowHeightToPx(row.height) });
+				rows.push({ excelRow: r, cells, height: rowHeightToPx(row.height, sheetProps?.defaultRowHeight) });
 			}
 
-			const view = worksheet.views?.[0] as { showGridLines?: boolean; zoomScale?: number } | undefined;
+			const view = worksheet.views?.[0] as { zoomScale?: number } | undefined;
 			const tabColorArgb = (worksheet.properties as { tabColor?: IExcelColor } | undefined)?.tabColor;
 			const tabColor = resolveColor(tabColorArgb) ?? undefined;
 			const protectedSheet = (worksheet as { sheetProtection?: { sheet?: boolean } }).sheetProtection?.sheet === true;
@@ -672,7 +788,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 				columnWidths,
 				truncated,
 				minCol: dims.minC,
-				showGridLines: view?.showGridLines ?? true,
+				showGridLines,
 				...(view?.zoomScale ? { zoomScale: view.zoomScale } : {}),
 				...(tabColor ? { tabColor } : {}),
 				...(protectedSheet ? { protectedSheet: true } : {}),
@@ -682,6 +798,10 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			});
 		});
 
-		return { sheets, drawingsBySheet: extras.drawingsBySheet };
+		return {
+			sheets,
+			drawingsBySheet: extras.drawingsBySheet,
+			...(extras.themeColorsByName ? { themeColors: extras.themeColorsByName } : {}),
+		};
 	}
 }

@@ -38,9 +38,10 @@ export async function parseSpreadsheetResource(
 		return raw;
 	}
 	// drawings は「表示順(1始まり)」でキーされている。renderer 側 DOMParser で図形/画像へ変換して付与する。
+	// schemeClr の解決にはブック固有のテーマパレット(theme1.xml 由来)を使う。
 	const sheets: IParadisSheetData[] = raw.sheets.map((sheet, idx) => {
-		const shapes = parseDrawingShapes(drawings[idx + 1]);
+		const shapes = parseDrawingShapes(drawings[idx + 1], raw.themeColors);
 		return shapes.length > 0 ? { ...sheet, shapes } : sheet;
 	});
-	return { sheets };
+	return { sheets, themeColors: raw.themeColors };
 }
