@@ -33,6 +33,10 @@ export const all = Object.freeze<string[]>([
 export const unicodeFilter = Object.freeze<string[]>([
 	'**',
 
+	// PARA-PATCH: fork-owned area (src/vs/paradis) intentionally contains Japanese comments and
+	// user-facing Japanese strings (settings descriptions, labels). Exempt it from the unicode check.
+	'!src/vs/paradis/**',
+
 	'!**/ThirdPartyNotices.txt',
 	'!**/ThirdPartyNotices.cli.txt',
 	'!**/LICENSE.{txt,rtf}',
