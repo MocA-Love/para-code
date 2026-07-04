@@ -2,7 +2,7 @@
 	"name": "@para/mobile",
 	"version": "0.1.0",
 	"private": true,
-	"main": "index.ts",
+	"main": "expo-router/entry",
 	"scripts": {
 		"start": "expo start",
 		"ios": "expo run:ios",

@@ -1,0 +1,26 @@
+{
+	"expo": {
+		"name": "Para Code Mobile",
+		"slug": "para-code-mobile",
+		"scheme": "paracode-mobile",
+		"version": "0.1.0",
+		"orientation": "portrait",
+		"userInterfaceStyle": "automatic",
+		"newArchEnabled": true,
+		"ios": {
+			"supportsTablet": false,
+			"bundleIdentifier": "ltd.paradis.paracode.mobile",
+			"infoPlist": {
+				"NSCameraUsageDescription": "QRコードでPara Codeとペアリングするためにカメラを使用します。"
+			}
+		},
+		"plugins": [
+			"expo-router",
+			"expo-secure-store",
+			[
+				"expo-camera",
+				{ "cameraPermission": "QRコードでPara Codeとペアリングするためにカメラを使用します。" }
+			]
+		]
+	}
+}
