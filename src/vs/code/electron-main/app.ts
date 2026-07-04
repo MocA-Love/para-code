@@ -1304,6 +1304,9 @@ export class CodeApplication extends Disposable {
 		// Encryption
 		const encryptionChannel = ProxyChannel.fromService(accessor.get(IEncryptionMainService), disposables);
 		mainProcessElectronServer.registerChannel('encryption', encryptionChannel);
+		// PARA-PATCH: expose the encryption channel to the shared process too, so the mobile relay
+		// service can encrypt its long-term secret key via safeStorage (src/vs/paradis/contrib/mobileRelay/)
+		sharedProcessClient.then(client => client.registerChannel('encryption', encryptionChannel));
 
 		// Browser View
 		const browserViewChannel = ProxyChannel.fromService(accessor.get(IBrowserViewMainService), disposables);
