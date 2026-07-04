@@ -20,5 +20,6 @@ import './contrib/watermark/browser/paradisWatermark.contribution.js';
 import './contrib/notifications/browser/paradisNotificationsSettings.js';
 import './contrib/resourceMonitor/browser/paradisResourceMonitorSettings.contribution.js';
 import './contrib/defaultExtensions/browser/paradisDefaultSettings.contribution.js';
+import './contrib/defaultExtensions/browser/paradisSuppressExtensionWelcomeTabs.contribution.js';
 import './contrib/fileViewers/browser/paradisMarkdownViewer.contribution.js';
 import './contrib/viewLayout/browser/paradisViewLayout.contribution.js';
