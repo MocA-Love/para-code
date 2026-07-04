@@ -1,0 +1,204 @@
+# Para Code Mobile — 設計書（ドラフト v1）
+
+作成: 2026-07-05。UIモックアップは同ディレクトリの `mobile.html` を参照。
+
+## 0. ゴールと前提
+
+- PCで動くPara Codeから離れた場所（別ネットワーク含む）から、iPhoneで作業を続行できる
+- 対象機能: ターミナル操作 / ソース管理 / ファイル閲覧 / ブラウザ(para-browser)閲覧 / エージェント(Claude Code, Codex)の状態監視と質問への即時回答（プッシュ通知）
+- ワークスペース単位で切り替えるUI（mobile.html準拠）
+- iOS先行、Androidを後続。PC側はfork実装ルール（新規ファイル完結・PARA-PATCH最小）を厳守
+
+## 1. 全体アーキテクチャ
+
+```
+┌─ iPhone ────────────┐      ┌─ リレーサーバ ──────────────┐      ┌─ PC (Para Code) ────────────────┐
+│ Para Code Mobile     │ WSS  │ Cloudflare Workers          │ WSS  │ shared process                   │
+│ (React Native+Expo)  │◄────►│  + Durable Objects          │◄────►│  paradisMobileRelayClient        │
+│  - xterm.js(WebView) │      │  (deviceIdごとに1 DO,       │      │  (デバイス鍵/E2E/再接続/多重化)   │
+│  - E2E暗号(libsodium)│      │   ルーティングのみ・中身は  │      │        ▲ IPC channel             │
+│  - APNs + NSE復号    │      │   復号できない)             │      │ 各workbenchウィンドウ             │
+└─────────────────────┘      │  + APNsプッシュ送信          │      │  paradisMobileWorkspaceProvider  │
+                              └────────────────────────────┘      │  (terminal/scm/fs/browser提供)    │
+                                                                   └──────────────────────────────────┘
+```
+
+- **両端ともoutbound WSSのみ**。PC側のポート開放・固定IP不要、NAT/ファイアウォール越えが自動で成立する
+- **リレーは暗号文の転送だけ**を行う（E2E暗号化、§3）。リレーが侵害されてもターミナル内容・ファイル内容は読めない
+- PC側の接続オーナーは **shared process**（アプリで1つ、ウィンドウのreload/closeに影響されない。`/agent-hook` サーバと同居できる既存パターン）。各ウィンドウは自ワークスペースの機能を shared process にIPC channelで提供する
+
+### リポジトリ構成（2026-07-05決定: 同一リポジトリ）
+
+PC側contributionは `src/vs/paradis/contrib/mobileRelay/`、モバイルアプリ・リレー・共有プロトコルは**本リポジトリのルート直下 `./app`**（pnpm workspace）に置く:
+
+```
+app/
+├── design/       # 設計書・UIモックアップ（このファイル）
+├── mobile/       # React Native (Expo) アプリ
+├── relay/        # Cloudflare Workers + Durable Objects
+└── protocol/     # フレーム定義・E2E暗号・型 (TS共有)
+```
+
+- ルート直下の新規ディレクトリはupstreamとのコンフリクトリスクがほぼ無い
+- hygieneチェックは対象外（2026-07-05確認: `build/filters.ts` の `all` はルート直下ファイルと build/extensions/scripts/src/test 配下のみを対象とし、`app/**` はそもそも含まれない。PARA-PATCH不要）。ESLintはTSコードを置く段階で要確認。`.gitignore` へのRN/Expo生成物の追加は必要
+- 注意: `src/vs/` はVS Code独自ビルドのため `./app/protocol` を直接importできない。プロトコル定義は `src/vs/paradis/contrib/mobileRelay/common/` へ**コピー同期**する（同期チェックスクリプトを `app/protocol` 側に置く）
+
+## 2. ペアリングと認証
+
+### 2.1 鍵の構成
+
+| 鍵 | 保管場所 | 用途 |
+|---|---|---|
+| PCデバイス鍵 (X25519) | PC: Electron `safeStorage` で暗号化して application スコープに保存 | デバイス同一性・E2E |
+| モバイルデバイス鍵 (X25519) | iOS: Secure Enclave/Keychain (`expo-secure-store`) | 同上 |
+| セッション鍵 | メモリのみ | 接続ごとにECDH+HKDFで導出、XChaCha20-Poly1305で全フレームを暗号化 |
+
+暗号ライブラリは両端とも libsodium（PC: `sodium-native` は避け、既存依存に合わせWASM版 or tweetnacl。実装時に選定）。
+
+### 2.2 初回ペアリングフロー
+
+1. PC: コマンド「**Para: モバイルデバイスを接続**」→ 鍵ペア生成（未生成時）、リレーに `deviceId` を登録し、**短命ペアリングトークン**（TTL 5分・1回限り）を発行
+2. PC: QRコードを表示。内容 = `{relayUrl, deviceId, pairingToken, pcPubKey}`
+3. モバイル: QRスキャン → リレーに pairingToken で接続 → 自分の pubKey を pcPubKey 宛に暗号化して送信
+4. **相互検証**: 両端で共有秘密から6桁の検証コード（SAS）を導出して表示。PC側ダイアログでユーザーが「モバイルに表示されたコードと一致」を確認して承認 → リレーによるMITMを排除
+5. 両端が相手の公開鍵を永続化。リレーDOは `deviceId ↔ mobileId(+APNsトークン)` のルーティング情報のみ保存
+
+mobile.html のペアリング画面の6桁コードはこの**SAS検証コード**（QRが読めない環境向けの手動入力コードも兼ねる）。
+
+### 2.3 再接続時の認証
+
+- モバイル→リレー: デバイス鍵によるチャレンジ署名（Ed25519に変換 or 別途署名鍵）でDOに認証
+- PC→リレー: 同様。PCはPara Code起動中は常時WSSを維持（切断時は指数バックオフで再接続）
+- E2Eレイヤー: 接続確立ごとにephemeral X25519でECDH（長期鍵と組み合わせるNoise IKパターン相当）→ 前方秘匿性を確保
+
+## 3. プロトコル
+
+E2Eチャネル上に**チャネル多重化されたバイナリフレーム**（msgpack）を流す:
+
+```
+Frame = { ch: string, ws?: string, seq: number, payload: bytes }
+```
+
+| ch | 方向 | 内容 |
+|---|---|---|
+| `state` | PC→M | ワークスペース一覧・ターミナル一覧・エージェント状態のスナップショット+差分。ホーム画面とバッジの供給源 |
+| `term` | 双方向 | PTY入出力(生バイナリ)・resize・タブ操作。ターミナルIDはPC側の実インスタンスに対応（ミラー方式、§4.2） |
+| `scm` | 双方向 | リポジトリ状態・変更一覧・diff取得・コミット実行 |
+| `fs` | M→PC要求 | ディレクトリ一覧・ファイル読み取り（サイズ上限付き）。書き込みはv1では対象外 |
+| `browser` | 双方向 | para-browserのCDP screencastフレーム(PC→M)と入力イベント(M→PC) |
+| `notify` | PC→M | プッシュ対象イベント（§6）。オンライン時はin-app、オフライン時はリレー経由APNs |
+
+- `state` はスナップショット+差分方式（切断復帰時はスナップショット再送）
+- `term` / `browser` はバックプレッシャ制御（モバイル側のwindow update方式）。帯域が細い時はscreencastのフレームレート/品質を落とす
+
+## 4. PC側実装設計（Para Code / このリポジトリ）
+
+fork規約準拠: `src/vs/paradis/contrib/mobileRelay/` 配下の新規ファイル + 集約importへの追記のみで完結させる。
+
+```
+src/vs/paradis/contrib/mobileRelay/
+├── common/paradisMobileRelay.ts            # プロトコル型・設定キー・チャネルID定数
+├── node/paradisMobileRelayClient.ts        # shared process常駐: WSS接続・E2E・多重化・再接続
+├── node/paradisMobileRelayChannel.ts       # ウィンドウ⇔shared processのIPC channel
+├── electron-browser/
+│   ├── paradisMobileRelay.contribution.ts  # ウィンドウ側: ペアリングコマンド/QRダイアログ/WorkspaceProvider登録
+│   ├── paradisMobilePairingDialog.ts       # QR表示・SAS承認ダイアログ
+│   └── paradisMobileWorkspaceProvider.ts   # terminal/scm/fs/browserの各ハンドラ
+└── browser/paradisMobileRelaySettings.contribution.ts  # 設定スキーマ登録
+```
+
+- shared process側のコードロードは、`/agent-hook`（agentBrowser系）が既に確立している shared process 登録ポイントに相乗りする（実装時に該当箇所を確認し、必要なら1行PARA-PATCH）
+- 集約import: `paradis.electron-browser.contribution.ts` と `paradis.common.contribution.ts` に各1行
+
+### 4.1 既存資産の再利用（重要）
+
+| 必要機能 | 再利用する既存実装 |
+|---|---|
+| エージェント状態（実行中/応答待ち/レビュー待ち） | `IParadisAgentStatusStore`（`workspaceSwitch/common/`）。shared processの`/agent-hook`がClaude Codeフックを受けて`permission/working/review`に集計済み |
+| 通知イベント | `ParadisNotificationTrigger` の状態遷移検知にファンアウト先（`notify`チャネル）を追加 |
+| ブラウザミラー | `agentBrowser/node/paradisCdpFilterProxy.ts` 等のCDP基盤。`Page.startScreencast` + `Input.dispatch*` で実現 |
+| ワークスペース概念 | `IParadisWorkspaceSwitchService` / ターミナルスコープ（`IParadisTerminalScopeService`） |
+| スリープ防止の推奨通知 | keepAwake設計（別途設計済み）の内部コマンド `paradis.power.promptKeepAwakeForRemote` をモバイル初回接続時に実行 |
+
+### 4.2 ターミナルは「ミラー」方式
+
+新しいヘッドレスセッションを作るのではなく、**PCの実ターミナルインスタンスにアタッチ**する:
+
+- 一覧/状態: `ITerminalService` のインスタンス列挙 + ワークスペーススコープで絞り込み
+- 出力: `instance.onData`（xterm連携の生データ）を購読して転送。接続時に直近バッファ（scrollback末尾N KB）をスナップショット送信
+- 入力: `instance.sendText` / 生入力パス。リサイズはモバイル側の表示都合でPC側を変えない（モバイルは自前のxterm.jsでreflow）→ 実装時にreflowの品質を検証し、必要ならPC側と寸法同期するモードを追加
+
+これにより「PCで作業していた続きをそのままスマホで操作」が成立する（mobile.htmlのタブミラーと一致）。
+
+### 4.3 設定
+
+- `paradis.mobile.enabled` (bool, def: false) — リレー接続の常駐を有効化。ペアリング済みデバイスがあれば起動時に自動接続
+- `paradis.mobile.relayUrl` (string, def: 公式リレー) — セルフホスト用
+- ペアリング済みデバイスの管理コマンド: 「Para: モバイルデバイスの管理」（一覧・失効）
+
+## 5. モバイルアプリ設計
+
+### 5.1 技術スタック（推奨: React Native + Expo）
+
+| 選択肢 | 判断 |
+|---|---|
+| **React Native + Expo (dev client)** ✅ | TS資産（protocolパッケージ）を共有でき、Android展開が同一コード。xterm.jsはWebViewで実績あり。APNs/SecureStore/QRスキャンはExpoモジュールで揃う |
+| SwiftUIネイティブ | 端末体験は最良だがAndroidで全書き直し。チームのTS中心スキルと合わない |
+| Flutter | Dartに資産がない |
+
+- ターミナル描画: `react-native-webview` 内の **xterm.js**（PC側と同じレンダラ＝エスケープシーケンス互換性が保証される）。修飾キー行・IME入力はRN側UIからWebViewへ注入
+- 状態管理: protocolパッケージの `state` スナップショット+差分をそのままstoreに反映（Zustand等）
+- 画面構成は mobile.html の通り: ホーム / ターミナル / ソース管理 / ファイル / ブラウザ + ワークスペース切り替えバー
+
+### 5.2 プッシュ通知（E2Eを保ったまま）
+
+1. PC → リレー: `notify` イベント（**E2E暗号化済みペイロード**）
+2. リレー → APNs: `mutable-content: 1` で暗号文ペイロードをそのまま送信（APNs/リレーには「通知が発生した」ことしか分からない）
+3. iOS **Notification Service Extension** がKeychainのセッション鍵…ではなく長期鍵から導出した通知用鍵で復号し、「Claude Code — para-code: 質問があります…」を組み立てて表示
+4. タップ → 該当ワークスペースのターミナル画面へディープリンク
+
+通知種別: エージェントの質問/許可要求（permission）、タスク完了（review）、長時間タスクの完了、接続切断（PCオフライン化）。
+
+配布形態（2026-07-05決定）: **TestFlight内部テスト配布**（Apple Developer Program加入済み）。App Store公開は当面しない。
+
+### 5.3 オフライン/切断時の挙動
+
+- 接続断はホームのPCカードに明示（「オフライン · 最終接続 x分前」）
+- `state` の最終スナップショットは閲覧可能のまま（操作はグレーアウト）
+- PCがスリープした場合もこの経路で検知 → keepAwake推奨との連携
+
+## 6. リレーサーバ設計（Cloudflare Workers + Durable Objects）
+
+既存のPara Code配布基盤がCloudflare（wrangler）にあるため同居させる。
+
+- **deviceIdごとに1つのDO**: PC側WSSとモバイル側WSS（複数可）を保持し、フレームを転送するだけ。WebSocket Hibernationでアイドルコストほぼゼロ
+- DOの永続状態: `{deviceId, pcPubKey, mobiles: [{mobileId, mobilePubKey, apnsToken}]}` — 鍵は公開鍵のみ、秘密は一切持たない
+- ペアリングトークン発行/検証、APNs送信（Workers から HTTP/2 APNs API）
+- 帯域対策: フレームサイズ上限・レート制限。screencastはPC側で品質調整するためリレーは無関心でよい
+- 認証されないWSSは即切断。DOはルーティングメタデータ以外をログにも残さない
+
+## 7. 段階的ロードマップ
+
+| Phase | 内容 | 完了条件 |
+|---|---|---|
+| **M0** | protocolパッケージ + リレーDO + PC側relayClientの骨格。ペアリング(QR/SAS)成立 | CLIテストクライアントでPCとE2E疎通 |
+| **M1** | `state` + `term` + APNs通知。モバイルアプリ(ホーム/ターミナルのみ) | 外出先からClaude Codeの質問に回答できる |
+| **M2** | `scm` + `fs`（ソース管理・ファイル画面） | スマホからdiff確認+コミット |
+| **M3** | `browser`（CDP screencastミラー） | para-browser閲覧・操作 |
+| **M4** | Android対応 / LAN直結モード（mDNS発見でリレー迂回、低レイテンシ） | — |
+
+M1が「離れても作業続行」の最小価値。ここまでを最初のマイルストーンにする。
+
+## 8. セキュリティ上の設計判断まとめ
+
+- リレーには**ゼロトラスト**: E2E必須、リレーは暗号文ルーティングのみ。SAS検証でペアリング時のMITMも排除
+- ターミナル遠隔操作は事実上のリモートシェル。**ペアリングはPC側での物理的な承認操作を必須**とし、デバイス失効をPC側からいつでも実行可能にする
+- モバイル側の鍵はKeychain(Secure Enclave)保管、アプリ起動時にFace ID/Touch IDでゲート（設定でon/off）
+- `fs` の読み取りはワークスペースルート配下に制限（シンボリックリンク越え禁止）
+- リレーURLを設定で差し替え可能にし、セルフホストの選択肢を残す
+
+## 9. 未決事項
+
+- [ ] xterm.js in WebView の入力レイテンシ・IME品質の実機検証（M1の最初に検証スパイクを置く）
+- [ ] Codexの状態検知カバレッジ（現行`/agent-hook`はClaude Codeフック前提。Codex側の検知方法を実装時に確認）
+- [ ] リレーの公式ホスト名・課金保護（Cloudflare無料枠で足りる想定だが、screencast帯域は要実測）
