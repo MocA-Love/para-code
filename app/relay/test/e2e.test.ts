@@ -140,13 +140,19 @@ class PcHarness {
 		this.ws.send(framed.buffer.slice(framed.byteOffset, framed.byteOffset + framed.byteLength) as ArrayBuffer);
 	}
 
+	/** PC側セッションが確立し mux が使えるか（モバイルのconfirm受信済みか）。 */
+	isReady(mobileId: string): boolean {
+		return this.sessions.get(mobileId)?.confirmed === true;
+	}
+
 	sendFrame(mobileId: string, ch: typeof Channels[keyof typeof Channels], payload: Uint8Array): void {
 		this.sessions.get(mobileId)?.mux?.send(ch, payload);
 	}
 }
 
 describe('full E2E: mobile <-> relay <-> PC', () => {
-	it('pairs with SAS then exchanges data frames end to end', async () => {
+	// 実WebSocket(miniflare)+ポーリングを跨ぐ統合テストのため、CI負荷時の遅延を吸収する余裕を持たせる。
+	it('pairs with SAS then exchanges data frames end to end', { timeout: 30_000 }, async () => {
 		// 1. PC provision
 		const pcIdentity = generateIdentity();
 		const pcToken = 'pc-' + toBase64Url(generateIdentity().publicKey).slice(0, 20);
@@ -189,22 +195,24 @@ describe('full E2E: mobile <-> relay <-> PC', () => {
 		const client = new RelayClient(mobileIdentity, creds, socketFactory, { onFrame: f => received.push(f), onError: e => errors.push(e) });
 		client.connect();
 
-		// 接続確立を待つ
+		// 接続確立を待つ（モバイルのonline かつ PC側セッション(mux)確立の両方を待つ。
+		// モバイルはconfirm送信で即onlineになるが、PCがそのconfirmを処理してmuxを張るのは
+		// 僅かに後になるため、両方揃うまで待たないとPC→mobileフレームが取りこぼされる）。
 		try {
-			await waitFor(() => client.connectionState === 'online', 3000);
+			await waitFor(() => client.connectionState === 'online' && harness.isReady(creds.mobileId), 10000);
 		} catch (e) {
-			throw new Error(`not online. state=${client.connectionState} errors=${JSON.stringify(errors.map(String))}`);
+			throw new Error(`not ready. state=${client.connectionState} pcReady=${harness.isReady(creds.mobileId)} errors=${JSON.stringify(errors.map(String))}`);
 		}
 
 		// 6. PC → mobile: state フレーム
 		harness.sendFrame(creds.mobileId, Channels.State, new TextEncoder().encode('{"ok":true}'));
-		await waitFor(() => received.length >= 1, 3000);
+		await waitFor(() => received.length >= 1, 10000);
 		expect(received[0]!.ch).toBe('state');
 		expect(new TextDecoder().decode(received[0]!.payload)).toBe('{"ok":true}');
 
 		// 7. mobile → PC: term フレーム
 		client.send(Channels.Terminal, new TextEncoder().encode('whoami\n'), 'para-code');
-		await waitFor(() => harness.inbound.some(f => f.ch === 'term'), 3000);
+		await waitFor(() => harness.inbound.some(f => f.ch === 'term'), 10000);
 		const term = harness.inbound.find(f => f.ch === 'term')!;
 		expect(new TextDecoder().decode(term.payload)).toBe('whoami\n');
 		expect(term.ws).toBe('para-code');
