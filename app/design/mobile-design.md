@@ -222,7 +222,7 @@ M1が「離れても作業続行」の最小価値。ここまでを最初のマ
 - **AEAD カウンタの堅牢化**: 受信カウンタは復号成功時のみ前進（不正1フレームで恒久 desync しない）。webcrypto の非同期 seal は方向別に直列化（nonce 再利用防止）
 - **再接続・失効**: モバイル切断でセッション破棄、リレーに revoke エンドポイントを追加して失効を伝播
 - **端末出力の宛先分離**: ターミナル出力は attach を要求したモバイルにのみ返す（複数デバイス時の相互漏洩を防止）
-- **リリース前の必須対応（未了）**: PC 側の長期秘密鍵は現状 mode 0600 の平文 JSON 保存。`IEncryptionMainService`(safeStorage) での暗号化をリリース前に実施する（過去セッションは毎回 ephemeral の前方秘匿で保護されるが、能動なりすまし防止のため）
+- **PC 側長期秘密鍵の暗号化（対応済み）**: 秘密鍵(pkcs8)を `IEncryptionMainService`(safeStorage) で暗号化して保存するようにした（`app.ts` の encryption チャネルを shared process にも公開）。旧平文形式は読込時に自動移行。safeStorage 不可環境（キーリング無し Linux 等）のみ mode 0600 平文にフォールバック。実 dev build で暗号化保存（encSecret のみ・平文 pkcs8 無し）を確認済み
 
 ## 9. 未決事項
 
