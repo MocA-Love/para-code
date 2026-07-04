@@ -325,7 +325,13 @@ const paradisWorkspacesViewContainer: ViewContainer = Registry.as<IViewContainer
 	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [PARADIS_WORKSPACES_CONTAINER_ID, { mergeViewWithContainerWhenSingleView: true }]),
 	storageId: `${PARADIS_WORKSPACES_CONTAINER_ID}.state`,
 	hideIfEmpty: false
-}, ViewContainerLocation.Sidebar);
+	// isDefault: 左サイドバーの「既定コンテナ」にする。upstream では Explorer が担うが、fork は
+	// Explorer を右(セカンダリ)サイドバー既定に移した (explorerViewlet.ts の PARA-PATCH) ため、
+	// 左サイドバーに既定コンテナが1つも無い状態になっていた。その状態だとビルド版の新規起動時に
+	// layout.ts の「既定以外のビューレットは復元しない」フォールバックが解決先を失い、保存された
+	// 表示状態に関わらず毎回サイドバーが強制非表示 (SIDEBAR_HIDDEN=true) になる
+	// (dev 実行は !isBuilt 分岐で免除されるため再現しない)。
+}, ViewContainerLocation.Sidebar, { isDefault: true });
 
 Registry.as<IViewsRegistry>(ViewExtensions.ViewsRegistry).registerViews([{
 	id: PARADIS_WORKSPACES_VIEW_ID,
