@@ -17,6 +17,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	overrides: {
 		'workbench.iconTheme': 'material-icon-theme',
 		'workbench.colorTheme': 'Houston',
+		// SCMの「コミットメッセージを生成」(同梱Copilot拡張) の出力を日本語に。プロンプト本体
+		// (gitCommitMessagePrompt.tsx) は改変せず、公式のカスタム指示注入ポイントを既定値で埋める。
+		'github.copilot.chat.commitMessageGeneration.instructions': [
+			// allow-any-unicode-next-line
+			{ text: 'コミットメッセージは日本語で書いてください。1行目は変更内容の簡潔な要約にしてください。' }
+		],
 		'sqlite.recordsPerPage': 500,
 		'githubPullRequests.createOnPublishBranch': 'never',
 		'indentRainbow.colors': [
