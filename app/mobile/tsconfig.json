@@ -13,5 +13,5 @@
 		"allowSyntheticDefaultImports": true,
 		"resolveJsonModule": true
 	},
-	"include": ["src", "app", "index.ts"]
+	"include": ["src", "app"]
 }
