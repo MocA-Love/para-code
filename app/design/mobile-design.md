@@ -199,6 +199,14 @@ src/vs/paradis/contrib/mobileRelay/
 
 M1が「離れても作業続行」の最小価値。ここまでを最初のマイルストーンにする。
 
+### 実装状況（2026-07-05 時点）
+
+- **M0 完了**: `app/protocol`（E2E暗号・ペアリング・フレームコーデック、AES-256-GCM + X25519 + HKDF-SHA256）、`app/relay`（Cloudflare Workers + DeviceDO、WebSocket Hibernation）、PC側 `src/vs/paradis/contrib/mobileRelay/`（shared process常駐サービス + renderer contribution）、`app/mobile` の接続/ペアリングクライアント中核ロジックを実装済み
+- **暗号方針**: PC側はvscodeへの新規npm依存を避けるため Node webcrypto で実装、モバイル側は @noble（純JS、RN対応）。両者のワイヤ互換は `app/protocol/test/interop.test.ts` が保証
+- **検証済み**: protocol/relay/mobile のユニット・統合テスト（フルE2E: mobile↔実リレー(miniflare)↔PCハーネスでペアリング〜双方向フレーム）、実dev buildでPCがローカルリレーに provision→WS接続→pair/begin してペアリングURIダイアログを表示するところまで確認
+- **M1 残**: モバイルアプリのUI画面（ホーム/ターミナル/ペアリング、xterm.js in WebView）、APNsプッシュ通知（PC側 notify チャネル + Notification Service Extension）、ターミナルscrollback初期同期。これらは実機（iOS + Apple署名）が必要で本環境では未検証
+- **未着手**: M2(scm/fs)、M3(browser CDP screencast)、M4(Android/LAN直結)
+
 ## 8. セキュリティ上の設計判断まとめ
 
 - リレーには**ゼロトラスト**: E2E必須、リレーは暗号文ルーティングのみ。SAS検証でペアリング時のMITMも排除
