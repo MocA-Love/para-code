@@ -1,0 +1,22 @@
+{
+	"name": "@para/protocol",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Para Code Mobile shared protocol: E2E crypto, pairing, frame codec",
+	"main": "src/index.ts",
+	"scripts": {
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@msgpack/msgpack": "^3.0.0",
+		"@noble/ciphers": "^1.0.0",
+		"@noble/curves": "^1.6.0",
+		"@noble/hashes": "^1.5.0"
+	},
+	"devDependencies": {
+		"typescript": "^5.6.0",
+		"vitest": "^2.1.0"
+	}
+}
