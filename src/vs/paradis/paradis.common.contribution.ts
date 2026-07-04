@@ -22,5 +22,6 @@ import './contrib/resourceMonitor/browser/paradisResourceMonitorSettings.contrib
 import './contrib/defaultExtensions/browser/paradisDefaultSettings.contribution.js';
 import './contrib/defaultExtensions/browser/paradisSuppressExtensionWelcomeTabs.contribution.js';
 import './contrib/defaultExtensions/browser/paradisSeedUserSettings.contribution.js';
+import './contrib/defaultExtensions/browser/paradisDefaultNotificationFilters.contribution.js';
 import './contrib/fileViewers/browser/paradisMarkdownViewer.contribution.js';
 import './contrib/viewLayout/browser/paradisViewLayout.contribution.js';
