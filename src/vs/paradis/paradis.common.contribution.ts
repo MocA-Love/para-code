@@ -23,6 +23,7 @@ import './contrib/defaultExtensions/browser/paradisDefaultSettings.contribution.
 import './contrib/defaultExtensions/browser/paradisSuppressExtensionWelcomeTabs.contribution.js';
 import './contrib/defaultExtensions/browser/paradisSeedUserSettings.contribution.js';
 import './contrib/defaultExtensions/browser/paradisDefaultNotificationFilters.contribution.js';
+import './contrib/terminalPresets/browser/paradisTerminalPresets.contribution.js';
 import './contrib/fileViewers/browser/paradisMarkdownViewer.contribution.js';
 import './contrib/viewLayout/browser/paradisViewLayout.contribution.js';
 import './contrib/keepAwake/browser/paradisKeepAwakeSettings.contribution.js';
