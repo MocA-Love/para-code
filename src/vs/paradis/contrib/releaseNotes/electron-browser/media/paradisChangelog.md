@@ -4,6 +4,10 @@
 
 Para Code が本家 VS Code に加えた変更の一覧です。新しいバージョンが上に来ます。
 
+## 未リリース
+
+- ターミナルのエージェント CLI から使う Para Browser MCP（para-browser）が、パッケージ版で接続に失敗する問題を修正しました（MCP 中継スクリプトが配布物に含まれていませんでした）
+
 ## paracode-5（2026-07-04）
 
 - ウィンドウ透過を既定で有効にしました（既定の不透明度は 0.8）。設定 `paradis.window.transparency.enabled` でオフにできます
