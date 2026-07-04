@@ -46,6 +46,21 @@ describe('handshake + secure channel', () => {
 		expect(() => pcChannel.open(sealed)).toThrow(/nonce/);
 	});
 
+	test('a failed open does not advance the receive counter (H-1)', () => {
+		const { mobileChannel, pcChannel } = establish();
+		const m1 = mobileChannel.seal(text('first'));
+		const m2 = mobileChannel.seal(text('second'));
+
+		// 改ざんされた最初のフレームは復号失敗する
+		const tampered = Uint8Array.from(m1);
+		tampered[tampered.length - 1] = (tampered[tampered.length - 1] ?? 0) ^ 0x01;
+		expect(() => pcChannel.open(tampered)).toThrow();
+
+		// カウンタが進んでいなければ、正しい m1 は依然として復号できる
+		expect(new TextDecoder().decode(pcChannel.open(m1))).toBe('first');
+		expect(new TextDecoder().decode(pcChannel.open(m2))).toBe('second');
+	});
+
 	test('impostor without pc static key cannot complete handshake', () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();

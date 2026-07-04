@@ -48,12 +48,13 @@ export function mobileIdFromString(text: string): Uint8Array {
 
 /** リレーの制御メッセージ（テキストフレーム、JSON）。 */
 export type RelayControlMessage =
-	// ペアリングソケット⇔PCソケット間の中継（dataはE2Eハンドシェイクの断片、base64url）
-	| { readonly type: 'pairing-msg'; readonly data: string }
-	// PC→リレー: このペアリングを承認し、モバイル用の資格情報を発行せよ
-	| { readonly type: 'pairing-approve'; readonly name: string }
+	// ペアリングソケット⇔PCソケット間の中継（dataはE2Eハンドシェイクの断片、base64url）。
+	// PC→pairing方向では省略、pairing→PC方向ではリレーが送信元pairIdを付与する。
+	| { readonly type: 'pairing-msg'; readonly data: string; readonly pairId?: string }
+	// PC→リレー: 指定したpairIdのペアリングを承認し、モバイル用の資格情報を発行せよ
+	| { readonly type: 'pairing-approve'; readonly pairId: string; readonly name: string }
 	// PC→リレー: ペアリングを拒否
-	| { readonly type: 'pairing-reject' }
+	| { readonly type: 'pairing-reject'; readonly pairId: string }
 	// リレー→ペアリングソケット: 承認完了。モバイルはこの資格情報で以後 ws/mobile に接続する
 	| { readonly type: 'paired'; readonly deviceId: string; readonly mobileId: string; readonly mobileToken: string }
 	// リレー→PC: モバイルの接続状態変化 / リレー→モバイル: PCの接続状態変化

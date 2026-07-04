@@ -61,6 +61,9 @@ export default {
 		if (request.method === 'POST' && parts[2] === 'pair' && parts[3] === 'begin') {
 			return stub.fetch(new Request('https://do/?action=begin-pairing', request));
 		}
+		if (request.method === 'POST' && parts[2] === 'mobile' && parts[3] === 'revoke') {
+			return stub.fetch(new Request('https://do/?action=revoke', request));
+		}
 		if (parts[2] === 'ws') {
 			const forward = new Request(`https://do/?${url.searchParams.toString()}`, request);
 			return stub.fetch(forward);

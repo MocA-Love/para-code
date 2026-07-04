@@ -49,8 +49,10 @@ class DirectionalCipher {
 	constructor(private readonly key: Uint8Array) { }
 
 	seal(plaintext: Uint8Array): Uint8Array {
-		const nonce = this.nextNonce();
-		return concatBytes(nonce, gcm(this.key, nonce).encrypt(plaintext));
+		const nonce = this.nonceFor(this.counter);
+		const sealed = concatBytes(nonce, gcm(this.key, nonce).encrypt(plaintext));
+		this.counter++;
+		return sealed;
 	}
 
 	open(message: Uint8Array): Uint8Array {
@@ -58,18 +60,21 @@ class DirectionalCipher {
 			throw new Error('message too short');
 		}
 		const nonce = message.subarray(0, NONCE_LENGTH);
-		const expected = this.nextNonce();
+		const expected = this.nonceFor(this.counter);
 		for (let i = 0; i < NONCE_LENGTH; i++) {
 			if (nonce[i] !== expected[i]) {
 				throw new Error('unexpected nonce (out-of-order or replayed message)');
 			}
 		}
-		return gcm(this.key, expected).decrypt(message.subarray(NONCE_LENGTH));
+		// 復号（認証失敗はthrow）が成功して初めてカウンタを進める。失敗時に進めると
+		// 不正・欠落フレーム1個で受信側が恒久desyncするため（H-1）。
+		const plaintext = gcm(this.key, expected).decrypt(message.subarray(NONCE_LENGTH));
+		this.counter++;
+		return plaintext;
 	}
 
-	private nextNonce(): Uint8Array {
+	private nonceFor(value: bigint): Uint8Array {
 		const nonce = new Uint8Array(NONCE_LENGTH);
-		let value = this.counter++;
 		// 先頭8バイトにカウンタをビッグエンディアンで置く（残り4バイトは0固定）。
 		// webcrypto実装と一致させるため配置を厳密に定める。
 		for (let i = 7; i >= 0; i--) {

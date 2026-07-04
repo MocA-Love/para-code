@@ -79,28 +79,38 @@ async function provisionDevice(): Promise<{ deviceId: string; pcToken: string }>
 }
 
 describe('relay pairing + routing', () => {
-	it('provisions a device and issues a pairing token', async () => {
-		const { deviceId } = await provisionDevice();
-		const res = await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST' });
+	it('provisions a device and issues a pairing token (authenticated)', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const res = await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } });
 		const body = await res.json<{ pairId: string; pairingToken: string }>();
 		expect(body.pairId).toBeTruthy();
 		expect(body.pairingToken).toBeTruthy();
+	});
+
+	it('rejects pair/begin without the pc token (C-1)', async () => {
+		const { deviceId } = await provisionDevice();
+		const res = await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST' });
+		expect(res.status).toBe(401);
+		const res2 = await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: 'Bearer wrong' } });
+		expect(res2.status).toBe(401);
 	});
 
 	it('routes pairing approval to mint mobile credentials', async () => {
 		const { deviceId, pcToken } = await provisionDevice();
 		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
 
-		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST' })).json<{ pairId: string; pairingToken: string }>();
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
 		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
 
-		// pairing socket → PC へ pairing-msg が中継される
+		// pairing socket → PC へ pairing-msg が中継される（pairId付き）
 		pairWs.send(encodeRelayControl({ type: 'pairing-msg', data: 'aGVsbG8' }));
 		const atPc = decodeRelayControl(await pcWs.next() as string);
 		expect(atPc.type).toBe('pairing-msg');
+		if (atPc.type !== 'pairing-msg') { throw new Error('unreachable'); }
+		expect(atPc.pairId).toBe(pair.pairId);
 
-		// PC が承認 → pairing socket に paired が返る
-		pcWs.send(encodeRelayControl({ type: 'pairing-approve', name: 'iPhone' }));
+		// PC が承認（pairId指定）→ pairing socket に paired が返る
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'iPhone' }));
 		const paired = decodeRelayControl(await pairWs.next() as string);
 		expect(paired.type).toBe('paired');
 		if (paired.type !== 'paired') { throw new Error('unreachable'); }

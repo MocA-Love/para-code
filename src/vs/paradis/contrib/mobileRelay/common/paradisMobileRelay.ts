@@ -62,12 +62,20 @@ export type ParadisMobilePairingEvent =
 	// タイムアウト/失敗/拒否
 	| { readonly kind: 'failed'; readonly reason: string };
 
-/** renderer → shared process へ提供する、ワークスペース/ターミナルのデータ要求への応答経路。 */
+/** renderer ⇔ shared process のフレーム。 */
 export interface IParadisMobileInboundFrame {
 	readonly ch: ChannelId;
 	readonly ws: string | undefined;
 	readonly seq: number;
 	readonly payload: VSBuffer;
+	/**
+	 * 対象/送信元モバイルのID。
+	 * - shared process → renderer（受信）: フレームの送信元モバイル。
+	 * - renderer → shared process（送信）: 宛先モバイル。省略時は全オンラインモバイルへ
+	 *   ブロードキャスト（state スナップショット等、全デバイス共通の情報向け）。指定時は
+	 *   そのモバイルにのみ送る（ターミナル出力など、要求元だけに返すべき情報向け。M-2）。
+	 */
+	readonly mobileId?: string;
 }
 
 /**
@@ -76,6 +84,9 @@ export interface IParadisMobileInboundFrame {
  */
 export interface IParadisMobileRelayService {
 	readonly _serviceBrand: undefined;
+
+	// 起動時初期化（enabled と relayUrl を渡す。renderer から1回呼ぶ）
+	initialize(enabled: boolean, relayUrl: string | undefined): Promise<void>;
 
 	// 状態
 	readonly onDidChangeStatus: Event<IParadisMobileStatus>;

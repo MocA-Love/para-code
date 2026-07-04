@@ -41,7 +41,10 @@ type TermOutbound =
  * SCM / fs / browser チャネルは本スライスでは未実装（設計書 M2/M3。ここに追加していく）。
  */
 export class ParadisMobileWorkspaceProvider extends Disposable {
+	// ターミナルID → その出力購読(dispose用)。1端末につき最後にattachしたモバイルへ出力を返す。
 	private readonly attachedTerminals = this._register(new DisposableMap<number>());
+	// ターミナルID → 出力の宛先モバイルID。
+	private readonly terminalSubscribers = new Map<number, string>();
 
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
@@ -85,6 +88,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return { activeWs: this.workspaceSwitchService.activeStateKey, workspaces, terminals };
 	}
 
+	/** オンラインのモバイルが居なくなったら、全ターミナル購読を解放する（M-2: 購読リーク防止）。 */
+	detachAll(): void {
+		this.attachedTerminals.clearAndDisposeAll();
+		this.terminalSubscribers.clear();
+	}
+
 	/** shared process から届いたモバイル→PCフレームを処理する。 */
 	handleInbound(frame: InboundFrame): void {
 		if (frame.ch === Channels.State) {
@@ -93,11 +102,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		if (frame.ch === Channels.Terminal) {
-			this.handleTerminalInbound(frame.payload);
+			this.handleTerminalInbound(frame.payload, frame.mobileId);
 		}
 	}
 
-	private handleTerminalInbound(payload: VSBuffer): void {
+	private handleTerminalInbound(payload: VSBuffer, mobileId: string | undefined): void {
 		let msg: TermInbound;
 		try {
 			msg = JSON.parse(decoder.decode(payload.buffer)) as TermInbound;
@@ -109,6 +118,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		if (msg.t === 'attach') {
+			// 出力はattachを要求したモバイルにのみ返す（M-2）。再attachは宛先を更新する。
+			this.terminalSubscribers.set(msg.id, mobileId ?? '');
 			if (this.attachedTerminals.has(msg.id)) {
 				return;
 			}
@@ -117,10 +128,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			store.add(instance.onExit(() => {
 				this.sendTerm({ t: 'exit', id: msg.id });
 				this.attachedTerminals.deleteAndDispose(msg.id);
+				this.terminalSubscribers.delete(msg.id);
 			}));
 			this.attachedTerminals.set(msg.id, store);
 		} else if (msg.t === 'detach') {
 			this.attachedTerminals.deleteAndDispose(msg.id);
+			this.terminalSubscribers.delete(msg.id);
 		} else if (msg.t === 'input') {
 			// 生入力を送る（改行はモバイル側が明示的に送る）。
 			instance.sendText(msg.data, false).catch(err => this.logService.warn('[paradisMobileRelay] sendText failed', err));
@@ -128,6 +141,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	private sendTerm(msg: TermOutbound): void {
-		this.sendFrame({ ch: Channels.Terminal, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify(msg))) });
+		const target = this.terminalSubscribers.get(msg.id);
+		this.sendFrame({ ch: Channels.Terminal, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify(msg))), mobileId: target || undefined });
 	}
 }
