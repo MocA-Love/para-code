@@ -188,6 +188,7 @@ export interface PairingPayload {
 	readonly version: 1;
 	readonly relayUrl: string;
 	readonly deviceId: string;
+	readonly pairId: string;
 	readonly pairingToken: Uint8Array;
 	readonly pcPublicKey: Uint8Array;
 }
@@ -197,6 +198,7 @@ export function encodePairingUri(payload: PairingPayload): string {
 		v: payload.version,
 		r: payload.relayUrl,
 		d: payload.deviceId,
+		p: payload.pairId,
 		t: toBase64Url(payload.pairingToken),
 		k: toBase64Url(payload.pcPublicKey),
 	});

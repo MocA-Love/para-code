@@ -11,6 +11,7 @@ describe('pairing payload', () => {
 			version: 1 as const,
 			relayUrl: 'wss://relay.paradis.ltd',
 			deviceId: 'dev_abc123',
+			pairId: 'pair_xyz',
 			pairingToken: randomToken(16),
 			pcPublicKey: pc.publicKey,
 		};
@@ -20,6 +21,7 @@ describe('pairing payload', () => {
 		const decoded = decodePairingUri(uri);
 		expect(decoded.relayUrl).toBe(payload.relayUrl);
 		expect(decoded.deviceId).toBe(payload.deviceId);
+		expect(decoded.pairId).toBe(payload.pairId);
 		expect(Array.from(decoded.pairingToken)).toEqual(Array.from(payload.pairingToken));
 		expect(Array.from(decoded.pcPublicKey)).toEqual(Array.from(pc.publicKey));
 	});

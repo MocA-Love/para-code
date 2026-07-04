@@ -301,6 +301,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			version: 1,
 			relayUrl: this.relayWsBase(),
 			deviceId: this.state.device.deviceId,
+			pairId: body.pairId,
 			pairingToken,
 			pcPublicKey: identity.publicKey,
 		});

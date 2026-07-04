@@ -22,6 +22,8 @@ export interface PairingPayload {
 	readonly version: 1;
 	readonly relayUrl: string;
 	readonly deviceId: string;
+	/** リレーが払い出したペアリングセッションID（公開識別子）。 */
+	readonly pairId: string;
 	/** 短命・1回限りのペアリングトークン。リレーがペアリング接続の認可に使う。 */
 	readonly pairingToken: Uint8Array;
 	/** PCの長期公開鍵（X25519）。 */
@@ -33,6 +35,7 @@ export function encodePairingUri(payload: PairingPayload): string {
 		v: payload.version,
 		r: payload.relayUrl,
 		d: payload.deviceId,
+		p: payload.pairId,
 		t: toBase64Url(payload.pairingToken),
 		k: toBase64Url(payload.pcPublicKey),
 	});
@@ -55,16 +58,17 @@ export function decodePairingUri(uri: string): PairingPayload {
 	}
 	const relayUrl = raw['r'];
 	const deviceId = raw['d'];
+	const pairId = raw['p'];
 	const token = raw['t'];
 	const key = raw['k'];
-	if (typeof relayUrl !== 'string' || typeof deviceId !== 'string' || typeof token !== 'string' || typeof key !== 'string') {
+	if (typeof relayUrl !== 'string' || typeof deviceId !== 'string' || typeof pairId !== 'string' || typeof token !== 'string' || typeof key !== 'string') {
 		throw new Error('malformed pairing payload');
 	}
 	const pcPublicKey = fromBase64Url(key);
 	if (pcPublicKey.length !== 32) {
 		throw new Error('malformed pairing payload: pcPublicKey');
 	}
-	return { version: 1, relayUrl, deviceId, pairingToken: fromBase64Url(token), pcPublicKey };
+	return { version: 1, relayUrl, deviceId, pairId, pairingToken: fromBase64Url(token), pcPublicKey };
 }
 
 /**

@@ -104,6 +104,9 @@ describe('relay pairing + routing', () => {
 		const paired = decodeRelayControl(await pairWs.next() as string);
 		expect(paired.type).toBe('paired');
 		if (paired.type !== 'paired') { throw new Error('unreachable'); }
+		// PC にも mobileId 付きの paired が届く（相手鍵の紐付け用。mobileTokenは空）。
+		const pcPaired = decodeRelayControl(await pcWs.next() as string);
+		expect(pcPaired.type).toBe('paired');
 
 		// 発行された資格情報でモバイルが接続でき、PC⇔モバイルでバイナリが双方向中継される
 		const mobileWs = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=${paired.mobileToken}`);
