@@ -125,6 +125,8 @@ export const indentationFilter = Object.freeze<string[]>([
 	'!build/win32/**',
 	'!build/checker/**',
 	'!src/vs/workbench/contrib/terminal/common/scripts/psreadline/**',
+	// PARA-PATCH: vendored Chrome extension shipped with the built-in browser (see the folder's README.md)
+	'!src/vs/paradis/contrib/browserExtensions/electron-main/media/**',
 
 	// except multiple specific files
 	'!**/package.json',
@@ -226,6 +228,8 @@ export const copyrightFilter = Object.freeze<string[]>([
 	// vendored third-party libraries
 	'!src/vs/base/common/lit-html/**',
 	'!src/vs/base/common/signals-core/**',
+	// PARA-PATCH: vendored Chrome extension shipped with the built-in browser (see the folder's README.md)
+	'!src/vs/paradis/contrib/browserExtensions/electron-main/media/**',
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',
@@ -267,5 +271,7 @@ export const eslintFilter = Object.freeze<string[]>([
 ]);
 
 export const stylelintFilter = Object.freeze<string[]>([
-	'src/**/*.css'
+	'src/**/*.css',
+	// PARA-PATCH: vendored Chrome extension shipped with the built-in browser (see the folder's README.md)
+	'!src/vs/paradis/contrib/browserExtensions/electron-main/media/**',
 ]);

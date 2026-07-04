@@ -107,6 +107,8 @@ const vscodeResourceIncludes = [
 	// Paradis (Para Code)
 	// PARA-PATCH: ship the fork changelog shown by the paradis.showChangelog command
 	'out-build/vs/paradis/contrib/releaseNotes/electron-browser/media/*.md',
+	// PARA-PATCH: ship the vendored React DevTools extension loaded into built-in browser sessions
+	'out-build/vs/paradis/contrib/browserExtensions/electron-main/media/**',
 
 	// Extensions
 	'out-build/vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',
