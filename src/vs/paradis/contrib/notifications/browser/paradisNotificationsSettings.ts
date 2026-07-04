@@ -66,6 +66,25 @@ export interface IParadisNotificationsSettingsService {
 	getVolume(): number;
 	setVolume(volume: number): void;
 
+	/** OS（デスクトップ）通知を出すか。既定 true。 */
+	getOsNotificationsEnabled(): boolean;
+	setOsNotificationsEnabled(enabled: boolean): void;
+
+	/** 対応待ち（permission）遷移で OS 通知を出すか。既定 true。 */
+	getOsNotifyOnPermission(): boolean;
+	setOsNotifyOnPermission(enabled: boolean): void;
+
+	/** 作業完了（review）遷移で OS 通知を出すか。既定 true。 */
+	getOsNotifyOnReview(): boolean;
+	setOsNotifyOnReview(enabled: boolean): void;
+
+	/**
+	 * アクティブスペースを見ている（ウィンドウがフォーカス中）ときも通知するか。既定 false。
+	 * false の場合、いま見ているスペースのイベントはフォーカス中は通知されない（音・OS通知・Aivis すべて）。
+	 */
+	getNotifyWhileFocused(): boolean;
+	setNotifyWhileFocused(enabled: boolean): void;
+
 	getAivisSettings(): IParadisAivisSettings;
 	setAivisSettings(patch: Partial<IParadisAivisSettings>): void;
 
@@ -78,6 +97,10 @@ export interface IParadisNotificationsSettingsService {
 const KEY_RINGTONE_ID = 'paradis.notifications.selectedRingtoneId';
 const KEY_MUTED = 'paradis.notifications.soundsMuted';
 const KEY_VOLUME = 'paradis.notifications.volume';
+const KEY_OS_ENABLED = 'paradis.notifications.osNotificationsEnabled';
+const KEY_OS_PERMISSION = 'paradis.notifications.osNotifyOnPermission';
+const KEY_OS_REVIEW = 'paradis.notifications.osNotifyOnReview';
+const KEY_NOTIFY_FOCUSED = 'paradis.notifications.notifyWhileFocused';
 const KEY_AIVIS = 'paradis.notifications.aivis';
 const KEY_AIVIS_CUSTOM_PRESETS = 'paradis.notifications.aivisCustomModelPresets';
 
@@ -118,6 +141,42 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 
 	setVolume(volume: number): void {
 		this.storageService.store(KEY_VOLUME, Math.max(0, Math.min(100, volume)), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this._onDidChange.fire();
+	}
+
+	getOsNotificationsEnabled(): boolean {
+		return this.storageService.getBoolean(KEY_OS_ENABLED, StorageScope.APPLICATION, true);
+	}
+
+	setOsNotificationsEnabled(enabled: boolean): void {
+		this.storageService.store(KEY_OS_ENABLED, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this._onDidChange.fire();
+	}
+
+	getOsNotifyOnPermission(): boolean {
+		return this.storageService.getBoolean(KEY_OS_PERMISSION, StorageScope.APPLICATION, true);
+	}
+
+	setOsNotifyOnPermission(enabled: boolean): void {
+		this.storageService.store(KEY_OS_PERMISSION, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this._onDidChange.fire();
+	}
+
+	getOsNotifyOnReview(): boolean {
+		return this.storageService.getBoolean(KEY_OS_REVIEW, StorageScope.APPLICATION, true);
+	}
+
+	setOsNotifyOnReview(enabled: boolean): void {
+		this.storageService.store(KEY_OS_REVIEW, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
+		this._onDidChange.fire();
+	}
+
+	getNotifyWhileFocused(): boolean {
+		return this.storageService.getBoolean(KEY_NOTIFY_FOCUSED, StorageScope.APPLICATION, false);
+	}
+
+	setNotifyWhileFocused(enabled: boolean): void {
+		this.storageService.store(KEY_NOTIFY_FOCUSED, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
 		this._onDidChange.fire();
 	}
 
