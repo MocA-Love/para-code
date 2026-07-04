@@ -22,7 +22,11 @@ describe('frame codec', () => {
 	});
 
 	test('rejects unknown channel and malformed input', () => {
-		expect(() => decodeFrame(encodeFrame({ ch: 'bogus' as never, seq: 1, payload: new Uint8Array(0) }))).toThrow(/channel/);
-		expect(() => decodeFrame(new Uint8Array([0xc0]))).toThrow(); // msgpack nil
+		expect(() => encodeFrame({ ch: 'bogus' as never, seq: 1, payload: new Uint8Array(0) })).toThrow(/channel/);
+		expect(() => decodeFrame(new Uint8Array([0xff]))).toThrow(); // too short (<8 bytes)
+		// 未知のチャネルID(99)を持つ整形フレーム
+		const bad = new Uint8Array(8);
+		bad[0] = 99;
+		expect(() => decodeFrame(bad)).toThrow(/channel id/);
 	});
 });

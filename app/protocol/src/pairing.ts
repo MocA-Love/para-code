@@ -8,7 +8,6 @@
  * 設計書 §2 参照。
  */
 
-import { decode, encode } from '@msgpack/msgpack';
 import { x25519 } from '@noble/curves/ed25519';
 import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
@@ -30,14 +29,14 @@ export interface PairingPayload {
 }
 
 export function encodePairingUri(payload: PairingPayload): string {
-	const packed = encode({
+	const json = JSON.stringify({
 		v: payload.version,
 		r: payload.relayUrl,
 		d: payload.deviceId,
-		t: payload.pairingToken,
-		k: payload.pcPublicKey,
+		t: toBase64Url(payload.pairingToken),
+		k: toBase64Url(payload.pcPublicKey),
 	});
-	return `${PAIRING_URI_SCHEME}?d=${toBase64Url(packed)}`;
+	return `${PAIRING_URI_SCHEME}?d=${toBase64Url(new TextEncoder().encode(json))}`;
 }
 
 export function decodePairingUri(uri: string): PairingPayload {
@@ -45,18 +44,27 @@ export function decodePairingUri(uri: string): PairingPayload {
 	if (!uri.startsWith(prefix)) {
 		throw new Error('not a Para Code pairing URI');
 	}
-	const raw = decode(fromBase64Url(uri.slice(prefix.length))) as Record<string, unknown>;
+	let raw: Record<string, unknown>;
+	try {
+		raw = JSON.parse(new TextDecoder().decode(fromBase64Url(uri.slice(prefix.length)))) as Record<string, unknown>;
+	} catch {
+		throw new Error('malformed pairing payload');
+	}
 	if (raw === null || typeof raw !== 'object' || raw['v'] !== 1) {
 		throw new Error('unsupported pairing payload');
 	}
 	const relayUrl = raw['r'];
 	const deviceId = raw['d'];
-	const pairingToken = raw['t'];
-	const pcPublicKey = raw['k'];
-	if (typeof relayUrl !== 'string' || typeof deviceId !== 'string' || !(pairingToken instanceof Uint8Array) || !(pcPublicKey instanceof Uint8Array) || pcPublicKey.length !== 32) {
+	const token = raw['t'];
+	const key = raw['k'];
+	if (typeof relayUrl !== 'string' || typeof deviceId !== 'string' || typeof token !== 'string' || typeof key !== 'string') {
 		throw new Error('malformed pairing payload');
 	}
-	return { version: 1, relayUrl, deviceId, pairingToken, pcPublicKey };
+	const pcPublicKey = fromBase64Url(key);
+	if (pcPublicKey.length !== 32) {
+		throw new Error('malformed pairing payload: pcPublicKey');
+	}
+	return { version: 1, relayUrl, deviceId, pairingToken: fromBase64Url(token), pcPublicKey };
 }
 
 /**

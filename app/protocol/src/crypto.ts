@@ -14,7 +14,7 @@
  * （設計書 §8 参照）。プリミティブは @noble/*（監査済み・純JS・Node/Workers/RN共通）を使う。
  */
 
-import { xchacha20poly1305 } from '@noble/ciphers/chacha';
+import { gcm } from '@noble/ciphers/aes';
 import { x25519 } from '@noble/curves/ed25519';
 import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
@@ -24,7 +24,10 @@ import { concatBytes } from './util.js';
 const PROTOCOL_INFO = new TextEncoder().encode('para-code-mobile/1');
 const ACK_PAYLOAD = new TextEncoder().encode('para-hs-ack');
 const CONFIRM_PAYLOAD = new TextEncoder().encode('para-hs-confirm');
-const NONCE_LENGTH = 24;
+// AES-256-GCM を採用（Node/Web の webcrypto と @noble の双方が実装するため、
+// PC側=webcrypto / モバイル側=@noble でバイト互換にできる。nonceは12バイトのカウンタ。
+// セッション鍵は接続毎にephemeral DHで新規導出されるため、カウンタnonceの再利用は起きない）。
+const NONCE_LENGTH = 12;
 const KEY_LENGTH = 32;
 
 export interface Identity {
@@ -47,7 +50,7 @@ class DirectionalCipher {
 
 	seal(plaintext: Uint8Array): Uint8Array {
 		const nonce = this.nextNonce();
-		return concatBytes(nonce, xchacha20poly1305(this.key, nonce).encrypt(plaintext));
+		return concatBytes(nonce, gcm(this.key, nonce).encrypt(plaintext));
 	}
 
 	open(message: Uint8Array): Uint8Array {
@@ -61,13 +64,15 @@ class DirectionalCipher {
 				throw new Error('unexpected nonce (out-of-order or replayed message)');
 			}
 		}
-		return xchacha20poly1305(this.key, expected).decrypt(message.subarray(NONCE_LENGTH));
+		return gcm(this.key, expected).decrypt(message.subarray(NONCE_LENGTH));
 	}
 
 	private nextNonce(): Uint8Array {
 		const nonce = new Uint8Array(NONCE_LENGTH);
 		let value = this.counter++;
-		for (let i = 0; i < 8; i++) {
+		// 先頭8バイトにカウンタをビッグエンディアンで置く（残り4バイトは0固定）。
+		// webcrypto実装と一致させるため配置を厳密に定める。
+		for (let i = 7; i >= 0; i--) {
 			nonce[i] = Number(value & 0xffn);
 			value >>= 8n;
 		}
