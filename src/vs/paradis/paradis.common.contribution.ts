@@ -26,3 +26,4 @@ import './contrib/defaultExtensions/browser/paradisDefaultNotificationFilters.co
 import './contrib/fileViewers/browser/paradisMarkdownViewer.contribution.js';
 import './contrib/viewLayout/browser/paradisViewLayout.contribution.js';
 import './contrib/keepAwake/browser/paradisKeepAwakeSettings.contribution.js';
+import './contrib/mobileRelay/browser/paradisMobileRelaySettings.contribution.js';
