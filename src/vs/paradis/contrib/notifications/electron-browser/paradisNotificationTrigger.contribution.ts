@@ -116,6 +116,8 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			return; // ペインが別ウィンドウ or 終了済み
 		}
 
+		// 設定「Para Code を見ている間も通知する」が有効なら、フォーカス由来の抑制を行わない
+		const notifyWhileFocused = this.settingsService.getNotifyWhileFocused();
 		const isVisibleAndFocused = !document.hidden && this.hostService.hasFocus;
 		const stateKey = this.terminalScopeService.getStateKeyForInstance(instanceId);
 
@@ -124,7 +126,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			// アイコン変化はスコープ概念に紐づくため対象外だが、音 + OS通知 + Aivis は
 			// ワークスペースフォルダ名をプレースホルダにして発火させる。
 			// 抑制条件は「このウィンドウが可視かつフォーカス中」のみ。
-			if (isVisibleAndFocused) {
+			if (isVisibleAndFocused && !notifyWhileFocused) {
 				return;
 			}
 			await this._notify(undefined, status, this._resolveFallbackPlaceholders(status));
@@ -134,7 +136,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		// 抑制ルール: 対象スコープが見えていて (アクティブ) かつウィンドウがフォーカスされている場合は鳴らさない。
 		// document.hidden (最小化・別スペース) の場合は常に鳴らす。
 		const isActiveScope = stateKey === this.workspaceSwitchService.activeStateKey;
-		if (isActiveScope && isVisibleAndFocused) {
+		if (isActiveScope && isVisibleAndFocused && !notifyWhileFocused) {
 			return;
 		}
 
@@ -145,7 +147,11 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 	private async _notify(stateKey: string | undefined, status: 'review' | 'permission', placeholders: IParadisAivisPlaceholders): Promise<void> {
 		// OS通知は従来どおり即時。通知音と Aivis は shared process の AudioScheduler で調停する
 		// （通知音 → 完了後に Aivis の順。重複通知音は捨て、Aivis は FIFO で失わない）。
-		this._showOsNotification(stateKey, status, placeholders);
+		const osEnabled = this.settingsService.getOsNotificationsEnabled()
+			&& (status === 'permission' ? this.settingsService.getOsNotifyOnPermission() : this.settingsService.getOsNotifyOnReview());
+		if (osEnabled) {
+			this._showOsNotification(stateKey, status, placeholders);
+		}
 
 		const muted = this.settingsService.getSoundsMuted();
 		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; priority: IParadisNotifyAudioRequest['priority'] } = {
