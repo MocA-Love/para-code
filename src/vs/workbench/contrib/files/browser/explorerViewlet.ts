@@ -262,7 +262,7 @@ export const VIEW_CONTAINER: ViewContainer = viewContainerRegistry.registerViewC
 	icon: explorerViewIcon,
 	alwaysUseContainerInfo: true,
 	hideIfEmpty: true,
-	order: 3, // PARA-PATCH: place Explorer below Source Control (order: 2) in the auxiliary bar
+	order: 0,
 	openCommandActionDescriptor: {
 		id: VIEWLET_ID,
 		title: localize2('explore', "Explorer"),
@@ -270,7 +270,7 @@ export const VIEW_CONTAINER: ViewContainer = viewContainerRegistry.registerViewC
 		keybindings: { primary: KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyE },
 		order: 0
 	},
-	// PARA-PATCH: default Explorer into the auxiliary (secondary) side bar below Source Control
+	// PARA-PATCH: default Explorer into the auxiliary (secondary) side bar (first, above Source Control and Chat)
 }, ViewContainerLocation.AuxiliaryBar, { isDefault: true });
 
 const openFolder = localize('openFolder', "Open Folder");
