@@ -24,3 +24,4 @@ import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribu
 import './contrib/browserBookmarks/electron-browser/paradisBrowserBookmarks.contribution.js';
 import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution.js';
 import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
+import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
