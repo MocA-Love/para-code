@@ -322,6 +322,8 @@ jobs:
   publish:
     needs: [build-darwin, build-win32, build-linux]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create/upload (GitHub Release with artifacts)
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -379,3 +381,26 @@ jobs:
           publish "stable:win32-x64-user"   "win32-x64-user"   "win32-x64-user-setup.exe"   "win32-x64"
           publish "stable:win32-arm64-user" "win32-arm64-user" "win32-arm64-user-setup.exe" "win32-arm64"
           publish "stable:linux-x64"        "linux-x64"        "linux-x64.deb"              "linux-x64"
+
+      # Also attach the artifacts to a GitHub Release on the tag, so first-time
+      # installs can be downloaded from the Releases page without digging into
+      # R2. The auto-updater keeps using R2/KV above (Release asset URLs on a
+      # private repo require auth, which end-user machines don't have).
+      - name: Create GitHub Release with artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="${GITHUB_REF#refs/tags/}"
+          mkdir -p release-assets
+          cp "artifacts/darwin-x64/darwin-x64.zip"               "release-assets/ParaCode-$TAG-darwin-x64.zip"
+          cp "artifacts/darwin-arm64/darwin-arm64.zip"           "release-assets/ParaCode-$TAG-darwin-arm64.zip"
+          cp "artifacts/win32-x64/win32-x64-user-setup.exe"      "release-assets/ParaCode-$TAG-win32-x64-setup.exe"
+          cp "artifacts/win32-arm64/win32-arm64-user-setup.exe"  "release-assets/ParaCode-$TAG-win32-arm64-setup.exe"
+          cp "artifacts/linux-x64/linux-x64.deb"                 "release-assets/ParaCode-$TAG-linux-x64.deb"
+          (cd release-assets && sha256sum -- * > "ParaCode-$TAG-SHA256SUMS.txt")
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber release-assets/*
