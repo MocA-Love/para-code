@@ -10,6 +10,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
+import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	MobileIdentity,
@@ -53,7 +54,8 @@ interface PairedMobile {
 }
 
 interface PersistedState {
-	identity?: { pubKey: string; pkcs8: string };
+	// encSecret: safeStorageで暗号化したpkcs8秘密鍵。pkcs8: 平文(旧形式/暗号化不可環境のフォールバック)。
+	identity?: { pubKey: string; encSecret?: string; pkcs8?: string };
 	device?: { deviceId: string; pcToken: string };
 	mobiles: PairedMobile[];
 }
@@ -173,6 +175,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	constructor(
 		private readonly userDataPath: string,
+		private readonly encryptionService: IEncryptionService,
 		private readonly logService: ILogService,
 	) {
 		super();
@@ -190,14 +193,47 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		} catch {
 			this.state = { mobiles: [] };
 		}
-		if (this.state.identity) {
-			this.identity = await importIdentity(fromBase64Url(this.state.identity.pkcs8), fromBase64Url(this.state.identity.pubKey));
+		const stored = this.state.identity;
+		if (stored) {
+			const pkcs8B64 = await this.decryptSecret(stored);
+			if (pkcs8B64 !== undefined) {
+				this.identity = await importIdentity(fromBase64Url(pkcs8B64), fromBase64Url(stored.pubKey));
+				// 旧形式(平文pkcs8)で読めた場合は暗号化形式へ移行して保存し直す。
+				if (stored.pkcs8 !== undefined) {
+					await this.persistIdentitySecret(this.identity, fromBase64Url(pkcs8B64));
+					await this.save();
+				}
+			}
+		}
+	}
+
+	private async decryptSecret(stored: NonNullable<PersistedState['identity']>): Promise<string | undefined> {
+		if (stored.encSecret !== undefined) {
+			try {
+				return await this.encryptionService.decrypt(stored.encSecret);
+			} catch (err) {
+				this.logService.error('[paradisMobileRelay] failed to decrypt identity secret', err);
+				return undefined;
+			}
+		}
+		return stored.pkcs8; // 旧形式(平文)フォールバック
+	}
+
+	/** pkcs8秘密鍵を safeStorage で暗号化して state.identity に格納する（不可なら平文フォールバック）。 */
+	private async persistIdentitySecret(identity: MobileIdentity, pkcs8: Uint8Array): Promise<void> {
+		const pkcs8B64 = toBase64Url(pkcs8);
+		try {
+			const encSecret = await this.encryptionService.encrypt(pkcs8B64);
+			this.state.identity = { pubKey: toBase64Url(identity.publicKey), encSecret };
+		} catch (err) {
+			// safeStorageが使えない環境（例: キーリング無しのLinux）では平文で保存（mode 0600）。
+			this.logService.warn('[paradisMobileRelay] safeStorage unavailable, storing identity secret in plaintext', err);
+			this.state.identity = { pubKey: toBase64Url(identity.publicKey), pkcs8: pkcs8B64 };
 		}
 	}
 
 	private async save(): Promise<void> {
-		// TODO(follow-up): 秘密鍵は safeStorage(IEncryptionMainService経由)で暗号化して保存する。
-		// 現状は既存のParadis secret保存(平文)と同水準。ファイルは 0600 で作成する。
+		// 秘密鍵は persistIdentitySecret で safeStorage 暗号化済み。ファイルも 0600 で作成する。
 		const json = JSON.stringify(this.state);
 		await fs.writeFile(this.statePath, json, { encoding: 'utf8', mode: 0o600 });
 	}
@@ -208,7 +244,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		const { identity, pkcs8 } = await generatePersistableIdentity();
 		this.identity = identity;
-		this.state.identity = { pubKey: toBase64Url(identity.publicKey), pkcs8: toBase64Url(pkcs8) };
+		await this.persistIdentitySecret(identity, pkcs8);
 		await this.save();
 		return identity;
 	}
