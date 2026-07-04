@@ -44,7 +44,7 @@ const chatViewContainer: ViewContainer = Registry.as<IViewContainersRegistry>(Vi
 	ctorDescriptor: new SyncDescriptor(ViewPaneContainer, [ChatViewContainerId, { mergeViewWithContainerWhenSingleView: true }]),
 	storageId: ChatViewContainerId,
 	hideIfEmpty: true,
-	order: 1,
+	order: 4, // PARA-PATCH: place Chat last in the auxiliary bar, below Explorer (order: 0) and Source Control (order: 2)
 }, ViewContainerLocation.AuxiliaryBar, { isDefault: true, doNotRegisterOpenCommand: true });
 
 const chatViewDescriptor: IViewDescriptor = {
