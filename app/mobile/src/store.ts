@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { type Frame, type Identity, generateIdentity } from '@para/protocol';
+import { type Frame, type Identity, type NotifyPayload, decodeNotify, generateIdentity } from '@para/protocol';
 import { RelayClient, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
@@ -31,6 +31,8 @@ export interface StoreState {
 	workspace: WorkspaceState | undefined;
 	/** ターミナルID → 受信済み出力（末尾のみ保持）。 */
 	terminalOutput: Map<number, string>;
+	/** 受信した通知（新しい順、最大50件）。 */
+	notifications: NotifyPayload[];
 }
 
 const IDENTITY_KEY = 'para.identity';
@@ -87,12 +89,15 @@ export class MobileController {
 		pcOnline: false,
 		workspace: undefined,
 		terminalOutput: new Map(),
+		notifications: [],
 	};
 
 	constructor(
 		private readonly identity: Identity,
 		private readonly socketFactory: SocketFactory,
 		private readonly onChange: (state: StoreState) => void,
+		/** 通知受信時のフック（expo-notifications によるローカル通知表示など）。 */
+		private readonly onNotify?: (payload: NotifyPayload) => void,
 	) { }
 
 	connect(creds: PairedCredentials): void {
@@ -152,11 +157,21 @@ export class MobileController {
 					this.emit();
 				}
 			} catch { /* ignore */ }
+		} else if (frame.ch === 'notify') {
+			try {
+				const payload = decodeNotify(frame.payload);
+				// 重複IDは無視。新しい順に最大50件保持。
+				if (!this.state.notifications.some(n => n.id === payload.id)) {
+					this.state.notifications = [payload, ...this.state.notifications].slice(0, 50);
+					this.emit();
+					this.onNotify?.(payload);
+				}
+			} catch { /* ignore */ }
 		}
 	}
 
 	private emit(): void {
-		this.onChange({ ...this.state, terminalOutput: new Map(this.state.terminalOutput) });
+		this.onChange({ ...this.state, terminalOutput: new Map(this.state.terminalOutput), notifications: [...this.state.notifications] });
 	}
 }
 

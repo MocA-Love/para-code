@@ -7,8 +7,8 @@ import { useAppStore } from '../src/appState.js';
 /** ホーム画面: 接続状態・ワークスペース・ターミナル一覧（mobile.html のホーム相当）。 */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { connection, pcOnline, workspace, paired, ready } = useAppStore(s => ({
-		connection: s.connection, pcOnline: s.pcOnline, workspace: s.workspace, paired: s.paired, ready: s.ready,
+	const { connection, pcOnline, workspace, paired, ready, notifications } = useAppStore(s => ({
+		connection: s.connection, pcOnline: s.pcOnline, workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
 	}));
 
 	if (ready && !paired) {
@@ -48,6 +48,27 @@ export default function HomeScreen() {
 				);
 			})}
 			{(workspace?.workspaces.length ?? 0) === 0 ? <Text style={styles.dim}>ワークスペース情報を取得中…</Text> : null}
+
+			{notifications.length > 0 ? (
+				<>
+					<Text style={styles.sectionTitle}>最近の通知</Text>
+					<View style={styles.wsCard}>
+						{notifications.slice(0, 8).map(n => (
+							<Pressable
+								key={n.id}
+								style={styles.notifRow}
+								onPress={() => { if (n.terminalId !== undefined) { router.push({ pathname: '/terminal', params: { id: String(n.terminalId), title: n.title } }); } }}
+							>
+								<View style={[styles.notifDot, n.kind === 'agent-question' ? styles.dotWaiting : n.kind === 'agent-error' ? styles.dotError : styles.dotDone]} />
+								<View style={{ flex: 1 }}>
+									<Text style={styles.notifTitle} numberOfLines={1}>{n.title}</Text>
+									<Text style={styles.notifBody} numberOfLines={1}>{n.body}</Text>
+								</View>
+							</Pressable>
+						))}
+					</View>
+				</>
+			) : null}
 		</ScrollView>
 	);
 }
@@ -75,4 +96,11 @@ const styles = StyleSheet.create({
 	badgeRunning: { backgroundColor: 'rgba(78,201,176,0.15)', color: '#4ec9b0' },
 	primaryBtn: { backgroundColor: '#007acc', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
 	primaryBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+	notifRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
+	notifDot: { width: 8, height: 8, borderRadius: 4 },
+	dotWaiting: { backgroundColor: '#f48771' },
+	dotDone: { backgroundColor: '#4ec9b0' },
+	dotError: { backgroundColor: '#f14c4c' },
+	notifTitle: { color: '#cccccc', fontSize: 13, fontWeight: '600' },
+	notifBody: { color: '#8b8b8b', fontSize: 12, marginTop: 1 },
 });

@@ -11,7 +11,7 @@ import { Disposable, DisposableMap, DisposableStore } from '../../../../base/com
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { Channels } from '../common/paradisMobileProtocol.js';
+import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
 import { IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
 
 const encoder = new TextEncoder();
@@ -45,6 +45,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly attachedTerminals = this._register(new DisposableMap<number>());
 	// ターミナルID → 出力の宛先モバイルID。
 	private readonly terminalSubscribers = new Map<number, string>();
+	// エージェント状態の遷移検知用（stateKey → 直近の状態）。
+	private readonly previousScopeStatus = new Map<string, string>();
+	private notifyCounter = 0;
 
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
@@ -56,11 +59,50 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	) {
 		super();
 
-		// 状態が変わったらスナップショットを再送。
+		// 状態が変わったらスナップショットを再送。エージェント状態の変化は通知判定も行う。
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => this.pushState()));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.pushState()));
-		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.pushState()));
+		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushState(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => this.pushState()));
+	}
+
+	/**
+	 * エージェント状態の遷移を検知して notify フレームを送る。
+	 * - permission（質問/許可要求）への遷移 → agent-question
+	 * - review（作業完了）への遷移 → agent-done
+	 * これがモバイルの「エージェントの質問通知」の供給源。全オンラインモバイルへ届ける。
+	 */
+	private detectAndNotify(): void {
+		for (const inst of this.terminalService.instances) {
+			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId);
+			if (!stateKey) {
+				continue;
+			}
+			const status = this.agentStatusStore.getScopeStatus(stateKey);
+			const prev = this.previousScopeStatus.get(stateKey);
+			if (status && status !== prev) {
+				if (status === 'permission' || status === 'review') {
+					this.emitNotify(status === 'permission' ? 'agent-question' : 'agent-done', inst.instanceId, stateKey, inst.title);
+				}
+			}
+			if (status) {
+				this.previousScopeStatus.set(stateKey, status);
+			} else {
+				this.previousScopeStatus.delete(stateKey);
+			}
+		}
+	}
+
+	private emitNotify(kind: NotifyKind, terminalId: number, ws: string, terminalTitle: string): void {
+		const wsName = this.workspaceSwitchService.repositories.find(r => r.id === ws)?.name ?? ws;
+		const title = kind === 'agent-question'
+			? `${terminalTitle} — ${wsName}`
+			: `${terminalTitle} — ${wsName}`;
+		const body = kind === 'agent-question'
+			? 'エージェントが確認を求めています'
+			: 'エージェントが作業を完了しました';
+		const payload: NotifyPayload = { kind, id: `n${this.notifyCounter++}`, title, body, ws, terminalId, at: Date.now() };
+		this.sendFrame({ ch: Channels.Notify, ws: undefined, seq: 0, payload: VSBuffer.wrap(encodeNotify(payload)) });
 	}
 
 	/** 接続確立直後などに全状態を送る。 */
