@@ -721,7 +721,8 @@ export class ParadisCcusageEditor extends EditorPane {
 		const seq = this.seqPalette;
 		const top = projects.slice(0, MAX_PROJECT_ROWS);
 		const restCost = projects.slice(MAX_PROJECT_ROWS).reduce((sum, p) => sum + p.cost, 0);
-		const maxCost = Math.max(0.01, ...top.map(p => p.cost));
+		// 「その他」の合計が個別プロジェクトの最大値を超えることがあるため、スケールに含める
+		const maxCost = Math.max(0.01, ...top.map(p => p.cost), restCost);
 		top.forEach((project, index) => {
 			appendHBarRow(card, project.name, project.rawName, project.cost, maxCost, seq[Math.min(index, seq.length - 1)], formatUsd(project.cost));
 		});
@@ -849,7 +850,7 @@ function appendHBarRow(container: HTMLElement, name: string, tooltip: string, va
 	}
 	const track = dom.append(row, $('.track'));
 	const bar = dom.append(track, $('.bar'));
-	bar.style.width = `${Math.max(1, (value / maxValue) * 100).toFixed(1)}%`;
+	bar.style.width = `${Math.min(100, Math.max(1, (value / maxValue) * 100)).toFixed(1)}%`;
 	bar.style.background = color;
 	dom.append(row, $('span.val')).textContent = formatted;
 }
