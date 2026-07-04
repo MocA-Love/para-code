@@ -4,7 +4,7 @@
 
 Para Code が本家 VS Code に加えた変更の一覧です。新しいバージョンが上に来ます。
 
-## 未リリース
+## paracode-6（2026-07-04）
 
 - Source Control の「コミットメッセージを生成」が日本語でメッセージを作るようになりました（設定 `github.copilot.chat.commitMessageGeneration.instructions` を独自の指示で上書きできます）
 - 既定テーマ（Houston / Dark 2026 / Light 2026）のボタン・バッジ・フォーカス枠などのアクセント色を Para Code のブランドカラー（#09AFD9）に統一し、ステータスバーも通常時・フォルダ未オープン時ともブランドカラーになりました（settings.json の `workbench.colorCustomizations` でいつでも上書きできます）
