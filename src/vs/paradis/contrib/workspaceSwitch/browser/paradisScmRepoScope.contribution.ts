@@ -35,6 +35,9 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 
 	private static readonly SETTING_ID = 'paradis.workspaceSwitch.scopeScmRepositories';
 
+	/** 自身の非表示化・絞り込み操作が発火させる可視変更イベントへの再入を防ぐ。 */
+	private _enforcing = false;
+
 	constructor(
 		@ISCMService private readonly scmService: ISCMService,
 		@ISCMViewService private readonly scmViewService: ISCMViewService,
@@ -45,12 +48,33 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		super();
 
 		// 新しく登録されたリポジトリがスコープ外なら、そのリポジトリだけ非表示にする。
-		// (ユーザーが SCM ビューで手動で表示を切り替えた分は、次のフォルダ変更まで尊重する)
 		// ISCMViewService は DI 注入時点で構築済み = 自身の onDidAddRepository リスナーの方が先に
 		// 登録されているため、このハンドラ実行時には表示状態の初期化 (選択) が済んでいる
 		this._register(this.scmService.onDidAddRepository(repository => {
 			if (this.isEnabled() && !this.isInScope(repository)) {
-				this.scmViewService.toggleVisibility(repository, false);
+				this.hide([repository]);
+			}
+		}));
+
+		// upstream の SCMViewService には、絞り込みを覆して「スコープ外リポジトリを表示に戻す」経路が
+		// 少なくとも2つある (scmViewService.ts):
+		//  - onDidRemoveRepository: 可視リポジトリが 0 になると _repositories[0] を強制表示する。
+		//    スペース切り替え直後は「新スペースのリポジトリがまだ開いておらず全て非表示」の瞬間があり、
+		//    そこへ旧スペースのリポジトリの close が届くと、別スペースのリポジトリが表示されてしまう
+		//  - onDidAddRepository の起動時分岐: 保存済み state (previousState) に無いリポジトリが来ると
+		//    全リポジトリの selectionIndex を振り直して一括再表示する
+		// どちらも個別に追うのではなく、「表示に追加された」イベントを監視してスコープ外なら隠すことで
+		// 一律に打ち消す。この結果、ユーザーがスコープ外リポジトリを手動で表示する操作も維持されなく
+		// なるが、全リポジトリを見たい場合は設定 (SETTING_ID) を無効にすればよい。
+		// 自身の hide は removed のみのイベントで added は空のため、このハンドラが自身の操作へ
+		// 再帰することはない (_enforcing は同期発火するセッターイベントへの保険)。
+		this._register(this.scmViewService.onDidChangeVisibleRepositories(({ added }) => {
+			if (this._enforcing || !this.isEnabled()) {
+				return;
+			}
+			const outOfScope = [...added].filter(repository => !this.isInScope(repository));
+			if (outOfScope.length > 0) {
+				this.hide(outOfScope);
 			}
 		}));
 
@@ -96,11 +120,27 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		return folders.some(folder => extUri.isEqualOrParent(root, folder.uri) || extUri.isEqualOrParent(folder.uri, root));
 	}
 
+	private hide(repositories: readonly ISCMRepository[]): void {
+		this._enforcing = true;
+		try {
+			for (const repository of repositories) {
+				this.scmViewService.toggleVisibility(repository, false);
+			}
+		} finally {
+			this._enforcing = false;
+		}
+	}
+
 	private applyToAll(): void {
 		if (!this.isEnabled()) {
 			return;
 		}
-		this.scmViewService.visibleRepositories = [...this.scmService.repositories].filter(repository => this.isInScope(repository));
+		this._enforcing = true;
+		try {
+			this.scmViewService.visibleRepositories = [...this.scmService.repositories].filter(repository => this.isInScope(repository));
+		} finally {
+			this._enforcing = false;
+		}
 	}
 }
 
