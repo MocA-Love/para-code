@@ -1,0 +1,23 @@
+{
+	"name": "@para/relay",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Para Code Mobile relay: Cloudflare Workers + Durable Objects",
+	"scripts": {
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy",
+		"test": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@para/protocol": "workspace:*"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.5.0",
+		"@cloudflare/workers-types": "^4.20241106.0",
+		"typescript": "^5.6.0",
+		"vitest": "^2.1.0",
+		"wrangler": "^3.90.0"
+	}
+}
