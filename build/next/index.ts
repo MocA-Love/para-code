@@ -104,6 +104,10 @@ const desktopEntryPoints = [
 	'vs/platform/agentHost/node/agentHostMain',
 	'vs/platform/agentHost/node/diffWorkerMain',
 	'vs/workbench/api/node/extensionHostProcess',
+	// PARA-PATCH: ship the Para Code agent-browser MCP stdio shim. Agent CLIs (Claude Code / Codex)
+	// run it directly via `node out/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js`
+	// (see paradisMcpSnippets.ts), so packaged builds must emit it at that exact path.
+	'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
 ];
 
 const codeEntryPoints = [
