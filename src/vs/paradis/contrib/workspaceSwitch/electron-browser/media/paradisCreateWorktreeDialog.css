@@ -1,0 +1,155 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* Create Worktree dialog (see paradisCreateWorktreeDialog.ts). Colors come from --vscode-* theme tokens so the dialog adapts to any color theme. */
+
+.paradis-create-worktree-backdrop {
+	position: absolute;
+	inset: 0;
+	background: rgba(0, 0, 0, 0.45);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 2600;
+}
+
+.paradis-create-worktree-dialog {
+	width: 560px;
+	max-width: 92vw;
+	background: var(--vscode-editorWidget-background);
+	color: var(--vscode-foreground);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 10px;
+	box-shadow: 0 10px 40px var(--vscode-widget-shadow);
+	padding: 16px 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	font-size: 13px;
+}
+
+.paradis-create-worktree-dialog .pcw-title {
+	margin: 0 0 2px;
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.paradis-create-worktree-dialog .pcw-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.paradis-create-worktree-dialog .pcw-input,
+.paradis-create-worktree-dialog .pcw-prompt,
+.paradis-create-worktree-dialog .pcw-select {
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 4px;
+	padding: 5px 8px;
+	font-family: inherit;
+	font-size: 13px;
+	outline: none;
+}
+
+.paradis-create-worktree-dialog .pcw-input:focus,
+.paradis-create-worktree-dialog .pcw-prompt:focus,
+.paradis-create-worktree-dialog .pcw-select:focus {
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-create-worktree-dialog .pcw-name {
+	flex: 1;
+}
+
+.paradis-create-worktree-dialog .pcw-branch {
+	width: 180px;
+	font-family: var(--monaco-monospace-font);
+	font-size: 12px;
+}
+
+.paradis-create-worktree-dialog .pcw-prompt {
+	resize: vertical;
+	min-height: 56px;
+}
+
+.paradis-create-worktree-dialog .pcw-field-row {
+	flex-wrap: wrap;
+}
+
+.paradis-create-worktree-dialog .pcw-label {
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-create-worktree-dialog .pcw-select {
+	max-width: 180px;
+	text-overflow: ellipsis;
+}
+
+.paradis-create-worktree-dialog .pcw-branch-select {
+	font-family: var(--monaco-monospace-font);
+	font-size: 12px;
+}
+
+.paradis-create-worktree-dialog .pcw-path-preview {
+	color: var(--vscode-descriptionForeground);
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	direction: rtl;
+	text-align: left;
+}
+
+.paradis-create-worktree-dialog .pcw-error {
+	color: var(--vscode-errorForeground);
+	font-size: 12px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.paradis-create-worktree-dialog .pcw-error:empty {
+	display: none;
+}
+
+.paradis-create-worktree-dialog .pcw-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 4px;
+}
+
+.paradis-create-worktree-dialog .pcw-btn {
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	border: none;
+	border-radius: 4px;
+	padding: 6px 14px;
+	cursor: pointer;
+	font-size: 13px;
+}
+
+.paradis-create-worktree-dialog .pcw-btn:hover:not(:disabled) {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-create-worktree-dialog .pcw-btn-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.paradis-create-worktree-dialog .pcw-btn-primary:hover:not(:disabled) {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.paradis-create-worktree-dialog .pcw-btn:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
