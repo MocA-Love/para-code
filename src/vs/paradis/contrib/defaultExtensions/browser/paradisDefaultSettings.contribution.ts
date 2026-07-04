@@ -59,12 +59,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'statusBar.noFolderForeground': '#FFFFFF'
 			}
 		},
-		// SCMの「コミットメッセージを生成」(同梱Copilot拡張) の出力を日本語に。プロンプト本体
-		// (gitCommitMessagePrompt.tsx) は改変せず、公式のカスタム指示注入ポイントを既定値で埋める。
-		'github.copilot.chat.commitMessageGeneration.instructions': [
-			// allow-any-unicode-next-line
-			{ text: 'コミットメッセージは日本語で書いてください。1行目は変更内容の簡潔な要約にしてください。' }
-		],
+		// 注: `github.copilot.chat.commitMessageGeneration.instructions` はここ（defaultレイヤー）では
+		// 効かない。Copilot拡張の customInstructionsService.fetchInstructionsFromSetting は inspect の
+		// workspaceFolder/workspace/global 値だけを読み、default 値を意図的に無視するため。
+		// 代わりに paradisSeedUserSettings.contribution.ts が user settings.json へ一度だけシードする。
 		// 初回インストール直後に拡張のWelcome/Get Startedタブが大量に開くのを抑止する。
 		// walkthroughs.openOnInstall: インストール直後のWalkthrough自動オープン（Welcomeタブ）の抑止。
 		// 各拡張固有の What's New / Welcome ページは、設定が用意されているものはここで無効化し、

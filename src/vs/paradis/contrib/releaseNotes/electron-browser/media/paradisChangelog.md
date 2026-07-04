@@ -4,6 +4,10 @@
 
 Para Code が本家 VS Code に加えた変更の一覧です。新しいバージョンが上に来ます。
 
+## 未リリース
+
+- コミットメッセージの日本語生成が実際には効いていなかった問題を修正しました（同梱 Copilot 拡張が既定値レイヤーを読まないため、初回起動時に user settings.json へ日本語指示を書き込む方式に変更。既に自分で設定している場合は上書きしません）
+
 ## paracode-6（2026-07-04）
 
 - Source Control の「コミットメッセージを生成」が日本語でメッセージを作るようになりました（設定 `github.copilot.chat.commitMessageGeneration.instructions` を独自の指示で上書きできます）
