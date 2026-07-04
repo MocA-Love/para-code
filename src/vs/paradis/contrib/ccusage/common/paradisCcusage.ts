@@ -23,6 +23,8 @@ export interface IParadisCcusageExecOptions {
 	readonly until?: string;
 	/** IANA タイムゾーン(例: Asia/Tokyo)。 */
 	readonly timezone?: string;
+	/** true なら shared process の結果キャッシュ(TTL)を無視して再実行する(手動更新用)。 */
+	readonly bypassCache?: boolean;
 }
 
 /** モデル単位の内訳(daily/session 共通)。 */

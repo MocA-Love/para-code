@@ -25,6 +25,9 @@ import {
 
 export const PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH = 'paradis.ccusage.executablePath';
 
+/** 常に取得する期間(日)。UI の期間フィルターの最大値と一致させる。 */
+export const FETCH_WINDOW_DAYS = 90;
+
 /** 1日×1モデルのスライス(積み上げバー・モデル別集計の元データ)。 */
 export interface IParadisCcusageModelSlice {
 	readonly model: string;
@@ -67,7 +70,8 @@ export interface IParadisCcusageSessionData {
 export interface IParadisCcusageProjectData {
 	readonly name: string;
 	readonly rawName: string;
-	readonly cost: number;
+	/** 日別コスト(YYYY-MM-DD → USD)。期間フィルターはクライアント側で行う。 */
+	readonly dailyCosts: { readonly date: string; readonly cost: number }[];
 }
 
 export interface IParadisCcusageDashboardData {
@@ -110,9 +114,9 @@ export class ParadisCcusageClient {
 		return this.sharedProcessService.getChannel(PARADIS_CCUSAGE_CHANNEL);
 	}
 
-	private execOptions(sinceDays: number | undefined): IParadisCcusageExecOptions {
+	private execOptions(sinceDays: number | undefined, bypassCache?: boolean): IParadisCcusageExecOptions {
 		const executablePath = this.configurationService.getValue<string>(PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH);
-		const options: { executablePath?: string; since?: string } = {};
+		const options: { executablePath?: string; since?: string; bypassCache?: boolean } = {};
 		if (typeof executablePath === 'string' && executablePath.trim().length > 0) {
 			options.executablePath = executablePath.trim();
 		}
@@ -121,24 +125,38 @@ export class ParadisCcusageClient {
 			since.setDate(since.getDate() - (sinceDays - 1));
 			options.since = paradisCcusageDateArg(since);
 		}
+		if (bypassCache) {
+			options.bypassCache = true;
+		}
 		return options;
 	}
 
-	/** 今日1日分の合計コスト(USD)。ステータスバー表示用。 */
+	/**
+	 * 今日1日分の合計コスト(USD)。ステータスバー表示用。
+	 * ダッシュボードと同じ「90日分の daily」を呼ぶことで shared process のキャッシュを共有する
+	 * (ccusage の走査コストは since に依らずほぼ一定なので、絞っても速くならない)。
+	 */
 	async fetchTodayCost(): Promise<number | undefined> {
-		const rows = await this.channel.call<IParadisCcusageDailyRow[]>('fetchDaily', [this.execOptions(1)]);
+		const rows = await this.channel.call<IParadisCcusageDailyRow[]>('fetchDaily', [this.execOptions(FETCH_WINDOW_DAYS)]);
 		if (!Array.isArray(rows) || rows.length === 0) {
 			return undefined;
 		}
-		return rows.reduce((sum, row) => sum + (row.totalCost ?? 0), 0);
+		const now = new Date();
+		const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+		const todayRow = rows.find(row => row.period === today);
+		return todayRow ? (todayRow.totalCost ?? 0) : 0;
 	}
 
-	/** ダッシュボード一式を取得する。一部レポートの失敗は failedReports として返し、全体は成立させる。 */
-	async fetchDashboard(sinceDays: number): Promise<IParadisCcusageDashboardData> {
-		const options = this.execOptions(sinceDays);
+	/**
+	 * ダッシュボード一式を取得する。常に最大期間(90日)分を取得し、期間の絞り込みは
+	 * 呼び出し側(エディタ)が日付でスライスする — 期間切り替えのたびに CLI を再実行しないため。
+	 * 一部レポートの失敗は failedReports として返し、全体は成立させる。
+	 */
+	async fetchDashboard(bypassCache = false): Promise<IParadisCcusageDashboardData> {
+		const options = this.execOptions(FETCH_WINDOW_DAYS, bypassCache);
 		const [daily, block, sessions, projects] = await Promise.allSettled([
 			this.channel.call<IParadisCcusageDailyRow[]>('fetchDaily', [options]),
-			this.channel.call<IParadisCcusageBlock | undefined>('fetchActiveBlock', [this.execOptions(undefined)]),
+			this.channel.call<IParadisCcusageBlock | undefined>('fetchActiveBlock', [this.execOptions(undefined, bypassCache)]),
 			this.channel.call<IParadisCcusageSessionRow[]>('fetchRecentSessions', [options]),
 			this.channel.call<ParadisCcusageProjects>('fetchProjects', [options]),
 		]);
@@ -244,9 +262,10 @@ function normalizeSessions(rows: IParadisCcusageSessionRow[]): IParadisCcusageSe
 function normalizeProjects(projects: ParadisCcusageProjects): IParadisCcusageProjectData[] {
 	const result: IParadisCcusageProjectData[] = [];
 	for (const [rawName, rows] of Object.entries(projects ?? {})) {
-		const cost = (Array.isArray(rows) ? rows : []).reduce((sum, row) => sum + (row?.totalCost ?? 0), 0);
-		result.push({ name: paradisCcusageProjectDisplayName(rawName), rawName, cost });
+		const dailyCosts = (Array.isArray(rows) ? rows : [])
+			.filter(row => typeof row?.date === 'string')
+			.map(row => ({ date: row.date!, cost: row.totalCost ?? 0 }));
+		result.push({ name: paradisCcusageProjectDisplayName(rawName), rawName, dailyCosts });
 	}
-	result.sort((a, b) => b.cost - a.cost);
 	return result;
 }
