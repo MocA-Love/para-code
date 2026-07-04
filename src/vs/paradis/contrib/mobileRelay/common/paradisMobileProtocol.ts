@@ -193,6 +193,24 @@ export interface PairingPayload {
 	readonly pcPublicKey: Uint8Array;
 }
 
+// ---- notify チャネルのペイロード（app/protocol/src/notify.ts と一致） ----
+
+export type NotifyKind = 'agent-question' | 'agent-done' | 'agent-error' | 'disconnected';
+
+export interface NotifyPayload {
+	readonly kind: NotifyKind;
+	readonly id: string;
+	readonly title: string;
+	readonly body: string;
+	readonly ws?: string;
+	readonly terminalId?: number;
+	readonly at: number;
+}
+
+export function encodeNotify(payload: NotifyPayload): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify(payload));
+}
+
 export function encodePairingUri(payload: PairingPayload): string {
 	const json = JSON.stringify({
 		v: payload.version,

@@ -11,7 +11,7 @@ import { decodePairingUri } from '@para/protocol';
 import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type StoreState } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
-import { rnSocketFactory, secureKeyStore } from './platform.js';
+import { ensureNotificationPermission, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
 
 interface AppState extends StoreState {
 	ready: boolean;
@@ -32,16 +32,23 @@ export const useAppStore = create<AppState>(set => ({
 	pcOnline: false,
 	workspace: undefined,
 	terminalOutput: new Map(),
+	notifications: [],
 	ready: false,
 	paired: false,
 
 	async init() {
 		const loaded = await loadOrCreateIdentity(secureKeyStore);
 		identity = loaded.identity;
-		controller = new MobileController(identity, rnSocketFactory, s => set({ ...s }));
+		controller = new MobileController(
+			identity,
+			rnSocketFactory,
+			s => set({ ...s }),
+			payload => { void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId }); },
+		);
 		const creds = await loadCredentials(secureKeyStore);
 		set({ ready: true, paired: !!creds });
 		if (creds) {
+			void ensureNotificationPermission();
 			controller.connect(creds);
 		}
 	},

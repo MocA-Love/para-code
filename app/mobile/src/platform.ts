@@ -7,6 +7,7 @@
  */
 
 import * as SecureStore from 'expo-secure-store';
+import * as Notifications from 'expo-notifications';
 import type { KeyStore } from './store.js';
 import type { SocketFactory, SocketLike } from './relayClient.js';
 
@@ -37,3 +38,37 @@ export const rnSocketFactory: SocketFactory = (url: string): SocketLike => {
 	const ws = new WebSocket(url);
 	return ws as unknown as SocketLike;
 };
+
+// 前面表示中もバナーを出す（既定では前面時に抑制されるため）。
+Notifications.setNotificationHandler({
+	handleNotification: async () => ({
+		// SDKバージョン差異に両対応（旧: shouldShowAlert / 新: shouldShowBanner+List）。
+		shouldShowAlert: true,
+		shouldShowBanner: true,
+		shouldShowList: true,
+		shouldPlaySound: true,
+		shouldSetBadge: false,
+	}),
+});
+
+/** ローカル通知の権限を要求する（初回接続時などに呼ぶ）。 */
+export async function ensureNotificationPermission(): Promise<boolean> {
+	const settings = await Notifications.getPermissionsAsync();
+	if (settings.granted) {
+		return true;
+	}
+	const req = await Notifications.requestPermissionsAsync();
+	return req.granted;
+}
+
+/**
+ * ローカル通知を即時表示する（オンライン時の notify フレーム受信で使用）。
+ * オフライン時の APNs リモート通知は、リレー→APNs→Notification Service Extension で別途配送する
+ * （設計書 §5.2。NSE はネイティブ実装が必要で本コードには含まれない）。
+ */
+export async function presentLocalNotification(title: string, body: string, data: Record<string, unknown>): Promise<void> {
+	await Notifications.scheduleNotificationAsync({
+		content: { title, body, data },
+		trigger: null, // 即時
+	});
+}

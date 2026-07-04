@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { generateIdentity, respondHandshake, FrameMux, Channels, type Identity } from '@para/protocol';
+import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
 import { loadCredentials, loadOrCreateIdentity, MobileController, saveCredentials, type KeyStore } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
@@ -89,7 +89,8 @@ describe('MobileController', () => {
 		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
 
 		let latest: import('./store.js').StoreState | undefined;
-		const controller = new MobileController(mobile, () => pair.client, s => { latest = s; });
+		const notified: import('@para/protocol').NotifyPayload[] = [];
+		const controller = new MobileController(mobile, () => pair.client, s => { latest = s; }, p => notified.push(p));
 		const pcMuxP = drivePc(pair, pc, mobile.publicKey);
 		controller.connect(creds);
 		pair.fireOpen();
@@ -114,5 +115,17 @@ describe('MobileController', () => {
 		controller.sendInput(1, 'ls');
 		await flush();
 		expect(JSON.parse(pcGot[0]!)).toEqual({ t: 'input', id: 1, data: 'ls' });
+
+		// PC → notify: 質問通知が state に反映され onNotify が呼ばれる
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'q1', title: 'claude — para-code', body: '確認を求めています', at: 1 }));
+		await flush();
+		expect(latest?.notifications.length).toBe(1);
+		expect(latest?.notifications[0]!.kind).toBe('agent-question');
+		expect(notified.map(n => n.id)).toEqual(['q1']);
+
+		// 同一IDの重複通知は無視
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'q1', title: 'x', body: 'y', at: 2 }));
+		await flush();
+		expect(latest?.notifications.length).toBe(1);
 	});
 });
