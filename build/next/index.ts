@@ -304,6 +304,9 @@ const desktopResourcePatterns = [
 	// Paradis (Para Code)
 	// PARA-PATCH: ship the fork changelog shown by the paradis.showChangelog command
 	'vs/paradis/contrib/releaseNotes/electron-browser/media/*.md',
+	// PARA-PATCH: ship the vendored React DevTools extension loaded into built-in browser sessions
+	// (`**/*.*` instead of `**`: this glob impl matches directories too and copyFile would fail on them)
+	'vs/paradis/contrib/browserExtensions/electron-main/media/**/*.*',
 ];
 
 // Resources for server target (minimal - no UI)

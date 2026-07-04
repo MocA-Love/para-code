@@ -18,6 +18,8 @@ import { BrowserSessionRemote, IBrowserSessionRemote } from './browserSessionRem
 import { FileAccess, Schemas } from '../../../base/common/network.js';
 import { IInstantiationService } from '../../instantiation/common/instantiation.js';
 import { localize } from '../../../nls.js';
+// PARA-PATCH: load bundled devtools extensions (React DevTools) into browser view sessions
+import { paradisInstallBrowserExtensions } from '../../../paradis/contrib/browserExtensions/electron-main/paradisBrowserExtensions.js';
 
 /**
  * Holds an Electron session along with its storage scope and unique browser
@@ -267,6 +269,7 @@ export class BrowserSession {
 	 * Apply the permission policy and preload scripts to the session.
 	 */
 	private configure(): void {
+		paradisInstallBrowserExtensions(this.electronSession); // PARA-PATCH: bundled React DevTools
 		this._permissions.configure(this.electronSession);
 		this.electronSession.registerPreloadScript({
 			type: 'frame',

@@ -1699,6 +1699,9 @@ export default defineConfig(
 						// PARA-PATCH: windowsMainService.ts が起動時デフォルトワークスペース注入
 						// (paradisEnsureDefaultWorkspace) を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/workspaceSwitch/~',
+						// PARA-PATCH: browserSession.ts が同梱ブラウザ拡張（React DevTools）を
+						// ロード (paradisInstallBrowserExtensions) するための唯一の逆方向 import
+						'vs/paradis/contrib/browserExtensions/~',
 						'tas-client', // node module allowed even in /common/
 						'@microsoft/1ds-core-js', // node module allowed even in /common/
 						'@microsoft/1ds-post-js', // node module allowed even in /common/
