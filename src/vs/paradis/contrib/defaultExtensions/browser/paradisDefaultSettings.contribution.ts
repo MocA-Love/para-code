@@ -65,6 +65,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// allow-any-unicode-next-line
 			{ text: 'コミットメッセージは日本語で書いてください。1行目は変更内容の簡潔な要約にしてください。' }
 		],
+		// 初回インストール直後に拡張のWelcome/Get Startedタブが大量に開くのを抑止する。
+		// walkthroughs.openOnInstall: インストール直後のWalkthrough自動オープン（Welcomeタブ）の抑止。
+		// 各拡張固有の What's New / Welcome ページは、設定が用意されているものはここで無効化し、
+		// 設定が無いもの（Dependi / Deno）は paradisSuppressExtensionWelcomeTabs.contribution.ts で閉じる。
+		'workbench.welcomePage.walkthroughs.openOnInstall': false,
+		'gitlens.showWhatsNewAfterUpgrades': false,
+		'go.showWelcome': false,
+		'dependi.extras.silenceUpdateMessages': true,
 		'sqlite.recordsPerPage': 500,
 		'githubPullRequests.createOnPublishBranch': 'never',
 		'indentRainbow.colors': [
