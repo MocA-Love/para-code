@@ -51,11 +51,24 @@ export interface IParadisPaneTokenService {
 	prepareShellLaunchConfig(shellLaunchConfig: IShellLaunchConfig): void;
 }
 
-/** {persistentProcessId → token} 永続化マップのストレージキー（workspace scope）。 */
+/**
+ * {persistentProcessId → token} 永続化マップのストレージキー。
+ * APPLICATIONスコープ: ワークスペース切り替え（Para Codeのワークスペース即時切り替えではターミナルが
+ * 切り替えを跨いで生き続け、別workspaceのウィンドウへ attachPersistentProcess で再接続される）でも
+ * トークンを復元できるようにする。workspaceスコープだと切り替え先のストレージにエントリが無く、
+ * ペインがトークンを失って共有（バインド）が二度とできなくなる。persistentProcessId はptyホスト
+ * （アプリ全体で共有）内で一意なので、アプリ単位のマップで衝突しない。
+ */
 const STORAGE_KEY = 'paradis.agentBrowser.paneTokens';
 
-/** 永続化マップの最大エントリ数（古いものから間引く）。 */
-const MAX_PERSISTED_ENTRIES = 100;
+/**
+ * 永続化マップの最大エントリ数（古いものから間引く）。APPLICATIONスコープ化でアプリ全体の上限に
+ * なったため、多数のワークスペース/永続ターミナル併用でも生存トークンが間引かれない程度に取る。
+ * 注意: マップ全体の read-modify-write のため、複数ウィンドウがほぼ同時に書き込むと後勝ちで
+ * 片方のエントリが落ちる可能性がある（ストレージ変更はウィンドウ間へ随時同期されるので窓は短い。
+ * 失われた場合の影響は「そのペインがリロード後に共有不可」に留まり、ターミナル再作成で回復する）。
+ */
+const MAX_PERSISTED_ENTRIES = 300;
 
 class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenService {
 	declare readonly _serviceBrand: undefined;
@@ -171,7 +184,7 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 	}
 
 	private _readPersistedTokens(): Record<string, string> {
-		const raw = this.storageService.get(STORAGE_KEY, StorageScope.WORKSPACE);
+		const raw = this.storageService.get(STORAGE_KEY, StorageScope.APPLICATION);
 		if (!raw) {
 			return {};
 		}
@@ -187,7 +200,7 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 	}
 
 	private _writePersistedTokens(map: Record<string, string>): void {
-		this.storageService.store(STORAGE_KEY, JSON.stringify(map), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		this.storageService.store(STORAGE_KEY, JSON.stringify(map), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
 	private _persistToken(persistentProcessId: number, token: string): void {
