@@ -230,7 +230,12 @@ export class DeviceDO implements DurableObject {
 		const tokenHash = await hashToken(mobileToken);
 		this.sql.exec('INSERT INTO mobiles (mobileId, name, tokenHash, createdAt) VALUES (?, ?, ?, ?)', mobileId, name || 'device', tokenHash, Date.now());
 		const deviceId = this.state.id.toString();
+		// モバイル(pairing socket)へは資格情報一式を渡す。
 		this.broadcastToPairing({ type: 'paired', deviceId, mobileId, mobileToken });
+		// PCへも mobileId を通知する（PCは直前のpairing-msgで得たモバイル公開鍵を
+		// この mobileId に紐付けて保存し、以後のデータ接続の相手鍵とする）。mobileTokenは
+		// モバイル専用の秘密なのでPCには送らず空にする。
+		this.sendToPc({ type: 'paired', deviceId, mobileId, mobileToken: '' });
 	}
 
 	// --- helpers ------------------------------------------------------------------
