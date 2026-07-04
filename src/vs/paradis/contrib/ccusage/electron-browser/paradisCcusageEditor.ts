@@ -141,7 +141,7 @@ export class ParadisCcusageEditor extends EditorPane {
 		const refresh = dom.append(toolbar, $('button.paradis-ccusage-refresh')) as HTMLButtonElement;
 		this.refreshIcon = dom.append(refresh, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		dom.append(refresh, $('span')).textContent = localize('paradis.ccusage.refresh', "Refresh");
-		this._register(dom.addDisposableListener(refresh, dom.EventType.CLICK, () => this.refresh()));
+		this._register(dom.addDisposableListener(refresh, dom.EventType.CLICK, () => this.refresh(true)));
 
 		this.body = dom.append(this.root, $('.paradis-ccusage-body'));
 		this.tooltip = dom.append(this.root, $('.paradis-ccusage-tooltip'));
@@ -174,7 +174,15 @@ export class ParadisCcusageEditor extends EditorPane {
 		}
 		this.periodDays = days;
 		this.updateFilterButtons();
-		this.refresh();
+		// データは常に90日分保持しているので、期間切り替えは再描画(日付スライス)だけで済む
+		this.renderBody();
+	}
+
+	/** 選択中の期間の開始日(YYYY-MM-DD、この日を含む)。 */
+	private periodCutoff(): string {
+		const since = new Date();
+		since.setDate(since.getDate() - (this.periodDays - 1));
+		return localDateString(since);
 	}
 
 	private setAgentFilter(agent: AgentFilter): void {
@@ -195,7 +203,7 @@ export class ParadisCcusageEditor extends EditorPane {
 		}
 	}
 
-	private async refresh(): Promise<void> {
+	private async refresh(bypassCache = false): Promise<void> {
 		if (this.loading || !this.body) {
 			return;
 		}
@@ -213,7 +221,7 @@ export class ParadisCcusageEditor extends EditorPane {
 				localize('paradis.ccusage.loading', "Collecting usage data via ccusage… The first run may take a while.")));
 		}
 		try {
-			this.data = await this.client.fetchDashboard(this.periodDays);
+			this.data = await this.client.fetchDashboard(bypassCache);
 		} catch (error) {
 			this.lastError = error instanceof Error ? error.message : String(error);
 		} finally {
@@ -305,10 +313,12 @@ export class ParadisCcusageEditor extends EditorPane {
 	}
 
 	private filterDays(days: IParadisCcusageDayData[]): IParadisCcusageDayData[] {
+		const cutoff = this.periodCutoff();
+		const inPeriod = days.filter(day => day.date >= cutoff);
 		if (this.agentFilter === 'all') {
-			return days;
+			return inPeriod;
 		}
-		return days.map(day => ({ date: day.date, models: day.models.filter(m => m.agent === this.agentFilter) }));
+		return inPeriod.map(day => ({ date: day.date, models: day.models.filter(m => m.agent === this.agentFilter) }));
 	}
 
 	private computeModelTotals(days: IParadisCcusageDayData[]): IModelTotal[] {
@@ -354,7 +364,9 @@ export class ParadisCcusageEditor extends EditorPane {
 
 		// 期間コスト(ヒーロー数値) + エージェント内訳
 		const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
-		dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = localize('paradis.ccusage.kpi.cost', "Cost ({0} days)", days.length);
+		dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodDays === 1
+			? localize('paradis.ccusage.kpi.costToday', "Cost (today)")
+			: localize('paradis.ccusage.kpi.costPeriod', "Cost (last {0} days)", this.periodDays);
 		dom.append(costTile, $('.paradis-ccusage-stat-value.hero')).textContent = formatUsd(totalCost);
 		const agentCosts = new Map<ParadisCcusageAgent, number>();
 		for (const total of totals) {
@@ -688,7 +700,16 @@ export class ParadisCcusageEditor extends EditorPane {
 	}
 
 	private renderProjects(card: HTMLElement): void {
-		const projects = this.data?.projects ?? [];
+		// 選択中の期間内のコストへスライスしてから集計する
+		const cutoff = this.periodCutoff();
+		const projects = (this.data?.projects ?? [])
+			.map(project => ({
+				name: project.name,
+				rawName: project.rawName,
+				cost: project.dailyCosts.reduce((sum, day) => sum + (day.date >= cutoff ? day.cost : 0), 0),
+			}))
+			.filter(project => project.cost > 0)
+			.sort((a, b) => b.cost - a.cost);
 		if (projects.length === 0) {
 			return;
 		}
@@ -713,7 +734,12 @@ export class ParadisCcusageEditor extends EditorPane {
 		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.sessions.title', "Recent Sessions");
 		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.sessions.desc', "Claude Code only · most recent first");
 
-		const sessions = (this.data?.sessions ?? []).slice(0, MAX_SESSION_ROWS);
+		// filterDays/renderProjects と同じ「ローカル日付文字列の辞書順比較」で期間判定を揃える。
+		// 活動日時が取れないセッションは判定不能なので表示に残す。
+		const cutoff = this.periodCutoff();
+		const sessions = (this.data?.sessions ?? [])
+			.filter(session => session.lastActivity === undefined || localDateString(new Date(session.lastActivity)) >= cutoff)
+			.slice(0, MAX_SESSION_ROWS);
 		if (sessions.length === 0) {
 			dom.append(card, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.sessions.none', "No sessions in the selected period.");
 			return;
@@ -899,6 +925,11 @@ function niceStep(rawStep: number): number {
 		magnitude *= 10;
 	}
 	return magnitude;
+}
+
+/** ローカル時刻で YYYY-MM-DD を返す(daily の period と同じ基準)。 */
+function localDateString(date: Date): string {
+	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 /** "2026-07-04" → "7/4"。 */

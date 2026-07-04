@@ -39,10 +39,27 @@ const EXEC_TIMEOUT_MS = 60_000;
 const NPX_PINNED_VERSION = 'ccusage@20.0.14';
 /** JSON 出力の最大サイズ(セッションが多いと数MBになる)。 */
 const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
+/**
+ * 結果キャッシュのTTL。ccusage は毎回 JSONL 全走査で数秒かかるため、
+ * ダッシュボードとステータスバーで走査結果を共有する。手動更新は bypassCache で貫通できる。
+ */
+const CACHE_TTL_MS = 5 * 60 * 1000;
+/** アクティブブロック(残り時間・消費速度)は鮮度が重要なので短いTTLにする。 */
+const BLOCK_CACHE_TTL_MS = 60 * 1000;
+/** --offline フォールバックで得た結果(価格が古い可能性)は短命キャッシュに留める。 */
+const FALLBACK_CACHE_TTL_MS = 60 * 1000;
 
 interface IResolvedExecutable {
 	readonly command: string;
 	readonly prefixArgs: string[];
+}
+
+/** exec 失敗の原因分類。--offline 再試行の要否判断に使う。 */
+interface IParadisExecError extends Error {
+	/** バイナリが起動できなかった(ENOENT 等)。 */
+	spawnFailed?: boolean;
+	/** タイムアウトで kill された。 */
+	timedOut?: boolean;
 }
 
 export class ParadisCcusageService implements IParadisCcusageService {
@@ -51,6 +68,10 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private resolved: IResolvedExecutable | undefined;
 	/** 解決処理の in-flight メモ(並列 fetch の初回に解決が多重実行されるのを防ぐ)。 */
 	private resolving: Promise<IResolvedExecutable> | undefined;
+	/** レポート結果のTTLキャッシュ(キー: 実行引数+実行ファイルパス)。 */
+	private readonly cache = new Map<string, { at: number; ttl: number; value: unknown }>();
+	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
+	private readonly inflight = new Map<string, Promise<unknown>>();
 
 	constructor(private readonly logService: ILogService) { }
 
@@ -60,7 +81,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 
 	async fetchActiveBlock(options: IParadisCcusageExecOptions): Promise<IParadisCcusageBlock | undefined> {
-		const result = await this.execJson<{ blocks?: IParadisCcusageBlock[] }>(['blocks', '--active'], options);
+		const result = await this.execJson<{ blocks?: IParadisCcusageBlock[] }>(['blocks', '--active'], options, BLOCK_CACHE_TTL_MS);
 		const blocks = Array.isArray(result.blocks) ? result.blocks : [];
 		return blocks.find(block => block.isActive && !block.isGap) ?? blocks[0];
 	}
@@ -75,7 +96,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		return result.projects ?? {};
 	}
 
-	private async execJson<T>(reportArgs: string[], options: IParadisCcusageExecOptions): Promise<T> {
+	private async execJson<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<T> {
 		const args = [...reportArgs, '--json'];
 		if (options.since && /^\d{8}$/.test(options.since)) {
 			args.push('--since', options.since);
@@ -87,10 +108,70 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			args.push('--timezone', options.timezone);
 		}
 
+		const cacheKey = JSON.stringify([args, options.executablePath ?? '']);
+		if (!options.bypassCache) {
+			const cached = this.cache.get(cacheKey);
+			if (cached && Date.now() - cached.at < cached.ttl) {
+				return cached.value as T;
+			}
+		}
+		// bypassCache でも実行中の同一リクエストには相乗りする(結果はどのみち今まさに取り直したもの)
+		const inflight = this.inflight.get(cacheKey);
+		if (inflight) {
+			return inflight as Promise<T>;
+		}
+
+		const promise = this.doExecJson<T>(reportArgs, args, options)
+			.then(({ value, usedOfflineFallback }) => {
+				this.pruneCache();
+				this.cache.set(cacheKey, { at: Date.now(), ttl: usedOfflineFallback ? FALLBACK_CACHE_TTL_MS : ttl, value });
+				return value;
+			})
+			.finally(() => {
+				if (this.inflight.get(cacheKey) === promise) {
+					this.inflight.delete(cacheKey);
+				}
+			});
+		this.inflight.set(cacheKey, promise);
+		return promise;
+	}
+
+	/** 期限切れエントリの掃除(since が日付で変わるため古いキーが溜まり続けるのを防ぐ)。 */
+	private pruneCache(): void {
+		const now = Date.now();
+		for (const [key, entry] of this.cache) {
+			if (now - entry.at >= entry.ttl) {
+				this.cache.delete(key);
+			}
+		}
+	}
+
+	private async doExecJson<T>(reportArgs: string[], args: string[], options: IParadisCcusageExecOptions): Promise<{ value: T; usedOfflineFallback: boolean }> {
 		const executable = await this.resolveExecutable(options.executablePath);
-		const stdout = await this.exec(executable, args);
+		let stdout: string;
+		let usedOfflineFallback = false;
 		try {
-			return JSON.parse(stdout) as T;
+			stdout = await this.exec(executable, args);
+		} catch (error) {
+			// 価格表のオンライン取得失敗(オフライン環境等)で落ちることがあるため、キャッシュ済み価格を
+			// 使う --offline で一度だけ再試行する。ただしバイナリが起動できなかった(ENOENT)・timeout の
+			// 場合は再試行しても同じ失敗(npx なら二重のパッケージ取得)になるだけなので、そのまま投げる。
+			const execError = error as IParadisExecError;
+			if (execError.spawnFailed || execError.timedOut) {
+				throw error;
+			}
+			this.logService.info(`[ParadisCcusage] retrying 'ccusage ${reportArgs.join(' ')}' with --offline: ${execError.message}`);
+			try {
+				// 1回目に解決済みの executable をそのまま使う(再解決の PATH プローブを避ける)
+				stdout = await this.exec(executable, [...args, '--offline']);
+				usedOfflineFallback = true;
+			} catch {
+				// 再試行も失敗した場合は元のエラーの方が原因を表している
+				throw error;
+			}
+		}
+		try {
+			return { value: JSON.parse(stdout) as T, usedOfflineFallback };
 		} catch (error) {
 			this.logService.warn(`[ParadisCcusage] failed to parse JSON output of 'ccusage ${reportArgs.join(' ')}': ${error}`);
 			throw new Error('ccusage returned invalid JSON output');
@@ -111,7 +192,10 @@ export class ParadisCcusageService implements IParadisCcusageService {
 					this.logService.warn(`[ParadisCcusage] ${executable.command} ${fullArgs.join(' ')} failed: ${stderr || err.message}`);
 					// 実行自体に失敗した場合は次回に別の候補を試せるようキャッシュを破棄する
 					this.resolved = undefined;
-					reject(new Error(stderr?.trim() || err.message));
+					const execError: IParadisExecError = new Error(stderr?.trim() || err.message);
+					execError.spawnFailed = (err as NodeJS.ErrnoException).code === 'ENOENT';
+					execError.timedOut = err.killed === true;
+					reject(execError);
 				} else {
 					resolve(stdout);
 				}
