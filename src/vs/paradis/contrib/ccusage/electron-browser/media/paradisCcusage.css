@@ -345,6 +345,8 @@
 /* ---- sessions table ---- */
 
 .paradis-ccusage table {
+	/* カード幅を超えないよう固定レイアウト(セル内容は ellipsis で切る) */
+	table-layout: fixed;
 	width: 100%;
 	border-collapse: collapse;
 	font-size: 12px;
@@ -357,7 +359,15 @@
 	padding: 5px 8px;
 	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
 	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
+
+/* セッション表の固定列幅(Project 列が残り幅を取る) */
+.paradis-ccusage-sessions th:nth-child(2) { width: 64px; }
+.paradis-ccusage-sessions th:nth-child(3) { width: 60px; }
+.paradis-ccusage-sessions th:nth-child(4) { width: 68px; }
+.paradis-ccusage-sessions th:nth-child(5) { width: 92px; }
 
 .paradis-ccusage td {
 	padding: 5px 8px;
@@ -366,7 +376,6 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	max-width: 260px;
 }
 
 .paradis-ccusage td.num,

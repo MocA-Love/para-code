@@ -747,7 +747,7 @@ export class ParadisCcusageEditor extends EditorPane {
 		}
 
 		const colorMap = this.buildModelColorMap(this.computeModelTotals(this.filterDays(this.data?.days ?? [])));
-		const table = dom.append(card, $('table'));
+		const table = dom.append(card, $('table.paradis-ccusage-sessions'));
 		const thead = dom.append(table, $('thead'));
 		const headRow = dom.append(thead, $('tr'));
 		dom.append(headRow, $('th')).textContent = localize('paradis.ccusage.sessions.project', "Project");
