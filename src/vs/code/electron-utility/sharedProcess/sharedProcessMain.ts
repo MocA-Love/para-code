@@ -152,6 +152,8 @@ import { registerParadisSpreadsheet } from '../../../paradis/contrib/fileViewers
 // PARA-PATCH: モバイルリレー接続（fork独自、src/vs/paradis/contrib/mobileRelay/ 参照）。リレーへのoutbound WSSと
 // E2E暗号をshared processが所有する（ウィンドウreload非依存・Node webcryptoでX25519が動く）
 import { registerParadisMobileRelay } from '../../../paradis/contrib/mobileRelay/node/paradisMobileRelayChannel.js';
+// PARA-PATCH: ccusage CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/ccusage/ 参照）
+import { registerParadisCcusage } from '../../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
 import { LocalGitService } from '../../../platform/git/node/localGitService.js';
@@ -523,6 +525,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: モバイルリレーサービス（src/vs/paradis/contrib/mobileRelay/ 参照）
 		this._register(registerParadisMobileRelay(this.server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(ILogService)));
+
+		// PARA-PATCH: ccusage CLI 実行バックエンド（src/vs/paradis/contrib/ccusage/ 参照）
+		this._register(registerParadisCcusage(this.server, accessor.get(ILogService)));
 
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);
