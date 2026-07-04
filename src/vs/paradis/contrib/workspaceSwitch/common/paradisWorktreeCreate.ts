@@ -1,0 +1,91 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// 「自然言語から worktree を作成してエージェントを実行」機能の共通型定義。
+// shared process 側の git 実行チャネル (paradisWorktreeGitChannel.ts) と
+// workbench 側のダイアログ (paradisCreateWorktreeDialog.ts) の間で共有する。
+
+/** shared process 上で git worktree 操作を行う IPC チャネル名。 */
+export const PARADIS_WORKTREE_GIT_CHANNEL = 'paradisWorktreeGit';
+
+/** リポジトリのブランチ一覧の取得結果。 */
+export interface IParadisGitBranches {
+	/** ローカルブランチ名（コミット日時の新しい順）。 */
+	readonly branches: string[];
+	/** メインチェックアウトの現在ブランチ（detached HEAD なら undefined）。 */
+	readonly head: string | undefined;
+}
+
+/** git worktree add の要求。パスはすべてネイティブファイルシステムパス。 */
+export interface IParadisAddWorktreeRequest {
+	/** 親リポジトリのルートパス。 */
+	readonly repoPath: string;
+	/** 作成する worktree のディレクトリパス（未存在であること）。 */
+	readonly worktreePath: string;
+	/** 新規作成するブランチ名。 */
+	readonly newBranch: string;
+	/** 分岐元 ref（ブランチ名・タグ・SHA）。 */
+	readonly baseRef: string;
+}
+
+/**
+ * エージェント CLI の起動コマンドテンプレート。
+ * `{prompt}` プレースホルダがシェルエスケープ済みのプロンプトに置換される。
+ * プレースホルダが無い場合は末尾にエスケープ済みプロンプトを追加する。
+ */
+export interface IParadisAgentCommandTemplate {
+	readonly id: string;
+	readonly label: string;
+	readonly command: string;
+}
+
+/** 既定のエージェント定義。設定 paradis.workspaceSwitch.agents で上書き・追加できる。 */
+export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTemplate[] = [
+	{ id: 'claude', label: 'Claude Code', command: 'claude {prompt}' },
+	{ id: 'codex', label: 'Codex', command: 'codex {prompt}' },
+	{ id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' },
+];
+
+/**
+ * プロンプトを POSIX シェルのシングルクォート引数としてエスケープする。
+ * （' を '\'' に置換して全体を ' で包む定番手法。）
+ */
+export function paradisQuoteShellArg(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** テンプレートの {prompt} を置換して実行コマンド文字列を組み立てる。 */
+export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, prompt: string): string {
+	const quoted = paradisQuoteShellArg(prompt);
+	if (template.command.includes('{prompt}')) {
+		return template.command.replace('{prompt}', quoted);
+	}
+	return `${template.command} ${quoted}`;
+}
+
+/**
+ * ブランチ名として安全な形へ正規化する（git check-ref-format のサブセット）。
+ * 空になった場合は undefined を返す。
+ */
+export function paradisSanitizeBranchName(value: string): string | undefined {
+	const sanitized = value.trim()
+		.replace(/\s+/g, '-')
+		.replace(/[~^:?*\[\]\\\x00-\x1f\x7f]/g, '')
+		.replace(/\.{2,}/g, '.')
+		.replace(/@\{/g, '')
+		.replace(/\/{2,}/g, '/')
+		.replace(/^[-./]+|[-./]+$/g, '')
+		.replace(/\.lock$/i, '');
+	return sanitized.length > 0 ? sanitized : undefined;
+}
+
+/** worktree のディレクトリ名として使える形へ正規化する（ブランチ名の / も潰す）。 */
+export function paradisSanitizeWorktreeDirName(value: string): string | undefined {
+	const sanitized = paradisSanitizeBranchName(value)?.replace(/\//g, '-');
+	return sanitized && sanitized.length > 0 ? sanitized : undefined;
+}

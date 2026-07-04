@@ -323,6 +323,16 @@ export class ParadisWorkspacesView extends ViewPane {
 	private buildRepositoryContextMenuActions(repository: IParadisWorkspaceRepository): IAction[] {
 		return [
 			new Action(
+				'paradis.workspaceSwitch.createWorktreeContext',
+				localize('paradis.workspaceSwitch.createWorktreeContext', "New Worktree Space..."),
+				undefined,
+				true,
+				// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
+				// browser 層のこのビューからは ID 経由で呼ぶ (web ビルドでは未登録のため no-op)
+				() => this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', repository.id)
+			),
+			new Separator(),
+			new Action(
 				'paradis.workspaceSwitch.rename',
 				localize('paradis.workspaceSwitch.renameContext', "Rename..."),
 				undefined,
