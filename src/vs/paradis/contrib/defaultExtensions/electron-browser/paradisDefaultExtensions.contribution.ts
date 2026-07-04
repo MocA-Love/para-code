@@ -73,7 +73,6 @@ const DEFAULT_EXTENSION_IDS: readonly string[] = [
 	'golang.go',
 	'Dart-Code.dart-code',
 	'Dart-Code.flutter',
-	'swiftlang.swift-vscode',
 	// 日本語言語パック（導入後、下の再起動通知で表示言語へ反映する）
 	'MS-CEINTL.vscode-language-pack-ja'
 ];
