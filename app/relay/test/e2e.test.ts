@@ -81,7 +81,7 @@ class PcHarness {
 	private readonly sessions = new Map<string, { channel?: Awaited<ReturnType<typeof respondHandshake>>['channel']; verify?: (c: Uint8Array) => void; mux?: FrameMux; confirmed: boolean }>();
 	readonly inbound: Frame[] = [];
 
-	constructor(private readonly ws: WebSocket, private readonly pcIdentity: Identity, private readonly pairingToken: Uint8Array) {
+	constructor(private readonly ws: WebSocket, private readonly pcIdentity: Identity, private readonly pairingToken: Uint8Array, private readonly pairId: string) {
 		ws.addEventListener('message', ev => { void this.onMessage(ev.data as string | ArrayBuffer); });
 	}
 
@@ -93,7 +93,7 @@ class PcHarness {
 				this.pendingMobilePub = fromBase64Url(inner.pub);
 				// SASを算出（モバイルと一致するはず。テストでは一致確認は呼び出し側で行う）。
 				this.lastSas = deriveSasCode(this.pcIdentity, this.pendingMobilePub, this.pairingToken);
-				this.ws.send(encodeRelayControl({ type: 'pairing-approve', name: 'iPhone' }));
+				this.ws.send(encodeRelayControl({ type: 'pairing-approve', pairId: msg.pairId ?? this.pairId, name: 'iPhone' }));
 			} else if (msg.type === 'paired') {
 				if (this.pendingMobilePub) {
 					this.mobilePubKeys.set(msg.mobileId, this.pendingMobilePub);
@@ -159,10 +159,10 @@ describe('full E2E: mobile <-> relay <-> PC', () => {
 		// 2. PC socket + harness
 		const pcWs = await openRaw(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
 
-		// 3. begin pairing
-		const pairRes = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST' })).json<{ pairId: string; pairingToken: string }>();
+		// 3. begin pairing（pcToken認証）
+		const pairRes = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
 		const pairingToken = fromBase64Url(pairRes.pairingToken);
-		const harness = new PcHarness(pcWs, pcIdentity, pairingToken);
+		const harness = new PcHarness(pcWs, pcIdentity, pairingToken, pairRes.pairId);
 
 		const payload: PairingPayload = {
 			version: 1,

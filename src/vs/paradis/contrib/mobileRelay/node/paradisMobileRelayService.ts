@@ -115,7 +115,8 @@ class MobileSession {
 	private pendingVerify: ((confirm: Uint8Array) => Promise<void>) | undefined;
 
 	private emit(frame: { ch: ChannelId; ws?: string; seq: number; payload: Uint8Array }): void {
-		this.onFrame({ ch: frame.ch, ws: frame.ws, seq: frame.seq, payload: VSBuffer.wrap(frame.payload) });
+		// 送信元モバイルのIDを付けて renderer へ渡す（要求元にのみ返すべき応答の宛先解決に使う）。
+		this.onFrame({ ch: frame.ch, ws: frame.ws, seq: frame.seq, payload: VSBuffer.wrap(frame.payload), mobileId: this.mobileId });
 	}
 
 	/** PC→モバイルのフレームを封緘して送る。 */
@@ -158,9 +159,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	// ペアリング中の状態
 	private pairing: {
+		pairId: string;
 		pairingToken: Uint8Array;
 		mobilePubKey?: Uint8Array;
 		proposedName: string;
+		// SAS表示済み（awaiting-approval発火済み）。これ以降は mobilePubKey を凍結し、
+		// 別の公開鍵を持つpairing-msgでの上書きを禁じる（C-2: SASすり替え防止）。
+		sasShown: boolean;
 	} | undefined;
 
 	private readonly statePath: string;
@@ -288,14 +293,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// ペアリング中はメッセージを受けるため必ず接続する（既に接続済みなら no-op）。
 		this.connect();
 
-		// ペアリングトークンを発行。
-		const res = await fetch(`${this.relayHttpBase()}/device/${this.state.device.deviceId}/pair/begin`, { method: 'POST' });
+		// ペアリングトークンを発行。pcTokenで認証する（リレー側で本人確認。C-1）。
+		const res = await fetch(`${this.relayHttpBase()}/device/${this.state.device.deviceId}/pair/begin`, {
+			method: 'POST',
+			headers: { authorization: `Bearer ${this.state.device.pcToken}` },
+		});
 		if (!res.ok) {
 			throw new Error(`pair/begin failed: ${res.status}`);
 		}
 		const body = await res.json() as { pairId: string; pairingToken: string; expiresAt: number };
 		const pairingToken = fromBase64Url(body.pairingToken);
-		this.pairing = { pairingToken, proposedName: 'モバイルデバイス' };
+		this.pairing = { pairId: body.pairId, pairingToken, proposedName: 'モバイルデバイス', sasShown: false };
 
 		const pairingUri = encodePairingUri({
 			version: 1,
@@ -312,27 +320,55 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (!this.pairing || !this.pairing.mobilePubKey) {
 			throw new Error('no pairing awaiting approval');
 		}
-		this.sendControl({ type: 'pairing-approve', name: this.pairing.proposedName });
+		this.sendControl({ type: 'pairing-approve', pairId: this.pairing.pairId, name: this.pairing.proposedName });
 		// 実際の mobiles への追加は relay からの 'paired'(mobileId) 受信時に行う。
 	}
 
 	async cancelPairing(): Promise<void> {
 		if (this.pairing) {
-			this.sendControl({ type: 'pairing-reject' });
+			this.sendControl({ type: 'pairing-reject', pairId: this.pairing.pairId });
 			this.pairing = undefined;
 		}
 	}
 
 	async revokeDevice(deviceName: string): Promise<void> {
+		const removed = this.state.mobiles.filter(m => m.name === deviceName);
 		this.state.mobiles = this.state.mobiles.filter(m => m.name !== deviceName);
 		await this.save();
+		// M-1: リレー側の資格情報も失効させ、既存のモバイル接続を切断する。
+		for (const m of removed) {
+			this.sessions.delete(m.mobileId);
+			void this.revokeOnRelay(m.mobileId);
+		}
 		this._onDidChangeStatus.fire(this.snapshot());
 	}
 
+	private async revokeOnRelay(mobileId: string): Promise<void> {
+		if (!this.state.device) {
+			return;
+		}
+		try {
+			await fetch(`${this.relayHttpBase()}/device/${this.state.device.deviceId}/mobile/revoke`, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${this.state.device.pcToken}`, 'content-type': 'application/json' },
+				body: JSON.stringify({ mobileId }),
+			});
+		} catch (err) {
+			this.logService.warn('[paradisMobileRelay] relay revoke failed', err);
+		}
+	}
+
 	async sendFrame(frame: IParadisMobileInboundFrame): Promise<void> {
-		// ws（ワークスペース）に紐づかない全体フレーム、または特定モバイル宛。
-		// 現状は全オンラインセッションへブロードキャスト（1台想定。将来 mobileId 指定に拡張）。
 		const payload = frame.payload.buffer;
+		// M-2: 宛先mobileId指定時はそのセッションにのみ送る（ターミナル出力などを要求元だけに返す）。
+		// 未指定時のみ全オンラインセッションへブロードキャスト（state スナップショット等）。
+		if (frame.mobileId !== undefined) {
+			const session = this.sessions.get(frame.mobileId);
+			if (session?.isOnline) {
+				await session.sendFrame(frame.ch, frame.ws, payload);
+			}
+			return;
+		}
 		for (const session of this.sessions.values()) {
 			if (session.isOnline) {
 				await session.sendFrame(frame.ch, frame.ws, payload);
@@ -461,15 +497,31 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		} catch {
 			return;
 		}
-		if (msg.type === 'pairing-msg') {
-			await this.onPairingMessage(msg.data);
-		} else if (msg.type === 'paired') {
+		if (msg.type === 'pairing-msg' && typeof msg.data === 'string') {
+			await this.onPairingMessage(msg.data, msg.pairId);
+		} else if (msg.type === 'paired' && typeof msg.mobileId === 'string' && msg.mobileId.length > 0) {
 			await this.onPaired(msg.mobileId);
+		} else if (msg.type === 'presence' && msg.peer === 'mobile' && typeof msg.mobileId === 'string') {
+			// モバイルが切断/再接続したら、そのmobileIdの確立済みセッションを破棄する。
+			// これをしないと、再接続時のモバイルの新しい hello を確立済みセッションが
+			// アプリフレーム扱いして復号失敗し、恒久的に通信不能になる（H-3）。
+			if (!msg.online) {
+				this.sessions.delete(msg.mobileId);
+				this._onDidChangeStatus.fire(this.snapshot());
+			}
 		}
 	}
 
-	private async onPairingMessage(dataB64: string): Promise<void> {
+	private async onPairingMessage(dataB64: string, pairId: string | undefined): Promise<void> {
 		if (!this.pairing || !this.identity) {
+			return;
+		}
+		// C-2: 進行中のペアリング(pairId)以外からのメッセージは無視する。
+		if (pairId !== undefined && pairId !== this.pairing.pairId) {
+			return;
+		}
+		// C-2: 既にSASを表示した後は相手鍵を凍結し、別鍵での上書き（SASすり替え）を禁じる。
+		if (this.pairing.sasShown) {
 			return;
 		}
 		// pairing-msg の中身: モバイルの長期公開鍵(base64url JSON)。
@@ -487,6 +539,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				this.pairing.proposedName = payload.name.slice(0, 64);
 			}
 			const sasCode = await deriveSasCode(this.identity, mobilePubKey, this.pairing.pairingToken);
+			// C-2: SAS表示以降は相手鍵を凍結する（承認するのは「今SASを表示した鍵」ちょうど）。
+			this.pairing.sasShown = true;
 			this._onPairingEvent.fire({ kind: 'awaiting-approval', sasCode, proposedName: this.pairing.proposedName });
 		} catch (err) {
 			this.logService.warn('[paradisMobileRelay] bad pairing message', err);

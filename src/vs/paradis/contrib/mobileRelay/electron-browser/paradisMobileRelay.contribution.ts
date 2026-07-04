@@ -81,8 +81,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// shared process が復号したモバイル→PCフレームを provider へ。
 		this._register(this.service.onInboundFrame(frame => this.provider.handleInbound(frame)));
 
-		// 接続状態をステータスバーに反映。
-		this._register(this.service.onDidChangeStatus(status => this.renderStatusbar(status)));
+		// 接続状態をステータスバーに反映。オンラインのモバイルが0になったら端末購読を解放。
+		this._register(this.service.onDidChangeStatus(status => {
+			this.renderStatusbar(status);
+			if (status.onlineMobiles === 0) {
+				this.provider.detachAll();
+			}
+		}));
 
 		// ペアリング成立時に通知 + 状態を1回送る。
 		this._register(this.service.onPairingEvent(() => { /* ダイアログ側で処理。ここではno-op */ }));
@@ -107,8 +112,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 	private async initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> {
 		try {
-			// initialize は IPC 経由（ProxyChannel はサービスの全asyncメソッドを公開する）。
-			await (this.service as unknown as { initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> }).initialize(enabled, relayUrl);
+			await this.service.initialize(enabled, relayUrl);
 			// オンラインになったら状態を1回 push。
 			this.provider.pushState();
 		} catch (err) {

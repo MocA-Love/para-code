@@ -16,7 +16,7 @@
  */
 
 import { decodeRelayControl, encodeRelayControl, mobileIdFromString, mobileIdToString, packPcData, unpackPcData, type RelayControlMessage } from '@para/protocol';
-import { hashToken, randomTokenB64u, timingSafeEqualHex } from './auth.js';
+import { extractToken, hashToken, randomTokenB64u, timingSafeEqualHex } from './auth.js';
 
 interface DeviceRecord {
 	pcPublicKey: string; // base64url
@@ -56,7 +56,10 @@ export class DeviceDO implements DurableObject {
 			return this.provision(request);
 		}
 		if (action === 'begin-pairing') {
-			return this.beginPairing();
+			return this.beginPairing(request);
+		}
+		if (action === 'revoke') {
+			return this.revokeMobile(request);
 		}
 		if (request.headers.get('Upgrade') !== 'websocket') {
 			return new Response('expected websocket', { status: 426 });
@@ -97,7 +100,15 @@ export class DeviceDO implements DurableObject {
 		return Response.json({ ok: true });
 	}
 
-	private async beginPairing(): Promise<Response> {
+	private async beginPairing(request: Request): Promise<Response> {
+		// C-1: ペアリングセッションの発行はPC本人（pcToken保持者）に限定する。
+		// 未認証だと deviceId を知る第三者が有効な pairId/token を発行してペアリング
+		// ソケットを開けてしまう。
+		const device = this.device();
+		const token = extractToken(request);
+		if (!device || token === null || !timingSafeEqualHex(await hashToken(token), device.pcTokenHash)) {
+			return new Response('unauthorized', { status: 401 });
+		}
 		this.cleanupPairings();
 		const pairId = randomTokenB64u(12);
 		const pairingToken = randomTokenB64u(32);
@@ -108,6 +119,24 @@ export class DeviceDO implements DurableObject {
 
 	private cleanupPairings(): void {
 		this.sql.exec('DELETE FROM pending WHERE expiresAt < ?', Date.now());
+	}
+
+	// M-1: PC(pcToken保持者)からのデバイス失効。資格情報を削除し、既存のモバイル接続を切断する。
+	private async revokeMobile(request: Request): Promise<Response> {
+		const device = this.device();
+		const token = extractToken(request);
+		if (!device || token === null || !timingSafeEqualHex(await hashToken(token), device.pcTokenHash)) {
+			return new Response('unauthorized', { status: 401 });
+		}
+		const body = await request.json<{ mobileId?: string }>().catch(() => ({} as { mobileId?: string }));
+		if (typeof body.mobileId !== 'string') {
+			return Response.json({ error: 'missing mobileId' }, { status: 400 });
+		}
+		this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', body.mobileId);
+		for (const ws of this.state.getWebSockets(`m:${body.mobileId}`)) {
+			try { ws.close(1000, 'revoked'); } catch { /* ignore */ }
+		}
+		return Response.json({ ok: true });
 	}
 
 	// --- WebSocket accept ---------------------------------------------------------
@@ -205,33 +234,44 @@ export class DeviceDO implements DurableObject {
 		}
 
 		if (tag.startsWith('pair:')) {
-			// ペアリングソケット → PCへ中継（PCが承認/拒否を判断）
+			// ペアリングソケット → PCへ中継（PCが承認/拒否を判断）。送信元pairIdを付与して、
+			// PCが「どのペアリングのメッセージか」を検証できるようにする（C-2）。
 			const pairId = tag.slice('pair:'.length);
 			if (msg.type === 'pairing-msg') {
-				this.sendToPc({ type: 'pairing-msg', data: msg.data });
+				this.sendToPc({ type: 'pairing-msg', data: msg.data, pairId });
 			}
 			return;
 		}
 
 		if (tag === 'pc') {
-			if (msg.type === 'pairing-msg') {
-				this.broadcastToPairing({ type: 'pairing-msg', data: msg.data });
-			} else if (msg.type === 'pairing-approve') {
-				await this.approvePairing(msg.name);
+			if (msg.type === 'pairing-approve') {
+				await this.approvePairing(msg.pairId, msg.name);
 			} else if (msg.type === 'pairing-reject') {
-				this.broadcastToPairing({ type: 'error', message: 'pairing rejected' });
+				this.sendToTag(`pair:${msg.pairId}`, { type: 'error', message: 'pairing rejected' });
 			}
+			// 注: PC→pairing方向のpairing-msg中継は行わない（現行プロトコルはpairing→PCの一方向）。
 		}
 	}
 
-	private async approvePairing(name: string): Promise<void> {
+	private async approvePairing(pairId: string, name: string): Promise<void> {
+		// C-1: 承認対象の pairId が実在する（PCが発行し、まだ有効な）ことを確認する。
+		this.cleanupPairings();
+		const pending = this.sql.exec('SELECT pairId FROM pending WHERE pairId = ?', pairId).toArray()[0];
+		if (!pending) {
+			this.sendToPc({ type: 'error', message: 'unknown or expired pairId' });
+			return;
+		}
+		// C-1: ペアリングトークンを1回限りにする（承認後は即失効）。
+		this.sql.exec('DELETE FROM pending WHERE pairId = ?', pairId);
+
 		const mobileId = mobileIdToString(crypto.getRandomValues(new Uint8Array(16)));
 		const mobileToken = randomTokenB64u(32);
 		const tokenHash = await hashToken(mobileToken);
 		this.sql.exec('INSERT INTO mobiles (mobileId, name, tokenHash, createdAt) VALUES (?, ?, ?, ?)', mobileId, name || 'device', tokenHash, Date.now());
 		const deviceId = this.state.id.toString();
-		// モバイル(pairing socket)へは資格情報一式を渡す。
-		this.broadcastToPairing({ type: 'paired', deviceId, mobileId, mobileToken });
+		// C-1: 資格情報は承認対象の pairId ソケットにのみ渡す（全pairソケットへのブロードキャストは
+		// mobileToken 漏洩になる）。
+		this.sendToTag(`pair:${pairId}`, { type: 'paired', deviceId, mobileId, mobileToken });
 		// PCへも mobileId を通知する（PCは直前のpairing-msgで得たモバイル公開鍵を
 		// この mobileId に紐付けて保存し、以後のデータ接続の相手鍵とする）。mobileTokenは
 		// モバイル専用の秘密なのでPCには送らず空にする。
@@ -255,15 +295,6 @@ export class DeviceDO implements DurableObject {
 
 	private sendToPc(msg: RelayControlMessage): void {
 		this.sendToTag('pc', msg);
-	}
-
-	private broadcastToPairing(msg: RelayControlMessage): void {
-		const text = encodeRelayControl(msg);
-		for (const ws of this.state.getWebSockets()) {
-			if ((this.state.getTags(ws)[0] ?? '').startsWith('pair:')) {
-				try { ws.send(text); } catch { /* ignore */ }
-			}
-		}
 	}
 
 	private sendError(ws: WebSocket, message: string): void {

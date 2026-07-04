@@ -104,19 +104,22 @@ class Cipher {
 	constructor(private readonly key: CryptoKey) { }
 
 	async seal(plaintext: Uint8Array): Promise<Uint8Array> {
-		const nonce = nonceFor(this.counter++);
+		const nonce = nonceFor(this.counter);
 		const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, this.key, plaintext as BufferSource));
+		this.counter++;
 		return concat(nonce, ct);
 	}
 
 	async open(message: Uint8Array): Promise<Uint8Array> {
 		if (message.length < NONCE_LENGTH) { throw new Error('message too short'); }
 		const nonce = message.subarray(0, NONCE_LENGTH);
-		const expected = nonceFor(this.counter++);
+		const expected = nonceFor(this.counter);
 		for (let i = 0; i < NONCE_LENGTH; i++) {
 			if (nonce[i] !== expected[i]) { throw new Error('unexpected nonce (out-of-order or replayed message)'); }
 		}
+		// 復号成功時のみカウンタを進める（失敗時に進めると1フレームで恒久desyncする。H-1）。
 		const pt = await subtle.decrypt({ name: 'AES-GCM', iv: expected as BufferSource }, this.key, message.subarray(NONCE_LENGTH) as BufferSource);
+		this.counter++;
 		return new Uint8Array(pt);
 	}
 }
