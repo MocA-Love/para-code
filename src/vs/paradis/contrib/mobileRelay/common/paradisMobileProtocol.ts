@@ -37,6 +37,8 @@ export interface Frame {
 	readonly ws?: string;
 	readonly seq: number;
 	readonly payload: Uint8Array;
+	/** 続きのチャンクがある（分割された論理フレームの途中。FrameMuxが再結合する）。 */
+	readonly more?: boolean;
 }
 
 export function encodeFrame(frame: Frame): Uint8Array {
@@ -54,7 +56,7 @@ export function encodeFrame(frame: Frame): Uint8Array {
 	const header = new Uint8Array(8);
 	const view = new DataView(header.buffer);
 	view.setUint8(0, chId);
-	view.setUint8(1, frame.ws !== undefined ? 0x01 : 0x00);
+	view.setUint8(1, (frame.ws !== undefined ? 0x01 : 0x00) | (frame.more === true ? 0x02 : 0x00));
 	view.setUint32(2, frame.seq, false);
 	view.setUint16(6, wsBytes.length, false);
 	const out = new Uint8Array(header.length + wsBytes.length + frame.payload.length);
@@ -73,7 +75,9 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 	if (ch === undefined) {
 		throw new Error(`unknown frame channel id: ${view.getUint8(0)}`);
 	}
-	const hasWs = (view.getUint8(1) & 0x01) !== 0;
+	const flags = view.getUint8(1);
+	const hasWs = (flags & 0x01) !== 0;
+	const more = (flags & 0x02) !== 0;
 	const seq = view.getUint32(2, false);
 	const wsLen = view.getUint16(6, false);
 	if (8 + wsLen > bytes.length) {
@@ -81,7 +85,13 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 	}
 	const ws = hasWs ? new TextDecoder().decode(bytes.subarray(8, 8 + wsLen)) : undefined;
 	const payload = bytes.subarray(8 + wsLen);
-	return ws === undefined ? { ch, seq, payload } : { ch, ws, seq, payload };
+	return {
+		ch,
+		seq,
+		payload,
+		...(ws !== undefined ? { ws } : {}),
+		...(more ? { more: true } : {}),
+	};
 }
 
 // ---- リレー制御メッセージ（app/protocol/src/relay.ts と一致） ----

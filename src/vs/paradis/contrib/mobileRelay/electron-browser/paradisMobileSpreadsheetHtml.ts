@@ -42,8 +42,12 @@ import '../../fileViewers/electron-browser/media/paradisSpreadsheet.css';
 
 const $ = dom.$;
 
-/** リレーのWebSocketメッセージ上限(1MiB)より安全側に置く直列化サイズ上限(UTF-8バイト)。 */
-const MOBILE_XLSX_HTML_MAX_BYTES = 900_000;
+/**
+ * 直列化サイズ上限(UTF-8バイト)。FrameMuxのチャンク分割転送によりリレーの
+ * WebSocketメッセージ上限(1MiB)には縛られなくなったため、モバイルのWebViewが
+ * 現実的に描画できる規模を上限とする。超過時は後方シートから省略する。
+ */
+const MOBILE_XLSX_HTML_MAX_BYTES = 6_000_000;
 
 const encoder = new TextEncoder();
 

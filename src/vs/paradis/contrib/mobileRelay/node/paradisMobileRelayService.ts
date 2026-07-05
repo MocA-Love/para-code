@@ -23,6 +23,7 @@ import {
 import { FrameMux } from '../common/paradisMobileMux.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
+import { IParadisFileSearchResult, IParadisTextSearchResult, paradisSearchFiles, paradisSearchText } from './paradisMobileSearch.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import {
 	Channels,
@@ -432,8 +433,18 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * agentチャネル用: renderer から「ターミナルinstanceId ⇔ ペイントークン」対応表を同期する
 	 * （全置換）。チャットミラーはこの対応でモバイルの attach(id) を transcript へ解決する。
 	 */
-	async syncAgentPanes(entries: readonly { terminalId: number; token: string }[]): Promise<void> {
+	async syncAgentPanes(entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void> {
 		this.agentChat.syncPanes(entries);
+	}
+
+	/** fsチャネル用: ripgrepによるファイル名検索（rendererはプロセスを起動できないためここで実行）。 */
+	async searchFiles(rootPath: string, query: string, maxResults: number): Promise<IParadisFileSearchResult> {
+		return paradisSearchFiles(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService);
+	}
+
+	/** fsチャネル用: ripgrepによるテキスト全文検索。 */
+	async searchText(rootPath: string, query: string, maxResults: number): Promise<IParadisTextSearchResult> {
+		return paradisSearchText(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService);
 	}
 
 	private async revokeOnRelay(mobileId: string): Promise<void> {

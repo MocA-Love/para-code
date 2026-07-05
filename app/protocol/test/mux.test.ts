@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import { createInitiator, generateIdentity, respondHandshake } from '../src/crypto.js';
 import { Channels } from '../src/frames.js';
-import { FrameMux } from '../src/mux.js';
+import { FRAME_CHUNK_BYTES, FrameMux } from '../src/mux.js';
 
 function establish() {
 	const mobile = generateIdentity();
@@ -35,6 +35,31 @@ describe('FrameMux over SecureChannel', () => {
 		expect(received).toEqual([
 			{ ch: 'term', text: 'input', ws: 'para-code' },
 			{ ch: 'scm', text: 'commit' },
+		]);
+	});
+
+	test('chunks payloads above FRAME_CHUNK_BYTES and reassembles them transparently', () => {
+		const { mobileChannel, pcChannel } = establish();
+
+		let sealedCount = 0;
+		const pcMux = new FrameMux(pcChannel, { sendSealed: () => { } });
+		const mobileMux = new FrameMux(mobileChannel, { sendSealed: sealed => { sealedCount++; pcMux.receive(sealed); } });
+
+		const received: { size: number; ws?: string; first: number; last: number }[] = [];
+		pcMux.on(Channels.Fs, f => received.push({ size: f.payload.length, ws: f.ws, first: f.payload[0]!, last: f.payload[f.payload.length - 1]! }));
+
+		// チャンク2.5個分の大きなペイロード（xlsx HTML相当）
+		const big = new Uint8Array(Math.floor(FRAME_CHUNK_BYTES * 2.5));
+		big[0] = 7;
+		big[big.length - 1] = 9;
+		mobileMux.send(Channels.Fs, big, 'para-code');
+		// 直後の小さなフレームも正しく独立して届く
+		mobileMux.send(Channels.Fs, new Uint8Array([42]));
+
+		expect(sealedCount).toBe(4); // 3チャンク + 1
+		expect(received).toEqual([
+			{ size: big.length, ws: 'para-code', first: 7, last: 9 },
+			{ size: 1, ws: undefined, first: 42, last: 42 },
 		]);
 	});
 

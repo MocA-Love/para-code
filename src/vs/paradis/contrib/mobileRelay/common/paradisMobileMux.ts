@@ -19,9 +19,22 @@ export interface FrameMuxOptions {
 	readonly onError?: (error: unknown) => void;
 }
 
+/**
+ * 1チャンクのペイロード上限（app/protocol/src/mux.ts の FRAME_CHUNK_BYTES と一致させること）。
+ * リレー(Cloudflare Worker)のWebSocketメッセージ上限(1MiB)に対し、ヘッダ・封緘タグ・
+ * mobileIdプレフィクスを差し引いても安全に収まるサイズ。
+ */
+const FRAME_CHUNK_BYTES = 700 * 1024;
+
+/** 再結合バッファの上限（app/protocol 側と一致）。 */
+const FRAME_REASSEMBLY_LIMIT = 32 * 1024 * 1024;
+
 export class FrameMux {
 	private readonly handlers = new Map<ChannelId, FrameHandler>();
 	private readonly seq = new Map<ChannelId, number>();
+	// チャネル別のチャンク再結合バッファ（more=trueのフレームを結合し、more無しで確定）。
+	// rxChainの直列化とnonce厳密検査により、チャンクは必ず送信順に届く。
+	private readonly reassembly = new Map<ChannelId, Uint8Array[]>();
 
 	// webcryptoのseal/openは非同期。SecureChannelは方向別にカウンタnonceを持つため、
 	// seal（nonce採番）→送出、および open（nonce厳密一致で復号）を**厳密に直列化**しないと、
@@ -37,12 +50,27 @@ export class FrameMux {
 	}
 
 	send(channel: ChannelId, payload: Uint8Array, ws?: string): Promise<void> {
-		const seq = this.seq.get(channel) ?? 0;
-		this.seq.set(channel, seq + 1);
-		const frame: Frame = ws === undefined ? { ch: channel, seq, payload } : { ch: channel, ws, seq, payload };
+		// 大きなペイロードはチャンク分割する。seq採番〜seal〜送出の列全体を1つの
+		// チェーンタスクで行い、他のsendのチャンクが間に割り込まないようにする。
 		const run = this.txChain.then(async () => {
-			// seal(nonce採番+暗号化)と送出を不可分にする。
-			this.options.sendSealed(await this.channel.seal(encodeFrame(frame)));
+			for (let offset = 0; ; offset += FRAME_CHUNK_BYTES) {
+				const end = Math.min(offset + FRAME_CHUNK_BYTES, payload.length);
+				const more = end < payload.length;
+				const seq = this.seq.get(channel) ?? 0;
+				this.seq.set(channel, seq + 1);
+				const frame: Frame = {
+					ch: channel,
+					seq,
+					payload: payload.subarray(offset, end),
+					...(ws !== undefined ? { ws } : {}),
+					...(more ? { more: true } : {}),
+				};
+				// seal(nonce採番+暗号化)と送出を不可分にする。
+				this.options.sendSealed(await this.channel.seal(encodeFrame(frame)));
+				if (!more) {
+					return;
+				}
+			}
 		});
 		// チェーンは失敗しても後続を止めないよう握りつぶす（各呼び出しには元のPromiseを返す）。
 		this.txChain = run.catch(() => { /* keep chain alive */ });
@@ -61,7 +89,31 @@ export class FrameMux {
 				}
 				throw error;
 			}
-			this.handlers.get(frame.ch)?.(frame);
+			const pending = this.reassembly.get(frame.ch);
+			if (frame.more === true) {
+				const chunks = pending ?? [];
+				chunks.push(frame.payload);
+				if (chunks.reduce((total, c) => total + c.length, 0) > FRAME_REASSEMBLY_LIMIT) {
+					this.reassembly.delete(frame.ch);
+					this.options.onError?.(new Error(`frame reassembly limit exceeded on channel ${frame.ch}`));
+					return;
+				}
+				this.reassembly.set(frame.ch, chunks);
+				return;
+			}
+			let full = frame;
+			if (pending !== undefined) {
+				this.reassembly.delete(frame.ch);
+				const total = pending.reduce((sum, c) => sum + c.length, 0) + frame.payload.length;
+				const combined = new Uint8Array(total);
+				let offset = 0;
+				for (const chunk of [...pending, frame.payload]) {
+					combined.set(chunk, offset);
+					offset += chunk.length;
+				}
+				full = { ...frame, payload: combined };
+			}
+			this.handlers.get(full.ch)?.(full);
 		});
 		this.rxChain = run.catch(() => { /* keep chain alive */ });
 		return run;

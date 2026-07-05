@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsListResult, type FsReadResult, type FsXlsxResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
+import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsFindResult, type FsGrepResult, type FsListResult, type FsReadResult, type FsXlsxResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -47,6 +47,8 @@ interface AppState extends StoreState {
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
 	fsXlsx(ws: string, path: string): Promise<FsXlsxResult>;
+	fsFind(ws: string, query: string): Promise<FsFindResult>;
+	fsGrep(ws: string, query: string): Promise<FsGrepResult>;
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
 	browserTargets(): Promise<BrowserTargetsResult>;
 	browserStart(targetId: string): Promise<void>;
@@ -187,6 +189,16 @@ export const useAppStore = create<AppState>(set => ({
 	fsXlsx(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.fsXlsx(ws, path);
+	},
+
+	fsFind(ws: string, query: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.fsFind(ws, query);
+	},
+
+	fsGrep(ws: string, query: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.fsGrep(ws, query);
 	},
 
 	scmXlsxDiff(ws: string, path: string) {

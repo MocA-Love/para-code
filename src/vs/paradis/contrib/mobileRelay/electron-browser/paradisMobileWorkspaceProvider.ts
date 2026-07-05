@@ -61,9 +61,11 @@ type ScmInbound =
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
 	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean }
-	| { t: 'xlsx'; id: string; ws: string; path: string };
+	| { t: 'xlsx'; id: string; ws: string; path: string }
+	| { t: 'find'; id: string; ws: string; query: string }
+	| { t: 'grep'; id: string; ws: string; query: string };
 
-const FS_READ_LIMIT = 256 * 1024; // ファイル読み取り上限（バイト）
+const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト。FrameMuxのチャンク分割転送で1MiB超の応答も送れる）
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
 const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字）
 
@@ -99,7 +101,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly sharedProcessService: ISharedProcessService,
 		private readonly runGit: (repoPath: string, args: readonly string[]) => Promise<IParadisGitResult>,
 		private readonly paneTokenService: IParadisPaneTokenService,
-		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string }[]) => void,
+		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string }[]) => void,
+		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
+		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 	) {
 		super();
 
@@ -125,16 +129,28 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this.refreshBranches();
 	}
 
-	/** terminalId ⇔ ペイントークン対応表を shared process のチャットミラーへ同期する。 */
+	/**
+	 * terminalId ⇔ ペイントークン対応表を shared process のチャットミラーへ同期する。
+	 * cwd はhook未発火時のセッション探索フォールバック（~/.claude/projects の逆引き）に使う。
+	 */
 	private pushAgentPanes(): void {
-		const entries: { terminalId: number; token: string }[] = [];
-		for (const inst of this.allInstances()) {
+		const instances = this.allInstances();
+		Promise.all(instances.map(async inst => {
 			const token = this.paneTokenService.getTokenForInstance(inst.instanceId);
-			if (token !== undefined) {
-				entries.push({ terminalId: inst.instanceId, token });
+			if (token === undefined) {
+				return undefined;
 			}
-		}
-		this.syncAgentPanes(entries);
+			let cwd: string | undefined;
+			try {
+				const cwdResource = await inst.getCwdResource();
+				cwd = cwdResource?.scheme === 'file' ? cwdResource.fsPath : undefined;
+			} catch {
+				cwd = undefined;
+			}
+			return { terminalId: inst.instanceId, token, ...(cwd !== undefined ? { cwd } : {}) };
+		})).then(entries => {
+			this.syncAgentPanes(entries.filter((e): e is { terminalId: number; token: string; cwd?: string } => e !== undefined));
+		}).catch(err => this.logService.warn('[paradisMobileRelay] pushAgentPanes failed', err));
 	}
 
 	private readonly pushStateScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 100));
@@ -540,6 +556,27 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const reply = (body: object) => {
 			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ id: msg.id, ...body }))), mobileId: mobileId || undefined });
 		};
+		// 検索（find/grep）はパスでなくクエリを取るため、パス解決の前に処理する。
+		// 実行はshared process（ripgrep）。ワークスペースルート起点なので脱出の余地はない。
+		if (msg.t === 'find' || msg.t === 'grep') {
+			const root = this.resolveWsRoot(msg.ws);
+			if (!root || root.scheme !== 'file') {
+				reply({ error: `unknown workspace: ${msg.ws}` });
+				return;
+			}
+			try {
+				if (msg.t === 'find') {
+					const result = await this.searchFiles(root.fsPath, msg.query, 100);
+					reply({ t: 'find', files: result.files, truncated: result.truncated });
+				} else {
+					const result = await this.searchText(root.fsPath, msg.query, 200);
+					reply({ t: 'grep', matches: result.matches, truncated: result.truncated });
+				}
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
 		const uri = await this.resolveWorkspacePathReal(msg.ws, msg.path);
 		if (!uri) {
 			reply({ error: `invalid path: ${msg.path}` });

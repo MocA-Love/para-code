@@ -1,12 +1,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import type { AgentChatMessage } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { MarkdownText } from '../../src/components/markdownText.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
 
@@ -124,6 +125,7 @@ export default function AgentScreen() {
 						data={chat.messages}
 						keyExtractor={m => `${chat.epoch}:${m.rev}`}
 						ListHeaderComponent={chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}
+						ListFooterComponent={activeTerminal?.agentStatus === 'working' ? <WorkingIndicator /> : null}
 						renderItem={({ item }) => <MessageBubble message={item} />}
 						contentContainerStyle={styles.listContent}
 					/>
@@ -188,7 +190,35 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 	const isUser = message.role === 'user';
 	return (
 		<View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}>
-			<Text style={styles.bubbleText} selectable>{message.text}</Text>
+			{isUser
+				? <Text style={styles.bubbleText} selectable>{message.text}</Text>
+				: <MarkdownText text={message.text} />}
+		</View>
+	);
+}
+
+/** エージェントがターン実行中に出す「考え中」インジケータ（ドットの脈動アニメーション）。 */
+function WorkingIndicator() {
+	const pulse = useRef(new Animated.Value(0)).current;
+	useEffect(() => {
+		const loop = Animated.loop(Animated.sequence([
+			Animated.timing(pulse, { toValue: 1, duration: 600, useNativeDriver: true }),
+			Animated.timing(pulse, { toValue: 0, duration: 600, useNativeDriver: true }),
+		]));
+		loop.start();
+		return () => loop.stop();
+	}, [pulse]);
+	const dot = (delay: number) => (
+		<Animated.View
+			style={[styles.workingDot, {
+				opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: delay === 0 ? [0.9, 0.25] : delay === 1 ? [0.6, 0.5] : [0.25, 0.9] }),
+			}]}
+		/>
+	);
+	return (
+		<View style={styles.workingRow}>
+			{dot(0)}{dot(1)}{dot(2)}
+			<Text style={styles.workingText}>考え中…</Text>
 		</View>
 	);
 }
@@ -226,6 +256,9 @@ const styles = StyleSheet.create({
 	denyBtn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
 	approvalBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
 	approvalHint: { color: colors.textDim, fontSize: 10 },
+	workingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
+	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
+	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4 },
 	inputBar: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, padding: 12 },
 	input: { flex: 1, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10, maxHeight: 120 },
 	sendBtn: { backgroundColor: colors.accent2, borderRadius: 10, width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },

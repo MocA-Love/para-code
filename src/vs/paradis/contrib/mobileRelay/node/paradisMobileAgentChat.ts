@@ -298,6 +298,85 @@ function parseCodexLine(obj: Record<string, unknown>): IRawMessage[] {
 	return out;
 }
 
+// ---- hook未発火時のセッション探索フォールバック ------------------------------------------------
+
+/**
+ * ターミナルのcwdから実行中らしいエージェントセッションのtranscriptを探す。
+ * hookは「アプリ起動後に発火したイベント」しか知れないため、Para Code起動前から
+ * 動いているセッションや発言がまだ無いセッションはこれで拾う（後からhookが発火したら
+ * そちらが正となり上書きされる）。
+ * - Claude: ~/.claude/projects/<cwdスラッグ>/ の最新 .jsonl
+ * - Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl の直近ファイルのうち
+ *           先頭行 session_meta の cwd が一致する最新のもの
+ */
+async function discoverSessionByCwd(cwd: string): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number } | undefined> {
+	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number }[] = [];
+
+	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）
+	try {
+		const slug = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+		const dir = join(homedir(), '.claude', 'projects', slug);
+		const names = await fs.readdir(dir);
+		for (const name of names) {
+			if (!name.endsWith('.jsonl')) {
+				continue;
+			}
+			try {
+				const stat = await fs.stat(join(dir, name));
+				candidates.push({ agent: 'claude', transcriptPath: join(dir, name), mtime: stat.mtimeMs });
+			} catch { /* 消えた直後などは無視 */ }
+		}
+	} catch { /* プロジェクトディレクトリ無し = Claudeセッション無し */ }
+
+	// Codex: 直近2日分の日付ディレクトリから rollout を新しい順に見て、session_meta.cwd を突合
+	try {
+		const sessionsRoot = join(homedir(), '.codex', 'sessions');
+		const days = [new Date(), new Date(Date.now() - 24 * 60 * 60 * 1000)];
+		const rollouts: { path: string; mtime: number }[] = [];
+		for (const day of days) {
+			const dir = join(sessionsRoot, String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, '0'), String(day.getDate()).padStart(2, '0'));
+			try {
+				const names = await fs.readdir(dir);
+				for (const name of names) {
+					if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) {
+						continue;
+					}
+					try {
+						const stat = await fs.stat(join(dir, name));
+						rollouts.push({ path: join(dir, name), mtime: stat.mtimeMs });
+					} catch { /* ignore */ }
+				}
+			} catch { /* その日のディレクトリ無し */ }
+		}
+		rollouts.sort((a, b) => b.mtime - a.mtime);
+		for (const rollout of rollouts.slice(0, 20)) {
+			try {
+				const handle = await fs.open(rollout.path, 'r');
+				let firstLine: string;
+				try {
+					const buffer = Buffer.alloc(16 * 1024);
+					const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+					firstLine = buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '';
+				} finally {
+					await handle.close();
+				}
+				const meta = rec(JSON.parse(firstLine));
+				const payload = rec(meta?.['payload']);
+				if (meta?.['type'] === 'session_meta' && str(payload?.['cwd']) === cwd) {
+					candidates.push({ agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime });
+					break; // 新しい順に見ているので最初の一致が最新
+				}
+			} catch { /* 壊れた行・読み取り失敗は無視 */ }
+		}
+	} catch { /* sessions ディレクトリ無し = Codexセッション無し */ }
+
+	if (candidates.length === 0) {
+		return undefined;
+	}
+	candidates.sort((a, b) => b.mtime - a.mtime);
+	return candidates[0];
+}
+
 // ---- tailer ---------------------------------------------------------------------------------
 
 interface ITailerDelegate {
@@ -508,6 +587,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly paneSessions = new Map<string, IPaneSessionInfo>();
 	/** ターミナルinstanceId → ペイントークン (rendererから同期)。 */
 	private readonly terminalToToken = new Map<number, string>();
+	/** ペイントークン → ターミナルのcwd (rendererから同期。hook未発火時のセッション探索用)。 */
+	private readonly tokenToCwd = new Map<string, string>();
 	/** ペイントークン → 稼働中の tailer (購読者がいる間のみ)。 */
 	private readonly tailers = new Map<string, TranscriptTailer>();
 	/** ペイントークン → 購読中モバイルID (最後にattachしたモバイルが勝つ。termチャネルと同じM-2方針)。 */
@@ -528,11 +609,15 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** renderer から同期される「ターミナルinstanceId ⇔ ペイントークン」対応表 (全置換)。 */
-	syncPanes(entries: readonly { terminalId: number; token: string }[]): void {
+	syncPanes(entries: readonly { terminalId: number; token: string; cwd?: string }[]): void {
 		this.terminalToToken.clear();
+		this.tokenToCwd.clear();
 		for (const entry of entries) {
 			if (typeof entry.terminalId === 'number' && typeof entry.token === 'string' && entry.token.length > 0) {
 				this.terminalToToken.set(entry.terminalId, entry.token);
+				if (typeof entry.cwd === 'string' && entry.cwd.length > 0) {
+					this.tokenToCwd.set(entry.token, entry.cwd);
+				}
 			}
 		}
 		// 消えたターミナル（PC側でclose等）の購読・tailerを掃除する。detachは
@@ -582,10 +667,23 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private async handleAttach(mobileId: string, msg: { id: number; epoch?: string; afterRev?: number }): Promise<void> {
 		const token = this.terminalToToken.get(msg.id);
-		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		let session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		if (token !== undefined && session === undefined) {
+			// hookがまだ発火していない (Para Code起動前からのセッション・発言前など)。
+			// ターミナルのcwdからtranscriptを探すフォールバックを試す。
+			const cwd = this.tokenToCwd.get(token);
+			if (cwd !== undefined) {
+				const discovered = await discoverSessionByCwd(cwd);
+				if (discovered !== undefined) {
+					session = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: undefined };
+					this.paneSessions.set(token, session);
+					this.logService.info(`[paradisAgentChat] discovered session by cwd for terminal ${msg.id}: ${discovered.transcriptPath}`);
+				}
+			}
+		}
 		if (token === undefined || session === undefined) {
-			// このターミナルではまだエージェントのhookが発火していない (エージェント未起動、
-			// または旧notify.sh)。モバイル側は「ターミナルタブで見る」案内を出す。
+			// エージェント未起動、または探索でも見つからない。モバイル側は
+			// 「ターミナルタブで見る」案内を出す。
 			this.sendTo(mobileId, { t: 'none', id: msg.id });
 			return;
 		}

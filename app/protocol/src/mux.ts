@@ -23,9 +23,21 @@ export interface FrameMuxOptions {
 	readonly onError?: (error: unknown) => void;
 }
 
+/**
+ * 1チャンクのペイロード上限。リレー(Cloudflare Worker)のWebSocketメッセージ上限(1MiB)に対し、
+ * フレームヘッダ・封緘タグ・mobileIdプレフィクスを差し引いても安全に収まるサイズにする。
+ */
+export const FRAME_CHUNK_BYTES = 700 * 1024;
+
+/** 再結合バッファの上限（これを超える論理フレームは破棄してエラー扱い）。 */
+export const FRAME_REASSEMBLY_LIMIT = 32 * 1024 * 1024;
+
 export class FrameMux {
 	private readonly handlers = new Map<ChannelId, FrameHandler>();
 	private readonly seq = new Map<ChannelId, number>();
+	// チャネル別のチャンク再結合バッファ（more=trueのフレームを結合し、more無しで確定）。
+	// 送信側はチャンク列を連続送出し、トランスポート(WebSocket)とnonce検査が順序を保証する。
+	private readonly reassembly = new Map<ChannelId, Uint8Array[]>();
 
 	constructor(private readonly channel: SecureChannel, private readonly options: FrameMuxOptions) { }
 
@@ -34,12 +46,25 @@ export class FrameMux {
 		this.handlers.set(channel, handler);
 	}
 
-	/** アプリ層フレームを送る（seqは自動採番）。 */
+	/** アプリ層フレームを送る（seqは自動採番。大きなペイロードは自動でチャンク分割）。 */
 	send(channel: ChannelId, payload: Uint8Array, ws?: string): void {
-		const seq = (this.seq.get(channel) ?? 0);
-		this.seq.set(channel, seq + 1);
-		const frame: Frame = ws === undefined ? { ch: channel, seq, payload } : { ch: channel, ws, seq, payload };
-		this.options.sendSealed(this.channel.seal(encodeFrame(frame)));
+		for (let offset = 0; ; offset += FRAME_CHUNK_BYTES) {
+			const end = Math.min(offset + FRAME_CHUNK_BYTES, payload.length);
+			const more = end < payload.length;
+			const seq = (this.seq.get(channel) ?? 0);
+			this.seq.set(channel, seq + 1);
+			const frame: Frame = {
+				ch: channel,
+				seq,
+				payload: payload.subarray(offset, end),
+				...(ws !== undefined ? { ws } : {}),
+				...(more ? { more: true } : {}),
+			};
+			this.options.sendSealed(this.channel.seal(encodeFrame(frame)));
+			if (!more) {
+				return;
+			}
+		}
 	}
 
 	/** transportから届いた封緘バイト列を処理する。 */
@@ -54,9 +79,33 @@ export class FrameMux {
 			}
 			throw error;
 		}
-		const handler = this.handlers.get(frame.ch);
+		const pending = this.reassembly.get(frame.ch);
+		if (frame.more === true) {
+			const chunks = pending ?? [];
+			chunks.push(frame.payload);
+			if (chunks.reduce((total, c) => total + c.length, 0) > FRAME_REASSEMBLY_LIMIT) {
+				this.reassembly.delete(frame.ch);
+				this.options.onError?.(new Error(`frame reassembly limit exceeded on channel ${frame.ch}`));
+				return;
+			}
+			this.reassembly.set(frame.ch, chunks);
+			return;
+		}
+		let full = frame;
+		if (pending !== undefined) {
+			this.reassembly.delete(frame.ch);
+			const total = pending.reduce((sum, c) => sum + c.length, 0) + frame.payload.length;
+			const payload = new Uint8Array(total);
+			let offset = 0;
+			for (const chunk of [...pending, frame.payload]) {
+				payload.set(chunk, offset);
+				offset += chunk.length;
+			}
+			full = { ...frame, payload };
+		}
+		const handler = this.handlers.get(full.ch);
 		if (handler) {
-			handler(frame);
+			handler(full);
 		}
 	}
 }

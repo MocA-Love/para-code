@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -9,21 +9,31 @@ import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { FileViewer } from '../../src/components/fileViewer.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
-import type { FsListResult, FsReadResult } from '../../src/store.js';
+import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../../src/store.js';
 
 /**
  * ファイル画面（モックアップ準拠）。ワークスペースのファイルツリーを閲覧し、
- * ファイル名フィルタとタップでのフルスクリーンビューア表示に対応（読み取り専用）。
+ * タップでのフルスクリーンビューア表示に対応（読み取り専用）。
  * ビューアはPC版と同じテーマのシンタックスハイライトで表示し、.md/.htmlは
  * レンダー/Raw を切り替えられる。
+ *
+ * 検索はPC側ripgrep（VS Code本体と同じエンジン）によるワークスペース全体検索:
+ *  - ファイル名: 全階層の相対パスに対する部分一致（.gitignore尊重、ランク順）
+ *  - テキスト: 全文検索（スマートケース・リテラル一致、行プレビュー付き）
  */
 export default function FilesScreen() {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, fsXlsx, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, connection: s.connection })));
+	const { fsList, fsRead, fsXlsx, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
 
 	const [path, setPath] = useState('');
 	const [listing, setListing] = useState<FsListResult | undefined>();
 	const [filter, setFilter] = useState('');
+	const [searchMode, setSearchMode] = useState<'name' | 'text'>('name');
+	const [findResult, setFindResult] = useState<FsFindResult | undefined>();
+	const [grepResult, setGrepResult] = useState<FsGrepResult | undefined>();
+	const [searching, setSearching] = useState(false);
+	// 入力デバウンスと応答順序の入れ替わり対策（最後に発行したクエリのみ反映する）
+	const searchGenRef = useRef(0);
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
 	const [viewerPath, setViewerPath] = useState<string | undefined>();
@@ -55,8 +65,47 @@ export default function FilesScreen() {
 		setListing(undefined);
 		setViewerPath(undefined);
 		setViewerResult(undefined);
+		setFindResult(undefined);
+		setGrepResult(undefined);
 		void load('');
 	}, [load]);
+
+	// 検索（300msデバウンス）。クエリが空になったら結果をクリアしてツリー表示へ戻る。
+	useEffect(() => {
+		const query = filter.trim();
+		const gen = ++searchGenRef.current;
+		if (!wsId || connection !== 'online' || query.length === 0) {
+			setFindResult(undefined);
+			setGrepResult(undefined);
+			setSearching(false);
+			return;
+		}
+		setSearching(true);
+		const timer = setTimeout(async () => {
+			try {
+				if (searchMode === 'name') {
+					const result = await fsFind(wsId, query);
+					if (searchGenRef.current === gen) {
+						setFindResult(result);
+						setGrepResult(undefined);
+					}
+				} else {
+					const result = await fsGrep(wsId, query);
+					if (searchGenRef.current === gen) {
+						setGrepResult(result);
+						setFindResult(undefined);
+					}
+				}
+			} catch {
+				// 接続断・タイムアウト等。結果は更新しない（次の入力で再試行）。
+			} finally {
+				if (searchGenRef.current === gen) {
+					setSearching(false);
+				}
+			}
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [filter, searchMode, wsId, connection, fsFind, fsGrep]);
 
 	const openViewer = async (p: string) => {
 		viewerPathRef.current = p;
@@ -88,8 +137,9 @@ export default function FilesScreen() {
 	};
 
 	const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
-	const entries = (listing?.entries ?? []).filter(e => !filter || e.name.toLowerCase().includes(filter.toLowerCase()));
+	const entries = listing?.entries ?? [];
 	const crumbs = [ws?.name ?? '', ...path.split('/').filter(Boolean)];
+	const searchActive = filter.trim().length > 0;
 
 	return (
 		<ConnectionGate>
@@ -101,39 +151,90 @@ export default function FilesScreen() {
 					style={styles.searchInput}
 					value={filter}
 					onChangeText={setFilter}
-					placeholder="ファイル名で検索…"
+					placeholder={searchMode === 'name' ? 'ファイル名で検索（全階層）…' : 'テキストで検索（全文）…'}
 					placeholderTextColor={colors.textDim}
 					autoCapitalize="none"
 					autoCorrect={false}
 				/>
+				{searching ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
+				<Pressable
+					style={[styles.modeChip, searchMode === 'name' && styles.modeChipActive]}
+					onPress={() => setSearchMode('name')}
+				>
+					<Text style={[styles.modeText, searchMode === 'name' && styles.modeTextActive]}>名前</Text>
+				</Pressable>
+				<Pressable
+					style={[styles.modeChip, searchMode === 'text' && styles.modeChipActive]}
+					onPress={() => setSearchMode('text')}
+				>
+					<Text style={[styles.modeText, searchMode === 'text' && styles.modeTextActive]}>内容</Text>
+				</Pressable>
 			</View>
-			<Text style={styles.breadcrumb} numberOfLines={1}>{crumbs.join(' › ')}</Text>
+			{!searchActive ? <Text style={styles.breadcrumb} numberOfLines={1}>{crumbs.join(' › ')}</Text> : null}
 			<ScrollView
 				style={styles.list}
-				refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void load(path); }} tintColor={colors.textDim} />}
+				keyboardShouldPersistTaps="handled"
+				refreshControl={!searchActive ? <RefreshControl refreshing={loading} onRefresh={() => { void load(path); }} tintColor={colors.textDim} /> : undefined}
 			>
-				{error ? <Text style={styles.error}>{error}</Text> : null}
-				{loading && !listing ? <ActivityIndicator style={styles.spinner} /> : null}
-				{path !== '' ? (
-					<Pressable style={styles.row} onPress={() => { void load(parent); }}>
-						<Ionicons name="folder-outline" size={16} color={colors.textDim} />
-						<Text style={styles.rowName}>..</Text>
-					</Pressable>
-				) : null}
-				{entries.map(entry => {
-					const childPath = path === '' ? entry.name : `${path}/${entry.name}`;
-					return (
-						<Pressable
-							key={entry.name}
-							style={styles.row}
-							onPress={() => { entry.dir ? void load(childPath) : void openViewer(childPath); }}
-						>
-							<Ionicons name={entry.dir ? 'folder-outline' : 'document-text-outline'} size={16} color={entry.dir ? colors.accent : colors.textDim} />
-							<Text style={styles.rowName} numberOfLines={1}>{entry.name}</Text>
-							{!entry.dir && entry.size !== undefined ? <Text style={styles.size}>{formatSize(entry.size)}</Text> : null}
-						</Pressable>
-					);
-				})}
+				{error && !searchActive ? <Text style={styles.error}>{error}</Text> : null}
+				{searchActive ? (
+					<>
+						{findResult !== undefined ? (
+							<>
+								{findResult.files.map(p => (
+									<Pressable key={p} style={styles.row} onPress={() => { void openViewer(p); }}>
+										<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
+										<View style={styles.resultCol}>
+											<Text style={styles.rowName} numberOfLines={1}>{p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p}</Text>
+											{p.includes('/') ? <Text style={styles.resultPath} numberOfLines={1}>{p.slice(0, p.lastIndexOf('/'))}</Text> : null}
+										</View>
+									</Pressable>
+								))}
+								{findResult.files.length === 0 && !searching ? <Text style={styles.dimNote}>一致するファイルがありません</Text> : null}
+								{findResult.truncated ? <Text style={styles.dimNote}>（結果が多いため一部のみ表示しています）</Text> : null}
+							</>
+						) : grepResult !== undefined ? (
+							<>
+								{grepResult.matches.map((m, i) => (
+									<Pressable key={`${m.path}:${m.line}:${i}`} style={styles.row} onPress={() => { void openViewer(m.path); }}>
+										<View style={styles.resultCol}>
+											<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
+											<Text style={styles.resultPreview} numberOfLines={2}>{m.text}</Text>
+										</View>
+									</Pressable>
+								))}
+								{grepResult.matches.length === 0 && !searching ? <Text style={styles.dimNote}>一致する箇所がありません</Text> : null}
+								{grepResult.truncated ? <Text style={styles.dimNote}>（結果が多いため一部のみ表示しています）</Text> : null}
+							</>
+						) : (
+							<Text style={styles.dimNote}>検索中…</Text>
+						)}
+					</>
+				) : (
+					<>
+						{loading && !listing ? <ActivityIndicator style={styles.spinner} /> : null}
+						{path !== '' ? (
+							<Pressable style={styles.row} onPress={() => { void load(parent); }}>
+								<Ionicons name="folder-outline" size={16} color={colors.textDim} />
+								<Text style={styles.rowName}>..</Text>
+							</Pressable>
+						) : null}
+						{entries.map(entry => {
+							const childPath = path === '' ? entry.name : `${path}/${entry.name}`;
+							return (
+								<Pressable
+									key={entry.name}
+									style={styles.row}
+									onPress={() => { entry.dir ? void load(childPath) : void openViewer(childPath); }}
+								>
+									<Ionicons name={entry.dir ? 'folder-outline' : 'document-text-outline'} size={16} color={entry.dir ? colors.accent : colors.textDim} />
+									<Text style={styles.rowName} numberOfLines={1}>{entry.name}</Text>
+									{!entry.dir && entry.size !== undefined ? <Text style={styles.size}>{formatSize(entry.size)}</Text> : null}
+								</Pressable>
+							);
+						})}
+					</>
+				)}
 			</ScrollView>
 			{viewerPath !== undefined ? (
 				<FileViewer path={viewerPath} result={viewerResult} spreadsheetHtml={viewerXlsxHtml} onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsxHtml(undefined); }} />
@@ -164,4 +265,12 @@ const styles = StyleSheet.create({
 	row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#21262d' },
 	rowName: { flex: 1, color: colors.text, fontSize: 14 },
 	size: { color: colors.textDim, fontSize: 11 },
+	modeChip: { borderRadius: 8, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 8, paddingVertical: 4 },
+	modeChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(0,122,204,.16)' },
+	modeText: { color: colors.textDim, fontSize: 11 },
+	modeTextActive: { color: colors.text, fontWeight: '600' },
+	resultCol: { flex: 1, gap: 2 },
+	resultPath: { color: colors.textDim, fontSize: 11 },
+	resultPreview: { color: colors.text, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	dimNote: { color: colors.textDim, fontSize: 12, paddingVertical: 12, textAlign: 'center' },
 });

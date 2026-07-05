@@ -8,6 +8,8 @@
  * バイナリ形式:
  *   [chId:u8][flags:u8][seq:u32 BE][wsLen:u16 BE][ws bytes(UTF-8)][payload...]
  *   flags bit0: ws が存在するか
+ *   flags bit1: 続きのチャンクがある（大きな論理フレームの分割。リレーのWebSocket
+ *               メッセージ上限(1MiB)を超えるペイロードを FrameMux が分割・再結合する）
  */
 
 /** 論理チャネルID。 */
@@ -53,6 +55,8 @@ export interface Frame {
 	readonly seq: number;
 	/** チャネル固有のペイロード。 */
 	readonly payload: Uint8Array;
+	/** 続きのチャンクがある（分割された論理フレームの途中。FrameMuxが再結合する）。 */
+	readonly more?: boolean;
 }
 
 export function encodeFrame(frame: Frame): Uint8Array {
@@ -70,7 +74,7 @@ export function encodeFrame(frame: Frame): Uint8Array {
 	const header = new Uint8Array(1 + 1 + 4 + 2);
 	const view = new DataView(header.buffer);
 	view.setUint8(0, chId);
-	view.setUint8(1, frame.ws !== undefined ? 0x01 : 0x00);
+	view.setUint8(1, (frame.ws !== undefined ? 0x01 : 0x00) | (frame.more === true ? 0x02 : 0x00));
 	view.setUint32(2, frame.seq, false);
 	view.setUint16(6, wsBytes.length, false);
 
@@ -91,7 +95,9 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 	if (ch === undefined) {
 		throw new Error(`unknown frame channel id: ${chId}`);
 	}
-	const hasWs = (view.getUint8(1) & 0x01) !== 0;
+	const flags = view.getUint8(1);
+	const hasWs = (flags & 0x01) !== 0;
+	const more = (flags & 0x02) !== 0;
 	const seq = view.getUint32(2, false);
 	const wsLen = view.getUint16(6, false);
 	if (8 + wsLen > bytes.length) {
@@ -99,5 +105,11 @@ export function decodeFrame(bytes: Uint8Array): Frame {
 	}
 	const ws = hasWs ? new TextDecoder().decode(bytes.subarray(8, 8 + wsLen)) : undefined;
 	const payload = bytes.subarray(8 + wsLen);
-	return ws === undefined ? { ch, seq, payload } : { ch, ws, seq, payload };
+	return {
+		ch,
+		seq,
+		payload,
+		...(ws !== undefined ? { ws } : {}),
+		...(more ? { more: true } : {}),
+	};
 }
