@@ -307,6 +307,8 @@ const desktopResourcePatterns = [
 	// PARA-PATCH: ship the vendored React DevTools extension loaded into built-in browser sessions
 	// (`**/*.*` instead of `**`: this glob impl matches directories too and copyFile would fail on them)
 	'vs/paradis/contrib/browserExtensions/electron-main/media/**/*.*',
+	// PARA-PATCH: ship the spreadsheet viewer CSS read at runtime for the mobile xlsx HTML (inlined into the WebView document)
+	'vs/paradis/contrib/fileViewers/electron-browser/media/*.css',
 ];
 
 // Resources for server target (minimal - no UI)
