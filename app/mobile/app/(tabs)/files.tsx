@@ -1,10 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { FileViewer } from '../../src/components/fileViewer.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
@@ -18,7 +19,7 @@ import type { FsListResult, FsReadResult } from '../../src/store.js';
  */
 export default function FilesScreen() {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, connection: s.connection })));
+	const { fsList, fsRead, fsXlsx, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, connection: s.connection })));
 
 	const [path, setPath] = useState('');
 	const [listing, setListing] = useState<FsListResult | undefined>();
@@ -27,6 +28,9 @@ export default function FilesScreen() {
 	const [loading, setLoading] = useState(false);
 	const [viewerPath, setViewerPath] = useState<string | undefined>();
 	const [viewerResult, setViewerResult] = useState<FsReadResult | undefined>();
+	const [viewerXlsxHtml, setViewerXlsxHtml] = useState<string | undefined>();
+	// 開く→閉じる→別ファイルを開く、の間に前のfetchが解決して上書きするのを防ぐ世代ガード
+	const viewerPathRef = useRef<string | undefined>(undefined);
 
 	const wsId = ws?.id;
 
@@ -55,16 +59,31 @@ export default function FilesScreen() {
 	}, [load]);
 
 	const openViewer = async (p: string) => {
+		viewerPathRef.current = p;
 		setViewerPath(p);
 		setViewerResult(undefined);
+		setViewerXlsxHtml(undefined);
 		if (!wsId) {
 			return;
 		}
 		try {
-			// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
-			setViewerResult(await fsRead(wsId, p, true));
+			if (/\.(?:xlsx|xlsm)$/i.test(p)) {
+				// Excel は PC 側でレンダリングされた静的HTMLを受け取る（PC版ビューアと同じ見た目）
+				const html = (await fsXlsx(wsId, p)).html;
+				if (viewerPathRef.current === p) {
+					setViewerXlsxHtml(html);
+				}
+			} else {
+				// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
+				const result = await fsRead(wsId, p, true);
+				if (viewerPathRef.current === p) {
+					setViewerResult(result);
+				}
+			}
 		} catch (e) {
-			setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
+			if (viewerPathRef.current === p) {
+				setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
+			}
 		}
 	};
 
@@ -73,6 +92,7 @@ export default function FilesScreen() {
 	const crumbs = [ws?.name ?? '', ...path.split('/').filter(Boolean)];
 
 	return (
+		<ConnectionGate>
 		<View style={styles.screen}>
 			<WsBar />
 			<View style={styles.searchBox}>
@@ -116,9 +136,10 @@ export default function FilesScreen() {
 				})}
 			</ScrollView>
 			{viewerPath !== undefined ? (
-				<FileViewer path={viewerPath} result={viewerResult} onClose={() => { setViewerPath(undefined); setViewerResult(undefined); }} />
+				<FileViewer path={viewerPath} result={viewerResult} spreadsheetHtml={viewerXlsxHtml} onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsxHtml(undefined); }} />
 			) : null}
 		</View>
+		</ConnectionGate>
 	);
 }
 

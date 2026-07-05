@@ -57,6 +57,15 @@ export interface FsReadResult {
 	highlightTruncated?: boolean;
 }
 
+/** fs xlsx 応答（PC側でレンダリングされたExcelの静的HTML）。 */
+export interface FsXlsxResult {
+	html: string;
+}
+/** scm xlsxDiff 応答（PC側でレンダリングされたExcel差分の静的HTML）。 */
+export interface ScmXlsxDiffResult {
+	html: string;
+}
+
 /** browser targets 応答。 */
 export interface BrowserTargetsResult {
 	targets: { targetId: string; title: string; url: string }[];
@@ -137,6 +146,7 @@ export async function saveCredentials(keyStore: KeyStore, creds: PairedCredentia
  */
 export class MobileController {
 	private client: RelayClient | undefined;
+	private lastCredentials: PairedCredentials | undefined;
 	readonly state: StoreState = {
 		connection: 'offline',
 		pcOnline: false,
@@ -155,6 +165,7 @@ export class MobileController {
 	) { }
 
 	connect(creds: PairedCredentials): void {
+		this.lastCredentials = creds;
 		this.client?.close();
 		this.client = new RelayClient(this.identity, creds, this.socketFactory, {
 			onStateChange: s => { this.state.connection = s; this.emit(); },
@@ -167,6 +178,33 @@ export class MobileController {
 	disconnect(): void {
 		this.client?.close();
 		this.client = undefined;
+		this.state.connection = 'offline';
+		this.state.pcOnline = false;
+		this.emit();
+	}
+
+	/** 手動切断後などに、保存済み資格情報で接続し直す。 */
+	reconnect(): void {
+		if (this.client) {
+			this.client.ensureConnected();
+		} else if (this.lastCredentials) {
+			this.connect(this.lastCredentials);
+		}
+	}
+
+	/** 未接続なら即座に接続、'online' 表示中は生存確認する（フォアグラウンド復帰時用）。 */
+	ensureConnected(): void {
+		const client = this.client;
+		if (!client) {
+			return;
+		}
+		if (client.connectionState === 'online') {
+			// zombie検出: 応答が必ず返るstate要求を送り、無応答なら接続を作り直す
+			this.requestState();
+			client.probeLiveness();
+		} else {
+			client.ensureConnected();
+		}
 	}
 
 	/** ターミナルにアタッチ（出力購読を要求）。 */
@@ -266,6 +304,16 @@ export class MobileController {
 	/** ファイル読み取り（上限つき）。highlight=trueでPCテーマのハイライトHTMLも返る。 */
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult> {
 		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}) });
+	}
+
+	/** xlsx をPC側でレンダリングした静的HTMLを取得する。 */
+	fsXlsx(ws: string, path: string): Promise<FsXlsxResult> {
+		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path });
+	}
+
+	/** xlsx の差分(HEAD vs 作業ツリー)をPC側でレンダリングした静的HTMLを取得する。 */
+	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult> {
+		return this.request<ScmXlsxDiffResult>('scm', { t: 'xlsxDiff', ws, path });
 	}
 
 	// --- browser（para-browser ミラー、設計書 M3） ------------------------------

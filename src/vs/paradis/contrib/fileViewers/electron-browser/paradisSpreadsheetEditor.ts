@@ -32,7 +32,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildShapeOverlay, computeOverflowRoom, createOverflowSpan, createShrinkSpan, getColumnLabel, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
+import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay } from './paradisSpreadsheetRender.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
@@ -393,77 +393,14 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	private _buildSheetTable(sheet: IParadisSheetData): { table: HTMLTableElement; naturalWidth: number } {
-		const table = $('table.paradis-spreadsheet-table') as HTMLTableElement;
-		if (sheet.showGridLines !== false) {
-			table.classList.add('grid');
-		}
-		const naturalWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((sum, w) => sum + w, 0);
-		table.style.width = `${naturalWidth}px`;
-
-		const colgroup = dom.append(table, $('colgroup'));
-		const rowNumCol = dom.append(colgroup, $('col')) as HTMLTableColElement;
-		rowNumCol.style.width = `${PARADIS_ROW_NUM_COL_WIDTH}px`;
-		for (const w of sheet.columnWidths) {
-			const col = dom.append(colgroup, $('col')) as HTMLTableColElement;
-			if (w) {
-				col.style.width = `${w}px`;
-			}
-		}
-
-		const thead = dom.append(table, $('thead.paradis-spreadsheet-head'));
-		this._theadEl = thead;
-		this._headCellEls = [];
-		const headRow = dom.append(thead, $('tr'));
-		dom.append(headRow, $('th.paradis-spreadsheet-corner'));
-		for (let i = 0; i < sheet.columnCount; i++) {
-			const th = dom.append(headRow, $('th.paradis-spreadsheet-colhead'));
-			th.textContent = getColumnLabel(i);
-			this._headCellEls.push(th);
-		}
-
-		const tbody = dom.append(table, $('tbody'));
-		this._dataRowEls = [];
-		this._shrinkCells = [];
-		this._overflowCells = [];
-		let displayRowNum = 0;
-		for (const row of sheet.rows) {
-			displayRowNum++;
-			const tr = dom.append(tbody, $('tr')) as HTMLTableRowElement;
-			tr.style.height = `${row.height}px`;
-			this._dataRowEls.push({ excelRow: row.excelRow, tr });
-			const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
-			rowHead.textContent = String(displayRowNum);
-			for (let ci = 0; ci < row.cells.length; ci++) {
-				const cell = row.cells[ci];
-				if (cell.hidden) {
-					continue;
-				}
-				const td = dom.append(tr, $('td')) as HTMLTableCellElement;
-				if (cell.colSpan && cell.colSpan > 1) {
-					td.colSpan = cell.colSpan;
-				}
-				if (cell.rowSpan && cell.rowSpan > 1) {
-					td.rowSpan = cell.rowSpan;
-				}
-				applyBaseCellStyle(td, cell);
-				if (cell.shrinkToFit && !cell.wrapText && !cell.verticalText) {
-					this._shrinkCells.push({ td, span: createShrinkSpan(td, cell) });
-				} else {
-					const toward = overflowToward(cell);
-					const room = toward !== 'none' ? computeOverflowRoom(row.cells, ci, sheet.columnWidths) : undefined;
-					if (toward !== 'none' && room && (room.left > 0 || room.right > 0)) {
-						this._overflowCells.push({ td, span: createOverflowSpan(td, cell), toward, leftRoom: room.left, rightRoom: room.right, valign: (cell.style.verticalAlign as string) || 'bottom' });
-					} else {
-						setCellContent(td, cell);
-					}
-				}
-				if (cell.diagonal) {
-					appendDiagonalOverlay(td, cell.diagonal);
-				}
-			}
-		}
-
-		return { table, naturalWidth };
+		// 構築ロジックは buildSheetTableDom に共通化（モバイル向け静的HTML生成と共用）。
+		const build = buildSheetTableDom(sheet);
+		this._theadEl = build.thead;
+		this._headCellEls = build.headCells;
+		this._dataRowEls = build.dataRows;
+		this._shrinkCells = build.shrinkCells;
+		this._overflowCells = build.overflowCells;
+		return { table: build.table, naturalWidth: build.naturalWidth };
 	}
 
 	private _renderTabs(): void {

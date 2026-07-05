@@ -77,7 +77,13 @@ function buildHtml(): string {
 		},
 		reset: function () { term.reset(); },
 	};
-	window.addEventListener('resize', function () { fit(currentCols); });
+	// キーボード開閉などでWebViewの高さが変わったら、フォントを合わせ直した上で
+	// 最下部（プロンプト行）が見える位置までスクロールする。
+	window.addEventListener('resize', function () {
+		fit(currentCols);
+		term.scrollToBottom();
+		window.scrollTo(0, document.body.scrollHeight);
+	});
 	window.ReactNativeWebView.postMessage('ready');
 })();
 </script></body></html>`;

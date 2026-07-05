@@ -5,10 +5,11 @@
  * 画面（screens）はここから状態を購読し、コントローラ経由で操作する。
  */
 
+import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsListResult, type FsReadResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type StoreState } from './store.js';
+import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsListResult, type FsReadResult, type FsXlsxResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -16,6 +17,12 @@ import { configureNotificationHandler, ensureNotificationPermission, presentLoca
 interface AppState extends StoreState {
 	ready: boolean;
 	paired: boolean;
+	/** ユーザーがホームの切断ボタンで明示的に切断した状態（自動再接続を抑止）。 */
+	manualOffline: boolean;
+	/** リレー接続を手動で切断する。 */
+	disconnectRelay(): void;
+	/** 手動切断後に接続し直す（未接続で固まっている場合の再接続にも使える）。 */
+	connectRelay(): void;
 	/** ワークスペースバーで選択中のワークスペースID（全画面で連動）。 */
 	selectedWs: string | undefined;
 	setSelectedWs(ws: string): void;
@@ -36,6 +43,8 @@ interface AppState extends StoreState {
 	scmLog(ws: string): Promise<ScmLogResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
+	fsXlsx(ws: string, path: string): Promise<FsXlsxResult>;
+	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
 	browserTargets(): Promise<BrowserTargetsResult>;
 	browserStart(targetId: string): Promise<void>;
 	browserStop(): Promise<void>;
@@ -54,6 +63,7 @@ export const useAppStore = create<AppState>(set => ({
 	browserFrame: undefined,
 	ready: false,
 	paired: false,
+	manualOffline: false,
 	selectedWs: undefined,
 	selectedTerminalId: undefined,
 
@@ -67,12 +77,29 @@ export const useAppStore = create<AppState>(set => ({
 			s => set({ ...s }),
 			payload => { void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId }); },
 		);
+		// フォアグラウンド復帰時、接続が死んでいたら即座に繋ぎ直す（iOSはバックグラウンドで
+		// ソケットが黙って死ぬため、これが無いと再起動/復帰後に繋がらないことがある）。
+		RNAppState.addEventListener('change', appState => {
+			if (appState === 'active' && !useAppStore.getState().manualOffline) {
+				controller?.ensureConnected();
+			}
+		});
 		const creds = await loadCredentials(secureKeyStore);
 		set({ ready: true, paired: !!creds });
 		if (creds) {
 			ensureNotificationPermission().catch(err => console.warn('[appState] notification permission request failed', err));
 			controller.connect(creds);
 		}
+	},
+
+	disconnectRelay() {
+		set({ manualOffline: true });
+		controller?.disconnect();
+	},
+
+	connectRelay() {
+		set({ manualOffline: false });
+		controller?.reconnect();
 	},
 
 	async pairFromUri(uri: string, deviceName: string, onSas: (code: string) => void) {
@@ -139,6 +166,16 @@ export const useAppStore = create<AppState>(set => ({
 	fsRead(ws: string, path: string, highlight?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.fsRead(ws, path, highlight);
+	},
+
+	fsXlsx(ws: string, path: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.fsXlsx(ws, path);
+	},
+
+	scmXlsxDiff(ws: string, path: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.scmXlsxDiff(ws, path);
 	},
 
 	browserTargets() {

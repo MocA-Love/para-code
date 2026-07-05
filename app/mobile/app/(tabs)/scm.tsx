@@ -5,6 +5,7 @@ import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, 
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { DiffView } from '../../src/components/diffView.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
@@ -17,16 +18,15 @@ import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
  */
 export default function ScmScreen() {
 	const ws = useEffectiveWs();
-	const { scmStatus, scmDiff, scmCommit, scmLog, connection } = useAppStore(useShallow(s => ({
-		scmStatus: s.scmStatus, scmDiff: s.scmDiff, scmCommit: s.scmCommit, scmLog: s.scmLog, connection: s.connection,
+	const { scmStatus, scmCommit, scmLog, connection } = useAppStore(useShallow(s => ({
+		scmStatus: s.scmStatus, scmCommit: s.scmCommit, scmLog: s.scmLog, connection: s.connection,
 	})));
 
 	const [status, setStatus] = useState<ScmStatusResult | undefined>();
 	const [log, setLog] = useState<ScmLogResult | undefined>();
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
-	const [diffPath, setDiffPath] = useState<string | undefined>();
-	const [diffText, setDiffText] = useState<string | undefined>();
+	const [diffTarget, setDiffTarget] = useState<{ path: string; staged: boolean } | undefined>();
 	const [message, setMessage] = useState('');
 	const [committing, setCommitting] = useState(false);
 	const [commitResult, setCommitResult] = useState<string | undefined>();
@@ -53,23 +53,9 @@ export default function ScmScreen() {
 	useEffect(() => {
 		setStatus(undefined);
 		setLog(undefined);
-		setDiffPath(undefined);
+		setDiffTarget(undefined);
 		void refresh();
 	}, [refresh]);
-
-	const openDiff = async (path: string, staged: boolean) => {
-		setDiffPath(path);
-		setDiffText(undefined);
-		if (!wsId) {
-			return;
-		}
-		try {
-			const result = await scmDiff(wsId, path, staged);
-			setDiffText(result.diff);
-		} catch (e) {
-			setDiffText(`エラー: ${String(e instanceof Error ? e.message : e)}`);
-		}
-	};
 
 	const openCommit = (hash: string) => {
 		if (log?.webUrl) {
@@ -97,6 +83,7 @@ export default function ScmScreen() {
 	};
 
 	return (
+		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
 			<WsBar />
 			<ScrollView
@@ -140,7 +127,7 @@ export default function ScmScreen() {
 					const staged = f.x !== ' ' && f.x !== '?';
 					const letter = (f.x !== ' ' && f.x !== '?' ? f.x : f.y) || '?';
 					return (
-						<Pressable key={`${f.x}${f.y}${f.path}`} style={styles.fileRow} onPress={() => { void openDiff(f.path, staged && f.y === ' '); }}>
+						<Pressable key={`${f.x}${f.y}${f.path}`} style={styles.fileRow} onPress={() => setDiffTarget({ path: f.path, staged: staged && f.y === ' ' })}>
 							<Ionicons name="document-text-outline" size={14} color={colors.textDim} />
 							<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
 							<Text style={[styles.fileLetter, letter === 'M' ? styles.mod : letter === 'A' || letter === '?' ? styles.add : letter === 'D' ? styles.del : undefined]}>{letter === '?' ? 'A' : letter}</Text>
@@ -163,10 +150,11 @@ export default function ScmScreen() {
 				) : null}
 				<View style={{ height: 24 }} />
 			</ScrollView>
-			{diffPath !== undefined ? (
-				<DiffView path={diffPath} diff={diffText} onClose={() => setDiffPath(undefined)} />
+			{diffTarget !== undefined && wsId ? (
+				<DiffView ws={wsId} path={diffTarget.path} staged={diffTarget.staged} onClose={() => setDiffTarget(undefined)} />
 			) : null}
 		</KeyboardAvoidingView>
+		</ConnectionGate>
 	);
 }
 

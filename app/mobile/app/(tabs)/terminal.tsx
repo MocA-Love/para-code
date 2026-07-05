@@ -5,6 +5,7 @@ import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { TermView } from '../../src/components/termView.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
@@ -56,6 +57,7 @@ export default function TerminalScreen() {
 	};
 
 	return (
+		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
 			<WsBar />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
@@ -110,6 +112,7 @@ export default function TerminalScreen() {
 				</Pressable>
 			</View>
 		</KeyboardAvoidingView>
+		</ConnectionGate>
 	);
 }
 

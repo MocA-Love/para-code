@@ -62,6 +62,9 @@ interface Timers {
 
 const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 500;
+// 接続開始〜E2E確立までの上限。RNのWebSocketは接続失敗やPC不在時にonclose/oncloseが
+// 届かないまま黙り込むことがあり、これが無いと'connecting'/'handshaking'で永久に止まる。
+const CONNECT_TIMEOUT_MS = 12_000;
 
 export class RelayClient {
 	private socket: SocketLike | null = null;
@@ -70,6 +73,9 @@ export class RelayClient {
 	private closedByUser = false;
 	private reconnectAttempt = 0;
 	private reconnectHandle: unknown = null;
+	private connectTimeoutHandle: unknown = null;
+	/** 最後に何かを受信した時刻（onlineのまま死んだソケットの検出用）。 */
+	private lastReceivedAt = 0;
 
 	constructor(
 		private readonly identity: Identity,
@@ -94,9 +100,72 @@ export class RelayClient {
 			this.timers.clearTimeout(this.reconnectHandle);
 			this.reconnectHandle = null;
 		}
+		this.clearConnectTimeout();
 		this.socket?.close(1000, 'client closed');
 		this.socket = null;
 		this.setState('offline');
+	}
+
+	/**
+	 * 未接続なら即座に接続し直す（バックオフ待ちも打ち切る）。
+	 * フォアグラウンド復帰時など「今すぐ繋がってほしい」場面用。
+	 * すでにonlineなら何もしない。ユーザーが明示的に切断した状態は維持する。
+	 */
+	ensureConnected(): void {
+		if (this.closedByUser || this.state === 'online') {
+			return;
+		}
+		this.reopenSocket();
+	}
+
+	/**
+	 * 'online' のまま死んでいるソケット（zombie）の検出。呼び出し側が直前に応答を伴う
+	 * 要求（state要求など）を送っている前提で、timeoutMs 以内に何も受信しなければ
+	 * 接続を作り直す。iOSはバックグラウンドでソケットを黙って殺し、oncloseが届かない
+	 * ことがあるため、'online' 表示だけでは生存を信用できない。
+	 */
+	probeLiveness(timeoutMs: number = 5_000): void {
+		if (this.state !== 'online') {
+			this.ensureConnected();
+			return;
+		}
+		const probeAt = Date.now();
+		this.timers.setTimeout(() => {
+			if (!this.closedByUser && this.state === 'online' && this.lastReceivedAt < probeAt) {
+				this.reopenSocket();
+			}
+		}, timeoutMs);
+	}
+
+	/** バックオフ待ちを打ち切り、既存ソケットを黙って破棄して接続し直す。 */
+	private reopenSocket(): void {
+		if (this.reconnectHandle !== null) {
+			this.timers.clearTimeout(this.reconnectHandle);
+			this.reconnectHandle = null;
+		}
+		this.reconnectAttempt = 0;
+		// 死んでいる可能性のあるソケットを黙って破棄する（oncloseからの
+		// 二重再接続を防ぐためハンドラを外してから閉じる）。
+		if (this.socket) {
+			const stale = this.socket;
+			this.socket = null;
+			this.mux = null;
+			stale.onclose = null;
+			stale.onerror = null;
+			stale.onmessage = null;
+			try {
+				stale.close(4002, 'superseded');
+			} catch { /* ignore */ }
+		}
+		this.clearConnectTimeout();
+		this.openSocket();
+	}
+
+	private clearConnectTimeout(): void {
+		if (this.connectTimeoutHandle !== null) {
+			this.timers.clearTimeout(this.connectTimeoutHandle);
+			this.connectTimeoutHandle = null;
+		}
 	}
 
 	/** アプリ層フレームを送る（接続前は捨てられる）。 */
@@ -129,6 +198,17 @@ export class RelayClient {
 		socket.binaryType = 'arraybuffer';
 		this.socket = socket;
 
+		// 一定時間内にE2E確立まで到達しなければ強制的に閉じる（onclose経由で再接続）。
+		this.clearConnectTimeout();
+		this.connectTimeoutHandle = this.timers.setTimeout(() => {
+			this.connectTimeoutHandle = null;
+			if (this.socket === socket && this.state !== 'online') {
+				try {
+					socket.close(4001, 'connect timeout');
+				} catch { /* ignore */ }
+			}
+		}, CONNECT_TIMEOUT_MS);
+
 		const initiator = createInitiator(this.identity, this.credentials.pcPublicKey);
 
 		socket.onopen = () => {
@@ -139,6 +219,7 @@ export class RelayClient {
 
 		let established = false;
 		socket.onmessage = event => {
+			this.lastReceivedAt = Date.now();
 			if (typeof event.data === 'string') {
 				this.handleControl(event.data);
 				return;
@@ -160,6 +241,7 @@ export class RelayClient {
 					}
 					established = true;
 					this.reconnectAttempt = 0;
+					this.clearConnectTimeout();
 					this.setState('online');
 				} catch (error) {
 					this.onFatal(error);
@@ -192,6 +274,7 @@ export class RelayClient {
 	}
 
 	private onClosed(): void {
+		this.clearConnectTimeout();
 		this.mux = null;
 		this.socket = null;
 		if (this.closedByUser) {

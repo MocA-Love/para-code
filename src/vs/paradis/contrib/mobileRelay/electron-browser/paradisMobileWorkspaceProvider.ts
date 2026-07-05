@@ -22,7 +22,9 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileHtml } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
 import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
 
@@ -50,13 +52,15 @@ type TermOutbound =
 type ScmInbound =
 	| { t: 'status'; id: string; ws: string }
 	| { t: 'diff'; id: string; ws: string; path?: string; staged?: boolean }
+	| { t: 'xlsxDiff'; id: string; ws: string; path: string }
 	| { t: 'commit'; id: string; ws: string; message: string; all?: boolean }
 	| { t: 'log'; id: string; ws: string };
 
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
-	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean };
+	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean }
+	| { t: 'xlsx'; id: string; ws: string; path: string };
 
 const FS_READ_LIMIT = 256 * 1024; // ファイル読み取り上限（バイト）
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
@@ -91,6 +95,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly languageService: ILanguageService,
 		private readonly extensionService: IExtensionService,
 		private readonly themeService: IThemeService,
+		private readonly sharedProcessService: ISharedProcessService,
 		private readonly runGit: (repoPath: string, args: readonly string[]) => Promise<IParadisGitResult>,
 	) {
 		super();
@@ -385,6 +390,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ t: 'commit', output: result.stdout.trim() });
 					this.refreshBranches();
 				}
+			} else if (msg.t === 'xlsxDiff') {
+				// Excel差分: HEAD(git:スキーマ、git拡張のFSプロバイダ経由) vs 作業ツリーを
+				// PC版差分ビューアと同じ計算・描画でHTML化して返す。
+				const modified = await this.resolveWorkspacePathReal(msg.ws, msg.path);
+				if (!modified) {
+					reply({ error: `invalid path: ${msg.path}` });
+					return;
+				}
+				const original = modified.with({ scheme: 'git', query: JSON.stringify({ path: modified.fsPath, ref: 'HEAD' }) });
+				const html = await renderSpreadsheetDiffMobileHtml(this.fileService, this.sharedProcessService, original, modified, 'HEAD', '作業ツリー');
+				reply({ t: 'xlsxDiff', html });
 			} else if (msg.t === 'log') {
 				const [result, remote] = await Promise.all([
 					this.runGit(repoPath, ['log', '-n', '8', '--pretty=format:%H%x09%ar%x09%s']),
@@ -510,7 +526,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		try {
-			if (msg.t === 'list') {
+			if (msg.t === 'xlsx') {
+				const html = await renderSpreadsheetMobileHtml(this.fileService, this.sharedProcessService, uri);
+				reply({ t: 'xlsx', html });
+			} else if (msg.t === 'list') {
 				const stat = await this.fileService.resolve(uri);
 				const entries = (stat.children ?? [])
 					.filter(c => !c.isSymbolicLink) // シンボリックリンク越えの読み取りを防止（設計書 §8）

@@ -1,23 +1,31 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 /**
- * unified diff のフルスクリーンビューア。GitHub モバイルアプリ風に、
- * 行番号つき・追加行は緑背景・削除行は赤背景・ハンク見出しは青系で表示する。
+ * 変更ファイルのフルスクリーンビューア。
+ * - テキスト: GitHub モバイルアプリ風の unified diff（行番号つき・緑/赤背景）
+ * - .md / .html: 「Diff / レンダー」を切り替えられる（レンダーは現在の作業ツリーの内容）
+ * - .xlsx / .xlsm: PC側でレンダリングされたExcel差分HTML（HEAD vs 作業ツリー、セル色分け）を
+ *   表示し、「レンダー」で現在のブックそのものも見られる。どちらもピンチ拡大縮小可
  */
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { WebView } from 'react-native-webview';
+import { useShallow } from 'zustand/react/shallow';
+import { useAppStore } from '../appState.js';
+import { buildMarkdownHtml } from './fileViewer.js';
 import { colors } from '../theme.js';
 
 interface DiffViewProps {
+	ws: string;
 	path: string;
-	/** unified diff テキスト。undefined は読み込み中。 */
-	diff: string | undefined;
+	staged: boolean;
 	onClose: () => void;
 }
 
 type DiffRowKind = 'hunk' | 'add' | 'del' | 'ctx';
+type ViewMode = 'diff' | 'render';
 
 interface DiffRow {
 	kind: DiffRowKind;
@@ -65,12 +73,73 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 	return rows;
 }
 
-export function DiffView({ path, diff, onClose }: DiffViewProps) {
-	const rows = useMemo(() => (diff === undefined ? [] : parseUnifiedDiff(diff)), [diff]);
+export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
+	const { scmDiff, scmXlsxDiff, fsRead, fsXlsx } = useAppStore(useShallow(s => ({
+		scmDiff: s.scmDiff, scmXlsxDiff: s.scmXlsxDiff, fsRead: s.fsRead, fsXlsx: s.fsXlsx,
+	})));
+	const name = path.split('/').pop() ?? path;
+	const kind = /\.(?:md|markdown)$/i.test(name) ? 'markdown'
+		: /\.(?:html?|xhtml)$/i.test(name) ? 'html'
+			: /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : 'other';
+
+	const [mode, setMode] = useState<ViewMode>('diff');
+	const [diffText, setDiffText] = useState<string | undefined>();
+	const [diffHtml, setDiffHtml] = useState<string | undefined>();
+	const [renderHtml, setRenderHtml] = useState<string | undefined>();
+	const [error, setError] = useState<string | undefined>();
+
+	// Diff モードのデータ取得（初回のみ）
+	useEffect(() => {
+		let cancelled = false;
+		if (kind === 'spreadsheet') {
+			scmXlsxDiff(ws, path)
+				.then(r => { if (!cancelled) { setDiffHtml(r.html); } })
+				.catch(e => { if (!cancelled) { setError(String(e instanceof Error ? e.message : e)); } });
+		} else {
+			scmDiff(ws, path, staged)
+				.then(r => { if (!cancelled) { setDiffText(r.diff); } })
+				.catch(e => { if (!cancelled) { setError(String(e instanceof Error ? e.message : e)); } });
+		}
+		return () => { cancelled = true; };
+	}, [ws, path, staged, kind, scmDiff, scmXlsxDiff]);
+
+	// レンダーモードのデータ取得（初めて切り替えたときに一度だけ）
+	useEffect(() => {
+		if (mode !== 'render' || renderHtml !== undefined) {
+			return;
+		}
+		let cancelled = false;
+		const load = async () => {
+			try {
+				if (kind === 'spreadsheet') {
+					const r = await fsXlsx(ws, path);
+					if (!cancelled) {
+						setRenderHtml(r.html);
+					}
+				} else {
+					const r = await fsRead(ws, path);
+					if (!cancelled) {
+						setRenderHtml(kind === 'markdown' ? buildMarkdownHtml(r) : r.content);
+					}
+				}
+			} catch (e) {
+				if (!cancelled) {
+					setError(String(e instanceof Error ? e.message : e));
+				}
+			}
+		};
+		void load();
+		return () => { cancelled = true; };
+	}, [mode, renderHtml, kind, ws, path, fsRead, fsXlsx]);
+
+	const rows = useMemo(() => (diffText === undefined ? [] : parseUnifiedDiff(diffText)), [diffText]);
 	const stats = useMemo(() => ({
 		add: rows.filter(r => r.kind === 'add').length,
 		del: rows.filter(r => r.kind === 'del').length,
 	}), [rows]);
+
+	const showWebView = mode === 'render' ? renderHtml : kind === 'spreadsheet' ? diffHtml : undefined;
+	const loading = mode === 'render' ? renderHtml === undefined : kind === 'spreadsheet' ? diffHtml === undefined : diffText === undefined;
 
 	return (
 		<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
@@ -78,38 +147,65 @@ export function DiffView({ path, diff, onClose }: DiffViewProps) {
 				<View style={styles.header}>
 					<Ionicons name="git-compare-outline" size={16} color={colors.textDim} />
 					<Text style={styles.title} numberOfLines={1}>{path}</Text>
-					<Text style={styles.statAdd}>+{stats.add}</Text>
-					<Text style={styles.statDel}>-{stats.del}</Text>
+					{mode === 'diff' && kind !== 'spreadsheet' && diffText !== undefined ? (
+						<>
+							<Text style={styles.statAdd}>+{stats.add}</Text>
+							<Text style={styles.statDel}>-{stats.del}</Text>
+						</>
+					) : null}
+					{kind !== 'other' ? (
+						<View style={styles.segment}>
+							<Pressable style={[styles.segmentBtn, mode === 'diff' && styles.segmentBtnActive]} onPress={() => setMode('diff')}>
+								<Text style={[styles.segmentText, mode === 'diff' && styles.segmentTextActive]}>Diff</Text>
+							</Pressable>
+							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => setMode('render')}>
+								<Text style={[styles.segmentText, mode === 'render' && styles.segmentTextActive]}>レンダー</Text>
+							</Pressable>
+						</View>
+					) : null}
 					<Pressable onPress={onClose} hitSlop={8} accessibilityLabel="閉じる">
 						<Ionicons name="close" size={22} color={colors.text} />
 					</Pressable>
 				</View>
-				<ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
-					{diff === undefined ? <Text style={styles.dim}>読み込み中…</Text> : null}
-					{diff !== undefined && rows.length === 0 ? <Text style={styles.dim}>{diff.trim() || '差分はありません'}</Text> : null}
-					{rows.map((row, i) => {
-						if (row.kind === 'hunk') {
+				{error ? <Text style={styles.error}>{error}</Text> : null}
+				{showWebView !== undefined ? (
+					// xlsx(自前生成HTMLのシート切替スクリプトのみ)以外はJS無効。
+					// レンダーHTML(.html raw内容)のスクリプトは実行しない。
+					<WebView
+						style={styles.web}
+						source={{ html: showWebView }}
+						originWhitelist={['*']}
+						javaScriptEnabled={kind === 'spreadsheet'}
+					/>
+				) : loading && !error ? (
+					<Text style={styles.dim}>読み込み中…</Text>
+				) : (
+					<ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
+						{rows.length === 0 && diffText !== undefined ? <Text style={styles.dim}>{diffText.trim() || '差分はありません'}</Text> : null}
+						{rows.map((row, i) => {
+							if (row.kind === 'hunk') {
+								return (
+									<View key={i} style={[styles.row, styles.hunkRow]}>
+										<Text style={styles.hunkText} numberOfLines={1}>{row.text}</Text>
+									</View>
+								);
+							}
+							const rowStyle = row.kind === 'add' ? styles.addRow : row.kind === 'del' ? styles.delRow : undefined;
+							const numStyle = row.kind === 'add' ? styles.addNum : row.kind === 'del' ? styles.delNum : undefined;
+							const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' ';
+							const signStyle = row.kind === 'add' ? styles.signAdd : row.kind === 'del' ? styles.signDel : styles.signCtx;
 							return (
-								<View key={i} style={[styles.row, styles.hunkRow]}>
-									<Text style={styles.hunkText} numberOfLines={1}>{row.text}</Text>
+								<View key={i} style={[styles.row, rowStyle]}>
+									<Text style={[styles.lineNo, numStyle]}>{row.oldNo ?? ''}</Text>
+									<Text style={[styles.lineNo, numStyle]}>{row.newNo ?? ''}</Text>
+									<Text style={[styles.sign, signStyle]}>{sign}</Text>
+									<Text style={styles.code}>{row.text || ' '}</Text>
 								</View>
 							);
-						}
-						const rowStyle = row.kind === 'add' ? styles.addRow : row.kind === 'del' ? styles.delRow : undefined;
-						const numStyle = row.kind === 'add' ? styles.addNum : row.kind === 'del' ? styles.delNum : undefined;
-						const sign = row.kind === 'add' ? '+' : row.kind === 'del' ? '-' : ' ';
-						const signStyle = row.kind === 'add' ? styles.signAdd : row.kind === 'del' ? styles.signDel : styles.signCtx;
-						return (
-							<View key={i} style={[styles.row, rowStyle]}>
-								<Text style={[styles.lineNo, numStyle]}>{row.oldNo ?? ''}</Text>
-								<Text style={[styles.lineNo, numStyle]}>{row.newNo ?? ''}</Text>
-								<Text style={[styles.sign, signStyle]}>{sign}</Text>
-								<Text style={styles.code}>{row.text || ' '}</Text>
-							</View>
-						);
-					})}
-					<View style={{ height: 32 }} />
-				</ScrollView>
+						})}
+						<View style={{ height: 32 }} />
+					</ScrollView>
+				)}
 			</View>
 		</Modal>
 	);
@@ -122,7 +218,14 @@ const styles = StyleSheet.create({
 	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 58, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
 	title: { flex: 1, color: colors.text, fontSize: 13, fontFamily: MONO },
 	statAdd: { color: '#3fb950', fontSize: 12, fontFamily: MONO, fontWeight: '700' },
-	statDel: { color: '#f85149', fontSize: 12, fontFamily: MONO, fontWeight: '700', marginRight: 4 },
+	statDel: { color: '#f85149', fontSize: 12, fontFamily: MONO, fontWeight: '700' },
+	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	segmentBtn: { paddingHorizontal: 10, paddingVertical: 5 },
+	segmentBtnActive: { backgroundColor: 'rgba(0,122,204,.25)' },
+	segmentText: { color: colors.textDim, fontSize: 12 },
+	segmentTextActive: { color: colors.text, fontWeight: '600' },
+	web: { flex: 1 },
+	error: { color: colors.red, fontSize: 12, paddingHorizontal: 16, paddingVertical: 8 },
 	body: { flex: 1 },
 	bodyContent: { paddingVertical: 8 },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 24 },
