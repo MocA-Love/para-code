@@ -20,6 +20,8 @@ interface FileViewerProps {
 	path: string;
 	/** fsRead の結果。undefined は読み込み中。 */
 	result: FsReadResult | undefined;
+	/** xlsx等: PC側でレンダリングされた静的HTML（指定時はこちらを優先表示）。 */
+	spreadsheetHtml?: string;
 	onClose: () => void;
 }
 
@@ -44,8 +46,8 @@ function buildCodeHtml(result: FsReadResult): string {
 </head><body>${body}</body></html>`;
 }
 
-/** markdown のレンダーHTML（PCテーマの背景/前景に合わせた読みやすいスタイル）。 */
-function buildMarkdownHtml(result: FsReadResult): string {
+/** markdown のレンダーHTML（PCテーマの背景/前景に合わせた読みやすいスタイル）。DiffViewのレンダーモードと共用。 */
+export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 'fg'>): string {
 	const bg = result.bg ?? '#1e1e1e';
 	const fg = result.fg ?? '#d4d4d4';
 	const rendered = marked.parse(result.content, { async: false });
@@ -66,12 +68,15 @@ function buildMarkdownHtml(result: FsReadResult): string {
 </head><body>${rendered}</body></html>`;
 }
 
-export function FileViewer({ path, result, onClose }: FileViewerProps) {
+export function FileViewer({ path, result, spreadsheetHtml, onClose }: FileViewerProps) {
 	const name = path.split('/').pop() ?? path;
-	const kind = /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
+	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
 	const [mode, setMode] = useState<ViewMode>(kind === 'other' ? 'code' : 'render');
 
 	const html = useMemo(() => {
+		if (kind === 'spreadsheet') {
+			return spreadsheetHtml;
+		}
 		if (!result) {
 			return undefined;
 		}
@@ -82,7 +87,7 @@ export function FileViewer({ path, result, onClose }: FileViewerProps) {
 			return buildMarkdownHtml(result);
 		}
 		return buildCodeHtml(result);
-	}, [result, mode, kind]);
+	}, [result, spreadsheetHtml, mode, kind]);
 
 	return (
 		<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
@@ -90,7 +95,7 @@ export function FileViewer({ path, result, onClose }: FileViewerProps) {
 				<View style={styles.header}>
 					<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
 					<Text style={styles.title} numberOfLines={1}>{path}</Text>
-					{kind !== 'other' ? (
+					{kind === 'markdown' || kind === 'html' ? (
 						<View style={styles.segment}>
 							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => setMode('render')}>
 								<Text style={[styles.segmentText, mode === 'render' && styles.segmentTextActive]}>レンダー</Text>
@@ -108,13 +113,14 @@ export function FileViewer({ path, result, onClose }: FileViewerProps) {
 					<Text style={styles.truncated}>サイズ上限のため先頭のみ表示しています</Text>
 				) : null}
 				{html !== undefined ? (
-					// javaScriptEnabled は常に false（リポジトリ内の信頼できない .html の
-					// スクリプトを端末で実行しない。レンダーは静的表示のみ）
+					// javaScriptEnabled はスプレッドシート（PC側で自前生成したHTMLのシート切替
+					// スクリプトのみ）を除き false。リポジトリ内の信頼できない .html の
+					// スクリプトは端末で実行しない（レンダーは静的表示のみ）。
 					<WebView
 						style={styles.web}
 						source={{ html }}
 						originWhitelist={['*']}
-						javaScriptEnabled={false}
+						javaScriptEnabled={kind === 'spreadsheet'}
 					/>
 				) : (
 					<Text style={styles.dim}>読み込み中…</Text>

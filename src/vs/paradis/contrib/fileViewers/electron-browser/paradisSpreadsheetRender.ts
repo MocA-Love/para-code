@@ -9,7 +9,7 @@
 // Excelビューア/差分で共有する DOM 描画ヘルパー(Vanilla DOM。Superset の SpreadsheetViewer.tsx 相当)。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagonalBorder, IParadisRenderAnchor, IParadisRenderShape } from '../common/paradisSpreadsheet.js';
+import { IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagonalBorder, IParadisRenderAnchor, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
 
 const $ = dom.$;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -561,4 +561,93 @@ export function computeShapeBBox(shape: IParadisRenderShape, rowYByExcelRow: Map
 	const x = Math.min(tl.x, br.x);
 	const y = Math.min(tl.y, br.y);
 	return { x, y, w: Math.abs(br.x - tl.x), h: Math.abs(br.y - tl.y) };
+}
+
+/** buildSheetTableDom の戻り値。呼び出し側がレイアウト確定後の後処理に使う参照を含む。 */
+export interface IParadisSheetTableDom {
+	readonly table: HTMLTableElement;
+	readonly naturalWidth: number;
+	readonly thead: HTMLElement;
+	readonly headCells: HTMLElement[];
+	readonly dataRows: { excelRow: number; tr: HTMLElement }[];
+	readonly shrinkCells: { td: HTMLElement; span: HTMLElement }[];
+	readonly overflowCells: IParadisOverflowItem[];
+}
+
+/**
+ * 1シートぶんのテーブルDOMを構築する（ビューア本体とモバイル向け静的HTML生成で共用）。
+ * shrinkToFit / セルまたぎオーバーフローはレイアウト確定後に applyShrinkToFit /
+ * applyOverflow を呼ぶ必要があるため、対象セルを戻り値で返す。
+ */
+export function buildSheetTableDom(sheet: IParadisSheetData): IParadisSheetTableDom {
+	const table = $('table.paradis-spreadsheet-table') as HTMLTableElement;
+	if (sheet.showGridLines !== false) {
+		table.classList.add('grid');
+	}
+	const naturalWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((sum, w) => sum + w, 0);
+	table.style.width = `${naturalWidth}px`;
+
+	const colgroup = dom.append(table, $('colgroup'));
+	const rowNumCol = dom.append(colgroup, $('col')) as HTMLTableColElement;
+	rowNumCol.style.width = `${PARADIS_ROW_NUM_COL_WIDTH}px`;
+	for (const w of sheet.columnWidths) {
+		const col = dom.append(colgroup, $('col')) as HTMLTableColElement;
+		if (w) {
+			col.style.width = `${w}px`;
+		}
+	}
+
+	const thead = dom.append(table, $('thead.paradis-spreadsheet-head'));
+	const headCells: HTMLElement[] = [];
+	const headRow = dom.append(thead, $('tr'));
+	dom.append(headRow, $('th.paradis-spreadsheet-corner'));
+	for (let i = 0; i < sheet.columnCount; i++) {
+		const th = dom.append(headRow, $('th.paradis-spreadsheet-colhead'));
+		th.textContent = getColumnLabel(i);
+		headCells.push(th);
+	}
+
+	const tbody = dom.append(table, $('tbody'));
+	const dataRows: { excelRow: number; tr: HTMLElement }[] = [];
+	const shrinkCells: { td: HTMLElement; span: HTMLElement }[] = [];
+	const overflowCells: IParadisOverflowItem[] = [];
+	let displayRowNum = 0;
+	for (const row of sheet.rows) {
+		displayRowNum++;
+		const tr = dom.append(tbody, $('tr')) as HTMLTableRowElement;
+		tr.style.height = `${row.height}px`;
+		dataRows.push({ excelRow: row.excelRow, tr });
+		const rowHead = dom.append(tr, $('td.paradis-spreadsheet-rowhead'));
+		rowHead.textContent = String(displayRowNum);
+		for (let ci = 0; ci < row.cells.length; ci++) {
+			const cell = row.cells[ci];
+			if (cell.hidden) {
+				continue;
+			}
+			const td = dom.append(tr, $('td')) as HTMLTableCellElement;
+			if (cell.colSpan && cell.colSpan > 1) {
+				td.colSpan = cell.colSpan;
+			}
+			if (cell.rowSpan && cell.rowSpan > 1) {
+				td.rowSpan = cell.rowSpan;
+			}
+			applyBaseCellStyle(td, cell);
+			if (cell.shrinkToFit && !cell.wrapText && !cell.verticalText) {
+				shrinkCells.push({ td, span: createShrinkSpan(td, cell) });
+			} else {
+				const toward = overflowToward(cell);
+				const room = toward !== 'none' ? computeOverflowRoom(row.cells, ci, sheet.columnWidths) : undefined;
+				if (toward !== 'none' && room && (room.left > 0 || room.right > 0)) {
+					overflowCells.push({ td, span: createOverflowSpan(td, cell), toward, leftRoom: room.left, rightRoom: room.right, valign: (cell.style.verticalAlign as string) || 'bottom' });
+				} else {
+					setCellContent(td, cell);
+				}
+			}
+			if (cell.diagonal) {
+				appendDiagonalOverlay(td, cell.diagonal);
+			}
+		}
+	}
+
+	return { table, naturalWidth, thead, headCells, dataRows, shrinkCells, overflowCells };
 }

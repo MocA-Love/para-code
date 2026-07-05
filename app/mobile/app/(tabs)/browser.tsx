@@ -5,6 +5,7 @@ import { ActivityIndicator, GestureResponderEvent, Image, LayoutChangeEvent, Pre
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { WsBar } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
 
@@ -74,6 +75,7 @@ export default function BrowserScreen() {
 
 	if (activeUrl === undefined) {
 		return (
+			<ConnectionGate>
 			<View style={styles.screen}>
 				<WsBar />
 				<ScrollView style={styles.picker} contentContainerStyle={styles.pickerContent}>
@@ -94,10 +96,12 @@ export default function BrowserScreen() {
 					</Pressable>
 				</ScrollView>
 			</View>
+			</ConnectionGate>
 		);
 	}
 
 	return (
+		<ConnectionGate>
 		<View style={styles.screen}>
 			<View style={styles.syncBanner}>
 				<Ionicons name="link-outline" size={13} color={colors.accent} />
@@ -143,6 +147,7 @@ export default function BrowserScreen() {
 				</Pressable>
 			</View>
 		</View>
+		</ConnectionGate>
 	);
 }
 

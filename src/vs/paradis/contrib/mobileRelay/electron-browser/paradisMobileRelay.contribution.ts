@@ -99,6 +99,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			languageService,
 			extensionService,
 			themeService,
+			sharedProcessService,
 			(repoPath, args) => this.service.runGit(repoPath, args),
 		));
 

@@ -14,9 +14,10 @@ import { colors } from '../../src/theme.js';
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { connection, pcOnline, workspace, paired, ready, notifications, setSelectedWs, setSelectedTerminalId } = useAppStore(useShallow(s => ({
+	const { connection, pcOnline, workspace, paired, ready, notifications, setSelectedWs, setSelectedTerminalId, manualOffline, disconnectRelay, connectRelay } = useAppStore(useShallow(s => ({
 		connection: s.connection, pcOnline: s.pcOnline, workspace: s.workspace, paired: s.paired, ready: s.ready,
 		notifications: s.notifications, setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
+		manualOffline: s.manualOffline, disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay,
 	})));
 
 	if (ready && !paired) {
@@ -60,13 +61,26 @@ export default function HomeScreen() {
 			) : null}
 
 			<View style={styles.card}>
-				<Text style={styles.cardLabel}>接続中のPC</Text>
+				<View style={styles.cardHeader}>
+					<Text style={styles.cardLabel}>接続中のPC</Text>
+					{connection === 'online' ? (
+						<Pressable style={styles.connToggle} onPress={disconnectRelay} accessibilityLabel="切断">
+							<Ionicons name="power-outline" size={12} color={colors.red} />
+							<Text style={styles.connToggleTextOff}>切断</Text>
+						</Pressable>
+					) : (
+						<Pressable style={styles.connToggle} onPress={connectRelay} accessibilityLabel="接続">
+							<Ionicons name="power-outline" size={12} color={colors.green} />
+							<Text style={styles.connToggleTextOn}>接続</Text>
+						</Pressable>
+					)}
+				</View>
 				<View style={styles.pcRow}>
 					<View style={styles.pcIcon}><Ionicons name="laptop-outline" size={20} color="#fff" /></View>
 					<View style={{ flex: 1 }}>
 						<Text style={styles.pcName}>Para Code</Text>
 						<Text style={[styles.pcState, !online && styles.pcStateOff]}>
-							{online ? '● 接続中 · リレー経由 (E2E暗号化)' : connection === 'online' ? '○ PCオフライン' : '接続中…'}
+							{online ? '● 接続中 · リレー経由 (E2E暗号化)' : connection === 'online' ? '○ PCオフライン' : manualOffline ? '○ 切断中' : '接続中…'}
 						</Text>
 					</View>
 				</View>
@@ -153,7 +167,11 @@ const styles = StyleSheet.create({
 	pushTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
 	pushMsg: { color: colors.textDim, fontSize: 12, marginTop: 1 },
 	card: { backgroundColor: colors.surface, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: colors.border },
-	cardLabel: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginBottom: 10, letterSpacing: 0.5 },
+	cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+	cardLabel: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
+	connToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4, backgroundColor: colors.surface2 },
+	connToggleTextOff: { color: colors.red, fontSize: 11, fontWeight: '600' },
+	connToggleTextOn: { color: colors.green, fontSize: 11, fontWeight: '600' },
 	pcRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
 	pcIcon: { width: 40, height: 40, borderRadius: 10, backgroundColor: colors.accent2, alignItems: 'center', justifyContent: 'center' },
 	pcName: { color: '#fff', fontSize: 15, fontWeight: '600' },
