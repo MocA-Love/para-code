@@ -57,8 +57,59 @@
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
+.paradis-ccusage-seg button:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+.paradis-ccusage-seg button:disabled:hover {
+	background: transparent;
+}
+
 .paradis-ccusage-toolbar-spacer {
 	flex: 1;
+}
+
+/* 「カスタム…」選択時にツールバー直下に開く日付範囲入力行 */
+.paradis-ccusage-custom-range {
+	display: none;
+	align-items: center;
+	gap: 8px;
+	padding: 0 20px 10px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+
+.paradis-ccusage-custom-range.open {
+	display: flex;
+}
+
+.paradis-ccusage-custom-range input[type=date] {
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35)));
+	border-radius: 4px;
+	font-size: 12px;
+	font-family: inherit;
+	padding: 3px 6px;
+}
+
+.paradis-ccusage-custom-range .arrow {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ccusage-custom-range button {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	border: none;
+	border-radius: 4px;
+	font-size: 12px;
+	font-family: inherit;
+	padding: 4px 10px;
+	cursor: pointer;
+}
+
+.paradis-ccusage-custom-range button:hover {
+	background: var(--vscode-button-hoverBackground);
 }
 
 .paradis-ccusage-updated {

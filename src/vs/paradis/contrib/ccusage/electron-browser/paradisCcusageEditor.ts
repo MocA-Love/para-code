@@ -31,7 +31,7 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ParadisCcusageAgent } from '../common/paradisCcusage.js';
-import { IParadisCcusageDashboardData, IParadisCcusageDayData, ParadisCcusageClient } from './paradisCcusageClient.js';
+import { FETCH_WINDOW_DAYS, IParadisCcusageDashboardData, IParadisCcusageDayData, IParadisCcusageModelSlice, ParadisCcusageClient } from './paradisCcusageClient.js';
 import { PARADIS_CCUSAGE_EDITOR_ID } from './paradisCcusageInput.js';
 
 const $ = dom.$;
@@ -55,6 +55,29 @@ const MAX_SESSION_ROWS = 8;
 
 type AgentFilter = 'all' | ParadisCcusageAgent;
 
+/** 期間プリセット。'custom' のときは常に customRange が設定されている。 */
+type ParadisCcusagePresetKey = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' | '7d' | '30d' | '90d' | 'custom';
+/** チャートの表示単位。7日未満の期間では daily に強制される(effectiveGranularity 参照)。 */
+type ParadisCcusageGranularity = 'daily' | 'weekly';
+
+interface IDateRange {
+	/** YYYY-MM-DD、この日を含む。 */
+	readonly from: string;
+	/** YYYY-MM-DD、この日を含む。 */
+	readonly to: string;
+}
+
+/** 日別/週別チャートの1本のバー・ポイントに対応する集計単位。 */
+interface IBucket {
+	/** ソート用キー(バケット開始日、YYYY-MM-DD)。 */
+	readonly key: string;
+	/** X軸目盛り用の短いラベル(例: "7/4")。 */
+	readonly axisLabel: string;
+	/** ツールチップ見出し用のラベル(daily は正確な日付、weekly は "Week of 7/4" 形式)。 */
+	readonly tooltipLabel: string;
+	readonly models: IParadisCcusageModelSlice[];
+}
+
 interface IModelTotal {
 	readonly model: string;
 	readonly agent: ParadisCcusageAgent;
@@ -74,14 +97,20 @@ export class ParadisCcusageEditor extends EditorPane {
 	private tooltip: HTMLElement | undefined;
 	private updatedLabel: HTMLElement | undefined;
 	private refreshIcon: HTMLElement | undefined;
-	private periodButtons: { days: number; button: HTMLButtonElement }[] = [];
+	private presetButtons: { key: ParadisCcusagePresetKey; button: HTMLButtonElement }[] = [];
+	private granularityButtons: { granularity: ParadisCcusageGranularity; button: HTMLButtonElement }[] = [];
 	private agentButtons: { agent: AgentFilter; button: HTMLButtonElement }[] = [];
+	private customRangeRow: HTMLElement | undefined;
+	private customFromInput: HTMLInputElement | undefined;
+	private customToInput: HTMLInputElement | undefined;
 
 	private readonly client: ParadisCcusageClient;
 	private readonly bodyDisposables = this._register(new DisposableStore());
 	private readonly relayoutScheduler = this._register(new RunOnceScheduler(() => this.renderBody(), 100));
 
-	private periodDays = 30;
+	private presetKey: ParadisCcusagePresetKey = '30d';
+	private customRange: IDateRange | undefined;
+	private granularity: ParadisCcusageGranularity = 'daily';
 	private agentFilter: AgentFilter = 'all';
 	private data: IParadisCcusageDashboardData | undefined;
 	private lastError: string | undefined;
@@ -107,18 +136,52 @@ export class ParadisCcusageEditor extends EditorPane {
 		// フィルター行(1行・下の全カードに適用)
 		const toolbar = dom.append(this.root, $('.paradis-ccusage-toolbar'));
 
-		const periodSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
-		const periods: { days: number; label: string }[] = [
-			{ days: 1, label: localize('paradis.ccusage.period.today', "Today") },
-			{ days: 7, label: localize('paradis.ccusage.period.7d', "7 Days") },
-			{ days: 30, label: localize('paradis.ccusage.period.30d', "30 Days") },
-			{ days: 90, label: localize('paradis.ccusage.period.90d', "90 Days") },
+		// プリセットは「特定の日を指す」グループと「直近N日/カスタム」グループの2つの seg に分け、
+		// 視覚的にまとまりを作る(ボタンが増えても1グループの見た目は詰まりすぎない)。
+		const pointPresetSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
+		const pointPresets: { key: ParadisCcusagePresetKey; label: string }[] = [
+			{ key: 'today', label: localize('paradis.ccusage.period.today', "Today") },
+			{ key: 'yesterday', label: localize('paradis.ccusage.period.yesterday', "Yesterday") },
+			{ key: 'thisWeek', label: localize('paradis.ccusage.period.thisWeek', "This Week") },
+			{ key: 'lastWeek', label: localize('paradis.ccusage.period.lastWeek', "Last Week") },
 		];
-		for (const period of periods) {
-			const button = dom.append(periodSeg, $('button')) as HTMLButtonElement;
-			button.textContent = period.label;
-			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setPeriod(period.days)));
-			this.periodButtons.push({ days: period.days, button });
+		for (const preset of pointPresets) {
+			const button = dom.append(pointPresetSeg, $('button')) as HTMLButtonElement;
+			button.textContent = preset.label;
+			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setPreset(preset.key)));
+			this.presetButtons.push({ key: preset.key, button });
+		}
+
+		const rangePresetSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
+		const rangePresets: { key: ParadisCcusagePresetKey; label: string }[] = [
+			{ key: '7d', label: localize('paradis.ccusage.period.7d', "7 Days") },
+			{ key: '30d', label: localize('paradis.ccusage.period.30d', "30 Days") },
+			{ key: '90d', label: localize('paradis.ccusage.period.90d', "90 Days") },
+			{ key: 'custom', label: localize('paradis.ccusage.period.custom', "Custom…") },
+		];
+		for (const preset of rangePresets) {
+			const button = dom.append(rangePresetSeg, $('button')) as HTMLButtonElement;
+			button.textContent = preset.label;
+			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => {
+				if (preset.key === 'custom') {
+					this.toggleCustomRangePanel();
+				} else {
+					this.setPreset(preset.key);
+				}
+			}));
+			this.presetButtons.push({ key: preset.key, button });
+		}
+
+		const granularitySeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
+		const granularities: { granularity: ParadisCcusageGranularity; label: string }[] = [
+			{ granularity: 'daily', label: localize('paradis.ccusage.granularity.daily', "Daily") },
+			{ granularity: 'weekly', label: localize('paradis.ccusage.granularity.weekly', "Weekly") },
+		];
+		for (const g of granularities) {
+			const button = dom.append(granularitySeg, $('button')) as HTMLButtonElement;
+			button.textContent = g.label;
+			this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.setGranularity(g.granularity)));
+			this.granularityButtons.push({ granularity: g.granularity, button });
 		}
 
 		const agentSeg = dom.append(toolbar, $('.paradis-ccusage-seg'));
@@ -142,6 +205,17 @@ export class ParadisCcusageEditor extends EditorPane {
 		this.refreshIcon = dom.append(refresh, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		dom.append(refresh, $('span')).textContent = localize('paradis.ccusage.refresh', "Refresh");
 		this._register(dom.addDisposableListener(refresh, dom.EventType.CLICK, () => this.refresh(true)));
+
+		// 「カスタム…」選択時にツールバー下に開く日付範囲入力(常に取得済みの90日窓の中に制限)
+		this.customRangeRow = dom.append(this.root, $('.paradis-ccusage-custom-range'));
+		this.customFromInput = dom.append(this.customRangeRow, $('input')) as HTMLInputElement;
+		this.customFromInput.type = 'date';
+		dom.append(this.customRangeRow, $('span.arrow')).textContent = '→';
+		this.customToInput = dom.append(this.customRangeRow, $('input')) as HTMLInputElement;
+		this.customToInput.type = 'date';
+		const applyButton = dom.append(this.customRangeRow, $('button')) as HTMLButtonElement;
+		applyButton.textContent = localize('paradis.ccusage.customRange.apply', "Apply");
+		this._register(dom.addDisposableListener(applyButton, dom.EventType.CLICK, () => this.applyCustomRange()));
 
 		this.body = dom.append(this.root, $('.paradis-ccusage-body'));
 		this.tooltip = dom.append(this.root, $('.paradis-ccusage-tooltip'));
@@ -168,21 +242,94 @@ export class ParadisCcusageEditor extends EditorPane {
 		this.body?.focus();
 	}
 
-	private setPeriod(days: number): void {
-		if (this.periodDays === days) {
+	private setPreset(key: ParadisCcusagePresetKey): void {
+		if (this.presetKey === key && !this.customRange) {
 			return;
 		}
-		this.periodDays = days;
+		this.presetKey = key;
+		this.customRange = undefined;
+		this.customRangeRow?.classList.remove('open');
 		this.updateFilterButtons();
 		// データは常に90日分保持しているので、期間切り替えは再描画(日付スライス)だけで済む
 		this.renderBody();
 	}
 
-	/** 選択中の期間の開始日(YYYY-MM-DD、この日を含む)。 */
-	private periodCutoff(): string {
-		const since = new Date();
-		since.setDate(since.getDate() - (this.periodDays - 1));
-		return localDateString(since);
+	private setGranularity(granularity: ParadisCcusageGranularity): void {
+		if (this.granularity === granularity) {
+			return;
+		}
+		this.granularity = granularity;
+		this.updateFilterButtons();
+		this.renderBody();
+	}
+
+	private toggleCustomRangePanel(): void {
+		if (!this.customRangeRow || !this.customFromInput || !this.customToInput) {
+			return;
+		}
+		const opening = !this.customRangeRow.classList.contains('open');
+		if (opening) {
+			// 開くたびに範囲(取得済みの90日窓)を最新化する。タブを長時間開きっぱなしでも日付がずれない。
+			const today = new Date();
+			const minStr = localDateString(addDaysLocal(today, -(FETCH_WINDOW_DAYS - 1)));
+			const maxStr = localDateString(today);
+			this.customFromInput.min = minStr;
+			this.customFromInput.max = maxStr;
+			this.customToInput.min = minStr;
+			this.customToInput.max = maxStr;
+			this.customFromInput.value ||= this.customRange?.from ?? minStr;
+			this.customToInput.value ||= this.customRange?.to ?? maxStr;
+		}
+		this.customRangeRow.classList.toggle('open', opening);
+	}
+
+	private applyCustomRange(): void {
+		if (!this.customFromInput?.value || !this.customToInput?.value) {
+			return;
+		}
+		// <input type=date> の min/max はピッカー操作の補助でしかなく、値そのものは窓外でも
+		// 確定しうる(特にタブを日をまたいで開きっぱなしにした場合)ため、取得済みの90日窓へ改めてクランプする。
+		const today = new Date();
+		const minStr = localDateString(addDaysLocal(today, -(FETCH_WINDOW_DAYS - 1)));
+		const maxStr = localDateString(today);
+		const clamp = (value: string) => value < minStr ? minStr : (value > maxStr ? maxStr : value);
+		let from = clamp(this.customFromInput.value);
+		let to = clamp(this.customToInput.value);
+		if (from > to) {
+			[from, to] = [to, from];
+		}
+		this.customRange = { from, to };
+		this.presetKey = 'custom';
+		this.customRangeRow?.classList.remove('open');
+		this.updateFilterButtons();
+		this.renderBody();
+	}
+
+	/** 選択中のプリセット/カスタム範囲を日付レンジ(両端含む)として返す。 */
+	private currentRange(): IDateRange {
+		return this.customRange ?? presetRange(this.presetKey, new Date());
+	}
+
+	/** 週別表示は最低7日分ないと意味がないため、短い期間では強制的に daily にする。 */
+	private effectiveGranularity(rangeDays: number): ParadisCcusageGranularity {
+		return rangeDays < 7 ? 'daily' : this.granularity;
+	}
+
+	/** KPI カードの「コスト」ラベルを選択中のプリセットに合わせて出し分ける。 */
+	private periodLabel(): string {
+		if (this.customRange) {
+			return localize('paradis.ccusage.kpi.costCustom', "Cost (custom range)");
+		}
+		switch (this.presetKey) {
+			case 'today': return localize('paradis.ccusage.kpi.costToday', "Cost (today)");
+			case 'yesterday': return localize('paradis.ccusage.kpi.costYesterday', "Cost (yesterday)");
+			case 'thisWeek': return localize('paradis.ccusage.kpi.costThisWeek', "Cost (this week)");
+			case 'lastWeek': return localize('paradis.ccusage.kpi.costLastWeek', "Cost (last week)");
+			case '7d': return localize('paradis.ccusage.kpi.costPeriod', "Cost (last {0} days)", 7);
+			case '30d': return localize('paradis.ccusage.kpi.costPeriod', "Cost (last {0} days)", 30);
+			case '90d': return localize('paradis.ccusage.kpi.costPeriod', "Cost (last {0} days)", 90);
+			case 'custom': return localize('paradis.ccusage.kpi.costCustom', "Cost (custom range)");
+		}
 	}
 
 	private setAgentFilter(agent: AgentFilter): void {
@@ -195,9 +342,21 @@ export class ParadisCcusageEditor extends EditorPane {
 	}
 
 	private updateFilterButtons(): void {
-		for (const { days, button } of this.periodButtons) {
-			button.classList.toggle('checked', days === this.periodDays);
+		for (const { key, button } of this.presetButtons) {
+			button.classList.toggle('checked', key === 'custom' ? !!this.customRange : (!this.customRange && this.presetKey === key));
 		}
+
+		const range = this.currentRange();
+		const rangeDays = spanDaysInclusive(range.from, range.to);
+		const effective = this.effectiveGranularity(rangeDays);
+		for (const { granularity, button } of this.granularityButtons) {
+			button.classList.toggle('checked', granularity === effective);
+			if (granularity === 'weekly') {
+				button.disabled = rangeDays < 7;
+				button.title = rangeDays < 7 ? localize('paradis.ccusage.granularity.tooShort', "Selected period is too short for a weekly view") : '';
+			}
+		}
+
 		for (const { agent, button } of this.agentButtons) {
 			button.classList.toggle('checked', agent === this.agentFilter);
 		}
@@ -273,7 +432,8 @@ export class ParadisCcusageEditor extends EditorPane {
 			return;
 		}
 
-		const days = this.filterDays(this.data.days);
+		const range = this.currentRange();
+		const days = this.filterDaysInRange(this.data.days, range);
 		const totals = this.computeModelTotals(days);
 
 		if (this.data.failedReports.length > 0) {
@@ -291,30 +451,33 @@ export class ParadisCcusageEditor extends EditorPane {
 			return;
 		}
 
+		const rangeDays = spanDaysInclusive(range.from, range.to);
+		const granularity = this.effectiveGranularity(rangeDays);
+		const buckets = computeBuckets(days, granularity);
+
 		this.renderKpis(this.body, days, totals);
 		this.renderBlockCard(this.body);
 
 		const grid = dom.append(this.body, $('.paradis-ccusage-grid2'));
 		const left = dom.append(grid, $('.paradis-ccusage-card'));
-		this.renderDailyChart(left, days, totals);
+		this.renderDailyChart(left, buckets, totals, granularity);
 		const right = dom.append(grid, $('.paradis-ccusage-card'));
 		this.renderModelBreakdown(right, totals);
 		if (this.agentFilter === 'all' || this.agentFilter === 'claude') {
-			this.renderProjects(right);
+			this.renderProjects(right, range);
 		}
 
 		const grid2 = dom.append(this.body, $('.paradis-ccusage-grid2'));
 		const trendCard = dom.append(grid2, $('.paradis-ccusage-card'));
-		this.renderTokenTrend(trendCard, days);
+		this.renderTokenTrend(trendCard, buckets, granularity);
 		if (this.agentFilter === 'all' || this.agentFilter === 'claude') {
 			const sessionsCard = dom.append(grid2, $('.paradis-ccusage-card'));
-			this.renderSessions(sessionsCard);
+			this.renderSessions(sessionsCard, range);
 		}
 	}
 
-	private filterDays(days: IParadisCcusageDayData[]): IParadisCcusageDayData[] {
-		const cutoff = this.periodCutoff();
-		const inPeriod = days.filter(day => day.date >= cutoff);
+	private filterDaysInRange(days: IParadisCcusageDayData[], range: IDateRange): IParadisCcusageDayData[] {
+		const inPeriod = days.filter(day => day.date >= range.from && day.date <= range.to);
 		if (this.agentFilter === 'all') {
 			return inPeriod;
 		}
@@ -364,9 +527,7 @@ export class ParadisCcusageEditor extends EditorPane {
 
 		// 期間コスト(ヒーロー数値) + エージェント内訳
 		const costTile = dom.append(kpis, $('.paradis-ccusage-card'));
-		dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodDays === 1
-			? localize('paradis.ccusage.kpi.costToday', "Cost (today)")
-			: localize('paradis.ccusage.kpi.costPeriod', "Cost (last {0} days)", this.periodDays);
+		dom.append(costTile, $('.paradis-ccusage-stat-label')).textContent = this.periodLabel();
 		dom.append(costTile, $('.paradis-ccusage-stat-value.hero')).textContent = formatUsd(totalCost);
 		const agentCosts = new Map<ParadisCcusageAgent, number>();
 		for (const total of totals) {
@@ -445,8 +606,10 @@ export class ParadisCcusageEditor extends EditorPane {
 
 	// ---------- daily stacked bar ----------
 
-	private renderDailyChart(card: HTMLElement, days: IParadisCcusageDayData[], totals: IModelTotal[]): void {
-		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.daily.title', "Daily Cost");
+	private renderDailyChart(card: HTMLElement, buckets: IBucket[], totals: IModelTotal[], granularity: ParadisCcusageGranularity): void {
+		dom.append(card, $('h3')).textContent = granularity === 'weekly'
+			? localize('paradis.ccusage.weekly.title', "Weekly Cost")
+			: localize('paradis.ccusage.daily.title', "Daily Cost");
 		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.daily.desc', "Per-model breakdown (USD). Hover a bar for details.");
 
 		const colorMap = this.buildModelColorMap(totals);
@@ -476,21 +639,21 @@ export class ParadisCcusageEditor extends EditorPane {
 		const svg = svgEl(doc, 'svg', { width: String(width), height: String(height), viewBox: `0 0 ${width} ${height}` });
 		card.appendChild(svg);
 
-		const dayCosts = days.map(day => {
+		const barCosts = buckets.map(bucket => {
 			const perModel = new Map<string, number>();
 			let other = 0;
-			for (const slice of day.models) {
+			for (const slice of bucket.models) {
 				if (seriesModels.includes(slice.model)) {
 					perModel.set(slice.model, (perModel.get(slice.model) ?? 0) + slice.cost);
 				} else {
 					other += slice.cost;
 				}
 			}
-			const total = day.models.reduce((sum, slice) => sum + slice.cost, 0);
-			return { date: day.date, perModel, other, total };
+			const total = bucket.models.reduce((sum, slice) => sum + slice.cost, 0);
+			return { axisLabel: bucket.axisLabel, tooltipLabel: bucket.tooltipLabel, perModel, other, total };
 		});
 
-		const maxTotal = Math.max(0.01, ...dayCosts.map(d => d.total));
+		const maxTotal = Math.max(0.01, ...barCosts.map(d => d.total));
 		const step = niceStep(maxTotal * 1.12 / 4);
 		const maxY = step * 4;
 		const y = (v: number) => padT + plotH - (v / maxY) * plotH;
@@ -505,25 +668,25 @@ export class ParadisCcusageEditor extends EditorPane {
 			svg.appendChild(tick);
 		}
 
-		const band = plotW / Math.max(1, dayCosts.length);
+		const band = plotW / Math.max(1, barCosts.length);
 		const barW = Math.max(2, Math.min(24, band * 0.6));
 		const gap = band > 8 ? 2 : 1;
 		const labelEvery = Math.max(1, Math.ceil(34 / band));
-		const maxIndex = dayCosts.reduce((best, d, i) => (d.total > dayCosts[best].total ? i : best), 0);
+		const maxIndex = barCosts.reduce((best, d, i) => (d.total > barCosts[best].total ? i : best), 0);
 
-		dayCosts.forEach((day, index) => {
+		barCosts.forEach((bar, index) => {
 			const cx = padL + band * index + band / 2;
 			const x0 = cx - barW / 2;
 			let acc = 0;
 			const segments: { color: string; value: number }[] = [];
 			for (const model of seriesModels) {
-				const value = day.perModel.get(model) ?? 0;
+				const value = bar.perModel.get(model) ?? 0;
 				if (value > 0) {
 					segments.push({ color: colorMap.get(model) ?? OTHER_COLOR, value });
 				}
 			}
-			if (day.other > 0) {
-				segments.push({ color: OTHER_COLOR, value: day.other });
+			if (bar.other > 0) {
+				segments.push({ color: OTHER_COLOR, value: bar.other });
 			}
 			segments.forEach((segment, segmentIndex) => {
 				const isTop = segmentIndex === segments.length - 1;
@@ -548,12 +711,12 @@ export class ParadisCcusageEditor extends EditorPane {
 
 			if (index % labelEvery === 0) {
 				const label = svgEl(doc, 'text', { x: String(cx), y: String(height - 6), 'text-anchor': 'middle', class: 'paradis-ccusage-axis-text' });
-				label.textContent = shortDate(day.date);
+				label.textContent = bar.axisLabel;
 				svg.appendChild(label);
 			}
-			if (index === maxIndex && day.total > 0) {
-				const label = svgEl(doc, 'text', { x: String(cx), y: String(y(day.total) - 5), 'text-anchor': 'middle', class: 'paradis-ccusage-direct-label' });
-				label.textContent = formatUsd(day.total);
+			if (index === maxIndex && bar.total > 0) {
+				const label = svgEl(doc, 'text', { x: String(cx), y: String(y(bar.total) - 5), 'text-anchor': 'middle', class: 'paradis-ccusage-direct-label' });
+				label.textContent = formatUsd(bar.total);
 				svg.appendChild(label);
 			}
 
@@ -562,16 +725,16 @@ export class ParadisCcusageEditor extends EditorPane {
 			this.bodyDisposables.add(dom.addDisposableListener(hit, dom.EventType.POINTER_MOVE, e => {
 				const rows: ITooltipRow[] = [];
 				for (const model of seriesModels) {
-					const value = day.perModel.get(model);
+					const value = bar.perModel.get(model);
 					if (value !== undefined && value > 0) {
 						rows.push({ color: colorMap.get(model), name: prettyModelName(model), value: formatUsd(value) });
 					}
 				}
-				if (day.other > 0) {
-					rows.push({ color: OTHER_COLOR, name: localize('paradis.ccusage.other', "Other"), value: formatUsd(day.other) });
+				if (bar.other > 0) {
+					rows.push({ color: OTHER_COLOR, name: localize('paradis.ccusage.other', "Other"), value: formatUsd(bar.other) });
 				}
-				rows.push({ name: localize('paradis.ccusage.total', "Total"), value: formatUsd(day.total), isTotal: true });
-				this.showTooltip(e, day.date, rows);
+				rows.push({ name: localize('paradis.ccusage.total', "Total"), value: formatUsd(bar.total), isTotal: true });
+				this.showTooltip(e, bar.tooltipLabel, rows);
 			}));
 			this.bodyDisposables.add(dom.addDisposableListener(hit, dom.EventType.POINTER_LEAVE, () => this.hideTooltip()));
 			svg.appendChild(hit);
@@ -580,9 +743,11 @@ export class ParadisCcusageEditor extends EditorPane {
 
 	// ---------- token trend line ----------
 
-	private renderTokenTrend(card: HTMLElement, days: IParadisCcusageDayData[]): void {
+	private renderTokenTrend(card: HTMLElement, buckets: IBucket[], granularity: ParadisCcusageGranularity): void {
 		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.trend.title', "Token Trend");
-		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.trend.desc', "Daily input + output tokens (cache excluded). Hover for cache reads too.");
+		dom.append(card, $('.desc')).textContent = granularity === 'weekly'
+			? localize('paradis.ccusage.trend.descWeekly', "Weekly input + output tokens (cache excluded). Hover for cache reads too.")
+			: localize('paradis.ccusage.trend.desc', "Daily input + output tokens (cache excluded). Hover for cache reads too.");
 
 		const doc = card.ownerDocument;
 		const width = Math.max(320, card.clientWidth > 0 ? card.clientWidth - 34 : (this.body?.clientWidth ?? 720) * 0.55);
@@ -591,10 +756,11 @@ export class ParadisCcusageEditor extends EditorPane {
 		const plotW = width - padL - padR;
 		const plotH = height - padT - padB;
 
-		const points = days.map(day => ({
-			date: day.date,
-			io: day.models.reduce((sum, m) => sum + m.inputTokens + m.outputTokens, 0),
-			cacheRead: day.models.reduce((sum, m) => sum + m.cacheReadTokens, 0),
+		const points = buckets.map(bucket => ({
+			axisLabel: bucket.axisLabel,
+			tooltipLabel: bucket.tooltipLabel,
+			io: bucket.models.reduce((sum, m) => sum + m.inputTokens + m.outputTokens, 0),
+			cacheRead: bucket.models.reduce((sum, m) => sum + m.cacheReadTokens, 0),
 		}));
 		const maxIo = Math.max(1, ...points.map(p => p.io));
 		const step = niceStep(maxIo * 1.15 / 4);
@@ -619,7 +785,7 @@ export class ParadisCcusageEditor extends EditorPane {
 		points.forEach((point, index) => {
 			if (index % labelEvery === 0) {
 				const label = svgEl(doc, 'text', { x: String(x(index)), y: String(height - 6), 'text-anchor': 'middle', class: 'paradis-ccusage-axis-text' });
-				label.textContent = shortDate(point.date);
+				label.textContent = point.axisLabel;
 				svg.appendChild(label);
 			}
 		});
@@ -660,7 +826,7 @@ export class ParadisCcusageEditor extends EditorPane {
 			crosshair.setAttribute('x1', String(x(index)));
 			crosshair.setAttribute('x2', String(x(index)));
 			crosshair.setAttribute('visibility', 'visible');
-			this.showTooltip(e, points[index].date, [
+			this.showTooltip(e, points[index].tooltipLabel, [
 				{ color: accent, name: localize('paradis.ccusage.trend.io', "Input + Output"), value: formatTokens(points[index].io) },
 				{ name: localize('paradis.ccusage.trend.cacheRead', "Cache read"), value: formatTokens(points[index].cacheRead) },
 			]);
@@ -699,14 +865,13 @@ export class ParadisCcusageEditor extends EditorPane {
 		}
 	}
 
-	private renderProjects(card: HTMLElement): void {
+	private renderProjects(card: HTMLElement, range: IDateRange): void {
 		// 選択中の期間内のコストへスライスしてから集計する
-		const cutoff = this.periodCutoff();
 		const projects = (this.data?.projects ?? [])
 			.map(project => ({
 				name: project.name,
 				rawName: project.rawName,
-				cost: project.dailyCosts.reduce((sum, day) => sum + (day.date >= cutoff ? day.cost : 0), 0),
+				cost: project.dailyCosts.reduce((sum, day) => sum + (day.date >= range.from && day.date <= range.to ? day.cost : 0), 0),
 			}))
 			.filter(project => project.cost > 0)
 			.sort((a, b) => b.cost - a.cost);
@@ -731,22 +896,27 @@ export class ParadisCcusageEditor extends EditorPane {
 		}
 	}
 
-	private renderSessions(card: HTMLElement): void {
+	private renderSessions(card: HTMLElement, range: IDateRange): void {
 		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.sessions.title', "Recent Sessions");
 		dom.append(card, $('.desc')).textContent = localize('paradis.ccusage.sessions.desc', "Claude Code only · most recent first");
 
-		// filterDays/renderProjects と同じ「ローカル日付文字列の辞書順比較」で期間判定を揃える。
+		// filterDaysInRange/renderProjects と同じ「ローカル日付文字列の辞書順比較」で期間判定を揃える。
 		// 活動日時が取れないセッションは判定不能なので表示に残す。
-		const cutoff = this.periodCutoff();
 		const sessions = (this.data?.sessions ?? [])
-			.filter(session => session.lastActivity === undefined || localDateString(new Date(session.lastActivity)) >= cutoff)
+			.filter(session => {
+				if (session.lastActivity === undefined) {
+					return true;
+				}
+				const activityDate = localDateString(new Date(session.lastActivity));
+				return activityDate >= range.from && activityDate <= range.to;
+			})
 			.slice(0, MAX_SESSION_ROWS);
 		if (sessions.length === 0) {
 			dom.append(card, $('.paradis-ccusage-note')).textContent = localize('paradis.ccusage.sessions.none', "No sessions in the selected period.");
 			return;
 		}
 
-		const colorMap = this.buildModelColorMap(this.computeModelTotals(this.filterDays(this.data?.days ?? [])));
+		const colorMap = this.buildModelColorMap(this.computeModelTotals(this.filterDaysInRange(this.data?.days ?? [], range)));
 		const table = dom.append(card, $('table.paradis-ccusage-sessions'));
 		const thead = dom.append(table, $('thead'));
 		const headRow = dom.append(thead, $('tr'));
@@ -931,6 +1101,99 @@ function niceStep(rawStep: number): number {
 /** ローカル時刻で YYYY-MM-DD を返す(daily の period と同じ基準)。 */
 function localDateString(date: Date): string {
 	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** "YYYY-MM-DD" をローカル時刻の Date に変換する(タイムゾーン変換を避けるため Date.parse は使わない)。 */
+function parseLocalDate(isoDate: string): Date {
+	const [y, m, d] = isoDate.split('-').map(Number);
+	return new Date(y, m - 1, d);
+}
+
+function addDaysLocal(date: Date, delta: number): Date {
+	const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+	d.setDate(d.getDate() + delta);
+	return d;
+}
+
+/** 月曜始まりの週の開始日を返す。 */
+function startOfWeekMonday(date: Date): Date {
+	const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+	const dow = d.getDay();
+	const diff = dow === 0 ? -6 : 1 - dow;
+	return addDaysLocal(d, diff);
+}
+
+/** 両端を含む日数。 */
+function spanDaysInclusive(from: string, to: string): number {
+	return Math.round((parseLocalDate(to).getTime() - parseLocalDate(from).getTime()) / 86400000) + 1;
+}
+
+/** プリセットキーを実際の日付レンジ(両端含む、YYYY-MM-DD)に変換する。 */
+function presetRange(key: ParadisCcusagePresetKey, today: Date): IDateRange {
+	const todayStr = localDateString(today);
+	switch (key) {
+		case 'today':
+			return { from: todayStr, to: todayStr };
+		case 'yesterday': {
+			const y = localDateString(addDaysLocal(today, -1));
+			return { from: y, to: y };
+		}
+		case 'thisWeek':
+			return { from: localDateString(startOfWeekMonday(today)), to: todayStr };
+		case 'lastWeek': {
+			const thisStart = startOfWeekMonday(today);
+			return { from: localDateString(addDaysLocal(thisStart, -7)), to: localDateString(addDaysLocal(thisStart, -1)) };
+		}
+		case '7d':
+			return { from: localDateString(addDaysLocal(today, -6)), to: todayStr };
+		case '30d':
+			return { from: localDateString(addDaysLocal(today, -29)), to: todayStr };
+		case '90d':
+			return { from: localDateString(addDaysLocal(today, -89)), to: todayStr };
+		case 'custom':
+			// presetKey が 'custom' のときは currentRange() が customRange を先に見るため、ここには来ない。
+			return { from: todayStr, to: todayStr };
+	}
+}
+
+/**
+ * 日別データを表示単位(daily/weekly)のバケットへ集計する。weekly は月曜始まりの週ごとに
+ * モデル別スライスを合算する。バケットは日付昇順で返す。
+ */
+function computeBuckets(days: IParadisCcusageDayData[], granularity: ParadisCcusageGranularity): IBucket[] {
+	if (granularity === 'daily') {
+		return days.map(day => ({ key: day.date, axisLabel: shortDate(day.date), tooltipLabel: day.date, models: day.models }));
+	}
+
+	const byWeek = new Map<string, Map<string, IParadisCcusageModelSlice>>();
+	for (const day of days) {
+		const weekStart = localDateString(startOfWeekMonday(parseLocalDate(day.date)));
+		let models = byWeek.get(weekStart);
+		if (!models) {
+			models = new Map();
+			byWeek.set(weekStart, models);
+		}
+		for (const slice of day.models) {
+			const existing = models.get(slice.model);
+			models.set(slice.model, existing ? {
+				model: slice.model,
+				agent: slice.agent,
+				cost: existing.cost + slice.cost,
+				inputTokens: existing.inputTokens + slice.inputTokens,
+				outputTokens: existing.outputTokens + slice.outputTokens,
+				cacheCreationTokens: existing.cacheCreationTokens + slice.cacheCreationTokens,
+				cacheReadTokens: existing.cacheReadTokens + slice.cacheReadTokens,
+			} : { ...slice });
+		}
+	}
+	return [...byWeek.entries()]
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([weekStart, models]) => ({
+			key: weekStart,
+			axisLabel: shortDate(weekStart),
+			tooltipLabel: localize('paradis.ccusage.weekOf', "Week of {0}", shortDate(weekStart)),
+			models: [...models.values()],
+		}));
 }
 
 /** "2026-07-04" → "7/4"。 */
