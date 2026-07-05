@@ -22,6 +22,7 @@ import {
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux } from '../common/paradisMobileMux.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
+import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import {
 	Channels,
@@ -110,6 +111,7 @@ class MobileSession {
 				this.mux.on(Channels.Scm, f => this.emit(f));
 				this.mux.on(Channels.Fs, f => this.emit(f));
 				this.mux.on(Channels.Browser, f => this.emit(f));
+				this.mux.on(Channels.Agent, f => this.emit(f));
 				return;
 			}
 			await this.mux!.receive(payload);
@@ -180,6 +182,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	// para-browser の CDP screencast ミラー（設計書 M3、browser チャネル）
 	private readonly browserMirror: ParadisMobileBrowserMirror;
 
+	// エージェントセッションのチャットミラー（agentチャネル）。transcript の tail は
+	// ファイルI/O・hookバス購読とも shared process 側の仕事なのでここで直接処理する
+	// （browser チャネルと同じ方針。renderer は経由しない）。
+	private readonly agentChat: ParadisMobileAgentChat;
+
 	constructor(
 		private readonly userDataPath: string,
 		private readonly encryptionService: IEncryptionService,
@@ -188,6 +195,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		super();
 		this.statePath = join(this.userDataPath, 'paradis-mobile-relay.json');
 		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), this.logService));
+		this.agentChat = this._register(new ParadisMobileAgentChat(
+			(mobileId, payload) => {
+				const session = this.sessions.get(mobileId);
+				if (session?.isOnline) {
+					session.sendFrame(Channels.Agent, undefined, payload).catch(err => this.logService.warn('[paradisMobileRelay] agent reply failed', err));
+				}
+			},
+			this.logService,
+		));
 		this._register(toDisposable(() => this.disconnect()));
 	}
 
@@ -412,6 +428,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		});
 	}
 
+	/**
+	 * agentチャネル用: renderer から「ターミナルinstanceId ⇔ ペイントークン」対応表を同期する
+	 * （全置換）。チャットミラーはこの対応でモバイルの attach(id) を transcript へ解決する。
+	 */
+	async syncAgentPanes(entries: readonly { terminalId: number; token: string }[]): Promise<void> {
+		this.agentChat.syncPanes(entries);
+	}
+
 	private async revokeOnRelay(mobileId: string): Promise<void> {
 		if (!this.state.device) {
 			return;
@@ -539,8 +563,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				this.identity,
 				sealed => this.sendBinaryToMobile(mobileId, sealed),
 				frame => {
-					// browser チャネルは shared process 内の CDP ミラーで直接処理する
-					// （rendererはCDPに触れないため）。それ以外は renderer へ配送。
+					// browser / agent チャネルは shared process 内で直接処理する
+					// （rendererはCDP・ワークスペース外ファイルに触れないため）。それ以外は renderer へ配送。
+					if (frame.ch === Channels.Agent) {
+						this.agentChat.handleInbound(idStr, frame.payload.buffer);
+						return;
+					}
 					if (frame.ch === Channels.Browser) {
 						const respond = (payload: Uint8Array) => {
 							const s = this.sessions.get(idStr);
@@ -591,6 +619,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (!msg.online) {
 				this.sessions.delete(msg.mobileId);
 				this.browserMirror.stopSession(msg.mobileId);
+				this.agentChat.dropSubscriber(msg.mobileId);
 				this._onDidChangeStatus.fire(this.snapshot());
 			}
 		}

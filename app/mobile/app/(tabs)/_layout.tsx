@@ -28,6 +28,11 @@ export default function TabsLayout() {
 				headerTitle: 'Para Code Mobile',
 				tabBarIcon: ({ color, size }) => <Ionicons name="home-outline" color={color} size={size} />,
 			}} />
+			<Tabs.Screen name="agent" options={{
+				title: 'エージェント',
+				tabBarIcon: ({ color, size }) => <Ionicons name="chatbubbles-outline" color={color} size={size} />,
+				...(pending > 0 ? { tabBarBadge: pending, tabBarBadgeStyle: { backgroundColor: colors.red, color: '#fff', fontSize: 10 } } : {}),
+			}} />
 			<Tabs.Screen name="terminal" options={{
 				title: 'ターミナル',
 				tabBarIcon: ({ color, size }) => <Ionicons name="terminal-outline" color={color} size={size} />,

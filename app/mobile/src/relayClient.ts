@@ -235,7 +235,7 @@ export class RelayClient {
 					});
 					if (this.callbacks.onFrame) {
 						const onFrame = this.callbacks.onFrame;
-						for (const ch of ['state', 'term', 'scm', 'fs', 'browser', 'notify'] as ChannelId[]) {
+						for (const ch of ['state', 'term', 'scm', 'fs', 'browser', 'notify', 'agent'] as ChannelId[]) {
 							this.mux.on(ch, onFrame);
 						}
 					}

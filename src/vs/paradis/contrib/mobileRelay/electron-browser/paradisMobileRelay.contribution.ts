@@ -26,6 +26,7 @@ import { IWebviewWorkbenchService } from '../../../../workbench/contrib/webviewP
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
+import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -78,6 +79,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@ILanguageService languageService: ILanguageService,
 		@IExtensionService extensionService: IExtensionService,
 		@IThemeService themeService: IThemeService,
+		@IParadisPaneTokenService paneTokenService: IParadisPaneTokenService,
 	) {
 		super();
 
@@ -101,6 +103,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			themeService,
 			sharedProcessService,
 			(repoPath, args) => this.service.runGit(repoPath, args),
+			paneTokenService,
+			entries => { this.service.syncAgentPanes(entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
 		));
 
 		// shared process が復号したモバイル→PCフレームを provider へ。

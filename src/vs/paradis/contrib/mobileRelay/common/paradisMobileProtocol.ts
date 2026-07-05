@@ -24,11 +24,12 @@ export const Channels = Object.freeze({
 	Fs: 'fs',
 	Browser: 'browser',
 	Notify: 'notify',
+	Agent: 'agent',
 } as const);
 
 export type ChannelId = typeof Channels[keyof typeof Channels];
 
-const CHANNEL_TO_ID: Record<ChannelId, number> = { state: 1, term: 2, scm: 3, fs: 4, browser: 5, notify: 6 };
+const CHANNEL_TO_ID: Record<ChannelId, number> = { state: 1, term: 2, scm: 3, fs: 4, browser: 5, notify: 6, agent: 7 };
 const ID_TO_CHANNEL = new Map<number, ChannelId>((Object.entries(CHANNEL_TO_ID) as [ChannelId, number][]).map(([ch, id]) => [id, ch]));
 
 export interface Frame {

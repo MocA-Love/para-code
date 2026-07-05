@@ -78,6 +78,31 @@ export interface BrowserFrame {
 	h: number;
 }
 
+/** agent チャネルの正規化済みチャットメッセージ（PC側 paradisMobileAgentChat.ts と一致）。 */
+export interface AgentChatMessage {
+	rev: number;
+	role: 'user' | 'assistant' | 'tool';
+	kind: 'text' | 'thinking' | 'tool_use' | 'tool_result';
+	text: string;
+	tool?: string;
+	ts?: number;
+}
+
+/** ターミナル1つ分のエージェントチャット状態。 */
+export interface AgentChatState {
+	/** 'claude' | 'codex'。 */
+	agent: string;
+	/** PC側tailerのepoch（再接続時の差分同期に使う）。 */
+	epoch: string;
+	/** 受信済み最終rev。 */
+	rev: number;
+	messages: AgentChatMessage[];
+	/** 古い履歴が省略されている。 */
+	truncated: boolean;
+	/** PC側にセッションが見つからなかった（エージェント未起動等）。 */
+	none?: boolean;
+}
+
 /** 秘密情報の永続化。 */
 export interface KeyStore {
 	getItem(key: string): Promise<string | null>;
@@ -95,6 +120,8 @@ export interface StoreState {
 	notifications: NotifyPayload[];
 	/** browser ミラーの直近フレーム（未開始は undefined）。 */
 	browserFrame: BrowserFrame | undefined;
+	/** ターミナルID → エージェントチャット状態（agentチャネル）。 */
+	agentChats: Map<number, AgentChatState>;
 }
 
 const IDENTITY_KEY = 'para.identity';
@@ -154,7 +181,11 @@ export class MobileController {
 		terminalOutput: new Map(),
 		notifications: [],
 		browserFrame: undefined,
+		agentChats: new Map(),
 	};
+
+	/** agentチャットの購読中ターミナルID（再接続時に自動で再attachする）。 */
+	private attachedAgentId: number | undefined;
 
 	constructor(
 		private readonly identity: Identity,
@@ -168,7 +199,15 @@ export class MobileController {
 		this.lastCredentials = creds;
 		this.client?.close();
 		this.client = new RelayClient(this.identity, creds, this.socketFactory, {
-			onStateChange: s => { this.state.connection = s; this.emit(); },
+			onStateChange: s => {
+				this.state.connection = s;
+				this.emit();
+				// 再接続完了時: 購読中のagentチャットがあれば手元のepoch/revで再attachする
+				// （PC側はepoch一致なら差分のみ、不一致なら全量スナップショットを返す）。
+				if (s === 'online' && this.attachedAgentId !== undefined) {
+					this.sendAgentAttach(this.attachedAgentId);
+				}
+			},
 			onPcPresence: online => { this.state.pcOnline = online; this.emit(); },
 			onFrame: frame => this.handleFrame(frame),
 		});
@@ -233,6 +272,39 @@ export class MobileController {
 
 	private sendTerm(msg: { t: string; id: number; data?: string }): void {
 		this.client?.send('term', encoder.encode(JSON.stringify(msg)));
+	}
+
+	// --- agent チャット（エージェントセッションのチャットミラー） ----------------
+
+	/** エージェントチャットの購読を開始する（切断→再接続時は自動で再attachされる）。 */
+	attachAgent(id: number): void {
+		this.attachedAgentId = id;
+		this.sendAgentAttach(id);
+	}
+
+	detachAgent(id: number): void {
+		if (this.attachedAgentId === id) {
+			this.attachedAgentId = undefined;
+		}
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id })));
+	}
+
+	/** チャット表示の再読み込み（セッションが見つからなかった後の再試行にも使う）。 */
+	refreshAgent(id: number): void {
+		this.state.agentChats.delete(id);
+		this.emit();
+		if (this.attachedAgentId === id) {
+			this.sendAgentAttach(id);
+		}
+	}
+
+	private sendAgentAttach(id: number): void {
+		// 手元に同ターミナルの受信済み状態があれば epoch/afterRev を申告して差分だけ受け取る。
+		const existing = this.state.agentChats.get(id);
+		const body = existing !== undefined && !existing.none
+			? { t: 'attach', id, epoch: existing.epoch, afterRev: existing.rev }
+			: { t: 'attach', id };
+		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
 	}
 
 	// --- scm / fs（リクエスト/レスポンス） ------------------------------------
@@ -347,6 +419,10 @@ export class MobileController {
 			this.settleResponse(frame.payload);
 			return;
 		}
+		if (frame.ch === 'agent') {
+			this.handleAgentFrame(frame.payload);
+			return;
+		}
 		if (frame.ch === 'browser') {
 			// screencastフレーム（id無しのストリーム）と要求応答（id有り）が混在する
 			try {
@@ -391,8 +467,54 @@ export class MobileController {
 		}
 	}
 
+	private handleAgentFrame(payload: Uint8Array): void {
+		try {
+			const msg = JSON.parse(decoder.decode(payload)) as {
+				t: string; id: number; agent?: string; epoch?: string; rev?: number;
+				messages?: AgentChatMessage[]; truncated?: boolean;
+			};
+			if (typeof msg.id !== 'number') {
+				return;
+			}
+			if (msg.t === 'none') {
+				this.state.agentChats.set(msg.id, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
+				this.emit();
+				return;
+			}
+			if (msg.t === 'snapshot') {
+				this.state.agentChats.set(msg.id, {
+					agent: msg.agent ?? 'claude',
+					epoch: msg.epoch ?? '',
+					rev: msg.rev ?? -1,
+					messages: msg.messages ?? [],
+					truncated: msg.truncated === true,
+				});
+				this.emit();
+				return;
+			}
+			if (msg.t === 'delta') {
+				const existing = this.state.agentChats.get(msg.id);
+				if (!existing || existing.epoch !== msg.epoch) {
+					// epoch不一致の差分は適用できない → 全量を取り直す（欠落したまま表示しない）。
+					if (this.attachedAgentId === msg.id) {
+						this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'attach', id: msg.id })));
+					}
+					return;
+				}
+				// 重複revは捨てる（再attach応答と押し出しdeltaの競合対策）。
+				const fresh = (msg.messages ?? []).filter(m => !existing.messages.some(e => e.rev === m.rev));
+				this.state.agentChats.set(msg.id, {
+					...existing,
+					rev: msg.rev ?? existing.rev,
+					messages: [...existing.messages, ...fresh].slice(-500),
+				});
+				this.emit();
+			}
+		} catch { /* ignore */ }
+	}
+
 	private emit(): void {
-		this.onChange({ ...this.state, terminalOutput: new Map(this.state.terminalOutput), notifications: [...this.state.notifications] });
+		this.onChange({ ...this.state, terminalOutput: new Map(this.state.terminalOutput), notifications: [...this.state.notifications], agentChats: new Map(this.state.agentChats) });
 	}
 }
 

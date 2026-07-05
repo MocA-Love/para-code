@@ -42,10 +42,16 @@ export const PARADIS_CLAUDE_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'Notification' },
 ];
 
-/** ~/.codex/hooks.json に登録するイベント一覧 (Superset の createCodexHooksJson と同じ)。 */
+/**
+ * ~/.codex/hooks.json に登録するイベント一覧 (Superset の createCodexHooksJson ベース)。
+ * PermissionRequest は Codex 0.129+ の安定hooksに存在し、承認待ち状態の検出
+ * (モバイルの承認バッジ/チャットミラー) に使う。旧バージョンでは未知イベントとして
+ * 単に発火しないだけで無害。
+ */
 export const PARADIS_CODEX_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'SessionStart' },
 	{ eventName: 'UserPromptSubmit' },
+	{ eventName: 'PermissionRequest' },
 	{ eventName: 'Stop' },
 ];
 
