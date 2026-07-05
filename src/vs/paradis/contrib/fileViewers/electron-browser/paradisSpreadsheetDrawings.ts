@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // xlsx の drawing XML(shared process から文字列で渡ってくる)を DOMParser で解析し、図形(直線コネクタ/矩形)へ変換する。
-// Superset apps/desktop の parseWorkbook.ts の drawing 解析部の移植。重要事項説明書等の「斜線」はこの直線コネクタで表現される。
+// 既存の別実装の drawing 解析部の移植。セル上の斜線もこの直線コネクタで表現される。
 
 import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
 import { IParadisDrawingData, IParadisRenderAnchor, IParadisRenderShape } from '../common/paradisSpreadsheet.js';
