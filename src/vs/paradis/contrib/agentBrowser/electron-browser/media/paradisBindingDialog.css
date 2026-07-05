@@ -12,10 +12,11 @@
  * (alpha variants are derived via color-mix) so the dialog adapts to any color theme.
  */
 
+/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
 .paradis-binding-dialog-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(0, 0, 0, 0.45);
+	background: rgba(0, 0, 0, 0.5);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -27,16 +28,21 @@
 	max-width: 94vw;
 	height: 700px;
 	max-height: 92vh;
-	background: var(--vscode-editorWidget-background);
+	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 12px;
+	border-radius: 8px;
 	display: flex;
 	flex-direction: column;
-	box-shadow: 0 10px 40px var(--vscode-widget-shadow);
+	box-shadow: var(--vscode-shadow-xl);
 	overflow: hidden;
 	font-size: 13px;
 	outline: none;
+}
+
+/* The modal receives focus (tabindex=-1) for Escape handling; the workbench-wide keyboard-focus rule ([tabindex="-1"]:focus in workbench media/style.css) would otherwise draw a focusBorder frame around the whole dialog. */
+.monaco-workbench .paradis-binding-dialog:focus {
+	outline: none !important;
 }
 
 .paradis-binding-dialog .codicon {
@@ -212,13 +218,18 @@
 	overflow-y: auto;
 }
 
+/* The setup column is only shown on the "MCP接続設定" tab (the middle column is hidden there), so it fills the remaining width instead of a fixed 340px sidebar. */
 .paradis-binding-dialog .pbd-col-right {
-	width: 340px;
+	flex: 1;
+	min-width: 0;
 	border-left: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	display: flex;
 	flex-direction: column;
-	flex-shrink: 0;
 	overflow-y: auto;
+}
+
+.paradis-binding-dialog .pbd-col-right .pbd-setup-card {
+	max-width: 720px;
 }
 
 /* ---------- left: page identity card ---------- */

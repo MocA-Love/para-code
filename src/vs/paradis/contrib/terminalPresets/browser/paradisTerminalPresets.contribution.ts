@@ -56,7 +56,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		[PARADIS_PRESETS_SETTING]: {
 			type: 'array',
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.terminal.presets', "ターミナルのコマンドプリセット（ユーザーレベル）。ピン留めするとターミナルタブバーの右側にボタンとして表示されます。リポジトリレベルのプリセットは各リポジトリ直下の .paracode.json に定義できます（「Para Code: コマンドプリセットを管理」コマンドから編集）。"),
+			markdownDescription: localize('paradis.terminal.presets', "ターミナルのコマンドプリセット（ユーザーレベル）。ピン留めするとターミナルタブバーの右側にボタンとして表示されます。[コマンドプリセットを管理](command:paradis.terminal.configurePresets) から GUI で作成・編集できます。リポジトリレベルのプリセットは各リポジトリ直下の .paracode.json に定義できます。"),
 			items: {
 				type: 'object',
 				required: ['name', 'commands'],
@@ -107,6 +107,20 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 		@IParadisPresetService private readonly presetService: IParadisPresetService,
 	) {
 		super();
+		// プリセットボタン群の並び（タブバー右側）に管理ダイアログの入り口を常設する（プリセット0件でも表示）
+		for (const menuId of [MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
+			this._register(MenuRegistry.appendMenuItem(menuId, {
+				command: {
+					id: 'paradis.terminal.configurePresets',
+					// allow-any-unicode-next-line
+					title: localize('paradis.presetButtons.manage', "コマンドプリセットを管理"),
+					icon: Codicon.tools
+				},
+				group: 'navigation',
+				order: 100, // ピン留めプリセットボタン（20〜）の右隣
+				when: IsSessionsWindowContext.toNegated()
+			}));
+		}
 		this._register(this.presetService.onDidChangePresets(() => this._update()));
 		this._update();
 	}

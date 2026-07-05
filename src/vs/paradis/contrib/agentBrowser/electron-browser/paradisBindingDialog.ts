@@ -511,6 +511,11 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _renderRight(): void {
 		dom.clearNode(this._colRight);
+		// MCP接続設定は「MCP接続設定」タブ専用（ターミナルペイン/権限タブとの重複表示を避ける）
+		this._colRight.style.display = this._activeTab === 'setup' ? 'flex' : 'none';
+		if (this._activeTab !== 'setup') {
+			return;
+		}
 		const pane = this._selectedPane();
 
 		const card = dom.append(this._colRight, $('.pbd-setup-card'));
