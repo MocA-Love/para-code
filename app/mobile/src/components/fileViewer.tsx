@@ -110,7 +110,12 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 
 	const html = useMemo(() => {
 		if (kind === 'spreadsheet') {
-			return spreadsheetHtml;
+			if (spreadsheetHtml !== undefined) {
+				return spreadsheetHtml;
+			}
+			// レンダリング失敗時は result にエラーメッセージが入る。
+			// これを無視すると「読み込み中…」が恒久表示になるため、コード表示で見せる。
+			return result ? buildCodeHtml(result) : undefined;
 		}
 		if (!result) {
 			return undefined;

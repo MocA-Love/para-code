@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -29,7 +29,7 @@ export default function AgentScreen() {
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent, sendInput: s.sendInput,
 	})));
 	const [input, setInput] = useState('');
-	const listRef = useRef<FlatList<AgentChatMessage>>(null);
+	const listRef = useRef<FlatList<ChatRow>>(null);
 
 	const terminals = (workspace?.terminals ?? []).filter(t =>
 		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
@@ -37,6 +37,30 @@ export default function AgentScreen() {
 	const activeId = activeTerminal?.id;
 	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
 	const permissionPending = activeTerminal?.agentStatus === 'permission';
+
+	// CLI版のUXに合わせ、本文(text)以外の連続する thinking / tool_use / tool_result を
+	// 1つの「アクティビティ」行へ集約する（デフォルト折りたたみ、タップで展開）。
+	const rows = useMemo<ChatRow[]>(() => {
+		const result: ChatRow[] = [];
+		let buffer: AgentChatMessage[] = [];
+		const flush = () => {
+			const first = buffer[0];
+			if (first !== undefined) {
+				result.push({ type: 'group', key: `g:${first.rev}`, msgs: buffer });
+				buffer = [];
+			}
+		};
+		for (const m of chat?.messages ?? []) {
+			if (m.kind === 'text') {
+				flush();
+				result.push({ type: 'msg', m });
+			} else {
+				buffer.push(m);
+			}
+		}
+		flush();
+		return result;
+	}, [chat?.messages]);
 
 	useEffect(() => {
 		if (activeId === undefined) {
@@ -122,11 +146,11 @@ export default function AgentScreen() {
 				) : (
 					<FlatList
 						ref={listRef}
-						data={chat.messages}
-						keyExtractor={m => `${chat.epoch}:${m.rev}`}
+						data={rows}
+						keyExtractor={row => row.type === 'msg' ? `${chat.epoch}:${row.m.rev}` : `${chat.epoch}:${row.key}`}
 						ListHeaderComponent={chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}
 						ListFooterComponent={activeTerminal?.agentStatus === 'working' ? <WorkingIndicator /> : null}
-						renderItem={({ item }) => <MessageBubble message={item} />}
+						renderItem={({ item }) => item.type === 'msg' ? <MessageBubble message={item.m} /> : <ActivityGroup msgs={item.msgs} />}
 						contentContainerStyle={styles.listContent}
 					/>
 				)}
@@ -164,6 +188,60 @@ export default function AgentScreen() {
 			</View>
 		</KeyboardAvoidingView>
 		</ConnectionGate>
+	);
+}
+
+/** FlatList の1行。本文はそのまま、アクティビティ（thinking/tool群）は集約行。 */
+type ChatRow =
+	| { type: 'msg'; m: AgentChatMessage }
+	| { type: 'group'; key: string; msgs: AgentChatMessage[] };
+
+/** アクティビティ群の要約文（例: `思考 ×2 ・ ツール5件 (Bash, Read) ・ 48秒`）。 */
+function summarizeActivity(msgs: readonly AgentChatMessage[]): string {
+	const thinking = msgs.filter(m => m.kind === 'thinking').length;
+	const tools = msgs.filter(m => m.kind === 'tool_use');
+	const names: string[] = [];
+	for (const t of tools) {
+		if (t.tool && !names.includes(t.tool)) {
+			names.push(t.tool);
+		}
+	}
+	const parts: string[] = [];
+	if (thinking > 0) {
+		parts.push(thinking === 1 ? '思考' : `思考 ×${thinking}`);
+	}
+	if (tools.length > 0) {
+		const shown = names.slice(0, 3).join(', ');
+		parts.push(`ツール${tools.length}件${shown ? ` (${shown}${names.length > 3 ? '…' : ''})` : ''}`);
+	}
+	if (parts.length === 0) {
+		parts.push(`${msgs.length}件のアクティビティ`);
+	}
+	const stamps = msgs.map(m => m.ts).filter((t): t is number => typeof t === 'number');
+	if (stamps.length >= 2) {
+		const sec = Math.round((Math.max(...stamps) - Math.min(...stamps)) / 1000);
+		if (sec >= 1) {
+			parts.push(sec >= 60 ? `${Math.floor(sec / 60)}分${sec % 60}秒` : `${sec}秒`);
+		}
+	}
+	return parts.join(' ・ ');
+}
+
+/** thinking / tool 群の集約行。デフォルト折りたたみ、タップで展開。 */
+function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
+	const [expanded, setExpanded] = useState(false);
+	return (
+		<View>
+			<Pressable style={styles.activityRow} onPress={() => setExpanded(e => !e)} accessibilityLabel={expanded ? 'アクティビティを折りたたむ' : 'アクティビティを展開'}>
+				<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
+				<Text style={styles.activityText} numberOfLines={1}>{summarizeActivity(msgs)}</Text>
+			</Pressable>
+			{expanded ? (
+				<View style={styles.activityBody}>
+					{msgs.map(m => <MessageBubble key={m.rev} message={m} />)}
+				</View>
+			) : null}
+		</View>
 	);
 }
 
@@ -246,6 +324,9 @@ const styles = StyleSheet.create({
 	bubbleAssistant: { alignSelf: 'flex-start', backgroundColor: colors.surface },
 	bubbleText: { color: colors.text, fontSize: 13, lineHeight: 19 },
 	thinkingText: { color: colors.textDim, fontSize: 11, fontStyle: 'italic', lineHeight: 16, paddingHorizontal: 4 },
+	activityRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 3 },
+	activityText: { color: colors.textDim, fontSize: 11, flex: 1 },
+	activityBody: { gap: 6, paddingLeft: 14, paddingTop: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border, marginLeft: 8 },
 	toolRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 4 },
 	toolText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flex: 1, lineHeight: 15 },
 	approvalBar: { marginHorizontal: 12, marginTop: 8, backgroundColor: 'rgba(220,80,80,.12)', borderWidth: 1, borderColor: colors.red, borderRadius: 10, padding: 10, gap: 8 },

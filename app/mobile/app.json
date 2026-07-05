@@ -14,7 +14,7 @@
 			"appleTeamId": "WB4G82C384",
 			"infoPlist": {
 				"NSCameraUsageDescription": "QRコードでPara Codeとペアリングするためにカメラを使用します。",
-				"ITSAppUsesNonExemptEncryption": true
+				"ITSAppUsesNonExemptEncryption": false
 			}
 		},
 		"plugins": [
@@ -23,6 +23,10 @@
 			[
 				"expo-camera",
 				{ "cameraPermission": "QRコードでPara Codeとペアリングするためにカメラを使用します。" }
+			],
+			[
+				"expo-local-authentication",
+				{ "faceIDPermission": "アプリのロック解除にFace IDを使用します。" }
 			]
 		]
 	}

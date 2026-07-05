@@ -30,6 +30,8 @@ export interface ScmDiffResult {
 /** scm log 応答。 */
 export interface ScmLogResult {
 	commits: { hash: string; when: string; subject: string }[];
+	/** skip+limitの先にまだコミットが残っているか（追加読み込みボタンの表示判定）。 */
+	hasMore?: boolean;
 	/** リモート(origin)から導出したWeb URL（コミットページへのリンク用）。 */
 	webUrl?: string;
 }
@@ -378,8 +380,8 @@ export class MobileController {
 	}
 
 	/** 直近コミット一覧。 */
-	scmLog(ws: string): Promise<ScmLogResult> {
-		return this.request<ScmLogResult>('scm', { t: 'log', ws });
+	scmLog(ws: string, opts?: { limit?: number; skip?: number }): Promise<ScmLogResult> {
+		return this.request<ScmLogResult>('scm', { t: 'log', ws, ...(opts?.limit !== undefined ? { limit: opts.limit } : {}), ...(opts?.skip !== undefined ? { skip: opts.skip } : {}) });
 	}
 
 	/** ディレクトリ一覧（ワークスペースルート相対パス）。 */
