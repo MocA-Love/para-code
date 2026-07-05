@@ -70,6 +70,31 @@ function escapeHtml(text: string): string {
 	return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/**
+ * CSSが参照する `var(--vscode-*)` をPCの現在テーマの実値へ解決した :root ブロックを作る。
+ * モバイルのWebViewにはワークベンチのCSS変数が存在せず、未解決だと背景・罫線色が
+ * 消えてレイアウトが崩れて見えるため、生成時に固定値として焼き込む。
+ */
+function resolveCssVariables(css: string): string {
+	const names = new Set<string>();
+	for (const match of css.matchAll(/var\((--[A-Za-z0-9-]+)/g)) {
+		names.add(match[1]);
+	}
+	if (names.size === 0) {
+		return '';
+	}
+	const bodyStyle = mainWindow.getComputedStyle(mainWindow.document.body);
+	const rootStyle = mainWindow.getComputedStyle(mainWindow.document.documentElement);
+	const declarations: string[] = [];
+	for (const name of names) {
+		const value = (bodyStyle.getPropertyValue(name) || rootStyle.getPropertyValue(name)).trim();
+		if (value.length > 0) {
+			declarations.push(`${name}: ${value};`);
+		}
+	}
+	return declarations.length > 0 ? `:root { ${declarations.join(' ')} }\n` : '';
+}
+
 /** 実レイアウト測定用の不可視ホストを body に一時的に作って fn を実行する。 */
 function withMeasureHost<T>(fn: (host: HTMLElement, doc: Document) => T): T {
 	const doc = mainWindow.document;
@@ -212,7 +237,9 @@ function assembleMobileDoc(css: string, sections: readonly ISectionEntry[], noti
 	const body = sections.map((s, i) => `<div class="pm-sheet${i === 0 ? ' active' : ''}" data-i="${i}">${s.html}</div>`).join('');
 	return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=${viewportWidth}">
-<style>${css}
+<style>${resolveCssVariables(css)}${css}
+/* iOS WebViewのフォント自動拡大を無効化(広いビューポートで文字が勝手に拡大され、PC実測済みの列幅・縮小率と食い違う) */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { margin: 0; background: #ffffff; }
 .pm-tabs { position: sticky; top: 0; display: flex; overflow-x: auto; background: #f3f3f3; border-bottom: 1px solid #d0d0d0; z-index: 20; }
 .pm-tab { border: none; background: transparent; padding: 10px 16px; font-size: 15px; color: #666666; white-space: nowrap; }
@@ -252,27 +279,57 @@ function assembleWithinBudget(css: string, sections: ISectionEntry[], notices: s
 	}
 }
 
-/** xlsx をPC版ビューアと同じ見た目の静的HTMLへレンダリングする(全シート、タブ切替付き)。 */
-export async function renderSpreadsheetMobileHtml(fileService: IFileService, sharedProcessService: ISharedProcessService, resource: URI): Promise<string> {
+/** renderSpreadsheetMobileSheet の結果(1シート分のHTML + シート一覧)。 */
+export interface IParadisMobileSheetResult {
+	readonly html: string;
+	/** ブックの全シート名(モバイルのネイティブタブ用)。 */
+	readonly sheets: string[];
+	/** 今回レンダリングしたシートのインデックス。 */
+	readonly sheet: number;
+}
+
+// 直近にパースしたブックのキャッシュ(シートタブ切替のたびの再パースを避ける)。
+// mtime が変わったら読み直す。1エントリで十分(モバイルは同時に1ブックしか見ない)。
+let workbookCache: { key: string; mtime: number; workbook: IParadisWorkbookData } | undefined;
+
+async function parseWithCache(fileService: IFileService, sharedProcessService: ISharedProcessService, resource: URI): Promise<IParadisWorkbookData> {
+	const stat = await fileService.stat(resource);
+	const key = resource.toString();
+	const mtime = stat.mtime ?? 0;
+	if (workbookCache && workbookCache.key === key && workbookCache.mtime === mtime) {
+		return workbookCache.workbook;
+	}
 	const workbook = await parseSpreadsheetResource(fileService, sharedProcessService, resource);
+	workbookCache = { key, mtime, workbook };
+	return workbook;
+}
+
+/**
+ * xlsx の1シートをPC版ビューアと同じ見た目の静的HTMLへレンダリングする。
+ * シート単位の遅延読み込み(モバイルのネイティブタブが切替時に個別要求する)により、
+ * シート数の多いブックでも1回の転送・生成が1シート分で済む。
+ */
+export async function renderSpreadsheetMobileSheet(fileService: IFileService, sharedProcessService: ISharedProcessService, resource: URI, sheetIndex: number): Promise<IParadisMobileSheetResult> {
+	const workbook = await parseWithCache(fileService, sharedProcessService, resource);
 	const css = await loadSpreadsheetCss();
 	if (workbook.sheets.length === 0) {
 		throw new Error('シートが見つかりません');
 	}
-	return withMeasureHost((host, doc) => {
-		const sections: ISectionEntry[] = [];
+	const index = Math.min(Math.max(0, sheetIndex), workbook.sheets.length - 1);
+	const sheet = workbook.sheets[index];
+	const html = withMeasureHost((host, doc) => {
+		const section = buildSheetSectionHtml(sheet, host, doc);
 		const notices: string[] = [];
-		let rowsTruncated = false;
-		for (const sheet of workbook.sheets) {
-			const { html, naturalWidth } = buildSheetSectionHtml(sheet, host, doc);
-			sections.push({ name: sheet.name, html, naturalWidth });
-			rowsTruncated = rowsTruncated || !!sheet.truncated;
+		if (sheet.truncated) {
+			notices.push('行数が多いためシートの先頭のみ表示しています');
 		}
-		if (rowsTruncated) {
-			notices.push('行数が多いため各シートの先頭のみ表示しています');
+		const docHtml = assembleMobileDoc(css, [{ name: sheet.name, html: section.html, naturalWidth: section.naturalWidth }], notices);
+		if (encoder.encode(docHtml).length > MOBILE_XLSX_HTML_MAX_BYTES) {
+			throw new Error('このシートは大きすぎるため、モバイルでは表示できません');
 		}
-		return assembleWithinBudget(css, sections, notices);
+		return docHtml;
 	});
+	return { html, sheets: workbook.sheets.map(s => s.name), sheet: index };
 }
 
 /**

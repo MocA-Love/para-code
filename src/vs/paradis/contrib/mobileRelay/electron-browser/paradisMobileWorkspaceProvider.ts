@@ -25,7 +25,7 @@ import { IExtensionService } from '../../../../workbench/services/extensions/com
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileHtml } from './paradisMobileSpreadsheetHtml.js';
+import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
 import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
 
@@ -61,7 +61,7 @@ type ScmInbound =
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
 	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean }
-	| { t: 'xlsx'; id: string; ws: string; path: string }
+	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number }
 	| { t: 'find'; id: string; ws: string; query: string }
 	| { t: 'grep'; id: string; ws: string; query: string };
 
@@ -584,8 +584,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		try {
 			if (msg.t === 'xlsx') {
-				const html = await renderSpreadsheetMobileHtml(this.fileService, this.sharedProcessService, uri);
-				reply({ t: 'xlsx', html });
+				// シート単位の遅延読み込み(sheet省略時は先頭)。シート一覧はモバイルの
+				// ネイティブタブに使われ、切替時に該当sheetだけ再要求される。
+				const result = await renderSpreadsheetMobileSheet(this.fileService, this.sharedProcessService, uri, typeof msg.sheet === 'number' ? msg.sheet : 0);
+				reply({ t: 'xlsx', html: result.html, sheets: result.sheets, sheet: result.sheet });
 			} else if (msg.t === 'list') {
 				const stat = await this.fileService.resolve(uri);
 				const entries = (stat.children ?? [])

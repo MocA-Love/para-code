@@ -57,9 +57,13 @@ export interface FsReadResult {
 	highlightTruncated?: boolean;
 }
 
-/** fs xlsx 応答（PC側でレンダリングされたExcelの静的HTML）。 */
+/** fs xlsx 応答（PC側でレンダリングされたExcelの1シート分の静的HTML + シート一覧）。 */
 export interface FsXlsxResult {
 	html: string;
+	/** ブックの全シート名（ネイティブのシートタブ表示用）。 */
+	sheets?: string[];
+	/** 今回レンダリングされたシートのインデックス。 */
+	sheet?: number;
 }
 /** fs find 応答（ファイル名検索、ルート相対パスのランク順）。 */
 export interface FsFindResult {
@@ -388,9 +392,9 @@ export class MobileController {
 		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}) });
 	}
 
-	/** xlsx をPC側でレンダリングした静的HTMLを取得する（重いブックはPC側の生成に時間がかかるため長め）。 */
-	fsXlsx(ws: string, path: string): Promise<FsXlsxResult> {
-		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path }, 120_000);
+	/** xlsx の1シートをPC側でレンダリングした静的HTMLを取得する（重いブックはPC側の生成に時間がかかるため長め）。 */
+	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult> {
+		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path, ...(sheet !== undefined ? { sheet } : {}) }, 120_000);
 	}
 
 	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */

@@ -46,7 +46,7 @@ interface AppState extends StoreState {
 	scmLog(ws: string): Promise<ScmLogResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
-	fsXlsx(ws: string, path: string): Promise<FsXlsxResult>;
+	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult>;
 	fsFind(ws: string, query: string): Promise<FsFindResult>;
 	fsGrep(ws: string, query: string): Promise<FsGrepResult>;
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
@@ -186,9 +186,9 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.fsRead(ws, path, highlight);
 	},
 
-	fsXlsx(ws: string, path: string) {
+	fsXlsx(ws: string, path: string, sheet?: number) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.fsXlsx(ws, path);
+		return controller.fsXlsx(ws, path, sheet);
 	},
 
 	fsFind(ws: string, query: string) {
