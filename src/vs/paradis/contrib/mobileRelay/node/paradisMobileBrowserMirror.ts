@@ -12,11 +12,15 @@
 // フレームをモバイルへ転送し、入力イベントを流し込む。
 //
 // 【実装ノート】Page.startScreencast は Electron の WebContentsView 埋め込みページでは
-// フレームを発火しない（2026-07-05 実測）。そのため Page.captureScreenshot の定期
-// ポーリング + 入力直後の即時キャプチャで実装する（~1.5fps、リレー帯域にも優しい）。
+// フレームを発火しない（2026-07-05 実測）。そのため electron-main の
+// webContents.beginFrameSubscription によるプッシュ（PARADIS_CDP_TARGET_CHANNEL の
+// onDidFrame）を主経路とし、プッシュが使えない/止まった場合（対象不明、ウィンドウ
+// 最小化・オクルージョン等でペイントが起きない）のみ Page.captureScreenshot の
+// 低頻度ポーリングへ自動フォールバックする。入力は従来どおりCDPで注入する。
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IParadisCdpFrameEvent, IParadisCdpFrameSubscription } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 
 /** モバイル→PC の browser チャネル要求。 */
@@ -46,11 +50,22 @@ interface MirrorSession {
 	lastFrameData: string | undefined;
 	/** msgId → 応答ハンドラ（captureScreenshot / getLayoutMetrics の応答受け取り用）。 */
 	handlers: Map<number, (result: unknown) => void>;
+	/** electron-main のフレーム購読(beginFrameSubscription)が有効か。 */
+	pushMode: boolean;
+	/** startFrameSubscription が成功したか（stop時の参照返却用）。 */
+	pushStarted: boolean;
+	/** 直近にプッシュフレームを受け取った時刻（フォールバック判定用）。 */
+	lastPushFrameAt: number;
+	/** 直近にビューポート寸法を取得した時刻（プッシュ中の取得間引き用）。 */
+	lastMetricsAt: number;
 	send: (payload: Uint8Array) => void;
 }
 
 // 変化が無いフレームは送信しない（下記）ため、間隔は短めでも帯域を圧迫しない
 const CAPTURE_INTERVAL_MS = 250;
+// プッシュ購読中にこれ以上フレームが無い場合、ポーリングで1枚キャプチャする
+// （非表示・最小化中はペイントが起きずプッシュが止まるため）
+const PUSH_STALE_MS = 1500;
 const CDP_CALL_TIMEOUT_MS = 5000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -62,9 +77,26 @@ export class ParadisMobileBrowserMirror extends Disposable {
 
 	constructor(
 		private readonly upstream: ParadisCdpUpstream,
+		private readonly cdpFrames: IParadisCdpFrameSubscription | undefined,
 		private readonly logService: ILogService,
 	) {
 		super();
+		if (cdpFrames) {
+			this._register(cdpFrames.onDidFrame(e => this.onPushFrame(e)));
+		}
+	}
+
+	/** electron-main からのプッシュフレームを、該当ターゲットをミラー中の全モバイルへ転送する。 */
+	private onPushFrame(e: IParadisCdpFrameEvent): void {
+		for (const session of this.sessions.values()) {
+			if (session.targetId !== e.targetId || !session.pushMode) {
+				continue;
+			}
+			session.lastPushFrameAt = Date.now();
+			// フォールバックポーリングが同一フレームを再送しないよう dedup 基準も更新する
+			session.lastFrameData = e.data;
+			session.send(encoder.encode(JSON.stringify({ t: 'frame', data: e.data, w: e.w, h: e.h })));
+		}
 	}
 
 	override dispose(): void {
@@ -74,13 +106,17 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		super.dispose();
 	}
 
-	/** モバイル切断時に呼ぶ（ポーリングを止めてCDP接続を閉じる）。 */
+	/** モバイル切断時に呼ぶ（ポーリング・プッシュ購読を止めてCDP接続を閉じる）。 */
 	stopSession(mobileId: string): void {
 		const session = this.sessions.get(mobileId);
 		if (session) {
 			this.sessions.delete(mobileId);
 			if (session.captureTimer !== undefined) {
 				clearInterval(session.captureTimer);
+			}
+			if (session.pushStarted) {
+				session.pushStarted = false;
+				this.cdpFrames?.stopFrameSubscription(session.targetId).catch(() => undefined);
 			}
 			try {
 				session.socket.close();
@@ -135,7 +171,8 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		const socket = new WebSocket(`ws://127.0.0.1:${port}/devtools/page/${targetId}`);
 		const session: MirrorSession = {
 			socket, targetId, nextId: 1, viewWidth: 0, viewHeight: 0,
-			captureTimer: undefined, captureInFlight: false, lastFrameData: undefined, handlers: new Map(), send,
+			captureTimer: undefined, captureInFlight: false, lastFrameData: undefined, handlers: new Map(),
+			pushMode: false, pushStarted: false, lastPushFrameAt: 0, lastMetricsAt: 0, send,
 		};
 		this.sessions.set(mobileId, session);
 
@@ -173,15 +210,51 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		};
 
 		this.cdpSend(session, 'Page.enable', {});
-		// ビューポート寸法を取得（入力座標変換用）
-		this.cdpCall(session, 'Page.getLayoutMetrics', {}, result => {
-			const metrics = result as { cssVisualViewport?: { clientWidth?: number; clientHeight?: number } } | undefined;
-			session.viewWidth = Math.round(metrics?.cssVisualViewport?.clientWidth ?? 0);
-			session.viewHeight = Math.round(metrics?.cssVisualViewport?.clientHeight ?? 0);
-		});
-		// 定期キャプチャ（Electron WebContentsView では startScreencast が使えないため）
+		// 主経路: electron-main の再描画プッシュ購読（成功すればペイントの度にフレームが届く）
+		if (this.cdpFrames) {
+			this.cdpFrames.startFrameSubscription(targetId).then(ok => {
+				if (!ok) {
+					return;
+				}
+				if (this.sessions.get(mobileId) === session) {
+					session.pushMode = true;
+					session.pushStarted = true;
+					session.lastPushFrameAt = Date.now();
+				} else {
+					// 購読成立前にセッションが破棄/置換されていたら参照を返す
+					this.cdpFrames?.stopFrameSubscription(targetId).catch(() => undefined);
+				}
+			}).catch(err => this.logService.warn('[paradisMobileBrowserMirror] frame subscription failed', err));
+		}
+		// 初回フレーム（プッシュはペイント時にしか発火しないため、開始直後の1枚はキャプチャで送る）
 		this.captureFrame(session);
-		session.captureTimer = setInterval(() => this.captureFrame(session), CAPTURE_INTERVAL_MS);
+		// 定期tick: プッシュが健在なら寸法更新のみ、プッシュ不可/停滞時はキャプチャにフォールバック
+		session.captureTimer = setInterval(() => this.tick(session), CAPTURE_INTERVAL_MS);
+	}
+
+	private tick(session: MirrorSession): void {
+		if (session.pushMode && Date.now() - session.lastPushFrameAt < PUSH_STALE_MS) {
+			// プッシュで描画は届いている。タップ座標変換用のビューポート寸法だけ、
+			// CDP往復を抑えるため約1秒間隔で追従させる
+			if (Date.now() - session.lastMetricsAt >= 1000) {
+				session.lastMetricsAt = Date.now();
+				this.refreshViewMetrics(session);
+			}
+			return;
+		}
+		this.captureFrame(session);
+	}
+
+	private refreshViewMetrics(session: MirrorSession): void {
+		this.cdpCall(session, 'Page.getLayoutMetrics', {}, metricsResult => {
+			const metrics = metricsResult as { cssVisualViewport?: { clientWidth?: number; clientHeight?: number } } | undefined;
+			const w = Math.round(metrics?.cssVisualViewport?.clientWidth ?? 0);
+			const h = Math.round(metrics?.cssVisualViewport?.clientHeight ?? 0);
+			if (w > 0 && h > 0) {
+				session.viewWidth = w;
+				session.viewHeight = h;
+			}
+		});
 	}
 
 	private captureFrame(session: MirrorSession): void {
@@ -189,19 +262,35 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			return;
 		}
 		session.captureInFlight = true;
-		this.cdpCall(session, 'Page.captureScreenshot', { format: 'jpeg', quality: 60 }, result => {
-			session.captureInFlight = false;
-			const data = (result as { data?: string } | undefined)?.data;
-			// 画面に変化が無ければ送らない（モバイル側の再描画と帯域の節約）
-			if (data && data !== session.lastFrameData) {
-				session.lastFrameData = data;
-				session.send(encoder.encode(JSON.stringify({
-					t: 'frame',
-					data,
-					w: session.viewWidth,
-					h: session.viewHeight,
-				})));
+		// ビューポート寸法は毎フレーム取り直す。開始時の1回きりだと、PC側でウィンドウの
+		// リサイズやパネル開閉でビューの大きさが変わったとき、フレームに載る寸法と実画面が
+		// ずれてモバイルのタップ座標が系統的にズレる。
+		this.cdpCall(session, 'Page.getLayoutMetrics', {}, metricsResult => {
+			const metrics = metricsResult as { cssVisualViewport?: { clientWidth?: number; clientHeight?: number } } | undefined;
+			const w = Math.round(metrics?.cssVisualViewport?.clientWidth ?? 0);
+			const h = Math.round(metrics?.cssVisualViewport?.clientHeight ?? 0);
+			if (w > 0 && h > 0) {
+				session.viewWidth = w;
+				session.viewHeight = h;
 			}
+			if (session.socket.readyState !== 1) {
+				session.captureInFlight = false;
+				return;
+			}
+			this.cdpCall(session, 'Page.captureScreenshot', { format: 'jpeg', quality: 60 }, result => {
+				session.captureInFlight = false;
+				const data = (result as { data?: string } | undefined)?.data;
+				// 画面に変化が無ければ送らない（モバイル側の再描画と帯域の節約）
+				if (data && data !== session.lastFrameData) {
+					session.lastFrameData = data;
+					session.send(encoder.encode(JSON.stringify({
+						t: 'frame',
+						data,
+						w: session.viewWidth,
+						h: session.viewHeight,
+					})));
+				}
+			});
 		});
 	}
 
@@ -229,7 +318,11 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			this.cdpSend(session, 'Input.insertText', { text: msg.text });
 		}
 		// 入力の反映を素早く見せるため、少し置いてから即時キャプチャする
-		setTimeout(() => this.captureFrame(session), 150);
+		// （プッシュが直近まで届いている間は再描画が自動で届くため不要。
+		// プッシュ購読中でも停滞している場合はキャプチャする）
+		if (!(session.pushMode && Date.now() - session.lastPushFrameAt < PUSH_STALE_MS)) {
+			setTimeout(() => this.captureFrame(session), 150);
+		}
 	}
 
 	private cdpSend(session: MirrorSession, method: string, params: object): void {
@@ -240,6 +333,8 @@ export class ParadisMobileBrowserMirror extends Disposable {
 
 	private cdpCall(session: MirrorSession, method: string, params: object, onResult: (result: unknown) => void): void {
 		if (session.socket.readyState !== 1) {
+			// 呼び出し元の状態(captureInFlight等)を固着させないため、必ずコールバックする
+			onResult(undefined);
 			return;
 		}
 		const id = session.nextId++;

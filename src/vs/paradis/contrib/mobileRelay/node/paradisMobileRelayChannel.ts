@@ -11,6 +11,7 @@ import { IPCServer, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.j
 import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IParadisCdpFrameSubscription, PARADIS_CDP_TARGET_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../common/paradisMobileRelay.js';
 import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
 
@@ -24,7 +25,9 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
 export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService): IDisposable {
 	const store = new DisposableStore();
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
-	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, logService));
+	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）
+	const cdpFrames = ProxyChannel.toService<IParadisCdpFrameSubscription>(mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL));
+	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, logService));
 	server.registerChannel(PARADIS_MOBILE_RELAY_CHANNEL, ProxyChannel.fromService(service, store));
 	return store;
 }
