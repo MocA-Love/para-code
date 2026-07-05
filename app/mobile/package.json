@@ -2,7 +2,7 @@
 	"name": "@para/mobile",
 	"version": "0.1.0",
 	"private": true,
-	"main": "expo-router/entry",
+	"main": "index.ts",
 	"scripts": {
 		"start": "expo start",
 		"ios": "expo run:ios",
@@ -11,21 +11,24 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
+		"@expo/vector-icons": "^15.1.1",
 		"@para/protocol": "workspace:*",
-		"expo": "~52.0.0",
-		"expo-router": "~4.0.0",
-		"expo-secure-store": "~14.0.0",
-		"expo-camera": "~16.0.0",
-		"expo-local-authentication": "~15.0.0",
-		"expo-notifications": "~0.29.0",
-		"react": "18.3.1",
-		"react-native": "0.76.0",
-		"react-native-webview": "13.12.0",
+		"expo": "~57.0.2",
+		"expo-camera": "~57.0.0",
+		"expo-local-authentication": "~57.0.0",
+		"expo-notifications": "~57.0.3",
+		"expo-router": "~57.0.3",
+		"expo-secure-store": "~57.0.0",
+		"react": "19.2.3",
+		"react-native": "0.86.0",
+		"react-native-get-random-values": "~1.11.0",
+		"react-native-screens": "~4.25.2",
+		"react-native-webview": "13.16.1",
 		"zustand": "^5.0.0"
 	},
 	"devDependencies": {
-		"@types/react": "~18.3.0",
-		"typescript": "^5.6.0",
+		"@types/react": "~19.2.17",
+		"typescript": "^6.0.3",
 		"vitest": "^2.1.0"
 	}
 }

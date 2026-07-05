@@ -40,16 +40,31 @@ export const rnSocketFactory: SocketFactory = (url: string): SocketLike => {
 };
 
 // 前面表示中もバナーを出す（既定では前面時に抑制されるため）。
-Notifications.setNotificationHandler({
-	handleNotification: async () => ({
-		// SDKバージョン差異に両対応（旧: shouldShowAlert / 新: shouldShowBanner+List）。
-		shouldShowAlert: true,
-		shouldShowBanner: true,
-		shouldShowList: true,
-		shouldPlaySound: true,
-		shouldSetBadge: false,
-	}),
-});
+// モジュールのトップレベルで同期的に呼ぶと、ネイティブモジュール初期化のタイミング次第で
+// 例外が上位（expo-router の entry.js の登録処理）まで伝播し、"App entry not found" として
+// アプリ全体が起動不能になる。副作用は関数にくるみ、呼び出し側（appState.init）から
+// try/catch 付きで一度だけ実行する。
+let notificationHandlerConfigured = false;
+export function configureNotificationHandler(): void {
+	if (notificationHandlerConfigured) {
+		return;
+	}
+	notificationHandlerConfigured = true;
+	try {
+		Notifications.setNotificationHandler({
+			handleNotification: async () => ({
+				// SDKバージョン差異に両対応（旧: shouldShowAlert / 新: shouldShowBanner+List）。
+				shouldShowAlert: true,
+				shouldShowBanner: true,
+				shouldShowList: true,
+				shouldPlaySound: true,
+				shouldSetBadge: false,
+			}),
+		});
+	} catch (err) {
+		console.warn('[platform] failed to configure notification handler', err);
+	}
+}
 
 /** ローカル通知の権限を要求する（初回接続時などに呼ぶ）。 */
 export async function ensureNotificationPermission(): Promise<boolean> {

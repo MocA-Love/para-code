@@ -1,6 +1,8 @@
 {
 	// PARA-CODE: fork-owned file (Para Code) — Para Code Mobile relay worker
 	"name": "para-mobile-relay",
+	// PARA-CODE: CROUTECH アカウント（2026-07-05、本番デプロイ先として選定）に固定
+	"account_id": "979dbe0328e903a34bb6291b06cca0da",
 	"main": "src/worker.ts",
 	"compatibility_date": "2024-11-01",
 	"compatibility_flags": ["nodejs_compat"],

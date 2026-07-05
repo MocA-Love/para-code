@@ -14,8 +14,48 @@ import { RelayClient, type ConnectionState, type PairedCredentials, type SocketF
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
 export interface WorkspaceState {
 	activeWs: string | undefined;
-	workspaces: { id: string; name: string; color?: string }[];
+	workspaces: { id: string; name: string; color?: string; branch?: string }[];
 	terminals: { id: number; title: string; ws?: string; agentStatus?: string }[];
+}
+
+/** scm status 応答。 */
+export interface ScmStatusResult {
+	branch: string;
+	files: { x: string; y: string; path: string }[];
+}
+/** scm diff 応答。 */
+export interface ScmDiffResult {
+	diff: string;
+}
+/** scm log 応答。 */
+export interface ScmLogResult {
+	commits: { hash: string; when: string; subject: string }[];
+}
+/** scm commit 応答。 */
+export interface ScmCommitResult {
+	output: string;
+}
+/** fs list 応答。 */
+export interface FsListResult {
+	entries: { name: string; dir: boolean; size?: number }[];
+}
+/** fs read 応答。 */
+export interface FsReadResult {
+	content: string;
+	truncated: boolean;
+	size: number;
+}
+
+/** browser targets 応答。 */
+export interface BrowserTargetsResult {
+	targets: { targetId: string; title: string; url: string }[];
+}
+/** browser の直近 screencast フレーム。 */
+export interface BrowserFrame {
+	/** JPEG の base64。 */
+	data: string;
+	w: number;
+	h: number;
 }
 
 /** 秘密情報の永続化。 */
@@ -33,6 +73,8 @@ export interface StoreState {
 	terminalOutput: Map<number, string>;
 	/** 受信した通知（新しい順、最大50件）。 */
 	notifications: NotifyPayload[];
+	/** browser ミラーの直近フレーム（未開始は undefined）。 */
+	browserFrame: BrowserFrame | undefined;
 }
 
 const IDENTITY_KEY = 'para.identity';
@@ -90,6 +132,7 @@ export class MobileController {
 		workspace: undefined,
 		terminalOutput: new Map(),
 		notifications: [],
+		browserFrame: undefined,
 	};
 
 	constructor(
@@ -129,6 +172,11 @@ export class MobileController {
 		this.sendTerm({ t: 'input', id, data });
 	}
 
+	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
+	createTerminal(ws?: string): void {
+		this.client?.send('term', encoder.encode(JSON.stringify({ t: 'create', ws })));
+	}
+
 	/** 現在の状態スナップショットを要求する。 */
 	requestState(): void {
 		this.client?.send('state', new Uint8Array(0));
@@ -138,7 +186,121 @@ export class MobileController {
 		this.client?.send('term', encoder.encode(JSON.stringify(msg)));
 	}
 
+	// --- scm / fs（リクエスト/レスポンス） ------------------------------------
+
+	private requestCounter = 0;
+	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: unknown }>();
+
+	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object): Promise<T> {
+		const client = this.client;
+		if (!client) {
+			return Promise.reject(new Error('not connected'));
+		}
+		const id = `r${this.requestCounter++}`;
+		return new Promise<T>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pending.delete(id);
+				reject(new Error('request timeout'));
+			}, 30_000);
+			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+			client.send(channel, encoder.encode(JSON.stringify({ id, ...body })));
+		});
+	}
+
+	private settleResponse(payload: Uint8Array): void {
+		try {
+			const msg = JSON.parse(decoder.decode(payload)) as { id?: string; error?: string };
+			if (!msg.id) {
+				return;
+			}
+			const entry = this.pending.get(msg.id);
+			if (!entry) {
+				return;
+			}
+			this.pending.delete(msg.id);
+			clearTimeout(entry.timer as Parameters<typeof clearTimeout>[0]);
+			if (msg.error) {
+				entry.reject(new Error(msg.error));
+			} else {
+				entry.resolve(msg);
+			}
+		} catch { /* ignore */ }
+	}
+
+	/** git status（変更ファイル一覧 + ブランチ名）。 */
+	scmStatus(ws: string): Promise<ScmStatusResult> {
+		return this.request<ScmStatusResult>('scm', { t: 'status', ws });
+	}
+
+	/** git diff（path省略で全体、staged=trueでステージ済み）。 */
+	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult> {
+		return this.request<ScmDiffResult>('scm', { t: 'diff', ws, path, staged });
+	}
+
+	/** コミット（all=trueで git add -A してから）。 */
+	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult> {
+		return this.request<ScmCommitResult>('scm', { t: 'commit', ws, message, all });
+	}
+
+	/** 直近コミット一覧。 */
+	scmLog(ws: string): Promise<ScmLogResult> {
+		return this.request<ScmLogResult>('scm', { t: 'log', ws });
+	}
+
+	/** ディレクトリ一覧（ワークスペースルート相対パス）。 */
+	fsList(ws: string, path: string): Promise<FsListResult> {
+		return this.request<FsListResult>('fs', { t: 'list', ws, path });
+	}
+
+	/** ファイル読み取り（上限つき）。 */
+	fsRead(ws: string, path: string): Promise<FsReadResult> {
+		return this.request<FsReadResult>('fs', { t: 'read', ws, path });
+	}
+
+	// --- browser（para-browser ミラー、設計書 M3） ------------------------------
+
+	/** ミラー可能なブラウザページ一覧。 */
+	browserTargets(): Promise<BrowserTargetsResult> {
+		return this.request<BrowserTargetsResult>('browser', { t: 'targets' });
+	}
+
+	/** screencast を開始する（フレームは state.browserFrame に流れ込む）。 */
+	browserStart(targetId: string): Promise<void> {
+		return this.request<void>('browser', { t: 'start', targetId });
+	}
+
+	/** screencast を停止する。 */
+	async browserStop(): Promise<void> {
+		this.state.browserFrame = undefined;
+		this.emit();
+		try {
+			await this.request<void>('browser', { t: 'stop' });
+		} catch { /* 接続断などは無視 */ }
+	}
+
+	/** 入力イベントを送る（正規化座標）。 */
+	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text'; nx?: number; ny?: number; dy?: number; text?: string }): void {
+		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'input', ...input })));
+	}
+
 	private handleFrame(frame: Frame): void {
+		if (frame.ch === 'scm' || frame.ch === 'fs') {
+			this.settleResponse(frame.payload);
+			return;
+		}
+		if (frame.ch === 'browser') {
+			// screencastフレーム（id無しのストリーム）と要求応答（id有り）が混在する
+			try {
+				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number };
+				if (msg.t === 'frame' && typeof msg.data === 'string') {
+					this.state.browserFrame = { data: msg.data, w: msg.w ?? 0, h: msg.h ?? 0 };
+					this.emit();
+				} else if (msg.id) {
+					this.settleResponse(frame.payload);
+				}
+			} catch { /* ignore */ }
+			return;
+		}
 		if (frame.ch === 'state') {
 			try {
 				this.state.workspace = JSON.parse(decoder.decode(frame.payload)) as WorkspaceState;

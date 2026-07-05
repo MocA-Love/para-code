@@ -3,8 +3,9 @@
 import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { useAppStore } from '../src/appState.js';
+import { colors } from '../src/theme.js';
 
-/** ルートレイアウト。起動時にコントローラを初期化する。 */
+/** ルートレイアウト。起動時にコントローラを初期化し、タブ群とペアリングモーダルを持つ。 */
 export default function RootLayout() {
 	const init = useAppStore(s => s.init);
 	useEffect(() => {
@@ -12,10 +13,9 @@ export default function RootLayout() {
 	}, [init]);
 
 	return (
-		<Stack screenOptions={{ headerStyle: { backgroundColor: '#161b22' }, headerTintColor: '#cccccc', contentStyle: { backgroundColor: '#0d1117' } }}>
-			<Stack.Screen name="index" options={{ title: 'Para Code Mobile' }} />
-			<Stack.Screen name="pair" options={{ title: 'デバイスを接続', presentation: 'modal' }} />
-			<Stack.Screen name="terminal" options={{ title: 'ターミナル' }} />
+		<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
+			<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+			<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
 		</Stack>
 	);
 }

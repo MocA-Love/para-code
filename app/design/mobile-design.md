@@ -205,8 +205,12 @@ M1が「離れても作業続行」の最小価値。ここまでを最初のマ
 - **暗号方針**: PC側はvscodeへの新規npm依存を避けるため Node webcrypto で実装、モバイル側は @noble（純JS、RN対応）。両者のワイヤ互換は `app/protocol/test/interop.test.ts` が保証
 - **検証済み**: protocol/relay/mobile のユニット・統合テスト（フルE2E: mobile↔実リレー(miniflare)↔PCハーネスでペアリング〜双方向フレーム）、実dev buildでPCがローカルリレーに provision→WS接続→pair/begin してペアリングURIダイアログを表示するところまで確認
 - **M1 実装済み**: モバイルアプリのUI画面（ホーム/ペアリング(QR+SAS)/ターミナル）、通知パイプライン（PC側 notify チャネル：エージェント状態の permission/review 遷移を検知して送信 → モバイルで通知一覧反映＋expo-notificationsローカル通知）。オンライン/接続時の「エージェントの質問通知」はこの経路で完結。protocol/relay/mobile のユニット・統合テストでカバー
-- **M1 残（実機必須で本環境では検証不能）**: iOSアプリのオンデバイス実行確認、APNsリモート通知のオフライン配送（リレー→APNs→Notification Service Extension。NSEはネイティブSwift実装＋Apple署名が必要）、xterm.js in WebView による端末完全再現（現状はANSI除去の簡易表示で動作）、ターミナルscrollback初期同期
-- **未着手**: M2(scm/fs)、M3(browser CDP screencast)、M4(Android/LAN直結)、リレーのprovisionレート制限（DoS対策）
+- **M1 完了（2026-07-05 シミュレータ実機E2E検証済み）**: iOS 26.5 シミュレータでオンデバイス実行を確認（Expo SDK 57 / RN 0.86 へ移行。SDK 52 は Xcode 26.6 と非互換で起動不能だった）。ペアリング（QR/リンク貼り付け→SAS→承認）、状態同期、ターミナルミラー双方向、scrollback初期同期（attach時に `getContentsAsText` 末尾を送信）まで実機確認。PC側は QR コードを自前エンコーダ（`paradisQrCode.ts`、依存ゼロ、CoreImage デコーダで往復検証済み）で webview パネル表示
+- **M2 完了（同日E2E検証済み）**: scm（status/diff/commit/log。gitはshared processの `runGit` で実行、サブコマンド許可リスト制）と fs（list/read。ワークスペースルート配下限定・シンボリックリンク除外・256KB上限）。モバイルからの実コミットを検証済み
+- **M3 完了（同日E2E検証済み）**: browser ミラー。**Page.startScreencast は Electron の WebContentsView ではフレームを発火しない（実測）** ため、Page.captureScreenshot の 700ms ポーリング + 入力直後の即時キャプチャで実装。タップは正規化座標→CSS座標変換で `Input.dispatchMouseEvent`（**buttons:1 必須**、無いとクリック合成されない）。PC→モバイルのライブフレーム同期とモバイル→PCのタップ dispatch を双方向で実機検証済み
+- **UI**: `app/design/mobile.html` のモックアップ準拠に全面改装（2026-07-05）。下部5タブ（ホーム/ターミナル/ソース管理/ファイル/ブラウザ）+ 上部ワークスペースバー（全画面連動・応答待ちバッジ）+ ホームのPCカード/エージェント状態/「回答する」導線。デザイントークンは `src/theme.ts` に集約
+- **M1 残（実機必須で本環境では検証不能）**: APNsリモート通知のオフライン配送（リレー→APNs→Notification Service Extension。NSEはネイティブSwift実装＋Apple署名が必要）、xterm.js in WebView による端末完全再現（現状はANSI除去の簡易表示で動作）
+- **未着手**: M4(Android/LAN直結)、リレーのprovisionレート制限（DoS対策）
 
 ## 8. セキュリティ上の設計判断まとめ
 

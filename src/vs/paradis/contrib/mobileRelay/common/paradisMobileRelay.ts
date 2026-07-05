@@ -25,7 +25,8 @@ export const PARADIS_MOBILE_ENABLED_KEY = 'paradis.mobile.enabled';
 /** リレーのベースURL（セルフホスト用）。 */
 export const PARADIS_MOBILE_RELAY_URL_KEY = 'paradis.mobile.relayUrl';
 
-export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.paradis.workers.dev';
+// 2026-07-05 デプロイ済み（CROUTECHアカウント、app/relay/wrangler.jsonc参照）。
+export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudflare8234.workers.dev';
 
 // ---- IPC チャネル ----
 
@@ -79,6 +80,14 @@ export interface IParadisMobileInboundFrame {
 }
 
 /**
+ * onInboundFrame のIPCワイヤ形式。IParadisMobileInboundFrameオブジェクトをそのままイベント
+ * データにすると、IPCの引数シリアライザがpayload(VSBuffer)をネストされたプロパティとして
+ * JSON.stringifyしてしまいバイト列が壊れる（sendFrameと同じ理由）。タプル配列にすると
+ * 各要素がトップレベル値としてシリアライズされ、VSBufferが正しくバイナリのまま転送される。
+ */
+export type ParadisMobileInboundFrameWire = readonly [ch: ChannelId, ws: string | undefined, seq: number, payload: VSBuffer, mobileId: string | undefined];
+
+/**
  * shared process 側チャネルが公開するメソッド/イベント（renderer から call/listen する）。
  * ProxyChannel.fromService で自動チャネル化するため、メソッドは async、イベントは Event<T> とする。
  */
@@ -104,7 +113,23 @@ export interface IParadisMobileRelayService {
 	revokeDevice(deviceName: string): Promise<void>;
 
 	// フレーム: shared process が復号したモバイル→PCフレームを renderer へ配送
-	readonly onInboundFrame: Event<IParadisMobileInboundFrame>;
-	// renderer → shared process: PC→モバイルフレームを封緘して送出
-	sendFrame(frame: IParadisMobileInboundFrame): Promise<void>;
+	readonly onInboundFrame: Event<ParadisMobileInboundFrameWire>;
+	// renderer → shared process: PC→モバイルフレームを封緘して送出。
+	// payload(VSBuffer)はIPCの引数シリアライザがVSBufferをバイナリのまま転送できるよう
+	// トップレベル引数として渡す（IParadisMobileInboundFrameオブジェクトへネストすると
+	// serialize()のObject分岐でJSON.stringifyされ、VSBufferの中身が壊れる）。
+	sendFrame(ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void>;
+
+	/**
+	 * scmチャネル用のgit実行（rendererはプロセスを起動できないためshared processで実行）。
+	 * サブコマンドはサービス実装側の許可リストで制限される。
+	 */
+	runGit(repoPath: string, args: readonly string[]): Promise<IParadisGitResult>;
+}
+
+/** runGit の結果。 */
+export interface IParadisGitResult {
+	readonly code: number;
+	readonly stdout: string;
+	readonly stderr: string;
 }
