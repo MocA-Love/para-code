@@ -4,7 +4,11 @@
 
 Para Code が本家 VS Code に加えた変更の一覧です。新しいバージョンが上に来ます。
 
-## 未リリース
+## paracode-9（2026-07-06）
+
+### 修正
+
+- ccusage ダッシュボードで、環境によって ccusage の実行に失敗する（spawn ENOENT になる）問題を修正しました（ログインシェルの PATH を解決してから実行するように）
 
 ### 改善（Para Code Mobile）
 
