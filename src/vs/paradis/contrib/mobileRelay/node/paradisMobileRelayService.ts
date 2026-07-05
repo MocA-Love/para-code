@@ -411,7 +411,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 任意コマンド実行（--upload-pack等）を防ぐため各引数も検査する。
 	 */
 	async runGit(repoPath: string, args: readonly string[]): Promise<IParadisGitResult> {
-		const ALLOWED_SUBCOMMANDS = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote']);
+		const ALLOWED_SUBCOMMANDS = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore', 'remote', 'show']);
 		if (args.length === 0 || !ALLOWED_SUBCOMMANDS.has(args[0])) {
 			throw new Error(`paradisMobileRelay: git subcommand not allowed: ${args[0] ?? '(none)'}`);
 		}

@@ -18,8 +18,8 @@ import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
  */
 export default function ScmScreen() {
 	const ws = useEffectiveWs();
-	const { scmStatus, scmCommit, scmLog, connection } = useAppStore(useShallow(s => ({
-		scmStatus: s.scmStatus, scmCommit: s.scmCommit, scmLog: s.scmLog, connection: s.connection,
+	const { scmStatus, scmCommit, scmLog, scmCommitFiles, connection } = useAppStore(useShallow(s => ({
+		scmStatus: s.scmStatus, scmCommit: s.scmCommit, scmLog: s.scmLog, scmCommitFiles: s.scmCommitFiles, connection: s.connection,
 	})));
 
 	const [status, setStatus] = useState<ScmStatusResult | undefined>();
@@ -30,6 +30,9 @@ export default function ScmScreen() {
 	const [loading, setLoading] = useState(false);
 	const [diffTarget, setDiffTarget] = useState<{ path: string; staged: boolean } | undefined>();
 	const [message, setMessage] = useState('');
+	// コミット行タップで展開する「そのコミットの変更ファイル一覧」。hash単位でキャッシュする
+	const [expandedHash, setExpandedHash] = useState<string | undefined>();
+	const [commitFiles, setCommitFiles] = useState<Record<string, { files?: { status: string; path: string }[]; error?: string }>>({});
 	const [committing, setCommitting] = useState(false);
 	const [commitResult, setCommitResult] = useState<string | undefined>();
 
@@ -64,6 +67,8 @@ export default function ScmScreen() {
 		setStatus(undefined);
 		setLog(undefined);
 		setDiffTarget(undefined);
+		setExpandedHash(undefined);
+		setCommitFiles({});
 		void refresh();
 	}, [refresh]);
 
@@ -87,6 +92,20 @@ export default function ScmScreen() {
 	const openCommit = (hash: string) => {
 		if (log?.webUrl) {
 			void Linking.openURL(`${log.webUrl}/commit/${hash}`);
+		}
+	};
+
+	/** コミット行のタップ: 変更ファイル一覧を展開/折りたたみ（初回のみ取得）。 */
+	const toggleCommit = (hash: string) => {
+		if (expandedHash === hash) {
+			setExpandedHash(undefined);
+			return;
+		}
+		setExpandedHash(hash);
+		if (!commitFiles[hash] && wsId) {
+			scmCommitFiles(wsId, hash)
+				.then(r => setCommitFiles(prev => ({ ...prev, [hash]: { files: r.files } })))
+				.catch((e: unknown) => setCommitFiles(prev => ({ ...prev, [hash]: { error: String(e instanceof Error ? e.message : e) } })));
 		}
 	};
 
@@ -167,14 +186,37 @@ export default function ScmScreen() {
 				) : null}
 				{logError ? <Text style={styles.error}>{logError}</Text> : null}
 				{log && log.commits.length === 0 ? <Text style={styles.dim}>コミットはありません</Text> : null}
-				{(log?.commits ?? []).map(c => (
-					<Pressable key={c.hash} style={styles.commitRow} onPress={() => openCommit(c.hash)} disabled={!log?.webUrl}>
-						<Ionicons name="ellipse-outline" size={10} color={colors.textDim} />
-						<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
-						<Text style={styles.commitWhen}>{c.when}</Text>
-						{log?.webUrl ? <Ionicons name="open-outline" size={13} color={colors.textDim} /> : null}
-					</Pressable>
-				))}
+				{(log?.commits ?? []).map(c => {
+					const expanded = expandedHash === c.hash;
+					const detail = commitFiles[c.hash];
+					return (
+						<View key={c.hash}>
+							<Pressable style={styles.commitRow} onPress={() => toggleCommit(c.hash)}>
+								<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={11} color={colors.textDim} />
+								<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
+								<Text style={styles.commitWhen}>{c.when}</Text>
+								{log?.webUrl ? (
+									<Pressable onPress={() => openCommit(c.hash)} hitSlop={8} accessibilityLabel="ブラウザでコミットを開く">
+										<Ionicons name="open-outline" size={13} color={colors.textDim} />
+									</Pressable>
+								) : null}
+							</Pressable>
+							{expanded ? (
+								<View style={styles.commitDetail}>
+									{!detail ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
+									{detail?.error ? <Text style={styles.error}>{detail.error}</Text> : null}
+									{detail?.files && detail.files.length === 0 ? <Text style={styles.dim}>変更ファイルはありません</Text> : null}
+									{(detail?.files ?? []).map(f => (
+										<View key={`${f.status}${f.path}`} style={styles.commitFileRow}>
+											<Text style={[styles.fileLetter, f.status === 'M' ? styles.mod : f.status === 'A' ? styles.add : f.status === 'D' ? styles.del : undefined]}>{f.status}</Text>
+											<Text style={styles.commitFilePath} numberOfLines={1}>{f.path}</Text>
+										</View>
+									))}
+								</View>
+							) : null}
+						</View>
+					);
+				})}
 				{log?.hasMore ? (
 					<Pressable style={styles.loadMoreBtn} onPress={() => { void loadMore(); }} disabled={loadingMore}>
 						<Text style={styles.loadMoreText}>{loadingMore ? '読み込み中…' : 'さらに読み込む'}</Text>
@@ -214,6 +256,9 @@ const styles = StyleSheet.create({
 	add: { color: colors.add },
 	del: { color: colors.del },
 	commitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+	commitDetail: { paddingLeft: 20, paddingBottom: 6, gap: 3 },
+	commitFileRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+	commitFilePath: { flex: 1, color: colors.textDim, fontSize: 12 },
 	loadMoreBtn: { alignItems: 'center', paddingVertical: 10, marginTop: 4, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
 	loadMoreText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
 	commitSubject: { flex: 1, color: colors.text, fontSize: 13 },

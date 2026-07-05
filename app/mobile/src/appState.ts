@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsFindResult, type FsGrepResult, type FsListResult, type FsReadResult, type FsXlsxResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
+import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsFindResult, type FsGrepResult, type FsListResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -44,6 +44,7 @@ interface AppState extends StoreState {
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
 	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult>;
 	scmLog(ws: string, opts?: { limit?: number; skip?: number }): Promise<ScmLogResult>;
+	scmCommitFiles(ws: string, hash: string): Promise<ScmCommitFilesResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult>;
@@ -174,6 +175,11 @@ export const useAppStore = create<AppState>(set => ({
 	scmLog(ws: string, opts?: { limit?: number; skip?: number }) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.scmLog(ws, opts);
+	},
+
+	scmCommitFiles(ws: string, hash: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.scmCommitFiles(ws, hash);
 	},
 
 	fsList(ws: string, path: string) {
