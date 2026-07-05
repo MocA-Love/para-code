@@ -18,7 +18,10 @@ import { Event } from '../../../../base/common/event.js';
 import * as path from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { getResolvedShellEnv } from '../../../../platform/shell/node/shellEnv.js';
 import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
@@ -72,8 +75,32 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private readonly cache = new Map<string, { at: number; ttl: number; value: unknown }>();
 	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
 	private readonly inflight = new Map<string, Promise<unknown>>();
+	/**
+	 * ログインシェル由来の解決済み環境(PATH 等)。shared process は Dock/Spotlight 起動の
+	 * electron-main から process.env を継承するだけなので、GUI 起動では ~/.zshrc 等で
+	 * nvm/volta/fnm が足す PATH が反映されず 'npx'/'ccusage' が ENOENT になりうる。
+	 * getResolvedShellEnv は VS Code 本体が拡張機能ホスト起動時などに使う既存の解決ロジック。
+	 */
+	private resolvedShellEnvPromise: Promise<NodeJS.ProcessEnv> | undefined;
 
-	constructor(private readonly logService: ILogService) { }
+	constructor(
+		private readonly logService: ILogService,
+		private readonly configurationService: IConfigurationService,
+		private readonly args: NativeParsedArgs,
+	) { }
+
+	/** exec に渡す環境変数(process.env にログインシェル解決分をマージしたもの)。 */
+	private getExecEnv(): Promise<NodeJS.ProcessEnv> {
+		if (!this.resolvedShellEnvPromise) {
+			this.resolvedShellEnvPromise = getResolvedShellEnv(this.configurationService, this.logService, this.args, process.env)
+				.then(shellEnv => ({ ...process.env, ...shellEnv }))
+				.catch(error => {
+					this.logService.warn(`[ParadisCcusage] failed to resolve shell environment, falling back to inherited PATH: ${error instanceof Error ? error.message : error}`);
+					return { ...process.env };
+				});
+		}
+		return this.resolvedShellEnvPromise;
+	}
 
 	async fetchDaily(options: IParadisCcusageExecOptions): Promise<IParadisCcusageDailyRow[]> {
 		const result = await this.execJson<{ daily?: IParadisCcusageDailyRow[] }>(['daily'], options);
@@ -178,15 +205,16 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		}
 	}
 
-	private exec(executable: IResolvedExecutable, args: string[]): Promise<string> {
+	private async exec(executable: IResolvedExecutable, args: string[]): Promise<string> {
 		const fullArgs = [...executable.prefixArgs, ...args];
+		const env = await this.getExecEnv();
 		return new Promise<string>((resolve, reject) => {
 			cp.execFile(executable.command, fullArgs, {
 				encoding: 'utf8',
 				timeout: EXEC_TIMEOUT_MS,
 				maxBuffer: EXEC_MAX_BUFFER,
 				windowsHide: true,
-				env: { ...process.env, NO_COLOR: '1', LOG_LEVEL: '0' }
+				env: { ...env, NO_COLOR: '1', LOG_LEVEL: '0' }
 			}, (err, stdout, stderr) => {
 				if (err) {
 					this.logService.warn(`[ParadisCcusage] ${executable.command} ${fullArgs.join(' ')} failed: ${stderr || err.message}`);
@@ -254,9 +282,10 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 
 	/** コマンド名が PATH 上で実行可能か(`<cmd> --version` の成否)を確認する。 */
-	private canExecute(command: string): Promise<boolean> {
+	private async canExecute(command: string): Promise<boolean> {
+		const env = await this.getExecEnv();
 		return new Promise<boolean>(resolve => {
-			cp.execFile(command, ['--version'], { timeout: 10_000, windowsHide: true }, err => resolve(!err));
+			cp.execFile(command, ['--version'], { timeout: 10_000, windowsHide: true, env }, err => resolve(!err));
 		});
 	}
 
@@ -292,8 +321,8 @@ export class ParadisCcusageChannel implements IServerChannel<string> {
 /**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
-export function registerParadisCcusage(server: IPCServer<string>, logService: ILogService): IDisposable {
-	const service = new ParadisCcusageService(logService);
+export function registerParadisCcusage(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
+	const service = new ParadisCcusageService(logService, configurationService, args);
 	server.registerChannel(PARADIS_CCUSAGE_CHANNEL, new ParadisCcusageChannel(service));
 	return { dispose: () => { } };
 }
