@@ -39,6 +39,10 @@ export interface ScmLogResult {
 export interface ScmCommitResult {
 	output: string;
 }
+/** scm commitFiles 応答（1コミットの変更ファイル一覧）。 */
+export interface ScmCommitFilesResult {
+	files: { status: string; path: string }[];
+}
 /** fs list 応答。 */
 export interface FsListResult {
 	entries: { name: string; dir: boolean; size?: number }[];
@@ -382,6 +386,10 @@ export class MobileController {
 	/** 直近コミット一覧。 */
 	scmLog(ws: string, opts?: { limit?: number; skip?: number }): Promise<ScmLogResult> {
 		return this.request<ScmLogResult>('scm', { t: 'log', ws, ...(opts?.limit !== undefined ? { limit: opts.limit } : {}), ...(opts?.skip !== undefined ? { skip: opts.skip } : {}) });
+	}
+
+	scmCommitFiles(ws: string, hash: string): Promise<ScmCommitFilesResult> {
+		return this.request<ScmCommitFilesResult>('scm', { t: 'commitFiles', ws, hash });
 	}
 
 	/** ディレクトリ一覧（ワークスペースルート相対パス）。 */

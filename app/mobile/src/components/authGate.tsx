@@ -19,7 +19,6 @@ type GateState = 'locked' | 'authenticating' | 'unlocked';
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
 	const [state, setState] = useState<GateState>('locked');
-	const [appActive, setAppActive] = useState(true);
 	const stateRef = useRef(state);
 	stateRef.current = state;
 	// 認証済みのままバックグラウンドへ移った時刻。10分以内の復帰は再認証を免除する。
@@ -63,7 +62,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 		void authenticate();
 		let stuckTimer: ReturnType<typeof setTimeout> | undefined;
 		const sub = AppState.addEventListener('change', next => {
-			setAppActive(next === 'active');
 			if (next === 'background') {
 				if (stateRef.current === 'unlocked') {
 					hiddenAtRef.current = Date.now();
@@ -97,18 +95,9 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 	}, [authenticate]);
 
 	if (state === 'unlocked') {
-		// アプリスイッチャーのサムネイル等に内容が写らないよう、非アクティブ中は目隠しを重ねる
-		// （childrenはアンマウントせず状態を保つ）
-		return (
-			<View style={styles.fill}>
-				{children}
-				{!appActive ? (
-					<View style={styles.privacyCover}>
-						<Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
-					</View>
-				) : null}
-			</View>
-		);
+		// ロック解除後の猶予時間内はアプリスイッチャー等でも目隠しはしない（ユーザー要望）。
+		// 再ロック（猶予超過での復帰）時は state が変わりロック画面に切り替わる。
+		return <>{children}</>;
 	}
 	return (
 		<View style={styles.screen}>
@@ -126,8 +115,6 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 }
 
 const styles = StyleSheet.create({
-	fill: { flex: 1 },
-	privacyCover: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg, zIndex: 10 },
 	screen: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, backgroundColor: colors.bg },
 	title: { color: colors.text, fontSize: 15, fontWeight: '600' },
 	dim: { color: colors.textDim, fontSize: 13 },

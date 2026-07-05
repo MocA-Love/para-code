@@ -109,6 +109,8 @@ const vscodeResourceIncludes = [
 	'out-build/vs/paradis/contrib/releaseNotes/electron-browser/media/*.md',
 	// PARA-PATCH: ship the vendored React DevTools extension loaded into built-in browser sessions
 	'out-build/vs/paradis/contrib/browserExtensions/electron-main/media/**',
+	// PARA-PATCH: ship the spreadsheet viewer CSS read at runtime for the mobile xlsx HTML (inlined into the WebView document)
+	'out-build/vs/paradis/contrib/fileViewers/electron-browser/media/*.css',
 
 	// Extensions
 	'out-build/vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',

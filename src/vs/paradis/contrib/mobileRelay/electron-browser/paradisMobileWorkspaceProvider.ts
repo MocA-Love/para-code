@@ -55,7 +55,8 @@ type ScmInbound =
 	| { t: 'diff'; id: string; ws: string; path?: string; staged?: boolean }
 	| { t: 'xlsxDiff'; id: string; ws: string; path: string }
 	| { t: 'commit'; id: string; ws: string; message: string; all?: boolean }
-	| { t: 'log'; id: string; ws: string; limit?: number; skip?: number };
+	| { t: 'log'; id: string; ws: string; limit?: number; skip?: number }
+	| { t: 'commitFiles'; id: string; ws: string; hash: string };
 
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
@@ -458,6 +459,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const remote = await this.runGit(repoPath, ['remote', 'get-url', 'origin']).catch(() => undefined);
 				const webUrl = remote && remote.code === 0 ? remoteToWebUrl(remote.stdout.trim()) : undefined;
 				reply({ t: 'log', commits, hasMore, ...(webUrl ? { webUrl } : {}) });
+			} else if (msg.t === 'commitFiles') {
+				// ハッシュ以外（オプションやrev式）を渡させない。`git show` は引数次第で
+				// ファイル内容も出せるサブコマンドなので、40桁以内の16進に厳格に絞る
+				if (!/^[0-9a-f]{4,40}$/i.test(msg.hash)) {
+					reply({ error: 'invalid commit hash' });
+					return;
+				}
+				const result = await this.runGit(repoPath, ['show', '--name-status', '--pretty=format:', msg.hash]);
+				if (result.code !== 0) {
+					reply({ error: result.stderr.trim() || 'git show failed' });
+					return;
+				}
+				const files = result.stdout.split('\n').filter(l => l.includes('\t')).map(line => {
+					const parts = line.split('\t');
+					// リネーム(R100等)は "R100<TAB>old<TAB>new" なので新パスを採用する
+					return { status: parts[0][0] ?? '?', path: parts[parts.length - 1] };
+				});
+				reply({ t: 'commitFiles', files });
 			}
 		} catch (err) {
 			reply({ error: String(err) });
@@ -706,5 +725,15 @@ function remoteToWebUrl(remote: string): string | undefined {
 	if (!/^https?:\/\//.test(url)) {
 		return undefined;
 	}
-	return url.replace(/\.git$/, '');
+	// リモートURLに認証情報が埋まっていることがある（x-access-token:<token>@github.com 等）。
+	// トークンをモバイルへ送らない・ブラウザURLに露出させないため必ず除去する。
+	try {
+		const parsed = new URL(url);
+		parsed.username = '';
+		parsed.password = '';
+		url = parsed.toString();
+	} catch {
+		return undefined;
+	}
+	return url.replace(/\/$/, '').replace(/\.git$/, '');
 }
