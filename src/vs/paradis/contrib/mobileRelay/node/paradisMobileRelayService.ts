@@ -21,6 +21,7 @@ import {
 	respondHandshake,
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux } from '../common/paradisMobileMux.js';
+import { IParadisCdpFrameSubscription } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { IParadisFileSearchResult, IParadisTextSearchResult, paradisSearchFiles, paradisSearchText } from './paradisMobileSearch.js';
@@ -191,11 +192,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	constructor(
 		private readonly userDataPath: string,
 		private readonly encryptionService: IEncryptionService,
+		cdpFrames: IParadisCdpFrameSubscription | undefined,
 		private readonly logService: ILogService,
 	) {
 		super();
 		this.statePath = join(this.userDataPath, 'paradis-mobile-relay.json');
-		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), this.logService));
+		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), cdpFrames, this.logService));
 		this.agentChat = this._register(new ParadisMobileAgentChat(
 			(mobileId, payload) => {
 				const session = this.sessions.get(mobileId);

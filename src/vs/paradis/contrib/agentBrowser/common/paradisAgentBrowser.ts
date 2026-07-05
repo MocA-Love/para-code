@@ -9,6 +9,8 @@
 // ブラウザページ⇔ターミナル上のエージェントCLI（Claude Code / Codex）紐付け機能の共有定義。
 // workbench（browser / electron-browser）と shared process（node）の両方から参照される。
 
+import { Event } from '../../../../base/common/event.js';
+
 /**
  * ターミナルのPTY環境へ注入する、ペインを一意に識別するトークンの環境変数名。
  * ターミナル内で起動されたエージェントCLI（およびそのstdio MCP子プロセス）に継承され、
@@ -54,6 +56,30 @@ export const PARADIS_AGENT_BROWSER_CHANNEL = 'paradisAgentBrowser';
  * 解決用IPCチャネル名（CDPゲートウェイのターゲットフィルタが使う）。
  */
 export const PARADIS_CDP_TARGET_CHANNEL = 'paradisCdpTarget';
+
+/**
+ * electron-main のフレーム購読(beginFrameSubscription)が発火する1フレーム
+ * （{@link PARADIS_CDP_TARGET_CHANNEL} の `onDidFrame` イベントのペイロード）。
+ */
+export interface IParadisCdpFrameEvent {
+	readonly targetId: string;
+	/** base64エンコード済みJPEG。 */
+	readonly data: string;
+	/** フレームのピクセル寸法（アスペクト比・タップ座標の正規化用）。 */
+	readonly w: number;
+	readonly h: number;
+}
+
+/**
+ * shared process から見た electron-main のフレーム購読プロキシ
+ * （`ProxyChannel.toService` で {@link PARADIS_CDP_TARGET_CHANNEL} に接続する）。
+ */
+export interface IParadisCdpFrameSubscription {
+	readonly onDidFrame: Event<IParadisCdpFrameEvent>;
+	/** 購読開始。対象が見つからない場合は false（呼び出し側はポーリングに留まる）。 */
+	startFrameSubscription(targetId: string): Promise<boolean>;
+	stopFrameSubscription(targetId: string): Promise<void>;
+}
 
 /**
  * CDPゲートウェイ経由のスクリーンショット委譲リクエスト
