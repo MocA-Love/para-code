@@ -24,6 +24,8 @@ export const Channels = Object.freeze({
 	Browser: 'browser',
 	/** プッシュ対象イベント (PC→M) */
 	Notify: 'notify',
+	/** エージェント(Claude Code / Codex)セッションのチャットミラー (双方向) */
+	Agent: 'agent',
 } as const);
 
 export type ChannelId = typeof Channels[keyof typeof Channels];
@@ -36,6 +38,7 @@ const CHANNEL_TO_ID: Record<ChannelId, number> = {
 	fs: 4,
 	browser: 5,
 	notify: 6,
+	agent: 7,
 };
 const ID_TO_CHANNEL = new Map<number, ChannelId>(
 	(Object.entries(CHANNEL_TO_ID) as [ChannelId, number][]).map(([ch, id]) => [id, ch]),

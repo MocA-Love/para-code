@@ -23,6 +23,7 @@ import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../.
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileHtml } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
@@ -97,6 +98,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly themeService: IThemeService,
 		private readonly sharedProcessService: ISharedProcessService,
 		private readonly runGit: (repoPath: string, args: readonly string[]) => Promise<IParadisGitResult>,
+		private readonly paneTokenService: IParadisPaneTokenService,
+		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string }[]) => void,
 	) {
 		super();
 
@@ -114,7 +117,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.terminalService.onDidChangeInstanceDimensions(() => this.pushStateSoon()));
 		// worktree（スペース）の増減もワークスペース一覧に反映する
 		this._register(this.worktreeService.onDidChangeWorktrees(() => this.pushStateSoon()));
+		// agentチャネル用: terminalId ⇔ ペイントークンの対応を shared process へ同期する
+		// （チャットミラーが attach(id) を transcript へ解決するのに使う）。
+		this._register(this.paneTokenService.onDidChange(() => this.pushAgentPanes()));
+		this._register(this.terminalService.onDidChangeInstances(() => this.pushAgentPanes()));
+		this.pushAgentPanes();
 		this.refreshBranches();
+	}
+
+	/** terminalId ⇔ ペイントークン対応表を shared process のチャットミラーへ同期する。 */
+	private pushAgentPanes(): void {
+		const entries: { terminalId: number; token: string }[] = [];
+		for (const inst of this.allInstances()) {
+			const token = this.paneTokenService.getTokenForInstance(inst.instanceId);
+			if (token !== undefined) {
+				entries.push({ terminalId: inst.instanceId, token });
+			}
+		}
+		this.syncAgentPanes(entries);
 	}
 
 	private readonly pushStateScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 100));

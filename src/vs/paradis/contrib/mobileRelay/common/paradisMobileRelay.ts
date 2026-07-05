@@ -125,6 +125,13 @@ export interface IParadisMobileRelayService {
 	 * サブコマンドはサービス実装側の許可リストで制限される。
 	 */
 	runGit(repoPath: string, args: readonly string[]): Promise<IParadisGitResult>;
+
+	/**
+	 * agentチャネル用: 「ターミナルinstanceId ⇔ ペイントークン」対応表の同期（全置換）。
+	 * renderer がターミナル一覧の変化に合わせて呼ぶ。ペイントークンはE2Eの外へは出さず、
+	 * モバイルとの間では常に terminalId で識別する。
+	 */
+	syncAgentPanes(entries: readonly { terminalId: number; token: string }[]): Promise<void>;
 }
 
 /** runGit の結果。 */

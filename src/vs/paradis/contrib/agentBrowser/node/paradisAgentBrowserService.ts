@@ -25,6 +25,7 @@ import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
+import { fireParadisAgentHookEvent } from './paradisAgentHookBus.js';
 import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -394,10 +395,13 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._cdpGateway.handleRequest(req, res);
 		}
 
-		// エージェントCLIのhook通知 (GET /agent-hook?pane=<token>&event=<eventType>)。
-		// Claude Code / Codex の hooks に登録した curl 1行から叩かれる (Superset の
-		// GET /hook/complete 方式の移植。ペイントークンで認証)
-		if (req.method === 'GET' && (req.url ?? '').startsWith('/agent-hook')) {
+		// エージェントCLIのhook通知 (/agent-hook?pane=<token>&event=<eventType>)。
+		// Claude Code / Codex の hooks に登録した notify.sh から叩かれる (Superset の
+		// GET /hook/complete 方式の移植。ペイントークンで認証)。
+		// v2スクリプトは hook stdin JSON をそのまま POST body に載せる (session_id /
+		// transcript_path をモバイルのエージェントチャットミラーが使う)。旧v1スクリプトの
+		// GET (bodyなし) も引き続き受理する。
+		if ((req.method === 'GET' || req.method === 'POST') && (req.url ?? '').startsWith('/agent-hook')) {
 			return this._handleAgentHook(req, res);
 		}
 
@@ -465,7 +469,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
-	private _handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): void {
+	private async _handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
 		const token = this._extractToken(req);
 		if (!token) {
 			res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -475,8 +479,32 @@ export class ParadisAgentBrowserService extends Disposable {
 
 		const url = new URL(req.url ?? '/', 'http://127.0.0.1');
 		const eventType = url.searchParams.get('event') ?? '';
-		const normalized = paradisNormalizeAgentHookEvent(eventType);
 
+		// v2スクリプトのPOST body (hook stdin JSON) から session_id / transcript_path / cwd を
+		// 抽出してhookバスへ流す (モバイルのエージェントチャットミラー用)。パース失敗や
+		// 旧v1のGETでは undefined のまま流す (イベント名だけでも購読側の用途がある)。
+		let sessionId: string | undefined;
+		let transcriptPath: string | undefined;
+		let cwd: string | undefined;
+		if (req.method === 'POST') {
+			try {
+				const body = await this._readBody(req);
+				const parsed: unknown = JSON.parse(body);
+				if (parsed && typeof parsed === 'object') {
+					const record = parsed as Record<string, unknown>;
+					sessionId = typeof record['session_id'] === 'string' ? record['session_id'] : undefined;
+					transcriptPath = typeof record['transcript_path'] === 'string' ? record['transcript_path'] : undefined;
+					cwd = typeof record['cwd'] === 'string' ? record['cwd'] : undefined;
+				}
+			} catch {
+				// bodyの欠落・壊れたJSONは無視する (イベント名ベースの状態更新は継続)
+			}
+		}
+		if (eventType) {
+			fireParadisAgentHookEvent({ token, event: eventType, sessionId, transcriptPath, cwd, at: Date.now() });
+		}
+
+		const normalized = paradisNormalizeAgentHookEvent(eventType);
 		if (normalized === undefined) {
 			res.writeHead(200, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ ok: false, reason: `unknown event: ${eventType}` }));

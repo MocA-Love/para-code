@@ -37,6 +37,9 @@ interface AppState extends StoreState {
 	detachTerminal(id: number): void;
 	sendInput(id: number, data: string): void;
 	createTerminal(ws?: string): void;
+	attachAgent(id: number): void;
+	detachAgent(id: number): void;
+	refreshAgent(id: number): void;
 	scmStatus(ws: string): Promise<ScmStatusResult>;
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
 	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult>;
@@ -61,6 +64,7 @@ export const useAppStore = create<AppState>(set => ({
 	terminalOutput: new Map(),
 	notifications: [],
 	browserFrame: undefined,
+	agentChats: new Map(),
 	ready: false,
 	paired: false,
 	manualOffline: false,
@@ -128,6 +132,18 @@ export const useAppStore = create<AppState>(set => ({
 
 	createTerminal(ws?: string) {
 		controller?.createTerminal(ws);
+	},
+
+	attachAgent(id: number) {
+		controller?.attachAgent(id);
+	},
+
+	detachAgent(id: number) {
+		controller?.detachAgent(id);
+	},
+
+	refreshAgent(id: number) {
+		controller?.refreshAgent(id);
 	},
 
 	setSelectedWs(ws: string) {
