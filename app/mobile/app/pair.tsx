@@ -3,12 +3,17 @@
 import { useState } from 'react';
 import { useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../src/appState.js';
 
 /**
  * ペアリング画面: カメラでQRを読み取り、PCと接続する。
  * 読み取り後に表示されるSAS 6桁を、PC側ダイアログの6桁と突き合わせてもらう。
+ *
+ * PC側は現状 QR 画像ではなく paracode-mobile://pair の URI テキストをダイアログに表示するのみ
+ * （QR描画ライブラリは未同梱）。またシミュレータには実カメラが無くQRスキャンを試せないため、
+ * URI を直接貼り付けて接続する手動入力を併設する。
  */
 export default function PairScreen() {
 	const router = useRouter();
@@ -17,44 +22,80 @@ export default function PairScreen() {
 	const [sas, setSas] = useState<string | undefined>();
 	const [error, setError] = useState<string | undefined>();
 	const [scanning, setScanning] = useState(true);
+	const [pasteMode, setPasteMode] = useState(false);
+	const [pastedUri, setPastedUri] = useState('');
+	const [connecting, setConnecting] = useState(false);
 
-	if (!permission) {
-		return <View style={styles.center}><Text style={styles.dim}>カメラを準備中…</Text></View>;
-	}
-	if (!permission.granted) {
-		return (
-			<View style={styles.center}>
-				<Text style={styles.title}>カメラの許可が必要です</Text>
-				<Text style={styles.dim}>QR コードを読み取るためにカメラを使用します。</Text>
-				<Pressable style={styles.primaryBtn} onPress={requestPermission}><Text style={styles.primaryBtnText}>カメラを許可</Text></Pressable>
-			</View>
-		);
-	}
+	const connect = async (uri: string) => {
+		setError(undefined);
+		try {
+			await pairFromUri(uri, deviceName(), code => setSas(code));
+			router.back();
+		} catch (e) {
+			setError(String(e));
+			setScanning(true);
+			setConnecting(false);
+		}
+	};
 
 	const onScan = async (data: string) => {
 		if (!scanning) {
 			return;
 		}
 		setScanning(false);
-		try {
-			await pairFromUri(data, deviceName(), code => setSas(code));
-			// 成立 → ホームへ
-			router.back();
-		} catch (e) {
-			setError(String(e));
-			setScanning(true);
+		await connect(data);
+	};
+
+	const onSubmitPasted = async () => {
+		if (!pastedUri.trim() || connecting) {
+			return;
 		}
+		setConnecting(true);
+		await connect(pastedUri.trim());
 	};
 
 	if (sas) {
 		return (
 			<View style={styles.center}>
-				<Text style={styles.title}>確認コード</Text>
+				<View style={styles.appIcon}><Ionicons name="phone-portrait-outline" size={32} color="#fff" /></View>
+				<Text style={styles.title}>Para Code と接続</Text>
 				<Text style={styles.dim}>PC 側に表示されている 6 桁と一致することを確認してください。</Text>
-				<Text style={styles.sas}>{sas}</Text>
-				<Text style={styles.dim}>PC で「接続を承認」を押すと接続が完了します。</Text>
+				<Text style={styles.sas}>{sas.slice(0, 3)} {sas.slice(3)}</Text>
+				<Text style={styles.dim}>PC で「接続を承認」を押すと接続が完了します。{'\n'}接続はエンドツーエンドで暗号化されます</Text>
 			</View>
 		);
+	}
+
+	if (pasteMode || !permission?.granted) {
+		return (
+			<KeyboardAvoidingView style={styles.center} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+				<Text style={styles.title}>リンクを貼り付けて接続</Text>
+				<Text style={styles.dim}>PC の Para Code に表示された paracode-mobile://pair の リンクを貼り付けてください。</Text>
+				<TextInput
+					style={styles.input}
+					value={pastedUri}
+					onChangeText={setPastedUri}
+					placeholder="paracode-mobile://pair?d=..."
+					placeholderTextColor="#8b8b8b"
+					autoCapitalize="none"
+					autoCorrect={false}
+					multiline
+				/>
+				{error ? <Text style={styles.error}>{error}</Text> : null}
+				<Pressable style={styles.primaryBtn} onPress={onSubmitPasted} disabled={connecting}>
+					<Text style={styles.primaryBtnText}>{connecting ? '接続中…' : '接続'}</Text>
+				</Pressable>
+				{permission && !permission.granted ? (
+					<Pressable onPress={requestPermission}><Text style={styles.linkText}>カメラでQRを読み取る</Text></Pressable>
+				) : (
+					<Pressable onPress={() => setPasteMode(false)}><Text style={styles.linkText}>QRを読み取る（カメラを使う）</Text></Pressable>
+				)}
+			</KeyboardAvoidingView>
+		);
+	}
+
+	if (!permission) {
+		return <View style={styles.center}><Text style={styles.dim}>カメラを準備中…</Text></View>;
 	}
 
 	return (
@@ -67,6 +108,7 @@ export default function PairScreen() {
 			<View style={styles.overlay}>
 				<Text style={styles.scanHint}>PC の Para Code に表示された QR を枠に収めてください</Text>
 				{error ? <Text style={styles.error}>{error}</Text> : null}
+				<Pressable onPress={() => setPasteMode(true)}><Text style={styles.linkTextLight}>リンクを貼り付けて接続</Text></Pressable>
 			</View>
 		</View>
 	);
@@ -82,9 +124,13 @@ const styles = StyleSheet.create({
 	title: { color: '#fff', fontSize: 22, fontWeight: '700' },
 	dim: { color: '#8b8b8b', fontSize: 13, textAlign: 'center', lineHeight: 20 },
 	sas: { color: '#4fc3f7', fontSize: 44, fontWeight: '700', letterSpacing: 10, fontVariant: ['tabular-nums'] },
+	appIcon: { width: 72, height: 72, borderRadius: 18, backgroundColor: '#007acc', alignItems: 'center', justifyContent: 'center' },
 	overlay: { position: 'absolute', bottom: 60, left: 20, right: 20, alignItems: 'center', gap: 8 },
 	scanHint: { color: '#fff', fontSize: 13, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, overflow: 'hidden' },
 	error: { color: '#f48771', fontSize: 12, textAlign: 'center' },
 	primaryBtn: { backgroundColor: '#007acc', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
 	primaryBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
+	input: { width: '100%', minHeight: 90, backgroundColor: '#252526', borderRadius: 10, borderWidth: 1, borderColor: '#3c3c3c', color: '#cccccc', fontSize: 13, padding: 12, textAlignVertical: 'top' },
+	linkText: { color: '#4fc3f7', fontSize: 13, marginTop: 4 },
+	linkTextLight: { color: '#fff', fontSize: 13, textDecorationLine: 'underline' },
 });

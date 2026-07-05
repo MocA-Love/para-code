@@ -128,4 +128,41 @@ describe('MobileController', () => {
 		await flush();
 		expect(latest?.notifications.length).toBe(1);
 	});
+
+	it('scm/fs request-response resolves and rejects by id', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxP = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxP;
+		await flush();
+
+		// PC側: scm/fs リクエストに id 付きで応答するエコーサーバ
+		pcMux.on(Channels.Scm, f => {
+			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; ws: string };
+			if (req.t === 'status') {
+				pcMux.send(Channels.Scm, new TextEncoder().encode(JSON.stringify({ id: req.id, t: 'status', branch: 'main', files: [{ x: 'M', y: ' ', path: 'a.ts' }] })));
+			} else {
+				pcMux.send(Channels.Scm, new TextEncoder().encode(JSON.stringify({ id: req.id, error: 'boom' })));
+			}
+		});
+		pcMux.on(Channels.Fs, f => {
+			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; path: string };
+			pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify({ id: req.id, t: 'list', entries: [{ name: 'src', dir: true }] })));
+		});
+
+		const status = await controller.scmStatus('w1');
+		expect(status.branch).toBe('main');
+		expect(status.files[0]!.path).toBe('a.ts');
+
+		await expect(controller.scmDiff('w1', 'a.ts')).rejects.toThrow('boom');
+
+		const listing = await controller.fsList('w1', '');
+		expect(listing.entries[0]!.name).toBe('src');
+	});
 });

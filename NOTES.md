@@ -77,6 +77,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 | `src/vs/code/electron-browser/workbench/workbench.html` / `workbench-dev.html` | CSP の `trusted-types` 許可ポリシー一覧に `paradisSpreadsheetDrawings` を1トークン追加（`content` 属性内のため行内コメント不可） | Excel図形(斜線)を drawing XML から SVG 化する際、renderer の `DOMParser.parseFromString` が Trusted Types 強制でブロックされる。`createTrustedTypesPolicy('paradisSpreadsheetDrawings', ...)`（`paradisSpreadsheetDrawings.ts`）で作るポリシー名を CSP 許可リストに載せないと `createPolicy` が例外→生文字列fallback→ブロックとなる。通常ウィンドウ(workbench.html)専用機能のため sessions html は対象外 |
 | `cloudflare/update-server/package.json` / `package-lock.json` / `tsconfig.json` | 新規追加（fork所有、upstreamに同パスなし）。自動アップデートサーバー（Cloudflare Worker）のマニフェスト・lockファイル・tsconfig。同ディレクトリの `src/*.ts` / `wrangler.toml` にはPARA-CODEマーカー記載済み | 自動アップデート基盤（`updateUrl`が指すWorker）の付帯設定ファイル。JSONのためマーカーを埋め込めない |
 | `src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/**`（61ファイル） | 新規追加（vendoredサードパーティ成果物、MIT）。React Developer Tools 7.0.1 のChrome拡張をCRX3から展開してそのまま同梱。取得元・更新手順は `src/vs/paradis/contrib/browserExtensions/README.md` 参照 | 内蔵ブラウザへReact DevToolsを既定ロードする機能。ビルド済み第三者コードのためマーカーを埋め込まず、hygiene/eslint/stylelintから除外（`build/filters.ts`・`.eslint-ignore` のPARA-PATCH） |
+| `app/mobile/package.json` / `app/mobile/tsconfig.json` / `app/pnpm-lock.yaml` | Expo SDKを52→57へ移行（react-native 0.76→0.86、react 19.0.0→19.2.3）、`@expo/vector-icons` と `react-native-get-random-values` を新規依存として追加。`tsconfig.json` には `expo install --fix` が自動付与した `"extends": "expo/tsconfig.base"` を追加。`pnpm-lock.yaml` は `app/` pnpmワークスペース全体でこれらの依存解決を更新 | SDK 52がXcode 26.6/iOS 26.5ツールチェーンと非互換で、アプリがそもそも起動しなかった（「App entry point not found」）。動作確認済みのvanilla baselineに一致するSDK 57へ切り替えて解決 |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
@@ -232,6 +233,17 @@ win/mac/linuxへの配布と自動アップデートの実装。設計の経緯�
 - GitHub Actions側のsecrets登録一式（Apple署名・公証用6種、`CF_API_TOKEN`/`CF_ACCOUNT_ID`/`CF_R2_BUCKET`/`CF_R2_PUBLIC_BASE_URL`/`CF_KV_NAMESPACE_ID`/`PARA_UPDATE_ACCESS_CLIENT_ID`/`_SECRET`）。値が確定済みのもの: `CF_R2_BUCKET=para-code-releases`、`CF_R2_PUBLIC_BASE_URL=https://pub-753b4bcb636d45bfad234cefc4414031.r2.dev`、`CF_KV_NAMESPACE_ID=95abfbef8a784048975904f37347daac`、`CF_ACCOUNT_ID=REDACTED-CLOUDFLARE-ACCOUNT-ID`
 
 **次にやること**: GitHub Actions secrets登録（Cloudflare側の値は確定済み、Apple署名・公証用とCF_API_TOKENが残り） → Access Application作成（ダッシュボード） → 実リリースでのE2E確認。
+
+## モバイルリレー: Cloudflare Workers/DOデプロイ（2026-07-05）
+
+「Para Code Mobile」（iPhone遠隔操作機能、`src/vs/paradis/contrib/mobileRelay/`）がPCとモバイルの間を中継するリレーサーバー（`app/relay/`、Cloudflare Workers + Durable Objects）を、開発時のプレースホルダーURLのまま放置していたのを本番デプロイした。設計・実装の詳細は設計書（`app/design/mobile-design.md`）参照。ここには配置場所と再開に必要な情報のみ記す。
+
+- **デプロイ先**: REDACTED-ACCOUNTアカウント（account_id: `REDACTED-CLOUDFLARE-ACCOUNT-ID`、上記の更新配信基盤と同一アカウント）。ユーザーが明示的にこのアカウントを指定して選定
+- **デプロイ済みURL**: `wss://para-mobile-relay.cloudflare8234.workers.dev`（`app/relay/`の既定`workers.dev`サブドメイン。カスタムドメインは未設定）。PC側の既定値`PARADIS_MOBILE_DEFAULT_RELAY_URL`（`src/vs/paradis/contrib/mobileRelay/common/paradisMobileRelay.ts`）をこの実URLに更新済み。**それ以前は`wss://para-mobile-relay.paradis.workers.dev`という、実際には一度もデプロイされたことのないプレースホルダーURLのままだった**（セルフホスト設定`paradis.mobile.relayUrl`で上書きしない限り、初回起動時のペアリングが到達不能で必ず失敗する状態だった）
+- **account_id固定**: `app/relay/wrangler.jsonc`に`"account_id": "REDACTED-CLOUDFLARE-ACCOUNT-ID"`を追記（PARA-CODEコメント付き）。複数Cloudflareアカウントを持つユーザーの環境では、これが無いと`wrangler deploy`が「More than one account available」で失敗する
+- Version ID: `c63e07c0-c10a-49fa-91d6-6bb11863c8ae`
+- デプロイ確認: `curl -X POST https://para-mobile-relay.cloudflare8234.workers.dev/device/new/provision`が200 `{"ok":true,"deviceId":"..."}`を返すことを確認済み
+- DeviceDO（SQLite-backed、`app/relay/wrangler.jsonc`の`migrations`で`new_sqlite_classes`指定）は初回デプロイ時に自動でマイグレーションされる。以降の再デプロイでスキーマ変更が必要な場合は`migrations`に新しい`tag`エントリを追加すること
 
 ## ビルド環境（macOS / Apple Silicon）
 

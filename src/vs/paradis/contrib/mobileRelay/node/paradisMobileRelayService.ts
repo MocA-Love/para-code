@@ -21,6 +21,8 @@ import {
 	respondHandshake,
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux } from '../common/paradisMobileMux.js';
+import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
+import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import {
 	Channels,
 	ChannelId,
@@ -34,12 +36,14 @@ import {
 	unpackPcData,
 } from '../common/paradisMobileProtocol.js';
 import {
+	IParadisGitResult,
 	IParadisMobileInboundFrame,
 	IParadisMobilePairingSession,
 	IParadisMobileRelayService,
 	IParadisMobileStatus,
 	PARADIS_MOBILE_DEFAULT_RELAY_URL,
 	ParadisMobileConnectionState,
+	ParadisMobileInboundFrameWire,
 	ParadisMobilePairingEvent,
 } from '../common/paradisMobileRelay.js';
 
@@ -146,7 +150,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly _onPairingEvent = this._register(new Emitter<ParadisMobilePairingEvent>());
 	readonly onPairingEvent = this._onPairingEvent.event;
 
-	private readonly _onInboundFrame = this._register(new Emitter<IParadisMobileInboundFrame>());
+	private readonly _onInboundFrame = this._register(new Emitter<ParadisMobileInboundFrameWire>());
 	readonly onInboundFrame = this._onInboundFrame.event;
 
 	private state: PersistedState = { mobiles: [] };
@@ -173,6 +177,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly statePath: string;
 	private relayUrlOverride: string | undefined;
 
+	// para-browser の CDP screencast ミラー（設計書 M3、browser チャネル）
+	private readonly browserMirror: ParadisMobileBrowserMirror;
+
 	constructor(
 		private readonly userDataPath: string,
 		private readonly encryptionService: IEncryptionService,
@@ -180,6 +187,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	) {
 		super();
 		this.statePath = join(this.userDataPath, 'paradis-mobile-relay.json');
+		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), this.logService));
 		this._register(toDisposable(() => this.disconnect()));
 	}
 
@@ -379,6 +387,31 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this._onDidChangeStatus.fire(this.snapshot());
 	}
 
+	/**
+	 * scmチャネル用のgit実行。サブコマンドを許可リストで制限し、オプション経由の
+	 * 任意コマンド実行（--upload-pack等）を防ぐため各引数も検査する。
+	 */
+	async runGit(repoPath: string, args: readonly string[]): Promise<IParadisGitResult> {
+		const ALLOWED_SUBCOMMANDS = new Set(['status', 'diff', 'add', 'commit', 'log', 'rev-parse', 'branch', 'restore']);
+		if (args.length === 0 || !ALLOWED_SUBCOMMANDS.has(args[0])) {
+			throw new Error(`paradisMobileRelay: git subcommand not allowed: ${args[0] ?? '(none)'}`);
+		}
+		// 外部コマンド実行やリポジトリ差し替えに繋がるオプションを拒否
+		const FORBIDDEN = /^--(upload-pack|receive-pack|exec|git-dir|work-tree|config-env)\b|^-c$|^-C$/;
+		for (const a of args) {
+			if (FORBIDDEN.test(a)) {
+				throw new Error(`paradisMobileRelay: git argument not allowed: ${a}`);
+			}
+		}
+		const { execFile } = await import('child_process');
+		return new Promise<IParadisGitResult>(resolve => {
+			execFile('git', ['-C', repoPath, ...args], { maxBuffer: 4 * 1024 * 1024, timeout: 30_000 }, (err, stdout, stderr) => {
+				const rawCode: unknown = err ? (err as NodeJS.ErrnoException & { code?: unknown }).code ?? 1 : 0;
+				resolve({ code: typeof rawCode === 'number' ? rawCode : 1, stdout: String(stdout), stderr: String(stderr) });
+			});
+		});
+	}
+
 	private async revokeOnRelay(mobileId: string): Promise<void> {
 		if (!this.state.device) {
 			return;
@@ -394,20 +427,20 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
-	async sendFrame(frame: IParadisMobileInboundFrame): Promise<void> {
-		const payload = frame.payload.buffer;
+	async sendFrame(ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void> {
+		const bytes = payload.buffer;
 		// M-2: 宛先mobileId指定時はそのセッションにのみ送る（ターミナル出力などを要求元だけに返す）。
 		// 未指定時のみ全オンラインセッションへブロードキャスト（state スナップショット等）。
-		if (frame.mobileId !== undefined) {
-			const session = this.sessions.get(frame.mobileId);
+		if (mobileId !== undefined) {
+			const session = this.sessions.get(mobileId);
 			if (session?.isOnline) {
-				await session.sendFrame(frame.ch, frame.ws, payload);
+				await session.sendFrame(ch, ws, bytes);
 			}
 			return;
 		}
 		for (const session of this.sessions.values()) {
 			if (session.isOnline) {
-				await session.sendFrame(frame.ch, frame.ws, payload);
+				await session.sendFrame(ch, ws, bytes);
 			}
 		}
 	}
@@ -505,7 +538,21 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				fromBase64Url(paired.pubKey),
 				this.identity,
 				sealed => this.sendBinaryToMobile(mobileId, sealed),
-				frame => this._onInboundFrame.fire(frame),
+				frame => {
+					// browser チャネルは shared process 内の CDP ミラーで直接処理する
+					// （rendererはCDPに触れないため）。それ以外は renderer へ配送。
+					if (frame.ch === Channels.Browser) {
+						const respond = (payload: Uint8Array) => {
+							const s = this.sessions.get(idStr);
+							if (s?.isOnline) {
+								s.sendFrame(Channels.Browser, undefined, payload).catch(err => this.logService.warn('[paradisMobileRelay] browser reply failed', err));
+							}
+						};
+						this.browserMirror.handleRequest(idStr, frame.payload.buffer, respond).catch(err => this.logService.warn('[paradisMobileRelay] browser request failed', err));
+						return;
+					}
+					this._onInboundFrame.fire([frame.ch, frame.ws, frame.seq, frame.payload, frame.mobileId]);
+				},
 				this.logService,
 			);
 			this.sessions.set(idStr, session);
@@ -543,6 +590,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// アプリフレーム扱いして復号失敗し、恒久的に通信不能になる（H-3）。
 			if (!msg.online) {
 				this.sessions.delete(msg.mobileId);
+				this.browserMirror.stopSession(msg.mobileId);
 				this._onDidChangeStatus.fire(this.snapshot());
 			}
 		}
