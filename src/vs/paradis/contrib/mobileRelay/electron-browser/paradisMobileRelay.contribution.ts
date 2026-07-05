@@ -18,13 +18,16 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
+import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWebviewWorkbenchService } from '../../../../workbench/contrib/webviewPanel/browser/webviewWorkbenchService.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
-import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisMobileRelayService,
 	IParadisMobileStatus,
@@ -65,11 +68,16 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@ILogService private readonly logService: ILogService,
 		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@ITerminalService terminalService: ITerminalService,
+		@ITerminalGroupService terminalGroupService: ITerminalGroupService,
 		@IParadisTerminalScopeService terminalScopeService: IParadisTerminalScopeService,
+		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
 		@IParadisAgentStatusStore agentStatusStore: IParadisAgentStatusStore,
 		@IWebviewWorkbenchService private readonly webviewWorkbenchService: IWebviewWorkbenchService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IFileService fileService: IFileService,
+		@ILanguageService languageService: ILanguageService,
+		@IExtensionService extensionService: IExtensionService,
+		@IThemeService themeService: IThemeService,
 	) {
 		super();
 
@@ -82,10 +90,15 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			frame => { this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
 			workspaceSwitchService,
 			terminalService,
+			terminalGroupService,
 			terminalScopeService,
+			worktreeService,
 			agentStatusStore,
 			this.logService,
 			fileService,
+			languageService,
+			extensionService,
+			themeService,
 			(repoPath, args) => this.service.runGit(repoPath, args),
 		));
 

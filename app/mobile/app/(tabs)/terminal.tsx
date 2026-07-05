@@ -1,11 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
-import { stripAnsi } from '../../src/ansi.js';
+import { TermView } from '../../src/components/termView.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
 
@@ -14,8 +14,8 @@ import { colors } from '../../src/theme.js';
  * チップで切り替え、PCの実ターミナルをミラー表示・入力する。応答待ちのタブは
  * 赤ドットで示す。修飾キー行から Esc/Tab/^C/矢印も送れる。
  *
- * 注: 現状は ANSI エスケープを除去したプレーンテキスト表示。カーソル制御や色などの
- * 完全な再現は xterm.js を WebView に載せる対応で置き換える予定（設計書 §5.1）。
+ * 表示は xterm.js（WebView、termView.tsx）で行い、claude / codex などの TUI も
+ * PC と同じ描画になる。cols/rows は PC 側ターミナルと同一に保つ。
  */
 export default function TerminalScreen() {
 	const ws = useEffectiveWs();
@@ -25,13 +25,14 @@ export default function TerminalScreen() {
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, sendInput: s.sendInput, createTerminal: s.createTerminal,
 	})));
 	const [input, setInput] = useState('');
-	const scrollRef = useRef<ScrollView>(null);
 
-	const terminals = (workspace?.terminals ?? []).filter(t => !ws || t.ws === ws.id || !t.ws);
-	const activeId = selectedTerminalId !== undefined && terminals.some(t => t.id === selectedTerminalId)
-		? selectedTerminalId
-		: terminals[0]?.id;
-	const output = activeId !== undefined ? stripAnsi(terminalOutput.get(activeId) ?? '') : '';
+	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
+	// （全ワークスペースに重複表示しない）。
+	const terminals = (workspace?.terminals ?? []).filter(t =>
+		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
+	const activeTerminal = (selectedTerminalId !== undefined ? terminals.find(t => t.id === selectedTerminalId) : undefined) ?? terminals[0];
+	const activeId = activeTerminal?.id;
+	const output = activeId !== undefined ? terminalOutput.get(activeId) ?? '' : '';
 
 	useEffect(() => {
 		if (activeId === undefined) {
@@ -43,19 +44,13 @@ export default function TerminalScreen() {
 		return () => detachTerminal(activeId);
 	}, [activeId, attachTerminal, detachTerminal]);
 
-	useEffect(() => {
-		scrollRef.current?.scrollToEnd({ animated: false });
-	}, [output]);
-
 	const send = (data: string) => {
 		if (activeId !== undefined) {
 			sendInput(activeId, data);
 		}
 	};
 	const submit = () => {
-		if (!input) {
-			return;
-		}
+		// 空のまま送信 = Enter 単独（TUIの確認プロンプト等に必要）
 		send(input + '\r');
 		setInput('');
 	};
@@ -80,24 +75,30 @@ export default function TerminalScreen() {
 				</Pressable>
 				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
 			</ScrollView>
-			<ScrollView ref={scrollRef} style={styles.output} contentContainerStyle={styles.outputContent}>
-				<Text style={styles.outputText} selectable>{output || '(出力なし — PCのターミナルで操作すると内容がミラーされます)'}</Text>
-			</ScrollView>
-			<View style={styles.keyRow}>
+			<View style={styles.output}>
+				{activeId !== undefined ? (
+					<TermView key={activeId} output={output} cols={activeTerminal?.cols} rows={activeTerminal?.rows} />
+				) : (
+					<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
+				)}
+			</View>
+			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.keyBar} contentContainerStyle={styles.keyRow}>
 				<Pressable style={styles.key} onPress={() => send('\u001b')}><Text style={styles.keyText}>Esc</Text></Pressable>
 				<Pressable style={styles.key} onPress={() => send('\t')}><Text style={styles.keyText}>Tab</Text></Pressable>
 				<Pressable style={styles.key} onPress={() => send('\u0003')}><Text style={styles.keyText}>^C</Text></Pressable>
 				<Pressable style={styles.key} onPress={() => send('\u001b[A')}><Text style={styles.keyText}>↑</Text></Pressable>
 				<Pressable style={styles.key} onPress={() => send('\u001b[B')}><Text style={styles.keyText}>↓</Text></Pressable>
+				<Pressable style={styles.key} onPress={() => send('\u001b[D')}><Text style={styles.keyText}>←</Text></Pressable>
+				<Pressable style={styles.key} onPress={() => send('\u001b[C')}><Text style={styles.keyText}>→</Text></Pressable>
 				<Pressable style={styles.key} onPress={() => send('/')}><Text style={styles.keyText}>/</Text></Pressable>
 				<Pressable style={styles.key} onPress={() => send('|')}><Text style={styles.keyText}>|</Text></Pressable>
-			</View>
+			</ScrollView>
 			<View style={styles.inputBar}>
 				<TextInput
 					style={styles.input}
 					value={input}
 					onChangeText={setInput}
-					placeholder="コマンドまたは回答を入力…"
+					placeholder="コマンドまたは回答を入力…（空でEnter送信）"
 					placeholderTextColor={colors.textDim}
 					autoCapitalize="none"
 					autoCorrect={false}
@@ -105,7 +106,7 @@ export default function TerminalScreen() {
 					blurOnSubmit={false}
 				/>
 				<Pressable style={styles.sendBtn} onPress={submit} accessibilityLabel="送信">
-					<Ionicons name="arrow-up" size={20} color="#fff" />
+					<Ionicons name={input ? 'arrow-up' : 'return-down-back'} size={20} color="#fff" />
 				</Pressable>
 			</View>
 		</KeyboardAvoidingView>
@@ -123,9 +124,9 @@ const styles = StyleSheet.create({
 	dotRed: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
 	dotGreen: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
 	dim: { color: colors.textDim, fontSize: 12 },
-	output: { flex: 1, backgroundColor: '#1e1e1e', marginHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border },
-	outputContent: { padding: 10 },
-	outputText: { color: colors.text, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, lineHeight: 16 },
+	output: { flex: 1, backgroundColor: '#1e1e1e', marginHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	placeholder: { color: colors.textDim, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, padding: 10 },
+	keyBar: { flexGrow: 0, flexShrink: 0 },
 	keyRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingTop: 8 },
 	key: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },
 	keyText: { color: colors.text, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },

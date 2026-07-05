@@ -35,7 +35,7 @@ interface AppState extends StoreState {
 	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult>;
 	scmLog(ws: string): Promise<ScmLogResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
-	fsRead(ws: string, path: string): Promise<FsReadResult>;
+	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
 	browserTargets(): Promise<BrowserTargetsResult>;
 	browserStart(targetId: string): Promise<void>;
 	browserStop(): Promise<void>;
@@ -136,9 +136,9 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.fsList(ws, path);
 	},
 
-	fsRead(ws: string, path: string) {
+	fsRead(ws: string, path: string, highlight?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.fsRead(ws, path);
+		return controller.fsRead(ws, path, highlight);
 	},
 
 	browserTargets() {

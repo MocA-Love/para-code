@@ -15,7 +15,7 @@ import { RelayClient, type ConnectionState, type PairedCredentials, type SocketF
 export interface WorkspaceState {
 	activeWs: string | undefined;
 	workspaces: { id: string; name: string; color?: string; branch?: string }[];
-	terminals: { id: number; title: string; ws?: string; agentStatus?: string }[];
+	terminals: { id: number; title: string; ws?: string; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
 /** scm status 応答。 */
@@ -30,6 +30,8 @@ export interface ScmDiffResult {
 /** scm log 応答。 */
 export interface ScmLogResult {
 	commits: { hash: string; when: string; subject: string }[];
+	/** リモート(origin)から導出したWeb URL（コミットページへのリンク用）。 */
+	webUrl?: string;
 }
 /** scm commit 応答。 */
 export interface ScmCommitResult {
@@ -44,6 +46,15 @@ export interface FsReadResult {
 	content: string;
 	truncated: boolean;
 	size: number;
+	/** highlight要求時: PCの現行テーマでトークン化されたHTML（.monaco-tokenized-source）。 */
+	html?: string;
+	/** highlight要求時: トークン色のカラーマップCSS。 */
+	css?: string;
+	/** highlight要求時: エディタ背景色/前景色。 */
+	bg?: string;
+	fg?: string;
+	/** ハイライトがサイズ上限で先頭のみになっている。 */
+	highlightTruncated?: boolean;
 }
 
 /** browser targets 応答。 */
@@ -252,9 +263,9 @@ export class MobileController {
 		return this.request<FsListResult>('fs', { t: 'list', ws, path });
 	}
 
-	/** ファイル読み取り（上限つき）。 */
-	fsRead(ws: string, path: string): Promise<FsReadResult> {
-		return this.request<FsReadResult>('fs', { t: 'read', ws, path });
+	/** ファイル読み取り（上限つき）。highlight=trueでPCテーマのハイライトHTMLも返る。 */
+	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult> {
+		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}) });
 	}
 
 	// --- browser（para-browser ミラー、設計書 M3） ------------------------------

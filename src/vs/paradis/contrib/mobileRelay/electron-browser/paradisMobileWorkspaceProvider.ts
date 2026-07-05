@@ -6,14 +6,23 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { joinPath } from '../../../../base/common/resources.js';
+import { TokenizationRegistry } from '../../../../editor/common/languages.js';
+import { ILanguageService } from '../../../../editor/common/languages/language.js';
+import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
+import { tokenizeToString } from '../../../../editor/common/languages/textToHtmlTokenizer.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { editorBackground, editorForeground } from '../../../../platform/theme/common/colorRegistry.js';
+import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
+import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
+import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
 import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
 
@@ -24,7 +33,7 @@ const decoder = new TextDecoder();
 interface StateSnapshot {
 	activeWs: string | undefined;
 	workspaces: { id: string; name: string; color?: string; branch?: string }[];
-	terminals: { id: number; title: string; ws?: string; agentStatus?: string }[];
+	terminals: { id: number; title: string; ws?: string; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
@@ -47,9 +56,10 @@ type ScmInbound =
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
-	| { t: 'read'; id: string; ws: string; path: string };
+	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean };
 
 const FS_READ_LIMIT = 256 * 1024; // ファイル読み取り上限（バイト）
+const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
 const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字）
 
 /**
@@ -72,20 +82,43 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
 		private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		private readonly terminalService: ITerminalService,
+		private readonly terminalGroupService: ITerminalGroupService,
 		private readonly terminalScopeService: IParadisTerminalScopeService,
+		private readonly worktreeService: IParadisWorktreeService,
 		private readonly agentStatusStore: IParadisAgentStatusStore,
 		private readonly logService: ILogService,
 		private readonly fileService: IFileService,
+		private readonly languageService: ILanguageService,
+		private readonly extensionService: IExtensionService,
+		private readonly themeService: IThemeService,
 		private readonly runGit: (repoPath: string, args: readonly string[]) => Promise<IParadisGitResult>,
 	) {
 		super();
 
 		// 状態が変わったらスナップショットを再送。エージェント状態の変化は通知判定も行う。
-		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.refreshBranches(); this.pushState(); }));
-		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.pushState()));
-		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushState(); }));
-		this._register(this.terminalService.onDidChangeInstances(() => this.pushState()));
+		// 再送はイベント起点では100msに集約する（特にウィンドウリサイズ中の
+		// onDidChangeInstanceDimensions はインスタンス数×フレーム数で連射されるため、
+		// そのまま送るとリレー帯域を浪費する）。
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.refreshBranches(); this.pushStateSoon(); }));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.pushStateSoon()));
+		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
+		this._register(this.terminalService.onDidChangeInstances(() => this.pushStateSoon()));
+		// park/unpark（ワークスペース切り替えでの退避/復帰）は instances イベントに乗らないため groups 変化でも再送する
+		this._register(this.terminalGroupService.onDidChangeGroups(() => this.pushStateSoon()));
+		// PC側のリサイズで cols/rows が変わったら再送（モバイルのxtermが同寸法に追従する）
+		this._register(this.terminalService.onDidChangeInstanceDimensions(() => this.pushStateSoon()));
+		// worktree（スペース）の増減もワークスペース一覧に反映する
+		this._register(this.worktreeService.onDidChangeWorktrees(() => this.pushStateSoon()));
 		this.refreshBranches();
+	}
+
+	private readonly pushStateScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 100));
+
+	/** イベント起点のスナップショット再送（100msに集約）。 */
+	private pushStateSoon(): void {
+		if (!this.pushStateScheduler.isScheduled()) {
+			this.pushStateScheduler.schedule();
+		}
 	}
 
 	// リポジトリID → 現在のブランチ名（state スナップショット用の非同期キャッシュ）。
@@ -113,8 +146,35 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * - review（作業完了）への遷移 → agent-done
 	 * これがモバイルの「エージェントの質問通知」の供給源。全オンラインモバイルへ届ける。
 	 */
-	private detectAndNotify(): void {
+	/**
+	 * park 中（他ワークスペースへ退避中）のグループも含めた全ターミナルインスタンス。
+	 * terminalService.instances はアクティブワークスペースの表示中グループしか含まないため、
+	 * これを使わないとモバイル側は「PCで選択中のワークスペースのターミナル」しか見えない。
+	 */
+	private allInstances(): ITerminalInstance[] {
+		const seen = new Set<number>();
+		const result: ITerminalInstance[] = [];
+		const add = (inst: ITerminalInstance) => {
+			if (!seen.has(inst.instanceId)) {
+				seen.add(inst.instanceId);
+				result.push(inst);
+			}
+		};
 		for (const inst of this.terminalService.instances) {
+			add(inst);
+		}
+		if (this.terminalGroupService instanceof TerminalGroupService) {
+			for (const group of this.terminalGroupService.paradisParkedGroups) {
+				for (const inst of group.terminalInstances) {
+					add(inst);
+				}
+			}
+		}
+		return result;
+	}
+
+	private detectAndNotify(): void {
+		for (const inst of this.allInstances()) {
 			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId);
 			if (!stateKey) {
 				continue;
@@ -135,7 +195,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	private emitNotify(kind: NotifyKind, terminalId: number, ws: string, terminalTitle: string): void {
-		const wsName = this.workspaceSwitchService.repositories.find(r => r.id === ws)?.name ?? ws;
+		const wsName = this.wsDisplayName(ws);
 		const title = kind === 'agent-question'
 			? `${terminalTitle} — ${wsName}`
 			: `${terminalTitle} — ${wsName}`;
@@ -153,20 +213,39 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	private buildSnapshot(): StateSnapshot {
-		const workspaces = this.workspaceSwitchService.repositories.map(r => ({
-			id: r.id,
-			name: r.name,
-			...(r.color ? { color: r.color } : {}),
-			...(this.branchCache.has(r.id) ? { branch: this.branchCache.get(r.id) } : {}),
-		}));
-		const terminals = this.terminalService.instances.map(inst => {
-			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId);
+		// リポジトリの直後にそのworktree（スペース）を並べる。idはターミナルスコープ等と
+		// 同じ状態キー（worktree:<uri>）なので、モバイル側のフィルタがそのまま効く。
+		const workspaces: StateSnapshot['workspaces'] = [];
+		for (const r of this.workspaceSwitchService.repositories) {
+			workspaces.push({
+				id: r.id,
+				name: r.name,
+				...(r.color ? { color: r.color } : {}),
+				...(this.branchCache.has(r.id) ? { branch: this.branchCache.get(r.id) } : {}),
+			});
+			for (const worktree of this.worktreeService.getWorktrees(r.id)) {
+				if (worktree.missing) {
+					continue;
+				}
+				workspaces.push({
+					id: paradisWorktreeStateKey(worktree.uri),
+					name: `✦ ${worktree.name}`,
+					...(r.color ? { color: r.color } : {}),
+					...(worktree.branch ? { branch: worktree.branch } : {}),
+				});
+			}
+		}
+		const terminals = this.allInstances().map(inst => {
+			// スコープ未タグのターミナルはPC側では「常に表示」扱いだが、モバイルでは
+			// 全ワークスペースに重複表示されてしまうため、アクティブワークスペース所属として送る。
+			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId) ?? this.workspaceSwitchService.activeStateKey;
 			const agentStatus = stateKey ? this.agentStatusStore.getScopeStatus(stateKey) : undefined;
 			return {
 				id: inst.instanceId,
 				title: inst.title,
 				...(stateKey ? { ws: stateKey } : {}),
 				...(agentStatus ? { agentStatus } : {}),
+				...(inst.cols > 0 && inst.rows > 0 ? { cols: inst.cols, rows: inst.rows } : {}),
 			};
 		});
 		return { activeWs: this.workspaceSwitchService.activeStateKey, workspaces, terminals };
@@ -198,11 +277,50 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 	}
 
+	// --- ws（状態キー）の解決 ------------------------------------------------------
+
+	/**
+	 * ワークスペースID（リポジトリID or worktree状態キー）をルートURIへ解決する。
+	 * scm / fs / ターミナル作成の全チャネルで共通に使う。
+	 */
+	private resolveWsRoot(ws: string): URI | undefined {
+		const repo = this.workspaceSwitchService.repositories.find(r => r.id === ws);
+		if (repo) {
+			return repo.uri;
+		}
+		if (ws.startsWith('worktree:')) {
+			for (const r of this.workspaceSwitchService.repositories) {
+				for (const worktree of this.worktreeService.getWorktrees(r.id)) {
+					if (paradisWorktreeStateKey(worktree.uri) === ws) {
+						return worktree.uri;
+					}
+				}
+			}
+		}
+		return undefined;
+	}
+
+	/** ワークスペースID → 表示名（通知タイトル用）。 */
+	private wsDisplayName(ws: string): string {
+		const repo = this.workspaceSwitchService.repositories.find(r => r.id === ws);
+		if (repo) {
+			return repo.name;
+		}
+		for (const r of this.workspaceSwitchService.repositories) {
+			for (const worktree of this.worktreeService.getWorktrees(r.id)) {
+				if (paradisWorktreeStateKey(worktree.uri) === ws) {
+					return `${r.name} ✦ ${worktree.name}`;
+				}
+			}
+		}
+		return ws;
+	}
+
 	// --- scm チャネル -----------------------------------------------------------
 
 	private repoPathForWs(ws: string): string | undefined {
-		const repo = this.workspaceSwitchService.repositories.find(r => r.id === ws);
-		return repo?.uri.scheme === 'file' ? repo.uri.fsPath : undefined;
+		const root = this.resolveWsRoot(ws);
+		return root?.scheme === 'file' ? root.fsPath : undefined;
 	}
 
 	private async handleScmInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
@@ -268,12 +386,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					this.refreshBranches();
 				}
 			} else if (msg.t === 'log') {
-				const result = await this.runGit(repoPath, ['log', '-n', '8', '--pretty=format:%h%x09%ar%x09%s']);
+				const [result, remote] = await Promise.all([
+					this.runGit(repoPath, ['log', '-n', '8', '--pretty=format:%H%x09%ar%x09%s']),
+					this.runGit(repoPath, ['remote', 'get-url', 'origin']),
+				]);
 				const commits = result.stdout.split('\n').filter(l => l.includes('\t')).map(line => {
 					const [hash, when, ...subject] = line.split('\t');
 					return { hash, when, subject: subject.join('\t') };
 				});
-				reply({ t: 'log', commits });
+				// リモートのWeb URLが分かればモバイル側でコミットページへ飛べるようにする
+				const webUrl = remote.code === 0 ? remoteToWebUrl(remote.stdout.trim()) : undefined;
+				reply({ t: 'log', commits, ...(webUrl ? { webUrl } : {}) });
 			}
 		} catch (err) {
 			reply({ error: String(err) });
@@ -284,8 +407,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	/** ワークスペースルート配下に正規化したURIを返す（../ 等の脱出は拒否）。 */
 	private resolveWorkspacePath(ws: string, relPath: string): URI | undefined {
-		const repo = this.workspaceSwitchService.repositories.find(r => r.id === ws);
-		if (!repo) {
+		const root = this.resolveWsRoot(ws);
+		if (!root) {
 			return undefined;
 		}
 		// モバイル側は常に'/'区切りの相対パスを送る想定。Windows上ではjoinPath内部で
@@ -299,7 +422,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (segments.some(s => s === '..' || s === '.')) {
 			return undefined;
 		}
-		return segments.length === 0 ? repo.uri : joinPath(repo.uri, ...segments);
+		return segments.length === 0 ? root : joinPath(root, ...segments);
 	}
 
 	/**
@@ -312,16 +435,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!uri) {
 			return undefined;
 		}
-		const repo = this.workspaceSwitchService.repositories.find(r => r.id === ws);
-		if (!repo) {
+		const root = this.resolveWsRoot(ws);
+		if (!root) {
 			return undefined;
 		}
 		const real = await this.fileService.realpath(uri);
 		if (!real) {
 			return undefined;
 		}
-		const rootPath = repo.uri.path.endsWith('/') ? repo.uri.path : `${repo.uri.path}/`;
-		if (real.path !== repo.uri.path && !real.path.startsWith(rootPath)) {
+		const rootPath = root.path.endsWith('/') ? root.path : `${root.path}/`;
+		if (real.path !== root.path && !real.path.startsWith(rootPath)) {
 			return undefined;
 		}
 		return uri;
@@ -336,6 +459,37 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			const content = await this.fileService.readFile(uri, { length: FS_READ_LIMIT });
 			return content.value.toString();
 		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * PCの現行カラーテーマそのままのシンタックスハイライトHTMLを生成する。
+	 * トークン色は tokenizeToString が付ける mtk クラス + カラーマップCSSで再現し、
+	 * 背景/前景はテーマのエディタ色を添える。失敗時は undefined（モバイル側はプレーン表示）。
+	 */
+	private async highlightFile(uri: URI, text: string): Promise<{ html: string; css: string; bg?: string; fg?: string; highlightTruncated?: boolean } | undefined> {
+		try {
+			// TextMate文法は拡張機構経由で登録されるため、登録完了を待ってから言語解決する
+			await this.extensionService.whenInstalledExtensionsRegistered();
+			const truncated = text.length > HIGHLIGHT_SOURCE_LIMIT;
+			const source = truncated ? text.slice(0, HIGHLIGHT_SOURCE_LIMIT) : text;
+			const newlineIndex = source.indexOf('\n');
+			const firstLine = newlineIndex === -1 ? source : source.slice(0, newlineIndex);
+			const languageId = this.languageService.guessLanguageIdByFilepathOrFirstLine(uri, firstLine);
+			const html = await tokenizeToString(this.languageService, source, languageId);
+			const colorMap = TokenizationRegistry.getColorMap();
+			const css = colorMap ? generateTokensCSSForColorMap(colorMap) : '';
+			const theme = this.themeService.getColorTheme();
+			return {
+				html,
+				css,
+				bg: theme.getColor(editorBackground)?.toString(),
+				fg: theme.getColor(editorForeground)?.toString(),
+				...(truncated ? { highlightTruncated: true } : {}),
+			};
+		} catch (err) {
+			this.logService.warn('[paradisMobileRelay] highlight failed', err);
 			return undefined;
 		}
 	}
@@ -366,7 +520,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} else if (msg.t === 'read') {
 				const stat = await this.fileService.stat(uri);
 				const content = await this.fileService.readFile(uri, { length: FS_READ_LIMIT });
-				reply({ t: 'read', content: content.value.toString(), truncated: (stat.size ?? 0) > FS_READ_LIMIT, size: stat.size ?? 0 });
+				const text = content.value.toString();
+				const body: Record<string, unknown> = { t: 'read', content: text, truncated: (stat.size ?? 0) > FS_READ_LIMIT, size: stat.size ?? 0 };
+				if (msg.highlight) {
+					const highlighted = await this.highlightFile(uri, text);
+					if (highlighted) {
+						Object.assign(body, highlighted);
+					}
+				}
+				reply(body);
 			}
 		} catch (err) {
 			reply({ error: String(err) });
@@ -381,14 +543,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		if (msg.t === 'create') {
-			// モバイルからの新規ターミナル作成。ws指定時はそのリポジトリをcwdにする。
+			// モバイルからの新規ターミナル作成。ws指定時はそのリポジトリ/worktreeをcwdにする。
 			// 作成に伴う onDidChangeInstances で state が自動再送されるため応答は不要。
-			const repo = msg.ws ? this.workspaceSwitchService.repositories.find(r => r.id === msg.ws) : undefined;
-			this.terminalService.createTerminal(repo ? { cwd: repo.uri } : undefined)
+			const ws = msg.ws;
+			const root = ws ? this.resolveWsRoot(ws) : undefined;
+			this.terminalService.createTerminal(root ? { cwd: root } : undefined)
+				.then(instance => {
+					// 既定のタグ付けはPC側アクティブスコープ所属になるため、指定wsへ付け替える
+					// （アクティブ外ならそのまま park され、指定ワークスペースの一覧にだけ出る）。
+					if (ws && root) {
+						this.terminalScopeService.assignInstanceScope(instance.instanceId, ws);
+						this.pushState();
+					}
+				})
 				.catch(err => this.logService.warn('[paradisMobileRelay] createTerminal failed', err));
 			return;
 		}
-		const instance = this.terminalService.instances.find(i => i.instanceId === msg.id);
+		// park 中（他ワークスペースのターミナル）にもモバイルからattach/入力できるようにする
+		const instance = this.allInstances().find(i => i.instanceId === msg.id);
 		if (!instance) {
 			return;
 		}
@@ -429,4 +601,23 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const target = this.terminalSubscribers.get(msg.id);
 		this.sendFrame({ ch: Channels.Terminal, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify(msg))), mobileId: target || undefined });
 	}
+}
+
+/**
+ * git remote のURLをブラウザで開けるWeb URLへ変換する。
+ * 例: git@github.com:owner/repo.git → https://github.com/owner/repo
+ */
+function remoteToWebUrl(remote: string): string | undefined {
+	if (!remote) {
+		return undefined;
+	}
+	let url = remote;
+	const scpMatch = url.match(/^(?:ssh:\/\/)?git@(?<host>[^:/]+)[:/](?<repoPath>.+)$/);
+	if (scpMatch?.groups) {
+		url = `https://${scpMatch.groups.host}/${scpMatch.groups.repoPath}`;
+	}
+	if (!/^https?:\/\//.test(url)) {
+		return undefined;
+	}
+	return url.replace(/\.git$/, '');
 }

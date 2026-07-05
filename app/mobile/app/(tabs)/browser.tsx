@@ -107,19 +107,31 @@ export default function BrowserScreen() {
 				<Ionicons name="globe-outline" size={13} color={colors.textDim} />
 				<Text style={styles.urlText} numberOfLines={1}>{activeUrl.replace(/^https?:\/\//, '')}</Text>
 			</View>
-			<View style={styles.viewport} onLayout={onLayout}>
+			{/* ピンチで拡大縮小・ドラッグでパンできるようScrollViewズームに載せる。
+			    タップ座標は子ビューのローカル座標系（ズーム非依存）なのでマッピングはそのまま有効 */}
+			<ScrollView
+				style={styles.viewport}
+				onLayout={onLayout}
+				minimumZoomScale={1}
+				maximumZoomScale={5}
+				bouncesZoom
+				showsHorizontalScrollIndicator={false}
+				showsVerticalScrollIndicator={false}
+				contentContainerStyle={{ width: viewSize.w, height: viewSize.h }}
+			>
 				{frame ? (
 					<Pressable style={styles.frameWrap} onPress={onTap}>
 						<Image
 							source={{ uri: `data:image/jpeg;base64,${frame.data}` }}
 							style={styles.frameImage}
 							resizeMode="contain"
+							fadeDuration={0}
 						/>
 					</Pressable>
 				) : (
 					<View style={styles.center}><ActivityIndicator /><Text style={styles.dim}>フレームを待っています…</Text></View>
 				)}
-			</View>
+			</ScrollView>
 			<View style={styles.toolbar}>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'back' })}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'forward' })}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>

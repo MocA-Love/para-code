@@ -1,17 +1,20 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { FileViewer } from '../../src/components/fileViewer.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
-import type { FsListResult } from '../../src/store.js';
+import type { FsListResult, FsReadResult } from '../../src/store.js';
 
 /**
  * ファイル画面（モックアップ準拠）。ワークスペースのファイルツリーを閲覧し、
- * ファイル名フィルタとタップでの下部プレビュー表示に対応（読み取り専用）。
+ * ファイル名フィルタとタップでのフルスクリーンビューア表示に対応（読み取り専用）。
+ * ビューアはPC版と同じテーマのシンタックスハイライトで表示し、.md/.htmlは
+ * レンダー/Raw を切り替えられる。
  */
 export default function FilesScreen() {
 	const ws = useEffectiveWs();
@@ -22,9 +25,8 @@ export default function FilesScreen() {
 	const [filter, setFilter] = useState('');
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
-	const [previewPath, setPreviewPath] = useState<string | undefined>();
-	const [previewContent, setPreviewContent] = useState<string | undefined>();
-	const [truncated, setTruncated] = useState(false);
+	const [viewerPath, setViewerPath] = useState<string | undefined>();
+	const [viewerResult, setViewerResult] = useState<FsReadResult | undefined>();
 
 	const wsId = ws?.id;
 
@@ -47,24 +49,22 @@ export default function FilesScreen() {
 
 	useEffect(() => {
 		setListing(undefined);
-		setPreviewPath(undefined);
-		setPreviewContent(undefined);
+		setViewerPath(undefined);
+		setViewerResult(undefined);
 		void load('');
 	}, [load]);
 
-	const openPreview = async (p: string) => {
-		setPreviewPath(p);
-		setPreviewContent(undefined);
-		setTruncated(false);
+	const openViewer = async (p: string) => {
+		setViewerPath(p);
+		setViewerResult(undefined);
 		if (!wsId) {
 			return;
 		}
 		try {
-			const result = await fsRead(wsId, p);
-			setPreviewContent(result.content);
-			setTruncated(result.truncated);
+			// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
+			setViewerResult(await fsRead(wsId, p, true));
 		} catch (e) {
-			setPreviewContent(`エラー: ${String(e instanceof Error ? e.message : e)}`);
+			setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
 		}
 	};
 
@@ -106,28 +106,17 @@ export default function FilesScreen() {
 						<Pressable
 							key={entry.name}
 							style={styles.row}
-							onPress={() => { entry.dir ? void load(childPath) : void openPreview(childPath); }}
+							onPress={() => { entry.dir ? void load(childPath) : void openViewer(childPath); }}
 						>
 							<Ionicons name={entry.dir ? 'folder-outline' : 'document-text-outline'} size={16} color={entry.dir ? colors.accent : colors.textDim} />
-							<Text style={[styles.rowName, previewPath === childPath && styles.rowNameActive]} numberOfLines={1}>{entry.name}</Text>
+							<Text style={styles.rowName} numberOfLines={1}>{entry.name}</Text>
 							{!entry.dir && entry.size !== undefined ? <Text style={styles.size}>{formatSize(entry.size)}</Text> : null}
 						</Pressable>
 					);
 				})}
 			</ScrollView>
-			{previewPath !== undefined ? (
-				<View style={styles.preview}>
-					<View style={styles.previewHeader}>
-						<Text style={styles.previewTitle} numberOfLines={1}>プレビュー — {previewPath.split('/').pop()?.toUpperCase()}</Text>
-						<Pressable onPress={() => setPreviewPath(undefined)}><Ionicons name="close" size={16} color={colors.textDim} /></Pressable>
-					</View>
-					{truncated ? <Text style={styles.truncated}>サイズ上限のため先頭のみ表示しています</Text> : null}
-					<ScrollView style={styles.previewScroll}>
-						<ScrollView horizontal showsHorizontalScrollIndicator={false}>
-							<Text style={styles.previewText}>{previewContent ?? '読み込み中…'}</Text>
-						</ScrollView>
-					</ScrollView>
-				</View>
+			{viewerPath !== undefined ? (
+				<FileViewer path={viewerPath} result={viewerResult} onClose={() => { setViewerPath(undefined); setViewerResult(undefined); }} />
 			) : null}
 		</View>
 	);
@@ -153,13 +142,5 @@ const styles = StyleSheet.create({
 	error: { color: colors.red, fontSize: 12, marginVertical: 8 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#21262d' },
 	rowName: { flex: 1, color: colors.text, fontSize: 14 },
-	rowNameActive: { color: colors.accent },
 	size: { color: colors.textDim, fontSize: 11 },
-	preview: { maxHeight: 300, backgroundColor: colors.surface, borderTopLeftRadius: 14, borderTopRightRadius: 14, borderWidth: 1, borderColor: colors.border, marginHorizontal: 8 },
-	previewHeader: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingTop: 12, paddingBottom: 6 },
-	previewTitle: { flex: 1, color: colors.textDim, fontSize: 11, fontWeight: '600', letterSpacing: 0.5 },
-	previewClose: { color: colors.textDim, fontSize: 14, paddingHorizontal: 4 },
-	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 14, paddingBottom: 4 },
-	previewScroll: { paddingHorizontal: 14, paddingBottom: 14 },
-	previewText: { color: colors.text, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, lineHeight: 16 },
 });

@@ -81,6 +81,22 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 		return undefined;
 	}
 
+	assignInstanceScope(instanceId: number, stateKey: string): void {
+		const groupService = this.terminalGroupService;
+		if (!(groupService instanceof TerminalGroupService)) {
+			return;
+		}
+		const group = groupService.groups.find(g => g.terminalInstances.some(instance => instance.instanceId === instanceId));
+		if (!group || this._groupRepositories.get(group) === stateKey) {
+			return;
+		}
+		this._groupRepositories.set(group, stateKey);
+		if (stateKey !== this.workspaceSwitchService.activeStateKey) {
+			this.parkGroup(groupService, group, stateKey);
+		}
+		this.persistMapping();
+	}
+
 	/** 保存済みマッピングからグループの所属リポジトリを引く (リロード直後の復元グループ用) */
 	private lookupRestoredRepository(group: ITerminalGroup): string | undefined {
 		for (const instance of group.terminalInstances) {
