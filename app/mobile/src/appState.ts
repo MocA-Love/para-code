@@ -43,7 +43,7 @@ interface AppState extends StoreState {
 	scmStatus(ws: string): Promise<ScmStatusResult>;
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
 	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult>;
-	scmLog(ws: string): Promise<ScmLogResult>;
+	scmLog(ws: string, opts?: { limit?: number; skip?: number }): Promise<ScmLogResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult>;
@@ -171,9 +171,9 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.scmCommit(ws, message, all);
 	},
 
-	scmLog(ws: string) {
+	scmLog(ws: string, opts?: { limit?: number; skip?: number }) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.scmLog(ws);
+		return controller.scmLog(ws, opts);
 	},
 
 	fsList(ws: string, path: string) {

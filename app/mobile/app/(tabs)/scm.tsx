@@ -24,6 +24,8 @@ export default function ScmScreen() {
 
 	const [status, setStatus] = useState<ScmStatusResult | undefined>();
 	const [log, setLog] = useState<ScmLogResult | undefined>();
+	const [logError, setLogError] = useState<string | undefined>();
+	const [loadingMore, setLoadingMore] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
 	const [diffTarget, setDiffTarget] = useState<{ path: string; staged: boolean } | undefined>();
@@ -38,9 +40,17 @@ export default function ScmScreen() {
 			return;
 		}
 		setError(undefined);
+		setLogError(undefined);
 		setLoading(true);
 		try {
-			const [st, lg] = await Promise.all([scmStatus(wsId), scmLog(wsId).catch(() => undefined)]);
+			// 履歴取得の失敗はstatus表示を巻き添えにせず、履歴セクション側にエラーを出す
+			const [st, lg] = await Promise.all([
+				scmStatus(wsId),
+				scmLog(wsId, { limit: 10 }).catch((e: unknown) => {
+					setLogError(String(e instanceof Error ? e.message : e));
+					return undefined;
+				}),
+			]);
 			setStatus(st);
 			setLog(lg);
 		} catch (e) {
@@ -56,6 +66,23 @@ export default function ScmScreen() {
 		setDiffTarget(undefined);
 		void refresh();
 	}, [refresh]);
+
+	const loadMore = async () => {
+		if (!wsId || !log || loadingMore) {
+			return;
+		}
+		setLoadingMore(true);
+		try {
+			const more = await scmLog(wsId, { limit: 10, skip: log.commits.length });
+			// ページ読み込みの合間に新規コミットが積まれるとウィンドウがずれて同じhashが再来しうるため去重する
+			const seen = new Set(log.commits.map(c => c.hash));
+			setLog({ ...log, commits: [...log.commits, ...more.commits.filter(c => !seen.has(c.hash))], hasMore: more.hasMore });
+		} catch (e) {
+			setLogError(String(e instanceof Error ? e.message : e));
+		} finally {
+			setLoadingMore(false);
+		}
+	};
 
 	const openCommit = (hash: string) => {
 		if (log?.webUrl) {
@@ -135,18 +162,23 @@ export default function ScmScreen() {
 					);
 				})}
 
-				{log && log.commits.length > 0 ? (
-					<>
-						<Text style={[styles.sectionTitle, { marginTop: 18 }]}>最近のコミット</Text>
-						{log.commits.map(c => (
-							<Pressable key={c.hash} style={styles.commitRow} onPress={() => openCommit(c.hash)} disabled={!log.webUrl}>
-								<Ionicons name="ellipse-outline" size={10} color={colors.textDim} />
-								<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
-								<Text style={styles.commitWhen}>{c.when}</Text>
-								{log.webUrl ? <Ionicons name="open-outline" size={13} color={colors.textDim} /> : null}
-							</Pressable>
-						))}
-					</>
+				{log !== undefined || logError !== undefined ? (
+					<Text style={[styles.sectionTitle, { marginTop: 18 }]}>最近のコミット</Text>
+				) : null}
+				{logError ? <Text style={styles.error}>{logError}</Text> : null}
+				{log && log.commits.length === 0 ? <Text style={styles.dim}>コミットはありません</Text> : null}
+				{(log?.commits ?? []).map(c => (
+					<Pressable key={c.hash} style={styles.commitRow} onPress={() => openCommit(c.hash)} disabled={!log?.webUrl}>
+						<Ionicons name="ellipse-outline" size={10} color={colors.textDim} />
+						<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
+						<Text style={styles.commitWhen}>{c.when}</Text>
+						{log?.webUrl ? <Ionicons name="open-outline" size={13} color={colors.textDim} /> : null}
+					</Pressable>
+				))}
+				{log?.hasMore ? (
+					<Pressable style={styles.loadMoreBtn} onPress={() => { void loadMore(); }} disabled={loadingMore}>
+						<Text style={styles.loadMoreText}>{loadingMore ? '読み込み中…' : 'さらに読み込む'}</Text>
+					</Pressable>
 				) : null}
 				<View style={{ height: 24 }} />
 			</ScrollView>
@@ -182,6 +214,8 @@ const styles = StyleSheet.create({
 	add: { color: colors.add },
 	del: { color: colors.del },
 	commitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+	loadMoreBtn: { alignItems: 'center', paddingVertical: 10, marginTop: 4, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+	loadMoreText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
 	commitSubject: { flex: 1, color: colors.text, fontSize: 13 },
 	commitWhen: { color: colors.textDim, fontSize: 11 },
 });

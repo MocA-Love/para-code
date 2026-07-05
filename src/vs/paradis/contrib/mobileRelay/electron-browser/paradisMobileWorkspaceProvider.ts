@@ -55,7 +55,7 @@ type ScmInbound =
 	| { t: 'diff'; id: string; ws: string; path?: string; staged?: boolean }
 	| { t: 'xlsxDiff'; id: string; ws: string; path: string }
 	| { t: 'commit'; id: string; ws: string; message: string; all?: boolean }
-	| { t: 'log'; id: string; ws: string };
+	| { t: 'log'; id: string; ws: string; limit?: number; skip?: number };
 
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
@@ -438,17 +438,26 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const html = await renderSpreadsheetDiffMobileHtml(this.fileService, this.sharedProcessService, original, modified, 'HEAD', '作業ツリー');
 				reply({ t: 'xlsxDiff', html });
 			} else if (msg.t === 'log') {
-				const [result, remote] = await Promise.all([
-					this.runGit(repoPath, ['log', '-n', '8', '--pretty=format:%H%x09%ar%x09%s']),
-					this.runGit(repoPath, ['remote', 'get-url', 'origin']),
-				]);
-				const commits = result.stdout.split('\n').filter(l => l.includes('\t')).map(line => {
+				const limit = Math.min(Math.max(Math.trunc(msg.limit ?? 10), 1), 100);
+				const skip = Math.max(Math.trunc(msg.skip ?? 0), 0);
+				// limit+1件取得して切り詰めることで、追加ページの有無(hasMore)を1回のgit logで判定する
+				const result = await this.runGit(repoPath, ['log', '--skip', String(skip), '-n', String(limit + 1), '--pretty=format:%H%x09%ar%x09%s']);
+				// コミット0件のリポジトリも exit 128 になるため、実エラーは「非ゼロ かつ stderr あり」で判定する
+				if (result.code !== 0 && result.stderr.trim() && !/does not have any commits yet/.test(result.stderr)) {
+					reply({ error: result.stderr.trim() });
+					return;
+				}
+				const all = result.stdout.split('\n').filter(l => l.includes('\t')).map(line => {
 					const [hash, when, ...subject] = line.split('\t');
 					return { hash, when, subject: subject.join('\t') };
 				});
-				// リモートのWeb URLが分かればモバイル側でコミットページへ飛べるようにする
-				const webUrl = remote.code === 0 ? remoteToWebUrl(remote.stdout.trim()) : undefined;
-				reply({ t: 'log', commits, ...(webUrl ? { webUrl } : {}) });
+				const hasMore = all.length > limit;
+				const commits = hasMore ? all.slice(0, limit) : all;
+				// リモートのWeb URLが分かればモバイル側でコミットページへ飛べるようにする。
+				// remoteが無い/失敗してもログ本体の応答は返す（履歴表示を巻き添えにしない）。
+				const remote = await this.runGit(repoPath, ['remote', 'get-url', 'origin']).catch(() => undefined);
+				const webUrl = remote && remote.code === 0 ? remoteToWebUrl(remote.stdout.trim()) : undefined;
+				reply({ t: 'log', commits, hasMore, ...(webUrl ? { webUrl } : {}) });
 			}
 		} catch (err) {
 			reply({ error: String(err) });
