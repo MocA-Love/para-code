@@ -1,17 +1,19 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { DiffView } from '../../src/components/diffView.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
 import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
 
 /**
  * ソース管理画面（モックアップ準拠）。リポジトリ/ブランチ表示、コミット入力、
- * 変更一覧（タップでインライン差分プレビュー）、最近のコミット。
+ * 変更一覧（タップでフルスクリーンのDiffビューア）、最近のコミット
+ * （タップで外部ブラウザのコミットページを開く）。
  */
 export default function ScmScreen() {
 	const ws = useEffectiveWs();
@@ -23,7 +25,7 @@ export default function ScmScreen() {
 	const [log, setLog] = useState<ScmLogResult | undefined>();
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
-	const [expandedPath, setExpandedPath] = useState<string | undefined>();
+	const [diffPath, setDiffPath] = useState<string | undefined>();
 	const [diffText, setDiffText] = useState<string | undefined>();
 	const [message, setMessage] = useState('');
 	const [committing, setCommitting] = useState(false);
@@ -51,25 +53,27 @@ export default function ScmScreen() {
 	useEffect(() => {
 		setStatus(undefined);
 		setLog(undefined);
-		setExpandedPath(undefined);
+		setDiffPath(undefined);
 		void refresh();
 	}, [refresh]);
 
-	const toggleDiff = async (path: string, staged: boolean) => {
-		if (expandedPath === path) {
-			setExpandedPath(undefined);
-			return;
-		}
-		setExpandedPath(path);
+	const openDiff = async (path: string, staged: boolean) => {
+		setDiffPath(path);
 		setDiffText(undefined);
 		if (!wsId) {
 			return;
 		}
 		try {
 			const result = await scmDiff(wsId, path, staged);
-			setDiffText(result.diff || '(差分なし)');
+			setDiffText(result.diff);
 		} catch (e) {
 			setDiffText(`エラー: ${String(e instanceof Error ? e.message : e)}`);
+		}
+	};
+
+	const openCommit = (hash: string) => {
+		if (log?.webUrl) {
+			void Linking.openURL(`${log.webUrl}/commit/${hash}`);
 		}
 	};
 
@@ -135,22 +139,12 @@ export default function ScmScreen() {
 				{(status?.files ?? []).map(f => {
 					const staged = f.x !== ' ' && f.x !== '?';
 					const letter = (f.x !== ' ' && f.x !== '?' ? f.x : f.y) || '?';
-					const expanded = expandedPath === f.path;
 					return (
-						<View key={`${f.x}${f.y}${f.path}`}>
-							<Pressable style={styles.fileRow} onPress={() => { void toggleDiff(f.path, staged && f.y === ' '); }}>
-								<Ionicons name="document-text-outline" size={14} color={colors.textDim} />
-								<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
-								<Text style={[styles.fileLetter, letter === 'M' ? styles.mod : letter === 'A' || letter === '?' ? styles.add : letter === 'D' ? styles.del : undefined]}>{letter === '?' ? 'A' : letter}</Text>
-							</Pressable>
-							{expanded ? (
-								<View style={styles.diffBox}>
-									<ScrollView horizontal showsHorizontalScrollIndicator={false}>
-										<Text style={styles.diffText}>{diffText ?? '読み込み中…'}</Text>
-									</ScrollView>
-								</View>
-							) : null}
-						</View>
+						<Pressable key={`${f.x}${f.y}${f.path}`} style={styles.fileRow} onPress={() => { void openDiff(f.path, staged && f.y === ' '); }}>
+							<Ionicons name="document-text-outline" size={14} color={colors.textDim} />
+							<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
+							<Text style={[styles.fileLetter, letter === 'M' ? styles.mod : letter === 'A' || letter === '?' ? styles.add : letter === 'D' ? styles.del : undefined]}>{letter === '?' ? 'A' : letter}</Text>
+						</Pressable>
 					);
 				})}
 
@@ -158,16 +152,20 @@ export default function ScmScreen() {
 					<>
 						<Text style={[styles.sectionTitle, { marginTop: 18 }]}>最近のコミット</Text>
 						{log.commits.map(c => (
-							<View key={c.hash} style={styles.commitRow}>
+							<Pressable key={c.hash} style={styles.commitRow} onPress={() => openCommit(c.hash)} disabled={!log.webUrl}>
 								<Ionicons name="ellipse-outline" size={10} color={colors.textDim} />
 								<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
 								<Text style={styles.commitWhen}>{c.when}</Text>
-							</View>
+								{log.webUrl ? <Ionicons name="open-outline" size={13} color={colors.textDim} /> : null}
+							</Pressable>
 						))}
 					</>
 				) : null}
 				<View style={{ height: 24 }} />
 			</ScrollView>
+			{diffPath !== undefined ? (
+				<DiffView path={diffPath} diff={diffText} onClose={() => setDiffPath(undefined)} />
+			) : null}
 		</KeyboardAvoidingView>
 	);
 }
@@ -195,8 +193,6 @@ const styles = StyleSheet.create({
 	mod: { color: colors.mod },
 	add: { color: colors.add },
 	del: { color: colors.del },
-	diffBox: { backgroundColor: '#1e1e1e', borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 10, marginVertical: 6 },
-	diffText: { color: colors.text, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 10, lineHeight: 15 },
 	commitRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
 	commitSubject: { flex: 1, color: colors.text, fontSize: 13 },
 	commitWhen: { color: colors.textDim, fontSize: 11 },

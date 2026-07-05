@@ -106,6 +106,12 @@ export interface IParadisTerminalScopeService {
 	readonly _serviceBrand: undefined;
 	/** インスタンスの所属スコープ (park 中のグループも対象)。不明なら undefined */
 	getStateKeyForInstance(instanceId: number): string | undefined;
+	/**
+	 * インスタンスの所属グループを指定スコープへ付け替える。アクティブスコープ以外を
+	 * 指定した場合は即座に park する (モバイル発の「PCで非表示のワークスペース向け
+	 * ターミナル作成」用。既定のタグ付けはアクティブスコープ所属になるため)
+	 */
+	assignInstanceScope(instanceId: number, stateKey: string): void;
 }
 
 export const IParadisAgentStatusStore = createDecorator<IParadisAgentStatusStore>('paradisAgentStatusStore');

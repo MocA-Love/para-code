@@ -42,12 +42,15 @@ interface MirrorSession {
 	viewHeight: number;
 	captureTimer: ReturnType<typeof setInterval> | undefined;
 	captureInFlight: boolean;
+	/** 直近に送ったフレーム（無変化フレームの送信スキップ用）。 */
+	lastFrameData: string | undefined;
 	/** msgId → 応答ハンドラ（captureScreenshot / getLayoutMetrics の応答受け取り用）。 */
 	handlers: Map<number, (result: unknown) => void>;
 	send: (payload: Uint8Array) => void;
 }
 
-const CAPTURE_INTERVAL_MS = 700;
+// 変化が無いフレームは送信しない（下記）ため、間隔は短めでも帯域を圧迫しない
+const CAPTURE_INTERVAL_MS = 250;
 const CDP_CALL_TIMEOUT_MS = 5000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -97,10 +100,12 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		try {
 			if (msg.t === 'targets') {
 				const list = await this.upstream.fetchJson('/json/list') as Array<Record<string, unknown>>;
-				// para-browser のページ = http(s) URLを持つターゲット（workbench等のvscode-file
-				// ウィンドウやDevTools自身は除外）
+				// para-browser のページ = http(s) URLを持つ type='page' のターゲットのみ。
+				// URLだけで絞ると、開いているページが内部に持つ iframe / service_worker /
+				// worker まで別ページとして列挙されてしまう（workbench等のvscode-file
+				// ウィンドウやDevTools自身も除外）
 				const targets = list
-					.filter(t => typeof t.url === 'string' && /^https?:\/\//.test(t.url as string))
+					.filter(t => t.type === 'page' && typeof t.url === 'string' && /^https?:\/\//.test(t.url as string))
 					.map(t => ({ targetId: String(t.id), title: String(t.title ?? ''), url: String(t.url) }));
 				reply({ id: msg.id, t: 'targets', targets });
 			} else if (msg.t === 'start') {
@@ -130,7 +135,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		const socket = new WebSocket(`ws://127.0.0.1:${port}/devtools/page/${targetId}`);
 		const session: MirrorSession = {
 			socket, targetId, nextId: 1, viewWidth: 0, viewHeight: 0,
-			captureTimer: undefined, captureInFlight: false, handlers: new Map(), send,
+			captureTimer: undefined, captureInFlight: false, lastFrameData: undefined, handlers: new Map(), send,
 		};
 		this.sessions.set(mobileId, session);
 
@@ -187,7 +192,9 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		this.cdpCall(session, 'Page.captureScreenshot', { format: 'jpeg', quality: 60 }, result => {
 			session.captureInFlight = false;
 			const data = (result as { data?: string } | undefined)?.data;
-			if (data) {
+			// 画面に変化が無ければ送らない（モバイル側の再描画と帯域の節約）
+			if (data && data !== session.lastFrameData) {
+				session.lastFrameData = data;
 				session.send(encoder.encode(JSON.stringify({
 					t: 'frame',
 					data,
