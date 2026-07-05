@@ -105,6 +105,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(repoPath, args) => this.service.runGit(repoPath, args),
 			paneTokenService,
 			entries => { this.service.syncAgentPanes(entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
+			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
+			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 		));
 
 		// shared process が復号したモバイル→PCフレームを provider へ。

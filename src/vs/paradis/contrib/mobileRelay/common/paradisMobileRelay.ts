@@ -131,7 +131,13 @@ export interface IParadisMobileRelayService {
 	 * renderer がターミナル一覧の変化に合わせて呼ぶ。ペイントークンはE2Eの外へは出さず、
 	 * モバイルとの間では常に terminalId で識別する。
 	 */
-	syncAgentPanes(entries: readonly { terminalId: number; token: string }[]): Promise<void>;
+	syncAgentPanes(entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void>;
+
+	/** fsチャネル用: ripgrepによるファイル名検索（.gitignore尊重・再帰）。 */
+	searchFiles(rootPath: string, query: string, maxResults: number): Promise<{ files: string[]; truncated: boolean }>;
+
+	/** fsチャネル用: ripgrepによるテキスト全文検索（スマートケース・リテラル一致）。 */
+	searchText(rootPath: string, query: string, maxResults: number): Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>;
 }
 
 /** runGit の結果。 */

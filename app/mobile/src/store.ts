@@ -61,6 +61,16 @@ export interface FsReadResult {
 export interface FsXlsxResult {
 	html: string;
 }
+/** fs find 応答（ファイル名検索、ルート相対パスのランク順）。 */
+export interface FsFindResult {
+	files: string[];
+	truncated: boolean;
+}
+/** fs grep 応答（テキスト全文検索）。 */
+export interface FsGrepResult {
+	matches: { path: string; line: number; text: string }[];
+	truncated: boolean;
+}
 /** scm xlsxDiff 応答（PC側でレンダリングされたExcel差分の静的HTML）。 */
 export interface ScmXlsxDiffResult {
 	html: string;
@@ -312,7 +322,7 @@ export class MobileController {
 	private requestCounter = 0;
 	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: unknown }>();
 
-	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object): Promise<T> {
+	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000): Promise<T> {
 		const client = this.client;
 		if (!client) {
 			return Promise.reject(new Error('not connected'));
@@ -322,7 +332,7 @@ export class MobileController {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
 				reject(new Error('request timeout'));
-			}, 30_000);
+			}, timeoutMs);
 			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
 			client.send(channel, encoder.encode(JSON.stringify({ id, ...body })));
 		});
@@ -378,14 +388,24 @@ export class MobileController {
 		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}) });
 	}
 
-	/** xlsx をPC側でレンダリングした静的HTMLを取得する。 */
+	/** xlsx をPC側でレンダリングした静的HTMLを取得する（重いブックはPC側の生成に時間がかかるため長め）。 */
 	fsXlsx(ws: string, path: string): Promise<FsXlsxResult> {
-		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path });
+		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path }, 120_000);
+	}
+
+	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */
+	fsFind(ws: string, query: string): Promise<FsFindResult> {
+		return this.request<FsFindResult>('fs', { t: 'find', ws, query });
+	}
+
+	/** テキスト全文検索（ワークスペース全体、PC側ripgrep）。 */
+	fsGrep(ws: string, query: string): Promise<FsGrepResult> {
+		return this.request<FsGrepResult>('fs', { t: 'grep', ws, query });
 	}
 
 	/** xlsx の差分(HEAD vs 作業ツリー)をPC側でレンダリングした静的HTMLを取得する。 */
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult> {
-		return this.request<ScmXlsxDiffResult>('scm', { t: 'xlsxDiff', ws, path });
+		return this.request<ScmXlsxDiffResult>('scm', { t: 'xlsxDiff', ws, path }, 120_000);
 	}
 
 	// --- browser（para-browser ミラー、設計書 M3） ------------------------------
