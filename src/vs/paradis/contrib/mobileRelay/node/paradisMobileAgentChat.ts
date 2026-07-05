@@ -683,7 +683,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		if (token === undefined || session === undefined) {
 			// エージェント未起動、または探索でも見つからない。モバイル側は
-			// 「ターミナルタブで見る」案内を出す。
+			// 「ターミナルタブで見る」案内を出す。トークンが分かる場合は購読者として
+			// 記録しておき、後からhookでセッションが判明したら自動でスナップショットを
+			// 送り直す(エージェント起動を待たずにattachしたケースの自己回復)。
+			if (token !== undefined) {
+				this.subscribers.set(token, mobileId);
+			}
 			this.sendTo(mobileId, { t: 'none', id: msg.id });
 			return;
 		}
@@ -714,9 +719,34 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
 		if (event.transcriptPath === undefined || event.transcriptPath.length === 0) {
+			// transcript_path無しのhook(CodexのSessionStart等)でも「エージェントが動き出した」
+			// 合図にはなる。購読中でセッション未特定のペインならcwd探索を試みる。
+			const cwd = event.cwd ?? this.tokenToCwd.get(event.token);
+			if (cwd !== undefined && !this.paneSessions.has(event.token) && this.subscribers.has(event.token)) {
+				this.discoverAndNotify(event.token, cwd).catch(err => this.logService.warn('[paradisAgentChat] discovery on hook failed', err));
+			}
 			return;
 		}
 		this.onHookEventChecked(event, event.transcriptPath).catch(err => this.logService.warn('[paradisAgentChat] hook event handling failed', err));
+	}
+
+	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */
+	private async discoverAndNotify(token: string, cwd: string): Promise<void> {
+		const discovered = await discoverSessionByCwd(cwd);
+		if (discovered === undefined || this.paneSessions.has(token)) {
+			return;
+		}
+		this.paneSessions.set(token, { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: undefined });
+		this.pushToSubscriber(token);
+	}
+
+	/** 購読者がいれば、そのペインの現行セッションでattach相当のスナップショットを送る。 */
+	private pushToSubscriber(token: string): void {
+		const subscriber = this.subscribers.get(token);
+		const terminalId = this.terminalIdForToken(token);
+		if (subscriber !== undefined && terminalId !== undefined) {
+			this.handleAttach(subscriber, { id: terminalId }).catch(err => this.logService.warn('[paradisAgentChat] push after session discovery failed', err));
+		}
 	}
 
 	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string): Promise<void> {
@@ -733,21 +763,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		};
 		this.paneSessions.set(event.token, info);
 
+		// エージェント起動などでこのペインのセッションが初めて判明した
+		// → 「セッションなし」表示のまま待っている購読者にスナップショットを送る。
+		if (previous === undefined) {
+			this.pushToSubscriber(event.token);
+			return;
+		}
 		// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
 		// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
-		if (previous !== undefined && previous.transcriptPath !== info.transcriptPath) {
+		if (previous.transcriptPath !== info.transcriptPath) {
 			const tailer = this.tailers.get(event.token);
 			if (tailer !== undefined) {
 				tailer.dispose();
 				this.tailers.delete(event.token);
-				const subscriber = this.subscribers.get(event.token);
-				if (subscriber !== undefined) {
-					const terminalId = this.terminalIdForToken(event.token);
-					if (terminalId !== undefined) {
-						this.handleAttach(subscriber, { id: terminalId }).catch(err => this.logService.warn('[paradisAgentChat] re-attach after session switch failed', err));
-					}
-				}
 			}
+			this.pushToSubscriber(event.token);
 		}
 	}
 

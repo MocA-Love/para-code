@@ -38,7 +38,8 @@ export default function FilesScreen() {
 	const [loading, setLoading] = useState(false);
 	const [viewerPath, setViewerPath] = useState<string | undefined>();
 	const [viewerResult, setViewerResult] = useState<FsReadResult | undefined>();
-	const [viewerXlsxHtml, setViewerXlsxHtml] = useState<string | undefined>();
+	const [viewerXlsx, setViewerXlsx] = useState<{ html?: string; sheets?: string[]; sheet?: number } | undefined>();
+	const [viewerLine, setViewerLine] = useState<number | undefined>();
 	// 開く→閉じる→別ファイルを開く、の間に前のfetchが解決して上書きするのを防ぐ世代ガード
 	const viewerPathRef = useRef<string | undefined>(undefined);
 
@@ -107,20 +108,22 @@ export default function FilesScreen() {
 		return () => clearTimeout(timer);
 	}, [filter, searchMode, wsId, connection, fsFind, fsGrep]);
 
-	const openViewer = async (p: string) => {
+	const openViewer = async (p: string, line?: number) => {
 		viewerPathRef.current = p;
 		setViewerPath(p);
 		setViewerResult(undefined);
-		setViewerXlsxHtml(undefined);
+		setViewerXlsx(undefined);
+		setViewerLine(line);
 		if (!wsId) {
 			return;
 		}
 		try {
 			if (/\.(?:xlsx|xlsm)$/i.test(p)) {
-				// Excel は PC 側でレンダリングされた静的HTMLを受け取る（PC版ビューアと同じ見た目）
-				const html = (await fsXlsx(wsId, p)).html;
+				// Excel は PC 側でレンダリングされた静的HTML（1シート分）を受け取る。
+				// シート一覧はビューアのネイティブタブになり、切替時に個別要求する
+				const result = await fsXlsx(wsId, p);
 				if (viewerPathRef.current === p) {
-					setViewerXlsxHtml(html);
+					setViewerXlsx({ html: result.html, sheets: result.sheets, sheet: result.sheet });
 				}
 			} else {
 				// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
@@ -128,6 +131,25 @@ export default function FilesScreen() {
 				if (viewerPathRef.current === p) {
 					setViewerResult(result);
 				}
+			}
+		} catch (e) {
+			if (viewerPathRef.current === p) {
+				setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
+			}
+		}
+	};
+
+	const selectSheet = async (index: number) => {
+		const p = viewerPath;
+		if (!wsId || p === undefined) {
+			return;
+		}
+		// 表示中のHTMLは残したままシートだけ差し替える（タブ位置は即時反映）
+		setViewerXlsx(prev => prev ? { ...prev, sheet: index, html: undefined } : prev);
+		try {
+			const result = await fsXlsx(wsId, p, index);
+			if (viewerPathRef.current === p) {
+				setViewerXlsx({ html: result.html, sheets: result.sheets, sheet: result.sheet });
 			}
 		} catch (e) {
 			if (viewerPathRef.current === p) {
@@ -196,7 +218,7 @@ export default function FilesScreen() {
 						) : grepResult !== undefined ? (
 							<>
 								{grepResult.matches.map((m, i) => (
-									<Pressable key={`${m.path}:${m.line}:${i}`} style={styles.row} onPress={() => { void openViewer(m.path); }}>
+									<Pressable key={`${m.path}:${m.line}:${i}`} style={styles.row} onPress={() => { void openViewer(m.path, m.line); }}>
 										<View style={styles.resultCol}>
 											<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
 											<Text style={styles.resultPreview} numberOfLines={2}>{m.text}</Text>
@@ -237,7 +259,16 @@ export default function FilesScreen() {
 				)}
 			</ScrollView>
 			{viewerPath !== undefined ? (
-				<FileViewer path={viewerPath} result={viewerResult} spreadsheetHtml={viewerXlsxHtml} onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsxHtml(undefined); }} />
+				<FileViewer
+					path={viewerPath}
+					result={viewerResult}
+					spreadsheetHtml={viewerXlsx?.html}
+					sheets={viewerXlsx?.sheets}
+					sheetIndex={viewerXlsx?.sheet}
+					onSelectSheet={i => { void selectSheet(i); }}
+					focusLine={viewerLine}
+					onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerLine(undefined); }}
+				/>
 			) : null}
 		</View>
 		</ConnectionGate>
