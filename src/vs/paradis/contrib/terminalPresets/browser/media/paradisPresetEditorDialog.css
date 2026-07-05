@@ -7,10 +7,11 @@
 
 /* Command Presets manager dialog (see paradisPresetEditorDialog.ts). */
 
+/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
 .paradis-preset-editor-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(0, 0, 0, 0.45);
+	background: rgba(0, 0, 0, 0.5);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -22,11 +23,11 @@
 	max-width: 92vw;
 	max-height: 84vh;
 	overflow-y: auto;
-	background: var(--vscode-editorWidget-background);
+	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 10px;
-	box-shadow: 0 10px 40px var(--vscode-widget-shadow);
+	border-radius: 8px;
+	box-shadow: var(--vscode-shadow-xl);
 	padding: 16px 18px;
 	display: flex;
 	flex-direction: column;
@@ -167,6 +168,51 @@
 	font-size: 16px;
 	width: 20px;
 	text-align: center;
+}
+
+.paradis-preset-editor-dialog .ppe-icon-grid {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px;
+	max-height: 128px;
+	overflow-y: auto;
+	border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border, transparent));
+	border-radius: 4px;
+	padding: 4px;
+	margin-top: 4px;
+}
+
+.paradis-preset-editor-dialog .ppe-icon-cell {
+	width: 26px;
+	height: 26px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	color: var(--vscode-foreground);
+	cursor: pointer;
+	padding: 0;
+}
+
+.paradis-preset-editor-dialog .ppe-icon-cell .codicon {
+	font-size: 16px;
+}
+
+.paradis-preset-editor-dialog .ppe-icon-cell:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-preset-editor-dialog .ppe-icon-cell.selected {
+	border-color: var(--vscode-focusBorder);
+	background: color-mix(in srgb, var(--vscode-focusBorder) 15%, transparent);
+}
+
+.paradis-preset-editor-dialog .ppe-icon-grid-empty {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	padding: 4px 6px;
 }
 
 .paradis-preset-editor-dialog .ppe-check-row {

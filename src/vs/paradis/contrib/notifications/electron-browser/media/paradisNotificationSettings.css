@@ -10,10 +10,11 @@
 /* allow-any-unicode-next-line */
 /* paradisBindingDialog.css と同じ方式: 自前backdrop+モーダル、色は全て --vscode-* テーマトークン。 */
 
+/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
 .paradis-notif-settings-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(0, 0, 0, 0.45);
+	background: rgba(0, 0, 0, 0.5);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -25,16 +26,21 @@
 	max-width: 94vw;
 	height: 780px;
 	max-height: 92vh;
-	background: var(--vscode-editorWidget-background);
+	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 12px;
+	border-radius: 8px;
 	display: flex;
 	flex-direction: column;
-	box-shadow: 0 10px 40px var(--vscode-widget-shadow);
+	box-shadow: var(--vscode-shadow-xl);
 	overflow: hidden;
 	font-size: 13px;
 	outline: none;
+}
+
+/* The modal receives focus (tabindex=-1) for Escape handling; the workbench-wide keyboard-focus rule ([tabindex="-1"]:focus in workbench media/style.css) would otherwise draw a focusBorder frame around the whole dialog. */
+.monaco-workbench .paradis-notif-settings:focus {
+	outline: none !important;
 }
 
 .paradis-notif-settings .codicon {
@@ -642,7 +648,7 @@
 .paradis-notif-nested-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(0, 0, 0, 0.45);
+	background: rgba(0, 0, 0, 0.5);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -654,11 +660,11 @@
 	max-width: 92vw;
 	max-height: 88vh;
 	overflow-y: auto;
-	background: var(--vscode-editorWidget-background);
+	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 10px;
-	box-shadow: 0 10px 40px var(--vscode-widget-shadow);
+	border-radius: 8px;
+	box-shadow: var(--vscode-shadow-xl);
 	padding: 18px 20px;
 	font-size: 13px;
 }
