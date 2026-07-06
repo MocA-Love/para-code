@@ -59,6 +59,12 @@ export type RelayControlMessage =
 	| { readonly type: 'paired'; readonly deviceId: string; readonly mobileId: string; readonly mobileToken: string }
 	// リレー→PC: モバイルの接続状態変化 / リレー→モバイル: PCの接続状態変化
 	| { readonly type: 'presence'; readonly peer: 'pc' | 'mobile'; readonly mobileId?: string; readonly online: boolean }
+	// モバイル→リレー: APNsデバイストークンを登録する（オフライン時のプッシュ配送先）。
+	// token はAPNsデバイストークン(16進64桁想定)。env省略時は 'prod'。
+	| { readonly type: 'register-push'; readonly token: string; readonly env?: 'prod' | 'dev' }
+	// PC→リレー: 対象モバイルがオフラインならAPNsへプッシュせよ。payloadはE2E暗号文(base64url)で
+	// リレーは開けない。iOSのNotification Service Extensionが復号して本文を差し替える。
+	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string }
 	| { readonly type: 'error'; readonly message: string };
 
 export function encodeRelayControl(message: RelayControlMessage): string {

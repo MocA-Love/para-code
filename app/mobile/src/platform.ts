@@ -31,6 +31,27 @@ function sanitize(key: string): string {
 	return key.replace(/[^A-Za-z0-9._-]/g, '_');
 }
 
+// NSE（NotifyExtension）と共有するKeychainアクセスグループ。エンタイトルメントの
+// keychain-access-groups（$(AppIdentifierPrefix)ltd.paradis.paracode.mobile.shared）と一致させる。
+const NOTIFY_KEYCHAIN_ACCESS_GROUP = 'WB4G82C384.ltd.paradis.paracode.mobile.shared';
+
+/**
+ * 通知鍵（32バイトのhex）を、Notification Service Extension から読める共有Keychainへ保存する。
+ * NSE はロック中にも起動するため AFTER_FIRST_UNLOCK を使う（初回ロック解除後は常に読める）。
+ * シミュレータ等で accessGroup が使えない場合は失敗するが、プッシュ自体が使えない環境なので無視してよい。
+ */
+export async function persistNotifyKey(hex: string): Promise<void> {
+	try {
+		await SecureStore.setItemAsync('notifyKey', hex, {
+			keychainService: 'paracode.notify',
+			accessGroup: NOTIFY_KEYCHAIN_ACCESS_GROUP,
+			keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
+		});
+	} catch (err) {
+		console.warn('[platform] failed to persist notify key for NSE', err);
+	}
+}
+
 /** React Native の global WebSocket を使う SocketFactory。 */
 export const rnSocketFactory: SocketFactory = (url: string): SocketLike => {
 	// RN の WebSocket は onopen/onmessage/onclose/onerror を持ち、SocketLike と互換。
@@ -77,9 +98,33 @@ export async function ensureNotificationPermission(): Promise<boolean> {
 }
 
 /**
+ * APNs デバイストークン（hex）を取得する。iOS実機以外（シミュレータ・Android・権限拒否）では
+ * undefined を返す。取得したトークンはリレーへ register-push で登録し、アプリ未起動時の
+ * リモートプッシュ（リレー→APNs→Notification Service Extension）の宛先になる。
+ */
+export async function getApnsDeviceToken(): Promise<string | undefined> {
+	try {
+		const granted = await ensureNotificationPermission();
+		if (!granted) {
+			return undefined;
+		}
+		const token = await Notifications.getDevicePushTokenAsync();
+		// iOS では { type: 'ios', data: '<64桁hex>' }
+		if (token.type === 'ios' && typeof token.data === 'string' && /^[0-9a-f]{64}$/i.test(token.data)) {
+			return token.data.toLowerCase();
+		}
+		return undefined;
+	} catch (err) {
+		// シミュレータや entitlement 未設定では registerForRemoteNotifications が失敗する。ローカル通知は影響なし。
+		console.warn('[platform] APNs token unavailable', err);
+		return undefined;
+	}
+}
+
+/**
  * ローカル通知を即時表示する（オンライン時の notify フレーム受信で使用）。
  * オフライン時の APNs リモート通知は、リレー→APNs→Notification Service Extension で別途配送する
- * （設計書 §5.2。NSE はネイティブ実装が必要で本コードには含まれない）。
+ * （設計書 §5.2。NSE はネイティブ実装。ios/ の NotifyExtension ターゲット参照）。
  */
 export async function presentLocalNotification(title: string, body: string, data: Record<string, unknown>): Promise<void> {
 	await Notifications.scheduleNotificationAsync({

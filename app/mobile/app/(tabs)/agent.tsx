@@ -40,7 +40,15 @@ export default function AgentScreen() {
 
 	// CLI版のUXに合わせ、本文(text)以外の連続する thinking / tool_use / tool_result を
 	// 1つの「アクティビティ」行へ集約する（デフォルト折りたたみ、タップで展開）。
+	// 質問(question)は集約せず独立行にする（気づけないと会話が止まるため）。
 	const rows = useMemo<ChatRow[]>(() => {
+		// 質問の「回答済み」判定: 同じ toolUseId の tool_result が後続に存在するか。
+		const answeredIds = new Set<string>();
+		for (const m of chat?.messages ?? []) {
+			if (m.kind === 'tool_result' && m.toolUseId !== undefined) {
+				answeredIds.add(m.toolUseId);
+			}
+		}
 		const result: ChatRow[] = [];
 		let buffer: AgentChatMessage[] = [];
 		const flush = () => {
@@ -54,6 +62,9 @@ export default function AgentScreen() {
 			if (m.kind === 'text') {
 				flush();
 				result.push({ type: 'msg', m });
+			} else if (m.kind === 'question') {
+				flush();
+				result.push({ type: 'question', m, answered: m.toolUseId !== undefined && answeredIds.has(m.toolUseId) });
 			} else {
 				buffer.push(m);
 			}
@@ -91,6 +102,19 @@ export default function AgentScreen() {
 		// TUIの入力欄へテキストを入れ、少し置いてからCRで確定する（貼り付け直後の
 		// 確定はTUI側の取りこぼしがあるため。承認番号注入と同じ250ms方式）。
 		send(text);
+		setTimeout(() => send('\r'), 250);
+	};
+
+	/**
+	 * 質問(AskUserQuestion)への回答。TUIの選択プロンプトは番号キーで選択肢へジャンプするため、
+	 * 承認注入と同じ「番号 → 250ms → CR」方式で選んで確定する（複数質問タブは回答すると
+	 * 自動で次のタブへ進むので、順に回答すれば最後に Submit される）。
+	 */
+	const answerQuestion = (optionIndex: number) => {
+		if (activeId === undefined) {
+			return;
+		}
+		send(String(optionIndex + 1));
 		setTimeout(() => send('\r'), 250);
 	};
 
@@ -147,10 +171,13 @@ export default function AgentScreen() {
 					<FlatList
 						ref={listRef}
 						data={rows}
-						keyExtractor={row => row.type === 'msg' ? `${chat.epoch}:${row.m.rev}` : `${chat.epoch}:${row.key}`}
+						keyExtractor={row => row.type === 'group' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
 						ListHeaderComponent={chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}
 						ListFooterComponent={activeTerminal?.agentStatus === 'working' ? <WorkingIndicator /> : null}
-						renderItem={({ item }) => item.type === 'msg' ? <MessageBubble message={item.m} /> : <ActivityGroup msgs={item.msgs} />}
+						renderItem={({ item }) =>
+							item.type === 'msg' ? <MessageBubble message={item.m} />
+								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={answerQuestion} />
+									: <ActivityGroup msgs={item.msgs} />}
 						contentContainerStyle={styles.listContent}
 					/>
 				)}
@@ -191,9 +218,10 @@ export default function AgentScreen() {
 	);
 }
 
-/** FlatList の1行。本文はそのまま、アクティビティ（thinking/tool群）は集約行。 */
+/** FlatList の1行。本文はそのまま、アクティビティ（thinking/tool群）は集約行、質問は独立行。 */
 type ChatRow =
 	| { type: 'msg'; m: AgentChatMessage }
+	| { type: 'question'; m: AgentChatMessage; answered: boolean }
 	| { type: 'group'; key: string; msgs: AgentChatMessage[] };
 
 /** アクティビティ群の要約文（例: `思考 ×2 ・ ツール5件 (Bash, Read) ・ 48秒`）。 */
@@ -241,6 +269,41 @@ function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
 					{msgs.map(m => <MessageBubble key={m.rev} message={m} />)}
 				</View>
 			) : null}
+		</View>
+	);
+}
+
+/**
+ * 質問カード（Claude Code の AskUserQuestion 等）。選択肢をタップすると番号+Enterを
+ * PTYへ注入して回答する。同じ toolUseId の tool_result が届いたら回答済み表示になる。
+ */
+function QuestionCard({ message, answered, onAnswer }: { message: AgentChatMessage; answered: boolean; onAnswer: (optionIndex: number) => void }) {
+	// 二度押し防止のローカル状態（tool_result が届くまでの間）
+	const [selected, setSelected] = useState<number | undefined>(undefined);
+	const disabled = answered || selected !== undefined;
+	return (
+		<View style={[styles.questionCard, answered && styles.questionCardAnswered]}>
+			<View style={styles.questionHeader}>
+				<Ionicons name="help-circle" size={16} color={answered ? colors.textDim : colors.accent2} />
+				{message.header ? <Text style={styles.questionChip}>{message.header}</Text> : null}
+				{answered ? <Text style={styles.questionAnswered}>回答済み</Text> : null}
+			</View>
+			<Text style={styles.questionText} selectable>{message.text}</Text>
+			{(message.options ?? []).map((option, i) => (
+				<Pressable
+					key={i}
+					style={[styles.questionOption, selected === i && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
+					disabled={disabled}
+					onPress={() => { setSelected(i); onAnswer(i); }}
+				>
+					<Text style={styles.questionOptionLabel}>{i + 1}. {option.label}</Text>
+					{option.description ? <Text style={styles.questionOptionDesc} numberOfLines={3}>{option.description}</Text> : null}
+				</Pressable>
+			))}
+			{!answered && (message.options ?? []).length === 0 ? (
+				<Text style={styles.approvalHint}>選択肢を取得できませんでした。ターミナルタブで回答してください</Text>
+			) : null}
+			{!disabled ? <Text style={styles.approvalHint}>タップで回答（自由入力は下の入力欄から送れます）</Text> : null}
 		</View>
 	);
 }
@@ -337,6 +400,17 @@ const styles = StyleSheet.create({
 	denyBtn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
 	approvalBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
 	approvalHint: { color: colors.textDim, fontSize: 10 },
+	questionCard: { backgroundColor: 'rgba(0,122,204,.10)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 12, padding: 12, gap: 8 },
+	questionCardAnswered: { borderColor: colors.border, backgroundColor: colors.surface, opacity: 0.75 },
+	questionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+	questionChip: { color: colors.text, fontSize: 11, fontWeight: '600', backgroundColor: colors.panel, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },
+	questionAnswered: { color: colors.textDim, fontSize: 11, marginLeft: 'auto' },
+	questionText: { color: colors.text, fontSize: 13, lineHeight: 19, fontWeight: '600' },
+	questionOption: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, gap: 3 },
+	questionOptionSelected: { borderColor: colors.accent2, backgroundColor: 'rgba(0,122,204,.20)' },
+	questionOptionDisabled: { opacity: 0.6 },
+	questionOptionLabel: { color: colors.text, fontSize: 13, fontWeight: '500' },
+	questionOptionDesc: { color: colors.textDim, fontSize: 11, lineHeight: 15 },
 	workingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
 	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
 	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4 },

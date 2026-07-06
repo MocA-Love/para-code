@@ -18,6 +18,11 @@ export { DeviceDO };
 
 interface Env {
 	DEVICES: DurableObjectNamespace;
+	// APNsシークレット（`wrangler secret put` で設定。DeviceDO が参照する）。未設定でも起動はする。
+	APNS_KEY_P8?: string;
+	APNS_KEY_ID?: string;
+	APNS_TEAM_ID?: string;
+	APNS_TOPIC?: string;
 }
 
 function doStubFor(env: Env, deviceId: string | null): DurableObjectStub | null {

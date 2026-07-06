@@ -15,10 +15,12 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	MobileIdentity,
 	SecureChannel,
+	deriveNotifyKey,
 	deriveSasCode,
 	generatePersistableIdentity,
 	importIdentity,
 	respondHandshake,
+	sealNotify,
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux } from '../common/paradisMobileMux.js';
 import { IParadisCdpFrameSubscription } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -30,10 +32,12 @@ import {
 	Channels,
 	ChannelId,
 	decodeRelayControl,
+	encodeNotify,
 	encodeRelayControl,
 	encodePairingUri,
 	fromBase64Url,
 	mobileIdToString,
+	NotifyPayload,
 	packPcData,
 	toBase64Url,
 	unpackPcData,
@@ -205,6 +209,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 					session.sendFrame(Channels.Agent, undefined, payload).catch(err => this.logService.warn('[paradisMobileRelay] agent reply failed', err));
 				}
 			},
+			// transcript に質問(AskUserQuestion等)が現れた → 質問本文入りの通知を全モバイルへ流す。
+			// hookベースの agentStatus 遷移通知(renderer側 emitNotify)は AskUserQuestion では
+			// 発火しないことがあるため、こちらが質問通知の主経路。
+			info => this.notifyAgentQuestion(info),
 			this.logService,
 		));
 		this._register(toDisposable(() => this.disconnect()));
@@ -307,6 +315,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		} else {
 			this.setConnectionState(enabled ? 'disconnected' : 'disabled');
 		}
+		this.updateEagerTailing();
 	}
 
 	async setEnabled(enabled: boolean): Promise<void> {
@@ -323,6 +332,71 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		} else {
 			this.disconnect();
 			this.setConnectionState('disabled');
+		}
+		this.updateEagerTailing();
+	}
+
+	/** リレー有効 かつ ペアリング済みモバイルが1台以上あるときだけ、質問検出用の常時tailを回す。 */
+	private updateEagerTailing(): void {
+		this.agentChat.setEagerTailing(this.enabled && this.state.mobiles.length > 0);
+	}
+
+	/** transcript に現れた質問を Notify として全モバイルへ届ける（オフラインへはAPNsプッシュ）。 */
+	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex'; text: string; header?: string }): void {
+		// 通知はプレビュー用途なので本文を短く切る。長文のまま封緘するとAPNsの4KB制限
+		// （リレー側の3800B上限チェック）を超え、アプリ未起動時のプッシュだけがサイレントに
+		// 落ちる（全文はチャット画面が別経路で同期する）。700字 = 日本語でもUTF-8で約2.1KB、
+		// JSON+GCMタグ+base64url(×1.33)を足しても3800Bに収まる。
+		// allow-any-unicode-next-line
+		const body = info.text.length > 700 ? `${info.text.slice(0, 700)}…` : info.text;
+		const payload: NotifyPayload = {
+			kind: 'agent-question',
+			id: `q${Date.now().toString(36)}-${info.terminalId}`,
+			// allow-any-unicode-next-line
+			title: info.header !== undefined && info.header.length > 0 ? `質問: ${info.header}` : 'エージェントからの質問',
+			body,
+			terminalId: info.terminalId,
+			at: Date.now(),
+		};
+		this.dispatchNotify(encodeNotify(payload));
+	}
+
+	// モバイルID → 通知鍵（PC長期秘密鍵 × モバイル長期公開鍵から導出、プロセス寿命でキャッシュ）。
+	private readonly notifyKeyCache = new Map<string, Promise<Uint8Array>>();
+
+	private notifyKeyFor(mobileId: string, pubKeyB64: string): Promise<Uint8Array> {
+		let cached = this.notifyKeyCache.get(mobileId);
+		if (!cached) {
+			cached = (async () => {
+				const identity = await this.ensureIdentity();
+				return deriveNotifyKey(identity.privateKey, fromBase64Url(pubKeyB64));
+			})();
+			// 失敗をキャッシュしない（次回再導出させる）
+			cached.catch(() => this.notifyKeyCache.delete(mobileId));
+			this.notifyKeyCache.set(mobileId, cached);
+		}
+		return cached;
+	}
+
+	/**
+	 * Notify ペイロードを全ペアリング済みモバイルへ配送する。
+	 * - オンライン: 通常のE2Eフレーム（アプリ内でローカル通知として表示される）
+	 * - オフライン（アプリ未起動/バックグラウンドでWS切断中）: 通知鍵で封緘した暗号文を
+	 *   push-notify 制御メッセージでリレーへ渡し、リレーがAPNsへフォールバック配送する。
+	 *   リレー/APNsに見えるのは「通知が発生した」ことだけで、本文はiOSのNotification
+	 *   Service Extension が復号する（設計書 §5.2）。
+	 */
+	private dispatchNotify(bytes: Uint8Array): void {
+		for (const mobile of this.state.mobiles) {
+			const session = this.sessions.get(mobile.mobileId);
+			if (session?.isOnline) {
+				session.sendFrame(Channels.Notify, undefined, bytes).catch(err => this.logService.warn('[paradisMobileRelay] notify frame failed', err));
+				continue;
+			}
+			this.notifyKeyFor(mobile.mobileId, mobile.pubKey).then(async key => {
+				const sealed = await sealNotify(key, bytes);
+				this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: toBase64Url(sealed) });
+			}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
 		}
 	}
 
@@ -398,6 +472,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const removed = this.state.mobiles.filter(m => m.name === deviceName);
 		this.state.mobiles = this.state.mobiles.filter(m => m.name !== deviceName);
 		await this.save();
+		this.updateEagerTailing();
 		// M-1: リレー側の資格情報も失効させ、既存のモバイル接続を切断する。
 		for (const m of removed) {
 			this.sessions.delete(m.mobileId);
@@ -466,6 +541,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async sendFrame(ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void> {
 		const bytes = payload.buffer;
+		// Notify のブロードキャストは専用経路へ: オンラインへはフレーム、オフラインへはAPNsプッシュ。
+		// renderer 側の通知（agentStatus遷移由来の emitNotify）もこの1点でプッシュ対応になる。
+		if (ch === Channels.Notify && mobileId === undefined) {
+			this.dispatchNotify(bytes);
+			return;
+		}
 		// M-2: 宛先mobileId指定時はそのセッションにのみ送る（ターミナル出力などを要求元だけに返す）。
 		// 未指定時のみ全オンラインセッションへブロードキャスト（state スナップショット等）。
 		if (mobileId !== undefined) {
@@ -683,6 +764,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.pairing = undefined;
 		this._onPairingEvent.fire({ kind: 'paired', deviceName: name });
 		this._onDidChangeStatus.fire(this.snapshot());
+		this.updateEagerTailing();
 	}
 
 	private uniqueName(base: string): string {

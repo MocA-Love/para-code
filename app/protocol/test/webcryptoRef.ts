@@ -14,6 +14,8 @@
 const PROTOCOL_INFO = new TextEncoder().encode('para-code-mobile/1');
 const ACK_PAYLOAD = new TextEncoder().encode('para-hs-ack');
 const CONFIRM_PAYLOAD = new TextEncoder().encode('para-hs-confirm');
+const NOTIFY_SALT = new TextEncoder().encode('paradis-mobile-notify-v1');
+const NOTIFY_INFO = new TextEncoder().encode('notify');
 const NONCE_LENGTH = 12;
 
 const subtle = globalThis.crypto.subtle;
@@ -137,6 +139,30 @@ export async function webRespond(responderStatic: WebIdentity, initiatorStaticPu
 			}
 		},
 	};
+}
+
+/** 通知鍵導出のwebcrypto版。app/protocol の deriveNotifyKey と互換（生の32バイト鍵を返す）。 */
+export async function webDeriveNotifyKey(ownPrivateKey: CryptoKey, peerPublicKey: Uint8Array): Promise<Uint8Array> {
+	const ikm = await dh(ownPrivateKey, peerPublicKey);
+	return hkdfSha256(ikm, NOTIFY_SALT, NOTIFY_INFO, 32);
+}
+
+/** 通知の封緘のwebcrypto版（12Bランダムnonce || AES-256-GCM暗号文）。 */
+export async function webSealNotify(key: Uint8Array, plaintext: Uint8Array): Promise<Uint8Array> {
+	const nonce = new Uint8Array(NONCE_LENGTH);
+	globalThis.crypto.getRandomValues(nonce);
+	const aesKey = await importAesKey(key);
+	const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, aesKey, plaintext as BufferSource));
+	return concat(nonce, ct);
+}
+
+/** 通知の開封のwebcrypto版（認証失敗はthrow）。 */
+export async function webOpenNotify(key: Uint8Array, sealed: Uint8Array): Promise<Uint8Array> {
+	if (sealed.length < NONCE_LENGTH) { throw new Error('sealed notify too short'); }
+	const nonce = sealed.subarray(0, NONCE_LENGTH);
+	const aesKey = await importAesKey(key);
+	const pt = await subtle.decrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, aesKey, sealed.subarray(NONCE_LENGTH) as BufferSource);
+	return new Uint8Array(pt);
 }
 
 /** イニシエータ（モバイル側）のwebcrypto版。interopの両方向テスト用。 */

@@ -105,7 +105,11 @@ export type RelayControlMessage =
 	| { readonly type: 'pairing-reject'; readonly pairId: string }
 	| { readonly type: 'paired'; readonly deviceId: string; readonly mobileId: string; readonly mobileToken: string }
 	| { readonly type: 'presence'; readonly peer: 'pc' | 'mobile'; readonly mobileId?: string; readonly online: boolean }
-	| { readonly type: 'error'; readonly message: string };
+	| { readonly type: 'error'; readonly message: string }
+	// APNsプッシュ: モバイルがトークンを登録し（register-push）、PCがオフラインのモバイル宛に
+	// 暗号文ペイロード（通知鍵で封緘済み・リレーは復号不可）のプッシュ配送を依頼する（push-notify）
+	| { readonly type: 'register-push'; readonly token: string; readonly env?: 'prod' | 'dev' }
+	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string };
 
 export function encodeRelayControl(message: RelayControlMessage): string {
 	return JSON.stringify(message);

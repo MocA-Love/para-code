@@ -25,6 +25,7 @@ import { IExtensionService } from '../../../../workbench/services/extensions/com
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
 import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
@@ -117,7 +118,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// onDidChangeInstanceDimensions はインスタンス数×フレーム数で連射されるため、
 		// そのまま送るとリレー帯域を浪費する）。
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.refreshBranches(); this.pushStateSoon(); }));
-		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.pushStateSoon()));
+		// 切替はエディタターミナルのpark/unpark（allInstances の増減）を伴うため、agentペイン対応表も同期し直す
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); this.pushAgentPanes(); }));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => this.pushStateSoon()));
 		// park/unpark（ワークスペース切り替えでの退避/復帰）は instances イベントに乗らないため groups 変化でも再送する
@@ -215,6 +217,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					add(inst);
 				}
 			}
+		}
+		// エディタエリアのターミナルはワークスペース切り替え時に専用台帳へパークされ、
+		// terminalService.instances からも paradisParkedGroups からも消える。ここを列挙しないと
+		// 他ワークスペースのエディタターミナル（Claude Code等をエディタタブで開いている場合）が
+		// モバイルから一切見えなくなる。
+		for (const inst of paradisListParkedTerminalEditorInstances()) {
+			add(inst);
 		}
 		return result;
 	}

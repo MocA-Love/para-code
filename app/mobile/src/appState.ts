@@ -12,7 +12,7 @@ import { decodePairingUri } from '@para/protocol';
 import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsFindResult, type FsGrepResult, type FsListResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
-import { configureNotificationHandler, ensureNotificationPermission, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
+import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
 
 interface AppState extends StoreState {
 	ready: boolean;
@@ -84,6 +84,10 @@ export const useAppStore = create<AppState>(set => ({
 			rnSocketFactory,
 			s => set({ ...s }),
 			payload => { void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId }); },
+			getApnsDeviceToken,
+			// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
+			__DEV__ ? 'dev' : 'prod',
+			persistNotifyKey,
 		);
 		// フォアグラウンド復帰時、接続が死んでいたら即座に繋ぎ直す（iOSはバックグラウンドで
 		// ソケットが黙って死ぬため、これが無いと再起動/復帰後に繋がらないことがある）。

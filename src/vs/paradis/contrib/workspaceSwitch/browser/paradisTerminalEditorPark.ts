@@ -46,6 +46,16 @@ export function paradisParkTerminalEditorInstance(instance: ITerminalInstance): 
 	return true;
 }
 
+/**
+ * パーク中の全インスタンスを列挙する（台帳からは取り出さない）。
+ * モバイルリレーが「他ワークスペースへ退避中のエディタターミナル」も一覧・attach できるようにするための読み取り専用ビュー。
+ * terminalService.instances にも paradisParkedGroups にも現れないのはこの台帳のインスタンスだけなので、
+ * 全ターミナル列挙はこの3つの合算で完全になる。
+ */
+export function paradisListParkedTerminalEditorInstances(): ITerminalInstance[] {
+	return [...parkedInstances.values()].map(e => e.instance);
+}
+
 /** パーク済みインスタンスを取り出す（一度取り出したら台帳から消え、監視リスナーも解除される）。 */
 export function paradisTakeParkedTerminalEditorInstance(persistentProcessId: number): ITerminalInstance | undefined {
 	const entry = parkedInstances.get(persistentProcessId);
