@@ -16,6 +16,7 @@ import { marked } from 'marked';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { colors } from '../theme.js';
 import type { FsReadResult } from '../store.js';
+import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 
 interface FileViewerProps {
 	path: string;
@@ -31,6 +32,8 @@ interface FileViewerProps {
 	onSelectSheet?: (index: number) => void;
 	/** pdf: PDFバイナリ（base64url）。キャッシュへ書き出して WKWebView のネイティブPDF表示に渡す。 */
 	pdfData?: string;
+	/** docx: Word文書バイナリ（base64）。WebView 内の docx-preview でレンダリングする。 */
+	docxData?: string;
 	/** テキスト検索から開いた場合の一致行（1始まり）。その行へスクロールしハイライトする。 */
 	focusLine?: number;
 	onClose: () => void;
@@ -106,6 +109,122 @@ export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 
 }
 
 /**
+ * Word(.docx) のレンダーHTML。PC版ビューア（paradisDocxFileEditor.ts の _buildHtml）と同じ
+ * vendored ライブラリ（jszip + パッチ済み docx-preview、assets/docxpreview/ に同梱）・同じ
+ * レンダリングオプション・同じ後処理を WebView 内で実行する。表示仕様の変更は PC 版と
+ * 両方に反映すること（レンダリングロジックの原本は PC 版）。
+ */
+function buildDocxHtml(docxBase64: string): string {
+	// viewport はページ幅（A4縦 ≒ 794px + 余白）に固定し、WKWebView の自動フィットと
+	// ピンチズームに任せる（画面幅に合わせて縮小表示され、拡大も自然に効く）。
+	return `<!DOCTYPE html><html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=830">
+<style>
+	/* PC版と同じ: docx-preview はページ要素に width(=ページ幅) + padding(=余白) を設定し、
+	box-sizing:border-box を前提にした値なので、既定の content-box のままだと用紙が余白分
+	横に膨らむ。 */
+	*, *::before, *::after { box-sizing: border-box; }
+	html, body { margin: 0; padding: 0; }
+	body { background-color: #1e1e1e; font-family: -apple-system, sans-serif; font-size: 13px; }
+	#content { padding: 16px 16px 48px; display: flex; flex-direction: column; align-items: center; }
+	#content .docx-wrapper { background: transparent; padding: 0; display: flex; flex-direction: column; align-items: center; gap: 16px; }
+	#content .docx-wrapper > section.docx {
+		background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); margin: 0;
+		/* ページ基準(mso-position-*-relative:page)のVML図形(斜線等)の配置基準（PC版と同じ）。 */
+		position: relative;
+		/* 色指定の無い文字の既定は黒（用紙上で読める色を明示。PC版と同じ）。 */
+		color: #000;
+	}
+	/* table-layout:fixed の表で折り返し不可能な内容がセル幅を超えたとき、隣接セルへの
+	重なりではなく折り返しで高さ側に逃がす（PC版と同じ）。 */
+	#content table td, #content table th { overflow-wrap: break-word; }
+	#status { position: fixed; top: 45%; width: 100%; text-align: center; opacity: .75; color: #ccc; }
+</style>
+</head>
+<body>
+<div id="content"></div>
+<div id="status">レンダリング中…</div>
+<script>${docxPreviewBundle.jszip}</script>
+<script>${docxPreviewBundle.docxPreview}</script>
+<script>
+	(async () => {
+		const statusEl = document.getElementById('status');
+		const contentEl = document.getElementById('content');
+		try {
+			if (!window.docx || !window.JSZip) {
+				throw new Error('レンダリングライブラリの読み込みに失敗しました');
+			}
+			const b64 = ${JSON.stringify(docxBase64)};
+			const bin = atob(b64);
+			const buf = new Uint8Array(bin.length);
+			for (let i = 0; i < bin.length; i++) {
+				buf[i] = bin.charCodeAt(i);
+			}
+			// オプションは PC 版ビューアと同一（各項目の理由は paradisDocxFileEditor.ts 参照）。
+			await window.docx.renderAsync(buf.buffer, contentEl, undefined, {
+				className: 'docx',
+				inWrapper: true,
+				ignoreWidth: false,
+				ignoreHeight: false,
+				breakPages: true,
+				ignoreLastRenderedPageBreak: false,
+				experimental: true,
+				renderHeaders: true,
+				renderFooters: true,
+				renderFootnotes: true,
+				renderEndnotes: true,
+				useBase64URL: true
+			});
+			// ページ本文幅を超える表などがあるとき、白紙をコンテンツ幅まで広げてはみ出しを防ぐ（PC版と同じ）。
+			for (const section of contentEl.querySelectorAll('.docx-wrapper > section.docx')) {
+				const needed = section.scrollWidth;
+				if (needed > section.clientWidth) {
+					section.style.width = needed + 'px';
+				}
+			}
+			// Symbol/Wingdings フォントの Private Use Area 記号を標準Unicodeへ差し替える（PC版と同じ。
+			// iOS にもこれらのフォントは無く、豆腐になるため）。
+			const SYMBOL_FONT_GLYPH_MAP = {
+				'\\uF0B7': '\\u2022',
+				'\\uF0A7': '\\u25AA',
+				'\\uF0E0': '\\u2192',
+				'\\uF0FC': '\\u2713',
+				'\\uF06C': '\\u25CF',
+			};
+			const symbolGlyphClass = '[' + Object.keys(SYMBOL_FONT_GLYPH_MAP).join('') + ']';
+			const symbolGlyphPattern = new RegExp(symbolGlyphClass);
+			const symbolGlyphReplaceAll = new RegExp(symbolGlyphClass, 'g');
+			// 注意: この regex リテラルは TS テンプレートリテラル内の埋め込みJSなので、
+			// \\s 等の正規表現専用エスケープは二重バックスラッシュで書く（PC版と同じ罠対策）。
+			const symbolFontPattern = /font-family:\\s*[^;]*(?:symbol|wingdings|webdings)/i;
+			for (const styleEl of document.querySelectorAll('style')) {
+				const text = styleEl.textContent;
+				if (!text || !symbolGlyphPattern.test(text)) {
+					continue;
+				}
+				const patched = text.replace(/[^{}]+\\{[^{}]*\\}/g, block => {
+					if (!symbolFontPattern.test(block)) {
+						return block;
+					}
+					return block.replace(/(content:\\s*")([^"]*)(")/gi,
+						(all, before, glyphs, after) => before + glyphs.replace(symbolGlyphReplaceAll, ch => SYMBOL_FONT_GLYPH_MAP[ch] ?? ch) + after);
+				});
+				if (patched !== text) {
+					styleEl.textContent = patched;
+				}
+			}
+			statusEl.remove();
+		} catch (err) {
+			statusEl.textContent = 'Word 文書を表示できませんでした: ' + (err && err.message ? err.message : err);
+		}
+	})();
+</script>
+</body>
+</html>`;
+}
+
+/**
  * PDF表示。base64 のバイナリをキャッシュファイルへ書き出し、WKWebView に file:// URI で
  * 読ませてネイティブPDFレンダリング（ピンチズーム・ページング・テキスト選択つき）を使う。
  * 書き込みは legacy API の Base64 エンコーディング指定で行う（デコードがネイティブ側で走るため、
@@ -168,9 +287,9 @@ function PdfView({ data }: { data: string }) {
 	);
 }
 
-export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, onClose }: FileViewerProps) {
+export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, onClose }: FileViewerProps) {
 	const name = path.split('/').pop() ?? path;
-	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
+	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.docx$/i.test(name) ? 'docx' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
 	const [mode, setMode] = useState<ViewMode>(kind === 'other' || focusLine !== undefined ? 'code' : 'render');
 
@@ -188,6 +307,13 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 			// エラー時のみ result のメッセージをコード表示で見せる。
 			return result ? buildCodeHtml(result) : undefined;
 		}
+		if (kind === 'docx') {
+			if (docxData !== undefined) {
+				return buildDocxHtml(docxData);
+			}
+			// エラー時のみ result のメッセージをコード表示で見せる（成功時は docxData が来る）。
+			return result ? buildCodeHtml(result) : undefined;
+		}
 		if (!result) {
 			return undefined;
 		}
@@ -198,11 +324,12 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 			return buildMarkdownHtml(result);
 		}
 		return buildCodeHtml(result, focusLine);
-	}, [result, spreadsheetHtml, mode, kind, focusLine]);
+	}, [result, spreadsheetHtml, docxData, mode, kind, focusLine]);
 
 	// 行ジャンプのスクロールスクリプトは自前生成のコードHTML内のみで有効化する
 	// （.html のレンダー表示など、リポジトリ由来のHTMLでは引き続きJS無効）。
-	const allowJs = kind === 'spreadsheet' || (mode === 'code' && focusLine !== undefined);
+	// docx は WebView 内で vendored の docx-preview を実行するため JS が必要。
+	const allowJs = kind === 'spreadsheet' || kind === 'docx' || (mode === 'code' && focusLine !== undefined);
 
 	return (
 		<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>

@@ -23,7 +23,7 @@ import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../
  */
 export default function FilesScreen() {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, fsXlsx, fsPdf, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
+	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
 
 	const [path, setPath] = useState('');
 	const [listing, setListing] = useState<FsListResult | undefined>();
@@ -40,6 +40,7 @@ export default function FilesScreen() {
 	const [viewerResult, setViewerResult] = useState<FsReadResult | undefined>();
 	const [viewerXlsx, setViewerXlsx] = useState<{ html?: string; sheets?: string[]; sheet?: number } | undefined>();
 	const [viewerPdf, setViewerPdf] = useState<string | undefined>();
+	const [viewerDocx, setViewerDocx] = useState<string | undefined>();
 	const [viewerLine, setViewerLine] = useState<number | undefined>();
 	// 開く→閉じる→別ファイルを開く、の間に前のfetchが解決して上書きするのを防ぐ世代ガード
 	const viewerPathRef = useRef<string | undefined>(undefined);
@@ -115,6 +116,7 @@ export default function FilesScreen() {
 		setViewerResult(undefined);
 		setViewerXlsx(undefined);
 		setViewerPdf(undefined);
+		setViewerDocx(undefined);
 		setViewerLine(line);
 		if (!wsId) {
 			return;
@@ -132,6 +134,13 @@ export default function FilesScreen() {
 				const result = await fsPdf(wsId, p);
 				if (viewerPathRef.current === p) {
 					setViewerPdf(result.data);
+				}
+			} else if (/\.docx$/i.test(p)) {
+				// Word はバイナリを base64 で受け取り、WebView 内の docx-preview（PC版と同じ
+				// vendored ライブラリ）でレンダリングする
+				const result = await fsDocx(wsId, p);
+				if (viewerPathRef.current === p) {
+					setViewerDocx(result.data);
 				}
 			} else {
 				// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
@@ -276,7 +285,8 @@ export default function FilesScreen() {
 					onSelectSheet={i => { void selectSheet(i); }}
 					focusLine={viewerLine}
 					pdfData={viewerPdf}
-					onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerLine(undefined); }}
+					docxData={viewerDocx}
+					onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerDocx(undefined); setViewerLine(undefined); }}
 				/>
 			) : null}
 		</View>

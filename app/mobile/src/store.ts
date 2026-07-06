@@ -76,6 +76,11 @@ export interface FsPdfResult {
 	data: string;
 	size: number;
 }
+/** fs docx 応答（Word文書バイナリの base64。WebView 内の docx-preview でレンダリングする）。 */
+export interface FsDocxResult {
+	data: string;
+	size: number;
+}
 /** fs find 応答（ファイル名検索、ルート相対パスのランク順）。 */
 export interface FsFindResult {
 	files: string[];
@@ -464,6 +469,11 @@ export class MobileController {
 	/** PDF バイナリを base64 で取得する（大きい PDF はチャンク転送で時間がかかるため長め）。 */
 	fsPdf(ws: string, path: string): Promise<FsPdfResult> {
 		return this.request<FsPdfResult>('fs', { t: 'pdf', ws, path }, 120_000);
+	}
+
+	/** Word(.docx) バイナリを base64 で取得する（レンダリングはモバイルの WebView 内で行う）。 */
+	fsDocx(ws: string, path: string): Promise<FsDocxResult> {
+		return this.request<FsDocxResult>('fs', { t: 'docx', ws, path }, 120_000);
 	}
 
 	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */
