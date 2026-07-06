@@ -180,6 +180,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 			個別に(インラインstyleで)色を上書きするため、そちらは引き続き優先される。 */
 			color: #000;
 		}
+		/* table-layout:fixed の表（幅固定）で、折り返し不可能な内容（プレースホルダ変数名等の
+		連続した英数字トークン）がセル幅を超えると、既定では折り返されずセルの外・隣接セルの
+		上にオーバーフローして重なって表示されてしまう。fixedレイアウトは「列幅は固定するが、
+		中身は溢れさせない」という直感的な挙動を期待されるため、必ず折り返して高さ側に逃がす。 */
+		#content table td, #content table th { overflow-wrap: break-word; }
 		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
 	</style>
 </head>
@@ -204,6 +209,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 					ignoreWidth: false,
 					ignoreHeight: false,
 					breakPages: true,
+					// docx-preview は明示的な改ページ(<w:br type="page">)にしか反応せず、
+					// 文中の折返しによる自動改ページの計算(テキストレイアウトエンジン)を持たない。
+					// 唯一の代替情報が w:lastRenderedPageBreak — Word がその文書を最後に保存した
+					// 時点の実際のページ割りを記録したキャッシュで、docx-preview はこれを改ページとして
+					// 扱う実装を持つが既定では無視する(ignoreLastRenderedPageBreak の既定値は true)。
+					// 明示的な改ページが無い文書(実務でよくある複数ページの契約書・重説等)がまるごと
+					// 1ページの巨大な連続体として描画されてしまっていたため、明示的に false にして
+					// このキャッシュ値を改ページとして使う(内容編集後は古い値になり得るが、
+					// 明示的な改ページが無い以上、実際のWordのページ割りに最も近づく唯一の手段)。
+					ignoreLastRenderedPageBreak: false,
 					renderHeaders: true,
 					renderFooters: true,
 					renderFootnotes: true,
