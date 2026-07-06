@@ -16,6 +16,7 @@
  */
 
 import { decodeRelayControl, encodeRelayControl, mobileIdFromString, mobileIdToString, packPcData, unpackPcData, type RelayControlMessage } from '@para/protocol';
+import { sendApnsNotification, type ApnsEnv, type ApnsJwtCache } from './apns.js';
 import { extractToken, hashToken, randomTokenB64u, timingSafeEqualHex } from './auth.js';
 
 interface DeviceRecord {
@@ -37,15 +38,32 @@ interface PendingPairing {
 }
 
 const PAIRING_TTL_MS = 5 * 60 * 1000;
+// APNsのペイロード上限は4KB。base64url暗号文はそのまま `e` に載るため、余裕をみて上限を設ける。
+const MAX_PUSH_PAYLOAD_BYTES = 3800;
 
 export class DeviceDO implements DurableObject {
 	private readonly sql: SqlStorage;
+	// ES256 JWTのメモリキャッシュ（apns.ts が45分間再利用する）。
+	private readonly apnsJwtCache: ApnsJwtCache = {};
 
 	constructor(private readonly state: DurableObjectState, private readonly env: unknown) {
 		this.sql = state.storage.sql;
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS device (id INTEGER PRIMARY KEY CHECK (id = 1), pcPublicKey TEXT, pcTokenHash TEXT)`);
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS mobiles (mobileId TEXT PRIMARY KEY, name TEXT, tokenHash TEXT, createdAt INTEGER)`);
 		this.sql.exec(`CREATE TABLE IF NOT EXISTS pending (pairId TEXT PRIMARY KEY, tokenHash TEXT, expiresAt INTEGER)`);
+		// 後方互換マイグレーション: 既存DOの mobiles テーブルにAPNs列を追加する。
+		// SQLiteは `ADD COLUMN IF NOT EXISTS` を持たないため、既に存在する場合の例外は握りつぶす。
+		this.migrateMobilesForPush();
+	}
+
+	private migrateMobilesForPush(): void {
+		for (const column of ['apnsToken TEXT', 'apnsEnv TEXT']) {
+			try {
+				this.sql.exec(`ALTER TABLE mobiles ADD COLUMN ${column}`);
+			} catch {
+				// 列が既に存在する（=マイグレーション済み）。無視してよい。
+			}
+		}
 	}
 
 	async fetch(request: Request): Promise<Response> {
@@ -243,13 +261,58 @@ export class DeviceDO implements DurableObject {
 			return;
 		}
 
+		if (tag.startsWith('m:')) {
+			// 認証済みモバイルソケット上でのみ register-push を受理し、その mobileId の行に保存する。
+			if (msg.type === 'register-push') {
+				this.registerPush(tag.slice(2), msg.token, msg.env);
+			}
+			return;
+		}
+
 		if (tag === 'pc') {
 			if (msg.type === 'pairing-approve') {
 				await this.approvePairing(msg.pairId, msg.name);
 			} else if (msg.type === 'pairing-reject') {
 				this.sendToTag(`pair:${msg.pairId}`, { type: 'error', message: 'pairing rejected' });
+			} else if (msg.type === 'push-notify') {
+				await this.pushNotify(msg.mobileId, msg.payload);
 			}
 			// 注: PC→pairing方向のpairing-msg中継は行わない（現行プロトコルはpairing→PCの一方向）。
+		}
+	}
+
+	// --- APNs プッシュ ---------------------------------------------------------------
+
+	private registerPush(mobileId: string, token: string, env: 'prod' | 'dev' | undefined): void {
+		// APNsデバイストークンは16進64桁想定。それ以外は黙って破棄する（不正入力の保存防止）。
+		if (!/^[0-9a-f]{64}$/i.test(token)) {
+			return;
+		}
+		if (!this.mobile(mobileId)) {
+			return;
+		}
+		const apnsEnv = env === 'dev' ? 'dev' : 'prod';
+		this.sql.exec('UPDATE mobiles SET apnsToken = ?, apnsEnv = ? WHERE mobileId = ?', token, apnsEnv, mobileId);
+	}
+
+	private async pushNotify(mobileId: string, payload: string): Promise<void> {
+		if (typeof payload !== 'string' || new TextEncoder().encode(payload).length > MAX_PUSH_PAYLOAD_BYTES) {
+			console.warn('[push] payload missing or too large; dropping');
+			return;
+		}
+		// オンライン（m:<mobileId> のソケットが1本以上）なら通常のE2Eフレームが届くので何もしない。
+		if (this.state.getWebSockets(`m:${mobileId}`).length > 0) {
+			return;
+		}
+		const row = this.sql.exec('SELECT apnsToken, apnsEnv FROM mobiles WHERE mobileId = ?', mobileId).toArray()[0];
+		if (!row || !row.apnsToken) {
+			return;
+		}
+		const apnsEnv = (row.apnsEnv as string | null) === 'dev' ? 'dev' : 'prod';
+		const result = await sendApnsNotification(this.env as ApnsEnv, { token: row.apnsToken as string, env: apnsEnv, payload }, this.apnsJwtCache);
+		if (result === 'unregistered') {
+			// 410 Unregistered: 失効したトークンをDBから消す。
+			this.sql.exec('UPDATE mobiles SET apnsToken = NULL, apnsEnv = NULL WHERE mobileId = ?', mobileId);
 		}
 	}
 

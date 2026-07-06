@@ -24,6 +24,9 @@ import { concatBytes } from './util.js';
 const PROTOCOL_INFO = new TextEncoder().encode('para-code-mobile/1');
 const ACK_PAYLOAD = new TextEncoder().encode('para-hs-ack');
 const CONFIRM_PAYLOAD = new TextEncoder().encode('para-hs-confirm');
+// プッシュ通知用の鍵導出パラメータ。セッション鍵と混ざらないよう salt/info を分離する。
+const NOTIFY_SALT = new TextEncoder().encode('paradis-mobile-notify-v1');
+const NOTIFY_INFO = new TextEncoder().encode('notify');
 // AES-256-GCM を採用（Node/Web の webcrypto と @noble の双方が実装するため、
 // PC側=webcrypto / モバイル側=@noble でバイト互換にできる。nonceは12バイトのカウンタ。
 // セッション鍵は接続毎にephemeral DHで新規導出されるため、カウンタnonceの再利用は起きない）。
@@ -210,4 +213,37 @@ export function respondHandshake(responderStatic: Identity, initiatorStaticPub: 
 /** 暗号学的乱数（ペアリングトークン等に使用）。 */
 export function randomToken(length: number): Uint8Array {
 	return randomBytes(length);
+}
+
+/**
+ * プッシュ通知用の「通知鍵」を双方の長期鍵から導出する（32バイト）。
+ *
+ * セッション鍵と違い ephemeral を混ぜないため、WS接続なしでも両側が同じ鍵を計算できる
+ * （iOS の Notification Service Extension はアプリ未起動・接続なしで復号する必要がある）。
+ * X25519 の対称性により、PC側 (PC秘密鍵, モバイル公開鍵) とモバイル側 (モバイル秘密鍵,
+ * PC公開鍵) が同一の共有秘密＝同一の通知鍵になる。
+ */
+export function deriveNotifyKey(ownSecretKey: Uint8Array, peerPublicKey: Uint8Array): Uint8Array {
+	const ikm = x25519.getSharedSecret(ownSecretKey, peerPublicKey);
+	return hkdf(sha256, ikm, NOTIFY_SALT, NOTIFY_INFO, KEY_LENGTH);
+}
+
+/**
+ * 通知ペイロードを通知鍵で封緘する: 12バイトのランダムnonce || AES-256-GCM暗号文(tag込み)。
+ *
+ * セッション暗号は順序保証のあるWS上でカウンタnonceを使うが、通知は低頻度かつ長期鍵で
+ * カウンタ状態を共有できない（送信は複数プロセス・受信はNSE）ため、ランダムnonceにする。
+ */
+export function sealNotify(key: Uint8Array, plaintext: Uint8Array): Uint8Array {
+	const nonce = randomBytes(NONCE_LENGTH);
+	return concatBytes(nonce, gcm(key, nonce).encrypt(plaintext));
+}
+
+/** 封緘された通知を開封する（認証失敗はthrow）。 */
+export function openNotify(key: Uint8Array, sealed: Uint8Array): Uint8Array {
+	if (sealed.length < NONCE_LENGTH) {
+		throw new Error('sealed notify too short');
+	}
+	const nonce = sealed.subarray(0, NONCE_LENGTH);
+	return gcm(key, nonce).decrypt(sealed.subarray(NONCE_LENGTH));
 }

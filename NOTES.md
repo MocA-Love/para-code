@@ -82,6 +82,8 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `marked` を依存に追加 | モバイルのファイルビューアの `.md` レンダー表示（レンダー/Raw切り替え）用 |
 | `src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**`（約190ファイル: pdf.min.mjs / pdf.worker.min.mjs / cmaps / standard_fonts / LICENSE） | 新規追加（vendoredサードパーティ成果物、Apache-2.0）。`pdfjs-dist@6.1.200` の build 成果物と CMap/標準フォントをそのまま同梱。取得元・更新手順は同ディレクトリの `README.md` 参照 | PC版PDFビューア（`paradisPdfFileEditor.ts`）が webview 内で pdf.js を実行するため。ビルド済み第三者コードのためマーカーを埋め込まず、hygiene/eslintから除外（`build/filters.ts`・`.eslint-ignore`・`.eslint-allowed-javascript-files` のPARA-PATCH）。パッケージ同梱は `build/next/index.ts` と `build/gulpfile.vscode.ts` の両方に glob 追加済み |
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-file-system@~57.0.0` を依存に追加 | モバイルのPDFビューア。リレー経由で受けたPDFバイナリをキャッシュファイルへ書き出し、WKWebViewのネイティブPDF表示に file:// URI で渡すため |
+| `app/mobile/app.json` | `expo-notifications` プラグイン追加、iOS `UIBackgroundModes: [remote-notification]` 追加 | APNsリモートプッシュ（アプリ未起動時の通知配送）。**注意: `app/mobile/ios/` は `app/.gitignore` で無視されるため、NSEターゲット等のネイティブ変更はリポジトリに残らない**。NSEのソースと復元手順は `app/mobile/native/NotifyExtension/README.md` 参照 |
+| `app/mobile/native/NotifyExtension/Info.plist` / `NotifyExtension.entitlements` | 新規追加（fork所有）。NSEターゲットの設定ファイル（追跡用コピー。実体は gitignore された `ios/` 内） | プッシュ通知本文のNSE復号。plistはコメント不可のためここに記録 |
 
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 

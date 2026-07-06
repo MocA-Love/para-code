@@ -11,6 +11,21 @@ export default defineWorkersConfig({
 				isolatedStorage: false,
 				singleWorker: true,
 				wrangler: { configPath: './wrangler.jsonc' },
+				// APNsプッシュ経路のテスト用シークレット。使い捨てのP-256鍵で、本番とは無関係。
+				miniflare: {
+					bindings: {
+						APNS_KEY_P8: [
+							'-----BEGIN PRIVATE KEY-----',
+							'MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgfQayOIMz4OZDurRB',
+							'AFp6UF7Sx1vTQBPaHVCJIivp16ShRANCAAT3iqWMLu+1JsNc1xHaf9I70IDIsyjM',
+							'2S5kbGXyYXnYAOYX4YXeCGMlR8Bej91DRTSBSu7aCTmhz/9f5QcVLowH',
+							'-----END PRIVATE KEY-----',
+						].join('\n'),
+						APNS_KEY_ID: 'TESTKEYID1',
+						APNS_TEAM_ID: 'TESTTEAM01',
+						APNS_TOPIC: 'ltd.paradis.paracode.mobile',
+					},
+				},
 			},
 		},
 	},

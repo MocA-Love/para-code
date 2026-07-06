@@ -14,6 +14,8 @@
 const PROTOCOL_INFO = new TextEncoder().encode('para-code-mobile/1');
 const ACK_PAYLOAD = new TextEncoder().encode('para-hs-ack');
 const CONFIRM_PAYLOAD = new TextEncoder().encode('para-hs-confirm');
+const NOTIFY_SALT = new TextEncoder().encode('paradis-mobile-notify-v1');
+const NOTIFY_INFO = new TextEncoder().encode('notify');
 const NONCE_LENGTH = 12;
 
 // globalThis.crypto は Electron の shared process(Node)/renderer 双方で利用可能。
@@ -176,6 +178,43 @@ export async function respondHandshake(responderStatic: MobileIdentity, initiato
 			if (!equalBytes(payload, CONFIRM_PAYLOAD)) { throw new Error('handshake confirm mismatch'); }
 		},
 	};
+}
+
+/**
+ * プッシュ通知用の「通知鍵」を双方の長期鍵から導出する（32バイト）。
+ * app/protocol/src/crypto.ts の deriveNotifyKey とバイト互換。
+ *
+ * セッション鍵と違い ephemeral を混ぜないため、WS接続なしでも両側が同じ鍵を計算できる
+ * （iOS の Notification Service Extension はアプリ未起動・接続なしで復号する必要がある）。
+ * X25519 の対称性により、PC側 (PC秘密鍵, モバイル公開鍵) とモバイル側 (モバイル秘密鍵,
+ * PC公開鍵) が同一の共有秘密＝同一の通知鍵になる。
+ */
+export async function deriveNotifyKey(ownPrivateKey: CryptoKey, peerPublicKey: Uint8Array): Promise<Uint8Array> {
+	const ikm = await dh(ownPrivateKey, peerPublicKey);
+	return hkdfSha256(ikm, NOTIFY_SALT, NOTIFY_INFO, 32);
+}
+
+/**
+ * 通知ペイロードを通知鍵で封緘する: 12バイトのランダムnonce || AES-256-GCM暗号文(tag込み)。
+ *
+ * セッション暗号は順序保証のあるWS上でカウンタnonceを使うが、通知は低頻度かつ長期鍵で
+ * カウンタ状態を共有できない（送信は複数プロセス・受信はNSE）ため、ランダムnonceにする。
+ */
+export async function sealNotify(key: Uint8Array, plaintext: Uint8Array): Promise<Uint8Array> {
+	const nonce = new Uint8Array(NONCE_LENGTH);
+	globalThis.crypto.getRandomValues(nonce);
+	const aesKey = await importAesKey(key);
+	const ct = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, aesKey, plaintext as BufferSource));
+	return concat(nonce, ct);
+}
+
+/** 封緘された通知を開封する（認証失敗はthrow）。 */
+export async function openNotify(key: Uint8Array, sealed: Uint8Array): Promise<Uint8Array> {
+	if (sealed.length < NONCE_LENGTH) { throw new Error('sealed notify too short'); }
+	const nonce = sealed.subarray(0, NONCE_LENGTH);
+	const aesKey = await importAesKey(key);
+	const pt = await subtle.decrypt({ name: 'AES-GCM', iv: nonce as BufferSource }, aesKey, sealed.subarray(NONCE_LENGTH) as BufferSource);
+	return new Uint8Array(pt);
 }
 
 /** SAS 6桁コード導出（app/protocol/src/pairing.ts と一致）。 */

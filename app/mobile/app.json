@@ -14,12 +14,14 @@
 			"appleTeamId": "WB4G82C384",
 			"infoPlist": {
 				"NSCameraUsageDescription": "QRコードでPara Codeとペアリングするためにカメラを使用します。",
-				"ITSAppUsesNonExemptEncryption": false
+				"ITSAppUsesNonExemptEncryption": false,
+				"UIBackgroundModes": ["remote-notification"]
 			}
 		},
 		"plugins": [
 			"expo-router",
 			"expo-secure-store",
+			"expo-notifications",
 			[
 				"expo-camera",
 				{ "cameraPermission": "QRコードでPara Codeとペアリングするためにカメラを使用します。" }

@@ -36,17 +36,30 @@ import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../agentBrow
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
 
+/** kind==='question' の選択肢1件。 */
+export interface IParadisAgentQuestionOption {
+	readonly label: string;
+	readonly description?: string;
+}
+
 /** モバイルへ送る正規化済みチャットメッセージ1件。 */
 export interface IParadisAgentChatMessage {
 	/** epoch内で単調増加する連番 (差分同期用)。 */
 	readonly rev: number;
 	readonly role: 'user' | 'assistant' | 'tool';
-	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result';
+	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question';
 	readonly text: string;
 	/** kind==='tool_use' のときのツール名。 */
 	readonly tool?: string;
 	/** 元イベントの時刻 (epoch ms、取れた場合のみ)。 */
 	readonly ts?: number;
+	/** kind==='question' のとき: タブ見出し（AskUserQuestion の header）。 */
+	readonly header?: string;
+	/** kind==='question' のとき: 選択肢（TUIの表示順 = 番号キーの割り当て順）。 */
+	readonly options?: readonly IParadisAgentQuestionOption[];
+	/** kind==='question' | 'tool_result' のとき: 対応付け用の tool_use ID。
+	 *  同じIDの tool_result が後続に現れたら質問は回答済み（モバイルはUIを非活性化する）。 */
+	readonly toolUseId?: string;
 }
 
 /** agentチャネルのモバイル→PCメッセージ。 */
@@ -116,10 +129,13 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 
 interface IRawMessage {
 	readonly role: 'user' | 'assistant' | 'tool';
-	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result';
+	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question';
 	readonly text: string;
 	readonly tool?: string;
 	readonly ts?: number;
+	readonly header?: string;
+	readonly options?: readonly IParadisAgentQuestionOption[];
+	readonly toolUseId?: string;
 }
 
 /** unknown からの安全なプロパティ読み出し。 */
@@ -153,6 +169,45 @@ function flattenContent(content: unknown): string {
 		return parts.join('\n');
 	}
 	return '';
+}
+
+/**
+ * AskUserQuestion の input（{ questions: [{ question, header, options: [{label, description}] , multiSelect? }] }）を
+ * question メッセージ列へ展開する。想定形でなければ空配列（呼び出し側が汎用 tool_use にフォールバック）。
+ */
+function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts: number | undefined): IRawMessage[] {
+	const inputRec = rec(input);
+	const questionsRaw = inputRec?.['questions'];
+	if (!Array.isArray(questionsRaw)) {
+		return [];
+	}
+	const out: IRawMessage[] = [];
+	for (const questionRaw of questionsRaw) {
+		const q = rec(questionRaw);
+		const questionText = str(q?.['question']);
+		if (!q || questionText === undefined || questionText.trim().length === 0) {
+			continue;
+		}
+		const options: IParadisAgentQuestionOption[] = [];
+		const optionsRaw = q['options'];
+		if (Array.isArray(optionsRaw)) {
+			for (const optionRaw of optionsRaw) {
+				const o = rec(optionRaw);
+				const label = str(o?.['label']);
+				if (label !== undefined && label.trim().length > 0) {
+					const description = str(o?.['description']);
+					options.push({ label: truncateText(label, 200), ...(description !== undefined ? { description: truncateText(description, 500) } : {}) });
+				}
+			}
+		}
+		out.push({
+			role: 'assistant', kind: 'question', text: truncateText(questionText, TEXT_LIMIT), ts,
+			...(str(q['header']) !== undefined ? { header: str(q['header']) } : {}),
+			...(options.length > 0 ? { options } : {}),
+			...(toolUseId !== undefined ? { toolUseId } : {}),
+		});
+	}
+	return out;
 }
 
 /** Claude Code transcript JSONL の1行をパースする。表示対象外の行は空配列。 */
@@ -195,7 +250,13 @@ function parseClaudeLine(obj: Record<string, unknown>): IRawMessage[] {
 				} else if (b['type'] === 'tool_result') {
 					const text = flattenContent(b['content']);
 					if (text.trim().length > 0) {
-						out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+						// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う
+						// （質問への回答の tool_result は選択されたラベルが本文に入るため必ず非空）。
+						const toolUseId = str(b['tool_use_id']);
+						out.push({
+							role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts,
+							...(toolUseId !== undefined ? { toolUseId } : {}),
+						});
 					}
 				}
 			}
@@ -222,6 +283,16 @@ function parseClaudeLine(obj: Record<string, unknown>): IRawMessage[] {
 				}
 			} else if (b['type'] === 'tool_use') {
 				const tool = str(b['name']) ?? 'tool';
+				// AskUserQuestion はユーザーへの選択式質問。汎用ツールとして折りたたむと
+				// モバイルで質問に気づけないため、専用の question メッセージに展開する。
+				if (tool === 'AskUserQuestion') {
+					const questions = parseAskUserQuestions(b['input'], str(b['id']), ts);
+					if (questions.length > 0) {
+						out.push(...questions);
+						continue;
+					}
+					// input が想定形でない場合は従来どおり汎用 tool_use として出す
+				}
 				let text = '';
 				try {
 					text = JSON.stringify(b['input']);
@@ -594,8 +665,13 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** ペイントークン → 購読中モバイルID (最後にattachしたモバイルが勝つ。termチャネルと同じM-2方針)。 */
 	private readonly subscribers = new Map<string, string>();
 
+	/** 有効時はモバイルの購読が無くてもセッション判明済みペインを常時tailする（質問検出・通知用）。 */
+	private eagerTailing = false;
+
 	constructor(
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
+		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
+		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string }) => void,
 		private readonly logService: ILogService,
 	) {
 		super();
@@ -608,6 +684,29 @@ export class ParadisMobileAgentChat extends Disposable {
 		}));
 	}
 
+	/**
+	 * ペアリング済みモバイルが存在する間だけ常時tailを有効にする。
+	 * 有効化時点で判明済みの全セッションのtailを開始し、無効化時は購読の無いtailerを止める
+	 * （リレー無効・ペアリング0台のときに全transcriptを監視し続けるコストを避ける）。
+	 */
+	setEagerTailing(enabled: boolean): void {
+		if (this.eagerTailing === enabled) {
+			return;
+		}
+		this.eagerTailing = enabled;
+		if (enabled) {
+			for (const [token, session] of this.paneSessions) {
+				if (this.terminalIdForToken(token) !== undefined) {
+					this.ensureTailer(token, session);
+				}
+			}
+		} else {
+			for (const token of [...this.tailers.keys()]) {
+				this.stopTailerIfUnsubscribed(token);
+			}
+		}
+	}
+
 	/** renderer から同期される「ターミナルinstanceId ⇔ ペイントークン」対応表 (全置換)。 */
 	syncPanes(entries: readonly { terminalId: number; token: string; cwd?: string }[]): void {
 		this.terminalToToken.clear();
@@ -617,6 +716,15 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.terminalToToken.set(entry.terminalId, entry.token);
 				if (typeof entry.cwd === 'string' && entry.cwd.length > 0) {
 					this.tokenToCwd.set(entry.token, entry.cwd);
+				}
+			}
+		}
+		// セッションは判明済みだが terminalId 対応が今届いたペインの常時tailを開始する
+		// （hookが先・ペイン同期が後の順で来るケース）。
+		if (this.eagerTailing) {
+			for (const [token, session] of this.paneSessions) {
+				if (this.terminalIdForToken(token) !== undefined && !this.tailers.has(token)) {
+					this.ensureTailer(token, session);
 				}
 			}
 		}
@@ -736,8 +844,17 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (discovered === undefined || this.paneSessions.has(token)) {
 			return;
 		}
-		this.paneSessions.set(token, { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: undefined });
+		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: undefined };
+		this.paneSessions.set(token, session);
+		this.ensureEagerTailer(token, session);
 		this.pushToSubscriber(token);
+	}
+
+	/** 常時tailが有効なら、このペインのtailerを起動しておく（購読が無くても質問を検出できるように）。 */
+	private ensureEagerTailer(token: string, session: IPaneSessionInfo): void {
+		if (this.eagerTailing && this.terminalIdForToken(token) !== undefined) {
+			this.ensureTailer(token, session);
+		}
 	}
 
 	/** 購読者がいれば、そのペインの現行セッションでattach相当のスナップショットを送る。 */
@@ -766,6 +883,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// エージェント起動などでこのペインのセッションが初めて判明した
 		// → 「セッションなし」表示のまま待っている購読者にスナップショットを送る。
 		if (previous === undefined) {
+			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscriber(event.token);
 			return;
 		}
@@ -777,6 +895,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				tailer.dispose();
 				this.tailers.delete(event.token);
 			}
+			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscriber(event.token);
 		}
 	}
@@ -794,6 +913,15 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (subscriber !== undefined && terminalId !== undefined) {
 					this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages });
 				}
+				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
+				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
+				if (terminalId !== undefined) {
+					for (const message of messages) {
+						if (message.kind === 'question') {
+							this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(message.header !== undefined ? { header: message.header } : {}) });
+						}
+					}
+				}
 			},
 			onEpochReset: () => {
 				const subscriber = this.subscribers.get(token);
@@ -809,6 +937,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private stopTailerIfUnsubscribed(token: string): void {
+		// 常時tail中は購読が無くてもtailerを維持する（質問検出のため）。
+		if (this.eagerTailing) {
+			return;
+		}
 		if (!this.subscribers.has(token)) {
 			const tailer = this.tailers.get(token);
 			if (tailer !== undefined) {

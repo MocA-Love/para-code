@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, test } from 'vitest';
-import { createInitiator, generateIdentity, respondHandshake } from '../src/crypto.js';
-import { generateWebIdentity, webInitiate, webRespond } from './webcryptoRef.js';
+import { createInitiator, deriveNotifyKey, generateIdentity, openNotify, respondHandshake, sealNotify } from '../src/crypto.js';
+import { generateWebIdentity, webDeriveNotifyKey, webInitiate, webOpenNotify, webRespond, webSealNotify } from './webcryptoRef.js';
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
@@ -55,5 +55,25 @@ describe('noble <-> webcrypto interop', () => {
 		const initiator = createInitiator(mobile, pc.publicKey);
 		const fake = await webRespond(impostor, mobile.publicKey, initiator.hello);
 		expect(() => initiator.finish(fake.response)).toThrow();
+	});
+});
+
+describe('notify key interop', () => {
+	test('derive matches across implementations and seal/open interop both ways', async () => {
+		const pc = await generateWebIdentity();   // webcrypto (PC)
+		const mobile = generateIdentity();        // noble (mobile)
+
+		// PC は (PC秘密鍵, モバイル公開鍵)、モバイルは (モバイル秘密鍵, PC公開鍵) で導出。
+		const pcKey = await webDeriveNotifyKey(pc.privateKey, mobile.publicKey);
+		const mobileKey = deriveNotifyKey(mobile.secretKey, pc.publicKey);
+		expect([...pcKey]).toEqual([...mobileKey]);
+
+		// PC(webcrypto) が封緘 → モバイル(noble) が開封
+		const sealed = await webSealNotify(pcKey, enc('agent-question: 確認'));
+		expect(dec(openNotify(mobileKey, sealed))).toBe('agent-question: 確認');
+
+		// モバイル(noble) が封緘 → PC(webcrypto) が開封
+		const back = sealNotify(mobileKey, enc('agent-done'));
+		expect(dec(await webOpenNotify(pcKey, back))).toBe('agent-done');
 	});
 });

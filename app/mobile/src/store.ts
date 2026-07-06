@@ -8,8 +8,8 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { type Frame, type Identity, type NotifyPayload, decodeNotify, generateIdentity } from '@para/protocol';
-import { RelayClient, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
+import { type Frame, type Identity, type NotifyPayload, decodeNotify, deriveNotifyKey, generateIdentity } from '@para/protocol';
+import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
 export interface WorkspaceState {
@@ -103,14 +103,26 @@ export interface BrowserFrame {
 	h: number;
 }
 
+/** kind==='question' の選択肢1件。 */
+export interface AgentQuestionOption {
+	label: string;
+	description?: string;
+}
+
 /** agent チャネルの正規化済みチャットメッセージ（PC側 paradisMobileAgentChat.ts と一致）。 */
 export interface AgentChatMessage {
 	rev: number;
 	role: 'user' | 'assistant' | 'tool';
-	kind: 'text' | 'thinking' | 'tool_use' | 'tool_result';
+	kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question';
 	text: string;
 	tool?: string;
 	ts?: number;
+	/** kind==='question': タブ見出し。 */
+	header?: string;
+	/** kind==='question': 選択肢（表示順 = TUIの番号キー割り当て順）。 */
+	options?: AgentQuestionOption[];
+	/** kind==='question' | 'tool_result': 対応付け用ID。同IDの tool_result が後続にあれば回答済み。 */
+	toolUseId?: string;
 }
 
 /** ターミナル1つ分のエージェントチャット状態。 */
@@ -218,10 +230,44 @@ export class MobileController {
 		private readonly onChange: (state: StoreState) => void,
 		/** 通知受信時のフック（expo-notifications によるローカル通知表示など）。 */
 		private readonly onNotify?: (payload: NotifyPayload) => void,
+		/** APNsデバイストークンの取得（iOS実機のみ値を返す）。接続確立ごとにリレーへ登録する。 */
+		private readonly getPushToken?: () => Promise<string | undefined>,
+		/** aps-environment（開発ビルド='dev'、TestFlight/App Store='prod'）。 */
+		private readonly pushEnv: 'dev' | 'prod' = 'prod',
+		/** 通知鍵(hex)の永続化（NSEと共有するKeychainへ。iOSのみ）。 */
+		private readonly persistNotifyKey?: (hex: string) => Promise<void>,
 	) { }
+
+	private static bytesToHexStatic(bytes: Uint8Array): string {
+		let out = '';
+		for (const b of bytes) {
+			out += b.toString(16).padStart(2, '0');
+		}
+		return out;
+	}
+
+	/** 接続確立時にAPNsトークンをリレーへ登録する（アプリ未起動時のプッシュ配送先）。 */
+	private registerPushToken(): void {
+		if (!this.getPushToken) {
+			return;
+		}
+		this.getPushToken().then(token => {
+			if (token !== undefined) {
+				this.client?.sendControl(encodeRelayControl({ type: 'register-push', token, env: this.pushEnv }));
+			}
+		}).catch(() => { /* トークン未取得（シミュレータ・権限拒否等）は黙って無視 */ });
+	}
 
 	connect(creds: PairedCredentials): void {
 		this.lastCredentials = creds;
+		// アプリ未起動時のプッシュ本文を Notification Service Extension が復号できるよう、
+		// 長期鍵ペアから導出した通知鍵を共有Keychainへ保存しておく（設計書 §5.2）。
+		if (this.persistNotifyKey) {
+			try {
+				const notifyKey = deriveNotifyKey(this.identity.secretKey, creds.pcPublicKey);
+				void this.persistNotifyKey(MobileController.bytesToHexStatic(notifyKey)).catch(() => { /* シミュレータ等では失敗してよい */ });
+			} catch { /* 導出失敗時はプッシュ本文が固定文になるだけ（致命的でない） */ }
+		}
 		this.client?.close();
 		this.client = new RelayClient(this.identity, creds, this.socketFactory, {
 			onStateChange: s => {
@@ -231,6 +277,9 @@ export class MobileController {
 				// （PC側はepoch一致なら差分のみ、不一致なら全量スナップショットを返す）。
 				if (s === 'online' && this.attachedAgentId !== undefined) {
 					this.sendAgentAttach(this.attachedAgentId);
+				}
+				if (s === 'online') {
+					this.registerPushToken();
 				}
 			},
 			onPcPresence: online => { this.state.pcOnline = online; this.emit(); },
