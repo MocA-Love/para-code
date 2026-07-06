@@ -81,6 +81,11 @@ export interface FsDocxResult {
 	data: string;
 	size: number;
 }
+/** fs media 応答（画像・動画・音声バイナリの base64）。 */
+export interface FsMediaResult {
+	data: string;
+	size: number;
+}
 /** fs find 応答（ファイル名検索、ルート相対パスのランク順）。 */
 export interface FsFindResult {
 	files: string[];
@@ -474,6 +479,11 @@ export class MobileController {
 	/** Word(.docx) バイナリを base64 で取得する（レンダリングはモバイルの WebView 内で行う）。 */
 	fsDocx(ws: string, path: string): Promise<FsDocxResult> {
 		return this.request<FsDocxResult>('fs', { t: 'docx', ws, path }, 120_000);
+	}
+
+	/** 画像・動画・音声バイナリを base64 で取得する（大きいファイルはチャンク転送で時間がかかるため長め）。 */
+	fsMedia(ws: string, path: string): Promise<FsMediaResult> {
+		return this.request<FsMediaResult>('fs', { t: 'media', ws, path }, 120_000);
 	}
 
 	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */

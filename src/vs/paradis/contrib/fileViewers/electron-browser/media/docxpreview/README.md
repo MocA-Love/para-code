@@ -144,6 +144,15 @@ Para Code Mobile の Word ビューア（`app/mobile/src/components/fileViewer.t
 WebView 内で実行する。**このディレクトリの min.js を更新・再パッチしたら、以下で
 バンドルを再生成すること**（忘れるとPC版とモバイル版のレンダリング結果が食い違う）:
 
+なお、モバイル側の `buildDocxHtml` には WKWebView(WebKit) 専用のレンダリング回避策が
+2つ入っている（PC版のChromiumでは不要なため、vendored ライブラリ側ではなく
+モバイルのHTML後処理として実装している）:
+
+1. WebKit は表セル直上の `writing-mode`（直交フロー）をレイアウトできず、縦書きセルの
+   文字が1文字ずつ横に積まれてセル幅が暴走する → writing-mode をセル内のラッパー div へ移す
+2. WebKit は `border-collapse` の表で 1px 未満の罫線を描画しない（Word 標準罫線は
+   0.5pt ≒ 0.67px なので細罫線がほぼ全滅する）→ 1px 未満の罫線幅を 1px へ底上げする
+
 ```bash
 cd <repo root>
 python3 - <<'EOF'

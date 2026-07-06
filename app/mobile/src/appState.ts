@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsGrepResult, type FsListResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
+import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -50,6 +50,7 @@ interface AppState extends StoreState {
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult>;
 	fsPdf(ws: string, path: string): Promise<FsPdfResult>;
 	fsDocx(ws: string, path: string): Promise<FsDocxResult>;
+	fsMedia(ws: string, path: string): Promise<FsMediaResult>;
 	fsFind(ws: string, query: string): Promise<FsFindResult>;
 	fsGrep(ws: string, query: string): Promise<FsGrepResult>;
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
@@ -211,6 +212,11 @@ export const useAppStore = create<AppState>(set => ({
 	fsDocx(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.fsDocx(ws, path);
+	},
+
+	fsMedia(ws: string, path: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.fsMedia(ws, path);
 	},
 
 	fsFind(ws: string, query: string) {

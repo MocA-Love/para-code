@@ -34,12 +34,33 @@ interface FileViewerProps {
 	pdfData?: string;
 	/** docx: Word文書バイナリ（base64）。WebView 内の docx-preview でレンダリングする。 */
 	docxData?: string;
+	/** 画像・動画・音声: バイナリ（base64）。画像は data URI、動画/音声はキャッシュファイル経由で表示する。 */
+	mediaData?: string;
 	/** テキスト検索から開いた場合の一致行（1始まり）。その行へスクロールしハイライトする。 */
 	focusLine?: number;
 	onClose: () => void;
 }
 
 type ViewMode = 'render' | 'code';
+
+/** 画像として表示する拡張子（PC版の builtin media-preview 拡張と同じ対応範囲）。 */
+const IMAGE_FILE_PATTERN = /\.(?:jpe?g|jpe|png|bmp|gif|ico|webp|avif|svg)$/i;
+/** 動画・音声として表示する拡張子（iOSで再生できる形式中心。PC版は mp4/webm + mp3/wav/ogg/oga）。 */
+const AV_FILE_PATTERN = /\.(?:mp4|m4v|mov|webm|mp3|wav|m4a|aac|ogg|oga)$/i;
+/** PC側へバイナリ取得（fs media）を要求すべきファイルか（files画面のビューア起動判定用）。 */
+export const MEDIA_FILE_PATTERN = new RegExp(`(?:${IMAGE_FILE_PATTERN.source})|(?:${AV_FILE_PATTERN.source})`, 'i');
+
+/** 拡張子 → MIMEタイプ（画像の data URI 用）。 */
+const IMAGE_MIME: Record<string, string> = {
+	jpg: 'image/jpeg', jpeg: 'image/jpeg', jpe: 'image/jpeg',
+	png: 'image/png', bmp: 'image/bmp', gif: 'image/gif', ico: 'image/x-icon',
+	webp: 'image/webp', avif: 'image/avif', svg: 'image/svg+xml',
+};
+
+function fileExt(name: string): string {
+	const dot = name.lastIndexOf('.');
+	return dot >= 0 ? name.slice(dot + 1).toLowerCase() : '';
+}
 
 function escapeHtml(text: string): string {
 	return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -176,6 +197,67 @@ function buildDocxHtml(docxBase64: string): string {
 				renderEndnotes: true,
 				useBase64URL: true
 			});
+			// 【WebKit回避策1】WKWebView(WebKit) は表セル直上の writing-mode（直交フロー）を
+			// レイアウトできず、縦書きセルの文字が1文字ずつ横に積まれてセル幅が暴走し、
+			// 表全体の罫線・列幅も崩れる。writing-mode（と transform）をセル内のラッパー div へ
+			// 移すと正しく描画される（PC版のChromiumはtd直上で正しく描画できるため後処理は不要）。
+			for (const td of contentEl.querySelectorAll('td')) {
+				const wm = td.style.writingMode;
+				if (wm && wm !== 'horizontal-tb') {
+					const wrap = document.createElement('div');
+					wrap.style.writingMode = wm;
+					const tf = td.style.transform;
+					if (tf && tf !== 'none') {
+						wrap.style.transform = tf;
+					}
+					while (td.firstChild) {
+						wrap.appendChild(td.firstChild);
+					}
+					td.appendChild(wrap);
+					td.style.writingMode = '';
+					td.style.transform = '';
+				}
+			}
+			// 【WebKit回避策2】WebKit は border-collapse の表で 1px 未満の罫線を描画しない。
+			// Word 標準の罫線は 0.5pt ≒ 0.67px のため、そのままだと表の細罫線がほぼ全て消える。
+			// 1px 未満の罫線幅を 1px へ底上げする（docx-preview 生成のCSSルールと
+			// セルのインラインstyleの両方）。
+			const bumpBorders = style => {
+				for (const side of ['top', 'right', 'bottom', 'left']) {
+					const prop = 'border-' + side + '-width';
+					const value = style.getPropertyValue(prop);
+					if (!value) {
+						continue;
+					}
+					const num = parseFloat(value);
+					if (isNaN(num) || num <= 0) {
+						continue;
+					}
+					const px = value.endsWith('pt') ? num * 96 / 72 : num;
+					if (px < 1) {
+						style.setProperty(prop, '1px');
+					}
+				}
+			};
+			for (const sheet of document.styleSheets) {
+				let rules;
+				try {
+					rules = sheet.cssRules;
+				} catch (ruleErr) {
+					rules = undefined;
+				}
+				if (!rules) {
+					continue;
+				}
+				for (const rule of rules) {
+					if (rule.style) {
+						bumpBorders(rule.style);
+					}
+				}
+			}
+			for (const el of contentEl.querySelectorAll('table, td, th')) {
+				bumpBorders(el.style);
+			}
 			// ページ本文幅を超える表などがあるとき、白紙をコンテンツ幅まで広げてはみ出しを防ぐ（PC版と同じ）。
 			for (const section of contentEl.querySelectorAll('.docx-wrapper > section.docx')) {
 				const needed = section.scrollWidth;
@@ -225,12 +307,31 @@ function buildDocxHtml(docxBase64: string): string {
 }
 
 /**
- * PDF表示。base64 のバイナリをキャッシュファイルへ書き出し、WKWebView に file:// URI で
- * 読ませてネイティブPDFレンダリング（ピンチズーム・ページング・テキスト選択つき）を使う。
- * 書き込みは legacy API の Base64 エンコーディング指定で行う（デコードがネイティブ側で走るため、
- * 数十MBのPDFでもJSスレッドをブロックしない）。
+ * 画像のレンダーHTML。バイナリを data URI で埋め込み、暗背景の中央に収めて表示する
+ * （ピンチズーム可）。SVG も <img> 経由なので内部スクリプトは実行されない
+ * （WebView 側でも JS 無効で表示する）。
  */
-function PdfView({ data }: { data: string }) {
+function buildImageHtml(base64: string, ext: string): string {
+	const mime = IMAGE_MIME[ext] ?? 'application/octet-stream';
+	return `<!DOCTYPE html><html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=10">
+<style>
+	html, body { margin: 0; height: 100%; background: #1e1e1e; }
+	body { display: flex; align-items: center; justify-content: center; }
+	img { max-width: 100%; max-height: 100%; object-fit: contain; }
+</style>
+</head><body><img src="data:${mime};base64,${base64}"></body></html>`;
+}
+
+/**
+ * PDF・動画・音声の表示。base64 のバイナリをキャッシュファイルへ書き出し、WKWebView に
+ * file:// URI で読ませてネイティブレンダリング（PDF: ズーム・ページング・テキスト選択、
+ * 動画/音声: 標準プレーヤー）を使う。
+ * 書き込みは legacy API の Base64 エンコーディング指定で行う（デコードがネイティブ側で走るため、
+ * 数十MBのファイルでもJSスレッドをブロックしない）。
+ */
+function NativeFileView({ data, ext }: { data: string; ext: string }) {
 	const [uri, setUri] = useState<string | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
 	useEffect(() => {
@@ -242,7 +343,7 @@ function PdfView({ data }: { data: string }) {
 				if (!dir) {
 					throw new Error('cache directory unavailable');
 				}
-				const target = `${dir}pm-pdf-view-${Date.now()}.pdf`;
+				const target = `${dir}pm-file-view-${Date.now()}.${ext}`;
 				await LegacyFileSystem.writeAsStringAsync(target, data, { encoding: LegacyFileSystem.EncodingType.Base64 });
 				written = target;
 				if (!cancelled) {
@@ -264,9 +365,9 @@ function PdfView({ data }: { data: string }) {
 				void LegacyFileSystem.deleteAsync(written, { idempotent: true }).catch(() => { });
 			}
 		};
-	}, [data]);
+	}, [data, ext]);
 	if (error !== undefined) {
-		return <Text style={styles.dim}>PDF を表示できませんでした: {error}</Text>;
+		return <Text style={styles.dim}>ファイルを表示できませんでした: {error}</Text>;
 	}
 	if (uri === undefined) {
 		return (
@@ -287,9 +388,9 @@ function PdfView({ data }: { data: string }) {
 	);
 }
 
-export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, onClose }: FileViewerProps) {
+export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, onClose }: FileViewerProps) {
 	const name = path.split('/').pop() ?? path;
-	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.docx$/i.test(name) ? 'docx' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
+	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.docx$/i.test(name) ? 'docx' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
 	const [mode, setMode] = useState<ViewMode>(kind === 'other' || focusLine !== undefined ? 'code' : 'render');
 
@@ -302,9 +403,16 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 			// これを無視すると「読み込み中…」が恒久表示になるため、コード表示で見せる。
 			return result ? buildCodeHtml(result) : undefined;
 		}
-		if (kind === 'pdf') {
-			// 正常時は PdfView（file:// URI）で表示するため html は使わない。
+		if (kind === 'pdf' || kind === 'av') {
+			// 正常時は NativeFileView（file:// URI）で表示するため html は使わない。
 			// エラー時のみ result のメッセージをコード表示で見せる。
+			return result ? buildCodeHtml(result) : undefined;
+		}
+		if (kind === 'image') {
+			if (mediaData !== undefined) {
+				return buildImageHtml(mediaData, fileExt(name));
+			}
+			// エラー時のみ result のメッセージをコード表示で見せる（成功時は mediaData が来る）。
 			return result ? buildCodeHtml(result) : undefined;
 		}
 		if (kind === 'docx') {
@@ -324,7 +432,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 			return buildMarkdownHtml(result);
 		}
 		return buildCodeHtml(result, focusLine);
-	}, [result, spreadsheetHtml, docxData, mode, kind, focusLine]);
+	}, [result, spreadsheetHtml, docxData, mediaData, mode, kind, focusLine, name]);
 
 	// 行ジャンプのスクロールスクリプトは自前生成のコードHTML内のみで有効化する
 	// （.html のレンダー表示など、リポジトリ由来のHTMLでは引き続きJS無効）。
@@ -364,7 +472,9 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					<Text style={styles.truncated}>サイズ上限のため先頭のみ表示しています</Text>
 				) : null}
 				{kind === 'pdf' && pdfData !== undefined ? (
-					<PdfView data={pdfData} />
+					<NativeFileView data={pdfData} ext="pdf" />
+				) : kind === 'av' && mediaData !== undefined ? (
+					<NativeFileView data={mediaData} ext={fileExt(name)} />
 				) : html !== undefined ? (
 					// javaScriptEnabled は自前生成HTML（スプレッドシート・検索行ジャンプ付き
 					// コードビュー）のみ true。リポジトリ内の信頼できない .html の
