@@ -147,12 +147,24 @@ export class ParadisDocxFileEditor extends EditorPane {
 <html>
 <head>
 	<meta charset="utf-8">
-	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:; style-src 'nonce-${nonce}' 'unsafe-inline'; img-src blob: data: https:; font-src https: data: blob:; connect-src https: blob: data:;">
+	<!-- style-src: docx-preview は文書の見た目（フォント/色/罫線/numbering等)のほぼ全てを
+	document.createElement('style') による動的な <style> 要素(nonce無し)として注入する。
+	CSPの style-src は「nonce-source が1つでもあると 'unsafe-inline' は無視される」という
+	後方互換ルールがあるため、nonce と unsafe-inline を併記しても nonce の無い動的 style は
+	ブロックされる(sheet=null になり書式が丸ごと無効化される)。ここでは nonce を使わず
+	'unsafe-inline' のみを指定し、docx-preview 由来のスタイルも含めて確実に適用させる。 -->
+	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}' https:; style-src 'unsafe-inline'; img-src blob: data: https:; font-src https: data: blob:; connect-src https: blob: data:;">
 	<style nonce="${nonce}">
+		/* docx-preview はページ要素(section.docx)に「width(=ページ幅) + padding(=左右余白)」を設定する
+		("createPageElement": ignoreWidth未指定時に r.style.width = pageSize.width、余白は paddingLeft/Right)。
+		これは box-sizing:border-box（余白がwidthに含まれる = 用紙の外形がpageSize通りになる）を前提にした値であり、
+		既定の content-box のままだと「width + 左右padding」が単純加算されて実際の用紙が
+		本来より左右合計の余白分だけ横に広がってしまう（例: A4 + 上下左右1inch余白で約35%増）。
+		これが原因で用紙自体が過大サイズになり、テーブルが本来収まる余地まではみ出しやすくなっていた。 */
+		*, *::before, *::after { box-sizing: border-box; }
 		html, body { margin: 0; padding: 0; height: 100%; }
 		body {
 			background-color: var(--vscode-editor-background);
-			color: var(--vscode-editor-foreground);
 			font-family: var(--vscode-font-family);
 			font-size: 13px;
 		}
@@ -160,7 +172,14 @@ export class ParadisDocxFileEditor extends EditorPane {
 		#content { padding: 32px 16px 48px; display: flex; flex-direction: column; align-items: center; }
 		/* docx-preview のページ要素（.docx-wrapper > section.docx）に PDF ビューア風の白紙＋影を付ける。 */
 		#content .docx-wrapper { background: transparent; padding: 0; display: flex; flex-direction: column; align-items: center; gap: 16px; }
-		#content .docx-wrapper > section.docx { background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); margin: 0; }
+		#content .docx-wrapper > section.docx {
+			background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); margin: 0;
+			/* Word の実書式は「明示的な色指定が無い文字は黒」が既定。この既定を app のエディタ配色
+			（var(--vscode-editor-foreground)、ダークテーマでは白紙上でほぼ読めない薄色になる）に
+			委ねてしまわないよう、用紙自体に黒を明示する。docx-preview は色指定のある文字だけ
+			個別に(インラインstyleで)色を上書きするため、そちらは引き続き優先される。 */
+			color: #000;
+		}
 		#status { position: absolute; top: 45%; width: 100%; text-align: center; opacity: .75; }
 	</style>
 </head>
@@ -191,6 +210,61 @@ export class ParadisDocxFileEditor extends EditorPane {
 					renderEndnotes: true,
 					useBase64URL: true
 				});
+				// docx-preview はページ幅を固定値(width、grow不可)で設定する一方、高さは
+				// min-height(可変)にしている。本文（表など）がページの本文幅より広い場合、
+				// 高さと違って幅は伸びず、白紙の外へそのままはみ出して背後の(暗い)背景が
+				// 直接見えてしまう。各ページを実際のコンテンツ幅に合わせて伸ばし、はみ出し分も
+				// 白紙の中に収める（ページ自体を「用紙が足りない分だけ大きい用紙」にする）。
+				for (const section of contentEl.querySelectorAll('.docx-wrapper > section.docx')) {
+					const needed = section.scrollWidth;
+					if (needed > section.clientWidth) {
+						section.style.width = needed + 'px';
+					}
+				}
+				// Word の「箇条書き」既定スタイルは通常 Symbol/Wingdings フォントの専用コードポイント
+				// (Private Use Area、例: bullet は U+F0B7) で記号を描画する。実機のWordがあるWindows/Mac
+				// にはこれらのフォントが入っているため正しく見えるが、Symbol/Wingdingsを持たない環境
+				// （本アプリのElectron/Chromiumなど）では該当グリフが無く豆腐(□)になる。
+				// font-family が Symbol 系のルールに限定し、既知の主要コードポイントだけ
+				// 環境非依存の標準Unicode記号へ差し替える（該当しないものは元のまま＝現状維持）。
+				const SYMBOL_FONT_GLYPH_MAP = {
+					'\uF0B7': '\u2022', // Symbol: bullet -> •
+					'\uF0A7': '\u25AA', // Symbol: black small square -> ▪
+					'\uF0E0': '\u2192', // Symbol: arrow -> →
+					'\uF0FC': '\u2713', // Wingdings: check -> ✓
+					'\uF06C': '\u25CF', // Wingdings: solid circle -> ●
+				};
+				const symbolGlyphClass = '[' + Object.keys(SYMBOL_FONT_GLYPH_MAP).join('') + ']';
+				// test 用(g無し)と replace 用(g付き)を分ける。同一パターンに g を付けて
+				// 両方に使い回すと、test() が lastIndex を持ち越して次回以降の判定を誤る罠がある。
+				const symbolGlyphPattern = new RegExp(symbolGlyphClass);
+				const symbolGlyphReplaceAll = new RegExp(symbolGlyphClass, 'g');
+				// 注意: このコードは TypeScript のテンプレートリテラル(_buildHtmlの戻り値文字列)に
+				// 埋め込まれた「webview内で実行されるJS文字列」であり、外側のテンプレートリテラルの
+				// 文字列パース時に \s のような「正規表現専用の無効なエスケープシーケンス」は
+				// バックスラッシュごと消えて s のような裸の文字になってしまう(実際にこれで
+				// \s* が s* に化けて全く別の意味の正規表現になるバグを踏んだ)。ここでは
+				// \\s のように二重にエスケープし、生成されるJS文字列側で正しく \s が残るようにする。
+				const symbolFontPattern = /font-family:\\s*[^;]*(?:symbol|wingdings|webdings)/i;
+				for (const styleEl of document.querySelectorAll('style')) {
+					const text = styleEl.textContent;
+					if (!text || !symbolGlyphPattern.test(text)) {
+						continue;
+					}
+					// ルールブロック(selector { ... })単位で処理し、そのブロックに Symbol/Wingdings 系の
+					// font-family が含まれる場合だけ content: "..." 内の該当コードポイントを置換する
+					// (content と font-family の宣言順序はどちらが先でも良いようブロック全体を見る)。
+					const patched = text.replace(/[^{}]+\\{[^{}]*\\}/g, block => {
+						if (!symbolFontPattern.test(block)) {
+							return block;
+						}
+						return block.replace(/(content:\\s*")([^"]*)(")/gi,
+							(all, before, glyphs, after) => before + glyphs.replace(symbolGlyphReplaceAll, ch => SYMBOL_FONT_GLYPH_MAP[ch] ?? ch) + after);
+					});
+					if (patched !== text) {
+						styleEl.textContent = patched;
+					}
+				}
 				statusEl.remove();
 			} catch (err) {
 				statusEl.textContent = 'Word 文書を表示できませんでした: ' + (err && err.message ? err.message : err);
