@@ -69,6 +69,7 @@ type FsInbound =
 	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean }
 	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number }
 	| { t: 'pdf'; id: string; ws: string; path: string }
+	| { t: 'docx'; id: string; ws: string; path: string }
 	| { t: 'find'; id: string; ws: string; query: string }
 	| { t: 'grep'; id: string; ws: string; query: string };
 
@@ -651,6 +652,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 標準base64（パディング付き）。モバイル側は expo-file-system の Base64 エンコーディング指定で
 				// ネイティブデコードしながらファイルへ書くため、JSでのデコードは発生しない。
 				reply({ t: 'pdf', data: encodeBase64(content.value), size: stat.size ?? 0 });
+			} else if (msg.t === 'docx') {
+				// Word文書もバイナリのまま base64 で返す（レンダリングはモバイル側の WebView が
+				// PC版ビューアと同じ vendored docx-preview で行う。PC側でHTML化しないのは、
+				// docx-preview がDOM前提でタブストップ計算等が表示環境のフォント計測に依存するため）。
+				const stat = await this.fileService.stat(uri);
+				if ((stat.size ?? 0) > PDF_READ_LIMIT) {
+					// allow-any-unicode-next-line
+					reply({ error: `Word 文書が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${PDF_READ_LIMIT / 1024 / 1024}MB までです。` });
+					return;
+				}
+				const content = await this.fileService.readFile(uri, { length: PDF_READ_LIMIT });
+				reply({ t: 'docx', data: encodeBase64(content.value), size: stat.size ?? 0 });
 			} else if (msg.t === 'list') {
 				const stat = await this.fileService.resolve(uri);
 				const entries = (stat.children ?? [])

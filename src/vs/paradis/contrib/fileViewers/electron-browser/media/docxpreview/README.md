@@ -134,3 +134,27 @@ DevTools から `.docx-wrapper > section.docx` 各要素の `getBoundingClientRe
 なお、タブストップ計算自体は docx-preview の `experimental: true` オプションで有効になる
 機能（無効だとタブが全角空白1つになり、右揃えタブや点線リーダーが機能しない）。
 `paradisDocxFileEditor.ts` 側の renderAsync オプションで有効化している。
+
+## モバイルアプリ用バンドル（要同期）
+
+Para Code Mobile の Word ビューア（`app/mobile/src/components/fileViewer.tsx` の
+`buildDocxHtml`）は、このディレクトリの **パッチ済み** `jszip.min.js` /
+`docx-preview.min.js` を `app/mobile/assets/docxpreview/docxPreviewBundle.json`
+（`{ version, jszip, docxPreview }`、xtermBundle.json と同方式）として同梱し、
+WebView 内で実行する。**このディレクトリの min.js を更新・再パッチしたら、以下で
+バンドルを再生成すること**（忘れるとPC版とモバイル版のレンダリング結果が食い違う）:
+
+```bash
+cd <repo root>
+python3 - <<'EOF'
+import json
+base = 'src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/'
+bundle = {
+    'version': 1,  # 更新時はインクリメント
+    'jszip': open(base + 'jszip.min.js', encoding='utf-8').read(),
+    'docxPreview': open(base + 'docx-preview.min.js', encoding='utf-8').read(),
+}
+with open('app/mobile/assets/docxpreview/docxPreviewBundle.json', 'w', encoding='utf-8') as f:
+    json.dump(bundle, f, ensure_ascii=False)
+EOF
+```
