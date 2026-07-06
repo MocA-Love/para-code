@@ -70,13 +70,14 @@ type FsInbound =
 	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number }
 	| { t: 'pdf'; id: string; ws: string; path: string }
 	| { t: 'docx'; id: string; ws: string; path: string }
+	| { t: 'media'; id: string; ws: string; path: string }
 	| { t: 'find'; id: string; ws: string; query: string }
 	| { t: 'grep'; id: string; ws: string; query: string };
 
 const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト。FrameMuxのチャンク分割転送で1MiB超の応答も送れる）
-// PDF バイナリの読み取り上限。base64 で約1.37倍に膨らむため、FrameMux の再結合上限
-// （FRAME_REASSEMBLY_LIMIT = 32MiB）に収まるようここで抑える（20MiB → base64 約27MiB）。
-const PDF_READ_LIMIT = 20 * 1024 * 1024;
+// バイナリ（PDF・Word・画像・動画・音声）の読み取り上限。base64 で約1.37倍に膨らむため、
+// FrameMux の再結合上限（FRAME_REASSEMBLY_LIMIT = 32MiB）に収まるようここで抑える（20MiB → base64 約27MiB）。
+const BINARY_READ_LIMIT = 20 * 1024 * 1024;
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
 const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字。serialize不可時のフォールバック用）
 const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
@@ -643,12 +644,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} else if (msg.t === 'pdf') {
 				// PDF はバイナリのまま base64 で返す（'read' の UTF-8 デコード経路はバイナリを壊すため使えない）。
 				const stat = await this.fileService.stat(uri);
-				if ((stat.size ?? 0) > PDF_READ_LIMIT) {
+				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
 					// allow-any-unicode-next-line
-					reply({ error: `PDF が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${PDF_READ_LIMIT / 1024 / 1024}MB までです。` });
+					reply({ error: `PDF が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
-				const content = await this.fileService.readFile(uri, { length: PDF_READ_LIMIT });
+				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
 				// 標準base64（パディング付き）。モバイル側は expo-file-system の Base64 エンコーディング指定で
 				// ネイティブデコードしながらファイルへ書くため、JSでのデコードは発生しない。
 				reply({ t: 'pdf', data: encodeBase64(content.value), size: stat.size ?? 0 });
@@ -657,13 +658,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// PC版ビューアと同じ vendored docx-preview で行う。PC側でHTML化しないのは、
 				// docx-preview がDOM前提でタブストップ計算等が表示環境のフォント計測に依存するため）。
 				const stat = await this.fileService.stat(uri);
-				if ((stat.size ?? 0) > PDF_READ_LIMIT) {
+				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
 					// allow-any-unicode-next-line
-					reply({ error: `Word 文書が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${PDF_READ_LIMIT / 1024 / 1024}MB までです。` });
+					reply({ error: `Word 文書が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
 					return;
 				}
-				const content = await this.fileService.readFile(uri, { length: PDF_READ_LIMIT });
+				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
 				reply({ t: 'docx', data: encodeBase64(content.value), size: stat.size ?? 0 });
+			} else if (msg.t === 'media') {
+				// 画像・動画・音声もバイナリのまま base64 で返す（表示はモバイル側。画像は data URI、
+				// 動画/音声はキャッシュファイル経由で WKWebView のネイティブ再生を使う）。
+				const stat = await this.fileService.stat(uri);
+				if ((stat.size ?? 0) > BINARY_READ_LIMIT) {
+					// allow-any-unicode-next-line
+					reply({ error: `ファイルが大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${BINARY_READ_LIMIT / 1024 / 1024}MB までです。` });
+					return;
+				}
+				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
+				reply({ t: 'media', data: encodeBase64(content.value), size: stat.size ?? 0 });
 			} else if (msg.t === 'list') {
 				const stat = await this.fileService.resolve(uri);
 				const entries = (stat.children ?? [])

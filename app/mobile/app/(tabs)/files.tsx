@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
-import { FileViewer } from '../../src/components/fileViewer.js';
+import { FileViewer, MEDIA_FILE_PATTERN } from '../../src/components/fileViewer.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { colors } from '../../src/theme.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../../src/store.js';
@@ -23,7 +23,7 @@ import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../
  */
 export default function FilesScreen() {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
+	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
 
 	const [path, setPath] = useState('');
 	const [listing, setListing] = useState<FsListResult | undefined>();
@@ -41,6 +41,7 @@ export default function FilesScreen() {
 	const [viewerXlsx, setViewerXlsx] = useState<{ html?: string; sheets?: string[]; sheet?: number } | undefined>();
 	const [viewerPdf, setViewerPdf] = useState<string | undefined>();
 	const [viewerDocx, setViewerDocx] = useState<string | undefined>();
+	const [viewerMedia, setViewerMedia] = useState<string | undefined>();
 	const [viewerLine, setViewerLine] = useState<number | undefined>();
 	// 開く→閉じる→別ファイルを開く、の間に前のfetchが解決して上書きするのを防ぐ世代ガード
 	const viewerPathRef = useRef<string | undefined>(undefined);
@@ -117,6 +118,7 @@ export default function FilesScreen() {
 		setViewerXlsx(undefined);
 		setViewerPdf(undefined);
 		setViewerDocx(undefined);
+		setViewerMedia(undefined);
 		setViewerLine(line);
 		if (!wsId) {
 			return;
@@ -141,6 +143,13 @@ export default function FilesScreen() {
 				const result = await fsDocx(wsId, p);
 				if (viewerPathRef.current === p) {
 					setViewerDocx(result.data);
+				}
+			} else if (MEDIA_FILE_PATTERN.test(p)) {
+				// 画像・動画・音声はバイナリを base64 で受け取る（画像は data URI、
+				// 動画/音声はキャッシュファイル経由の WKWebView ネイティブ再生で表示する）
+				const result = await fsMedia(wsId, p);
+				if (viewerPathRef.current === p) {
+					setViewerMedia(result.data);
 				}
 			} else {
 				// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
@@ -286,7 +295,8 @@ export default function FilesScreen() {
 					focusLine={viewerLine}
 					pdfData={viewerPdf}
 					docxData={viewerDocx}
-					onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerDocx(undefined); setViewerLine(undefined); }}
+					mediaData={viewerMedia}
+					onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerDocx(undefined); setViewerMedia(undefined); setViewerLine(undefined); }}
 				/>
 			) : null}
 		</View>
