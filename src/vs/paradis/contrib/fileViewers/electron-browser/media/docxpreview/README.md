@@ -31,3 +31,22 @@ cp package/LICENSE.markdown LICENSE-jszip
 更新時はこの README のバージョン表記も更新すること。
 ビルド同梱は `build/next/index.ts` の `desktopResourcePatterns`（実リリース経路）と
 `build/gulpfile.vscode.ts` の `vscodeResourceIncludes` の両方に glob 登録済み。
+
+## 既知のバグへの手動パッチ（`docx-preview.min.js`、2026-07-06）
+
+`docx-preview@0.3.7`（GitHub `master` の現行実装でも同様、未修正）の
+`HtmlRenderer.levelTextToContent()` は、番号付き/箇条書きリストの CSS `content` 値を
+テンプレートリテラルの二重ネストで組み立てており、生成される値が
+`content: ""counter(docx-num-5-0, decimal)"".\9";` のような不正な CSS になる
+（`counter()` 呼び出しをクォートで囲んでしまい、さらに外側からもクォートしている）。
+ブラウザはこの `content` 宣言をパースエラーとして無視し（計算値は `content: none`）、
+**番号・箇条書きの記号が一切表示されない**。
+
+この関数の実装を、正しい CSS（`counter(...)` はクォート無し、リテラル文字列部分だけ
+`JSON.stringify` でクォートし、スペース区切りで連結する）に**直接パッチ**してある
+（`levelTextToContent(e,t,r,a){...}` 関数本体を丸ごと置換）。
+
+再更新時（`npm pack` で新バージョンを取得し直す際）は、新しい `docx-preview.min.js` に
+このパッチが必要かどうか確認し、必要ならこの内容で再適用すること。壊れた実装かどうかは、
+実際に番号付きリストを含む .docx をレンダリングし、DevTools で `::before` の
+計算済み `content` が `none` になっていないかで確認できる。
