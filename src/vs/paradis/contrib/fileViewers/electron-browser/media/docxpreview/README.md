@@ -50,3 +50,62 @@ cp package/LICENSE.markdown LICENSE-jszip
 このパッチが必要かどうか確認し、必要ならこの内容で再適用すること。壊れた実装かどうかは、
 実際に番号付きリストを含む .docx をレンダリングし、DevTools で `::before` の
 計算済み `content` が `none` になっていないかで確認できる。
+
+## 既知のバグへの手動パッチ2件目（VML図形の `strokecolor`/`strokeweight` 未対応、2026-07-06）
+
+VML 図形（`<v:line>`/`<v:rect>`/`<v:oval>` 等。斜線コネクタ・罫線装飾など実務文書で
+多用される）は、線の色・太さを (a) `<v:stroke color="..." weight="...">` という子要素、
+(b) 図形要素自身の `strokecolor`/`strokeweight` 属性、の2通りの書き方で指定できる
+（VML仕様上どちらも有効）。原実装の VML 属性パーサ（`Ce(e,t)` 関数、`for(const t of
+v.attrs(e)) switch(t.localName)`）は (a) の子要素形式にしか対応する `case` が無く、
+(b) の属性形式（実務ではこちらの方が一般的）を完全に無視する。結果、生成される SVG の
+`<line>`/`<rect>` 等に `stroke` 属性が一切付かず、ブラウザの既定値 `stroke: none` により
+**図形が透明になり完全に見えなくなる**（数値が壊れて無視される numbering バグと違い、
+こちらは属性自体がパース時点で捨てられ復元不可能なため、後処理では直せない）。
+
+`Ce` 関数の属性パース switch 文に `case"strokecolor"`（`stroke` へ、末尾の
+`" [3040]"`のようなテーマカラー参照サフィックスを除去）と `case"strokeweight"`
+（`stroke-width` へ）を追加した。
+
+再更新時は、罫線・斜線コネクタ（`<v:line>` 等）を含む .docx で、DevTools の
+Elements パネルから該当 `<line>`/`<rect>` の computed `stroke` が `none` に
+なっていないかで壊れているか確認できる。
+
+## 既知のバグへの手動パッチ3件目（ページ幅の不整合、2026-07-07）
+
+複数ページの実務文書（契約書・重要事項説明書等）で、ページごとに白紙の幅が大きく
+異なって見える（あるページだけ極端に広い/狭い）不具合。根本原因は3つ重なっていた。
+
+1. **`<w:textDirection>` の V バリアント未対応**: `tbRlV`/`lrTbV`/`tbLrV`（縦書きの
+   亜種、文字回転の有無が違うだけで書字方向自体は `tbRl`/`lrTb`/`btLr` と同じ）が
+   `parseTableCellVerticalText` のマッピングに無く、フォールバックで横書き
+   (`horizontal-tb`) として描画されていた。本来「幅は狭いが十分な高さ」の縦書き
+   セルの中身が横方向に大きくはみ出し、テーブル・ページ全体を押し広げていた。
+   マッピングに `tbRlV`/`lrTbV`/`tbLrV` を追加（対応する非V版と同じ設定）。
+
+2. **`valueOfTblLayout` の属性名バグ（本件の核心）**: OOXML(ECMA-376) の
+   `<w:tblLayout>` は値を `w:type` 属性で持つ（他の多くの要素と違い `w:val` ではない）。
+   原実装は `v.attr(e,"val")` を参照しており常に空文字列になるため、
+   `<w:tblLayout w:type="fixed"/>` が指定されていても常に無視されて
+   `table-layout:auto` にフォールバックしていた。`w:tblW type="auto"` かつ
+   `tblLayout type="fixed"` の文書では、`table-layout:auto` が「折り返せない内容
+   (プレースホルダ変数名等の連続した英数字トークン)を含む列があるとテーブル全体を
+   押し広げてよい」という挙動になるため、そのままページ全体の幅まで拡大していた。
+   `"val"` を `"type"` に修正（`renderTable.ts` 相当の1文字の違いだが影響は大きい）。
+
+3. **`tblW=auto` 時の幅の未計算**: 2.の修正後も、`table-layout:fixed` はテーブル
+   全体の絶対幅が明示されていないと機能しない（列同士の比率は固定されるが、
+   テーブル自体のサイズは内容依存のままになる）。`renderTable` で、
+   `width:auto` かつ `table-layout:fixed` かつ全 `gridCol` に幅がある場合は
+   その合計を明示的な `width` として補完し、`table-layout` 自体が省略されている
+   場合（`width` は明示）は `fixed` をデフォルトとして補うようにした。
+
+これに加えて、`table-layout:fixed` で固定された列幅を実データ未投入のプレースホルダ
+（`{{変数名}}` のような折り返せない長いトークン）が超えるとセルの外や隣接セルの上に
+オーバーフローして重なって見えるため、`paradisDocxFileEditor.ts` 側の注入CSSで
+`table td, table th { overflow-wrap: break-word; }` を追加し、はみ出さず折り返すようにした
+（これは vendored ファイルではなく `paradisDocxFileEditor.ts` 側の変更）。
+
+再更新時は、複数ページの実務文書（列幅固定・縦書きラベル列を含む表がある文書）で
+DevTools から `.docx-wrapper > section.docx` 各要素の `getBoundingClientRect().width`
+を比較し、ページごとに値が食い違っていないかで確認できる。
