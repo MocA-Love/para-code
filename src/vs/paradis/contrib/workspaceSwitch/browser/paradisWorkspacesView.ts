@@ -405,6 +405,20 @@ export class ParadisWorkspacesView extends ViewPane {
 					async () => this.worktreeService.removeKnownWorktree(worktree)
 				)
 			);
+		} else {
+			actions.push(
+				new Separator(),
+				new Action(
+					'paradis.workspaceSwitch.worktree.remove',
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.worktreeRemoveContext', "ワークツリーを削除"),
+					undefined,
+					true,
+					// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
+					// browser 層のこのビューからは ID 経由で呼ぶ (web ビルドでは未登録のため no-op)
+					() => this.commandService.executeCommand('paradis.workspaceSwitch.removeWorktree', worktree)
+				)
+			);
 		}
 
 		return actions;

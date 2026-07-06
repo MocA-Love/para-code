@@ -33,6 +33,16 @@ export interface IParadisAddWorktreeRequest {
 	readonly baseRef: string;
 }
 
+/** git worktree remove の要求。パスはすべてネイティブファイルシステムパス。 */
+export interface IParadisRemoveWorktreeRequest {
+	/** 親リポジトリのルートパス。 */
+	readonly repoPath: string;
+	/** 削除対象の worktree のディレクトリパス。 */
+	readonly worktreePath: string;
+	/** true の場合 `git worktree remove --force`（未コミット変更や未追跡ファイルがあっても強制削除）。 */
+	readonly force: boolean;
+}
+
 /**
  * エージェント CLI の起動コマンドテンプレート。
  * `{prompt}` プレースホルダがシェルエスケープ済みのプロンプトに置換される。

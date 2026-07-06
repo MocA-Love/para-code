@@ -23,8 +23,10 @@ import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.co
 import './contrib/fileViewers/electron-browser/paradisHtmlViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisPdfViewer.contribution.js';
+import './contrib/fileViewers/electron-browser/paradisDocxViewer.contribution.js';
 import './contrib/browserBookmarks/electron-browser/paradisBrowserBookmarks.contribution.js';
 import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution.js';
 import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
+import './contrib/browserMirror/electron-browser/paradisBrowserMirrorSpike.contribution.js';
 import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';

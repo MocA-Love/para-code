@@ -286,6 +286,8 @@ const desktopResourcePatterns = [
 
 	// Media - audio
 	'vs/platform/accessibilitySignal/browser/media/*.mp3',
+	// PARA-PATCH: ship the built-in notification ringtones played by the notification settings dialog / trigger
+	'vs/paradis/contrib/notifications/browser/media/sounds/*.mp3',
 
 	// Media - images
 	'vs/workbench/contrib/welcomeGettingStarted/common/media/**/*.svg',
@@ -313,6 +315,10 @@ const desktopResourcePatterns = [
 	// (`**/*.*` matches all payload files — they all have extensions; extension-less LICENSE files are listed separately)
 	'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**/*.*',
 	'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**/LICENSE*',
+	// PARA-PATCH: ship the vendored docx-preview + jszip runtime loaded by the Word (.docx) viewer webview
+	// (LICENSE-docx-preview / LICENSE-jszip have no extension, so they need the separate glob below)
+	'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**/*.*',
+	'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**/LICENSE*',
 ];
 
 // Resources for server target (minimal - no UI)

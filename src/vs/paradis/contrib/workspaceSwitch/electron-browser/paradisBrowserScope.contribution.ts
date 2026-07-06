@@ -21,6 +21,12 @@ import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch
  *   dispose を veto する。input と model (main プロセスの WebContentsView) が生存する
  *   ため、切り替え先から戻って working set が同じ id を getOrCreateLazy すると
  *   生きている実体にそのまま再接続され、ページは**リロードされない**
+ * - 切り替え開始時 (onWillSwitchScope) に生存中の全 WebContentsView を即座に隠す。
+ *   WCV はワークスペース DOM ではなくウィンドウに重なるネイティブビューで、veto で
+ *   生かしたままにする都合上、隠蔽は WebContentsViewRendererFeature の可視性追従
+ *   (requestAnimationFrame 遅延 + main への非同期 IPC) だけに頼っている。updateFolders の
+ *   再レイアウト中に旧ページが古い bounds のまま数フレーム残る (残像) のを防ぐため、
+ *   レイアウトが変わる前にここで先回りして隠す
  * - ユーザーが自分でタブを閉じた場合 (isSwitching ではない) は veto せず通常どおり破棄
  * - contextual filter で、ブラウザタブの一覧系 UI を現リポジトリのタブに絞る
  * - リポジトリがリストから削除されたら、そのリポジトリの退避中タブを強制破棄して
@@ -48,6 +54,9 @@ class ParadisBrowserWorkspaceScope extends Disposable implements IWorkbenchContr
 		this._register(Event.runAndSubscribe(this.browserViewWorkbenchService.onDidChangeBrowserViews, () => this.hookAndTagViews()));
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => this.cleanupRemovedRepositories()));
 
+		// 切り替えでレイアウトが変わる前に、生存中のネイティブビューを先回りして隠す (残像対策)。
+		this._register(this.workspaceSwitchService.onWillSwitchScope(() => this.hideAllBrowserViews()));
+
 		// 切り替え完了で contextual filter の結果が変わったことを通知する
 		const filterChanged = this._register(new Emitter<void>());
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => filterChanged.fire()));
@@ -55,6 +64,20 @@ class ParadisBrowserWorkspaceScope extends Disposable implements IWorkbenchContr
 			include: input => this.isInActiveScope(input),
 			onDidChange: filterChanged.event
 		}));
+	}
+
+	/**
+	 * 生存中の全ブラウザビューのネイティブ WebContentsView を隠す。切り替え完了後に
+	 * 切り替え先の (可視化された) ブラウザエディタが WebContentsViewRendererFeature の
+	 * 可視性追従で自身を再表示するため、ここで隠しても復帰する。model 未解決 (WCV 未生成)
+	 * のビューは隠す対象が無いので何もしない。
+	 */
+	private hideAllBrowserViews(): void {
+		for (const [, input] of this.browserViewWorkbenchService.getKnownBrowserViews()) {
+			if (input.model?.visible) {
+				void input.model.setVisible(false);
+			}
+		}
 	}
 
 	private isInActiveScope(input: BrowserEditorInput): boolean {

@@ -186,6 +186,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	}
 
 	private _notifSectionEl: HTMLElement | undefined;
+	private _notifRenderToken = 0;
 
 	private _renderNotificationsSection(): void {
 		const container = this._notifSectionEl;
@@ -196,15 +197,20 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		// 再描画で直前にフォーカスされていた要素(チェックボックス等)がDOMから外れると、
 		// ブラウザの既定のフォーカス移動により .pns-body が先頭までスクロールされてしまう
 		// ことがあるため、再描画の前後でスクロール位置を保存・復元する。
+		// 着信音リストは _fetchCustomRingtone().then(...) で非同期に追加されるため、同期復元だけだと
+		// 一旦空リストで縮んだ本文高さに scrollTop がクランプされ、行が揃った後に上へ飛ぶ。
+		// そのため非同期のリスト構築が完了した後にも同じ位置へ復元する（トークンで最新の再描画のみ有効化）。
 		const scrollTop = this._body.scrollTop;
-		try {
-			this._renderNotificationsSectionBody(container);
-		} finally {
-			this._body.scrollTop = scrollTop;
-		}
+		const token = ++this._notifRenderToken;
+		this._renderNotificationsSectionBody(container, () => {
+			if (token === this._notifRenderToken && !this._store.isDisposed) {
+				this._body.scrollTop = scrollTop;
+			}
+		});
+		this._body.scrollTop = scrollTop;
 	}
 
-	private _renderNotificationsSectionBody(container: HTMLElement): void {
+	private _renderNotificationsSectionBody(container: HTMLElement, onListPopulated: () => void): void {
 		dom.clearNode(container);
 		this._renderDisposables.clear();
 
@@ -279,6 +285,7 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 		}));
 
 		if (muted) {
+			onListPopulated();
 			return;
 		}
 
@@ -329,6 +336,8 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			for (const ringtone of ringtones) {
 				this._renderRingtoneRow(list, ringtone, ringtone.id === selectedId, volume);
 			}
+			// 着信音リストが揃って本文高さが確定した後にスクロール位置を復元する。
+			onListPopulated();
 		});
 	}
 

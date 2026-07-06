@@ -536,9 +536,11 @@ export class MobileController {
 			} catch { /* ignore malformed */ }
 		} else if (frame.ch === 'term') {
 			try {
-				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; id: number; data?: string };
+				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; id: number; data?: string; snapshot?: boolean };
 				if (msg.t === 'data' && typeof msg.data === 'string') {
-					const prev = this.state.terminalOutput.get(msg.id) ?? '';
+					// snapshot（attach時のVT画面復元）はバッファを置き換える。追記だと再attachの
+					// たびにスナップショットが積み重なり、xtermへの再生で画面が二重・崩壊するため。
+					const prev = msg.snapshot ? '' : (this.state.terminalOutput.get(msg.id) ?? '');
 					const next = (prev + msg.data).slice(-MAX_TERM_BUFFER);
 					this.state.terminalOutput.set(msg.id, next);
 					this.emit();

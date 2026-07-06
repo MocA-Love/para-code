@@ -19,8 +19,10 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { editorBackground, editorForeground } from '../../../../platform/theme/common/colorRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
+import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/browser/xterm/xtermAddonImporter.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -47,7 +49,9 @@ type TermInbound =
 	| { t: 'input'; id: number; data: string }
 	| { t: 'create'; ws?: string };
 type TermOutbound =
-	| { t: 'data'; id: number; data: string }
+	// snapshot=true は attach 時の画面復元用フレーム（VTシーケンス込み）。モバイルは追記せず
+	// バッファ全体を置き換える（再attachで画面が二重にならないようにするため）。
+	| { t: 'data'; id: number; data: string; snapshot?: boolean }
 	| { t: 'exit'; id: number };
 
 /** scm チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
@@ -73,7 +77,8 @@ const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト
 // （FRAME_REASSEMBLY_LIMIT = 32MiB）に収まるようここで抑える（20MiB → base64 約27MiB）。
 const PDF_READ_LIMIT = 20 * 1024 * 1024;
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
-const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字）
+const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字。serialize不可時のフォールバック用）
+const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
 
 /**
  * shared process のリレーサービスと、このウィンドウのワークスペース/ターミナルを橋渡しする。
@@ -90,6 +95,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// エージェント状態の遷移検知用（stateKey → 直近の状態）。
 	private readonly previousScopeStatus = new Map<string, string>();
 	private notifyCounter = 0;
+	// attach時のVTスナップショット生成に使う serialize addon（PC側xtermの現画面を
+	// エスケープシーケンス込みでシリアライズし、モバイルのxtermで完全再現するため）。
+	private readonly xtermAddonImporter = new XtermAddonImporter();
+	// raw xterm → その端末に一度だけ load した serialize addon（端末ごとに1つ）。
+	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
 
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
@@ -678,14 +688,27 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// 作成に伴う onDidChangeInstances で state が自動再送されるため応答は不要。
 			const ws = msg.ws;
 			const root = ws ? this.resolveWsRoot(ws) : undefined;
+			// 作成時点でのPC側アクティブスコープ。指定wsがこれと一致（または未指定）なら
+			// PCの現在の作業ワークスペース宛なので、通常の「新規ターミナル」と同じくパネルに表示する。
+			const activeStateKey = this.workspaceSwitchService.activeStateKey;
 			this.terminalService.createTerminal(root ? { cwd: root } : undefined)
 				.then(instance => {
-					// 既定のタグ付けはPC側アクティブスコープ所属になるため、指定wsへ付け替える
-					// （アクティブ外ならそのまま park され、指定ワークスペースの一覧にだけ出る）。
-					if (ws && root) {
+					if (ws && root && ws !== activeStateKey) {
+						// PC側で非表示のワークスペース向け: 既定のタグ付け（アクティブスコープ所属）を
+						// 指定wsへ付け替える。アクティブ外なので assignInstanceScope が即 park し、
+						// そのワークスペースへ切り替えたときにだけ表示される。
 						this.terminalScopeService.assignInstanceScope(instance.instanceId, ws);
-						this.pushState();
+					} else {
+						// PCのアクティブws（または未指定）向け: 既定タグ付けのままアクティブに残る。
+						// createTerminal はパネルを開かないため、通常の「新規ターミナル」コマンドと同様に
+						// アクティブ化してターミナルパネルを表示し、PC側にちゃんと出るようにする。
+						this.terminalService.setActiveInstance(instance);
+						if (instance.target !== TerminalLocation.Editor) {
+							this.terminalGroupService.showPanel(false)
+								.catch(err => this.logService.warn('[paradisMobileRelay] showPanel failed', err));
+						}
 					}
+					this.pushState();
 				})
 				.catch(err => this.logService.warn('[paradisMobileRelay] createTerminal failed', err));
 			return;
@@ -698,16 +721,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (msg.t === 'attach') {
 			// 出力はattachを要求したモバイルにのみ返す（M-2）。再attachは宛先を更新する。
 			this.terminalSubscribers.set(msg.id, mobileId ?? '');
-			// scrollback初期同期: 直近バッファ末尾を送って「PCで作業していた続き」を見せる（設計書 §4.2）
-			try {
-				const contents = instance.xterm?.getContentsAsText();
-				if (contents) {
-					const tail = contents.length > TERM_SCROLLBACK_LIMIT ? contents.slice(-TERM_SCROLLBACK_LIMIT) : contents;
-					this.sendTerm({ t: 'data', id: msg.id, data: tail.endsWith('\n') ? tail : tail + '\r\n' });
-				}
-			} catch (err) {
-				this.logService.warn('[paradisMobileRelay] scrollback sync failed', err);
-			}
+			// 画面初期同期: 現在の画面状態をエスケープシーケンス込み（serialize addon）で送り、
+			// モバイルのxtermで「PCで作業していた続き」を完全再現する（設計書 §4.2）。
+			// getContentsAsText のプレーン化では代替バッファ/カーソル/色を持つTUI（claude/codex等）が
+			// 崩れるため、VTシリアライズに切り替える。async だが snapshot=true でモバイルが
+			// バッファ全体を置換するため、以後の onData 追記との順序ずれでは二重・欠落しない。
+			this.sendTerminalSnapshot(instance, msg.id);
 			if (this.attachedTerminals.has(msg.id)) {
 				return;
 			}
@@ -726,6 +745,51 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// 生入力を送る（改行はモバイル側が明示的に送る）。
 			instance.sendText(msg.data, false).catch(err => this.logService.warn('[paradisMobileRelay] sendText failed', err));
 		}
+	}
+
+	/**
+	 * attach したモバイルへ、現在の端末画面をVTスナップショットとして送る。
+	 * serialize addon が使えない場合はプレーンテキスト末尾へフォールバックする（従来動作）。
+	 */
+	private sendTerminalSnapshot(instance: ITerminalInstance, id: number): void {
+		this.serializeTerminalSnapshot(instance).then(snapshot => {
+			// serialize解決を待つ間に detach された場合は送らない。
+			if (!this.terminalSubscribers.has(id)) {
+				return;
+			}
+			let data = snapshot;
+			if (data === undefined) {
+				const contents = instance.xterm?.getContentsAsText();
+				if (!contents) {
+					return;
+				}
+				const tail = contents.length > TERM_SCROLLBACK_LIMIT ? contents.slice(-TERM_SCROLLBACK_LIMIT) : contents;
+				data = tail.endsWith('\n') ? tail : tail + '\r\n';
+			}
+			this.sendTerm({ t: 'data', id, data, snapshot: true });
+		}).catch(err => this.logService.warn('[paradisMobileRelay] scrollback sync failed', err));
+	}
+
+	/**
+	 * PC側xtermの現画面をVTシーケンスへシリアライズする。代替バッファ（TUIの全画面）・
+	 * カーソル位置・色・モードを復元できる。serialize addon は端末ごとに一度だけ load する。
+	 */
+	private async serializeTerminalSnapshot(instance: ITerminalInstance): Promise<string | undefined> {
+		const xterm = instance.xterm;
+		if (!xterm) {
+			return undefined;
+		}
+		const raw = xterm.raw;
+		let addon = this.serializeAddons.get(raw);
+		if (!addon) {
+			const Ctor = await this.xtermAddonImporter.importAddon('serialize');
+			const loaded = new Ctor();
+			raw.loadAddon(loaded);
+			addon = loaded;
+			this.serializeAddons.set(raw, loaded);
+		}
+		// 通常バッファのスクロールバックは行数で抑える（代替バッファ=TUIは常に全体が含まれる）。
+		return addon.serialize({ scrollback: TERM_SNAPSHOT_SCROLLBACK_ROWS });
 	}
 
 	private sendTerm(msg: TermOutbound): void {

@@ -93,6 +93,9 @@ const vscodeResourceIncludes = [
 	// Accessibility Signals
 	'out-build/vs/platform/accessibilitySignal/browser/media/*.mp3',
 
+	// PARA-PATCH: ship the built-in notification ringtones played by the notification settings dialog / trigger
+	'out-build/vs/paradis/contrib/notifications/browser/media/sounds/*.mp3',
+
 	// Welcome
 	'out-build/vs/workbench/contrib/welcomeGettingStarted/common/media/**/*.{svg,png}',
 	'out-build/vs/workbench/contrib/welcomeOnboarding/browser/media/*.svg',
@@ -113,6 +116,8 @@ const vscodeResourceIncludes = [
 	'out-build/vs/paradis/contrib/fileViewers/electron-browser/media/*.css',
 	// PARA-PATCH: ship the vendored pdf.js runtime loaded by the PDF viewer webview
 	'out-build/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**',
+	// PARA-PATCH: ship the vendored docx-preview + jszip runtime loaded by the Word (.docx) viewer webview
+	'out-build/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**',
 
 	// Extensions
 	'out-build/vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',
