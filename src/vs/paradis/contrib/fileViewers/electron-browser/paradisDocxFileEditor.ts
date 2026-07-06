@@ -174,6 +174,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		#content .docx-wrapper { background: transparent; padding: 0; display: flex; flex-direction: column; align-items: center; gap: 16px; }
 		#content .docx-wrapper > section.docx {
 			background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.35); margin: 0;
+			/* ページ基準(mso-position-*-relative:page)で絶対配置されるVML図形(斜線コネクタ等)の
+			基準点をこのページ要素にする。これが無いと絶対配置の基準が祖先側に逃げてしまい、
+			ページ座標で指定された図形が別ページの内容の上に描かれる。 */
+			position: relative;
 			/* Word の実書式は「明示的な色指定が無い文字は黒」が既定。この既定を app のエディタ配色
 			（var(--vscode-editor-foreground)、ダークテーマでは白紙上でほぼ読めない薄色になる）に
 			委ねてしまわないよう、用紙自体に黒を明示する。docx-preview は色指定のある文字だけ
@@ -219,6 +223,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 					// このキャッシュ値を改ページとして使う(内容編集後は古い値になり得るが、
 					// 明示的な改ページが無い以上、実際のWordのページ割りに最も近づく唯一の手段)。
 					ignoreLastRenderedPageBreak: false,
+					// タブストップの実座標計算を有効にする(docx-preview の「experimental」機能だが
+					// 実体はタブ位置の計算+リーダー線の描画で、これが無いとタブが単なる全角空白1つに
+					// なり、目次の「見出し……ページ番号」のような右揃えタブ+点線リーダーが、
+					// 左詰め+リーダー無しのレイアウト崩れとして描かれる)。
+					experimental: true,
 					renderHeaders: true,
 					renderFooters: true,
 					renderFootnotes: true,

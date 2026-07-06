@@ -109,3 +109,28 @@ Elements パネルから該当 `<line>`/`<rect>` の computed `stroke` が `none
 再更新時は、複数ページの実務文書（列幅固定・縦書きラベル列を含む表がある文書）で
 DevTools から `.docx-wrapper > section.docx` 各要素の `getBoundingClientRect().width`
 を比較し、ページごとに値が食い違っていないかで確認できる。
+
+## 既知のバグへの手動パッチ4件目（図形の位置とタブストップ、2026-07-07）
+
+1. **ページ基準のVML図形の位置ズレ**: `mso-position-{horizontal,vertical}-relative:page`
+   （ページ左上原点で配置する指定）を持つVML図形（「線で抹消」の斜線コネクタ等）について、
+   原実装（`renderVmlElement`）は position:absolute を含む style をそのまま流すだけで
+   left/top を与えないため、svg がアンカー段落の位置（static position）に置かれ、その中で
+   from/to のページ基準座標が描かれる = アンカー位置とページ座標が二重に加算され、図形が
+   本来のページ位置から大きくズレて別ページの内容の上に描かれていた。relative:page の
+   指定がある軸は left/top を 0 にするパッチを適用（ビューア側CSSで `section.docx` に
+   `position:relative` を付与しページ要素を基準にしている。この2つはセット）。
+
+2. **hanging indent 段落の行頭タブ**: Word の仕様では、hanging indent（ぶら下げ
+   インデント、CSSでは text-indent が負）を持つ段落の行頭タブ文字は「left indent の位置」
+   へのジャンプとして扱われる（明示タブストップより優先）。実務文書の目次で多用される
+   「[tab]見出し[tab]ページ番号」構造（先頭タブは実質幅ゼロ、2つ目だけが右揃え+点線
+   リーダー）がこれに依存する。原実装のタブストップ計算（`je` 関数、experimental
+   オプションで有効化）はこの暗黙ストップを知らず、行頭タブに右端の右揃え+リーダー
+   ストップを選んでしまい、見出しが行末へ押し出されリーダー線が行頭に来る崩れ方を
+   していた。text-indent が負の段落ではインデント位置(pos:0)の左タブをストップ候補の
+   先頭に補うパッチを適用。
+
+なお、タブストップ計算自体は docx-preview の `experimental: true` オプションで有効になる
+機能（無効だとタブが全角空白1つになり、右揃えタブや点線リーダーが機能しない）。
+`paradisDocxFileEditor.ts` 側の renderAsync オプションで有効化している。
