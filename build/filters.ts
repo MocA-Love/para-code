@@ -127,6 +127,8 @@ export const indentationFilter = Object.freeze<string[]>([
 	'!src/vs/workbench/contrib/terminal/common/scripts/psreadline/**',
 	// PARA-PATCH: vendored Chrome extension shipped with the built-in browser (see the folder's README.md)
 	'!src/vs/paradis/contrib/browserExtensions/electron-main/media/**',
+	// PARA-PATCH: vendored pdf.js (pdfjs-dist) used by the PDF viewer (see the folder's README.md)
+	'!src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**',
 
 	// except multiple specific files
 	'!**/package.json',
@@ -230,6 +232,8 @@ export const copyrightFilter = Object.freeze<string[]>([
 	'!src/vs/base/common/signals-core/**',
 	// PARA-PATCH: vendored Chrome extension shipped with the built-in browser (see the folder's README.md)
 	'!src/vs/paradis/contrib/browserExtensions/electron-main/media/**',
+	// PARA-PATCH: vendored pdf.js (pdfjs-dist) used by the PDF viewer (see the folder's README.md)
+	'!src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**',
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',

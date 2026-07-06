@@ -8,11 +8,12 @@
  *   （md は marked でHTML化、html はそのまま表示）
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { marked } from 'marked';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { colors } from '../theme.js';
 import type { FsReadResult } from '../store.js';
 
@@ -28,6 +29,8 @@ interface FileViewerProps {
 	sheetIndex?: number;
 	/** xlsx: シートタブが選択された（PCへ該当シートを再要求する）。 */
 	onSelectSheet?: (index: number) => void;
+	/** pdf: PDFバイナリ（base64url）。キャッシュへ書き出して WKWebView のネイティブPDF表示に渡す。 */
+	pdfData?: string;
 	/** テキスト検索から開いた場合の一致行（1始まり）。その行へスクロールしハイライトする。 */
 	focusLine?: number;
 	onClose: () => void;
@@ -102,9 +105,72 @@ export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 
 </head><body>${rendered}</body></html>`;
 }
 
-export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, onClose }: FileViewerProps) {
+/**
+ * PDF表示。base64 のバイナリをキャッシュファイルへ書き出し、WKWebView に file:// URI で
+ * 読ませてネイティブPDFレンダリング（ピンチズーム・ページング・テキスト選択つき）を使う。
+ * 書き込みは legacy API の Base64 エンコーディング指定で行う（デコードがネイティブ側で走るため、
+ * 数十MBのPDFでもJSスレッドをブロックしない）。
+ */
+function PdfView({ data }: { data: string }) {
+	const [uri, setUri] = useState<string | undefined>(undefined);
+	const [error, setError] = useState<string | undefined>(undefined);
+	useEffect(() => {
+		let cancelled = false;
+		let written: string | undefined;
+		(async () => {
+			try {
+				const dir = LegacyFileSystem.cacheDirectory;
+				if (!dir) {
+					throw new Error('cache directory unavailable');
+				}
+				const target = `${dir}pm-pdf-view-${Date.now()}.pdf`;
+				await LegacyFileSystem.writeAsStringAsync(target, data, { encoding: LegacyFileSystem.EncodingType.Base64 });
+				written = target;
+				if (!cancelled) {
+					setUri(target);
+				} else {
+					// 書き込み完了前にアンマウント済み。cleanup は written 未設定のまま走り終えているのでここで消す。
+					void LegacyFileSystem.deleteAsync(target, { idempotent: true }).catch(() => { });
+				}
+			} catch (e) {
+				if (!cancelled) {
+					setError(String(e instanceof Error ? e.message : e));
+				}
+			}
+		})();
+		return () => {
+			cancelled = true;
+			if (written !== undefined) {
+				// 一時ファイルの削除失敗は無視（cacheディレクトリはOSが回収する）
+				void LegacyFileSystem.deleteAsync(written, { idempotent: true }).catch(() => { });
+			}
+		};
+	}, [data]);
+	if (error !== undefined) {
+		return <Text style={styles.dim}>PDF を表示できませんでした: {error}</Text>;
+	}
+	if (uri === undefined) {
+		return (
+			<View style={styles.loadingBox}>
+				<ActivityIndicator color={colors.textDim} />
+				<Text style={styles.dim}>読み込み中…</Text>
+			</View>
+		);
+	}
+	return (
+		<WebView
+			style={styles.web}
+			source={{ uri }}
+			originWhitelist={['*']}
+			allowingReadAccessToURL={uri}
+			javaScriptEnabled={false}
+		/>
+	);
+}
+
+export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, onClose }: FileViewerProps) {
 	const name = path.split('/').pop() ?? path;
-	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
+	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
 	const [mode, setMode] = useState<ViewMode>(kind === 'other' || focusLine !== undefined ? 'code' : 'render');
 
@@ -115,6 +181,11 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 			}
 			// レンダリング失敗時は result にエラーメッセージが入る。
 			// これを無視すると「読み込み中…」が恒久表示になるため、コード表示で見せる。
+			return result ? buildCodeHtml(result) : undefined;
+		}
+		if (kind === 'pdf') {
+			// 正常時は PdfView（file:// URI）で表示するため html は使わない。
+			// エラー時のみ result のメッセージをコード表示で見せる。
 			return result ? buildCodeHtml(result) : undefined;
 		}
 		if (!result) {
@@ -165,7 +236,9 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 				{result?.truncated || result?.highlightTruncated ? (
 					<Text style={styles.truncated}>サイズ上限のため先頭のみ表示しています</Text>
 				) : null}
-				{html !== undefined ? (
+				{kind === 'pdf' && pdfData !== undefined ? (
+					<PdfView data={pdfData} />
+				) : html !== undefined ? (
 					// javaScriptEnabled は自前生成HTML（スプレッドシート・検索行ジャンプ付き
 					// コードビュー）のみ true。リポジトリ内の信頼できない .html の
 					// スクリプトは端末で実行しない（レンダーは静的表示のみ）。
