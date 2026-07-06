@@ -23,7 +23,7 @@ import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../
  */
 export default function FilesScreen() {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, fsXlsx, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
+	const { fsList, fsRead, fsXlsx, fsPdf, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
 
 	const [path, setPath] = useState('');
 	const [listing, setListing] = useState<FsListResult | undefined>();
@@ -39,6 +39,7 @@ export default function FilesScreen() {
 	const [viewerPath, setViewerPath] = useState<string | undefined>();
 	const [viewerResult, setViewerResult] = useState<FsReadResult | undefined>();
 	const [viewerXlsx, setViewerXlsx] = useState<{ html?: string; sheets?: string[]; sheet?: number } | undefined>();
+	const [viewerPdf, setViewerPdf] = useState<string | undefined>();
 	const [viewerLine, setViewerLine] = useState<number | undefined>();
 	// 開く→閉じる→別ファイルを開く、の間に前のfetchが解決して上書きするのを防ぐ世代ガード
 	const viewerPathRef = useRef<string | undefined>(undefined);
@@ -113,6 +114,7 @@ export default function FilesScreen() {
 		setViewerPath(p);
 		setViewerResult(undefined);
 		setViewerXlsx(undefined);
+		setViewerPdf(undefined);
 		setViewerLine(line);
 		if (!wsId) {
 			return;
@@ -124,6 +126,12 @@ export default function FilesScreen() {
 				const result = await fsXlsx(wsId, p);
 				if (viewerPathRef.current === p) {
 					setViewerXlsx({ html: result.html, sheets: result.sheets, sheet: result.sheet });
+				}
+			} else if (/\.pdf$/i.test(p)) {
+				// PDF はバイナリを base64 で受け取り、キャッシュへ書き出して WKWebView でネイティブ表示する
+				const result = await fsPdf(wsId, p);
+				if (viewerPathRef.current === p) {
+					setViewerPdf(result.data);
 				}
 			} else {
 				// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
@@ -267,7 +275,8 @@ export default function FilesScreen() {
 					sheetIndex={viewerXlsx?.sheet}
 					onSelectSheet={i => { void selectSheet(i); }}
 					focusLine={viewerLine}
-					onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerLine(undefined); }}
+					pdfData={viewerPdf}
+					onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerLine(undefined); }}
 				/>
 			) : null}
 		</View>

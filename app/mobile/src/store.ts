@@ -71,6 +71,11 @@ export interface FsXlsxResult {
 	/** 今回レンダリングされたシートのインデックス。 */
 	sheet?: number;
 }
+/** fs pdf 応答（PDFバイナリの base64。WKWebView のネイティブPDF表示に使う）。 */
+export interface FsPdfResult {
+	data: string;
+	size: number;
+}
 /** fs find 応答（ファイル名検索、ルート相対パスのランク順）。 */
 export interface FsFindResult {
 	files: string[];
@@ -405,6 +410,11 @@ export class MobileController {
 	/** xlsx の1シートをPC側でレンダリングした静的HTMLを取得する（重いブックはPC側の生成に時間がかかるため長め）。 */
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult> {
 		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path, ...(sheet !== undefined ? { sheet } : {}) }, 120_000);
+	}
+
+	/** PDF バイナリを base64 で取得する（大きい PDF はチャンク転送で時間がかかるため長め）。 */
+	fsPdf(ws: string, path: string): Promise<FsPdfResult> {
+		return this.request<FsPdfResult>('fs', { t: 'pdf', ws, path }, 120_000);
 	}
 
 	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */

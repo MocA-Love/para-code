@@ -172,3 +172,5 @@ src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/buil
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/proxy.js
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/react_devtools_backend_compact.js
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/popups/shared.js
+src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/pdf.min.mjs
+src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/pdf.worker.min.mjs

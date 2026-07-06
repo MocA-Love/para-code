@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { VSBuffer } from '../../../../base/common/buffer.js';
+import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { joinPath } from '../../../../base/common/resources.js';
@@ -63,10 +63,14 @@ type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
 	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean }
 	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number }
+	| { t: 'pdf'; id: string; ws: string; path: string }
 	| { t: 'find'; id: string; ws: string; query: string }
 	| { t: 'grep'; id: string; ws: string; query: string };
 
 const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト。FrameMuxのチャンク分割転送で1MiB超の応答も送れる）
+// PDF バイナリの読み取り上限。base64 で約1.37倍に膨らむため、FrameMux の再結合上限
+// （FRAME_REASSEMBLY_LIMIT = 32MiB）に収まるようここで抑える（20MiB → base64 約27MiB）。
+const PDF_READ_LIMIT = 20 * 1024 * 1024;
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
 const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字）
 
@@ -616,6 +620,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// ネイティブタブに使われ、切替時に該当sheetだけ再要求される。
 				const result = await renderSpreadsheetMobileSheet(this.fileService, this.sharedProcessService, uri, typeof msg.sheet === 'number' ? msg.sheet : 0);
 				reply({ t: 'xlsx', html: result.html, sheets: result.sheets, sheet: result.sheet });
+			} else if (msg.t === 'pdf') {
+				// PDF はバイナリのまま base64 で返す（'read' の UTF-8 デコード経路はバイナリを壊すため使えない）。
+				const stat = await this.fileService.stat(uri);
+				if ((stat.size ?? 0) > PDF_READ_LIMIT) {
+					// allow-any-unicode-next-line
+					reply({ error: `PDF が大きすぎます（${Math.round((stat.size ?? 0) / 1024 / 1024)}MB）。モバイル表示は ${PDF_READ_LIMIT / 1024 / 1024}MB までです。` });
+					return;
+				}
+				const content = await this.fileService.readFile(uri, { length: PDF_READ_LIMIT });
+				// 標準base64（パディング付き）。モバイル側は expo-file-system の Base64 エンコーディング指定で
+				// ネイティブデコードしながらファイルへ書くため、JSでのデコードは発生しない。
+				reply({ t: 'pdf', data: encodeBase64(content.value), size: stat.size ?? 0 });
 			} else if (msg.t === 'list') {
 				const stat = await this.fileService.resolve(uri);
 				const entries = (stat.children ?? [])

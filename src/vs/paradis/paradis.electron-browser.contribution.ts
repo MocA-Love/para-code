@@ -22,6 +22,7 @@ import './contrib/notifications/electron-browser/paradisNotificationSettingsDial
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisHtmlViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribution.js';
+import './contrib/fileViewers/electron-browser/paradisPdfViewer.contribution.js';
 import './contrib/browserBookmarks/electron-browser/paradisBrowserBookmarks.contribution.js';
 import './contrib/releaseNotes/electron-browser/paradisReleaseNotes.contribution.js';
 import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';

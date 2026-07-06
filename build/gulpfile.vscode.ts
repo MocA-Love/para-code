@@ -111,6 +111,8 @@ const vscodeResourceIncludes = [
 	'out-build/vs/paradis/contrib/browserExtensions/electron-main/media/**',
 	// PARA-PATCH: ship the spreadsheet viewer CSS read at runtime for the mobile xlsx HTML (inlined into the WebView document)
 	'out-build/vs/paradis/contrib/fileViewers/electron-browser/media/*.css',
+	// PARA-PATCH: ship the vendored pdf.js runtime loaded by the PDF viewer webview
+	'out-build/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**',
 
 	// Extensions
 	'out-build/vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',

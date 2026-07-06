@@ -25,6 +25,10 @@ export const PARADIS_HTML_INPUT_TYPE_ID = 'paradis.input.htmlPreview';
 export const PARADIS_FILE_DIFF_EDITOR_ID = 'paradis.editor.fileViewerDiff';
 export const PARADIS_FILE_DIFF_INPUT_TYPE_ID = 'paradis.input.fileViewerDiff';
 
+/** PDF ビューアの EditorPane / EditorInput 識別子。 */
+export const PARADIS_PDF_EDITOR_ID = 'paradis.editor.pdfPreview';
+export const PARADIS_PDF_INPUT_TYPE_ID = 'paradis.input.pdfPreview';
+
 /** Excel(スプレッドシート)ビューアの EditorPane / EditorInput 識別子。 */
 export const PARADIS_SPREADSHEET_EDITOR_ID = 'paradis.editor.spreadsheet';
 export const PARADIS_SPREADSHEET_INPUT_TYPE_ID = 'paradis.input.spreadsheet';
@@ -37,6 +41,7 @@ export const PARADIS_MARKDOWN_EXTENSIONS: readonly string[] = ['.md', '.markdown
 export const PARADIS_HTML_EXTENSIONS: readonly string[] = ['.html', '.htm'];
 // Excelビューア対象。exceljs は OOXML(.xlsx/.xlsm)のみ対応で、旧BIFF形式(.xls)は非対応のため含めない。
 export const PARADIS_SPREADSHEET_EXTENSIONS: readonly string[] = ['.xlsx', '.xlsm'];
+export const PARADIS_PDF_EXTENSIONS: readonly string[] = ['.pdf'];
 
 // EditorResolver には拡張子ごとに `*<ext>` 形式で個別登録する（ビルトインの Search Editor が
 // `'*' + SEARCH_EDITOR_EXT` で登録しているのと同じ実績のある形。brace glob は使わない）。
@@ -58,4 +63,9 @@ export function isParadisHtmlResource(resource: URI): boolean {
 /** 与えられたリソースの拡張子が Excel ビューア対象か。 */
 export function isParadisSpreadsheetResource(resource: URI): boolean {
 	return PARADIS_SPREADSHEET_EXTENSIONS.includes(extname(resource).toLowerCase());
+}
+
+/** 与えられたリソースの拡張子が PDF ビューア対象か。 */
+export function isParadisPdfResource(resource: URI): boolean {
+	return PARADIS_PDF_EXTENSIONS.includes(extname(resource).toLowerCase());
 }

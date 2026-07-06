@@ -309,6 +309,10 @@ const desktopResourcePatterns = [
 	'vs/paradis/contrib/browserExtensions/electron-main/media/**/*.*',
 	// PARA-PATCH: ship the spreadsheet viewer CSS read at runtime for the mobile xlsx HTML (inlined into the WebView document)
 	'vs/paradis/contrib/fileViewers/electron-browser/media/*.css',
+	// PARA-PATCH: ship the vendored pdf.js runtime loaded by the PDF viewer webview
+	// (`**/*.*` matches all payload files — they all have extensions; extension-less LICENSE files are listed separately)
+	'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**/*.*',
+	'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**/LICENSE*',
 ];
 
 // Resources for server target (minimal - no UI)
