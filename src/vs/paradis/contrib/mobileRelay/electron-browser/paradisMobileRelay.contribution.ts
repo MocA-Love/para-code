@@ -23,7 +23,7 @@ import { ILanguageService } from '../../../../editor/common/languages/language.j
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWebviewWorkbenchService } from '../../../../workbench/contrib/webviewPanel/browser/webviewWorkbenchService.js';
-import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -40,6 +40,7 @@ import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
+const MENU_COMMAND = 'paradis.mobile.showMenu';
 
 /**
  * renderer 側のモバイルリレー contribution。
@@ -136,6 +137,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_MOBILE_ENABLED_KEY)) {
 				this.service.setEnabled(this.isEnabled()).catch(err => this.logService.warn('[paradisMobileRelay] setEnabled failed', err));
+				// 有効/無効の切り替えは shared process の状態変化を待たずに即座に表示へ反映する
+				// （無効化直後の項目消去・有効化直後の項目表示を確実にするため）。
+				this.service.getStatus().then(status => this.renderStatusbar(status)).catch(() => { /* ignore */ });
 			}
 		}));
 
@@ -151,27 +155,46 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			await this.service.initialize(enabled, relayUrl);
 			// オンラインになったら状態を1回 push。
 			this.provider.pushState();
+			// 初期化完了時点の状態でステータスバーを描き直す。onDidChangeStatus は状態が
+			// 「変化」したときしか発火しないため、shared process が既に目的の状態だった場合に
+			// 初回描画を取りこぼさないよう、ここでも明示的に反映する（件3: 表示が出ない対策）。
+			const status = await this.service.getStatus();
+			this.renderStatusbar(status);
 		} catch (err) {
 			this.logService.warn('[paradisMobileRelay] initialize failed', err);
 		}
 	}
 
 	private renderStatusbar(status: IParadisMobileStatus): void {
-		if (status.state === 'disabled') {
+		// 表示可否は「設定でリレーが有効か」だけで決める。shared process の state に依存すると、
+		// 初期化前・再接続中・ウィンドウリロード直後などに一瞬 'disabled'/'disconnected' が
+		// 返ってきた時に項目が消えてしまう（「接続状態表示が出ない時がある」の原因）。
+		// リレーが有効な間は常に項目を出し、現在の接続状態はラベル側で表す。
+		if (!this.isEnabled()) {
 			this.statusbarEntry.clear();
 			return;
 		}
 		const online = status.onlineMobiles > 0;
-		const label = status.state === 'online'
-			? (online ? localize('paradis.mobile.statusbar.active', "モバイル接続中 ({0})", status.onlineMobiles) : localize('paradis.mobile.statusbar.ready', "モバイル待機中"))
-			: localize('paradis.mobile.statusbar.connecting', "モバイル接続中…");
-		const icon = status.state === 'online' ? '$(radio-tower)' : '$(sync~spin)';
+		let label: string;
+		let icon: string;
+		if (status.state === 'online') {
+			label = online
+				? localize('paradis.mobile.statusbar.active', "モバイル接続中 ({0})", status.onlineMobiles)
+				: localize('paradis.mobile.statusbar.ready', "モバイル待機中");
+			icon = '$(radio-tower)';
+		} else if (status.state === 'disconnected') {
+			label = localize('paradis.mobile.statusbar.disconnected', "モバイル切断中");
+			icon = '$(debug-disconnect)';
+		} else {
+			label = localize('paradis.mobile.statusbar.connecting', "モバイル接続中…");
+			icon = '$(sync~spin)';
+		}
 		const entry = {
 			name: localize('paradis.mobile.statusbar.name', "Para Code Mobile"),
 			text: `${icon} ${label}`,
 			ariaLabel: label,
-			tooltip: localize('paradis.mobile.statusbar.tooltip', "Para Code Mobile のリレー接続状態。クリックでデバイスを接続します。"),
-			command: PAIR_COMMAND,
+			tooltip: localize('paradis.mobile.statusbar.tooltip', "Para Code Mobile のリレー接続状態。クリックでメニューを開きます。"),
+			command: MENU_COMMAND,
 		};
 		if (this.statusbarEntry.value) {
 			this.statusbarEntry.value.update(entry);
@@ -315,6 +338,63 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		await this.service.revokeDevice(picked.label);
 		this.notificationService.info(localize('paradis.mobile.revoked', "モバイルデバイス「{0}」を失効させました。", picked.label));
 	}
+
+	/**
+	 * ステータスバークリック（およびコマンド）から開くアクションメニュー。
+	 * デバイス接続 / 接続済みデバイスの解除 / リレーの有効・無効切り替え（＝PCとの接続を切る）を一箇所に集約する。
+	 */
+	async showActionMenu(): Promise<void> {
+		const status = await this.service.getStatus();
+		const enabled = this.isEnabled();
+		type MenuItem = IQuickPickItem & { readonly action: 'pair' | 'manage' | 'disable' | 'enable' };
+		const items: MenuItem[] = [];
+		if (enabled) {
+			items.push({
+				action: 'pair',
+				label: localize('paradis.mobile.menu.pair', "モバイルデバイスを接続…"),
+				description: localize('paradis.mobile.menu.pairDesc', "QRコードで新しいデバイスをペアリング"),
+			});
+			if (status.pairedDevices.length > 0) {
+				items.push({
+					action: 'manage',
+					label: localize('paradis.mobile.menu.manage', "接続済みデバイスを解除…"),
+					description: localize('paradis.mobile.menu.manageDesc', "{0}台がペアリング済み", status.pairedDevices.length),
+				});
+			}
+			items.push({
+				action: 'disable',
+				label: localize('paradis.mobile.menu.disable', "リレーを無効にする（接続を切る）"),
+				description: localize('paradis.mobile.menu.disableDesc', "モバイルとの接続を切断し、待機を停止します"),
+			});
+		} else {
+			items.push({
+				action: 'enable',
+				label: localize('paradis.mobile.menu.enable', "リレーを有効にする"),
+				description: localize('paradis.mobile.menu.enableDesc', "モバイルからの接続を待機します"),
+			});
+		}
+		const picked = await this.quickInputService.pick(items, {
+			placeHolder: localize('paradis.mobile.menu.placeholder', "Para Code Mobile"),
+		});
+		if (!picked) {
+			return;
+		}
+		switch (picked.action) {
+			case 'pair':
+				await this.runPairing();
+				break;
+			case 'manage':
+				await this.manageDevices();
+				break;
+			case 'disable':
+				await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, false);
+				this.notificationService.info(localize('paradis.mobile.disabled', "モバイルリレーを無効にしました。モバイルからの接続はできなくなります。"));
+				break;
+			case 'enable':
+				await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, true);
+				break;
+		}
+	}
 }
 
 registerWorkbenchContribution2(ParadisMobileRelayContribution.ID, ParadisMobileRelayContribution, WorkbenchPhase.AfterRestored);
@@ -350,3 +430,19 @@ class ParadisManageMobileDevicesAction extends Action2 {
 	}
 }
 registerAction2(ParadisManageMobileDevicesAction);
+
+class ParadisMobileMenuAction extends Action2 {
+	constructor() {
+		super({
+			id: MENU_COMMAND,
+			title: localize2('paradis.mobile.showMenu', "Mobile Relay Menu"),
+			category: localize2('paradis.category', "Para Code"),
+			f1: true,
+		});
+	}
+
+	async run(_accessor: ServicesAccessor): Promise<void> {
+		await ParadisMobileRelayContribution.instance?.showActionMenu();
+	}
+}
+registerAction2(ParadisMobileMenuAction);

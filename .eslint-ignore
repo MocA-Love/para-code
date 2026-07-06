@@ -63,3 +63,4 @@ src/vs/base/common/signals-core/**
 # PARA-PATCH: vendored Chrome extension shipped with the built-in browser (Para Code)
 src/vs/paradis/contrib/browserExtensions/electron-main/media/**
 src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**
+src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**

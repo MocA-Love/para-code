@@ -41,6 +41,8 @@ import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/commo
 // PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway
 import { PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpTargetService } from '../../paradis/contrib/agentBrowser/electron-main/paradisCdpTargetService.js';
+// PARA-PATCH: browser mirror WebRTC spike — capture a single WebContentsView instead of the whole screen when armed
+import { paradisResolveMirrorCaptureFrame } from '../../paradis/contrib/browserMirror/electron-main/paradisBrowserMirrorCapture.js';
 // PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator
 import { PARADIS_RESOURCE_MONITOR_CHANNEL } from '../../paradis/contrib/resourceMonitor/common/paradisResourceMonitor.js';
 import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourceMonitor/electron-main/paradisResourceMonitorMainService.js';
@@ -250,6 +252,16 @@ export class CodeApplication extends Disposable {
 		}));
 		session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
 			try {
+				// PARA-PATCH: browser mirror WebRTC spike — when armed (env PARADIS_MIRROR_CAPTURE_VIEW),
+				// return the target WebContentsView's WebFrameMain so getDisplayMedia captures that
+				// embedded view alone instead of the whole screen. Off by default; existing screen
+				// recording / screenshot flows are unaffected. See src/vs/paradis/contrib/browserMirror/.
+				const paradisMirrorFrame = paradisResolveMirrorCaptureFrame();
+				if (paradisMirrorFrame) {
+					callback({ video: paradisMirrorFrame });
+					return;
+				}
+
 				const frame = request.frame;
 				const win = frame ? BrowserWindow.getAllWindows().find(w => w.webContents.mainFrame === frame) : undefined;
 

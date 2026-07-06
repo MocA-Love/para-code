@@ -174,3 +174,5 @@ src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/buil
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/popups/shared.js
 src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/pdf.min.mjs
 src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/pdf.worker.min.mjs
+src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/docx-preview.min.js
+src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/jszip.min.js

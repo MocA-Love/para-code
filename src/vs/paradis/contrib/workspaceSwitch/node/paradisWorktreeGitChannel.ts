@@ -16,7 +16,7 @@ import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisAddWorktreeRequest, IParadisGitBranches, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisGitBranches, IParadisRemoveWorktreeRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 
 export class ParadisWorktreeGitService {
 
@@ -66,6 +66,29 @@ export class ParadisWorktreeGitService {
 		}
 		await this.exec(['-C', request.repoPath, 'worktree', 'add', '--no-track', '-b', request.newBranch, request.worktreePath, request.baseRef]);
 	}
+
+	/**
+	 * git worktree remove [--force] <worktreePath> を実行する。
+	 * 未コミット変更や未追跡ファイルがある場合、force なしだと git が失敗する（呼び出し側で
+	 * force 付き再試行を確認する）。stale なメタデータで失敗しないよう先に prune する。
+	 */
+	async removeWorktree(request: IParadisRemoveWorktreeRequest): Promise<void> {
+		// IPC 境界の防御: 位置引数が git のオプションとして解釈されないことを保証する
+		if (typeof request.worktreePath !== 'string' || request.worktreePath.length === 0 || request.worktreePath.startsWith('-')) {
+			throw new Error(`Invalid argument: ${String(request.worktreePath)}`);
+		}
+		try {
+			await this.exec(['-C', request.repoPath, 'worktree', 'prune']);
+		} catch {
+			// prune の失敗は致命的ではない
+		}
+		const args = ['-C', request.repoPath, 'worktree', 'remove'];
+		if (request.force) {
+			args.push('--force');
+		}
+		args.push(request.worktreePath);
+		await this.exec(args);
+	}
 }
 
 export class ParadisWorktreeGitChannel implements IServerChannel<string> {
@@ -81,6 +104,7 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 		switch (command) {
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest) as Promise<T>;
+			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
