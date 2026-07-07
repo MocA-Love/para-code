@@ -42,6 +42,10 @@ class ParadisScmInputScope extends Disposable implements IWorkbenchContribution 
 		this._register(this.workspaceSwitchService.onWillSwitchScope(previousKey => this.stashInputs(previousKey)));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(targetKey => this.beginRestore(targetKey)));
 
+		// リポジトリ/worktree の削除で二度と開かれないスコープの下書きを掃除する
+		// (STORAGE_KEY に削除済みキーの入力が残り続けるのを防ぐ)。
+		this._register(this.workspaceSwitchService.onDidRetireScope(stateKey => this.discardStashFor(stateKey)));
+
 		// Git 拡張の再スキャンは非同期なので、SCM リポジトリの再登録を待って復元する
 		this._register(this.scmService.onDidAddRepository(repository => this.tryRestoreFor(repository)));
 	}
@@ -65,6 +69,15 @@ class ParadisScmInputScope extends Disposable implements IWorkbenchContribution 
 		} else {
 			delete all[previousKey];
 		}
+		this.storageService.store(ParadisScmInputScope.STORAGE_KEY, JSON.stringify(all), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	private discardStashFor(stateKey: string): void {
+		const all = this.loadAll();
+		if (all[stateKey] === undefined) {
+			return;
+		}
+		delete all[stateKey];
 		this.storageService.store(ParadisScmInputScope.STORAGE_KEY, JSON.stringify(all), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 

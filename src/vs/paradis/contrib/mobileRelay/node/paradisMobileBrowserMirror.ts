@@ -176,11 +176,21 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		};
 		this.sessions.set(mobileId, session);
 
-		await new Promise<void>((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error('CDP接続がタイムアウトしました')), 5000);
-			socket.onopen = () => { clearTimeout(timer); resolve(); };
-			socket.onerror = () => { clearTimeout(timer); reject(new Error('CDP接続に失敗しました')); };
-		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('CDP接続がタイムアウトしました')), 5000);
+				socket.onopen = () => { clearTimeout(timer); resolve(); };
+				socket.onerror = () => { clearTimeout(timer); reject(new Error('CDP接続に失敗しました')); };
+			});
+		} catch (err) {
+			// 接続失敗/タイムアウト時、登録済みの死にセッションをMapから外し、接続試行中の
+			// ソケットもcloseする（oncloseハンドラは接続成功後にしか付かないため自動掃除されない）。
+			if (this.sessions.get(mobileId) === session) {
+				this.sessions.delete(mobileId);
+			}
+			try { socket.close(); } catch { /* ignore */ }
+			throw err;
+		}
 
 		// 待機中に同一mobileIdへの別の'start'がMapを上書きしていたら、この接続は
 		// もう不要（古い方）なので破棄する。ここを再検証しないと、上書きされた古い

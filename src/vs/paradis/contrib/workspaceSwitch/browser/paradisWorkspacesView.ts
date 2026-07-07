@@ -26,6 +26,7 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { WorkbenchObjectTree } from '../../../../platform/list/browser/listService.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -220,6 +221,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -271,10 +273,12 @@ export class ParadisWorkspacesView extends ViewPane {
 			}
 			if (isWorktree(element)) {
 				if (!element.missing) {
-					this.workspaceSwitchService.switchToWorktree(element);
+					// 切り替えは updateFolders / ディスク状態の変化で reject しうる。握り潰さず通知する
+					// (放置すると unhandled rejection になりビュー上は「無反応」に見える)。
+					this.workspaceSwitchService.switchToWorktree(element).catch(error => this.notificationService.error(error));
 				}
 			} else {
-				this.workspaceSwitchService.switchRepository(element.id);
+				this.workspaceSwitchService.switchRepository(element.id).catch(error => this.notificationService.error(error));
 			}
 		}));
 
@@ -372,7 +376,7 @@ export class ParadisWorkspacesView extends ViewPane {
 				localize('paradis.workspaceSwitch.removeContext', "Remove from List"),
 				undefined,
 				true,
-				() => this.workspaceSwitchService.removeRepository(repository.id)
+				() => this.workspaceSwitchService.removeRepository(repository.id).catch(error => this.notificationService.error(error))
 			)
 		];
 	}

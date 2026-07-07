@@ -15,6 +15,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { escape } from '../../../../base/common/strings.js';
 import { dirname } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -120,7 +121,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	protected override renderDocument(text: string, resource: URI, _webview: IOverlayWebview): string {
 		const dir = dirname(resource);
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
-		const baseHref = asWebviewUri(dir, remoteInfo).toString(true);
+		// skipEncoding=true は `"` 等をそのまま残すため、属性値に埋める前に HTML エスケープする。
+		const baseHref = escape(asWebviewUri(dir, remoteInfo).toString(true)).replace(/"/g, '&quot;');
 
 		// <base> で相対リソースを webview リソース URI に解決し、初期ズームを CSS zoom で焼き込む。
 		const headInjection = `<base href="${baseHref}/"><style>html{zoom:${this._zoomFactor};}</style>`;

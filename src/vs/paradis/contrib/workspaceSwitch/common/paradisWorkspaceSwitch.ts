@@ -142,6 +142,13 @@ export interface IParadisWorkspaceSwitchService {
 	readonly onDidChangeRepositories: Event<void>;
 
 	/**
+	 * スコープ (状態キー) が恒久的に破棄されたときに発火する (リポジトリ削除 / worktree 削除)。
+	 * ペイロードは破棄された状態キー。スコープ別に持たれる状態 (park 中ターミナル / SCM入力の
+	 * 下書き 等) を各コンポーネントが掃除するためのブロードキャスト。
+	 */
+	readonly onDidRetireScope: Event<string>;
+
+	/**
 	 * 切り替え処理の冒頭 (状態退避の直前) に発火する。ペイロードは切り替え元の
 	 * 状態キー (リポジトリID or worktree キー。リスト外なら undefined)。SCM入力の
 	 * 退避など、updateFolders でリソースが破棄される前に済ませたい処理のためのフック。
@@ -187,6 +194,14 @@ export interface IParadisWorkspaceSwitchService {
 
 	/** worktree へ切り替える (状態キーは paradisWorktreeStateKey(uri)) */
 	switchToWorktree(worktree: IParadisWorktree): Promise<void>;
+
+	/**
+	 * 指定スコープに紐づく保存済み状態 (working set / パネル表示状態) を破棄し、
+	 * onDidRetireScope を発火する。リポジトリ削除・worktree 削除のライフサイクル終端から
+	 * 呼び、二度と到達できなくなったスコープの状態が WORKSPACE ストレージや park 中の
+	 * ターミナルとして残り続けるのを防ぐ。
+	 */
+	discardScopeState(stateKey: string): void;
 }
 
 // --- Extension Host 再起動の抑止フラグ ---------------------------------------------------------

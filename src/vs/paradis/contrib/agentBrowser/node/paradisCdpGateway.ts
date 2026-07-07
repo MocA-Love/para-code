@@ -233,6 +233,16 @@ export class ParadisCdpGateway extends Disposable {
 		this._connectionsByToken.delete(token);
 	}
 
+	/**
+	 * ペイントークンを退役させる (ペイン/ウィンドウ終了時にサービス側から呼ぶ)。
+	 * アクティブ接続を切断し、トークン別にキャッシュしていた飾りのブラウザWS id も落として
+	 * トークン数に比例した単調リークを防ぐ。
+	 */
+	retireToken(token: string): void {
+		this.closeConnectionsForToken(token);
+		this._browserWsIds.delete(token);
+	}
+
 	override dispose(): void {
 		for (const token of [...this._connectionsByToken.keys()]) {
 			this.closeConnectionsForToken(token);

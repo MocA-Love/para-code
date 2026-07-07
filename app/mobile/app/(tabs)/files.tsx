@@ -45,6 +45,8 @@ export default function FilesScreen() {
 	const [viewerLine, setViewerLine] = useState<number | undefined>();
 	// 開く→閉じる→別ファイルを開く、の間に前のfetchが解決して上書きするのを防ぐ世代ガード
 	const viewerPathRef = useRef<string | undefined>(undefined);
+	// 同一ファイル内でシートを素早く切り替えた際、古いシート応答が新しい選択を上書きするのを防ぐ世代ガード
+	const sheetGenRef = useRef(0);
 
 	const wsId = ws?.id;
 
@@ -172,13 +174,14 @@ export default function FilesScreen() {
 		}
 		// 表示中のHTMLは残したままシートだけ差し替える（タブ位置は即時反映）
 		setViewerXlsx(prev => prev ? { ...prev, sheet: index, html: undefined } : prev);
+		const gen = ++sheetGenRef.current;
 		try {
 			const result = await fsXlsx(wsId, p, index);
-			if (viewerPathRef.current === p) {
+			if (viewerPathRef.current === p && sheetGenRef.current === gen) {
 				setViewerXlsx({ html: result.html, sheets: result.sheets, sheet: result.sheet });
 			}
 		} catch (e) {
-			if (viewerPathRef.current === p) {
+			if (viewerPathRef.current === p && sheetGenRef.current === gen) {
 				setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
 			}
 		}

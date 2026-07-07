@@ -33,7 +33,7 @@ const openSockets: WebSocket[] = [];
 afterEach(() => { for (const ws of openSockets.splice(0)) { try { ws.close(); } catch { /* ignore */ } } });
 
 /** miniflare の WebSocket を SocketLike に適合させる（accept後に onopen を発火）。 */
-function socketFactory(url: string): SocketLike {
+function socketFactory(url: string, protocols?: string | string[]): SocketLike {
 	// SELF.fetch は Promise。SocketLike は同期生成を期待するので、接続確立を内部で橋渡しする。
 	const listeners: Partial<Record<'open' | 'close' | 'error' | 'message', ((arg?: unknown) => void)>> = {};
 	let realWs: WebSocket | undefined;
@@ -44,7 +44,12 @@ function socketFactory(url: string): SocketLike {
 		onopen: null, onclose: null, onerror: null, onmessage: null,
 	};
 	void listeners;
-	SELF.fetch(url, { headers: { Upgrade: 'websocket' } }).then(res => {
+	// finding #7: 認証トークンは Sec-WebSocket-Protocol サブプロトコルで送る（実RNトランスポート相当）。
+	const headers: Record<string, string> = { Upgrade: 'websocket' };
+	if (protocols !== undefined) {
+		headers['Sec-WebSocket-Protocol'] = Array.isArray(protocols) ? protocols.join(', ') : protocols;
+	}
+	SELF.fetch(url, { headers }).then(res => {
 		if (res.status !== 101 || !res.webSocket) {
 			like.onerror?.(new Error(`ws failed: ${res.status}`));
 			return;

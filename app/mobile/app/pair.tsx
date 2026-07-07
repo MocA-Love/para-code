@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -18,6 +18,7 @@ import { useAppStore } from '../src/appState.js';
 export default function PairScreen() {
 	const router = useRouter();
 	const pairFromUri = useAppStore(s => s.pairFromUri);
+	const cancelPairing = useAppStore(s => s.cancelPairing);
 	const [permission, requestPermission] = useCameraPermissions();
 	const [sas, setSas] = useState<string | undefined>();
 	const [error, setError] = useState<string | undefined>();
@@ -25,6 +26,12 @@ export default function PairScreen() {
 	const [pasteMode, setPasteMode] = useState(false);
 	const [pastedUri, setPastedUri] = useState('');
 	const [connecting, setConnecting] = useState(false);
+
+	// 画面を閉じたら進行中のペアリングを中断する（無応答ソケットの残留と、
+	// 離脱後に裏で接続が成立してしまうのを防ぐ）。
+	useEffect(() => {
+		return () => { cancelPairing(); };
+	}, [cancelPairing]);
 
 	const connect = async (uri: string) => {
 		setError(undefined);

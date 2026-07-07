@@ -53,10 +53,11 @@ export async function persistNotifyKey(hex: string): Promise<void> {
 }
 
 /** React Native の global WebSocket を使う SocketFactory。 */
-export const rnSocketFactory: SocketFactory = (url: string): SocketLike => {
+export const rnSocketFactory: SocketFactory = (url: string, protocols?: string | string[]): SocketLike => {
 	// RN の WebSocket は onopen/onmessage/onclose/onerror を持ち、SocketLike と互換。
 	// binaryType は 'arraybuffer' を指定してバイナリを ArrayBuffer で受ける。
-	const ws = new WebSocket(url);
+	// protocols は認証トークンを載せる Sec-WebSocket-Protocol サブプロトコル（finding #7）。
+	const ws = new WebSocket(url, protocols);
 	return ws as unknown as SocketLike;
 };
 

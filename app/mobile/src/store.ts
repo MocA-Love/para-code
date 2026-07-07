@@ -572,6 +572,22 @@ export class MobileController {
 		if (frame.ch === 'state') {
 			try {
 				this.state.workspace = JSON.parse(decoder.decode(frame.payload)) as WorkspaceState;
+				// 切断中に exit 通知を取り逃したケースに備え、現存しないターミナルの
+				// terminalOutput / agentChats エントリを掃除する。
+				const live = new Set(this.state.workspace.terminals.map(t => t.id));
+				for (const id of this.state.terminalOutput.keys()) {
+					if (!live.has(id)) {
+						this.state.terminalOutput.delete(id);
+					}
+				}
+				for (const id of this.state.agentChats.keys()) {
+					if (!live.has(id)) {
+						this.state.agentChats.delete(id);
+						if (this.attachedAgentId === id) {
+							this.attachedAgentId = undefined;
+						}
+					}
+				}
 				this.emit();
 			} catch { /* ignore malformed */ }
 		} else if (frame.ch === 'term') {
@@ -586,6 +602,12 @@ export class MobileController {
 					this.emit();
 				} else if (msg.t === 'exit') {
 					this.state.terminalOutput.delete(msg.id);
+					// 閉じたターミナルは二度と再attachされないため、チャット履歴も掃除する。
+					// （放置すると agentChats に使い捨てターミナル分のチャットが蓄積し続ける）
+					this.state.agentChats.delete(msg.id);
+					if (this.attachedAgentId === msg.id) {
+						this.attachedAgentId = undefined;
+					}
 					this.emit();
 				}
 			} catch { /* ignore */ }

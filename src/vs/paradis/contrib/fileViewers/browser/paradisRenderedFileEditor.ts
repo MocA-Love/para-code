@@ -319,6 +319,11 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 		if (mode === 'raw') {
 			await this._ensureRawEditor(resource);
+			// await 中に別ファイルへ切り替わっていたら、古い継続で DOM/フォーカスを触らない
+			// (新入力側が設定した表示状態を古い mode のまま上書きしないようにする)。
+			if (!isEqual(this._currentResource, resource)) {
+				return;
+			}
 		}
 		// Raw エディタは active クラス(visibility)で表示切替。Rendered(webview overlay)は claim/release で制御する。
 		this._editorContainer?.classList.toggle('active', mode === 'raw');

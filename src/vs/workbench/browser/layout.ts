@@ -635,7 +635,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		const activityBar = this.getPart(Parts.ACTIVITYBAR_PART);
 		const sideBar = this.getPart(Parts.SIDEBAR_PART);
 		const auxiliaryBar = this.getPart(Parts.AUXILIARYBAR_PART);
-		const auxiliaryActivityBar = this.getPart(Parts.AUXILIARY_ACTIVITYBAR_PART); // PARA-PATCH
+		const auxiliaryActivityBar = this.getPart(Parts.AUXILIARY_ACTIVITYBAR_PART); // PARA-PATCH: reposition the aux activity bar together with the other parts on side bar position change
 		const newPositionValue = (position === Position.LEFT) ? 'left' : 'right';
 		const oldPositionValue = (position === Position.RIGHT) ? 'left' : 'right';
 		const panelAlignment = this.getPanelAlignment();
@@ -647,7 +647,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		const activityBarContainer = assertReturnsDefined(activityBar.getContainer());
 		const sideBarContainer = assertReturnsDefined(sideBar.getContainer());
 		const auxiliaryBarContainer = assertReturnsDefined(auxiliaryBar.getContainer());
-		const auxiliaryActivityBarContainer = assertReturnsDefined(auxiliaryActivityBar.getContainer()); // PARA-PATCH
+		const auxiliaryActivityBarContainer = assertReturnsDefined(auxiliaryActivityBar.getContainer()); // PARA-PATCH: mirror the sidebar-position CSS classes onto the aux activity bar container
 		activityBarContainer.classList.remove(oldPositionValue);
 		sideBarContainer.classList.remove(oldPositionValue);
 		activityBarContainer.classList.add(newPositionValue);
@@ -665,7 +665,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		activityBar.updateStyles();
 		sideBar.updateStyles();
 		auxiliaryBar.updateStyles();
-		auxiliaryActivityBar.updateStyles(); // PARA-PATCH
+		auxiliaryActivityBar.updateStyles(); // PARA-PATCH: refresh aux activity bar styles alongside the other parts after repositioning
 
 		// Move activity bar and side bars
 		this.adjustPartPositions(position, panelAlignment, panelPosition);
@@ -1414,7 +1414,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			const isPanelHorizontal = isHorizontal(this.getPanelPosition());
 			const takenWidth =
 				(this.isVisible(Parts.ACTIVITYBAR_PART) ? this.activityBarPartView.minimumWidth : 0) +
-				(this.isVisible(Parts.AUXILIARY_ACTIVITYBAR_PART) ? this.auxiliaryActivityBarPartView.minimumWidth : 0) + // PARA-PATCH
+				(this.isVisible(Parts.AUXILIARY_ACTIVITYBAR_PART) ? this.auxiliaryActivityBarPartView.minimumWidth : 0) + // PARA-PATCH: reserve the aux activity bar width in the taken-width budget
 				(this.isVisible(Parts.SIDEBAR_PART) ? this.sideBarPartView.minimumWidth : 0) +
 				(this.isVisible(Parts.PANEL_PART) && !isPanelHorizontal ? this.panelPartView.minimumWidth : 0) +
 				(this.isVisible(Parts.AUXILIARYBAR_PART) ? this.auxiliaryBarPartView.minimumWidth : 0);
@@ -1639,7 +1639,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		const bannerPart = this.getPart(Parts.BANNER_PART);
 		const editorPart = this.getPart(Parts.EDITOR_PART);
 		const activityBar = this.getPart(Parts.ACTIVITYBAR_PART);
-		const auxiliaryActivityBar = this.getPart(Parts.AUXILIARY_ACTIVITYBAR_PART); // PARA-PATCH
+		const auxiliaryActivityBar = this.getPart(Parts.AUXILIARY_ACTIVITYBAR_PART); // PARA-PATCH: include the aux activity bar when building the workbench grid
 		const panelPart = this.getPart(Parts.PANEL_PART);
 		const auxiliaryBarPart = this.getPart(Parts.AUXILIARYBAR_PART);
 		const sideBar = this.getPart(Parts.SIDEBAR_PART);
@@ -1650,7 +1650,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		this.bannerPartView = bannerPart;
 		this.sideBarPartView = sideBar;
 		this.activityBarPartView = activityBar;
-		this.auxiliaryActivityBarPartView = auxiliaryActivityBar; // PARA-PATCH
+		this.auxiliaryActivityBarPartView = auxiliaryActivityBar; // PARA-PATCH: store the aux activity bar view reference for grid layout
 		this.editorPartView = editorPart;
 		this.panelPartView = panelPart;
 		this.auxiliaryBarPartView = auxiliaryBarPart;
@@ -1658,7 +1658,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		const viewMap: Record<string, ISerializableView> = {
 			[Parts.ACTIVITYBAR_PART]: this.activityBarPartView,
-			[Parts.AUXILIARY_ACTIVITYBAR_PART]: this.auxiliaryActivityBarPartView, // PARA-PATCH
+			[Parts.AUXILIARY_ACTIVITYBAR_PART]: this.auxiliaryActivityBarPartView, // PARA-PATCH: register the aux activity bar in the part view map
 			[Parts.BANNER_PART]: this.bannerPartView,
 			[Parts.TITLEBAR_PART]: this.titleBarPartView,
 			[Parts.EDITOR_PART]: this.editorPartView,
@@ -2719,7 +2719,7 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		const middleSection: ISerializedNode[] = this.arrangeMiddleSectionNodes({
 			activityBar: activityBarNode,
-			auxiliaryActivityBar: auxiliaryActivityBarNode, // PARA-PATCH
+			auxiliaryActivityBar: auxiliaryActivityBarNode, // PARA-PATCH: pass the aux activity bar node into the middle-section arrangement
 			auxiliaryBar: auxiliaryBarNode,
 			editor: editorNode,
 			panel: panelNode,

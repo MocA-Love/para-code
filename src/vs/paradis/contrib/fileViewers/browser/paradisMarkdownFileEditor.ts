@@ -13,6 +13,7 @@
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { escape } from '../../../../base/common/strings.js';
 import { dirname } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
@@ -72,7 +73,9 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		const nonce = generateUuid();
 		const dir = dirname(resource);
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
-		const baseHref = asWebviewUri(dir, remoteInfo).toString(true);
+		// skipEncoding=true は `"` 等をそのまま残すため、属性値に埋める前に HTML エスケープする
+		// (" を含むディレクトリ名で <base href> 属性を突き破る任意マークアップ注入を防ぐ)。
+		const baseHref = escape(asWebviewUri(dir, remoteInfo).toString(true)).replace(/"/g, '&quot;');
 
 		const colorMap = TokenizationRegistry.getColorMap();
 		const tokenCss = colorMap ? generateTokensCSSForColorMap(colorMap) : '';

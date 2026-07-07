@@ -81,11 +81,16 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	private readonly _headerDisposables = this._register(new DisposableStore());
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
+	// タブ描画は _renderTabs のたびに DOM とリスナーを作り直すため、入力単位の store ではなく
+	// 描画単位の専用 store で管理する(旧タブのリスナー/切り離し済み DOM を都度解放する)。
+	private readonly _tabsDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _overlayRaf = this._register(new MutableDisposable());
 	private readonly _overlayTriggers = this._register(new MutableDisposable<DisposableStore>());
 	private _currentResource: URI | undefined;
 	private _sheets: readonly IParadisSheetData[] = [];
 	private _activeSheetIndex = 0;
+	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
+	private _loadGeneration = 0;
 
 	constructor(
 		group: IEditorGroup,
@@ -162,17 +167,19 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	}
 
 	private async _load(resource: URI, token: CancellationToken): Promise<void> {
+		const generation = ++this._loadGeneration;
 		this._renderMessage(localize('paradis.spreadsheet.loading', "Loading spreadsheet..."));
 		let workbook: IParadisWorkbookData;
 		try {
 			workbook = await parseSpreadsheetResource(this._fileService, this._sharedProcessService, resource);
 		} catch (err) {
-			if (!token.isCancellationRequested && isEqual(this._currentResource, resource)) {
+			if (generation === this._loadGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource)) {
 				this._renderMessage(localize('paradis.spreadsheet.error', "Failed to open spreadsheet: {0}", err instanceof Error ? err.message : String(err)));
 			}
 			return;
 		}
-		if (token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
+		// 応答の逆順到着で古い結果が新しい結果を上書きしないよう、最新ロードでなければ破棄する。
+		if (generation !== this._loadGeneration || token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
 			return;
 		}
 		this._sheets = workbook.sheets;
@@ -408,6 +415,9 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			return;
 		}
 		dom.clearNode(this._tabsEl);
+		// 旧タブのクリックリスナー(と切り離し済み DOM への参照)を解放してから描画し直す。
+		const tabsStore = new DisposableStore();
+		this._tabsDisposables.value = tabsStore;
 		if (this._sheets.length <= 1) {
 			this._tabsEl.style.display = 'none';
 			return;
@@ -430,7 +440,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			}
 			const label = dom.append(tab, $('span'));
 			label.textContent = sheet.name;
-			this._inputDisposables.value?.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
+			tabsStore.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
 				if (this._activeSheetIndex === idx) {
 					return;
 				}
@@ -501,6 +511,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 
 	override clearInput(): void {
 		this._inputDisposables.clear();
+		this._tabsDisposables.clear();
 		this._overlayRaf.clear();
 		this._overlayTriggers.clear();
 		this._dataRowEls = [];

@@ -14,7 +14,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 
 interface ISerializedKnownWorktree {
 	readonly repositoryId: string;
@@ -91,6 +91,9 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		const before = this._known.length;
 		this._known = this._known.filter(known => !(known.repositoryId === worktree.repositoryId && known.path === worktree.uri.toString()));
 		if (this._known.length !== before) {
+			// この worktree の切り替えスコープ状態 (working set / パネル / SCM入力 / park 中ターミナル)
+			// を破棄する。二度と開かれないキーの状態が WORKSPACE ストレージに残り続けるのを防ぐ。
+			this.workspaceSwitchService.discardScopeState(paradisWorktreeStateKey(worktree.uri));
 			this.saveKnown();
 			this._refreshScheduler.schedule();
 		}
@@ -170,6 +173,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 				if (!scannedPaths.has(known.path)) {
 					if (autoRemove) {
 						this._known = this._known.filter(candidate => candidate !== known);
+						this.workspaceSwitchService.discardScopeState(paradisWorktreeStateKey(URI.parse(known.path)));
 						knownChanged = true;
 					} else {
 						list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), missing: true });
@@ -181,11 +185,15 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			result.set(repository.id, list);
 		}
 
-		// 登録解除されたリポジトリの既知エントリを掃除
+		// 登録解除されたリポジトリの既知エントリを掃除 (親リポジトリごと消えた worktree も
+		// スコープ状態を破棄する。リポジトリ削除で連鎖的に到達不能になるため)
 		const repositoryIds = new Set(repositories.map(repository => repository.id));
-		const beforeCount = this._known.length;
-		this._known = this._known.filter(known => repositoryIds.has(known.repositoryId));
-		if (this._known.length !== beforeCount) {
+		const orphanedKnown = this._known.filter(known => !repositoryIds.has(known.repositoryId));
+		if (orphanedKnown.length > 0) {
+			this._known = this._known.filter(known => repositoryIds.has(known.repositoryId));
+			for (const known of orphanedKnown) {
+				this.workspaceSwitchService.discardScopeState(paradisWorktreeStateKey(URI.parse(known.path)));
+			}
 			knownChanged = true;
 		}
 

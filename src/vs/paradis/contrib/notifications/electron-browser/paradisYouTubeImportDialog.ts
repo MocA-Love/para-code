@@ -10,7 +10,7 @@
 // url → (未導入なら)インストールログ表示 → ダウンロード → 波形エディタ、の4ステップ構成。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -69,6 +69,9 @@ class ParadisYouTubeImportDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _dialog: HTMLElement;
+	// ステップ再描画のたびに破棄済みDOMのリスナが蓄積しないよう、ステップ単位で束ねて
+	// 各 _renderXxxStep 冒頭で clear する（設定ダイアログ本体の _renderDisposables と同方式）。
+	private readonly _stepDisposables = this._register(new DisposableStore());
 	private _step: Step = 'url';
 	private _downloaded: IParadisYouTubeDownloadResult | undefined;
 	private _audioEditor: ParadisAudioEditor | undefined;
@@ -105,6 +108,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 
 	private _renderUrlStep(initialError?: string): void {
 		this._step = 'url';
+		this._stepDisposables.clear();
 		dom.clearNode(this._dialog);
 		this._dialog.classList.remove('wide');
 		dom.append(this._dialog, $('h3')).textContent = STR_TITLE;
@@ -135,7 +139,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 		const footer = dom.append(this._dialog, $('.pns-nested-footer'));
 		const cancelBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
 		cancelBtn.textContent = STR_CANCEL;
-		this._register(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
+		this._stepDisposables.add(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
 
 		const loadBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary')) as HTMLButtonElement;
 		loadBtn.textContent = STR_LOAD;
@@ -148,8 +152,8 @@ class ParadisYouTubeImportDialog extends Disposable {
 			}
 			this._renderDownloadingStep(url);
 		};
-		this._register(dom.addDisposableListener(loadBtn, 'click', doLoad));
-		this._register(dom.addDisposableListener(urlInput, 'keydown', e => {
+		this._stepDisposables.add(dom.addDisposableListener(loadBtn, 'click', doLoad));
+		this._stepDisposables.add(dom.addDisposableListener(urlInput, 'keydown', e => {
 			if (e.key === 'Enter') {
 				doLoad();
 			}
@@ -164,12 +168,13 @@ class ParadisYouTubeImportDialog extends Disposable {
 			const installBtn = dom.append(notice, $('button.pns-btn')) as HTMLButtonElement;
 			installBtn.textContent = STR_INSTALL_HOMEBREW;
 			installBtn.style.marginTop = '6px';
-			this._register(dom.addDisposableListener(installBtn, 'click', () => this._renderInstallingStep()));
+			this._stepDisposables.add(dom.addDisposableListener(installBtn, 'click', () => this._renderInstallingStep()));
 		}
 	}
 
 	private _renderInstallingStep(): void {
 		this._step = 'installing';
+		this._stepDisposables.clear();
 		dom.clearNode(this._dialog);
 		dom.append(this._dialog, $('h3')).textContent = STR_INSTALLING_TITLE;
 
@@ -179,7 +184,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 		const backBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
 		backBtn.textContent = STR_BACK;
 		backBtn.style.display = 'none';
-		this._register(dom.addDisposableListener(backBtn, 'click', () => this._renderUrlStep()));
+		this._stepDisposables.add(dom.addDisposableListener(backBtn, 'click', () => this._renderUrlStep()));
 
 		const installId = generateUuid();
 		let lastSeq = 0;
@@ -214,6 +219,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 
 	private _renderDownloadingStep(url: string): void {
 		this._step = 'downloading';
+		this._stepDisposables.clear();
 		dom.clearNode(this._dialog);
 		dom.append(this._dialog, $('h3')).textContent = STR_TITLE;
 		dom.append(this._dialog, $('.pns-nested-desc')).textContent = STR_DOWNLOADING;
@@ -234,12 +240,13 @@ class ParadisYouTubeImportDialog extends Disposable {
 
 	private _renderEditorStep(url: string, downloaded: IParadisYouTubeDownloadResult): void {
 		this._step = 'editor';
+		this._stepDisposables.clear();
 		dom.clearNode(this._dialog);
 		this._dialog.classList.add('wide');
 		dom.append(this._dialog, $('h3')).textContent = STR_TITLE;
 
 		const editorContainer = dom.append(this._dialog, $('div'));
-		this._audioEditor = this._register(new ParadisAudioEditor(editorContainer, {
+		this._audioEditor = this._stepDisposables.add(new ParadisAudioEditor(editorContainer, {
 			tempId: downloaded.tempId,
 			videoTitle: downloaded.info.title,
 			totalDuration: downloaded.info.durationSeconds,
@@ -251,11 +258,11 @@ class ParadisYouTubeImportDialog extends Disposable {
 		const footer = dom.append(this._dialog, $('.pns-nested-footer'));
 		const cancelBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
 		cancelBtn.textContent = STR_CANCEL;
-		this._register(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
+		this._stepDisposables.add(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
 
 		const importBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary')) as HTMLButtonElement;
 		importBtn.textContent = STR_IMPORT;
-		this._register(dom.addDisposableListener(importBtn, 'click', async () => {
+		this._stepDisposables.add(dom.addDisposableListener(importBtn, 'click', async () => {
 			if (!this._audioEditor) {
 				return;
 			}
@@ -281,7 +288,9 @@ class ParadisYouTubeImportDialog extends Disposable {
 			};
 			try {
 				await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('renderClip', [request]);
-				this._downloaded = undefined; // renderClip完了後は cleanupTempAudio 不要 (取り込み済み)
+				// renderClip は再編集用にソースを assets へコピー済みなので temp は不要。
+				// _downloaded は残したまま dispose() に cleanupTempAudio させ、
+				// ダウンロード元 (paradis-ytfull-*) と _tempAudio エントリを確実に解放する。
 				this.onImported();
 				this.dispose();
 			} catch (error) {

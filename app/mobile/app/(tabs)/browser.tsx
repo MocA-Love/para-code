@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, GestureResponderEvent, Image, LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -38,10 +38,27 @@ export default function BrowserScreen() {
 		}
 	}, [browserTargets, connection]);
 
+	// ターゲット一覧の読み込みは接続状態に追従させる。
 	useEffect(() => {
 		void loadTargets();
-		return () => { void browserStop(); };
-	}, [loadTargets, browserStop]);
+	}, [loadTargets]);
+
+	// screencast の停止は画面のアンマウント時にだけ送る。接続の瞬断で
+	// loadTargets が作り直されても stop が飛ばないよう、この effect は依存を持たず
+	// browserStop は ref 経由で参照する（再接続時にミラーが止まる不具合の防止）。
+	const browserStopRef = useRef(browserStop);
+	browserStopRef.current = browserStop;
+	useEffect(() => {
+		return () => { void browserStopRef.current(); };
+	}, []);
+
+	// 接続が切れたらミラー表示を畳んでターゲット選択に戻す
+	// （復帰時に古い activeUrl のままスピナーで固まるのを防ぐ）。
+	useEffect(() => {
+		if (connection !== 'online') {
+			setActiveUrl(undefined);
+		}
+	}, [connection]);
 
 	const start = async (targetId: string, url: string) => {
 		setError(undefined);
