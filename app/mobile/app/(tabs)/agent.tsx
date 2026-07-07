@@ -105,18 +105,32 @@ export default function AgentScreen() {
 		setTimeout(() => send('\r'), 250);
 	};
 
-	/**
-	 * 質問(AskUserQuestion)への回答。TUIの選択プロンプトは番号キーで選択肢へジャンプするため、
-	 * 承認注入と同じ「番号 → 250ms → CR」方式で選んで確定する（複数質問タブは回答すると
-	 * 自動で次のタブへ進むので、順に回答すれば最後に Submit される）。
-	 */
-	const answerQuestion = (optionIndex: number) => {
+	/** キー列を一定間隔（300ms）でPTYへ注入する（TUIが1入力ずつ処理する時間を確保する）。 */
+	const sendSequence = (parts: string[]) => {
 		if (activeId === undefined) {
 			return;
 		}
-		send(String(optionIndex + 1));
-		setTimeout(() => send('\r'), 250);
+		parts.forEach((part, i) => setTimeout(() => send(part), i * 300));
 	};
+
+	/**
+	 * 質問(AskUserQuestion)への回答。TUIの選択プロンプトは番号キーで選択肢へジャンプするため、
+	 * 承認注入と同じ「番号 → CR」方式で選んで確定する（複数質問タブは回答すると
+	 * 自動で次のタブへ進むので、順に回答すれば最後に Submit される）。
+	 */
+	const answerQuestion = (optionIndex: number) => sendSequence([String(optionIndex + 1), '\r']);
+
+	/** 複数選択(multiSelect)の質問: 番号でジャンプしてスペースでトグルする（確定はしない）。 */
+	const toggleQuestionOption = (optionIndex: number) => sendSequence([String(optionIndex + 1), ' ']);
+
+	/** 複数選択(multiSelect)の質問の確定（Enter）。 */
+	const confirmQuestion = () => sendSequence(['\r']);
+
+	/**
+	 * 自由入力での回答。AskUserQuestion のTUIは選択肢の末尾に常に「Other」（自由入力）を
+	 * 持つため、「Otherの番号 → CR（入力欄が開く） → テキスト → CR（確定）」を注入する。
+	 */
+	const answerQuestionFreeText = (optionCount: number, text: string) => sendSequence([String(optionCount + 1), '\r', text, '\r']);
 
 	/** 承認クイックアクション。Claudeは番号+250ms+CR、Codexはショートカット1文字。 */
 	const approve = (choice: 'yes' | 'no') => {
@@ -185,7 +199,7 @@ export default function AgentScreen() {
 						ListFooterComponent={activeTerminal?.agentStatus === 'working' ? <WorkingIndicator /> : null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} />
-								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={answerQuestion} />
+								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={answerQuestion} onToggle={toggleQuestionOption} onConfirm={confirmQuestion} onFreeText={answerQuestionFreeText} />
 									: <ActivityGroup msgs={item.msgs} />}
 						contentContainerStyle={styles.listContent}
 					/>
@@ -283,36 +297,102 @@ function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
 }
 
 /**
- * 質問カード（Claude Code の AskUserQuestion 等）。選択肢をタップすると番号+Enterを
- * PTYへ注入して回答する。同じ toolUseId の tool_result が届いたら回答済み表示になる。
+ * 質問カード（Claude Code の AskUserQuestion 等）。
+ *  - 単一選択: 選択肢タップで番号+EnterをPTYへ注入して即回答
+ *  - 複数選択(multiSelect): タップでトグル（番号+スペース注入）し、「決定」でEnter注入
+ *  - 自由入力: カード内の入力欄からTUIの「Other」（常に選択肢の末尾に存在）経由で回答
+ * 同じ toolUseId の tool_result が届いたら回答済み表示になる。
  */
-function QuestionCard({ message, answered, onAnswer }: { message: AgentChatMessage; answered: boolean; onAnswer: (optionIndex: number) => void }) {
+function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm, onFreeText }: {
+	message: AgentChatMessage;
+	answered: boolean;
+	onAnswer: (optionIndex: number) => void;
+	onToggle: (optionIndex: number) => void;
+	onConfirm: () => void;
+	onFreeText: (optionCount: number, text: string) => void;
+}) {
 	// 二度押し防止のローカル状態（tool_result が届くまでの間）
 	const [selected, setSelected] = useState<number | undefined>(undefined);
-	const disabled = answered || selected !== undefined;
+	const [toggled, setToggled] = useState<Set<number>>(new Set());
+	const [freeText, setFreeText] = useState('');
+	const [submitted, setSubmitted] = useState(false);
+	const multiSelect = message.multiSelect === true;
+	const options = message.options ?? [];
+	const disabled = answered || submitted || (!multiSelect && selected !== undefined);
+	const isToggled = (i: number) => toggled.has(i);
+	const toggle = (i: number) => {
+		setToggled(prev => {
+			const next = new Set(prev);
+			if (next.has(i)) {
+				next.delete(i);
+			} else {
+				next.add(i);
+			}
+			return next;
+		});
+		onToggle(i);
+	};
 	return (
 		<View style={[styles.questionCard, answered && styles.questionCardAnswered]}>
 			<View style={styles.questionHeader}>
 				<Ionicons name="help-circle" size={16} color={answered ? colors.textDim : colors.accent2} />
 				{message.header ? <Text style={styles.questionChip}>{message.header}</Text> : null}
+				{multiSelect ? <Text style={styles.questionChip}>複数選択可</Text> : null}
 				{answered ? <Text style={styles.questionAnswered}>回答済み</Text> : null}
 			</View>
 			<Text style={styles.questionText} selectable>{message.text}</Text>
-			{(message.options ?? []).map((option, i) => (
+			{options.map((option, i) => (
 				<Pressable
 					key={i}
-					style={[styles.questionOption, selected === i && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
+					style={[styles.questionOption, (multiSelect ? isToggled(i) : selected === i) && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
 					disabled={disabled}
-					onPress={() => { setSelected(i); onAnswer(i); }}
+					onPress={() => {
+						if (multiSelect) {
+							toggle(i);
+						} else {
+							setSelected(i);
+							onAnswer(i);
+						}
+					}}
 				>
-					<Text style={styles.questionOptionLabel}>{i + 1}. {option.label}</Text>
+					<Text style={styles.questionOptionLabel}>{multiSelect ? (isToggled(i) ? '☑' : '☐') : `${i + 1}.`} {option.label}</Text>
 					{option.description ? <Text style={styles.questionOptionDesc} numberOfLines={3}>{option.description}</Text> : null}
 				</Pressable>
 			))}
-			{!answered && (message.options ?? []).length === 0 ? (
-				<Text style={styles.approvalHint}>選択肢を取得できませんでした。ターミナルタブで回答してください</Text>
+			{multiSelect && !disabled ? (
+				<Pressable
+					style={[styles.questionConfirmBtn, toggled.size === 0 && styles.sendBtnDisabled]}
+					disabled={toggled.size === 0}
+					onPress={() => { setSubmitted(true); onConfirm(); }}
+				>
+					<Text style={styles.approvalBtnText}>決定（{toggled.size}件）</Text>
+				</Pressable>
 			) : null}
-			{!disabled ? <Text style={styles.approvalHint}>タップで回答（自由入力は下の入力欄から送れます）</Text> : null}
+			{!disabled ? (
+				<View style={styles.questionFreeRow}>
+					<TextInput
+						style={styles.questionFreeInput}
+						value={freeText}
+						onChangeText={setFreeText}
+						placeholder="自由に入力して回答…"
+						placeholderTextColor={colors.textDim}
+						autoCapitalize="none"
+						autoCorrect={false}
+					/>
+					<Pressable
+						style={[styles.questionFreeSend, freeText.trim().length === 0 && styles.sendBtnDisabled]}
+						disabled={freeText.trim().length === 0}
+						onPress={() => { setSubmitted(true); onFreeText(options.length, freeText.trim()); }}
+						accessibilityLabel="自由入力で回答"
+					>
+						<Ionicons name="arrow-up" size={16} color="#fff" />
+					</Pressable>
+				</View>
+			) : null}
+			{!answered && options.length === 0 ? (
+				<Text style={styles.approvalHint}>選択肢を取得できませんでした。TUI側と番号がずれる可能性があるため、ターミナルタブでの回答が確実です</Text>
+			) : null}
+			{!disabled && options.length > 0 ? <Text style={styles.approvalHint}>{multiSelect ? 'タップで選択し「決定」で回答します' : 'タップで回答します'}</Text> : null}
 		</View>
 	);
 }
@@ -422,6 +502,10 @@ const styles = StyleSheet.create({
 	questionOptionDisabled: { opacity: 0.6 },
 	questionOptionLabel: { color: colors.text, fontSize: 13, fontWeight: '500' },
 	questionOptionDesc: { color: colors.textDim, fontSize: 11, lineHeight: 15 },
+	questionConfirmBtn: { backgroundColor: colors.accent2, borderRadius: 8, paddingVertical: 9, alignItems: 'center' },
+	questionFreeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+	questionFreeInput: { flex: 1, backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 12, paddingHorizontal: 10, paddingVertical: 8 },
+	questionFreeSend: { backgroundColor: colors.accent2, borderRadius: 8, width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },
 	workingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
 	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
 	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4 },

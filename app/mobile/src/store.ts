@@ -131,6 +131,8 @@ export interface AgentChatMessage {
 	header?: string;
 	/** kind==='question': 選択肢（表示順 = TUIの番号キー割り当て順）。 */
 	options?: AgentQuestionOption[];
+	/** kind==='question': 複数選択可能な質問か（TUIではトグル選択 + Enter確定）。 */
+	multiSelect?: boolean;
 	/** kind==='question' | 'tool_result': 対応付け用ID。同IDの tool_result が後続にあれば回答済み。 */
 	toolUseId?: string;
 }

@@ -57,6 +57,8 @@ export interface IParadisAgentChatMessage {
 	readonly header?: string;
 	/** kind==='question' のとき: 選択肢（TUIの表示順 = 番号キーの割り当て順）。 */
 	readonly options?: readonly IParadisAgentQuestionOption[];
+	/** kind==='question' のとき: 複数選択可能な質問か（TUIではトグル選択 + Enter確定）。 */
+	readonly multiSelect?: boolean;
 	/** kind==='question' | 'tool_result' のとき: 対応付け用の tool_use ID。
 	 *  同じIDの tool_result が後続に現れたら質問は回答済み（モバイルはUIを非活性化する）。 */
 	readonly toolUseId?: string;
@@ -143,6 +145,7 @@ interface IRawMessage {
 	readonly ts?: number;
 	readonly header?: string;
 	readonly options?: readonly IParadisAgentQuestionOption[];
+	readonly multiSelect?: boolean;
 	readonly toolUseId?: string;
 }
 
@@ -235,6 +238,7 @@ function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts
 			role: 'assistant', kind: 'question', text: truncateText(questionText, TEXT_LIMIT), ts,
 			...(str(q['header']) !== undefined ? { header: str(q['header']) } : {}),
 			...(options.length > 0 ? { options } : {}),
+			...(q['multiSelect'] === true ? { multiSelect: true } : {}),
 			...(toolUseId !== undefined ? { toolUseId } : {}),
 		});
 	}
