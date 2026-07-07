@@ -58,6 +58,23 @@ export const PARADIS_AGENT_BROWSER_CHANNEL = 'paradisAgentBrowser';
 export const PARADIS_CDP_TARGET_CHANNEL = 'paradisCdpTarget';
 
 /**
+ * workbenchウィンドウが shared process の IPCServer へ登録する、ファイルプレビュー
+ * オープン用IPCチャネル名。shared process 側（MCPの `preview_file` ツール）が
+ * `ipcServer.getChannel(名前, ctxフィルタ)` で「呼び出し元ペインのウィンドウ」だけに
+ * ルーティングして呼び出す（逆方向は使わない）。
+ */
+export const PARADIS_AGENT_PREVIEW_CHANNEL = 'paradisAgentPreview';
+
+/**
+ * {@link PARADIS_AGENT_PREVIEW_CHANNEL} の `previewFile` 呼び出し結果。
+ * error は LLM がそのまま読む英語メッセージ。
+ */
+export interface IParadisPreviewFileResult {
+	readonly ok: boolean;
+	readonly error?: string;
+}
+
+/**
  * electron-main のフレーム購読(beginFrameSubscription)が発火する1フレーム
  * （{@link PARADIS_CDP_TARGET_CHANNEL} の `onDidFrame` イベントのペイロード）。
  */
