@@ -11,7 +11,7 @@
  */
 
 import type { ReactNode } from 'react';
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../theme.js';
 
 type Block =
@@ -73,11 +73,14 @@ function parseBlocks(source: string): Block[] {
 	return blocks;
 }
 
-/** インライン記法（`code` と **bold**）をTextノード列へ変換する。 */
+/** [ラベル](URL) 形式のリンク。http(s) のみタップで開く（他スキームは実行しない）。 */
+const LINK_PATTERN = /\[[^\]\n]+\]\(https?:\/\/[^()\s]+\)/;
+
+/** インライン記法（`code` / **bold** / [リンク](url)）をTextノード列へ変換する。 */
 function renderInline(text: string, baseStyle: object): ReactNode[] {
 	const nodes: ReactNode[] = [];
-	// `code` / **bold** の位置で分割する（ネストは扱わない）
-	const parts = text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g);
+	// `code` / **bold** / [リンク](url) の位置で分割する（ネストは扱わない）
+	const parts = text.split(new RegExp(`(\`[^\`\n]+\`|\\*\\*[^*\n]+\\*\\*|${LINK_PATTERN.source})`, 'g'));
 	parts.forEach((part, i) => {
 		if (part.length === 0) {
 			return;
@@ -86,6 +89,18 @@ function renderInline(text: string, baseStyle: object): ReactNode[] {
 			nodes.push(<Text key={i} style={[baseStyle, styles.inlineCode]}>{part.slice(1, -1)}</Text>);
 		} else if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
 			nodes.push(<Text key={i} style={[baseStyle, styles.bold]}>{part.slice(2, -2)}</Text>);
+		} else if (part.startsWith('[') && LINK_PATTERN.test(part)) {
+			const match = /^\[(?<label>[^\]\n]+)\]\((?<url>https?:\/\/[^()\s]+)\)$/.exec(part);
+			if (match?.groups?.url !== undefined && match.groups.label !== undefined) {
+				const url = match.groups.url;
+				nodes.push(
+					<Text key={i} style={[baseStyle, styles.link]} onPress={() => { void Linking.openURL(url).catch(() => { /* 開けないURLは無視 */ }); }}>
+						{match.groups.label}
+					</Text>
+				);
+			} else {
+				nodes.push(<Text key={i} style={baseStyle}>{part}</Text>);
+			}
 		} else {
 			nodes.push(<Text key={i} style={baseStyle}>{part}</Text>);
 		}
@@ -134,6 +149,7 @@ const styles = StyleSheet.create({
 	root: { gap: 6 },
 	body: { color: colors.text, fontSize: 13, lineHeight: 19 },
 	bold: { fontWeight: '700' },
+	link: { color: '#58a6ff', textDecorationLine: 'underline' },
 	inlineCode: { fontFamily: mono, fontSize: 12, backgroundColor: 'rgba(110,118,129,.25)', borderRadius: 3 },
 	heading: { fontWeight: '700' },
 	h1: { fontSize: 16 },
