@@ -79,6 +79,9 @@ export class DeviceDO implements DurableObject {
 		if (action === 'revoke') {
 			return this.revokeMobile(request);
 		}
+		if (action === 'self-revoke') {
+			return this.selfRevokeMobile(request);
+		}
 		if (request.headers.get('Upgrade') !== 'websocket') {
 			return new Response('expected websocket', { status: 426 });
 		}
@@ -167,6 +170,27 @@ export class DeviceDO implements DurableObject {
 		for (const ws of this.state.getWebSockets(`m:${body.mobileId}`)) {
 			try { ws.close(1000, 'revoked'); } catch { /* ignore */ }
 		}
+		return Response.json({ ok: true });
+	}
+
+	// モバイル(mobileToken保持者)自身によるペアリング解除。トークンは対象 mobileId 本人の
+	// ものと一致する必要があるため、自分の資格情報しか削除できない。
+	private async selfRevokeMobile(request: Request): Promise<Response> {
+		const body = await request.json<{ mobileId?: string }>().catch(() => ({} as { mobileId?: string }));
+		if (typeof body.mobileId !== 'string') {
+			return Response.json({ error: 'missing mobileId' }, { status: 400 });
+		}
+		const record = this.mobile(body.mobileId);
+		const token = extractToken(request);
+		if (!record || token === null || !timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
+			return new Response('unauthorized', { status: 401 });
+		}
+		this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', body.mobileId);
+		for (const ws of this.state.getWebSockets(`m:${body.mobileId}`)) {
+			try { ws.close(1000, 'revoked'); } catch { /* ignore */ }
+		}
+		// PC側にも通知し、PCの登録デバイス一覧から取り除けるようにする。
+		this.sendToPc({ type: 'mobile-revoked', mobileId: body.mobileId });
 		return Response.json({ ok: true });
 	}
 

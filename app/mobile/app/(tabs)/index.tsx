@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -15,11 +15,22 @@ import { colors } from '../../src/theme.js';
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { connection, pcOnline, workspace, paired, ready, notifications, setSelectedWs, setSelectedTerminalId, manualOffline, disconnectRelay, connectRelay } = useAppStore(useShallow(s => ({
+	const { connection, pcOnline, workspace, paired, ready, notifications, setSelectedWs, setSelectedTerminalId, manualOffline, disconnectRelay, connectRelay, unpair } = useAppStore(useShallow(s => ({
 		connection: s.connection, pcOnline: s.pcOnline, workspace: s.workspace, paired: s.paired, ready: s.ready,
 		notifications: s.notifications, setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
-		manualOffline: s.manualOffline, disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay,
+		manualOffline: s.manualOffline, disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay, unpair: s.unpair,
 	})));
+
+	const confirmUnpair = () => {
+		Alert.alert(
+			'ペアリング解除',
+			'このPCとのペアリング情報を削除します。再接続にはPC側でQRコードを再発行してのペアリングが必要です。',
+			[
+				{ text: 'キャンセル', style: 'cancel' },
+				{ text: '解除する', style: 'destructive', onPress: () => { void unpair(); } },
+			],
+		);
+	};
 
 	if (ready && !paired) {
 		return (
@@ -64,17 +75,23 @@ export default function HomeScreen() {
 			<View style={styles.card}>
 				<View style={styles.cardHeader}>
 					<Text style={styles.cardLabel}>接続中のPC</Text>
-					{connection === 'online' ? (
-						<Pressable style={styles.connToggle} onPress={disconnectRelay} accessibilityLabel="切断">
-							<Ionicons name="power-outline" size={12} color={colors.red} />
-							<Text style={styles.connToggleTextOff}>切断</Text>
+					<View style={styles.cardHeaderBtns}>
+						{connection === 'online' ? (
+							<Pressable style={styles.connToggle} onPress={disconnectRelay} accessibilityLabel="切断">
+								<Ionicons name="power-outline" size={12} color={colors.red} />
+								<Text style={styles.connToggleTextOff}>切断</Text>
+							</Pressable>
+						) : (
+							<Pressable style={styles.connToggle} onPress={connectRelay} accessibilityLabel="接続">
+								<Ionicons name="power-outline" size={12} color={colors.green} />
+								<Text style={styles.connToggleTextOn}>接続</Text>
+							</Pressable>
+						)}
+						<Pressable style={styles.connToggle} onPress={confirmUnpair} accessibilityLabel="ペアリング解除">
+							<Ionicons name="trash-outline" size={12} color={colors.textDim} />
+							<Text style={styles.connToggleTextDim}>解除</Text>
 						</Pressable>
-					) : (
-						<Pressable style={styles.connToggle} onPress={connectRelay} accessibilityLabel="接続">
-							<Ionicons name="power-outline" size={12} color={colors.green} />
-							<Text style={styles.connToggleTextOn}>接続</Text>
-						</Pressable>
-					)}
+					</View>
 				</View>
 				<View style={styles.pcRow}>
 					<View style={styles.pcIcon}><Ionicons name="laptop-outline" size={20} color="#fff" /></View>
@@ -173,6 +190,8 @@ const styles = StyleSheet.create({
 	connToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 9, paddingVertical: 4, backgroundColor: colors.surface2 },
 	connToggleTextOff: { color: colors.red, fontSize: 11, fontWeight: '600' },
 	connToggleTextOn: { color: colors.green, fontSize: 11, fontWeight: '600' },
+	connToggleTextDim: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
+	cardHeaderBtns: { flexDirection: 'row', gap: 6 },
 	pcRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
 	pcIcon: { width: 40, height: 40, borderRadius: 10, backgroundColor: colors.accent2, alignItems: 'center', justifyContent: 'center' },
 	pcName: { color: '#fff', fontSize: 15, fontWeight: '600' },

@@ -6,6 +6,8 @@
  * ルーティング（すべて deviceId ベースで DeviceDO へ委譲）:
  *  - POST /device/:deviceId/provision   PC初期登録（PCトークン発行）
  *  - POST /device/:deviceId/pair/begin  ペアリングトークン発行（QR用）
+ *  - POST /device/:deviceId/mobile/revoke        PCによるモバイル失効（pcToken認証）
+ *  - POST /device/:deviceId/mobile/self-revoke   モバイル自身のペアリング解除（mobileToken認証）
  *  - GET  /device/:deviceId/ws?role=pc|mobile|pair&...   WebSocket
  *
  * deviceId は DurableObjectId の文字列表現（`idFromName` ではなく `newUniqueId` を
@@ -86,6 +88,10 @@ export default {
 		}
 		if (request.method === 'POST' && parts[2] === 'mobile' && parts[3] === 'revoke') {
 			return stub.fetch(new Request('https://do/?action=revoke', request));
+		}
+		// モバイル自身によるペアリング解除（mobileToken認証。自分の資格情報のみ削除できる）
+		if (request.method === 'POST' && parts[2] === 'mobile' && parts[3] === 'self-revoke') {
+			return stub.fetch(new Request('https://do/?action=self-revoke', request));
 		}
 		if (parts[2] === 'ws') {
 			const forward = new Request(`https://do/?${url.searchParams.toString()}`, request);
