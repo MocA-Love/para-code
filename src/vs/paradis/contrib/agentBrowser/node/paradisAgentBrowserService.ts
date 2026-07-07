@@ -20,11 +20,11 @@ import { spawn } from 'child_process';
 import { promises as fs, unlinkSync } from 'fs';
 import { homedir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { join } from '../../../../base/common/path.js';
+import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, paradisCountLiveBackgroundTasks } from './paradisAgentHookBus.js';
 import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
@@ -82,6 +82,18 @@ const TOOLS = [
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
+		name: 'preview_file',
+		description: 'Open a file in the Para Code window that owns this terminal pane, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				path: { type: 'string', description: 'Absolute path of the file to open (relative paths are rejected because this server does not share your working directory).' },
+			},
+			required: ['path'],
+			additionalProperties: false,
+		},
+	},
+	{
 		name: 'get_cdp_endpoint',
 		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code. Point chrome-devtools-mcp (--browserUrl) or browser-use (CDP URL) at the returned httpBase to drive the browser page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -122,7 +134,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	constructor(
 		userDataPath: string,
 		private readonly playwrightInvoker: IParadisPlaywrightInvoker,
-		ipcServer: IPCServer<string>,
+		private readonly ipcServer: IPCServer<string>,
 		private readonly mainProcessService: IMainProcessService,
 		private readonly logService: ILogService,
 	) {
@@ -782,16 +794,22 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'tools/list':
 				return { tools: TOOLS };
 			case 'tools/call':
-				return this._callTool(token, rpc.params as { name?: unknown } | undefined);
+				return this._callTool(token, rpc.params as { name?: unknown; arguments?: unknown } | undefined);
 			default:
 				throw new JsonRpcMethodError(-32601, `Method not found: ${rpc.method}`);
 		}
 	}
 
-	private async _callTool(token: string, params: { name?: unknown } | undefined): Promise<unknown> {
+	private async _callTool(token: string, params: { name?: unknown; arguments?: unknown } | undefined): Promise<unknown> {
 		const name = typeof params?.name === 'string' ? params.name : undefined;
 		if (!name || !TOOLS.some(t => t.name === name)) {
 			throw new JsonRpcMethodError(-32602, `Unknown tool: ${String(name)}`);
+		}
+
+		if (name === 'preview_file') {
+			const toolArgs = params?.arguments && typeof params.arguments === 'object' ? params.arguments as Record<string, unknown> : undefined;
+			const path = typeof toolArgs?.path === 'string' ? toolArgs.path : undefined;
+			return this._previewFile(token, path);
 		}
 
 		if (name === 'get_cdp_endpoint') {
@@ -831,6 +849,44 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			default:
 				throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
+		}
+	}
+
+	/**
+	 * `preview_file` ツールの実体。呼び出し元ペインのウィンドウを `_paneShells` で特定し、
+	 * そのウィンドウが登録した {@link PARADIS_AGENT_PREVIEW_CHANNEL} 経由でエディタを開かせる。
+	 * ページ共有（bind）とは独立して、ペイントークンだけで最初から使える。
+	 */
+	private async _previewFile(token: string, path: string | undefined): Promise<unknown> {
+		if (!path || !isAbsolute(path)) {
+			return this._toolError(`preview_file requires an absolute file path (got: ${String(path)}). Resolve the path against your working directory first.`);
+		}
+		const pane = this._paneShells.get(token);
+		if (!pane) {
+			return this._toolError('Para Code could not identify the window that owns this terminal pane (the pane may have just been created, or Para Code was restarted after this CLI started). Retry in a few seconds; if it keeps failing, re-launch this CLI in a terminal pane inside Para Code.');
+		}
+		// getChannel の ctx フィルタは「接続が現れるまで待つ」ため、ウィンドウが既に閉じて
+		// いると永久に解決しない。先に接続の存在を確認し、呼び出し自体にもタイムアウトを張る。
+		if (!this.ipcServer.connections.some(connection => connection.ctx === pane.windowCtx)) {
+			return this._toolError('The Para Code window that owns this terminal pane is not connected (it may have been closed or is reloading). Retry in a few seconds.');
+		}
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const channel = this.ipcServer.getChannel(PARADIS_AGENT_PREVIEW_CHANNEL, client => client.ctx === pane.windowCtx);
+			const result = await Promise.race([
+				channel.call<IParadisPreviewFileResult>('previewFile', [path]),
+				new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timed out after 10s')), 10000); }),
+			]);
+			if (!result.ok) {
+				return this._toolError(result.error ?? 'Failed to open the file in Para Code.');
+			}
+			return this._toolText(`Opened ${path} in the Para Code window that owns this terminal pane.`);
+		} catch (error) {
+			return this._toolError(`Failed to open the file in Para Code: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			if (timer !== undefined) {
+				clearTimeout(timer);
+			}
 		}
 	}
 

@@ -69,6 +69,18 @@ const LOCAL_TOOLS = [
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
+		name: 'preview_file',
+		description: 'Open a file in the Para Code window that owns this terminal pane, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				path: { type: 'string', description: 'Absolute path of the file to open (relative paths are rejected because this server does not share your working directory).' },
+			},
+			required: ['path'],
+			additionalProperties: false,
+		},
+	},
+	{
 		name: 'get_cdp_endpoint',
 		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code. Point chrome-devtools-mcp (--browserUrl) or browser-use (CDP URL) at the returned httpBase to drive the browser page shared with this terminal pane.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
