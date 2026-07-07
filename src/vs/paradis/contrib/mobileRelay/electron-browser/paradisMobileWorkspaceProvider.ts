@@ -249,6 +249,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			const status = this.agentStatusStore.getScopeStatus(stateKey);
 			const prev = this.previousScopeStatus.get(stateKey);
 			if (status && status !== prev) {
+				// 'question' (AskUserQuestion) はここでは通知しない: shared process の
+				// transcript ミラーが質問本文・選択肢つきの通知を別経路で全モバイルへ
+				// 送るため、状態遷移ベースの汎用通知と二重になるのを防ぐ。
 				if (status === 'permission' || status === 'review') {
 					this.emitNotify(status === 'permission' ? 'agent-question' : 'agent-done', inst.instanceId, stateKey, inst.title);
 				}

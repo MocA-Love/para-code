@@ -5,6 +5,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { isAgentWaiting } from '../../src/store.js';
 import { colors } from '../../src/theme.js';
 
 /**
@@ -94,7 +95,7 @@ export default function HomeScreen() {
 						<Text style={styles.statLabel}>ターミナル</Text>
 					</View>
 					<View style={styles.stat}>
-						<Text style={styles.statValue}>{(workspace?.terminals ?? []).filter(t => t.agentStatus === 'permission').length}</Text>
+						<Text style={styles.statValue}>{(workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length}</Text>
 						<Text style={styles.statLabel}>応答待ち</Text>
 					</View>
 				</View>
@@ -113,7 +114,7 @@ export default function HomeScreen() {
 							</Pressable>
 						</View>
 						{terminals.map(t => {
-							const waiting = t.agentStatus === 'permission';
+							const waiting = isAgentWaiting(t.agentStatus);
 							return (
 								<View key={t.id} style={[styles.termCard, waiting && styles.termCardWaiting]}>
 									<View style={styles.termRow}>
@@ -149,7 +150,7 @@ export default function HomeScreen() {
 }
 
 function agentLabel(status: string): string {
-	return status === 'permission' ? '応答待ち' : status === 'working' ? '実行中' : 'レビュー';
+	return status === 'permission' ? '応答待ち' : status === 'question' ? '質問あり' : status === 'working' ? '実行中' : 'レビュー';
 }
 
 const styles = StyleSheet.create({

@@ -25,7 +25,7 @@ import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisSharedPageInfo, PARADIS_CDP_TARGET_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
-import { fireParadisAgentHookEvent } from './paradisAgentHookBus.js';
+import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, paradisCountLiveBackgroundTasks } from './paradisAgentHookBus.js';
 import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -155,6 +155,30 @@ export class ParadisAgentBrowserService extends Disposable {
 		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
 		// (Superset の setupAgentHooks 相当。失敗しても起動は妨げない)。
 		paradisSetupAgentHooks(logService).catch(error => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
+
+		// transcript由来のペインアクティビティ (ParadisMobileAgentChat の tailer が学習) を
+		// 実行状態へ反映する。hookイベントが来ない場面の状態変化はここが拾う:
+		//  - 質問(AskUserQuestion)の出現/回答は hook を発火しない (transcript にしか現れない)
+		//  - バックグラウンドタスクの起動を Stop hook より後から検知した場合の
+		//    「完了 → 実行中」への補正 (tail はポーリング分だけ hook より遅れることがある)
+		this._register(onParadisAgentPaneActivity(({ token, activity }) => {
+			const current = this._paneStatuses.get(token)?.status;
+			if (activity.pendingQuestion) {
+				if (current !== 'question' && current !== 'permission') {
+					this._paneStatuses.set(token, { status: 'question', changedAt: Date.now() });
+				}
+				return; // 質問への回答待ちが最優先。バックグラウンドタスク補正で上書きさせない
+			}
+			if (current === 'question') {
+				// 回答された → エージェントは続行する (直後のツール実行hookが上書きしてくれるが、
+				// 来ない場合でも赤表示が残らないよう working へ戻す)
+				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now() });
+				return;
+			}
+			if (paradisCountLiveBackgroundTasks(token, Date.now()) > 0 && (current === undefined || current === 'review')) {
+				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now() });
+			}
+		}));
 	}
 
 	// --- バインディングレジストリ（workbenchからIPCチャネル経由で呼ばれる） ---
@@ -486,6 +510,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		let sessionId: string | undefined;
 		let transcriptPath: string | undefined;
 		let cwd: string | undefined;
+		let hookMessage: string | undefined;
 		if (req.method === 'POST') {
 			try {
 				const body = await this._readBody(req);
@@ -495,6 +520,8 @@ export class ParadisAgentBrowserService extends Disposable {
 					sessionId = typeof record['session_id'] === 'string' ? record['session_id'] : undefined;
 					transcriptPath = typeof record['transcript_path'] === 'string' ? record['transcript_path'] : undefined;
 					cwd = typeof record['cwd'] === 'string' ? record['cwd'] : undefined;
+					// Notification イベントの本文 (許可要求かアイドル通知かの判別に使う)
+					hookMessage = typeof record['message'] === 'string' ? record['message'] : undefined;
 				}
 			} catch {
 				// bodyの欠落・壊れたJSONは無視する (イベント名ベースの状態更新は継続)
@@ -504,11 +531,24 @@ export class ParadisAgentBrowserService extends Disposable {
 			fireParadisAgentHookEvent({ token, event: eventType, sessionId, transcriptPath, cwd, at: Date.now() });
 		}
 
-		const normalized = paradisNormalizeAgentHookEvent(eventType);
+		let normalized = paradisNormalizeAgentHookEvent(eventType, hookMessage);
 		if (normalized === undefined) {
 			res.writeHead(200, { 'Content-Type': 'application/json' });
-			res.end(JSON.stringify({ ok: false, reason: `unknown event: ${eventType}` }));
+			res.end(JSON.stringify({ ok: false, reason: `ignored event: ${eventType}` }));
 			return;
+		}
+
+		// transcript由来のアクティビティ (ParadisMobileAgentChat の tailer が学習) で補正する:
+		//  - ターン終了(Stop)でもバックグラウンドのサブエージェント等が実行中なら「完了」ではなく
+		//    「実行中」として表示する (完了通知はタスクが終わって本体が再開・停止した時に出る)
+		//  - 質問(AskUserQuestion)が回答待ちの間は working 系イベント (サブエージェントのツール
+		//    実行等でも発火する) に赤表示を上書きさせない
+		const activity = getParadisAgentPaneActivity(token);
+		if (normalized === 'review' && eventType === 'Stop' && paradisCountLiveBackgroundTasks(token, Date.now()) > 0) {
+			normalized = 'working';
+		}
+		if (normalized === 'working' && activity.pendingQuestion) {
+			normalized = 'question';
 		}
 
 		if (normalized === 'idle') {

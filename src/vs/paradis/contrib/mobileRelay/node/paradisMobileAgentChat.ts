@@ -31,7 +31,7 @@ import { homedir } from 'os';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -62,6 +62,14 @@ export interface IParadisAgentChatMessage {
 	readonly toolUseId?: string;
 }
 
+/** セッションのメタ情報（モバイルのエージェントタブに表示する）。 */
+export interface IParadisAgentSessionInfo {
+	/** モデル名（Claude: assistant行の message.model、Codex: turn_context.model）。 */
+	readonly model?: string;
+	/** reasoning effort（Codex: turn_context.effort、Claude: settings.json の既定値 + /effort の実行記録）。 */
+	readonly effort?: string;
+}
+
 /** agentチャネルのモバイル→PCメッセージ。 */
 type AgentInbound =
 	| { t: 'attach'; id: number; epoch?: string; afterRev?: number }
@@ -69,8 +77,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[] }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo }
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo }
 	| { t: 'none'; id: number };
 
 const encoder = new TextEncoder();
@@ -136,6 +144,29 @@ interface IRawMessage {
 	readonly header?: string;
 	readonly options?: readonly IParadisAgentQuestionOption[];
 	readonly toolUseId?: string;
+}
+
+/**
+ * 表示メッセージには乗らない「状態のためのシグナル」。パース時に1バッチ分を収集し、
+ * tailer がバックグラウンドタスク・質問回答待ち・セッションメタ情報の追跡へ反映する。
+ */
+interface IParseSignals {
+	/** バックグラウンドタスク（サブエージェント等）の起動: id → 起動時刻。 */
+	readonly openedTasks: Map<string, number>;
+	/** task-notification が届いた（完了・失敗・停止いずれも）タスクID。 */
+	readonly closedTasks: string[];
+	/** 出現した質問 (AskUserQuestion) の tool_use_id。 */
+	readonly askedQuestionIds: string[];
+	/** tool_result が現れた tool_use_id（質問の「回答済み」判定）。 */
+	readonly answeredIds: string[];
+	/** 実ユーザーのテキスト発話があった（未回答質問クリアの保険）。 */
+	userText: boolean;
+	model?: string;
+	effort?: string;
+}
+
+function newParseSignals(): IParseSignals {
+	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], userText: false };
 }
 
 /** unknown からの安全なプロパティ読み出し。 */
@@ -210,8 +241,66 @@ function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts
 	return out;
 }
 
+/**
+ * Claude Code のユーザーロール行のテキストを表示メッセージへ変換する。
+ * ハーネスが user ロールとして注入する合成テキスト（バックグラウンドタスクの完了通知・
+ * スラッシュコマンドの実行記録・system-reminder 等）は「ユーザーの発言」として
+ * 吹き出し表示すると誤解を招くため、種類ごとに変換・除去する。
+ */
+function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | undefined, signals: IParseSignals): void {
+	const trimmed = rawText.trim();
+	if (trimmed.length === 0) {
+		return;
+	}
+	// バックグラウンドタスク（サブエージェント等）の完了通知。ユーザーの発言ではなく
+	// ハーネスからの通知なので、ツール結果カードとして表示する。
+	if (trimmed.startsWith('<task-notification>')) {
+		for (const match of trimmed.matchAll(/<task-id>([^<\n]+)<\/task-id>/g)) {
+			signals.closedTasks.push(match[1].trim());
+		}
+		const summary = /<summary>([\s\S]*?)<\/summary>/.exec(trimmed)?.[1]?.trim();
+		const result = /<result>([\s\S]*?)<\/result>/.exec(trimmed)?.[1]?.trim();
+		const status = /<status>([^<\n]+)<\/status>/.exec(trimmed)?.[1]?.trim();
+		// allow-any-unicode-next-line
+		const title = summary !== undefined && summary.length > 0 ? `バックグラウンドタスク完了: ${summary}` : 'バックグラウンドタスクが完了しました';
+		const parts = [title];
+		if (status !== undefined && status !== 'completed') {
+			parts.push(`status: ${status}`);
+		}
+		if (result !== undefined && result.length > 0) {
+			parts.push(result);
+		}
+		out.push({ role: 'tool', kind: 'tool_result', text: truncateText(parts.join('\n'), TOOL_TEXT_LIMIT), ts });
+		return;
+	}
+	// スラッシュコマンドの実行記録（/compact 等）。コマンド名だけを短く出す。
+	const commandName = /<command-name>([^<\n]*)<\/command-name>/.exec(trimmed)?.[1]?.trim();
+	if (commandName !== undefined && commandName.length > 0) {
+		const commandArgs = /<command-args>([^<\n]*)<\/command-args>/.exec(trimmed)?.[1]?.trim();
+		out.push({ role: 'user', kind: 'text', text: truncateText(commandArgs ? `${commandName} ${commandArgs}` : commandName, TEXT_LIMIT), ts });
+		return;
+	}
+	// ローカルコマンドの出力・注意書きはノイズなので出さない。ただし /effort の実行記録は
+	// セッションの effort 変更としてメタ情報へ反映する（Claude の transcript に effort の
+	// 直接の記録は無く、これと settings.json の既定値だけが手掛かり）。
+	if (trimmed.startsWith('<local-command-stdout>') || trimmed.startsWith('<local-command-caveat>')) {
+		const effortMatch = /^<local-command-stdout>Set effort level to (\w+)/.exec(trimmed);
+		if (effortMatch) {
+			signals.effort = effortMatch[1];
+		}
+		return;
+	}
+	// 本文へ付随する system-reminder（メモリ想起等のハーネス注入）は表示から除く。
+	const text = rawText.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+	if (text.length === 0) {
+		return;
+	}
+	signals.userText = true;
+	out.push({ role: 'user', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
+}
+
 /** Claude Code transcript JSONL の1行をパースする。表示対象外の行は空配列。 */
-function parseClaudeLine(obj: Record<string, unknown>): IRawMessage[] {
+function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
 	if (obj['isSidechain'] === true || obj['isMeta'] === true) {
 		return []; // サブエージェント内・メタ行はメインの会話に出さない
 	}
@@ -231,9 +320,7 @@ function parseClaudeLine(obj: Record<string, unknown>): IRawMessage[] {
 
 	if (type === 'user') {
 		if (typeof content === 'string') {
-			if (content.trim().length > 0) {
-				out.push({ role: 'user', kind: 'text', text: truncateText(content, TEXT_LIMIT), ts });
-			}
+			pushClaudeUserText(out, content, ts, signals);
 			return out;
 		}
 		if (Array.isArray(content)) {
@@ -243,16 +330,22 @@ function parseClaudeLine(obj: Record<string, unknown>): IRawMessage[] {
 					continue;
 				}
 				if (b['type'] === 'text') {
-					const text = str(b['text']) ?? '';
-					if (text.trim().length > 0) {
-						out.push({ role: 'user', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
-					}
+					pushClaudeUserText(out, str(b['text']) ?? '', ts, signals);
 				} else if (b['type'] === 'tool_result') {
 					const text = flattenContent(b['content']);
+					// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う（本文が空でも回答は成立する）。
+					const toolUseId = str(b['tool_use_id']);
+					if (toolUseId !== undefined) {
+						signals.answeredIds.push(toolUseId);
+					}
+					// バックグラウンドタスク（サブエージェント等）の起動応答から実行中タスクを学習する。
+					if (/Async agent launched|running in the background/i.test(text)) {
+						const idMatch = /\bagentId:\s*([A-Za-z0-9_-]+)/.exec(text) ?? /background with ID:\s*([A-Za-z0-9_-]+)/.exec(text);
+						if (idMatch) {
+							signals.openedTasks.set(idMatch[1], ts ?? Date.now());
+						}
+					}
 					if (text.trim().length > 0) {
-						// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う
-						// （質問への回答の tool_result は選択されたラベルが本文に入るため必ず非空）。
-						const toolUseId = str(b['tool_use_id']);
 						out.push({
 							role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts,
 							...(toolUseId !== undefined ? { toolUseId } : {}),
@@ -265,6 +358,10 @@ function parseClaudeLine(obj: Record<string, unknown>): IRawMessage[] {
 	}
 
 	// assistant
+	const model = str(message['model']);
+	if (model !== undefined && model.length > 0) {
+		signals.model = model;
+	}
 	if (Array.isArray(content)) {
 		for (const block of content) {
 			const b = rec(block);
@@ -286,17 +383,32 @@ function parseClaudeLine(obj: Record<string, unknown>): IRawMessage[] {
 				// AskUserQuestion はユーザーへの選択式質問。汎用ツールとして折りたたむと
 				// モバイルで質問に気づけないため、専用の question メッセージに展開する。
 				if (tool === 'AskUserQuestion') {
-					const questions = parseAskUserQuestions(b['input'], str(b['id']), ts);
+					const toolUseId = str(b['id']);
+					const questions = parseAskUserQuestions(b['input'], toolUseId, ts);
 					if (questions.length > 0) {
+						if (toolUseId !== undefined) {
+							signals.askedQuestionIds.push(toolUseId);
+						}
 						out.push(...questions);
 						continue;
 					}
 					// input が想定形でない場合は従来どおり汎用 tool_use として出す
 				}
 				let text = '';
-				try {
-					text = JSON.stringify(b['input']);
-				} catch { /* 表示は空でよい */ }
+				const input = rec(b['input']);
+				if (tool === 'Agent' || tool === 'Task') {
+					// サブエージェント起動は description（何をさせるか）を出す方が JSON より分かりやすい。
+					const description = str(input?.['description']);
+					const subagentType = str(input?.['subagent_type']);
+					if (description !== undefined && description.length > 0) {
+						text = subagentType !== undefined && subagentType.length > 0 ? `${description} (${subagentType})` : description;
+					}
+				}
+				if (text.length === 0) {
+					try {
+						text = JSON.stringify(b['input']);
+					} catch { /* 表示は空でよい */ }
+				}
 				out.push({ role: 'assistant', kind: 'tool_use', tool, text: truncateText(text, TOOL_TEXT_LIMIT), ts });
 			}
 		}
@@ -305,8 +417,21 @@ function parseClaudeLine(obj: Record<string, unknown>): IRawMessage[] {
 }
 
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
-function parseCodexLine(obj: Record<string, unknown>): IRawMessage[] {
+function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
 	// rollout行: { timestamp, type, payload }
+	if (obj['type'] === 'turn_context') {
+		// ターンごとの実行コンテキスト（model / effort 等）。表示メッセージは無いがメタ情報を学習する。
+		const context = rec(obj['payload']);
+		const model = str(context?.['model']);
+		const effort = str(context?.['effort']);
+		if (model !== undefined && model.length > 0) {
+			signals.model = model;
+		}
+		if (effort !== undefined && effort.length > 0) {
+			signals.effort = effort;
+		}
+		return [];
+	}
 	if (obj['type'] !== 'response_item') {
 		return []; // event_msg は response_item と重複するため使わない。session_meta 等も対象外
 	}
@@ -455,6 +580,10 @@ interface ITailerDelegate {
 	onDelta(messages: IParadisAgentChatMessage[]): void;
 	/** epoch が切り替わった (truncate検知・読み直し)。購読者へ全量スナップショットを送り直す。 */
 	onEpochReset(): void;
+	/** アクティビティ（バックグラウンドタスク・質問回答待ち）が変化した。 */
+	onActivity(): void;
+	/** セッションメタ情報（model / effort）が変化した。 */
+	onInfo(): void;
 }
 
 /**
@@ -466,6 +595,13 @@ class TranscriptTailer {
 	epoch = newEpoch();
 	rev = 0;
 	readonly messages: IParadisAgentChatMessage[] = [];
+	/** 実行中バックグラウンドタスク（サブエージェント等）: id → 起動時刻 (epoch ms)。 */
+	readonly backgroundTasks = new Map<string, number>();
+	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
+	readonly pendingQuestions = new Set<string>();
+	/** セッションメタ情報（transcriptから学習した最新値）。 */
+	model: string | undefined;
+	effort: string | undefined;
 	/** 初回読み込みが完了したら resolve (attach応答はこれを待つ)。 */
 	readonly ready: Promise<void>;
 
@@ -486,6 +622,21 @@ class TranscriptTailer {
 		this.ready = this.enqueue(() => this.initialLoad());
 		this.startWatching();
 		this.pollTimer = setInterval(() => this.enqueue(() => this.readAppended()), POLL_INTERVAL_MS);
+		if (agent === 'claude') {
+			// Claude の transcript は effort を直接記録しない。既定値を settings.json から
+			// 補完する（セッション内の /effort 変更は transcript の実行記録が上書きする）。
+			this.loadClaudeDefaultEffort().catch(() => { /* settings.json 無し・壊れは無視 */ });
+		}
+	}
+
+	/** ~/.claude/settings.json の effortLevel を、transcript由来の値が無い場合の既定として適用する。 */
+	private async loadClaudeDefaultEffort(): Promise<void> {
+		const raw = await fs.readFile(join(homedir(), '.claude', 'settings.json'), 'utf8');
+		const effortLevel = str(rec(JSON.parse(raw))?.['effortLevel']);
+		if (!this.disposed && effortLevel !== undefined && effortLevel.length > 0 && this.effort === undefined) {
+			this.effort = effortLevel;
+			this.delegate.onInfo();
+		}
 	}
 
 	get wasInitialTruncated(): boolean {
@@ -579,9 +730,17 @@ class TranscriptTailer {
 				this.offset = 0;
 				this.remainder = '';
 				this.initialTruncated = false;
+				this.backgroundTasks.clear();
+				this.pendingQuestions.clear();
+				this.model = undefined;
+				this.effort = undefined;
 				await handle.close().catch(() => { /* ignore */ });
 				await this.initialLoad();
+				// initialLoad が読み直した後の状態で購読者・状態レジストリを同期し直す
+				// （新ファイルにタスク・質問が無い場合も「無し」を確実に反映する）。
 				this.delegate.onEpochReset();
+				this.delegate.onActivity();
+				this.delegate.onInfo();
 				return;
 			}
 			if (stat.size === this.offset) {
@@ -606,6 +765,7 @@ class TranscriptTailer {
 		const lines = combined.split('\n');
 		this.remainder = lines.pop() ?? '';
 		const added: IParadisAgentChatMessage[] = [];
+		const signals = newParseSignals();
 		for (const line of lines) {
 			const trimmed = line.trim();
 			if (trimmed.length === 0) {
@@ -620,11 +780,12 @@ class TranscriptTailer {
 			if (!obj) {
 				continue;
 			}
-			const raw = this.agent === 'claude' ? parseClaudeLine(obj) : parseCodexLine(obj);
+			const raw = this.agent === 'claude' ? parseClaudeLine(obj, signals) : parseCodexLine(obj, signals);
 			for (const message of raw) {
 				added.push({ ...message, rev: this.rev++ });
 			}
 		}
+		this.applySignals(signals);
 		if (added.length === 0) {
 			return;
 		}
@@ -634,6 +795,54 @@ class TranscriptTailer {
 		}
 		if (emitDelta) {
 			this.delegate.onDelta(added);
+		}
+	}
+
+	/** パースで収集したシグナルをタスク・質問・メタ情報の追跡へ反映し、変化があれば通知する。 */
+	private applySignals(signals: IParseSignals): void {
+		let activityChanged = false;
+		for (const [id, at] of signals.openedTasks) {
+			if (!this.backgroundTasks.has(id)) {
+				this.backgroundTasks.set(id, at);
+				activityChanged = true;
+			}
+		}
+		for (const id of signals.closedTasks) {
+			if (this.backgroundTasks.delete(id)) {
+				activityChanged = true;
+			}
+		}
+		for (const id of signals.askedQuestionIds) {
+			if (!this.pendingQuestions.has(id)) {
+				this.pendingQuestions.add(id);
+				activityChanged = true;
+			}
+		}
+		for (const id of signals.answeredIds) {
+			if (this.pendingQuestions.delete(id)) {
+				activityChanged = true;
+			}
+		}
+		// 保険: 実ユーザーのテキスト発話が現れた＝会話は先へ進んでいる。未回答のまま残った
+		// 質問（形式外の回答・割り込み等）は回答待ち扱いを解除し、赤表示が残らないようにする。
+		if (signals.userText && this.pendingQuestions.size > 0) {
+			this.pendingQuestions.clear();
+			activityChanged = true;
+		}
+		let infoChanged = false;
+		if (signals.model !== undefined && signals.model !== this.model) {
+			this.model = signals.model;
+			infoChanged = true;
+		}
+		if (signals.effort !== undefined && signals.effort !== this.effort) {
+			this.effort = signals.effort;
+			infoChanged = true;
+		}
+		if (activityChanged) {
+			this.delegate.onActivity();
+		}
+		if (infoChanged) {
+			this.delegate.onInfo();
 		}
 	}
 }
@@ -677,10 +886,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		super();
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		this._register(toDisposable(() => {
-			for (const tailer of this.tailers.values()) {
-				tailer.dispose();
+			for (const token of [...this.tailers.keys()]) {
+				this.disposeTailer(token);
 			}
-			this.tailers.clear();
 		}));
 	}
 
@@ -736,10 +944,9 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.subscribers.delete(token);
 			}
 		}
-		for (const [token, tailer] of [...this.tailers]) {
+		for (const token of [...this.tailers.keys()]) {
 			if (!liveTokens.has(token)) {
-				tailer.dispose();
-				this.tailers.delete(token);
+				this.disposeTailer(token);
 			}
 		}
 	}
@@ -812,15 +1019,17 @@ export class ParadisMobileAgentChat extends Disposable {
 		// リング上限を超えて古い分が退避済みだと、先頭revが飛んでいてサイレント欠落に
 		// なるため、その場合は全量スナップショットへフォールバックする。
 		const oldestRev = tailer.messages.length > 0 ? tailer.messages[0].rev : tailer.rev;
+		const info = ParadisMobileAgentChat.infoOf(tailer);
 		if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 			// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 			const messages = tailer.messages.filter(m => m.rev > afterRev);
-			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages });
+			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}) });
 		} else {
 			const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 			this.sendTo(mobileId, {
 				t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
 				...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
+				...(info !== undefined ? { info } : {}),
 			});
 		}
 	}
@@ -890,14 +1099,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
 		// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
 		if (previous.transcriptPath !== info.transcriptPath) {
-			const tailer = this.tailers.get(event.token);
-			if (tailer !== undefined) {
-				tailer.dispose();
-				this.tailers.delete(event.token);
-			}
+			this.disposeTailer(event.token);
 			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscriber(event.token);
 		}
+	}
+
+	/** tailer の現在の追跡状態からセッションメタ情報を組み立てる。 */
+	private static infoOf(tailer: TranscriptTailer): IParadisAgentSessionInfo | undefined {
+		if (tailer.model === undefined && tailer.effort === undefined) {
+			return undefined;
+		}
+		return {
+			...(tailer.model !== undefined ? { model: tailer.model } : {}),
+			...(tailer.effort !== undefined ? { effort: tailer.effort } : {}),
+		};
 	}
 
 	private ensureTailer(token: string, session: IPaneSessionInfo): TranscriptTailer {
@@ -905,7 +1121,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (existing !== undefined && existing.transcriptPath === session.transcriptPath) {
 			return existing;
 		}
-		existing?.dispose();
+		if (existing !== undefined) {
+			this.disposeTailer(token);
+		}
+		const pushActivity = () => {
+			setParadisAgentPaneActivity(token, {
+				backgroundTasks: new Map(tailer.backgroundTasks),
+				pendingQuestion: tailer.pendingQuestions.size > 0,
+			});
+		};
 		const tailer = new TranscriptTailer(session.transcriptPath, session.agent, {
 			onDelta: messages => {
 				const subscriber = this.subscribers.get(token);
@@ -928,12 +1152,35 @@ export class ParadisMobileAgentChat extends Disposable {
 				const terminalId = this.terminalIdForToken(token);
 				if (subscriber !== undefined && terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
-					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages });
+					const info = ParadisMobileAgentChat.infoOf(tailer);
+					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}) });
+				}
+			},
+			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
+			// （ParadisAgentBrowserService がペイン実行状態 working/question の判定に使う）。
+			onActivity: pushActivity,
+			// model / effort の変化は空deltaで購読者へ届ける（メッセージ本文とは独立に変わるため）。
+			onInfo: () => {
+				const subscriber = this.subscribers.get(token);
+				const terminalId = this.terminalIdForToken(token);
+				const info = ParadisMobileAgentChat.infoOf(tailer);
+				if (subscriber !== undefined && terminalId !== undefined && info !== undefined) {
+					this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], info });
 				}
 			},
 		}, this.logService);
 		this.tailers.set(token, tailer);
 		return tailer;
+	}
+
+	/** tailer を破棄し、そのペインのアクティビティを「何もしていない」へ戻す（stale な赤/実行中表示の防止）。 */
+	private disposeTailer(token: string): void {
+		const tailer = this.tailers.get(token);
+		if (tailer !== undefined) {
+			tailer.dispose();
+			this.tailers.delete(token);
+			setParadisAgentPaneActivity(token, { backgroundTasks: new Map(), pendingQuestion: false });
+		}
 	}
 
 	private stopTailerIfUnsubscribed(token: string): void {
@@ -942,11 +1189,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (!this.subscribers.has(token)) {
-			const tailer = this.tailers.get(token);
-			if (tailer !== undefined) {
-				tailer.dispose();
-				this.tailers.delete(token);
-			}
+			this.disposeTailer(token);
 		}
 	}
 

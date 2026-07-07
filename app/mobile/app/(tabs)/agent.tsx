@@ -5,7 +5,7 @@ import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollVi
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
-import type { AgentChatMessage } from '../../src/store.js';
+import { isAgentWaiting, type AgentChatMessage } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { MarkdownText } from '../../src/components/markdownText.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
@@ -140,7 +140,7 @@ export default function AgentScreen() {
 					const active = t.id === activeId;
 					return (
 						<Pressable key={t.id} style={[styles.tabChip, active && styles.tabChipActive]} onPress={() => setSelectedTerminalId(t.id)}>
-							{t.agentStatus === 'permission'
+							{isAgentWaiting(t.agentStatus)
 								? <View style={styles.dotRed} />
 								: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
 							<Text style={[styles.tabText, active && styles.tabTextActive]} numberOfLines={1}>{i + 1}: {t.title}</Text>
@@ -149,6 +149,15 @@ export default function AgentScreen() {
 				})}
 				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
 			</ScrollView>
+
+			{chat !== undefined && !chat.none && (chat.agent || chat.info) ? (
+				<View style={styles.metaRow}>
+					<Ionicons name="hardware-chip-outline" size={11} color={colors.textDim} />
+					<Text style={styles.metaText} numberOfLines={1}>
+						{[chat.info?.model ?? chat.agent, chat.info?.effort ? `effort: ${chat.info.effort}` : undefined].filter(Boolean).join(' ・ ')}
+					</Text>
+				</View>
+			) : null}
 
 			<View style={styles.chatArea}>
 				{activeId === undefined ? (
@@ -375,6 +384,8 @@ const styles = StyleSheet.create({
 	dotRed: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
 	dotGreen: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
 	dim: { color: colors.textDim, fontSize: 12 },
+	metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 16, paddingBottom: 6 },
+	metaText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	chatArea: { flex: 1, marginHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, overflow: 'hidden' },
 	listContent: { padding: 12, gap: 8 },
 	placeholder: { color: colors.textDim, fontSize: 13, lineHeight: 20, padding: 16 },

@@ -93,10 +93,14 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			if (previous === paneStatus.status) {
 				continue; // 遷移なし
 			}
-			if (paneStatus.status !== 'review' && paneStatus.status !== 'permission') {
-				continue; // working / working への遷移は通知対象外
+			if (paneStatus.status !== 'review' && paneStatus.status !== 'permission' && paneStatus.status !== 'question') {
+				continue; // working への遷移は通知対象外
 			}
-			void this._handleTransition(paneStatus.token, paneStatus.status).catch(error => {
+			// 質問(AskUserQuestion)への遷移も「人間の対応が必要」= 許可要求と同じPC通知
+			// (音 + OS通知 + Aivis) を出す。モバイルの質問通知は transcript ミラー
+			// (paradisMobileAgentChat) が質問本文付きで別経路発火するため、ここはPC向けのみ。
+			const effective = paneStatus.status === 'question' ? 'permission' : paneStatus.status;
+			void this._handleTransition(paneStatus.token, effective).catch(error => {
 				this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
 			});
 		}
