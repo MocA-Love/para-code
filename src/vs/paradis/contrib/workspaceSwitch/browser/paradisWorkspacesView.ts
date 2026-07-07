@@ -76,12 +76,13 @@ function revealLabel(): string {
  */
 function applyStatusIcon(iconElement: HTMLElement, status: ParadisAgentStatus | undefined, fallback: ThemeIcon): void {
 	const icon = status === 'working' ? Codicon.loading
-		: status === 'permission' || status === 'review' ? Codicon.circleFilled
+		: status === 'permission' || status === 'question' || status === 'review' ? Codicon.circleFilled
 			: fallback;
 	iconElement.className = `codicon ${ThemeIcon.asClassName(icon).replace('codicon ', '')}`;
 	if (status === 'working') {
 		iconElement.classList.add('codicon-modifier-spin', 'paradis-status-working');
-	} else if (status === 'permission') {
+	} else if (status === 'permission' || status === 'question') {
+		// 質問(AskUserQuestion)も許可要求と同じ「人間の対応が必要」= 赤の脈動表示
 		iconElement.classList.add('paradis-status-permission');
 	} else if (status === 'review') {
 		iconElement.classList.add('paradis-status-review');

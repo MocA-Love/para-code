@@ -4,13 +4,14 @@ import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { isAgentWaiting } from '../../src/store.js';
 import { colors } from '../../src/theme.js';
 
 /** 下部タブ（モックアップ準拠: ホーム/ターミナル/ソース管理/ファイル/ブラウザ）。 */
 export default function TabsLayout() {
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
 	// 応答待ちエージェント数 → ターミナルタブのバッジ
-	const pending = (workspace?.terminals ?? []).filter(t => t.agentStatus === 'permission').length;
+	const pending = (workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length;
 
 	return (
 		<Tabs

@@ -3,6 +3,7 @@
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
+import { isAgentWaiting } from '../store.js';
 import { colors } from '../theme.js';
 
 /**
@@ -21,7 +22,7 @@ export function WsBar() {
 	const effective = selectedWs && list.some(w => w.id === selectedWs) ? selectedWs : list[0]?.id;
 	const pendingByWs = new Map<string, number>();
 	for (const t of workspace?.terminals ?? []) {
-		if (t.agentStatus === 'permission' && t.ws) {
+		if (isAgentWaiting(t.agentStatus) && t.ws) {
 			pendingByWs.set(t.ws, (pendingByWs.get(t.ws) ?? 0) + 1);
 		}
 	}

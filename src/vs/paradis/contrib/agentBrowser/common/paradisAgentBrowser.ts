@@ -123,12 +123,15 @@ export interface IParadisPaneBinding {
 
 /**
  * ペインで動くエージェントCLIの実行状態。Superset (apps/desktop の shared/tabs-types.ts
- * PaneStatus) と同じ4状態モデル。idle は「エントリなし」で表現する。
+ * PaneStatus) の4状態モデル + 質問状態。idle は「エントリなし」で表現する。
  * - working: エージェントがターン実行中 (スピナー表示)
- * - permission: 人間の対応が必要 (許可待ち/質問。赤の脈動表示)
+ * - permission: 人間の対応が必要 (ツール実行の許可待ち。赤の脈動表示)
+ * - question: エージェントからの選択式質問 (AskUserQuestion) に回答待ち (赤の脈動表示)。
+ *   permission と分ける理由: モバイル通知は質問本文入りの専用経路 (transcriptミラー) が
+ *   担当するため、状態遷移ベースの汎用通知と二重にならないよう発火元で区別が要る
  * - review: ターン完了、確認待ち (緑の静止ドット。スコープを開いたら idle へ確認遷移)
  */
-export type ParadisAgentStatus = 'working' | 'permission' | 'review';
+export type ParadisAgentStatus = 'working' | 'permission' | 'question' | 'review';
 
 export interface IParadisAgentPaneStatus {
 	readonly token: string;
@@ -181,7 +184,7 @@ export interface IParadisMcpSetupResult {
 	readonly servers: readonly IParadisMcpSetupServerResult[];
 }
 
-export function paradisNormalizeAgentHookEvent(eventType: string): ParadisAgentStatus | 'idle' | undefined {
+export function paradisNormalizeAgentHookEvent(eventType: string, message?: string): ParadisAgentStatus | 'idle' | undefined {
 	switch (eventType) {
 		// 完了系: Claude Code / Codex / OpenCode
 		case 'Stop':
@@ -190,8 +193,14 @@ export function paradisNormalizeAgentHookEvent(eventType: string): ParadisAgentS
 		case 'task_complete':
 		case 'SessionEnd':
 			return 'review';
-		// 要対応系: 許可要求・ユーザー入力要求
+		// Claude Code の Notification は許可要求以外でも発火する（プロンプトが60秒以上
+		// 入力待ちのままのアイドル通知 "Claude is waiting for your input" 等）。message が
+		// 許可要求を示すときだけ permission として扱い、それ以外は状態を変えない（undefined）。
+		// 本物の許可要求の検出は PermissionRequest hook が本線で、これはその
+		// フォールバック（PermissionRequest 未対応の旧 Claude Code 向け）。
 		case 'Notification':
+			return message !== undefined && /permission/i.test(message) ? 'permission' : undefined;
+		// 要対応系: 許可要求・ユーザー入力要求
 		case 'PermissionRequest':
 		case 'PreToolUse':
 		case 'exec_approval_request':

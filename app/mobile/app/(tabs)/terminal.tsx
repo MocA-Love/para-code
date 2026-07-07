@@ -5,6 +5,7 @@ import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
+import { isAgentWaiting } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { TermView } from '../../src/components/termView.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
@@ -65,7 +66,7 @@ export default function TerminalScreen() {
 					const active = t.id === activeId;
 					return (
 						<Pressable key={t.id} style={[styles.tabChip, active && styles.tabChipActive]} onPress={() => setSelectedTerminalId(t.id)}>
-							{t.agentStatus === 'permission'
+							{isAgentWaiting(t.agentStatus)
 								? <View style={styles.dotRed} />
 								: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
 							<Text style={[styles.tabText, active && styles.tabTextActive]} numberOfLines={1}>{i + 1}: {t.title}</Text>

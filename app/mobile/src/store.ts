@@ -135,6 +135,14 @@ export interface AgentChatMessage {
 	toolUseId?: string;
 }
 
+/** セッションのメタ情報（PC側 transcript から学習した最新値）。 */
+export interface AgentSessionInfo {
+	/** モデル名（Claude: assistant行の model、Codex: turn_context.model）。 */
+	model?: string;
+	/** reasoning effort（Codex: turn_context、Claude: settings.json の既定値 + /effort の実行記録）。 */
+	effort?: string;
+}
+
 /** ターミナル1つ分のエージェントチャット状態。 */
 export interface AgentChatState {
 	/** 'claude' | 'codex'。 */
@@ -148,6 +156,16 @@ export interface AgentChatState {
 	truncated: boolean;
 	/** PC側にセッションが見つからなかった（エージェント未起動等）。 */
 	none?: boolean;
+	/** セッションのメタ情報（model / effort）。 */
+	info?: AgentSessionInfo;
+}
+
+/**
+ * 「人間の対応が必要」なエージェント状態か（赤表示・応答待ちバッジの判定）。
+ * permission = ツール実行の許可待ち、question = 選択式質問（AskUserQuestion）への回答待ち。
+ */
+export function isAgentWaiting(status: string | undefined): boolean {
+	return status === 'permission' || status === 'question';
 }
 
 /** 秘密情報の永続化。 */
@@ -586,7 +604,7 @@ export class MobileController {
 		try {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; agent?: string; epoch?: string; rev?: number;
-				messages?: AgentChatMessage[]; truncated?: boolean;
+				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -603,6 +621,7 @@ export class MobileController {
 					rev: msg.rev ?? -1,
 					messages: msg.messages ?? [],
 					truncated: msg.truncated === true,
+					...(msg.info !== undefined ? { info: msg.info } : {}),
 				});
 				this.emit();
 				return;
@@ -622,6 +641,7 @@ export class MobileController {
 					...existing,
 					rev: msg.rev ?? existing.rev,
 					messages: [...existing.messages, ...fresh].slice(-500),
+					...(msg.info !== undefined ? { info: msg.info } : {}),
 				});
 				this.emit();
 			}

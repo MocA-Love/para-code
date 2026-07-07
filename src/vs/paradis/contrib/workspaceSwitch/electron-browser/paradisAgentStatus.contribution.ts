@@ -22,9 +22,10 @@ import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentSta
 import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 
-/** 集計時の優先度 (Superset の STATUS_PRIORITY と同じ: permission 最強) */
+/** 集計時の優先度 (Superset の STATUS_PRIORITY と同方針: 要対応が最強) */
 const STATUS_PRIORITY: Record<ParadisAgentStatus, number> = {
-	permission: 3,
+	permission: 4,
+	question: 3,
 	working: 2,
 	review: 1,
 };

@@ -39,3 +39,58 @@ export const onParadisAgentHookEvent: Event<IParadisAgentHookEvent> = emitter.ev
 export function fireParadisAgentHookEvent(event: IParadisAgentHookEvent): void {
 	emitter.fire(event);
 }
+
+// --- ペインアクティビティ（transcript由来の実行状態） ---------------------------------------------
+//
+// hookイベントだけでは分からない「transcriptを読まないと分からない状態」を、
+// ParadisMobileAgentChat の tailer が学習してここへ書き込み、ParadisAgentBrowserService の
+// ペイン実行状態 (working/permission/question/review) の判定材料にする:
+//  - pendingQuestion: AskUserQuestion が回答待ち（同じ tool_use_id の tool_result 未出現）
+//  - backgroundTasks: バックグラウンドのサブエージェント等が実行中（task-notification 未着）
+// hookイベントバスと同じモジュールシングルトン方式（shared process 内限定）。
+
+/** 1ペインのtranscript由来アクティビティ。 */
+export interface IParadisAgentPaneActivity {
+	/** 実行中バックグラウンドタスクID → 起動時刻 (epoch ms)。 */
+	readonly backgroundTasks: ReadonlyMap<string, number>;
+	/** 回答待ちの質問 (AskUserQuestion) があるか。 */
+	readonly pendingQuestion: boolean;
+}
+
+/** 完了通知が来ないまま残ったバックグラウンドタスクを無視するまでの時間。 */
+const BACKGROUND_TASK_STALE_MS = 60 * 60 * 1000;
+
+const activities = new Map<string, IParadisAgentPaneActivity>();
+const activityEmitter = new Emitter<{ readonly token: string; readonly activity: IParadisAgentPaneActivity }>();
+
+/** ペインアクティビティの変化の購読（shared process 内限定）。 */
+export const onParadisAgentPaneActivity: Event<{ readonly token: string; readonly activity: IParadisAgentPaneActivity }> = activityEmitter.event;
+
+/** ペインアクティビティの更新（ParadisMobileAgentChat の tailer 専用）。 */
+export function setParadisAgentPaneActivity(token: string, activity: IParadisAgentPaneActivity): void {
+	if (activity.backgroundTasks.size === 0 && !activity.pendingQuestion) {
+		activities.delete(token);
+	} else {
+		activities.set(token, activity);
+	}
+	activityEmitter.fire({ token, activity });
+}
+
+/** 現在のペインアクティビティ（無ければ「何もしていない」）。 */
+export function getParadisAgentPaneActivity(token: string): IParadisAgentPaneActivity {
+	return activities.get(token) ?? { backgroundTasks: new Map(), pendingQuestion: false };
+}
+
+/**
+ * 実行中とみなせるバックグラウンドタスク数。完了通知(task-notification)を取りこぼした
+ * エントリで 'working' が永久に残らないよう、古すぎるものは数えない。
+ */
+export function paradisCountLiveBackgroundTasks(token: string, now: number): number {
+	let count = 0;
+	for (const openedAt of getParadisAgentPaneActivity(token).backgroundTasks.values()) {
+		if (now - openedAt < BACKGROUND_TASK_STALE_MS) {
+			count++;
+		}
+	}
+	return count;
+}
