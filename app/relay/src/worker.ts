@@ -16,8 +16,16 @@ import { DeviceDO } from './deviceDO.js';
 
 export { DeviceDO };
 
+/** Cloudflare Rate Limiting バインディング（wrangler.jsonc の unsafe.bindings で定義）。 */
+interface RateLimiter {
+	limit(options: { key: string }): Promise<{ success: boolean }>;
+}
+
 interface Env {
 	DEVICES: DurableObjectNamespace;
+	// finding #9: 無認証の /device/new/provision へのIPベースのレート制限。
+	// バインディング未設定（ローカル/テスト）でも動くよう optional。
+	PROVISION_LIMITER?: RateLimiter;
 	// APNsシークレット（`wrangler secret put` で設定。DeviceDO が参照する）。未設定でも起動はする。
 	APNS_KEY_P8?: string;
 	APNS_KEY_ID?: string;
@@ -43,6 +51,16 @@ export default {
 
 		// POST /device/new/provision : 新規deviceIdを払い出してprovision
 		if (request.method === 'POST' && parts[0] === 'device' && parts[1] === 'new' && parts[2] === 'provision') {
+			// finding #9: 無認証エンドポイントなので、DO＋永続SQLite行の無限作成（ストレージDoS）を
+			// 防ぐためIP単位でレート制限する。CF-Connecting-IP を持つ本番リクエストにのみ適用し、
+			// ローカル/テスト（ヘッダ無し・バインディング無し）は素通しする。
+			const clientIp = request.headers.get('CF-Connecting-IP');
+			if (clientIp && env.PROVISION_LIMITER) {
+				const { success } = await env.PROVISION_LIMITER.limit({ key: clientIp });
+				if (!success) {
+					return new Response('rate limited', { status: 429 });
+				}
+			}
 			const id = env.DEVICES.newUniqueId();
 			const stub = env.DEVICES.get(id);
 			const forward = new Request(`https://do/?action=provision`, request);

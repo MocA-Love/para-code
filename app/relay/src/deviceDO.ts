@@ -17,7 +17,7 @@
 
 import { decodeRelayControl, encodeRelayControl, mobileIdFromString, mobileIdToString, packPcData, unpackPcData, type RelayControlMessage } from '@para/protocol';
 import { sendApnsNotification, type ApnsEnv, type ApnsJwtCache } from './apns.js';
-import { extractToken, hashToken, randomTokenB64u, timingSafeEqualHex } from './auth.js';
+import { extractToken, hashToken, randomTokenB64u, subprotocolAuthHeader, timingSafeEqualHex } from './auth.js';
 
 interface DeviceRecord {
 	pcPublicKey: string; // base64url
@@ -83,15 +83,19 @@ export class DeviceDO implements DurableObject {
 			return new Response('expected websocket', { status: 426 });
 		}
 		const role = url.searchParams.get('role');
-		const token = url.searchParams.get('token') ?? '';
+		// finding #7: トークンはサブプロトコル（推奨）/ クエリ（deprecated）両対応で受理する。
+		const token = extractToken(request) ?? '';
+		// 提示された para-auth.<token> サブプロトコルは101応答でそのままecho（RFC6455準拠、
+		// 厳格なクライアント対策）。クエリ方式の旧クライアントでは undefined。
+		const echoSubprotocol = subprotocolAuthHeader(request) ?? undefined;
 		if (role === 'pc') {
-			return this.acceptPc(token);
+			return this.acceptPc(token, echoSubprotocol);
 		}
 		if (role === 'mobile') {
-			return this.acceptMobile(url.searchParams.get('mobileId') ?? '', token);
+			return this.acceptMobile(url.searchParams.get('mobileId') ?? '', token, echoSubprotocol);
 		}
 		if (role === 'pair') {
-			return this.acceptPairing(url.searchParams.get('pairId') ?? '', token);
+			return this.acceptPairing(url.searchParams.get('pairId') ?? '', token, echoSubprotocol);
 		}
 		return new Response('bad role', { status: 400 });
 	}
@@ -104,9 +108,18 @@ export class DeviceDO implements DurableObject {
 	}
 
 	private async provision(request: Request): Promise<Response> {
-		const body = await request.json<{ pcPublicKey?: string; pcToken?: string }>();
+		const body = await request.json<{ pcPublicKey?: string; pcToken?: string }>().catch(() => ({} as { pcPublicKey?: string; pcToken?: string }));
 		if (!body.pcPublicKey || !body.pcToken) {
 			return Response.json({ error: 'missing fields' }, { status: 400 });
+		}
+		// finding #9: 形式・長さを厳密に検証し、巨大文字列の永続化（ストレージ増幅）を防ぐ。
+		// pcPublicKey は32バイト公開鍵のbase64url（パディングなし=43文字）であるべき。
+		if (typeof body.pcPublicKey !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(body.pcPublicKey)) {
+			return Response.json({ error: 'invalid pcPublicKey' }, { status: 400 });
+		}
+		// pcToken は randomTokenB64u(32)=43文字想定。上限を設けて任意長トークンの保存を防ぐ。
+		if (typeof body.pcToken !== 'string' || body.pcToken.length < 16 || body.pcToken.length > 128) {
+			return Response.json({ error: 'invalid pcToken' }, { status: 400 });
 		}
 		const existing = this.device();
 		if (existing) {
@@ -159,7 +172,7 @@ export class DeviceDO implements DurableObject {
 
 	// --- WebSocket accept ---------------------------------------------------------
 
-	private async acceptPc(token: string): Promise<Response> {
+	private async acceptPc(token: string, echoSubprotocol?: string): Promise<Response> {
 		const device = this.device();
 		if (!device || !timingSafeEqualHex(await hashToken(token), device.pcTokenHash)) {
 			return new Response('unauthorized', { status: 401 });
@@ -170,10 +183,10 @@ export class DeviceDO implements DurableObject {
 		}
 		return this.upgrade(ws => this.state.acceptWebSocket(ws, ['pc']), () => {
 			this.notifyPcPresence(true);
-		});
+		}, echoSubprotocol);
 	}
 
-	private async acceptMobile(mobileIdStr: string, token: string): Promise<Response> {
+	private async acceptMobile(mobileIdStr: string, token: string, echoSubprotocol?: string): Promise<Response> {
 		const record = this.mobile(mobileIdStr);
 		if (!record || !timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
 			return new Response('unauthorized', { status: 401 });
@@ -183,16 +196,16 @@ export class DeviceDO implements DurableObject {
 			this.sendToPc({ type: 'presence', peer: 'mobile', mobileId: mobileIdStr, online: true });
 			// モバイルに現在のPC接続状態を通知
 			this.sendToTag(`m:${mobileIdStr}`, { type: 'presence', peer: 'pc', online: this.state.getWebSockets('pc').length > 0 });
-		});
+		}, echoSubprotocol);
 	}
 
-	private async acceptPairing(pairId: string, token: string): Promise<Response> {
+	private async acceptPairing(pairId: string, token: string, echoSubprotocol?: string): Promise<Response> {
 		this.cleanupPairings();
 		const row = this.sql.exec('SELECT pairId, tokenHash, expiresAt FROM pending WHERE pairId = ?', pairId).toArray()[0];
 		if (!row || !timingSafeEqualHex(await hashToken(token), row.tokenHash as string)) {
 			return new Response('unauthorized', { status: 401 });
 		}
-		return this.upgrade(ws => this.state.acceptWebSocket(ws, [`pair:${pairId}`]), undefined);
+		return this.upgrade(ws => this.state.acceptWebSocket(ws, [`pair:${pairId}`]), undefined, echoSubprotocol);
 	}
 
 	private mobile(mobileIdStr: string): MobileRecord | null {
@@ -200,13 +213,16 @@ export class DeviceDO implements DurableObject {
 		return row ? { mobileId: row.mobileId as string, name: row.name as string, tokenHash: row.tokenHash as string, createdAt: row.createdAt as number } : null;
 	}
 
-	private upgrade(accept: (ws: WebSocket) => void, onOpen: (() => void) | undefined): Response {
+	private upgrade(accept: (ws: WebSocket) => void, onOpen: (() => void) | undefined, echoSubprotocol?: string): Response {
 		const pair = new WebSocketPair();
 		const client = pair[0];
 		const server = pair[1];
 		accept(server);
 		onOpen?.();
-		return new Response(null, { status: 101, webSocket: client });
+		// finding #7: クライアントが para-auth.<token> サブプロトコルを提示した場合は
+		// RFC6455準拠でそのまま選択subprotocolとしてechoする（厳格なクライアント互換）。
+		const headers = echoSubprotocol ? { 'Sec-WebSocket-Protocol': echoSubprotocol } : undefined;
+		return new Response(null, { status: 101, webSocket: client, headers });
 	}
 
 	// --- WebSocket message routing (Hibernation handlers) -------------------------
@@ -375,10 +391,18 @@ export class DeviceDO implements DurableObject {
 
 	async webSocketClose(ws: WebSocket): Promise<void> {
 		const tag = this.state.getTags(ws)[0] ?? '';
+		// finding #8: 同role/同idの残存ソケットが無いときのみoffline通知する。
+		// クローズ済みソケットは getWebSockets から除外されるため残数で判定できる。
+		// これが無いと、PC再接続(supersede)や同一mobileIdの再接続レースで、旧ソケットの
+		// close配送が新接続のonline通知の後に届き、恒久的な偽オフライン表示になる。
 		if (tag === 'pc') {
-			this.notifyPcPresence(false);
+			if (this.state.getWebSockets('pc').length === 0) {
+				this.notifyPcPresence(false);
+			}
 		} else if (tag.startsWith('m:')) {
-			this.sendToPc({ type: 'presence', peer: 'mobile', mobileId: tag.slice(2), online: false });
+			if (this.state.getWebSockets(tag).length === 0) {
+				this.sendToPc({ type: 'presence', peer: 'mobile', mobileId: tag.slice(2), online: false });
+			}
 		}
 	}
 

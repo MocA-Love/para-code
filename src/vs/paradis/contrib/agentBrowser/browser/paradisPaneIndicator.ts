@@ -14,7 +14,7 @@
 
 import { addDisposableListener } from '../../../../base/browser/dom.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 
 /** インジケータの表示状態。 */
 export type ParadisPaneIndicatorState = 'bound' | 'unbound';
@@ -59,15 +59,18 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 		element.title = currentHost.getPaneIndicatorTooltip(instanceId);
 	};
 
+	// ホスト購読は付け替え式で持つ。onDidChangeHost は繰り返し発火しうるため、旧ホストの
+	// 購読を MutableDisposable で解除してから新ホストへ張り直す (長寿命 store への無条件 add で
+	// 旧ホスト購読が蓄積するのを防ぐ)。
+	const hostSubscription = disposables.add(new MutableDisposable());
+	const bindHost = () => {
+		hostSubscription.value = currentHost?.onDidChangeState(update);
+	};
 	disposables.add(onDidChangeHost.event(() => {
 		update();
-		if (currentHost) {
-			disposables.add(currentHost.onDidChangeState(update));
-		}
+		bindHost();
 	}));
-	if (currentHost) {
-		disposables.add(currentHost.onDidChangeState(update));
-	}
+	bindHost();
 	disposables.add(addDisposableListener(element, 'click', e => {
 		e.stopPropagation();
 		currentHost?.openBindingDialog(instanceId);

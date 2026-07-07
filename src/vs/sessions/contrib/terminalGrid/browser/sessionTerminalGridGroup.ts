@@ -12,7 +12,7 @@ import { IDisposable, Disposable, DisposableStore, dispose, toDisposable } from 
 import { Orientation } from '../../../../base/browser/ui/sash/sash.js';
 import { isHorizontal, IWorkbenchLayoutService, Position } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { ITerminalInstance, Direction, ITerminalGroup, ITerminalGroupService, ITerminalInstanceService, ITerminalConfigurationService, ITerminalService, TerminalDataTransfers } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalInstance, Direction, ITerminalGroup, ITerminalGroupService, ITerminalInstanceService, ITerminalConfigurationService, ITerminalService, ITerminalEditorService, TerminalDataTransfers } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { getTerminalResourcesFromDragEvent } from '../../../../workbench/contrib/terminal/browser/terminalUri.js';
 import { ViewContainerLocation, IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { IShellLaunchConfig, ITerminalTabLayoutInfoById, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
@@ -192,9 +192,34 @@ class SessionTerminalGridCell implements IGridCellView {
 			if (!containsDragType(e, TerminalDataTransfers.Terminals)) {
 				return;
 			}
+			// このウィンドウ内でドラッグ元ターミナルを解決できるかをまず確認する。別ウィンドウ（同一
+			// プロファイルで複数ウィンドウを使う場合）からドラッグされたターミナルは、このウィンドウの
+			// `terminalService.instances` には存在しないため `getInstanceFromResource` は undefined を
+			// 返す。その場合は upstream が永続プロセスの引き継ぎ（`TerminalService._addInstanceToGroup`
+			// → `requestDetachInstance`）で処理する経路を、同じ要素に bubble 段で登録された upstream の
+			// `DragAndDropObserver` が駆動する。ここで無条件に `stopPropagation` するとその経路に到達
+			// できずドロップが黙って失われるので、自前でグリッド分割を実行できるとき（＝同一ウィンドウ内
+			// のターミナルを解決できたとき）だけイベントを横取りする。
+			const source = this._resolveDropSource(e);
+			if (!source) {
+				this._clearDropOverlay();
+				return;
+			}
 			e.stopPropagation();
-			this._handleDrop(e);
+			this._handleDrop(e, source);
 		}, true));
+	}
+
+	/**
+	 * Resolves the terminal instance being dragged from a drop {@link DragEvent}, but only if it
+	 * belongs to this window. Returns `undefined` for a terminal dragged in from another window (its
+	 * URI is not present in this window's `terminalService.instances`), which the caller uses to
+	 * decide whether to handle the drop itself or defer to upstream's cross-window handoff.
+	 */
+	private _resolveDropSource(e: DragEvent): ITerminalInstance | undefined {
+		const resources = getTerminalResourcesFromDragEvent(e);
+		const sourceUri = resources?.[0];
+		return this._terminalService.getInstanceFromResource(sourceUri);
 	}
 
 	private _updateDropOverlay(e: DragEvent): void {
@@ -215,17 +240,14 @@ class SessionTerminalGridCell implements IGridCellView {
 		this._dropOverlay = undefined;
 	}
 
-	private _handleDrop(e: DragEvent): void {
+	private _handleDrop(e: DragEvent, source: ITerminalInstance): void {
 		const direction = computeGridDropDirection(e.clientX, e.clientY, this.element.getBoundingClientRect());
 		this._clearDropOverlay();
 		if (direction === undefined) {
 			return;
 		}
 
-		const resources = getTerminalResourcesFromDragEvent(e);
-		const sourceUri = resources?.[0];
-		const source = this._terminalService.getInstanceFromResource(sourceUri);
-		if (!source || source === this.instance) {
+		if (source === this.instance) {
 			return;
 		}
 
@@ -419,7 +441,8 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 		@IViewDescriptorService private readonly _viewDescriptorService: IViewDescriptorService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ITerminalGroupService private readonly _terminalGroupService: ITerminalGroupService,
-		@ITerminalService private readonly _terminalService: ITerminalService
+		@ITerminalService private readonly _terminalService: ITerminalService,
+		@ITerminalEditorService private readonly _terminalEditorService: ITerminalEditorService
 	) {
 		super();
 		if (shellLaunchConfigOrInstance) {
@@ -512,6 +535,17 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 			// `sourceGroup === this` (reordering a pane within the same grid), this removes the
 			// existing bookkeeping entry and grid cell so the re-add below does not duplicate it.
 			sourceGroup.removeInstance(source);
+		} else if (source.target === TerminalLocation.Editor) {
+			// エディタ所属のターミナル（ターミナルエディタのタブ）は `getGroupForInstance` が undefined を
+			// 返すため上の分岐に入らない。この場合に何もせず grid へ追加すると、(1) インスタンスが
+			// terminalEditorService と grid group の両方に登録されて `terminalService.instances` に二重に
+			// 現れ、(2) xterm DOM だけが grid へ移って元のエディタタブは空のまま残り、(3) その空タブを
+			// 閉じると `TerminalEditorInput` がインスタンスごと dispose して grid のペインが死ぬ。
+			// upstream の `TerminalService.moveToTerminalView`(terminalService.ts) と同じ手順で、
+			// terminalEditorService から detach（`TerminalEditorInput` とインスタンスの結び付きを切る）
+			// してから panel 所属に付け替える。
+			this._terminalEditorService.detachInstance(source);
+			source.target = TerminalLocation.Panel;
 		}
 
 		const referenceIndex = this._terminalInstances.indexOf(reference);

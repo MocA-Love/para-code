@@ -76,6 +76,10 @@ class MobileSession {
 	private channel: SecureChannel | undefined;
 	private mux: FrameMux | undefined;
 	private confirmed = false;
+	// 受信payloadを厳密に直列化する（H-2/#17）。confirmed遷移をまたぐハンドシェイク期は
+	// mux外なので、ここで直列化しないと同一TCPチャンクで届いたconfirmとアプリフレームが
+	// 並行してpendingVerifyに流れ、nonceカウンタが恒久desyncする。
+	private rxChain: Promise<void> = Promise.resolve();
 
 	constructor(
 		readonly mobileId: string,
@@ -91,8 +95,20 @@ class MobileSession {
 		return this.confirmed;
 	}
 
+	/**
+	 * モバイルからのバイナリを受信キューに積む。前のpayload処理の完了後に順に処理し、
+	 * confirmed遷移をまたぐ並行実行を防ぐ。返すPromiseはこのpayloadの処理完了で解決する
+	 * （呼び出し側がisOnline遷移を検査できるように）。
+	 */
+	enqueuePayload(payload: Uint8Array): Promise<void> {
+		const result = this.rxChain.then(() => this.handlePayload(payload));
+		// handlePayload は内部でcatch済みなのでrejectしないが、念のため鎖が切れないようにする。
+		this.rxChain = result.catch(() => { });
+		return result;
+	}
+
 	/** モバイルからのバイナリ（この mobileId 宛の payload）を処理する。 */
-	async handlePayload(payload: Uint8Array): Promise<void> {
+	private async handlePayload(payload: Uint8Array): Promise<void> {
 		try {
 			if (!this.channel) {
 				// 最初のバイナリは hello（ephemeral公開鍵32B）。responderハンドシェイクを実行。
@@ -574,10 +590,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		this.setConnectionState('connecting');
-		const url = `${this.relayWsBase()}/device/${this.state.device.deviceId}/ws?role=pc&token=${encodeURIComponent(this.state.device.pcToken)}`;
+		// finding #7: pcTokenはURLクエリではなく Sec-WebSocket-Protocol サブプロトコル
+		// (`para-auth.<token>`) で送る。クエリだとWorkers Logsに長期トークンが平文で残るため。
+		// pcTokenはbase64urlなのでsubprotocol tokenとしてそのまま有効。
+		const url = `${this.relayWsBase()}/device/${this.state.device.deviceId}/ws?role=pc`;
 		let socket: WebSocket;
 		try {
-			socket = new WebSocket(url);
+			socket = new WebSocket(url, [`para-auth.${this.state.device.pcToken}`]);
 		} catch (err) {
 			this.logService.error('[paradisMobileRelay] failed to open socket', err);
 			this.scheduleReconnect();
@@ -594,6 +613,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		socket.onerror = () => { /* onclose が続く */ };
 		socket.onclose = () => {
 			this.socket = undefined;
+			// PC自身のリレーWSが切れた場合も、presence offline経路と同じ3点セットで
+			// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
+			for (const id of this.sessions.keys()) {
+				this.browserMirror.stopSession(id);
+				this.agentChat.dropSubscriber(id);
+			}
 			this.sessions.clear();
 			if (this.enabled) {
 				this.setConnectionState('disconnected');
@@ -608,6 +633,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = undefined;
+		}
+		// onclose と同様、セッション破棄前に per-mobile リソースを解放する。
+		for (const id of this.sessions.keys()) {
+			this.browserMirror.stopSession(id);
+			this.agentChat.dropSubscriber(id);
 		}
 		this.sessions.clear();
 		if (this.socket) {
@@ -680,7 +710,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.sessions.set(idStr, session);
 		}
 		const wasOnline = session.isOnline;
-		await session.handlePayload(payload);
+		await session.enqueuePayload(payload);
 		if (session.isOnline !== wasOnline) {
 			this._onDidChangeStatus.fire(this.snapshot());
 		}

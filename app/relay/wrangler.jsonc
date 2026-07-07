@@ -22,5 +22,17 @@
 	],
 	"observability": {
 		"enabled": true
+	},
+	// PARA-CODE: finding #9 — 無認証 /device/new/provision のIPベースレート制限。
+	// simple.limit 回/period 秒。ペアリング前のprovisionは1台につき1回なので通常運用に余裕。
+	"unsafe": {
+		"bindings": [
+			{
+				"name": "PROVISION_LIMITER",
+				"type": "ratelimit",
+				"namespace_id": "1101",
+				"simple": { "limit": 20, "period": 60 }
+			}
+		]
 	}
 }

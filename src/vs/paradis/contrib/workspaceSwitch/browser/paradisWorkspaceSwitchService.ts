@@ -61,6 +61,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private readonly _onDidChangeRepositories = this._register(new Emitter<void>());
 	readonly onDidChangeRepositories = this._onDidChangeRepositories.event;
 
+	private readonly _onDidRetireScope = this._register(new Emitter<string>());
+	readonly onDidRetireScope = this._onDidRetireScope.event;
+
 	private readonly _onWillSwitchScope = this._register(new Emitter<string | undefined>());
 	readonly onWillSwitchScope = this._onWillSwitchScope.event;
 
@@ -167,8 +170,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 		this._repositories.splice(index, 1);
 		this.saveRepositories();
-		this.deleteWorkingSetFor(id);
+		this.discardScopeState(id);
 		this._onDidChangeRepositories.fire();
+	}
+
+	discardScopeState(stateKey: string): void {
+		this.deleteWorkingSetFor(stateKey);
+		this._panelVisibility.delete(stateKey);
+		this._onDidRetireScope.fire(stateKey);
 	}
 
 	async renameRepository(id: string, name: string): Promise<void> {

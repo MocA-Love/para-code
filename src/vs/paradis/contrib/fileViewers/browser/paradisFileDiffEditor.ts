@@ -82,16 +82,25 @@ export class ParadisFileDiffEditor extends EditorPane {
 				this._textModelService.createModelReference(diffInput.modifiedResource),
 			]);
 		} catch (error) {
-			this._modelRefs.clear();
+			// 自分がまだ現役の store のときだけ共有状態を破棄する。
+			// 後続 setInput に差し替えられていれば触らない（その store は後続が管理する）。
+			if (this._modelRefs.value === store) {
+				this._modelRefs.clear();
+			}
 			throw error;
 		}
-		store.add(originalRef);
-		store.add(modifiedRef);
 
-		if (token.isCancellationRequested || this.input !== input) {
-			this._modelRefs.clear();
+		// await 中に入力が切り替わった/キャンセルされた場合、共有の _modelRefs は既に
+		// 後続 setInput の store を指している可能性がある。共有状態には触れず、自分が
+		// 取得した参照だけを破棄して return する（誤破棄・リークの両方を防ぐ）。
+		if (token.isCancellationRequested || this.input !== input || this._modelRefs.value !== store) {
+			originalRef.dispose();
+			modifiedRef.dispose();
 			return;
 		}
+
+		store.add(originalRef);
+		store.add(modifiedRef);
 
 		const widget = this._ensureWidget();
 		widget.setModel({

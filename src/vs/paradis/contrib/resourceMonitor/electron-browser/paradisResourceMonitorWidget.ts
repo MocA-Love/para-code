@@ -109,6 +109,12 @@ class ParadisResourceMonitorWidget extends Disposable {
 	}
 
 	private reschedulePolling(): void {
+		// enabled=false の間は再アームしない。closePanel() 経由でここが呼ばれても、
+		// 無効化直後の pollTimer.cancel() を打ち消してポーリングが恒久継続するのを防ぐ。
+		if (!this.configurationService.getValue<boolean>(CONFIG_KEY_ENABLED)) {
+			this.pollTimer.cancel();
+			return;
+		}
 		const interval = this.panel.value ? PANEL_OPEN_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
 		this.pollTimer.cancelAndSet(() => this.poll(false), interval);
 	}

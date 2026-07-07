@@ -195,6 +195,17 @@ export class ParadisNotificationsService extends Disposable {
 		this._register({ dispose: () => this._scheduler.dispose() });
 	}
 
+	override dispose(): void {
+		// 取り込み成功/キャンセルどちらの経路でも掃除漏れがあり得るため、残った一時音源
+		// ディレクトリ (paradis-ytfull-*) をプロセス終了前にまとめて削除する。
+		for (const entry of this._tempAudio.values()) {
+			void rm(entry.dir, { recursive: true, force: true }).catch(() => { /* ignore */ });
+		}
+		this._tempAudio.clear();
+		this._installStates.clear();
+		super.dispose();
+	}
+
 	// === 通知音 + Aivis の再生調停 ================================================================
 
 	/**
@@ -593,7 +604,13 @@ export class ParadisNotificationsService extends Disposable {
 		if (!state) {
 			return { lines: [], done: true, error: 'unknown installId' };
 		}
-		return { lines: state.lines.filter(l => l.seq > afterSeq), done: state.done, error: state.error };
+		const result: IParadisInstallLogResult = { lines: state.lines.filter(l => l.seq > afterSeq), done: state.done, error: state.error };
+		if (state.done) {
+			// 完了ログ（最大1000行）を返し切ったので、shared process に残さず破棄する。
+			// UIは done を受け取るとポーリングを止めるため、これ以降 getInstallLog は呼ばれない。
+			this._installStates.delete(installId);
+		}
+		return result;
 	}
 
 	private _runProcess(binaryPath: string, args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<string> {

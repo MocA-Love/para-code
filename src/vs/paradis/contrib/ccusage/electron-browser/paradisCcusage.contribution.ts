@@ -87,7 +87,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'string',
 			default: '',
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.ccusage.executablePath', "Absolute path to the `ccusage` executable. When empty, Para Code looks for `ccusage` on PATH and common install locations, and falls back to `npx ccusage@latest`."),
+			markdownDescription: localize('paradis.ccusage.executablePath', "Absolute path to the `ccusage` executable. When empty, Para Code looks for `ccusage` on PATH and common install locations, and falls back to `npx` with a pinned `ccusage` version for supply-chain safety. Set this path explicitly if you want to use a different (e.g. newer) version."),
 		},
 		[SETTING_STATUS_BAR_ENABLED]: {
 			type: 'boolean',

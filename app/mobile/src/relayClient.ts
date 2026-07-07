@@ -34,7 +34,9 @@ export interface SocketLike {
 	binaryType?: string;
 }
 
-export type SocketFactory = (url: string) => SocketLike;
+// protocols: WebSocketサブプロトコル（finding #7 で認証トークンを `para-auth.<token>` として
+// 載せるために使う。RNのWebSocketは第2引数に string|string[] を取れる）。
+export type SocketFactory = (url: string, protocols?: string | string[]) => SocketLike;
 
 export interface PairedCredentials {
 	readonly relayUrl: string;
@@ -184,17 +186,22 @@ export class RelayClient {
 
 	private wsUrl(): string {
 		const base = this.credentials.relayUrl.replace(/\/$/, '');
+		// finding #7: mobileTokenはクエリではなくサブプロトコル（wsProtocols）で送る。
 		const params = new URLSearchParams({
 			role: 'mobile',
 			mobileId: this.credentials.mobileId,
-			token: this.credentials.mobileToken,
 		});
 		return `${base}/device/${this.credentials.deviceId}/ws?${params.toString()}`;
 	}
 
+	/** 認証トークンを載せる Sec-WebSocket-Protocol サブプロトコル（finding #7）。 */
+	private wsProtocols(): string {
+		return `para-auth.${this.credentials.mobileToken}`;
+	}
+
 	private openSocket(): void {
 		this.setState('connecting');
-		const socket = this.socketFactory(this.wsUrl());
+		const socket = this.socketFactory(this.wsUrl(), this.wsProtocols());
 		socket.binaryType = 'arraybuffer';
 		this.socket = socket;
 

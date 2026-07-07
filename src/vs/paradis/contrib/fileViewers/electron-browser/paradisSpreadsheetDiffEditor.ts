@@ -111,6 +111,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _renderDisposables = this._register(new DisposableStore());
+	// タブ描画は _renderTabs のたびに DOM とリスナーを作り直すため、描画単位の専用 store で管理する。
+	private readonly _tabsDisposables = this._register(new MutableDisposable<DisposableStore>());
+	// _navigate の rAF ハンドルは連打で蓄積しないよう都度差し替える。
+	private readonly _navigateRaf = this._register(new MutableDisposable());
+	// スクロール同期の抑止フラグは echo イベントに頼らず次フレームで解除する(代入が no-op でも立ちっぱなしにしない)。
+	private readonly _syncScrollReset = this._register(new MutableDisposable());
 	private _originalResource: URI | undefined;
 	private _modifiedResource: URI | undefined;
 	private _diffSheets: IParadisDiffSheet[] = [];
@@ -118,6 +124,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _diffLocations: IDiffLocation[] = [];
 	private _activeSheetIndex = 0;
 	private _currentDiffIdx = 0;
+	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
+	private _loadGeneration = 0;
 
 	constructor(
 		group: IEditorGroup,
@@ -203,13 +211,15 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (!original || !modified) {
 			return;
 		}
+		const generation = ++this._loadGeneration;
 		this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "Loading diff..."));
 		try {
 			const [origWb, modWb] = await Promise.all([
 				parseSpreadsheetResource(this._fileService, this._sharedProcessService, original).catch(() => ({ sheets: [] })),
 				parseSpreadsheetResource(this._fileService, this._sharedProcessService, modified).catch(() => ({ sheets: [] })),
 			]);
-			if (token.isCancellationRequested || !isEqual(this._modifiedResource, modified)) {
+			// 応答の逆順到着で古い結果が新しい結果を上書きしないよう、最新ロードでなければ破棄する。
+			if (generation !== this._loadGeneration || token.isCancellationRequested || !isEqual(this._modifiedResource, modified)) {
 				return;
 			}
 			this._diffSheets = buildDiffSheets(origWb.sheets, modWb.sheets);
@@ -527,12 +537,20 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _wireSyncScroll(from: HTMLElement, to: HTMLElement): void {
 		this._renderDisposables.add(dom.addDisposableListener(from, dom.EventType.SCROLL, () => {
 			if (this._syncing) {
-				this._syncing = false;
 				return;
 			}
 			this._syncing = true;
-			to.scrollTop = from.scrollTop;
-			to.scrollLeft = from.scrollLeft;
+			// 代入が実値を変えない(既に同値/クランプ済み)場合は echo イベントが発火しないため、
+			// フラグ解除を echo に頼らず次フレームで必ず行う(片側 truncated 等で同期が外れないように)。
+			if (to.scrollTop !== from.scrollTop) {
+				to.scrollTop = from.scrollTop;
+			}
+			if (to.scrollLeft !== from.scrollLeft) {
+				to.scrollLeft = from.scrollLeft;
+			}
+			this._syncScrollReset.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(from), () => {
+				this._syncing = false;
+			});
 		}));
 	}
 
@@ -541,6 +559,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 		dom.clearNode(this._tabsEl);
+		// 旧タブのクリックリスナー(と切り離し済み DOM への参照)を解放してから描画し直す。
+		const tabsStore = new DisposableStore();
+		this._tabsDisposables.value = tabsStore;
 		if (this._diffSheets.length <= 1) {
 			this._tabsEl.style.display = 'none';
 			return;
@@ -570,7 +591,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 			const labelEl = dom.append(tab, $('span'));
 			labelEl.textContent = label;
-			this._inputDisposables.value?.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
+			tabsStore.add(dom.addDisposableListener(tab, dom.EventType.CLICK, () => {
 				if (this._activeSheetIndex === idx) {
 					return;
 				}
@@ -614,7 +635,8 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._updateNav();
 		this._scrollToRow(location.rowIndex);
 		// レイアウト確定後(図形の rowY 測定 rAF の後)に現在位置をハイライトする。
-		this._renderDisposables.add(dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation(location)));
+		// 連打で消化済みハンドルが蓄積しないよう、直前の rAF を差し替える。
+		this._navigateRaf.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation(location));
 	}
 
 	private _scrollToRow(rowIndex: number): void {
@@ -693,6 +715,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	override clearInput(): void {
 		this._inputDisposables.clear();
 		this._renderDisposables.clear();
+		this._tabsDisposables.clear();
+		this._navigateRaf.clear();
+		this._syncScrollReset.clear();
 		this._originalResource = undefined;
 		this._modifiedResource = undefined;
 		this._diffSheets = [];

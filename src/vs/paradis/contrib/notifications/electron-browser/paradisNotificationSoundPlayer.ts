@@ -34,6 +34,8 @@ export class ParadisNotificationSoundPlayer extends Disposable {
 
 	private _currentAudio: HTMLAudioElement | undefined;
 	private _currentBlobUrl: string | undefined;
+	/** play() の世代トークン。_resolveUrl の await 中に別の play()/stop() が走ったかを判定する。 */
+	private _generation = 0;
 
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -68,6 +70,8 @@ export class ParadisNotificationSoundPlayer extends Disposable {
 
 	/** 再生中の音を止める（プレビューの再選択・通知の重複防止用）。 */
 	stop(): void {
+		// 世代を進めて、_resolveUrl の await 中の play() を無効化する（追い越し防止）。
+		this._generation++;
 		if (this._currentAudio) {
 			this._currentAudio.pause();
 			this._currentAudio.src = '';
@@ -82,8 +86,16 @@ export class ParadisNotificationSoundPlayer extends Disposable {
 	/** volume は 0-100。ringtoneId が解決できない場合は何もしない。 */
 	async play(ringtoneId: string, volume: number): Promise<void> {
 		this.stop();
+		const generation = this._generation;
 		const resolved = await this._resolveUrl(ringtoneId);
 		if (!resolved) {
+			return;
+		}
+		if (generation !== this._generation) {
+			// await 中に別の play()/stop() に追い越された。生成したBlob URLを解放して破棄する。
+			if (resolved.revoke) {
+				URL.revokeObjectURL(resolved.url);
+			}
 			return;
 		}
 		const audio = new Audio(resolved.url);

@@ -12,7 +12,7 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -61,6 +61,9 @@ export class ParadisAivisDictionarySection extends Disposable {
 	private readonly _renderDisposables = this._register(new DisposableStore());
 	private readonly _fileInput: HTMLInputElement;
 	private _importTargetUuid: string | undefined;
+	// 新規作成/編集ダイアログは同時に1つしか開かない前提。開くたびに差し替えて、
+	// 閉じた（自己dispose済みの）ダイアログ参照をセクション本体の store に溜めない。
+	private readonly _nestedDialog = this._register(new MutableDisposable<Disposable>());
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -256,12 +259,12 @@ export class ParadisAivisDictionarySection extends Disposable {
 			this._render();
 			this._openEditDialog(uuid, settings.apiKey);
 		});
-		this._register(dialog);
+		this._nestedDialog.value = dialog;
 	}
 
 	private _openEditDialog(uuid: string, apiKey: string): void {
 		const dialog = new ParadisDictionaryEditorDialog(this.layoutService, this.sharedProcessService, uuid, apiKey, () => this._render());
-		this._register(dialog);
+		this._nestedDialog.value = dialog;
 	}
 }
 
@@ -398,6 +401,9 @@ class ParadisDictionaryEditorDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _bodyEl: HTMLElement;
+	// 行の追加/削除のたびに tbody を作り直すため、行のリスナはこの store に束ねて
+	// renderRows 冒頭で clear する（ダイアログ本体の store に無制限に溜めない）。
+	private readonly _rowDisposables = this._register(new DisposableStore());
 	private _words: IWordRow[] = [];
 	private _name = '';
 	private _description = '';
@@ -481,6 +487,7 @@ class ParadisDictionaryEditorDialog extends Disposable {
 		const errorEl = $('.pns-error') as HTMLElement;
 
 		const renderRows = () => {
+			this._rowDisposables.clear();
 			dom.clearNode(tbody);
 			if (this._words.length === 0) {
 				const emptyRow = dom.append(tbody, $('tr'));
@@ -564,19 +571,19 @@ class ParadisDictionaryEditorDialog extends Disposable {
 		const surfaceCell = dom.append(row, $('td'));
 		const surfaceInput = dom.append(surfaceCell, $('input')) as HTMLInputElement;
 		surfaceInput.value = word.surface;
-		this._register(dom.addDisposableListener(surfaceInput, 'input', () => { word.surface = surfaceInput.value; }));
+		this._rowDisposables.add(dom.addDisposableListener(surfaceInput, 'input', () => { word.surface = surfaceInput.value; }));
 
 		const pronunciationCell = dom.append(row, $('td'));
 		const pronunciationInput = dom.append(pronunciationCell, $('input')) as HTMLInputElement;
 		pronunciationInput.value = word.pronunciation;
-		this._register(dom.addDisposableListener(pronunciationInput, 'input', () => { word.pronunciation = pronunciationInput.value; }));
+		this._rowDisposables.add(dom.addDisposableListener(pronunciationInput, 'input', () => { word.pronunciation = pronunciationInput.value; }));
 
 		const accentCell = dom.append(row, $('td'));
 		const accentInput = dom.append(accentCell, $('input')) as HTMLInputElement;
 		accentInput.type = 'number';
 		accentInput.min = '0';
 		accentInput.value = String(word.accentType);
-		this._register(dom.addDisposableListener(accentInput, 'input', () => { word.accentType = Number(accentInput.value) || 0; }));
+		this._rowDisposables.add(dom.addDisposableListener(accentInput, 'input', () => { word.accentType = Number(accentInput.value) || 0; }));
 
 		const priorityCell = dom.append(row, $('td'));
 		const priorityInput = dom.append(priorityCell, $('input')) as HTMLInputElement;
@@ -584,7 +591,7 @@ class ParadisDictionaryEditorDialog extends Disposable {
 		priorityInput.min = '0';
 		priorityInput.max = '10';
 		priorityInput.value = String(word.priority);
-		this._register(dom.addDisposableListener(priorityInput, 'input', () => { word.priority = Number(priorityInput.value) || 0; }));
+		this._rowDisposables.add(dom.addDisposableListener(priorityInput, 'input', () => { word.priority = Number(priorityInput.value) || 0; }));
 
 		const typeCell = dom.append(row, $('td'));
 		const typeSelect = dom.append(typeCell, $('select')) as HTMLSelectElement;
@@ -594,12 +601,12 @@ class ParadisDictionaryEditorDialog extends Disposable {
 			option.textContent = type.label;
 		}
 		typeSelect.value = word.wordType;
-		this._register(dom.addDisposableListener(typeSelect, 'change', () => { word.wordType = typeSelect.value as ParadisAivisWordType; }));
+		this._rowDisposables.add(dom.addDisposableListener(typeSelect, 'change', () => { word.wordType = typeSelect.value as ParadisAivisWordType; }));
 
 		const removeCell = dom.append(row, $('td'));
 		const removeBtn = dom.append(removeCell, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
 		removeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
-		this._register(dom.addDisposableListener(removeBtn, 'click', () => {
+		this._rowDisposables.add(dom.addDisposableListener(removeBtn, 'click', () => {
 			this._words.splice(index, 1);
 			rerender();
 		}));

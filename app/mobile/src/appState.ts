@@ -33,6 +33,8 @@ interface AppState extends StoreState {
 	init(): Promise<void>;
 	/** QRから読み取ったURIでペアリングする。SAS表示はonSasで受ける。 */
 	pairFromUri(uri: string, deviceName: string, onSas: (code: string) => void): Promise<void>;
+	/** 進行中のペアリングを中断する（ペアリング画面から離脱したとき等）。 */
+	cancelPairing(): void;
 	attachTerminal(id: number): void;
 	detachTerminal(id: number): void;
 	sendInput(id: number, data: string): void;
@@ -62,6 +64,10 @@ interface AppState extends StoreState {
 
 let identity: Identity | undefined;
 let controller: MobileController | undefined;
+/** 進行中のペアリングクライアント（cancelPairing で中断するため保持）。 */
+let pairing: PairingClient | undefined;
+/** init() の二重実行防止（Fast Refresh 等での再マウント対策）。同期的に立てて async 再入も弾く。 */
+let initStarted = false;
 
 export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',
@@ -78,31 +84,45 @@ export const useAppStore = create<AppState>(set => ({
 	selectedTerminalId: undefined,
 
 	async init() {
-		configureNotificationHandler();
-		const loaded = await loadOrCreateIdentity(secureKeyStore);
-		identity = loaded.identity;
-		controller = new MobileController(
-			identity,
-			rnSocketFactory,
-			s => set({ ...s }),
-			payload => { void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId }); },
-			getApnsDeviceToken,
-			// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
-			__DEV__ ? 'dev' : 'prod',
-			persistNotifyKey,
-		);
-		// フォアグラウンド復帰時、接続が死んでいたら即座に繋ぎ直す（iOSはバックグラウンドで
-		// ソケットが黙って死ぬため、これが無いと再起動/復帰後に繋がらないことがある）。
-		RNAppState.addEventListener('change', appState => {
-			if (appState === 'active' && !useAppStore.getState().manualOffline) {
-				controller?.ensureConnected();
+		// 二重初期化を防ぐ。放置すると旧 MobileController/RelayClient が close されず、
+		// 新旧2つが同じ set() へ state を書き込んで表示が競合し、AppState リスナも蓄積する。
+		if (initStarted) {
+			return;
+		}
+		initStarted = true;
+		try {
+			configureNotificationHandler();
+			const loaded = await loadOrCreateIdentity(secureKeyStore);
+			identity = loaded.identity;
+			controller = new MobileController(
+				identity,
+				rnSocketFactory,
+				s => set({ ...s }),
+				payload => { void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId }); },
+				getApnsDeviceToken,
+				// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
+				__DEV__ ? 'dev' : 'prod',
+				persistNotifyKey,
+			);
+			// フォアグラウンド復帰時、接続が死んでいたら即座に繋ぎ直す（iOSはバックグラウンドで
+			// ソケットが黙って死ぬため、これが無いと再起動/復帰後に繋がらないことがある）。
+			RNAppState.addEventListener('change', appState => {
+				if (appState === 'active' && !useAppStore.getState().manualOffline) {
+					controller?.ensureConnected();
+				}
+			});
+			const creds = await loadCredentials(secureKeyStore);
+			set({ ready: true, paired: !!creds });
+			if (creds) {
+				ensureNotificationPermission().catch(err => console.warn('[appState] notification permission request failed', err));
+				controller.connect(creds);
 			}
-		});
-		const creds = await loadCredentials(secureKeyStore);
-		set({ ready: true, paired: !!creds });
-		if (creds) {
-			ensureNotificationPermission().catch(err => console.warn('[appState] notification permission request failed', err));
-			controller.connect(creds);
+		} catch (err) {
+			// 一過性の失敗（KeyStore読み取り等）で ready:false に張り付かないよう、
+			// 次回の init() で再試行できるようにガードを戻す（特に dev の Fast Refresh は
+			// モジュール状態が保持されるため、戻さないと復帰不能になる）。
+			initStarted = false;
+			throw err;
 		}
 	},
 
@@ -121,11 +141,25 @@ export const useAppStore = create<AppState>(set => ({
 			throw new Error('not initialized');
 		}
 		const payload: PairingPayload = decodePairingUri(uri);
-		const pairing = new PairingClient(identity, deviceName, rnSocketFactory);
-		const creds: PairedCredentials = await pairing.pair(payload, { onSasCode: onSas });
-		await saveCredentials(secureKeyStore, creds);
-		set({ paired: true });
-		controller?.connect(creds);
+		// 直前のペアリングが残っていれば畳んでから開始する。
+		pairing?.cancel();
+		const client = new PairingClient(identity, deviceName, rnSocketFactory);
+		pairing = client;
+		try {
+			const creds: PairedCredentials = await client.pair(payload, { onSasCode: onSas });
+			await saveCredentials(secureKeyStore, creds);
+			set({ paired: true });
+			controller?.connect(creds);
+		} finally {
+			if (pairing === client) {
+				pairing = undefined;
+			}
+		}
+	},
+
+	cancelPairing() {
+		pairing?.cancel();
+		pairing = undefined;
 	},
 
 	attachTerminal(id: number) {

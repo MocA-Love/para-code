@@ -21,7 +21,7 @@ import './media/paradisResourceMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -64,6 +64,9 @@ export class ParadisResourceMonitorPanel extends Disposable {
 	private sortOption: ParadisResourceMonitorSortOption = 'memory';
 	private readonly collapsedScopes = new Set<string>();
 	private latestSnapshot: IParadisResourceMonitorSnapshot | undefined;
+
+	/** renderBody() は毎ポーリングで呼ばれ DOM を作り直すため、その都度生成する行リスナーはここに登録し、再描画のたびに clear() する(クラス寿命の _store に溜めない)。 */
+	private readonly _bodyListeners = this._register(new DisposableStore());
 
 	constructor(
 		private readonly anchor: HTMLElement,
@@ -202,6 +205,7 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		if (!snapshot) {
 			return;
 		}
+		this._bodyListeners.clear();
 		dom.clearNode(this.bodyElement);
 
 		const totalUsage: IParadisResourceUsage = { cpu: snapshot.totalCpu, memory: snapshot.totalMemory };
@@ -293,10 +297,10 @@ export class ParadisResourceMonitorPanel extends Disposable {
 			memory: scope.memory,
 		});
 		if (!isOther) {
-			this._register(dom.addDisposableListener(row, 'click', () => this.options.switchToScope(scope.stateKey)));
+			this._bodyListeners.add(dom.addDisposableListener(row, 'click', () => this.options.switchToScope(scope.stateKey)));
 		}
 		if (iconElement) {
-			this._register(dom.addDisposableListener(iconElement, 'click', e => {
+			this._bodyListeners.add(dom.addDisposableListener(iconElement, 'click', e => {
 				e.stopPropagation();
 				if (this.collapsedScopes.has(scope.stateKey)) {
 					this.collapsedScopes.delete(scope.stateKey);

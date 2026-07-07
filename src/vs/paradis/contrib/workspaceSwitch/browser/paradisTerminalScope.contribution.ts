@@ -8,6 +8,7 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroup, ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -64,6 +65,12 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(stateKey => this.applyScope(stateKey)));
 		this._register(this.terminalGroupService.onDidDisposeGroup(group => this.discardGroup(group)));
+
+		// リポジトリ/worktree がリストから恒久的に消えたら、そのスコープの park 中グループは
+		// 二度と unpark されない (applyScope の復帰は切り替え先キーのみ対象)。放置すると PTY が
+		// UI から不可視のまま生き続け、レイアウト永続化でリロードを跨いで復元・再park され続ける。
+		// ブラウザスコープの cleanupRemovedRepositories と同じ思想で、退役スコープの実体を破棄する。
+		this._register(this.workspaceSwitchService.onDidRetireScope(stateKey => this.retireScope(stateKey)));
 
 		// park 中のグループも terminalService のレイアウト永続化に含まれる (PARA-PATCH) ため、
 		// リロード後は全グループが一旦 groups に復元され、出現し次第 tagUntaggedGroups が
@@ -175,6 +182,27 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 			}
 		}
 
+		this.persistMapping();
+	}
+
+	/**
+	 * 退役したスコープ (リポジトリ削除 / worktree 削除) の park 中グループを実体ごと破棄する。
+	 * 各インスタンスを User 破棄すると PTY が停止し、最後のインスタンス破棄でグループが onDisposed
+	 * を発火する。それを受けて terminalGroupService 側が paradisParkedGroups から外し (レイアウト
+	 * 永続化から除外)、こちらの discardGroup が _groupRepositories / _parkedGroups を掃除する。
+	 */
+	private retireScope(stateKey: string): void {
+		const parked = this._parkedGroups.get(stateKey);
+		if (!parked || parked.length === 0) {
+			return;
+		}
+		// discardGroup が同期で _parkedGroups を書き換えるためコピーを走査する
+		for (const group of [...parked]) {
+			for (const instance of [...group.terminalInstances]) {
+				instance.dispose(TerminalExitReason.User);
+			}
+		}
+		this._parkedGroups.delete(stateKey);
 		this.persistMapping();
 	}
 

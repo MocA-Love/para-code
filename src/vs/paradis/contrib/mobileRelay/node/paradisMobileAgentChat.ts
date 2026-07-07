@@ -611,6 +611,10 @@ class TranscriptTailer {
 
 	private offset = 0;
 	private remainder = '';
+	// transcript を offset 連続で読み進める間、UTF-8マルチバイト文字が読み境界で分断されても
+	// 化けないよう stream モードでデコードする（境界の継続バイトはデコーダ内部で持ち越される）。
+	// epoch reset（offset 0 へ巻き戻し）時は新しいインスタンスに差し替えて内部状態を捨てる。
+	private decoder = new TextDecoder();
 	private initialTruncated = false;
 	private watcher: FSWatcher | undefined;
 	private pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -700,7 +704,7 @@ class TranscriptTailer {
 			const length = stat.size - start;
 			const buffer = Buffer.alloc(length);
 			const { bytesRead } = await handle.read(buffer, 0, length, start);
-			let text = decoder.decode(buffer.subarray(0, bytesRead));
+			let text = this.decoder.decode(buffer.subarray(0, bytesRead), { stream: true });
 			if (start > 0) {
 				// 途中から読んだ場合、最初の不完全行を捨てる
 				const firstNewline = text.indexOf('\n');
@@ -733,6 +737,8 @@ class TranscriptTailer {
 				this.messages.length = 0;
 				this.offset = 0;
 				this.remainder = '';
+				// offset 0 から読み直すので、前のバイト境界を持ち越したデコーダは捨てる。
+				this.decoder = new TextDecoder();
 				this.initialTruncated = false;
 				this.backgroundTasks.clear();
 				this.pendingQuestions.clear();
@@ -754,7 +760,7 @@ class TranscriptTailer {
 			const buffer = Buffer.alloc(length);
 			const { bytesRead } = await handle.read(buffer, 0, length, this.offset);
 			this.offset += bytesRead;
-			this.consumeText(decoder.decode(buffer.subarray(0, bytesRead)), true);
+			this.consumeText(this.decoder.decode(buffer.subarray(0, bytesRead), { stream: true }), true);
 			if (!this.watcher) {
 				this.startWatching();
 			}
@@ -877,6 +883,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly tailers = new Map<string, TranscriptTailer>();
 	/** ペイントークン → 購読中モバイルID (最後にattachしたモバイルが勝つ。termチャネルと同じM-2方針)。 */
 	private readonly subscribers = new Map<string, string>();
+	/** 直近のsyncPanesで terminalId 対応が確認できた（生存していた）トークン集合。paneSessionsの掃除判定に使う。 */
+	private paneTokensSeenLive = new Set<string>();
 
 	/** 有効時はモバイルの購読が無くてもセッション判明済みペインを常時tailする（質問検出・通知用）。 */
 	private eagerTailing = false;
@@ -953,6 +961,15 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.disposeTailer(token);
 			}
 		}
+		// paneSessions も掃除する（放置するとclose済みターミナルのセッション情報が単調増加する）。
+		// ただしhookが先・ペイン同期が後で来るケース（まだ一度もterminalId対応が確認されていない
+		// トークン）を消さないよう、前回のsyncで生存確認済みだったトークンが今回消えた場合のみ削除する。
+		for (const token of [...this.paneSessions.keys()]) {
+			if (!liveTokens.has(token) && this.paneTokensSeenLive.has(token)) {
+				this.paneSessions.delete(token);
+			}
+		}
+		this.paneTokensSeenLive = liveTokens;
 	}
 
 	/** モバイルの切断 (presence offline)。そのモバイルの購読をすべて解放する。 */

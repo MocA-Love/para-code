@@ -219,9 +219,20 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 呼び出し元ペインを識別するために使う（env読み取り不可のWindowsでは主経路）。
 	 */
 	async syncPaneShells(windowCtx: string, entries: readonly { token: string; shellPid: number }[]): Promise<void> {
+		const nextTokens = new Set<string>();
+		for (const entry of entries) {
+			if (typeof entry.token === 'string' && typeof entry.shellPid === 'number' && entry.shellPid > 0) {
+				nextTokens.add(entry.token);
+			}
+		}
 		for (const [token, entry] of [...this._paneShells]) {
 			if (entry.windowCtx === windowCtx) {
 				this._paneShells.delete(token);
+				// 同ウィンドウの全置換で消えた＝そのペインが閉じられた。まだバインド中でなければ
+				// (アクティブなCDP接続を巻き込まないため) 実行状態などトークン別エントリを掃除する。
+				if (!nextTokens.has(token) && !this._bindings.has(token)) {
+					this._retirePaneToken(token);
+				}
 			}
 		}
 		for (const entry of entries) {
@@ -252,11 +263,13 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** ウィンドウ切断時に、そのウィンドウのバインディングとシェルPID表をまとめて破棄する。 */
 	removeBindingsForWindow(windowCtx: string): void {
 		const removedPageIds = new Set<string>();
+		const windowTokens = new Set<string>();
 		for (const [token, entry] of [...this._bindings]) {
 			if (entry.windowCtx === windowCtx) {
 				this._bindings.delete(token);
 				this._cdpGateway.closeConnectionsForToken(token);
 				removedPageIds.add(entry.pageId);
+				windowTokens.add(token);
 			}
 		}
 		// バインドが完全に消えたページは backgroundThrottling を既定へ戻す
@@ -269,8 +282,25 @@ export class ParadisAgentBrowserService extends Disposable {
 		for (const [token, entry] of [...this._paneShells]) {
 			if (entry.windowCtx === windowCtx) {
 				this._paneShells.delete(token);
+				windowTokens.add(token);
 			}
 		}
+		// ウィンドウが消えた＝そのペインのトークン（ペインごとに一意なUUIDで再利用されない）は
+		// 二度と現れない。実行状態・接続実績・CDPの飾りIDのトークン別エントリを掃除して、
+		// shared process の生存期間を通じた単調リークを防ぐ。
+		for (const token of windowTokens) {
+			this._retirePaneToken(token);
+		}
+	}
+
+	/**
+	 * ペイン/ウィンドウ終了で二度と使われないトークンのトークン別エントリを掃除する。
+	 * hook 由来の実行状態・接続実績・CDPゲートウェイのトークン別キャッシュをまとめて落とす。
+	 */
+	private _retirePaneToken(token: string): void {
+		this._paneStatuses.delete(token);
+		this._seenTokens.delete(token);
+		this._cdpGateway.retireToken(token);
 	}
 
 	/**
