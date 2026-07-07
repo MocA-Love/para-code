@@ -139,6 +139,45 @@ describe('relay pairing + routing', () => {
 		expect(Array.from(back)).toEqual([1, 2, 3]);
 	});
 
+	it('lets a mobile self-revoke its own credentials (and notifies the pc)', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		pairWs.send(encodeRelayControl({ type: 'pairing-msg', data: 'aGVsbG8' }));
+		await pcWs.next(); // pairing-msg
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'iPhone' }));
+		const paired = decodeRelayControl(await pairWs.next() as string);
+		if (paired.type !== 'paired') { throw new Error('unreachable'); }
+		await pcWs.next(); // paired(pc向け)
+
+		// 他人のトークンでは解除できない
+		const wrong = await SELF.fetch(`https://relay/device/${deviceId}/mobile/self-revoke`, {
+			method: 'POST',
+			headers: { authorization: 'Bearer wrong-token' },
+			body: JSON.stringify({ mobileId: paired.mobileId }),
+		});
+		expect(wrong.status).toBe(401);
+
+		// 本人のmobileTokenで解除できる
+		const ok = await SELF.fetch(`https://relay/device/${deviceId}/mobile/self-revoke`, {
+			method: 'POST',
+			headers: { authorization: `Bearer ${paired.mobileToken}` },
+			body: JSON.stringify({ mobileId: paired.mobileId }),
+		});
+		expect(ok.ok).toBe(true);
+
+		// PCへ mobile-revoked が届く
+		const revoked = decodeRelayControl(await pcWs.next() as string);
+		expect(revoked).toEqual({ type: 'mobile-revoked', mobileId: paired.mobileId });
+
+		// 失効後は同じ資格情報で接続できない
+		const res = await SELF.fetch(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=${paired.mobileToken}`, {
+			headers: { Upgrade: 'websocket' },
+		});
+		expect(res.status).toBe(401);
+	});
+
 	it('rejects mobile connection with a bad token', async () => {
 		const { deviceId } = await provisionDevice();
 		const res = await SELF.fetch(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=AAAAAAAAAAAAAAAAAAAAAA&token=wrong`, {

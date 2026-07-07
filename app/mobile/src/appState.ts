@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, loadCredentials, loadOrCreateIdentity, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -35,6 +35,8 @@ interface AppState extends StoreState {
 	pairFromUri(uri: string, deviceName: string, onSas: (code: string) => void): Promise<void>;
 	/** 進行中のペアリングを中断する（ペアリング画面から離脱したとき等）。 */
 	cancelPairing(): void;
+	/** ペアリングを完全に解除する（リレー上の資格情報も失効させ、ローカルの保存分も削除する）。 */
+	unpair(): Promise<void>;
 	attachTerminal(id: number): void;
 	detachTerminal(id: number): void;
 	sendInput(id: number, data: string): void;
@@ -160,6 +162,19 @@ export const useAppStore = create<AppState>(set => ({
 	cancelPairing() {
 		pairing?.cancel();
 		pairing = undefined;
+	},
+
+	async unpair() {
+		const creds = await loadCredentials(secureKeyStore);
+		// 先にリレー側の資格情報を失効させる（WebSocketとは独立したHTTPなので接続状態に依らず
+		// 送れる）。失敗してもローカル解除は続行する: トークン実体はこの端末にしか無いため、
+		// リレーに残っても悪用はできず、PC側の失効操作でも掃除できる。
+		if (creds) {
+			await revokeSelfOnRelay(creds);
+		}
+		controller?.reset();
+		await clearCredentials(secureKeyStore);
+		set({ paired: false, manualOffline: false, selectedWs: undefined, selectedTerminalId: undefined });
 	},
 
 	attachTerminal(id: number) {

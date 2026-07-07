@@ -2,7 +2,7 @@
 
 import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
-import { loadCredentials, loadOrCreateIdentity, MobileController, saveCredentials, type KeyStore } from './store.js';
+import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, revokeSelfOnRelay, saveCredentials, type KeyStore } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
 class MemoryKeyStore implements KeyStore {
@@ -33,6 +33,45 @@ describe('key persistence', () => {
 		const loaded = await loadCredentials(ks);
 		expect(loaded?.deviceId).toBe('d');
 		expect(Array.from(loaded!.pcPublicKey)).toEqual(Array.from(creds.pcPublicKey));
+	});
+
+	it('clears credentials on unpair', async () => {
+		const ks = new MemoryKeyStore();
+		await saveCredentials(ks, { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'm', mobileToken: 't', pcPublicKey: generateIdentity().publicKey });
+		await clearCredentials(ks);
+		expect(await loadCredentials(ks)).toBeUndefined();
+	});
+});
+
+describe('revokeSelfOnRelay', () => {
+	const creds: PairedCredentials = {
+		relayUrl: 'wss://relay.example/', deviceId: 'dev1', mobileId: 'mob1', mobileToken: 'tok1',
+		pcPublicKey: generateIdentity().publicKey,
+	};
+
+	it('POSTs to the self-revoke endpoint with bearer auth (ws -> http)', async () => {
+		let captured: { url: string; init: RequestInit } | undefined;
+		const fakeFetch = (async (url: unknown, init?: RequestInit) => {
+			captured = { url: String(url), init: init! };
+			return { ok: true } as Response;
+		}) as typeof fetch;
+		expect(await revokeSelfOnRelay(creds, fakeFetch)).toBe(true);
+		expect(captured!.url).toBe('https://relay.example/device/dev1/mobile/self-revoke');
+		expect((captured!.init.headers as Record<string, string>).authorization).toBe('Bearer tok1');
+		expect(JSON.parse(captured!.init.body as string)).toEqual({ mobileId: 'mob1' });
+	});
+
+	it('returns false on network failure without throwing', async () => {
+		const fakeFetch = (async () => { throw new Error('offline'); }) as typeof fetch;
+		expect(await revokeSelfOnRelay(creds, fakeFetch)).toBe(false);
+	});
+
+	it('aborts after the timeout instead of hanging', async () => {
+		// 応答が永遠に返らないfetch: AbortSignalのabortでのみrejectする（ハーフオープン接続相当）。
+		const fakeFetch = ((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+			init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+		})) as typeof fetch;
+		expect(await revokeSelfOnRelay(creds, fakeFetch, 50)).toBe(false);
 	});
 });
 

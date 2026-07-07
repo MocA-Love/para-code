@@ -746,7 +746,23 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				this.agentChat.dropSubscriber(msg.mobileId);
 				this._onDidChangeStatus.fire(this.snapshot());
 			}
+		} else if (msg.type === 'mobile-revoked' && typeof msg.mobileId === 'string') {
+			await this.onMobileRevoked(msg.mobileId);
 		}
+	}
+
+	/** モバイル側からの自己ペアリング解除（リレー経由）。PC側の登録・セッションも掃除する。 */
+	private async onMobileRevoked(mobileId: string): Promise<void> {
+		if (!this.state.mobiles.some(m => m.mobileId === mobileId)) {
+			return;
+		}
+		this.state.mobiles = this.state.mobiles.filter(m => m.mobileId !== mobileId);
+		await this.save();
+		this.sessions.delete(mobileId);
+		this.browserMirror.stopSession(mobileId);
+		this.agentChat.dropSubscriber(mobileId);
+		this.updateEagerTailing();
+		this._onDidChangeStatus.fire(this.snapshot());
 	}
 
 	private async onPairingMessage(dataB64: string, pairId: string | undefined): Promise<void> {

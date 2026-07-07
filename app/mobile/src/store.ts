@@ -224,6 +224,35 @@ export async function loadCredentials(keyStore: KeyStore): Promise<PairedCredent
 	return { relayUrl: p.relayUrl, deviceId: p.deviceId, mobileId: p.mobileId, mobileToken: p.mobileToken, pcPublicKey: fromB64(p.pcPublicKey) };
 }
 
+export async function clearCredentials(keyStore: KeyStore): Promise<void> {
+	await keyStore.deleteItem(CREDS_KEY);
+}
+
+/**
+ * リレー上の自分の資格情報を失効させる（ペアリング解除）。mobileToken 本人認証なので
+ * 自分の分しか消せない。ネットワーク断などの失敗は false を返す（ローカル解除は続行してよい）。
+ * RNのfetchは既定タイムアウトを持たないため、ハーフオープン接続で unpair() 全体が
+ * ハングしないよう AbortController で上限を切る。
+ */
+export async function revokeSelfOnRelay(creds: PairedCredentials, fetchImpl: typeof fetch = fetch, timeoutMs = 5_000): Promise<boolean> {
+	const httpBase = creds.relayUrl.replace(/\/$/, '').replace(/^ws/, 'http');
+	const abort = new AbortController();
+	const timer = setTimeout(() => abort.abort(), timeoutMs);
+	try {
+		const res = await fetchImpl(`${httpBase}/device/${creds.deviceId}/mobile/self-revoke`, {
+			method: 'POST',
+			headers: { authorization: `Bearer ${creds.mobileToken}`, 'content-type': 'application/json' },
+			body: JSON.stringify({ mobileId: creds.mobileId }),
+			signal: abort.signal,
+		});
+		return res.ok;
+	} catch {
+		return false;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export async function saveCredentials(keyStore: KeyStore, creds: PairedCredentials): Promise<void> {
 	await keyStore.setItem(CREDS_KEY, JSON.stringify({
 		relayUrl: creds.relayUrl,
@@ -323,6 +352,22 @@ export class MobileController {
 		this.client = undefined;
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
+		this.emit();
+	}
+
+	/** ペアリング解除時: 接続を閉じ、保持している資格情報と表示状態をすべて初期化する。 */
+	reset(): void {
+		this.client?.close();
+		this.client = undefined;
+		this.lastCredentials = undefined;
+		this.attachedAgentId = undefined;
+		this.state.connection = 'offline';
+		this.state.pcOnline = false;
+		this.state.workspace = undefined;
+		this.state.terminalOutput = new Map();
+		this.state.notifications = [];
+		this.state.browserFrame = undefined;
+		this.state.agentChats = new Map();
 		this.emit();
 	}
 

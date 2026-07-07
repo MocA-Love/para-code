@@ -65,6 +65,9 @@ export type RelayControlMessage =
 	// PC→リレー: 対象モバイルがオフラインならAPNsへプッシュせよ。payloadはE2E暗号文(base64url)で
 	// リレーは開けない。iOSのNotification Service Extensionが復号して本文を差し替える。
 	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string }
+	// リレー→PC: モバイル自身がペアリングを解除した（self-revoke）。PCは登録デバイス一覧から
+	// この mobileId を取り除く。
+	| { readonly type: 'mobile-revoked'; readonly mobileId: string }
 	| { readonly type: 'error'; readonly message: string };
 
 export function encodeRelayControl(message: RelayControlMessage): string {
