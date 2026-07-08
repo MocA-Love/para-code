@@ -21,7 +21,7 @@ import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/l
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, markParadisManagedWorkspaceWindow, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { paradisParkTerminalEditorInstance } from './paradisTerminalEditorPark.js';
+import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
 
 interface ISerializedRepository {
 	readonly id: string;
@@ -177,6 +177,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	discardScopeState(stateKey: string): void {
 		this.deleteWorkingSetFor(stateKey);
 		this._panelVisibility.delete(stateKey);
+		// この scope の working set に載っていたエディタターミナルは park 台帳に生き続けている。
+		// working set を消すと二度と revive されず PTY/xterm が孤児化するため、ここで実体ごと破棄する。
+		// パネルグループの retireScope (onDidRetireScope 購読) と対をなすエディタ側の掃除。
+		paradisRetireParkedTerminalEditorInstances(stateKey);
 		this._onDidRetireScope.fire(stateKey);
 	}
 
@@ -247,7 +251,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// (詳細は paradisTerminalEditorPark.ts のコメント参照)。working set を保存して
 					// いない場合 (previousKey なし) は復元先が無くインスタンスが孤児化するためパークしない。
 					for (const instance of [...this.terminalEditorService.instances]) {
-						if (paradisParkTerminalEditorInstance(instance)) {
+						if (paradisParkTerminalEditorInstance(instance, previousKey)) {
 							this.terminalEditorService.detachInstance(instance);
 						}
 					}

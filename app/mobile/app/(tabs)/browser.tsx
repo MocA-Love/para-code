@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, GestureResponderEvent, Image, LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
@@ -23,6 +24,14 @@ export default function BrowserScreen() {
 	const [error, setError] = useState<string | undefined>();
 	const [activeUrl, setActiveUrl] = useState<string | undefined>();
 	const [viewSize, setViewSize] = useState({ w: 1, h: 1 });
+
+	// タブが表示中(focused)か。expo-router の Tabs は他タブへ移っても画面をアンマウントしない
+	// ため、これを見て screencast を停止/再開する（裏でフレーム送受信が回り続けてPC・電池を
+	// 消費するのを防ぐ）。
+	const isFocused = useIsFocused();
+	// ミラー中の targetId。ユーザーが明示的に「切替」した時のみ undefined に戻す。
+	// blur→focus の往復では、これが残っていれば同じ targetId でミラーを自動で張り直す。
+	const mirrorActiveRef = useRef<string | undefined>(undefined);
 
 	const loadTargets = useCallback(async () => {
 		if (connection !== 'online') {
@@ -53,17 +62,35 @@ export default function BrowserScreen() {
 	}, []);
 
 	// 接続が切れたらミラー表示を畳んでターゲット選択に戻す
-	// （復帰時に古い activeUrl のままスピナーで固まるのを防ぐ）。
+	// （復帰時に古い activeUrl のままスピナーで固まるのを防ぐ）。ミラー中フラグも落として、
+	// 再接続後に裏で勝手に張り直さない（既存の「再選択させる」挙動を維持する）。
 	useEffect(() => {
 		if (connection !== 'online') {
+			mirrorActiveRef.current = undefined;
 			setActiveUrl(undefined);
 		}
 	}, [connection]);
+
+	// タブの blur/focus で screencast を止め／再開する（バッテリー対策）。
+	// blur 時は最後のフレームを残したまま停止し（browserStop(true)）、再 focus 時はミラーが
+	// 有効だった場合のみ同じ targetId で張り直す。ユーザーには静止画→最新画面の自然な
+	// 切り替えだけが見え、空白やスピナーは出さない。ミラー未開始時は何もしない。
+	useEffect(() => {
+		if (connection !== 'online' || mirrorActiveRef.current === undefined) {
+			return;
+		}
+		if (isFocused) {
+			void browserStart(mirrorActiveRef.current).catch(() => undefined);
+		} else {
+			void browserStop(true);
+		}
+	}, [isFocused, connection, browserStart, browserStop]);
 
 	const start = async (targetId: string, url: string) => {
 		setError(undefined);
 		try {
 			await browserStart(targetId);
+			mirrorActiveRef.current = targetId;
 			setActiveUrl(url);
 		} catch (e) {
 			setError(String(e instanceof Error ? e.message : e));
@@ -159,7 +186,7 @@ export default function BrowserScreen() {
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'reload' })}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'scroll', dy: -0.5 })}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'scroll', dy: 0.5 })}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
-				<Pressable style={[styles.toolBtn, styles.stopBtn]} onPress={() => { void browserStop().then(() => setActiveUrl(undefined)); }}>
+				<Pressable style={[styles.toolBtn, styles.stopBtn]} onPress={() => { mirrorActiveRef.current = undefined; void browserStop().then(() => setActiveUrl(undefined)); }}>
 					<Text style={styles.toolText}>切替</Text>
 				</Pressable>
 			</View>

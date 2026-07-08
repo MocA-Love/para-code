@@ -148,7 +148,26 @@ class ParadisAgentBrowserBindingModel extends Disposable implements IParadisAgen
 		return this._bindings.find(binding => binding.token === token);
 	}
 
+	/** このウィンドウのターミナルペインにトークンが1本でも割り当てられているか（renderer内で同期判定）。 */
+	private hasAnyPaneToken(): boolean {
+		for (const instance of this.terminalService.instances) {
+			if (this.paneTokenService.getTokenForInstance(instance.instanceId) !== undefined) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	async refresh(): Promise<void> {
+		// トークンが1本も無ければ shared process のバインディング/接続実績はこのウィンドウに
+		// 関係し得ず、listBindings/listSeenTokens の結果は必ず空へ収束する。ただし直前まで
+		// 残っていたキャッシュを空へ落とし切る必要があるため、「トークン0 かつ 手元の
+		// bindings/seenTokens も既に空」の両方を満たすときだけ IPC をスキップする。片方でも
+		// 非空なら通常どおり取得して確実に空へ収束させ、トークンが1本でも生えれば次の tick で
+		// 即座に取得を再開する（interval 自体は止めないのでイベント取りこぼしで固まらない）。
+		if (!this.hasAnyPaneToken() && this._bindings.length === 0 && this._seenTokens.size === 0) {
+			return;
+		}
 		try {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
 			const [bindings, seenTokens] = await Promise.all([

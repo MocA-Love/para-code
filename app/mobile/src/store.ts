@@ -368,7 +368,7 @@ export class MobileController {
 		this.state.notifications = [];
 		this.state.browserFrame = undefined;
 		this.state.agentChats = new Map();
-		this.emit();
+		this.emit({ term: true, notifications: true, agentChats: true });
 	}
 
 	/** 手動切断後などに、保存済み資格情報で接続し直す。 */
@@ -441,7 +441,7 @@ export class MobileController {
 	/** チャット表示の再読み込み（セッションが見つからなかった後の再試行にも使う）。 */
 	refreshAgent(id: number): void {
 		this.state.agentChats.delete(id);
-		this.emit();
+		this.emit({ agentChats: true });
 		if (this.attachedAgentId === id) {
 			this.sendAgentAttach(id);
 		}
@@ -578,10 +578,15 @@ export class MobileController {
 		return this.request<void>('browser', { t: 'start', targetId });
 	}
 
-	/** screencast を停止する。 */
-	async browserStop(): Promise<void> {
-		this.state.browserFrame = undefined;
-		this.emit();
+	/**
+	 * screencast を停止する。keepFrame=true のときは最後のフレームを残したまま停止する
+	 * （タブのblur等で一時停止する用途。再フォーカス時に静止画→最新画面へ自然に切り替わる）。
+	 */
+	async browserStop(keepFrame = false): Promise<void> {
+		if (!keepFrame) {
+			this.state.browserFrame = undefined;
+			this.emit();
+		}
 		try {
 			await this.request<void>('browser', { t: 'stop' });
 		} catch { /* 接続断などは無視 */ }
@@ -633,7 +638,9 @@ export class MobileController {
 						}
 					}
 				}
-				this.emit();
+				// workspace は再代入で参照が変わる。terminalOutput / agentChats は上の掃除で
+				// ミューテートしうるため、常に新参照へ差し替える（掃除が空振りでも安全側に倒す）。
+				this.emit({ term: true, agentChats: true });
 			} catch { /* ignore malformed */ }
 		} else if (frame.ch === 'term') {
 			try {
@@ -644,7 +651,7 @@ export class MobileController {
 					const prev = msg.snapshot ? '' : (this.state.terminalOutput.get(msg.id) ?? '');
 					const next = (prev + msg.data).slice(-MAX_TERM_BUFFER);
 					this.state.terminalOutput.set(msg.id, next);
-					this.emit();
+					this.emit({ term: true });
 				} else if (msg.t === 'exit') {
 					this.state.terminalOutput.delete(msg.id);
 					// 閉じたターミナルは二度と再attachされないため、チャット履歴も掃除する。
@@ -653,7 +660,7 @@ export class MobileController {
 					if (this.attachedAgentId === msg.id) {
 						this.attachedAgentId = undefined;
 					}
-					this.emit();
+					this.emit({ term: true, agentChats: true });
 				}
 			} catch { /* ignore */ }
 		} else if (frame.ch === 'notify') {
@@ -662,7 +669,7 @@ export class MobileController {
 				// 重複IDは無視。新しい順に最大50件保持。
 				if (!this.state.notifications.some(n => n.id === payload.id)) {
 					this.state.notifications = [payload, ...this.state.notifications].slice(0, 50);
-					this.emit();
+					this.emit({ notifications: true });
 					this.onNotify?.(payload);
 				}
 			} catch { /* ignore */ }
@@ -680,7 +687,7 @@ export class MobileController {
 			}
 			if (msg.t === 'none') {
 				this.state.agentChats.set(msg.id, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
-				this.emit();
+				this.emit({ agentChats: true });
 				return;
 			}
 			if (msg.t === 'snapshot') {
@@ -692,7 +699,7 @@ export class MobileController {
 					truncated: msg.truncated === true,
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 				});
-				this.emit();
+				this.emit({ agentChats: true });
 				return;
 			}
 			if (msg.t === 'delta') {
@@ -712,13 +719,41 @@ export class MobileController {
 					messages: [...existing.messages, ...fresh].slice(-500),
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 				});
-				this.emit();
+				this.emit({ agentChats: true });
 			}
 		} catch { /* ignore */ }
 	}
 
-	private emit(): void {
-		this.onChange({ ...this.state, terminalOutput: new Map(this.state.terminalOutput), notifications: [...this.state.notifications], agentChats: new Map(this.state.agentChats) });
+	/** 直近に onChange へ渡したスナップショット（未変更コレクションの参照据え置きに使う）。 */
+	private lastEmitted: StoreState | undefined;
+
+	/**
+	 * 状態変化を購読側へ通知する。terminalOutput / notifications / agentChats の3コレクションは
+	 * ミューテートしても参照は変わらないため、明示的に新しい参照へ差し替えないと Zustand の
+	 * useShallow セレクタが変化を検知できない。逆に「毎回すべて new し直す」と、どのチャネルの
+	 * 更新でも全画面が再レンダーされてしまう（バッテリー・描画コスト）。
+	 *
+	 * そこで changed で「今回中身を書き換えたコレクション」だけを新しい参照にし、書き換えていない
+	 * ものは前回 emit した参照をそのまま渡す。これにより変更と参照更新が機械的に1対1で対応する。
+	 * コレクションをミューテートした呼び出し元は、対応するフラグを必ず立てること
+	 * （立て忘れると「更新したのに画面が変わらない」表示バグになる）。
+	 *
+	 * connection / pcOnline / workspace / browserFrame は常に丸ごと再代入されるスカラ相当なので、
+	 * this.state の現在値をそのまま渡せば参照比較が正しく働く（changed で管理する必要はない）。
+	 */
+	private emit(changed?: { term?: boolean; notifications?: boolean; agentChats?: boolean }): void {
+		const prev = this.lastEmitted;
+		const next: StoreState = {
+			connection: this.state.connection,
+			pcOnline: this.state.pcOnline,
+			workspace: this.state.workspace,
+			browserFrame: this.state.browserFrame,
+			terminalOutput: (!prev || changed?.term) ? new Map(this.state.terminalOutput) : prev.terminalOutput,
+			notifications: (!prev || changed?.notifications) ? [...this.state.notifications] : prev.notifications,
+			agentChats: (!prev || changed?.agentChats) ? new Map(this.state.agentChats) : prev.agentChats,
+		};
+		this.lastEmitted = next;
+		this.onChange(next);
 	}
 }
 

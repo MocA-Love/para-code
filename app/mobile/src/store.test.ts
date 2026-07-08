@@ -204,4 +204,50 @@ describe('MobileController', () => {
 		const listing = await controller.fsList('w1', '');
 		expect(listing.entries[0]!.name).toBe('src');
 	});
+
+	it('emit only swaps references for the collection that actually changed', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+
+		// 毎回の emit スナップショットを（スプレッドせず）そのまま貯め、コレクションの参照同一性を検証する。
+		const emits: import('./store.js').StoreState[] = [];
+		const controller = new MobileController(mobile, () => pair.client, s => { emits.push(s); });
+		const pcMuxP = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxP;
+		await flush();
+
+		const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+
+		// term 出力更新: terminalOutput だけ新参照になり、agentChats/notifications は据え置き。
+		const beforeTerm = emits[emits.length - 1]!;
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'hello' }));
+		await flush();
+		const afterTerm = emits[emits.length - 1]!;
+		expect(afterTerm.terminalOutput).not.toBe(beforeTerm.terminalOutput);
+		expect(afterTerm.agentChats).toBe(beforeTerm.agentChats);
+		expect(afterTerm.notifications).toBe(beforeTerm.notifications);
+
+		// agentChat 更新: agentChats だけ新参照になり、terminalOutput/notifications は据え置き。
+		const beforeAgent = emits[emits.length - 1]!;
+		pcMux.send(Channels.Agent, enc({ t: 'snapshot', id: 1, agent: 'claude', epoch: 'e1', rev: 0, messages: [] }));
+		await flush();
+		const afterAgent = emits[emits.length - 1]!;
+		expect(afterAgent.agentChats).not.toBe(beforeAgent.agentChats);
+		expect(afterAgent.terminalOutput).toBe(beforeAgent.terminalOutput);
+		expect(afterAgent.notifications).toBe(beforeAgent.notifications);
+
+		// browserFrame 更新: どの Map/配列の参照も変わらない（browserFrame のみ差し替わる）。
+		const beforeFrame = emits[emits.length - 1]!;
+		pcMux.send(Channels.Browser, enc({ t: 'frame', data: 'AAAA', w: 10, h: 10 }));
+		await flush();
+		const afterFrame = emits[emits.length - 1]!;
+		expect(afterFrame.browserFrame?.data).toBe('AAAA');
+		expect(afterFrame.terminalOutput).toBe(beforeFrame.terminalOutput);
+		expect(afterFrame.agentChats).toBe(beforeFrame.agentChats);
+		expect(afterFrame.notifications).toBe(beforeFrame.notifications);
+	});
 });

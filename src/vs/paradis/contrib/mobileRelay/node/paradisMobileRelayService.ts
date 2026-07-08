@@ -492,6 +492,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// M-1: リレー側の資格情報も失効させ、既存のモバイル接続を切断する。
 		for (const m of removed) {
 			this.sessions.delete(m.mobileId);
+			this.notifyKeyCache.delete(m.mobileId);
 			void this.revokeOnRelay(m.mobileId);
 		}
 		this._onDidChangeStatus.fire(this.snapshot());
@@ -759,6 +760,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.state.mobiles = this.state.mobiles.filter(m => m.mobileId !== mobileId);
 		await this.save();
 		this.sessions.delete(mobileId);
+		this.notifyKeyCache.delete(mobileId);
 		this.browserMirror.stopSession(mobileId);
 		this.agentChat.dropSubscriber(mobileId);
 		this.updateEagerTailing();
