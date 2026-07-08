@@ -70,11 +70,13 @@ interface AppState extends StoreState {
 	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
 	browserStop(keepFrame?: boolean): Promise<void>;
 	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate'; nx?: number; ny?: number; dy?: number; dx?: number; text?: string; url?: string }): void;
-	/** WebRTCミラーのシグナリング（webrtcMirror.ts が使う）。 */
-	webrtcOffer(targetId: string, sdp: string): Promise<{ sdp?: string }>;
-	webrtcSendIce(candidate: object): void;
-	webrtcStop(): void;
-	setWebrtcIceHandler(handler: ((candidate: object) => void) | undefined): void;
+	/** WebRTCミラーのシグナリング（webrtcMirror.ts が使う。sid はセッション識別子）。 */
+	webrtcOffer(targetId: string, sdp: string, sid: string): Promise<{ sdp?: string }>;
+	webrtcSendIce(candidate: object, sid: string): void;
+	webrtcStop(sid: string): void;
+	setWebrtcIceHandler(sid: string, handler: (candidate: object) => void): void;
+	/** sid が現在登録中のハンドラと一致する場合のみ解除する（旧世代のcleanupが現行を消さないため）。 */
+	clearWebrtcIceHandler(sid: string): void;
 	fetchTurnIceServers(): Promise<object[]>;
 }
 
@@ -358,22 +360,28 @@ export const useAppStore = create<AppState>(set => ({
 		controller?.browserInput(input);
 	},
 
-	webrtcOffer(targetId, sdp) {
+	webrtcOffer(targetId, sdp, sid) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.webrtcOffer(targetId, sdp);
+		return controller.webrtcOffer(targetId, sdp, sid);
 	},
 
-	webrtcSendIce(candidate) {
-		controller?.webrtcSendIce(candidate);
+	webrtcSendIce(candidate, sid) {
+		controller?.webrtcSendIce(candidate, sid);
 	},
 
-	webrtcStop() {
-		controller?.webrtcStop();
+	webrtcStop(sid) {
+		controller?.webrtcStop(sid);
 	},
 
-	setWebrtcIceHandler(handler) {
+	setWebrtcIceHandler(sid, handler) {
 		if (controller) {
-			controller.webrtcIceHandler = handler;
+			controller.webrtcIceHandler = { sid, fn: handler };
+		}
+	},
+
+	clearWebrtcIceHandler(sid) {
+		if (controller && controller.webrtcIceHandler?.sid === sid) {
+			controller.webrtcIceHandler = undefined;
 		}
 	},
 

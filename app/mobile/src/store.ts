@@ -733,22 +733,27 @@ export class MobileController {
 
 	// --- browser WebRTC ミラー（app/design/webrtc-mirror-design.md） ---------------
 
-	/** PC→mobile の ICE candidate 受信ハンドラ（webrtcMirror.ts が登録する。単一スロット）。 */
-	webrtcIceHandler: ((candidate: object) => void) | undefined;
+	/**
+	 * PC→mobile の ICE candidate 受信ハンドラ（webrtcMirror.ts が登録する。単一スロット）。
+	 * sid（セッションID）を持ち、別セッション宛のICEを現行ハンドラへ流さない。
+	 * 確立フェーズ（TURN取得＋offer応答のawait）が長く、素早い切替では新旧セッションが
+	 * 過渡的に共存するため、sidで宛先を識別する。
+	 */
+	webrtcIceHandler: { sid: string; fn: (candidate: object) => void } | undefined;
 
 	/** WebRTC offer を送り、PC側ストリーマの answer SDP を待つ。 */
-	webrtcOffer(targetId: string, sdp: string): Promise<{ sdp?: string }> {
-		return this.request<{ sdp?: string }>('browser', { t: 'webrtc-offer', targetId, sdp }, 20_000);
+	webrtcOffer(targetId: string, sdp: string, sid: string): Promise<{ sdp?: string }> {
+		return this.request<{ sdp?: string }>('browser', { t: 'webrtc-offer', targetId, sdp, sid }, 20_000);
 	}
 
 	/** 自分の ICE candidate をPCへ送る（fire-and-forget）。 */
-	webrtcSendIce(candidate: object): void {
-		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-ice', candidate })));
+	webrtcSendIce(candidate: object, sid: string): void {
+		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-ice', candidate, sid })));
 	}
 
-	/** PC側のピアを畳ませる。 */
-	webrtcStop(): void {
-		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-stop' })));
+	/** PC側のピアを畳ませる（sid が現行セッションと違えばPC側で無視される）。 */
+	webrtcStop(sid: string): void {
+		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-stop', sid })));
 	}
 
 	/**
@@ -794,12 +799,16 @@ export class MobileController {
 		if (frame.ch === 'browser') {
 			// screencastフレーム（id無しのストリーム）と要求応答（id有り）が混在する
 			try {
-				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number; candidate?: object };
+				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number; candidate?: object; sid?: string };
 				if (msg.t === 'frame' && typeof msg.data === 'string') {
 					this.state.browserFrame = { data: msg.data, w: msg.w ?? 0, h: msg.h ?? 0 };
 					this.emit();
 				} else if (msg.t === 'webrtc-ice' && msg.candidate) {
-					this.webrtcIceHandler?.(msg.candidate);
+					// sid未設定（旧PC）は互換のため受理。設定時は現行セッション宛のみ通す
+					const handler = this.webrtcIceHandler;
+					if (handler && (msg.sid === undefined || msg.sid === handler.sid)) {
+						handler.fn(msg.candidate);
+					}
 				} else if (msg.id) {
 					this.settleResponse(frame.payload);
 				}
