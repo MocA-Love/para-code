@@ -1,24 +1,104 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect } from 'react';
-import { Stack } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { DarkTheme, Stack, ThemeProvider, useRouter } from 'expo-router';
+import * as Notifications from 'expo-notifications';
 import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { colors } from '../src/theme.js';
 
-/** ルートレイアウト。起動時にコントローラを初期化し、タブ群とペアリングモーダルを持つ。 */
+/** notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。 */
+interface NotificationDeepLinkData {
+	ws?: string;
+	terminalId?: number;
+}
+
+/**
+ * このアプリは常時ダークテーマのみ（ライトモード非対応）。expo-routerの既定テーマは
+ * ライト（白背景）のため、これを明示的に上書きしないとNativeTabsの画面遷移時や
+ * 初回レンダリング時にネイティブ側のデフォルト背景（白）が一瞬見えてしまう
+ * （iOS 26ではNativeTabs.Triggerのcontentstyle.backgroundColorがコンテンツにより
+ * 自動決定され上書きできないため、テーマ側で合わせる必要がある）。
+ */
+const appTheme = {
+	...DarkTheme,
+	colors: {
+		...DarkTheme.colors,
+		primary: colors.accent,
+		background: colors.bg,
+		card: colors.panel,
+		text: colors.text,
+		border: colors.border,
+	},
+};
+
+/**
+ * ルートレイアウト。起動時にコントローラを初期化し、タブ群とペアリングモーダルを持つ。
+ * OS通知（ローカル/リモート双方）のタップをエージェント画面へのディープリンクに変換する。
+ * AuthGateでロック中に届いた場合は解除まで遷移を保留する。
+ */
 export default function RootLayout() {
+	const router = useRouter();
 	const init = useAppStore(s => s.init);
+	const setSelectedWs = useAppStore(s => s.setSelectedWs);
+	const setSelectedTerminalId = useAppStore(s => s.setSelectedTerminalId);
+	const [unlocked, setUnlocked] = useState(false);
+	// tryNavigateから常に最新値を読むためのref（tryNavigate自体をunlockedに依存させると
+	// 参照が変わるたびにリスナーeffectを再登録することになり、stale closure対策として
+	// 依存を空にした場合に「登録時点のunlocked」を永久キャプチャしてしまうため）。
+	const unlockedRef = useRef(false);
+	const pendingRef = useRef<NotificationDeepLinkData | undefined>(undefined);
+
 	useEffect(() => {
 		void init();
 	}, [init]);
 
+	const tryNavigate = useCallback(() => {
+		const target = pendingRef.current;
+		if (!unlockedRef.current || !target) {
+			return;
+		}
+		pendingRef.current = undefined;
+		// setSelectedWs は selectedTerminalId をリセットするため、この順序を厳守する。
+		if (target.ws) {
+			setSelectedWs(target.ws);
+		}
+		if (target.terminalId !== undefined) {
+			setSelectedTerminalId(target.terminalId);
+		}
+		router.push('/agent');
+	}, [router, setSelectedWs, setSelectedTerminalId]);
+
+	useEffect(() => {
+		unlockedRef.current = unlocked;
+		tryNavigate();
+	}, [unlocked, tryNavigate]);
+
+	useEffect(() => {
+		const sub = Notifications.addNotificationResponseReceivedListener(response => {
+			pendingRef.current = response.notification.request.content.data as NotificationDeepLinkData;
+			tryNavigate();
+		});
+		// コールドスタート（通知タップでアプリが起動された）対応
+		void Notifications.getLastNotificationResponseAsync().then(response => {
+			if (response) {
+				pendingRef.current = response.notification.request.content.data as NotificationDeepLinkData;
+				tryNavigate();
+			}
+		});
+		return () => sub.remove();
+	}, [tryNavigate]);
+
+	const handleUnlock = useCallback(() => setUnlocked(true), []);
+
 	return (
-		<AuthGate>
-			<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
-				<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-				<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
-			</Stack>
-		</AuthGate>
+		<ThemeProvider value={appTheme}>
+			<AuthGate onUnlock={handleUnlock}>
+				<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
+					<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+					<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
+				</Stack>
+			</AuthGate>
+		</ThemeProvider>
 	);
 }

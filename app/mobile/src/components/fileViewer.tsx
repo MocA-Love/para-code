@@ -502,7 +502,7 @@ const styles = StyleSheet.create({
 	title: { flex: 1, color: colors.text, fontSize: 13 },
 	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	segmentBtn: { paddingHorizontal: 10, paddingVertical: 5 },
-	segmentBtnActive: { backgroundColor: 'rgba(0,122,204,.25)' },
+	segmentBtnActive: { backgroundColor: 'rgba(9,175,217,.25)' },
 	segmentText: { color: colors.textDim, fontSize: 12 },
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
 	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 16, paddingVertical: 4 },
@@ -512,7 +512,7 @@ const styles = StyleSheet.create({
 	sheetBar: { flexGrow: 0, flexShrink: 0, backgroundColor: colors.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	sheetBarContent: { paddingHorizontal: 12, paddingVertical: 8, gap: 8 },
 	sheetChip: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 180 },
-	sheetChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(0,122,204,.16)' },
+	sheetChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
 	sheetText: { color: colors.textDim, fontSize: 12 },
 	sheetTextActive: { color: colors.text, fontWeight: '600' },
 });

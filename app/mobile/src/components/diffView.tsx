@@ -221,7 +221,7 @@ const styles = StyleSheet.create({
 	statDel: { color: '#f85149', fontSize: 12, fontFamily: MONO, fontWeight: '700' },
 	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	segmentBtn: { paddingHorizontal: 10, paddingVertical: 5 },
-	segmentBtnActive: { backgroundColor: 'rgba(0,122,204,.25)' },
+	segmentBtnActive: { backgroundColor: 'rgba(9,175,217,.25)' },
 	segmentText: { color: colors.textDim, fontSize: 12 },
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
 	web: { flex: 1 },

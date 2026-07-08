@@ -14,6 +14,23 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { colors } from '../theme.js';
 
+/**
+ * 未ペアリング時の案内。ConnectionGateと、ホーム画面（独自に接続状態を出す都合上
+ * 全体をConnectionGateでラップできない）の両方から使う共通部品。
+ */
+export function PairingRequiredNotice({ onStart }: { onStart: () => void }) {
+	return (
+		<View style={styles.center}>
+			<Ionicons name="qr-code-outline" size={40} color={colors.textDim} />
+			<Text style={styles.title}>ペアリングが必要です</Text>
+			<Text style={styles.dim}>PCとペアリングすると、離れた場所からでも遠隔操作できます。</Text>
+			<Pressable style={styles.btn} onPress={onStart}>
+				<Text style={styles.btnText}>ペアリングを開始</Text>
+			</Pressable>
+		</View>
+	);
+}
+
 export function ConnectionGate({ children }: { children: ReactNode }) {
 	const router = useRouter();
 	const { connection, pcOnline, paired, ready, manualOffline, connectRelay } = useAppStore(useShallow(s => ({
@@ -26,16 +43,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	}
 
 	if (ready && !paired) {
-		return (
-			<View style={styles.center}>
-				<Ionicons name="qr-code-outline" size={40} color={colors.textDim} />
-				<Text style={styles.title}>ペアリングが必要です</Text>
-				<Text style={styles.dim}>ホームタブから「接続を開始」でPCとペアリングしてください。</Text>
-				<Pressable style={styles.btn} onPress={() => router.push('/')}>
-					<Text style={styles.btnText}>ホームへ</Text>
-				</Pressable>
-			</View>
-		);
+		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
 	}
 
 	const connecting = !manualOffline && (connection === 'connecting' || connection === 'handshaking');

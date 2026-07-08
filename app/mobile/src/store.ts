@@ -280,8 +280,13 @@ export class MobileController {
 		agentChats: new Map(),
 	};
 
-	/** agentチャットの購読中ターミナルID（再接続時に自動で再attachする）。 */
-	private attachedAgentId: number | undefined;
+	/**
+	 * agentチャットの購読中ターミナルID → 購読者数（参照カウント）。
+	 * ホーム画面のアテンションカードとエージェント画面が同じターミナルを同時に
+	 * 購読しうる（別ターミナルの場合は2件同時）ため単一IDでは表現できない。
+	 * 再接続時はここに残っている全IDを再attachする。
+	 */
+	private attachedAgents = new Map<number, number>();
 
 	constructor(
 		private readonly identity: Identity,
@@ -334,8 +339,10 @@ export class MobileController {
 				this.emit();
 				// 再接続完了時: 購読中のagentチャットがあれば手元のepoch/revで再attachする
 				// （PC側はepoch一致なら差分のみ、不一致なら全量スナップショットを返す）。
-				if (s === 'online' && this.attachedAgentId !== undefined) {
-					this.sendAgentAttach(this.attachedAgentId);
+				if (s === 'online') {
+					for (const id of this.attachedAgents.keys()) {
+						this.sendAgentAttach(id);
+					}
 				}
 				if (s === 'online') {
 					this.registerPushToken();
@@ -360,7 +367,7 @@ export class MobileController {
 		this.client?.close();
 		this.client = undefined;
 		this.lastCredentials = undefined;
-		this.attachedAgentId = undefined;
+		this.attachedAgents.clear();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
 		this.state.workspace = undefined;
@@ -425,24 +432,38 @@ export class MobileController {
 
 	// --- agent チャット（エージェントセッションのチャットミラー） ----------------
 
-	/** エージェントチャットの購読を開始する（切断→再接続時は自動で再attachされる）。 */
+	/**
+	 * エージェントチャットの購読を開始する（切断→再接続時は自動で再attachされる）。
+	 * 参照カウント方式: 同じidに対する2件目以降の呼び出しはPCへの再送信をせず
+	 * カウントのみ増やす（ホーム画面とエージェント画面が同時に同じターミナルを
+	 * 購読するケースで、片方のdetachがもう片方の購読を切らないようにするため）。
+	 */
 	attachAgent(id: number): void {
-		this.attachedAgentId = id;
-		this.sendAgentAttach(id);
+		const count = (this.attachedAgents.get(id) ?? 0) + 1;
+		this.attachedAgents.set(id, count);
+		if (count === 1) {
+			this.sendAgentAttach(id);
+		}
 	}
 
 	detachAgent(id: number): void {
-		if (this.attachedAgentId === id) {
-			this.attachedAgentId = undefined;
+		const count = this.attachedAgents.get(id);
+		if (count === undefined) {
+			return;
 		}
-		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id })));
+		if (count <= 1) {
+			this.attachedAgents.delete(id);
+			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id })));
+		} else {
+			this.attachedAgents.set(id, count - 1);
+		}
 	}
 
 	/** チャット表示の再読み込み（セッションが見つからなかった後の再試行にも使う）。 */
 	refreshAgent(id: number): void {
 		this.state.agentChats.delete(id);
 		this.emit({ agentChats: true });
-		if (this.attachedAgentId === id) {
+		if (this.attachedAgents.has(id)) {
 			this.sendAgentAttach(id);
 		}
 	}
@@ -633,9 +654,7 @@ export class MobileController {
 				for (const id of this.state.agentChats.keys()) {
 					if (!live.has(id)) {
 						this.state.agentChats.delete(id);
-						if (this.attachedAgentId === id) {
-							this.attachedAgentId = undefined;
-						}
+						this.attachedAgents.delete(id);
 					}
 				}
 				// workspace は再代入で参照が変わる。terminalOutput / agentChats は上の掃除で
@@ -657,9 +676,7 @@ export class MobileController {
 					// 閉じたターミナルは二度と再attachされないため、チャット履歴も掃除する。
 					// （放置すると agentChats に使い捨てターミナル分のチャットが蓄積し続ける）
 					this.state.agentChats.delete(msg.id);
-					if (this.attachedAgentId === msg.id) {
-						this.attachedAgentId = undefined;
-					}
+					this.attachedAgents.delete(msg.id);
 					this.emit({ term: true, agentChats: true });
 				}
 			} catch { /* ignore */ }
@@ -706,7 +723,7 @@ export class MobileController {
 				const existing = this.state.agentChats.get(msg.id);
 				if (!existing || existing.epoch !== msg.epoch) {
 					// epoch不一致の差分は適用できない → 全量を取り直す（欠落したまま表示しない）。
-					if (this.attachedAgentId === msg.id) {
+					if (this.attachedAgents.has(msg.id)) {
 						this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'attach', id: msg.id })));
 					}
 					return;
