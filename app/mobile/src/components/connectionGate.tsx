@@ -46,10 +46,15 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
 	}
 
-	const connecting = !manualOffline && (connection === 'connecting' || connection === 'handshaking');
+	// PCオフライン（リレーには繋がったがPC側が不在）はハンドシェイク未完了(handshaking)の
+	// 段階でもリレーのpresence通知で分かる。PC不在時はE2Eハンドシェイク応答が永遠に来ず
+	// タイムアウト→再接続を繰り返すため、「接続しています…」のまま固まって見せず
+	// 「PCがオフライン」と的確に伝える。
+	const pcOffline = !manualOffline && !pcOnline && (connection === 'online' || connection === 'handshaking');
+	const connecting = !manualOffline && !pcOffline && (connection === 'connecting' || connection === 'handshaking');
 	const message = manualOffline
 		? '接続を切断しています'
-		: connection === 'online'
+		: pcOffline
 			? 'PCがオフラインです。PCの Para Code が起動しているか確認してください。'
 			: connecting
 				? 'PCに接続しています…'

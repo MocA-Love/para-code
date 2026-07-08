@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
+import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -12,8 +13,12 @@ import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { ScreenTitle } from '../../src/components/screenTitle.js';
 import { QuestionCard } from '../../src/components/questionCard.js';
 import { ApprovalCard } from '../../src/components/approvalCard.js';
+import { findLatestApprovalRequest } from '../../src/components/attentionCard.js';
+import { GlassComposer } from '../../src/components/glassComposer.js';
+import { ModelPill } from '../../src/components/modelPill.js';
 import { useAgentActions } from '../../src/hooks/useAgentActions.js';
-import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../../src/theme.js';
 
 /**
@@ -28,14 +33,15 @@ import { colors } from '../../src/theme.js';
  */
 export default function AgentScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, agentChats, selectedTerminalId, setSelectedTerminalId, attachAgent, detachAgent, refreshAgent } = useAppStore(useShallow(s => ({
+	const { workspace, agentChats, selectedTerminalId, setSelectedTerminalId, attachAgent, detachAgent, refreshAgent, fsUpload } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats,
 		selectedTerminalId: s.selectedTerminalId, setSelectedTerminalId: s.setSelectedTerminalId,
-		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
+		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent, fsUpload: s.fsUpload,
 	})));
 	const [input, setInput] = useState('');
 	const listRef = useRef<FlatList<ChatRow>>(null);
-	const tabBarSpacer = useTabBarSpacer();
+	const insets = useSafeAreaInsets();
+	const keyboardVisible = useKeyboardVisible();
 
 	const terminals = (workspace?.terminals ?? []).filter(t =>
 		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
@@ -104,9 +110,35 @@ export default function AgentScreen() {
 		actions.sendText(text);
 	};
 
+	/**
+	 * 画像添付（+ボタン）。フォトライブラリから選び、PCへアップロードして保存先の
+	 * フルパスを入力欄へ挿入する（エージェントCLIはプロンプト内のパスから画像を読める）。
+	 */
+	const [uploading, setUploading] = useState(false);
+	const attachImage = async () => {
+		if (uploading) {
+			return;
+		}
+		const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], base64: true, quality: 0.8 });
+		const asset = result.assets?.[0];
+		if (result.canceled || !asset?.base64) {
+			return;
+		}
+		setUploading(true);
+		try {
+			const name = asset.fileName ?? 'photo.jpg';
+			const { path } = await fsUpload(name, asset.base64);
+			setInput(prev => prev.length > 0 ? prev + ' ' + path + ' ' : path + ' ');
+		} catch (err) {
+			console.warn('[agent] image upload failed', err);
+		} finally {
+			setUploading(false);
+		}
+	};
+
 	return (
 		<ConnectionGate>
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 			<ScreenTitle title="エージェント" subtitle="応答待ちの質問・承認をここで完結" />
 			<WsBar />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
@@ -168,24 +200,31 @@ export default function AgentScreen() {
 
 			{permissionPending && activeId !== undefined ? (
 				<View style={styles.approvalBarWrap}>
-					<ApprovalCard onApprove={actions.approve} />
+					<ApprovalCard onApprove={actions.approve} detail={findLatestApprovalRequest(chat)} />
 				</View>
 			) : null}
 
-			<View style={[styles.inputBar, { paddingBottom: tabBarSpacer }]}>
-				<TextInput
-					style={styles.input}
+			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 30 }]}>
+				<GlassComposer
 					value={input}
 					onChangeText={setInput}
+					onSubmit={submit}
 					placeholder="エージェントへメッセージ…"
-					placeholderTextColor={colors.textDim}
-					autoCapitalize="none"
-					autoCorrect={false}
-					multiline
+					sendDisabled={input.trim().length === 0}
+					tools={
+						<>
+							<Pressable style={styles.attachBtn} onPress={() => { void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">
+								<Ionicons name={uploading ? 'hourglass-outline' : 'add'} size={20} color={colors.text} />
+							</Pressable>
+							<ModelPill
+								agent={chat !== undefined && !chat.none ? chat.agent : undefined}
+								model={chat?.info?.model}
+								effort={chat?.info?.effort}
+								onCommand={actions.sendText}
+							/>
+						</>
+					}
 				/>
-				<Pressable style={[styles.sendBtn, input.trim().length === 0 && styles.sendBtnDisabled]} onPress={submit} disabled={input.trim().length === 0} accessibilityLabel="送信">
-					<Ionicons name="arrow-up" size={20} color="#fff" />
-				</Pressable>
 			</View>
 		</KeyboardAvoidingView>
 		</ConnectionGate>
@@ -252,7 +291,7 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 		return (
 			<View style={styles.toolRow}>
 				<Ionicons name="construct-outline" size={12} color={colors.textDim} />
-				<Text style={styles.toolText} numberOfLines={3}>{message.tool}: {message.text}</Text>
+				<Text style={styles.toolText} numberOfLines={3}>{message.tool === 'approval_request' ? '許可要求' : message.tool}: {message.text}</Text>
 			</View>
 		);
 	}
@@ -337,8 +376,6 @@ const styles = StyleSheet.create({
 	workingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
 	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
 	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4 },
-	inputBar: { flexDirection: 'row', alignItems: 'flex-end', gap: 8, padding: 12 },
-	input: { flex: 1, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10, maxHeight: 120 },
-	sendBtn: { backgroundColor: colors.accent2, borderRadius: 10, width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
-	sendBtnDisabled: { opacity: 0.4 },
+	inputBar: { paddingHorizontal: 12, paddingTop: 10 },
+	attachBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 });

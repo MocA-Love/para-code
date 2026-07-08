@@ -6,4 +6,6 @@ dist/
 .expo-shared/
 ios/
 android/
+# Expoローカルモジュールの ios/ はprebuild成果物ではなくソースなので追跡する
+!mobile/modules/*/ios/
 *.tsbuildinfo

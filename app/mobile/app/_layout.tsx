@@ -5,6 +5,7 @@ import { DarkTheme, Stack, ThemeProvider, useRouter } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
+import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 
 /** notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。 */
@@ -51,6 +52,7 @@ export default function RootLayout() {
 
 	useEffect(() => {
 		void init();
+		startLiveActivitySync();
 	}, [init]);
 
 	const tryNavigate = useCallback(() => {

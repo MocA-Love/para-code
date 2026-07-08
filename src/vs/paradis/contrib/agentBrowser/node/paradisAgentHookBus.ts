@@ -26,6 +26,10 @@ export interface IParadisAgentHookEvent {
 	readonly transcriptPath: string | undefined;
 	/** hook stdin JSON の cwd。 */
 	readonly cwd: string | undefined;
+	/** hook stdin JSON の tool_name（PreToolUse / PostToolUse のみ）。 */
+	readonly toolName?: string;
+	/** hook stdin JSON の tool_input（PreToolUse のみ。AskUserQuestion のライブ質問検出に使う）。 */
+	readonly toolInput?: unknown;
 	/** 受信時刻（epoch ms）。 */
 	readonly at: number;
 }

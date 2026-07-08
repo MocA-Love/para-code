@@ -29,6 +29,18 @@ function findPendingQuestion(chat: AgentChatState | undefined): AgentChatMessage
 	return undefined;
 }
 
+/** チャット履歴から直近の承認要求内容（PermissionRequest hook由来の合成カード）を探す。 */
+export function findLatestApprovalRequest(chat: AgentChatState | undefined): string | undefined {
+	const messages = chat?.messages ?? [];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m !== undefined && m.kind === 'tool_use' && m.tool === 'approval_request') {
+			return m.text;
+		}
+	}
+	return undefined;
+}
+
 /**
  * ホーム画面最上部のアテンションカード（mock-2.html準拠）。応答待ちのエージェントの
  * 質問・許可確認を、ターミナル画面へ遷移せずその場で回答できるようにする
@@ -77,7 +89,7 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 					onFreeText={actions.answerQuestionFreeText}
 				/>
 			) : (
-				<ApprovalCard onApprove={actions.approve} />
+				<ApprovalCard onApprove={actions.approve} detail={findLatestApprovalRequest(chat)} />
 			)}
 			<Pressable style={styles.openLink} onPress={onOpenAgent}>
 				<Text style={styles.openLinkText}>エージェント画面で詳しく見る ›</Text>

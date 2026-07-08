@@ -10,6 +10,7 @@ import { localize, localize2 } from '../../../../nls.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -77,6 +78,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IWebviewWorkbenchService private readonly webviewWorkbenchService: IWebviewWorkbenchService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IFileService fileService: IFileService,
+		@IEnvironmentService environmentService: IEnvironmentService,
 		@ILanguageService languageService: ILanguageService,
 		@IExtensionService extensionService: IExtensionService,
 		@IThemeService themeService: IThemeService,
@@ -99,6 +101,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			agentStatusStore,
 			this.logService,
 			fileService,
+			environmentService,
 			languageService,
 			extensionService,
 			themeService,

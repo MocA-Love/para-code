@@ -68,16 +68,25 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 		[sendSequence],
 	);
 
-	/** 承認クイックアクション。Claudeは番号+250ms+CR、Codexはショートカット1文字。 */
+	/**
+	 * 承認クイックアクション。
+	 *  - Claude 許可: '1'（Yes、選択肢構成に依らず先頭がYes）+250ms+CR。
+	 *    拒否は番号ではなく Esc を注入する（「Always Allow」が無いプロンプトでは選択肢が
+	 *    2つになり、'3' 固定注入だと範囲外で拒否が黙って失敗するため。Esc は選択肢数に
+	 *    依存せずキャンセル=拒否として機能する）。
+	 *  - Codex: y / d のショートカット1文字（Enter不要）。
+	 */
 	const approve = useCallback((choice: 'yes' | 'no') => {
 		if (terminalId === undefined) {
 			return;
 		}
 		if (agent === 'codex') {
 			send(choice === 'yes' ? 'y' : 'd');
-		} else {
-			send(choice === 'yes' ? '1' : '3');
+		} else if (choice === 'yes') {
+			send('1');
 			setTimeout(() => send('\r'), 250);
+		} else {
+			send('\u001b');
 		}
 	}, [terminalId, agent, send]);
 

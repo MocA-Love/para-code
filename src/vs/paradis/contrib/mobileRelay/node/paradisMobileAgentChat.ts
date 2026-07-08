@@ -246,6 +246,14 @@ function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts
 }
 
 /**
+ * ライブ質問（hook注入）と transcript 上の本物の質問を突き合わせるための内容キー。
+ * 両者とも parseAskUserQuestions を通るため、truncate 後のテキストが一致する。
+ */
+function liveQuestionContentKey(m: IRawMessage): string {
+	return `${m.text} ${(m.options ?? []).map(o => o.label).join('')}`;
+}
+
+/**
  * Claude Code のユーザーロール行のテキストを表示メッセージへ変換する。
  * ハーネスが user ロールとして注入する合成テキスト（バックグラウンドタスクの完了通知・
  * スラッシュコマンドの実行記録・system-reminder 等）は「ユーザーの発言」として
@@ -254,6 +262,12 @@ function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts
 function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | undefined, signals: IParseSignals): void {
 	const trimmed = rawText.trim();
 	if (trimmed.length === 0) {
+		return;
+	}
+	// ユーザーがescでツール実行（AskUserQuestion等）を中断した際にハーネスが注入する
+	// 内部マーカー。ユーザーの発言ではないため表示しない（signals.userTextも立てない。
+	// 立てると同一バッチ内の未回答質問カードを誤ってクリアしてしまう）。
+	if (/^\[Request interrupted by user( for tool use)?\]$/.test(trimmed)) {
 		return;
 	}
 	// バックグラウンドタスク（サブエージェント等）の完了通知。ユーザーの発言ではなく
@@ -465,10 +479,27 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		if (text.trim().length > 0) {
 			out.push({ role: 'assistant', kind: 'thinking', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
 		}
-	} else if (ptype === 'function_call') {
+	} else if (ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'mcp_tool_call') {
+		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
 		const tool = str(payload['name']) ?? 'tool';
-		const text = str(payload['arguments']) ?? '';
+		const text = str(payload['arguments']) ?? str(payload['input']) ?? '';
 		out.push({ role: 'assistant', kind: 'tool_use', tool, text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+	} else if (ptype === 'web_search_call' || ptype === 'tool_search_call') {
+		// web_search_call は action.query、tool_search_call は arguments(オブジェクト)にクエリが入る
+		const action = rec(payload['action']);
+		const args = rec(payload['arguments']);
+		let query = str(action?.['query']) ?? str(args?.['query']) ?? '';
+		if (query.length === 0) {
+			try {
+				query = JSON.stringify(args ?? action ?? '');
+			} catch { /* 表示は空でよい */ }
+		}
+		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', text: truncateText(query, TOOL_TEXT_LIMIT), ts });
+	} else if (ptype === 'custom_tool_call_output') {
+		const text = str(payload['output']) ?? '';
+		if (text.trim().length > 0) {
+			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+		}
 	} else if (ptype === 'local_shell_call') {
 		let text = '';
 		try {
@@ -603,6 +634,19 @@ class TranscriptTailer {
 	readonly backgroundTasks = new Map<string, number>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
 	readonly pendingQuestions = new Set<string>();
+	/**
+	 * PreToolUse hook でライブ注入した質問: 内容キー → 合成toolUseId。Claude Code は
+	 * AskUserQuestion の tool_use を決着（回答/中断）まで transcript へ flush しないため、
+	 * hook 供給の合成カードを先に出し、決着後に transcript へ現れる本物と突き合わせる。
+	 */
+	private readonly liveQuestions = new Map<string, string>();
+	/**
+	 * transcript に現れた本物の tool_use_id → 合成ID群（後続 tool_result の付け替え用）。
+	 * 1回の AskUserQuestion に複数の質問が含まれると、合成カードは質問ごとに別IDだが
+	 * 本物の tool_use_id / tool_result は1つなので、配列で全合成IDを決着させる。
+	 */
+	private readonly liveQuestionRealIds = new Map<string, string[]>();
+	private liveQuestionSeq = 0;
 	/** セッションメタ情報（transcriptから学習した最新値）。 */
 	model: string | undefined;
 	effort: string | undefined;
@@ -742,6 +786,8 @@ class TranscriptTailer {
 				this.initialTruncated = false;
 				this.backgroundTasks.clear();
 				this.pendingQuestions.clear();
+				this.liveQuestions.clear();
+				this.liveQuestionRealIds.clear();
 				this.model = undefined;
 				this.effort = undefined;
 				await handle.close().catch(() => { /* ignore */ });
@@ -792,6 +838,35 @@ class TranscriptTailer {
 			}
 			const raw = this.agent === 'claude' ? parseClaudeLine(obj, signals) : parseCodexLine(obj, signals);
 			for (const message of raw) {
+				// ライブ質問の決着処理: hookで注入済みの質問が決着後に transcript へ本物として
+				// 現れたら間引き（合成カードで表示済み）、対応する tool_result は合成IDへ
+				// 付け替える（モバイル側の合成カードが「回答済み」になる）。
+				if (message.kind === 'question') {
+					const syntheticId = this.liveQuestions.get(liveQuestionContentKey(message));
+					if (syntheticId !== undefined) {
+						if (message.toolUseId !== undefined) {
+							const ids = this.liveQuestionRealIds.get(message.toolUseId);
+							if (ids !== undefined) {
+								ids.push(syntheticId);
+							} else {
+								this.liveQuestionRealIds.set(message.toolUseId, [syntheticId]);
+							}
+						}
+						this.liveQuestions.delete(liveQuestionContentKey(message));
+						continue;
+					}
+				}
+				if (message.kind === 'tool_result' && message.toolUseId !== undefined) {
+					const syntheticIds = this.liveQuestionRealIds.get(message.toolUseId);
+					if (syntheticIds !== undefined) {
+						this.liveQuestionRealIds.delete(message.toolUseId);
+						for (const syntheticId of syntheticIds) {
+							signals.answeredIds.push(syntheticId);
+							added.push({ ...message, toolUseId: syntheticId, rev: this.rev++ });
+						}
+						continue;
+					}
+				}
 				added.push({ ...message, rev: this.rev++ });
 			}
 		}
@@ -806,6 +881,72 @@ class TranscriptTailer {
 		if (emitDelta) {
 			this.delegate.onDelta(added);
 		}
+	}
+
+	/** 直近に注入した承認要求の内容キー（PermissionRequest hookの再発火による重複注入の抑止）。 */
+	private lastApprovalKey: string | undefined;
+
+	/**
+	 * PermissionRequest hook で受けた承認要求の内容（ツール名・コマンド等）を表示カードとして
+	 * 注入する。Codex は承認要求を rollout に一切書かず、Claude もプロンプト表示中は
+	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
+	 * 内容を承認バー（許可/拒否）に添えて表示する。
+	 */
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown): void {
+		this.enqueue(async () => {
+			const input = rec(toolInput);
+			const detail = str(input?.['description']) ?? str(input?.['command']) ?? (input !== undefined ? JSON.stringify(input) : '');
+			const text = [toolName, detail].filter(v => v !== undefined && v.length > 0).join(': ');
+			if (text.length === 0) {
+				return;
+			}
+			const key = text;
+			if (this.lastApprovalKey === key) {
+				return; // 同一要求の再発火（リトライ等）は無視
+			}
+			this.lastApprovalKey = key;
+			const message: IParadisAgentChatMessage = {
+				role: 'assistant', kind: 'tool_use', tool: 'approval_request',
+				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++,
+			};
+			this.messages.push(message);
+			if (this.messages.length > MESSAGE_RING_LIMIT) {
+				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
+			}
+			this.delegate.onDelta([message]);
+		});
+	}
+
+	/**
+	 * PreToolUse hook で受けた AskUserQuestion の tool_input をライブ質問カードとして注入する。
+	 * transcript の読み取りと同じキューで直列化し、rev 採番・リング更新の競合を防ぐ。
+	 * 注入されたカードは delegate.onDelta 経由で購読者へ届き、（onDelta 内の既存処理で）
+	 * 質問プッシュ通知も発火する。
+	 */
+	injectLiveQuestions(input: unknown): void {
+		this.enqueue(async () => {
+			const parsed = parseAskUserQuestions(input, undefined, Date.now());
+			const added: IParadisAgentChatMessage[] = [];
+			for (const message of parsed) {
+				const key = liveQuestionContentKey(message);
+				if (this.liveQuestions.has(key)) {
+					continue; // 同一質問の多重hook（リトライ等）は無視
+				}
+				const syntheticId = `live:${this.epoch}:${this.liveQuestionSeq++}`;
+				this.liveQuestions.set(key, syntheticId);
+				this.pendingQuestions.add(syntheticId);
+				added.push({ ...message, toolUseId: syntheticId, rev: this.rev++ });
+			}
+			if (added.length === 0) {
+				return;
+			}
+			this.messages.push(...added);
+			if (this.messages.length > MESSAGE_RING_LIMIT) {
+				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
+			}
+			this.delegate.onDelta(added);
+			this.delegate.onActivity();
+		});
 	}
 
 	/** パースで収集したシグナルをタスク・質問・メタ情報の追跡へ反映し、変化があれば通知する。 */
@@ -1115,14 +1256,28 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (previous === undefined) {
 			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscriber(event.token);
-			return;
-		}
-		// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
-		// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
-		if (previous.transcriptPath !== info.transcriptPath) {
+		} else if (previous.transcriptPath !== info.transcriptPath) {
+			// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
+			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
 			this.disposeTailer(event.token);
 			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscriber(event.token);
+		}
+
+		// AskUserQuestion のライブ検出: Claude Code は質問の tool_use を決着（回答/中断）まで
+		// transcript へ flush しないため、PreToolUse hook の tool_input から合成質問カードを
+		// 注入する（チャット表示・回答待ちバッジ・プッシュ通知の唯一のライブな供給源）。
+		if (event.event === 'PreToolUse' && event.toolName === 'AskUserQuestion' && event.toolInput !== undefined
+			&& (this.eagerTailing || this.subscribers.has(event.token))) {
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectLiveQuestions(event.toolInput);
+		}
+
+		// 承認要求のライブ検出: Codex は承認要求を rollout に書かず、Claude もプロンプト
+		// 表示中は transcript に現れないため、PermissionRequest hook の tool_name / tool_input
+		// から内容カードを注入する（モバイルの承認バーに「何を承認するのか」を添える）。
+		if (event.event === 'PermissionRequest' && (event.toolName !== undefined || event.toolInput !== undefined)
+			&& (this.eagerTailing || this.subscribers.has(event.token))) {
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput);
 		}
 	}
 

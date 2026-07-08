@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -57,6 +57,7 @@ interface AppState extends StoreState {
 	fsMedia(ws: string, path: string): Promise<FsMediaResult>;
 	fsFind(ws: string, query: string): Promise<FsFindResult>;
 	fsGrep(ws: string, query: string): Promise<FsGrepResult>;
+	fsUpload(name: string, dataBase64: string): Promise<FsUploadResult>;
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
 	browserTargets(): Promise<BrowserTargetsResult>;
 	browserStart(targetId: string): Promise<void>;
@@ -109,11 +110,37 @@ export const useAppStore = create<AppState>(set => ({
 			);
 			// フォアグラウンド復帰時、接続が死んでいたら即座に繋ぎ直す（iOSはバックグラウンドで
 			// ソケットが黙って死ぬため、これが無いと再起動/復帰後に繋がらないことがある）。
+			// 加えてフォアグラウンド中は定期ハートビート（state要求+生存確認）を回す。
+			// WSにはping/pongが無く「送信して初めて切断に気づく」ため、放置中に接続が
+			// 静かに死ぬと『接続しています…』のまま固まって見える問題への対策。
+			let heartbeat: ReturnType<typeof setInterval> | undefined;
+			const startHeartbeat = () => {
+				stopHeartbeat();
+				heartbeat = setInterval(() => {
+					if (!useAppStore.getState().manualOffline) {
+						controller?.ensureConnected();
+					}
+				}, 25_000);
+			};
+			const stopHeartbeat = () => {
+				if (heartbeat !== undefined) {
+					clearInterval(heartbeat);
+					heartbeat = undefined;
+				}
+			};
 			RNAppState.addEventListener('change', appState => {
-				if (appState === 'active' && !useAppStore.getState().manualOffline) {
-					controller?.ensureConnected();
+				if (appState === 'active') {
+					if (!useAppStore.getState().manualOffline) {
+						controller?.ensureConnected();
+					}
+					startHeartbeat();
+				} else {
+					// バックグラウンドではタイマーを止める（バッテリー対策。iOSはいずれにせよ
+					// バックグラウンドのJSタイマーを止めるが、明示しておく）
+					stopHeartbeat();
 				}
 			});
+			startHeartbeat();
 			const creds = await loadCredentials(secureKeyStore);
 			set({ ready: true, paired: !!creds });
 			if (creds) {
@@ -277,6 +304,11 @@ export const useAppStore = create<AppState>(set => ({
 	fsGrep(ws: string, query: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.fsGrep(ws, query);
+	},
+
+	fsUpload(name: string, dataBase64: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.fsUpload(name, dataBase64);
 	},
 
 	scmXlsxDiff(ws: string, path: string) {

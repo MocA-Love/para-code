@@ -30,13 +30,18 @@ export interface IParadisManagedHookEvent {
 
 /**
  * ~/.claude/settings.json に登録するイベント一覧 (Superset の createClaudeSettingsJson と同方針)。
- * PreToolUse は登録しない (permission に正規化されるため、ツール実行のたびに誤通知になる)。
+ * PreToolUse は AskUserQuestion に限定して登録する: Claude Code は AskUserQuestion の
+ * tool_use 行を回答/中断の決着まで transcript へ flush しないため、transcript 監視では
+ * 質問中をライブ検知できない（PreToolUse hook の tool_input が唯一のライブな供給源）。
+ * matcher 無しの全ツール PreToolUse は登録しない (permission に正規化されるため、
+ * ツール実行のたびに誤通知になる)。
  */
 export const PARADIS_CLAUDE_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'SessionStart' },
 	{ eventName: 'SessionEnd' },
 	{ eventName: 'UserPromptSubmit' },
 	{ eventName: 'Stop' },
+	{ eventName: 'PreToolUse', matcher: 'AskUserQuestion' },
 	{ eventName: 'PostToolUse', matcher: '*' },
 	{ eventName: 'PermissionRequest', matcher: '*' },
 	{ eventName: 'Notification' },

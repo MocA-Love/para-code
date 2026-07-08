@@ -5,14 +5,18 @@ import { colors } from '../theme.js';
 
 /**
  * エージェントの許可確認(permission)カード。許可/拒否の2択クイックアクション。
+ * detail には PermissionRequest hook 由来の承認内容（ツール名+コマンド等）が入る。
  * 選択肢が複数ある場合はTUI側（ターミナルタブ）での回答を促す注記を出す
  * （PTY注入は番号ベースのため、選択肢が2つより多いケースを安全に扱えないため）。
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
-export function ApprovalCard({ onApprove }: { onApprove: (choice: 'yes' | 'no') => void }) {
+export function ApprovalCard({ onApprove, detail }: { onApprove: (choice: 'yes' | 'no') => void; detail?: string }) {
 	return (
 		<View style={styles.approvalBar}>
 			<Text style={styles.approvalText}>エージェントが確認を求めています</Text>
+			{detail !== undefined && detail.length > 0 ? (
+				<Text style={styles.approvalDetail} numberOfLines={6} selectable>{detail}</Text>
+			) : null}
 			<View style={styles.approvalButtons}>
 				<Pressable style={[styles.approvalBtn, styles.approveBtn]} onPress={() => onApprove('yes')}>
 					<Text style={styles.approveBtnText}>許可</Text>
@@ -29,6 +33,7 @@ export function ApprovalCard({ onApprove }: { onApprove: (choice: 'yes' | 'no') 
 const styles = StyleSheet.create({
 	approvalBar: { backgroundColor: 'rgba(224,192,125,.10)', borderWidth: 1, borderColor: colors.yellow, borderRadius: 16, padding: 14, gap: 8 },
 	approvalText: { color: colors.text, fontSize: 13, fontWeight: '600' },
+	approvalDetail: { color: colors.text, fontSize: 11.5, lineHeight: 16, fontFamily: 'Menlo', backgroundColor: colors.surface2, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 },
 	approvalButtons: { flexDirection: 'row', gap: 10 },
 	approvalBtn: { flex: 1, borderRadius: 12, paddingVertical: 10, alignItems: 'center' },
 	approveBtn: { backgroundColor: colors.green },
