@@ -626,8 +626,59 @@ export class MobileController {
 	}
 
 	/** 入力イベントを送る（正規化座標）。 */
-	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text'; nx?: number; ny?: number; dy?: number; text?: string }): void {
+	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate'; nx?: number; ny?: number; dy?: number; dx?: number; text?: string; url?: string }): void {
 		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'input', ...input })));
+	}
+
+	// --- browser WebRTC ミラー（app/design/webrtc-mirror-design.md） ---------------
+
+	/** PC→mobile の ICE candidate 受信ハンドラ（webrtcMirror.ts が登録する。単一スロット）。 */
+	webrtcIceHandler: ((candidate: object) => void) | undefined;
+
+	/** WebRTC offer を送り、PC側ストリーマの answer SDP を待つ。 */
+	webrtcOffer(targetId: string, sdp: string): Promise<{ sdp?: string }> {
+		return this.request<{ sdp?: string }>('browser', { t: 'webrtc-offer', targetId, sdp }, 20_000);
+	}
+
+	/** 自分の ICE candidate をPCへ送る（fire-and-forget）。 */
+	webrtcSendIce(candidate: object): void {
+		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-ice', candidate })));
+	}
+
+	/** PC側のピアを畳ませる。 */
+	webrtcStop(): void {
+		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-stop' })));
+	}
+
+	/**
+	 * TURN短期資格情報をリレーから取得する（Cloudflare Realtime）。リレー側にシークレットが
+	 * 未設定の場合や失敗時は空配列（STUNのみで続行）。対称NAT越え（キャリア回線⇔自宅PC等）に必要。
+	 */
+	async fetchTurnIceServers(timeoutMs = 5_000): Promise<object[]> {
+		const creds = this.lastCredentials;
+		if (!creds) {
+			return [];
+		}
+		const httpBase = creds.relayUrl.replace(/\/$/, '').replace(/^ws/, 'http');
+		const abort = new AbortController();
+		const timer = setTimeout(() => abort.abort(), timeoutMs);
+		try {
+			const res = await fetch(`${httpBase}/device/${creds.deviceId}/turn`, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${creds.mobileToken}`, 'content-type': 'application/json' },
+				body: JSON.stringify({ mobileId: creds.mobileId }),
+				signal: abort.signal,
+			});
+			if (!res.ok) {
+				return [];
+			}
+			const data = await res.json() as { iceServers?: object[] };
+			return Array.isArray(data.iceServers) ? data.iceServers : [];
+		} catch {
+			return [];
+		} finally {
+			clearTimeout(timer);
+		}
 	}
 
 	private handleFrame(frame: Frame): void {
@@ -642,10 +693,12 @@ export class MobileController {
 		if (frame.ch === 'browser') {
 			// screencastフレーム（id無しのストリーム）と要求応答（id有り）が混在する
 			try {
-				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number };
+				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number; candidate?: object };
 				if (msg.t === 'frame' && typeof msg.data === 'string') {
 					this.state.browserFrame = { data: msg.data, w: msg.w ?? 0, h: msg.h ?? 0 };
 					this.emit();
+				} else if (msg.t === 'webrtc-ice' && msg.candidate) {
+					this.webrtcIceHandler?.(msg.candidate);
 				} else if (msg.id) {
 					this.settleResponse(frame.payload);
 				}

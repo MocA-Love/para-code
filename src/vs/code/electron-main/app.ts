@@ -252,11 +252,18 @@ export class CodeApplication extends Disposable {
 		}));
 		session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
 			try {
-				// PARA-PATCH: browser mirror WebRTC spike — when armed (env PARADIS_MIRROR_CAPTURE_VIEW),
-				// return the target WebContentsView's WebFrameMain so getDisplayMedia captures that
-				// embedded view alone instead of the whole screen. Off by default; existing screen
-				// recording / screenshot flows are unaffected. See src/vs/paradis/contrib/browserMirror/.
+				// PARA-PATCH: browser mirror WebRTC — when armed (mobile webrtc-offer or env
+				// PARADIS_MIRROR_CAPTURE_VIEW), return the target WebContentsView's WebFrameMain so
+				// getDisplayMedia captures that embedded view alone instead of the whole screen.
+				// 'deny' means the request was armed but the target could not be resolved — fail
+				// closed instead of falling through to full-screen capture (that would leak the
+				// whole desktop to the mobile device). Off by default; existing screen recording /
+				// screenshot flows are unaffected. See src/vs/paradis/contrib/browserMirror/.
 				const paradisMirrorFrame = paradisResolveMirrorCaptureFrame();
+				if (paradisMirrorFrame === 'deny') {
+					callback({});
+					return;
+				}
 				if (paradisMirrorFrame) {
 					callback({ video: paradisMirrorFrame });
 					return;

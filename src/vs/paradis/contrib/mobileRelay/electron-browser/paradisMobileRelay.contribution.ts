@@ -38,6 +38,8 @@ import {
 	PARADIS_MOBILE_RELAY_URL_KEY,
 } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
+import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
+import { Channels } from '../common/paradisMobileProtocol.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
@@ -113,8 +115,22 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 		));
 
+		// WebRTCミラーのストリーマ（browser チャネルの webrtc-* シグナリングを処理）。
+		const webrtcStreamer = this._register(new ParadisMobileWebrtcStreamer(
+			frame => { this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload).catch(err => this.logService.warn('[paradisMobileRelay] webrtc sendFrame failed', err)); },
+			this.logService,
+		));
+
 		// shared process が復号したモバイル→PCフレームを provider へ。
-		this._register(this.service.onInboundFrame(([ch, ws, seq, payload, mobileId]) => this.provider.handleInbound({ ch, ws, seq, payload, mobileId })));
+		// browser チャネルは webrtc シグナリングだけが renderer に転送されてくる
+		// （それ以外の browser 要求は shared process 内で処理される）。
+		this._register(this.service.onInboundFrame(([ch, ws, seq, payload, mobileId]) => {
+			if (ch === Channels.Browser) {
+				webrtcStreamer.handleInbound({ ch, ws, seq, payload, mobileId });
+				return;
+			}
+			this.provider.handleInbound({ ch, ws, seq, payload, mobileId });
+		}));
 
 		// 接続状態をステータスバーに反映。オンラインのモバイルが0になったら端末購読を解放。
 		// 0 → 非0 に転じた（新規ペアリングに限らず、PC再起動後の自動再接続なども含む）
@@ -123,6 +139,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			this.renderStatusbar(status);
 			if (status.onlineMobiles === 0) {
 				this.provider.detachAll();
+				webrtcStreamer.stopAll();
 			} else if (this.previousOnlineMobiles === 0) {
 				this.provider.pushState();
 			}

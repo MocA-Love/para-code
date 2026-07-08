@@ -1,12 +1,16 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, GestureResponderEvent, Image, LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ComponentType, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, GestureResponderEvent, Image, LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
+import { getRtcView, startWebrtcMirror, WebrtcMirrorSession } from '../webrtcMirror.js';
 import { colors } from '../theme.js';
+
+/** RTCView（react-native-webrtc）。未リンクのビルドでは undefined（JPEGミラーのみ）。 */
+const RTCViewComponent = getRtcView() as ComponentType<{ streamURL: string; style?: object; objectFit?: string }> | undefined;
 
 /**
  * ブラウザパネル（モックアップ mock-2.html 準拠、設計書 M3、「その他」タブのセグメント）。
@@ -33,6 +37,48 @@ export function BrowserPanel({ active }: { active: boolean }) {
 	// active の解除→再有効化の往復では、これが残っていれば同じ targetId でミラーを自動で張り直す。
 	const mirrorActiveRef = useRef<string | undefined>(undefined);
 
+	// WebRTCミラー（低遅延経路）。確立できたら RTCView 表示、失敗・切断時は
+	// 既存のJPEGフレーム表示へ自動フォールバックする（JPEGは並行して流れ続けている）。
+	const webrtcSessionRef = useRef<WebrtcMirrorSession | undefined>(undefined);
+	// 確立中(await中)に stop/切替/非active化が起きた場合に、解決後のセッションを
+	// 復活させないための世代トークン。stopWebrtc / tryWebrtc のたびに進める。
+	const webrtcGenRef = useRef(0);
+	const [webrtcUrl, setWebrtcUrl] = useState<string | undefined>();
+	const stopWebrtc = useCallback(() => {
+		webrtcGenRef.current++;
+		webrtcSessionRef.current?.stop();
+		webrtcSessionRef.current = undefined;
+		setWebrtcUrl(undefined);
+	}, []);
+	const tryWebrtc = useCallback(async (targetId: string) => {
+		if (RTCViewComponent === undefined) {
+			return; // このビルドにはネイティブモジュールが無い
+		}
+		webrtcSessionRef.current?.stop();
+		webrtcSessionRef.current = undefined;
+		const gen = ++webrtcGenRef.current;
+		try {
+			const session = await startWebrtcMirror(targetId);
+			if (gen !== webrtcGenRef.current) {
+				session.stop(); // 確立中に stop/切替された（古い世代）→ 即破棄
+				return;
+			}
+			webrtcSessionRef.current = session;
+			session.onClosed(() => {
+				if (webrtcSessionRef.current === session) {
+					webrtcSessionRef.current = undefined;
+					setWebrtcUrl(undefined);
+				}
+			});
+			setWebrtcUrl(session.streamUrl);
+		} catch (e) {
+			console.log('[browser] webrtc unavailable, falling back to JPEG mirror:', e instanceof Error ? e.message : e);
+			if (gen === webrtcGenRef.current) {
+				setWebrtcUrl(undefined);
+			}
+		}
+	}, []);
+
 	const loadTargets = useCallback(async () => {
 		if (connection !== 'online') {
 			return;
@@ -57,8 +103,13 @@ export function BrowserPanel({ active }: { active: boolean }) {
 	// browserStop は ref 経由で参照する（再接続時にミラーが止まる不具合の防止）。
 	const browserStopRef = useRef(browserStop);
 	browserStopRef.current = browserStop;
+	const stopWebrtcRef = useRef(stopWebrtc);
+	stopWebrtcRef.current = stopWebrtc;
 	useEffect(() => {
-		return () => { void browserStopRef.current(); };
+		return () => {
+			stopWebrtcRef.current();
+			void browserStopRef.current();
+		};
 	}, []);
 
 	// 接続が切れたらミラー表示を畳んでターゲット選択に戻す
@@ -68,8 +119,9 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		if (connection !== 'online') {
 			mirrorActiveRef.current = undefined;
 			setActiveUrl(undefined);
+			stopWebrtc();
 		}
-	}, [connection]);
+	}, [connection, stopWebrtc]);
 
 	// active の解除/有効化で screencast を止め／再開する（バッテリー対策）。
 	// 解除時は最後のフレームを残したまま停止し（browserStop(true)）、再有効化時はミラーが
@@ -81,10 +133,12 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		}
 		if (active) {
 			void browserStart(mirrorActiveRef.current).catch(() => undefined);
+			void tryWebrtc(mirrorActiveRef.current);
 		} else {
+			stopWebrtc();
 			void browserStop(true);
 		}
-	}, [active, connection, browserStart, browserStop]);
+	}, [active, connection, browserStart, browserStop, tryWebrtc, stopWebrtc]);
 
 	const start = async (targetId: string, url: string) => {
 		setError(undefined);
@@ -92,6 +146,7 @@ export function BrowserPanel({ active }: { active: boolean }) {
 			await browserStart(targetId);
 			mirrorActiveRef.current = targetId;
 			setActiveUrl(url);
+			void tryWebrtc(targetId);
 		} catch (e) {
 			setError(String(e instanceof Error ? e.message : e));
 		}
@@ -99,6 +154,21 @@ export function BrowserPanel({ active }: { active: boolean }) {
 
 	const onLayout = (e: LayoutChangeEvent) => {
 		setViewSize({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height });
+	};
+
+	// URL欄の編集値。ミラー対象の切り替えで追従させ、確定(go)でPC側へ遷移を送る。
+	const [urlInput, setUrlInput] = useState('');
+	useEffect(() => {
+		setUrlInput(activeUrl ?? '');
+	}, [activeUrl]);
+	const navigate = () => {
+		const raw = urlInput.trim();
+		if (raw.length === 0) {
+			return;
+		}
+		const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+		browserInput({ kind: 'navigate', url });
+		setActiveUrl(url);
 	};
 
 	const onTap = (e: GestureResponderEvent) => {
@@ -116,6 +186,75 @@ export function BrowserPanel({ active }: { active: boolean }) {
 			browserInput({ kind: 'tap', nx, ny });
 		}
 	};
+
+	// スワイプでPC側ページをスクロールする。ズーム中（zoomScale>1）はScrollViewのパンに
+	// 譲るため捕捉しない。8px未満の移動はタップとして扱う（onTapへ委譲）。
+	// 描画中のフレーム寸法・ビュー寸法はrefで参照する（PanResponderはマウント時に固定されるため）。
+	const zoomScaleRef = useRef(1);
+	const frameRef = useRef(frame);
+	frameRef.current = frame;
+	const viewSizeRef = useRef(viewSize);
+	viewSizeRef.current = viewSize;
+	const browserInputRef = useRef(browserInput);
+	browserInputRef.current = browserInput;
+	const onTapRef = useRef(onTap);
+	onTapRef.current = onTap;
+	const onZoomScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+		zoomScaleRef.current = e.nativeEvent.zoomScale ?? 1;
+	};
+	const panResponder = useMemo(() => {
+		// 前回moveまでの累積移動量（送信済みぶんを差し引くための基準）
+		let lastX = 0;
+		let lastY = 0;
+		let moved = false;
+		const drawnSize = () => {
+			const f = frameRef.current;
+			const v = viewSizeRef.current;
+			if (!f || f.w === 0 || f.h === 0) {
+				return undefined;
+			}
+			const scale = Math.min(v.w / f.w, v.h / f.h);
+			return { w: f.w * scale, h: f.h * scale };
+		};
+		return PanResponder.create({
+			// タップも拾うため開始時から責任を持つ（ズーム中とマルチタッチはScrollViewへ譲る）
+			onStartShouldSetPanResponder: () => zoomScaleRef.current <= 1.01,
+			onMoveShouldSetPanResponder: (_e, g) => zoomScaleRef.current <= 1.01 && g.numberActiveTouches === 1,
+			onPanResponderGrant: () => {
+				lastX = 0;
+				lastY = 0;
+				moved = false;
+			},
+			onPanResponderMove: (_e, g) => {
+				if (g.numberActiveTouches !== 1) {
+					return;
+				}
+				if (!moved && Math.abs(g.dx) < 8 && Math.abs(g.dy) < 8) {
+					return; // まだタップの可能性がある
+				}
+				moved = true;
+				const drawn = drawnSize();
+				if (!drawn) {
+					return;
+				}
+				const stepX = g.dx - lastX;
+				const stepY = g.dy - lastY;
+				lastX = g.dx;
+				lastY = g.dy;
+				// 指の移動と同方向にコンテンツが動く自然なスクロール（指を下へ→ページは上へ戻る）
+				const dx = -stepX / drawn.w;
+				const dy = -stepY / drawn.h;
+				if (Math.abs(dx) > 0.001 || Math.abs(dy) > 0.001) {
+					browserInputRef.current({ kind: 'scroll', dx, dy });
+				}
+			},
+			onPanResponderRelease: (e, g) => {
+				if (!moved && Math.abs(g.dx) < 8 && Math.abs(g.dy) < 8) {
+					onTapRef.current(e);
+				}
+			},
+		});
+	}, []);
 
 	if (activeUrl === undefined) {
 		return (
@@ -143,13 +282,21 @@ export function BrowserPanel({ active }: { active: boolean }) {
 
 	return (
 		<View style={styles.screen}>
-			<View style={styles.syncBanner}>
-				<Ionicons name="link-outline" size={13} color={colors.accent} />
-				<Text style={styles.syncText}>PCのPara Codeブラウザビューと同期中</Text>
-			</View>
 			<View style={styles.urlBar}>
 				<Ionicons name="globe-outline" size={13} color={colors.textDim} />
-				<Text style={styles.urlText} numberOfLines={1}>{activeUrl.replace(/^https?:\/\//, '')}</Text>
+				<TextInput
+					style={styles.urlInput}
+					value={urlInput}
+					onChangeText={setUrlInput}
+					onSubmitEditing={navigate}
+					placeholder="URLを入力…"
+					placeholderTextColor={colors.textDim}
+					keyboardType="url"
+					autoCapitalize="none"
+					autoCorrect={false}
+					returnKeyType="go"
+					selectTextOnFocus
+				/>
 			</View>
 			{/* ピンチで拡大縮小・ドラッグでパンできるようScrollViewズームに載せる。
 			    タップ座標は子ビューのローカル座標系（ズーム非依存）なのでマッピングはそのまま有効 */}
@@ -162,16 +309,22 @@ export function BrowserPanel({ active }: { active: boolean }) {
 				showsHorizontalScrollIndicator={false}
 				showsVerticalScrollIndicator={false}
 				contentContainerStyle={{ width: viewSize.w, height: viewSize.h }}
+				onScroll={onZoomScroll}
+				scrollEventThrottle={100}
 			>
-				{frame ? (
-					<Pressable style={styles.frameWrap} onPress={onTap}>
+				{webrtcUrl !== undefined && RTCViewComponent !== undefined ? (
+					<View style={styles.frameWrap} {...panResponder.panHandlers}>
+						<RTCViewComponent streamURL={webrtcUrl} style={styles.frameImage} objectFit="contain" />
+					</View>
+				) : frame ? (
+					<View style={styles.frameWrap} {...panResponder.panHandlers}>
 						<Image
 							source={{ uri: `data:image/jpeg;base64,${frame.data}` }}
 							style={styles.frameImage}
 							resizeMode="contain"
 							fadeDuration={0}
 						/>
-					</Pressable>
+					</View>
 				) : (
 					<View style={styles.center}><ActivityIndicator /><Text style={styles.dim}>フレームを待っています…</Text></View>
 				)}
@@ -182,7 +335,7 @@ export function BrowserPanel({ active }: { active: boolean }) {
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'reload' })}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'scroll', dy: -0.5 })}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'scroll', dy: 0.5 })}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
-				<Pressable style={[styles.toolBtn, styles.stopBtn]} onPress={() => { mirrorActiveRef.current = undefined; void browserStop().then(() => setActiveUrl(undefined)); }}>
+				<Pressable style={[styles.toolBtn, styles.stopBtn]} onPress={() => { mirrorActiveRef.current = undefined; stopWebrtc(); void browserStop().then(() => setActiveUrl(undefined)); }}>
 					<Text style={styles.toolText}>切替</Text>
 				</Pressable>
 			</View>
@@ -203,10 +356,8 @@ const styles = StyleSheet.create({
 	targetUrl: { color: colors.textDim, fontSize: 11, marginTop: 3 },
 	reloadTargets: { alignItems: 'center', marginTop: 8 },
 	link: { color: colors.accent, fontSize: 13 },
-	syncBanner: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(9,175,217,.12)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 10, marginHorizontal: 12, marginTop: 8, paddingVertical: 8, paddingHorizontal: 12 },
-	syncText: { color: colors.accent, fontSize: 12 },
-	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 8, paddingVertical: 8, paddingHorizontal: 12 },
-	urlText: { color: colors.text, fontSize: 12, fontFamily: 'Menlo' },
+	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 8, paddingVertical: 4, paddingHorizontal: 12 },
+	urlInput: { flex: 1, color: colors.text, fontSize: 12, fontFamily: 'Menlo', paddingVertical: 6 },
 	viewport: { flex: 1, margin: 12, borderRadius: 10, overflow: 'hidden', backgroundColor: '#000' },
 	frameWrap: { flex: 1 },
 	frameImage: { flex: 1 },

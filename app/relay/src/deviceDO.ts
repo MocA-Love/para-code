@@ -82,6 +82,9 @@ export class DeviceDO implements DurableObject {
 		if (action === 'self-revoke') {
 			return this.selfRevokeMobile(request);
 		}
+		if (action === 'turn-credentials') {
+			return this.turnCredentials(request);
+		}
 		if (request.headers.get('Upgrade') !== 'websocket') {
 			return new Response('expected websocket', { status: 426 });
 		}
@@ -192,6 +195,43 @@ export class DeviceDO implements DurableObject {
 		// PC側にも通知し、PCの登録デバイス一覧から取り除けるようにする。
 		this.sendToPc({ type: 'mobile-revoked', mobileId: body.mobileId });
 		return Response.json({ ok: true });
+	}
+
+	/**
+	 * WebRTCミラー用のTURN短期資格情報の発行（mobileToken認証、Cloudflare Realtime TURN）。
+	 * シークレット（TURN_KEY_ID / TURN_KEY_API_TOKEN）未設定の環境では空のiceServersを返し、
+	 * クライアントはSTUNのみで続行する（機能ゲート）。TURNはDTLSを終端しない純中継のため
+	 * E2E方針に抵触しない（SFUは使わない）。
+	 */
+	private async turnCredentials(request: Request): Promise<Response> {
+		const body = await request.json<{ mobileId?: string }>().catch(() => ({} as { mobileId?: string }));
+		if (typeof body.mobileId !== 'string') {
+			return Response.json({ error: 'missing mobileId' }, { status: 400 });
+		}
+		const record = this.mobile(body.mobileId);
+		const token = extractToken(request);
+		if (!record || token === null || !timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
+			return new Response('unauthorized', { status: 401 });
+		}
+		const env = this.env as { TURN_KEY_ID?: string; TURN_KEY_API_TOKEN?: string };
+		if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) {
+			return Response.json({ iceServers: [] });
+		}
+		try {
+			const res = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${env.TURN_KEY_ID}/credentials/generate-ice-servers`, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, 'content-type': 'application/json' },
+				body: JSON.stringify({ ttl: 86_400 }),
+				signal: AbortSignal.timeout(5_000),
+			});
+			if (!res.ok) {
+				return Response.json({ iceServers: [] });
+			}
+			const data = await res.json<{ iceServers?: unknown }>();
+			return Response.json({ iceServers: data.iceServers ?? [] });
+		} catch {
+			return Response.json({ iceServers: [] });
+		}
 	}
 
 	// --- WebSocket accept ---------------------------------------------------------

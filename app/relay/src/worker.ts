@@ -93,6 +93,10 @@ export default {
 		if (request.method === 'POST' && parts[2] === 'mobile' && parts[3] === 'self-revoke') {
 			return stub.fetch(new Request('https://do/?action=self-revoke', request));
 		}
+		// WebRTCミラー用のTURN短期資格情報（mobileToken認証。シークレット未設定なら空を返す）
+		if (request.method === 'POST' && parts[2] === 'turn') {
+			return stub.fetch(new Request('https://do/?action=turn-credentials', request));
+		}
 		if (parts[2] === 'ws') {
 			const forward = new Request(`https://do/?${url.searchParams.toString()}`, request);
 			return stub.fetch(forward);
