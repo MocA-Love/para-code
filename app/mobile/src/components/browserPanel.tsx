@@ -219,14 +219,40 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		}
 	};
 
+	// タップ検出はresponder獲得に依存しない生の onTouchStart/End/Cancel で行う。
+	// ズーム中はScrollViewがパン/ピンチのresponderを奪うため、PanResponderのrelease
+	// 経由ではタップが一切届かない（ピンチ後にタップが効かなくなる不具合の原因）。
+	// touchイベントは責任の所在と無関係に子ビューへ届くので、ズーム状態に依存しない。
+	// 移動量の判定は pageX/Y（画面座標）で行う: ズームパン中はコンテンツが指に追従して
+	// 動くため、ローカル座標だと変位がほぼ0になりパン終了を誤タップしてしまう。
+	const tapCandidateRef = useRef<{ pageX: number; pageY: number } | undefined>(undefined);
+	const onFrameTouchStart = (e: GestureResponderEvent) => {
+		if (e.nativeEvent.touches.length === 1) {
+			tapCandidateRef.current = { pageX: e.nativeEvent.pageX, pageY: e.nativeEvent.pageY };
+		} else {
+			tapCandidateRef.current = undefined; // ピンチ等のマルチタッチはタップにしない
+		}
+	};
+	const onFrameTouchCancel = () => {
+		tapCandidateRef.current = undefined; // ネイティブのスクロール/ズームに移行した
+	};
+	const onFrameTouchEnd = (e: GestureResponderEvent) => {
+		const start = tapCandidateRef.current;
+		tapCandidateRef.current = undefined;
+		if (!start || e.nativeEvent.touches.length > 0) {
+			return; // マルチタッチ経由、またはまだ指が残っている
+		}
+		if (Math.abs(e.nativeEvent.pageX - start.pageX) < 8 && Math.abs(e.nativeEvent.pageY - start.pageY) < 8) {
+			onTap(e);
+		}
+	};
+
 	// スワイプでPC側ページをスクロールする。ズーム中（zoomScale>1）はScrollViewのパンに
-	// 譲るため捕捉しない。8px未満の移動はタップとして扱う（onTapへ委譲）。
+	// 譲るため捕捉しない（タップは上記のtouchハンドラが常時拾う）。
 	// 描画中のコンテンツ寸法・ビュー寸法はrefで参照する（PanResponderはマウント時に固定されるため）。
 	const zoomScaleRef = useRef(1);
 	const browserInputRef = useRef(browserInput);
 	browserInputRef.current = browserInput;
-	const onTapRef = useRef(onTap);
-	onTapRef.current = onTap;
 	const onZoomScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
 		zoomScaleRef.current = e.nativeEvent.zoomScale ?? 1;
 	};
@@ -276,11 +302,8 @@ export function BrowserPanel({ active }: { active: boolean }) {
 					browserInputRef.current({ kind: 'scroll', dx, dy });
 				}
 			},
-			onPanResponderRelease: (e, g) => {
-				if (!moved && Math.abs(g.dx) < 8 && Math.abs(g.dy) < 8) {
-					onTapRef.current(e);
-				}
-			},
+			// タップの発火は onFrameTouchEnd 側が担う（responder獲得に依存しないため、
+			// ここでのrelease処理は不要。二重発火させない）
 		});
 	}, []);
 
@@ -338,10 +361,12 @@ export function BrowserPanel({ active }: { active: boolean }) {
 				showsVerticalScrollIndicator={false}
 				contentContainerStyle={{ width: viewSize.w, height: viewSize.h }}
 				onScroll={onZoomScroll}
+				onScrollEndDrag={onZoomScroll}
+				onMomentumScrollEnd={onZoomScroll}
 				scrollEventThrottle={100}
 			>
 				{webrtcUrl !== undefined && RTCViewComponent !== undefined ? (
-					<View style={styles.frameWrap} {...panResponder.panHandlers}>
+					<View style={styles.frameWrap} {...panResponder.panHandlers} onTouchStart={onFrameTouchStart} onTouchEnd={onFrameTouchEnd} onTouchCancel={onFrameTouchCancel}>
 						<RTCViewComponent
 							streamURL={webrtcUrl}
 							style={styles.frameImage}
@@ -353,7 +378,7 @@ export function BrowserPanel({ active }: { active: boolean }) {
 						/>
 					</View>
 				) : frame ? (
-					<View style={styles.frameWrap} {...panResponder.panHandlers}>
+					<View style={styles.frameWrap} {...panResponder.panHandlers} onTouchStart={onFrameTouchStart} onTouchEnd={onFrameTouchEnd} onTouchCancel={onFrameTouchCancel}>
 						<Image
 							source={{ uri: `data:image/jpeg;base64,${frame.data}` }}
 							style={styles.frameImage}
