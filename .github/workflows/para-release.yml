@@ -52,7 +52,7 @@ jobs:
       VSCODE_ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           lfs: true
 
@@ -183,7 +183,7 @@ jobs:
       VSCODE_ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           lfs: true
 
@@ -242,7 +242,7 @@ jobs:
       VSCODE_ARCH: x64
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           lfs: true
 
@@ -326,7 +326,7 @@ jobs:
       contents: write # gh release create/upload (GitHub Release with artifacts)
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v5
         with:
