@@ -3,8 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import { KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAppStore } from '../src/appState.js';
 
 /**
@@ -64,7 +63,7 @@ export default function PairScreen() {
 	if (sas) {
 		return (
 			<View style={styles.center}>
-				<View style={styles.appIcon}><Ionicons name="phone-portrait-outline" size={32} color="#fff" /></View>
+				<Image source={require('../assets/pairing-logo.png')} style={styles.appIcon} resizeMode="contain" />
 				<Text style={styles.title}>Para Code と接続</Text>
 				<Text style={styles.dim}>PC 側に表示されている 6 桁と一致することを確認してください。</Text>
 				<Text style={styles.sas}>{sas.slice(0, 3)} {sas.slice(3)}</Text>
@@ -131,7 +130,7 @@ const styles = StyleSheet.create({
 	title: { color: '#fff', fontSize: 22, fontWeight: '700' },
 	dim: { color: '#8b8b8b', fontSize: 13, textAlign: 'center', lineHeight: 20 },
 	sas: { color: '#4fc3f7', fontSize: 44, fontWeight: '700', letterSpacing: 10, fontVariant: ['tabular-nums'] },
-	appIcon: { width: 72, height: 72, borderRadius: 18, backgroundColor: '#007acc', alignItems: 'center', justifyContent: 'center' },
+	appIcon: { width: 72, height: 72 },
 	overlay: { position: 'absolute', bottom: 60, left: 20, right: 20, alignItems: 'center', gap: 8 },
 	scanHint: { color: '#fff', fontSize: 13, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, overflow: 'hidden' },
 	error: { color: '#f48771', fontSize: 12, textAlign: 'center' },

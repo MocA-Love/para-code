@@ -26,7 +26,7 @@ export default function TabsLayout() {
 		>
 			<Tabs.Screen name="index" options={{
 				title: 'ホーム',
-				headerTitle: 'Para Code Mobile',
+				headerTitle: 'Para Code',
 				tabBarIcon: ({ color, size }) => <Ionicons name="home-outline" color={color} size={size} />,
 			}} />
 			<Tabs.Screen name="agent" options={{

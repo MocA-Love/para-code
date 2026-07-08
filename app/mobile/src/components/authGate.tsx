@@ -45,7 +45,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 				return;
 			}
 			const result = await LocalAuthentication.authenticateAsync({
-				promptMessage: 'Para Code Mobile のロックを解除',
+				promptMessage: 'Para Code のロックを解除',
 				cancelLabel: 'キャンセル',
 			});
 			if (attempt === attemptRef.current) {
@@ -102,7 +102,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 	return (
 		<View style={styles.screen}>
 			<Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
-			<Text style={styles.title}>Para Code Mobile はロックされています</Text>
+			<Text style={styles.title}>Para Code はロックされています</Text>
 			{state === 'locked' ? (
 				<Pressable style={styles.unlockBtn} onPress={() => { void authenticate(); }}>
 					<Text style={styles.unlockText}>ロック解除</Text>
