@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -39,7 +39,13 @@ interface AppState extends StoreState {
 	unpair(): Promise<void>;
 	attachTerminal(id: number): void;
 	detachTerminal(id: number): void;
+	/** ターミナル同期ストリームの購読（購読時にリプレイキャッシュを同期再生）。 */
+	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void): () => void;
 	sendInput(id: number, data: string): void;
+	/** 矢印キーをセマンティック名で送る（PC側が端末モードに合わせてエンコードする）。 */
+	sendArrowKey(id: number, key: 'up' | 'down' | 'right' | 'left'): void;
+	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
+	sendTextInput(id: number, text: string, execute: boolean): void;
 	createTerminal(ws?: string): void;
 	attachAgent(id: number): void;
 	detachAgent(id: number): void;
@@ -219,8 +225,20 @@ export const useAppStore = create<AppState>(set => ({
 		controller?.detachTerminal(id);
 	},
 
+	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void) {
+		return controller?.subscribeTerminal(id, listener) ?? (() => { });
+	},
+
 	sendInput(id: number, data: string) {
 		controller?.sendInput(id, data);
+	},
+
+	sendArrowKey(id: number, key: 'up' | 'down' | 'right' | 'left') {
+		controller?.sendArrowKey(id, key);
+	},
+
+	sendTextInput(id: number, text: string, execute: boolean) {
+		controller?.sendTextInput(id, text, execute);
 	},
 
 	createTerminal(ws?: string) {

@@ -251,3 +251,140 @@ describe('MobileController', () => {
 		expect(afterFrame.notifications).toBe(beforeFrame.notifications);
 	});
 });
+
+// --- ターミナル同期プロトコル（epoch/seq/ACK） ---
+
+describe('MobileController terminal sync protocol', () => {
+	async function setup() {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, s => { latest = s; });
+		const pcMuxP = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxP;
+		await flush();
+		const enc = (o: object) => new TextEncoder().encode(JSON.stringify(o));
+		const pcGot: { t: string; id: number; epoch?: number; seq?: number }[] = [];
+		pcMux.on(Channels.Terminal, f => pcGot.push(JSON.parse(new TextDecoder().decode(f.payload))));
+		return { controller, pcMux, enc, pcGot, latestState: () => latest };
+	}
+
+	it('attaches with epoch, applies snapshot/data in order and acks the snapshot', async () => {
+		const { controller, pcMux, enc, pcGot } = await setup();
+		const events: import('./store.js').TermStreamEvent[] = [];
+		controller.subscribeTerminal(1, ev => events.push(ev));
+		controller.attachTerminal(1);
+		await flush();
+		expect(pcGot[0]!.t).toBe('attach');
+		const epoch = pcGot[0]!.epoch!;
+		expect(typeof epoch).toBe('number');
+
+		// snapshot（cols/rows/unicode同梱） → 購読者へ届き、即ACKが返る
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'SNAP', snapshot: true, epoch, seq: 1, cols: 120, rows: 40, unicode: '11' }));
+		await flush();
+		expect(events).toEqual([{ kind: 'snapshot', data: 'SNAP', cols: 120, rows: 40, unicode: '11' }]);
+		const ack = pcGot.find(m => m.t === 'ack');
+		expect(ack).toEqual({ t: 'ack', id: 1, epoch, seq: 1 });
+
+		// 連続seqのdataは追記イベントになる
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'abc', epoch, seq: 2 }));
+		await flush();
+		expect(events[1]).toEqual({ kind: 'data', data: 'abc' });
+
+	});
+
+	it('discards frames from a stale epoch and pre-snapshot data', async () => {
+		const { controller, pcMux, enc, pcGot } = await setup();
+		const events: import('./store.js').TermStreamEvent[] = [];
+		controller.subscribeTerminal(1, ev => events.push(ev));
+		controller.attachTerminal(1);
+		await flush();
+		const epoch1 = pcGot[0]!.epoch!;
+		// snapshot前に届いたライブdataは捨てられる（snapshotに反映済みのため）
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'early', epoch: epoch1, seq: 1 }));
+		await flush();
+		expect(events).toEqual([]);
+		// 再attach（新epoch）後、旧epochのsnapshotは捨てられる
+		controller.attachTerminal(1);
+		await flush();
+		const epoch2 = pcGot.filter(m => m.t === 'attach')[1]!.epoch!;
+		expect(epoch2).toBeGreaterThan(epoch1);
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'stale', snapshot: true, epoch: epoch1, seq: 2 }));
+		await flush();
+		expect(events).toEqual([]);
+		// 新epochのsnapshotは適用される
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'fresh', snapshot: true, epoch: epoch2, seq: 1 }));
+		await flush();
+		expect(events).toEqual([{ kind: 'snapshot', data: 'fresh' }]);
+	});
+
+	it('re-attaches with a new epoch when a seq gap is detected', async () => {
+		const { controller, pcMux, enc, pcGot } = await setup();
+		controller.subscribeTerminal(1, () => { });
+		controller.attachTerminal(1);
+		await flush();
+		const epoch = pcGot[0]!.epoch!;
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'SNAP', snapshot: true, epoch, seq: 1 }));
+		await flush();
+		// seq=3（=2を取りこぼした）→ 新epochで自動再attach
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'x', epoch, seq: 3 }));
+		await flush();
+		const attaches = pcGot.filter(m => m.t === 'attach');
+		expect(attaches.length).toBe(2);
+		expect(attaches[1]!.epoch!).toBeGreaterThan(epoch);
+	});
+
+	it('acks after receiving the ack-threshold worth of data', async () => {
+		const { controller, pcMux, enc, pcGot } = await setup();
+		controller.subscribeTerminal(1, () => { });
+		controller.attachTerminal(1);
+		await flush();
+		const epoch = pcGot[0]!.epoch!;
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'S', snapshot: true, epoch, seq: 1 }));
+		await flush();
+		const acksAfterSnapshot = pcGot.filter(m => m.t === 'ack').length;
+		// 5000文字未満ではACKしない
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'a'.repeat(4000), epoch, seq: 2 }));
+		await flush();
+		expect(pcGot.filter(m => m.t === 'ack').length).toBe(acksAfterSnapshot);
+		// 閾値を超えたらACK（受信済み最終seqを載せる）
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'b'.repeat(2000), epoch, seq: 3 }));
+		await flush();
+		const acks = pcGot.filter(m => m.t === 'ack');
+		expect(acks.length).toBe(acksAfterSnapshot + 1);
+		expect(acks[acks.length - 1]!.seq).toBe(3);
+	});
+
+	it('replays the snapshot cache to late subscribers', async () => {
+		const { controller, pcMux, enc, pcGot } = await setup();
+		controller.subscribeTerminal(1, () => { });
+		controller.attachTerminal(1);
+		await flush();
+		const epoch = pcGot[0]!.epoch!;
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'SNAP', snapshot: true, epoch, seq: 1, cols: 80, rows: 24 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'tail', epoch, seq: 2 }));
+		await flush();
+		// 後から購読したリスナーにも snapshot→data の順でキャッシュが再生される
+		const late: import('./store.js').TermStreamEvent[] = [];
+		controller.subscribeTerminal(1, ev => late.push(ev));
+		expect(late).toEqual([
+			{ kind: 'snapshot', data: 'SNAP', cols: 80, rows: 24 },
+			{ kind: 'data', data: 'tail' },
+		]);
+	});
+
+	it('keeps the legacy string-buffer path for PCs that do not echo epoch', async () => {
+		const { controller, pcMux, enc, latestState } = await setup();
+		controller.subscribeTerminal(1, () => { });
+		controller.attachTerminal(1);
+		await flush();
+		// epoch/seq無しの応答（旧PC） → terminalOutput に従来どおり蓄積される
+		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'legacy', snapshot: true }));
+		await flush();
+		expect(latestState()?.terminalOutput.get(1)).toBe('legacy');
+	});
+});

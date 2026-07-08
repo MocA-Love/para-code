@@ -174,6 +174,32 @@ export function isAgentWaiting(status: string | undefined): boolean {
 	return status === 'permission' || status === 'question';
 }
 
+/**
+ * 同期プロトコル（epoch/seq）のターミナルストリームイベント。
+ * snapshot はバッファ全体の置き換え（適用すべき cols/rows・unicode幅版を伴う）、
+ * data は追記、exit は端末終了。
+ */
+export interface TermStreamEvent {
+	kind: 'snapshot' | 'data' | 'exit';
+	data?: string;
+	cols?: number;
+	rows?: number;
+	unicode?: string;
+}
+
+/** attach中ターミナル1つ分の同期ストリーム状態。 */
+interface TermStreamState {
+	/** attach時に採番した世代番号。これと一致しない受信フレームは捨てる。 */
+	epoch: number;
+	/** 受信済み最終seq。snapshot受信前は undefined（ライブ出力はsnapshotに含まれるので捨てる）。 */
+	lastSeq: number | undefined;
+	/** 前回ACKからの受信文字数。 */
+	unackedChars: number;
+	listeners: Set<(ev: TermStreamEvent) => void>;
+	/** タブ再訪時の即時再描画用（snapshot起点のイベント列）。 */
+	cache: { events: TermStreamEvent[]; chars: number } | undefined;
+}
+
 /** 秘密情報の永続化。 */
 export interface KeyStore {
 	getItem(key: string): Promise<string | null>;
@@ -198,6 +224,13 @@ export interface StoreState {
 const IDENTITY_KEY = 'para.identity';
 const CREDS_KEY = 'para.credentials';
 const MAX_TERM_BUFFER = 200_000;
+// --- ターミナル同期プロトコル（epoch/seq対応PC向け）の定数 ---
+// 受信文字数がこの閾値を超えるたびにACKを返す（PC側フロー制御の材料。本家
+// FlowControlConstants.CharCountAckSize と同値）。
+const TERM_ACK_CHARS = 5_000;
+// タブ再訪時に即時再描画するためのリプレイキャッシュ上限（snapshot+後続dataの合計文字数）。
+// 超過したら丸ごと捨てる（途中で切るとエスケープシーケンスが壊れるため、部分保持はしない）。
+const TERM_REPLAY_CACHE_LIMIT = 150_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -347,8 +380,13 @@ export class MobileController {
 					for (const id of this.attachedAgents.keys()) {
 						this.sendAgentAttach(id);
 					}
-				}
-				if (s === 'online') {
+					// 表示中（購読者あり）のターミナルも再attachする。切断中に取り逃した出力は
+					// 再attach応答のsnapshotで補われる（放置すると復帰後も画面が止まったままになる）。
+					for (const [id, stream] of this.termStreams) {
+						if (stream.listeners.size > 0) {
+							this.attachTerminal(id);
+						}
+					}
 					this.registerPushToken();
 				}
 			},
@@ -372,6 +410,7 @@ export class MobileController {
 		this.client = undefined;
 		this.lastCredentials = undefined;
 		this.attachedAgents.clear();
+		this.termStreams.clear();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
 		this.state.workspace = undefined;
@@ -406,18 +445,80 @@ export class MobileController {
 		}
 	}
 
-	/** ターミナルにアタッチ（出力購読を要求）。 */
+	/**
+	 * ターミナルにアタッチ（出力購読を要求）。attachごとに新しい epoch を採番し、
+	 * PC側は epoch/seq 付きの同期ストリーム（snapshot→data...）で応答する。
+	 * 旧PCは epoch を無視して従来の生ストリームを返す（terminalOutput 側で処理）。
+	 * seq欠落検出時・再接続時の再同期もこのメソッドで行う（新epochで取り直し）。
+	 */
 	attachTerminal(id: number): void {
-		this.sendTerm({ t: 'attach', id });
+		const stream = this.ensureTermStream(id);
+		stream.epoch = ++this.termEpochCounter;
+		stream.lastSeq = undefined;
+		stream.unackedChars = 0;
+		this.sendTerm({ t: 'attach', id, epoch: stream.epoch });
 	}
 
 	detachTerminal(id: number): void {
+		// ストリーム状態は消さない（cache をタブ再訪時の即時再描画に使う）。
+		// epoch はattach時に必ず更新されるため、detach後に届く残りフレームは無害。
 		this.sendTerm({ t: 'detach', id });
+	}
+
+	/**
+	 * ターミナルの同期ストリームを購読する。購読時点のリプレイキャッシュ
+	 * （最後のsnapshot＋後続data）を同期的に再生してから、以後のライブイベントを流す。
+	 */
+	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void): () => void {
+		const stream = this.ensureTermStream(id);
+		stream.listeners.add(listener);
+		if (stream.cache) {
+			for (const ev of stream.cache.events) {
+				listener(ev);
+			}
+		}
+		return () => {
+			stream.listeners.delete(listener);
+		};
+	}
+
+	private termEpochCounter = 0;
+	private readonly termStreams = new Map<number, TermStreamState>();
+
+	private ensureTermStream(id: number): TermStreamState {
+		let stream = this.termStreams.get(id);
+		if (!stream) {
+			stream = { epoch: 0, lastSeq: undefined, unackedChars: 0, listeners: new Set(), cache: undefined };
+			this.termStreams.set(id, stream);
+		}
+		return stream;
 	}
 
 	/** ターミナルへ入力を送る。 */
 	sendInput(id: number, data: string): void {
 		this.sendTerm({ t: 'input', id, data });
+	}
+
+	/**
+	 * 矢印キーをセマンティック名で送る。PC側が端末モード（application cursor keys）に
+	 * 合わせて CSI / SS3 へエンコードする（vim / less 等で矢印が効かない問題の対策）。
+	 * data は旧バージョンのPC（key 未対応）向けのフォールバック。
+	 */
+	sendArrowKey(id: number, key: 'up' | 'down' | 'right' | 'left'): void {
+		const fallback = { up: '\u001b[A', down: '\u001b[B', right: '\u001b[C', left: '\u001b[D' }[key];
+		this.sendTerm({ t: 'input', id, data: fallback, key });
+	}
+
+	/**
+	 * コンポーザーからのテキスト入力を送る。PC側は bracketed paste モード中なら
+	 * ESC[200~...ESC[201~ で包み、複数行テキストが1行目で実行されるのを防ぐ。
+	 * execute=true で末尾にEnterを付けて実行する。data は旧PC向けフォールバック
+	 * （改行をEnterに正規化した従来相当の生入力）。
+	 */
+	sendTextInput(id: number, text: string, execute: boolean): void {
+		const normalized = text.replace(/\r?\n/g, '\r');
+		const fallback = execute && !normalized.endsWith('\r') ? normalized + '\r' : normalized;
+		this.sendTerm({ t: 'input', id, data: fallback, text, execute });
 	}
 
 	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
@@ -430,7 +531,7 @@ export class MobileController {
 		this.client?.send('state', new Uint8Array(0));
 	}
 
-	private sendTerm(msg: { t: string; id: number; data?: string }): void {
+	private sendTerm(msg: { t: string; id: number; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number }): void {
 		this.client?.send('term', encoder.encode(JSON.stringify(msg)));
 	}
 
@@ -728,16 +829,27 @@ export class MobileController {
 			} catch { /* ignore malformed */ }
 		} else if (frame.ch === 'term') {
 			try {
-				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; id: number; data?: string; snapshot?: boolean };
-				if (msg.t === 'data' && typeof msg.data === 'string') {
-					// snapshot（attach時のVT画面復元）はバッファを置き換える。追記だと再attachの
-					// たびにスナップショットが積み重なり、xtermへの再生で画面が二重・崩壊するため。
+				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; id: number; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string };
+				if (msg.t === 'data' && typeof msg.data === 'string' && typeof msg.epoch === 'number' && typeof msg.seq === 'number') {
+					// 同期プロトコル（新PC）: epoch/seq検証つきストリームとして処理する。
+					// terminalOutput（旧経路の文字列バッファ）は経由しない。
+					this.handleTermSyncData({ id: msg.id, data: msg.data, snapshot: msg.snapshot === true, epoch: msg.epoch, seq: msg.seq, cols: msg.cols, rows: msg.rows, unicode: msg.unicode });
+				} else if (msg.t === 'data' && typeof msg.data === 'string') {
+					// 旧PC互換経路: snapshot（attach時のVT画面復元）はバッファを置き換える。
+					// 追記だと再attachのたびにスナップショットが積み重なり、再生で画面が崩壊するため。
 					const prev = msg.snapshot ? '' : (this.state.terminalOutput.get(msg.id) ?? '');
 					const next = (prev + msg.data).slice(-MAX_TERM_BUFFER);
 					this.state.terminalOutput.set(msg.id, next);
 					this.emit({ term: true });
 				} else if (msg.t === 'exit') {
 					this.state.terminalOutput.delete(msg.id);
+					const stream = this.termStreams.get(msg.id);
+					if (stream) {
+						for (const listener of stream.listeners) {
+							listener({ kind: 'exit' });
+						}
+						this.termStreams.delete(msg.id);
+					}
 					// 閉じたターミナルは二度と再attachされないため、チャット履歴も掃除する。
 					// （放置すると agentChats に使い捨てターミナル分のチャットが蓄積し続ける）
 					this.state.agentChats.delete(msg.id);
@@ -755,6 +867,68 @@ export class MobileController {
 					this.onNotify?.(payload);
 				}
 			} catch { /* ignore */ }
+		}
+	}
+
+	/**
+	 * 同期プロトコルのターミナルデータ1フレームを処理する。
+	 * - epoch不一致（再attach前の旧世代）は捨てる
+	 * - snapshot はリプレイキャッシュを起点から作り直し、購読者へ「バッファ置き換え」として流す
+	 * - data は seq 連続性を検証し、欠落を検出したら新epochで再attachしてsnapshotから復旧する
+	 * - 受信文字数に応じてACKを返す（PC側フロー制御の材料。snapshotは大きいので即ACK）
+	 */
+	private handleTermSyncData(msg: { id: number; data: string; snapshot: boolean; epoch: number; seq: number; cols?: number; rows?: number; unicode?: string }): void {
+		const stream = this.termStreams.get(msg.id);
+		if (!stream || msg.epoch !== stream.epoch) {
+			return;
+		}
+		if (msg.snapshot) {
+			stream.lastSeq = msg.seq;
+			const ev: TermStreamEvent = {
+				kind: 'snapshot', data: msg.data,
+				...(msg.cols !== undefined ? { cols: msg.cols } : {}),
+				...(msg.rows !== undefined ? { rows: msg.rows } : {}),
+				...(msg.unicode !== undefined ? { unicode: msg.unicode } : {}),
+			};
+			stream.cache = { events: [ev], chars: msg.data.length };
+			for (const listener of stream.listeners) {
+				listener(ev);
+			}
+			this.sendTermAck(msg.id, stream);
+			return;
+		}
+		if (stream.lastSeq === undefined) {
+			// snapshot受信前のライブ出力。この後に届くsnapshotへ反映済みなので捨てる。
+			return;
+		}
+		if (msg.seq !== stream.lastSeq + 1) {
+			// seq欠落（リレー再接続時の取りこぼし等）。新epochで再attachし、snapshotから復旧する。
+			this.attachTerminal(msg.id);
+			return;
+		}
+		stream.lastSeq = msg.seq;
+		const ev: TermStreamEvent = { kind: 'data', data: msg.data };
+		if (stream.cache) {
+			stream.cache.events.push(ev);
+			stream.cache.chars += msg.data.length;
+			if (stream.cache.chars > TERM_REPLAY_CACHE_LIMIT) {
+				// 上限超過は丸ごと捨てる（部分保持はエスケープシーケンスを壊す）。次のsnapshotで再構築。
+				stream.cache = undefined;
+			}
+		}
+		for (const listener of stream.listeners) {
+			listener(ev);
+		}
+		stream.unackedChars += msg.data.length;
+		if (stream.unackedChars >= TERM_ACK_CHARS) {
+			this.sendTermAck(msg.id, stream);
+		}
+	}
+
+	private sendTermAck(id: number, stream: TermStreamState): void {
+		stream.unackedChars = 0;
+		if (stream.lastSeq !== undefined) {
+			this.sendTerm({ t: 'ack', id, epoch: stream.epoch, seq: stream.lastSeq });
 		}
 	}
 

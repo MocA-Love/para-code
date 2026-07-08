@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -45,15 +45,29 @@ interface StateSnapshot {
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
 type TermInbound =
-	| { t: 'attach'; id: number }
+	// epoch はモバイルが attach ごとに採番する世代番号。指定があると同期プロトコル
+	// （seq 付与・ACKフロー制御・リサイズ時スナップショット再同期）が有効になる。
+	// 未指定（旧アプリ）は従来どおり生ストリームをそのまま流す。
+	| { t: 'attach'; id: number; epoch?: number }
 	| { t: 'detach'; id: number }
-	| { t: 'input'; id: number; data: string }
+	// 受信済み最終 seq の確認応答（epoch 対応クライアントのみ）。フロー制御の材料。
+	| { t: 'ack'; id: number; epoch: number; seq: number }
+	// input は3形態（新しいアプリは key / text を送り、data は旧PC向けフォールバック）:
+	// - key: 矢印キー等のセマンティック指定。PC側が端末モード（application cursor keys）に
+	//   合わせて CSI / SS3 へエンコードする
+	// - text: コンポーザーからのテキスト入力。sendText の bracketed paste 対応を通し、
+	//   複数行貼り付けがTUIで1行目から実行されてしまう問題を防ぐ。execute=true で実行（Enter）
+	// - data: 生のエスケープシーケンス（旧アプリ、および Esc/Tab/^C 等のモード非依存キー）
+	| { t: 'input'; id: number; data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }
 	| { t: 'create'; ws?: string };
+type TermSemanticKey = 'up' | 'down' | 'right' | 'left';
 type TermOutbound =
-	// snapshot=true は attach 時の画面復元用フレーム（VTシーケンス込み）。モバイルは追記せず
-	// バッファ全体を置き換える（再attachで画面が二重にならないようにするため）。
-	| { t: 'data'; id: number; data: string; snapshot?: boolean }
-	| { t: 'exit'; id: number };
+	// snapshot=true は画面復元用フレーム（VTシーケンス込み）。モバイルは追記せず
+	// バッファ全体を置き換える（attach 時・リサイズ時・フロー制御の追いつき時）。
+	// epoch/seq は同期プロトコル有効時のみ付与（seq は送信順に1ずつ増える。モバイルは
+	// ギャップ検出で再attachする）。snapshot には適用すべき cols/rows と unicode 幅版も同梱する。
+	| { t: 'data'; id: number; data: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string }
+	| { t: 'exit'; id: number; epoch?: number };
 
 /** scm チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type ScmInbound =
@@ -85,6 +99,35 @@ const UPLOAD_BASE64_LIMIT = Math.ceil(UPLOAD_LIMIT * 4 / 3) + 4; // 同、base64
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
 const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字。serialize不可時のフォールバック用）
 const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
+// --- ターミナル同期プロトコル（epoch対応クライアント向け）の定数 ---
+const TERM_COALESCE_MS = 16; // onData のまとめ送り間隔（1フレーム=1暗号化+relay往復のため細切れ送信を避ける）
+const TERM_COALESCE_FLUSH_CHARS = 64 * 1024; // まとめ送りバッファの即時フラッシュ閾値
+// フロー制御: 未ACK文字数が HIGH を超えたら生ストリーム転送を止め（ptyは止めない）、
+// ACK が LOW まで追いついたらスナップショット1発で最新画面へ追いつく（mosh の
+// 「中間状態スキップ」方式）。値は本家 FlowControlConstants（renderer↔ptyHost間）に合わせる。
+const TERM_HIGH_WATERMARK_CHARS = 100_000;
+const TERM_LOW_WATERMARK_CHARS = 5_000;
+const TERM_RESIZE_SNAPSHOT_DELAY_MS = 200; // リサイズ確定からスナップショット再同期までのデバウンス
+
+/** epoch対応クライアントがattach中のターミナル1つ分の同期プロトコル状態。 */
+interface TermSyncState {
+	/** モバイルが attach 時に採番した世代番号（送信フレームへ毎回付与する）。 */
+	epoch: number;
+	/** 直近に送信したseq（送信直前にインクリメント。snapshotも消費する）。 */
+	seq: number;
+	/** 送信済み・未ACKのフレーム（フロー制御の残量計算用）。 */
+	inflight: { seq: number; chars: number }[];
+	unackedChars: number;
+	/** フロー制御で生ストリーム転送を停止中（ptyは止めない。ACKが追いつくとsnapshotで再同期）。 */
+	suspended: boolean;
+	/** suspend中に出力を破棄した（=再開時にsnapshot再同期が必要）。 */
+	droppedWhileSuspended: boolean;
+	/** onData のまとめ送りバッファ。 */
+	pending: string[];
+	pendingChars: number;
+	coalesceTimer: ReturnType<typeof setTimeout> | undefined;
+	resizeTimer: ReturnType<typeof setTimeout> | undefined;
+}
 
 /**
  * shared process のリレーサービスと、このウィンドウのワークスペース/ターミナルを橋渡しする。
@@ -106,6 +149,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly xtermAddonImporter = new XtermAddonImporter();
 	// raw xterm → その端末に一度だけ load した serialize addon（端末ごとに1つ）。
 	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
+	// ターミナルID → 同期プロトコル状態（epoch対応クライアントがattach中のもののみ）。
+	private readonly termSyncStates = new Map<number, TermSyncState>();
 
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
@@ -143,6 +188,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.terminalGroupService.onDidChangeGroups(() => this.pushStateSoon()));
 		// PC側のリサイズで cols/rows が変わったら再送（モバイルのxtermが同寸法に追従する）
 		this._register(this.terminalService.onDidChangeInstanceDimensions(() => this.pushStateSoon()));
+		// attach中ターミナルのリサイズは、寸法確定後にVTスナップショットで再同期する。
+		// 生ストリームだけだと「新寸法向けの再描画がモバイルの旧寸法xtermへ書かれる」レースが
+		// 構造的に残り、特に代替バッファ（TUI）はリサイズでリフローされないため崩れたままになる。
+		this._register(this.terminalService.onDidChangeInstanceDimensions(instance => this.scheduleResizeResync(instance)));
 		// worktree（スペース）の増減もワークスペース一覧に反映する
 		this._register(this.worktreeService.onDidChangeWorktrees(() => this.pushStateSoon()));
 		// agentチャネル用: terminalId ⇔ ペイントークンの対応を shared process へ同期する
@@ -328,8 +377,21 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	/** オンラインのモバイルが居なくなったら、全ターミナル購読を解放する（M-2: 購読リーク防止）。 */
 	detachAll(): void {
+		for (const id of this.termSyncStates.keys()) {
+			this.clearTermSync(id);
+		}
+		this.termSyncStates.clear();
 		this.attachedTerminals.clearAndDisposeAll();
 		this.terminalSubscribers.clear();
+	}
+
+	override dispose(): void {
+		// setTimeout ベースのタイマー（coalesce/resize）を確実に止める。
+		for (const id of this.termSyncStates.keys()) {
+			this.clearTermSync(id);
+		}
+		this.termSyncStates.clear();
+		super.dispose();
 	}
 
 	/** shared process から届いたモバイル→PCフレームを処理する。 */
@@ -778,6 +840,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (msg.t === 'attach') {
 			// 出力はattachを要求したモバイルにのみ返す（M-2）。再attachは宛先を更新する。
 			this.terminalSubscribers.set(msg.id, mobileId ?? '');
+			// epoch付きattach（同期プロトコル対応クライアント）は世代状態を作り直す。
+			// 古い世代のタイマー・未ACK残量は破棄する（旧世代のフレームはモバイル側が
+			// epoch不一致で捨てるため、混在しても画面は壊れない）。
+			this.clearTermSync(msg.id);
+			this.termSyncStates.delete(msg.id);
+			if (msg.epoch !== undefined) {
+				this.termSyncStates.set(msg.id, {
+					epoch: msg.epoch, seq: 0, inflight: [], unackedChars: 0,
+					suspended: false, droppedWhileSuspended: false,
+					pending: [], pendingChars: 0, coalesceTimer: undefined, resizeTimer: undefined,
+				});
+			}
 			// 画面初期同期: 現在の画面状態をエスケープシーケンス込み（serialize addon）で送り、
 			// モバイルのxtermで「PCで作業していた続き」を完全再現する（設計書 §4.2）。
 			// getContentsAsText のプレーン化では代替バッファ/カーソル/色を持つTUI（claude/codex等）が
@@ -788,25 +862,180 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				return;
 			}
 			const store = new DisposableStore();
-			store.add(instance.onData(data => this.sendTerm({ t: 'data', id: msg.id, data })));
+			store.add(instance.onData(data => this.sendTermData(msg.id, data)));
 			store.add(instance.onExit(() => {
-				this.sendTerm({ t: 'exit', id: msg.id });
+				const epoch = this.termSyncStates.get(msg.id)?.epoch;
+				this.clearTermSync(msg.id);
+				this.termSyncStates.delete(msg.id);
+				this.sendTerm({ t: 'exit', id: msg.id, ...(epoch !== undefined ? { epoch } : {}) });
 				this.attachedTerminals.deleteAndDispose(msg.id);
 				this.terminalSubscribers.delete(msg.id);
 			}));
 			this.attachedTerminals.set(msg.id, store);
 		} else if (msg.t === 'detach') {
+			this.clearTermSync(msg.id);
+			this.termSyncStates.delete(msg.id);
 			this.attachedTerminals.deleteAndDispose(msg.id);
 			this.terminalSubscribers.delete(msg.id);
+		} else if (msg.t === 'ack') {
+			this.handleTerminalAck(instance, msg);
 		} else if (msg.t === 'input') {
-			// 生入力を送る（改行はモバイル側が明示的に送る）。
-			instance.sendText(msg.data, false).catch(err => this.logService.warn('[paradisMobileRelay] sendText failed', err));
+			this.handleTerminalInput(instance, msg).catch(err => this.logService.warn('[paradisMobileRelay] sendText failed', err));
 		}
+	}
+
+	/**
+	 * モバイルからのターミナル入力を端末モードに合わせて送る。
+	 * - key: application cursor keys モード中は SS3（ESC O A 等）、通常は CSI（ESC [ A 等）。
+	 *   モバイル側は端末モードを知らないため、モード判定はPC側で行う（vim / less 等で矢印が
+	 *   効かなくなる問題の対策）
+	 * - text: bracketed paste モード中は ESC[200~...ESC[201~ で包む（sendText が判定）。
+	 *   複数行テキストが1行目で実行されるのを防ぐ
+	 * - data: 生のまま送る（従来動作）
+	 */
+	private async handleTerminalInput(instance: ITerminalInstance, msg: { data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }): Promise<void> {
+		if (msg.key !== undefined) {
+			const finalChar = { up: 'A', down: 'B', right: 'C', left: 'D' }[msg.key];
+			if (finalChar !== undefined) {
+				const applicationMode = instance.xterm?.raw.modes.applicationCursorKeysMode === true;
+				await instance.sendText(applicationMode ? `\x1bO${finalChar}` : `\x1b[${finalChar}`, false);
+				return;
+			}
+			// 未知のキー名（将来の拡張）は data フォールバックへ落とす（モバイルは key と
+			// 等価な生シーケンスを data に常時併載する契約）。
+		}
+		if (msg.text !== undefined) {
+			await instance.sendText(msg.text, msg.execute === true, true);
+		} else if (msg.data !== undefined) {
+			// 生入力を送る（改行はモバイル側が明示的に送る）。
+			await instance.sendText(msg.data, false);
+		}
+	}
+
+	/** まとめ送りタイマーと保留バッファのみ破棄する（snapshot送信時用。resizeTimerは別ライフサイクル）。 */
+	private clearTermCoalesce(sync: TermSyncState): void {
+		if (sync.coalesceTimer !== undefined) {
+			clearTimeout(sync.coalesceTimer);
+			sync.coalesceTimer = undefined;
+		}
+		sync.pending = [];
+		sync.pendingChars = 0;
+	}
+
+	/**
+	 * 同期プロトコル状態のタイマー・保留バッファを全て破棄する（map のエントリ自体は
+	 * 消さない。detach/exit 側で必要に応じて delete する）。
+	 */
+	private clearTermSync(id: number): void {
+		const sync = this.termSyncStates.get(id);
+		if (!sync) {
+			return;
+		}
+		this.clearTermCoalesce(sync);
+		if (sync.resizeTimer !== undefined) {
+			clearTimeout(sync.resizeTimer);
+			sync.resizeTimer = undefined;
+		}
+	}
+
+	/**
+	 * pty出力1チャンクの転送。同期プロトコル有効時はまとめ送り＋フロー制御を通す。
+	 * suspend中は破棄し（ptyは止めない）、ACKが追いついた時点のスナップショットで追いつく。
+	 */
+	private sendTermData(id: number, data: string): void {
+		const sync = this.termSyncStates.get(id);
+		if (!sync) {
+			// 旧アプリ: 従来どおり生チャンクをそのまま送る。
+			this.sendTerm({ t: 'data', id, data });
+			return;
+		}
+		if (sync.suspended) {
+			sync.droppedWhileSuspended = true;
+			return;
+		}
+		sync.pending.push(data);
+		sync.pendingChars += data.length;
+		if (sync.pendingChars >= TERM_COALESCE_FLUSH_CHARS) {
+			this.flushTermData(id);
+		} else if (sync.coalesceTimer === undefined) {
+			sync.coalesceTimer = setTimeout(() => this.flushTermData(id), TERM_COALESCE_MS);
+		}
+	}
+
+	/** まとめ送りバッファを1フレームとして送信し、未ACK残量が閾値を超えたらsuspendする。 */
+	private flushTermData(id: number): void {
+		const sync = this.termSyncStates.get(id);
+		if (!sync) {
+			return;
+		}
+		if (sync.coalesceTimer !== undefined) {
+			clearTimeout(sync.coalesceTimer);
+			sync.coalesceTimer = undefined;
+		}
+		if (sync.pendingChars === 0 || !this.terminalSubscribers.has(id)) {
+			sync.pending = [];
+			sync.pendingChars = 0;
+			return;
+		}
+		const data = sync.pending.join('');
+		sync.pending = [];
+		sync.pendingChars = 0;
+		const seq = ++sync.seq;
+		sync.inflight.push({ seq, chars: data.length });
+		sync.unackedChars += data.length;
+		this.sendTerm({ t: 'data', id, data, epoch: sync.epoch, seq });
+		if (sync.unackedChars > TERM_HIGH_WATERMARK_CHARS) {
+			sync.suspended = true;
+		}
+	}
+
+	/** モバイルからのACK。未ACK残量を減らし、suspend中でLOWまで追いついたらsnapshotで再同期する。 */
+	private handleTerminalAck(instance: ITerminalInstance, msg: { id: number; epoch: number; seq: number }): void {
+		const sync = this.termSyncStates.get(msg.id);
+		if (!sync || sync.epoch !== msg.epoch) {
+			return; // 旧世代のACKは無視（再attach直後の混在で正常に起きる）
+		}
+		while (sync.inflight.length > 0 && sync.inflight[0].seq <= msg.seq) {
+			sync.unackedChars -= sync.inflight[0].chars;
+			sync.inflight.shift();
+		}
+		if (sync.suspended && sync.unackedChars <= TERM_LOW_WATERMARK_CHARS) {
+			sync.suspended = false;
+			if (sync.droppedWhileSuspended) {
+				sync.droppedWhileSuspended = false;
+				// 破棄していた間の出力はもう送れないので、最新画面のスナップショットで追いつく
+				// （moshの「中間状態スキップ」に相当。スクロールバックの完全性より最新画面を優先）。
+				this.sendTerminalSnapshot(instance, msg.id);
+			}
+		}
+	}
+
+	/**
+	 * attach中ターミナルのリサイズ後の再同期をスケジュールする（ドラッグ中の連射を
+	 * デバウンスし、寸法確定後にスナップショット1回へ収斂させる）。
+	 */
+	private scheduleResizeResync(instance: ITerminalInstance): void {
+		const id = instance.instanceId;
+		const sync = this.termSyncStates.get(id);
+		if (!sync || !this.terminalSubscribers.has(id)) {
+			return;
+		}
+		if (sync.resizeTimer !== undefined) {
+			clearTimeout(sync.resizeTimer);
+		}
+		sync.resizeTimer = setTimeout(() => {
+			sync.resizeTimer = undefined;
+			if (this.terminalSubscribers.has(id)) {
+				this.sendTerminalSnapshot(instance, id);
+			}
+		}, TERM_RESIZE_SNAPSHOT_DELAY_MS);
 	}
 
 	/**
 	 * attach したモバイルへ、現在の端末画面をVTスナップショットとして送る。
 	 * serialize addon が使えない場合はプレーンテキスト末尾へフォールバックする（従来動作）。
+	 * 同期プロトコル有効時は epoch/seq と適用すべき cols/rows・unicode幅版を同梱し、
+	 * モバイルが「reset→resize→write」を原子的に適用できるようにする。
 	 */
 	private sendTerminalSnapshot(instance: ITerminalInstance, id: number): void {
 		this.serializeTerminalSnapshot(instance).then(snapshot => {
@@ -823,7 +1052,27 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const tail = contents.length > TERM_SCROLLBACK_LIMIT ? contents.slice(-TERM_SCROLLBACK_LIMIT) : contents;
 				data = tail.endsWith('\n') ? tail : tail + '\r\n';
 			}
-			this.sendTerm({ t: 'data', id, data, snapshot: true });
+			const sync = this.termSyncStates.get(id);
+			if (!sync) {
+				this.sendTerm({ t: 'data', id, data, snapshot: true });
+				return;
+			}
+			// snapshotはバッファ全体を置き換えるため、まとめ送り待ちの生データは破棄してよい
+			// （serialize前の書き込みバリアでPC側xtermに反映済み＝snapshotに含まれている。
+			// 送るだけ帯域の無駄になる）。resizeTimer はここでは触らない（serialize待ちの間に
+			// 発生した新しいリサイズの再同期予約を消してしまうため）。
+			this.clearTermCoalesce(sync);
+			const seq = ++sync.seq;
+			sync.inflight.push({ seq, chars: data.length });
+			sync.unackedChars += data.length;
+			if (sync.unackedChars > TERM_HIGH_WATERMARK_CHARS) {
+				// 巨大snapshot直後も水位ルールを一貫させる（モバイルはsnapshotを即ACKするため
+				// 詰まらない。ACKが来るまでの生ストリームはdrop→追いつき時に再snapshot）。
+				sync.suspended = true;
+			}
+			const dims = instance.cols > 0 && instance.rows > 0 ? { cols: instance.cols, rows: instance.rows } : {};
+			const unicode = instance.xterm?.raw.unicode.activeVersion;
+			this.sendTerm({ t: 'data', id, data, snapshot: true, epoch: sync.epoch, seq, ...dims, ...(unicode ? { unicode } : {}) });
 		}).catch(err => this.logService.warn('[paradisMobileRelay] scrollback sync failed', err));
 	}
 
@@ -845,6 +1094,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			addon = loaded;
 			this.serializeAddons.set(raw, loaded);
 		}
+		// 書き込みキューのバリア: onData で届いたがPC側xtermがまだパースしていない出力を
+		// 反映しきってからシリアライズする。これが無いと「直前の1チャンクがsnapshotにも
+		// 後続ストリームにも含まれない」欠落窓ができる（snapshot送信時にまとめ送り待ちの
+		// 生データを破棄する前提条件でもある）。
+		// 端末dispose等でコールバックが発火しない場合に備え、上限付きで待つ
+		// （タイムアウト時は現時点のバッファでシリアライズする＝従来動作相当）。
+		await Promise.race([
+			new Promise<void>(resolve => raw.write('', () => resolve())),
+			timeout(1000),
+		]);
 		// 通常バッファのスクロールバックは行数で抑える（代替バッファ=TUIは常に全体が含まれる）。
 		return addon.serialize({ scrollback: TERM_SNAPSHOT_SCROLLBACK_ROWS });
 	}
