@@ -13,12 +13,24 @@ import { useAppStore } from './appState.js';
 let started = false;
 
 export function startLiveActivitySync(): void {
-	if (started || !isLiveActivitySupported()) {
+	if (started) {
 		return;
 	}
 	started = true;
 	let lastJson = '';
-	useAppStore.subscribe(state => {
+	let warnedUnsupported = false;
+	const apply = (state: Pick<StoreState, 'workspace' | 'agentChats'>) => {
+		// サポート判定は更新のたびに問い合わせる。isSupported() はライブアクティビティの
+		// 許可状態（設定アプリで切り替え可能）を含むため、マウント時の一発判定にすると
+		// 「起動時に許可オフ → 後から有効化」で二度と表示されなくなる。
+		if (!isLiveActivitySupported()) {
+			if (!warnedUnsupported) {
+				warnedUnsupported = true;
+				console.log('[liveActivity] unsupported or not enabled (build without the widget extension, or Live Activities disabled in Settings)');
+			}
+			return;
+		}
+		warnedUnsupported = false;
 		const next = buildState(state);
 		const json = next === undefined ? '' : JSON.stringify(next);
 		if (json === lastJson) {
@@ -30,7 +42,11 @@ export function startLiveActivitySync(): void {
 		} else {
 			void startOrUpdateLiveActivity('Para Code', next).catch(err => console.warn('[liveActivity] update failed', err));
 		}
-	});
+	};
+	useAppStore.subscribe(apply);
+	// subscribe はストア変化時にしか発火しないため、購読開始時点で既に実行中/応答待ちの
+	// エージェントがいる場合も即時反映する
+	apply(useAppStore.getState());
 }
 
 /** ストア状態からActivityの表示状態を組み立てる。表示すべきものが無ければundefined。 */
