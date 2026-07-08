@@ -7,6 +7,7 @@
  *  - 太字（**）
  *  - 見出し（# 〜 ###）
  *  - 箇条書き（- / * / 1.）
+ *  - 表（GFMテーブル: ヘッダー行＋区切り行＋本体行、列アライメント対応）
  * それ以外はプレーンテキストとして安全に表示する（未対応記法で壊れない）。
  */
 
@@ -14,11 +15,35 @@ import type { ReactNode } from 'react';
 import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../theme.js';
 
+type CellAlign = 'left' | 'center' | 'right';
+
 type Block =
 	| { kind: 'code'; text: string }
 	| { kind: 'heading'; level: number; text: string }
 	| { kind: 'bullet'; marker: string; text: string }
+	| { kind: 'table'; header: string[]; aligns: CellAlign[]; rows: string[][] }
 	| { kind: 'para'; text: string };
+
+/** `| a | b |` 形式の行をセル配列へ分解する（前後のパイプは落とす）。 */
+function splitTableRow(line: string): string[] {
+	let trimmed = line.trim();
+	if (trimmed.startsWith('|')) {
+		trimmed = trimmed.slice(1);
+	}
+	if (trimmed.endsWith('|')) {
+		trimmed = trimmed.slice(0, -1);
+	}
+	return trimmed.split('|').map(cell => cell.trim());
+}
+
+/** GFMテーブルの区切り行（`| --- | :---: |` 等）かどうか。 */
+function isTableSeparator(line: string): boolean {
+	const trimmed = line.trim();
+	if (!trimmed.includes('-') || !trimmed.includes('|')) {
+		return false;
+	}
+	return splitTableRow(trimmed).every(cell => /^:?-+:?$/.test(cell));
+}
 
 function parseBlocks(source: string): Block[] {
 	const blocks: Block[] = [];
@@ -33,7 +58,8 @@ function parseBlocks(source: string): Block[] {
 		}
 	};
 
-	for (const line of lines) {
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i] ?? '';
 		if (codeLines !== undefined) {
 			if (line.trimEnd().startsWith('```')) {
 				blocks.push({ kind: 'code', text: codeLines.join('\n') });
@@ -46,6 +72,22 @@ function parseBlocks(source: string): Block[] {
 		if (line.trimStart().startsWith('```')) {
 			flushPara();
 			codeLines = [];
+			continue;
+		}
+		// 表: 「|で始まるヘッダー行」＋「区切り行」の並びで開始し、|で始まる行が続く限り本体行
+		if (line.trim().startsWith('|') && i + 1 < lines.length && isTableSeparator(lines[i + 1] ?? '')) {
+			flushPara();
+			const header = splitTableRow(line);
+			const aligns = splitTableRow(lines[i + 1] ?? '').map<CellAlign>(cell =>
+				cell.startsWith(':') && cell.endsWith(':') ? 'center' : cell.endsWith(':') ? 'right' : 'left');
+			const rows: string[][] = [];
+			let next = i + 2;
+			while (next < lines.length && (lines[next] ?? '').trim().startsWith('|')) {
+				rows.push(splitTableRow(lines[next] ?? ''));
+				next++;
+			}
+			blocks.push({ kind: 'table', header, aligns, rows });
+			i = next - 1;
 			continue;
 		}
 		const heading = line.match(/^(?<hashes>#{1,3})\s+(?<body>.+)$/);
@@ -135,6 +177,34 @@ export function MarkdownText({ text }: { text: string }) {
 						</View>
 					);
 				}
+				if (block.kind === 'table') {
+					// 列数はヘッダー基準（本体行の過不足セルは空/切り捨てで揃える）
+					const cols = block.header.length;
+					return (
+						<View key={i} style={styles.table}>
+							<View style={[styles.tableRow, styles.tableHead]}>
+								{block.header.map((cell, c) => (
+									<View key={c} style={[styles.tableCell, c > 0 ? styles.tableCellBorder : null]}>
+										<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
+											{renderInline(cell, styles.body)}
+										</Text>
+									</View>
+								))}
+							</View>
+							{block.rows.map((row, r) => (
+								<View key={r} style={[styles.tableRow, r % 2 === 1 ? styles.tableRowAlt : null]}>
+									{Array.from({ length: cols }, (_, c) => (
+										<View key={c} style={[styles.tableCell, c > 0 ? styles.tableCellBorder : null]}>
+											<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
+												{renderInline(row[c] ?? '', styles.body)}
+											</Text>
+										</View>
+									))}
+								</View>
+							))}
+						</View>
+					);
+				}
 				return (
 					<Text key={i} style={styles.body} selectable>{renderInline(block.text, styles.body)}</Text>
 				);
@@ -159,4 +229,12 @@ const styles = StyleSheet.create({
 	bulletRow: { flexDirection: 'row', gap: 6 },
 	bulletMarker: { color: colors.textDim },
 	bulletBody: { flex: 1 },
+	table: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: 'hidden', marginVertical: 2 },
+	tableRow: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+	tableHead: { backgroundColor: 'rgba(110,118,129,.18)', borderTopWidth: 0 },
+	tableRowAlt: { backgroundColor: 'rgba(110,118,129,.07)' },
+	tableCell: { flex: 1, paddingVertical: 5, paddingHorizontal: 7 },
+	tableCellBorder: { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
+	tableHeadText: { fontWeight: '700', fontSize: 12, lineHeight: 17 },
+	tableCellText: { fontSize: 12, lineHeight: 17 },
 });
