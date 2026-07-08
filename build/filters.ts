@@ -131,6 +131,8 @@ export const indentationFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**',
 	// PARA-PATCH: vendored docx-preview + jszip used by the Word (.docx) viewer (see the folder's README.md)
 	'!src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**',
+	// PARA-PATCH: vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server (see the folder's README.md)
+	'!src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
 
 	// except multiple specific files
 	'!**/package.json',
@@ -238,6 +240,8 @@ export const copyrightFilter = Object.freeze<string[]>([
 	'!src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**',
 	// PARA-PATCH: vendored docx-preview + jszip used by the Word (.docx) viewer (see the folder's README.md)
 	'!src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**',
+	// PARA-PATCH: vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server (see the folder's README.md)
+	'!src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
 
 	// extensions/copilot has its own code style
 	'!extensions/copilot/**',

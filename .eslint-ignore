@@ -64,3 +64,4 @@ src/vs/base/common/signals-core/**
 src/vs/paradis/contrib/browserExtensions/electron-main/media/**
 src/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**
 src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**
+src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**
