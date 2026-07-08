@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -25,10 +25,11 @@ import { colors } from '../../src/theme.js';
  */
 export default function TerminalScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, terminalOutput, selectedTerminalId, setSelectedTerminalId, attachTerminal, detachTerminal, sendInput, createTerminal } = useAppStore(useShallow(s => ({
+	const { workspace, terminalOutput, selectedTerminalId, setSelectedTerminalId, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, terminalOutput: s.terminalOutput,
 		selectedTerminalId: s.selectedTerminalId, setSelectedTerminalId: s.setSelectedTerminalId,
-		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, sendInput: s.sendInput, createTerminal: s.createTerminal,
+		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, subscribeTerminal: s.subscribeTerminal, sendInput: s.sendInput,
+		sendArrowKey: s.sendArrowKey, sendTextInput: s.sendTextInput, createTerminal: s.createTerminal,
 	})));
 	const [input, setInput] = useState('');
 	const insets = useStableInsets();
@@ -52,14 +53,43 @@ export default function TerminalScreen() {
 		return () => detachTerminal(activeId);
 	}, [activeId, attachTerminal, detachTerminal]);
 
+	// TermView への同期ストリーム購読口（端末ごとに安定した関数を渡す）。
+	const subscribeActive = useMemo(() => {
+		if (activeId === undefined) {
+			return undefined;
+		}
+		return (listener: Parameters<typeof subscribeTerminal>[1]) => subscribeTerminal(activeId, listener);
+	}, [activeId, subscribeTerminal]);
+	// WebViewプロセス死・inject欠落時の再同期: 再attach（新epoch）でsnapshotを取り直す。
+	const resyncActive = useMemo(() => {
+		if (activeId === undefined) {
+			return undefined;
+		}
+		return () => attachTerminal(activeId);
+	}, [activeId, attachTerminal]);
+
 	const send = (data: string) => {
 		if (activeId !== undefined) {
 			sendInput(activeId, data);
 		}
 	};
+	const sendArrow = (key: 'up' | 'down' | 'right' | 'left') => {
+		if (activeId !== undefined) {
+			sendArrowKey(activeId, key);
+		}
+	};
 	const submit = () => {
-		// 空のまま送信 = Enter 単独（TUIの確認プロンプト等に必要）
-		send(input + '\r');
+		if (activeId === undefined) {
+			return;
+		}
+		if (input === '') {
+			// 空のまま送信 = Enter 単独（TUIの確認プロンプト等に必要）。bracketed paste で
+			// 包むと空ペーストになってしまうため生のEnterを送る。
+			sendInput(activeId, '\r');
+		} else {
+			// テキストはPC側でbracketed paste対応の上で実行される（複数行対応）。
+			sendTextInput(activeId, input, true);
+		}
 		setInput('');
 	};
 
@@ -87,7 +117,7 @@ export default function TerminalScreen() {
 			</ScrollView>
 			<View style={styles.output}>
 				{activeId !== undefined ? (
-					<TermView key={activeId} output={output} cols={activeTerminal?.cols} rows={activeTerminal?.rows} />
+					<TermView key={activeId} output={output} cols={activeTerminal?.cols} rows={activeTerminal?.rows} subscribe={subscribeActive} onNeedResync={resyncActive} />
 				) : (
 					<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
 				)}
@@ -105,10 +135,10 @@ export default function TerminalScreen() {
 							<Pressable style={styles.key} onPress={() => send('\u001b')}><Text style={styles.keyText}>Esc</Text></Pressable>
 							<Pressable style={styles.key} onPress={() => send('\t')}><Text style={styles.keyText}>Tab</Text></Pressable>
 							<Pressable style={styles.key} onPress={() => send('\u0003')}><Text style={[styles.keyText, styles.keyAccent]}>^C</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => send('\u001b[A')}><Text style={styles.keyText}>↑</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => send('\u001b[B')}><Text style={styles.keyText}>↓</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => send('\u001b[D')}><Text style={styles.keyText}>←</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => send('\u001b[C')}><Text style={styles.keyText}>→</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => sendArrow('up')}><Text style={styles.keyText}>↑</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => sendArrow('down')}><Text style={styles.keyText}>↓</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => sendArrow('left')}><Text style={styles.keyText}>←</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => sendArrow('right')}><Text style={styles.keyText}>→</Text></Pressable>
 							<Pressable style={styles.key} onPress={() => send('/')}><Text style={styles.keyText}>/</Text></Pressable>
 							<Pressable style={styles.key} onPress={() => send('|')}><Text style={styles.keyText}>|</Text></Pressable>
 						</ScrollView>
