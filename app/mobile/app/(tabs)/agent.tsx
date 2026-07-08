@@ -18,7 +18,7 @@ import { GlassComposer } from '../../src/components/glassComposer.js';
 import { ModelPill } from '../../src/components/modelPill.js';
 import { useAgentActions } from '../../src/hooks/useAgentActions.js';
 import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { colors } from '../../src/theme.js';
 
 /**
@@ -40,7 +40,7 @@ export default function AgentScreen() {
 	})));
 	const [input, setInput] = useState('');
 	const listRef = useRef<FlatList<ChatRow>>(null);
-	const insets = useSafeAreaInsets();
+	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
 
 	const terminals = (workspace?.terminals ?? []).filter(t =>
