@@ -315,9 +315,23 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		const x = Math.round((msg.nx ?? 0) * session.viewWidth);
 		const y = Math.round((msg.ny ?? 0) * session.viewHeight);
 		if (msg.kind === 'tap') {
-			// buttons:1 が無いと Chromium がクリックとして合成しないことがある（実測）
-			this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
-			this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 1, clickCount: 1 });
+			// タップは座標の正確さが命なので、キャッシュ済み寸法ではなく受信時点の
+			// ビューポート寸法を取り直してからディスパッチする（WebRTCミラー中は
+			// JPEGフレーム由来の寸法更新が止まり得る・リサイズ直後のズレも防ぐ）。
+			this.cdpCall(session, 'Page.getLayoutMetrics', {}, metricsResult => {
+				const metrics = metricsResult as { cssVisualViewport?: { clientWidth?: number; clientHeight?: number } } | undefined;
+				const w = Math.round(metrics?.cssVisualViewport?.clientWidth ?? 0);
+				const h = Math.round(metrics?.cssVisualViewport?.clientHeight ?? 0);
+				if (w > 0 && h > 0) {
+					session.viewWidth = w;
+					session.viewHeight = h;
+				}
+				const tapX = Math.round((msg.nx ?? 0) * session.viewWidth);
+				const tapY = Math.round((msg.ny ?? 0) * session.viewHeight);
+				// buttons:1 が無いと Chromium がクリックとして合成しないことがある（実測）
+				this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mousePressed', x: tapX, y: tapY, button: 'left', buttons: 1, clickCount: 1 });
+				this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x: tapX, y: tapY, button: 'left', buttons: 1, clickCount: 1 });
+			});
 		} else if (msg.kind === 'scroll') {
 			const deltaY = Math.round((msg.dy ?? 0) * session.viewHeight);
 			const deltaX = Math.round((msg.dx ?? 0) * session.viewWidth);
