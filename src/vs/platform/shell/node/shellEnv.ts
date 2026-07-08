@@ -67,7 +67,7 @@ export async function getResolvedShellEnv(configurationService: IConfigurationSe
 			unixShellEnvPromise = Promises.withAsyncBody<NodeJS.ProcessEnv>(async (resolve, reject) => {
 				const cts = new CancellationTokenSource();
 
-				let timeoutValue = 10000; // default to 10 seconds
+				let timeoutValue = 60000; // PARA-PATCH: default to 60 seconds (upstream: 10s). Heavy shell configs (nvm/mise etc.) often exceed 10s and a failure here breaks PATH-dependent features for the whole session
 				const configuredTimeoutValue = configurationService.getValue<unknown>('application.shellEnvironmentResolutionTimeout');
 				if (typeof configuredTimeoutValue === 'number') {
 					timeoutValue = clamp(configuredTimeoutValue, 1, 120) * 1000 /* convert from seconds */;
@@ -93,6 +93,11 @@ export async function getResolvedShellEnv(configurationService: IConfigurationSe
 					cts.dispose();
 				}
 			});
+
+			// PARA-PATCH: do not cache a failed resolution forever - clear the cache on failure so
+			// the next caller retries (e.g. a timeout on a cold start would otherwise break
+			// PATH-dependent features until the process is restarted)
+			unixShellEnvPromise.catch(() => { unixShellEnvPromise = undefined; });
 		}
 
 		return unixShellEnvPromise;

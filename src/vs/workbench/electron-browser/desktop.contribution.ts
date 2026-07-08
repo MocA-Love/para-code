@@ -146,7 +146,7 @@ import product from '../../platform/product/common/product.js';
 		'properties': {
 			'application.shellEnvironmentResolutionTimeout': {
 				'type': 'number',
-				'default': 10,
+				'default': 60, // PARA-PATCH: raised from 10 to match the changed fallback in shellEnv.ts (heavy shell configs often exceed 10s)
 				'minimum': 1,
 				'maximum': 120,
 				'included': !isWindows,

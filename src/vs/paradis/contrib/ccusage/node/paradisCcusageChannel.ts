@@ -92,12 +92,17 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	/** exec に渡す環境変数(process.env にログインシェル解決分をマージしたもの)。 */
 	private getExecEnv(): Promise<NodeJS.ProcessEnv> {
 		if (!this.resolvedShellEnvPromise) {
-			this.resolvedShellEnvPromise = getResolvedShellEnv(this.configurationService, this.logService, this.args, process.env)
+			const promise = getResolvedShellEnv(this.configurationService, this.logService, this.args, process.env)
 				.then(shellEnv => ({ ...process.env, ...shellEnv }))
 				.catch(error => {
 					this.logService.warn(`[ParadisCcusage] failed to resolve shell environment, falling back to inherited PATH: ${error instanceof Error ? error.message : error}`);
+					// 失敗(タイムアウト等)は永続キャッシュせず、次回 fetch で再解決を試みる
+					if (this.resolvedShellEnvPromise === promise) {
+						this.resolvedShellEnvPromise = undefined;
+					}
 					return { ...process.env };
 				});
+			this.resolvedShellEnvPromise = promise;
 		}
 		return this.resolvedShellEnvPromise;
 	}
@@ -257,7 +262,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		const names = isWindows ? ['ccusage.cmd', 'ccusage.exe', 'ccusage'] : ['ccusage'];
 		const candidateDirs = isWindows
 			? [path.join(home, 'AppData', 'Roaming', 'npm'), path.join(home, '.bun', 'bin')]
-			: [path.join(home, '.bun', 'bin'), path.join(home, '.local', 'bin'), path.join(home, '.deno', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
+			: [path.join(home, '.npm-global', 'bin'), path.join(home, '.bun', 'bin'), path.join(home, '.local', 'bin'), path.join(home, '.deno', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
 
 		// PATH 上にあればそれを使う(コマンド名のまま execFile に渡す)
 		for (const name of names) {
@@ -277,7 +282,25 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		}
 
 		this.logService.warn(`[ParadisCcusage] ccusage binary not found, falling back to 'npx -y ${NPX_PINNED_VERSION}' (fetches from the npm registry on first run)`);
-		this.resolved = { command: isWindows ? 'npx.cmd' : 'npx', prefixArgs: ['-y', NPX_PINNED_VERSION] };
+		// GUI 起動でシェル環境解決に失敗すると PATH に npx が居ないことがあるため、
+		// PATH 上で見つからない場合は候補ディレクトリから絶対パスで解決する
+		const npxNames = isWindows ? ['npx.cmd'] : ['npx'];
+		let npxCommand = npxNames[0];
+		if (!(await this.canExecute(npxCommand))) {
+			for (const dir of candidateDirs) {
+				for (const name of npxNames) {
+					const candidate = path.join(dir, name);
+					if (await this.fileExists(candidate)) {
+						npxCommand = candidate;
+						break;
+					}
+				}
+				if (path.isAbsolute(npxCommand)) {
+					break;
+				}
+			}
+		}
+		this.resolved = { command: npxCommand, prefixArgs: ['-y', NPX_PINNED_VERSION] };
 		return this.resolved;
 	}
 
