@@ -56,16 +56,12 @@ const NO_SERVER_MESSAGE =
 	`this tool, or simply continue working without this MCP server.`;
 
 // オフライン時の tools/list 応答に使うツール定義（shared process側の TOOLS と同一内容の複製。
-// このシムは vs/* を import できないためインラインで持つ）。
+// このシムは vs/* を import できないためインラインで持つ）。オンライン時はサーバーへ透過転送
+// されるため、内蔵chrome-devtools-mcp由来の動的ツールはここには載せない（オフラインでは元々使えない）。
 const LOCAL_TOOLS = [
 	{
 		name: 'get_shared_page',
 		description: 'Get the URL and title of the browser page currently shared with this terminal pane in Para Code. Returns an error message if no page is shared yet.',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'read_page',
-		description: 'Read the current content of the browser page shared with this terminal pane in Para Code, as an accessibility snapshot (includes element references, text and structure).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -82,7 +78,7 @@ const LOCAL_TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code. Point chrome-devtools-mcp (--browserUrl) or browser-use (CDP URL) at the returned httpBase to drive the browser page shared with this terminal pane.',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools are built into this MCP server and already target the page shared with this terminal pane.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 ] as const;

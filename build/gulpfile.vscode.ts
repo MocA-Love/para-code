@@ -118,6 +118,8 @@ const vscodeResourceIncludes = [
 	'out-build/vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs/**',
 	// PARA-PATCH: ship the vendored docx-preview + jszip runtime loaded by the Word (.docx) viewer webview
 	'out-build/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/**',
+	// PARA-PATCH: ship the vendored chrome-devtools-mcp spawned per-pane by the para-browser MCP server
+	'out-build/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**',
 
 	// Extensions
 	'out-build/vs/workbench/contrib/extensions/browser/media/{theme-icon.png,language-icon.svg}',

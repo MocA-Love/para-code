@@ -24,11 +24,12 @@ import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, paradisCountLiveBackgroundTasks } from './paradisAgentHookBus.js';
 import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
+import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
 
 /**
  * PlaywrightChannel（vs/platform/browserView/node/playwrightChannel.ts）の `call` と構造的に一致する
@@ -62,9 +63,6 @@ interface IJsonRpcRequest {
 	params?: unknown;
 }
 
-/** 全ペイン共通で使うPlaywrightセッションID（PlaywrightServiceはウィンドウ毎に分離済み）。 */
-const MCP_PLAYWRIGHT_SESSION_ID = 'paradis-agent-browser';
-
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 // allow-any-unicode-next-line
@@ -74,11 +72,6 @@ const TOOLS = [
 	{
 		name: 'get_shared_page',
 		description: 'Get the URL and title of the browser page currently shared with this terminal pane in Para Code. Returns an error message if no page is shared yet.',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
-	{
-		name: 'read_page',
-		description: 'Read the current content of the browser page shared with this terminal pane in Para Code, as an accessibility snapshot (includes element references, text and structure).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -95,10 +88,19 @@ const TOOLS = [
 	},
 	{
 		name: 'get_cdp_endpoint',
-		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code. Point chrome-devtools-mcp (--browserUrl) or browser-use (CDP URL) at the returned httpBase to drive the browser page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
+		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 ] as const;
+
+/** para-browser側の静的ツール名（chrome-devtools-mcp側で同名ツールが現れた場合に隠すための予約集合）。 */
+const RESERVED_TOOL_NAMES: ReadonlySet<string> = new Set(TOOLS.map(tool => tool.name));
+
+/**
+ * CDPゲートウェイのブラウザレベルWSエンドポイントのパスセグメント。ゲートウェイはこのIDを
+ * 検証しない（トークンは `?pane=` クエリで解決される）ため、内蔵プロキシ用の固定値でよい。
+ */
+const EMBEDDED_DEVTOOLS_WS_ID = 'paradis-embedded';
 
 /**
  * get_cdp_endpoint 応答に添える、CDPゲートウェイの制約ガイダンス（LLM向け・英語）。
@@ -128,12 +130,16 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _paneStatuses = new Map<string, { status: ParadisAgentStatus; changedAt: number }>();
 	private readonly _portFilePath: string;
 	private readonly _cdpGateway: ParadisCdpGateway;
+	/** vendored chrome-devtools-mcp をペイン毎の子プロセスとして管理するプロキシ。 */
+	private readonly _devtoolsProxy: ParadisDevtoolsMcpProxy;
 	private _httpServer: http.Server | undefined;
 	private _port: number | undefined;
 
 	constructor(
 		userDataPath: string,
-		private readonly playwrightInvoker: IParadisPlaywrightInvoker,
+		// ウィンドウ毎のPlaywrightServiceへの橋渡し。read_page廃止（chrome-devtools側の
+		// take_snapshot に一本化）以降は未使用だが、sharedProcessMain側の配線を安定させるため維持。
+		_playwrightInvoker: IParadisPlaywrightInvoker,
 		private readonly ipcServer: IPCServer<string>,
 		private readonly mainProcessService: IMainProcessService,
 		private readonly logService: ILogService,
@@ -160,6 +166,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			new ParadisCdpUpstream(userDataPath, logService),
 			logService,
 		));
+		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService));
 		// ウィンドウ切断（リロード・クローズ）時はページ共有（tracked pages）も失われるため、
 		// そのウィンドウ由来のバインディングをまとめて破棄して整合させる。
 		this._register(ipcServer.onDidRemoveConnection(connection => this.removeBindingsForWindow(connection.ctx)));
@@ -313,6 +320,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneStatuses.delete(token);
 		this._seenTokens.delete(token);
 		this._cdpGateway.retireToken(token);
+		this._devtoolsProxy.retire(token);
 	}
 
 	/**
@@ -650,12 +658,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 
 		const shimArg = `"${request.shimPath}"`;
-		// browserUrlはシングルクォートで囲み、`${VAR:-default}` をClaude Codeが接続時に展開できる
-		// 文字列としてそのまま登録する（ログインシェルのシングルクォートは中身を展開しない）。
-		const cdpArg = `--browserUrl='\${${PARADIS_CDP_URL_ENV_VAR}:-${request.cdpUrl}}'`;
+		// chrome-devtools系ツールはpara-browserサーバーに内蔵済み（vendored chrome-devtools-mcpを
+		// ペイン毎の子プロセスとしてプロキシ）のため、登録するのは para-browser 1エントリのみ。
 		const commands: { readonly server: string; readonly command: string }[] = [
 			{ server: 'para-browser', command: `claude mcp add -s user para-browser -- node ${shimArg}` },
-			{ server: 'chrome-devtools', command: `claude mcp add -s user chrome-devtools -- npx -y chrome-devtools-mcp@latest ${cdpArg}` },
 		];
 
 		const servers: IParadisMcpSetupServerResult[] = [];
@@ -686,6 +692,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const hasSection = (name: string) => existing.split(/\r?\n/).some(line => line.trim() === `[mcp_servers.${name}]`);
 
 		// TOML basic string ではバックスラッシュがエスケープ扱いになるため、Windowsパスを考慮して二重化する。
+		// chrome-devtools系ツールはpara-browserサーバーに内蔵済みのため、セクションは para-browser のみ。
 		const shimPathToml = request.shimPath.replace(/\\/g, '\\\\');
 		const sections: { readonly server: string; readonly text: string }[] = [
 			{
@@ -695,15 +702,6 @@ export class ParadisAgentBrowserService extends Disposable {
 					'command = "node"',
 					`args = ["${shimPathToml}"]`,
 					`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}"]`,
-				].join('\n'),
-			},
-			{
-				server: 'chrome-devtools',
-				text: [
-					'[mcp_servers.chrome-devtools]',
-					'command = "npx"',
-					`args = ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "${request.cdpUrl}"]`,
-					`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}", "${PARADIS_CDP_URL_ENV_VAR}"]`,
 				].join('\n'),
 			},
 		];
@@ -802,7 +800,9 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'ping':
 				return {};
 			case 'tools/list':
-				return { tools: TOOLS };
+				// para固有ツール＋内蔵chrome-devtools-mcpのツール（子プロセスが起動できない場合は
+				// para固有ツールのみに縮退し、一覧自体は失敗させない）
+				return { tools: [...TOOLS, ...await this._listDevtoolsTools(token)] };
 			case 'tools/call':
 				return this._callTool(token, rpc.params as { name?: unknown; arguments?: unknown } | undefined);
 			default:
@@ -812,8 +812,12 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	private async _callTool(token: string, params: { name?: unknown; arguments?: unknown } | undefined): Promise<unknown> {
 		const name = typeof params?.name === 'string' ? params.name : undefined;
-		if (!name || !TOOLS.some(t => t.name === name)) {
+		if (!name) {
 			throw new JsonRpcMethodError(-32602, `Unknown tool: ${String(name)}`);
+		}
+		if (!TOOLS.some(t => t.name === name)) {
+			// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
+			return this._callDevtoolsTool(token, name, params?.arguments);
 		}
 
 		if (name === 'preview_file') {
@@ -833,7 +837,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._toolText(JSON.stringify({
 				httpBase,
 				// allow-any-unicode-next-line
-				note: 'chrome-devtools-mcp の --browserUrl や browser-use の CDP URL にこの httpBase を指定してください。操作できるのはこのターミナルペインに共有されたページのみです。',
+				note: 'browser-use など外部の生CDPクライアントのCDP URLにこの httpBase を指定してください。chrome-devtools系ツール（take_snapshot / click / navigate_page 等）はこのMCPサーバーに内蔵済みなので、通常このエンドポイントを直接使う必要はありません。操作できるのはこのターミナルペインに共有されたページのみです。',
 				limitations: CDP_LIMITATIONS_NOTE,
 				boundPage: boundEntry ? { url: boundEntry.pageInfo.url, title: boundEntry.pageInfo.title } : null,
 				...(boundEntry ? {} : { hint: NOT_BOUND_MESSAGE }),
@@ -848,18 +852,54 @@ export class ParadisAgentBrowserService extends Disposable {
 		switch (name) {
 			case 'get_shared_page':
 				return this._toolText(JSON.stringify({ url: binding.pageInfo.url, title: binding.pageInfo.title, pageId: binding.pageId }, null, 2));
-			case 'read_page': {
-				try {
-					const summary = await this.playwrightInvoker.call<string>(binding.windowCtx, 'getSummary', [MCP_PLAYWRIGHT_SESSION_ID, binding.pageId]);
-					return this._toolText(summary);
-				} catch (error) {
-					// allow-any-unicode-next-line
-					return this._toolError(`共有ページの読み取りに失敗しました（ページやウィンドウが閉じられた可能性があります）: ${error instanceof Error ? error.message : String(error)}`);
-				}
-			}
 			default:
 				throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
 		}
+	}
+
+	/**
+	 * 内蔵chrome-devtools-mcp（ペイン毎の子プロセス）のツール一覧を返す。
+	 * 起動や応答に失敗した場合は空配列に縮退する（para固有ツールの提供は妨げない）。
+	 */
+	private async _listDevtoolsTools(token: string): Promise<IParadisProxiedTool[]> {
+		const wsEndpoint = this._devtoolsWsEndpoint(token);
+		if (!wsEndpoint) {
+			return [];
+		}
+		try {
+			return await this._devtoolsProxy.listTools(token, wsEndpoint);
+		} catch (error) {
+			this.logService.warn('[ParadisAgentBrowser] Embedded chrome-devtools-mcp is unavailable; serving para-browser tools only', error);
+			return [];
+		}
+	}
+
+	/** ツール呼び出しを内蔵chrome-devtools-mcpへ転送する（転送対象外の名前は -32602）。 */
+	private async _callDevtoolsTool(token: string, name: string, args: unknown): Promise<unknown> {
+		const wsEndpoint = this._devtoolsWsEndpoint(token);
+		if (wsEndpoint && await this._devtoolsProxy.isProxiedTool(token, wsEndpoint, name)) {
+			// DevToolsツールは全て「ペインに共有されたページ」前提。未共有なら既存ツールと
+			// 同じ案内文を返す（子プロセス側の英語エラーより行動可能なガイダンスを優先）。
+			if (!this._bindings.get(token)) {
+				return this._toolError(NOT_BOUND_MESSAGE);
+			}
+			const result = await this._devtoolsProxy.tryCallTool(token, wsEndpoint, name, args);
+			if (result !== undefined) {
+				return result;
+			}
+		}
+		throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
+	}
+
+	/**
+	 * 内蔵chrome-devtools-mcp子プロセスが接続するCDPゲートウェイのWSエンドポイント。
+	 * `?pane=` クエリはゲートウェイのトークン解決の最優先経路（全OSで決定的）。
+	 */
+	private _devtoolsWsEndpoint(token: string): string | undefined {
+		if (this._port === undefined) {
+			return undefined;
+		}
+		return `ws://127.0.0.1:${this._port}/cdp/devtools/browser/${EMBEDDED_DEVTOOLS_WS_ID}?pane=${encodeURIComponent(token)}`;
 	}
 
 	/**

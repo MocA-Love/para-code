@@ -11,7 +11,7 @@
 // （挙動の二重実装を避けるための共通化モジュール）。
 
 import { FileAccess } from '../../../../base/common/network.js';
-import { PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 
 /** stdioシム（毎起動時にポートファイルから実ポートを解決する）の絶対パス。 */
 export function getParadisShimPath(): string {
@@ -31,19 +31,19 @@ export function getParadisMcpEndpointForToken(token: string): string {
 /**
  * Claude Code向けセットアップスニペット: シェルにそのまま貼れる純粋なコマンドのみ
  * （コメント行はzshの既定で interactivecomments が無効だとエラーになるため一切含めない）。
- * `${VAR:-default}` はClaude Codeが接続時に展開する（Para Codeペイン外では固定ポートに
- * フォールバックするので設定パースが壊れない）。シェルの事前展開を防ぐシングルクォート必須。
+ *
+ * chrome-devtools系ツール（take_snapshot / click / navigate_page 等）は para-browser サーバーに
+ * 内蔵済み（vendored chrome-devtools-mcp をペイン毎の子プロセスとしてプロキシ）のため、
+ * 登録するのは para-browser 1エントリのみ。
  *
  * 注記（CDPゲートウェイの制約）: ゲートウェイが見せるのは「このペインに共有された1ページ」
- * のみで、chrome-devtools-mcp の new_page / close_page / resize_page は非対応
- * （ページの開閉はPara Code UI側で行い、ビューポート変更は emulate ツールを使う）。
- * 詳細は接続後に get_cdp_endpoint ツールの応答（limitations）でLLM自身にも伝わる。
+ * のみで、chrome-devtools系の new_page / close_page / resize_page は非対応
+ * （ページの開閉はPara Code UI側で行い、ビューポート変更は emulate ツールを使う。
+ * 内蔵プロキシはこれらを一覧から除外して提示する）。
  */
 export function getParadisClaudeSetupSnippet(): string {
-	const cdpUrl = getParadisCdpUrl();
 	return [
 		`claude mcp add -s user para-browser -- node "${getParadisShimPath()}"`,
-		`claude mcp add -s user chrome-devtools -- npx -y chrome-devtools-mcp@latest --browserUrl='\${${PARADIS_CDP_URL_ENV_VAR}:-${cdpUrl}}'`,
 		'',
 	].join('\n');
 }
@@ -55,19 +55,13 @@ export function getParadisClaudeSetupSnippet(): string {
 export function getParadisCodexSetupSnippet(): string {
 	// TOML basic string ではバックスラッシュがエスケープ扱いになるため、Windowsパスを考慮して二重化する
 	const shimPathToml = getParadisShimPath().replace(/\\/g, '\\\\');
-	const cdpUrl = getParadisCdpUrl();
 	return [
 		'# Add to ~/.codex/config.toml',
-		'# Note: the Para Code CDP gateway exposes a single shared page; new_page / close_page / resize_page are not supported.',
+		'# Note: chrome-devtools tools are built into the para-browser server (no separate chrome-devtools entry needed).',
 		'[mcp_servers.para-browser]',
 		'command = "node"',
 		`args = ["${shimPathToml}"]`,
 		`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}"]`,
-		'',
-		'[mcp_servers.chrome-devtools]',
-		'command = "npx"',
-		`args = ["-y", "chrome-devtools-mcp@latest", "--browserUrl", "${cdpUrl}"]`,
-		`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}", "${PARADIS_CDP_URL_ENV_VAR}"]`,
 		'',
 	].join('\n');
 }
