@@ -469,8 +469,13 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 			return []; // developer / system プロンプトは出さない
 		}
 		const text = flattenContent(payload['content']);
-		// Codexはuserメッセージとして環境コンテキストXMLを注入するため表示から除く
-		if (text.trim().length === 0 || /^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT)/.test(text.trim())) {
+		// Codexはuserメッセージとして環境コンテキスト/プロジェクト指示を注入するため表示から除く。
+		// 旧CLI(0.4x): <environment_context> / <user_instructions>
+		// 新CLI(0.80+): 「# AGENTS.md instructions for <path>」見出し＋<INSTRUCTIONS>ラッパー
+		const trimmedText = text.trim();
+		if (trimmedText.length === 0
+			|| /^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(trimmedText)
+			|| trimmedText.startsWith('# AGENTS.md instructions for')) {
 			return [];
 		}
 		out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
