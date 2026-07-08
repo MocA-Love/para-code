@@ -33,12 +33,30 @@ interface IWebrtcSignal {
 	targetId?: string;
 	sdp?: string;
 	candidate?: RTCIceCandidateInit;
+	/**
+	 * セッション識別子（モバイル側の startWebrtcMirror 1回ごとに一意）。
+	 * モバイルの確立フェーズは長い（TURN取得＋offer応答のawait）ため、素早いターゲット
+	 * 切替では新旧セッションが過渡的に共存する。古いセッションのcleanupが送る stop/ice を
+	 * これで識別して弾き、現行ピアを巻き添えにしない。旧クライアントは未設定（=常に受理）。
+	 */
+	sid?: string;
 }
 
 interface IPeerState {
 	pc: RTCPeerConnection;
 	stream: MediaStream;
+	/** このピアを張ったofferのセッションID（旧クライアントはundefined）。 */
+	sid: string | undefined;
+	/** setRemoteDescription 完了済みか（完了前に届いたICEは pendingIce へ溜める）。 */
+	remoteSet: boolean;
+	/** connectionState==='disconnected' の復帰猶予タイマー。 */
+	disconnectTimer: ReturnType<typeof setTimeout> | undefined;
 }
+
+/** answer前ICEキューの上限（暴走対策。通常のトリクルは数個〜十数個）。 */
+const MAX_PENDING_ICE = 64;
+/** disconnected からの復帰を待つ猶予。過ぎたらキャプチャごと解放（モバイルはJPEGへ落ちている）。 */
+const DISCONNECT_GRACE_MS = 10_000;
 
 const STUN_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.cloudflare.com:3478' }];
 
@@ -55,6 +73,15 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 	 * ピア/キャプチャのリーク防止）。
 	 */
 	private readonly offerGen = new Map<string, number>();
+	/**
+	 * answer（setRemoteDescription）前に届いたモバイルのICE candidateの一時キュー。
+	 * PC側はarm往復＋getDisplayMediaでピア生成が数百ms遅れるのに対し、モバイルは
+	 * offer送信直後からトリクルするため、キュー無しでは先行candidateを取りこぼす
+	 * （peer-reflexive頼みになり、NAT構成次第で確立失敗→JPEG降格の温床になる）。
+	 */
+	private readonly pendingIce = new Map<string, { sid: string | undefined; candidates: RTCIceCandidateInit[] }>();
+	/** mobileId ごとの現在有効なセッションID（直近offerのsid）。stale な ice/stop を弾く。 */
+	private readonly currentSid = new Map<string, string | undefined>();
 	private readonly decoder = new TextDecoder();
 	private readonly encoder = new TextEncoder();
 
@@ -80,13 +107,38 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 			return;
 		}
 		if (msg.t === 'webrtc-offer' && typeof msg.sdp === 'string') {
-			void this.handleOffer(mobileId, msg.id, msg.sdp);
+			this.currentSid.set(mobileId, msg.sid);
+			void this.handleOffer(mobileId, msg.id, msg.sdp, msg.sid);
 		} else if (msg.t === 'webrtc-ice' && msg.candidate) {
+			if (this.isStaleSid(mobileId, msg.sid)) {
+				return; // 破棄済み旧セッションのICE
+			}
 			const peer = this.peers.get(mobileId);
-			peer?.pc.addIceCandidate(msg.candidate).catch(err => this.logService.warn('[paradisWebrtc] addIceCandidate failed', err));
+			if (peer && peer.remoteSet) {
+				peer.pc.addIceCandidate(msg.candidate).catch(err => this.logService.warn('[paradisWebrtc] addIceCandidate failed', err));
+			} else {
+				// ピア生成前／answer設定前に届いた分。setRemoteDescription後にまとめて適用する
+				let queue = this.pendingIce.get(mobileId);
+				if (!queue || queue.sid !== msg.sid) {
+					queue = { sid: msg.sid, candidates: [] };
+					this.pendingIce.set(mobileId, queue);
+				}
+				if (queue.candidates.length < MAX_PENDING_ICE) {
+					queue.candidates.push(msg.candidate);
+				}
+			}
 		} else if (msg.t === 'webrtc-stop') {
+			if (this.isStaleSid(mobileId, msg.sid)) {
+				return; // 旧セッションのcleanupによるstop。現行ピアを巻き添えにしない
+			}
 			this.stopPeer(mobileId);
 		}
+	}
+
+	/** 現行セッション（直近offer）と異なるsidか。どちらか未設定なら互換のため受理する。 */
+	private isStaleSid(mobileId: string, sid: string | undefined): boolean {
+		const current = this.currentSid.get(mobileId);
+		return sid !== undefined && current !== undefined && sid !== current;
 	}
 
 	/** すべてのピアを破棄する（モバイル全切断・dispose 時）。 */
@@ -96,7 +148,7 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 		}
 	}
 
-	private async handleOffer(mobileId: string, id: string | undefined, sdp: string): Promise<void> {
+	private async handleOffer(mobileId: string, id: string | undefined, sdp: string, sid: string | undefined): Promise<void> {
 		// 既存ピアは作り直す（モバイル側の再ネゴシエーション起点）
 		this.stopPeer(mobileId);
 		const gen = (this.offerGen.get(mobileId) ?? 0) + 1;
@@ -127,17 +179,32 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 		}
 
 		const pc = new RTCPeerConnection({ iceServers: STUN_SERVERS });
-		this.peers.set(mobileId, { pc, stream });
+		const peer: IPeerState = { pc, stream, sid, remoteSet: false, disconnectTimer: undefined };
+		this.peers.set(mobileId, peer);
 		pc.addTrack(track, stream);
 
 		pc.onicecandidate = e => {
 			if (e.candidate) {
-				this.send(mobileId, { t: 'webrtc-ice', candidate: e.candidate.toJSON() });
+				this.send(mobileId, { t: 'webrtc-ice', candidate: e.candidate.toJSON(), sid });
 			}
 		};
 		pc.onconnectionstatechange = () => {
 			if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
 				this.stopPeer(mobileId);
+			} else if (pc.connectionState === 'disconnected') {
+				// モバイルのオフライン化等。復帰しなければキャプチャごと解放する（明示stopが
+				// 届かない切断ではこれが唯一の解放経路。failed到達は数十秒かかることがある）
+				if (this.peers.get(mobileId) === peer && peer.disconnectTimer === undefined) {
+					peer.disconnectTimer = setTimeout(() => {
+						peer.disconnectTimer = undefined;
+						if (this.peers.get(mobileId) === peer && pc.connectionState !== 'connected') {
+							this.stopPeer(mobileId);
+						}
+					}, DISCONNECT_GRACE_MS);
+				}
+			} else if (pc.connectionState === 'connected' && peer.disconnectTimer !== undefined) {
+				clearTimeout(peer.disconnectTimer);
+				peer.disconnectTimer = undefined;
 			}
 		};
 		// 対象ビューが閉じられるとトラックが終了する → ピアも畳む（モバイルはJPEGへフォールバック）
@@ -145,12 +212,21 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 
 		try {
 			await pc.setRemoteDescription({ type: 'offer', sdp });
+			peer.remoteSet = true;
+			// answer前（arm往復＋getDisplayMediaの間）に届いていたICEをまとめて適用する
+			const queued = this.pendingIce.get(mobileId);
+			if (queued && queued.sid === sid) {
+				this.pendingIce.delete(mobileId);
+				for (const candidate of queued.candidates) {
+					pc.addIceCandidate(candidate).catch(err => this.logService.warn('[paradisWebrtc] queued addIceCandidate failed', err));
+				}
+			}
 			const answer = await pc.createAnswer();
 			await pc.setLocalDescription(answer);
-			this.send(mobileId, { t: 'webrtc-answer', id, sdp: answer.sdp });
+			this.send(mobileId, { t: 'webrtc-answer', id, sdp: answer.sdp, sid });
 		} catch (err) {
 			this.logService.warn('[paradisWebrtc] negotiation failed', err);
-			this.send(mobileId, { t: 'webrtc-error', id, error: String(err instanceof Error ? err.message : err) });
+			this.send(mobileId, { t: 'webrtc-error', id, error: String(err instanceof Error ? err.message : err), sid });
 			this.stopPeer(mobileId);
 		}
 	}
@@ -158,11 +234,16 @@ export class ParadisMobileWebrtcStreamer extends Disposable {
 	private stopPeer(mobileId: string): void {
 		// 進行中(handleOfferのawait中)の古い offer も無効化する
 		this.offerGen.set(mobileId, (this.offerGen.get(mobileId) ?? 0) + 1);
+		this.pendingIce.delete(mobileId);
 		const peer = this.peers.get(mobileId);
 		if (!peer) {
 			return;
 		}
 		this.peers.delete(mobileId);
+		if (peer.disconnectTimer !== undefined) {
+			clearTimeout(peer.disconnectTimer);
+			peer.disconnectTimer = undefined;
+		}
 		try {
 			peer.pc.onicecandidate = null;
 			peer.pc.onconnectionstatechange = null;

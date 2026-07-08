@@ -61,6 +61,8 @@ export interface WebrtcMirrorSession {
 
 const STUN_SERVERS = [{ urls: 'stun:stun.cloudflare.com:3478' }];
 const CONNECT_TIMEOUT_MS = 10_000;
+/** disconnected からの自然復帰を待つ猶予。過ぎたら畳んでJPEGへ（failed/closedは即時）。 */
+const DISCONNECT_GRACE_MS = 5_000;
 
 /**
  * 指定ターゲットの WebRTC ミラーを開始する。確立できなければ throw
@@ -72,22 +74,36 @@ export async function startWebrtcMirror(targetId: string): Promise<WebrtcMirrorS
 		throw new Error('webrtc unavailable in this build');
 	}
 	const store = useAppStore.getState();
+	// セッション識別子。確立フェーズが長い（TURN取得＋offer応答のawait）ため、素早い切替では
+	// 新旧セッションが過渡的に共存する。全シグナリングに付与し、PC側は stale な stop/ice を弾き、
+	// store側は別セッション宛のICEを現行ハンドラへ流さない（ハンドラ解除も自分の分のみ）。
+	const sid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 	// TURN資格情報（対称NAT越え用）。リレー側が未設定なら空＝STUNのみ。
 	const turnServers = await store.fetchTurnIceServers().catch(() => []);
 	const pc = new mod.RTCPeerConnection({ iceServers: [...STUN_SERVERS, ...turnServers] });
 	let closed = false;
 	let closedCb: (() => void) | undefined;
+	let connectTimer: ReturnType<typeof setTimeout> | undefined;
+	let disconnectGraceTimer: ReturnType<typeof setTimeout> | undefined;
 	const cleanup = (notifyPc: boolean) => {
 		if (closed) {
 			return;
 		}
 		closed = true;
-		store.setWebrtcIceHandler(undefined);
+		if (connectTimer !== undefined) {
+			clearTimeout(connectTimer); // 確立途中の失敗でも10sタイマーを残さない（放置Promiseのreject防止）
+			connectTimer = undefined;
+		}
+		if (disconnectGraceTimer !== undefined) {
+			clearTimeout(disconnectGraceTimer);
+			disconnectGraceTimer = undefined;
+		}
+		store.clearWebrtcIceHandler(sid);
 		try {
 			pc.close();
 		} catch { /* ignore */ }
 		if (notifyPc) {
-			store.webrtcStop();
+			store.webrtcStop(sid);
 		}
 		closedCb?.();
 	};
@@ -99,7 +115,7 @@ export async function startWebrtcMirror(targetId: string): Promise<WebrtcMirrorS
 		// とは限らないため、remoteDescription 設定前は自前で溜める）
 		let remoteSet = false;
 		const pendingIce: object[] = [];
-		store.setWebrtcIceHandler(candidate => {
+		store.setWebrtcIceHandler(sid, candidate => {
 			if (remoteSet) {
 				pc.addIceCandidate(candidate).catch(() => { /* 無効なcandidateは無視 */ });
 			} else {
@@ -109,17 +125,20 @@ export async function startWebrtcMirror(targetId: string): Promise<WebrtcMirrorS
 		// mobile→PC の ICE
 		(pc as unknown as { onicecandidate: ((e: { candidate?: { toJSON(): object } | null }) => void) | null }).onicecandidate = e => {
 			if (e.candidate) {
-				useAppStore.getState().webrtcSendIce(e.candidate.toJSON());
+				useAppStore.getState().webrtcSendIce(e.candidate.toJSON(), sid);
 			}
 		};
 
 		// ストリーム受信を待つPromise（track イベント）
 		const streamPromise = new Promise<{ toURL(): string }>((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error('webrtc connect timeout')), CONNECT_TIMEOUT_MS);
+			connectTimer = setTimeout(() => reject(new Error('webrtc connect timeout')), CONNECT_TIMEOUT_MS);
 			(pc as unknown as { ontrack: ((e: { streams: { toURL(): string }[] }) => void) | null }).ontrack = e => {
 				const stream = e.streams[0];
 				if (stream) {
-					clearTimeout(timer);
+					if (connectTimer !== undefined) {
+						clearTimeout(connectTimer);
+						connectTimer = undefined;
+					}
 					resolve(stream);
 				}
 			};
@@ -130,7 +149,7 @@ export async function startWebrtcMirror(targetId: string): Promise<WebrtcMirrorS
 		if (!offer.sdp) {
 			throw new Error('empty offer sdp');
 		}
-		const answer = await store.webrtcOffer(targetId, offer.sdp);
+		const answer = await store.webrtcOffer(targetId, offer.sdp, sid);
 		if (!answer.sdp) {
 			throw new Error('empty answer sdp');
 		}
@@ -143,8 +162,19 @@ export async function startWebrtcMirror(targetId: string): Promise<WebrtcMirrorS
 		const stream = await streamPromise;
 
 		(pc as unknown as { onconnectionstatechange: (() => void) | null }).onconnectionstatechange = () => {
-			if (pc.connectionState === 'failed' || pc.connectionState === 'closed' || pc.connectionState === 'disconnected') {
+			if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
 				cleanup(false);
+			} else if (pc.connectionState === 'disconnected') {
+				// disconnected は一時的で自然復帰しうる。即畳まず猶予を置き、復帰しなければJPEGへ
+				disconnectGraceTimer ??= setTimeout(() => {
+					disconnectGraceTimer = undefined;
+					if (pc.connectionState !== 'connected') {
+						cleanup(false);
+					}
+				}, DISCONNECT_GRACE_MS);
+			} else if (pc.connectionState === 'connected' && disconnectGraceTimer !== undefined) {
+				clearTimeout(disconnectGraceTimer);
+				disconnectGraceTimer = undefined;
 			}
 		};
 

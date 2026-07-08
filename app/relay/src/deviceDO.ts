@@ -41,10 +41,16 @@ const PAIRING_TTL_MS = 5 * 60 * 1000;
 // APNsのペイロード上限は4KB。base64url暗号文はそのまま `e` に載るため、余裕をみて上限を設ける。
 const MAX_PUSH_PAYLOAD_BYTES = 3800;
 
+/** TURN資格情報発行のレート制限（デバイスDO単位、スライディングウィンドウ）。 */
+const TURN_RATE_WINDOW_MS = 60 * 1000;
+const TURN_RATE_MAX_PER_WINDOW = 6;
+
 export class DeviceDO implements DurableObject {
 	private readonly sql: SqlStorage;
 	// ES256 JWTのメモリキャッシュ（apns.ts が45分間再利用する）。
 	private readonly apnsJwtCache: ApnsJwtCache = {};
+	/** TURN資格情報の発行時刻（レート制限用。インメモリで十分、詳細は turnCredentials 参照）。 */
+	private turnIssueTimes: number[] = [];
 
 	constructor(private readonly state: DurableObjectState, private readonly env: unknown) {
 		this.sql = state.storage.sql;
@@ -213,6 +219,16 @@ export class DeviceDO implements DurableObject {
 		if (!record || token === null || !timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
 			return new Response('unauthorized', { status: 401 });
 		}
+		// デバイス単位の発行レート制限。1リクエストごとにCloudflare TURN APIへの外部fetchが
+		// 走るため、暴走クライアントによるクォータ消費を抑える（インメモリで十分:
+		// DOのハイバネーションでリセットされても制限が緩む方向にしか倒れない）。
+		// 429を受けたモバイル側は非okとして空のiceServers扱い＝STUNのみで続行する。
+		const now = Date.now();
+		this.turnIssueTimes = this.turnIssueTimes.filter(t => now - t < TURN_RATE_WINDOW_MS);
+		if (this.turnIssueTimes.length >= TURN_RATE_MAX_PER_WINDOW) {
+			return Response.json({ error: 'rate limited' }, { status: 429 });
+		}
+		this.turnIssueTimes.push(now);
 		const env = this.env as { TURN_KEY_ID?: string; TURN_KEY_API_TOKEN?: string };
 		if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) {
 			return Response.json({ iceServers: [] });
