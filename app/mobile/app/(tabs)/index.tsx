@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useRouter } from 'expo-router';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -35,7 +35,7 @@ export default function HomeScreen() {
 	if (ready && !paired) {
 		return (
 			<View style={styles.center}>
-				<View style={styles.appIcon}><Ionicons name="phone-portrait-outline" size={32} color="#fff" /></View>
+				<Image source={require('../../assets/pairing-logo.png')} style={styles.appIcon} resizeMode="contain" />
 				<Text style={styles.title}>Para Code と接続</Text>
 				<Text style={styles.dim}>PC側のPara Codeで「モバイルデバイスを接続」を実行し、表示されたQRコードを読み取ると、別ネットワークからでも安全に遠隔操作できます。</Text>
 				<Pressable style={styles.primaryBtn} onPress={() => router.push('/pair')}>
@@ -174,7 +174,7 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	content: { padding: 16, paddingBottom: 32 },
 	center: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 },
-	appIcon: { width: 72, height: 72, borderRadius: 18, backgroundColor: colors.accent2, alignItems: 'center', justifyContent: 'center' },
+	appIcon: { width: 72, height: 72 },
 	title: { color: '#fff', fontSize: 22, fontWeight: '700' },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', lineHeight: 20 },
 	dimSmall: { color: colors.textDim, fontSize: 12, marginTop: 4 },
