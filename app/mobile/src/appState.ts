@@ -63,7 +63,13 @@ interface AppState extends StoreState {
 	browserStart(targetId: string): Promise<void>;
 	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
 	browserStop(keepFrame?: boolean): Promise<void>;
-	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text'; nx?: number; ny?: number; dy?: number; text?: string }): void;
+	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate'; nx?: number; ny?: number; dy?: number; dx?: number; text?: string; url?: string }): void;
+	/** WebRTCミラーのシグナリング（webrtcMirror.ts が使う）。 */
+	webrtcOffer(targetId: string, sdp: string): Promise<{ sdp?: string }>;
+	webrtcSendIce(candidate: object): void;
+	webrtcStop(): void;
+	setWebrtcIceHandler(handler: ((candidate: object) => void) | undefined): void;
+	fetchTurnIceServers(): Promise<object[]>;
 }
 
 let identity: Identity | undefined;
@@ -332,5 +338,28 @@ export const useAppStore = create<AppState>(set => ({
 
 	browserInput(input) {
 		controller?.browserInput(input);
+	},
+
+	webrtcOffer(targetId, sdp) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.webrtcOffer(targetId, sdp);
+	},
+
+	webrtcSendIce(candidate) {
+		controller?.webrtcSendIce(candidate);
+	},
+
+	webrtcStop() {
+		controller?.webrtcStop();
+	},
+
+	setWebrtcIceHandler(handler) {
+		if (controller) {
+			controller.webrtcIceHandler = handler;
+		}
+	},
+
+	fetchTurnIceServers() {
+		return controller?.fetchTurnIceServers() ?? Promise.resolve([]);
 	},
 }));

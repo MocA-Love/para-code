@@ -227,7 +227,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	constructor(
 		private readonly userDataPath: string,
 		private readonly encryptionService: IEncryptionService,
-		cdpFrames: IParadisCdpFrameSubscription | undefined,
+		private readonly cdpFrames: IParadisCdpFrameSubscription | undefined,
 		private readonly logService: ILogService,
 	) {
 		super();
@@ -710,6 +710,22 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						return;
 					}
 					if (frame.ch === Channels.Browser) {
+						// WebRTCシグナリング（t: 'webrtc-*'）は renderer のストリーマが処理する
+						// （WebRTCスタックはrendererにしか無い）。offer は getDisplayMedia が
+						// 対象ビュー単体を返すよう electron-main を先に arm してから転送する。
+						const webrtc = this.peekWebrtcSignal(frame.payload.buffer);
+						if (webrtc !== undefined) {
+							const forward = () => this._onInboundFrame.fire([frame.ch, frame.ws, frame.seq, frame.payload, frame.mobileId]);
+							if (webrtc.t === 'webrtc-offer' && typeof webrtc.targetId === 'string' && webrtc.targetId.length > 0 && this.cdpFrames) {
+								this.cdpFrames.armMirrorCapture(webrtc.targetId).then(forward, (err: unknown) => {
+									this.logService.warn('[paradisMobileRelay] webrtc arm failed', err);
+									forward(); // arm失敗でも転送はする（rendererが失敗応答を返せるように）
+								});
+							} else {
+								forward();
+							}
+							return;
+						}
 						const respond = (payload: Uint8Array) => {
 							const s = this.sessions.get(idStr);
 							if (s?.isOnline) {
@@ -730,6 +746,20 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (session.isOnline !== wasOnline) {
 			this._onDidChangeStatus.fire(this.snapshot());
 		}
+	}
+
+	/**
+	 * browser チャネルのペイロードが WebRTC シグナリング（t: 'webrtc-*'）なら
+	 * そのJSONを返す。違えば undefined（既存の browserMirror が処理する）。
+	 */
+	private peekWebrtcSignal(payload: Uint8Array): { t: string; targetId?: unknown } | undefined {
+		try {
+			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: unknown; targetId?: unknown };
+			if (typeof msg.t === 'string' && msg.t.startsWith('webrtc-')) {
+				return msg as { t: string; targetId?: unknown };
+			}
+		} catch { /* JSONでないペイロードは既存処理へ */ }
+		return undefined;
 	}
 
 	private sendBinaryToMobile(mobileId: Uint8Array, sealed: Uint8Array): void {

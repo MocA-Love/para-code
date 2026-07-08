@@ -16,6 +16,7 @@ import { encodeBase64 } from '../../../../base/common/buffer.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { IParadisCdpFrameEvent, IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
+import { paradisArmMirrorCapture } from '../../browserMirror/electron-main/paradisBrowserMirrorCapture.js';
 
 /** フレームの最小送信間隔（toJPEG は同期でそれなりに重いため、ペイント毎=最大60fpsを間引く）。 */
 const FRAME_MIN_INTERVAL_MS = 150;
@@ -75,6 +76,16 @@ export class ParadisCdpTargetService {
 		this.frameSubs.set(targetId, state);
 		wc.once('destroyed', state.destroyedListener);
 		return true;
+	}
+
+	/**
+	 * WebRTCミラー用: 次の1回の getDisplayMedia が指定targetIdのWebContentsView単体を
+	 * キャプチャするよう arm する（one-shot、TTL付き）。実体は
+	 * paradisBrowserMirrorCapture.ts のモジュール状態（app.ts の
+	 * setDisplayMediaRequestHandler が paradisResolveMirrorCaptureFrame() で消費する）。
+	 */
+	async armMirrorCapture(targetId: string): Promise<void> {
+		paradisArmMirrorCapture(targetId);
 	}
 
 	/** 購読の参照を1つ返す。最後の参照が消えたら endFrameSubscription する。 */

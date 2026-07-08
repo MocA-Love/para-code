@@ -29,12 +29,15 @@ type BrowserInbound =
 	| { t: 'start'; id: string; targetId: string }
 	| { t: 'stop'; id: string }
 	| {
-		t: 'input'; kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text';
+		t: 'input'; kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate';
 		/** tap/scroll: 直近フレームに対する正規化座標(0..1)。 */
 		nx?: number; ny?: number;
-		/** scroll: 正規化スクロール量（正=下へ）。 */
+		/** scroll: 正規化スクロール量（dy: 正=下へ、dx: 正=右へ）。 */
 		dy?: number;
+		dx?: number;
 		text?: string;
+		/** navigate: 遷移先URL（http/httpsのみ受け付ける）。 */
+		url?: string;
 	};
 
 interface MirrorSession {
@@ -317,7 +320,8 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 1, clickCount: 1 });
 		} else if (msg.kind === 'scroll') {
 			const deltaY = Math.round((msg.dy ?? 0) * session.viewHeight);
-			this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: x || Math.round(session.viewWidth / 2), y: y || Math.round(session.viewHeight / 2), deltaX: 0, deltaY });
+			const deltaX = Math.round((msg.dx ?? 0) * session.viewWidth);
+			this.cdpSend(session, 'Input.dispatchMouseEvent', { type: 'mouseWheel', x: x || Math.round(session.viewWidth / 2), y: y || Math.round(session.viewHeight / 2), deltaX, deltaY });
 		} else if (msg.kind === 'back') {
 			this.cdpSend(session, 'Runtime.evaluate', { expression: 'history.back()' });
 		} else if (msg.kind === 'forward') {
@@ -326,6 +330,8 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			this.cdpSend(session, 'Page.reload', {});
 		} else if (msg.kind === 'text' && msg.text) {
 			this.cdpSend(session, 'Input.insertText', { text: msg.text });
+		} else if (msg.kind === 'navigate' && msg.url && /^https?:\/\//i.test(msg.url)) {
+			this.cdpSend(session, 'Page.navigate', { url: msg.url });
 		}
 		// 入力の反映を素早く見せるため、少し置いてから即時キャプチャする
 		// （プッシュが直近まで届いている間は再描画が自動で届くため不要。
