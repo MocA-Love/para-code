@@ -10,7 +10,13 @@ import { getRtcView, startWebrtcMirror, WebrtcMirrorSession } from '../webrtcMir
 import { colors } from '../theme.js';
 
 /** RTCView（react-native-webrtc）。未リンクのビルドでは undefined（JPEGミラーのみ）。 */
-const RTCViewComponent = getRtcView() as ComponentType<{ streamURL: string; style?: object; objectFit?: string }> | undefined;
+const RTCViewComponent = getRtcView() as ComponentType<{
+	streamURL: string;
+	style?: object;
+	objectFit?: string;
+	/** 描画中の映像テクスチャの実寸法が変わると発火（タップ座標マッピングの正）。 */
+	onDimensionsChange?: (e: { nativeEvent: { width: number; height: number } }) => void;
+}> | undefined;
 
 /**
  * ブラウザパネル（モックアップ mock-2.html 準拠、設計書 M3、「その他」タブのセグメント）。
@@ -44,10 +50,15 @@ export function BrowserPanel({ active }: { active: boolean }) {
 	// 復活させないための世代トークン。stopWebrtc / tryWebrtc のたびに進める。
 	const webrtcGenRef = useRef(0);
 	const [webrtcUrl, setWebrtcUrl] = useState<string | undefined>();
+	// RTCView が実際に描画している映像の実寸法（onDimensionsChange で更新）。
+	// タップ/スワイプの座標計算はこれを最優先で使う。PC側リサイズの途中でも
+	// 「描画されている映像そのもの」の寸法なので、表示と計算が絶対にずれない。
+	const webrtcDimsRef = useRef<{ w: number; h: number } | undefined>(undefined);
 	const stopWebrtc = useCallback(() => {
 		webrtcGenRef.current++;
 		webrtcSessionRef.current?.stop();
 		webrtcSessionRef.current = undefined;
+		webrtcDimsRef.current = undefined;
 		setWebrtcUrl(undefined);
 	}, []);
 	const tryWebrtc = useCallback(async (targetId: string) => {
@@ -56,6 +67,7 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		}
 		webrtcSessionRef.current?.stop();
 		webrtcSessionRef.current = undefined;
+		webrtcDimsRef.current = undefined; // 旧セッションの映像寸法をJPEGの座標計算に残さない
 		const gen = ++webrtcGenRef.current;
 		try {
 			const session = await startWebrtcMirror(targetId);
@@ -67,9 +79,11 @@ export function BrowserPanel({ active }: { active: boolean }) {
 			session.onClosed(() => {
 				if (webrtcSessionRef.current === session) {
 					webrtcSessionRef.current = undefined;
+					webrtcDimsRef.current = undefined;
 					setWebrtcUrl(undefined);
 				}
 			});
+			webrtcDimsRef.current = undefined; // 初回 onDimensionsChange まではJPEGフレーム寸法で代用
 			setWebrtcUrl(session.streamUrl);
 		} catch (e) {
 			console.log('[browser] webrtc unavailable, falling back to JPEG mirror:', e instanceof Error ? e.message : e);
@@ -171,13 +185,31 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		setActiveUrl(url);
 	};
 
+	const frameRef = useRef(frame);
+	frameRef.current = frame;
+	const viewSizeRef = useRef(viewSize);
+	viewSizeRef.current = viewSize;
+
+	// 座標計算に使う「表示中コンテンツ」の寸法。WebRTC表示中は RTCView が実際に描画
+	// している映像寸法（onDimensionsChange）、JPEG表示中は表示中フレーム自身の寸法。
+	// どちらも「画面に映っているものそのもの」なので、PC側リサイズの伝搬中でもずれない。
+	const contentDims = (): { w: number; h: number } | undefined => {
+		const d = webrtcDimsRef.current ?? (frameRef.current && frameRef.current.w > 0 && frameRef.current.h > 0
+			? { w: frameRef.current.w, h: frameRef.current.h }
+			: undefined);
+		return d && d.w > 0 && d.h > 0 ? d : undefined;
+	};
+	const contentDimsRef = useRef(contentDims);
+	contentDimsRef.current = contentDims;
+
 	const onTap = (e: GestureResponderEvent) => {
-		if (!frame || frame.w === 0 || frame.h === 0) {
+		const dims = contentDimsRef.current();
+		if (!dims) {
 			return;
 		}
-		const scale = Math.min(viewSize.w / frame.w, viewSize.h / frame.h);
-		const drawnW = frame.w * scale;
-		const drawnH = frame.h * scale;
+		const scale = Math.min(viewSize.w / dims.w, viewSize.h / dims.h);
+		const drawnW = dims.w * scale;
+		const drawnH = dims.h * scale;
 		const offsetX = (viewSize.w - drawnW) / 2;
 		const offsetY = (viewSize.h - drawnH) / 2;
 		const nx = (e.nativeEvent.locationX - offsetX) / drawnW;
@@ -189,12 +221,8 @@ export function BrowserPanel({ active }: { active: boolean }) {
 
 	// スワイプでPC側ページをスクロールする。ズーム中（zoomScale>1）はScrollViewのパンに
 	// 譲るため捕捉しない。8px未満の移動はタップとして扱う（onTapへ委譲）。
-	// 描画中のフレーム寸法・ビュー寸法はrefで参照する（PanResponderはマウント時に固定されるため）。
+	// 描画中のコンテンツ寸法・ビュー寸法はrefで参照する（PanResponderはマウント時に固定されるため）。
 	const zoomScaleRef = useRef(1);
-	const frameRef = useRef(frame);
-	frameRef.current = frame;
-	const viewSizeRef = useRef(viewSize);
-	viewSizeRef.current = viewSize;
 	const browserInputRef = useRef(browserInput);
 	browserInputRef.current = browserInput;
 	const onTapRef = useRef(onTap);
@@ -208,13 +236,13 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		let lastY = 0;
 		let moved = false;
 		const drawnSize = () => {
-			const f = frameRef.current;
+			const dims = contentDimsRef.current();
 			const v = viewSizeRef.current;
-			if (!f || f.w === 0 || f.h === 0) {
+			if (!dims) {
 				return undefined;
 			}
-			const scale = Math.min(v.w / f.w, v.h / f.h);
-			return { w: f.w * scale, h: f.h * scale };
+			const scale = Math.min(v.w / dims.w, v.h / dims.h);
+			return { w: dims.w * scale, h: dims.h * scale };
 		};
 		return PanResponder.create({
 			// タップも拾うため開始時から責任を持つ（ズーム中とマルチタッチはScrollViewへ譲る）
@@ -314,7 +342,15 @@ export function BrowserPanel({ active }: { active: boolean }) {
 			>
 				{webrtcUrl !== undefined && RTCViewComponent !== undefined ? (
 					<View style={styles.frameWrap} {...panResponder.panHandlers}>
-						<RTCViewComponent streamURL={webrtcUrl} style={styles.frameImage} objectFit="contain" />
+						<RTCViewComponent
+							streamURL={webrtcUrl}
+							style={styles.frameImage}
+							objectFit="contain"
+							onDimensionsChange={e => {
+								const { width, height } = e.nativeEvent;
+								webrtcDimsRef.current = width > 0 && height > 0 ? { w: width, h: height } : undefined;
+							}}
+						/>
 					</View>
 				) : frame ? (
 					<View style={styles.frameWrap} {...panResponder.panHandlers}>
