@@ -83,10 +83,11 @@ export class FrameMux {
 			try {
 				frame = decodeFrame(await this.channel.open(sealed));
 			} catch (error) {
-				if (this.options.onError) {
-					this.options.onError(error);
-					return;
-				}
+				// 復号/デコード失敗はonErrorへ通知した上で必ずrethrowする（app/protocol/src/mux.tsとは
+				// ここだけ意図的に異なる）。MobileSession.handlePayloadの自己回復（復号不能な32B=
+				// モバイル再起動後の再送helloとしてセッションを再確立）はcatchでしか発火できないため、
+				// onErrorで握り潰すと確立済みセッションが永久に新しいhelloを無視し再接続不能になる。
+				this.options.onError?.(error);
 				throw error;
 			}
 			const pending = this.reassembly.get(frame.ch);

@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useStableInsets } from './useStableInsets.js';
 
 /**
  * NativeTabsのフローティングタブバー（Liquid Glass）に画面最下部のコンテンツが
@@ -10,6 +10,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
  * 値はSafeArea下端 + フローティングタブバー本体の高さの目安。
  */
 export function useTabBarSpacer(): number {
-	const insets = useSafeAreaInsets();
+	const insets = useStableInsets();
 	return insets.bottom + 62;
 }

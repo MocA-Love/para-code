@@ -12,7 +12,7 @@ import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { ScreenTitle } from '../../src/components/screenTitle.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
 import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { colors } from '../../src/theme.js';
 
 /**
@@ -31,7 +31,7 @@ export default function TerminalScreen() {
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, sendInput: s.sendInput, createTerminal: s.createTerminal,
 	})));
 	const [input, setInput] = useState('');
-	const insets = useSafeAreaInsets();
+	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う

@@ -2,8 +2,8 @@
 
 import { ReactNode } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme.js';
+import { useStableInsets } from '../hooks/useStableInsets.js';
 
 /**
  * 画面見出し（モックアップ mock-2.html 準拠）。`NativeTabs`にはネイティブヘッダーの
@@ -13,7 +13,7 @@ import { colors } from '../theme.js';
  * ビューにしか効かず、各画面はヘッダー行が非スクロール領域にあるため手動で扱う）。
  */
 export function ScreenTitle({ title, subtitle, right }: { title: string; subtitle?: string; right?: ReactNode }) {
-	const insets = useSafeAreaInsets();
+	const insets = useStableInsets();
 	return (
 		<View style={[styles.wrap, { paddingTop: insets.top + 4 }]}>
 			<View style={styles.textCol}>
