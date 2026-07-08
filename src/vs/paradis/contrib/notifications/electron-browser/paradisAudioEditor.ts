@@ -312,6 +312,13 @@ export class ParadisAudioEditor extends Disposable {
 			} finally {
 				await audioContext.close();
 			}
+			// 防御: decodeAudioData / audioContext.close の await 中に dispose された場合に備える。
+			// _blobUrl は上で dispose チェック後に同期代入するため通常は dispose() 側が revoke するが、
+			// async ギャップを跨いだ後にも disposed を再確認し、blob URL を確実に解放する（二重 revoke でも無害）。
+			if (this._store.isDisposed && this._blobUrl) {
+				URL.revokeObjectURL(this._blobUrl);
+				this._blobUrl = undefined;
+			}
 		} catch {
 			// 波形の取得に失敗しても開始/終了は手入力で編集できるため致命的ではない。
 		}

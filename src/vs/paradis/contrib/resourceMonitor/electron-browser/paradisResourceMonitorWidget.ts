@@ -80,6 +80,16 @@ class ParadisResourceMonitorWidget extends Disposable {
 
 		this._register(dom.addDisposableListener(this.button, 'click', () => this.togglePanel()));
 
+		// アイドルポーリング(パネル非表示時)はウィンドウ不可視中スキップするため、可視へ復帰
+		// した直後は最大 IDLE_POLL_INTERVAL_MS 古い値が見え得る。これを縮めるための補助として、
+		// 可視化イベント時に(有効かつパネル非表示なら)即時1回だけ更新する。ポーリングの継続は
+		// あくまで pollTimer 側が毎tickの hidden 判定で担保しており、この購読には依存しない。
+		this._register(dom.addDisposableListener(dom.getDocument(this.button), 'visibilitychange', () => {
+			if (!dom.getDocument(this.button).hidden && !this.panel.value && this.configurationService.getValue<boolean>(CONFIG_KEY_ENABLED)) {
+				void this.poll(false);
+			}
+		}));
+
 		this.applyEnabled();
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(CONFIG_KEY_ENABLED)) {
@@ -144,6 +154,15 @@ class ParadisResourceMonitorWidget extends Disposable {
 	}
 
 	private async poll(force: boolean): Promise<void> {
+		// アイドルポーリング(パネル非表示)のみ、ウィジェットが属するウィンドウが不可視
+		// (最小化・完全背面などで document.hidden)の間は getSnapshot を呼ばず、electron-main
+		// 側の ps サブプロセスを起こさない。手動更新(force)とパネル表示中(2秒ポーリング)は
+		// 常に取得する。復帰時は次tick(最大 IDLE_POLL_INTERVAL_MS)で hidden が false に戻って
+		// 自動再開するため、可視化イベントの取りこぼしで固まることはない。マルチウィンドウ対応の
+		// ため mainWindow 固定ではなくウィジェットが属するウィンドウの document を見る。
+		if (!force && !this.panel.value && dom.getDocument(this.button).hidden) {
+			return;
+		}
 		if (this.isFetching) {
 			return;
 		}

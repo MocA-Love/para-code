@@ -60,7 +60,8 @@ interface AppState extends StoreState {
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
 	browserTargets(): Promise<BrowserTargetsResult>;
 	browserStart(targetId: string): Promise<void>;
-	browserStop(): Promise<void>;
+	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
+	browserStop(keepFrame?: boolean): Promise<void>;
 	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text'; nx?: number; ny?: number; dy?: number; text?: string }): void;
 }
 
@@ -293,8 +294,8 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.browserStart(targetId);
 	},
 
-	browserStop() {
-		return controller?.browserStop() ?? Promise.resolve();
+	browserStop(keepFrame?: boolean) {
+		return controller?.browserStop(keepFrame) ?? Promise.resolve();
 	},
 
 	browserInput(input) {

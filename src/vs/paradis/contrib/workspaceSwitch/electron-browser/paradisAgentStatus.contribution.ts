@@ -16,6 +16,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -47,6 +48,13 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 
 	static readonly ID = 'workbench.contrib.paradisAgentStatusPoller';
 
+	/**
+	 * このポーラーが statusStore へ最後に書き込んだ内容が空だったか。setScopeStatuses は
+	 * 「ポーラー専用」なので、この局所フラグが store の空/非空をそのまま反映する。
+	 * トークン0のときの「一度だけ空へ収束させてから IPC を休止する」判定に使う。
+	 */
+	private _lastWroteEmpty = true;
+
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
@@ -55,6 +63,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		@IParadisAgentStatusStore private readonly statusStore: IParadisAgentStatusStore,
 		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
+		@ITerminalService private readonly terminalService: ITerminalService,
 	) {
 		super();
 
@@ -67,7 +76,29 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		this.poll();
 	}
 
+	/** このウィンドウのターミナルペインにトークンが1本でも割り当てられているか（renderer内で同期判定）。 */
+	private hasAnyPaneToken(): boolean {
+		for (const instance of this.terminalService.instances) {
+			if (this.paneTokenService.getTokenForInstance(instance.instanceId) !== undefined) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private async poll(): Promise<void> {
+		// トークンが1本も無ければ listPaneStatuses は突合対象が無く結果は必ず全て捨てられる。
+		// 直前に書いた状態が残っていることがあるので、store が非空なら一度だけ空へ収束させ、
+		// 以降（トークン0のまま）は IPC をスキップする。トークンが1本でも生えれば次の tick で
+		// hasAnyPaneToken が true になり即座にポーリングを再開する（IntervalTimer は止めない）。
+		if (!this.hasAnyPaneToken()) {
+			if (!this._lastWroteEmpty) {
+				this.statusStore.setScopeStatuses(new Map());
+				this._lastWroteEmpty = true;
+			}
+			return;
+		}
+
 		let statuses: IParadisAgentPaneStatus[];
 		try {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
@@ -108,6 +139,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		}
 
 		this.statusStore.setScopeStatuses(scopeStatuses);
+		this._lastWroteEmpty = scopeStatuses.size === 0;
 	}
 }
 

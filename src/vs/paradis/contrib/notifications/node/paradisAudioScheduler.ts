@@ -89,6 +89,11 @@ export interface AudioSchedulerDeps {
 	 * しなければ、スケジューラはビジーフラグを強制解放して待機中の Aivis タスクを起こす。既定 30s。
 	 */
 	ringtoneSafetyTimeoutMs?: number;
+	/**
+	 * 完了しない `runner.play` に対する安全網。この期限までに play が resolve/reject しなければ、
+	 * スケジューラは再生をあきらめて次の Aivis タスクへ進む（aivisBusy の張り付きを防ぐ）。既定 30s。
+	 */
+	aivisPlaySafetyTimeoutMs?: number;
 }
 
 const MAX_RETRY_ATTEMPTS = 3;
@@ -97,6 +102,10 @@ const MAX_RETRY_ATTEMPTS = 3;
 const DEFAULT_BACKOFF_MS = [1000, 2000];
 const RATE_LIMIT_MARGIN_MS = 500;
 const RINGTONE_SAFETY_TIMEOUT_MS = 30_000;
+// Aivis 再生ハングに対する安全網の期限。着信音側（RINGTONE_SAFETY_TIMEOUT_MS）と対称の値にする:
+// 発話音声1件として十分長く、正常な再生（通常は数秒）が誤って打ち切られることはない一方、
+// OS の再生プロセス（afplay 等）がハングしてもこの期限で必ずキューが前進する。
+const AIVIS_PLAY_SAFETY_TIMEOUT_MS = 30_000;
 
 function defaultSleep(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
@@ -116,6 +125,7 @@ export class AudioScheduler {
 	private disposed = false;
 	private ringtoneIdleWaiters: Array<() => void> = [];
 	private ringtoneSafetyTimer: ReturnType<typeof setTimeout> | null = null;
+	private aivisPlaySafetyTimer: ReturnType<typeof setTimeout> | null = null;
 
 	constructor(private readonly deps: AudioSchedulerDeps) { }
 
@@ -197,6 +207,10 @@ export class AudioScheduler {
 			clearTimeout(this.ringtoneSafetyTimer);
 			this.ringtoneSafetyTimer = null;
 		}
+		if (this.aivisPlaySafetyTimer) {
+			clearTimeout(this.aivisPlaySafetyTimer);
+			this.aivisPlaySafetyTimer = null;
+		}
 		// 進行中の runOne() が永久ハングしないよう、待機中の ringtone-idle waiter を全て起こす。
 		const waiters = this.ringtoneIdleWaiters;
 		this.ringtoneIdleWaiters = [];
@@ -233,7 +247,7 @@ export class AudioScheduler {
 				await this.waitForRingtoneIdle();
 				if (this.disposed) { return; }
 				try {
-					await runner.play(audio);
+					await this.playWithSafetyTimeout(runner, audio);
 				} catch (playErr) {
 					// 再生失敗は合成のリトライを正当化しない。
 					const wrapped = new AivisError(
@@ -269,6 +283,45 @@ export class AudioScheduler {
 		if (lastErr) {
 			this.deps.logWarn?.(`[audio-scheduler] aivis task gave up after ${MAX_RETRY_ATTEMPTS} attempts: ${lastErr.reason}`);
 		}
+	}
+
+	/**
+	 * runner.play を安全タイマー付きで待つ。着信音側の ringtoneSafetyTimer と対称の多重防御:
+	 * OS の再生プロセス（afplay 等）がハングして play が resolve/reject しないと、runOne が
+	 * pump() の finally に到達できず aivisBusy が true のまま張り付き、以後の Aivis 発話が
+	 * キューに滞留し続ける。期限内に play が完了しなければ再生をあきらめて resolve し、次の
+	 * タスクへ進める（正常完了時は必ずタイマーを clear するので正常系の挙動は変わらない）。
+	 */
+	private playWithSafetyTimeout(runner: AivisTaskRunner, audio: Buffer): Promise<void> {
+		const timeoutMs = this.deps.aivisPlaySafetyTimeoutMs ?? AIVIS_PLAY_SAFETY_TIMEOUT_MS;
+		return new Promise<void>((resolve, reject) => {
+			let settled = false;
+			const clearSafetyTimer = () => {
+				if (this.aivisPlaySafetyTimer) {
+					clearTimeout(this.aivisPlaySafetyTimer);
+					this.aivisPlaySafetyTimer = null;
+				}
+			};
+			this.aivisPlaySafetyTimer = setTimeout(() => {
+				if (settled) { return; }
+				settled = true;
+				this.aivisPlaySafetyTimer = null;
+				this.deps.logWarn?.('[audio-scheduler] aivis playback did not finish within safety timeout; giving up and continuing');
+				// あきらめて次へ進む（item-specific 失敗ではないので握りつぶす）。
+				resolve();
+			}, timeoutMs);
+			runner.play(audio).then(() => {
+				if (settled) { return; }
+				settled = true;
+				clearSafetyTimer();
+				resolve();
+			}, err => {
+				if (settled) { return; }
+				settled = true;
+				clearSafetyTimer();
+				reject(err);
+			});
+		});
 	}
 
 	private computeBackoffMs(err: AivisError, attempt: number): number {

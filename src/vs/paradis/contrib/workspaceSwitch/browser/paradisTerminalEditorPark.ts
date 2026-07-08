@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 
 /**
@@ -23,13 +24,23 @@ import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browse
  * インスタンスをそのまま再利用する。パネルターミナルの park/unpark
  * (terminalGroupService.ts の PARA-PATCH) と対になる仕組み。
  *
- * ここに残ったままのインスタンス（対応する working set が二度と適用されない等）は、パネルの
- * park と同様ウィンドウの寿命まで生存し、ウィンドウを閉じると pty host 側の孤児処理で回収される。
+ * park 中のインスタンスは、対応するスコープへ戻れば revive で再利用され、スコープが退役
+ * (リポジトリ削除 / worktree 削除) すれば paradisRetireParkedTerminalEditorInstances で
+ * 実体ごと破棄される。どちらの経路にも乗らない場合のみパネルの park と同様ウィンドウの寿命まで
+ * 生存し、ウィンドウを閉じると pty host 側の孤児処理で回収される。
+ *
+ * 各エントリには park 元スコープの stateKey を併記する。working set の実体 (persistentProcessId を
+ * 含むシリアライズ済みエディタ入力) は EditorParts 内部 storage にあり外部から列挙できないため、
+ * 退役スコープの park インスタンスを特定するにはこの park 時点のタグに頼る。パネル側 _parkedGroups が
+ * repositoryId でグループを束ねているのと対称。
  */
-const parkedInstances = new Map<number, { readonly instance: ITerminalInstance; readonly onDisposedListener: IDisposable }>();
+const parkedInstances = new Map<number, { readonly instance: ITerminalInstance; readonly stateKey: string; readonly onDisposedListener: IDisposable }>();
 
-/** インスタンスを persistentProcessId をキーにパークする。ID未確定のインスタンスは登録しない。 */
-export function paradisParkTerminalEditorInstance(instance: ITerminalInstance): boolean {
+/**
+ * インスタンスを persistentProcessId をキーにパークする。ID未確定のインスタンスは登録しない。
+ * stateKey は park 元スコープ (= 切り替え元の working set を保存したスコープ) の状態キー。
+ */
+export function paradisParkTerminalEditorInstance(instance: ITerminalInstance, stateKey: string): boolean {
 	const persistentProcessId = instance.persistentProcessId;
 	if (typeof persistentProcessId !== 'number' || !instance.shouldPersist) {
 		return false;
@@ -42,8 +53,33 @@ export function paradisParkTerminalEditorInstance(instance: ITerminalInstance): 
 		onDisposedListener.dispose();
 	});
 	parkedInstances.get(persistentProcessId)?.onDisposedListener.dispose();
-	parkedInstances.set(persistentProcessId, { instance, onDisposedListener });
+	parkedInstances.set(persistentProcessId, { instance, stateKey, onDisposedListener });
 	return true;
+}
+
+/**
+ * 退役したスコープ (リポジトリ削除 / worktree 削除) の park 中エディタターミナルを実体ごと破棄する。
+ * 破棄対象は「park 時に当該 stateKey でタグ付けされた」インスタンスのみ。park 台帳に居る =
+ * どの UI にも接続されていない (revive で取り出されると台帳から消える) ため、現在表示中の
+ * インスタンスや他スコープの park を誤って殺すことはない。
+ *
+ * instance.dispose() が onDisposed を発火して上の掃除リスナーが再入で台帳を触るのを避けるため、
+ * 先に台帳から取り除きリスナーを解除してから dispose する。パネル側 retireScope が
+ * instance.dispose(TerminalExitReason.User) で PTY ごと停止するのと対称に User 理由で破棄する。
+ */
+export function paradisRetireParkedTerminalEditorInstances(stateKey: string): void {
+	const retiring: ITerminalInstance[] = [];
+	for (const [persistentProcessId, entry] of [...parkedInstances]) {
+		if (entry.stateKey !== stateKey) {
+			continue;
+		}
+		parkedInstances.delete(persistentProcessId);
+		entry.onDisposedListener.dispose();
+		retiring.push(entry.instance);
+	}
+	for (const instance of retiring) {
+		instance.dispose(TerminalExitReason.User);
+	}
 }
 
 /**

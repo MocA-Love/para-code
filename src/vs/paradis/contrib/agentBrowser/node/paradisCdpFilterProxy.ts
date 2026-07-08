@@ -575,6 +575,28 @@ export async function paradisProxyBrowserUpgrade(
 			refreshBound();
 			const bound = allowedTargetIds;
 
+			// プロキシ内部発行リクエストへの応答は、sessionId付き（スコープ外ターゲットへ
+			// セッションスコープで送った Runtime.runIfWaitingForDebugger 等）でも必ずここで回収する。
+			// この応答は下の sessionId ガード（許可外セッションを早期 return）で握りつぶされ、
+			// 従来は internalPendingIds の削除に到達せず id が永久残留していた。ガードより前に
+			// 処理することで、正常応答（sessionId付き）とセッション消滅時のエラー応答（root宛）の
+			// 双方を取りこぼしなく回収する。
+			if (typeof msg.id === 'number' && internalPendingIds.has(msg.id)) {
+				internalPendingIds.delete(msg.id);
+				// プロキシ内部発行（先行attach等）への応答は握りつぶす。
+				// attach成功時のsessionIdは許可セットへ加える（イベント経由と二重でも無害）。
+				const sid = (msg.result as { sessionId?: string } | undefined)?.sessionId;
+				const attachTid = internalAttachTargets.get(msg.id);
+				internalAttachTargets.delete(msg.id);
+				if (sid) {
+					allowedSessionIds.add(sid);
+					if (attachTid) {
+						sessionIdToTargetId.set(sid, attachTid);
+					}
+				}
+				return;
+			}
+
 			// セッションスコープのフレーム
 			if (msg.sessionId) {
 				if (!allowedSessionIds.has(msg.sessionId)) {
@@ -610,23 +632,8 @@ export async function paradisProxyBrowserUpgrade(
 				return;
 			}
 
-			// リクエストへの応答
+			// リクエストへの応答（プロキシ内部発行のidは上で回収済み）
 			if (typeof msg.id === 'number') {
-				if (internalPendingIds.has(msg.id)) {
-					internalPendingIds.delete(msg.id);
-					// プロキシ内部発行（先行attach等）への応答は握りつぶす。
-					// attach成功時のsessionIdは許可セットへ加える（イベント経由と二重でも無害）。
-					const sid = (msg.result as { sessionId?: string } | undefined)?.sessionId;
-					const attachTid = internalAttachTargets.get(msg.id);
-					internalAttachTargets.delete(msg.id);
-					if (sid) {
-						allowedSessionIds.add(sid);
-						if (attachTid) {
-							sessionIdToTargetId.set(sid, attachTid);
-						}
-					}
-					return;
-				}
 				const origMethod = pendingMethods.get(msg.id);
 				pendingMethods.delete(msg.id);
 				const clientAttachTid = pendingAttachTargets.get(msg.id);
