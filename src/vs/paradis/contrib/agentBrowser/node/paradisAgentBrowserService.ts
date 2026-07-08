@@ -553,6 +553,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		let transcriptPath: string | undefined;
 		let cwd: string | undefined;
 		let hookMessage: string | undefined;
+		let toolName: string | undefined;
+		let toolInput: unknown;
 		if (req.method === 'POST') {
 			try {
 				const body = await this._readBody(req);
@@ -564,16 +566,24 @@ export class ParadisAgentBrowserService extends Disposable {
 					cwd = typeof record['cwd'] === 'string' ? record['cwd'] : undefined;
 					// Notification イベントの本文 (許可要求かアイドル通知かの判別に使う)
 					hookMessage = typeof record['message'] === 'string' ? record['message'] : undefined;
+					// PreToolUse / PostToolUse のツール情報 (AskUserQuestion のライブ質問検出に使う)
+					toolName = typeof record['tool_name'] === 'string' ? record['tool_name'] : undefined;
+					toolInput = record['tool_input'];
 				}
 			} catch {
 				// bodyの欠落・壊れたJSONは無視する (イベント名ベースの状態更新は継続)
 			}
 		}
 		if (eventType) {
-			fireParadisAgentHookEvent({ token, event: eventType, sessionId, transcriptPath, cwd, at: Date.now() });
+			fireParadisAgentHookEvent({ token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, at: Date.now() });
 		}
 
 		let normalized = paradisNormalizeAgentHookEvent(eventType, hookMessage);
+		// AskUserQuestion の PreToolUse は「選択式質問の回答待ち」の開始（permissionではなく
+		// question として扱う）。transcript には決着後まで現れないため、これが唯一のライブ検知点。
+		if (eventType === 'PreToolUse' && toolName === 'AskUserQuestion') {
+			normalized = 'question';
+		}
 		if (normalized === undefined) {
 			res.writeHead(200, { 'Content-Type': 'application/json' });
 			res.end(JSON.stringify({ ok: false, reason: `ignored event: ${eventType}` }));

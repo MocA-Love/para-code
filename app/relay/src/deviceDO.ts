@@ -215,6 +215,13 @@ export class DeviceDO implements DurableObject {
 		if (!record || !timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
 			return new Response('unauthorized', { status: 401 });
 		}
+		// 同一モバイルの既存ソケットは閉じる（1本に限定）。iOSがバックグラウンドで
+		// ソケットをhalf-openのまま放置した場合、これが残っていると再接続時に
+		// 「offline通知が飛ばない→PC側が古いE2Eセッションを保持し続ける→新しい
+		// ハンドシェイクを復号失敗で無視し続ける」恒久ループになる（acceptPcと同様の措置）。
+		for (const ws of this.state.getWebSockets(`m:${mobileIdStr}`)) {
+			try { ws.close(1000, 'superseded'); } catch { /* ignore */ }
+		}
 		return this.upgrade(ws => this.state.acceptWebSocket(ws, [`m:${mobileIdStr}`]), () => {
 			// PCにモバイルのpresenceを通知
 			this.sendToPc({ type: 'presence', peer: 'mobile', mobileId: mobileIdStr, online: true });

@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -10,7 +10,9 @@ import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { TermView } from '../../src/components/termView.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { ScreenTitle } from '../../src/components/screenTitle.js';
-import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { GlassComposer } from '../../src/components/glassComposer.js';
+import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../../src/theme.js';
 
 /**
@@ -29,7 +31,8 @@ export default function TerminalScreen() {
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, sendInput: s.sendInput, createTerminal: s.createTerminal,
 	})));
 	const [input, setInput] = useState('');
-	const tabBarSpacer = useTabBarSpacer();
+	const insets = useSafeAreaInsets();
+	const keyboardVisible = useKeyboardVisible();
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
 	// （全ワークスペースに重複表示しない）。
@@ -62,7 +65,7 @@ export default function TerminalScreen() {
 
 	return (
 		<ConnectionGate>
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 			<ScreenTitle title="ターミナル" />
 			<WsBar />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
@@ -89,32 +92,28 @@ export default function TerminalScreen() {
 					<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
 				)}
 			</View>
-			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.keyBar} contentContainerStyle={styles.keyRow}>
-				<Pressable style={styles.key} onPress={() => send('\u001b')}><Text style={styles.keyText}>Esc</Text></Pressable>
-				<Pressable style={styles.key} onPress={() => send('\t')}><Text style={styles.keyText}>Tab</Text></Pressable>
-				<Pressable style={styles.key} onPress={() => send('\u0003')}><Text style={styles.keyText}>^C</Text></Pressable>
-				<Pressable style={styles.key} onPress={() => send('\u001b[A')}><Text style={styles.keyText}>↑</Text></Pressable>
-				<Pressable style={styles.key} onPress={() => send('\u001b[B')}><Text style={styles.keyText}>↓</Text></Pressable>
-				<Pressable style={styles.key} onPress={() => send('\u001b[D')}><Text style={styles.keyText}>←</Text></Pressable>
-				<Pressable style={styles.key} onPress={() => send('\u001b[C')}><Text style={styles.keyText}>→</Text></Pressable>
-				<Pressable style={styles.key} onPress={() => send('/')}><Text style={styles.keyText}>/</Text></Pressable>
-				<Pressable style={styles.key} onPress={() => send('|')}><Text style={styles.keyText}>|</Text></Pressable>
-			</ScrollView>
-			<View style={[styles.inputBar, { paddingBottom: tabBarSpacer }]}>
-				<TextInput
-					style={styles.input}
+			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 30 }]}>
+				<GlassComposer
 					value={input}
 					onChangeText={setInput}
+					onSubmit={submit}
 					placeholder="コマンドまたは回答を入力…（空でEnter送信）"
-					placeholderTextColor={colors.textDim}
-					autoCapitalize="none"
-					autoCorrect={false}
-					onSubmitEditing={submit}
-					blurOnSubmit={false}
+					sendIcon={input ? 'arrow-up' : 'return-down-back'}
+					monospace
+					tools={
+						<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.keyRowScroll} contentContainerStyle={styles.keyRow} keyboardShouldPersistTaps="always">
+							<Pressable style={styles.key} onPress={() => send('\u001b')}><Text style={styles.keyText}>Esc</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => send('\t')}><Text style={styles.keyText}>Tab</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => send('\u0003')}><Text style={[styles.keyText, styles.keyAccent]}>^C</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => send('\u001b[A')}><Text style={styles.keyText}>↑</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => send('\u001b[B')}><Text style={styles.keyText}>↓</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => send('\u001b[D')}><Text style={styles.keyText}>←</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => send('\u001b[C')}><Text style={styles.keyText}>→</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => send('/')}><Text style={styles.keyText}>/</Text></Pressable>
+							<Pressable style={styles.key} onPress={() => send('|')}><Text style={styles.keyText}>|</Text></Pressable>
+						</ScrollView>
+					}
 				/>
-				<Pressable style={styles.sendBtn} onPress={submit} accessibilityLabel="送信">
-					<Ionicons name={input ? 'arrow-up' : 'return-down-back'} size={20} color="#fff" />
-				</Pressable>
 			</View>
 		</KeyboardAvoidingView>
 		</ConnectionGate>
@@ -134,12 +133,10 @@ const styles = StyleSheet.create({
 	dim: { color: colors.textDim, fontSize: 12 },
 	output: { flex: 1, backgroundColor: '#1e1e1e', marginHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	placeholder: { color: colors.textDim, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, padding: 10 },
-	keyBar: { flexGrow: 0, flexShrink: 0 },
-	keyRow: { flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingTop: 8 },
-	key: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },
-	keyText: { color: colors.text, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	inputBar: { flexDirection: 'row', alignItems: 'center', gap: 8, padding: 12 },
-	input: { flex: 1, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10 },
-	sendBtn: { backgroundColor: colors.accent2, borderRadius: 10, width: 42, height: 42, alignItems: 'center', justifyContent: 'center' },
-	sendBtnText: { color: '#fff', fontSize: 17, fontWeight: '700' },
+	keyRowScroll: { flex: 1, minWidth: 0 },
+	keyRow: { flexDirection: 'row', gap: 6, alignItems: 'center', paddingRight: 8 },
+	key: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 13, paddingVertical: 8 },
+	keyText: { color: colors.text, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	keyAccent: { color: colors.accent },
+	inputBar: { paddingHorizontal: 12, paddingTop: 10 },
 });

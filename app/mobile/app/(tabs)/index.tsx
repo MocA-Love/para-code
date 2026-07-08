@@ -1,13 +1,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useRouter } from 'expo-router';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
-import type { NotifyKind } from '@para/protocol';
+import type { NotifyPayload } from '@para/protocol';
 import { PairingRequiredNotice } from '../../src/components/connectionGate.js';
+import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { ScreenTitle } from '../../src/components/screenTitle.js';
 import { AttentionCard } from '../../src/components/attentionCard.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
@@ -60,24 +61,28 @@ export default function HomeScreen() {
 		setSelectedTerminalId(terminalId);
 		router.push('/agent');
 	};
-	const latestQuestion = notifications.find(n => n.kind === 'agent-question');
-
+	const openNotification = (n: NotifyPayload) => {
+		if (n.ws !== undefined) {
+			setSelectedWs(n.ws);
+		}
+		if (n.terminalId !== undefined) {
+			setSelectedTerminalId(n.terminalId);
+		}
+		router.push('/agent');
+	};
 	return (
-		<ScrollView style={styles.screen} contentContainerStyle={[styles.content, { paddingBottom: tabBarSpacer }]}>
-			<ScreenTitle title="ホーム" subtitle="Para Code Mobile" />
-			{latestQuestion ? (
-				<Pressable
-					style={styles.pushBanner}
-					onPress={() => { if (latestQuestion.terminalId !== undefined && latestQuestion.ws) { openAgent(latestQuestion.ws, latestQuestion.terminalId); } }}
-				>
-					<View style={styles.pushIcon}><Ionicons name="chatbubble-ellipses-outline" size={17} color="#fff" /></View>
-					<View style={{ flex: 1 }}>
-						<Text style={styles.pushTitle} numberOfLines={1}>{latestQuestion.title}</Text>
-						<Text style={styles.pushMsg} numberOfLines={1}>{latestQuestion.body}</Text>
-					</View>
-				</Pressable>
-			) : null}
-
+		<View style={styles.screen}>
+		<ScreenTitle
+			title="ホーム"
+			subtitle="Para Code Mobile"
+			right={
+				<NotificationsButton
+					notifications={notifications}
+					onOpenNotification={openNotification}
+				/>
+			}
+		/>
+		<ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingBottom: tabBarSpacer }]}>
 			{waitingTerminal && waitingWs && (waitingTerminal.agentStatus === 'permission' || waitingTerminal.agentStatus === 'question') ? (
 				<AttentionCard
 					wsName={waitingWs.name}
@@ -111,11 +116,11 @@ export default function HomeScreen() {
 					</View>
 				</View>
 				<View style={styles.pcRow}>
-					<View style={styles.pcIcon}><Ionicons name="laptop-outline" size={20} color="#fff" /></View>
+					<Image source={require('../../assets/pairing-logo.png')} style={styles.pcIcon} resizeMode="contain" />
 					<View style={{ flex: 1 }}>
 						<Text style={styles.pcName}>Para Code</Text>
 						<Text style={[styles.pcState, !online && styles.pcStateOff]}>
-							{online ? '● 接続中 · リレー経由 (E2E暗号化)' : connection === 'online' ? '○ PCオフライン' : manualOffline ? '○ 切断中' : '接続中…'}
+							{online ? '● 接続中' : (connection === 'online' || connection === 'handshaking') && !pcOnline ? '○ PCオフライン' : manualOffline ? '○ 切断中' : '接続中…'}
 						</Text>
 					</View>
 				</View>
@@ -168,21 +173,8 @@ export default function HomeScreen() {
 				<Text style={styles.dimSmall}>ワークスペース情報を取得中… PCの Para Code でリポジトリを登録すると表示されます。</Text>
 			) : null}
 
-			{notifications.length > 0 ? (
-				<>
-					<Text style={styles.sectionTitle}>最近の通知</Text>
-					<View style={styles.notifCard}>
-						{notifications.slice(0, 8).map((n, i, arr) => (
-							<View key={n.id} style={[styles.notifRow, i === arr.length - 1 && styles.notifRowLast]}>
-								<View style={[styles.notifDot, { backgroundColor: notifDotColor(n.kind) }]} />
-								<Text style={styles.notifMsg} numberOfLines={2}>{n.body || n.title}</Text>
-								<Text style={styles.notifTime}>{formatRelativeTime(n.at)}</Text>
-							</View>
-						))}
-					</View>
-				</>
-			) : null}
 		</ScrollView>
+		</View>
 	);
 }
 
@@ -190,40 +182,13 @@ function agentLabel(status: string): string {
 	return status === 'permission' ? '応答待ち' : status === 'question' ? '質問あり' : status === 'working' ? '実行中' : 'レビュー';
 }
 
-function notifDotColor(kind: NotifyKind): string {
-	switch (kind) {
-		case 'agent-question': return colors.red;
-		case 'agent-done': return colors.green;
-		case 'agent-error': return colors.red;
-		case 'disconnected': return colors.yellow;
-		default: return colors.textDim;
-	}
-}
 
-function formatRelativeTime(at: number): string {
-	const diffSec = Math.max(0, Math.floor((Date.now() - at) / 1000));
-	if (diffSec < 60) {
-		return '今';
-	}
-	const diffMin = Math.floor(diffSec / 60);
-	if (diffMin < 60) {
-		return `${diffMin}分前`;
-	}
-	const diffHour = Math.floor(diffMin / 60);
-	if (diffHour < 24) {
-		return `${diffHour}時間前`;
-	}
-	return `${Math.floor(diffHour / 24)}日前`;
-}
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	content: { padding: 16, paddingBottom: 32 },
+	scroll: { flex: 1 },
+	content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 32 },
 	dimSmall: { color: colors.textDim, fontSize: 12, marginTop: 4 },
-	pushBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(45,45,48,.97)', borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 10, marginBottom: 14 },
-	pushIcon: { width: 34, height: 34, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.claude },
-	pushTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	pushMsg: { color: colors.textDim, fontSize: 12, marginTop: 1 },
 	card: { backgroundColor: colors.surface, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: colors.border },
 	cardHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
 	cardLabel: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
@@ -233,7 +198,7 @@ const styles = StyleSheet.create({
 	connToggleTextDim: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
 	cardHeaderBtns: { flexDirection: 'row', gap: 6 },
 	pcRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-	pcIcon: { width: 40, height: 40, borderRadius: 10, backgroundColor: colors.accent2, alignItems: 'center', justifyContent: 'center' },
+	pcIcon: { width: 40, height: 40 },
 	pcName: { color: '#fff', fontSize: 15, fontWeight: '600' },
 	pcState: { color: colors.green, fontSize: 12, marginTop: 2 },
 	pcStateOff: { color: colors.textDim },
@@ -256,10 +221,4 @@ const styles = StyleSheet.create({
 	badgeRunning: { backgroundColor: 'rgba(78,201,176,0.15)', color: colors.green },
 	badgeReview: { backgroundColor: 'rgba(220,220,170,0.15)', color: colors.yellow },
 	badgeIdle: { backgroundColor: 'rgba(139,139,139,0.15)', color: colors.textDim },
-	notifCard: { backgroundColor: colors.surface, borderRadius: 14, padding: 6, borderWidth: 1, borderColor: colors.border },
-	notifRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, padding: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-	notifRowLast: { borderBottomWidth: 0 },
-	notifDot: { width: 7, height: 7, borderRadius: 4, marginTop: 4 },
-	notifMsg: { flex: 1, color: colors.text, fontSize: 12, lineHeight: 17 },
-	notifTime: { color: colors.textDim, fontSize: 10.5, flexShrink: 0 },
 });

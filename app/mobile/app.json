@@ -15,7 +15,8 @@
 			"infoPlist": {
 				"NSCameraUsageDescription": "QRコードでPara Codeとペアリングするためにカメラを使用します。",
 				"ITSAppUsesNonExemptEncryption": false,
-				"UIBackgroundModes": ["remote-notification"]
+				"UIBackgroundModes": ["remote-notification"],
+				"NSSupportsLiveActivities": true
 			}
 		},
 		"plugins": [
@@ -25,6 +26,10 @@
 			[
 				"expo-camera",
 				{ "cameraPermission": "QRコードでPara Codeとペアリングするためにカメラを使用します。" }
+			],
+			[
+				"expo-image-picker",
+				{ "photosPermission": "エージェントへ画像を添付するためにフォトライブラリを使用します。" }
 			],
 			[
 				"expo-local-authentication",

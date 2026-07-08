@@ -96,6 +96,10 @@ export interface FsGrepResult {
 	matches: { path: string; line: number; text: string }[];
 	truncated: boolean;
 }
+/** fs upload 応答（PC側に保存された添付ファイルのフルパス）。 */
+export interface FsUploadResult {
+	path: string;
+}
 /** scm xlsxDiff 応答（PC側でレンダリングされたExcel差分の静的HTML）。 */
 export interface ScmXlsxDiffResult {
 	html: string;
@@ -570,6 +574,14 @@ export class MobileController {
 	/** 画像・動画・音声バイナリを base64 で取得する（大きいファイルはチャンク転送で時間がかかるため長め）。 */
 	fsMedia(ws: string, path: string): Promise<FsMediaResult> {
 		return this.request<FsMediaResult>('fs', { t: 'media', ws, path }, 120_000);
+	}
+
+	/**
+	 * 画像等をPCへアップロードし、保存先フルパスを受け取る（エージェントへの添付用。
+	 * PC側は userData 配下の専用ディレクトリに保存し、モバイルはパスをPTYへ貼り付ける）。
+	 */
+	fsUpload(name: string, dataBase64: string): Promise<FsUploadResult> {
+		return this.request<FsUploadResult>('fs', { t: 'upload', name, data: dataBase64 }, 120_000);
 	}
 
 	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */

@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
+import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { joinPath } from '../../../../base/common/resources.js';
@@ -15,6 +15,7 @@ import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
 import { tokenizeToString } from '../../../../editor/common/languages/textToHtmlTokenizer.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { editorBackground, editorForeground } from '../../../../platform/theme/common/colorRegistry.js';
@@ -72,12 +73,15 @@ type FsInbound =
 	| { t: 'docx'; id: string; ws: string; path: string }
 	| { t: 'media'; id: string; ws: string; path: string }
 	| { t: 'find'; id: string; ws: string; query: string }
-	| { t: 'grep'; id: string; ws: string; query: string };
+	| { t: 'grep'; id: string; ws: string; query: string }
+	| { t: 'upload'; id: string; name: string; data: string };
 
 const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト。FrameMuxのチャンク分割転送で1MiB超の応答も送れる）
 // バイナリ（PDF・Word・画像・動画・音声）の読み取り上限。base64 で約1.37倍に膨らむため、
 // FrameMux の再結合上限（FRAME_REASSEMBLY_LIMIT = 32MiB）に収まるようここで抑える（20MiB → base64 約27MiB）。
 const BINARY_READ_LIMIT = 20 * 1024 * 1024;
+const UPLOAD_LIMIT = 10 * 1024 * 1024; // モバイルからの添付アップロード上限（バイト）
+const UPLOAD_BASE64_LIMIT = Math.ceil(UPLOAD_LIMIT * 4 / 3) + 4; // 同、base64文字列長での事前判定用
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
 const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字。serialize不可時のフォールバック用）
 const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
@@ -113,6 +117,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly agentStatusStore: IParadisAgentStatusStore,
 		private readonly logService: ILogService,
 		private readonly fileService: IFileService,
+		private readonly environmentService: IEnvironmentService,
 		private readonly languageService: ILanguageService,
 		private readonly extensionService: IExtensionService,
 		private readonly themeService: IThemeService,
@@ -612,6 +617,30 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const reply = (body: object) => {
 			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ id: msg.id, ...body }))), mobileId: mobileId || undefined });
 		};
+		// 画像アップロード（エージェントへの添付用）。ワークスペースを汚さないよう
+		// userData 配下の専用ディレクトリへ保存し、フルパスを返す（モバイル側がPTYへ
+		// パスを貼り付け、エージェントCLIがそのパスの画像を読む）。パスは取らないため
+		// パス解決の前に処理する。ファイル名はサニタイズし、脱出の余地を残さない。
+		if (msg.t === 'upload') {
+			try {
+				if (msg.data.length > UPLOAD_BASE64_LIMIT) {
+					// allow-any-unicode-next-line
+					reply({ error: `ファイルが大きすぎます。添付は ${Math.round(UPLOAD_LIMIT / 1024 / 1024)}MB までです。` });
+					return;
+				}
+				const content = decodeBase64(msg.data);
+				const dot = msg.name.lastIndexOf('.');
+				const ext = dot >= 0 ? msg.name.slice(dot + 1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) : '';
+				const dir = joinPath(this.environmentService.userRoamingDataHome, 'paraMobileUploads');
+				// 同ミリ秒の連続アップロードで上書きしないよう乱数サフィックスを付ける
+				const target = joinPath(dir, `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext ? `.${ext}` : ''}`);
+				await this.fileService.writeFile(target, content);
+				reply({ t: 'upload', path: target.fsPath });
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
 		// 検索（find/grep）はパスでなくクエリを取るため、パス解決の前に処理する。
 		// 実行はshared process（ripgrep）。ワークスペースルート起点なので脱出の余地はない。
 		if (msg.t === 'find' || msg.t === 'grep') {

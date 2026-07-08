@@ -138,6 +138,21 @@ class MobileSession {
 			}
 			await this.mux!.receive(payload);
 		} catch (err) {
+			// 自己回復: ハンドシェイク確立中/確立後に処理できない32Bのペイロードが届いた場合、
+			// それはモバイルが再接続して送り直した新しい hello（ephemeral公開鍵32B）である
+			// 可能性が高い（正規のsealed frameはヘッダ+nonce+tagで32Bより必ず大きい）。
+			// リレーからのモバイルoffline通知が欠落した場合（旧ソケットのcloseが届かない等）、
+			// 古いセッションに固着したままだと新しい接続のhelloを永久に復号失敗で無視し続けて
+			// モバイルが二度と接続できなくなるため、セッションを破棄してhelloとして処理し直す。
+			if (payload.length === 32 && this.channel !== undefined) {
+				this.logService.info(`[paradisMobileRelay] session ${this.mobileId}: undecryptable 32B payload; treating as new hello (session reset)`);
+				this.channel = undefined;
+				this.mux = undefined;
+				this.confirmed = false;
+				this.pendingVerify = undefined;
+				await this.handlePayload(payload);
+				return;
+			}
 			this.logService.warn(`[paradisMobileRelay] session ${this.mobileId} error`, err);
 		}
 	}
