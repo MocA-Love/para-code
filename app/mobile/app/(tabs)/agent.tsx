@@ -9,6 +9,11 @@ import { isAgentWaiting, type AgentChatMessage } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { MarkdownText } from '../../src/components/markdownText.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
+import { ScreenTitle } from '../../src/components/screenTitle.js';
+import { QuestionCard } from '../../src/components/questionCard.js';
+import { ApprovalCard } from '../../src/components/approvalCard.js';
+import { useAgentActions } from '../../src/hooks/useAgentActions.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
 
 /**
@@ -23,13 +28,14 @@ import { colors } from '../../src/theme.js';
  */
 export default function AgentScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, agentChats, selectedTerminalId, setSelectedTerminalId, attachAgent, detachAgent, refreshAgent, sendInput } = useAppStore(useShallow(s => ({
+	const { workspace, agentChats, selectedTerminalId, setSelectedTerminalId, attachAgent, detachAgent, refreshAgent } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats,
 		selectedTerminalId: s.selectedTerminalId, setSelectedTerminalId: s.setSelectedTerminalId,
-		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent, sendInput: s.sendInput,
+		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 	})));
 	const [input, setInput] = useState('');
 	const listRef = useRef<FlatList<ChatRow>>(null);
+	const tabBarSpacer = useTabBarSpacer();
 
 	const terminals = (workspace?.terminals ?? []).filter(t =>
 		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
@@ -37,6 +43,7 @@ export default function AgentScreen() {
 	const activeId = activeTerminal?.id;
 	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
 	const permissionPending = activeTerminal?.agentStatus === 'permission';
+	const actions = useAgentActions(activeId, chat?.agent);
 
 	// CLI版のUXに合わせ、本文(text)以外の連続する thinking / tool_use / tool_result を
 	// 1つの「アクティビティ」行へ集約する（デフォルト折りたたみ、タップで展開）。
@@ -91,63 +98,16 @@ export default function AgentScreen() {
 		return undefined;
 	}, [messageCount, activeId]);
 
-	const send = (data: string) => {
-		if (activeId !== undefined) {
-			sendInput(activeId, data);
-		}
-	};
 	const submit = () => {
 		const text = input;
 		setInput('');
-		// TUIの入力欄へテキストを入れ、少し置いてからCRで確定する（貼り付け直後の
-		// 確定はTUI側の取りこぼしがあるため。承認番号注入と同じ250ms方式）。
-		send(text);
-		setTimeout(() => send('\r'), 250);
-	};
-
-	/** キー列を一定間隔（300ms）でPTYへ注入する（TUIが1入力ずつ処理する時間を確保する）。 */
-	const sendSequence = (parts: string[]) => {
-		if (activeId === undefined) {
-			return;
-		}
-		parts.forEach((part, i) => setTimeout(() => send(part), i * 300));
-	};
-
-	/**
-	 * 質問(AskUserQuestion)への回答。TUIの選択プロンプトは番号キーで選択肢へジャンプするため、
-	 * 承認注入と同じ「番号 → CR」方式で選んで確定する（複数質問タブは回答すると
-	 * 自動で次のタブへ進むので、順に回答すれば最後に Submit される）。
-	 */
-	const answerQuestion = (optionIndex: number) => sendSequence([String(optionIndex + 1), '\r']);
-
-	/** 複数選択(multiSelect)の質問: 番号でジャンプしてスペースでトグルする（確定はしない）。 */
-	const toggleQuestionOption = (optionIndex: number) => sendSequence([String(optionIndex + 1), ' ']);
-
-	/** 複数選択(multiSelect)の質問の確定（Enter）。 */
-	const confirmQuestion = () => sendSequence(['\r']);
-
-	/**
-	 * 自由入力での回答。AskUserQuestion のTUIは選択肢の末尾に常に「Other」（自由入力）を
-	 * 持つため、「Otherの番号 → CR（入力欄が開く） → テキスト → CR（確定）」を注入する。
-	 */
-	const answerQuestionFreeText = (optionCount: number, text: string) => sendSequence([String(optionCount + 1), '\r', text, '\r']);
-
-	/** 承認クイックアクション。Claudeは番号+250ms+CR、Codexはショートカット1文字。 */
-	const approve = (choice: 'yes' | 'no') => {
-		if (activeId === undefined) {
-			return;
-		}
-		if (chat?.agent === 'codex') {
-			send(choice === 'yes' ? 'y' : 'd');
-		} else {
-			send(choice === 'yes' ? '1' : '3');
-			setTimeout(() => send('\r'), 250);
-		}
+		actions.sendText(text);
 	};
 
 	return (
 		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+			<ScreenTitle title="エージェント" subtitle="応答待ちの質問・承認をここで完結" />
 			<WsBar />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
 				{terminals.map((t, i) => {
@@ -199,7 +159,7 @@ export default function AgentScreen() {
 						ListFooterComponent={activeTerminal?.agentStatus === 'working' ? <WorkingIndicator /> : null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} />
-								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={answerQuestion} onToggle={toggleQuestionOption} onConfirm={confirmQuestion} onFreeText={answerQuestionFreeText} />
+								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onToggle={actions.toggleQuestionOption} onConfirm={actions.confirmQuestion} onFreeText={actions.answerQuestionFreeText} />
 									: <ActivityGroup msgs={item.msgs} />}
 						contentContainerStyle={styles.listContent}
 					/>
@@ -207,21 +167,12 @@ export default function AgentScreen() {
 			</View>
 
 			{permissionPending && activeId !== undefined ? (
-				<View style={styles.approvalBar}>
-					<Text style={styles.approvalText}>エージェントが確認を求めています</Text>
-					<View style={styles.approvalButtons}>
-						<Pressable style={[styles.approvalBtn, styles.approveBtn]} onPress={() => approve('yes')}>
-							<Text style={styles.approvalBtnText}>許可</Text>
-						</Pressable>
-						<Pressable style={[styles.approvalBtn, styles.denyBtn]} onPress={() => approve('no')}>
-							<Text style={styles.approvalBtnText}>拒否</Text>
-						</Pressable>
-					</View>
-					<Text style={styles.approvalHint}>選択肢が複数ある場合はターミナルタブで確認できます</Text>
+				<View style={styles.approvalBarWrap}>
+					<ApprovalCard onApprove={actions.approve} />
 				</View>
 			) : null}
 
-			<View style={styles.inputBar}>
+			<View style={[styles.inputBar, { paddingBottom: tabBarSpacer }]}>
 				<TextInput
 					style={styles.input}
 					value={input}
@@ -296,107 +247,6 @@ function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
 	);
 }
 
-/**
- * 質問カード（Claude Code の AskUserQuestion 等）。
- *  - 単一選択: 選択肢タップで番号+EnterをPTYへ注入して即回答
- *  - 複数選択(multiSelect): タップでトグル（番号+スペース注入）し、「決定」でEnter注入
- *  - 自由入力: カード内の入力欄からTUIの「Other」（常に選択肢の末尾に存在）経由で回答
- * 同じ toolUseId の tool_result が届いたら回答済み表示になる。
- */
-function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm, onFreeText }: {
-	message: AgentChatMessage;
-	answered: boolean;
-	onAnswer: (optionIndex: number) => void;
-	onToggle: (optionIndex: number) => void;
-	onConfirm: () => void;
-	onFreeText: (optionCount: number, text: string) => void;
-}) {
-	// 二度押し防止のローカル状態（tool_result が届くまでの間）
-	const [selected, setSelected] = useState<number | undefined>(undefined);
-	const [toggled, setToggled] = useState<Set<number>>(new Set());
-	const [freeText, setFreeText] = useState('');
-	const [submitted, setSubmitted] = useState(false);
-	const multiSelect = message.multiSelect === true;
-	const options = message.options ?? [];
-	const disabled = answered || submitted || (!multiSelect && selected !== undefined);
-	const isToggled = (i: number) => toggled.has(i);
-	const toggle = (i: number) => {
-		setToggled(prev => {
-			const next = new Set(prev);
-			if (next.has(i)) {
-				next.delete(i);
-			} else {
-				next.add(i);
-			}
-			return next;
-		});
-		onToggle(i);
-	};
-	return (
-		<View style={[styles.questionCard, answered && styles.questionCardAnswered]}>
-			<View style={styles.questionHeader}>
-				<Ionicons name="help-circle" size={16} color={answered ? colors.textDim : colors.accent2} />
-				{message.header ? <Text style={styles.questionChip}>{message.header}</Text> : null}
-				{multiSelect ? <Text style={styles.questionChip}>複数選択可</Text> : null}
-				{answered ? <Text style={styles.questionAnswered}>回答済み</Text> : null}
-			</View>
-			<Text style={styles.questionText} selectable>{message.text}</Text>
-			{options.map((option, i) => (
-				<Pressable
-					key={i}
-					style={[styles.questionOption, (multiSelect ? isToggled(i) : selected === i) && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
-					disabled={disabled}
-					onPress={() => {
-						if (multiSelect) {
-							toggle(i);
-						} else {
-							setSelected(i);
-							onAnswer(i);
-						}
-					}}
-				>
-					<Text style={styles.questionOptionLabel}>{multiSelect ? (isToggled(i) ? '☑' : '☐') : `${i + 1}.`} {option.label}</Text>
-					{option.description ? <Text style={styles.questionOptionDesc} numberOfLines={3}>{option.description}</Text> : null}
-				</Pressable>
-			))}
-			{multiSelect && !disabled ? (
-				<Pressable
-					style={[styles.questionConfirmBtn, toggled.size === 0 && styles.sendBtnDisabled]}
-					disabled={toggled.size === 0}
-					onPress={() => { setSubmitted(true); onConfirm(); }}
-				>
-					<Text style={styles.approvalBtnText}>決定（{toggled.size}件）</Text>
-				</Pressable>
-			) : null}
-			{!disabled ? (
-				<View style={styles.questionFreeRow}>
-					<TextInput
-						style={styles.questionFreeInput}
-						value={freeText}
-						onChangeText={setFreeText}
-						placeholder="自由に入力して回答…"
-						placeholderTextColor={colors.textDim}
-						autoCapitalize="none"
-						autoCorrect={false}
-					/>
-					<Pressable
-						style={[styles.questionFreeSend, freeText.trim().length === 0 && styles.sendBtnDisabled]}
-						disabled={freeText.trim().length === 0}
-						onPress={() => { setSubmitted(true); onFreeText(options.length, freeText.trim()); }}
-						accessibilityLabel="自由入力で回答"
-					>
-						<Ionicons name="arrow-up" size={16} color="#fff" />
-					</Pressable>
-				</View>
-			) : null}
-			{!answered && options.length === 0 ? (
-				<Text style={styles.approvalHint}>選択肢を取得できませんでした。TUI側と番号がずれる可能性があるため、ターミナルタブでの回答が確実です</Text>
-			) : null}
-			{!disabled && options.length > 0 ? <Text style={styles.approvalHint}>{multiSelect ? 'タップで選択し「決定」で回答します' : 'タップで回答します'}</Text> : null}
-		</View>
-	);
-}
-
 function MessageBubble({ message }: { message: AgentChatMessage }) {
 	if (message.kind === 'tool_use') {
 		return (
@@ -458,7 +308,7 @@ const styles = StyleSheet.create({
 	tabBar: { flexGrow: 0, flexShrink: 0 },
 	tabContent: { paddingHorizontal: 16, paddingBottom: 8, gap: 8, alignItems: 'center' },
 	tabChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 200 },
-	tabChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(0,122,204,.16)' },
+	tabChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
 	tabText: { color: colors.textDim, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	tabTextActive: { color: colors.text },
 	dotRed: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
@@ -474,7 +324,7 @@ const styles = StyleSheet.create({
 	retryText: { color: colors.text, fontSize: 12 },
 	truncatedNote: { color: colors.textDim, fontSize: 11, textAlign: 'center', paddingBottom: 8 },
 	bubble: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, maxWidth: '88%' },
-	bubbleUser: { alignSelf: 'flex-end', backgroundColor: 'rgba(0,122,204,.28)' },
+	bubbleUser: { alignSelf: 'flex-end', backgroundColor: 'rgba(9,175,217,.28)' },
 	bubbleAssistant: { alignSelf: 'flex-start', backgroundColor: colors.surface },
 	bubbleText: { color: colors.text, fontSize: 13, lineHeight: 19 },
 	thinkingText: { color: colors.textDim, fontSize: 11, fontStyle: 'italic', lineHeight: 16, paddingHorizontal: 4 },
@@ -483,29 +333,7 @@ const styles = StyleSheet.create({
 	activityBody: { gap: 6, paddingLeft: 14, paddingTop: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border, marginLeft: 8 },
 	toolRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 4 },
 	toolText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flex: 1, lineHeight: 15 },
-	approvalBar: { marginHorizontal: 12, marginTop: 8, backgroundColor: 'rgba(220,80,80,.12)', borderWidth: 1, borderColor: colors.red, borderRadius: 10, padding: 10, gap: 8 },
-	approvalText: { color: colors.text, fontSize: 13, fontWeight: '600' },
-	approvalButtons: { flexDirection: 'row', gap: 10 },
-	approvalBtn: { flex: 1, borderRadius: 8, paddingVertical: 9, alignItems: 'center' },
-	approveBtn: { backgroundColor: colors.accent2 },
-	denyBtn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-	approvalBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
-	approvalHint: { color: colors.textDim, fontSize: 10 },
-	questionCard: { backgroundColor: 'rgba(0,122,204,.10)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 12, padding: 12, gap: 8 },
-	questionCardAnswered: { borderColor: colors.border, backgroundColor: colors.surface, opacity: 0.75 },
-	questionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-	questionChip: { color: colors.text, fontSize: 11, fontWeight: '600', backgroundColor: colors.panel, borderRadius: 6, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },
-	questionAnswered: { color: colors.textDim, fontSize: 11, marginLeft: 'auto' },
-	questionText: { color: colors.text, fontSize: 13, lineHeight: 19, fontWeight: '600' },
-	questionOption: { backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9, gap: 3 },
-	questionOptionSelected: { borderColor: colors.accent2, backgroundColor: 'rgba(0,122,204,.20)' },
-	questionOptionDisabled: { opacity: 0.6 },
-	questionOptionLabel: { color: colors.text, fontSize: 13, fontWeight: '500' },
-	questionOptionDesc: { color: colors.textDim, fontSize: 11, lineHeight: 15 },
-	questionConfirmBtn: { backgroundColor: colors.accent2, borderRadius: 8, paddingVertical: 9, alignItems: 'center' },
-	questionFreeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-	questionFreeInput: { flex: 1, backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 12, paddingHorizontal: 10, paddingVertical: 8 },
-	questionFreeSend: { backgroundColor: colors.accent2, borderRadius: 8, width: 34, height: 34, alignItems: 'center', justifyContent: 'center' },
+	approvalBarWrap: { marginHorizontal: 12, marginTop: 8 },
 	workingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
 	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
 	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4 },

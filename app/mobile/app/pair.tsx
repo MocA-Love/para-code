@@ -32,6 +32,16 @@ export default function PairScreen() {
 		return () => { cancelPairing(); };
 	}, [cancelPairing]);
 
+	// カメラでのQRスキャンをデフォルト導線にするため、権限が未確定/未許可（まだ
+	// 尋ねていない）の間に自動でリクエストする。拒否された場合やシミュレータ等で
+	// ハードウェアが無い場合は permission.granted が false のままなのでリンク貼り付けへ
+	// フォールバックする（pasteMode || !permission.granted の分岐、下記参照）。
+	useEffect(() => {
+		if (permission && !permission.granted && permission.canAskAgain) {
+			void requestPermission();
+		}
+	}, [permission, requestPermission]);
+
 	const connect = async (uri: string) => {
 		setError(undefined);
 		try {
@@ -72,7 +82,14 @@ export default function PairScreen() {
 		);
 	}
 
-	if (pasteMode || !permission?.granted) {
+	// 権限の確定前（初回マウント直後、上のuseEffectでリクエスト中）はリンク貼り付けに
+	// 落とさず、確定を待つ（ここでリンク貼り付けを先に出すと、許可済みの実機でも
+	// 一瞬リンク貼り付け画面が見えてからカメラに切り替わるチラつきが起きるため）。
+	if (!permission) {
+		return <View style={styles.center}><Text style={styles.dim}>カメラを準備中…</Text></View>;
+	}
+
+	if (pasteMode || !permission.granted) {
 		return (
 			<KeyboardAvoidingView style={styles.center} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 				<Text style={styles.title}>リンクを貼り付けて接続</Text>
@@ -91,17 +108,13 @@ export default function PairScreen() {
 				<Pressable style={styles.primaryBtn} onPress={onSubmitPasted} disabled={connecting}>
 					<Text style={styles.primaryBtnText}>{connecting ? '接続中…' : '接続'}</Text>
 				</Pressable>
-				{permission && !permission.granted ? (
+				{!permission.granted ? (
 					<Pressable onPress={requestPermission}><Text style={styles.linkText}>カメラでQRを読み取る</Text></Pressable>
 				) : (
 					<Pressable onPress={() => setPasteMode(false)}><Text style={styles.linkText}>QRを読み取る（カメラを使う）</Text></Pressable>
 				)}
 			</KeyboardAvoidingView>
 		);
-	}
-
-	if (!permission) {
-		return <View style={styles.center}><Text style={styles.dim}>カメラを準備中…</Text></View>;
 	}
 
 	return (
@@ -129,14 +142,14 @@ const styles = StyleSheet.create({
 	center: { flex: 1, backgroundColor: '#0d1117', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 },
 	title: { color: '#fff', fontSize: 22, fontWeight: '700' },
 	dim: { color: '#8b8b8b', fontSize: 13, textAlign: 'center', lineHeight: 20 },
-	sas: { color: '#4fc3f7', fontSize: 44, fontWeight: '700', letterSpacing: 10, fontVariant: ['tabular-nums'] },
+	sas: { color: '#09AFD9', fontSize: 44, fontWeight: '700', letterSpacing: 10, fontVariant: ['tabular-nums'] },
 	appIcon: { width: 72, height: 72 },
 	overlay: { position: 'absolute', bottom: 60, left: 20, right: 20, alignItems: 'center', gap: 8 },
 	scanHint: { color: '#fff', fontSize: 13, textAlign: 'center', backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 8, overflow: 'hidden' },
 	error: { color: '#f48771', fontSize: 12, textAlign: 'center' },
-	primaryBtn: { backgroundColor: '#007acc', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
+	primaryBtn: { backgroundColor: '#0598BD', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
 	primaryBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
 	input: { width: '100%', minHeight: 90, backgroundColor: '#252526', borderRadius: 10, borderWidth: 1, borderColor: '#3c3c3c', color: '#cccccc', fontSize: 13, padding: 12, textAlignVertical: 'top' },
-	linkText: { color: '#4fc3f7', fontSize: 13, marginTop: 4 },
+	linkText: { color: '#09AFD9', fontSize: 13, marginTop: 4 },
 	linkTextLight: { color: '#fff', fontSize: 13, textDecorationLine: 'underline' },
 });

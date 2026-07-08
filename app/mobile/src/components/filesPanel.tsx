@@ -4,16 +4,16 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../src/appState.js';
-import { ConnectionGate } from '../../src/components/connectionGate.js';
-import { FileViewer, MEDIA_FILE_PATTERN } from '../../src/components/fileViewer.js';
-import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
-import { colors } from '../../src/theme.js';
-import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../../src/store.js';
+import { useAppStore } from '../appState.js';
+import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
+import { useEffectiveWs } from './wsBar.js';
+import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
+import { colors } from '../theme.js';
+import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../store.js';
 
 /**
- * ファイル画面（モックアップ準拠）。ワークスペースのファイルツリーを閲覧し、
- * タップでのフルスクリーンビューア表示に対応（読み取り専用）。
+ * ファイルパネル（モックアップ mock-2.html 準拠、「その他」タブのセグメント）。
+ * ワークスペースのファイルツリーを閲覧し、タップでのフルスクリーンビューア表示に対応（読み取り専用）。
  * ビューアはPC版と同じテーマのシンタックスハイライトで表示し、.md/.htmlは
  * レンダー/Raw を切り替えられる。
  *
@@ -21,10 +21,11 @@ import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../
  *  - ファイル名: 全階層の相対パスに対する部分一致（.gitignore尊重、ランク順）
  *  - テキスト: 全文検索（スマートケース・リテラル一致、行プレビュー付き）
  */
-export default function FilesScreen() {
+export function FilesPanel() {
 	const ws = useEffectiveWs();
 	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
 
+	const tabBarSpacer = useTabBarSpacer();
 	const [path, setPath] = useState('');
 	const [listing, setListing] = useState<FsListResult | undefined>();
 	const [filter, setFilter] = useState('');
@@ -193,9 +194,7 @@ export default function FilesScreen() {
 	const searchActive = filter.trim().length > 0;
 
 	return (
-		<ConnectionGate>
 		<View style={styles.screen}>
-			<WsBar />
 			<View style={styles.searchBox}>
 				<Ionicons name="search-outline" size={14} color={colors.textDim} />
 				<TextInput
@@ -224,6 +223,7 @@ export default function FilesScreen() {
 			{!searchActive ? <Text style={styles.breadcrumb} numberOfLines={1}>{crumbs.join(' › ')}</Text> : null}
 			<ScrollView
 				style={styles.list}
+				contentContainerStyle={{ paddingBottom: tabBarSpacer }}
 				keyboardShouldPersistTaps="handled"
 				refreshControl={!searchActive ? <RefreshControl refreshing={loading} onRefresh={() => { void load(path); }} tintColor={colors.textDim} /> : undefined}
 			>
@@ -303,7 +303,6 @@ export default function FilesScreen() {
 				/>
 			) : null}
 		</View>
-		</ConnectionGate>
 	);
 }
 
@@ -329,7 +328,7 @@ const styles = StyleSheet.create({
 	rowName: { flex: 1, color: colors.text, fontSize: 14 },
 	size: { color: colors.textDim, fontSize: 11 },
 	modeChip: { borderRadius: 8, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 8, paddingVertical: 4 },
-	modeChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(0,122,204,.16)' },
+	modeChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
 	modeText: { color: colors.textDim, fontSize: 11 },
 	modeTextActive: { color: colors.text, fontWeight: '600' },
 	resultCol: { flex: 1, gap: 2 },

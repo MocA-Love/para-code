@@ -17,7 +17,7 @@ const REAUTH_GRACE_MS = 10 * 60 * 1000;
 
 type GateState = 'locked' | 'authenticating' | 'unlocked';
 
-export function AuthGate({ children }: { children: React.ReactNode }) {
+export function AuthGate({ children, onUnlock }: { children: React.ReactNode; onUnlock?: () => void }) {
 	const [state, setState] = useState<GateState>('locked');
 	const stateRef = useRef(state);
 	stateRef.current = state;
@@ -42,6 +42,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 			if (!enrolled) {
 				// 生体情報もパスコードも未設定の端末ではロックが成立しないため通す
 				setState('unlocked');
+				onUnlock?.();
 				return;
 			}
 			const result = await LocalAuthentication.authenticateAsync({
@@ -50,13 +51,16 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 			});
 			if (attempt === attemptRef.current) {
 				setState(result.success ? 'unlocked' : 'locked');
+				if (result.success) {
+					onUnlock?.();
+				}
 			}
 		} catch {
 			if (attempt === attemptRef.current) {
 				setState('locked');
 			}
 		}
-	}, []);
+	}, [onUnlock]);
 
 	useEffect(() => {
 		void authenticate();

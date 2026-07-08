@@ -9,6 +9,8 @@ import { isAgentWaiting } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { TermView } from '../../src/components/termView.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
+import { ScreenTitle } from '../../src/components/screenTitle.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
 
 /**
@@ -27,6 +29,7 @@ export default function TerminalScreen() {
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, sendInput: s.sendInput, createTerminal: s.createTerminal,
 	})));
 	const [input, setInput] = useState('');
+	const tabBarSpacer = useTabBarSpacer();
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
 	// （全ワークスペースに重複表示しない）。
@@ -60,6 +63,7 @@ export default function TerminalScreen() {
 	return (
 		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
+			<ScreenTitle title="ターミナル" />
 			<WsBar />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
 				{terminals.map((t, i) => {
@@ -96,7 +100,7 @@ export default function TerminalScreen() {
 				<Pressable style={styles.key} onPress={() => send('/')}><Text style={styles.keyText}>/</Text></Pressable>
 				<Pressable style={styles.key} onPress={() => send('|')}><Text style={styles.keyText}>|</Text></Pressable>
 			</ScrollView>
-			<View style={styles.inputBar}>
+			<View style={[styles.inputBar, { paddingBottom: tabBarSpacer }]}>
 				<TextInput
 					style={styles.input}
 					value={input}
@@ -122,7 +126,7 @@ const styles = StyleSheet.create({
 	tabBar: { flexGrow: 0, flexShrink: 0 },
 	tabContent: { paddingHorizontal: 16, paddingBottom: 8, gap: 8, alignItems: 'center' },
 	tabChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 200 },
-	tabChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(0,122,204,.16)' },
+	tabChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
 	tabText: { color: colors.textDim, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	tabTextActive: { color: colors.text },
 	dotRed: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },

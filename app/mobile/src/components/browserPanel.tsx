@@ -3,34 +3,34 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, GestureResponderEvent, Image, LayoutChangeEvent, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../src/appState.js';
-import { ConnectionGate } from '../../src/components/connectionGate.js';
-import { WsBar } from '../../src/components/wsBar.js';
-import { colors } from '../../src/theme.js';
+import { useAppStore } from '../appState.js';
+import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
+import { colors } from '../theme.js';
 
 /**
- * ブラウザ画面（モックアップ準拠、設計書 M3）。PC側 para-browser の screencast を
- * 同期表示し、タップ・スクロール・戻る/進む/再読み込みを送る。
+ * ブラウザパネル（モックアップ mock-2.html 準拠、設計書 M3、「その他」タブのセグメント）。
+ * PC側 para-browser の screencast を同期表示し、タップ・スクロール・戻る/進む/再読み込みを送る。
+ *
+ * `active` が false の間（タブがフォーカスを失った、またはセグメントがブラウザでない）は
+ * screencast を停止する。ファイル/ブラウザがタブ統合される前は `useIsFocused()` のみで
+ * 判定できたが、統合後はタブのfocusとセグメント選択の両方を親（more.tsx）から渡してもらう
+ * 必要がある（そうしないとセグメント切替時にscreencastが止まらず電池/帯域を無駄にする）。
  */
-export default function BrowserScreen() {
+export function BrowserPanel({ active }: { active: boolean }) {
 	const { browserTargets, browserStart, browserStop, browserInput, frame, connection } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,
 		browserInput: s.browserInput, frame: s.browserFrame, connection: s.connection,
 	})));
 
+	const tabBarSpacer = useTabBarSpacer();
 	const [targets, setTargets] = useState<{ targetId: string; title: string; url: string }[] | undefined>();
 	const [error, setError] = useState<string | undefined>();
 	const [activeUrl, setActiveUrl] = useState<string | undefined>();
 	const [viewSize, setViewSize] = useState({ w: 1, h: 1 });
 
-	// タブが表示中(focused)か。expo-router の Tabs は他タブへ移っても画面をアンマウントしない
-	// ため、これを見て screencast を停止/再開する（裏でフレーム送受信が回り続けてPC・電池を
-	// 消費するのを防ぐ）。
-	const isFocused = useIsFocused();
 	// ミラー中の targetId。ユーザーが明示的に「切替」した時のみ undefined に戻す。
-	// blur→focus の往復では、これが残っていれば同じ targetId でミラーを自動で張り直す。
+	// active の解除→再有効化の往復では、これが残っていれば同じ targetId でミラーを自動で張り直す。
 	const mirrorActiveRef = useRef<string | undefined>(undefined);
 
 	const loadTargets = useCallback(async () => {
@@ -71,20 +71,20 @@ export default function BrowserScreen() {
 		}
 	}, [connection]);
 
-	// タブの blur/focus で screencast を止め／再開する（バッテリー対策）。
-	// blur 時は最後のフレームを残したまま停止し（browserStop(true)）、再 focus 時はミラーが
+	// active の解除/有効化で screencast を止め／再開する（バッテリー対策）。
+	// 解除時は最後のフレームを残したまま停止し（browserStop(true)）、再有効化時はミラーが
 	// 有効だった場合のみ同じ targetId で張り直す。ユーザーには静止画→最新画面の自然な
 	// 切り替えだけが見え、空白やスピナーは出さない。ミラー未開始時は何もしない。
 	useEffect(() => {
 		if (connection !== 'online' || mirrorActiveRef.current === undefined) {
 			return;
 		}
-		if (isFocused) {
+		if (active) {
 			void browserStart(mirrorActiveRef.current).catch(() => undefined);
 		} else {
 			void browserStop(true);
 		}
-	}, [isFocused, connection, browserStart, browserStop]);
+	}, [active, connection, browserStart, browserStop]);
 
 	const start = async (targetId: string, url: string) => {
 		setError(undefined);
@@ -119,10 +119,8 @@ export default function BrowserScreen() {
 
 	if (activeUrl === undefined) {
 		return (
-			<ConnectionGate>
 			<View style={styles.screen}>
-				<WsBar />
-				<ScrollView style={styles.picker} contentContainerStyle={styles.pickerContent}>
+				<ScrollView style={styles.picker} contentContainerStyle={[styles.pickerContent, { paddingBottom: tabBarSpacer }]}>
 					<Text style={styles.sectionTitle}>ミラーするページを選択</Text>
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 					{targets === undefined ? <ActivityIndicator style={styles.spinner} /> : null}
@@ -140,12 +138,10 @@ export default function BrowserScreen() {
 					</Pressable>
 				</ScrollView>
 			</View>
-			</ConnectionGate>
 		);
 	}
 
 	return (
-		<ConnectionGate>
 		<View style={styles.screen}>
 			<View style={styles.syncBanner}>
 				<Ionicons name="link-outline" size={13} color={colors.accent} />
@@ -180,7 +176,7 @@ export default function BrowserScreen() {
 					<View style={styles.center}><ActivityIndicator /><Text style={styles.dim}>フレームを待っています…</Text></View>
 				)}
 			</ScrollView>
-			<View style={styles.toolbar}>
+			<View style={[styles.toolbar, { paddingBottom: tabBarSpacer }]}>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'back' })}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'forward' })}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'reload' })}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
@@ -191,7 +187,6 @@ export default function BrowserScreen() {
 				</Pressable>
 			</View>
 		</View>
-		</ConnectionGate>
 	);
 }
 
@@ -208,7 +203,7 @@ const styles = StyleSheet.create({
 	targetUrl: { color: colors.textDim, fontSize: 11, marginTop: 3 },
 	reloadTargets: { alignItems: 'center', marginTop: 8 },
 	link: { color: colors.accent, fontSize: 13 },
-	syncBanner: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(0,122,204,.12)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 10, marginHorizontal: 12, marginTop: 8, paddingVertical: 8, paddingHorizontal: 12 },
+	syncBanner: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(9,175,217,.12)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 10, marginHorizontal: 12, marginTop: 8, paddingVertical: 8, paddingHorizontal: 12 },
 	syncText: { color: colors.accent, fontSize: 12 },
 	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 8, paddingVertical: 8, paddingHorizontal: 12 },
 	urlText: { color: colors.text, fontSize: 12, fontFamily: 'Menlo' },
