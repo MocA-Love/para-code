@@ -37,7 +37,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.mobile.agent.codexDaemonStreaming', "実験的: `codex remote-control start` などで既に稼働しているローカル app-server daemonへ読み取りクライアントとして接続し、Codexの生成中テキストとツール出力をPara Code Mobileへリアルタイム表示します。macOS/Linuxのみ対応し、daemonの起動は行いません。複数クライアント購読はCodex側で発展中の機能のため、問題がある場合は無効にしてください。無効時や接続失敗時は従来のhook/transcript同期へ自動的に戻ります。")
+			markdownDescription: localize('paradis.mobile.agent.codexDaemonStreaming', "実験的: ローカルのCodex app-server daemonを起動または再利用し、その後に開始したCodexセッションの生成中テキスト・ツール出力・動的モデル一覧・次ターン設定をPara Code Mobileへ連携します。macOS/Linuxのみ対応します。Para Codeは共有daemonを停止しません。複数クライアント購読はCodex側で発展中の機能のため、問題がある場合は無効にしてください。無効時や接続失敗時は従来のhook/transcript同期へ自動的に戻ります。")
 		}
 	}
 });

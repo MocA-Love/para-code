@@ -57,6 +57,8 @@ interface AppState extends StoreState {
 	attachAgent(id: number): void;
 	detachAgent(id: number): void;
 	refreshAgent(id: number): void;
+	requestAgentModelCatalog(id: number): void;
+	updateAgentSettings(id: number, model: string, effort: string): void;
 	scmStatus(ws: string): Promise<ScmStatusResult>;
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
 	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult>;
@@ -309,6 +311,14 @@ export const useAppStore = create<AppState>(set => ({
 
 	refreshAgent(id: number) {
 		controller?.refreshAgent(id);
+	},
+
+	requestAgentModelCatalog(id: number) {
+		controller?.requestAgentModelCatalog(id);
+	},
+
+	updateAgentSettings(id: number, model: string, effort: string) {
+		controller?.updateAgentSettings(id, model, effort);
 	},
 
 	setSelectedWs(ws: string) {

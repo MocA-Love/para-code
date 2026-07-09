@@ -252,6 +252,93 @@ describe('MobileController', () => {
 	});
 });
 
+describe('MobileController Codex model control', () => {
+	async function setup() {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const requests: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.send(Channels.Agent, encode({ t: 'snapshot', id: 7, agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [], info: { model: 'gpt-5.6-sol', effort: 'low' } }));
+		await flush();
+		return { controller, pcMux, encode, requests, latestState: () => latest };
+	}
+
+	it('roundtrips the dynamic catalog and atomically confirms model plus effort', async () => {
+		const { controller, pcMux, encode, requests, latestState } = await setup();
+		controller.requestAgentModelCatalog(7);
+		await flush();
+		const catalogRequest = requests[0] as { t: string; id: number; requestId: string };
+		expect({ t: catalogRequest.t, id: catalogRequest.id }).toEqual({ t: 'model-catalog', id: 7 });
+
+		pcMux.send(Channels.Agent, encode({
+			t: 'model-catalog', id: 7, requestId: catalogRequest.requestId,
+			models: [{
+				id: 'gpt-5.6-terra', model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'strong',
+				efforts: [{ value: 'low', description: 'fast' }, { value: 'max', description: 'deep' }, { value: 'ultra', description: 'agents' }],
+				defaultEffort: 'low', isDefault: true,
+			}],
+		}));
+		await flush();
+		expect(latestState()?.agentChats.get(7)?.modelControl).toEqual({
+			status: 'ready',
+			models: [{
+				id: 'gpt-5.6-terra', model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'strong',
+				efforts: [{ value: 'low', description: 'fast' }, { value: 'max', description: 'deep' }, { value: 'ultra', description: 'agents' }],
+				defaultEffort: 'low', isDefault: true,
+			}],
+		});
+
+		controller.updateAgentSettings(7, 'gpt-5.6-terra', 'ultra');
+		await flush();
+		const updateRequest = requests[1] as { t: string; id: number; requestId: string; model: string; effort: string };
+		expect(updateRequest).toEqual({
+			t: 'settings-update', id: 7, requestId: updateRequest.requestId, model: 'gpt-5.6-terra', effort: 'ultra',
+		});
+		pcMux.send(Channels.Agent, encode({ t: 'settings-update', id: 7, requestId: updateRequest.requestId, status: 'pending' }));
+		pcMux.send(Channels.Agent, encode({
+			t: 'settings-update', id: 7, requestId: updateRequest.requestId, status: 'confirmed',
+			info: { model: 'gpt-5.6-terra', effort: 'ultra' },
+		}));
+		await flush();
+		expect({ info: latestState()?.agentChats.get(7)?.info, control: latestState()?.agentChats.get(7)?.modelControl }).toEqual({
+			info: { model: 'gpt-5.6-terra', effort: 'ultra' },
+			control: { status: 'ready', models: latestState()?.agentChats.get(7)?.modelControl?.models },
+		});
+	});
+
+	it('ignores stale responses and rejects a malformed catalog at the relay boundary', async () => {
+		const { controller, pcMux, encode, requests, latestState } = await setup();
+		controller.requestAgentModelCatalog(7);
+		await flush();
+		const request = requests[0] as { requestId: string };
+		pcMux.send(Channels.Agent, encode({
+			t: 'model-catalog', id: 7, requestId: `${request.requestId}-stale`,
+			models: [{ id: 'stale', model: 'stale', displayName: 'Stale', efforts: [{ value: 'high', description: '' }], defaultEffort: 'high', isDefault: true }],
+		}));
+		await flush();
+		expect(latestState()?.agentChats.get(7)?.modelControl?.status).toBe('loading');
+
+		pcMux.send(Channels.Agent, encode({
+			t: 'model-catalog', id: 7, requestId: request.requestId,
+			models: [{ id: 'broken', model: 'broken', displayName: 'Broken', efforts: [{ value: 42 }], defaultEffort: 'high', isDefault: true }],
+		}));
+		await flush();
+		expect(latestState()?.agentChats.get(7)?.modelControl).toEqual({
+			status: 'error', models: [], errorCode: 'invalid-response', errorMessage: 'Codexのモデル一覧レスポンスが不正です',
+		});
+	});
+});
+
 // --- ターミナル同期プロトコル（epoch/seq/ACK） ---
 
 describe('MobileController terminal sync protocol', () => {
