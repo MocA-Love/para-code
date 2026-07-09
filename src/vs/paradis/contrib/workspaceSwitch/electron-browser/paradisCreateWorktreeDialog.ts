@@ -9,7 +9,7 @@
 // 「新しいスペース（worktree）を作成」ダイアログ（Superset の New Workspace モーダル相当）。
 // 自然言語プロンプト＋エージェント選択＋ベースブランチ選択から、
 //   1. git worktree add -b <branch>（shared process の paradisWorktreeGitChannel 経由）
-//   2. ブランチ名/スペース名の自動命名（手入力 > Copilot 小型モデル > 決定的フォールバック）
+//   2. ブランチ名の自動命名（手入力 > Copilot 小型モデル > 決定的フォールバック）
 //   3. 新スペースへの切り替え（IParadisWorkspaceSwitchService.switchToWorktree）
 //   4. エージェントCLI をエディタ領域ターミナルで起動（プロンプトを初期引数として渡す）
 // までを一括で行う。プロンプト未入力・エージェント「なし」なら純粋な worktree 作成として動く。
@@ -27,20 +27,23 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAgentCommandTemplate,
 	IParadisGitBranches,
 	PARADIS_DEFAULT_AGENT_COMMANDS,
 	PARADIS_WORKTREE_GIT_CHANNEL,
 	paradisBuildAgentCommand,
+	paradisBuildWorktreeNames,
 	paradisSanitizeBranchName,
 	paradisSanitizeWorktreeDirName,
+	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
 
 const $ = dom.$;
@@ -48,7 +51,7 @@ const $ = dom.$;
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.createWorktree.title', "新しいスペース（worktree）を作成");
 // allow-any-unicode-next-line
-const STR_NAME_PLACEHOLDER = localize('paradis.createWorktree.namePlaceholder', "スペース名（任意）");
+const STR_NAME_PLACEHOLDER = localize('paradis.createWorktree.namePlaceholder', "スペース名（表示名・任意）");
 // allow-any-unicode-next-line
 const STR_BRANCH_PLACEHOLDER = localize('paradis.createWorktree.branchPlaceholder', "ブランチ名（任意）");
 // allow-any-unicode-next-line
@@ -84,6 +87,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		accessor.get(ILayoutService),
 		accessor.get(ISharedProcessService),
 		accessor.get(IParadisWorkspaceSwitchService),
+		accessor.get(IParadisWorktreeService),
 		accessor.get(IConfigurationService),
 		accessor.get(ITerminalService),
 		accessor.get(IEditorGroupsService),
@@ -119,6 +123,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		layoutService: ILayoutService,
 		private readonly sharedProcessService: ISharedProcessService,
 		private readonly switchService: IParadisWorkspaceSwitchService,
+		private readonly worktreeService: IParadisWorktreeService,
 		private readonly configurationService: IConfigurationService,
 		private readonly terminalService: ITerminalService,
 		private readonly editorGroupsService: IEditorGroupsService,
@@ -232,9 +237,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		this._register(dom.addDisposableListener(this._createBtn, 'click', () => void this._doCreate()));
 
 		this._register(dom.addDisposableListener(this._repoSelect, 'change', () => void this._loadBranches()));
-		for (const input of [this._nameInput, this._branchInput]) {
-			this._register(dom.addDisposableListener(input, 'input', () => this._updatePathPreview()));
-		}
+		this._register(dom.addDisposableListener(this._branchInput, 'input', () => this._updatePathPreview()));
 
 		void this._loadBranches();
 		this._updatePathPreview();
@@ -300,8 +303,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			this._pathPreview.textContent = '';
 			return;
 		}
-		const dirName = paradisSanitizeWorktreeDirName(this._nameInput.value)
-			?? paradisSanitizeWorktreeDirName(this._branchInput.value)
+		const dirName = paradisSanitizeWorktreeDirName(this._branchInput.value)
 			?? STR_AUTO;
 		this._pathPreview.textContent = this._computeWorktreeUri(repository, dirName).fsPath;
 	}
@@ -401,8 +403,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 			// 2. worktree 作成
 			this._setBusy(true, STR_CREATING);
-			const dirName = paradisSanitizeWorktreeDirName(this._nameInput.value)
-				?? paradisSanitizeWorktreeDirName(branch)!;
+			const { displayName, dirName } = paradisBuildWorktreeNames(this._nameInput.value, branch);
 			const worktreeUri = this._computeWorktreeUri(repository, dirName);
 			await this.sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('addWorktree', [{
 				repoPath: repository.uri.fsPath,
@@ -411,10 +412,17 @@ class ParadisCreateWorktreeDialog extends Disposable {
 				baseRef,
 			}]);
 
+			this.worktreeService.addKnownWorktree({
+				repositoryId: repository.id,
+				name: displayName,
+				branch,
+				uri: worktreeUri,
+			});
+
 			// 3. 新スペースへ切り替え（worktree サービスの自動検出を待たず、その場で対象を組み立てて切り替える）
 			await this.switchService.switchToWorktree({
 				repositoryId: repository.id,
-				name: dirName,
+				name: displayName,
 				branch,
 				uri: worktreeUri,
 			});
@@ -425,6 +433,14 @@ class ParadisCreateWorktreeDialog extends Disposable {
 				await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath);
 			} catch (error) {
 				this.logService.warn('[ParadisCreateWorktree] auto-run presets failed', error);
+			}
+
+			if (paradisShouldCreateDefaultTerminal(agentId, prompt)) {
+				const instance = await this.terminalService.createTerminal({
+					cwd: worktreeUri,
+					location: TerminalLocation.Panel,
+				});
+				instance.focus(true);
 			}
 
 			// 5. エージェントCLI 起動（エディタ領域ターミナル。pane トークンが自動注入されるため
