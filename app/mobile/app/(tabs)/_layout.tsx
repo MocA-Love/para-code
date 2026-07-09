@@ -9,10 +9,12 @@ import { WsDrawerLayout } from '../../src/components/wsDrawer.js';
 import { colors } from '../../src/theme.js';
 
 /**
- * 下部タブ（モックアップ mock-2.html 準拠: ホーム/エージェント/ターミナル/ソース管理/その他）。
+ * 下部タブ（ホーム/ターミナル/ソース管理/ファイル/ブラウザ）。
+ * 旧エージェントタブはホーム（全ワークスペース横断のエージェント一覧→詳細画面）に
+ * 統合し、空いた枠へ旧「その他」のセグメント（ファイル/ブラウザ）を独立タブに昇格した。
  * `NativeTabs`（expo-router/unstable-native-tabs）を使い、iOS 26実機ではOS標準の
  * Liquid Glass（半透明・屈折するタブバー）がそのまま適用される。ヘッダーはNativeTabsに
- * 概念が無いため、各画面側で独自ヘッダー（ワークスペースピッカー等）を描画する。
+ * 概念が無いため、各画面側で独自ヘッダー（ワークスペースドロワーのチップ等）を描画する。
  *
  * 各Triggerの`contentStyle.backgroundColor`は、iOS 26+ではコンテンツにより自動決定され
  * 上書きできない（画面遷移時の白フラッシュ対策は代わりに root の _layout.tsx で
@@ -21,7 +23,7 @@ import { colors } from '../../src/theme.js';
  */
 export default function TabsLayout() {
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
-	// 応答待ちエージェント数 → エージェント/ターミナルタブのバッジ
+	// 応答待ちエージェント数 → ホーム/ターミナルタブのバッジ
 	const pending = (workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length;
 	const badge = pending > 0 ? String(pending) : undefined;
 
@@ -39,10 +41,6 @@ export default function TabsLayout() {
 			<NativeTabs.Trigger name="index" contentStyle={{ backgroundColor: colors.bg }}>
 				<NativeTabs.Trigger.Label>ホーム</NativeTabs.Trigger.Label>
 				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="home-outline" />} />
-			</NativeTabs.Trigger>
-			<NativeTabs.Trigger name="agent" contentStyle={{ backgroundColor: colors.bg }}>
-				<NativeTabs.Trigger.Label>エージェント</NativeTabs.Trigger.Label>
-				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="chatbubbles-outline" />} />
 				{badge ? <NativeTabs.Trigger.Badge>{badge}</NativeTabs.Trigger.Badge> : null}
 			</NativeTabs.Trigger>
 			<NativeTabs.Trigger name="terminal" contentStyle={{ backgroundColor: colors.bg }}>
@@ -54,9 +52,13 @@ export default function TabsLayout() {
 				<NativeTabs.Trigger.Label>ソース管理</NativeTabs.Trigger.Label>
 				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="git-branch-outline" />} />
 			</NativeTabs.Trigger>
-			<NativeTabs.Trigger name="more" contentStyle={{ backgroundColor: colors.bg }}>
-				<NativeTabs.Trigger.Label>その他</NativeTabs.Trigger.Label>
-				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="ellipsis-horizontal-outline" />} />
+			<NativeTabs.Trigger name="files" contentStyle={{ backgroundColor: colors.bg }}>
+				<NativeTabs.Trigger.Label>ファイル</NativeTabs.Trigger.Label>
+				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="folder-outline" />} />
+			</NativeTabs.Trigger>
+			<NativeTabs.Trigger name="browser" contentStyle={{ backgroundColor: colors.bg }}>
+				<NativeTabs.Trigger.Label>ブラウザ</NativeTabs.Trigger.Label>
+				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="globe-outline" />} />
 			</NativeTabs.Trigger>
 		</NativeTabs>
 		</WsDrawerLayout>
