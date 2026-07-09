@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme.js';
+import { hapticImpact } from '../haptics.js';
 
 /**
  * Liquid Glass風の2段コンポーザー（mo.html 案A2/T1）。上段にテキスト入力、
@@ -44,7 +45,7 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 				<View style={styles.toolsLeft}>{tools}</View>
 				<Pressable
 					style={({ pressed }) => [styles.sendBtn, sendDisabled && styles.sendBtnDisabled, pressed && styles.sendBtnPressed]}
-					onPress={onSubmit}
+					onPress={() => { hapticImpact('medium'); onSubmit(); }}
 					disabled={sendDisabled}
 					accessibilityLabel="送信"
 				>

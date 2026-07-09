@@ -2,6 +2,7 @@
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../theme.js';
+import { hapticSelection } from '../haptics.js';
 
 /** ピル型セグメントコントロール（モックアップ mock-2.html 準拠）。 */
 export function SegmentedControl<T extends string>({ value, onChange, options }: {
@@ -14,7 +15,7 @@ export function SegmentedControl<T extends string>({ value, onChange, options }:
 			{options.map(opt => {
 				const active = opt.value === value;
 				return (
-					<Pressable key={opt.value} style={[styles.item, active && styles.itemActive]} onPress={() => onChange(opt.value)}>
+					<Pressable key={opt.value} style={[styles.item, active && styles.itemActive]} onPress={() => { hapticSelection(); onChange(opt.value); }}>
 						<Text style={[styles.text, active && styles.textActive]}>{opt.label}</Text>
 					</Pressable>
 				);

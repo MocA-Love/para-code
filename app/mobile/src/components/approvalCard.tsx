@@ -2,6 +2,7 @@
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../theme.js';
+import { hapticSuccess, hapticWarning } from '../haptics.js';
 
 /**
  * エージェントの許可確認(permission)カード。許可/拒否の2択クイックアクション。
@@ -18,10 +19,10 @@ export function ApprovalCard({ onApprove, detail }: { onApprove: (choice: 'yes' 
 				<Text style={styles.approvalDetail} numberOfLines={6} selectable>{detail}</Text>
 			) : null}
 			<View style={styles.approvalButtons}>
-				<Pressable style={[styles.approvalBtn, styles.approveBtn]} onPress={() => onApprove('yes')}>
+				<Pressable style={[styles.approvalBtn, styles.approveBtn]} onPress={() => { hapticSuccess(); onApprove('yes'); }}>
 					<Text style={styles.approveBtnText}>許可</Text>
 				</Pressable>
-				<Pressable style={[styles.approvalBtn, styles.denyBtn]} onPress={() => onApprove('no')}>
+				<Pressable style={[styles.approvalBtn, styles.denyBtn]} onPress={() => { hapticWarning(); onApprove('no'); }}>
 					<Text style={styles.denyBtnText}>拒否</Text>
 				</Pressable>
 			</View>

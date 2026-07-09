@@ -8,6 +8,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { isAgentWaiting } from '../store.js';
 import { colors } from '../theme.js';
+import { hapticSelection } from '../haptics.js';
 
 /**
  * ワークスペース選択（モックアップ mock-2.html 準拠）。ヘッダーのピル型ピッカーをタップすると
@@ -68,6 +69,7 @@ export function WsBar() {
 		setOpen(false);
 	};
 	const select = (id: string) => {
+		hapticSelection();
 		setSelectedWs(id);
 		closeSheet();
 	};

@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './bottomSheet.js';
 import { agentModelOptions, matchAgentModel } from '../agentModels.js';
 import { colors } from '../theme.js';
+import { hapticSelection } from '../haptics.js';
 
 /**
  * エージェントコンポーザーのモデル/Effortピル（mo.html 案A2）。セッションの現在値を
@@ -33,10 +34,12 @@ export function ModelPill({ agent, model, effort, onCommand }: {
 	const label = [currentModel?.label ?? model, effort].filter(Boolean).join(' · ') || 'model / effort';
 
 	const applyModel = (id: string) => {
+		hapticSelection();
 		setPickedModelId(id);
 		onCommand(`/model ${id}`);
 	};
 	const applyEffort = (level: string) => {
+		hapticSelection();
 		onCommand(`/effort ${level}`);
 		setOpen(false);
 	};
