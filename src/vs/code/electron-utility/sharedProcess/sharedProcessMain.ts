@@ -526,7 +526,7 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		this._register(registerParadisSpreadsheet(this.server));
 
 		// PARA-PATCH: worktree作成用の git 実行バックエンド（git worktree add / ブランチ列挙）
-		this._register(registerParadisWorktreeGit(this.server, accessor.get(ILogService)));
+		this._register(registerParadisWorktreeGit(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
 
 		// PARA-PATCH: モバイルリレーサービス（src/vs/paradis/contrib/mobileRelay/ 参照）
 		this._register(registerParadisMobileRelay(this.server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService)));

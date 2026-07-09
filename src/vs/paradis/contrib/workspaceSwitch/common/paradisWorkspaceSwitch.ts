@@ -60,7 +60,7 @@ export function paradisWorkspaceColorHex(colorId: string | undefined): string | 
 export interface IParadisWorktree {
 	/** 親リポジトリ (IParadisWorkspaceRepository.id) */
 	readonly repositoryId: string;
-	/** 表示名 (作業ツリーディレクトリの basename) */
+	/** Workspaces ビューで見せる表示名 */
 	readonly name: string;
 	/** チェックアウト中のブランチ名 (detached HEAD なら短縮SHA) */
 	readonly branch?: string;
@@ -82,6 +82,8 @@ export interface IParadisWorktreeService {
 	getWorktrees(repositoryId: string): readonly IParadisWorktree[];
 	/** リポジトリ本体 (main checkout) のブランチ名 (detached HEAD なら短縮SHA)。git 管理外なら undefined */
 	getRepositoryBranch(repositoryId: string): string | undefined;
+	/** 作成直後など、表示名を伴う worktree を既知リストへ登録する */
+	addKnownWorktree(worktree: IParadisWorktree): void;
 	/** 自動削除OFFで残った missing エントリを手動でリストから外す */
 	removeKnownWorktree(worktree: IParadisWorktree): void;
 }

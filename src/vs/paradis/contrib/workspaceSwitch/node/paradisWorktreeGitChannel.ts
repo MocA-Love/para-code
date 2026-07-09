@@ -15,16 +15,56 @@ import * as cp from 'child_process';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { getResolvedShellEnv } from '../../../../platform/shell/node/shellEnv.js';
 import { IParadisAddWorktreeRequest, IParadisGitBranches, IParadisRemoveWorktreeRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+
+type ShellEnvResolver = () => Promise<NodeJS.ProcessEnv>;
 
 export class ParadisWorktreeGitService {
 
-	constructor(private readonly logService: ILogService) { }
+	private resolvedShellEnvPromise: Promise<NodeJS.ProcessEnv> | undefined;
 
-	private exec(args: string[], cwd?: string): Promise<string> {
+	constructor(
+		private readonly logService: ILogService,
+		private readonly configurationService?: IConfigurationService,
+		private readonly args?: NativeParsedArgs,
+		private readonly execFile: typeof cp.execFile = cp.execFile,
+		private readonly shellEnvResolver?: ShellEnvResolver,
+	) { }
+
+	private getExecEnv(): Promise<NodeJS.ProcessEnv> {
+		if (!this.resolvedShellEnvPromise) {
+			const promise = this.resolveShellEnv()
+				.then(shellEnv => ({ ...process.env, ...shellEnv }))
+				.catch(error => {
+					this.logService.warn(`[ParadisWorktreeGit] failed to resolve shell environment, falling back to inherited PATH: ${error instanceof Error ? error.message : error}`);
+					if (this.resolvedShellEnvPromise === promise) {
+						this.resolvedShellEnvPromise = undefined;
+					}
+					return { ...process.env };
+				});
+			this.resolvedShellEnvPromise = promise;
+		}
+		return this.resolvedShellEnvPromise;
+	}
+
+	private resolveShellEnv(): Promise<NodeJS.ProcessEnv> {
+		if (this.shellEnvResolver) {
+			return this.shellEnvResolver();
+		}
+		if (this.configurationService && this.args) {
+			return getResolvedShellEnv(this.configurationService, this.logService, this.args, process.env);
+		}
+		return Promise.resolve({});
+	}
+
+	private async exec(args: string[], cwd?: string): Promise<string> {
+		const env = await this.getExecEnv();
 		return new Promise<string>((resolve, reject) => {
-			cp.execFile('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
+			this.execFile('git', args, { cwd, encoding: 'utf8', env: { ...env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
 				if (err) {
 					this.logService.warn(`[ParadisWorktreeGit] git ${args.join(' ')} failed: ${stderr || err.message}`);
 					reject(new Error(stderr?.trim() || err.message));
@@ -114,8 +154,8 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 /**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
-export function registerParadisWorktreeGit(server: IPCServer<string>, logService: ILogService): IDisposable {
-	const service = new ParadisWorktreeGitService(logService);
+export function registerParadisWorktreeGit(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
+	const service = new ParadisWorktreeGitService(logService, configurationService, args);
 	server.registerChannel(PARADIS_WORKTREE_GIT_CHANNEL, new ParadisWorktreeGitChannel(service));
 	return { dispose: () => { } };
 }

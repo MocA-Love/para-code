@@ -99,3 +99,15 @@ export function paradisSanitizeWorktreeDirName(value: string): string | undefine
 	const sanitized = paradisSanitizeBranchName(value)?.replace(/\//g, '-');
 	return sanitized && sanitized.length > 0 ? sanitized : undefined;
 }
+
+/** worktree 作成時の表示名とディレクトリ名を決める。スペース名は表示専用。 */
+export function paradisBuildWorktreeNames(spaceName: string, branchName: string): { displayName: string; dirName: string } {
+	const dirName = paradisSanitizeWorktreeDirName(branchName)!;
+	const displayName = spaceName.trim() || dirName;
+	return { displayName, dirName };
+}
+
+/** エージェント用ターミナルが作られない作成では、空の通常ターミナルを表示する。 */
+export function paradisShouldCreateDefaultTerminal(agentId: string, prompt: string): boolean {
+	return agentId === 'none' || prompt.trim().length === 0;
+}
