@@ -70,6 +70,11 @@ interface AppState extends StoreState {
 	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
 	browserStop(keepFrame?: boolean): Promise<void>;
 	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate'; nx?: number; ny?: number; dy?: number; dx?: number; text?: string; url?: string }): void;
+	/**
+	 * WebRTCミラー表示中にJPEGフレームの受信処理を止める（フルパース前に読み捨てて
+	 * JSスレッド飽和を防ぐ。PC側はフォールバック用にJPEGを送り続けている）。
+	 */
+	setJpegFramesSuspended(suspended: boolean): void;
 	/** WebRTCミラーのシグナリング（webrtcMirror.ts が使う。sid はセッション識別子）。 */
 	webrtcOffer(targetId: string, sdp: string, sid: string): Promise<{ sdp?: string }>;
 	webrtcSendIce(candidate: object, sid: string): void;
@@ -358,6 +363,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	browserInput(input) {
 		controller?.browserInput(input);
+	},
+
+	setJpegFramesSuspended(suspended) {
+		controller?.setJpegFramesSuspended(suspended);
 	},
 
 	webrtcOffer(targetId, sdp, sid) {

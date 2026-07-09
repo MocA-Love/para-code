@@ -28,9 +28,10 @@ const RTCViewComponent = getRtcView() as ComponentType<{
  * 必要がある（そうしないとセグメント切替時にscreencastが止まらず電池/帯域を無駄にする）。
  */
 export function BrowserPanel({ active }: { active: boolean }) {
-	const { browserTargets, browserStart, browserStop, browserInput, frame, connection } = useAppStore(useShallow(s => ({
+	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, setJpegFramesSuspended } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,
 		browserInput: s.browserInput, frame: s.browserFrame, connection: s.connection,
+		setJpegFramesSuspended: s.setJpegFramesSuspended,
 	})));
 
 	const tabBarSpacer = useTabBarSpacer();
@@ -126,6 +127,14 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		};
 	}, []);
 
+	// WebRTC表示中はJPEGフレームの受信処理を止める（表示に使わない数百KB/フレームの
+	// フルパースがJSスレッドを飽和させ、タップ・画面切替が遅くなるのを防ぐ）。
+	// WebRTCが切断されたら自動で再開し、並走しているJPEGへ継ぎ目なく戻る。
+	useEffect(() => {
+		setJpegFramesSuspended(webrtcUrl !== undefined);
+		return () => setJpegFramesSuspended(false);
+	}, [webrtcUrl, setJpegFramesSuspended]);
+
 	// 接続が切れたらミラー表示を畳んでターゲット選択に戻す
 	// （復帰時に古い activeUrl のままスピナーで固まるのを防ぐ）。ミラー中フラグも落として、
 	// 再接続後に裏で勝手に張り直さない（既存の「再選択させる」挙動を維持する）。
@@ -187,6 +196,9 @@ export function BrowserPanel({ active }: { active: boolean }) {
 
 	const frameRef = useRef(frame);
 	frameRef.current = frame;
+	// 巨大なdata URI文字列の再生成はフレームが変わった時だけにする（他要因の再レンダーで
+	// RN Imageに新しいsourceオブジェクトを渡して再デコードさせない）
+	const frameSource = useMemo(() => frame ? { uri: `data:image/jpeg;base64,${frame.data}` } : undefined, [frame]);
 	const viewSizeRef = useRef(viewSize);
 	viewSizeRef.current = viewSize;
 
@@ -377,10 +389,10 @@ export function BrowserPanel({ active }: { active: boolean }) {
 							}}
 						/>
 					</View>
-				) : frame ? (
+				) : frameSource ? (
 					<View style={styles.frameWrap} {...panResponder.panHandlers} onTouchStart={onFrameTouchStart} onTouchEnd={onFrameTouchEnd} onTouchCancel={onFrameTouchCancel}>
 						<Image
-							source={{ uri: `data:image/jpeg;base64,${frame.data}` }}
+							source={frameSource}
 							style={styles.frameImage}
 							resizeMode="contain"
 							fadeDuration={0}
