@@ -66,6 +66,9 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 
 	const question = agentStatus === 'question' ? findPendingQuestion(chat) : undefined;
 	const agentLabel = chat?.agent === 'codex' ? 'Codex' : 'Claude Code';
+	// 複数質問グループの一部なら、ホームの単発カードでは回答させない（1問だけの回答で
+	// フォーム全体がSubmitされる事故を防ぐ）。エージェント画面のステップ式カードへ誘導する。
+	const isGroupedQuestion = question !== undefined && question.questionGroup !== undefined && (question.questionCount ?? 1) > 1;
 
 	return (
 		<View style={styles.card}>
@@ -79,7 +82,12 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 				</View>
 				<Animated.View style={[styles.pulseDot, { opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 0.4] }) }]} />
 			</View>
-			{question ? (
+			{isGroupedQuestion && question ? (
+				<Pressable style={styles.groupNotice} onPress={onOpenAgent}>
+					<Text style={styles.groupNoticeTitle}>複数の質問（全{question.questionCount}問）が届いています</Text>
+					<Text style={styles.groupNoticeBody}>エージェント画面ですべての質問に回答してから送信できます</Text>
+				</Pressable>
+			) : question ? (
 				<QuestionCard
 					message={question}
 					answered={false}
@@ -108,4 +116,7 @@ const styles = StyleSheet.create({
 	pulseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.red },
 	openLink: { alignItems: 'center', paddingTop: 2 },
 	openLinkText: { color: colors.textDim, fontSize: 11 },
+	groupNotice: { backgroundColor: 'rgba(9,175,217,.10)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 16, padding: 14, gap: 4 },
+	groupNoticeTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
+	groupNoticeBody: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
 });

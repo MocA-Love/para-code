@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useIsFocused } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -11,7 +12,7 @@ import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { MarkdownText } from '../../src/components/markdownText.js';
 import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
 import { ScreenTitle } from '../../src/components/screenTitle.js';
-import { QuestionCard } from '../../src/components/questionCard.js';
+import { QuestionCard, QuestionGroupCard } from '../../src/components/questionCard.js';
 import { ApprovalCard } from '../../src/components/approvalCard.js';
 import { findLatestApprovalRequest } from '../../src/components/attentionCard.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
@@ -42,6 +43,7 @@ export default function AgentScreen() {
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
+	const isFocused = useIsFocused();
 
 	const terminals = (workspace?.terminals ?? []).filter(t =>
 		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
@@ -77,7 +79,20 @@ export default function AgentScreen() {
 				result.push({ type: 'msg', m });
 			} else if (m.kind === 'question') {
 				flush();
-				result.push({ type: 'question', m, answered: m.toolUseId !== undefined && answeredIds.has(m.toolUseId) });
+				// 同一 AskUserQuestion 由来の複数質問（questionGroup が同じ連続行）は
+				// 1枚のステップ式カードへ集約する（1問ずつの即時送信を防ぐ）。
+				const last = result[result.length - 1];
+				const answered = m.toolUseId !== undefined && answeredIds.has(m.toolUseId);
+				if (m.questionGroup !== undefined && (m.questionCount ?? 1) > 1) {
+					if (last !== undefined && last.type === 'questionGroup' && last.key === m.questionGroup) {
+						last.msgs.push(m);
+						last.answered = last.answered || answered;
+					} else {
+						result.push({ type: 'questionGroup', key: m.questionGroup, msgs: [m], answered });
+					}
+				} else {
+					result.push({ type: 'question', m, answered });
+				}
 			} else {
 				buffer.push(m);
 			}
@@ -138,7 +153,10 @@ export default function AgentScreen() {
 
 	return (
 		<ConnectionGate>
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+		{/* enabled={isFocused}: NativeTabsの画面凍結中に keyboardWillHide を取り逃すと
+		    下パディングが張り付き、復帰時にUIが上へ潰れる（非フォーカスで無効化→復帰時に
+		    クリーンな状態から再計算させる） */}
+		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} enabled={isFocused}>
 			<ScreenTitle title="エージェント" subtitle="応答待ちの質問・承認をここで完結" />
 			<WsBar />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
@@ -186,13 +204,14 @@ export default function AgentScreen() {
 					<FlatList
 						ref={listRef}
 						data={rows}
-						keyExtractor={row => row.type === 'group' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
+						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
 						ListHeaderComponent={chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}
 						ListFooterComponent={activeTerminal?.agentStatus === 'working' ? <WorkingIndicator /> : null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} />
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onToggle={actions.toggleQuestionOption} onConfirm={actions.confirmQuestion} onFreeText={actions.answerQuestionFreeText} />
-									: <ActivityGroup msgs={item.msgs} />}
+									: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
+										: <ActivityGroup msgs={item.msgs} />}
 						contentContainerStyle={styles.listContent}
 					/>
 				)}
@@ -235,6 +254,7 @@ export default function AgentScreen() {
 type ChatRow =
 	| { type: 'msg'; m: AgentChatMessage }
 	| { type: 'question'; m: AgentChatMessage; answered: boolean }
+	| { type: 'questionGroup'; key: string; msgs: AgentChatMessage[]; answered: boolean }
 	| { type: 'group'; key: string; msgs: AgentChatMessage[] };
 
 /** アクティビティ群の要約文（例: `思考 ×2 ・ ツール5件 (Bash, Read) ・ 48秒`）。 */

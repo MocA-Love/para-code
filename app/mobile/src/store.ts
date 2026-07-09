@@ -139,6 +139,12 @@ export interface AgentChatMessage {
 	multiSelect?: boolean;
 	/** kind==='question' | 'tool_result': 対応付け用ID。同IDの tool_result が後続にあれば回答済み。 */
 	toolUseId?: string;
+	/** kind==='question': 同一 AskUserQuestion 呼び出しのグループキー（複数質問の集約表示用）。 */
+	questionGroup?: string;
+	/** kind==='question': グループ内の位置（0起点）。 */
+	questionIndex?: number;
+	/** kind==='question': グループの総質問数。 */
+	questionCount?: number;
 }
 
 /** セッションのメタ情報（PC側 transcript から学習した最新値）。 */
@@ -707,8 +713,24 @@ export class MobileController {
 		return this.request<BrowserTargetsResult>('browser', { t: 'targets' });
 	}
 
+	/**
+	 * JPEGフレームの受信処理を一時停止するフラグ（WebRTCミラー表示中）。
+	 * PC側はWebRTC確立中もJPEG screencastを並行して送り続ける（継ぎ目なしフォールバック
+	 * のため）が、表示に使わないフレームを毎回フルパース（数百KBのJSON.parse）すると
+	 * JSスレッドが飽和しタップ・画面切替が遅延する。suspend中は handleFrame の先頭で
+	 * プレフィックス判定だけして読み捨てる。
+	 */
+	private jpegFramesSuspended = false;
+	/** browserStop 後、次の browserStart までフレームを読み捨てる（停止が効くまでのフレーム洪水対策）。 */
+	private browserStopping = false;
+
+	setJpegFramesSuspended(suspended: boolean): void {
+		this.jpegFramesSuspended = suspended;
+	}
+
 	/** screencast を開始する（フレームは state.browserFrame に流れ込む）。 */
 	browserStart(targetId: string): Promise<void> {
+		this.browserStopping = false;
 		return this.request<void>('browser', { t: 'start', targetId });
 	}
 
@@ -717,6 +739,8 @@ export class MobileController {
 	 * （タブのblur等で一時停止する用途。再フォーカス時に静止画→最新画面へ自然に切り替わる）。
 	 */
 	async browserStop(keepFrame = false): Promise<void> {
+		// PC側で停止が効くまでに届く残フレームは読み捨てる（切替直後のJSスレッド飽和対策）
+		this.browserStopping = true;
 		if (!keepFrame) {
 			this.state.browserFrame = undefined;
 			this.emit();
@@ -797,7 +821,16 @@ export class MobileController {
 			return;
 		}
 		if (frame.ch === 'browser') {
-			// screencastフレーム（id無しのストリーム）と要求応答（id有り）が混在する
+			// screencastフレーム（id無しのストリーム）と要求応答（id有り）が混在する。
+			// フレームは数百KBのbase64を含むため、表示に使わない間（WebRTCミラー表示中・
+			// 停止処理中）は先頭バイトのプレフィックス判定だけでフルパース前に読み捨てる
+			// （PC側のシリアライズは常に t が先頭キー）。
+			if (this.jpegFramesSuspended || this.browserStopping) {
+				const head = decoder.decode(frame.payload.subarray(0, 12));
+				if (head.startsWith('{"t":"frame"')) {
+					return;
+				}
+			}
 			try {
 				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number; candidate?: object; sid?: string };
 				if (msg.t === 'frame' && typeof msg.data === 'string') {
