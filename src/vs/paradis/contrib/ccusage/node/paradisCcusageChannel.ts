@@ -21,7 +21,7 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { getResolvedShellEnv } from '../../../../platform/shell/node/shellEnv.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
@@ -81,30 +81,23 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	 * nvm/volta/fnm が足す PATH が反映されず 'npx'/'ccusage' が ENOENT になりうる。
 	 * getResolvedShellEnv は VS Code 本体が拡張機能ホスト起動時などに使う既存の解決ロジック。
 	 */
-	private resolvedShellEnvPromise: Promise<NodeJS.ProcessEnv> | undefined;
+	private readonly cachedShellEnv: ParadisCachedShellEnv;
 
 	constructor(
 		private readonly logService: ILogService,
-		private readonly configurationService: IConfigurationService,
-		private readonly args: NativeParsedArgs,
-	) { }
+		configurationService: IConfigurationService,
+		args: NativeParsedArgs,
+	) {
+		this.cachedShellEnv = new ParadisCachedShellEnv(
+			logService,
+			'ParadisCcusage',
+			createParadisShellEnvResolver(logService, configurationService, args),
+		);
+	}
 
 	/** exec に渡す環境変数(process.env にログインシェル解決分をマージしたもの)。 */
 	private getExecEnv(): Promise<NodeJS.ProcessEnv> {
-		if (!this.resolvedShellEnvPromise) {
-			const promise = getResolvedShellEnv(this.configurationService, this.logService, this.args, process.env)
-				.then(shellEnv => ({ ...process.env, ...shellEnv }))
-				.catch(error => {
-					this.logService.warn(`[ParadisCcusage] failed to resolve shell environment, falling back to inherited PATH: ${error instanceof Error ? error.message : error}`);
-					// 失敗(タイムアウト等)は永続キャッシュせず、次回 fetch で再解決を試みる
-					if (this.resolvedShellEnvPromise === promise) {
-						this.resolvedShellEnvPromise = undefined;
-					}
-					return { ...process.env };
-				});
-			this.resolvedShellEnvPromise = promise;
-		}
-		return this.resolvedShellEnvPromise;
+		return this.cachedShellEnv.getEnv();
 	}
 
 	async fetchDaily(options: IParadisCcusageExecOptions): Promise<IParadisCcusageDailyRow[]> {

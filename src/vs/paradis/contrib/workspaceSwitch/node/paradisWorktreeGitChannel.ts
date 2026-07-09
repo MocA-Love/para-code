@@ -15,16 +15,34 @@ import * as cp from 'child_process';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { IParadisAddWorktreeRequest, IParadisGitBranches, IParadisRemoveWorktreeRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 
 export class ParadisWorktreeGitService {
 
-	constructor(private readonly logService: ILogService) { }
+	private readonly cachedShellEnv: ParadisCachedShellEnv;
 
-	private exec(args: string[], cwd?: string): Promise<string> {
+	constructor(
+		private readonly logService: ILogService,
+		configurationService?: IConfigurationService,
+		args?: NativeParsedArgs,
+		private readonly execFile: typeof cp.execFile = cp.execFile,
+		shellEnvResolver?: ParadisRawShellEnvResolver,
+	) {
+		this.cachedShellEnv = new ParadisCachedShellEnv(
+			logService,
+			'ParadisWorktreeGit',
+			shellEnvResolver ?? createParadisShellEnvResolver(logService, configurationService, args),
+		);
+	}
+
+	private async exec(args: string[], cwd?: string): Promise<string> {
+		const env = await this.cachedShellEnv.getEnv();
 		return new Promise<string>((resolve, reject) => {
-			cp.execFile('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
+			this.execFile('git', args, { cwd, encoding: 'utf8', env: { ...env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
 				if (err) {
 					this.logService.warn(`[ParadisWorktreeGit] git ${args.join(' ')} failed: ${stderr || err.message}`);
 					reject(new Error(stderr?.trim() || err.message));
@@ -114,8 +132,8 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 /**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
-export function registerParadisWorktreeGit(server: IPCServer<string>, logService: ILogService): IDisposable {
-	const service = new ParadisWorktreeGitService(logService);
+export function registerParadisWorktreeGit(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
+	const service = new ParadisWorktreeGitService(logService, configurationService, args);
 	server.registerChannel(PARADIS_WORKTREE_GIT_CHANNEL, new ParadisWorktreeGitChannel(service));
 	return { dispose: () => { } };
 }
