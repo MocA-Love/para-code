@@ -370,6 +370,10 @@ export function BrowserPanel({ active }: { active: boolean }) {
 				minimumZoomScale={1}
 				maximumZoomScale={5}
 				bouncesZoom
+				// 等倍時のラバーバンドを無効化。有効だとページスクロールのスワイプ
+				// （PanResponderが処理）と同時にミラー描画自体が上下にバウンスして見える。
+				// ズーム中のパンはコンテンツがビューポートより大きいため影響しない。
+				bounces={false}
 				showsHorizontalScrollIndicator={false}
 				showsVerticalScrollIndicator={false}
 				contentContainerStyle={{ width: viewSize.w, height: viewSize.h }}

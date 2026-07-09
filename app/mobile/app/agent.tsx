@@ -123,10 +123,33 @@ export default function AgentDetailScreen() {
 		return () => detachAgent(activeId);
 	}, [activeId, attachAgent, detachAgent]);
 
-	// 新着で末尾へスクロール
+	// 新着で末尾へスクロール。画面を開いた直後（対象切替直後）は、上から下まで流れる
+	// アニメーションを見せず最新メッセージへ即時ジャンプする。FlatListは長い履歴を
+	// 分割レンダリングして contentSize が段階的に伸びるため、開いてからしばらくは
+	// onContentSizeChange のたびに末尾へ張り付かせる（pinUntil方式）。
+	const pinUntilRef = useRef(0);
+	const pinArmedRef = useRef(true);
+	useEffect(() => {
+		pinArmedRef.current = true;
+	}, [activeId]);
+	const messagesArrived = (chat?.messages.length ?? 0) > 0;
+	useEffect(() => {
+		// pinの起点は「最初のメッセージが実際に届いた時」。attach（activeId変更）起点だと
+		// 低速リレーでデータ到着が800msを超えたとき初回ジャンプが効かなくなる。
+		if (messagesArrived && pinArmedRef.current) {
+			pinArmedRef.current = false;
+			pinUntilRef.current = Date.now() + 800;
+			listRef.current?.scrollToEnd({ animated: false });
+		}
+	}, [messagesArrived, activeId]);
+	const onContentSizeChange = () => {
+		if (Date.now() < pinUntilRef.current) {
+			listRef.current?.scrollToEnd({ animated: false });
+		}
+	};
 	const messageCount = chat?.messages.length ?? 0;
 	useEffect(() => {
-		if (messageCount > 0) {
+		if (messageCount > 0 && Date.now() >= pinUntilRef.current) {
 			const timer = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
 			return () => clearTimeout(timer);
 		}
@@ -216,6 +239,7 @@ export default function AgentDetailScreen() {
 									: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
 										: <ActivityGroup msgs={item.msgs} />}
 						contentContainerStyle={styles.listContent}
+						onContentSizeChange={onContentSizeChange}
 					/>
 				)}
 			</View>
@@ -379,9 +403,11 @@ const styles = StyleSheet.create({
 	retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },
 	retryText: { color: colors.text, fontSize: 12 },
 	truncatedNote: { color: colors.textDim, fontSize: 11, textAlign: 'center', paddingBottom: 8 },
-	bubble: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, maxWidth: '88%' },
-	bubbleUser: { alignSelf: 'flex-end', backgroundColor: 'rgba(9,175,217,.28)' },
-	bubbleAssistant: { alignSelf: 'flex-start', backgroundColor: colors.surface },
+	bubble: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9 },
+	// ユーザー発言のみ幅を絞って右寄せ（チャットの視覚言語）。エージェント側は
+	// コード等の長い内容が多いため全幅を使う。
+	bubbleUser: { alignSelf: 'flex-end', backgroundColor: 'rgba(9,175,217,.28)', maxWidth: '88%' },
+	bubbleAssistant: { alignSelf: 'stretch', backgroundColor: colors.surface },
 	bubbleText: { color: colors.text, fontSize: 13, lineHeight: 19 },
 	thinkingText: { color: colors.textDim, fontSize: 11, fontStyle: 'italic', lineHeight: 16, paddingHorizontal: 4 },
 	activityRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 3 },
