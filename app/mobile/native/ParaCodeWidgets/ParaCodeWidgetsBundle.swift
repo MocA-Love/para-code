@@ -2,6 +2,7 @@
 
 import ActivityKit
 import SwiftUI
+import UIKit
 import WidgetKit
 
 @main
@@ -71,9 +72,20 @@ struct ParaCodeLiveActivity: Widget {
 
 private struct LogoBadge: View {
 	var body: some View {
-		Image(systemName: "apple.terminal")
-			.font(.system(size: 14, weight: .bold))
-			.foregroundStyle(Color(red: 0.04, green: 0.69, blue: 0.85))
+		// ホームタブのPCカードと同じPara Codeロゴ（paracode-logo.png、Extension同梱リソース。
+		// 元画像は app/mobile/assets/pairing-logo.png の縮小コピー）。
+		// リソースが見つからないビルド（手動復元漏れ等）ではターミナルシンボルへフォールバック。
+		if let logo = UIImage(named: "paracode-logo") {
+			Image(uiImage: logo)
+				.resizable()
+				.scaledToFit()
+				.frame(width: 18, height: 18)
+				.clipShape(RoundedRectangle(cornerRadius: 4))
+		} else {
+			Image(systemName: "apple.terminal")
+				.font(.system(size: 14, weight: .bold))
+				.foregroundStyle(Color(red: 0.04, green: 0.69, blue: 0.85))
+		}
 	}
 }
 

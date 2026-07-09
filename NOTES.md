@@ -89,6 +89,8 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 | `app/mobile/assets/docxpreview/docxPreviewBundle.json` | 新規追加。PC版Wordビューアの vendored パッチ済み `jszip.min.js` + `docx-preview.min.js` を `{version, jszip, docxPreview}` として同梱（xtermBundle.json と同方式） | モバイルのWordビューア（WebView内レンダリング）用。**PC側の min.js を更新したら再生成が必要**。生成手順は `src/vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview/README.md`「モバイルアプリ用バンドル」参照 |
 | `src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/**`（約350ファイル: package.json / LICENSE / build/**） | 新規追加（vendoredサードパーティ成果物、Apache-2.0）。`chrome-devtools-mcp@1.5.0`（Google）のnpm公開物をそのまま同梱（依存ゼロの自己完結パッケージ、上流README/skillsのみ除外）。取得元・更新手順は同ディレクトリの `README.md` 参照 | para-browser MCPサーバーがペイン毎の子プロセスとしてspawnし、DevToolsツール群をプロキシ合流させるため（`paradisDevtoolsMcpProxy.ts`）。ビルド済み第三者コードのためマーカーを埋め込まず、hygiene/eslintから除外（`build/filters.ts`・`.eslint-ignore`・`.eslint-allowed-javascript-files` のPARA-PATCH。パッケージ更新時は allowlist の再生成が必要、手順は同ファイル内コメント参照）。パッケージ同梱は `build/next/index.ts` と `build/gulpfile.vscode.ts` の両方に glob 追加済み |
 
+| `app/mobile/native/ParaCodeWidgets/paracode-logo.png` | 新規追加（fork所有バイナリ）。`app/mobile/assets/pairing-logo.png` を `sips -Z 128` で縮小したコピー（gitignoreされた `ios/ParaCodeWidgets/` にも同一物を配置し、Widgetターゲットの Resources に pbxproj 手動登録済み） | Live Activity / Dynamic Island のロゴをホームタブのPCカードと同じPara Codeロゴにするため（`ParaCodeWidgetsBundle.swift` の LogoBadge が `UIImage(named:)` で読む。復元手順は同ディレクトリ README 参照）。PNGのためマーカーを埋め込めない |
+
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
 ## CDPゲートウェイとリモートデバッグ（agentBrowser、2026-07-02追加）
