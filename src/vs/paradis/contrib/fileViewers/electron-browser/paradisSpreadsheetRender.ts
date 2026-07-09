@@ -10,6 +10,8 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagonalBorder, IParadisRenderAnchor, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
+import type { IParadisDiffDetail } from './paradisSpreadsheetDiff.js';
+import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 
 const $ = dom.$;
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -467,9 +469,19 @@ function shapeDiffStroke(status: string, side: 'original' | 'modified', shape: I
 	}
 }
 
+function appendSvgHoverTitle(el: SVGElement, title: string | undefined, pointerEvents: string): void {
+	if (!title) {
+		return;
+	}
+	const titleEl = el.ownerDocument.createElementNS(SVG_NS, 'title');
+	titleEl.textContent = title;
+	el.appendChild(titleEl);
+	el.setAttribute('pointer-events', pointerEvents);
+}
+
 /** 図形diff: 各図形を差分ステータス色で描画する SVG オーバーレイ。 */
 export function buildShapeDiffOverlay(
-	renders: readonly { readonly shape: IParadisRenderShape; readonly status: string }[],
+	renders: readonly { readonly shape: IParadisRenderShape; readonly status: string; readonly diffDetails?: readonly IParadisDiffDetail[] }[],
 	side: 'original' | 'modified',
 	rowYByExcelRow: Map<number, number>,
 	columnWidths: readonly number[],
@@ -483,10 +495,11 @@ export function buildShapeDiffOverlay(
 
 	const svg = doc.createElementNS(SVG_NS, 'svg') as SVGElement;
 	svg.setAttribute('class', 'paradis-spreadsheet-shapes');
-	for (const { shape, status } of renders) {
+	for (const { shape, status, diffDetails } of renders) {
 		const tl = anchorPos(shape.from);
 		const br = anchorPos(shape.to);
 		const st = shapeDiffStroke(status, side, shape);
+		const diffTitle = status !== 'unchanged' && diffDetails?.length ? formatDiffDetails(diffDetails) : undefined;
 
 		if (shape.type === 'image' && shape.href) {
 			const w = shape.ext ? emuToPx(shape.ext.cx) : Math.max(0, br.x - tl.x);
@@ -499,6 +512,7 @@ export function buildShapeDiffOverlay(
 			img.setAttribute('preserveAspectRatio', 'none');
 			img.setAttribute('href', shape.href);
 			img.setAttribute('opacity', String(st.opacity));
+			appendSvgHoverTitle(img, diffTitle, 'visiblePainted');
 			svg.appendChild(img);
 			if (status !== 'unchanged') {
 				const rect = doc.createElementNS(SVG_NS, 'rect');
@@ -512,6 +526,7 @@ export function buildShapeDiffOverlay(
 				if (st.dash) {
 					rect.setAttribute('stroke-dasharray', st.dash);
 				}
+				appendSvgHoverTitle(rect, diffTitle, 'visiblePainted');
 				svg.appendChild(rect);
 			}
 			continue;
@@ -530,6 +545,7 @@ export function buildShapeDiffOverlay(
 			if (st.dash) {
 				line.setAttribute('stroke-dasharray', st.dash);
 			}
+			appendSvgHoverTitle(line, diffTitle, 'stroke');
 			svg.appendChild(line);
 		} else {
 			const rect = doc.createElementNS(SVG_NS, 'rect');
@@ -544,6 +560,7 @@ export function buildShapeDiffOverlay(
 			if (st.dash) {
 				rect.setAttribute('stroke-dasharray', st.dash);
 			}
+			appendSvgHoverTitle(rect, diffTitle, 'visiblePainted');
 			svg.appendChild(rect);
 		}
 	}

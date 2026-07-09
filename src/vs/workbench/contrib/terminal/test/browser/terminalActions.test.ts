@@ -3,11 +3,14 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { deepStrictEqual } from 'assert';
+import { deepStrictEqual, strictEqual } from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
+import { hasKey } from '../../../../../base/common/types.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
-import { WorkspaceFolderCwdPair, shrinkWorkspaceFolderCwdPairs } from '../../browser/terminalActions.js';
+import { ICreateTerminalOptions, ITerminalInstance } from '../../browser/terminal.js';
+import { WorkspaceFolderCwdPair, shrinkWorkspaceFolderCwdPairs, splitOrCreateTerminal } from '../../browser/terminalActions.js';
 
 function makeFakeFolder(name: string, uri: URI): IWorkspaceFolder {
 	return {
@@ -81,6 +84,37 @@ suite('terminalActions', () => {
 				const pairC = makePair(c);
 				deepStrictEqual(shrinkWorkspaceFolderCwdPairs([pairA, pairB, pairC, pairD]), [pairA, pairC]);
 			});
+		});
+	});
+
+	suite('splitOrCreateTerminal', () => {
+		test('creates a panel terminal when no parent terminal is provided', async () => {
+			const newInstance = { instanceId: 1 } as ITerminalInstance;
+			const calls: (ICreateTerminalOptions | undefined)[] = [];
+
+			await splitOrCreateTerminal({
+				createAndFocusTerminal: async options => {
+					calls.push(options);
+					return newInstance;
+				}
+			}, undefined);
+
+			deepStrictEqual(calls, [{ location: TerminalLocation.Panel }]);
+		});
+
+		test('splits the explicitly provided parent terminal', async () => {
+			const parentInstance = { instanceId: 1 } as ITerminalInstance;
+			let options: ICreateTerminalOptions | undefined;
+
+			await splitOrCreateTerminal({
+				createAndFocusTerminal: async value => {
+					options = value;
+					return parentInstance;
+				}
+			}, parentInstance);
+
+			const location = options?.location;
+			strictEqual((typeof location === 'object' && location !== null && hasKey(location, { parentTerminal: true }) ? location.parentTerminal : undefined), parentInstance);
 		});
 	});
 });
