@@ -8,7 +8,7 @@ import { useAppStore } from '../appState.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorSession } from '../webrtcMirror.js';
 import { colors } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
+import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /** RTCView（react-native-webrtc）。未リンクのビルドでは undefined（JPEGミラーのみ）。 */
 const RTCViewComponent = getRtcView() as ComponentType<{
@@ -331,12 +331,12 @@ export function BrowserPanel({ active }: { active: boolean }) {
 						<Text style={styles.dim}>ミラーできるブラウザページがありません。PCの para-browser でページを開いてください。</Text>
 					) : null}
 					{(targets ?? []).map(t => (
-						<Pressable key={t.targetId} style={styles.targetRow} onPress={() => { void start(t.targetId, t.url); }}>
+						<Pressable key={t.targetId} style={styles.targetRow} onPress={() => { hapticSelection(); void start(t.targetId, t.url); }}>
 							<Text style={styles.targetTitle} numberOfLines={1}>{t.title || '(無題)'}</Text>
 							<Text style={styles.targetUrl} numberOfLines={1}>{t.url}</Text>
 						</Pressable>
 					))}
-					<Pressable style={styles.reloadTargets} onPress={() => { void loadTargets(); }}>
+					<Pressable style={styles.reloadTargets} onPress={() => { hapticImpact('light'); void loadTargets(); }}>
 						<Text style={styles.link}>一覧を更新</Text>
 					</Pressable>
 				</ScrollView>
@@ -352,6 +352,7 @@ export function BrowserPanel({ active }: { active: boolean }) {
 					style={styles.urlInput}
 					value={urlInput}
 					onChangeText={setUrlInput}
+					onFocus={() => hapticSelection()}
 					onSubmitEditing={navigate}
 					placeholder="URLを入力…"
 					placeholderTextColor={colors.textDim}

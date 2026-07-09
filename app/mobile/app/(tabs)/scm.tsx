@@ -10,6 +10,7 @@ import { DiffView } from '../../src/components/diffView.js';
 import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
+import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
 
 /**
@@ -165,12 +166,13 @@ export default function ScmScreen() {
 					placeholder="コミットメッセージ"
 					placeholderTextColor={colors.textDim}
 					autoCapitalize="none"
+					onFocus={() => hapticSelection()}
 					editable={!committing}
 					multiline
 				/>
 				<Pressable
 					style={[styles.commitBtn, (!wsId || !message.trim() || committing) && styles.commitBtnDisabled]}
-					onPress={() => { void commit(); }}
+					onPress={() => { hapticImpact('medium'); void commit(); }}
 					disabled={!wsId || !message.trim() || committing}
 				>
 					<Text style={styles.commitBtnText}>{committing ? 'コミット中…' : 'コミット'}</Text>
@@ -189,13 +191,13 @@ export default function ScmScreen() {
 					const letter = (f.x !== ' ' && f.x !== '?' ? f.x : f.y) || '?';
 					return (
 						<View key={`${f.x}${f.y}${f.path}`} style={styles.fileRowWrap}>
-							<Pressable style={styles.fileRow} onPress={() => setDiffTarget({ path: f.path, staged: staged && f.y === ' ' })}>
+							<Pressable style={styles.fileRow} onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ' }); }}>
 								<Ionicons name="document-text-outline" size={14} color={colors.textDim} />
 								<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
 								<Text style={[styles.fileLetter, letter === 'M' ? styles.mod : letter === 'A' || letter === '?' ? styles.add : letter === 'D' ? styles.del : undefined]}>{letter === '?' ? 'A' : letter}</Text>
 							</Pressable>
 							{log?.webUrl ? (
-								<Pressable style={styles.fileExtBtn} onPress={() => openFileExternally(f.path)} hitSlop={8} accessibilityLabel="外部で開く">
+								<Pressable style={styles.fileExtBtn} onPress={() => { hapticImpact('light'); openFileExternally(f.path); }} hitSlop={8} accessibilityLabel="外部で開く">
 									<Ionicons name="open-outline" size={13} color={colors.textDim} />
 								</Pressable>
 							) : null}
@@ -213,12 +215,12 @@ export default function ScmScreen() {
 					const detail = commitFiles[c.hash];
 					return (
 						<View key={c.hash}>
-							<Pressable style={styles.commitRow} onPress={() => toggleCommit(c.hash)}>
+							<Pressable style={styles.commitRow} onPress={() => { hapticSelection(); toggleCommit(c.hash); }}>
 								<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={11} color={colors.textDim} />
 								<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
 								<Text style={styles.commitWhen}>{c.when}</Text>
 								{log?.webUrl ? (
-									<Pressable onPress={() => openCommit(c.hash)} hitSlop={8} accessibilityLabel="ブラウザでコミットを開く">
+									<Pressable onPress={() => { hapticImpact('light'); openCommit(c.hash); }} hitSlop={8} accessibilityLabel="ブラウザでコミットを開く">
 										<Ionicons name="open-outline" size={13} color={colors.textDim} />
 									</Pressable>
 								) : null}
@@ -240,7 +242,7 @@ export default function ScmScreen() {
 					);
 				})}
 				{log?.hasMore ? (
-					<Pressable style={styles.loadMoreBtn} onPress={() => { void loadMore(); }} disabled={loadingMore}>
+					<Pressable style={styles.loadMoreBtn} onPress={() => { hapticImpact('light'); void loadMore(); }} disabled={loadingMore}>
 						<Text style={styles.loadMoreText}>{loadingMore ? '読み込み中…' : 'さらに読み込む'}</Text>
 					</Pressable>
 				) : null}

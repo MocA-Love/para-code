@@ -11,6 +11,7 @@ import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { colors } from '../theme.js';
+import { hapticImpact } from '../haptics.js';
 
 /** 離脱後に再認証を免除する猶予時間。 */
 const REAUTH_GRACE_MS = 10 * 60 * 1000;
@@ -108,7 +109,7 @@ export function AuthGate({ children, onUnlock }: { children: React.ReactNode; on
 			<Ionicons name="lock-closed-outline" size={44} color={colors.textDim} />
 			<Text style={styles.title}>Para Code はロックされています</Text>
 			{state === 'locked' ? (
-				<Pressable style={styles.unlockBtn} onPress={() => { void authenticate(); }}>
+				<Pressable style={styles.unlockBtn} onPress={() => { hapticImpact('medium'); void authenticate(); }}>
 					<Text style={styles.unlockText}>ロック解除</Text>
 				</Pressable>
 			) : (

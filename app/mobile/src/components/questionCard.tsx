@@ -92,6 +92,7 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 						placeholderTextColor={colors.textDim}
 						autoCapitalize="none"
 						autoCorrect={false}
+						onFocus={() => hapticSelection()}
 					/>
 					<Pressable
 						style={[styles.questionFreeSend, freeText.trim().length === 0 && styles.confirmBtnDisabled]}
@@ -209,6 +210,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 					placeholderTextColor={colors.textDim}
 					autoCapitalize="none"
 					autoCorrect={false}
+					onFocus={() => hapticSelection()}
 				/>
 			) : null}
 			{!disabled ? (

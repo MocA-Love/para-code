@@ -100,6 +100,16 @@ export interface FsGrepResult {
 export interface FsUploadResult {
 	path: string;
 }
+/** fs hl 応答（コード断片のPCテーマハイライト。失敗時は全フィールド欠落＝プレーン表示）。 */
+export interface FsHighlightResult {
+	/** `.monaco-tokenized-source` 形式のHTML（span.mtkN と <br/> のみ）。 */
+	html?: string;
+	/** `.mtkN { color: ... }` のカラーマップCSS。 */
+	css?: string;
+	/** エディタ背景色/前景色。 */
+	bg?: string;
+	fg?: string;
+}
 /** scm xlsxDiff 応答（PC側でレンダリングされたExcel差分の静的HTML）。 */
 export interface ScmXlsxDiffResult {
 	html: string;
@@ -765,9 +775,23 @@ export class MobileController {
 		return this.request<ScmXlsxDiffResult>('scm', { t: 'xlsxDiff', ws, path }, 120_000);
 	}
 
+	/** コード断片のシンタックスハイライト（PCの現行テーマ。エージェントチャットのコードブロック用）。 */
+	fsHighlight(text: string, lang?: string): Promise<FsHighlightResult> {
+		return this.request<FsHighlightResult>('fs', { t: 'hl', text, ...(lang !== undefined && lang.length > 0 ? { lang } : {}) }, 15_000);
+	}
+
 	/** ccusage 使用量ダッシュボード（PC版フッターの Ccusage と同じ集計データ）。 */
 	usageDashboard(bypassCache?: boolean): Promise<UsageDashboardResult> {
-		return this.request<UsageDashboardResult>('fs', { t: 'usage', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000);
+		// PC側は他のfs応答と違い結果を data フィールドにネストして返す（reply({ t: 'usage', data })）。
+		// 応答オブジェクトをそのまま結果として扱うと days/failedReports が undefined になり
+		// 画面側の参照でクラッシュするため、ここで必ず剥がす。
+		return this.request<{ data?: UsageDashboardResult }>('fs', { t: 'usage', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+			.then(response => {
+				if (!response.data) {
+					throw new Error('empty usage response');
+				}
+				return response.data;
+			});
 	}
 
 	// --- browser（para-browser ミラー、設計書 M3） ------------------------------

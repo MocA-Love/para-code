@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useAppStore } from '../src/appState.js';
+import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 /**
  * ペアリング画面: カメラでQRを読み取り、PCと接続する。
@@ -102,16 +103,17 @@ export default function PairScreen() {
 					placeholderTextColor="#8b8b8b"
 					autoCapitalize="none"
 					autoCorrect={false}
+					onFocus={() => hapticSelection()}
 					multiline
 				/>
 				{error ? <Text style={styles.error}>{error}</Text> : null}
-				<Pressable style={styles.primaryBtn} onPress={onSubmitPasted} disabled={connecting}>
+				<Pressable style={styles.primaryBtn} onPress={() => { hapticImpact('medium'); void onSubmitPasted(); }} disabled={connecting}>
 					<Text style={styles.primaryBtnText}>{connecting ? '接続中…' : '接続'}</Text>
 				</Pressable>
 				{!permission.granted ? (
-					<Pressable onPress={requestPermission}><Text style={styles.linkText}>カメラでQRを読み取る</Text></Pressable>
+					<Pressable onPress={() => { hapticImpact('light'); void requestPermission(); }}><Text style={styles.linkText}>カメラでQRを読み取る</Text></Pressable>
 				) : (
-					<Pressable onPress={() => setPasteMode(false)}><Text style={styles.linkText}>QRを読み取る（カメラを使う）</Text></Pressable>
+					<Pressable onPress={() => { hapticImpact('light'); setPasteMode(false); }}><Text style={styles.linkText}>QRを読み取る（カメラを使う）</Text></Pressable>
 				)}
 			</KeyboardAvoidingView>
 		);
@@ -127,7 +129,7 @@ export default function PairScreen() {
 			<View style={styles.overlay}>
 				<Text style={styles.scanHint}>PC の Para Code に表示された QR を枠に収めてください</Text>
 				{error ? <Text style={styles.error}>{error}</Text> : null}
-				<Pressable onPress={() => setPasteMode(true)}><Text style={styles.linkTextLight}>リンクを貼り付けて接続</Text></Pressable>
+				<Pressable onPress={() => { hapticSelection(); setPasteMode(true); }}><Text style={styles.linkTextLight}>リンクを貼り付けて接続</Text></Pressable>
 			</View>
 		</View>
 	);

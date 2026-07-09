@@ -5,7 +5,7 @@ import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { colors } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
+import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /**
  * Liquid Glassの2段コンポーザー（mo.html 案A2/T1）。上段にテキスト入力、
@@ -38,6 +38,7 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 				autoCapitalize="none"
 				autoCorrect={false}
 				multiline={!monospace}
+				onFocus={() => hapticSelection()}
 				onSubmitEditing={monospace ? onSubmit : undefined}
 				blurOnSubmit={false}
 			/>

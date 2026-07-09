@@ -46,7 +46,7 @@ export function ModelPill({ agent, model, effort, onCommand }: {
 
 	return (
 		<>
-			<Pressable style={styles.pill} onPress={() => { setPickedModelId(undefined); setOpen(true); }} accessibilityLabel="モデルとeffortを変更">
+			<Pressable style={styles.pill} onPress={() => { hapticSelection(); setPickedModelId(undefined); setOpen(true); }} accessibilityLabel="モデルとeffortを変更">
 				<Ionicons name="hardware-chip-outline" size={12} color={colors.textDim} />
 				<Text style={styles.pillText} numberOfLines={1}>{label}</Text>
 			</Pressable>

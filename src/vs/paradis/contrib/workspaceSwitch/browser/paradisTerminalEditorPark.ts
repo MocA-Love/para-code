@@ -92,6 +92,20 @@ export function paradisListParkedTerminalEditorInstances(): ITerminalInstance[] 
 	return [...parkedInstances.values()].map(e => e.instance);
 }
 
+/**
+ * park中インスタンスの instanceId → park元スコープの stateKey を引く（スコープ解決用）。
+ * エディタエリアのターミナルはパネルのグループ台帳 (_groupRepositories) に乗らないため、
+ * IParadisTerminalScopeService.getStateKeyForInstance がこの台帳を第二の解決先として使う。
+ */
+export function paradisGetParkedTerminalEditorStateKey(instanceId: number): string | undefined {
+	for (const entry of parkedInstances.values()) {
+		if (entry.instance.instanceId === instanceId) {
+			return entry.stateKey;
+		}
+	}
+	return undefined;
+}
+
 /** パーク済みインスタンスを取り出す（一度取り出したら台帳から消え、監視リスナーも解除される）。 */
 export function paradisTakeParkedTerminalEditorInstance(persistentProcessId: number): ITerminalInstance | undefined {
 	const entry = parkedInstances.get(persistentProcessId);
