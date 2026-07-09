@@ -26,6 +26,7 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -224,12 +225,15 @@ const AUTORUN_APPROVED_STORAGE_KEY = 'paradis.terminalPresets.autoRunApproved';
  *
  * @param repositoryPath 親リポジトリのルートパス。承認キーに含める（同一リポジトリの worktree 間では
  *   一度の承認で済み、かつ別リポジトリが同名・同内容のプリセットを定義しても承認は流用されない）。
+ * @returns 実際に1つ以上のプリセットを実行したか（呼び出し側がデフォルト端末の要否を判断するために使う）。
  */
-export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: string): Promise<void> {
+export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: string): Promise<boolean> {
 	const presetService = accessor.get(IParadisPresetService);
 	const dialogService = accessor.get(IDialogService);
 	const storageService = accessor.get(IStorageService);
+	const logService = accessor.get(ILogService);
 
+	let ranAny = false;
 	const presets = await presetService.getPresetsForFolder(folderUri);
 	for (const preset of presets) {
 		if (!preset.autoRun) {
@@ -260,6 +264,20 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 		}
 		// 切り替え直後はワークスペースフォルダの反映が完了していないことがあるため、
 		// cwd の基準を新しい worktree フォルダに明示する
-		await presetService.runPreset(preset, { cwd: folderUri });
+		try {
+			await presetService.runPreset(preset, {
+				cwd: folderUri,
+				// 切り替え元の park 済み端末が activeInstance に残っていても再利用しない。
+				forceNewTerminal: true,
+				onDidStart: () => {
+					ranAny = true;
+				},
+			});
+			ranAny = true;
+		} catch (error) {
+			// 後続プリセットを続行し、既に成功したプリセットの情報を呼び出し側へ返す。
+			logService.warn(`[ParadisTerminalPresets] auto-run preset '${preset.name}' failed`, error);
+		}
 	}
+	return ranAny;
 }

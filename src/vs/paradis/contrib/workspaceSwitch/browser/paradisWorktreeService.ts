@@ -46,6 +46,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	readonly onDidChangeWorktrees = this._onDidChangeWorktrees.event;
 
 	private _worktrees = new Map<string, IParadisWorktree[]>();
+	private _detectedWorktrees = new Map<string, IParadisWorktree[]>();
 	/** リポジトリID → main checkout のブランチ名 (.git/HEAD 由来) */
 	private _branches = new Map<string, string>();
 	private _known: ISerializedKnownWorktree[];
@@ -83,8 +84,24 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		return this._worktrees.get(repositoryId) ?? [];
 	}
 
+	getDetectedWorktrees(repositoryId: string): readonly IParadisWorktree[] {
+		return this._detectedWorktrees.get(repositoryId) ?? [];
+	}
+
 	getRepositoryBranch(repositoryId: string): string | undefined {
 		return this._branches.get(repositoryId);
+	}
+
+	addKnownWorktree(worktree: IParadisWorktree): void {
+		const path = worktree.uri.toString();
+		const index = this._known.findIndex(known => known.repositoryId === worktree.repositoryId && known.path === path);
+		if (index >= 0) {
+			this._known[index] = { repositoryId: worktree.repositoryId, path, name: worktree.name };
+		} else {
+			this._known.push({ repositoryId: worktree.repositoryId, path, name: worktree.name });
+		}
+		this.saveKnown();
+		this._refreshScheduler.schedule();
 	}
 
 	removeKnownWorktree(worktree: IParadisWorktree): void {
@@ -142,6 +159,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 		const repositories = this.workspaceSwitchService.repositories;
 		const result = new Map<string, IParadisWorktree[]>();
+		const detectedWorktrees = new Map<string, IParadisWorktree[]>();
 		const branches = new Map<string, string>();
 		let knownChanged = false;
 
@@ -151,16 +169,17 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 				branches.set(repository.id, branch);
 			}
 			const scanned = await this.scanWorktrees(repository);
+			detectedWorktrees.set(repository.id, scanned);
 			const scannedPaths = new Set(scanned.map(worktree => worktree.uri.toString()));
 			const knownForRepository = this._known.filter(known => known.repositoryId === repository.id);
 			const list: IParadisWorktree[] = [];
 
 			// ディスク上に存在するもの: 既知なら常に表示、新規は autoImport 時のみ追加
 			for (const worktree of scanned) {
-				const isKnown = knownForRepository.some(known => known.path === worktree.uri.toString());
-				if (isKnown || autoImport) {
-					list.push(worktree);
-					if (!isKnown) {
+				const known = knownForRepository.find(known => known.path === worktree.uri.toString());
+				if (known || autoImport) {
+					list.push(known ? { ...worktree, name: known.name } : worktree);
+					if (!known) {
 						this._known.push({ repositoryId: repository.id, path: worktree.uri.toString(), name: worktree.name });
 						knownChanged = true;
 					}
@@ -201,6 +220,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			this.saveKnown();
 		}
 		this._worktrees = result;
+		this._detectedWorktrees = detectedWorktrees;
 		this._branches = branches;
 		this._onDidChangeWorktrees.fire();
 	}
