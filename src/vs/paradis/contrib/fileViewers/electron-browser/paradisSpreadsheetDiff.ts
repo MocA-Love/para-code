@@ -11,12 +11,52 @@
 // 各セルに diffStatus(added/removed/modified)と文字レベル差分(diffSegments)を付与する。
 // 文字レベル差分は依存を増やさないため LCS ベースで自前実装している(Superset は `diff` パッケージの diffChars)。
 
+import { stringHash } from '../../../../base/common/hash.js';
+import { equals as objectsEqual } from '../../../../base/common/objects.js';
 import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
 
 export type ParadisDiffStatus = 'added' | 'removed' | 'modified';
 
+export type ParadisDiffDetailKind =
+	| 'value'
+	| 'fontFamily'
+	| 'fontSize'
+	| 'textAlign'
+	| 'verticalAlign'
+	| 'fontWeight'
+	| 'fontStyle'
+	| 'textDecoration'
+	| 'color'
+	| 'backgroundColor'
+	| 'borderTop'
+	| 'borderRight'
+	| 'borderBottom'
+	| 'borderLeft'
+	| 'paddingLeft'
+	| 'otherStyle'
+	| 'mergedColumns'
+	| 'mergedRows'
+	| 'wrapText'
+	| 'verticalText'
+	| 'shrinkToFit'
+	| 'richText'
+	| 'diagonalBorder'
+	| 'object'
+	| 'objectStart'
+	| 'objectEnd'
+	| 'objectWidth'
+	| 'objectHeight'
+	| 'objectFlipHorizontal'
+	| 'objectFlipVertical'
+	| 'objectType'
+	| 'objectOutlineColor'
+	| 'objectOutlineWidth'
+	| 'objectDash'
+	| 'objectImage';
+
 export interface IParadisDiffDetail {
-	readonly label: string;
+	readonly kind: ParadisDiffDetailKind;
+	readonly property?: string;
 	readonly original?: string;
 	readonly modified?: string;
 }
@@ -30,7 +70,6 @@ export interface IParadisDiffCell extends IParadisCellData {
 	readonly diffStatus?: ParadisDiffStatus;
 	readonly diffSegments?: readonly IParadisDiffSegment[];
 	readonly diffDetails?: readonly IParadisDiffDetail[];
-	readonly diffTitle?: string;
 }
 
 export interface IParadisDiffRow {
@@ -62,21 +101,21 @@ export interface IParadisDiffSheet {
 // 文字レベル差分が大きすぎる場合の粗いフォールバック閾値(n*m)。
 const MAX_CHAR_DIFF_CELLS = 4_000_000;
 
-const STYLE_LABELS: Record<string, string> = {
-	fontFamily: 'Font',
-	fontSize: 'Font size',
-	textAlign: 'Horizontal alignment',
-	verticalAlign: 'Vertical alignment',
-	fontWeight: 'Font weight',
-	fontStyle: 'Font style',
-	textDecoration: 'Text decoration',
-	color: 'Font color',
-	backgroundColor: 'Fill color',
-	borderTop: 'Top border',
-	borderRight: 'Right border',
-	borderBottom: 'Bottom border',
-	borderLeft: 'Left border',
-	paddingLeft: 'Indent',
+const STYLE_DETAIL_KINDS: Record<string, ParadisDiffDetailKind> = {
+	fontFamily: 'fontFamily',
+	fontSize: 'fontSize',
+	textAlign: 'textAlign',
+	verticalAlign: 'verticalAlign',
+	fontWeight: 'fontWeight',
+	fontStyle: 'fontStyle',
+	textDecoration: 'textDecoration',
+	color: 'color',
+	backgroundColor: 'backgroundColor',
+	borderTop: 'borderTop',
+	borderRight: 'borderRight',
+	borderBottom: 'borderBottom',
+	borderLeft: 'borderLeft',
+	paddingLeft: 'paddingLeft',
 };
 
 const STYLE_ORDER = [
@@ -97,6 +136,7 @@ const STYLE_ORDER = [
 ];
 
 const EMPTY_CELL: IParadisCellData = { value: '', style: {} };
+const MAX_DIFF_DETAIL_VALUE_LENGTH = 512;
 
 interface CharRun {
 	value: string;
@@ -110,28 +150,16 @@ function detailValue(value: unknown): string | undefined {
 	if (value === null) {
 		return 'null';
 	}
-	return String(value);
+	const text = String(value);
+	return text.length <= MAX_DIFF_DETAIL_VALUE_LENGTH ? text : `${text.slice(0, MAX_DIFF_DETAIL_VALUE_LENGTH - 1)}…`;
 }
 
-function titleValue(value: string | undefined): string {
-	if (value === undefined) {
-		return '(unset)';
-	}
-	if (value === '') {
-		return '(empty)';
-	}
-	return value;
-}
-
-export function formatDiffDetails(details: readonly IParadisDiffDetail[]): string {
-	return details.map(detail => `${detail.label}: ${titleValue(detail.original)} -> ${titleValue(detail.modified)}`).join('\n');
-}
-
-function pushDetail(details: IParadisDiffDetail[], label: string, original: unknown, modified: unknown): void {
+function pushDetail(details: IParadisDiffDetail[], kind: ParadisDiffDetailKind, original: unknown, modified: unknown, property?: string): void {
 	if (original === modified) {
 		return;
 	}
-	details.push({ label, original: detailValue(original), modified: detailValue(modified) });
+	const boundedProperty = detailValue(property);
+	details.push({ kind, ...(boundedProperty ? { property: boundedProperty } : {}), original: detailValue(original), modified: detailValue(modified) });
 }
 
 function normalizeStyle(style: IParadisCellData['style']): Record<string, string> {
@@ -159,69 +187,130 @@ function sortedStyleKeys(original: Record<string, string>, modified: Record<stri
 	});
 }
 
-function stableStringify(value: unknown): string | undefined {
+function boundedStableStringify(value: unknown): string | undefined {
 	if (value === undefined) {
 		return undefined;
 	}
-	if (Array.isArray(value)) {
-		return JSON.stringify(value.map(v => stablePlainValue(v)));
-	}
-	return JSON.stringify(stablePlainValue(value));
+	const chunks: string[] = [];
+	let length = 0;
+	let truncated = false;
+	const append = (text: string): void => {
+		const remaining = MAX_DIFF_DETAIL_VALUE_LENGTH - length;
+		if (remaining <= 0) {
+			truncated = true;
+			return;
+		}
+		if (text.length > remaining) {
+			chunks.push(text.slice(0, remaining));
+			length = MAX_DIFF_DETAIL_VALUE_LENGTH;
+			truncated = true;
+			return;
+		}
+		chunks.push(text);
+		length += text.length;
+	};
+	const serialize = (current: unknown, arrayItem = false): void => {
+		if (truncated) {
+			return;
+		}
+		if (current === undefined) {
+			if (arrayItem) {
+				append('null');
+			}
+			return;
+		}
+		if (current === null || typeof current === 'number' || typeof current === 'boolean') {
+			append(JSON.stringify(current) ?? 'null');
+			return;
+		}
+		if (typeof current === 'string') {
+			const bounded = current.slice(0, MAX_DIFF_DETAIL_VALUE_LENGTH);
+			append(JSON.stringify(bounded));
+			if (bounded.length !== current.length) {
+				truncated = true;
+			}
+			return;
+		}
+		if (Array.isArray(current)) {
+			append('[');
+			for (let i = 0; i < current.length && !truncated; i++) {
+				if (i > 0) {
+					append(',');
+				}
+				serialize(current[i], true);
+			}
+			append(']');
+			return;
+		}
+		if (typeof current === 'object') {
+			append('{');
+			let emitted = 0;
+			for (const key of Object.keys(current).sort()) {
+				const nested = (current as Record<string, unknown>)[key];
+				if (nested === undefined || truncated) {
+					continue;
+				}
+				if (emitted++ > 0) {
+					append(',');
+				}
+				serialize(key);
+				append(':');
+				serialize(nested);
+			}
+			append('}');
+			return;
+		}
+		append(JSON.stringify(String(current)));
+	};
+	serialize(value);
+	const result = chunks.join('');
+	return truncated ? `${result.slice(0, MAX_DIFF_DETAIL_VALUE_LENGTH - 1)}…` : result;
 }
 
-function stablePlainValue(value: unknown): unknown {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
-		return value;
+function pushStructuredDetail(details: IParadisDiffDetail[], kind: ParadisDiffDetailKind, original: unknown, modified: unknown): void {
+	if (objectsEqual(original, modified)) {
+		return;
 	}
-	const record = value as Record<string, unknown>;
-	const out: Record<string, unknown> = {};
-	for (const key of Object.keys(record).sort()) {
-		const nested = record[key];
-		out[key] = Array.isArray(nested) ? nested.map(v => stablePlainValue(v)) : stablePlainValue(nested);
-	}
-	return out;
+	details.push({ kind, original: boundedStableStringify(original), modified: boundedStableStringify(modified) });
 }
 
 function addStyleDetails(details: IParadisDiffDetail[], original: IParadisCellData['style'], modified: IParadisCellData['style']): void {
 	const normalizedOriginal = normalizeStyle(original);
 	const normalizedModified = normalizeStyle(modified);
 	for (const key of sortedStyleKeys(normalizedOriginal, normalizedModified)) {
-		pushDetail(details, STYLE_LABELS[key] ?? key, normalizedOriginal[key], normalizedModified[key]);
+		pushDetail(details, STYLE_DETAIL_KINDS[key] ?? 'otherStyle', normalizedOriginal[key], normalizedModified[key], STYLE_DETAIL_KINDS[key] ? undefined : key);
 	}
 }
 
 function buildCellDiffDetails(original: IParadisCellData, modified: IParadisCellData): IParadisDiffDetail[] {
 	const details: IParadisDiffDetail[] = [];
-	pushDetail(details, 'Value', original.value, modified.value);
+	pushDetail(details, 'value', original.value, modified.value);
 	addStyleDetails(details, original.style, modified.style);
-	pushDetail(details, 'Merged columns', original.colSpan ?? 1, modified.colSpan ?? 1);
-	pushDetail(details, 'Merged rows', original.rowSpan ?? 1, modified.rowSpan ?? 1);
-	pushDetail(details, 'Wrap text', !!original.wrapText, !!modified.wrapText);
-	pushDetail(details, 'Vertical text', !!original.verticalText, !!modified.verticalText);
-	pushDetail(details, 'Shrink to fit', !!original.shrinkToFit, !!modified.shrinkToFit);
-	pushDetail(details, 'Rich text', stableStringify(original.richText), stableStringify(modified.richText));
-	pushDetail(details, 'Diagonal border', stableStringify(original.diagonal), stableStringify(modified.diagonal));
+	pushDetail(details, 'mergedColumns', original.colSpan ?? 1, modified.colSpan ?? 1);
+	pushDetail(details, 'mergedRows', original.rowSpan ?? 1, modified.rowSpan ?? 1);
+	pushDetail(details, 'wrapText', !!original.wrapText, !!modified.wrapText);
+	pushDetail(details, 'verticalText', !!original.verticalText, !!modified.verticalText);
+	pushDetail(details, 'shrinkToFit', !!original.shrinkToFit, !!modified.shrinkToFit);
+	pushStructuredDetail(details, 'richText', original.richText, modified.richText);
+	pushStructuredDetail(details, 'diagonalBorder', original.diagonal, modified.diagonal);
 	return details;
-}
-
-function cellHasComparableData(cell: IParadisCellData): boolean {
-	return buildCellDiffDetails(EMPTY_CELL, cell).length > 0;
 }
 
 function withCellDiff(cell: IParadisCellData, status: ParadisDiffStatus, details: readonly IParadisDiffDetail[]): IParadisDiffCell {
 	if (details.length === 0) {
 		return { ...cell };
 	}
-	return { ...cell, diffStatus: status, diffDetails: details, diffTitle: formatDiffDetails(details) };
+	return { ...cell, diffStatus: status, diffDetails: details };
 }
 
 function markCell(cell: IParadisCellData, status: ParadisDiffStatus): IParadisDiffCell {
-	if (!cellHasComparableData(cell)) {
-		return { ...cell };
-	}
 	const original = status === 'added' ? EMPTY_CELL : cell;
 	const modified = status === 'added' ? cell : EMPTY_CELL;
-	return withCellDiff(cell, status, buildCellDiffDetails(original, modified));
+	const details = buildCellDiffDetails(original, modified);
+	if (details.length === 0) {
+		return { ...cell };
+	}
+	return withCellDiff(cell, status, details);
 }
 
 /** 2つの文字列の LCS ベース差分。`diff` パッケージの diffChars 相当のランを返す。 */
@@ -405,14 +494,12 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 						diffStatus: changed ? 'modified' : undefined,
 						diffSegments: valueChanged ? computeDiffSegments(origCell.value, modCell.value, 'original') : undefined,
 						diffDetails: changed ? details : undefined,
-						diffTitle: changed ? formatDiffDetails(details) : undefined,
 					});
 					modCells.push({
 						...modCell,
 						diffStatus: changed ? 'modified' : undefined,
 						diffSegments: valueChanged ? computeDiffSegments(origCell.value, modCell.value, 'modified') : undefined,
 						diffDetails: changed ? details : undefined,
-						diffTitle: changed ? formatDiffDetails(details) : undefined,
 					});
 				} else {
 					origCells.push(emptyCell);
@@ -468,7 +555,6 @@ export interface IParadisShapeRender {
 	readonly shape: IParadisRenderShape;
 	readonly status: ParadisShapeDiffStatus;
 	readonly diffDetails?: readonly IParadisDiffDetail[];
-	readonly diffTitle?: string;
 }
 
 /** Prev/Next のナビ対象になる図形の変更1件。 */
@@ -481,7 +567,6 @@ export interface IParadisShapeChange {
 	readonly shape: IParadisRenderShape;
 	readonly side: 'original' | 'modified';
 	readonly diffDetails?: readonly IParadisDiffDetail[];
-	readonly diffTitle?: string;
 }
 
 export interface IParadisShapeDiff {
@@ -495,19 +580,8 @@ function shapeKey(s: IParadisRenderShape): string {
 	return s.name || s.shapeId || `${s.type}:${s.from.c},${s.from.co},${s.from.r},${s.from.ro},${s.to.c},${s.to.r}`;
 }
 
-function sameGeometry(a: IParadisRenderShape, b: IParadisRenderShape): boolean {
-	return a.from.c === b.from.c && a.from.co === b.from.co && a.from.r === b.from.r && a.from.ro === b.from.ro
-		&& a.to.c === b.to.c && a.to.co === b.to.co && a.to.r === b.to.r && a.to.ro === b.to.ro
-		&& (a.ext?.cx ?? -1) === (b.ext?.cx ?? -1) && (a.ext?.cy ?? -1) === (b.ext?.cy ?? -1);
-}
-
-function sameStyle(a: IParadisRenderShape, b: IParadisRenderShape): boolean {
-	return a.type === b.type && a.outlineWidth === b.outlineWidth && a.outlineColor === b.outlineColor
-		&& a.dash === b.dash && (a.href ?? '') === (b.href ?? '');
-}
-
 function anchorText(anchor: IParadisRenderShape['from']): string {
-	return `row ${anchor.r + 1}, col ${anchor.c + 1}, offset ${anchor.ro}:${anchor.co}`;
+	return `${anchor.r + 1}:${anchor.c + 1}:${anchor.ro}:${anchor.co}`;
 }
 
 function shapeName(shape: IParadisRenderShape): string {
@@ -515,29 +589,51 @@ function shapeName(shape: IParadisRenderShape): string {
 }
 
 function shapeAddedDetails(shape: IParadisRenderShape): IParadisDiffDetail[] {
-	return [{ label: 'Object', original: undefined, modified: shapeName(shape) }];
+	const details: IParadisDiffDetail[] = [];
+	pushDetail(details, 'object', undefined, shapeName(shape));
+	return details;
 }
 
 function shapeRemovedDetails(shape: IParadisRenderShape): IParadisDiffDetail[] {
-	return [{ label: 'Object', original: shapeName(shape), modified: undefined }];
+	const details: IParadisDiffDetail[] = [];
+	pushDetail(details, 'object', shapeName(shape), undefined);
+	return details;
 }
 
 function shapeGeometryDetails(original: IParadisRenderShape, modified: IParadisRenderShape): IParadisDiffDetail[] {
 	const details: IParadisDiffDetail[] = [];
-	pushDetail(details, 'Object start', anchorText(original.from), anchorText(modified.from));
-	pushDetail(details, 'Object end', anchorText(original.to), anchorText(modified.to));
-	pushDetail(details, 'Object width', original.ext?.cx, modified.ext?.cx);
-	pushDetail(details, 'Object height', original.ext?.cy, modified.ext?.cy);
+	pushDetail(details, 'objectStart', anchorText(original.from), anchorText(modified.from));
+	pushDetail(details, 'objectEnd', anchorText(original.to), anchorText(modified.to));
+	pushDetail(details, 'objectWidth', original.ext?.cx, modified.ext?.cx);
+	pushDetail(details, 'objectHeight', original.ext?.cy, modified.ext?.cy);
+	pushDetail(details, 'objectFlipHorizontal', original.flipH, modified.flipH);
+	pushDetail(details, 'objectFlipVertical', original.flipV, modified.flipV);
 	return details;
+}
+
+function imageDescription(href: string | undefined): string | undefined {
+	if (!href) {
+		return undefined;
+	}
+	const headerEnd = href.indexOf(',');
+	const header = headerEnd === -1 ? '' : href.slice(0, headerEnd);
+	const mime = /^data:([^;,]+)/.exec(header)?.[1] ?? 'application/octet-stream';
+	const payloadLength = headerEnd === -1 ? href.length : href.length - headerEnd - 1;
+	const padding = href.endsWith('==') ? 2 : href.endsWith('=') ? 1 : 0;
+	const bytes = header.includes(';base64') ? Math.max(0, Math.floor(payloadLength * 3 / 4) - padding) : payloadLength;
+	const fingerprint = (stringHash(href, 0) >>> 0).toString(16).padStart(8, '0');
+	return `${mime}; ${bytes} B; ${fingerprint}`;
 }
 
 function shapeStyleDetails(original: IParadisRenderShape, modified: IParadisRenderShape): IParadisDiffDetail[] {
 	const details: IParadisDiffDetail[] = [];
-	pushDetail(details, 'Object type', original.type, modified.type);
-	pushDetail(details, 'Object outline color', original.outlineColor, modified.outlineColor);
-	pushDetail(details, 'Object outline width', original.outlineWidth, modified.outlineWidth);
-	pushDetail(details, 'Object dash', original.dash, modified.dash);
-	pushDetail(details, 'Object image', original.href, modified.href);
+	pushDetail(details, 'objectType', original.type, modified.type);
+	pushDetail(details, 'objectOutlineColor', original.outlineColor, modified.outlineColor);
+	pushDetail(details, 'objectOutlineWidth', original.outlineWidth, modified.outlineWidth);
+	pushDetail(details, 'objectDash', original.dash, modified.dash);
+	if (original.href !== modified.href) {
+		pushDetail(details, 'objectImage', imageDescription(original.href), imageDescription(modified.href));
+	}
 	return details;
 }
 
@@ -545,11 +641,11 @@ function withShapeDiff(shape: IParadisRenderShape, status: ParadisShapeDiffStatu
 	if (details.length === 0) {
 		return { shape, status };
 	}
-	return { shape, status, diffDetails: details, diffTitle: formatDiffDetails(details) };
+	return { shape, status, diffDetails: details };
 }
 
 function withShapeChange(key: string, status: IParadisShapeChange['status'], shape: IParadisRenderShape, side: 'original' | 'modified', details: readonly IParadisDiffDetail[]): IParadisShapeChange {
-	return { key, status, anchorRow: shape.from.r + 1, shape, side, diffDetails: details, diffTitle: formatDiffDetails(details) };
+	return { key, status, anchorRow: shape.from.r + 1, shape, side, diffDetails: details };
 }
 
 /** 旧版/新版の図形を安定キーで突き合わせ、各版の描画リストと変更一覧を返す。 */
@@ -568,6 +664,16 @@ export function buildShapeDiff(original: readonly IParadisRenderShape[] | undefi
 	const originalRenders: IParadisShapeRender[] = [];
 	const modifiedRenders: IParadisShapeRender[] = [];
 	const changes: IParadisShapeChange[] = [];
+	const pairDetails = new Map<string, { readonly geometry: readonly IParadisDiffDetail[]; readonly style: readonly IParadisDiffDetail[]; readonly all: readonly IParadisDiffDetail[] }>();
+	for (const [key, originalShape] of origByKey) {
+		const modifiedShape = modByKey.get(key);
+		if (!modifiedShape) {
+			continue;
+		}
+		const geometry = shapeGeometryDetails(originalShape, modifiedShape);
+		const style = shapeStyleDetails(originalShape, modifiedShape);
+		pairDetails.set(key, { geometry, style, all: [...geometry, ...style] });
+	}
 
 	// original 側(左)。変更のカウントは削除のみここで、移動/スタイル変更は modified 側で1回だけ数える。
 	for (const s of orig) {
@@ -577,10 +683,10 @@ export function buildShapeDiff(original: readonly IParadisRenderShape[] | undefi
 			const details = shapeRemovedDetails(s);
 			originalRenders.push(withShapeDiff(s, 'removed', details));
 			changes.push(withShapeChange(key, 'removed', s, 'original', details));
-		} else if (!sameGeometry(s, m)) {
-			originalRenders.push(withShapeDiff(s, 'moved', shapeGeometryDetails(s, m)));
-		} else if (!sameStyle(s, m)) {
-			originalRenders.push(withShapeDiff(s, 'changed', shapeStyleDetails(s, m)));
+		} else if ((pairDetails.get(key)?.geometry.length ?? 0) > 0) {
+			originalRenders.push(withShapeDiff(s, 'moved', pairDetails.get(key)?.all));
+		} else if ((pairDetails.get(key)?.style.length ?? 0) > 0) {
+			originalRenders.push(withShapeDiff(s, 'changed', pairDetails.get(key)?.style));
 		} else {
 			originalRenders.push({ shape: s, status: 'unchanged' });
 		}
@@ -594,12 +700,12 @@ export function buildShapeDiff(original: readonly IParadisRenderShape[] | undefi
 			const details = shapeAddedDetails(s);
 			modifiedRenders.push(withShapeDiff(s, 'added', details));
 			changes.push(withShapeChange(key, 'added', s, 'modified', details));
-		} else if (!sameGeometry(o, s)) {
-			const details = shapeGeometryDetails(o, s);
+		} else if ((pairDetails.get(key)?.geometry.length ?? 0) > 0) {
+			const details = pairDetails.get(key)?.all ?? [];
 			modifiedRenders.push(withShapeDiff(s, 'moved', details));
 			changes.push(withShapeChange(key, 'moved', s, 'modified', details));
-		} else if (!sameStyle(o, s)) {
-			const details = shapeStyleDetails(o, s);
+		} else if ((pairDetails.get(key)?.style.length ?? 0) > 0) {
+			const details = pairDetails.get(key)?.style ?? [];
 			modifiedRenders.push(withShapeDiff(s, 'changed', details));
 			changes.push(withShapeChange(key, 'changed', s, 'modified', details));
 		} else {

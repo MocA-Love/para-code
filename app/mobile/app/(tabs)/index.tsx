@@ -13,6 +13,7 @@ import { AttentionCard } from '../../src/components/attentionCard.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
+import { hapticSelection } from '../../src/haptics.js';
 
 /**
  * ホーム画面（mock.html 案A準拠のリデザイン）。旧デザインの「接続中のPC」カードと
@@ -48,6 +49,7 @@ export default function HomeScreen() {
 
 	/** エージェントタブへ遷移する。setSelectedWsがselectedTerminalIdをリセットするため、この順序を厳守する。 */
 	const openAgent = (wsId: string, terminalId: number) => {
+		hapticSelection();
 		setSelectedWs(wsId);
 		setSelectedTerminalId(terminalId);
 		router.push('/agent');

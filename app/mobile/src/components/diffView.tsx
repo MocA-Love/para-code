@@ -16,6 +16,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { buildMarkdownHtml } from './fileViewer.js';
 import { colors } from '../theme.js';
+import { hapticImpact, hapticSelection } from '../haptics.js';
 
 interface DiffViewProps {
 	ws: string;
@@ -155,15 +156,15 @@ export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
 					) : null}
 					{kind !== 'other' ? (
 						<View style={styles.segment}>
-							<Pressable style={[styles.segmentBtn, mode === 'diff' && styles.segmentBtnActive]} onPress={() => setMode('diff')}>
+							<Pressable style={[styles.segmentBtn, mode === 'diff' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('diff'); }}>
 								<Text style={[styles.segmentText, mode === 'diff' && styles.segmentTextActive]}>Diff</Text>
 							</Pressable>
-							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => setMode('render')}>
+							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('render'); }}>
 								<Text style={[styles.segmentText, mode === 'render' && styles.segmentTextActive]}>レンダー</Text>
 							</Pressable>
 						</View>
 					) : null}
-					<Pressable onPress={onClose} hitSlop={8} accessibilityLabel="閉じる">
+					<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel="閉じる">
 						<Ionicons name="close" size={22} color={colors.text} />
 					</Pressable>
 				</View>

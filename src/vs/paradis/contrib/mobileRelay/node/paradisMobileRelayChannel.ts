@@ -8,7 +8,9 @@
 
 import { IDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IPCServer, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisCdpFrameSubscription, PARADIS_CDP_TARGET_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -22,12 +24,12 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
  *
  * 長期秘密鍵の暗号化のため、main プロセスの 'encryption'(safeStorage) チャネルを注入する。
  */
-export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService): IDisposable {
+export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
 	const store = new DisposableStore();
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
 	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）
 	const cdpFrames = ProxyChannel.toService<IParadisCdpFrameSubscription>(mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL));
-	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, logService));
+	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, logService, configurationService, args));
 	server.registerChannel(PARADIS_MOBILE_RELAY_CHANNEL, ProxyChannel.fromService(service, store));
 	return store;
 }

@@ -52,7 +52,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				type: 'object',
 				required: ['id', 'command'],
 				properties: {
-					id: { type: 'string', description: localize('paradis.workspaceSwitch.agents.id', "エージェントの識別子。") },
+					id: { type: 'string', not: { const: 'none' }, description: localize('paradis.workspaceSwitch.agents.id', "エージェントの識別子。'none' は「実行しない」の予約識別子のため使用不可。") },
 					label: { type: 'string', description: localize('paradis.workspaceSwitch.agents.label', "選択肢として表示する名前。") },
 					command: { type: 'string', description: localize('paradis.workspaceSwitch.agents.command', "ターミナルで実行するコマンド。例: claude {prompt}") }
 				}

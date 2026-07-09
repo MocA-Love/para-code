@@ -15,6 +15,7 @@ import { WebView } from 'react-native-webview';
 import { marked } from 'marked';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { colors } from '../theme.js';
+import { hapticImpact, hapticSelection } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 
@@ -448,22 +449,22 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 					<Text style={styles.title} numberOfLines={1}>{path}</Text>
 					{kind === 'markdown' || kind === 'html' ? (
 						<View style={styles.segment}>
-							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => setMode('render')}>
+							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('render'); }}>
 								<Text style={[styles.segmentText, mode === 'render' && styles.segmentTextActive]}>レンダー</Text>
 							</Pressable>
-							<Pressable style={[styles.segmentBtn, mode === 'code' && styles.segmentBtnActive]} onPress={() => setMode('code')}>
+							<Pressable style={[styles.segmentBtn, mode === 'code' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('code'); }}>
 								<Text style={[styles.segmentText, mode === 'code' && styles.segmentTextActive]}>Raw</Text>
 							</Pressable>
 						</View>
 					) : null}
-					<Pressable onPress={onClose} hitSlop={8} accessibilityLabel="閉じる">
+					<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel="閉じる">
 						<Ionicons name="close" size={22} color={colors.text} />
 					</Pressable>
 				</View>
 				{kind === 'spreadsheet' && sheets !== undefined && sheets.length > 1 ? (
 					<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.sheetBar} contentContainerStyle={styles.sheetBarContent}>
 						{sheets.map((sheetName, i) => (
-							<Pressable key={i} style={[styles.sheetChip, i === sheetIndex && styles.sheetChipActive]} onPress={() => onSelectSheet?.(i)}>
+							<Pressable key={i} style={[styles.sheetChip, i === sheetIndex && styles.sheetChipActive]} onPress={() => { hapticSelection(); onSelectSheet?.(i); }}>
 								<Text style={[styles.sheetText, i === sheetIndex && styles.sheetTextActive]} numberOfLines={1}>{sheetName}</Text>
 							</Pressable>
 						))}

@@ -8,8 +8,8 @@
 
 // エージェントCLI (Claude Code / Codex) の通知hook設置に関する共有定義。
 // 自動設置 (node/paradisAgentHooksSetup.ts) と手動スニペットコピー
-// (workspaceSwitch/electron-browser/paradisAgentStatus.contribution.ts) の両方から参照され、
-// 生成されるhookコマンド・イベント一覧が両経路で常に一致することを保証する。
+// (workspaceSwitch/electron-browser/paradisAgentStatus.contribution.ts) の両方から参照される。
+// バージョン依存イベントは自動設置側で対応確認後にだけ追加する。
 
 /**
  * ホームディレクトリ相対の notify スクリプト設置先 (POSIX)。
@@ -33,18 +33,18 @@ export interface IParadisManagedHookEvent {
 
 /**
  * ~/.claude/settings.json に登録するイベント一覧 (Superset の createClaudeSettingsJson と同方針)。
- * PreToolUse は AskUserQuestion に限定して登録する: Claude Code は AskUserQuestion の
+ * PreToolUse は全ツールを登録する: Claude Code は AskUserQuestion の
  * tool_use 行を回答/中断の決着まで transcript へ flush しないため、transcript 監視では
  * 質問中をライブ検知できない（PreToolUse hook の tool_input が唯一のライブな供給源）。
- * matcher 無しの全ツール PreToolUse は登録しない (permission に正規化されるため、
- * ツール実行のたびに誤通知になる)。
+ * それ以外のツールはモバイルのライブティッカー供給源として使い、状態判定では
+ * PermissionRequest と分離して working に正規化する。
  */
 export const PARADIS_CLAUDE_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'SessionStart' },
 	{ eventName: 'SessionEnd' },
 	{ eventName: 'UserPromptSubmit' },
 	{ eventName: 'Stop' },
-	{ eventName: 'PreToolUse', matcher: 'AskUserQuestion' },
+	{ eventName: 'PreToolUse', matcher: '*' },
 	{ eventName: 'PostToolUse', matcher: '*' },
 	{ eventName: 'PermissionRequest', matcher: '*' },
 	{ eventName: 'Notification' },
@@ -61,6 +61,13 @@ export const PARADIS_CLAUDE_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 ];
 
 /**
+ * Claude Code 2.1.205 で実地確認した生成中メッセージイベント。
+ * 旧版は未知のhookキーを settings.json の検証時に拒否し得るため、静的な一覧へは含めず、
+ * 自動設置側が対応バージョンを確認できた場合にだけ追加する。
+ */
+export const PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT: IParadisManagedHookEvent = { eventName: 'MessageDisplay' };
+
+/**
  * ~/.codex/hooks.json に登録するイベント一覧 (Superset の createCodexHooksJson ベース)。
  * PermissionRequest は Codex 0.129+ の安定hooksに存在し、承認待ち状態の検出
  * (モバイルの承認バッジ/チャットミラー) に使う。旧バージョンでは未知イベントとして
@@ -71,6 +78,9 @@ export const PARADIS_CODEX_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'UserPromptSubmit' },
 	{ eventName: 'PermissionRequest' },
 	{ eventName: 'Stop' },
+	// ツール開始をライブティッカーへ反映する。PermissionRequestとは別イベントなので、
+	// 通常のツール実行を許可待ち扱いにはしない。
+	{ eventName: 'PreToolUse' },
 	// PostToolUse: 長いターンの途中でも「実行中」を維持するライブネス供給源。Codex の新hooksは
 	// Claude Code 互換の stdin JSON (transcript_path 付き) を送るため、hook 未発火起因の
 	// セッション未特定からの自己回復にも効く。Codex hooks.json の対応イベントは10種のみで、

@@ -9,6 +9,7 @@ import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
 import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { colors } from '../theme.js';
+import { hapticSelection } from '../haptics.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../store.js';
 
 /**
@@ -205,17 +206,18 @@ export function FilesPanel() {
 					placeholderTextColor={colors.textDim}
 					autoCapitalize="none"
 					autoCorrect={false}
+					onFocus={() => hapticSelection()}
 				/>
 				{searching ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
 				<Pressable
 					style={[styles.modeChip, searchMode === 'name' && styles.modeChipActive]}
-					onPress={() => setSearchMode('name')}
+					onPress={() => { hapticSelection(); setSearchMode('name'); }}
 				>
 					<Text style={[styles.modeText, searchMode === 'name' && styles.modeTextActive]}>名前</Text>
 				</Pressable>
 				<Pressable
 					style={[styles.modeChip, searchMode === 'text' && styles.modeChipActive]}
-					onPress={() => setSearchMode('text')}
+					onPress={() => { hapticSelection(); setSearchMode('text'); }}
 				>
 					<Text style={[styles.modeText, searchMode === 'text' && styles.modeTextActive]}>内容</Text>
 				</Pressable>
@@ -233,7 +235,7 @@ export function FilesPanel() {
 						{findResult !== undefined ? (
 							<>
 								{findResult.files.map(p => (
-									<Pressable key={p} style={styles.row} onPress={() => { void openViewer(p); }}>
+									<Pressable key={p} style={styles.row} onPress={() => { hapticSelection(); void openViewer(p); }}>
 										<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
 										<View style={styles.resultCol}>
 											<Text style={styles.rowName} numberOfLines={1}>{p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p}</Text>
@@ -247,7 +249,7 @@ export function FilesPanel() {
 						) : grepResult !== undefined ? (
 							<>
 								{grepResult.matches.map((m, i) => (
-									<Pressable key={`${m.path}:${m.line}:${i}`} style={styles.row} onPress={() => { void openViewer(m.path, m.line); }}>
+									<Pressable key={`${m.path}:${m.line}:${i}`} style={styles.row} onPress={() => { hapticSelection(); void openViewer(m.path, m.line); }}>
 										<View style={styles.resultCol}>
 											<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
 											<Text style={styles.resultPreview} numberOfLines={2}>{m.text}</Text>
@@ -265,7 +267,7 @@ export function FilesPanel() {
 					<>
 						{loading && !listing ? <ActivityIndicator style={styles.spinner} /> : null}
 						{path !== '' ? (
-							<Pressable style={styles.row} onPress={() => { void load(parent); }}>
+							<Pressable style={styles.row} onPress={() => { hapticSelection(); void load(parent); }}>
 								<Ionicons name="folder-outline" size={16} color={colors.textDim} />
 								<Text style={styles.rowName}>..</Text>
 							</Pressable>
@@ -276,7 +278,7 @@ export function FilesPanel() {
 								<Pressable
 									key={entry.name}
 									style={styles.row}
-									onPress={() => { entry.dir ? void load(childPath) : void openViewer(childPath); }}
+									onPress={() => { hapticSelection(); entry.dir ? void load(childPath) : void openViewer(childPath); }}
 								>
 									<Ionicons name={entry.dir ? 'folder-outline' : 'document-text-outline'} size={16} color={entry.dir ? colors.accent : colors.textDim} />
 									<Text style={styles.rowName} numberOfLines={1}>{entry.name}</Text>

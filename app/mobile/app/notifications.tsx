@@ -8,7 +8,7 @@ import type { NotifyKind, NotifyPayload } from '@para/protocol';
 import { useAppStore } from '../src/appState.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { colors } from '../src/theme.js';
-import { hapticSelection } from '../src/haptics.js';
+import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 function dotColor(kind: NotifyKind): string {
 	switch (kind) {
@@ -66,7 +66,7 @@ export default function NotificationsScreen() {
 		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
 			<View style={styles.header}>
 				<Text style={styles.title}>通知</Text>
-				<Pressable style={styles.closeBtn} onPress={() => router.back()} accessibilityLabel="閉じる">
+				<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
 					<Ionicons name="close" size={16} color={colors.textDim} />
 				</Pressable>
 			</View>

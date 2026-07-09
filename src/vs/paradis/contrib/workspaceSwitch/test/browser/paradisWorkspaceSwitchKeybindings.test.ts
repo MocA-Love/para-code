@@ -7,20 +7,22 @@
 
 import assert from 'assert';
 import { KeyCode, KeyMod } from '../../../../../base/common/keyCodes.js';
-import { createSimpleKeybinding, KeyCodeChord } from '../../../../../base/common/keybindings.js';
+import { createSimpleKeybinding, Keybinding, KeyCodeChord } from '../../../../../base/common/keybindings.js';
 import { OperatingSystem } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IContext } from '../../../../../platform/contextkey/common/contextkey.js';
-import { IKeybindingItem, KeybindingsRegistry, KeybindingWeight } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { IKeybindingItem, KeybindingsRegistry } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { KeybindingResolver, ResultKind } from '../../../../../platform/keybinding/common/keybindingResolver.js';
 import { ResolvedKeybindingItem } from '../../../../../platform/keybinding/common/resolvedKeybindingItem.js';
 import { USLayoutResolvedKeybinding } from '../../../../../platform/keybinding/common/usLayoutResolvedKeybinding.js';
+import { DEFAULT_COMMANDS_TO_SKIP_SHELL } from '../../../../../workbench/contrib/terminal/common/terminal.js';
+import { paradisWorkspaceSwitchCommandId } from '../../common/paradisWorkspaceSwitchKeybindings.js';
 import '../../browser/paradisWorkspaceSwitch.contribution.js';
 
 const competingCommandId = 'test.paradis.workspaceSwitch.competingDefault';
 
 function switchCommandId(index: number): string {
-	return `paradis.workspaceSwitch.switchToRepository${index}`;
+	return paradisWorkspaceSwitchCommandId(index);
 }
 
 function commandBindings(os: OperatingSystem, index: number): IKeybindingItem[] {
@@ -84,10 +86,31 @@ suite('Paradis workspace switch keybindings', () => {
 		}
 	});
 
+	test('keeps Ctrl+Alt+1..9 as the Windows primary binding', () => {
+		for (let index = 1; index <= 9; index++) {
+			const bindings = commandBindings(OperatingSystem.Windows, index);
+			const primary = bindings.find(item => item.weight2 === 0);
+			assert.ok(primary);
+			assertDigitChord(primary, {
+				ctrlKey: true,
+				altKey: true,
+				metaKey: false,
+				keyCode: KeyCode.Digit0 + index,
+			});
+		}
+	});
+
+	test('keeps workspace shortcuts in VS Code when the terminal has focus', () => {
+		assert.deepStrictEqual(
+			Array.from({ length: 9 }, (_, index) => DEFAULT_COMMANDS_TO_SKIP_SHELL.includes(switchCommandId(index + 1))),
+			Array.from({ length: 9 }, () => true),
+		);
+	});
+
 	test('wins over an existing lower-priority default binding', () => {
 		const competingRegistration = KeybindingsRegistry.registerKeybindingRule({
 			id: competingCommandId,
-			weight: KeybindingWeight.ExternalExtension + 999,
+			weight: Number.MAX_SAFE_INTEGER - 1,
 			primary: KeyMod.CtrlCmd | KeyCode.Digit1,
 			mac: { primary: KeyMod.WinCtrl | KeyCode.Digit1 },
 		});
@@ -123,5 +146,31 @@ suite('Paradis workspace switch keybindings', () => {
 		} finally {
 			competingRegistration.dispose();
 		}
+	});
+
+	test('allows a user keybinding to override the fork default', () => {
+		const defaultBinding = commandBindings(OperatingSystem.Macintosh, 1).find(item => item.weight2 === 0);
+		assert.ok(defaultBinding?.keybinding);
+		const resolvedDefault = USLayoutResolvedKeybinding.resolveKeybinding(defaultBinding.keybinding, OperatingSystem.Macintosh)[0];
+		const resolvedUser = USLayoutResolvedKeybinding.resolveKeybinding(
+			new Keybinding([createSimpleKeybinding(KeyMod.WinCtrl | KeyCode.Digit1, OperatingSystem.Macintosh)]),
+			OperatingSystem.Macintosh,
+		)[0];
+		assert.ok(resolvedDefault);
+		assert.ok(resolvedUser);
+
+		const resolver = new KeybindingResolver([
+			new ResolvedKeybindingItem(resolvedDefault, switchCommandId(1), null, undefined, true, null, false),
+		], [
+			new ResolvedKeybindingItem(resolvedUser, competingCommandId, null, undefined, false, null, false),
+		], () => { });
+		const keypress = USLayoutResolvedKeybinding.getDispatchStr(createSimpleKeybinding(
+			KeyMod.WinCtrl | KeyCode.Digit1,
+			OperatingSystem.Macintosh,
+		));
+		assert.ok(keypress);
+		const result = resolver.resolve({ getValue: () => undefined }, [], keypress);
+		assert.ok(result.kind === ResultKind.KbFound);
+		assert.strictEqual(result.commandId, competingCommandId);
 	});
 });

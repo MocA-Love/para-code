@@ -3,16 +3,16 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { deepStrictEqual, ok } from 'assert';
-import { IDisposable } from '../../../../../base/common/lifecycle.js';
+import { deepStrictEqual } from 'assert';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isIMenuItem, MenuId, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
 import { TerminalCommandId } from '../../common/terminal.js';
 import { setupTerminalMenus } from '../../browser/terminalMenus.js';
 
-function ensureTerminalMenusSetup(disposables: Pick<{ add(disposable: IDisposable): IDisposable }, 'add'>): void {
+function ensureTerminalMenusSetup(disposables: Pick<DisposableStore, 'add'>): void {
 	if (!getMenuCommandIds(MenuId.TerminalTabEmptyAreaContext).includes(TerminalCommandId.New)) {
-		disposables.add(setupTerminalMenus());
+		setupTerminalMenus(disposables);
 	}
 }
 
@@ -34,22 +34,28 @@ suite('terminalMenus', () => {
 	});
 
 	test('empty terminal tab area exposes create and split actions', () => {
-		const commandIds = getMenuCommandIds(MenuId.TerminalTabEmptyAreaContext);
+		const createItems = MenuRegistry.getMenuItems(MenuId.TerminalTabEmptyAreaContext)
+			.filter(isIMenuItem)
+			.filter(item => item.group === '1_create');
 
 		deepStrictEqual(
+			createItems.map(item => [item.command.id, item.order]),
 			[
-				commandIds.includes(TerminalCommandId.NewWithProfile),
-				commandIds.includes(TerminalCommandId.New),
-				commandIds.includes(TerminalCommandId.SplitOrCreate)
+				[TerminalCommandId.SplitOrCreate, 1],
+				[TerminalCommandId.NewWithProfile, 2],
+				[TerminalCommandId.New, 3],
 			],
-			[true, true, true]
 		);
 	});
 
 	test('terminal instance context exposes create actions for empty terminal bodies', () => {
-		const commandIds = getMenuCommandIds(MenuId.TerminalInstanceContext);
+		const createItems = MenuRegistry.getMenuItems(MenuId.TerminalInstanceContext)
+			.filter(isIMenuItem)
+			.filter(item => item.group === '1_create');
 
-		ok(commandIds.includes(TerminalCommandId.New));
-		ok(commandIds.includes(TerminalCommandId.SplitOrCreate));
+		deepStrictEqual(createItems.map(item => [item.command.id, item.order]), [
+			[TerminalCommandId.SplitOrCreate, 1],
+			[TerminalCommandId.New, 2],
+		]);
 	});
 });
