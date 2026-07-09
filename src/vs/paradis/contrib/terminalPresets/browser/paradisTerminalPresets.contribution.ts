@@ -224,12 +224,14 @@ const AUTORUN_APPROVED_STORAGE_KEY = 'paradis.terminalPresets.autoRunApproved';
  *
  * @param repositoryPath 親リポジトリのルートパス。承認キーに含める（同一リポジトリの worktree 間では
  *   一度の承認で済み、かつ別リポジトリが同名・同内容のプリセットを定義しても承認は流用されない）。
+ * @returns 実際に1つ以上のプリセットを実行したか（呼び出し側がデフォルト端末の要否を判断するために使う）。
  */
-export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: string): Promise<void> {
+export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: string): Promise<boolean> {
 	const presetService = accessor.get(IParadisPresetService);
 	const dialogService = accessor.get(IDialogService);
 	const storageService = accessor.get(IStorageService);
 
+	let ranAny = false;
 	const presets = await presetService.getPresetsForFolder(folderUri);
 	for (const preset of presets) {
 		if (!preset.autoRun) {
@@ -261,5 +263,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 		// 切り替え直後はワークスペースフォルダの反映が完了していないことがあるため、
 		// cwd の基準を新しい worktree フォルダに明示する
 		await presetService.runPreset(preset, { cwd: folderUri });
+		ranAny = true;
 	}
+	return ranAny;
 }

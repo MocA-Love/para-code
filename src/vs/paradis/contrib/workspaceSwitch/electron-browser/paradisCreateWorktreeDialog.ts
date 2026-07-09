@@ -165,7 +165,9 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private get _agents(): readonly IParadisAgentCommandTemplate[] {
 		const configured = this.configurationService.getValue<IParadisAgentCommandTemplate[]>('paradis.workspaceSwitch.agents');
 		if (Array.isArray(configured) && configured.length > 0) {
-			return configured.filter(agent => agent && typeof agent.id === 'string' && typeof agent.command === 'string');
+			// 'none' は「実行しない」を表す予約識別子（_agentSelect の固定オプション）のため、
+			// 設定で誤って同じ id が指定されても既定端末とエージェント端末の二重起動を避けるため除外する
+			return configured.filter(agent => agent && typeof agent.id === 'string' && agent.id !== 'none' && typeof agent.command === 'string');
 		}
 		return PARADIS_DEFAULT_AGENT_COMMANDS;
 	}
@@ -429,13 +431,16 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 			// 4. 自動実行プリセット（.paracode.json / ユーザー設定の autoRun）を先に起動する
 			//    （dev サーバー等の下準備 → エージェント、の順。失敗しても作成自体は成功扱い）
+			let autoRunExecuted = false;
 			try {
-				await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath);
+				autoRunExecuted = await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath);
 			} catch (error) {
 				this.logService.warn('[ParadisCreateWorktree] auto-run presets failed', error);
 			}
 
-			if (paradisShouldCreateDefaultTerminal(agentId, prompt)) {
+			// 4.5. エージェントも自動実行プリセットも何も起動しない場合のみ、既定のターミナルを開く
+			//    (autoRun プリセットがフォーカスした端末からフォーカスを奪わないようにする)
+			if (!autoRunExecuted && paradisShouldCreateDefaultTerminal(agentId, prompt)) {
 				const instance = await this.terminalService.createTerminal({
 					cwd: worktreeUri,
 					location: TerminalLocation.Panel,
