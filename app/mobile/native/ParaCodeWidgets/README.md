@@ -14,13 +14,17 @@ PARA-CODE: fork-owned directory (Para Code).
 
 ## `npx expo prebuild --clean` 等で ios/ を作り直した場合の復元手順
 
-1. このディレクトリの3ファイルを `app/mobile/ios/ParaCodeWidgets/` へコピー
+1. このディレクトリのファイル一式（Swift 2つ + Info.plist + `paracode-logo.png`）を
+   `app/mobile/ios/ParaCodeWidgets/` へコピー
 2. Xcode で `ParaCodeMobile.xcworkspace` を開き、File → New → Target… → **Widget Extension** を追加
    - Product Name: `ParaCodeWidgets` / Team: WB4G82C384 / Language: Swift
    - 「Include Live Activity」「Include Configuration App Intent」は**チェックしない**（Bundle内で自前定義するため。付けた場合は生成テンプレートを全て削除）
    - Bundle Identifier が `ltd.paradis.paracode.mobile.ParaCodeWidgets` になることを確認
 3. 生成されたテンプレートの Swift/Info.plist を本ディレクトリのもので置き換える
-   （Info.plist の `NSExtensionPointIdentifier` は `com.apple.widgetkit-extension`）
+   （Info.plist の `NSExtensionPointIdentifier` は `com.apple.widgetkit-extension`）。
+   `paracode-logo.png` は ParaCodeWidgets ターゲットの **Resources（Copy Bundle Resources）**
+   へ追加する（ロック画面/Dynamic Island のロゴ。`assets/pairing-logo.png` の
+   `sips -Z 128` 縮小コピー。無くてもビルドは通り、ターミナルシンボルへフォールバックする）
 4. ターゲットの iOS Deployment Target をメインアプリと揃え、
    `CURRENT_PROJECT_VERSION` / `MARKETING_VERSION` もメインアプリと一致させる
    （不一致だとビルド時に CFBundleVersion / CFBundleShortVersionString の警告が出る）
