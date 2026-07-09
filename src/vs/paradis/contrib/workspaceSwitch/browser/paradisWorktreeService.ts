@@ -87,6 +87,18 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		return this._branches.get(repositoryId);
 	}
 
+	addKnownWorktree(worktree: IParadisWorktree): void {
+		const path = worktree.uri.toString();
+		const index = this._known.findIndex(known => known.repositoryId === worktree.repositoryId && known.path === path);
+		if (index >= 0) {
+			this._known[index] = { repositoryId: worktree.repositoryId, path, name: worktree.name };
+		} else {
+			this._known.push({ repositoryId: worktree.repositoryId, path, name: worktree.name });
+		}
+		this.saveKnown();
+		this._refreshScheduler.schedule();
+	}
+
 	removeKnownWorktree(worktree: IParadisWorktree): void {
 		const before = this._known.length;
 		this._known = this._known.filter(known => !(known.repositoryId === worktree.repositoryId && known.path === worktree.uri.toString()));
@@ -157,10 +169,10 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 			// ディスク上に存在するもの: 既知なら常に表示、新規は autoImport 時のみ追加
 			for (const worktree of scanned) {
-				const isKnown = knownForRepository.some(known => known.path === worktree.uri.toString());
-				if (isKnown || autoImport) {
-					list.push(worktree);
-					if (!isKnown) {
+				const known = knownForRepository.find(known => known.path === worktree.uri.toString());
+				if (known || autoImport) {
+					list.push(known ? { ...worktree, name: known.name } : worktree);
+					if (!known) {
 						this._known.push({ repositoryId: repository.id, path: worktree.uri.toString(), name: worktree.name });
 						knownChanged = true;
 					}
