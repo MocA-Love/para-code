@@ -35,6 +35,7 @@ import { IEditorGroupsService } from '../../../../workbench/services/editor/comm
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+import { paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
@@ -363,11 +364,9 @@ MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
 });
 
 // --- キーバインド (Superset 風のリポジトリ即時切り替え) ------------------------------------------
-// mac: ctrl+cmd+1..9 / ctrl+cmd+[ ] (cmd+1..9 はエディタグループ、cmd+alt+矢印はカーソル追加と
-// 衝突するため避ける)。win/linux: ctrl+alt+1..9 / ctrl+alt+[ ]。
-// 注意: mac の ctrl+cmd+1 / ctrl+cmd+9 は upstream の Move Editor into First/Last Group が
-// 使っているため、weight を +1 して 1..9 を一貫してリポジトリ切り替えに割り当てる
-// (エディタ移動はメニュー/コマンドパレットから実行可能、必要ならリバインドで戻せる)。
+// mac: ctrl+1..9 (primary) / ctrl+cmd+1..9 (secondary)。win/linux: ctrl+alt+1..9。
+// Parachan のデフォルトは既存の built-in / extension デフォルトより高い weight で登録する。
+// ユーザーの keybindings.json はデフォルト登録より後に解決されるため、引き続き上書き可能。
 
 for (let index = 1; index <= 9; index++) {
 	registerAction2(class extends Action2 {
@@ -377,11 +376,7 @@ for (let index = 1; index <= 9; index++) {
 				title: localize2('paradis.workspaceSwitch.switchToRepositoryN', "Switch to Repository {0}", index),
 				category: CATEGORY,
 				f1: false,
-				keybinding: {
-					weight: KeybindingWeight.WorkbenchContrib + 1,
-					primary: KeyMod.CtrlCmd | KeyMod.Alt | (KeyCode.Digit0 + index),
-					mac: { primary: KeyMod.CtrlCmd | KeyMod.WinCtrl | (KeyCode.Digit0 + index) }
-				}
+				keybinding: paradisWorkspaceSwitchKeybinding(index)
 			});
 		}
 
