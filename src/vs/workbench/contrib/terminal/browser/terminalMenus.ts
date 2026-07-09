@@ -17,7 +17,7 @@ import { TerminalCommandId, TERMINAL_VIEW_ID } from '../common/terminal.js';
 import { TerminalContextKeys, TerminalContextKeyStrings } from '../common/terminalContextKey.js';
 import { terminalStrings } from '../common/terminalStrings.js';
 import { ACTIVE_GROUP, AUX_WINDOW_GROUP, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { HasSpeechProvider } from '../../speech/common/speechService.js';
 import { hasKey } from '../../../../base/common/types.js';
 import { TerminalContribContextKeyStrings } from '../terminalContribExports.js';
@@ -38,8 +38,10 @@ export const enum TerminalMenuBarGroup {
 	Configure = '7_configure'
 }
 
-export function setupTerminalMenus(): void {
-	MenuRegistry.appendMenuItems(
+export function setupTerminalMenus(): IDisposable {
+	const disposables = new DisposableStore();
+
+	disposables.add(MenuRegistry.appendMenuItems(
 		[
 			{
 				id: MenuId.MenubarTerminalMenu,
@@ -103,10 +105,36 @@ export function setupTerminalMenus(): void {
 				}
 			},
 		]
-	);
+	));
 
-	MenuRegistry.appendMenuItems(
+	disposables.add(MenuRegistry.appendMenuItems(
 		[
+			{
+				id: MenuId.TerminalInstanceContext,
+				item: {
+					command: {
+						id: TerminalCommandId.SplitOrCreate,
+						title: terminalStrings.split.value,
+						icon: Codicon.splitHorizontal
+					},
+					group: TerminalContextMenuGroup.Create,
+					order: 1,
+					when: ContextKeyExpr.or(TerminalContextKeys.processSupported, TerminalContextKeys.webExtensionContributedProfile)
+				}
+			},
+			{
+				id: MenuId.TerminalInstanceContext,
+				item: {
+					command: {
+						id: TerminalCommandId.New,
+						title: terminalStrings.new,
+						icon: Codicon.plus
+					},
+					group: TerminalContextMenuGroup.Create,
+					order: 2,
+					when: ContextKeyExpr.or(TerminalContextKeys.processSupported, TerminalContextKeys.webExtensionContributedProfile)
+				}
+			},
 			{
 				id: MenuId.TerminalInstanceContext,
 				item: {
@@ -183,9 +211,9 @@ export function setupTerminalMenus(): void {
 				}
 			},
 		]
-	);
+	));
 
-	MenuRegistry.appendMenuItem(MenuId.EditorTabsBarContext, {
+	disposables.add(MenuRegistry.appendMenuItem(MenuId.EditorTabsBarContext, {
 		command: {
 			id: TerminalCommandId.CreateTerminalEditorSameGroup,
 			title: terminalStrings.new
@@ -193,9 +221,9 @@ export function setupTerminalMenus(): void {
 		group: '1_zzz_file',
 		order: 30,
 		when: TerminalContextKeys.processSupported
-	});
+	}));
 
-	MenuRegistry.appendMenuItem(MenuId.EmptyEditorGroupContext, {
+	disposables.add(MenuRegistry.appendMenuItem(MenuId.EmptyEditorGroupContext, {
 		command: {
 			id: TerminalCommandId.CreateTerminalEditorSameGroup,
 			title: terminalStrings.new
@@ -203,9 +231,9 @@ export function setupTerminalMenus(): void {
 		group: '1_zzz_file',
 		order: 30,
 		when: TerminalContextKeys.processSupported
-	});
+	}));
 
-	MenuRegistry.appendMenuItems(
+	disposables.add(MenuRegistry.appendMenuItems(
 		[
 			{
 				id: MenuId.TerminalEditorInstanceContext,
@@ -302,10 +330,23 @@ export function setupTerminalMenus(): void {
 				}
 			}
 		]
-	);
+	));
 
-	MenuRegistry.appendMenuItems(
+	disposables.add(MenuRegistry.appendMenuItems(
 		[
+			{
+				id: MenuId.TerminalTabEmptyAreaContext,
+				item: {
+					command: {
+						id: TerminalCommandId.SplitOrCreate,
+						title: terminalStrings.split.value,
+						icon: Codicon.splitHorizontal
+					},
+					group: TerminalContextMenuGroup.Create,
+					order: 1,
+					when: ContextKeyExpr.or(TerminalContextKeys.processSupported, TerminalContextKeys.webExtensionContributedProfile)
+				}
+			},
 			{
 				id: MenuId.TerminalTabEmptyAreaContext,
 				item: {
@@ -313,7 +354,8 @@ export function setupTerminalMenus(): void {
 						id: TerminalCommandId.NewWithProfile,
 						title: localize('workbench.action.terminal.newWithProfile.short', "New Terminal With Profile...")
 					},
-					group: TerminalContextMenuGroup.Create
+					group: TerminalContextMenuGroup.Create,
+					order: 2
 				}
 			},
 			{
@@ -323,13 +365,14 @@ export function setupTerminalMenus(): void {
 						id: TerminalCommandId.New,
 						title: terminalStrings.new
 					},
-					group: TerminalContextMenuGroup.Create
+					group: TerminalContextMenuGroup.Create,
+					order: 3
 				}
 			}
 		]
-	);
+	));
 
-	MenuRegistry.appendMenuItems(
+	disposables.add(MenuRegistry.appendMenuItems(
 		[
 			{
 				id: MenuId.TerminalNewDropdownContext,
@@ -376,9 +419,9 @@ export function setupTerminalMenus(): void {
 				},
 			}
 		]
-	);
+	));
 
-	MenuRegistry.appendMenuItems(
+	disposables.add(MenuRegistry.appendMenuItems(
 		[
 			{
 				id: MenuId.ViewTitle,
@@ -551,9 +594,9 @@ export function setupTerminalMenus(): void {
 				},
 			},
 		]
-	);
+	));
 
-	MenuRegistry.appendMenuItems(
+	disposables.add(MenuRegistry.appendMenuItems(
 		[
 			{
 				id: MenuId.TerminalTabContext,
@@ -661,54 +704,54 @@ export function setupTerminalMenus(): void {
 				}
 			}
 		]
-	);
+	));
 
-	MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
+	disposables.add(MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
 		command: {
 			id: TerminalCommandId.MoveToTerminalPanel,
 			title: terminalStrings.moveToTerminalPanel
 		},
 		when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
 		group: '2_files'
-	});
+	}));
 
-	MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
+	disposables.add(MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
 		command: {
 			id: TerminalCommandId.Rename,
 			title: terminalStrings.rename
 		},
 		when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
 		group: '2_files'
-	});
+	}));
 
-	MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
+	disposables.add(MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
 		command: {
 			id: TerminalCommandId.ChangeColor,
 			title: terminalStrings.changeColor
 		},
 		when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
 		group: '2_files'
-	});
+	}));
 
-	MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
+	disposables.add(MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
 		command: {
 			id: TerminalCommandId.ChangeIcon,
 			title: terminalStrings.changeIcon
 		},
 		when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
 		group: '2_files'
-	});
-	MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
+	}));
+	disposables.add(MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, {
 		command: {
 			id: TerminalCommandId.SizeToContentWidth,
 			title: terminalStrings.toggleSizeToContentWidth
 		},
 		when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
 		group: '2_files'
-	});
+	}));
 
 	for (const menuId of [MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
-		MenuRegistry.appendMenuItem(menuId, {
+		disposables.add(MenuRegistry.appendMenuItem(menuId, {
 			command: {
 				id: TerminalCommandId.CreateTerminalEditorSameGroup,
 				title: terminalStrings.new,
@@ -723,8 +766,8 @@ export function setupTerminalMenus(): void {
 			order: 0
 			// PARA-PATCH: show the "New Terminal" button next to the split buttons regardless
 			// of the active editor kind, not only while a terminal editor is active.
-		});
-		MenuRegistry.appendMenuItem(menuId, {
+		}));
+		disposables.add(MenuRegistry.appendMenuItem(menuId, {
 			command: {
 				id: TerminalCommandId.Clear,
 				title: localize('workbench.action.terminal.clearLong', "Clear Terminal"),
@@ -734,8 +777,8 @@ export function setupTerminalMenus(): void {
 			order: 6,
 			when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
 			isHiddenByDefault: true
-		});
-		MenuRegistry.appendMenuItem(menuId, {
+		}));
+		disposables.add(MenuRegistry.appendMenuItem(menuId, {
 			command: {
 				id: TerminalCommandId.RunActiveFile,
 				title: localize('workbench.action.terminal.runActiveFile', "Run Active File"),
@@ -745,8 +788,8 @@ export function setupTerminalMenus(): void {
 			order: 7,
 			when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
 			isHiddenByDefault: true
-		});
-		MenuRegistry.appendMenuItem(menuId, {
+		}));
+		disposables.add(MenuRegistry.appendMenuItem(menuId, {
 			command: {
 				id: TerminalCommandId.RunSelectedText,
 				title: localize('workbench.action.terminal.runSelectedText', "Run Selected Text"),
@@ -756,8 +799,8 @@ export function setupTerminalMenus(): void {
 			order: 8,
 			when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
 			isHiddenByDefault: true
-		});
-		MenuRegistry.appendMenuItem(menuId, {
+		}));
+		disposables.add(MenuRegistry.appendMenuItem(menuId, {
 			command: {
 				id: TerminalCommandId.StartVoice,
 				title: localize('workbench.action.terminal.startVoiceEditor', "Start Dictation"),
@@ -767,8 +810,8 @@ export function setupTerminalMenus(): void {
 			order: 9,
 			when: ContextKeyExpr.and(ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal), TerminalContextKeys.terminalDictationInProgress.negate()),
 			isHiddenByDefault: true
-		});
-		MenuRegistry.appendMenuItem(menuId, {
+		}));
+		disposables.add(MenuRegistry.appendMenuItem(menuId, {
 			command: {
 				id: TerminalCommandId.StopVoice,
 				title: localize('workbench.action.terminal.stopVoiceEditor', "Stop Dictation"),
@@ -778,8 +821,10 @@ export function setupTerminalMenus(): void {
 			order: 10,
 			when: ContextKeyExpr.and(ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal), HasSpeechProvider, TerminalContextKeys.terminalDictationInProgress),
 			isHiddenByDefault: true
-		});
+		}));
 	}
+
+	return disposables;
 }
 
 export function getTerminalActionBarArgs(location: ITerminalLocationOptions, profiles: ITerminalProfile[], defaultProfileName: string, contributedProfiles: readonly IExtensionTerminalProfile[], terminalService: ITerminalService, dropdownMenu: IMenu, disposableStore: DisposableStore): {

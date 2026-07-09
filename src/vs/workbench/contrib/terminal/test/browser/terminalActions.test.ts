@@ -3,11 +3,12 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { deepStrictEqual } from 'assert';
+import { deepStrictEqual, strictEqual } from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
-import { WorkspaceFolderCwdPair, shrinkWorkspaceFolderCwdPairs } from '../../browser/terminalActions.js';
+import { ICreateTerminalOptions, ITerminalInstance } from '../../browser/terminal.js';
+import { WorkspaceFolderCwdPair, shrinkWorkspaceFolderCwdPairs, splitOrCreateTerminal } from '../../browser/terminalActions.js';
 
 function makeFakeFolder(name: string, uri: URI): IWorkspaceFolder {
 	return {
@@ -81,6 +82,39 @@ suite('terminalActions', () => {
 				const pairC = makePair(c);
 				deepStrictEqual(shrinkWorkspaceFolderCwdPairs([pairA, pairB, pairC, pairD]), [pairA, pairC]);
 			});
+		});
+	});
+
+	suite('splitOrCreateTerminal', () => {
+		test('creates a new terminal when no terminal is active', async () => {
+			const newInstance = { instanceId: 1 } as ITerminalInstance;
+			const calls: (ICreateTerminalOptions | undefined)[] = [];
+
+			await splitOrCreateTerminal({
+				activeInstance: undefined,
+				createAndFocusTerminal: async options => {
+					calls.push(options);
+					return newInstance;
+				}
+			});
+
+			deepStrictEqual(calls, [undefined]);
+		});
+
+		test('splits the active terminal when one exists', async () => {
+			const activeInstance = { instanceId: 1 } as ITerminalInstance;
+			let options: ICreateTerminalOptions | undefined;
+
+			await splitOrCreateTerminal({
+				activeInstance,
+				createAndFocusTerminal: async value => {
+					options = value;
+					return activeInstance;
+				}
+			});
+
+			const location = options?.location;
+			strictEqual((typeof location === 'object' && location !== null ? location as { splitActiveTerminal?: boolean } : undefined)?.splitActiveTerminal, true);
 		});
 	});
 });
