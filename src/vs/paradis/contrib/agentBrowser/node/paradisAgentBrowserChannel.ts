@@ -13,6 +13,8 @@
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpSetupRequest, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
@@ -61,8 +63,10 @@ export function registerParadisAgentBrowser(
 	userDataPath: string,
 	mainProcessService: IMainProcessService,
 	logService: ILogService,
+	configurationService: IConfigurationService,
+	args: NativeParsedArgs,
 ): IDisposable {
-	const service = new ParadisAgentBrowserService(userDataPath, playwrightInvoker, server, mainProcessService, logService);
+	const service = new ParadisAgentBrowserService(userDataPath, playwrightInvoker, server, mainProcessService, logService, configurationService, args);
 	server.registerChannel(PARADIS_AGENT_BROWSER_CHANNEL, new ParadisAgentBrowserChannel(service));
 	return service;
 }

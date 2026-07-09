@@ -280,9 +280,10 @@ async function mergeHooksFile(filePath: string, managedEvents: readonly IParadis
  * 旧版の settings.json は未知のhookキーを拒否し得るため、バージョンを確認できない場合も
  * 安全側に倒して登録しない。判定は起動を妨げない短いベストエフォートとする。
  */
-async function supportsClaudeMessageDisplay(): Promise<boolean> {
+async function supportsClaudeMessageDisplay(shellEnvResolver: () => Promise<NodeJS.ProcessEnv>): Promise<boolean> {
+	const env = await shellEnvResolver();
 	return new Promise(resolve => {
-		execFile('claude', ['--version'], { encoding: 'utf8', timeout: 2000, windowsHide: true }, (error, stdout) => {
+		execFile('claude', ['--version'], { encoding: 'utf8', timeout: 2000, windowsHide: true, env }, (error, stdout) => {
 			if (error) {
 				resolve(false);
 				return;
@@ -307,14 +308,14 @@ async function supportsClaudeMessageDisplay(): Promise<boolean> {
  * (Claude Code のhookは Git Bash または PowerShell、Codex のhookは cmd /C で実行される。
  * 3シェルすべてで同じ意味になる形式は「powershell.exe を絶対パス引数で起動」のみ)。
  */
-export async function paradisSetupAgentHooks(logService: ILogService): Promise<void> {
+export async function paradisSetupAgentHooks(logService: ILogService, shellEnvResolver: () => Promise<NodeJS.ProcessEnv> = () => Promise.resolve({ ...process.env })): Promise<void> {
 	await installNotifyScript(logService);
 	// Windows のhookコマンドは各シェルの変数展開仕様の違いを避けるため絶対パス埋め込み。
 	// POSIX は従来どおり $HOME 参照の固定文字列 (undefined → paradisManagedHookDefinition の既定)。
 	const hookCommand = process.platform === 'win32' ? paradisManagedAgentHookCommandWindows(homedir()) : undefined;
 	// $CLAUDE_CONFIG_DIR / $CODEX_HOME でhomeを移動しているユーザーにも設置が届くよう、
 	// 設置先はハードコードではなく解決関数を通す (未設定なら従来どおり ~/.claude / ~/.codex)。
-	const claudeEvents = await supportsClaudeMessageDisplay()
+	const claudeEvents = await supportsClaudeMessageDisplay(shellEnvResolver)
 		? [...PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT]
 		: PARADIS_CLAUDE_HOOK_EVENTS;
 	if (claudeEvents === PARADIS_CLAUDE_HOOK_EVENTS) {

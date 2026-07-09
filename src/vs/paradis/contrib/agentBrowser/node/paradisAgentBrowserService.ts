@@ -22,9 +22,13 @@ import { homedir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
+import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, paradisCountLiveBackgroundTasks } from './paradisAgentHookBus.js';
 import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
@@ -65,8 +69,13 @@ interface IJsonRpcRequest {
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
-/** 'working' のまま更新が止まったペイン状態を 'review' へ降格するまでの時間。 */
-const PARADIS_WORKING_STALE_MS = 15 * 60 * 1000;
+interface IParadisPaneStatusEntry {
+	readonly status: ParadisAgentStatus;
+	readonly changedAt: number;
+	readonly cwd?: string;
+	/** Stop後のバックグラウンドタスク補正によるworkingだけがstale降格の対象。 */
+	readonly backgroundCompletionFallback?: boolean;
+}
 
 // allow-any-unicode-next-line
 const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。注意: 共有はPara Codeの再起動（自動アップデート適用を含む）でリセットされるため、以前共有していた場合も再共有が必要です。再共有しても届かない場合は、このCLIをペインで起動し直してから再共有してください（ペインの識別トークンが再起動で変わっている可能性があります）。';
@@ -130,7 +139,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * エージェントCLIのhook通知 (GET /agent-hook) で更新される、ペインごとの実行状態。
 	 * workbench が listPaneStatuses でポーリングし、Workspaces ビューのスピナー表示に使う。
 	 */
-	private readonly _paneStatuses = new Map<string, { status: ParadisAgentStatus; changedAt: number; cwd?: string }>();
+	private readonly _paneStatuses = new Map<string, IParadisPaneStatusEntry>();
 	private readonly _portFilePath: string;
 	private readonly _cdpGateway: ParadisCdpGateway;
 	/** vendored chrome-devtools-mcp をペイン毎の子プロセスとして管理するプロキシ。 */
@@ -146,6 +155,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		private readonly ipcServer: IPCServer<string>,
 		private readonly mainProcessService: IMainProcessService,
 		private readonly logService: ILogService,
+		configurationService?: IConfigurationService,
+		args?: NativeParsedArgs,
 	) {
 		super();
 		this._portFilePath = join(userDataPath, PARADIS_MCP_PORT_FILE_NAME);
@@ -176,7 +187,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		void this._startServer();
 		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
 		// (Superset の setupAgentHooks 相当。失敗しても起動は妨げない)。
-		paradisSetupAgentHooks(logService).catch(error => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
+		const cachedShellEnv = new ParadisCachedShellEnv(
+			logService,
+			'ParadisAgentHooks',
+			createParadisShellEnvResolver(logService, configurationService, args),
+		);
+		paradisSetupAgentHooks(logService, () => cachedShellEnv.getEnv()).catch(error => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
 
 		// transcript由来のペインアクティビティ (ParadisMobileAgentChat の tailer が学習) を
 		// 実行状態へ反映する。hookイベントが来ない場面の状態変化はここが拾う:
@@ -201,7 +217,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				return;
 			}
 			if (paradisCountLiveBackgroundTasks(token, Date.now()) > 0 && (current === undefined || current === 'review')) {
-				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}) });
+				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}), backgroundCompletionFallback: true });
 			}
 		}));
 	}
@@ -626,8 +642,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		//  - 質問(AskUserQuestion)が回答待ちの間は working 系イベント (サブエージェントのツール
 		//    実行等でも発火する) に赤表示を上書きさせない
 		const activity = getParadisAgentPaneActivity(token);
+		let backgroundCompletionFallback = false;
 		if (normalized === 'review' && eventType === 'Stop' && paradisCountLiveBackgroundTasks(token, Date.now()) > 0) {
 			normalized = 'working';
+			backgroundCompletionFallback = true;
 		}
 		if (normalized === 'working' && activity.pendingQuestion) {
 			normalized = 'question';
@@ -638,7 +656,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		} else {
 			// cwd はhookが報告した最新値を保持する (今回のイベントに無ければ既知の値を維持)。
 			const knownCwd = cwd ?? this._paneStatuses.get(token)?.cwd;
-			this._paneStatuses.set(token, { status: normalized, changedAt: Date.now(), ...(knownCwd !== undefined ? { cwd: knownCwd } : {}) });
+			this._paneStatuses.set(token, {
+				status: normalized,
+				changedAt: Date.now(),
+				...(knownCwd !== undefined ? { cwd: knownCwd } : {}),
+				...(backgroundCompletionFallback ? { backgroundCompletionFallback: true } : {}),
+			});
 		}
 		this.logService.trace(`[ParadisAgentBrowser] agent-hook: ${eventType} -> ${normalized}`);
 
@@ -647,18 +670,15 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * 'working' のまま一定時間更新が無いエントリを 'review' へ降格する。
-	 * PostToolUse hook が登録済みのため、本当に実行中なら状態は数分おきに更新され続ける。
-	 * 更新が止まった 'working' は「Stop の review がバックグラウンドタスク補正で working に
-	 * 変換された後、タスクの完了通知を取りこぼした」等の取り残しで、放置すると誰も
-	 * 取り消さないため永久に実行中表示になる（実バグ）。長時間ツール実行の誤降格は、
-	 * 次の hook が来れば working に戻るので一時的なズレに留まる。
+	 * Stop の review がバックグラウンドタスク補正で working になった状態だけを、一定時間後に
+	 * reviewへ降格する。通常のPreToolUse→PostToolUse間や長い推論は途中hookが無いため、単に
+	 * workingの更新時刻だけを見ると正常な長時間処理を完了扱いにしてしまう。
 	 */
 	private _sweepStalePaneStatuses(): void {
 		const now = Date.now();
 		for (const [token, entry] of this._paneStatuses) {
-			if (entry.status === 'working' && now - entry.changedAt > PARADIS_WORKING_STALE_MS) {
-				this._paneStatuses.set(token, { ...entry, status: 'review', changedAt: now });
+			if (paradisShouldSweepStaleWorkingStatus(entry.status, entry.backgroundCompletionFallback, entry.changedAt, now)) {
+				this._paneStatuses.set(token, { status: 'review', changedAt: now, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
 			}
 		}
 	}
