@@ -1205,9 +1205,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
 		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string }) => void,
 		private readonly logService: ILogService,
+		codexShellEnvResolver?: () => Promise<NodeJS.ProcessEnv>,
 	) {
 		super();
-		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
+		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService, codexShellEnvResolver));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		this._register(toDisposable(() => {
 			for (const token of [...this.tailers.keys()]) {

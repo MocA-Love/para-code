@@ -107,9 +107,9 @@ function rawDataToString(data: RawData): string {
 	return Buffer.from(data).toString('utf8');
 }
 
-function runManagedCodexDaemonStart(): Promise<void> {
+function runManagedCodexDaemonStart(env: NodeJS.ProcessEnv): Promise<void> {
 	return new Promise((resolve, reject) => {
-		execFile('codex', ['app-server', 'daemon', 'start'], { timeout: 10_000, windowsHide: true }, error => {
+		execFile('codex', ['app-server', 'daemon', 'start'], { timeout: 10_000, windowsHide: true, env }, error => {
 			if (error) {
 				reject(error);
 			} else {
@@ -164,10 +164,11 @@ function createUnixWebSocketConnection(socketPath: string): typeof createConnect
  * 同じ共有app-serverを起動する。プロセスはCodex TUIからも利用されるためdetachし、
  * Para Code終了時には停止しない。
  */
-function startDirectCodexAppServer(socketPath: string): Promise<void> {
+function startDirectCodexAppServer(socketPath: string, env: NodeJS.ProcessEnv): Promise<void> {
 	return new Promise((resolve, reject) => {
 		const child = spawn('codex', ['app-server', '--listen', 'unix://'], {
 			detached: true,
+			env,
 			stdio: 'ignore',
 			windowsHide: true,
 		});
@@ -207,9 +208,9 @@ function startDirectCodexAppServer(socketPath: string): Promise<void> {
 	});
 }
 
-async function ensureCodexDaemonStarted(socketPath: string): Promise<void> {
+async function ensureCodexDaemonStarted(socketPath: string, env: NodeJS.ProcessEnv): Promise<void> {
 	try {
-		await runManagedCodexDaemonStart();
+		await runManagedCodexDaemonStart(env);
 		return;
 	} catch (managedError) {
 		// managed commandは既存daemonがあればインストール方式を問わず成功する。ここへ
@@ -218,7 +219,7 @@ async function ensureCodexDaemonStarted(socketPath: string): Promise<void> {
 			return;
 		}
 		try {
-			await startDirectCodexAppServer(socketPath);
+			await startDirectCodexAppServer(socketPath, env);
 		} catch (directError) {
 			throw new Error(`Codex daemon start failed: ${String(managedError)}; direct app-server fallback failed: ${String(directError)}`);
 		}
@@ -256,6 +257,8 @@ export class ParadisCodexLiveClient extends Disposable {
 	constructor(
 		private readonly onEvent: (event: IParadisCodexDaemonEvent) => void,
 		private readonly logService: ILogService,
+		/** GUI起動時もログインシェル由来のPATHでcodexを解決する。 */
+		private readonly shellEnvResolver: () => Promise<NodeJS.ProcessEnv> = () => Promise.resolve({ ...process.env }),
 	) {
 		super();
 	}
@@ -396,7 +399,9 @@ export class ParadisCodexLiveClient extends Disposable {
 					return;
 				}
 				this.lastDaemonStartAttempt = now;
-				this.daemonStartInFlight = ensureCodexDaemonStarted(socketPath).finally(() => this.daemonStartInFlight = undefined);
+				this.daemonStartInFlight = this.shellEnvResolver()
+					.then(env => ensureCodexDaemonStarted(socketPath, env))
+					.finally(() => this.daemonStartInFlight = undefined);
 			}
 			try {
 				await this.daemonStartInFlight;
