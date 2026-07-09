@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useIsFocused } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -34,6 +35,7 @@ export default function TerminalScreen() {
 	const [input, setInput] = useState('');
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
+	const isFocused = useIsFocused();
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
 	// （全ワークスペースに重複表示しない）。
@@ -95,14 +97,17 @@ export default function TerminalScreen() {
 
 	return (
 		<ConnectionGate>
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+		{/* enabled={isFocused}: NativeTabsの画面凍結中に keyboardWillHide を取り逃すと
+		    下パディングが張り付き、復帰時にUIが上へ潰れる（非フォーカスで無効化→復帰時に
+		    クリーンな状態から再計算させる） */}
+		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90} enabled={isFocused}>
 			<ScreenTitle title="ターミナル" />
 			<WsBar />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
 				{terminals.map((t, i) => {
 					const active = t.id === activeId;
 					return (
-						<Pressable key={t.id} style={[styles.tabChip, active && styles.tabChipActive]} onPress={() => setSelectedTerminalId(t.id)}>
+						<Pressable key={t.id} style={({ pressed }) => [styles.tabChip, active && styles.tabChipActive, pressed && styles.keyPressed]} onPress={() => setSelectedTerminalId(t.id)}>
 							{isAgentWaiting(t.agentStatus)
 								? <View style={styles.dotRed} />
 								: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
@@ -110,7 +115,7 @@ export default function TerminalScreen() {
 						</Pressable>
 					);
 				})}
-				<Pressable style={styles.tabChip} onPress={() => createTerminal(ws?.id)} accessibilityLabel="新しいターミナル">
+				<Pressable style={({ pressed }) => [styles.tabChip, pressed && styles.keyPressed]} onPress={() => createTerminal(ws?.id)} accessibilityLabel="新しいターミナル">
 					<Ionicons name="add" size={16} color={colors.textDim} />
 				</Pressable>
 				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
@@ -132,15 +137,15 @@ export default function TerminalScreen() {
 					monospace
 					tools={
 						<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.keyRowScroll} contentContainerStyle={styles.keyRow} keyboardShouldPersistTaps="always">
-							<Pressable style={styles.key} onPress={() => send('\u001b')}><Text style={styles.keyText}>Esc</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => send('\t')}><Text style={styles.keyText}>Tab</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => send('\u0003')}><Text style={[styles.keyText, styles.keyAccent]}>^C</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => sendArrow('up')}><Text style={styles.keyText}>↑</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => sendArrow('down')}><Text style={styles.keyText}>↓</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => sendArrow('left')}><Text style={styles.keyText}>←</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => sendArrow('right')}><Text style={styles.keyText}>→</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => send('/')}><Text style={styles.keyText}>/</Text></Pressable>
-							<Pressable style={styles.key} onPress={() => send('|')}><Text style={styles.keyText}>|</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('\u001b')}><Text style={styles.keyText}>Esc</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('\t')}><Text style={styles.keyText}>Tab</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('\u0003')}><Text style={[styles.keyText, styles.keyDanger]}>^C</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => sendArrow('up')}><Text style={styles.keyText}>↑</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => sendArrow('down')}><Text style={styles.keyText}>↓</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => sendArrow('left')}><Text style={styles.keyText}>←</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => sendArrow('right')}><Text style={styles.keyText}>→</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('/')}><Text style={styles.keyText}>/</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('|')}><Text style={styles.keyText}>|</Text></Pressable>
 						</ScrollView>
 					}
 				/>
@@ -166,7 +171,8 @@ const styles = StyleSheet.create({
 	keyRowScroll: { flex: 1, minWidth: 0 },
 	keyRow: { flexDirection: 'row', gap: 6, alignItems: 'center', paddingRight: 8 },
 	key: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 13, paddingVertical: 8 },
+	keyPressed: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	keyText: { color: colors.text, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	keyAccent: { color: colors.accent },
+	keyDanger: { color: colors.red },
 	inputBar: { paddingHorizontal: 12, paddingTop: 10 },
 });

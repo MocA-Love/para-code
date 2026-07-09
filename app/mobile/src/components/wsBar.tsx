@@ -1,8 +1,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Animated, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { isAgentWaiting } from '../store.js';
@@ -18,7 +19,9 @@ export function WsBar() {
 		workspace: s.workspace, selectedWs: s.selectedWs, setSelectedWs: s.setSelectedWs,
 	})));
 	const [open, setOpen] = useState(false);
+	const [mounted, setMounted] = useState(false);
 	const anim = useRef(new Animated.Value(0)).current;
+	const isFocused = useIsFocused();
 
 	const list = workspace?.workspaces ?? [];
 
@@ -37,12 +40,32 @@ export function WsBar() {
 	const current = list.find(w => w.id === effective);
 	const currentPending = pendingByWs.get(effective ?? '') ?? 0;
 
+	// mount/unmountの真偽はopenに同期させ、退場アニメの間だけmountedを維持する（bottomSheet.tsxと同じ方式）。
+	// これにより「閉じアニメのコールバックが確定しない限りModalが残り続ける」状態を避け、
+	// 画面凍結や再レンダー競合時にopacity:0の全画面Pressableがタッチを奪い続ける事故を防ぐ。
+	useEffect(() => {
+		if (open) {
+			setMounted(true);
+			Animated.timing(anim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
+		} else {
+			Animated.timing(anim, { toValue: 0, duration: 180, useNativeDriver: true }).start(() => setMounted(false));
+		}
+	}, [open, anim]);
+
+	// タブがフォーカスを失ったら、アニメ完了を待たず即座に閉じ状態へ強制リセットする。
+	useEffect(() => {
+		if (!isFocused) {
+			setOpen(false);
+			setMounted(false);
+			anim.setValue(0);
+		}
+	}, [isFocused, anim]);
+
 	const openSheet = () => {
 		setOpen(true);
-		Animated.timing(anim, { toValue: 1, duration: 220, useNativeDriver: true }).start();
 	};
 	const closeSheet = () => {
-		Animated.timing(anim, { toValue: 0, duration: 180, useNativeDriver: true }).start(() => setOpen(false));
+		setOpen(false);
 	};
 	const select = (id: string) => {
 		setSelectedWs(id);
@@ -68,8 +91,8 @@ export function WsBar() {
 				<Ionicons name="chevron-down" size={14} color={colors.textDim} />
 			</Pressable>
 
-			<Modal visible={open} transparent animationType="none" onRequestClose={closeSheet}>
-				<Animated.View style={[StyleSheet.absoluteFill, styles.overlay, { opacity: overlayOpacity }]}>
+			<Modal visible={mounted} transparent animationType="none" onRequestClose={closeSheet}>
+				<Animated.View style={[StyleSheet.absoluteFill, styles.overlay, { opacity: overlayOpacity }]} pointerEvents={open ? 'auto' : 'none'}>
 					<Pressable style={StyleSheet.absoluteFill} onPress={closeSheet} accessibilityLabel="閉じる" />
 				</Animated.View>
 				<Animated.View style={[styles.sheet, { transform: [{ translateY }] }]}>

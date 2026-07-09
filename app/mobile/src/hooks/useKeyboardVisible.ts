@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { Dimensions, Keyboard, KeyboardEvent, Platform } from 'react-native';
+import { useIsFocused } from 'expo-router';
 
 /**
  * キーボードが「実際に画面下部を覆っているか」を返すフック。キーボード表示中は
@@ -11,9 +12,21 @@ import { Dimensions, Keyboard, KeyboardEvent, Platform } from 'react-native';
  * ハードウェアキーボード接続時（シミュレータの ⌘K 含む）は willShow が
  * アクセサリバーだけの小さいフレームで発火し、boolean判定だと「表示中」扱いに
  * なって余白が8pxへ縮み、入力バーがタブバーへ食い込むため。
+ *
+ * NativeTabsは非表示タブの画面を凍結する。凍結中に keyboardWillHide を取り逃すと
+ * visible=true のまま張り付き、タブ復帰後も入力バーの余白が縮んだままになる。
+ * useIsFocused でフォーカス状態を監視し、非フォーカスへ移る/フォーカスへ戻るたびに
+ * false へ倒して張り付きを防ぐ（フォーカス中に実際に表示されていれば直後のイベントで
+ * 再び true になる）。
  */
 export function useKeyboardVisible(): boolean {
 	const [visible, setVisible] = useState(false);
+	const isFocused = useIsFocused();
+	useEffect(() => {
+		if (!isFocused) {
+			setVisible(false);
+		}
+	}, [isFocused]);
 	useEffect(() => {
 		if (Platform.OS === 'ios') {
 			// iOSは表示/非表示/フレーム変化のすべてで発火する changeFrame を使う。
