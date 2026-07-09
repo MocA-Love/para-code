@@ -10,6 +10,8 @@
 // shared process 側の git 実行チャネル (paradisWorktreeGitChannel.ts) と
 // workbench 側のダイアログ (paradisCreateWorktreeDialog.ts) の間で共有する。
 
+import { isLinux } from '../../../../base/common/platform.js';
+
 /** shared process 上で git worktree 操作を行う IPC チャネル名。 */
 export const PARADIS_WORKTREE_GIT_CHANNEL = 'paradisWorktreeGit';
 
@@ -100,28 +102,46 @@ export function paradisSanitizeWorktreeDirName(value: string): string | undefine
 	return sanitized && sanitized.length > 0 ? sanitized : undefined;
 }
 
-/** 既存ブランチ由来の名前や既存worktreeの実ディレクトリ名と衝突しない名前を返す。 */
-export function paradisDeduplicateWorktreeDirName(branchName: string, existingBranches: readonly string[], existingDirNames: readonly string[] = []): string {
-	const baseDirName = paradisSanitizeWorktreeDirName(branchName)!;
-	const occupiedDirNames = new Set(existingBranches
-		.map(paradisSanitizeWorktreeDirName)
-		.filter((name): name is string => typeof name === 'string'));
-	for (const existingDirName of existingDirNames) {
-		const sanitized = paradisSanitizeWorktreeDirName(existingDirName);
-		if (sanitized) {
-			occupiedDirNames.add(sanitized);
-		}
+function paradisNameComparisonKey(value: string, ignoreCase: boolean): string {
+	return ignoreCase ? value.toLowerCase() : value;
+}
+
+/** 既存ブランチとファイルシステム上で衝突しないブランチ名を返す。 */
+export function paradisDeduplicateBranchName(branchName: string, existingBranches: readonly string[], ignoreCase: boolean = !isLinux): string {
+	const occupiedBranchNames = new Set(existingBranches.map(name => paradisNameComparisonKey(name, ignoreCase)));
+	if (!occupiedBranchNames.has(paradisNameComparisonKey(branchName, ignoreCase))) {
+		return branchName;
 	}
-	if (!occupiedDirNames.has(baseDirName)) {
-		return baseDirName;
-	}
-	for (let suffix = 2; suffix < 100; suffix++) {
-		const candidate = `${baseDirName}-${suffix}`;
-		if (!occupiedDirNames.has(candidate)) {
+	for (let suffix = 2; ; suffix++) {
+		const candidate = `${branchName}-${suffix}`;
+		if (!occupiedBranchNames.has(paradisNameComparisonKey(candidate, ignoreCase))) {
 			return candidate;
 		}
 	}
-	return `${baseDirName}-${Date.now() % 10000}`;
+}
+
+/** 既存ブランチ由来の名前や既存worktreeの実ディレクトリ名と衝突しない名前を返す。 */
+export function paradisDeduplicateWorktreeDirName(branchName: string, existingBranches: readonly string[], existingDirNames: readonly string[] = [], ignoreCase: boolean = !isLinux): string {
+	const baseDirName = paradisSanitizeWorktreeDirName(branchName)!;
+	const occupiedDirNames = new Set(existingBranches
+		.map(paradisSanitizeWorktreeDirName)
+		.filter((name): name is string => typeof name === 'string')
+		.map(name => paradisNameComparisonKey(name, ignoreCase)));
+	for (const existingDirName of existingDirNames) {
+		const sanitized = paradisSanitizeWorktreeDirName(existingDirName);
+		if (sanitized) {
+			occupiedDirNames.add(paradisNameComparisonKey(sanitized, ignoreCase));
+		}
+	}
+	if (!occupiedDirNames.has(paradisNameComparisonKey(baseDirName, ignoreCase))) {
+		return baseDirName;
+	}
+	for (let suffix = 2; ; suffix++) {
+		const candidate = `${baseDirName}-${suffix}`;
+		if (!occupiedDirNames.has(paradisNameComparisonKey(candidate, ignoreCase))) {
+			return candidate;
+		}
+	}
 }
 
 /** worktree 作成時の表示名とディレクトリ名を決める。スペース名は表示専用。 */

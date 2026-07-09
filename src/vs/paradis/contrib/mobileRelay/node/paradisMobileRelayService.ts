@@ -597,6 +597,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.agentChat.onCliCommandDetected(terminalId, cwd);
 	}
 
+	async setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void> {
+		this.agentChat.setCodexDaemonEnabled(options.codexDaemonStreaming === true);
+	}
+
+	async notifyAgentTerminalHint(terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void> {
+		this.agentChat.onTerminalHint(terminalId, hint);
+	}
+
 	/** fsチャネル用: ripgrepによるファイル名検索（rendererはプロセスを起動できないためここで実行）。 */
 	async searchFiles(rootPath: string, query: string, maxResults: number): Promise<IParadisFileSearchResult> {
 		return paradisSearchFiles(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService);

@@ -11,14 +11,15 @@
  * それ以外はプレーンテキストとして安全に表示する（未対応記法で壊れない）。
  */
 
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
+import { useAppStore } from '../appState.js';
 import { colors } from '../theme.js';
 
 type CellAlign = 'left' | 'center' | 'right';
 
 type Block =
-	| { kind: 'code'; text: string }
+	| { kind: 'code'; text: string; lang?: string }
 	| { kind: 'heading'; level: number; text: string }
 	| { kind: 'bullet'; marker: string; text: string }
 	| { kind: 'table'; header: string[]; aligns: CellAlign[]; rows: string[][] }
@@ -49,6 +50,7 @@ function parseBlocks(source: string): Block[] {
 	const blocks: Block[] = [];
 	const lines = source.split('\n');
 	let codeLines: string[] | undefined;
+	let codeLang: string | undefined;
 	let paraLines: string[] = [];
 
 	const flushPara = () => {
@@ -62,7 +64,7 @@ function parseBlocks(source: string): Block[] {
 		const line = lines[i] ?? '';
 		if (codeLines !== undefined) {
 			if (line.trimEnd().startsWith('```')) {
-				blocks.push({ kind: 'code', text: codeLines.join('\n') });
+				blocks.push({ kind: 'code', text: codeLines.join('\n'), ...(codeLang !== undefined ? { lang: codeLang } : {}) });
 				codeLines = undefined;
 			} else {
 				codeLines.push(line);
@@ -72,6 +74,9 @@ function parseBlocks(source: string): Block[] {
 		if (line.trimStart().startsWith('```')) {
 			flushPara();
 			codeLines = [];
+			// フェンスの言語名（```ts 等）。PCテーマハイライトの言語解決に使う。
+			const info = line.trimStart().slice(3).trim().split(/\s+/)[0] ?? '';
+			codeLang = info.length > 0 ? info : undefined;
 			continue;
 		}
 		// 表: 「|で始まるヘッダー行」＋「区切り行」の並びで開始し、|で始まる行が続く限り本体行
@@ -109,10 +114,137 @@ function parseBlocks(source: string): Block[] {
 		paraLines.push(line);
 	}
 	if (codeLines !== undefined) {
-		blocks.push({ kind: 'code', text: codeLines.join('\n') }); // 閉じ忘れフェンスも表示する
+		blocks.push({ kind: 'code', text: codeLines.join('\n'), ...(codeLang !== undefined ? { lang: codeLang } : {}) }); // 閉じ忘れフェンスも表示する
 	}
 	flushPara();
 	return blocks;
+}
+
+// ---- コードブロックのPCテーマハイライト -------------------------------------------------------
+
+/** 色付きテキスト片。1行 = HighlightRun[]。 */
+interface HighlightRun { text: string; color?: string; italic?: boolean; bold?: boolean }
+interface HighlightData { lines: HighlightRun[][]; bg?: string; fg?: string }
+
+/**
+ * PCから届いた `.monaco-tokenized-source` HTML（span.mtkN と <br/> のみ、< > & エスケープ）と
+ * カラーマップCSS（`.mtkN { color: ... }`）をネイティブText用の色付きラン列へ変換する。
+ * 期待形式から外れた場合は undefined（プレーン表示のまま）。
+ */
+function parseTokenizedHtml(html: string, css: string): HighlightRun[][] | undefined {
+	const inner = /^<div[^>]*>([\s\S]*)<\/div>$/.exec(html.trim())?.[1];
+	if (inner === undefined) {
+		return undefined;
+	}
+	const colorByClass = new Map<string, string>();
+	for (const rule of css.matchAll(/\.(mtk\d+)\s*\{\s*color:\s*([^;}]+);/g)) {
+		const className = rule[1];
+		const color = rule[2];
+		if (className !== undefined && color !== undefined) {
+			colorByClass.set(className, color.trim());
+		}
+	}
+	const unescape = (s: string) => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+	let currentLine: HighlightRun[] = [];
+	const lines: HighlightRun[][] = [currentLine];
+	const tokenPattern = /<span class="([^"]*)">([\s\S]*?)<\/span>|<br\/?>|([^<]+)/g;
+	for (const m of inner.matchAll(tokenPattern)) {
+		if (m[0].startsWith('<br')) {
+			currentLine = [];
+			lines.push(currentLine);
+			continue;
+		}
+		if (m[1] !== undefined) {
+			const classes = m[1].split(/\s+/);
+			const colorClass = classes.find(c => /^mtk\d+$/.test(c));
+			currentLine.push({
+				text: unescape(m[2] ?? ''),
+				...(colorClass !== undefined && colorByClass.has(colorClass) ? { color: colorByClass.get(colorClass) } : {}),
+				...(classes.includes('mtki') ? { italic: true } : {}),
+				...(classes.includes('mtkb') ? { bold: true } : {}),
+			});
+		} else if (m[3] !== undefined && m[3].length > 0) {
+			currentLine.push({ text: unescape(m[3]) });
+		}
+	}
+	return lines;
+}
+
+/** ハイライト結果のメモリキャッシュ（同一コード片の再取得を避ける）。null = 取得失敗（再試行しない）。 */
+const highlightCache = new Map<string, HighlightData | null>();
+const HIGHLIGHT_CACHE_LIMIT = 120;
+
+/**
+ * コードブロック。まずプレーンで即描画し、PCの現行テーマによるハイライト
+ * （fs hl 要求 → Monacoトークナイザ + カラーマップ）が取れ次第、色付きに差し替える。
+ * 取得失敗・未接続時はプレーンのまま（機能は損なわない）。
+ */
+function CodeBlock({ text, lang }: { text: string; lang?: string }) {
+	const fsHighlight = useAppStore(s => s.fsHighlight);
+	const cacheKey = `${lang ?? ''} ${text}`;
+	const [data, setData] = useState<HighlightData | undefined>(() => highlightCache.get(cacheKey) ?? undefined);
+
+	useEffect(() => {
+		if (highlightCache.has(cacheKey)) {
+			const cached = highlightCache.get(cacheKey);
+			setData(cached ?? undefined);
+			return;
+		}
+		let cancelled = false;
+		fsHighlight(text, lang).then(result => {
+			let parsed: HighlightData | null = null;
+			if (result.html !== undefined && result.css !== undefined) {
+				const lines = parseTokenizedHtml(result.html, result.css);
+				if (lines !== undefined) {
+					parsed = { lines, ...(result.bg !== undefined ? { bg: result.bg } : {}), ...(result.fg !== undefined ? { fg: result.fg } : {}) };
+				}
+			}
+			if (highlightCache.size >= HIGHLIGHT_CACHE_LIMIT) {
+				const oldest = highlightCache.keys().next().value;
+				if (oldest !== undefined) {
+					highlightCache.delete(oldest);
+				}
+			}
+			highlightCache.set(cacheKey, parsed);
+			if (!cancelled && parsed !== null) {
+				setData(parsed);
+			}
+		}).catch(() => {
+			// 未接続・タイムアウト等は次回マウント時に再試行できるようキャッシュしない
+		});
+		return () => { cancelled = true; };
+	}, [cacheKey, text, lang, fsHighlight]);
+
+	if (data === undefined) {
+		return (
+			<View style={styles.codeBlock}>
+				<Text style={styles.codeText} selectable>{text}</Text>
+			</View>
+		);
+	}
+	return (
+		<View style={[styles.codeBlock, data.bg !== undefined ? { backgroundColor: data.bg } : null]}>
+			<Text style={[styles.codeText, data.fg !== undefined ? { color: data.fg } : null]} selectable>
+				{data.lines.map((line, li) => (
+					<Text key={li}>
+						{li > 0 ? '\n' : ''}
+						{line.map((run, ri) => (
+							<Text
+								key={ri}
+								style={[
+									run.color !== undefined ? { color: run.color } : null,
+									run.italic ? styles.codeItalic : null,
+									run.bold ? styles.codeBold : null,
+								]}
+							>
+								{run.text}
+							</Text>
+						))}
+					</Text>
+				))}
+			</Text>
+		</View>
+	);
 }
 
 /** [ラベル](URL) 形式のリンク。http(s) のみタップで開く（他スキームは実行しない）。 */
@@ -156,11 +288,7 @@ export function MarkdownText({ text }: { text: string }) {
 		<View style={styles.root}>
 			{blocks.map((block, i) => {
 				if (block.kind === 'code') {
-					return (
-						<View key={i} style={styles.codeBlock}>
-							<Text style={styles.codeText} selectable>{block.text}</Text>
-						</View>
-					);
+					return <CodeBlock key={i} text={block.text} lang={block.lang} />;
 				}
 				if (block.kind === 'heading') {
 					return (
@@ -226,6 +354,8 @@ const styles = StyleSheet.create({
 	h2: { fontSize: 15 },
 	codeBlock: { backgroundColor: '#161b22', borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 8 },
 	codeText: { color: colors.text, fontFamily: mono, fontSize: 11, lineHeight: 16 },
+	codeItalic: { fontStyle: 'italic' },
+	codeBold: { fontWeight: '700' },
 	bulletRow: { flexDirection: 'row', gap: 6 },
 	bulletMarker: { color: colors.textDim },
 	bulletBody: { flex: 1 },

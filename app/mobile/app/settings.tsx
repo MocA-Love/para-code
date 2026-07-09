@@ -7,7 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { colors } from '../src/theme.js';
-import { hapticSelection } from '../src/haptics.js';
+import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 /**
  * 設定画面。ワークスペースドロワーの設定アイコンから開く。
@@ -30,7 +30,7 @@ export default function SettingsScreen() {
 		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
 			<View style={styles.header}>
 				<Text style={styles.title}>設定</Text>
-				<Pressable style={styles.closeBtn} onPress={() => router.back()} accessibilityLabel="閉じる">
+				<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
 					<Ionicons name="close" size={16} color={colors.textDim} />
 				</Pressable>
 			</View>

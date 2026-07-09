@@ -15,7 +15,7 @@ import { TestInstantiationService } from '../../../../../platform/instantiation/
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { paradisRunAutoRunPresets } from '../../browser/paradisTerminalPresets.contribution.js';
-import { IParadisPresetService, IParadisResolvedPreset } from '../../common/paradisTerminalPresets.js';
+import { IParadisPresetService, IParadisResolvedPreset, IParadisRunPresetOptions } from '../../common/paradisTerminalPresets.js';
 
 const TEST_FOLDER = URI.file('/repo-worktrees/feature');
 
@@ -26,8 +26,9 @@ function createPreset(name: string): IParadisResolvedPreset {
 suite('paradisRunAutoRunPresets', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createInstantiationService(failingPresets: ReadonlySet<string>): { instantiationService: TestInstantiationService; runs: string[] } {
+	function createInstantiationService(failingPresets: ReadonlySet<string>, partiallyStartedPresets: ReadonlySet<string> = new Set()): { instantiationService: TestInstantiationService; runs: string[]; forceNewTerminal: boolean[] } {
 		const runs: string[] = [];
+		const forceNewTerminal: boolean[] = [];
 		const presets = [createPreset('first'), createPreset('second'), createPreset('third')];
 		const instantiationService = store.add(new TestInstantiationService());
 		instantiationService.stub(IParadisPresetService, new class extends mock<IParadisPresetService>() {
@@ -35,8 +36,12 @@ suite('paradisRunAutoRunPresets', () => {
 				return presets;
 			}
 
-			override async runPreset(preset: IParadisResolvedPreset): Promise<void> {
+			override async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
 				runs.push(preset.name);
+				forceNewTerminal.push(options?.forceNewTerminal === true);
+				if (partiallyStartedPresets.has(preset.name)) {
+					options?.onDidStart?.();
+				}
 				if (failingPresets.has(preset.name)) {
 					throw new Error(`failed: ${preset.name}`);
 				}
@@ -45,15 +50,19 @@ suite('paradisRunAutoRunPresets', () => {
 		instantiationService.stub(IDialogService, new (mock<IDialogService>())());
 		instantiationService.stub(IStorageService, new (mock<IStorageService>())());
 		instantiationService.stub(ILogService, new NullLogService());
-		return { instantiationService, runs };
+		return { instantiationService, runs, forceNewTerminal };
 	}
 
 	test('preserves partial success and continues after a preset fails', async () => {
-		const { instantiationService, runs } = createInstantiationService(new Set(['second']));
+		const { instantiationService, runs, forceNewTerminal } = createInstantiationService(new Set(['second']));
 
 		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
 
-		assert.deepStrictEqual({ ranAny, runs }, { ranAny: true, runs: ['first', 'second', 'third'] });
+		assert.deepStrictEqual({ ranAny, runs, forceNewTerminal }, {
+			ranAny: true,
+			runs: ['first', 'second', 'third'],
+			forceNewTerminal: [true, true, true],
+		});
 	});
 
 	test('returns false when every preset fails', async () => {
@@ -62,5 +71,16 @@ suite('paradisRunAutoRunPresets', () => {
 		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
 
 		assert.deepStrictEqual({ ranAny, runs }, { ranAny: false, runs: ['first', 'second', 'third'] });
+	});
+
+	test('preserves a partial start within a failed preset', async () => {
+		const { instantiationService, runs } = createInstantiationService(
+			new Set(['first', 'second', 'third']),
+			new Set(['second']),
+		);
+
+		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
+
+		assert.deepStrictEqual({ ranAny, runs }, { ranAny: true, runs: ['first', 'second', 'third'] });
 	});
 });

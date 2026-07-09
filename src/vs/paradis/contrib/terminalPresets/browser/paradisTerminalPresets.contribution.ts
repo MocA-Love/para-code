@@ -265,7 +265,14 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 		// 切り替え直後はワークスペースフォルダの反映が完了していないことがあるため、
 		// cwd の基準を新しい worktree フォルダに明示する
 		try {
-			await presetService.runPreset(preset, { cwd: folderUri });
+			await presetService.runPreset(preset, {
+				cwd: folderUri,
+				// 切り替え元の park 済み端末が activeInstance に残っていても再利用しない。
+				forceNewTerminal: true,
+				onDidStart: () => {
+					ranAny = true;
+				},
+			});
 			ranAny = true;
 		} catch (error) {
 			// 後続プリセットを続行し、既に成功したプリセットの情報を呼び出し側へ返す。

@@ -90,7 +90,10 @@ type FsInbound =
 	| { t: 'find'; id: string; ws: string; query: string }
 	| { t: 'grep'; id: string; ws: string; query: string }
 	| { t: 'upload'; id: string; name: string; data: string }
-	| { t: 'usage'; id: string; bypassCache?: boolean };
+	| { t: 'usage'; id: string; bypassCache?: boolean }
+	// テキスト断片のシンタックスハイライト（エージェントチャットのコードブロック用）。
+	// lang はMarkdownフェンスの言語名（ts / typescript / python 等）。
+	| { t: 'hl'; id: string; text: string; lang?: string };
 
 const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト。FrameMuxのチャンク分割転送で1MiB超の応答も送れる）
 // バイナリ（PDF・Word・画像・動画・音声）の読み取り上限。base64 で約1.37倍に膨らむため、
@@ -672,6 +675,37 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 	}
 
+	/**
+	 * Markdownフェンスのコード断片をPCの現行テーマでハイライトする（highlightFile の断片版）。
+	 * 言語はフェンスの言語名（`ts` / `typescript` 等）から解決する。名前で引けない場合は
+	 * 拡張子として解釈し、それでも不明ならプレーンテキスト扱い（着色なしのHTMLが返る）。
+	 */
+	private async highlightSnippet(text: string, lang: string | undefined): Promise<{ html: string; css: string; bg?: string; fg?: string } | undefined> {
+		if (typeof text !== 'string' || text.length === 0 || text.length > HIGHLIGHT_SOURCE_LIMIT) {
+			return undefined;
+		}
+		await this.extensionService.whenInstalledExtensionsRegistered();
+		let languageId: string | null = null;
+		if (typeof lang === 'string' && lang.length > 0 && lang.length < 32) {
+			const cleaned = lang.trim().toLowerCase();
+			languageId = this.languageService.getLanguageIdByLanguageName(cleaned);
+			if (!languageId) {
+				// フェンス名が言語名でない場合は拡張子として解決する（`ts` → typescript 等）
+				languageId = this.languageService.guessLanguageIdByFilepathOrFirstLine(URI.file(`/snippet.${cleaned.replace(/[^a-z0-9+#-]/g, '')}`), undefined);
+			}
+		}
+		const html = await tokenizeToString(this.languageService, text, languageId);
+		const colorMap = TokenizationRegistry.getColorMap();
+		const css = colorMap ? generateTokensCSSForColorMap(colorMap) : '';
+		const theme = this.themeService.getColorTheme();
+		return {
+			html,
+			css,
+			bg: theme.getColor(editorBackground)?.toString(),
+			fg: theme.getColor(editorForeground)?.toString(),
+		};
+	}
+
 	private async handleFsInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
 		let msg: FsInbound;
 		try {
@@ -713,6 +747,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				reply({ t: 'usage', data });
 			} catch (err) {
 				reply({ error: String(err) });
+			}
+			return;
+		}
+		// テキスト断片のハイライト（エージェントチャットのコードブロック用）。ファイルの
+		// highlight と同じく Monaco トークナイザ + 現行テーマのカラーマップで生成する。
+		// 失敗はエラーでなく空応答（モバイル側はプレーン表示にフォールバック）。
+		if (msg.t === 'hl') {
+			try {
+				const result = await this.highlightSnippet(msg.text, msg.lang);
+				reply({ t: 'hl', ...(result ?? {}) });
+			} catch (err) {
+				this.logService.warn('[paradisMobileRelay] snippet highlight failed', err);
+				reply({ t: 'hl' });
 			}
 			return;
 		}

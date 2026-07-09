@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { colors } from '../theme.js';
+import { hapticImpact } from '../haptics.js';
 
 /**
  * 未ペアリング時の案内。ConnectionGateと、ホーム画面（独自に接続状態を出す都合上
@@ -24,7 +25,7 @@ export function PairingRequiredNotice({ onStart }: { onStart: () => void }) {
 			<Ionicons name="qr-code-outline" size={40} color={colors.textDim} />
 			<Text style={styles.title}>ペアリングが必要です</Text>
 			<Text style={styles.dim}>PCとペアリングすると、離れた場所からでも遠隔操作できます。</Text>
-			<Pressable style={styles.btn} onPress={onStart}>
+			<Pressable style={styles.btn} onPress={() => { hapticImpact('medium'); onStart(); }}>
 				<Text style={styles.btnText}>ペアリングを開始</Text>
 			</Pressable>
 		</View>
@@ -66,7 +67,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 			<Text style={styles.title}>{connecting ? '接続中' : '未接続'}</Text>
 			<Text style={styles.dim}>{message}</Text>
 			{!connecting ? (
-				<Pressable style={styles.btn} onPress={connectRelay}>
+				<Pressable style={styles.btn} onPress={() => { hapticImpact('light'); connectRelay(); }}>
 					<Text style={styles.btnText}>{manualOffline ? '接続する' : '再接続'}</Text>
 				</Pressable>
 			) : null}

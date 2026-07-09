@@ -24,6 +24,8 @@ import { ChannelId } from './paradisMobileProtocol.js';
 export const PARADIS_MOBILE_ENABLED_KEY = 'paradis.mobile.enabled';
 /** リレーのベースURL（セルフホスト用）。 */
 export const PARADIS_MOBILE_RELAY_URL_KEY = 'paradis.mobile.relayUrl';
+/** 実験的: 稼働中Codex app-server daemonからトークン単位の進捗通知を購読する。 */
+export const PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY = 'paradis.mobile.agent.codexDaemonStreaming';
 
 // 2026-07-05 デプロイ済み（CROUTECHアカウント、app/relay/wrangler.jsonc参照）。
 export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudflare8234.workers.dev';
@@ -140,6 +142,12 @@ export interface IParadisMobileRelayService {
 	 * `claude --help` のような空振りは誤検知にならない)。
 	 */
 	notifyAgentCliCommand(terminalId: number, cwd: string | undefined): Promise<void>;
+
+	/** 実験的Codex daemon購読の設定をshared processへ同期する。 */
+	setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void>;
+
+	/** PTY表示からbest-effort抽出した経過時間等を既存ライブ状態へ補足する。 */
+	notifyAgentTerminalHint(terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void>;
 
 	/** fsチャネル用: ripgrepによるファイル名検索（.gitignore尊重・再帰）。 */
 	searchFiles(rootPath: string, query: string, maxResults: number): Promise<{ files: string[]; truncated: boolean }>;

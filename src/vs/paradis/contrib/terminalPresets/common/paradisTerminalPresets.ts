@@ -66,6 +66,16 @@ export interface IParadisResolvedPreset extends IParadisPresetDefinition {
 	readonly key: string;
 }
 
+/** プリセット実行時に呼び出し側が指定できる一時的な実行条件。 */
+export interface IParadisRunPresetOptions {
+	/** 相対 cwd の基準（および cwd 未指定時の作業ディレクトリ）。 */
+	readonly cwd?: URI;
+	/** current-terminal 指定でも既存のアクティブ端末を再利用しない。 */
+	readonly forceNewTerminal?: boolean;
+	/** 最初のターミナルまたはコマンドを開始した時点で呼び出す。 */
+	readonly onDidStart?: () => void;
+}
+
 export const IParadisPresetService = createDecorator<IParadisPresetService>('paradisPresetService');
 
 export interface IParadisPresetService {
@@ -88,7 +98,7 @@ export interface IParadisPresetService {
 	 * @param options.cwd 相対 cwd の基準（および cwd 未指定時の作業ディレクトリ）を明示する。
 	 *   worktree 作成直後などワークスペースフォルダの反映を待てない場面で使う。
 	 */
-	runPreset(preset: IParadisResolvedPreset, options?: { cwd?: URI }): Promise<void>;
+	runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void>;
 
 	/** プリセットを保存する（新規または name 一致の既存を置換）。 */
 	savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, replaceName?: string): Promise<void>;
