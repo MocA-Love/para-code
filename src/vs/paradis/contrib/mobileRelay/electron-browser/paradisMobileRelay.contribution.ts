@@ -18,6 +18,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
@@ -120,6 +121,23 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
 		));
+
+		// エージェントCLI (`claude` / `codex`) コマンドの実行開始を shell integration で検知し、
+		// shared process のセッション探索を前倒しするトリガーとして通知する。起動の確定情報には
+		// 使わない (探索側の鮮度ガードで `claude --help` 等の空振りは自然に弾かれる)。
+		// hookがまだ届かない環境 (Codex の hook 未trust等) での検知の主経路になる。
+		const commandExecuted = this._register(terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandExecuted));
+		this._register(commandExecuted.event(({ instance, data: command }) => {
+			const commandLine = (command.command ?? '').trim();
+			// 先頭の環境変数代入 (FOO=1 claude ...) を剥がし、最初の実行語のbasenameで判定する。
+			const firstWord = commandLine.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, '').split(/\s+/)[0] ?? '';
+			const base = (firstWord.split(/[\\/]/).pop() ?? '').replace(/\.exe$/i, '');
+			if (base !== 'claude' && base !== 'codex') {
+				return;
+			}
+			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
+			this.service.notifyAgentCliCommand(instance.instanceId, cwd).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed', err));
+		}));
 
 		// WebRTCミラーのストリーマ（browser チャネルの webrtc-* シグナリングを処理）。
 		const webrtcStreamer = this._register(new ParadisMobileWebrtcStreamer(

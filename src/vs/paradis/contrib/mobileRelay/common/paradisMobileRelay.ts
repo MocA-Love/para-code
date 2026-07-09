@@ -133,6 +133,14 @@ export interface IParadisMobileRelayService {
 	 */
 	syncAgentPanes(entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void>;
 
+	/**
+	 * agentチャネル用: ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell
+	 * integration 由来)。起動の確定情報としては使わず、そのペインの cwd ベースのセッション探索を
+	 * 前倒しするトリガーとしてのみ使う (実在する新しい transcript の発見をもって確定するため、
+	 * `claude --help` のような空振りは誤検知にならない)。
+	 */
+	notifyAgentCliCommand(terminalId: number, cwd: string | undefined): Promise<void>;
+
 	/** fsチャネル用: ripgrepによるファイル名検索（.gitignore尊重・再帰）。 */
 	searchFiles(rootPath: string, query: string, maxResults: number): Promise<{ files: string[]; truncated: boolean }>;
 

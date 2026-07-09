@@ -589,6 +589,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.agentChat.syncPanes(entries);
 	}
 
+	/**
+	 * agentチャネル用: `claude` / `codex` コマンドの実行開始検知 (shell integration 由来)。
+	 * cwd ベースのセッション探索を前倒しするトリガーとしてのみ使う (詳細は common の interface コメント)。
+	 */
+	async notifyAgentCliCommand(terminalId: number, cwd: string | undefined): Promise<void> {
+		this.agentChat.onCliCommandDetected(terminalId, cwd);
+	}
+
 	/** fsチャネル用: ripgrepによるファイル名検索（rendererはプロセスを起動できないためここで実行）。 */
 	async searchFiles(rootPath: string, query: string, maxResults: number): Promise<IParadisFileSearchResult> {
 		return paradisSearchFiles(rootPath, query, Math.min(Math.max(1, maxResults), 500), this.logService);

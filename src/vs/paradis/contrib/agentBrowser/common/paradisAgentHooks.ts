@@ -18,6 +18,9 @@
  */
 export const PARADIS_NOTIFY_HOOK_RELATIVE_PATH = '.para-code/hooks/notify.sh';
 
+/** Windows用 notify スクリプト (PowerShell) の設置先。役割は上のPOSIX版と同じ。 */
+export const PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1 = '.para-code/hooks/notify.ps1';
+
 /**
  * hook登録イベント1件 (Claude Code の settings.json / Codex の hooks.json は同じ
  * `{ hooks: { EventName: [{ matcher?, hooks: [{ type, command }] }] } }` 構造)。
@@ -45,6 +48,16 @@ export const PARADIS_CLAUDE_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'PostToolUse', matcher: '*' },
 	{ eventName: 'PermissionRequest', matcher: '*' },
 	{ eventName: 'Notification' },
+	// 以下は現行 Claude Code の追加イベント (旧バージョンでは未知イベントとして発火しないだけで無害)。
+	// matcher は付けない (省略 = 全マッチ。イベントごとの matcher 対応差の影響を受けない)。
+	// - PostToolUseFailure: ツール失敗後もターン継続 → working の維持 (失敗を完了と誤認しない)
+	// - StopFailure: APIエラーでターン終了 → Stop と同じ「終わった」扱い (止まったのに実行中表示のまま、を防ぐ)
+	// - PermissionDenied: 拒否後もターン継続 → working の維持
+	// - CwdChanged: 状態は変えないが transcript_path 付きで届くため、セッション対応の再マップに使う
+	{ eventName: 'PostToolUseFailure' },
+	{ eventName: 'StopFailure' },
+	{ eventName: 'PermissionDenied' },
+	{ eventName: 'CwdChanged' },
 ];
 
 /**
@@ -58,6 +71,11 @@ export const PARADIS_CODEX_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
 	{ eventName: 'UserPromptSubmit' },
 	{ eventName: 'PermissionRequest' },
 	{ eventName: 'Stop' },
+	// PostToolUse: 長いターンの途中でも「実行中」を維持するライブネス供給源。Codex の新hooksは
+	// Claude Code 互換の stdin JSON (transcript_path 付き) を送るため、hook 未発火起因の
+	// セッション未特定からの自己回復にも効く。Codex hooks.json の対応イベントは10種のみで、
+	// それ以外の名前は無視される (イベントを増やす場合は対応表を必ず確認すること)。
+	{ eventName: 'PostToolUse' },
 ];
 
 /**
@@ -68,8 +86,20 @@ export function paradisManagedAgentHookCommand(): string {
 	return `[ -x "$HOME/${PARADIS_NOTIFY_HOOK_RELATIVE_PATH}" ] && "$HOME/${PARADIS_NOTIFY_HOOK_RELATIVE_PATH}" || true`;
 }
 
+/**
+ * Windows用のhookコマンド (1行)。Claude Code のhookは Git Bash があれば bash、無ければ
+ * PowerShell で、Codex のhookは cmd (/C) で実行されるため、この3シェルすべてで同じ意味に
+ * なる「powershell.exe を絶対パス引数付きで直接起動する」形にする ($HOME/%USERPROFILE% の
+ * 展開仕様がシェルごとに違うため、パスは設置時に絶対パスへ埋め込む)。
+ * パス区切りは3シェルすべてが受け付ける '/' に正規化する。
+ */
+export function paradisManagedAgentHookCommandWindows(homeDir: string): string {
+	const scriptPath = `${homeDir.replace(/\\/g, '/')}/${PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1}`;
+	return `powershell -NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"`;
+}
+
 /** 1イベント分のhook定義オブジェクトを組み立てる (自動マージ・手動スニペットで共用)。 */
-export function paradisManagedHookDefinition(event: IParadisManagedHookEvent): { readonly matcher?: string; readonly hooks: readonly { readonly type: string; readonly command: string }[] } {
-	const entry = { type: 'command', command: paradisManagedAgentHookCommand() };
+export function paradisManagedHookDefinition(event: IParadisManagedHookEvent, command: string = paradisManagedAgentHookCommand()): { readonly matcher?: string; readonly hooks: readonly { readonly type: string; readonly command: string }[] } {
+	const entry = { type: 'command', command };
 	return event.matcher !== undefined ? { matcher: event.matcher, hooks: [entry] } : { hooks: [entry] };
 }
