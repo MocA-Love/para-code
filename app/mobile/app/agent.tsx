@@ -7,7 +7,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
-import { isAgentWaiting, type AgentChatMessage } from '../src/store.js';
+import { isAgentWaiting, type AgentChatMessage, type AgentLiveState } from '../src/store.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
 import { MarkdownText } from '../src/components/markdownText.js';
 import { GlassSurface } from '../src/components/glassSurface.js';
@@ -251,7 +251,7 @@ export default function AgentDetailScreen() {
 						data={rows}
 						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
 						ListHeaderComponent={chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}
-						ListFooterComponent={activeTerminal?.agentStatus === 'working' ? <WorkingIndicator /> : null}
+						ListFooterComponent={activeTerminal?.agentStatus === 'working' || chat?.live !== undefined ? <WorkingIndicator live={chat?.live} /> : null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} />
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onToggle={actions.toggleQuestionOption} onConfirm={actions.confirmQuestion} onFreeText={actions.answerQuestionFreeText} />
@@ -306,14 +306,25 @@ type ChatRow =
 	| { type: 'questionGroup'; key: string; msgs: AgentChatMessage[]; answered: boolean }
 	| { type: 'group'; key: string; msgs: AgentChatMessage[] };
 
+/**
+ * ツール名の表示整形。MCPツールの内部名（mcp__sentry__search_issues）は読みにくいため、
+ * 「search_issues · sentry MCP」の形に直す。それ以外はそのまま。
+ */
+function formatToolName(tool: string): string {
+	const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
+	// allow-any-unicode-next-line
+	return mcp ? `${mcp[2]} · ${mcp[1]} MCP` : tool;
+}
+
 /** アクティビティ群の要約文（例: `思考 ×2 ・ ツール5件 (Bash, Read) ・ 48秒`）。 */
 function summarizeActivity(msgs: readonly AgentChatMessage[]): string {
 	const thinking = msgs.filter(m => m.kind === 'thinking').length;
 	const tools = msgs.filter(m => m.kind === 'tool_use');
 	const names: string[] = [];
 	for (const t of tools) {
-		if (t.tool && !names.includes(t.tool)) {
-			names.push(t.tool);
+		const name = t.tool !== undefined ? formatToolName(t.tool) : undefined;
+		if (name !== undefined && !names.includes(name)) {
+			names.push(name);
 		}
 	}
 	const parts: string[] = [];
@@ -360,7 +371,7 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 		return (
 			<View style={styles.toolRow}>
 				<Ionicons name="construct-outline" size={12} color={colors.textDim} />
-				<Text style={styles.toolText} numberOfLines={3}>{message.tool === 'approval_request' ? '許可要求' : message.tool}: {message.text}</Text>
+				<Text style={styles.toolText} numberOfLines={3}>{message.tool === 'approval_request' ? '許可要求' : formatToolName(message.tool ?? 'tool')}: {message.text}</Text>
 			</View>
 		);
 	}
@@ -386,8 +397,9 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 }
 
 /** エージェントがターン実行中に出す「考え中」インジケータ（ドットの脈動アニメーション）。 */
-function WorkingIndicator() {
+function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 	const pulse = useRef(new Animated.Value(0)).current;
+	const [, setClock] = useState(0);
 	useEffect(() => {
 		const loop = Animated.loop(Animated.sequence([
 			Animated.timing(pulse, { toValue: 1, duration: 600, useNativeDriver: true }),
@@ -396,6 +408,13 @@ function WorkingIndicator() {
 		loop.start();
 		return () => loop.stop();
 	}, [pulse]);
+	useEffect(() => {
+		if (live === undefined) {
+			return;
+		}
+		const timer = setInterval(() => setClock(Date.now()), 1000);
+		return () => clearInterval(timer);
+	}, [live]);
 	const dot = (delay: number) => (
 		<Animated.View
 			style={[styles.workingDot, {
@@ -403,10 +422,24 @@ function WorkingIndicator() {
 			}]}
 		/>
 	);
+	const elapsedSeconds = live !== undefined
+		? Math.max(live.elapsedSeconds ?? 0, Math.max(0, Math.floor((Date.now() - live.startedAt) / 1000)))
+		: undefined;
+	const elapsed = elapsedSeconds !== undefined ? (elapsedSeconds < 60 ? `${elapsedSeconds}秒` : `${Math.floor(elapsedSeconds / 60)}分${String(elapsedSeconds % 60).padStart(2, '0')}秒`) : undefined;
+	const tokens = live?.tokenCount !== undefined ? `${live.tokenCount.toLocaleString()} tokens` : undefined;
+	const metrics = [elapsed, tokens].filter((value): value is string => value !== undefined).join(' · ');
+	const label = live?.phase === 'tool'
+		? `実行中: ${formatToolName(live.tool ?? 'tool')}`
+		: live?.phase === 'message' ? '応答を生成中'
+			: live?.phase === 'permission' ? '確認待ち' : '考え中';
+	const preview = live?.phase === 'message' ? live.text?.trim() : live?.detail;
 	return (
 		<View style={styles.workingRow}>
-			{dot(0)}{dot(1)}{dot(2)}
-			<Text style={styles.workingText}>考え中…</Text>
+			<View style={styles.workingHeader}>
+				{dot(0)}{dot(1)}{dot(2)}
+				<Text style={styles.workingText}>{label}{metrics.length > 0 ? `（${metrics}）` : '…'}</Text>
+			</View>
+			{preview !== undefined && preview.length > 0 ? <Text style={styles.workingPreview} numberOfLines={4}>{preview}</Text> : null}
 		</View>
 	);
 }
@@ -440,9 +473,11 @@ const styles = StyleSheet.create({
 	toolRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 4 },
 	toolText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flex: 1, lineHeight: 15 },
 	approvalBarWrap: { marginHorizontal: 12, marginTop: 8 },
-	workingRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
+	workingRow: { gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
+	workingHeader: { flexDirection: 'row', alignItems: 'center', gap: 5 },
 	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
 	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4 },
+	workingPreview: { color: colors.text, fontSize: 12, lineHeight: 18, marginLeft: 4, opacity: 0.82 },
 	inputBar: { paddingHorizontal: 12, paddingTop: 10 },
 	attachBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 });

@@ -30,6 +30,16 @@ export interface IParadisAgentHookEvent {
 	readonly toolName?: string;
 	/** hook stdin JSON の tool_input（PreToolUse のみ。AskUserQuestion のライブ質問検出に使う）。 */
 	readonly toolInput?: unknown;
+	/** hook stdin JSON の tool_use_id（ツール開始・完了の対応付け。未提供のCLIもある）。 */
+	readonly toolUseId?: string;
+	/** MessageDisplay: 同一assistantメッセージで安定するID。 */
+	readonly messageId?: string;
+	/** MessageDisplay: 今回新たに完成した行のバッチ。 */
+	readonly messageDelta?: string;
+	/** MessageDisplay: 同一メッセージ内の0起点バッチ番号。 */
+	readonly messageIndex?: number;
+	/** MessageDisplay: 最後のバッチか。 */
+	readonly messageFinal?: boolean;
 	/** 受信時刻（epoch ms）。 */
 	readonly at: number;
 }

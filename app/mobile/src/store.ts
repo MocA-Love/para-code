@@ -216,6 +216,20 @@ export interface AgentSessionInfo {
 	effort?: string;
 }
 
+/** transcript確定前の一時的な実行状況（PC側の最新値で置換され、履歴には残らない）。 */
+export interface AgentLiveState {
+	phase: 'thinking' | 'tool' | 'message' | 'permission';
+	source: 'hook' | 'transcript' | 'codex-daemon' | 'pty';
+	startedAt: number;
+	updatedAt: number;
+	tool?: string;
+	detail?: string;
+	text?: string;
+	final?: boolean;
+	elapsedSeconds?: number;
+	tokenCount?: number;
+}
+
 /** ターミナル1つ分のエージェントチャット状態。 */
 export interface AgentChatState {
 	/** 'claude' | 'codex'。 */
@@ -231,6 +245,8 @@ export interface AgentChatState {
 	none?: boolean;
 	/** セッションのメタ情報（model / effort）。 */
 	info?: AgentSessionInfo;
+	/** 生成中本文・実行中ツール等の一時状態。 */
+	live?: AgentLiveState;
 }
 
 /**
@@ -650,9 +666,16 @@ export class MobileController {
 
 	private sendAgentAttach(id: number): void {
 		// 手元に同ターミナルの受信済み状態があれば epoch/afterRev を申告して差分だけ受け取る。
+		// afterRev は「最後に受信したメッセージの rev」を申告する。PC側の rev フィールドは
+		// 「次に採番される値」（最後のメッセージ+1）で、PC側の差分フィルタは m.rev > afterRev の
+		// ため、これをそのまま送ると切断中に届いた最初のメッセージ (rev = afterRev) が毎回
+		// 除外されてしまう（バックグラウンド復帰のたびにPCで打ったプロンプトが1件消えるバグ）。
 		const existing = this.state.agentChats.get(id);
-		const body = existing !== undefined && !existing.none
-			? { t: 'attach', id, epoch: existing.epoch, afterRev: existing.rev }
+		const lastMessageRev = existing !== undefined
+			? existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1
+			: undefined;
+		const body = existing !== undefined && !existing.none && lastMessageRev !== undefined
+			? { t: 'attach', id, epoch: existing.epoch, afterRev: lastMessageRev }
 			: { t: 'attach', id };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
 	}
@@ -1066,7 +1089,7 @@ export class MobileController {
 		try {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; agent?: string; epoch?: string; rev?: number;
-				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo;
+				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -1084,6 +1107,7 @@ export class MobileController {
 					messages: msg.messages ?? [],
 					truncated: msg.truncated === true,
 					...(msg.info !== undefined ? { info: msg.info } : {}),
+					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 				});
 				this.emit({ agentChats: true });
 				return;
@@ -1097,13 +1121,28 @@ export class MobileController {
 					}
 					return;
 				}
+				// rev の飛び（リレーのフレーム落ち等）を検出したら、黙って継ぎ足さず差分を
+				// 取り直す（sendAgentAttach が afterRev 付きで欠落分から再取得する）。
+				const incoming = msg.messages ?? [];
+				const lastKnownRev = existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1;
+				const minIncomingRev = incoming.length > 0 ? Math.min(...incoming.map(m => m.rev)) : undefined;
+				if (minIncomingRev !== undefined && minIncomingRev > lastKnownRev + 1) {
+					if (this.attachedAgents.has(msg.id)) {
+						this.sendAgentAttach(msg.id);
+					}
+					return;
+				}
 				// 重複revは捨てる（再attach応答と押し出しdeltaの競合対策）。
-				const fresh = (msg.messages ?? []).filter(m => !existing.messages.some(e => e.rev === m.rev));
+				const fresh = incoming.filter(m => !existing.messages.some(e => e.rev === m.rev));
+				const base = msg.live === null
+					? (({ live: _live, ...rest }) => rest)(existing)
+					: existing;
 				this.state.agentChats.set(msg.id, {
-					...existing,
+					...base,
 					rev: msg.rev ?? existing.rev,
 					messages: [...existing.messages, ...fresh].slice(-500),
 					...(msg.info !== undefined ? { info: msg.info } : {}),
+					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 				});
 				this.emit({ agentChats: true });
 			}

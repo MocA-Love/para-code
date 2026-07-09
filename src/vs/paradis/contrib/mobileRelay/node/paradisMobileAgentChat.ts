@@ -32,6 +32,7 @@ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import { IParadisCodexDaemonEvent, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -73,6 +74,24 @@ export interface IParadisAgentChatMessage {
 	readonly questionCount?: number;
 }
 
+/** transcript確定前に表示する一時的な実行状況。履歴revには含めず、常に最新値で置換する。 */
+export interface IParadisAgentLiveState {
+	readonly phase: 'thinking' | 'tool' | 'message' | 'permission';
+	readonly source: 'hook' | 'transcript' | 'codex-daemon' | 'pty';
+	/** 現在の処理が始まった時刻（経過時間表示用）。 */
+	readonly startedAt: number;
+	readonly updatedAt: number;
+	readonly tool?: string;
+	readonly detail?: string;
+	/** MessageDisplay / daemon deltaで先出しする生成中テキスト。 */
+	readonly text?: string;
+	readonly final?: boolean;
+	/** transcript/PTYが明示的に報告した経過秒。無ければstartedAtから算出する。 */
+	readonly elapsedSeconds?: number;
+	/** PTY等が表示した概算生成トークン数。 */
+	readonly tokenCount?: number;
+}
+
 /** セッションのメタ情報（モバイルのエージェントタブに表示する）。 */
 export interface IParadisAgentSessionInfo {
 	/** モデル名（Claude: assistant行の message.model、Codex: turn_context.model）。 */
@@ -88,8 +107,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null }
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null }
 	| { t: 'none'; id: number };
 
 const encoder = new TextEncoder();
@@ -110,6 +129,12 @@ const TOOL_TEXT_LIMIT = 1500;
 function truncateText(text: string, limit: number): string {
 	// allow-any-unicode-next-line
 	return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+/** 生成中テキストは後続deltaが見えるよう、上限超過時は末尾を保持する。 */
+function truncateLiveText(text: string, limit: number): string {
+	// allow-any-unicode-next-line
+	return text.length > limit ? `…${text.slice(-(limit - 1))}` : text;
 }
 
 function newEpoch(): string {
@@ -197,6 +222,51 @@ function rec(value: unknown): Record<string, unknown> | undefined {
 
 function str(value: unknown): string | undefined {
 	return typeof value === 'string' ? value : undefined;
+}
+
+function num(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+interface ITranscriptProgress {
+	readonly tool: string;
+	readonly detail?: string;
+	readonly elapsedSeconds?: number;
+	readonly done?: boolean;
+}
+
+/** Claude transcriptのephemeral progress行を、表示に必要な最小情報へ正規化する。 */
+function parseClaudeProgress(obj: Record<string, unknown>): ITranscriptProgress | undefined {
+	if (obj['type'] !== 'progress') {
+		return undefined;
+	}
+	const data = rec(obj['data']);
+	const type = str(data?.['type']);
+	if (type === 'bash_progress') {
+		const output = str(data?.['output'])?.trim();
+		const detail = output?.split(/\r?\n/).filter(Boolean).at(-1);
+		const elapsedSeconds = num(data?.['elapsedTimeSeconds']);
+		return {
+			tool: 'Bash',
+			...(detail !== undefined ? { detail: truncateText(detail, 500) } : {}),
+			...(elapsedSeconds !== undefined ? { elapsedSeconds } : {}),
+		};
+	}
+	if (type === 'mcp_progress') {
+		const toolName = str(data?.['toolName']) ?? 'MCP';
+		const serverName = str(data?.['serverName']);
+		const progressMessage = str(data?.['progressMessage']);
+		const status = str(data?.['status']);
+		const elapsedTimeMs = num(data?.['elapsedTimeMs']);
+		const detail = [serverName !== undefined ? `${serverName} MCP` : undefined, progressMessage].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
+		return {
+			tool: toolName,
+			...(detail.length > 0 ? { detail: truncateText(detail, 500) } : {}),
+			...(elapsedTimeMs !== undefined ? { elapsedSeconds: Math.max(0, Math.round(elapsedTimeMs / 1000)) } : {}),
+			...((status === 'completed' || status === 'failed') ? { done: true } : {}),
+		};
+	}
+	return undefined;
 }
 
 /** tool_result 等の content (string | ブロック配列) を表示テキストへ平坦化する。 */
@@ -682,6 +752,8 @@ interface ITailerDelegate {
 	onActivity(): void;
 	/** セッションメタ情報（model / effort）が変化した。 */
 	onInfo(): void;
+	/** Claude transcriptのephemeral progress行を受けた。履歴には追加しない。 */
+	onProgress(progress: ITranscriptProgress): void;
 }
 
 /**
@@ -887,6 +959,7 @@ class TranscriptTailer {
 		this.remainder = lines.pop() ?? '';
 		const added: IParadisAgentChatMessage[] = [];
 		const signals = newParseSignals();
+		let latestProgress: ITranscriptProgress | undefined;
 		for (const line of lines) {
 			const trimmed = line.trim();
 			if (trimmed.length === 0) {
@@ -900,6 +973,13 @@ class TranscriptTailer {
 			}
 			if (!obj) {
 				continue;
+			}
+			if (this.agent === 'claude') {
+				const progress = parseClaudeProgress(obj);
+				if (progress !== undefined) {
+					latestProgress = progress;
+					continue;
+				}
 			}
 			const raw = this.agent === 'claude' ? parseClaudeLine(obj, signals) : parseCodexLine(obj, signals);
 			for (const message of raw) {
@@ -936,6 +1016,9 @@ class TranscriptTailer {
 			}
 		}
 		this.applySignals(signals);
+		if (latestProgress !== undefined) {
+			this.delegate.onProgress(latestProgress);
+		}
 		if (added.length === 0) {
 			return;
 		}
@@ -1092,6 +1175,17 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly tailers = new Map<string, TranscriptTailer>();
 	/** ペイントークン → 購読中モバイルID (最後にattachしたモバイルが勝つ。termチャネルと同じM-2方針)。 */
 	private readonly subscribers = new Map<string, string>();
+	/** ペイントークン → transcript確定前の最新ライブ状態。履歴とは独立に置換する。 */
+	private readonly liveStates = new Map<string, IParadisAgentLiveState>();
+	/** PreToolUse/PostToolUseの対応付け。並行ツールの古い完了で最新表示を消さないために使う。 */
+	private readonly liveToolIds = new Map<string, string>();
+	/** Claude MessageDisplayの行バッチをメッセージ単位で連結する内部バッファ。 */
+	private readonly liveMessageBuffers = new Map<string, { messageId: string; lastIndex: number; text: string; startedAt: number; final: boolean }>();
+	/** Codex daemonのagentMessage deltaをitem単位で連結する内部バッファ。 */
+	private readonly codexMessageBuffers = new Map<string, { itemId: string; text: string; startedAt: number }>();
+	/** Codex daemonで現在表示中のitem ID。古いitem/completedによる巻き戻しを防ぐ。 */
+	private readonly codexActiveItems = new Map<string, string>();
+	private readonly codexLiveClient: ParadisCodexLiveClient;
 	/** 直近のsyncPanesで terminalId 対応が確認できた（生存していた）トークン集合。paneSessionsの掃除判定に使う。 */
 	private paneTokensSeenLive = new Set<string>();
 
@@ -1105,6 +1199,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		private readonly logService: ILogService,
 	) {
 		super();
+		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		this._register(toDisposable(() => {
 			for (const token of [...this.tailers.keys()]) {
@@ -1115,6 +1210,29 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			this.cliDiscoveryTimers.clear();
 		}));
+	}
+
+	/** 実験的Codex daemon購読の有効/無効（既定false、renderer設定から同期）。 */
+	setCodexDaemonEnabled(enabled: boolean): void {
+		this.codexLiveClient.setEnabled(enabled);
+		this.syncCodexDaemonThreads();
+	}
+
+	/** rendererがPTY画面からbest-effort抽出した装飾情報を、既存ライブ状態へだけ合成する。 */
+	onTerminalHint(terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): void {
+		const token = this.terminalToToken.get(terminalId);
+		const previous = token !== undefined ? this.liveStates.get(token) : undefined;
+		if (token === undefined || previous === undefined) {
+			return; // PTY文字列だけでエージェント起動を確定しない
+		}
+		const now = Date.now();
+		this.setLiveState(token, {
+			...previous,
+			...(hint.elapsedSeconds !== undefined ? { startedAt: now - hint.elapsedSeconds * 1000 } : {}),
+			updatedAt: now,
+			...(hint.elapsedSeconds !== undefined ? { elapsedSeconds: hint.elapsedSeconds } : {}),
+			...(hint.tokenCount !== undefined ? { tokenCount: hint.tokenCount } : {}),
+		});
 	}
 
 	/**
@@ -1180,9 +1298,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const token of [...this.paneSessions.keys()]) {
 			if (!liveTokens.has(token) && this.paneTokensSeenLive.has(token)) {
 				this.paneSessions.delete(token);
+				this.liveStates.delete(token);
+				this.liveToolIds.delete(token);
+				this.liveMessageBuffers.delete(token);
+				this.codexMessageBuffers.delete(token);
+				this.codexActiveItems.delete(token);
 			}
 		}
 		this.paneTokensSeenLive = liveTokens;
+		this.syncCodexDaemonThreads();
 	}
 
 	/** コマンド検知トリガーの再探索タイマー (dispose時に確実に止める)。 */
@@ -1259,6 +1383,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (discovered !== undefined) {
 					session = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: undefined };
 					this.paneSessions.set(token, session);
+					this.syncCodexDaemonThreads();
 					this.logService.info(`[paradisAgentChat] discovered session by cwd for terminal ${msg.id}: ${discovered.transcriptPath}`);
 				}
 			}
@@ -1287,21 +1412,327 @@ export class ParadisMobileAgentChat extends Disposable {
 		// なるため、その場合は全量スナップショットへフォールバックする。
 		const oldestRev = tailer.messages.length > 0 ? tailer.messages[0].rev : tailer.rev;
 		const info = ParadisMobileAgentChat.infoOf(tailer);
+		const live = this.liveStates.get(token) ?? null;
 		if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 			// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 			const messages = tailer.messages.filter(m => m.rev > afterRev);
-			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}) });
+			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live });
 		} else {
 			const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 			this.sendTo(mobileId, {
 				t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
 				...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 				...(info !== undefined ? { info } : {}),
+				live,
 			});
 		}
 	}
 
+	/** tool_inputからティッカーに有用な短い説明だけを抽出する（巨大なJSONは送らない）。 */
+	private static toolDetail(toolInput: unknown): string | undefined {
+		const input = rec(toolInput);
+		if (input === undefined) {
+			return undefined;
+		}
+		for (const key of ['command', 'file_path', 'path', 'query', 'pattern', 'url', 'description']) {
+			const value = str(input[key]);
+			if (value !== undefined && value.trim().length > 0) {
+				return truncateText(value.trim().replace(/\s+/g, ' '), 500);
+			}
+		}
+		return undefined;
+	}
+
+	/** hookを履歴とは独立したライブ状態へ反映する。 */
+	private updateLiveFromHook(event: IParadisAgentHookEvent): void {
+		switch (event.event) {
+			case 'UserPromptSubmit':
+				this.liveToolIds.delete(event.token);
+				this.liveMessageBuffers.delete(event.token);
+				this.setLiveState(event.token, {
+					phase: 'thinking', source: 'hook', startedAt: event.at, updatedAt: event.at,
+				});
+				return;
+			case 'PreToolUse': {
+				if (event.toolUseId !== undefined) {
+					this.liveToolIds.set(event.token, event.toolUseId);
+				} else {
+					this.liveToolIds.delete(event.token);
+				}
+				const phase = event.toolName === 'AskUserQuestion' ? 'permission' : 'tool';
+				const detail = ParadisMobileAgentChat.toolDetail(event.toolInput);
+				this.setLiveState(event.token, {
+					phase, source: 'hook', startedAt: event.at, updatedAt: event.at,
+					...(event.toolName !== undefined ? { tool: event.toolName } : {}),
+					...(detail !== undefined ? { detail } : {}),
+				});
+				return;
+			}
+			case 'PostToolUse':
+			case 'PostToolUseFailure':
+			case 'PermissionDenied': {
+				const currentToolId = this.liveToolIds.get(event.token);
+				if (event.toolUseId !== undefined && currentToolId !== undefined && event.toolUseId !== currentToolId) {
+					return;
+				}
+				this.liveToolIds.delete(event.token);
+				const previous = this.liveStates.get(event.token);
+				this.setLiveState(event.token, {
+					phase: 'thinking', source: 'hook', startedAt: previous?.startedAt ?? event.at, updatedAt: event.at,
+				});
+				return;
+			}
+			case 'PermissionRequest': {
+				const detail = ParadisMobileAgentChat.toolDetail(event.toolInput);
+				this.setLiveState(event.token, {
+					phase: 'permission', source: 'hook', startedAt: event.at, updatedAt: event.at,
+					...(event.toolName !== undefined ? { tool: event.toolName } : {}),
+					...(detail !== undefined ? { detail } : {}),
+				});
+				return;
+			}
+			case 'MessageDisplay':
+				this.updateLiveMessage(event);
+				return;
+			case 'Stop':
+			case 'StopFailure':
+			case 'SessionEnd':
+			case 'TerminalExit':
+			case 'agent-turn-complete':
+				this.clearLiveState(event.token);
+				return;
+		}
+	}
+
+	/** MessageDisplayの重複バッチを除外し、同一メッセージのdeltaを順番に連結する。 */
+	private updateLiveMessage(event: IParadisAgentHookEvent): void {
+		if (event.messageId === undefined || event.messageDelta === undefined || event.messageIndex === undefined) {
+			return;
+		}
+		const previous = this.liveMessageBuffers.get(event.token);
+		if (previous?.messageId === event.messageId && event.messageIndex <= previous.lastIndex) {
+			return;
+		}
+		const startedAt = previous?.messageId === event.messageId ? previous.startedAt : event.at;
+		const prefix = previous?.messageId === event.messageId ? previous.text : '';
+		const text = truncateLiveText(prefix + event.messageDelta, TEXT_LIMIT);
+		const buffer = {
+			messageId: event.messageId,
+			lastIndex: event.messageIndex,
+			text,
+			startedAt,
+			final: event.messageFinal === true,
+		};
+		this.liveMessageBuffers.set(event.token, buffer);
+		this.setLiveState(event.token, {
+			phase: 'message', source: 'hook', startedAt, updatedAt: event.at, text,
+			...(buffer.final ? { final: true } : {}),
+		});
+	}
+
+	private setLiveState(token: string, state: IParadisAgentLiveState): void {
+		this.liveStates.set(token, state);
+		this.pushLiveToSubscriber(token, state);
+	}
+
+	private clearLiveState(token: string): void {
+		const hadState = this.liveStates.delete(token);
+		this.liveToolIds.delete(token);
+		this.liveMessageBuffers.delete(token);
+		if (hadState) {
+			this.pushLiveToSubscriber(token, null);
+		}
+	}
+
+	/** transcriptに永続化される長時間ツールprogressを、hookティッカーの補足へ反映する。 */
+	private updateLiveFromProgress(token: string, progress: ITranscriptProgress): void {
+		const previous = this.liveStates.get(token);
+		// 生成本文の先出しが始まった後に、遅れてflushされたツールprogressで上書きしない。
+		if (previous?.phase === 'message') {
+			return;
+		}
+		const now = Date.now();
+		if (progress.done) {
+			this.setLiveState(token, {
+				phase: 'thinking', source: 'transcript', startedAt: previous?.startedAt ?? now, updatedAt: now,
+			});
+			return;
+		}
+		const startedAt = progress.elapsedSeconds !== undefined
+			? now - progress.elapsedSeconds * 1000
+			: previous?.phase === 'tool' ? previous.startedAt : now;
+		this.setLiveState(token, {
+			phase: 'tool', source: 'transcript', startedAt, updatedAt: now, tool: progress.tool,
+			...(progress.detail !== undefined ? { detail: progress.detail } : {}),
+			...(progress.elapsedSeconds !== undefined ? { elapsedSeconds: progress.elapsedSeconds } : {}),
+		});
+	}
+
+	/** daemonへ購読させるのは、hookがthread IDを確定できたCodexセッションだけ。 */
+	private syncCodexDaemonThreads(): void {
+		const threadIds = new Set<string>();
+		for (const session of this.paneSessions.values()) {
+			if (session.agent === 'codex' && session.sessionId !== undefined && session.sessionId.length > 0) {
+				threadIds.add(session.sessionId);
+			}
+		}
+		this.codexLiveClient.setThreads([...threadIds]);
+	}
+
+	/** Codex daemonの通知を対応するペインの置換型ライブ状態へ投影する。 */
+	private onCodexDaemonEvent(event: IParadisCodexDaemonEvent): void {
+		for (const [token, session] of this.paneSessions) {
+			if (session.agent === 'codex' && session.sessionId === event.threadId) {
+				this.applyCodexDaemonEvent(token, event);
+			}
+		}
+	}
+
+	private applyCodexDaemonEvent(token: string, event: IParadisCodexDaemonEvent): void {
+		const now = Date.now();
+		if (event.method === 'turn/started') {
+			this.codexMessageBuffers.delete(token);
+			this.codexActiveItems.delete(token);
+			this.setLiveState(token, { phase: 'thinking', source: 'codex-daemon', startedAt: now, updatedAt: now });
+			return;
+		}
+		if (event.method === 'turn/completed') {
+			this.codexMessageBuffers.delete(token);
+			this.codexActiveItems.delete(token);
+			this.clearLiveState(token);
+			return;
+		}
+		if (event.method === 'item/started') {
+			const item = rec(event.params['item']);
+			const itemId = str(item?.['id']);
+			const itemType = str(item?.['type']);
+			const startedAt = num(event.params['startedAtMs']) ?? now;
+			if (itemId !== undefined) {
+				this.codexActiveItems.set(token, itemId);
+			}
+			if (itemType === 'agentMessage') {
+				if (itemId !== undefined) {
+					this.codexMessageBuffers.set(token, { itemId, text: '', startedAt });
+				}
+				this.setLiveState(token, { phase: 'message', source: 'codex-daemon', startedAt, updatedAt: now });
+				return;
+			}
+			if (itemType === 'reasoning') {
+				this.setLiveState(token, { phase: 'thinking', source: 'codex-daemon', startedAt, updatedAt: now });
+				return;
+			}
+			const tool = ParadisMobileAgentChat.codexItemToolName(itemType, item);
+			if (tool !== undefined) {
+				const detail = ParadisMobileAgentChat.codexItemDetail(itemType, item);
+				this.setLiveState(token, {
+					phase: 'tool', source: 'codex-daemon', startedAt, updatedAt: now, tool,
+					...(detail !== undefined ? { detail } : {}),
+				});
+			}
+			return;
+		}
+		if (event.method === 'item/agentMessage/delta') {
+			const itemId = str(event.params['itemId']);
+			const delta = str(event.params['delta']);
+			if (itemId === undefined || delta === undefined) {
+				return;
+			}
+			const previous = this.codexMessageBuffers.get(token);
+			const startedAt = previous?.itemId === itemId ? previous.startedAt : now;
+			const text = truncateCodexLiveText((previous?.itemId === itemId ? previous.text : '') + delta);
+			this.codexMessageBuffers.set(token, { itemId, text, startedAt });
+			this.codexActiveItems.set(token, itemId);
+			this.setLiveState(token, { phase: 'message', source: 'codex-daemon', startedAt, updatedAt: now, text });
+			return;
+		}
+		if (event.method === 'item/reasoning/summaryTextDelta') {
+			const delta = str(event.params['delta']);
+			if (delta === undefined) {
+				return;
+			}
+			const previous = this.liveStates.get(token);
+			const detail = truncateCodexLiveText((previous?.phase === 'thinking' ? previous.detail ?? '' : '') + delta);
+			this.setLiveState(token, {
+				phase: 'thinking', source: 'codex-daemon', startedAt: previous?.phase === 'thinking' ? previous.startedAt : now,
+				updatedAt: now, detail,
+			});
+			return;
+		}
+		if (event.method === 'item/commandExecution/outputDelta') {
+			const itemId = str(event.params['itemId']);
+			const delta = str(event.params['delta']);
+			if (delta === undefined) {
+				return;
+			}
+			const previous = this.liveStates.get(token);
+			const detail = truncateCodexLiveText([previous?.detail, delta.trim()].filter((part): part is string => part !== undefined && part.length > 0).join('\n'));
+			if (itemId !== undefined) {
+				this.codexActiveItems.set(token, itemId);
+			}
+			this.setLiveState(token, {
+				phase: 'tool', source: 'codex-daemon', startedAt: previous?.phase === 'tool' ? previous.startedAt : now,
+				updatedAt: now, tool: previous?.tool ?? 'shell', ...(detail.length > 0 ? { detail } : {}),
+			});
+			return;
+		}
+		if (event.method === 'item/completed') {
+			const item = rec(event.params['item']);
+			const itemId = str(item?.['id']);
+			if (itemId !== undefined && this.codexActiveItems.get(token) !== itemId) {
+				return;
+			}
+			this.codexActiveItems.delete(token);
+			const previous = this.liveStates.get(token);
+			this.setLiveState(token, {
+				phase: 'thinking', source: 'codex-daemon', startedAt: previous?.startedAt ?? now, updatedAt: now,
+			});
+		}
+	}
+
+	private static codexItemToolName(itemType: string | undefined, item: Record<string, unknown> | undefined): string | undefined {
+		switch (itemType) {
+			case 'commandExecution': return 'shell';
+			case 'fileChange': return 'apply_patch';
+			case 'webSearch': return 'web_search';
+			case 'mcpToolCall': {
+				const server = str(item?.['server']);
+				const tool = str(item?.['tool']) ?? 'tool';
+				return server !== undefined ? `mcp__${server}__${tool}` : tool;
+			}
+			case 'dynamicToolCall': return str(item?.['tool']) ?? 'tool';
+			case 'collabAgentToolCall': return str(item?.['tool']) ?? 'agent';
+			case 'sleep': return 'sleep';
+			case 'imageView': return 'view_image';
+			case 'imageGeneration': return 'image_generation';
+			default: return undefined;
+		}
+	}
+
+	private static codexItemDetail(itemType: string | undefined, item: Record<string, unknown> | undefined): string | undefined {
+		const value = itemType === 'commandExecution' ? str(item?.['command'])
+			: itemType === 'webSearch' ? str(item?.['query'])
+				: itemType === 'imageView' ? str(item?.['path'])
+					: itemType === 'collabAgentToolCall' ? str(item?.['prompt'])
+						: undefined;
+		return value !== undefined && value.length > 0 ? truncateText(value.replace(/\s+/g, ' '), 500) : undefined;
+	}
+
+	/** 現在attach中のモバイルへライブ状態だけを空deltaとして送る。 */
+	private pushLiveToSubscriber(token: string, live: IParadisAgentLiveState | null): void {
+		const subscriber = this.subscribers.get(token);
+		const terminalId = this.terminalIdForToken(token);
+		const tailer = this.tailers.get(token);
+		if (subscriber === undefined || terminalId === undefined || tailer === undefined) {
+			return;
+		}
+		this.sendTo(subscriber, {
+			t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev,
+			messages: [], live,
+		});
+	}
+
 	private onHookEvent(event: IParadisAgentHookEvent): void {
+		this.updateLiveFromHook(event);
 		if (event.transcriptPath === undefined || event.transcriptPath.length === 0) {
 			// transcript_path無しのhook(CodexのSessionStart等)でも「エージェントが動き出した」
 			// 合図にはなる。購読中でセッション未特定のペインならcwd探索を試みる。
@@ -1322,6 +1753,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: undefined };
 		this.paneSessions.set(token, session);
+		this.syncCodexDaemonThreads();
 		this.ensureEagerTailer(token, session);
 		this.pushToSubscriber(token);
 	}
@@ -1355,6 +1787,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			sessionId: event.sessionId,
 		};
 		this.paneSessions.set(event.token, info);
+		this.syncCodexDaemonThreads();
 
 		// エージェント起動などでこのペインのセッションが初めて判明した
 		// → 「セッションなし」表示のまま待っている購読者にスナップショットを送る。
@@ -1416,6 +1849,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		};
 		const tailer = new TranscriptTailer(session.transcriptPath, session.agent, {
 			onDelta: messages => {
+				const live = this.liveStates.get(token);
+				if (live?.phase === 'message' && live.final && messages.some(message => message.role === 'assistant' && message.kind === 'text')) {
+					// MessageDisplayの最終バッチはtranscript本文が届くまで表示し、確定本文との二重表示を避ける。
+					this.clearLiveState(token);
+				}
 				const subscriber = this.subscribers.get(token);
 				const terminalId = this.terminalIdForToken(token);
 				if (subscriber !== undefined && terminalId !== undefined) {
@@ -1437,7 +1875,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (subscriber !== undefined && terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = ParadisMobileAgentChat.infoOf(tailer);
-					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}) });
+					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null });
 				}
 			},
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
@@ -1452,6 +1890,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], info });
 				}
 			},
+			onProgress: progress => this.updateLiveFromProgress(token, progress),
 		}, this.logService);
 		this.tailers.set(token, tailer);
 		return tailer;

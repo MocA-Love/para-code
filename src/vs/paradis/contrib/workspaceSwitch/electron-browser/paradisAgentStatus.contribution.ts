@@ -172,9 +172,9 @@ class ParadisCopyAgentHooksSetupAction extends Action2 {
 
 		// ~/.claude/settings.json の "hooks" にマージするスニペット。通常は shared process 起動時に
 		// 自動マージされる (agentBrowser/node/paradisAgentHooksSetup.ts) ため、このアクションは
-		// 自動設置が使えない環境向けの手動フォールバック。イベント一覧・コマンドは自動設置と
-		// 完全に同一 (POSIXは ~/.para-code/hooks/notify.sh 参照、Windowsは notify.ps1 の
-		// powershell 直接起動。PreToolUse は誤通知源になるため登録しない)。
+		// 自動設置が使えない環境向けの手動フォールバック。POSIXは
+		// ~/.para-code/hooks/notify.sh、Windowsは notify.ps1 を参照する。CLIバージョンを
+		// 判定できない手動スニペットには、旧版が拒否し得るMessageDisplayを含めない。
 		let command: string | undefined;
 		if (isWindows) {
 			const userHome = await pathService.userHome();
