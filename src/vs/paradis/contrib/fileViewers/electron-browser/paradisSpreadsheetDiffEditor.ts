@@ -22,6 +22,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -36,7 +37,8 @@ import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay,
 import { IParadisRenderShape } from '../common/paradisSpreadsheet.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
-import { IParadisDiffCell, IParadisDiffRow, IParadisDiffSheet, IParadisShapeDiff, IParadisShapeRender, buildDiffSheets, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
+import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisShapeDiff, IParadisShapeRender, buildDiffSheets, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
+import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 
 import './media/paradisSpreadsheet.css';
@@ -111,6 +113,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private readonly _renderDisposables = this._register(new DisposableStore());
+	private readonly _diffDetailsByCell = new WeakMap<HTMLElement, readonly IParadisDiffDetail[]>();
 	// タブ描画は _renderTabs のたびに DOM とリスナーを作り直すため、描画単位の専用 store で管理する。
 	private readonly _tabsDisposables = this._register(new MutableDisposable<DisposableStore>());
 	// _navigate の rAF ハンドルは連打で蓄積しないよう都度差し替える。
@@ -135,6 +138,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		@IFileService private readonly _fileService: IFileService,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@INativeHostService private readonly _nativeHostService: INativeHostService,
+		@IHoverService private readonly _hoverService: IHoverService,
 	) {
 		super(PARADIS_SPREADSHEET_DIFF_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
@@ -413,6 +417,19 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				this._buildDiffCell(tr, cell, row.cells, ci, columnWidths, overflowCells);
 			}
 		});
+		this._renderDisposables.add(dom.addDisposableListener(table, dom.EventType.MOUSE_OVER, event => {
+			if (!dom.isHTMLElement(event.target)) {
+				return;
+			}
+			const cell = dom.findParentWithClass(event.target, 'paradis-spreadsheet-diff-details', table);
+			if (!cell || (dom.isHTMLElement(event.relatedTarget) && cell.contains(event.relatedTarget))) {
+				return;
+			}
+			const details = this._diffDetailsByCell.get(cell);
+			if (details) {
+				this._hoverService.showDelayedHover({ target: cell, content: formatDiffDetails(details) }, { groupId: 'paradis-spreadsheet-diff-details' });
+			}
+		}));
 
 		// 現在位置ハイライト用の要素(ナビ時に配置)。
 		const highlight = dom.append(contentEl, $('.paradis-spreadsheet-diff-highlight'));
@@ -465,6 +482,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		applyBaseCellStyle(td, cell);
 		if (cell.diffStatus) {
 			td.classList.add(`diff-${cell.diffStatus}`);
+		}
+		if (cell.diffDetails?.length) {
+			td.classList.add('paradis-spreadsheet-diff-details');
+			this._diffDetailsByCell.set(td, cell.diffDetails);
 		}
 		if (cell.diffSegments && cell.diffSegments.length > 0) {
 			for (const seg of cell.diffSegments) {

@@ -5,6 +5,7 @@
 
 import { getFontSnippets } from '../../../../base/browser/fonts.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import * as nls from '../../../../nls.js';
@@ -136,6 +137,7 @@ registerTerminalActions();
 
 setupTerminalCommands();
 
-setupTerminalMenus();
+const terminalMenuDisposables = new DisposableStore();
+setupTerminalMenus(terminalMenuDisposables);
 
 registerColors();
