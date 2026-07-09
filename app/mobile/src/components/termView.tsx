@@ -74,6 +74,7 @@ function buildHtml(): string {
 	} catch (e) { /* 古い/破損バンドル: Unicode 6 幅のまま続行 */ }
 	term.open(document.getElementById('wrap'));
 	var currentCols = 80;
+	var currentRows = 24;
 	// RN→WebView の inject 連番。欠落（=injectの取りこぼし）を検出したら desync を
 	// 通知して再同期してもらう。snapshot 適用で連番は張り直される。
 	var injectSeq = 0;
@@ -90,26 +91,41 @@ function buildHtml(): string {
 		injectSeq = n;
 		return true;
 	}
-	// PCと同じ cols を維持したまま画面幅に収まるフォントサイズを実測ベースで求める
-	function fit(cols) {
+	// PCと同じ cols/rows を維持したまま画面に収まるフォントサイズを実測ベースで求める。
+	// 幅だけで決めると、キーボード表示等でWebViewの高さが縮んでも行数×行高は
+	// 変わらないため、上部が画面外に押し出されてしまう。幅ベース・高さベース
+	// それぞれで算出したフォントサイズの小さい方を採用し、両軸に収める。
+	function fit(cols, rows) {
 		var probe = document.createElement('span');
 		probe.style.fontFamily = 'Menlo, monospace';
 		probe.style.fontSize = '100px';
+		probe.style.lineHeight = 'normal';
 		probe.style.position = 'absolute';
 		probe.style.visibility = 'hidden';
 		probe.style.whiteSpace = 'pre';
 		probe.textContent = 'WWWWWWWWWW';
 		document.body.appendChild(probe);
-		var charWidthAt100 = probe.getBoundingClientRect().width / 10;
+		var rect = probe.getBoundingClientRect();
+		var charWidthAt100 = rect.width / 10;
+		// フォントの自然な行送り（100px時）。xtermの実セル高は行送りにほぼ比例するため、
+		// 実レンダラの寸法を取得しなくてもこの比率で十分近似できる。
+		var lineHeightAt100 = rect.height;
 		document.body.removeChild(probe);
-		var avail = document.documentElement.clientWidth - 10;
-		var fontSize = Math.floor(100 * avail / (charWidthAt100 * cols));
+		var availWidth = document.documentElement.clientWidth - 10;
+		var fontSizeByWidth = Math.floor(100 * availWidth / (charWidthAt100 * cols));
+		var fontSize = fontSizeByWidth;
+		if (rows > 0) {
+			var availHeight = document.documentElement.clientHeight - 10;
+			var fontSizeByHeight = Math.floor(100 * availHeight / (lineHeightAt100 * rows));
+			fontSize = Math.min(fontSizeByWidth, fontSizeByHeight);
+		}
 		term.options.fontSize = Math.max(4, Math.min(16, fontSize));
 	}
 	window.__para = {
 		resize: function (cols, rows) {
 			currentCols = cols;
-			fit(cols);
+			currentRows = rows;
+			fit(cols, rows);
 			term.resize(cols, rows);
 			term.scrollToBottom();
 		},
@@ -132,7 +148,8 @@ function buildHtml(): string {
 			term.reset();
 			if (cols > 0 && rows > 0 && (cols !== term.cols || rows !== term.rows)) {
 				currentCols = cols;
-				fit(cols);
+				currentRows = rows;
+				fit(cols, rows);
 				term.resize(cols, rows);
 			}
 			term.write(data, function () { term.scrollToBottom(); });
@@ -142,7 +159,7 @@ function buildHtml(): string {
 	// キーボード開閉などでWebViewの高さが変わったら、フォントを合わせ直した上で
 	// 最下部（プロンプト行）が見える位置までスクロールする。
 	window.addEventListener('resize', function () {
-		fit(currentCols);
+		fit(currentCols, currentRows);
 		term.scrollToBottom();
 		window.scrollTo(0, document.body.scrollHeight);
 	});
