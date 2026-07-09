@@ -2,15 +2,16 @@
 
 import { ReactNode } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
-import { BlurView } from 'expo-blur';
 import { Ionicons } from '@expo/vector-icons';
+import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 
 /**
- * Liquid Glass風の2段コンポーザー（mo.html 案A2/T1）。上段にテキスト入力、
+ * Liquid Glassの2段コンポーザー（mo.html 案A2/T1）。上段にテキスト入力、
  * 下段にツール列（左: 呼び出し側が渡す任意のツール、右: 送信ボタン）。
- * 面はBlurView+半透明オーバーレイで、タブバーと質感を揃える。
+ * 面はGlassSurface（iOS 26+は本物のLiquid Glass、それ未満はBlurViewフォールバック）で、
+ * タブバーと質感を揃える。内側のボタン群はHIGに従いglass化しない（glass on glass回避）。
  * エージェントタブ（モデル/Effortピル）とターミナルタブ（特殊キー列）で共用する。
  */
 export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tools, sendIcon = 'arrow-up', sendDisabled = false, monospace = false }: {
@@ -26,9 +27,8 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 	monospace?: boolean;
 }) {
 	return (
-		<View style={styles.wrap}>
-			<BlurView intensity={40} tint="dark" style={StyleSheet.absoluteFill} />
-			<View style={[StyleSheet.absoluteFill, styles.overlay]} />
+		// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
+		<GlassSurface style={[styles.wrap, !liquidGlass && styles.wrapFallbackBorder]}>
 			<TextInput
 				style={[styles.input, monospace && styles.inputMono]}
 				value={value}
@@ -52,16 +52,16 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 					<Ionicons name={sendIcon} size={18} color="#fff" />
 				</Pressable>
 			</View>
-		</View>
+		</GlassSurface>
 	);
 }
 
 const styles = StyleSheet.create({
 	wrap: {
-		borderRadius: 26, borderWidth: 1, borderColor: colors.glassBorder,
+		borderRadius: 26,
 		overflow: 'hidden', paddingTop: 12, paddingBottom: 10, paddingHorizontal: 14,
 	},
-	overlay: { backgroundColor: colors.glassBg },
+	wrapFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	input: { color: colors.text, fontSize: 15, paddingHorizontal: 4, paddingBottom: 12, maxHeight: 120 },
 	inputMono: { fontFamily: 'Menlo', fontSize: 13 },
 	tools: { flexDirection: 'row', alignItems: 'center', gap: 8 },

@@ -4,8 +4,7 @@ import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { useIsFocused } from 'expo-router';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
-import { WsBar } from '../../src/components/wsBar.js';
-import { ScreenTitle } from '../../src/components/screenTitle.js';
+import { WsHeader } from '../../src/components/wsDrawer.js';
 import { SegmentedControl } from '../../src/components/segmentedControl.js';
 import { FilesPanel } from '../../src/components/filesPanel.js';
 import { BrowserPanel } from '../../src/components/browserPanel.js';
@@ -27,8 +26,7 @@ export default function MoreScreen() {
 	return (
 		<ConnectionGate>
 		<View style={styles.screen}>
-			<ScreenTitle title="その他" />
-			<WsBar />
+			<WsHeader title="その他" />
 			<SegmentedControl
 				value={segment}
 				onChange={setSegment}

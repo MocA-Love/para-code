@@ -7,8 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { DiffView } from '../../src/components/diffView.js';
-import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
-import { ScreenTitle } from '../../src/components/screenTitle.js';
+import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
 import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
@@ -147,8 +146,7 @@ export default function ScmScreen() {
 	return (
 		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
-			<ScreenTitle title="ソース管理" />
-			<WsBar />
+			<WsHeader title="ソース管理" />
 			<ScrollView
 				style={styles.list}
 				refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void refresh(); }} tintColor={colors.textDim} />}

@@ -105,6 +105,57 @@ export interface ScmXlsxDiffResult {
 	html: string;
 }
 
+/** ccusage: エージェント軸（ccusage のソース名に対応）。 */
+export type UsageAgent = 'claude' | 'codex' | 'gemini' | 'other';
+/** ccusage: 1日×1モデルのスライス。 */
+export interface UsageModelSlice {
+	model: string;
+	agent: UsageAgent;
+	cost: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheCreationTokens: number;
+	cacheReadTokens: number;
+}
+export interface UsageDayData {
+	/** YYYY-MM-DD。 */
+	date: string;
+	models: UsageModelSlice[];
+}
+/** ccusage: 現在アクティブな5時間ブロック。 */
+export interface UsageBlockData {
+	startTime: number;
+	endTime: number;
+	costUSD: number;
+	remainingMinutes?: number;
+	projectedCost?: number;
+	projectedTokens?: number;
+	costPerHour?: number;
+	tokensPerMinute?: number;
+}
+export interface UsageSessionData {
+	project: string;
+	rawProject: string;
+	lastActivity?: number;
+	models: string[];
+	totalTokens: number;
+	totalCost: number;
+}
+export interface UsageProjectData {
+	name: string;
+	rawName: string;
+	dailyCosts: { date: string; cost: number }[];
+}
+/** ccusage usage 応答（PC側で正規化済みのダッシュボードデータ一式）。 */
+export interface UsageDashboardResult {
+	days: UsageDayData[];
+	block?: UsageBlockData;
+	sessions: UsageSessionData[];
+	projects: UsageProjectData[];
+	failedReports: string[];
+	fetchedAt: number;
+}
+
 /** browser targets 応答。 */
 export interface BrowserTargetsResult {
 	targets: { targetId: string; title: string; url: string }[];
@@ -704,6 +755,11 @@ export class MobileController {
 	/** xlsx の差分(HEAD vs 作業ツリー)をPC側でレンダリングした静的HTMLを取得する。 */
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult> {
 		return this.request<ScmXlsxDiffResult>('scm', { t: 'xlsxDiff', ws, path }, 120_000);
+	}
+
+	/** ccusage 使用量ダッシュボード（PC版フッターの Ccusage と同じ集計データ）。 */
+	usageDashboard(bypassCache?: boolean): Promise<UsageDashboardResult> {
+		return this.request<UsageDashboardResult>('fs', { t: 'usage', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000);
 	}
 
 	// --- browser（para-browser ミラー、設計書 M3） ------------------------------

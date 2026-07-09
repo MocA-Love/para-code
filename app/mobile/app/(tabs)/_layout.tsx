@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
+import { WsDrawerLayout } from '../../src/components/wsDrawer.js';
 import { colors } from '../../src/theme.js';
 
 /**
@@ -25,6 +26,9 @@ export default function TabsLayout() {
 	const badge = pending > 0 ? String(pending) : undefined;
 
 	return (
+		// ワークスペースドロワーはタブバーごと覆う全画面オーバーレイ（X等と同じ）。
+		// ここで1回だけ包み、各画面はuseWsDrawer()経由で開く。
+		<WsDrawerLayout>
 		<NativeTabs
 			blurEffect="systemUltraThinMaterialDark"
 			tintColor={colors.accent}
@@ -55,5 +59,6 @@ export default function TabsLayout() {
 				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="ellipsis-horizontal-outline" />} />
 			</NativeTabs.Trigger>
 		</NativeTabs>
+		</WsDrawerLayout>
 	);
 }

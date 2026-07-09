@@ -32,6 +32,7 @@ import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
 import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
+import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -88,7 +89,8 @@ type FsInbound =
 	| { t: 'media'; id: string; ws: string; path: string }
 	| { t: 'find'; id: string; ws: string; query: string }
 	| { t: 'grep'; id: string; ws: string; query: string }
-	| { t: 'upload'; id: string; name: string; data: string };
+	| { t: 'upload'; id: string; name: string; data: string }
+	| { t: 'usage'; id: string; bypassCache?: boolean };
 
 const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト。FrameMuxのチャンク分割転送で1MiB超の応答も送れる）
 // バイナリ（PDF・Word・画像・動画・音声）の読み取り上限。base64 で約1.37倍に膨らむため、
@@ -172,6 +174,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string }[]) => void,
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
+		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
 	) {
 		super();
 
@@ -698,6 +701,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const target = joinPath(dir, `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext ? `.${ext}` : ''}`);
 				await this.fileService.writeFile(target, content);
 				reply({ t: 'upload', path: target.fsPath });
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
+		// ccusage 使用量ダッシュボード。ワークスペースに紐付かないため、パス解決の前に処理する。
+		if (msg.t === 'usage') {
+			try {
+				const data = await this.fetchUsageDashboard(!!msg.bypassCache);
+				reply({ t: 'usage', data });
 			} catch (err) {
 				reply({ error: String(err) });
 			}

@@ -10,8 +10,7 @@ import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, type AgentChatMessage } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { MarkdownText } from '../../src/components/markdownText.js';
-import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
-import { ScreenTitle } from '../../src/components/screenTitle.js';
+import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { QuestionCard, QuestionGroupCard } from '../../src/components/questionCard.js';
 import { ApprovalCard } from '../../src/components/approvalCard.js';
 import { findLatestApprovalRequest } from '../../src/components/attentionCard.js';
@@ -157,8 +156,7 @@ export default function AgentScreen() {
 		    下パディングが張り付き、復帰時にUIが上へ潰れる（非フォーカスで無効化→復帰時に
 		    クリーンな状態から再計算させる） */}
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} enabled={isFocused}>
-			<ScreenTitle title="エージェント" subtitle="応答待ちの質問・承認をここで完結" />
-			<WsBar />
+			<WsHeader title="エージェント" />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
 				{terminals.map((t, i) => {
 					const active = t.id === activeId;

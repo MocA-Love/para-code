@@ -9,8 +9,7 @@ import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { TermView } from '../../src/components/termView.js';
-import { WsBar, useEffectiveWs } from '../../src/components/wsBar.js';
-import { ScreenTitle } from '../../src/components/screenTitle.js';
+import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
 import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
@@ -102,8 +101,7 @@ export default function TerminalScreen() {
 		    下パディングが張り付き、復帰時にUIが上へ潰れる（非フォーカスで無効化→復帰時に
 		    クリーンな状態から再計算させる） */}
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90} enabled={isFocused}>
-			<ScreenTitle title="ターミナル" />
-			<WsBar />
+			<WsHeader title="ターミナル" />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
 				{terminals.map((t, i) => {
 					const active = t.id === activeId;
