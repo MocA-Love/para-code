@@ -40,10 +40,11 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
  */
 export default function AgentDetailScreen() {
 	const router = useRouter();
-	const { workspace, agentChats, selectedWs, selectedTerminalId, attachAgent, detachAgent, refreshAgent, fsUpload } = useAppStore(useShallow(s => ({
+	const { workspace, agentChats, selectedWs, selectedTerminalId, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
 		selectedTerminalId: s.selectedTerminalId,
-		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent, fsUpload: s.fsUpload,
+		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
+		requestAgentModelCatalog: s.requestAgentModelCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
 	})));
 	const [input, setInput] = useState('');
 	const listRef = useRef<FlatList<ChatRow>>(null);
@@ -288,7 +289,10 @@ export default function AgentDetailScreen() {
 								agent={chat !== undefined && !chat.none ? chat.agent : undefined}
 								model={chat?.info?.model}
 								effort={chat?.info?.effort}
-								onCommand={actions.sendText}
+								modelControl={chat?.modelControl}
+								onClaudeCommand={actions.sendText}
+								onRequestCodexCatalog={() => { if (activeId !== undefined) { requestAgentModelCatalog(activeId); } }}
+								onUpdateCodexSettings={(nextModel, nextEffort) => { if (activeId !== undefined) { updateAgentSettings(activeId, nextModel, nextEffort); } }}
 							/>
 						</>
 					}
