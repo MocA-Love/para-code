@@ -188,12 +188,15 @@ export default function CcusageScreen() {
 							<View style={styles.card}>
 								{models.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
 								{models.map(m => (
-									<View key={m.model} style={styles.barRow}>
-										<Text style={styles.barLabel} numberOfLines={1}>{m.model}</Text>
+									// モデル名は固定幅ラベルだと省略されるため、名前+金額の行とバーの2段組にする
+									<View key={m.model} style={styles.modelRow}>
+										<View style={styles.modelHead}>
+											<Text style={styles.modelName} numberOfLines={1}>{m.model}</Text>
+											<Text style={styles.barValue}>{formatCost(m.cost)}</Text>
+										</View>
 										<View style={styles.barTrack}>
 											<View style={[styles.barFill, { width: `${Math.max(2, (m.cost / maxModelCost) * 100)}%`, backgroundColor: AGENT_COLOR[m.agent] }]} />
 										</View>
-										<Text style={styles.barValue}>{formatCost(m.cost)}</Text>
 									</View>
 								))}
 							</View>
@@ -240,6 +243,9 @@ const styles = StyleSheet.create({
 	kpiSub: { color: colors.textDim, fontSize: 11 },
 	barRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8 },
 	barLabel: { color: colors.text, fontSize: 11.5, width: 72 },
+	modelRow: { paddingVertical: 8, gap: 6 },
+	modelHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+	modelName: { color: colors.text, fontSize: 12, flex: 1 },
 	barTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: colors.surface3, overflow: 'hidden' },
 	barFill: { height: 8, borderRadius: 4 },
 	barValue: { color: colors.textDim, fontSize: 11.5, width: 56, textAlign: 'right' },
