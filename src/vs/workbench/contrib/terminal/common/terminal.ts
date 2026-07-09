@@ -501,6 +501,16 @@ export const enum TerminalCommandId {
 }
 
 export const DEFAULT_COMMANDS_TO_SKIP_SHELL: string[] = [
+	// PARA-PATCH: Control+1..9 must switch Para Code workspaces even when the terminal has focus.
+	'paradis.workspaceSwitch.switchToRepository1',
+	'paradis.workspaceSwitch.switchToRepository2',
+	'paradis.workspaceSwitch.switchToRepository3',
+	'paradis.workspaceSwitch.switchToRepository4',
+	'paradis.workspaceSwitch.switchToRepository5',
+	'paradis.workspaceSwitch.switchToRepository6',
+	'paradis.workspaceSwitch.switchToRepository7',
+	'paradis.workspaceSwitch.switchToRepository8',
+	'paradis.workspaceSwitch.switchToRepository9',
 	TerminalCommandId.ClearSelection,
 	TerminalCommandId.Clear,
 	TerminalCommandId.CopyAndClearSelection,

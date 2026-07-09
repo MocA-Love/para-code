@@ -48,7 +48,7 @@ import { createSimpleKeybinding, KeyCodeChord } from '../../../../../base/common
 import { OperatingSystem } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IContext } from '../../../../../platform/contextkey/common/contextkey.js';
-import { IKeybindingItem, KeybindingsRegistry, KeybindingWeight } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { IKeybindingItem, KeybindingsRegistry } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { KeybindingResolver, ResultKind } from '../../../../../platform/keybinding/common/keybindingResolver.js';
 import { ResolvedKeybindingItem } from '../../../../../platform/keybinding/common/resolvedKeybindingItem.js';
 import { USLayoutResolvedKeybinding } from '../../../../../platform/keybinding/common/usLayoutResolvedKeybinding.js';
@@ -124,7 +124,7 @@ suite('Paradis workspace switch keybindings', () => {
 	test('wins over an existing lower-priority default binding', () => {
 		const competingRegistration = KeybindingsRegistry.registerKeybindingRule({
 			id: competingCommandId,
-			weight: KeybindingWeight.ExternalExtension + 999,
+			weight: Number.MAX_SAFE_INTEGER - 1,
 			primary: KeyMod.CtrlCmd | KeyCode.Digit1,
 			mac: { primary: KeyMod.WinCtrl | KeyCode.Digit1 },
 		});
@@ -193,7 +193,7 @@ Expected: FAIL. The macOS test cannot find a secondary binding and/or sees `Cont
 
 - [ ] **Step 1: Add the shared keybinding descriptor helper**
 
-Create the helper with the complete contents below. The `+ 1000` band is higher than existing built-in and extension default registrations, while user keybindings remain overrides in `WorkbenchKeybindingService`.
+Create the helper with the complete contents below. `Number.MAX_SAFE_INTEGER` wins over every built-in and extension default registration, including extension rules whose weight includes a contribution index, while user keybindings remain overrides in `WorkbenchKeybindingService`.
 
 ```ts
 /*---------------------------------------------------------------------------------------------
@@ -204,9 +204,9 @@ Create the helper with the complete contents below. The `+ 1000` band is higher 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
-import { IKeybindingRule, KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { IKeybindingRule } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 
-const PARADIS_WORKSPACE_SWITCH_KEYBINDING_WEIGHT = KeybindingWeight.ExternalExtension + 1000;
+const PARADIS_WORKSPACE_SWITCH_KEYBINDING_WEIGHT = Number.MAX_SAFE_INTEGER;
 
 export function paradisWorkspaceSwitchKeybinding(index: number): Omit<IKeybindingRule, 'id'> {
 	const digit = KeyCode.Digit0 + index;
@@ -278,7 +278,7 @@ Run:
 rtk npm run test-browser-no-install -- --run src/vs/paradis/contrib/workspaceSwitch/test/browser/paradisWorkspaceSwitchKeybindings.test.ts --browser chromium
 ```
 
-Expected: all 3 tests pass. In particular, pure `Control+1` resolves to `paradis.workspaceSwitch.switchToRepository1` even with the competing default registered at `KeybindingWeight.ExternalExtension + 999`.
+Expected: all 3 tests pass. In particular, pure `Control+1` resolves to `paradis.workspaceSwitch.switchToRepository1` even with the competing default registered at `Number.MAX_SAFE_INTEGER - 1`.
 
 - [ ] **Step 5: Commit the green implementation and test**
 

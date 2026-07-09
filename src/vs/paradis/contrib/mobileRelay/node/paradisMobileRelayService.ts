@@ -10,8 +10,11 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import {
 	MobileIdentity,
 	SecureChannel,
@@ -230,14 +233,23 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	// ファイルI/O・hookバス購読とも shared process 側の仕事なのでここで直接処理する
 	// （browser チャネルと同じ方針。renderer は経由しない）。
 	private readonly agentChat: ParadisMobileAgentChat;
+	/** GUI起動でもcodex CLIを解決できるログインシェル環境。 */
+	private readonly cachedShellEnv: ParadisCachedShellEnv;
 
 	constructor(
 		private readonly userDataPath: string,
 		private readonly encryptionService: IEncryptionService,
 		private readonly cdpFrames: IParadisCdpFrameSubscription | undefined,
 		private readonly logService: ILogService,
+		configurationService?: IConfigurationService,
+		args?: NativeParsedArgs,
 	) {
 		super();
+		this.cachedShellEnv = new ParadisCachedShellEnv(
+			logService,
+			'ParadisMobileRelay',
+			createParadisShellEnvResolver(logService, configurationService, args),
+		);
 		this.statePath = join(this.userDataPath, 'paradis-mobile-relay.json');
 		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), cdpFrames, this.logService));
 		this.agentChat = this._register(new ParadisMobileAgentChat(
@@ -252,6 +264,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// 発火しないことがあるため、こちらが質問通知の主経路。
 			info => this.notifyAgentQuestion(info),
 			this.logService,
+			() => this.cachedShellEnv.getEnv(),
 		));
 		this._register(toDisposable(() => this.disconnect()));
 	}
@@ -595,6 +608,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 */
 	async notifyAgentCliCommand(terminalId: number, cwd: string | undefined): Promise<void> {
 		this.agentChat.onCliCommandDetected(terminalId, cwd);
+	}
+
+	async setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void> {
+		this.agentChat.setCodexDaemonEnabled(options.codexDaemonStreaming === true);
+	}
+
+	async notifyAgentTerminalHint(terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void> {
+		this.agentChat.onTerminalHint(terminalId, hint);
 	}
 
 	/** fsチャネル用: ripgrepによるファイル名検索（rendererはプロセスを起動できないためここで実行）。 */

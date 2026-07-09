@@ -79,6 +79,8 @@ export const IParadisWorktreeService = createDecorator<IParadisWorktreeService>(
 export interface IParadisWorktreeService {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeWorktrees: Event<void>;
+	/** 設定による表示対象外も含め、ディスク上で検出した全worktree。 */
+	getDetectedWorktrees(repositoryId: string): readonly IParadisWorktree[];
 	getWorktrees(repositoryId: string): readonly IParadisWorktree[];
 	/** リポジトリ本体 (main checkout) のブランチ名 (detached HEAD なら短縮SHA)。git 管理外なら undefined */
 	getRepositoryBranch(repositoryId: string): string | undefined;

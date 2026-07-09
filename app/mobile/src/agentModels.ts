@@ -1,10 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 /**
- * エージェントCLI（Claude Code / Codex）の選択可能モデルと、各モデルが対応する
- * reasoning effort の対応表（2026-07調査）。モデル/Effort変更シート（modelPill.tsx）の
- * 選択肢の供給源。変更の適用はPTYへの `/model <id>`・`/effort <level>` 注入で行うため、
- * id はそれぞれのCLIがコマンド引数として受け付ける表記にする。
+ * Claude Codeの選択可能モデルとreasoning effortの対応表。
+ * Codexはapp-serverのmodel/listを正本にして動的取得するため、ここへ固定値を置かない。
  */
 
 export interface AgentModelOption {
@@ -24,20 +22,10 @@ const CLAUDE_MODELS: readonly AgentModelOption[] = [
 	{ id: 'haiku', label: 'Haiku 4.5', aliases: ['claude-haiku-4-5', 'claude-haiku-4-5-20251001'], efforts: ['low', 'medium', 'high'] },
 ];
 
-const CODEX_MODELS: readonly AgentModelOption[] = [
-	{ id: 'gpt-5.5', label: 'GPT-5.5', aliases: [], efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
-	{ id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', aliases: [], efforts: ['none', 'low', 'medium', 'high', 'xhigh'] },
-	{ id: 'gpt-5.4', label: 'GPT-5.4', aliases: [], efforts: ['none', 'low', 'medium', 'high'] },
-	{ id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', aliases: [], efforts: ['none', 'low', 'medium', 'high'] },
-];
-
 /** agent種別（'claude' | 'codex'）に応じたモデル一覧。未知のagentは空配列。 */
 export function agentModelOptions(agent: string | undefined): readonly AgentModelOption[] {
 	if (agent === 'claude') {
 		return CLAUDE_MODELS;
-	}
-	if (agent === 'codex') {
-		return CODEX_MODELS;
 	}
 	return [];
 }

@@ -1,5 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { useEffect, useRef } from 'react';
+import { usePathname } from 'expo-router';
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -7,6 +9,27 @@ import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
 import { WsDrawerLayout } from '../../src/components/wsDrawer.js';
 import { colors } from '../../src/theme.js';
+import { hapticSelection } from '../../src/haptics.js';
+
+/** 下部タブのルートパス集合（タブ間遷移の判定用）。 */
+const TAB_PATHS = new Set(['/', '/index', '/terminal', '/scm', '/files', '/browser']);
+
+/**
+ * タブ切り替えの触覚フィードバック。NativeTabs はOSネイティブのタブバーで
+ * JSのpressイベントを持たないため、パス変化（タブルート間の遷移のみ）で発火させる。
+ * スタック遷移（エージェント詳細・設定等）は各ボタン側のハプティクスが担うため対象外。
+ */
+function useTabSwitchHaptics(): void {
+	const pathname = usePathname();
+	const previousRef = useRef(pathname);
+	useEffect(() => {
+		const previous = previousRef.current;
+		previousRef.current = pathname;
+		if (previous !== pathname && TAB_PATHS.has(previous) && TAB_PATHS.has(pathname)) {
+			hapticSelection();
+		}
+	}, [pathname]);
+}
 
 /**
  * 下部タブ（ホーム/ターミナル/ソース管理/ファイル/ブラウザ）。
@@ -22,6 +45,7 @@ import { colors } from '../../src/theme.js';
  * Android/iOS 18以下では引き続き有効なため、後方互換のため残す。
  */
 export default function TabsLayout() {
+	useTabSwitchHaptics();
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
 	// 応答待ちエージェント数 → ホーム/ターミナルタブのバッジ
 	const pending = (workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length;

@@ -35,7 +35,7 @@ import { IEditorGroupsService } from '../../../../workbench/services/editor/comm
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
-import { paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
+import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
@@ -372,7 +372,7 @@ for (let index = 1; index <= 9; index++) {
 	registerAction2(class extends Action2 {
 		constructor() {
 			super({
-				id: `paradis.workspaceSwitch.switchToRepository${index}`,
+				id: paradisWorkspaceSwitchCommandId(index),
 				title: localize2('paradis.workspaceSwitch.switchToRepositoryN', "Switch to Repository {0}", index),
 				category: CATEGORY,
 				f1: false,

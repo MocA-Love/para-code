@@ -5,7 +5,9 @@
 
 import { deepStrictEqual, strictEqual } from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
+import { hasKey } from '../../../../../base/common/types.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
 import { ICreateTerminalOptions, ITerminalInstance } from '../../browser/terminal.js';
 import { WorkspaceFolderCwdPair, shrinkWorkspaceFolderCwdPairs, splitOrCreateTerminal } from '../../browser/terminalActions.js';
@@ -86,35 +88,33 @@ suite('terminalActions', () => {
 	});
 
 	suite('splitOrCreateTerminal', () => {
-		test('creates a new terminal when no terminal is active', async () => {
+		test('creates a panel terminal when no parent terminal is provided', async () => {
 			const newInstance = { instanceId: 1 } as ITerminalInstance;
 			const calls: (ICreateTerminalOptions | undefined)[] = [];
 
 			await splitOrCreateTerminal({
-				activeInstance: undefined,
 				createAndFocusTerminal: async options => {
 					calls.push(options);
 					return newInstance;
 				}
-			});
+			}, undefined);
 
-			deepStrictEqual(calls, [undefined]);
+			deepStrictEqual(calls, [{ location: TerminalLocation.Panel }]);
 		});
 
-		test('splits the active terminal when one exists', async () => {
-			const activeInstance = { instanceId: 1 } as ITerminalInstance;
+		test('splits the explicitly provided parent terminal', async () => {
+			const parentInstance = { instanceId: 1 } as ITerminalInstance;
 			let options: ICreateTerminalOptions | undefined;
 
 			await splitOrCreateTerminal({
-				activeInstance,
 				createAndFocusTerminal: async value => {
 					options = value;
-					return activeInstance;
+					return parentInstance;
 				}
-			});
+			}, parentInstance);
 
 			const location = options?.location;
-			strictEqual((typeof location === 'object' && location !== null ? location as { splitActiveTerminal?: boolean } : undefined)?.splitActiveTerminal, true);
+			strictEqual((typeof location === 'object' && location !== null && hasKey(location, { parentTerminal: true }) ? location.parentTerminal : undefined), parentInstance);
 		});
 	});
 });

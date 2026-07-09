@@ -18,51 +18,29 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { getResolvedShellEnv } from '../../../../platform/shell/node/shellEnv.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { IParadisAddWorktreeRequest, IParadisGitBranches, IParadisRemoveWorktreeRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
-
-type ShellEnvResolver = () => Promise<NodeJS.ProcessEnv>;
 
 export class ParadisWorktreeGitService {
 
-	private resolvedShellEnvPromise: Promise<NodeJS.ProcessEnv> | undefined;
+	private readonly cachedShellEnv: ParadisCachedShellEnv;
 
 	constructor(
 		private readonly logService: ILogService,
-		private readonly configurationService?: IConfigurationService,
-		private readonly args?: NativeParsedArgs,
+		configurationService?: IConfigurationService,
+		args?: NativeParsedArgs,
 		private readonly execFile: typeof cp.execFile = cp.execFile,
-		private readonly shellEnvResolver?: ShellEnvResolver,
-	) { }
-
-	private getExecEnv(): Promise<NodeJS.ProcessEnv> {
-		if (!this.resolvedShellEnvPromise) {
-			const promise = this.resolveShellEnv()
-				.then(shellEnv => ({ ...process.env, ...shellEnv }))
-				.catch(error => {
-					this.logService.warn(`[ParadisWorktreeGit] failed to resolve shell environment, falling back to inherited PATH: ${error instanceof Error ? error.message : error}`);
-					if (this.resolvedShellEnvPromise === promise) {
-						this.resolvedShellEnvPromise = undefined;
-					}
-					return { ...process.env };
-				});
-			this.resolvedShellEnvPromise = promise;
-		}
-		return this.resolvedShellEnvPromise;
-	}
-
-	private resolveShellEnv(): Promise<NodeJS.ProcessEnv> {
-		if (this.shellEnvResolver) {
-			return this.shellEnvResolver();
-		}
-		if (this.configurationService && this.args) {
-			return getResolvedShellEnv(this.configurationService, this.logService, this.args, process.env);
-		}
-		return Promise.resolve({});
+		shellEnvResolver?: ParadisRawShellEnvResolver,
+	) {
+		this.cachedShellEnv = new ParadisCachedShellEnv(
+			logService,
+			'ParadisWorktreeGit',
+			shellEnvResolver ?? createParadisShellEnvResolver(logService, configurationService, args),
+		);
 	}
 
 	private async exec(args: string[], cwd?: string): Promise<string> {
-		const env = await this.getExecEnv();
+		const env = await this.cachedShellEnv.getEnv();
 		return new Promise<string>((resolve, reject) => {
 			this.execFile('git', args, { cwd, encoding: 'utf8', env: { ...env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
 				if (err) {

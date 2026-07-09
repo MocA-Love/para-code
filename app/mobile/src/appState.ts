@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -57,6 +57,8 @@ interface AppState extends StoreState {
 	attachAgent(id: number): void;
 	detachAgent(id: number): void;
 	refreshAgent(id: number): void;
+	requestAgentModelCatalog(id: number): void;
+	updateAgentSettings(id: number, model: string, effort: string): void;
 	scmStatus(ws: string): Promise<ScmStatusResult>;
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
 	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult>;
@@ -71,6 +73,8 @@ interface AppState extends StoreState {
 	fsFind(ws: string, query: string): Promise<FsFindResult>;
 	fsGrep(ws: string, query: string): Promise<FsGrepResult>;
 	fsUpload(name: string, dataBase64: string): Promise<FsUploadResult>;
+	/** コード断片のシンタックスハイライト（PCの現行テーマ）。 */
+	fsHighlight(text: string, lang?: string): Promise<FsHighlightResult>;
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
 	/** ccusage 使用量ダッシュボード。bypassCache=true で shared process 側の TTL キャッシュを無視して再取得する。 */
 	usageDashboard(bypassCache?: boolean): Promise<UsageDashboardResult>;
@@ -309,6 +313,14 @@ export const useAppStore = create<AppState>(set => ({
 		controller?.refreshAgent(id);
 	},
 
+	requestAgentModelCatalog(id: number) {
+		controller?.requestAgentModelCatalog(id);
+	},
+
+	updateAgentSettings(id: number, model: string, effort: string) {
+		controller?.updateAgentSettings(id, model, effort);
+	},
+
 	setSelectedWs(ws: string) {
 		set({ selectedWs: ws, selectedTerminalId: undefined });
 	},
@@ -394,6 +406,11 @@ export const useAppStore = create<AppState>(set => ({
 	fsUpload(name: string, dataBase64: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.fsUpload(name, dataBase64);
+	},
+
+	fsHighlight(text: string, lang?: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.fsHighlight(text, lang);
 	},
 
 	scmXlsxDiff(ws: string, path: string) {

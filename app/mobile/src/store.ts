@@ -100,6 +100,16 @@ export interface FsGrepResult {
 export interface FsUploadResult {
 	path: string;
 }
+/** fs hl 応答（コード断片のPCテーマハイライト。失敗時は全フィールド欠落＝プレーン表示）。 */
+export interface FsHighlightResult {
+	/** `.monaco-tokenized-source` 形式のHTML（span.mtkN と <br/> のみ）。 */
+	html?: string;
+	/** `.mtkN { color: ... }` のカラーマップCSS。 */
+	css?: string;
+	/** エディタ背景色/前景色。 */
+	bg?: string;
+	fg?: string;
+}
 /** scm xlsxDiff 応答（PC側でレンダリングされたExcel差分の静的HTML）。 */
 export interface ScmXlsxDiffResult {
 	html: string;
@@ -206,6 +216,92 @@ export interface AgentSessionInfo {
 	effort?: string;
 }
 
+/** Codexモデルが広告するreasoning effort 1件。 */
+export interface AgentReasoningEffortOption {
+	value: string;
+	description: string;
+}
+
+/** Codex app-serverのmodel/listから正規化したモデル候補。 */
+export interface AgentModelOption {
+	id: string;
+	model: string;
+	displayName: string;
+	description: string;
+	efforts: AgentReasoningEffortOption[];
+	defaultEffort: string;
+	isDefault: boolean;
+}
+
+/** モデルカタログ取得と次ターン設定変更の状態。 */
+export interface AgentModelControlState {
+	status: 'idle' | 'loading' | 'ready' | 'updating' | 'error';
+	requestId?: string;
+	models: AgentModelOption[];
+	pending?: { model: string; effort: string };
+	errorCode?: string;
+	errorMessage?: string;
+}
+
+/** relay境界では型注釈を信用せず、UIへ渡す動的カタログを上限つきで正規化する。 */
+function parseAgentModelOptions(value: unknown): AgentModelOption[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const models: AgentModelOption[] = [];
+	for (const candidate of value.slice(0, 128)) {
+		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+			continue;
+		}
+		const raw = candidate as Record<string, unknown>;
+		if (typeof raw['id'] !== 'string' || typeof raw['model'] !== 'string' || typeof raw['displayName'] !== 'string'
+			|| typeof raw['defaultEffort'] !== 'string' || !Array.isArray(raw['efforts'])) {
+			continue;
+		}
+		const efforts: AgentReasoningEffortOption[] = [];
+		for (const candidateEffort of raw['efforts'].slice(0, 16)) {
+			if (candidateEffort !== null && typeof candidateEffort === 'object' && !Array.isArray(candidateEffort)) {
+				const effort = candidateEffort as Record<string, unknown>;
+				if (typeof effort['value'] === 'string' && typeof effort['description'] === 'string') {
+					efforts.push({ value: effort['value'].slice(0, 100), description: effort['description'].slice(0, 500) });
+				}
+			}
+		}
+		if (efforts.length === 0) {
+			continue;
+		}
+		const id = raw['id'].slice(0, 500);
+		const model = raw['model'].slice(0, 500);
+		if (models.some(existing => existing.id === id || existing.model === model)) {
+			continue;
+		}
+		models.push({
+			id,
+			model,
+			displayName: raw['displayName'].slice(0, 200),
+			description: typeof raw['description'] === 'string' ? raw['description'].slice(0, 1_000) : '',
+			efforts,
+			defaultEffort: raw['defaultEffort'].slice(0, 100),
+			isDefault: raw['isDefault'] === true,
+		});
+	}
+	return models;
+}
+
+/** transcript確定前の一時的な実行状況（PC側の最新値で置換され、履歴には残らない）。 */
+export interface AgentLiveState {
+	phase: 'thinking' | 'tool' | 'message' | 'permission';
+	source: 'hook' | 'transcript' | 'codex-daemon' | 'pty';
+	startedAt: number;
+	updatedAt: number;
+	tool?: string;
+	detail?: string;
+	text?: string;
+	final?: boolean;
+	elapsedSeconds?: number;
+	tokenCount?: number;
+}
+
 /** ターミナル1つ分のエージェントチャット状態。 */
 export interface AgentChatState {
 	/** 'claude' | 'codex'。 */
@@ -221,6 +317,10 @@ export interface AgentChatState {
 	none?: boolean;
 	/** セッションのメタ情報（model / effort）。 */
 	info?: AgentSessionInfo;
+	/** 生成中本文・実行中ツール等の一時状態。 */
+	live?: AgentLiveState;
+	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
+	modelControl?: AgentModelControlState;
 }
 
 /**
@@ -381,6 +481,8 @@ export class MobileController {
 	 * 再接続時はここに残っている全IDを再attachする。
 	 */
 	private attachedAgents = new Map<number, number>();
+	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
+	private readonly agentControlTimers = new Map<number, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
 
 	constructor(
 		private readonly identity: Identity,
@@ -467,6 +569,10 @@ export class MobileController {
 		this.client = undefined;
 		this.lastCredentials = undefined;
 		this.attachedAgents.clear();
+		for (const pending of this.agentControlTimers.values()) {
+			clearTimeout(pending.timer);
+		}
+		this.agentControlTimers.clear();
 		this.termStreams.clear();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
@@ -638,11 +744,82 @@ export class MobileController {
 		}
 	}
 
+	/** 対象Codexセッションの最新モデルカタログをPCへ要求する。 */
+	requestAgentModelCatalog(id: number): void {
+		const existing = this.state.agentChats.get(id);
+		if (existing === undefined || existing.none || existing.agent !== 'codex'
+			|| existing.modelControl?.status === 'loading' || existing.modelControl?.status === 'updating') {
+			return;
+		}
+		const requestId = `agent-models-${this.requestCounter++}`;
+		this.state.agentChats.set(id, {
+			...existing,
+			modelControl: { status: 'loading', requestId, models: existing.modelControl?.models ?? [] },
+		});
+		this.emit({ agentChats: true });
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'model-catalog', id, requestId })));
+		this.scheduleAgentControlTimeout(id, requestId, 'Codexのモデル一覧取得がタイムアウトしました');
+	}
+
+	/** 検証済みカタログのモデルとEffortを、Codexの次ターン設定へ同時適用する。 */
+	updateAgentSettings(id: number, model: string, effort: string): void {
+		const existing = this.state.agentChats.get(id);
+		if (existing === undefined || existing.none || existing.agent !== 'codex' || existing.modelControl?.status === 'updating') {
+			return;
+		}
+		const selected = existing.modelControl?.models.find(option => option.model === model);
+		if (selected === undefined || !selected.efforts.some(option => option.value === effort)) {
+			return;
+		}
+		const requestId = `agent-settings-${this.requestCounter++}`;
+		this.state.agentChats.set(id, {
+			...existing,
+			modelControl: {
+				status: 'updating', requestId, models: existing.modelControl?.models ?? [],
+				pending: { model, effort },
+			},
+		});
+		this.emit({ agentChats: true });
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'settings-update', id, requestId, model, effort })));
+		this.scheduleAgentControlTimeout(id, requestId, 'Codexの設定変更がタイムアウトしました');
+	}
+
+	private scheduleAgentControlTimeout(id: number, requestId: string, message: string): void {
+		this.clearAgentControlTimeout(id);
+		const timer = setTimeout(() => {
+			const existing = this.state.agentChats.get(id);
+			if (existing?.modelControl?.requestId === requestId) {
+				this.state.agentChats.set(id, {
+					...existing,
+					modelControl: { status: 'error', models: existing.modelControl.models, errorCode: 'timeout', errorMessage: message },
+				});
+				this.emit({ agentChats: true });
+			}
+			this.agentControlTimers.delete(id);
+		}, 30_000);
+		this.agentControlTimers.set(id, { requestId, timer });
+	}
+
+	private clearAgentControlTimeout(id: number, requestId?: string): void {
+		const pending = this.agentControlTimers.get(id);
+		if (pending !== undefined && (requestId === undefined || pending.requestId === requestId)) {
+			clearTimeout(pending.timer);
+			this.agentControlTimers.delete(id);
+		}
+	}
+
 	private sendAgentAttach(id: number): void {
 		// 手元に同ターミナルの受信済み状態があれば epoch/afterRev を申告して差分だけ受け取る。
+		// afterRev は「最後に受信したメッセージの rev」を申告する。PC側の rev フィールドは
+		// 「次に採番される値」（最後のメッセージ+1）で、PC側の差分フィルタは m.rev > afterRev の
+		// ため、これをそのまま送ると切断中に届いた最初のメッセージ (rev = afterRev) が毎回
+		// 除外されてしまう（バックグラウンド復帰のたびにPCで打ったプロンプトが1件消えるバグ）。
 		const existing = this.state.agentChats.get(id);
-		const body = existing !== undefined && !existing.none
-			? { t: 'attach', id, epoch: existing.epoch, afterRev: existing.rev }
+		const lastMessageRev = existing !== undefined
+			? existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1
+			: undefined;
+		const body = existing !== undefined && !existing.none && lastMessageRev !== undefined
+			? { t: 'attach', id, epoch: existing.epoch, afterRev: lastMessageRev }
 			: { t: 'attach', id };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
 	}
@@ -765,9 +942,23 @@ export class MobileController {
 		return this.request<ScmXlsxDiffResult>('scm', { t: 'xlsxDiff', ws, path }, 120_000);
 	}
 
+	/** コード断片のシンタックスハイライト（PCの現行テーマ。エージェントチャットのコードブロック用）。 */
+	fsHighlight(text: string, lang?: string): Promise<FsHighlightResult> {
+		return this.request<FsHighlightResult>('fs', { t: 'hl', text, ...(lang !== undefined && lang.length > 0 ? { lang } : {}) }, 15_000);
+	}
+
 	/** ccusage 使用量ダッシュボード（PC版フッターの Ccusage と同じ集計データ）。 */
 	usageDashboard(bypassCache?: boolean): Promise<UsageDashboardResult> {
-		return this.request<UsageDashboardResult>('fs', { t: 'usage', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000);
+		// PC側は他のfs応答と違い結果を data フィールドにネストして返す（reply({ t: 'usage', data })）。
+		// 応答オブジェクトをそのまま結果として扱うと days/failedReports が undefined になり
+		// 画面側の参照でクラッシュするため、ここで必ず剥がす。
+		return this.request<{ data?: UsageDashboardResult }>('fs', { t: 'usage', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+			.then(response => {
+				if (!response.data) {
+					throw new Error('empty usage response');
+				}
+				return response.data;
+			});
 	}
 
 	// --- browser（para-browser ミラー、設計書 M3） ------------------------------
@@ -1042,17 +1233,23 @@ export class MobileController {
 		try {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; agent?: string; epoch?: string; rev?: number;
-				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo;
+				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null;
+				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
 			}
 			if (msg.t === 'none') {
+				this.clearAgentControlTimeout(msg.id);
 				this.state.agentChats.set(msg.id, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
 				this.emit({ agentChats: true });
 				return;
 			}
 			if (msg.t === 'snapshot') {
+				const previous = this.state.agentChats.get(msg.id);
+				if (previous?.epoch !== msg.epoch) {
+					this.clearAgentControlTimeout(msg.id);
+				}
 				this.state.agentChats.set(msg.id, {
 					agent: msg.agent ?? 'claude',
 					epoch: msg.epoch ?? '',
@@ -1060,6 +1257,8 @@ export class MobileController {
 					messages: msg.messages ?? [],
 					truncated: msg.truncated === true,
 					...(msg.info !== undefined ? { info: msg.info } : {}),
+					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
+					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
 				});
 				this.emit({ agentChats: true });
 				return;
@@ -1073,14 +1272,91 @@ export class MobileController {
 					}
 					return;
 				}
+				// rev の飛び（リレーのフレーム落ち等）を検出したら、黙って継ぎ足さず差分を
+				// 取り直す（sendAgentAttach が afterRev 付きで欠落分から再取得する）。
+				const incoming = msg.messages ?? [];
+				const lastKnownRev = existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1;
+				const minIncomingRev = incoming.length > 0 ? Math.min(...incoming.map(m => m.rev)) : undefined;
+				if (minIncomingRev !== undefined && minIncomingRev > lastKnownRev + 1) {
+					if (this.attachedAgents.has(msg.id)) {
+						this.sendAgentAttach(msg.id);
+					}
+					return;
+				}
 				// 重複revは捨てる（再attach応答と押し出しdeltaの競合対策）。
-				const fresh = (msg.messages ?? []).filter(m => !existing.messages.some(e => e.rev === m.rev));
+				const fresh = incoming.filter(m => !existing.messages.some(e => e.rev === m.rev));
+				const base = msg.live === null
+					? (({ live: _live, ...rest }) => rest)(existing)
+					: existing;
 				this.state.agentChats.set(msg.id, {
-					...existing,
+					...base,
 					rev: msg.rev ?? existing.rev,
 					messages: [...existing.messages, ...fresh].slice(-500),
 					...(msg.info !== undefined ? { info: msg.info } : {}),
+					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 				});
+				this.emit({ agentChats: true });
+				return;
+			}
+			if (msg.t === 'model-catalog' && typeof msg.requestId === 'string' && Array.isArray(msg.models)) {
+				const existing = this.state.agentChats.get(msg.id);
+				if (existing?.modelControl?.requestId !== msg.requestId) {
+					return;
+				}
+				const models = parseAgentModelOptions(msg.models);
+				this.clearAgentControlTimeout(msg.id, msg.requestId);
+				this.state.agentChats.set(msg.id, {
+					...existing,
+					modelControl: models.length > 0
+						? { status: 'ready', models }
+						: { status: 'error', models: [], errorCode: 'invalid-response', errorMessage: 'Codexのモデル一覧レスポンスが不正です' },
+				});
+				this.emit({ agentChats: true });
+				return;
+			}
+			if (msg.t === 'model-control-error' && typeof msg.requestId === 'string') {
+				const existing = this.state.agentChats.get(msg.id);
+				if (existing?.modelControl?.requestId !== msg.requestId) {
+					return;
+				}
+				this.clearAgentControlTimeout(msg.id, msg.requestId);
+				this.state.agentChats.set(msg.id, {
+					...existing,
+					modelControl: {
+						status: 'error', models: existing.modelControl.models,
+						errorCode: msg.code ?? 'unavailable', errorMessage: msg.message ?? 'モデル一覧を取得できませんでした',
+					},
+				});
+				this.emit({ agentChats: true });
+				return;
+			}
+			if (msg.t === 'settings-update' && typeof msg.requestId === 'string') {
+				const existing = this.state.agentChats.get(msg.id);
+				if (existing?.modelControl?.requestId !== msg.requestId) {
+					return;
+				}
+				if (msg.status === 'pending') {
+					return; // 送信時点ですでにupdatingへ遷移済み
+				}
+				if (msg.status !== 'confirmed' && msg.status !== 'failed') {
+					return;
+				}
+				this.clearAgentControlTimeout(msg.id, msg.requestId);
+				if (msg.status === 'confirmed') {
+					this.state.agentChats.set(msg.id, {
+						...existing,
+						...(msg.info !== undefined ? { info: msg.info } : {}),
+						modelControl: { status: 'ready', models: existing.modelControl.models },
+					});
+				} else if (msg.status === 'failed') {
+					this.state.agentChats.set(msg.id, {
+						...existing,
+						modelControl: {
+							status: 'error', models: existing.modelControl.models,
+							errorCode: msg.code ?? 'unavailable', errorMessage: msg.message ?? '設定を更新できませんでした',
+						},
+					});
+				}
 				this.emit({ agentChats: true });
 			}
 		} catch { /* ignore */ }

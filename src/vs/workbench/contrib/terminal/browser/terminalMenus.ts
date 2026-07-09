@@ -17,7 +17,7 @@ import { TerminalCommandId, TERMINAL_VIEW_ID } from '../common/terminal.js';
 import { TerminalContextKeys, TerminalContextKeyStrings } from '../common/terminalContextKey.js';
 import { terminalStrings } from '../common/terminalStrings.js';
 import { ACTIVE_GROUP, AUX_WINDOW_GROUP, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
-import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { HasSpeechProvider } from '../../speech/common/speechService.js';
 import { hasKey } from '../../../../base/common/types.js';
 import { TerminalContribContextKeyStrings } from '../terminalContribExports.js';
@@ -38,8 +38,8 @@ export const enum TerminalMenuBarGroup {
 	Configure = '7_configure'
 }
 
-export function setupTerminalMenus(): IDisposable {
-	const disposables = new DisposableStore();
+/** Register terminal menus into a store owned by the workbench contribution or test suite. */
+export function setupTerminalMenus(disposables: Pick<DisposableStore, 'add'>): void {
 
 	disposables.add(MenuRegistry.appendMenuItems(
 		[
@@ -824,7 +824,6 @@ export function setupTerminalMenus(): IDisposable {
 		}));
 	}
 
-	return disposables;
 }
 
 export function getTerminalActionBarArgs(location: ITerminalLocationOptions, profiles: ITerminalProfile[], defaultProfileName: string, contributedProfiles: readonly IExtensionTerminalProfile[], terminalService: ITerminalService, dropdownMenu: IMenu, disposableStore: DisposableStore): {

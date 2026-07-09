@@ -89,11 +89,14 @@ export interface WorkspaceFolderCwdPair {
 	isOverridden: boolean;
 }
 
-export async function splitOrCreateTerminal(terminalService: Pick<ITerminalService, 'activeInstance' | 'createAndFocusTerminal'>): Promise<ITerminalInstance | undefined> {
-	if (terminalService.activeInstance) {
-		return terminalService.createAndFocusTerminal({ location: { splitActiveTerminal: true } });
+export async function splitOrCreateTerminal(
+	terminalService: Pick<ITerminalService, 'createAndFocusTerminal'>,
+	parentTerminal: ITerminalInstance | undefined,
+): Promise<ITerminalInstance | undefined> {
+	if (parentTerminal) {
+		return terminalService.createAndFocusTerminal({ location: { parentTerminal } });
 	}
-	return terminalService.createAndFocusTerminal();
+	return terminalService.createAndFocusTerminal({ location: TerminalLocation.Panel });
 }
 
 export async function getCwdForSplit(
@@ -1095,8 +1098,9 @@ export function registerTerminalActions() {
 		precondition: ContextKeyExpr.or(TerminalContextKeys.processSupported, TerminalContextKeys.webExtensionContributedProfile),
 		icon: Codicon.splitHorizontal,
 		f1: false,
-		run: async c => {
-			await splitOrCreateTerminal(c.service);
+		run: async (c, accessor, args) => {
+			const contextualInstance = getSelectedViewInstances2(accessor, args)?.[0];
+			await splitOrCreateTerminal(c.service, contextualInstance ?? c.groupService.activeInstance);
 		}
 	});
 

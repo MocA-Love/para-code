@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { localize, localize2 } from '../../../../nls.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -20,7 +20,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -34,12 +34,14 @@ import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspa
 import {
 	IParadisMobileRelayService,
 	IParadisMobileStatus,
+	PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY,
 	PARADIS_MOBILE_ENABLED_KEY,
 	PARADIS_MOBILE_RELAY_CHANNEL,
 	PARADIS_MOBILE_RELAY_URL_KEY,
 } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
+import { ParadisAgentTerminalHintParser } from './paradisAgentTerminalHints.js';
 import { Channels } from '../common/paradisMobileProtocol.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 
@@ -64,6 +66,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private readonly service: IParadisMobileRelayService;
 	private readonly provider: ParadisMobileWorkspaceProvider;
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	private readonly terminalHintListeners = this._register(new DisposableMap<number>());
+	private readonly terminalHintParsers = new Map<number, ParadisAgentTerminalHintParser>();
 	private previousOnlineMobiles = 0;
 
 	constructor(
@@ -139,6 +143,17 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			this.service.notifyAgentCliCommand(instance.instanceId, cwd).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed', err));
 		}));
 
+		// Omnara旧実装で実績のあるPTY文字列ヒューリスティックは、状態判定には使わず
+		// hook/transcriptで確定したティッカーの経過時間・token数を補う用途だけに限定する。
+		for (const instance of terminalService.instances) {
+			this.trackTerminalHints(instance);
+		}
+		this._register(terminalService.onDidCreateInstance(instance => this.trackTerminalHints(instance)));
+		this._register(terminalService.onDidDisposeInstance(instance => {
+			this.terminalHintListeners.deleteAndDispose(instance.instanceId);
+			this.terminalHintParsers.delete(instance.instanceId);
+		}));
+
 		// WebRTCミラーのストリーマ（browser チャネルの webrtc-* シグナリングを処理）。
 		const webrtcStreamer = this._register(new ParadisMobileWebrtcStreamer(
 			frame => { this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload).catch(err => this.logService.warn('[paradisMobileRelay] webrtc sendFrame failed', err)); },
@@ -181,9 +196,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_MOBILE_ENABLED_KEY)) {
 				this.service.setEnabled(this.isEnabled()).catch(err => this.logService.warn('[paradisMobileRelay] setEnabled failed', err));
+				this.syncAgentLiveOptions();
 				// 有効/無効の切り替えは shared process の状態変化を待たずに即座に表示へ反映する
 				// （無効化直後の項目消去・有効化直後の項目表示を確実にするため）。
 				this.service.getStatus().then(status => this.renderStatusbar(status)).catch(() => { /* ignore */ });
+			}
+			if (e.affectsConfiguration(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY)) {
+				this.syncAgentLiveOptions();
 			}
 		}));
 
@@ -194,9 +213,33 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		return this.configurationService.getValue<boolean>(PARADIS_MOBILE_ENABLED_KEY) === true;
 	}
 
+	private syncAgentLiveOptions(): void {
+		const codexDaemonStreaming = this.isEnabled()
+			&& this.configurationService.getValue<boolean>(PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY) === true;
+		this.service.setAgentLiveOptions({ codexDaemonStreaming }).catch(err => this.logService.warn('[paradisMobileRelay] setAgentLiveOptions failed', err));
+	}
+
+	private trackTerminalHints(instance: ITerminalInstance): void {
+		if (this.terminalHintListeners.has(instance.instanceId)) {
+			return;
+		}
+		const parser = new ParadisAgentTerminalHintParser();
+		this.terminalHintParsers.set(instance.instanceId, parser);
+		this.terminalHintListeners.set(instance.instanceId, instance.onData(data => {
+			if (!this.isEnabled()) {
+				return;
+			}
+			const hint = parser.accept(data);
+			if (hint !== undefined) {
+				this.service.notifyAgentTerminalHint(instance.instanceId, hint).catch(err => this.logService.trace('[paradisMobileRelay] terminal hint failed', String(err)));
+			}
+		}));
+	}
+
 	private async initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> {
 		try {
 			await this.service.initialize(enabled, relayUrl);
+			this.syncAgentLiveOptions();
 			// オンラインになったら状態を1回 push。
 			this.provider.pushState();
 			// 初期化完了時点の状態でステータスバーを描き直す。onDidChangeStatus は状態が

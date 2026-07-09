@@ -18,6 +18,7 @@ import './media/paradisCreateWorktreeDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { raceTimeout } from '../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -27,6 +28,7 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
@@ -41,8 +43,9 @@ import {
 	PARADIS_WORKTREE_GIT_CHANNEL,
 	paradisBuildAgentCommand,
 	paradisBuildWorktreeNames,
+	paradisDeduplicateBranchName,
+	paradisDeduplicateWorktreeDirName,
 	paradisSanitizeBranchName,
-	paradisSanitizeWorktreeDirName,
 	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
 
@@ -78,7 +81,6 @@ const STR_NAMING = localize('paradis.createWorktree.naming', "ブランチ名を
 const STR_NO_BRANCHES = localize('paradis.createWorktree.noBranches', "ブランチを取得できませんでした");
 // allow-any-unicode-next-line
 const STR_AUTO = localize('paradis.createWorktree.autoName', "(自動生成)");
-
 /** LLM 命名の待ち時間上限。Superset の 5 秒に合わせつつ余裕を持たせる。 */
 const NAMING_TIMEOUT_MS = 8000;
 
@@ -93,6 +95,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		accessor.get(IEditorGroupsService),
 		accessor.get(ILanguageModelsService),
 		accessor.get(ILogService),
+		accessor.get(INotificationService),
 		accessor.get(IInstantiationService),
 		preselectedRepositoryId,
 	);
@@ -129,6 +132,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly editorGroupsService: IEditorGroupsService,
 		private readonly languageModelsService: ILanguageModelsService,
 		private readonly logService: ILogService,
+		private readonly notificationService: INotificationService,
 		private readonly instantiationService: IInstantiationService,
 		preselectedRepositoryId: string | undefined,
 	) {
@@ -165,7 +169,9 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private get _agents(): readonly IParadisAgentCommandTemplate[] {
 		const configured = this.configurationService.getValue<IParadisAgentCommandTemplate[]>('paradis.workspaceSwitch.agents');
 		if (Array.isArray(configured) && configured.length > 0) {
-			return configured.filter(agent => agent && typeof agent.id === 'string' && typeof agent.command === 'string');
+			// 'none' は「実行しない」を表す予約識別子（_agentSelect の固定オプション）のため、
+			// 設定で誤って同じ id が指定されても既定端末とエージェント端末の二重起動を避けるため除外する
+			return configured.filter(agent => agent && typeof agent.id === 'string' && agent.id !== 'none' && typeof agent.command === 'string');
 		}
 		return PARADIS_DEFAULT_AGENT_COMMANDS;
 	}
@@ -303,8 +309,11 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			this._pathPreview.textContent = '';
 			return;
 		}
-		const dirName = paradisSanitizeWorktreeDirName(this._branchInput.value)
-			?? STR_AUTO;
+		const branch = paradisSanitizeBranchName(this._branchInput.value);
+		const existingDirNames = this.worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
+		const dirName = branch
+			? paradisDeduplicateWorktreeDirName(branch, this._branches?.branches ?? [], existingDirNames)
+			: STR_AUTO;
 		this._pathPreview.textContent = this._computeWorktreeUri(repository, dirName).fsPath;
 	}
 
@@ -360,21 +369,6 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		return `para-${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
 	}
 
-	/** 既存ブランチと重複しない名前にする。 */
-	private _deduplicateBranch(branch: string): string {
-		const existing = new Set(this._branches?.branches ?? []);
-		if (!existing.has(branch)) {
-			return branch;
-		}
-		for (let suffix = 2; suffix < 100; suffix++) {
-			const candidate = `${branch}-${suffix}`;
-			if (!existing.has(candidate)) {
-				return candidate;
-			}
-		}
-		return `${branch}-${Date.now() % 10000}`;
-	}
-
 	private async _doCreate(): Promise<void> {
 		if (this._busy) {
 			return;
@@ -388,6 +382,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 		const prompt = this._promptInput.value.trim();
 		const agentId = this._agentSelect.value;
+		let worktreeCreated = false;
 
 		try {
 			// 1. ブランチ名の決定（手入力 > LLM > フォールバック）
@@ -399,11 +394,12 @@ class ParadisCreateWorktreeDialog extends Disposable {
 				}
 				branch = branch ?? this._fallbackBranchName();
 			}
-			branch = this._deduplicateBranch(branch);
+			branch = paradisDeduplicateBranchName(branch, this._branches?.branches ?? []);
 
 			// 2. worktree 作成
 			this._setBusy(true, STR_CREATING);
-			const { displayName, dirName } = paradisBuildWorktreeNames(this._nameInput.value, branch);
+			const existingDirNames = this.worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
+			const { displayName, dirName } = paradisBuildWorktreeNames(this._nameInput.value, branch, this._branches?.branches ?? [], existingDirNames);
 			const worktreeUri = this._computeWorktreeUri(repository, dirName);
 			await this.sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('addWorktree', [{
 				repoPath: repository.uri.fsPath,
@@ -411,6 +407,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 				newBranch: branch,
 				baseRef,
 			}]);
+			worktreeCreated = true;
 
 			this.worktreeService.addKnownWorktree({
 				repositoryId: repository.id,
@@ -429,13 +426,16 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 			// 4. 自動実行プリセット（.paracode.json / ユーザー設定の autoRun）を先に起動する
 			//    （dev サーバー等の下準備 → エージェント、の順。失敗しても作成自体は成功扱い）
+			let autoRunExecuted = false;
 			try {
-				await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath);
+				autoRunExecuted = await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath);
 			} catch (error) {
 				this.logService.warn('[ParadisCreateWorktree] auto-run presets failed', error);
 			}
 
-			if (paradisShouldCreateDefaultTerminal(agentId, prompt)) {
+			// 4.5. エージェントも自動実行プリセットも何も起動しない場合のみ、既定のターミナルを開く
+			//    (autoRun プリセットがフォーカスした端末からフォーカスを奪わないようにする)
+			if (!autoRunExecuted && paradisShouldCreateDefaultTerminal(agentId, prompt)) {
 				const instance = await this.terminalService.createTerminal({
 					cwd: worktreeUri,
 					location: TerminalLocation.Panel,
@@ -459,6 +459,12 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			this.dispose();
 		} catch (error) {
 			this.logService.error('[ParadisCreateWorktree] failed', error);
+			if (worktreeCreated) {
+				// allow-any-unicode-next-line
+				this.notificationService.error(localize('paradis.createWorktree.createdWithError', "worktree は作成されましたが、その後のセットアップに失敗しました: {0}", toErrorMessage(error)));
+				this.dispose();
+				return;
+			}
 			this._setBusy(false);
 			this._showError(error);
 		}
