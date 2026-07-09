@@ -43,7 +43,7 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 			<View style={styles.tools}>
 				<View style={styles.toolsLeft}>{tools}</View>
 				<Pressable
-					style={[styles.sendBtn, sendDisabled && styles.sendBtnDisabled]}
+					style={({ pressed }) => [styles.sendBtn, sendDisabled && styles.sendBtnDisabled, pressed && styles.sendBtnPressed]}
 					onPress={onSubmit}
 					disabled={sendDisabled}
 					accessibilityLabel="送信"
@@ -68,4 +68,5 @@ const styles = StyleSheet.create({
 	toolsLeft: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 8 },
 	sendBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.accent2, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 	sendBtnDisabled: { backgroundColor: colors.surface3 },
+	sendBtnPressed: { opacity: 0.6 },
 });

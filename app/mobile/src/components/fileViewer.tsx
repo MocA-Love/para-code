@@ -384,6 +384,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 			originWhitelist={['*']}
 			allowingReadAccessToURL={uri}
 			javaScriptEnabled={false}
+			opaque={false}
 		/>
 	);
 }
@@ -484,6 +485,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						source={{ html }}
 						originWhitelist={['*']}
 						javaScriptEnabled={allowJs}
+						opaque={false}
 					/>
 				) : (
 					<View style={styles.loadingBox}>
@@ -506,7 +508,9 @@ const styles = StyleSheet.create({
 	segmentText: { color: colors.textDim, fontSize: 12 },
 	segmentTextActive: { color: colors.text, fontWeight: '600' },
 	truncated: { color: colors.yellow, fontSize: 10, paddingHorizontal: 16, paddingVertical: 4 },
-	web: { flex: 1 },
+	// WKWebView は初回ペイント前の既定背景が不透明白のため、開いた瞬間に白フラッシュする。
+	// opaque={false}（Androidでは無視される）とこの背景色で初回ペイント前もダーク面が見えるようにする。
+	web: { flex: 1, backgroundColor: colors.bg },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 24 },
 	loadingBox: { alignItems: 'center', gap: 8, marginTop: 24 },
 	sheetBar: { flexGrow: 0, flexShrink: 0, backgroundColor: colors.surface, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
