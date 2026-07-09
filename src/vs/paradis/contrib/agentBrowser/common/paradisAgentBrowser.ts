@@ -234,7 +234,6 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 			return message !== undefined && /permission/i.test(message) ? 'permission' : undefined;
 		// 要対応系: 許可要求・ユーザー入力要求
 		case 'PermissionRequest':
-		case 'PreToolUse':
 		case 'exec_approval_request':
 		case 'apply_patch_approval_request':
 		case 'request_user_input':
@@ -245,6 +244,7 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		// ターンは継続中」(Claude Code) なので実行中扱い (permission の解除にも効く)。
 		case 'SessionStart':
 		case 'UserPromptSubmit':
+		case 'PreToolUse':
 		case 'PostToolUse':
 		case 'PostToolUseFailure':
 		case 'PermissionDenied':
