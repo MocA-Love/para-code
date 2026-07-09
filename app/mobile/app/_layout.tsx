@@ -104,6 +104,8 @@ export default function RootLayout() {
 					<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
 						<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
 						<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
+						{/* エージェント詳細。ホームの一覧・通知タップから開く（旧エージェントタブの後継） */}
+						<Stack.Screen name="agent" options={{ headerShown: false }} />
 						{/* 通知一覧。ベルからのズーム遷移（Link.AppleZoom）で開くため独自ヘッダーを使う */}
 						<Stack.Screen name="notifications" options={{ headerShown: false }} />
 						{/* 設定。ワークスペースドロワーの設定アイコンから開く */}

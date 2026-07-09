@@ -2,55 +2,70 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useIsFocused } from 'expo-router';
+import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../../src/appState.js';
-import { isAgentWaiting, type AgentChatMessage } from '../../src/store.js';
-import { ConnectionGate } from '../../src/components/connectionGate.js';
-import { MarkdownText } from '../../src/components/markdownText.js';
-import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
-import { QuestionCard, QuestionGroupCard } from '../../src/components/questionCard.js';
-import { ApprovalCard } from '../../src/components/approvalCard.js';
-import { findLatestApprovalRequest } from '../../src/components/attentionCard.js';
-import { GlassComposer } from '../../src/components/glassComposer.js';
-import { ModelPill } from '../../src/components/modelPill.js';
-import { useAgentActions } from '../../src/hooks/useAgentActions.js';
-import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
-import { useStableInsets } from '../../src/hooks/useStableInsets.js';
-import { colors } from '../../src/theme.js';
+import { useAppStore } from '../src/appState.js';
+import { isAgentWaiting, type AgentChatMessage } from '../src/store.js';
+import { ConnectionGate } from '../src/components/connectionGate.js';
+import { MarkdownText } from '../src/components/markdownText.js';
+import { GlassSurface } from '../src/components/glassSurface.js';
+import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.js';
+import { ApprovalCard } from '../src/components/approvalCard.js';
+import { findLatestApprovalRequest } from '../src/components/attentionCard.js';
+import { GlassComposer } from '../src/components/glassComposer.js';
+import { ModelPill } from '../src/components/modelPill.js';
+import { wsColor } from '../src/components/wsDrawer.js';
+import { useAgentActions } from '../src/hooks/useAgentActions.js';
+import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
+import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { colors } from '../src/theme.js';
+import { hapticSelection } from '../src/haptics.js';
 
 /**
- * エージェント画面。PCのターミナルでTUIとして動いているClaude Code / Codexの会話を、
- * transcriptミラー（agentチャネル）でチャット表示する。PC側のTUIはそのまま。
+ * エージェント詳細画面。ホームの一覧（または通知）から1エージェントを選んで開く
+ * スタック画面（旧: (tabs)/agent.tsx のタブ。ホーム＝一覧、ここ＝詳細に再編し、
+ * タブ内のターミナル切り替えチップ・モデル表示行を廃止した。モデル/Effortは
+ * コンポーザーのModelPillで確認できる）。ルートパスは旧タブと同じ /agent のため、
+ * 通知ディープリンク等の既存遷移はそのまま動く。
  *
+ * PCのターミナルでTUIとして動いているClaude Code / Codexの会話を、
+ * transcriptミラー（agentチャネル）でチャット表示する。PC側のTUIはそのまま。
  * 入力・承認応答は既存のtermチャネル（PTY stdin注入）で行う:
  *  - テキスト送信: そのままTUIの入力欄に入り、Enterで確定
  *  - 承認（Claude）: 選択肢番号を送って250ms後にCR（TUIが番号を処理してから確定する必要がある）
  *  - 承認（Codex）: y / d / a のショートカット1文字（Enter不要）
  * 詳細は memory/mobile-agent-gui-research.md の調査結果を参照。
  */
-export default function AgentScreen() {
-	const ws = useEffectiveWs();
-	const { workspace, agentChats, selectedTerminalId, setSelectedTerminalId, attachAgent, detachAgent, refreshAgent, fsUpload } = useAppStore(useShallow(s => ({
-		workspace: s.workspace, agentChats: s.agentChats,
-		selectedTerminalId: s.selectedTerminalId, setSelectedTerminalId: s.setSelectedTerminalId,
+export default function AgentDetailScreen() {
+	const router = useRouter();
+	const { workspace, agentChats, selectedWs, selectedTerminalId, attachAgent, detachAgent, refreshAgent, fsUpload } = useAppStore(useShallow(s => ({
+		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
+		selectedTerminalId: s.selectedTerminalId,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent, fsUpload: s.fsUpload,
 	})));
 	const [input, setInput] = useState('');
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
-	const isFocused = useIsFocused();
 
-	const terminals = (workspace?.terminals ?? []).filter(t =>
-		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
-	const activeTerminal = (selectedTerminalId !== undefined ? terminals.find(t => t.id === selectedTerminalId) : undefined) ?? terminals[0];
+	// 表示対象: selectedTerminalId（ホーム/通知が遷移前に設定する）。無ければ選択中ws
+	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
+	const allTerminals = workspace?.terminals ?? [];
+	const wsList = workspace?.workspaces ?? [];
+	const effectiveWsId = (selectedWs !== undefined && wsList.some(w => w.id === selectedWs) ? selectedWs : wsList[0]?.id);
+	const activeTerminal = (selectedTerminalId !== undefined ? allTerminals.find(t => t.id === selectedTerminalId) : undefined)
+		?? allTerminals.find(t => (t.ws ?? workspace?.activeWs) === effectiveWsId);
 	const activeId = activeTerminal?.id;
 	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
 	const permissionPending = activeTerminal?.agentStatus === 'permission';
 	const actions = useAgentActions(activeId, chat?.agent);
+
+	// ヘッダー表示用: このターミナルの所属ワークスペース
+	const agentWs = activeTerminal !== undefined
+		? wsList.find(w => w.id === (activeTerminal.ws ?? workspace?.activeWs))
+		: undefined;
 
 	// CLI版のUXに合わせ、本文(text)以外の連続する thinking / tool_use / tool_result を
 	// 1つの「アクティビティ」行へ集約する（デフォルト折りたたみ、タップで展開）。
@@ -152,34 +167,24 @@ export default function AgentScreen() {
 
 	return (
 		<ConnectionGate>
-		{/* enabled={isFocused}: NativeTabsの画面凍結中に keyboardWillHide を取り逃すと
-		    下パディングが張り付き、復帰時にUIが上へ潰れる（非フォーカスで無効化→復帰時に
-		    クリーンな状態から再計算させる） */}
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} enabled={isFocused}>
-			<WsHeader title="エージェント" />
-			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
-				{terminals.map((t, i) => {
-					const active = t.id === activeId;
-					return (
-						<Pressable key={t.id} style={[styles.tabChip, active && styles.tabChipActive]} onPress={() => setSelectedTerminalId(t.id)}>
-							{isAgentWaiting(t.agentStatus)
-								? <View style={styles.dotRed} />
-								: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
-							<Text style={[styles.tabText, active && styles.tabTextActive]} numberOfLines={1}>{i + 1}: {t.title}</Text>
-						</Pressable>
-					);
-				})}
-				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
-			</ScrollView>
-
-			{chat !== undefined && !chat.none && (chat.agent || chat.info) ? (
-				<View style={styles.metaRow}>
-					<Ionicons name="hardware-chip-outline" size={11} color={colors.textDim} />
-					<Text style={styles.metaText} numberOfLines={1}>
-						{[chat.info?.model ?? chat.agent, chat.info?.effort ? `effort: ${chat.info.effort}` : undefined].filter(Boolean).join(' ・ ')}
-					</Text>
+		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+			{/* 独自ヘッダー: 戻る（Liquid Glass）＋ターミナルタイトル＋ワークスペース */}
+			<View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+				<Pressable onPress={() => { hapticSelection(); router.back(); }} accessibilityLabel="戻る">
+					<GlassSurface style={styles.backBtn} interactive>
+						<Ionicons name="chevron-back" size={20} color={colors.text} />
+					</GlassSurface>
+				</Pressable>
+				<View style={styles.headerBody}>
+					<Text style={styles.headerTitle} numberOfLines={1}>{activeTerminal?.title ?? 'エージェント'}</Text>
+					{agentWs !== undefined ? (
+						<Text style={styles.headerSub} numberOfLines={1}>
+							<Text style={{ color: wsColor(agentWs) }}>{agentWs.name}</Text>
+							{agentWs.branch ? ` · ${agentWs.branch}` : ''}
+						</Text>
+					) : null}
 				</View>
-			) : null}
+			</View>
 
 			<View style={styles.chatArea}>
 				{activeId === undefined ? (
@@ -221,7 +226,7 @@ export default function AgentScreen() {
 				</View>
 			) : null}
 
-			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 30 }]}>
+			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
 				<GlassComposer
 					value={input}
 					onChangeText={setInput}
@@ -362,17 +367,11 @@ function WorkingIndicator() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	tabBar: { flexGrow: 0, flexShrink: 0 },
-	tabContent: { paddingHorizontal: 16, paddingBottom: 8, gap: 8, alignItems: 'center' },
-	tabChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 200 },
-	tabChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
-	tabText: { color: colors.textDim, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	tabTextActive: { color: colors.text },
-	dotRed: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
-	dotGreen: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
-	dim: { color: colors.textDim, fontSize: 12 },
-	metaRow: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 16, paddingBottom: 6 },
-	metaText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 8 },
+	backBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+	headerBody: { flex: 1, minWidth: 0 },
+	headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
+	headerSub: { color: colors.textDim, fontSize: 11, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	chatArea: { flex: 1, marginHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, overflow: 'hidden' },
 	listContent: { padding: 12, gap: 8 },
 	placeholder: { color: colors.textDim, fontSize: 13, lineHeight: 20, padding: 16 },

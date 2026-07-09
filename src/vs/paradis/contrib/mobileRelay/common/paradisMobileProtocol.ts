@@ -228,6 +228,23 @@ export function encodeNotify(payload: NotifyPayload): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify(payload));
 }
 
+/**
+ * Notifyペイロードから種別だけを読む（APNsプッシュ抑制の判定用）。
+ * 形式不正なら undefined（呼び出し側は「抑制しない」に倒す）。
+ */
+export function peekNotifyKind(bytes: Uint8Array): NotifyKind | undefined {
+	try {
+		const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { kind?: unknown };
+		const kind = parsed.kind;
+		if (kind === 'agent-question' || kind === 'agent-done' || kind === 'agent-error' || kind === 'disconnected') {
+			return kind;
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function encodePairingUri(payload: PairingPayload): string {
 	const json = JSON.stringify({
 		v: payload.version,

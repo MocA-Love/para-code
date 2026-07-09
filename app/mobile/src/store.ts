@@ -588,6 +588,14 @@ export class MobileController {
 		this.client?.send('state', new Uint8Array(0));
 	}
 
+	/**
+	 * 通知設定をPCへ同期する（notifyチャネル M→PC）。PC側はオフライン端末への
+	 * APNsフォールバックプッシュの抑制判定に使う（設定画面参照）。
+	 */
+	sendNotifyPrefs(prefs: { agentDone: boolean; agentQuestion: boolean }): void {
+		this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...prefs })));
+	}
+
 	private sendTerm(msg: { t: string; id: number; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number }): void {
 		this.client?.send('term', encoder.encode(JSON.stringify(msg)));
 	}

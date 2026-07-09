@@ -30,9 +30,9 @@ interface AppState extends StoreState {
 	selectedTerminalId: number | undefined;
 	setSelectedTerminalId(id: number | undefined): void;
 	/**
-	 * 通知設定（設定画面）。falseの種別はOS通知（バナー）を出さない。
-	 * アプリ内の通知一覧には残る。アプリ未起動時のAPNsリモート通知はNSE経由の
-	 * 別配送のためこの設定では抑制されない点に注意。
+	 * 通知設定（設定画面）。falseの種別はOS通知（バナー）を出さない
+	 * （アプリ内の通知一覧には残る）。PC側にも同期され、アプリ未起動時の
+	 * APNsリモートプッシュはPC側のdispatchNotifyで抑制される。
 	 */
 	notifyPrefs: { agentDone: boolean; agentQuestion: boolean };
 	setNotifyPref(key: 'agentDone' | 'agentQuestion', enabled: boolean): void;
@@ -100,6 +100,8 @@ let controller: MobileController | undefined;
 let pairing: PairingClient | undefined;
 /** init() の二重実行防止（Fast Refresh 等での再マウント対策）。同期的に立てて async 再入も弾く。 */
 let initStarted = false;
+/** 通知設定の再送subscribeの多重登録防止（init()失敗リトライ対策）。 */
+let prefsSyncSubscribed = false;
 
 export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',
@@ -159,6 +161,17 @@ export const useAppStore = create<AppState>(set => ({
 				__DEV__ ? 'dev' : 'prod',
 				persistNotifyKey,
 			);
+			// オンラインになるたび通知設定をPCへ同期する（PC側の永続値を最新に保つ。
+			// オフライン中に変更した設定もここで追いつく）。init()が後続処理の失敗で
+			// リトライされた場合に多重登録しないようフラグでガードする。
+			if (!prefsSyncSubscribed) {
+				prefsSyncSubscribed = true;
+				useAppStore.subscribe((s, prev) => {
+					if (s.connection === 'online' && prev.connection !== 'online') {
+						controller?.sendNotifyPrefs(s.notifyPrefs);
+					}
+				});
+			}
 			// フォアグラウンド復帰時、接続が死んでいたら即座に繋ぎ直す（iOSはバックグラウンドで
 			// ソケットが黙って死ぬため、これが無いと再起動/復帰後に繋がらないことがある）。
 			// 加えてフォアグラウンド中は定期ハートビート（state要求+生存確認）を回す。
@@ -308,6 +321,9 @@ export const useAppStore = create<AppState>(set => ({
 		const next = { ...useAppStore.getState().notifyPrefs, [key]: enabled };
 		set({ notifyPrefs: next });
 		secureKeyStore.setItem('notifyPrefs', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save notifyPrefs', err));
+		// PC側にも同期する（アプリ未起動時のAPNsリモートプッシュはPC側で抑制判定するため）。
+		// オフライン中の変更は再接続時のonStateChange('online')フックで再送される。
+		controller?.sendNotifyPrefs(next);
 	},
 
 	scmStatus(ws: string) {

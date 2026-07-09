@@ -33,6 +33,7 @@ import {
 	ChannelId,
 	decodeRelayControl,
 	encodeNotify,
+	peekNotifyKind,
 	encodeRelayControl,
 	encodePairingUri,
 	fromBase64Url,
@@ -62,6 +63,12 @@ interface PairedMobile {
 	readonly name: string;
 	/** モバイルの長期公開鍵（base64url）。データ接続時のハンドシェイク相手鍵。 */
 	readonly pubKey: string;
+	/**
+	 * モバイルの通知設定（アプリの設定画面から notify チャネルで同期される）。
+	 * falseの種別はAPNsフォールバックプッシュを送らない（オンライン時のフレーム配送は
+	 * 続ける: アプリ内の通知一覧に載せるかはモバイル側が判断する）。未設定は全てtrue扱い。
+	 */
+	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean };
 }
 
 interface PersistedState {
@@ -418,16 +425,52 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 *   Service Extension が復号する（設計書 §5.2）。
 	 */
 	private dispatchNotify(bytes: Uint8Array): void {
+		// APNs抑制判定用に種別だけ覗く（形式不正なら抑制せず送る側に倒す）
+		const kind = peekNotifyKind(bytes);
 		for (const mobile of this.state.mobiles) {
 			const session = this.sessions.get(mobile.mobileId);
 			if (session?.isOnline) {
 				session.sendFrame(Channels.Notify, undefined, bytes).catch(err => this.logService.warn('[paradisMobileRelay] notify frame failed', err));
 				continue;
 			}
+			// オフライン時のAPNsフォールバックは、モバイルが同期してきた通知設定を尊重する
+			// （オンライン時のフレームは常に送る: 表示可否はモバイル側が判断する）。
+			const prefs = mobile.notifyPrefs;
+			if (prefs && ((kind === 'agent-done' && prefs.agentDone === false) || (kind === 'agent-question' && prefs.agentQuestion === false))) {
+				continue;
+			}
 			this.notifyKeyFor(mobile.mobileId, mobile.pubKey).then(async key => {
 				const sealed = await sealNotify(key, bytes);
 				this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: toBase64Url(sealed) });
 			}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
+		}
+	}
+
+	/** モバイルから同期された通知設定（notifyチャネル M→PC）を保存する。 */
+	private handleNotifyPrefs(mobileId: string, payload: Uint8Array): void {
+		try {
+			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: string; agentDone?: boolean; agentQuestion?: boolean };
+			if (msg.t !== 'prefs') {
+				return;
+			}
+			const mobile = this.state.mobiles.find(m => m.mobileId === mobileId);
+			if (!mobile) {
+				return;
+			}
+			const next = {
+				agentDone: msg.agentDone !== false,
+				agentQuestion: msg.agentQuestion !== false,
+			};
+			// モバイルはonline遷移のたびに再送してくるため、値が変わった時だけ書き込む
+			// （バックグラウンド復帰ごとのディスク書き込みチャーンを避ける）。
+			const prev = mobile.notifyPrefs;
+			if (prev && prev.agentDone === next.agentDone && prev.agentQuestion === next.agentQuestion) {
+				return;
+			}
+			mobile.notifyPrefs = next;
+			this.save().catch(err => this.logService.warn('[paradisMobileRelay] notify prefs save failed', err));
+		} catch (err) {
+			this.logService.warn('[paradisMobileRelay] invalid notify prefs payload', err);
 		}
 	}
 
@@ -707,6 +750,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 					// （rendererはCDP・ワークスペース外ファイルに触れないため）。それ以外は renderer へ配送。
 					if (frame.ch === Channels.Agent) {
 						this.agentChat.handleInbound(idStr, frame.payload.buffer);
+						return;
+					}
+					if (frame.ch === Channels.Notify) {
+						// M→PC方向のnotifyチャネル: 通知設定の同期メッセージ。
+						this.handleNotifyPrefs(idStr, frame.payload.buffer);
 						return;
 					}
 					if (frame.ch === Channels.Browser) {
