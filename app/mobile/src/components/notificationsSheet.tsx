@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { NotifyKind, NotifyPayload } from '@para/protocol';
 import { BottomSheet } from './bottomSheet.js';
 import { colors } from '../theme.js';
+import { hapticImpact } from '../haptics.js';
 
 function dotColor(kind: NotifyKind): string {
 	switch (kind) {
@@ -49,7 +50,7 @@ export function NotificationsButton({ notifications, onOpenNotification }: {
 
 	return (
 		<>
-			<Pressable style={styles.bellBtn} onPress={() => setOpen(true)} accessibilityLabel="通知">
+			<Pressable style={styles.bellBtn} onPress={() => { hapticImpact('light'); setOpen(true); }} accessibilityLabel="通知">
 				<BlurView intensity={30} tint="dark" style={StyleSheet.absoluteFill} />
 				<View style={[StyleSheet.absoluteFill, styles.bellOverlay]} />
 				<Ionicons name="notifications-outline" size={18} color={colors.text} />

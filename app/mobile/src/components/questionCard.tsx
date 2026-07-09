@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
 import type { AgentChatMessage } from '../store.js';
 import { colors } from '../theme.js';
+import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /**
  * 質問カード（Claude Code の AskUserQuestion 等）。
@@ -59,6 +60,7 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 					style={[styles.questionOption, (multiSelect ? isToggled(i) : selected === i) && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
 					disabled={disabled}
 					onPress={() => {
+						hapticSelection();
 						if (multiSelect) {
 							toggle(i);
 						} else {
@@ -75,7 +77,7 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 				<Pressable
 					style={[styles.questionConfirmBtn, toggled.size === 0 && styles.confirmBtnDisabled]}
 					disabled={toggled.size === 0}
-					onPress={() => { setSubmitted(true); onConfirm(); }}
+					onPress={() => { hapticImpact('medium'); setSubmitted(true); onConfirm(); }}
 				>
 					<Text style={styles.confirmBtnText}>決定（{toggled.size}件）</Text>
 				</Pressable>
@@ -94,7 +96,7 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 					<Pressable
 						style={[styles.questionFreeSend, freeText.trim().length === 0 && styles.confirmBtnDisabled]}
 						disabled={freeText.trim().length === 0}
-						onPress={() => { setSubmitted(true); onFreeText(options.length, freeText.trim()); }}
+						onPress={() => { hapticImpact('medium'); setSubmitted(true); onFreeText(options.length, freeText.trim()); }}
 						accessibilityLabel="自由入力で回答"
 					>
 						<Ionicons name="arrow-up" size={16} color="#fff" />
@@ -161,7 +163,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 					<Pressable
 						key={i}
 						style={[styles.stepTab, i === step && styles.stepTabActive, answers[i] !== undefined && styles.stepTabAnswered]}
-						onPress={() => setStep(i)}
+						onPress={() => { hapticSelection(); setStep(i); }}
 					>
 						<Text style={[styles.stepTabText, i === step && styles.stepTabTextActive]}>
 							{answers[i] !== undefined ? '✓ ' : ''}{m.header ?? `Q${i + 1}`}
@@ -179,6 +181,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 						style={[styles.questionOption, selected && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
 						disabled={disabled}
 						onPress={() => {
+							hapticSelection();
 							if (multiSelect) {
 								const next = toggledIndices.includes(i) ? toggledIndices.filter(v => v !== i) : [...toggledIndices, i].sort((a, b) => a - b);
 								setAnswer(step, next.length > 0 ? { kind: 'multi', indices: next } : undefined);
@@ -213,6 +216,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 					style={[styles.questionConfirmBtn, !allAnswered && styles.confirmBtnDisabled]}
 					disabled={!allAnswered}
 					onPress={() => {
+						hapticImpact('medium');
 						setSubmitted(true);
 						onSubmit(answers.filter((a): a is QuestionGroupAnswer => a !== undefined));
 					}}

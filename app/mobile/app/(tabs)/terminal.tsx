@@ -15,6 +15,7 @@ import { GlassComposer } from '../../src/components/glassComposer.js';
 import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { colors } from '../../src/theme.js';
+import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.js';
 
 /**
  * ターミナル画面（モックアップ準拠）。選択中ワークスペースのターミナルタブを
@@ -107,7 +108,7 @@ export default function TerminalScreen() {
 				{terminals.map((t, i) => {
 					const active = t.id === activeId;
 					return (
-						<Pressable key={t.id} style={({ pressed }) => [styles.tabChip, active && styles.tabChipActive, pressed && styles.keyPressed]} onPress={() => setSelectedTerminalId(t.id)}>
+						<Pressable key={t.id} style={({ pressed }) => [styles.tabChip, active && styles.tabChipActive, pressed && styles.keyPressed]} onPress={() => { hapticSelection(); setSelectedTerminalId(t.id); }}>
 							{isAgentWaiting(t.agentStatus)
 								? <View style={styles.dotRed} />
 								: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
@@ -115,7 +116,7 @@ export default function TerminalScreen() {
 						</Pressable>
 					);
 				})}
-				<Pressable style={({ pressed }) => [styles.tabChip, pressed && styles.keyPressed]} onPress={() => createTerminal(ws?.id)} accessibilityLabel="新しいターミナル">
+				<Pressable style={({ pressed }) => [styles.tabChip, pressed && styles.keyPressed]} onPress={() => { hapticSelection(); createTerminal(ws?.id); }} accessibilityLabel="新しいターミナル">
 					<Ionicons name="add" size={16} color={colors.textDim} />
 				</Pressable>
 				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
@@ -137,15 +138,15 @@ export default function TerminalScreen() {
 					monospace
 					tools={
 						<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.keyRowScroll} contentContainerStyle={styles.keyRow} keyboardShouldPersistTaps="always">
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('\u001b')}><Text style={styles.keyText}>Esc</Text></Pressable>
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('\t')}><Text style={styles.keyText}>Tab</Text></Pressable>
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('\u0003')}><Text style={[styles.keyText, styles.keyDanger]}>^C</Text></Pressable>
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => sendArrow('up')}><Text style={styles.keyText}>↑</Text></Pressable>
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => sendArrow('down')}><Text style={styles.keyText}>↓</Text></Pressable>
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => sendArrow('left')}><Text style={styles.keyText}>←</Text></Pressable>
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => sendArrow('right')}><Text style={styles.keyText}>→</Text></Pressable>
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('/')}><Text style={styles.keyText}>/</Text></Pressable>
-							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => send('|')}><Text style={styles.keyText}>|</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); send('\u001b'); }}><Text style={styles.keyText}>Esc</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); send('\t'); }}><Text style={styles.keyText}>Tab</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticWarning(); send('\u0003'); }}><Text style={[styles.keyText, styles.keyDanger]}>^C</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); sendArrow('up'); }}><Text style={styles.keyText}>↑</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); sendArrow('down'); }}><Text style={styles.keyText}>↓</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); sendArrow('left'); }}><Text style={styles.keyText}>←</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); sendArrow('right'); }}><Text style={styles.keyText}>→</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); send('/'); }}><Text style={styles.keyText}>/</Text></Pressable>
+							<Pressable style={({ pressed }) => [styles.key, pressed && styles.keyPressed]} onPress={() => { hapticImpact('light'); send('|'); }}><Text style={styles.keyText}>|</Text></Pressable>
 						</ScrollView>
 					}
 				/>

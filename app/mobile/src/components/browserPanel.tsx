@@ -8,6 +8,7 @@ import { useAppStore } from '../appState.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorSession } from '../webrtcMirror.js';
 import { colors } from '../theme.js';
+import { hapticImpact } from '../haptics.js';
 
 /** RTCView（react-native-webrtc）。未リンクのビルドでは undefined（JPEGミラーのみ）。 */
 const RTCViewComponent = getRtcView() as ComponentType<{
@@ -403,12 +404,12 @@ export function BrowserPanel({ active }: { active: boolean }) {
 				)}
 			</ScrollView>
 			<View style={[styles.toolbar, { paddingBottom: tabBarSpacer }]}>
-				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'back' })}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
-				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'forward' })}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>
-				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'reload' })}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
-				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'scroll', dy: -0.5 })}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
-				<Pressable style={styles.toolBtn} onPress={() => browserInput({ kind: 'scroll', dy: 0.5 })}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
-				<Pressable style={[styles.toolBtn, styles.stopBtn]} onPress={() => { mirrorActiveRef.current = undefined; stopWebrtc(); void browserStop().then(() => setActiveUrl(undefined)); }}>
+				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'back' }); }}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
+				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'forward' }); }}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>
+				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'reload' }); }}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
+				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: -0.5 }); }}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
+				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: 0.5 }); }}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
+				<Pressable style={[styles.toolBtn, styles.stopBtn]} onPress={() => { hapticImpact('light'); mirrorActiveRef.current = undefined; stopWebrtc(); void browserStop().then(() => setActiveUrl(undefined)); }}>
 					<Text style={styles.toolText}>切替</Text>
 				</Pressable>
 			</View>
