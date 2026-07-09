@@ -26,6 +26,7 @@ import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurati
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -230,6 +231,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 	const presetService = accessor.get(IParadisPresetService);
 	const dialogService = accessor.get(IDialogService);
 	const storageService = accessor.get(IStorageService);
+	const logService = accessor.get(ILogService);
 
 	let ranAny = false;
 	const presets = await presetService.getPresetsForFolder(folderUri);
@@ -262,8 +264,13 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 		}
 		// 切り替え直後はワークスペースフォルダの反映が完了していないことがあるため、
 		// cwd の基準を新しい worktree フォルダに明示する
-		await presetService.runPreset(preset, { cwd: folderUri });
-		ranAny = true;
+		try {
+			await presetService.runPreset(preset, { cwd: folderUri });
+			ranAny = true;
+		} catch (error) {
+			// 後続プリセットを続行し、既に成功したプリセットの情報を呼び出し側へ返す。
+			logService.warn(`[ParadisTerminalPresets] auto-run preset '${preset.name}' failed`, error);
+		}
 	}
 	return ranAny;
 }

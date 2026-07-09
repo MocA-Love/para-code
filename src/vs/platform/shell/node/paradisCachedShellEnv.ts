@@ -18,30 +18,40 @@ import { getResolvedShellEnv } from './shellEnv.js';
 
 export type ParadisRawShellEnvResolver = () => Promise<NodeJS.ProcessEnv>;
 
+/** 失敗後、同じ操作内で高コストなシェル解決を繰り返さないための待機時間。 */
+const SHELL_ENV_FAILURE_RETRY_DELAY_MS = 5_000;
+
 /**
  * ログインシェル由来の環境変数(PATH等)を process.env にマージした結果をキャッシュして返す。
- * 解決に失敗した場合は process.env のみへフォールバックし、キャッシュは残さず次回呼び出しで
- * 再解決を試みる。
+ * 解決に失敗した場合は process.env のみへフォールバックする。失敗結果は短時間だけ保持し、
+ * 1操作内の連続呼び出しでは再解決せず、待機時間後の呼び出しで再試行する。
  */
 export class ParadisCachedShellEnv {
 
 	private mergedEnvPromise: Promise<NodeJS.ProcessEnv> | undefined;
+	private retryAfter = 0;
 
 	constructor(
 		private readonly logService: ILogService,
 		private readonly logPrefix: string,
 		private readonly resolveRawEnv: ParadisRawShellEnvResolver,
+		private readonly now: () => number = Date.now,
 	) { }
 
 	getEnv(): Promise<NodeJS.ProcessEnv> {
+		if (this.mergedEnvPromise && this.retryAfter > 0 && this.now() >= this.retryAfter) {
+			this.mergedEnvPromise = undefined;
+			this.retryAfter = 0;
+		}
 		if (!this.mergedEnvPromise) {
 			const promise = this.resolveRawEnv()
-				.then(shellEnv => ({ ...process.env, ...shellEnv }))
+				.then(shellEnv => {
+					this.retryAfter = 0;
+					return { ...process.env, ...shellEnv };
+				})
 				.catch(error => {
 					this.logService.warn(`[${this.logPrefix}] failed to resolve shell environment, falling back to inherited PATH: ${error instanceof Error ? error.message : error}`);
-					if (this.mergedEnvPromise === promise) {
-						this.mergedEnvPromise = undefined;
-					}
+					this.retryAfter = this.now() + SHELL_ENV_FAILURE_RETRY_DELAY_MS;
 					return { ...process.env };
 				});
 			this.mergedEnvPromise = promise;
