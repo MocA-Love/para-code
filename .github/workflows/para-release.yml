@@ -160,7 +160,7 @@ jobs:
       - name: Compute sha256
         run: shasum -a 256 "darwin-${{ matrix.arch }}.zip" | cut -d' ' -f1 > "darwin-${{ matrix.arch }}.zip.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: darwin-${{ matrix.arch }}
           path: |
@@ -227,7 +227,7 @@ jobs:
           Copy-Item $setup.FullName "win32-${{ matrix.arch }}-user-setup.exe"
           (Get-FileHash "win32-${{ matrix.arch }}-user-setup.exe" -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii "win32-${{ matrix.arch }}-user-setup.exe.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: win32-${{ matrix.arch }}
           path: |
@@ -311,7 +311,7 @@ jobs:
           cp "$deb" linux-x64.deb
           sha256sum linux-x64.deb | cut -d' ' -f1 > linux-x64.deb.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x64
           path: |
