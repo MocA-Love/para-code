@@ -100,9 +100,33 @@ export function paradisSanitizeWorktreeDirName(value: string): string | undefine
 	return sanitized && sanitized.length > 0 ? sanitized : undefined;
 }
 
+/** 既存ブランチ由来の名前や既存worktreeの実ディレクトリ名と衝突しない名前を返す。 */
+export function paradisDeduplicateWorktreeDirName(branchName: string, existingBranches: readonly string[], existingDirNames: readonly string[] = []): string {
+	const baseDirName = paradisSanitizeWorktreeDirName(branchName)!;
+	const occupiedDirNames = new Set(existingBranches
+		.map(paradisSanitizeWorktreeDirName)
+		.filter((name): name is string => typeof name === 'string'));
+	for (const existingDirName of existingDirNames) {
+		const sanitized = paradisSanitizeWorktreeDirName(existingDirName);
+		if (sanitized) {
+			occupiedDirNames.add(sanitized);
+		}
+	}
+	if (!occupiedDirNames.has(baseDirName)) {
+		return baseDirName;
+	}
+	for (let suffix = 2; suffix < 100; suffix++) {
+		const candidate = `${baseDirName}-${suffix}`;
+		if (!occupiedDirNames.has(candidate)) {
+			return candidate;
+		}
+	}
+	return `${baseDirName}-${Date.now() % 10000}`;
+}
+
 /** worktree 作成時の表示名とディレクトリ名を決める。スペース名は表示専用。 */
-export function paradisBuildWorktreeNames(spaceName: string, branchName: string): { displayName: string; dirName: string } {
-	const dirName = paradisSanitizeWorktreeDirName(branchName)!;
+export function paradisBuildWorktreeNames(spaceName: string, branchName: string, existingBranches: readonly string[] = [], existingDirNames: readonly string[] = []): { displayName: string; dirName: string } {
+	const dirName = paradisDeduplicateWorktreeDirName(branchName, existingBranches, existingDirNames);
 	const displayName = spaceName.trim() || dirName;
 	return { displayName, dirName };
 }

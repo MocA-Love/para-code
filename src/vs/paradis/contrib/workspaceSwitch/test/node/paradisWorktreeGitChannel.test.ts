@@ -4,10 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese test comments)
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import assert from 'assert';
 import * as cp from 'child_process';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { ParadisCachedShellEnv } from '../../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.js';
 
 interface IExecFileCall {
@@ -56,12 +59,16 @@ suite('ParadisWorktreeGitService', () => {
 
 	test('falls back to the inherited process env when shell resolution fails', async () => {
 		const calls: IExecFileCall[] = [];
+		let resolverCalls = 0;
 		const service = new ParadisWorktreeGitService(
 			new NullLogService(),
 			undefined,
 			undefined,
 			createExecFile(calls),
-			async () => { throw new Error('shell resolution timed out'); },
+			async () => {
+				resolverCalls++;
+				throw new Error('shell resolution timed out');
+			},
 		);
 
 		await service.addWorktree({
@@ -71,9 +78,39 @@ suite('ParadisWorktreeGitService', () => {
 			baseRef: 'main',
 		});
 
-		assert.strictEqual(calls.length, 2);
-		assert.strictEqual(calls[0].env?.PATH, process.env.PATH);
-		assert.strictEqual(calls[1].env?.PATH, process.env.PATH);
+		assert.deepStrictEqual({ resolverCalls, paths: calls.map(call => call.env?.PATH) }, {
+			resolverCalls: 1,
+			paths: [process.env.PATH, process.env.PATH],
+		});
+	});
+
+	test('retries shell resolution after the failure cooldown', async () => {
+		let now = 0;
+		let resolverCalls = 0;
+		const cachedEnv = new ParadisCachedShellEnv(
+			new NullLogService(),
+			'ParadisWorktreeGitTest',
+			async () => {
+				resolverCalls++;
+				if (resolverCalls === 1) {
+					throw new Error('shell resolution timed out');
+				}
+				return { PATH: '/resolved/bin' };
+			},
+			() => now,
+		);
+
+		const first = await cachedEnv.getEnv();
+		const cachedFallback = await cachedEnv.getEnv();
+		now = 5_000;
+		const retried = await cachedEnv.getEnv();
+
+		assert.deepStrictEqual({ resolverCalls, first: first.PATH, cached: cachedFallback.PATH, retried: retried.PATH }, {
+			resolverCalls: 2,
+			first: process.env.PATH,
+			cached: process.env.PATH,
+			retried: '/resolved/bin',
+		});
 	});
 
 	test('resolves the shell environment only once and reuses it across execs', async () => {
