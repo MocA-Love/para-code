@@ -210,8 +210,11 @@ export interface IParadisMcpSetupResult {
 export function paradisNormalizeAgentHookEvent(eventType: string, message?: string): ParadisAgentStatus | 'idle' | undefined {
 	switch (eventType) {
 		// 完了系: Claude Code / Codex / OpenCode
+		// StopFailure は「APIエラーでターンが終わった」(Claude Code)。実行中表示が
+		// 残り続けるより「終わったので確認して」の方が実態に合うため review に畳む。
 		case 'Stop':
 		case 'SubagentStop':
+		case 'StopFailure':
 		case 'agent-turn-complete':
 		case 'task_complete':
 		case 'SessionEnd':
@@ -232,9 +235,13 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		case 'permission.ask':
 			return 'permission';
 		// 実行中系
+		// PostToolUseFailure / PermissionDenied はどちらも「ツールは失敗/拒否されたが
+		// ターンは継続中」(Claude Code) なので実行中扱い (permission の解除にも効く)。
 		case 'SessionStart':
 		case 'UserPromptSubmit':
 		case 'PostToolUse':
+		case 'PostToolUseFailure':
+		case 'PermissionDenied':
 		case 'task_started':
 		case 'Start':
 			return 'working';

@@ -27,11 +27,11 @@
 //    truncate/置き換え (サイズ減少) を検知したら epoch を切り替えて読み直す
 
 import { watch, FSWatcher, promises as fs } from 'fs';
-import { homedir } from 'os';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -117,7 +117,13 @@ function newEpoch(): string {
 }
 
 function agentKindForPath(transcriptPath: string): ParadisAgentKind {
-	return /[\\/]\.codex[\\/]/.test(transcriptPath) ? 'codex' : 'claude';
+	// CODEX_HOME を移動していると ".codex" がパスに現れないため、rolloutのファイル名規約と
+	// 解決済みhome配下かでも判定する (Claude の transcript は <uuid>.jsonl でrollout-接頭辞を持たない)。
+	if (/[\\/]\.codex[\\/]/.test(transcriptPath) || /[\\/]rollout-[^\\/]*\.jsonl$/.test(transcriptPath)) {
+		return 'codex';
+	}
+	const codexHome = paradisCodexHome();
+	return (transcriptPath === codexHome || transcriptPath.startsWith(codexHome + sep)) ? 'codex' : 'claude';
 }
 
 /**
@@ -130,7 +136,7 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 	if (!isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl')) {
 		return false;
 	}
-	const roots = [join(homedir(), '.claude'), join(homedir(), '.codex')];
+	const roots = [paradisClaudeConfigDir(), paradisCodexHome()];
 	const within = (candidate: string) => roots.some(root => candidate === root || candidate.startsWith(root + sep));
 	if (!within(resolve(transcriptPath))) {
 		return false;
@@ -481,6 +487,10 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 	const tsParsed = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
 	const ts = Number.isFinite(tsParsed) ? tsParsed : undefined;
 	const ptype = str(payload['type']);
+	// Codex のツール呼び出し/結果は call_id で対応付く (Claude の tool_use_id 相当)。
+	// toolUseId に載せてモバイル側で呼び出し⇔結果の突き合わせに使えるようにする
+	// (質問の回答済み判定は kind==='question' 限定なので Codex の ID が混ざっても影響しない)。
+	const callId = str(payload['call_id']);
 	const out: IRawMessage[] = [];
 
 	if (ptype === 'message') {
@@ -508,7 +518,7 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
 		const tool = str(payload['name']) ?? 'tool';
 		const text = str(payload['arguments']) ?? str(payload['input']) ?? '';
-		out.push({ role: 'assistant', kind: 'tool_use', tool, text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+		out.push({ role: 'assistant', kind: 'tool_use', tool, text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'web_search_call' || ptype === 'tool_search_call') {
 		// web_search_call は action.query、tool_search_call は arguments(オブジェクト)にクエリが入る
 		const action = rec(payload['action']);
@@ -519,18 +529,37 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 				query = JSON.stringify(args ?? action ?? '');
 			} catch { /* 表示は空でよい */ }
 		}
-		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', text: truncateText(query, TOOL_TEXT_LIMIT), ts });
+		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', text: truncateText(query, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+	} else if (ptype === 'tool_search_output') {
+		// tool_search_call の結果 ({ call_id, status, execution, tools: [...] })。見つかった
+		// ツール一覧を結果カードとして出す (無視するとツール検索の結果だけ同期から抜ける)。
+		const toolsRaw = payload['tools'];
+		let text = '';
+		if (Array.isArray(toolsRaw) && toolsRaw.length > 0) {
+			try {
+				text = toolsRaw.map(tool => {
+					const t = rec(tool);
+					return str(t?.['name']) ?? JSON.stringify(tool);
+				}).join('\n');
+			} catch { /* 表示は空でよい */ }
+		}
+		if (text.trim().length === 0) {
+			text = str(payload['status']) ?? '';
+		}
+		if (text.trim().length > 0) {
+			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+		}
 	} else if (ptype === 'custom_tool_call_output') {
 		const text = str(payload['output']) ?? '';
 		if (text.trim().length > 0) {
-			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		}
 	} else if (ptype === 'local_shell_call') {
 		let text = '';
 		try {
 			text = JSON.stringify(payload['action']);
 		} catch { /* 表示は空でよい */ }
-		out.push({ role: 'assistant', kind: 'tool_use', tool: 'shell', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+		out.push({ role: 'assistant', kind: 'tool_use', tool: 'shell', text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'function_call_output') {
 		const output = payload['output'];
 		let text: string;
@@ -548,7 +577,7 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 			}
 		}
 		if (text.trim().length > 0) {
-			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		}
 	}
 	return out;
@@ -565,13 +594,19 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
  * - Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl の直近ファイルのうち
  *           先頭行 session_meta の cwd が一致する最新のもの
  */
-async function discoverSessionByCwd(cwd: string): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number } | undefined> {
+async function discoverSessionByCwd(cwd: string, minMtime?: number): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number } | undefined> {
 	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number }[] = [];
 
-	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）
+	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）。
+	// Claude Code はcwdをrealpath解決してからスラッグ化するため、symlink経由のターミナルでも
+	// 一致するよう解決後のパスを使う（解決失敗時は文字面のまま）。
 	try {
-		const slug = cwd.replace(/[^a-zA-Z0-9]/g, '-');
-		const dir = join(homedir(), '.claude', 'projects', slug);
+		let resolvedCwd = cwd;
+		try {
+			resolvedCwd = await fs.realpath(cwd);
+		} catch { /* 消えたディレクトリ等は文字面で試す */ }
+		const slug = resolvedCwd.replace(/[^a-zA-Z0-9]/g, '-');
+		const dir = join(paradisClaudeConfigDir(), 'projects', slug);
 		const names = await fs.readdir(dir);
 		for (const name of names) {
 			if (!name.endsWith('.jsonl')) {
@@ -586,7 +621,7 @@ async function discoverSessionByCwd(cwd: string): Promise<{ agent: ParadisAgentK
 
 	// Codex: 直近2日分の日付ディレクトリから rollout を新しい順に見て、session_meta.cwd を突合
 	try {
-		const sessionsRoot = join(homedir(), '.codex', 'sessions');
+		const sessionsRoot = join(paradisCodexHome(), 'sessions');
 		const days = [new Date(), new Date(Date.now() - 24 * 60 * 60 * 1000)];
 		const rollouts: { path: string; mtime: number }[] = [];
 		for (const day of days) {
@@ -626,11 +661,14 @@ async function discoverSessionByCwd(cwd: string): Promise<{ agent: ParadisAgentK
 		}
 	} catch { /* sessions ディレクトリ無し = Codexセッション無し */ }
 
-	if (candidates.length === 0) {
+	// minMtime 指定時は「それ以降に更新されたtranscript」だけを受け付ける (コマンド実行検知
+	// トリガーの鮮度ガード。古いセッションを誤って現行扱いにしない)。
+	const fresh = minMtime !== undefined ? candidates.filter(c => c.mtime >= minMtime) : candidates;
+	if (fresh.length === 0) {
 		return undefined;
 	}
-	candidates.sort((a, b) => b.mtime - a.mtime);
-	return candidates[0];
+	fresh.sort((a, b) => b.mtime - a.mtime);
+	return fresh[0];
 }
 
 // ---- tailer ---------------------------------------------------------------------------------
@@ -710,7 +748,7 @@ class TranscriptTailer {
 
 	/** ~/.claude/settings.json の effortLevel を、transcript由来の値が無い場合の既定として適用する。 */
 	private async loadClaudeDefaultEffort(): Promise<void> {
-		const raw = await fs.readFile(join(homedir(), '.claude', 'settings.json'), 'utf8');
+		const raw = await fs.readFile(join(paradisClaudeConfigDir(), 'settings.json'), 'utf8');
 		const effortLevel = str(rec(JSON.parse(raw))?.['effortLevel']);
 		if (!this.disposed && effortLevel !== undefined && effortLevel.length > 0 && this.effort === undefined) {
 			this.effort = effortLevel;
@@ -1072,6 +1110,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			for (const token of [...this.tailers.keys()]) {
 				this.disposeTailer(token);
 			}
+			for (const timer of this.cliDiscoveryTimers) {
+				clearTimeout(timer);
+			}
+			this.cliDiscoveryTimers.clear();
 		}));
 	}
 
@@ -1141,6 +1183,39 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}
 		this.paneTokensSeenLive = liveTokens;
+	}
+
+	/** コマンド検知トリガーの再探索タイマー (dispose時に確実に止める)。 */
+	private readonly cliDiscoveryTimers = new Set<ReturnType<typeof setTimeout>>();
+
+	/**
+	 * ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell integration 由来)。
+	 * これ自体を「エージェント起動」とはみなさず、cwd ベースのセッション探索を前倒しする
+	 * トリガーとしてのみ使う。transcript / rollout の作成はコマンド起動から数秒遅れるため、
+	 * 少し待って数回試す。鮮度ガード (コマンド開始時刻より新しい更新のみ受理) により、
+	 * `claude --help` のような空振りで古いセッションを掴む誤検知は起きない。
+	 */
+	onCliCommandDetected(terminalId: number, cwd: string | undefined): void {
+		const token = this.terminalToToken.get(terminalId);
+		if (token === undefined || this.paneSessions.has(token)) {
+			return; // ペイン不明、またはセッション判明済み (hookが正)
+		}
+		const effectiveCwd = cwd ?? this.tokenToCwd.get(token);
+		if (effectiveCwd === undefined) {
+			return;
+		}
+		// resume 直後は既存transcriptへの追記になるため、開始時刻より少し手前まで許容する。
+		const minMtime = Date.now() - 15_000;
+		for (const delayMs of [2_000, 6_000, 15_000]) {
+			const timer = setTimeout(() => {
+				this.cliDiscoveryTimers.delete(timer);
+				if (this.paneSessions.has(token)) {
+					return;
+				}
+				this.discoverAndNotify(token, effectiveCwd, minMtime).catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
+			}, delayMs);
+			this.cliDiscoveryTimers.add(timer);
+		}
 	}
 
 	/** モバイルの切断 (presence offline)。そのモバイルの購読をすべて解放する。 */
@@ -1240,8 +1315,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */
-	private async discoverAndNotify(token: string, cwd: string): Promise<void> {
-		const discovered = await discoverSessionByCwd(cwd);
+	private async discoverAndNotify(token: string, cwd: string, minMtime?: number): Promise<void> {
+		const discovered = await discoverSessionByCwd(cwd, minMtime);
 		if (discovered === undefined || this.paneSessions.has(token)) {
 			return;
 		}

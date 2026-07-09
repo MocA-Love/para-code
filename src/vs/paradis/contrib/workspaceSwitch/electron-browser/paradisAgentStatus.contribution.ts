@@ -8,6 +8,7 @@
 
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { isWindows } from '../../../../base/common/platform.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
@@ -18,9 +19,10 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
+import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 
 /** 集計時の優先度 (Superset の STATUS_PRIORITY と同方針: 要対応が最強) */
@@ -160,14 +162,21 @@ class ParadisCopyAgentHooksSetupAction extends Action2 {
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const clipboardService = accessor.get(IClipboardService);
 		const notificationService = accessor.get(INotificationService);
+		const pathService = accessor.get(IPathService);
 
 		// ~/.claude/settings.json の "hooks" にマージするスニペット。通常は shared process 起動時に
 		// 自動マージされる (agentBrowser/node/paradisAgentHooksSetup.ts) ため、このアクションは
 		// 自動設置が使えない環境向けの手動フォールバック。イベント一覧・コマンドは自動設置と
-		// 完全に同一 (~/.para-code/hooks/notify.sh 参照方式。PreToolUse は誤通知源になるため登録しない)。
+		// 完全に同一 (POSIXは ~/.para-code/hooks/notify.sh 参照、Windowsは notify.ps1 の
+		// powershell 直接起動。PreToolUse は誤通知源になるため登録しない)。
+		let command: string | undefined;
+		if (isWindows) {
+			const userHome = await pathService.userHome();
+			command = paradisManagedAgentHookCommandWindows(userHome.fsPath);
+		}
 		const hooks: Record<string, unknown> = {};
 		for (const event of PARADIS_CLAUDE_HOOK_EVENTS) {
-			hooks[event.eventName] = [paradisManagedHookDefinition(event)];
+			hooks[event.eventName] = [paradisManagedHookDefinition(event, command)];
 		}
 
 		await clipboardService.writeText(JSON.stringify({ hooks }, undefined, 2));
