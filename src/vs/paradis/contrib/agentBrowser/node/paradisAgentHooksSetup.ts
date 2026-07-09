@@ -14,12 +14,13 @@
 // 3. ~/.codex/hooks.json へhook定義を冪等マージ (同上)。
 // 既存ファイルのJSONパースに失敗した場合は何も書かない (ユーザーファイルを壊すくらいなら諦める)。
 
+import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
-import { IParadisManagedHookEvent, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { IParadisManagedHookEvent, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from './paradisAgentHome.js';
 
 /**
@@ -275,6 +276,31 @@ async function mergeHooksFile(filePath: string, managedEvents: readonly IParadis
 }
 
 /**
+ * MessageDisplay は Claude Code 2.1.205 で初めてpayloadを実地確認した。
+ * 旧版の settings.json は未知のhookキーを拒否し得るため、バージョンを確認できない場合も
+ * 安全側に倒して登録しない。判定は起動を妨げない短いベストエフォートとする。
+ */
+async function supportsClaudeMessageDisplay(): Promise<boolean> {
+	return new Promise(resolve => {
+		execFile('claude', ['--version'], { encoding: 'utf8', timeout: 2000, windowsHide: true }, (error, stdout) => {
+			if (error) {
+				resolve(false);
+				return;
+			}
+			const match = /(\d+)\.(\d+)\.(\d+)/.exec(stdout);
+			if (!match) {
+				resolve(false);
+				return;
+			}
+			const major = Number(match[1]);
+			const minor = Number(match[2]);
+			const patch = Number(match[3]);
+			resolve(major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 205))));
+		});
+	});
+}
+
+/**
  * hook自動設置のエントリポイント。ParadisAgentBrowserService 起動時に fire-and-forget で
  * 呼ばれる。各ステップは内部でエラーを握りつぶすため、この関数が起動を妨げることはない。
  * Windows は notify.ps1 を設置し、hookコマンドは powershell 直接起動形式にする
@@ -288,6 +314,12 @@ export async function paradisSetupAgentHooks(logService: ILogService): Promise<v
 	const hookCommand = process.platform === 'win32' ? paradisManagedAgentHookCommandWindows(homedir()) : undefined;
 	// $CLAUDE_CONFIG_DIR / $CODEX_HOME でhomeを移動しているユーザーにも設置が届くよう、
 	// 設置先はハードコードではなく解決関数を通す (未設定なら従来どおり ~/.claude / ~/.codex)。
-	await mergeHooksFile(join(paradisClaudeConfigDir(), 'settings.json'), PARADIS_CLAUDE_HOOK_EVENTS, logService, hookCommand);
+	const claudeEvents = await supportsClaudeMessageDisplay()
+		? [...PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT]
+		: PARADIS_CLAUDE_HOOK_EVENTS;
+	if (claudeEvents === PARADIS_CLAUDE_HOOK_EVENTS) {
+		logService.trace('[ParadisAgentHooks] Claude MessageDisplay support not confirmed; leaving the version-dependent hook disabled');
+	}
+	await mergeHooksFile(join(paradisClaudeConfigDir(), 'settings.json'), claudeEvents, logService, hookCommand);
 	await mergeHooksFile(join(paradisCodexHome(), 'hooks.json'), PARADIS_CODEX_HOOK_EVENTS, logService, hookCommand);
 }

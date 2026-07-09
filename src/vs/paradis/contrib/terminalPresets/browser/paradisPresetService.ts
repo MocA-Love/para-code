@@ -33,6 +33,7 @@ import {
 	IParadisPresetDefinition,
 	IParadisPresetService,
 	IParadisResolvedPreset,
+	IParadisRunPresetOptions,
 	isValidPresetDefinition,
 	PARADIS_PRESETS_SETTING,
 	PARADIS_WORKSPACE_PRESET_FILE,
@@ -240,7 +241,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 	// --- 実行 ------------------------------------------------------------------------------------
 
-	async runPreset(preset: IParadisResolvedPreset, options?: { cwd?: URI }): Promise<void> {
+	async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
 		const commands = preset.commands.map(command => command.trim()).filter(command => command.length > 0);
 		if (commands.length === 0) {
 			return;
@@ -251,21 +252,26 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 		switch (mode) {
 			case 'current-terminal': {
-				let instance = this.terminalService.activeInstance;
+				let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
 				if (!instance) {
 					instance = await this._createTerminalInActiveGroup(cwd);
+					options?.onDidStart?.();
 					await instance.sendText(joined, true);
-				} else if (preset.cwd && cwd) {
-					// 既存ターミナルは作業ディレクトリが不明なので cd を前置する
-					await instance.sendText(`cd ${await instance.preparePathForShell(cwd.fsPath)} && ${joined}`, true);
 				} else {
-					await instance.sendText(joined, true);
+					if (preset.cwd && cwd) {
+						// 既存ターミナルは作業ディレクトリが不明なので cd を前置する
+						await instance.sendText(`cd ${await instance.preparePathForShell(cwd.fsPath)} && ${joined}`, true);
+					} else {
+						await instance.sendText(joined, true);
+					}
+					options?.onDidStart?.();
 				}
 				instance.focus(true);
 				break;
 			}
 			case 'new-terminal': {
 				const instance = await this._createTerminalInActiveGroup(cwd);
+				options?.onDidStart?.();
 				instance.focus(true);
 				await instance.sendText(joined, true);
 				break;
@@ -274,6 +280,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				let first: ITerminalInstance | undefined;
 				for (const command of commands) {
 					const instance = await this._createTerminalInActiveGroup(cwd);
+					options?.onDidStart?.();
 					first ??= instance;
 					await instance.sendText(command, true);
 				}
@@ -291,6 +298,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 						cwd,
 						location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
 					});
+					options?.onDidStart?.();
 					await instance.sendText(commands[index], true);
 				}
 				break;

@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBuildWorktreeNames, paradisDeduplicateWorktreeDirName, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
+import { paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisDeduplicateWorktreeDirName, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -49,6 +49,16 @@ suite('paradisWorktreeCreate', () => {
 			paradisBuildWorktreeNames('', 'feat-foo', ['feat/foo']),
 			{ displayName: 'feat-foo-2', dirName: 'feat-foo-2' },
 		);
+	});
+
+	test('deduplicates branch and directory names on case-insensitive file systems', () => {
+		assert.deepStrictEqual({
+			branch: paradisDeduplicateBranchName('feature', ['Feature'], true),
+			directory: paradisDeduplicateWorktreeDirName('feature', [], ['Feature'], true),
+		}, {
+			branch: 'feature-2',
+			directory: 'feature-2',
+		});
 	});
 
 	test('creates a default terminal when no agent command will run', () => {

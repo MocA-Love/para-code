@@ -52,7 +52,7 @@ jobs:
       VSCODE_ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           lfs: true
 
@@ -160,7 +160,7 @@ jobs:
       - name: Compute sha256
         run: shasum -a 256 "darwin-${{ matrix.arch }}.zip" | cut -d' ' -f1 > "darwin-${{ matrix.arch }}.zip.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: darwin-${{ matrix.arch }}
           path: |
@@ -183,7 +183,7 @@ jobs:
       VSCODE_ARCH: ${{ matrix.arch }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           lfs: true
 
@@ -227,7 +227,7 @@ jobs:
           Copy-Item $setup.FullName "win32-${{ matrix.arch }}-user-setup.exe"
           (Get-FileHash "win32-${{ matrix.arch }}-user-setup.exe" -Algorithm SHA256).Hash.ToLower() | Out-File -Encoding ascii "win32-${{ matrix.arch }}-user-setup.exe.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: win32-${{ matrix.arch }}
           path: |
@@ -242,7 +242,7 @@ jobs:
       VSCODE_ARCH: x64
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           lfs: true
 
@@ -311,7 +311,7 @@ jobs:
           cp "$deb" linux-x64.deb
           sha256sum linux-x64.deb | cut -d' ' -f1 > linux-x64.deb.sha256
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linux-x64
           path: |
@@ -326,9 +326,9 @@ jobs:
       contents: write # gh release create/upload (GitHub Release with artifacts)
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           path: artifacts
 

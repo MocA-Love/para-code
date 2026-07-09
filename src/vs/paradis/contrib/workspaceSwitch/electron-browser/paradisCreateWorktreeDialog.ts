@@ -43,6 +43,7 @@ import {
 	PARADIS_WORKTREE_GIT_CHANNEL,
 	paradisBuildAgentCommand,
 	paradisBuildWorktreeNames,
+	paradisDeduplicateBranchName,
 	paradisDeduplicateWorktreeDirName,
 	paradisSanitizeBranchName,
 	paradisShouldCreateDefaultTerminal,
@@ -309,7 +310,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			return;
 		}
 		const branch = paradisSanitizeBranchName(this._branchInput.value);
-		const existingDirNames = this.worktreeService.getWorktrees(repository.id).map(worktree => basename(worktree.uri));
+		const existingDirNames = this.worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
 		const dirName = branch
 			? paradisDeduplicateWorktreeDirName(branch, this._branches?.branches ?? [], existingDirNames)
 			: STR_AUTO;
@@ -368,21 +369,6 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		return `para-${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
 	}
 
-	/** 既存ブランチと重複しない名前にする。 */
-	private _deduplicateBranch(branch: string): string {
-		const existing = new Set(this._branches?.branches ?? []);
-		if (!existing.has(branch)) {
-			return branch;
-		}
-		for (let suffix = 2; suffix < 100; suffix++) {
-			const candidate = `${branch}-${suffix}`;
-			if (!existing.has(candidate)) {
-				return candidate;
-			}
-		}
-		return `${branch}-${Date.now() % 10000}`;
-	}
-
 	private async _doCreate(): Promise<void> {
 		if (this._busy) {
 			return;
@@ -408,11 +394,11 @@ class ParadisCreateWorktreeDialog extends Disposable {
 				}
 				branch = branch ?? this._fallbackBranchName();
 			}
-			branch = this._deduplicateBranch(branch);
+			branch = paradisDeduplicateBranchName(branch, this._branches?.branches ?? []);
 
 			// 2. worktree 作成
 			this._setBusy(true, STR_CREATING);
-			const existingDirNames = this.worktreeService.getWorktrees(repository.id).map(worktree => basename(worktree.uri));
+			const existingDirNames = this.worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
 			const { displayName, dirName } = paradisBuildWorktreeNames(this._nameInput.value, branch, this._branches?.branches ?? [], existingDirNames);
 			const worktreeUri = this._computeWorktreeUri(repository, dirName);
 			await this.sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('addWorktree', [{
