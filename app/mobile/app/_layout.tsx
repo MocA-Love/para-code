@@ -1,7 +1,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { StyleSheet } from 'react-native';
 import { DarkTheme, Stack, ThemeProvider, useRouter } from 'expo-router';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
 import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
@@ -94,13 +96,27 @@ export default function RootLayout() {
 	const handleUnlock = useCallback(() => setUnlocked(true), []);
 
 	return (
-		<ThemeProvider value={appTheme}>
-			<AuthGate onUnlock={handleUnlock}>
-				<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
-					<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-					<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
-				</Stack>
-			</AuthGate>
-		</ThemeProvider>
+		// GestureHandlerRootView: ワークスペースドロワー（ReanimatedDrawerLayout）の
+		// ネイティブジェスチャ認識に必須
+		<GestureHandlerRootView style={styles.root}>
+			<ThemeProvider value={appTheme}>
+				<AuthGate onUnlock={handleUnlock}>
+					<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
+						<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+						<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
+						{/* 通知一覧。ベルからのズーム遷移（Link.AppleZoom）で開くため独自ヘッダーを使う */}
+						<Stack.Screen name="notifications" options={{ headerShown: false }} />
+						{/* 設定。ワークスペースドロワーの設定アイコンから開く */}
+						<Stack.Screen name="settings" options={{ headerShown: false, presentation: 'modal' }} />
+						{/* Ccusage ダッシュボード。設定画面の項目から開く */}
+						<Stack.Screen name="ccusage" options={{ headerShown: false }} />
+					</Stack>
+				</AuthGate>
+			</ThemeProvider>
+		</GestureHandlerRootView>
 	);
 }
+
+const styles = StyleSheet.create({
+	root: { flex: 1 },
+});

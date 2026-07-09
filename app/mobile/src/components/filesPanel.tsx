@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
-import { useEffectiveWs } from './wsBar.js';
+import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { colors } from '../theme.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../store.js';

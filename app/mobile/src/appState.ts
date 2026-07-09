@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -29,6 +29,13 @@ interface AppState extends StoreState {
 	/** ターミナル画面で選択中のターミナルID（ws切替時はリセット）。 */
 	selectedTerminalId: number | undefined;
 	setSelectedTerminalId(id: number | undefined): void;
+	/**
+	 * 通知設定（設定画面）。falseの種別はOS通知（バナー）を出さない。
+	 * アプリ内の通知一覧には残る。アプリ未起動時のAPNsリモート通知はNSE経由の
+	 * 別配送のためこの設定では抑制されない点に注意。
+	 */
+	notifyPrefs: { agentDone: boolean; agentQuestion: boolean };
+	setNotifyPref(key: 'agentDone' | 'agentQuestion', enabled: boolean): void;
 	/** 初期化（起動時に1回）。identityをロードし、資格情報があれば接続する。 */
 	init(): Promise<void>;
 	/** QRから読み取ったURIでペアリングする。SAS表示はonSasで受ける。 */
@@ -65,6 +72,8 @@ interface AppState extends StoreState {
 	fsGrep(ws: string, query: string): Promise<FsGrepResult>;
 	fsUpload(name: string, dataBase64: string): Promise<FsUploadResult>;
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
+	/** ccusage 使用量ダッシュボード。bypassCache=true で shared process 側の TTL キャッシュを無視して再取得する。 */
+	usageDashboard(bypassCache?: boolean): Promise<UsageDashboardResult>;
 	browserTargets(): Promise<BrowserTargetsResult>;
 	browserStart(targetId: string): Promise<void>;
 	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
@@ -105,6 +114,7 @@ export const useAppStore = create<AppState>(set => ({
 	manualOffline: false,
 	selectedWs: undefined,
 	selectedTerminalId: undefined,
+	notifyPrefs: { agentDone: true, agentQuestion: true },
 
 	async init() {
 		// 二重初期化を防ぐ。放置すると旧 MobileController/RelayClient が close されず、
@@ -117,11 +127,33 @@ export const useAppStore = create<AppState>(set => ({
 			configureNotificationHandler();
 			const loaded = await loadOrCreateIdentity(secureKeyStore);
 			identity = loaded.identity;
+			// 通知設定をロード（保存が無い/壊れている場合は既定値のまま）
+			try {
+				const raw = await secureKeyStore.getItem('notifyPrefs');
+				if (raw) {
+					const parsed = JSON.parse(raw) as Partial<AppState['notifyPrefs']>;
+					set({
+						notifyPrefs: {
+							agentDone: parsed.agentDone !== false,
+							agentQuestion: parsed.agentQuestion !== false,
+						},
+					});
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load notifyPrefs', err);
+			}
 			controller = new MobileController(
 				identity,
 				rnSocketFactory,
 				s => set({ ...s }),
-				payload => { void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId }); },
+				payload => {
+					// 通知設定でOFFの種別はOS通知を出さない（アプリ内の通知一覧には残る）
+					const prefs = useAppStore.getState().notifyPrefs;
+					if ((payload.kind === 'agent-done' && !prefs.agentDone) || (payload.kind === 'agent-question' && !prefs.agentQuestion)) {
+						return;
+					}
+					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId });
+				},
 				getApnsDeviceToken,
 				// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
 				__DEV__ ? 'dev' : 'prod',
@@ -272,6 +304,12 @@ export const useAppStore = create<AppState>(set => ({
 		set({ selectedTerminalId: id });
 	},
 
+	setNotifyPref(key: 'agentDone' | 'agentQuestion', enabled: boolean) {
+		const next = { ...useAppStore.getState().notifyPrefs, [key]: enabled };
+		set({ notifyPrefs: next });
+		secureKeyStore.setItem('notifyPrefs', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save notifyPrefs', err));
+	},
+
 	scmStatus(ws: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.scmStatus(ws);
@@ -345,6 +383,11 @@ export const useAppStore = create<AppState>(set => ({
 	scmXlsxDiff(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.scmXlsxDiff(ws, path);
+	},
+
+	usageDashboard(bypassCache?: boolean) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.usageDashboard(bypassCache);
 	},
 
 	browserTargets() {

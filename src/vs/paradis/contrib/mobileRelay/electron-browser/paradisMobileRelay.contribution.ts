@@ -13,7 +13,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -40,6 +40,7 @@ import {
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { Channels } from '../common/paradisMobileProtocol.js';
+import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
@@ -85,6 +86,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IExtensionService extensionService: IExtensionService,
 		@IThemeService themeService: IThemeService,
 		@IParadisPaneTokenService paneTokenService: IParadisPaneTokenService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 
@@ -92,6 +94,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this._register({ dispose: () => { if (ParadisMobileRelayContribution.instance === this) { ParadisMobileRelayContribution.instance = undefined; } } });
 
 		this.service = ProxyChannel.toService<IParadisMobileRelayService>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
+
+		// ccusage ダッシュボードデータ取得（PC版と同じ shared process 経由のクライアントを再利用する）
+		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);
 
 		this.provider = this._register(new ParadisMobileWorkspaceProvider(
 			frame => { this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
@@ -113,6 +118,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			entries => { this.service.syncAgentPanes(entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
+			bypassCache => ccusageClient.fetchDashboard(bypassCache),
 		));
 
 		// WebRTCミラーのストリーマ（browser チャネルの webrtc-* シグナリングを処理）。
