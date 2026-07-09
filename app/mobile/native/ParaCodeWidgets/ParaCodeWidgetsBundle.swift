@@ -58,10 +58,10 @@ struct ParaCodeLiveActivity: Widget {
 						.font(.caption2.bold())
 						.foregroundStyle(.red)
 				} else {
-					ProgressView()
-						.progressViewStyle(.circular)
-						.tint(.green)
-						.scaleEffect(0.7)
+					Image(systemName: "play.circle.fill")
+						.font(.system(size: 12))
+						.foregroundStyle(.green)
+						.frame(width: 14, height: 14)
 				}
 			}
 			.keylineTint(Color(red: 0.04, green: 0.69, blue: 0.85)) // ブランドシアン #09AFD9
@@ -86,20 +86,23 @@ private struct CountsView: View {
 					Circle().fill(.red).frame(width: 7, height: 7)
 					Text("\(state.waitingCount)").font(.caption.bold()).foregroundStyle(.white)
 				}
+				.frame(height: 16)
 			}
 			if state.runningCount > 0 {
 				HStack(spacing: 3) {
-					ProgressView()
-						.progressViewStyle(.circular)
-						.tint(.green)
-						.scaleEffect(0.6)
+					Image(systemName: "arrow.triangle.2.circlepath")
+						.font(.system(size: 11))
+						.foregroundStyle(.green)
+						.frame(width: 12, height: 12)
 					Text("\(state.runningCount)").font(.caption.bold()).foregroundStyle(.white)
 				}
+				.frame(height: 16)
 			}
 			if state.waitingCount == 0 && state.runningCount == 0 {
 				Image(systemName: "checkmark.circle.fill")
 					.font(.caption)
 					.foregroundStyle(.green)
+					.frame(height: 16)
 			}
 		}
 	}

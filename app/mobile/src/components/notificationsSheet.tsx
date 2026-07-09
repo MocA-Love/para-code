@@ -58,7 +58,7 @@ export function NotificationsButton({ notifications, onOpenNotification }: {
 				) : null}
 			</Pressable>
 
-			<BottomSheet visible={open} onClose={() => setOpen(false)} title="通知">
+			<BottomSheet visible={open} onClose={() => setOpen(false)} title="通知" fullHeight>
 				<ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
 					{notifications.length === 0 ? (
 						<Text style={styles.empty}>通知はありません</Text>
@@ -99,7 +99,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.red, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
 	},
 	bellBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
-	list: { paddingHorizontal: 14 },
+	list: { flex: 1, paddingHorizontal: 14 },
 	listContent: { paddingBottom: 32 },
 	empty: { color: colors.textDim, fontSize: 13, textAlign: 'center', paddingVertical: 32 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, borderRadius: 14, marginBottom: 4 },
