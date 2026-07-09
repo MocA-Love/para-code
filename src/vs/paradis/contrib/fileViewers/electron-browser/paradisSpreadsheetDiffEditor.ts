@@ -36,7 +36,7 @@ import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay,
 import { IParadisRenderShape } from '../common/paradisSpreadsheet.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
-import { IParadisDiffCell, IParadisDiffRow, IParadisDiffSheet, IParadisShapeDiff, IParadisShapeRender, buildDiffSheets, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
+import { IParadisDiffCell, IParadisDiffRow, IParadisDiffSheet, IParadisShapeDiff, IParadisShapeRender, buildDiffSheets, buildShapeDiff, formatDiffDetails, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 
 import './media/paradisSpreadsheet.css';
@@ -465,6 +465,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		applyBaseCellStyle(td, cell);
 		if (cell.diffStatus) {
 			td.classList.add(`diff-${cell.diffStatus}`);
+		}
+		if (cell.diffTitle || cell.diffDetails) {
+			td.title = cell.diffTitle ?? formatDiffDetails(cell.diffDetails ?? []);
 		}
 		if (cell.diffSegments && cell.diffSegments.length > 0) {
 			for (const seg of cell.diffSegments) {

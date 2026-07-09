@@ -467,9 +467,19 @@ function shapeDiffStroke(status: string, side: 'original' | 'modified', shape: I
 	}
 }
 
+function appendSvgHoverTitle(el: SVGElement, title: string | undefined, pointerEvents: string): void {
+	if (!title) {
+		return;
+	}
+	const titleEl = el.ownerDocument.createElementNS(SVG_NS, 'title');
+	titleEl.textContent = title;
+	el.appendChild(titleEl);
+	el.setAttribute('pointer-events', pointerEvents);
+}
+
 /** 図形diff: 各図形を差分ステータス色で描画する SVG オーバーレイ。 */
 export function buildShapeDiffOverlay(
-	renders: readonly { readonly shape: IParadisRenderShape; readonly status: string }[],
+	renders: readonly { readonly shape: IParadisRenderShape; readonly status: string; readonly diffTitle?: string }[],
 	side: 'original' | 'modified',
 	rowYByExcelRow: Map<number, number>,
 	columnWidths: readonly number[],
@@ -483,7 +493,7 @@ export function buildShapeDiffOverlay(
 
 	const svg = doc.createElementNS(SVG_NS, 'svg') as SVGElement;
 	svg.setAttribute('class', 'paradis-spreadsheet-shapes');
-	for (const { shape, status } of renders) {
+	for (const { shape, status, diffTitle } of renders) {
 		const tl = anchorPos(shape.from);
 		const br = anchorPos(shape.to);
 		const st = shapeDiffStroke(status, side, shape);
@@ -499,6 +509,7 @@ export function buildShapeDiffOverlay(
 			img.setAttribute('preserveAspectRatio', 'none');
 			img.setAttribute('href', shape.href);
 			img.setAttribute('opacity', String(st.opacity));
+			appendSvgHoverTitle(img, status !== 'unchanged' ? diffTitle : undefined, 'visiblePainted');
 			svg.appendChild(img);
 			if (status !== 'unchanged') {
 				const rect = doc.createElementNS(SVG_NS, 'rect');
@@ -512,6 +523,7 @@ export function buildShapeDiffOverlay(
 				if (st.dash) {
 					rect.setAttribute('stroke-dasharray', st.dash);
 				}
+				appendSvgHoverTitle(rect, diffTitle, 'visiblePainted');
 				svg.appendChild(rect);
 			}
 			continue;
@@ -530,6 +542,7 @@ export function buildShapeDiffOverlay(
 			if (st.dash) {
 				line.setAttribute('stroke-dasharray', st.dash);
 			}
+			appendSvgHoverTitle(line, status !== 'unchanged' ? diffTitle : undefined, 'stroke');
 			svg.appendChild(line);
 		} else {
 			const rect = doc.createElementNS(SVG_NS, 'rect');
@@ -544,6 +557,7 @@ export function buildShapeDiffOverlay(
 			if (st.dash) {
 				rect.setAttribute('stroke-dasharray', st.dash);
 			}
+			appendSvgHoverTitle(rect, status !== 'unchanged' ? diffTitle : undefined, 'visiblePainted');
 			svg.appendChild(rect);
 		}
 	}
