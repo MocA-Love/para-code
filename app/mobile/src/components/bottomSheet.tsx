@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useRef, useState } from 'react';
 import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme.js';
+import { hapticImpact } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 
 /**
@@ -47,7 +48,7 @@ export function BottomSheet({ visible, onClose, title, children, fullHeight = fa
 				<View style={styles.handle} />
 				<View style={styles.head}>
 					<Text style={styles.title}>{title}</Text>
-					<Pressable style={styles.close} onPress={onClose} accessibilityLabel="閉じる">
+					<Pressable style={styles.close} onPress={() => { hapticImpact('light'); onClose(); }} accessibilityLabel="閉じる">
 						<Ionicons name="close" size={14} color={colors.textDim} />
 					</Pressable>
 				</View>

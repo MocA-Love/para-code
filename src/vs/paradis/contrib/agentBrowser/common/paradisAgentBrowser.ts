@@ -161,6 +161,12 @@ export interface IParadisAgentPaneStatus {
 	readonly status: ParadisAgentStatus;
 	/** 最終更新 (epoch ms) */
 	readonly changedAt: number;
+	/**
+	 * hookが最後に報告した作業ディレクトリ。renderer側でトークン→ターミナルの解決が
+	 * できない場合 (ウィンドウリロード後にpark中のエディタターミナルがまだ復元されていない等) の
+	 * スコープ解決フォールバック (cwd→リポジトリ/worktreeルートの最長一致) に使う。
+	 */
+	readonly cwd?: string;
 }
 
 /**

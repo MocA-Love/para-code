@@ -10,6 +10,7 @@ import { ConnectionGate } from '../src/components/connectionGate.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
 import { colors } from '../src/theme.js';
+import { hapticImpact } from '../src/haptics.js';
 import type { UsageAgent, UsageDashboardResult } from '../src/store.js';
 
 /** モデル・プロジェクト別バーの表示上限件数。 */
@@ -89,6 +90,9 @@ export default function CcusageScreen() {
 
 	const [data, setData] = useState<UsageDashboardResult | undefined>();
 	const [loading, setLoading] = useState(false);
+	// pull-to-refresh 由来の読み込みだけ RefreshControl のスピナーに紐付ける
+	// （初回ロードを refreshing にすると中央の ActivityIndicator と二重表示になる）。
+	const [pullRefreshing, setPullRefreshing] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 
 	const refresh = useCallback(async (bypassCache = false) => {
@@ -107,16 +111,25 @@ export default function CcusageScreen() {
 
 	useEffect(() => { void refresh(); }, [refresh]);
 
+	const onPullRefresh = useCallback(async () => {
+		setPullRefreshing(true);
+		try {
+			await refresh(true);
+		} finally {
+			setPullRefreshing(false);
+		}
+	}, [refresh]);
+
 	const todayCost = useMemo(() => {
-		if (!data) { return undefined; }
+		if (!data?.days) { return undefined; }
 		const today = localDateKey(new Date());
 		const row = data.days.find(d => d.date === today);
 		return row ? row.models.reduce((sum, m) => sum + m.cost, 0) : 0;
 	}, [data]);
 
-	const dailyCosts = useMemo(() => data ? recentDailyCosts(data, DAILY_WINDOW_DAYS) : [], [data]);
+	const dailyCosts = useMemo(() => data?.days ? recentDailyCosts(data, DAILY_WINDOW_DAYS) : [], [data]);
 	const maxDailyCost = useMemo(() => Math.max(0.01, ...dailyCosts.map(d => d.cost)), [dailyCosts]);
-	const models = useMemo(() => data ? aggregateModels(data, AGGREGATE_WINDOW_DAYS).slice(0, TOP_MODELS) : [], [data]);
+	const models = useMemo(() => data?.days ? aggregateModels(data, AGGREGATE_WINDOW_DAYS).slice(0, TOP_MODELS) : [], [data]);
 	const maxModelCost = useMemo(() => Math.max(0.01, ...models.map(m => m.cost)), [models]);
 	const sessions = useMemo(() => (data?.sessions ?? []).slice(0, TOP_SESSIONS), [data]);
 
@@ -125,18 +138,18 @@ export default function CcusageScreen() {
 			<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
 				<View style={styles.header}>
 					<Text style={styles.title}>Ccusage</Text>
-					<Pressable style={styles.closeBtn} onPress={() => router.back()} accessibilityLabel="閉じる">
+					<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
 						<Ionicons name="close" size={16} color={colors.textDim} />
 					</Pressable>
 				</View>
 				<ScrollView
 					style={styles.scroll}
 					contentContainerStyle={{ paddingBottom: tabBarSpacer }}
-					refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void refresh(true); }} tintColor={colors.textDim} />}
+					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
-					{data && data.failedReports.length > 0 ? (
+					{data && (data.failedReports?.length ?? 0) > 0 ? (
 						<Text style={styles.warn}>一部のレポート取得に失敗しました（{data.failedReports.join(', ')}）</Text>
 					) : null}
 

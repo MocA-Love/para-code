@@ -127,7 +127,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * エージェントCLIのhook通知 (GET /agent-hook) で更新される、ペインごとの実行状態。
 	 * workbench が listPaneStatuses でポーリングし、Workspaces ビューのスピナー表示に使う。
 	 */
-	private readonly _paneStatuses = new Map<string, { status: ParadisAgentStatus; changedAt: number }>();
+	private readonly _paneStatuses = new Map<string, { status: ParadisAgentStatus; changedAt: number; cwd?: string }>();
 	private readonly _portFilePath: string;
 	private readonly _cdpGateway: ParadisCdpGateway;
 	/** vendored chrome-devtools-mcp をペイン毎の子プロセスとして管理するプロキシ。 */
@@ -181,21 +181,24 @@ export class ParadisAgentBrowserService extends Disposable {
 		//  - バックグラウンドタスクの起動を Stop hook より後から検知した場合の
 		//    「完了 → 実行中」への補正 (tail はポーリング分だけ hook より遅れることがある)
 		this._register(onParadisAgentPaneActivity(({ token, activity }) => {
-			const current = this._paneStatuses.get(token)?.status;
+			const entry = this._paneStatuses.get(token);
+			const current = entry?.status;
+			// hookが報告済みのcwd (スコープ解決フォールバック用) は補正更新でも維持する
+			const cwd = entry?.cwd;
 			if (activity.pendingQuestion) {
 				if (current !== 'question' && current !== 'permission') {
-					this._paneStatuses.set(token, { status: 'question', changedAt: Date.now() });
+					this._paneStatuses.set(token, { status: 'question', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}) });
 				}
 				return; // 質問への回答待ちが最優先。バックグラウンドタスク補正で上書きさせない
 			}
 			if (current === 'question') {
 				// 回答された → エージェントは続行する (直後のツール実行hookが上書きしてくれるが、
 				// 来ない場合でも赤表示が残らないよう working へ戻す)
-				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now() });
+				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}) });
 				return;
 			}
 			if (paradisCountLiveBackgroundTasks(token, Date.now()) > 0 && (current === undefined || current === 'review')) {
-				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now() });
+				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}) });
 			}
 		}));
 	}
@@ -616,7 +619,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (normalized === 'idle') {
 			this._paneStatuses.delete(token);
 		} else {
-			this._paneStatuses.set(token, { status: normalized, changedAt: Date.now() });
+			// cwd はhookが報告した最新値を保持する (今回のイベントに無ければ既知の値を維持)。
+			const knownCwd = cwd ?? this._paneStatuses.get(token)?.cwd;
+			this._paneStatuses.set(token, { status: normalized, changedAt: Date.now(), ...(knownCwd !== undefined ? { cwd: knownCwd } : {}) });
 		}
 		this.logService.trace(`[ParadisAgentBrowser] agent-hook: ${eventType} -> ${normalized}`);
 
@@ -626,7 +631,7 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/** workbench のポーリング用: 現在のペイン実行状態一覧 */
 	async listPaneStatuses(): Promise<IParadisAgentPaneStatus[]> {
-		return [...this._paneStatuses].map(([token, entry]) => ({ token, status: entry.status, changedAt: entry.changedAt }));
+		return [...this._paneStatuses].map(([token, entry]) => ({ token, status: entry.status, changedAt: entry.changedAt, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) }));
 	}
 
 	/** review 状態の確認遷移 (スコープを開いた時に workbench から呼ばれる) */

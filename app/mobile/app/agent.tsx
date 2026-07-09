@@ -21,7 +21,7 @@ import { useAgentActions } from '../src/hooks/useAgentActions.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { colors } from '../src/theme.js';
-import { hapticSelection } from '../src/haptics.js';
+import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 /**
  * エージェント詳細画面。ホームの一覧（または通知）から1エージェントを選んで開く
@@ -147,6 +147,25 @@ export default function AgentDetailScreen() {
 			listRef.current?.scrollToEnd({ animated: false });
 		}
 	};
+
+	// キーボード開閉でリストの高さが変わったとき、直前に最下部（最新）を見ていたなら
+	// 最下部へ張り付き直す。KeyboardAvoidingView は高さを縮めるだけでスクロール位置を
+	// 保持するため、これが無いと最新メッセージがキーボードの裏に隠れる。
+	// 履歴を遡って読んでいる最中（最下部にいない）は位置を動かさない。
+	const atBottomRef = useRef(true);
+	const listHeightRef = useRef(0);
+	const onListScroll = (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
+		const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+		atBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 48;
+	};
+	const onListLayout = (e: { nativeEvent: { layout: { height: number } } }) => {
+		const height = e.nativeEvent.layout.height;
+		const shrank = height < listHeightRef.current;
+		listHeightRef.current = height;
+		if (shrank && atBottomRef.current) {
+			listRef.current?.scrollToEnd({ animated: false });
+		}
+	};
 	const messageCount = chat?.messages.length ?? 0;
 	useEffect(() => {
 		if (messageCount > 0 && Date.now() >= pinUntilRef.current) {
@@ -221,7 +240,7 @@ export default function AgentDetailScreen() {
 							claude / codex をこのターミナルで起動（または一度発言）すると表示されます。
 							生の画面はターミナルタブで確認できます。
 						</Text>
-						<Pressable style={styles.retryBtn} onPress={() => refreshAgent(activeId)}>
+						<Pressable style={styles.retryBtn} onPress={() => { hapticImpact('light'); refreshAgent(activeId); }}>
 							<Ionicons name="refresh" size={14} color={colors.text} />
 							<Text style={styles.retryText}>再試行</Text>
 						</Pressable>
@@ -240,6 +259,9 @@ export default function AgentDetailScreen() {
 										: <ActivityGroup msgs={item.msgs} />}
 						contentContainerStyle={styles.listContent}
 						onContentSizeChange={onContentSizeChange}
+						onScroll={onListScroll}
+						scrollEventThrottle={32}
+						onLayout={onListLayout}
 					/>
 				)}
 			</View>
@@ -259,7 +281,7 @@ export default function AgentDetailScreen() {
 					sendDisabled={input.trim().length === 0}
 					tools={
 						<>
-							<Pressable style={styles.attachBtn} onPress={() => { void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">
+							<Pressable style={styles.attachBtn} onPress={() => { hapticImpact('light'); void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">
 								<Ionicons name={uploading ? 'hourglass-outline' : 'add'} size={20} color={colors.text} />
 							</Pressable>
 							<ModelPill
@@ -320,7 +342,7 @@ function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
 	const [expanded, setExpanded] = useState(false);
 	return (
 		<View>
-			<Pressable style={styles.activityRow} onPress={() => setExpanded(e => !e)} accessibilityLabel={expanded ? 'アクティビティを折りたたむ' : 'アクティビティを展開'}>
+			<Pressable style={styles.activityRow} onPress={() => { hapticSelection(); setExpanded(e => !e); }} accessibilityLabel={expanded ? 'アクティビティを折りたたむ' : 'アクティビティを展開'}>
 				<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
 				<Text style={styles.activityText} numberOfLines={1}>{summarizeActivity(msgs)}</Text>
 			</Pressable>
@@ -396,18 +418,20 @@ const styles = StyleSheet.create({
 	headerBody: { flex: 1, minWidth: 0 },
 	headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
 	headerSub: { color: colors.textDim, fontSize: 11, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	chatArea: { flex: 1, marginHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.panel, overflow: 'hidden' },
-	listContent: { padding: 12, gap: 8 },
+	// 案A「フルフラット」: チャット領域の外枠カードを廃止し、背景に直接描画する
+	// （Claude公式アプリ風。コードブロックや長文が画面幅を最大限使える）。
+	chatArea: { flex: 1 },
+	listContent: { paddingHorizontal: 14, paddingVertical: 10, gap: 9 },
 	placeholder: { color: colors.textDim, fontSize: 13, lineHeight: 20, padding: 16 },
 	noneBox: { alignItems: 'flex-start' },
 	retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },
 	retryText: { color: colors.text, fontSize: 12 },
 	truncatedNote: { color: colors.textDim, fontSize: 11, textAlign: 'center', paddingBottom: 8 },
-	bubble: { borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9 },
-	// ユーザー発言のみ幅を絞って右寄せ（チャットの視覚言語）。エージェント側は
-	// コード等の長い内容が多いため全幅を使う。
-	bubbleUser: { alignSelf: 'flex-end', backgroundColor: 'rgba(9,175,217,.28)', maxWidth: '88%' },
-	bubbleAssistant: { alignSelf: 'stretch', backgroundColor: colors.surface },
+	bubble: {},
+	// ユーザー発言のみ控えめなグレーバブル（右寄せ・送信側の角だけ詰める）。
+	// エージェント側はバブルを使わず背景に直接テキストを流す（案Aフルフラット）。
+	bubbleUser: { alignSelf: 'flex-end', backgroundColor: colors.surface2, borderRadius: 16, borderBottomRightRadius: 5, paddingHorizontal: 12, paddingVertical: 8, maxWidth: '86%' },
+	bubbleAssistant: { alignSelf: 'stretch', paddingHorizontal: 2 },
 	bubbleText: { color: colors.text, fontSize: 13, lineHeight: 19 },
 	thinkingText: { color: colors.textDim, fontSize: 11, fontStyle: 'italic', lineHeight: 16, paddingHorizontal: 4 },
 	activityRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 3 },

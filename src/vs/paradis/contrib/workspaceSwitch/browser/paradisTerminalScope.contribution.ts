@@ -15,6 +15,7 @@ import { ITerminalGroup, ITerminalGroupService, ITerminalService } from '../../.
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { paradisGetParkedTerminalEditorStateKey } from './paradisTerminalEditorPark.js';
 
 interface ISerializedTerminalRepositoryEntry {
 	readonly persistentProcessId: number;
@@ -54,7 +55,7 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 
 	constructor(
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
-		@ITerminalService terminalService: ITerminalService,
+		@ITerminalService private readonly terminalService: ITerminalService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IStorageService private readonly storageService: IStorageService,
 	) {
@@ -84,6 +85,21 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 			if (group.terminalInstances.some(instance => instance.instanceId === instanceId)) {
 				return stateKey;
 			}
+		}
+		// エディタエリアのターミナルはパネルのグループ台帳に乗らない。ここで解決できないと
+		// エージェント状態・通知・モバイル同期がすべて「スコープ外」として捨ててしまう
+		// （エディタターミナルで動くエージェントが常にアイドル表示になる実バグの原因）。
+		// park中なら park 台帳の stateKey を返す。
+		const parkedStateKey = paradisGetParkedTerminalEditorStateKey(instanceId);
+		if (parkedStateKey !== undefined) {
+			return parkedStateKey;
+		}
+		// このウィンドウに実在する（=どこにも退避されていない）残りのインスタンスは、
+		// 表示中の working set の一部＝アクティブスコープ所属とみなす。エディタエリアの
+		// ターミナルに加え、バックグラウンドターミナル等の台帳外インスタンスも拾う
+		// （スコープ切替時にはこれらも park され、上の台帳解決へ移る）。
+		if (this.terminalService.instances.some(instance => instance.instanceId === instanceId)) {
+			return this.workspaceSwitchService.activeStateKey;
 		}
 		return undefined;
 	}

@@ -11,7 +11,7 @@ import { isAgentWaiting } from '../store.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { colors } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
 /**
  * ワークスペースドロワー（mock.html 案A準拠）。全タブ共通の左スライドドロワーに
@@ -131,6 +131,7 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	};
 
 	const confirmUnpair = () => {
+		hapticWarning();
 		Alert.alert(
 			'ペアリング解除',
 			'このPCとのペアリング情報を削除します。再接続にはPC側でQRコードを再発行してのペアリングが必要です。',
@@ -155,7 +156,7 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 					</View>
 					<Pressable
 						style={styles.settingsBtn}
-						onPress={() => { onClose(); router.push('/settings'); }}
+						onPress={() => { hapticSelection(); onClose(); router.push('/settings'); }}
 						accessibilityLabel="設定"
 						hitSlop={6}
 					>
@@ -218,12 +219,12 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 			{/* 接続管理（旧ホームカードのボタン群から移設） */}
 			<View style={styles.footer}>
 				{connection === 'online' ? (
-					<Pressable style={styles.footerBtn} onPress={disconnectRelay} accessibilityLabel="切断">
+					<Pressable style={styles.footerBtn} onPress={() => { hapticImpact('light'); disconnectRelay(); }} accessibilityLabel="切断">
 						<Ionicons name="power-outline" size={13} color={colors.red} />
 						<Text style={[styles.footerBtnText, { color: colors.red }]}>切断</Text>
 					</Pressable>
 				) : (
-					<Pressable style={styles.footerBtn} onPress={connectRelay} accessibilityLabel="接続">
+					<Pressable style={styles.footerBtn} onPress={() => { hapticImpact('light'); connectRelay(); }} accessibilityLabel="接続">
 						<Ionicons name="power-outline" size={13} color={colors.green} />
 						<Text style={[styles.footerBtnText, { color: colors.green }]}>接続</Text>
 					</Pressable>
