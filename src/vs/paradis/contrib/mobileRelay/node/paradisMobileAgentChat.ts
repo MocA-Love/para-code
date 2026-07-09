@@ -62,6 +62,15 @@ export interface IParadisAgentChatMessage {
 	/** kind==='question' | 'tool_result' のとき: 対応付け用の tool_use ID。
 	 *  同じIDの tool_result が後続に現れたら質問は回答済み（モバイルはUIを非活性化する）。 */
 	readonly toolUseId?: string;
+	/** kind==='question' のとき: 同一 AskUserQuestion 呼び出しのグループキー。
+	 *  複数質問はモバイル側でこのキーごとに1枚のステップ式カードへ集約され、
+	 *  全問回答が揃ってから一括でTUIへ注入される（1問ごとのEnterはフォーム全体を
+	 *  Submitしてしまうため）。 */
+	readonly questionGroup?: string;
+	/** kind==='question' のとき: グループ内の位置（0起点）。 */
+	readonly questionIndex?: number;
+	/** kind==='question' のとき: グループの総質問数。 */
+	readonly questionCount?: number;
 }
 
 /** セッションのメタ情報（モバイルのエージェントタブに表示する）。 */
@@ -147,6 +156,9 @@ interface IRawMessage {
 	readonly options?: readonly IParadisAgentQuestionOption[];
 	readonly multiSelect?: boolean;
 	readonly toolUseId?: string;
+	readonly questionGroup?: string;
+	readonly questionIndex?: number;
+	readonly questionCount?: number;
 }
 
 /**
@@ -242,7 +254,15 @@ function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts
 			...(toolUseId !== undefined ? { toolUseId } : {}),
 		});
 	}
-	return out;
+	// 同一呼び出しの複数質問はモバイル側で1枚のステップ式カードへ集約するため、グループメタを
+	// 付与する（グループキーは transcript 経路では実 toolUseId。ライブ注入経路では toolUseId が
+	// 無いため injectLiveQuestions 側で合成キーを設定する）。
+	return out.map((message, index) => ({
+		...message,
+		questionIndex: index,
+		questionCount: out.length,
+		...(toolUseId !== undefined ? { questionGroup: toolUseId } : {}),
+	}));
 }
 
 /**
@@ -652,6 +672,8 @@ class TranscriptTailer {
 	 */
 	private readonly liveQuestionRealIds = new Map<string, string[]>();
 	private liveQuestionSeq = 0;
+	/** ライブ注入の質問グループ連番（1回の AskUserQuestion hook = 1グループ）。 */
+	private liveQuestionGroupSeq = 0;
 	/** セッションメタ情報（transcriptから学習した最新値）。 */
 	model: string | undefined;
 	effort: string | undefined;
@@ -931,6 +953,9 @@ class TranscriptTailer {
 	injectLiveQuestions(input: unknown): void {
 		this.enqueue(async () => {
 			const parsed = parseAskUserQuestions(input, undefined, Date.now());
+			// 1回の hook = 1つの AskUserQuestion 呼び出し。複数質問をモバイル側で1枚の
+			// ステップ式カードへ集約できるよう、共通の合成グループキーを付与する
+			const groupId = `liveg:${this.epoch}:${this.liveQuestionGroupSeq++}`;
 			const added: IParadisAgentChatMessage[] = [];
 			for (const message of parsed) {
 				const key = liveQuestionContentKey(message);
@@ -940,7 +965,7 @@ class TranscriptTailer {
 				const syntheticId = `live:${this.epoch}:${this.liveQuestionSeq++}`;
 				this.liveQuestions.set(key, syntheticId);
 				this.pendingQuestions.add(syntheticId);
-				added.push({ ...message, toolUseId: syntheticId, rev: this.rev++ });
+				added.push({ ...message, toolUseId: syntheticId, questionGroup: groupId, rev: this.rev++ });
 			}
 			if (added.length === 0) {
 				return;
@@ -1280,7 +1305,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 承認要求のライブ検出: Codex は承認要求を rollout に書かず、Claude もプロンプト
 		// 表示中は transcript に現れないため、PermissionRequest hook の tool_name / tool_input
 		// から内容カードを注入する（モバイルの承認バーに「何を承認するのか」を添える）。
-		if (event.event === 'PermissionRequest' && (event.toolName !== undefined || event.toolInput !== undefined)
+		// AskUserQuestion は除外: 上の PreToolUse 経路が選択肢つき質問カードを注入済みで、
+		// こちらも注入すると生JSONの承認カードが二重に出る（回答も質問カード側で完結する）。
+		if (event.event === 'PermissionRequest' && event.toolName !== 'AskUserQuestion'
+			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token))) {
 			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput);
 		}

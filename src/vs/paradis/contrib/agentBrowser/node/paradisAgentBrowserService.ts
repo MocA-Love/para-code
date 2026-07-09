@@ -589,7 +589,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		let normalized = paradisNormalizeAgentHookEvent(eventType, hookMessage);
 		// AskUserQuestion の PreToolUse は「選択式質問の回答待ち」の開始（permissionではなく
 		// question として扱う）。transcript には決着後まで現れないため、これが唯一のライブ検知点。
-		if (eventType === 'PreToolUse' && toolName === 'AskUserQuestion') {
+		// PermissionRequest も同様: AskUserQuestion は PreToolUse と PermissionRequest の両方を
+		// 発火するため、後者を permission にすると質問カードと承認カードが二重表示になる。
+		if ((eventType === 'PreToolUse' || eventType === 'PermissionRequest') && toolName === 'AskUserQuestion') {
 			normalized = 'question';
 		}
 		if (normalized === undefined) {

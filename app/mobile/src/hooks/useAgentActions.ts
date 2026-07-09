@@ -12,6 +12,12 @@ import { useAppStore } from '../appState.js';
  *  - 承認（Codex）: y / d / a のショートカット1文字（Enter不要）
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
+/** 複数質問グループ（AskUserQuestion の questions が2つ以上）の1問ぶんの回答。 */
+export type QuestionGroupAnswer =
+	| { kind: 'option'; index: number }
+	| { kind: 'multi'; indices: number[] }
+	| { kind: 'text'; optionCount: number; text: string };
+
 export interface AgentActions {
 	send(data: string): void;
 	sendText(text: string): void;
@@ -19,6 +25,7 @@ export interface AgentActions {
 	toggleQuestionOption(optionIndex: number): void;
 	confirmQuestion(): void;
 	answerQuestionFreeText(optionCount: number, text: string): void;
+	answerQuestionGroup(answers: QuestionGroupAnswer[]): void;
 	approve(choice: 'yes' | 'no'): void;
 }
 
@@ -69,6 +76,32 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	);
 
 	/**
+	 * 複数質問グループの一括回答。TUIの複数質問タブは「番号キー = 現在タブの選択肢を選んで
+	 * 次のタブへ自動前進」「Enter = フォーム全体をSubmit」なので、1問ごとにEnterを打つと
+	 * 途中でも全体が送信されてしまう（既知バグの原因）。ここでは全質問の回答を
+	 * 「番号（＋multiSelectはスペーストグル後Enterでタブ確定）を順に注入 → 最後に1度だけ
+	 * Enter」でまとめて送る。自由入力の質問は「Other番号 → CR（入力欄）→ テキスト → CR」。
+	 * 末尾のEnterは、最終タブの回答で自動Submitされた場合でも空の入力欄に落ちるだけで無害。
+	 */
+	const answerQuestionGroup = useCallback((answers: QuestionGroupAnswer[]) => {
+		const parts: string[] = [];
+		for (const answer of answers) {
+			if (answer.kind === 'option') {
+				parts.push(String(answer.index + 1));
+			} else if (answer.kind === 'multi') {
+				for (const i of answer.indices) {
+					parts.push(String(i + 1), ' ');
+				}
+				parts.push('\r'); // multiSelectは番号で前進しないため、タブ確定のEnterが要る
+			} else {
+				parts.push(String(answer.optionCount + 1), '\r', answer.text, '\r');
+			}
+		}
+		parts.push('\r'); // 全タブ回答後のSubmit
+		sendSequence(parts);
+	}, [sendSequence]);
+
+	/**
 	 * 承認クイックアクション。
 	 *  - Claude 許可: '1'（Yes、選択肢構成に依らず先頭がYes）+250ms+CR。
 	 *    拒否は番号ではなく Esc を注入する（「Always Allow」が無いプロンプトでは選択肢が
@@ -90,7 +123,7 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 		}
 	}, [terminalId, agent, send]);
 
-	return { send, sendText, answerQuestion, toggleQuestionOption, confirmQuestion, answerQuestionFreeText, approve };
+	return { send, sendText, answerQuestion, toggleQuestionOption, confirmQuestion, answerQuestionFreeText, answerQuestionGroup, approve };
 }
 
 /** 指定ターミナルのエージェントチャットを購読する（アタッチ/デタッチのライフサイクル込み）。 */
