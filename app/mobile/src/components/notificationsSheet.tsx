@@ -24,11 +24,9 @@ export function NotificationsButton({ notifications }: {
 		<Link href="/notifications" asChild>
 			<Link.AppleZoom>
 				<Pressable style={styles.bellBtn} onPress={() => hapticImpact('light')} accessibilityLabel="通知">
-					{/* 丸クリップはガラス面のラッパーだけに掛ける（ボタン自体に overflow: hidden を
-					    掛けるとバッジが円周で欠ける） */}
-					<View style={styles.bellGlass}>
-						<GlassSurface style={StyleSheet.absoluteFill} interactive />
-					</View>
+					{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される）。
+					    ボタン自体に overflow: hidden を掛けるとバッジが円周で欠けるので掛けない */}
+					<GlassSurface style={styles.bellGlass} interactive />
 					<Ionicons name="notifications-outline" size={18} color={colors.text} />
 					{questionCount > 0 ? (
 						<View style={styles.bellBadge}><Text style={styles.bellBadgeText}>{questionCount}</Text></View>
