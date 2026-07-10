@@ -15,12 +15,16 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { joinPath } from '../../../../base/common/resources.js';
+import { URI } from '../../../../base/common/uri.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -28,6 +32,21 @@ import { IParadisNotificationsSettingsService } from '../browser/paradisNotifica
 import { IParadisAivisPlaceholders, IParadisNotifyAudioRequest, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
 
 const POLL_INTERVAL = 2000;
+
+type NotifyStatus = 'review' | 'permission' | 'question';
+
+/** {{event}} の読み上げ用ラベル（日本語）。 */
+const EVENT_LABELS: Readonly<Record<NotifyStatus, string>> = Object.freeze({
+	// allow-any-unicode-next-line
+	review: '作業完了',
+	// allow-any-unicode-next-line
+	permission: '許可要求',
+	// allow-any-unicode-next-line
+	question: '質問',
+});
+
+// allow-any-unicode-next-line
+const STR_UNKNOWN_SPACE = '不明なスペース';
 
 // allow-any-unicode-next-line
 const STR_TITLE_REVIEW = 'エージェントの作業が完了しました';
@@ -52,6 +71,8 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
+		@IFileService private readonly fileService: IFileService,
+		@ITerminalService private readonly terminalService: ITerminalService,
 		@IHostService private readonly hostService: IHostService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
@@ -99,8 +120,9 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			// 質問(AskUserQuestion)への遷移も「人間の対応が必要」= 許可要求と同じPC通知
 			// (音 + OS通知 + Aivis) を出す。モバイルの質問通知は transcript ミラー
 			// (paradisMobileAgentChat) が質問本文付きで別経路発火するため、ここはPC向けのみ。
-			const effective = paneStatus.status === 'question' ? 'permission' : paneStatus.status;
-			void this._handleTransition(paneStatus.token, effective).catch(error => {
+			// status は {{event}} で区別できるよう question のまま渡し、テンプレート選択や
+			// 優先度の分岐箇所で permission と同扱いにする。
+			void this._handleTransition(paneStatus.token, paneStatus.status).catch(error => {
 				this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
 			});
 		}
@@ -114,7 +136,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		}
 	}
 
-	private async _handleTransition(token: string, status: 'review' | 'permission'): Promise<void> {
+	private async _handleTransition(token: string, status: NotifyStatus): Promise<void> {
 		const instanceId = this.paneTokenService.getInstanceForToken(token);
 		if (instanceId === undefined) {
 			return; // ペインが別ウィンドウ or 終了済み
@@ -133,7 +155,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			if (isVisibleAndFocused && !notifyWhileFocused) {
 				return;
 			}
-			await this._notify(undefined, status, this._resolveFallbackPlaceholders(status));
+			await this._notify(undefined, status, await this._resolveFallbackPlaceholders(status, instanceId));
 			return;
 		}
 
@@ -144,22 +166,25 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			return;
 		}
 
-		await this._notify(stateKey, status, this._resolvePlaceholders(stateKey, status));
+		await this._notify(stateKey, status, await this._resolvePlaceholders(stateKey, status, instanceId));
 	}
 
 	/** 音 + OS通知 + Aivis を発火する (stateKey === undefined はスコープ外フォールバック)。 */
-	private async _notify(stateKey: string | undefined, status: 'review' | 'permission', placeholders: IParadisAivisPlaceholders): Promise<void> {
+	private async _notify(stateKey: string | undefined, status: NotifyStatus, placeholders: IParadisAivisPlaceholders): Promise<void> {
+		// question は「人間の対応が必要」= permission と同じ扱い ({{event}} だけ区別)。
+		const needsAction = status === 'permission' || status === 'question';
+
 		// OS通知は従来どおり即時。通知音と Aivis は shared process の AudioScheduler で調停する
 		// （通知音 → 完了後に Aivis の順。重複通知音は捨て、Aivis は FIFO で失わない）。
 		const osEnabled = this.settingsService.getOsNotificationsEnabled()
-			&& (status === 'permission' ? this.settingsService.getOsNotifyOnPermission() : this.settingsService.getOsNotifyOnReview());
+			&& (needsAction ? this.settingsService.getOsNotifyOnPermission() : this.settingsService.getOsNotifyOnReview());
 		if (osEnabled) {
 			this._showOsNotification(stateKey, status, placeholders);
 		}
 
 		const muted = this.settingsService.getSoundsMuted();
 		const request: { ringtone?: IParadisNotifyAudioRequest['ringtone']; aivis?: IParadisNotifyAudioRequest['aivis']; priority: IParadisNotifyAudioRequest['priority'] } = {
-			priority: status === 'permission' ? 'high' : 'normal',
+			priority: needsAction ? 'high' : 'normal',
 		};
 		if (!muted) {
 			request.ringtone = { id: this.settingsService.getSelectedRingtoneId(), volume: this.settingsService.getVolume() };
@@ -167,7 +192,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 
 		const aivis = this.settingsService.getAivisSettings();
 		if (aivis.enabled && aivis.apiKey && aivis.modelUuid) {
-			const template = status === 'permission' ? aivis.formatPermission : aivis.format;
+			const template = needsAction ? aivis.formatPermission : aivis.format;
 			const text = renderParadisAivisTemplate(template, placeholders).trim();
 			if (text) {
 				request.aivis = {
@@ -192,36 +217,91 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		}
 	}
 
-	/** stateKey (リポジトリID or worktreeキー) からAivisテンプレート用のプレースホルダを組み立てる。 */
-	private _resolvePlaceholders(stateKey: string, status: 'review' | 'permission'): IParadisAivisPlaceholders {
-		const event = status === 'permission' ? 'PermissionRequest' : 'Stop';
+	/**
+	 * stateKey (リポジトリID or worktreeキー) からAivisテンプレート用のプレースホルダを組み立てる。
+	 * どのキーも空文字のまま読み上げに渡らないよう、解決できない値は段階的にフォールバックする
+	 * (space → ワークスペースフォルダ名 → 既定語 / branch → space / worktree → branch)。
+	 */
+	private async _resolvePlaceholders(stateKey: string, status: NotifyStatus, instanceId: number): Promise<IParadisAivisPlaceholders> {
+		const event = EVENT_LABELS[status];
+		const tab = this._resolveTabName(instanceId);
 
 		for (const repository of this.workspaceSwitchService.repositories) {
 			if (repository.id === stateKey) {
-				return { workspace: repository.name, project: repository.name, event };
+				const space = repository.name || this._workspaceFolderName() || STR_UNKNOWN_SPACE;
+				const branch = (await this._resolveBranch(repository.uri)) || space;
+				// メインcheckoutにworktree名は無いため、常に何かが読まれるようブランチ名で代替する
+				return { space, branch, worktree: branch, tab, event };
 			}
 			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
 				if (paradisWorktreeStateKey(worktree.uri) === stateKey) {
-					return { workspace: repository.name, project: repository.name, worktree: worktree.name, branch: worktree.branch, event };
+					const space = repository.name || this._workspaceFolderName() || STR_UNKNOWN_SPACE;
+					const branch = worktree.branch || (await this._resolveBranch(worktree.uri)) || space;
+					return { space, branch, worktree: worktree.name || branch, tab, event };
 				}
 			}
 		}
-		return { event };
+		// stateKey がどのスペースにも一致しない (切り替え直後でリスト未更新・削除済み等)
+		return this._resolveFallbackPlaceholders(status, instanceId);
 	}
 
-	/** スコープ外ターミナル用フォールバック: ワークスペースフォルダ名をプレースホルダにする。 */
-	private _resolveFallbackPlaceholders(status: 'review' | 'permission'): IParadisAivisPlaceholders {
-		const event = status === 'permission' ? 'PermissionRequest' : 'Stop';
+	/** スコープ外ターミナル用フォールバック: ワークスペースフォルダ名をスペース名として使う。 */
+	private async _resolveFallbackPlaceholders(status: NotifyStatus, instanceId: number): Promise<IParadisAivisPlaceholders> {
+		const event = EVENT_LABELS[status];
+		const tab = this._resolveTabName(instanceId);
 		const folder = this.contextService.getWorkspace().folders[0];
-		if (folder) {
-			return { workspace: folder.name, project: folder.name, event };
-		}
-		return { event };
+		const space = folder?.name || STR_UNKNOWN_SPACE;
+		const branch = (folder ? await this._resolveBranch(folder.uri) : undefined) || space;
+		return { space, branch, worktree: branch, tab, event };
 	}
 
-	private _showOsNotification(stateKey: string | undefined, status: 'review' | 'permission', placeholders: IParadisAivisPlaceholders): void {
-		const title = status === 'permission' ? STR_TITLE_PERMISSION : STR_TITLE_REVIEW;
-		const body = placeholders.worktree ? `${placeholders.workspace ?? ''} (${placeholders.worktree})` : placeholders.workspace;
+	private _workspaceFolderName(): string | undefined {
+		return this.contextService.getWorkspace().folders[0]?.name || undefined;
+	}
+
+	/** 遷移したペインのターミナルタブ名 (リネーム済みならその名前)。 */
+	private _resolveTabName(instanceId: number): string | undefined {
+		return this.terminalService.instances.find(instance => instance.instanceId === instanceId)?.title || undefined;
+	}
+
+	/**
+	 * チェックアウト中のブランチ名を `.git/HEAD` から解決する (detached HEAD は短縮SHA)。
+	 * worktree のように `.git` がファイル (`gitdir: <path>`) の場合は参照先を辿る。
+	 * 解決できなければ undefined (呼び出し側でフォールバック)。
+	 */
+	private async _resolveBranch(root: URI): Promise<string | undefined> {
+		try {
+			const dotGit = joinPath(root, '.git');
+			let headUri = joinPath(dotGit, 'HEAD');
+			if ((await this.fileService.stat(dotGit)).isFile) {
+				// trim: Windows の .git ファイルは CRLF のことがあり、\r がパス末尾に残ると解決に失敗する
+				const gitdirContent = (await this.fileService.readFile(dotGit)).value.toString().trim();
+				const gitdir = gitdirContent.match(/^gitdir:\s*(?<path>.+?)\s*$/m)?.groups?.path;
+				if (!gitdir) {
+					return undefined;
+				}
+				const gitdirUri = gitdir.startsWith('/') || /^[A-Za-z]:[\\/]/.test(gitdir)
+					? URI.file(gitdir)
+					: joinPath(root, gitdir);
+				headUri = joinPath(gitdirUri, 'HEAD');
+			}
+			const head = (await this.fileService.readFile(headUri)).value.toString().trim();
+			const ref = head.match(/^ref:\s*refs\/heads\/(?<branch>.+)$/)?.groups?.branch;
+			if (ref) {
+				return ref;
+			}
+			// 40桁=SHA-1 / 64桁=SHA-256 リポジトリの detached HEAD
+			return /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(head) ? head.slice(0, 7) : undefined;
+		} catch {
+			return undefined; // gitリポジトリでない・読み取り失敗
+		}
+	}
+
+	private _showOsNotification(stateKey: string | undefined, status: NotifyStatus, placeholders: IParadisAivisPlaceholders): void {
+		const title = status === 'review' ? STR_TITLE_REVIEW : STR_TITLE_PERMISSION;
+		const body = placeholders.worktree && placeholders.worktree !== placeholders.space
+			? `${placeholders.space ?? ''} (${placeholders.worktree})`
+			: placeholders.space;
 
 		this.hostService.showToast({ title, body, silent: true }, CancellationToken.None).then(result => {
 			// スコープ外フォールバック (stateKey === undefined) はクリックでの切り替え先が無い

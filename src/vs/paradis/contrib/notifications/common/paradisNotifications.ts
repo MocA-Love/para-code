@@ -137,46 +137,46 @@ export interface IParadisInstallLogResult {
 export type ParadisAivisEventKind = 'complete' | 'permission';
 
 export interface IParadisAivisPlaceholders {
+	/** Workspacesビュー上のスペース名 (リポジトリ名。worktree内でも親スペース名) */
+	space?: string;
 	branch?: string;
-	workspace?: string;
 	worktree?: string;
-	project?: string;
+	/** 遷移したペインのターミナルタブ名 */
 	tab?: string;
-	pane?: string;
 	event?: string;
 }
 
-export const PARADIS_AIVIS_PLACEHOLDER_KEYS = ['branch', 'workspace', 'worktree', 'project', 'tab', 'pane', 'event'] as const satisfies readonly (keyof IParadisAivisPlaceholders)[];
+export const PARADIS_AIVIS_PLACEHOLDER_KEYS = ['space', 'branch', 'worktree', 'tab', 'event'] as const satisfies readonly (keyof IParadisAivisPlaceholders)[];
 
-/** プレースホルダ表示用ラベル（日本語、Superset移植）。 */
+/** プレースホルダ表示用ラベル（日本語）。 */
 export const PARADIS_AIVIS_PLACEHOLDER_LABELS: Readonly<Record<(typeof PARADIS_AIVIS_PLACEHOLDER_KEYS)[number], string>> = Object.freeze({
+	// allow-any-unicode-next-line
+	space: 'スペース',
 	// allow-any-unicode-next-line
 	branch: 'ブランチ',
 	// allow-any-unicode-next-line
-	workspace: 'ワークスペース',
-	// allow-any-unicode-next-line
 	worktree: 'ワークツリー',
 	// allow-any-unicode-next-line
-	project: 'プロジェクト',
-	// allow-any-unicode-next-line
 	tab: 'タブ',
-	// allow-any-unicode-next-line
-	pane: 'ペーン',
 	// allow-any-unicode-next-line
 	event: 'イベント',
 });
 
+/**
+ * テンプレート中の `{{key}}` を置換する。未知のキー・値が未設定のキーは空文字に落とす
+ * （`{{...}}` の記号がそのまま読み上げに渡らないよう、`}}` までの任意文字列にマッチさせる）。
+ */
 export function renderParadisAivisTemplate(template: string, vars: IParadisAivisPlaceholders): string {
-	return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_match, key: string) => {
+	return template.replace(/\{\{\s*([^{}]*?)\s*\}\}/g, (_match, key: string) => {
 		const value = (vars as Record<string, string | undefined>)[key];
 		return value ?? '';
 	});
 }
 
 // allow-any-unicode-next-line
-export const PARADIS_AIVIS_DEFAULT_FORMAT = 'ワークスペース、{{workspace}}、です';
+export const PARADIS_AIVIS_DEFAULT_FORMAT = '{{space}}の作業が完了しました';
 // allow-any-unicode-next-line
-export const PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION = '{{branch}}で対応が必要です';
+export const PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION = '{{space}}で対応が必要です';
 
 export type ParadisAivisWordType = 'PROPER_NOUN' | 'COMMON_NOUN' | 'VERB' | 'ADJECTIVE' | 'SUFFIX';
 
