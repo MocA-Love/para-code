@@ -13,6 +13,7 @@
 // どちらも件数・走査量・時間に上限を設け、モバイルの1リクエストで返し切れる量に丸める。
 
 import { spawn } from 'child_process';
+import { isWindows } from '../../../../base/common/platform.js';
 import { rgDiskPath } from '../../../../base/node/ripgrep.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
@@ -43,6 +44,17 @@ const PREVIEW_TEXT_LIMIT = 240;
 
 /** rg の共通引数: .git は常に除外（シンボリックリンクは rg の既定で辿らない）。 */
 const COMMON_ARGS = ['--no-config', '-g', '!.git'] as const;
+
+/**
+ * rg が返す相対パスを '/'区切りへ正規化する。Windows の rg はバックスラッシュ区切り
+ * （`src\a\b.ts`）を返すが、モバイルとの契約（および fs チャネルのパス検査。`\` を含む
+ * パスは脱出対策で一律拒否される）は '/'区切りのため、ここで変換しないと検索結果を
+ * タップしたときに invalid path になる。'./' / '.\' プレフィックスもここで剥がす。
+ */
+function normalizeRgPath(path: string): string {
+	const slashed = isWindows ? path.replaceAll('\\', '/') : path;
+	return slashed.startsWith('./') ? slashed.slice(2) : slashed;
+}
 
 function spawnRg(rgPath: string, args: string[], cwd: string, onLine: (line: string) => boolean | void, logService: ILogService): Promise<void> {
 	return new Promise<void>(resolve => {
@@ -108,7 +120,7 @@ export async function paradisSearchFiles(rootPath: string, query: string, maxRes
 	let scanTruncated = false;
 
 	await spawnRg(rgPath, [...COMMON_ARGS, '--files'], rootPath, line => {
-		const path = line.trim();
+		const path = normalizeRgPath(line.trim());
 		if (path.length === 0) {
 			return;
 		}
@@ -180,8 +192,8 @@ export async function paradisSearchText(rootPath: string, query: string, maxResu
 		if (typeof pathText !== 'string' || typeof lineNumber !== 'number' || typeof linesText !== 'string') {
 			return;
 		}
-		// rg は './' 始まりで返すことがあるため正規化する
-		const path = pathText.startsWith('./') ? pathText.slice(2) : pathText;
+		// rg は './' 始まり（Windowsでは '\'区切り）で返すことがあるため正規化する
+		const path = normalizeRgPath(pathText);
 		let text = linesText.replace(/\r?\n$/, '').trim();
 		if (text.length > PREVIEW_TEXT_LIMIT) {
 			// allow-any-unicode-next-line
