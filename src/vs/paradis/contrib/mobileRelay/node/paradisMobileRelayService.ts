@@ -598,10 +598,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	/**
 	 * agentチャネル用: renderer から「ターミナルinstanceId ⇔ ペイントークン」対応表を同期する
-	 * （全置換）。チャットミラーはこの対応でモバイルの attach(id) を transcript へ解決する。
+	 * （ウィンドウ単位の全置換）。チャットミラーはこの対応でモバイルの attach(id) を transcript へ解決する。
 	 */
-	async syncAgentPanes(entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void> {
-		this.agentChat.syncPanes(entries);
+	async syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void> {
+		this.agentChat.syncPanes(windowId, entries);
 	}
 
 	/**

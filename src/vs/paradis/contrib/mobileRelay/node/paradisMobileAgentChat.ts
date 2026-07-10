@@ -1292,15 +1292,35 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	/** renderer から同期される「ターミナルinstanceId ⇔ ペイントークン」対応表 (全置換)。 */
-	syncPanes(entries: readonly { terminalId: number; token: string; cwd?: string }[]): void {
+	/** windowId → そのウィンドウが最後に同期したペイン対応。ウィンドウ単位で全置換する。 */
+	private readonly panesByWindow = new Map<number, readonly { terminalId: number; token: string; cwd?: string }[]>();
+
+	/**
+	 * renderer から同期される「ターミナルinstanceId ⇔ ペイントークン」対応表。
+	 *
+	 * shared process は全ウィンドウで共有されるため、全体を置換すると別ウィンドウの登録が
+	 * 消え、そのウィンドウのペインの tailer (fs.watch + ポーリング) が同期のたびに破棄/再生成
+	 * を繰り返してしまう。windowId 単位で置換し、全ウィンドウ分をマージして対応表を再構築する。
+	 * terminalId (instanceId) はウィンドウ内でしか一意でないため、ウィンドウ間で衝突した場合は
+	 * 後勝ちになる (従来の全置換と同等の制約。トークンはUUIDなので衝突しない)。
+	 * ウィンドウを閉じる際は renderer が空配列でベストエフォート同期して自分の分を消す
+	 * (クラッシュ等で届かなかった分は relay の再起動まで残るが、実害は tailer の空回りのみ)。
+	 */
+	syncPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string }[]): void {
+		if (entries.length === 0) {
+			this.panesByWindow.delete(windowId);
+		} else {
+			this.panesByWindow.set(windowId, entries);
+		}
 		this.terminalToToken.clear();
 		this.tokenToCwd.clear();
-		for (const entry of entries) {
-			if (typeof entry.terminalId === 'number' && typeof entry.token === 'string' && entry.token.length > 0) {
-				this.terminalToToken.set(entry.terminalId, entry.token);
-				if (typeof entry.cwd === 'string' && entry.cwd.length > 0) {
-					this.tokenToCwd.set(entry.token, entry.cwd);
+		for (const windowEntries of this.panesByWindow.values()) {
+			for (const entry of windowEntries) {
+				if (typeof entry.terminalId === 'number' && typeof entry.token === 'string' && entry.token.length > 0) {
+					this.terminalToToken.set(entry.terminalId, entry.token);
+					if (typeof entry.cwd === 'string' && entry.cwd.length > 0) {
+						this.tokenToCwd.set(entry.token, entry.cwd);
+					}
 				}
 			}
 		}

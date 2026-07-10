@@ -48,6 +48,20 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 	private _enforcing = false;
 
 	/**
+	 * リポジトリroot (比較キー) → git.close を実行した回数。
+	 *
+	 * スコープ判定 (isInScope の URI 比較) と git 拡張の root 解決 (realpath ベース) は、
+	 * フォルダパスに symlink 等が含まれると食い違うことがある。その場合、reconcile の
+	 * openRepository (openIfClosed=true, openIfParent=true で各種ガードをバイパスする) が
+	 * 「スコープ外」と判定される親リポジトリを毎回開き直してしまい、close → open → close の
+	 * 無限ループになる (実際に2秒周期のループが発生した)。同一 root への close 試行回数に
+	 * 上限を設け、上限到達後は「開いたまま非表示」で妥協してループを遮断する。
+	 * フォルダ入れ替え (= 本物のスペース切り替え) でリセットして再試行を許す。
+	 */
+	private readonly _closeAttempts = new Map<string, number>();
+	private static readonly MAX_CLOSE_ATTEMPTS = 3;
+
+	/**
 	 * スコープ外リポジトリの close / 現フォルダの openRepository を git 拡張へ依頼する遅延実行。
 	 * 切り替え直後は git 拡張自身がフォルダ変更を処理中のため、少し置いてから・連打は集約して行う。
 	 */
@@ -100,6 +114,7 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		// フォルダ入れ替え (= スペース/worktree の切り替え) で全リポジトリを絞り直し、
 		// スコープ外リポジトリの close と現フォルダの開き直しを予約する
 		this._register(this.contextService.onDidChangeWorkspaceFolders(() => {
+			this._closeAttempts.clear();
 			this.applyToAll();
 			this._reconcileScheduler.schedule();
 		}));
@@ -107,6 +122,7 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(ParadisScmRepoScope.SETTING_ID)) {
 				if (this.isEnabled()) {
+					this._closeAttempts.clear();
 					this.applyToAll();
 					this._reconcileScheduler.schedule();
 				} else {
@@ -181,6 +197,19 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 				// 再確認する (閉じたリポジトリの root を git.close に渡すと hint 解決に失敗し、
 				// pickRepository フォールバックが別リポジトリを閉じたり QuickPick を出したりする)。
 				if (root && repository.provider.providerId === 'git' && !this.isInScope(repository) && [...this.scmService.repositories].includes(repository)) {
+					// ループ遮断: 同一 root を既に規定回数 close していたら、再オープンされ続けて
+					// いる (スコープ判定と git の root 解決の食い違い) と見なし、以後は close せず
+					// 「開いたまま非表示」に留める (_closeAttempts のコメント参照)
+					const rootKey = this.uriIdentityService.extUri.getComparisonKey(root);
+					const attempts = this._closeAttempts.get(rootKey) ?? 0;
+					if (attempts >= ParadisScmRepoScope.MAX_CLOSE_ATTEMPTS) {
+						if (attempts === ParadisScmRepoScope.MAX_CLOSE_ATTEMPTS) {
+							this._closeAttempts.set(rootKey, attempts + 1);
+							this.logService.info(`[ParadisScmRepoScope] repository keeps reopening after ${attempts} closes, giving up closing (kept hidden): ${root.toString()}`);
+						}
+						continue;
+					}
+					this._closeAttempts.set(rootKey, attempts + 1);
 					try {
 						this.logService.trace(`[ParadisScmRepoScope] closing out-of-scope repository: ${root.toString()}`);
 						await this.commandService.executeCommand('git.close', root);
