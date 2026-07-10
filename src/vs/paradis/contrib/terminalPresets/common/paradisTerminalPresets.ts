@@ -226,7 +226,28 @@ export function paradisGetPresetTasks(definition: IParadisPresetDefinition): { r
 	}
 }
 
-/** 全タスクの全コマンドを1つの文字列にする（autoRun 承認ハッシュ・確認ダイアログ・一覧プレビュー用）。 */
+/** 全タスクの全コマンドを1つの文字列にする（確認ダイアログ・一覧プレビュー用）。 */
 export function paradisPresetCommandSignature(definition: IParadisPresetDefinition, separator = '\n'): string {
 	return paradisGetPresetTasks(definition).tasks.flatMap(task => task.commands).join(separator);
+}
+
+/**
+ * autoRun の承認ハッシュ用の署名。コマンドに加えて作業ディレクトリ（プリセット既定・タスク別）も含める。
+ * 同じコマンドでも実行場所が変われば意味が変わるため、cwd だけの書き換えで承認をすり抜けられないようにする。
+ * cwd 指定が一切無い場合は旧実装（commands.join('\n')）と同値になり、既存の承認を無効化しない。
+ */
+export function paradisPresetApprovalSignature(definition: IParadisPresetDefinition): string {
+	const parts: string[] = [];
+	const presetCwd = definition.cwd?.trim();
+	if (presetCwd) {
+		parts.push(`#cwd:${presetCwd}`);
+	}
+	for (const task of paradisGetPresetTasks(definition).tasks) {
+		const taskCwd = task.cwd?.trim();
+		if (taskCwd) {
+			parts.push(`#cwd:${taskCwd}`);
+		}
+		parts.push(...task.commands);
+	}
+	return parts.join('\n');
 }

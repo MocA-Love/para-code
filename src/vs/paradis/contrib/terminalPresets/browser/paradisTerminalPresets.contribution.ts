@@ -14,6 +14,7 @@
 //   - コマンドパレット（プリセットを実行 / プリセットを管理）
 //   - worktree 作成直後の自動実行ヘルパー（リポジトリレベルは初回に内容の確認を挟む）
 
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { hash } from '../../../../base/common/hash.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -35,6 +36,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import {
 	IParadisPresetService,
 	IParadisResolvedPreset,
+	paradisPresetApprovalSignature,
 	paradisPresetCommandSignature,
 	PARADIS_PRESET_LAUNCH_MODES,
 	PARADIS_PRESET_LAYOUTS,
@@ -165,9 +167,12 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 				when: IsSessionsWindowContext.toNegated()
 			}));
 		}
-		this._register(this.presetService.onDidChangePresets(() => this._update()));
-		// 実行状態（緑ドット相当の●表示・クリック時のフォーカス切替）が変わったら登録し直す
-		this._register(this.presetService.onDidChangeRunningPresets(() => this._update()));
+		// 子プロセスの起動/終了イベントは連続で飛んでくるため、再構築は debounce して1回に合流させる
+		// （ボタン群の全 dispose→再登録がイベントごとに走ると、ツールバーのちらつきと無駄な再計算になる）
+		const updateScheduler = this._register(new RunOnceScheduler(() => this._update(), 50));
+		this._register(this.presetService.onDidChangePresets(() => updateScheduler.schedule()));
+		// 実行状態（●表示・クリック時のフォーカス切替）が変わったら登録し直す
+		this._register(this.presetService.onDidChangeRunningPresets(() => updateScheduler.schedule()));
 		this._update();
 	}
 
@@ -305,7 +310,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 			continue;
 		}
 		if (preset.source === 'workspace') {
-			const approvalKey = `${repositoryPath}:${preset.name}:${hash(paradisPresetCommandSignature(preset))}`;
+			const approvalKey = `${repositoryPath}:${preset.name}:${hash(paradisPresetApprovalSignature(preset))}`;
 			let approved: string[];
 			try {
 				approved = JSON.parse(storageService.get(AUTORUN_APPROVED_STORAGE_KEY, StorageScope.APPLICATION, '[]'));
