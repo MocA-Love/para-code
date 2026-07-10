@@ -110,8 +110,8 @@ export default function RootLayout() {
 						<Stack.Screen name="notifications" options={{ headerShown: false }} />
 						{/* 設定。ワークスペースドロワーの設定アイコンから開く */}
 						<Stack.Screen name="settings" options={{ headerShown: false, presentation: 'modal' }} />
-						{/* Ccusage ダッシュボード。設定画面の項目から開く */}
-						<Stack.Screen name="ccusage" options={{ headerShown: false }} />
+						{/* Ccusage ダッシュボード。設定画面の項目から開く（設定のmodalと区別するため水平pushにする） */}
+						<Stack.Screen name="ccusage" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>
 				</AuthGate>
 			</ThemeProvider>
