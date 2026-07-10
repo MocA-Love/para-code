@@ -44,8 +44,9 @@ function formatRelativeTime(at: number): string {
 export default function NotificationsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
-	const { notifications, setSelectedWs, setSelectedTerminalId } = useAppStore(useShallow(s => ({
+	const { notifications, setSelectedWs, setSelectedTerminalId, clearNotifications } = useAppStore(useShallow(s => ({
 		notifications: s.notifications, setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
+		clearNotifications: s.clearNotifications,
 	})));
 
 	const openNotification = (n: NotifyPayload) => {
@@ -66,6 +67,11 @@ export default function NotificationsScreen() {
 		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
 			<View style={styles.header}>
 				<Text style={styles.title}>通知</Text>
+				{notifications.length > 0 ? (
+					<Pressable style={styles.clearBtn} onPress={() => { hapticImpact('light'); clearNotifications(); }} accessibilityLabel="通知をすべてクリア">
+						<Text style={styles.clearBtnText}>クリア</Text>
+					</Pressable>
+				) : null}
 				<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
 					<Ionicons name="close" size={16} color={colors.textDim} />
 				</Pressable>
@@ -99,8 +105,10 @@ export default function NotificationsScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 10 },
+	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 20, paddingBottom: 10 },
 	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
+	clearBtn: { height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 14 },
+	clearBtnText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
 	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	list: { flex: 1, paddingHorizontal: 14 },
 	listContent: { paddingBottom: 32 },
