@@ -10,7 +10,7 @@ import { RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
-import { joinPath } from '../../../../base/common/resources.js';
+import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
@@ -624,8 +624,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!real) {
 			return undefined;
 		}
-		const rootPath = root.path.endsWith('/') ? root.path : `${root.path}/`;
-		if (real.path !== root.path && !real.path.startsWith(rootPath)) {
+		// fileService.realpath は fs.realpath の戻り値文字列をそのまま URI.path に入れて返すため、
+		// Windows ではネイティブパス（`C:\Users\...`、バックスラッシュ区切り・先頭スラッシュ無し）が
+		// 入り、URI 形式の root.path（`/c:/Users/...`）と文字列比較しても絶対に一致しない。
+		// URI.file で正規化し直してから、大文字小文字差（ドライブレター等）も吸収する
+		// extUriBiasedIgnorePathCase で包含判定する。
+		const realUri = real.scheme === 'file' && (real.path.includes('\\') || !real.path.startsWith('/')) ? URI.file(real.path) : real;
+		if (!extUriBiasedIgnorePathCase.isEqualOrParent(realUri, root)) {
 			return undefined;
 		}
 		return uri;
