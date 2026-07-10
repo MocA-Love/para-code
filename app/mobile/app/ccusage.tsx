@@ -16,7 +16,7 @@ import type { UsageAgent, UsageDashboardResult } from '../src/store.js';
 /** モデル・プロジェクト別バーの表示上限件数。 */
 const TOP_MODELS = 6;
 const TOP_SESSIONS = 10;
-const DAILY_WINDOW_DAYS = 14;
+const DAILY_WINDOW_DAYS = 7;
 const AGGREGATE_WINDOW_DAYS = 30;
 
 const AGENT_COLOR: Record<UsageAgent, string> = {
@@ -71,11 +71,11 @@ function aggregateModels(data: UsageDashboardResult, windowDays: number): ModelA
 	return [...byModel.values()].sort((a, b) => b.cost - a.cost);
 }
 
-/** 直近 windowDays 分の日別合計コスト（日付昇順、欠損日も0埋め）。 */
+/** 直近 windowDays 分の日別合計コスト（日付降順＝新しい日が先頭、欠損日も0埋め）。 */
 function recentDailyCosts(data: UsageDashboardResult, windowDays: number): { date: string; cost: number }[] {
 	const byDate = new Map(data.days.map(d => [d.date, d.models.reduce((sum, m) => sum + m.cost, 0)]));
 	const out: { date: string; cost: number }[] = [];
-	for (let i = windowDays - 1; i >= 0; i--) {
+	for (let i = 0; i < windowDays; i++) {
 		const date = localDateKey(new Date(Date.now() - i * 86_400_000));
 		out.push({ date, cost: byDate.get(date) ?? 0 });
 	}
