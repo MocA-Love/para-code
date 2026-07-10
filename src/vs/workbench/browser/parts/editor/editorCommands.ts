@@ -122,6 +122,8 @@ export const API_OPEN_WITH_EDITOR_COMMAND_ID = '_workbench.openWith';
 
 export const EDITOR_CORE_NAVIGATION_COMMANDS = [
 	SPLIT_EDITOR,
+	SPLIT_EDITOR_RIGHT, // PARA-PATCH: toolbar shows split-right/down buttons instead of SPLIT_EDITOR, exempt them from maxItems overflow too
+	SPLIT_EDITOR_DOWN, // PARA-PATCH: see above
 	CLOSE_EDITOR_COMMAND_ID,
 	UNPIN_EDITOR_COMMAND_ID,
 	UNLOCK_GROUP_COMMAND_ID,
