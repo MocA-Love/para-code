@@ -215,6 +215,60 @@
 	padding: 4px 6px;
 }
 
+/* ---------- task cards ---------- */
+
+.paradis-preset-editor-dialog .ppe-tasks {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.paradis-preset-editor-dialog .ppe-task-card {
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	padding: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.paradis-preset-editor-dialog .ppe-task-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.paradis-preset-editor-dialog .ppe-task-name {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-preset-editor-dialog .ppe-task-cwd {
+	flex: 1;
+	min-width: 0;
+	font-family: var(--monaco-monospace-font);
+	font-size: 12px;
+}
+
+.paradis-preset-editor-dialog .ppe-task-btn {
+	flex-shrink: 0;
+	padding: 4px 7px;
+}
+
+.paradis-preset-editor-dialog .ppe-task-btn:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.paradis-preset-editor-dialog .ppe-add-task {
+	align-self: flex-start;
+	margin-top: 2px;
+}
+
+.paradis-preset-editor-dialog .ppe-check-row-sub {
+	margin-left: 20px;
+}
+
 .paradis-preset-editor-dialog .ppe-check-row {
 	display: flex;
 	align-items: center;
