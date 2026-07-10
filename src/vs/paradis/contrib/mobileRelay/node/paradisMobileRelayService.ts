@@ -586,8 +586,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 		}
 		const { execFile } = await import('child_process');
+		// core.quotepath=false: 既定では非ASCIIパスが八進エスケープ+引用符("\345...")で
+		// 出力され、モバイルのソース管理タブで文字化け表示になるため無効化する。
 		return new Promise<IParadisGitResult>(resolve => {
-			execFile('git', ['-C', repoPath, ...args], { maxBuffer: 4 * 1024 * 1024, timeout: 30_000 }, (err, stdout, stderr) => {
+			execFile('git', ['-C', repoPath, '-c', 'core.quotepath=false', ...args], { maxBuffer: 4 * 1024 * 1024, timeout: 30_000 }, (err, stdout, stderr) => {
 				const rawCode: unknown = err ? (err as NodeJS.ErrnoException & { code?: unknown }).code ?? 1 : 0;
 				resolve({ code: typeof rawCode === 'number' ? rawCode : 1, stdout: String(stdout), stderr: String(stderr) });
 			});
