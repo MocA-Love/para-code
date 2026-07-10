@@ -36,6 +36,7 @@ import {
 	IParadisResolvedPreset,
 	IParadisRunPresetOptions,
 	isValidPresetDefinition,
+	paradisGetPresetTasks,
 	PARADIS_PRESETS_SETTING,
 	PARADIS_WORKSPACE_PRESET_FILE,
 	ParadisPresetSource,
@@ -241,78 +242,115 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		}
 	}
 
+	// --- 実行状態の追跡 ----------------------------------------------------------------------------
+
+	private readonly _onDidChangeRunningPresets = this._register(new Emitter<void>());
+	readonly onDidChangeRunningPresets: Event<void> = this._onDidChangeRunningPresets.event;
+
+	/** プリセット key → このサービスが起動したターミナル。破棄されたら取り除く。 */
+	private readonly _presetTerminals = new Map<string, Set<ITerminalInstance>>();
+	private readonly _presetTerminalListeners = this._register(new DisposableStore());
+
+	private _trackPresetTerminal(key: string, instance: ITerminalInstance): void {
+		let set = this._presetTerminals.get(key);
+		if (!set) {
+			set = new Set();
+			this._presetTerminals.set(key, set);
+		}
+		set.add(instance);
+		const listeners = new DisposableStore();
+		this._presetTerminalListeners.add(listeners);
+		listeners.add(instance.onDisposed(() => {
+			set.delete(instance);
+			if (set.size === 0) {
+				this._presetTerminals.delete(key);
+			}
+			this._presetTerminalListeners.delete(listeners);
+			listeners.dispose();
+			this._onDidChangeRunningPresets.fire();
+		}));
+		listeners.add(instance.onDidChangeHasChildProcesses(() => this._onDidChangeRunningPresets.fire()));
+		this._onDidChangeRunningPresets.fire();
+	}
+
+	private _getRunningTerminals(key: string): ITerminalInstance[] {
+		return [...(this._presetTerminals.get(key) ?? [])].filter(instance => instance.hasChildProcesses);
+	}
+
+	isPresetRunning(key: string): boolean {
+		return this._getRunningTerminals(key).length > 0;
+	}
+
+	async focusRunningPreset(key: string): Promise<boolean> {
+		const instance = this._getRunningTerminals(key)[0];
+		if (!instance) {
+			return false;
+		}
+		await this.terminalService.focusInstance(instance);
+		return true;
+	}
+
 	// --- 実行 ------------------------------------------------------------------------------------
 
 	async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
-		const commands = preset.commands.map(command => command.trim()).filter(command => command.length > 0);
-		if (commands.length === 0) {
+		const { tasks, layout } = paradisGetPresetTasks(preset);
+		if (tasks.length === 0) {
 			return;
 		}
-		const cwd = this._resolveCwd(preset, options?.cwd);
-		const mode = preset.launchMode ?? 'new-terminal';
 
-		switch (mode) {
-			case 'current-terminal': {
-				let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
-				if (!instance) {
-					instance = await this._createTerminalInActiveGroup(cwd);
-					options?.onDidStart?.();
-					await instance.processReady;
-					await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
-				} else {
-					await instance.processReady;
-					if (preset.cwd && cwd) {
-						// 既存ターミナルは作業ディレクトリが不明なので cd を前置する
-						const changeDirectory = await this._buildChangeDirectoryCommand(instance, cwd);
-						await instance.sendText(paradisJoinPresetCommands([changeDirectory, ...commands], instance.shellType), true);
-					} else {
-						await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
-					}
-					options?.onDidStart?.();
-				}
-				instance.focus(true);
-				break;
-			}
-			case 'new-terminal': {
-				const instance = await this._createTerminalInActiveGroup(cwd);
+		if (layout === 'current') {
+			// 全タスクのコマンドを連結してアクティブなターミナルへ送る（旧 current-terminal 相当）。
+			// 既存プロセスとの帰属が曖昧になるため実行状態の追跡はしない。
+			const commands = tasks.flatMap(task => task.commands);
+			const cwd = this._resolveCwd(preset, preset.cwd, options?.cwd);
+			let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
+			if (!instance) {
+				instance = await this._createTerminalInActiveGroup(cwd, preset.name);
 				options?.onDidStart?.();
-				instance.focus(true);
 				await instance.processReady;
 				await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
-				break;
-			}
-			case 'new-terminal-each': {
-				let first: ITerminalInstance | undefined;
-				for (const command of commands) {
-					const instance = await this._createTerminalInActiveGroup(cwd);
-					options?.onDidStart?.();
-					first ??= instance;
-					await instance.sendText(command, true);
+			} else {
+				await instance.processReady;
+				if (preset.cwd && cwd) {
+					// 既存ターミナルは作業ディレクトリが不明なので cd を前置する
+					const changeDirectory = await this._buildChangeDirectoryCommand(instance, cwd);
+					await instance.sendText(paradisJoinPresetCommands([changeDirectory, ...commands], instance.shellType), true);
+				} else {
+					await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
 				}
-				first?.focus(true);
-				break;
+				options?.onDidStart?.();
 			}
-			case 'split': {
-				// 先頭はアクティブグループ、以降は右→下の交互にグループを分割して並べる
-				let group = this.editorGroupsService.activeGroup;
-				for (let index = 0; index < commands.length; index++) {
-					if (index > 0) {
-						group = this.editorGroupsService.addGroup(group, index % 2 === 1 ? GroupDirection.RIGHT : GroupDirection.DOWN);
-					}
-					const instance = await this.terminalService.createTerminal({
-						cwd,
-						location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
-					});
-					options?.onDidStart?.();
-					await instance.sendText(commands[index], true);
-				}
-				break;
-			}
+			instance.focus(true);
+			return;
 		}
+
+		// tabs / split: タスクごとに名前付きターミナルを作って並べる
+		let first: ITerminalInstance | undefined;
+		let group = this.editorGroupsService.activeGroup;
+		for (let index = 0; index < tasks.length; index++) {
+			const task = tasks[index];
+			const cwd = this._resolveCwd(preset, task.cwd ?? preset.cwd, options?.cwd);
+			const name = task.name?.trim() || (tasks.length > 1 ? `${preset.name} ${index + 1}` : preset.name);
+			if (layout === 'split' && index > 0) {
+				// 先頭はアクティブグループ、以降は右→下の交互にグループを分割して並べる
+				group = this.editorGroupsService.addGroup(group, index % 2 === 1 ? GroupDirection.RIGHT : GroupDirection.DOWN);
+			}
+			const instance = await this.terminalService.createTerminal({
+				config: { name },
+				cwd,
+				location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
+			});
+			options?.onDidStart?.();
+			first ??= instance;
+			this._trackPresetTerminal(preset.key, instance);
+			await instance.processReady;
+			await instance.sendText(paradisJoinPresetCommands(task.commands, instance.shellType), true);
+		}
+		first?.focus(true);
 	}
 
-	private _resolveCwd(preset: IParadisResolvedPreset, baseOverride?: URI): URI | undefined {
-		const cwd = preset.cwd?.trim();
+	private _resolveCwd(preset: IParadisResolvedPreset, cwdSpec: string | undefined, baseOverride?: URI): URI | undefined {
+		const cwd = cwdSpec?.trim();
 		if (cwd && isAbsolute(cwd)) {
 			return URI.file(cwd);
 		}
@@ -347,8 +385,9 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return `cd ${await instance.preparePathForShell(cwd.fsPath)}`;
 	}
 
-	private async _createTerminalInActiveGroup(cwd: URI | undefined): Promise<ITerminalInstance> {
+	private async _createTerminalInActiveGroup(cwd: URI | undefined, name?: string): Promise<ITerminalInstance> {
 		return this.terminalService.createTerminal({
+			config: name ? { name } : undefined,
 			cwd,
 			location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
 		});

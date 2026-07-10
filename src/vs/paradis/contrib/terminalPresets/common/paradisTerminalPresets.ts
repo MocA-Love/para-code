@@ -24,27 +24,53 @@ export const PARADIS_WORKSPACE_PRESET_FILE = '.paracode.json';
 export const PARADIS_PRESETS_SETTING = 'paradis.terminal.presets';
 
 /**
- * プリセットの起動モード。
+ * プリセットの起動モード（旧形式）。
  * エディタ領域のターミナルは1エディタ=1ターミナルのため、「split」はエディタグループの分割になる。
+ * 新形式では tasks + layout を使う（paradisGetPresetTasks が両形式を正規化する）。
  */
 export const PARADIS_PRESET_LAUNCH_MODES = ['current-terminal', 'new-terminal', 'new-terminal-each', 'split'] as const;
 export type ParadisPresetLaunchMode = typeof PARADIS_PRESET_LAUNCH_MODES[number];
+
+/**
+ * タスク群（＝ターミナル群）の並べ方。
+ *   - tabs: 各タスクをアクティブグループのタブとして並べる
+ *   - split: エディタグループを右→下の交互に分割してタスクごとに並べる
+ *   - current: 全タスクのコマンドを連結してアクティブなターミナルに送る（旧 current-terminal 相当）
+ */
+export const PARADIS_PRESET_LAYOUTS = ['tabs', 'split', 'current'] as const;
+export type ParadisPresetLayout = typeof PARADIS_PRESET_LAYOUTS[number];
+
+/** 1タスク = 1ターミナル。名前・作業ディレクトリ・そのターミナルで順に実行するコマンド列を持つ。 */
+export interface IParadisPresetTask {
+	/** ターミナルのタイトル。未指定はプリセット名。 */
+	readonly name?: string;
+	/** 作業ディレクトリ。相対ならワークスペースフォルダ基準。未指定はプリセットの cwd。 */
+	readonly cwd?: string;
+	/** このターミナルで実行するコマンド（上から順、失敗時は後続を実行しない）。 */
+	readonly commands: readonly string[];
+}
 
 /** プリセット定義（settings.json / .paracode.json に書かれる形そのまま）。 */
 export interface IParadisPresetDefinition {
 	/** 表示名（ボタンのツールチップ・一覧に使う）。 */
 	readonly name: string;
 	readonly description?: string;
-	/** 実行するコマンド（上から順）。 */
-	readonly commands: readonly string[];
+	/** 旧形式: 実行するコマンド（上から順）。tasks があればそちらが優先。 */
+	readonly commands?: readonly string[];
+	/** 新形式: タスク（＝ターミナル）ごとのコマンド定義。 */
+	readonly tasks?: readonly IParadisPresetTask[];
+	/** tasks の並べ方。未指定は tabs。 */
+	readonly layout?: ParadisPresetLayout;
 	/** ボタンアイコンの codicon 名（例: "rocket"）。未指定は "run"。 */
 	readonly icon?: string;
-	/** 作業ディレクトリ。相対ならワークスペースフォルダ基準。未指定はワークスペースフォルダ。 */
+	/** 既定の作業ディレクトリ。相対ならワークスペースフォルダ基準。未指定はワークスペースフォルダ。 */
 	readonly cwd?: string;
-	/** 起動モード。未指定は new-terminal。 */
+	/** 旧形式: 起動モード。未指定は new-terminal。tasks があれば無視される。 */
 	readonly launchMode?: ParadisPresetLaunchMode;
 	/** ターミナルタブバー右側にボタンとして表示するか。未指定は true。 */
 	readonly pinned?: boolean;
+	/** ピン留めボタンにアイコンの代わりに名前を表示するか。未指定は false（アイコン表示）。 */
+	readonly pinnedLabel?: boolean;
 	/** 「新しいスペース（worktree）を作成」直後に自動実行するか。 */
 	readonly autoRun?: boolean;
 	/**
@@ -101,6 +127,18 @@ export interface IParadisPresetService {
 	 */
 	runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void>;
 
+	/** プリセットが起動したターミナルの生存/実行状態が変わったとき（終了・破棄・子プロセス変化）。 */
+	readonly onDidChangeRunningPresets: Event<void>;
+
+	/**
+	 * プリセット（key）が起動したターミナルのうち、子プロセスが実行中のものがあるか。
+	 * current レイアウトで既存ターミナルへ送信した分は追跡しない（プロセスの帰属が曖昧なため）。
+	 */
+	isPresetRunning(key: string): boolean;
+
+	/** 実行中プリセットの先頭ターミナルへフォーカスを移す。対象が無ければ false。 */
+	focusRunningPreset(key: string): Promise<boolean>;
+
 	/** プリセットを保存する（新規または name 一致の既存を置換）。 */
 	savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, replaceName?: string): Promise<void>;
 
@@ -123,13 +161,72 @@ export function paradisJoinPresetCommands(commands: readonly string[], shellType
 	return joined;
 }
 
-/** 定義の最低限のバリデーション（不正エントリは読み飛ばす）。 */
+function isValidCommandList(value: unknown): value is readonly string[] {
+	return Array.isArray(value) && value.length > 0
+		&& value.every(command => typeof command === 'string' && command.trim().length > 0);
+}
+
+function isValidPresetTask(value: unknown): value is IParadisPresetTask {
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	const candidate = value as IParadisPresetTask;
+	return isValidCommandList(candidate.commands)
+		&& (candidate.name === undefined || typeof candidate.name === 'string')
+		&& (candidate.cwd === undefined || typeof candidate.cwd === 'string');
+}
+
+/** 定義の最低限のバリデーション（不正エントリは読み飛ばす）。旧形式(commands)・新形式(tasks)の両方を受け付ける。 */
 export function isValidPresetDefinition(value: unknown): value is IParadisPresetDefinition {
 	if (!value || typeof value !== 'object') {
 		return false;
 	}
 	const candidate = value as IParadisPresetDefinition;
-	return typeof candidate.name === 'string' && candidate.name.trim().length > 0
-		&& Array.isArray(candidate.commands) && candidate.commands.length > 0
-		&& candidate.commands.every(command => typeof command === 'string' && command.trim().length > 0);
+	if (typeof candidate.name !== 'string' || candidate.name.trim().length === 0) {
+		return false;
+	}
+	if (Array.isArray(candidate.tasks)) {
+		return candidate.tasks.length > 0 && candidate.tasks.every(isValidPresetTask);
+	}
+	return isValidCommandList(candidate.commands);
+}
+
+/**
+ * 旧形式（commands + launchMode）・新形式（tasks + layout）を「タスク列＋レイアウト」に正規化する。
+ * 旧形式の読み替え:
+ *   - new-terminal（既定）: 全コマンドで1タスク、tabs
+ *   - current-terminal: 全コマンドで1タスク、current
+ *   - new-terminal-each: コマンドごとに1タスク、tabs
+ *   - split: コマンドごとに1タスク、split
+ */
+export function paradisGetPresetTasks(definition: IParadisPresetDefinition): { readonly tasks: readonly IParadisPresetTask[]; readonly layout: ParadisPresetLayout } {
+	const normalizeCommands = (commands: readonly string[]) =>
+		commands.map(command => command.trim()).filter(command => command.length > 0);
+
+	if (definition.tasks && definition.tasks.length > 0) {
+		const tasks = definition.tasks
+			.map(task => ({ ...task, commands: normalizeCommands(task.commands) }))
+			.filter(task => task.commands.length > 0);
+		return { tasks, layout: definition.layout ?? 'tabs' };
+	}
+
+	const commands = normalizeCommands(definition.commands ?? []);
+	if (commands.length === 0) {
+		return { tasks: [], layout: 'tabs' };
+	}
+	switch (definition.launchMode ?? 'new-terminal') {
+		case 'current-terminal':
+			return { tasks: [{ commands }], layout: 'current' };
+		case 'new-terminal-each':
+			return { tasks: commands.map(command => ({ commands: [command] })), layout: 'tabs' };
+		case 'split':
+			return { tasks: commands.map(command => ({ commands: [command] })), layout: 'split' };
+		default:
+			return { tasks: [{ commands }], layout: 'tabs' };
+	}
+}
+
+/** 全タスクの全コマンドを1つの文字列にする（autoRun 承認ハッシュ・確認ダイアログ・一覧プレビュー用）。 */
+export function paradisPresetCommandSignature(definition: IParadisPresetDefinition, separator = '\n'): string {
+	return paradisGetPresetTasks(definition).tasks.flatMap(task => task.commands).join(separator);
 }

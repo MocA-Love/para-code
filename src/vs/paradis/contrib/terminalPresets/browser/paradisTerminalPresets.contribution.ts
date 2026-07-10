@@ -35,7 +35,9 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import {
 	IParadisPresetService,
 	IParadisResolvedPreset,
+	paradisPresetCommandSignature,
 	PARADIS_PRESET_LAUNCH_MODES,
+	PARADIS_PRESET_LAYOUTS,
 	PARADIS_PRESETS_SETTING,
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
@@ -60,17 +62,44 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			markdownDescription: localize('paradis.terminal.presets', "ターミナルのコマンドプリセット（ユーザーレベル）。ピン留めするとターミナルタブバーの右側にボタンとして表示されます。[コマンドプリセットを管理](command:paradis.terminal.configurePresets) から GUI で作成・編集できます。リポジトリレベルのプリセットは各リポジトリ直下の .paracode.json に定義できます。"),
 			items: {
 				type: 'object',
-				required: ['name', 'commands'],
+				required: ['name'],
 				properties: {
 					name: { type: 'string', description: localize('paradis.terminal.presets.name', "プリセット名。") },
 					description: { type: 'string', description: localize('paradis.terminal.presets.description', "説明（ツールチップに表示）。") },
 					commands: {
 						type: 'array',
 						items: { type: 'string' },
-						description: localize('paradis.terminal.presets.commands', "実行するコマンド（上から順）。")
+						description: localize('paradis.terminal.presets.commands', "旧形式: 実行するコマンド（上から順）。tasks があればそちらが優先。")
+					},
+					tasks: {
+						type: 'array',
+						description: localize('paradis.terminal.presets.tasks', "タスク（＝ターミナル）ごとのコマンド定義。1タスクにつき1ターミナルが起動する。"),
+						items: {
+							type: 'object',
+							required: ['commands'],
+							properties: {
+								name: { type: 'string', description: localize('paradis.terminal.presets.tasks.name', "ターミナルのタイトル。未指定はプリセット名。") },
+								cwd: { type: 'string', description: localize('paradis.terminal.presets.tasks.cwd', "作業ディレクトリ。相対パスはワークスペースフォルダ基準。") },
+								commands: {
+									type: 'array',
+									items: { type: 'string' },
+									description: localize('paradis.terminal.presets.tasks.commands', "このターミナルで実行するコマンド（上から順、失敗時は後続を実行しない）。")
+								}
+							}
+						}
+					},
+					layout: {
+						type: 'string',
+						enum: [...PARADIS_PRESET_LAYOUTS],
+						enumDescriptions: [
+							localize('paradis.terminal.presets.layout.tabs', "タスクごとのターミナルをタブとして並べる"),
+							localize('paradis.terminal.presets.layout.split', "エディタグループを分割してタスクごとに並べる"),
+							localize('paradis.terminal.presets.layout.current', "全コマンドを連結してアクティブなターミナルで実行"),
+						],
+						description: localize('paradis.terminal.presets.layout', "タスク群（＝ターミナル群）の並べ方。既定は tabs。")
 					},
 					icon: { type: 'string', description: localize('paradis.terminal.presets.icon', "ボタンの codicon 名（例: rocket, play, server-process）。") },
-					cwd: { type: 'string', description: localize('paradis.terminal.presets.cwd', "作業ディレクトリ。相対パスはワークスペースフォルダ基準。") },
+					cwd: { type: 'string', description: localize('paradis.terminal.presets.cwd', "既定の作業ディレクトリ。相対パスはワークスペースフォルダ基準。") },
 					launchMode: {
 						type: 'string',
 						enum: [...PARADIS_PRESET_LAUNCH_MODES],
@@ -80,9 +109,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 							localize('paradis.terminal.presets.mode.newTerminalEach', "コマンドごとに新しいターミナルで実行"),
 							localize('paradis.terminal.presets.mode.split', "エディタグループを分割してコマンドごとに並べる"),
 						],
-						description: localize('paradis.terminal.presets.launchMode', "起動モード。既定は new-terminal。")
+						description: localize('paradis.terminal.presets.launchMode', "旧形式: 起動モード。既定は new-terminal。tasks があれば無視される。")
 					},
 					pinned: { type: 'boolean', default: true, description: localize('paradis.terminal.presets.pinned', "ターミナルタブバー右側にボタンとして表示する。") },
+					pinnedLabel: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.pinnedLabel', "ピン留めボタンにアイコンの代わりに名前を表示する。") },
 					autoRun: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.autoRun', "「新しいスペース（worktree）を作成」直後に自動実行する。") },
 					appliesTo: {
 						type: 'array',
@@ -98,6 +128,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 
 // --- ピン留めプリセットのタブバーボタン動的登録 ---------------------------------------------------
 
+/** タブバー右側のドロップダウン（全プリセットの一覧）のメニュー。 */
+const ParadisPresetsSubmenu = new MenuId('paradisPresetsSubmenu');
+
 class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisPresetButtons';
@@ -108,8 +141,18 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 		@IParadisPresetService private readonly presetService: IParadisPresetService,
 	) {
 		super();
-		// プリセットボタン群の並び（タブバー右側）に管理ダイアログの入り口を常設する（プリセット0件でも表示）
 		for (const menuId of [MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
+			// 全プリセットのドロップダウン（ピン留めの有無に関わらず全件を集約する入り口）
+			this._register(MenuRegistry.appendMenuItem(menuId, {
+				submenu: ParadisPresetsSubmenu,
+				// allow-any-unicode-next-line
+				title: localize('paradis.presetButtons.dropdown', "コマンドプリセット"),
+				icon: Codicon.play,
+				group: 'navigation',
+				order: 99, // ピン留めプリセットボタン（20〜）の右、管理ボタン（100）の左
+				when: IsSessionsWindowContext.toNegated()
+			}));
+			// プリセットボタン群の並び（タブバー右側）に管理ダイアログの入り口を常設する（プリセット0件でも表示）
 			this._register(MenuRegistry.appendMenuItem(menuId, {
 				command: {
 					id: 'paradis.terminal.configurePresets',
@@ -118,11 +161,13 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 					icon: Codicon.tools
 				},
 				group: 'navigation',
-				order: 100, // ピン留めプリセットボタン（20〜）の右隣
+				order: 100,
 				when: IsSessionsWindowContext.toNegated()
 			}));
 		}
 		this._register(this.presetService.onDidChangePresets(() => this._update()));
+		// 実行状態（緑ドット相当の●表示・クリック時のフォーカス切替）が変わったら登録し直す
+		this._register(this.presetService.onDidChangeRunningPresets(() => this._update()));
 		this._update();
 	}
 
@@ -130,18 +175,38 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 		this._registrations.clear();
 		let order = 20; // New Terminal(0) や Open Browser(-10) より右
 		for (const preset of this.presetService.presets) {
+			const running = this.presetService.isPresetRunning(preset.key);
+			const commandId = `paradis.preset.run.${preset.key}`;
+			this._registrations.add(CommandsRegistry.registerCommand(commandId, async accessor => {
+				const service = accessor.get(IParadisPresetService);
+				// 実行中（子プロセスが生きている）なら再実行ではなくそのターミナルへフォーカスする
+				if (service.isPresetRunning(preset.key) && await service.focusRunningPreset(preset.key)) {
+					return;
+				}
+				return service.runPreset(preset);
+			}));
+			const icon = preset.icon ? ThemeIcon.fromId(preset.icon) : Codicon.play;
+			const tooltip = preset.description ? `${preset.name} — ${preset.description}` : preset.name;
+
+			// ドロップダウンには全プリセットを列挙（リポジトリ由来 → ユーザー由来の順）。実行中は ● を付ける
+			// allow-any-unicode-next-line
+			const dropdownTitle = running ? localize('paradis.presetButtons.runningItem', "● {0}（実行中 — クリックで表示）", preset.name) : preset.name;
+			this._registrations.add(MenuRegistry.appendMenuItem(ParadisPresetsSubmenu, {
+				command: { id: commandId, title: dropdownTitle, tooltip },
+				group: preset.source === 'workspace' ? '1_workspace' : '2_user',
+			}));
+
+			// ピン留めプリセットはタブバーに直接ボタンを出す（pinnedLabel でアイコンの代わりに名前を表示）
 			if (preset.pinned === false) {
 				continue;
 			}
-			const commandId = `paradis.preset.run.${preset.key}`;
-			this._registrations.add(CommandsRegistry.registerCommand(commandId, accessor => {
-				return accessor.get(IParadisPresetService).runPreset(preset);
-			}));
-			const icon = preset.icon ? ThemeIcon.fromId(preset.icon) : Codicon.play;
-			const title = preset.description ? `${preset.name} — ${preset.description}` : preset.name;
 			for (const menuId of [MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
 				this._registrations.add(MenuRegistry.appendMenuItem(menuId, {
-					command: { id: commandId, title, icon },
+					command: preset.pinnedLabel === true
+						// アイコンを持たないメニュー項目はツールバーでラベル（title）表示になる
+						// allow-any-unicode-next-line
+						? { id: commandId, title: running ? localize('paradis.presetButtons.runningPinned', "● {0}", preset.name) : preset.name, tooltip }
+						: { id: commandId, title: tooltip, icon },
 					group: 'navigation',
 					order: order,
 					when: IsSessionsWindowContext.toNegated()
@@ -186,7 +251,7 @@ registerAction2(class extends Action2 {
 			preset,
 			label: preset.name,
 			description: preset.source === 'workspace' ? PARADIS_WORKSPACE_PRESET_FILE : undefined,
-			detail: preset.commands.join(' && '),
+			detail: paradisPresetCommandSignature(preset, ' && '),
 		}));
 		const pick = await quickInputService.pick(picks, {
 			// allow-any-unicode-next-line
@@ -240,7 +305,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 			continue;
 		}
 		if (preset.source === 'workspace') {
-			const approvalKey = `${repositoryPath}:${preset.name}:${hash(preset.commands.join('\n'))}`;
+			const approvalKey = `${repositoryPath}:${preset.name}:${hash(paradisPresetCommandSignature(preset))}`;
 			let approved: string[];
 			try {
 				approved = JSON.parse(storageService.get(AUTORUN_APPROVED_STORAGE_KEY, StorageScope.APPLICATION, '[]'));
@@ -251,7 +316,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 				const result = await dialogService.confirm({
 					// allow-any-unicode-next-line
 					message: localize('paradis.terminal.autoRunConfirm', "リポジトリのプリセット「{0}」を自動実行しますか？", preset.name),
-					detail: preset.commands.join('\n'),
+					detail: paradisPresetCommandSignature(preset),
 					// allow-any-unicode-next-line
 					primaryButton: localize('paradis.terminal.autoRunConfirmRun', "実行")
 				});
