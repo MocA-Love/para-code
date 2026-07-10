@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -50,6 +51,9 @@ export default function AgentDetailScreen() {
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
+	// ヘッダーはブラーのオーバーレイとしてチャットの上に重ねる（純正メール風。
+	// コンテンツがヘッダーの下を通ってボケて見える）。実高さは onLayout で測る。
+	const [headerHeight, setHeaderHeight] = useState(insets.top + 52);
 
 	// 表示対象: selectedTerminalId（ホーム/通知が遷移前に設定する）。無ければ選択中ws
 	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
@@ -211,31 +215,13 @@ export default function AgentDetailScreen() {
 	return (
 		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-			{/* 独自ヘッダー: 戻る（Liquid Glass）＋ターミナルタイトル＋ワークスペース */}
-			<View style={[styles.header, { paddingTop: insets.top + 4 }]}>
-				<Pressable onPress={() => { hapticSelection(); router.back(); }} accessibilityLabel="戻る">
-					<GlassSurface style={styles.backBtn} interactive>
-						<Ionicons name="chevron-back" size={20} color={colors.text} />
-					</GlassSurface>
-				</Pressable>
-				<View style={styles.headerBody}>
-					<Text style={styles.headerTitle} numberOfLines={1}>{activeTerminal?.title ?? 'エージェント'}</Text>
-					{agentWs !== undefined ? (
-						<Text style={styles.headerSub} numberOfLines={1}>
-							<Text style={{ color: wsColor(agentWs) }}>{agentWs.name}</Text>
-							{agentWs.branch ? ` · ${agentWs.branch}` : ''}
-						</Text>
-					) : null}
-				</View>
-			</View>
-
 			<View style={styles.chatArea}>
 				{activeId === undefined ? (
-					<Text style={styles.placeholder}>ターミナルがありません。ターミナルタブから作成し、claude / codex を起動してください。</Text>
+					<Text style={[styles.placeholder, { marginTop: headerHeight }]}>ターミナルがありません。ターミナルタブから作成し、claude / codex を起動してください。</Text>
 				) : chat === undefined ? (
-					<Text style={styles.placeholder}>読み込み中…</Text>
+					<Text style={[styles.placeholder, { marginTop: headerHeight }]}>読み込み中…</Text>
 				) : chat.none ? (
-					<View style={styles.noneBox}>
+					<View style={[styles.noneBox, { marginTop: headerHeight }]}>
 						<Text style={styles.placeholder}>
 							このターミナルのエージェントセッションが見つかりません。{'\n\n'}
 							claude / codex をこのターミナルで起動（または一度発言）すると表示されます。
@@ -258,13 +244,36 @@ export default function AgentDetailScreen() {
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onToggle={actions.toggleQuestionOption} onConfirm={actions.confirmQuestion} onFreeText={actions.answerQuestionFreeText} />
 									: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
 										: <ActivityGroup msgs={item.msgs} />}
-						contentContainerStyle={styles.listContent}
+						contentContainerStyle={[styles.listContent, { paddingTop: headerHeight + 6 }]}
+						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
 						onContentSizeChange={onContentSizeChange}
 						onScroll={onListScroll}
 						scrollEventThrottle={32}
 						onLayout={onListLayout}
 					/>
 				)}
+			</View>
+
+			{/* 独自ヘッダー: チャットの上に重ねるブラーバー（純正メール風にコンテンツが
+			    下を通ってボケる）＋戻る（Liquid Glass）＋ターミナルタイトル＋ワークスペース */}
+			<View style={styles.headerOverlay} onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}>
+				<BlurView tint="dark" intensity={50} style={StyleSheet.absoluteFill} />
+				<View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+					<Pressable onPress={() => { hapticSelection(); router.back(); }} accessibilityLabel="戻る">
+						<GlassSurface style={styles.backBtn} interactive>
+							<Ionicons name="chevron-back" size={20} color={colors.text} />
+						</GlassSurface>
+					</Pressable>
+					<View style={styles.headerBody}>
+						<Text style={styles.headerTitle} numberOfLines={1}>{activeTerminal?.title ?? 'エージェント'}</Text>
+						{agentWs !== undefined ? (
+							<Text style={styles.headerSub} numberOfLines={1}>
+								<Text style={{ color: wsColor(agentWs) }}>{agentWs.name}</Text>
+								{agentWs.branch ? ` · ${agentWs.branch}` : ''}
+							</Text>
+						) : null}
+					</View>
+				</View>
 			</View>
 
 			{permissionPending && activeId !== undefined ? (
@@ -450,6 +459,7 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
+	headerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, overflow: 'hidden' },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 8 },
 	backBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
 	headerBody: { flex: 1, minWidth: 0 },
