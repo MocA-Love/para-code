@@ -38,6 +38,20 @@
 	color: var(--vscode-charts-blue);
 }
 
+/* allow-any-unicode-next-line */
+/* アクティブ行の常時ハイライト。以前はチェックマークのアイコン色だけが「今開いているワークスペース」の
+ * 唯一の目印だったため、エージェント状態アイコン (working/permission/review) に上書きされると
+ * 見分けがつかなくなっていた。行の背景と名前の太字はアイコンの状態と独立させ、常に残るようにする。 */
+.paradis-workspaces-list .paradis-workspace-row.active,
+.paradis-workspaces-list .paradis-worktree-row.active {
+	background-color: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent);
+}
+
+.paradis-workspaces-list .paradis-workspace-row.active > .paradis-workspace-labels > .paradis-workspace-name,
+.paradis-workspaces-list .paradis-worktree-row.active > .paradis-worktree-name {
+	font-weight: 600;
+}
+
 .paradis-workspaces-list .paradis-workspace-labels {
 	display: flex;
 	flex-direction: column;
