@@ -54,9 +54,12 @@ export default function HomeScreen() {
 		setSelectedTerminalId(terminalId);
 		router.push('/agent');
 	};
-	// 全ワークスペース横断のエージェント一覧（応答待ち → 実行中 → その他 → アイドルの順）
+	// 全ワークスペース横断のエージェント一覧（応答待ち → 実行中 → その他 → アイドルの順）。
+	// エージェントCLIが動いた実績のあるターミナルだけを載せる（プレーンなターミナルを
+	// 開いただけでホームに行が増えないように）。
 	const wsById = new Map((workspace?.workspaces ?? []).map(w => [w.id, w]));
-	const rows = [...(workspace?.terminals ?? [])].sort((a, b) => statusOrder(a.agentStatus) - statusOrder(b.agentStatus));
+	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true)
+		.sort((a, b) => statusOrder(a.agentStatus) - statusOrder(b.agentStatus));
 
 	return (
 		<View style={styles.screen}>

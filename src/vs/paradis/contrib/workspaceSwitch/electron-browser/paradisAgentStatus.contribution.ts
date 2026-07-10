@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { IntervalTimer } from '../../../../base/common/async.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
 import { sep } from '../../../../base/common/path.js';
 import { isWindows } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -20,6 +20,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -60,6 +61,8 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		@IParadisAgentStatusStore private readonly statusStore: IParadisAgentStatusStore,
 		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
+		@ITerminalService private readonly terminalService: ITerminalService,
+		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
 	) {
 		super();
 
@@ -69,7 +72,34 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		// 切り替え直後は即ポーリング (アクティブスコープの review を素早く確認遷移させる)
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.poll()));
 
+		// シェルプロセスの終了 (instance.onExit) を shared process へ通知する。エージェントCLIは
+		// クラッシュ・端末の強制クローズでは Stop/SessionEnd hook を発火できず、実行状態と
+		// モバイルの「考え中」表示が永久に残るため、プロセス消滅を唯一確実な解除点として使う。
+		// ウィンドウリロードでは onExit は発火しない (永続ターミナルはプロセスが生き続ける) ので、
+		// 動作中のエージェントを誤って解除することはない。
+		for (const instance of this.terminalService.instances) {
+			this.watchInstanceExit(instance);
+		}
+		this._register(terminalInstanceService.onDidCreateInstance(instance => this.watchInstanceExit(instance)));
+		this._register(this.terminalService.onDidDisposeInstance(instance => this.exitListeners.deleteAndDispose(instance.instanceId)));
+
 		this.poll();
+	}
+
+	private readonly exitListeners = this._register(new DisposableMap<number, IDisposable>());
+
+	private watchInstanceExit(instance: ITerminalInstance): void {
+		if (this.exitListeners.has(instance.instanceId)) {
+			return;
+		}
+		this.exitListeners.set(instance.instanceId, instance.onExit(() => {
+			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+			if (token !== undefined) {
+				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+					.call('notifyTerminalExit', [token])
+					.then(() => this.poll(), () => { /* shared process 未起動時は次のポーリングで整合する */ });
+			}
+		}));
 	}
 
 	/**
@@ -103,9 +133,13 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 
 	private async poll(): Promise<void> {
 		let statuses: IParadisAgentPaneStatus[];
+		let agentTokens: string[];
 		try {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
-			statuses = await channel.call<IParadisAgentPaneStatus[]>('listPaneStatuses');
+			[statuses, agentTokens] = await Promise.all([
+				channel.call<IParadisAgentPaneStatus[]>('listPaneStatuses'),
+				channel.call<string[]>('listAgentHookTokens'),
+			]);
 		} catch (error) {
 			this.logService.trace('[ParadisAgentStatus] poll failed', String(error));
 			return; // shared process 未起動 (起動直後の20〜30秒) は静かにスキップ
@@ -113,11 +147,25 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 
 		const activeStateKey = this.workspaceSwitchService.activeStateKey;
 		const scopeStatuses = new Map<string, ParadisAgentStatus>();
+		// ペイン単位の状態（スコープ集約前）。モバイルのホーム一覧・Live Activity が
+		// 「そのターミナル自身の状態」を表示するために使う。
+		const instanceStatuses = new Map<number, ParadisAgentStatus>();
+		// hook発火実績のあるペイン = エージェントCLIが動いた（動いている）ターミナル。
+		const agentInstanceIds = new Set<number>();
+		for (const token of agentTokens) {
+			const instanceId = this.paneTokenService.getInstanceForToken(token);
+			if (instanceId !== undefined) {
+				agentInstanceIds.add(instanceId);
+			}
+		}
 
 		for (const paneStatus of statuses) {
 			// 第一解決: トークン → このウィンドウのターミナルインスタンス → 所属スコープ
 			const instanceId = this.paneTokenService.getInstanceForToken(paneStatus.token);
 			const resolvedViaInstance = instanceId !== undefined;
+			if (instanceId !== undefined) {
+				instanceStatuses.set(instanceId, paneStatus.status);
+			}
 			let stateKey = instanceId !== undefined ? this.terminalScopeService.getStateKeyForInstance(instanceId) : undefined;
 			// 第二解決: hookが報告したcwd → リポジトリ/worktreeルートの最長一致。
 			// インスタンス未解決 (リロード後の未復元park等) でも「そのリポジトリでエージェントが
@@ -138,6 +186,9 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 					.call('acknowledgePaneStatus', [paneStatus.token])
 					.then(undefined, () => { /* ignore */ });
+				if (instanceId !== undefined) {
+					instanceStatuses.delete(instanceId); // 確認遷移させたペインはペイン単位表示でも即 idle 扱い
+				}
 				continue;
 			}
 
@@ -148,6 +199,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		}
 
 		this.statusStore.setScopeStatuses(scopeStatuses);
+		this.statusStore.setInstanceStates(instanceStatuses, agentInstanceIds);
 	}
 }
 

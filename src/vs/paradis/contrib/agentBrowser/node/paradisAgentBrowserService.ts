@@ -29,7 +29,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
-import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, paradisCountLiveBackgroundTasks } from './paradisAgentHookBus.js';
+import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, paradisCountLiveBackgroundTasks } from './paradisAgentHookBus.js';
 import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -140,6 +140,14 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * workbench が listPaneStatuses でポーリングし、Workspaces ビューのスピナー表示に使う。
 	 */
 	private readonly _paneStatuses = new Map<string, IParadisPaneStatusEntry>();
+	/**
+	 * 一度でもエージェントhook (POST /agent-hook) を発火したペイントークンの集合。
+	 * 「そのターミナルでエージェントCLIが動いた実績」の判定に使う（プレーンなターミナルと
+	 * エージェントペインの区別。モバイルのホーム一覧・Live Activity のフィルタ用）。
+	 * idle（Stop確認済み・SessionEnd後）でも消さない: エージェントは次のターンで再開し得る。
+	 * ペイン消滅（TerminalExit）でのみ削除する。
+	 */
+	private readonly _agentHookTokens = new Set<string>();
 	private readonly _portFilePath: string;
 	private readonly _cdpGateway: ParadisCdpGateway;
 	/** vendored chrome-devtools-mcp をペイン毎の子プロセスとして管理するプロキシ。 */
@@ -193,6 +201,20 @@ export class ParadisAgentBrowserService extends Disposable {
 			createParadisShellEnvResolver(logService, configurationService, args),
 		);
 		paradisSetupAgentHooks(logService, () => cachedShellEnv.getEnv()).catch(error => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
+		// transcript由来のターン終了（Codex の usage limit エラー・中断等、Stop hook が
+		// 発火しないケース）を working 状態の解除に反映する。Stop hook と同じく、
+		// バックグラウンドタスクが残っていれば working を維持する（stale掃除の対象になる）。
+		this._register(onParadisAgentTurnEnded(({ token, at }) => {
+			const entry = this._paneStatuses.get(token);
+			if (entry === undefined || entry.status !== 'working') {
+				return;
+			}
+			if (paradisCountLiveBackgroundTasks(token, at) > 0) {
+				this._paneStatuses.set(token, { ...entry, changedAt: at, backgroundCompletionFallback: true });
+			} else {
+				this._paneStatuses.set(token, { status: 'review', changedAt: at, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
+			}
+		}));
 
 		// transcript由来のペインアクティビティ (ParadisMobileAgentChat の tailer が学習) を
 		// 実行状態へ反映する。hookイベントが来ない場面の状態変化はここが拾う:
@@ -616,6 +638,11 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 		}
 		if (eventType) {
+			if (eventType === 'TerminalExit') {
+				this._agentHookTokens.delete(token);
+			} else {
+				this._agentHookTokens.add(token);
+			}
 			fireParadisAgentHookEvent({
 				token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
 				toolUseId, messageId, messageDelta, messageIndex, messageFinal, at: Date.now(),
@@ -681,6 +708,23 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._paneStatuses.set(token, { status: 'review', changedAt: now, ...(entry.cwd !== undefined ? { cwd: entry.cwd } : {}) });
 			}
 		}
+	}
+
+	/** workbench のポーリング用: エージェントhookの発火実績があるペイントークン一覧 */
+	async listAgentHookTokens(): Promise<string[]> {
+		return [...this._agentHookTokens];
+	}
+
+	/**
+	 * ターミナルのシェルプロセス終了を workbench から通知する（renderer の instance.onExit 起点）。
+	 * エージェントCLIはクラッシュ・強制終了時に Stop/SessionEnd hook を発火できないため、
+	 * ここで実行状態と実績を掃除し、hookバスへ TerminalExit を流してチャットミラーの
+	 * ライブ状態（考え中表示）も解除する。
+	 */
+	async notifyTerminalExit(token: string): Promise<void> {
+		this._agentHookTokens.delete(token);
+		this._paneStatuses.delete(token);
+		fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: Date.now() });
 	}
 
 	/** workbench のポーリング用: 現在のペイン実行状態一覧 */

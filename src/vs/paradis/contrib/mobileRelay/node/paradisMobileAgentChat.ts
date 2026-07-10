@@ -31,7 +31,7 @@ import { watch, FSWatcher, promises as fs } from 'fs';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { fireParadisAgentTurnEnded, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 
@@ -213,12 +213,18 @@ interface IParseSignals {
 	readonly answeredIds: string[];
 	/** 実ユーザーのテキスト発話があった（未回答質問クリアの保険）。 */
 	userText: boolean;
+	/**
+	 * ターンが終了した（Codex event_msg の task_complete / error / turn_aborted）。
+	 * usage limit 等のエラー中断は Stop 系 hook が発火しないため、transcript が唯一の検出点。
+	 * ライブ追記時のみライブ状態（考え中表示）の解除に使う。
+	 */
+	turnEnded: boolean;
 	model?: string;
 	effort?: string;
 }
 
 function newParseSignals(): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], userText: false };
+	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], userText: false, turnEnded: false };
 }
 
 /** unknown からの安全なプロパティ読み出し。 */
@@ -552,8 +558,20 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		}
 		return [];
 	}
+	if (obj['type'] === 'event_msg') {
+		// event_msg は表示内容としては response_item と重複するため使わないが、ターン終了の
+		// 検出にだけ使う。usage limit（error / codex_error_info: usage_limit_exceeded）や
+		// 中断（turn_aborted）は hooks.json に対応イベントが無く Stop hook が発火しないため、
+		// ここで拾わないと「考え中」表示が永久に残る。
+		const eventPayload = rec(obj['payload']);
+		const eventType = str(eventPayload?.['type']);
+		if (eventType === 'task_complete' || eventType === 'error' || eventType === 'turn_aborted') {
+			signals.turnEnded = true;
+		}
+		return [];
+	}
 	if (obj['type'] !== 'response_item') {
-		return []; // event_msg は response_item と重複するため使わない。session_meta 等も対象外
+		return []; // session_meta 等も対象外
 	}
 	const payload = rec(obj['payload']);
 	if (!payload) {
@@ -760,6 +778,8 @@ interface ITailerDelegate {
 	onInfo(): void;
 	/** Claude transcriptのephemeral progress行を受けた。履歴には追加しない。 */
 	onProgress(progress: ITranscriptProgress): void;
+	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
+	onTurnEnded(): void;
 }
 
 /**
@@ -1021,7 +1041,7 @@ class TranscriptTailer {
 				added.push({ ...message, rev: this.rev++ });
 			}
 		}
-		this.applySignals(signals);
+		this.applySignals(signals, emitDelta);
 		if (latestProgress !== undefined) {
 			this.delegate.onProgress(latestProgress);
 		}
@@ -1107,7 +1127,7 @@ class TranscriptTailer {
 	}
 
 	/** パースで収集したシグナルをタスク・質問・メタ情報の追跡へ反映し、変化があれば通知する。 */
-	private applySignals(signals: IParseSignals): void {
+	private applySignals(signals: IParseSignals, live: boolean): void {
 		let activityChanged = false;
 		for (const [id, at] of signals.openedTasks) {
 			if (!this.backgroundTasks.has(id)) {
@@ -1151,6 +1171,11 @@ class TranscriptTailer {
 		}
 		if (infoChanged) {
 			this.delegate.onInfo();
+		}
+		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
+		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
+		if (live && signals.turnEnded) {
+			this.delegate.onTurnEnded();
 		}
 	}
 }
@@ -1691,7 +1716,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.setLiveState(token, { phase: 'thinking', source: 'codex-daemon', startedAt: now, updatedAt: now });
 			return;
 		}
-		if (event.method === 'turn/completed') {
+		if (event.method === 'turn/completed' || event.method === 'turn/failed' || event.method === 'turn/aborted') {
+			// turn/failed は usage limit 等のエラー中断（turn/completed が来ないため、
+			// ここで解除しないと「考え中」表示が残り続ける）。
 			this.codexMessageBuffers.delete(token);
 			this.codexActiveItems.delete(token);
 			this.clearLiveState(token);
@@ -1999,6 +2026,12 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.pushInfoToSubscriber(token);
 			},
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
+			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
+			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
+			onTurnEnded: () => {
+				this.clearLiveState(token);
+				fireParadisAgentTurnEnded(token);
+			},
 		}, this.logService);
 		this.tailers.set(token, tailer);
 		return tailer;
