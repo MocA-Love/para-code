@@ -54,7 +54,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          lfs: true
+          # All LFS objects are Copilot simulation-test caches excluded from the packaged extension.
+          # Avoid making production releases depend on the repository's GitHub LFS download budget.
+          lfs: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -185,7 +187,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          lfs: true
+          # All LFS objects are Copilot simulation-test caches excluded from the packaged extension.
+          # Avoid making production releases depend on the repository's GitHub LFS download budget.
+          lfs: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -244,7 +248,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          lfs: true
+          # All LFS objects are Copilot simulation-test caches excluded from the packaged extension.
+          # Avoid making production releases depend on the repository's GitHub LFS download budget.
+          lfs: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
