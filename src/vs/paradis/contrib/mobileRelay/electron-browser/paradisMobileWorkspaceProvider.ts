@@ -40,7 +40,9 @@ const decoder = new TextDecoder();
 /** ワークスペース状態スナップショット（stateチャネルのペイロード）。 */
 interface StateSnapshot {
 	activeWs: string | undefined;
-	workspaces: { id: string; name: string; color?: string; branch?: string }[];
+	// parent: worktree（スペース）の親リポジトリid。モバイル側がドロワーで親子グルーピング
+	// （開閉表示）するために使う。旧アプリは無視するため後方互換（フラット表示のまま）。
+	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string }[];
 	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
@@ -359,9 +361,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 				workspaces.push({
 					id: paradisWorktreeStateKey(worktree.uri),
+					// 「✦ 」接頭辞は旧アプリ（フラット表示）互換のため残す。新アプリはparentで
+					// グルーピングし、表示時に接頭辞を取り除く
 					name: `✦ ${worktree.name}`,
 					...(r.color ? { color: r.color } : {}),
 					...(worktree.branch ? { branch: worktree.branch } : {}),
+					parent: r.id,
 				});
 			}
 		}

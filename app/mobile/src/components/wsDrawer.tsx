@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { ReactNode, createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
-import { Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Image, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,6 +28,15 @@ import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
  *  - 中央: ワークスペース一覧（応答待ちは「質問あり」バッジで強調）
  *  - 下部: 接続/切断トグルとペアリング解除（同じく旧ホームカードから移設）
  */
+
+// AndroidのLayoutAnimation（ワークツリー開閉アニメ）は旧アーキテクチャでは明示的な有効化が必要
+// （新アーキテクチャではこの呼び出しはno-opで無害）。
+if (Platform.OS === 'android') {
+	UIManager.setLayoutAnimationEnabledExperimental?.(true);
+}
+
+/** stateスナップショットのワークスペースエントリ（parentはworktreeの親リポジトリid）。 */
+type WsEntry = { id: string; name: string; color?: string; branch?: string; parent?: string };
 
 /** ワークスペースの表示色。PC側がcolorを配信していればそれを、無ければ名前のハッシュで安定に決める。 */
 const WS_PALETTE = [colors.accent, colors.purple, colors.green, colors.orange, colors.yellow, colors.red] as const;
@@ -118,16 +127,113 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 		disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay, unpair: s.unpair,
 	})));
 
-	const list = workspace?.workspaces ?? [];
+	const list: WsEntry[] = workspace?.workspaces ?? [];
 	const terminals = workspace?.terminals ?? [];
 	const effective = selectedWs !== undefined && list.some(w => w.id === selectedWs) ? selectedWs : list[0]?.id;
 	const waitingTotal = terminals.filter(t => isAgentWaiting(t.agentStatus)).length;
 	const online = connection === 'online' && pcOnline;
 
+	// ── ワークツリー（スペース）の親子グルーピング ──
+	// parent付きエントリを親リポジトリ行の配下にまとめ、開閉できるようにする。
+	// 旧PC（parent未配信）では全エントリがrepos側に入り、従来通りのフラット表示になる。
+	const repos = list.filter(w => w.parent === undefined);
+	const repoIds = new Set(repos.map(r => r.id));
+	// 親が一覧に見つからないworktree（不整合時の保険）はフラット表示にフォールバック
+	const orphans = list.filter(w => w.parent !== undefined && !repoIds.has(w.parent));
+	// 閉じているリポジトリidの集合（既定は全展開）。ドロワーはマウントされ続けるため
+	// セッション中は保持される（永続化はしない）。
+	const [collapsedRepos, setCollapsedRepos] = useState<ReadonlySet<string>>(new Set());
+
+	// 選択が閉じたグループ内へ移ったときだけ自動展開する（選択行が隠れたままにならないように）。
+	// 依存をeffective/selectedParentに絞ることで、選択中グループを手動で閉じ直す操作は妨げない。
+	const selectedParent = list.find(w => w.id === effective)?.parent;
+	useEffect(() => {
+		if (selectedParent === undefined) {
+			return;
+		}
+		setCollapsedRepos(prev => {
+			if (!prev.has(selectedParent)) {
+				return prev;
+			}
+			const next = new Set(prev);
+			next.delete(selectedParent);
+			return next;
+		});
+	}, [effective, selectedParent]);
+
+	const toggleRepo = (id: string) => {
+		hapticImpact('light');
+		LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+		setCollapsedRepos(prev => {
+			const next = new Set(prev);
+			if (next.has(id)) {
+				next.delete(id);
+			} else {
+				next.add(id);
+			}
+			return next;
+		});
+	};
+
 	const select = (id: string) => {
 		hapticSelection();
 		setSelectedWs(id);
 		onClose();
+	};
+
+	// ws未タグのターミナルは他画面と同様にPC側アクティブワークスペース所属として数える
+	const wsTerminalsOf = (id: string) => terminals.filter(t => (t.ws ?? workspace?.activeWs) === id);
+
+	/**
+	 * ワークスペース1行。child=worktree行（インデント＋ガイド線）、childCount>0=グループ親行
+	 * （ワークツリー数＋開閉シェブロン付き。折りたたみ中はaggWaiting/aggRunningで配下の
+	 * 応答待ち・実行中を集約表示し、閉じていても見落とさないようにする）。
+	 */
+	const renderRow = (ws: WsEntry, opts: { child?: boolean; childCount?: number; open?: boolean; aggWaiting?: number; aggRunning?: number } = {}) => {
+		const active = ws.id === effective;
+		const wsTerminals = wsTerminalsOf(ws.id);
+		const waiting = wsTerminals.filter(t => isAgentWaiting(t.agentStatus)).length + (opts.aggWaiting ?? 0);
+		const running = wsTerminals.filter(t => t.agentStatus === 'working').length + (opts.aggRunning ?? 0);
+		const color = wsColor(ws);
+		// グループ表示ではPCが旧アプリ互換のために付ける「✦ 」接頭辞を取り除く
+		const name = opts.child ? ws.name.replace(/^✦ /, '') : ws.name;
+		const grouped = (opts.childCount ?? 0) > 0;
+		return (
+			<Pressable key={ws.id} style={[styles.row, opts.child && styles.wtRow, active && styles.rowActive]} onPress={() => select(ws.id)}>
+				{active && !opts.child ? <View style={styles.rowIndicator} /> : null}
+				{opts.child ? <View style={[styles.wtGuide, active && styles.wtGuideActive]} /> : null}
+				<View style={[styles.avatar, opts.child && styles.wtAvatar, { backgroundColor: color + '22' }]}>
+					<Text style={[styles.avatarText, opts.child && styles.wtAvatarText, { color }]}>{opts.child ? '✦' : name.charAt(0).toUpperCase()}</Text>
+				</View>
+				<View style={styles.rowBody}>
+					<Text style={[styles.rowName, opts.child && styles.wtName, active && styles.rowNameActive]} numberOfLines={1}>{name}</Text>
+					{ws.branch ? (
+						<View style={styles.rowBranchRow}>
+							<Ionicons name="git-branch-outline" size={10} color={colors.accent} />
+							<Text style={styles.rowBranch} numberOfLines={1}>{ws.branch}</Text>
+						</View>
+					) : null}
+				</View>
+				{waiting > 0 ? (
+					<View style={styles.alertBadge}><Text style={styles.alertBadgeText}>{waiting > 1 ? `質問あり ${waiting}` : '質問あり'}</Text></View>
+				) : null}
+				{running > 0 ? <View style={styles.runOrb} /> : null}
+				{!grouped && wsTerminals.length === 0 ? <Text style={styles.countText}>0</Text> : null}
+				{grouped ? (
+					<>
+						<Text style={styles.wtCount}>{opts.childCount}</Text>
+						<Pressable
+							style={styles.twistBtn}
+							hitSlop={6}
+							onPress={() => toggleRepo(ws.id)}
+							accessibilityLabel={opts.open ? 'ワークツリーを折りたたむ' : 'ワークツリーを展開'}
+						>
+							<Ionicons name={opts.open ? 'chevron-down' : 'chevron-forward'} size={13} color={colors.textDim} />
+						</Pressable>
+					</>
+				) : null}
+			</Pressable>
+		);
 	};
 
 	const confirmUnpair = () => {
@@ -181,36 +287,23 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 
 			<Text style={styles.sectionTitle}>ワークスペース</Text>
 			<ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
-				{list.map(ws => {
-					const active = ws.id === effective;
-					// ws未タグのターミナルは他画面と同様にPC側アクティブワークスペース所属として数える
-					const wsTerminals = terminals.filter(t => (t.ws ?? workspace?.activeWs) === ws.id);
-					const waiting = wsTerminals.filter(t => isAgentWaiting(t.agentStatus)).length;
-					const running = wsTerminals.filter(t => t.agentStatus === 'working').length;
-					const color = wsColor(ws);
+				{repos.map(repo => {
+					const children = list.filter(w => w.parent === repo.id);
+					if (children.length === 0) {
+						return renderRow(repo);
+					}
+					const open = !collapsedRepos.has(repo.id);
+					// 折りたたみ中は配下の応答待ち/実行中を親行に集約表示する
+					const aggWaiting = open ? 0 : children.reduce((n, c) => n + wsTerminalsOf(c.id).filter(t => isAgentWaiting(t.agentStatus)).length, 0);
+					const aggRunning = open ? 0 : children.reduce((n, c) => n + wsTerminalsOf(c.id).filter(t => t.agentStatus === 'working').length, 0);
 					return (
-						<Pressable key={ws.id} style={[styles.row, active && styles.rowActive]} onPress={() => select(ws.id)}>
-							{active ? <View style={styles.rowIndicator} /> : null}
-							<View style={[styles.avatar, { backgroundColor: color + '22' }]}>
-								<Text style={[styles.avatarText, { color }]}>{ws.name.charAt(0).toUpperCase()}</Text>
-							</View>
-							<View style={styles.rowBody}>
-								<Text style={[styles.rowName, active && styles.rowNameActive]} numberOfLines={1}>{ws.name}</Text>
-								{ws.branch ? (
-									<View style={styles.rowBranchRow}>
-										<Ionicons name="git-branch-outline" size={10} color={colors.accent} />
-										<Text style={styles.rowBranch} numberOfLines={1}>{ws.branch}</Text>
-									</View>
-								) : null}
-							</View>
-							{waiting > 0 ? (
-								<View style={styles.alertBadge}><Text style={styles.alertBadgeText}>質問あり</Text></View>
-							) : null}
-							{running > 0 ? <View style={styles.runOrb} /> : null}
-							{wsTerminals.length === 0 ? <Text style={styles.countText}>0</Text> : null}
-						</Pressable>
+						<View key={repo.id}>
+							{renderRow(repo, { childCount: children.length, open, aggWaiting, aggRunning })}
+							{open ? children.map(c => renderRow(c, { child: true })) : null}
+						</View>
 					);
 				})}
+				{orphans.map(ws => renderRow(ws))}
 				{list.length === 0 ? (
 					<Text style={styles.dim}>ワークスペース情報を取得中… PCの Para Code でリポジトリを登録すると表示されます。</Text>
 				) : null}
@@ -331,6 +424,16 @@ const styles = StyleSheet.create({
 	alertBadgeText: { color: colors.red, fontSize: 9.5, fontWeight: '700' },
 	runOrb: { width: 8, height: 8, borderRadius: 5, backgroundColor: colors.green },
 	countText: { color: colors.textDim, fontSize: 10, backgroundColor: colors.surface3, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
+	// ワークツリー（グループ子行）: インデント＋左端の縦ガイド線で親子関係を示す
+	wtRow: { marginLeft: 27, paddingLeft: 14, paddingVertical: 9 },
+	wtGuide: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 1.5, borderRadius: 1, backgroundColor: colors.borderStrong },
+	wtGuideActive: { backgroundColor: colors.accent },
+	wtAvatar: { width: 26, height: 26, borderRadius: 8 },
+	wtAvatarText: { fontSize: 11 },
+	wtName: { fontSize: 12.5 },
+	// グループ親行: ワークツリー数バッジ＋開閉シェブロン（行本体タップ=選択と分離した独立ヒット領域）
+	wtCount: { color: colors.textDim, fontSize: 10, backgroundColor: colors.surface3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	twistBtn: { width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginVertical: -6, marginRight: -4 },
 	dim: { color: colors.textDim, fontSize: 12, paddingHorizontal: 8, lineHeight: 18 },
 	footer: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
 	footerBtn: {
