@@ -129,11 +129,12 @@ export interface IParadisMobileRelayService {
 	runGit(repoPath: string, args: readonly string[]): Promise<IParadisGitResult>;
 
 	/**
-	 * agentチャネル用: 「ターミナルinstanceId ⇔ ペイントークン」対応表の同期（全置換）。
-	 * renderer がターミナル一覧の変化に合わせて呼ぶ。ペイントークンはE2Eの外へは出さず、
-	 * モバイルとの間では常に terminalId で識別する。
+	 * agentチャネル用: 「ターミナルinstanceId ⇔ ペイントークン」対応表の同期（ウィンドウ単位の全置換。
+	 * shared process は全ウィンドウ共有のため、windowId で自ウィンドウの分だけを置き換える）。
+	 * renderer がターミナル一覧の変化に合わせて呼び、ウィンドウを閉じる際は空配列で自分の分を消す。
+	 * ペイントークンはE2Eの外へは出さず、モバイルとの間では常に terminalId で識別する。
 	 */
-	syncAgentPanes(entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void>;
+	syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void>;
 
 	/**
 	 * agentチャネル用: ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell

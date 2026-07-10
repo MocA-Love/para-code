@@ -13,6 +13,7 @@
 // バインド/解除の実処理もここに集約する（コマンドパレットとダイアログの二重実装を避ける）。
 
 import { mainWindow } from '../../../../base/browser/window.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -103,6 +104,15 @@ class ParadisAgentBrowserBindingModel extends Disposable implements IParadisAgen
 	private _seenTokens = new Set<string>();
 	private _pollTimer: number | undefined;
 
+	/**
+	 * onDidChange の発火を集約するコアレサ。onAnyInstanceTitleChange はエージェントCLIの
+	 * OSCタイトル更新でターミナル数に比例して高頻度発火し、購読側（各ペインのインジケータ等）
+	 * の再描画コストもペイン数に比例するため、素通しするとペイン数の二乗で再描画が走る。
+	 * scheduleFire は「既に予約済みなら再予約しない」ことで、連続発火下でも一定間隔で
+	 * 確実に発火する（trailing debounce の発火飢餓を避ける）。
+	 */
+	private readonly _fireScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(), 100));
+
 	get bindings(): readonly IParadisPaneBinding[] { return this._bindings; }
 
 	constructor(
@@ -113,12 +123,18 @@ class ParadisAgentBrowserBindingModel extends Disposable implements IParadisAgen
 		super();
 
 		// ペイン集合・タイトル（エージェント種別判定に使用）の変化はUIの再描画に直結する。
-		this._register(this.paneTokenService.onDidChange(() => this._onDidChange.fire()));
-		this._register(this.terminalService.onDidChangeInstances(() => this._onDidChange.fire()));
-		this._register(this.terminalService.onAnyInstanceTitleChange(() => this._onDidChange.fire()));
+		this._register(this.paneTokenService.onDidChange(() => this.scheduleFire()));
+		this._register(this.terminalService.onDidChangeInstances(() => this.scheduleFire()));
+		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.scheduleFire()));
 
 		this._pollTimer = mainWindow.setInterval(() => { void this.refresh(); }, POLL_INTERVAL);
 		void this.refresh();
+	}
+
+	private scheduleFire(): void {
+		if (!this._fireScheduler.isScheduled()) {
+			this._fireScheduler.schedule();
+		}
 	}
 
 	getPanes(): IParadisPaneDescriptor[] {
@@ -183,7 +199,7 @@ class ParadisAgentBrowserBindingModel extends Disposable implements IParadisAgen
 			this._bindings = bindings;
 			this._seenTokens = new Set(seenTokens);
 			if (changed) {
-				this._onDidChange.fire();
+				this.scheduleFire();
 			}
 		} catch {
 			// shared process 未起動等。次のポーリングで再試行される。

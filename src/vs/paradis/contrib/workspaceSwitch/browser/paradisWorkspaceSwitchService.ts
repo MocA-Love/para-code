@@ -237,6 +237,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			markParadisManagedWorkspaceWindow();
 
 			this._switching = true;
+			let completed = false;
 			try {
 				this._onWillSwitchScope.fire(previousKey);
 
@@ -270,11 +271,18 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 				this.setActiveEntry(stateKey, uri);
 				this.restorePanelVisibilityFor(stateKey);
+				completed = true;
 			} finally {
 				this._switching = false;
-			}
 
-			this._onDidSwitchScope.fire(stateKey);
+				// 完了時は切り替え先スコープへ、途中で例外が起きた場合は元スコープへ発火する。
+				// onWillSwitchScope で退避済みの状態 (SCM入力の下書き・park済みターミナル) は
+				// onDidSwitchScope を受け皿として復元されるため、失敗時に発火しないと迷子のまま残る
+				const restoreKey = completed ? stateKey : previousKey;
+				if (restoreKey !== undefined) {
+					this._onDidSwitchScope.fire(restoreKey);
+				}
+			}
 		});
 	}
 

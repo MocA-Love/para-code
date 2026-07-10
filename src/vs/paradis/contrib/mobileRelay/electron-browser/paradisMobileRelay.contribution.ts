@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { localize, localize2 } from '../../../../nls.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { Disposable, DisposableMap, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -100,6 +101,10 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 		this.service = ProxyChannel.toService<IParadisMobileRelayService>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
 
+		// ウィンドウを閉じるとき、このウィンドウ分のペイン対応表を shared process から消す
+		// (ベストエフォート。届かなくても同一 windowId での再同期時に置き換わる)
+		this._register({ dispose: () => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, []).catch(() => { }); } });
+
 		// ccusage ダッシュボードデータ取得（PC版と同じ shared process 経由のクライアントを再利用する）
 		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);
 
@@ -120,7 +125,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			sharedProcessService,
 			(repoPath, args) => this.service.runGit(repoPath, args),
 			paneTokenService,
-			entries => { this.service.syncAgentPanes(entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
+			entries => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
