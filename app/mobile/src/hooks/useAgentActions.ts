@@ -76,28 +76,30 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	);
 
 	/**
-	 * 複数質問グループの一括回答。TUIの複数質問タブは「番号キー = 現在タブの選択肢を選んで
-	 * 次のタブへ自動前進」「Enter = フォーム全体をSubmit」なので、1問ごとにEnterを打つと
-	 * 途中でも全体が送信されてしまう（既知バグの原因）。ここでは全質問の回答を
-	 * 「番号（＋multiSelectはスペーストグル後Enterでタブ確定）を順に注入 → 最後に1度だけ
-	 * Enter」でまとめて送る。自由入力の質問は「Other番号 → CR（入力欄）→ テキスト → CR」。
-	 * 末尾のEnterは、最終タブの回答で自動Submitされた場合でも空の入力欄に落ちるだけで無害。
+	 * 複数質問グループの一括回答。TUIの選択プロンプトは「番号キー = 選択肢へジャンプ
+	 * （ハイライト移動のみ）」「Enter = 現在の質問を確定して次の質問へ前進（最終問なら
+	 * Submit）」なので、単一質問（answerQuestion）と同じく1問ごとに「番号 → Enter」で
+	 * 確定しながら前進する。番号だけを連打すると全てが1問目のハイライト移動に消費され、
+	 * 1問目しか選択されず送信もされない（既知バグの原因）。
+	 * multiSelect は「番号 → スペース」でトグルし、Enterでその質問を確定。
+	 * 自由入力は「Other番号 → CR（入力欄）→ テキスト → CR」。
+	 * 末尾の予備Enterは、最終問の確定で自動Submitされた場合は空の入力欄に落ちるだけで無害。
 	 */
 	const answerQuestionGroup = useCallback((answers: QuestionGroupAnswer[]) => {
 		const parts: string[] = [];
 		for (const answer of answers) {
 			if (answer.kind === 'option') {
-				parts.push(String(answer.index + 1));
+				parts.push(String(answer.index + 1), '\r');
 			} else if (answer.kind === 'multi') {
 				for (const i of answer.indices) {
 					parts.push(String(i + 1), ' ');
 				}
-				parts.push('\r'); // multiSelectは番号で前進しないため、タブ確定のEnterが要る
+				parts.push('\r');
 			} else {
 				parts.push(String(answer.optionCount + 1), '\r', answer.text, '\r');
 			}
 		}
-		parts.push('\r'); // 全タブ回答後のSubmit
+		parts.push('\r'); // 全問確定後にSubmit確認ステップが残っている場合の予備
 		sendSequence(parts);
 	}, [sendSequence]);
 
