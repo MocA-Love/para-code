@@ -41,7 +41,7 @@ const decoder = new TextDecoder();
 interface StateSnapshot {
 	activeWs: string | undefined;
 	workspaces: { id: string; name: string; color?: string; branch?: string }[];
-	terminals: { id: number; title: string; ws?: string; agentStatus?: string; cols?: number; rows?: number }[];
+	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
@@ -369,11 +369,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// スコープ未タグのターミナルはPC側では「常に表示」扱いだが、モバイルでは
 			// 全ワークスペースに重複表示されてしまうため、アクティブワークスペース所属として送る。
 			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId) ?? this.workspaceSwitchService.activeStateKey;
-			const agentStatus = stateKey ? this.agentStatusStore.getScopeStatus(stateKey) : undefined;
+			// 状態はペイン単位の値を使う。スコープ集約値（getScopeStatus）を付けると、
+			// 同スコープで別のエージェントが動いているだけで無関係なプレーンターミナルまで
+			// 「実行中」に見えてしまう（ホーム一覧・Live Activity の誤表示の原因）。
+			const agentStatus = this.agentStatusStore.getInstanceStatus(inst.instanceId);
+			// agent: そのターミナルでエージェントCLIが動いた実績（hook発火）があるか。
+			// モバイル側はホーム一覧・Live Activity をこのフラグで絞る。
+			const agent = this.agentStatusStore.isAgentInstance(inst.instanceId);
 			return {
 				id: inst.instanceId,
 				title: inst.title,
 				...(stateKey ? { ws: stateKey } : {}),
+				...(agent ? { agent } : {}),
 				...(agentStatus ? { agentStatus } : {}),
 				...(inst.cols > 0 && inst.rows > 0 ? { cols: inst.cols, rows: inst.rows } : {}),
 			};

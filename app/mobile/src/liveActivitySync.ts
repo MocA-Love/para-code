@@ -53,8 +53,11 @@ export function startLiveActivitySync(): void {
 function buildState(state: Pick<StoreState, 'workspace' | 'agentChats'>): LiveActivityState | undefined {
 	const terminals = state.workspace?.terminals ?? [];
 	const workspaces = new Map((state.workspace?.workspaces ?? []).map(w => [w.id, w.name]));
-	const waiting = terminals.filter(t => isAgentWaiting(t.agentStatus));
-	const running = terminals.filter(t => t.agentStatus === 'working');
+	// エージェント実績のあるターミナルに限定する（プレーンなターミナルがワークスペース
+	// 集約状態を拾ってActivityに載る誤表示の再発防止。状態自体もペイン単位になったが二重に守る）
+	const agents = terminals.filter(t => t.agent === true);
+	const waiting = agents.filter(t => isAgentWaiting(t.agentStatus));
+	const running = agents.filter(t => t.agentStatus === 'working');
 	if (waiting.length === 0 && running.length === 0) {
 		return undefined;
 	}

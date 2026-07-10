@@ -41,6 +41,10 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				return this.service.listSeenTokens() as Promise<T>;
 			case 'listPaneStatuses':
 				return this.service.listPaneStatuses() as Promise<T>;
+			case 'listAgentHookTokens':
+				return this.service.listAgentHookTokens() as Promise<T>;
+			case 'notifyTerminalExit':
+				return this.service.notifyTerminalExit(String(args[0])) as Promise<T>;
 			case 'acknowledgePaneStatus':
 				return this.service.acknowledgePaneStatus(String(args[0])) as Promise<T>;
 			case 'syncPaneShells':

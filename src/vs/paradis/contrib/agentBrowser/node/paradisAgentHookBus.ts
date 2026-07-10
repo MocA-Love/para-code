@@ -54,6 +54,22 @@ export function fireParadisAgentHookEvent(event: IParadisAgentHookEvent): void {
 	emitter.fire(event);
 }
 
+// --- ターン終了シグナル（transcript由来） ----------------------------------------------------------
+//
+// Codex の usage limit エラーや中断（turn_aborted）は Stop 系 hook を発火しないため、
+// transcript（rollout JSONL）の event_msg が唯一の検出点。ParadisMobileAgentChat の tailer が
+// 検出して発火し、ParadisAgentBrowserService がペイン実行状態（working の解除）に反映する。
+
+const turnEndedEmitter = new Emitter<{ readonly token: string; readonly at: number }>();
+
+/** transcript由来のターン終了の購読（shared process 内限定）。 */
+export const onParadisAgentTurnEnded: Event<{ readonly token: string; readonly at: number }> = turnEndedEmitter.event;
+
+/** transcript由来のターン終了の発火（ParadisMobileAgentChat の tailer 専用）。 */
+export function fireParadisAgentTurnEnded(token: string): void {
+	turnEndedEmitter.fire({ token, at: Date.now() });
+}
+
 // --- ペインアクティビティ（transcript由来の実行状態） ---------------------------------------------
 //
 // hookイベントだけでは分からない「transcriptを読まないと分からない状態」を、

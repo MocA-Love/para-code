@@ -239,10 +239,14 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		case 'request_user_input':
 		case 'permission.ask':
 			return 'permission';
+		// セッション開始はエージェント起動直後（プロンプト表示のみでターン未実行）にも発火する。
+		// working にするとCLIを起動しただけで「実行中」表示になるため、状態は変えない
+		// （実行中への遷移は UserPromptSubmit / PreToolUse 等の実際の活動イベントで行う）。
+		case 'SessionStart':
+			return undefined;
 		// 実行中系
 		// PostToolUseFailure / PermissionDenied はどちらも「ツールは失敗/拒否されたが
 		// ターンは継続中」(Claude Code) なので実行中扱い (permission の解除にも効く)。
-		case 'SessionStart':
 		case 'UserPromptSubmit':
 		case 'PreToolUse':
 		case 'PostToolUse':

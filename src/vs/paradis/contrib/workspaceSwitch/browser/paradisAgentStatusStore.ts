@@ -24,9 +24,19 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 	readonly onDidChangeAgentStatuses = this._onDidChangeAgentStatuses.event;
 
 	private _statuses = new Map<string, ParadisAgentStatus>();
+	private _instanceStatuses = new Map<number, ParadisAgentStatus>();
+	private _agentInstanceIds = new Set<number>();
 
 	getScopeStatus(stateKey: string): ParadisAgentStatus | undefined {
 		return this._statuses.get(stateKey);
+	}
+
+	getInstanceStatus(instanceId: number): ParadisAgentStatus | undefined {
+		return this._instanceStatuses.get(instanceId);
+	}
+
+	isAgentInstance(instanceId: number): boolean {
+		return this._agentInstanceIds.has(instanceId);
 	}
 
 	setScopeStatuses(statuses: Map<string, ParadisAgentStatus>): void {
@@ -35,6 +45,18 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 			return;
 		}
 		this._statuses = new Map(statuses);
+		this._onDidChangeAgentStatuses.fire();
+	}
+
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void {
+		// setScopeStatuses と同じく、変化がある時だけイベントを発火する
+		const statusesUnchanged = this._instanceStatuses.size === statuses.size && [...statuses].every(([key, value]) => this._instanceStatuses.get(key) === value);
+		const agentsUnchanged = this._agentInstanceIds.size === agentInstanceIds.size && [...agentInstanceIds].every(id => this._agentInstanceIds.has(id));
+		if (statusesUnchanged && agentsUnchanged) {
+			return;
+		}
+		this._instanceStatuses = new Map(statuses);
+		this._agentInstanceIds = new Set(agentInstanceIds);
 		this._onDidChangeAgentStatuses.fire();
 	}
 }

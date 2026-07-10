@@ -129,8 +129,18 @@ export interface IParadisAgentStatusStore {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeAgentStatuses: Event<void>;
 	getScopeStatus(stateKey: string): ParadisAgentStatus | undefined;
+	/**
+	 * ターミナルインスタンス単体のエージェント実行状態（スコープ集約前のペイン単位の値）。
+	 * モバイルのホーム一覧・Live Activity 用: スコープ集約値を使うと同スコープの
+	 * 無関係なターミナルまで「実行中」に見えてしまうため、ペイン単位で引く。
+	 */
+	getInstanceStatus(instanceId: number): ParadisAgentStatus | undefined;
+	/** そのインスタンスでエージェントCLIが動いた実績（hook発火）があるか。 */
+	isAgentInstance(instanceId: number): boolean;
 	/** ポーラー専用 */
 	setScopeStatuses(statuses: Map<string, ParadisAgentStatus>): void;
+	/** ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新） */
+	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void;
 }
 
 /**

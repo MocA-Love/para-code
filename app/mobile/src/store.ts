@@ -15,7 +15,9 @@ import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCrede
 export interface WorkspaceState {
 	activeWs: string | undefined;
 	workspaces: { id: string; name: string; color?: string; branch?: string }[];
-	terminals: { id: number; title: string; ws?: string; agentStatus?: string; cols?: number; rows?: number }[];
+	// agent: そのターミナルでエージェントCLI（claude/codex）が動いた実績があるか（PC側のhook発火実績）。
+	// ホーム一覧・Live Activity はこのフラグで「エージェントのターミナル」だけに絞る。
+	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
 /** scm status 応答。 */
