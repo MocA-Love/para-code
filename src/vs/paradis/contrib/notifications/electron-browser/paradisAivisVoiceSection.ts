@@ -21,10 +21,12 @@ import {
 	IParadisAivisDictionaryListItem,
 	IParadisAivisModelPreset,
 	IParadisAivisModelSummary,
+	IParadisAivisPlaceholders,
 	PARADIS_AIVIS_BUILTIN_PRESETS,
 	PARADIS_AIVIS_PLACEHOLDER_KEYS,
 	PARADIS_AIVIS_PLACEHOLDER_LABELS,
 	PARADIS_NOTIFICATIONS_CHANNEL,
+	renderParadisAivisTemplate,
 } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
@@ -35,7 +37,7 @@ const $ = dom.$;
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.notif.aivis.title', "Aivis Voice Announcement");
 // allow-any-unicode-next-line
-const STR_DESC = localize('paradis.notif.aivis.desc', "通知音の後に Aivis API でワークスペース名やブランチ名を音声で読み上げます。");
+const STR_DESC = localize('paradis.notif.aivis.desc', "通知音の後に Aivis API でスペース名やブランチ名を音声で読み上げます。");
 // allow-any-unicode-next-line
 const STR_ENABLE_LABEL = localize('paradis.notif.aivis.enableLabel', "音声報告を有効化");
 // allow-any-unicode-next-line
@@ -82,19 +84,16 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 const presetModelInfoCache = new Map<string, IParadisAivisModelSummary | null>();
 
-const SAMPLE_PLACEHOLDER_VALUES: Readonly<Record<string, string>> = Object.freeze({
+/** テスト再生用のサンプル値。event は再生する種別に応じて上書きする。 */
+const SAMPLE_PLACEHOLDER_VALUES: IParadisAivisPlaceholders = Object.freeze({
+	// allow-any-unicode-next-line
+	space: 'サンプルスペース',
 	// allow-any-unicode-next-line
 	branch: 'サンプルブランチ',
 	// allow-any-unicode-next-line
-	workspace: 'サンプルワークスペース',
-	// allow-any-unicode-next-line
 	worktree: 'サンプルワークツリー',
 	// allow-any-unicode-next-line
-	project: 'サンプルプロジェクト',
-	// allow-any-unicode-next-line
 	tab: 'ターミナル',
-	// allow-any-unicode-next-line
-	pane: 'ペーン1',
 });
 
 export class ParadisAivisVoiceSection extends Disposable {
@@ -495,12 +494,12 @@ export class ParadisAivisVoiceSection extends Disposable {
 			return;
 		}
 		const template = kind === 'permission' ? settings.formatPermission : settings.format;
-		let rendered = template;
-		for (const [key, value] of Object.entries(SAMPLE_PLACEHOLDER_VALUES)) {
-			rendered = rendered.replace(new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, 'g'), value);
-		}
-		// allow-any-unicode-next-line
-		rendered = rendered.replace(/\{\{\s*event\s*\}\}/g, kind === 'permission' ? 'PermissionRequest' : 'Stop').replace(/\{\{\s*\w+\s*\}\}/g, '');
+		// 本番 (paradisNotificationTrigger) と同じ置換関数を使い、プレビューと実際の読み上げの挙動を一致させる
+		const rendered = renderParadisAivisTemplate(template, {
+			...SAMPLE_PLACEHOLDER_VALUES,
+			// allow-any-unicode-next-line
+			event: kind === 'permission' ? '許可要求' : '作業完了',
+		});
 		try {
 			await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('playAivis', [{
 				apiKey: settings.apiKey,
