@@ -36,6 +36,8 @@ interface AppState extends StoreState {
 	 */
 	notifyPrefs: { agentDone: boolean; agentQuestion: boolean };
 	setNotifyPref(key: 'agentDone' | 'agentQuestion', enabled: boolean): void;
+	/** 通知一覧を全消去する（通知一覧画面のクリアボタン）。 */
+	clearNotifications(): void;
 	/** 初期化（起動時に1回）。identityをロードし、資格情報があれば接続する。 */
 	init(): Promise<void>;
 	/** QRから読み取ったURIでペアリングする。SAS表示はonSasで受ける。 */
@@ -336,6 +338,10 @@ export const useAppStore = create<AppState>(set => ({
 		// PC側にも同期する（アプリ未起動時のAPNsリモートプッシュはPC側で抑制判定するため）。
 		// オフライン中の変更は再接続時のonStateChange('online')フックで再送される。
 		controller?.sendNotifyPrefs(next);
+	},
+
+	clearNotifications() {
+		controller?.clearNotifications();
 	},
 
 	scmStatus(ws: string) {

@@ -24,7 +24,11 @@ export function NotificationsButton({ notifications }: {
 		<Link href="/notifications" asChild>
 			<Link.AppleZoom>
 				<Pressable style={styles.bellBtn} onPress={() => hapticImpact('light')} accessibilityLabel="通知">
-					<GlassSurface style={StyleSheet.absoluteFill} interactive />
+					{/* 丸クリップはガラス面のラッパーだけに掛ける（ボタン自体に overflow: hidden を
+					    掛けるとバッジが円周で欠ける） */}
+					<View style={styles.bellGlass}>
+						<GlassSurface style={StyleSheet.absoluteFill} interactive />
+					</View>
 					<Ionicons name="notifications-outline" size={18} color={colors.text} />
 					{questionCount > 0 ? (
 						<View style={styles.bellBadge}><Text style={styles.bellBadgeText}>{questionCount}</Text></View>
@@ -37,11 +41,12 @@ export function NotificationsButton({ notifications }: {
 
 const styles = StyleSheet.create({
 	bellBtn: {
-		width: 40, height: 40, borderRadius: 20, overflow: 'hidden',
+		width: 40, height: 40, borderRadius: 20,
 		alignItems: 'center', justifyContent: 'center',
 	},
+	bellGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 20, overflow: 'hidden' },
 	bellBadge: {
-		position: 'absolute', top: 3, right: 3, minWidth: 15, height: 15, borderRadius: 8,
+		position: 'absolute', top: -1, right: -1, minWidth: 15, height: 15, borderRadius: 8,
 		backgroundColor: colors.red, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
 	},
 	bellBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },

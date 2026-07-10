@@ -867,6 +867,15 @@ export class MobileController {
 		} catch { /* ignore */ }
 	}
 
+	/** 通知一覧を全消去する（通知一覧画面のクリアボタン用）。 */
+	clearNotifications(): void {
+		if (this.state.notifications.length === 0) {
+			return;
+		}
+		this.state.notifications = [];
+		this.emit({ notifications: true });
+	}
+
 	/** git status（変更ファイル一覧 + ブランチ名）。 */
 	scmStatus(ws: string): Promise<ScmStatusResult> {
 		return this.request<ScmStatusResult>('scm', { t: 'status', ws });
