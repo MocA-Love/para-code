@@ -674,7 +674,11 @@ export class ParadisAgentBrowserService extends Disposable {
 			normalized = 'working';
 			backgroundCompletionFallback = true;
 		}
-		if (normalized === 'working' && activity.pendingQuestion) {
+		// permission も question 中は矯正する: AskUserQuestion は tool_name の無い
+		// Notification("permission"を含む本文) や tool_name が取れなかった PermissionRequest
+		// でも permission を発火させることがあり、そのまま通すと質問カードの下に
+		// 許可/拒否バーが一瞬出る（質問回答待ち中に本物の許可プロンプトは並存しない）。
+		if ((normalized === 'working' || normalized === 'permission') && activity.pendingQuestion) {
 			normalized = 'question';
 		}
 

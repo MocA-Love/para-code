@@ -1938,7 +1938,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		// から内容カードを注入する（モバイルの承認バーに「何を承認するのか」を添える）。
 		// AskUserQuestion は除外: 上の PreToolUse 経路が選択肢つき質問カードを注入済みで、
 		// こちらも注入すると生JSONの承認カードが二重に出る（回答も質問カード側で完結する）。
+		// tool_name が取れない PermissionRequest（旧CLI・パース失敗）でも、質問回答待ち中は
+		// AskUserQuestion 由来とみなして注入しない（質問カードと承認カードの二重表示防止）。
 		if (event.event === 'PermissionRequest' && event.toolName !== 'AskUserQuestion'
+			&& !getParadisAgentPaneActivity(event.token).pendingQuestion
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token))) {
 			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput);
