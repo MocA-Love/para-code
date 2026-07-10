@@ -10,7 +10,9 @@
 // shared process 側の git 実行チャネル (paradisWorktreeGitChannel.ts) と
 // workbench 側のダイアログ (paradisCreateWorktreeDialog.ts) の間で共有する。
 
+import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { isLinux } from '../../../../base/common/platform.js';
+import { GeneralShellType, TerminalShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
 
 /** shared process 上で git worktree 操作を行う IPC チャネル名。 */
 export const PARADIS_WORKTREE_GIT_CHANNEL = 'paradisWorktreeGit';
@@ -63,21 +65,48 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 	{ id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' },
 ];
 
-/**
- * プロンプトを POSIX シェルのシングルクォート引数としてエスケープする。
- * （' を '\'' に置換して全体を ' で包む定番手法。）
- */
-export function paradisQuoteShellArg(value: string): string {
+function paradisQuotePosixShellArg(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** テンプレートの {prompt} を置換して実行コマンド文字列を組み立てる。 */
-export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, prompt: string): string {
-	const quoted = paradisQuoteShellArg(prompt);
-	if (template.command.includes('{prompt}')) {
-		return template.command.replace('{prompt}', quoted);
+function paradisQuotePowerShellArg(value: string): string {
+	return `'${value.replace(/'/g, '$&$&')}'`;
+}
+
+function paradisEncodeUtf16LeBase64(value: string): string {
+	const bytes = new Uint8Array(value.length * 2);
+	for (let index = 0; index < value.length; index++) {
+		const codeUnit = value.charCodeAt(index);
+		bytes[index * 2] = codeUnit & 0xff;
+		bytes[index * 2 + 1] = codeUnit >>> 8;
 	}
-	return `${template.command} ${quoted}`;
+	return encodeBase64(VSBuffer.wrap(bytes));
+}
+
+function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string): string {
+	if (template.command.includes('{prompt}')) {
+		return template.command.replace('{prompt}', promptExpression);
+	}
+	return `${template.command} ${promptExpression}`;
+}
+
+/** cmd.exeでは任意文字列の安全な引数化が困難なため、Base64化したPowerShellスクリプトへ委譲する。 */
+function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTemplate, prompt: string): string {
+	const promptBase64 = encodeBase64(VSBuffer.fromString(prompt));
+	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt');
+	const script = `$paradisPrompt = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${promptBase64}')); ${command}`;
+	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${paradisEncodeUtf16LeBase64(script)}`;
+}
+
+/** 実際のターミナルシェルに合わせ、テンプレートの {prompt} を安全な単一引数へ置換する。 */
+export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, shellType: TerminalShellType): string {
+	if (shellType === WindowsShellType.CommandPrompt) {
+		return paradisBuildCommandPromptAgentCommand(template, prompt);
+	}
+	const quoted = shellType === GeneralShellType.PowerShell
+		? paradisQuotePowerShellArg(prompt)
+		: paradisQuotePosixShellArg(prompt);
+	return paradisApplyPromptToTemplate(template, quoted);
 }
 
 /**

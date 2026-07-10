@@ -70,11 +70,9 @@ export class LinuxUpdateService extends AbstractUpdateService {
 	}
 
 	protected override async doDownloadUpdate(state: AvailableForDownload): Promise<void> {
-		// Use the download URL if available as we don't currently detect the package type that was
-		// installed and the website download page is more useful than the tarball generally.
-		if (this.productService.downloadUrl && this.productService.downloadUrl.length > 0) {
-			this.nativeHostMainService.openExternal(undefined, this.productService.downloadUrl);
-		} else if (state.update.url) {
+		// PARA-PATCH: the update feed points at Para Code's published Linux artifact. product.downloadUrl
+		// is intentionally not used because it may be a generic or unavailable landing page.
+		if (state.update.url) {
 			this.nativeHostMainService.openExternal(undefined, state.update.url);
 		}
 

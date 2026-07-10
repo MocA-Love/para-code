@@ -726,7 +726,12 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 			// to the renderer (see updateConfiguration) so it can gate its CSS on the real native state.
 			// Default ON (`!== false`): the setting's registry default (true) lives in the renderer-side
 			// configuration registry which the main process cannot see, so "unset" must mean enabled here too.
-			const paradisTransparencyEnabled = !config.isSessionsWindow && this.configurationService.getValue<boolean>('paradis.window.transparency.enabled') !== false;
+			// Transparent Electron windows on Windows require a frameless window. Disable the renderer's
+			// translucent CSS as well by reporting the actual creation state for native-titlebar windows.
+			const paradisTransparencySupported = !isWindows || !hasNativeTitlebar(this.configurationService);
+			const paradisTransparencyEnabled = !config.isSessionsWindow
+				&& paradisTransparencySupported
+				&& this.configurationService.getValue<boolean>('paradis.window.transparency.enabled') !== false;
 			this.paradisTransparentWindow = paradisTransparencyEnabled;
 			const options = instantiationService.invokeFunction(defaultBrowserWindowOptions, this.windowState, paradisTransparencyEnabled ? { transparent: true } : undefined, webPreferences);
 

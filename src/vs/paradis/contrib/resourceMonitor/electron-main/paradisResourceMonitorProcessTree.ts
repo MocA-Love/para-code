@@ -7,12 +7,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // プロセスツリーのスナップショット取得(Superset apps/desktop の
-// src/main/lib/resource-metrics/process-tree.ts 移植)。macOS/Linuxで `ps -eo` を1回実行し、
+// src/main/lib/resource-metrics/process-tree.ts 移植)。macOS/Linuxでは `ps -eo`、Windowsでは
+// Win32_PerfFormattedData_PerfProc_Process を1回取得し、
 // PID/親PID/CPU%/RSS を同一時点のスナップショットとして取得することで、
 // 「子孫の列挙」と「使用率の読み取り」の間の競合(別々にプロセス一覧を取る場合に起き得る)を避ける。
-// Windowsは非対応(ps不在のため、captureProcessSnapshot は空のスナップショットを返す)。
 
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { platform } from 'os';
 import { promisify } from 'util';
 
@@ -47,7 +47,7 @@ export interface IParadisSubtreeResources {
  * ツリー構造とリソース値を同一時点から得る。
  */
 export async function captureParadisProcessSnapshot(): Promise<IParadisProcessSnapshot> {
-	const raw = platform() === 'win32' ? [] : await listUnixProcesses();
+	const raw = platform() === 'win32' ? await listWindowsProcesses() : await listUnixProcesses();
 
 	const byPid = new Map<number, IParadisProcessInfo>();
 	const childrenOf = new Map<number, number[]>();
@@ -63,6 +63,57 @@ export async function captureParadisProcessSnapshot(): Promise<IParadisProcessSn
 	}
 
 	return { byPid, childrenOf };
+}
+
+const WINDOWS_PROCESS_SNAPSHOT_SCRIPT = [
+	'$ErrorActionPreference = \'Stop\'',
+	'@(Get-CimInstance Win32_PerfFormattedData_PerfProc_Process |',
+	'Where-Object { [int64]$_.IDProcess -gt 0 } |',
+	'ForEach-Object { [PSCustomObject]@{ pid = [int64]$_.IDProcess; ppid = [int64]$_.CreatingProcessID; cpu = [double]$_.PercentProcessorTime; memory = [int64]$_.WorkingSet } }) |',
+	'ConvertTo-Json -Compress',
+].join(' ');
+
+function listWindowsProcesses(): Promise<IParadisProcessInfo[]> {
+	return new Promise(resolve => {
+		execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_PROCESS_SNAPSHOT_SCRIPT], {
+			encoding: 'utf8',
+			maxBuffer: MAX_BUFFER,
+			timeout: EXEC_TIMEOUT_MS,
+			windowsHide: true,
+		}, (error, stdout) => {
+			if (error) {
+				resolve([]);
+				return;
+			}
+			try {
+				const parsed: unknown = JSON.parse(stdout || '[]');
+				const entries = Array.isArray(parsed) ? parsed : [parsed];
+				const result: IParadisProcessInfo[] = [];
+				for (const entry of entries) {
+					if (!entry || typeof entry !== 'object') {
+						continue;
+					}
+					const record = entry as Record<string, unknown>;
+					const pid = Number(record.pid);
+					const ppid = Number(record.ppid);
+					if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(ppid) || ppid < 0) {
+						continue;
+					}
+					const cpu = Number(record.cpu);
+					const memory = Number(record.memory);
+					result.push({
+						pid,
+						ppid,
+						cpu: Number.isFinite(cpu) ? Math.max(0, cpu) : 0,
+						memory: Number.isFinite(memory) ? Math.max(0, memory) : 0,
+					});
+				}
+				resolve(result);
+			} catch {
+				resolve([]);
+			}
+		});
+	});
 }
 
 /**

@@ -627,8 +627,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!root) {
 			return undefined;
 		}
-		const real = await this.fileService.realpath(uri);
-		if (!real) {
+		const [real, realRoot] = await Promise.all([
+			this.fileService.realpath(uri),
+			this.fileService.realpath(root),
+		]);
+		if (!real || !realRoot) {
 			return undefined;
 		}
 		// fileService.realpath は fs.realpath の戻り値文字列をそのまま URI.path に入れて返すため、
@@ -636,8 +639,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// 入り、URI 形式の root.path（`/c:/Users/...`）と文字列比較しても絶対に一致しない。
 		// URI.file で正規化し直してから、大文字小文字差（ドライブレター等）も吸収する
 		// extUriBiasedIgnorePathCase で包含判定する。
-		const realUri = real.scheme === 'file' && (real.path.includes('\\') || !real.path.startsWith('/')) ? URI.file(real.path) : real;
-		if (!extUriBiasedIgnorePathCase.isEqualOrParent(realUri, root)) {
+		const normalizeRealUri = (candidate: URI): URI => candidate.scheme === 'file' && (candidate.path.includes('\\') || !candidate.path.startsWith('/'))
+			? URI.file(candidate.path)
+			: candidate;
+		const realUri = normalizeRealUri(real);
+		const realRootUri = normalizeRealUri(realRoot);
+		if (!extUriBiasedIgnorePathCase.isEqualOrParent(realUri, realRootUri)) {
 			return undefined;
 		}
 		return uri;

@@ -18,7 +18,6 @@
 import type * as http from 'http';
 import { spawn } from 'child_process';
 import { promises as fs, unlinkSync } from 'fs';
-import { homedir } from 'os';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
@@ -30,6 +29,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, paradisCountLiveBackgroundTasks } from './paradisAgentHookBus.js';
+import { paradisCodexHome } from './paradisAgentHome.js';
 import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
@@ -789,7 +789,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	private async _setupCodexMcp(request: IParadisMcpSetupRequest): Promise<IParadisMcpSetupResult> {
-		const configDir = join(homedir(), '.codex');
+		const configDir = paradisCodexHome();
 		const configPath = join(configDir, 'config.toml');
 
 		let existing = '';
