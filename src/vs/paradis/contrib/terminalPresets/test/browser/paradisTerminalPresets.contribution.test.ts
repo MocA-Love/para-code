@@ -14,8 +14,9 @@ import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.j
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
+import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
 import { paradisRunAutoRunPresets } from '../../browser/paradisTerminalPresets.contribution.js';
-import { IParadisPresetService, IParadisResolvedPreset, IParadisRunPresetOptions } from '../../common/paradisTerminalPresets.js';
+import { IParadisPresetService, IParadisResolvedPreset, IParadisRunPresetOptions, paradisJoinPresetCommands } from '../../common/paradisTerminalPresets.js';
 
 const TEST_FOLDER = URI.file('/repo-worktrees/feature');
 
@@ -82,5 +83,21 @@ suite('paradisRunAutoRunPresets', () => {
 		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
 
 		assert.deepStrictEqual({ ranAny, runs }, { ranAny: true, runs: ['first', 'second', 'third'] });
+	});
+});
+
+suite('paradisJoinPresetCommands', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('uses native conditional chaining outside PowerShell', () => {
+		assert.strictEqual(paradisJoinPresetCommands(['first', 'second'], PosixShellType.Bash), 'first && second');
+		assert.strictEqual(paradisJoinPresetCommands(['first', 'second'], WindowsShellType.CommandPrompt), 'first && second');
+	});
+
+	test('supports Windows PowerShell 5.1 without pipeline chain operators', () => {
+		assert.strictEqual(
+			paradisJoinPresetCommands(['first', 'second', 'third'], GeneralShellType.PowerShell),
+			'first; if ($?) { second; if ($?) { third } }',
+		);
 	});
 });

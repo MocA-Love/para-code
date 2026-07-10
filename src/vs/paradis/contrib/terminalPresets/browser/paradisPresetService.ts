@@ -23,6 +23,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { GeneralShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -38,6 +39,7 @@ import {
 	PARADIS_PRESETS_SETTING,
 	PARADIS_WORKSPACE_PRESET_FILE,
 	ParadisPresetSource,
+	paradisJoinPresetCommands,
 } from '../common/paradisTerminalPresets.js';
 
 export class ParadisPresetService extends Disposable implements IParadisPresetService {
@@ -247,7 +249,6 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			return;
 		}
 		const cwd = this._resolveCwd(preset, options?.cwd);
-		const joined = commands.join(' && ');
 		const mode = preset.launchMode ?? 'new-terminal';
 
 		switch (mode) {
@@ -256,13 +257,16 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				if (!instance) {
 					instance = await this._createTerminalInActiveGroup(cwd);
 					options?.onDidStart?.();
-					await instance.sendText(joined, true);
+					await instance.processReady;
+					await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
 				} else {
+					await instance.processReady;
 					if (preset.cwd && cwd) {
 						// 既存ターミナルは作業ディレクトリが不明なので cd を前置する
-						await instance.sendText(`cd ${await instance.preparePathForShell(cwd.fsPath)} && ${joined}`, true);
+						const changeDirectory = await this._buildChangeDirectoryCommand(instance, cwd);
+						await instance.sendText(paradisJoinPresetCommands([changeDirectory, ...commands], instance.shellType), true);
 					} else {
-						await instance.sendText(joined, true);
+						await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
 					}
 					options?.onDidStart?.();
 				}
@@ -273,7 +277,8 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				const instance = await this._createTerminalInActiveGroup(cwd);
 				options?.onDidStart?.();
 				instance.focus(true);
-				await instance.sendText(joined, true);
+				await instance.processReady;
+				await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
 				break;
 			}
 			case 'new-terminal-each': {
@@ -313,7 +318,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		}
 		// 明示された基準 (worktree 作成直後など、フォルダ反映を待てない場面) を最優先する
 		if (baseOverride) {
-			return cwd ? joinPath(baseOverride, cwd.replace(/^\.\//, '')) : baseOverride;
+			return cwd ? joinPath(baseOverride, this._normalizeRelativeCwd(cwd)) : baseOverride;
 		}
 		const folder = preset.source === 'workspace' && preset.sourceUri
 			? this.contextService.getWorkspace().folders.find(candidate => candidate.uri.toString() === joinPath(preset.sourceUri!, '..').toString())
@@ -325,7 +330,21 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		if (!folder) {
 			return undefined;
 		}
-		return folder.toResource(cwd.replace(/^\.\//, ''));
+		return folder.toResource(this._normalizeRelativeCwd(cwd));
+	}
+
+	private _normalizeRelativeCwd(cwd: string): string {
+		return cwd.replace(/\\/g, '/').replace(/^\.\//, '');
+	}
+
+	private async _buildChangeDirectoryCommand(instance: ITerminalInstance, cwd: URI): Promise<string> {
+		if (instance.shellType === GeneralShellType.PowerShell) {
+			return `Set-Location -LiteralPath '${cwd.fsPath.replace(/'/g, '$&$&')}'`;
+		}
+		if (instance.shellType === WindowsShellType.CommandPrompt) {
+			return `cd /d "${cwd.fsPath.replace(/"/g, '""')}"`;
+		}
+		return `cd ${await instance.preparePathForShell(cwd.fsPath)}`;
 	}
 
 	private async _createTerminalInActiveGroup(cwd: URI | undefined): Promise<ITerminalInstance> {

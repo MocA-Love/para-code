@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
+import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess } from '../../../../base/common/network.js';
@@ -185,7 +186,9 @@ export class ParadisNotificationsService extends Disposable {
 					onComplete();
 					return;
 				}
-				void this._playRingtoneFile(ringtone.id, ringtone.volume).finally(() => onComplete());
+				void this._playRingtoneFile(ringtone.id, ringtone.volume)
+					.catch(error => this.logService.warn(`[ParadisNotifications] Failed to play ringtone: ${getErrorMessage(error)}`))
+					.finally(() => onComplete());
 			},
 			notifyAivisPaused: reason => this._onAivisPaused.fire(reason),
 			onError: err => this.logService.warn(`[ParadisNotifications] Aivis scheduler error (${err.kind}): ${err.reason}`),
@@ -1095,39 +1098,63 @@ export class ParadisNotificationsService extends Disposable {
 
 	/**
 	 * サウンドファイルをOSの標準ツールで再生し、完了を待つ（Superset main/lib/play-sound.ts 移植）。
-	 * macOS: afplay -v、Linux: paplay --volume（失敗時aplayへフォールバック）、Windows: PowerShell。
+	 * macOS: afplay -v、Linux: 利用可能な音声プレイヤーを順に試行、Windows: PowerShell。
 	 */
-	private _playSoundFile(soundPath: string, volume: number): Promise<void> {
+	private async _playSoundFile(soundPath: string, volume: number): Promise<void> {
 		if (!existsSync(soundPath)) {
 			this.logService.warn(`[ParadisNotifications] sound file not found: ${soundPath}`);
-			return Promise.resolve();
+			return;
 		}
 		const volumeDecimal = Math.max(0, Math.min(1, volume / 100));
+		if (volumeDecimal === 0) {
+			return;
+		}
 
 		if (process.platform === 'darwin') {
-			return new Promise(resolve => execFile('afplay', ['-v', volumeDecimal.toString(), soundPath], () => resolve()));
+			await this._runAudioPlayer('afplay', ['-v', volumeDecimal.toString(), soundPath]);
+			return;
 		}
 		if (process.platform === 'win32') {
-			if (volume === 0) {
-				return Promise.resolve();
-			}
 			const escapedPath = soundPath.replace(/'/g, '\'\'');
 			const isWav = /\.wav$/i.test(soundPath);
 			const script = isWav
 				? `$p = New-Object Media.SoundPlayer '${escapedPath}'; $p.PlaySync()`
 				: `Add-Type -AssemblyName presentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([System.Uri]::new('${escapedPath}')); $p.Volume = ${volumeDecimal}; $p.Play(); Start-Sleep -Milliseconds 500; while ($p.NaturalDuration.HasTimeSpan -and $p.Position -lt $p.NaturalDuration.TimeSpan) { Start-Sleep -Milliseconds 200 }`;
-			return new Promise(resolve => execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true }, () => resolve()));
+			await this._runAudioPlayer('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], true);
+			return;
 		}
-		// Linux
+
+		// Linux: MP3を扱えないaplayだけに依存せず、一般的なデスクトップ/メディア環境を順に試す。
 		const paVolume = Math.round(volumeDecimal * 65536);
-		return new Promise(resolve => {
-			execFile('paplay', ['--volume', paVolume.toString(), soundPath], error => {
-				if (error) {
-					execFile('aplay', [soundPath], () => resolve());
-					return;
-				}
-				resolve();
-			});
+		const percentVolume = Math.round(volumeDecimal * 100);
+		const candidates: ReadonlyArray<readonly [string, readonly string[]]> = [
+			['paplay', ['--volume', paVolume.toString(), soundPath]],
+			['ffplay', ['-nodisp', '-autoexit', '-loglevel', 'error', '-volume', percentVolume.toString(), soundPath]],
+			['mpv', ['--no-video', '--really-quiet', `--volume=${percentVolume}`, soundPath]],
+			['play', ['-q', '-v', volumeDecimal.toString(), soundPath]],
+			...(/\.mp3$/i.test(soundPath) ? [['mpg123', ['-q', '-f', Math.round(volumeDecimal * 32768).toString(), soundPath]] as const] : []),
+			...(/\.wav$/i.test(soundPath) ? [['aplay', ['-q', soundPath]] as const] : []),
+		];
+		for (const [command, args] of candidates) {
+			if (await this._tryAudioPlayer(command, args)) {
+				return;
+			}
+		}
+		throw new Error('Linuxで音声を再生できませんでした（paplay、ffplay、mpv、play、mpg123、aplayのいずれかが必要です）');
+	}
+
+	private _runAudioPlayer(command: string, args: readonly string[], windowsHide: boolean = false): Promise<void> {
+		return new Promise((resolve, reject) => {
+			execFile(command, [...args], { windowsHide }, error => error ? reject(error) : resolve());
 		});
+	}
+
+	private async _tryAudioPlayer(command: string, args: readonly string[]): Promise<boolean> {
+		try {
+			await this._runAudioPlayer(command, args);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 }

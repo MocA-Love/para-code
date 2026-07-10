@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisDeduplicateWorktreeDirName, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
+import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
+import { paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisDeduplicateWorktreeDirName, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -68,5 +69,22 @@ suite('paradisWorktreeCreate', () => {
 
 	test('does not create an extra default terminal when an agent command will run', () => {
 		assert.strictEqual(paradisShouldCreateDefaultTerminal('codex', 'build this'), false);
+	});
+
+	test('quotes agent prompts for POSIX and PowerShell terminals', () => {
+		const template = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		assert.strictEqual(paradisBuildAgentCommand(template, 'fix it\'s broken', PosixShellType.Bash), String.raw`codex 'fix it'\''s broken'`);
+		assert.strictEqual(paradisBuildAgentCommand(template, 'fix it\'s broken', GeneralShellType.PowerShell), String.raw`codex 'fix it''s broken'`);
+	});
+
+	test('encodes arbitrary cmd.exe prompts without interpolating metacharacters', () => {
+		const command = paradisBuildAgentCommand(
+			{ id: 'codex', label: 'Codex', command: 'codex {prompt}' },
+			'fix & echo %PATH% "now"',
+			WindowsShellType.CommandPrompt,
+		);
+		assert.match(command, /^powershell\.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
+		assert.ok(!command.includes('%PATH%'));
+		assert.ok(!command.includes('& echo'));
 	});
 });

@@ -447,12 +447,13 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			//    Workspaces ビューの稼働状態表示もそのまま効く）
 			const agent = this._agents.find(candidate => candidate.id === agentId);
 			if (agent && prompt.length > 0) {
-				const command = paradisBuildAgentCommand(agent, prompt);
 				const instance = await this.terminalService.createTerminal({
 					cwd: worktreeUri,
 					location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
 				});
 				instance.focus(true);
+				await instance.processReady;
+				const command = paradisBuildAgentCommand(agent, prompt, instance.shellType);
 				await instance.sendText(command, true);
 			}
 

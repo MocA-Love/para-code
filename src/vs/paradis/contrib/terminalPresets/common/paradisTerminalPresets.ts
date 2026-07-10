@@ -15,6 +15,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import { GeneralShellType, TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
 
 /** ワークスペースフォルダ直下で認識する設定ファイル名。 */
 export const PARADIS_WORKSPACE_PRESET_FILE = '.paracode.json';
@@ -105,6 +106,21 @@ export interface IParadisPresetService {
 
 	/** プリセットを定義元から削除する。 */
 	deletePreset(preset: IParadisResolvedPreset): Promise<void>;
+}
+
+/** PowerShell 5.1を含む実行シェルに合わせ、失敗時に後続を実行しないコマンド列へ変換する。 */
+export function paradisJoinPresetCommands(commands: readonly string[], shellType: TerminalShellType): string {
+	if (commands.length === 0) {
+		return '';
+	}
+	if (shellType !== GeneralShellType.PowerShell) {
+		return commands.join(' && ');
+	}
+	let joined = commands[commands.length - 1];
+	for (let index = commands.length - 2; index >= 0; index--) {
+		joined = `${commands[index]}; if ($?) { ${joined} }`;
+	}
+	return joined;
 }
 
 /** 定義の最低限のバリデーション（不正エントリは読み飛ばす）。 */
