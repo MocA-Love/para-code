@@ -142,4 +142,64 @@ suite('ParadisWorktreeGitService', () => {
 			assert.strictEqual(call.env?.PATH, '/opt/homebrew/bin:/usr/bin');
 		}
 	});
+
+	function createLifecycleService(handler: (command: string, args: readonly string[], options: cp.ExecFileOptions, callback: (error: (cp.ExecFileException & { code?: number }) | null, stdout: string, stderr: string) => void) => void): ParadisWorktreeGitService {
+		return new ParadisWorktreeGitService(
+			new NullLogService(),
+			undefined,
+			undefined,
+			handler as unknown as typeof cp.execFile,
+			async () => ({}),
+		);
+	}
+
+	test('runs lifecycle script in worktree with project root environment and a hang-protection timeout', async () => {
+		const calls: Array<{ command: string; args: readonly string[]; cwd?: string; root?: string; timeout?: number }> = [];
+		const service = createLifecycleService((command, args, options, callback) => {
+			calls.push({ command, args, cwd: options.cwd as string, root: (options.env as NodeJS.ProcessEnv | undefined)?.PARACODE_PROJECT_ROOT_PATH, timeout: options.timeout });
+			callback(null, '', '');
+		});
+		await service.runLifecycleScript({
+			kind: 'setup', repoPath: '/repo', worktreePath: '/repo-worktrees/task', script: 'bun install'
+		});
+		assert.deepStrictEqual(calls, [{
+			command: process.env.SHELL || '/bin/sh',
+			args: ['-lc', 'bun install'],
+			cwd: '/repo-worktrees/task',
+			root: '/repo',
+			timeout: 10 * 60_000
+		}]);
+	});
+
+	test('rejects a non-zero lifecycle script exit', async () => {
+		const service = createLifecycleService((_command, _args, _options, callback) => {
+			callback(Object.assign(new Error('exit 7'), { code: 7 }), '', 'failed setup');
+		});
+		await assert.rejects(
+			service.runLifecycleScript({ kind: 'setup', repoPath: '/repo', worktreePath: '/worktree', script: 'false' }),
+			/setup スクリプトが失敗しました.*failed setup/
+		);
+	});
+
+	test('reports an output-limit overflow as such instead of mislabeling it a timeout', async () => {
+		const service = createLifecycleService((_command, _args, _options, callback) => {
+			// maxBuffer 超過時も killed=true になるが、code に文字列エラーコードが入る
+			callback(Object.assign(new Error('stdout maxBuffer length exceeded'), { killed: true, code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' as unknown as number }), '', '');
+		});
+		await assert.rejects(
+			service.runLifecycleScript({ kind: 'setup', repoPath: '/repo', worktreePath: '/worktree', script: 'yes' }),
+			/setup スクリプトの出力が上限/
+		);
+	});
+
+	test('reports a timed-out lifecycle script as timeout instead of a generic failure', async () => {
+		const service = createLifecycleService((_command, _args, _options, callback) => {
+			// Node は timeout 到達時に子プロセスを kill し、killed=true・code=null のエラーを返す
+			callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGKILL' as NodeJS.Signals }), '', '');
+		});
+		await assert.rejects(
+			service.runLifecycleScript({ kind: 'teardown', repoPath: '/repo', worktreePath: '/worktree', script: 'sleep infinity' }),
+			/teardown スクリプトが 10 分以内に終了しなかった/
+		);
+	});
 });

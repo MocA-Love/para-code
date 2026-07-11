@@ -372,6 +372,16 @@ export class ParadisWorkspacesView extends ViewPane {
 			),
 			new Separator(),
 			new Action(
+				'paradis.workspaceSwitch.configureLifecycleScripts',
+				localize('paradis.workspaceSwitch.configureLifecycleScriptsContext', "Setup/Teardown Scripts..."),
+				undefined,
+				true,
+				// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。
+				// browser 層のこのビューからは ID 経由で呼ぶ (web ビルドでは未登録のため no-op)
+				() => this.commandService.executeCommand('paradis.workspaceSwitch.configureLifecycleScripts', repository.id)
+			),
+			new Separator(),
+			new Action(
 				'paradis.workspaceSwitch.removeFromList',
 				localize('paradis.workspaceSwitch.removeContext', "Remove from List"),
 				undefined,

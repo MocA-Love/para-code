@@ -18,7 +18,7 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
-import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
@@ -28,9 +28,12 @@ import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeServi
 import { IParadisRemoveWorktreeRequest, PARADIS_DEFAULT_AGENT_COMMANDS, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
+import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
+import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
 
 export const PARADIS_CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
 export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
+export const PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID = 'paradis.workspaceSwitch.configureLifecycleScripts';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -115,6 +118,33 @@ registerAction2(ParadisCreateWorktreeAction);
  * ID 経由でこのコマンドを実行する。git 実行と shared process チャネル依存があるため
  * electron-browser 層に置く）。
  */
+/**
+ * teardown スクリプト起因の失敗を、削除フロー内の他の想定外エラーと区別するためのマーカー。
+ * これで包まれていないエラーに「セットアップ解除スクリプトが失敗した」と誤って案内しないために使う。
+ */
+class ParadisTeardownFailedError extends Error {
+	constructor(readonly reason: unknown) {
+		super(reason instanceof Error ? reason.message : String(reason));
+	}
+}
+
+/** worktree 削除前後の一連のアクション（順序・失敗時の打ち切りをテストしやすいよう分離）。 */
+export interface IParadisRemoveWorktreeActions {
+	/** リポジトリ定義の teardownScript を実行する。失敗したら後続（切り替え・削除）を一切実行しない。 */
+	runTeardown(): Promise<void>;
+	/** 削除対象が現在アクティブなら親リポジトリへ切り替える。 */
+	switchToParent(): Promise<void>;
+	/** git worktree remove（force 再試行込み）を実行する。 */
+	remove(): Promise<void>;
+}
+
+/** teardown → 親への切り替え → 削除、の順で実行する。 */
+export async function paradisRemoveWorktreeSequence(actions: IParadisRemoveWorktreeActions): Promise<void> {
+	await actions.runTeardown();
+	await actions.switchToParent();
+	await actions.remove();
+}
+
 class ParadisRemoveWorktreeAction extends Action2 {
 	constructor() {
 		super({
@@ -134,6 +164,9 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		const worktreeService = accessor.get(IParadisWorktreeService);
 		const sharedProcessService = accessor.get(ISharedProcessService);
 		const logService = accessor.get(ILogService);
+		// アクセサは同期実行中しか有効でないため、await をまたぐ teardown 実行用に
+		// instantiationService だけ取り出しておき、実行時は invokeFunction で新しいアクセサを作る
+		const instantiationService = accessor.get(IInstantiationService);
 
 		// executeCommand 経由で渡ってくる URI が復元済みでない可能性に備えて revive する
 		const uri = URI.isUri(worktree.uri) ? worktree.uri : URI.revive(worktree.uri);
@@ -156,60 +189,121 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			return;
 		}
 
-		// 削除対象が現在アクティブなワークスペースの場合、先に親リポジトリへ切り替えてから削除する
-		// （削除後に存在しないフォルダを開いたままにしないため）
-		if (switchService.activeStateKey === paradisWorktreeStateKey(uri)) {
-			try {
-				await switchService.switchRepository(worktree.repositoryId);
-			} catch (error) {
-				logService.warn('[ParadisRemoveWorktree] switch to parent repository before removal failed', error);
-			}
-		}
-
-		const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
-		const removeRequest: IParadisRemoveWorktreeRequest = {
-			repoPath: repository.uri.fsPath,
-			worktreePath: uri.fsPath,
-			force: false
-		};
-
 		try {
-			await channel.call('removeWorktree', [removeRequest]);
-		} catch (error) {
-			// 未コミット変更・未追跡ファイルがあると force なしでは失敗する。強制削除を追加確認する
-			const { confirmed: forceConfirmed } = await dialogService.confirm({
-				type: 'warning',
-				// allow-any-unicode-next-line
-				message: localize('paradis.workspaceSwitch.removeWorktreeForceConfirm', "ワークツリーを削除できませんでした。強制削除しますか？"),
-				detail: `${error instanceof Error ? error.message : String(error)}\n\n`
-					// allow-any-unicode-next-line
-					+ localize('paradis.workspaceSwitch.removeWorktreeForceDetail', "--force で強制削除します。未コミットの変更や未追跡ファイルは完全に失われます。"),
-				// allow-any-unicode-next-line
-				primaryButton: localize('paradis.workspaceSwitch.removeWorktreeForceAction', "強制削除")
+			await paradisRemoveWorktreeSequence({
+				runTeardown: async () => {
+					// リポジトリ定義の teardownScript。失敗したら切り替え・削除を一切行わない
+					try {
+						await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri);
+					} catch (error) {
+						throw new ParadisTeardownFailedError(error);
+					}
+				},
+				switchToParent: async () => {
+					// 削除対象が現在アクティブなワークスペースの場合、先に親リポジトリへ切り替えてから削除する
+					// （削除後に存在しないフォルダを開いたままにしないため）
+					if (switchService.activeStateKey !== paradisWorktreeStateKey(uri)) {
+						return;
+					}
+					try {
+						await switchService.switchRepository(worktree.repositoryId);
+					} catch (error) {
+						logService.warn('[ParadisRemoveWorktree] switch to parent repository before removal failed', error);
+					}
+				},
+				remove: async () => {
+					const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
+					const removeRequest: IParadisRemoveWorktreeRequest = {
+						repoPath: repository.uri.fsPath,
+						worktreePath: uri.fsPath,
+						force: false
+					};
+
+					try {
+						await channel.call('removeWorktree', [removeRequest]);
+					} catch (error) {
+						// 未コミット変更・未追跡ファイルがあると force なしでは失敗する。強制削除を追加確認する
+						const { confirmed: forceConfirmed } = await dialogService.confirm({
+							type: 'warning',
+							// allow-any-unicode-next-line
+							message: localize('paradis.workspaceSwitch.removeWorktreeForceConfirm', "ワークツリーを削除できませんでした。強制削除しますか？"),
+							detail: `${error instanceof Error ? error.message : String(error)}\n\n`
+								// allow-any-unicode-next-line
+								+ localize('paradis.workspaceSwitch.removeWorktreeForceDetail', "--force で強制削除します。未コミットの変更や未追跡ファイルは完全に失われます。"),
+							// allow-any-unicode-next-line
+							primaryButton: localize('paradis.workspaceSwitch.removeWorktreeForceAction', "強制削除")
+						});
+						if (!forceConfirmed) {
+							return;
+						}
+						try {
+							await channel.call('removeWorktree', [{ ...removeRequest, force: true }]);
+						} catch (forceError) {
+							logService.error('[ParadisRemoveWorktree] force removal failed', forceError);
+							await dialogService.error(
+								// allow-any-unicode-next-line
+								localize('paradis.workspaceSwitch.removeWorktreeFailed', "ワークツリーの削除に失敗しました。"),
+								forceError instanceof Error ? forceError.message : String(forceError)
+							);
+							return;
+						}
+					}
+
+					// git worktree remove は .git/worktrees/<name> のメタデータも消すため watcher 経由で
+					// いずれ一覧が更新されるが、既知リストから即座に外して反映を早める
+					worktreeService.removeKnownWorktree({ ...worktree, uri });
+				},
 			});
-			if (!forceConfirmed) {
-				return;
-			}
-			try {
-				await channel.call('removeWorktree', [{ ...removeRequest, force: true }]);
-			} catch (forceError) {
-				logService.error('[ParadisRemoveWorktree] force removal failed', forceError);
+		} catch (error) {
+			if (error instanceof ParadisTeardownFailedError) {
+				logService.error('[ParadisRemoveWorktree] teardown failed', error.reason);
 				await dialogService.error(
 					// allow-any-unicode-next-line
-					localize('paradis.workspaceSwitch.removeWorktreeFailed', "ワークツリーの削除に失敗しました。"),
-					forceError instanceof Error ? forceError.message : String(forceError)
+					localize('paradis.workspaceSwitch.removeWorktreeTeardownFailed', "セットアップ解除スクリプトが失敗したため、削除を中止しました。"),
+					error.message
 				);
 				return;
 			}
+			logService.error('[ParadisRemoveWorktree] removal failed', error);
+			await dialogService.error(
+				// allow-any-unicode-next-line
+				localize('paradis.workspaceSwitch.removeWorktreeUnexpectedFailed', "ワークツリーの削除中に予期しないエラーが発生しました。"),
+				error instanceof Error ? error.message : String(error)
+			);
 		}
-
-		// git worktree remove は .git/worktrees/<name> のメタデータも消すため watcher 経由で
-		// いずれ一覧が更新されるが、既知リストから即座に外して反映を早める
-		worktreeService.removeKnownWorktree({ ...worktree, uri });
 	}
 }
 
 registerAction2(ParadisRemoveWorktreeAction);
+
+/**
+ * リポジトリの Setup/Teardown スクリプト（.paracode.json）を編集するダイアログを開くコマンド。
+ * Workspaces ビューのリポジトリ行コンテキストメニューから ID 経由で呼ぶ。
+ */
+class ParadisConfigureLifecycleScriptsAction extends Action2 {
+	constructor() {
+		super({
+			id: PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID,
+			title: localize2('paradis.workspaceSwitch.configureLifecycleScripts', "Setup/Teardown Scripts..."),
+			category: localize2('paradis.category', "Para Code"),
+			f1: false
+		});
+	}
+
+	run(accessor: ServicesAccessor, repositoryId?: string): void {
+		if (typeof repositoryId !== 'string') {
+			return;
+		}
+		const switchService = accessor.get(IParadisWorkspaceSwitchService);
+		const repository = switchService.repositories.find(candidate => candidate.id === repositoryId);
+		if (!repository) {
+			return;
+		}
+		openParadisWorkspaceLifecycleDialog(accessor, repository);
+	}
+}
+
+registerAction2(ParadisConfigureLifecycleScriptsAction);
 
 // Workspaces ビュータイトルのボタン（「+」ボタンの左に配置）
 MenuRegistry.appendMenuItem(MenuId.ViewTitle, {

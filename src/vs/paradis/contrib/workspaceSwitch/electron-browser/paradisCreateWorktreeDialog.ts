@@ -32,6 +32,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
+import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
@@ -50,6 +51,28 @@ import {
 } from '../common/paradisWorktreeCreate.js';
 
 const $ = dom.$;
+
+/** worktree 作成後に行う一連のアクション（順序・失敗時の打ち切りをテストしやすいよう分離）。 */
+export interface IParadisCreatedWorktreeActions {
+	/** リポジトリ定義の setupScript を実行する。失敗したら後続を一切実行しない。 */
+	runSetup(): Promise<void>;
+	/** 自動実行プリセットを起動する。何か起動したら true を返す。 */
+	runAutoRun(): Promise<boolean>;
+	/** runAutoRun が何も起動しなかった場合のみ呼ばれる。 */
+	openDefaultTerminal(): Promise<void>;
+	/** エージェント CLI を起動する。 */
+	launchAgent(): Promise<void>;
+}
+
+/** setup → 自動実行プリセット（無ければ既定ターミナル） → エージェント起動、の順で実行する。 */
+export async function paradisCompleteCreatedWorktree(actions: IParadisCreatedWorktreeActions): Promise<void> {
+	await actions.runSetup();
+	const autoRunExecuted = await actions.runAutoRun();
+	if (!autoRunExecuted) {
+		await actions.openDefaultTerminal();
+	}
+	await actions.launchAgent();
+}
 
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.createWorktree.title', "新しいスペース（worktree）を作成");
@@ -431,40 +454,50 @@ class ParadisCreateWorktreeDialog extends Disposable {
 				uri: worktreeUri,
 			});
 
-			// 4. 自動実行プリセット（.paracode.json / ユーザー設定の autoRun）を先に起動する
-			//    （dev サーバー等の下準備 → エージェント、の順。失敗しても作成自体は成功扱い）
-			let autoRunExecuted = false;
-			try {
-				autoRunExecuted = await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath, targetStateKey);
-			} catch (error) {
-				this.logService.warn('[ParadisCreateWorktree] auto-run presets failed', error);
-			}
-
-			// 4.5. エージェントも自動実行プリセットも何も起動しない場合のみ、既定のターミナルを開く
-			//    (autoRun プリセットがフォーカスした端末からフォーカスを奪わないようにする)
-			if (!autoRunExecuted && paradisShouldCreateDefaultTerminal(agentId, prompt)) {
-				const instance = await this.terminalService.createTerminal({
-					cwd: worktreeUri,
-					location: TerminalLocation.Panel,
-				});
-				this.terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
-				instance.focus(true);
-			}
-
-			// 5. エージェントCLI 起動（エディタ領域ターミナル。pane トークンが自動注入されるため
-			//    Workspaces ビューの稼働状態表示もそのまま効く）
-			const agent = this._agents.find(candidate => candidate.id === agentId);
-			if (agent && prompt.length > 0) {
-				const instance = await this.terminalService.createTerminal({
-					cwd: worktreeUri,
-					location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
-				});
-				this.terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
-				instance.focus(true);
-				await instance.processReady;
-				const command = paradisBuildAgentCommand(agent, prompt, instance.shellType);
-				await instance.sendText(command, true);
-			}
+			// 4. setup スクリプト → 自動実行プリセット → （なければ既定ターミナル） → エージェント起動、の順に実行する。
+			//    setup の失敗はここで例外として伝播し、後続はすべて打ち切る（下の catch で処理される）。
+			await paradisCompleteCreatedWorktree({
+				runSetup: async () => {
+					await this.instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'setup', repository, worktreeUri);
+				},
+				runAutoRun: async () => {
+					// .paracode.json / ユーザー設定の autoRun（dev サーバー等の下準備）。失敗しても作成自体は成功扱い
+					try {
+						return await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath, targetStateKey);
+					} catch (error) {
+						this.logService.warn('[ParadisCreateWorktree] auto-run presets failed', error);
+						return false;
+					}
+				},
+				openDefaultTerminal: async () => {
+					// エージェントも自動実行プリセットも何も起動しない場合のみ、既定のターミナルを開く
+					if (!paradisShouldCreateDefaultTerminal(agentId, prompt)) {
+						return;
+					}
+					const instance = await this.terminalService.createTerminal({
+						cwd: worktreeUri,
+						location: TerminalLocation.Panel,
+					});
+					this.terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
+					instance.focus(true);
+				},
+				launchAgent: async () => {
+					// エディタ領域ターミナル。pane トークンが自動注入されるため Workspaces ビューの稼働状態表示もそのまま効く
+					const agent = this._agents.find(candidate => candidate.id === agentId);
+					if (!agent || prompt.length === 0) {
+						return;
+					}
+					const instance = await this.terminalService.createTerminal({
+						cwd: worktreeUri,
+						location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
+					});
+					this.terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
+					instance.focus(true);
+					await instance.processReady;
+					const command = paradisBuildAgentCommand(agent, prompt, instance.shellType);
+					await instance.sendText(command, true);
+				},
+			});
 
 			this.dispose();
 		} catch (error) {
