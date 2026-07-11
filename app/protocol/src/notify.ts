@@ -22,6 +22,7 @@ export interface NotifyPayload {
 	readonly ws?: string;
 	/** 関連ターミナルのインスタンスID（あればディープリンク先）。 */
 	readonly terminalId?: number;
+	readonly agentToken?: string;
 	/** PC側で通知が発生した時刻（epoch ms）。 */
 	readonly at: number;
 }
@@ -45,7 +46,8 @@ export function decodeNotify(bytes: Uint8Array): NotifyPayload {
 	}
 	const ws = typeof raw['ws'] === 'string' ? raw['ws'] : undefined;
 	const terminalId = typeof raw['terminalId'] === 'number' ? raw['terminalId'] : undefined;
-	return { kind, id, title, body, at, ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}) };
+	const agentToken = typeof raw['agentToken'] === 'string' && raw['agentToken'].length <= 200 ? raw['agentToken'] : undefined;
+	return { kind, id, title, body, at, ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(agentToken !== undefined ? { agentToken } : {}) };
 }
 
 function isNotifyKind(value: string): value is NotifyKind {

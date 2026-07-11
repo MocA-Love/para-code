@@ -162,7 +162,7 @@ export const useAppStore = create<AppState>(set => ({
 					if ((payload.kind === 'agent-done' && !prefs.agentDone) || (payload.kind === 'agent-question' && !prefs.agentQuestion)) {
 						return;
 					}
-					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId });
+					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId, agentToken: payload.agentToken });
 				},
 				getApnsDeviceToken,
 				// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する

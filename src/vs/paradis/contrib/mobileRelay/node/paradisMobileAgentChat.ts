@@ -27,7 +27,11 @@
 //  - ファイル監視は fs.watch + ポーリングの二重化 (watchの取りこぼし・未作成ファイル対応)。
 //    truncate/置き換え (サイズ減少) を検知したら epoch を切り替えて読み直す
 
-import { watch, FSWatcher, promises as fs } from 'fs';
+import { watch, type Dirent, FSWatcher, promises as fs } from 'fs';
+// eslint-disable-next-line local/code-import-patterns
+import { createRequire } from 'module';
+// eslint-disable-next-line local/code-import-patterns
+import type { DatabaseSync } from 'node:sqlite';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -104,10 +108,10 @@ export interface IParadisAgentSessionInfo {
 
 /** agentチャネルのモバイル→PCメッセージ。 */
 type AgentInbound =
-	| { t: 'attach'; id: number; epoch?: string; afterRev?: number }
-	| { t: 'detach'; id: number }
-	| { t: 'model-catalog'; id: number; requestId: string }
-	| { t: 'settings-update'; id: number; requestId: string; model: string; effort: string };
+	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number }
+	| { t: 'detach'; id: number; token?: string }
+	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
+	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
@@ -132,6 +136,7 @@ const SNAPSHOT_SEND_LIMIT = 200;
 /** 本文テキストの上限 (モバイル表示用。超過は末尾に…を付けて切る)。 */
 const TEXT_LIMIT = 6000;
 const TOOL_TEXT_LIMIT = 1500;
+const nodeRequire = createRequire(import.meta.url);
 
 function truncateText(text: string, limit: number): string {
 	// allow-any-unicode-next-line
@@ -257,6 +262,18 @@ export function paradisParseCodexSessionMeta(firstLine: string): { readonly cwd:
 	}
 }
 
+export function paradisSelectUnambiguousSessionCandidate<T extends { readonly transcriptPath: string; readonly mtime: number }>(
+	candidates: readonly T[],
+	minMtime: number | undefined,
+	excludedPaths: ReadonlySet<string>,
+): T | undefined {
+	const fresh = candidates
+		.filter(candidate => !excludedPaths.has(candidate.transcriptPath))
+		.filter(candidate => minMtime === undefined || candidate.mtime >= minMtime)
+		.sort((a, b) => b.mtime - a.mtime);
+	return fresh.length === 1 ? fresh[0] : undefined;
+}
+
 interface ITranscriptProgress {
 	readonly tool: string;
 	readonly detail?: string;
@@ -375,7 +392,7 @@ function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts
  * 両者とも parseAskUserQuestions を通るため、truncate 後のテキストが一致する。
  */
 function liveQuestionContentKey(m: IRawMessage): string {
-	return `${m.text} ${(m.options ?? []).map(o => o.label).join('')}`;
+	return `${m.text}\0${(m.options ?? []).map(o => o.label).join('\x01')}`;
 }
 
 /**
@@ -696,6 +713,42 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 
 // ---- hook未発火時のセッション探索フォールバック ------------------------------------------------
 
+async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | undefined): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string }[] | undefined> {
+	let database: DatabaseSync | undefined;
+	try {
+		const names = await fs.readdir(paradisCodexHome());
+		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+		if (stateDb === undefined) {
+			return undefined;
+		}
+		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		const rows = database.prepare(`
+			SELECT id, rollout_path, COALESCE(updated_at_ms, updated_at * 1000) AS mtime
+			FROM threads
+			WHERE cwd = ? AND archived = 0
+				AND (? IS NULL OR COALESCE(updated_at_ms, updated_at * 1000) >= ?)
+			ORDER BY mtime DESC
+		`).all(cwd, minMtime ?? null, minMtime ?? null) as unknown[];
+		const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string }[] = [];
+		for (const value of rows) {
+			const row = rec(value);
+			const transcriptPath = str(row?.['rollout_path']);
+			const sessionId = str(row?.['id']);
+			const mtime = num(row?.['mtime']);
+			if (transcriptPath === undefined || !isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl') || mtime === undefined) {
+				continue;
+			}
+			candidates.push({ agent: 'codex', transcriptPath, mtime, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}) });
+		}
+		return candidates;
+	} catch {
+		return undefined; // 古いCodex/SQLite非対応環境ではファイル走査へフォールバック
+	} finally {
+		database?.close();
+	}
+}
+
 /**
  * ターミナルのcwdから実行中らしいエージェントセッションのtranscriptを探す。
  * hookは「アプリ起動後に発火したイベント」しか知れないため、Para Code起動前から
@@ -705,84 +758,97 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
  * - Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl の直近ファイルのうち
  *           先頭行 session_meta の cwd が一致する最新のもの
  */
-async function discoverSessionByCwd(cwd: string, minMtime?: number): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string } | undefined> {
+async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set()): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string } | undefined> {
 	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string }[] = [];
 
 	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）。
 	// Claude Code はcwdをrealpath解決してからスラッグ化するため、symlink経由のターミナルでも
 	// 一致するよう解決後のパスを使う（解決失敗時は文字面のまま）。
-	try {
-		let resolvedCwd = cwd;
+	if (agent === 'claude') {
 		try {
-			resolvedCwd = await fs.realpath(cwd);
-		} catch { /* 消えたディレクトリ等は文字面で試す */ }
-		const slug = resolvedCwd.replace(/[^a-zA-Z0-9]/g, '-');
-		const dir = join(paradisClaudeConfigDir(), 'projects', slug);
-		const names = await fs.readdir(dir);
-		for (const name of names) {
-			if (!name.endsWith('.jsonl')) {
-				continue;
-			}
+			let resolvedCwd = cwd;
 			try {
-				const stat = await fs.stat(join(dir, name));
-				candidates.push({ agent: 'claude', transcriptPath: join(dir, name), mtime: stat.mtimeMs });
-			} catch { /* 消えた直後などは無視 */ }
-		}
-	} catch { /* プロジェクトディレクトリ無し = Claudeセッション無し */ }
-
-	// Codex: 直近2日分の日付ディレクトリから rollout を新しい順に見て、session_meta.cwd を突合
-	try {
-		const sessionsRoot = join(paradisCodexHome(), 'sessions');
-		const days = [new Date(), new Date(Date.now() - 24 * 60 * 60 * 1000)];
-		const rollouts: { path: string; mtime: number }[] = [];
-		for (const day of days) {
-			const dir = join(sessionsRoot, String(day.getFullYear()), String(day.getMonth() + 1).padStart(2, '0'), String(day.getDate()).padStart(2, '0'));
-			try {
-				const names = await fs.readdir(dir);
-				for (const name of names) {
-					if (!name.startsWith('rollout-') || !name.endsWith('.jsonl')) {
-						continue;
-					}
-					try {
-						const stat = await fs.stat(join(dir, name));
-						rollouts.push({ path: join(dir, name), mtime: stat.mtimeMs });
-					} catch { /* ignore */ }
+				resolvedCwd = await fs.realpath(cwd);
+			} catch { /* 消えたディレクトリ等は文字面で試す */ }
+			const slug = resolvedCwd.replace(/[^a-zA-Z0-9]/g, '-');
+			const dir = join(paradisClaudeConfigDir(), 'projects', slug);
+			const names = await fs.readdir(dir);
+			for (const name of names) {
+				if (!name.endsWith('.jsonl')) {
+					continue;
 				}
-			} catch { /* その日のディレクトリ無し */ }
-		}
-		rollouts.sort((a, b) => b.mtime - a.mtime);
-		for (const rollout of rollouts.slice(0, 20)) {
-			try {
-				const handle = await fs.open(rollout.path, 'r');
-				let firstLine: string;
 				try {
-					const buffer = Buffer.alloc(16 * 1024);
-					const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-					firstLine = buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '';
-				} finally {
-					await handle.close();
-				}
-				const meta = paradisParseCodexSessionMeta(firstLine);
-				if (meta?.cwd === cwd) {
-					const sessionId = meta.sessionId;
-					candidates.push({
-						agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime,
-						...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
-					});
-					break; // 新しい順に見ているので最初の一致が最新
-				}
-			} catch { /* 壊れた行・読み取り失敗は無視 */ }
+					const stat = await fs.stat(join(dir, name));
+					candidates.push({ agent: 'claude', transcriptPath: join(dir, name), mtime: stat.mtimeMs });
+				} catch { /* 消えた直後などは無視 */ }
+			}
+		} catch { /* プロジェクトディレクトリ無し = Claudeセッション無し */ }
+	}
+
+	// Codex: sessions配下を走査し、コマンド開始後に更新されたrolloutを新しい順に見て
+	// session_meta.cwdを突合する。作成日が古いresumeセッションもmtime更新で候補になる。
+	if (agent === 'codex') {
+		const indexed = await discoverCodexSessionsFromStateDb(cwd, minMtime);
+		if (indexed !== undefined) {
+			candidates.push(...indexed);
 		}
-	} catch { /* sessions ディレクトリ無し = Codexセッション無し */ }
+		if (indexed === undefined) {
+			try {
+				const sessionsRoot = join(paradisCodexHome(), 'sessions');
+				const rollouts: { path: string; mtime: number }[] = [];
+				const collect = async (dir: string, depth: number): Promise<void> => {
+					let entries: Dirent[];
+					try {
+						entries = await fs.readdir(dir, { withFileTypes: true });
+					} catch {
+						return;
+					}
+					for (const entry of entries) {
+						const path = join(dir, entry.name);
+						if (entry.isDirectory() && depth < 3) {
+							await collect(path, depth + 1);
+						} else if (entry.isFile() && entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+							try {
+								const stat = await fs.stat(path);
+								if (minMtime === undefined || stat.mtimeMs >= minMtime) {
+									rollouts.push({ path, mtime: stat.mtimeMs });
+								}
+							} catch { /* 消えた直後などは無視 */ }
+						}
+					}
+				};
+				await collect(sessionsRoot, 0);
+				rollouts.sort((a, b) => b.mtime - a.mtime);
+				for (const rollout of rollouts) {
+					try {
+						const handle = await fs.open(rollout.path, 'r');
+						let firstLine: string;
+						try {
+							const buffer = Buffer.alloc(16 * 1024);
+							const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+							firstLine = buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '';
+						} finally {
+							await handle.close();
+						}
+						const meta = paradisParseCodexSessionMeta(firstLine);
+						if (meta?.cwd === cwd) {
+							const sessionId = meta.sessionId;
+							candidates.push({
+								agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime,
+								...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
+							});
+						}
+					} catch { /* 壊れた行・読み取り失敗は無視 */ }
+				}
+			} catch { /* sessions ディレクトリ無し = Codexセッション無し */ }
+		}
+	}
 
 	// minMtime 指定時は「それ以降に更新されたtranscript」だけを受け付ける (コマンド実行検知
 	// トリガーの鮮度ガード。古いセッションを誤って現行扱いにしない)。
-	const fresh = minMtime !== undefined ? candidates.filter(c => c.mtime >= minMtime) : candidates;
-	if (fresh.length === 0) {
-		return undefined;
-	}
-	fresh.sort((a, b) => b.mtime - a.mtime);
-	return fresh[0];
+	// cwdだけでは同一cwdの複数セッションをペインへ一意に帰属できない。誤threadの会話表示や
+	// モデル変更を避けるため、候補が複数ある場合は推測せず未確定のままにする。
+	return paradisSelectUnambiguousSessionCandidate(candidates, minMtime, excludedPaths);
 }
 
 // ---- tailer ---------------------------------------------------------------------------------
@@ -1231,10 +1297,14 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** ペイントークン → 既知のセッション情報 (hookバスから学習、購読の有無に関わらず保持)。 */
 	private readonly paneSessions = new Map<string, IPaneSessionInfo>();
+	/** transcriptPath → 所有ペイントークン。同一threadを複数ペインへ誤割当しない。 */
+	private readonly transcriptClaims = new Map<string, string>();
 	/** ターミナルinstanceId → ペイントークン (rendererから同期)。 */
 	private readonly terminalToToken = new Map<number, string>();
 	/** ペイントークン → ターミナルのcwd (rendererから同期。hook未発火時のセッション探索用)。 */
 	private readonly tokenToCwd = new Map<string, string>();
+	/** ペイントークン → workspace状態キー（通知タップ先の一意化用）。 */
+	private readonly tokenToWorkspace = new Map<string, string>();
 	/** ペイントークン → 稼働中の tailer (購読者がいる間のみ)。 */
 	private readonly tailers = new Map<string, TranscriptTailer>();
 	/** ペイントークン → 購読中モバイルID (最後にattachしたモバイルが勝つ。termチャネルと同じM-2方針)。 */
@@ -1251,17 +1321,17 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly codexActiveItems = new Map<string, string>();
 	/** daemonが確認した次ターンのCodexモデル設定。transcriptの直近ターン値より優先表示する。 */
 	private readonly codexThreadSettings = new Map<string, IParadisCodexThreadSettings>();
+	private readonly hookSequences = new Map<string, number>();
+	private readonly pendingHooks = new Map<string, { readonly event: IParadisAgentHookEvent; readonly transcriptPath: string; readonly sequence: number; readonly receivedAt: number }>();
+	private readonly pendingHookTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly codexLiveClient: ParadisCodexLiveClient;
-	/** 直近のsyncPanesで terminalId 対応が確認できた（生存していた）トークン集合。paneSessionsの掃除判定に使う。 */
-	private paneTokensSeenLive = new Set<string>();
-
 	/** 有効時はモバイルの購読が無くてもセッション判明済みペインを常時tailする（質問検出・通知用）。 */
 	private eagerTailing = false;
 
 	constructor(
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
 		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
-		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string }) => void,
+		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string; ws?: string; agentToken: string }) => void,
 		private readonly logService: ILogService,
 		codexShellEnvResolver?: () => Promise<NodeJS.ProcessEnv>,
 	) {
@@ -1272,10 +1342,18 @@ export class ParadisMobileAgentChat extends Disposable {
 			for (const token of [...this.tailers.keys()]) {
 				this.disposeTailer(token);
 			}
-			for (const timer of this.cliDiscoveryTimers) {
-				clearTimeout(timer);
+			for (const timers of this.cliDiscoveryTimers.values()) {
+				for (const timer of timers) {
+					clearTimeout(timer);
+				}
 			}
 			this.cliDiscoveryTimers.clear();
+			for (const timer of this.pendingHookTimers.values()) {
+				clearTimeout(timer);
+			}
+			this.pendingHookTimers.clear();
+			this.pendingHooks.clear();
+			this.hookSequences.clear();
 		}));
 	}
 
@@ -1334,7 +1412,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** windowId → そのウィンドウが最後に同期したペイン対応。ウィンドウ単位で全置換する。 */
-	private readonly panesByWindow = new Map<number, readonly { terminalId: number; token: string; cwd?: string }[]>();
+	private readonly panesByWindow = new Map<number, readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]>();
 
 	/**
 	 * renderer から同期される「ターミナルinstanceId ⇔ ペイントークン」対応表。
@@ -1342,12 +1420,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * shared process は全ウィンドウで共有されるため、全体を置換すると別ウィンドウの登録が
 	 * 消え、そのウィンドウのペインの tailer (fs.watch + ポーリング) が同期のたびに破棄/再生成
 	 * を繰り返してしまう。windowId 単位で置換し、全ウィンドウ分をマージして対応表を再構築する。
-	 * terminalId (instanceId) はウィンドウ内でしか一意でないため、ウィンドウ間で衝突した場合は
-	 * 後勝ちになる (従来の全置換と同等の制約。トークンはUUIDなので衝突しない)。
+	 * terminalId (instanceId) はウィンドウ内でしか一意でないため、ウィンドウ間で衝突したIDは
+	 * attach/controlの解決対象から外す。ペイントークンはUUIDなので確定状態の同期には使える。
 	 * ウィンドウを閉じる際は renderer が空配列でベストエフォート同期して自分の分を消す
 	 * (クラッシュ等で届かなかった分は relay の再起動まで残るが、実害は tailer の空回りのみ)。
 	 */
-	syncPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string }[]): void {
+	syncPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): void {
 		if (entries.length === 0) {
 			this.panesByWindow.delete(windowId);
 		} else {
@@ -1355,12 +1433,23 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.terminalToToken.clear();
 		this.tokenToCwd.clear();
+		this.tokenToWorkspace.clear();
+		const ambiguousTerminalIds = new Set<number>();
 		for (const windowEntries of this.panesByWindow.values()) {
 			for (const entry of windowEntries) {
 				if (typeof entry.terminalId === 'number' && typeof entry.token === 'string' && entry.token.length > 0) {
-					this.terminalToToken.set(entry.terminalId, entry.token);
+					const previous = this.terminalToToken.get(entry.terminalId);
+					if (previous !== undefined && previous !== entry.token) {
+						ambiguousTerminalIds.add(entry.terminalId);
+						this.terminalToToken.delete(entry.terminalId);
+					} else if (!ambiguousTerminalIds.has(entry.terminalId)) {
+						this.terminalToToken.set(entry.terminalId, entry.token);
+					}
 					if (typeof entry.cwd === 'string' && entry.cwd.length > 0) {
 						this.tokenToCwd.set(entry.token, entry.cwd);
+					}
+					if (typeof entry.ws === 'string' && entry.ws.length > 0) {
+						this.tokenToWorkspace.set(entry.token, entry.ws);
 					}
 				}
 			}
@@ -1376,7 +1465,28 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// 消えたターミナル（PC側でclose等）の購読・tailerを掃除する。detachは
 		// terminalId→token解決に依存するため、ここで拾わないとtailerがリークする。
-		const liveTokens = new Set(this.terminalToToken.values());
+		const liveTokens = this.allLiveTokens();
+		for (const [token, pending] of [...this.pendingHooks]) {
+			if (Date.now() - pending.receivedAt > 120_000) {
+				this.pendingHooks.delete(token);
+				this.hookSequences.delete(token);
+				const timer = this.pendingHookTimers.get(token);
+				if (timer !== undefined) {
+					clearTimeout(timer);
+					this.pendingHookTimers.delete(token);
+				}
+				continue;
+			}
+			if (liveTokens.has(token)) {
+				this.pendingHooks.delete(token);
+				const timer = this.pendingHookTimers.get(token);
+				if (timer !== undefined) {
+					clearTimeout(timer);
+					this.pendingHookTimers.delete(token);
+				}
+				this.onHookEventChecked(pending.event, pending.transcriptPath, pending.sequence, true).catch(err => this.logService.warn('[paradisAgentChat] pending hook handling failed', err));
+			}
+		}
 		for (const token of [...this.subscribers.keys()]) {
 			if (!liveTokens.has(token)) {
 				this.subscribers.delete(token);
@@ -1387,12 +1497,24 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.disposeTailer(token);
 			}
 		}
+		for (const [token, timers] of [...this.cliDiscoveryTimers]) {
+			if (!liveTokens.has(token)) {
+				for (const timer of timers) {
+					clearTimeout(timer);
+				}
+				this.cliDiscoveryTimers.delete(token);
+				this.cliDiscoveryGenerations.delete(token);
+			}
+		}
 		// paneSessions も掃除する（放置するとclose済みターミナルのセッション情報が単調増加する）。
-		// ただしhookが先・ペイン同期が後で来るケース（まだ一度もterminalId対応が確認されていない
-		// トークン）を消さないよう、前回のsyncで生存確認済みだったトークンが今回消えた場合のみ削除する。
+		// セッション登録側は必ずlive tokenを確認するため、現在liveでないものは即時に破棄できる。
 		for (const token of [...this.paneSessions.keys()]) {
-			if (!liveTokens.has(token) && this.paneTokensSeenLive.has(token)) {
+			if (!liveTokens.has(token)) {
+				const removed = this.paneSessions.get(token);
 				this.paneSessions.delete(token);
+				if (removed !== undefined && this.transcriptClaims.get(removed.transcriptPath) === token) {
+					this.transcriptClaims.delete(removed.transcriptPath);
+				}
 				this.liveStates.delete(token);
 				this.liveToolIds.delete(token);
 				this.liveMessageBuffers.delete(token);
@@ -1401,13 +1523,13 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.codexThreadSettings.delete(token);
 			}
 		}
-		this.paneTokensSeenLive = liveTokens;
 		this.syncCodexDaemonThreads();
 		this.emitConfirmedAgentPanesIfChanged();
 	}
 
 	/** コマンド検知トリガーの再探索タイマー (dispose時に確実に止める)。 */
-	private readonly cliDiscoveryTimers = new Set<ReturnType<typeof setTimeout>>();
+	private readonly cliDiscoveryTimers = new Map<string, Set<ReturnType<typeof setTimeout>>>();
+	private readonly cliDiscoveryGenerations = new Map<string, number>();
 
 	/**
 	 * ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell integration 由来)。
@@ -1416,15 +1538,18 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 少し待って数回試す。鮮度ガード (コマンド開始時刻より新しい更新のみ受理) により、
 	 * `claude --help` のような空振りで古いセッションを掴む誤検知は起きない。
 	 */
-	onCliCommandDetected(terminalId: number, cwd: string | undefined): void {
-		const token = this.terminalToToken.get(terminalId);
-		if (token === undefined || this.paneSessions.has(token)) {
-			return; // ペイン不明、またはセッション判明済み (hookが正)
+	onCliCommandDetected(token: string, agent: ParadisAgentKind, cwd: string | undefined): void {
+		if (!this.isLiveToken(token)) {
+			return;
 		}
 		const effectiveCwd = cwd ?? this.tokenToCwd.get(token);
 		if (effectiveCwd === undefined) {
 			return;
 		}
+		this.tokenToCwd.set(token, effectiveCwd);
+		this.cancelCliDiscovery(token);
+		const generation = (this.cliDiscoveryGenerations.get(token) ?? 0) + 1;
+		this.cliDiscoveryGenerations.set(token, generation);
 		// resume 直後は既存transcriptへの追記になるため、開始時刻より少し手前まで許容する。
 		const minMtime = Date.now() - 15_000;
 		// 共有daemonは起動済みthreadのrollout初回flushが遅れることがあるため、短い即時探索に
@@ -1432,13 +1557,32 @@ export class ParadisMobileAgentChat extends Disposable {
 		// コマンド開始前の古いセッションを誤って拾うことはない。
 		for (const delayMs of [2_000, 6_000, 15_000, 30_000, 60_000]) {
 			const timer = setTimeout(() => {
-				this.cliDiscoveryTimers.delete(timer);
-				if (this.paneSessions.has(token)) {
+				const timers = this.cliDiscoveryTimers.get(token);
+				timers?.delete(timer);
+				if (timers?.size === 0) {
+					this.cliDiscoveryTimers.delete(token);
+				}
+				if (this.cliDiscoveryGenerations.get(token) !== generation) {
 					return;
 				}
-				this.discoverAndNotify(token, effectiveCwd, minMtime).catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
+				this.discoverAndNotify(token, agent, effectiveCwd, minMtime, generation).catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
 			}, delayMs);
-			this.cliDiscoveryTimers.add(timer);
+			let timers = this.cliDiscoveryTimers.get(token);
+			if (timers === undefined) {
+				timers = new Set();
+				this.cliDiscoveryTimers.set(token, timers);
+			}
+			timers.add(timer);
+		}
+	}
+
+	private cancelCliDiscovery(token: string): void {
+		const timers = this.cliDiscoveryTimers.get(token);
+		if (timers !== undefined) {
+			for (const timer of timers) {
+				clearTimeout(timer);
+			}
+			this.cliDiscoveryTimers.delete(token);
 		}
 	}
 
@@ -1467,7 +1611,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (msg.t === 'attach' && typeof msg.id === 'number') {
 			this.handleAttach(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] attach failed', err));
 		} else if (msg.t === 'detach' && typeof msg.id === 'number') {
-			const token = this.terminalToToken.get(msg.id);
+			const token = this.resolveInboundToken(msg.id, msg.token);
 			if (token !== undefined && this.subscribers.get(token) === mobileId) {
 				this.subscribers.delete(token);
 				this.stopTailerIfUnsubscribed(token);
@@ -1481,13 +1625,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	private isValidControlRequest(msg: { readonly id: unknown; readonly requestId?: unknown }): msg is { readonly id: number; readonly requestId: string } {
+	private isValidControlRequest(msg: { readonly id: unknown; readonly token?: unknown; readonly requestId?: unknown }): msg is { readonly id: number; readonly token?: string; readonly requestId: string } {
 		return typeof msg.id === 'number' && Number.isInteger(msg.id) && msg.id >= 0
+			&& (msg.token === undefined || (typeof msg.token === 'string' && msg.token.length > 0 && msg.token.length <= 200))
 			&& typeof msg.requestId === 'string' && msg.requestId.length > 0 && msg.requestId.length <= 100;
 	}
 
-	private codexControlSession(mobileId: string, terminalId: number): { readonly token: string; readonly threadId: string } | undefined {
-		const token = this.terminalToToken.get(terminalId);
+	private codexControlSession(mobileId: string, terminalId: number, paneToken?: string): { readonly token: string; readonly threadId: string } | undefined {
+		const token = this.resolveInboundToken(terminalId, paneToken);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		if (token === undefined || session?.agent !== 'codex' || session.sessionId === undefined || this.subscribers.get(token) !== mobileId) {
 			return undefined;
@@ -1495,48 +1640,49 @@ export class ParadisMobileAgentChat extends Disposable {
 		return { token, threadId: session.sessionId };
 	}
 
-	private async handleModelCatalogRequest(mobileId: string, msg: { readonly id: number; readonly requestId: string }): Promise<void> {
-		const session = this.codexControlSession(mobileId, msg.id);
+	private async handleModelCatalogRequest(mobileId: string, msg: { readonly id: number; readonly token?: string; readonly requestId: string }): Promise<void> {
+		const session = this.codexControlSession(mobileId, msg.id, msg.token);
 		if (session === undefined) {
-			this.sendControlError(mobileId, msg.id, msg.requestId, new ParadisCodexControlError('unavailable', '操作対象のCodexセッションを確認できません'));
+			this.sendControlError(mobileId, msg.id, msg.requestId, new ParadisCodexControlError('unavailable', '操作対象のCodexセッションを確認できません'), msg.token);
 			return;
 		}
 		try {
 			const models = await this.codexLiveClient.listModels(session.threadId);
-			this.sendTo(mobileId, { t: 'model-catalog', id: msg.id, requestId: msg.requestId, models });
+			this.sendTo(mobileId, { t: 'model-catalog', id: msg.id, requestId: msg.requestId, models }, session.token);
 		} catch (error) {
-			this.sendControlError(mobileId, msg.id, msg.requestId, error);
+			this.sendControlError(mobileId, msg.id, msg.requestId, error, msg.token);
 		}
 	}
 
-	private async handleSettingsUpdateRequest(mobileId: string, msg: { readonly id: number; readonly requestId: string; readonly model: string; readonly effort: string }): Promise<void> {
-		const session = this.codexControlSession(mobileId, msg.id);
+	private async handleSettingsUpdateRequest(mobileId: string, msg: { readonly id: number; readonly token?: string; readonly requestId: string; readonly model: string; readonly effort: string }): Promise<void> {
+		const session = this.codexControlSession(mobileId, msg.id, msg.token);
 		if (session === undefined) {
-			this.sendControlError(mobileId, msg.id, msg.requestId, new ParadisCodexControlError('unavailable', '操作対象のCodexセッションを確認できません'));
+			this.sendControlError(mobileId, msg.id, msg.requestId, new ParadisCodexControlError('unavailable', '操作対象のCodexセッションを確認できません'), msg.token);
 			return;
 		}
-		this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'pending' });
+		this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'pending' }, session.token);
 		try {
 			const settings = await this.codexLiveClient.updateThreadSettings(session.threadId, msg.model, msg.effort);
-			const current = this.codexControlSession(mobileId, msg.id);
-			if (current?.token === session.token && current.threadId === session.threadId) {
-				this.codexThreadSettings.set(session.token, settings);
-				this.pushInfoToSubscriber(session.token);
+			const current = this.codexControlSession(mobileId, msg.id, msg.token);
+			if (current?.token !== session.token || current.threadId !== session.threadId) {
+				return;
 			}
+			this.codexThreadSettings.set(session.token, settings);
+			this.pushInfoToSubscriber(session.token);
 			const info = { model: settings.model, ...(settings.effort !== undefined ? { effort: settings.effort } : {}) };
-			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'confirmed', info });
+			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'confirmed', info }, session.token);
 		} catch (error) {
 			const normalized = ParadisMobileAgentChat.controlError(error);
 			this.sendTo(mobileId, {
 				t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed',
 				code: normalized.code, message: normalized.message,
-			});
+			}, session.token);
 		}
 	}
 
-	private sendControlError(mobileId: string, terminalId: number, requestId: string, error: unknown): void {
+	private sendControlError(mobileId: string, terminalId: number, requestId: string, error: unknown, token?: string): void {
 		const normalized = ParadisMobileAgentChat.controlError(error);
-		this.sendTo(mobileId, { t: 'model-control-error', id: terminalId, requestId, code: normalized.code, message: normalized.message });
+		this.sendTo(mobileId, { t: 'model-control-error', id: terminalId, requestId, code: normalized.code, message: normalized.message }, token);
 	}
 
 	private static controlError(error: unknown): { readonly code: string; readonly message: string } {
@@ -1546,24 +1692,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		return { code: 'unavailable', message: 'Codexのモデル設定を更新できませんでした' };
 	}
 
-	private async handleAttach(mobileId: string, msg: { id: number; epoch?: string; afterRev?: number }): Promise<void> {
-		const token = this.terminalToToken.get(msg.id);
-		let session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		if (token !== undefined && session === undefined) {
-			// hookがまだ発火していない (Para Code起動前からのセッション・発言前など)。
-			// ターミナルのcwdからtranscriptを探すフォールバックを試す。
-			const cwd = this.tokenToCwd.get(token);
-			if (cwd !== undefined) {
-				const discovered = await discoverSessionByCwd(cwd);
-				if (discovered !== undefined) {
-					session = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
-					this.paneSessions.set(token, session);
-					this.emitConfirmedAgentPanesIfChanged();
-					this.syncCodexDaemonThreads();
-					this.logService.info(`[paradisAgentChat] discovered session by cwd for terminal ${msg.id}: ${discovered.transcriptPath}`);
-				}
-			}
-		}
+	private async handleAttach(mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number }): Promise<void> {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		if (token === undefined || session === undefined) {
 			// エージェント未起動、または探索でも見つからない。モバイル側は
 			// 「ターミナルタブで見る」案内を出す。トークンが分かる場合は購読者として
@@ -1572,14 +1703,14 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (token !== undefined) {
 				this.subscribers.set(token, mobileId);
 			}
-			this.sendTo(mobileId, { t: 'none', id: msg.id });
+			this.sendTo(mobileId, { t: 'none', id: msg.id }, msg.token);
 			return;
 		}
 		this.subscribers.set(token, mobileId);
 		const tailer = this.ensureTailer(token, session);
 		await tailer.ready;
-		// attach処理中に購読が置き換わっていたら何もしない
-		if (this.subscribers.get(token) !== mobileId) {
+		// attach処理中に購読またはセッションが置き換わっていたら旧snapshotを送らない。
+		if (this.subscribers.get(token) !== mobileId || this.paneSessions.get(token) !== session || this.tailers.get(token) !== tailer) {
 			return;
 		}
 		const afterRev = msg.afterRev;
@@ -1592,7 +1723,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 			// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 			const messages = tailer.messages.filter(m => m.rev > afterRev);
-			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live });
+			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live }, token);
 		} else {
 			const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 			this.sendTo(mobileId, {
@@ -1600,7 +1731,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 				...(info !== undefined ? { info } : {}),
 				live,
-			});
+			}, token);
 		}
 	}
 
@@ -1916,31 +2047,69 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.sendTo(subscriber, {
 			t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev,
 			messages: [], live,
-		});
+		}, token);
 	}
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
-		this.updateLiveFromHook(event);
 		if (event.transcriptPath === undefined || event.transcriptPath.length === 0) {
-			// transcript_path無しのhook(CodexのSessionStart等)でも「エージェントが動き出した」
-			// 合図にはなる。購読中でセッション未特定のペインならcwd探索を試みる。
-			const cwd = event.cwd ?? this.tokenToCwd.get(event.token);
-			if (cwd !== undefined && !this.paneSessions.has(event.token) && this.subscribers.has(event.token)) {
-				this.discoverAndNotify(event.token, cwd).catch(err => this.logService.warn('[paradisAgentChat] discovery on hook failed', err));
-			}
+			// agent種別を確定できないため、transcript_path無しのhookだけではcwd探索しない。
+			// CLI検知経路がagent種別付きで鮮度検証済み探索を行う。
 			return;
 		}
-		this.onHookEventChecked(event, event.transcriptPath).catch(err => this.logService.warn('[paradisAgentChat] hook event handling failed', err));
+		const sequence = (this.hookSequences.get(event.token) ?? 0) + 1;
+		this.hookSequences.set(event.token, sequence);
+		this.onHookEventChecked(event, event.transcriptPath, sequence, false).catch(err => this.logService.warn('[paradisAgentChat] hook event handling failed', err));
 	}
 
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */
-	private async discoverAndNotify(token: string, cwd: string, minMtime?: number): Promise<void> {
-		const discovered = await discoverSessionByCwd(cwd, minMtime);
-		if (discovered === undefined || this.paneSessions.has(token)) {
+	private async discoverAndNotify(token: string, agent: ParadisAgentKind, cwd: string, minMtime: number | undefined, generation: number): Promise<void> {
+		const previous = this.paneSessions.get(token);
+		const claimedByOthers = new Set([...this.transcriptClaims]
+			.filter(([, owner]) => owner !== token)
+			.map(([path]) => path));
+		if (previous !== undefined) {
+			claimedByOthers.add(previous.transcriptPath);
+		}
+		const discovered = await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers);
+		if (discovered === undefined
+			|| this.cliDiscoveryGenerations.get(token) !== generation
+			|| !this.isLiveToken(token) || this.tokenToCwd.get(token) !== cwd
+			|| this.transcriptClaimedByOther(discovered.transcriptPath, token)
+			|| !(await isAllowedTranscriptPath(discovered.transcriptPath))) {
 			return;
+		}
+		// CLI起動との相関には更新時刻ではなくファイル生成時刻を使う。別paneの古いthreadが
+		// 偶然同時に更新されても、新規起動paneへ割り当てない。復元探索はこの制約を使わない。
+		if (minMtime !== undefined) {
+			try {
+				const stat = await fs.stat(discovered.transcriptPath);
+				if (stat.birthtimeMs < minMtime) {
+					return;
+				}
+			} catch {
+				return;
+			}
+		}
+		if (this.cliDiscoveryGenerations.get(token) !== generation
+			|| !this.isLiveToken(token) || this.tokenToCwd.get(token) !== cwd
+			|| this.transcriptClaimedByOther(discovered.transcriptPath, token)
+			|| this.paneSessions.get(token) !== previous) {
+			return;
+		}
+		if (previous?.transcriptPath === discovered.transcriptPath) {
+			return;
+		}
+		if (previous !== undefined) {
+			this.paneSessions.delete(token);
+			if (this.transcriptClaims.get(previous.transcriptPath) === token) {
+				this.transcriptClaims.delete(previous.transcriptPath);
+			}
+			this.disposeTailer(token);
+			this.clearLiveState(token);
 		}
 		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
 		this.paneSessions.set(token, session);
+		this.transcriptClaims.set(discovered.transcriptPath, token);
 		this.emitConfirmedAgentPanesIfChanged();
 		this.syncCodexDaemonThreads();
 		this.ensureEagerTailer(token, session);
@@ -1959,14 +2128,56 @@ export class ParadisMobileAgentChat extends Disposable {
 		const subscriber = this.subscribers.get(token);
 		const terminalId = this.terminalIdForToken(token);
 		if (subscriber !== undefined && terminalId !== undefined) {
-			this.handleAttach(subscriber, { id: terminalId }).catch(err => this.logService.warn('[paradisAgentChat] push after session discovery failed', err));
+			this.handleAttach(subscriber, { id: terminalId, token }).catch(err => this.logService.warn('[paradisAgentChat] push after session discovery failed', err));
 		}
 	}
 
-	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string): Promise<void> {
-		if (!(await isAllowedTranscriptPath(transcriptPath))) {
+	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string, sequence: number, pathAlreadyChecked: boolean): Promise<void> {
+		if (!pathAlreadyChecked && !(await isAllowedTranscriptPath(transcriptPath))) {
 			this.logService.warn(`[paradisAgentChat] rejected transcript path outside allowed roots: ${transcriptPath}`);
 			return;
+		}
+		if (this.hookSequences.get(event.token) !== sequence) {
+			return;
+		}
+		if (!this.isLiveToken(event.token)) {
+			this.pendingHooks.set(event.token, { event, transcriptPath, sequence, receivedAt: Date.now() });
+			const previousTimer = this.pendingHookTimers.get(event.token);
+			if (previousTimer !== undefined) {
+				clearTimeout(previousTimer);
+			}
+			const timer = setTimeout(() => {
+				if (this.pendingHooks.get(event.token)?.sequence === sequence) {
+					this.pendingHooks.delete(event.token);
+					this.hookSequences.delete(event.token);
+				}
+				this.pendingHookTimers.delete(event.token);
+			}, 120_000);
+			this.pendingHookTimers.set(event.token, timer);
+			return;
+		}
+		this.pendingHooks.delete(event.token);
+		const pendingTimer = this.pendingHookTimers.get(event.token);
+		if (pendingTimer !== undefined) {
+			clearTimeout(pendingTimer);
+			this.pendingHookTimers.delete(event.token);
+		}
+		this.updateLiveFromHook(event);
+		this.cancelCliDiscovery(event.token);
+		this.cliDiscoveryGenerations.set(event.token, (this.cliDiscoveryGenerations.get(event.token) ?? 0) + 1);
+		const previousOwner = this.transcriptClaims.get(transcriptPath);
+		if (previousOwner !== undefined && previousOwner !== event.token) {
+			// ペイン環境を伴うhookはcwd探索より強い証拠なので、探索由来の誤claimを置き換える。
+			this.paneSessions.delete(previousOwner);
+			this.disposeTailer(previousOwner);
+			this.liveStates.delete(previousOwner);
+			this.liveToolIds.delete(previousOwner);
+			this.liveMessageBuffers.delete(previousOwner);
+			this.codexMessageBuffers.delete(previousOwner);
+			this.codexActiveItems.delete(previousOwner);
+			this.codexThreadSettings.delete(previousOwner);
+			this.cancelCliDiscovery(previousOwner);
+			this.cliDiscoveryGenerations.set(previousOwner, (this.cliDiscoveryGenerations.get(previousOwner) ?? 0) + 1);
 		}
 		const previous = this.paneSessions.get(event.token);
 		const info: IPaneSessionInfo = {
@@ -1975,7 +2186,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			transcriptPath,
 			sessionId: event.sessionId,
 		};
+		if (previous !== undefined && previous.transcriptPath !== transcriptPath
+			&& this.transcriptClaims.get(previous.transcriptPath) === event.token) {
+			this.transcriptClaims.delete(previous.transcriptPath);
+		}
 		this.paneSessions.set(event.token, info);
+		this.transcriptClaims.set(transcriptPath, event.token);
 		this.emitConfirmedAgentPanesIfChanged();
 		this.syncCodexDaemonThreads();
 
@@ -2036,7 +2252,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tailer = this.tailers.get(token);
 		const info = tailer !== undefined ? this.infoOf(token, tailer) : undefined;
 		if (subscriber !== undefined && terminalId !== undefined && tailer !== undefined && info !== undefined) {
-			this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], info });
+			this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], info }, token);
 		}
 	}
 
@@ -2064,14 +2280,15 @@ export class ParadisMobileAgentChat extends Disposable {
 				const subscriber = this.subscribers.get(token);
 				const terminalId = this.terminalIdForToken(token);
 				if (subscriber !== undefined && terminalId !== undefined) {
-					this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages });
+					this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages }, token);
 				}
 				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
 				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
 				if (terminalId !== undefined) {
 					for (const message of messages) {
 						if (message.kind === 'question') {
-							this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(message.header !== undefined ? { header: message.header } : {}) });
+							const ws = this.tokenToWorkspace.get(token);
+							this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(message.header !== undefined ? { header: message.header } : {}), ...(ws !== undefined ? { ws } : {}), agentToken: token });
 						}
 					}
 				}
@@ -2082,7 +2299,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (subscriber !== undefined && terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null });
+					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null }, token);
 				}
 			},
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
@@ -2129,16 +2346,45 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private terminalIdForToken(token: string): number | undefined {
-		for (const [terminalId, candidate] of this.terminalToToken) {
-			if (candidate === token) {
-				return terminalId;
+		for (const entries of this.panesByWindow.values()) {
+			for (const entry of entries) {
+				if (entry.token === token) {
+					return entry.terminalId;
+				}
 			}
 		}
 		return undefined;
 	}
 
+	private resolveInboundToken(terminalId: number, paneToken: string | undefined): string | undefined {
+		if (paneToken !== undefined) {
+			return this.isLiveToken(paneToken) && this.terminalIdForToken(paneToken) === terminalId ? paneToken : undefined;
+		}
+		// 旧モバイル互換。複数ウィンドウでIDが衝突する場合はMapから除外済みなので拒否する。
+		return this.terminalToToken.get(terminalId);
+	}
+
+	private isLiveToken(token: string): boolean {
+		return this.allLiveTokens().has(token);
+	}
+
+	private allLiveTokens(): Set<string> {
+		const tokens = new Set<string>();
+		for (const entries of this.panesByWindow.values()) {
+			for (const entry of entries) {
+				tokens.add(entry.token);
+			}
+		}
+		return tokens;
+	}
+
+	private transcriptClaimedByOther(transcriptPath: string, token: string): boolean {
+		const owner = this.transcriptClaims.get(transcriptPath);
+		return owner !== undefined && owner !== token;
+	}
+
 	private confirmedAgentPaneTokens(): readonly string[] {
-		return paradisConfirmedAgentPaneTokens(this.paneSessions.keys(), this.terminalToToken.values());
+		return paradisConfirmedAgentPaneTokens(this.paneSessions.keys(), this.allLiveTokens());
 	}
 
 	private emitConfirmedAgentPanesIfChanged(): void {
@@ -2151,7 +2397,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this._onDidChangeConfirmedAgentPanes.fire(next);
 	}
 
-	private sendTo(mobileId: string, msg: AgentOutbound): void {
-		this.send(mobileId, encoder.encode(JSON.stringify(msg)));
+	private sendTo(mobileId: string, msg: AgentOutbound, token?: string): void {
+		this.send(mobileId, encoder.encode(JSON.stringify({ ...msg, ...(token !== undefined ? { token } : {}) })));
 	}
 }
