@@ -22,8 +22,9 @@
 
 /* allow-any-unicode-next-line */
 /* リポジトリ行は純粋なグルーピング見出し (main checkout もリスト内の1行として worktree 行側に
- * 混ぜ込んだため、この行自体はクリックでの切り替え対象ではない)。アイコン・名前・件数バッジ・
- * ホバー時の「新規worktree作成」ボタンのみを持つ。 */
+ * 混ぜ込んだため、この行自体はクリックでの切り替え対象ではない)。名前・件数バッジ・
+ * ホバー時の「新規worktree作成」ボタンのみを持つ (本アイコンは isMainCheckout 行と重複するため
+ * 持たない。区切りは薄い上border線のみで表現する)。 */
 .paradis-workspaces-list .paradis-workspace-row {
 	display: flex;
 	align-items: center;
@@ -31,11 +32,9 @@
 	height: 100%;
 	padding: 0 12px 0 10px;
 	box-sizing: border-box;
-}
-
-.paradis-workspaces-list .paradis-workspace-row > .codicon {
-	flex-shrink: 0;
-	opacity: 0.8;
+	/* sideBarSectionHeader.border は contrastBorder 継承で通常テーマでは未設定(透明)になるため、
+	 * 標準テーマでも実色を持つ panel.border を使う */
+	border-top: 1px solid var(--vscode-panel-border, transparent);
 }
 
 .paradis-workspaces-list .paradis-workspace-name {

@@ -110,7 +110,6 @@ function applyStatusIcon(iconElement: HTMLElement, status: ParadisAgentStatus | 
 
 interface IRepositoryTemplateData {
 	readonly row: HTMLElement;
-	readonly icon: HTMLElement;
 	readonly name: HTMLElement;
 	readonly count: HTMLElement;
 	readonly actionBar: ActionBar;
@@ -154,25 +153,24 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 
 	renderTemplate(container: HTMLElement): IRepositoryTemplateData {
 		const row = DOM.append(container, DOM.$('.paradis-workspace-row'));
-		const icon = DOM.append(row, DOM.$('.codicon'));
 		const name = DOM.append(row, DOM.$('.paradis-workspace-name'));
 		const count = DOM.append(row, DOM.$('.paradis-workspace-count'));
 		const actionsContainer = DOM.append(row, DOM.$('.paradis-workspace-actions'));
 		const actionBar = new ActionBar(actionsContainer);
-		return { row, icon, name, count, actionBar };
+		return { row, name, count, actionBar };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorkspaceRepository, FuzzyScore>, _index: number, templateData: IRepositoryTemplateData): void {
 		const repository = node.element;
-		templateData.icon.className = ThemeIcon.asClassName(Codicon.repo);
 		templateData.name.textContent = repository.name;
 		templateData.count.textContent = String(node.children.length);
 
-		// Superset と同じ固定パレットの色をアイコンと行左端の色バーに反映する。
+		// Superset と同じ固定パレットの色を行左端の色バーに反映する。
 		// 色バーは chevron より左に置くため .monaco-tl-row の ::before で描画し、
-		// 色はカスタムプロパティで渡す (media/paradisWorkspaceSwitch.css 参照)
+		// 色はカスタムプロパティで渡す (media/paradisWorkspaceSwitch.css 参照)。
+		// worktree 行 (WorktreeRenderer) 側にも同じ色を継続させ、リポジトリ内で
+		// 色の帯が途切れないようにする (getRepositoryColorHex 経由)
 		const colorHex = paradisWorkspaceColorHex(repository.color);
-		templateData.icon.style.color = colorHex ?? '';
 		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--paradis-workspace-color', colorHex ?? 'transparent');
 
 		templateData.actionBar.clear();
@@ -199,6 +197,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly isActive: (worktree: IParadisWorktree) => boolean,
 		private readonly getStatus: (stateKey: string) => ParadisAgentStatus | undefined,
 		private readonly getDiffStat: (worktree: IParadisWorktree) => IParadisDiffStat | undefined,
+		private readonly getRepositoryColorHex: (repositoryId: string) => string | undefined,
 	) { }
 
 	renderTemplate(container: HTMLElement): IWorktreeTemplateData {
@@ -226,6 +225,11 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			: worktree.branch ?? '';
 		templateData.row.classList.toggle('active', active);
 		templateData.row.classList.toggle('missing', !!worktree.missing);
+
+		// リポジトリ見出し行と同じ色を worktree 行にも継続させる (RepositoryRenderer.renderElement 参照)。
+		// 別要素の .monaco-tl-row なのでカスタムプロパティは継承されず、ここで明示的に設定する必要がある
+		const colorHex = this.getRepositoryColorHex(worktree.repositoryId);
+		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--paradis-workspace-color', colorHex ?? 'transparent');
 
 		const diffStat = worktree.missing ? undefined : this.getDiffStat(worktree);
 		const hasDiff = !!diffStat && (diffStat.insertions > 0 || diffStat.deletions > 0);
@@ -294,7 +298,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		const worktreeRenderer = new WorktreeRenderer(
 			worktree => this.workspaceSwitchService.activeStateKey === worktreeStateKeyFor(worktree),
 			getStatus,
-			worktree => this._diffStats.get(worktree.uri.fsPath)
+			worktree => this._diffStats.get(worktree.uri.fsPath),
+			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color)
 		);
 
 		this.tree = this._register(this.instantiationService.createInstance(
@@ -563,6 +568,14 @@ export class ParadisWorkspacesView extends ViewPane {
 		actions.push(
 			new Separator(),
 			new Action(
+				'paradis.workspaceSwitch.worktree.rename',
+				localize('paradis.workspaceSwitch.worktreeRenameContext', "Rename..."),
+				undefined,
+				!worktree.missing,
+				() => this.promptRenameWorktree(worktree)
+			),
+			new Separator(),
+			new Action(
 				'paradis.workspaceSwitch.worktree.moveUp',
 				localize('paradis.workspaceSwitch.moveUp', "Move Up"),
 				undefined,
@@ -651,6 +664,26 @@ export class ParadisWorkspacesView extends ViewPane {
 		});
 		if (name !== undefined && name.trim()) {
 			await this.workspaceSwitchService.renameRepository(repository.id, name.trim());
+		}
+	}
+
+	/**
+	 * worktree の表示名を変更する。専用の rename API は用意せず、既存の
+	 * addKnownWorktree (同一 path があれば name を上書きする実装) をそのまま使う
+	 * (paradisWorktreeService.ts 参照)。main checkout (isMainCheckout) はこの
+	 * 台帳の管理外の合成エントリのため対象外 (呼び出し元でメニュー自体を出さない)。
+	 */
+	private async promptRenameWorktree(worktree: IParadisWorktree): Promise<void> {
+		const name = await this.quickInputService.input({
+			value: worktree.name,
+			valueSelection: [0, worktree.name.length],
+			prompt: localize('paradis.workspaceSwitch.worktreeRenamePrompt', "Enter a new name for this worktree"),
+			validateInput: async value => value.trim()
+				? undefined
+				: localize('paradis.workspaceSwitch.renameEmpty', "Name cannot be empty")
+		});
+		if (name !== undefined && name.trim()) {
+			this.worktreeService.addKnownWorktree({ ...worktree, name: name.trim() });
 		}
 	}
 }
