@@ -116,6 +116,9 @@ export interface IParadisMobileRelayService {
 
 	// フレーム: shared process が復号したモバイル→PCフレームを renderer へ配送
 	readonly onInboundFrame: Event<ParadisMobileInboundFrameWire>;
+	/** hookまたは検証済みtranscriptで実在セッションが確定したペイントークン一覧。 */
+	readonly onDidChangeConfirmedAgentPanes: Event<readonly string[]>;
+	getConfirmedAgentPaneTokens(): Promise<readonly string[]>;
 	// renderer → shared process: PC→モバイルフレームを封緘して送出。
 	// payload(VSBuffer)はIPCの引数シリアライザがVSBufferをバイナリのまま転送できるよう
 	// トップレベル引数として渡す（IParadisMobileInboundFrameオブジェクトへネストすると

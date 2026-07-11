@@ -29,6 +29,7 @@
 
 import { watch, FSWatcher, promises as fs } from 'fs';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { fireParadisAgentTurnEnded, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
@@ -238,6 +239,22 @@ function str(value: unknown): string | undefined {
 
 function num(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/** Codex rollout先頭行から、cwdと共有daemonのthread IDを取り出す。 */
+export function paradisParseCodexSessionMeta(firstLine: string): { readonly cwd: string; readonly sessionId?: string } | undefined {
+	try {
+		const meta = rec(JSON.parse(firstLine));
+		const payload = rec(meta?.['payload']);
+		const cwd = str(payload?.['cwd']);
+		if (meta?.['type'] !== 'session_meta' || cwd === undefined) {
+			return undefined;
+		}
+		const sessionId = str(payload?.['session_id']) ?? str(payload?.['id']);
+		return { cwd, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}) };
+	} catch {
+		return undefined;
+	}
 }
 
 interface ITranscriptProgress {
@@ -688,8 +705,8 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
  * - Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl の直近ファイルのうち
  *           先頭行 session_meta の cwd が一致する最新のもの
  */
-async function discoverSessionByCwd(cwd: string, minMtime?: number): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number } | undefined> {
-	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number }[] = [];
+async function discoverSessionByCwd(cwd: string, minMtime?: number): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string } | undefined> {
+	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string }[] = [];
 
 	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）。
 	// Claude Code はcwdをrealpath解決してからスラッグ化するため、symlink経由のターミナルでも
@@ -745,10 +762,13 @@ async function discoverSessionByCwd(cwd: string, minMtime?: number): Promise<{ a
 				} finally {
 					await handle.close();
 				}
-				const meta = rec(JSON.parse(firstLine));
-				const payload = rec(meta?.['payload']);
-				if (meta?.['type'] === 'session_meta' && str(payload?.['cwd']) === cwd) {
-					candidates.push({ agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime });
+				const meta = paradisParseCodexSessionMeta(firstLine);
+				if (meta?.cwd === cwd) {
+					const sessionId = meta.sessionId;
+					candidates.push({
+						agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime,
+						...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
+					});
 					break; // 新しい順に見ているので最初の一致が最新
 				}
 			} catch { /* 壊れた行・読み取り失敗は無視 */ }
@@ -1189,12 +1209,25 @@ interface IPaneSessionInfo {
 	readonly sessionId: string | undefined;
 }
 
+/** セッション確定済みかつ現在rendererから生存同期されているペインだけを公開する。 */
+export function paradisConfirmedAgentPaneTokens(
+	confirmedTokens: Iterable<string>,
+	liveTokens: Iterable<string>,
+): readonly string[] {
+	const live = new Set(liveTokens);
+	return [...confirmedTokens].filter(token => live.has(token)).sort();
+}
+
 /**
  * agentチャネル本体。hookバスからペイン⇔transcriptの対応を学習し、モバイルの購読
  * (attach/detach) に応じて tailer を起動・停止する。tailer は購読者がいる間だけ動かし、
  * 誰も見ていないファイルの監視コストを避ける (再attach時はファイルから全量再構築)。
  */
 export class ParadisMobileAgentChat extends Disposable {
+
+	private readonly _onDidChangeConfirmedAgentPanes = this._register(new Emitter<readonly string[]>());
+	readonly onDidChangeConfirmedAgentPanes = this._onDidChangeConfirmedAgentPanes.event;
+	private lastConfirmedAgentPaneTokens: readonly string[] = [];
 
 	/** ペイントークン → 既知のセッション情報 (hookバスから学習、購読の有無に関わらず保持)。 */
 	private readonly paneSessions = new Map<string, IPaneSessionInfo>();
@@ -1250,6 +1283,14 @@ export class ParadisMobileAgentChat extends Disposable {
 	setCodexDaemonEnabled(enabled: boolean): void {
 		this.codexLiveClient.setEnabled(enabled);
 		this.syncCodexDaemonThreads();
+	}
+
+	/**
+	 * hookまたは鮮度検証済みtranscript探索で、実在するエージェントセッションとの対応が
+	 * 確定したペイントークン。単なる `claude` / `codex` コマンド検知は含めない。
+	 */
+	getConfirmedAgentPaneTokens(): readonly string[] {
+		return this.confirmedAgentPaneTokens();
 	}
 
 	/** rendererがPTY画面からbest-effort抽出した装飾情報を、既存ライブ状態へだけ合成する。 */
@@ -1362,6 +1403,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.paneTokensSeenLive = liveTokens;
 		this.syncCodexDaemonThreads();
+		this.emitConfirmedAgentPanesIfChanged();
 	}
 
 	/** コマンド検知トリガーの再探索タイマー (dispose時に確実に止める)。 */
@@ -1385,7 +1427,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// resume 直後は既存transcriptへの追記になるため、開始時刻より少し手前まで許容する。
 		const minMtime = Date.now() - 15_000;
-		for (const delayMs of [2_000, 6_000, 15_000]) {
+		// 共有daemonは起動済みthreadのrollout初回flushが遅れることがあるため、短い即時探索に
+		// 加えて30秒・60秒でも再確認する。鮮度ガードは維持されるので、待機を延ばしても
+		// コマンド開始前の古いセッションを誤って拾うことはない。
+		for (const delayMs of [2_000, 6_000, 15_000, 30_000, 60_000]) {
 			const timer = setTimeout(() => {
 				this.cliDiscoveryTimers.delete(timer);
 				if (this.paneSessions.has(token)) {
@@ -1511,8 +1556,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (cwd !== undefined) {
 				const discovered = await discoverSessionByCwd(cwd);
 				if (discovered !== undefined) {
-					session = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: undefined };
+					session = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
 					this.paneSessions.set(token, session);
+					this.emitConfirmedAgentPanesIfChanged();
 					this.syncCodexDaemonThreads();
 					this.logService.info(`[paradisAgentChat] discovered session by cwd for terminal ${msg.id}: ${discovered.transcriptPath}`);
 				}
@@ -1698,7 +1744,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		});
 	}
 
-	/** daemonへ購読させるのは、hookがthread IDを確定できたCodexセッションだけ。 */
+	/** daemonへ購読させるのは、hookまたはrolloutメタ情報でthread IDを確定できたCodexセッションだけ。 */
 	private syncCodexDaemonThreads(): void {
 		const threadIds = new Set<string>();
 		for (const session of this.paneSessions.values()) {
@@ -1893,8 +1939,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (discovered === undefined || this.paneSessions.has(token)) {
 			return;
 		}
-		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: undefined };
+		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
 		this.paneSessions.set(token, session);
+		this.emitConfirmedAgentPanesIfChanged();
 		this.syncCodexDaemonThreads();
 		this.ensureEagerTailer(token, session);
 		this.pushToSubscriber(token);
@@ -1929,6 +1976,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			sessionId: event.sessionId,
 		};
 		this.paneSessions.set(event.token, info);
+		this.emitConfirmedAgentPanesIfChanged();
 		this.syncCodexDaemonThreads();
 
 		// エージェント起動などでこのペインのセッションが初めて判明した
@@ -2087,6 +2135,20 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}
 		return undefined;
+	}
+
+	private confirmedAgentPaneTokens(): readonly string[] {
+		return paradisConfirmedAgentPaneTokens(this.paneSessions.keys(), this.terminalToToken.values());
+	}
+
+	private emitConfirmedAgentPanesIfChanged(): void {
+		const next = this.confirmedAgentPaneTokens();
+		if (next.length === this.lastConfirmedAgentPaneTokens.length
+			&& next.every((token, index) => token === this.lastConfirmedAgentPaneTokens[index])) {
+			return;
+		}
+		this.lastConfirmedAgentPaneTokens = next;
+		this._onDidChangeConfirmedAgentPanes.fire(next);
 	}
 
 	private sendTo(mobileId: string, msg: AgentOutbound): void {
