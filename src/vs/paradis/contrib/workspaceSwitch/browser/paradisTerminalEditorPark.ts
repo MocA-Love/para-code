@@ -106,6 +106,29 @@ export function paradisGetParkedTerminalEditorStateKey(instanceId: number): stri
 	return undefined;
 }
 
+/**
+ * 指定スコープの park 中インスタンスをすべて取り出す（台帳から消え、監視リスナーも解除される）。
+ *
+ * エディタターミナルの復元は本来 working set の deserialize → reviveInput
+ * (terminalEditorService.ts の PARA-PATCH) が担うが、復路で適用される working set が
+ * park した世代と一致しない場合など、reviveInput の台帳ルックアップに到達しないことがある。
+ * その場合インスタンスは誰にも回収されず PTY だけが不可視のまま生き続ける（リーク）。
+ * スコープ切り替え完了時にこの関数で残留分を回収し、明示的にエディタとして開き直す
+ * フォールバックに使う（paradisTerminalScope.contribution.ts の applyScope）。
+ */
+export function paradisTakeParkedTerminalEditorInstancesForScope(stateKey: string): ITerminalInstance[] {
+	const taken: ITerminalInstance[] = [];
+	for (const [persistentProcessId, entry] of [...parkedInstances]) {
+		if (entry.stateKey !== stateKey) {
+			continue;
+		}
+		parkedInstances.delete(persistentProcessId);
+		entry.onDisposedListener.dispose();
+		taken.push(entry.instance);
+	}
+	return taken;
+}
+
 /** パーク済みインスタンスを取り出す（一度取り出したら台帳から消え、監視リスナーも解除される）。 */
 export function paradisTakeParkedTerminalEditorInstance(persistentProcessId: number): ITerminalInstance | undefined {
 	const entry = parkedInstances.get(persistentProcessId);

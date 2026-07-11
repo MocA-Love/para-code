@@ -44,4 +44,14 @@ suite('worktree lifecycle order', () => {
 		}), /failed/);
 		assert.deepStrictEqual(events, ['teardown']);
 	});
+
+	test('switch-to-parent failure prevents removal', async () => {
+		const events: string[] = [];
+		await assert.rejects(paradisRemoveWorktreeSequence({
+			runTeardown: async () => { events.push('teardown'); },
+			switchToParent: async () => { events.push('switch'); throw new Error('switch failed'); },
+			remove: async () => { events.push('remove'); }
+		}), /switch failed/);
+		assert.deepStrictEqual(events, ['teardown', 'switch']);
+	});
 });
