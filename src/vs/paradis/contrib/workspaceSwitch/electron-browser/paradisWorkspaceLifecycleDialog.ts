@@ -132,13 +132,19 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		dom.append(this._dialog, $('h3.pcw-title')).textContent = STR_TITLE;
 		dom.append(this._dialog, $('div.pcw-label')).textContent = STR_DESCRIPTION;
 
-		dom.append(this._dialog, $('label.pcw-label')).textContent = STR_SETUP_LABEL;
+		const setupLabel = dom.append(this._dialog, $('label.pcw-label')) as HTMLLabelElement;
+		setupLabel.textContent = STR_SETUP_LABEL;
+		setupLabel.htmlFor = 'paradis-lifecycle-setup-input';
 		this._setupInput = dom.append(this._dialog, $('textarea.pcw-prompt')) as HTMLTextAreaElement;
+		this._setupInput.id = 'paradis-lifecycle-setup-input';
 		this._setupInput.rows = 3;
 		this._setupInput.spellcheck = false;
 
-		dom.append(this._dialog, $('label.pcw-label')).textContent = STR_TEARDOWN_LABEL;
+		const teardownLabel = dom.append(this._dialog, $('label.pcw-label')) as HTMLLabelElement;
+		teardownLabel.textContent = STR_TEARDOWN_LABEL;
+		teardownLabel.htmlFor = 'paradis-lifecycle-teardown-input';
 		this._teardownInput = dom.append(this._dialog, $('textarea.pcw-prompt')) as HTMLTextAreaElement;
+		this._teardownInput.id = 'paradis-lifecycle-teardown-input';
 		this._teardownInput.rows = 3;
 		this._teardownInput.spellcheck = false;
 
@@ -165,6 +171,7 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 				this._errorEl.textContent = toErrorMessage(error);
 			}
 		}
+		this.focusInput();
 	}
 
 	private _setBusy(busy: boolean): void {

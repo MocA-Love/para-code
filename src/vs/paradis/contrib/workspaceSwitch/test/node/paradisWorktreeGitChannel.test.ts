@@ -181,6 +181,17 @@ suite('ParadisWorktreeGitService', () => {
 		);
 	});
 
+	test('reports an output-limit overflow as such instead of mislabeling it a timeout', async () => {
+		const service = createLifecycleService((_command, _args, _options, callback) => {
+			// maxBuffer 超過時も killed=true になるが、code に文字列エラーコードが入る
+			callback(Object.assign(new Error('stdout maxBuffer length exceeded'), { killed: true, code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' as unknown as number }), '', '');
+		});
+		await assert.rejects(
+			service.runLifecycleScript({ kind: 'setup', repoPath: '/repo', worktreePath: '/worktree', script: 'yes' }),
+			/setup スクリプトの出力が上限/
+		);
+	});
+
 	test('reports a timed-out lifecycle script as timeout instead of a generic failure', async () => {
 		const service = createLifecycleService((_command, _args, _options, callback) => {
 			// Node は timeout 到達時に子プロセスを kill し、killed=true・code=null のエラーを返す

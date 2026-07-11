@@ -31,6 +31,9 @@ import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorks
  */
 const PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS = PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES * 60_000;
 
+/** setup/teardown スクリプトの stdout/stderr 上限。超過時は打ち切ってエラーにする。 */
+const PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+
 export class ParadisWorktreeGitService {
 
 	private readonly cachedShellEnv: ParadisCachedShellEnv;
@@ -139,6 +142,8 @@ export class ParadisWorktreeGitService {
 			encoding: 'utf8',
 			timeout: PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS,
 			killSignal: 'SIGKILL',
+			// bun install 等は 1MiB (Node 既定) を超える出力を吐き得る。上限は明示しつつ余裕を持たせる
+			maxBuffer: PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES,
 			detached: !isWindows,
 			env: { ...env, PARACODE_PROJECT_ROOT_PATH: request.repoPath }
 		};
@@ -149,6 +154,13 @@ export class ParadisWorktreeGitService {
 			const child = this.execFile(shell, args, options, (error, _stdout, stderr) => {
 				if (!error) { resolve(); return; }
 				const label = request.kind === 'setup' ? 'setup' : 'teardown';
+				// maxBuffer 超過でも killed=true になるため、タイムアウトと区別する (code が
+				// 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' の文字列になる。タイムアウト時は null)
+				if ((error as { code?: unknown }).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+					// allow-any-unicode-next-line
+					reject(new Error(localize('paradis.workspaceLifecycle.scriptOutputExceeded', "{0} スクリプトの出力が上限 ({1} MB) を超えたため中断しました。", request.kind, PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES / (1024 * 1024))));
+					return;
+				}
 				if ((error as { killed?: boolean }).killed) {
 					if (!isWindows && typeof childRef.pid === 'number') {
 						// execFile の timeout はシェル本体しか kill しないため、残った孫プロセスを
