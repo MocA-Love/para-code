@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisConfirmedAgentPaneTokens, paradisParseCodexSessionMeta } from '../../node/paradisMobileAgentChat.js';
+import { paradisConfirmedAgentPaneTokens, paradisParseCodexSessionMeta, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
 
 suite('ParadisMobileAgentChat', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -36,5 +36,19 @@ suite('ParadisMobileAgentChat', () => {
 
 	test('rejects non-session metadata', () => {
 		assert.strictEqual(paradisParseCodexSessionMeta('{"type":"event_msg","payload":{}}'), undefined);
+	});
+
+	test('does not guess when multiple fresh sessions match the same cwd', () => {
+		assert.strictEqual(paradisSelectUnambiguousSessionCandidate([
+			{ transcriptPath: '/sessions/a.jsonl', mtime: 20 },
+			{ transcriptPath: '/sessions/b.jsonl', mtime: 21 },
+		], 10, new Set()), undefined);
+	});
+
+	test('selects the sole unclaimed fresh session', () => {
+		assert.deepStrictEqual(paradisSelectUnambiguousSessionCandidate([
+			{ transcriptPath: '/sessions/a.jsonl', mtime: 20 },
+			{ transcriptPath: '/sessions/b.jsonl', mtime: 21 },
+		], 10, new Set(['/sessions/a.jsonl'])), { transcriptPath: '/sessions/b.jsonl', mtime: 21 });
 	});
 });

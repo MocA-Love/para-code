@@ -43,7 +43,7 @@ interface StateSnapshot {
 	// parent: worktree（スペース）の親リポジトリid。モバイル側がドロワーで親子グルーピング
 	// （開閉表示）するために使う。旧アプリは無視するため後方互換（フラット表示のまま）。
 	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string }[];
-	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentStatus?: string; cols?: number; rows?: number }[];
+	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
@@ -177,7 +177,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly sharedProcessService: ISharedProcessService,
 		private readonly runGit: (repoPath: string, args: readonly string[]) => Promise<IParadisGitResult>,
 		private readonly paneTokenService: IParadisPaneTokenService,
-		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string }[]) => void,
+		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]) => void,
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
@@ -229,9 +229,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} catch {
 				cwd = undefined;
 			}
-			return { terminalId: inst.instanceId, token, ...(cwd !== undefined ? { cwd } : {}) };
+			const ws = this.terminalScopeService.getStateKeyForInstance(inst.instanceId) ?? this.workspaceSwitchService.activeStateKey;
+			return { terminalId: inst.instanceId, token, ...(cwd !== undefined ? { cwd } : {}), ...(ws !== undefined ? { ws } : {}) };
 		})).then(entries => {
-			this.syncAgentPanes(entries.filter((e): e is { terminalId: number; token: string; cwd?: string } => e !== undefined));
+			this.syncAgentPanes(entries.filter((e): e is { terminalId: number; token: string; cwd?: string; ws?: string } => e !== undefined));
 		}).catch(err => this.logService.warn('[paradisMobileRelay] pushAgentPanes failed', err));
 	}
 
@@ -390,6 +391,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				title: inst.title,
 				...(stateKey ? { ws: stateKey } : {}),
 				...(agent ? { agent } : {}),
+				...(agent && paneToken !== undefined ? { agentToken: paneToken } : {}),
 				...(agentStatus ? { agentStatus } : {}),
 				...(inst.cols > 0 && inst.rows > 0 ? { cols: inst.cols, rows: inst.rows } : {}),
 			};

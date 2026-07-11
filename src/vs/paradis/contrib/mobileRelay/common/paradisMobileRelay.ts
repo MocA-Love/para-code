@@ -34,6 +34,11 @@ export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudfl
 
 export const PARADIS_MOBILE_RELAY_CHANNEL = 'paradisMobileRelay';
 
+export interface IParadisConfirmedAgentPanes {
+	readonly revision: number;
+	readonly tokens: readonly string[];
+}
+
 /** shared process の接続状態。 */
 export type ParadisMobileConnectionState = 'disabled' | 'disconnected' | 'connecting' | 'online';
 
@@ -117,8 +122,8 @@ export interface IParadisMobileRelayService {
 	// フレーム: shared process が復号したモバイル→PCフレームを renderer へ配送
 	readonly onInboundFrame: Event<ParadisMobileInboundFrameWire>;
 	/** hookまたは検証済みtranscriptで実在セッションが確定したペイントークン一覧。 */
-	readonly onDidChangeConfirmedAgentPanes: Event<readonly string[]>;
-	getConfirmedAgentPaneTokens(): Promise<readonly string[]>;
+	readonly onDidChangeConfirmedAgentPanes: Event<IParadisConfirmedAgentPanes>;
+	getConfirmedAgentPanes(): Promise<IParadisConfirmedAgentPanes>;
 	// renderer → shared process: PC→モバイルフレームを封緘して送出。
 	// payload(VSBuffer)はIPCの引数シリアライザがVSBufferをバイナリのまま転送できるよう
 	// トップレベル引数として渡す（IParadisMobileInboundFrameオブジェクトへネストすると
@@ -137,7 +142,7 @@ export interface IParadisMobileRelayService {
 	 * renderer がターミナル一覧の変化に合わせて呼び、ウィンドウを閉じる際は空配列で自分の分を消す。
 	 * ペイントークンはE2Eの外へは出さず、モバイルとの間では常に terminalId で識別する。
 	 */
-	syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void>;
+	syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
 
 	/**
 	 * agentチャネル用: ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell
@@ -145,7 +150,7 @@ export interface IParadisMobileRelayService {
 	 * 前倒しするトリガーとしてのみ使う (実在する新しい transcript の発見をもって確定するため、
 	 * `claude --help` のような空振りは誤検知にならない)。
 	 */
-	notifyAgentCliCommand(terminalId: number, cwd: string | undefined): Promise<void>;
+	notifyAgentCliCommand(paneToken: string, agent: 'claude' | 'codex', cwd: string | undefined): Promise<void>;
 
 	/** 実験的Codex daemon購読の設定をshared processへ同期する。 */
 	setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void>;

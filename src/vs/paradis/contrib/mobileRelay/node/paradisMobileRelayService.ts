@@ -50,6 +50,7 @@ import {
 } from '../common/paradisMobileProtocol.js';
 import {
 	IParadisGitResult,
+	IParadisConfirmedAgentPanes,
 	IParadisMobileInboundFrame,
 	IParadisMobilePairingSession,
 	IParadisMobileRelayService,
@@ -204,8 +205,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly _onInboundFrame = this._register(new Emitter<ParadisMobileInboundFrameWire>());
 	readonly onInboundFrame = this._onInboundFrame.event;
 
-	private readonly _onDidChangeConfirmedAgentPanes = this._register(new Emitter<readonly string[]>());
+	private readonly _onDidChangeConfirmedAgentPanes = this._register(new Emitter<IParadisConfirmedAgentPanes>());
 	readonly onDidChangeConfirmedAgentPanes = this._onDidChangeConfirmedAgentPanes.event;
+	private confirmedAgentPanes: IParadisConfirmedAgentPanes = { revision: 0, tokens: [] };
 
 	private state: PersistedState = { mobiles: [] };
 	private identity: MobileIdentity | undefined;
@@ -271,7 +273,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.logService,
 			() => this.cachedShellEnv.getEnv(),
 		));
-		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(tokens => this._onDidChangeConfirmedAgentPanes.fire(tokens)));
+		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(tokens => {
+			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens };
+			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);
+		}));
 		this._register(toDisposable(() => this.disconnect()));
 	}
 
@@ -347,8 +352,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return this.snapshot();
 	}
 
-	async getConfirmedAgentPaneTokens(): Promise<readonly string[]> {
-		return this.agentChat.getConfirmedAgentPaneTokens();
+	async getConfirmedAgentPanes(): Promise<IParadisConfirmedAgentPanes> {
+		return this.confirmedAgentPanes;
 	}
 
 	private snapshot(): IParadisMobileStatus {
@@ -403,7 +408,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/** transcript に現れた質問を Notify として全モバイルへ届ける（オフラインへはAPNsプッシュ）。 */
-	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex'; text: string; header?: string }): void {
+	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex'; text: string; header?: string; ws?: string; agentToken: string }): void {
 		// 通知はプレビュー用途なので本文を短く切る。長文のまま封緘するとAPNsの4KB制限
 		// （リレー側の3800B上限チェック）を超え、アプリ未起動時のプッシュだけがサイレントに
 		// 落ちる（全文はチャット画面が別経路で同期する）。700字 = 日本語でもUTF-8で約2.1KB、
@@ -417,6 +422,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			title: info.header !== undefined && info.header.length > 0 ? `質問: ${info.header}` : 'エージェントからの質問',
 			body,
 			terminalId: info.terminalId,
+			agentToken: info.agentToken,
+			...(info.ws !== undefined ? { ws: info.ws } : {}),
 			at: Date.now(),
 		};
 		this.dispatchNotify(encodeNotify(payload));
@@ -628,7 +635,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * agentチャネル用: renderer から「ターミナルinstanceId ⇔ ペイントークン」対応表を同期する
 	 * （ウィンドウ単位の全置換）。チャットミラーはこの対応でモバイルの attach(id) を transcript へ解決する。
 	 */
-	async syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string }[]): Promise<void> {
+	async syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void> {
 		this.agentChat.syncPanes(windowId, entries);
 	}
 
@@ -636,8 +643,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * agentチャネル用: `claude` / `codex` コマンドの実行開始検知 (shell integration 由来)。
 	 * cwd ベースのセッション探索を前倒しするトリガーとしてのみ使う (詳細は common の interface コメント)。
 	 */
-	async notifyAgentCliCommand(terminalId: number, cwd: string | undefined): Promise<void> {
-		this.agentChat.onCliCommandDetected(terminalId, cwd);
+	async notifyAgentCliCommand(paneToken: string, agent: 'claude' | 'codex', cwd: string | undefined): Promise<void> {
+		this.agentChat.onCliCommandDetected(paneToken, agent, cwd);
 	}
 
 	async setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void> {

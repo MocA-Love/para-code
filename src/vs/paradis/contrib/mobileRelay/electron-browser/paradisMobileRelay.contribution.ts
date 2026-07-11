@@ -134,9 +134,16 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、
 		// shell integration後の鮮度検証済みtranscript探索で実在セッションを確定できる。
 		// その確定結果をホーム一覧のagentフラグへ反映する。
-		this._register(this.service.onDidChangeConfirmedAgentPanes(tokens => this.provider.setConfirmedAgentPaneTokens(tokens)));
-		this.service.getConfirmedAgentPaneTokens()
-			.then(tokens => this.provider.setConfirmedAgentPaneTokens(tokens))
+		let confirmedAgentPanesRevision = -1;
+		const applyConfirmedAgentPanes = (state: { readonly revision: number; readonly tokens: readonly string[] }) => {
+			if (state.revision > confirmedAgentPanesRevision) {
+				confirmedAgentPanesRevision = state.revision;
+				this.provider.setConfirmedAgentPaneTokens(state.tokens);
+			}
+		};
+		this._register(this.service.onDidChangeConfirmedAgentPanes(applyConfirmedAgentPanes));
+		this.service.getConfirmedAgentPanes()
+			.then(applyConfirmedAgentPanes)
 			.catch(err => this.logService.warn('[paradisMobileRelay] confirmed agent terminals initial sync failed', err));
 
 		// エージェントCLI (`claude` / `codex`) コマンドの実行開始を shell integration で検知し、
@@ -152,8 +159,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			if (base !== 'claude' && base !== 'codex') {
 				return;
 			}
+			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
+			if (paneToken === undefined) {
+				return;
+			}
 			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
-			this.service.notifyAgentCliCommand(instance.instanceId, cwd).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed', err));
+			this.service.notifyAgentCliCommand(paneToken, base, cwd).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed', err));
 		}));
 
 		// Omnara旧実装で実績のあるPTY文字列ヒューリスティックは、状態判定には使わず

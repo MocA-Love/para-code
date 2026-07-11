@@ -19,7 +19,7 @@ export interface WorkspaceState {
 	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string }[];
 	// agent: そのターミナルでエージェントCLI（claude/codex）が動いた実績があるか（PC側のhook発火実績）。
 	// ホーム一覧・Live Activity はこのフラグで「エージェントのターミナル」だけに絞る。
-	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentStatus?: string; cols?: number; rows?: number }[];
+	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
 /** scm status 応答。 */
@@ -733,7 +733,7 @@ export class MobileController {
 		}
 		if (count <= 1) {
 			this.attachedAgents.delete(id);
-			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id })));
+			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id, token: this.agentToken(id) })));
 		} else {
 			this.attachedAgents.set(id, count - 1);
 		}
@@ -761,7 +761,7 @@ export class MobileController {
 			modelControl: { status: 'loading', requestId, models: existing.modelControl?.models ?? [] },
 		});
 		this.emit({ agentChats: true });
-		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'model-catalog', id, requestId })));
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'model-catalog', id, token: this.agentToken(id), requestId })));
 		this.scheduleAgentControlTimeout(id, requestId, 'Codexのモデル一覧取得がタイムアウトしました');
 	}
 
@@ -784,7 +784,7 @@ export class MobileController {
 			},
 		});
 		this.emit({ agentChats: true });
-		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'settings-update', id, requestId, model, effort })));
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'settings-update', id, token: this.agentToken(id), requestId, model, effort })));
 		this.scheduleAgentControlTimeout(id, requestId, 'Codexの設定変更がタイムアウトしました');
 	}
 
@@ -823,9 +823,13 @@ export class MobileController {
 			? existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1
 			: undefined;
 		const body = existing !== undefined && !existing.none && lastMessageRev !== undefined
-			? { t: 'attach', id, epoch: existing.epoch, afterRev: lastMessageRev }
-			: { t: 'attach', id };
+			? { t: 'attach', id, token: this.agentToken(id), epoch: existing.epoch, afterRev: lastMessageRev }
+			: { t: 'attach', id, token: this.agentToken(id) };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
+	}
+
+	private agentToken(id: number): string | undefined {
+		return this.state.workspace?.terminals.find(terminal => terminal.id === id)?.agentToken;
 	}
 
 	// --- scm / fs（リクエスト/レスポンス） ------------------------------------
@@ -1267,12 +1271,16 @@ export class MobileController {
 	private handleAgentFrame(payload: Uint8Array): void {
 		try {
 			const msg = JSON.parse(decoder.decode(payload)) as {
-				t: string; id: number; agent?: string; epoch?: string; rev?: number;
+				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null;
 				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
+			}
+			const expectedToken = this.agentToken(msg.id);
+			if (expectedToken === undefined || msg.token !== expectedToken) {
+				return; // 別ウィンドウで同じterminalIdを持つペインからの応答
 			}
 			if (msg.t === 'none') {
 				this.clearAgentControlTimeout(msg.id);
@@ -1303,7 +1311,7 @@ export class MobileController {
 				if (!existing || existing.epoch !== msg.epoch) {
 					// epoch不一致の差分は適用できない → 全量を取り直す（欠落したまま表示しない）。
 					if (this.attachedAgents.has(msg.id)) {
-						this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'attach', id: msg.id })));
+						this.sendAgentAttach(msg.id);
 					}
 					return;
 				}

@@ -14,6 +14,7 @@ import { colors } from '../src/theme.js';
 interface NotificationDeepLinkData {
 	ws?: string;
 	terminalId?: number;
+	agentToken?: string;
 }
 
 /**
