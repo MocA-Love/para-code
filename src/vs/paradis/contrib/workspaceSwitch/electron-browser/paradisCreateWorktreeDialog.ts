@@ -35,7 +35,7 @@ import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisT
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAgentCommandTemplate,
 	IParadisGitBranches,
@@ -97,6 +97,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		accessor.get(ILogService),
 		accessor.get(INotificationService),
 		accessor.get(IInstantiationService),
+		accessor.get(IParadisTerminalScopeService),
 		preselectedRepositoryId,
 	);
 	// ダイアログは自身の close で自己 dispose する
@@ -134,6 +135,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly logService: ILogService,
 		private readonly notificationService: INotificationService,
 		private readonly instantiationService: IInstantiationService,
+		private readonly terminalScopeService: IParadisTerminalScopeService,
 		preselectedRepositoryId: string | undefined,
 	) {
 		super();
@@ -401,6 +403,11 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			const existingDirNames = this.worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
 			const { displayName, dirName } = paradisBuildWorktreeNames(this._nameInput.value, branch, this._branches?.branches ?? [], existingDirNames);
 			const worktreeUri = this._computeWorktreeUri(repository, dirName);
+			// このworktreeの状態キー。setup スクリプト～自動実行プリセットの実行中にユーザーが
+			// PC側で別スペースへ切り替えても、これから作るターミナルを常にこの worktree へ
+			// 明示的に紐付けるために使う（既定の暗黙タグ付けは「生成時点でアクティブなスコープ」
+			// になってしまい、別スペース表示中に紐付け漏れが起きる）。
+			const targetStateKey = paradisWorktreeStateKey(worktreeUri);
 			await this.sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('addWorktree', [{
 				repoPath: repository.uri.fsPath,
 				worktreePath: worktreeUri.fsPath,
@@ -428,7 +435,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			//    （dev サーバー等の下準備 → エージェント、の順。失敗しても作成自体は成功扱い）
 			let autoRunExecuted = false;
 			try {
-				autoRunExecuted = await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath);
+				autoRunExecuted = await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath, targetStateKey);
 			} catch (error) {
 				this.logService.warn('[ParadisCreateWorktree] auto-run presets failed', error);
 			}
@@ -440,6 +447,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 					cwd: worktreeUri,
 					location: TerminalLocation.Panel,
 				});
+				this.terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
 				instance.focus(true);
 			}
 
@@ -451,6 +459,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 					cwd: worktreeUri,
 					location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
 				});
+				this.terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
 				instance.focus(true);
 				await instance.processReady;
 				const command = paradisBuildAgentCommand(agent, prompt, instance.shellType);
