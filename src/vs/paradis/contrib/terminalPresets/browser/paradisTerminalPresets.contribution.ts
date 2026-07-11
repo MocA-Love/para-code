@@ -295,9 +295,13 @@ const AUTORUN_APPROVED_STORAGE_KEY = 'paradis.terminalPresets.autoRunApproved';
  *
  * @param repositoryPath 親リポジトリのルートパス。承認キーに含める（同一リポジトリの worktree 間では
  *   一度の承認で済み、かつ別リポジトリが同名・同内容のプリセットを定義しても承認は流用されない）。
+ * @param stateKey 実行対象の状態キー（worktree 作成直後など、現在PC側でアクティブなスコープとは
+ *   限らない）。指定すると生成されたターミナルをこのスコープへ明示的に紐付ける（呼び出し元が
+ *   `paradisCreateWorktreeDialog` の場合、setup スクリプト実行中にユーザーが別スコープへ
+ *   切り替えても、完成したターミナルが誤って「今アクティブな」スコープに表示されるのを防ぐ）。
  * @returns 実際に1つ以上のプリセットを実行したか（呼び出し側がデフォルト端末の要否を判断するために使う）。
  */
-export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: string): Promise<boolean> {
+export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: string, stateKey?: string): Promise<boolean> {
 	const presetService = accessor.get(IParadisPresetService);
 	const dialogService = accessor.get(IDialogService);
 	const storageService = accessor.get(IStorageService);
@@ -339,6 +343,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 				cwd: folderUri,
 				// 切り替え元の park 済み端末が activeInstance に残っていても再利用しない。
 				forceNewTerminal: true,
+				stateKey,
 				onDidStart: () => {
 					ranAny = true;
 				},

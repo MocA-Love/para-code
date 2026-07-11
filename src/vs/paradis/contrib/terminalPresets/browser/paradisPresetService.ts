@@ -30,6 +30,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { GroupDirection, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisPresetDefinition,
 	IParadisPresetService,
@@ -62,6 +63,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@IWorkspaceTrustManagementService private readonly workspaceTrustService: IWorkspaceTrustManagementService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
 	) {
 		super();
 
@@ -306,6 +308,11 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
 			if (!instance) {
 				instance = await this._createTerminalInActiveGroup(cwd, preset.name);
+				if (options?.stateKey) {
+					// 生成〜表示の間にユーザーが別スコープへ切り替えても、既定の（生成時点で
+					// アクティブなスコープへの）暗黙タグ付けを明示的に上書きし、正しいスコープに紐付ける。
+					this.terminalScopeService.assignInstanceScope(instance.instanceId, options.stateKey);
+				}
 				options?.onDidStart?.();
 				await instance.processReady;
 				await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
@@ -340,6 +347,9 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				cwd,
 				location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
 			});
+			if (options?.stateKey) {
+				this.terminalScopeService.assignInstanceScope(instance.instanceId, options.stateKey);
+			}
 			options?.onDidStart?.();
 			first ??= instance;
 			this._trackPresetTerminal(preset.key, instance);
