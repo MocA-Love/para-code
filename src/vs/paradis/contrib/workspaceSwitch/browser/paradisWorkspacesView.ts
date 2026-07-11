@@ -127,10 +127,10 @@ interface IWorktreeTemplateData {
 }
 
 class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement> {
-	getHeight(_element: WorkspaceTreeElement): number {
-		// リポジトリ行は純粋なグルーピング見出しになった (main checkout も worktree 行として
-		// 子要素に含まれる) ため、worktree 行と同じ高さでよい
-		return 30;
+	getHeight(element: WorkspaceTreeElement): number {
+		// リポジトリ行は純粋なグルーピング見出し (main checkout も worktree 行として
+		// 子要素に含まれる)。worktree 行は名前の下にブランチ名を重ねる2段表示のため高くする
+		return isWorktree(element) ? 44 : 30;
 	}
 
 	getTemplateId(element: WorkspaceTreeElement): string {
@@ -204,8 +204,10 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 	renderTemplate(container: HTMLElement): IWorktreeTemplateData {
 		const row = DOM.append(container, DOM.$('.paradis-worktree-row'));
 		const icon = DOM.append(row, DOM.$('.codicon'));
-		const name = DOM.append(row, DOM.$('.paradis-worktree-name'));
-		const branch = DOM.append(row, DOM.$('.paradis-worktree-branch'));
+		// 名前の下にブランチ名を重ねる2段表示 (リポジトリ行が見出し化される前の従来スタイルを踏襲)
+		const labels = DOM.append(row, DOM.$('.paradis-worktree-labels'));
+		const name = DOM.append(labels, DOM.$('.paradis-worktree-name'));
+		const branch = DOM.append(labels, DOM.$('.paradis-worktree-branch'));
 		const diff = DOM.append(row, DOM.$('.paradis-worktree-diff'));
 		const diffAdded = DOM.append(diff, DOM.$('span.paradis-worktree-diff-added'));
 		const diffRemoved = DOM.append(diff, DOM.$('span.paradis-worktree-diff-removed'));
@@ -527,13 +529,6 @@ export class ParadisWorkspacesView extends ViewPane {
 				() => this.commandService.executeCommand('revealFileInOS', worktree.uri)
 			),
 			new Action(
-				'paradis.workspaceSwitch.worktree.openInEditor',
-				localize('paradis.workspaceSwitch.openInEditor', "Open in Editor"),
-				undefined,
-				!worktree.missing,
-				() => this.openWorktree(worktree)
-			),
-			new Action(
 				'paradis.workspaceSwitch.worktree.copyPath',
 				localize('paradis.workspaceSwitch.copyPath', "Copy Path"),
 				undefined,
@@ -590,7 +585,8 @@ export class ParadisWorkspacesView extends ViewPane {
 				new Separator(),
 				new Action(
 					'paradis.workspaceSwitch.worktree.remove',
-					localize('paradis.workspaceSwitch.worktreeRemoveContext', "Close Workspace"),
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.worktreeRemoveContext', "ワークツリーを削除"),
 					undefined,
 					true,
 					// コマンド実体は electron-browser 層 (paradisCreateWorktree.contribution.ts)。

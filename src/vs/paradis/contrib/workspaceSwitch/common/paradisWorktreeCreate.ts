@@ -38,6 +38,12 @@ export interface IParadisAddWorktreeRequest {
 	readonly baseRef: string;
 }
 
+/** 作業ツリーの未コミット差分の統計 (git diff HEAD --numstat の合算)。 */
+export interface IParadisDiffStat {
+	readonly insertions: number;
+	readonly deletions: number;
+}
+
 /** リポジトリ定義の setup/teardown スクリプトを worktree 上で実行する要求。 */
 export interface IParadisRunLifecycleScriptRequest {
 	/** 実行するスクリプトの種別。 */

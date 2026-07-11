@@ -73,7 +73,7 @@
 	background-color: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent);
 }
 
-.paradis-workspaces-list .paradis-worktree-row.active > .paradis-worktree-name {
+.paradis-workspaces-list .paradis-worktree-row.active .paradis-worktree-name {
 	font-weight: 600;
 }
 
@@ -116,15 +116,25 @@
 	color: var(--vscode-charts-blue);
 }
 
-.paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-name {
+/* allow-any-unicode-next-line */
+/* 名前の下にブランチ名を重ねる2段表示 (見出し化前のリポジトリ行と同じ従来スタイル)。
+ * 差分バッジ (.paradis-worktree-diff) は margin-left: auto で右端に残る */
+.paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-labels {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	line-height: 1.4;
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-workspaces-list .paradis-worktree-labels > .paradis-worktree-name {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
-.paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-branch {
-	min-width: 0;
-	flex-shrink: 1;
+.paradis-workspaces-list .paradis-worktree-labels > .paradis-worktree-branch {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
