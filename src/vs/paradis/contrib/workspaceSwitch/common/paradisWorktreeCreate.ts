@@ -37,6 +37,24 @@ export interface IParadisAddWorktreeRequest {
 	readonly baseRef: string;
 }
 
+/** 作業ツリーの未コミット差分の統計 (git diff HEAD --numstat の合算)。 */
+export interface IParadisDiffStat {
+	readonly insertions: number;
+	readonly deletions: number;
+}
+
+/** リポジトリ定義の setup/teardown スクリプトを worktree 上で実行する要求。 */
+export interface IParadisRunLifecycleScriptRequest {
+	/** 実行するスクリプトの種別。 */
+	readonly kind: 'setup' | 'teardown';
+	/** 親リポジトリのルートパス（PARACODE_PROJECT_ROOT_PATH に渡す）。 */
+	readonly repoPath: string;
+	/** スクリプトを実行する worktree のディレクトリパス（cwd になる）。 */
+	readonly worktreePath: string;
+	/** シェル経由で実行するスクリプト本文。 */
+	readonly script: string;
+}
+
 /** git worktree remove の要求。パスはすべてネイティブファイルシステムパス。 */
 export interface IParadisRemoveWorktreeRequest {
 	/** 親リポジトリのルートパス。 */
