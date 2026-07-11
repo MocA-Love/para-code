@@ -177,7 +177,7 @@ suite('ParadisWorktreeGitService', () => {
 		});
 		await assert.rejects(
 			service.runLifecycleScript({ kind: 'setup', repoPath: '/repo', worktreePath: '/worktree', script: 'false' }),
-			/Setup script failed.*failed setup/i
+			/setup スクリプトが失敗しました.*failed setup/
 		);
 	});
 
@@ -188,7 +188,7 @@ suite('ParadisWorktreeGitService', () => {
 		});
 		await assert.rejects(
 			service.runLifecycleScript({ kind: 'teardown', repoPath: '/repo', worktreePath: '/worktree', script: 'sleep infinity' }),
-			/Teardown script timed out after 10 minutes/i
+			/teardown スクリプトが 10 分以内に終了しなかった/
 		);
 	});
 });

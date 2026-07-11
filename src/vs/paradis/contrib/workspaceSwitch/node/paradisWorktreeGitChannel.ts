@@ -20,14 +20,16 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
+import { localize } from '../../../../nls.js';
 import { IParadisAddWorktreeRequest, IParadisGitBranches, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
 
 /**
  * setup/teardown スクリプトの最長実行時間。スクリプトはユーザー任意のシェルコマンドのため、
  * 終了しないコマンド（対話待ち・フォアグラウンドの dev サーバー等の書き間違い）が混ざると
  * 呼び出し元の worktree 作成/削除フローが永久に完了しなくなる。上限で強制打ち切りする。
  */
-const PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS = 10 * 60_000;
+const PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS = PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES * 60_000;
 
 export class ParadisWorktreeGitService {
 
@@ -129,22 +131,43 @@ export class ParadisWorktreeGitService {
 		// プラットフォームごとにシェルと引数形式を対で選ぶ
 		const shell = isWindows ? (env.ComSpec || 'cmd.exe') : (env.SHELL || '/bin/sh');
 		const args = isWindows ? ['/d', '/s', '/c', request.script] : ['-lc', request.script];
+		// `detached` は execFile の型定義には無いが、ランタイムでは spawn へそのまま透過される。
+		// POSIX ではスクリプトを独立したプロセスグループにし、タイムアウト時に
+		// バックグラウンド化した孫プロセス（`some-daemon &` 等）ごと殺せるようにする
+		const options: cp.ExecFileOptionsWithStringEncoding & { detached: boolean } = {
+			cwd: request.worktreePath,
+			encoding: 'utf8',
+			timeout: PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS,
+			killSignal: 'SIGKILL',
+			detached: !isWindows,
+			env: { ...env, PARACODE_PROJECT_ROOT_PATH: request.repoPath }
+		};
 		await new Promise<void>((resolve, reject) => {
-			this.execFile(shell, args, {
-				cwd: request.worktreePath,
-				encoding: 'utf8',
-				timeout: PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS,
-				killSignal: 'SIGKILL',
-				env: { ...env, PARACODE_PROJECT_ROOT_PATH: request.repoPath }
-			}, (error, _stdout, stderr) => {
+			// callback から child 自体を参照すると、テスト用モックの同期 callback 呼び出しで
+			// 代入前参照 (TDZ) になるため、pid はホルダー経由で受け渡す
+			const childRef: { pid?: number } = {};
+			const child = this.execFile(shell, args, options, (error, _stdout, stderr) => {
 				if (!error) { resolve(); return; }
-				const label = request.kind === 'setup' ? 'Setup' : 'Teardown';
+				const label = request.kind === 'setup' ? 'setup' : 'teardown';
 				if ((error as { killed?: boolean }).killed) {
-					reject(new Error(`${label} script timed out after ${PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS / 60_000} minutes and was terminated.`));
+					if (!isWindows && typeof childRef.pid === 'number') {
+						// execFile の timeout はシェル本体しか kill しないため、残った孫プロセスを
+						// プロセスグループごと始末する（既に全滅していれば ESRCH で無視される）
+						try { process.kill(-childRef.pid, 'SIGKILL'); } catch { /* グループが既に存在しない */ }
+					}
+					// allow-any-unicode-next-line
+					reject(new Error(localize('paradis.workspaceLifecycle.scriptTimedOut', "{0} スクリプトが {1} 分以内に終了しなかったため、強制終了しました。", label, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES)));
 					return;
 				}
-				reject(new Error(`${label} script failed${typeof (error as { code?: number }).code === 'number' ? ` (exit ${(error as { code?: number }).code})` : ''}: ${stderr?.trim() || error.message}`));
+				const exitCode = (error as { code?: number }).code;
+				const detail = stderr?.trim() || error.message;
+				reject(new Error(typeof exitCode === 'number'
+					// allow-any-unicode-next-line
+					? localize('paradis.workspaceLifecycle.scriptFailedWithExit', "{0} スクリプトが失敗しました (exit {1}): {2}", label, exitCode, detail)
+					// allow-any-unicode-next-line
+					: localize('paradis.workspaceLifecycle.scriptFailed', "{0} スクリプトが失敗しました: {1}", label, detail)));
 			});
+			childRef.pid = child?.pid;
 		});
 	}
 }

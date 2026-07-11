@@ -13,6 +13,9 @@ import { localize } from '../../../../nls.js';
 
 export type ParadisWorkspaceLifecycleKind = 'setup' | 'teardown';
 
+/** setup/teardown スクリプトの最長実行時間（分）。実行側とUI文言の両方から参照する。 */
+export const PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES = 10;
+
 export interface IParadisWorkspaceLifecycleConfig {
 	readonly setupScript?: string;
 	readonly teardownScript?: string;
