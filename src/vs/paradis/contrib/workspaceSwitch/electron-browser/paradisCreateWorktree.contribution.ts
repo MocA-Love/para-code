@@ -128,11 +128,23 @@ class ParadisTeardownFailedError extends Error {
 	}
 }
 
+/**
+ * 親リポジトリへの切り替え失敗を、削除フロー内の他の想定外エラーと区別するためのマーカー。
+ * switchToParent の唯一の目的は「削除後に存在しないフォルダを開いたままにしない」ことなので、
+ * 失敗したまま削除を続行すると、開いているフォルダがディスクから消えてウィンドウが
+ * ゴースト状態になる。teardown 失敗と同様に削除を中止するために使う。
+ */
+class ParadisSwitchToParentFailedError extends Error {
+	constructor(readonly reason: unknown) {
+		super(reason instanceof Error ? reason.message : String(reason));
+	}
+}
+
 /** worktree 削除前後の一連のアクション（順序・失敗時の打ち切りをテストしやすいよう分離）。 */
 export interface IParadisRemoveWorktreeActions {
 	/** リポジトリ定義の teardownScript を実行する。失敗したら後続（切り替え・削除）を一切実行しない。 */
 	runTeardown(): Promise<void>;
-	/** 削除対象が現在アクティブなら親リポジトリへ切り替える。 */
+	/** 削除対象が現在アクティブなら親リポジトリへ切り替える。失敗したら削除を実行しない。 */
 	switchToParent(): Promise<void>;
 	/** git worktree remove（force 再試行込み）を実行する。 */
 	remove(): Promise<void>;
@@ -201,14 +213,15 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				},
 				switchToParent: async () => {
 					// 削除対象が現在アクティブなワークスペースの場合、先に親リポジトリへ切り替えてから削除する
-					// （削除後に存在しないフォルダを開いたままにしないため）
+					// （削除後に存在しないフォルダを開いたままにしないため）。切り替えに失敗したまま
+					// 削除を続行すると、開いているフォルダがディスクから消えてウィンドウが壊れるため中止する
 					if (switchService.activeStateKey !== paradisWorktreeStateKey(uri)) {
 						return;
 					}
 					try {
 						await switchService.switchRepository(worktree.repositoryId);
 					} catch (error) {
-						logService.warn('[ParadisRemoveWorktree] switch to parent repository before removal failed', error);
+						throw new ParadisSwitchToParentFailedError(error);
 					}
 				},
 				remove: async () => {
@@ -260,6 +273,15 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				await dialogService.error(
 					// allow-any-unicode-next-line
 					localize('paradis.workspaceSwitch.removeWorktreeTeardownFailed', "セットアップ解除スクリプトが失敗したため、削除を中止しました。"),
+					error.message
+				);
+				return;
+			}
+			if (error instanceof ParadisSwitchToParentFailedError) {
+				logService.error('[ParadisRemoveWorktree] switch to parent repository before removal failed', error.reason);
+				await dialogService.error(
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.removeWorktreeSwitchFailed', "親リポジトリへの切り替えに失敗したため、削除を中止しました。ワークツリーは削除されていません（設定されているセットアップ解除スクリプトは実行済みです）。"),
 					error.message
 				);
 				return;
