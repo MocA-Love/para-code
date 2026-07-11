@@ -9,6 +9,7 @@
 // 強制した上で shared process の paradisWorktreeGitChannel 経由で実行するオーケストレーション。
 
 import { joinPath } from '../../../../base/common/resources.js';
+import { localize } from '../../../../nls.js';
 import { URI } from '../../../../base/common/uri.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -41,7 +42,10 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 	const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
 	const script = kind === 'setup' ? config.setupScript : config.teardownScript;
 	if (!script) { return false; }
-	if (!trustService.isWorkspaceTrusted()) { throw new Error('Workspace Trust is required to run repository lifecycle scripts.'); }
+	if (!trustService.isWorkspaceTrusted()) {
+		// allow-any-unicode-next-line
+		throw new Error(localize('paradis.workspaceLifecycle.trustRequired', "リポジトリ定義の setup/teardown スクリプトを実行するには、ワークスペースの信頼（Workspace Trust）が必要です。"));
+	}
 	await sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('runLifecycleScript', [{
 		kind, repoPath: repository.uri.fsPath, worktreePath: worktreeUri.fsPath, script
 	}]);

@@ -29,7 +29,7 @@ const $ = dom.$;
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.workspaceLifecycle.title', "Setup / Teardown スクリプト");
 // allow-any-unicode-next-line
-const STR_DESCRIPTION = localize('paradis.workspaceLifecycle.description', "{0} に保存されます（コミットすればチーム全体・全 worktree に反映されます）。実行時は環境変数 {1} に親リポジトリの絶対パスが渡されます。", PARADIS_WORKSPACE_PRESET_FILE, 'PARACODE_PROJECT_ROOT_PATH');
+const STR_DESCRIPTION = localize('paradis.workspaceLifecycle.description', "{0} に保存されます（コミットすればチーム全体・全 worktree に反映されます）。このリポジトリで worktree を作成・削除するたびに自動実行され、最長 {2} 分で打ち切られます。実行時は環境変数 {1} に親リポジトリの絶対パスが渡されます。保存時、コメント付き JSONC のコメントは保持されません。", PARADIS_WORKSPACE_PRESET_FILE, 'PARACODE_PROJECT_ROOT_PATH', 10);
 // allow-any-unicode-next-line
 const STR_SETUP_LABEL = localize('paradis.workspaceLifecycle.setupLabel', "Setup スクリプト（worktree 作成直後、対象 worktree を作業ディレクトリとして実行）");
 // allow-any-unicode-next-line
