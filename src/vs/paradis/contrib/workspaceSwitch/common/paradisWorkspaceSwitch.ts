@@ -67,6 +67,13 @@ export interface IParadisWorktree {
 	readonly uri: URI;
 	/** 作業ツリーのディレクトリが見つからない (自動削除OFFで残っている) */
 	readonly missing?: boolean;
+	/**
+	 * true の場合、この行は実際の git worktree ではなくリポジトリ本体 (main checkout) を
+	 * 表す合成エントリ (Workspaces ビューがリポジトリ行を純粋なグルーピング見出しにするため、
+	 * main checkout もリスト内の1行として子要素に混ぜ込む)。切り替え/状態キーは
+	 * worktree 単位ではなく repositoryId をそのまま使う。
+	 */
+	readonly isMainCheckout?: boolean;
 }
 
 export const IParadisWorktreeService = createDecorator<IParadisWorktreeService>('paradisWorktreeService');
@@ -88,6 +95,11 @@ export interface IParadisWorktreeService {
 	addKnownWorktree(worktree: IParadisWorktree): void;
 	/** 自動削除OFFで残った missing エントリを手動でリストから外す */
 	removeKnownWorktree(worktree: IParadisWorktree): void;
+	/**
+	 * リポジトリ内の worktree の表示順を指定する (Workspaces ビューの「上へ移動/下へ移動」用)。
+	 * orderedUris は getWorktrees が返す worktree の uri.toString() の配列。
+	 */
+	setWorktreeOrder(repositoryId: string, orderedUris: readonly string[]): void;
 }
 
 /**

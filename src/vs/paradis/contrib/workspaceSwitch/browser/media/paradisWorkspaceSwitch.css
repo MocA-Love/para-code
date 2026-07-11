@@ -20,57 +20,61 @@
 	background-color: var(--paradis-workspace-color, transparent);
 }
 
+/* allow-any-unicode-next-line */
+/* リポジトリ行は純粋なグルーピング見出し (main checkout もリスト内の1行として worktree 行側に
+ * 混ぜ込んだため、この行自体はクリックでの切り替え対象ではない)。アイコン・名前・件数バッジ・
+ * ホバー時の「新規worktree作成」ボタンのみを持つ。 */
 .paradis-workspaces-list .paradis-workspace-row {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: 6px;
 	height: 100%;
 	padding: 0 12px 0 10px;
 	box-sizing: border-box;
-	cursor: pointer;
 }
 
 .paradis-workspaces-list .paradis-workspace-row > .codicon {
 	flex-shrink: 0;
+	opacity: 0.8;
 }
 
-.paradis-workspaces-list .paradis-workspace-row > .codicon.codicon-check {
-	color: var(--vscode-charts-blue);
+.paradis-workspaces-list .paradis-workspace-name {
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-workspaces-list .paradis-workspace-count {
+	flex-shrink: 0;
+	font-size: 0.85em;
+	opacity: 0.6;
+}
+
+/* allow-any-unicode-next-line */
+/* 「新規worktree作成」ボタンは常時表示せず、行のホバー/フォーカス時のみ出す
+ * (Explorer 等、既存の VS Code トリーの慣習と同じ) */
+.paradis-workspaces-list .paradis-workspace-actions {
+	margin-left: auto;
+	flex-shrink: 0;
+	opacity: 0;
+}
+
+.paradis-workspaces-list .monaco-tl-row:hover .paradis-workspace-actions,
+.paradis-workspaces-list .monaco-list-row.focused .paradis-workspace-actions {
+	opacity: 1;
 }
 
 /* allow-any-unicode-next-line */
 /* アクティブ行の常時ハイライト。以前はチェックマークのアイコン色だけが「今開いているワークスペース」の
  * 唯一の目印だったため、エージェント状態アイコン (working/permission/review) に上書きされると
  * 見分けがつかなくなっていた。行の背景と名前の太字はアイコンの状態と独立させ、常に残るようにする。 */
-.paradis-workspaces-list .paradis-workspace-row.active,
 .paradis-workspaces-list .paradis-worktree-row.active {
 	background-color: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent);
 }
 
-.paradis-workspaces-list .paradis-workspace-row.active > .paradis-workspace-labels > .paradis-workspace-name,
-.paradis-workspaces-list .paradis-worktree-row.active > .paradis-worktree-name {
+.paradis-workspaces-list .paradis-worktree-row.active .paradis-worktree-name {
 	font-weight: 600;
-}
-
-.paradis-workspaces-list .paradis-workspace-labels {
-	display: flex;
-	flex-direction: column;
-	overflow: hidden;
-	line-height: 1.4;
-}
-
-.paradis-workspaces-list .paradis-workspace-labels > .paradis-workspace-name {
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.paradis-workspaces-list .paradis-workspace-labels > .paradis-workspace-branch {
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	font-size: 0.85em;
-	opacity: 0.7;
 }
 
 /* エージェント実行状態 (Superset の StatusIndicator / AsciiSpinner 相当) */
@@ -112,13 +116,25 @@
 	color: var(--vscode-charts-blue);
 }
 
-.paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-name {
+/* allow-any-unicode-next-line */
+/* 名前の下にブランチ名を重ねる2段表示 (見出し化前のリポジトリ行と同じ従来スタイル)。
+ * 差分バッジ (.paradis-worktree-diff) は margin-left: auto で右端に残る */
+.paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-labels {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	line-height: 1.4;
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-workspaces-list .paradis-worktree-labels > .paradis-worktree-name {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
-.paradis-workspaces-list .paradis-worktree-row > .paradis-worktree-branch {
+.paradis-workspaces-list .paradis-worktree-labels > .paradis-worktree-branch {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -128,6 +144,29 @@
 
 .paradis-workspaces-list .paradis-worktree-row.missing {
 	opacity: 0.5;
+}
+
+/* 未コミット差分 (+挿入/-削除) バッジ。常に行の右端に固定する */
+.paradis-workspaces-list .paradis-worktree-diff {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+	margin-left: auto;
+	font-size: 0.85em;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-workspaces-list .paradis-worktree-diff.hidden {
+	display: none;
+}
+
+.paradis-workspaces-list .paradis-worktree-diff-added:not(:empty) {
+	color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043);
+}
+
+.paradis-workspaces-list .paradis-worktree-diff-removed:not(:empty) {
+	color: var(--vscode-gitDecoration-deletedResourceForeground, #e5534b);
 }
 
 /* allow-any-unicode-next-line */
