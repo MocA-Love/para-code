@@ -29,10 +29,12 @@ import { IParadisDiffStat, IParadisRemoveWorktreeRequest, PARADIS_DEFAULT_AGENT_
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
+import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
 
 export const PARADIS_CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
 export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
 export const PARADIS_GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
+export const PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID = 'paradis.workspaceSwitch.configureLifecycleScripts';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -287,6 +289,35 @@ class ParadisGetDiffStatsAction extends Action2 {
 }
 
 registerAction2(ParadisGetDiffStatsAction);
+
+/**
+ * リポジトリの Setup/Teardown スクリプト（.paracode.json）を編集するダイアログを開くコマンド。
+ * Workspaces ビューのリポジトリ行コンテキストメニューから ID 経由で呼ぶ。
+ */
+class ParadisConfigureLifecycleScriptsAction extends Action2 {
+	constructor() {
+		super({
+			id: PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID,
+			title: localize2('paradis.workspaceSwitch.configureLifecycleScripts', "Setup/Teardown Scripts..."),
+			category: localize2('paradis.category', "Para Code"),
+			f1: false
+		});
+	}
+
+	run(accessor: ServicesAccessor, repositoryId?: string): void {
+		if (typeof repositoryId !== 'string') {
+			return;
+		}
+		const switchService = accessor.get(IParadisWorkspaceSwitchService);
+		const repository = switchService.repositories.find(candidate => candidate.id === repositoryId);
+		if (!repository) {
+			return;
+		}
+		openParadisWorkspaceLifecycleDialog(accessor, repository);
+	}
+}
+
+registerAction2(ParadisConfigureLifecycleScriptsAction);
 
 // Workspaces ビュータイトルのボタン（「+」ボタンの左に配置）
 MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
