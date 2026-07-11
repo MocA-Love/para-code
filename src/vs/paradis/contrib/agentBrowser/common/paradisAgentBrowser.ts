@@ -112,6 +112,12 @@ export interface IParadisCdpFrameSubscription {
  */
 export interface IParadisSharedPageBindings {
 	listBoundCdpTargets(): Promise<{ token: string; targetId: string }[]>;
+	/**
+	 * PC側でペインが確認済み（既読）になった際に、そのペイントークンで発火する。
+	 * モバイルリレーがこれを購読し、対応する通知をモバイル側の履歴からも消す
+	 * （dismissed-token、notify チャネル）。
+	 */
+	readonly onDidAcknowledgePane: Event<string>;
 }
 
 /**

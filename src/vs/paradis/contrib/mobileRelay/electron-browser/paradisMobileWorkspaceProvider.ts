@@ -336,7 +336,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const body = kind === 'agent-question'
 			? 'エージェントが確認を求めています'
 			: 'エージェントが作業を完了しました';
-		const payload: NotifyPayload = { kind, id: `n${this.notifyCounter++}`, title, body, ws, terminalId, at: Date.now() };
+		// agentToken: PC側でこのペインが確認済みになった際に、対応するモバイル通知を
+		// 一括で既読化する識別子として使う（dispatchAgentDismiss、notifyPrefsとは別用途）。
+		const agentToken = this.paneTokenService.getTokenForInstance(terminalId);
+		const payload: NotifyPayload = { kind, id: `n${this.notifyCounter++}`, title, body, ws, terminalId, ...(agentToken !== undefined ? { agentToken } : {}), at: Date.now() };
 		this.sendFrame({ ch: Channels.Notify, ws: undefined, seq: 0, payload: VSBuffer.wrap(encodeNotify(payload)) });
 	}
 

@@ -18,6 +18,7 @@
 import type * as http from 'http';
 import { spawn } from 'child_process';
 import { promises as fs, unlinkSync } from 'fs';
+import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
 import { IPCServer } from '../../../../base/parts/ipc/common/ipc.js';
@@ -148,6 +149,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ペイン消滅（TerminalExit）でのみ削除する。
 	 */
 	private readonly _agentHookTokens = new Set<string>();
+	/** {@link IParadisSharedPageBindings.onDidAcknowledgePane} の実体。モバイルリレーが購読する。 */
+	private readonly _onDidAcknowledgePane = this._register(new Emitter<string>());
+	readonly onDidAcknowledgePane = this._onDidAcknowledgePane.event;
 	private readonly _portFilePath: string;
 	private readonly _cdpGateway: ParadisCdpGateway;
 	/** vendored chrome-devtools-mcp をペイン毎の子プロセスとして管理するプロキシ。 */
@@ -746,6 +750,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._agentHookTokens.delete(token);
 		this._paneStatuses.delete(token);
 		fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: Date.now() });
+		this._onDidAcknowledgePane.fire(token);
 	}
 
 	/** workbench のポーリング用: 現在のペイン実行状態一覧 */
@@ -759,6 +764,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const entry = this._paneStatuses.get(token);
 		if (entry && entry.status === 'review') {
 			this._paneStatuses.delete(token);
+			this._onDidAcknowledgePane.fire(token);
 		}
 	}
 

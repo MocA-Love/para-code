@@ -7,7 +7,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { localize, localize2 } from '../../../../nls.js';
+import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
+import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableMap, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -24,6 +26,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWebviewWorkbenchService } from '../../../../workbench/contrib/webviewPanel/browser/webviewWorkbenchService.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
@@ -49,6 +52,8 @@ import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcus
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
 const MENU_COMMAND = 'paradis.mobile.showMenu';
+/** PCフォーカス状態のハートビート間隔。shared process側のTTL（WINDOW_FOCUS_TTL_MS=90秒）より十分短く保つ。 */
+const PC_FOCUS_HEARTBEAT_INTERVAL_MS = 25_000;
 
 /**
  * renderer 側のモバイルリレー contribution。
@@ -93,6 +98,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IThemeService themeService: IThemeService,
 		@IParadisPaneTokenService paneTokenService: IParadisPaneTokenService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IHostService private readonly hostService: IHostService,
 	) {
 		super();
 
@@ -104,6 +110,24 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// ウィンドウを閉じるとき、このウィンドウ分のペイン対応表を shared process から消す
 		// (ベストエフォート。届かなくても同一 windowId での再同期時に置き換わる)
 		this._register({ dispose: () => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, []).catch(() => { }); } });
+
+		// PCフォーカス中はモバイルへの通知配信を抑制する機能（suppressWhenPcFocused）用に、
+		// このウィンドウのフォーカス状態を shared process へ報告する（paradisNotificationTrigger等と
+		// 同じ isVisibleAndFocused 判定: !document.hidden && hostService.hasFocus）。
+		// イベント駆動の即時報告に加え、定期ハートビートでも再送する
+		// （shared process側はWINDOW_FOCUS_TTL_MSより古い報告を無視する。rendererがクラッシュ等で
+		// disposeを経ずに落ちても、このハートビートが途絶えることで自然に「フォーカス無し」に
+		// 復帰させ、通知が恒久的にサイレント抑制され続けることを防ぐ）。
+		const reportPcFocus = () => {
+			const focused = !mainWindow.document.hidden && this.hostService.hasFocus;
+			this.service.setPcFocus(mainWindow.vscodeWindowId, focused).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
+		};
+		this._register(this.hostService.onDidChangeFocus(() => reportPcFocus()));
+		this._register(dom.addDisposableListener(mainWindow.document, 'visibilitychange', () => reportPcFocus()));
+		const focusHeartbeat = this._register(new IntervalTimer());
+		focusHeartbeat.cancelAndSet(() => reportPcFocus(), PC_FOCUS_HEARTBEAT_INTERVAL_MS);
+		reportPcFocus();
+		this._register({ dispose: () => { this.service.setPcFocus(mainWindow.vscodeWindowId, false).catch(() => { }); } });
 
 		// ccusage ダッシュボードデータ取得（PC版と同じ shared process 経由のクライアントを再利用する）
 		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);

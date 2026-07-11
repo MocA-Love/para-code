@@ -21,7 +21,7 @@ export default function SettingsScreen() {
 		notifyPrefs: s.notifyPrefs, setNotifyPref: s.setNotifyPref,
 	})));
 
-	const toggle = (key: 'agentDone' | 'agentQuestion') => (value: boolean) => {
+	const toggle = (key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused') => (value: boolean) => {
 		hapticSelection();
 		setNotifyPref(key, value);
 	};
@@ -75,9 +75,21 @@ export default function SettingsScreen() {
 							trackColor={{ true: colors.accent2 }}
 						/>
 					</View>
+					<View style={styles.separator} />
+					<View style={styles.row}>
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>PC作業中は通知しない</Text>
+							<Text style={styles.rowDesc}>PCの画面を見ている間はこのアプリへ通知を送りません</Text>
+						</View>
+						<Switch
+							value={notifyPrefs.suppressWhenPcFocused}
+							onValueChange={toggle('suppressWhenPcFocused')}
+							trackColor={{ true: colors.accent2 }}
+						/>
+					</View>
 				</View>
 				<Text style={styles.note}>
-					OFFにするとバナー通知が止まります（アプリ内の通知一覧には残ります）。
+					OFFにするとバナー通知が止まります（アプリ内の通知一覧には残ります）。「PC作業中は通知しない」がONの間は、PCの画面を見ている間に発生した通知はこのアプリに一切届きません。
 				</Text>
 			</ScrollView>
 		</View>

@@ -702,7 +702,7 @@ export class MobileController {
 	 * 通知設定をPCへ同期する（notifyチャネル M→PC）。PC側はオフライン端末への
 	 * APNsフォールバックプッシュの抑制判定に使う（設定画面参照）。
 	 */
-	sendNotifyPrefs(prefs: { agentDone: boolean; agentQuestion: boolean }): void {
+	sendNotifyPrefs(prefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean }): void {
 		this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...prefs })));
 	}
 
@@ -1190,6 +1190,15 @@ export class MobileController {
 				// 他端末がこの通知を処理済みにした（本機の一覧からも消す。無ければ何もしない）。
 				if (this.state.notifications.some(n => n.id === control.id)) {
 					this.state.notifications = this.state.notifications.filter(n => n.id !== control.id);
+					this.emit({ notifications: true });
+				}
+				return;
+			}
+			if (control?.t === 'dismissed-token') {
+				// PC自身がそのエージェント(agentToken)のペインを確認済みにした。
+				// 同じagentTokenを持つ通知は全てまとめて一覧から消す。
+				if (this.state.notifications.some(n => n.agentToken === control.token)) {
+					this.state.notifications = this.state.notifications.filter(n => n.agentToken !== control.token);
 					this.emit({ notifications: true });
 				}
 				return;
