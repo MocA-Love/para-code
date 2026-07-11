@@ -245,6 +245,36 @@ export function peekNotifyKind(bytes: Uint8Array): NotifyKind | undefined {
 	}
 }
 
+/**
+ * notify チャネル上の制御メッセージ（NotifyPayloadとは別形。`t` フィールドで区別する）。
+ * - dismiss: モバイルが通知一覧で項目をタップ/クリアした（M→PC）。
+ * - dismissed: PCが他の端末へ「その通知は既に処理された」ことを伝える（PC→M、複数端末間の一覧同期用）。
+ */
+export type NotifyControlMessage =
+	| { readonly t: 'dismiss'; readonly id: string }
+	| { readonly t: 'dismissed'; readonly id: string };
+
+export function encodeNotifyDismissed(id: string): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'dismissed', id }));
+}
+
+/**
+ * notify チャネルの受信バイト列を制御メッセージとして読む。NotifyPayload（`kind`を持つ）や
+ * 形式不正なバイト列に対しては undefined を返す（呼び出し側は通常のNotifyPayloadとしての
+ * デコードにフォールバックする）。
+ */
+export function decodeNotifyControl(bytes: Uint8Array): NotifyControlMessage | undefined {
+	try {
+		const raw = JSON.parse(new TextDecoder().decode(bytes)) as { t?: unknown; id?: unknown };
+		if ((raw.t === 'dismiss' || raw.t === 'dismissed') && typeof raw.id === 'string') {
+			return { t: raw.t, id: raw.id };
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export function encodePairingUri(payload: PairingPayload): string {
 	const json = JSON.stringify({
 		v: payload.version,

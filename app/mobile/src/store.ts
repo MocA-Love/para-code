@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { type Frame, type Identity, type NotifyPayload, decodeNotify, deriveNotifyKey, generateIdentity } from '@para/protocol';
+import { type Frame, type Identity, type NotifyPayload, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity } from '@para/protocol';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
@@ -878,6 +878,19 @@ export class MobileController {
 		this.emit({ notifications: true });
 	}
 
+	/**
+	 * 通知一覧から単一項目を消す（タップして遷移した時に呼ぶ）。PCへも通知して
+	 * 他のペアリング済み端末の一覧からも同じ項目を消す（notifyチャネル M→PC→他M）。
+	 */
+	dismissNotification(id: string): void {
+		if (!this.state.notifications.some(n => n.id === id)) {
+			return;
+		}
+		this.state.notifications = this.state.notifications.filter(n => n.id !== id);
+		this.emit({ notifications: true });
+		this.client?.send('notify', encodeNotifyDismiss(id));
+	}
+
 	/** git status（変更ファイル一覧 + ブランチ名）。 */
 	scmStatus(ws: string): Promise<ScmStatusResult> {
 		return this.request<ScmStatusResult>('scm', { t: 'status', ws });
@@ -1168,6 +1181,15 @@ export class MobileController {
 				}
 			} catch { /* ignore */ }
 		} else if (frame.ch === 'notify') {
+			const control = decodeNotifyControl(frame.payload);
+			if (control?.t === 'dismissed') {
+				// 他端末がこの通知を処理済みにした（本機の一覧からも消す。無ければ何もしない）。
+				if (this.state.notifications.some(n => n.id === control.id)) {
+					this.state.notifications = this.state.notifications.filter(n => n.id !== control.id);
+					this.emit({ notifications: true });
+				}
+				return;
+			}
 			try {
 				const payload = decodeNotify(frame.payload);
 				// 重複IDは無視。新しい順に最大50件保持。
