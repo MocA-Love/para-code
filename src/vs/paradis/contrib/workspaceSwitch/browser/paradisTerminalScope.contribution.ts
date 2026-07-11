@@ -251,9 +251,14 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 		// openEditor は非同期で、この間にユーザーがさらに別スコープへ切り替えている可能性がある。
 		// 取り出したまま開けない・開き損ねたインスタンスは台帳へ戻し、次の切り替えか
-		// スコープ退役で必ず回収されるようにする（戻さないと PTY がどこからも参照されず漏れる）
+		// スコープ退役で必ず回収されるようにする（戻さないと PTY がどこからも参照されず漏れる）。
+		// 取り出し後に dispose されたインスタンスは開かず・戻さず捨てる（take で台帳の
+		// onDisposed 掃除が外れているため、戻すと死んだエントリが残り続ける）
 		(async () => {
 			for (const instance of instances) {
+				if (instance.isDisposed) {
+					continue;
+				}
 				if (this.workspaceSwitchService.activeStateKey !== targetStateKey) {
 					paradisParkTerminalEditorInstance(instance, targetStateKey);
 					continue;
@@ -261,7 +266,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				try {
 					await this.terminalEditorService.openEditor(instance);
 				} catch (error) {
-					paradisParkTerminalEditorInstance(instance, targetStateKey);
+					if (!instance.isDisposed) {
+						paradisParkTerminalEditorInstance(instance, targetStateKey);
+					}
 					onUnexpectedError(error);
 				}
 			}
