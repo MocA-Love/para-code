@@ -58,6 +58,14 @@ interface AppState extends StoreState {
 	unpair(): Promise<void>;
 	attachTerminal(id: number): void;
 	detachTerminal(id: number): void;
+	/** ターミナル名を変更する（PC側の実インスタンスにも反映され、他端末にも同期される）。 */
+	renameTerminal(id: number, title: string): void;
+	/**
+	 * ピン留め状態（キーは pinKeyForTerminal 参照）。モバイル端末ローカルのみの状態で、
+	 * PCへは同期しない（ホーム一覧の並び順の好みなのでPC側に対応概念が無いため）。
+	 */
+	pinnedKeys: Set<string>;
+	togglePin(key: string): void;
 	/** ターミナル同期ストリームの購読（購読時にリプレイキャッシュを同期再生）。 */
 	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void): () => void;
 	sendInput(id: number, data: string): void;
@@ -134,6 +142,7 @@ export const useAppStore = create<AppState>(set => ({
 	homeShowAllWorkspaces: true,
 	selectedTerminalId: undefined,
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: false },
+	pinnedKeys: new Set(),
 
 	async init() {
 		// 二重初期化を防ぐ。放置すると旧 MobileController/RelayClient が close されず、
@@ -161,6 +170,18 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load notifyPrefs', err);
+			}
+			// ピン留め状態をロード（保存が無い/壊れている場合は空集合のまま）
+			try {
+				const raw = await secureKeyStore.getItem('pinnedTerminals');
+				if (raw) {
+					const parsed = JSON.parse(raw) as unknown;
+					if (Array.isArray(parsed)) {
+						set({ pinnedKeys: new Set(parsed.filter((k): k is string => typeof k === 'string')) });
+					}
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load pinnedTerminals', err);
 			}
 			controller = new MobileController(
 				identity,
@@ -293,6 +314,22 @@ export const useAppStore = create<AppState>(set => ({
 
 	detachTerminal(id: number) {
 		controller?.detachTerminal(id);
+	},
+
+	renameTerminal(id: number, title: string) {
+		controller?.renameTerminal(id, title);
+	},
+
+	togglePin(key: string) {
+		const current = useAppStore.getState().pinnedKeys;
+		const next = new Set(current);
+		if (next.has(key)) {
+			next.delete(key);
+		} else {
+			next.add(key);
+		}
+		set({ pinnedKeys: next });
+		secureKeyStore.setItem('pinnedTerminals', JSON.stringify([...next])).catch(err => console.warn('[appState] failed to save pinnedTerminals', err));
 	},
 
 	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void) {
