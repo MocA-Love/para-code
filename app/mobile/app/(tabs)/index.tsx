@@ -8,7 +8,7 @@ import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
 import { PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
-import { WsHeader, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
+import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionCard } from '../../src/components/attentionCard.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
@@ -20,13 +20,19 @@ import { hapticSelection } from '../../src/haptics.js';
  * ワークスペース別グループ表示を廃止し、全ワークスペース横断のエージェント一覧に
  * 再定義した（PCステータス・接続管理はワークスペースドロワーへ移設）。
  * 応答待ちのエージェントがいる場合は最上部のアテンションカードでその場で回答できる。
+ *
+ * ドロワーで特定のワークスペースを選択している間（homeShowAllWorkspaces=false）は、
+ * 一覧をそのワークスペース（＋配下のworktree）だけに絞り込む。ドロワー上部の
+ * 「すべて表示」を選ぶとこれまで通り全ワークスペース横断の一覧に戻る。
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, setSelectedWs, setSelectedTerminalId } = useAppStore(useShallow(s => ({
+	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalId } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
+		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
 	})));
+	const effectiveWs = useEffectiveWs();
 
 	const tabBarSpacer = useTabBarSpacer();
 	// ホームは横スクロール要素を持たないため、フォーカス中は画面全域の右スワイプで
@@ -37,8 +43,29 @@ export default function HomeScreen() {
 		setFullWidthSwipe(isFocused);
 		return () => setFullWidthSwipe(false);
 	}, [isFocused, setFullWidthSwipe]);
-	// 応答待ちのターミナル（複数あれば先頭の1件をアテンションカードで扱う）
-	const waitingTerminal = (workspace?.terminals ?? []).find(t => isAgentWaiting(t.agentStatus));
+	// 絞り込み中は選択中ワークスペース（selectedWs）＋その配下のworktreeだけを対象にする。
+	// selectedWsは他タブや通知タップ・エージェント遷移でも更新される全画面共有の値なので、
+	// それらの操作でワークスペースが切り替わった後にホームへ戻ると、絞り込み先も追従する
+	// （ヘッダーのチップ色・ドロワーのアクティブ行と一貫させるための意図的な挙動）。
+	const scopeIds = !homeShowAllWorkspaces && effectiveWs !== undefined
+		? new Set([effectiveWs.id, ...(workspace?.workspaces ?? []).filter(w => w.parent === effectiveWs.id).map(w => w.id)])
+		: undefined;
+	const wsById = new Map((workspace?.workspaces ?? []).map(w => [w.id, w]));
+	/** ws未タグのターミナルはPC側アクティブワークスペース所属として扱う（ホーム全体で共通のフォールバック順）。 */
+	const resolveWs = (t: { ws?: string }) =>
+		(t.ws !== undefined ? wsById.get(t.ws) : undefined)
+		?? (workspace?.activeWs !== undefined ? wsById.get(workspace.activeWs) : undefined)
+		?? workspace?.workspaces[0];
+	const inScope = (t: { ws?: string }) => {
+		if (scopeIds === undefined) {
+			return true;
+		}
+		const ws = resolveWs(t);
+		return ws !== undefined && scopeIds.has(ws.id);
+	};
+
+	// 応答待ちのターミナル（複数あれば先頭の1件をアテンションカードで扱う。絞り込み中は対象外のワークスペース分は無視する）
+	const waitingTerminal = (workspace?.terminals ?? []).find(t => isAgentWaiting(t.agentStatus) && inScope(t));
 	const waitingWs = waitingTerminal ? (workspace?.workspaces ?? []).find(w => w.id === waitingTerminal.ws) : undefined;
 	const waitingChat = useAgentChatSubscription(waitingTerminal?.id);
 	const waitingActions = useAgentActions(waitingTerminal?.id, waitingChat?.agent);
@@ -54,18 +81,21 @@ export default function HomeScreen() {
 		setSelectedTerminalId(terminalId);
 		router.push('/agent');
 	};
-	// 全ワークスペース横断のエージェント一覧（応答待ち → 実行中 → その他 → アイドルの順）。
-	// エージェントCLIが動いた実績のあるターミナルだけを載せる（プレーンなターミナルを
-	// 開いただけでホームに行が増えないように）。
-	const wsById = new Map((workspace?.workspaces ?? []).map(w => [w.id, w]));
-	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true)
+	// エージェント一覧（応答待ち → 実行中 → その他 → アイドルの順）。絞り込み中は選択中
+	// ワークスペース分だけに絞る。エージェントCLIが動いた実績のあるターミナルだけを載せる
+	// （プレーンなターミナルを開いただけでホームに行が増えないように）。
+	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t))
 		.sort((a, b) => statusOrder(a.agentStatus) - statusOrder(b.agentStatus));
+	const headerSubtitle = homeShowAllWorkspaces || effectiveWs === undefined
+		? 'Para Code Mobile'
+		: `${effectiveWs.name}${effectiveWs.branch ? ` · ${effectiveWs.branch}` : ''}`;
 
 	return (
 		<View style={styles.screen}>
 			<WsHeader
 				title="ホーム"
-				subtitle="Para Code Mobile"
+				subtitle={headerSubtitle}
+				allWorkspaces={homeShowAllWorkspaces}
 				right={<NotificationsButton notifications={notifications} />}
 			/>
 			<ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingBottom: tabBarSpacer }]}>
@@ -80,13 +110,11 @@ export default function HomeScreen() {
 					/>
 				) : null}
 
-				<Text style={styles.sectionTitle}>エージェント — 全ワークスペース</Text>
+				<Text style={styles.sectionTitle}>
+					{homeShowAllWorkspaces || effectiveWs === undefined ? 'エージェント — 全ワークスペース' : `エージェント — ${effectiveWs.name}`}
+				</Text>
 				{rows.map(t => {
-					// ws未タグのターミナルはPC側アクティブワークスペース所属として表示する
-					// （activeWsも未定義なら先頭ワークスペースへフォールバックし、行が無反応になるのを防ぐ）
-					const ws = (t.ws !== undefined ? wsById.get(t.ws) : undefined)
-						?? (workspace?.activeWs !== undefined ? wsById.get(workspace.activeWs) : undefined)
-						?? workspace?.workspaces[0];
+					const ws = resolveWs(t);
 					const waiting = isAgentWaiting(t.agentStatus);
 					const color = ws ? wsColor(ws) : colors.accent;
 					return (
@@ -109,7 +137,9 @@ export default function HomeScreen() {
 				})}
 				{rows.length === 0 ? (
 					<Text style={styles.dimSmall}>
-						エージェントはまだありません。ターミナルタブでターミナルを作成し、claude / codex を起動すると表示されます。
+						{homeShowAllWorkspaces || effectiveWs === undefined
+							? 'エージェントはまだありません。ターミナルタブでターミナルを作成し、claude / codex を起動すると表示されます。'
+							: `${effectiveWs.name} のエージェントはまだありません。ドロワー上部の「すべて表示」で他のワークスペースも確認できます。`}
 					</Text>
 				) : null}
 				{(workspace?.workspaces.length ?? 0) === 0 ? (

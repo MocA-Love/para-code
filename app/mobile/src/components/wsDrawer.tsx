@@ -119,10 +119,11 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	const insets = useStableInsets();
 	const router = useRouter();
 	const {
-		workspace, selectedWs, setSelectedWs, connection, pcOnline, manualOffline,
+		workspace, selectedWs, setSelectedWs, homeShowAllWorkspaces, setHomeShowAllWorkspaces, connection, pcOnline, manualOffline,
 		disconnectRelay, connectRelay, unpair,
 	} = useAppStore(useShallow(s => ({
 		workspace: s.workspace, selectedWs: s.selectedWs, setSelectedWs: s.setSelectedWs,
+		homeShowAllWorkspaces: s.homeShowAllWorkspaces, setHomeShowAllWorkspaces: s.setHomeShowAllWorkspaces,
 		connection: s.connection, pcOnline: s.pcOnline, manualOffline: s.manualOffline,
 		disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay, unpair: s.unpair,
 	})));
@@ -178,6 +179,14 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	const select = (id: string) => {
 		hapticSelection();
 		setSelectedWs(id);
+		setHomeShowAllWorkspaces(false);
+		onClose();
+	};
+
+	/** ワークスペース一覧上部の「すべて表示」。ホームの絞り込みを解除する（他タブのselectedWsは変えない）。 */
+	const selectAll = () => {
+		hapticSelection();
+		setHomeShowAllWorkspaces(true);
 		onClose();
 	};
 
@@ -190,7 +199,9 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	 * 応答待ち・実行中を集約表示し、閉じていても見落とさないようにする）。
 	 */
 	const renderRow = (ws: WsEntry, opts: { child?: boolean; childCount?: number; open?: boolean; aggWaiting?: number; aggRunning?: number } = {}) => {
-		const active = ws.id === effective;
+		// 「すべて表示」が選ばれている間はどのワークスペース行もアクティブ表示にしない
+		// （ホームの絞り込み先が無いことを一目で示す）。
+		const active = !homeShowAllWorkspaces && ws.id === effective;
 		const wsTerminals = wsTerminalsOf(ws.id);
 		const waiting = wsTerminals.filter(t => isAgentWaiting(t.agentStatus)).length + (opts.aggWaiting ?? 0);
 		const running = wsTerminals.filter(t => t.agentStatus === 'working').length + (opts.aggRunning ?? 0);
@@ -287,6 +298,16 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 
 			<Text style={styles.sectionTitle}>ワークスペース</Text>
 			<ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
+				<Pressable style={[styles.row, styles.allRow, homeShowAllWorkspaces && styles.rowActive]} onPress={selectAll}>
+					{homeShowAllWorkspaces ? <View style={styles.rowIndicator} /> : null}
+					<View style={[styles.avatar, styles.allIcon]}>
+						<Ionicons name="apps-outline" size={16} color={homeShowAllWorkspaces ? colors.accent : colors.textDim} />
+					</View>
+					<View style={styles.rowBody}>
+						<Text style={[styles.rowName, homeShowAllWorkspaces && styles.rowNameActive]}>すべて表示</Text>
+						<Text style={styles.allSub}>全ワークスペース横断で見る</Text>
+					</View>
+				</Pressable>
 				{repos.map(repo => {
 					const children = list.filter(w => w.parent === repo.id);
 					if (children.length === 0) {
@@ -336,7 +357,7 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
  * 左端のワークスペースチップのタップでドロワーを開く（エッジスワイプは
  * WsDrawerLayoutがネイティブで処理するため、ここにジェスチャは持たない）。
  */
-export function WsHeader({ title, subtitle, right }: { title: string; subtitle?: string; right?: ReactNode }) {
+export function WsHeader({ title, subtitle, right, allWorkspaces }: { title: string; subtitle?: string; right?: ReactNode; allWorkspaces?: boolean }) {
 	const insets = useStableInsets();
 	const drawer = useWsDrawer();
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
@@ -344,10 +365,11 @@ export function WsHeader({ title, subtitle, right }: { title: string; subtitle?:
 
 	// 他ワークスペースの応答待ち件数（チップ上の赤バッジ = ドロワーを開く動機づけ）。
 	// ws未タグのターミナルは他画面と同様にPC側アクティブワークスペース所属として数える。
-	const otherWaiting = (workspace?.terminals ?? []).filter(t =>
+	// allWorkspaces中はすでに全件が見えているため「他」の概念が無く、バッジは出さない。
+	const otherWaiting = allWorkspaces ? 0 : (workspace?.terminals ?? []).filter(t =>
 		isAgentWaiting(t.agentStatus) && (t.ws ?? workspace?.activeWs) !== current?.id).length;
 
-	const chipColor = current ? wsColor(current) : colors.accent;
+	const chipColor = allWorkspaces ? colors.textDim : (current ? wsColor(current) : colors.accent);
 	const defaultSubtitle = current ? `${current.name}${current.branch ? ` · ${current.branch}` : ''}` : undefined;
 
 	return (
@@ -359,7 +381,11 @@ export function WsHeader({ title, subtitle, right }: { title: string; subtitle?:
 					interactive
 					tintColor={liquidGlass ? chipColor + '33' : undefined}
 				>
-					<Text style={[styles.chipText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>
+					{allWorkspaces ? (
+						<Ionicons name="apps-outline" size={16} color={chipColor} />
+					) : (
+						<Text style={[styles.chipText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>
+					)}
 				</GlassSurface>
 				{otherWaiting > 0 ? (
 					<View style={styles.chipBadge}><Text style={styles.chipBadgeText}>{otherWaiting}</Text></View>
@@ -413,6 +439,10 @@ const styles = StyleSheet.create({
 	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, marginBottom: 2 },
 	rowActive: { backgroundColor: colors.accentWash },
 	rowIndicator: { position: 'absolute', left: 0, top: 10, bottom: 10, width: 3, borderRadius: 2, backgroundColor: colors.accent },
+	// 「すべて表示」行: 通常のワークスペース行とアイコン以外は共通のスタイルを流用する
+	allRow: { marginBottom: 8 },
+	allIcon: { backgroundColor: colors.surface2 },
+	allSub: { color: colors.textDim, fontSize: 10.5, marginTop: 2 },
 	avatar: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
 	avatarText: { fontSize: 13, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	rowBody: { flex: 1, minWidth: 0 },
