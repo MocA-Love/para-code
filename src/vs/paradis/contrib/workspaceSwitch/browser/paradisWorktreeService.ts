@@ -41,6 +41,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	declare readonly _serviceBrand: undefined;
 
 	private static readonly KNOWN_WORKTREES_STORAGE_KEY = 'paradis.workspaceSwitch.knownWorktrees';
+	private static readonly WORKTREE_ORDER_STORAGE_KEY = 'paradis.workspaceSwitch.worktreeOrder';
 
 	private readonly _onDidChangeWorktrees = this._register(new Emitter<void>());
 	readonly onDidChangeWorktrees = this._onDidChangeWorktrees.event;
@@ -50,6 +51,8 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	/** リポジトリID → main checkout のブランチ名 (.git/HEAD 由来) */
 	private _branches = new Map<string, string>();
 	private _known: ISerializedKnownWorktree[];
+	/** リポジトリID → 表示順 (worktree の uri.toString() の配列)。手動並び替え (Move Up/Down) で更新される */
+	private _order: Map<string, string[]>;
 
 	/** リポジトリID → .git/worktrees 監視の disposable */
 	private readonly _watchers = this._register(new DisposableMap<string>());
@@ -65,6 +68,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		super();
 
 		this._known = this.loadKnown();
+		this._order = this.loadOrder();
 
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => {
 			this.installWatchers();
@@ -114,6 +118,12 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			this.saveKnown();
 			this._refreshScheduler.schedule();
 		}
+	}
+
+	setWorktreeOrder(repositoryId: string, orderedUris: readonly string[]): void {
+		this._order.set(repositoryId, [...orderedUris]);
+		this.saveOrder();
+		this._refreshScheduler.schedule();
 	}
 
 	private installWatchers(): void {
@@ -200,7 +210,13 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 				}
 			}
 
-			list.sort((a, b) => a.name.localeCompare(b.name));
+			const order = this._order.get(repository.id);
+			const orderIndex = new Map((order ?? []).map((uri, index) => [uri, index]));
+			list.sort((a, b) => {
+				const indexA = orderIndex.get(a.uri.toString()) ?? Number.MAX_SAFE_INTEGER;
+				const indexB = orderIndex.get(b.uri.toString()) ?? Number.MAX_SAFE_INTEGER;
+				return indexA !== indexB ? indexA - indexB : a.name.localeCompare(b.name);
+			});
 			result.set(repository.id, list);
 		}
 
@@ -291,5 +307,22 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 	private saveKnown(): void {
 		this.storageService.store(ParadisWorktreeService.KNOWN_WORKTREES_STORAGE_KEY, JSON.stringify(this._known), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	private loadOrder(): Map<string, string[]> {
+		const raw = this.storageService.get(ParadisWorktreeService.WORKTREE_ORDER_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (!raw) {
+			return new Map();
+		}
+		try {
+			const parsed: Record<string, string[]> = JSON.parse(raw);
+			return new Map(Object.entries(parsed));
+		} catch {
+			return new Map();
+		}
+	}
+
+	private saveOrder(): void {
+		this.storageService.store(ParadisWorktreeService.WORKTREE_ORDER_STORAGE_KEY, JSON.stringify(Object.fromEntries(this._order)), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 }
