@@ -6,17 +6,18 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalGroup, ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 import { paradisLookupInstanceScope, paradisRecordInstanceScopes } from '../common/paradisTerminalProcessScope.js';
-import { paradisGetParkedTerminalEditorStateKey } from './paradisTerminalEditorPark.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 
 interface ISerializedTerminalRepositoryEntry {
 	readonly persistentProcessId: number;
@@ -78,6 +79,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	constructor(
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
 		@ITerminalService private readonly terminalService: ITerminalService,
+		@ITerminalEditorService private readonly terminalEditorService: ITerminalEditorService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IStorageService private readonly storageService: IStorageService,
 	) {
@@ -86,6 +88,12 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this._restoredMapping = this.loadMapping();
 
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
+
+		// persistMapping は persistentProcessId が確定済みのインスタンスしか書き出せない。
+		// タグ付け直後はまだ pid 未確定のことがあり、その後どのトリガーも走らないまま
+		// リロードすると復元マッピングから漏れる（非アクティブスコープのターミナルが
+		// リロード後にアクティブスコープへ誤って出現する）。pid 確定のたびに書き直して塞ぐ
+		this._register(this.terminalService.onAnyInstanceProcessIdReady(() => this.persistMapping()));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(stateKey => this.applyScope(stateKey)));
 		this._register(this.terminalGroupService.onDidDisposeGroup(group => this.discardGroup(group)));
 
@@ -155,7 +163,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 今セッションでまだ一度もタグ付けしていない (リロード直後の復元グループ) 場合のみ、
 	 * 前回セッションからの保存済みマッピング `_restoredMapping` にフォールバックする。
 	 */
-	private lookupRestoredRepository(group: ITerminalGroup): string | undefined {
+	private resolveGroupScope(group: ITerminalGroup): string | undefined {
 		return paradisLookupInstanceScope(this._instanceScopes, this._restoredMapping, group.terminalInstances);
 	}
 
@@ -174,7 +182,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 			// 既知の対応 (今セッション中のタグ付け実績、またはリロード前の保存済みマッピング) を
 			// 優先し、対応が無いもの (真に新規のグループ) だけアクティブエントリ所属とする
-			const stateKey = this.lookupRestoredRepository(group) ?? activeStateKey;
+			const stateKey = this.resolveGroupScope(group) ?? activeStateKey;
 			if (!stateKey) {
 				continue;
 			}
@@ -225,7 +233,39 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 		}
 
+		// エディタターミナルの復元は working set の deserialize → reviveInput が担うが、
+		// 復路の working set が park 世代と一致しない等でルックアップに到達しないと、
+		// インスタンスが台帳に残り PTY だけが不可視のまま生き続ける（タブは復元されない）。
+		// 切り替え完了時点で台帳に残っている切り替え先スコープの分を明示的に開き直す。
+		// 正常に revive された分は台帳から取り出し済みのため二重復元にはならない
+		this.unparkEditorTerminals(targetStateKey);
+
 		this.persistMapping();
+	}
+
+	/** 切り替え先スコープの park 台帳に残留したエディタターミナルをエディタとして開き直す */
+	private unparkEditorTerminals(targetStateKey: string): void {
+		const instances = paradisTakeParkedTerminalEditorInstancesForScope(targetStateKey);
+		if (instances.length === 0) {
+			return;
+		}
+		// openEditor は非同期で、この間にユーザーがさらに別スコープへ切り替えている可能性がある。
+		// 取り出したまま開けない・開き損ねたインスタンスは台帳へ戻し、次の切り替えか
+		// スコープ退役で必ず回収されるようにする（戻さないと PTY がどこからも参照されず漏れる）
+		(async () => {
+			for (const instance of instances) {
+				if (this.workspaceSwitchService.activeStateKey !== targetStateKey) {
+					paradisParkTerminalEditorInstance(instance, targetStateKey);
+					continue;
+				}
+				try {
+					await this.terminalEditorService.openEditor(instance);
+				} catch (error) {
+					paradisParkTerminalEditorInstance(instance, targetStateKey);
+					onUnexpectedError(error);
+				}
+			}
+		})();
 	}
 
 	/**
@@ -286,7 +326,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		const activeStateKey = this.workspaceSwitchService.activeStateKey;
 		let changed = false;
 		for (const group of [...groupService.groups]) {
-			const restoredStateKey = this.lookupRestoredRepository(group);
+			const restoredStateKey = this.resolveGroupScope(group);
 			if (!restoredStateKey || this._groupRepositories.get(group) === restoredStateKey) {
 				continue;
 			}
