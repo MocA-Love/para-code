@@ -41,11 +41,12 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
  */
 export default function AgentDetailScreen() {
 	const router = useRouter();
-	const { workspace, agentChats, selectedWs, selectedTerminalId, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload } = useAppStore(useShallow(s => ({
+	const { workspace, agentChats, selectedWs, selectedTerminalId, connection, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
-		selectedTerminalId: s.selectedTerminalId,
+		selectedTerminalId: s.selectedTerminalId, connection: s.connection,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
+		browserTargets: s.browserTargets,
 	})));
 	const [input, setInput] = useState('');
 	const listRef = useRef<FlatList<ChatRow>>(null);
@@ -71,6 +72,30 @@ export default function AgentDetailScreen() {
 	const agentWs = activeTerminal !== undefined
 		? wsList.find(w => w.id === (activeTerminal.ws ?? workspace?.activeWs))
 		: undefined;
+
+	// ヘッダーのブラウザボタン用: このエージェントと共有中のブラウザページがあるか
+	// （あればボタンに緑ドットを出す）。表示補助なので取得失敗は無視してバッジ無しにする。
+	const agentToken = activeTerminal?.agentToken;
+	const [hasSharedPage, setHasSharedPage] = useState(false);
+	useEffect(() => {
+		setHasSharedPage(false);
+		if (agentToken === undefined || connection !== 'online') {
+			return;
+		}
+		let cancelled = false;
+		browserTargets()
+			.then(result => {
+				if (!cancelled) {
+					setHasSharedPage(result.targets.some(t => t.sharedToken === agentToken));
+				}
+			})
+			.catch(() => undefined);
+		return () => { cancelled = true; };
+	}, [agentToken, connection, browserTargets]);
+	const openBrowser = () => {
+		hapticSelection();
+		router.push(agentToken !== undefined ? `/browser?token=${encodeURIComponent(agentToken)}` : '/browser');
+	};
 
 	// CLI版のUXに合わせ、本文(text)以外の連続する thinking / tool_use / tool_result を
 	// 1つの「アクティビティ」行へ集約する（デフォルト折りたたみ、タップで展開）。
@@ -273,6 +298,13 @@ export default function AgentDetailScreen() {
 							</Text>
 						) : null}
 					</View>
+					{/* ブラウザボタン（旧ブラウザタブの後継）。共有中ページがあれば緑ドットで示す */}
+					<Pressable onPress={openBrowser} accessibilityLabel="ブラウザを開く">
+						<GlassSurface style={styles.browserBtn} interactive>
+							<Ionicons name="globe-outline" size={18} color={colors.text} />
+						</GlassSurface>
+						{hasSharedPage ? <View style={styles.browserBtnBadge} /> : null}
+					</Pressable>
 				</View>
 			</View>
 
@@ -462,6 +494,8 @@ const styles = StyleSheet.create({
 	headerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, overflow: 'hidden' },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 8 },
 	backBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+	browserBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+	browserBtnBadge: { position: 'absolute', top: -2, right: -2, width: 10, height: 10, borderRadius: 5, backgroundColor: colors.green, borderWidth: 2, borderColor: colors.bg },
 	headerBody: { flex: 1, minWidth: 0 },
 	headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
 	headerSub: { color: colors.textDim, fontSize: 11, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },

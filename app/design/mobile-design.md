@@ -209,6 +209,7 @@ M1が「離れても作業続行」の最小価値。ここまでを最初のマ
 - **M2 完了（同日E2E検証済み）**: scm（status/diff/commit/log。gitはshared processの `runGit` で実行、サブコマンド許可リスト制）と fs（list/read。ワークスペースルート配下限定・シンボリックリンク除外・256KB上限）。モバイルからの実コミットを検証済み
 - **M3 完了（同日E2E検証済み）**: browser ミラー。**Page.startScreencast は Electron の WebContentsView ではフレームを発火しない（実測）** ため、Page.captureScreenshot の 700ms ポーリング + 入力直後の即時キャプチャで実装。タップは正規化座標→CSS座標変換で `Input.dispatchMouseEvent`（**buttons:1 必須**、無いとクリック合成されない）。PC→モバイルのライブフレーム同期とモバイル→PCのタップ dispatch を双方向で実機検証済み
 - **UI**: `app/design/mobile.html` のモックアップ準拠に全面改装（2026-07-05）。下部5タブ（ホーム/ターミナル/ソース管理/ファイル/ブラウザ）+ 上部ワークスペースバー（全画面連動・応答待ちバッジ）+ ホームのPCカード/エージェント状態/「回答する」導線。デザイントークンは `src/theme.ts` に集約
+- **UI改編（2026-07-11）**: ブラウザの独立タブを廃止して下部4タブ化し、ブラウザはエージェント詳細ヘッダーのボタンから開くスタック画面（`app/browser.tsx`）に変更（用途が「エージェントの作業結果を見る」に従属するため）。PC側 `targets` 応答に agentBrowser のバインディング由来の `sharedToken` を付与し、遷移元エージェントと共有中のページを自動選択、ヘッダーボタンには緑ドットを表示。複数ページは画面上部のタブチップで切替
 - **M1 残（実機必須で本環境では検証不能）**: APNsリモート通知のオフライン配送（リレー→APNs→Notification Service Extension。NSEはネイティブSwift実装＋Apple署名が必要）、xterm.js in WebView による端末完全再現（現状はANSI除去の簡易表示で動作）
 - **未着手**: M4(Android/LAN直結)、リレーのprovisionレート制限（DoS対策）
 

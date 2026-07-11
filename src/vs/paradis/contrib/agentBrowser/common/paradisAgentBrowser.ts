@@ -105,6 +105,16 @@ export interface IParadisCdpFrameSubscription {
 }
 
 /**
+ * バインド済み共有ページの「ペイントークン ⇔ CDP targetId」対応を読むための最小
+ * インターフェース。実体は ParadisAgentBrowserService。モバイルリレーのブラウザミラーが
+ * targets 応答に「どのページがどのエージェントペインと共有中か」を添えるために使う
+ * （同一 shared process 内の直接参照。sharedProcessMain.ts が生成順に依存注入する）。
+ */
+export interface IParadisSharedPageBindings {
+	listBoundCdpTargets(): Promise<{ token: string; targetId: string }[]>;
+}
+
+/**
  * CDPゲートウェイ経由のスクリーンショット委譲リクエスト
  * （shared process → electron-main、{@link PARADIS_CDP_TARGET_CHANNEL} の
  * `captureScreenshot` メソッド引数）。

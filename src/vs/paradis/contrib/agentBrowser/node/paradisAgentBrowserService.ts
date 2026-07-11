@@ -323,6 +323,23 @@ export class ParadisAgentBrowserService extends Disposable {
 		return [...this._seenTokens];
 	}
 
+	/**
+	 * バインド済み共有ページの「CDP targetId → ペイントークン」対応を返す（モバイルの
+	 * ブラウザ一覧で「このエージェントと共有中のタブ」を判別するため）。targetId未解決の
+	 * バインドはここで解決を試み、解決できなかったものは結果に含めない。
+	 * {@link IParadisSharedPageBindings} の実装（モバイルリレーへ依存注入される）。
+	 */
+	async listBoundCdpTargets(): Promise<{ token: string; targetId: string }[]> {
+		const result: { token: string; targetId: string }[] = [];
+		for (const token of [...this._bindings.keys()]) {
+			const targetId = await this._ensureBoundTargetId(token);
+			if (targetId !== undefined) {
+				result.push({ token, targetId });
+			}
+		}
+		return result;
+	}
+
 	/** ウィンドウ切断時に、そのウィンドウのバインディングとシェルPID表をまとめて破棄する。 */
 	removeBindingsForWindow(windowCtx: string): void {
 		const removedPageIds = new Set<string>();

@@ -113,6 +113,8 @@ export default function RootLayout() {
 						<Stack.Screen name="settings" options={{ headerShown: false, presentation: 'modal' }} />
 						{/* Ccusage ダッシュボード。設定画面の項目から開く（設定のmodalと区別するため水平pushにする） */}
 						<Stack.Screen name="ccusage" options={{ headerShown: false, animation: 'slide_from_right' }} />
+						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継） */}
+						<Stack.Screen name="browser" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>
 				</AuthGate>
 			</ThemeProvider>

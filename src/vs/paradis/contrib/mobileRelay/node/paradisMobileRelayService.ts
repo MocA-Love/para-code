@@ -26,7 +26,7 @@ import {
 	sealNotify,
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux } from '../common/paradisMobileMux.js';
-import { IParadisCdpFrameSubscription } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { IParadisFileSearchResult, IParadisTextSearchResult, paradisSearchFiles, paradisSearchText } from './paradisMobileSearch.js';
@@ -247,6 +247,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		private readonly userDataPath: string,
 		private readonly encryptionService: IEncryptionService,
 		private readonly cdpFrames: IParadisCdpFrameSubscription | undefined,
+		// agentBrowser の共有ページバインディング（targets応答の sharedToken 用）。
+		// 同一 shared process 内の直接参照を sharedProcessMain.ts が注入する。
+		private readonly sharedPageBindings: IParadisSharedPageBindings | undefined,
 		private readonly logService: ILogService,
 		configurationService?: IConfigurationService,
 		args?: NativeParsedArgs,
@@ -258,7 +261,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			createParadisShellEnvResolver(logService, configurationService, args),
 		);
 		this.statePath = join(this.userDataPath, 'paradis-mobile-relay.json');
-		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), cdpFrames, this.logService));
+		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), cdpFrames, sharedPageBindings, this.logService));
 		this.agentChat = this._register(new ParadisMobileAgentChat(
 			(mobileId, payload) => {
 				const session = this.sessions.get(mobileId);
