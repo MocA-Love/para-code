@@ -202,6 +202,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly _onInboundFrame = this._register(new Emitter<ParadisMobileInboundFrameWire>());
 	readonly onInboundFrame = this._onInboundFrame.event;
 
+	private readonly _onDidChangeConfirmedAgentPanes = this._register(new Emitter<readonly string[]>());
+	readonly onDidChangeConfirmedAgentPanes = this._onDidChangeConfirmedAgentPanes.event;
+
 	private state: PersistedState = { mobiles: [] };
 	private identity: MobileIdentity | undefined;
 	private enabled = false;
@@ -266,6 +269,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.logService,
 			() => this.cachedShellEnv.getEnv(),
 		));
+		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(tokens => this._onDidChangeConfirmedAgentPanes.fire(tokens)));
 		this._register(toDisposable(() => this.disconnect()));
 	}
 
@@ -339,6 +343,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async getStatus(): Promise<IParadisMobileStatus> {
 		return this.snapshot();
+	}
+
+	async getConfirmedAgentPaneTokens(): Promise<readonly string[]> {
+		return this.agentChat.getConfirmedAgentPaneTokens();
 	}
 
 	private snapshot(): IParadisMobileStatus {

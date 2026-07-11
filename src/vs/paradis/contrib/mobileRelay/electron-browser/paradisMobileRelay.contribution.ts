@@ -131,6 +131,14 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
 		));
 
+		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、
+		// shell integration後の鮮度検証済みtranscript探索で実在セッションを確定できる。
+		// その確定結果をホーム一覧のagentフラグへ反映する。
+		this._register(this.service.onDidChangeConfirmedAgentPanes(tokens => this.provider.setConfirmedAgentPaneTokens(tokens)));
+		this.service.getConfirmedAgentPaneTokens()
+			.then(tokens => this.provider.setConfirmedAgentPaneTokens(tokens))
+			.catch(err => this.logService.warn('[paradisMobileRelay] confirmed agent terminals initial sync failed', err));
+
 		// エージェントCLI (`claude` / `codex`) コマンドの実行開始を shell integration で検知し、
 		// shared process のセッション探索を前倒しするトリガーとして通知する。起動の確定情報には
 		// 使わない (探索側の鮮度ガードで `claude --help` 等の空振りは自然に弾かれる)。

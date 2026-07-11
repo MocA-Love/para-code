@@ -144,6 +144,7 @@ interface TermSyncState {
  * SCM / fs / browser チャネルは本スライスでは未実装（設計書 M2/M3。ここに追加していく）。
  */
 export class ParadisMobileWorkspaceProvider extends Disposable {
+	private confirmedAgentPaneTokens = new Set<string>();
 	// ターミナルID → その出力購読(dispose用)。1端末につき最後にattachしたモバイルへ出力を返す。
 	private readonly attachedTerminals = this._register(new DisposableMap<number>());
 	// ターミナルID → 出力の宛先モバイルID。
@@ -378,9 +379,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// 同スコープで別のエージェントが動いているだけで無関係なプレーンターミナルまで
 			// 「実行中」に見えてしまう（ホーム一覧・Live Activity の誤表示の原因）。
 			const agentStatus = this.agentStatusStore.getInstanceStatus(inst.instanceId);
-			// agent: そのターミナルでエージェントCLIが動いた実績（hook発火）があるか。
+			// agent: そのターミナルでエージェントCLIの実在セッションが確認できたか。
+			// 通常はhook発火、共有daemon利用時は鮮度検証済みtranscript探索で確定する。
 			// モバイル側はホーム一覧・Live Activity をこのフラグで絞る。
-			const agent = this.agentStatusStore.isAgentInstance(inst.instanceId);
+			const paneToken = this.paneTokenService.getTokenForInstance(inst.instanceId);
+			const agent = this.agentStatusStore.isAgentInstance(inst.instanceId)
+				|| (paneToken !== undefined && this.confirmedAgentPaneTokens.has(paneToken));
 			return {
 				id: inst.instanceId,
 				title: inst.title,
@@ -391,6 +395,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			};
 		});
 		return { activeWs: this.workspaceSwitchService.activeStateKey, workspaces, terminals };
+	}
+
+	/** shared processがhookまたは検証済みtranscriptから確定したエージェント端末を反映する。 */
+	setConfirmedAgentPaneTokens(tokens: readonly string[]): void {
+		const next = new Set(tokens);
+		if (next.size === this.confirmedAgentPaneTokens.size
+			&& [...next].every(token => this.confirmedAgentPaneTokens.has(token))) {
+			return;
+		}
+		this.confirmedAgentPaneTokens = next;
+		this.pushStateSoon();
 	}
 
 	/** オンラインのモバイルが居なくなったら、全ターミナル購読を解放する（M-2: 購読リーク防止）。 */
