@@ -142,4 +142,41 @@ suite('ParadisWorktreeGitService', () => {
 			assert.strictEqual(call.env?.PATH, '/opt/homebrew/bin:/usr/bin');
 		}
 	});
+
+	function createLifecycleService(handler: (command: string, args: readonly string[], options: cp.ExecFileOptions, callback: (error: (cp.ExecFileException & { code?: number }) | null, stdout: string, stderr: string) => void) => void): ParadisWorktreeGitService {
+		return new ParadisWorktreeGitService(
+			new NullLogService(),
+			undefined,
+			undefined,
+			handler as unknown as typeof cp.execFile,
+			async () => ({}),
+		);
+	}
+
+	test('runs lifecycle script in worktree with project root environment', async () => {
+		const calls: Array<{ command: string; args: readonly string[]; cwd?: string; root?: string }> = [];
+		const service = createLifecycleService((command, args, options, callback) => {
+			calls.push({ command, args, cwd: options.cwd as string, root: (options.env as NodeJS.ProcessEnv | undefined)?.PARACODE_PROJECT_ROOT_PATH });
+			callback(null, '', '');
+		});
+		await service.runLifecycleScript({
+			kind: 'setup', repoPath: '/repo', worktreePath: '/repo-worktrees/task', script: 'bun install'
+		});
+		assert.deepStrictEqual(calls, [{
+			command: process.env.SHELL || '/bin/sh',
+			args: ['-lc', 'bun install'],
+			cwd: '/repo-worktrees/task',
+			root: '/repo'
+		}]);
+	});
+
+	test('rejects a non-zero lifecycle script exit', async () => {
+		const service = createLifecycleService((_command, _args, _options, callback) => {
+			callback(Object.assign(new Error('exit 7'), { code: 7 }), '', 'failed setup');
+		});
+		await assert.rejects(
+			service.runLifecycleScript({ kind: 'setup', repoPath: '/repo', worktreePath: '/worktree', script: 'false' }),
+			/Setup script failed.*failed setup/i
+		);
+	});
 });
