@@ -29,6 +29,7 @@ import {
 	ParadisAivisWordType,
 } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { getCachedAivisDictionaryList, invalidateAivisDictionaryListCache, setCachedAivisDictionaryList } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 
 const $ = dom.$;
@@ -81,7 +82,11 @@ export class ParadisAivisDictionarySection extends Disposable {
 		this._fileInput.style.display = 'none';
 		this._register(dom.addDisposableListener(this._fileInput, 'change', () => this._handleImportFile()));
 
-		this._register(this.settingsService.onDidChange(() => this._render()));
+		this._register(this.settingsService.onDidChange(scope => {
+			if (scope === 'aivis') {
+				this._render();
+			}
+		}));
 		this._render();
 	}
 
@@ -123,20 +128,23 @@ export class ParadisAivisDictionarySection extends Disposable {
 		}
 
 		const listEl = dom.append(this.container, $('div'));
-		listEl.textContent = STR_LOADING;
 
+		// フォーマット文字列の編集やスライダー操作などリストと無関係な 'aivis' スコープの変更でも
+		// このセクションは再描画されるため、既にキャッシュ済みならAPIを叩き直さず同期的に描画する
+		// （毎回「読み込み中…」に戻って本文高さが変動し、スクロール位置がずれるのを防ぐ）。
+		const cached = getCachedAivisDictionaryList(settings.apiKey);
+		if (cached) {
+			this._populateList(listEl, cached, settings.apiKey, settings.userDictionaryUuid);
+			return;
+		}
+
+		listEl.textContent = STR_LOADING;
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisAivisDictionaryListItem[]>('listAivisDictionaries', [settings.apiKey]).then(list => {
 			if (this._store.isDisposed) {
 				return;
 			}
-			dom.clearNode(listEl);
-			if (list.length === 0) {
-				dom.append(listEl, $('.pns-empty')).textContent = STR_EMPTY;
-				return;
-			}
-			for (const dict of list) {
-				this._renderCard(listEl, dict, settings.apiKey, settings.userDictionaryUuid);
-			}
+			setCachedAivisDictionaryList(settings.apiKey, list);
+			this._populateList(listEl, list, settings.apiKey, settings.userDictionaryUuid);
 		}, error => {
 			if (this._store.isDisposed) {
 				return;
@@ -144,6 +152,17 @@ export class ParadisAivisDictionarySection extends Disposable {
 			dom.clearNode(listEl);
 			dom.append(listEl, $('.pns-error')).textContent = error instanceof Error ? error.message : String(error);
 		});
+	}
+
+	private _populateList(listEl: HTMLElement, list: readonly IParadisAivisDictionaryListItem[], apiKey: string, activeUuid: string): void {
+		dom.clearNode(listEl);
+		if (list.length === 0) {
+			dom.append(listEl, $('.pns-empty')).textContent = STR_EMPTY;
+			return;
+		}
+		for (const dict of list) {
+			this._renderCard(listEl, dict, apiKey, activeUuid);
+		}
 	}
 
 	private _renderCard(container: HTMLElement, dict: IParadisAivisDictionaryListItem, apiKey: string, activeUuid: string): void {
@@ -213,6 +232,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 				throw new Error('AivisSpeech 互換の JSON オブジェクトを選択してください');
 			}
 			await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('importAivisDictionary', [settings.apiKey, targetUuid, data, false]);
+			invalidateAivisDictionaryListCache(settings.apiKey);
 			this._render();
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] dictionary import failed', error);
@@ -244,6 +264,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		}
 		try {
 			await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('deleteAivisDictionary', [apiKey, uuid]);
+			invalidateAivisDictionaryListCache(apiKey);
 			if (wasActive) {
 				this.settingsService.setAivisSettings({ userDictionaryUuid: '' });
 			}
@@ -256,6 +277,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 	private _openCreateDialog(): void {
 		const settings = this.settingsService.getAivisSettings();
 		const dialog = new ParadisCreateDictionaryDialog(this.layoutService, this.sharedProcessService, settings.apiKey, uuid => {
+			invalidateAivisDictionaryListCache(settings.apiKey);
 			this._render();
 			this._openEditDialog(uuid, settings.apiKey);
 		});
@@ -263,7 +285,10 @@ export class ParadisAivisDictionarySection extends Disposable {
 	}
 
 	private _openEditDialog(uuid: string, apiKey: string): void {
-		const dialog = new ParadisDictionaryEditorDialog(this.layoutService, this.sharedProcessService, uuid, apiKey, () => this._render());
+		const dialog = new ParadisDictionaryEditorDialog(this.layoutService, this.sharedProcessService, uuid, apiKey, () => {
+			invalidateAivisDictionaryListCache(apiKey);
+			this._render();
+		});
 		this._nestedDialog.value = dialog;
 	}
 }

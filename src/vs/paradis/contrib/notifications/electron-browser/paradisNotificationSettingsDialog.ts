@@ -26,6 +26,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { CUSTOM_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisRingtoneData, PARADIS_NOTIFICATIONS_CHANNEL, PARADIS_RINGTONES } from '../common/paradisNotifications.js';
+import { clearAivisApiCaches } from './paradisAivisApiCache.js';
 import { ParadisAivisDictionarySection } from './paradisAivisDictionarySection.js';
 import { ParadisAivisUsageSection } from './paradisAivisUsageSection.js';
 import { ParadisAivisVoiceSection } from './paradisAivisVoiceSection.js';
@@ -118,6 +119,10 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 	) {
 		super();
 
+		// ダイアログを閉じている間にAivisSpeech側（外部）で辞書・モデルが変更されている可能性が
+		// あるため、開くたびにAivis関連APIのキャッシュ（paradisAivisApiCache.ts）を破棄する。
+		clearAivisApiCaches();
+
 		this._player = this._register(this.instantiationService.createInstance(ParadisNotificationSoundPlayer));
 
 		this._backdrop = $('.paradis-notif-settings-backdrop');
@@ -148,7 +153,11 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 			}
 		}));
 
-		this._register(this.settingsService.onDidChange(() => this._renderNotificationsSection()));
+		this._register(this.settingsService.onDidChange(scope => {
+			if (scope === 'notifications') {
+				this._renderNotificationsSection();
+			}
+		}));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._render();

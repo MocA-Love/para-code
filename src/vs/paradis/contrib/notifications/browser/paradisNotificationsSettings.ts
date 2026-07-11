@@ -49,12 +49,21 @@ const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
 export const IParadisNotificationsSettingsService = createDecorator<IParadisNotificationsSettingsService>('paradisNotificationsSettingsService');
 
 /**
+ * `onDidChange` が通知する変更範囲。設定ダイアログの各セクションは自分に関係しないスコープの
+ * 変更まで購読すると、無関係な操作のたびに自身のDOMを丸ごと再構築してしまう
+ * （着信音リスト等の非同期再フェッチによるスクロール位置のズレ・ちらつきの原因になっていた）。
+ * そのため「通知サウンド関連」と「Aivis関連」を分けて通知し、各セクションが自分のスコープの
+ * 変更だけを購読できるようにする。
+ */
+export type ParadisNotificationsChangeScope = 'notifications' | 'aivis';
+
+/**
  * 通知サウンド + Aivis読み上げ設定の読み書きサービス。トリガー・再生ロジック（electron-browser）と
  * 設定UI（electron-browser の自前ダイアログ）の両方から参照される。
  */
 export interface IParadisNotificationsSettingsService {
 	readonly _serviceBrand: undefined;
-	readonly onDidChange: Event<void>;
+	readonly onDidChange: Event<ParadisNotificationsChangeScope>;
 
 	getSelectedRingtoneId(): string;
 	setSelectedRingtoneId(id: string): void;
@@ -107,8 +116,8 @@ const KEY_AIVIS_CUSTOM_PRESETS = 'paradis.notifications.aivisCustomModelPresets'
 class ParadisNotificationsSettingsService extends Disposable implements IParadisNotificationsSettingsService {
 	declare readonly _serviceBrand: undefined;
 
-	private readonly _onDidChange = this._register(new Emitter<void>());
-	readonly onDidChange: Event<void> = this._onDidChange.event;
+	private readonly _onDidChange = this._register(new Emitter<ParadisNotificationsChangeScope>());
+	readonly onDidChange: Event<ParadisNotificationsChangeScope> = this._onDidChange.event;
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
@@ -122,7 +131,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 
 	setSelectedRingtoneId(id: string): void {
 		this.storageService.store(KEY_RINGTONE_ID, id, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('notifications');
 	}
 
 	getSoundsMuted(): boolean {
@@ -131,7 +140,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 
 	setSoundsMuted(muted: boolean): void {
 		this.storageService.store(KEY_MUTED, muted, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('notifications');
 	}
 
 	getVolume(): number {
@@ -141,7 +150,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 
 	setVolume(volume: number): void {
 		this.storageService.store(KEY_VOLUME, Math.max(0, Math.min(100, volume)), StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('notifications');
 	}
 
 	getOsNotificationsEnabled(): boolean {
@@ -150,7 +159,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 
 	setOsNotificationsEnabled(enabled: boolean): void {
 		this.storageService.store(KEY_OS_ENABLED, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('notifications');
 	}
 
 	getOsNotifyOnPermission(): boolean {
@@ -159,7 +168,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 
 	setOsNotifyOnPermission(enabled: boolean): void {
 		this.storageService.store(KEY_OS_PERMISSION, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('notifications');
 	}
 
 	getOsNotifyOnReview(): boolean {
@@ -168,7 +177,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 
 	setOsNotifyOnReview(enabled: boolean): void {
 		this.storageService.store(KEY_OS_REVIEW, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('notifications');
 	}
 
 	getNotifyWhileFocused(): boolean {
@@ -177,7 +186,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 
 	setNotifyWhileFocused(enabled: boolean): void {
 		this.storageService.store(KEY_NOTIFY_FOCUSED, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('notifications');
 	}
 
 	getAivisSettings(): IParadisAivisSettings {
@@ -196,7 +205,7 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 	setAivisSettings(patch: Partial<IParadisAivisSettings>): void {
 		const next = { ...this.getAivisSettings(), ...patch };
 		this.storageService.store(KEY_AIVIS, JSON.stringify(next), StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('aivis');
 	}
 
 	getCustomAivisModelPresets(): readonly IParadisAivisModelPreset[] {
@@ -216,13 +225,13 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 		const existing = this.getCustomAivisModelPresets().filter(p => p.uuid !== preset.uuid);
 		const next = [...existing, preset];
 		this.storageService.store(KEY_AIVIS_CUSTOM_PRESETS, JSON.stringify(next), StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('aivis');
 	}
 
 	removeCustomAivisModelPreset(uuid: string): void {
 		const next = this.getCustomAivisModelPresets().filter(p => p.uuid !== uuid);
 		this.storageService.store(KEY_AIVIS_CUSTOM_PRESETS, JSON.stringify(next), StorageScope.APPLICATION, StorageTarget.MACHINE);
-		this._onDidChange.fire();
+		this._onDidChange.fire('aivis');
 	}
 }
 
