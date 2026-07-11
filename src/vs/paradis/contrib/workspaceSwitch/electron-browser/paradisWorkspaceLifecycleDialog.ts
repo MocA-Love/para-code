@@ -21,7 +21,7 @@ import { FileOperationResult, IFileService, toFileOperationResult } from '../../
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IParadisWorkspaceRepository } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisWorkspaceLifecycleConfig, paradisParseWorkspaceLifecycleConfig, paradisUpdateWorkspaceLifecycleConfig } from '../common/paradisWorkspaceLifecycle.js';
+import { IParadisWorkspaceLifecycleConfig, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES, paradisParseWorkspaceLifecycleConfig, paradisUpdateWorkspaceLifecycleConfig } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
 
 const $ = dom.$;
@@ -29,7 +29,7 @@ const $ = dom.$;
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.workspaceLifecycle.title', "Setup / Teardown スクリプト");
 // allow-any-unicode-next-line
-const STR_DESCRIPTION = localize('paradis.workspaceLifecycle.description', "{0} に保存されます（コミットすればチーム全体・全 worktree に反映されます）。このリポジトリで worktree を作成・削除するたびに自動実行され、最長 {2} 分で打ち切られます。実行時は環境変数 {1} に親リポジトリの絶対パスが渡されます。保存時、コメント付き JSONC のコメントは保持されません。", PARADIS_WORKSPACE_PRESET_FILE, 'PARACODE_PROJECT_ROOT_PATH', 10);
+const STR_DESCRIPTION = localize('paradis.workspaceLifecycle.description', "{0} に保存されます（コミットすればチーム全体・全 worktree に反映されます）。このリポジトリで worktree を作成・削除するたびに自動実行され、最長 {2} 分で打ち切られます。実行時は環境変数 {1} に親リポジトリの絶対パスが渡されます。保存時、コメント付き JSONC のコメントは保持されません。", PARADIS_WORKSPACE_PRESET_FILE, 'PARACODE_PROJECT_ROOT_PATH', PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES);
 // allow-any-unicode-next-line
 const STR_SETUP_LABEL = localize('paradis.workspaceLifecycle.setupLabel', "Setup スクリプト（worktree 作成直後、対象 worktree を作業ディレクトリとして実行）");
 // allow-any-unicode-next-line
@@ -62,6 +62,7 @@ let paradisActiveWorkspaceLifecycleDialog: ParadisWorkspaceLifecycleDialog | und
 
 export function openParadisWorkspaceLifecycleDialog(accessor: ServicesAccessor, repository: IParadisWorkspaceRepository): void {
 	if (paradisActiveWorkspaceLifecycleDialog) {
+		paradisActiveWorkspaceLifecycleDialog.focusInput();
 		return;
 	}
 	// ダイアログは自身の close で自己 dispose する
@@ -112,6 +113,11 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		void this._loadExisting();
 	}
 
+	/** 既に開いているダイアログへの再オープン要求時に入力へフォーカスを当てる。 */
+	focusInput(): void {
+		this._setupInput.focus();
+	}
+
 	override dispose(): void {
 		if (paradisActiveWorkspaceLifecycleDialog === this) {
 			paradisActiveWorkspaceLifecycleDialog = undefined;
@@ -126,14 +132,12 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		dom.append(this._dialog, $('h3.pcw-title')).textContent = STR_TITLE;
 		dom.append(this._dialog, $('div.pcw-label')).textContent = STR_DESCRIPTION;
 
-		const setupRow = dom.append(this._dialog, $('.pcw-field-row'));
-		dom.append(setupRow, $('label.pcw-label')).textContent = STR_SETUP_LABEL;
+		dom.append(this._dialog, $('label.pcw-label')).textContent = STR_SETUP_LABEL;
 		this._setupInput = dom.append(this._dialog, $('textarea.pcw-prompt')) as HTMLTextAreaElement;
 		this._setupInput.rows = 3;
 		this._setupInput.spellcheck = false;
 
-		const teardownRow = dom.append(this._dialog, $('.pcw-field-row'));
-		dom.append(teardownRow, $('label.pcw-label')).textContent = STR_TEARDOWN_LABEL;
+		dom.append(this._dialog, $('label.pcw-label')).textContent = STR_TEARDOWN_LABEL;
 		this._teardownInput = dom.append(this._dialog, $('textarea.pcw-prompt')) as HTMLTextAreaElement;
 		this._teardownInput.rows = 3;
 		this._teardownInput.spellcheck = false;
