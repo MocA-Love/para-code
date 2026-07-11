@@ -44,13 +44,15 @@ function formatRelativeTime(at: number): string {
 export default function NotificationsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
-	const { notifications, setSelectedWs, setSelectedTerminalId, clearNotifications } = useAppStore(useShallow(s => ({
+	const { notifications, setSelectedWs, setSelectedTerminalId, clearNotifications, dismissNotification } = useAppStore(useShallow(s => ({
 		notifications: s.notifications, setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
-		clearNotifications: s.clearNotifications,
+		clearNotifications: s.clearNotifications, dismissNotification: s.dismissNotification,
 	})));
 
 	const openNotification = (n: NotifyPayload) => {
 		hapticSelection();
+		// 開いた通知は一覧から消す（既読/削除扱い）。他のペアリング済み端末にも同期される。
+		dismissNotification(n.id);
 		// setSelectedWs は selectedTerminalId をリセットするため、この順序を厳守する。
 		if (n.ws !== undefined) {
 			setSelectedWs(n.ws);

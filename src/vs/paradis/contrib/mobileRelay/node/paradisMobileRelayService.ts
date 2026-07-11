@@ -34,8 +34,10 @@ import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import {
 	Channels,
 	ChannelId,
+	decodeNotifyControl,
 	decodeRelayControl,
 	encodeNotify,
+	encodeNotifyDismissed,
 	peekNotifyKind,
 	encodeRelayControl,
 	encodePairingUri,
@@ -495,6 +497,24 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
+	/**
+	 * モバイルが通知一覧で項目を処理した（タップ/クリア）ことを他のペアリング済み端末へ伝える
+	 * （notifyチャネル M→PC→他M）。オフライン端末はAPNsで起こしてまで同期する話ではないため
+	 * オンラインのセッションにのみ配送する（次回オンライン化時は素直に残っていて構わない）。
+	 */
+	private handleNotifyDismiss(fromMobileId: string, notifyId: string): void {
+		const bytes = encodeNotifyDismissed(notifyId);
+		for (const mobile of this.state.mobiles) {
+			if (mobile.mobileId === fromMobileId) {
+				continue;
+			}
+			const session = this.sessions.get(mobile.mobileId);
+			if (session?.isOnline) {
+				session.sendFrame(Channels.Notify, undefined, bytes).catch(err => this.logService.warn('[paradisMobileRelay] notify dismiss forward failed', err));
+			}
+		}
+	}
+
 	private relayHttpBase(): string {
 		const ws = (this.relayUrlOverride ?? PARADIS_MOBILE_DEFAULT_RELAY_URL).replace(/\/$/, '');
 		return ws.replace(/^ws/, 'http');
@@ -792,7 +812,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						return;
 					}
 					if (frame.ch === Channels.Notify) {
-						// M→PC方向のnotifyチャネル: 通知設定の同期メッセージ。
+						// M→PC方向のnotifyチャネル: 通知設定の同期 or 既読(dismiss)メッセージ。
+						const control = decodeNotifyControl(frame.payload.buffer);
+						if (control?.t === 'dismiss') {
+							this.handleNotifyDismiss(idStr, control.id);
+							return;
+						}
 						this.handleNotifyPrefs(idStr, frame.payload.buffer);
 						return;
 					}

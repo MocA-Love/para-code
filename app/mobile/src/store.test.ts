@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, type Identity } from '@para/protocol';
+import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
 import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, revokeSelfOnRelay, saveCredentials, type KeyStore } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
@@ -166,6 +166,22 @@ describe('MobileController', () => {
 		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'q1', title: 'x', body: 'y', at: 2 }));
 		await flush();
 		expect(latest?.notifications.length).toBe(1);
+
+		// mobile → dismiss: ローカルの一覧から消え、PCへdismissメッセージが送られる
+		const pcNotifyGot: import('@para/protocol').NotifyControlMessage[] = [];
+		pcMux.on(Channels.Notify, f => { const c = decodeNotifyControl(f.payload); if (c) { pcNotifyGot.push(c); } });
+		controller.dismissNotification('q1');
+		await flush();
+		expect(latest?.notifications.length).toBe(0);
+		expect(pcNotifyGot).toEqual([{ t: 'dismiss', id: 'q1' }]);
+
+		// PC → dismissed（他端末が処理済みにした）: 一覧にあれば消える。無ければ何もしない
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'q2', title: 'x', body: 'y', at: 3 }));
+		await flush();
+		expect(latest?.notifications.length).toBe(1);
+		pcMux.send(Channels.Notify, encodeNotifyDismissed('q2'));
+		await flush();
+		expect(latest?.notifications.length).toBe(0);
 	});
 
 	it('scm/fs request-response resolves and rejects by id', async () => {

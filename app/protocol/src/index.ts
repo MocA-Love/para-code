@@ -11,5 +11,5 @@ export type { FrameHandler, FrameMuxOptions } from './mux.js';
 export { toBase64Url, fromBase64Url, concatBytes, bytesEqual } from './util.js';
 export { RELAY_DATA_VERSION, MOBILE_ID_LENGTH, packPcData, unpackPcData, mobileIdToString, mobileIdFromString, encodeRelayControl, decodeRelayControl } from './relay.js';
 export type { RelayControlMessage } from './relay.js';
-export { encodeNotify, decodeNotify } from './notify.js';
-export type { NotifyKind, NotifyPayload } from './notify.js';
+export { encodeNotify, decodeNotify, encodeNotifyDismiss, encodeNotifyDismissed, decodeNotifyControl } from './notify.js';
+export type { NotifyKind, NotifyPayload, NotifyControlMessage } from './notify.js';

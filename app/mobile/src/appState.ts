@@ -38,6 +38,8 @@ interface AppState extends StoreState {
 	setNotifyPref(key: 'agentDone' | 'agentQuestion', enabled: boolean): void;
 	/** 通知一覧を全消去する（通知一覧画面のクリアボタン）。 */
 	clearNotifications(): void;
+	/** 通知一覧から単一項目を消す（項目タップで遷移した時）。他端末の一覧にも同期される。 */
+	dismissNotification(id: string): void;
 	/** 初期化（起動時に1回）。identityをロードし、資格情報があれば接続する。 */
 	init(): Promise<void>;
 	/** QRから読み取ったURIでペアリングする。SAS表示はonSasで受ける。 */
@@ -342,6 +344,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	clearNotifications() {
 		controller?.clearNotifications();
+	},
+
+	dismissNotification(id: string) {
+		controller?.dismissNotification(id);
 	},
 
 	scmStatus(ws: string) {
