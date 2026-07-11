@@ -25,7 +25,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisRemoveWorktreeRequest, PARADIS_DEFAULT_AGENT_COMMANDS, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisDiffStat, IParadisRemoveWorktreeRequest, PARADIS_DEFAULT_AGENT_COMMANDS, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
@@ -34,6 +34,7 @@ import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycle
 export const PARADIS_CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
 export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
 export const PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID = 'paradis.workspaceSwitch.configureLifecycleScripts';
+export const PARADIS_GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -297,6 +298,41 @@ class ParadisRemoveWorktreeAction extends Action2 {
 }
 
 registerAction2(ParadisRemoveWorktreeAction);
+
+/**
+ * 各作業ツリーの未コミット差分 (+/-行数) をまとめて返すコマンド。
+ * Workspaces ビュー (browser 層) がポーリングで ID 経由で呼ぶ。git 実行は shared process の
+ * worktree git チャネルに委譲する (web ビルドでは未登録のため呼び出し側で安全に無効化される)。
+ */
+class ParadisGetDiffStatsAction extends Action2 {
+	constructor() {
+		super({
+			id: PARADIS_GET_DIFF_STATS_COMMAND_ID,
+			title: localize2('paradis.workspaceSwitch.getDiffStats', "Get Worktree Diff Stats"),
+			category: localize2('paradis.category', "Para Code"),
+			f1: false
+		});
+	}
+
+	async run(accessor: ServicesAccessor, paths?: string[]): Promise<Record<string, IParadisDiffStat>> {
+		if (!Array.isArray(paths) || paths.length === 0) {
+			return {};
+		}
+		const sharedProcessService = accessor.get(ISharedProcessService);
+		const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
+		const result: Record<string, IParadisDiffStat> = {};
+		await Promise.all(paths.map(async path => {
+			try {
+				result[path] = await channel.call<IParadisDiffStat>('getDiffStat', [path]);
+			} catch {
+				// 個々のパスの失敗 (worktree が消えた等) は無視し、他のパスの結果は返す
+			}
+		}));
+		return result;
+	}
+}
+
+registerAction2(ParadisGetDiffStatsAction);
 
 /**
  * リポジトリの Setup/Teardown スクリプト（.paracode.json）を編集するダイアログを開くコマンド。

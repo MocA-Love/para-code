@@ -153,6 +153,24 @@ suite('ParadisWorktreeGitService', () => {
 		);
 	}
 
+	test('sums insertions and deletions across files, skipping binary entries', async () => {
+		const service = createLifecycleService((_command, args, _options, callback) => {
+			assert.deepStrictEqual(args, ['-C', '/worktree', 'diff', 'HEAD', '--numstat']);
+			// バイナリファイルは "-\t-\t<path>" で出力される (加算対象外)
+			callback(null, '10\t2\tsrc/a.ts\n-\t-\tassets/logo.png\n0\t5\tsrc/b.ts\n', '');
+		});
+
+		assert.deepStrictEqual(await service.getDiffStat('/worktree'), { insertions: 10, deletions: 7 });
+	});
+
+	test('returns zero stats instead of throwing when git fails (removed worktree, not a repo, ...)', async () => {
+		const service = createLifecycleService((_command, _args, _options, callback) => {
+			callback(Object.assign(new Error('exit 128'), { code: 128 }), '', 'fatal: not a git repository');
+		});
+
+		assert.deepStrictEqual(await service.getDiffStat('/gone'), { insertions: 0, deletions: 0 });
+	});
+
 	test('runs lifecycle script in worktree with project root environment and a hang-protection timeout', async () => {
 		const calls: Array<{ command: string; args: readonly string[]; cwd?: string; root?: string; timeout?: number }> = [];
 		const service = createLifecycleService((command, args, options, callback) => {
