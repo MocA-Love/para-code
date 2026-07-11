@@ -15,6 +15,7 @@ import { ITerminalGroup, ITerminalGroupService, ITerminalService } from '../../.
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { paradisLookupInstanceScope, paradisRecordInstanceScopes } from '../common/paradisTerminalProcessScope.js';
 import { paradisGetParkedTerminalEditorStateKey } from './paradisTerminalEditorPark.js';
 
 interface ISerializedTerminalRepositoryEntry {
@@ -34,7 +35,7 @@ interface ISerializedTerminalRepositoryEntry {
  *   一旦復元される。{persistentProcessId → repositoryId} の保存済みマッピングから
  *   再接続完了時に再タグ付け・再 park する
  */
-class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTerminalScopeService {
+export class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTerminalScopeService {
 
 	declare readonly _serviceBrand: undefined;
 
@@ -47,9 +48,30 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 	private readonly _parkedGroups = new Map<string, ITerminalGroup[]>();
 
 	/**
+	 * instanceId → 所属リポジトリID。このセッション中にタグ付けしたグループの
+	 * インスタンスを常に記録する（グループの生存中を通じて更新され続ける）。
+	 *
+	 * `_groupRepositories` はグループ「オブジェクト」の参照をキーにしているため、同じ
+	 * ターミナルプロセスを表す新しいグループオブジェクトが作られる（例: TerminalService の
+	 * moveToBackground → showBackgroundTerminal による一時非表示→再表示。最後の1インスタンスが
+	 * 抜けた時点で旧グループは dispose され、再表示時に createGroup で新しいグループが作られる）
+	 * と、旧オブジェクトへの対応は discardGroup で消え、新オブジェクトは tagUntaggedGroups から見て
+	 * 「未タグ (常に表示)」になってしまう。instanceId は同じ ITerminalInstance がグループの
+	 * 生成し直しを跨いで持ち回る安定な同期採番のため、ここに記録しておけば tagUntaggedGroups が
+	 * 「今アクティブなスコープ」への決め打ちより先にこちらを優先でき、正しい所属へ復元できる。
+	 * （persistentProcessId はプロセス起動後に非同期で確定するため、生成直後のタグ付け時点では
+	 * まだ undefined で記録できないことがあり、ライブ記録のキーには使えない。）
+	 *
+	 * エントリはグループ dispose では消さない（moveToBackground による一時的な dispose を
+	 * 跨いで引けることがこのマップの存在意義）。スコープ退役時に retireScope でまとめて掃除する。
+	 */
+	private readonly _instanceScopes = new Map<number, string>();
+
+	/**
 	 * リロード前に保存した {persistentProcessId → repositoryId}。起動時に一度だけ読み込む
 	 * (起動後の persistMapping はこのキーを上書きするため、遅延読み込みだと自分の
-	 * 起動時タグ付けで正しい対応を潰してしまう)。
+	 * 起動時タグ付けで正しい対応を潰してしまう)。今セッション中の対応は `_instanceScopes` が持つため、
+	 * こちらは「今セッションではまだ一度もタグ付けしていない (前回セッションからの持ち越し)」場合のみ引く。
 	 */
 	private readonly _restoredMapping: Map<number, string>;
 
@@ -114,23 +136,27 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 			return;
 		}
 		this._groupRepositories.set(group, stateKey);
+		this.recordInstanceScopes(group, stateKey);
 		if (stateKey !== this.workspaceSwitchService.activeStateKey) {
 			this.parkGroup(groupService, group, stateKey);
 		}
 		this.persistMapping();
 	}
 
-	/** 保存済みマッピングからグループの所属リポジトリを引く (リロード直後の復元グループ用) */
+	/** グループの構成インスタンスの instanceId に、このタグ付けを記録する */
+	private recordInstanceScopes(group: ITerminalGroup, stateKey: string): void {
+		paradisRecordInstanceScopes(this._instanceScopes, group.terminalInstances, stateKey);
+	}
+
+	/**
+	 * このグループの所属リポジトリを、構成インスタンスから引く。
+	 * 今セッション中に一度でもタグ付けしたことがあれば `_instanceScopes` が最新の対応を持つ
+	 * (グループオブジェクトが作り直されても instanceId は安定するため)。
+	 * 今セッションでまだ一度もタグ付けしていない (リロード直後の復元グループ) 場合のみ、
+	 * 前回セッションからの保存済みマッピング `_restoredMapping` にフォールバックする。
+	 */
 	private lookupRestoredRepository(group: ITerminalGroup): string | undefined {
-		for (const instance of group.terminalInstances) {
-			if (typeof instance.persistentProcessId === 'number') {
-				const repositoryId = this._restoredMapping.get(instance.persistentProcessId);
-				if (repositoryId) {
-					return repositoryId;
-				}
-			}
-		}
-		return undefined;
+		return paradisLookupInstanceScope(this._instanceScopes, this._restoredMapping, group.terminalInstances);
 	}
 
 	private tagUntaggedGroups(): void {
@@ -146,14 +172,15 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 				continue;
 			}
 
-			// リロードで復元されたグループは保存済みマッピングの対応を優先し、
-			// マッピングに無いもの (新規作成) はアクティブエントリ所属とする
+			// 既知の対応 (今セッション中のタグ付け実績、またはリロード前の保存済みマッピング) を
+			// 優先し、対応が無いもの (真に新規のグループ) だけアクティブエントリ所属とする
 			const stateKey = this.lookupRestoredRepository(group) ?? activeStateKey;
 			if (!stateKey) {
 				continue;
 			}
 
 			this._groupRepositories.set(group, stateKey);
+			this.recordInstanceScopes(group, stateKey);
 			changed = true;
 
 			if (stateKey !== activeStateKey) {
@@ -208,6 +235,13 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 	 * 永続化から除外)、こちらの discardGroup が _groupRepositories / _parkedGroups を掃除する。
 	 */
 	private retireScope(stateKey: string): void {
+		// 退役スコープのライブ記録を掃除する（グループ dispose では意図的に消さないため、
+		// ここで消さないとセッション中に作成・削除を繰り返した分だけ増え続ける）
+		for (const [instanceId, scopeKey] of this._instanceScopes) {
+			if (scopeKey === stateKey) {
+				this._instanceScopes.delete(instanceId);
+			}
+		}
 		const parked = this._parkedGroups.get(stateKey);
 		if (!parked || parked.length === 0) {
 			return;
@@ -258,6 +292,7 @@ class ParadisTerminalWorkspaceScope extends Disposable implements IParadisTermin
 			}
 
 			this._groupRepositories.set(group, restoredStateKey);
+			this.recordInstanceScopes(group, restoredStateKey);
 			changed = true;
 
 			if (restoredStateKey !== activeStateKey) {

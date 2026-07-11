@@ -99,6 +99,14 @@ export interface IParadisRunPresetOptions {
 	readonly cwd?: URI;
 	/** current-terminal 指定でも既存のアクティブ端末を再利用しない。 */
 	readonly forceNewTerminal?: boolean;
+	/**
+	 * 新規作成したターミナルインスタンスを明示的に紐付けるワークスペース切り替えの状態キー。
+	 * 未指定なら既定の（生成時点でアクティブな状態キーへの）暗黙タグ付けに任せる。
+	 * 呼び出し元が「今アクティブなスコープとは限らない対象」（worktree 作成直後の自動実行等）を
+	 * 明確に把握している場合に指定し、生成〜表示の間にユーザーが別スコープへ切り替えても
+	 * 誤った (現在アクティブな) スコープへ紐付いてしまう競合を防ぐ。
+	 */
+	readonly stateKey?: string;
 	/** 最初のターミナルまたはコマンドを開始した時点で呼び出す。 */
 	readonly onDidStart?: () => void;
 }
