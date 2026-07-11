@@ -62,7 +62,10 @@ type TermInbound =
 	//   複数行貼り付けがTUIで1行目から実行されてしまう問題を防ぐ。execute=true で実行（Enter）
 	// - data: 生のエスケープシーケンス（旧アプリ、および Esc/Tab/^C 等のモード非依存キー）
 	| { t: 'input'; id: number; data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }
-	| { t: 'create'; ws?: string };
+	| { t: 'create'; ws?: string }
+	// モバイルからのターミナル名変更。PC側の実インスタンスへ反映し、stateの再送で
+	// 他モバイル端末（およびPC自身のタブ表示）にも波及させる。
+	| { t: 'rename'; id: number; title: string };
 type TermSemanticKey = 'up' | 'down' | 'right' | 'left';
 type TermOutbound =
 	// snapshot=true は画面復元用フレーム（VTシーケンス込み）。モバイルは追記せず
@@ -193,6 +196,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); this.pushAgentPanes(); }));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => this.pushStateSoon()));
+		// タイトル変更（F2手動リネーム、モバイルからのrename、プロセス由来の自動タイトルなど）を
+		// 他のペアリング端末・他ウィンドウへも伝播する。
+		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.pushStateSoon()));
 		// park/unpark（ワークスペース切り替えでの退避/復帰）は instances イベントに乗らないため groups 変化でも再送する
 		this._register(this.terminalGroupService.onDidChangeGroups(() => this.pushStateSoon()));
 		// PC側のリサイズで cols/rows が変わったら再送（モバイルのxtermが同寸法に追従する）
@@ -985,6 +991,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.handleTerminalAck(instance, msg);
 		} else if (msg.t === 'input') {
 			this.handleTerminalInput(instance, msg).catch(err => this.logService.warn('[paradisMobileRelay] sendText failed', err));
+		} else if (msg.t === 'rename') {
+			if (typeof msg.title !== 'string') {
+				return;
+			}
+			// 制御文字（改行・Bidi override等）はタブ表示のなりすまし・崩れの元になるため除去する。
+			const title = msg.title.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e]/g, '').trim().slice(0, 200);
+			if (title.length > 0) {
+				instance.rename(title).catch(err => this.logService.warn('[paradisMobileRelay] rename failed', err));
+			}
 		}
 	}
 

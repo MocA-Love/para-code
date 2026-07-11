@@ -336,6 +336,14 @@ export function isAgentWaiting(status: string | undefined): boolean {
 }
 
 /**
+ * ピン留めの識別キー。instanceIdはPC再起動・ウィンドウreloadで再採番される揮発値のため、
+ * エージェント確定済みのターミナルは比較的安定なagentTokenを優先して使う。
+ */
+export function pinKeyForTerminal(terminal: { id: number; agentToken?: string }): string {
+	return terminal.agentToken !== undefined ? `tok:${terminal.agentToken}` : `id:${terminal.id}`;
+}
+
+/**
  * 同期プロトコル（epoch/seq）のターミナルストリームイベント。
  * snapshot はバッファ全体の置き換え（適用すべき cols/rows・unicode幅版を伴う）、
  * data は追記、exit は端末終了。
@@ -693,6 +701,22 @@ export class MobileController {
 		this.client?.send('term', encoder.encode(JSON.stringify({ t: 'create', ws })));
 	}
 
+	/**
+	 * ターミナル名を変更する。手元のworkspaceスナップショットを楽観的に書き換えてから
+	 * PCへ送る（PC側の権威的なstate再送が届き次第、その値で上書きされる）。
+	 */
+	renameTerminal(id: number, title: string): void {
+		const workspace = this.state.workspace;
+		if (workspace) {
+			this.state.workspace = {
+				...workspace,
+				terminals: workspace.terminals.map(t => t.id === id ? { ...t, title } : t),
+			};
+			this.emit();
+		}
+		this.sendTerm({ t: 'rename', id, title });
+	}
+
 	/** 現在の状態スナップショットを要求する。 */
 	requestState(): void {
 		this.client?.send('state', new Uint8Array(0));
@@ -706,7 +730,7 @@ export class MobileController {
 		this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...prefs })));
 	}
 
-	private sendTerm(msg: { t: string; id: number; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number }): void {
+	private sendTerm(msg: { t: string; id: number; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }): void {
 		this.client?.send('term', encoder.encode(JSON.stringify(msg)));
 	}
 

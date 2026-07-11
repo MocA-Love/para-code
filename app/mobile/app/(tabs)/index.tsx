@@ -1,19 +1,21 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useIsFocused, useRouter } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
-import { isAgentWaiting } from '../../src/store.js';
+import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
 import { PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionCard } from '../../src/components/attentionCard.js';
+import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
-import { hapticSelection } from '../../src/haptics.js';
+import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 
 /**
  * ホーム画面（mock.html 案A準拠のリデザイン）。旧デザインの「接続中のPC」カードと
@@ -27,12 +29,15 @@ import { hapticSelection } from '../../src/haptics.js';
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalId } = useAppStore(useShallow(s => ({
+	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalId, pinnedKeys, renameTerminal, togglePin } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
+		pinnedKeys: s.pinnedKeys, renameTerminal: s.renameTerminal, togglePin: s.togglePin,
 	})));
 	const effectiveWs = useEffectiveWs();
+	// 長押しで開くアクションメニュー（名前を変更/ピン留め）の表示状態。
+	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 
 	const tabBarSpacer = useTabBarSpacer();
 	// ホームは横スクロール要素を持たないため、フォーカス中は画面全域の右スワイプで
@@ -85,7 +90,10 @@ export default function HomeScreen() {
 	// ワークスペース分だけに絞る。エージェントCLIが動いた実績のあるターミナルだけを載せる
 	// （プレーンなターミナルを開いただけでホームに行が増えないように）。
 	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t))
-		.sort((a, b) => statusOrder(a.agentStatus) - statusOrder(b.agentStatus));
+		.sort((a, b) => {
+			const pinDiff = (pinnedKeys.has(pinKeyForTerminal(b)) ? 1 : 0) - (pinnedKeys.has(pinKeyForTerminal(a)) ? 1 : 0);
+			return pinDiff !== 0 ? pinDiff : statusOrder(a.agentStatus) - statusOrder(b.agentStatus);
+		});
 	const headerSubtitle = homeShowAllWorkspaces || effectiveWs === undefined
 		? 'Para Code Mobile'
 		: `${effectiveWs.name}${effectiveWs.branch ? ` · ${effectiveWs.branch}` : ''}`;
@@ -117,12 +125,21 @@ export default function HomeScreen() {
 					const ws = resolveWs(t);
 					const waiting = isAgentWaiting(t.agentStatus);
 					const color = ws ? wsColor(ws) : colors.accent;
+					const pinned = pinnedKeys.has(pinKeyForTerminal(t));
 					return (
 						<Pressable
 							key={t.id}
 							style={[styles.agentRow, waiting && styles.agentRowWaiting]}
 							onPress={() => { if (ws) { openAgent(ws.id, t.id); } }}
+							onLongPress={e => {
+								hapticImpact('medium');
+								setMenu({
+									target: { id: t.id, title: t.title, pinned },
+									anchor: { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY },
+								});
+							}}
 						>
+							{pinned ? <Ionicons name="bookmark" size={11} color={colors.accent} style={styles.pinIcon} /> : null}
 							<View style={[styles.orb, orbStyle(t.agentStatus)]} />
 							<View style={styles.agentBody}>
 								<Text style={styles.agentTitle} numberOfLines={1}>{t.title}</Text>
@@ -146,6 +163,18 @@ export default function HomeScreen() {
 					<Text style={styles.dimSmall}>ワークスペース情報を取得中… PCの Para Code でリポジトリを登録すると表示されます。</Text>
 				) : null}
 			</ScrollView>
+			<TerminalActionsMenu
+				target={menu?.target}
+				anchor={menu?.anchor}
+				onClose={() => setMenu(undefined)}
+				onRename={(id, title) => renameTerminal(id, title)}
+				onTogglePin={id => {
+					const terminal = workspace?.terminals.find(term => term.id === id);
+					if (terminal) {
+						togglePin(pinKeyForTerminal(terminal));
+					}
+				}}
+			/>
 		</View>
 	);
 }
@@ -182,6 +211,7 @@ const styles = StyleSheet.create({
 		borderWidth: 1, borderColor: colors.border, marginBottom: 8,
 	},
 	agentRowWaiting: { borderLeftWidth: 3, borderLeftColor: colors.red },
+	pinIcon: { marginRight: -2 },
 	orb: { width: 10, height: 10, borderRadius: 6 },
 	orbWaiting: { backgroundColor: colors.red },
 	orbRunning: { backgroundColor: colors.green },
