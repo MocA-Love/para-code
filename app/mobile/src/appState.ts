@@ -26,6 +26,13 @@ interface AppState extends StoreState {
 	/** ワークスペースバーで選択中のワークスペースID（全画面で連動）。 */
 	selectedWs: string | undefined;
 	setSelectedWs(ws: string): void;
+	/**
+	 * ホームのエージェント一覧を全ワークスペース横断で表示するか。falseの間はドロワーの
+	 * 選択中ワークスペース（selectedWs）に絞り込む。既定はtrue（アプリ再起動時はここに戻る。
+	 * AsyncStorage等へは永続化しない）。バックグラウンド復帰やタブ切替では維持される。
+	 */
+	homeShowAllWorkspaces: boolean;
+	setHomeShowAllWorkspaces(value: boolean): void;
 	/** ターミナル画面で選択中のターミナルID（ws切替時はリセット）。 */
 	selectedTerminalId: number | undefined;
 	setSelectedTerminalId(id: number | undefined): void;
@@ -123,6 +130,7 @@ export const useAppStore = create<AppState>(set => ({
 	paired: false,
 	manualOffline: false,
 	selectedWs: undefined,
+	homeShowAllWorkspaces: true,
 	selectedTerminalId: undefined,
 	notifyPrefs: { agentDone: true, agentQuestion: true },
 
@@ -274,7 +282,7 @@ export const useAppStore = create<AppState>(set => ({
 		}
 		controller?.reset();
 		await clearCredentials(secureKeyStore);
-		set({ paired: false, manualOffline: false, selectedWs: undefined, selectedTerminalId: undefined });
+		set({ paired: false, manualOffline: false, selectedWs: undefined, homeShowAllWorkspaces: true, selectedTerminalId: undefined });
 	},
 
 	attachTerminal(id: number) {
@@ -327,6 +335,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	setSelectedWs(ws: string) {
 		set({ selectedWs: ws, selectedTerminalId: undefined });
+	},
+
+	setHomeShowAllWorkspaces(value: boolean) {
+		set({ homeShowAllWorkspaces: value });
 	},
 
 	setSelectedTerminalId(id: number | undefined) {
