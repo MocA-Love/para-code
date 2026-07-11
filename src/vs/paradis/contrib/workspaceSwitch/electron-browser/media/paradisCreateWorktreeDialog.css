@@ -15,7 +15,10 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	z-index: 2600;
+	/* workbench のモーダルダイアログ (monaco-dialog-modal-block, z-index 2575) より下に置く。
+	これより上げると、worktree 作成中の setup スクリプト承認ダイアログ等がこの backdrop の
+	裏に隠れて操作不能になる (E2E で実測) */
+	z-index: 2570;
 }
 
 .paradis-create-worktree-dialog {
