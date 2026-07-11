@@ -308,7 +308,8 @@ export class ParadisWorkspacesView extends ViewPane {
 					getId: (element: WorkspaceTreeElement) => isWorktree(element) ? `worktree:${worktreeStateKeyFor(element)}` : `repo:${element.id}`
 				},
 				horizontalScrolling: false,
-				// 行本体のクリックは「切り替え」専用にし、worktree の開閉は左端の chevron でのみ行う
+				// worktree 行本体のクリックは「切り替え」専用にし、リポジトリ見出しの開閉は
+				// 左端の chevron でのみ行う (見出し行本体のクリックは何もしない)
 				expandOnlyOnTwistieClick: true,
 				accessibilityProvider: {
 					getAriaLabel: (element: WorkspaceTreeElement) => element.name,
@@ -344,8 +345,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		this._diffStatsScheduler.schedule(0);
 	}
 
-	/** worktree 行 (main checkout の合成行を含む) を開く。行クリックとコンテキストメニューの
-	 * 「Open in Editor」から共有する。 */
+	/** worktree 行 (main checkout の合成行を含む) のクリックで、その作業ツリーへ切り替える。 */
 	private openWorktree(worktree: IParadisWorktree): void {
 		if (worktree.missing) {
 			return;
@@ -358,8 +358,15 @@ export class ParadisWorkspacesView extends ViewPane {
 		promise.catch(error => this.notificationService.error(error));
 	}
 
+	/** refreshDiffStats の多重実行防止 (await 中に schedule(0) が割り込むと再入しうる) */
+	private _diffStatsInFlight = false;
+
 	/** diff 統計 (+N/-N) をポーリングで取得する。View可視時のみ実行し、非可視時は間隔だけ空けて再チェックする。 */
 	private async refreshDiffStats(): Promise<void> {
+		if (this._diffStatsInFlight) {
+			this._diffStatsScheduler.schedule();
+			return;
+		}
 		if (!this.isBodyVisible()) {
 			this._diffStatsScheduler.schedule();
 			return;
@@ -380,6 +387,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			return;
 		}
 
+		this._diffStatsInFlight = true;
 		try {
 			const result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, [...paths]);
 			if (result) {
@@ -392,6 +400,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		} catch {
 			// web ビルド等でコマンド未登録の場合は無視 (diff バッジを出さないだけで安全に成立する)
 		} finally {
+			this._diffStatsInFlight = false;
 			this._diffStatsScheduler.schedule();
 		}
 	}

@@ -82,10 +82,15 @@ export class ParadisWorktreeGitService {
 
 	/**
 	 * 作業ツリーの未コミット差分 (staged + unstaged) の追加/削除行数を返す。
+	 * git diff HEAD ベースのため、未追跡 (untracked) の新規ファイルは集計に含まれない (意図的な仕様)。
 	 * git 管理外・HEAD 未作成・コマンド失敗時は { insertions: 0, deletions: 0 } を返す
 	 * (Workspaces ビューのポーリング表示なので、個別の失敗で例外を伝播させない)。
 	 */
 	async getDiffStat(worktreePath: string): Promise<IParadisDiffStat> {
+		// IPC 境界の防御: 呼び出し元のバグ (undefined の文字列化等) を早期に無害化する
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0) {
+			return { insertions: 0, deletions: 0 };
+		}
 		try {
 			const raw = await this.exec(['-C', worktreePath, 'diff', 'HEAD', '--numstat']);
 			let insertions = 0;

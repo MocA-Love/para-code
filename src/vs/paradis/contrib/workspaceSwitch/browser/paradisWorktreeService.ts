@@ -72,6 +72,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => {
 			this.installWatchers();
+			this.pruneOrderForRemovedRepositories();
 			this._refreshScheduler.schedule();
 		}));
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
@@ -118,12 +119,33 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			this.saveKnown();
 			this._refreshScheduler.schedule();
 		}
+		// 手動並び順からも消しておく (残っても末尾フォールバックで無害だが、蓄積を防ぐ)
+		const order = this._order.get(worktree.repositoryId);
+		if (order?.includes(worktree.uri.toString())) {
+			this._order.set(worktree.repositoryId, order.filter(uri => uri !== worktree.uri.toString()));
+			this.saveOrder();
+		}
 	}
 
 	setWorktreeOrder(repositoryId: string, orderedUris: readonly string[]): void {
 		this._order.set(repositoryId, [...orderedUris]);
 		this.saveOrder();
 		this._refreshScheduler.schedule();
+	}
+
+	/** リポジトリ一覧から消えた repositoryId の手動並び順を掃除する (ストレージ肥大化防止) */
+	private pruneOrderForRemovedRepositories(): void {
+		const alive = new Set(this.workspaceSwitchService.repositories.map(repository => repository.id));
+		let changed = false;
+		for (const repositoryId of [...this._order.keys()]) {
+			if (!alive.has(repositoryId)) {
+				this._order.delete(repositoryId);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.saveOrder();
+		}
 	}
 
 	private installWatchers(): void {
