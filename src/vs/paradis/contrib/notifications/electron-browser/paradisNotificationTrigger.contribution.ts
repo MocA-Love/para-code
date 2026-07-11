@@ -85,9 +85,12 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 				this.notificationService.notify({ severity: Severity.Warning, message: reason });
 			}));
 
-		// Aivis設定（APIキー等）が変更・保存されたら一時停止を解除する。onDidChange は音量等の変更でも
-		// 発火するが、resume は冪等なので毎回呼んで問題ない。
-		this._register(this.settingsService.onDidChange(() => {
+		// Aivis設定（APIキー等）が変更・保存されたら一時停止を解除する。resume は冪等なので
+		// Aivis関連の変更であれば毎回呼んで問題ない（通知サウンド関連の変更では発火しない）。
+		this._register(this.settingsService.onDidChange(scope => {
+			if (scope !== 'aivis') {
+				return;
+			}
 			void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('resumeAivis').catch(() => { /* shared process 未起動時は無視 */ });
 		}));
 

@@ -29,6 +29,7 @@ import {
 	renderParadisAivisTemplate,
 } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
+import { getCachedAivisDictionaryList, getCachedAivisModelInfo, setCachedAivisDictionaryList, setCachedAivisModelInfo } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { base64ToBlobUrl } from './paradisNotificationSoundPlayer.js';
 
@@ -115,7 +116,11 @@ export class ParadisAivisVoiceSection extends Disposable {
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
-		this._register(this.settingsService.onDidChange(() => this._render()));
+		this._register(this.settingsService.onDidChange(scope => {
+			if (scope === 'aivis') {
+				this._render();
+			}
+		}));
 		this._render();
 	}
 
@@ -205,6 +210,13 @@ export class ParadisAivisVoiceSection extends Disposable {
 		for (const key of PARADIS_AIVIS_PLACEHOLDER_KEYS) {
 			const chip = dom.append(chipRow, $('button.pns-btn')) as HTMLButtonElement;
 			chip.textContent = `{{${key}}} / ${PARADIS_AIVIS_PLACEHOLDER_LABELS[key]}`;
+			// mousedownでフォーマット欄からフォーカスを奪うと、textareaのblurが click より先に
+			// 発火して setAivisSettings() を呼び、'aivis' スコープの再描画でこのチップ自身を含む
+			// セクション全体が作り直されてしまう。その結果 click イベントが失われたり、挿入先の
+			// textareaが再描画後の新しいDOM要素(選択範囲情報を持たない)になったりして、挿入位置が
+			// カーソル位置からずれる・挿入自体が反映されないように見える不具合になっていた。
+			// フォーカス移動自体を止めることで、挿入前に再描画が割り込まないようにする。
+			this._renderDisposables.add(dom.addDisposableListener(chip, 'mousedown', e => e.preventDefault()));
 			this._renderDisposables.add(dom.addDisposableListener(chip, 'click', () => this._insertPlaceholder(key)));
 		}
 
@@ -401,17 +413,22 @@ export class ParadisAivisVoiceSection extends Disposable {
 			container.textContent = STR_MODEL_INFO_INVALID;
 			return;
 		}
+
+		// フォーマット文字列の編集など、UUID自体は変わっていない 'aivis' スコープの変更でも
+		// このセクションは再描画される。キャッシュ済みなら再フェッチせず即座に表示する。
+		const cached = getCachedAivisModelInfo(apiKey, trimmed);
+		if (cached !== undefined) {
+			this._applyModelInfo(container, cached);
+			return;
+		}
+
 		container.textContent = STR_MODEL_INFO_LOADING;
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisAivisModelSummary | null>('getAivisModel', [apiKey, trimmed]).then(model => {
+			setCachedAivisModelInfo(apiKey, trimmed, model);
 			if (this._store.isDisposed || container.isConnected === false) {
 				return;
 			}
-			if (!model) {
-				container.textContent = '';
-				return;
-			}
-			// allow-any-unicode-next-line
-			container.textContent = `選択中: ${model.name}${model.authorName ? ` / by ${model.authorName}` : ''}`;
+			this._applyModelInfo(container, model);
 		}, error => {
 			if (this._store.isDisposed) {
 				return;
@@ -419,6 +436,15 @@ export class ParadisAivisVoiceSection extends Disposable {
 			// allow-any-unicode-next-line
 			container.textContent = `モデル取得失敗: ${error instanceof Error ? error.message : String(error)}`;
 		});
+	}
+
+	private _applyModelInfo(container: HTMLElement, model: IParadisAivisModelSummary | null): void {
+		if (!model) {
+			container.textContent = '';
+			return;
+		}
+		// allow-any-unicode-next-line
+		container.textContent = `選択中: ${model.name}${model.authorName ? ` / by ${model.authorName}` : ''}`;
 	}
 
 	private _renderDictionarySelect(settings: { readonly apiKey: string; readonly userDictionaryUuid: string }): void {
@@ -437,19 +463,31 @@ export class ParadisAivisVoiceSection extends Disposable {
 		if (!settings.apiKey) {
 			return;
 		}
+
+		const cached = getCachedAivisDictionaryList(settings.apiKey);
+		if (cached) {
+			this._populateDictionaryOptions(select, cached, settings.userDictionaryUuid);
+			return;
+		}
+
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisAivisDictionaryListItem[]>('listAivisDictionaries', [settings.apiKey]).then(list => {
 			if (this._store.isDisposed) {
 				return;
 			}
-			for (const dict of list) {
-				const option = dom.append(select, $('option')) as HTMLOptionElement;
-				option.value = dict.uuid;
-				option.textContent = `${dict.name} (${dict.word_count})`;
-			}
-			select.value = settings.userDictionaryUuid || '';
+			setCachedAivisDictionaryList(settings.apiKey, list);
+			this._populateDictionaryOptions(select, list, settings.userDictionaryUuid);
 		}, error => {
 			this.logService.warn('[ParadisNotifications] failed to list Aivis dictionaries', error);
 		});
+	}
+
+	private _populateDictionaryOptions(select: HTMLSelectElement, list: readonly IParadisAivisDictionaryListItem[], userDictionaryUuid: string): void {
+		for (const dict of list) {
+			const option = dom.append(select, $('option')) as HTMLOptionElement;
+			option.value = dict.uuid;
+			option.textContent = `${dict.name} (${dict.word_count})`;
+		}
+		select.value = userDictionaryUuid || '';
 	}
 
 	private _insertPlaceholder(key: string): void {

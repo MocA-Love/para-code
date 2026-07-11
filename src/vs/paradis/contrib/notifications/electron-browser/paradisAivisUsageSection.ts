@@ -90,7 +90,11 @@ export class ParadisAivisUsageSection extends Disposable {
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
 	) {
 		super();
-		this._register(this.settingsService.onDidChange(() => this._render()));
+		this._register(this.settingsService.onDidChange(scope => {
+			if (scope === 'aivis') {
+				this._render();
+			}
+		}));
 		this._render();
 	}
 
