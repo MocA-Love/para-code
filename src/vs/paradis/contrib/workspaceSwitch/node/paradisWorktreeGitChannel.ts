@@ -21,7 +21,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { localize } from '../../../../nls.js';
-import { IParadisAddWorktreeRequest, IParadisGitBranches, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
 
 /**
@@ -78,6 +78,32 @@ export class ParadisWorktreeGitService {
 			head = undefined;
 		}
 		return { branches, head };
+	}
+
+	/**
+	 * 作業ツリーの未コミット差分 (staged + unstaged) の追加/削除行数を返す。
+	 * git 管理外・HEAD 未作成・コマンド失敗時は { insertions: 0, deletions: 0 } を返す
+	 * (Workspaces ビューのポーリング表示なので、個別の失敗で例外を伝播させない)。
+	 */
+	async getDiffStat(worktreePath: string): Promise<IParadisDiffStat> {
+		try {
+			const raw = await this.exec(['-C', worktreePath, 'diff', 'HEAD', '--numstat']);
+			let insertions = 0;
+			let deletions = 0;
+			for (const line of raw.split('\n')) {
+				const trimmed = line.trim();
+				if (!trimmed) {
+					continue;
+				}
+				// フォーマット: "<added>\t<deleted>\t<path>" (バイナリファイルは '-' '-')
+				const [added, deleted] = trimmed.split('\t');
+				insertions += Number.parseInt(added, 10) || 0;
+				deletions += Number.parseInt(deleted, 10) || 0;
+			}
+			return { insertions, deletions };
+		} catch {
+			return { insertions: 0, deletions: 0 };
+		}
 	}
 
 	/** git worktree add --no-track -b <newBranch> <worktreePath> <baseRef> を実行する。 */
@@ -197,6 +223,7 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 		switch (command) {
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest) as Promise<T>;
+			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest) as Promise<T>;
 			default:
