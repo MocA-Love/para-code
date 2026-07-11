@@ -12,7 +12,7 @@ import { colors } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
 
 /** 下部タブのルートパス集合（タブ間遷移の判定用）。 */
-const TAB_PATHS = new Set(['/', '/index', '/terminal', '/scm', '/files', '/browser']);
+const TAB_PATHS = new Set(['/', '/index', '/terminal', '/scm', '/files']);
 
 /**
  * タブ切り替えの触覚フィードバック。NativeTabs はOSネイティブのタブバーで
@@ -32,9 +32,11 @@ function useTabSwitchHaptics(): void {
 }
 
 /**
- * 下部タブ（ホーム/ターミナル/ソース管理/ファイル/ブラウザ）。
+ * 下部タブ（ホーム/ターミナル/ソース管理/ファイル）。
  * 旧エージェントタブはホーム（全ワークスペース横断のエージェント一覧→詳細画面）に
  * 統合し、空いた枠へ旧「その他」のセグメント（ファイル/ブラウザ）を独立タブに昇格した。
+ * その後、ブラウザは「エージェントの作業結果を見る」用途が実態のため独立タブを廃止し、
+ * エージェント詳細ヘッダーのボタンから開くスタック画面（/browser）へ移した。
  * `NativeTabs`（expo-router/unstable-native-tabs）を使い、iOS 26実機ではOS標準の
  * Liquid Glass（半透明・屈折するタブバー）がそのまま適用される。ヘッダーはNativeTabsに
  * 概念が無いため、各画面側で独自ヘッダー（ワークスペースドロワーのチップ等）を描画する。
@@ -79,10 +81,6 @@ export default function TabsLayout() {
 			<NativeTabs.Trigger name="files" contentStyle={{ backgroundColor: colors.bg }}>
 				<NativeTabs.Trigger.Label>ファイル</NativeTabs.Trigger.Label>
 				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="folder-outline" />} />
-			</NativeTabs.Trigger>
-			<NativeTabs.Trigger name="browser" contentStyle={{ backgroundColor: colors.bg }}>
-				<NativeTabs.Trigger.Label>ブラウザ</NativeTabs.Trigger.Label>
-				<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="globe-outline" />} />
 			</NativeTabs.Trigger>
 		</NativeTabs>
 		</WsDrawerLayout>

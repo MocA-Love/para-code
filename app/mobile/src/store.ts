@@ -170,9 +170,9 @@ export interface UsageDashboardResult {
 	fetchedAt: number;
 }
 
-/** browser targets 応答。 */
+/** browser targets 応答。sharedToken はそのページを共有中のターミナルペインのトークン（PC側 agentBrowser のバインディング由来）。 */
 export interface BrowserTargetsResult {
-	targets: { targetId: string; title: string; url: string }[];
+	targets: { targetId: string; title: string; url: string; sharedToken?: string }[];
 }
 /** browser の直近 screencast フレーム。 */
 export interface BrowserFrame {

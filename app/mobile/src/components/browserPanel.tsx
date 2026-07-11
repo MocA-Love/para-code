@@ -5,7 +5,7 @@ import { ActivityIndicator, GestureResponderEvent, Image, LayoutChangeEvent, Nat
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
+import { useStableInsets } from '../hooks/useStableInsets.js';
 import { getRtcView, startWebrtcMirror, WebrtcMirrorSession } from '../webrtcMirror.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
@@ -19,31 +19,44 @@ const RTCViewComponent = getRtcView() as ComponentType<{
 	onDimensionsChange?: (e: { nativeEvent: { width: number; height: number } }) => void;
 }> | undefined;
 
+/** targets 応答の1件（PC側 paradisMobileBrowserMirror.ts の応答と一致）。 */
+interface BrowserTarget {
+	targetId: string;
+	title: string;
+	url: string;
+	/** そのページを共有中のターミナルペインのトークン（未共有ページには無い）。 */
+	sharedToken?: string;
+}
+
 /**
- * ブラウザパネル（モックアップ mock-2.html 準拠、設計書 M3、「その他」タブのセグメント）。
+ * ブラウザパネル（設計書 M3。/browser スタック画面の本体、旧ブラウザタブから移設）。
  * PC側 para-browser の screencast を同期表示し、タップ・スクロール・戻る/進む/再読み込みを送る。
  *
- * `active` が false の間（タブがフォーカスを失った、またはセグメントがブラウザでない）は
- * screencast を停止する。ファイル/ブラウザがタブ統合される前は `useIsFocused()` のみで
- * 判定できたが、統合後はタブのfocusとセグメント選択の両方を親（more.tsx）から渡してもらう
- * 必要がある（そうしないとセグメント切替時にscreencastが止まらず電池/帯域を無駄にする）。
+ * ページ選択は上部のタブチップで行う。ターゲット一覧の取得後は自動でミラーを開始する:
+ * `preferredToken`（エージェント詳細から渡されるペイントークン）と共有中のページがあれば
+ * それを優先し、無ければ先頭のページを選ぶ。
+ *
+ * `active` が false の間（画面がフォーカスを失った間）は screencast を停止する。
  */
-export function BrowserPanel({ active }: { active: boolean }) {
-	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, setJpegFramesSuspended } = useAppStore(useShallow(s => ({
+export function BrowserPanel({ active, preferredToken }: { active: boolean; preferredToken?: string }) {
+	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, setJpegFramesSuspended, workspace } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,
 		browserInput: s.browserInput, frame: s.browserFrame, connection: s.connection,
-		setJpegFramesSuspended: s.setJpegFramesSuspended,
+		setJpegFramesSuspended: s.setJpegFramesSuspended, workspace: s.workspace,
 	})));
 
-	const tabBarSpacer = useTabBarSpacer();
-	const [targets, setTargets] = useState<{ targetId: string; title: string; url: string }[] | undefined>();
+	const insets = useStableInsets();
+	const [targets, setTargets] = useState<BrowserTarget[] | undefined>();
 	const [error, setError] = useState<string | undefined>();
 	const [activeUrl, setActiveUrl] = useState<string | undefined>();
+	const [activeTargetId, setActiveTargetId] = useState<string | undefined>();
 	const [viewSize, setViewSize] = useState({ w: 1, h: 1 });
 
-	// ミラー中の targetId。ユーザーが明示的に「切替」した時のみ undefined に戻す。
+	// ミラー中の targetId。ユーザーがチップで切り替えた時は新しい targetId に張り替える。
 	// active の解除→再有効化の往復では、これが残っていれば同じ targetId でミラーを自動で張り直す。
 	const mirrorActiveRef = useRef<string | undefined>(undefined);
+	// ターゲット一覧到着時の自動ミラー開始を発火済みか（マウントごと・再接続ごとに1回だけ）。
+	const autoStartedRef = useRef(false);
 
 	// WebRTCミラー（低遅延経路）。確立できたら RTCView 表示、失敗・切断時は
 	// 既存のJPEGフレーム表示へ自動フォールバックする（JPEGは並行して流れ続けている）。
@@ -136,13 +149,15 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		return () => setJpegFramesSuspended(false);
 	}, [webrtcUrl, setJpegFramesSuspended]);
 
-	// 接続が切れたらミラー表示を畳んでターゲット選択に戻す
-	// （復帰時に古い activeUrl のままスピナーで固まるのを防ぐ）。ミラー中フラグも落として、
-	// 再接続後に裏で勝手に張り直さない（既存の「再選択させる」挙動を維持する）。
+	// 接続が切れたらミラー表示を畳む（復帰時に古い activeUrl のままスピナーで固まるのを
+	// 防ぐ）。ミラー中フラグも落とし、再接続時はターゲット再取得→自動選択からやり直す
+	// （autoStartedRef も戻して自動再開を許可する）。
 	useEffect(() => {
 		if (connection !== 'online') {
 			mirrorActiveRef.current = undefined;
+			autoStartedRef.current = false;
 			setActiveUrl(undefined);
+			setActiveTargetId(undefined);
 			stopWebrtc();
 		}
 	}, [connection, stopWebrtc]);
@@ -170,10 +185,35 @@ export function BrowserPanel({ active }: { active: boolean }) {
 			await browserStart(targetId);
 			mirrorActiveRef.current = targetId;
 			setActiveUrl(url);
+			setActiveTargetId(targetId);
 			void tryWebrtc(targetId);
 		} catch (e) {
 			setError(String(e instanceof Error ? e.message : e));
 		}
+	};
+
+	// ターゲット一覧が届いたら自動でミラーを開始する（画面を開いてすぐ見える状態にする）。
+	// preferredToken と共有中のページを最優先、無ければ先頭。ユーザーがチップで切り替えた後や
+	// 一覧の再取得では発火しない（autoStartedRef、マウントごと・再接続ごとに1回だけ）。
+	useEffect(() => {
+		if (autoStartedRef.current || !active || connection !== 'online' || mirrorActiveRef.current !== undefined) {
+			return;
+		}
+		const candidate = (preferredToken !== undefined ? targets?.find(t => t.sharedToken === preferredToken) : undefined) ?? targets?.[0];
+		if (candidate === undefined) {
+			return;
+		}
+		autoStartedRef.current = true;
+		void start(candidate.targetId, candidate.url);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [targets, active, connection, preferredToken]);
+
+	// チップ表示用: 共有トークン → ターミナルタイトル（「2: claude と共有中」の表示に使う）
+	const terminalTitleOf = (token: string | undefined): string | undefined => {
+		if (token === undefined) {
+			return undefined;
+		}
+		return workspace?.terminals.find(t => t.agentToken === token)?.title;
 	};
 
 	const onLayout = (e: LayoutChangeEvent) => {
@@ -320,32 +360,65 @@ export function BrowserPanel({ active }: { active: boolean }) {
 		});
 	}, []);
 
+	// 上部のタブチップ: ミラー対象の切り替え。共有中のページはリンクアイコン＋ターミナル名で示す
+	const chipLabel = (t: BrowserTarget): string => {
+		const shared = terminalTitleOf(t.sharedToken);
+		const title = t.title || t.url.replace(/^https?:\/\//, '') || '(無題)';
+		return shared !== undefined ? `${shared} · ${title}` : title;
+	};
+	const tabStrip = targets !== undefined && targets.length > 0 ? (
+		<View style={styles.tabStripWrap}>
+			<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabStripContent}>
+				{targets.map(t => {
+					const selected = t.targetId === activeTargetId;
+					const shared = t.sharedToken !== undefined;
+					return (
+						<Pressable
+							key={t.targetId}
+							style={[styles.tabChip, selected && styles.tabChipSelected]}
+							onPress={() => {
+								if (t.targetId === activeTargetId) {
+									return;
+								}
+								hapticSelection();
+								void start(t.targetId, t.url);
+							}}
+						>
+							{shared ? <Ionicons name="link" size={11} color={selected ? colors.accent : colors.green} /> : null}
+							<Text style={[styles.tabChipText, selected && styles.tabChipTextSelected]} numberOfLines={1}>{chipLabel(t)}</Text>
+						</Pressable>
+					);
+				})}
+				<Pressable style={styles.tabChip} onPress={() => { hapticImpact('light'); void loadTargets(); }} accessibilityLabel="一覧を更新">
+					<Ionicons name="refresh" size={12} color={colors.textDim} />
+				</Pressable>
+			</ScrollView>
+		</View>
+	) : null;
+
 	if (activeUrl === undefined) {
 		return (
 			<View style={styles.screen}>
-				<ScrollView style={styles.picker} contentContainerStyle={[styles.pickerContent, { paddingBottom: tabBarSpacer }]}>
-					<Text style={styles.sectionTitle}>ミラーするページを選択</Text>
+				{tabStrip}
+				<View style={styles.emptyBox}>
 					{error ? <Text style={styles.error}>{error}</Text> : null}
 					{targets === undefined ? <ActivityIndicator style={styles.spinner} /> : null}
 					{targets && targets.length === 0 ? (
 						<Text style={styles.dim}>ミラーできるブラウザページがありません。PCの para-browser でページを開いてください。</Text>
 					) : null}
-					{(targets ?? []).map(t => (
-						<Pressable key={t.targetId} style={styles.targetRow} onPress={() => { hapticSelection(); void start(t.targetId, t.url); }}>
-							<Text style={styles.targetTitle} numberOfLines={1}>{t.title || '(無題)'}</Text>
-							<Text style={styles.targetUrl} numberOfLines={1}>{t.url}</Text>
+					{targets !== undefined ? (
+						<Pressable style={styles.reloadTargets} onPress={() => { hapticImpact('light'); void loadTargets(); }}>
+							<Text style={styles.link}>一覧を更新</Text>
 						</Pressable>
-					))}
-					<Pressable style={styles.reloadTargets} onPress={() => { hapticImpact('light'); void loadTargets(); }}>
-						<Text style={styles.link}>一覧を更新</Text>
-					</Pressable>
-				</ScrollView>
+					) : null}
+				</View>
 			</View>
 		);
 	}
 
 	return (
 		<View style={styles.screen}>
+			{tabStrip}
 			<View style={styles.urlBar}>
 				<Ionicons name="globe-outline" size={13} color={colors.textDim} />
 				<TextInput
@@ -408,15 +481,12 @@ export function BrowserPanel({ active }: { active: boolean }) {
 					<View style={styles.center}><ActivityIndicator /><Text style={styles.dim}>フレームを待っています…</Text></View>
 				)}
 			</ScrollView>
-			<View style={[styles.toolbar, { paddingBottom: tabBarSpacer }]}>
+			<View style={[styles.toolbar, { paddingBottom: insets.bottom + 10 }]}>
 				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'back' }); }}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'forward' }); }}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'reload' }); }}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: -0.5 }); }}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
 				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: 0.5 }); }}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
-				<Pressable style={[styles.toolBtn, styles.stopBtn]} onPress={() => { hapticImpact('light'); mirrorActiveRef.current = undefined; stopWebrtc(); void browserStop().then(() => setActiveUrl(undefined)); }}>
-					<Text style={styles.toolText}>切替</Text>
-				</Pressable>
 			</View>
 		</View>
 	);
@@ -424,25 +494,28 @@ export function BrowserPanel({ active }: { active: boolean }) {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	picker: { flex: 1 },
-	pickerContent: { padding: 16 },
-	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginBottom: 12, letterSpacing: 0.5 },
+	// ミラー対象切り替えのタブチップ（横スクロール）
+	tabStripWrap: { flexShrink: 0 },
+	tabStripContent: { flexDirection: 'row', gap: 6, paddingHorizontal: 12, paddingVertical: 8 },
+	tabChip: {
+		flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, paddingVertical: 6,
+		borderRadius: 14, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, maxWidth: 220,
+	},
+	tabChipSelected: { backgroundColor: colors.accentWash, borderColor: 'rgba(9,175,217,0.5)' },
+	tabChipText: { color: colors.textDim, fontSize: 11 },
+	tabChipTextSelected: { color: colors.accent },
+	emptyBox: { flex: 1, justifyContent: 'center', padding: 24 },
 	spinner: { marginTop: 24 },
 	dim: { color: colors.textDim, fontSize: 13, textAlign: 'center', marginTop: 16, lineHeight: 20 },
-	error: { color: colors.red, fontSize: 12, marginBottom: 8 },
-	targetRow: { backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 10 },
-	targetTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
-	targetUrl: { color: colors.textDim, fontSize: 11, marginTop: 3 },
-	reloadTargets: { alignItems: 'center', marginTop: 8 },
+	error: { color: colors.red, fontSize: 12, marginBottom: 8, textAlign: 'center' },
+	reloadTargets: { alignItems: 'center', marginTop: 16 },
 	link: { color: colors.accent, fontSize: 13 },
-	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 8, paddingVertical: 4, paddingHorizontal: 12 },
+	urlBar: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, marginHorizontal: 12, marginTop: 2, paddingVertical: 4, paddingHorizontal: 12 },
 	urlInput: { flex: 1, color: colors.text, fontSize: 12, fontFamily: 'Menlo', paddingVertical: 6 },
 	viewport: { flex: 1, margin: 12, borderRadius: 10, overflow: 'hidden', backgroundColor: '#000' },
 	frameWrap: { flex: 1 },
 	frameImage: { flex: 1 },
 	center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12 },
-	toolbar: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingBottom: 10, paddingHorizontal: 12, gap: 8 },
+	toolbar: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center', paddingHorizontal: 12, gap: 8 },
 	toolBtn: { flex: 1, alignItems: 'center', paddingVertical: 9, backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border },
-	stopBtn: { borderColor: 'rgba(244,135,113,.4)' },
-	toolText: { color: colors.text, fontSize: 15 },
 });

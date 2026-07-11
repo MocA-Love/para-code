@@ -20,7 +20,7 @@
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisCdpFrameEvent, IParadisCdpFrameSubscription } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisCdpFrameEvent, IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 
 /** モバイル→PC の browser チャネル要求。 */
@@ -81,6 +81,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 	constructor(
 		private readonly upstream: ParadisCdpUpstream,
 		private readonly cdpFrames: IParadisCdpFrameSubscription | undefined,
+		private readonly sharedPageBindings: IParadisSharedPageBindings | undefined,
 		private readonly logService: ILogService,
 	) {
 		super();
@@ -139,13 +140,31 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		try {
 			if (msg.t === 'targets') {
 				const list = await this.upstream.fetchJson('/json/list') as Array<Record<string, unknown>>;
+				// ターミナルペインへ共有中のページ（agentBrowserのバインディング）の targetId →
+				// ペイントークン対応。モバイル側が「このエージェントと共有中のタブ」を優先表示する
+				// ために使う。取得失敗（未解決・サービス未生成）は共有情報なしとして続行する。
+				const sharedTokens = new Map<string, string>();
+				try {
+					const bindings = await this.sharedPageBindings?.listBoundCdpTargets() ?? [];
+					for (const binding of bindings) {
+						sharedTokens.set(binding.targetId, binding.token);
+					}
+				} catch (err) {
+					this.logService.warn('[paradisMobileBrowserMirror] failed to resolve shared page bindings', err);
+				}
 				// para-browser のページ = http(s) URLを持つ type='page' のターゲットのみ。
 				// URLだけで絞ると、開いているページが内部に持つ iframe / service_worker /
 				// worker まで別ページとして列挙されてしまう（workbench等のvscode-file
 				// ウィンドウやDevTools自身も除外）
 				const targets = list
 					.filter(t => t.type === 'page' && typeof t.url === 'string' && /^https?:\/\//.test(t.url as string))
-					.map(t => ({ targetId: String(t.id), title: String(t.title ?? ''), url: String(t.url) }));
+					.map(t => {
+						const sharedToken = sharedTokens.get(String(t.id));
+						return {
+							targetId: String(t.id), title: String(t.title ?? ''), url: String(t.url),
+							...(sharedToken !== undefined ? { sharedToken } : {}),
+						};
+					});
 				reply({ id: msg.id, t: 'targets', targets });
 			} else if (msg.t === 'start') {
 				await this.start(mobileId, msg.targetId, send);

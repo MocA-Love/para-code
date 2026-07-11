@@ -11,7 +11,6 @@
 // ウィンドウ識別子を明示的に送る必要はない（PlaywrightChannelと同じctx空間を共有する）。
 
 import { Event } from '../../../../base/common/event.js';
-import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
@@ -60,6 +59,8 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 /**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  * サービス生成・チャネル登録・ウィンドウ切断時のバインディング破棄の配線をまとめて行う。
+ * 戻り値はサービス実体（IDisposable 兼 IParadisSharedPageBindings）。モバイルリレーの
+ * 登録（registerParadisMobileRelay）へ共有ページバインディングとしてそのまま渡せる。
  */
 export function registerParadisAgentBrowser(
 	server: IPCServer<string>,
@@ -69,7 +70,7 @@ export function registerParadisAgentBrowser(
 	logService: ILogService,
 	configurationService: IConfigurationService,
 	args: NativeParsedArgs,
-): IDisposable {
+): ParadisAgentBrowserService {
 	const service = new ParadisAgentBrowserService(userDataPath, playwrightInvoker, server, mainProcessService, logService, configurationService, args);
 	server.registerChannel(PARADIS_AGENT_BROWSER_CHANNEL, new ParadisAgentBrowserChannel(service));
 	return service;

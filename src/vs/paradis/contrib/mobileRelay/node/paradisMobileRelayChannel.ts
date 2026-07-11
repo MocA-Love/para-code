@@ -13,7 +13,7 @@ import { IEncryptionService } from '../../../../platform/encryption/common/encry
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisCdpFrameSubscription, PARADIS_CDP_TARGET_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, PARADIS_CDP_TARGET_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../common/paradisMobileRelay.js';
 import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
 
@@ -23,13 +23,15 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
  * sharedProcessMain.ts から1行で呼ぶ（既存の registerParadis* と同じ形）。
  *
  * 長期秘密鍵の暗号化のため、main プロセスの 'encryption'(safeStorage) チャネルを注入する。
+ * sharedPageBindings は agentBrowser の共有ページバインディング（同一 shared process 内の
+ * ParadisAgentBrowserService 実体。targets応答の sharedToken 用）。
  */
-export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
+export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings): IDisposable {
 	const store = new DisposableStore();
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
 	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）
 	const cdpFrames = ProxyChannel.toService<IParadisCdpFrameSubscription>(mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL));
-	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, logService, configurationService, args));
+	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, sharedPageBindings, logService, configurationService, args));
 	server.registerChannel(PARADIS_MOBILE_RELAY_CHANNEL, ProxyChannel.fromService(service, store));
 	return store;
 }
