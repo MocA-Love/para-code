@@ -38,6 +38,7 @@ import {
 	decodeRelayControl,
 	encodeNotify,
 	encodeNotifyDismissed,
+	encodeNotifyDismissedByToken,
 	peekNotifyKind,
 	encodeRelayControl,
 	encodePairingUri,
@@ -71,10 +72,12 @@ interface PairedMobile {
 	readonly pubKey: string;
 	/**
 	 * モバイルの通知設定（アプリの設定画面から notify チャネルで同期される）。
-	 * falseの種別はAPNsフォールバックプッシュを送らない（オンライン時のフレーム配送は
-	 * 続ける: アプリ内の通知一覧に載せるかはモバイル側が判断する）。未設定は全てtrue扱い。
+	 * agentDone/agentQuestionがfalseの種別はAPNsフォールバックプッシュを送らない
+	 * （オンライン時のフレーム配送は続ける: アプリ内の通知一覧に載せるかはモバイル側が
+	 * 判断する）。未設定は全てtrue扱い。suppressWhenPcFocusedはtrueの間、PCがフォーカス
+	 * されている間の配信自体（オンラインフレーム・APNs両方）を止める（未設定はfalse=抑制なし）。
 	 */
-	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean };
+	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean; suppressWhenPcFocused?: boolean };
 }
 
 interface PersistedState {
@@ -280,6 +283,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);
 		}));
+		// PC側でペインを確認済みにした（フォーカス中の自動既読 or ターミナルを開いての手動既読）
+		// ときも、モバイル側の通知履歴から対応する通知を消す（M起点のdismissと同じ配送経路）。
+		if (this.sharedPageBindings) {
+			this._register(this.sharedPageBindings.onDidAcknowledgePane(token => this.dispatchAgentDismiss(token)));
+		}
 		this._register(toDisposable(() => this.disconnect()));
 	}
 
@@ -460,7 +468,18 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private dispatchNotify(bytes: Uint8Array): void {
 		// APNs抑制判定用に種別だけ覗く（形式不正なら抑制せず送る側に倒す）
 		const kind = peekNotifyKind(bytes);
+		// PCフォーカス中の抑制は「作業の進捗（完了/質問）を今PCで見ているなら通知不要」という
+		// 意図のため、エラー・切断系（現状は将来拡張用に型があるのみで未実装）には適用しない。
+		const focusSuppressible = kind === 'agent-done' || kind === 'agent-question';
+		const focusSuppressed = focusSuppressible && this.pcFocused;
 		for (const mobile of this.state.mobiles) {
+			// PCフォーカス中はそもそも配信しない（suppressWhenPcFocused）。オンライン/オフライン
+			// どちらの経路も対象: 対応済みの通知が後からモバイルの通知一覧に残り続ける問題
+			// （dismissed-token同期は「PC側で確認した」ケースのみをカバーする）を、配信自体を
+			// 止めることで避ける。
+			if (focusSuppressed && mobile.notifyPrefs?.suppressWhenPcFocused === true) {
+				continue;
+			}
 			const session = this.sessions.get(mobile.mobileId);
 			if (session?.isOnline) {
 				session.sendFrame(Channels.Notify, undefined, bytes).catch(err => this.logService.warn('[paradisMobileRelay] notify frame failed', err));
@@ -482,7 +501,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** モバイルから同期された通知設定（notifyチャネル M→PC）を保存する。 */
 	private handleNotifyPrefs(mobileId: string, payload: Uint8Array): void {
 		try {
-			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: string; agentDone?: boolean; agentQuestion?: boolean };
+			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: string; agentDone?: boolean; agentQuestion?: boolean; suppressWhenPcFocused?: boolean };
 			if (msg.t !== 'prefs') {
 				return;
 			}
@@ -493,11 +512,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			const next = {
 				agentDone: msg.agentDone !== false,
 				agentQuestion: msg.agentQuestion !== false,
+				suppressWhenPcFocused: msg.suppressWhenPcFocused === true,
 			};
 			// モバイルはonline遷移のたびに再送してくるため、値が変わった時だけ書き込む
 			// （バックグラウンド復帰ごとのディスク書き込みチャーンを避ける）。
 			const prev = mobile.notifyPrefs;
-			if (prev && prev.agentDone === next.agentDone && prev.agentQuestion === next.agentQuestion) {
+			if (prev && prev.agentDone === next.agentDone && prev.agentQuestion === next.agentQuestion && prev.suppressWhenPcFocused === next.suppressWhenPcFocused) {
 				return;
 			}
 			mobile.notifyPrefs = next;
@@ -521,6 +541,22 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			const session = this.sessions.get(mobile.mobileId);
 			if (session?.isOnline) {
 				session.sendFrame(Channels.Notify, undefined, bytes).catch(err => this.logService.warn('[paradisMobileRelay] notify dismiss forward failed', err));
+			}
+		}
+	}
+
+	/**
+	 * PC側でペインが確認済みになった（{@link IParadisSharedPageBindings.onDidAcknowledgePane}）ことを
+	 * 全ペアリング済みモバイルへ伝え、そのagentTokenに紐づく通知を履歴からも消させる。
+	 * handleNotifyDismissと同様、オフライン端末はAPNsで起こしてまで同期する話ではないため
+	 * オンラインのセッションにのみ配送する（次回オンライン化時は素直に残っていて構わない）。
+	 */
+	private dispatchAgentDismiss(token: string): void {
+		const bytes = encodeNotifyDismissedByToken(token);
+		for (const mobile of this.state.mobiles) {
+			const session = this.sessions.get(mobile.mobileId);
+			if (session?.isOnline) {
+				session.sendFrame(Channels.Notify, undefined, bytes).catch(err => this.logService.warn('[paradisMobileRelay] agent dismiss forward failed', err));
 			}
 		}
 	}
@@ -640,6 +676,41 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 */
 	async syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void> {
 		this.agentChat.syncPanes(windowId, entries);
+	}
+
+	/**
+	 * windowId → 直近報告されたフォーカス状態と受信時刻。suppressWhenPcFocused の判定に使う。
+	 * rendererはフォーカス変化イベントに加え定期ハートビートでも再送する（下記WINDOW_FOCUS_TTL_MS
+	 * コメント参照）。renderer がクラッシュ等でdisposeを経ずに落ちた場合、ハートビートが途絶えて
+	 * 古いfocused=trueがTTL超過で自然に無視されるようにし、通知が恒久的にサイレント抑制される
+	 * ことを防ぐ。
+	 */
+	private readonly windowFocus = new Map<number, { focused: boolean; at: number }>();
+
+	/**
+	 * ハートビート間隔（renderer側、paradisMobileRelay.contribution.ts）より十分長い猶予。
+	 * これを超えて更新が無いウィンドウは「もう存在しない」とみなしフォーカス判定から除外する。
+	 */
+	private static readonly WINDOW_FOCUS_TTL_MS = 90_000;
+
+	/** いずれかのウィンドウがフォーカス中（かつ生存報告がTTL内）なら true（PCフォーカス中とみなす）。 */
+	private get pcFocused(): boolean {
+		const now = Date.now();
+		let focused = false;
+		for (const [windowId, entry] of this.windowFocus) {
+			if (now - entry.at > ParadisMobileRelayService.WINDOW_FOCUS_TTL_MS) {
+				this.windowFocus.delete(windowId);
+				continue;
+			}
+			if (entry.focused) {
+				focused = true;
+			}
+		}
+		return focused;
+	}
+
+	async setPcFocus(windowId: number, focused: boolean): Promise<void> {
+		this.windowFocus.set(windowId, { focused, at: Date.now() });
 	}
 
 	/**

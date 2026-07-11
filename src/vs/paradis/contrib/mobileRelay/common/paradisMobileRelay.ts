@@ -145,6 +145,14 @@ export interface IParadisMobileRelayService {
 	syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
 
 	/**
+	 * renderer → shared process: このウィンドウのフォーカス状態を報告する（PCフォーカス中の
+	 * モバイル通知抑制、suppressWhenPcFocused用）。IHostService.hasFocusはウィンドウ単位・
+	 * shared processは全ウィンドウ共有のため、windowIdキーで管理し「いずれかのウィンドウが
+	 * フォーカス中ならPCフォーカス中」と判定する。ウィンドウを閉じる際は focused=false で送る。
+	 */
+	setPcFocus(windowId: number, focused: boolean): Promise<void>;
+
+	/**
 	 * agentチャネル用: ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell
 	 * integration 由来)。起動の確定情報としては使わず、そのペインの cwd ベースのセッション探索を
 	 * 前倒しするトリガーとしてのみ使う (実在する新しい transcript の発見をもって確定するため、

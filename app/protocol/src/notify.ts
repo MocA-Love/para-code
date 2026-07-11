@@ -58,10 +58,14 @@ function isNotifyKind(value: string): value is NotifyKind {
  * notify チャネル上の制御メッセージ（NotifyPayloadとは別形。`t` フィールドで区別する）。
  * - dismiss: モバイルが通知一覧で項目をタップ/クリアした（M→PC）。
  * - dismissed: PCが他の端末へ「その通知は既に処理された」ことを伝える（PC→M、複数端末間の一覧同期用）。
+ * - dismissed-token: PC自身でペインを確認済みにした（acknowledgePaneStatus）ことを全モバイルへ
+ *   伝える（PC→M）。dismissedと異なり通知の`id`をPC側は持たないため、代わりに`agentToken`で
+ *   同一エージェントの通知をまとめて既読にする。
  */
 export type NotifyControlMessage =
 	| { readonly t: 'dismiss'; readonly id: string }
-	| { readonly t: 'dismissed'; readonly id: string };
+	| { readonly t: 'dismissed'; readonly id: string }
+	| { readonly t: 'dismissed-token'; readonly token: string };
 
 export function encodeNotifyDismiss(id: string): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify({ t: 'dismiss', id }));
@@ -71,6 +75,10 @@ export function encodeNotifyDismissed(id: string): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify({ t: 'dismissed', id }));
 }
 
+export function encodeNotifyDismissedByToken(token: string): Uint8Array {
+	return new TextEncoder().encode(JSON.stringify({ t: 'dismissed-token', token }));
+}
+
 /**
  * notify チャネルの受信バイト列を制御メッセージとして読む。NotifyPayload（`kind`を持つ）や
  * 形式不正なバイト列に対しては undefined を返す（呼び出し側は通常のNotifyPayloadとしての
@@ -78,9 +86,12 @@ export function encodeNotifyDismissed(id: string): Uint8Array {
  */
 export function decodeNotifyControl(bytes: Uint8Array): NotifyControlMessage | undefined {
 	try {
-		const raw = JSON.parse(new TextDecoder().decode(bytes)) as { t?: unknown; id?: unknown };
+		const raw = JSON.parse(new TextDecoder().decode(bytes)) as { t?: unknown; id?: unknown; token?: unknown };
 		if ((raw.t === 'dismiss' || raw.t === 'dismissed') && typeof raw.id === 'string') {
 			return { t: raw.t, id: raw.id };
+		}
+		if (raw.t === 'dismissed-token' && typeof raw.token === 'string') {
+			return { t: raw.t, token: raw.token };
 		}
 		return undefined;
 	} catch {

@@ -37,12 +37,13 @@ interface AppState extends StoreState {
 	selectedTerminalId: number | undefined;
 	setSelectedTerminalId(id: number | undefined): void;
 	/**
-	 * 通知設定（設定画面）。falseの種別はOS通知（バナー）を出さない
-	 * （アプリ内の通知一覧には残る）。PC側にも同期され、アプリ未起動時の
-	 * APNsリモートプッシュはPC側のdispatchNotifyで抑制される。
+	 * 通知設定（設定画面）。agentDone/agentQuestionがfalseの種別はOS通知（バナー）を
+	 * 出さない（アプリ内の通知一覧には残る）。suppressWhenPcFocusedはPC側の判断のみに
+	 * 使う（PCがフォーカスされている間はそもそもモバイルへ配信しない）。いずれもPC側に
+	 * 同期され、アプリ未起動時のAPNsリモートプッシュ抑制もPC側のdispatchNotifyが行う。
 	 */
-	notifyPrefs: { agentDone: boolean; agentQuestion: boolean };
-	setNotifyPref(key: 'agentDone' | 'agentQuestion', enabled: boolean): void;
+	notifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean };
+	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean): void;
 	/** 通知一覧を全消去する（通知一覧画面のクリアボタン）。 */
 	clearNotifications(): void;
 	/** 通知一覧から単一項目を消す（項目タップで遷移した時）。他端末の一覧にも同期される。 */
@@ -132,7 +133,7 @@ export const useAppStore = create<AppState>(set => ({
 	selectedWs: undefined,
 	homeShowAllWorkspaces: true,
 	selectedTerminalId: undefined,
-	notifyPrefs: { agentDone: true, agentQuestion: true },
+	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: false },
 
 	async init() {
 		// 二重初期化を防ぐ。放置すると旧 MobileController/RelayClient が close されず、
@@ -154,6 +155,7 @@ export const useAppStore = create<AppState>(set => ({
 						notifyPrefs: {
 							agentDone: parsed.agentDone !== false,
 							agentQuestion: parsed.agentQuestion !== false,
+							suppressWhenPcFocused: parsed.suppressWhenPcFocused === true,
 						},
 					});
 				}
@@ -345,7 +347,7 @@ export const useAppStore = create<AppState>(set => ({
 		set({ selectedTerminalId: id });
 	},
 
-	setNotifyPref(key: 'agentDone' | 'agentQuestion', enabled: boolean) {
+	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean) {
 		const next = { ...useAppStore.getState().notifyPrefs, [key]: enabled };
 		set({ notifyPrefs: next });
 		secureKeyStore.setItem('notifyPrefs', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save notifyPrefs', err));
