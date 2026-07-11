@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese assertions)
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
@@ -62,7 +63,7 @@ suite('workspace lifecycle dialog', () => {
 
 	test('does not overwrite malformed JSONC', async () => {
 		const fixture = await createDialogSaveFixture('{ bad json');
-		await assert.rejects(fixture.save({ setupScript: 'bun install' }), /Invalid .paracode.json/);
+		await assert.rejects(fixture.save({ setupScript: 'bun install' }), /\.paracode\.json の内容が不正です/);
 		assert.strictEqual(fixture.writeCount, 0);
 	});
 });
