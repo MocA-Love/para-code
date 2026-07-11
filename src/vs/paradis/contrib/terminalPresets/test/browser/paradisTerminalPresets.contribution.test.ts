@@ -27,9 +27,10 @@ function createPreset(name: string): IParadisResolvedPreset {
 suite('paradisRunAutoRunPresets', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createInstantiationService(failingPresets: ReadonlySet<string>, partiallyStartedPresets: ReadonlySet<string> = new Set()): { instantiationService: TestInstantiationService; runs: string[]; forceNewTerminal: boolean[] } {
+	function createInstantiationService(failingPresets: ReadonlySet<string>, partiallyStartedPresets: ReadonlySet<string> = new Set()): { instantiationService: TestInstantiationService; runs: string[]; forceNewTerminal: boolean[]; stateKeys: (string | undefined)[] } {
 		const runs: string[] = [];
 		const forceNewTerminal: boolean[] = [];
+		const stateKeys: (string | undefined)[] = [];
 		const presets = [createPreset('first'), createPreset('second'), createPreset('third')];
 		const instantiationService = store.add(new TestInstantiationService());
 		instantiationService.stub(IParadisPresetService, new class extends mock<IParadisPresetService>() {
@@ -40,6 +41,7 @@ suite('paradisRunAutoRunPresets', () => {
 			override async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
 				runs.push(preset.name);
 				forceNewTerminal.push(options?.forceNewTerminal === true);
+				stateKeys.push(options?.stateKey);
 				if (partiallyStartedPresets.has(preset.name)) {
 					options?.onDidStart?.();
 				}
@@ -51,7 +53,7 @@ suite('paradisRunAutoRunPresets', () => {
 		instantiationService.stub(IDialogService, new (mock<IDialogService>())());
 		instantiationService.stub(IStorageService, new (mock<IStorageService>())());
 		instantiationService.stub(ILogService, new NullLogService());
-		return { instantiationService, runs, forceNewTerminal };
+		return { instantiationService, runs, forceNewTerminal, stateKeys };
 	}
 
 	test('preserves partial success and continues after a preset fails', async () => {
@@ -83,6 +85,14 @@ suite('paradisRunAutoRunPresets', () => {
 		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
 
 		assert.deepStrictEqual({ ranAny, runs }, { ranAny: true, runs: ['first', 'second', 'third'] });
+	});
+
+	test('forwards the explicit stateKey to every preset run, so terminals are tagged to the target scope regardless of what is active on the PC when they finish starting', async () => {
+		const { instantiationService, stateKeys } = createInstantiationService(new Set());
+
+		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo', 'worktree:test-scope');
+
+		assert.deepStrictEqual(stateKeys, ['worktree:test-scope', 'worktree:test-scope', 'worktree:test-scope']);
 	});
 });
 
