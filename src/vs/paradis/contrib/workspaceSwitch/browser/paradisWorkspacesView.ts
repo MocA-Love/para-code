@@ -373,7 +373,6 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.configureLifecycleScripts',
-				// allow-any-unicode-next-line
 				localize('paradis.workspaceSwitch.configureLifecycleScriptsContext', "Setup/Teardown Scripts..."),
 				undefined,
 				true,

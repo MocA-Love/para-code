@@ -25,7 +25,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisDiffStat, IParadisRemoveWorktreeRequest, PARADIS_DEFAULT_AGENT_COMMANDS, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisRemoveWorktreeRequest, PARADIS_DEFAULT_AGENT_COMMANDS, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
@@ -33,7 +33,6 @@ import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycle
 
 export const PARADIS_CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
 export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
-export const PARADIS_GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
 export const PARADIS_CONFIGURE_LIFECYCLE_SCRIPTS_COMMAND_ID = 'paradis.workspaceSwitch.configureLifecycleScripts';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
@@ -119,6 +118,16 @@ registerAction2(ParadisCreateWorktreeAction);
  * ID 経由でこのコマンドを実行する。git 実行と shared process チャネル依存があるため
  * electron-browser 層に置く）。
  */
+/**
+ * teardown スクリプト起因の失敗を、削除フロー内の他の想定外エラーと区別するためのマーカー。
+ * これで包まれていないエラーに「セットアップ解除スクリプトが失敗した」と誤って案内しないために使う。
+ */
+class ParadisTeardownFailedError extends Error {
+	constructor(readonly reason: unknown) {
+		super(reason instanceof Error ? reason.message : String(reason));
+	}
+}
+
 /** worktree 削除前後の一連のアクション（順序・失敗時の打ち切りをテストしやすいよう分離）。 */
 export interface IParadisRemoveWorktreeActions {
 	/** リポジトリ定義の teardownScript を実行する。失敗したら後続（切り替え・削除）を一切実行しない。 */
@@ -184,7 +193,11 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			await paradisRemoveWorktreeSequence({
 				runTeardown: async () => {
 					// リポジトリ定義の teardownScript。失敗したら切り替え・削除を一切行わない
-					await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri);
+					try {
+						await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri);
+					} catch (error) {
+						throw new ParadisTeardownFailedError(error);
+					}
 				},
 				switchToParent: async () => {
 					// 削除対象が現在アクティブなワークスペースの場合、先に親リポジトリへ切り替えてから削除する
@@ -242,10 +255,19 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				},
 			});
 		} catch (error) {
-			logService.error('[ParadisRemoveWorktree] teardown failed', error);
+			if (error instanceof ParadisTeardownFailedError) {
+				logService.error('[ParadisRemoveWorktree] teardown failed', error.reason);
+				await dialogService.error(
+					// allow-any-unicode-next-line
+					localize('paradis.workspaceSwitch.removeWorktreeTeardownFailed', "セットアップ解除スクリプトが失敗したため、削除を中止しました。"),
+					error.message
+				);
+				return;
+			}
+			logService.error('[ParadisRemoveWorktree] removal failed', error);
 			await dialogService.error(
 				// allow-any-unicode-next-line
-				localize('paradis.workspaceSwitch.removeWorktreeTeardownFailed', "セットアップ解除スクリプトが失敗したため、削除を中止しました。"),
+				localize('paradis.workspaceSwitch.removeWorktreeUnexpectedFailed', "ワークツリーの削除中に予期しないエラーが発生しました。"),
 				error instanceof Error ? error.message : String(error)
 			);
 		}
@@ -253,42 +275,6 @@ class ParadisRemoveWorktreeAction extends Action2 {
 }
 
 registerAction2(ParadisRemoveWorktreeAction);
-
-/**
- * 指定した worktree/リポジトリのパス群について、作業ツリーの未コミット差分統計 (+N/-N) を
- * まとめて取得するコマンド。browser 層の Workspaces ビューはポーリングでこのコマンドを ID 経由
- * で呼ぶ (git 実行と shared process 依存があるため electron-browser 層に置く。web ビルドでは
- * 未登録 = executeCommand が undefined を返すだけで安全に無効化される)。
- */
-class ParadisGetDiffStatsAction extends Action2 {
-	constructor() {
-		super({
-			id: PARADIS_GET_DIFF_STATS_COMMAND_ID,
-			title: localize2('paradis.workspaceSwitch.getDiffStats', "Get Worktree Diff Stats"),
-			category: localize2('paradis.category', "Para Code"),
-			f1: false
-		});
-	}
-
-	async run(accessor: ServicesAccessor, paths?: string[]): Promise<Record<string, IParadisDiffStat>> {
-		if (!Array.isArray(paths) || paths.length === 0) {
-			return {};
-		}
-		const sharedProcessService = accessor.get(ISharedProcessService);
-		const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
-		const result: Record<string, IParadisDiffStat> = {};
-		await Promise.all(paths.map(async path => {
-			try {
-				result[path] = await channel.call<IParadisDiffStat>('getDiffStat', [path]);
-			} catch {
-				// 個々のパスの失敗 (worktree が消えた等) は無視し、他のパスの結果は返す
-			}
-		}));
-		return result;
-	}
-}
-
-registerAction2(ParadisGetDiffStatsAction);
 
 /**
  * リポジトリの Setup/Teardown スクリプト（.paracode.json）を編集するダイアログを開くコマンド。

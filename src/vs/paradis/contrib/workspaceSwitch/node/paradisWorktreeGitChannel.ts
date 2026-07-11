@@ -20,7 +20,14 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
-import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisGitBranches, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+
+/**
+ * setup/teardown スクリプトの最長実行時間。スクリプトはユーザー任意のシェルコマンドのため、
+ * 終了しないコマンド（対話待ち・フォアグラウンドの dev サーバー等の書き間違い）が混ざると
+ * 呼び出し元の worktree 作成/削除フローが永久に完了しなくなる。上限で強制打ち切りする。
+ */
+const PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS = 10 * 60_000;
 
 export class ParadisWorktreeGitService {
 
@@ -66,32 +73,6 @@ export class ParadisWorktreeGitService {
 			head = undefined;
 		}
 		return { branches, head };
-	}
-
-	/**
-	 * 作業ツリーの未コミット差分 (staged + unstaged、HEAD 比較) の統計を返す。
-	 * git 管理外・HEAD 未作成・コマンド失敗時は { insertions: 0, deletions: 0 } を返す
-	 * (Workspaces ビューのポーリング表示なので、個別の失敗で例外を伝播させない)。
-	 */
-	async getDiffStat(worktreePath: string): Promise<IParadisDiffStat> {
-		try {
-			const raw = await this.exec(['-C', worktreePath, 'diff', 'HEAD', '--numstat']);
-			let insertions = 0;
-			let deletions = 0;
-			for (const line of raw.split('\n')) {
-				const trimmed = line.trim();
-				if (!trimmed) {
-					continue;
-				}
-				// フォーマット: "<added>\t<deleted>\t<path>" (バイナリファイルは '-' '-')
-				const [added, deleted] = trimmed.split('\t');
-				insertions += Number.parseInt(added, 10) || 0;
-				deletions += Number.parseInt(deleted, 10) || 0;
-			}
-			return { insertions, deletions };
-		} catch {
-			return { insertions: 0, deletions: 0 };
-		}
 	}
 
 	/** git worktree add --no-track -b <newBranch> <worktreePath> <baseRef> を実行する。 */
@@ -144,16 +125,24 @@ export class ParadisWorktreeGitService {
 			throw new Error('Invalid lifecycle script request.');
 		}
 		const env = await this.cachedShellEnv.getEnv();
-		const shell = env.SHELL || (isWindows ? env.ComSpec : undefined) || (isWindows ? 'cmd.exe' : '/bin/sh');
+		// Windows では SHELL が設定されていても（Git Bash 等）引数形式が /c 系と食い違うため、
+		// プラットフォームごとにシェルと引数形式を対で選ぶ
+		const shell = isWindows ? (env.ComSpec || 'cmd.exe') : (env.SHELL || '/bin/sh');
 		const args = isWindows ? ['/d', '/s', '/c', request.script] : ['-lc', request.script];
 		await new Promise<void>((resolve, reject) => {
 			this.execFile(shell, args, {
 				cwd: request.worktreePath,
 				encoding: 'utf8',
+				timeout: PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS,
+				killSignal: 'SIGKILL',
 				env: { ...env, PARACODE_PROJECT_ROOT_PATH: request.repoPath }
 			}, (error, _stdout, stderr) => {
 				if (!error) { resolve(); return; }
 				const label = request.kind === 'setup' ? 'Setup' : 'Teardown';
+				if ((error as { killed?: boolean }).killed) {
+					reject(new Error(`${label} script timed out after ${PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS / 60_000} minutes and was terminated.`));
+					return;
+				}
 				reject(new Error(`${label} script failed${typeof (error as { code?: number }).code === 'number' ? ` (exit ${(error as { code?: number }).code})` : ''}: ${stderr?.trim() || error.message}`));
 			});
 		});
@@ -174,7 +163,6 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest) as Promise<T>;
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest) as Promise<T>;
-			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);

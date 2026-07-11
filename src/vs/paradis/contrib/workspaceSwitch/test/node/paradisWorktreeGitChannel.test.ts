@@ -153,10 +153,10 @@ suite('ParadisWorktreeGitService', () => {
 		);
 	}
 
-	test('runs lifecycle script in worktree with project root environment', async () => {
-		const calls: Array<{ command: string; args: readonly string[]; cwd?: string; root?: string }> = [];
+	test('runs lifecycle script in worktree with project root environment and a hang-protection timeout', async () => {
+		const calls: Array<{ command: string; args: readonly string[]; cwd?: string; root?: string; timeout?: number }> = [];
 		const service = createLifecycleService((command, args, options, callback) => {
-			calls.push({ command, args, cwd: options.cwd as string, root: (options.env as NodeJS.ProcessEnv | undefined)?.PARACODE_PROJECT_ROOT_PATH });
+			calls.push({ command, args, cwd: options.cwd as string, root: (options.env as NodeJS.ProcessEnv | undefined)?.PARACODE_PROJECT_ROOT_PATH, timeout: options.timeout });
 			callback(null, '', '');
 		});
 		await service.runLifecycleScript({
@@ -166,7 +166,8 @@ suite('ParadisWorktreeGitService', () => {
 			command: process.env.SHELL || '/bin/sh',
 			args: ['-lc', 'bun install'],
 			cwd: '/repo-worktrees/task',
-			root: '/repo'
+			root: '/repo',
+			timeout: 10 * 60_000
 		}]);
 	});
 
@@ -177,6 +178,17 @@ suite('ParadisWorktreeGitService', () => {
 		await assert.rejects(
 			service.runLifecycleScript({ kind: 'setup', repoPath: '/repo', worktreePath: '/worktree', script: 'false' }),
 			/Setup script failed.*failed setup/i
+		);
+	});
+
+	test('reports a timed-out lifecycle script as timeout instead of a generic failure', async () => {
+		const service = createLifecycleService((_command, _args, _options, callback) => {
+			// Node は timeout 到達時に子プロセスを kill し、killed=true・code=null のエラーを返す
+			callback(Object.assign(new Error('killed'), { killed: true, signal: 'SIGKILL' as NodeJS.Signals }), '', '');
+		});
+		await assert.rejects(
+			service.runLifecycleScript({ kind: 'teardown', repoPath: '/repo', worktreePath: '/worktree', script: 'sleep infinity' }),
+			/Teardown script timed out after 10 minutes/i
 		);
 	});
 });

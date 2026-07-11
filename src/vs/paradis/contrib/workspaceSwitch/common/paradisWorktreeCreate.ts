@@ -13,6 +13,7 @@
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { GeneralShellType, TerminalShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { ParadisWorkspaceLifecycleKind } from './paradisWorkspaceLifecycle.js';
 
 /** shared process 上で git worktree 操作を行う IPC チャネル名。 */
 export const PARADIS_WORKTREE_GIT_CHANNEL = 'paradisWorktreeGit';
@@ -37,16 +38,10 @@ export interface IParadisAddWorktreeRequest {
 	readonly baseRef: string;
 }
 
-/** 作業ツリーの未コミット差分の統計 (git diff HEAD --numstat の合算)。 */
-export interface IParadisDiffStat {
-	readonly insertions: number;
-	readonly deletions: number;
-}
-
 /** リポジトリ定義の setup/teardown スクリプトを worktree 上で実行する要求。 */
 export interface IParadisRunLifecycleScriptRequest {
 	/** 実行するスクリプトの種別。 */
-	readonly kind: 'setup' | 'teardown';
+	readonly kind: ParadisWorkspaceLifecycleKind;
 	/** 親リポジトリのルートパス（PARACODE_PROJECT_ROOT_PATH に渡す）。 */
 	readonly repoPath: string;
 	/** スクリプトを実行する worktree のディレクトリパス（cwd になる）。 */

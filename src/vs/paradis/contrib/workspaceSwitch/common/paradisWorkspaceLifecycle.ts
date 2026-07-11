@@ -9,6 +9,7 @@
 // 既存の presets フィールドや未知のフィールドを保持したまま、setupScript / teardownScript だけを更新する。
 
 import { parse as parseJsonc } from '../../../../base/common/jsonc.js';
+import { localize } from '../../../../nls.js';
 
 export type ParadisWorkspaceLifecycleKind = 'setup' | 'teardown';
 
@@ -23,6 +24,11 @@ type ParadisWorkspaceConfigFile = {
 	[key: string]: unknown;
 };
 
+function paradisInvalidConfigMessage(): string {
+	// allow-any-unicode-next-line
+	return localize('paradis.workspaceLifecycle.invalidConfig', ".paracode.json の内容が不正です（JSONC として解析できません）。");
+}
+
 function normalizeScript(value: unknown): string | undefined {
 	if (typeof value !== 'string') {
 		return undefined;
@@ -36,10 +42,10 @@ function parseConfigFile(content: string): ParadisWorkspaceConfigFile {
 	try {
 		parsed = parseJsonc<unknown>(content);
 	} catch {
-		throw new Error('Invalid .paracode.json configuration.');
+		throw new Error(paradisInvalidConfigMessage());
 	}
 	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-		throw new Error('Invalid .paracode.json configuration.');
+		throw new Error(paradisInvalidConfigMessage());
 	}
 	return parsed as ParadisWorkspaceConfigFile;
 }
