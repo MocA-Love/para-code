@@ -39,6 +39,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { fireParadisAgentTurnEnded, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
+import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -115,8 +116,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null }
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null }
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
@@ -224,13 +225,13 @@ interface IParseSignals {
 	 * usage limit 等のエラー中断は Stop 系 hook が発火しないため、transcript が唯一の検出点。
 	 * ライブ追記時のみライブ状態（考え中表示）の解除に使う。
 	 */
-	turnEnded: boolean;
+	turnEnded: 'completed' | 'failed' | 'interrupted' | undefined;
 	model?: string;
 	effort?: string;
 }
 
 function newParseSignals(): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], userText: false, turnEnded: false };
+	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], userText: false, turnEnded: undefined };
 }
 
 /** unknown からの安全なプロパティ読み出し。 */
@@ -600,7 +601,7 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		const eventPayload = rec(obj['payload']);
 		const eventType = str(eventPayload?.['type']);
 		if (eventType === 'task_complete' || eventType === 'error' || eventType === 'turn_aborted') {
-			signals.turnEnded = true;
+			signals.turnEnded = eventType === 'task_complete' ? 'completed' : eventType === 'turn_aborted' ? 'interrupted' : 'failed';
 		}
 		return [];
 	}
@@ -865,7 +866,7 @@ interface ITailerDelegate {
 	/** Claude transcriptのephemeral progress行を受けた。履歴には追加しない。 */
 	onProgress(progress: ITranscriptProgress): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
-	onTurnEnded(): void;
+	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted'): void;
 }
 
 /**
@@ -1260,8 +1261,8 @@ class TranscriptTailer {
 		}
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
-		if (live && signals.turnEnded) {
-			this.delegate.onTurnEnded();
+		if (live && signals.turnEnded !== undefined) {
+			this.delegate.onTurnEnded(signals.turnEnded);
 		}
 	}
 }
@@ -1311,6 +1312,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly subscribers = new Map<string, string>();
 	/** ペイントークン → transcript確定前の最新ライブ状態。履歴とは独立に置換する。 */
 	private readonly liveStates = new Map<string, IParadisAgentLiveState>();
+	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
 	/** PreToolUse/PostToolUseの対応付け。並行ツールの古い完了で最新表示を消さないために使う。 */
 	private readonly liveToolIds = new Map<string, string>();
 	/** Claude MessageDisplayの行バッチをメッセージ単位で連結する内部バッファ。 */
@@ -1338,6 +1340,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		super();
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService, codexShellEnvResolver));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
+		const activitySweepTimer = setInterval(() => {
+			const now = Date.now();
+			for (const [token, tracker] of this.activityTrackers) {
+				if (tracker.sweepStale(now)) {
+					this.pushActivityToSubscriber(token);
+				}
+			}
+		}, 60_000);
+		this._register(toDisposable(() => clearInterval(activitySweepTimer)));
 		this._register(toDisposable(() => {
 			for (const token of [...this.tailers.keys()]) {
 				this.disposeTailer(token);
@@ -1521,6 +1532,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.codexMessageBuffers.delete(token);
 				this.codexActiveItems.delete(token);
 				this.codexThreadSettings.delete(token);
+				this.activityTrackers.delete(token);
 			}
 		}
 		this.syncCodexDaemonThreads();
@@ -1720,17 +1732,18 @@ export class ParadisMobileAgentChat extends Disposable {
 		const oldestRev = tailer.messages.length > 0 ? tailer.messages[0].rev : tailer.rev;
 		const info = this.infoOf(token, tailer);
 		const live = this.liveStates.get(token) ?? null;
+		const activity = this.activityTrackers.get(token)?.snapshot() ?? null;
 		if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 			// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 			const messages = tailer.messages.filter(m => m.rev > afterRev);
-			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live }, token);
+			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity }, token);
 		} else {
 			const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 			this.sendTo(mobileId, {
 				t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
 				...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 				...(info !== undefined ? { info } : {}),
-				live,
+				live, activity,
 			}, token);
 		}
 	}
@@ -1897,6 +1910,9 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private applyCodexDaemonEvent(token: string, event: IParadisCodexDaemonEvent): void {
 		const now = Date.now();
+		if (this.activityTracker(token).applyCodex(event.method, event.params, now)) {
+			this.pushActivityToSubscriber(token);
+		}
 		if (event.method === 'thread/settings/updated') {
 			const settings = rec(event.params['threadSettings']);
 			const model = str(settings?.['model']);
@@ -1908,6 +1924,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'turn/started') {
+			if (this.activityTracker(token).beginTurn()) {
+				this.pushActivityToSubscriber(token);
+			}
 			this.codexMessageBuffers.delete(token);
 			this.codexActiveItems.delete(token);
 			this.setLiveState(token, { phase: 'thinking', source: 'codex-daemon', startedAt: now, updatedAt: now });
@@ -1919,6 +1938,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.codexMessageBuffers.delete(token);
 			this.codexActiveItems.delete(token);
 			this.clearLiveState(token);
+			const reason = event.method === 'turn/completed' ? 'completed' : event.method === 'turn/aborted' ? 'interrupted' : 'failed';
+			if (this.activityTracker(token).endTurn(reason, now)) {
+				this.pushActivityToSubscriber(token);
+			}
 			return;
 		}
 		if (event.method === 'item/started') {
@@ -2050,6 +2073,27 @@ export class ParadisMobileAgentChat extends Disposable {
 		}, token);
 	}
 
+	private activityTracker(token: string): ParadisAgentActivityTracker {
+		let tracker = this.activityTrackers.get(token);
+		if (tracker === undefined) {
+			tracker = new ParadisAgentActivityTracker();
+			this.activityTrackers.set(token, tracker);
+		}
+		return tracker;
+	}
+
+	private pushActivityToSubscriber(token: string): void {
+		const subscriber = this.subscribers.get(token);
+		const terminalId = this.terminalIdForToken(token);
+		const tailer = this.tailers.get(token);
+		if (subscriber !== undefined && terminalId !== undefined && tailer !== undefined) {
+			this.sendTo(subscriber, {
+				t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev,
+				messages: [], activity: this.activityTrackers.get(token)?.snapshot() ?? null,
+			}, token);
+		}
+	}
+
 	private onHookEvent(event: IParadisAgentHookEvent): void {
 		if (event.transcriptPath === undefined || event.transcriptPath.length === 0) {
 			// agent種別を確定できないため、transcript_path無しのhookだけではcwd探索しない。
@@ -2106,6 +2150,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			this.disposeTailer(token);
 			this.clearLiveState(token);
+			this.activityTrackers.delete(token);
 		}
 		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
 		this.paneSessions.set(token, session);
@@ -2176,6 +2221,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.codexMessageBuffers.delete(previousOwner);
 			this.codexActiveItems.delete(previousOwner);
 			this.codexThreadSettings.delete(previousOwner);
+			this.activityTrackers.delete(previousOwner);
 			this.cancelCliDiscovery(previousOwner);
 			this.cliDiscoveryGenerations.set(previousOwner, (this.cliDiscoveryGenerations.get(previousOwner) ?? 0) + 1);
 		}
@@ -2204,9 +2250,20 @@ export class ParadisMobileAgentChat extends Disposable {
 			// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
 			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
 			this.codexThreadSettings.delete(event.token);
+			this.activityTrackers.delete(event.token);
 			this.disposeTailer(event.token);
 			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscriber(event.token);
+		}
+		if (event.event === 'UserPromptSubmit' && this.activityTracker(event.token).beginTurn()) {
+			this.pushActivityToSubscriber(event.token);
+		}
+		const activityChanged = event.payload !== undefined && this.activityTracker(event.token).applyClaude(event.event, event.payload, event.at);
+		const activityEnded = event.event === 'Stop' || event.event === 'SessionEnd'
+			? this.activityTracker(event.token).endTurn('completed', event.at)
+			: event.event === 'StopFailure' ? this.activityTracker(event.token).endTurn('failed', event.at) : false;
+		if (activityChanged || activityEnded) {
+			this.pushActivityToSubscriber(event.token);
 		}
 
 		// AskUserQuestion のライブ検出: Claude Code は質問の tool_use を決着（回答/中断）まで
@@ -2299,7 +2356,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (subscriber !== undefined && terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null }, token);
+					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, activity: this.activityTrackers.get(token)?.snapshot() ?? null }, token);
 				}
 			},
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
@@ -2316,8 +2373,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
 			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
-			onTurnEnded: () => {
+			onTurnEnded: reason => {
 				this.clearLiveState(token);
+				if (this.activityTracker(token).endTurn(reason, Date.now())) {
+					this.pushActivityToSubscriber(token);
+				}
 				fireParadisAgentTurnEnded(token);
 			},
 		}, this.logService);

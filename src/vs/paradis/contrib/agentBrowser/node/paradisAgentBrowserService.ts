@@ -29,7 +29,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
-import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, paradisCountLiveBackgroundTasks } from './paradisAgentHookBus.js';
+import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload } from './paradisAgentHookBus.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
 import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
@@ -633,12 +633,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		let messageDelta: string | undefined;
 		let messageIndex: number | undefined;
 		let messageFinal: boolean | undefined;
+		let hookPayload: Readonly<Record<string, unknown>> | undefined;
 		if (req.method === 'POST') {
 			try {
 				const body = await this._readBody(req);
 				const parsed: unknown = JSON.parse(body);
 				if (parsed && typeof parsed === 'object') {
 					const record = parsed as Record<string, unknown>;
+					hookPayload = paradisSanitizeAgentHookPayload(record);
 					sessionId = typeof record['session_id'] === 'string' ? record['session_id'] : undefined;
 					transcriptPath = typeof record['transcript_path'] === 'string' ? record['transcript_path'] : undefined;
 					cwd = typeof record['cwd'] === 'string' ? record['cwd'] : undefined;
@@ -666,7 +668,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			fireParadisAgentHookEvent({
 				token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
-				toolUseId, messageId, messageDelta, messageIndex, messageFinal, at: Date.now(),
+				toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload, at: Date.now(),
 			});
 		}
 

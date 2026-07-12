@@ -16,10 +16,19 @@
  * このパスが「当fork管理のhookである」ことを識別するマーカーを兼ねる
  * (~/.claude/settings.json / ~/.codex/hooks.json の冪等マージ時)。
  */
-export const PARADIS_NOTIFY_HOOK_RELATIVE_PATH = '.para-code/hooks/notify.sh';
+export const PARADIS_AGENT_HOOK_SCHEMA_VERSION = 1;
+
+/** スキーマ版をファイル名に含め、旧Para Codeが新しいhookを管理対象として削除しないようにする。 */
+export const PARADIS_NOTIFY_HOOK_RELATIVE_PATH = `.para-code/hooks/notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`;
 
 /** Windows用 notify スクリプト (PowerShell) の設置先。役割は上のPOSIX版と同じ。 */
-export const PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1 = '.para-code/hooks/notify.ps1';
+export const PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1 = `.para-code/hooks/notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.ps1`;
+
+/** スキーマ導入前のPara Code hook。現行版への移行時だけ除去する。 */
+export const PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS = [
+	'.para-code/hooks/notify.sh',
+	'.para-code/hooks/notify.ps1',
+] as const;
 
 /**
  * hook登録イベント1件 (Claude Code の settings.json / Codex の hooks.json は同じ
@@ -66,6 +75,17 @@ export const PARADIS_CLAUDE_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
  * 自動設置側が対応バージョンを確認できた場合にだけ追加する。
  */
 export const PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT: IParadisManagedHookEvent = { eventName: 'MessageDisplay' };
+
+/** Claude Code 2.1.207でpayloadを確認し、モバイルactivityへ実際に写像する追加hook。 */
+export const PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS: readonly IParadisManagedHookEvent[] = [
+	{ eventName: 'SubagentStart' },
+	{ eventName: 'SubagentStop' },
+	{ eventName: 'TaskCreated' },
+	{ eventName: 'TaskCompleted' },
+	{ eventName: 'TeammateIdle' },
+	{ eventName: 'PreCompact' },
+	{ eventName: 'PostCompact' },
+];
 
 /**
  * ~/.codex/hooks.json に登録するイベント一覧 (Superset の createCodexHooksJson ベース)。

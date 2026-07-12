@@ -14,6 +14,7 @@ import { MarkdownText } from '../src/components/markdownText.js';
 import { GlassSurface } from '../src/components/glassSurface.js';
 import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.js';
 import { ApprovalCard } from '../src/components/approvalCard.js';
+import { AgentActivityCard } from '../src/components/agentActivityCard.js';
 import { findLatestApprovalRequest } from '../src/components/attentionCard.js';
 import { GlassComposer } from '../src/components/glassComposer.js';
 import { ModelPill } from '../src/components/modelPill.js';
@@ -263,7 +264,7 @@ export default function AgentDetailScreen() {
 						data={rows}
 						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
 						ListHeaderComponent={chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}
-						ListFooterComponent={activeTerminal?.agentStatus === 'working' || chat?.live !== undefined ? <WorkingIndicator live={chat?.live} /> : null}
+						ListFooterComponent={activeTerminal?.agentStatus === 'working' || chat?.live !== undefined || chat?.activity !== undefined ? <>{chat?.activity !== undefined ? <AgentActivityCard activity={chat.activity} /> : null}{activeTerminal?.agentStatus === 'working' || chat?.live !== undefined ? <WorkingIndicator live={chat?.live} /> : null}</> : null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} />
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onToggle={actions.toggleQuestionOption} onConfirm={actions.confirmQuestion} onFreeText={actions.answerQuestionFreeText} />
