@@ -17,6 +17,12 @@
 //     プロンプトが空のときは when 節が不成立になり、↓は従来どおりシェル履歴ナビとして機能する
 //  3. fork既定値として runOnEnter を 'always' に上書きし、候補の Enter 確定で即実行にする
 //     (terminal.integrated.suggest.enabled は upstream 既定が true のため上書き不要)
+//  4. 候補リスト表示中は →キーを AcceptSelectedSuggestion に割り当てる(Superset の「→で選択候補の
+//     suffix 入力」相当)。AcceptSelectedSuggestion は DEFAULT_COMMANDS_TO_SKIP_SHELL 登録済みなので
+//     この when 成立時は → がシェルへ流れず、zsh-autosuggestions のゴースト確定と競合しない。
+//     リスト非表示時の → は従来どおりシェルへ素通し(ゴースト確定/カーソル移動)される
+//  5. fork既定値として inlineSuggestion を 'off' に上書きし、シェルのゴーストテキストを候補リストへ
+//     取り込まない(ゴースト=シェル、リスト=エディタ側という Superset と同じ役割分担にする)
 
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -32,6 +38,7 @@ import { registerTerminalContribution, type ITerminalContributionContext } from 
 import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
 import { TerminalSuggestCommandId } from '../../../../workbench/contrib/terminalContrib/suggest/common/terminal.suggest.js';
 import { TerminalSuggestSettingId } from '../../../../workbench/contrib/terminalContrib/suggest/common/terminalSuggestConfiguration.js';
+import { SimpleSuggestContext } from '../../../../workbench/services/suggest/browser/simpleSuggestWidget.js';
 
 /**
  * Fork-only context key: whether the active terminal's prompt input (excluding ghost text) is
@@ -110,11 +117,30 @@ KeybindingsRegistry.registerKeybindingRule({
 	)
 });
 
+// 候補リスト表示中(かつフォーカスされた候補がある時)は →キーで選択候補を確定する。
+// when 節が suggestWidgetVisible を要求するため、リスト非表示時の → はシェルへ流れて
+// 従来どおりゴースト確定/カーソル移動として機能する。ユーザーは keybindings.json の
+// `-workbench.action.terminal.acceptSelectedSuggestion` で無効化/変更できる。
+// 意図的なトレードオフ: リスト表示中は → での行内カーソル右移動ができなくなる(Superset と同じ。
+// Esc でリストを閉じれば従来の → に戻る)。
+KeybindingsRegistry.registerKeybindingRule({
+	id: TerminalSuggestCommandId.AcceptSelectedSuggestion,
+	primary: KeyCode.RightArrow,
+	weight: KeybindingWeight.WorkbenchContrib + 1,
+	when: ContextKeyExpr.and(
+		TerminalContextKeys.focus,
+		TerminalContextKeys.suggestWidgetVisible,
+		SimpleSuggestContext.HasFocusedSuggestion
+	)
+});
+
 // Para Code の fork 既定値: 候補を Enter で確定したら即実行する(Superset の Enter=run と同等)。
+// inlineSuggestion 'off' はシェルのゴーストテキストを候補リストへ取り込まない(役割分担の明確化)。
 // 設定の "default" レイヤーへの注入なので、ユーザーが settings.json で明示的に
-// terminal.integrated.suggest.runOnEnter を設定している場合はそちらが優先される。
+// 同キーを設定している場合はそちらが優先される。
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerDefaultConfigurations([{
 	overrides: {
-		[TerminalSuggestSettingId.RunOnEnter]: 'always'
+		[TerminalSuggestSettingId.RunOnEnter]: 'always',
+		[TerminalSuggestSettingId.InlineSuggestion]: 'off'
 	}
 }]);

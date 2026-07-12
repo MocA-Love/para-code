@@ -495,7 +495,8 @@ export class PromptInputModel extends Disposable implements IPromptInputModel {
 				if (!cell || cell.getCode() === 0) {
 					break;
 				}
-				if (this._isCellStyledLikeGhostText(cell)) {
+				// PARA-PATCH: pass allowPaletteGrey for the forward (after-cursor) scan only
+				if (this._isCellStyledLikeGhostText(cell, true)) {
 					ghostTextIndex = cursorIndex + potentialGhostIndexOffset;
 					break;
 				}
@@ -670,7 +671,16 @@ export class PromptInputModel extends Disposable implements IPromptInputModel {
 		return line?.translateToString(false, startCellX, buffer.cursorX).length ?? 0;
 	}
 
-	private _isCellStyledLikeGhostText(cell: IBufferCell): boolean {
+	private _isCellStyledLikeGhostText(cell: IBufferCell, allowPaletteGrey?: boolean): boolean {
+		// PARA-PATCH: zsh-autosuggestions' default highlight is `fg=8` (palette bright black), which
+		// is neither italic nor dim, so upstream fails to detect the ghost text and treats it as real
+		// input. Also treat palette color 8 foreground as ghost text styling, but only when scanning
+		// forward from the cursor (allowPaletteGrey) — fg=8 is also a common syntax highlighting
+		// color (e.g. comments), so applying it to the backward "preceding text is not ghost" check
+		// would suppress ghost detection whenever real input before the cursor happens to be grey.
+		if (allowPaletteGrey && cell.isFgPalette() && cell.getFgColor() === 8) {
+			return true;
+		}
 		return !!(cell.isItalic() || cell.isDim());
 	}
 
