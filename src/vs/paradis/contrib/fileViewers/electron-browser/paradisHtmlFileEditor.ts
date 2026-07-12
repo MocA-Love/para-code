@@ -125,7 +125,9 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		const baseHref = escape(asWebviewUri(dir, remoteInfo).toString(true)).replace(/"/g, '&quot;');
 
 		// <base> で相対リソースを webview リソース URI に解決し、初期ズームを CSS zoom で焼き込む。
-		const headInjection = `<base href="${baseHref}/"><style>html{zoom:${this._zoomFactor};}</style>`;
+		// 背景色: webview の body は既定で透明のため、背景無指定の HTML はエディタ背景（＋ウィンドウ透過）が
+		// 透けて読めなくなる。ブラウザ既定と同じ白を html に敷く。著者が背景を指定していればそちらが勝つ。
+		const headInjection = `<base href="${baseHref}/"><style>html{zoom:${this._zoomFactor};background-color:#ffffff;}</style>`;
 		// ライブなズーム変更（ボタン操作）を postMessage で受け取り、スクロール位置を保ったまま反映する。
 		const zoomScript = `<script>(function(){try{window.addEventListener('message',function(e){var d=e.data;if(d&&typeof d.__paradisZoom==='number'){document.documentElement.style.zoom=String(d.__paradisZoom);}});}catch(err){}})();</script>`;
 
