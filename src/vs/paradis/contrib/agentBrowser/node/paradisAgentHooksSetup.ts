@@ -15,7 +15,7 @@
 // 既存ファイルのJSONパースに失敗した場合は何も書かない (ユーザーファイルを壊すくらいなら諦める)。
 
 import { execFile } from 'child_process';
-import { promises as fs, watch } from 'fs';
+import { promises as fs, readFileSync, watch, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from '../../../../base/common/path.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -285,7 +285,7 @@ async function installNotifyScript(logService: ILogService): Promise<void> {
 
 export interface IParadisAgentHooksFileIO {
 	readFile(filePath: string): Promise<string | undefined>;
-	writeFile(filePath: string, content: string): Promise<void>;
+	writeFileIfUnchanged(filePath: string, expected: string | undefined, content: string): boolean;
 	mkdir(directory: string): Promise<void>;
 }
 
@@ -297,8 +297,21 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
 			return undefined;
 		}
 	},
-	async writeFile(filePath, content) {
-		await fs.writeFile(filePath, content);
+	writeFileIfUnchanged(filePath, expected, content) {
+		let current: string | undefined;
+		try {
+			current = readFileSync(filePath, 'utf8');
+		} catch {
+			current = undefined;
+		}
+		if (current !== expected) {
+			return false;
+		}
+		// 比較後にイベントループへ制御を返さず直ちに保存し、外部writerとの競合窓を
+		// 最小化する。非協調プロセスとの完全なCASは通常ファイルAPIでは不可能だが、
+		// 少なくともPara Code自身が非同期処理を挟んで古い内容を書くことはない。
+		writeFileSync(filePath, content);
+		return true;
 	},
 	async mkdir(directory) {
 		await fs.mkdir(directory, { recursive: true });
@@ -312,6 +325,7 @@ const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
  */
 export async function paradisMergeAgentHooksFile(filePath: string, managedEvents: readonly IParadisManagedHookEvent[], logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
 	try {
+		await io.mkdir(dirname(filePath));
 		for (let attempt = 0; attempt < 3; attempt++) {
 			const existingRaw = await io.readFile(filePath);
 			const merged = paradisMergeAgentHooksJson(existingRaw, managedEvents, hookCommand);
@@ -326,11 +340,9 @@ export async function paradisMergeAgentHooksFile(filePath: string, managedEvents
 			}
 			// read→write間にユーザーや別ツールが保存していれば、古いスナップショットで
 			// 上書きせず、最新内容を起点に再マージする。
-			if (await io.readFile(filePath) !== existingRaw) {
+			if (!io.writeFileIfUnchanged(filePath, existingRaw, content)) {
 				continue;
 			}
-			await io.mkdir(dirname(filePath));
-			await io.writeFile(filePath, content);
 			logService?.info(`[ParadisAgentHooks] Updated agent hooks in ${filePath}`);
 			return;
 		}
