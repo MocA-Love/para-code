@@ -60,6 +60,8 @@ interface AppState extends StoreState {
 	detachTerminal(id: number): void;
 	/** ターミナル名を変更する（PC側の実インスタンスにも反映され、他端末にも同期される）。 */
 	renameTerminal(id: number, title: string): void;
+	/** ターミナルを削除する（PC側の実インスタンスも閉じる。呼び出し側で確認済みの前提）。 */
+	closeTerminal(id: number): void;
 	/**
 	 * ピン留め状態（キーは pinKeyForTerminal 参照）。モバイル端末ローカルのみの状態で、
 	 * PCへは同期しない（ホーム一覧の並び順の好みなのでPC側に対応概念が無いため）。
@@ -318,6 +320,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	renameTerminal(id: number, title: string) {
 		controller?.renameTerminal(id, title);
+	},
+
+	closeTerminal(id: number) {
+		controller?.closeTerminal(id);
 	},
 
 	togglePin(key: string) {
