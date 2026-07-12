@@ -128,6 +128,8 @@ let pairing: PairingClient | undefined;
 let initStarted = false;
 /** 通知設定の再送subscribeの多重登録防止（init()失敗リトライ対策）。 */
 let prefsSyncSubscribed = false;
+/** 発生からこれより古い通知はOS通知（バナー）に出さない（アプリ内一覧には残る）。 */
+const NOTIFY_BANNER_MAX_AGE_MS = 60_000;
 
 export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',
@@ -193,6 +195,15 @@ export const useAppStore = create<AppState>(set => ({
 					// 通知設定でOFFの種別はOS通知を出さない（アプリ内の通知一覧には残る）
 					const prefs = useAppStore.getState().notifyPrefs;
 					if ((payload.kind === 'agent-done' && !prefs.agentDone) || (payload.kind === 'agent-question' && !prefs.agentQuestion)) {
+						return;
+					}
+					// 発生から時間が経った通知はOS通知（バナー）を出さない（アプリ内の通知一覧には残る）。
+					// iOSがバックグラウンドでアプリを凍結するとPC側からはオンラインに見えたまま
+					// notifyフレームがソケットに滞留し、アプリを開いた瞬間にまとめて届くため、
+					// 鮮度チェックなしだと過去の通知がその場で一斉にバナー表示されてしまう。
+					// APNs経路のapns-expiration（TTL）に相当する判定のクライアント版。
+					// PCとモバイルの時計ずれで新鮮な通知を落とさないよう、閾値は緩めに取る。
+					if (Date.now() - payload.at > NOTIFY_BANNER_MAX_AGE_MS) {
 						return;
 					}
 					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId, agentToken: payload.agentToken });
