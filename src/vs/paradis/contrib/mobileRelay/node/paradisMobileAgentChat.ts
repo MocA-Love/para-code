@@ -1762,9 +1762,8 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** モバイルの切断 (presence offline)。そのモバイルの購読をすべて解放する。 */
 	dropSubscriber(mobileId: string): void {
-		for (const key of [...this.activityDetailRequests.keys()]) {
-			if (key.startsWith(`${mobileId}\0`)) { this.activityDetailRequests.delete(key); }
-		}
+		// activity-detailの実読取はキャンセル不能。切断後もfinallyまでin-flight枠を
+		// 保持し、即再接続による並列上限の迂回を防ぐ（応答は購読検証で抑止される）。
 		for (const [key, pending] of [...this.pendingActions]) {
 			if (pending.mobileId === mobileId) {
 				clearTimeout(pending.timer);
@@ -2891,6 +2890,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
 			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
 			onTurnEnded: reason => {
+				this.activeTurnTokens.delete(token);
 				this.clearLiveState(token);
 				if (this.activityTracker(token).endTurn(reason, Date.now())) {
 					this.pushActivityToSubscribers(token);
