@@ -33,7 +33,10 @@ export interface ScmDiffResult {
 }
 /** scm log 応答。 */
 export interface ScmLogResult {
-	commits: { hash: string; when: string; subject: string }[];
+	/** at: committer dateのepoch ms（相対時刻はモバイル側が表示のたびに計算する）。
+	 *  when: PC側で整形済みの相対時刻文字列。旧バージョンのPCはatを送らないため
+	 *  フォールバック用に残っている。 */
+	commits: { hash: string; when: string; subject: string; at?: number }[];
 	/** skip+limitの先にまだコミットが残っているか（追加読み込みボタンの表示判定）。 */
 	hasMore?: boolean;
 	/** リモート(origin)から導出したWeb URL（コミットページへのリンク用）。 */
