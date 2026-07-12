@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -62,6 +62,8 @@ interface AppState extends StoreState {
 	renameTerminal(id: number, title: string): void;
 	/** ターミナルを削除する（PC側の実インスタンスも閉じる。呼び出し側で確認済みの前提）。 */
 	closeTerminal(id: number): void;
+	/** エージェントの「レビュー」状態を確認済みにする（ステータスバッジのポップオーバーから）。 */
+	ackAgentStatus(id: number): void;
 	/**
 	 * ピン留め状態（キーは pinKeyForTerminal 参照）。モバイル端末ローカルのみの状態で、
 	 * PCへは同期しない（ホーム一覧の並び順の好みなのでPC側に対応概念が無いため）。
@@ -86,6 +88,10 @@ interface AppState extends StoreState {
 	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult>;
 	scmLog(ws: string, opts?: { limit?: number; skip?: number }): Promise<ScmLogResult>;
 	scmCommitFiles(ws: string, hash: string): Promise<ScmCommitFilesResult>;
+	/** worktree（スペース）作成フォームの材料。 */
+	worktreeForm(): Promise<WorktreeFormResult>;
+	/** worktree（スペース）を作成する（PC版の作成ダイアログと同じ処理がPC側で走る）。 */
+	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string }): Promise<WorktreeCreateResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult>;
@@ -337,6 +343,10 @@ export const useAppStore = create<AppState>(set => ({
 		controller?.closeTerminal(id);
 	},
 
+	ackAgentStatus(id: number) {
+		controller?.ackAgentStatus(id);
+	},
+
 	togglePin(key: string) {
 		const current = useAppStore.getState().pinnedKeys;
 		const next = new Set(current);
@@ -441,6 +451,16 @@ export const useAppStore = create<AppState>(set => ({
 	scmCommitFiles(ws: string, hash: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.scmCommitFiles(ws, hash);
+	},
+
+	worktreeForm() {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.worktreeForm();
+	},
+
+	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string }) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.createWorktree(opts);
 	},
 
 	fsList(ws: string, path: string) {

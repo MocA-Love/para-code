@@ -48,6 +48,7 @@ import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { ParadisAgentTerminalHintParser } from './paradisAgentTerminalHints.js';
 import { Channels } from '../common/paradisMobileProtocol.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
+import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
@@ -153,6 +154,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
+			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
+			() => instantiationService.invokeFunction(paradisGetWorktreeCreateForm),
+			request => instantiationService.invokeFunction(paradisCreateWorktreeHeadless, request),
 		));
 
 		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、

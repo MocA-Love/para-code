@@ -33,6 +33,8 @@ import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from '.
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
 import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
+import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -69,7 +71,11 @@ type TermInbound =
 	// モバイルからのターミナル削除（ホーム長押しメニュー）。モバイル側で確認済みの前提で
 	// PC側の実インスタンスを閉じる。onDidChangeInstances経由でstateが自動再送され、
 	// 他モバイル端末・PC自身のタブ表示からも消える。
-	| { t: 'close'; id: number };
+	| { t: 'close'; id: number }
+	// モバイルからのエージェント状態の既読（ホームのステータスバッジタップ→「確認済みにする」）。
+	// PCのフォーカス中自動既読と同じ acknowledgePaneStatus 経路を通すため、'review' 状態のみ
+	// クリアされ、通知履歴のdismiss等の後続処理も自動で走る。
+	| { t: 'ackStatus'; id: number };
 type TermSemanticKey = 'up' | 'down' | 'right' | 'left';
 type TermOutbound =
 	// snapshot=true は画面復元用フレーム（VTシーケンス込み）。モバイルは追記せず
@@ -86,7 +92,11 @@ type ScmInbound =
 	| { t: 'xlsxDiff'; id: string; ws: string; path: string }
 	| { t: 'commit'; id: string; ws: string; message: string; all?: boolean }
 	| { t: 'log'; id: string; ws: string; limit?: number; skip?: number }
-	| { t: 'commitFiles'; id: string; ws: string; hash: string };
+	| { t: 'commitFiles'; id: string; ws: string; hash: string }
+	// worktree（スペース）作成のフォーム材料と作成本体。他のscmメッセージと違い特定の
+	// ワークスペースに紐づかないため ws を持たない（repo はリポジトリid）。
+	| { t: 'worktreeForm'; id: string; ws?: undefined }
+	| { t: 'createWorktree'; id: string; ws?: undefined; repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string };
 
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
@@ -188,6 +198,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
+		// worktree（スペース）作成。実体は paradisWorktreeHeadlessCreate.ts（contribution側で
+		// instantiationService.invokeFunction に束ねて渡される。runGit等と同じコールバック方式）
+		private readonly getWorktreeCreateForm: () => Promise<IParadisWorktreeCreateFormData>,
+		private readonly createWorktree: (request: IParadisHeadlessWorktreeRequest) => Promise<IParadisHeadlessWorktreeResult>,
 	) {
 		super();
 
@@ -518,6 +532,31 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const reply = (body: object) => {
 			this.sendFrame({ ch: Channels.Scm, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ id: msg.id, ...body }))), mobileId: mobileId || undefined });
 		};
+		// worktree作成系は特定ワークスペースに紐づかない（wsを持たない）ため、repoPath解決より先に処理する
+		if (msg.t === 'worktreeForm' || msg.t === 'createWorktree') {
+			try {
+				if (msg.t === 'worktreeForm') {
+					reply({ t: 'worktreeForm', ...(await this.getWorktreeCreateForm()) });
+				} else {
+					if (typeof msg.repo !== 'string' || msg.repo.length === 0) {
+						reply({ error: 'repo is required' });
+						return;
+					}
+					const result = await this.createWorktree({
+						repositoryId: msg.repo,
+						...(typeof msg.name === 'string' ? { name: msg.name } : {}),
+						...(typeof msg.branch === 'string' ? { branch: msg.branch } : {}),
+						...(typeof msg.base === 'string' ? { baseRef: msg.base } : {}),
+						...(typeof msg.prompt === 'string' ? { prompt: msg.prompt } : {}),
+						...(typeof msg.agent === 'string' ? { agentId: msg.agent } : {}),
+					});
+					reply({ t: 'createWorktree', ...result });
+				}
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
 		const repoPath = this.repoPathForWs(msg.ws);
 		if (!repoPath) {
 			reply({ error: `unknown workspace: ${msg.ws}` });
@@ -1014,6 +1053,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// confirmOnKill確認（safeDisposeTerminal）は挟まず直接閉じる。挟むと、
 			// PCが無人の間はモバイルから応答できない確認ダイアログで永久にハングする。
 			instance.dispose(TerminalExitReason.User);
+		} else if (msg.t === 'ackStatus') {
+			// PCのフォーカス中自動既読（paradisAgentStatus.contribution.ts）と同じ経路。
+			// shared processの_paneStatusesがクリアされ、ポーラー経由でホーム一覧の表示も
+			// アイドルへ戻り、通知履歴のdismiss（dispatchAgentDismiss）も自動で走る。
+			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+			if (token !== undefined) {
+				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+					.call('acknowledgePaneStatus', [token])
+					.then(undefined, err => this.logService.warn('[paradisMobileRelay] ackStatus failed', err));
+			}
 		}
 	}
 

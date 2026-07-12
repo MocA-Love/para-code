@@ -155,11 +155,16 @@ export default function ScmScreen() {
 				style={styles.list}
 				refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void refresh(); }} tintColor={colors.textDim} />}
 			>
+				{/* リポジトリ名とブランチ名は長いと1行内で潰し合うため2行に分ける */}
 				<View style={styles.repoCard}>
-					<Ionicons name="cube-outline" size={15} color={colors.textDim} />
-					<Text style={styles.repoName} numberOfLines={1}>{ws?.name ?? '—'}</Text>
-					<Ionicons name="git-branch-outline" size={13} color={colors.accent} />
-					<Text style={styles.repoBranch} numberOfLines={1}>{status?.branch ?? ws?.branch ?? '…'}</Text>
+					<View style={styles.repoRow}>
+						<Ionicons name="cube-outline" size={15} color={colors.textDim} />
+						<Text style={styles.repoName} numberOfLines={1}>{ws?.name ?? '—'}</Text>
+					</View>
+					<View style={styles.repoRow}>
+						<Ionicons name="git-branch-outline" size={13} color={colors.accent} />
+						<Text style={styles.repoBranch} numberOfLines={1}>{status?.branch ?? ws?.branch ?? '…'}</Text>
+					</View>
 				</View>
 
 				<TextInput
@@ -263,8 +268,9 @@ export default function ScmScreen() {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	list: { flex: 1, paddingHorizontal: 16 },
-	repoCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.surface, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 10 },
-	repoName: { color: colors.text, fontSize: 14, fontWeight: '600', flex: 1, minWidth: 60 },
+	repoCard: { gap: 6, backgroundColor: colors.surface, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 10 },
+	repoRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+	repoName: { color: colors.text, fontSize: 14, fontWeight: '600', flexShrink: 1 },
 	repoBranch: { color: colors.accent, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flexShrink: 1 },
 	commitInput: { backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10, minHeight: 56, textAlignVertical: 'top', marginBottom: 8 },
 	commitBtn: { backgroundColor: colors.accent2, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },

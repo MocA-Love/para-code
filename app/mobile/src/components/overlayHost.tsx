@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Fragment, ReactNode, useEffect, useId, useReducer } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 
 /**
  * ルート常駐のオーバーレイ基盤（Portal）。RN標準のModal（fade）はネイティブ側で
@@ -45,6 +46,20 @@ export function OverlayHost() {
 			{[...entries.entries()].map(([key, node]) => <Fragment key={key}>{node}</Fragment>)}
 		</View>
 	);
+}
+
+/**
+ * マウント時にscaleのみで出現させるラッパー。opacityフェードはGlassViewの効果を
+ * 消してしまうため使わない（glassSurface.tsxの制約コメント参照）。オーバーレイ上の
+ * glassメニュー/ポップオーバーの出現演出に共用する。
+ */
+export function PopIn({ style, children }: { style?: StyleProp<ViewStyle>; children: ReactNode }) {
+	const scale = useSharedValue(0.9);
+	useEffect(() => {
+		scale.value = withTiming(1, { duration: 160, easing: Easing.out(Easing.cubic) });
+	}, [scale]);
+	const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
+	return <Animated.View style={[style, animatedStyle]}>{children}</Animated.View>;
 }
 
 /** childrenをその場ではなくOverlayHostへ描画する。マウント中のみ表示される。 */
