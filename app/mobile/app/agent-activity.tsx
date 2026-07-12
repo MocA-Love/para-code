@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../src/appState.js';
@@ -10,7 +10,9 @@ import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { colors } from '../src/theme.js';
 import { hapticSelection } from '../src/haptics.js';
 import { useNow } from '../src/time.js';
-import type { AgentActivityAgent, AgentActivityStatus } from '../src/store.js';
+import type { AgentActivityAgent, AgentActivityStatus, AgentActivityTask } from '../src/store.js';
+
+type ActivityRow = { kind: 'section'; title: string; empty?: string } | { kind: 'agent'; value: AgentActivityAgent } | { kind: 'task'; value: AgentActivityTask };
 
 function statusLabel(status: AgentActivityStatus): string {
 	switch (status) {
@@ -46,6 +48,12 @@ export default function AgentActivityScreen() {
 	const chatLoading = !parentMissing && chat === undefined;
 	const activity = chat?.activity;
 	const sessionChanged = chat !== undefined && typeof params.epoch === 'string' && chat.epoch !== params.epoch;
+	const rows: ActivityRow[] = activity === undefined ? [] : [
+		{ kind: 'section', title: 'SubAgents', ...(activity.agents.length === 0 ? { empty: '検出されたSubAgentはありません' } : {}) },
+		...activity.agents.map(value => ({ kind: 'agent' as const, value })),
+		{ kind: 'section', title: 'Tasks', ...(activity.tasks.length === 0 ? { empty: 'Task API / hook由来のTaskはありません' } : {}) },
+		...activity.tasks.map(value => ({ kind: 'task' as const, value })),
+	];
 
 	const selectAgent = (agent: AgentActivityAgent) => {
 		if (agent.role !== 'subagent') { return; }
@@ -67,35 +75,32 @@ export default function AgentActivityScreen() {
 					</View>
 				</View>
 
-				<ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }]}>
+				<View style={styles.listArea}>
 					{parentMissing ? <View style={styles.empty}><Ionicons name="alert-circle-outline" size={24} color={colors.yellow} /><Text style={styles.emptyTitle}>親エージェントを確認できません</Text><Text style={styles.emptyText}>元のエージェント画面へ戻り、最新のセッションを開き直してください。</Text></View> : chatLoading ? <View style={styles.empty}><Ionicons name="sync-outline" size={24} color={colors.textDim} /><Text style={styles.emptyTitle}>Agent sessionを読み込み中</Text></View> : sessionChanged ? <View style={styles.empty}><Ionicons name="alert-circle-outline" size={24} color={colors.yellow} /><Text style={styles.emptyTitle}>親セッションが切り替わりました</Text><Text style={styles.emptyText}>親エージェントへ戻り、新しいセッションから開き直してください。</Text></View> : activity === undefined ? <View style={styles.empty}><Ionicons name="people-outline" size={24} color={colors.textDim} /><Text style={styles.emptyTitle}>SubAgentの活動はありません</Text><Text style={styles.emptyText}>親エージェントがSubAgentやTaskを開始すると、ここへ表示されます。</Text></View> : (
-						<>
-							<View style={styles.overview}>
+						<FlatList
+							data={rows}
+							keyExtractor={row => row.kind === 'section' ? `section:${row.title}` : `${row.kind}:${row.value.id}`}
+							contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }]}
+							ListHeaderComponent={<View style={styles.overview}>
 								<View><Text style={styles.metric}>{activity.agents.length}</Text><Text style={styles.metricLabel}>SubAgents</Text></View>
 								<View style={styles.metricDivider} />
 								<View><Text style={styles.metric}>{activity.tasks.length}</Text><Text style={styles.metricLabel}>Tasks</Text></View>
 								<View style={styles.metricDivider} />
 								<View><Text style={styles.metric}>{activity.agents.filter(agent => agent.status === 'running').length}</Text><Text style={styles.metricLabel}>Running</Text></View>
-							</View>
-
-							<Text style={styles.sectionTitle}>SubAgents</Text>
-							{activity.agents.length === 0 ? <Text style={styles.muted}>検出されたSubAgentはありません</Text> : activity.agents.map(agent => (
+							</View>}
+							renderItem={({ item }) => item.kind === 'section' ? <View><Text style={styles.sectionTitle}>{item.title}</Text>{item.empty ? <Text style={styles.muted}>{item.empty}</Text> : null}</View> : item.kind === 'agent' ? (() => { const agent = item.value; return (
 								<Pressable key={agent.id} disabled={agent.role !== 'subagent'} accessibilityRole={agent.role === 'subagent' ? 'button' : undefined} accessibilityLabel={agent.role === 'subagent' ? `${agent.label}の詳細を開く` : `${agent.label} teammate`} onPress={() => selectAgent(agent)} style={styles.agentRow}>
 									<View style={[styles.avatar, { backgroundColor: agent.provider === 'claude' ? 'rgba(216,142,92,.16)' : colors.accentWash }]}><Text style={[styles.avatarText, { color: agent.provider === 'claude' ? colors.claude : colors.accent }]}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>
 									<View style={styles.agentBody}><Text style={styles.agentLabel} numberOfLines={1}>{agent.label}</Text><Text style={styles.agentMeta} numberOfLines={1}>{agent.provider ?? chat?.agent ?? 'agent'} · {duration(agent.startedAt, agent.status === 'running' || agent.status === 'idle' ? now : agent.updatedAt)}</Text></View>
 									<View style={[styles.status, { backgroundColor: `${statusColor(agent.status)}1F` }]}><Text style={[styles.statusText, { color: statusColor(agent.status) }]}>{statusLabel(agent.status)}</Text></View>
 									{agent.role === 'subagent' ? <Ionicons name="chevron-forward" size={14} color={colors.textDim} /> : null}
 								</Pressable>
-							))}
-
-
-							<Text style={styles.sectionTitle}>Tasks</Text>
-							{activity.tasks.length === 0 ? <Text style={styles.muted}>Task API / hook由来のTaskはありません</Text> : activity.tasks.map(task => (
+							); })() : (() => { const task = item.value; return (
 								<View key={task.id} style={styles.taskRow}><Ionicons name={task.status === 'completed' ? 'checkmark-circle' : task.status === 'failed' ? 'close-circle' : 'ellipse-outline'} size={16} color={statusColor(task.status)} /><View style={styles.taskBody}><Text style={styles.taskLabel}>{task.label}</Text>{task.detail ? <Text style={styles.taskDetail}>{task.detail}</Text> : null}{task.assignee ? <Text style={styles.agentMeta}>担当: {task.assignee}</Text> : null}</View><Text style={[styles.taskStatus, { color: statusColor(task.status) }]}>{statusLabel(task.status)}</Text></View>
-							))}
-						</>
+							); })()}
+						/>
 					)}
-				</ScrollView>
+				</View>
 			</View>
 		</ConnectionGate>
 	);
@@ -103,6 +108,7 @@ export default function AgentActivityScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
+	listArea: { flex: 1 },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	backBtn: { width: 44, height: 44, borderRadius: 22, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
 	headerBody: { flex: 1, minWidth: 0 }, contextRow: { flexDirection: 'row', alignItems: 'center', gap: 4 }, context: { color: colors.purple, fontSize: 9, fontWeight: '700' },
