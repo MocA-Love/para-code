@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { LayoutChangeEvent, PanResponder, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AccessibilityInfo, Animated, LayoutChangeEvent, PanResponder, StyleSheet, Text, View } from 'react-native';
 import { colors, mono } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 
@@ -16,10 +16,83 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 	const selectedIndex = Math.max(0, efforts.indexOf(value ?? ''));
 	const [previewIndex, setPreviewIndex] = useState(selectedIndex);
 	const [trackWidth, setTrackWidth] = useState(0);
+	const [reduceMotion, setReduceMotion] = useState(false);
+	const thumbScale = useRef(new Animated.Value(1)).current;
+	const burstProgress = useRef(new Animated.Value(0)).current;
+	const particleValues = useRef(Array.from({ length: 10 }, () => new Animated.Value(0))).current;
+	const progress = efforts.length <= 1 ? 0 : previewIndex / (efforts.length - 1);
+	const activeEffort = efforts[previewIndex] ?? efforts[0] ?? '';
+	const isMaximum = activeEffort === 'max' || activeEffort === 'ultra';
+
+	useEffect(() => {
+		let mounted = true;
+		void AccessibilityInfo.isReduceMotionEnabled().then(enabled => {
+			if (mounted) {
+				setReduceMotion(enabled);
+			}
+		});
+		const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
+		return () => {
+			mounted = false;
+			subscription.remove();
+		};
+	}, []);
 
 	useEffect(() => {
 		setPreviewIndex(selectedIndex);
 	}, [selectedIndex]);
+
+	useEffect(() => {
+		if (reduceMotion) {
+			thumbScale.setValue(1);
+			return;
+		}
+		thumbScale.setValue(0.9);
+		const spring = Animated.spring(thumbScale, {
+			toValue: 1,
+			stiffness: 420,
+			damping: 38,
+			mass: 1,
+			useNativeDriver: true,
+		});
+		spring.start();
+		return () => spring.stop();
+	}, [previewIndex, reduceMotion, thumbScale]);
+
+	useEffect(() => {
+		burstProgress.stopAnimation();
+		burstProgress.setValue(0);
+		if (!isMaximum || disabled || reduceMotion) {
+			return;
+		}
+		const burst = Animated.timing(burstProgress, {
+			toValue: 1,
+			duration: 650,
+			useNativeDriver: true,
+		});
+		burst.start();
+		return () => burst.stop();
+	}, [burstProgress, disabled, isMaximum, reduceMotion]);
+
+	useEffect(() => {
+		for (const particle of particleValues) {
+			particle.stopAnimation();
+			particle.setValue(0);
+		}
+		if (!isMaximum || disabled || reduceMotion || trackWidth <= 0) {
+			return;
+		}
+		const stream = Animated.loop(Animated.stagger(105, particleValues.map((particle, index) => Animated.sequence([
+			Animated.timing(particle, {
+				toValue: 1,
+				duration: 1_050 + index * 35,
+				useNativeDriver: true,
+			}),
+			Animated.timing(particle, { toValue: 0, duration: 0, useNativeDriver: true }),
+		]))));
+		stream.start();
+		return () => stream.stop();
+	}, [disabled, isMaximum, particleValues, reduceMotion, trackWidth]);
 
 	const setPreview = useCallback((index: number) => {
 		const nextIndex = Math.max(0, Math.min(index, efforts.length - 1));
@@ -64,9 +137,6 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 		return null;
 	}
 
-	const progress = efforts.length === 1 ? 0 : previewIndex / (efforts.length - 1);
-	const activeEffort = efforts[previewIndex] ?? efforts[0];
-	const isMaximum = activeEffort === 'max' || activeEffort === 'ultra';
 	const onLayout = (event: LayoutChangeEvent) => setTrackWidth(event.nativeEvent.layout.width);
 
 	return (
@@ -98,13 +168,50 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 			>
 				<View style={styles.track}>
 					<View style={[styles.range, { width: `${progress * 100}%`, backgroundColor: accentColor }, isMaximum && styles.rangeMaximum]} />
+					{isMaximum && !disabled && !reduceMotion ? (
+						<View pointerEvents="none" style={[styles.particleClip, { width: `${progress * 100}%` }]}>
+							{particleValues.map((particle, index) => (
+								<Animated.View
+									key={index}
+									style={[
+										styles.particle,
+										{
+											top: `${14 + index * 17 % 72}%`,
+											opacity: particle.interpolate({ inputRange: [0, 0.15, 0.78, 1], outputRange: [0, 0.9, 0.55, 0] }),
+											transform: [
+												{ translateX: particle.interpolate({ inputRange: [0, 1], outputRange: [-12, trackWidth + 12] }) },
+												{ scale: particle.interpolate({ inputRange: [0, 0.5, 1], outputRange: [0.55, 1, 0.8] }) },
+											],
+										},
+									]}
+								/>
+							))}
+						</View>
+					) : null}
 					{efforts.map((effort, index) => {
 						const position = efforts.length === 1 ? 0 : index / (efforts.length - 1) * 100;
 						return <View key={effort} style={[styles.tick, { left: `${position}%` }, index <= previewIndex && styles.tickActive]} />;
 					})}
 				</View>
-				<View
-					style={[styles.thumb, { left: `${progress * 100}%` }, isMaximum && styles.thumbMaximum]}
+				{isMaximum && !disabled && !reduceMotion ? (
+					<Animated.View
+						pointerEvents="none"
+						style={[
+							styles.burstRing,
+							{
+								left: `${progress * 100}%`,
+								opacity: burstProgress.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.85, 0] }),
+								transform: [{ scale: burstProgress.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1.9] }) }],
+							},
+						]}
+					/>
+				) : null}
+				<Animated.View
+					style={[
+						styles.thumb,
+						{ left: `${progress * 100}%`, transform: [{ scale: thumbScale }] },
+						isMaximum && styles.thumbMaximum,
+					]}
 				/>
 			</View>
 			<View style={styles.scaleLabels}>
@@ -122,12 +229,15 @@ const styles = StyleSheet.create({
 	label: { color: colors.textDim, fontSize: 10.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
 	value: { fontFamily: mono.ios, fontSize: 11, fontWeight: '800' },
 	valueMaximum: { color: colors.yellow },
-	slider: { height: 32, justifyContent: 'center' },
+	slider: { height: 32, justifyContent: 'center', marginHorizontal: 14 },
 	track: { height: 24, borderRadius: 12, backgroundColor: 'rgba(255,255,255,.07)', borderWidth: 0.5, borderColor: colors.border, overflow: 'hidden' },
 	range: { height: '100%', borderTopLeftRadius: 12, borderBottomLeftRadius: 12 },
 	rangeMaximum: { backgroundColor: colors.yellow },
+	particleClip: { position: 'absolute', top: 0, left: 0, bottom: 0, overflow: 'hidden' },
+	particle: { position: 'absolute', left: 0, width: 3, height: 3, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,.78)', shadowColor: '#fff', shadowOpacity: 0.7, shadowRadius: 3 },
 	tick: { position: 'absolute', top: 10, width: 4, height: 4, marginLeft: -2, borderRadius: 2, backgroundColor: 'rgba(255,255,255,.27)' },
 	tickActive: { backgroundColor: 'rgba(255,255,255,.68)' },
+	burstRing: { position: 'absolute', top: -2, width: 36, height: 36, marginLeft: -18, borderRadius: 18, borderWidth: 2, borderColor: colors.yellow, shadowColor: colors.yellow, shadowOpacity: 0.9, shadowRadius: 7 },
 	thumb: { position: 'absolute', top: 2, width: 28, height: 28, marginLeft: -14, borderRadius: 14, backgroundColor: '#fff', borderWidth: 0.5, borderColor: colors.borderStrong, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2 },
 	thumbMaximum: { shadowColor: colors.yellow, shadowOpacity: 0.8, shadowRadius: 10 },
 	scaleLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
