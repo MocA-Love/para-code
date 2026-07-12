@@ -460,6 +460,8 @@ const MAX_TERM_BUFFER = 200_000;
 // 受信文字数がこの閾値を超えるたびにACKを返す（PC側フロー制御の材料。本家
 // FlowControlConstants.CharCountAckSize と同値）。
 const TERM_ACK_CHARS = 5_000;
+// エージェント応答ストリーミング中の delta emit を coalesce する窓（ms）。leading + trailing。
+const AGENT_STREAM_EMIT_MS = 120;
 // タブ再訪時に即時再描画するためのリプレイキャッシュ上限（snapshot+後続dataの合計文字数）。
 // 超過したら丸ごと捨てる（途中で切るとエスケープシーケンスが壊れるため、部分保持はしない）。
 const TERM_REPLAY_CACHE_LIMIT = 150_000;
@@ -633,6 +635,7 @@ export class MobileController {
 	disconnect(): void {
 		this.client?.close();
 		this.client = undefined;
+		this.flushAgentEmit();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
 		this.emit();
@@ -648,6 +651,7 @@ export class MobileController {
 			clearTimeout(pending.timer);
 		}
 		this.agentControlTimers.clear();
+		this.flushAgentEmit();
 		this.termStreams.clear();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
@@ -1484,7 +1488,15 @@ export class MobileController {
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 				});
-				this.emit({ agentChats: true });
+				// ターン継続中（live あり）の高頻度な delta だけ throttle でまとめる。ターン終了
+				// （live === null）や live 情報を伴わない確定 delta は即時反映する（追従の遅延・
+				// 取りこぼしを避ける）。
+				if (msg.live !== undefined && msg.live !== null) {
+					this.emitAgentStreamThrottled();
+				} else {
+					this.flushAgentEmit();
+					this.emit({ agentChats: true });
+				}
 				return;
 			}
 			if (msg.t === 'model-catalog' && typeof msg.requestId === 'string' && Array.isArray(msg.models)) {
@@ -1553,6 +1565,42 @@ export class MobileController {
 
 	/** 直近に onChange へ渡したスナップショット（未変更コレクションの参照据え置きに使う）。 */
 	private lastEmitted: StoreState | undefined;
+
+	/** ストリーミング delta の emit を coalesce するためのタイマー／保留フラグ。 */
+	private agentEmitTimer: ReturnType<typeof setTimeout> | undefined;
+	private agentEmitPending = false;
+
+	/**
+	 * エージェント応答のストリーミング中（ターン継続中の delta）専用の emit。1文字ごとに
+	 * emit すると購読側（チャット画面）が過剰に再レンダリングし、入力欄のIME変換が
+	 * 妨げられたり描画が重くなる。そこで leading + trailing の throttle（AGENT_STREAM_EMIT_MS）で
+	 * まとめる。最初の delta は即時反映し、以後 window 内の更新は末尾の1回にまとめる。
+	 * trailing を必ず発火させるため、最後の delta を取りこぼさない。ターン終了・スナップショット等の
+	 * 重要フレームは呼び出し側が flushAgentEmit + 即時 emit で確実に反映すること。
+	 */
+	private emitAgentStreamThrottled(): void {
+		if (this.agentEmitTimer !== undefined) {
+			this.agentEmitPending = true;
+			return;
+		}
+		this.emit({ agentChats: true });
+		this.agentEmitTimer = setTimeout(() => {
+			this.agentEmitTimer = undefined;
+			if (this.agentEmitPending) {
+				this.agentEmitPending = false;
+				this.emitAgentStreamThrottled();
+			}
+		}, AGENT_STREAM_EMIT_MS);
+	}
+
+	/** 保留中のストリーミング emit を破棄する（即時 emit する重要フレームの直前に呼ぶ）。 */
+	private flushAgentEmit(): void {
+		if (this.agentEmitTimer !== undefined) {
+			clearTimeout(this.agentEmitTimer);
+			this.agentEmitTimer = undefined;
+		}
+		this.agentEmitPending = false;
+	}
 
 	/**
 	 * 状態変化を購読側へ通知する。terminalOutput / notifications / agentChats の3コレクションは
