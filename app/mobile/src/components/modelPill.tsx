@@ -31,6 +31,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	const [pickedModelId, setPickedModelId] = useState<string | undefined>(undefined);
 	const [codexUpdatePending, setCodexUpdatePending] = useState(false);
 	const [claudeUpdatePending, setClaudeUpdatePending] = useState(false);
+	const [effortResetVersion, setEffortResetVersion] = useState(0);
 	const claudeRequestLocked = useRef(false);
 	const mounted = useRef(true);
 	useEffect(() => {
@@ -44,9 +45,9 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 		}
 		if (modelControl?.status === 'ready') {
 			setCodexUpdatePending(false);
-			setOpen(false);
 		} else if (modelControl?.status === 'error') {
 			setCodexUpdatePending(false);
+			setEffortResetVersion(version => version + 1);
 			if (!open) {
 				Alert.alert('設定を変更できませんでした', modelControl.errorMessage ?? 'Codexから設定変更を確認できませんでした');
 			}
@@ -93,8 +94,8 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			});
 		}
 	};
-	const applyEffort = (level: string) => {
-		if (claudeRequestLocked.current) { return; }
+	const applyEffort = (level: string): boolean => {
+		if (claudeRequestLocked.current) { return false; }
 		hapticSelection();
 		if (agent === 'codex' && selected !== undefined) {
 			const apply = () => {
@@ -107,10 +108,11 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 					'Ultraはサブエージェントを並列実行するため、通常のEffortより使用量が大きくなる可能性があります。',
 					[{ text: 'キャンセル', style: 'cancel' }, { text: '使用する', onPress: apply }],
 				);
+				return false;
 			} else {
 				apply();
 			}
-			return;
+			return true;
 		}
 		claudeRequestLocked.current = true;
 		setClaudeUpdatePending(true);
@@ -118,8 +120,12 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			if (!mounted.current) { return; }
 			claudeRequestLocked.current = false;
 			setClaudeUpdatePending(false);
-			if (accepted) { setOpen(false); } else { Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください'); }
+			if (!accepted) {
+				setEffortResetVersion(version => version + 1);
+				Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください');
+			}
 		});
+		return true;
 	};
 	const openSheet = () => {
 		hapticSelection();
@@ -197,6 +203,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 								value={effort}
 								disabled={isCodexBusy || claudeUpdatePending}
 								accentColor={agentAccent}
+								resetVersion={effortResetVersion}
 								onValueCommit={applyEffort}
 							/>
 						</>
