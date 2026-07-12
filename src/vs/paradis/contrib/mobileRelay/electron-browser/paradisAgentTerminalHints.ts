@@ -15,7 +15,7 @@ export interface IParadisAgentTerminalHint {
 	readonly tokenCount?: number;
 }
 
-function stripTerminalControls(text: string): string {
+export function stripTerminalControls(text: string): string {
 	return text
 		.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
 		.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')

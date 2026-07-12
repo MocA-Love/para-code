@@ -34,6 +34,7 @@ import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/par
 import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
 const encoder = new TextEncoder();
@@ -176,6 +177,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
 	// ターミナルID → 同期プロトコル状態（epoch対応クライアントがattach中のもののみ）。
 	private readonly termSyncStates = new Map<number, TermSyncState>();
+	// モバイル発の /model・/effort 切替でClaude TUIが出す確認ダイアログを自動確定するガード。
+	private readonly modelSwitchGuard = this._register(new ParadisAgentModelSwitchGuard(this.logService));
 
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
@@ -1090,6 +1093,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			await instance.sendText(msg.text, msg.execute === true, true);
 		} else if (msg.data !== undefined) {
 			// 生入力を送る（改行はモバイル側が明示的に送る）。
+			// /model・/effort 切替の注入時は確認ダイアログ自動確定ウォッチを張る。
+			this.modelSwitchGuard.maybeArm(instance, msg.data);
 			await instance.sendText(msg.data, false);
 		}
 	}
