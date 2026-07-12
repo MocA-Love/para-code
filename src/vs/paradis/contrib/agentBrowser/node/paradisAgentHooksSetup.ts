@@ -19,6 +19,7 @@ import { promises as fs, readFileSync, watch, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join } from '../../../../base/common/path.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { findExecutable } from '../../../../base/node/processes.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
@@ -379,20 +380,59 @@ export function paradisSupportsClaudeMessageDisplay(versionOutput: string): bool
 	return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 205)));
 }
 
-async function claudeVersionOutput(shellEnvResolver: () => Promise<NodeJS.ProcessEnv>): Promise<string | undefined> {
+const PARADIS_CLAUDE_VERSION_TIMEOUT_MS = 15_000;
+const PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS = 3;
+
+type ClaudeVersionProbeFailureStage = 'shell-env' | 'not-found' | 'spawn' | 'timeout' | 'exit' | 'unparseable';
+
+type ClaudeVersionProbeResult =
+	| { readonly outcome: 'success'; readonly versionOutput: string }
+	| { readonly outcome: 'failure'; readonly stage: ClaudeVersionProbeFailureStage; readonly detail?: string };
+
+function claudeVersionProbeErrorDetail(error: Error & { readonly code?: string | number; readonly killed?: boolean; readonly signal?: string }, executable: string, stderr: string): string {
+	const parts = [`executable=${executable}`];
+	if (error.code !== undefined) {
+		parts.push(`code=${error.code}`);
+	}
+	if (error.signal !== undefined) {
+		parts.push(`signal=${error.signal}`);
+	}
+	const trimmedStderr = stderr.trim().slice(0, 500);
+	if (trimmedStderr) {
+		parts.push(`stderr=${JSON.stringify(trimmedStderr)}`);
+	}
+	return parts.join(', ');
+}
+
+async function probeClaudeVersion(shellEnvResolver: () => Promise<NodeJS.ProcessEnv>): Promise<ClaudeVersionProbeResult> {
 	let env: NodeJS.ProcessEnv;
 	try {
 		env = await shellEnvResolver();
-	} catch {
-		return undefined;
+	} catch (error) {
+		return { outcome: 'failure', stage: 'shell-env', detail: error instanceof Error ? error.message : String(error) };
+	}
+	let executable: string | undefined;
+	try {
+		executable = await findExecutable('claude', undefined, undefined, env);
+	} catch (error) {
+		return { outcome: 'failure', stage: 'spawn', detail: `executable resolution failed: ${error instanceof Error ? error.message : String(error)}` };
+	}
+	if (executable === undefined) {
+		return { outcome: 'failure', stage: 'not-found' };
 	}
 	return new Promise(resolve => {
-		execFile('claude', ['--version'], { encoding: 'utf8', timeout: 2000, windowsHide: true, env }, (error, stdout) => {
+		execFile(executable, ['--version'], { encoding: 'utf8', timeout: PARADIS_CLAUDE_VERSION_TIMEOUT_MS, windowsHide: true, env }, (error, stdout, stderr) => {
 			if (error) {
-				resolve(undefined);
+				const typedError = error as Error & { readonly code?: string | number; readonly killed?: boolean; readonly signal?: string };
+				const stage: ClaudeVersionProbeFailureStage = typedError.killed ? 'timeout' : typeof typedError.code === 'number' ? 'exit' : 'spawn';
+				resolve({ outcome: 'failure', stage, detail: claudeVersionProbeErrorDetail(typedError, executable, stderr) });
 				return;
 			}
-			resolve(stdout);
+			if (!/(\d+)\.(\d+)\.(\d+)/.test(stdout)) {
+				resolve({ outcome: 'failure', stage: 'unparseable', detail: `executable=${executable}, stdout=${JSON.stringify(stdout.trim().slice(0, 200))}` });
+				return;
+			}
+			resolve({ outcome: 'success', versionOutput: stdout });
 		});
 	});
 }
@@ -428,7 +468,9 @@ export class ParadisAgentHooksReconciler extends Disposable {
 	private disposed = false;
 	private notifyScriptInstalled = false;
 	private capabilityLogged = false;
-	private claudeVersionPromise: Promise<string | undefined> | undefined;
+	private claudeVersion: string | undefined;
+	private claudeVersionProbePromise: Promise<string | undefined> | undefined;
+	private claudeVersionAttempts = 0;
 
 	constructor(
 		private readonly logService: ILogService | undefined,
@@ -483,16 +525,16 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		this.pendingReconcile = this.scheduleReconcile(() => {
 			this.pendingReconcile = undefined;
 			if (!this.disposed) {
-				void this.reconcile();
+				void this.reconcile(false);
 			}
 		});
 	}
 
-	reconcile(): Promise<void> {
+	reconcile(allowVersionProbe: boolean = true): Promise<void> {
 		if (this.disposed) {
 			return this.reconcileTail;
 		}
-		const run = this.options.reconcileFiles ?? (() => this.reconcileManagedFiles());
+		const run = this.options.reconcileFiles ?? (() => this.reconcileManagedFiles(allowVersionProbe));
 		this.reconcileTail = this.reconcileTail.then(run, run);
 		return this.reconcileTail;
 	}
@@ -501,16 +543,39 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		return this.reconcileTail;
 	}
 
-	private async reconcileManagedFiles(): Promise<void> {
+	private async resolveClaudeVersion(allowProbe: boolean): Promise<string | undefined> {
+		if (this.options.claudeVersionOutput !== undefined) {
+			this.claudeVersion = this.options.claudeVersionOutput;
+			return this.claudeVersion;
+		}
+		if (this.claudeVersion !== undefined || !allowProbe || this.claudeVersionAttempts >= PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS) {
+			return this.claudeVersion;
+		}
+		if (this.claudeVersionProbePromise === undefined) {
+			const attempt = ++this.claudeVersionAttempts;
+			this.claudeVersionProbePromise = probeClaudeVersion(this.shellEnvResolver).then(result => {
+				if (result.outcome === 'success') {
+					this.claudeVersion = result.versionOutput;
+					return result.versionOutput;
+				}
+				const detail = result.detail ? ` (${result.detail})` : '';
+				const exhausted = attempt >= PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS ? '; retry limit reached for this process' : '';
+				this.logService?.warn(`[ParadisAgentHooks] Claude version probe failed at ${result.stage}, attempt ${attempt}/${PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS}${detail}${exhausted}`);
+				return undefined;
+			}).finally(() => {
+				this.claudeVersionProbePromise = undefined;
+			});
+		}
+		return this.claudeVersionProbePromise;
+	}
+
+	private async reconcileManagedFiles(allowVersionProbe: boolean): Promise<void> {
 		if (this.options.installNotifyScript !== false && !this.notifyScriptInstalled && this.logService !== undefined) {
 			await installNotifyScript(this.logService);
 			this.notifyScriptInstalled = true;
 		}
 		const hookCommand = process.platform === 'win32' ? paradisManagedAgentHookCommandWindows(homedir()) : undefined;
-		this.claudeVersionPromise ??= this.options.claudeVersionOutput !== undefined
-			? Promise.resolve(this.options.claudeVersionOutput)
-			: claudeVersionOutput(this.shellEnvResolver);
-		const claudeVersion = await this.claudeVersionPromise;
+		const claudeVersion = await this.resolveClaudeVersion(allowVersionProbe);
 		const claudeEvents = [
 			...PARADIS_CLAUDE_HOOK_EVENTS,
 			...(claudeVersion !== undefined && paradisSupportsClaudeActivityHooks(claudeVersion) ? PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS : []),
@@ -519,7 +584,7 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		if (claudeVersion === undefined || !paradisSupportsClaudeActivityHooks(claudeVersion)) {
 			this.logService?.trace('[ParadisAgentHooks] Claude activity hook support not confirmed; leaving version-dependent hooks disabled');
 		}
-		if (!this.capabilityLogged) {
+		if (!this.capabilityLogged && (claudeVersion !== undefined || this.claudeVersionAttempts >= PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS)) {
 			this.capabilityLogged = true;
 			this.logService?.info(`[ParadisAgentHooks] Claude version ${claudeVersion?.trim() ?? 'unknown'}; managed events: ${claudeEvents.map(event => event.eventName).join(', ')}`);
 		}
@@ -549,7 +614,12 @@ export async function paradisSetupAgentHooks(logService: ILogService, shellEnvRe
 	const hookCommand = process.platform === 'win32' ? paradisManagedAgentHookCommandWindows(homedir()) : undefined;
 	// $CLAUDE_CONFIG_DIR / $CODEX_HOME でhomeを移動しているユーザーにも設置が届くよう、
 	// 設置先はハードコードではなく解決関数を通す (未設定なら従来どおり ~/.claude / ~/.codex)。
-	const claudeVersion = await claudeVersionOutput(shellEnvResolver);
+	const claudeVersionProbe = await probeClaudeVersion(shellEnvResolver);
+	const claudeVersion = claudeVersionProbe.outcome === 'success' ? claudeVersionProbe.versionOutput : undefined;
+	if (claudeVersionProbe.outcome === 'failure') {
+		const detail = claudeVersionProbe.detail ? ` (${claudeVersionProbe.detail})` : '';
+		logService.warn(`[ParadisAgentHooks] Claude version probe failed at ${claudeVersionProbe.stage}, attempt 1/1${detail}`);
+	}
 	const claudeEvents = [
 		...PARADIS_CLAUDE_HOOK_EVENTS,
 		...(claudeVersion !== undefined && paradisSupportsClaudeActivityHooks(claudeVersion) ? PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS : []),
