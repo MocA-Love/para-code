@@ -31,3 +31,4 @@ import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
 import './contrib/browserMirror/electron-browser/paradisBrowserMirrorSpike.contribution.js';
 import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';
+import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.js';
