@@ -70,6 +70,17 @@ interface AppState extends StoreState {
 	 */
 	pinnedKeys: Set<string>;
 	togglePin(key: string): void;
+	/**
+	 * コンポーザーの下書き（キーは pinKeyForTerminal 等のエージェント/ターミナル単位の一意ID）。
+	 * 画面遷移で入力中テキストが消えないようメモリ上に退避する。キーごとに分離されるため
+	 * 別のエージェントの入力欄には表示されない。端末ローカルのみでPC・他端末へは同期せず、
+	 * AsyncStorage等へも永続化しない（アプリ再起動で消える）。
+	 */
+	agentDrafts: Record<string, string>;
+	/** 下書きを更新する（空文字を渡すとそのキーの下書きを消す）。 */
+	setAgentDraft(key: string, text: string): void;
+	/** 下書きを消す（送信完了時など）。 */
+	clearAgentDraft(key: string): void;
 	/** ターミナル同期ストリームの購読（購読時にリプレイキャッシュを同期再生）。 */
 	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void): () => void;
 	sendInput(id: number, data: string): void;
@@ -153,6 +164,7 @@ export const useAppStore = create<AppState>(set => ({
 	selectedTerminalId: undefined,
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: false },
 	pinnedKeys: new Set(),
+	agentDrafts: {},
 
 	async init() {
 		// 二重初期化を防ぐ。放置すると旧 MobileController/RelayClient が close されず、
@@ -357,6 +369,33 @@ export const useAppStore = create<AppState>(set => ({
 		}
 		set({ pinnedKeys: next });
 		secureKeyStore.setItem('pinnedTerminals', JSON.stringify([...next])).catch(err => console.warn('[appState] failed to save pinnedTerminals', err));
+	},
+
+	setAgentDraft(key: string, text: string) {
+		const current = useAppStore.getState().agentDrafts;
+		if (text.length === 0) {
+			if (current[key] === undefined) {
+				return;
+			}
+			const next = { ...current };
+			delete next[key];
+			set({ agentDrafts: next });
+			return;
+		}
+		if (current[key] === text) {
+			return;
+		}
+		set({ agentDrafts: { ...current, [key]: text } });
+	},
+
+	clearAgentDraft(key: string) {
+		const current = useAppStore.getState().agentDrafts;
+		if (current[key] === undefined) {
+			return;
+		}
+		const next = { ...current };
+		delete next[key];
+		set({ agentDrafts: next });
 	},
 
 	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void) {
