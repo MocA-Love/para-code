@@ -13,7 +13,7 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
  * オーバーレイ（暗幕）がシートより先に一括表示されて不自然なため、暗幕のフェードと
  * シートのスライドを同じAnimated値で同期させる（wsBarのシートと同じ挙動）。
  */
-export function BottomSheet({ visible, onClose, title, children, fullHeight = false, glass = false, glassTintColor }: {
+export function BottomSheet({ visible, onClose, title, children, fullHeight = false, glass = false }: {
 	visible: boolean;
 	onClose: () => void;
 	title: string;
@@ -22,8 +22,6 @@ export function BottomSheet({ visible, onClose, title, children, fullHeight = fa
 	fullHeight?: boolean;
 	/** モーダル単位でLiquid Glassを有効化する。内部の操作要素は不透明のままにする。 */
 	glass?: boolean;
-	/** Glassを使う場合の識別色。 */
-	glassTintColor?: string;
 }) {
 	const anim = useRef(new Animated.Value(0)).current;
 	const [mounted, setMounted] = useState(visible);
@@ -50,7 +48,7 @@ export function BottomSheet({ visible, onClose, title, children, fullHeight = fa
 				<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="閉じる" />
 			</Animated.View>
 			<Animated.View style={[styles.sheet, glass && styles.glassSheet, fullHeight && { maxHeight: undefined, top: insets.top }, { transform: [{ translateY }] }]}>
-				{glass ? <GlassSurface style={styles.glassBackdrop} tintColor={glassTintColor} /> : null}
+				{glass ? <GlassSurface style={styles.glassBackdrop} /> : null}
 				<View style={styles.handle} />
 				<View style={styles.head}>
 					<Text style={styles.title}>{title}</Text>

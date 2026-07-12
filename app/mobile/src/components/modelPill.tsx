@@ -153,7 +153,6 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 				onClose={() => setOpen(false)}
 				title="モデルと Effort"
 				glass
-				glassTintColor={agentAccent}
 			>
 				<ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
 					<Text style={styles.sectionLabel}>モデル</Text>
