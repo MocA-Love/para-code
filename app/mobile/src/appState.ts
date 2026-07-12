@@ -91,6 +91,7 @@ interface AppState extends StoreState {
 	sendAgentMessage(id: number, text: string): Promise<boolean>;
 	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean>;
 	answerAgentApproval(id: number, interactionId: string, choice: 'yes' | 'no'): Promise<boolean>;
+	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string): Promise<boolean>;
 	createTerminal(ws?: string): void;
 	attachAgent(id: number): void;
 	detachAgent(id: number): void;
@@ -427,6 +428,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	answerAgentApproval(id: number, interactionId: string, choice: 'yes' | 'no') {
 		return controller?.answerAgentApproval(id, interactionId, choice) ?? Promise.resolve(false);
+	},
+
+	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string) {
+		return controller?.updateClaudeSetting(id, setting, value) ?? Promise.resolve(false);
 	},
 
 	createTerminal(ws?: string) {

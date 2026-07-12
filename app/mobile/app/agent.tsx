@@ -326,11 +326,13 @@ export default function AgentDetailScreen() {
 				<AgentComposer
 					draftKey={draftKey}
 					activeId={activeId}
+					sessionEpoch={chat?.epoch}
 					agent={chat !== undefined && !chat.none ? chat.agent : undefined}
 					model={chat?.info?.model}
 					effort={chat?.info?.effort}
 					modelControl={chat?.modelControl}
 					sendText={actions.sendText}
+					updateClaudeSetting={actions.updateClaudeSetting}
 					onAfterSubmit={scrollToEndSticky}
 					fsUpload={fsUpload}
 					requestAgentModelCatalog={requestAgentModelCatalog}

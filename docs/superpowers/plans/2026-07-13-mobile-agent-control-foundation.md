@@ -94,12 +94,13 @@
 - Consumes: Task 2のrequest/result、Task 3のinteraction mode。
 - Produces: prompt状態に限定されたClaude model command。
 
-- [ ] Claudeモデルコマンドをtermチャネルからagent actionへ移す。
-- [ ] prompt以外の状態では要求を拒否する。
-- [ ] 既存確認ダイアログguardをrequest IDとsession epochへ紐づける。
-- [ ] guardの成功、タイムアウト、セッション変更をaction resultへ反映する。
-- [ ] Codexの既存app-server設定変更経路は維持する。
-- [ ] read-only reviewerへ差分レビューを依頼し、Important以上を解消する。
+- [x] Claudeモデルコマンドをtermチャネルからagent actionへ移す。
+- [x] prompt以外の状態では要求を拒否する。
+- [x] 既存確認ダイアログguardをrequest IDとsession epochへ紐づける。
+- [x] guardの成功、タイムアウト、セッション変更をaction resultへ反映する。
+- [x] Claude設定専用capabilityで旧・中間PCとのfallbackを維持する。
+- [x] Codexの既存app-server設定変更経路は維持する。
+- [x] read-only reviewerへ差分レビューを依頼し、Important以上を解消する。
 
 ### Task 5: 基盤全体レビュー
 

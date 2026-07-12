@@ -380,6 +380,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.agentChat.finalizeInteractionAction(mobileId, requestId, token, outcome);
 	}
 
+	async validateAgentAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number): Promise<boolean> {
+		return this.agentChat.validateClaimedAction(mobileId, requestId, token, epoch, terminalId, windowId);
+	}
+
 	private snapshot(): IParadisMobileStatus {
 		return {
 			state: this.connectionState,

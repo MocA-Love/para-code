@@ -50,11 +50,40 @@ export class ParadisAgentModelSwitchGuard extends Disposable {
 		this.arm(instance);
 	}
 
-	private arm(instance: ITerminalInstance): void {
+	/** Agent Action用。コマンド送信から確認ダイアログの自動確定までを1つのPromiseで追跡する。 */
+	async execute(instance: ITerminalInstance, command: string, validate: () => Promise<boolean>): Promise<void> {
+		if (!MODEL_SWITCH_COMMAND.test(command.trimStart())) {
+			throw new Error('Unsupported Claude setting command');
+		}
+		let cancel = () => { };
+		const confirmation = new Promise<void>((resolve, reject) => { cancel = this.arm(instance, { resolve, reject, validate }); });
+		try {
+			await instance.sendText(command, true, true);
+		} catch (error) {
+			cancel();
+			await confirmation.catch(() => undefined);
+			throw error;
+		}
+		await confirmation;
+	}
+
+	private arm(instance: ITerminalInstance, completion?: { resolve: () => void; reject: (error: Error) => void; validate?: () => Promise<boolean> }): () => void {
 		const id = instance.instanceId;
 		const store = new DisposableStore();
+		const disposeOwnWatch = () => {
+			if (this.watches.get(id) === store) {
+				this.watches.deleteAndDispose(id);
+			}
+		};
 		let buffer = '';
 		let confirmed = false;
+		let settled = false;
+		store.add(toDisposable(() => {
+			if (!settled) {
+				settled = true;
+				completion?.reject(new Error('Claude setting confirmation was cancelled'));
+			}
+		}));
 
 		store.add(instance.onData(chunk => {
 			if (confirmed) {
@@ -68,17 +97,38 @@ export class ParadisAgentModelSwitchGuard extends Disposable {
 			}
 			confirmed = true;
 			// フォーカス既定は "Yes" 側なので Enter 1回で確定できる。
-			instance.sendText('\r', false)
-				.catch(err => this.logService.warn('[paradisMobileRelay] model switch auto-confirm failed', err));
-			// 確定したらウォッチ終了（購読・タイマーを破棄。二重確定を防ぐ）。
-			this.watches.deleteAndDispose(id);
+			Promise.resolve(completion?.validate?.() ?? true).then(valid => {
+				if (!valid || settled || this.watches.get(id) !== store) {
+					throw new Error('Claude setting session changed before confirmation');
+				}
+				// Enter送信開始後は期限タイマーで失敗へ反転させない（副作用と結果を一致させる）。
+				settled = true;
+				return instance.sendText('\r', false);
+			}).then(() => {
+				settled = true;
+				completion?.resolve();
+				// 確定したらウォッチ終了（購読・タイマーを破棄。二重確定を防ぐ）。
+				disposeOwnWatch();
+			}).catch(err => {
+				settled = true;
+				completion?.reject(err instanceof Error ? err : new Error(String(err)));
+				this.logService.warn('[paradisMobileRelay] model switch auto-confirm failed', err);
+				disposeOwnWatch();
+			});
 		}));
 
-		const timer = setTimeout(() => this.watches.deleteAndDispose(id), WATCH_DURATION_MS);
+		const timer = setTimeout(() => {
+			if (!settled) {
+				settled = true;
+				completion?.reject(new Error('Claude setting confirmation timed out'));
+			}
+			disposeOwnWatch();
+		}, WATCH_DURATION_MS);
 		store.add(toDisposable(() => clearTimeout(timer)));
 
 		// 同一端末で連続切替した場合は前回ウォッチを破棄して張り直す（DisposableMap.set は
 		// 上書き時に旧値を dispose する）。
 		this.watches.set(id, store);
+		return disposeOwnWatch;
 	}
 }

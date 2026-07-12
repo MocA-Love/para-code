@@ -122,13 +122,14 @@ type AgentInbound =
 	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string }
 	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
 	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: 'yes' | 'no' }
+	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true } }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true } }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string }
@@ -1452,6 +1453,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly codexMessageBuffers = new Map<string, { itemId: string; text: string; startedAt: number }>();
 	/** Codex daemonで現在表示中のitem ID。古いitem/completedによる巻き戻しを防ぐ。 */
 	private readonly codexActiveItems = new Map<string, string>();
+	/** main agentがターン処理中のtoken。Claude hook / Codex app-serverの開始・終了で更新する。 */
+	private readonly activeTurnTokens = new Set<string>();
 	/** daemonが確認した次ターンのCodexモデル設定。transcriptの直近ターン値より優先表示する。 */
 	private readonly codexThreadSettings = new Map<string, IParadisCodexThreadSettings>();
 	private readonly hookSequences = new Map<string, number>();
@@ -1460,8 +1463,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly codexLiveClient: ParadisCodexLiveClient;
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
-	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
-	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
 
 	constructor(
@@ -1670,6 +1673,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.codexActiveItems.delete(token);
 				this.codexThreadSettings.delete(token);
 				this.activityTrackers.delete(token);
+				this.activeTurnTokens.delete(token);
 			}
 		}
 		this.syncCodexDaemonThreads();
@@ -1783,6 +1787,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.handleQuestionAction(mobileId, msg);
 		} else if (msg.t === 'action/answerApproval' && this.isValidApprovalAction(msg)) {
 			this.handleApprovalAction(mobileId, msg);
+		} else if (msg.t === 'action/claudeSetting' && this.isValidClaudeSettingAction(msg)) {
+			this.handleClaudeSettingAction(mobileId, msg);
 		} else if (msg.t === 'model-catalog' && this.isValidControlRequest(msg)) {
 			this.handleModelCatalogRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] model catalog failed', err));
 		} else if (msg.t === 'settings-update' && this.isValidControlRequest(msg)
@@ -1837,6 +1843,40 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
 			&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
 			&& (msg.choice === 'yes' || msg.choice === 'no');
+	}
+
+	private isValidClaudeSettingAction(msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>): boolean {
+		return this.isValidControlRequest(msg)
+			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+			&& (msg.setting === 'model' || msg.setting === 'effort')
+			&& typeof msg.value === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.value);
+	}
+
+	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const windowId = token !== undefined ? this.windowIdForPane(msg.id, token) : undefined;
+		const key = this.actionKey(mobileId, msg.requestId);
+		if (token === undefined || session?.agent !== 'claude' || tailer === undefined || tailer.epoch !== msg.epoch || windowId === undefined
+			|| !this.hasSubscriber(token, mobileId) || !this.isAgentPrompt(token, tailer) || this.pendingActions.has(key) || this.completedActions.has(key)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'not-at-prompt', message: 'Claude Codeが入力待ちの時だけ設定を変更できます' }, token ?? msg.token);
+			return;
+		}
+		const timer = setTimeout(() => {
+			if (this.pendingActions.delete(key)) {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
+			}
+		}, 5_000);
+		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId, requirePrompt: true, timer });
+		this.requestAction(mobileId, windowId, encoder.encode(JSON.stringify({
+			t: 'action/claudeSetting', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch,
+			setting: msg.setting, value: msg.value, windowId,
+		})));
+	}
+
+	private isAgentPrompt(token: string, tailer: TranscriptTailer): boolean {
+		return !this.activeTurnTokens.has(token) && this.liveStates.get(token) === undefined && tailer.currentInteraction() === null;
 	}
 
 	private handleQuestionAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>): void {
@@ -1916,10 +1956,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			token, epoch, terminalId: pending.terminalId, windowId: pending.windowId,
 			...(pending.interaction !== undefined ? { interaction: pending.interaction } : {}),
 			...(pending.interactionKey !== undefined ? { interactionKey: pending.interactionKey } : {}), timer: completedTimer,
+			...(pending.requirePrompt === true ? { requirePrompt: true } : {}),
 		});
 		const currentTailer = this.tailers.get(token);
 		const valid = pending.token === token && pending.epoch === epoch && currentTailer?.epoch === epoch && this.hasSubscriber(token, mobileId)
 			&& (pending.interaction === undefined || currentTailer.hasPendingInteraction(pending.interaction))
+			&& (pending.requirePrompt !== true || this.isAgentPrompt(token, currentTailer))
 			&& (pending.interactionKey === undefined || this.interactionClaims.get(pending.interactionKey) === key);
 		if (!valid) {
 			this.releaseInteractionClaim(pending.interactionKey, key);
@@ -1945,6 +1987,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.releaseInteractionClaim(completed.interactionKey, key);
 		return 'completed';
+	}
+
+	validateClaimedAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number): boolean {
+		const completed = this.completedActions.get(this.actionKey(mobileId, requestId));
+		const tailer = this.tailers.get(token);
+		return completed !== undefined && completed.token === token && completed.epoch === epoch
+			&& completed.terminalId === terminalId && completed.windowId === windowId
+			&& this.windowIdForPane(terminalId, token) === windowId && tailer?.epoch === epoch
+			&& this.hasSubscriber(token, mobileId)
+			&& (completed.requirePrompt !== true || (this.paneSessions.get(token)?.agent === 'claude' && this.isAgentPrompt(token, tailer)));
 	}
 
 	finalizeInteractionAction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed'): void {
@@ -2070,14 +2122,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 			// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 			const messages = tailer.messages.filter(m => m.rev > afterRev);
-			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity, interaction, capabilities: { agentActions: true } }, token);
+			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } }, token);
 		} else {
 			const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 			this.sendTo(mobileId, {
 				t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
 				...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 				...(info !== undefined ? { info } : {}),
-				live, activity, interaction, capabilities: { agentActions: true },
+				live, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
 			}, token);
 		}
 	}
@@ -2258,6 +2310,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'turn/started') {
+			this.activeTurnTokens.add(token);
 			if (this.activityTracker(token).beginTurn()) {
 				this.pushActivityToSubscribers(token);
 			}
@@ -2267,6 +2320,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (event.method === 'turn/completed' || event.method === 'turn/failed' || event.method === 'turn/aborted') {
+			this.activeTurnTokens.delete(token);
 			// turn/failed は usage limit 等のエラー中断（turn/completed が来ないため、
 			// ここで解除しないと「考え中」表示が残り続ける）。
 			this.codexMessageBuffers.delete(token);
@@ -2491,6 +2545,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.disposeTailer(token);
 			this.clearLiveState(token);
 			this.activityTrackers.delete(token);
+			this.activeTurnTokens.delete(token);
 		}
 		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
 		this.paneSessions.set(token, session);
@@ -2549,7 +2604,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			clearTimeout(pendingTimer);
 			this.pendingHookTimers.delete(event.token);
 		}
-		this.updateLiveFromHook(event);
+		const submittedPrompt = str(event.payload?.['prompt'])?.trimStart();
+		const isLocalSettingCommand = event.event === 'UserPromptSubmit' && submittedPrompt !== undefined && /^\/(?:model|effort)\s+\S/.test(submittedPrompt);
+		if (!isLocalSettingCommand) {
+			this.updateLiveFromHook(event);
+		}
 		this.cancelCliDiscovery(event.token);
 		this.cliDiscoveryGenerations.set(event.token, (this.cliDiscoveryGenerations.get(event.token) ?? 0) + 1);
 		const previousOwner = this.transcriptClaims.get(transcriptPath);
@@ -2564,6 +2623,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.codexActiveItems.delete(previousOwner);
 			this.codexThreadSettings.delete(previousOwner);
 			this.activityTrackers.delete(previousOwner);
+			this.activeTurnTokens.delete(previousOwner);
 			this.cancelCliDiscovery(previousOwner);
 			this.cliDiscoveryGenerations.set(previousOwner, (this.cliDiscoveryGenerations.get(previousOwner) ?? 0) + 1);
 		}
@@ -2593,12 +2653,16 @@ export class ParadisMobileAgentChat extends Disposable {
 			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
 			this.codexThreadSettings.delete(event.token);
 			this.activityTrackers.delete(event.token);
+			this.activeTurnTokens.delete(event.token);
 			this.disposeTailer(event.token);
 			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscribers(event.token);
 		}
-		if (event.event === 'UserPromptSubmit' && this.activityTracker(event.token).beginTurn()) {
+		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand && this.activityTracker(event.token).beginTurn()) {
 			this.pushActivityToSubscribers(event.token);
+		}
+		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand) {
+			this.activeTurnTokens.add(event.token);
 		}
 		const activityChanged = event.payload !== undefined && this.activityTracker(event.token).applyClaude(event.event, event.payload, event.at);
 		const activityEnded = event.event === 'Stop' || event.event === 'SessionEnd'
@@ -2606,6 +2670,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			: event.event === 'StopFailure' ? this.activityTracker(event.token).endTurn('failed', event.at) : false;
 		if (activityChanged || activityEnded) {
 			this.pushActivityToSubscribers(event.token);
+		}
+		if (event.event === 'Stop' || event.event === 'SessionEnd' || event.event === 'StopFailure') {
+			this.activeTurnTokens.delete(event.token);
 		}
 
 		// AskUserQuestion のライブ検出: Claude Code は質問の tool_use を決着（回答/中断）まで
@@ -2700,7 +2767,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true } });
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } });
 				}
 			},
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する

@@ -149,6 +149,8 @@ export interface IParadisMobileRelayService {
 	continueAgentInteraction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number): Promise<'valid' | 'completed' | 'stale'>;
 	/** renderer側のinteractionキー列が成功・失敗・取消のいずれかで終了したことを通知し、排他claimを解放する。 */
 	finalizeAgentInteraction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed'): Promise<void>;
+	/** 長時間Action完了時にsession/ownerがclaim時と同じか確認する。 */
+	validateAgentAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number): Promise<boolean>;
 
 	/**
 	 * renderer → shared process: このウィンドウのフォーカス状態を報告する（PCフォーカス中の

@@ -201,6 +201,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly claimAgentAction: (mobileId: string, requestId: string, token: string, epoch: string) => Promise<'claimed' | 'stale' | 'expired'>,
 		private readonly continueAgentInteraction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<'valid' | 'completed' | 'stale'>,
 		private readonly finalizeAgentInteraction: (mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed') => Promise<void>,
+		private readonly validateAgentAction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<boolean>,
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
@@ -490,7 +491,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown };
 		let interactionAccepted = false;
 		try {
 			msg = JSON.parse(payload.toString());
@@ -498,11 +499,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		const sendMessage = msg.t === 'action/sendMessage' && typeof msg.text === 'string';
+		const claudeSetting = msg.t === 'action/claudeSetting' && (msg.setting === 'model' || msg.setting === 'effort')
+			&& typeof msg.value === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.value)
+			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
 		const interaction = msg.t === 'action/interaction' && Array.isArray(msg.parts) && msg.parts.length > 0 && msg.parts.length <= 500
 			&& msg.parts.every(part => typeof part === 'string' && part.length <= 10_000)
 			&& typeof msg.delayMs === 'number' && Number.isInteger(msg.delayMs) && msg.delayMs >= 0 && msg.delayMs <= 1_000
 			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
-		if ((!sendMessage && !interaction) || typeof msg.id !== 'number' || typeof msg.token !== 'string'
+		if ((!sendMessage && !interaction && !claudeSetting) || typeof msg.id !== 'number' || typeof msg.token !== 'string'
 			|| typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string') {
 			return;
 		}
@@ -524,6 +528,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		try {
 			if (sendMessage) {
 				await instance.sendText(msg.text as string, true, true);
+			} else if (claudeSetting) {
+				await this.modelSwitchGuard.execute(instance, `/${msg.setting as 'model' | 'effort'} ${msg.value as string}`,
+					() => this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number));
+				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number))) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '設定変更中にClaude Codeセッションが変わりました');
+					return;
+				}
 			} else {
 				const parts = msg.parts as string[];
 				for (let index = 0; index < parts.length; index++) {
@@ -551,7 +562,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
 		} catch {
-			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'send-failed', 'メッセージを送信できませんでした');
+			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', claudeSetting ? 'confirmation-failed' : 'send-failed', claudeSetting ? 'Claude Codeの設定変更を確認できませんでした' : 'メッセージを送信できませんでした');
 		} finally {
 			if (interaction) {
 				await this.finalizeAgentInteraction(mobileId, msg.requestId, msg.token, interactionAccepted ? 'accepted' : 'failed').catch(err => this.logService.warn('[paradisMobileRelay] finalize agent interaction failed', err));

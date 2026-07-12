@@ -27,18 +27,20 @@ import { hapticImpact } from '../haptics.js';
  * （毎レンダリングで新しい要素参照になる props を作らないため）。
  */
 export const AgentComposer = memo(function AgentComposer({
-	draftKey, activeId, agent, model, effort, modelControl,
-	sendText, onAfterSubmit, fsUpload, requestAgentModelCatalog, updateAgentSettings,
+	draftKey, activeId, sessionEpoch, agent, model, effort, modelControl,
+	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, requestAgentModelCatalog, updateAgentSettings,
 }: {
 	/** 下書きの退避キー（ターミナル単位。切替時のみ変わる）。 */
 	draftKey: string | undefined;
 	activeId: number | undefined;
+	sessionEpoch: string | undefined;
 	/** 'claude' | 'codex'（セッション未特定時は undefined）。 */
 	agent: string | undefined;
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
 	sendText: (text: string) => Promise<boolean>;
+	updateClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<boolean>;
 	/** 送信直後に呼ぶ（最下部への追従スクロール）。 */
 	onAfterSubmit: () => void;
 	fsUpload: (name: string, dataBase64: string) => Promise<FsUploadResult>;
@@ -134,11 +136,12 @@ export const AgentComposer = memo(function AgentComposer({
 						<Ionicons name={uploading ? 'hourglass-outline' : 'add'} size={20} color={colors.text} />
 					</Pressable>
 					<ModelPill
+						key={`${activeId ?? 'none'}:${sessionEpoch ?? 'none'}:${agent ?? 'none'}`}
 						agent={agent}
 						model={model}
 						effort={effort}
 						modelControl={modelControl}
-						onClaudeCommand={sendText}
+						onClaudeSetting={updateClaudeSetting}
 						onRequestCodexCatalog={() => { if (activeId !== undefined) { requestAgentModelCatalog(activeId); } }}
 						onUpdateCodexSettings={(nextModel, nextEffort) => { if (activeId !== undefined) { updateAgentSettings(activeId, nextModel, nextEffort); } }}
 					/>
