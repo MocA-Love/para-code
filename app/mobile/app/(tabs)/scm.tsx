@@ -10,6 +10,7 @@ import { DiffView } from '../../src/components/diffView.js';
 import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
+import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
 
@@ -25,6 +26,8 @@ export default function ScmScreen() {
 	})));
 
 	const tabBarSpacer = useTabBarSpacer();
+	// 相対時刻表示（最近のコミットの「〇分前」）を画面を開いたままでも追従させる
+	const now = useNow();
 	const [status, setStatus] = useState<ScmStatusResult | undefined>();
 	const [log, setLog] = useState<ScmLogResult | undefined>();
 	const [logError, setLogError] = useState<string | undefined>();
@@ -218,7 +221,8 @@ export default function ScmScreen() {
 							<Pressable style={styles.commitRow} onPress={() => { hapticSelection(); toggleCommit(c.hash); }}>
 								<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={11} color={colors.textDim} />
 								<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
-								<Text style={styles.commitWhen}>{c.when}</Text>
+								{/* atが無いのは旧バージョンのPC（whenはPC側整形の英語文字列） */}
+								<Text style={styles.commitWhen}>{c.at !== undefined ? formatRelativeTime(c.at, now) : c.when}</Text>
 								{log?.webUrl ? (
 									<Pressable onPress={() => { hapticImpact('light'); openCommit(c.hash); }} hitSlop={8} accessibilityLabel="ブラウザでコミットを開く">
 										<Ionicons name="open-outline" size={13} color={colors.textDim} />
