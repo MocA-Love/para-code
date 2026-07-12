@@ -781,7 +781,7 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 
 // ---- hook未発火時のセッション探索フォールバック ------------------------------------------------
 
-async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | undefined): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string }[] | undefined> {
+async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | undefined): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] | undefined> {
 	let database: DatabaseSync | undefined;
 	try {
 		const names = await fs.readdir(paradisCodexHome());
@@ -792,22 +792,28 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
 		const rows = database.prepare(`
-			SELECT id, rollout_path, COALESCE(updated_at_ms, updated_at * 1000) AS mtime
+			SELECT id, rollout_path, COALESCE(updated_at_ms, updated_at * 1000) AS mtime,
+				COALESCE(created_at_ms, created_at * 1000) AS created_at
 			FROM threads
 			WHERE cwd = ? AND archived = 0
 				AND (? IS NULL OR COALESCE(updated_at_ms, updated_at * 1000) >= ?)
 			ORDER BY mtime DESC
 		`).all(cwd, minMtime ?? null, minMtime ?? null) as unknown[];
-		const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string }[] = [];
+		const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] = [];
 		for (const value of rows) {
 			const row = rec(value);
 			const transcriptPath = str(row?.['rollout_path']);
 			const sessionId = str(row?.['id']);
 			const mtime = num(row?.['mtime']);
+			const createdAt = num(row?.['created_at']);
 			if (transcriptPath === undefined || !isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl') || mtime === undefined) {
 				continue;
 			}
-			candidates.push({ agent: 'codex', transcriptPath, mtime, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}) });
+			candidates.push({
+				agent: 'codex', transcriptPath, mtime,
+				...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
+				...(createdAt !== undefined ? { createdAt } : {}),
+			});
 		}
 		return candidates;
 	} catch {
@@ -826,8 +832,8 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
  * - Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl の直近ファイルのうち
  *           先頭行 session_meta の cwd が一致する最新のもの
  */
-async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set()): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string } | undefined> {
-	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string }[] = [];
+async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set()): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined> {
+	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] = [];
 
 	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）。
 	// Claude Code はcwdをrealpath解決してからスラッグ化するため、symlink経由のターミナルでも
@@ -2184,14 +2190,22 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// CLI起動との相関には更新時刻ではなくファイル生成時刻を使う。別paneの古いthreadが
 		// 偶然同時に更新されても、新規起動paneへ割り当てない。復元探索はこの制約を使わない。
+		// state DB由来の候補はDBのcreated_atで判定する。Codexは最初のターンまでrollout実ファイルを
+		// 生成しないため、ファイルのbirthtimeを待つと起動直後のセッションを取りこぼす。
 		if (minMtime !== undefined) {
-			try {
-				const stat = await fs.stat(discovered.transcriptPath);
-				if (stat.birthtimeMs < minMtime) {
+			if (discovered.createdAt !== undefined) {
+				if (discovered.createdAt < minMtime) {
 					return;
 				}
-			} catch {
-				return;
+			} else {
+				try {
+					const stat = await fs.stat(discovered.transcriptPath);
+					if (stat.birthtimeMs < minMtime) {
+						return;
+					}
+				} catch {
+					return;
+				}
 			}
 		}
 		if (this.cliDiscoveryGenerations.get(token) !== generation
