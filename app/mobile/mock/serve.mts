@@ -17,6 +17,11 @@ const server = createServer(async (request, response) => {
 		return;
 	}
 	const url = new URL(request.url ?? '/', 'http://localhost');
+	if (url.pathname === '/favicon.ico') {
+		response.writeHead(204, { 'Cache-Control': 'public, max-age=86400' });
+		response.end();
+		return;
+	}
 	if (url.pathname !== '/' && url.pathname !== '/agent-ui-catalog.html') {
 		response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
 		response.end('Not Found');
