@@ -11,7 +11,7 @@ import { useAppStore } from '../src/appState.js';
 import { isAgentWaiting, type AgentChatMessage, type AgentLiveState } from '../src/store.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
 import { MarkdownText } from '../src/components/markdownText.js';
-import { GlassSurface } from '../src/components/glassSurface.js';
+import { GlassSurface, liquidGlass } from '../src/components/glassSurface.js';
 import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.js';
 import { ApprovalCard } from '../src/components/approvalCard.js';
 import { AgentActivityCard } from '../src/components/agentActivityCard.js';
@@ -154,62 +154,86 @@ export default function AgentDetailScreen() {
 		return () => detachAgent(activeId);
 	}, [activeId, attachAgent, detachAgent]);
 
-	// 新着で末尾へスクロール。画面を開いた直後（対象切替直後）は、上から下まで流れる
-	// アニメーションを見せず最新メッセージへ即時ジャンプする。FlatListは長い履歴を
-	// 分割レンダリングして contentSize が段階的に伸びるため、開いてからしばらくは
-	// onContentSizeChange のたびに末尾へ張り付かせる（pinUntil方式）。
-	const pinUntilRef = useRef(0);
-	const pinArmedRef = useRef(true);
-	useEffect(() => {
-		pinArmedRef.current = true;
-	}, [activeId]);
-	const messagesArrived = (chat?.messages.length ?? 0) > 0;
-	useEffect(() => {
-		// pinの起点は「最初のメッセージが実際に届いた時」。attach（activeId変更）起点だと
-		// 低速リレーでデータ到着が800msを超えたとき初回ジャンプが効かなくなる。
-		if (messagesArrived && pinArmedRef.current) {
-			pinArmedRef.current = false;
-			pinUntilRef.current = Date.now() + 800;
-			listRef.current?.scrollToEnd({ animated: false });
+	// 自動スクロールは「sticky（最下部追従）モード」の状態ベースで制御する。
+	// 開いた直後・対象切替直後は sticky で、onContentSizeChange のたびに末尾へ
+	// 即時ジャンプする（FlatListは長い履歴を分割レンダリングして contentSize が
+	// 段階的に伸びるため、初回表示もこれで最新まで張り付く）。確定メッセージの追加
+	// だけでなく、実行中インジケータ（live/activity のフッター）の伸縮にも追従する。
+	// ユーザーが上へスクロールして下端から離れたら解除し、以後は何が届いても位置を
+	// 動かさない（遡り読みを妨げない）。下端付近まで手で戻ると自動で復帰する。
+	const [sticky, setStickyState] = useState(true);
+	const stickyRef = useRef(true);
+	// sticky解除中に届いた新着（確定メッセージ）の件数。ジャンプボタンのバッジに出す。
+	const [newCount, setNewCount] = useState(0);
+	const setSticky = (value: boolean) => {
+		stickyRef.current = value;
+		setStickyState(value);
+		if (value) {
+			setNewCount(0);
 		}
-	}, [messagesArrived, activeId]);
+	};
+	const prevCountRef = useRef(0);
+	useEffect(() => {
+		setSticky(true);
+		prevCountRef.current = 0;
+	}, [activeId]);
+	const messageCount = chat?.messages.length ?? 0;
+	useEffect(() => {
+		const delta = messageCount - prevCountRef.current;
+		prevCountRef.current = messageCount;
+		if (delta > 0 && !stickyRef.current) {
+			setNewCount(c => c + delta);
+		}
+	}, [messageCount]);
 	const onContentSizeChange = () => {
-		if (Date.now() < pinUntilRef.current) {
+		if (stickyRef.current) {
 			listRef.current?.scrollToEnd({ animated: false });
 		}
 	};
-
-	// キーボード開閉でリストの高さが変わったとき、直前に最下部（最新）を見ていたなら
-	// 最下部へ張り付き直す。KeyboardAvoidingView は高さを縮めるだけでスクロール位置を
-	// 保持するため、これが無いと最新メッセージがキーボードの裏に隠れる。
-	// 履歴を遡って読んでいる最中（最下部にいない）は位置を動かさない。
-	const atBottomRef = useRef(true);
-	const listHeightRef = useRef(0);
+	// アニメーション付き scrollToEnd（ジャンプ・自分の送信）は中間位置でも onScroll を
+	// 発火させるため、その途中経過を「ユーザーが上へスクロールした」と誤認して sticky を
+	// 解除しないよう、プログラム起因のスクロール中は解除判定を抑止する。
+	const programmaticUntilRef = useRef(0);
+	const scrollToEndSticky = () => {
+		setSticky(true);
+		programmaticUntilRef.current = Date.now() + 700;
+		listRef.current?.scrollToEnd({ animated: true });
+	};
+	// sticky判定のしきい値: 下端から80px以内なら「最下部にいる」とみなす。
 	const onListScroll = (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
 		const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-		atBottomRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 48;
+		const nearBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - 80;
+		if (nearBottom && !stickyRef.current) {
+			setSticky(true);
+		} else if (!nearBottom && stickyRef.current && Date.now() >= programmaticUntilRef.current) {
+			setSticky(false);
+		}
 	};
+	const jumpToLatest = () => {
+		hapticSelection();
+		scrollToEndSticky();
+	};
+
+	// キーボード開閉でリストの高さが変わったとき、最下部追従中なら張り付き直す。
+	// KeyboardAvoidingView は高さを縮めるだけでスクロール位置を保持するため、
+	// これが無いと最新メッセージがキーボードの裏に隠れる。
+	// 履歴を遡って読んでいる最中（sticky解除中）は位置を動かさない。
+	const listHeightRef = useRef(0);
 	const onListLayout = (e: { nativeEvent: { layout: { height: number } } }) => {
 		const height = e.nativeEvent.layout.height;
 		const shrank = height < listHeightRef.current;
 		listHeightRef.current = height;
-		if (shrank && atBottomRef.current) {
+		if (shrank && stickyRef.current) {
 			listRef.current?.scrollToEnd({ animated: false });
 		}
 	};
-	const messageCount = chat?.messages.length ?? 0;
-	useEffect(() => {
-		if (messageCount > 0 && Date.now() >= pinUntilRef.current) {
-			const timer = setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80);
-			return () => clearTimeout(timer);
-		}
-		return undefined;
-	}, [messageCount, activeId]);
 
 	const submit = () => {
 		const text = input;
 		setInput('');
 		actions.sendText(text);
+		// 自分の送信は例外的に無条件で最下部へ（遡り読み中でも自分の発言は見たいはず）
+		scrollToEndSticky();
 	};
 
 	/**
@@ -278,6 +302,18 @@ export default function AgentDetailScreen() {
 						onLayout={onListLayout}
 					/>
 				)}
+				{/* sticky解除中（遡り読み中）の「最新へジャンプ」ボタン（Liquid Glass）。
+				    新着が届いたら件数バッジを添える。タップで最下部へ戻り追従を再開する */}
+				{!sticky && chat !== undefined && !chat.none ? (
+					<View style={styles.jumpWrap} pointerEvents="box-none">
+						<Pressable onPress={jumpToLatest} accessibilityLabel="最新のメッセージへ移動">
+							<GlassSurface style={[styles.jumpBtn, !liquidGlass && styles.jumpFallbackBorder]} interactive>
+								<Ionicons name="chevron-down" size={16} color={colors.text} />
+								{newCount > 0 ? <Text style={styles.jumpText}>{newCount > 99 ? '99+' : String(newCount)}</Text> : null}
+							</GlassSurface>
+						</Pressable>
+					</View>
+				) : null}
 			</View>
 
 			{/* 独自ヘッダー: チャットの上に重ねるブラーバー（純正メール風にコンテンツが
@@ -527,6 +563,11 @@ const styles = StyleSheet.create({
 	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
 	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4 },
 	workingPreview: { color: colors.text, fontSize: 12, lineHeight: 18, marginLeft: 4, opacity: 0.82 },
+	jumpWrap: { position: 'absolute', bottom: 12, right: 14 },
+	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く（他のglassボタンと同じ流儀）
+	jumpBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minWidth: 40, height: 40, borderRadius: 20, paddingHorizontal: 12, overflow: 'hidden' },
+	jumpFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
+	jumpText: { color: colors.text, fontSize: 12, fontWeight: '600' },
 	inputBar: { paddingHorizontal: 12, paddingTop: 10 },
 	attachBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 });
