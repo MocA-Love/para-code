@@ -110,6 +110,11 @@ export interface IParadisAgentSessionInfo {
 	readonly effort?: string;
 }
 
+export interface IParadisAgentInteraction {
+	readonly kind: 'question' | 'approval';
+	readonly id: string;
+}
+
 /** agentチャネルのモバイル→PCメッセージ。 */
 type AgentInbound =
 	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number }
@@ -120,8 +125,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; capabilities?: { readonly agentActions: true } }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; capabilities?: { readonly agentActions: true } }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true } }
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true } }
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string }
@@ -962,7 +967,7 @@ class TranscriptTailer {
 	 * AskUserQuestion の tool_use を決着（回答/中断）まで transcript へ flush しないため、
 	 * hook 供給の合成カードを先に出し、決着後に transcript へ現れる本物と突き合わせる。
 	 */
-	private readonly liveQuestions = new Map<string, string>();
+	private readonly liveQuestions = new Map<string, string[]>();
 	/**
 	 * transcript に現れた本物の tool_use_id → 合成ID群（後続 tool_result の付け替え用）。
 	 * 1回の AskUserQuestion に複数の質問が含まれると、合成カードは質問ごとに別IDだが
@@ -1111,6 +1116,8 @@ class TranscriptTailer {
 				this.initialTruncated = false;
 				this.backgroundTasks.clear();
 				this.pendingQuestions.clear();
+				this.pendingApprovalId = undefined;
+				this.lastApprovalKey = undefined;
 				this.liveQuestions.clear();
 				this.liveQuestionRealIds.clear();
 				this.model = undefined;
@@ -1175,7 +1182,9 @@ class TranscriptTailer {
 				// 現れたら間引き（合成カードで表示済み）、対応する tool_result は合成IDへ
 				// 付け替える（モバイル側の合成カードが「回答済み」になる）。
 				if (message.kind === 'question') {
-					const syntheticId = this.liveQuestions.get(liveQuestionContentKey(message));
+					const contentKey = liveQuestionContentKey(message);
+					const syntheticIds = this.liveQuestions.get(contentKey);
+					const syntheticId = syntheticIds?.shift();
 					if (syntheticId !== undefined) {
 						if (message.toolUseId !== undefined) {
 							const ids = this.liveQuestionRealIds.get(message.toolUseId);
@@ -1185,7 +1194,9 @@ class TranscriptTailer {
 								this.liveQuestionRealIds.set(message.toolUseId, [syntheticId]);
 							}
 						}
-						this.liveQuestions.delete(liveQuestionContentKey(message));
+						if (syntheticIds?.length === 0) {
+							this.liveQuestions.delete(contentKey);
+						}
 						continue;
 					}
 				}
@@ -1221,6 +1232,8 @@ class TranscriptTailer {
 
 	/** 直近に注入した承認要求の内容キー（PermissionRequest hookの再発火による重複注入の抑止）。 */
 	private lastApprovalKey: string | undefined;
+	private pendingApprovalId: string | undefined;
+	private approvalSeq = 0;
 
 	/**
 	 * PermissionRequest hook で受けた承認要求の内容（ツール名・コマンド等）を表示カードとして
@@ -1228,7 +1241,7 @@ class TranscriptTailer {
 	 * transcript に現れないため、hook が唯一のライブな供給源。モバイル側はこのメッセージの
 	 * 内容を承認バー（許可/拒否）に添えて表示する。
 	 */
-	injectApprovalRequest(toolName: string | undefined, toolInput: unknown): void {
+	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string): void {
 		this.enqueue(async () => {
 			const input = rec(toolInput);
 			const detail = str(input?.['description']) ?? str(input?.['command']) ?? (input !== undefined ? JSON.stringify(input) : '');
@@ -1236,14 +1249,16 @@ class TranscriptTailer {
 			if (text.length === 0) {
 				return;
 			}
-			const key = text;
+			const key = toolUseId !== undefined ? `${toolUseId}:${text}` : text;
 			if (this.lastApprovalKey === key) {
 				return; // 同一要求の再発火（リトライ等）は無視
 			}
+			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
 			this.lastApprovalKey = key;
+			this.pendingApprovalId = interactionId;
 			const message: IParadisAgentChatMessage = {
 				role: 'assistant', kind: 'tool_use', tool: 'approval_request',
-				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++,
+				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++, toolUseId: interactionId,
 			};
 			this.messages.push(message);
 			if (this.messages.length > MESSAGE_RING_LIMIT) {
@@ -1251,6 +1266,35 @@ class TranscriptTailer {
 			}
 			this.delegate.onDelta([message]);
 		});
+	}
+
+	clearApprovalRequest(toolUseId: string | undefined, force: boolean): void {
+		this.enqueue(async () => {
+			if (this.pendingApprovalId === undefined || (!force && (toolUseId === undefined || this.pendingApprovalId !== toolUseId))) {
+				return;
+			}
+			this.pendingApprovalId = undefined;
+			this.lastApprovalKey = undefined;
+			this.delegate.onDelta([]);
+		});
+	}
+
+	currentInteraction(): IParadisAgentInteraction | null {
+		if (this.pendingApprovalId !== undefined) {
+			return { kind: 'approval', id: this.pendingApprovalId };
+		}
+		for (let index = this.messages.length - 1; index >= 0; index--) {
+			const message = this.messages[index];
+			if (message.kind === 'question' && message.toolUseId !== undefined && this.pendingQuestions.has(message.toolUseId)) {
+				return { kind: 'question', id: message.questionGroup ?? message.toolUseId };
+			}
+		}
+		return null;
+	}
+
+	hasPendingInteraction(interaction: IParadisAgentInteraction): boolean {
+		const current = this.currentInteraction();
+		return current?.kind === interaction.kind && current.id === interaction.id;
 	}
 
 	/**
@@ -1266,13 +1310,18 @@ class TranscriptTailer {
 			// ステップ式カードへ集約できるよう、共通の合成グループキーを付与する
 			const groupId = `liveg:${this.epoch}:${this.liveQuestionGroupSeq++}`;
 			const added: IParadisAgentChatMessage[] = [];
+			const occurrences = new Map<string, number>();
 			for (const message of parsed) {
 				const key = liveQuestionContentKey(message);
-				if (this.liveQuestions.has(key)) {
+				const occurrence = occurrences.get(key) ?? 0;
+				occurrences.set(key, occurrence + 1);
+				const existingIds = this.liveQuestions.get(key) ?? [];
+				if (existingIds.length > occurrence) {
 					continue; // 同一質問の多重hook（リトライ等）は無視
 				}
 				const syntheticId = `live:${this.epoch}:${this.liveQuestionSeq++}`;
-				this.liveQuestions.set(key, syntheticId);
+				existingIds.push(syntheticId);
+				this.liveQuestions.set(key, existingIds);
 				this.pendingQuestions.add(syntheticId);
 				added.push({ ...message, toolUseId: syntheticId, questionGroup: groupId, rev: this.rev++ });
 			}
@@ -1874,17 +1923,18 @@ export class ParadisMobileAgentChat extends Disposable {
 		const info = this.infoOf(token, tailer);
 		const live = this.liveStates.get(token) ?? null;
 		const activity = this.activityTrackers.get(token)?.snapshot() ?? null;
+		const interaction = tailer.currentInteraction();
 		if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 			// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 			const messages = tailer.messages.filter(m => m.rev > afterRev);
-			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity, capabilities: { agentActions: true } }, token);
+			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity, interaction, capabilities: { agentActions: true } }, token);
 		} else {
 			const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 			this.sendTo(mobileId, {
 				t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
 				...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 				...(info !== undefined ? { info } : {}),
-				live, activity, capabilities: { agentActions: true },
+				live, activity, interaction, capabilities: { agentActions: true },
 			}, token);
 		}
 	}
@@ -2434,7 +2484,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& !getParadisAgentPaneActivity(event.token).pendingQuestion
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token))) {
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput);
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, event.toolUseId);
+		}
+		const forceApprovalClear = event.event === 'Stop' || event.event === 'SessionEnd' || event.event === 'StopFailure' || event.event === 'PermissionDenied';
+		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
+		if ((forceApprovalClear || matchingApprovalClear) && this.tailers.has(event.token)) {
+			this.tailers.get(event.token)?.clearApprovalRequest(event.toolUseId, forceApprovalClear);
 		}
 	}
 
@@ -2484,7 +2539,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 				const terminalId = this.terminalIdForToken(token);
 				if (terminalId !== undefined) {
-					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages });
+					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, interaction: tailer.currentInteraction() });
 				}
 				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
 				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
@@ -2502,7 +2557,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, activity: this.activityTrackers.get(token)?.snapshot() ?? null, capabilities: { agentActions: true } });
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true } });
 				}
 			},
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
