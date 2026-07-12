@@ -29,7 +29,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
-import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload } from './paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload } from './paradisAgentHookBus.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
@@ -296,9 +296,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		for (const [token, entry] of [...this._paneShells]) {
 			if (entry.windowCtx === windowCtx) {
 				this._paneShells.delete(token);
-				// 同ウィンドウの全置換で消えた＝そのペインが閉じられた。まだバインド中でなければ
-				// (アクティブなCDP接続を巻き込まないため) 実行状態などトークン別エントリを掃除する。
-				if (!nextTokens.has(token) && !this._bindings.has(token)) {
+				// 同ウィンドウの全置換で消えた＝そのペインが閉じられた。Browser bindingも
+				// ペインtokenの所有物なので、残存していても一緒にretireする。
+				if (!nextTokens.has(token)) {
 					this._retirePaneToken(token);
 				}
 			}
@@ -383,8 +383,18 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * hook 由来の実行状態・接続実績・CDPゲートウェイのトークン別キャッシュをまとめて落とす。
 	 */
 	private _retirePaneToken(token: string): void {
+		const binding = this._bindings.get(token);
+		if (this._bindings.delete(token)) {
+			this._cdpGateway.closeConnectionsForToken(token);
+			if (binding && !this._isPageBound(binding.pageId)) {
+				this._setBackgroundThrottling(binding.pageId, true);
+			}
+		}
+		this._paneShells.delete(token);
 		this._paneStatuses.delete(token);
+		this._agentHookTokens.delete(token);
 		this._seenTokens.delete(token);
+		clearParadisAgentPaneActivity(token);
 		this._cdpGateway.retireToken(token);
 		this._devtoolsProxy.retire(token);
 	}
@@ -750,8 +760,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ライブ状態（考え中表示）も解除する。
 	 */
 	async notifyTerminalExit(token: string): Promise<void> {
-		this._agentHookTokens.delete(token);
-		this._paneStatuses.delete(token);
+		this._retirePaneToken(token);
 		fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: Date.now() });
 		this._onDidAcknowledgePane.fire(token);
 	}

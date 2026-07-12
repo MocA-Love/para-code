@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { IntervalTimer } from '../../../../base/common/async.js';
-import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { sep } from '../../../../base/common/path.js';
 import { isWindows } from '../../../../base/common/platform.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -17,6 +17,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
@@ -24,6 +25,7 @@ import { ITerminalInstance, ITerminalInstanceService, ITerminalService } from '.
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { paradisShouldClearAgentStatusAfterPollFailures } from '../../agentBrowser/common/paradisAgentStatusStale.js';
 import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 
@@ -63,6 +65,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		@ILogService private readonly logService: ILogService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super();
 
@@ -81,25 +84,41 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 			this.watchInstanceExit(instance);
 		}
 		this._register(terminalInstanceService.onDidCreateInstance(instance => this.watchInstanceExit(instance)));
-		this._register(this.terminalService.onDidDisposeInstance(instance => this.exitListeners.deleteAndDispose(instance.instanceId)));
+		this._register(lifecycleService.onWillShutdown(event => this.preserveTerminalsForReload = event.reason === ShutdownReason.RELOAD));
 
 		this.poll();
 	}
 
 	private readonly exitListeners = this._register(new DisposableMap<number, IDisposable>());
+	private preserveTerminalsForReload = false;
+	private consecutivePollFailures = 0;
 
 	private watchInstanceExit(instance: ITerminalInstance): void {
 		if (this.exitListeners.has(instance.instanceId)) {
 			return;
 		}
-		this.exitListeners.set(instance.instanceId, instance.onExit(() => {
-			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
-			if (token !== undefined) {
-				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
-					.call('notifyTerminalExit', [token])
-					.then(() => this.poll(), () => { /* shared process 未起動時は次のポーリングで整合する */ });
+		const listeners = new DisposableStore();
+		let token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+		let notified = false;
+		const notify = () => {
+			if (notified || token === undefined) {
+				return;
+			}
+			notified = true;
+			this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+				.call('notifyTerminalExit', [token])
+				.then(() => this.poll(), () => { /* shared process 未起動時は次のポーリングで整合する */ });
+			this.exitListeners.deleteAndDispose(instance.instanceId);
+		};
+		// token serviceとpollerのcreate listener順に依存しないよう、未解決なら割当変更時に補完する。
+		listeners.add(this.paneTokenService.onDidChange(() => token ??= this.paneTokenService.getTokenForInstance(instance.instanceId)));
+		listeners.add(instance.onExit(notify));
+		listeners.add(instance.onDisposed(() => {
+			if (!this.preserveTerminalsForReload) {
+				notify();
 			}
 		}));
+		this.exitListeners.set(instance.instanceId, listeners);
 	}
 
 	/**
@@ -142,8 +161,14 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 			]);
 		} catch (error) {
 			this.logService.trace('[ParadisAgentStatus] poll failed', String(error));
+			this.consecutivePollFailures++;
+			if (paradisShouldClearAgentStatusAfterPollFailures(this.consecutivePollFailures)) {
+				this.statusStore.setScopeStatuses(new Map());
+				this.statusStore.setInstanceStates(new Map(), new Set());
+			}
 			return; // shared process 未起動 (起動直後の20〜30秒) は静かにスキップ
 		}
+		this.consecutivePollFailures = 0;
 
 		const activeStateKey = this.workspaceSwitchService.activeStateKey;
 		const scopeStatuses = new Map<string, ParadisAgentStatus>();

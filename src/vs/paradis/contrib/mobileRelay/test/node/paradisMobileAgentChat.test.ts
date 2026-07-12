@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisConfirmedAgentPaneTokens, paradisParseCodexSessionMeta, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
+import { paradisConfirmedAgentPaneTokens, paradisParseClaudeTranscriptLineForTest, paradisParseCodexSessionMeta, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
 
 suite('ParadisMobileAgentChat', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -50,5 +50,38 @@ suite('ParadisMobileAgentChat', () => {
 			{ transcriptPath: '/sessions/a.jsonl', mtime: 20 },
 			{ transcriptPath: '/sessions/b.jsonl', mtime: 21 },
 		], 10, new Set(['/sessions/a.jsonl'])), { transcriptPath: '/sessions/b.jsonl', mtime: 21 });
+	});
+
+	test('classifies a teammate report separately from user input', () => {
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({
+			type: 'user',
+			message: { content: 'Another Claude session sent a message:\n<teammate-message teammate_id="reviewer" summary="レビュー完了">問題はありません。</teammate-message>\nThis came from another Claude session.' },
+		}));
+		assert.strictEqual(parsed.userText, false);
+		assert.deepStrictEqual(parsed.messages, [{
+			role: 'assistant', kind: 'peer_message', text: '問題はありません。', peerName: 'reviewer', peerSummary: 'レビュー完了',
+		}]);
+	});
+
+	test('hides teammate idle notifications', () => {
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({
+			type: 'user',
+			message: { content: 'Another Claude session sent a message:\n<teammate-message teammate_id="reviewer">{"type":"idle_notification","from":"reviewer"}</teammate-message>' },
+		}));
+		assert.strictEqual(parsed.userText, false);
+		assert.deepStrictEqual(parsed.messages, []);
+	});
+
+	test('keeps ordinary Claude transcript user text unchanged', () => {
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'user', message: { content: '通常の質問です' } }));
+		assert.strictEqual(parsed.userText, true);
+		assert.deepStrictEqual(parsed.messages, [{ role: 'user', kind: 'text', text: '通常の質問です' }]);
+	});
+
+	test('does not misclassify a user asking about teammate markup', () => {
+		const text = '<teammate-message teammate_id="example">とは何ですか？';
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'user', message: { content: text } }));
+		assert.strictEqual(parsed.userText, true);
+		assert.deepStrictEqual(parsed.messages, [{ role: 'user', kind: 'text', text }]);
 	});
 });
