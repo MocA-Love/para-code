@@ -8,6 +8,7 @@ import type { NotifyKind, NotifyPayload } from '@para/protocol';
 import { useAppStore } from '../src/appState.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { colors } from '../src/theme.js';
+import { formatRelativeTime, useNow } from '../src/time.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 function dotColor(kind: NotifyKind): string {
@@ -20,22 +21,6 @@ function dotColor(kind: NotifyKind): string {
 	}
 }
 
-function formatRelativeTime(at: number): string {
-	const diffSec = Math.max(0, Math.floor((Date.now() - at) / 1000));
-	if (diffSec < 60) {
-		return '今';
-	}
-	const diffMin = Math.floor(diffSec / 60);
-	if (diffMin < 60) {
-		return `${diffMin}分前`;
-	}
-	const diffHour = Math.floor(diffMin / 60);
-	if (diffHour < 24) {
-		return `${diffHour}時間前`;
-	}
-	return `${Math.floor(diffHour / 24)}日前`;
-}
-
 /**
  * 通知一覧画面。ヘッダーのベル（Link.AppleZoom）からズーム遷移で開く独立ルート
  * （旧notificationsSheet.tsxの自作ボトムシートを置き換え）。ズーム遷移は
@@ -44,6 +29,8 @@ function formatRelativeTime(at: number): string {
 export default function NotificationsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// 相対時刻表示を画面を開いたままでも追従させる
+	const now = useNow();
 	const { notifications, setSelectedWs, setSelectedTerminalId, clearNotifications, dismissNotification } = useAppStore(useShallow(s => ({
 		notifications: s.notifications, setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
 		clearNotifications: s.clearNotifications, dismissNotification: s.dismissNotification,
@@ -95,7 +82,7 @@ export default function NotificationsScreen() {
 								<Text style={styles.rowTitle} numberOfLines={1}>{n.title}</Text>
 								<Text style={styles.rowBody} numberOfLines={2}>{n.body}</Text>
 							</View>
-							<Text style={styles.time}>{formatRelativeTime(n.at)}</Text>
+							<Text style={styles.time}>{formatRelativeTime(n.at, now)}</Text>
 							{openable ? <Ionicons name="chevron-forward" size={13} color={colors.textDim} /> : null}
 						</Pressable>
 					);

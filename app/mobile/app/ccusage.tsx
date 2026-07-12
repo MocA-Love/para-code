@@ -10,6 +10,7 @@ import { ConnectionGate } from '../src/components/connectionGate.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
 import { colors } from '../src/theme.js';
+import { formatRelativeTime, useNow } from '../src/time.js';
 import { hapticImpact } from '../src/haptics.js';
 import type { UsageAgent, UsageDashboardResult } from '../src/store.js';
 
@@ -41,16 +42,9 @@ function localDateKey(date: Date): string {
 	return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function relativeTime(ts: number | undefined): string {
+function relativeTime(ts: number | undefined, now: number): string {
 	if (ts === undefined) { return '—'; }
-	const diffMs = Date.now() - ts;
-	const minutes = Math.floor(diffMs / 60_000);
-	if (minutes < 1) { return 'たった今'; }
-	if (minutes < 60) { return `${minutes}分前`; }
-	const hours = Math.floor(minutes / 60);
-	if (hours < 24) { return `${hours}時間前`; }
-	const days = Math.floor(hours / 24);
-	return `${days}日前`;
+	return formatRelativeTime(ts, now);
 }
 
 interface ModelAgg { model: string; agent: UsageAgent; cost: number; tokens: number }
@@ -86,6 +80,8 @@ export default function CcusageScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// 相対時刻表示（セッションの最終アクティビティ）を画面を開いたままでも追従させる
+	const now = useNow();
 	const { usageDashboard, connection } = useAppStore(useShallow(s => ({ usageDashboard: s.usageDashboard, connection: s.connection })));
 
 	const [data, setData] = useState<UsageDashboardResult | undefined>();
@@ -209,7 +205,7 @@ export default function CcusageScreen() {
 										<View style={styles.rowBody}>
 											<Text style={styles.rowTitle} numberOfLines={1}>{s.project}</Text>
 											<Text style={styles.rowDesc} numberOfLines={1}>
-												{s.models.join(', ') || '—'} · {formatCompactTokens(s.totalTokens)} tok · {relativeTime(s.lastActivity)}
+												{s.models.join(', ') || '—'} · {formatCompactTokens(s.totalTokens)} tok · {relativeTime(s.lastActivity, now)}
 											</Text>
 										</View>
 										<Text style={styles.sessionCost}>{formatCost(s.totalCost)}</Text>

@@ -585,15 +585,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const limit = Math.min(Math.max(Math.trunc(msg.limit ?? 10), 1), 100);
 				const skip = Math.max(Math.trunc(msg.skip ?? 0), 0);
 				// limit+1件取得して切り詰めることで、追加ページの有無(hasMore)を1回のgit logで判定する
-				const result = await this.runGit(repoPath, ['log', '--skip', String(skip), '-n', String(limit + 1), '--pretty=format:%H%x09%ar%x09%s']);
+				// %ct(committer dateのepoch秒)が相対時刻表示の主データ。モバイル側が表示のたびに
+				// 再計算するので取得時点のスナップショットが古くならない（%arだと整形済み文字列が
+				// 固定される上、author date基準のためrebaseしたコミットが実際より古く見える）。
+				// %arは旧バージョンのモバイルアプリ向けフォールバックとして当面残す。
+				const result = await this.runGit(repoPath, ['log', '--skip', String(skip), '-n', String(limit + 1), '--pretty=format:%H%x09%ct%x09%ar%x09%s']);
 				// コミット0件のリポジトリも exit 128 になるため、実エラーは「非ゼロ かつ stderr あり」で判定する
 				if (result.code !== 0 && result.stderr.trim() && !/does not have any commits yet/.test(result.stderr)) {
 					reply({ error: result.stderr.trim() });
 					return;
 				}
 				const all = result.stdout.split('\n').filter(l => l.includes('\t')).map(line => {
-					const [hash, when, ...subject] = line.split('\t');
-					return { hash, when, subject: subject.join('\t') };
+					const [hash, ct, when, ...subject] = line.split('\t');
+					const at = Number(ct) * 1000;
+					return { hash, when, subject: subject.join('\t'), ...(Number.isFinite(at) && at > 0 ? { at } : {}) };
 				});
 				const hasMore = all.length > limit;
 				const commits = hasMore ? all.slice(0, limit) : all;
