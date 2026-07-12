@@ -40,8 +40,48 @@ export interface IParadisAgentHookEvent {
 	readonly messageIndex?: number;
 	/** MessageDisplay: 最後のバッチか。 */
 	readonly messageFinal?: boolean;
+	/** イベント固有フィールドを保持した、サイズ制限済みのhook stdin JSON。 */
+	readonly payload?: Readonly<Record<string, unknown>>;
 	/** 受信時刻（epoch ms）。 */
 	readonly at: number;
+}
+
+const HOOK_PAYLOAD_MAX_DEPTH = 5;
+const HOOK_PAYLOAD_MAX_ENTRIES = 100;
+const HOOK_PAYLOAD_MAX_STRING = 10_000;
+
+function sanitizeHookValue(value: unknown, depth: number): unknown {
+	if (typeof value === 'string') {
+		return value.slice(0, HOOK_PAYLOAD_MAX_STRING);
+	}
+	if (typeof value === 'number' || typeof value === 'boolean' || value === null) {
+		return value;
+	}
+	if (depth >= HOOK_PAYLOAD_MAX_DEPTH) {
+		return Array.isArray(value) ? [] : {};
+	}
+	if (Array.isArray(value)) {
+		return value.slice(0, HOOK_PAYLOAD_MAX_ENTRIES).map(entry => sanitizeHookValue(entry, depth + 1));
+	}
+	if (typeof value === 'object' && value !== null) {
+		const result: Record<string, unknown> = {};
+		for (const [key, entry] of Object.entries(value).slice(0, HOOK_PAYLOAD_MAX_ENTRIES)) {
+			if (key !== '__proto__' && key !== 'prototype' && key !== 'constructor'
+				&& entry !== undefined && typeof entry !== 'function' && typeof entry !== 'symbol') {
+				result[key.slice(0, 200)] = sanitizeHookValue(entry, depth + 1);
+			}
+		}
+		return result;
+	}
+	return undefined;
+}
+
+/** hook固有payloadを転送可能なJSONオブジェクトへ制限する。 */
+export function paradisSanitizeAgentHookPayload(value: unknown): Readonly<Record<string, unknown>> | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	return sanitizeHookValue(value, 0) as Readonly<Record<string, unknown>>;
 }
 
 const emitter = new Emitter<IParadisAgentHookEvent>();

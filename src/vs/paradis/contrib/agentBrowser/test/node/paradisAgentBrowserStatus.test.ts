@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../../common/paradisAgentStatusStale.js';
+import { paradisSanitizeAgentHookPayload } from '../../node/paradisAgentHookBus.js';
 
 suite('ParadisAgentBrowserStatus', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -23,5 +24,25 @@ suite('ParadisAgentBrowserStatus', () => {
 			afterTimeout: paradisShouldSweepStaleWorkingStatus('working', true, 0, 15 * 60 * 1000 + 1),
 			review: paradisShouldSweepStaleWorkingStatus('review', true, 0, 16 * 60 * 1000),
 		}, { beforeTimeout: false, afterTimeout: true, review: false });
+	});
+
+	test('sanitizes hook payload without dropping event-specific fields', () => {
+		assert.deepStrictEqual(paradisSanitizeAgentHookPayload({
+			agent_id: 'agent-1', task_id: 'task-1', nested: { values: [1, true, 'ok'] }, ignored: undefined,
+		}), { agent_id: 'agent-1', task_id: 'task-1', nested: { values: [1, true, 'ok'] } });
+	});
+
+	test('bounds hook payload depth and string size', () => {
+		const result = paradisSanitizeAgentHookPayload({
+			value: 'x'.repeat(20_000),
+			deep: { a: { b: { c: { d: { e: true } } } } },
+		});
+		assert.ok(typeof result?.['value'] === 'string' && result['value'].length < 20_000);
+		assert.deepStrictEqual(result?.['deep'], { a: { b: { c: { d: {} } } } });
+	});
+
+	test('drops prototype mutation keys from hook payloads', () => {
+		const payload = JSON.parse('{"__proto__":{"polluted":true},"safe":true}');
+		assert.deepStrictEqual(paradisSanitizeAgentHookPayload(payload), { safe: true });
 	});
 });

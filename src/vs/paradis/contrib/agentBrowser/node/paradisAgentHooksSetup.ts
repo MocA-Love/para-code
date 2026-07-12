@@ -20,7 +20,7 @@ import { homedir } from 'os';
 import { dirname, join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
-import { IParadisManagedHookEvent, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from './paradisAgentHome.js';
 
 /**
@@ -131,15 +131,45 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * (ポートファイルenvを参照して /agent-hook を叩くもの) を対象とする。
  * ユーザー自身のhook (Superset の notify.sh 等) はここに一致しないため必ず保持される。
  */
-function isParadisManagedHookCommand(command: unknown): boolean {
+function paradisManagedHookSchema(command: unknown): number | undefined {
 	if (typeof command !== 'string') {
-		return false;
+		return undefined;
 	}
 	const normalized = command.replace(/\\/g, '/');
-	if (normalized.includes(`/${PARADIS_NOTIFY_HOOK_RELATIVE_PATH}`) || normalized.includes(`/${PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1}`)) {
-		return true;
+	const match = /\/\.para-code\/hooks\/notify-v(\d+)\.(?:sh|ps1)(?:["'\s]|$)/.exec(normalized);
+	if (match) {
+		return Number(match[1]);
 	}
-	return normalized.includes(PARADIS_MCP_PORT_FILE_ENV_VAR) && normalized.includes('/agent-hook?pane=');
+	if (PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS.some(path => normalized.includes(`/${path}`))
+		|| (normalized.includes(PARADIS_MCP_PORT_FILE_ENV_VAR) && normalized.includes('/agent-hook?pane='))) {
+		return 0;
+	}
+	return undefined;
+}
+
+function isParadisManagedHookCommand(command: unknown): boolean {
+	return paradisManagedHookSchema(command) !== undefined;
+}
+
+function highestParadisManagedHookSchema(hooks: Readonly<Record<string, unknown>>): number | undefined {
+	let highest: number | undefined;
+	for (const definitions of Object.values(hooks)) {
+		if (!Array.isArray(definitions)) {
+			continue;
+		}
+		for (const definition of definitions) {
+			if (!isPlainObject(definition) || !Array.isArray(definition['hooks'])) {
+				continue;
+			}
+			for (const hook of definition['hooks']) {
+				const schema = isPlainObject(hook) ? paradisManagedHookSchema(hook['command']) : undefined;
+				if (schema !== undefined && (highest === undefined || schema > highest)) {
+					highest = schema;
+				}
+			}
+		}
+	}
+	return highest;
 }
 
 /**
@@ -188,6 +218,10 @@ export function paradisMergeAgentHooksJson(existingRaw: string | undefined, mana
 	const hooksValue = parsed['hooks'];
 	const hooks: Record<string, unknown> = isPlainObject(hooksValue) ? hooksValue : {};
 	parsed['hooks'] = hooks;
+	const existingSchema = highestParadisManagedHookSchema(hooks);
+	if (existingSchema !== undefined && existingSchema > PARADIS_AGENT_HOOK_SCHEMA_VERSION) {
+		return existingRaw;
+	}
 
 	// 全イベントから当fork管理のhookを一旦取り除く。もう登録しないイベント
 	// (旧スニペットの PreToolUse 等) に残った自hookの掃除も兼ねる。
@@ -276,27 +310,41 @@ async function mergeHooksFile(filePath: string, managedEvents: readonly IParadis
 }
 
 /**
- * MessageDisplay は Claude Code 2.1.205 で初めてpayloadを実地確認した。
+ * activity追加hookとMessageDisplayはClaude Code 2.1.207でpayloadを一括確認した。
  * 旧版の settings.json は未知のhookキーを拒否し得るため、バージョンを確認できない場合も
  * 安全側に倒して登録しない。判定は起動を妨げない短いベストエフォートとする。
  */
-async function supportsClaudeMessageDisplay(shellEnvResolver: () => Promise<NodeJS.ProcessEnv>): Promise<boolean> {
+export function paradisSupportsClaudeActivityHooks(versionOutput: string): boolean {
+	const match = /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput);
+	if (!match) {
+		return false;
+	}
+	const major = Number(match[1]);
+	const minor = Number(match[2]);
+	const patch = Number(match[3]);
+	return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 207)));
+}
+
+export function paradisSupportsClaudeMessageDisplay(versionOutput: string): boolean {
+	const match = /(\d+)\.(\d+)\.(\d+)/.exec(versionOutput);
+	if (!match) {
+		return false;
+	}
+	const major = Number(match[1]);
+	const minor = Number(match[2]);
+	const patch = Number(match[3]);
+	return major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 205)));
+}
+
+async function claudeVersionOutput(shellEnvResolver: () => Promise<NodeJS.ProcessEnv>): Promise<string | undefined> {
 	const env = await shellEnvResolver();
 	return new Promise(resolve => {
 		execFile('claude', ['--version'], { encoding: 'utf8', timeout: 2000, windowsHide: true, env }, (error, stdout) => {
 			if (error) {
-				resolve(false);
+				resolve(undefined);
 				return;
 			}
-			const match = /(\d+)\.(\d+)\.(\d+)/.exec(stdout);
-			if (!match) {
-				resolve(false);
-				return;
-			}
-			const major = Number(match[1]);
-			const minor = Number(match[2]);
-			const patch = Number(match[3]);
-			resolve(major > 2 || (major === 2 && (minor > 1 || (minor === 1 && patch >= 205))));
+			resolve(stdout);
 		});
 	});
 }
@@ -315,11 +363,14 @@ export async function paradisSetupAgentHooks(logService: ILogService, shellEnvRe
 	const hookCommand = process.platform === 'win32' ? paradisManagedAgentHookCommandWindows(homedir()) : undefined;
 	// $CLAUDE_CONFIG_DIR / $CODEX_HOME でhomeを移動しているユーザーにも設置が届くよう、
 	// 設置先はハードコードではなく解決関数を通す (未設定なら従来どおり ~/.claude / ~/.codex)。
-	const claudeEvents = await supportsClaudeMessageDisplay(shellEnvResolver)
-		? [...PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT]
-		: PARADIS_CLAUDE_HOOK_EVENTS;
-	if (claudeEvents === PARADIS_CLAUDE_HOOK_EVENTS) {
-		logService.trace('[ParadisAgentHooks] Claude MessageDisplay support not confirmed; leaving the version-dependent hook disabled');
+	const claudeVersion = await claudeVersionOutput(shellEnvResolver);
+	const claudeEvents = [
+		...PARADIS_CLAUDE_HOOK_EVENTS,
+		...(claudeVersion !== undefined && paradisSupportsClaudeActivityHooks(claudeVersion) ? PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS : []),
+		...(claudeVersion !== undefined && paradisSupportsClaudeMessageDisplay(claudeVersion) ? [PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT] : []),
+	];
+	if (claudeVersion === undefined || !paradisSupportsClaudeActivityHooks(claudeVersion)) {
+		logService.trace('[ParadisAgentHooks] Claude activity hook support not confirmed; leaving version-dependent hooks disabled');
 	}
 	await mergeHooksFile(join(paradisClaudeConfigDir(), 'settings.json'), claudeEvents, logService, hookCommand);
 	await mergeHooksFile(join(paradisCodexHome(), 'hooks.json'), PARADIS_CODEX_HOOK_EVENTS, logService, hookCommand);

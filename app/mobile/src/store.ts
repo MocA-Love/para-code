@@ -306,6 +306,50 @@ export interface AgentLiveState {
 	tokenCount?: number;
 }
 
+export type AgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
+export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; status: AgentActivityStatus; startedAt: number; updatedAt: number }
+export interface AgentActivityTask { id: string; label: string; detail?: string; assignee?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
+export interface AgentActivityCompaction { id: string; trigger?: string; status: 'running' | 'completed'; startedAt: number; updatedAt: number }
+export interface AgentActivityState {
+	agents: AgentActivityAgent[];
+	tasks: AgentActivityTask[];
+	compactions: AgentActivityCompaction[];
+	startedAt: number;
+	updatedAt: number;
+}
+
+function parseAgentActivityState(value: unknown): AgentActivityState | undefined {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) { return undefined; }
+	const raw = value as Record<string, unknown>;
+	if (!Array.isArray(raw['agents']) || !Array.isArray(raw['tasks']) || !Array.isArray(raw['compactions']) || typeof raw['startedAt'] !== 'number' || typeof raw['updatedAt'] !== 'number') { return undefined; }
+	const statuses = new Set<AgentActivityStatus>(['running', 'idle', 'completed', 'failed', 'interrupted', 'unknown']);
+	const agents: AgentActivityAgent[] = [];
+	for (const candidate of raw['agents'].slice(0, 50)) {
+		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
+		const item = candidate as Record<string, unknown>;
+		if (typeof item['id'] === 'string' && typeof item['label'] === 'string' && (item['role'] === 'subagent' || item['role'] === 'teammate') && statuses.has(item['status'] as AgentActivityStatus) && typeof item['startedAt'] === 'number' && typeof item['updatedAt'] === 'number') {
+			agents.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), role: item['role'], status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
+		}
+	}
+	const tasks: AgentActivityTask[] = [];
+	for (const candidate of raw['tasks'].slice(0, 100)) {
+		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
+		const item = candidate as Record<string, unknown>;
+		if (typeof item['id'] === 'string' && typeof item['label'] === 'string' && statuses.has(item['status'] as AgentActivityStatus) && typeof item['startedAt'] === 'number' && typeof item['updatedAt'] === 'number') {
+			tasks.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), ...(typeof item['detail'] === 'string' ? { detail: item['detail'].slice(0, 2_000) } : {}), ...(typeof item['assignee'] === 'string' ? { assignee: item['assignee'].slice(0, 500) } : {}), status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
+		}
+	}
+	const compactions: AgentActivityCompaction[] = [];
+	for (const candidate of raw['compactions'].slice(0, 5)) {
+		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
+		const item = candidate as Record<string, unknown>;
+		if (typeof item['id'] === 'string' && (item['status'] === 'running' || item['status'] === 'completed') && typeof item['startedAt'] === 'number' && typeof item['updatedAt'] === 'number') {
+			compactions.push({ id: item['id'].slice(0, 500), ...(typeof item['trigger'] === 'string' ? { trigger: item['trigger'].slice(0, 100) } : {}), status: item['status'], startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
+		}
+	}
+	return { agents, tasks, compactions, startedAt: raw['startedAt'], updatedAt: raw['updatedAt'] };
+}
+
 /** ターミナル1つ分のエージェントチャット状態。 */
 export interface AgentChatState {
 	/** 'claude' | 'codex'。 */
@@ -323,6 +367,8 @@ export interface AgentChatState {
 	info?: AgentSessionInfo;
 	/** 生成中本文・実行中ツール等の一時状態。 */
 	live?: AgentLiveState;
+	/** SubAgent、タスク、圧縮のプロバイダー非依存な最新状態。 */
+	activity?: AgentActivityState;
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
 	modelControl?: AgentModelControlState;
 }
@@ -1305,7 +1351,7 @@ export class MobileController {
 		try {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
-				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null;
+				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; activity?: AgentActivityState | null;
 				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string;
 			};
 			if (typeof msg.id !== 'number') {
@@ -1315,6 +1361,7 @@ export class MobileController {
 			if (expectedToken === undefined || msg.token !== expectedToken) {
 				return; // 別ウィンドウで同じterminalIdを持つペインからの応答
 			}
+			const parsedActivity = msg.activity !== null ? parseAgentActivityState(msg.activity) : undefined;
 			if (msg.t === 'none') {
 				this.clearAgentControlTimeout(msg.id);
 				this.state.agentChats.set(msg.id, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
@@ -1334,6 +1381,7 @@ export class MobileController {
 					truncated: msg.truncated === true,
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
+					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
 				});
 				this.emit({ agentChats: true });
@@ -1361,15 +1409,15 @@ export class MobileController {
 				}
 				// 重複revは捨てる（再attach応答と押し出しdeltaの競合対策）。
 				const fresh = incoming.filter(m => !existing.messages.some(e => e.rev === m.rev));
-				const base = msg.live === null
-					? (({ live: _live, ...rest }) => rest)(existing)
-					: existing;
+				const withoutLive = msg.live === null ? (({ live: _live, ...rest }) => rest)(existing) : existing;
+				const base = msg.activity === null ? (({ activity: _activity, ...rest }) => rest)(withoutLive) : withoutLive;
 				this.state.agentChats.set(msg.id, {
 					...base,
 					rev: msg.rev ?? existing.rev,
 					messages: [...existing.messages, ...fresh].slice(-500),
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
+					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 				});
 				this.emit({ agentChats: true });
 				return;
