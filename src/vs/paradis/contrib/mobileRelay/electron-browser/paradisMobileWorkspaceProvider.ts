@@ -20,7 +20,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { editorBackground, editorForeground } from '../../../../platform/theme/common/colorRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
+import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/browser/xterm/xtermAddonImporter.js';
@@ -65,7 +65,11 @@ type TermInbound =
 	| { t: 'create'; ws?: string }
 	// モバイルからのターミナル名変更。PC側の実インスタンスへ反映し、stateの再送で
 	// 他モバイル端末（およびPC自身のタブ表示）にも波及させる。
-	| { t: 'rename'; id: number; title: string };
+	| { t: 'rename'; id: number; title: string }
+	// モバイルからのターミナル削除（ホーム長押しメニュー）。モバイル側で確認済みの前提で
+	// PC側の実インスタンスを閉じる。onDidChangeInstances経由でstateが自動再送され、
+	// 他モバイル端末・PC自身のタブ表示からも消える。
+	| { t: 'close'; id: number };
 type TermSemanticKey = 'up' | 'down' | 'right' | 'left';
 type TermOutbound =
 	// snapshot=true は画面復元用フレーム（VTシーケンス込み）。モバイルは追記せず
@@ -1000,6 +1004,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			if (title.length > 0) {
 				instance.rename(title).catch(err => this.logService.warn('[paradisMobileRelay] rename failed', err));
 			}
+		} else if (msg.t === 'close') {
+			// モバイル側で既に破壊的操作の確認ダイアログを経ているため、PC側の
+			// confirmOnKill確認（safeDisposeTerminal）は挟まず直接閉じる。挟むと、
+			// PCが無人の間はモバイルから応答できない確認ダイアログで永久にハングする。
+			instance.dispose(TerminalExitReason.User);
 		}
 	}
 

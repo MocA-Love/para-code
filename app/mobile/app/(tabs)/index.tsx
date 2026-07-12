@@ -29,14 +29,14 @@ import { hapticImpact, hapticSelection } from '../../src/haptics.js';
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalId, pinnedKeys, renameTerminal, togglePin } = useAppStore(useShallow(s => ({
+	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalId, pinnedKeys, renameTerminal, togglePin, closeTerminal } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
-		pinnedKeys: s.pinnedKeys, renameTerminal: s.renameTerminal, togglePin: s.togglePin,
+		pinnedKeys: s.pinnedKeys, renameTerminal: s.renameTerminal, togglePin: s.togglePin, closeTerminal: s.closeTerminal,
 	})));
 	const effectiveWs = useEffectiveWs();
-	// 長押しで開くアクションメニュー（名前を変更/ピン留め）の表示状態。
+	// 長押しで開くアクションメニュー（名前を変更/ピン留め/削除）の表示状態。
 	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 
 	const tabBarSpacer = useTabBarSpacer();
@@ -174,6 +174,7 @@ export default function HomeScreen() {
 						togglePin(pinKeyForTerminal(terminal));
 					}
 				}}
+				onDelete={id => closeTerminal(id)}
 			/>
 		</View>
 	);
