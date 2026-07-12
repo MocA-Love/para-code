@@ -530,7 +530,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				await instance.sendText(msg.text as string, true, true);
 			} else if (claudeSetting) {
 				await this.modelSwitchGuard.execute(instance, `/${msg.setting as 'model' | 'effort'} ${msg.value as string}`,
-					() => this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number));
+					// クロージャ内では typeof ガードによる絞り込みが効かないため as で明示する（ガード済み）
+					() => this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number));
 				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number))) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '設定変更中にClaude Codeセッションが変わりました');
 					return;
