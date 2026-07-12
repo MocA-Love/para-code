@@ -31,7 +31,7 @@ import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetup
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload } from './paradisAgentHookBus.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
-import { paradisSetupAgentHooks } from './paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
@@ -204,7 +204,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			'ParadisAgentHooks',
 			createParadisShellEnvResolver(logService, configurationService, args),
 		);
-		paradisSetupAgentHooks(logService, () => cachedShellEnv.getEnv()).catch(error => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
+		const agentHooksReconciler = this._register(new ParadisAgentHooksReconciler(logService, {}, () => cachedShellEnv.getEnv()));
+		void agentHooksReconciler.start().catch(error => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
 		// transcript由来のターン終了（Codex の usage limit エラー・中断等、Stop hook が
 		// 発火しないケース）を working 状態の解除に反映する。Stop hook と同じく、
 		// バックグラウンドタスクが残っていれば working を維持する（stale掃除の対象になる）。
