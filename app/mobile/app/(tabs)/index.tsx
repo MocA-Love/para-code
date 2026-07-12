@@ -12,6 +12,7 @@ import { NotificationsButton } from '../../src/components/notificationsSheet.js'
 import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionCard } from '../../src/components/attentionCard.js';
 import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
+import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
@@ -29,15 +30,18 @@ import { hapticImpact, hapticSelection } from '../../src/haptics.js';
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalId, pinnedKeys, renameTerminal, togglePin, closeTerminal } = useAppStore(useShallow(s => ({
+	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalId, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
 		pinnedKeys: s.pinnedKeys, renameTerminal: s.renameTerminal, togglePin: s.togglePin, closeTerminal: s.closeTerminal,
+		ackAgentStatus: s.ackAgentStatus,
 	})));
 	const effectiveWs = useEffectiveWs();
 	// 長押しで開くアクションメニュー（名前を変更/ピン留め/削除）の表示状態。
 	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number } } | undefined>(undefined);
+	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
+	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 
 	const tabBarSpacer = useTabBarSpacer();
 	// ホームは横スクロール要素を持たないため、フォーカス中は画面全域の右スワイプで
@@ -148,7 +152,25 @@ export default function HomeScreen() {
 									{ws?.branch ? <Text style={styles.agentBranch} numberOfLines={1}> · {ws.branch}</Text> : null}
 								</View>
 							</View>
-							<Text style={[styles.badge, badgeStyle(t.agentStatus)]}>{agentLabel(t.agentStatus)}</Text>
+							{t.agentStatus === 'review' ? (
+								// レビューのみタップで「確認済みにする」ポップオーバーを開ける
+								// （応答待ち/質問は回答して解消するもの、実行中/アイドルは既読の概念が無い）
+								<Pressable
+									hitSlop={8}
+									onPress={e => {
+										hapticSelection();
+										setStatusPopover({
+											target: { id: t.id, status: 'review' },
+											anchor: { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY },
+										});
+									}}
+									accessibilityLabel="ステータスを確認済みにする"
+								>
+									<Text style={[styles.badge, badgeStyle(t.agentStatus)]}>{agentLabel(t.agentStatus)}</Text>
+								</Pressable>
+							) : (
+								<Text style={[styles.badge, badgeStyle(t.agentStatus)]}>{agentLabel(t.agentStatus)}</Text>
+							)}
 						</Pressable>
 					);
 				})}
@@ -175,6 +197,12 @@ export default function HomeScreen() {
 					}
 				}}
 				onDelete={id => closeTerminal(id)}
+			/>
+			<AgentStatusPopover
+				target={statusPopover?.target}
+				anchor={statusPopover?.anchor}
+				onClose={() => setStatusPopover(undefined)}
+				onAck={id => ackAgentStatus(id)}
 			/>
 		</View>
 	);

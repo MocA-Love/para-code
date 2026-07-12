@@ -50,6 +50,17 @@ export interface ScmCommitResult {
 export interface ScmCommitFilesResult {
 	files: { status: string; path: string }[];
 }
+/** worktree（スペース）作成フォームの材料（scm worktreeForm 応答）。 */
+export interface WorktreeFormResult {
+	repos: { id: string; name: string; branches: string[]; head?: string }[];
+	agents: { id: string; label: string }[];
+}
+/** worktree（スペース）作成の応答。warning は「作成はできたが後続処理が失敗した」場合。 */
+export interface WorktreeCreateResult {
+	name: string;
+	branch: string;
+	warning?: string;
+}
 /** fs list 応答。 */
 export interface FsListResult {
 	entries: { name: string; dir: boolean; size?: number }[];
@@ -783,6 +794,23 @@ export class MobileController {
 		this.sendTerm({ t: 'close', id });
 	}
 
+	/**
+	 * エージェントの「レビュー」状態を確認済みにする（ホームのステータスバッジタップ）。
+	 * PC側のフォーカス中自動既読と同じ経路を通り、関連通知のdismissも走る。
+	 * 手元のスナップショットは楽観的にアイドルへ書き換える（PC側のstate再送で確定）。
+	 */
+	ackAgentStatus(id: number): void {
+		const workspace = this.state.workspace;
+		if (workspace) {
+			this.state.workspace = {
+				...workspace,
+				terminals: workspace.terminals.map(t => t.id === id ? { ...t, agentStatus: undefined } : t),
+			};
+			this.emit();
+		}
+		this.sendTerm({ t: 'ackStatus', id });
+	}
+
 	/** 現在の状態スナップショットを要求する。 */
 	requestState(): void {
 		this.client?.send('state', new Uint8Array(0));
@@ -1007,6 +1035,20 @@ export class MobileController {
 
 	scmCommitFiles(ws: string, hash: string): Promise<ScmCommitFilesResult> {
 		return this.request<ScmCommitFilesResult>('scm', { t: 'commitFiles', ws, hash });
+	}
+
+	/** worktree（スペース）作成フォームの材料（リポジトリ一覧・ブランチ・エージェント定義）。 */
+	worktreeForm(): Promise<WorktreeFormResult> {
+		return this.request<WorktreeFormResult>('scm', { t: 'worktreeForm' });
+	}
+
+	/**
+	 * worktree（スペース）を作成する。PC版の作成ダイアログと同じ処理（ブランチ自動命名・
+	 * スペース切り替え・setupスクリプト・エージェント起動）がPC側で走るため、タイムアウトは
+	 * かなり長め（setupスクリプト次第で数分かかりうる。超過時もPC側の作成処理自体は継続する）。
+	 */
+	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string }): Promise<WorktreeCreateResult> {
+		return this.request<WorktreeCreateResult>('scm', { t: 'createWorktree', ...opts }, 300_000);
 	}
 
 	/** ディレクトリ一覧（ワークスペースルート相対パス）。 */

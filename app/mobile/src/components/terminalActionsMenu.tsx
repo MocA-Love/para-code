@@ -1,11 +1,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { ReactNode, useEffect, useRef, useState } from 'react';
-import { BackHandler, Dimensions, KeyboardAvoidingView, Platform, Pressable, StyleProp, StyleSheet, Text, TextInput, View, ViewStyle } from 'react-native';
-import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import { useEffect, useRef, useState } from 'react';
+import { BackHandler, Dimensions, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
-import { OverlayPortal } from './overlayHost.js';
+import { OverlayPortal, PopIn } from './overlayHost.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
@@ -178,21 +177,6 @@ export function TerminalActionsMenu({ target, anchor, onClose, onRename, onToggl
 			)}
 		</OverlayPortal>
 	);
-}
-
-/**
- * マウント時にscaleのみで出現させるラッパー。opacityフェードはGlassViewの効果を
- * 消してしまうため使わない（glassSurface.tsxの制約コメント参照）。
- * mode切り替えでサブツリーごと再マウントされるため、メニュー→ダイアログの
- * 遷移時にも同じポップ演出が掛かる。
- */
-function PopIn({ style, children }: { style?: StyleProp<ViewStyle>; children: ReactNode }) {
-	const scale = useSharedValue(0.9);
-	useEffect(() => {
-		scale.value = withTiming(1, { duration: 160, easing: Easing.out(Easing.cubic) });
-	}, [scale]);
-	const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
-	return <Animated.View style={[style, animatedStyle]}>{children}</Animated.View>;
 }
 
 const styles = StyleSheet.create({

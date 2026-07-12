@@ -10,6 +10,7 @@ import { useAppStore } from '../appState.js';
 import { isAgentWaiting } from '../store.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
@@ -144,6 +145,8 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	// 閉じているリポジトリidの集合（既定は全展開）。ドロワーはマウントされ続けるため
 	// セッション中は保持される（永続化はしない）。
 	const [collapsedRepos, setCollapsedRepos] = useState<ReadonlySet<string>>(new Set());
+	// 「新しいスペース（worktree）を作成」シートの表示状態（見出し右の＋から開く）。
+	const [createSheetOpen, setCreateSheetOpen] = useState(false);
 
 	// 選択が閉じたグループ内へ移ったときだけ自動展開する（選択行が隠れたままにならないように）。
 	// 依存をeffective/selectedParentに絞ることで、選択中グループを手動で閉じ直す操作は妨げない。
@@ -296,7 +299,18 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 				</View>
 			</View>
 
-			<Text style={styles.sectionTitle}>ワークスペース</Text>
+			<View style={styles.sectionHead}>
+				<Text style={styles.sectionTitle}>ワークスペース</Text>
+				{/* PC版の「スペース名右の＋」に対応する、新しいスペース（worktree）作成の入口 */}
+				<Pressable
+					style={styles.addSpaceBtn}
+					hitSlop={8}
+					onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
+					accessibilityLabel="新しいスペースを作成"
+				>
+					<Ionicons name="add" size={16} color={colors.text} />
+				</Pressable>
+			</View>
 			<ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
 				<Pressable style={[styles.row, styles.allRow, homeShowAllWorkspaces && styles.rowActive]} onPress={selectAll}>
 					{homeShowAllWorkspaces ? <View style={styles.rowIndicator} /> : null}
@@ -348,6 +362,7 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 					<Text style={styles.footerBtnText}>ペアリング解除</Text>
 				</Pressable>
 			</View>
+			<WorktreeCreateSheet visible={createSheetOpen} onClose={() => setCreateSheetOpen(false)} />
 		</View>
 	);
 }
@@ -433,7 +448,9 @@ const styles = StyleSheet.create({
 	statValue: { color: colors.accent, fontSize: 15, fontWeight: '700' },
 	statValueAlert: { color: colors.red },
 	statLabel: { color: colors.textDim, fontSize: 9.5, marginTop: 1 },
+	sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 16 },
 	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 8 },
+	addSpaceBtn: { width: 24, height: 24, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
 	list: { flex: 1 },
 	listContent: { paddingHorizontal: 10, paddingBottom: 8 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, marginBottom: 2 },
