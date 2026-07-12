@@ -16,7 +16,8 @@ export function ApprovalCard({ interactionId, onApprove, detail }: { interaction
 	const [submitting, setSubmitting] = useState(false);
 	const submit = (choice: 'yes' | 'no') => {
 		setSubmitting(true);
-		void onApprove(interactionId, choice).then(accepted => { if (!accepted) { setSubmitting(false); } });
+		const retry = setTimeout(() => setSubmitting(false), 15_000);
+		void onApprove(interactionId, choice).then(accepted => { if (!accepted) { clearTimeout(retry); setSubmitting(false); } });
 	};
 	return (
 		<View style={styles.approvalBar}>
@@ -25,10 +26,10 @@ export function ApprovalCard({ interactionId, onApprove, detail }: { interaction
 				<Text style={styles.approvalDetail} numberOfLines={6} selectable>{detail}</Text>
 			) : null}
 			<View style={styles.approvalButtons}>
-				<Pressable disabled={submitting} style={[styles.approvalBtn, styles.approveBtn, submitting && styles.disabled]} onPress={() => { hapticSuccess(); submit('yes'); }}>
+				<Pressable disabled={submitting} accessibilityRole="button" accessibilityState={{ disabled: submitting }} style={[styles.approvalBtn, styles.approveBtn, submitting && styles.disabled]} onPress={() => { hapticSuccess(); submit('yes'); }}>
 					<Text style={styles.approveBtnText}>許可</Text>
 				</Pressable>
-				<Pressable disabled={submitting} style={[styles.approvalBtn, styles.denyBtn, submitting && styles.disabled]} onPress={() => { hapticWarning(); submit('no'); }}>
+				<Pressable disabled={submitting} accessibilityRole="button" accessibilityState={{ disabled: submitting }} style={[styles.approvalBtn, styles.denyBtn, submitting && styles.disabled]} onPress={() => { hapticWarning(); submit('no'); }}>
 					<Text style={styles.denyBtnText}>拒否</Text>
 				</Pressable>
 			</View>
