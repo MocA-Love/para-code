@@ -12,7 +12,7 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IPathService } from '../../../../platform/path/common/pathService.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { PARADIS_CODEX_TERMINAL_TITLE_ENABLED_SETTING, PARADIS_CODEX_TERMINAL_TITLE_ITEMS } from '../common/paradisCodexTerminalTitle.js';
 
@@ -120,4 +120,4 @@ class ParadisCodexTerminalTitleContribution extends Disposable implements IWorkb
 	}
 }
 
-registerWorkbenchContribution2(ParadisCodexTerminalTitleContribution.ID, ParadisCodexTerminalTitleContribution, WorkbenchPhase.Ready);
+registerWorkbenchContribution2(ParadisCodexTerminalTitleContribution.ID, ParadisCodexTerminalTitleContribution, WorkbenchPhase.AfterRestored);
