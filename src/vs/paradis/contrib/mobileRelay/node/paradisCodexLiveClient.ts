@@ -81,6 +81,12 @@ export interface IParadisCodexThreadSettings {
 	readonly effort?: string;
 }
 
+export interface IParadisCodexThreadMessage {
+	readonly role: 'user' | 'assistant' | 'tool';
+	readonly text: string;
+	readonly kind: 'text' | 'thinking' | 'tool';
+}
+
 /** モバイルへ安全なcode/messageとして返せるCodex制御エラー。 */
 export class ParadisCodexControlError extends Error {
 	constructor(readonly code: 'disabled' | 'unsupported' | 'unavailable' | 'not-loaded' | 'busy' | 'invalid-selection' | 'timeout' | 'rpc-error', message: string) {
@@ -95,6 +101,17 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function stringValue(value: unknown, maxLength: number = 500): string | undefined {
 	return typeof value === 'string' && value.length > 0 && value.length <= maxLength ? value : undefined;
+}
+
+function threadMessageText(value: unknown): string | undefined {
+	if (typeof value === 'string') { return value.trim().length > 0 ? truncateCodexLiveText(value) : undefined; }
+	if (!Array.isArray(value)) { return undefined; }
+	const parts = value.map(part => {
+		if (typeof part === 'string') { return part; }
+		const item = record(part);
+		return typeof item?.['text'] === 'string' ? item['text'] : typeof item?.['content'] === 'string' ? item['content'] : undefined;
+	}).filter((part): part is string => part !== undefined && part.trim().length > 0);
+	return parts.length > 0 ? truncateCodexLiveText(parts.join('\n')) : undefined;
 }
 
 function rawDataToString(data: RawData): string {
@@ -378,6 +395,44 @@ export class ParadisCodexLiveClient extends Disposable {
 			this.rejectSettingsWaiter(threadId, error instanceof Error ? error : new Error(String(error)));
 			throw error;
 		}
+	}
+
+	/** SubAgent詳細用に子threadのturn/itemを上限付きで読み出す。 */
+	async readThreadMessages(threadId: string): Promise<readonly IParadisCodexThreadMessage[]> {
+		if (!this.enabled || !this.initialized) {
+			throw new ParadisCodexControlError('unavailable', 'Codex app-serverへ接続していません');
+		}
+		const result = record(await this.request('thread/read', { threadId, includeTurns: true }));
+		const thread = record(result?.['thread']) ?? result;
+		const turns = Array.isArray(thread?.['turns']) ? thread['turns'] : [];
+		const messages: IParadisCodexThreadMessage[] = [];
+		for (const turn of turns.slice(-100)) {
+			const items = Array.isArray(record(turn)?.['items']) ? record(turn)?.['items'] as unknown[] : [];
+			for (const rawItem of items) {
+				const item = record(rawItem);
+				const type = stringValue(item?.['type']);
+				const parts = [
+					threadMessageText(item?.['text']), threadMessageText(item?.['content']), threadMessageText(item?.['summary']),
+					threadMessageText(item?.['query']), threadMessageText(item?.['command']), threadMessageText(item?.['aggregatedOutput']),
+					threadMessageText(item?.['output']), threadMessageText(item?.['prompt']), threadMessageText(item?.['error']),
+				];
+				for (const field of ['changes', 'arguments', 'result'] as const) {
+					const value = item?.[field];
+					if (value !== undefined) {
+						try { parts.push(threadMessageText(JSON.stringify(value))); } catch { /* 循環参照等は表示しない */ }
+					}
+				}
+				if (item?.['action'] !== undefined) {
+					try { parts.push(threadMessageText(JSON.stringify(item['action']))); } catch { /* 表示しない */ }
+				}
+				const text = parts.filter((part, index, values): part is string => part !== undefined && values.indexOf(part) === index).join('\n');
+				if (text === undefined || text.trim().length === 0) { continue; }
+				const role: IParadisCodexThreadMessage['role'] = type === 'userMessage' ? 'user' : type === 'agentMessage' ? 'assistant' : 'tool';
+				const kind: IParadisCodexThreadMessage['kind'] = type === 'reasoning' ? 'thinking' : role === 'tool' ? 'tool' : 'text';
+				messages.push({ role, kind, text: truncateCodexLiveText(text) });
+			}
+		}
+		return messages.slice(-200);
 	}
 
 	override dispose(): void {
