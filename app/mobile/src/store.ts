@@ -389,7 +389,7 @@ export interface AgentChatState {
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
 	modelControl?: AgentModelControlState;
 	/** PC側がsession検証付きAgent Actionを受け付ける。 */
-	capabilities?: { agentActions: true };
+	capabilities?: { agentActions: true; claudeSettings?: true };
 	interaction?: AgentInteraction;
 }
 
@@ -817,6 +817,17 @@ export class MobileController {
 		return this.sendAgentAction(id, {
 			t: 'action/answerApproval', token: this.agentToken(id), epoch: chat.epoch, interactionId, choice,
 		}, 60_000);
+	}
+
+	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string): Promise<boolean> {
+		const chat = this.state.agentChats.get(id);
+		if (this.state.connection !== 'online' || chat?.agent !== 'claude' || chat.capabilities?.claudeSettings !== true
+			|| chat.interaction !== undefined || !/^[A-Za-z0-9._:-]{1,200}$/.test(value)) {
+			return Promise.resolve(false);
+		}
+		return this.sendAgentAction(id, {
+			t: 'action/claudeSetting', token: this.agentToken(id), epoch: chat.epoch, setting, value,
+		});
 	}
 
 	private sendAgentAction(id: number, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
@@ -1498,7 +1509,7 @@ export class MobileController {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; activity?: AgentActivityState | null;
-				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; capabilities?: { agentActions?: unknown }; interaction?: AgentInteraction | null;
+				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -1532,7 +1543,7 @@ export class MobileController {
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
-					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const } } : {}),
+					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
 				});
@@ -1571,7 +1582,7 @@ export class MobileController {
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
-					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const } } : {}),
+					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 				});
 				// ターン継続中（live あり）の高頻度な delta だけ throttle でまとめる。ターン終了

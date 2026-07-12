@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './bottomSheet.js';
@@ -15,13 +15,13 @@ import type { AgentModelControlState } from '../store.js';
  * Claudeは従来どおり静的対応表+PTYコマンド、Codexはapp-serverのmodel/listを正本にし、
  * modelとeffortをthread/settings/updateで原子的に変更する。
  */
-export function ModelPill({ agent, model, effort, modelControl, onClaudeCommand, onRequestCodexCatalog, onUpdateCodexSettings }: {
+export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting, onRequestCodexCatalog, onUpdateCodexSettings }: {
 	/** 'claude' | 'codex'（セッション未特定時は undefined）。 */
 	agent: string | undefined;
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
-	onClaudeCommand: (command: string) => void;
+	onClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<boolean>;
 	onRequestCodexCatalog: () => void;
 	onUpdateCodexSettings: (model: string, effort: string) => void;
 }) {
@@ -29,6 +29,13 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeCommand,
 	// シート内で選択したモデル（未選択時はセッションの現在モデルから推定）
 	const [pickedModelId, setPickedModelId] = useState<string | undefined>(undefined);
 	const [codexUpdatePending, setCodexUpdatePending] = useState(false);
+	const [claudeUpdatePending, setClaudeUpdatePending] = useState(false);
+	const claudeRequestLocked = useRef(false);
+	const mounted = useRef(true);
+	useEffect(() => {
+		mounted.current = true;
+		return () => { mounted.current = false; };
+	}, []);
 
 	useEffect(() => {
 		if (!codexUpdatePending) {
@@ -65,13 +72,26 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeCommand,
 	const label = [currentModel?.label ?? model, effort].filter(Boolean).join(' · ') || 'model / effort';
 
 	const applyModel = (id: string) => {
+		if (claudeRequestLocked.current) { return; }
 		hapticSelection();
+		const previousPicked = pickedModelId;
 		setPickedModelId(id);
 		if (agent !== 'codex') {
-			onClaudeCommand(`/model ${id}`);
+			claudeRequestLocked.current = true;
+			setClaudeUpdatePending(true);
+			void onClaudeSetting('model', id).catch(() => false).then(accepted => {
+				if (!mounted.current) { return; }
+				claudeRequestLocked.current = false;
+				setClaudeUpdatePending(false);
+				if (!accepted) {
+					setPickedModelId(previousPicked);
+					Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください');
+				}
+			});
 		}
 	};
 	const applyEffort = (level: string) => {
+		if (claudeRequestLocked.current) { return; }
 		hapticSelection();
 		if (agent === 'codex' && selected !== undefined) {
 			const apply = () => {
@@ -89,8 +109,14 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeCommand,
 			}
 			return;
 		}
-		onClaudeCommand(`/effort ${level}`);
-		setOpen(false);
+		claudeRequestLocked.current = true;
+		setClaudeUpdatePending(true);
+		void onClaudeSetting('effort', level).catch(() => false).then(accepted => {
+			if (!mounted.current) { return; }
+			claudeRequestLocked.current = false;
+			setClaudeUpdatePending(false);
+			if (accepted) { setOpen(false); } else { Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください'); }
+		});
 	};
 	const openSheet = () => {
 		hapticSelection();
@@ -110,9 +136,9 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeCommand,
 			<Pressable
 				style={styles.pill}
 				onPress={openSheet}
-				disabled={modelControl?.status === 'updating'}
+				disabled={modelControl?.status === 'updating' || claudeUpdatePending}
 				accessibilityRole="button"
-				accessibilityState={{ disabled: modelControl?.status === 'updating' }}
+				accessibilityState={{ disabled: modelControl?.status === 'updating' || claudeUpdatePending }}
 				accessibilityLabel="モデルとeffortを変更"
 			>
 				<Ionicons name="hardware-chip-outline" size={12} color={colors.textDim} />
@@ -141,9 +167,9 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeCommand,
 								key={option.id}
 								style={[styles.modelRow, isSelected && styles.modelRowActive]}
 								onPress={() => applyModel(option.id)}
-								disabled={isCodexBusy}
+								disabled={isCodexBusy || claudeUpdatePending}
 								accessibilityRole="button"
-								accessibilityState={{ selected: isSelected, disabled: isCodexBusy }}
+								accessibilityState={{ selected: isSelected, disabled: isCodexBusy || claudeUpdatePending }}
 							>
 								<View style={styles.modelBody}>
 									<Text style={[styles.modelLabel, isSelected && styles.modelLabelActive]}>{option.label}</Text>
@@ -164,9 +190,9 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeCommand,
 										key={level}
 										style={[styles.effortBtn, effort === level && styles.effortBtnActive]}
 									onPress={() => applyEffort(level)}
-									disabled={isCodexBusy}
+								disabled={isCodexBusy || claudeUpdatePending}
 									accessibilityRole="button"
-									accessibilityState={{ selected: effort === level, disabled: isCodexBusy }}
+								accessibilityState={{ selected: effort === level, disabled: isCodexBusy || claudeUpdatePending }}
 									>
 										<Text style={[styles.effortText, effort === level && styles.effortTextActive]}>{level}</Text>
 									</Pressable>
@@ -176,7 +202,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeCommand,
 					) : null}
 					{agent === 'codex'
 						? <Text style={styles.hint}>{isCodexUpdating ? 'Codexへ設定を適用中…' : 'Effortを選ぶと、モデルとEffortが次のターンへ同時に適用されます'}</Text>
-						: <Text style={styles.hint}>変更はClaude CodeのTUIへ /model・/effort コマンドとして送られます</Text>}
+						: <Text style={styles.hint}>{claudeUpdatePending ? 'Claude Codeへ設定を適用中…' : '入力待ち状態を確認してモデル・Effortを変更します'}</Text>}
 				</ScrollView>
 			</BottomSheet>
 		</>

@@ -26,6 +26,7 @@ export interface AgentActions {
 	answerQuestionFreeText(interactionId: string, optionCount: number, text: string): Promise<boolean>;
 	answerQuestionGroup(interactionId: string, answers: QuestionGroupAnswer[]): Promise<boolean>;
 	approve(interactionId: string, choice: 'yes' | 'no'): Promise<boolean>;
+	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<boolean>;
 }
 
 export function useAgentActions(terminalId: number | undefined, agent: string | undefined): AgentActions {
@@ -33,8 +34,10 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	const sendAgentMessage = useAppStore(s => s.sendAgentMessage);
 	const answerAgentQuestion = useAppStore(s => s.answerAgentQuestion);
 	const answerAgentApproval = useAppStore(s => s.answerAgentApproval);
+	const updateClaudeSettingAction = useAppStore(s => s.updateClaudeSetting);
 	const interaction = useAppStore(s => terminalId !== undefined ? s.agentChats.get(terminalId)?.interaction : undefined);
 	const supportsAgentActions = useAppStore(s => terminalId !== undefined && s.agentChats.get(terminalId)?.capabilities?.agentActions === true);
+	const supportsClaudeSettings = useAppStore(s => terminalId !== undefined && s.agentChats.get(terminalId)?.capabilities?.claudeSettings === true);
 
 	const send = useCallback((data: string) => {
 		if (terminalId !== undefined) {
@@ -164,7 +167,19 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 		return Promise.resolve(true);
 	}, [terminalId, agent, interaction, supportsAgentActions, answerAgentApproval, send]);
 
-	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, approve };
+	const updateClaudeSetting = useCallback((setting: 'model' | 'effort', value: string) => {
+		if (terminalId === undefined || agent !== 'claude' || interaction !== undefined) {
+			return Promise.resolve(false);
+		}
+		if (supportsClaudeSettings) {
+			return updateClaudeSettingAction(terminalId, setting, value);
+		}
+		send(`/${setting} ${value}`);
+		setTimeout(() => send('\r'), 250);
+		return Promise.resolve(true);
+	}, [terminalId, agent, interaction, supportsClaudeSettings, updateClaudeSettingAction, send]);
+
+	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, approve, updateClaudeSetting };
 }
 
 /** 指定ターミナルのエージェントチャットを購読する（アタッチ/デタッチのライフサイクル込み）。 */
