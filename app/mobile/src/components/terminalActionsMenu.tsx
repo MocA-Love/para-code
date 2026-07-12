@@ -3,8 +3,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { BackHandler, Dimensions, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
+import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
+import { AgentRowClone, type AgentRowData, type AgentRowRect } from './agentRow.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
@@ -29,10 +32,19 @@ const MENU_HEIGHT_ESTIMATE = 150;
  * RN Modalは使わずOverlayPortal（overlayHost.tsx参照）でルートへ描画する。
  * Modalのfadeは祖先opacityのアニメーションでglass効果を消してしまうため、
  * 出現アニメーションもopacityを使わないscaleのみで行う。
+ *
+ * 長押し時は iOS 標準のコンテキストメニュー作法（案A: リフト&ディム）で、背景全体を
+ * 暗転+軽いブラー（{@link DimScrim}）し、対象行だけを浮かせたクローン（{@link AgentRowClone}）
+ * をスクリムの上に残す。クローン描画に必要な行データ（rowData）とウィンドウ座標（rect）は
+ * 呼び出し元が measureInWindow で取得して渡す。rename/delete ダイアログ中もディムは維持する。
  */
-export function TerminalActionsMenu({ target, anchor, onClose, onRename, onTogglePin, onDelete }: {
+export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, onRename, onTogglePin, onDelete }: {
 	target: TerminalActionsMenuTarget | undefined;
 	anchor: { x: number; y: number } | undefined;
+	/** 長押しされた行のウィンドウ座標。リフトクローンの位置決めに使う（未取得なら省略可）。 */
+	rect: AgentRowRect | undefined;
+	/** リフトクローンとして再描画する行データ。 */
+	rowData: AgentRowData | undefined;
 	onClose: () => void;
 	onRename: (id: number, title: string) => void;
 	onTogglePin: (id: number) => void;
@@ -90,11 +102,14 @@ export function TerminalActionsMenu({ target, anchor, onClose, onRename, onToggl
 
 	const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 	const menuLeft = Math.min(Math.max(anchor.x - MENU_WIDTH / 2, 16), screenWidth - MENU_WIDTH - 16);
-	const menuTop = Math.min(Math.max(anchor.y, 16), screenHeight - MENU_HEIGHT_ESTIMATE - 16);
+	// リフトクローンがある場合はその下端を基準にして、浮いた行とメニューが重ならないようにする。
+	const menuAnchorTop = rect ? rect.y + rect.height + 10 : anchor.y;
+	const menuTop = Math.min(Math.max(menuAnchorTop, 16), screenHeight - MENU_HEIGHT_ESTIMATE - 16);
 
 	return (
 		<OverlayPortal>
-			<Pressable style={StyleSheet.absoluteFill} onPress={close} accessibilityLabel="閉じる" />
+			<DimScrim onPress={close} />
+			{rowData && rect ? <AgentRowClone data={rowData} rect={rect} /> : null}
 			{mode === 'menu' ? (
 				<PopIn style={[styles.menuPos, { top: menuTop, left: menuLeft }]}>
 					<GlassSurface style={[styles.menu, !liquidGlass && styles.menuFallbackBorder]}>
@@ -179,7 +194,27 @@ export function TerminalActionsMenu({ target, anchor, onClose, onRename, onToggl
 	);
 }
 
+/**
+ * 背景全体を暗転+軽いブラーで沈める、タップで閉じるバックドロップ。スクリム自体は
+ * glass面ではないので、フェードインの opacity アニメーションを使える（PopIn の 160ms と
+ * 揃える）。Blurが使えない環境でも半透明の暗幕だけで破綻なく成立する。
+ */
+function DimScrim({ onPress }: { onPress: () => void }) {
+	const progress = useSharedValue(0);
+	useEffect(() => {
+		progress.value = withTiming(1, { duration: 160, easing: Easing.out(Easing.cubic) });
+	}, [progress]);
+	const animatedStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
+	return (
+		<Animated.View style={[StyleSheet.absoluteFill, animatedStyle]}>
+			<BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFill} pointerEvents="none" />
+			<Pressable style={[StyleSheet.absoluteFill, styles.scrimDim]} onPress={onPress} accessibilityLabel="閉じる" />
+		</Animated.View>
+	);
+}
+
 const styles = StyleSheet.create({
+	scrimDim: { backgroundColor: 'rgba(0,0,0,0.55)' },
 	menuPos: { position: 'absolute', width: MENU_WIDTH },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く（glassComposerと同じ流儀）
 	menu: { borderRadius: 14, overflow: 'hidden' },

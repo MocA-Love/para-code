@@ -1,9 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useIsFocused, useRouter } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
@@ -12,6 +11,7 @@ import { NotificationsButton } from '../../src/components/notificationsSheet.js'
 import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionCard } from '../../src/components/attentionCard.js';
 import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
+import { AgentBadge, AgentRowContent, agentRowStyles, type AgentRowData, type AgentRowRect } from '../../src/components/agentRow.js';
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
@@ -39,7 +39,10 @@ export default function HomeScreen() {
 	})));
 	const effectiveWs = useEffectiveWs();
 	// 長押しで開くアクションメニュー（名前を変更/ピン留め/削除）の表示状態。
-	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number } } | undefined>(undefined);
+	// rect/rowData は「リフト&ディム」で対象行を前面へ浮かせるクローン描画に使う。
+	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number }; rect?: AgentRowRect; rowData: AgentRowData } | undefined>(undefined);
+	// 各行の実ビューへの参照。長押し時に measureInWindow でウィンドウ座標を取得するために持つ。
+	const rowRefs = useRef(new Map<number, View>());
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
 	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 
@@ -130,47 +133,44 @@ export default function HomeScreen() {
 					const waiting = isAgentWaiting(t.agentStatus);
 					const color = ws ? wsColor(ws) : colors.accent;
 					const pinned = pinnedKeys.has(pinKeyForTerminal(t));
-					return (
+					const rowData: AgentRowData = { title: t.title, wsName: ws?.name ?? '—', wsColor: color, branch: ws?.branch, pinned, agentStatus: t.agentStatus, waiting };
+					const badge = t.agentStatus === 'review' ? (
+						// レビューのみタップで「確認済みにする」ポップオーバーを開ける
+						// （応答待ち/質問は回答して解消するもの、実行中/アイドルは既読の概念が無い）
 						<Pressable
-							key={t.id}
-							style={[styles.agentRow, waiting && styles.agentRowWaiting]}
-							onPress={() => { if (ws) { openAgent(ws.id, t.id); } }}
-							onLongPress={e => {
-								hapticImpact('medium');
-								setMenu({
-									target: { id: t.id, title: t.title, pinned },
+							hitSlop={8}
+							onPress={e => {
+								hapticSelection();
+								setStatusPopover({
+									target: { id: t.id, status: 'review' },
 									anchor: { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY },
 								});
 							}}
+							accessibilityLabel="ステータスを確認済みにする"
 						>
-							{pinned ? <Ionicons name="bookmark" size={11} color={colors.accent} style={styles.pinIcon} /> : null}
-							<View style={[styles.orb, orbStyle(t.agentStatus)]} />
-							<View style={styles.agentBody}>
-								<Text style={styles.agentTitle} numberOfLines={1}>{t.title}</Text>
-								<View style={styles.agentSub}>
-									<Text style={[styles.agentWs, { color }]} numberOfLines={1}>{ws?.name ?? '—'}</Text>
-									{ws?.branch ? <Text style={styles.agentBranch} numberOfLines={1}> · {ws.branch}</Text> : null}
-								</View>
-							</View>
-							{t.agentStatus === 'review' ? (
-								// レビューのみタップで「確認済みにする」ポップオーバーを開ける
-								// （応答待ち/質問は回答して解消するもの、実行中/アイドルは既読の概念が無い）
-								<Pressable
-									hitSlop={8}
-									onPress={e => {
-										hapticSelection();
-										setStatusPopover({
-											target: { id: t.id, status: 'review' },
-											anchor: { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY },
-										});
-									}}
-									accessibilityLabel="ステータスを確認済みにする"
-								>
-									<Text style={[styles.badge, badgeStyle(t.agentStatus)]}>{agentLabel(t.agentStatus)}</Text>
-								</Pressable>
-							) : (
-								<Text style={[styles.badge, badgeStyle(t.agentStatus)]}>{agentLabel(t.agentStatus)}</Text>
-							)}
+							<AgentBadge status={t.agentStatus} />
+						</Pressable>
+					) : undefined;
+					return (
+						<Pressable
+							key={t.id}
+							ref={node => { if (node) { rowRefs.current.set(t.id, node); } else { rowRefs.current.delete(t.id); } }}
+							style={[agentRowStyles.container, waiting && agentRowStyles.containerWaiting]}
+							onPress={() => { if (ws) { openAgent(ws.id, t.id); } }}
+							onLongPress={e => {
+								hapticImpact('medium');
+								const target = { id: t.id, title: t.title, pinned };
+								const anchor = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
+								const node = rowRefs.current.get(t.id);
+								if (node) {
+									// ウィンドウ座標を取得してから、その位置に浮かせたクローンとメニューを開く。
+									node.measureInWindow((x, y, width, height) => setMenu({ target, anchor, rect: { x, y, width, height }, rowData }));
+								} else {
+									setMenu({ target, anchor, rowData });
+								}
+							}}
+						>
+							<AgentRowContent data={rowData} badge={badge} />
 						</Pressable>
 					);
 				})}
@@ -188,6 +188,8 @@ export default function HomeScreen() {
 			<TerminalActionsMenu
 				target={menu?.target}
 				anchor={menu?.anchor}
+				rect={menu?.rect}
+				rowData={menu?.rowData}
 				onClose={() => setMenu(undefined)}
 				onRename={(id, title) => renameTerminal(id, title)}
 				onTogglePin={id => {
@@ -212,48 +214,10 @@ function statusOrder(status: string | undefined): number {
 	return status === 'permission' || status === 'question' ? 0 : status === 'working' ? 1 : status === undefined ? 3 : 2;
 }
 
-function agentLabel(status: string | undefined): string {
-	return status === 'permission' ? '応答待ち' : status === 'question' ? '質問あり' : status === 'working' ? '実行中' : status === undefined ? 'アイドル' : 'レビュー';
-}
-
-function orbStyle(status: string | undefined) {
-	return status === 'permission' || status === 'question' ? styles.orbWaiting
-		: status === 'working' ? styles.orbRunning
-			: status === undefined ? styles.orbIdle : styles.orbReview;
-}
-
-function badgeStyle(status: string | undefined) {
-	return status === 'permission' || status === 'question' ? styles.badgeWaiting
-		: status === 'working' ? styles.badgeRunning
-			: status === undefined ? styles.badgeIdle : styles.badgeReview;
-}
-
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1 },
 	content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 32 },
 	dimSmall: { color: colors.textDim, fontSize: 12, marginTop: 4, lineHeight: 18 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginTop: 6, marginBottom: 8, letterSpacing: 0.5 },
-	agentRow: {
-		flexDirection: 'row', alignItems: 'center', gap: 11,
-		backgroundColor: colors.surface, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14,
-		borderWidth: 1, borderColor: colors.border, marginBottom: 8,
-	},
-	agentRowWaiting: { borderLeftWidth: 3, borderLeftColor: colors.red },
-	pinIcon: { marginRight: -2 },
-	orb: { width: 10, height: 10, borderRadius: 6 },
-	orbWaiting: { backgroundColor: colors.red },
-	orbRunning: { backgroundColor: colors.green },
-	orbReview: { backgroundColor: colors.yellow },
-	orbIdle: { backgroundColor: '#55555c' },
-	agentBody: { flex: 1, minWidth: 0 },
-	agentTitle: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
-	agentSub: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
-	agentWs: { fontSize: 11, fontFamily: 'Menlo', flexShrink: 1 },
-	agentBranch: { color: colors.textDim, fontSize: 11, flexShrink: 1 },
-	badge: { fontSize: 10, fontWeight: '700', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
-	badgeWaiting: { backgroundColor: 'rgba(244,135,113,0.15)', color: colors.red },
-	badgeRunning: { backgroundColor: 'rgba(78,201,176,0.15)', color: colors.green },
-	badgeReview: { backgroundColor: 'rgba(220,220,170,0.15)', color: colors.yellow },
-	badgeIdle: { backgroundColor: 'rgba(139,139,139,0.15)', color: colors.textDim },
 });
