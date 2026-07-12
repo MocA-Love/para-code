@@ -763,6 +763,23 @@ export class MobileController {
 		this.sendTerm({ t: 'rename', id, title });
 	}
 
+	/**
+	 * ターミナルを削除する。PC側の実インスタンスも閉じる（instance.dispose）破壊的操作のため、
+	 * 呼び出し側（ホーム長押しメニュー）で確認ダイアログを経てから呼ぶ想定。手元の一覧からは
+	 * 楽観的に消しておき、PC側の権威的なstate再送（onDidChangeInstances）で確定させる。
+	 */
+	closeTerminal(id: number): void {
+		const workspace = this.state.workspace;
+		if (workspace) {
+			this.state.workspace = {
+				...workspace,
+				terminals: workspace.terminals.filter(t => t.id !== id),
+			};
+			this.emit();
+		}
+		this.sendTerm({ t: 'close', id });
+	}
+
 	/** 現在の状態スナップショットを要求する。 */
 	requestState(): void {
 		this.client?.send('state', new Uint8Array(0));
