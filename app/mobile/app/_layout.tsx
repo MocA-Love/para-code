@@ -7,6 +7,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
 import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
+import { OverlayHost } from '../src/components/overlayHost.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 
@@ -116,6 +117,9 @@ export default function RootLayout() {
 						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継） */}
 						<Stack.Screen name="browser" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>
+					{/* glass対応メニュー/ダイアログの描画先（overlayHost.tsx参照）。
+					    再ロック時にロック画面より上へ残らないよう、AuthGateの内側に置く */}
+					<OverlayHost />
 				</AuthGate>
 			</ThemeProvider>
 		</GestureHandlerRootView>
