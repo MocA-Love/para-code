@@ -1,14 +1,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import * as ImagePicker from 'expo-image-picker';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
-import { isAgentWaiting, type AgentChatMessage, type AgentLiveState } from '../src/store.js';
+import { isAgentWaiting, pinKeyForTerminal, type AgentChatMessage, type AgentLiveState } from '../src/store.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
 import { MarkdownText } from '../src/components/markdownText.js';
 import { GlassSurface, liquidGlass } from '../src/components/glassSurface.js';
@@ -16,8 +15,7 @@ import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.
 import { ApprovalCard } from '../src/components/approvalCard.js';
 import { AgentActivityCard } from '../src/components/agentActivityCard.js';
 import { findLatestApprovalRequest } from '../src/components/attentionCard.js';
-import { GlassComposer } from '../src/components/glassComposer.js';
-import { ModelPill } from '../src/components/modelPill.js';
+import { AgentComposer } from '../src/components/agentComposer.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useAgentActions } from '../src/hooks/useAgentActions.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
@@ -49,7 +47,6 @@ export default function AgentDetailScreen() {
 		requestAgentModelCatalog: s.requestAgentModelCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
 		browserTargets: s.browserTargets,
 	})));
-	const [input, setInput] = useState('');
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
@@ -68,6 +65,13 @@ export default function AgentDetailScreen() {
 	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
 	const permissionPending = activeTerminal?.agentStatus === 'permission';
 	const actions = useAgentActions(activeId, chat?.agent);
+
+	// 入力中テキストは画面を離れても消えないよう、エージェント（ターミナル）単位の
+	// 一意キーでメモリ上に退避する（実体は AgentComposer 内の useComposerDraft）。キーが
+	// 分離されるので別エージェントの入力欄には混ざらない。下書きの value と入力欄自体は
+	// AgentComposer が閉じて持ち、ストリーミング（agentChats の更新）で入力欄が再レンダリング
+	// されない構造にしている（IME変換のキャンセル防止）。
+	const draftKey = activeTerminal !== undefined ? pinKeyForTerminal(activeTerminal) : undefined;
 
 	// ヘッダー表示用: このターミナルの所属ワークスペース
 	const agentWs = activeTerminal !== undefined
@@ -194,11 +198,12 @@ export default function AgentDetailScreen() {
 	// 発火させるため、その途中経過を「ユーザーが上へスクロールした」と誤認して sticky を
 	// 解除しないよう、プログラム起因のスクロール中は解除判定を抑止する。
 	const programmaticUntilRef = useRef(0);
-	const scrollToEndSticky = () => {
+	// AgentComposer へ安定参照で渡すため useCallback 化（ref と安定な setState のみ参照）。
+	const scrollToEndSticky = useCallback(() => {
 		setSticky(true);
 		programmaticUntilRef.current = Date.now() + 700;
 		listRef.current?.scrollToEnd({ animated: true });
-	};
+	}, []);
 	// sticky判定のしきい値: 下端から80px以内なら「最下部にいる」とみなす。
 	const onListScroll = (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
 		const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
@@ -225,40 +230,6 @@ export default function AgentDetailScreen() {
 		listHeightRef.current = height;
 		if (shrank && stickyRef.current) {
 			listRef.current?.scrollToEnd({ animated: false });
-		}
-	};
-
-	const submit = () => {
-		const text = input;
-		setInput('');
-		actions.sendText(text);
-		// 自分の送信は例外的に無条件で最下部へ（遡り読み中でも自分の発言は見たいはず）
-		scrollToEndSticky();
-	};
-
-	/**
-	 * 画像添付（+ボタン）。フォトライブラリから選び、PCへアップロードして保存先の
-	 * フルパスを入力欄へ挿入する（エージェントCLIはプロンプト内のパスから画像を読める）。
-	 */
-	const [uploading, setUploading] = useState(false);
-	const attachImage = async () => {
-		if (uploading) {
-			return;
-		}
-		const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], base64: true, quality: 0.8 });
-		const asset = result.assets?.[0];
-		if (result.canceled || !asset?.base64) {
-			return;
-		}
-		setUploading(true);
-		try {
-			const name = asset.fileName ?? 'photo.jpg';
-			const { path } = await fsUpload(name, asset.base64);
-			setInput(prev => prev.length > 0 ? prev + ' ' + path + ' ' : path + ' ');
-		} catch (err) {
-			console.warn('[agent] image upload failed', err);
-		} finally {
-			setUploading(false);
 		}
 	};
 
@@ -352,28 +323,18 @@ export default function AgentDetailScreen() {
 			) : null}
 
 			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
-				<GlassComposer
-					value={input}
-					onChangeText={setInput}
-					onSubmit={submit}
-					placeholder="エージェントへメッセージ…"
-					sendDisabled={input.trim().length === 0}
-					tools={
-						<>
-							<Pressable style={styles.attachBtn} onPress={() => { hapticImpact('light'); void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">
-								<Ionicons name={uploading ? 'hourglass-outline' : 'add'} size={20} color={colors.text} />
-							</Pressable>
-							<ModelPill
-								agent={chat !== undefined && !chat.none ? chat.agent : undefined}
-								model={chat?.info?.model}
-								effort={chat?.info?.effort}
-								modelControl={chat?.modelControl}
-								onClaudeCommand={actions.sendText}
-								onRequestCodexCatalog={() => { if (activeId !== undefined) { requestAgentModelCatalog(activeId); } }}
-								onUpdateCodexSettings={(nextModel, nextEffort) => { if (activeId !== undefined) { updateAgentSettings(activeId, nextModel, nextEffort); } }}
-							/>
-						</>
-					}
+				<AgentComposer
+					draftKey={draftKey}
+					activeId={activeId}
+					agent={chat !== undefined && !chat.none ? chat.agent : undefined}
+					model={chat?.info?.model}
+					effort={chat?.info?.effort}
+					modelControl={chat?.modelControl}
+					sendText={actions.sendText}
+					onAfterSubmit={scrollToEndSticky}
+					fsUpload={fsUpload}
+					requestAgentModelCatalog={requestAgentModelCatalog}
+					updateAgentSettings={updateAgentSettings}
 				/>
 			</View>
 		</KeyboardAvoidingView>
@@ -585,5 +546,4 @@ const styles = StyleSheet.create({
 	jumpFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	jumpText: { color: colors.text, fontSize: 12, fontWeight: '600' },
 	inputBar: { paddingHorizontal: 12, paddingTop: 10 },
-	attachBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 });
