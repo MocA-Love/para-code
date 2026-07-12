@@ -35,6 +35,7 @@ test/componentFixtures/.screenshots/*
 dist
 .playwright-cli
 .playwright-mcp
+/.superpowers/
 .worktrees/
 .claude/
 .agents/agents/*.local.md
