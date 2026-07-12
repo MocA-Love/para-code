@@ -234,8 +234,11 @@ export function paradisNormalizeAgentHookEvent(eventType: string, message?: stri
 		// 完了系: Claude Code / Codex / OpenCode
 		// StopFailure は「APIエラーでターンが終わった」(Claude Code)。実行中表示が
 		// 残り続けるより「終わったので確認して」の方が実態に合うため review に畳む。
+		// SubagentStop は含めない: サブエージェント完了は本体ターンの終了ではなく、
+		// review に畳むと本体実行中に完了通知・完了ドットが誤発火する。状態不変（undefined）
+		// に落とし、本体の Stop だけでターン終了を扱う（'working' を返す形にしないのは、
+		// 本体 Stop 後に遅れて届いた場合に review を巻き戻さないため）。
 		case 'Stop':
-		case 'SubagentStop':
 		case 'StopFailure':
 		case 'agent-turn-complete':
 		case 'task_complete':
