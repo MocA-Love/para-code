@@ -206,7 +206,7 @@ export interface AgentQuestionOption {
 export interface AgentChatMessage {
 	rev: number;
 	role: 'user' | 'assistant' | 'tool';
-	kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question';
+	kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question' | 'peer_message';
 	text: string;
 	tool?: string;
 	ts?: number;
@@ -224,6 +224,9 @@ export interface AgentChatMessage {
 	questionIndex?: number;
 	/** kind==='question': グループの総質問数。 */
 	questionCount?: number;
+	/** kind==='peer_message': Claude Code Agent Teamsの送信元と要約。 */
+	peerName?: string;
+	peerSummary?: string;
 }
 
 /** セッションのメタ情報（PC側 transcript から学習した最新値）。 */

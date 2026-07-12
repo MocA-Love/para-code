@@ -449,6 +449,18 @@ function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
 }
 
 function MessageBubble({ message }: { message: AgentChatMessage }) {
+	if (message.kind === 'peer_message') {
+		return (
+			<View style={styles.peerMessageCard}>
+				<View style={styles.peerMessageHeader}>
+					<Ionicons name="people-outline" size={13} color={colors.accent2} />
+					<Text style={styles.peerMessageLabel}>Claude teammate{message.peerName ? ` · ${message.peerName}` : ''}</Text>
+				</View>
+				{message.peerSummary ? <Text style={styles.peerMessageSummary}>{message.peerSummary}</Text> : null}
+				<MarkdownText text={message.text} />
+			</View>
+		);
+	}
 	if (message.kind === 'tool_use') {
 		return (
 			<View style={styles.toolRow}>
@@ -536,6 +548,10 @@ const styles = StyleSheet.create({
 	headerBody: { flex: 1, minWidth: 0 },
 	headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
 	headerSub: { color: colors.textDim, fontSize: 11, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	peerMessageCard: { alignSelf: 'stretch', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, gap: 6 },
+	peerMessageHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+	peerMessageLabel: { color: colors.accent2, fontSize: 11, fontWeight: '700' },
+	peerMessageSummary: { color: colors.text, fontSize: 12, fontWeight: '600' },
 	// 案A「フルフラット」: チャット領域の外枠カードを廃止し、背景に直接描画する
 	// （Claude公式アプリ風。コードブロックや長文が画面幅を最大限使える）。
 	chatArea: { flex: 1 },

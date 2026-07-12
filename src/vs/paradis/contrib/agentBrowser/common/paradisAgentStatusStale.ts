@@ -8,6 +8,14 @@
 
 /** Stop後のバックグラウンド補正が取り残された場合だけ完了へ降格するまでの時間。 */
 const PARADIS_BACKGROUND_COMPLETION_STALE_MS = 15 * 60 * 1000;
+/** background taskとStop fallbackが同じ時刻基準で収束するための上限。 */
+export const PARADIS_AGENT_BACKGROUND_TASK_STALE_MS = PARADIS_BACKGROUND_COMPLETION_STALE_MS;
+/** 2秒pollが60秒連続失敗したらrenderer側の古いsnapshotを破棄する。 */
+export const PARADIS_AGENT_STATUS_POLL_FAILURE_CLEAR_THRESHOLD = 30;
+
+export function paradisShouldClearAgentStatusAfterPollFailures(consecutiveFailures: number): boolean {
+	return consecutiveFailures >= PARADIS_AGENT_STATUS_POLL_FAILURE_CLEAR_THRESHOLD;
+}
 
 /** 長時間の通常ツールを除外し、取り残されたバックグラウンド補正だけを降格する。 */
 export function paradisShouldSweepStaleWorkingStatus(status: string, backgroundCompletionFallback: boolean | undefined, changedAt: number, now: number): boolean {

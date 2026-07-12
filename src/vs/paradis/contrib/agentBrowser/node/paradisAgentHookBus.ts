@@ -13,6 +13,7 @@
 // （同一プロセス内でのみ成立する前提。IPC は介さない）。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
+import { PARADIS_AGENT_BACKGROUND_TASK_STALE_MS } from '../common/paradisAgentStatusStale.js';
 
 /** notify.sh (v2) がPOSTするhook JSONから抽出した、1回のhook発火の内容。 */
 export interface IParadisAgentHookEvent {
@@ -128,8 +129,6 @@ export interface IParadisAgentPaneActivity {
 }
 
 /** 完了通知が来ないまま残ったバックグラウンドタスクを無視するまでの時間。 */
-const BACKGROUND_TASK_STALE_MS = 60 * 60 * 1000;
-
 const activities = new Map<string, IParadisAgentPaneActivity>();
 const activityEmitter = new Emitter<{ readonly token: string; readonly activity: IParadisAgentPaneActivity }>();
 
@@ -151,6 +150,13 @@ export function getParadisAgentPaneActivity(token: string): IParadisAgentPaneAct
 	return activities.get(token) ?? { backgroundTasks: new Map(), pendingQuestion: false };
 }
 
+/** terminal/pane終了時にtoken由来のtranscript activityを即時破棄する。 */
+export function clearParadisAgentPaneActivity(token: string): void {
+	if (activities.delete(token)) {
+		activityEmitter.fire({ token, activity: { backgroundTasks: new Map(), pendingQuestion: false } });
+	}
+}
+
 /**
  * 実行中とみなせるバックグラウンドタスク数。完了通知(task-notification)を取りこぼした
  * エントリで 'working' が永久に残らないよう、古すぎるものは数えない。
@@ -158,7 +164,7 @@ export function getParadisAgentPaneActivity(token: string): IParadisAgentPaneAct
 export function paradisCountLiveBackgroundTasks(token: string, now: number): number {
 	let count = 0;
 	for (const openedAt of getParadisAgentPaneActivity(token).backgroundTasks.values()) {
-		if (now - openedAt < BACKGROUND_TASK_STALE_MS) {
+		if (now - openedAt < PARADIS_AGENT_BACKGROUND_TASK_STALE_MS) {
 			count++;
 		}
 	}

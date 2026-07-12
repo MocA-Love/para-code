@@ -55,7 +55,7 @@ export interface IParadisAgentChatMessage {
 	/** epoch内で単調増加する連番 (差分同期用)。 */
 	readonly rev: number;
 	readonly role: 'user' | 'assistant' | 'tool';
-	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question';
+	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question' | 'peer_message';
 	readonly text: string;
 	/** kind==='tool_use' のときのツール名。 */
 	readonly tool?: string;
@@ -79,6 +79,9 @@ export interface IParadisAgentChatMessage {
 	readonly questionIndex?: number;
 	/** kind==='question' のとき: グループの総質問数。 */
 	readonly questionCount?: number;
+	/** kind==='peer_message': Claude Code Agent Teamsの送信元と要約。 */
+	readonly peerName?: string;
+	readonly peerSummary?: string;
 }
 
 /** transcript確定前に表示する一時的な実行状況。履歴revには含めず、常に最新値で置換する。 */
@@ -192,7 +195,7 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 
 interface IRawMessage {
 	readonly role: 'user' | 'assistant' | 'tool';
-	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question';
+	readonly kind: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'question' | 'peer_message';
 	readonly text: string;
 	readonly tool?: string;
 	readonly ts?: number;
@@ -203,6 +206,8 @@ interface IRawMessage {
 	readonly questionGroup?: string;
 	readonly questionIndex?: number;
 	readonly questionCount?: number;
+	readonly peerName?: string;
+	readonly peerSummary?: string;
 }
 
 /**
@@ -232,6 +237,45 @@ interface IParseSignals {
 
 function newParseSignals(): IParseSignals {
 	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], userText: false, turnEnded: undefined };
+}
+
+function decodeXmlAttribute(value: string): string {
+	return value.replace(/&quot;/g, '"').replace(/&apos;/g, String.fromCodePoint(39)).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+/** Claude Code Agent TeamsのMailbox配送を通常のユーザー発言から分離する。 */
+function parseClaudePeerMessage(rawText: string, ts: number | undefined): IRawMessage | null | undefined {
+	// ユーザーがタグ文字列を質問に含めただけのケースを誤分類しないよう、Claude Codeが
+	// 付ける配送prefixまたはcross-session wrapperが先頭にある場合だけ内部通信として扱う。
+	if (!rawText.startsWith('Another Claude session sent a message') && !rawText.startsWith('<cross-session-message>')) {
+		return undefined;
+	}
+	const tagged = /<(teammate-message|agent-message)\b([^>]*)>([\s\S]*?)<\/\1>/.exec(rawText);
+	if (tagged === null) {
+		const crossSession = /<cross-session-message>([\s\S]*?)<\/cross-session-message>/.exec(rawText);
+		const text = (crossSession?.[1] ?? rawText.replace(/^Another Claude session sent a message(?: while you were working)?:?\s*/, '')).trim();
+		return text.length > 0 ? { role: 'assistant', kind: 'peer_message', text: truncateText(text, TEXT_LIMIT), ts } : null;
+	}
+	const attributes = tagged[2];
+	const body = tagged[3].trim();
+	try {
+		const protocol = rec(JSON.parse(body));
+		if (protocol?.['type'] === 'idle_notification') {
+			return null;
+		}
+	} catch {
+		// 通常の自然言語レポートはJSONではない。
+	}
+	if (body.length === 0) {
+		return null;
+	}
+	const name = /\b(?:teammate_id|from)="([^"]+)"/.exec(attributes)?.[1];
+	const summary = /\bsummary="([^"]+)"/.exec(attributes)?.[1];
+	return {
+		role: 'assistant', kind: 'peer_message', text: truncateText(body, TEXT_LIMIT), ts,
+		...(name !== undefined ? { peerName: decodeXmlAttribute(name) } : {}),
+		...(summary !== undefined ? { peerSummary: decodeXmlAttribute(summary) } : {}),
+	};
 }
 
 /** unknown からの安全なプロパティ読み出し。 */
@@ -407,6 +451,13 @@ function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | un
 	if (trimmed.length === 0) {
 		return;
 	}
+	const peerMessage = parseClaudePeerMessage(trimmed, ts);
+	if (peerMessage !== undefined) {
+		if (peerMessage !== null) {
+			out.push(peerMessage);
+		}
+		return;
+	}
 	// ユーザーがescでツール実行（AskUserQuestion等）を中断した際にハーネスが注入する
 	// 内部マーカー。ユーザーの発言ではないため表示しない（signals.userTextも立てない。
 	// 立てると同一バッチ内の未回答質問カードを誤ってクリアしてしまう）。
@@ -575,6 +626,22 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals): 
 		}
 	}
 	return out;
+}
+
+/** transcript分類の回帰テスト用。productionと同じparserを1行だけ通す。 */
+export function paradisParseClaudeTranscriptLineForTest(line: string): { messages: IRawMessage[]; userText: boolean } {
+	let obj: Record<string, unknown> | undefined;
+	try {
+		obj = rec(JSON.parse(line));
+	} catch {
+		return { messages: [], userText: false };
+	}
+	if (obj === undefined) {
+		return { messages: [], userText: false };
+	}
+	const signals = newParseSignals();
+	const messages = JSON.parse(JSON.stringify(parseClaudeLine(obj, signals))) as IRawMessage[];
+	return { messages, userText: signals.userText };
 }
 
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
@@ -1327,7 +1394,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly pendingHooks = new Map<string, { readonly event: IParadisAgentHookEvent; readonly transcriptPath: string; readonly sequence: number; readonly receivedAt: number }>();
 	private readonly pendingHookTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly codexLiveClient: ParadisCodexLiveClient;
-	/** 有効時はモバイルの購読が無くてもセッション判明済みペインを常時tailする（質問検出・通知用）。 */
+	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
 
 	constructor(
@@ -1400,9 +1467,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
-	 * ペアリング済みモバイルが存在する間だけ常時tailを有効にする。
-	 * 有効化時点で判明済みの全セッションのtailを開始し、無効化時は購読の無いtailerを止める
-	 * （リレー無効・ペアリング0台のときに全transcriptを監視し続けるコストを避ける）。
+	 * ペアリング済みモバイル向けのライブ質問/承認注入を切り替える。CodexのStopなし終了を
+	 * 検出するstatus用tailerはモバイル接続から独立しているため、無効化しても停止しない。
 	 */
 	setEagerTailing(enabled: boolean): void {
 		if (this.eagerTailing === enabled) {
@@ -1414,10 +1480,6 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (this.terminalIdForToken(token) !== undefined) {
 					this.ensureTailer(token, session);
 				}
-			}
-		} else {
-			for (const token of [...this.tailers.keys()]) {
-				this.stopTailerIfUnsubscribed(token);
 			}
 		}
 	}
@@ -1467,11 +1529,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// セッションは判明済みだが terminalId 対応が今届いたペインの常時tailを開始する
 		// （hookが先・ペイン同期が後の順で来るケース）。
-		if (this.eagerTailing) {
-			for (const [token, session] of this.paneSessions) {
-				if (this.terminalIdForToken(token) !== undefined && !this.tailers.has(token)) {
-					this.ensureTailer(token, session);
-				}
+		for (const [token, session] of this.paneSessions) {
+			if (this.terminalIdForToken(token) !== undefined && !this.tailers.has(token)) {
+				this.ensureTailer(token, session);
 			}
 		}
 		// 消えたターミナル（PC側でclose等）の購読・tailerを掃除する。detachは
@@ -2161,9 +2221,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.pushToSubscriber(token);
 	}
 
-	/** 常時tailが有効なら、このペインのtailerを起動しておく（購読が無くても質問を検出できるように）。 */
+	/** status収束のため、セッション確定済みの生存ペインはモバイル購読が無くてもtailする。 */
 	private ensureEagerTailer(token: string, session: IPaneSessionInfo): void {
-		if (this.eagerTailing && this.terminalIdForToken(token) !== undefined) {
+		if (this.terminalIdForToken(token) !== undefined) {
 			this.ensureTailer(token, session);
 		}
 	}
@@ -2396,8 +2456,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private stopTailerIfUnsubscribed(token: string): void {
-		// 常時tail中は購読が無くてもtailerを維持する（質問検出のため）。
-		if (this.eagerTailing) {
+		// status用tailはセッション確定済みの生存ペインに常駐させる。
+		if (this.paneSessions.has(token) && this.isLiveToken(token)) {
 			return;
 		}
 		if (!this.subscribers.has(token)) {
