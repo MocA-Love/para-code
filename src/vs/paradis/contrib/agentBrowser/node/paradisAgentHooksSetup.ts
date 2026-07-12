@@ -283,28 +283,58 @@ async function installNotifyScript(logService: ILogService): Promise<void> {
 	}
 }
 
-/** 設定ファイル1つ分の冪等マージ + 書き込み。失敗しても例外は投げない。 */
-async function mergeHooksFile(filePath: string, managedEvents: readonly IParadisManagedHookEvent[], logService: ILogService | undefined, hookCommand?: string): Promise<void> {
-	try {
-		let existingRaw: string | undefined;
+export interface IParadisAgentHooksFileIO {
+	readFile(filePath: string): Promise<string | undefined>;
+	writeFile(filePath: string, content: string): Promise<void>;
+	mkdir(directory: string): Promise<void>;
+}
+
+const defaultAgentHooksFileIO: IParadisAgentHooksFileIO = {
+	async readFile(filePath) {
 		try {
-			existingRaw = await fs.readFile(filePath, 'utf8');
+			return await fs.readFile(filePath, 'utf8');
 		} catch {
-			existingRaw = undefined; // ファイルなし → 新規作成
+			return undefined;
 		}
-		const merged = paradisMergeAgentHooksJson(existingRaw, managedEvents, hookCommand);
-		if (merged === undefined) {
-			logService?.warn(`[ParadisAgentHooks] Could not parse ${filePath}; skipping hook merge (user file left untouched)`);
+	},
+	async writeFile(filePath, content) {
+		await fs.writeFile(filePath, content);
+	},
+	async mkdir(directory) {
+		await fs.mkdir(directory, { recursive: true });
+	},
+};
+
+/**
+ * 設定ファイル1つ分の冪等マージ + 書き込み。書き込み直前に再読込し、外部更新が
+ * 入っていれば最新内容からマージし直す。上限内に安定しなければユーザーファイルを
+ * 優先して書き込みを見送る。失敗しても例外は投げない。
+ */
+export async function paradisMergeAgentHooksFile(filePath: string, managedEvents: readonly IParadisManagedHookEvent[], logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+	try {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const existingRaw = await io.readFile(filePath);
+			const merged = paradisMergeAgentHooksJson(existingRaw, managedEvents, hookCommand);
+			if (merged === undefined) {
+				logService?.warn(`[ParadisAgentHooks] Could not parse ${filePath}; skipping hook merge (user file left untouched)`);
+				return;
+			}
+			// 既存ファイルの末尾改行は維持する (余計な毎回書き込みを防ぐ)
+			const content = existingRaw !== undefined && existingRaw.endsWith('\n') ? `${merged}\n` : merged;
+			if (content === existingRaw) {
+				return; // 既に最新
+			}
+			// read→write間にユーザーや別ツールが保存していれば、古いスナップショットで
+			// 上書きせず、最新内容を起点に再マージする。
+			if (await io.readFile(filePath) !== existingRaw) {
+				continue;
+			}
+			await io.mkdir(dirname(filePath));
+			await io.writeFile(filePath, content);
+			logService?.info(`[ParadisAgentHooks] Updated agent hooks in ${filePath}`);
 			return;
 		}
-		// 既存ファイルの末尾改行は維持する (余計な毎回書き込みを防ぐ)
-		const content = existingRaw !== undefined && existingRaw.endsWith('\n') ? `${merged}\n` : merged;
-		if (content === existingRaw) {
-			return; // 既に最新
-		}
-		await fs.mkdir(dirname(filePath), { recursive: true });
-		await fs.writeFile(filePath, content);
-		logService?.info(`[ParadisAgentHooks] Updated agent hooks in ${filePath}`);
+		logService?.warn(`[ParadisAgentHooks] ${filePath} kept changing during hook merge; skipped update to preserve external changes`);
 	} catch (error) {
 		logService?.warn(`[ParadisAgentHooks] Failed to update ${filePath}`, error);
 	}
@@ -481,8 +511,8 @@ export class ParadisAgentHooksReconciler extends Disposable {
 			this.capabilityLogged = true;
 			this.logService?.info(`[ParadisAgentHooks] Claude version ${claudeVersion?.trim() ?? 'unknown'}; managed events: ${claudeEvents.map(event => event.eventName).join(', ')}`);
 		}
-		await mergeHooksFile(this.claudeSettingsPath, claudeEvents, this.logService, hookCommand);
-		await mergeHooksFile(this.codexHooksPath, PARADIS_CODEX_HOOK_EVENTS, this.logService, hookCommand);
+		await paradisMergeAgentHooksFile(this.claudeSettingsPath, claudeEvents, this.logService, hookCommand);
+		await paradisMergeAgentHooksFile(this.codexHooksPath, PARADIS_CODEX_HOOK_EVENTS, this.logService, hookCommand);
 	}
 
 	override dispose(): void {
@@ -516,6 +546,6 @@ export async function paradisSetupAgentHooks(logService: ILogService, shellEnvRe
 	if (claudeVersion === undefined || !paradisSupportsClaudeActivityHooks(claudeVersion)) {
 		logService.trace('[ParadisAgentHooks] Claude activity hook support not confirmed; leaving version-dependent hooks disabled');
 	}
-	await mergeHooksFile(join(paradisClaudeConfigDir(), 'settings.json'), claudeEvents, logService, hookCommand);
-	await mergeHooksFile(join(paradisCodexHome(), 'hooks.json'), PARADIS_CODEX_HOOK_EVENTS, logService, hookCommand);
+	await paradisMergeAgentHooksFile(join(paradisClaudeConfigDir(), 'settings.json'), claudeEvents, logService, hookCommand);
+	await paradisMergeAgentHooksFile(join(paradisCodexHome(), 'hooks.json'), PARADIS_CODEX_HOOK_EVENTS, logService, hookCommand);
 }
