@@ -120,6 +120,8 @@ type AgentInbound =
 	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number }
 	| { t: 'detach'; id: number; token?: string }
 	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string }
+	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
+	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: 'yes' | 'no' }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string };
 
@@ -132,6 +134,11 @@ type AgentOutbound =
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
 	| { t: 'none'; id: number };
+
+type AgentQuestionAnswer =
+	| { readonly kind: 'option'; readonly index: number }
+	| { readonly kind: 'multi'; readonly indices: readonly number[] }
+	| { readonly kind: 'text'; readonly optionCount: number; readonly text: string };
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -1453,8 +1460,9 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly codexLiveClient: ParadisCodexLiveClient;
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
-	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly timer: ReturnType<typeof setTimeout> }>();
-	private readonly completedActionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly interactionClaims = new Map<string, string>();
 
 	constructor(
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
@@ -1496,10 +1504,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				clearTimeout(pending.timer);
 			}
 			this.pendingActions.clear();
-			for (const timer of this.completedActionTimers.values()) {
-				clearTimeout(timer);
+			for (const completed of this.completedActions.values()) {
+				clearTimeout(completed.timer);
 			}
-			this.completedActionTimers.clear();
+			this.completedActions.clear();
+			this.interactionClaims.clear();
 		}));
 	}
 
@@ -1732,12 +1741,14 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (pending.mobileId === mobileId) {
 				clearTimeout(pending.timer);
 				this.pendingActions.delete(key);
+				this.releaseInteractionClaim(pending.interactionKey, key);
 			}
 		}
-		for (const [key, timer] of [...this.completedActionTimers]) {
+		for (const [key, completed] of [...this.completedActions]) {
 			if (key.startsWith(`${mobileId}\0`)) {
-				clearTimeout(timer);
-				this.completedActionTimers.delete(key);
+				clearTimeout(completed.timer);
+				this.completedActions.delete(key);
+				this.releaseInteractionClaim(completed.interactionKey, key);
 			}
 		}
 		for (const token of [...this.subscribers.keys()]) {
@@ -1768,6 +1779,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		} else if (msg.t === 'action/sendMessage' && this.isValidSendMessageAction(msg)) {
 			this.handleSendMessageAction(mobileId, msg);
+		} else if (msg.t === 'action/answerQuestion' && this.isValidQuestionAction(msg)) {
+			this.handleQuestionAction(mobileId, msg);
+		} else if (msg.t === 'action/answerApproval' && this.isValidApprovalAction(msg)) {
+			this.handleApprovalAction(mobileId, msg);
 		} else if (msg.t === 'model-catalog' && this.isValidControlRequest(msg)) {
 			this.handleModelCatalogRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] model catalog failed', err));
 		} else if (msg.t === 'settings-update' && this.isValidControlRequest(msg)
@@ -1789,7 +1804,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const windowId = token !== undefined ? this.windowIdForPane(msg.id, token) : undefined;
 		const key = this.actionKey(mobileId, msg.requestId);
-		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || windowId === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActionTimers.has(key)) {
+		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || windowId === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
 			return;
 		}
@@ -1798,8 +1813,90 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
 			}
 		}, 5_000);
-		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, timer });
+		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId, timer });
 		this.requestAction(mobileId, windowId, encoder.encode(JSON.stringify({ ...msg, token, windowId })));
+	}
+
+	private isValidQuestionAction(msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>): boolean {
+		if (!this.isValidControlRequest(msg) || typeof msg.epoch !== 'string' || msg.epoch.length === 0 || msg.epoch.length > 200
+			|| typeof msg.interactionId !== 'string' || msg.interactionId.length === 0 || msg.interactionId.length > 500
+			|| !Array.isArray(msg.answers) || msg.answers.length === 0 || msg.answers.length > 20) {
+			return false;
+		}
+		return msg.answers.every(answer => {
+			if (rec(answer) === undefined || typeof answer.kind !== 'string') { return false; }
+			if (answer.kind === 'option') { return Number.isInteger(answer.index) && answer.index >= 0 && answer.index < 100; }
+			if (answer.kind === 'multi') { return Array.isArray(answer.indices) && answer.indices.length > 0 && answer.indices.length <= 100 && answer.indices.every(index => Number.isInteger(index) && index >= 0 && index < 100); }
+			return answer.kind === 'text' && Number.isInteger(answer.optionCount) && answer.optionCount >= 0 && answer.optionCount < 100
+				&& typeof answer.text === 'string' && answer.text.trim().length > 0 && answer.text.length <= 10_000;
+		});
+	}
+
+	private isValidApprovalAction(msg: Extract<AgentInbound, { t: 'action/answerApproval' }>): boolean {
+		return this.isValidControlRequest(msg)
+			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+			&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
+			&& (msg.choice === 'yes' || msg.choice === 'no');
+	}
+
+	private handleQuestionAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>): void {
+		const parts: string[] = [];
+		for (const answer of msg.answers) {
+			if (answer.kind === 'option') {
+				parts.push(String(answer.index + 1), '\r');
+			} else if (answer.kind === 'multi') {
+				for (const index of [...new Set(answer.indices)].sort((a, b) => a - b)) {
+					parts.push(String(index + 1), ' ');
+				}
+				parts.push('\r');
+			} else {
+				parts.push(String(answer.optionCount + 1), '\r', answer.text.trim(), '\r');
+			}
+		}
+		if (msg.answers.length > 1) {
+			parts.push('\r');
+		}
+		this.dispatchInteractionAction(mobileId, msg, { kind: 'question', id: msg.interactionId }, parts);
+	}
+
+	private handleApprovalAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerApproval' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const agent = token !== undefined ? this.paneSessions.get(token)?.agent : undefined;
+		const parts = agent === 'codex'
+			? [msg.choice === 'yes' ? 'y' : 'd']
+			: msg.choice === 'yes' ? ['1', '\r'] : ['\u001b'];
+		this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, parts);
+	}
+
+	private dispatchInteractionAction(
+		mobileId: string,
+		msg: Extract<AgentInbound, { t: 'action/answerQuestion' | 'action/answerApproval' }>,
+		interaction: IParadisAgentInteraction,
+		parts: readonly string[],
+	): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const windowId = token !== undefined ? this.windowIdForPane(msg.id, token) : undefined;
+		const key = this.actionKey(mobileId, msg.requestId);
+		const interactionKey = token !== undefined ? `${token}\0${msg.epoch}\0${interaction.kind}\0${interaction.id}` : undefined;
+		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || windowId === undefined
+			|| !this.hasSubscriber(token, mobileId) || !tailer.hasPendingInteraction(interaction)
+			|| interactionKey === undefined || this.interactionClaims.has(interactionKey)
+			|| parts.length === 0 || parts.length > 100 || this.pendingActions.has(key) || this.completedActions.has(key)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' }, token ?? msg.token);
+			return;
+		}
+		const timer = setTimeout(() => {
+			if (this.pendingActions.delete(key)) {
+				this.releaseInteractionClaim(interactionKey, key);
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
+			}
+		}, 5_000);
+		this.interactionClaims.set(interactionKey, key);
+		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId, interaction, interactionKey, timer });
+		this.requestAction(mobileId, windowId, encoder.encode(JSON.stringify({
+			t: 'action/interaction', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interaction, parts, delayMs: 300, windowId,
+		})));
 	}
 
 	claimSendMessageAction(mobileId: string, requestId: string, token: string, epoch: string): 'claimed' | 'stale' | 'expired' {
@@ -1810,12 +1907,58 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		clearTimeout(pending.timer);
 		this.pendingActions.delete(key);
-		const completedTimer = setTimeout(() => this.completedActionTimers.delete(key), 60_000);
-		this.completedActionTimers.set(key, completedTimer);
+		const completedTimer = setTimeout(() => {
+			const completed = this.completedActions.get(key);
+			this.completedActions.delete(key);
+			this.releaseInteractionClaim(completed?.interactionKey, key);
+		}, 60_000);
+		this.completedActions.set(key, {
+			token, epoch, terminalId: pending.terminalId, windowId: pending.windowId,
+			...(pending.interaction !== undefined ? { interaction: pending.interaction } : {}),
+			...(pending.interactionKey !== undefined ? { interactionKey: pending.interactionKey } : {}), timer: completedTimer,
+		});
 		const currentTailer = this.tailers.get(token);
-		return pending.token === token && pending.epoch === epoch && currentTailer?.epoch === epoch && this.hasSubscriber(token, mobileId)
-			? 'claimed'
-			: 'stale';
+		const valid = pending.token === token && pending.epoch === epoch && currentTailer?.epoch === epoch && this.hasSubscriber(token, mobileId)
+			&& (pending.interaction === undefined || currentTailer.hasPendingInteraction(pending.interaction))
+			&& (pending.interactionKey === undefined || this.interactionClaims.get(pending.interactionKey) === key);
+		if (!valid) {
+			this.releaseInteractionClaim(pending.interactionKey, key);
+		}
+		return valid ? 'claimed' : 'stale';
+	}
+
+	continueInteractionAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number): 'valid' | 'completed' | 'stale' {
+		const key = this.actionKey(mobileId, requestId);
+		const completed = this.completedActions.get(key);
+		const tailer = this.tailers.get(token);
+		if (completed === undefined || completed.token !== token || completed.epoch !== epoch || completed.terminalId !== terminalId || completed.windowId !== windowId
+			|| this.windowIdForPane(terminalId, token) !== windowId || tailer?.epoch !== epoch || !this.hasSubscriber(token, mobileId)
+			|| (completed.interactionKey !== undefined && this.interactionClaims.get(completed.interactionKey) !== key)) {
+			this.releaseInteractionClaim(completed?.interactionKey, key);
+			return 'stale';
+		}
+		if (completed.interaction === undefined) {
+			return 'stale';
+		}
+		if (tailer.hasPendingInteraction(completed.interaction)) {
+			return 'valid';
+		}
+		this.releaseInteractionClaim(completed.interactionKey, key);
+		return 'completed';
+	}
+
+	finalizeInteractionAction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed'): void {
+		const key = this.actionKey(mobileId, requestId);
+		const completed = this.completedActions.get(key);
+		if (outcome === 'failed' && completed?.token === token) {
+			this.releaseInteractionClaim(completed.interactionKey, key);
+		}
+	}
+
+	private releaseInteractionClaim(interactionKey: string | undefined, actionKey: string): void {
+		if (interactionKey !== undefined && this.interactionClaims.get(interactionKey) === actionKey) {
+			this.interactionClaims.delete(interactionKey);
+		}
 	}
 
 	private actionKey(mobileId: string, requestId: string): string {

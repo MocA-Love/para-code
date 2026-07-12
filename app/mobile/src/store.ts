@@ -390,7 +390,18 @@ export interface AgentChatState {
 	modelControl?: AgentModelControlState;
 	/** PC側がsession検証付きAgent Actionを受け付ける。 */
 	capabilities?: { agentActions: true };
+	interaction?: AgentInteraction;
 }
+
+export interface AgentInteraction {
+	kind: 'question' | 'approval';
+	id: string;
+}
+
+export type AgentQuestionAnswer =
+	| { kind: 'option'; index: number }
+	| { kind: 'multi'; indices: number[] }
+	| { kind: 'text'; optionCount: number; text: string };
 
 /**
  * 「人間の対応が必要」なエージェント状態か（赤表示・応答待ちバッジの判定）。
@@ -781,17 +792,43 @@ export class MobileController {
 			this.sendTextInput(id, text, true);
 			return Promise.resolve(true);
 		}
-		const requestId = `agent-message-${this.requestCounter++}`;
+		return this.sendAgentAction(id, {
+			t: 'action/sendMessage', token: this.agentToken(id), epoch: chat.epoch, text,
+		});
+	}
+
+	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean> {
+		const chat = this.state.agentChats.get(id);
+		if (this.state.connection !== 'online' || chat?.capabilities?.agentActions !== true
+			|| chat.interaction?.kind !== 'question' || chat.interaction.id !== interactionId) {
+			return Promise.resolve(false);
+		}
+		return this.sendAgentAction(id, {
+			t: 'action/answerQuestion', token: this.agentToken(id), epoch: chat.epoch, interactionId, answers,
+		}, 60_000);
+	}
+
+	answerAgentApproval(id: number, interactionId: string, choice: 'yes' | 'no'): Promise<boolean> {
+		const chat = this.state.agentChats.get(id);
+		if (this.state.connection !== 'online' || chat?.capabilities?.agentActions !== true
+			|| chat.interaction?.kind !== 'approval' || chat.interaction.id !== interactionId) {
+			return Promise.resolve(false);
+		}
+		return this.sendAgentAction(id, {
+			t: 'action/answerApproval', token: this.agentToken(id), epoch: chat.epoch, interactionId, choice,
+		}, 60_000);
+	}
+
+	private sendAgentAction(id: number, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
+		const requestId = `agent-action-${this.requestCounter++}`;
 		return new Promise(resolve => {
 			const timer = setTimeout(() => {
 				if (this.pendingAgentActions.delete(requestId)) {
 					resolve(false);
 				}
-			}, 30_000);
+			}, timeoutMs);
 			this.pendingAgentActions.set(requestId, { id, resolve, timer });
-			this.client?.send('agent', encoder.encode(JSON.stringify({
-				t: 'action/sendMessage', id, token: this.agentToken(id), requestId, epoch: chat.epoch, text,
-			})));
+			this.client?.send('agent', encoder.encode(JSON.stringify({ ...body, id, requestId })));
 		});
 	}
 
@@ -1461,7 +1498,7 @@ export class MobileController {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; activity?: AgentActivityState | null;
-				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; capabilities?: { agentActions?: unknown };
+				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; capabilities?: { agentActions?: unknown }; interaction?: AgentInteraction | null;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -1471,6 +1508,10 @@ export class MobileController {
 				return; // 別ウィンドウで同じterminalIdを持つペインからの応答
 			}
 			const parsedActivity = msg.activity !== null ? parseAgentActivityState(msg.activity) : undefined;
+			const parsedInteraction = msg.interaction !== null && (msg.interaction?.kind === 'question' || msg.interaction?.kind === 'approval')
+				&& typeof msg.interaction.id === 'string' && msg.interaction.id.length > 0
+				? { kind: msg.interaction.kind, id: msg.interaction.id } satisfies AgentInteraction
+				: undefined;
 			if (msg.t === 'none') {
 				this.clearAgentControlTimeout(msg.id);
 				this.state.agentChats.set(msg.id, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
@@ -1492,6 +1533,7 @@ export class MobileController {
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const } } : {}),
+					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
 				});
 				this.emit({ agentChats: true });
@@ -1520,7 +1562,8 @@ export class MobileController {
 				// 重複revは捨てる（再attach応答と押し出しdeltaの競合対策）。
 				const fresh = incoming.filter(m => !existing.messages.some(e => e.rev === m.rev));
 				const withoutLive = msg.live === null ? (({ live: _live, ...rest }) => rest)(existing) : existing;
-				const base = msg.activity === null ? (({ activity: _activity, ...rest }) => rest)(withoutLive) : withoutLive;
+				const withoutActivity = msg.activity === null ? (({ activity: _activity, ...rest }) => rest)(withoutLive) : withoutLive;
+				const base = msg.interaction === null ? (({ interaction: _interaction, ...rest }) => rest)(withoutActivity) : withoutActivity;
 				this.state.agentChats.set(msg.id, {
 					...base,
 					rev: msg.rev ?? existing.rev,
@@ -1529,6 +1572,7 @@ export class MobileController {
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const } } : {}),
+					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 				});
 				// ターン継続中（live あり）の高頻度な delta だけ throttle でまとめる。ターン終了
 				// （live === null）や live 情報を伴わない確定 delta は即時反映する（追従の遅延・

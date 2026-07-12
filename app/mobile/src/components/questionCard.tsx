@@ -16,13 +16,12 @@ import { hapticImpact, hapticSelection } from '../haptics.js';
  * 同じ toolUseId の tool_result が届いたら回答済み表示になる。
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
-export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm, onFreeText }: {
+export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText }: {
 	message: AgentChatMessage;
 	answered: boolean;
-	onAnswer: (optionIndex: number) => void;
-	onToggle: (optionIndex: number) => void;
-	onConfirm: () => void;
-	onFreeText: (optionCount: number, text: string) => void;
+	onAnswer: (interactionId: string, optionIndex: number) => Promise<boolean>;
+	onMulti: (interactionId: string, indices: number[]) => Promise<boolean>;
+	onFreeText: (interactionId: string, optionCount: number, text: string) => Promise<boolean>;
 }) {
 	// 二度押し防止のローカル状態（tool_result が届くまでの間）
 	const [selected, setSelected] = useState<number | undefined>(undefined);
@@ -31,7 +30,8 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 	const [submitted, setSubmitted] = useState(false);
 	const multiSelect = message.multiSelect === true;
 	const options = message.options ?? [];
-	const disabled = answered || submitted || (!multiSelect && selected !== undefined);
+	const interactionId = message.questionGroup ?? message.toolUseId;
+	const disabled = answered || submitted;
 	const isToggled = (i: number) => toggled.has(i);
 	const toggle = (i: number) => {
 		setToggled(prev => {
@@ -43,7 +43,10 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 			}
 			return next;
 		});
-		onToggle(i);
+	};
+	const submit = (action: () => Promise<boolean>) => {
+		setSubmitted(true);
+		void action().then(accepted => { if (!accepted) { setSubmitted(false); } });
 	};
 	return (
 		<View style={[styles.questionCard, answered && styles.questionCardAnswered]}>
@@ -65,7 +68,9 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 							toggle(i);
 						} else {
 							setSelected(i);
-							onAnswer(i);
+							if (interactionId !== undefined) {
+								submit(() => onAnswer(interactionId, i));
+							}
 						}
 					}}
 				>
@@ -77,7 +82,7 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 				<Pressable
 					style={[styles.questionConfirmBtn, toggled.size === 0 && styles.confirmBtnDisabled]}
 					disabled={toggled.size === 0}
-					onPress={() => { hapticImpact('medium'); setSubmitted(true); onConfirm(); }}
+					onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onMulti(interactionId, [...toggled].sort((a, b) => a - b))); } }}
 				>
 					<Text style={styles.confirmBtnText}>決定（{toggled.size}件）</Text>
 				</Pressable>
@@ -97,7 +102,7 @@ export function QuestionCard({ message, answered, onAnswer, onToggle, onConfirm,
 					<Pressable
 						style={[styles.questionFreeSend, freeText.trim().length === 0 && styles.confirmBtnDisabled]}
 						disabled={freeText.trim().length === 0}
-						onPress={() => { hapticImpact('medium'); setSubmitted(true); onFreeText(options.length, freeText.trim()); }}
+						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onFreeText(interactionId, options.length, freeText.trim())); } }}
 						accessibilityLabel="自由入力で回答"
 					>
 						<Ionicons name="arrow-up" size={16} color="#fff" />
@@ -122,7 +127,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 	/** 同一 questionGroup の質問（questionIndex 順）。 */
 	messages: AgentChatMessage[];
 	answered: boolean;
-	onSubmit: (answers: QuestionGroupAnswer[]) => void;
+	onSubmit: (interactionId: string, answers: QuestionGroupAnswer[]) => Promise<boolean>;
 }) {
 	const [step, setStep] = useState(0);
 	const [answers, setAnswers] = useState<(QuestionGroupAnswer | undefined)[]>(() => messages.map(() => undefined));
@@ -134,6 +139,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 	const multiSelect = current?.multiSelect === true;
 	const answeredCount = answers.filter(a => a !== undefined).length;
 	const allAnswered = answeredCount === messages.length;
+	const interactionId = messages[0]?.questionGroup ?? messages[0]?.toolUseId;
 
 	const setAnswer = (index: number, answer: QuestionGroupAnswer | undefined) => {
 		setAnswers(prev => prev.map((v, i) => (i === index ? answer : v)));
@@ -218,9 +224,11 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 					style={[styles.questionConfirmBtn, !allAnswered && styles.confirmBtnDisabled]}
 					disabled={!allAnswered}
 					onPress={() => {
+						if (interactionId === undefined) { return; }
 						hapticImpact('medium');
 						setSubmitted(true);
-						onSubmit(answers.filter((a): a is QuestionGroupAnswer => a !== undefined));
+						void onSubmit(interactionId, answers.filter((a): a is QuestionGroupAnswer => a !== undefined))
+							.then(accepted => { if (!accepted) { setSubmitted(false); } });
 					}}
 				>
 					<Text style={styles.confirmBtnText}>回答を送信（{answeredCount}/{messages.length}）</Text>
