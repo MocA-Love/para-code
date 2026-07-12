@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -38,7 +38,7 @@ export const AgentComposer = memo(function AgentComposer({
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
-	sendText: (text: string) => void;
+	sendText: (text: string) => Promise<boolean>;
 	/** 送信直後に呼ぶ（最下部への追従スクロール）。 */
 	onAfterSubmit: () => void;
 	fsUpload: (name: string, dataBase64: string) => Promise<FsUploadResult>;
@@ -46,13 +46,45 @@ export const AgentComposer = memo(function AgentComposer({
 	updateAgentSettings: (id: number, model: string, effort: string) => void;
 }) {
 	const [input, setInput, clearInput] = useComposerDraft(draftKey);
+	const inputRevisionRef = useRef(0);
+	const submissionGenerationRef = useRef(0);
+	const draftKeyRef = useRef(draftKey);
+	const [submitting, setSubmitting] = useState(false);
+	if (draftKeyRef.current !== draftKey) {
+		draftKeyRef.current = draftKey;
+		inputRevisionRef.current++;
+		submissionGenerationRef.current++;
+	}
+	useEffect(() => {
+		setSubmitting(false);
+	}, [draftKey]);
+	const updateInput = useCallback((text: string) => {
+		inputRevisionRef.current++;
+		setInput(text);
+	}, [setInput]);
 
 	const submit = useCallback(() => {
+		if (submitting) {
+			return;
+		}
 		const text = input;
-		clearInput();
-		sendText(text);
-		onAfterSubmit();
-	}, [input, clearInput, sendText, onAfterSubmit]);
+		const submittedDraftKey = draftKey;
+		const submittedRevision = inputRevisionRef.current;
+		const generation = ++submissionGenerationRef.current;
+		setSubmitting(true);
+		sendText(text).then(accepted => {
+			if (accepted && draftKeyRef.current === submittedDraftKey && inputRevisionRef.current === submittedRevision) {
+				clearInput();
+			}
+			if (accepted && submissionGenerationRef.current === generation) {
+				onAfterSubmit();
+			}
+		}).finally(() => {
+			if (submissionGenerationRef.current === generation) {
+				setSubmitting(false);
+			}
+		});
+	}, [submitting, input, draftKey, clearInput, sendText, onAfterSubmit]);
 
 	/**
 	 * 画像添付（+ボタン）。フォトライブラリから選び、PCへアップロードして保存先の
@@ -69,27 +101,33 @@ export const AgentComposer = memo(function AgentComposer({
 			return;
 		}
 		setUploading(true);
+		const uploadDraftKey = draftKey;
 		try {
 			const name = asset.fileName ?? 'photo.jpg';
 			const { path } = await fsUpload(name, asset.base64);
 			// アップロードのawait中に入力が変わっている可能性があるため、最新の下書きを
 			// ストアから読んでパスを追記する（stale closure回避）。
-			const prev = draftKey !== undefined ? useAppStore.getState().agentDrafts[draftKey] ?? '' : input;
-			setInput(prev.length > 0 ? prev + ' ' + path + ' ' : path + ' ');
+			const prev = uploadDraftKey !== undefined ? useAppStore.getState().agentDrafts[uploadDraftKey] ?? '' : input;
+			const next = prev.length > 0 ? prev + ' ' + path + ' ' : path + ' ';
+			if (draftKeyRef.current === uploadDraftKey) {
+				updateInput(next);
+			} else if (uploadDraftKey !== undefined) {
+				useAppStore.getState().setAgentDraft(uploadDraftKey, next);
+			}
 		} catch (err) {
 			console.warn('[agent] image upload failed', err);
 		} finally {
 			setUploading(false);
 		}
-	}, [uploading, fsUpload, draftKey, input, setInput]);
+	}, [uploading, fsUpload, draftKey, input, updateInput]);
 
 	return (
 		<GlassComposer
 			value={input}
-			onChangeText={setInput}
+			onChangeText={updateInput}
 			onSubmit={submit}
 			placeholder="エージェントへメッセージ…"
-			sendDisabled={input.trim().length === 0}
+			sendDisabled={submitting || input.trim().length === 0}
 			tools={
 				<>
 					<Pressable style={styles.attachBtn} onPress={() => { hapticImpact('light'); void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">

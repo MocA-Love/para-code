@@ -198,6 +198,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly runGit: (repoPath: string, args: readonly string[]) => Promise<IParadisGitResult>,
 		private readonly paneTokenService: IParadisPaneTokenService,
 		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]) => void,
+		private readonly claimAgentAction: (mobileId: string, requestId: string, token: string, epoch: string) => Promise<'claimed' | 'stale' | 'expired'>,
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
@@ -470,6 +471,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.handleTerminalInbound(frame.payload, frame.mobileId);
 			return;
 		}
+		if (frame.ch === Channels.Agent) {
+			this.handleAgentAction(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] agent action failed', err));
+			return;
+		}
 		if (frame.ch === Channels.Scm) {
 			this.handleScmInbound(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] scm request failed', err));
 			return;
@@ -477,6 +482,50 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (frame.ch === Channels.Fs) {
 			this.handleFsInbound(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] fs request failed', err));
 		}
+	}
+
+	private async handleAgentAction(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
+		if (mobileId === undefined) {
+			return;
+		}
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown };
+		try {
+			msg = JSON.parse(payload.toString());
+		} catch {
+			return;
+		}
+		if (msg.t !== 'action/sendMessage' || typeof msg.id !== 'number' || typeof msg.token !== 'string'
+			|| typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string' || typeof msg.text !== 'string') {
+			return;
+		}
+		const instance = this.allInstances().find(candidate => candidate.instanceId === msg.id
+			&& this.paneTokenService.getTokenForInstance(candidate.instanceId) === msg.token);
+		if (instance === undefined) {
+			// shared processのイベントは全windowへ届く。対象ペインを所有しないwindowは
+			// 拒否を返さず、tokenが一致する所有windowだけに処理を任せる。
+			return;
+		}
+		const claim = await this.claimAgentAction(mobileId, msg.requestId, msg.token, msg.epoch);
+		if (claim === 'expired') {
+			return; // shared process側のtimeout応答がすでに要求元へ送られている
+		}
+		if (claim === 'stale') {
+			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '操作対象のエージェントセッションが変わりました');
+			return;
+		}
+		try {
+			await instance.sendText(msg.text, true, true);
+			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
+		} catch {
+			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'send-failed', 'メッセージを送信できませんでした');
+		}
+	}
+
+	private sendAgentActionResult(mobileId: string, id: number, token: string, requestId: string, status: 'accepted' | 'rejected', code?: string, message?: string): void {
+		this.sendFrame({
+			ch: Channels.Agent, ws: undefined, seq: 0, mobileId,
+			payload: VSBuffer.fromString(JSON.stringify({ t: 'action-result', id, token, requestId, status, ...(code !== undefined ? { code } : {}), ...(message !== undefined ? { message } : {}) })),
+		});
 	}
 
 	// --- ws（状態キー）の解決 ------------------------------------------------------

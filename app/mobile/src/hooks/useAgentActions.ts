@@ -20,7 +20,7 @@ export type QuestionGroupAnswer =
 
 export interface AgentActions {
 	send(data: string): void;
-	sendText(text: string): void;
+	sendText(text: string): Promise<boolean>;
 	answerQuestion(optionIndex: number): void;
 	toggleQuestionOption(optionIndex: number): void;
 	confirmQuestion(): void;
@@ -31,6 +31,7 @@ export interface AgentActions {
 
 export function useAgentActions(terminalId: number | undefined, agent: string | undefined): AgentActions {
 	const sendInput = useAppStore(s => s.sendInput);
+	const sendAgentMessage = useAppStore(s => s.sendAgentMessage);
 
 	const send = useCallback((data: string) => {
 		if (terminalId !== undefined) {
@@ -49,9 +50,11 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	// TUIの入力欄へテキストを入れ、少し置いてからCRで確定する（貼り付け直後の
 	// 確定はTUI側の取りこぼしがあるため。承認番号注入と同じ250ms方式）。
 	const sendText = useCallback((text: string) => {
-		send(text);
-		setTimeout(() => send('\r'), 250);
-	}, [send]);
+		if (terminalId === undefined) {
+			return Promise.resolve(false);
+		}
+		return sendAgentMessage(terminalId, text);
+	}, [terminalId, sendAgentMessage]);
 
 	/**
 	 * 質問(AskUserQuestion)への回答。TUIの選択プロンプトは番号キーで選択肢へジャンプするため、

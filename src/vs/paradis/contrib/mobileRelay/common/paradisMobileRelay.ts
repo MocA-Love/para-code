@@ -143,6 +143,8 @@ export interface IParadisMobileRelayService {
 	 * ペイントークンはE2Eの外へは出さず、モバイルとの間では常に terminalId で識別する。
 	 */
 	syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
+	/** rendererがAgent Actionを実行する直前に、shared processのsession epochを再検証して一度だけclaimする。 */
+	claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string): Promise<'claimed' | 'stale' | 'expired'>;
 
 	/**
 	 * renderer → shared process: このウィンドウのフォーカス状態を報告する（PCフォーカス中の

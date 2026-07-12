@@ -151,6 +151,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(repoPath, args) => this.service.runGit(repoPath, args),
 			paneTokenService,
 			entries => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
+			(mobileId, requestId, token, epoch) => this.service.claimAgentAction(mobileId, requestId, token, epoch),
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
@@ -216,6 +217,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// browser チャネルは webrtc シグナリングだけが renderer に転送されてくる
 		// （それ以外の browser 要求は shared process 内で処理される）。
 		this._register(this.service.onInboundFrame(([ch, ws, seq, payload, mobileId]) => {
+			if (ch === Channels.Agent && ws !== `window:${mainWindow.vscodeWindowId}`) {
+				return;
+			}
 			if (ch === Channels.Browser) {
 				webrtcStreamer.handleInbound({ ch, ws, seq, payload, mobileId });
 				return;
