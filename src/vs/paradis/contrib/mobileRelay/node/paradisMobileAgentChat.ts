@@ -1958,7 +1958,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		return msg.answers.every(answer => {
 			if (rec(answer) === undefined || typeof answer.kind !== 'string') { return false; }
 			if (answer.kind === 'option') { return Number.isInteger(answer.index) && answer.index >= 0 && answer.index < 100; }
-			if (answer.kind === 'multi') { return Array.isArray(answer.indices) && answer.indices.length > 0 && answer.indices.length <= 100 && answer.indices.every(index => Number.isInteger(index) && index >= 0 && index < 100); }
+			if (answer.kind === 'multi') { return Array.isArray(answer.indices) && answer.indices.length > 0 && answer.indices.length <= 100 && answer.indices.every((index: number) => Number.isInteger(index) && index >= 0 && index < 100); }
 			return answer.kind === 'text' && Number.isInteger(answer.optionCount) && answer.optionCount >= 0 && answer.optionCount < 100
 				&& typeof answer.text === 'string' && answer.text.trim().length > 0 && answer.text.length <= 10_000;
 		});
