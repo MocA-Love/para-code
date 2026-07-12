@@ -621,7 +621,9 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 	private actionViewItemProvider(action: IAction, options: IBaseActionViewItemOptions): IActionViewItem | undefined {
 
 		// --- Custom view items registered via IActionViewItemService
-		for (const menuId of [MenuId.TitleBar, MenuId.LayoutControlMenu]) {
+		// PARA-PATCH: also honor EditorTitle / CompactWindowEditorTitle custom view items (e.g.
+		// pinned preset buttons) when editor actions are rendered in the title bar (compact window etc.)
+		for (const menuId of [MenuId.TitleBar, MenuId.LayoutControlMenu, MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
 			const customViewItem = this.actionViewItemService.lookUp(menuId, action.id);
 			if (customViewItem) {
 				const result = customViewItem(action, options, this.instantiationService, getWindowId(this.element ? getWindow(this.element) : mainWindow));

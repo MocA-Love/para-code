@@ -69,7 +69,7 @@ export interface IParadisPresetDefinition {
 	readonly launchMode?: ParadisPresetLaunchMode;
 	/** ターミナルタブバー右側にボタンとして表示するか。未指定は true。 */
 	readonly pinned?: boolean;
-	/** ピン留めボタンにアイコンの代わりに名前を表示するか。未指定は false（アイコン表示）。 */
+	/** ピン留めボタンにアイコンに加えて名前も表示するか。未指定は false（アイコンのみ）。 */
 	readonly pinnedLabel?: boolean;
 	/** 「新しいスペース（worktree）を作成」直後に自動実行するか。 */
 	readonly autoRun?: boolean;
@@ -134,18 +134,6 @@ export interface IParadisPresetService {
 	 *   worktree 作成直後などワークスペースフォルダの反映を待てない場面で使う。
 	 */
 	runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void>;
-
-	/** プリセットが起動したターミナルの生存/実行状態が変わったとき（終了・破棄・子プロセス変化）。 */
-	readonly onDidChangeRunningPresets: Event<void>;
-
-	/**
-	 * プリセット（key）が起動したターミナルのうち、子プロセスが実行中のものがあるか。
-	 * current レイアウトで既存ターミナルへ送信した分は追跡しない（プロセスの帰属が曖昧なため）。
-	 */
-	isPresetRunning(key: string): boolean;
-
-	/** 実行中プリセットの先頭ターミナルへフォーカスを移す。対象が無ければ false。 */
-	focusRunningPreset(key: string): Promise<boolean>;
 
 	/** プリセットを保存する（新規または name 一致の既存を置換）。 */
 	savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, replaceName?: string): Promise<void>;
