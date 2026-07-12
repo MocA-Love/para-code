@@ -38,7 +38,7 @@ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { fireParadisAgentTurnEnded, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
-import { IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
+import { IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
@@ -115,6 +115,12 @@ export interface IParadisAgentInteraction {
 	readonly id: string;
 }
 
+export interface IParadisAgentActivityDetailMessage {
+	readonly role: 'user' | 'assistant' | 'tool';
+	readonly kind: 'text' | 'thinking' | 'tool';
+	readonly text: string;
+}
+
 /** agentチャネルのモバイル→PCメッセージ。 */
 type AgentInbound =
 	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number }
@@ -124,7 +130,8 @@ type AgentInbound =
 	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: 'yes' | 'no' }
 	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
-	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string };
+	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
+	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
@@ -133,6 +140,7 @@ type AgentOutbound =
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string }
+	| { t: 'activity-detail'; id: number; requestId: string; activityId: string; messages?: readonly IParadisAgentActivityDetailMessage[]; error?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
 	| { t: 'none'; id: number };
 
@@ -527,8 +535,8 @@ function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | un
 }
 
 /** Claude Code transcript JSONL の1行をパースする。表示対象外の行は空配列。 */
-function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
-	if (obj['isSidechain'] === true || obj['isMeta'] === true) {
+function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, includeSidechain = false): IRawMessage[] {
+	if ((!includeSidechain && obj['isSidechain'] === true) || obj['isMeta'] === true) {
 		return []; // サブエージェント内・メタ行はメインの会話に出さない
 	}
 	const type = str(obj['type']);
@@ -606,11 +614,12 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals): 
 					out.push({ role: 'assistant', kind: 'thinking', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
 				}
 			} else if (b['type'] === 'tool_use') {
-				const tool = str(b['name']) ?? 'tool';
+				const rawTool = str(b['name']) ?? 'tool';
+				const tool = rawTool === 'WebSearch' ? 'web_search' : rawTool;
+				const toolUseId = str(b['id']);
 				// AskUserQuestion はユーザーへの選択式質問。汎用ツールとして折りたたむと
 				// モバイルで質問に気づけないため、専用の question メッセージに展開する。
 				if (tool === 'AskUserQuestion') {
-					const toolUseId = str(b['id']);
 					const questions = parseAskUserQuestions(b['input'], toolUseId, ts);
 					if (questions.length > 0) {
 						if (toolUseId !== undefined) {
@@ -636,7 +645,7 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals): 
 						text = JSON.stringify(b['input']);
 					} catch { /* 表示は空でよい */ }
 				}
-				out.push({ role: 'assistant', kind: 'tool_use', tool, text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+				out.push({ role: 'assistant', kind: 'tool_use', tool, text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(toolUseId !== undefined ? { toolUseId } : {}) });
 			}
 		}
 	}
@@ -701,7 +710,7 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 	// Codex のツール呼び出し/結果は call_id で対応付く (Claude の tool_use_id 相当)。
 	// toolUseId に載せてモバイル側で呼び出し⇔結果の突き合わせに使えるようにする
 	// (質問の回答済み判定は kind==='question' 限定なので Codex の ID が混ざっても影響しない)。
-	const callId = str(payload['call_id']);
+	const callId = str(payload['call_id']) ?? str(payload['id']);
 	const out: IRawMessage[] = [];
 
 	if (ptype === 'message') {
@@ -735,12 +744,22 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		const action = rec(payload['action']);
 		const args = rec(payload['arguments']);
 		let query = str(action?.['query']) ?? str(args?.['query']) ?? '';
+		if (ptype === 'web_search_call' && action !== undefined) {
+			try {
+				const actionText = JSON.stringify(action);
+				if (/https?:\/\//i.test(actionText) && !query.includes(actionText)) { query = [query, actionText].filter(Boolean).join('\n'); }
+			} catch { /* 表示はqueryだけでよい */ }
+		}
 		if (query.length === 0) {
 			try {
 				query = JSON.stringify(args ?? action ?? '');
 			} catch { /* 表示は空でよい */ }
 		}
 		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', text: truncateText(query, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+		if (ptype === 'web_search_call' && (payload['status'] === 'completed' || payload['status'] === 'failed')) {
+			const resultText = payload['status'] === 'failed' ? `Web検索に失敗しました${query ? `\n${query}` : ''}` : query || 'Web検索完了';
+			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(resultText, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+		}
 	} else if (ptype === 'tool_search_output') {
 		// tool_search_call の結果 ({ call_id, status, execution, tools: [...] })。見つかった
 		// ツール一覧を結果カードとして出す (無視するとツール検索の結果だけ同期から抜ける)。
@@ -1466,6 +1485,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
+	private readonly activityDetailRequests = new Map<string, string>();
 
 	constructor(
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
@@ -1512,6 +1532,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			this.completedActions.clear();
 			this.interactionClaims.clear();
+			this.activityDetailRequests.clear();
 		}));
 	}
 
@@ -1741,6 +1762,9 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** モバイルの切断 (presence offline)。そのモバイルの購読をすべて解放する。 */
 	dropSubscriber(mobileId: string): void {
+		for (const key of [...this.activityDetailRequests.keys()]) {
+			if (key.startsWith(`${mobileId}\0`)) { this.activityDetailRequests.delete(key); }
+		}
 		for (const [key, pending] of [...this.pendingActions]) {
 			if (pending.mobileId === mobileId) {
 				clearTimeout(pending.timer);
@@ -1795,6 +1819,88 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& typeof msg.model === 'string' && msg.model.length > 0 && msg.model.length <= 500
 			&& typeof msg.effort === 'string' && msg.effort.length > 0 && msg.effort.length <= 100) {
 			this.handleSettingsUpdateRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] settings update failed', err));
+		} else if (msg.t === 'activity-detail' && this.isValidControlRequest(msg)
+			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+			&& typeof msg.activityId === 'string' && msg.activityId.length > 0 && msg.activityId.length <= 500) {
+			this.handleActivityDetailRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] activity detail failed', err));
+		}
+	}
+
+	private async handleActivityDetailRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'activity-detail' }>): Promise<void> {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const known = token !== undefined && this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent' && (agent.provider === undefined || agent.provider === session?.agent));
+		const requestKey = `${mobileId}\0${msg.requestId}`;
+		const inFlightForToken = token !== undefined ? [...this.activityDetailRequests.values()].filter(value => value === token).length : 0;
+		if (token === undefined || session === undefined || tailer?.epoch !== msg.epoch || !known || !this.hasSubscriber(token, mobileId) || this.activityDetailRequests.has(requestKey) || inFlightForToken >= 2) {
+			this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgentの詳細を確認できません' }, token ?? msg.token);
+			return;
+		}
+		this.activityDetailRequests.set(requestKey, token);
+		try {
+			const messages = session.agent === 'codex'
+				? (await this.codexLiveClient.readThreadMessages(msg.activityId)).map(ParadisMobileAgentChat.codexDetailMessage)
+				: await this.readClaudeSubagentMessages(session.transcriptPath, msg.activityId);
+			if (this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)
+				&& this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent')) {
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, messages }, token);
+			} else if (this.hasSubscriber(token, mobileId)) {
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent詳細の対象セッションが更新されました' }, token);
+			}
+		} catch {
+			if (this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)) {
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent transcriptを取得できませんでした' }, token);
+			} else if (this.hasSubscriber(token, mobileId)) {
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent詳細の対象セッションが更新されました' }, token);
+			}
+		} finally {
+			this.activityDetailRequests.delete(requestKey);
+		}
+	}
+
+	private static codexDetailMessage(message: IParadisCodexThreadMessage): IParadisAgentActivityDetailMessage {
+		return message;
+	}
+
+	private async readClaudeSubagentMessages(transcriptPath: string, activityId: string): Promise<readonly IParadisAgentActivityDetailMessage[]> {
+		if (!/^[A-Za-z0-9._:-]{1,500}$/.test(activityId)) {
+			return [];
+		}
+		const dir = resolve(transcriptPath, '..');
+		const filename = transcriptPath.slice(transcriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
+		const agentFile = `${activityId.startsWith('agent-') ? activityId : `agent-${activityId}`}.jsonl`;
+		const candidates = [join(dir, filename, 'subagents', agentFile), join(dir, 'subagents', agentFile)];
+		let selected: string | undefined;
+		for (const candidate of candidates) {
+			if (await isAllowedTranscriptPath(candidate) && await fs.stat(candidate).then(stat => stat.isFile()).catch(() => false)) {
+				selected = candidate;
+				break;
+			}
+		}
+		if (selected === undefined) { return []; }
+		const stat = await fs.stat(selected);
+		const start = Math.max(0, stat.size - INITIAL_READ_TAIL_BYTES);
+		const handle = await fs.open(selected, 'r');
+		try {
+			const buffer = Buffer.alloc(stat.size - start);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+			const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
+			if (start > 0) { lines.shift(); }
+			const out: IParadisAgentActivityDetailMessage[] = [];
+			for (const line of lines) {
+				let parsed: Record<string, unknown> | undefined;
+				try { parsed = rec(JSON.parse(line)); } catch { continue; }
+				if (parsed === undefined) { continue; }
+				for (const message of parseClaudeLine(parsed, newParseSignals(), true)) {
+					if (message.kind === 'question' || message.kind === 'peer_message') { continue; }
+					const kind: IParadisAgentActivityDetailMessage['kind'] = message.kind === 'thinking' ? 'thinking' : message.kind === 'tool_use' || message.kind === 'tool_result' ? 'tool' : 'text';
+					out.push({ role: message.role, kind, text: message.text });
+				}
+			}
+			return out.slice(-200);
+		} finally {
+			await handle.close();
 		}
 	}
 
@@ -2169,7 +2275,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				const detail = ParadisMobileAgentChat.toolDetail(event.toolInput);
 				this.setLiveState(event.token, {
 					phase, source: 'hook', startedAt: event.at, updatedAt: event.at,
-					...(event.toolName !== undefined ? { tool: event.toolName } : {}),
+					...(event.toolName !== undefined ? { tool: event.toolName === 'WebSearch' ? 'web_search' : event.toolName } : {}),
 					...(detail !== undefined ? { detail } : {}),
 				});
 				return;

@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -92,6 +92,7 @@ interface AppState extends StoreState {
 	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean>;
 	answerAgentApproval(id: number, interactionId: string, choice: 'yes' | 'no'): Promise<boolean>;
 	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string): Promise<boolean>;
+	requestAgentActivityDetail(id: number, activityId: string): Promise<AgentActivityDetailMessage[]>;
 	createTerminal(ws?: string): void;
 	attachAgent(id: number): void;
 	detachAgent(id: number): void;
@@ -432,6 +433,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string) {
 		return controller?.updateClaudeSetting(id, setting, value) ?? Promise.resolve(false);
+	},
+
+	requestAgentActivityDetail(id: number, activityId: string) {
+		return controller?.requestAgentActivityDetail(id, activityId) ?? Promise.reject(new Error('not connected'));
 	},
 
 	createTerminal(ws?: string) {

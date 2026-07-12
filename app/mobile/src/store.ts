@@ -324,7 +324,7 @@ export interface AgentLiveState {
 }
 
 export type AgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
-export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; status: AgentActivityStatus; startedAt: number; updatedAt: number }
+export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; provider?: 'claude' | 'codex'; detail?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
 export interface AgentActivityTask { id: string; label: string; detail?: string; assignee?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
 export interface AgentActivityCompaction { id: string; trigger?: string; status: 'running' | 'completed'; startedAt: number; updatedAt: number }
 export interface AgentActivityState {
@@ -334,6 +334,7 @@ export interface AgentActivityState {
 	startedAt: number;
 	updatedAt: number;
 }
+export interface AgentActivityDetailMessage { role: 'user' | 'assistant' | 'tool'; kind: 'text' | 'thinking' | 'tool'; text: string }
 
 function parseAgentActivityState(value: unknown): AgentActivityState | undefined {
 	if (value === null || typeof value !== 'object' || Array.isArray(value)) { return undefined; }
@@ -341,11 +342,11 @@ function parseAgentActivityState(value: unknown): AgentActivityState | undefined
 	if (!Array.isArray(raw['agents']) || !Array.isArray(raw['tasks']) || !Array.isArray(raw['compactions']) || typeof raw['startedAt'] !== 'number' || typeof raw['updatedAt'] !== 'number') { return undefined; }
 	const statuses = new Set<AgentActivityStatus>(['running', 'idle', 'completed', 'failed', 'interrupted', 'unknown']);
 	const agents: AgentActivityAgent[] = [];
-	for (const candidate of raw['agents'].slice(0, 50)) {
+	for (const candidate of raw['agents'].slice(0, 100)) {
 		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
 		const item = candidate as Record<string, unknown>;
 		if (typeof item['id'] === 'string' && typeof item['label'] === 'string' && (item['role'] === 'subagent' || item['role'] === 'teammate') && statuses.has(item['status'] as AgentActivityStatus) && typeof item['startedAt'] === 'number' && typeof item['updatedAt'] === 'number') {
-			agents.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), role: item['role'], status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
+			agents.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), role: item['role'], ...(item['provider'] === 'claude' || item['provider'] === 'codex' ? { provider: item['provider'] } : {}), ...(typeof item['detail'] === 'string' ? { detail: item['detail'].slice(0, 4_000) } : {}), status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
 		}
 	}
 	const tasks: AgentActivityTask[] = [];
@@ -574,6 +575,7 @@ export class MobileController {
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
 	private readonly agentControlTimers = new Map<number, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentActions = new Map<string, { readonly id: number; readonly resolve: (accepted: boolean) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingActivityDetails = new Map<string, { readonly id: number; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 
 	constructor(
 		private readonly identity: Identity,
@@ -830,6 +832,22 @@ export class MobileController {
 		});
 	}
 
+	requestAgentActivityDetail(id: number, activityId: string): Promise<AgentActivityDetailMessage[]> {
+		const chat = this.state.agentChats.get(id);
+		if (this.state.connection !== 'online' || chat === undefined || !chat.activity?.agents.some(agent => agent.id === activityId && agent.role === 'subagent')) {
+			return Promise.reject(new Error('SubAgentが見つかりません'));
+		}
+		const requestId = `agent-detail-${this.requestCounter++}`;
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pendingActivityDetails.delete(requestId);
+				reject(new Error('SubAgent詳細の取得がタイムアウトしました'));
+			}, 15_000);
+			this.pendingActivityDetails.set(requestId, { id, activityId, resolve, reject, timer });
+			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'activity-detail', id, token: this.agentToken(id), requestId, epoch: chat.epoch, activityId })));
+		});
+	}
+
 	private sendAgentAction(id: number, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
 		const requestId = `agent-action-${this.requestCounter++}`;
 		return new Promise(resolve => {
@@ -849,6 +867,11 @@ export class MobileController {
 			pending.resolve(false);
 		}
 		this.pendingAgentActions.clear();
+		for (const pending of this.pendingActivityDetails.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(new Error('接続が切断されました'));
+		}
+		this.pendingActivityDetails.clear();
 	}
 
 	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
@@ -1509,7 +1532,7 @@ export class MobileController {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; activity?: AgentActivityState | null;
-				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
+				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -1523,6 +1546,25 @@ export class MobileController {
 				&& typeof msg.interaction.id === 'string' && msg.interaction.id.length > 0
 				? { kind: msg.interaction.kind, id: msg.interaction.id } satisfies AgentInteraction
 				: undefined;
+			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
+				const pending = this.pendingActivityDetails.get(msg.requestId);
+				if (pending === undefined || pending.id !== msg.id || pending.activityId !== msg.activityId) { return; }
+				clearTimeout(pending.timer);
+				this.pendingActivityDetails.delete(msg.requestId);
+				if (typeof msg.error === 'string') { pending.reject(new Error(msg.error)); return; }
+				const rawMessages = (msg as unknown as { messages?: unknown }).messages;
+				if (!Array.isArray(rawMessages)) { pending.reject(new Error('SubAgent詳細の応答が不正です')); return; }
+				const messages: AgentActivityDetailMessage[] = [];
+				for (const candidate of rawMessages.slice(-200)) {
+					if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
+					const item = candidate as Record<string, unknown>;
+					if ((item['role'] === 'user' || item['role'] === 'assistant' || item['role'] === 'tool') && (item['kind'] === 'text' || item['kind'] === 'thinking' || item['kind'] === 'tool') && typeof item['text'] === 'string') {
+						messages.push({ role: item['role'], kind: item['kind'], text: item['text'].slice(0, 6_000) });
+					}
+				}
+				pending.resolve(messages);
+				return;
+			}
 			if (msg.t === 'none') {
 				this.clearAgentControlTimeout(msg.id);
 				this.state.agentChats.set(msg.id, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });

@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentActivityState, AgentActivityStatus } from '../store.js';
 import { colors } from '../theme.js';
@@ -36,13 +36,15 @@ function statusColor(status: AgentActivityStatus): string {
 	return status === 'failed' ? colors.red : status === 'interrupted' || status === 'unknown' ? colors.yellow : status === 'running' ? colors.accent : colors.green;
 }
 
-export function AgentActivityCard({ activity }: { activity: AgentActivityState }) {
-	const hasActive = activity.agents.some(item => active(item.status)) || activity.tasks.some(item => active(item.status));
+export function AgentActivityCard({ activity, onOpen }: { activity: AgentActivityState; onOpen?: (agentId?: string) => void }) {
+	const activeAgents = activity.agents.filter(item => active(item.status));
+	const activeTasks = activity.tasks.filter(item => active(item.status));
+	const hasActive = activeAgents.length > 0 || activeTasks.length > 0;
 	const latestCompaction = activity.compactions[activity.compactions.length - 1];
 	if (!hasActive) {
 		return (
 			<View style={styles.wrap}>
-				<View style={styles.summary}><Ionicons name="checkmark-circle-outline" size={12} color={colors.textDim} /><Text style={styles.summaryText} numberOfLines={2}>{summarizeAgentActivity(activity)}</Text></View>
+				<Pressable accessibilityRole="button" disabled={onOpen === undefined} onPress={() => onOpen?.()} style={styles.summary}><Ionicons name="checkmark-circle-outline" size={12} color={colors.textDim} /><Text style={styles.summaryText} numberOfLines={2}>{summarizeAgentActivity(activity)}</Text>{onOpen !== undefined ? <Ionicons name="chevron-forward" size={12} color={colors.textDim} /> : null}</Pressable>
 				{latestCompaction?.status === 'completed' ? <View style={styles.compaction}><Ionicons name="diamond-outline" size={11} color={colors.purple} /><Text style={styles.compactionText}>コンテキストを圧縮しました</Text></View> : null}
 			</View>
 		);
@@ -50,19 +52,31 @@ export function AgentActivityCard({ activity }: { activity: AgentActivityState }
 	return (
 		<View style={styles.wrap}>
 			<View style={styles.card}>
-				<View style={styles.header}><View style={styles.dot} /><Text style={styles.title}>実行中のエージェント</Text><Text style={styles.count}>{activity.agents.filter(item => active(item.status)).length}</Text></View>
-				{activity.agents.map(agent => (
-					<View key={agent.id} style={styles.row}>
+				<Pressable accessibilityRole="button" disabled={onOpen === undefined} onPress={() => onOpen?.()} style={styles.header}><View style={styles.dot} /><Text style={styles.title}>実行中のエージェント</Text><Text style={styles.count}>{activeAgents.length}</Text>{onOpen !== undefined ? <Ionicons name="chevron-forward" size={12} color={colors.textDim} /> : null}</Pressable>
+				{activeAgents.map(agent => (
+					<Pressable key={agent.id} accessibilityRole="button" accessibilityLabel={`${agent.label}の詳細を開く`} disabled={onOpen === undefined} onPress={() => onOpen?.(agent.id)} style={styles.row}>
 						<View style={styles.avatar}><Text style={styles.avatarText}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>
 						<View style={styles.body}><Text style={styles.label} numberOfLines={1}>{agent.label}</Text><Text style={styles.meta}>{agent.role === 'teammate' ? 'teammate' : 'SubAgent'}</Text></View>
 						<View style={[styles.pill, { backgroundColor: `${statusColor(agent.status)}20` }]}><Text style={[styles.pillText, { color: statusColor(agent.status) }]}>{statusLabel(agent.status)}</Text></View>
-					</View>
+					</Pressable>
 				))}
-				{activity.tasks.length > 0 ? <View style={styles.tasks}><Text style={styles.taskTitle}>タスク {activity.tasks.filter(task => task.status === 'completed').length} / {activity.tasks.length}</Text>{activity.tasks.map(task => <View key={task.id} style={styles.taskRow}><Ionicons name={task.status === 'completed' ? 'checkmark-circle' : 'ellipse-outline'} size={12} color={statusColor(task.status)} /><Text style={styles.taskText} numberOfLines={1}>{task.label}</Text></View>)}</View> : null}
+				{activeTasks.length > 0 ? <View style={styles.tasks}><Text style={styles.taskTitle}>実行中のTask {activeTasks.length}</Text>{activeTasks.map(task => <View key={task.id} style={styles.taskRow}><Ionicons name="ellipse-outline" size={12} color={statusColor(task.status)} /><Text style={styles.taskText} numberOfLines={1}>{task.label}</Text></View>)}</View> : null}
 			</View>
 			{latestCompaction?.status === 'completed' ? <View style={styles.compaction}><Ionicons name="diamond-outline" size={11} color={colors.purple} /><Text style={styles.compactionText}>コンテキストを圧縮しました</Text></View> : null}
 		</View>
 	);
+}
+
+/** 親Agentヘッダー直下へ固定する実行中SubAgentのコンパクトストリップ。 */
+export function AgentActivityStrip({ activity, onOpen }: { activity: AgentActivityState; onOpen: (agentId?: string) => void }) {
+	const activeAgents = activity.agents.filter(item => active(item.status));
+	const activeTasks = activity.tasks.filter(item => active(item.status));
+	if (activeAgents.length === 0 && activeTasks.length === 0) { return null; }
+	return <Pressable accessibilityRole="button" accessibilityLabel="実行中のSubAgentとTaskを開く" onPress={() => onOpen()} style={styles.strip}>
+		<View style={styles.dot} /><Text style={styles.stripTitle}>SubAgents</Text>
+		<View style={styles.stripAvatars}>{activeAgents.slice(0, 3).map(agent => <View key={agent.id} style={styles.stripAvatar}><Text style={styles.stripAvatarText}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>)}</View>
+		<Text style={styles.stripCount}>{activeAgents.length} agents{activeTasks.length > 0 ? ` · ${activeTasks.length} tasks` : ''}</Text><Ionicons name="chevron-forward" size={13} color={colors.textDim} />
+	</Pressable>;
 }
 
 const styles = StyleSheet.create({
@@ -78,4 +92,5 @@ const styles = StyleSheet.create({
 	tasks: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, marginTop: 8, paddingTop: 8, gap: 5 }, taskTitle: { color: colors.textDim, fontSize: 9 }, taskRow: { flexDirection: 'row', alignItems: 'center', gap: 6 }, taskText: { color: colors.text, fontSize: 9, flex: 1 },
 	compaction: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: 'rgba(193,147,217,0.10)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(193,147,217,0.20)' }, compactionText: { color: colors.purple, fontSize: 9 },
 	summary: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border }, summaryText: { color: colors.textDim, fontSize: 10, flex: 1 },
+	strip: { height: 42, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, borderRadius: 13, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border }, stripTitle: { color: colors.text, fontSize: 10.5, fontWeight: '700' }, stripAvatars: { flexDirection: 'row', paddingRight: 4 }, stripAvatar: { width: 20, height: 20, borderRadius: 7, backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.bg, alignItems: 'center', justifyContent: 'center', marginRight: -5 }, stripAvatarText: { color: colors.accent, fontSize: 7.5, fontWeight: '800' }, stripCount: { flex: 1, color: colors.textDim, fontSize: 9 },
 });

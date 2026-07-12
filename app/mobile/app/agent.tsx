@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, FlatList, Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,7 +13,7 @@ import { MarkdownText } from '../src/components/markdownText.js';
 import { GlassSurface, liquidGlass } from '../src/components/glassSurface.js';
 import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.js';
 import { ApprovalCard } from '../src/components/approvalCard.js';
-import { AgentActivityCard } from '../src/components/agentActivityCard.js';
+import { AgentActivityCard, AgentActivityStrip } from '../src/components/agentActivityCard.js';
 import { findLatestApprovalRequest } from '../src/components/attentionCard.js';
 import { AgentComposer } from '../src/components/agentComposer.js';
 import { wsColor } from '../src/components/wsDrawer.js';
@@ -63,6 +63,7 @@ export default function AgentDetailScreen() {
 		?? allTerminals.find(t => (t.ws ?? workspace?.activeWs) === effectiveWsId);
 	const activeId = activeTerminal?.id;
 	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
+	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => item.status === 'running' || item.status === 'idle') || chat.activity.tasks.some(item => item.status === 'running' || item.status === 'idle'));
 	const permissionPending = activeTerminal?.agentStatus === 'permission';
 	const actions = useAgentActions(activeId, chat?.agent);
 
@@ -101,6 +102,13 @@ export default function AgentDetailScreen() {
 		hapticSelection();
 		router.push(agentToken !== undefined ? `/browser?token=${encodeURIComponent(agentToken)}` : '/browser');
 	};
+	const openAgentActivity = (agentId?: string) => {
+		if (activeId === undefined) { return; }
+		hapticSelection();
+		router.push(agentId !== undefined
+			? { pathname: '/agent-activity-detail', params: { terminalId: String(activeId), agentId, epoch: chat?.epoch ?? '' } }
+			: { pathname: '/agent-activity', params: { terminalId: String(activeId), epoch: chat?.epoch ?? '' } });
+	};
 
 	// CLI版のUXに合わせ、本文(text)以外の連続する thinking / tool_use / tool_result を
 	// 1つの「アクティビティ」行へ集約する（デフォルト折りたたみ、タップで展開）。
@@ -114,6 +122,8 @@ export default function AgentDetailScreen() {
 			}
 		}
 		const result: ChatRow[] = [];
+		const webSearches = new Map<string, AgentChatMessage>();
+		const completedWebSearches = new Set((chat?.messages ?? []).filter(message => message.kind === 'tool_result' && message.toolUseId !== undefined).map(message => message.toolUseId!));
 		let buffer: AgentChatMessage[] = [];
 		const flush = () => {
 			const first = buffer[0];
@@ -142,6 +152,15 @@ export default function AgentDetailScreen() {
 				} else {
 					result.push({ type: 'question', m, answered });
 				}
+			} else if (m.kind === 'tool_use' && m.tool === 'web_search') {
+				flush();
+				if (m.toolUseId === undefined || !completedWebSearches.has(m.toolUseId)) { result.push({ type: 'web', key: m.toolUseId ?? `web:${m.rev}`, msgs: [m] }); }
+				if (m.toolUseId !== undefined) { webSearches.set(m.toolUseId, m); }
+			} else if (m.kind === 'tool_result' && m.toolUseId !== undefined && webSearches.has(m.toolUseId)) {
+				flush();
+				// 完了結果は実際に届いた位置へ置く。開始行へ後付けすると、その間の本文や
+				// ツールより前に検索結果が見えるため、時系列が壊れる。
+				result.push({ type: 'web', key: `web-result:${m.rev}`, msgs: [webSearches.get(m.toolUseId)!, m] });
 			} else {
 				buffer.push(m);
 			}
@@ -257,15 +276,16 @@ export default function AgentDetailScreen() {
 					<FlatList
 						ref={listRef}
 						data={rows}
-						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
-						ListHeaderComponent={chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}
-						ListFooterComponent={activeTerminal?.agentStatus === 'working' || chat?.live !== undefined || chat?.activity !== undefined ? <>{chat?.activity !== undefined ? <AgentActivityCard activity={chat.activity} /> : null}{activeTerminal?.agentStatus === 'working' || chat?.live !== undefined ? <WorkingIndicator live={chat?.live} /> : null}</> : null}
+						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
+						ListHeaderComponent={<>{chat.activity !== undefined && !hasActiveActivity ? <AgentActivityCard activity={chat.activity} onOpen={openAgentActivity} /> : null}{chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}</>}
+						ListFooterComponent={activeTerminal?.agentStatus === 'working' || chat?.live !== undefined ? <WorkingIndicator live={chat?.live} /> : null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} />
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
-									: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
-										: <ActivityGroup msgs={item.msgs} />}
-						contentContainerStyle={[styles.listContent, { paddingTop: headerHeight + 6 }]}
+								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
+									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} />
+									: <ActivityGroup msgs={item.msgs} />}
+						contentContainerStyle={[styles.listContent, { paddingTop: headerHeight + (hasActiveActivity ? 52 : 6) }]}
 						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
 						onContentSizeChange={onContentSizeChange}
 						onScroll={onListScroll}
@@ -315,6 +335,7 @@ export default function AgentDetailScreen() {
 					</Pressable>
 				</View>
 			</View>
+			{hasActiveActivity && chat?.activity !== undefined ? <View style={[styles.activityStripOverlay, { top: headerHeight + 4 }]}><AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} /></View> : null}
 
 			{permissionPending && activeId !== undefined ? (
 				<View style={styles.approvalBarWrap}>
@@ -349,6 +370,7 @@ type ChatRow =
 	| { type: 'msg'; m: AgentChatMessage }
 	| { type: 'question'; m: AgentChatMessage; answered: boolean }
 	| { type: 'questionGroup'; key: string; msgs: AgentChatMessage[]; answered: boolean }
+	| { type: 'web'; key: string; msgs: AgentChatMessage[] }
 	| { type: 'group'; key: string; msgs: AgentChatMessage[] };
 
 /**
@@ -409,6 +431,41 @@ function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
 			) : null}
 		</View>
 	);
+}
+
+function webDomains(msgs: readonly { text: string }[]): string[] {
+	const domains = new Set<string>();
+	for (const message of msgs) {
+		for (const match of message.text.matchAll(/https?:\/\/([^\s/)>\]}"']+)/gi)) {
+			const domain = match[1]?.toLowerCase().replace(/^www\./, '').replace(/[.,;:]$/, '');
+			if (domain !== undefined && /^[a-z0-9.-]+$/.test(domain) && domain.includes('.') && !/^\d+(?:\.\d+){3}$/.test(domain) && !domain.endsWith('.local') && !domain.endsWith('.internal') && domain !== 'localhost') { domains.add(domain); }
+			if (domains.size >= 6) { return [...domains]; }
+		}
+	}
+	return [...domains];
+}
+
+function Favicon({ domain, remote = false }: { domain: string; remote?: boolean }) {
+	const [failed, setFailed] = useState(false);
+	return <View style={styles.favicon} accessible={false}>{!remote || failed ? <Text style={styles.faviconLetter}>{domain.slice(0, 1).toUpperCase()}</Text> : <Image accessible={false} source={{ uri: `https://www.google.com/s2/favicons?sz=64&domain_url=${encodeURIComponent(`https://${domain}`)}` }} style={styles.faviconImage} onError={() => setFailed(true)} />}</View>;
+}
+
+/** ChatGPTの検索中表示に近い、クエリ＋発見サイトfaviconの専用アクティビティ。 */
+function WebSearchActivity({ msgs }: { msgs: AgentChatMessage[] }) {
+	const [expanded, setExpanded] = useState(false);
+	const [remoteFavicons, setRemoteFavicons] = useState(false);
+	const query = msgs.find(message => message.kind === 'tool_use' && message.tool === 'web_search')?.text ?? 'Web検索';
+	const domains = webDomains(msgs);
+	const completed = msgs.some(message => message.kind === 'tool_result');
+	const failed = msgs.some(message => message.kind === 'tool_result' && message.text.startsWith('Web検索に失敗しました'));
+	return <View style={styles.webWrap}>
+		<Pressable style={styles.webRow} onPress={() => { hapticSelection(); setExpanded(value => !value); }} accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={expanded ? 'Web検索アクティビティを折りたたむ' : 'Web検索アクティビティを展開'}>
+			<View style={styles.faviconStack}>{domains.length > 0 ? domains.slice(0, 4).map(domain => <Favicon key={domain} domain={domain} remote={remoteFavicons} />) : <View style={styles.favicon}><Ionicons name="search" size={12} color={colors.accent2} /></View>}</View>
+			<View style={styles.webBody}><Text style={[styles.webLabel, failed && { color: colors.red }]}>{failed ? 'Web検索失敗' : domains.length > 0 ? `${domains.length}サイトを参照` : completed ? 'Web検索完了' : 'Webを検索中'}</Text><Text style={styles.webQuery} numberOfLines={1}>{query}</Text></View>
+			<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
+		</Pressable>
+		{expanded ? <View style={styles.activityBody}>{msgs.map(message => <MessageBubble key={message.rev} message={message} />)}{domains.length > 0 && !remoteFavicons ? <Pressable accessibilityRole="button" accessibilityLabel="Googleからサイトアイコンを取得" onPress={() => setRemoteFavicons(true)}><Text style={styles.faviconConsent}>サイトアイコンを表示（ドメイン名をGoogleへ送信）</Text></Pressable> : null}{domains.map(domain => <View key={domain} style={styles.domainRow}><Favicon domain={domain} remote={remoteFavicons} /><Text style={styles.domainText}>{domain}</Text></View>)}</View> : null}
+	</View>;
 }
 
 function MessageBubble({ message }: { message: AgentChatMessage }) {
@@ -490,6 +547,11 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 		: live?.phase === 'message' ? '応答を生成中'
 			: live?.phase === 'permission' ? '確認待ち' : '考え中';
 	const preview = live?.phase === 'message' ? live.text?.trim() : live?.detail;
+	const isWebSearch = live?.phase === 'tool' && (live.tool === 'web_search' || live.tool === 'webSearch');
+	const liveDomains = preview !== undefined ? webDomains([{ text: preview }]) : [];
+	if (isWebSearch) {
+		return <View style={styles.webWrap} accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Webを検索中"><View style={styles.webRow}><View style={styles.faviconStack}>{liveDomains.length > 0 ? liveDomains.map(domain => <Favicon key={domain} domain={domain} />) : <View style={styles.favicon}><Ionicons name="search" size={12} color={colors.accent2} /></View>}</View><View style={styles.webBody}><Text style={styles.webLabel}>Webを検索中{metrics.length > 0 ? ` · ${metrics}` : ''}</Text><Text style={styles.webQuery} numberOfLines={2}>{preview ?? '検索結果を確認しています'}</Text></View></View></View>;
+	}
 	return (
 		<View style={styles.workingRow}>
 			<View style={styles.workingHeader}>
@@ -504,6 +566,7 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	headerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, overflow: 'hidden' },
+	activityStripOverlay: { position: 'absolute', left: 12, right: 12, zIndex: 9 },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 8 },
 	backBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
 	browserBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
@@ -534,6 +597,9 @@ const styles = StyleSheet.create({
 	activityRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 3 },
 	activityText: { color: colors.textDim, fontSize: 11, flex: 1 },
 	activityBody: { gap: 6, paddingLeft: 14, paddingTop: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border, marginLeft: 8 },
+	webWrap: { marginVertical: 2 }, webRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 13, backgroundColor: 'rgba(9,175,217,.07)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(9,175,217,.18)' },
+	faviconStack: { flexDirection: 'row', alignItems: 'center', paddingRight: 4 }, favicon: { width: 22, height: 22, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginRight: -5, overflow: 'hidden' }, faviconImage: { width: 14, height: 14, borderRadius: 3 }, faviconLetter: { color: colors.textDim, fontSize: 9, fontWeight: '800' }, faviconConsent: { color: colors.accent2, fontSize: 9.5, paddingVertical: 5 },
+	webBody: { flex: 1, minWidth: 0 }, webLabel: { color: colors.accent2, fontSize: 9.5, fontWeight: '700' }, webQuery: { color: colors.text, fontSize: 11, marginTop: 1 }, domainRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }, domainText: { color: colors.textDim, fontSize: 10.5 },
 	toolRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 4 },
 	toolText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flex: 1, lineHeight: 15 },
 	approvalBarWrap: { marginHorizontal: 12, marginTop: 8 },

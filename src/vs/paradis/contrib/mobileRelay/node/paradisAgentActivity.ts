@@ -12,6 +12,8 @@ export interface IParadisAgentActivityAgent {
 	readonly id: string;
 	readonly label: string;
 	readonly role: 'subagent' | 'teammate';
+	readonly provider: 'claude' | 'codex';
+	readonly detail?: string;
 	readonly status: ParadisAgentActivityStatus;
 	readonly startedAt: number;
 	readonly updatedAt: number;
@@ -52,7 +54,14 @@ function text(value: unknown): string | undefined {
 }
 
 function terminal(status: ParadisAgentActivityStatus): boolean {
-	return status === 'completed' || status === 'failed' || status === 'interrupted' || status === 'unknown';
+	return status === 'completed' || status === 'failed' || status === 'interrupted';
+}
+
+function codexSubAgentStatus(kind: string | undefined, method: string): ParadisAgentActivityStatus {
+	if (kind === 'interrupted') { return 'interrupted'; }
+	if (kind === 'failed' || kind === 'errored') { return 'failed'; }
+	if (kind === 'completed' || kind === 'shutdown' || method === 'item/completed') { return 'completed'; }
+	return 'running';
 }
 
 function codexStatus(value: unknown): ParadisAgentActivityStatus {
@@ -75,16 +84,9 @@ export class ParadisAgentActivityTracker {
 	private activeCompactionId: string | undefined;
 
 	beginTurn(): boolean {
-		if (this.agents.size === 0 && this.tasks.size === 0 && this.compactions.size === 0) {
-			return false;
-		}
-		this.agents.clear();
-		this.tasks.clear();
-		this.compactions.clear();
-		this.startedAt = undefined;
-		this.updatedAt = undefined;
-		this.activeCompactionId = undefined;
-		return true;
+		// セッション内の完了履歴はモバイルの一覧・詳細へ残す。新しい活動は同じ
+		// trackerへ追記され、finishApplyで上限を超えた古い完了項目だけを落とす。
+		return false;
 	}
 
 	applyClaude(event: string, payload: Readonly<Record<string, unknown>>, at: number): boolean {
@@ -95,13 +97,20 @@ export class ParadisAgentActivityTracker {
 				const previous = this.agents.get(id);
 				const nextStatus: ParadisAgentActivityStatus = event === 'SubagentStop' ? 'completed' : 'running';
 				if (!(previous !== undefined && terminal(previous.status) && nextStatus === 'running')) {
-					this.agents.set(id, { id, label: text(payload['agent_type']) ?? previous?.label ?? 'SubAgent', role: 'subagent', status: nextStatus, startedAt: previous?.startedAt ?? at, updatedAt: at });
+					this.agents.set(id, {
+						id, label: text(payload['agent_type']) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'claude',
+						...(text(payload['description']) ?? text(payload['prompt']) ?? previous?.detail ? { detail: text(payload['description']) ?? text(payload['prompt']) ?? previous?.detail } : {}),
+						status: nextStatus, startedAt: previous?.startedAt ?? at, updatedAt: at,
+					});
 				}
 			}
 		} else if (event === 'TaskCreated' || event === 'TaskCompleted') {
 			const id = text(payload['task_id']);
 			if (id !== undefined) {
 				const previous = this.tasks.get(id);
+				if (previous !== undefined && terminal(previous.status) && event === 'TaskCreated') {
+					return this.finishApply(before, at);
+				}
 				this.tasks.set(id, {
 					id, label: text(payload['task_subject']) ?? previous?.label ?? 'Task',
 					...(text(payload['description']) ?? previous?.detail ? { detail: text(payload['description']) ?? previous?.detail } : {}),
@@ -114,7 +123,7 @@ export class ParadisAgentActivityTracker {
 			if (name !== undefined) {
 				const id = `teammate:${name}`;
 				const previous = this.agents.get(id);
-				this.agents.set(id, { id, label: name, role: 'teammate', status: 'idle', startedAt: previous?.startedAt ?? at, updatedAt: at });
+				this.agents.set(id, { id, label: name, role: 'teammate', provider: 'claude', status: 'idle', startedAt: previous?.startedAt ?? at, updatedAt: at });
 			}
 		} else if (event === 'PreCompact') {
 			const id = `compact:${at}`;
@@ -144,9 +153,10 @@ export class ParadisAgentActivityTracker {
 			const id = text(item?.['agentThreadId']);
 			if (id !== undefined) {
 				const previous = this.agents.get(id);
-				const kind = text(item?.['kind']);
-				const status: ParadisAgentActivityStatus = kind === 'interrupted' ? 'interrupted' : 'running';
-				this.agents.set(id, { id, label: text(item?.['agentPath']) ?? previous?.label ?? 'SubAgent', role: 'subagent', status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+				const status = codexSubAgentStatus(text(item?.['kind']), method);
+				if (!(previous !== undefined && terminal(previous.status) && status === 'running')) {
+					this.agents.set(id, { id, label: text(item?.['agentPath']) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(previous?.detail ? { detail: previous.detail } : {}), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+				}
 			}
 		} else if (type === 'collabAgentToolCall') {
 			const prompt = text(item?.['prompt']);
@@ -157,7 +167,9 @@ export class ParadisAgentActivityTracker {
 				const previous = this.agents.get(id);
 				const state = record(states?.[id]);
 				const status = state !== undefined ? codexStatus(state['status']) : method === 'item/completed' ? 'completed' : 'running';
-				this.agents.set(id, { id, label: prompt ?? previous?.label ?? 'SubAgent', role: 'subagent', status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+				if (!(previous !== undefined && terminal(previous.status) && status === 'running')) {
+					this.agents.set(id, { id, label: prompt ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(prompt ?? previous?.detail ? { detail: prompt ?? previous?.detail } : {}), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+				}
 			}
 		}
 		return this.finishApply(before, at);
@@ -165,14 +177,16 @@ export class ParadisAgentActivityTracker {
 
 	endTurn(reason: 'completed' | 'failed' | 'interrupted', at: number): boolean {
 		const before = this.serialized();
-		for (const [id, agent] of this.agents) {
-			if (agent.status === 'running' || agent.status === 'idle') {
-				this.agents.set(id, { ...agent, status: reason, updatedAt: at });
+		if (reason !== 'completed') {
+			for (const [id, agent] of this.agents) {
+				if (agent.status === 'running' || agent.status === 'idle') {
+					this.agents.set(id, { ...agent, status: reason, updatedAt: at });
+				}
 			}
-		}
-		for (const [id, task] of this.tasks) {
-			if (task.status === 'running' || task.status === 'idle') {
-				this.tasks.set(id, { ...task, status: reason, updatedAt: at });
+			for (const [id, task] of this.tasks) {
+				if (task.status === 'running' || task.status === 'idle') {
+					this.tasks.set(id, { ...task, status: reason, updatedAt: at });
+				}
 			}
 		}
 		for (const [id, compaction] of this.compactions) {
@@ -210,14 +224,17 @@ export class ParadisAgentActivityTracker {
 			return undefined;
 		}
 		return {
-			agents: [...this.agents.values()].sort((a, b) => a.id.localeCompare(b.id)),
-			tasks: [...this.tasks.values()].sort((a, b) => a.id.localeCompare(b.id)),
+			agents: [...this.agents.values()].sort((a, b) => Number(b.status === 'running' || b.status === 'idle') - Number(a.status === 'running' || a.status === 'idle') || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)),
+			tasks: [...this.tasks.values()].sort((a, b) => Number(b.status === 'running' || b.status === 'idle') - Number(a.status === 'running' || a.status === 'idle') || b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)),
 			compactions: [...this.compactions.values()].sort((a, b) => a.startedAt - b.startedAt).slice(-5),
 			startedAt: this.startedAt, updatedAt: this.updatedAt,
 		};
 	}
 
 	private finishApply(before: string, at: number): boolean {
+		this.trimCompleted(this.agents, 100);
+		this.trimCompleted(this.tasks, 100);
+		this.trimCompleted(this.compactions, 20);
 		const after = this.serialized();
 		if (after === before) {
 			return false;
@@ -225,6 +242,12 @@ export class ParadisAgentActivityTracker {
 		this.startedAt ??= at;
 		this.updatedAt = at;
 		return true;
+	}
+
+	private trimCompleted<T extends { readonly status: string; readonly updatedAt: number }>(items: Map<string, T>, limit: number): void {
+		if (items.size <= limit) { return; }
+		const removable = [...items.entries()].filter(([, item]) => item.status !== 'running' && item.status !== 'idle').sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+		for (const [id] of removable.slice(0, Math.max(0, items.size - limit))) { items.delete(id); }
 	}
 
 	private serialized(): string {
