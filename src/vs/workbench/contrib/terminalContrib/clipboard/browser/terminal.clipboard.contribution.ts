@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH comments)
 
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
 import { Disposable, toDisposable, type IDisposable } from '../../../../../base/common/lifecycle.js';
@@ -27,6 +28,8 @@ import { KeyCode, KeyMod } from '../../../../../base/common/keyCodes.js';
 import { KeybindingWeight } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { terminalStrings } from '../../../terminal/common/terminalStrings.js';
 import { isString } from '../../../../../base/common/types.js';
+// PARA-PATCH: 画像のみクリップボードのペーストをTUIへ中継するヘルパー（src/vs/paradis/contrib/terminalImagePaste/）
+import { paradisTryTerminalImagePaste } from '../../../../../paradis/contrib/terminalImagePaste/browser/paradisTerminalImagePaste.js';
 
 // #region Terminal Contributions
 
@@ -89,6 +92,13 @@ export class TerminalClipboardContribution extends Disposable implements ITermin
 			if (resource?.scheme === Schemas.file) {
 				text = resource.fsPath;
 			}
+		}
+
+		// PARA-PATCH: テキストもファイルパスも無い（スクリーンショット等の画像のみ）場合、Ctrl+V(0x16)をPTYへ送り
+		// TUI（Claude Code/Codex等）の画像添付を起動する。テキスト時は既存経路に一切触れない
+		if (!text && this._xterm && await paradisTryTerminalImagePaste(this._clipboardService, this._xterm)) {
+			this._ctx.instance.focus();
+			return;
 		}
 
 		await this._paste(text);

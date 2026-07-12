@@ -1917,6 +1917,9 @@ export default defineConfig(
 						// Only allow terminalContrib to import from itself, this works because
 						// terminalContrib is one extra folder deep
 						'vs/workbench/contrib/terminalContrib/*/~',
+						// PARA-PATCH: terminal.clipboard.contribution.ts が画像のみクリップボードのペースト中継
+						// (paradisTryTerminalImagePaste) を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/terminalImagePaste/~',
 						'vscode-notebook-renderer', // Type only import
 						'@vscode/tree-sitter-wasm', // type import
 						{
