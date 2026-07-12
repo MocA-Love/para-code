@@ -79,16 +79,25 @@ suite('ParadisAgentHooksSetup', () => {
 				}]
 			}, concurrentSetting: true
 		});
-		const reads = [initial, concurrentlyUpdated, concurrentlyUpdated, concurrentlyUpdated];
+		const reads = [initial, concurrentlyUpdated];
 		let written: string | undefined;
+		let compareAttempts = 0;
 
 		await paradisMergeAgentHooksFile('/tmp/settings.json', PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, undefined, undefined, {
 			readFile: async () => reads.shift(),
-			writeFile: async (_path, content) => { written = content; },
+			writeFileIfUnchanged: (_path, expected, content) => {
+				compareAttempts++;
+				if (expected === initial) {
+					return false; // 最初のread後に外部更新が入ったことを再現
+				}
+				written = content;
+				return true;
+			},
 			mkdir: async () => undefined,
 		});
 
 		assert.ok(written !== undefined);
+		assert.strictEqual(compareAttempts, 2);
 		const parsed = JSON.parse(written) as { concurrentSetting: boolean; hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
 		assert.strictEqual(parsed.concurrentSetting, true);
 		assert.deepStrictEqual(parsed.hooks['Stop'][0].hooks.map(hook => hook.command), [
