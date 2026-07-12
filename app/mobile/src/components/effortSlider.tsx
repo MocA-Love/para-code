@@ -143,7 +143,7 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 		<View style={[styles.container, disabled && styles.disabled]}>
 			<View style={styles.labelRow}>
 				<Text style={styles.label}>Effort</Text>
-				<Text style={[styles.value, { color: accentColor }, isMaximum && styles.valueMaximum]}>{activeEffort}</Text>
+				<Text style={[styles.value, { color: accentColor }]}>{activeEffort}</Text>
 			</View>
 			<View
 				{...panResponder.panHandlers}
@@ -167,7 +167,7 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 				onLayout={onLayout}
 			>
 				<View style={styles.track}>
-					<View style={[styles.range, { width: `${progress * 100}%`, backgroundColor: accentColor }, isMaximum && styles.rangeMaximum]} />
+					<View style={[styles.range, { width: `${progress * 100}%`, backgroundColor: accentColor }]} />
 					{isMaximum && !disabled && !reduceMotion ? (
 						<View pointerEvents="none" style={[styles.particleClip, { width: `${progress * 100}%` }]}>
 							{particleValues.map((particle, index) => (
@@ -200,6 +200,8 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 							styles.burstRing,
 							{
 								left: `${progress * 100}%`,
+								borderColor: accentColor,
+								shadowColor: accentColor,
 								opacity: burstProgress.interpolate({ inputRange: [0, 0.15, 1], outputRange: [0, 0.85, 0] }),
 								transform: [{ scale: burstProgress.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1.9] }) }],
 							},
@@ -211,6 +213,7 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 						styles.thumb,
 						{ left: `${progress * 100}%`, transform: [{ scale: thumbScale }] },
 						isMaximum && styles.thumbMaximum,
+						isMaximum && { shadowColor: accentColor },
 					]}
 				/>
 			</View>
@@ -228,18 +231,16 @@ const styles = StyleSheet.create({
 	labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 7 },
 	label: { color: colors.textDim, fontSize: 10.5, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
 	value: { fontFamily: mono.ios, fontSize: 11, fontWeight: '800' },
-	valueMaximum: { color: colors.yellow },
 	slider: { height: 32, justifyContent: 'center', marginHorizontal: 14 },
 	track: { height: 24, borderRadius: 12, backgroundColor: 'rgba(255,255,255,.07)', borderWidth: 0.5, borderColor: colors.border, overflow: 'hidden' },
 	range: { height: '100%', borderTopLeftRadius: 12, borderBottomLeftRadius: 12 },
-	rangeMaximum: { backgroundColor: colors.yellow },
 	particleClip: { position: 'absolute', top: 0, left: 0, bottom: 0, overflow: 'hidden' },
 	particle: { position: 'absolute', left: 0, width: 3, height: 3, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,.78)', shadowColor: '#fff', shadowOpacity: 0.7, shadowRadius: 3 },
 	tick: { position: 'absolute', top: 10, width: 4, height: 4, marginLeft: -2, borderRadius: 2, backgroundColor: 'rgba(255,255,255,.27)' },
 	tickActive: { backgroundColor: 'rgba(255,255,255,.68)' },
-	burstRing: { position: 'absolute', top: -2, width: 36, height: 36, marginLeft: -18, borderRadius: 18, borderWidth: 2, borderColor: colors.yellow, shadowColor: colors.yellow, shadowOpacity: 0.9, shadowRadius: 7 },
+	burstRing: { position: 'absolute', top: -2, width: 36, height: 36, marginLeft: -18, borderRadius: 18, borderWidth: 2, shadowOpacity: 0.9, shadowRadius: 7 },
 	thumb: { position: 'absolute', top: 2, width: 28, height: 28, marginLeft: -14, borderRadius: 14, backgroundColor: '#fff', borderWidth: 0.5, borderColor: colors.borderStrong, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 3, shadowOffset: { width: 0, height: 1 }, elevation: 2 },
-	thumbMaximum: { shadowColor: colors.yellow, shadowOpacity: 0.8, shadowRadius: 10 },
+	thumbMaximum: { shadowOpacity: 0.8, shadowRadius: 10 },
 	scaleLabels: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
 	scaleLabel: { color: colors.textDim, fontSize: 9.5 },
 });
