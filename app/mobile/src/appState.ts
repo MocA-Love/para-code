@@ -88,6 +88,7 @@ interface AppState extends StoreState {
 	sendArrowKey(id: number, key: 'up' | 'down' | 'right' | 'left'): void;
 	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
 	sendTextInput(id: number, text: string, execute: boolean): void;
+	sendAgentMessage(id: number, text: string): Promise<boolean>;
 	createTerminal(ws?: string): void;
 	attachAgent(id: number): void;
 	detachAgent(id: number): void;
@@ -412,6 +413,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	sendTextInput(id: number, text: string, execute: boolean) {
 		controller?.sendTextInput(id, text, execute);
+	},
+
+	sendAgentMessage(id: number, text: string) {
+		return controller?.sendAgentMessage(id, text) ?? Promise.resolve(false);
 	},
 
 	createTerminal(ws?: string) {

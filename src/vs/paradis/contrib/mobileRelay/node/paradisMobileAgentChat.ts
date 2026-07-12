@@ -114,15 +114,17 @@ export interface IParadisAgentSessionInfo {
 type AgentInbound =
 	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number }
 	| { t: 'detach'; id: number; token?: string }
+	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; capabilities?: { readonly agentActions: true } }
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; capabilities?: { readonly agentActions: true } }
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
+	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
 	| { t: 'none'; id: number };
 
@@ -1381,8 +1383,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly tokenToWorkspace = new Map<string, string>();
 	/** ペイントークン → 稼働中の tailer (購読者がいる間のみ)。 */
 	private readonly tailers = new Map<string, TranscriptTailer>();
-	/** ペイントークン → 購読中モバイルID (最後にattachしたモバイルが勝つ。termチャネルと同じM-2方針)。 */
-	private readonly subscribers = new Map<string, string>();
+	/** ペイントークン → 購読中モバイルID。複数端末から同じエージェントを同時に閲覧できる。 */
+	private readonly subscribers = new Map<string, Set<string>>();
 	/** ペイントークン → transcript確定前の最新ライブ状態。履歴とは独立に置換する。 */
 	private readonly liveStates = new Map<string, IParadisAgentLiveState>();
 	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
@@ -1402,9 +1404,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly codexLiveClient: ParadisCodexLiveClient;
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
 	private eagerTailing = false;
+	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly completedActionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 	constructor(
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
+		private readonly requestAction: (mobileId: string, windowId: number, payload: Uint8Array) => void,
 		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
 		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string; ws?: string; agentToken: string }) => void,
 		private readonly logService: ILogService,
@@ -1417,7 +1422,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const now = Date.now();
 			for (const [token, tracker] of this.activityTrackers) {
 				if (tracker.sweepStale(now)) {
-					this.pushActivityToSubscriber(token);
+					this.pushActivityToSubscribers(token);
 				}
 			}
 		}, 60_000);
@@ -1438,6 +1443,14 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.pendingHookTimers.clear();
 			this.pendingHooks.clear();
 			this.hookSequences.clear();
+			for (const pending of this.pendingActions.values()) {
+				clearTimeout(pending.timer);
+			}
+			this.pendingActions.clear();
+			for (const timer of this.completedActionTimers.values()) {
+				clearTimeout(timer);
+			}
+			this.completedActionTimers.clear();
 		}));
 	}
 
@@ -1666,9 +1679,20 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** モバイルの切断 (presence offline)。そのモバイルの購読をすべて解放する。 */
 	dropSubscriber(mobileId: string): void {
-		for (const [token, subscriber] of [...this.subscribers]) {
-			if (subscriber === mobileId) {
-				this.subscribers.delete(token);
+		for (const [key, pending] of [...this.pendingActions]) {
+			if (pending.mobileId === mobileId) {
+				clearTimeout(pending.timer);
+				this.pendingActions.delete(key);
+			}
+		}
+		for (const [key, timer] of [...this.completedActionTimers]) {
+			if (key.startsWith(`${mobileId}\0`)) {
+				clearTimeout(timer);
+				this.completedActionTimers.delete(key);
+			}
+		}
+		for (const token of [...this.subscribers.keys()]) {
+			if (this.removeSubscriber(token, mobileId)) {
 				this.stopTailerIfUnsubscribed(token);
 			}
 		}
@@ -1690,10 +1714,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.handleAttach(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] attach failed', err));
 		} else if (msg.t === 'detach' && typeof msg.id === 'number') {
 			const token = this.resolveInboundToken(msg.id, msg.token);
-			if (token !== undefined && this.subscribers.get(token) === mobileId) {
-				this.subscribers.delete(token);
+			if (token !== undefined && this.removeSubscriber(token, mobileId)) {
 				this.stopTailerIfUnsubscribed(token);
 			}
+		} else if (msg.t === 'action/sendMessage' && this.isValidSendMessageAction(msg)) {
+			this.handleSendMessageAction(mobileId, msg);
 		} else if (msg.t === 'model-catalog' && this.isValidControlRequest(msg)) {
 			this.handleModelCatalogRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] model catalog failed', err));
 		} else if (msg.t === 'settings-update' && this.isValidControlRequest(msg)
@@ -1701,6 +1726,56 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& typeof msg.effort === 'string' && msg.effort.length > 0 && msg.effort.length <= 100) {
 			this.handleSettingsUpdateRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] settings update failed', err));
 		}
+	}
+
+	private isValidSendMessageAction(msg: Extract<AgentInbound, { t: 'action/sendMessage' }>): boolean {
+		return this.isValidControlRequest(msg)
+			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+			&& typeof msg.text === 'string' && msg.text.trim().length > 0 && msg.text.length <= 100_000;
+	}
+
+	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const windowId = token !== undefined ? this.windowIdForPane(msg.id, token) : undefined;
+		const key = this.actionKey(mobileId, msg.requestId);
+		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || windowId === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActionTimers.has(key)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
+			return;
+		}
+		const timer = setTimeout(() => {
+			if (this.pendingActions.delete(key)) {
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
+			}
+		}, 5_000);
+		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, timer });
+		this.requestAction(mobileId, windowId, encoder.encode(JSON.stringify({ ...msg, token, windowId })));
+	}
+
+	claimSendMessageAction(mobileId: string, requestId: string, token: string, epoch: string): 'claimed' | 'stale' | 'expired' {
+		const key = this.actionKey(mobileId, requestId);
+		const pending = this.pendingActions.get(key);
+		if (pending === undefined) {
+			return 'expired';
+		}
+		clearTimeout(pending.timer);
+		this.pendingActions.delete(key);
+		const completedTimer = setTimeout(() => this.completedActionTimers.delete(key), 60_000);
+		this.completedActionTimers.set(key, completedTimer);
+		const currentTailer = this.tailers.get(token);
+		return pending.token === token && pending.epoch === epoch && currentTailer?.epoch === epoch && this.hasSubscriber(token, mobileId)
+			? 'claimed'
+			: 'stale';
+	}
+
+	private actionKey(mobileId: string, requestId: string): string {
+		return `${mobileId}\0${requestId}`;
+	}
+
+	private windowIdForPane(terminalId: number, token: string): number | undefined {
+		const owners = [...this.panesByWindow].filter(([, entries]) => entries.some(entry => entry.terminalId === terminalId && entry.token === token));
+		return owners.length === 1 ? owners[0][0] : undefined;
 	}
 
 	private isValidControlRequest(msg: { readonly id: unknown; readonly token?: unknown; readonly requestId?: unknown }): msg is { readonly id: number; readonly token?: string; readonly requestId: string } {
@@ -1712,7 +1787,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private codexControlSession(mobileId: string, terminalId: number, paneToken?: string): { readonly token: string; readonly threadId: string } | undefined {
 		const token = this.resolveInboundToken(terminalId, paneToken);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		if (token === undefined || session?.agent !== 'codex' || session.sessionId === undefined || this.subscribers.get(token) !== mobileId) {
+		if (token === undefined || session?.agent !== 'codex' || session.sessionId === undefined || !this.hasSubscriber(token, mobileId)) {
 			return undefined;
 		}
 		return { token, threadId: session.sessionId };
@@ -1746,7 +1821,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 			this.codexThreadSettings.set(session.token, settings);
-			this.pushInfoToSubscriber(session.token);
+			this.pushInfoToSubscribers(session.token);
 			const info = { model: settings.model, ...(settings.effort !== undefined ? { effort: settings.effort } : {}) };
 			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'confirmed', info }, session.token);
 		} catch (error) {
@@ -1779,16 +1854,16 @@ export class ParadisMobileAgentChat extends Disposable {
 			// 記録しておき、後からhookでセッションが判明したら自動でスナップショットを
 			// 送り直す(エージェント起動を待たずにattachしたケースの自己回復)。
 			if (token !== undefined) {
-				this.subscribers.set(token, mobileId);
+				this.addSubscriber(token, mobileId);
 			}
 			this.sendTo(mobileId, { t: 'none', id: msg.id }, msg.token);
 			return;
 		}
-		this.subscribers.set(token, mobileId);
+		this.addSubscriber(token, mobileId);
 		const tailer = this.ensureTailer(token, session);
 		await tailer.ready;
 		// attach処理中に購読またはセッションが置き換わっていたら旧snapshotを送らない。
-		if (this.subscribers.get(token) !== mobileId || this.paneSessions.get(token) !== session || this.tailers.get(token) !== tailer) {
+		if (!this.hasSubscriber(token, mobileId) || this.paneSessions.get(token) !== session || this.tailers.get(token) !== tailer) {
 			return;
 		}
 		const afterRev = msg.afterRev;
@@ -1802,14 +1877,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 			// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 			const messages = tailer.messages.filter(m => m.rev > afterRev);
-			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity }, token);
+			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity, capabilities: { agentActions: true } }, token);
 		} else {
 			const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 			this.sendTo(mobileId, {
 				t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
 				...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 				...(info !== undefined ? { info } : {}),
-				live, activity,
+				live, activity, capabilities: { agentActions: true },
 			}, token);
 		}
 	}
@@ -1918,7 +1993,7 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private setLiveState(token: string, state: IParadisAgentLiveState): void {
 		this.liveStates.set(token, state);
-		this.pushLiveToSubscriber(token, state);
+		this.pushLiveToSubscribers(token, state);
 	}
 
 	private clearLiveState(token: string): void {
@@ -1926,7 +2001,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.liveToolIds.delete(token);
 		this.liveMessageBuffers.delete(token);
 		if (hadState) {
-			this.pushLiveToSubscriber(token, null);
+			this.pushLiveToSubscribers(token, null);
 		}
 	}
 
@@ -1977,7 +2052,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private applyCodexDaemonEvent(token: string, event: IParadisCodexDaemonEvent): void {
 		const now = Date.now();
 		if (this.activityTracker(token).applyCodex(event.method, event.params, now)) {
-			this.pushActivityToSubscriber(token);
+			this.pushActivityToSubscribers(token);
 		}
 		if (event.method === 'thread/settings/updated') {
 			const settings = rec(event.params['threadSettings']);
@@ -1985,13 +2060,13 @@ export class ParadisMobileAgentChat extends Disposable {
 			const effort = str(settings?.['effort']);
 			if (model !== undefined) {
 				this.codexThreadSettings.set(token, { model, ...(effort !== undefined ? { effort } : {}) });
-				this.pushInfoToSubscriber(token);
+				this.pushInfoToSubscribers(token);
 			}
 			return;
 		}
 		if (event.method === 'turn/started') {
 			if (this.activityTracker(token).beginTurn()) {
-				this.pushActivityToSubscriber(token);
+				this.pushActivityToSubscribers(token);
 			}
 			this.codexMessageBuffers.delete(token);
 			this.codexActiveItems.delete(token);
@@ -2006,7 +2081,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.clearLiveState(token);
 			const reason = event.method === 'turn/completed' ? 'completed' : event.method === 'turn/aborted' ? 'interrupted' : 'failed';
 			if (this.activityTracker(token).endTurn(reason, now)) {
-				this.pushActivityToSubscriber(token);
+				this.pushActivityToSubscribers(token);
 			}
 			return;
 		}
@@ -2125,18 +2200,17 @@ export class ParadisMobileAgentChat extends Disposable {
 		return value !== undefined && value.length > 0 ? truncateText(value.replace(/\s+/g, ' '), 500) : undefined;
 	}
 
-	/** 現在attach中のモバイルへライブ状態だけを空deltaとして送る。 */
-	private pushLiveToSubscriber(token: string, live: IParadisAgentLiveState | null): void {
-		const subscriber = this.subscribers.get(token);
+	/** 現在attach中の全モバイルへライブ状態だけを空deltaとして送る。 */
+	private pushLiveToSubscribers(token: string, live: IParadisAgentLiveState | null): void {
 		const terminalId = this.terminalIdForToken(token);
 		const tailer = this.tailers.get(token);
-		if (subscriber === undefined || terminalId === undefined || tailer === undefined) {
+		if (terminalId === undefined || tailer === undefined) {
 			return;
 		}
-		this.sendTo(subscriber, {
+		this.sendToSubscribers(token, {
 			t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev,
 			messages: [], live,
-		}, token);
+		});
 	}
 
 	private activityTracker(token: string): ParadisAgentActivityTracker {
@@ -2148,15 +2222,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		return tracker;
 	}
 
-	private pushActivityToSubscriber(token: string): void {
-		const subscriber = this.subscribers.get(token);
+	private pushActivityToSubscribers(token: string): void {
 		const terminalId = this.terminalIdForToken(token);
 		const tailer = this.tailers.get(token);
-		if (subscriber !== undefined && terminalId !== undefined && tailer !== undefined) {
-			this.sendTo(subscriber, {
+		if (terminalId !== undefined && tailer !== undefined) {
+			this.sendToSubscribers(token, {
 				t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev,
 				messages: [], activity: this.activityTrackers.get(token)?.snapshot() ?? null,
-			}, token);
+			});
 		}
 	}
 
@@ -2232,7 +2305,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.emitConfirmedAgentPanesIfChanged();
 		this.syncCodexDaemonThreads();
 		this.ensureEagerTailer(token, session);
-		this.pushToSubscriber(token);
+		this.pushToSubscribers(token);
 	}
 
 	/** status収束のため、セッション確定済みの生存ペインはモバイル購読が無くてもtailする。 */
@@ -2243,11 +2316,13 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** 購読者がいれば、そのペインの現行セッションでattach相当のスナップショットを送る。 */
-	private pushToSubscriber(token: string): void {
-		const subscriber = this.subscribers.get(token);
+	private pushToSubscribers(token: string): void {
+		const subscribers = [...(this.subscribers.get(token) ?? [])];
 		const terminalId = this.terminalIdForToken(token);
-		if (subscriber !== undefined && terminalId !== undefined) {
-			this.handleAttach(subscriber, { id: terminalId, token }).catch(err => this.logService.warn('[paradisAgentChat] push after session discovery failed', err));
+		if (terminalId !== undefined) {
+			for (const subscriber of subscribers) {
+				this.handleAttach(subscriber, { id: terminalId, token }).catch(err => this.logService.warn('[paradisAgentChat] push after session discovery failed', err));
+			}
 		}
 	}
 
@@ -2319,7 +2394,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// → 「セッションなし」表示のまま待っている購読者にスナップショットを送る。
 		if (previous === undefined) {
 			this.ensureEagerTailer(event.token, info);
-			this.pushToSubscriber(event.token);
+			this.pushToSubscribers(event.token);
 		} else if (previous.transcriptPath !== info.transcriptPath) {
 			// 同じペインで別セッションが始まった (claude再起動・/clear・resume等でファイルが変わる)
 			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
@@ -2327,17 +2402,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.activityTrackers.delete(event.token);
 			this.disposeTailer(event.token);
 			this.ensureEagerTailer(event.token, info);
-			this.pushToSubscriber(event.token);
+			this.pushToSubscribers(event.token);
 		}
 		if (event.event === 'UserPromptSubmit' && this.activityTracker(event.token).beginTurn()) {
-			this.pushActivityToSubscriber(event.token);
+			this.pushActivityToSubscribers(event.token);
 		}
 		const activityChanged = event.payload !== undefined && this.activityTracker(event.token).applyClaude(event.event, event.payload, event.at);
 		const activityEnded = event.event === 'Stop' || event.event === 'SessionEnd'
 			? this.activityTracker(event.token).endTurn('completed', event.at)
 			: event.event === 'StopFailure' ? this.activityTracker(event.token).endTurn('failed', event.at) : false;
 		if (activityChanged || activityEnded) {
-			this.pushActivityToSubscriber(event.token);
+			this.pushActivityToSubscribers(event.token);
 		}
 
 		// AskUserQuestion のライブ検出: Claude Code は質問の tool_use を決着（回答/中断）まで
@@ -2377,13 +2452,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		};
 	}
 
-	private pushInfoToSubscriber(token: string): void {
-		const subscriber = this.subscribers.get(token);
+	private pushInfoToSubscribers(token: string): void {
 		const terminalId = this.terminalIdForToken(token);
 		const tailer = this.tailers.get(token);
 		const info = tailer !== undefined ? this.infoOf(token, tailer) : undefined;
-		if (subscriber !== undefined && terminalId !== undefined && tailer !== undefined && info !== undefined) {
-			this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], info }, token);
+		if (terminalId !== undefined && tailer !== undefined && info !== undefined) {
+			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], info });
 		}
 	}
 
@@ -2408,10 +2482,9 @@ export class ParadisMobileAgentChat extends Disposable {
 					// MessageDisplayの最終バッチはtranscript本文が届くまで表示し、確定本文との二重表示を避ける。
 					this.clearLiveState(token);
 				}
-				const subscriber = this.subscribers.get(token);
 				const terminalId = this.terminalIdForToken(token);
-				if (subscriber !== undefined && terminalId !== undefined) {
-					this.sendTo(subscriber, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages }, token);
+				if (terminalId !== undefined) {
+					this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages });
 				}
 				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
 				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
@@ -2425,12 +2498,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			},
 			onEpochReset: () => {
-				const subscriber = this.subscribers.get(token);
 				const terminalId = this.terminalIdForToken(token);
-				if (subscriber !== undefined && terminalId !== undefined) {
+				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendTo(subscriber, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, activity: this.activityTrackers.get(token)?.snapshot() ?? null }, token);
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, activity: this.activityTrackers.get(token)?.snapshot() ?? null, capabilities: { agentActions: true } });
 				}
 			},
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
@@ -2442,7 +2514,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (settings !== undefined && tailer.model === settings.model && tailer.effort === settings.effort) {
 					this.codexThreadSettings.delete(token);
 				}
-				this.pushInfoToSubscriber(token);
+				this.pushInfoToSubscribers(token);
 			},
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
@@ -2450,7 +2522,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			onTurnEnded: reason => {
 				this.clearLiveState(token);
 				if (this.activityTracker(token).endTurn(reason, Date.now())) {
-					this.pushActivityToSubscriber(token);
+					this.pushActivityToSubscribers(token);
 				}
 				fireParadisAgentTurnEnded(token);
 			},
@@ -2529,6 +2601,36 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.lastConfirmedAgentPaneTokens = next;
 		this._onDidChangeConfirmedAgentPanes.fire(next);
+	}
+
+	private addSubscriber(token: string, mobileId: string): void {
+		let subscribers = this.subscribers.get(token);
+		if (subscribers === undefined) {
+			subscribers = new Set<string>();
+			this.subscribers.set(token, subscribers);
+		}
+		subscribers.add(mobileId);
+	}
+
+	private removeSubscriber(token: string, mobileId: string): boolean {
+		const subscribers = this.subscribers.get(token);
+		if (subscribers === undefined || !subscribers.delete(mobileId)) {
+			return false;
+		}
+		if (subscribers.size === 0) {
+			this.subscribers.delete(token);
+		}
+		return true;
+	}
+
+	private hasSubscriber(token: string, mobileId: string): boolean {
+		return this.subscribers.get(token)?.has(mobileId) === true;
+	}
+
+	private sendToSubscribers(token: string, msg: AgentOutbound): void {
+		for (const mobileId of this.subscribers.get(token) ?? []) {
+			this.sendTo(mobileId, msg, token);
+		}
 	}
 
 	private sendTo(mobileId: string, msg: AgentOutbound, token?: string): void {

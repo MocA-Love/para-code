@@ -272,6 +272,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 					session.sendFrame(Channels.Agent, undefined, payload).catch(err => this.logService.warn('[paradisMobileRelay] agent reply failed', err));
 				}
 			},
+			(mobileId, windowId, payload) => this._onInboundFrame.fire([Channels.Agent, `window:${windowId}`, 0, VSBuffer.wrap(payload), mobileId]),
 			// transcript に質問(AskUserQuestion等)が現れた → 質問本文入りの通知を全モバイルへ流す。
 			// hookベースの agentStatus 遷移通知(renderer側 emitNotify)は AskUserQuestion では
 			// 発火しないことがあるため、こちらが質問通知の主経路。
@@ -365,6 +366,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async getConfirmedAgentPanes(): Promise<IParadisConfirmedAgentPanes> {
 		return this.confirmedAgentPanes;
+	}
+
+	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string): Promise<'claimed' | 'stale' | 'expired'> {
+		return this.agentChat.claimSendMessageAction(mobileId, requestId, token, epoch);
 	}
 
 	private snapshot(): IParadisMobileStatus {

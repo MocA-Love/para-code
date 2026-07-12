@@ -388,6 +388,8 @@ export interface AgentChatState {
 	activity?: AgentActivityState;
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
 	modelControl?: AgentModelControlState;
+	/** PC側がsession検証付きAgent Actionを受け付ける。 */
+	capabilities?: { agentActions: true };
 }
 
 /**
@@ -560,6 +562,7 @@ export class MobileController {
 	private attachedAgents = new Map<number, number>();
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
 	private readonly agentControlTimers = new Map<number, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingAgentActions = new Map<string, { readonly id: number; readonly resolve: (accepted: boolean) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 
 	constructor(
 		private readonly identity: Identity,
@@ -607,8 +610,11 @@ export class MobileController {
 		}
 		this.client?.close();
 		this.client = new RelayClient(this.identity, creds, this.socketFactory, {
-			onStateChange: s => {
+				onStateChange: s => {
 				this.state.connection = s;
+				if (s !== 'online') {
+					this.cancelPendingAgentActions();
+				}
 				this.emit();
 				// 再接続完了時: 購読中のagentチャットがあれば手元のepoch/revで再attachする
 				// （PC側はepoch一致なら差分のみ、不一致なら全量スナップショットを返す）。
@@ -635,6 +641,7 @@ export class MobileController {
 	disconnect(): void {
 		this.client?.close();
 		this.client = undefined;
+		this.cancelPendingAgentActions();
 		this.flushAgentEmit();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
@@ -651,6 +658,7 @@ export class MobileController {
 			clearTimeout(pending.timer);
 		}
 		this.agentControlTimers.clear();
+		this.cancelPendingAgentActions();
 		this.flushAgentEmit();
 		this.termStreams.clear();
 		this.state.connection = 'offline';
@@ -761,6 +769,38 @@ export class MobileController {
 		const normalized = text.replace(/\r?\n/g, '\r');
 		const fallback = execute && !normalized.endsWith('\r') ? normalized + '\r' : normalized;
 		this.sendTerm({ t: 'input', id, data: fallback, text, execute });
+	}
+
+	/** session検証付きAgent Action。未対応PCでは従来のterm入力へフォールバックする。 */
+	sendAgentMessage(id: number, text: string): Promise<boolean> {
+		const chat = this.state.agentChats.get(id);
+		if (this.state.connection !== 'online') {
+			return Promise.resolve(false);
+		}
+		if (chat === undefined || chat.none || chat.capabilities?.agentActions !== true) {
+			this.sendTextInput(id, text, true);
+			return Promise.resolve(true);
+		}
+		const requestId = `agent-message-${this.requestCounter++}`;
+		return new Promise(resolve => {
+			const timer = setTimeout(() => {
+				if (this.pendingAgentActions.delete(requestId)) {
+					resolve(false);
+				}
+			}, 30_000);
+			this.pendingAgentActions.set(requestId, { id, resolve, timer });
+			this.client?.send('agent', encoder.encode(JSON.stringify({
+				t: 'action/sendMessage', id, token: this.agentToken(id), requestId, epoch: chat.epoch, text,
+			})));
+		});
+	}
+
+	private cancelPendingAgentActions(): void {
+		for (const pending of this.pendingAgentActions.values()) {
+			clearTimeout(pending.timer);
+			pending.resolve(false);
+		}
+		this.pendingAgentActions.clear();
 	}
 
 	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
@@ -1421,7 +1461,7 @@ export class MobileController {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; activity?: AgentActivityState | null;
-				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string;
+				requestId?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; capabilities?: { agentActions?: unknown };
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -1451,6 +1491,7 @@ export class MobileController {
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
+					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const } } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
 				});
 				this.emit({ agentChats: true });
@@ -1487,6 +1528,7 @@ export class MobileController {
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
+					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const } } : {}),
 				});
 				// ターン継続中（live あり）の高頻度な delta だけ throttle でまとめる。ターン終了
 				// （live === null）や live 情報を伴わない確定 delta は即時反映する（追従の遅延・
@@ -1497,6 +1539,16 @@ export class MobileController {
 					this.flushAgentEmit();
 					this.emit({ agentChats: true });
 				}
+				return;
+			}
+			if (msg.t === 'action-result' && typeof msg.requestId === 'string') {
+				const pending = this.pendingAgentActions.get(msg.requestId);
+				if (pending === undefined || pending.id !== msg.id || (msg.status !== 'accepted' && msg.status !== 'rejected')) {
+					return;
+				}
+				clearTimeout(pending.timer);
+				this.pendingAgentActions.delete(msg.requestId);
+				pending.resolve(msg.status === 'accepted');
 				return;
 			}
 			if (msg.t === 'model-catalog' && typeof msg.requestId === 'string' && Array.isArray(msg.models)) {
