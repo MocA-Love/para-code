@@ -91,7 +91,12 @@ const BUNDLED_VSIX_FILES: readonly string[] = [
 	'yudai1204.polacode-button-0.0.1.vsix',
 	'VisualStudioExptTeam.vscodeintellicode-1.3.2.vsix',
 	'VisualStudioExptTeam.intellicode-api-usage-examples-0.2.9.vsix',
-	'evondev.indent-rainbow-palettes-0.0.20.vsix'
+	'evondev.indent-rainbow-palettes-0.0.20.vsix',
+	// Para Codeパッチ版 (upstream v2.4.5ベース、composeのworking_dirラベルで現在のワークスペース外の
+	// コンテナをContainersビューから隠す)。installGivenVersion:true でpinnedになるため、ギャラリーの
+	// 新版に自動更新で置き換えられることはない (ユーザーが拡張ビューで手動更新した場合のみ失われる)。
+	// 既にギャラリー版がインストール済みでもVSIXインストールが既存版を置き換える。ビルド手順はNOTES.md参照
+	'ms-azuretools.vscode-containers-2.4.105.vsix'
 ];
 
 const BUNDLED_VSIX_DIR = 'resources/paradis/extensions';
