@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
@@ -31,7 +31,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 	const multiSelect = message.multiSelect === true;
 	const options = message.options ?? [];
 	const interactionId = message.questionGroup ?? message.toolUseId;
-	const disabled = answered || submitted;
+	const disabled = answered || submitted || interactionId === undefined;
 	const isToggled = (i: number) => toggled.has(i);
 	const toggle = (i: number) => {
 		setToggled(prev => {
@@ -46,7 +46,8 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 	};
 	const submit = (action: () => Promise<boolean>) => {
 		setSubmitted(true);
-		void action().then(accepted => { if (!accepted) { setSubmitted(false); } });
+		const retry = setTimeout(() => setSubmitted(false), 15_000);
+		void action().then(accepted => { if (!accepted) { clearTimeout(retry); setSubmitted(false); } });
 	};
 	return (
 		<View style={[styles.questionCard, answered && styles.questionCardAnswered]}>
@@ -62,6 +63,8 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 					key={i}
 					style={[styles.questionOption, (multiSelect ? isToggled(i) : selected === i) && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
 					disabled={disabled}
+					accessibilityRole="button"
+					accessibilityState={{ selected: multiSelect ? isToggled(i) : selected === i, disabled }}
 					onPress={() => {
 						hapticSelection();
 						if (multiSelect) {
@@ -81,7 +84,9 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 			{multiSelect && !disabled ? (
 				<Pressable
 					style={[styles.questionConfirmBtn, toggled.size === 0 && styles.confirmBtnDisabled]}
-					disabled={toggled.size === 0}
+					disabled={toggled.size === 0 || interactionId === undefined}
+					accessibilityRole="button"
+					accessibilityState={{ disabled: toggled.size === 0 || interactionId === undefined }}
 					onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onMulti(interactionId, [...toggled].sort((a, b) => a - b))); } }}
 				>
 					<Text style={styles.confirmBtnText}>決定（{toggled.size}件）</Text>
@@ -101,7 +106,9 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 					/>
 					<Pressable
 						style={[styles.questionFreeSend, freeText.trim().length === 0 && styles.confirmBtnDisabled]}
-						disabled={freeText.trim().length === 0}
+						disabled={freeText.trim().length === 0 || interactionId === undefined}
+						accessibilityRole="button"
+						accessibilityState={{ disabled: freeText.trim().length === 0 || interactionId === undefined }}
 						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onFreeText(interactionId, options.length, freeText.trim())); } }}
 						accessibilityLabel="自由入力で回答"
 					>
@@ -112,6 +119,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 			{!answered && options.length === 0 ? (
 				<Text style={styles.hint}>選択肢を取得できませんでした。TUI側と番号がずれる可能性があるため、ターミナルタブでの回答が確実です</Text>
 			) : null}
+			{!answered && interactionId === undefined ? <Text style={styles.hint}>この質問はモバイルから安全に回答できません。ターミナルタブで回答してください</Text> : null}
 			{!disabled && options.length > 0 ? <Text style={styles.hint}>{multiSelect ? 'タップで選択し「決定」で回答します' : 'タップで回答します'}</Text> : null}
 		</View>
 	);
@@ -133,13 +141,18 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 	const [answers, setAnswers] = useState<(QuestionGroupAnswer | undefined)[]>(() => messages.map(() => undefined));
 	const [freeTexts, setFreeTexts] = useState<string[]>(() => messages.map(() => ''));
 	const [submitted, setSubmitted] = useState(false);
-	const disabled = answered || submitted;
+	const interactionId = messages[0]?.questionGroup ?? messages[0]?.toolUseId;
+	const disabled = answered || submitted || interactionId === undefined;
 	const current = messages[step];
 	const options = current?.options ?? [];
 	const multiSelect = current?.multiSelect === true;
 	const answeredCount = answers.filter(a => a !== undefined).length;
 	const allAnswered = answeredCount === messages.length;
-	const interactionId = messages[0]?.questionGroup ?? messages[0]?.toolUseId;
+	useEffect(() => {
+		setAnswers(previous => messages.map((_, index) => previous[index]));
+		setFreeTexts(previous => messages.map((_, index) => previous[index] ?? ''));
+		setStep(previous => Math.min(previous, Math.max(0, messages.length - 1)));
+	}, [messages.length]);
 
 	const setAnswer = (index: number, answer: QuestionGroupAnswer | undefined) => {
 		setAnswers(prev => prev.map((v, i) => (i === index ? answer : v)));
@@ -170,6 +183,9 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 					<Pressable
 						key={i}
 						style={[styles.stepTab, i === step && styles.stepTabActive, answers[i] !== undefined && styles.stepTabAnswered]}
+						accessibilityRole="tab"
+						accessibilityState={{ selected: i === step, disabled }}
+						disabled={disabled}
 						onPress={() => { hapticSelection(); setStep(i); }}
 					>
 						<Text style={[styles.stepTabText, i === step && styles.stepTabTextActive]}>
@@ -187,6 +203,8 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 						key={i}
 						style={[styles.questionOption, selected && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
 						disabled={disabled}
+						accessibilityRole="button"
+						accessibilityState={{ selected, disabled }}
 						onPress={() => {
 							hapticSelection();
 							if (multiSelect) {
@@ -222,19 +240,23 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 			{!disabled ? (
 				<Pressable
 					style={[styles.questionConfirmBtn, !allAnswered && styles.confirmBtnDisabled]}
-					disabled={!allAnswered}
+					disabled={!allAnswered || interactionId === undefined}
+					accessibilityRole="button"
+					accessibilityState={{ disabled: !allAnswered || interactionId === undefined }}
 					onPress={() => {
 						if (interactionId === undefined) { return; }
 						hapticImpact('medium');
 						setSubmitted(true);
+						const retry = setTimeout(() => setSubmitted(false), 15_000);
 						void onSubmit(interactionId, answers.filter((a): a is QuestionGroupAnswer => a !== undefined))
-							.then(accepted => { if (!accepted) { setSubmitted(false); } });
+							.then(accepted => { if (!accepted) { clearTimeout(retry); setSubmitted(false); } });
 					}}
 				>
 					<Text style={styles.confirmBtnText}>回答を送信（{answeredCount}/{messages.length}）</Text>
 				</Pressable>
 			) : null}
 			{!disabled ? <Text style={styles.hint}>すべての質問に回答してから送信されます（1問ずつは送信されません）</Text> : null}
+			{!answered && interactionId === undefined ? <Text style={styles.hint}>この質問グループはターミナルタブで回答してください</Text> : null}
 		</View>
 	);
 }
