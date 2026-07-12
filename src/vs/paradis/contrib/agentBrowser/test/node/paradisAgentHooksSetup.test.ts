@@ -7,9 +7,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
+import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, paradisManagedAgentHookCommand } from '../../common/paradisAgentHooks.js';
-import { paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
 
 suite('ParadisAgentHooksSetup', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -61,5 +65,100 @@ suite('ParadisAgentHooksSetup', () => {
 		const parsed = JSON.parse(first) as { hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
 		assert.deepStrictEqual(parsed.hooks['Stop'], [{ hooks: [userHook] }]);
 		assert.ok(parsed.hooks['SubagentStart'][0].hooks[0].command.includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
+	});
+
+	test('reconciles externally replaced settings without removing user hooks', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-'));
+		try {
+			const claudeSettingsPath = join(root, '.claude', 'settings.json');
+			const codexHooksPath = join(root, '.codex', 'hooks.json');
+			const userHook = { type: 'command', command: '/tmp/my-custom-hook.sh' };
+			await fs.mkdir(join(root, '.claude'), { recursive: true });
+			await fs.writeFile(claudeSettingsPath, JSON.stringify({ hooks: { Stop: [{ matcher: 'custom', hooks: [userHook] }] }, customSetting: true }));
+
+			const reconciler = new ParadisAgentHooksReconciler(undefined, {
+				claudeSettingsPath,
+				codexHooksPath,
+				claudeVersionOutput: '2.1.207',
+				installNotifyScript: false,
+			});
+			await reconciler.reconcile();
+			reconciler.dispose();
+
+			const parsed = JSON.parse(await fs.readFile(claudeSettingsPath, 'utf8')) as { customSetting: boolean; hooks: Record<string, readonly { matcher?: string; hooks: readonly { command: string }[] }[]> };
+			assert.strictEqual(parsed.customSetting, true);
+			assert.deepStrictEqual(parsed.hooks['Stop'][0], { matcher: 'custom', hooks: [userHook] });
+			assert.ok(parsed.hooks['SubagentStart'].some(definition => definition.hooks.some(hook => hook.command.includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`))));
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('debounces watched changes, audits missed changes, and stops after dispose', async () => {
+		let watchListener: ((fileName: string | null) => void) | undefined;
+		let auditListener: (() => void) | undefined;
+		let watchDisposed = false;
+		let auditDisposed = false;
+		let reconcileCount = 0;
+		const scheduled: (() => void)[] = [];
+		const disposable = (dispose: () => void): IDisposable => ({ dispose });
+		const reconciler = new ParadisAgentHooksReconciler(undefined, {
+			claudeVersionOutput: '2.1.207',
+			installNotifyScript: false,
+			watchDirectory: (_path, listener) => {
+				watchListener = listener;
+				return disposable(() => watchDisposed = true);
+			},
+			scheduleAudit: listener => {
+				auditListener = listener;
+				return disposable(() => auditDisposed = true);
+			},
+			scheduleReconcile: listener => {
+				scheduled.push(listener);
+				return disposable(() => undefined);
+			},
+			reconcileFiles: async () => { reconcileCount++; },
+		});
+
+		await reconciler.start();
+		assert.strictEqual(reconcileCount, 1);
+		watchListener?.('settings.json');
+		watchListener?.('settings.json');
+		assert.strictEqual(scheduled.length, 1);
+		scheduled.shift()?.();
+		await reconciler.whenIdle();
+		assert.strictEqual(reconcileCount, 2);
+		auditListener?.();
+		await reconciler.whenIdle();
+		assert.strictEqual(reconcileCount, 3);
+
+		reconciler.dispose();
+		assert.strictEqual(watchDisposed, true);
+		assert.strictEqual(auditDisposed, true);
+		watchListener?.('settings.json');
+		auditListener?.();
+		assert.strictEqual(scheduled.length, 0);
+		assert.strictEqual(reconcileCount, 3);
+	});
+
+	test('keeps base hook reconciliation available when Claude version detection fails', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-version-'));
+		try {
+			const claudeSettingsPath = join(root, '.claude', 'settings.json');
+			const reconciler = new ParadisAgentHooksReconciler(undefined, {
+				claudeSettingsPath,
+				codexHooksPath: join(root, '.codex', 'hooks.json'),
+				installNotifyScript: false,
+			}, async () => { throw new Error('shell environment unavailable'); });
+
+			await reconciler.reconcile();
+			reconciler.dispose();
+
+			const parsed = JSON.parse(await fs.readFile(claudeSettingsPath, 'utf8')) as { hooks: Record<string, unknown> };
+			assert.ok(parsed.hooks['Stop']);
+			assert.strictEqual(parsed.hooks['SubagentStart'], undefined);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 });
