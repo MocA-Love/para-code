@@ -14,6 +14,9 @@
 //   - コマンドパレット（プリセットを実行 / プリセットを管理）
 //   - worktree 作成直後の自動実行ヘルパー（リポジトリレベルは初回に内容の確認を挟む）
 
+import './media/paradisPresetToolbar.css';
+import { reset } from '../../../../base/browser/dom.js';
+import { renderLabelWithIcons } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { hash } from '../../../../base/common/hash.js';
@@ -21,7 +24,9 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
-import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
+import { MenuEntryActionViewItem } from '../../../../platform/actions/browser/menuEntryActionViewItem.js';
+import { Action2, MenuId, MenuItemAction, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
@@ -114,7 +119,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 						description: localize('paradis.terminal.presets.launchMode', "旧形式: 起動モード。既定は new-terminal。tasks があれば無視される。")
 					},
 					pinned: { type: 'boolean', default: true, description: localize('paradis.terminal.presets.pinned', "ターミナルタブバー右側にボタンとして表示する。") },
-					pinnedLabel: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.pinnedLabel', "ピン留めボタンにアイコンの代わりに名前を表示する。") },
+					pinnedLabel: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.pinnedLabel', "ピン留めボタンにアイコンに加えて名前も表示する。") },
 					autoRun: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.autoRun', "「新しいスペース（worktree）を作成」直後に自動実行する。") },
 					appliesTo: {
 						type: 'array',
@@ -133,6 +138,32 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 /** タブバー右側のドロップダウン（全プリセットの一覧）のメニュー。 */
 const ParadisPresetsSubmenu = new MenuId('paradisPresetsSubmenu');
 
+/**
+ * pinnedLabel 用のツールバー項目。標準の {@link MenuEntryActionViewItem} は「アイコンか名前の
+ * どちらか」しか描画しないため、ラベル描画へ切り替えた上でラベル内に codicon を埋め込み、
+ * 「アイコン＋名前」の見た目にする（options の切り替えは upstream の
+ * TextOnlyMenuEntryActionViewItem と同じ手法）。
+ */
+class ParadisPresetIconLabelViewItem extends MenuEntryActionViewItem {
+
+	override render(container: HTMLElement): void {
+		this.options.label = true;
+		this.options.icon = false;
+		super.render(container);
+		container.classList.add('paradis-preset-icon-label');
+	}
+
+	protected override updateLabel(): void {
+		if (this.label) {
+			const icon = this._menuItemAction.item.icon;
+			const title = ThemeIcon.isThemeIcon(icon)
+				? `$(${icon.id}) ${this._commandAction.label}`
+				: this._commandAction.label;
+			reset(this.label, ...renderLabelWithIcons(title));
+		}
+	}
+}
+
 class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisPresetButtons';
@@ -141,6 +172,7 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 
 	constructor(
 		@IParadisPresetService private readonly presetService: IParadisPresetService,
+		@IActionViewItemService private readonly actionViewItemService: IActionViewItemService,
 	) {
 		super();
 		for (const menuId of [MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
@@ -167,12 +199,10 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 				when: IsSessionsWindowContext.toNegated()
 			}));
 		}
-		// 子プロセスの起動/終了イベントは連続で飛んでくるため、再構築は debounce して1回に合流させる
+		// プリセット変更イベントはフォルダ再読込などで連続で飛んでくるため、再構築は debounce して1回に合流させる
 		// （ボタン群の全 dispose→再登録がイベントごとに走ると、ツールバーのちらつきと無駄な再計算になる）
 		const updateScheduler = this._register(new RunOnceScheduler(() => this._update(), 50));
 		this._register(this.presetService.onDidChangePresets(() => updateScheduler.schedule()));
-		// 実行状態（●表示・クリック時のフォーカス切替）が変わったら登録し直す
-		this._register(this.presetService.onDidChangeRunningPresets(() => updateScheduler.schedule()));
 		this._update();
 	}
 
@@ -180,42 +210,33 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 		this._registrations.clear();
 		let order = 20; // New Terminal(0) や Open Browser(-10) より右
 		for (const preset of this.presetService.presets) {
-			const running = this.presetService.isPresetRunning(preset.key);
 			const commandId = `paradis.preset.run.${preset.key}`;
-			this._registrations.add(CommandsRegistry.registerCommand(commandId, async accessor => {
-				const service = accessor.get(IParadisPresetService);
-				// 実行中（子プロセスが生きている）なら再実行ではなくそのターミナルへフォーカスする
-				if (service.isPresetRunning(preset.key) && await service.focusRunningPreset(preset.key)) {
-					return;
-				}
-				return service.runPreset(preset);
-			}));
+			this._registrations.add(CommandsRegistry.registerCommand(commandId, accessor =>
+				accessor.get(IParadisPresetService).runPreset(preset)));
 			const icon = preset.icon ? ThemeIcon.fromId(preset.icon) : Codicon.play;
 			const tooltip = preset.description ? `${preset.name} — ${preset.description}` : preset.name;
 
-			// ドロップダウンには全プリセットを列挙（リポジトリ由来 → ユーザー由来の順）。実行中は ● を付ける
-			// allow-any-unicode-next-line
-			const dropdownTitle = running ? localize('paradis.presetButtons.runningItem', "● {0}（実行中 — クリックで表示）", preset.name) : preset.name;
+			// ドロップダウンには全プリセットを列挙（リポジトリ由来 → ユーザー由来の順）
 			this._registrations.add(MenuRegistry.appendMenuItem(ParadisPresetsSubmenu, {
-				command: { id: commandId, title: dropdownTitle, tooltip },
+				command: { id: commandId, title: preset.name, tooltip },
 				group: preset.source === 'workspace' ? '1_workspace' : '2_user',
 			}));
 
-			// ピン留めプリセットはタブバーに直接ボタンを出す（pinnedLabel でアイコンの代わりに名前を表示）
+			// ピン留めプリセットはタブバーに直接ボタンを出す（pinnedLabel でアイコンに加えて名前も表示）
 			if (preset.pinned === false) {
 				continue;
 			}
 			for (const menuId of [MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
 				this._registrations.add(MenuRegistry.appendMenuItem(menuId, {
-					command: preset.pinnedLabel === true
-						// アイコンを持たないメニュー項目はツールバーでラベル（title）表示になる
-						// allow-any-unicode-next-line
-						? { id: commandId, title: running ? localize('paradis.presetButtons.runningPinned', "● {0}", preset.name) : preset.name, tooltip }
-						: { id: commandId, title: tooltip, icon },
+					command: { id: commandId, title: preset.name, tooltip, icon },
 					group: 'navigation',
 					order: order,
 					when: IsSessionsWindowContext.toNegated()
 				}));
+				if (preset.pinnedLabel === true) {
+					this._registrations.add(this.actionViewItemService.register(menuId, commandId, (action, options, instantiationService) =>
+						action instanceof MenuItemAction ? instantiationService.createInstance(ParadisPresetIconLabelViewItem, action, options) : undefined));
+				}
 			}
 			order++;
 		}

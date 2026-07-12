@@ -244,54 +244,6 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		}
 	}
 
-	// --- 実行状態の追跡 ----------------------------------------------------------------------------
-
-	private readonly _onDidChangeRunningPresets = this._register(new Emitter<void>());
-	readonly onDidChangeRunningPresets: Event<void> = this._onDidChangeRunningPresets.event;
-
-	/** プリセット key → このサービスが起動したターミナル。破棄されたら取り除く。 */
-	private readonly _presetTerminals = new Map<string, Set<ITerminalInstance>>();
-	private readonly _presetTerminalListeners = this._register(new DisposableStore());
-
-	private _trackPresetTerminal(key: string, instance: ITerminalInstance): void {
-		let set = this._presetTerminals.get(key);
-		if (!set) {
-			set = new Set();
-			this._presetTerminals.set(key, set);
-		}
-		set.add(instance);
-		const listeners = new DisposableStore();
-		this._presetTerminalListeners.add(listeners);
-		listeners.add(instance.onDisposed(() => {
-			set.delete(instance);
-			if (set.size === 0) {
-				this._presetTerminals.delete(key);
-			}
-			this._presetTerminalListeners.delete(listeners);
-			listeners.dispose();
-			this._onDidChangeRunningPresets.fire();
-		}));
-		listeners.add(instance.onDidChangeHasChildProcesses(() => this._onDidChangeRunningPresets.fire()));
-		this._onDidChangeRunningPresets.fire();
-	}
-
-	private _getRunningTerminals(key: string): ITerminalInstance[] {
-		return [...(this._presetTerminals.get(key) ?? [])].filter(instance => instance.hasChildProcesses);
-	}
-
-	isPresetRunning(key: string): boolean {
-		return this._getRunningTerminals(key).length > 0;
-	}
-
-	async focusRunningPreset(key: string): Promise<boolean> {
-		const instance = this._getRunningTerminals(key)[0];
-		if (!instance) {
-			return false;
-		}
-		await this.terminalService.focusInstance(instance);
-		return true;
-	}
-
 	// --- 実行 ------------------------------------------------------------------------------------
 
 	async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
@@ -302,7 +254,6 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 		if (layout === 'current') {
 			// 全タスクのコマンドを連結してアクティブなターミナルへ送る（旧 current-terminal 相当）。
-			// 既存プロセスとの帰属が曖昧になるため実行状態の追跡はしない。
 			const commands = tasks.flatMap(task => task.commands);
 			const cwd = this._resolveCwd(preset, preset.cwd, options?.cwd);
 			let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
@@ -352,7 +303,6 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			}
 			options?.onDidStart?.();
 			first ??= instance;
-			this._trackPresetTerminal(preset.key, instance);
 			await instance.processReady;
 			await instance.sendText(paradisJoinPresetCommands(task.commands, instance.shellType), true);
 		}

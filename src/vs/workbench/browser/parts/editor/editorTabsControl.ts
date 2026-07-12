@@ -14,6 +14,7 @@ import { ResolvedKeybinding } from '../../../../base/common/keybindings.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { createActionViewItem } from '../../../../platform/actions/browser/menuEntryActionViewItem.js';
 import { MenuId } from '../../../../platform/actions/common/actions.js';
+import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js'; // PARA-PATCH: custom action view item lookup
 import { IContextKeyService, IContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -308,6 +309,18 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 
 	private actionViewItemProvider(action: IAction, options: IBaseActionViewItemOptions): IActionViewItem | undefined {
 		const activeEditorPane = this.groupView.activeEditorPane;
+
+		// PARA-PATCH: honor custom view items registered via IActionViewItemService (e.g. pinned
+		// preset buttons with icon+label) in the EditorTitle toolbar, same as
+		// titlebarPart.actionViewItemProvider does. Resolved via invokeFunction to keep the
+		// base class constructor signature unchanged.
+		const customViewItem = this.instantiationService.invokeFunction(accessor => accessor.get(IActionViewItemService)).lookUp(MenuId.EditorTitle, action.id);
+		if (customViewItem) {
+			const result = customViewItem(action, options, this.instantiationService, getWindow(this.parent).vscodeWindowId);
+			if (result) {
+				return result;
+			}
+		}
 
 		// Check Active Editor
 		if (activeEditorPane instanceof EditorPane) {
