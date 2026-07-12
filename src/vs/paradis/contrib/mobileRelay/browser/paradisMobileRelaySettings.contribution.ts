@@ -35,9 +35,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		},
 		[PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY]: {
 			type: 'boolean',
-			default: false,
+			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.mobile.agent.codexDaemonStreaming', "実験的: ローカルのCodex app-server daemonを起動または再利用し、その後に開始したCodexセッションの生成中テキスト・ツール出力・動的モデル一覧・次ターン設定をPara Code Mobileへ連携します。macOS/Linuxのみ対応します。Para Codeは共有daemonを停止しません。複数クライアント購読はCodex側で発展中の機能のため、問題がある場合は無効にしてください。無効時や接続失敗時は従来のhook/transcript同期へ自動的に戻ります。")
+			markdownDescription: localize('paradis.mobile.agent.codexDaemonStreaming', "ローカルのCodex app-server daemonを起動または再利用し、その後に開始したCodexセッションの生成中テキスト・SubAgent・ツール出力・動的モデル一覧・次ターン設定をPara Code Mobileへ連携します。macOS/Linuxのみ対応します。Para Codeは共有daemonを停止しません。問題がある場合は無効にでき、無効時や接続失敗時は従来のhook/transcript同期へ自動的に戻ります。")
 		}
 	}
 });

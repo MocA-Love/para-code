@@ -156,6 +156,8 @@ const POLL_INTERVAL_MS = 1500;
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
 const INITIAL_READ_MAX_BYTES = 4 * 1024 * 1024;
 const INITIAL_READ_TAIL_BYTES = 1024 * 1024;
+const APPEND_READ_CHUNK_BYTES = 1024 * 1024;
+const MAX_TRANSCRIPT_LINE_BYTES = 1024 * 1024;
 /** 保持するメッセージ数の上限 (超過分は古いものから捨てる)。 */
 const MESSAGE_RING_LIMIT = 400;
 /** attach応答スナップショットで送る最大件数。 */
@@ -212,6 +214,14 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 		// 未作成ファイルは字面検証のみで許可する（tailerは作成を待てる）。
 		return true;
 	}
+}
+
+async function isAllowedOpenTranscriptPath(handle: fs.FileHandle, transcriptPath: string): Promise<boolean> {
+	if (!await isAllowedTranscriptPath(transcriptPath)) { return false; }
+	try {
+		const [opened, current] = await Promise.all([handle.stat(), fs.stat(await fs.realpath(transcriptPath))]);
+		return opened.dev === current.dev && opened.ino === current.ino && opened.isFile();
+	} catch { return false; }
 }
 
 // ---- transcript行 → 正規化メッセージ --------------------------------------------------------
@@ -1096,6 +1106,7 @@ class TranscriptTailer {
 			return; // 未作成。ポーリングで readAppended が offset 0 から読み始める
 		}
 		try {
+			if (!await isAllowedOpenTranscriptPath(handle, this.transcriptPath)) { return; }
 			const stat = await handle.stat();
 			let start = 0;
 			if (stat.size > INITIAL_READ_MAX_BYTES) {
@@ -1129,6 +1140,7 @@ class TranscriptTailer {
 			return; // 消えている/未作成。次のポーリングで再試行
 		}
 		try {
+			if (!await isAllowedOpenTranscriptPath(handle, this.transcriptPath)) { return; }
 			const stat = await handle.stat();
 			if (stat.size < this.offset) {
 				// truncate / 置き換え。epoch を切り替えて読み直す (購読者は全量を受け取り直す)
@@ -1161,11 +1173,14 @@ class TranscriptTailer {
 			if (stat.size === this.offset) {
 				return;
 			}
-			const length = stat.size - this.offset;
-			const buffer = Buffer.alloc(length);
-			const { bytesRead } = await handle.read(buffer, 0, length, this.offset);
-			this.offset += bytesRead;
-			this.consumeText(this.decoder.decode(buffer.subarray(0, bytesRead), { stream: true }), true);
+			while (this.offset < stat.size) {
+				const length = Math.min(APPEND_READ_CHUNK_BYTES, stat.size - this.offset);
+				const buffer = Buffer.alloc(length);
+				const { bytesRead } = await handle.read(buffer, 0, length, this.offset);
+				if (bytesRead === 0) { break; }
+				this.offset += bytesRead;
+				this.consumeText(this.decoder.decode(buffer.subarray(0, bytesRead), { stream: true }), true);
+			}
 			if (!this.watcher) {
 				this.startWatching();
 			}
@@ -1178,7 +1193,7 @@ class TranscriptTailer {
 	private consumeText(text: string, emitDelta: boolean): void {
 		const combined = this.remainder + text;
 		const lines = combined.split('\n');
-		this.remainder = lines.pop() ?? '';
+		this.remainder = (lines.pop() ?? '').slice(-MAX_TRANSCRIPT_LINE_BYTES);
 		const added: IParadisAgentChatMessage[] = [];
 		const signals = newParseSignals();
 		let latestProgress: ITranscriptProgress | undefined;
@@ -1322,6 +1337,12 @@ class TranscriptTailer {
 	hasPendingInteraction(interaction: IParadisAgentInteraction): boolean {
 		const current = this.currentInteraction();
 		return current?.kind === interaction.kind && current.id === interaction.id;
+	}
+
+	pendingQuestionMessages(interactionId: string): readonly IParadisAgentChatMessage[] {
+		return this.messages.filter(message => message.kind === 'question' && (message.questionGroup ?? message.toolUseId) === interactionId
+			&& message.toolUseId !== undefined && this.pendingQuestions.has(message.toolUseId))
+			.sort((a, b) => (a.questionIndex ?? 0) - (b.questionIndex ?? 0));
 	}
 
 	/**
@@ -1985,6 +2006,19 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private handleQuestionAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const questions = token !== undefined ? this.tailers.get(token)?.pendingQuestionMessages(msg.interactionId) ?? [] : [];
+		const answersMatch = questions.length === msg.answers.length && msg.answers.every((answer, index) => {
+			const question = questions[index];
+			const optionCount = question?.options?.length ?? 0;
+			if (answer.kind === 'option') { return question?.multiSelect !== true && answer.index < optionCount; }
+			if (answer.kind === 'multi') { return question?.multiSelect === true && answer.indices.every(value => value < optionCount); }
+			return answer.optionCount === optionCount;
+		});
+		if (!answersMatch) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '質問の選択肢が更新されました' }, token ?? msg.token);
+			return;
+		}
 		const parts: string[] = [];
 		for (const answer of msg.answers) {
 			if (answer.kind === 'option') {
@@ -2167,6 +2201,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const settings = await this.codexLiveClient.updateThreadSettings(session.threadId, msg.model, msg.effort);
 			const current = this.codexControlSession(mobileId, msg.id, msg.token);
 			if (current?.token !== session.token || current.threadId !== session.threadId) {
+				this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed', code: 'stale-session', message: '操作対象のCodexセッションが切り替わりました' }, current?.token ?? session.token);
 				return;
 			}
 			this.codexThreadSettings.set(session.token, settings);
@@ -2175,10 +2210,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'confirmed', info }, session.token);
 		} catch (error) {
 			const normalized = ParadisMobileAgentChat.controlError(error);
+			const current = this.codexControlSession(mobileId, msg.id, msg.token);
 			this.sendTo(mobileId, {
 				t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed',
-				code: normalized.code, message: normalized.message,
-			}, session.token);
+				code: current?.token === session.token && current.threadId === session.threadId ? normalized.code : 'stale-session', message: current?.token === session.token && current.threadId === session.threadId ? normalized.message : '操作対象のCodexセッションが切り替わりました',
+			}, current?.token ?? session.token);
 		}
 	}
 
