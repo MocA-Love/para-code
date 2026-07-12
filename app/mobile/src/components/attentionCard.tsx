@@ -89,15 +89,15 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 				</Pressable>
 			) : question ? (
 				<QuestionCard
+					key={question.questionGroup ?? question.toolUseId ?? question.rev}
 					message={question}
 					answered={false}
 					onAnswer={actions.answerQuestion}
-					onToggle={actions.toggleQuestionOption}
-					onConfirm={actions.confirmQuestion}
+					onMulti={actions.answerQuestionMulti}
 					onFreeText={actions.answerQuestionFreeText}
 				/>
 			) : (
-				<ApprovalCard onApprove={actions.approve} detail={findLatestApprovalRequest(chat)} />
+				<ApprovalCard key={chat?.interaction?.kind === 'approval' ? chat.interaction.id : `legacy:${chat?.epoch ?? 'unknown'}`} interactionId={chat?.interaction?.kind === 'approval' ? chat.interaction.id : `legacy:${chat?.epoch ?? 'unknown'}`} onApprove={actions.approve} detail={findLatestApprovalRequest(chat)} />
 			)}
 			<Pressable style={styles.openLink} onPress={onOpenAgent}>
 				<Text style={styles.openLinkText}>エージェント画面で詳しく見る ›</Text>

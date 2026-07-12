@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - 既存の未コミット変更へ触れない。
-- コミット、プッシュ、マイグレーションを行わない。
+- 実装単位ごとにレビュー後コミットする。プッシュ、マイグレーションは行わない。
 - プロジェクト指示に従い、テストコマンドは実行しない。各Task後は差分の静的レビューを行う。
 - 旧モバイルと旧PCの互換経路を残す。
 - termチャネルの一般ターミナル操作は変更しない。
@@ -71,14 +71,15 @@
 **Interfaces:**
 - Produces: `AgentInteraction`、`answerQuestion`、`answerApproval`、要求単位の取消可能なキー列。
 
-- [ ] pending question IDとapproval IDをPC側の状態として保持する。
-- [ ] snapshot/deltaへ`interaction`を追加する。
-- [ ] interaction ID不一致の要求を`stale-interaction`で拒否する。
-- [ ] TUIキー列をPC側で直列化し、各待機後にsession/interactionを再検証する。
-- [ ] ターミナル終了、セッションepoch変更、disposeで残りのキー列をキャンセルする。
-- [ ] モバイルの質問・承認カードを送信中に無効化し、失敗時だけ復帰する。
-- [ ] 単一multiSelectも決定時までローカル保持する。
-- [ ] read-only reviewerへ差分レビューを依頼し、Important以上を解消する。
+- [x] pending question IDとapproval IDをPC側の状態として保持する。
+- [x] snapshot/deltaへ`interaction`を追加する。
+- [x] interaction ID不一致の要求を`stale-interaction`で拒否する。
+- [x] TUIキー列をPC側で直列化し、各待機後にsession/interaction/owner/terminalを再検証する。
+- [x] ターミナル終了、セッションepoch変更、disposeで残りのキー列をキャンセルする。
+- [x] モバイルの質問・承認カードを送信中に無効化し、失敗時だけ復帰する。
+- [x] 単一multiSelectも決定時までローカル保持する。
+- [x] interaction単位の排他claimで複数モバイルからの二重回答を防止する。
+- [x] read-only reviewerへ差分レビューを依頼し、Important以上を解消する。
 
 ### Task 4: Claudeモデル・Effort操作の統合
 

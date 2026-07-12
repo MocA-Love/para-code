@@ -145,6 +145,10 @@ export interface IParadisMobileRelayService {
 	syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
 	/** rendererがAgent Actionを実行する直前に、shared processのsession epochを再検証して一度だけclaimする。 */
 	claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string): Promise<'claimed' | 'stale' | 'expired'>;
+	/** interactionキー列の待機区間ごとに、sessionとinteractionが継続中か再検証する。 */
+	continueAgentInteraction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number): Promise<'valid' | 'completed' | 'stale'>;
+	/** renderer側のinteractionキー列が成功・失敗・取消のいずれかで終了したことを通知し、排他claimを解放する。 */
+	finalizeAgentInteraction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed'): Promise<void>;
 
 	/**
 	 * renderer → shared process: このウィンドウのフォーカス状態を報告する（PCフォーカス中の

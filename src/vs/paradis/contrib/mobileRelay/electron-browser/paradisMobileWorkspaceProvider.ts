@@ -199,6 +199,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly paneTokenService: IParadisPaneTokenService,
 		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]) => void,
 		private readonly claimAgentAction: (mobileId: string, requestId: string, token: string, epoch: string) => Promise<'claimed' | 'stale' | 'expired'>,
+		private readonly continueAgentInteraction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<'valid' | 'completed' | 'stale'>,
+		private readonly finalizeAgentInteraction: (mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed') => Promise<void>,
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
@@ -488,14 +490,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown };
+		let interactionAccepted = false;
 		try {
 			msg = JSON.parse(payload.toString());
 		} catch {
 			return;
 		}
-		if (msg.t !== 'action/sendMessage' || typeof msg.id !== 'number' || typeof msg.token !== 'string'
-			|| typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string' || typeof msg.text !== 'string') {
+		const sendMessage = msg.t === 'action/sendMessage' && typeof msg.text === 'string';
+		const interaction = msg.t === 'action/interaction' && Array.isArray(msg.parts) && msg.parts.length > 0 && msg.parts.length <= 500
+			&& msg.parts.every(part => typeof part === 'string' && part.length <= 10_000)
+			&& typeof msg.delayMs === 'number' && Number.isInteger(msg.delayMs) && msg.delayMs >= 0 && msg.delayMs <= 1_000
+			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
+		if ((!sendMessage && !interaction) || typeof msg.id !== 'number' || typeof msg.token !== 'string'
+			|| typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string') {
 			return;
 		}
 		const instance = this.allInstances().find(candidate => candidate.instanceId === msg.id
@@ -514,10 +522,40 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		try {
-			await instance.sendText(msg.text, true, true);
+			if (sendMessage) {
+				await instance.sendText(msg.text as string, true, true);
+			} else {
+				const parts = msg.parts as string[];
+				for (let index = 0; index < parts.length; index++) {
+					if (index > 0) {
+						await new Promise<void>(resolve => setTimeout(resolve, msg.delayMs as number));
+						const currentInstance = this.allInstances().find(candidate => candidate === instance && candidate.instanceId === msg.id
+							&& this.paneTokenService.getTokenForInstance(candidate.instanceId) === msg.token);
+						if (currentInstance === undefined) {
+							this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '操作対象のターミナルが変わりました');
+							return;
+						}
+						const continuation = await this.continueAgentInteraction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number);
+						if (continuation === 'completed') {
+							this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'interaction-completed', '回答対象は別の操作で完了しました');
+							return;
+						}
+						if (continuation === 'stale') {
+							this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-interaction', '回答対象の質問または承認要求が変わりました');
+							return;
+						}
+					}
+					await instance.sendText(parts[index], false);
+				}
+				interactionAccepted = true;
+			}
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
 		} catch {
 			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'send-failed', 'メッセージを送信できませんでした');
+		} finally {
+			if (interaction) {
+				await this.finalizeAgentInteraction(mobileId, msg.requestId, msg.token, interactionAccepted ? 'accepted' : 'failed').catch(err => this.logService.warn('[paradisMobileRelay] finalize agent interaction failed', err));
+			}
 		}
 	}
 

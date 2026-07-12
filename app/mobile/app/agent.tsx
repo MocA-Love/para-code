@@ -262,7 +262,7 @@ export default function AgentDetailScreen() {
 						ListFooterComponent={activeTerminal?.agentStatus === 'working' || chat?.live !== undefined || chat?.activity !== undefined ? <>{chat?.activity !== undefined ? <AgentActivityCard activity={chat.activity} /> : null}{activeTerminal?.agentStatus === 'working' || chat?.live !== undefined ? <WorkingIndicator live={chat?.live} /> : null}</> : null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} />
-								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onToggle={actions.toggleQuestionOption} onConfirm={actions.confirmQuestion} onFreeText={actions.answerQuestionFreeText} />
+								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
 									: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
 										: <ActivityGroup msgs={item.msgs} />}
 						contentContainerStyle={[styles.listContent, { paddingTop: headerHeight + 6 }]}
@@ -318,7 +318,7 @@ export default function AgentDetailScreen() {
 
 			{permissionPending && activeId !== undefined ? (
 				<View style={styles.approvalBarWrap}>
-					<ApprovalCard onApprove={actions.approve} detail={findLatestApprovalRequest(chat)} />
+					<ApprovalCard key={chat?.interaction?.kind === 'approval' ? chat.interaction.id : `legacy:${chat?.epoch ?? activeId}`} interactionId={chat?.interaction?.kind === 'approval' ? chat.interaction.id : `legacy:${chat?.epoch ?? activeId}`} onApprove={actions.approve} detail={findLatestApprovalRequest(chat)} />
 				</View>
 			) : null}
 

@@ -21,17 +21,20 @@ export type QuestionGroupAnswer =
 export interface AgentActions {
 	send(data: string): void;
 	sendText(text: string): Promise<boolean>;
-	answerQuestion(optionIndex: number): void;
-	toggleQuestionOption(optionIndex: number): void;
-	confirmQuestion(): void;
-	answerQuestionFreeText(optionCount: number, text: string): void;
-	answerQuestionGroup(answers: QuestionGroupAnswer[]): void;
-	approve(choice: 'yes' | 'no'): void;
+	answerQuestion(interactionId: string, optionIndex: number): Promise<boolean>;
+	answerQuestionMulti(interactionId: string, indices: number[]): Promise<boolean>;
+	answerQuestionFreeText(interactionId: string, optionCount: number, text: string): Promise<boolean>;
+	answerQuestionGroup(interactionId: string, answers: QuestionGroupAnswer[]): Promise<boolean>;
+	approve(interactionId: string, choice: 'yes' | 'no'): Promise<boolean>;
 }
 
 export function useAgentActions(terminalId: number | undefined, agent: string | undefined): AgentActions {
 	const sendInput = useAppStore(s => s.sendInput);
 	const sendAgentMessage = useAppStore(s => s.sendAgentMessage);
+	const answerAgentQuestion = useAppStore(s => s.answerAgentQuestion);
+	const answerAgentApproval = useAppStore(s => s.answerAgentApproval);
+	const interaction = useAppStore(s => terminalId !== undefined ? s.agentChats.get(terminalId)?.interaction : undefined);
+	const supportsAgentActions = useAppStore(s => terminalId !== undefined && s.agentChats.get(terminalId)?.capabilities?.agentActions === true);
 
 	const send = useCallback((data: string) => {
 		if (terminalId !== undefined) {
@@ -61,21 +64,42 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	 * 承認注入と同じ「番号 → CR」方式で選んで確定する（複数質問タブは回答すると
 	 * 自動で次のタブへ進むので、順に回答すれば最後に Submit される）。
 	 */
-	const answerQuestion = useCallback((optionIndex: number) => sendSequence([String(optionIndex + 1), '\r']), [sendSequence]);
+	const answerQuestion = useCallback((interactionId: string, optionIndex: number) => {
+		if (supportsAgentActions) {
+			return terminalId !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
+				? answerAgentQuestion(terminalId, interactionId, [{ kind: 'option', index: optionIndex }])
+				: Promise.resolve(false);
+		}
+		sendSequence([String(optionIndex + 1), '\r']);
+		return Promise.resolve(true);
+	}, [terminalId, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
-	/** 複数選択(multiSelect)の質問: 番号でジャンプしてスペースでトグルする（確定はしない）。 */
-	const toggleQuestionOption = useCallback((optionIndex: number) => sendSequence([String(optionIndex + 1), ' ']), [sendSequence]);
-
-	/** 複数選択(multiSelect)の質問の確定（Enter）。 */
-	const confirmQuestion = useCallback(() => sendSequence(['\r']), [sendSequence]);
+	const answerQuestionMulti = useCallback((interactionId: string, indices: number[]) => {
+		if (supportsAgentActions) {
+			return terminalId !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
+				? answerAgentQuestion(terminalId, interactionId, [{ kind: 'multi', indices }])
+				: Promise.resolve(false);
+		}
+		const parts = indices.flatMap(index => [String(index + 1), ' ']);
+		sendSequence([...parts, '\r']);
+		return Promise.resolve(true);
+	}, [terminalId, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	/**
 	 * 自由入力での回答。AskUserQuestion のTUIは選択肢の末尾に常に「Other」（自由入力）を
 	 * 持つため、「Otherの番号 → CR（入力欄が開く） → テキスト → CR（確定）」を注入する。
 	 */
 	const answerQuestionFreeText = useCallback(
-		(optionCount: number, text: string) => sendSequence([String(optionCount + 1), '\r', text, '\r']),
-		[sendSequence],
+		(interactionId: string, optionCount: number, text: string) => {
+			if (supportsAgentActions) {
+				return terminalId !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
+					? answerAgentQuestion(terminalId, interactionId, [{ kind: 'text', optionCount, text }])
+					: Promise.resolve(false);
+			}
+			sendSequence([String(optionCount + 1), '\r', text, '\r']);
+			return Promise.resolve(true);
+		},
+		[terminalId, interaction, supportsAgentActions, answerAgentQuestion, sendSequence],
 	);
 
 	/**
@@ -88,7 +112,12 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	 * 自由入力は「Other番号 → CR（入力欄）→ テキスト → CR」。
 	 * 末尾の予備Enterは、最終問の確定で自動Submitされた場合は空の入力欄に落ちるだけで無害。
 	 */
-	const answerQuestionGroup = useCallback((answers: QuestionGroupAnswer[]) => {
+	const answerQuestionGroup = useCallback((interactionId: string, answers: QuestionGroupAnswer[]) => {
+		if (supportsAgentActions) {
+			return terminalId !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
+				? answerAgentQuestion(terminalId, interactionId, answers)
+				: Promise.resolve(false);
+		}
 		const parts: string[] = [];
 		for (const answer of answers) {
 			if (answer.kind === 'option') {
@@ -104,7 +133,8 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 		}
 		parts.push('\r'); // 全問確定後にSubmit確認ステップが残っている場合の予備
 		sendSequence(parts);
-	}, [sendSequence]);
+		return Promise.resolve(true);
+	}, [terminalId, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	/**
 	 * 承認クイックアクション。
@@ -114,9 +144,14 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	 *    依存せずキャンセル=拒否として機能する）。
 	 *  - Codex: y / d のショートカット1文字（Enter不要）。
 	 */
-	const approve = useCallback((choice: 'yes' | 'no') => {
+	const approve = useCallback((interactionId: string, choice: 'yes' | 'no') => {
 		if (terminalId === undefined) {
-			return;
+			return Promise.resolve(false);
+		}
+		if (supportsAgentActions) {
+			return interaction?.kind === 'approval' && interaction.id === interactionId
+				? answerAgentApproval(terminalId, interactionId, choice)
+				: Promise.resolve(false);
 		}
 		if (agent === 'codex') {
 			send(choice === 'yes' ? 'y' : 'd');
@@ -126,9 +161,10 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 		} else {
 			send('\u001b');
 		}
-	}, [terminalId, agent, send]);
+		return Promise.resolve(true);
+	}, [terminalId, agent, interaction, supportsAgentActions, answerAgentApproval, send]);
 
-	return { send, sendText, answerQuestion, toggleQuestionOption, confirmQuestion, answerQuestionFreeText, answerQuestionGroup, approve };
+	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, approve };
 }
 
 /** 指定ターミナルのエージェントチャットを購読する（アタッチ/デタッチのライフサイクル込み）。 */

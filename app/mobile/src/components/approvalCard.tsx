@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../theme.js';
 import { hapticSuccess, hapticWarning } from '../haptics.js';
@@ -11,7 +12,12 @@ import { hapticSuccess, hapticWarning } from '../haptics.js';
  * （PTY注入は番号ベースのため、選択肢が2つより多いケースを安全に扱えないため）。
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
-export function ApprovalCard({ onApprove, detail }: { onApprove: (choice: 'yes' | 'no') => void; detail?: string }) {
+export function ApprovalCard({ interactionId, onApprove, detail }: { interactionId: string; onApprove: (interactionId: string, choice: 'yes' | 'no') => Promise<boolean>; detail?: string }) {
+	const [submitting, setSubmitting] = useState(false);
+	const submit = (choice: 'yes' | 'no') => {
+		setSubmitting(true);
+		void onApprove(interactionId, choice).then(accepted => { if (!accepted) { setSubmitting(false); } });
+	};
 	return (
 		<View style={styles.approvalBar}>
 			<Text style={styles.approvalText}>エージェントが確認を求めています</Text>
@@ -19,10 +25,10 @@ export function ApprovalCard({ onApprove, detail }: { onApprove: (choice: 'yes' 
 				<Text style={styles.approvalDetail} numberOfLines={6} selectable>{detail}</Text>
 			) : null}
 			<View style={styles.approvalButtons}>
-				<Pressable style={[styles.approvalBtn, styles.approveBtn]} onPress={() => { hapticSuccess(); onApprove('yes'); }}>
+				<Pressable disabled={submitting} style={[styles.approvalBtn, styles.approveBtn, submitting && styles.disabled]} onPress={() => { hapticSuccess(); submit('yes'); }}>
 					<Text style={styles.approveBtnText}>許可</Text>
 				</Pressable>
-				<Pressable style={[styles.approvalBtn, styles.denyBtn]} onPress={() => { hapticWarning(); onApprove('no'); }}>
+				<Pressable disabled={submitting} style={[styles.approvalBtn, styles.denyBtn, submitting && styles.disabled]} onPress={() => { hapticWarning(); submit('no'); }}>
 					<Text style={styles.denyBtnText}>拒否</Text>
 				</Pressable>
 			</View>
@@ -37,6 +43,7 @@ const styles = StyleSheet.create({
 	approvalDetail: { color: colors.text, fontSize: 11.5, lineHeight: 16, fontFamily: 'Menlo', backgroundColor: colors.surface2, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 8 },
 	approvalButtons: { flexDirection: 'row', gap: 10 },
 	approvalBtn: { flex: 1, borderRadius: 12, paddingVertical: 10, alignItems: 'center' },
+	disabled: { opacity: 0.6 },
 	approveBtn: { backgroundColor: colors.green },
 	denyBtn: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: 'rgba(244,114,114,.3)' },
 	approveBtnText: { color: colors.bg, fontSize: 13, fontWeight: '700' },

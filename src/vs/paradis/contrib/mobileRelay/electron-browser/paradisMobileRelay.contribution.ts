@@ -152,6 +152,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			paneTokenService,
 			entries => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
 			(mobileId, requestId, token, epoch) => this.service.claimAgentAction(mobileId, requestId, token, epoch),
+			(mobileId, requestId, token, epoch, terminalId, windowId) => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, windowId),
+			(mobileId, requestId, token, outcome) => this.service.finalizeAgentInteraction(mobileId, requestId, token, outcome),
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
