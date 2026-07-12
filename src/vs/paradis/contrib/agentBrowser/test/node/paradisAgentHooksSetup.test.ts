@@ -13,7 +13,7 @@ import { join } from '../../../../../base/common/path.js';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, paradisManagedAgentHookCommand } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
 
 suite('ParadisAgentHooksSetup', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -65,6 +65,36 @@ suite('ParadisAgentHooksSetup', () => {
 		const parsed = JSON.parse(first) as { hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
 		assert.deepStrictEqual(parsed.hooks['Stop'], [{ hooks: [userHook] }]);
 		assert.ok(parsed.hooks['SubagentStart'][0].hooks[0].command.includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
+	});
+
+	test('retries from the latest settings when another writer changes them before write', async () => {
+		const initial = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: '/tmp/first-user-hook.sh' }] }] } });
+		const concurrentlyUpdated = JSON.stringify({
+			hooks: {
+				Stop: [{
+					hooks: [
+						{ type: 'command', command: '/tmp/first-user-hook.sh' },
+						{ type: 'command', command: '/tmp/concurrent-user-hook.sh' },
+					]
+				}]
+			}, concurrentSetting: true
+		});
+		const reads = [initial, concurrentlyUpdated, concurrentlyUpdated, concurrentlyUpdated];
+		let written: string | undefined;
+
+		await paradisMergeAgentHooksFile('/tmp/settings.json', PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, undefined, undefined, {
+			readFile: async () => reads.shift(),
+			writeFile: async (_path, content) => { written = content; },
+			mkdir: async () => undefined,
+		});
+
+		assert.ok(written !== undefined);
+		const parsed = JSON.parse(written) as { concurrentSetting: boolean; hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
+		assert.strictEqual(parsed.concurrentSetting, true);
+		assert.deepStrictEqual(parsed.hooks['Stop'][0].hooks.map(hook => hook.command), [
+			'/tmp/first-user-hook.sh',
+			'/tmp/concurrent-user-hook.sh',
+		]);
 	});
 
 	test('reconciles externally replaced settings without removing user hooks', async () => {
