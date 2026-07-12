@@ -6,12 +6,13 @@ import { colors, mono } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 
 /** モデルが提供する順序を保ったまま選択する、コンポーザー用のEffortスライダー。 */
-export function EffortSlider({ efforts, value, disabled, accentColor, onValueCommit }: {
+export function EffortSlider({ efforts, value, disabled, accentColor, resetVersion, onValueCommit }: {
 	efforts: readonly string[];
 	value: string | undefined;
 	disabled: boolean;
 	accentColor: string;
-	onValueCommit: (effort: string) => void;
+	resetVersion: number;
+	onValueCommit: (effort: string) => boolean;
 }) {
 	const selectedIndex = Math.max(0, efforts.indexOf(value ?? ''));
 	const [previewIndex, setPreviewIndex] = useState(selectedIndex);
@@ -20,6 +21,9 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 	const thumbScale = useRef(new Animated.Value(1)).current;
 	const burstProgress = useRef(new Animated.Value(0)).current;
 	const particleValues = useRef(Array.from({ length: 10 }, () => new Animated.Value(0))).current;
+	const sliderRef = useRef<View>(null);
+	const sliderPageX = useRef(0);
+	const sliderWidth = useRef(0);
 	const progress = efforts.length <= 1 ? 0 : previewIndex / (efforts.length - 1);
 	const activeEffort = efforts[previewIndex] ?? efforts[0] ?? '';
 	const isMaximum = activeEffort === 'max' || activeEffort === 'ultra';
@@ -40,7 +44,7 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 
 	useEffect(() => {
 		setPreviewIndex(selectedIndex);
-	}, [selectedIndex]);
+	}, [resetVersion, selectedIndex]);
 
 	useEffect(() => {
 		if (reduceMotion) {
@@ -105,39 +109,50 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 		return nextIndex;
 	}, [efforts.length]);
 
-	const indexFromLocation = useCallback((locationX: number) => {
-		if (efforts.length <= 1 || trackWidth <= 0) {
+	const indexFromPageX = useCallback((pageX: number) => {
+		if (efforts.length <= 1 || sliderWidth.current <= 0) {
 			return 0;
 		}
-		const ratio = Math.max(0, Math.min(1, locationX / trackWidth));
+		const ratio = Math.max(0, Math.min(1, (pageX - sliderPageX.current) / sliderWidth.current));
 		return Math.round(ratio * (efforts.length - 1));
-	}, [efforts.length, trackWidth]);
+	}, [efforts.length]);
 
 	const commitIndex = useCallback((index: number) => {
 		const safeIndex = setPreview(index);
 		const nextEffort = efforts[safeIndex];
 		if (nextEffort !== undefined && nextEffort !== value) {
-			onValueCommit(nextEffort);
+			const accepted = onValueCommit(nextEffort);
+			if (!accepted) {
+				setPreviewIndex(selectedIndex);
+			}
 		}
-		// 設定の確定はClaude/Codex側の応答を正本にする。確認を取り消した場合や
-		// 更新に失敗した場合に、スライダーだけが先行して見えないよう戻す。
-		setPreviewIndex(selectedIndex);
 	}, [efforts, onValueCommit, selectedIndex, setPreview, value]);
 
 	const panResponder = useMemo(() => PanResponder.create({
 		onStartShouldSetPanResponder: () => !disabled && efforts.length > 1,
 		onMoveShouldSetPanResponder: () => !disabled && efforts.length > 1,
-		onPanResponderGrant: event => { setPreview(indexFromLocation(event.nativeEvent.locationX)); },
-		onPanResponderMove: event => { setPreview(indexFromLocation(event.nativeEvent.locationX)); },
-		onPanResponderRelease: event => { commitIndex(indexFromLocation(event.nativeEvent.locationX)); },
-		onPanResponderTerminate: event => { commitIndex(indexFromLocation(event.nativeEvent.locationX)); },
-	}), [commitIndex, disabled, efforts.length, indexFromLocation, setPreview]);
+		onPanResponderGrant: event => { setPreview(indexFromPageX(event.nativeEvent.pageX)); },
+		onPanResponderMove: (_event, gestureState) => { setPreview(indexFromPageX(gestureState.moveX)); },
+		onPanResponderRelease: (event, gestureState) => {
+			const pageX = gestureState.moveX === 0 ? event.nativeEvent.pageX : gestureState.moveX;
+			commitIndex(indexFromPageX(pageX));
+		},
+		onPanResponderTerminate: () => { setPreviewIndex(selectedIndex); },
+	}), [commitIndex, disabled, efforts.length, indexFromPageX, selectedIndex, setPreview]);
 
 	if (efforts.length === 0) {
 		return null;
 	}
 
-	const onLayout = (event: LayoutChangeEvent) => setTrackWidth(event.nativeEvent.layout.width);
+	const onLayout = (event: LayoutChangeEvent) => {
+		const width = event.nativeEvent.layout.width;
+		setTrackWidth(width);
+		sliderWidth.current = width;
+		sliderRef.current?.measureInWindow((pageX, _pageY, measuredWidth) => {
+			sliderPageX.current = pageX;
+			sliderWidth.current = measuredWidth;
+		});
+	};
 
 	return (
 		<View style={[styles.container, disabled && styles.disabled]}>
@@ -146,6 +161,7 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onValueCom
 				<Text style={[styles.value, { color: accentColor }]}>{activeEffort}</Text>
 			</View>
 			<View
+				ref={sliderRef}
 				{...panResponder.panHandlers}
 				accessible
 				accessibilityRole="adjustable"
