@@ -18,6 +18,7 @@ import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
+import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 
 interface FileViewerProps {
 	path: string;
@@ -436,10 +437,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 		return buildCodeHtml(result, focusLine);
 	}, [result, spreadsheetHtml, docxData, mediaData, mode, kind, focusLine, name]);
 
-	// 行ジャンプのスクロールスクリプトは自前生成のコードHTML内のみで有効化する
-	// （.html のレンダー表示など、リポジトリ由来のHTMLでは引き続きJS無効）。
-	// docx は WebView 内で vendored の docx-preview を実行するため JS が必要。
-	const allowJs = kind === 'spreadsheet' || kind === 'docx' || (mode === 'code' && focusLine !== undefined);
+	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine);
 
 	return (
 		<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
@@ -478,9 +476,8 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 				) : kind === 'av' && mediaData !== undefined ? (
 					<NativeFileView data={mediaData} ext={fileExt(name)} />
 				) : html !== undefined ? (
-					// javaScriptEnabled は自前生成HTML（スプレッドシート・検索行ジャンプ付き
-					// コードビュー）のみ true。リポジトリ内の信頼できない .html の
-					// スクリプトは端末で実行しない（レンダーは静的表示のみ）。
+					// ペアリング済みワークスペースのHTMLはPC版と同様にスクリプト実行を許可する。
+					// スプレッドシート、Word、検索行ジャンプ付きコードビューも自前スクリプトを実行する。
 					<WebView
 						style={styles.web}
 						source={{ html }}

@@ -17,6 +17,7 @@ import { useAppStore } from '../appState.js';
 import { buildMarkdownHtml } from './fileViewer.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
+import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 
 interface DiffViewProps {
 	ws: string;
@@ -170,13 +171,13 @@ export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
 				</View>
 				{error ? <Text style={styles.error}>{error}</Text> : null}
 				{showWebView !== undefined ? (
-					// xlsx(自前生成HTMLのシート切替スクリプトのみ)以外はJS無効。
-					// レンダーHTML(.html raw内容)のスクリプトは実行しない。
+					// ペアリング済みワークスペースのHTMLはPC版と同様にスクリプト実行を許可する。
+					// xlsxは自前生成HTMLのシート切替スクリプトを実行する。
 					<WebView
 						style={styles.web}
 						source={{ html: showWebView }}
 						originWhitelist={['*']}
-						javaScriptEnabled={kind === 'spreadsheet'}
+						javaScriptEnabled={isDiffViewerJavaScriptEnabled(kind)}
 					/>
 				) : loading && !error ? (
 					<Text style={styles.dim}>読み込み中…</Text>
