@@ -63,7 +63,7 @@ function buildState(state: Pick<StoreState, 'workspace' | 'agentChats'>): LiveAc
 	}
 	// 応答待ち優先で最大2行。エージェント名はチャット情報があればそれを使う。
 	const rows: LiveActivityAgentRow[] = [...waiting, ...running].slice(0, 2).map(t => {
-		const agent = state.agentChats.get(t.id)?.agent;
+		const agent = state.agentChats.get(t.terminalKey)?.agent;
 		const name = agent === 'claude' ? 'Claude Code' : agent === 'codex' ? 'Codex' : t.title;
 		return {
 			name,
@@ -75,7 +75,7 @@ function buildState(state: Pick<StoreState, 'workspace' | 'agentChats'>): LiveAc
 	let questionPreview: string | undefined;
 	const single = waiting.length === 1 ? waiting[0] : undefined;
 	if (single !== undefined) {
-		const messages = state.agentChats.get(single.id)?.messages ?? [];
+		const messages = state.agentChats.get(single.terminalKey)?.messages ?? [];
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const m = messages[i];
 			if (m !== undefined && m.kind === 'question') {

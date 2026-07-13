@@ -221,6 +221,8 @@ export interface NotifyPayload {
 	readonly body: string;
 	readonly ws?: string;
 	readonly terminalId?: number;
+	readonly terminalKey?: string;
+	readonly windowId?: number;
 	readonly agentToken?: string;
 	readonly at: number;
 }

@@ -3682,11 +3682,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private resolveInboundToken(terminalId: number, paneToken: string | undefined): string | undefined {
-		if (paneToken !== undefined) {
-			return this.isLiveToken(paneToken) && this.terminalIdForToken(paneToken) === terminalId ? paneToken : undefined;
+		if (paneToken === undefined) {
+			return undefined;
 		}
-		// 旧モバイル互換。複数ウィンドウでIDが衝突する場合はMapから除外済みなので拒否する。
-		return this.terminalToToken.get(terminalId);
+		return this.isLiveToken(paneToken) && this.terminalIdForToken(paneToken) === terminalId ? paneToken : undefined;
 	}
 
 	private isLiveToken(token: string): boolean {

@@ -474,13 +474,13 @@ function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLo
 }
 
 export function MarkdownText({ text }: { text: string }) {
-	const { workspace, selectedWs, selectedTerminalId, fsResolveLink } = useAppStore(useShallow(s => ({
+	const { workspace, selectedWs, selectedTerminalKey, fsResolveLink } = useAppStore(useShallow(s => ({
 		workspace: s.workspace,
 		selectedWs: s.selectedWs,
-		selectedTerminalId: s.selectedTerminalId,
+		selectedTerminalKey: s.selectedTerminalKey,
 		fsResolveLink: s.fsResolveLink,
 	})));
-	const selectedTerminal = workspace?.terminals.find(terminal => terminal.id === selectedTerminalId);
+	const selectedTerminal = workspace?.terminals.find(terminal => terminal.terminalKey === selectedTerminalKey);
 	const terminalWs = selectedTerminal !== undefined ? (selectedTerminal.ws ?? workspace?.activeWs) : undefined;
 	const ws = terminalWs ?? selectedWs ?? workspace?.activeWs ?? workspace?.workspaces[0]?.id;
 	const [openingKey, setOpeningKey] = useState<string | undefined>();

@@ -120,7 +120,104 @@ function drivePc(pair: FakePair, pc: Identity, mobilePub: Uint8Array): Promise<F
 	});
 }
 
+function desktopState(terminals: { id: number; title: string; agentToken?: string; agent?: boolean }[], revision = 1) {
+	return {
+		protocolVersion: 2 as const,
+		desktopEpoch: 'desktop-test',
+		revision,
+		activeWs: '1:w1',
+		workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'para-code' }],
+		terminals: terminals.map(terminal => ({ ...terminal, terminalKey: `terminal-${terminal.id}`, windowId: 1, ws: '1:w1' })),
+	};
+}
+
 describe('MobileController', () => {
+	it('uses terminalKey when numeric terminal ids collide across windows', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxP = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxP;
+		await flush();
+
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		pcMux.send(Channels.State, encode({
+			protocolVersion: 2,
+			desktopEpoch: 'desktop-1',
+			revision: 2,
+			activeWs: '1:repo-a',
+			workspaces: [
+				{ id: '1:repo-a', sourceId: 'repo-a', windowId: 1, name: 'A' },
+				{ id: '2:repo-b', sourceId: 'repo-b', windowId: 2, name: 'B' },
+			],
+			terminals: [
+				{ terminalKey: 'terminal-a', id: 1, windowId: 1, title: 'A', ws: '1:repo-a' },
+				{ terminalKey: 'terminal-b', id: 1, windowId: 2, title: 'B', ws: '2:repo-b' },
+			],
+		}));
+		await flush();
+
+		const received: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Terminal, frame => received.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		controller.subscribeTerminal('terminal-a', () => { });
+		controller.subscribeTerminal('terminal-b', () => { });
+		controller.attachTerminal('terminal-a');
+		controller.attachTerminal('terminal-b');
+		await flush();
+		const attachA = received.find(message => message.t === 'attach' && message.terminalKey === 'terminal-a')!;
+		const attachB = received.find(message => message.t === 'attach' && message.terminalKey === 'terminal-b')!;
+		pcMux.send(Channels.Terminal, encode({ t: 'data', terminalKey: 'terminal-a', data: 'output-a', snapshot: true, epoch: attachA.epoch, seq: 1 }));
+		pcMux.send(Channels.Terminal, encode({ t: 'data', terminalKey: 'terminal-b', data: 'output-b', snapshot: true, epoch: attachB.epoch, seq: 1 }));
+		await flush();
+		controller.sendInput('terminal-b', 'pwd');
+		await flush();
+
+		expect(latest?.workspace?.terminals.map(terminal => terminal.terminalKey)).toEqual(['terminal-a', 'terminal-b']);
+		expect(latest?.terminalOutput.get('terminal-a')).toBe('output-a');
+		expect(latest?.terminalOutput.get('terminal-b')).toBe('output-b');
+		expect(received.find(message => message.t === 'input')).toMatchObject({
+			protocolVersion: 2,
+			desktopEpoch: 'desktop-1',
+			terminalKey: 'terminal-b',
+			t: 'input',
+			data: 'pwd',
+		});
+
+		pcMux.send(Channels.State, encode({
+			protocolVersion: 2,
+			desktopEpoch: 'desktop-1',
+			revision: 1,
+			activeWs: undefined,
+			workspaces: [],
+			terminals: [],
+		}));
+		await flush();
+		expect(latest?.workspace?.terminals).toHaveLength(2);
+
+		pcMux.send(Channels.State, encode({
+			protocolVersion: 2,
+			desktopEpoch: 'desktop-2',
+			revision: 1,
+			activeWs: '1:repo-a',
+			workspaces: [
+				{ id: '1:repo-a', sourceId: 'repo-a', windowId: 1, name: 'A' },
+				{ id: '2:repo-b', sourceId: 'repo-b', windowId: 2, name: 'B' },
+			],
+			terminals: [
+				{ terminalKey: 'terminal-a', id: 8, windowId: 1, title: 'A', ws: '1:repo-a' },
+				{ terminalKey: 'terminal-b', id: 9, windowId: 2, title: 'B', ws: '2:repo-b' },
+			],
+		}));
+		await flush();
+		expect(latest?.terminalOutput.size).toBe(0);
+		expect(received.filter(message => message.t === 'attach')).toHaveLength(4);
+	});
+
 	it('reflects state snapshot and terminal output from PC', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();
@@ -139,21 +236,27 @@ describe('MobileController', () => {
 		expect(latest?.connection).toBe('online');
 
 		// PC → state
-		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 1, title: 'zsh', agentToken: 'agent-1' }] })));
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh', agentToken: 'agent-1' }]))));
 		await flush();
 		expect(latest?.workspace?.workspaces[0]!.name).toBe('para-code');
 
-		// PC → term data
-		pcMux.send(Channels.Terminal, new TextEncoder().encode(JSON.stringify({ t: 'data', id: 1, data: 'hello\n' })));
+		const pcGot: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Terminal, frame => pcGot.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		controller.attachTerminal('terminal-1');
 		await flush();
-		expect(latest?.terminalOutput.get(1)).toBe('hello\n');
+		const attach = pcGot.find(message => message.t === 'attach')!;
+
+		// PC → term data
+		pcMux.send(Channels.Terminal, new TextEncoder().encode(JSON.stringify({ t: 'data', terminalKey: 'terminal-1', data: 'hello\n', snapshot: true, epoch: attach.epoch, seq: 1 })));
+		await flush();
+		expect(latest?.terminalOutput.get('terminal-1')).toBe('hello\n');
 
 		// mobile → term input（PC側で受信を確認）
-		const pcGot: string[] = [];
-		pcMux.on(Channels.Terminal, f => pcGot.push(new TextDecoder().decode(f.payload)));
-		controller.sendInput(1, 'ls');
+		controller.sendInput('terminal-1', 'ls');
 		await flush();
-		expect(JSON.parse(pcGot[0]!)).toEqual({ t: 'input', id: 1, data: 'ls' });
+		expect(pcGot.find(message => message.t === 'input')).toMatchObject({
+			protocolVersion: 2, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'input', data: 'ls',
+		});
 
 		// PC → notify: 質問通知が state に反映され onNotify が呼ばれる
 		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-question', id: 'q1', title: 'claude — para-code', body: '確認を求めています', at: 1 }));
@@ -196,10 +299,13 @@ describe('MobileController', () => {
 		pair.fireOpen();
 		const pcMux = await pcMuxP;
 		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+		await flush();
 
 		// PC側: scm/fs リクエストに id 付きで応答するエコーサーバ
 		pcMux.on(Channels.Scm, f => {
-			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; ws: string };
+			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; ws: string; protocolVersion: number; desktopEpoch: string; windowId: number };
+			expect(req).toMatchObject({ protocolVersion: 2, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
 			if (req.t === 'status') {
 				pcMux.send(Channels.Scm, new TextEncoder().encode(JSON.stringify({ id: req.id, t: 'status', branch: 'main', files: [{ x: 'M', y: ' ', path: 'a.ts' }] })));
 			} else {
@@ -207,17 +313,18 @@ describe('MobileController', () => {
 			}
 		});
 		pcMux.on(Channels.Fs, f => {
-			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; path: string };
+			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; path: string; protocolVersion: number; desktopEpoch: string; windowId: number; ws: string };
+			expect(req).toMatchObject({ protocolVersion: 2, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
 			pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify({ id: req.id, t: 'list', entries: [{ name: 'src', dir: true }] })));
 		});
 
-		const status = await controller.scmStatus('w1');
+		const status = await controller.scmStatus('1:w1');
 		expect(status.branch).toBe('main');
 		expect(status.files[0]!.path).toBe('a.ts');
 
-		await expect(controller.scmDiff('w1', 'a.ts')).rejects.toThrow('boom');
+		await expect(controller.scmDiff('1:w1', 'a.ts')).rejects.toThrow('boom');
 
-		const listing = await controller.fsList('w1', '');
+		const listing = await controller.fsList('1:w1', '');
 		expect(listing.entries[0]!.name).toBe('src');
 	});
 
@@ -237,12 +344,13 @@ describe('MobileController', () => {
 		await flush();
 
 		const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
-		pcMux.send(Channels.State, enc({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 1, title: 'claude', agentToken: 'agent-1' }] }));
+		pcMux.send(Channels.State, enc(desktopState([{ id: 1, title: 'claude', agentToken: 'agent-1' }])));
 		await flush();
+		controller.subscribeTerminal('terminal-1', () => { });
 
 		// term 出力更新: terminalOutput だけ新参照になり、agentChats/notifications は据え置き。
 		const beforeTerm = emits[emits.length - 1]!;
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'hello' }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'hello', snapshot: true, epoch: 0, seq: 1 }));
 		await flush();
 		const afterTerm = emits[emits.length - 1]!;
 		expect(afterTerm.terminalOutput).not.toBe(beforeTerm.terminalOutput);
@@ -286,7 +394,7 @@ describe('MobileController Codex model control', () => {
 		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
 		const requests: Record<string, unknown>[] = [];
 		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
-		pcMux.send(Channels.State, encode({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 7, title: 'codex', agentToken: 'agent-7' }] }));
+		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'codex', agentToken: 'agent-7' }])));
 		pcMux.send(Channels.Agent, encode({ t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [], info: { model: 'gpt-5.6-sol', effort: 'low' } }));
 		await flush();
 		return { controller, pcMux, encode, requests, latestState: () => latest };
@@ -294,7 +402,7 @@ describe('MobileController Codex model control', () => {
 
 	it('roundtrips the dynamic catalog and atomically confirms model plus effort', async () => {
 		const { controller, pcMux, encode, requests, latestState } = await setup();
-		controller.requestAgentModelCatalog(7);
+		controller.requestAgentModelCatalog('terminal-7');
 		await flush();
 		const catalogRequest = requests[0] as { t: string; id: number; requestId: string };
 		expect({ t: catalogRequest.t, id: catalogRequest.id }).toEqual({ t: 'model-catalog', id: 7 });
@@ -308,7 +416,7 @@ describe('MobileController Codex model control', () => {
 			}],
 		}));
 		await flush();
-		expect(latestState()?.agentChats.get(7)?.modelControl).toEqual({
+		expect(latestState()?.agentChats.get('terminal-7')?.modelControl).toEqual({
 			status: 'ready',
 			models: [{
 				id: 'gpt-5.6-terra', model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'strong',
@@ -317,7 +425,7 @@ describe('MobileController Codex model control', () => {
 			}],
 		});
 
-		controller.updateAgentSettings(7, 'gpt-5.6-terra', 'ultra');
+		controller.updateAgentSettings('terminal-7', 'gpt-5.6-terra', 'ultra');
 		await flush();
 		const updateRequest = requests[1] as { t: string; id: number; requestId: string; model: string; effort: string };
 		expect(updateRequest).toEqual({
@@ -329,15 +437,15 @@ describe('MobileController Codex model control', () => {
 			info: { model: 'gpt-5.6-terra', effort: 'ultra' },
 		}));
 		await flush();
-		expect({ info: latestState()?.agentChats.get(7)?.info, control: latestState()?.agentChats.get(7)?.modelControl }).toEqual({
+		expect({ info: latestState()?.agentChats.get('terminal-7')?.info, control: latestState()?.agentChats.get('terminal-7')?.modelControl }).toEqual({
 			info: { model: 'gpt-5.6-terra', effort: 'ultra' },
-			control: { status: 'ready', models: latestState()?.agentChats.get(7)?.modelControl?.models },
+			control: { status: 'ready', models: latestState()?.agentChats.get('terminal-7')?.modelControl?.models },
 		});
 	});
 
 	it('does not fall back to an unsafe combined PTY send before agent actions are ready', async () => {
 		const { controller, requests } = await setup();
-		await expect(controller.sendAgentMessage(7, '送信しない')).resolves.toEqual({
+		await expect(controller.sendAgentMessage('terminal-7', '送信しない')).resolves.toEqual({
 			status: 'rejected', message: 'エージェントセッションを準備中です。少し待ってから再送してください。',
 		});
 		expect(requests).toEqual([]);
@@ -345,7 +453,7 @@ describe('MobileController Codex model control', () => {
 
 	it('ignores stale responses and rejects a malformed catalog at the relay boundary', async () => {
 		const { controller, pcMux, encode, requests, latestState } = await setup();
-		controller.requestAgentModelCatalog(7);
+		controller.requestAgentModelCatalog('terminal-7');
 		await flush();
 		const request = requests[0] as { requestId: string };
 		pcMux.send(Channels.Agent, encode({
@@ -353,14 +461,14 @@ describe('MobileController Codex model control', () => {
 			models: [{ id: 'stale', model: 'stale', displayName: 'Stale', efforts: [{ value: 'high', description: '' }], defaultEffort: 'high', isDefault: true }],
 		}));
 		await flush();
-		expect(latestState()?.agentChats.get(7)?.modelControl?.status).toBe('loading');
+		expect(latestState()?.agentChats.get('terminal-7')?.modelControl?.status).toBe('loading');
 
 		pcMux.send(Channels.Agent, encode({
 			t: 'model-catalog', id: 7, token: 'agent-7', requestId: request.requestId,
 			models: [{ id: 'broken', model: 'broken', displayName: 'Broken', efforts: [{ value: 42 }], defaultEffort: 'high', isDefault: true }],
 		}));
 		await flush();
-		expect(latestState()?.agentChats.get(7)?.modelControl).toEqual({
+		expect(latestState()?.agentChats.get('terminal-7')?.modelControl).toEqual({
 			status: 'error', models: [], errorCode: 'invalid-response', errorMessage: 'Codexのモデル一覧レスポンスが不正です',
 		});
 	});
@@ -390,7 +498,7 @@ describe('MobileController agent approval', () => {
 		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
 		const requests: Record<string, unknown>[] = [];
 		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
-		pcMux.send(Channels.State, encode({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 7, title: 'codex', agentToken: 'agent-7' }] }));
+		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'codex', agentToken: 'agent-7' }])));
 		pcMux.send(Channels.Agent, encode({
 			t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [],
 			capabilities: { agentActions: true },
@@ -405,7 +513,7 @@ describe('MobileController agent approval', () => {
 		}));
 		await flush();
 
-		expect(latest?.agentChats.get(7)?.interaction).toEqual({
+		expect(latest?.agentChats.get('terminal-7')?.interaction).toEqual({
 			kind: 'approval', id: 'codex:s:approval-1', title: 'コマンドの実行許可', detail: 'git add src/file.ts',
 			choices: [
 				{ id: '0', label: '今回だけ許可', tone: 'approve' },
@@ -413,7 +521,7 @@ describe('MobileController agent approval', () => {
 				{ id: '2', label: '拒否', tone: 'deny' },
 			],
 		});
-		const answer = controller.answerAgentApproval(7, 'codex:s:approval-1', '1');
+		const answer = controller.answerAgentApproval('terminal-7', 'codex:s:approval-1', '1');
 		await flush();
 		expect(requests[0]).toEqual({
 			t: 'action/answerApproval', id: 7, token: 'agent-7', requestId: requests[0]?.requestId,
@@ -440,7 +548,9 @@ describe('MobileController terminal sync protocol', () => {
 		const pcMux = await pcMuxP;
 		await flush();
 		const enc = (o: object) => new TextEncoder().encode(JSON.stringify(o));
-		const pcGot: { t: string; id: number; epoch?: number; seq?: number }[] = [];
+		pcMux.send(Channels.State, enc(desktopState([{ id: 1, title: 'zsh' }])));
+		await flush();
+		const pcGot: { t: string; terminalKey?: string; epoch?: number; seq?: number; protocolVersion?: number; desktopEpoch?: string }[] = [];
 		pcMux.on(Channels.Terminal, f => pcGot.push(JSON.parse(new TextDecoder().decode(f.payload))));
 		return { controller, pcMux, enc, pcGot, latestState: () => latest };
 	}
@@ -448,62 +558,67 @@ describe('MobileController terminal sync protocol', () => {
 	it('attaches with epoch, applies snapshot/data in order and acks the snapshot', async () => {
 		const { controller, pcMux, enc, pcGot } = await setup();
 		const events: import('./store.js').TermStreamEvent[] = [];
-		controller.subscribeTerminal(1, ev => events.push(ev));
-		controller.attachTerminal(1);
+		controller.subscribeTerminal('terminal-1', ev => events.push(ev));
+		controller.attachTerminal('terminal-1');
 		await flush();
 		expect(pcGot[0]!.t).toBe('attach');
 		const epoch = pcGot[0]!.epoch!;
 		expect(typeof epoch).toBe('number');
 
 		// snapshot（cols/rows/unicode同梱） → 購読者へ届き、即ACKが返る
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'SNAP', snapshot: true, epoch, seq: 1, cols: 120, rows: 40, unicode: '11' }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'SNAP', snapshot: true, epoch, seq: 1, cols: 120, rows: 40, unicode: '11' }));
 		await flush();
 		expect(events).toEqual([{ kind: 'snapshot', data: 'SNAP', cols: 120, rows: 40, unicode: '11' }]);
 		const ack = pcGot.find(m => m.t === 'ack');
-		expect(ack).toEqual({ t: 'ack', id: 1, epoch, seq: 1 });
+		expect(ack).toMatchObject({ protocolVersion: 2, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'ack', epoch, seq: 1 });
 
 		// 連続seqのdataは追記イベントになる
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'abc', epoch, seq: 2 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'abc', epoch, seq: 2 }));
 		await flush();
 		expect(events[1]).toEqual({ kind: 'data', data: 'abc' });
 
 	});
 
 	it('discards frames from a stale epoch and pre-snapshot data', async () => {
-		const { controller, pcMux, enc, pcGot } = await setup();
+		const { controller, pcMux, enc, pcGot, latestState } = await setup();
 		const events: import('./store.js').TermStreamEvent[] = [];
-		controller.subscribeTerminal(1, ev => events.push(ev));
-		controller.attachTerminal(1);
+		controller.subscribeTerminal('terminal-1', ev => events.push(ev));
+		controller.attachTerminal('terminal-1');
 		await flush();
 		const epoch1 = pcGot[0]!.epoch!;
 		// snapshot前に届いたライブdataは捨てられる（snapshotに反映済みのため）
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'early', epoch: epoch1, seq: 1 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'early', epoch: epoch1, seq: 1 }));
 		await flush();
 		expect(events).toEqual([]);
 		// 再attach（新epoch）後、旧epochのsnapshotは捨てられる
-		controller.attachTerminal(1);
+		controller.attachTerminal('terminal-1');
 		await flush();
 		const epoch2 = pcGot.filter(m => m.t === 'attach')[1]!.epoch!;
 		expect(epoch2).toBeGreaterThan(epoch1);
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'stale', snapshot: true, epoch: epoch1, seq: 2 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'stale', snapshot: true, epoch: epoch1, seq: 2 }));
 		await flush();
 		expect(events).toEqual([]);
+		expect(latestState()?.terminalOutput.get('terminal-1')).toBeUndefined();
 		// 新epochのsnapshotは適用される
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'fresh', snapshot: true, epoch: epoch2, seq: 1 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'fresh', snapshot: true, epoch: epoch2, seq: 1 }));
 		await flush();
 		expect(events).toEqual([{ kind: 'snapshot', data: 'fresh' }]);
+		pcMux.send(Channels.Terminal, enc({ t: 'exit', terminalKey: 'terminal-1', epoch: epoch1 }));
+		await flush();
+		expect(events).toEqual([{ kind: 'snapshot', data: 'fresh' }]);
+		expect(latestState()?.terminalOutput.get('terminal-1')).toBe('fresh');
 	});
 
 	it('re-attaches with a new epoch when a seq gap is detected', async () => {
 		const { controller, pcMux, enc, pcGot } = await setup();
-		controller.subscribeTerminal(1, () => { });
-		controller.attachTerminal(1);
+		controller.subscribeTerminal('terminal-1', () => { });
+		controller.attachTerminal('terminal-1');
 		await flush();
 		const epoch = pcGot[0]!.epoch!;
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'SNAP', snapshot: true, epoch, seq: 1 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'SNAP', snapshot: true, epoch, seq: 1 }));
 		await flush();
 		// seq=3（=2を取りこぼした）→ 新epochで自動再attach
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'x', epoch, seq: 3 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'x', epoch, seq: 3 }));
 		await flush();
 		const attaches = pcGot.filter(m => m.t === 'attach');
 		expect(attaches.length).toBe(2);
@@ -512,19 +627,19 @@ describe('MobileController terminal sync protocol', () => {
 
 	it('acks after receiving the ack-threshold worth of data', async () => {
 		const { controller, pcMux, enc, pcGot } = await setup();
-		controller.subscribeTerminal(1, () => { });
-		controller.attachTerminal(1);
+		controller.subscribeTerminal('terminal-1', () => { });
+		controller.attachTerminal('terminal-1');
 		await flush();
 		const epoch = pcGot[0]!.epoch!;
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'S', snapshot: true, epoch, seq: 1 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'S', snapshot: true, epoch, seq: 1 }));
 		await flush();
 		const acksAfterSnapshot = pcGot.filter(m => m.t === 'ack').length;
 		// 5000文字未満ではACKしない
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'a'.repeat(4000), epoch, seq: 2 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'a'.repeat(4000), epoch, seq: 2 }));
 		await flush();
 		expect(pcGot.filter(m => m.t === 'ack').length).toBe(acksAfterSnapshot);
 		// 閾値を超えたらACK（受信済み最終seqを載せる）
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'b'.repeat(2000), epoch, seq: 3 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'b'.repeat(2000), epoch, seq: 3 }));
 		await flush();
 		const acks = pcGot.filter(m => m.t === 'ack');
 		expect(acks.length).toBe(acksAfterSnapshot + 1);
@@ -533,30 +648,29 @@ describe('MobileController terminal sync protocol', () => {
 
 	it('replays the snapshot cache to late subscribers', async () => {
 		const { controller, pcMux, enc, pcGot } = await setup();
-		controller.subscribeTerminal(1, () => { });
-		controller.attachTerminal(1);
+		controller.subscribeTerminal('terminal-1', () => { });
+		controller.attachTerminal('terminal-1');
 		await flush();
 		const epoch = pcGot[0]!.epoch!;
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'SNAP', snapshot: true, epoch, seq: 1, cols: 80, rows: 24 }));
-		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'tail', epoch, seq: 2 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'SNAP', snapshot: true, epoch, seq: 1, cols: 80, rows: 24 }));
+		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'tail', epoch, seq: 2 }));
 		await flush();
 		// 後から購読したリスナーにも snapshot→data の順でキャッシュが再生される
 		const late: import('./store.js').TermStreamEvent[] = [];
-		controller.subscribeTerminal(1, ev => late.push(ev));
+		controller.subscribeTerminal('terminal-1', ev => late.push(ev));
 		expect(late).toEqual([
 			{ kind: 'snapshot', data: 'SNAP', cols: 80, rows: 24 },
 			{ kind: 'data', data: 'tail' },
 		]);
 	});
 
-	it('keeps the legacy string-buffer path for PCs that do not echo epoch', async () => {
+	it('ignores terminal frames without terminalKey and sync metadata', async () => {
 		const { controller, pcMux, enc, latestState } = await setup();
-		controller.subscribeTerminal(1, () => { });
-		controller.attachTerminal(1);
+		controller.subscribeTerminal('terminal-1', () => { });
+		controller.attachTerminal('terminal-1');
 		await flush();
-		// epoch/seq無しの応答（旧PC） → terminalOutput に従来どおり蓄積される
 		pcMux.send(Channels.Terminal, enc({ t: 'data', id: 1, data: 'legacy', snapshot: true }));
 		await flush();
-		expect(latestState()?.terminalOutput.get(1)).toBe('legacy');
+		expect(latestState()?.terminalOutput.get('terminal-1')).toBeUndefined();
 	});
 });

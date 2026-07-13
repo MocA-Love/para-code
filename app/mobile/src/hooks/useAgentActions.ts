@@ -30,38 +30,38 @@ export interface AgentActions {
 	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<boolean>;
 }
 
-export function useAgentActions(terminalId: number | undefined, agent: string | undefined): AgentActions {
+export function useAgentActions(terminalKey: string | undefined, agent: string | undefined): AgentActions {
 	const sendInput = useAppStore(s => s.sendInput);
 	const sendAgentMessage = useAppStore(s => s.sendAgentMessage);
 	const answerAgentQuestion = useAppStore(s => s.answerAgentQuestion);
 	const answerAgentApproval = useAppStore(s => s.answerAgentApproval);
 	const updateClaudeSettingAction = useAppStore(s => s.updateClaudeSetting);
-	const interaction = useAppStore(s => terminalId !== undefined ? s.agentChats.get(terminalId)?.interaction : undefined);
-	const supportsAgentActions = useAppStore(s => terminalId !== undefined && s.agentChats.get(terminalId)?.capabilities?.agentActions === true);
-	const supportsClaudeSettings = useAppStore(s => terminalId !== undefined && s.agentChats.get(terminalId)?.capabilities?.claudeSettings === true);
+	const interaction = useAppStore(s => terminalKey !== undefined ? s.agentChats.get(terminalKey)?.interaction : undefined);
+	const supportsAgentActions = useAppStore(s => terminalKey !== undefined && s.agentChats.get(terminalKey)?.capabilities?.agentActions === true);
+	const supportsClaudeSettings = useAppStore(s => terminalKey !== undefined && s.agentChats.get(terminalKey)?.capabilities?.claudeSettings === true);
 
 	const send = useCallback((data: string) => {
-		if (terminalId !== undefined) {
-			sendInput(terminalId, data);
+		if (terminalKey !== undefined) {
+			sendInput(terminalKey, data);
 		}
-	}, [terminalId, sendInput]);
+	}, [terminalKey, sendInput]);
 
 	/** キー列を一定間隔（300ms）でPTYへ注入する（TUIが1入力ずつ処理する時間を確保する）。 */
 	const sendSequence = useCallback((parts: string[]) => {
-		if (terminalId === undefined) {
+		if (terminalKey === undefined) {
 			return;
 		}
 		parts.forEach((part, i) => setTimeout(() => send(part), i * 300));
-	}, [terminalId, send]);
+	}, [terminalKey, send]);
 
 	// TUIの入力欄へテキストを入れ、少し置いてからCRで確定する（貼り付け直後の
 	// 確定はTUI側の取りこぼしがあるため。承認番号注入と同じ250ms方式）。
 	const sendText = useCallback((text: string) => {
-		if (terminalId === undefined) {
+		if (terminalKey === undefined) {
 			return Promise.resolve({ status: 'rejected' as const, message: '送信先のエージェントが見つかりません' });
 		}
-		return sendAgentMessage(terminalId, text);
-	}, [terminalId, sendAgentMessage]);
+		return sendAgentMessage(terminalKey, text);
+	}, [terminalKey, sendAgentMessage]);
 
 	/**
 	 * 質問(AskUserQuestion)への回答。TUIの選択プロンプトは番号キーで選択肢へジャンプするため、
@@ -70,24 +70,24 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	 */
 	const answerQuestion = useCallback((interactionId: string, optionIndex: number) => {
 		if (supportsAgentActions) {
-			return terminalId !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
-				? answerAgentQuestion(terminalId, interactionId, [{ kind: 'option', index: optionIndex }])
+			return terminalKey !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
+				? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'option', index: optionIndex }])
 				: Promise.resolve(false);
 		}
 		sendSequence([String(optionIndex + 1), '\r']);
 		return Promise.resolve(true);
-	}, [terminalId, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
+	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	const answerQuestionMulti = useCallback((interactionId: string, indices: number[]) => {
 		if (supportsAgentActions) {
-			return terminalId !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
-				? answerAgentQuestion(terminalId, interactionId, [{ kind: 'multi', indices }])
+			return terminalKey !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
+				? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'multi', indices }])
 				: Promise.resolve(false);
 		}
 		const parts = indices.flatMap(index => [String(index + 1), ' ']);
 		sendSequence([...parts, '\r']);
 		return Promise.resolve(true);
-	}, [terminalId, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
+	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	/**
 	 * 自由入力での回答。AskUserQuestion のTUIは選択肢の末尾に常に「Other」（自由入力）を
@@ -96,14 +96,14 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	const answerQuestionFreeText = useCallback(
 		(interactionId: string, optionCount: number, text: string) => {
 			if (supportsAgentActions) {
-				return terminalId !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
-					? answerAgentQuestion(terminalId, interactionId, [{ kind: 'text', optionCount, text }])
+				return terminalKey !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
+					? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'text', optionCount, text }])
 					: Promise.resolve(false);
 			}
 			sendSequence([String(optionCount + 1), '\r', text, '\r']);
 			return Promise.resolve(true);
 		},
-		[terminalId, interaction, supportsAgentActions, answerAgentQuestion, sendSequence],
+		[terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence],
 	);
 
 	/**
@@ -118,8 +118,8 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	 */
 	const answerQuestionGroup = useCallback((interactionId: string, answers: QuestionGroupAnswer[]) => {
 		if (supportsAgentActions) {
-			return terminalId !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
-				? answerAgentQuestion(terminalId, interactionId, answers)
+			return terminalKey !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
+				? answerAgentQuestion(terminalKey, interactionId, answers)
 				: Promise.resolve(false);
 		}
 		const parts: string[] = [];
@@ -138,7 +138,7 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 		parts.push('\r'); // 全問確定後にSubmit確認ステップが残っている場合の予備
 		sendSequence(parts);
 		return Promise.resolve(true);
-	}, [terminalId, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
+	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	/**
 	 * 承認クイックアクション。
@@ -149,12 +149,12 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	 *  - Codex: y / d のショートカット1文字（Enter不要）。
 	 */
 	const approve = useCallback((interactionId: string, choice: string) => {
-		if (terminalId === undefined) {
+		if (terminalKey === undefined) {
 			return Promise.resolve(false);
 		}
 		if (supportsAgentActions) {
 			return interaction?.kind === 'approval' && interaction.id === interactionId
-				? answerAgentApproval(terminalId, interactionId, choice)
+				? answerAgentApproval(terminalKey, interactionId, choice)
 				: Promise.resolve(false);
 		}
 		if (choice !== 'yes' && choice !== 'no') {
@@ -169,36 +169,36 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 			send('\u001b');
 		}
 		return Promise.resolve(true);
-	}, [terminalId, agent, interaction, supportsAgentActions, answerAgentApproval, send]);
+	}, [terminalKey, agent, interaction, supportsAgentActions, answerAgentApproval, send]);
 
 	const updateClaudeSetting = useCallback((setting: 'model' | 'effort', value: string) => {
-		if (terminalId === undefined || agent !== 'claude' || interaction !== undefined) {
+		if (terminalKey === undefined || agent !== 'claude' || interaction !== undefined) {
 			return Promise.resolve(false);
 		}
 		if (supportsClaudeSettings) {
-			return updateClaudeSettingAction(terminalId, setting, value);
+			return updateClaudeSettingAction(terminalKey, setting, value);
 		}
 		send(`/${setting} ${value}`);
 		setTimeout(() => send('\r'), 250);
 		return Promise.resolve(true);
-	}, [terminalId, agent, interaction, supportsClaudeSettings, updateClaudeSettingAction, send]);
+	}, [terminalKey, agent, interaction, supportsClaudeSettings, updateClaudeSettingAction, send]);
 
 	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, approve, updateClaudeSetting };
 }
 
 /** 指定ターミナルのエージェントチャットを購読する（アタッチ/デタッチのライフサイクル込み）。 */
-export function useAgentChatSubscription(terminalId: number | undefined) {
+export function useAgentChatSubscription(terminalKey: string | undefined) {
 	const { agentChats, attachAgent, detachAgent } = useAppStore(useShallow(s => ({
 		agentChats: s.agentChats, attachAgent: s.attachAgent, detachAgent: s.detachAgent,
 	})));
 
 	useEffect(() => {
-		if (terminalId === undefined) {
+		if (terminalKey === undefined) {
 			return;
 		}
-		attachAgent(terminalId);
-		return () => detachAgent(terminalId);
-	}, [terminalId, attachAgent, detachAgent]);
+		attachAgent(terminalKey);
+		return () => detachAgent(terminalKey);
+	}, [terminalKey, attachAgent, detachAgent]);
 
-	return terminalId !== undefined ? agentChats.get(terminalId) : undefined;
+	return terminalKey !== undefined ? agentChats.get(terminalKey) : undefined;
 }

@@ -26,9 +26,9 @@ import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.
  */
 export default function TerminalScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, terminalOutput, selectedTerminalId, setSelectedTerminalId, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal } = useAppStore(useShallow(s => ({
+	const { workspace, terminalOutput, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, terminalOutput: s.terminalOutput,
-		selectedTerminalId: s.selectedTerminalId, setSelectedTerminalId: s.setSelectedTerminalId,
+		selectedTerminalKey: s.selectedTerminalKey, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, subscribeTerminal: s.subscribeTerminal, sendInput: s.sendInput,
 		sendArrowKey: s.sendArrowKey, sendTextInput: s.sendTextInput, createTerminal: s.createTerminal,
 	})));
@@ -41,56 +41,56 @@ export default function TerminalScreen() {
 	// （全ワークスペースに重複表示しない）。
 	const terminals = (workspace?.terminals ?? []).filter(t =>
 		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
-	const activeTerminal = (selectedTerminalId !== undefined ? terminals.find(t => t.id === selectedTerminalId) : undefined) ?? terminals[0];
-	const activeId = activeTerminal?.id;
-	const output = activeId !== undefined ? terminalOutput.get(activeId) ?? '' : '';
+	const activeTerminal = (selectedTerminalKey !== undefined ? terminals.find(t => t.terminalKey === selectedTerminalKey) : undefined) ?? terminals[0];
+	const activeKey = activeTerminal?.terminalKey;
+	const output = activeKey !== undefined ? terminalOutput.get(activeKey) ?? '' : '';
 
 	useEffect(() => {
-		if (activeId === undefined) {
+		if (activeKey === undefined) {
 			return;
 		}
-		attachTerminal(activeId);
+		attachTerminal(activeKey);
 		// タブ/ワークスペース切り替え時にPC側の購読を解放する（放置するとPCが全て
 		// のターミナルへ出力を送り続けてしまう）。
-		return () => detachTerminal(activeId);
-	}, [activeId, attachTerminal, detachTerminal]);
+		return () => detachTerminal(activeKey);
+	}, [activeKey, attachTerminal, detachTerminal]);
 
 	// TermView への同期ストリーム購読口（端末ごとに安定した関数を渡す）。
 	const subscribeActive = useMemo(() => {
-		if (activeId === undefined) {
+		if (activeKey === undefined) {
 			return undefined;
 		}
-		return (listener: Parameters<typeof subscribeTerminal>[1]) => subscribeTerminal(activeId, listener);
-	}, [activeId, subscribeTerminal]);
+		return (listener: Parameters<typeof subscribeTerminal>[1]) => subscribeTerminal(activeKey, listener);
+	}, [activeKey, subscribeTerminal]);
 	// WebViewプロセス死・inject欠落時の再同期: 再attach（新epoch）でsnapshotを取り直す。
 	const resyncActive = useMemo(() => {
-		if (activeId === undefined) {
+		if (activeKey === undefined) {
 			return undefined;
 		}
-		return () => attachTerminal(activeId);
-	}, [activeId, attachTerminal]);
+		return () => attachTerminal(activeKey);
+	}, [activeKey, attachTerminal]);
 
 	const send = (data: string) => {
-		if (activeId !== undefined) {
-			sendInput(activeId, data);
+		if (activeKey !== undefined) {
+			sendInput(activeKey, data);
 		}
 	};
 	const sendArrow = (key: 'up' | 'down' | 'right' | 'left') => {
-		if (activeId !== undefined) {
-			sendArrowKey(activeId, key);
+		if (activeKey !== undefined) {
+			sendArrowKey(activeKey, key);
 		}
 	};
 	const submit = () => {
-		if (activeId === undefined) {
+		if (activeKey === undefined) {
 			return;
 		}
 		if (input === '') {
 			// 空のまま送信 = Enter 単独（TUIの確認プロンプト等に必要）。bracketed paste で
 			// 包むと空ペーストになってしまうため生のEnterを送る。
-			sendInput(activeId, '\r');
+			sendInput(activeKey, '\r');
 		} else {
 			// テキストはPC側でbracketed paste対応の上で実行される（複数行対応）。
-			sendTextInput(activeId, input, true);
+			sendTextInput(activeKey, input, true);
 		}
 		setInput('');
 	};
@@ -104,9 +104,9 @@ export default function TerminalScreen() {
 			<WsHeader title="ターミナル" />
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
 				{terminals.map((t, i) => {
-					const active = t.id === activeId;
+					const active = t.terminalKey === activeKey;
 					return (
-						<Pressable key={t.id} style={({ pressed }) => [styles.tabChip, active && styles.tabChipActive, pressed && styles.keyPressed]} onPress={() => { hapticSelection(); setSelectedTerminalId(t.id); }}>
+						<Pressable key={t.terminalKey} style={({ pressed }) => [styles.tabChip, active && styles.tabChipActive, pressed && styles.keyPressed]} onPress={() => { hapticSelection(); setSelectedTerminalKey(t.terminalKey); }}>
 							{isAgentWaiting(t.agentStatus)
 								? <View style={styles.dotRed} />
 								: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
@@ -120,8 +120,8 @@ export default function TerminalScreen() {
 				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
 			</ScrollView>
 			<View style={styles.output}>
-				{activeId !== undefined ? (
-					<TermView key={activeId} output={output} cols={activeTerminal?.cols} rows={activeTerminal?.rows} subscribe={subscribeActive} onNeedResync={resyncActive} />
+				{activeKey !== undefined ? (
+					<TermView key={activeKey} output={output} cols={activeTerminal?.cols} rows={activeTerminal?.rows} subscribe={subscribeActive} onNeedResync={resyncActive} />
 				) : (
 					<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
 				)}

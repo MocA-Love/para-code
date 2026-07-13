@@ -5,7 +5,10 @@ import { decodeNotify, decodeNotifyControl, encodeNotify, encodeNotifyDismiss, e
 
 describe('notify codec', () => {
 	test('roundtrips a full payload', () => {
-		const payload: NotifyPayload = { kind: 'agent-question', id: 'n1', title: 'claude — para-code', body: '確認を求めています', ws: 'repo:1', terminalId: 2, at: 1783000000000 };
+		const payload: NotifyPayload = {
+			kind: 'agent-question', id: 'n1', title: 'claude — para-code', body: '確認を求めています',
+			ws: '1:repo:1', terminalId: 2, terminalKey: 'terminal-key', windowId: 1, at: 1783000000000,
+		};
 		const decoded = decodeNotify(encodeNotify(payload));
 		expect(decoded).toEqual(payload);
 	});

@@ -12,8 +12,7 @@ import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
 export interface TerminalActionsMenuTarget {
-	id: number;
-	windowId?: number;
+	terminalKey: string;
 	title: string;
 	pinned: boolean;
 }
@@ -47,9 +46,9 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 	/** リフトクローンとして再描画する行データ。 */
 	rowData: AgentRowData | undefined;
 	onClose: () => void;
-	onRename: (id: number, title: string, windowId?: number) => void;
-	onTogglePin: (id: number) => void;
-	onDelete: (id: number, windowId?: number) => void;
+	onRename: (terminalKey: string, title: string) => void;
+	onTogglePin: (terminalKey: string) => void;
+	onDelete: (terminalKey: string) => void;
 }) {
 	const [mode, setMode] = useState<'menu' | 'rename' | 'confirm-delete'>('menu');
 	// リネーム入力の下書き。OverlayHost経由の再描画1拍遅れでcontrolled inputの
@@ -91,13 +90,13 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 	const submitRename = () => {
 		const title = draftRef.current.trim();
 		if (title.length > 0 && title !== target.title) {
-			onRename(target.id, title, target.windowId);
+		onRename(target.terminalKey, title);
 		}
 		close();
 	};
 
 	const commitDelete = () => {
-		onDelete(target.id, target.windowId);
+		onDelete(target.terminalKey);
 		close();
 	};
 
@@ -124,7 +123,7 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 						<View style={styles.menuDivider} />
 						<Pressable
 							style={styles.menuItem}
-							onPress={() => { hapticImpact('light'); onTogglePin(target.id); close(); }}
+							onPress={() => { hapticImpact('light'); onTogglePin(target.terminalKey); close(); }}
 						>
 							<Text style={styles.menuItemLabel}>{target.pinned ? 'ピン留めを解除' : 'ピン留め'}</Text>
 							<Ionicons name={target.pinned ? 'bookmark' : 'bookmark-outline'} size={16} color={colors.textDim} />

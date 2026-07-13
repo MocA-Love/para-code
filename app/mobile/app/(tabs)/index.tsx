@@ -31,10 +31,10 @@ import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalId, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus } = useAppStore(useShallow(s => ({
+	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
-		setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
+		setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		pinnedKeys: s.pinnedKeys, renameTerminal: s.renameTerminal, togglePin: s.togglePin, closeTerminal: s.closeTerminal,
 		ackAgentStatus: s.ackAgentStatus,
 	})));
@@ -43,7 +43,7 @@ export default function HomeScreen() {
 	// rect/rowData は「リフト&ディム」で対象行を前面へ浮かせるクローン描画に使う。
 	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number }; rect?: AgentRowRect; rowData: AgentRowData } | undefined>(undefined);
 	// 各行の実ビューへの参照。長押し時に measureInWindow でウィンドウ座標を取得するために持つ。
-	const rowRefs = useRef(new Map<number, View>());
+	const rowRefs = useRef(new Map<string, View>());
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
 	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 
@@ -80,18 +80,18 @@ export default function HomeScreen() {
 	// 応答待ちのターミナル（複数あれば先頭の1件をアテンションカードで扱う。絞り込み中は対象外のワークスペース分は無視する）
 	const waitingTerminal = (workspace?.terminals ?? []).find(t => isAgentWaiting(t.agentStatus) && inScope(t));
 	const waitingWs = waitingTerminal ? (workspace?.workspaces ?? []).find(w => w.id === waitingTerminal.ws) : undefined;
-	const waitingChat = useAgentChatSubscription(waitingTerminal?.id);
-	const waitingActions = useAgentActions(waitingTerminal?.id, waitingChat?.agent);
+	const waitingChat = useAgentChatSubscription(waitingTerminal?.terminalKey);
+	const waitingActions = useAgentActions(waitingTerminal?.terminalKey, waitingChat?.agent);
 
 	if (ready && !paired) {
 		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
 	}
 
-	/** エージェントタブへ遷移する。setSelectedWsがselectedTerminalIdをリセットするため、この順序を厳守する。 */
-	const openAgent = (wsId: string, terminalId: number) => {
+	/** エージェントタブへ遷移する。setSelectedWsがselectedTerminalKeyをリセットするため、この順序を厳守する。 */
+	const openAgent = (wsId: string, terminalKey: string) => {
 		hapticSelection();
 		setSelectedWs(wsId);
-		setSelectedTerminalId(terminalId);
+		setSelectedTerminalKey(terminalKey);
 		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
 	};
 	// エージェント一覧（応答待ち → 実行中 → その他 → アイドルの順）。絞り込み中は選択中
@@ -122,7 +122,7 @@ export default function HomeScreen() {
 						agentStatus={waitingTerminal.agentStatus}
 						chat={waitingChat}
 						actions={waitingActions}
-						onOpenAgent={() => openAgent(waitingWs.id, waitingTerminal.id)}
+						onOpenAgent={() => openAgent(waitingWs.id, waitingTerminal.terminalKey)}
 					/>
 				) : null}
 
@@ -143,7 +143,7 @@ export default function HomeScreen() {
 							onPress={e => {
 								hapticSelection();
 								setStatusPopover({
-									target: { id: t.id, windowId: workspace?.windowId, status: 'review' },
+								target: { terminalKey: t.terminalKey, status: 'review' },
 									anchor: { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY },
 								});
 							}}
@@ -154,15 +154,15 @@ export default function HomeScreen() {
 					) : undefined;
 					return (
 						<Pressable
-							key={t.id}
-							ref={node => { if (node) { rowRefs.current.set(t.id, node); } else { rowRefs.current.delete(t.id); } }}
+							key={t.terminalKey}
+							ref={node => { if (node) { rowRefs.current.set(t.terminalKey, node); } else { rowRefs.current.delete(t.terminalKey); } }}
 							style={[agentRowStyles.container, waiting && agentRowStyles.containerWaiting]}
-							onPress={() => { if (ws) { openAgent(ws.id, t.id); } }}
+							onPress={() => { if (ws) { openAgent(ws.id, t.terminalKey); } }}
 							onLongPress={e => {
 								hapticImpact('medium');
-								const target = { id: t.id, windowId: workspace?.windowId, title: t.title, pinned };
+								const target = { terminalKey: t.terminalKey, title: t.title, pinned };
 								const anchor = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
-								const node = rowRefs.current.get(t.id);
+								const node = rowRefs.current.get(t.terminalKey);
 								if (node) {
 									// ウィンドウ座標を取得してから、その位置に浮かせたクローンとメニューを開く。
 									node.measureInWindow((x, y, width, height) => setMenu({ target, anchor, rect: { x, y, width, height }, rowData }));
@@ -192,20 +192,20 @@ export default function HomeScreen() {
 				rect={menu?.rect}
 				rowData={menu?.rowData}
 				onClose={() => setMenu(undefined)}
-				onRename={(id, title, windowId) => renameTerminal(id, title, windowId)}
-				onTogglePin={id => {
-					const terminal = workspace?.terminals.find(term => term.id === id);
+				onRename={(terminalKey, title) => renameTerminal(terminalKey, title)}
+				onTogglePin={terminalKey => {
+					const terminal = workspace?.terminals.find(term => term.terminalKey === terminalKey);
 					if (terminal) {
 						togglePin(pinKeyForTerminal(terminal));
 					}
 				}}
-				onDelete={(id, windowId) => closeTerminal(id, windowId)}
+				onDelete={terminalKey => closeTerminal(terminalKey)}
 			/>
 			<AgentStatusPopover
 				target={statusPopover?.target}
 				anchor={statusPopover?.anchor}
 				onClose={() => setStatusPopover(undefined)}
-				onAck={(id, windowId) => ackAgentStatus(id, windowId)}
+				onAck={terminalKey => ackAgentStatus(terminalKey)}
 			/>
 		</View>
 	);

@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { type Frame, type Identity, type NotifyPayload, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity } from '@para/protocol';
+import { type Frame, type Identity, type NotifyPayload, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity, randomToken, toBase64Url } from '@para/protocol';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -20,16 +20,17 @@ export interface WorkspacePrStatus {
 
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
 export interface WorkspaceState {
-	/** PC側ターミナルinstanceIdの名前空間。旧PCでは未設定。 */
-	windowId?: number;
+	protocolVersion: 2;
+	desktopEpoch: string;
+	revision: number;
 	activeWs: string | undefined;
 	// parent: worktree（スペース）の親リポジトリid。ドロワーの親子グルーピング（開閉表示）に使う。
 	// 旧PC（parent未配信）ではundefinedのままフラット表示にフォールバックする。
 	// pr: 現在ブランチに紐づくGitHub PR（PC側がghでポーリング）。旧PCでは未配信。
-	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string; pr?: WorkspacePrStatus }[];
+	workspaces: { id: string; sourceId: string; windowId: number; name: string; color?: string; branch?: string; parent?: string; pr?: WorkspacePrStatus }[];
 	// agent: そのターミナルでエージェントCLI（claude/codex）が動いた実績があるか（PC側のhook発火実績）。
 	// ホーム一覧・Live Activity はこのフラグで「エージェントのターミナル」だけに絞る。
-	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
+	terminals: { terminalKey: string; id: number; windowId: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
 /** scm status 応答。 */
@@ -486,8 +487,8 @@ function parseAgentInteraction(value: unknown): AgentInteraction | undefined {
  * ピン留めの識別キー。instanceIdはPC再起動・ウィンドウreloadで再採番される揮発値のため、
  * エージェント確定済みのターミナルは比較的安定なagentTokenを優先して使う。
  */
-export function pinKeyForTerminal(terminal: { id: number; agentToken?: string }): string {
-	return terminal.agentToken !== undefined ? `tok:${terminal.agentToken}` : `id:${terminal.id}`;
+export function pinKeyForTerminal(terminal: { terminalKey: string }): string {
+	return terminal.terminalKey;
 }
 
 /**
@@ -528,13 +529,13 @@ export interface StoreState {
 	pcOnline: boolean;
 	workspace: WorkspaceState | undefined;
 	/** ターミナルID → 受信済み出力（末尾のみ保持）。 */
-	terminalOutput: Map<number, string>;
+	terminalOutput: Map<string, string>;
 	/** 受信した通知（新しい順、最大50件）。 */
 	notifications: NotifyPayload[];
 	/** browser ミラーの直近フレーム（未開始は undefined）。 */
 	browserFrame: BrowserFrame | undefined;
 	/** ターミナルID → エージェントチャット状態（agentチャネル）。 */
-	agentChats: Map<number, AgentChatState>;
+	agentChats: Map<string, AgentChatState>;
 }
 
 const IDENTITY_KEY = 'para.identity';
@@ -641,11 +642,11 @@ export class MobileController {
 	 * 購読しうる（別ターミナルの場合は2件同時）ため単一IDでは表現できない。
 	 * 再接続時はここに残っている全IDを再attachする。
 	 */
-	private attachedAgents = new Map<number, number>();
+	private attachedAgents = new Map<string, number>();
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
-	private readonly agentControlTimers = new Map<number, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
-	private readonly pendingAgentActions = new Map<string, { readonly id: number; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
-	private readonly pendingActivityDetails = new Map<string, { readonly id: number; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly agentControlTimers = new Map<string, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 
 	constructor(
 		private readonly identity: Identity,
@@ -702,6 +703,7 @@ export class MobileController {
 				// 再接続完了時: 購読中のagentチャットがあれば手元のepoch/revで再attachする
 				// （PC側はepoch一致なら差分のみ、不一致なら全量スナップショットを返す）。
 				if (s === 'online') {
+					this.requestState();
 					for (const id of this.attachedAgents.keys()) {
 						this.sendAgentAttach(id);
 					}
@@ -799,29 +801,29 @@ export class MobileController {
 	/**
 	 * ターミナルにアタッチ（出力購読を要求）。attachごとに新しい epoch を採番し、
 	 * PC側は epoch/seq 付きの同期ストリーム（snapshot→data...）で応答する。
-	 * 旧PCは epoch を無視して従来の生ストリームを返す（terminalOutput 側で処理）。
 	 * seq欠落検出時・再接続時の再同期もこのメソッドで行う（新epochで取り直し）。
 	 */
-	attachTerminal(id: number): void {
-		const stream = this.ensureTermStream(id);
+	attachTerminal(terminalKey: string): void {
+		const stream = this.ensureTermStream(terminalKey);
 		stream.epoch = ++this.termEpochCounter;
 		stream.lastSeq = undefined;
 		stream.unackedChars = 0;
-		this.sendTerm({ t: 'attach', id, epoch: stream.epoch });
+		stream.cache = undefined;
+		this.sendTerm(terminalKey, { t: 'attach', epoch: stream.epoch });
 	}
 
-	detachTerminal(id: number): void {
+	detachTerminal(terminalKey: string): void {
 		// ストリーム状態は消さない（cache をタブ再訪時の即時再描画に使う）。
 		// epoch はattach時に必ず更新されるため、detach後に届く残りフレームは無害。
-		this.sendTerm({ t: 'detach', id });
+		this.sendTerm(terminalKey, { t: 'detach' });
 	}
 
 	/**
 	 * ターミナルの同期ストリームを購読する。購読時点のリプレイキャッシュ
 	 * （最後のsnapshot＋後続data）を同期的に再生してから、以後のライブイベントを流す。
 	 */
-	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void): () => void {
-		const stream = this.ensureTermStream(id);
+	subscribeTerminal(terminalKey: string, listener: (ev: TermStreamEvent) => void): () => void {
+		const stream = this.ensureTermStream(terminalKey);
 		stream.listeners.add(listener);
 		if (stream.cache) {
 			for (const ev of stream.cache.events) {
@@ -834,71 +836,71 @@ export class MobileController {
 	}
 
 	private termEpochCounter = 0;
-	private readonly termStreams = new Map<number, TermStreamState>();
+	private readonly termStreams = new Map<string, TermStreamState>();
 
-	private ensureTermStream(id: number): TermStreamState {
-		let stream = this.termStreams.get(id);
+	private ensureTermStream(terminalKey: string): TermStreamState {
+		let stream = this.termStreams.get(terminalKey);
 		if (!stream) {
 			stream = { epoch: 0, lastSeq: undefined, unackedChars: 0, listeners: new Set(), cache: undefined };
-			this.termStreams.set(id, stream);
+			this.termStreams.set(terminalKey, stream);
 		}
 		return stream;
 	}
 
 	/** ターミナルへ入力を送る。 */
-	sendInput(id: number, data: string): void {
-		this.sendTerm({ t: 'input', id, data });
+	sendInput(terminalKey: string, data: string): void {
+		this.sendTerm(terminalKey, { t: 'input', data });
 	}
 
 	/**
 	 * 矢印キーをセマンティック名で送る。PC側が端末モード（application cursor keys）に
 	 * 合わせて CSI / SS3 へエンコードする（vim / less 等で矢印が効かない問題の対策）。
-	 * data は旧バージョンのPC（key 未対応）向けのフォールバック。
+	 * data には同じ操作の生シーケンスも併載する。
 	 */
-	sendArrowKey(id: number, key: 'up' | 'down' | 'right' | 'left'): void {
+	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): void {
 		const fallback = { up: '\u001b[A', down: '\u001b[B', right: '\u001b[C', left: '\u001b[D' }[key];
-		this.sendTerm({ t: 'input', id, data: fallback, key });
+		this.sendTerm(terminalKey, { t: 'input', data: fallback, key });
 	}
 
 	/**
 	 * コンポーザーからのテキスト入力を送る。PC側は bracketed paste モード中なら
 	 * ESC[200~...ESC[201~ で包み、複数行テキストが1行目で実行されるのを防ぐ。
-	 * execute=true で末尾にEnterを付けて実行する。data は旧PC向けフォールバック
-	 * （改行をEnterに正規化した従来相当の生入力）。
+	 * execute=true で末尾にEnterを付けて実行する。data には改行をEnterへ正規化した
+	 * 生入力も併載する。
 	 */
-	sendTextInput(id: number, text: string, execute: boolean): void {
+	sendTextInput(terminalKey: string, text: string, execute: boolean): void {
 		const normalized = text.replace(/\r?\n/g, '\r');
 		const fallback = execute && !normalized.endsWith('\r') ? normalized + '\r' : normalized;
-		this.sendTerm({ t: 'input', id, data: fallback, text, execute });
+		this.sendTerm(terminalKey, { t: 'input', data: fallback, text, execute });
 	}
 
-	/** session検証付きAgent Action。未対応PCでは従来のterm入力へフォールバックする。 */
-	sendAgentMessage(id: number, text: string): Promise<AgentMessageSendResult> {
-		const chat = this.state.agentChats.get(id);
+	/** session検証付きAgent Action。 */
+	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult> {
+		const chat = this.state.agentChats.get(terminalKey);
 		if (this.state.connection !== 'online') {
 			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
 		}
 		if (chat === undefined || chat.none || chat.capabilities?.agentActions !== true) {
 			return Promise.resolve({ status: 'rejected', message: 'エージェントセッションを準備中です。少し待ってから再送してください。' });
 		}
-		return this.sendAgentActionResult(id, {
-			t: 'action/sendMessage', token: this.agentToken(id), epoch: chat.epoch, text,
+		return this.sendAgentActionResult(terminalKey, {
+			t: 'action/sendMessage', token: this.agentToken(terminalKey), epoch: chat.epoch, text,
 		});
 	}
 
-	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean> {
-		const chat = this.state.agentChats.get(id);
+	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean> {
+		const chat = this.state.agentChats.get(terminalKey);
 		if (this.state.connection !== 'online' || chat?.capabilities?.agentActions !== true
 			|| chat.interaction?.kind !== 'question' || chat.interaction.id !== interactionId) {
 			return Promise.resolve(false);
 		}
-		return this.sendAgentAction(id, {
-			t: 'action/answerQuestion', token: this.agentToken(id), epoch: chat.epoch, interactionId, answers,
+		return this.sendAgentAction(terminalKey, {
+			t: 'action/answerQuestion', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId, answers,
 		}, 60_000);
 	}
 
-	answerAgentApproval(id: number, interactionId: string, choice: string): Promise<boolean> {
-		const chat = this.state.agentChats.get(id);
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<boolean> {
+		const chat = this.state.agentChats.get(terminalKey);
 		if (this.state.connection !== 'online' || chat?.capabilities?.agentActions !== true
 			|| chat.interaction?.kind !== 'approval' || chat.interaction.id !== interactionId
 			|| (chat.interaction.choices !== undefined
@@ -906,52 +908,57 @@ export class MobileController {
 				: choice !== 'yes' && choice !== 'no')) {
 			return Promise.resolve(false);
 		}
-		return this.sendAgentAction(id, {
-			t: 'action/answerApproval', token: this.agentToken(id), epoch: chat.epoch, interactionId, choice,
+		return this.sendAgentAction(terminalKey, {
+			t: 'action/answerApproval', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId, choice,
 		}, 60_000);
 	}
 
-	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string): Promise<boolean> {
-		const chat = this.state.agentChats.get(id);
+	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<boolean> {
+		const chat = this.state.agentChats.get(terminalKey);
 		if (this.state.connection !== 'online' || chat?.agent !== 'claude' || chat.capabilities?.claudeSettings !== true
 			|| chat.interaction !== undefined || !/^[A-Za-z0-9._:-]{1,200}$/.test(value)) {
 			return Promise.resolve(false);
 		}
-		return this.sendAgentAction(id, {
-			t: 'action/claudeSetting', token: this.agentToken(id), epoch: chat.epoch, setting, value,
+		return this.sendAgentAction(terminalKey, {
+			t: 'action/claudeSetting', token: this.agentToken(terminalKey), epoch: chat.epoch, setting, value,
 		});
 	}
 
-	requestAgentActivityDetail(id: number, activityId: string): Promise<AgentActivityDetailMessage[]> {
-		const chat = this.state.agentChats.get(id);
-		if (this.state.connection !== 'online' || chat === undefined || !chat.activity?.agents.some(agent => agent.id === activityId && agent.role === 'subagent')) {
+	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]> {
+		const chat = this.state.agentChats.get(terminalKey);
+		const terminal = this.terminalForKey(terminalKey);
+		if (this.state.connection !== 'online' || chat === undefined || terminal === undefined || !chat.activity?.agents.some(agent => agent.id === activityId && agent.role === 'subagent')) {
 			return Promise.reject(new Error('SubAgentが見つかりません'));
 		}
-		const requestId = `agent-detail-${this.requestCounter++}`;
+		const requestId = `${this.requestPrefix}-agent-detail-${this.requestCounter++}`;
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pendingActivityDetails.delete(requestId);
 				reject(new Error('SubAgent詳細の取得がタイムアウトしました'));
 			}, 15_000);
-			this.pendingActivityDetails.set(requestId, { id, activityId, resolve, reject, timer });
-			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'activity-detail', id, token: this.agentToken(id), requestId, epoch: chat.epoch, activityId })));
+			this.pendingActivityDetails.set(requestId, { terminalKey, activityId, resolve, reject, timer });
+			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'activity-detail', id: terminal.id, token: this.agentToken(terminalKey), requestId, epoch: chat.epoch, activityId })));
 		});
 	}
 
-	private sendAgentAction(id: number, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
-		return this.sendAgentActionResult(id, body, timeoutMs).then(result => result.status === 'accepted');
+	private sendAgentAction(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
+		return this.sendAgentActionResult(terminalKey, body, timeoutMs).then(result => result.status === 'accepted');
 	}
 
-	private sendAgentActionResult(id: number, body: Record<string, unknown>, timeoutMs = 30_000): Promise<AgentMessageSendResult> {
-		const requestId = `agent-action-${this.requestCounter++}`;
+	private sendAgentActionResult(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<AgentMessageSendResult> {
+		const terminal = this.terminalForKey(terminalKey);
+		if (terminal === undefined) {
+			return Promise.resolve({ status: 'rejected' });
+		}
+		const requestId = `${this.requestPrefix}-agent-action-${this.requestCounter++}`;
 		return new Promise(resolve => {
 			const timer = setTimeout(() => {
 				if (this.pendingAgentActions.delete(requestId)) {
 					resolve({ status: 'rejected' });
 				}
 			}, timeoutMs);
-			this.pendingAgentActions.set(requestId, { id, resolve, timer });
-			this.client?.send('agent', encoder.encode(JSON.stringify({ ...body, id, requestId })));
+			this.pendingAgentActions.set(requestId, { terminalKey, resolve, timer });
+			this.client?.send('agent', encoder.encode(JSON.stringify({ ...body, id: terminal.id, requestId })));
 		});
 	}
 
@@ -970,57 +977,42 @@ export class MobileController {
 
 	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
 	createTerminal(ws?: string): void {
-		this.sendTerm({ t: 'create', ws });
+		const workspace = ws !== undefined ? this.state.workspace?.workspaces.find(item => item.id === ws) : this.state.workspace?.workspaces[0];
+		const desktop = this.state.workspace;
+		if (workspace === undefined || desktop === undefined) {
+			return;
+		}
+		this.client?.send('term', encoder.encode(JSON.stringify({
+			protocolVersion: 2,
+			desktopEpoch: desktop.desktopEpoch,
+			operationId: `${this.requestPrefix}-term-${this.requestCounter++}`,
+			t: 'create',
+			windowId: workspace.windowId,
+			ws: workspace.sourceId,
+		})));
 	}
 
-	/**
-	 * ターミナル名を変更する。手元のworkspaceスナップショットを楽観的に書き換えてから
-	 * PCへ送る（PC側の権威的なstate再送が届き次第、その値で上書きされる）。
-	 */
-	renameTerminal(id: number, title: string, targetWindowId?: number): void {
-		const workspace = this.state.workspace;
-		if (workspace && (targetWindowId === undefined || workspace.windowId === targetWindowId)) {
-			this.state.workspace = {
-				...workspace,
-				terminals: workspace.terminals.map(t => t.id === id ? { ...t, title } : t),
-			};
-			this.emit();
-		}
-		this.sendTerm({ t: 'rename', id, title }, targetWindowId);
+	/** ターミナル名を変更する。表示更新はPC側の権威的なstate再送で確定する。 */
+	renameTerminal(terminalKey: string, title: string): void {
+		this.sendTerm(terminalKey, { t: 'rename', title });
 	}
 
 	/**
 	 * ターミナルを削除する。PC側の実インスタンスも閉じる（instance.dispose）破壊的操作のため、
-	 * 呼び出し側（ホーム長押しメニュー）で確認ダイアログを経てから呼ぶ想定。手元の一覧からは
-	 * 楽観的に消しておき、PC側の権威的なstate再送（onDidChangeInstances）で確定させる。
+	 * 呼び出し側（ホーム長押しメニュー）で確認ダイアログを経てから呼ぶ想定。
+	 * 表示更新はPC側の権威的なstate再送で確定する。
 	 */
-	closeTerminal(id: number, targetWindowId?: number): void {
-		const workspace = this.state.workspace;
-		if (workspace && (targetWindowId === undefined || workspace.windowId === targetWindowId)) {
-			this.state.workspace = {
-				...workspace,
-				terminals: workspace.terminals.filter(t => t.id !== id),
-			};
-			this.emit();
-		}
-		this.sendTerm({ t: 'close', id }, targetWindowId);
+	closeTerminal(terminalKey: string): void {
+		this.sendTerm(terminalKey, { t: 'close' });
 	}
 
 	/**
 	 * エージェントの「レビュー」状態を確認済みにする（ホームのステータスバッジタップ）。
 	 * PC側のフォーカス中自動既読と同じ経路を通り、関連通知のdismissも走る。
-	 * 手元のスナップショットは楽観的にアイドルへ書き換える（PC側のstate再送で確定）。
+	 * 表示更新はPC側の権威的なstate再送で確定する。
 	 */
-	ackAgentStatus(id: number, targetWindowId?: number): void {
-		const workspace = this.state.workspace;
-		if (workspace && (targetWindowId === undefined || workspace.windowId === targetWindowId)) {
-			this.state.workspace = {
-				...workspace,
-				terminals: workspace.terminals.map(t => t.id === id ? { ...t, agentStatus: undefined } : t),
-			};
-			this.emit();
-		}
-		this.sendTerm({ t: 'ackStatus', id }, targetWindowId);
+	ackAgentStatus(terminalKey: string): void {
+		this.sendTerm(terminalKey, { t: 'ackStatus' });
 	}
 
 	/** 現在の状態スナップショットを要求する。 */
@@ -1036,9 +1028,18 @@ export class MobileController {
 		this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...prefs })));
 	}
 
-	private sendTerm(msg: { t: string; id?: number; ws?: string; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }, targetWindowId?: number): void {
-		const windowId = targetWindowId ?? this.state.workspace?.windowId;
-		this.client?.send('term', encoder.encode(JSON.stringify({ ...msg, ...(windowId !== undefined ? { windowId } : {}) })));
+	private sendTerm(terminalKey: string, msg: { t: string; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }): void {
+		const workspace = this.state.workspace;
+		if (workspace === undefined || !workspace.terminals.some(terminal => terminal.terminalKey === terminalKey)) {
+			return;
+		}
+		this.client?.send('term', encoder.encode(JSON.stringify({
+			protocolVersion: 2,
+			desktopEpoch: workspace.desktopEpoch,
+			operationId: `${this.requestPrefix}-term-${this.requestCounter++}`,
+			terminalKey,
+			...msg,
+		})));
 	}
 
 	// --- agent チャット（エージェントセッションのチャットミラー） ----------------
@@ -1049,65 +1050,70 @@ export class MobileController {
 	 * カウントのみ増やす（ホーム画面とエージェント画面が同時に同じターミナルを
 	 * 購読するケースで、片方のdetachがもう片方の購読を切らないようにするため）。
 	 */
-	attachAgent(id: number): void {
-		const count = (this.attachedAgents.get(id) ?? 0) + 1;
-		this.attachedAgents.set(id, count);
+	attachAgent(terminalKey: string): void {
+		const count = (this.attachedAgents.get(terminalKey) ?? 0) + 1;
+		this.attachedAgents.set(terminalKey, count);
 		if (count === 1) {
-			this.sendAgentAttach(id);
+			this.sendAgentAttach(terminalKey);
 		}
 	}
 
-	detachAgent(id: number): void {
-		const count = this.attachedAgents.get(id);
+	detachAgent(terminalKey: string): void {
+		const count = this.attachedAgents.get(terminalKey);
 		if (count === undefined) {
 			return;
 		}
 		if (count <= 1) {
-			this.attachedAgents.delete(id);
-			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id, token: this.agentToken(id) })));
+			this.attachedAgents.delete(terminalKey);
+			const terminal = this.terminalForKey(terminalKey);
+			if (terminal !== undefined) {
+				this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id: terminal.id, token: this.agentToken(terminalKey) })));
+			}
 		} else {
-			this.attachedAgents.set(id, count - 1);
+			this.attachedAgents.set(terminalKey, count - 1);
 		}
 	}
 
 	/** チャット表示の再読み込み（セッションが見つからなかった後の再試行にも使う）。 */
-	refreshAgent(id: number): void {
-		this.state.agentChats.delete(id);
+	refreshAgent(terminalKey: string): void {
+		this.state.agentChats.delete(terminalKey);
 		this.emit({ agentChats: true });
-		if (this.attachedAgents.has(id)) {
-			this.sendAgentAttach(id);
+		if (this.attachedAgents.has(terminalKey)) {
+			this.sendAgentAttach(terminalKey);
 		}
 	}
 
 	/** 対象Codexセッションの最新モデルカタログをPCへ要求する。 */
-	requestAgentModelCatalog(id: number): void {
-		const existing = this.state.agentChats.get(id);
+	requestAgentModelCatalog(terminalKey: string): void {
+		const existing = this.state.agentChats.get(terminalKey);
+		const terminal = this.terminalForKey(terminalKey);
 		if (existing === undefined || existing.none || existing.agent !== 'codex'
-			|| existing.modelControl?.status === 'loading' || existing.modelControl?.status === 'updating') {
+			|| terminal === undefined || existing.modelControl?.status === 'loading' || existing.modelControl?.status === 'updating') {
 			return;
 		}
-		const requestId = `agent-models-${this.requestCounter++}`;
-		this.state.agentChats.set(id, {
+		const requestId = `${this.requestPrefix}-agent-models-${this.requestCounter++}`;
+		this.state.agentChats.set(terminalKey, {
 			...existing,
 			modelControl: { status: 'loading', requestId, models: existing.modelControl?.models ?? [] },
 		});
 		this.emit({ agentChats: true });
-		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'model-catalog', id, token: this.agentToken(id), requestId })));
-		this.scheduleAgentControlTimeout(id, requestId, 'Codexのモデル一覧取得がタイムアウトしました');
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'model-catalog', id: terminal.id, token: this.agentToken(terminalKey), requestId })));
+		this.scheduleAgentControlTimeout(terminalKey, requestId, 'Codexのモデル一覧取得がタイムアウトしました');
 	}
 
 	/** 検証済みカタログのモデルとEffortを、Codexの次ターン設定へ同時適用する。 */
-	updateAgentSettings(id: number, model: string, effort: string): void {
-		const existing = this.state.agentChats.get(id);
-		if (existing === undefined || existing.none || existing.agent !== 'codex' || existing.modelControl?.status === 'updating') {
+	updateAgentSettings(terminalKey: string, model: string, effort: string): void {
+		const existing = this.state.agentChats.get(terminalKey);
+		const terminal = this.terminalForKey(terminalKey);
+		if (existing === undefined || existing.none || existing.agent !== 'codex' || terminal === undefined || existing.modelControl?.status === 'updating') {
 			return;
 		}
 		const selected = existing.modelControl?.models.find(option => option.model === model);
 		if (selected === undefined || !selected.efforts.some(option => option.value === effort)) {
 			return;
 		}
-		const requestId = `agent-settings-${this.requestCounter++}`;
-		this.state.agentChats.set(id, {
+		const requestId = `${this.requestPrefix}-agent-settings-${this.requestCounter++}`;
+		this.state.agentChats.set(terminalKey, {
 			...existing,
 			modelControl: {
 				status: 'updating', requestId, models: existing.modelControl?.models ?? [],
@@ -1115,56 +1121,72 @@ export class MobileController {
 			},
 		});
 		this.emit({ agentChats: true });
-		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'settings-update', id, token: this.agentToken(id), requestId, model, effort })));
-		this.scheduleAgentControlTimeout(id, requestId, 'Codexの設定変更がタイムアウトしました');
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'settings-update', id: terminal.id, token: this.agentToken(terminalKey), requestId, model, effort })));
+		this.scheduleAgentControlTimeout(terminalKey, requestId, 'Codexの設定変更がタイムアウトしました');
 	}
 
-	private scheduleAgentControlTimeout(id: number, requestId: string, message: string): void {
-		this.clearAgentControlTimeout(id);
+	private scheduleAgentControlTimeout(terminalKey: string, requestId: string, message: string): void {
+		this.clearAgentControlTimeout(terminalKey);
 		const timer = setTimeout(() => {
-			const existing = this.state.agentChats.get(id);
+			const existing = this.state.agentChats.get(terminalKey);
 			if (existing?.modelControl?.requestId === requestId) {
-				this.state.agentChats.set(id, {
+				this.state.agentChats.set(terminalKey, {
 					...existing,
 					modelControl: { status: 'error', models: existing.modelControl.models, errorCode: 'timeout', errorMessage: message },
 				});
 				this.emit({ agentChats: true });
 			}
-			this.agentControlTimers.delete(id);
+			this.agentControlTimers.delete(terminalKey);
 		}, 30_000);
-		this.agentControlTimers.set(id, { requestId, timer });
+		this.agentControlTimers.set(terminalKey, { requestId, timer });
 	}
 
-	private clearAgentControlTimeout(id: number, requestId?: string): void {
-		const pending = this.agentControlTimers.get(id);
+	private clearAgentControlTimeout(terminalKey: string, requestId?: string): void {
+		const pending = this.agentControlTimers.get(terminalKey);
 		if (pending !== undefined && (requestId === undefined || pending.requestId === requestId)) {
 			clearTimeout(pending.timer);
-			this.agentControlTimers.delete(id);
+			this.agentControlTimers.delete(terminalKey);
 		}
 	}
 
-	private sendAgentAttach(id: number): void {
+	private sendAgentAttach(terminalKey: string): void {
+		const terminal = this.terminalForKey(terminalKey);
+		if (terminal === undefined) {
+			return;
+		}
 		// 手元に同ターミナルの受信済み状態があれば epoch/afterRev を申告して差分だけ受け取る。
 		// afterRev は「最後に受信したメッセージの rev」を申告する。PC側の rev フィールドは
 		// 「次に採番される値」（最後のメッセージ+1）で、PC側の差分フィルタは m.rev > afterRev の
 		// ため、これをそのまま送ると切断中に届いた最初のメッセージ (rev = afterRev) が毎回
 		// 除外されてしまう（バックグラウンド復帰のたびにPCで打ったプロンプトが1件消えるバグ）。
-		const existing = this.state.agentChats.get(id);
+		const existing = this.state.agentChats.get(terminalKey);
 		const lastMessageRev = existing !== undefined
 			? existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1
 			: undefined;
 		const body = existing !== undefined && !existing.none && lastMessageRev !== undefined
-			? { t: 'attach', id, token: this.agentToken(id), epoch: existing.epoch, afterRev: lastMessageRev }
-			: { t: 'attach', id, token: this.agentToken(id) };
+			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev }
+			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey) };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
 	}
 
-	private agentToken(id: number): string | undefined {
-		return this.state.workspace?.terminals.find(terminal => terminal.id === id)?.agentToken;
+	private terminalForKey(terminalKey: string): WorkspaceState['terminals'][number] | undefined {
+		return this.state.workspace?.terminals.find(terminal => terminal.terminalKey === terminalKey);
+	}
+
+	private agentToken(terminalKey: string): string | undefined {
+		return this.terminalForKey(terminalKey)?.agentToken;
+	}
+
+	private terminalKeyForAgentFrame(terminalId: number, agentToken: string | undefined): string | undefined {
+		if (agentToken === undefined) {
+			return undefined;
+		}
+		return this.state.workspace?.terminals.find(terminal => terminal.id === terminalId && terminal.agentToken === agentToken)?.terminalKey;
 	}
 
 	// --- scm / fs（リクエスト/レスポンス） ------------------------------------
 
+	private readonly requestPrefix = toBase64Url(randomToken(12));
 	private requestCounter = 0;
 	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: unknown }>();
 
@@ -1173,14 +1195,32 @@ export class MobileController {
 		if (!client) {
 			return Promise.reject(new Error('not connected'));
 		}
-		const id = `r${this.requestCounter++}`;
+		let requestBody = body;
+		if (channel === 'scm' || channel === 'fs') {
+			const desktop = this.state.workspace;
+			const requestedWs = (body as { ws?: unknown }).ws;
+			const workspace = typeof requestedWs === 'string'
+				? desktop?.workspaces.find(candidate => candidate.id === requestedWs)
+				: desktop?.workspaces[0];
+			if (desktop === undefined || workspace === undefined) {
+				return Promise.reject(new Error('workspace not found'));
+			}
+			requestBody = {
+				...body,
+				protocolVersion: 2,
+				desktopEpoch: desktop.desktopEpoch,
+				windowId: workspace.windowId,
+				...(typeof requestedWs === 'string' ? { ws: workspace.sourceId } : {}),
+			};
+		}
+		const id = `${this.requestPrefix}-r-${this.requestCounter++}`;
 		return new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
 				reject(new Error('request timeout'));
 			}, timeoutMs);
 			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
-			client.send(channel, encoder.encode(JSON.stringify({ id, ...body })));
+			client.send(channel, encoder.encode(JSON.stringify({ id, ...requestBody })));
 		});
 	}
 
@@ -1485,52 +1525,107 @@ export class MobileController {
 		}
 		if (frame.ch === 'state') {
 			try {
-				this.state.workspace = JSON.parse(decoder.decode(frame.payload)) as WorkspaceState;
+				const incoming = JSON.parse(decoder.decode(frame.payload)) as WorkspaceState;
+				if (incoming.protocolVersion !== 2 || typeof incoming.desktopEpoch !== 'string' || typeof incoming.revision !== 'number'
+					|| !Array.isArray(incoming.workspaces) || !Array.isArray(incoming.terminals)
+					|| incoming.workspaces.some(workspace => typeof workspace.id !== 'string' || workspace.id.length === 0 || typeof workspace.sourceId !== 'string' || workspace.sourceId.length === 0 || typeof workspace.windowId !== 'number')
+					|| incoming.terminals.some(terminal => typeof terminal.terminalKey !== 'string' || terminal.terminalKey.length === 0 || terminal.terminalKey.length > 200 || typeof terminal.id !== 'number' || typeof terminal.windowId !== 'number')
+					|| new Set(incoming.workspaces.map(workspace => workspace.id)).size !== incoming.workspaces.length
+					|| new Set(incoming.terminals.map(terminal => terminal.terminalKey)).size !== incoming.terminals.length) {
+					return;
+				}
+				const previous = this.state.workspace;
+				if (previous?.desktopEpoch === incoming.desktopEpoch && incoming.revision <= previous.revision) {
+					return;
+				}
+				const epochChanged = previous !== undefined && previous.desktopEpoch !== incoming.desktopEpoch;
+				this.state.workspace = incoming;
+				if (epochChanged) {
+					this.state.terminalOutput.clear();
+					this.state.agentChats.clear();
+					this.cancelPendingAgentActions();
+					for (const pending of this.agentControlTimers.values()) {
+						clearTimeout(pending.timer);
+					}
+					this.agentControlTimers.clear();
+				}
 				// 切断中に exit 通知を取り逃したケースに備え、現存しないターミナルの
 				// terminalOutput / agentChats エントリを掃除する。
-				const live = new Set(this.state.workspace.terminals.map(t => t.id));
-				for (const id of this.state.terminalOutput.keys()) {
-					if (!live.has(id)) {
-						this.state.terminalOutput.delete(id);
+				const live = new Set(incoming.terminals.map(terminal => terminal.terminalKey));
+				for (const terminalKey of this.state.terminalOutput.keys()) {
+					if (!live.has(terminalKey)) {
+						this.state.terminalOutput.delete(terminalKey);
 					}
 				}
-				for (const id of this.state.agentChats.keys()) {
-					if (!live.has(id)) {
-						this.state.agentChats.delete(id);
-						this.attachedAgents.delete(id);
+				for (const terminalKey of this.state.agentChats.keys()) {
+					if (!live.has(terminalKey)) {
+						this.state.agentChats.delete(terminalKey);
+					}
+				}
+				for (const terminalKey of this.attachedAgents.keys()) {
+					if (!live.has(terminalKey)) {
+						this.attachedAgents.delete(terminalKey);
+					}
+				}
+				for (const [terminalKey, pending] of this.agentControlTimers) {
+					if (!live.has(terminalKey)) {
+						clearTimeout(pending.timer);
+						this.agentControlTimers.delete(terminalKey);
+					}
+				}
+				for (const terminalKey of this.termStreams.keys()) {
+					if (!live.has(terminalKey)) {
+						this.termStreams.delete(terminalKey);
 					}
 				}
 				// workspace は再代入で参照が変わる。terminalOutput / agentChats は上の掃除で
 				// ミューテートしうるため、常に新参照へ差し替える（掃除が空振りでも安全側に倒す）。
 				this.emit({ term: true, agentChats: true });
+				if (epochChanged) {
+					for (const [terminalKey, stream] of this.termStreams) {
+						if (stream.listeners.size > 0) {
+							this.attachTerminal(terminalKey);
+						}
+					}
+					for (const terminalKey of this.attachedAgents.keys()) {
+						this.sendAgentAttach(terminalKey);
+					}
+				}
 			} catch { /* ignore malformed */ }
 		} else if (frame.ch === 'term') {
 			try {
-				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; id: number; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string };
+				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; terminalKey?: string; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string; status?: string };
+				if (msg.t === 'operation-result') {
+					if (msg.status !== 'accepted') {
+						this.requestState();
+					}
+					return;
+				}
+				if (typeof msg.terminalKey !== 'string' || !this.state.workspace?.terminals.some(terminal => terminal.terminalKey === msg.terminalKey)) {
+					return;
+				}
 				if (msg.t === 'data' && typeof msg.data === 'string' && typeof msg.epoch === 'number' && typeof msg.seq === 'number') {
-					// 同期プロトコル（新PC）: epoch/seq検証つきストリームとして処理する。
-					// terminalOutput（旧経路の文字列バッファ）は経由しない。
-					this.handleTermSyncData({ id: msg.id, data: msg.data, snapshot: msg.snapshot === true, epoch: msg.epoch, seq: msg.seq, cols: msg.cols, rows: msg.rows, unicode: msg.unicode });
-				} else if (msg.t === 'data' && typeof msg.data === 'string') {
-					// 旧PC互換経路: snapshot（attach時のVT画面復元）はバッファを置き換える。
-					// 追記だと再attachのたびにスナップショットが積み重なり、再生で画面が崩壊するため。
-					const prev = msg.snapshot ? '' : (this.state.terminalOutput.get(msg.id) ?? '');
+					if (!this.handleTermSyncData({ terminalKey: msg.terminalKey, data: msg.data, snapshot: msg.snapshot === true, epoch: msg.epoch, seq: msg.seq, cols: msg.cols, rows: msg.rows, unicode: msg.unicode })) {
+						return;
+					}
+					const prev = msg.snapshot ? '' : (this.state.terminalOutput.get(msg.terminalKey) ?? '');
 					const next = (prev + msg.data).slice(-MAX_TERM_BUFFER);
-					this.state.terminalOutput.set(msg.id, next);
+					this.state.terminalOutput.set(msg.terminalKey, next);
 					this.emit({ term: true });
 				} else if (msg.t === 'exit') {
-					this.state.terminalOutput.delete(msg.id);
-					const stream = this.termStreams.get(msg.id);
-					if (stream) {
-						for (const listener of stream.listeners) {
-							listener({ kind: 'exit' });
-						}
-						this.termStreams.delete(msg.id);
+					const stream = this.termStreams.get(msg.terminalKey);
+					if (stream === undefined || typeof msg.epoch !== 'number' || msg.epoch !== stream.epoch) {
+						return;
 					}
+					this.state.terminalOutput.delete(msg.terminalKey);
+					for (const listener of stream.listeners) {
+						listener({ kind: 'exit' });
+					}
+					this.termStreams.delete(msg.terminalKey);
 					// 閉じたターミナルは二度と再attachされないため、チャット履歴も掃除する。
 					// （放置すると agentChats に使い捨てターミナル分のチャットが蓄積し続ける）
-					this.state.agentChats.delete(msg.id);
-					this.attachedAgents.delete(msg.id);
+					this.state.agentChats.delete(msg.terminalKey);
+					this.attachedAgents.delete(msg.terminalKey);
 					this.emit({ term: true, agentChats: true });
 				}
 			} catch { /* ignore */ }
@@ -1572,10 +1667,10 @@ export class MobileController {
 	 * - data は seq 連続性を検証し、欠落を検出したら新epochで再attachしてsnapshotから復旧する
 	 * - 受信文字数に応じてACKを返す（PC側フロー制御の材料。snapshotは大きいので即ACK）
 	 */
-	private handleTermSyncData(msg: { id: number; data: string; snapshot: boolean; epoch: number; seq: number; cols?: number; rows?: number; unicode?: string }): void {
-		const stream = this.termStreams.get(msg.id);
+	private handleTermSyncData(msg: { terminalKey: string; data: string; snapshot: boolean; epoch: number; seq: number; cols?: number; rows?: number; unicode?: string }): boolean {
+		const stream = this.termStreams.get(msg.terminalKey);
 		if (!stream || msg.epoch !== stream.epoch) {
-			return;
+			return false;
 		}
 		if (msg.snapshot) {
 			stream.lastSeq = msg.seq;
@@ -1589,17 +1684,17 @@ export class MobileController {
 			for (const listener of stream.listeners) {
 				listener(ev);
 			}
-			this.sendTermAck(msg.id, stream);
-			return;
+			this.sendTermAck(msg.terminalKey, stream);
+			return true;
 		}
 		if (stream.lastSeq === undefined) {
 			// snapshot受信前のライブ出力。この後に届くsnapshotへ反映済みなので捨てる。
-			return;
+			return false;
 		}
 		if (msg.seq !== stream.lastSeq + 1) {
 			// seq欠落（リレー再接続時の取りこぼし等）。新epochで再attachし、snapshotから復旧する。
-			this.attachTerminal(msg.id);
-			return;
+			this.attachTerminal(msg.terminalKey);
+			return false;
 		}
 		stream.lastSeq = msg.seq;
 		const ev: TermStreamEvent = { kind: 'data', data: msg.data };
@@ -1616,14 +1711,15 @@ export class MobileController {
 		}
 		stream.unackedChars += msg.data.length;
 		if (stream.unackedChars >= TERM_ACK_CHARS) {
-			this.sendTermAck(msg.id, stream);
+			this.sendTermAck(msg.terminalKey, stream);
 		}
+		return true;
 	}
 
-	private sendTermAck(id: number, stream: TermStreamState): void {
+	private sendTermAck(terminalKey: string, stream: TermStreamState): void {
 		stream.unackedChars = 0;
 		if (stream.lastSeq !== undefined) {
-			this.sendTerm({ t: 'ack', id, epoch: stream.epoch, seq: stream.lastSeq });
+			this.sendTerm(terminalKey, { t: 'ack', epoch: stream.epoch, seq: stream.lastSeq });
 		}
 	}
 
@@ -1637,15 +1733,15 @@ export class MobileController {
 			if (typeof msg.id !== 'number') {
 				return;
 			}
-			const expectedToken = this.agentToken(msg.id);
-			if (expectedToken === undefined || msg.token !== expectedToken) {
+			const terminalKey = this.terminalKeyForAgentFrame(msg.id, msg.token);
+			if (terminalKey === undefined) {
 				return; // 別ウィンドウで同じterminalIdを持つペインからの応答
 			}
 			const parsedActivity = msg.activity !== null ? parseAgentActivityState(msg.activity) : undefined;
 			const parsedInteraction = msg.interaction !== null ? parseAgentInteraction(msg.interaction) : undefined;
 			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
 				const pending = this.pendingActivityDetails.get(msg.requestId);
-				if (pending === undefined || pending.id !== msg.id || pending.activityId !== msg.activityId) { return; }
+				if (pending === undefined || pending.terminalKey !== terminalKey || pending.activityId !== msg.activityId) { return; }
 				clearTimeout(pending.timer);
 				this.pendingActivityDetails.delete(msg.requestId);
 				if (typeof msg.error === 'string') { pending.reject(new Error(msg.error)); return; }
@@ -1663,17 +1759,17 @@ export class MobileController {
 				return;
 			}
 			if (msg.t === 'none') {
-				this.clearAgentControlTimeout(msg.id);
-				this.state.agentChats.set(msg.id, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
+				this.clearAgentControlTimeout(terminalKey);
+				this.state.agentChats.set(terminalKey, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
 				this.emit({ agentChats: true });
 				return;
 			}
 			if (msg.t === 'snapshot') {
-				const previous = this.state.agentChats.get(msg.id);
+				const previous = this.state.agentChats.get(terminalKey);
 				if (previous?.epoch !== msg.epoch) {
-					this.clearAgentControlTimeout(msg.id);
+					this.clearAgentControlTimeout(terminalKey);
 				}
-				this.state.agentChats.set(msg.id, {
+				this.state.agentChats.set(terminalKey, {
 					agent: msg.agent ?? 'claude',
 					epoch: msg.epoch ?? '',
 					rev: msg.rev ?? -1,
@@ -1690,11 +1786,11 @@ export class MobileController {
 				return;
 			}
 			if (msg.t === 'delta') {
-				const existing = this.state.agentChats.get(msg.id);
+				const existing = this.state.agentChats.get(terminalKey);
 				if (!existing || existing.epoch !== msg.epoch) {
 					// epoch不一致の差分は適用できない → 全量を取り直す（欠落したまま表示しない）。
-					if (this.attachedAgents.has(msg.id)) {
-						this.sendAgentAttach(msg.id);
+					if (this.attachedAgents.has(terminalKey)) {
+						this.sendAgentAttach(terminalKey);
 					}
 					return;
 				}
@@ -1704,8 +1800,8 @@ export class MobileController {
 				const lastKnownRev = existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1;
 				const minIncomingRev = incoming.length > 0 ? Math.min(...incoming.map(m => m.rev)) : undefined;
 				if (minIncomingRev !== undefined && minIncomingRev > lastKnownRev + 1) {
-					if (this.attachedAgents.has(msg.id)) {
-						this.sendAgentAttach(msg.id);
+					if (this.attachedAgents.has(terminalKey)) {
+						this.sendAgentAttach(terminalKey);
 					}
 					return;
 				}
@@ -1714,7 +1810,7 @@ export class MobileController {
 				const withoutLive = msg.live === null ? (({ live: _live, ...rest }) => rest)(existing) : existing;
 				const withoutActivity = msg.activity === null ? (({ activity: _activity, ...rest }) => rest)(withoutLive) : withoutLive;
 				const base = msg.interaction === null ? (({ interaction: _interaction, ...rest }) => rest)(withoutActivity) : withoutActivity;
-				this.state.agentChats.set(msg.id, {
+				this.state.agentChats.set(terminalKey, {
 					...base,
 					rev: msg.rev ?? existing.rev,
 					messages: [...existing.messages, ...fresh].slice(-500),
@@ -1737,7 +1833,7 @@ export class MobileController {
 			}
 			if (msg.t === 'action-result' && typeof msg.requestId === 'string') {
 				const pending = this.pendingAgentActions.get(msg.requestId);
-				if (pending === undefined || pending.id !== msg.id || (msg.status !== 'accepted' && msg.status !== 'rejected')) {
+				if (pending === undefined || pending.terminalKey !== terminalKey || (msg.status !== 'accepted' && msg.status !== 'rejected')) {
 					return;
 				}
 				clearTimeout(pending.timer);
@@ -1746,13 +1842,13 @@ export class MobileController {
 				return;
 			}
 			if (msg.t === 'model-catalog' && typeof msg.requestId === 'string' && Array.isArray(msg.models)) {
-				const existing = this.state.agentChats.get(msg.id);
+				const existing = this.state.agentChats.get(terminalKey);
 				if (existing?.modelControl?.requestId !== msg.requestId) {
 					return;
 				}
 				const models = parseAgentModelOptions(msg.models);
-				this.clearAgentControlTimeout(msg.id, msg.requestId);
-				this.state.agentChats.set(msg.id, {
+				this.clearAgentControlTimeout(terminalKey, msg.requestId);
+				this.state.agentChats.set(terminalKey, {
 					...existing,
 					modelControl: models.length > 0
 						? { status: 'ready', models }
@@ -1762,12 +1858,12 @@ export class MobileController {
 				return;
 			}
 			if (msg.t === 'model-control-error' && typeof msg.requestId === 'string') {
-				const existing = this.state.agentChats.get(msg.id);
+				const existing = this.state.agentChats.get(terminalKey);
 				if (existing?.modelControl?.requestId !== msg.requestId) {
 					return;
 				}
-				this.clearAgentControlTimeout(msg.id, msg.requestId);
-				this.state.agentChats.set(msg.id, {
+				this.clearAgentControlTimeout(terminalKey, msg.requestId);
+				this.state.agentChats.set(terminalKey, {
 					...existing,
 					modelControl: {
 						status: 'error', models: existing.modelControl.models,
@@ -1778,7 +1874,7 @@ export class MobileController {
 				return;
 			}
 			if (msg.t === 'settings-update' && typeof msg.requestId === 'string') {
-				const existing = this.state.agentChats.get(msg.id);
+				const existing = this.state.agentChats.get(terminalKey);
 				if (existing?.modelControl?.requestId !== msg.requestId) {
 					return;
 				}
@@ -1788,15 +1884,15 @@ export class MobileController {
 				if (msg.status !== 'confirmed' && msg.status !== 'failed') {
 					return;
 				}
-				this.clearAgentControlTimeout(msg.id, msg.requestId);
+				this.clearAgentControlTimeout(terminalKey, msg.requestId);
 				if (msg.status === 'confirmed') {
-					this.state.agentChats.set(msg.id, {
+					this.state.agentChats.set(terminalKey, {
 						...existing,
 						...(msg.info !== undefined ? { info: msg.info } : {}),
 						modelControl: { status: 'ready', models: existing.modelControl.models },
 					});
 				} else if (msg.status === 'failed') {
-					this.state.agentChats.set(msg.id, {
+					this.state.agentChats.set(terminalKey, {
 						...existing,
 						modelControl: {
 							status: 'error', models: existing.modelControl.models,

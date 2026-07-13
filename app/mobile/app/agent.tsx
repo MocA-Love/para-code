@@ -44,9 +44,9 @@ import { shouldHandleLatestEntry } from '../src/agentNavigation.js';
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { workspace, agentChats, selectedWs, selectedTerminalId, connection, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
+	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
-		selectedTerminalId: s.selectedTerminalId, connection: s.connection,
+		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
 		browserTargets: s.browserTargets,
@@ -58,20 +58,20 @@ export default function AgentDetailScreen() {
 	// コンテンツがヘッダーの下を通ってボケて見える）。実高さは onLayout で測る。
 	const [headerHeight, setHeaderHeight] = useState(insets.top + 52);
 
-	// 表示対象: selectedTerminalId（ホーム/通知が遷移前に設定する）。無ければ選択中ws
+	// 表示対象: selectedTerminalKey（ホーム/通知が遷移前に設定する）。無ければ選択中ws
 	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
 	const allTerminals = workspace?.terminals ?? [];
 	const wsList = workspace?.workspaces ?? [];
 	const effectiveWsId = (selectedWs !== undefined && wsList.some(w => w.id === selectedWs) ? selectedWs : wsList[0]?.id);
-	const activeTerminal = (selectedTerminalId !== undefined ? allTerminals.find(t => t.id === selectedTerminalId) : undefined)
+	const activeTerminal = (selectedTerminalKey !== undefined ? allTerminals.find(t => t.terminalKey === selectedTerminalKey) : undefined)
 		?? allTerminals.find(t => (t.ws ?? workspace?.activeWs) === effectiveWsId);
-	const activeId = activeTerminal?.id;
-	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
+	const activeKey = activeTerminal?.terminalKey;
+	const chat = activeKey !== undefined ? agentChats.get(activeKey) : undefined;
 	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);
 	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
 	const permissionPending = activeTerminal?.agentStatus === 'permission' || chat?.interaction?.kind === 'approval';
 	const approval = chat?.interaction?.kind === 'approval' ? chat.interaction : undefined;
-	const actions = useAgentActions(activeId, chat?.agent);
+	const actions = useAgentActions(activeKey, chat?.agent);
 
 	// 入力中テキストは画面を離れても消えないよう、エージェント（ターミナル）単位の
 	// 一意キーでメモリ上に退避する。キーが分離されるので別エージェントの入力欄には混ざらない。
@@ -118,11 +118,11 @@ export default function AgentDetailScreen() {
 		router.push(agentToken !== undefined ? `/browser?token=${encodeURIComponent(agentToken)}` : '/browser');
 	};
 	const openAgentActivity = (agentId?: string) => {
-		if (activeId === undefined) { return; }
+		if (activeKey === undefined) { return; }
 		hapticSelection();
 		router.push(agentId !== undefined
-			? { pathname: '/agent-activity-detail', params: { terminalId: String(activeId), agentId, epoch: chat?.epoch ?? '' } }
-			: { pathname: '/agent-activity', params: { terminalId: String(activeId), epoch: chat?.epoch ?? '' } });
+			? { pathname: '/agent-activity-detail', params: { terminalKey: activeKey, agentId, epoch: chat?.epoch ?? '' } }
+			: { pathname: '/agent-activity', params: { terminalKey: activeKey, epoch: chat?.epoch ?? '' } });
 	};
 
 	// CLI版のUXに合わせ、本文(text)以外の連続する thinking / tool_use / tool_result を
@@ -185,12 +185,12 @@ export default function AgentDetailScreen() {
 	}, [chat?.messages]);
 
 	useEffect(() => {
-		if (activeId === undefined) {
+		if (activeKey === undefined) {
 			return;
 		}
-		attachAgent(activeId);
-		return () => detachAgent(activeId);
-	}, [activeId, attachAgent, detachAgent]);
+		attachAgent(activeKey);
+		return () => detachAgent(activeKey);
+	}, [activeKey, attachAgent, detachAgent]);
 
 	// 自動スクロールは「sticky（最下部追従）モード」の状態ベースで制御する。
 	// 開いた直後・対象切替直後は sticky で、onContentSizeChange のたびに末尾へ
@@ -224,9 +224,9 @@ export default function AgentDetailScreen() {
 		userMomentumRef.current = false;
 		setSticky(true);
 		prevCountRef.current = 0;
-	}, [activeId, setSticky]);
+	}, [activeKey, setSticky]);
 	useEffect(() => {
-		if (activeId === undefined || !shouldHandleLatestEntry(handledLatestEntryRef.current, latestEntry)) {
+		if (activeKey === undefined || !shouldHandleLatestEntry(handledLatestEntryRef.current, latestEntry)) {
 			return;
 		}
 		handledLatestEntryRef.current = latestEntry;
@@ -237,7 +237,7 @@ export default function AgentDetailScreen() {
 		setSticky(true);
 		const frame = requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
 		return () => cancelAnimationFrame(frame);
-	}, [activeId, latestEntry, setSticky]);
+	}, [activeKey, latestEntry, setSticky]);
 	const messageCount = chat?.messages.length ?? 0;
 	useEffect(() => {
 		const delta = messageCount - prevCountRef.current;
@@ -314,7 +314,7 @@ export default function AgentDetailScreen() {
 		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 			<View style={styles.chatArea}>
-				{activeId === undefined ? (
+				{activeKey === undefined ? (
 					<Text style={[styles.placeholder, { marginTop: headerHeight }]}>ターミナルがありません。ターミナルタブから作成し、claude / codex を起動してください。</Text>
 				) : chat === undefined ? (
 					<Text style={[styles.placeholder, { marginTop: headerHeight }]}>読み込み中…</Text>
@@ -325,7 +325,7 @@ export default function AgentDetailScreen() {
 							claude / codex をこのターミナルで起動（または一度発言）すると表示されます。
 							生の画面はターミナルタブで確認できます。
 						</Text>
-						<Pressable style={styles.retryBtn} onPress={() => { hapticImpact('light'); refreshAgent(activeId); }}>
+						<Pressable style={styles.retryBtn} onPress={() => { hapticImpact('light'); refreshAgent(activeKey); }}>
 							<Ionicons name="refresh" size={14} color={colors.text} />
 							<Text style={styles.retryText}>再試行</Text>
 						</Pressable>
@@ -399,11 +399,11 @@ export default function AgentDetailScreen() {
 			</View>
 			{hasActivityHistory && chat?.activity !== undefined ? <View style={[styles.activityStripOverlay, { top: headerHeight + 4 }]}><AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} /></View> : null}
 
-			{permissionPending && activeId !== undefined ? (
+			{permissionPending && activeKey !== undefined ? (
 				<View style={styles.approvalBarWrap}>
 					<ApprovalCard
-						key={approval?.id ?? `legacy:${chat?.epoch ?? activeId}`}
-						interactionId={approval?.id ?? `legacy:${chat?.epoch ?? activeId}`}
+						key={approval?.id ?? `legacy:${chat?.epoch ?? activeKey}`}
+						interactionId={approval?.id ?? `legacy:${chat?.epoch ?? activeKey}`}
 						onApprove={actions.approve}
 						title={approval?.title}
 						detail={approval?.detail ?? findLatestApprovalRequest(chat)}
@@ -415,7 +415,7 @@ export default function AgentDetailScreen() {
 			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
 				<AgentComposer
 					draftKey={draftKey}
-					activeId={activeId}
+					activeTerminalKey={activeKey}
 					sessionEpoch={chat?.epoch}
 					agent={chat !== undefined && !chat.none ? chat.agent : undefined}
 					model={chat?.info?.model}
