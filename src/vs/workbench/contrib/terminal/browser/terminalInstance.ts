@@ -22,6 +22,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import * as path from '../../../../base/common/path.js';
 import { OS, OperatingSystem, isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ScrollbarVisibility } from '../../../../base/common/scrollable.js';
+import { removeAnsiEscapeCodes } from '../../../../base/common/strings.js';
 import { URI } from '../../../../base/common/uri.js';
 import { TabFocus } from '../../../../editor/browser/config/tabFocus.js';
 import * as nls from '../../../../nls.js';
@@ -199,6 +200,13 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	private _processName: string = '';
 	private _sequence?: string;
 	private _staticTitle?: string;
+	private _transientTitle?: {
+		readonly owner: string;
+		readonly title: string;
+		readonly expectedSequence: string;
+		readonly persistentTitle: string;
+		readonly persistentTitleSource: TitleEventSource;
+	};
 	private _workspaceFolder?: IWorkspaceFolder;
 	private _labelComputer?: TerminalLabelComputer;
 	private _userHome?: string;
@@ -297,6 +305,9 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	get processName(): string { return this._processName; }
 	get sequence(): string | undefined { return this._sequence; }
 	get staticTitle(): string | undefined { return this._staticTitle; }
+	get transientTitle(): string | undefined { return this._transientTitle?.title; }
+	get persistentTitle(): string { return this._transientTitle?.persistentTitle ?? this._title; }
+	get persistentTitleSource(): TitleEventSource { return this._transientTitle?.persistentTitleSource ?? this._titleSource; }
 	get progressState(): IProgressState | undefined { return this.xterm?.progressState; }
 	get workspaceFolder(): IWorkspaceFolder | undefined { return this._workspaceFolder; }
 	get cwd(): string | undefined { return this._cwd; }
@@ -1858,6 +1869,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	}
 
 	async reuseTerminal(shell: IShellLaunchConfig, reset: boolean = false): Promise<void> {
+		this._clearTransientTitle();
 		// Unsubscribe any key listener we may have.
 		this._pressAnyKeyToCloseListener?.dispose();
 		this._pressAnyKeyToCloseListener = undefined;
@@ -2118,6 +2130,9 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	}
 
 	private _updateTitleProperties(title: string | undefined, eventSource: TitleEventSource): string {
+		if (eventSource === TitleEventSource.Api || (eventSource === TitleEventSource.Sequence && title !== this._transientTitle?.expectedSequence)) {
+			this._transientTitle = undefined;
+		}
 		if (title === undefined) {
 			return this._processName;
 		}
@@ -2401,6 +2416,38 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 			title = undefined;
 		}
 		this._setTitle(title, source ?? TitleEventSource.Api);
+	}
+
+	setTransientTitle(owner: string, title: string, expectedSequence: string): boolean {
+		const sanitizedTitle = removeAnsiEscapeCodes(title).replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+		if (!this._labelComputer || this._staticTitle || !owner || !sanitizedTitle || this._sequence !== expectedSequence
+			|| (this._transientTitle !== undefined && this._transientTitle.owner !== owner)) {
+			return false;
+		}
+		this._transientTitle = {
+			owner,
+			title: sanitizedTitle,
+			expectedSequence,
+			persistentTitle: this._transientTitle?.persistentTitle ?? this._title,
+			persistentTitleSource: this._transientTitle?.persistentTitleSource ?? this._titleSource,
+		};
+		this._labelComputer.refreshLabel(this);
+		return true;
+	}
+
+	clearTransientTitle(owner: string): void {
+		if (this._transientTitle?.owner !== owner) {
+			return;
+		}
+		this._clearTransientTitle();
+	}
+
+	private _clearTransientTitle(): void {
+		if (!this._transientTitle) {
+			return;
+		}
+		this._transientTitle = undefined;
+		this._labelComputer?.refreshLabel(this);
 	}
 
 	private _setTitle(title: string | undefined, eventSource: TitleEventSource): void {
@@ -2724,7 +2771,7 @@ export class TerminalLabelComputer extends Disposable {
 		super();
 	}
 
-	refreshLabel(instance: Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'cwd' | 'fixedCols' | 'fixedRows' | 'initialCwd' | 'processName' | 'sequence' | 'userHome' | 'workspaceFolder' | 'staticTitle' | 'capabilities' | 'title' | 'description'>, reset?: boolean): void {
+	refreshLabel(instance: Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'cwd' | 'fixedCols' | 'fixedRows' | 'initialCwd' | 'processName' | 'sequence' | 'userHome' | 'workspaceFolder' | 'staticTitle' | 'transientTitle' | 'capabilities' | 'title' | 'description'>, reset?: boolean): void {
 		const tabs = this._terminalConfigurationService.config.tabs;
 		const useAgentCliTitle = tabs.allowAgentCliTitle && TerminalLabelComputer.agentCliShellTypes.has(instance.shellType as GeneralShellType);
 		const titleTemplate = instance.shellLaunchConfig.titleTemplate ?? (useAgentCliTitle ? '${sequence}' : tabs.title);
@@ -2736,7 +2783,7 @@ export class TerminalLabelComputer extends Disposable {
 	}
 
 	computeLabel(
-		instance: Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'cwd' | 'fixedCols' | 'fixedRows' | 'initialCwd' | 'processName' | 'sequence' | 'userHome' | 'workspaceFolder' | 'staticTitle' | 'capabilities' | 'title' | 'description' | 'progressState'>,
+		instance: Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'cwd' | 'fixedCols' | 'fixedRows' | 'initialCwd' | 'processName' | 'sequence' | 'userHome' | 'workspaceFolder' | 'staticTitle' | 'transientTitle' | 'capabilities' | 'title' | 'description' | 'progressState'>,
 		labelTemplate: string,
 		labelType: TerminalLabelType,
 		reset?: boolean
@@ -2776,6 +2823,9 @@ export class TerminalLabelComputer extends Disposable {
 		}
 		if (!reset && instance.staticTitle && labelType === TerminalLabelType.Title) {
 			return instance.staticTitle.replace(/[\n\r\t]/g, '') || templateProperties.process?.replace(/[\n\r\t]/g, '') || '';
+		}
+		if (!reset && instance.transientTitle && labelType === TerminalLabelType.Title) {
+			return instance.transientTitle.replace(/[\n\r\t]/g, '') || templateProperties.process?.replace(/[\n\r\t]/g, '') || '';
 		}
 		const detection = instance.capabilities.has(TerminalCapability.CwdDetection) || instance.capabilities.has(TerminalCapability.NaiveCwdDetection);
 		const folders = this._workspaceContextService.getWorkspace().folders;

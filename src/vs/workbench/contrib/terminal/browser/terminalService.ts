@@ -745,7 +745,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 		if (instance.staticTitle) {
 			this._primaryBackend?.updateTitle(instance.persistentProcessId, instance.staticTitle, TitleEventSource.Api);
 		} else {
-			this._primaryBackend?.updateTitle(instance.persistentProcessId, instance.title, instance.titleSource);
+			this._primaryBackend?.updateTitle(instance.persistentProcessId, instance.persistentTitle, instance.persistentTitleSource);
 		}
 	}
 

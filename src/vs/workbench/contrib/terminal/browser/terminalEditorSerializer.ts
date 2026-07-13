@@ -38,8 +38,8 @@ export class TerminalInputSerializer implements IEditorSerializer {
 		return {
 			id: instance.persistentProcessId!,
 			pid: instance.processId || 0,
-			title: instance.title,
-			titleSource: instance.titleSource,
+			title: instance.persistentTitle,
+			titleSource: instance.persistentTitleSource,
 			cwd: '',
 			icon: instance.icon,
 			color: instance.color,
