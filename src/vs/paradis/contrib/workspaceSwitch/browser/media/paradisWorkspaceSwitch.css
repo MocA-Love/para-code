@@ -68,7 +68,11 @@
 /* アクティブ行の常時ハイライト。以前はチェックマークのアイコン色だけが「今開いているワークスペース」の
  * 唯一の目印だったため、エージェント状態アイコン (working/permission/review) に上書きされると
  * 見分けがつかなくなっていた。行の背景と名前の太字はアイコンの状態と独立させ、常に残るようにする。 */
-.paradis-workspaces-list .paradis-worktree-row.active {
+/* allow-any-unicode-next-line */
+/* 背景は contents 内の .paradis-worktree-row でなく親の .monaco-tl-row に付ける。
+ * contents 側に付けると、リスト選択時に twistie 領域だけリスト標準の選択背景が露出して
+ * 左端に暗い継ぎ目が見える (list.activeSelectionBackground が .monaco-list-row 全体に付くため)。 */
+.paradis-workspaces-list .monaco-tl-row:has(.paradis-worktree-row.active) {
 	background-color: color-mix(in srgb, var(--vscode-charts-blue) 12%, transparent);
 }
 
