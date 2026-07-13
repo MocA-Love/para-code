@@ -427,6 +427,15 @@ export interface AgentChatState {
 export interface AgentInteraction {
 	kind: 'question' | 'approval';
 	id: string;
+	title?: string;
+	detail?: string;
+	choices?: AgentApprovalChoice[];
+}
+
+export interface AgentApprovalChoice {
+	id: string;
+	label: string;
+	tone: 'approve' | 'neutral' | 'deny';
 }
 
 export type AgentQuestionAnswer =
@@ -440,6 +449,37 @@ export type AgentQuestionAnswer =
  */
 export function isAgentWaiting(status: string | undefined): boolean {
 	return status === 'permission' || status === 'question';
+}
+
+function parseAgentInteraction(value: unknown): AgentInteraction | undefined {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) { return undefined; }
+	const raw = value as Record<string, unknown>;
+	if ((raw['kind'] !== 'question' && raw['kind'] !== 'approval') || typeof raw['id'] !== 'string' || raw['id'].length === 0 || raw['id'].length > 500) {
+		return undefined;
+	}
+	if (raw['kind'] === 'question') {
+		return { kind: 'question', id: raw['id'] };
+	}
+	const title = typeof raw['title'] === 'string' && raw['title'].length <= 200 ? raw['title'] : undefined;
+	const detail = typeof raw['detail'] === 'string' && raw['detail'].length <= 6_000 ? raw['detail'] : undefined;
+	let choices: AgentApprovalChoice[] | undefined;
+	if (Array.isArray(raw['choices']) && raw['choices'].length <= 12) {
+		const parsed: AgentApprovalChoice[] = [];
+		for (const candidate of raw['choices']) {
+			if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { parsed.length = 0; break; }
+			const choice = candidate as Record<string, unknown>;
+			if (typeof choice['id'] !== 'string' || !/^[A-Za-z0-9._:-]{1,100}$/.test(choice['id'])
+				|| typeof choice['label'] !== 'string' || choice['label'].length === 0 || choice['label'].length > 200
+				|| (choice['tone'] !== 'approve' && choice['tone'] !== 'neutral' && choice['tone'] !== 'deny')
+				|| parsed.some(value => value.id === choice['id'])) {
+				parsed.length = 0;
+				break;
+			}
+			parsed.push({ id: choice['id'], label: choice['label'], tone: choice['tone'] });
+		}
+		choices = parsed;
+	}
+	return { kind: 'approval', id: raw['id'], ...(title !== undefined ? { title } : {}), ...(detail !== undefined ? { detail } : {}), ...(choices !== undefined ? { choices } : {}) };
 }
 
 /**
@@ -857,10 +897,13 @@ export class MobileController {
 		}, 60_000);
 	}
 
-	answerAgentApproval(id: number, interactionId: string, choice: 'yes' | 'no'): Promise<boolean> {
+	answerAgentApproval(id: number, interactionId: string, choice: string): Promise<boolean> {
 		const chat = this.state.agentChats.get(id);
 		if (this.state.connection !== 'online' || chat?.capabilities?.agentActions !== true
-			|| chat.interaction?.kind !== 'approval' || chat.interaction.id !== interactionId) {
+			|| chat.interaction?.kind !== 'approval' || chat.interaction.id !== interactionId
+			|| (chat.interaction.choices !== undefined
+				? !chat.interaction.choices.some(candidate => candidate.id === choice)
+				: choice !== 'yes' && choice !== 'no')) {
 			return Promise.resolve(false);
 		}
 		return this.sendAgentAction(id, {
@@ -1599,10 +1642,7 @@ export class MobileController {
 				return; // 別ウィンドウで同じterminalIdを持つペインからの応答
 			}
 			const parsedActivity = msg.activity !== null ? parseAgentActivityState(msg.activity) : undefined;
-			const parsedInteraction = msg.interaction !== null && (msg.interaction?.kind === 'question' || msg.interaction?.kind === 'approval')
-				&& typeof msg.interaction.id === 'string' && msg.interaction.id.length > 0
-				? { kind: msg.interaction.kind, id: msg.interaction.id } satisfies AgentInteraction
-				: undefined;
+			const parsedInteraction = msg.interaction !== null ? parseAgentInteraction(msg.interaction) : undefined;
 			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
 				const pending = this.pendingActivityDetails.get(msg.requestId);
 				if (pending === undefined || pending.id !== msg.id || pending.activityId !== msg.activityId) { return; }

@@ -69,7 +69,8 @@ export default function AgentDetailScreen() {
 	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
 	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);
 	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
-	const permissionPending = activeTerminal?.agentStatus === 'permission';
+	const permissionPending = activeTerminal?.agentStatus === 'permission' || chat?.interaction?.kind === 'approval';
+	const approval = chat?.interaction?.kind === 'approval' ? chat.interaction : undefined;
 	const actions = useAgentActions(activeId, chat?.agent);
 
 	// 入力中テキストは画面を離れても消えないよう、エージェント（ターミナル）単位の
@@ -400,7 +401,14 @@ export default function AgentDetailScreen() {
 
 			{permissionPending && activeId !== undefined ? (
 				<View style={styles.approvalBarWrap}>
-					<ApprovalCard key={chat?.interaction?.kind === 'approval' ? chat.interaction.id : `legacy:${chat?.epoch ?? activeId}`} interactionId={chat?.interaction?.kind === 'approval' ? chat.interaction.id : `legacy:${chat?.epoch ?? activeId}`} onApprove={actions.approve} detail={findLatestApprovalRequest(chat)} />
+					<ApprovalCard
+						key={approval?.id ?? `legacy:${chat?.epoch ?? activeId}`}
+						interactionId={approval?.id ?? `legacy:${chat?.epoch ?? activeId}`}
+						onApprove={actions.approve}
+						title={approval?.title}
+						detail={approval?.detail ?? findLatestApprovalRequest(chat)}
+						choices={approval?.choices}
+					/>
 				</View>
 			) : null}
 

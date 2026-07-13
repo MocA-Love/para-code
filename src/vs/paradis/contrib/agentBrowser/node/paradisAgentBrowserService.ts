@@ -141,6 +141,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * workbench が listPaneStatuses でポーリングし、Workspaces ビューのスピナー表示に使う。
 	 */
 	private readonly _paneStatuses = new Map<string, IParadisPaneStatusEntry>();
+	/** transcript/app-server由来の承認待ちを一度観測したtoken。解除時だけpermissionをworkingへ戻す。 */
+	private readonly _activityApprovalTokens = new Set<string>();
 	/**
 	 * 一度でもエージェントhook (POST /agent-hook) を発火したペイントークンの集合。
 	 * 「そのターミナルでエージェントCLIが動いた実績」の判定に使う（プレーンなターミナルと
@@ -233,6 +235,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._register(onParadisAgentPaneActivity(({ token, activity }) => {
 			const entry = this._paneStatuses.get(token);
 			const current = entry?.status;
+			const hadPendingApproval = this._activityApprovalTokens.has(token);
+			if (activity.pendingApproval) {
+				this._activityApprovalTokens.add(token);
+			} else {
+				this._activityApprovalTokens.delete(token);
+			}
 			// hookが報告済みのcwd (スコープ解決フォールバック用) は補正更新でも維持する
 			const cwd = entry?.cwd;
 			if (activity.pendingQuestion) {
@@ -241,7 +249,13 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				return; // 質問への回答待ちが最優先。バックグラウンドタスク補正で上書きさせない
 			}
-			if (current === 'question') {
+			if (activity.pendingApproval) {
+				if (current !== 'permission') {
+					this._paneStatuses.set(token, { status: 'permission', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}) });
+				}
+				return;
+			}
+			if (current === 'question' || (current === 'permission' && hadPendingApproval)) {
 				// 回答された → エージェントは続行する (直後のツール実行hookが上書きしてくれるが、
 				// 来ない場合でも赤表示が残らないよう working へ戻す)
 				this._paneStatuses.set(token, { status: 'working', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}) });
@@ -396,6 +410,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		this._paneShells.delete(token);
 		this._paneStatuses.delete(token);
+		this._activityApprovalTokens.delete(token);
 		this._agentHookTokens.delete(token);
 		this._seenTokens.delete(token);
 		clearParadisAgentPaneActivity(token);
@@ -718,6 +733,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 許可/拒否バーが一瞬出る（質問回答待ち中に本物の許可プロンプトは並存しない）。
 		if ((normalized === 'working' || normalized === 'permission') && activity.pendingQuestion) {
 			normalized = 'question';
+		} else if ((normalized === 'working' || normalized === 'question') && activity.pendingApproval) {
+			normalized = 'permission';
 		}
 
 		if (normalized === 'idle') {

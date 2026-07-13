@@ -32,10 +32,11 @@ suite('ParadisAgentBrowserStatus', () => {
 	});
 
 	test('clears transcript activity when its pane is retired', () => {
-		setParadisAgentPaneActivity('retired-pane', { backgroundTasks: new Map([['task-1', 1]]), pendingQuestion: true });
+		setParadisAgentPaneActivity('retired-pane', { backgroundTasks: new Map([['task-1', 1]]), pendingQuestion: true, pendingApproval: true });
 		clearParadisAgentPaneActivity('retired-pane');
 		assert.strictEqual(getParadisAgentPaneActivity('retired-pane').backgroundTasks.size, 0);
 		assert.strictEqual(getParadisAgentPaneActivity('retired-pane').pendingQuestion, false);
+		assert.strictEqual(getParadisAgentPaneActivity('retired-pane').pendingApproval, false);
 	});
 
 	test('sanitizes hook payload without dropping event-specific fields', () => {
