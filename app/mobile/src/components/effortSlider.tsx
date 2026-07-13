@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AccessibilityInfo, Animated, LayoutChangeEvent, PanResponder, StyleSheet, Text, View } from 'react-native';
 import { colors, mono } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
+import { effortSliderGestureBehavior } from './effortSliderBehavior.js';
 
 /**
  * モデルが提供する順序を保ったまま選択する、コンポーザー用のEffortスライダー。
@@ -26,6 +27,15 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 	const sliderRef = useRef<View>(null);
 	const sliderPageX = useRef(0);
 	const sliderWidth = useRef(0);
+	const dragging = useRef(false);
+	const selectedIndexRef = useRef(selectedIndex);
+	const effortsRef = useRef(efforts);
+	const valueRef = useRef(value);
+	const onChangeRef = useRef(onChange);
+	selectedIndexRef.current = selectedIndex;
+	effortsRef.current = efforts;
+	valueRef.current = value;
+	onChangeRef.current = onChange;
 	const progress = efforts.length <= 1 ? 0 : previewIndex / (efforts.length - 1);
 	const activeEffort = efforts[previewIndex] ?? efforts[0] ?? '';
 	const isMaximum = activeEffort === 'max' || activeEffort === 'ultra';
@@ -45,7 +55,9 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 	}, []);
 
 	useEffect(() => {
-		setPreviewIndex(selectedIndex);
+		if (!dragging.current) {
+			setPreviewIndex(selectedIndex);
+		}
 	}, [selectedIndex]);
 
 	useEffect(() => {
@@ -121,23 +133,32 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 
 	const commitIndex = useCallback((index: number) => {
 		const safeIndex = setPreview(index);
-		const nextEffort = efforts[safeIndex];
-		if (nextEffort !== undefined && nextEffort !== value) {
-			onChange(nextEffort);
+		const nextEffort = effortsRef.current[safeIndex];
+		if (nextEffort !== undefined && nextEffort !== valueRef.current) {
+			onChangeRef.current(nextEffort);
 		}
-	}, [efforts, onChange, setPreview, value]);
+	}, [setPreview]);
 
+	const gesture = effortSliderGestureBehavior(disabled, efforts.length);
 	const panResponder = useMemo(() => PanResponder.create({
-		onStartShouldSetPanResponder: () => !disabled && efforts.length > 1,
-		onMoveShouldSetPanResponder: () => !disabled && efforts.length > 1,
-		onPanResponderGrant: event => { setPreview(indexFromPageX(event.nativeEvent.pageX)); },
+		onStartShouldSetPanResponder: () => gesture.enabled,
+		onMoveShouldSetPanResponder: () => gesture.enabled,
+		onPanResponderGrant: event => {
+			dragging.current = true;
+			setPreview(indexFromPageX(event.nativeEvent.pageX));
+		},
 		onPanResponderMove: (_event, gestureState) => { setPreview(indexFromPageX(gestureState.moveX)); },
 		onPanResponderRelease: (event, gestureState) => {
 			const pageX = gestureState.moveX === 0 ? event.nativeEvent.pageX : gestureState.moveX;
+			dragging.current = false;
 			commitIndex(indexFromPageX(pageX));
 		},
-		onPanResponderTerminate: () => { setPreviewIndex(selectedIndex); },
-	}), [commitIndex, disabled, efforts.length, indexFromPageX, selectedIndex, setPreview]);
+		onPanResponderTerminationRequest: () => gesture.allowTermination,
+		onPanResponderTerminate: () => {
+			dragging.current = false;
+			setPreviewIndex(selectedIndexRef.current);
+		},
+	}), [commitIndex, gesture.allowTermination, gesture.enabled, indexFromPageX, setPreview]);
 
 	if (efforts.length === 0) {
 		return null;

@@ -131,7 +131,7 @@ export default function TerminalScreen() {
 					value={input}
 					onChangeText={setInput}
 					onSubmit={submit}
-					placeholder="コマンドまたは回答を入力…（空でEnter送信）"
+					placeholder="コマンドまたは回答を入力…"
 					sendIcon={input ? 'arrow-up' : 'return-down-back'}
 					monospace
 					tools={

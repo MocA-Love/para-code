@@ -35,6 +35,7 @@ import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFra
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
+import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
 const encoder = new TextEncoder();
@@ -163,6 +164,7 @@ interface TermSyncState {
  */
 export class ParadisMobileWorkspaceProvider extends Disposable {
 	private confirmedAgentPaneTokens = new Set<string>();
+	private readonly provisionalAgentPaneTokens = new Set<string>();
 	// ターミナルID → その出力購読(dispose用)。1端末につき最後にattachしたモバイルへ出力を返す。
 	private readonly attachedTerminals = this._register(new DisposableMap<number>());
 	// ターミナルID → 出力の宛先モバイルID。
@@ -419,7 +421,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// モバイル側はホーム一覧・Live Activity をこのフラグで絞る。
 			const paneToken = this.paneTokenService.getTokenForInstance(inst.instanceId);
 			const agent = this.agentStatusStore.isAgentInstance(inst.instanceId)
-				|| (paneToken !== undefined && this.confirmedAgentPaneTokens.has(paneToken));
+				|| (paneToken !== undefined && (this.confirmedAgentPaneTokens.has(paneToken) || this.provisionalAgentPaneTokens.has(paneToken)));
 			return {
 				id: inst.instanceId,
 				title: inst.title,
@@ -441,6 +443,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		this.confirmedAgentPaneTokens = next;
+		this.pushStateSoon();
+	}
+
+	/** shell integrationが検知した対話型Agent CLIを、session確定前からホームへ反映する。 */
+	setProvisionalAgentPaneToken(token: string, active: boolean): void {
+		const changed = active ? !this.provisionalAgentPaneTokens.has(token) : this.provisionalAgentPaneTokens.has(token);
+		if (!changed) { return; }
+		if (active) { this.provisionalAgentPaneTokens.add(token); } else { this.provisionalAgentPaneTokens.delete(token); }
 		this.pushStateSoon();
 	}
 
@@ -498,7 +508,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} catch {
 			return;
 		}
-		const sendMessage = msg.t === 'action/sendMessage' && typeof msg.text === 'string';
+		const sendMessage = msg.t === 'action/sendMessage' && typeof msg.text === 'string'
+			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
 		const claudeSetting = msg.t === 'action/claudeSetting' && (msg.setting === 'model' || msg.setting === 'effort')
 			&& typeof msg.value === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.value)
 			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
@@ -527,7 +538,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		try {
 			if (sendMessage) {
-				await instance.sendText(msg.text as string, true, true);
+				const outcome = await paradisSendAgentMessageToTui(
+					msg.text as string,
+					(text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode),
+					async () => {
+						const currentInstance = this.allInstances().find(candidate => candidate === instance && candidate.instanceId === msg.id
+							&& this.paneTokenService.getTokenForInstance(candidate.instanceId) === msg.token);
+						return currentInstance !== undefined && this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
+					},
+				);
+				if (!outcome.executed) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', outcome.consumed ? 'メッセージの貼り付け後にエージェントセッションが変わりました' : '送信前にエージェントセッションが変わりました', outcome.consumed);
+					return;
+				}
 			} else if (claudeSetting) {
 				await this.modelSwitchGuard.execute(instance, `/${msg.setting as 'model' | 'effort'} ${msg.value as string}`,
 					// クロージャ内では typeof ガードによる絞り込みが効かないため as で明示する（ガード済み）
@@ -571,10 +594,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 	}
 
-	private sendAgentActionResult(mobileId: string, id: number, token: string, requestId: string, status: 'accepted' | 'rejected', code?: string, message?: string): void {
+	private sendAgentActionResult(mobileId: string, id: number, token: string, requestId: string, status: 'accepted' | 'rejected', code?: string, message?: string, consumed?: boolean): void {
 		this.sendFrame({
 			ch: Channels.Agent, ws: undefined, seq: 0, mobileId,
-			payload: VSBuffer.fromString(JSON.stringify({ t: 'action-result', id, token, requestId, status, ...(code !== undefined ? { code } : {}), ...(message !== undefined ? { message } : {}) })),
+			payload: VSBuffer.fromString(JSON.stringify({ t: 'action-result', id, token, requestId, status, ...(code !== undefined ? { code } : {}), ...(message !== undefined ? { message } : {}), ...(consumed === true ? { consumed: true } : {}) })),
 		});
 	}
 

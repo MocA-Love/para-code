@@ -47,6 +47,7 @@ import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { ParadisAgentTerminalHintParser } from './paradisAgentTerminalHints.js';
 import { Channels } from '../common/paradisMobileProtocol.js';
+import { paradisInteractiveAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
@@ -182,21 +183,28 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// shared process のセッション探索を前倒しするトリガーとして通知する。起動の確定情報には
 		// 使わない (探索側の鮮度ガードで `claude --help` 等の空振りは自然に弾かれる)。
 		// hookがまだ届かない環境 (Codex の hook 未trust等) での検知の主経路になる。
+		const detectAgentCommand = (instance: ITerminalInstance, commandLine: string) => {
+			const agent = paradisInteractiveAgentCommand(commandLine.trim());
+			if (agent === undefined) { return; }
+			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
+			if (paneToken === undefined) { return; }
+			this.provider.setProvisionalAgentPaneToken(paneToken, true);
+			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
+			this.service.notifyAgentCliCommand(paneToken, agent, cwd).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed', err));
+		};
 		const commandExecuted = this._register(terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandExecuted));
 		this._register(commandExecuted.event(({ instance, data: command }) => {
-			const commandLine = (command.command ?? '').trim();
-			// 先頭の環境変数代入 (FOO=1 claude ...) を剥がし、最初の実行語のbasenameで判定する。
-			const firstWord = commandLine.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+/, '').split(/\s+/)[0] ?? '';
-			const base = (firstWord.split(/[\\/]/).pop() ?? '').replace(/\.exe$/i, '');
-			if (base !== 'claude' && base !== 'codex') {
-				return;
-			}
+			detectAgentCommand(instance, command.command ?? '');
+		}));
+		for (const instance of terminalService.instances) {
+			const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+			if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
+		}
+		const commandFinished = this._register(terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandFinished));
+		this._register(commandFinished.event(({ instance, data: command }) => {
+			if (paradisInteractiveAgentCommand((command.command ?? '').trim()) === undefined) { return; }
 			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
-			if (paneToken === undefined) {
-				return;
-			}
-			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
-			this.service.notifyAgentCliCommand(paneToken, base, cwd).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed', err));
+			if (paneToken !== undefined) { this.provider.setProvisionalAgentPaneToken(paneToken, false); }
 		}));
 
 		// Omnara旧実装で実績のあるPTY文字列ヒューリスティックは、状態判定には使わず
@@ -206,6 +214,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		}
 		this._register(terminalService.onDidCreateInstance(instance => this.trackTerminalHints(instance)));
 		this._register(terminalService.onDidDisposeInstance(instance => {
+			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
+			if (paneToken !== undefined) { this.provider.setProvisionalAgentPaneToken(paneToken, false); }
 			this.terminalHintListeners.deleteAndDispose(instance.instanceId);
 			this.terminalHintParsers.delete(instance.instanceId);
 		}));

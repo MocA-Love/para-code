@@ -2,7 +2,7 @@
 
 import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
-import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, revokeSelfOnRelay, saveCredentials, type KeyStore } from './store.js';
+import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
 class MemoryKeyStore implements KeyStore {
@@ -139,7 +139,7 @@ describe('MobileController', () => {
 		expect(latest?.connection).toBe('online');
 
 		// PC → state
-		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 1, title: 'zsh' }] })));
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 1, title: 'zsh', agentToken: 'agent-1' }] })));
 		await flush();
 		expect(latest?.workspace?.workspaces[0]!.name).toBe('para-code');
 
@@ -237,6 +237,8 @@ describe('MobileController', () => {
 		await flush();
 
 		const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+		pcMux.send(Channels.State, enc({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 1, title: 'claude', agentToken: 'agent-1' }] }));
+		await flush();
 
 		// term 出力更新: terminalOutput だけ新参照になり、agentChats/notifications は据え置き。
 		const beforeTerm = emits[emits.length - 1]!;
@@ -249,7 +251,7 @@ describe('MobileController', () => {
 
 		// agentChat 更新: agentChats だけ新参照になり、terminalOutput/notifications は据え置き。
 		const beforeAgent = emits[emits.length - 1]!;
-		pcMux.send(Channels.Agent, enc({ t: 'snapshot', id: 1, agent: 'claude', epoch: 'e1', rev: 0, messages: [] }));
+		pcMux.send(Channels.Agent, enc({ t: 'snapshot', id: 1, token: 'agent-1', agent: 'claude', epoch: 'e1', rev: 0, messages: [] }));
 		await flush();
 		const afterAgent = emits[emits.length - 1]!;
 		expect(afterAgent.agentChats).not.toBe(beforeAgent.agentChats);
@@ -284,7 +286,8 @@ describe('MobileController Codex model control', () => {
 		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
 		const requests: Record<string, unknown>[] = [];
 		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
-		pcMux.send(Channels.Agent, encode({ t: 'snapshot', id: 7, agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [], info: { model: 'gpt-5.6-sol', effort: 'low' } }));
+		pcMux.send(Channels.State, encode({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 7, title: 'codex', agentToken: 'agent-7' }] }));
+		pcMux.send(Channels.Agent, encode({ t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [], info: { model: 'gpt-5.6-sol', effort: 'low' } }));
 		await flush();
 		return { controller, pcMux, encode, requests, latestState: () => latest };
 	}
@@ -297,7 +300,7 @@ describe('MobileController Codex model control', () => {
 		expect({ t: catalogRequest.t, id: catalogRequest.id }).toEqual({ t: 'model-catalog', id: 7 });
 
 		pcMux.send(Channels.Agent, encode({
-			t: 'model-catalog', id: 7, requestId: catalogRequest.requestId,
+			t: 'model-catalog', id: 7, token: 'agent-7', requestId: catalogRequest.requestId,
 			models: [{
 				id: 'gpt-5.6-terra', model: 'gpt-5.6-terra', displayName: 'GPT-5.6 Terra', description: 'strong',
 				efforts: [{ value: 'low', description: 'fast' }, { value: 'max', description: 'deep' }, { value: 'ultra', description: 'agents' }],
@@ -318,11 +321,11 @@ describe('MobileController Codex model control', () => {
 		await flush();
 		const updateRequest = requests[1] as { t: string; id: number; requestId: string; model: string; effort: string };
 		expect(updateRequest).toEqual({
-			t: 'settings-update', id: 7, requestId: updateRequest.requestId, model: 'gpt-5.6-terra', effort: 'ultra',
+			t: 'settings-update', id: 7, token: 'agent-7', requestId: updateRequest.requestId, model: 'gpt-5.6-terra', effort: 'ultra',
 		});
-		pcMux.send(Channels.Agent, encode({ t: 'settings-update', id: 7, requestId: updateRequest.requestId, status: 'pending' }));
+		pcMux.send(Channels.Agent, encode({ t: 'settings-update', id: 7, token: 'agent-7', requestId: updateRequest.requestId, status: 'pending' }));
 		pcMux.send(Channels.Agent, encode({
-			t: 'settings-update', id: 7, requestId: updateRequest.requestId, status: 'confirmed',
+			t: 'settings-update', id: 7, token: 'agent-7', requestId: updateRequest.requestId, status: 'confirmed',
 			info: { model: 'gpt-5.6-terra', effort: 'ultra' },
 		}));
 		await flush();
@@ -332,26 +335,42 @@ describe('MobileController Codex model control', () => {
 		});
 	});
 
+	it('does not fall back to an unsafe combined PTY send before agent actions are ready', async () => {
+		const { controller, requests } = await setup();
+		await expect(controller.sendAgentMessage(7, '送信しない')).resolves.toEqual({
+			status: 'rejected', message: 'エージェントセッションを準備中です。少し待ってから再送してください。',
+		});
+		expect(requests).toEqual([]);
+	});
+
 	it('ignores stale responses and rejects a malformed catalog at the relay boundary', async () => {
 		const { controller, pcMux, encode, requests, latestState } = await setup();
 		controller.requestAgentModelCatalog(7);
 		await flush();
 		const request = requests[0] as { requestId: string };
 		pcMux.send(Channels.Agent, encode({
-			t: 'model-catalog', id: 7, requestId: `${request.requestId}-stale`,
+			t: 'model-catalog', id: 7, token: 'agent-7', requestId: `${request.requestId}-stale`,
 			models: [{ id: 'stale', model: 'stale', displayName: 'Stale', efforts: [{ value: 'high', description: '' }], defaultEffort: 'high', isDefault: true }],
 		}));
 		await flush();
 		expect(latestState()?.agentChats.get(7)?.modelControl?.status).toBe('loading');
 
 		pcMux.send(Channels.Agent, encode({
-			t: 'model-catalog', id: 7, requestId: request.requestId,
+			t: 'model-catalog', id: 7, token: 'agent-7', requestId: request.requestId,
 			models: [{ id: 'broken', model: 'broken', displayName: 'Broken', efforts: [{ value: 42 }], defaultEffort: 'high', isDefault: true }],
 		}));
 		await flush();
 		expect(latestState()?.agentChats.get(7)?.modelControl).toEqual({
 			status: 'error', models: [], errorCode: 'invalid-response', errorMessage: 'Codexのモデル一覧レスポンスが不正です',
 		});
+	});
+
+});
+
+describe('agent message action result', () => {
+	it('keeps pasted-but-not-executed distinct from accepted', () => {
+		expect(toAgentMessageSendResult('rejected', true, '本文は貼り付け済みです')).toEqual({ status: 'consumed', message: '本文は貼り付け済みです' });
+		expect(toAgentMessageSendResult('accepted', false)).toEqual({ status: 'accepted' });
 	});
 });
 

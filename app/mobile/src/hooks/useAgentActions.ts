@@ -3,6 +3,7 @@
 import { useCallback, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
+import type { AgentMessageSendResult } from '../store.js';
 
 /**
  * エージェントへの入力・承認応答をまとめたアクション群。
@@ -20,7 +21,7 @@ export type QuestionGroupAnswer =
 
 export interface AgentActions {
 	send(data: string): void;
-	sendText(text: string): Promise<boolean>;
+	sendText(text: string): Promise<AgentMessageSendResult>;
 	answerQuestion(interactionId: string, optionIndex: number): Promise<boolean>;
 	answerQuestionMulti(interactionId: string, indices: number[]): Promise<boolean>;
 	answerQuestionFreeText(interactionId: string, optionCount: number, text: string): Promise<boolean>;
@@ -57,7 +58,7 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	// 確定はTUI側の取りこぼしがあるため。承認番号注入と同じ250ms方式）。
 	const sendText = useCallback((text: string) => {
 		if (terminalId === undefined) {
-			return Promise.resolve(false);
+			return Promise.resolve({ status: 'rejected' as const, message: '送信先のエージェントが見つかりません' });
 		}
 		return sendAgentMessage(terminalId, text);
 	}, [terminalId, sendAgentMessage]);

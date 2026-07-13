@@ -2,15 +2,16 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
-import type { AgentModelControlState, FsUploadResult } from '../store.js';
+import type { AgentMessageSendResult, AgentModelControlState, FsUploadResult } from '../store.js';
 import { GlassComposer } from './glassComposer.js';
 import { ModelPill } from './modelPill.js';
 import { useComposerDraft } from '../hooks/useComposerDraft.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
+import { reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
 
 /**
  * エージェント詳細画面の入力欄（コンポーザー）を、チャット本文の再レンダリングから
@@ -39,7 +40,7 @@ export const AgentComposer = memo(function AgentComposer({
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
-	sendText: (text: string) => Promise<boolean>;
+	sendText: (text: string) => Promise<AgentMessageSendResult>;
 	updateClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<boolean>;
 	/** 送信直後に呼ぶ（最下部への追従スクロール）。 */
 	onAfterSubmit: () => void;
@@ -48,20 +49,21 @@ export const AgentComposer = memo(function AgentComposer({
 	updateAgentSettings: (id: number, model: string, effort: string) => void;
 }) {
 	const [input, setInput, clearInput] = useComposerDraft(draftKey);
-	const inputRevisionRef = useRef(0);
+	const inputRef = useRef(input);
+	inputRef.current = input;
 	const submissionGenerationRef = useRef(0);
 	const draftKeyRef = useRef(draftKey);
 	const [submitting, setSubmitting] = useState(false);
 	if (draftKeyRef.current !== draftKey) {
 		draftKeyRef.current = draftKey;
-		inputRevisionRef.current++;
+		inputRef.current = input;
 		submissionGenerationRef.current++;
 	}
 	useEffect(() => {
 		setSubmitting(false);
 	}, [draftKey]);
 	const updateInput = useCallback((text: string) => {
-		inputRevisionRef.current++;
+		inputRef.current = text;
 		setInput(text);
 	}, [setInput]);
 
@@ -71,15 +73,32 @@ export const AgentComposer = memo(function AgentComposer({
 		}
 		const text = input;
 		const submittedDraftKey = draftKey;
-		const submittedRevision = inputRevisionRef.current;
 		const generation = ++submissionGenerationRef.current;
 		setSubmitting(true);
-		sendText(text).then(accepted => {
-			if (accepted && draftKeyRef.current === submittedDraftKey && inputRevisionRef.current === submittedRevision) {
-				clearInput();
+		// 送信本文を先に入力欄から退避し、待機中に次のメッセージを入力できるようにする。
+		// reject時だけ最新入力の前へ戻すため、最初の本文が再送されることはない。
+		inputRef.current = '';
+		clearInput();
+		sendText(text).catch((): AgentMessageSendResult => ({ status: 'rejected', message: '送信処理中にエラーが発生しました' })).then(result => {
+			const reconciliation = reconcileSubmittedDraftTarget(
+				draftKeyRef.current, submittedDraftKey, inputRef.current,
+				submittedDraftKey !== undefined ? useAppStore.getState().agentDrafts[submittedDraftKey] ?? '' : '',
+				text, result.status,
+			);
+			if (reconciliation.kind === 'active' && reconciliation.value !== inputRef.current) {
+				inputRef.current = reconciliation.value;
+				setInput(reconciliation.value);
+			} else if (reconciliation.kind === 'stored') {
+				useAppStore.getState().setAgentDraft(reconciliation.key, reconciliation.value);
 			}
-			if (accepted && submissionGenerationRef.current === generation) {
+			if (result.status === 'accepted' && submissionGenerationRef.current === generation) {
 				onAfterSubmit();
+			}
+			if (result.status === 'consumed' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
+				Alert.alert('メッセージは未送信です', result.message ?? '本文はターミナルの入力欄に残っています。ターミナルを確認して送信してください。');
+			}
+			if (result.status === 'rejected' && shouldShowSubmissionAlert(result.status, submissionGenerationRef.current, generation)) {
+				Alert.alert('メッセージを送信できませんでした', result.message ?? '接続とエージェントセッションを確認して再送してください。');
 			}
 		}).finally(() => {
 			if (submissionGenerationRef.current === generation) {

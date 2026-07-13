@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { ReactNode } from 'react';
+import { memo, ReactNode } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
+import { glassComposerTextInputBehavior } from './glassComposerBehavior.js';
 
 /**
  * Liquid Glassの2段コンポーザー（mo.html 案A2/T1）。上段にテキスト入力、
@@ -26,22 +27,11 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 	/** ターミナル入力等、等幅フォントで表示する場合。 */
 	monospace?: boolean;
 }) {
+	const inputBehavior = glassComposerTextInputBehavior();
 	return (
 		// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
 		<GlassSurface style={[styles.wrap, !liquidGlass && styles.wrapFallbackBorder]}>
-			<TextInput
-				style={[styles.input, monospace && styles.inputMono]}
-				value={value}
-				onChangeText={onChangeText}
-				placeholder={placeholder}
-				placeholderTextColor={colors.textDim}
-				autoCapitalize="none"
-				autoCorrect={false}
-				multiline={!monospace}
-				onFocus={() => hapticSelection()}
-				onSubmitEditing={monospace ? onSubmit : undefined}
-				blurOnSubmit={false}
-			/>
+			<ComposerTextInput value={value} onChangeText={onChangeText} placeholder={placeholder} monospace={monospace} multiline={inputBehavior.multiline} blurOnSubmit={inputBehavior.blurOnSubmit} />
 			<View style={styles.tools}>
 				<View style={styles.toolsLeft}>{tools}</View>
 				<Pressable
@@ -56,6 +46,32 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 		</GlassSurface>
 	);
 }
+
+/**
+ * モデル一覧・Effort・チャット本文など入力以外の状態更新から、変換中のネイティブIMEを隔離する。
+ * value/onChangeText等が同一ならReact.memoがTextInputへのprops再適用を止める。
+ */
+const ComposerTextInput = memo(function ComposerTextInput({ value, onChangeText, placeholder, monospace, multiline, blurOnSubmit }: {
+	value: string;
+	onChangeText: (text: string) => void;
+	placeholder: string;
+	monospace: boolean;
+	multiline: boolean;
+	blurOnSubmit: boolean;
+}) {
+	return <TextInput
+		style={[styles.input, monospace && styles.inputMono]}
+		value={value}
+		onChangeText={onChangeText}
+		placeholder={placeholder}
+		placeholderTextColor={colors.textDim}
+		autoCapitalize="none"
+		autoCorrect={false}
+		multiline={multiline}
+		onFocus={hapticSelection}
+		blurOnSubmit={blurOnSubmit}
+	/>;
+});
 
 const styles = StyleSheet.create({
 	wrap: {

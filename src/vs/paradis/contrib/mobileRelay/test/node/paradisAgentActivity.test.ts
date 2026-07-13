@@ -14,7 +14,7 @@ suite('ParadisAgentActivity', () => {
 	test('normalizes Claude agents tasks teammates and compaction', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);
-		tracker.applyClaude('TaskCreated', { task_id: 't1', task_subject: 'hook調査', description: '設定を確認', teammate_name: 'researcher' }, 110);
+		tracker.applyClaude('TaskCreated', { task_id: 't1', task_subject: 'hook調査', task_description: '設定を確認', teammate_name: 'researcher' }, 110);
 		tracker.applyClaude('TeammateIdle', { teammate_name: 'researcher', team_name: 'para' }, 120);
 		tracker.applyClaude('PreCompact', { trigger: 'auto' }, 130);
 		tracker.applyClaude('PostCompact', { trigger: 'auto' }, 140);
@@ -22,13 +22,23 @@ suite('ParadisAgentActivity', () => {
 		tracker.applyClaude('TaskCompleted', { task_id: 't1', task_subject: 'hook調査', teammate_name: 'researcher' }, 160);
 		assert.deepStrictEqual(tracker.snapshot(), {
 			agents: [
-				{ id: 'a1', label: 'Explore', role: 'subagent', provider: 'claude', status: 'completed', startedAt: 100, updatedAt: 150 },
 				{ id: 'teammate:researcher', label: 'researcher', role: 'teammate', provider: 'claude', status: 'idle', startedAt: 120, updatedAt: 120 },
+				{ id: 'a1', label: 'Explore', role: 'subagent', provider: 'claude', status: 'completed', startedAt: 100, updatedAt: 150 },
 			],
 			tasks: [{ id: 't1', label: 'hook調査', detail: '設定を確認', assignee: 'researcher', status: 'completed', startedAt: 110, updatedAt: 160 }],
 			compactions: [{ id: 'compact:130', trigger: 'auto', status: 'completed', startedAt: 130, updatedAt: 140 }],
 			startedAt: 100, updatedAt: 160,
 		});
+	});
+
+	test('reads the current Claude task_description field', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyClaude('TaskCreated', {
+			task_id: 't1', task_subject: 'hook調査', task_description: '現行hook仕様を確認', teammate_name: 'researcher',
+		}, 100);
+		assert.deepStrictEqual(tracker.snapshot()?.tasks, [{
+			id: 't1', label: 'hook調査', detail: '現行hook仕様を確認', assignee: 'researcher', status: 'running', startedAt: 100, updatedAt: 100,
+		}]);
 	});
 
 	test('normalizes Codex collaboration snapshots and compaction', () => {
@@ -45,8 +55,15 @@ suite('ParadisAgentActivity', () => {
 	test('does not revive completed Codex collaboration after a delayed running event', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyCodex('item/completed', { item: { type: 'collabAgentToolCall', receiverThreadIds: ['thread-2'], agentsStates: { 'thread-2': { status: 'completed' } } } }, 100);
-		tracker.applyCodex('item/started', { item: { type: 'collabAgentToolCall', receiverThreadIds: ['thread-2'], agentsStates: { 'thread-2': { status: 'running' } } } }, 200);
+		tracker.applyCodex('item/started', { item: { type: 'collabAgentToolCall', receiverThreadIds: ['thread-2'], agentsStates: { 'thread-2': { status: 'running' } } } }, 50);
 		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'completed');
+	});
+
+	test('allows a newer Codex interaction to reactivate the same child thread', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyCodex('item/completed', { item: { type: 'collabAgentToolCall', receiverThreadIds: ['thread-2'], agentsStates: { 'thread-2': { status: 'completed' } } } }, 100);
+		tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: 'thread-2', kind: 'interacted' } }, 200);
+		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'running');
 	});
 
 	test('ends active work on transcript failure and never reports success', () => {
@@ -74,10 +91,10 @@ suite('ParadisAgentActivity', () => {
 		assert.strictEqual(tracker.snapshot()?.tasks[0].label, '完了済み');
 	});
 
-	test('maps Codex subAgentActivity terminal kinds', () => {
-		for (const [kind, expected] of [['completed', 'completed'], ['failed', 'failed'], ['shutdown', 'completed']] as const) {
+	test('maps current Codex subAgentActivity kinds without treating item completion as child completion', () => {
+		for (const [method, kind, expected] of [['item/started', 'started', 'running'], ['item/completed', 'interacted', 'running'], ['item/completed', 'interrupted', 'interrupted']] as const) {
 			const tracker = new ParadisAgentActivityTracker();
-			tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: kind, kind } }, 100);
+			tracker.applyCodex(method, { item: { type: 'subAgentActivity', agentThreadId: kind, kind } }, 100);
 			assert.strictEqual(tracker.snapshot()?.agents[0].status, expected);
 		}
 	});
@@ -88,12 +105,28 @@ suite('ParadisAgentActivity', () => {
 		assert.strictEqual(tracker.snapshot()?.agents[0].detail, '設定を調べる');
 	});
 
-	test('retains bounded activity history for the next turn', () => {
+	test('uses the current Claude SubagentStop last_assistant_message', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);
+		tracker.applyClaude('SubagentStop', { agent_id: 'a1', agent_type: 'Explore', last_assistant_message: '問題はありません' }, 200);
+		assert.strictEqual(tracker.snapshot()?.agents[0].detail, '問題はありません');
+	});
+
+	test('completes active work when a turn completes', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);
 		tracker.endTurn('completed', 200);
 		assert.strictEqual(tracker.beginTurn(), false);
-		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'running');
+		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'completed');
+	});
+
+	test('does not let a delayed old turn end overwrite newer active work', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: 'thread-2', kind: 'interacted' } }, 200);
+		tracker.endTurn('completed', 100);
+		assert.deepStrictEqual(tracker.snapshot()?.agents[0], {
+			id: 'thread-2', label: 'SubAgent', role: 'subagent', provider: 'codex', status: 'running', startedAt: 200, updatedAt: 200,
+		});
 	});
 
 	test('finishes an orphaned compaction on turn end', () => {
