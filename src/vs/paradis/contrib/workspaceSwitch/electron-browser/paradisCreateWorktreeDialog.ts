@@ -29,6 +29,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
@@ -106,6 +107,8 @@ const STR_NO_BRANCHES = localize('paradis.createWorktree.noBranches', "ブラン
 const STR_AUTO = localize('paradis.createWorktree.autoName', "(自動生成)");
 /** LLM 命名の待ち時間上限。Superset の 5 秒に合わせつつ余裕を持たせる。 */
 const NAMING_TIMEOUT_MS = 8000;
+/** 前回選択したエージェント id の保存キー（StorageScope.PROFILE）。 */
+const STORAGE_KEY_LAST_AGENT = 'paradis.workspaceSwitch.lastSelectedAgent';
 
 export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, preselectedRepositoryId?: string): void {
 	const dialog = new ParadisCreateWorktreeDialog(
@@ -121,6 +124,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		accessor.get(INotificationService),
 		accessor.get(IInstantiationService),
 		accessor.get(IParadisTerminalScopeService),
+		accessor.get(IStorageService),
 		preselectedRepositoryId,
 	);
 	// ダイアログは自身の close で自己 dispose する
@@ -159,6 +163,7 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly notificationService: INotificationService,
 		private readonly instantiationService: IInstantiationService,
 		private readonly terminalScopeService: IParadisTerminalScopeService,
+		private readonly storageService: IStorageService,
 		preselectedRepositoryId: string | undefined,
 	) {
 		super();
@@ -236,6 +241,12 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			const option = dom.append(this._agentSelect, $('option')) as HTMLOptionElement;
 			option.value = agent.id;
 			option.textContent = agent.label ?? agent.id;
+		}
+		// 前回選択したエージェントを復元する。保存値が現在の選択肢に無い場合
+		// （設定から削除された等）は既定の「実行しない」のままにする
+		const lastAgentId = this.storageService.get(STORAGE_KEY_LAST_AGENT, StorageScope.PROFILE);
+		if (lastAgentId && (lastAgentId === 'none' || this._agents.some(agent => agent.id === lastAgentId))) {
+			this._agentSelect.value = lastAgentId;
 		}
 
 		// ベースリポジトリ + ベースブランチ
@@ -407,6 +418,8 @@ class ParadisCreateWorktreeDialog extends Disposable {
 
 		const prompt = this._promptInput.value.trim();
 		const agentId = this._agentSelect.value;
+		// 次回ダイアログを開いたときに同じエージェントを既定選択にするため記憶する
+		this.storageService.store(STORAGE_KEY_LAST_AGENT, agentId, StorageScope.PROFILE, StorageTarget.MACHINE);
 		let worktreeCreated = false;
 
 		try {
