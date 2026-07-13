@@ -40,12 +40,12 @@ export default function AgentActivityScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const now = useNow();
-	const params = useLocalSearchParams<{ terminalId?: string; epoch?: string }>();
-	const terminalId = Number(params.terminalId);
+	const params = useLocalSearchParams<{ terminalKey?: string; epoch?: string }>();
+	const terminalKey = params.terminalKey;
 	const workspace = useAppStore(s => s.workspace);
-	const chat = useAppStore(s => Number.isInteger(terminalId) ? s.agentChats.get(terminalId) : undefined);
-	const terminal = workspace?.terminals.find(item => item.id === terminalId);
-	const parentMissing = !Number.isInteger(terminalId) || terminal === undefined;
+	const chat = useAppStore(s => terminalKey !== undefined ? s.agentChats.get(terminalKey) : undefined);
+	const terminal = workspace?.terminals.find(item => item.terminalKey === terminalKey);
+	const parentMissing = terminalKey === undefined || terminal === undefined;
 	const chatLoading = !parentMissing && chat === undefined;
 	const activity = chat?.activity;
 	const sessionChanged = chat !== undefined && typeof params.epoch === 'string' && chat.epoch !== params.epoch;
@@ -60,7 +60,7 @@ export default function AgentActivityScreen() {
 	const selectAgent = (agent: AgentActivityAgent) => {
 		if (agent.role !== 'subagent') { return; }
 		hapticSelection();
-		router.push({ pathname: '/agent-activity-detail', params: { terminalId: String(terminalId), agentId: agent.id, epoch: params.epoch ?? '' } });
+		router.push({ pathname: '/agent-activity-detail', params: { terminalKey, agentId: agent.id, epoch: params.epoch ?? '' } });
 	};
 
 	return (

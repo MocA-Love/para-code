@@ -27,12 +27,12 @@ import { reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agen
  * （毎レンダリングで新しい要素参照になる props を作らないため）。
  */
 export const AgentComposer = memo(function AgentComposer({
-	draftKey, activeId, sessionEpoch, agent, model, effort, modelControl, pr,
+	draftKey, activeTerminalKey, sessionEpoch, agent, model, effort, modelControl, pr,
 	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, requestAgentModelCatalog, updateAgentSettings,
 }: {
 	/** 下書きの退避キー（ターミナル単位。切替時のみ変わる）。 */
 	draftKey: string | undefined;
-	activeId: number | undefined;
+	activeTerminalKey: string | undefined;
 	sessionEpoch: string | undefined;
 	/** 'claude' | 'codex'（セッション未特定時は undefined）。 */
 	agent: string | undefined;
@@ -46,8 +46,8 @@ export const AgentComposer = memo(function AgentComposer({
 	/** 送信直後に呼ぶ（最下部への追従スクロール）。 */
 	onAfterSubmit: () => void;
 	fsUpload: (name: string, dataBase64: string) => Promise<FsUploadResult>;
-	requestAgentModelCatalog: (id: number) => void;
-	updateAgentSettings: (id: number, model: string, effort: string) => void;
+	requestAgentModelCatalog: (terminalKey: string) => void;
+	updateAgentSettings: (terminalKey: string, model: string, effort: string) => void;
 }) {
 	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
 	const nativeInputRef = useRef<TextInput>(null);
@@ -188,14 +188,14 @@ export const AgentComposer = memo(function AgentComposer({
 						<Ionicons name={uploading ? 'hourglass-outline' : 'add'} size={20} color={colors.text} />
 					</Pressable>
 					<ModelPill
-						key={`${activeId ?? 'none'}:${sessionEpoch ?? 'none'}:${agent ?? 'none'}`}
+						key={`${activeTerminalKey ?? 'none'}:${sessionEpoch ?? 'none'}:${agent ?? 'none'}`}
 						agent={agent}
 						model={model}
 						effort={effort}
 						modelControl={modelControl}
 						onClaudeSetting={updateClaudeSetting}
-						onRequestCodexCatalog={() => { if (activeId !== undefined) { requestAgentModelCatalog(activeId); } }}
-						onUpdateCodexSettings={(nextModel, nextEffort) => { if (activeId !== undefined) { updateAgentSettings(activeId, nextModel, nextEffort); } }}
+						onRequestCodexCatalog={() => { if (activeTerminalKey !== undefined) { requestAgentModelCatalog(activeTerminalKey); } }}
+						onUpdateCodexSettings={(nextModel, nextEffort) => { if (activeTerminalKey !== undefined) { updateAgentSettings(activeTerminalKey, nextModel, nextEffort); } }}
 					/>
 					{pr !== undefined ? <PrPill pr={pr} /> : null}
 				</>

@@ -11,6 +11,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableMap, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -33,6 +34,7 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { ACTIVE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
@@ -102,6 +104,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IExtensionService extensionService: IExtensionService,
 		@IThemeService themeService: IThemeService,
 		@IParadisPaneTokenService paneTokenService: IParadisPaneTokenService,
+		@IParadisTerminalIdentityService terminalIdentityService: IParadisTerminalIdentityService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IHostService private readonly hostService: IHostService,
 		@ICommandService commandService: ICommandService,
@@ -112,10 +115,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this._register({ dispose: () => { if (ParadisMobileRelayContribution.instance === this) { ParadisMobileRelayContribution.instance = undefined; } } });
 
 		this.service = ProxyChannel.toService<IParadisMobileRelayService>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
+		const windowSession = generateUuid();
 
 		// ウィンドウを閉じるとき、このウィンドウ分のペイン対応表を shared process から消す
 		// (ベストエフォート。届かなくても同一 windowId での再同期時に置き換わる)
 		this._register({ dispose: () => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, []).catch(() => { }); } });
+		this._register({ dispose: () => { this.service.removeTerminalWindow(mainWindow.vscodeWindowId, windowSession).catch(() => { }); } });
 
 		// PCフォーカス中はモバイルへの通知配信を抑制する機能（suppressWhenPcFocused）用に、
 		// このウィンドウのフォーカス状態を shared process へ報告する（paradisNotificationTrigger等と
@@ -156,6 +161,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			sharedProcessService,
 			(repoPath, args) => this.service.runGit(repoPath, args),
 			paneTokenService,
+			terminalIdentityService,
+			state => { this.service.syncTerminalWindow(mainWindow.vscodeWindowId, windowSession, state).catch(err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
 			entries => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
 			(mobileId, requestId, token, epoch) => this.service.claimAgentAction(mobileId, requestId, token, epoch),
 			(mobileId, requestId, token, epoch, terminalId, windowId) => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, windowId),
@@ -170,6 +177,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// PR 状態はPC版 Workspaces ビューと同じコマンド経由（gh 実行は shared process へ委譲）
 			paths => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, [...paths]),
 		));
+		this.provider.pushState();
 
 		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、
 		// shell integration後の鮮度検証済みtranscript探索で実在セッションを確定できる。
@@ -284,7 +292,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// browser チャネルは webrtc シグナリングだけが renderer に転送されてくる
 		// （それ以外の browser 要求は shared process 内で処理される）。
 		this._register(this.service.onInboundFrame(([ch, ws, seq, payload, mobileId]) => {
-			if (ch === Channels.Agent && ws !== `window:${mainWindow.vscodeWindowId}`) {
+			if ((ch === Channels.Agent || ch === Channels.Terminal || ch === Channels.Scm || ch === Channels.Fs) && ws !== `window:${mainWindow.vscodeWindowId}`) {
 				return;
 			}
 			if (ch === Channels.Browser) {

@@ -15,7 +15,7 @@ import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 /** notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。 */
 interface NotificationDeepLinkData {
 	ws?: string;
-	terminalId?: number;
+	terminalKey?: string;
 	agentToken?: string;
 }
 
@@ -47,7 +47,7 @@ export default function RootLayout() {
 	const router = useRouter();
 	const init = useAppStore(s => s.init);
 	const setSelectedWs = useAppStore(s => s.setSelectedWs);
-	const setSelectedTerminalId = useAppStore(s => s.setSelectedTerminalId);
+	const setSelectedTerminalKey = useAppStore(s => s.setSelectedTerminalKey);
 	const [unlocked, setUnlocked] = useState(false);
 	// tryNavigateから常に最新値を読むためのref（tryNavigate自体をunlockedに依存させると
 	// 参照が変わるたびにリスナーeffectを再登録することになり、stale closure対策として
@@ -66,15 +66,16 @@ export default function RootLayout() {
 			return;
 		}
 		pendingRef.current = undefined;
-		// setSelectedWs は selectedTerminalId をリセットするため、この順序を厳守する。
+		if (target.terminalKey === undefined) {
+			return;
+		}
+		// setSelectedWs は selectedTerminalKey をリセットするため、この順序を厳守する。
 		if (target.ws) {
 			setSelectedWs(target.ws);
 		}
-		if (target.terminalId !== undefined) {
-			setSelectedTerminalId(target.terminalId);
-		}
+		setSelectedTerminalKey(target.terminalKey);
 		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
-	}, [router, setSelectedWs, setSelectedTerminalId]);
+	}, [router, setSelectedWs, setSelectedTerminalKey]);
 
 	useEffect(() => {
 		unlockedRef.current = unlocked;

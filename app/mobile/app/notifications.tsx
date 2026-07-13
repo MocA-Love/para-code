@@ -31,8 +31,8 @@ export default function NotificationsScreen() {
 	const insets = useStableInsets();
 	// 相対時刻表示を画面を開いたままでも追従させる
 	const now = useNow();
-	const { notifications, setSelectedWs, setSelectedTerminalId, clearNotifications, dismissNotification } = useAppStore(useShallow(s => ({
-		notifications: s.notifications, setSelectedWs: s.setSelectedWs, setSelectedTerminalId: s.setSelectedTerminalId,
+	const { notifications, setSelectedWs, setSelectedTerminalKey, clearNotifications, dismissNotification } = useAppStore(useShallow(s => ({
+		notifications: s.notifications, setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		clearNotifications: s.clearNotifications, dismissNotification: s.dismissNotification,
 	})));
 
@@ -40,12 +40,12 @@ export default function NotificationsScreen() {
 		hapticSelection();
 		// 開いた通知は一覧から消す（既読/削除扱い）。他のペアリング済み端末にも同期される。
 		dismissNotification(n.id);
-		// setSelectedWs は selectedTerminalId をリセットするため、この順序を厳守する。
+		// setSelectedWs は selectedTerminalKey をリセットするため、この順序を厳守する。
 		if (n.ws !== undefined) {
 			setSelectedWs(n.ws);
 		}
-		if (n.terminalId !== undefined) {
-			setSelectedTerminalId(n.terminalId);
+		if (n.terminalKey !== undefined) {
+			setSelectedTerminalKey(n.terminalKey);
 		}
 		// この画面をスタックから畳みつつエージェントタブへ（戻る操作で通知一覧に戻らないように）。
 		// back()→push()の同期連発はズーム逆アニメと競合しうるため、dismissToで1操作にする。
@@ -69,7 +69,7 @@ export default function NotificationsScreen() {
 				{notifications.length === 0 ? (
 					<Text style={styles.empty}>通知はありません</Text>
 				) : notifications.map(n => {
-					const openable = n.ws !== undefined || n.terminalId !== undefined;
+					const openable = n.terminalKey !== undefined;
 					return (
 						<Pressable
 							key={n.id}

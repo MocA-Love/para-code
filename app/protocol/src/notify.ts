@@ -22,6 +22,9 @@ export interface NotifyPayload {
 	readonly ws?: string;
 	/** 関連ターミナルのインスタンスID（あればディープリンク先）。 */
 	readonly terminalId?: number;
+	/** 関連ターミナルの再起動をまたぐ論理ID（ディープリンクの正規キー）。 */
+	readonly terminalKey?: string;
+	readonly windowId?: number;
 	readonly agentToken?: string;
 	/** PC側で通知が発生した時刻（epoch ms）。 */
 	readonly at: number;
@@ -46,8 +49,10 @@ export function decodeNotify(bytes: Uint8Array): NotifyPayload {
 	}
 	const ws = typeof raw['ws'] === 'string' ? raw['ws'] : undefined;
 	const terminalId = typeof raw['terminalId'] === 'number' ? raw['terminalId'] : undefined;
+	const terminalKey = typeof raw['terminalKey'] === 'string' && raw['terminalKey'].length > 0 && raw['terminalKey'].length <= 200 ? raw['terminalKey'] : undefined;
+	const windowId = typeof raw['windowId'] === 'number' && Number.isInteger(raw['windowId']) ? raw['windowId'] : undefined;
 	const agentToken = typeof raw['agentToken'] === 'string' && raw['agentToken'].length <= 200 ? raw['agentToken'] : undefined;
-	return { kind, id, title, body, at, ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(agentToken !== undefined ? { agentToken } : {}) };
+	return { kind, id, title, body, at, ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}) };
 }
 
 function isNotifyKind(value: string): value is NotifyKind {

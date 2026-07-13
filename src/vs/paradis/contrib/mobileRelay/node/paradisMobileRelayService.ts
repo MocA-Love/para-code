@@ -10,6 +10,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
@@ -31,6 +32,7 @@ import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.j
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { IParadisFileSearchResult, IParadisTextSearchResult, paradisSearchFiles, paradisSearchText } from './paradisMobileSearch.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
+import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.js';
 import {
 	Channels,
 	ChannelId,
@@ -53,6 +55,7 @@ import {
 	IParadisGitResult,
 	IParadisConfirmedAgentPanes,
 	IParadisMobileInboundFrame,
+	IParadisMobileWindowStateV2,
 	IParadisMobilePairingSession,
 	IParadisMobileRelayService,
 	IParadisMobileStatus,
@@ -221,6 +224,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private reconnectAttempt = 0;
 	private readonly sessions = new Map<string, MobileSession>();
+	private readonly terminalRegistry = new ParadisMobileTerminalRegistry();
+	private readonly terminalOperationResults = new Map<string, Uint8Array>();
 
 	// ペアリング中の状態
 	private pairing: {
@@ -443,15 +448,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// JSON+GCMタグ+base64url(×1.33)を足しても3800Bに収まる。
 		// allow-any-unicode-next-line
 		const body = info.text.length > 700 ? `${info.text.slice(0, 700)}…` : info.text;
+		const terminal = this.terminalRegistry.desktopState().terminals.find(candidate => candidate.agentToken === info.agentToken);
 		const payload: NotifyPayload = {
 			kind: 'agent-question',
-			id: `q${Date.now().toString(36)}-${info.terminalId}`,
+			id: `q${generateUuid()}`,
 			// allow-any-unicode-next-line
 			title: info.header !== undefined && info.header.length > 0 ? `質問: ${info.header}` : 'エージェントからの質問',
 			body,
 			terminalId: info.terminalId,
+			...(terminal !== undefined ? { terminalKey: terminal.terminalKey, windowId: terminal.windowId } : {}),
 			agentToken: info.agentToken,
-			...(info.ws !== undefined ? { ws: info.ws } : {}),
+			...(terminal?.ws !== undefined ? { ws: terminal.ws } : {}),
 			at: Date.now(),
 		};
 		this.dispatchNotify(encodeNotify(payload));
@@ -799,6 +806,114 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
+	async syncTerminalWindow(windowId: number, windowSession: string, state: IParadisMobileWindowStateV2): Promise<void> {
+		const desktopState = this.terminalRegistry.syncWindow(windowId, windowSession, state);
+		const conflicts = this.terminalRegistry.conflictingTerminalKeys();
+		if (conflicts.length > 0) {
+			this.logService.error(`[paradisMobileRelay] duplicate terminalKey registration: ${conflicts.map(key => key.slice(0, 8)).join(',')}`);
+		}
+		await this.broadcastDesktopState(desktopState);
+	}
+
+	async removeTerminalWindow(windowId: number, windowSession: string): Promise<void> {
+		if (this.terminalRegistry.removeWindow(windowId, windowSession)) {
+			await this.broadcastDesktopState(this.terminalRegistry.desktopState());
+		}
+	}
+
+	private async broadcastDesktopState(state = this.terminalRegistry.desktopState(), mobileId?: string): Promise<void> {
+		const bytes = new TextEncoder().encode(JSON.stringify(state));
+		if (mobileId !== undefined) {
+			const session = this.sessions.get(mobileId);
+			if (session?.isOnline) {
+				await session.sendFrame(Channels.State, undefined, bytes);
+			}
+			return;
+		}
+		for (const session of this.sessions.values()) {
+			if (session.isOnline) {
+				await session.sendFrame(Channels.State, undefined, bytes);
+			}
+		}
+	}
+
+	private handleTerminalFrame(frame: IParadisMobileInboundFrame): void {
+		let message: { protocolVersion?: unknown; desktopEpoch?: unknown; operationId?: unknown; t?: unknown; terminalKey?: unknown; windowId?: unknown };
+		try {
+			message = JSON.parse(new TextDecoder().decode(frame.payload.buffer)) as typeof message;
+		} catch {
+			return;
+		}
+		const mobileId = frame.mobileId;
+		if (mobileId === undefined || typeof message.operationId !== 'string' || message.operationId.length === 0 || message.operationId.length > 200) {
+			return;
+		}
+		const cacheKey = `${mobileId}:${message.operationId}`;
+		const cached = this.terminalOperationResults.get(cacheKey);
+		if (cached !== undefined) {
+			this.sendTerminalOperationResult(mobileId, cached);
+			return;
+		}
+
+		if (message.protocolVersion !== 2 || message.desktopEpoch !== this.terminalRegistry.desktopEpoch) {
+			this.finishTerminalOperation(mobileId, cacheKey, message.operationId, 'stale-epoch');
+			return;
+		}
+		if (typeof message.t !== 'string' || !['attach', 'detach', 'ack', 'input', 'create', 'rename', 'close', 'ackStatus'].includes(message.t)) {
+			this.finishTerminalOperation(mobileId, cacheKey, message.operationId, 'terminal-not-found');
+			return;
+		}
+
+		let windowId: number | undefined;
+		if (message.t === 'create') {
+			const requestedWindowId = typeof message.windowId === 'number' && Number.isInteger(message.windowId) ? message.windowId : undefined;
+			windowId = requestedWindowId !== undefined && this.terminalRegistry.hasWindow(requestedWindowId) ? requestedWindowId : undefined;
+		} else if (typeof message.terminalKey === 'string' && message.terminalKey.length > 0 && message.terminalKey.length <= 200) {
+			windowId = this.terminalRegistry.ownerOf(message.terminalKey)?.windowId;
+		}
+		if (windowId === undefined) {
+			this.finishTerminalOperation(mobileId, cacheKey, message.operationId, 'terminal-not-found');
+			return;
+		}
+
+		this._onInboundFrame.fire([Channels.Terminal, `window:${windowId}`, frame.seq, frame.payload, mobileId]);
+		this.finishTerminalOperation(mobileId, cacheKey, message.operationId, 'accepted');
+	}
+
+	private handleWindowFrame(frame: IParadisMobileInboundFrame): void {
+		let message: { protocolVersion?: unknown; desktopEpoch?: unknown; windowId?: unknown };
+		try {
+			message = JSON.parse(new TextDecoder().decode(frame.payload.buffer)) as typeof message;
+		} catch {
+			return;
+		}
+		if (message.protocolVersion !== 2 || message.desktopEpoch !== this.terminalRegistry.desktopEpoch
+			|| typeof message.windowId !== 'number' || !Number.isInteger(message.windowId)
+			|| !this.terminalRegistry.hasWindow(message.windowId)) {
+			return;
+		}
+		this._onInboundFrame.fire([frame.ch, `window:${message.windowId}`, frame.seq, frame.payload, frame.mobileId]);
+	}
+
+	private finishTerminalOperation(mobileId: string, cacheKey: string, operationId: string, status: 'accepted' | 'stale-epoch' | 'terminal-not-found'): void {
+		const payload = new TextEncoder().encode(JSON.stringify({ t: 'operation-result', operationId, status }));
+		this.terminalOperationResults.set(cacheKey, payload);
+		if (this.terminalOperationResults.size > 1000) {
+			const oldest = this.terminalOperationResults.keys().next().value;
+			if (oldest !== undefined) {
+				this.terminalOperationResults.delete(oldest);
+			}
+		}
+		this.sendTerminalOperationResult(mobileId, payload);
+	}
+
+	private sendTerminalOperationResult(mobileId: string, payload: Uint8Array): void {
+		const session = this.sessions.get(mobileId);
+		if (session?.isOnline) {
+			session.sendFrame(Channels.Terminal, undefined, payload).catch(err => this.logService.warn('[paradisMobileRelay] terminal operation result failed', err));
+		}
+	}
+
 	// --- 接続 -----------------------------------------------------------------
 
 	private connect(): void {
@@ -911,6 +1026,18 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 					// （rendererはCDP・ワークスペース外ファイルに触れないため）。それ以外は renderer へ配送。
 					if (frame.ch === Channels.Agent) {
 						this.agentChat.handleInbound(idStr, frame.payload.buffer);
+						return;
+					}
+					if (frame.ch === Channels.State) {
+						this.broadcastDesktopState(this.terminalRegistry.desktopState(), idStr).catch(err => this.logService.warn('[paradisMobileRelay] state reply failed', err));
+						return;
+					}
+					if (frame.ch === Channels.Terminal) {
+						this.handleTerminalFrame(frame);
+						return;
+					}
+					if (frame.ch === Channels.Scm || frame.ch === Channels.Fs) {
+						this.handleWindowFrame(frame);
 						return;
 					}
 					if (frame.ch === Channels.Notify) {

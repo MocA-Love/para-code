@@ -39,6 +39,59 @@ export interface IParadisConfirmedAgentPanes {
 	readonly tokens: readonly string[];
 }
 
+/** protocol v2: renderer が shared process へ同期するワークスペース。 */
+export interface IParadisMobileWindowWorkspaceV2 {
+	readonly id: string;
+	readonly name: string;
+	readonly color?: string;
+	readonly branch?: string;
+	readonly parent?: string;
+	readonly pr?: { readonly number: number; readonly state: 'open' | 'draft' | 'merged' | 'closed'; readonly url: string };
+}
+
+/** protocol v2: renderer 内のターミナル。id はこのウィンドウ内でのみ一意。 */
+export interface IParadisMobileWindowTerminalV2 {
+	readonly terminalKey: string;
+	readonly id: number;
+	readonly title: string;
+	readonly ws?: string;
+	readonly agent?: boolean;
+	readonly agentToken?: string;
+	readonly agentStatus?: string;
+	readonly cols?: number;
+	readonly rows?: number;
+}
+
+/** protocol v2: renderer 一つ分の状態。 */
+export interface IParadisMobileWindowStateV2 {
+	readonly activeWs: string | undefined;
+	readonly workspaces: readonly IParadisMobileWindowWorkspaceV2[];
+	readonly terminals: readonly IParadisMobileWindowTerminalV2[];
+}
+
+/** protocol v2: shared process が付与する、全ウィンドウで一意なワークスペース。 */
+export interface IParadisMobileWorkspaceV2 extends Omit<IParadisMobileWindowWorkspaceV2, 'id' | 'parent'> {
+	readonly id: string;
+	readonly sourceId: string;
+	readonly windowId: number;
+	readonly parent?: string;
+}
+
+/** protocol v2: shared process が付与する所有ウィンドウ付きターミナル。 */
+export interface IParadisMobileTerminalV2 extends IParadisMobileWindowTerminalV2 {
+	readonly windowId: number;
+}
+
+/** protocol v2: モバイルへ一度だけ送る全 PC ウィンドウの統合状態。 */
+export interface IParadisMobileDesktopStateV2 {
+	readonly protocolVersion: 2;
+	readonly desktopEpoch: string;
+	readonly revision: number;
+	readonly activeWs: string | undefined;
+	readonly workspaces: readonly IParadisMobileWorkspaceV2[];
+	readonly terminals: readonly IParadisMobileTerminalV2[];
+}
+
 /** shared process の接続状態。 */
 export type ParadisMobileConnectionState = 'disabled' | 'disconnected' | 'connecting' | 'online';
 
@@ -129,6 +182,11 @@ export interface IParadisMobileRelayService {
 	// トップレベル引数として渡す（IParadisMobileInboundFrameオブジェクトへネストすると
 	// serialize()のObject分岐でJSON.stringifyされ、VSBufferの中身が壊れる）。
 	sendFrame(ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void>;
+
+	/** renderer 一つ分の protocol v2 状態を shared process の統合 registry へ同期する。 */
+	syncTerminalWindow(windowId: number, windowSession: string, state: IParadisMobileWindowStateV2): Promise<void>;
+	/** dispose された renderer の lease を、session が現在値と一致する場合だけ解除する。 */
+	removeTerminalWindow(windowId: number, windowSession: string): Promise<void>;
 
 	/**
 	 * scmチャネル用のgit実行（rendererはプロセスを起動できないためshared processで実行）。

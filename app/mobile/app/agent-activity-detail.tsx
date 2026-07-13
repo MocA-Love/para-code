@@ -43,12 +43,11 @@ export default function AgentActivityDetailScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const now = useNow();
-	const { terminalId: terminalParam, agentId, epoch } = useLocalSearchParams<{ terminalId?: string; agentId?: string; epoch?: string }>();
-	const terminalId = Number(terminalParam);
+	const { terminalKey, agentId, epoch } = useLocalSearchParams<{ terminalKey?: string; agentId?: string; epoch?: string }>();
 	const workspace = useAppStore(state => state.workspace);
-	const chat = useAppStore(state => Number.isInteger(terminalId) ? state.agentChats.get(terminalId) : undefined);
+	const chat = useAppStore(state => terminalKey !== undefined ? state.agentChats.get(terminalKey) : undefined);
 	const requestDetail = useAppStore(state => state.requestAgentActivityDetail);
-	const terminal = workspace?.terminals.find(item => item.id === terminalId);
+	const terminal = workspace?.terminals.find(item => item.terminalKey === terminalKey);
 	const sessionChanged = chat !== undefined && typeof epoch === 'string' && chat.epoch !== epoch;
 	const agents = !sessionChanged ? chat?.activity?.agents ?? [] : [];
 	const agent = typeof agentId === 'string' ? agents.find(item => item.id === agentId) : undefined;
@@ -65,13 +64,13 @@ export default function AgentActivityDetailScreen() {
 
 	useEffect(() => {
 		setMessages([]); setError(undefined);
-		if (!Number.isInteger(terminalId) || selectedAgentId === undefined) { setLoading(false); return; }
+		if (terminalKey === undefined || selectedAgentId === undefined) { setLoading(false); return; }
 		let cancelled = false; setLoading(true);
-		requestDetail(terminalId, selectedAgentId).then(result => { if (!cancelled) { setMessages(result); } })
+		requestDetail(terminalKey, selectedAgentId).then(result => { if (!cancelled) { setMessages(result); } })
 			.catch(reason => { if (!cancelled) { setError(reason instanceof Error ? reason.message : 'SubAgent transcriptを取得できませんでした'); } })
 			.finally(() => { if (!cancelled) { setLoading(false); } });
 		return () => { cancelled = true; };
-	}, [chat?.epoch, requestDetail, selectedAgentId, terminalId]);
+	}, [chat?.epoch, requestDetail, selectedAgentId, terminalKey]);
 
 	const elapsedEnd = agent?.status === 'running' || agent?.status === 'idle' ? now : agent?.updatedAt;
 	const elapsed = agent !== undefined && elapsedEnd !== undefined ? Math.max(0, Math.round((elapsedEnd - agent.startedAt) / 1000)) : 0;
@@ -81,7 +80,7 @@ export default function AgentActivityDetailScreen() {
 	];
 	const navigateAgent = (target: AgentActivityAgent) => {
 		hapticSelection();
-		router.push({ pathname: '/agent-activity-detail', params: { terminalId: String(terminalId), agentId: target.id, epoch: epoch ?? '' } });
+		router.push({ pathname: '/agent-activity-detail', params: { terminalKey, agentId: target.id, epoch: epoch ?? '' } });
 	};
 
 	return <ConnectionGate><View style={styles.screen}>

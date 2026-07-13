@@ -22,6 +22,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IShellLaunchConfig } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { shouldRemovePersistedTerminalIdentity } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
@@ -175,7 +176,7 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 			this._tokenByInstanceId.delete(instance.instanceId);
 			this._instanceIdByToken.delete(token);
 			this._instanceListeners.deleteAndDispose(instance.instanceId);
-			if (typeof instance.persistentProcessId === 'number') {
+			if (typeof instance.persistentProcessId === 'number' && shouldRemovePersistedTerminalIdentity(instance.exitReason)) {
 				this._removePersistedToken(instance.persistentProcessId);
 			}
 			this._onDidChange.fire();

@@ -27,12 +27,13 @@ import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/brows
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
-import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame } from '../common/paradisMobileRelay.js';
+import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2 } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
@@ -42,55 +43,45 @@ import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, I
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/** ワークスペース状態スナップショット（stateチャネルのペイロード）。 */
-interface StateSnapshot {
-	/** terminal instanceIdの名前空間。instanceIdはウィンドウ内でのみ一意。 */
-	windowId: number;
-	activeWs: string | undefined;
-	// parent: worktree（スペース）の親リポジトリid。モバイル側がドロワーで親子グルーピング
-	// （開閉表示）するために使う。旧アプリは無視するため後方互換（フラット表示のまま）。
-	// pr: 現在ブランチに紐づく GitHub PR（PC版 Workspaces ビューの PR チップと同じ供給源）。
-	// モバイルのエージェント詳細画面が PR ピルの表示に使う。旧アプリは無視する。
-	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string; pr?: { number: number; state: IParadisPrStatus['state']; url: string } }[];
-	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
-}
+type StateSnapshot = IParadisMobileWindowStateV2;
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
-type TermInbound =
+type TermInboundBase = { protocolVersion: 2; desktopEpoch: string; operationId: string };
+type TermInbound = TermInboundBase & (
 	// epoch はモバイルが attach ごとに採番する世代番号。指定があると同期プロトコル
 	// （seq 付与・ACKフロー制御・リサイズ時スナップショット再同期）が有効になる。
-	// 未指定（旧アプリ）は従来どおり生ストリームをそのまま流す。
-	| { t: 'attach'; id: number; windowId?: number; epoch?: number }
-	| { t: 'detach'; id: number; windowId?: number }
+	| { t: 'attach'; terminalKey: string; epoch: number }
+	| { t: 'detach'; terminalKey: string }
 	// 受信済み最終 seq の確認応答（epoch 対応クライアントのみ）。フロー制御の材料。
-	| { t: 'ack'; id: number; windowId?: number; epoch: number; seq: number }
-	// input は3形態（新しいアプリは key / text を送り、data は旧PC向けフォールバック）:
+	| { t: 'ack'; terminalKey: string; epoch: number; seq: number }
+	// input は3形態:
 	// - key: 矢印キー等のセマンティック指定。PC側が端末モード（application cursor keys）に
 	//   合わせて CSI / SS3 へエンコードする
 	// - text: コンポーザーからのテキスト入力。sendText の bracketed paste 対応を通し、
 	//   複数行貼り付けがTUIで1行目から実行されてしまう問題を防ぐ。execute=true で実行（Enter）
-	// - data: 生のエスケープシーケンス（旧アプリ、および Esc/Tab/^C 等のモード非依存キー）
-	| { t: 'input'; id: number; windowId?: number; data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }
-	| { t: 'create'; windowId?: number; ws?: string }
+	// - data: Esc/Tab/^C 等の生のエスケープシーケンス
+	| { t: 'input'; terminalKey: string; data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }
+	| { t: 'create'; windowId: number; ws?: string }
 	// モバイルからのターミナル名変更。PC側の実インスタンスへ反映し、stateの再送で
 	// 他モバイル端末（およびPC自身のタブ表示）にも波及させる。
-	| { t: 'rename'; id: number; windowId?: number; title: string }
+	| { t: 'rename'; terminalKey: string; title: string }
 	// モバイルからのターミナル削除（ホーム長押しメニュー）。モバイル側で確認済みの前提で
 	// PC側の実インスタンスを閉じる。onDidChangeInstances経由でstateが自動再送され、
 	// 他モバイル端末・PC自身のタブ表示からも消える。
-	| { t: 'close'; id: number; windowId?: number }
+	| { t: 'close'; terminalKey: string }
 	// モバイルからのエージェント状態の既読（ホームのステータスバッジタップ→「確認済みにする」）。
 	// PCのフォーカス中自動既読と同じ acknowledgePaneStatus 経路を通すため、'review' 状態のみ
 	// クリアされ、通知履歴のdismiss等の後続処理も自動で走る。
-	| { t: 'ackStatus'; id: number; windowId?: number };
+	| { t: 'ackStatus'; terminalKey: string }
+);
 type TermSemanticKey = 'up' | 'down' | 'right' | 'left';
 type TermOutbound =
 	// snapshot=true は画面復元用フレーム（VTシーケンス込み）。モバイルは追記せず
 	// バッファ全体を置き換える（attach 時・リサイズ時・フロー制御の追いつき時）。
 	// epoch/seq は同期プロトコル有効時のみ付与（seq は送信順に1ずつ増える。モバイルは
 	// ギャップ検出で再attachする）。snapshot には適用すべき cols/rows と unicode 幅版も同梱する。
-	| { t: 'data'; id: number; data: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string }
-	| { t: 'exit'; id: number; epoch?: number };
+	| { t: 'data'; data: string; snapshot?: boolean; epoch: number; seq: number; cols?: number; rows?: number; unicode?: string }
+	| { t: 'exit'; epoch?: number };
 
 /** scm チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type ScmInbound =
@@ -206,6 +197,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly sharedProcessService: ISharedProcessService,
 		private readonly runGit: (repoPath: string, args: readonly string[]) => Promise<IParadisGitResult>,
 		private readonly paneTokenService: IParadisPaneTokenService,
+		private readonly terminalIdentityService: IParadisTerminalIdentityService,
+		private readonly syncTerminalState: (state: IParadisMobileWindowStateV2) => void,
 		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]) => void,
 		private readonly claimAgentAction: (mobileId: string, requestId: string, token: string, epoch: string) => Promise<'claimed' | 'stale' | 'expired'>,
 		private readonly continueAgentInteraction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<'valid' | 'completed' | 'stale'>,
@@ -233,6 +226,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); this.pushAgentPanes(); }));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => this.pushStateSoon()));
+		this._register(this.terminalIdentityService.onDidChange(() => this.pushStateSoon()));
 		// タイトル変更（F2手動リネーム、モバイルからのrename、プロセス由来の自動タイトルなど）を
 		// 他のペアリング端末・他ウィンドウへも伝播する。
 		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.pushStateSoon()));
@@ -481,20 +475,28 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// agentToken: PC側でこのペインが確認済みになった際に、対応するモバイル通知を
 		// 一括で既読化する識別子として使う（dispatchAgentDismiss、notifyPrefsとは別用途）。
 		const agentToken = this.paneTokenService.getTokenForInstance(terminalId);
-		const payload: NotifyPayload = { kind, id: `n${this.notifyCounter++}`, title, body, ws, terminalId, ...(agentToken !== undefined ? { agentToken } : {}), at: Date.now() };
+		const terminalKey = this.terminalIdentityService.getTerminalKey(terminalId);
+		const payload: NotifyPayload = {
+			kind, id: `n${this.windowId}-${this.notifyCounter++}`, title, body,
+			ws: `${this.windowId}:${ws}`,
+			terminalId,
+			...(terminalKey !== undefined ? { terminalKey } : {}),
+			windowId: this.windowId,
+			...(agentToken !== undefined ? { agentToken } : {}),
+			at: Date.now(),
+		};
 		this.sendFrame({ ch: Channels.Notify, ws: undefined, seq: 0, payload: VSBuffer.wrap(encodeNotify(payload)) });
 	}
 
 	/** 接続確立直後などに全状態を送る。 */
 	pushState(): void {
-		const snapshot = this.buildSnapshot();
-		this.sendFrame({ ch: Channels.State, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify(snapshot))) });
+		this.syncTerminalState(this.buildSnapshot());
 	}
 
 	private buildSnapshot(): StateSnapshot {
 		// リポジトリの直後にそのworktree（スペース）を並べる。idはターミナルスコープ等と
 		// 同じ状態キー（worktree:<uri>）なので、モバイル側のフィルタがそのまま効く。
-		const workspaces: StateSnapshot['workspaces'] = [];
+		const workspaces: IParadisMobileWindowWorkspaceV2[] = [];
 		for (const r of this.workspaceSwitchService.repositories) {
 			workspaces.push({
 				id: r.id,
@@ -519,7 +521,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				});
 			}
 		}
-		const terminals = this.allInstances().map(inst => {
+		const terminals = this.allInstances().flatMap(inst => {
+			const terminalKey = this.terminalIdentityService.getTerminalKey(inst.instanceId);
+			if (terminalKey === undefined) {
+				return [];
+			}
 			// スコープ未タグのターミナルはPC側では「常に表示」扱いだが、モバイルでは
 			// 全ワークスペースに重複表示されてしまうため、アクティブワークスペース所属として送る。
 			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId) ?? this.workspaceSwitchService.activeStateKey;
@@ -534,6 +540,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			const agent = this.agentStatusStore.isAgentInstance(inst.instanceId)
 				|| (paneToken !== undefined && (this.confirmedAgentPaneTokens.has(paneToken) || this.provisionalAgentPaneTokens.has(paneToken)));
 			return {
+				terminalKey,
 				id: inst.instanceId,
 				title: inst.title,
 				...(stateKey ? { ws: stateKey } : {}),
@@ -543,7 +550,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				...(inst.cols > 0 && inst.rows > 0 ? { cols: inst.cols, rows: inst.rows } : {}),
 			};
 		});
-		return { windowId: this.windowId, activeWs: this.workspaceSwitchService.activeStateKey, workspaces, terminals };
+		return { activeWs: this.workspaceSwitchService.activeStateKey, workspaces, terminals };
 	}
 
 	/** shared processがhookまたは検証済みtranscriptから確定したエージェント端末を反映する。 */
@@ -1248,10 +1255,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} catch {
 			return;
 		}
-		// instanceIdはVS Codeウィンドウ内でしか一意ではない。新しいモバイルはstateで
-		// 受け取ったwindowIdを必ず返し、別ウィンドウの同じ番号へ操作が届くのを防ぐ。
-		// windowId無しは旧モバイル互換として従来経路を残す。
-		if (msg.windowId !== undefined && msg.windowId !== this.windowId) {
+		if (msg.protocolVersion !== 2 || typeof msg.desktopEpoch !== 'string' || typeof msg.operationId !== 'string') {
 			return;
 		}
 		if (msg.t === 'create') {
@@ -1284,53 +1288,58 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				.catch(err => this.logService.warn('[paradisMobileRelay] createTerminal failed', err));
 			return;
 		}
+		if (typeof msg.terminalKey !== 'string'
+			|| (msg.t === 'attach' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch)))
+			|| (msg.t === 'ack' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch) || typeof msg.seq !== 'number' || !Number.isInteger(msg.seq)))) {
+			return;
+		}
 		// park 中（他ワークスペースのターミナル）にもモバイルからattach/入力できるようにする
-		const instance = this.allInstances().find(i => i.instanceId === msg.id);
+		const instanceId = this.terminalIdentityService.getInstanceId(msg.terminalKey);
+		const instance = instanceId === undefined ? undefined : this.allInstances().find(i => i.instanceId === instanceId);
 		if (!instance) {
 			return;
 		}
+		const id = instance.instanceId;
 		if (msg.t === 'attach') {
 			// 出力はattachを要求したモバイルにのみ返す（M-2）。再attachは宛先を更新する。
-			this.terminalSubscribers.set(msg.id, mobileId ?? '');
+			this.terminalSubscribers.set(id, mobileId ?? '');
 			// epoch付きattach（同期プロトコル対応クライアント）は世代状態を作り直す。
 			// 古い世代のタイマー・未ACK残量は破棄する（旧世代のフレームはモバイル側が
 			// epoch不一致で捨てるため、混在しても画面は壊れない）。
-			this.clearTermSync(msg.id);
-			this.termSyncStates.delete(msg.id);
-			if (msg.epoch !== undefined) {
-				this.termSyncStates.set(msg.id, {
-					epoch: msg.epoch, seq: 0, inflight: [], unackedChars: 0,
-					suspended: false, droppedWhileSuspended: false,
-					pending: [], pendingChars: 0, coalesceTimer: undefined, resizeTimer: undefined,
-				});
-			}
+			this.clearTermSync(id);
+			this.termSyncStates.delete(id);
+			this.termSyncStates.set(id, {
+				epoch: msg.epoch, seq: 0, inflight: [], unackedChars: 0,
+				suspended: false, droppedWhileSuspended: false,
+				pending: [], pendingChars: 0, coalesceTimer: undefined, resizeTimer: undefined,
+			});
 			// 画面初期同期: 現在の画面状態をエスケープシーケンス込み（serialize addon）で送り、
 			// モバイルのxtermで「PCで作業していた続き」を完全再現する（設計書 §4.2）。
 			// getContentsAsText のプレーン化では代替バッファ/カーソル/色を持つTUI（claude/codex等）が
 			// 崩れるため、VTシリアライズに切り替える。async だが snapshot=true でモバイルが
 			// バッファ全体を置換するため、以後の onData 追記との順序ずれでは二重・欠落しない。
-			this.sendTerminalSnapshot(instance, msg.id);
-			if (this.attachedTerminals.has(msg.id)) {
+			this.sendTerminalSnapshot(instance, id);
+			if (this.attachedTerminals.has(id)) {
 				return;
 			}
 			const store = new DisposableStore();
-			store.add(instance.onData(data => this.sendTermData(msg.id, data)));
+			store.add(instance.onData(data => this.sendTermData(id, data)));
 			store.add(instance.onExit(() => {
-				const epoch = this.termSyncStates.get(msg.id)?.epoch;
-				this.clearTermSync(msg.id);
-				this.termSyncStates.delete(msg.id);
-				this.sendTerm({ t: 'exit', id: msg.id, ...(epoch !== undefined ? { epoch } : {}) });
-				this.attachedTerminals.deleteAndDispose(msg.id);
-				this.terminalSubscribers.delete(msg.id);
+				const epoch = this.termSyncStates.get(id)?.epoch;
+				this.clearTermSync(id);
+				this.termSyncStates.delete(id);
+				this.sendTerm(id, { t: 'exit', ...(epoch !== undefined ? { epoch } : {}) });
+				this.attachedTerminals.deleteAndDispose(id);
+				this.terminalSubscribers.delete(id);
 			}));
-			this.attachedTerminals.set(msg.id, store);
+			this.attachedTerminals.set(id, store);
 		} else if (msg.t === 'detach') {
-			this.clearTermSync(msg.id);
-			this.termSyncStates.delete(msg.id);
-			this.attachedTerminals.deleteAndDispose(msg.id);
-			this.terminalSubscribers.delete(msg.id);
+			this.clearTermSync(id);
+			this.termSyncStates.delete(id);
+			this.attachedTerminals.deleteAndDispose(id);
+			this.terminalSubscribers.delete(id);
 		} else if (msg.t === 'ack') {
-			this.handleTerminalAck(instance, msg);
+			this.handleTerminalAck(instance, id, msg);
 		} else if (msg.t === 'input') {
 			this.handleTerminalInput(instance, msg).catch(err => this.logService.warn('[paradisMobileRelay] sendText failed', err));
 		} else if (msg.t === 'rename') {
@@ -1423,8 +1432,6 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private sendTermData(id: number, data: string): void {
 		const sync = this.termSyncStates.get(id);
 		if (!sync) {
-			// 旧アプリ: 従来どおり生チャンクをそのまま送る。
-			this.sendTerm({ t: 'data', id, data });
 			return;
 		}
 		if (sync.suspended) {
@@ -1461,15 +1468,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const seq = ++sync.seq;
 		sync.inflight.push({ seq, chars: data.length });
 		sync.unackedChars += data.length;
-		this.sendTerm({ t: 'data', id, data, epoch: sync.epoch, seq });
+		this.sendTerm(id, { t: 'data', data, epoch: sync.epoch, seq });
 		if (sync.unackedChars > TERM_HIGH_WATERMARK_CHARS) {
 			sync.suspended = true;
 		}
 	}
 
 	/** モバイルからのACK。未ACK残量を減らし、suspend中でLOWまで追いついたらsnapshotで再同期する。 */
-	private handleTerminalAck(instance: ITerminalInstance, msg: { id: number; epoch: number; seq: number }): void {
-		const sync = this.termSyncStates.get(msg.id);
+	private handleTerminalAck(instance: ITerminalInstance, id: number, msg: { epoch: number; seq: number }): void {
+		const sync = this.termSyncStates.get(id);
 		if (!sync || sync.epoch !== msg.epoch) {
 			return; // 旧世代のACKは無視（再attach直後の混在で正常に起きる）
 		}
@@ -1483,7 +1490,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				sync.droppedWhileSuspended = false;
 				// 破棄していた間の出力はもう送れないので、最新画面のスナップショットで追いつく
 				// （moshの「中間状態スキップ」に相当。スクロールバックの完全性より最新画面を優先）。
-				this.sendTerminalSnapshot(instance, msg.id);
+				this.sendTerminalSnapshot(instance, id);
 			}
 		}
 	}
@@ -1532,7 +1539,6 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			const sync = this.termSyncStates.get(id);
 			if (!sync) {
-				this.sendTerm({ t: 'data', id, data, snapshot: true });
 				return;
 			}
 			// snapshotはバッファ全体を置き換えるため、まとめ送り待ちの生データは破棄してよい
@@ -1550,7 +1556,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			const dims = instance.cols > 0 && instance.rows > 0 ? { cols: instance.cols, rows: instance.rows } : {};
 			const unicode = instance.xterm?.raw.unicode.activeVersion;
-			this.sendTerm({ t: 'data', id, data, snapshot: true, epoch: sync.epoch, seq, ...dims, ...(unicode ? { unicode } : {}) });
+			this.sendTerm(id, { t: 'data', data, snapshot: true, epoch: sync.epoch, seq, ...dims, ...(unicode ? { unicode } : {}) });
 		}).catch(err => this.logService.warn('[paradisMobileRelay] scrollback sync failed', err));
 	}
 
@@ -1586,9 +1592,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return addon.serialize({ scrollback: TERM_SNAPSHOT_SCROLLBACK_ROWS });
 	}
 
-	private sendTerm(msg: TermOutbound): void {
-		const target = this.terminalSubscribers.get(msg.id);
-		this.sendFrame({ ch: Channels.Terminal, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify(msg))), mobileId: target || undefined });
+	private sendTerm(id: number, msg: TermOutbound): void {
+		const terminalKey = this.terminalIdentityService.getTerminalKey(id);
+		if (terminalKey === undefined) {
+			return;
+		}
+		const target = this.terminalSubscribers.get(id);
+		this.sendFrame({ ch: Channels.Terminal, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ ...msg, terminalKey }))), mobileId: target || undefined });
 	}
 }
 

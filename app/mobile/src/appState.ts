@@ -34,9 +34,9 @@ interface AppState extends StoreState {
 	 */
 	homeShowAllWorkspaces: boolean;
 	setHomeShowAllWorkspaces(value: boolean): void;
-	/** ターミナル画面で選択中のターミナルID（ws切替時はリセット）。 */
-	selectedTerminalId: number | undefined;
-	setSelectedTerminalId(id: number | undefined): void;
+	/** ターミナル画面で選択中の論理キー（ws切替時はリセット）。 */
+	selectedTerminalKey: string | undefined;
+	setSelectedTerminalKey(terminalKey: string | undefined): void;
 	/**
 	 * 通知設定（設定画面）。agentDone/agentQuestionがfalseの種別はOS通知（バナー）を
 	 * 出さない（アプリ内の通知一覧には残る）。suppressWhenPcFocusedはPC側の判断のみに
@@ -57,14 +57,14 @@ interface AppState extends StoreState {
 	cancelPairing(): void;
 	/** ペアリングを完全に解除する（リレー上の資格情報も失効させ、ローカルの保存分も削除する）。 */
 	unpair(): Promise<void>;
-	attachTerminal(id: number): void;
-	detachTerminal(id: number): void;
+	attachTerminal(terminalKey: string): void;
+	detachTerminal(terminalKey: string): void;
 	/** ターミナル名を変更する（PC側の実インスタンスにも反映され、他端末にも同期される）。 */
-	renameTerminal(id: number, title: string, windowId?: number): void;
+	renameTerminal(terminalKey: string, title: string): void;
 	/** ターミナルを削除する（PC側の実インスタンスも閉じる。呼び出し側で確認済みの前提）。 */
-	closeTerminal(id: number, windowId?: number): void;
+	closeTerminal(terminalKey: string): void;
 	/** エージェントの「レビュー」状態を確認済みにする（ステータスバッジのポップオーバーから）。 */
-	ackAgentStatus(id: number, windowId?: number): void;
+	ackAgentStatus(terminalKey: string): void;
 	/**
 	 * ピン留め状態（キーは pinKeyForTerminal 参照）。モバイル端末ローカルのみの状態で、
 	 * PCへは同期しない（ホーム一覧の並び順の好みなのでPC側に対応概念が無いため）。
@@ -83,23 +83,23 @@ interface AppState extends StoreState {
 	/** 下書きを消す（送信完了時など）。 */
 	clearAgentDraft(key: string): void;
 	/** ターミナル同期ストリームの購読（購読時にリプレイキャッシュを同期再生）。 */
-	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void): () => void;
-	sendInput(id: number, data: string): void;
+	subscribeTerminal(terminalKey: string, listener: (ev: TermStreamEvent) => void): () => void;
+	sendInput(terminalKey: string, data: string): void;
 	/** 矢印キーをセマンティック名で送る（PC側が端末モードに合わせてエンコードする）。 */
-	sendArrowKey(id: number, key: 'up' | 'down' | 'right' | 'left'): void;
+	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): void;
 	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
-	sendTextInput(id: number, text: string, execute: boolean): void;
-	sendAgentMessage(id: number, text: string): Promise<AgentMessageSendResult>;
-	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean>;
-	answerAgentApproval(id: number, interactionId: string, choice: string): Promise<boolean>;
-	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string): Promise<boolean>;
-	requestAgentActivityDetail(id: number, activityId: string): Promise<AgentActivityDetailMessage[]>;
+	sendTextInput(terminalKey: string, text: string, execute: boolean): void;
+	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult>;
+	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean>;
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<boolean>;
+	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<boolean>;
+	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]>;
 	createTerminal(ws?: string): void;
-	attachAgent(id: number): void;
-	detachAgent(id: number): void;
-	refreshAgent(id: number): void;
-	requestAgentModelCatalog(id: number): void;
-	updateAgentSettings(id: number, model: string, effort: string): void;
+	attachAgent(terminalKey: string): void;
+	detachAgent(terminalKey: string): void;
+	refreshAgent(terminalKey: string): void;
+	requestAgentModelCatalog(terminalKey: string): void;
+	updateAgentSettings(terminalKey: string, model: string, effort: string): void;
 	scmStatus(ws: string): Promise<ScmStatusResult>;
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
 	scmCommit(ws: string, message: string, all: boolean): Promise<ScmCommitResult>;
@@ -168,7 +168,7 @@ export const useAppStore = create<AppState>(set => ({
 	manualOffline: false,
 	selectedWs: undefined,
 	homeShowAllWorkspaces: true,
-	selectedTerminalId: undefined,
+	selectedTerminalKey: undefined,
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: false },
 	pinnedKeys: new Set(),
 	agentDrafts: {},
@@ -231,7 +231,7 @@ export const useAppStore = create<AppState>(set => ({
 					if (!shouldPresentForegroundNotification(RNAppState.currentState, payload.at, Date.now(), NOTIFY_BANNER_MAX_AGE_MS)) {
 						return;
 					}
-					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId, agentToken: payload.agentToken });
+					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalKey: payload.terminalKey, agentToken: payload.agentToken });
 				},
 				getApnsDeviceToken,
 				// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
@@ -354,27 +354,27 @@ export const useAppStore = create<AppState>(set => ({
 		}
 		controller?.reset();
 		await clearCredentials(secureKeyStore);
-		set({ paired: false, manualOffline: false, selectedWs: undefined, homeShowAllWorkspaces: true, selectedTerminalId: undefined });
+		set({ paired: false, manualOffline: false, selectedWs: undefined, homeShowAllWorkspaces: true, selectedTerminalKey: undefined });
 	},
 
-	attachTerminal(id: number) {
-		controller?.attachTerminal(id);
+	attachTerminal(terminalKey: string) {
+		controller?.attachTerminal(terminalKey);
 	},
 
-	detachTerminal(id: number) {
-		controller?.detachTerminal(id);
+	detachTerminal(terminalKey: string) {
+		controller?.detachTerminal(terminalKey);
 	},
 
-	renameTerminal(id: number, title: string, windowId?: number) {
-		controller?.renameTerminal(id, title, windowId);
+	renameTerminal(terminalKey: string, title: string) {
+		controller?.renameTerminal(terminalKey, title);
 	},
 
-	closeTerminal(id: number, windowId?: number) {
-		controller?.closeTerminal(id, windowId);
+	closeTerminal(terminalKey: string) {
+		controller?.closeTerminal(terminalKey);
 	},
 
-	ackAgentStatus(id: number, windowId?: number) {
-		controller?.ackAgentStatus(id, windowId);
+	ackAgentStatus(terminalKey: string) {
+		controller?.ackAgentStatus(terminalKey);
 	},
 
 	togglePin(key: string) {
@@ -416,76 +416,76 @@ export const useAppStore = create<AppState>(set => ({
 		set({ agentDrafts: next });
 	},
 
-	subscribeTerminal(id: number, listener: (ev: TermStreamEvent) => void) {
-		return controller?.subscribeTerminal(id, listener) ?? (() => { });
+	subscribeTerminal(terminalKey: string, listener: (ev: TermStreamEvent) => void) {
+		return controller?.subscribeTerminal(terminalKey, listener) ?? (() => { });
 	},
 
-	sendInput(id: number, data: string) {
-		controller?.sendInput(id, data);
+	sendInput(terminalKey: string, data: string) {
+		controller?.sendInput(terminalKey, data);
 	},
 
-	sendArrowKey(id: number, key: 'up' | 'down' | 'right' | 'left') {
-		controller?.sendArrowKey(id, key);
+	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left') {
+		controller?.sendArrowKey(terminalKey, key);
 	},
 
-	sendTextInput(id: number, text: string, execute: boolean) {
-		controller?.sendTextInput(id, text, execute);
+	sendTextInput(terminalKey: string, text: string, execute: boolean) {
+		controller?.sendTextInput(terminalKey, text, execute);
 	},
 
-	sendAgentMessage(id: number, text: string) {
-		return controller?.sendAgentMessage(id, text) ?? Promise.resolve({ status: 'rejected' as const });
+	sendAgentMessage(terminalKey: string, text: string) {
+		return controller?.sendAgentMessage(terminalKey, text) ?? Promise.resolve({ status: 'rejected' as const });
 	},
 
-	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]) {
-		return controller?.answerAgentQuestion(id, interactionId, answers) ?? Promise.resolve(false);
+	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]) {
+		return controller?.answerAgentQuestion(terminalKey, interactionId, answers) ?? Promise.resolve(false);
 	},
 
-	answerAgentApproval(id: number, interactionId: string, choice: string) {
-		return controller?.answerAgentApproval(id, interactionId, choice) ?? Promise.resolve(false);
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string) {
+		return controller?.answerAgentApproval(terminalKey, interactionId, choice) ?? Promise.resolve(false);
 	},
 
-	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string) {
-		return controller?.updateClaudeSetting(id, setting, value) ?? Promise.resolve(false);
+	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string) {
+		return controller?.updateClaudeSetting(terminalKey, setting, value) ?? Promise.resolve(false);
 	},
 
-	requestAgentActivityDetail(id: number, activityId: string) {
-		return controller?.requestAgentActivityDetail(id, activityId) ?? Promise.reject(new Error('not connected'));
+	requestAgentActivityDetail(terminalKey: string, activityId: string) {
+		return controller?.requestAgentActivityDetail(terminalKey, activityId) ?? Promise.reject(new Error('not connected'));
 	},
 
 	createTerminal(ws?: string) {
 		controller?.createTerminal(ws);
 	},
 
-	attachAgent(id: number) {
-		controller?.attachAgent(id);
+	attachAgent(terminalKey: string) {
+		controller?.attachAgent(terminalKey);
 	},
 
-	detachAgent(id: number) {
-		controller?.detachAgent(id);
+	detachAgent(terminalKey: string) {
+		controller?.detachAgent(terminalKey);
 	},
 
-	refreshAgent(id: number) {
-		controller?.refreshAgent(id);
+	refreshAgent(terminalKey: string) {
+		controller?.refreshAgent(terminalKey);
 	},
 
-	requestAgentModelCatalog(id: number) {
-		controller?.requestAgentModelCatalog(id);
+	requestAgentModelCatalog(terminalKey: string) {
+		controller?.requestAgentModelCatalog(terminalKey);
 	},
 
-	updateAgentSettings(id: number, model: string, effort: string) {
-		controller?.updateAgentSettings(id, model, effort);
+	updateAgentSettings(terminalKey: string, model: string, effort: string) {
+		controller?.updateAgentSettings(terminalKey, model, effort);
 	},
 
 	setSelectedWs(ws: string) {
-		set({ selectedWs: ws, selectedTerminalId: undefined });
+		set({ selectedWs: ws, selectedTerminalKey: undefined });
 	},
 
 	setHomeShowAllWorkspaces(value: boolean) {
 		set({ homeShowAllWorkspaces: value });
 	},
 
-	setSelectedTerminalId(id: number | undefined) {
-		set({ selectedTerminalId: id });
+	setSelectedTerminalKey(terminalKey: string | undefined) {
+		set({ selectedTerminalKey: terminalKey });
 	},
 
 	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean) {
