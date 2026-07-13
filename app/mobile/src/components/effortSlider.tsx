@@ -5,14 +5,16 @@ import { AccessibilityInfo, Animated, LayoutChangeEvent, PanResponder, StyleShee
 import { colors, mono } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 
-/** モデルが提供する順序を保ったまま選択する、コンポーザー用のEffortスライダー。 */
-export function EffortSlider({ efforts, value, disabled, accentColor, resetVersion, onValueCommit }: {
+/**
+ * モデルが提供する順序を保ったまま選択する、コンポーザー用のEffortスライダー。
+ * ここでの選択はローカルな仮選択にとどまり、送信は呼び出し元（モデルセレクターの確定操作）が行う。
+ */
+export function EffortSlider({ efforts, value, disabled, accentColor, onChange }: {
 	efforts: readonly string[];
 	value: string | undefined;
 	disabled: boolean;
 	accentColor: string;
-	resetVersion: number;
-	onValueCommit: (effort: string) => boolean;
+	onChange: (effort: string) => void;
 }) {
 	const selectedIndex = Math.max(0, efforts.indexOf(value ?? ''));
 	const [previewIndex, setPreviewIndex] = useState(selectedIndex);
@@ -44,7 +46,7 @@ export function EffortSlider({ efforts, value, disabled, accentColor, resetVersi
 
 	useEffect(() => {
 		setPreviewIndex(selectedIndex);
-	}, [resetVersion, selectedIndex]);
+	}, [selectedIndex]);
 
 	useEffect(() => {
 		if (reduceMotion) {
@@ -121,12 +123,9 @@ export function EffortSlider({ efforts, value, disabled, accentColor, resetVersi
 		const safeIndex = setPreview(index);
 		const nextEffort = efforts[safeIndex];
 		if (nextEffort !== undefined && nextEffort !== value) {
-			const accepted = onValueCommit(nextEffort);
-			if (!accepted) {
-				setPreviewIndex(selectedIndex);
-			}
+			onChange(nextEffort);
 		}
-	}, [efforts, onValueCommit, selectedIndex, setPreview, value]);
+	}, [efforts, onChange, setPreview, value]);
 
 	const panResponder = useMemo(() => PanResponder.create({
 		onStartShouldSetPanResponder: () => !disabled && efforts.length > 1,

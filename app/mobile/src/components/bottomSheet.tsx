@@ -13,9 +13,12 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
  * オーバーレイ（暗幕）がシートより先に一括表示されて不自然なため、暗幕のフェードと
  * シートのスライドを同じAnimated値で同期させる（wsBarのシートと同じ挙動）。
  */
-export function BottomSheet({ visible, onClose, title, children, fullHeight = false, glass = false }: {
+export function BottomSheet({ visible, onClose, onConfirm, title, children, fullHeight = false, glass = false }: {
 	visible: boolean;
+	/** 背景タップ・Androidバックボタン・（onConfirm未指定時は唯一の）閉じるボタンで呼ばれる「キャンセル」。 */
 	onClose: () => void;
+	/** 指定するとヘッダーが左✕（キャンセル=onClose）／右✓（確定）の2ボタン構成になる。未指定なら従来通り右上✕のみ。 */
+	onConfirm?: () => void;
 	title: string;
 	children: ReactNode;
 	/** 既定は高さ72%固定。trueにするとセーフエリア上端まで広げたほぼ全画面表示になる（通知一覧など）。 */
@@ -51,10 +54,24 @@ export function BottomSheet({ visible, onClose, title, children, fullHeight = fa
 				{glass ? <GlassSurface style={styles.glassBackdrop} /> : null}
 				<View style={styles.handle} />
 				<View style={styles.head}>
-					<Text style={styles.title}>{title}</Text>
-					<Pressable style={styles.close} onPress={() => { hapticImpact('light'); onClose(); }} accessibilityLabel="閉じる">
-						<Ionicons name="close" size={14} color={colors.textDim} />
-					</Pressable>
+					{onConfirm ? (
+						<>
+							<Pressable style={styles.headerBtn} onPress={() => { hapticImpact('light'); onClose(); }} accessibilityRole="button" accessibilityLabel="キャンセル">
+								<Ionicons name="close" size={16} color={colors.textDim} />
+							</Pressable>
+							<Text style={styles.title}>{title}</Text>
+							<Pressable style={[styles.headerBtn, styles.confirmBtn]} onPress={() => { hapticImpact('light'); onConfirm(); }} accessibilityRole="button" accessibilityLabel="確定">
+								<Ionicons name="checkmark" size={16} color={colors.bg} />
+							</Pressable>
+						</>
+					) : (
+						<>
+							<Text style={styles.title}>{title}</Text>
+							<Pressable style={styles.close} onPress={() => { hapticImpact('light'); onClose(); }} accessibilityLabel="閉じる">
+								<Ionicons name="close" size={14} color={colors.textDim} />
+							</Pressable>
+						</>
+					)}
 				</View>
 				{children}
 			</Animated.View>
@@ -75,4 +92,6 @@ const styles = StyleSheet.create({
 	head: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, paddingBottom: 12 },
 	title: { color: colors.text, fontSize: 16, fontWeight: '700' },
 	close: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
+	headerBtn: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
+	confirmBtn: { backgroundColor: colors.accent },
 });

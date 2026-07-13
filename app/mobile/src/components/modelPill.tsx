@@ -27,12 +27,11 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	onUpdateCodexSettings: (model: string, effort: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
-	// シート内で選択したモデル（未選択時はセッションの現在モデルから推定）
+	// シート内での仮選択（未選択時はセッションの現在値から推定）。確定操作までは送信しない。
 	const [pickedModelId, setPickedModelId] = useState<string | undefined>(undefined);
+	const [pickedEffort, setPickedEffort] = useState<string | undefined>(undefined);
 	const [codexUpdatePending, setCodexUpdatePending] = useState(false);
-	const [claudeUpdatePending, setClaudeUpdatePending] = useState(false);
-	const [effortResetVersion, setEffortResetVersion] = useState(0);
-	const claudeRequestLocked = useRef(false);
+	const [submitting, setSubmitting] = useState(false);
 	const mounted = useRef(true);
 	useEffect(() => {
 		mounted.current = true;
@@ -47,7 +46,6 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			setCodexUpdatePending(false);
 		} else if (modelControl?.status === 'error') {
 			setCodexUpdatePending(false);
-			setEffortResetVersion(version => version + 1);
 			if (!open) {
 				Alert.alert('設定を変更できませんでした', modelControl.errorMessage ?? 'Codexから設定変更を確認できませんでした');
 			}
@@ -72,68 +70,76 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	const selected = (pickedModelId !== undefined ? options.find(option => option.id === pickedModelId) : undefined)
 		?? currentModel
 		?? (defaultCodexModel !== undefined ? options.find(option => option.id === defaultCodexModel) : undefined);
+	// 仮選択されたeffortがselectedのモデルで提供されていない場合（モデル変更でeffort候補が変わった場合）は先頭にフォールバックする。
+	const candidateEffort = pickedEffort ?? effort;
+	const effectiveEffort = selected !== undefined && candidateEffort !== undefined && !selected.efforts.includes(candidateEffort)
+		? selected.efforts[0]
+		: candidateEffort;
 
 	const label = [currentModel?.label ?? model, effort].filter(Boolean).join(' · ') || 'model / effort';
 
 	const applyModel = (id: string) => {
-		if (claudeRequestLocked.current) { return; }
 		hapticSelection();
-		const previousPicked = pickedModelId;
 		setPickedModelId(id);
-		if (agent !== 'codex') {
-			claudeRequestLocked.current = true;
-			setClaudeUpdatePending(true);
-			void onClaudeSetting('model', id).catch(() => false).then(accepted => {
-				if (!mounted.current) { return; }
-				claudeRequestLocked.current = false;
-				setClaudeUpdatePending(false);
-				if (!accepted) {
-					setPickedModelId(previousPicked);
-					Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください');
-				}
-			});
-		}
 	};
-	const applyEffort = (level: string): boolean => {
-		if (claudeRequestLocked.current) { return false; }
-		hapticSelection();
-		if (agent === 'codex' && selected !== undefined) {
-			const apply = () => {
-				setCodexUpdatePending(true);
-				onUpdateCodexSettings(selected.id, level);
-			};
-			if (level === 'ultra') {
-				Alert.alert(
-					'Ultraを使用しますか？',
-					'Ultraはサブエージェントを並列実行するため、通常のEffortより使用量が大きくなる可能性があります。',
-					[{ text: 'キャンセル', style: 'cancel' }, { text: '使用する', onPress: apply }],
-				);
-				return false;
-			} else {
-				apply();
-			}
-			return true;
-		}
-		claudeRequestLocked.current = true;
-		setClaudeUpdatePending(true);
-		void onClaudeSetting('effort', level).catch(() => false).then(accepted => {
-			if (!mounted.current) { return; }
-			claudeRequestLocked.current = false;
-			setClaudeUpdatePending(false);
-			if (!accepted) {
-				setEffortResetVersion(version => version + 1);
-				Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください');
-			}
-		});
-		return true;
+	const applyEffort = (level: string) => {
+		setPickedEffort(level);
 	};
 	const openSheet = () => {
 		hapticSelection();
 		setPickedModelId(undefined);
+		setPickedEffort(undefined);
 		setOpen(true);
 		if (agent === 'codex') {
 			onRequestCodexCatalog();
 		}
+	};
+	const cancelSheet = () => {
+		if (submitting) { return; }
+		setOpen(false);
+	};
+	const confirmSheet = async () => {
+		if (submitting || selected === undefined) {
+			setOpen(false);
+			return;
+		}
+		const modelChanged = selected.id !== currentModel?.id;
+		const effortChanged = effectiveEffort !== undefined && effectiveEffort !== effort;
+		if (!modelChanged && !effortChanged) {
+			setOpen(false);
+			return;
+		}
+		if (agent === 'codex') {
+			if (effectiveEffort === undefined) {
+				setOpen(false);
+				return;
+			}
+			setCodexUpdatePending(true);
+			onUpdateCodexSettings(selected.id, effectiveEffort);
+			setOpen(false);
+			return;
+		}
+		setSubmitting(true);
+		if (modelChanged) {
+			const accepted = await onClaudeSetting('model', selected.id).catch(() => false);
+			if (!mounted.current) { return; }
+			if (!accepted) {
+				setSubmitting(false);
+				Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください');
+				return;
+			}
+		}
+		if (effortChanged && effectiveEffort !== undefined) {
+			const accepted = await onClaudeSetting('effort', effectiveEffort).catch(() => false);
+			if (!mounted.current) { return; }
+			if (!accepted) {
+				setSubmitting(false);
+				Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください');
+				return;
+			}
+		}
+		setSubmitting(false);
+		setOpen(false);
 	};
 	// 更新中だけでなく、カタログ取得中・失敗時の古い一覧も操作不能にする。
 	// model/listで検証済みのready状態だけを設定変更の入力として受け付ける。
@@ -145,9 +151,9 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			<Pressable
 				style={styles.pill}
 				onPress={openSheet}
-				disabled={modelControl?.status === 'updating' || claudeUpdatePending}
+				disabled={modelControl?.status === 'updating' || submitting}
 				accessibilityRole="button"
-				accessibilityState={{ disabled: modelControl?.status === 'updating' || claudeUpdatePending }}
+				accessibilityState={{ disabled: modelControl?.status === 'updating' || submitting }}
 				accessibilityLabel="モデルとeffortを変更"
 			>
 				<Ionicons name="hardware-chip-outline" size={12} color={colors.textDim} />
@@ -156,8 +162,10 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 
 			<BottomSheet
 				visible={open}
-				onClose={() => setOpen(false)}
+				onClose={cancelSheet}
+				onConfirm={() => { void confirmSheet(); }}
 				title="モデルと Effort"
+				fullHeight
 				glass
 			>
 				<ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
@@ -181,9 +189,9 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 								key={option.id}
 								style={[styles.modelRow, isSelected && { backgroundColor: agentAccentWash, borderColor: agentAccent }]}
 								onPress={() => applyModel(option.id)}
-								disabled={isCodexBusy || claudeUpdatePending}
+								disabled={isCodexBusy || submitting}
 								accessibilityRole="button"
-								accessibilityState={{ selected: isSelected, disabled: isCodexBusy || claudeUpdatePending }}
+								accessibilityState={{ selected: isSelected, disabled: isCodexBusy || submitting }}
 							>
 								<View style={styles.modelBody}>
 									<Text style={[styles.modelLabel, isSelected && styles.modelLabelActive]}>{option.label}</Text>
@@ -200,17 +208,16 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 							<Text style={[styles.sectionLabel, styles.sectionLabelGap]}>Effort（{selected.label}）</Text>
 							<EffortSlider
 								efforts={selected.efforts}
-								value={effort}
-								disabled={isCodexBusy || claudeUpdatePending}
+								value={effectiveEffort}
+								disabled={isCodexBusy || submitting}
 								accentColor={agentAccent}
-								resetVersion={effortResetVersion}
-								onValueCommit={applyEffort}
+								onChange={applyEffort}
 							/>
 						</>
 					) : null}
 					{agent === 'codex'
-						? <Text style={styles.hint}>{isCodexUpdating ? 'Codexへ設定を適用中…' : 'Effortを選ぶと、モデルとEffortが次のターンへ同時に適用されます'}</Text>
-						: <Text style={styles.hint}>{claudeUpdatePending ? 'Claude Codeへ設定を適用中…' : '入力待ち状態を確認してモデル・Effortを変更します'}</Text>}
+						? <Text style={styles.hint}>{isCodexUpdating ? 'Codexへ設定を適用中…' : '右上の✓で確定すると、モデルとEffortが次のターンへ同時に適用されます'}</Text>
+						: <Text style={styles.hint}>{submitting ? 'Claude Codeへ設定を適用中…' : '右上の✓で確定すると、入力待ち状態を確認してモデル・Effortを変更します'}</Text>}
 				</ScrollView>
 			</BottomSheet>
 		</>
