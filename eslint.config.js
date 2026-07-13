@@ -1702,6 +1702,9 @@ export default defineConfig(
 						// PARA-PATCH: browserSession.ts が同梱ブラウザ拡張（React DevTools）を
 						// ロード (paradisInstallBrowserExtensions) するための唯一の逆方向 import
 						'vs/paradis/contrib/browserExtensions/~',
+						// PARA-PATCH: browserSession.ts が内蔵ブラウザUAのElectronトークン除去
+						// (paradisApplyChromeLikeUserAgent) を呼ぶための逆方向 import
+						'vs/paradis/contrib/browserUserAgent/~',
 						'tas-client', // node module allowed even in /common/
 						'@microsoft/1ds-core-js', // node module allowed even in /common/
 						'@microsoft/1ds-post-js', // node module allowed even in /common/

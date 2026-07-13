@@ -20,6 +20,7 @@ import { IInstantiationService } from '../../instantiation/common/instantiation.
 import { localize } from '../../../nls.js';
 // PARA-PATCH: load bundled devtools extensions (React DevTools) into browser view sessions
 import { paradisInstallBrowserExtensions } from '../../../paradis/contrib/browserExtensions/electron-main/paradisBrowserExtensions.js';
+import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisBrowserUserAgent.js';
 
 /**
  * Holds an Electron session along with its storage scope and unique browser
@@ -270,6 +271,7 @@ export class BrowserSession {
 	 */
 	private configure(): void {
 		paradisInstallBrowserExtensions(this.electronSession); // PARA-PATCH: bundled React DevTools
+		paradisApplyChromeLikeUserAgent(this.electronSession); // PARA-PATCH: strip Electron token from UA so Google sign-in works
 		this._permissions.configure(this.electronSession);
 		this.electronSession.registerPreloadScript({
 			type: 'frame',
