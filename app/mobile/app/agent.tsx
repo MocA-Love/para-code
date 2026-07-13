@@ -70,10 +70,9 @@ export default function AgentDetailScreen() {
 	const actions = useAgentActions(activeId, chat?.agent);
 
 	// 入力中テキストは画面を離れても消えないよう、エージェント（ターミナル）単位の
-	// 一意キーでメモリ上に退避する（実体は AgentComposer 内の useComposerDraft）。キーが
-	// 分離されるので別エージェントの入力欄には混ざらない。下書きの value と入力欄自体は
-	// AgentComposer が閉じて持ち、ストリーミング（agentChats の更新）で入力欄が再レンダリング
-	// されない構造にしている（IME変換のキャンセル防止）。
+	// 一意キーでメモリ上に退避する。キーが分離されるので別エージェントの入力欄には混ざらない。
+	// 入力中の文字列はAgentComposer内のネイティブTextInputが保持し、Reactからvalueを
+	// 書き戻さない構造にしている（IME変換の意図しない確定・濁点分離を防止）。
 	const draftKey = activeTerminal !== undefined ? pinKeyForTerminal(activeTerminal) : undefined;
 
 	// ヘッダー表示用: このターミナルの所属ワークスペース
