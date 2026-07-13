@@ -96,6 +96,8 @@ export interface IParadisCdpFrameSubscription {
 	/** 購読開始。対象が見つからない場合は false（呼び出し側はポーリングに留まる）。 */
 	startFrameSubscription(targetId: string): Promise<boolean>;
 	stopFrameSubscription(targetId: string): Promise<void>;
+	/** targetIdを所有するworkbench window ID。対象が既に閉じられていればnull。 */
+	resolveTargetWindowId(targetId: string): Promise<number | null>;
 	/**
 	 * WebRTCミラー用: 次の1回の getDisplayMedia が指定targetIdのWebContentsView単体を
 	 * キャプチャするよう electron-main を arm する（one-shot、TTL付き）。

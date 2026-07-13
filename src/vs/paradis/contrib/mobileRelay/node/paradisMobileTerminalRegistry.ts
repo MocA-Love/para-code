@@ -13,6 +13,11 @@ export interface IParadisMobileTerminalOwner {
 	readonly terminalId: number;
 }
 
+export interface IParadisMobileWindowOwner {
+	readonly windowId: number;
+	readonly windowSession: string;
+}
+
 interface IWindowLease {
 	readonly session: string;
 	readonly state: IParadisMobileWindowStateV2;
@@ -79,6 +84,18 @@ export class ParadisMobileTerminalRegistry {
 
 	hasWindow(windowId: number): boolean {
 		return this.windows.has(windowId);
+	}
+
+	leaseOfWindow(windowId: number): IParadisMobileWindowOwner | undefined {
+		const lease = this.windows.get(windowId);
+		return lease === undefined ? undefined : { windowId, windowSession: lease.session };
+	}
+
+	ownerOfWorkspace(windowId: number, sourceId: string): IParadisMobileWindowOwner | undefined {
+		const lease = this.windows.get(windowId);
+		return lease?.state.workspaces.some(workspace => workspace.id === sourceId)
+			? { windowId, windowSession: lease.session }
+			: undefined;
 	}
 
 	conflictingTerminalKeys(): string[] {

@@ -6,8 +6,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { TerminalExitReason } from '../../../../../platform/terminal/common/terminal.js';
-import { shouldRemovePersistedTerminalIdentity, terminalKeyFromShellIntegrationNonce } from '../../common/paradisTerminalPersistence.js';
+import { paneTokenFromShellIntegrationNonce, restoredPaneToken, terminalKeyFromShellIntegrationNonce } from '../../common/paradisTerminalPersistence.js';
 
 suite('ParadisTerminalIdentity', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -30,17 +29,26 @@ suite('ParadisTerminalIdentity', () => {
 		);
 	});
 
-	test('Rendererまたはアプリ再起動では永続ペイントークンを残す', () => {
-		assert.strictEqual(shouldRemovePersistedTerminalIdentity(TerminalExitReason.Shutdown), false);
+	test('PTY再採番や別ウィンドウへのdetach後もnonceから同じpane tokenを得る', () => {
+		const before = { persistentProcessId: 41, shellIntegrationNonce: 'stable-nonce' };
+		const after = { persistentProcessId: 7, shellIntegrationNonce: 'stable-nonce' };
+
+		assert.deepStrictEqual({
+			processChanged: before.persistentProcessId !== after.persistentProcessId,
+			before: paneTokenFromShellIntegrationNonce(before.shellIntegrationNonce),
+			after: paneTokenFromShellIntegrationNonce(after.shellIntegrationNonce),
+		}, { processChanged: true, before: 'stable-nonce', after: 'stable-nonce' });
 	});
 
-	test('終了理由が不明な場合も復元に備えて永続ペイントークンを残す', () => {
-		assert.strictEqual(shouldRemovePersistedTerminalIdentity(TerminalExitReason.Unknown), false);
+	test('更新前から生存するPTYの実tokenを復元情報から推測なしで引き継ぐ', () => {
+		assert.deepStrictEqual({
+			revived: restoredPaneToken('nonce', 'existing-process-token'),
+			fresh: restoredPaneToken('nonce', undefined),
+		}, { revived: 'existing-process-token', fresh: 'nonce' });
 	});
 
-	test('明示終了と実プロセス終了では永続ペイントークンを削除する', () => {
-		assert.strictEqual(shouldRemovePersistedTerminalIdentity(TerminalExitReason.User), true);
-		assert.strictEqual(shouldRemovePersistedTerminalIdentity(TerminalExitReason.Process), true);
-		assert.strictEqual(shouldRemovePersistedTerminalIdentity(TerminalExitReason.Extension), true);
+	test('不正な復元tokenは採用せずnonceへフォールバックする', () => {
+		assert.strictEqual(restoredPaneToken('stable-nonce', ''), 'stable-nonce');
+		assert.strictEqual(restoredPaneToken('stable-nonce', 'x'.repeat(201)), 'stable-nonce');
 	});
 });

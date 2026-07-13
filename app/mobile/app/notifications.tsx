@@ -31,7 +31,8 @@ export default function NotificationsScreen() {
 	const insets = useStableInsets();
 	// 相対時刻表示を画面を開いたままでも追従させる
 	const now = useNow();
-	const { notifications, setSelectedWs, setSelectedTerminalKey, clearNotifications, dismissNotification } = useAppStore(useShallow(s => ({
+	const { workspace, notifications, setSelectedWs, setSelectedTerminalKey, clearNotifications, dismissNotification } = useAppStore(useShallow(s => ({
+		workspace: s.workspace,
 		notifications: s.notifications, setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		clearNotifications: s.clearNotifications, dismissNotification: s.dismissNotification,
 	})));
@@ -40,13 +41,14 @@ export default function NotificationsScreen() {
 		hapticSelection();
 		// 開いた通知は一覧から消す（既読/削除扱い）。他のペアリング済み端末にも同期される。
 		dismissNotification(n.id);
+		if (n.terminalKey === undefined || !workspace?.terminals.some(terminal => terminal.terminalKey === n.terminalKey)) {
+			return;
+		}
 		// setSelectedWs は selectedTerminalKey をリセットするため、この順序を厳守する。
 		if (n.ws !== undefined) {
 			setSelectedWs(n.ws);
 		}
-		if (n.terminalKey !== undefined) {
-			setSelectedTerminalKey(n.terminalKey);
-		}
+		setSelectedTerminalKey(n.terminalKey);
 		// この画面をスタックから畳みつつエージェントタブへ（戻る操作で通知一覧に戻らないように）。
 		// back()→push()の同期連発はズーム逆アニメと競合しうるため、dismissToで1操作にする。
 		router.dismissTo('/agent');

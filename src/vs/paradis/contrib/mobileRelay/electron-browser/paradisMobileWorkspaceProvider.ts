@@ -11,6 +11,7 @@ import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/bu
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { generateTokensCSSForColorMap } from '../../../../editor/common/languages/supports/tokenization.js';
@@ -33,7 +34,7 @@ import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCr
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
-import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2 } from '../common/paradisMobileRelay.js';
+import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
@@ -61,7 +62,7 @@ type TermInbound = TermInboundBase & (
 	//   複数行貼り付けがTUIで1行目から実行されてしまう問題を防ぐ。execute=true で実行（Enter）
 	// - data: Esc/Tab/^C 等の生のエスケープシーケンス
 	| { t: 'input'; terminalKey: string; data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }
-	| { t: 'create'; windowId: number; ws?: string }
+	| { t: 'create'; windowId: number; ws: string }
 	// モバイルからのターミナル名変更。PC側の実インスタンスへ反映し、stateの再送で
 	// 他モバイル端末（およびPC自身のタブ表示）にも波及させる。
 	| { t: 'rename'; terminalKey: string; title: string }
@@ -162,20 +163,19 @@ interface TermSyncState {
 export class ParadisMobileWorkspaceProvider extends Disposable {
 	private confirmedAgentPaneTokens = new Set<string>();
 	private readonly provisionalAgentPaneTokens = new Set<string>();
-	// ターミナルID → その出力購読(dispose用)。1端末につき最後にattachしたモバイルへ出力を返す。
+	// ターミナルID → PC側出力listener（全モバイル購読者へ分配するため1端末1本）。
 	private readonly attachedTerminals = this._register(new DisposableMap<number>());
-	// ターミナルID → 出力の宛先モバイルID。
-	private readonly terminalSubscribers = new Map<number, string>();
+	// ターミナルID → 出力を購読中のモバイルID。
+	private readonly terminalSubscribers = new Map<number, Set<string>>();
 	// エージェント状態の遷移検知用（stateKey → 直近の状態）。
 	private readonly previousScopeStatus = new Map<string, string>();
-	private notifyCounter = 0;
 	// attach時のVTスナップショット生成に使う serialize addon（PC側xtermの現画面を
 	// エスケープシーケンス込みでシリアライズし、モバイルのxtermで完全再現するため）。
 	private readonly xtermAddonImporter = new XtermAddonImporter();
 	// raw xterm → その端末に一度だけ load した serialize addon（端末ごとに1つ）。
 	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
-	// ターミナルID → 同期プロトコル状態（epoch対応クライアントがattach中のもののみ）。
-	private readonly termSyncStates = new Map<number, TermSyncState>();
+	// mobileId + ターミナルID → 独立したepoch/seq/ACK状態。
+	private readonly termSyncStates = new Map<string, TermSyncState>();
 	// モバイル発の /model・/effort 切替でClaude TUIが出す確認ダイアログを自動確定するガード。
 	private readonly modelSwitchGuard = this._register(new ParadisAgentModelSwitchGuard(this.logService));
 
@@ -200,6 +200,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly terminalIdentityService: IParadisTerminalIdentityService,
 		private readonly syncTerminalState: (state: IParadisMobileWindowStateV2) => void,
 		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]) => void,
+		private readonly completeTerminalOperation: (mobileId: string, operationId: string, status: ParadisMobileTerminalOperationStatus) => Promise<void>,
 		private readonly claimAgentAction: (mobileId: string, requestId: string, token: string, epoch: string) => Promise<'claimed' | 'stale' | 'expired'>,
 		private readonly continueAgentInteraction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<'valid' | 'completed' | 'stale'>,
 		private readonly finalizeAgentInteraction: (mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed') => Promise<void>,
@@ -477,7 +478,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const agentToken = this.paneTokenService.getTokenForInstance(terminalId);
 		const terminalKey = this.terminalIdentityService.getTerminalKey(terminalId);
 		const payload: NotifyPayload = {
-			kind, id: `n${this.windowId}-${this.notifyCounter++}`, title, body,
+			kind, id: `n${generateUuid()}`, title, body,
 			ws: `${this.windowId}:${ws}`,
 			terminalId,
 			...(terminalKey !== undefined ? { terminalKey } : {}),
@@ -574,8 +575,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	/** オンラインのモバイルが居なくなったら、全ターミナル購読を解放する（M-2: 購読リーク防止）。 */
 	detachAll(): void {
-		for (const id of this.termSyncStates.keys()) {
-			this.clearTermSync(id);
+		for (const key of this.termSyncStates.keys()) {
+			this.clearTermSync(key);
 		}
 		this.termSyncStates.clear();
 		this.attachedTerminals.clearAndDisposeAll();
@@ -584,8 +585,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	override dispose(): void {
 		// setTimeout ベースのタイマー（coalesce/resize）を確実に止める。
-		for (const id of this.termSyncStates.keys()) {
-			this.clearTermSync(id);
+		for (const key of this.termSyncStates.keys()) {
+			this.clearTermSync(key);
 		}
 		this.termSyncStates.clear();
 		super.dispose();
@@ -599,7 +600,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		if (frame.ch === Channels.Terminal) {
-			this.handleTerminalInbound(frame.payload, frame.mobileId);
+			this.handleTerminalInbound(frame.payload, frame.mobileId).catch(err => this.logService.warn('[paradisMobileRelay] terminal operation failed', err));
 			return;
 		}
 		if (frame.ch === Channels.Agent) {
@@ -1248,124 +1249,166 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 	}
 
-	private handleTerminalInbound(payload: VSBuffer, mobileId: string | undefined): void {
+	private async handleTerminalInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
 		let msg: TermInbound;
 		try {
 			msg = JSON.parse(decoder.decode(payload.buffer)) as TermInbound;
 		} catch {
 			return;
 		}
-		if (msg.protocolVersion !== 2 || typeof msg.desktopEpoch !== 'string' || typeof msg.operationId !== 'string') {
+		if (msg.protocolVersion !== 2 || typeof msg.desktopEpoch !== 'string' || typeof msg.operationId !== 'string' || mobileId === undefined) {
 			return;
 		}
+		const complete = (status: ParadisMobileTerminalOperationStatus) => this.completeTerminalOperation(mobileId, msg.operationId, status);
 		if (msg.t === 'create') {
 			// モバイルからの新規ターミナル作成。ws指定時はそのリポジトリ/worktreeをcwdにする。
-			// 作成に伴う onDidChangeInstances で state が自動再送されるため応答は不要。
 			const ws = msg.ws;
-			const root = ws ? this.resolveWsRoot(ws) : undefined;
+			if (typeof ws !== 'string' || ws.length === 0) {
+				await complete('terminal-not-found');
+				return;
+			}
+			const root = this.resolveWsRoot(ws);
+			if (root === undefined) {
+				await complete('terminal-not-found');
+				return;
+			}
 			// 作成時点でのPC側アクティブスコープ。指定wsがこれと一致（または未指定）なら
 			// PCの現在の作業ワークスペース宛なので、通常の「新規ターミナル」と同じくパネルに表示する。
 			const activeStateKey = this.workspaceSwitchService.activeStateKey;
-			this.terminalService.createTerminal(root ? { cwd: root } : undefined)
-				.then(instance => {
-					if (ws && root && ws !== activeStateKey) {
-						// PC側で非表示のワークスペース向け: 既定のタグ付け（アクティブスコープ所属）を
-						// 指定wsへ付け替える。アクティブ外なので assignInstanceScope が即 park し、
-						// そのワークスペースへ切り替えたときにだけ表示される。
-						this.terminalScopeService.assignInstanceScope(instance.instanceId, ws);
-					} else {
-						// PCのアクティブws（または未指定）向け: 既定タグ付けのままアクティブに残る。
-						// createTerminal はパネルを開かないため、通常の「新規ターミナル」コマンドと同様に
-						// アクティブ化してターミナルパネルを表示し、PC側にちゃんと出るようにする。
-						this.terminalService.setActiveInstance(instance);
-						if (instance.target !== TerminalLocation.Editor) {
-							this.terminalGroupService.showPanel(false)
-								.catch(err => this.logService.warn('[paradisMobileRelay] showPanel failed', err));
+			try {
+				const instance = await this.terminalService.createTerminal({ cwd: root });
+				if (ws !== activeStateKey) {
+					// PC側で非表示のワークスペース向け: 既定のタグ付け（アクティブスコープ所属）を
+					// 指定wsへ付け替える。アクティブ外なので assignInstanceScope が即 park し、
+					// そのワークスペースへ切り替えたときにだけ表示される。
+					this.terminalScopeService.assignInstanceScope(instance.instanceId, ws);
+				} else {
+					// PCのアクティブws向け: 既定タグ付けのままアクティブに残る。
+					// createTerminal はパネルを開かないため、通常の「新規ターミナル」コマンドと同様に
+					// アクティブ化してターミナルパネルを表示し、PC側にちゃんと出るようにする。
+					this.terminalService.setActiveInstance(instance);
+					if (instance.target !== TerminalLocation.Editor) {
+						try {
+							await this.terminalGroupService.showPanel(false);
+						} catch (err) {
+							// PTY作成は完了済み。パネル表示失敗を操作失敗にすると再試行で二重作成になる。
+							this.logService.warn('[paradisMobileRelay] showPanel failed', err);
 						}
 					}
-					this.pushState();
-				})
-				.catch(err => this.logService.warn('[paradisMobileRelay] createTerminal failed', err));
+				}
+				this.pushState();
+				await complete('accepted');
+			} catch (err) {
+				this.logService.warn('[paradisMobileRelay] createTerminal failed', err);
+				await complete('failed');
+			}
 			return;
 		}
 		if (typeof msg.terminalKey !== 'string'
 			|| (msg.t === 'attach' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch)))
-			|| (msg.t === 'ack' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch) || typeof msg.seq !== 'number' || !Number.isInteger(msg.seq)))) {
+			|| (msg.t === 'ack' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch) || typeof msg.seq !== 'number' || !Number.isInteger(msg.seq)))
+			|| (msg.t === 'input'
+				&& typeof msg.data !== 'string'
+				&& typeof msg.text !== 'string'
+				&& !(typeof msg.key === 'string' && ['up', 'down', 'right', 'left'].includes(msg.key)))) {
+			await complete('failed');
 			return;
 		}
 		// park 中（他ワークスペースのターミナル）にもモバイルからattach/入力できるようにする
 		const instanceId = this.terminalIdentityService.getInstanceId(msg.terminalKey);
 		const instance = instanceId === undefined ? undefined : this.allInstances().find(i => i.instanceId === instanceId);
 		if (!instance) {
+			await complete('terminal-not-found');
 			return;
 		}
 		const id = instance.instanceId;
-		if (msg.t === 'attach') {
-			// 出力はattachを要求したモバイルにのみ返す（M-2）。再attachは宛先を更新する。
-			this.terminalSubscribers.set(id, mobileId ?? '');
-			// epoch付きattach（同期プロトコル対応クライアント）は世代状態を作り直す。
-			// 古い世代のタイマー・未ACK残量は破棄する（旧世代のフレームはモバイル側が
-			// epoch不一致で捨てるため、混在しても画面は壊れない）。
-			this.clearTermSync(id);
-			this.termSyncStates.delete(id);
-			this.termSyncStates.set(id, {
-				epoch: msg.epoch, seq: 0, inflight: [], unackedChars: 0,
-				suspended: false, droppedWhileSuspended: false,
-				pending: [], pendingChars: 0, coalesceTimer: undefined, resizeTimer: undefined,
-			});
-			// 画面初期同期: 現在の画面状態をエスケープシーケンス込み（serialize addon）で送り、
-			// モバイルのxtermで「PCで作業していた続き」を完全再現する（設計書 §4.2）。
-			// getContentsAsText のプレーン化では代替バッファ/カーソル/色を持つTUI（claude/codex等）が
-			// 崩れるため、VTシリアライズに切り替える。async だが snapshot=true でモバイルが
-			// バッファ全体を置換するため、以後の onData 追記との順序ずれでは二重・欠落しない。
-			this.sendTerminalSnapshot(instance, id);
-			if (this.attachedTerminals.has(id)) {
+		const subscriptionKey = this.termSubscriptionKey(id, mobileId);
+		try {
+			if (msg.t === 'attach') {
+				// モバイルごとに独立した同期状態を持ち、同じ端末の購読を奪い合わない。
+				let subscribers = this.terminalSubscribers.get(id);
+				if (subscribers === undefined) {
+					subscribers = new Set();
+					this.terminalSubscribers.set(id, subscribers);
+				}
+				subscribers.add(mobileId);
+				// epoch付きattach（同期プロトコル対応クライアント）は世代状態を作り直す。
+				this.clearTermSync(subscriptionKey);
+				this.termSyncStates.delete(subscriptionKey);
+				this.termSyncStates.set(subscriptionKey, {
+					epoch: msg.epoch, seq: 0, inflight: [], unackedChars: 0,
+					suspended: false, droppedWhileSuspended: false,
+					pending: [], pendingChars: 0, coalesceTimer: undefined, resizeTimer: undefined,
+				});
+				this.sendTerminalSnapshot(instance, id, mobileId);
+				if (this.attachedTerminals.has(id)) {
+					await complete('accepted');
+					return;
+				}
+				const store = new DisposableStore();
+				store.add(instance.onData(data => this.sendTermData(id, data)));
+				store.add(instance.onExit(() => {
+					for (const subscriber of this.terminalSubscribers.get(id) ?? []) {
+						const key = this.termSubscriptionKey(id, subscriber);
+						const epoch = this.termSyncStates.get(key)?.epoch;
+						this.clearTermSync(key);
+						this.termSyncStates.delete(key);
+						this.sendTerm(id, subscriber, { t: 'exit', ...(epoch !== undefined ? { epoch } : {}) });
+					}
+					this.attachedTerminals.deleteAndDispose(id);
+					this.terminalSubscribers.delete(id);
+				}));
+				this.attachedTerminals.set(id, store);
+			} else if (msg.t === 'detach') {
+				this.clearTermSync(subscriptionKey);
+				this.termSyncStates.delete(subscriptionKey);
+				const subscribers = this.terminalSubscribers.get(id);
+				subscribers?.delete(mobileId);
+				if (subscribers?.size === 0) {
+					this.attachedTerminals.deleteAndDispose(id);
+					this.terminalSubscribers.delete(id);
+				}
+			} else if (msg.t === 'ack') {
+				this.handleTerminalAck(instance, id, mobileId, msg);
+			} else if (msg.t === 'input') {
+				await this.handleTerminalInput(instance, msg);
+			} else if (msg.t === 'rename') {
+				if (typeof msg.title !== 'string') {
+					await complete('failed');
+					return;
+				}
+				// 制御文字（改行・Bidi override等）はタブ表示のなりすまし・崩れの元になるため除去する。
+				const title = msg.title.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e]/g, '').trim().slice(0, 200);
+				if (title.length > 0) {
+					await instance.rename(title);
+				} else {
+					await complete('failed');
+					return;
+				}
+			} else if (msg.t === 'close') {
+				// モバイル側で既に破壊的操作の確認ダイアログを経ているため、PC側の
+				// confirmOnKill確認（safeDisposeTerminal）は挟まず直接閉じる。挟むと、
+				// PCが無人の間はモバイルから応答できない確認ダイアログで永久にハングする。
+				instance.dispose(TerminalExitReason.User);
+			} else if (msg.t === 'ackStatus') {
+				// PCのフォーカス中自動既読（paradisAgentStatus.contribution.ts）と同じ経路。
+				// shared processの_paneStatusesがクリアされ、ポーラー経由でホーム一覧の表示も
+				// アイドルへ戻り、通知履歴のdismiss（dispatchAgentDismiss）も自動で走る。
+				const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+				if (token !== undefined) {
+					await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call('acknowledgePaneStatus', [token]);
+				} else {
+					await complete('failed');
+					return;
+				}
+			} else {
+				await complete('failed');
 				return;
 			}
-			const store = new DisposableStore();
-			store.add(instance.onData(data => this.sendTermData(id, data)));
-			store.add(instance.onExit(() => {
-				const epoch = this.termSyncStates.get(id)?.epoch;
-				this.clearTermSync(id);
-				this.termSyncStates.delete(id);
-				this.sendTerm(id, { t: 'exit', ...(epoch !== undefined ? { epoch } : {}) });
-				this.attachedTerminals.deleteAndDispose(id);
-				this.terminalSubscribers.delete(id);
-			}));
-			this.attachedTerminals.set(id, store);
-		} else if (msg.t === 'detach') {
-			this.clearTermSync(id);
-			this.termSyncStates.delete(id);
-			this.attachedTerminals.deleteAndDispose(id);
-			this.terminalSubscribers.delete(id);
-		} else if (msg.t === 'ack') {
-			this.handleTerminalAck(instance, id, msg);
-		} else if (msg.t === 'input') {
-			this.handleTerminalInput(instance, msg).catch(err => this.logService.warn('[paradisMobileRelay] sendText failed', err));
-		} else if (msg.t === 'rename') {
-			if (typeof msg.title !== 'string') {
-				return;
-			}
-			// 制御文字（改行・Bidi override等）はタブ表示のなりすまし・崩れの元になるため除去する。
-			const title = msg.title.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e]/g, '').trim().slice(0, 200);
-			if (title.length > 0) {
-				instance.rename(title).catch(err => this.logService.warn('[paradisMobileRelay] rename failed', err));
-			}
-		} else if (msg.t === 'close') {
-			// モバイル側で既に破壊的操作の確認ダイアログを経ているため、PC側の
-			// confirmOnKill確認（safeDisposeTerminal）は挟まず直接閉じる。挟むと、
-			// PCが無人の間はモバイルから応答できない確認ダイアログで永久にハングする。
-			instance.dispose(TerminalExitReason.User);
-		} else if (msg.t === 'ackStatus') {
-			// PCのフォーカス中自動既読（paradisAgentStatus.contribution.ts）と同じ経路。
-			// shared processの_paneStatusesがクリアされ、ポーラー経由でホーム一覧の表示も
-			// アイドルへ戻り、通知履歴のdismiss（dispatchAgentDismiss）も自動で走る。
-			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
-			if (token !== undefined) {
-				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
-					.call('acknowledgePaneStatus', [token])
-					.then(undefined, err => this.logService.warn('[paradisMobileRelay] ackStatus failed', err));
-			}
+			await complete('accepted');
+		} catch (err) {
+			this.logService.warn('[paradisMobileRelay] terminal execution failed', err);
+			await complete('failed');
 		}
 	}
 
@@ -1413,8 +1456,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * 同期プロトコル状態のタイマー・保留バッファを全て破棄する（map のエントリ自体は
 	 * 消さない。detach/exit 側で必要に応じて delete する）。
 	 */
-	private clearTermSync(id: number): void {
-		const sync = this.termSyncStates.get(id);
+	private termSubscriptionKey(id: number, mobileId: string): string {
+		return `${mobileId}\0${id}`;
+	}
+
+	private clearTermSync(key: string): void {
+		const sync = this.termSyncStates.get(key);
 		if (!sync) {
 			return;
 		}
@@ -1430,7 +1477,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * suspend中は破棄し（ptyは止めない）、ACKが追いついた時点のスナップショットで追いつく。
 	 */
 	private sendTermData(id: number, data: string): void {
-		const sync = this.termSyncStates.get(id);
+		for (const mobileId of this.terminalSubscribers.get(id) ?? []) {
+			this.queueTermData(id, mobileId, data);
+		}
+	}
+
+	private queueTermData(id: number, mobileId: string, data: string): void {
+		const sync = this.termSyncStates.get(this.termSubscriptionKey(id, mobileId));
 		if (!sync) {
 			return;
 		}
@@ -1441,15 +1494,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		sync.pending.push(data);
 		sync.pendingChars += data.length;
 		if (sync.pendingChars >= TERM_COALESCE_FLUSH_CHARS) {
-			this.flushTermData(id);
+			this.flushTermData(id, mobileId);
 		} else if (sync.coalesceTimer === undefined) {
-			sync.coalesceTimer = setTimeout(() => this.flushTermData(id), TERM_COALESCE_MS);
+			sync.coalesceTimer = setTimeout(() => this.flushTermData(id, mobileId), TERM_COALESCE_MS);
 		}
 	}
 
 	/** まとめ送りバッファを1フレームとして送信し、未ACK残量が閾値を超えたらsuspendする。 */
-	private flushTermData(id: number): void {
-		const sync = this.termSyncStates.get(id);
+	private flushTermData(id: number, mobileId: string): void {
+		const sync = this.termSyncStates.get(this.termSubscriptionKey(id, mobileId));
 		if (!sync) {
 			return;
 		}
@@ -1457,7 +1510,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			clearTimeout(sync.coalesceTimer);
 			sync.coalesceTimer = undefined;
 		}
-		if (sync.pendingChars === 0 || !this.terminalSubscribers.has(id)) {
+		if (sync.pendingChars === 0 || !this.terminalSubscribers.get(id)?.has(mobileId)) {
 			sync.pending = [];
 			sync.pendingChars = 0;
 			return;
@@ -1468,15 +1521,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const seq = ++sync.seq;
 		sync.inflight.push({ seq, chars: data.length });
 		sync.unackedChars += data.length;
-		this.sendTerm(id, { t: 'data', data, epoch: sync.epoch, seq });
+		this.sendTerm(id, mobileId, { t: 'data', data, epoch: sync.epoch, seq });
 		if (sync.unackedChars > TERM_HIGH_WATERMARK_CHARS) {
 			sync.suspended = true;
 		}
 	}
 
 	/** モバイルからのACK。未ACK残量を減らし、suspend中でLOWまで追いついたらsnapshotで再同期する。 */
-	private handleTerminalAck(instance: ITerminalInstance, id: number, msg: { epoch: number; seq: number }): void {
-		const sync = this.termSyncStates.get(id);
+	private handleTerminalAck(instance: ITerminalInstance, id: number, mobileId: string, msg: { epoch: number; seq: number }): void {
+		const sync = this.termSyncStates.get(this.termSubscriptionKey(id, mobileId));
 		if (!sync || sync.epoch !== msg.epoch) {
 			return; // 旧世代のACKは無視（再attach直後の混在で正常に起きる）
 		}
@@ -1490,7 +1543,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				sync.droppedWhileSuspended = false;
 				// 破棄していた間の出力はもう送れないので、最新画面のスナップショットで追いつく
 				// （moshの「中間状態スキップ」に相当。スクロールバックの完全性より最新画面を優先）。
-				this.sendTerminalSnapshot(instance, id);
+				this.sendTerminalSnapshot(instance, id, mobileId);
 			}
 		}
 	}
@@ -1501,19 +1554,21 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 */
 	private scheduleResizeResync(instance: ITerminalInstance): void {
 		const id = instance.instanceId;
-		const sync = this.termSyncStates.get(id);
-		if (!sync || !this.terminalSubscribers.has(id)) {
-			return;
-		}
-		if (sync.resizeTimer !== undefined) {
-			clearTimeout(sync.resizeTimer);
-		}
-		sync.resizeTimer = setTimeout(() => {
-			sync.resizeTimer = undefined;
-			if (this.terminalSubscribers.has(id)) {
-				this.sendTerminalSnapshot(instance, id);
+		for (const mobileId of this.terminalSubscribers.get(id) ?? []) {
+			const sync = this.termSyncStates.get(this.termSubscriptionKey(id, mobileId));
+			if (!sync) {
+				continue;
 			}
-		}, TERM_RESIZE_SNAPSHOT_DELAY_MS);
+			if (sync.resizeTimer !== undefined) {
+				clearTimeout(sync.resizeTimer);
+			}
+			sync.resizeTimer = setTimeout(() => {
+				sync.resizeTimer = undefined;
+				if (this.terminalSubscribers.get(id)?.has(mobileId)) {
+					this.sendTerminalSnapshot(instance, id, mobileId);
+				}
+			}, TERM_RESIZE_SNAPSHOT_DELAY_MS);
+		}
 	}
 
 	/**
@@ -1522,10 +1577,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * 同期プロトコル有効時は epoch/seq と適用すべき cols/rows・unicode幅版を同梱し、
 	 * モバイルが「reset→resize→write」を原子的に適用できるようにする。
 	 */
-	private sendTerminalSnapshot(instance: ITerminalInstance, id: number): void {
+	private sendTerminalSnapshot(instance: ITerminalInstance, id: number, mobileId: string): void {
+		const subscriptionKey = this.termSubscriptionKey(id, mobileId);
+		const expectedSync = this.termSyncStates.get(subscriptionKey);
+		if (expectedSync === undefined) {
+			return;
+		}
 		this.serializeTerminalSnapshot(instance).then(snapshot => {
 			// serialize解決を待つ間に detach された場合は送らない。
-			if (!this.terminalSubscribers.has(id)) {
+			if (!this.terminalSubscribers.get(id)?.has(mobileId)) {
 				return;
 			}
 			let data = snapshot;
@@ -1537,8 +1597,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const tail = contents.length > TERM_SCROLLBACK_LIMIT ? contents.slice(-TERM_SCROLLBACK_LIMIT) : contents;
 				data = tail.endsWith('\n') ? tail : tail + '\r\n';
 			}
-			const sync = this.termSyncStates.get(id);
-			if (!sync) {
+			const sync = this.termSyncStates.get(subscriptionKey);
+			if (sync !== expectedSync) {
 				return;
 			}
 			// snapshotはバッファ全体を置き換えるため、まとめ送り待ちの生データは破棄してよい
@@ -1556,7 +1616,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			const dims = instance.cols > 0 && instance.rows > 0 ? { cols: instance.cols, rows: instance.rows } : {};
 			const unicode = instance.xterm?.raw.unicode.activeVersion;
-			this.sendTerm(id, { t: 'data', data, snapshot: true, epoch: sync.epoch, seq, ...dims, ...(unicode ? { unicode } : {}) });
+			this.sendTerm(id, mobileId, { t: 'data', data, snapshot: true, epoch: sync.epoch, seq, ...dims, ...(unicode ? { unicode } : {}) });
 		}).catch(err => this.logService.warn('[paradisMobileRelay] scrollback sync failed', err));
 	}
 
@@ -1592,13 +1652,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return addon.serialize({ scrollback: TERM_SNAPSHOT_SCROLLBACK_ROWS });
 	}
 
-	private sendTerm(id: number, msg: TermOutbound): void {
+	private sendTerm(id: number, mobileId: string, msg: TermOutbound): void {
 		const terminalKey = this.terminalIdentityService.getTerminalKey(id);
 		if (terminalKey === undefined) {
 			return;
 		}
-		const target = this.terminalSubscribers.get(id);
-		this.sendFrame({ ch: Channels.Terminal, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ ...msg, terminalKey }))), mobileId: target || undefined });
+		this.sendFrame({ ch: Channels.Terminal, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ ...msg, terminalKey }))), mobileId });
 	}
 }
 

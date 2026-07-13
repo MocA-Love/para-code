@@ -6,16 +6,19 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
-
 /** PTY再生成で数値IDが変わっても維持されるnonceを、モバイル公開用の名前空間へ変換する。 */
 export function terminalKeyFromShellIntegrationNonce(shellIntegrationNonce: string): string {
 	return `terminal:${shellIntegrationNonce}`;
 }
 
-/** Renderer・アプリ終了ではPTYが復元されるため関連メタデータを保持し、実際に閉じた場合だけ削除する。 */
-export function shouldRemovePersistedTerminalIdentity(reason: TerminalExitReason | undefined): boolean {
-	return reason === TerminalExitReason.User
-		|| reason === TerminalExitReason.Process
-		|| reason === TerminalExitReason.Extension;
+/** pane tokenもreviveされるPTY nonceから決定し、数値persistentProcessIdへ依存させない。 */
+export function paneTokenFromShellIntegrationNonce(shellIntegrationNonce: string): string {
+	return shellIntegrationNonce;
+}
+
+/** revive/detach元PTYが保持する実tokenを優先し、新規PTYだけnonceをtokenとして使う。 */
+export function restoredPaneToken(shellIntegrationNonce: string, revivedPaneToken: string | undefined): string {
+	return revivedPaneToken !== undefined && revivedPaneToken.length > 0 && revivedPaneToken.length <= 200
+		? revivedPaneToken
+		: paneTokenFromShellIntegrationNonce(shellIntegrationNonce);
 }

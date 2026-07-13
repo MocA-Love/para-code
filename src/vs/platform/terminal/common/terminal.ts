@@ -206,6 +206,8 @@ export interface IPtyHostAttachTarget {
 	type?: TerminalType;
 	hasChildProcesses: boolean;
 	shellIntegrationNonce: string;
+	/** PARA-CODE: The actual pane token retained by the revived or detached PTY. */
+	paradisPaneToken?: string;
 	tabActions?: ITerminalTabAction[];
 }
 
@@ -580,6 +582,8 @@ export interface IShellLaunchConfig {
 		hideFromUser?: boolean;
 		isFeatureTerminal?: boolean;
 		shellIntegrationNonce: string;
+		/** PARA-CODE: The actual pane token retained by the revived or detached PTY. */
+		paradisPaneToken?: string;
 		tabActions?: ITerminalTabAction[];
 	};
 
