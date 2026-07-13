@@ -19,7 +19,9 @@
 // Raw / 非可視のときは release する。claim 直後は下地が作り直され内容が失われ得るため、復帰時は必ず再 setHtml する。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { DisposableStore, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -75,6 +77,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private _currentResource: URI | undefined;
 	private _mode: ParadisFileViewerMode = 'rendered';
+	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
+	private _renderGeneration = 0;
 
 	constructor(
 		id: string,
@@ -119,7 +123,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	private _rerenderIfShowingRendered(): void {
 		const resource = this._currentResource;
 		if (resource && this._webviewClaimed && this._mode === 'rendered') {
-			void this.renderResource(resource, CancellationToken.None);
+			this._renderResourceInBackground(resource);
 		}
 	}
 
@@ -141,7 +145,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	protected abstract get allowScripts(): boolean;
 
 	/** 読み込んだテキストから webview に表示する完全な HTML ドキュメント文字列を生成する。 */
-	protected abstract renderDocument(text: string, resource: URI, webview: IOverlayWebview): Promise<string> | string;
+	protected abstract renderDocument(text: string, resource: URI, webview: IOverlayWebview, token: CancellationToken): Promise<string> | string;
 
 	/** webview 要素の生成直後に呼ばれるフック（サブクラスがメッセージ購読等を行う）。 */
 	protected onWebviewCreated(_webview: IOverlayWebview): void { }
@@ -183,6 +187,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 		const viewerInput = input as ParadisFileViewerInput;
 		const resource = viewerInput.resource;
+		// 同じ URI の入力を設定し直す経路でも、旧入力から継続中の描画を無効化する。
+		this._renderGeneration++;
 		this._currentResource = resource;
 		// 別ファイルに切り替わったので前のモデル参照を解放する。
 		this._modelRef.clear();
@@ -190,6 +196,27 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 		const store = new DisposableStore();
 		this._inputDisposables.value = store;
+		let initialViewApplied = false;
+		let rerenderAfterInitial = false;
+		const rerender = () => {
+			if (isEqual(this._currentResource, resource) && this._webviewClaimed && this._mode === 'rendered') {
+				this._renderResourceInBackground(resource);
+			}
+		};
+		const rerenderScheduler = store.add(new RunOnceScheduler(rerender, 50));
+		// watch エラーはワークスペース全体から連続して届く場合があるため、通常の変更通知より長く抑制する。
+		const watchRecoveryScheduler = store.add(new RunOnceScheduler(rerender, 1000));
+		const scheduleRerender = (scheduler: RunOnceScheduler) => {
+			// 初回描画より先に watcher 描画を開始すると、世代更新によって setInput が待つ描画を
+			// 無効化してしまう。初回完了まで通知を記録し、直後に最新内容を読み直す。
+			if (!initialViewApplied) {
+				rerenderAfterInitial = true;
+				return;
+			}
+			if (!scheduler.isScheduled()) {
+				scheduler.schedule();
+			}
+		};
 
 		// ディスク上のファイル変更を監視し、Rendered 表示中なら自動再レンダリングする（Raw は同一モデルなので自動反映。
 		// 非表示/Raw のときは再描画不要 — 次に Rendered へ復帰(claim)する際に最新内容で描き直す）。
@@ -197,33 +224,37 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			const watcher = this._fileService.createWatcher(resource, { recursive: false, excludes: [] });
 			store.add(watcher);
 			store.add(watcher.onDidChange(e => {
-				if (e.contains(resource) && isEqual(this._currentResource, resource) && this._webviewClaimed && this._mode === 'rendered') {
-					void this.renderResource(resource, CancellationToken.None);
+				if (e.contains(resource)) {
+					scheduleRerender(rerenderScheduler);
 				}
 			}));
 		} catch {
 			// watcher の生成に失敗しても表示自体は継続できるため致命的ではない。
 		}
+		// OS 側でイベントが欠落した場合は個別 watcher の onDidChange が来ないため、watch エラーを
+		// 復旧用の再読込トリガーとして扱う。短時間のエラー連発は recovery scheduler で1回にまとめる。
+		store.add(this._fileService.onDidWatchError(() => scheduleRerender(watchRecoveryScheduler)));
 
-		// Rendered の実描画は _applyViewMode → _updateWebviewPlacement(claim+setHtml)が担う。
-		await this._applyViewMode(viewerInput.viewMode, resource);
+		// Rendered の配置と実描画は _applyViewMode がまとめて担う。
+		await this._applyViewMode(viewerInput.viewMode, resource, token);
+		initialViewApplied = true;
+		if (rerenderAfterInitial) {
+			rerenderScheduler.schedule();
+		}
 	}
 
 	private async renderResource(resource: URI, token: CancellationToken): Promise<void> {
+		const generation = ++this._renderGeneration;
 		let text: string;
 		// Raw で開いたモデルがあれば、その現在値(未保存の編集を含む)から Rendered を作る。
 		const model = this._modelRef.value?.object.textEditorModel;
 		if (model && !model.isDisposed() && isEqual(model.uri, resource)) {
 			text = model.getValue();
 		} else {
-			try {
-				const content = await this._textFileService.read(resource, { acceptTextOnly: false });
-				text = content.value;
-			} catch {
-				text = '';
-			}
+			const content = await this._textFileService.read(resource, { acceptTextOnly: false });
+			text = content.value;
 		}
-		if (token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
+		if (!this._isRenderCurrent(generation, resource, token)) {
 			return;
 		}
 
@@ -233,11 +264,20 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			localResourceRoots: [dirname(resource)]
 		};
 
-		const html = await this.renderDocument(text, resource, webview);
-		if (token.isCancellationRequested || !isEqual(this._currentResource, resource)) {
+		const html = await this.renderDocument(text, resource, webview, token);
+		if (!this._isRenderCurrent(generation, resource, token)) {
 			return;
 		}
 		webview.setHtml(html);
+	}
+
+	private _isRenderCurrent(generation: number, resource: URI, token: CancellationToken): boolean {
+		return generation === this._renderGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource);
+	}
+
+	/** UI イベント由来の再描画。失敗時は現在の HTML を保持し、未処理の Promise を残さない。 */
+	private _renderResourceInBackground(resource: URI): void {
+		this.renderResource(resource, CancellationToken.None).catch(onUnexpectedError);
 	}
 
 	private ensureWebview(resource: URI): IOverlayWebview {
@@ -265,9 +305,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	/**
 	 * overlay webview を「可視 かつ Rendered」のときだけ claim してアンカーへ重ね、それ以外では release する。
-	 * claim で下地要素が作り直され内容が失われ得るため、claim した直後は必ず setHtml を貼り直す（冪等）。
+	 * claim で下地要素が作り直され内容が失われ得るため、true を返した呼出元は必ず再描画する。
 	 */
-	private _updateWebviewPlacement(): void {
+	private _updateWebviewPlacement(): boolean {
 		const resource = this._currentResource;
 		const shouldShow = this._editorVisible && this._mode === 'rendered' && !!resource;
 		if (!shouldShow) {
@@ -275,7 +315,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 				this._webview.release(this);
 				this._webviewClaimed = false;
 			}
-			return;
+			return false;
 		}
 		const webview = this.ensureWebview(resource);
 		const justClaimed = !this._webviewClaimed;
@@ -285,9 +325,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		}
 		dom.setParentFlowTo(webview.container, this._webviewContainer!);
 		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
-		if (justClaimed) {
-			void this.renderResource(resource, CancellationToken.None);
-		}
+		return justClaimed;
 	}
 
 	/** Rendered/Raw を内部切替する（エディタは開き直さない）。 */
@@ -299,12 +337,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (!resource) {
 			return;
 		}
-		// Rendered へ戻るときは Raw で編集された現在値を反映するため再レンダリングする（既に claim 済みの場合。
-		// 未 claim なら _applyViewMode → _updateWebviewPlacement の claim 時に描き直される）。
-		if (mode === 'rendered' && this._modelRef.value && this._webviewClaimed) {
-			void this.renderResource(resource, CancellationToken.None);
-		}
-		void this._applyViewMode(mode, resource);
+		this._applyViewMode(mode, resource).catch(onUnexpectedError);
 	}
 
 	/** 現在の表示モード。 */
@@ -312,7 +345,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		return this._mode;
 	}
 
-	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI): Promise<void> {
+	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI, token: CancellationToken = CancellationToken.None): Promise<void> {
 		this._mode = mode;
 		this._renderedBtn?.classList.toggle('active', mode === 'rendered');
 		this._rawBtn?.classList.toggle('active', mode === 'raw');
@@ -321,13 +354,21 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			await this._ensureRawEditor(resource);
 			// await 中に別ファイルへ切り替わっていたら、古い継続で DOM/フォーカスを触らない
 			// (新入力側が設定した表示状態を古い mode のまま上書きしないようにする)。
-			if (!isEqual(this._currentResource, resource)) {
+			if (!isEqual(this._currentResource, resource) || this._mode !== mode) {
 				return;
 			}
 		}
 		// Raw エディタは active クラス(visibility)で表示切替。Rendered(webview overlay)は claim/release で制御する。
 		this._editorContainer?.classList.toggle('active', mode === 'raw');
 		this._updateWebviewPlacement();
+		if (mode === 'rendered') {
+			// setInput はこの描画を待つ。既に別経路で claim 済みでも必ず最新世代を開始し、
+			// 非表示の入力も事前描画して、Raw の未保存編集やファイルの現在値を反映する。
+			await this.renderResource(resource, token);
+		}
+		if (!isEqual(this._currentResource, resource) || this._mode !== mode) {
+			return;
+		}
 		if (mode === 'raw') {
 			this._codeEditor?.focus();
 		} else {
@@ -354,6 +395,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	override clearInput(): void {
 		this._inputDisposables.clear();
+		this._renderGeneration++;
 		this._currentResource = undefined;
 		this._codeEditor?.setModel(null);
 		this._modelRef.clear();
@@ -362,6 +404,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			this._webview.release(this);
 			this._webviewClaimed = false;
 		}
+		// 次の入力を claim した直後に前ファイルの内容が一瞬表示されないよう、保持 HTML も消去する。
+		this._webview?.setHtml('');
 		super.clearInput();
 	}
 
@@ -369,7 +413,12 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (visible !== this._editorVisible) {
 			this._editorVisible = visible;
 			// 可視 かつ Rendered のときだけ overlay を claim、非可視では release する（webviewEditor と同じ挙動）。
-			this._updateWebviewPlacement();
+			if (this._updateWebviewPlacement()) {
+				const resource = this._currentResource;
+				if (resource) {
+					this._renderResourceInBackground(resource);
+				}
+			}
 		}
 		super.setEditorVisible(visible);
 	}
