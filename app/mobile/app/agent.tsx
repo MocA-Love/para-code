@@ -64,6 +64,7 @@ export default function AgentDetailScreen() {
 		?? allTerminals.find(t => (t.ws ?? workspace?.activeWs) === effectiveWsId);
 	const activeId = activeTerminal?.id;
 	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
+	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);
 	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
 	const permissionPending = activeTerminal?.agentStatus === 'permission';
 	const actions = useAgentActions(activeId, chat?.agent);
@@ -286,7 +287,7 @@ export default function AgentDetailScreen() {
 								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
 									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} />
 									: <ActivityGroup msgs={item.msgs} />}
-						contentContainerStyle={[styles.listContent, { paddingTop: headerHeight + (hasActiveActivity ? 52 : 6) }]}
+						contentContainerStyle={[styles.listContent, { paddingTop: headerHeight + (hasActivityHistory ? 52 : 6) }]}
 						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
 						onContentSizeChange={onContentSizeChange}
 						onScroll={onListScroll}
@@ -336,7 +337,7 @@ export default function AgentDetailScreen() {
 					</Pressable>
 				</View>
 			</View>
-			{hasActiveActivity && chat?.activity !== undefined ? <View style={[styles.activityStripOverlay, { top: headerHeight + 4 }]}><AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} /></View> : null}
+			{hasActivityHistory && chat?.activity !== undefined ? <View style={[styles.activityStripOverlay, { top: headerHeight + 4 }]}><AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} /></View> : null}
 
 			{permissionPending && activeId !== undefined ? (
 				<View style={styles.approvalBarWrap}>

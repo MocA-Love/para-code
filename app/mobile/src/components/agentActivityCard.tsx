@@ -52,15 +52,20 @@ export function AgentActivityCard({ activity, onOpen }: { activity: AgentActivit
 	);
 }
 
-/** 親Agentヘッダー直下へ固定する実行中SubAgentのコンパクトストリップ。 */
+/** 親Agentヘッダー直下へ固定するSubAgent活動・履歴のコンパクトストリップ。 */
 export function AgentActivityStrip({ activity, onOpen }: { activity: AgentActivityState; onOpen: (agentId?: string) => void }) {
 	const activeAgents = activity.agents.filter(item => isRunningAgentActivity(item.status));
 	const activeTasks = activity.tasks.filter(item => isRunningAgentActivity(item.status));
-	if (activeAgents.length === 0 && activeTasks.length === 0) { return null; }
-	return <Pressable accessibilityRole="button" accessibilityLabel="実行中のSubAgentとTaskを開く" onPress={() => onOpen()} style={styles.strip}>
-		<View style={styles.dot} /><Text style={styles.stripTitle}>SubAgents</Text>
-		<View style={styles.stripAvatars}>{activeAgents.slice(0, 3).map(agent => <View key={agent.id} style={styles.stripAvatar}><Text style={styles.stripAvatarText}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>)}</View>
-		<Text style={styles.stripCount}>{activeAgents.length} agents{activeTasks.length > 0 ? ` · ${activeTasks.length} tasks` : ''}</Text><Ionicons name="chevron-forward" size={13} color={colors.textDim} />
+	const allItems = [...activity.agents, ...activity.tasks];
+	if (allItems.length === 0) { return null; }
+	const hasActive = activeAgents.length > 0 || activeTasks.length > 0;
+	const allCompleted = allItems.every(item => item.status === 'completed');
+	const historyCount = activity.agents.length > 0 ? activity.agents.length : activity.tasks.length;
+	const statusSummary = hasActive ? `${activeAgents.length} agents${activeTasks.length > 0 ? ` · ${activeTasks.length} tasks` : ''}` : allCompleted ? `${historyCount}件完了` : `履歴 ${historyCount}件`;
+	return <Pressable accessibilityRole="button" accessibilityLabel={hasActive ? '実行中のSubAgentとTaskを開く' : 'SubAgent履歴を開く'} onPress={() => onOpen()} style={styles.strip}>
+		{hasActive ? <View style={styles.dot} /> : <Ionicons name={allCompleted ? 'checkmark-circle-outline' : 'time-outline'} size={15} color={allCompleted ? colors.green : colors.textDim} />}<Text style={styles.stripTitle}>SubAgents</Text>
+		{hasActive ? <View style={styles.stripAvatars}>{activeAgents.slice(0, 3).map(agent => <View key={agent.id} style={styles.stripAvatar}><Text style={styles.stripAvatarText}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>)}</View> : null}
+		<Text style={styles.stripCount}>{statusSummary}</Text><Ionicons name="chevron-forward" size={13} color={colors.textDim} />
 	</Pressable>;
 }
 
