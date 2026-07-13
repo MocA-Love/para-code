@@ -13,6 +13,7 @@ import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdenti
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
+import { connectionActionForAppState, shouldPresentForegroundNotification, shouldRunForegroundWork } from './appLifecycle.js';
 
 interface AppState extends StoreState {
 	ready: boolean;
@@ -227,7 +228,7 @@ export const useAppStore = create<AppState>(set => ({
 					// 鮮度チェックなしだと過去の通知がその場で一斉にバナー表示されてしまう。
 					// APNs経路のapns-expiration（TTL）に相当する判定のクライアント版。
 					// PCとモバイルの時計ずれで新鮮な通知を落とさないよう、閾値は緩めに取る。
-					if (Date.now() - payload.at > NOTIFY_BANNER_MAX_AGE_MS) {
+					if (!shouldPresentForegroundNotification(RNAppState.currentState, payload.at, Date.now(), NOTIFY_BANNER_MAX_AGE_MS)) {
 						return;
 					}
 					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalId: payload.terminalId, agentToken: payload.agentToken });
@@ -269,23 +270,34 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			};
 			RNAppState.addEventListener('change', appState => {
-				if (appState === 'active') {
+				const action = connectionActionForAppState(appState);
+				if (action === 'resume') {
 					if (!useAppStore.getState().manualOffline) {
-						controller?.ensureConnected();
+						controller?.resumeFromBackground();
 					}
 					startHeartbeat();
 				} else {
-					// バックグラウンドではタイマーを止める（バッテリー対策。iOSはいずれにせよ
-					// バックグラウンドのJSタイマーを止めるが、明示しておく）
+					// inactiveを含む非表示中は画面用タイマーを止める。接続を切るのは完全な
+					// backgroundだけにし、コントロールセンター等の短い中断では再接続を起こさない。
 					stopHeartbeat();
+					if (action === 'suspend' && !useAppStore.getState().manualOffline) {
+						controller?.suspendForBackground();
+					}
 				}
 			});
-			startHeartbeat();
+			if (shouldRunForegroundWork(RNAppState.currentState)) {
+				startHeartbeat();
+			}
 			const creds = await loadCredentials(secureKeyStore);
 			set({ ready: true, paired: !!creds });
 			if (creds) {
 				ensureNotificationPermission().catch(err => console.warn('[appState] notification permission request failed', err));
 				controller.connect(creds);
+				// KeyStore読込中にバックグラウンドへ移った場合、changeイベント時点ではまだ
+				// clientが無い。接続作成直後にも現在状態を確認し、背景用ソケットを残さない。
+				if (connectionActionForAppState(RNAppState.currentState) === 'suspend') {
+					controller.suspendForBackground();
+				}
 			}
 		} catch (err) {
 			// 一過性の失敗（KeyStore読み取り等）で ready:false に張り付かないよう、

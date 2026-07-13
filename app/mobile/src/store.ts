@@ -723,6 +723,24 @@ export class MobileController {
 		}
 	}
 
+	/** バックグラウンド通知をAPNsへ一本化するため、フォアグラウンド用ソケットを止める。 */
+	suspendForBackground(): void {
+		if (!this.client) {
+			return;
+		}
+		this.state.pcOnline = false;
+		this.client.suspend();
+	}
+
+	/** 復帰時は旧ソケットを再利用せず、新しい接続から購読中データだけを再同期する。 */
+	resumeFromBackground(): void {
+		if (this.client) {
+			this.client.resume();
+		} else if (this.lastCredentials) {
+			this.connect(this.lastCredentials);
+		}
+	}
+
 	/** 未接続なら即座に接続、'online' 表示中は生存確認する（フォアグラウンド復帰時用）。 */
 	ensureConnected(): void {
 		const client = this.client;

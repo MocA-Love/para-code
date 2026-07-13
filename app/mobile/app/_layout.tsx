@@ -10,6 +10,7 @@ import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
+import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 
 /** notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。 */
 interface NotificationDeepLinkData {
@@ -72,7 +73,7 @@ export default function RootLayout() {
 		if (target.terminalId !== undefined) {
 			setSelectedTerminalId(target.terminalId);
 		}
-		router.push('/agent');
+		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
 	}, [router, setSelectedWs, setSelectedTerminalId]);
 
 	useEffect(() => {

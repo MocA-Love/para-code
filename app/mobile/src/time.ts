@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useAppIsActive } from './hooks/useAppIsActive.js';
 
 /** これより古い時刻は相対表示をやめて絶対日付に切り替える。 */
 const ABSOLUTE_DATE_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
@@ -42,14 +43,19 @@ export function formatRelativeTime(at: number, now: number = Date.now()): string
 /**
  * 一定間隔で更新される現在時刻（epoch ms）。相対時刻表示を画面を開いたまま
  * でも追従させるために使う（「3分前」が放置で「1時間前」に育つ）。
- * 画面がタブ切り替え等で非表示でもintervalは回り続けるが、1分間隔のsetState
- * 1回分なのでコストは無視できる。
+ * アプリがactiveの間だけintervalを動かし、復帰時は滞留したtimer callbackを再生せず
+ * 現在時刻へ1回で追いつく。
  */
 export function useNow(intervalMs: number = 60_000): number {
 	const [now, setNow] = useState(() => Date.now());
+	const isAppActive = useAppIsActive();
 	useEffect(() => {
+		if (!isAppActive) {
+			return;
+		}
+		setNow(Date.now());
 		const timer = setInterval(() => setNow(Date.now()), intervalMs);
 		return () => clearInterval(timer);
-	}, [intervalMs]);
+	}, [intervalMs, isAppActive]);
 	return now;
 }

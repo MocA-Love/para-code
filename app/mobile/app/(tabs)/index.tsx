@@ -17,6 +17,7 @@ import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAg
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
+import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
 
 /**
  * ホーム画面（mock.html 案A準拠のリデザイン）。旧デザインの「接続中のPC」カードと
@@ -91,7 +92,7 @@ export default function HomeScreen() {
 		hapticSelection();
 		setSelectedWs(wsId);
 		setSelectedTerminalId(terminalId);
-		router.push('/agent');
+		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
 	};
 	// エージェント一覧（応答待ち → 実行中 → その他 → アイドルの順）。絞り込み中は選択中
 	// ワークスペース分だけに絞る。エージェントCLIが動いた実績のあるターミナルだけを載せる
