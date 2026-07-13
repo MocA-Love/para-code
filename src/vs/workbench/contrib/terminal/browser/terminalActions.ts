@@ -89,6 +89,7 @@ export interface WorkspaceFolderCwdPair {
 	isOverridden: boolean;
 }
 
+// PARA-PATCH: Split a selected terminal, or create a panel terminal when no parent exists.
 export async function splitOrCreateTerminal(
 	terminalService: Pick<ITerminalService, 'createAndFocusTerminal'>,
 	parentTerminal: ITerminalInstance | undefined,
@@ -1092,6 +1093,7 @@ export function registerTerminalActions() {
 		}
 	});
 
+	// PARA-PATCH: Expose the fork-specific split-or-create command used by terminal context menus.
 	registerTerminalAction({
 		id: TerminalCommandId.SplitOrCreate,
 		title: localize2('workbench.action.terminal.splitOrCreate', 'Split Terminal'),

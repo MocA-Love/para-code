@@ -131,6 +131,7 @@ const shellIntegrationSupportedShellTypes: (PosixShellType | GeneralShellType | 
  */
 const agentCliTitlePatterns: ReadonlyMap<GeneralShellType, RegExp> = new Map([
 	[GeneralShellType.Claude, /claude\s*code/i],
+	// PARA-PATCH: Detect Codex when Para Code supplies an OSC title for the terminal.
 	[GeneralShellType.Codex, /\bcodex\b/i],
 	[GeneralShellType.Copilot, /\bcopilot\b/i],
 	[GeneralShellType.Gemini, /\bgemini\b/i],

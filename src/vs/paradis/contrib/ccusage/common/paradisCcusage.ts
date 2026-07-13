@@ -84,7 +84,7 @@ export interface IParadisCcusageBlock {
 /** `ccusage claude session --json` の1セッション分(Claude Code のみ)。 */
 export interface IParadisCcusageSessionRow {
 	readonly sessionId?: string;
-	/** 例: "-Users-magu-github-para-code"(パス区切りが '-' に変換されたもの)。 */
+	/** 例: "-Users-example-projects-para-code"(パス区切りが '-' に変換されたもの)。 */
 	readonly projectPath?: string;
 	readonly firstActivity?: string;
 	readonly lastActivity?: string;

@@ -1,3 +1,4 @@
+# PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 Pod::Spec.new do |s|
   s.name           = 'ParaLiveActivity'
   s.version        = '1.0.0'

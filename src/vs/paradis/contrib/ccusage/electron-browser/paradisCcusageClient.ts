@@ -93,7 +93,7 @@ export function paradisCcusageDateArg(date: Date): string {
 }
 
 /**
- * ccusage の "-Users-magu-github-para-code" 形式のプロジェクト表記から表示名を作る。
+ * ccusage の "-Users-example-projects-para-code" 形式のプロジェクト表記から表示名を作る。
  * パス区切りが '-' に潰されていて復元不能なため、ホームディレクトリ相当の前置きを
  * ヒューリスティックに取り除くだけに留める(元表記はツールチップで参照可能にする)。
  */

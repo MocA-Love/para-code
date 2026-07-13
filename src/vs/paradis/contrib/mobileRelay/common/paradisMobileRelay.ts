@@ -27,7 +27,7 @@ export const PARADIS_MOBILE_RELAY_URL_KEY = 'paradis.mobile.relayUrl';
 /** 実験的: 稼働中Codex app-server daemonからトークン単位の進捗通知を購読する。 */
 export const PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY = 'paradis.mobile.agent.codexDaemonStreaming';
 
-// 2026-07-05 デプロイ済み（CROUTECHアカウント、app/relay/wrangler.jsonc参照）。
+// 2026-07-05 デプロイ済み（本番Cloudflareアカウント、app/relay/wrangler.jsonc参照）。
 export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudflare8234.workers.dev';
 
 // ---- IPC チャネル ----

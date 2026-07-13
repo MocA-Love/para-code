@@ -35,6 +35,7 @@ test/componentFixtures/.screenshots/*
 dist
 .playwright-cli
 .playwright-mcp
+# PARA-PATCH: Ignore local Superpowers and worktree artifacts used by Para Code development.
 /.superpowers/
 .worktrees/
 .claude/

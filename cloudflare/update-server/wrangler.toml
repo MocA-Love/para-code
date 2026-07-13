@@ -2,7 +2,7 @@
 name = "para-code-update-server"
 main = "src/index.ts"
 compatibility_date = "2026-07-01"
-account_id = "979dbe0328e903a34bb6291b06cca0da" # CROUTECH
+account_id = "979dbe0328e903a34bb6291b06cca0da" # Production Cloudflare account
 
 [[kv_namespaces]]
 binding = "RELEASES"

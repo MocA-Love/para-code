@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
         with:
           # Need enough history for the merge-base lookup below to succeed even

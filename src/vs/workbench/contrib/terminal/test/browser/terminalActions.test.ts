@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-PATCH: Cover the fork-specific split-or-create terminal helper.
 import { deepStrictEqual, strictEqual } from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { hasKey } from '../../../../../base/common/types.js';
@@ -87,6 +88,7 @@ suite('terminalActions', () => {
 		});
 	});
 
+	// PARA-PATCH: Verify fork-specific split-or-create behavior with and without a parent terminal.
 	suite('splitOrCreateTerminal', () => {
 		test('creates a panel terminal when no parent terminal is provided', async () => {
 			const newInstance = { instanceId: 1 } as ITerminalInstance;

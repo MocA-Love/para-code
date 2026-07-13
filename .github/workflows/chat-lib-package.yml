@@ -23,6 +23,7 @@ jobs:
 
     steps:
       - name: Checkout
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
 
       - name: Setup Node.js

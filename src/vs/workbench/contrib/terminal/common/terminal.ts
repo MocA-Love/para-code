@@ -433,6 +433,7 @@ export const enum TerminalCommandId {
 	NewInActiveWorkspace = 'workbench.action.terminal.newInActiveWorkspace',
 	NewWithProfile = 'workbench.action.terminal.newWithProfile',
 	Split = 'workbench.action.terminal.split',
+	// PARA-PATCH: Identify the fork-specific split-or-create terminal command.
 	SplitOrCreate = 'workbench.action.terminal.splitOrCreate',
 	SplitActiveTab = 'workbench.action.terminal.splitActiveTab',
 	SplitInActiveWorkspace = 'workbench.action.terminal.splitInActiveWorkspace',
@@ -560,6 +561,7 @@ export const DEFAULT_COMMANDS_TO_SKIP_SHELL: string[] = [
 	TerminalCommandId.SelectToNextLine,
 	TerminalCommandId.SelectToPreviousCommand,
 	TerminalCommandId.SelectToPreviousLine,
+	// PARA-PATCH: Keep the split-or-create keybinding in the workbench instead of forwarding it to the shell.
 	TerminalCommandId.SplitOrCreate,
 	TerminalCommandId.SplitInActiveWorkspace,
 	TerminalCommandId.Split,

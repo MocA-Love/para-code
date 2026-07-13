@@ -5,6 +5,7 @@
 
 import { getFontSnippets } from '../../../../base/browser/fonts.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+// PARA-PATCH: Track fork-added terminal menu registrations for disposal.
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -137,6 +138,7 @@ registerTerminalActions();
 
 setupTerminalCommands();
 
+// PARA-PATCH: Own the fork-added terminal menu registrations for workbench lifetime disposal.
 const terminalMenuDisposables = new DisposableStore();
 setupTerminalMenus(terminalMenuDisposables);
 
