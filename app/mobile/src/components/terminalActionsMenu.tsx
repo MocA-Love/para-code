@@ -13,6 +13,7 @@ import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
 export interface TerminalActionsMenuTarget {
 	id: number;
+	windowId?: number;
 	title: string;
 	pinned: boolean;
 }
@@ -46,9 +47,9 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 	/** リフトクローンとして再描画する行データ。 */
 	rowData: AgentRowData | undefined;
 	onClose: () => void;
-	onRename: (id: number, title: string) => void;
+	onRename: (id: number, title: string, windowId?: number) => void;
 	onTogglePin: (id: number) => void;
-	onDelete: (id: number) => void;
+	onDelete: (id: number, windowId?: number) => void;
 }) {
 	const [mode, setMode] = useState<'menu' | 'rename' | 'confirm-delete'>('menu');
 	// リネーム入力の下書き。OverlayHost経由の再描画1拍遅れでcontrolled inputの
@@ -90,13 +91,13 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 	const submitRename = () => {
 		const title = draftRef.current.trim();
 		if (title.length > 0 && title !== target.title) {
-			onRename(target.id, title);
+			onRename(target.id, title, target.windowId);
 		}
 		close();
 	};
 
 	const commitDelete = () => {
-		onDelete(target.id);
+		onDelete(target.id, target.windowId);
 		close();
 	};
 

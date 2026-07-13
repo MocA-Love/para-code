@@ -59,11 +59,11 @@ interface AppState extends StoreState {
 	attachTerminal(id: number): void;
 	detachTerminal(id: number): void;
 	/** ターミナル名を変更する（PC側の実インスタンスにも反映され、他端末にも同期される）。 */
-	renameTerminal(id: number, title: string): void;
+	renameTerminal(id: number, title: string, windowId?: number): void;
 	/** ターミナルを削除する（PC側の実インスタンスも閉じる。呼び出し側で確認済みの前提）。 */
-	closeTerminal(id: number): void;
+	closeTerminal(id: number, windowId?: number): void;
 	/** エージェントの「レビュー」状態を確認済みにする（ステータスバッジのポップオーバーから）。 */
-	ackAgentStatus(id: number): void;
+	ackAgentStatus(id: number, windowId?: number): void;
 	/**
 	 * ピン留め状態（キーは pinKeyForTerminal 参照）。モバイル端末ローカルのみの状態で、
 	 * PCへは同期しない（ホーム一覧の並び順の好みなのでPC側に対応概念が無いため）。
@@ -352,16 +352,16 @@ export const useAppStore = create<AppState>(set => ({
 		controller?.detachTerminal(id);
 	},
 
-	renameTerminal(id: number, title: string) {
-		controller?.renameTerminal(id, title);
+	renameTerminal(id: number, title: string, windowId?: number) {
+		controller?.renameTerminal(id, title, windowId);
 	},
 
-	closeTerminal(id: number) {
-		controller?.closeTerminal(id);
+	closeTerminal(id: number, windowId?: number) {
+		controller?.closeTerminal(id, windowId);
 	},
 
-	ackAgentStatus(id: number) {
-		controller?.ackAgentStatus(id);
+	ackAgentStatus(id: number, windowId?: number) {
+		controller?.ackAgentStatus(id, windowId);
 	},
 
 	togglePin(key: string) {

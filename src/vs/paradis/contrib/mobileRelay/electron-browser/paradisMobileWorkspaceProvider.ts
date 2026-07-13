@@ -43,6 +43,8 @@ const decoder = new TextDecoder();
 
 /** ワークスペース状態スナップショット（stateチャネルのペイロード）。 */
 interface StateSnapshot {
+	/** terminal instanceIdの名前空間。instanceIdはウィンドウ内でのみ一意。 */
+	windowId: number;
 	activeWs: string | undefined;
 	// parent: worktree（スペース）の親リポジトリid。モバイル側がドロワーで親子グルーピング
 	// （開閉表示）するために使う。旧アプリは無視するため後方互換（フラット表示のまま）。
@@ -55,29 +57,29 @@ type TermInbound =
 	// epoch はモバイルが attach ごとに採番する世代番号。指定があると同期プロトコル
 	// （seq 付与・ACKフロー制御・リサイズ時スナップショット再同期）が有効になる。
 	// 未指定（旧アプリ）は従来どおり生ストリームをそのまま流す。
-	| { t: 'attach'; id: number; epoch?: number }
-	| { t: 'detach'; id: number }
+	| { t: 'attach'; id: number; windowId?: number; epoch?: number }
+	| { t: 'detach'; id: number; windowId?: number }
 	// 受信済み最終 seq の確認応答（epoch 対応クライアントのみ）。フロー制御の材料。
-	| { t: 'ack'; id: number; epoch: number; seq: number }
+	| { t: 'ack'; id: number; windowId?: number; epoch: number; seq: number }
 	// input は3形態（新しいアプリは key / text を送り、data は旧PC向けフォールバック）:
 	// - key: 矢印キー等のセマンティック指定。PC側が端末モード（application cursor keys）に
 	//   合わせて CSI / SS3 へエンコードする
 	// - text: コンポーザーからのテキスト入力。sendText の bracketed paste 対応を通し、
 	//   複数行貼り付けがTUIで1行目から実行されてしまう問題を防ぐ。execute=true で実行（Enter）
 	// - data: 生のエスケープシーケンス（旧アプリ、および Esc/Tab/^C 等のモード非依存キー）
-	| { t: 'input'; id: number; data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }
-	| { t: 'create'; ws?: string }
+	| { t: 'input'; id: number; windowId?: number; data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }
+	| { t: 'create'; windowId?: number; ws?: string }
 	// モバイルからのターミナル名変更。PC側の実インスタンスへ反映し、stateの再送で
 	// 他モバイル端末（およびPC自身のタブ表示）にも波及させる。
-	| { t: 'rename'; id: number; title: string }
+	| { t: 'rename'; id: number; windowId?: number; title: string }
 	// モバイルからのターミナル削除（ホーム長押しメニュー）。モバイル側で確認済みの前提で
 	// PC側の実インスタンスを閉じる。onDidChangeInstances経由でstateが自動再送され、
 	// 他モバイル端末・PC自身のタブ表示からも消える。
-	| { t: 'close'; id: number }
+	| { t: 'close'; id: number; windowId?: number }
 	// モバイルからのエージェント状態の既読（ホームのステータスバッジタップ→「確認済みにする」）。
 	// PCのフォーカス中自動既読と同じ acknowledgePaneStatus 経路を通すため、'review' 状態のみ
 	// クリアされ、通知履歴のdismiss等の後続処理も自動で走る。
-	| { t: 'ackStatus'; id: number };
+	| { t: 'ackStatus'; id: number; windowId?: number };
 type TermSemanticKey = 'up' | 'down' | 'right' | 'left';
 type TermOutbound =
 	// snapshot=true は画面復元用フレーム（VTシーケンス込み）。モバイルは追記せず
@@ -184,6 +186,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
+		private readonly windowId: number,
 		private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		private readonly terminalService: ITerminalService,
 		private readonly terminalGroupService: ITerminalGroupService,
@@ -432,7 +435,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				...(inst.cols > 0 && inst.rows > 0 ? { cols: inst.cols, rows: inst.rows } : {}),
 			};
 		});
-		return { activeWs: this.workspaceSwitchService.activeStateKey, workspaces, terminals };
+		return { windowId: this.windowId, activeWs: this.workspaceSwitchService.activeStateKey, workspaces, terminals };
 	}
 
 	/** shared processがhookまたは検証済みtranscriptから確定したエージェント端末を反映する。 */
@@ -1083,6 +1086,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		try {
 			msg = JSON.parse(decoder.decode(payload.buffer)) as TermInbound;
 		} catch {
+			return;
+		}
+		// instanceIdはVS Codeウィンドウ内でしか一意ではない。新しいモバイルはstateで
+		// 受け取ったwindowIdを必ず返し、別ウィンドウの同じ番号へ操作が届くのを防ぐ。
+		// windowId無しは旧モバイル互換として従来経路を残す。
+		if (msg.windowId !== undefined && msg.windowId !== this.windowId) {
 			return;
 		}
 		if (msg.t === 'create') {

@@ -142,7 +142,7 @@ export default function HomeScreen() {
 							onPress={e => {
 								hapticSelection();
 								setStatusPopover({
-									target: { id: t.id, status: 'review' },
+									target: { id: t.id, windowId: workspace?.windowId, status: 'review' },
 									anchor: { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY },
 								});
 							}}
@@ -159,7 +159,7 @@ export default function HomeScreen() {
 							onPress={() => { if (ws) { openAgent(ws.id, t.id); } }}
 							onLongPress={e => {
 								hapticImpact('medium');
-								const target = { id: t.id, title: t.title, pinned };
+								const target = { id: t.id, windowId: workspace?.windowId, title: t.title, pinned };
 								const anchor = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY };
 								const node = rowRefs.current.get(t.id);
 								if (node) {
@@ -191,20 +191,20 @@ export default function HomeScreen() {
 				rect={menu?.rect}
 				rowData={menu?.rowData}
 				onClose={() => setMenu(undefined)}
-				onRename={(id, title) => renameTerminal(id, title)}
+				onRename={(id, title, windowId) => renameTerminal(id, title, windowId)}
 				onTogglePin={id => {
 					const terminal = workspace?.terminals.find(term => term.id === id);
 					if (terminal) {
 						togglePin(pinKeyForTerminal(terminal));
 					}
 				}}
-				onDelete={id => closeTerminal(id)}
+				onDelete={(id, windowId) => closeTerminal(id, windowId)}
 			/>
 			<AgentStatusPopover
 				target={statusPopover?.target}
 				anchor={statusPopover?.anchor}
 				onClose={() => setStatusPopover(undefined)}
-				onAck={id => ackAgentStatus(id)}
+				onAck={(id, windowId) => ackAgentStatus(id, windowId)}
 			/>
 		</View>
 	);

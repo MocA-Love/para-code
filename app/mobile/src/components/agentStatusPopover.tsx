@@ -10,6 +10,7 @@ import { hapticImpact } from '../haptics.js';
 
 export interface AgentStatusPopoverTarget {
 	id: number;
+	windowId?: number;
 	/** 現在のagentStatus（'permission' | 'question' | 'review' のとき開ける想定）。 */
 	status: string;
 }
@@ -34,7 +35,7 @@ export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 	target: AgentStatusPopoverTarget | undefined;
 	anchor: { x: number; y: number } | undefined;
 	onClose: () => void;
-	onAck: (id: number) => void;
+	onAck: (id: number, windowId?: number) => void;
 }) {
 	const open = target !== undefined && anchor !== undefined;
 
@@ -68,7 +69,7 @@ export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 					<Text style={styles.head}>このエージェントの状態</Text>
 					<Pressable
 						style={styles.item}
-						onPress={() => { hapticImpact('light'); onAck(target.id); onClose(); }}
+						onPress={() => { hapticImpact('light'); onAck(target.id, target.windowId); onClose(); }}
 					>
 						<View style={[styles.dot, styles.dotIdle]} />
 						<Text style={styles.itemLabel}>確認済みにする</Text>
