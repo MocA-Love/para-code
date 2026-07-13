@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -88,7 +88,7 @@ interface AppState extends StoreState {
 	sendArrowKey(id: number, key: 'up' | 'down' | 'right' | 'left'): void;
 	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
 	sendTextInput(id: number, text: string, execute: boolean): void;
-	sendAgentMessage(id: number, text: string): Promise<boolean>;
+	sendAgentMessage(id: number, text: string): Promise<AgentMessageSendResult>;
 	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean>;
 	answerAgentApproval(id: number, interactionId: string, choice: 'yes' | 'no'): Promise<boolean>;
 	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string): Promise<boolean>;
@@ -420,7 +420,7 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	sendAgentMessage(id: number, text: string) {
-		return controller?.sendAgentMessage(id, text) ?? Promise.resolve(false);
+		return controller?.sendAgentMessage(id, text) ?? Promise.resolve({ status: 'rejected' as const });
 	},
 
 	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]) {

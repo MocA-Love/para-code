@@ -118,6 +118,20 @@ export interface FsGrepResult {
 export interface FsUploadResult {
 	path: string;
 }
+
+/** Agent message submission outcome. `consumed` means pasted into the TUI but not executed. */
+export type AgentMessageSendResult =
+	| { readonly status: 'accepted' }
+	| { readonly status: 'rejected'; readonly message?: string }
+	| { readonly status: 'consumed'; readonly message?: string };
+
+export function toAgentMessageSendResult(status: 'accepted' | 'rejected', consumed: boolean, message?: string): AgentMessageSendResult {
+	return status === 'accepted'
+		? { status: 'accepted' }
+		: consumed
+			? { status: 'consumed', ...(message !== undefined ? { message } : {}) }
+			: { status: 'rejected', ...(message !== undefined ? { message } : {}) };
+}
 /** fs hl 応答（コード断片のPCテーマハイライト。失敗時は全フィールド欠落＝プレーン表示）。 */
 export interface FsHighlightResult {
 	/** `.monaco-tokenized-source` 形式のHTML（span.mtkN と <br/> のみ）。 */
@@ -574,7 +588,7 @@ export class MobileController {
 	private attachedAgents = new Map<number, number>();
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
 	private readonly agentControlTimers = new Map<number, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
-	private readonly pendingAgentActions = new Map<string, { readonly id: number; readonly resolve: (accepted: boolean) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingAgentActions = new Map<string, { readonly id: number; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingActivityDetails = new Map<string, { readonly id: number; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 
 	constructor(
@@ -785,16 +799,15 @@ export class MobileController {
 	}
 
 	/** session検証付きAgent Action。未対応PCでは従来のterm入力へフォールバックする。 */
-	sendAgentMessage(id: number, text: string): Promise<boolean> {
+	sendAgentMessage(id: number, text: string): Promise<AgentMessageSendResult> {
 		const chat = this.state.agentChats.get(id);
 		if (this.state.connection !== 'online') {
-			return Promise.resolve(false);
+			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
 		}
 		if (chat === undefined || chat.none || chat.capabilities?.agentActions !== true) {
-			this.sendTextInput(id, text, true);
-			return Promise.resolve(true);
+			return Promise.resolve({ status: 'rejected', message: 'エージェントセッションを準備中です。少し待ってから再送してください。' });
 		}
-		return this.sendAgentAction(id, {
+		return this.sendAgentActionResult(id, {
 			t: 'action/sendMessage', token: this.agentToken(id), epoch: chat.epoch, text,
 		});
 	}
@@ -849,11 +862,15 @@ export class MobileController {
 	}
 
 	private sendAgentAction(id: number, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
+		return this.sendAgentActionResult(id, body, timeoutMs).then(result => result.status === 'accepted');
+	}
+
+	private sendAgentActionResult(id: number, body: Record<string, unknown>, timeoutMs = 30_000): Promise<AgentMessageSendResult> {
 		const requestId = `agent-action-${this.requestCounter++}`;
 		return new Promise(resolve => {
 			const timer = setTimeout(() => {
 				if (this.pendingAgentActions.delete(requestId)) {
-					resolve(false);
+					resolve({ status: 'rejected' });
 				}
 			}, timeoutMs);
 			this.pendingAgentActions.set(requestId, { id, resolve, timer });
@@ -864,7 +881,7 @@ export class MobileController {
 	private cancelPendingAgentActions(): void {
 		for (const pending of this.pendingAgentActions.values()) {
 			clearTimeout(pending.timer);
-			pending.resolve(false);
+			pending.resolve({ status: 'rejected' });
 		}
 		this.pendingAgentActions.clear();
 		for (const pending of this.pendingActivityDetails.values()) {
@@ -1532,7 +1549,7 @@ export class MobileController {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; activity?: AgentActivityState | null;
-				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
+				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; consumed?: boolean; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -1645,7 +1662,7 @@ export class MobileController {
 				}
 				clearTimeout(pending.timer);
 				this.pendingAgentActions.delete(msg.requestId);
-				pending.resolve(msg.status === 'accepted');
+				pending.resolve(toAgentMessageSendResult(msg.status, msg.consumed === true, typeof msg.message === 'string' ? msg.message : undefined));
 				return;
 			}
 			if (msg.t === 'model-catalog' && typeof msg.requestId === 'string' && Array.isArray(msg.models)) {

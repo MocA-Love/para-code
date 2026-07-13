@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisConfirmedAgentPaneTokens, paradisParseClaudeTranscriptLineForTest, paradisParseCodexSessionMeta, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
+import { paradisClaudeSubagentTranscriptCandidates, paradisConfirmedAgentPaneTokens, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
 
 suite('ParadisMobileAgentChat', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -36,6 +36,48 @@ suite('ParadisMobileAgentChat', () => {
 
 	test('rejects non-session metadata', () => {
 		assert.strictEqual(paradisParseCodexSessionMeta('{"type":"event_msg","payload":{}}'), undefined);
+	});
+
+	test('keeps a completed Codex web search paired when the current rollout omits an id', () => {
+		const parsed = paradisParseCodexTranscriptLineForTest(JSON.stringify({
+			timestamp: '2026-07-13T00:00:00.000Z', type: 'response_item',
+			payload: { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'Codex app-server' } },
+		}));
+		assert.deepStrictEqual(parsed.messages, [
+			{ role: 'assistant', kind: 'tool_use', tool: 'web_search', text: 'Codex app-server', ts: 1783900800000, toolUseId: 'web:2026-07-13T00:00:00.000Z:19gx9vl' },
+			{ role: 'tool', kind: 'tool_result', text: 'Codex app-server', ts: 1783900800000, toolUseId: 'web:2026-07-13T00:00:00.000Z:19gx9vl' },
+		]);
+	});
+
+	test('extracts current Codex rollout sub_agent_activity for the activity tracker', () => {
+		const parsed = paradisParseCodexTranscriptLineForTest(JSON.stringify({
+			timestamp: '2026-07-13T00:00:00.000Z', type: 'event_msg',
+			payload: { type: 'sub_agent_activity', event_id: 'event-1', occurred_at_ms: 1783900800123, agent_thread_id: 'thread-2', agent_path: '/root/reviewer', kind: 'started' },
+		}));
+		assert.deepStrictEqual(parsed.activity, {
+			id: 'thread-2', agentPath: '/root/reviewer', kind: 'started', at: 1783900800123,
+		});
+	});
+
+	test('builds SubAgent detail from a persisted Codex child rollout', () => {
+		assert.deepStrictEqual(paradisParseCodexDetailLinesForTest([
+			JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '調査して' }] } }),
+			JSON.stringify({ type: 'response_item', payload: { type: 'reasoning', summary: [{ type: 'summary_text', text: '確認中' }] } }),
+			JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '完了しました' }] } }),
+		]), [
+			{ role: 'user', kind: 'text', text: '調査して' },
+			{ role: 'assistant', kind: 'thinking', text: '確認中' },
+			{ role: 'assistant', kind: 'text', text: '完了しました' },
+		]);
+	});
+
+	test('prefers the current Claude SubagentStop agent_transcript_path', () => {
+		assert.deepStrictEqual(paradisClaudeSubagentTranscriptCandidates(
+			'/Users/test/.claude/projects/workspace/session.jsonl', 'abc-123', '/Users/test/.claude/projects/workspace/session/subagents/agent-abc-123.jsonl',
+		), [
+			'/Users/test/.claude/projects/workspace/session/subagents/agent-abc-123.jsonl',
+			'/Users/test/.claude/projects/workspace/subagents/agent-abc-123.jsonl',
+		]);
 	});
 
 	test('does not guess when multiple fresh sessions match the same cwd', () => {

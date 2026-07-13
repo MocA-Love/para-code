@@ -139,7 +139,7 @@ type AgentOutbound =
 	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
-	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string }
+	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string; consumed?: boolean }
 	| { t: 'activity-detail'; id: number; requestId: string; activityId: string; messages?: readonly IParadisAgentActivityDetailMessage[]; error?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
 	| { t: 'none'; id: number };
@@ -247,6 +247,10 @@ interface IRawMessage {
  * 表示メッセージには乗らない「状態のためのシグナル」。パース時に1バッチ分を収集し、
  * tailer がバックグラウンドタスク・質問回答待ち・セッションメタ情報の追跡へ反映する。
  */
+type ICodexTranscriptActivityEvent =
+	| { readonly type: 'subagent'; readonly id: string; readonly agentPath?: string; readonly kind: 'started' | 'interacted' | 'interrupted'; readonly at: number }
+	| { readonly type: 'turnEnd'; readonly reason: 'completed' | 'failed' | 'interrupted'; readonly at: number };
+
 interface IParseSignals {
 	/** バックグラウンドタスク（サブエージェント等）の起動: id → 起動時刻。 */
 	readonly openedTasks: Map<string, number>;
@@ -264,12 +268,13 @@ interface IParseSignals {
 	 * ライブ追記時のみライブ状態（考え中表示）の解除に使う。
 	 */
 	turnEnded: 'completed' | 'failed' | 'interrupted' | undefined;
+	readonly codexActivityTimeline: ICodexTranscriptActivityEvent[];
 	model?: string;
 	effort?: string;
 }
 
 function newParseSignals(): IParseSignals {
-	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], userText: false, turnEnded: undefined };
+	return { openedTasks: new Map(), closedTasks: [], askedQuestionIds: [], answeredIds: [], codexActivityTimeline: [], userText: false, turnEnded: undefined };
 }
 
 function decodeXmlAttribute(value: string): string {
@@ -322,6 +327,15 @@ function str(value: unknown): string | undefined {
 
 function num(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function stableTextHash(value: string): string {
+	let hash = 2166136261;
+	for (const character of value) {
+		hash ^= character.charCodeAt(0);
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0).toString(36);
 }
 
 /** Codex rollout先頭行から、cwdと共有daemonのthread IDを取り出す。 */
@@ -678,6 +692,48 @@ export function paradisParseClaudeTranscriptLineForTest(line: string): { message
 	return { messages, userText: signals.userText };
 }
 
+/** Codex transcript分類の回帰テスト用。productionと同じparserを1行だけ通す。 */
+export function paradisParseCodexTranscriptLineForTest(line: string): { messages: IRawMessage[]; activity?: Omit<Extract<ICodexTranscriptActivityEvent, { type: 'subagent' }>, 'type'> } {
+	let obj: Record<string, unknown> | undefined;
+	try {
+		obj = rec(JSON.parse(line));
+	} catch {
+		return { messages: [] };
+	}
+	if (obj === undefined) {
+		return { messages: [] };
+	}
+	const signals = newParseSignals();
+	const messages = JSON.parse(JSON.stringify(parseCodexLine(obj, signals))) as IRawMessage[];
+	const activity = signals.codexActivityTimeline.find((event): event is Extract<ICodexTranscriptActivityEvent, { type: 'subagent' }> => event.type === 'subagent');
+	return { messages, ...(activity !== undefined ? { activity: { id: activity.id, ...(activity.agentPath !== undefined ? { agentPath: activity.agentPath } : {}), kind: activity.kind, at: activity.at } } : {}) };
+}
+
+/** Codex子threadのrollout行を、SubAgent詳細用メッセージへ正規化する。 */
+export function paradisParseCodexDetailLinesForTest(lines: readonly string[]): IParadisAgentActivityDetailMessage[] {
+	const out: IParadisAgentActivityDetailMessage[] = [];
+	for (const line of lines) {
+		let parsed: Record<string, unknown> | undefined;
+		try { parsed = rec(JSON.parse(line)); } catch { continue; }
+		if (parsed === undefined) { continue; }
+		for (const message of parseCodexLine(parsed, newParseSignals())) {
+			if (message.kind === 'question' || message.kind === 'peer_message') { continue; }
+			const kind: IParadisAgentActivityDetailMessage['kind'] = message.kind === 'thinking' ? 'thinking' : message.kind === 'tool_use' || message.kind === 'tool_result' ? 'tool' : 'text';
+			out.push({ role: message.role, kind, text: message.text });
+		}
+	}
+	return out.slice(-200);
+}
+
+/** Claude hookの公式pathを優先し、規定配置をフォールバック候補として返す。 */
+export function paradisClaudeSubagentTranscriptCandidates(transcriptPath: string, activityId: string, hookTranscriptPath?: string): readonly string[] {
+	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(activityId)) { return []; }
+	const dir = resolve(transcriptPath, '..');
+	const filename = transcriptPath.slice(transcriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
+	const agentFile = `${activityId.startsWith('agent-') ? activityId : `agent-${activityId}`}.jsonl`;
+	return [...new Set([...(hookTranscriptPath !== undefined ? [hookTranscriptPath] : []), join(dir, filename, 'subagents', agentFile), join(dir, 'subagents', agentFile)])];
+}
+
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
 function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
 	// rollout行: { timestamp, type, payload }
@@ -695,14 +751,26 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		return [];
 	}
 	if (obj['type'] === 'event_msg') {
-		// event_msg は表示内容としては response_item と重複するため使わないが、ターン終了の
-		// 検出にだけ使う。usage limit（error / codex_error_info: usage_limit_exceeded）や
+		// event_msg は表示内容には使わず、SubAgent活動とターン終了の状態復元に使う。
+		// usage limit（error / codex_error_info: usage_limit_exceeded）や
 		// 中断（turn_aborted）は hooks.json に対応イベントが無く Stop hook が発火しないため、
 		// ここで拾わないと「考え中」表示が永久に残る。
 		const eventPayload = rec(obj['payload']);
 		const eventType = str(eventPayload?.['type']);
+		if (eventType === 'sub_agent_activity') {
+			const id = str(eventPayload?.['agent_thread_id']);
+			const kind = str(eventPayload?.['kind']);
+			const timestamp = str(obj['timestamp']);
+			const at = num(eventPayload?.['occurred_at_ms']) ?? (timestamp !== undefined ? Date.parse(timestamp) : NaN);
+			if (id !== undefined && (kind === 'started' || kind === 'interacted' || kind === 'interrupted') && Number.isFinite(at)) {
+				signals.codexActivityTimeline.push({ type: 'subagent', id, ...(str(eventPayload?.['agent_path']) !== undefined ? { agentPath: str(eventPayload?.['agent_path']) } : {}), kind, at });
+			}
+		}
 		if (eventType === 'task_complete' || eventType === 'error' || eventType === 'turn_aborted') {
 			signals.turnEnded = eventType === 'task_complete' ? 'completed' : eventType === 'turn_aborted' ? 'interrupted' : 'failed';
+			const timestamp = str(obj['timestamp']);
+			const at = timestamp !== undefined ? Date.parse(timestamp) : NaN;
+			if (Number.isFinite(at)) { signals.codexActivityTimeline.push({ type: 'turnEnd', reason: signals.turnEnded, at }); }
 		}
 		return [];
 	}
@@ -720,7 +788,7 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 	// Codex のツール呼び出し/結果は call_id で対応付く (Claude の tool_use_id 相当)。
 	// toolUseId に載せてモバイル側で呼び出し⇔結果の突き合わせに使えるようにする
 	// (質問の回答済み判定は kind==='question' 限定なので Codex の ID が混ざっても影響しない)。
-	const callId = str(payload['call_id']) ?? str(payload['id']);
+	let callId = str(payload['call_id']) ?? str(payload['id']);
 	const out: IRawMessage[] = [];
 
 	if (ptype === 'message') {
@@ -764,6 +832,9 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 			try {
 				query = JSON.stringify(args ?? action ?? '');
 			} catch { /* 表示は空でよい */ }
+		}
+		if (ptype === 'web_search_call' && callId === undefined && tsRaw !== undefined) {
+			callId = `web:${tsRaw}:${stableTextHash(query)}`;
 		}
 		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', text: truncateText(query, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		if (ptype === 'web_search_call' && (payload['status'] === 'completed' || payload['status'] === 'failed')) {
@@ -862,6 +933,26 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 		return candidates;
 	} catch {
 		return undefined; // 古いCodex/SQLite非対応環境ではファイル走査へフォールバック
+	} finally {
+		database?.close();
+	}
+}
+
+/** 現行Codex state DBからthread IDに一致するrolloutを取得する。 */
+async function discoverCodexTranscriptByThreadId(threadId: string): Promise<string | undefined> {
+	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
+	let database: DatabaseSync | undefined;
+	try {
+		const names = await fs.readdir(paradisCodexHome());
+		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+		if (stateDb === undefined) { return undefined; }
+		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		const row = rec(database.prepare('SELECT rollout_path FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
+		const transcriptPath = str(row?.['rollout_path']);
+		return transcriptPath !== undefined && isAbsolute(transcriptPath) && transcriptPath.endsWith('.jsonl') ? transcriptPath : undefined;
+	} catch {
+		return undefined;
 	} finally {
 		database?.close();
 	}
@@ -984,6 +1075,8 @@ interface ITailerDelegate {
 	onProgress(progress: ITranscriptProgress): void;
 	/** ライブ追記でターン終了（task_complete / error / turn_aborted）を検出した。 */
 	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted'): void;
+	/** rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。 */
+	onCodexActivityTimeline(events: readonly ICodexTranscriptActivityEvent[]): void;
 }
 
 /**
@@ -1431,6 +1524,7 @@ class TranscriptTailer {
 		if (infoChanged) {
 			this.delegate.onInfo();
 		}
+		if (signals.codexActivityTimeline.length > 0) { this.delegate.onCodexActivityTimeline(signals.codexActivityTimeline); }
 		// ターン終了はライブ追記でのみ通知する（初回読み込み・epoch読み直しの履歴に含まれる
 		// 過去の task_complete で、現在進行中のライブ状態を消してしまわないように）。
 		if (live && signals.turnEnded !== undefined) {
@@ -1485,6 +1579,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** ペイントークン → transcript確定前の最新ライブ状態。履歴とは独立に置換する。 */
 	private readonly liveStates = new Map<string, IParadisAgentLiveState>();
 	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
+	/** Claude SubagentStopが通知した子transcript（pane token + agent ID → 許可済みpath）。 */
+	private readonly claudeSubagentTranscriptPaths = new Map<string, string>();
 	/** PreToolUse/PostToolUseの対応付け。並行ツールの古い完了で最新表示を消さないために使う。 */
 	private readonly liveToolIds = new Map<string, string>();
 	/** Claude MessageDisplayの行バッチをメッセージ単位で連結する内部バッファ。 */
@@ -1715,6 +1811,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.codexActiveItems.delete(token);
 				this.codexThreadSettings.delete(token);
 				this.activityTrackers.delete(token);
+				this.clearClaudeSubagentTranscripts(token);
 				this.activeTurnTokens.delete(token);
 			}
 		}
@@ -1860,8 +1957,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.activityDetailRequests.set(requestKey, token);
 		try {
 			const messages = session.agent === 'codex'
-				? (await this.codexLiveClient.readThreadMessages(msg.activityId)).map(ParadisMobileAgentChat.codexDetailMessage)
-				: await this.readClaudeSubagentMessages(session.transcriptPath, msg.activityId);
+				? await this.readCodexSubagentMessages(msg.activityId)
+				: await this.readClaudeSubagentMessages(session.transcriptPath, msg.activityId, this.claudeSubagentTranscriptPaths.get(`${token}\0${msg.activityId}`));
 			if (this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)
 				&& this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent')) {
 				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, messages }, token);
@@ -1883,14 +1980,30 @@ export class ParadisMobileAgentChat extends Disposable {
 		return message;
 	}
 
-	private async readClaudeSubagentMessages(transcriptPath: string, activityId: string): Promise<readonly IParadisAgentActivityDetailMessage[]> {
-		if (!/^[A-Za-z0-9._:-]{1,500}$/.test(activityId)) {
-			return [];
+	private async readCodexSubagentMessages(activityId: string): Promise<readonly IParadisAgentActivityDetailMessage[]> {
+		try {
+			return (await this.codexLiveClient.readThreadMessages(activityId)).map(ParadisMobileAgentChat.codexDetailMessage);
+		} catch {
+			const transcriptPath = await discoverCodexTranscriptByThreadId(activityId);
+			if (transcriptPath === undefined || !(await isAllowedTranscriptPath(transcriptPath))) { throw new Error('Codex SubAgent transcript not found'); }
+			const stat = await fs.stat(transcriptPath);
+			const start = Math.max(0, stat.size - INITIAL_READ_TAIL_BYTES);
+			const handle = await fs.open(transcriptPath, 'r');
+			try {
+				if (!(await isAllowedOpenTranscriptPath(handle, transcriptPath))) { throw new Error('Codex SubAgent transcript path changed'); }
+				const buffer = Buffer.alloc(stat.size - start);
+				const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+				const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
+				if (start > 0) { lines.shift(); }
+				return paradisParseCodexDetailLinesForTest(lines);
+			} finally {
+				await handle.close();
+			}
 		}
-		const dir = resolve(transcriptPath, '..');
-		const filename = transcriptPath.slice(transcriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
-		const agentFile = `${activityId.startsWith('agent-') ? activityId : `agent-${activityId}`}.jsonl`;
-		const candidates = [join(dir, filename, 'subagents', agentFile), join(dir, 'subagents', agentFile)];
+	}
+
+	private async readClaudeSubagentMessages(transcriptPath: string, activityId: string, hookTranscriptPath?: string): Promise<readonly IParadisAgentActivityDetailMessage[]> {
+		const candidates = paradisClaudeSubagentTranscriptCandidates(transcriptPath, activityId, hookTranscriptPath);
 		let selected: string | undefined;
 		for (const candidate of candidates) {
 			if (await isAllowedTranscriptPath(candidate) && await fs.stat(candidate).then(stat => stat.isFile()).catch(() => false)) {
@@ -1903,6 +2016,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const start = Math.max(0, stat.size - INITIAL_READ_TAIL_BYTES);
 		const handle = await fs.open(selected, 'r');
 		try {
+			if (!(await isAllowedOpenTranscriptPath(handle, selected))) { return []; }
 			const buffer = Buffer.alloc(stat.size - start);
 			const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
 			const lines = buffer.subarray(0, bytesRead).toString('utf8').split('\n');
@@ -2610,6 +2724,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		return tracker;
 	}
 
+	private clearClaudeSubagentTranscripts(token: string): void {
+		for (const key of this.claudeSubagentTranscriptPaths.keys()) {
+			if (key.startsWith(`${token}\0`)) { this.claudeSubagentTranscriptPaths.delete(key); }
+		}
+	}
+
 	private pushActivityToSubscribers(token: string): void {
 		const terminalId = this.terminalIdForToken(token);
 		const tailer = this.tailers.get(token);
@@ -2686,6 +2806,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.disposeTailer(token);
 			this.clearLiveState(token);
 			this.activityTrackers.delete(token);
+			this.clearClaudeSubagentTranscripts(token);
 			this.activeTurnTokens.delete(token);
 		}
 		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
@@ -2764,6 +2885,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.codexActiveItems.delete(previousOwner);
 			this.codexThreadSettings.delete(previousOwner);
 			this.activityTrackers.delete(previousOwner);
+			this.clearClaudeSubagentTranscripts(previousOwner);
 			this.activeTurnTokens.delete(previousOwner);
 			this.cancelCliDiscovery(previousOwner);
 			this.cliDiscoveryGenerations.set(previousOwner, (this.cliDiscoveryGenerations.get(previousOwner) ?? 0) + 1);
@@ -2794,10 +2916,19 @@ export class ParadisMobileAgentChat extends Disposable {
 			// → 稼働中の tailer を張り替え、購読者には新セッションのスナップショットを送り直す。
 			this.codexThreadSettings.delete(event.token);
 			this.activityTrackers.delete(event.token);
+			this.clearClaudeSubagentTranscripts(event.token);
 			this.activeTurnTokens.delete(event.token);
 			this.disposeTailer(event.token);
 			this.ensureEagerTailer(event.token, info);
 			this.pushToSubscribers(event.token);
+		}
+		if (event.event === 'SubagentStop') {
+			const activityId = str(event.payload?.['agent_id']);
+			const agentTranscriptPath = str(event.payload?.['agent_transcript_path']);
+			if (activityId !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(activityId)
+				&& agentTranscriptPath !== undefined && await isAllowedTranscriptPath(agentTranscriptPath)) {
+				this.claudeSubagentTranscriptPaths.set(`${event.token}\0${activityId}`, agentTranscriptPath);
+			}
 		}
 		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand && this.activityTracker(event.token).beginTurn()) {
 			this.pushActivityToSubscribers(event.token);
@@ -2923,14 +3054,21 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.pushInfoToSubscribers(token);
 			},
 			onProgress: progress => this.updateLiveFromProgress(token, progress),
+			onCodexActivityTimeline: events => {
+				const tracker = this.activityTracker(token);
+				let changed = false;
+				for (const event of events) {
+					changed = event.type === 'subagent'
+						? tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind } }, event.at) || changed
+						: tracker.endTurn(event.reason, event.at) || changed;
+				}
+				if (changed) { this.pushActivityToSubscribers(token); }
+			},
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
 			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
 			onTurnEnded: reason => {
 				this.activeTurnTokens.delete(token);
 				this.clearLiveState(token);
-				if (this.activityTracker(token).endTurn(reason, Date.now())) {
-					this.pushActivityToSubscribers(token);
-				}
 				fireParadisAgentTurnEnded(token);
 			},
 		}, this.logService);
