@@ -19,6 +19,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -56,6 +57,7 @@ import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm } from '../
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
+import { IParadisMobileWindowLease, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
@@ -86,6 +88,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
+		@IMainProcessService mainProcessService: IMainProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IDialogService private readonly dialogService: IDialogService,
@@ -117,9 +120,18 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 		this.service = ProxyChannel.toService<IParadisMobileRelayService>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
 		const windowSession = generateUuid();
+		const windowLeasePromise = new ParadisMobileWindowLeaseClient(mainProcessService.getChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL))
+			.claim(windowSession)
+			.then(lease => {
+				if (lease === undefined) {
+					throw new Error('Electron Main did not issue a mobile Renderer lease');
+				}
+				return lease;
+			});
+		const withWindowLease = <T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> => windowLeasePromise.then(callback);
 
 		// ウィンドウを閉じるとき、terminal leaseと同時にこのsessionのペイン対応表も破棄する。
-		this._register({ dispose: () => { this.service.removeTerminalWindow(mainWindow.vscodeWindowId, windowSession).catch(() => { }); } });
+		this._register({ dispose: () => { withWindowLease(lease => this.service.removeTerminalWindow(lease)).catch(() => { }); } });
 
 		// PCフォーカス中はモバイルへの通知配信を抑制する機能（suppressWhenPcFocused）用に、
 		// このウィンドウのフォーカス状態を shared process へ報告する（paradisNotificationTrigger等と
@@ -130,20 +142,20 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// 復帰させ、通知が恒久的にサイレント抑制され続けることを防ぐ）。
 		const reportPcFocus = () => {
 			const focused = !mainWindow.document.hidden && this.hostService.hasFocus;
-			this.service.setPcFocus(mainWindow.vscodeWindowId, windowSession, focused).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
+			withWindowLease(lease => this.service.setPcFocus(lease, focused)).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
 		};
 		this._register(this.hostService.onDidChangeFocus(() => reportPcFocus()));
 		this._register(dom.addDisposableListener(mainWindow.document, 'visibilitychange', () => reportPcFocus()));
 		const focusHeartbeat = this._register(new IntervalTimer());
 		focusHeartbeat.cancelAndSet(() => reportPcFocus(), PC_FOCUS_HEARTBEAT_INTERVAL_MS);
 		reportPcFocus();
-		this._register({ dispose: () => { this.service.setPcFocus(mainWindow.vscodeWindowId, windowSession, false).catch(() => { }); } });
+		this._register({ dispose: () => { withWindowLease(lease => this.service.setPcFocus(lease, false)).catch(() => { }); } });
 
 		// ccusage ダッシュボードデータ取得（PC版と同じ shared process 経由のクライアントを再利用する）
 		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);
 
 		this.provider = this._register(new ParadisMobileWorkspaceProvider(
-			frame => { this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
+			frame => { withWindowLease(() => this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
 			mainWindow.vscodeWindowId,
 			workspaceSwitchService,
 			terminalService,
@@ -161,13 +173,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(repoPath, args) => this.service.runGit(repoPath, args),
 			paneTokenService,
 			terminalIdentityService,
-			state => { this.service.syncTerminalWindow(mainWindow.vscodeWindowId, windowSession, state).catch(err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
-			entries => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, windowSession, entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
-			(mobileId, operationId, status) => this.service.completeTerminalOperation(mainWindow.vscodeWindowId, windowSession, mobileId, operationId, status),
-			(mobileId, requestId, token, epoch) => this.service.claimAgentAction(mobileId, requestId, token, epoch, mainWindow.vscodeWindowId, windowSession),
-			(mobileId, requestId, token, epoch, terminalId, windowId) => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, windowId, windowSession),
-			(mobileId, requestId, token, outcome) => this.service.finalizeAgentInteraction(mobileId, requestId, token, outcome, mainWindow.vscodeWindowId, windowSession),
-			(mobileId, requestId, token, epoch, terminalId, windowId) => this.service.validateAgentAction(mobileId, requestId, token, epoch, terminalId, windowId, windowSession),
+			state => { withWindowLease(lease => this.service.syncTerminalWindow(lease, state)).catch(err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
+			entries => { withWindowLease(lease => this.service.syncAgentPanes(lease, entries)).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
+			(mobileId, operationId, status) => withWindowLease(lease => this.service.completeTerminalOperation(lease, mobileId, operationId, status)),
+			(mobileId, requestId, token, epoch) => withWindowLease(lease => this.service.claimAgentAction(mobileId, requestId, token, epoch, lease)),
+			(mobileId, requestId, token, epoch, terminalId) => withWindowLease(lease => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, lease)),
+			(mobileId, requestId, token, outcome) => withWindowLease(lease => this.service.finalizeAgentInteraction(mobileId, requestId, token, outcome, lease)),
+			(mobileId, requestId, token, epoch, terminalId) => withWindowLease(lease => this.service.validateAgentAction(mobileId, requestId, token, epoch, terminalId, lease)),
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
@@ -294,7 +306,16 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// （それ以外の browser 要求は shared process 内で処理される）。
 		this._register(this.service.onInboundFrame(([ch, ws, seq, payload, mobileId]) => {
 			if ((ch === Channels.Agent || ch === Channels.Terminal || ch === Channels.Scm || ch === Channels.Fs || ch === Channels.Browser)
-				&& ws !== paradisMobileWindowRoute(mainWindow.vscodeWindowId, windowSession)) {
+				&& ws !== undefined) {
+				void windowLeasePromise.then(lease => {
+					if (ws === paradisMobileWindowRoute(lease.windowId, lease.windowSession, lease.rendererGeneration)) {
+						if (ch === Channels.Browser) {
+							webrtcStreamer.handleInbound({ ch, ws, seq, payload, mobileId });
+						} else {
+							this.provider.handleInbound({ ch, ws, seq, payload, mobileId });
+						}
+					}
+				}).catch(err => this.logService.warn('[paradisMobileRelay] inbound route lease failed', err));
 				return;
 			}
 			if (ch === Channels.Browser) {

@@ -6,20 +6,17 @@
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisMobileDesktopStateV2, IParadisMobileTerminalV2, IParadisMobileWindowStateV2, IParadisMobileWorkspaceV2 } from '../common/paradisMobileRelay.js';
+import { IParadisMobileRendererManifestEntry, IParadisMobileWindowLease } from '../common/paradisMobileWindowLease.js';
 
-export interface IParadisMobileTerminalOwner {
-	readonly windowId: number;
-	readonly windowSession: string;
+export interface IParadisMobileTerminalOwner extends IParadisMobileWindowLease {
 	readonly terminalId: number;
 }
 
-export interface IParadisMobileWindowOwner {
-	readonly windowId: number;
-	readonly windowSession: string;
-}
+export type IParadisMobileWindowOwner = IParadisMobileWindowLease;
 
 interface IWindowLease {
-	readonly session: string;
+	readonly windowSession: string;
+	readonly rendererGeneration: number;
 	readonly state: IParadisMobileWindowStateV2;
 }
 
@@ -32,7 +29,7 @@ export class ParadisMobileTerminalRegistry {
 
 	private revision = 0;
 	private readonly windows = new Map<number, IWindowLease>();
-	private readonly retiredSessions = new Map<number, Set<string>>();
+	private readonly retiredGeneration = new Map<number, number>();
 	private readonly owners = new Map<string, IParadisMobileTerminalOwner>();
 	private readonly conflicts = new Set<string>();
 
@@ -40,39 +37,28 @@ export class ParadisMobileTerminalRegistry {
 		this.desktopEpoch = desktopEpoch;
 	}
 
-	syncWindow(windowId: number, windowSession: string, state: IParadisMobileWindowStateV2): IParadisMobileDesktopStateV2 {
+	syncWindow(windowId: number, windowSession: string, rendererGeneration: number, state: IParadisMobileWindowStateV2): IParadisMobileDesktopStateV2 {
 		const current = this.windows.get(windowId);
-		if (current?.session !== windowSession) {
-			if (this.retiredSessions.get(windowId)?.has(windowSession)) {
-				return this.desktopState();
-			}
-			if (current !== undefined) {
-				let retired = this.retiredSessions.get(windowId);
-				if (retired === undefined) {
-					retired = new Set();
-					this.retiredSessions.set(windowId, retired);
-				}
-				retired.add(current.session);
-			}
+		if (current === undefined && rendererGeneration <= (this.retiredGeneration.get(windowId) ?? -1)) {
+			return this.desktopState(false);
 		}
-		this.windows.set(windowId, { session: windowSession, state });
+		if (current !== undefined && (rendererGeneration < current.rendererGeneration
+			|| (rendererGeneration === current.rendererGeneration && windowSession !== current.windowSession))) {
+			return this.desktopState(false);
+		}
+		this.windows.set(windowId, { windowSession, rendererGeneration, state });
 		this.rebuildOwners();
 		this.revision++;
-		return this.desktopState();
+		return this.desktopState(false);
 	}
 
-	removeWindow(windowId: number, windowSession: string): boolean {
+	removeWindow(windowId: number, windowSession: string, rendererGeneration: number): boolean {
 		const current = this.windows.get(windowId);
-		if (current?.session !== windowSession) {
+		if (current?.windowSession !== windowSession || current.rendererGeneration !== rendererGeneration) {
 			return false;
 		}
 		this.windows.delete(windowId);
-		let retired = this.retiredSessions.get(windowId);
-		if (retired === undefined) {
-			retired = new Set();
-			this.retiredSessions.set(windowId, retired);
-		}
-		retired.add(windowSession);
+		this.retiredGeneration.set(windowId, rendererGeneration);
 		this.rebuildOwners();
 		this.revision++;
 		return true;
@@ -88,13 +74,13 @@ export class ParadisMobileTerminalRegistry {
 
 	leaseOfWindow(windowId: number): IParadisMobileWindowOwner | undefined {
 		const lease = this.windows.get(windowId);
-		return lease === undefined ? undefined : { windowId, windowSession: lease.session };
+		return lease === undefined ? undefined : { windowId, windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration };
 	}
 
 	ownerOfWorkspace(windowId: number, sourceId: string): IParadisMobileWindowOwner | undefined {
 		const lease = this.windows.get(windowId);
 		return lease?.state.workspaces.some(workspace => workspace.id === sourceId)
-			? { windowId, windowSession: lease.session }
+			? { windowId, windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration }
 			: undefined;
 	}
 
@@ -102,7 +88,29 @@ export class ParadisMobileTerminalRegistry {
 		return [...this.conflicts].sort();
 	}
 
-	desktopState(): IParadisMobileDesktopStateV2 {
+	isComplete(manifest: readonly IParadisMobileRendererManifestEntry[]): boolean {
+		return manifest.length > 0 && manifest.every(entry => this.windows.get(entry.windowId)?.rendererGeneration === entry.rendererGeneration
+			&& this.windows.get(entry.windowId)?.windowSession === entry.windowSession);
+	}
+
+	reconcile(manifest: readonly IParadisMobileRendererManifestEntry[]): void {
+		const active = new Map(manifest.map(entry => [entry.windowId, entry]));
+		let changed = false;
+		for (const [windowId, lease] of this.windows) {
+			const entry = active.get(windowId);
+			if (entry === undefined || entry.rendererGeneration !== lease.rendererGeneration || entry.windowSession !== lease.windowSession) {
+				this.windows.delete(windowId);
+				this.retiredGeneration.set(windowId, Math.max(lease.rendererGeneration, this.retiredGeneration.get(windowId) ?? -1));
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.rebuildOwners();
+			this.revision++;
+		}
+	}
+
+	desktopState(complete = false): IParadisMobileDesktopStateV2 {
 		const workspaces: IParadisMobileWorkspaceV2[] = [];
 		const terminals: IParadisMobileTerminalV2[] = [];
 		let activeWs: string | undefined;
@@ -134,6 +142,7 @@ export class ParadisMobileTerminalRegistry {
 			protocolVersion: 2,
 			desktopEpoch: this.desktopEpoch,
 			revision: this.revision,
+			complete,
 			activeWs,
 			workspaces,
 			terminals,
@@ -154,7 +163,7 @@ export class ParadisMobileTerminalRegistry {
 					this.conflicts.add(terminal.terminalKey);
 					continue;
 				}
-				this.owners.set(terminal.terminalKey, { windowId, windowSession: lease.session, terminalId: terminal.id });
+				this.owners.set(terminal.terminalKey, { windowId, windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration, terminalId: terminal.id });
 			}
 		}
 	}

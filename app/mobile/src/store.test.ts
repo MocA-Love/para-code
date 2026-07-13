@@ -2,7 +2,7 @@
 
 import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
-import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore } from './store.js';
+import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
 class MemoryKeyStore implements KeyStore {
@@ -13,6 +13,11 @@ class MemoryKeyStore implements KeyStore {
 }
 
 describe('key persistence', () => {
+	it('reserves a monotonically increasing operation run across app starts', async () => {
+		const ks = new MemoryKeyStore();
+		expect(await reserveOperationRun(ks)).toBe(1);
+		expect(await reserveOperationRun(ks)).toBe(2);
+	});
 	it('generates identity once and reloads the same', async () => {
 		const ks = new MemoryKeyStore();
 		const a = await loadOrCreateIdentity(ks);
@@ -125,6 +130,7 @@ function desktopState(terminals: { id: number; title: string; agentToken?: strin
 		protocolVersion: 2 as const,
 		desktopEpoch: 'desktop-test',
 		revision,
+		complete: true,
 		activeWs: '1:w1',
 		workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'para-code' }],
 		terminals: terminals.map(terminal => ({ ...terminal, terminalKey: `terminal-${terminal.id}`, windowId: 1, ws: '1:w1' })),
@@ -150,6 +156,7 @@ describe('MobileController', () => {
 			protocolVersion: 2,
 			desktopEpoch: 'desktop-1',
 			revision: 2,
+			complete: true,
 			activeWs: '1:repo-a',
 			workspaces: [
 				{ id: '1:repo-a', sourceId: 'repo-a', windowId: 1, name: 'A' },
@@ -192,6 +199,7 @@ describe('MobileController', () => {
 			protocolVersion: 2,
 			desktopEpoch: 'desktop-1',
 			revision: 1,
+			complete: true,
 			activeWs: undefined,
 			workspaces: [],
 			terminals: [],
@@ -203,6 +211,7 @@ describe('MobileController', () => {
 			protocolVersion: 2,
 			desktopEpoch: 'desktop-2',
 			revision: 1,
+			complete: true,
 			activeWs: '1:repo-a',
 			workspaces: [
 				{ id: '1:repo-a', sourceId: 'repo-a', windowId: 1, name: 'A' },
@@ -216,6 +225,9 @@ describe('MobileController', () => {
 		await flush();
 		expect(latest?.terminalOutput.size).toBe(0);
 		expect(received.filter(message => message.t === 'attach')).toHaveLength(4);
+		const inputs = received.filter(message => message.t === 'input');
+		expect(inputs).toHaveLength(2);
+		expect(inputs[1]?.operationId).toBe(inputs[0]?.operationId);
 		const replayAfterEpochChange: import('./store.js').TermStreamEvent[] = [];
 		controller.subscribeTerminal('terminal-a', event => replayAfterEpochChange.push(event));
 		expect(replayAfterEpochChange).toEqual([]);
