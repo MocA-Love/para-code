@@ -26,7 +26,7 @@ export interface AgentActions {
 	answerQuestionMulti(interactionId: string, indices: number[]): Promise<boolean>;
 	answerQuestionFreeText(interactionId: string, optionCount: number, text: string): Promise<boolean>;
 	answerQuestionGroup(interactionId: string, answers: QuestionGroupAnswer[]): Promise<boolean>;
-	approve(interactionId: string, choice: 'yes' | 'no'): Promise<boolean>;
+	approve(interactionId: string, choice: string): Promise<boolean>;
 	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<boolean>;
 }
 
@@ -148,7 +148,7 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 	 *    依存せずキャンセル=拒否として機能する）。
 	 *  - Codex: y / d のショートカット1文字（Enter不要）。
 	 */
-	const approve = useCallback((interactionId: string, choice: 'yes' | 'no') => {
+	const approve = useCallback((interactionId: string, choice: string) => {
 		if (terminalId === undefined) {
 			return Promise.resolve(false);
 		}
@@ -156,6 +156,9 @@ export function useAgentActions(terminalId: number | undefined, agent: string | 
 			return interaction?.kind === 'approval' && interaction.id === interactionId
 				? answerAgentApproval(terminalId, interactionId, choice)
 				: Promise.resolve(false);
+		}
+		if (choice !== 'yes' && choice !== 'no') {
+			return Promise.resolve(false);
 		}
 		if (agent === 'codex') {
 			send(choice === 'yes' ? 'y' : 'd');

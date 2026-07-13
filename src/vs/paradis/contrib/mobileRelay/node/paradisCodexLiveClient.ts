@@ -35,6 +35,27 @@ interface IJsonRpcMessage {
 	readonly error?: unknown;
 }
 
+export interface IParadisCodexApprovalChoice {
+	readonly id: string;
+	readonly label: string;
+	readonly tone: 'approve' | 'neutral' | 'deny';
+}
+
+export interface IParadisCodexApprovalInteraction {
+	readonly kind: 'approval';
+	readonly id: string;
+	readonly title: string;
+	readonly detail: string;
+	readonly choices: readonly IParadisCodexApprovalChoice[];
+}
+
+interface IParadisCodexApprovalRequest {
+	readonly threadId: string;
+	readonly requestId: number | string;
+	readonly interaction: IParadisCodexApprovalInteraction;
+	readonly results: ReadonlyMap<string, Record<string, unknown>>;
+}
+
 interface IPendingRequest {
 	readonly method: string;
 	readonly resolve: (result: unknown) => void;
@@ -55,6 +76,8 @@ export interface IParadisCodexDaemonEvent {
 	readonly threadId: string;
 	readonly method: string;
 	readonly params: Record<string, unknown>;
+	readonly requestId?: number | string;
+	readonly approval?: IParadisCodexApprovalInteraction;
 }
 
 /** model/listが広告するreasoning effort 1件。 */
@@ -101,6 +124,187 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function stringValue(value: unknown, maxLength: number = 500): string | undefined {
 	return typeof value === 'string' && value.length > 0 && value.length <= maxLength ? value : undefined;
+}
+
+function requestIdValue(value: unknown): number | string | undefined {
+	if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+		return value;
+	}
+	return stringValue(value, 200);
+}
+
+function requestIdKey(threadId: string, requestId: number | string): string {
+	return `${threadId}\0${typeof requestId === 'number' ? 'n' : 's'}\0${String(requestId)}`;
+}
+
+function interactionIdForRequest(requestId: number | string): string {
+	const raw = String(requestId);
+	const safe = /^[A-Za-z0-9._-]+$/.test(raw) ? raw : Buffer.from(raw, 'utf8').toString('base64url');
+	return `codex:${typeof requestId === 'number' ? 'n' : 's'}:${safe}`;
+}
+
+function jsonRecordClone(value: unknown): Record<string, unknown> | undefined {
+	const source = record(value);
+	if (source === undefined) {
+		return undefined;
+	}
+	try {
+		const encoded = JSON.stringify(source);
+		return encoded.length <= MAX_RPC_PAYLOAD_BYTES ? JSON.parse(encoded) as Record<string, unknown> : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function commandDecision(value: unknown): unknown | undefined {
+	if (value === 'accept' || value === 'acceptForSession' || value === 'decline' || value === 'cancel') {
+		return value;
+	}
+	const decision = record(value);
+	const execpolicy = record(decision?.['acceptWithExecpolicyAmendment']);
+	const amendment = execpolicy?.['execpolicy_amendment'];
+	if (Array.isArray(amendment) && amendment.length > 0 && amendment.length <= 100 && amendment.every(part => typeof part === 'string' && part.length <= 1_000)) {
+		return { acceptWithExecpolicyAmendment: { execpolicy_amendment: [...amendment] } };
+	}
+	const network = record(decision?.['applyNetworkPolicyAmendment']);
+	const policy = record(network?.['network_policy_amendment']);
+	const host = stringValue(policy?.['host'], 1_000);
+	const action = policy?.['action'];
+	return host !== undefined && (action === 'allow' || action === 'deny')
+		? { applyNetworkPolicyAmendment: { network_policy_amendment: { host, action } } }
+		: undefined;
+}
+
+function decisionLabel(decision: unknown): { readonly label: string; readonly tone: IParadisCodexApprovalChoice['tone'] } | undefined {
+	if (decision === 'accept') { return { label: '今回だけ許可', tone: 'approve' }; }
+	if (decision === 'acceptForSession') { return { label: 'セッション中は許可', tone: 'neutral' }; }
+	if (decision === 'decline') { return { label: '拒否', tone: 'deny' }; }
+	if (decision === 'cancel') { return { label: 'キャンセル', tone: 'neutral' }; }
+	const value = record(decision);
+	if (value?.['acceptWithExecpolicyAmendment'] !== undefined) {
+		return { label: '同じ種類のコマンドを今後許可', tone: 'neutral' };
+	}
+	const network = record(record(value?.['applyNetworkPolicyAmendment'])?.['network_policy_amendment']);
+	const host = stringValue(network?.['host'], 1_000);
+	if (host !== undefined) {
+		return { label: network?.['action'] === 'allow' ? `${host} を今後許可` : `${host} を今後拒否`, tone: 'neutral' };
+	}
+	return undefined;
+}
+
+function commandDecisions(params: Record<string, unknown>): readonly unknown[] {
+	const advertised = params['availableDecisions'];
+	if (Array.isArray(advertised)) {
+		const parsed = advertised.slice(0, 12).map(commandDecision).filter(value => value !== undefined);
+		if (parsed.length > 0) {
+			return parsed;
+		}
+	}
+	const fallback: unknown[] = ['accept'];
+	const execpolicy = params['proposedExecpolicyAmendment'];
+	if (Array.isArray(execpolicy)) {
+		const parsed = commandDecision({ acceptWithExecpolicyAmendment: { execpolicy_amendment: execpolicy } });
+		if (parsed !== undefined) { fallback.push(parsed); }
+	}
+	if (Array.isArray(params['proposedNetworkPolicyAmendments'])) {
+		for (const amendment of params['proposedNetworkPolicyAmendments'].slice(0, 8)) {
+			const parsed = commandDecision({ applyNetworkPolicyAmendment: { network_policy_amendment: amendment } });
+			if (parsed !== undefined) { fallback.push(parsed); }
+		}
+	}
+	fallback.push('decline');
+	return fallback;
+}
+
+function approvalDetail(...parts: unknown[]): string {
+	return parts.filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+		.map(part => part.trim()).join('\n').slice(0, 6_000);
+}
+
+function buildDecisionApproval(
+	threadId: string,
+	requestId: number | string,
+	title: string,
+	detail: string,
+	decisions: readonly unknown[],
+): IParadisCodexApprovalRequest | undefined {
+	const choices: IParadisCodexApprovalChoice[] = [];
+	const results = new Map<string, Record<string, unknown>>();
+	for (const decision of decisions) {
+		const label = decisionLabel(decision);
+		if (label === undefined) { continue; }
+		const id = String(choices.length);
+		choices.push({ id, ...label });
+		results.set(id, { decision });
+	}
+	if (choices.length === 0) { return undefined; }
+	return {
+		threadId, requestId,
+		interaction: { kind: 'approval', id: interactionIdForRequest(requestId), title, detail, choices },
+		results,
+	};
+}
+
+/** Codex app-serverの承認server requestを、モバイル表示と安全な回答候補へ正規化する。 */
+function parseCodexApprovalRequest(message: IJsonRpcMessage): IParadisCodexApprovalRequest | undefined {
+	const method = message.method;
+	const requestId = requestIdValue(message.id);
+	const params = record(message.params);
+	const threadId = stringValue(params?.['threadId'], 500);
+	if (requestId === undefined || params === undefined || threadId === undefined) {
+		return undefined;
+	}
+	if (method === 'item/commandExecution/requestApproval') {
+		return buildDecisionApproval(threadId, requestId, 'コマンドの実行許可', approvalDetail(params['command'], params['reason'], params['cwd']), commandDecisions(params));
+	}
+	if (method === 'item/fileChange/requestApproval') {
+		return buildDecisionApproval(threadId, requestId, 'ファイル変更の許可', approvalDetail(params['reason'], params['grantRoot']), [
+			'accept', ...(stringValue(params['grantRoot'], 6_000) !== undefined ? ['acceptForSession'] : []), 'decline',
+		]);
+	}
+	if (method === 'item/permissions/requestApproval') {
+		const requested = record(params['permissions']);
+		if (requested === undefined) { return undefined; }
+		const granted: Record<string, unknown> = {};
+		for (const key of ['network', 'fileSystem']) {
+			const value = jsonRecordClone(requested[key]);
+			if (value !== undefined) { granted[key] = value; }
+		}
+		const interaction: IParadisCodexApprovalInteraction = {
+			kind: 'approval', id: interactionIdForRequest(requestId), title: '追加権限の許可',
+			detail: approvalDetail(params['reason'], params['cwd']),
+			choices: [
+				{ id: '0', label: '今回だけ許可', tone: 'approve' },
+				{ id: '1', label: 'セッション中は許可', tone: 'neutral' },
+				{ id: '2', label: '拒否', tone: 'deny' },
+			],
+		};
+		return {
+			threadId, requestId, interaction,
+			results: new Map([
+				['0', { permissions: granted, scope: 'turn' }],
+				['1', { permissions: granted, scope: 'session' }],
+				['2', { permissions: {}, scope: 'turn' }],
+			]),
+		};
+	}
+	return undefined;
+}
+
+export function paradisParseCodexApprovalRequestForTest(message: unknown): IParadisCodexApprovalRequest | undefined {
+	return record(message) !== undefined ? parseCodexApprovalRequest(message as IJsonRpcMessage) : undefined;
+}
+
+function approvalResult(request: IParadisCodexApprovalRequest, choiceId: string): Record<string, unknown> | undefined {
+	const direct = request.results.get(choiceId);
+	if (direct !== undefined) { return direct; }
+	const legacyTone = choiceId === 'yes' ? 'approve' : choiceId === 'no' ? 'deny' : undefined;
+	const legacyChoice = legacyTone !== undefined ? request.interaction.choices.find(choice => choice.tone === legacyTone) : undefined;
+	return legacyChoice !== undefined ? request.results.get(legacyChoice.id) : undefined;
+}
+
+export function paradisCodexApprovalResultForTest(request: IParadisCodexApprovalRequest, choiceId: string): Record<string, unknown> | undefined {
+	return approvalResult(request, choiceId);
 }
 
 function threadMessageText(value: unknown): string | undefined {
@@ -248,7 +452,7 @@ async function ensureCodexDaemonStarted(socketPath: string, env: NodeJS.ProcessE
  * - 明示設定時だけdaemonをensure-startし、停止はしない（実行中TUIが利用し得るため）
  * - thread/loaded/listでdaemon所有を確認できたthreadだけresume/購読する
  * - model/listをカタログの正本とし、thread/settings/updateを確認通知つきで適用する
- * - server requestには応答せず、承認処理をTUIクライアントから奪わない
+ * - 承認server requestは観測だけ行い、モバイルでユーザーが明示選択した時だけ同じ接続から応答する
  */
 export class ParadisCodexLiveClient extends Disposable {
 	private enabled = false;
@@ -269,6 +473,8 @@ export class ParadisCodexLiveClient extends Disposable {
 	private readonly subscribedThreads = new Set<string>();
 	private readonly threadSettings = new Map<string, IParadisCodexThreadSettings>();
 	private readonly settingsWaiters = new Map<string, ISettingsWaiter>();
+	private readonly pendingApprovals = new Map<string, IParadisCodexApprovalRequest>();
+	private readonly resolvingApprovals = new Set<string>();
 	private catalogCache: { readonly at: number; readonly models: readonly IParadisCodexModelOption[] } | undefined;
 
 	constructor(
@@ -299,6 +505,7 @@ export class ParadisCodexLiveClient extends Disposable {
 		const next = new Set(threadIds.filter(threadId => threadId.length > 0));
 		for (const threadId of this.wantedThreads) {
 			if (!next.has(threadId)) {
+				this.clearThreadApprovals(threadId);
 				this.wantedThreads.delete(threadId);
 				this.pendingThreads.delete(threadId);
 				this.threadSettings.delete(threadId);
@@ -327,6 +534,41 @@ export class ParadisCodexLiveClient extends Disposable {
 	/** 指定threadが同一daemonにロード済みかつ購読済みかを返す。 */
 	isThreadReady(threadId: string): boolean {
 		return this.enabled && this.initialized && this.loadedThreads.has(threadId) && this.subscribedThreads.has(threadId);
+	}
+
+	hasPendingApproval(threadId: string, interactionId: string): boolean {
+		return [...this.pendingApprovals.values()].some(request => request.threadId === threadId && request.interaction.id === interactionId);
+	}
+
+	async answerApproval(threadId: string, interactionId: string, choiceId: string): Promise<void> {
+		const request = [...this.pendingApprovals.values()].find(value => value.threadId === threadId && value.interaction.id === interactionId);
+		const result = request !== undefined ? approvalResult(request, choiceId) : undefined;
+		if (request === undefined || result === undefined || !this.wantedThreads.has(threadId)) {
+			throw new ParadisCodexControlError('not-loaded', 'この承認要求はすでに完了しています');
+		}
+		const key = requestIdKey(threadId, request.requestId);
+		if (this.resolvingApprovals.has(key)) {
+			throw new ParadisCodexControlError('busy', 'この承認要求には別の端末から回答中です');
+		}
+		const socket = this.socket;
+		if (socket?.readyState !== WebSocket.OPEN || !this.initialized) {
+			throw new ParadisCodexControlError('unavailable', 'Codex app-serverへ接続していません');
+		}
+		this.resolvingApprovals.add(key);
+		try {
+			await new Promise<void>((resolve, reject) => {
+				socket.send(JSON.stringify({ id: request.requestId, result }), error => {
+					if (error !== undefined) {
+						reject(new ParadisCodexControlError('unavailable', `Codexへ承認結果を送信できませんでした: ${error.message}`));
+					} else {
+						resolve();
+					}
+				});
+			});
+		} catch (error) {
+			this.resolvingApprovals.delete(key);
+			throw error;
+		}
 	}
 
 	/** daemon上で稼働中のthreadに対して、現在の動的モデル一覧を返す。 */
@@ -540,8 +782,18 @@ export class ParadisCodexLiveClient extends Disposable {
 			return;
 		}
 		if (typeof message.method === 'string' && message.id !== undefined) {
-			// 双方向JSON-RPCのserver request。承認や時刻要求は操作中のTUIクライアントが
-			// 処理する。監視・設定クライアントは先に応答して所有権を奪わない。
+			// 双方向JSON-RPCのserver request。承認要求は表示用に観測するが、ここでは
+			// 自動応答しない。モバイルでユーザーが明示的に選択した時だけanswerApprovalが
+			// 同じrequest idへ応答するため、TUIの承認画面ともfirst-response-winsで共存する。
+			const approval = parseCodexApprovalRequest(message);
+			if (approval !== undefined && this.wantedThreads.has(approval.threadId)) {
+				const key = requestIdKey(approval.threadId, approval.requestId);
+				this.pendingApprovals.set(key, approval);
+				this.onEvent({
+					threadId: approval.threadId, method: message.method, params: record(message.params)!,
+					requestId: approval.requestId, approval: approval.interaction,
+				});
+			}
 			return;
 		}
 		if (typeof message.id === 'number') {
@@ -558,7 +810,20 @@ export class ParadisCodexLiveClient extends Disposable {
 		}
 		if (message.method === 'thread/settings/updated') {
 			this.handleSettingsUpdated(threadId, params);
+		} else if (message.method === 'serverRequest/resolved') {
+			const requestId = requestIdValue(params['requestId']);
+			if (requestId !== undefined) {
+				const key = requestIdKey(threadId, requestId);
+				const approval = this.pendingApprovals.get(key);
+				this.pendingApprovals.delete(key);
+				this.resolvingApprovals.delete(key);
+				if (approval !== undefined && this.wantedThreads.has(threadId)) {
+					this.onEvent({ threadId, method: message.method, params, requestId, approval: approval.interaction });
+					return;
+				}
+			}
 		} else if (message.method === 'thread/closed') {
+			this.clearThreadApprovals(threadId);
 			this.loadedThreads.delete(threadId);
 			this.subscribedThreads.delete(threadId);
 			this.threadSettings.delete(threadId);
@@ -788,6 +1053,17 @@ export class ParadisCodexLiveClient extends Disposable {
 		for (const threadId of [...this.settingsWaiters.keys()]) {
 			this.rejectSettingsWaiter(threadId, error);
 		}
+		for (const approval of this.pendingApprovals.values()) {
+			if (this.wantedThreads.has(approval.threadId)) {
+				this.onEvent({
+					threadId: approval.threadId, method: 'serverRequest/resolved',
+					params: { threadId: approval.threadId, requestId: approval.requestId },
+					requestId: approval.requestId, approval: approval.interaction,
+				});
+			}
+		}
+		this.pendingApprovals.clear();
+		this.resolvingApprovals.clear();
 		this.loadedThreads.clear();
 		this.pendingThreads.clear();
 		this.subscribedThreads.clear();
@@ -817,6 +1093,18 @@ export class ParadisCodexLiveClient extends Disposable {
 
 	private async pathExists(path: string): Promise<boolean> {
 		return pathExists(path);
+	}
+
+	private clearThreadApprovals(threadId: string): void {
+		for (const [key, approval] of this.pendingApprovals) {
+			if (approval.threadId !== threadId) { continue; }
+			this.pendingApprovals.delete(key);
+			this.resolvingApprovals.delete(key);
+			this.onEvent({
+				threadId, method: 'serverRequest/resolved',
+				params: { threadId, requestId: approval.requestId }, requestId: approval.requestId, approval: approval.interaction,
+			});
+		}
 	}
 }
 

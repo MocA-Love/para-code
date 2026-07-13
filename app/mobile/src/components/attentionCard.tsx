@@ -80,6 +80,7 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 	// 複数質問グループの一部なら、ホームの単発カードでは回答させない（1問だけの回答で
 	// フォーム全体がSubmitされる事故を防ぐ）。エージェント画面のステップ式カードへ誘導する。
 	const isGroupedQuestion = question !== undefined && question.questionGroup !== undefined && (question.questionCount ?? 1) > 1;
+	const approval = chat?.interaction?.kind === 'approval' ? chat.interaction : undefined;
 
 	return (
 		<View style={styles.card}>
@@ -108,7 +109,14 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 					onFreeText={actions.answerQuestionFreeText}
 				/>
 			) : (
-				<ApprovalCard key={chat?.interaction?.kind === 'approval' ? chat.interaction.id : `legacy:${chat?.epoch ?? 'unknown'}`} interactionId={chat?.interaction?.kind === 'approval' ? chat.interaction.id : `legacy:${chat?.epoch ?? 'unknown'}`} onApprove={actions.approve} detail={findLatestApprovalRequest(chat)} />
+				<ApprovalCard
+					key={approval?.id ?? `legacy:${chat?.epoch ?? 'unknown'}`}
+					interactionId={approval?.id ?? `legacy:${chat?.epoch ?? 'unknown'}`}
+					onApprove={actions.approve}
+					title={approval?.title}
+					detail={approval?.detail ?? findLatestApprovalRequest(chat)}
+					choices={approval?.choices}
+				/>
 			)}
 			<Pressable style={styles.openLink} onPress={onOpenAgent}>
 				<Text style={styles.openLinkText}>エージェント画面で詳しく見る ›</Text>

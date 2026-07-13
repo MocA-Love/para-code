@@ -14,13 +14,13 @@
 //    (paradisAgentHookBus 経由)。画面パースには依存しない
 //  - 本文: transcript JSONL (Claude: ~/.claude/projects/**.jsonl、Codex: ~/.codex/sessions/**
 //    rollout) を tail してパースする。append-only なのでオフセット追跡で差分だけ読む
-//  - モバイルからの入力・承認キーは既存の term チャネル (PTY stdin注入) を使う
-//  - Codexのモデル一覧・次ターン設定だけはagentチャネルからapp-serverへ構造化RPCする
-//    （PTYの対話コマンドには依存しない）
+//  - モバイルからの通常入力とClaude承認は既存の term チャネル (PTY stdin注入) を使う
+//  - Codexの承認・モデル一覧・次ターン設定はapp-serverの構造化RPCを使う
+//    （承認の多択情報を失わず、PTYの表示やショートカットには依存しない）
 //
 // 切断・再接続への堅牢性 (設計方針):
-//  - 真実の源は常にディスク上の transcript ファイル。プロセス再起動・リレー切断で
-//    何かが失われることはなく、再購読すれば必ず再構築できる
+//  - 確定会話の真実の源はディスク上の transcript。未決着の承認だけはtranscriptに
+//    記録されないため、app-server server requestをライブ状態の正本として扱う
 //  - 各tailerは epoch (tail開始ごとに一意) + rev (メッセージ連番) を持つ。モバイルは
 //    attach 時に手元の epoch/afterRev を申告し、epoch一致なら差分のみ、不一致
 //    (shared process再起動・セッション切替) なら全量スナップショットを受け取る
@@ -38,7 +38,7 @@ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
-import { IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
+import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 
@@ -112,9 +112,15 @@ export interface IParadisAgentSessionInfo {
 	readonly effort?: string;
 }
 
-export interface IParadisAgentInteraction {
-	readonly kind: 'question' | 'approval';
-	readonly id: string;
+export type IParadisAgentInteraction =
+	| { readonly kind: 'question'; readonly id: string }
+	| {
+		readonly kind: 'approval'; readonly id: string; readonly title?: string; readonly detail?: string;
+		readonly choices?: IParadisCodexApprovalInteraction['choices'];
+	};
+
+export function paradisIsCodexDaemonApprovalInteraction(interactionId: string): boolean {
+	return interactionId.startsWith('codex:') || interactionId.startsWith('codex-status:');
 }
 
 export interface IParadisAgentActivityDetailMessage {
@@ -129,7 +135,7 @@ type AgentInbound =
 	| { t: 'detach'; id: number; token?: string }
 	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string }
 	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
-	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: 'yes' | 'no' }
+	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string }
 	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
@@ -1475,7 +1481,7 @@ class TranscriptTailer {
 				this.initialTruncated = false;
 				this.backgroundTasks.clear();
 				this.pendingQuestions.clear();
-				this.pendingApprovalId = undefined;
+				this.pendingApproval = undefined;
 				this.lastApprovalKey = undefined;
 				this.liveQuestions.clear();
 				this.liveQuestionRealIds.clear();
@@ -1594,7 +1600,7 @@ class TranscriptTailer {
 
 	/** 直近に注入した承認要求の内容キー（PermissionRequest hookの再発火による重複注入の抑止）。 */
 	private lastApprovalKey: string | undefined;
-	private pendingApprovalId: string | undefined;
+	private pendingApproval: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined;
 	private approvalSeq = 0;
 
 	/**
@@ -1617,7 +1623,13 @@ class TranscriptTailer {
 			}
 			const interactionId = toolUseId ?? `approval:${this.epoch}:${this.approvalSeq++}`;
 			this.lastApprovalKey = key;
-			this.pendingApprovalId = interactionId;
+			this.pendingApproval = {
+				kind: 'approval', id: interactionId, title: '操作の許可', detail: truncateText(text, TOOL_TEXT_LIMIT),
+				choices: [
+					{ id: 'yes', label: '許可', tone: 'approve' },
+					{ id: 'no', label: '拒否', tone: 'deny' },
+				],
+			};
 			const message: IParadisAgentChatMessage = {
 				role: 'assistant', kind: 'tool_use', tool: 'approval_request',
 				text: truncateText(text, TOOL_TEXT_LIMIT), ts: Date.now(), rev: this.rev++, toolUseId: interactionId,
@@ -1627,23 +1639,74 @@ class TranscriptTailer {
 				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
 			}
 			this.delegate.onDelta([message]);
+			this.delegate.onActivity();
+		});
+	}
+
+	/** Codex app-server由来の構造化された承認要求を、その選択肢を失わず表示する。 */
+	injectCodexApprovalRequest(interaction: IParadisCodexApprovalInteraction): void {
+		this.enqueue(async () => {
+			if (this.pendingApproval?.id === interaction.id) { return; }
+			const hadApproval = this.pendingApproval !== undefined;
+			this.pendingApproval = interaction;
+			this.lastApprovalKey = `codex:${interaction.id}`;
+			if (hadApproval) {
+				// hook経路が先着していた場合はカードだけ正式な選択肢へ置換し、履歴を重複させない。
+				this.delegate.onDelta([]);
+				this.delegate.onActivity();
+				return;
+			}
+			const message: IParadisAgentChatMessage = {
+				role: 'assistant', kind: 'tool_use', tool: 'approval_request', text: truncateText(interaction.detail || interaction.title, TOOL_TEXT_LIMIT),
+				ts: Date.now(), rev: this.rev++, toolUseId: interaction.id,
+			};
+			this.messages.push(message);
+			if (this.messages.length > MESSAGE_RING_LIMIT) {
+				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
+			}
+			this.delegate.onDelta([message]);
+			this.delegate.onActivity();
+		});
+	}
+
+	injectCodexApprovalFallback(threadId: string): void {
+		this.enqueue(async () => {
+			if (this.pendingApproval !== undefined) { return; }
+			this.pendingApproval = {
+				kind: 'approval', id: `codex-status:${threadId}`, title: 'Codexが許可を待っています',
+				detail: '承認内容を同期できませんでした。PCのCodex画面で確認してください。', choices: [],
+			};
+			this.lastApprovalKey = `codex-status:${threadId}`;
+			this.delegate.onDelta([]);
+			this.delegate.onActivity();
 		});
 	}
 
 	clearApprovalRequest(toolUseId: string | undefined, force: boolean): void {
 		this.enqueue(async () => {
-			if (this.pendingApprovalId === undefined || (!force && (toolUseId === undefined || this.pendingApprovalId !== toolUseId))) {
+			if (this.pendingApproval === undefined || (!force && (toolUseId === undefined || this.pendingApproval.id !== toolUseId))) {
 				return;
 			}
-			this.pendingApprovalId = undefined;
+			this.pendingApproval = undefined;
 			this.lastApprovalKey = undefined;
 			this.delegate.onDelta([]);
+			this.delegate.onActivity();
+		});
+	}
+
+	clearCodexApprovalRequest(interactionId?: string): void {
+		this.enqueue(async () => {
+			if (this.pendingApproval === undefined || (interactionId !== undefined && this.pendingApproval.id !== interactionId)) { return; }
+			this.pendingApproval = undefined;
+			this.lastApprovalKey = undefined;
+			this.delegate.onDelta([]);
+			this.delegate.onActivity();
 		});
 	}
 
 	currentInteraction(): IParadisAgentInteraction | null {
-		if (this.pendingApprovalId !== undefined) {
-			return { kind: 'approval', id: this.pendingApprovalId };
+		if (this.pendingApproval !== undefined) {
+			return this.pendingApproval;
 		}
 		for (let index = this.messages.length - 1; index >= 0; index--) {
 			const message = this.messages[index];
@@ -2343,7 +2406,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		return this.isValidControlRequest(msg)
 			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
 			&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
-			&& (msg.choice === 'yes' || msg.choice === 'no');
+			&& typeof msg.choice === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.choice);
 	}
 
 	private isValidClaudeSettingAction(msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>): boolean {
@@ -2415,11 +2478,77 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private handleApprovalAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerApproval' }>): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
-		const agent = token !== undefined ? this.paneSessions.get(token)?.agent : undefined;
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		if (session?.agent === 'codex' && token !== undefined && session.sessionId !== undefined && this.codexLiveClient.hasPendingApproval(session.sessionId, msg.interactionId)) {
+			this.handleCodexApprovalAction(mobileId, msg, token, session.sessionId).catch(error => {
+				this.logService.warn('[paradisAgentChat] Codex approval action failed', error);
+			});
+			return;
+		}
+		if (paradisIsCodexDaemonApprovalInteraction(msg.interactionId)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この承認要求はすでに完了しています' }, token ?? msg.token);
+			return;
+		}
+		const agent = session?.agent;
 		const parts = agent === 'codex'
 			? [msg.choice === 'yes' ? 'y' : 'd']
 			: msg.choice === 'yes' ? ['1', '\r'] : ['\u001b'];
+		if (msg.choice !== 'yes' && msg.choice !== 'no') {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '承認の選択肢が更新されました' }, token ?? msg.token);
+			return;
+		}
 		this.dispatchInteractionAction(mobileId, msg, { kind: 'approval', id: msg.interactionId }, parts);
+	}
+
+	private async handleCodexApprovalAction(
+		mobileId: string,
+		msg: Extract<AgentInbound, { t: 'action/answerApproval' }>,
+		token: string,
+		threadId: string,
+	): Promise<void> {
+		const tailer = this.tailers.get(token);
+		const interaction = tailer?.currentInteraction();
+		const windowId = this.windowIdForPane(msg.id, token);
+		const key = this.actionKey(mobileId, msg.requestId);
+		const interactionKey = `${token}\0${msg.epoch}\0approval\0${msg.interactionId}`;
+		if (tailer?.epoch !== msg.epoch || interaction?.kind !== 'approval' || interaction.id !== msg.interactionId
+			|| windowId === undefined || !this.hasSubscriber(token, mobileId) || this.interactionClaims.has(interactionKey)
+			|| this.pendingActions.has(key) || this.completedActions.has(key)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の承認要求が変わりました' }, token);
+			return;
+		}
+		const timer = setTimeout(() => {
+			if (this.pendingActions.delete(key)) {
+				this.releaseInteractionClaim(interactionKey, key);
+				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: 'Codexへ承認結果を送信できませんでした' }, token);
+			}
+		}, 5_000);
+		this.interactionClaims.set(interactionKey, key);
+		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId, interaction, interactionKey, timer });
+		try {
+			await this.codexLiveClient.answerApproval(threadId, msg.interactionId, msg.choice);
+			const pending = this.pendingActions.get(key);
+			if (pending === undefined) { return; }
+			clearTimeout(pending.timer);
+			this.pendingActions.delete(key);
+			const completedTimer = setTimeout(() => {
+				const completed = this.completedActions.get(key);
+				this.completedActions.delete(key);
+				this.releaseInteractionClaim(completed?.interactionKey, key);
+			}, 60_000);
+			this.completedActions.set(key, { token, epoch: msg.epoch, terminalId: msg.id, windowId, interaction, interactionKey, timer: completedTimer });
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+		} catch (error) {
+			const pending = this.pendingActions.get(key);
+			if (pending === undefined) { return; }
+			clearTimeout(pending.timer);
+			this.pendingActions.delete(key);
+			this.releaseInteractionClaim(interactionKey, key);
+			const normalized = error instanceof ParadisCodexControlError
+				? { code: error.code, message: error.message }
+				: { code: 'unavailable', message: 'Codexへ承認結果を送信できませんでした' };
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', ...normalized }, token);
+		}
 	}
 
 	private dispatchInteractionAction(
@@ -2524,6 +2653,15 @@ export class ParadisMobileAgentChat extends Disposable {
 	private releaseInteractionClaim(interactionKey: string | undefined, actionKey: string): void {
 		if (interactionKey !== undefined && this.interactionClaims.get(interactionKey) === actionKey) {
 			this.interactionClaims.delete(interactionKey);
+		}
+	}
+
+	private releaseInteractionClaimsFor(token: string, interactionId?: string): void {
+		for (const key of [...this.interactionClaims.keys()]) {
+			const parts = key.split('\0');
+			if (parts[0] === token && parts[2] === 'approval' && (interactionId === undefined || parts[3] === interactionId)) {
+				this.interactionClaims.delete(key);
+			}
 		}
 	}
 
@@ -2812,6 +2950,33 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private applyCodexDaemonEvent(token: string, event: IParadisCodexDaemonEvent): void {
 		const now = Date.now();
+		const session = this.paneSessions.get(token);
+		const tailer = session !== undefined ? this.ensureTailer(token, session) : undefined;
+		if (event.approval !== undefined) {
+			if (event.method === 'serverRequest/resolved') {
+				tailer?.clearCodexApprovalRequest(event.approval.id);
+				this.releaseInteractionClaimsFor(token, event.approval.id);
+				this.clearLiveState(token);
+			} else {
+				tailer?.injectCodexApprovalRequest(event.approval);
+				this.setLiveState(token, {
+					phase: 'tool', source: 'codex-daemon', startedAt: now, updatedAt: now,
+					tool: 'approval_request', detail: event.approval.detail || event.approval.title,
+				});
+			}
+			return;
+		}
+		if (event.method === 'thread/status/changed') {
+			const status = rec(event.params['status']);
+			const flags = status?.['activeFlags'];
+			const waiting = Array.isArray(flags) && flags.includes('waitingOnApproval');
+			if (waiting) {
+				tailer?.injectCodexApprovalFallback(event.threadId);
+			} else {
+				tailer?.clearCodexApprovalRequest(`codex-status:${event.threadId}`);
+				this.releaseInteractionClaimsFor(token, `codex-status:${event.threadId}`);
+			}
+		}
 		if (this.activityTracker(token).applyCodex(event.method, event.params, now)) {
 			this.pushActivityToSubscribers(token);
 		}
@@ -2848,6 +3013,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			// ここで解除しないと「考え中」表示が残り続ける）。
 			this.codexMessageBuffers.delete(token);
 			this.codexActiveItems.delete(token);
+			tailer?.clearCodexApprovalRequest();
+			this.releaseInteractionClaimsFor(token);
 			this.clearLiveState(token);
 			if (this.activityTracker(token).endTurn(now)) {
 				this.pushActivityToSubscribers(token);
@@ -3396,6 +3563,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			setParadisAgentPaneActivity(token, {
 				backgroundTasks: new Map(tailer.backgroundTasks),
 				pendingQuestion: tailer.pendingQuestions.size > 0,
+				pendingApproval: tailer.currentInteraction()?.kind === 'approval',
 			});
 		};
 		const tailer = new TranscriptTailer(session.transcriptPath, session.agent, {
@@ -3488,7 +3656,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (tailer !== undefined) {
 			tailer.dispose();
 			this.tailers.delete(token);
-			setParadisAgentPaneActivity(token, { backgroundTasks: new Map(), pendingQuestion: false });
+			setParadisAgentPaneActivity(token, { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false });
 		}
 	}
 

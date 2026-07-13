@@ -91,7 +91,7 @@ interface AppState extends StoreState {
 	sendTextInput(id: number, text: string, execute: boolean): void;
 	sendAgentMessage(id: number, text: string): Promise<AgentMessageSendResult>;
 	answerAgentQuestion(id: number, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean>;
-	answerAgentApproval(id: number, interactionId: string, choice: 'yes' | 'no'): Promise<boolean>;
+	answerAgentApproval(id: number, interactionId: string, choice: string): Promise<boolean>;
 	updateClaudeSetting(id: number, setting: 'model' | 'effort', value: string): Promise<boolean>;
 	requestAgentActivityDetail(id: number, activityId: string): Promise<AgentActivityDetailMessage[]>;
 	createTerminal(ws?: string): void;
@@ -440,7 +440,7 @@ export const useAppStore = create<AppState>(set => ({
 		return controller?.answerAgentQuestion(id, interactionId, answers) ?? Promise.resolve(false);
 	},
 
-	answerAgentApproval(id: number, interactionId: string, choice: 'yes' | 'no') {
+	answerAgentApproval(id: number, interactionId: string, choice: string) {
 		return controller?.answerAgentApproval(id, interactionId, choice) ?? Promise.resolve(false);
 	},
 

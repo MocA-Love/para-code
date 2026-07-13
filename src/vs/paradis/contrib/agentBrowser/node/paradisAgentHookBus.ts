@@ -125,6 +125,7 @@ export function fireParadisAgentTurnEnded(token: string): void {
 // ParadisMobileAgentChat の tailer が学習してここへ書き込み、ParadisAgentBrowserService の
 // ペイン実行状態 (working/permission/question/review) の判定材料にする:
 //  - pendingQuestion: AskUserQuestion が回答待ち（同じ tool_use_id の tool_result 未出現）
+//  - pendingApproval: Codex app-serverまたはhookが報告した承認要求が回答待ち
 //  - backgroundTasks: バックグラウンドのサブエージェント等が実行中（task-notification 未着）
 // hookイベントバスと同じモジュールシングルトン方式（shared process 内限定）。
 
@@ -134,6 +135,8 @@ export interface IParadisAgentPaneActivity {
 	readonly backgroundTasks: ReadonlyMap<string, number>;
 	/** 回答待ちの質問 (AskUserQuestion) があるか。 */
 	readonly pendingQuestion: boolean;
+	/** 回答待ちの操作承認があるか。 */
+	readonly pendingApproval: boolean;
 }
 
 /** 完了通知が来ないまま残ったバックグラウンドタスクを無視するまでの時間。 */
@@ -145,7 +148,7 @@ export const onParadisAgentPaneActivity: Event<{ readonly token: string; readonl
 
 /** ペインアクティビティの更新（ParadisMobileAgentChat の tailer 専用）。 */
 export function setParadisAgentPaneActivity(token: string, activity: IParadisAgentPaneActivity): void {
-	if (activity.backgroundTasks.size === 0 && !activity.pendingQuestion) {
+	if (activity.backgroundTasks.size === 0 && !activity.pendingQuestion && !activity.pendingApproval) {
 		activities.delete(token);
 	} else {
 		activities.set(token, activity);
@@ -155,13 +158,13 @@ export function setParadisAgentPaneActivity(token: string, activity: IParadisAge
 
 /** 現在のペインアクティビティ（無ければ「何もしていない」）。 */
 export function getParadisAgentPaneActivity(token: string): IParadisAgentPaneActivity {
-	return activities.get(token) ?? { backgroundTasks: new Map(), pendingQuestion: false };
+	return activities.get(token) ?? { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false };
 }
 
 /** terminal/pane終了時にtoken由来のtranscript activityを即時破棄する。 */
 export function clearParadisAgentPaneActivity(token: string): void {
 	if (activities.delete(token)) {
-		activityEmitter.fire({ token, activity: { backgroundTasks: new Map(), pendingQuestion: false } });
+		activityEmitter.fire({ token, activity: { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false } });
 	}
 }
 

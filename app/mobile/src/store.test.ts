@@ -374,6 +374,56 @@ describe('agent message action result', () => {
 	});
 });
 
+describe('MobileController agent approval', () => {
+	it('keeps Codex approval choices and sends the selected choice id', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const requests: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.send(Channels.State, encode({ activeWs: 'w1', workspaces: [{ id: 'w1', name: 'para-code' }], terminals: [{ id: 7, title: 'codex', agentToken: 'agent-7' }] }));
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [],
+			capabilities: { agentActions: true },
+			interaction: {
+				kind: 'approval', id: 'codex:s:approval-1', title: 'コマンドの実行許可', detail: 'git add src/file.ts',
+				choices: [
+					{ id: '0', label: '今回だけ許可', tone: 'approve' },
+					{ id: '1', label: '同じ種類のコマンドを今後許可', tone: 'neutral' },
+					{ id: '2', label: '拒否', tone: 'deny' },
+				],
+			},
+		}));
+		await flush();
+
+		expect(latest?.agentChats.get(7)?.interaction).toEqual({
+			kind: 'approval', id: 'codex:s:approval-1', title: 'コマンドの実行許可', detail: 'git add src/file.ts',
+			choices: [
+				{ id: '0', label: '今回だけ許可', tone: 'approve' },
+				{ id: '1', label: '同じ種類のコマンドを今後許可', tone: 'neutral' },
+				{ id: '2', label: '拒否', tone: 'deny' },
+			],
+		});
+		const answer = controller.answerAgentApproval(7, 'codex:s:approval-1', '1');
+		await flush();
+		expect(requests[0]).toEqual({
+			t: 'action/answerApproval', id: 7, token: 'agent-7', requestId: requests[0]?.requestId,
+			epoch: 'codex-e1', interactionId: 'codex:s:approval-1', choice: '1',
+		});
+		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-7', requestId: requests[0]?.requestId, status: 'accepted' }));
+		await expect(answer).resolves.toBe(true);
+	});
+});
+
 // --- ターミナル同期プロトコル（epoch/seq/ACK） ---
 
 describe('MobileController terminal sync protocol', () => {

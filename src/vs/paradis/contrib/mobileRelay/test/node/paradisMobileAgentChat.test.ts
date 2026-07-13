@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexRootThreadSource, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
+import { paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
+import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 suite('ParadisMobileAgentChat', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -32,6 +33,60 @@ suite('ParadisMobileAgentChat', () => {
 			type: 'session_meta',
 			payload: { cwd: '/workspace', id: 'thread-1' },
 		})), { cwd: '/workspace', sessionId: 'thread-1' });
+	});
+
+	test('preserves the exact Codex command approval choices and their response payloads', () => {
+		const parsed = paradisParseCodexApprovalRequestForTest({
+			method: 'item/commandExecution/requestApproval', id: 'approval-1', params: {
+				threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', startedAtMs: 1,
+				command: 'git add src/file.ts', cwd: '/workspace', reason: 'Git indexへの書き込み',
+				availableDecisions: [
+					'accept',
+					{ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['git', 'add'] } },
+					'decline',
+				],
+			},
+		});
+		assert.deepStrictEqual(parsed?.interaction, {
+			kind: 'approval', id: 'codex:s:approval-1', title: 'コマンドの実行許可',
+			detail: 'git add src/file.ts\nGit indexへの書き込み\n/workspace',
+			choices: [
+				{ id: '0', label: '今回だけ許可', tone: 'approve' },
+				{ id: '1', label: '同じ種類のコマンドを今後許可', tone: 'neutral' },
+				{ id: '2', label: '拒否', tone: 'deny' },
+			],
+		});
+		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, '1'), {
+			decision: { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['git', 'add'] } },
+		});
+		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, 'yes'), { decision: 'accept' });
+		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, 'no'), { decision: 'decline' });
+		assert.strictEqual(paradisCodexApprovalResultForTest(parsed!, 'missing'), undefined);
+	});
+
+	test('maps Codex permission approval to requested subsets and an explicit denial', () => {
+		const parsed = paradisParseCodexApprovalRequestForTest({
+			method: 'item/permissions/requestApproval', id: 61, params: {
+				threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', environmentId: 'local',
+				startedAtMs: 1, cwd: '/workspace', reason: '共有フォルダへの書き込み',
+				permissions: { network: null, fileSystem: { write: ['/workspace', '/shared'] } },
+			},
+		});
+		assert.deepStrictEqual(parsed?.interaction.choices, [
+			{ id: '0', label: '今回だけ許可', tone: 'approve' },
+			{ id: '1', label: 'セッション中は許可', tone: 'neutral' },
+			{ id: '2', label: '拒否', tone: 'deny' },
+		]);
+		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, '1'), {
+			permissions: { fileSystem: { write: ['/workspace', '/shared'] } }, scope: 'session',
+		});
+		assert.deepStrictEqual(paradisCodexApprovalResultForTest(parsed!, '2'), { permissions: {}, scope: 'turn' });
+	});
+
+	test('never falls a resolved Codex daemon approval back to PTY key injection', () => {
+		assert.strictEqual(paradisIsCodexDaemonApprovalInteraction('codex:s:approval-1'), true);
+		assert.strictEqual(paradisIsCodexDaemonApprovalInteraction('codex-status:thread-1'), true);
+		assert.strictEqual(paradisIsCodexDaemonApprovalInteraction('approval:epoch:1'), false);
 	});
 
 	test('keeps current Codex nested thread metadata', () => {
