@@ -160,6 +160,8 @@
 	border-radius: 4px;
 	font-size: 0.8em;
 	font-variant-numeric: tabular-nums;
+	/* リスト行のインライン line-height (行高と同値の44px) を継承するとチップが行の全高に膨らむ */
+	line-height: 1;
 	cursor: pointer;
 	--paradis-pr-color: var(--vscode-foreground);
 	color: var(--paradis-pr-color);
@@ -174,7 +176,10 @@
 	display: none;
 }
 
-.paradis-workspaces-list .paradis-worktree-pr > .codicon {
+/* allow-any-unicode-next-line */
+/* .monaco-workbench を前置して詳細度を上げる (upstream の
+ * `.monaco-workbench .codicon[class*="codicon-"] { font-size: 16px }` に後勝ちで負けないように) */
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-pr > .codicon {
 	font-size: 12px;
 	color: var(--paradis-pr-color);
 }
