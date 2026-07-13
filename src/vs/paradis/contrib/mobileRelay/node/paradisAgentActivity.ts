@@ -14,6 +14,8 @@ export interface IParadisAgentActivityAgent {
 	readonly role: 'subagent' | 'teammate';
 	readonly provider: 'claude' | 'codex';
 	readonly detail?: string;
+	readonly parentId?: string;
+	readonly depth?: number;
 	readonly status: ParadisAgentActivityStatus;
 	readonly startedAt: number;
 	readonly updatedAt: number;
@@ -51,6 +53,14 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function text(value: unknown): string | undefined {
 	return typeof value === 'string' && value.length > 0 ? value.slice(0, 1_000) : undefined;
+}
+
+function relationship(id: string, parentValue: unknown, depthValue: unknown, previous?: IParadisAgentActivityAgent): Pick<IParadisAgentActivityAgent, 'parentId' | 'depth'> {
+	const candidateParent = text(parentValue);
+	const parentId = candidateParent !== undefined && candidateParent !== id ? candidateParent : previous?.parentId;
+	const rawDepth = typeof depthValue === 'number' && Number.isFinite(depthValue) ? Math.trunc(depthValue) : undefined;
+	const depth = rawDepth !== undefined ? Math.min(5, Math.max(1, rawDepth)) : previous?.depth;
+	return { ...(parentId !== undefined ? { parentId } : {}), ...(depth !== undefined ? { depth } : {}) };
 }
 
 function terminal(status: ParadisAgentActivityStatus): boolean {
@@ -99,6 +109,7 @@ export class ParadisAgentActivityTracker {
 					this.agents.set(id, {
 						id, label: text(payload['agent_type']) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'claude',
 						...(detail !== undefined ? { detail } : {}),
+						...relationship(id, payload['parent_agent_id'] ?? payload['parent_id'], payload['depth'], previous),
 						status: nextStatus, startedAt: previous?.startedAt ?? at, updatedAt: at,
 					});
 				}
@@ -154,7 +165,7 @@ export class ParadisAgentActivityTracker {
 				const previous = this.agents.get(id);
 				const status = codexSubAgentStatus(text(item?.['kind']));
 				if (!(previous !== undefined && (at < previous.updatedAt || (terminal(previous.status) && status === 'running' && at === previous.updatedAt)))) {
-					this.agents.set(id, { id, label: text(item?.['agentPath']) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(previous?.detail ? { detail: previous.detail } : {}), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+					this.agents.set(id, { id, label: text(item?.['agentPath']) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(previous?.detail ? { detail: previous.detail } : {}), ...relationship(id, item?.['parentThreadId'], item?.['depth'], previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
 			}
 		} else if (type === 'collabAgentToolCall') {
@@ -167,11 +178,29 @@ export class ParadisAgentActivityTracker {
 				const state = record(states?.[id]);
 				const status = state !== undefined ? codexStatus(state['status']) : method === 'item/completed' ? 'completed' : 'running';
 				if (!(previous !== undefined && (at < previous.updatedAt || (terminal(previous.status) && status === 'running' && at === previous.updatedAt)))) {
-					this.agents.set(id, { id, label: prompt ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(prompt ?? previous?.detail ? { detail: prompt ?? previous?.detail } : {}), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+					this.agents.set(id, { id, label: prompt ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(prompt ?? previous?.detail ? { detail: prompt ?? previous?.detail } : {}), ...relationship(id, item?.['parentThreadId'], item?.['depth'], previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
 			}
 		}
 		return this.finishApply(before, at);
+	}
+
+	/** 永続メタデータから判明した親子関係を、循環を作らず既存Agentへ反映する。 */
+	setAgentRelationship(id: string, parentId: string | undefined, depth: number | undefined, at: number): boolean {
+		const previous = this.agents.get(id);
+		if (previous === undefined) { return false; }
+		const before = this.serialized();
+		let normalizedParent = parentId !== undefined && parentId !== id ? parentId : undefined;
+		const visited = new Set([id]);
+		for (let cursor = normalizedParent; cursor !== undefined;) {
+			if (visited.has(cursor)) { normalizedParent = undefined; break; }
+			visited.add(cursor);
+			cursor = this.agents.get(cursor)?.parentId;
+		}
+		const normalizedDepth = depth !== undefined && Number.isFinite(depth) ? Math.min(5, Math.max(1, Math.trunc(depth))) : normalizedParent !== undefined ? (this.agents.get(normalizedParent)?.depth ?? 1) + 1 : 1;
+		const next = { ...previous, depth: Math.min(5, normalizedDepth), updatedAt: Math.max(previous.updatedAt, at) };
+		if (normalizedParent !== undefined) { this.agents.set(id, { ...next, parentId: normalizedParent }); } else { const { parentId: _, ...withoutParent } = next; this.agents.set(id, withoutParent); }
+		return this.finishApply(before, Math.max(previous.updatedAt, at));
 	}
 
 	endTurn(reason: 'completed' | 'failed' | 'interrupted', at: number): boolean {

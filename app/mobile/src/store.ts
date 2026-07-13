@@ -338,7 +338,7 @@ export interface AgentLiveState {
 }
 
 export type AgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
-export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; provider?: 'claude' | 'codex'; detail?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
+export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; provider?: 'claude' | 'codex'; detail?: string; parentId?: string; depth?: number; status: AgentActivityStatus; startedAt: number; updatedAt: number }
 export interface AgentActivityTask { id: string; label: string; detail?: string; assignee?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
 export interface AgentActivityCompaction { id: string; trigger?: string; status: 'running' | 'completed'; startedAt: number; updatedAt: number }
 export interface AgentActivityState {
@@ -360,7 +360,9 @@ function parseAgentActivityState(value: unknown): AgentActivityState | undefined
 		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
 		const item = candidate as Record<string, unknown>;
 		if (typeof item['id'] === 'string' && typeof item['label'] === 'string' && (item['role'] === 'subagent' || item['role'] === 'teammate') && statuses.has(item['status'] as AgentActivityStatus) && typeof item['startedAt'] === 'number' && typeof item['updatedAt'] === 'number') {
-			agents.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), role: item['role'], ...(item['provider'] === 'claude' || item['provider'] === 'codex' ? { provider: item['provider'] } : {}), ...(typeof item['detail'] === 'string' ? { detail: item['detail'].slice(0, 4_000) } : {}), status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
+			const parentId = typeof item['parentId'] === 'string' && item['parentId'] !== item['id'] ? item['parentId'].slice(0, 500) : undefined;
+			const depth = typeof item['depth'] === 'number' && Number.isFinite(item['depth']) ? Math.min(5, Math.max(1, Math.trunc(item['depth']))) : undefined;
+			agents.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), role: item['role'], ...(item['provider'] === 'claude' || item['provider'] === 'codex' ? { provider: item['provider'] } : {}), ...(typeof item['detail'] === 'string' ? { detail: item['detail'].slice(0, 4_000) } : {}), ...(parentId !== undefined ? { parentId } : {}), ...(depth !== undefined ? { depth } : {}), status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
 		}
 	}
 	const tasks: AgentActivityTask[] = [];

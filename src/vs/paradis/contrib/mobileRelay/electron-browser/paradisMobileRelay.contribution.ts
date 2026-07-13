@@ -183,14 +183,34 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// shared process のセッション探索を前倒しするトリガーとして通知する。起動の確定情報には
 		// 使わない (探索側の鮮度ガードで `claude --help` 等の空振りは自然に弾かれる)。
 		// hookがまだ届かない環境 (Codex の hook 未trust等) での検知の主経路になる。
+		const activeAgentCommands = new Map<string, string>();
+		const agentCommandRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+		this._register({ dispose: () => { for (const timer of agentCommandRetryTimers.values()) { clearTimeout(timer); } agentCommandRetryTimers.clear(); } });
 		const detectAgentCommand = (instance: ITerminalInstance, commandLine: string) => {
-			const agent = paradisInteractiveAgentCommand(commandLine.trim());
-			if (agent === undefined) { return; }
+			const normalizedCommandLine = commandLine.trim();
+			const command = paradisInteractiveAgentCommand(normalizedCommandLine);
+			if (command === undefined) { return; }
 			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
 			if (paneToken === undefined) { return; }
+			if (activeAgentCommands.get(paneToken) === normalizedCommandLine) { return; }
+			activeAgentCommands.set(paneToken, normalizedCommandLine);
 			this.provider.setProvisionalAgentPaneToken(paneToken, true);
 			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
-			this.service.notifyAgentCliCommand(paneToken, agent, cwd).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed', err));
+			this.service.notifyAgentCliCommand(paneToken, command.agent, command.mode, cwd).then(() => {
+				const retry = agentCommandRetryTimers.get(paneToken);
+				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
+			}, err => {
+				this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed; retrying while command is active', err);
+				if (activeAgentCommands.get(paneToken) === normalizedCommandLine) { activeAgentCommands.delete(paneToken); }
+				if (!agentCommandRetryTimers.has(paneToken)) {
+					const retry = setTimeout(() => {
+						agentCommandRetryTimers.delete(paneToken);
+						const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+						if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
+					}, 2_000);
+					agentCommandRetryTimers.set(paneToken, retry);
+				}
+			});
 		};
 		const commandExecuted = this._register(terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandExecuted));
 		this._register(commandExecuted.event(({ instance, data: command }) => {
@@ -200,11 +220,32 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
 			if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
 		}
+		// 永続ターミナル再接続ではCommandDetectionよりpane token復元が遅い場合がある。
+		// token割当時に実行中コマンドを再評価し、起動済みAgentの取りこぼしを回収する。
+		this._register(paneTokenService.onDidChange(() => {
+			for (const instance of terminalService.instances) {
+				const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+				if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
+			}
+		}));
+		this._register(terminalService.onAnyInstanceAddedCapabilityType(type => {
+			if (type !== TerminalCapability.CommandDetection) { return; }
+			for (const instance of terminalService.instances) {
+				const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+				if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
+			}
+		}));
 		const commandFinished = this._register(terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandFinished));
 		this._register(commandFinished.event(({ instance, data: command }) => {
 			if (paradisInteractiveAgentCommand((command.command ?? '').trim()) === undefined) { return; }
 			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
-			if (paneToken !== undefined) { this.provider.setProvisionalAgentPaneToken(paneToken, false); }
+			if (paneToken !== undefined) {
+				activeAgentCommands.delete(paneToken);
+				const retry = agentCommandRetryTimers.get(paneToken);
+				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
+				this.provider.setProvisionalAgentPaneToken(paneToken, false);
+				this.service.notifyAgentCliCommandFinished(paneToken).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommandFinished failed', err));
+			}
 		}));
 
 		// Omnara旧実装で実績のあるPTY文字列ヒューリスティックは、状態判定には使わず
@@ -215,7 +256,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this._register(terminalService.onDidCreateInstance(instance => this.trackTerminalHints(instance)));
 		this._register(terminalService.onDidDisposeInstance(instance => {
 			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
-			if (paneToken !== undefined) { this.provider.setProvisionalAgentPaneToken(paneToken, false); }
+			if (paneToken !== undefined) {
+				activeAgentCommands.delete(paneToken);
+				const retry = agentCommandRetryTimers.get(paneToken);
+				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
+				this.provider.setProvisionalAgentPaneToken(paneToken, false);
+				this.service.notifyAgentCliCommandFinished(paneToken).catch(() => { /* shared process終了中は無視 */ });
+			}
 			this.terminalHintListeners.deleteAndDispose(instance.instanceId);
 			this.terminalHintParsers.delete(instance.instanceId);
 		}));
