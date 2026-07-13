@@ -63,7 +63,10 @@ import {
 	ParadisMobileConnectionState,
 	ParadisMobileInboundFrameWire,
 	ParadisMobilePairingEvent,
+	ParadisMobileTerminalOperationStatus,
+	paradisMobileWindowRoute,
 } from '../common/paradisMobileRelay.js';
+import { IParadisMobileWindowLeaseRef, ParadisMobileOperationLedger } from './paradisMobileOperationLedger.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
 import { promises as fs } from 'fs';
@@ -153,6 +156,7 @@ class MobileSession {
 				this.mux.on(Channels.Fs, f => this.emit(f));
 				this.mux.on(Channels.Browser, f => this.emit(f));
 				this.mux.on(Channels.Agent, f => this.emit(f));
+				this.mux.on(Channels.Notify, f => this.emit(f));
 				return;
 			}
 			await this.mux!.receive(payload);
@@ -225,7 +229,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private reconnectAttempt = 0;
 	private readonly sessions = new Map<string, MobileSession>();
 	private readonly terminalRegistry = new ParadisMobileTerminalRegistry();
-	private readonly terminalOperationResults = new Map<string, Uint8Array>();
+	private readonly terminalOperations = new ParadisMobileOperationLedger();
+	private readonly terminalOperationTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	private readonly webrtcRendererLeases = new Map<string, { readonly sid: string; readonly owner: IParadisMobileWindowLeaseRef }>();
 
 	// ペアリング中の状態
 	private pairing: {
@@ -277,7 +283,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 					session.sendFrame(Channels.Agent, undefined, payload).catch(err => this.logService.warn('[paradisMobileRelay] agent reply failed', err));
 				}
 			},
-			(mobileId, windowId, payload) => this._onInboundFrame.fire([Channels.Agent, `window:${windowId}`, 0, VSBuffer.wrap(payload), mobileId]),
+			(mobileId, windowId, windowSession, payload) => this._onInboundFrame.fire([Channels.Agent, paradisMobileWindowRoute(windowId, windowSession), 0, VSBuffer.wrap(payload), mobileId]),
 			// transcript に質問(AskUserQuestion等)が現れた → 質問本文入りの通知を全モバイルへ流す。
 			// hookベースの agentStatus 遷移通知(renderer側 emitNotify)は AskUserQuestion では
 			// 発火しないことがあるため、こちらが質問通知の主経路。
@@ -294,7 +300,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (this.sharedPageBindings) {
 			this._register(this.sharedPageBindings.onDidAcknowledgePane(token => this.dispatchAgentDismiss(token)));
 		}
-		this._register(toDisposable(() => this.disconnect()));
+		this._register(toDisposable(() => {
+			for (const timer of this.terminalOperationTimers.values()) {
+				clearTimeout(timer);
+			}
+			this.terminalOperationTimers.clear();
+			this.webrtcRendererLeases.clear();
+			this.disconnect();
+		}));
 	}
 
 	// --- 永続化 ---------------------------------------------------------------
@@ -373,20 +386,20 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return this.confirmedAgentPanes;
 	}
 
-	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string): Promise<'claimed' | 'stale' | 'expired'> {
-		return this.agentChat.claimSendMessageAction(mobileId, requestId, token, epoch);
+	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, windowId: number, windowSession: string): Promise<'claimed' | 'stale' | 'expired'> {
+		return this.agentChat.claimSendMessageAction(mobileId, requestId, token, epoch, windowId, windowSession);
 	}
 
-	async continueAgentInteraction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number): Promise<'valid' | 'completed' | 'stale'> {
-		return this.agentChat.continueInteractionAction(mobileId, requestId, token, epoch, terminalId, windowId);
+	async continueAgentInteraction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number, windowSession: string): Promise<'valid' | 'completed' | 'stale'> {
+		return this.agentChat.continueInteractionAction(mobileId, requestId, token, epoch, terminalId, windowId, windowSession);
 	}
 
-	async finalizeAgentInteraction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed'): Promise<void> {
-		this.agentChat.finalizeInteractionAction(mobileId, requestId, token, outcome);
+	async finalizeAgentInteraction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed', windowId: number, windowSession: string): Promise<void> {
+		this.agentChat.finalizeInteractionAction(mobileId, requestId, token, outcome, windowId, windowSession);
 	}
 
-	async validateAgentAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number): Promise<boolean> {
-		return this.agentChat.validateClaimedAction(mobileId, requestId, token, epoch, terminalId, windowId);
+	async validateAgentAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number, windowSession: string): Promise<boolean> {
+		return this.agentChat.validateClaimedAction(mobileId, requestId, token, epoch, terminalId, windowId, windowSession);
 	}
 
 	private snapshot(): IParadisMobileStatus {
@@ -661,6 +674,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// M-1: リレー側の資格情報も失効させ、既存のモバイル接続を切断する。
 		for (const m of removed) {
 			this.sessions.delete(m.mobileId);
+			this.webrtcRendererLeases.delete(m.mobileId);
+			this.browserMirror.stopSession(m.mobileId);
+			this.agentChat.dropSubscriber(m.mobileId);
 			this.notifyKeyCache.delete(m.mobileId);
 			void this.revokeOnRelay(m.mobileId);
 		}
@@ -698,8 +714,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * agentチャネル用: renderer から「ターミナルinstanceId ⇔ ペイントークン」対応表を同期する
 	 * （ウィンドウ単位の全置換）。チャットミラーはこの対応でモバイルの attach(id) を transcript へ解決する。
 	 */
-	async syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void> {
-		this.agentChat.syncPanes(windowId, entries);
+	async syncAgentPanes(windowId: number, windowSession: string, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void> {
+		this.agentChat.syncPanes(windowId, windowSession, entries);
 	}
 
 	/**
@@ -709,7 +725,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 古いfocused=trueがTTL超過で自然に無視されるようにし、通知が恒久的にサイレント抑制される
 	 * ことを防ぐ。
 	 */
-	private readonly windowFocus = new Map<number, { focused: boolean; at: number }>();
+	private readonly windowFocus = new Map<number, { windowSession: string; focused: boolean; at: number }>();
 
 	/**
 	 * ハートビート間隔（renderer側、paradisMobileRelay.contribution.ts）より十分長い猶予。
@@ -722,7 +738,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const now = Date.now();
 		let focused = false;
 		for (const [windowId, entry] of this.windowFocus) {
-			if (now - entry.at > ParadisMobileRelayService.WINDOW_FOCUS_TTL_MS) {
+			if (now - entry.at > ParadisMobileRelayService.WINDOW_FOCUS_TTL_MS
+				|| this.terminalRegistry.leaseOfWindow(windowId)?.windowSession !== entry.windowSession) {
 				this.windowFocus.delete(windowId);
 				continue;
 			}
@@ -733,8 +750,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return focused;
 	}
 
-	async setPcFocus(windowId: number, focused: boolean): Promise<void> {
-		this.windowFocus.set(windowId, { focused, at: Date.now() });
+	async setPcFocus(windowId: number, windowSession: string, focused: boolean): Promise<void> {
+		const current = this.terminalRegistry.leaseOfWindow(windowId);
+		if (current !== undefined && current.windowSession !== windowSession) {
+			return;
+		}
+		this.windowFocus.set(windowId, { windowSession, focused, at: Date.now() });
 	}
 
 	/**
@@ -807,7 +828,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	async syncTerminalWindow(windowId: number, windowSession: string, state: IParadisMobileWindowStateV2): Promise<void> {
+		const previous = this.terminalRegistry.leaseOfWindow(windowId);
 		const desktopState = this.terminalRegistry.syncWindow(windowId, windowSession, state);
+		const current = this.terminalRegistry.leaseOfWindow(windowId);
+		if (current?.windowSession === windowSession && previous !== undefined && previous.windowSession !== windowSession) {
+			this.finishTerminalOperationsForOwner(previous, 'stale-renderer');
+			this.agentChat.removePanes(previous.windowId, previous.windowSession);
+		}
 		const conflicts = this.terminalRegistry.conflictingTerminalKeys();
 		if (conflicts.length > 0) {
 			this.logService.error(`[paradisMobileRelay] duplicate terminalKey registration: ${conflicts.map(key => key.slice(0, 8)).join(',')}`);
@@ -816,7 +843,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	async removeTerminalWindow(windowId: number, windowSession: string): Promise<void> {
-		if (this.terminalRegistry.removeWindow(windowId, windowSession)) {
+		const removed = this.terminalRegistry.removeWindow(windowId, windowSession);
+		// terminal stateの初回同期よりpane同期が先に届いた場合も、同じsessionだけは掃除する。
+		this.agentChat.removePanes(windowId, windowSession);
+		if (removed) {
+			this.finishTerminalOperationsForOwner({ windowId, windowSession }, 'stale-renderer');
 			await this.broadcastDesktopState(this.terminalRegistry.desktopState());
 		}
 	}
@@ -838,7 +869,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private handleTerminalFrame(frame: IParadisMobileInboundFrame): void {
-		let message: { protocolVersion?: unknown; desktopEpoch?: unknown; operationId?: unknown; t?: unknown; terminalKey?: unknown; windowId?: unknown };
+		let message: { protocolVersion?: unknown; desktopEpoch?: unknown; operationId?: unknown; t?: unknown; terminalKey?: unknown; windowId?: unknown; ws?: unknown };
 		try {
 			message = JSON.parse(new TextDecoder().decode(frame.payload.buffer)) as typeof message;
 		} catch {
@@ -848,40 +879,54 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (mobileId === undefined || typeof message.operationId !== 'string' || message.operationId.length === 0 || message.operationId.length > 200) {
 			return;
 		}
-		const cacheKey = `${mobileId}:${message.operationId}`;
-		const cached = this.terminalOperationResults.get(cacheKey);
-		if (cached !== undefined) {
-			this.sendTerminalOperationResult(mobileId, cached);
+		const operationId = message.operationId;
+		const existing = this.terminalOperations.lookup(mobileId, operationId);
+		if (existing?.kind === 'final') {
+			this.sendTerminalOperationResult(mobileId, operationId, existing.status);
+			return;
+		}
+		if (existing?.kind === 'pending') {
 			return;
 		}
 
 		if (message.protocolVersion !== 2 || message.desktopEpoch !== this.terminalRegistry.desktopEpoch) {
-			this.finishTerminalOperation(mobileId, cacheKey, message.operationId, 'stale-epoch');
+			this.finishTerminalOperation(mobileId, operationId, 'stale-epoch');
 			return;
 		}
 		if (typeof message.t !== 'string' || !['attach', 'detach', 'ack', 'input', 'create', 'rename', 'close', 'ackStatus'].includes(message.t)) {
-			this.finishTerminalOperation(mobileId, cacheKey, message.operationId, 'terminal-not-found');
+			this.finishTerminalOperation(mobileId, operationId, 'terminal-not-found');
 			return;
 		}
 
-		let windowId: number | undefined;
+		let owner: IParadisMobileWindowLeaseRef | undefined;
 		if (message.t === 'create') {
 			const requestedWindowId = typeof message.windowId === 'number' && Number.isInteger(message.windowId) ? message.windowId : undefined;
-			windowId = requestedWindowId !== undefined && this.terminalRegistry.hasWindow(requestedWindowId) ? requestedWindowId : undefined;
+			owner = requestedWindowId !== undefined && typeof message.ws === 'string' && message.ws.length > 0
+				? this.terminalRegistry.ownerOfWorkspace(requestedWindowId, message.ws)
+				: undefined;
 		} else if (typeof message.terminalKey === 'string' && message.terminalKey.length > 0 && message.terminalKey.length <= 200) {
-			windowId = this.terminalRegistry.ownerOf(message.terminalKey)?.windowId;
+			owner = this.terminalRegistry.ownerOf(message.terminalKey);
 		}
-		if (windowId === undefined) {
-			this.finishTerminalOperation(mobileId, cacheKey, message.operationId, 'terminal-not-found');
+		if (owner === undefined) {
+			this.finishTerminalOperation(mobileId, operationId, 'terminal-not-found');
 			return;
 		}
 
-		this._onInboundFrame.fire([Channels.Terminal, `window:${windowId}`, frame.seq, frame.payload, mobileId]);
-		this.finishTerminalOperation(mobileId, cacheKey, message.operationId, 'accepted');
+		if (this.terminalOperations.begin(mobileId, operationId, owner).kind !== 'started') {
+			return;
+		}
+		const timerKey = this.terminalOperationKey(mobileId, operationId);
+		this.terminalOperationTimers.set(timerKey, setTimeout(() => {
+			this.terminalOperationTimers.delete(timerKey);
+			if (this.terminalOperations.complete(mobileId, operationId, owner, 'timeout')) {
+				this.sendTerminalOperationResult(mobileId, operationId, 'timeout');
+			}
+		}, 10_000));
+		this._onInboundFrame.fire([Channels.Terminal, paradisMobileWindowRoute(owner.windowId, owner.windowSession), frame.seq, frame.payload, mobileId]);
 	}
 
 	private handleWindowFrame(frame: IParadisMobileInboundFrame): void {
-		let message: { protocolVersion?: unknown; desktopEpoch?: unknown; windowId?: unknown };
+		let message: { protocolVersion?: unknown; desktopEpoch?: unknown; windowId?: unknown; ws?: unknown };
 		try {
 			message = JSON.parse(new TextDecoder().decode(frame.payload.buffer)) as typeof message;
 		} catch {
@@ -889,27 +934,58 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		if (message.protocolVersion !== 2 || message.desktopEpoch !== this.terminalRegistry.desktopEpoch
 			|| typeof message.windowId !== 'number' || !Number.isInteger(message.windowId)
-			|| !this.terminalRegistry.hasWindow(message.windowId)) {
+			|| typeof message.ws !== 'string' || message.ws.length === 0) {
 			return;
 		}
-		this._onInboundFrame.fire([frame.ch, `window:${message.windowId}`, frame.seq, frame.payload, frame.mobileId]);
-	}
-
-	private finishTerminalOperation(mobileId: string, cacheKey: string, operationId: string, status: 'accepted' | 'stale-epoch' | 'terminal-not-found'): void {
-		const payload = new TextEncoder().encode(JSON.stringify({ t: 'operation-result', operationId, status }));
-		this.terminalOperationResults.set(cacheKey, payload);
-		if (this.terminalOperationResults.size > 1000) {
-			const oldest = this.terminalOperationResults.keys().next().value;
-			if (oldest !== undefined) {
-				this.terminalOperationResults.delete(oldest);
-			}
+		const owner = this.terminalRegistry.ownerOfWorkspace(message.windowId, message.ws);
+		if (owner !== undefined) {
+			this._onInboundFrame.fire([frame.ch, paradisMobileWindowRoute(owner.windowId, owner.windowSession), frame.seq, frame.payload, frame.mobileId]);
 		}
-		this.sendTerminalOperationResult(mobileId, payload);
 	}
 
-	private sendTerminalOperationResult(mobileId: string, payload: Uint8Array): void {
+	private finishTerminalOperation(mobileId: string, operationId: string, status: ParadisMobileTerminalOperationStatus): void {
+		this.terminalOperations.finalize(mobileId, operationId, status);
+		this.sendTerminalOperationResult(mobileId, operationId, status);
+	}
+
+	async completeTerminalOperation(windowId: number, windowSession: string, mobileId: string, operationId: string, status: ParadisMobileTerminalOperationStatus): Promise<void> {
+		const current = this.terminalRegistry.leaseOfWindow(windowId);
+		if (current?.windowSession !== windowSession || !['accepted', 'terminal-not-found', 'failed', 'stale-renderer'].includes(status)) {
+			return;
+		}
+		const owner = { windowId, windowSession };
+		if (!this.terminalOperations.complete(mobileId, operationId, owner, status)) {
+			return;
+		}
+		const timerKey = this.terminalOperationKey(mobileId, operationId);
+		const timer = this.terminalOperationTimers.get(timerKey);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			this.terminalOperationTimers.delete(timerKey);
+		}
+		this.sendTerminalOperationResult(mobileId, operationId, status);
+	}
+
+	private terminalOperationKey(mobileId: string, operationId: string): string {
+		return `${mobileId}\0${operationId}`;
+	}
+
+	private finishTerminalOperationsForOwner(owner: IParadisMobileWindowLeaseRef, status: ParadisMobileTerminalOperationStatus): void {
+		for (const completed of this.terminalOperations.finalizeOwner(owner, status)) {
+			const timerKey = this.terminalOperationKey(completed.mobileId, completed.operationId);
+			const timer = this.terminalOperationTimers.get(timerKey);
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				this.terminalOperationTimers.delete(timerKey);
+			}
+			this.sendTerminalOperationResult(completed.mobileId, completed.operationId, completed.status);
+		}
+	}
+
+	private sendTerminalOperationResult(mobileId: string, operationId: string, status: ParadisMobileTerminalOperationStatus): void {
 		const session = this.sessions.get(mobileId);
 		if (session?.isOnline) {
+			const payload = new TextEncoder().encode(JSON.stringify({ t: 'operation-result', operationId, status }));
 			session.sendFrame(Channels.Terminal, undefined, payload).catch(err => this.logService.warn('[paradisMobileRelay] terminal operation result failed', err));
 		}
 	}
@@ -955,6 +1031,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				this.agentChat.dropSubscriber(id);
 			}
 			this.sessions.clear();
+			this.webrtcRendererLeases.clear();
 			if (this.enabled) {
 				this.setConnectionState('disconnected');
 				this.scheduleReconnect();
@@ -1056,15 +1133,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						// 対象ビュー単体を返すよう electron-main を先に arm してから転送する。
 						const webrtc = this.peekWebrtcSignal(frame.payload.buffer);
 						if (webrtc !== undefined) {
-							const forward = () => this._onInboundFrame.fire([frame.ch, frame.ws, frame.seq, frame.payload, frame.mobileId]);
-							if (webrtc.t === 'webrtc-offer' && typeof webrtc.targetId === 'string' && webrtc.targetId.length > 0 && this.cdpFrames) {
-								this.cdpFrames.armMirrorCapture(webrtc.targetId).then(forward, (err: unknown) => {
-									this.logService.warn('[paradisMobileRelay] webrtc arm failed', err);
-									forward(); // arm失敗でも転送はする（rendererが失敗応答を返せるように）
-								});
-							} else {
-								forward();
-							}
+							this.forwardWebrtcSignal(idStr, frame, webrtc).catch(err => this.logService.warn('[paradisMobileRelay] webrtc routing failed', err));
 							return;
 						}
 						const respond = (payload: Uint8Array) => {
@@ -1093,13 +1162,88 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * browser チャネルのペイロードが WebRTC シグナリング（t: 'webrtc-*'）なら
 	 * そのJSONを返す。違えば undefined（既存の browserMirror が処理する）。
 	 */
-	private peekWebrtcSignal(payload: Uint8Array): { t: string; targetId?: unknown } | undefined {
+	private peekWebrtcSignal(payload: Uint8Array): { t: 'webrtc-offer' | 'webrtc-ice' | 'webrtc-stop'; targetId?: unknown; sid?: unknown; id?: unknown } | undefined {
 		try {
-			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: unknown; targetId?: unknown };
-			if (typeof msg.t === 'string' && msg.t.startsWith('webrtc-')) {
-				return msg as { t: string; targetId?: unknown };
+			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: unknown; targetId?: unknown; sid?: unknown; id?: unknown };
+			if (msg.t === 'webrtc-offer' || msg.t === 'webrtc-ice' || msg.t === 'webrtc-stop') {
+				return msg as { t: 'webrtc-offer' | 'webrtc-ice' | 'webrtc-stop'; targetId?: unknown; sid?: unknown; id?: unknown };
 			}
 		} catch { /* JSONでないペイロードは既存処理へ */ }
+		return undefined;
+	}
+
+	private async forwardWebrtcSignal(
+		mobileId: string,
+		frame: IParadisMobileInboundFrame,
+		signal: { t: 'webrtc-offer' | 'webrtc-ice' | 'webrtc-stop'; targetId?: unknown; sid?: unknown; id?: unknown },
+	): Promise<void> {
+		if (typeof signal.sid !== 'string' || signal.sid.length === 0 || signal.sid.length > 200) {
+			return;
+		}
+		const sid = signal.sid;
+		let owner: IParadisMobileWindowLeaseRef | undefined;
+		if (signal.t === 'webrtc-offer') {
+			if (typeof signal.id !== 'string' || signal.id.length === 0 || signal.id.length > 200
+				|| typeof signal.targetId !== 'string' || signal.targetId.length === 0 || signal.targetId.length > 500) {
+				return;
+			}
+			owner = await this.resolveWebrtcOwner(signal.targetId);
+			if (owner === undefined) {
+				return;
+			}
+			this.webrtcRendererLeases.set(mobileId, { sid, owner });
+			if (this.cdpFrames) {
+				try {
+					await this.cdpFrames.armMirrorCapture(signal.targetId);
+				} catch (err) {
+					this.logService.warn('[paradisMobileRelay] webrtc arm failed', err);
+				}
+			}
+			if (this.webrtcRendererLeases.get(mobileId)?.sid !== sid) {
+				return;
+			}
+		} else {
+			const active = this.webrtcRendererLeases.get(mobileId);
+			owner = active?.sid === sid ? active.owner : undefined;
+			if (owner === undefined || this.terminalRegistry.leaseOfWindow(owner.windowId)?.windowSession !== owner.windowSession) {
+				this.webrtcRendererLeases.delete(mobileId);
+				return;
+			}
+		}
+		if (this.terminalRegistry.leaseOfWindow(owner.windowId)?.windowSession !== owner.windowSession) {
+			this.webrtcRendererLeases.delete(mobileId);
+			return;
+		}
+		this._onInboundFrame.fire([frame.ch, paradisMobileWindowRoute(owner.windowId, owner.windowSession), frame.seq, frame.payload, frame.mobileId]);
+		if (signal.t === 'webrtc-stop') {
+			this.webrtcRendererLeases.delete(mobileId);
+		}
+	}
+
+	private async resolveWebrtcOwner(targetId: string): Promise<IParadisMobileWindowLeaseRef | undefined> {
+		if (this.cdpFrames !== undefined) {
+			try {
+				const windowId = await this.cdpFrames.resolveTargetWindowId(targetId);
+				if (windowId !== null) {
+					return this.terminalRegistry.leaseOfWindow(windowId);
+				}
+			} catch (err) {
+				this.logService.warn('[paradisMobileRelay] failed to resolve WebRTC target window', err);
+			}
+		}
+		if (this.sharedPageBindings !== undefined) {
+			try {
+				const binding = (await this.sharedPageBindings.listBoundCdpTargets()).find(candidate => candidate.targetId === targetId);
+				if (binding !== undefined) {
+					const owner = this.agentChat.ownerOfPaneToken(binding.token);
+					return owner !== undefined && this.terminalRegistry.leaseOfWindow(owner.windowId)?.windowSession === owner.windowSession
+						? owner
+						: undefined;
+				}
+			} catch (err) {
+				this.logService.warn('[paradisMobileRelay] failed to resolve WebRTC target owner', err);
+			}
+		}
 		return undefined;
 	}
 
@@ -1129,6 +1273,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// アプリフレーム扱いして復号失敗し、恒久的に通信不能になる（H-3）。
 			if (!msg.online) {
 				this.sessions.delete(msg.mobileId);
+				this.webrtcRendererLeases.delete(msg.mobileId);
 				this.browserMirror.stopSession(msg.mobileId);
 				this.agentChat.dropSubscriber(msg.mobileId);
 				this._onDidChangeStatus.fire(this.snapshot());
@@ -1146,6 +1291,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.state.mobiles = this.state.mobiles.filter(m => m.mobileId !== mobileId);
 		await this.save();
 		this.sessions.delete(mobileId);
+		this.webrtcRendererLeases.delete(mobileId);
 		this.notifyKeyCache.delete(mobileId);
 		this.browserMirror.stopSession(mobileId);
 		this.agentChat.dropSubscriber(mobileId);

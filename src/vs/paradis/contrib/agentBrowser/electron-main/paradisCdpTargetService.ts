@@ -96,6 +96,19 @@ export class ParadisCdpTargetService {
 		}
 	}
 
+	/** WebRTCシグナルを対象BrowserViewのworkbench windowだけへ配送するための所有者解決。 */
+	async resolveTargetWindowId(targetId: string): Promise<number | null> {
+		for (const info of await this.browserViewMainService.getBrowserViews()) {
+			const view = this.browserViewMainService.tryGetBrowserView(info.id);
+			try {
+				if (view?.debugger.targetId === targetId) {
+					return info.owner.mainWindowId;
+				}
+			} catch { /* 破棄と競合したviewだけを飛ばして残りを調べる */ }
+		}
+		return null;
+	}
+
 	private teardownFrameSubscription(targetId: string): void {
 		const state = this.frameSubs.get(targetId);
 		if (!state) {

@@ -12,3 +12,14 @@ export function createAgentLatestEntryToken(now: number = Date.now()): string {
 export function shouldHandleLatestEntry(lastHandled: string | undefined, requested: string | undefined): boolean {
 	return requested !== undefined && requested !== lastHandled;
 }
+
+/** 明示されたterminalKeyが不在なら別ターミナルへ代替せず、未指定時だけ既定候補を選ぶ。 */
+export function resolveExplicitTerminalSelection<T extends { readonly terminalKey: string }>(
+	terminals: readonly T[],
+	selectedTerminalKey: string | undefined,
+	fallback: (terminal: T) => boolean,
+): T | undefined {
+	return selectedTerminalKey !== undefined
+		? terminals.find(terminal => terminal.terminalKey === selectedTerminalKey)
+		: terminals.find(fallback);
+}

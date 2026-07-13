@@ -58,10 +58,13 @@ final class NotificationService: UNNotificationServiceExtension {
 			bestAttempt.body = body
 		}
 
-		// 将来のディープリンク用に ws / terminalId / kind を userInfo へ残す。
+		// ディープリンクと対象検証に必要な識別子を userInfo へ残す。
 		var userInfo = bestAttempt.userInfo
 		if let ws = json["ws"] { userInfo["ws"] = ws }
 		if let terminalId = json["terminalId"] { userInfo["terminalId"] = terminalId }
+		if let terminalKey = json["terminalKey"] { userInfo["terminalKey"] = terminalKey }
+		if let agentToken = json["agentToken"] { userInfo["agentToken"] = agentToken }
+		if let windowId = json["windowId"] { userInfo["windowId"] = windowId }
 		if let kind = json["kind"] { userInfo["kind"] = kind }
 		bestAttempt.userInfo = userInfo
 

@@ -698,6 +698,7 @@ export class MobileController {
 				this.state.connection = s;
 				if (s !== 'online') {
 					this.cancelPendingAgentActions();
+					this.cancelPendingRequests();
 				}
 				this.emit();
 				// 再接続完了時: 購読中のagentチャットがあれば手元のepoch/revで再attachする
@@ -727,6 +728,7 @@ export class MobileController {
 		this.client?.close();
 		this.client = undefined;
 		this.cancelPendingAgentActions();
+		this.cancelPendingRequests();
 		this.flushAgentEmit();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
@@ -744,6 +746,7 @@ export class MobileController {
 		}
 		this.agentControlTimers.clear();
 		this.cancelPendingAgentActions();
+		this.cancelPendingRequests();
 		this.flushAgentEmit();
 		this.termStreams.clear();
 		this.state.connection = 'offline';
@@ -771,6 +774,8 @@ export class MobileController {
 			return;
 		}
 		this.state.pcOnline = false;
+		this.cancelPendingAgentActions();
+		this.cancelPendingRequests();
 		this.client.suspend();
 	}
 
@@ -1188,11 +1193,11 @@ export class MobileController {
 
 	private readonly requestPrefix = toBase64Url(randomToken(12));
 	private requestCounter = 0;
-	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: unknown }>();
+	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
 	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000): Promise<T> {
 		const client = this.client;
-		if (!client) {
+		if (!client || this.state.connection !== 'online') {
 			return Promise.reject(new Error('not connected'));
 		}
 		let requestBody = body;
@@ -1210,7 +1215,7 @@ export class MobileController {
 				protocolVersion: 2,
 				desktopEpoch: desktop.desktopEpoch,
 				windowId: workspace.windowId,
-				...(typeof requestedWs === 'string' ? { ws: workspace.sourceId } : {}),
+				ws: workspace.sourceId,
 			};
 		}
 		const id = `${this.requestPrefix}-r-${this.requestCounter++}`;
@@ -1235,13 +1240,21 @@ export class MobileController {
 				return;
 			}
 			this.pending.delete(msg.id);
-			clearTimeout(entry.timer as Parameters<typeof clearTimeout>[0]);
+			clearTimeout(entry.timer);
 			if (msg.error) {
 				entry.reject(new Error(msg.error));
 			} else {
 				entry.resolve(msg);
 			}
 		} catch { /* ignore */ }
+	}
+
+	private cancelPendingRequests(): void {
+		for (const entry of this.pending.values()) {
+			clearTimeout(entry.timer);
+			entry.reject(new Error('接続が切断されました'));
+		}
+		this.pending.clear();
 	}
 
 	/** 通知一覧を全消去する（通知一覧画面のクリアボタン用）。 */
@@ -1543,7 +1556,14 @@ export class MobileController {
 				if (epochChanged) {
 					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
+					for (const stream of this.termStreams.values()) {
+						stream.epoch = 0;
+						stream.lastSeq = undefined;
+						stream.unackedChars = 0;
+						stream.cache = undefined;
+					}
 					this.cancelPendingAgentActions();
+					this.cancelPendingRequests();
 					for (const pending of this.agentControlTimers.values()) {
 						clearTimeout(pending.timer);
 					}

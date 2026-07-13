@@ -24,7 +24,7 @@ import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
-import { shouldHandleLatestEntry } from '../src/agentNavigation.js';
+import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../src/agentNavigation.js';
 
 /**
  * エージェント詳細画面。ホームの一覧（または通知）から1エージェントを選んで開く
@@ -63,8 +63,11 @@ export default function AgentDetailScreen() {
 	const allTerminals = workspace?.terminals ?? [];
 	const wsList = workspace?.workspaces ?? [];
 	const effectiveWsId = (selectedWs !== undefined && wsList.some(w => w.id === selectedWs) ? selectedWs : wsList[0]?.id);
-	const activeTerminal = (selectedTerminalKey !== undefined ? allTerminals.find(t => t.terminalKey === selectedTerminalKey) : undefined)
-		?? allTerminals.find(t => (t.ws ?? workspace?.activeWs) === effectiveWsId);
+	const activeTerminal = resolveExplicitTerminalSelection(
+		allTerminals,
+		selectedTerminalKey,
+		terminal => (terminal.ws ?? workspace?.activeWs) === effectiveWsId,
+	);
 	const activeKey = activeTerminal?.terminalKey;
 	const chat = activeKey !== undefined ? agentChats.get(activeKey) : undefined;
 	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);

@@ -44,6 +44,7 @@ import {
 	PARADIS_MOBILE_ENABLED_KEY,
 	PARADIS_MOBILE_RELAY_CHANNEL,
 	PARADIS_MOBILE_RELAY_URL_KEY,
+	paradisMobileWindowRoute,
 } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
@@ -117,9 +118,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this.service = ProxyChannel.toService<IParadisMobileRelayService>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
 		const windowSession = generateUuid();
 
-		// ウィンドウを閉じるとき、このウィンドウ分のペイン対応表を shared process から消す
-		// (ベストエフォート。届かなくても同一 windowId での再同期時に置き換わる)
-		this._register({ dispose: () => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, []).catch(() => { }); } });
+		// ウィンドウを閉じるとき、terminal leaseと同時にこのsessionのペイン対応表も破棄する。
 		this._register({ dispose: () => { this.service.removeTerminalWindow(mainWindow.vscodeWindowId, windowSession).catch(() => { }); } });
 
 		// PCフォーカス中はモバイルへの通知配信を抑制する機能（suppressWhenPcFocused）用に、
@@ -131,14 +130,14 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// 復帰させ、通知が恒久的にサイレント抑制され続けることを防ぐ）。
 		const reportPcFocus = () => {
 			const focused = !mainWindow.document.hidden && this.hostService.hasFocus;
-			this.service.setPcFocus(mainWindow.vscodeWindowId, focused).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
+			this.service.setPcFocus(mainWindow.vscodeWindowId, windowSession, focused).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
 		};
 		this._register(this.hostService.onDidChangeFocus(() => reportPcFocus()));
 		this._register(dom.addDisposableListener(mainWindow.document, 'visibilitychange', () => reportPcFocus()));
 		const focusHeartbeat = this._register(new IntervalTimer());
 		focusHeartbeat.cancelAndSet(() => reportPcFocus(), PC_FOCUS_HEARTBEAT_INTERVAL_MS);
 		reportPcFocus();
-		this._register({ dispose: () => { this.service.setPcFocus(mainWindow.vscodeWindowId, false).catch(() => { }); } });
+		this._register({ dispose: () => { this.service.setPcFocus(mainWindow.vscodeWindowId, windowSession, false).catch(() => { }); } });
 
 		// ccusage ダッシュボードデータ取得（PC版と同じ shared process 経由のクライアントを再利用する）
 		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);
@@ -163,11 +162,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			paneTokenService,
 			terminalIdentityService,
 			state => { this.service.syncTerminalWindow(mainWindow.vscodeWindowId, windowSession, state).catch(err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
-			entries => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
-			(mobileId, requestId, token, epoch) => this.service.claimAgentAction(mobileId, requestId, token, epoch),
-			(mobileId, requestId, token, epoch, terminalId, windowId) => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, windowId),
-			(mobileId, requestId, token, outcome) => this.service.finalizeAgentInteraction(mobileId, requestId, token, outcome),
-			(mobileId, requestId, token, epoch, terminalId, windowId) => this.service.validateAgentAction(mobileId, requestId, token, epoch, terminalId, windowId),
+			entries => { this.service.syncAgentPanes(mainWindow.vscodeWindowId, windowSession, entries).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
+			(mobileId, operationId, status) => this.service.completeTerminalOperation(mainWindow.vscodeWindowId, windowSession, mobileId, operationId, status),
+			(mobileId, requestId, token, epoch) => this.service.claimAgentAction(mobileId, requestId, token, epoch, mainWindow.vscodeWindowId, windowSession),
+			(mobileId, requestId, token, epoch, terminalId, windowId) => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, windowId, windowSession),
+			(mobileId, requestId, token, outcome) => this.service.finalizeAgentInteraction(mobileId, requestId, token, outcome, mainWindow.vscodeWindowId, windowSession),
+			(mobileId, requestId, token, epoch, terminalId, windowId) => this.service.validateAgentAction(mobileId, requestId, token, epoch, terminalId, windowId, windowSession),
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
@@ -178,6 +178,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			paths => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, [...paths]),
 		));
 		this.provider.pushState();
+		reportPcFocus();
 
 		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、
 		// shell integration後の鮮度検証済みtranscript探索で実在セッションを確定できる。
@@ -292,7 +293,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// browser チャネルは webrtc シグナリングだけが renderer に転送されてくる
 		// （それ以外の browser 要求は shared process 内で処理される）。
 		this._register(this.service.onInboundFrame(([ch, ws, seq, payload, mobileId]) => {
-			if ((ch === Channels.Agent || ch === Channels.Terminal || ch === Channels.Scm || ch === Channels.Fs) && ws !== `window:${mainWindow.vscodeWindowId}`) {
+			if ((ch === Channels.Agent || ch === Channels.Terminal || ch === Channels.Scm || ch === Channels.Fs || ch === Channels.Browser)
+				&& ws !== paradisMobileWindowRoute(mainWindow.vscodeWindowId, windowSession)) {
 				return;
 			}
 			if (ch === Channels.Browser) {

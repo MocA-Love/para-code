@@ -15,6 +15,7 @@ import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { colors } from '../../src/theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.js';
+import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
 
 /**
  * ターミナル画面（モックアップ準拠）。選択中ワークスペースのターミナルタブを
@@ -41,7 +42,7 @@ export default function TerminalScreen() {
 	// （全ワークスペースに重複表示しない）。
 	const terminals = (workspace?.terminals ?? []).filter(t =>
 		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
-	const activeTerminal = (selectedTerminalKey !== undefined ? terminals.find(t => t.terminalKey === selectedTerminalKey) : undefined) ?? terminals[0];
+	const activeTerminal = resolveExplicitTerminalSelection(terminals, selectedTerminalKey, () => true);
 	const activeKey = activeTerminal?.terminalKey;
 	const output = activeKey !== undefined ? terminalOutput.get(activeKey) ?? '' : '';
 

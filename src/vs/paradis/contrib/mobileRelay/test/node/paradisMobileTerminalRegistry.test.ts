@@ -6,6 +6,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { paradisMobileWindowRoute } from '../../common/paradisMobileRelay.js';
 import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalRegistry.js';
 
 suite('ParadisMobileTerminalRegistry', () => {
@@ -67,10 +68,22 @@ suite('ParadisMobileTerminalRegistry', () => {
 
 	test('登録済みウィンドウだけを作成先として公開する', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
-		registry.syncWindow(3, 'session', { activeWs: undefined, workspaces: [], terminals: [] });
+		registry.syncWindow(3, 'session', { activeWs: 'repo', workspaces: [{ id: 'repo', name: 'Repo' }], terminals: [] });
 
 		assert.strictEqual(registry.hasWindow(3), true);
 		assert.strictEqual(registry.hasWindow(4), false);
+		assert.deepStrictEqual(registry.leaseOfWindow(3), { windowId: 3, windowSession: 'session' });
+		assert.deepStrictEqual(registry.ownerOfWorkspace(3, 'repo'), { windowId: 3, windowSession: 'session' });
+		assert.strictEqual(registry.ownerOfWorkspace(3, 'missing'), undefined);
+	});
+
+	test('交代済みRenderer sessionを現在のleaseとして返さない', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		registry.syncWindow(3, 'old-session', { activeWs: undefined, workspaces: [], terminals: [] });
+		registry.syncWindow(3, 'new-session', { activeWs: undefined, workspaces: [], terminals: [] });
+
+		assert.deepStrictEqual(registry.leaseOfWindow(3), { windowId: 3, windowSession: 'new-session' });
+		assert.strictEqual(paradisMobileWindowRoute(3, 'new-session'), 'window:3:new-session');
 	});
 
 	test('状態変更ごとにrevisionを増やしdesktopEpochを維持する', () => {

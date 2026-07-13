@@ -48,11 +48,14 @@ export default function RootLayout() {
 	const init = useAppStore(s => s.init);
 	const setSelectedWs = useAppStore(s => s.setSelectedWs);
 	const setSelectedTerminalKey = useAppStore(s => s.setSelectedTerminalKey);
+	const workspace = useAppStore(s => s.workspace);
 	const [unlocked, setUnlocked] = useState(false);
 	// tryNavigateから常に最新値を読むためのref（tryNavigate自体をunlockedに依存させると
 	// 参照が変わるたびにリスナーeffectを再登録することになり、stale closure対策として
 	// 依存を空にした場合に「登録時点のunlocked」を永久キャプチャしてしまうため）。
 	const unlockedRef = useRef(false);
+	const workspaceRef = useRef(workspace);
+	workspaceRef.current = workspace;
 	const pendingRef = useRef<NotificationDeepLinkData | undefined>(undefined);
 
 	useEffect(() => {
@@ -65,8 +68,12 @@ export default function RootLayout() {
 		if (!unlockedRef.current || !target) {
 			return;
 		}
+		const currentWorkspace = workspaceRef.current;
+		if (currentWorkspace === undefined) {
+			return;
+		}
 		pendingRef.current = undefined;
-		if (target.terminalKey === undefined) {
+		if (target.terminalKey === undefined || !currentWorkspace.terminals.some(terminal => terminal.terminalKey === target.terminalKey)) {
 			return;
 		}
 		// setSelectedWs は selectedTerminalKey をリセットするため、この順序を厳守する。
@@ -80,7 +87,7 @@ export default function RootLayout() {
 	useEffect(() => {
 		unlockedRef.current = unlocked;
 		tryNavigate();
-	}, [unlocked, tryNavigate]);
+	}, [unlocked, workspace, tryNavigate]);
 
 	useEffect(() => {
 		const sub = Notifications.addNotificationResponseReceivedListener(response => {

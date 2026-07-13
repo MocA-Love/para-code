@@ -59,6 +59,8 @@ export interface IProcessDetails {
 	type?: TerminalType;
 	hasChildProcesses: boolean;
 	shellIntegrationNonce: string;
+	/** PARA-CODE: Carries the exact pane token across PTY revive and detach. */
+	paradisPaneToken?: string;
 	tabActions?: ITerminalTabAction[];
 }
 

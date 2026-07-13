@@ -216,6 +216,9 @@ describe('MobileController', () => {
 		await flush();
 		expect(latest?.terminalOutput.size).toBe(0);
 		expect(received.filter(message => message.t === 'attach')).toHaveLength(4);
+		const replayAfterEpochChange: import('./store.js').TermStreamEvent[] = [];
+		controller.subscribeTerminal('terminal-a', event => replayAfterEpochChange.push(event));
+		expect(replayAfterEpochChange).toEqual([]);
 	});
 
 	it('reflects state snapshot and terminal output from PC', async () => {
@@ -326,6 +329,10 @@ describe('MobileController', () => {
 
 		const listing = await controller.fsList('1:w1', '');
 		expect(listing.entries[0]!.name).toBe('src');
+
+		const pendingBrowser = controller.browserTargets();
+		controller.disconnect();
+		await expect(pendingBrowser).rejects.toThrow('接続が切断されました');
 	});
 
 	it('emit only swaps references for the collection that actually changed', async () => {
