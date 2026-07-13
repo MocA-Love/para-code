@@ -17,6 +17,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ChannelId } from './paradisMobileProtocol.js';
+import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 
 // ---- 設定キー ----
 
@@ -87,6 +88,7 @@ export interface IParadisMobileDesktopStateV2 {
 	readonly protocolVersion: 2;
 	readonly desktopEpoch: string;
 	readonly revision: number;
+	readonly complete: boolean;
 	readonly activeWs: string | undefined;
 	readonly workspaces: readonly IParadisMobileWorkspaceV2[];
 	readonly terminals: readonly IParadisMobileTerminalV2[];
@@ -147,11 +149,11 @@ export interface IParadisMobileInboundFrame {
  */
 export type ParadisMobileInboundFrameWire = readonly [ch: ChannelId, ws: string | undefined, seq: number, payload: VSBuffer, mobileId: string | undefined];
 
-export type ParadisMobileTerminalOperationStatus = 'accepted' | 'stale-epoch' | 'terminal-not-found' | 'failed' | 'stale-renderer' | 'timeout';
+export type ParadisMobileTerminalOperationStatus = 'accepted' | 'stale-epoch' | 'terminal-not-found' | 'failed' | 'stale-renderer' | 'outcome-unknown';
 
 /** Renderer宛フレームをwindow IDだけでなく起動世代にも固定する。 */
-export function paradisMobileWindowRoute(windowId: number, windowSession: string): string {
-	return `window:${windowId}:${windowSession}`;
+export function paradisMobileWindowRoute(windowId: number, windowSession: string, rendererGeneration: number): string {
+	return `window:${windowId}:${rendererGeneration}:${windowSession}`;
 }
 
 /**
@@ -191,11 +193,11 @@ export interface IParadisMobileRelayService {
 	sendFrame(ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void>;
 
 	/** renderer 一つ分の protocol v2 状態を shared process の統合 registry へ同期する。 */
-	syncTerminalWindow(windowId: number, windowSession: string, state: IParadisMobileWindowStateV2): Promise<void>;
+	syncTerminalWindow(lease: IParadisMobileWindowLease, state: IParadisMobileWindowStateV2): Promise<void>;
 	/** dispose された renderer の lease を、session が現在値と一致する場合だけ解除する。 */
-	removeTerminalWindow(windowId: number, windowSession: string): Promise<void>;
+	removeTerminalWindow(lease: IParadisMobileWindowLease): Promise<void>;
 	/** Rendererで実際に操作が完了した後、そのleaseからだけ最終結果を確定する。 */
-	completeTerminalOperation(windowId: number, windowSession: string, mobileId: string, operationId: string, status: ParadisMobileTerminalOperationStatus): Promise<void>;
+	completeTerminalOperation(lease: IParadisMobileWindowLease, mobileId: string, operationId: string, status: ParadisMobileTerminalOperationStatus): Promise<void>;
 
 	/**
 	 * scmチャネル用のgit実行（rendererはプロセスを起動できないためshared processで実行）。
@@ -209,15 +211,15 @@ export interface IParadisMobileRelayService {
 	 * renderer がターミナル一覧の変化に合わせて呼び、ウィンドウを閉じる際は空配列で自分の分を消す。
 	 * モバイルの端末操作はwindowId + terminalId、エージェント操作はさらにペイントークンで識別する。
 	 */
-	syncAgentPanes(windowId: number, windowSession: string, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
+	syncAgentPanes(lease: IParadisMobileWindowLease, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
 	/** rendererがAgent Actionを実行する直前に、shared processのsession epochを再検証して一度だけclaimする。 */
-	claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, windowId: number, windowSession: string): Promise<'claimed' | 'stale' | 'expired'>;
+	claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'>;
 	/** interactionキー列の待機区間ごとに、sessionとinteractionが継続中か再検証する。 */
-	continueAgentInteraction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number, windowSession: string): Promise<'valid' | 'completed' | 'stale'>;
+	continueAgentInteraction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, lease: IParadisMobileWindowLease): Promise<'valid' | 'completed' | 'stale'>;
 	/** renderer側のinteractionキー列が成功・失敗・取消のいずれかで終了したことを通知し、排他claimを解放する。 */
-	finalizeAgentInteraction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed', windowId: number, windowSession: string): Promise<void>;
+	finalizeAgentInteraction(mobileId: string, requestId: string, token: string, outcome: 'accepted' | 'failed', lease: IParadisMobileWindowLease): Promise<void>;
 	/** 長時間Action完了時にsession/ownerがclaim時と同じか確認する。 */
-	validateAgentAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number, windowSession: string): Promise<boolean>;
+	validateAgentAction(mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, lease: IParadisMobileWindowLease): Promise<boolean>;
 
 	/**
 	 * renderer → shared process: このウィンドウのフォーカス状態を報告する（PCフォーカス中の
@@ -225,7 +227,7 @@ export interface IParadisMobileRelayService {
 	 * shared processは全ウィンドウ共有のため、windowIdキーで管理し「いずれかのウィンドウが
 	 * フォーカス中ならPCフォーカス中」と判定する。ウィンドウを閉じる際は focused=false で送る。
 	 */
-	setPcFocus(windowId: number, windowSession: string, focused: boolean): Promise<void>;
+	setPcFocus(lease: IParadisMobileWindowLease, focused: boolean): Promise<void>;
 
 	/**
 	 * agentチャネル用: ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell

@@ -14,43 +14,44 @@ export interface IParadisMobilePaneEntry {
 export interface IParadisMobilePaneOwner extends IParadisMobilePaneEntry {
 	readonly windowId: number;
 	readonly windowSession: string;
+	readonly rendererGeneration: number;
 }
 
 interface IParadisMobilePaneWindowLease {
 	readonly windowSession: string;
+	readonly rendererGeneration: number;
 	readonly entries: readonly IParadisMobilePaneEntry[];
 }
 
 /** Renderer世代付きのペイン対応表。交代済み世代の遅延sync/disposeは受理しない。 */
 export class ParadisMobilePaneRegistry {
 	private readonly windows = new Map<number, IParadisMobilePaneWindowLease>();
-	private readonly retiredSessions = new Map<number, Set<string>>();
-
-	syncWindow(windowId: number, windowSession: string, entries: readonly IParadisMobilePaneEntry[]): boolean {
+	private readonly retiredGeneration = new Map<number, number>();
+	syncWindow(windowId: number, windowSession: string, rendererGeneration: number, entries: readonly IParadisMobilePaneEntry[]): boolean {
 		const current = this.windows.get(windowId);
-		if (current?.windowSession !== windowSession) {
-			if (this.retiredSessions.get(windowId)?.has(windowSession)) {
-				return false;
-			}
-			if (current !== undefined) {
-				this.retire(windowId, current.windowSession);
-			}
+		if (current === undefined && rendererGeneration <= (this.retiredGeneration.get(windowId) ?? -1)) {
+			return false;
 		}
-		this.windows.set(windowId, { windowSession, entries });
+		if (current !== undefined && (rendererGeneration < current.rendererGeneration
+			|| (rendererGeneration === current.rendererGeneration && windowSession !== current.windowSession))) {
+			return false;
+		}
+		this.windows.set(windowId, { windowSession, rendererGeneration, entries });
 		return true;
 	}
 
-	removeWindow(windowId: number, windowSession: string): boolean {
-		if (this.windows.get(windowId)?.windowSession !== windowSession) {
+	removeWindow(windowId: number, windowSession: string, rendererGeneration: number): boolean {
+		const current = this.windows.get(windowId);
+		if (current?.windowSession !== windowSession || current.rendererGeneration !== rendererGeneration) {
 			return false;
 		}
 		this.windows.delete(windowId);
-		this.retire(windowId, windowSession);
+		this.retiredGeneration.set(windowId, rendererGeneration);
 		return true;
 	}
 
-	windowEntries(): readonly (readonly [number, string, readonly IParadisMobilePaneEntry[]])[] {
-		return [...this.windows].map(([windowId, lease]) => [windowId, lease.windowSession, lease.entries] as const);
+	windowEntries(): readonly (readonly [number, string, number, readonly IParadisMobilePaneEntry[]])[] {
+		return [...this.windows].map(([windowId, lease]) => [windowId, lease.windowSession, lease.rendererGeneration, lease.entries] as const);
 	}
 
 	ownerOf(token: string, terminalId?: number): IParadisMobilePaneOwner | undefined {
@@ -58,7 +59,7 @@ export class ParadisMobilePaneRegistry {
 		for (const [windowId, lease] of this.windows) {
 			for (const entry of lease.entries) {
 				if (entry.token === token && (terminalId === undefined || entry.terminalId === terminalId)) {
-					owners.push({ ...entry, windowId, windowSession: lease.windowSession });
+					owners.push({ ...entry, windowId, windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration });
 				}
 			}
 		}
@@ -66,15 +67,6 @@ export class ParadisMobilePaneRegistry {
 	}
 
 	allEntries(): readonly IParadisMobilePaneEntry[] {
-		return this.windowEntries().flatMap(([, , entries]) => entries);
-	}
-
-	private retire(windowId: number, windowSession: string): void {
-		let retired = this.retiredSessions.get(windowId);
-		if (retired === undefined) {
-			retired = new Set();
-			this.retiredSessions.set(windowId, retired);
-		}
-		retired.add(windowSession);
+		return this.windowEntries().flatMap(([, , , entries]) => entries);
 	}
 }

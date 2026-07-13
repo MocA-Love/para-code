@@ -23,6 +23,7 @@ export interface WorkspaceState {
 	protocolVersion: 2;
 	desktopEpoch: string;
 	revision: number;
+	complete: boolean;
 	activeWs: string | undefined;
 	// parent: worktree（スペース）の親リポジトリid。ドロワーの親子グルーピング（開閉表示）に使う。
 	// 旧PC（parent未配信）ではundefinedのままフラット表示にフォールバックする。
@@ -540,6 +541,7 @@ export interface StoreState {
 
 const IDENTITY_KEY = 'para.identity';
 const CREDS_KEY = 'para.credentials';
+const OPERATION_RUN_KEY = 'para.operationRun';
 const MAX_TERM_BUFFER = 200_000;
 // --- ターミナル同期プロトコル（epoch/seq対応PC向け）の定数 ---
 // 受信文字数がこの閾値を超えるたびにACKを返す（PC側フロー制御の材料。本家
@@ -582,6 +584,18 @@ export async function loadCredentials(keyStore: KeyStore): Promise<PairedCredent
 
 export async function clearCredentials(keyStore: KeyStore): Promise<void> {
 	await keyStore.deleteItem(CREDS_KEY);
+}
+
+/** アプリprocess起動ごとのterminal operation世代をSecureStore上で単調増加させる。 */
+export async function reserveOperationRun(keyStore: KeyStore): Promise<number> {
+	const raw = await keyStore.getItem(OPERATION_RUN_KEY);
+	const previous = raw === null ? 0 : Number(raw);
+	const next = Number.isSafeInteger(previous) && previous >= 0 ? previous + 1 : 1;
+	if (!Number.isSafeInteger(next)) {
+		throw new Error('terminal operation run exhausted');
+	}
+	await keyStore.setItem(OPERATION_RUN_KEY, String(next));
+	return next;
 }
 
 /**
@@ -647,6 +661,8 @@ export class MobileController {
 	private readonly agentControlTimers = new Map<string, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly terminalOperationOutbox = new Map<string, { readonly operationSeq: number; readonly payload: Uint8Array; state: 'pending' | 'unknown' }>();
+	private terminalOperationSeq = 0;
 
 	constructor(
 		private readonly identity: Identity,
@@ -660,6 +676,8 @@ export class MobileController {
 		private readonly pushEnv: 'dev' | 'prod' = 'prod',
 		/** 通知鍵(hex)の永続化（NSEと共有するKeychainへ。iOSのみ）。 */
 		private readonly persistNotifyKey?: (hex: string) => Promise<void>,
+		/** SecureStoreで予約済みのアプリ起動世代。 */
+		private readonly operationRun = 1,
 	) { }
 
 	private static bytesToHexStatic(bytes: Uint8Array): string {
@@ -705,6 +723,7 @@ export class MobileController {
 				// （PC側はepoch一致なら差分のみ、不一致なら全量スナップショットを返す）。
 				if (s === 'online') {
 					this.requestState();
+					this.resendTerminalOperationOutbox();
 					for (const id of this.attachedAgents.keys()) {
 						this.sendAgentAttach(id);
 					}
@@ -749,6 +768,7 @@ export class MobileController {
 		this.cancelPendingRequests();
 		this.flushAgentEmit();
 		this.termStreams.clear();
+		this.terminalOperationOutbox.clear();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
 		this.state.workspace = undefined;
@@ -987,14 +1007,13 @@ export class MobileController {
 		if (workspace === undefined || desktop === undefined) {
 			return;
 		}
-		this.client?.send('term', encoder.encode(JSON.stringify({
+		this.sendTerminalOperation({
 			protocolVersion: 2,
 			desktopEpoch: desktop.desktopEpoch,
-			operationId: `${this.requestPrefix}-term-${this.requestCounter++}`,
 			t: 'create',
 			windowId: workspace.windowId,
 			ws: workspace.sourceId,
-		})));
+		});
 	}
 
 	/** ターミナル名を変更する。表示更新はPC側の権威的なstate再送で確定する。 */
@@ -1038,13 +1057,33 @@ export class MobileController {
 		if (workspace === undefined || !workspace.terminals.some(terminal => terminal.terminalKey === terminalKey)) {
 			return;
 		}
-		this.client?.send('term', encoder.encode(JSON.stringify({
+		this.sendTerminalOperation({
 			protocolVersion: 2,
 			desktopEpoch: workspace.desktopEpoch,
-			operationId: `${this.requestPrefix}-term-${this.requestCounter++}`,
 			terminalKey,
 			...msg,
-		})));
+		});
+	}
+
+	private sendTerminalOperation(body: Record<string, unknown>): void {
+		const operationSeq = this.terminalOperationSeq++;
+		const operationId = `${this.requestPrefix}-term-${this.operationRun}-${operationSeq}`;
+		const payload = encoder.encode(JSON.stringify({
+			...body,
+			operationId,
+			operationRun: this.operationRun,
+			operationSeq,
+		}));
+		if (typeof body.t === 'string' && ['input', 'create', 'rename', 'close'].includes(body.t)) {
+			this.terminalOperationOutbox.set(operationId, { operationSeq, payload, state: 'pending' });
+		}
+		this.client?.send('term', payload);
+	}
+
+	private resendTerminalOperationOutbox(): void {
+		for (const operation of [...this.terminalOperationOutbox.values()].sort((a, b) => a.operationSeq - b.operationSeq)) {
+			this.client?.send('term', operation.payload);
+		}
 	}
 
 	// --- agent チャット（エージェントセッションのチャットミラー） ----------------
@@ -1539,7 +1578,7 @@ export class MobileController {
 		if (frame.ch === 'state') {
 			try {
 				const incoming = JSON.parse(decoder.decode(frame.payload)) as WorkspaceState;
-				if (incoming.protocolVersion !== 2 || typeof incoming.desktopEpoch !== 'string' || typeof incoming.revision !== 'number'
+				if (incoming.protocolVersion !== 2 || typeof incoming.desktopEpoch !== 'string' || typeof incoming.revision !== 'number' || typeof incoming.complete !== 'boolean'
 					|| !Array.isArray(incoming.workspaces) || !Array.isArray(incoming.terminals)
 					|| incoming.workspaces.some(workspace => typeof workspace.id !== 'string' || workspace.id.length === 0 || typeof workspace.sourceId !== 'string' || workspace.sourceId.length === 0 || typeof workspace.windowId !== 'number')
 					|| incoming.terminals.some(terminal => typeof terminal.terminalKey !== 'string' || terminal.terminalKey.length === 0 || terminal.terminalKey.length > 200 || typeof terminal.id !== 'number' || typeof terminal.windowId !== 'number')
@@ -1548,7 +1587,8 @@ export class MobileController {
 					return;
 				}
 				const previous = this.state.workspace;
-				if (previous?.desktopEpoch === incoming.desktopEpoch && incoming.revision <= previous.revision) {
+				if (previous?.desktopEpoch === incoming.desktopEpoch
+					&& (incoming.revision < previous.revision || (incoming.revision === previous.revision && incoming.complete === previous.complete))) {
 					return;
 				}
 				const epochChanged = previous !== undefined && previous.desktopEpoch !== incoming.desktopEpoch;
@@ -1602,6 +1642,7 @@ export class MobileController {
 				// ミューテートしうるため、常に新参照へ差し替える（掃除が空振りでも安全側に倒す）。
 				this.emit({ term: true, agentChats: true });
 				if (epochChanged) {
+					this.resendTerminalOperationOutbox();
 					for (const [terminalKey, stream] of this.termStreams) {
 						if (stream.listeners.size > 0) {
 							this.attachTerminal(terminalKey);
@@ -1614,8 +1655,16 @@ export class MobileController {
 			} catch { /* ignore malformed */ }
 		} else if (frame.ch === 'term') {
 			try {
-				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; terminalKey?: string; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string; status?: string };
+				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; operationId?: string; terminalKey?: string; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string; status?: string };
 				if (msg.t === 'operation-result') {
+					const pending = typeof msg.operationId === 'string' ? this.terminalOperationOutbox.get(msg.operationId) : undefined;
+					if (pending !== undefined) {
+						if (msg.status === 'outcome-unknown') {
+							pending.state = 'unknown';
+						} else if (msg.status !== undefined && ['accepted', 'stale-epoch', 'terminal-not-found', 'failed', 'stale-renderer'].includes(msg.status)) {
+							this.terminalOperationOutbox.delete(msg.operationId!);
+						}
+					}
 					if (msg.status !== 'accepted') {
 						this.requestState();
 					}

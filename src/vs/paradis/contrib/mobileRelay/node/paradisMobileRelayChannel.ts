@@ -15,6 +15,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, PARADIS_CDP_TARGET_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../common/paradisMobileRelay.js';
+import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
 import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
 
 /**
@@ -31,7 +32,8 @@ export function registerParadisMobileRelay(server: IPCServer, userDataPath: stri
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
 	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）
 	const cdpFrames = ProxyChannel.toService<IParadisCdpFrameSubscription>(mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL));
-	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, sharedPageBindings, logService, configurationService, args));
+	const windowLeaseClient = new ParadisMobileWindowLeaseClient(mainProcessService.getChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL));
+	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, sharedPageBindings, windowLeaseClient, logService, configurationService, args));
 	server.registerChannel(PARADIS_MOBILE_RELAY_CHANNEL, ProxyChannel.fromService(service, store));
 	return store;
 }

@@ -46,6 +46,8 @@ import { paradisResolveMirrorCaptureFrame } from '../../paradis/contrib/browserM
 // PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator
 import { PARADIS_RESOURCE_MONITOR_CHANNEL } from '../../paradis/contrib/resourceMonitor/common/paradisResourceMonitor.js';
 import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourceMonitor/electron-main/paradisResourceMonitorMainService.js';
+import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobileRelay/common/paradisMobileWindowLease.js';
+import { ParadisMobileWindowLeaseChannel } from '../../paradis/contrib/mobileRelay/electron-main/paradisMobileWindowLeaseChannel.js';
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
 import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
 import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
@@ -1344,6 +1346,12 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator (main process only)
 		const paradisResourceMonitorChannel = ProxyChannel.fromService(new ParadisResourceMonitorMainService(), disposables);
 		mainProcessElectronServer.registerChannel(PARADIS_RESOURCE_MONITOR_CHANNEL, paradisResourceMonitorChannel);
+
+		// allow-any-unicode-next-line
+		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。
+		const paradisMobileWindowLeaseChannel = disposables.add(new ParadisMobileWindowLeaseChannel(mainProcessElectronServer));
+		mainProcessElectronServer.registerChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, paradisMobileWindowLeaseChannel);
+		sharedProcessClient.then(client => client.registerChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, paradisMobileWindowLeaseChannel));
 
 		// Signing
 		const signChannel = ProxyChannel.fromService(accessor.get(ISignService), disposables);

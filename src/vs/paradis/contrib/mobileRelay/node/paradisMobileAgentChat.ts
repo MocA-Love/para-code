@@ -1898,7 +1898,7 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	constructor(
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
-		private readonly requestAction: (mobileId: string, windowId: number, windowSession: string, payload: Uint8Array) => void,
+		private readonly requestAction: (mobileId: string, windowId: number, windowSession: string, rendererGeneration: number, payload: Uint8Array) => void,
 		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
 		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string; ws?: string; agentToken: string }) => void,
 		private readonly logService: ILogService,
@@ -2016,15 +2016,15 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 空配列も「生存中だがペインがない」状態として保持する。ウィンドウの破棄は
 	 * removePanesでsession一致を確認してから削除する。
 	 */
-	syncPanes(windowId: number, windowSession: string, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): void {
-		if (!this.paneRegistry.syncWindow(windowId, windowSession, entries)) {
+	syncPanes(windowId: number, windowSession: string, rendererGeneration: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): void {
+		if (!this.paneRegistry.syncWindow(windowId, windowSession, rendererGeneration, entries)) {
 			return;
 		}
 		this.rebuildPaneMappings();
 	}
 
-	removePanes(windowId: number, windowSession: string): void {
-		if (!this.paneRegistry.removeWindow(windowId, windowSession)) {
+	removePanes(windowId: number, windowSession: string, rendererGeneration: number): void {
+		if (!this.paneRegistry.removeWindow(windowId, windowSession, rendererGeneration)) {
 			return;
 		}
 		this.rebuildPaneMappings();
@@ -2395,7 +2395,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}, 5_000);
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, timer });
-		this.requestAction(mobileId, owner.windowId, owner.windowSession, encoder.encode(JSON.stringify({ ...msg, token, windowId: owner.windowId })));
+		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({ ...msg, token, windowId: owner.windowId })));
 	}
 
 	private isValidQuestionAction(msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>): boolean {
@@ -2444,7 +2444,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 		}, 5_000);
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, requirePrompt: true, timer });
-		this.requestAction(mobileId, owner.windowId, owner.windowSession, encoder.encode(JSON.stringify({
+		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
 			t: 'action/claudeSetting', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch,
 			setting: msg.setting, value: msg.value, windowId: owner.windowId,
 		})));
@@ -2588,7 +2588,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}, 5_000);
 		this.interactionClaims.set(interactionKey, key);
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, interaction, interactionKey, timer });
-		this.requestAction(mobileId, owner.windowId, owner.windowSession, encoder.encode(JSON.stringify({
+		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
 			t: 'action/interaction', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interaction, parts, delayMs: 300, windowId: owner.windowId,
 		})));
 	}

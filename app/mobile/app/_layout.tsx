@@ -11,6 +11,7 @@ import { OverlayHost } from '../src/components/overlayHost.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
+import { notificationNavigationDecision } from '../src/notificationNavigation.js';
 
 /** notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。 */
 interface NotificationDeepLinkData {
@@ -69,13 +70,15 @@ export default function RootLayout() {
 			return;
 		}
 		const currentWorkspace = workspaceRef.current;
-		if (currentWorkspace === undefined) {
+		const decision = notificationNavigationDecision(currentWorkspace, target.terminalKey);
+		if (decision === 'wait') {
+			return;
+		}
+		if (decision === 'missing' || currentWorkspace === undefined || target.terminalKey === undefined) {
+			pendingRef.current = undefined;
 			return;
 		}
 		pendingRef.current = undefined;
-		if (target.terminalKey === undefined || !currentWorkspace.terminals.some(terminal => terminal.terminalKey === target.terminalKey)) {
-			return;
-		}
 		// setSelectedWs は selectedTerminalKey をリセットするため、この順序を厳守する。
 		if (target.ws) {
 			setSelectedWs(target.ws);

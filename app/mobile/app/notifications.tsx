@@ -10,6 +10,7 @@ import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { colors } from '../src/theme.js';
 import { formatRelativeTime, useNow } from '../src/time.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
+import { notificationNavigationDecision } from '../src/notificationNavigation.js';
 
 function dotColor(kind: NotifyKind): string {
 	switch (kind) {
@@ -39,11 +40,11 @@ export default function NotificationsScreen() {
 
 	const openNotification = (n: NotifyPayload) => {
 		hapticSelection();
-		// 開いた通知は一覧から消す（既読/削除扱い）。他のペアリング済み端末にも同期される。
-		dismissNotification(n.id);
-		if (n.terminalKey === undefined || !workspace?.terminals.some(terminal => terminal.terminalKey === n.terminalKey)) {
+		if (notificationNavigationDecision(workspace, n.terminalKey) !== 'open' || n.terminalKey === undefined) {
 			return;
 		}
+		// exact targetの検証成功後だけ既読にする。partial stateで有効な通知を消さない。
+		dismissNotification(n.id);
 		// setSelectedWs は selectedTerminalKey をリセットするため、この順序を厳守する。
 		if (n.ws !== undefined) {
 			setSelectedWs(n.ws);
@@ -71,7 +72,7 @@ export default function NotificationsScreen() {
 				{notifications.length === 0 ? (
 					<Text style={styles.empty}>通知はありません</Text>
 				) : notifications.map(n => {
-					const openable = n.terminalKey !== undefined;
+					const openable = notificationNavigationDecision(workspace, n.terminalKey) === 'open';
 					return (
 						<Pressable
 							key={n.id}

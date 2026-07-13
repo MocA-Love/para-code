@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -184,6 +184,7 @@ export const useAppStore = create<AppState>(set => ({
 			configureNotificationHandler();
 			const loaded = await loadOrCreateIdentity(secureKeyStore);
 			identity = loaded.identity;
+			const operationRun = await reserveOperationRun(secureKeyStore);
 			// 通知設定をロード（保存が無い/壊れている場合は既定値のまま）
 			try {
 				const raw = await secureKeyStore.getItem('notifyPrefs');
@@ -237,6 +238,7 @@ export const useAppStore = create<AppState>(set => ({
 				// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
 				__DEV__ ? 'dev' : 'prod',
 				persistNotifyKey,
+				operationRun,
 			);
 			// オンラインになるたび通知設定をPCへ同期する（PC側の永続値を最新に保つ。
 			// オフライン中に変更した設定もここで追いつく）。init()が後続処理の失敗で
