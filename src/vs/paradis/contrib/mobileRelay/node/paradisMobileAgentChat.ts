@@ -1082,6 +1082,7 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | undefined): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] | undefined> {
 	let database: DatabaseSync | undefined;
 	try {
+		const realCwd = await fs.realpath(cwd).catch(() => cwd);
 		const names = await fs.readdir(paradisCodexHome());
 		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
 		if (stateDb === undefined) {
@@ -1093,10 +1094,10 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 			SELECT id, rollout_path, source, COALESCE(updated_at_ms, updated_at * 1000) AS mtime,
 				COALESCE(created_at_ms, created_at * 1000) AS created_at
 			FROM threads
-			WHERE cwd = ? AND archived = 0
+			WHERE (cwd = ? OR cwd = ?) AND archived = 0
 				AND (? IS NULL OR COALESCE(updated_at_ms, updated_at * 1000) >= ?)
 			ORDER BY mtime DESC
-		`).all(cwd, minMtime ?? null, minMtime ?? null) as unknown[];
+		`).all(cwd, realCwd, minMtime ?? null, minMtime ?? null) as unknown[];
 		const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] = [];
 		for (const value of rows) {
 			const row = rec(value);
@@ -1142,6 +1143,28 @@ async function discoverCodexTranscriptByThreadId(threadId: string): Promise<stri
 	}
 }
 
+/** CLIのresume/fork対象として、root threadだけをIDで厳密に取得する。 */
+async function discoverCodexRootTranscriptByThreadId(threadId: string): Promise<string | undefined> {
+	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
+	let database: DatabaseSync | undefined;
+	try {
+		const names = await fs.readdir(paradisCodexHome());
+		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+		if (stateDb === undefined) { return undefined; }
+		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		const row = rec(database.prepare('SELECT rollout_path, source FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
+		const transcriptPath = str(row?.['rollout_path']);
+		const source = str(row?.['source']);
+		return transcriptPath !== undefined && isAbsolute(transcriptPath) && transcriptPath.endsWith('.jsonl')
+			&& source !== undefined && paradisIsCodexRootThreadSource(source) ? transcriptPath : undefined;
+	} catch {
+		return undefined;
+	} finally {
+		database?.close();
+	}
+}
+
 async function discoverCodexThreadSourceById(threadId: string): Promise<IParadisCodexThreadSource | undefined> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
@@ -1166,7 +1189,7 @@ async function discoverCodexThreadSourceById(threadId: string): Promise<IParadis
  * - Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl の直近ファイルのうち
  *           先頭行 session_meta の cwd が一致する最新のもの
  */
-async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set()): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined> {
+async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set(), mode?: ParadisCliDiscoveryMode): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined> {
 	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] = [];
 
 	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）。
@@ -1256,7 +1279,12 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 	// トリガーの鮮度ガード。古いセッションを誤って現行扱いにしない)。
 	// cwdだけでは同一cwdの複数セッションをペインへ一意に帰属できない。誤threadの会話表示や
 	// モデル変更を避けるため、候補が複数ある場合は推測せず未確定のままにする。
-	return paradisSelectUnambiguousSessionCandidate(candidates, minMtime, excludedPaths);
+	// Codexの新規起動・forkは更新時刻だけでなくDBの生成時刻で先に候補を絞る。
+	// 同じcwdで別threadが同時に更新されても、今回生成された1件を曖昧扱いで落とさない。
+	const eligible = agent === 'codex' && minMtime !== undefined && mode !== undefined
+		? candidates.filter(candidate => paradisCliDiscoveryCandidateIsFresh(candidate, minMtime, mode))
+		: candidates;
+	return paradisSelectUnambiguousSessionCandidate(eligible, minMtime, excludedPaths);
 }
 
 // ---- tailer ---------------------------------------------------------------------------------
@@ -2040,11 +2068,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 少し待って数回試す。鮮度ガード (コマンド開始時刻より新しい更新のみ受理) により、
 	 * `claude --help` のような空振りで古いセッションを掴む誤検知は起きない。
 	 */
-	onCliCommandDetected(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string | undefined): void {
+	onCliCommandDetected(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string | undefined, commandCwd?: string, sessionId?: string): void {
 		if (!this.isLiveToken(token)) {
 			return;
 		}
-		const effectiveCwd = cwd ?? this.tokenToCwd.get(token);
+		const baseCwd = cwd ?? this.tokenToCwd.get(token);
+		const effectiveCwd = commandCwd !== undefined && baseCwd !== undefined ? resolve(baseCwd, commandCwd) : baseCwd;
 		if (effectiveCwd === undefined) {
 			return;
 		}
@@ -2068,7 +2097,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (this.cliDiscoveryGenerations.get(token) !== generation) {
 					return;
 				}
-				this.discoverAndNotify(token, agent, mode, effectiveCwd, minMtime, generation).catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
+				this.discoverAndNotify(token, agent, mode, effectiveCwd, minMtime, generation, sessionId).catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
 			}, delayMs);
 			let timers = this.cliDiscoveryTimers.get(token);
 			if (timers === undefined) {
@@ -3085,15 +3114,30 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */
-	private async discoverAndNotify(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string, minMtime: number | undefined, generation: number): Promise<void> {
+	private async discoverAndNotify(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string, minMtime: number | undefined, generation: number, requestedSessionId?: string): Promise<void> {
 		const previous = this.paneSessions.get(token);
+		if (requestedSessionId !== undefined && previous?.sessionId === requestedSessionId) {
+			return;
+		}
 		const claimedByOthers = new Set([...this.transcriptClaims]
 			.filter(([, owner]) => owner !== token)
 			.map(([path]) => path));
 		if (previous !== undefined) {
 			claimedByOthers.add(previous.transcriptPath);
 		}
-		const discovered = await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers);
+		let exactSession = false;
+		let discovered: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined;
+		if (agent === 'codex' && requestedSessionId !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(requestedSessionId)) {
+			const transcriptPath = await discoverCodexRootTranscriptByThreadId(requestedSessionId);
+			if (transcriptPath !== undefined && !claimedByOthers.has(transcriptPath)) {
+				const stat = await fs.stat(transcriptPath).catch(() => undefined);
+				if (stat !== undefined) {
+					discovered = { agent: 'codex', transcriptPath, mtime: stat.mtimeMs, sessionId: requestedSessionId };
+					exactSession = true;
+				}
+			}
+		}
+		discovered ??= await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers, mode);
 		if (discovered === undefined
 			|| this.cliDiscoveryGenerations.get(token) !== generation
 			|| !this.isLiveToken(token) || this.tokenToCwd.get(token) !== cwd
@@ -3105,9 +3149,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 偶然同時に更新されても、新規起動paneへ割り当てない。復元探索はこの制約を使わない。
 		// state DB由来の候補はDBのcreated_atで判定する。Codexは最初のターンまでrollout実ファイルを
 		// 生成しないため、ファイルのbirthtimeを待つと起動直後のセッションを取りこぼす。
-		if (minMtime !== undefined && discovered.createdAt !== undefined) {
+		if (!exactSession && minMtime !== undefined && discovered.createdAt !== undefined) {
 			if (!paradisCliDiscoveryCandidateIsFresh(discovered, minMtime, mode)) { return; }
-		} else if (minMtime !== undefined && mode !== 'resume') {
+		} else if (!exactSession && minMtime !== undefined && mode !== 'resume') {
 			try {
 				const stat = await fs.stat(discovered.transcriptPath);
 				if (stat.birthtimeMs < minMtime) { return; }

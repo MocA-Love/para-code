@@ -136,6 +136,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 		this.provider = this._register(new ParadisMobileWorkspaceProvider(
 			frame => { this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
+			mainWindow.vscodeWindowId,
 			workspaceSwitchService,
 			terminalService,
 			terminalGroupService,
@@ -196,7 +197,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			activeAgentCommands.set(paneToken, normalizedCommandLine);
 			this.provider.setProvisionalAgentPaneToken(paneToken, true);
 			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
-			this.service.notifyAgentCliCommand(paneToken, command.agent, command.mode, cwd).then(() => {
+			this.service.notifyAgentCliCommand(paneToken, command.agent, command.mode, cwd, command.cwd, command.sessionId).then(() => {
 				const retry = agentCommandRetryTimers.get(paneToken);
 				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
 			}, err => {

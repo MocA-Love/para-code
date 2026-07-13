@@ -23,7 +23,7 @@ suite('ParadisAgentCliCommand', () => {
 			{ agent: 'codex', mode: 'new' },
 			{ agent: 'codex', mode: 'new' },
 			{ agent: 'codex', mode: 'resume' },
-			{ agent: 'codex', mode: 'fork' },
+			{ agent: 'codex', mode: 'fork', sessionId: '019f-thread' },
 		]);
 	});
 

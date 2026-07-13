@@ -13,6 +13,8 @@ import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCrede
 
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
 export interface WorkspaceState {
+	/** PC側ターミナルinstanceIdの名前空間。旧PCでは未設定。 */
+	windowId?: number;
 	activeWs: string | undefined;
 	// parent: worktree（スペース）の親リポジトリid。ドロワーの親子グルーピング（開閉表示）に使う。
 	// 旧PC（parent未配信）ではundefinedのままフラット表示にフォールバックする。
@@ -895,23 +897,23 @@ export class MobileController {
 
 	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
 	createTerminal(ws?: string): void {
-		this.client?.send('term', encoder.encode(JSON.stringify({ t: 'create', ws })));
+		this.sendTerm({ t: 'create', ws });
 	}
 
 	/**
 	 * ターミナル名を変更する。手元のworkspaceスナップショットを楽観的に書き換えてから
 	 * PCへ送る（PC側の権威的なstate再送が届き次第、その値で上書きされる）。
 	 */
-	renameTerminal(id: number, title: string): void {
+	renameTerminal(id: number, title: string, targetWindowId?: number): void {
 		const workspace = this.state.workspace;
-		if (workspace) {
+		if (workspace && (targetWindowId === undefined || workspace.windowId === targetWindowId)) {
 			this.state.workspace = {
 				...workspace,
 				terminals: workspace.terminals.map(t => t.id === id ? { ...t, title } : t),
 			};
 			this.emit();
 		}
-		this.sendTerm({ t: 'rename', id, title });
+		this.sendTerm({ t: 'rename', id, title }, targetWindowId);
 	}
 
 	/**
@@ -919,16 +921,16 @@ export class MobileController {
 	 * 呼び出し側（ホーム長押しメニュー）で確認ダイアログを経てから呼ぶ想定。手元の一覧からは
 	 * 楽観的に消しておき、PC側の権威的なstate再送（onDidChangeInstances）で確定させる。
 	 */
-	closeTerminal(id: number): void {
+	closeTerminal(id: number, targetWindowId?: number): void {
 		const workspace = this.state.workspace;
-		if (workspace) {
+		if (workspace && (targetWindowId === undefined || workspace.windowId === targetWindowId)) {
 			this.state.workspace = {
 				...workspace,
 				terminals: workspace.terminals.filter(t => t.id !== id),
 			};
 			this.emit();
 		}
-		this.sendTerm({ t: 'close', id });
+		this.sendTerm({ t: 'close', id }, targetWindowId);
 	}
 
 	/**
@@ -936,16 +938,16 @@ export class MobileController {
 	 * PC側のフォーカス中自動既読と同じ経路を通り、関連通知のdismissも走る。
 	 * 手元のスナップショットは楽観的にアイドルへ書き換える（PC側のstate再送で確定）。
 	 */
-	ackAgentStatus(id: number): void {
+	ackAgentStatus(id: number, targetWindowId?: number): void {
 		const workspace = this.state.workspace;
-		if (workspace) {
+		if (workspace && (targetWindowId === undefined || workspace.windowId === targetWindowId)) {
 			this.state.workspace = {
 				...workspace,
 				terminals: workspace.terminals.map(t => t.id === id ? { ...t, agentStatus: undefined } : t),
 			};
 			this.emit();
 		}
-		this.sendTerm({ t: 'ackStatus', id });
+		this.sendTerm({ t: 'ackStatus', id }, targetWindowId);
 	}
 
 	/** 現在の状態スナップショットを要求する。 */
@@ -961,8 +963,9 @@ export class MobileController {
 		this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...prefs })));
 	}
 
-	private sendTerm(msg: { t: string; id: number; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }): void {
-		this.client?.send('term', encoder.encode(JSON.stringify(msg)));
+	private sendTerm(msg: { t: string; id?: number; ws?: string; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }, targetWindowId?: number): void {
+		const windowId = targetWindowId ?? this.state.workspace?.windowId;
+		this.client?.send('term', encoder.encode(JSON.stringify({ ...msg, ...(windowId !== undefined ? { windowId } : {}) })));
 	}
 
 	// --- agent チャット（エージェントセッションのチャットミラー） ----------------

@@ -140,7 +140,7 @@ export interface IParadisMobileRelayService {
 	 * agentチャネル用: 「ターミナルinstanceId ⇔ ペイントークン」対応表の同期（ウィンドウ単位の全置換。
 	 * shared process は全ウィンドウ共有のため、windowId で自ウィンドウの分だけを置き換える）。
 	 * renderer がターミナル一覧の変化に合わせて呼び、ウィンドウを閉じる際は空配列で自分の分を消す。
-	 * ペイントークンはE2Eの外へは出さず、モバイルとの間では常に terminalId で識別する。
+	 * モバイルの端末操作はwindowId + terminalId、エージェント操作はさらにペイントークンで識別する。
 	 */
 	syncAgentPanes(windowId: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
 	/** rendererがAgent Actionを実行する直前に、shared processのsession epochを再検証して一度だけclaimする。 */
@@ -166,7 +166,7 @@ export interface IParadisMobileRelayService {
 	 * 前倒しするトリガーとしてのみ使う (実在する新しい transcript の発見をもって確定するため、
 	 * `claude --help` のような空振りは誤検知にならない)。
 	 */
-	notifyAgentCliCommand(paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined): Promise<void>;
+	notifyAgentCliCommand(paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<void>;
 	/** 対話型Agent CLIが終了した。TUI内resume監視と一時状態を解除する。 */
 	notifyAgentCliCommandFinished(paneToken: string): Promise<void>;
 

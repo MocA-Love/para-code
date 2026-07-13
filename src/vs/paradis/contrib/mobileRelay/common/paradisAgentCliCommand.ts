@@ -11,6 +11,10 @@ export type ParadisInteractiveAgentMode = 'new' | 'resume' | 'fork';
 export interface ParadisInteractiveAgentCommand {
 	readonly agent: 'claude' | 'codex';
 	readonly mode: ParadisInteractiveAgentMode;
+	/** Codexの-C/--cdで指定された実行ディレクトリ（シェルcwdからの相対値を含む）。 */
+	readonly cwd?: string;
+	/** `codex resume <thread-id>` / `codex fork <thread-id>` の明示対象。 */
+	readonly sessionId?: string;
 }
 
 const codexOptionsWithValue = new Set(['-c', '--config', '--enable', '--disable', '--remote', '--remote-auth-token-env', '-i', '--image', '-m', '--model', '--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd', '--add-dir', '-a', '--ask-for-approval']);
@@ -46,13 +50,32 @@ function shellWords(commandLine: string): string[] {
 	return words;
 }
 
-function firstPositional(args: readonly string[], optionsWithValue: ReadonlySet<string>): string | undefined {
+function firstPositionalIndex(args: readonly string[], optionsWithValue: ReadonlySet<string>): number | undefined {
 	for (let index = 0; index < args.length; index++) {
 		const argument = args[index];
-		if (argument === '--') { return args[index + 1]; }
-		if (!argument.startsWith('-')) { return argument; }
+		if (argument === '--') { return args[index + 1] !== undefined ? index + 1 : undefined; }
+		if (!argument.startsWith('-')) { return index; }
 		const option = argument.split('=', 1)[0];
 		if (!argument.includes('=') && optionsWithValue.has(option)) { index++; }
+	}
+	return undefined;
+}
+
+function firstPositional(args: readonly string[], optionsWithValue: ReadonlySet<string>): string | undefined {
+	const index = firstPositionalIndex(args, optionsWithValue);
+	return index !== undefined ? args[index] : undefined;
+}
+
+function optionValue(args: readonly string[], names: ReadonlySet<string>): string | undefined {
+	for (let index = 0; index < args.length; index++) {
+		const argument = args[index];
+		const equals = argument.indexOf('=');
+		if (equals > 0 && names.has(argument.slice(0, equals))) {
+			return argument.slice(equals + 1);
+		}
+		if (names.has(argument)) {
+			return args[index + 1];
+		}
 	}
 	return undefined;
 }
@@ -65,9 +88,17 @@ export function paradisInteractiveAgentCommand(commandLine: string): ParadisInte
 	if (executable !== 'codex' && executable !== 'claude') { return undefined; }
 	if (words.some(argument => argument === '-h' || argument === '--help' || argument === '-v' || argument === '-V' || argument === '--version')) { return undefined; }
 	if (executable === 'codex') {
-		const positional = firstPositional(words, codexOptionsWithValue);
+		const commandIndex = firstPositionalIndex(words, codexOptionsWithValue);
+		const positional = commandIndex !== undefined ? words[commandIndex] : undefined;
 		if (positional !== undefined && codexNonInteractiveCommands.has(positional)) { return undefined; }
-		return { agent: 'codex', mode: positional === 'resume' ? 'resume' : positional === 'fork' ? 'fork' : 'new' };
+		const mode = positional === 'resume' ? 'resume' : positional === 'fork' ? 'fork' : 'new';
+		const sessionId = mode !== 'new' && commandIndex !== undefined ? firstPositional(words.slice(commandIndex + 1), codexOptionsWithValue) : undefined;
+		const cwd = optionValue(words, new Set(['-C', '--cd']));
+		return {
+			agent: 'codex', mode,
+			...(cwd !== undefined && cwd.length > 0 ? { cwd } : {}),
+			...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
+		};
 	}
 	if (words.some(argument => argument === '-p' || argument === '--print' || argument === '--bg' || argument === '--background')) { return undefined; }
 	const positional = firstPositional(words, claudeOptionsWithValue);

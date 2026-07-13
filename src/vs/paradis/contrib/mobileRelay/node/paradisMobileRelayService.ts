@@ -734,8 +734,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * agentチャネル用: `claude` / `codex` コマンドの実行開始検知 (shell integration 由来)。
 	 * cwd ベースのセッション探索を前倒しするトリガーとしてのみ使う (詳細は common の interface コメント)。
 	 */
-	async notifyAgentCliCommand(paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined): Promise<void> {
-		this.agentChat.onCliCommandDetected(paneToken, agent, mode, cwd);
+	async notifyAgentCliCommand(paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<void> {
+		this.agentChat.onCliCommandDetected(paneToken, agent, mode, cwd, commandCwd, sessionId);
 	}
 
 	async notifyAgentCliCommandFinished(paneToken: string): Promise<void> {
