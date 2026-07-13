@@ -8,10 +8,11 @@
 
 import { createReadStream } from 'fs';
 import * as fs from 'fs/promises';
+// eslint-disable-next-line local/code-import-patterns
+import { createRequire } from 'module';
 import { createInterface } from 'readline';
 import { Event } from '../../../../base/common/event.js';
 import { isAbsolute, relative, resolve } from '../../../../base/common/path.js';
-import { nodeRequire } from '../../../../base/common/amd.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -25,6 +26,7 @@ import {
 const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_PROMPT_LENGTH = 16_384;
 const MAX_ROLLOUT_BYTES = 2 * 1024 * 1024;
+const nodeRequire = createRequire(import.meta.url);
 
 interface ICodexThreadRow {
 	readonly source?: unknown;

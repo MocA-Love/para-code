@@ -5,12 +5,15 @@
 
 import assert from 'assert';
 import * as fs from 'fs/promises';
+// eslint-disable-next-line local/code-import-patterns
+import { createRequire } from 'module';
 import { tmpdir } from 'os';
-import { nodeRequire } from '../../../../../base/common/amd.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisCodexTerminalTitleService } from '../../node/paradisCodexTerminalTitleChannel.js';
+
+const nodeRequire = createRequire(import.meta.url);
 
 suite('ParadisCodexTerminalTitleService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
