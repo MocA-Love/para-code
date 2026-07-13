@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import type { IParadisRecoveredAgentActivity } from './paradisPersistedAgentActivity.js';
+
 export type ParadisAgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
 
 export interface IParadisAgentActivityAgent {
@@ -201,6 +203,51 @@ export class ParadisAgentActivityTracker {
 		const next = { ...previous, depth: Math.min(5, normalizedDepth), updatedAt: Math.max(previous.updatedAt, at) };
 		if (normalizedParent !== undefined) { this.agents.set(id, { ...next, parentId: normalizedParent }); } else { const { parentId: _, ...withoutParent } = next; this.agents.set(id, withoutParent); }
 		return this.finishApply(before, Math.max(previous.updatedAt, at));
+	}
+
+	/** hooks／daemon欠落時の永続JSON復元を、確定済みライブ状態を巻き戻さず収束させる。 */
+	mergeRecoveredAgents(recoveredAgents: readonly IParadisRecoveredAgentActivity[], at: number): boolean {
+		const before = this.serialized();
+		const relationships = new Map<string, Pick<IParadisRecoveredAgentActivity, 'parentId' | 'depth'>>();
+		for (const recovered of recoveredAgents) {
+			if (!/^[A-Za-z0-9._:-]{1,500}$/.test(recovered.id)) { continue; }
+			const previous = this.agents.get(recovered.id);
+			if (previous !== undefined && previous.provider !== recovered.provider) { continue; }
+			let status: ParadisAgentActivityStatus = previous?.status ?? recovered.status;
+			if (previous !== undefined && !terminal(previous.status)) {
+				if (terminal(recovered.status) && recovered.updatedAt >= previous.updatedAt) {
+					status = recovered.status;
+				} else if (previous.status === 'unknown' && recovered.status === 'running' && recovered.updatedAt >= previous.updatedAt) {
+					status = 'running';
+				}
+			}
+			const label = previous?.label !== undefined && previous.label !== 'SubAgent' ? previous.label : recovered.label;
+			const detail = previous?.detail ?? recovered.detail;
+			this.agents.set(recovered.id, {
+				id: recovered.id, label, role: 'subagent', provider: recovered.provider,
+				...(detail !== undefined ? { detail } : {}),
+				...(previous?.parentId !== undefined ? { parentId: previous.parentId } : {}),
+				...(previous?.depth !== undefined ? { depth: previous.depth } : {}),
+				status, startedAt: Math.min(previous?.startedAt ?? recovered.startedAt, recovered.startedAt),
+				updatedAt: Math.max(previous?.updatedAt ?? recovered.updatedAt, recovered.updatedAt),
+			});
+			relationships.set(recovered.id, { ...(recovered.parentId !== undefined ? { parentId: recovered.parentId } : {}), ...(recovered.depth !== undefined ? { depth: recovered.depth } : {}) });
+		}
+		for (const [id, recovered] of relationships) {
+			const current = this.agents.get(id);
+			if (current === undefined || current.parentId !== undefined) { continue; }
+			let parentId = recovered.parentId !== id ? recovered.parentId : undefined;
+			const visited = new Set([id]);
+			for (let cursor = parentId; cursor !== undefined;) {
+				if (visited.has(cursor) || !this.agents.has(cursor)) { parentId = undefined; break; }
+				visited.add(cursor);
+				cursor = this.agents.get(cursor)?.parentId;
+			}
+			const rawDepth = recovered.depth ?? (parentId !== undefined ? (this.agents.get(parentId)?.depth ?? 1) + 1 : 1);
+			const depth = Math.min(5, Math.max(1, Math.trunc(rawDepth)));
+			this.agents.set(id, { ...current, ...(parentId !== undefined ? { parentId } : {}), depth });
+		}
+		return this.finishApply(before, at);
 	}
 
 	/** 親Agentのターン終了。子Agent/Taskは各自の終了イベントが正本なので変更しない。 */
