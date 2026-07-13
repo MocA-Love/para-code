@@ -188,6 +188,9 @@ export default function AgentDetailScreen() {
 	// 動かさない（遡り読みを妨げない）。下端付近まで手で戻ると自動で復帰する。
 	const [sticky, setStickyState] = useState(true);
 	const stickyRef = useRef(true);
+	const userScrollGestureRef = useRef(false);
+	const userDraggingRef = useRef(false);
+	const userMomentumRef = useRef(false);
 	// sticky解除中に届いた新着（確定メッセージ）の件数。ジャンプボタンのバッジに出す。
 	const [newCount, setNewCount] = useState(0);
 	const setSticky = (value: boolean) => {
@@ -199,6 +202,9 @@ export default function AgentDetailScreen() {
 	};
 	const prevCountRef = useRef(0);
 	useEffect(() => {
+		userScrollGestureRef.current = false;
+		userDraggingRef.current = false;
+		userMomentumRef.current = false;
 		setSticky(true);
 		prevCountRef.current = 0;
 	}, [activeId]);
@@ -215,14 +221,30 @@ export default function AgentDetailScreen() {
 			listRef.current?.scrollToEnd({ animated: false });
 		}
 	};
-	// アニメーション付き scrollToEnd（ジャンプ・自分の送信）は中間位置でも onScroll を
-	// 発火させるため、その途中経過を「ユーザーが上へスクロールした」と誤認して sticky を
-	// 解除しないよう、プログラム起因のスクロール中は解除判定を抑止する。
-	const programmaticUntilRef = useRef(0);
+	// stickyを解除するのは、ユーザーが指で動かしている間（慣性スクロールを含む）だけ。
+	// 新着やfooter伸長によるcontentSize更新でもonScrollは発火するため、位置だけで
+	// ユーザー操作と判定すると、旧offsetを見た瞬間に追従が誤解除される。
+	const onScrollBeginDrag = () => {
+		userScrollGestureRef.current = true;
+		userDraggingRef.current = true;
+		userMomentumRef.current = false;
+	};
+	const onScrollEndDrag = () => {
+		userDraggingRef.current = false;
+	};
+	const onMomentumScrollBegin = () => {
+		userMomentumRef.current = userScrollGestureRef.current;
+	};
+	const onMomentumScrollEnd = () => {
+		userMomentumRef.current = false;
+		userScrollGestureRef.current = false;
+	};
 	// AgentComposer へ安定参照で渡すため useCallback 化（ref と安定な setState のみ参照）。
 	const scrollToEndSticky = useCallback(() => {
+		userScrollGestureRef.current = false;
+		userDraggingRef.current = false;
+		userMomentumRef.current = false;
 		setSticky(true);
-		programmaticUntilRef.current = Date.now() + 700;
 		listRef.current?.scrollToEnd({ animated: true });
 	}, []);
 	// sticky判定のしきい値: 下端から80px以内なら「最下部にいる」とみなす。
@@ -231,7 +253,7 @@ export default function AgentDetailScreen() {
 		const nearBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - 80;
 		if (nearBottom && !stickyRef.current) {
 			setSticky(true);
-		} else if (!nearBottom && stickyRef.current && Date.now() >= programmaticUntilRef.current) {
+		} else if (!nearBottom && stickyRef.current && (userDraggingRef.current || userMomentumRef.current)) {
 			setSticky(false);
 		}
 	};
@@ -291,6 +313,10 @@ export default function AgentDetailScreen() {
 						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
 						onContentSizeChange={onContentSizeChange}
 						onScroll={onListScroll}
+						onScrollBeginDrag={onScrollBeginDrag}
+						onScrollEndDrag={onScrollEndDrag}
+						onMomentumScrollBegin={onMomentumScrollBegin}
+						onMomentumScrollEnd={onMomentumScrollEnd}
 						scrollEventThrottle={32}
 						onLayout={onListLayout}
 					/>
