@@ -87,6 +87,7 @@ jobs:
           fi
 
       - name: Checkout
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.resolve.outputs.is_version != 'true' && inputs.test_build || github.ref }}
@@ -130,6 +131,7 @@ jobs:
         run: node build/lib/preLaunch.ts
 
       - name: Cache Electron
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/electron
@@ -139,6 +141,7 @@ jobs:
         run: npx playwright install chromium
 
       - name: Cache Playwright
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache/save@v6
         with:
           path: ~/.cache/ms-playwright
@@ -186,6 +189,7 @@ jobs:
       matrix: ${{ fromJSON(needs.setup.outputs.perf_matrix) }}
     steps:
       - name: Checkout
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.test_is_version != 'true' && inputs.test_build || github.ref }}
@@ -220,6 +224,7 @@ jobs:
           name: build-output
 
       - name: Restore Electron cache
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/electron
@@ -229,6 +234,7 @@ jobs:
         run: node build/lib/preLaunch.ts
 
       - name: Restore Playwright cache
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
@@ -359,6 +365,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.test_is_version != 'true' && inputs.test_build || github.ref }}
@@ -393,6 +400,7 @@ jobs:
           name: build-output
 
       - name: Restore Electron cache
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/electron
@@ -402,6 +410,7 @@ jobs:
         run: node build/lib/preLaunch.ts
 
       - name: Restore Playwright cache
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache/restore@v6
         with:
           path: ~/.cache/ms-playwright
@@ -458,6 +467,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
         with:
           ref: ${{ needs.setup.outputs.test_is_version != 'true' && inputs.test_build || github.ref }}

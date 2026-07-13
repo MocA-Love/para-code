@@ -19,6 +19,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
       - uses: actions/checkout@v7
         with:
           lfs: true
@@ -33,6 +34,7 @@ jobs:
         run: echo "value=$(node build/azure-pipelines/common/computeNodeModulesCacheKey.ts)" >> $GITHUB_OUTPUT
       - name: Cache node modules
         id: cacheNodeModules
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache@v6
         with:
           path: "**/node_modules"
@@ -44,6 +46,7 @@ jobs:
         run: echo "dir=$(npm config get cache)" >> $GITHUB_OUTPUT
       - name: Cache npm directory
         if: ${{ steps.cacheNodeModules.outputs.cache-hit != 'true' }}
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache@v6
         with:
           path: ${{ steps.npmCacheDirPath.outputs.dir }}

@@ -39,6 +39,7 @@ export const enum TerminalMenuBarGroup {
 }
 
 /** Register terminal menus into a store owned by the workbench contribution or test suite. */
+// PARA-PATCH: Register terminal menu entries in a disposable store so fork-added menus can be tested and cleaned up.
 export function setupTerminalMenus(disposables: Pick<DisposableStore, 'add'>): void {
 
 	disposables.add(MenuRegistry.appendMenuItems(
@@ -109,6 +110,7 @@ export function setupTerminalMenus(disposables: Pick<DisposableStore, 'add'>): v
 
 	disposables.add(MenuRegistry.appendMenuItems(
 		[
+			// PARA-PATCH: Add the fork-specific split-or-create action to the terminal instance context menu.
 			{
 				id: MenuId.TerminalInstanceContext,
 				item: {
@@ -334,6 +336,7 @@ export function setupTerminalMenus(disposables: Pick<DisposableStore, 'add'>): v
 
 	disposables.add(MenuRegistry.appendMenuItems(
 		[
+			// PARA-PATCH: Offer terminal creation from the empty terminal tab context menu.
 			{
 				id: MenuId.TerminalTabEmptyAreaContext,
 				item: {

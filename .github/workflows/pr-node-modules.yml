@@ -13,6 +13,7 @@ jobs:
     runs-on: [ self-hosted, 1ES.Pool=1es-vscode-oss-ubuntu-22.04-x64, "JobId=compile-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
     steps:
       - name: Checkout microsoft/vscode
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
 
       - name: Setup Node.js
@@ -61,6 +62,7 @@ jobs:
 
       - name: Restore built-in extensions cache
         id: cache-builtin-extensions
+        # PARA-PATCH: Use the fork-selected cache v6 action; upstream still uses cache v5.
         uses: actions/cache@v6
         with:
           enableCrossOsArchive: true
@@ -81,6 +83,7 @@ jobs:
       VSCODE_ARCH: x64
     steps:
       - name: Checkout microsoft/vscode
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
 
       - name: Setup Node.js
@@ -147,6 +150,7 @@ jobs:
       VSCODE_ARCH: arm64
     steps:
       - name: Checkout microsoft/vscode
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
 
       - name: Setup Node.js
@@ -202,6 +206,7 @@ jobs:
       VSCODE_ARCH: x64
     steps:
       - name: Checkout microsoft/vscode
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
 
       - name: Setup Node.js
@@ -254,6 +259,7 @@ jobs:
     runs-on: [ self-hosted, 1ES.Pool=1es-vscode-oss-ubuntu-22.04-x64, "JobId=copilot-linux-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
     steps:
       - name: Checkout microsoft/vscode
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
 
       - name: Setup Node.js
@@ -287,6 +293,7 @@ jobs:
     runs-on: [ self-hosted, 1ES.Pool=1es-vscode-oss-windows-2022-x64, "JobId=copilot-windows-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}" ]
     steps:
       - name: Checkout microsoft/vscode
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
 
       - name: Setup Node.js

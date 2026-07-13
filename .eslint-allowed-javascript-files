@@ -10,6 +10,7 @@
 
 .github/skills/heap-snapshot-analysis/helpers/streamSnapshot.mjs
 .vscode-test.js
+# PARA-PATCH: Allow the fork-owned Metro configuration used by the Para Code mobile app.
 app/mobile/metro.config.js
 build/azure-pipelines/common/installPlaywright.js
 build/azure-pipelines/github-check-run.js

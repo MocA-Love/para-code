@@ -39,7 +39,7 @@
 - 変更は**1箇所・最小行数**に抑える。ロジック本体は新規ファイルに書き、既存ファイルには「差し替えポイント」だけを作る
   - 実例: ターミナル2Dグリッド化では、`terminalGroup.ts`（`SplitPaneContainer`が単一`orientation`の`SplitView`に密結合）を直接改造せず、`ITerminalGroup`インターフェース準拠の新クラスを新規ファイルに書き、`terminalGroupService.ts:163`の`this._instantiationService.createInstance(TerminalGroup, ...)`という1行だけを差し替える
 - 既存の具象クラスを改造するのではなく、**既存インターフェースに準拠した新実装クラスを新規ファイルで書き、DIのファクトリ/registerSingleton点で丸ごと差し替える**ことを常に検討する
-- やむを得ず既存ファイルを編集する箇所には、必ず一貫したマーカーコメント `// PARA-PATCH: <理由>` を付ける。これにより `grep -r "PARA-PATCH"` で全パッチ点を機械的に列挙できる
+- やむを得ず既存ファイルを編集する箇所には、そのファイル形式で有効なコメント構文を使って必ず `PARA-PATCH: <理由>` マーカーを付ける。これにより `grep -r "PARA-PATCH"` で全パッチ点を機械的に列挙できる
 - 既存の関数・メソッドのシグネチャは変更しない。拡張が必要な場合はオプショナル引数の追加、または新規メソッドの追加で対応する（既存呼び出し側の差分＝コンフリクト面を増やさない）
 - `src/vs/base/`（`grid.ts`等の汎用エンジン）は import して再利用するのみとし、改変しない。ここはupstreamの変更頻度が高くコンフリクトしやすい領域
 
@@ -47,16 +47,17 @@
 
 upstreamを定期的に取り込み続ける前提のため、「どこが独自実装か」を機械的に判別できることが常に重要。以下の2種類のマーカーを**必ず**使い分けること。
 
-1. **`// PARA-PATCH: <理由>`** — 既存（upstream由来）ファイルの一部にfork独自の変更を加えた箇所に付ける（既存の規約、上記参照）。`grep -rn "PARA-PATCH"` で個々のパッチ点を列挙できる。
-2. **`// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.`** — fork独自に新規作成した**ファイル全体**の冒頭（コピーライトヘッダー直後）に付ける。CSSファイルは `/* PARA-CODE: ... */` 形式にする。`grep -rl "PARA-CODE:"` でfork所有ファイルの一覧を丸ごと列挙できる。
+1. **`PARA-PATCH: <理由>`** — 既存（upstream由来）ファイルの一部にfork独自の変更を加えた箇所に付ける（既存の規約、上記参照）。TS/JSは `// PARA-PATCH:`、YAML/TOML/gitignore等は `# PARA-PATCH:`、HTMLは `<!-- PARA-PATCH: ... -->` のように、そのファイル形式で有効なコメント構文を使う。`grep -rn "PARA-PATCH"` で個々のパッチ点を列挙できる。
+2. **`PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.`** — fork独自に新規作成した**ファイル全体**の冒頭（コピーライトヘッダー直後）に付ける。TS/JSは `//`、CSSは `/* ... */`、HTMLは `<!-- ... -->`、YAML/TOML/gitignore等は `#` を使う。hygiene用の `allow-any-unicode-comment-file` が必要な場合は、その指示コメントの直後に置く。`grep -rl "PARA-CODE:"` でfork所有ファイルの一覧を丸ごと列挙できる。
    - 新規ディレクトリ（`src/vs/paradis/`、`src/vs/sessions/contrib/<feature>/`）配下のファイルはディレクトリ構成自体で「fork独自」と分かるとはいえ、ファイル単体を開いた人にも一目で分かるようにするため省略しない
-   - `grep -rl "PARA-CODE:" src/` と `grep -rn "PARA-PATCH:" src/` の2つのgrepで、コード上のfork変更点を完全に洗い出せる状態を維持する
+   - `grep -rl "PARA-CODE:" .` と `grep -rn "PARA-PATCH:" .`（`.git`・生成物・vendorは除外）の2つの検索で、リポジトリ全体のfork変更点を洗い出せる状態を維持する
 
-**コメントを書けないファイル（JSON/バイナリ等）の場合**: 上記2つのマーカーは埋め込めないため、代わりに `NOTES.md` の「コメントを書けないファイルへの変更一覧」セクションに1行追記すること（対象ファイル・変更内容・理由）。`git log --grep '^para:'` と合わせた二重の安全網として運用する。新しくこの種のファイルに変更を加える場合、実装完了時に必ずこの表への追記を忘れないこと。
+**コメントを書けないファイル（JSON/バイナリ/plist/entitlements等）の場合**: 上記2つのマーカーは埋め込めないため、代わりに `NOTES.md` の「コメントを書けないファイルへの変更一覧」セクションに1行追記すること（対象ファイル・変更内容・理由）。コメント自体は書けてもupstream hygieneがfork独自ヘッダーを拒否するファイル（`mise.toml`等）も同じ代替台帳で管理し、Microsoft名義の不適切なcopyrightは追加しない。生成lock、minified/vendor成果物、source mapはファイルへマーカーを追加せず、必要に応じて同じ一覧または同梱元READMEへ記録する。設計書・計画書・調査メモ等のドキュメントはマーカー必須対象外とする。`git log --grep '^para:'` と合わせた二重の安全網として運用し、新しくコメント不能ファイルに変更を加える場合は実装完了時に必ず表へ追記すること。
 
 ## コミット運用
 
 - 私たちの変更はコミットメッセージを **`para:` プレフィックス**で統一する（例: `para: add multi-repo workspace switching`）。`git log --grep '^para:'` で自分たちのパッチだけを一覧できるようにするため
+- 公開リポジトリの文書・コメント・サンプルには、個人名、個人メール、ローカルのユーザー名を含む絶対パス、ダウンロード先、無関係なローカルリポジトリ名、秘密値を記録しない。パス例は `/Users/example/...` や `~/projects/...` のように匿名化する
 - `git rerere` を有効化しておく（`git config rerere.enabled true`）。過去に解消したコンフリクトパターンをupstream取り込み時に自動再適用させるため
 - `product.json`への変更（`extensionsGallery`追加など）は本家の`gulpfile.hygiene.js`のhygieneチェックに意図的に抵触する。この場合のみ理由を明記した上で`--no-verify`を使ってよい。詳細は`NOTES.md`の「hygieneチェックとproduct.jsonの既知の衝突」を参照。**それ以外の通常の実装コミットではhygieneチェックを飛ばさないこと**
 

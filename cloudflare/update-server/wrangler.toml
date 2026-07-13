@@ -2,7 +2,7 @@
 name = "para-code-update-server"
 main = "src/index.ts"
 compatibility_date = "2026-07-01"
-account_id = "REDACTED-CLOUDFLARE-ACCOUNT-ID" # REDACTED-ACCOUNT
+account_id = "REDACTED-CLOUDFLARE-ACCOUNT-ID" # Production Cloudflare account
 
 [[kv_namespaces]]
 binding = "RELEASES"

@@ -16,6 +16,7 @@ jobs:
       RUSTUP_TOOLCHAIN: ${{ inputs.rustup_toolchain }}
     steps:
       - name: Checkout microsoft/vscode
+        # PARA-PATCH: Use the fork-selected checkout v7 action; upstream still uses checkout v6.
         uses: actions/checkout@v7
         with:
           lfs: true
