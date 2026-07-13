@@ -21,7 +21,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { localize } from '../../../../nls.js';
-import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, paradisParseGhPrStatus, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
 
 /**
@@ -64,6 +64,61 @@ export class ParadisWorktreeGitService {
 				}
 			});
 		});
+	}
+
+	/**
+	 * gh (GitHub CLI) が見つからなかった (ENOENT) 場合に true。以降の PR 状態取得を
+	 * プロセス生存中は打ち切る (未インストール環境でポーリングのたびに spawn を繰り返さない)。
+	 */
+	private ghUnavailable = false;
+
+	private async execGh(args: string[], cwd: string): Promise<string> {
+		const env = await this.cachedShellEnv.getEnv();
+		return new Promise<string>((resolve, reject) => {
+			// gh はネットワーク I/O のためタイムアウト必須。無いとプロキシ環境等でハングしたとき
+			// 呼び出し側 (Workspaces ビュー) の in-flight ガードが永久に解除されなくなる
+			this.execFile('gh', args, { cwd, encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: { ...env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' } }, (err, stdout, stderr) => {
+				if (err) {
+					if ((err as { code?: unknown }).code === 'ENOENT') {
+						this.ghUnavailable = true;
+					}
+					reject(new Error(stderr?.trim() || err.message));
+				} else {
+					resolve(stdout);
+				}
+			});
+		});
+	}
+
+	/**
+	 * 作業ツリーの現在ブランチに紐づく GitHub PR の状態を返す。
+	 * gh CLI 未インストール・未認証・PR なし・detached HEAD などはすべて undefined を返す
+	 * (Workspaces ビューのポーリング表示なので、失敗はチップ非表示として静かに縮退する)。
+	 */
+	async getPrStatus(worktreePath: string): Promise<IParadisPrStatus | undefined> {
+		// IPC 境界の防御: 呼び出し元のバグ (undefined の文字列化等) を早期に無害化する
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0 || this.ghUnavailable) {
+			return undefined;
+		}
+		let branch: string;
+		try {
+			branch = (await this.exec(['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+		} catch {
+			return undefined;
+		}
+		if (!branch || branch === 'HEAD') {
+			// detached HEAD ではブランチ照合ができないため PR を紐づけない
+			return undefined;
+		}
+		try {
+			const stdout = await this.execGh(['pr', 'view', '--json', 'number,title,url,state,isDraft,headRefName'], worktreePath);
+			return paradisParseGhPrStatus(stdout, branch);
+		} catch (error) {
+			// 「PR なし」は正常系。それ以外 (未認証・ネットワーク等) も表示上は同じ扱いだが、
+			// 調査の手がかりに trace へは残す
+			this.logService.trace(`[ParadisWorktreeGit] gh pr view failed for ${worktreePath}: ${error instanceof Error ? error.message : String(error)}`);
+			return undefined;
+		}
 	}
 
 	/** ローカルブランチ一覧（コミット日時の新しい順）と現在の HEAD ブランチを返す。 */
@@ -229,6 +284,7 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest) as Promise<T>;
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
+			case 'getPrStatus': return this.service.getPrStatus(String(args[0])) as Promise<T>;
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest) as Promise<T>;
 			default:

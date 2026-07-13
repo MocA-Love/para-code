@@ -998,6 +998,7 @@
 		"--notebook-find-width",
 		"--outline-element-color",
 		"--pane-header-size",
+		"--paradis-pr-color",
 		"--paradis-statusbar-bg",
 		"--paradis-titlebar-bg",
 		"--paradis-transparency-opacity",

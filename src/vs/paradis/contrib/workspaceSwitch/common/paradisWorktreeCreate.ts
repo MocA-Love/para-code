@@ -44,6 +44,57 @@ export interface IParadisDiffStat {
 	readonly deletions: number;
 }
 
+/** GitHub PR の状態。GitHub の表示色に対応する4値。 */
+export type ParadisPrState = 'open' | 'draft' | 'merged' | 'closed';
+
+/** 作業ツリーの現在ブランチに紐づく GitHub PR の要約 (gh pr view の抜粋)。 */
+export interface IParadisPrStatus {
+	readonly number: number;
+	readonly title: string;
+	readonly url: string;
+	readonly state: ParadisPrState;
+}
+
+/**
+ * `gh pr view --json number,title,url,state,isDraft,headRefName` の stdout を IParadisPrStatus へ変換する。
+ * `gh pr view` (引数なし) は過去の `gh pr checkout` が残した stale な tracking ref (refs/pull/N/head)
+ * 経由で無関係な PR に一致することがある (Superset で実測) ため、PR の headRefName が現在の
+ * ブランチ名と一致することを検証する。fork PR ではローカルブランチに fork owner の接頭辞が
+ * 付くことがある ("owner/feature" と headRefName "feature") ので後方一致も許す。
+ * 解釈できない・一致しない場合は undefined を返す (チップ非表示)。
+ */
+export function paradisParseGhPrStatus(stdout: string, currentBranch: string): IParadisPrStatus | undefined {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(stdout);
+	} catch {
+		return undefined;
+	}
+	if (typeof raw !== 'object' || raw === null) {
+		return undefined;
+	}
+	const pr = raw as { number?: unknown; title?: unknown; url?: unknown; state?: unknown; isDraft?: unknown; headRefName?: unknown };
+	if (typeof pr.number !== 'number' || typeof pr.url !== 'string' || typeof pr.state !== 'string' || typeof pr.headRefName !== 'string') {
+		return undefined;
+	}
+	// url は gh (GitHub API) の応答由来でクリック時に openerService へ渡すため、プロトコル
+	// ハンドラ系スキーム (file:/vscode: 等) が紛れ込まないよう https/http に限定する
+	if (!/^https?:\/\//.test(pr.url)) {
+		return undefined;
+	}
+	if (currentBranch !== pr.headRefName && !currentBranch.endsWith(`/${pr.headRefName}`)) {
+		return undefined;
+	}
+	let state: ParadisPrState;
+	switch (pr.state) {
+		case 'OPEN': state = pr.isDraft === true ? 'draft' : 'open'; break;
+		case 'MERGED': state = 'merged'; break;
+		case 'CLOSED': state = 'closed'; break;
+		default: return undefined;
+	}
+	return { number: pr.number, title: typeof pr.title === 'string' ? pr.title : '', url: pr.url, state };
+}
+
 /** リポジトリ定義の setup/teardown スクリプトを worktree 上で実行する要求。 */
 export interface IParadisRunLifecycleScriptRequest {
 	/** 実行するスクリプトの種別。 */
