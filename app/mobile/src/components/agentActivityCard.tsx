@@ -3,23 +3,8 @@
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { AgentActivityState, AgentActivityStatus } from '../store.js';
+import { isRunningAgentActivity, summarizeAgentActivity } from '../agentActivityTree.js';
 import { colors } from '../theme.js';
-
-function active(status: AgentActivityStatus): boolean {
-	return status === 'running' || status === 'idle';
-}
-
-export function summarizeAgentActivity(activity: AgentActivityState): string {
-	const failed = [...activity.agents, ...activity.tasks].filter(item => item.status === 'failed').length;
-	const interrupted = [...activity.agents, ...activity.tasks].filter(item => item.status === 'interrupted' || item.status === 'unknown').length;
-	if (activity.agents.length === 0 && activity.tasks.length === 0 && activity.compactions.length > 0) {
-		return 'コンテキスト圧縮が完了';
-	}
-	const parts = [`エージェント${activity.agents.length}件`, `タスク${activity.tasks.length}件`];
-	if (failed > 0) { parts.push(`失敗${failed}件`); }
-	if (interrupted > 0) { parts.push(`中断${interrupted}件`); }
-	return `${parts.join('・')}${failed > 0 || interrupted > 0 ? 'で終了' : 'が完了'}`;
-}
 
 function statusLabel(status: AgentActivityStatus): string {
 	switch (status) {
@@ -37,8 +22,8 @@ function statusColor(status: AgentActivityStatus): string {
 }
 
 export function AgentActivityCard({ activity, onOpen }: { activity: AgentActivityState; onOpen?: (agentId?: string) => void }) {
-	const activeAgents = activity.agents.filter(item => active(item.status));
-	const activeTasks = activity.tasks.filter(item => active(item.status));
+	const activeAgents = activity.agents.filter(item => isRunningAgentActivity(item.status));
+	const activeTasks = activity.tasks.filter(item => isRunningAgentActivity(item.status));
 	const hasActive = activeAgents.length > 0 || activeTasks.length > 0;
 	const latestCompaction = activity.compactions[activity.compactions.length - 1];
 	if (!hasActive) {
@@ -69,8 +54,8 @@ export function AgentActivityCard({ activity, onOpen }: { activity: AgentActivit
 
 /** 親Agentヘッダー直下へ固定する実行中SubAgentのコンパクトストリップ。 */
 export function AgentActivityStrip({ activity, onOpen }: { activity: AgentActivityState; onOpen: (agentId?: string) => void }) {
-	const activeAgents = activity.agents.filter(item => active(item.status));
-	const activeTasks = activity.tasks.filter(item => active(item.status));
+	const activeAgents = activity.agents.filter(item => isRunningAgentActivity(item.status));
+	const activeTasks = activity.tasks.filter(item => isRunningAgentActivity(item.status));
 	if (activeAgents.length === 0 && activeTasks.length === 0) { return null; }
 	return <Pressable accessibilityRole="button" accessibilityLabel="実行中のSubAgentとTaskを開く" onPress={() => onOpen()} style={styles.strip}>
 		<View style={styles.dot} /><Text style={styles.stripTitle}>SubAgents</Text>

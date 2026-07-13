@@ -2709,8 +2709,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.codexMessageBuffers.delete(token);
 			this.codexActiveItems.delete(token);
 			this.clearLiveState(token);
-			const reason = event.method === 'turn/completed' ? 'completed' : event.method === 'turn/aborted' ? 'interrupted' : 'failed';
-			if (this.activityTracker(token).endTurn(reason, now)) {
+			if (this.activityTracker(token).endTurn(now)) {
 				this.pushActivityToSubscribers(token);
 			}
 			return;
@@ -3084,9 +3083,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			? { ...event.payload, parent_agent_id: nestedParentId }
 			: event.payload;
 		const activityChanged = activityPayload !== undefined && this.activityTracker(event.token).applyClaude(event.event, activityPayload, event.at);
-		const activityEnded = event.event === 'Stop' || event.event === 'SessionEnd'
-			? this.activityTracker(event.token).endTurn('completed', event.at)
-			: event.event === 'StopFailure' ? this.activityTracker(event.token).endTurn('failed', event.at) : false;
+		const activityEnded = event.event === 'SessionEnd'
+			? this.activityTracker(event.token).endSession('interrupted', event.at)
+			: event.event === 'Stop' || event.event === 'StopFailure' ? this.activityTracker(event.token).endTurn(event.at) : false;
 		if (activityChanged || activityEnded) {
 			this.pushActivityToSubscribers(event.token);
 		}
@@ -3214,7 +3213,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					} else {
 						this.activeTurnTokens.delete(token);
 						fireParadisAgentTurnEnded(token);
-						changed = tracker.endTurn(event.reason, event.at) || changed;
+						changed = tracker.endTurn(event.at) || changed;
 					}
 				}
 				if (changed) { this.pushActivityToSubscribers(token); }

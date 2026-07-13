@@ -66,11 +66,11 @@ suite('ParadisAgentActivity', () => {
 		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'running');
 	});
 
-	test('ends active work on transcript failure and never reports success', () => {
+	test('keeps active child work when only the parent turn fails', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);
-		tracker.endTurn('failed', 200);
-		assert.deepStrictEqual(tracker.snapshot()?.agents[0].status, 'failed');
+		tracker.endTurn(200);
+		assert.deepStrictEqual(tracker.snapshot()?.agents[0].status, 'running');
 	});
 
 	test('sweeps only unchanged active work after fifteen minutes', () => {
@@ -129,18 +129,33 @@ suite('ParadisAgentActivity', () => {
 		assert.strictEqual(tracker.snapshot()?.agents[0].detail, '問題はありません');
 	});
 
-	test('completes active work when a turn completes', () => {
+	test('keeps active children and tasks when a parent turn completes', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);
-		tracker.endTurn('completed', 200);
+		tracker.applyClaude('TaskCreated', { task_id: 't1', task_subject: 'background task' }, 110);
+		tracker.endTurn(200);
 		assert.strictEqual(tracker.beginTurn(), false);
-		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'completed');
+		assert.deepStrictEqual({
+			agent: tracker.snapshot()?.agents[0].status,
+			task: tracker.snapshot()?.tasks[0].status,
+		}, { agent: 'running', task: 'running' });
+	});
+
+	test('finishes active children and tasks when the whole session ends', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);
+		tracker.applyClaude('TaskCreated', { task_id: 't1', task_subject: 'session task' }, 110);
+		tracker.endSession('interrupted', 200);
+		assert.deepStrictEqual({
+			agent: tracker.snapshot()?.agents[0].status,
+			task: tracker.snapshot()?.tasks[0].status,
+		}, { agent: 'interrupted', task: 'interrupted' });
 	});
 
 	test('does not let a delayed old turn end overwrite newer active work', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: 'thread-2', kind: 'interacted' } }, 200);
-		tracker.endTurn('completed', 100);
+		tracker.endTurn(100);
 		assert.deepStrictEqual(tracker.snapshot()?.agents[0], {
 			id: 'thread-2', label: 'SubAgent', role: 'subagent', provider: 'codex', status: 'running', startedAt: 200, updatedAt: 200,
 		});
@@ -149,7 +164,7 @@ suite('ParadisAgentActivity', () => {
 	test('finishes an orphaned compaction on turn end', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyClaude('PreCompact', { trigger: 'auto' }, 100);
-		tracker.endTurn('completed', 200);
+		tracker.endTurn(200);
 		assert.strictEqual(tracker.snapshot()?.compactions[0].status, 'completed');
 	});
 });
