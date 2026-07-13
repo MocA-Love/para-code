@@ -2,28 +2,26 @@
 
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import * as ImagePicker from 'expo-image-picker';
-import { Alert, Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
 import type { AgentMessageSendResult, AgentModelControlState, FsUploadResult } from '../store.js';
 import { GlassComposer } from './glassComposer.js';
 import { ModelPill } from './modelPill.js';
-import { useComposerDraft } from '../hooks/useComposerDraft.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
 
 /**
  * エージェント詳細画面の入力欄（コンポーザー）を、チャット本文の再レンダリングから
- * 隔離するための子コンポーネント。下書き（value）はこのコンポーネント内のローカルstate
- * （useComposerDraft）だけで完結させ、エージェント応答のストリーミング（agentChats の
- * delta ごとの更新）が入力欄の再レンダリングに波及しないようにする。
+ * 隔離するための子コンポーネント。入力中の文字列はuncontrolledのネイティブTextInputに
+ * 保持し、下書きストアへはonChangeTextから一方向に退避する。エージェント応答の
+ * ストリーミング（agentChats のdeltaごとの更新）も入力欄へ文字列を書き戻さない。
  *
- * これが独立コンポーネントである理由: 制御コンポーネントの TextInput は、日本語IMEの
- * 変換中（マークドテキスト保持中）に親由来で再レンダリングされると value が再適用され、
- * 変換途中の文字列がキャンセルされてしまう。ストリーミング中に頻発する親の再レンダリングを
- * ここで断ち切るため、React.memo で包み、渡す props は「ストリーミングの delta では参照が
- * 変わらないもの」（プリミティブ、またはストアの安定なアクション参照）だけに限定している。
+ * これが独立コンポーネントである理由: 制御コンポーネントのTextInputは、日本語IMEの
+ * 変換中（マークドテキスト保持中）にvalueが再適用されると、変換途中の文字列を確定・分解
+ * してしまう。React.memoで親の更新も隔離しつつ、入力自体をuncontrolledにすることで、
+ * コンポーザー内部の送信状態更新でもIMEの保持領域には触れない。
  * tools（添付ボタン＋ModelPill）も親から要素で受け取らず、このコンポーネント内部で組み立てる
  * （毎レンダリングで新しい要素参照になる props を作らないため）。
  */
@@ -48,37 +46,68 @@ export const AgentComposer = memo(function AgentComposer({
 	requestAgentModelCatalog: (id: number) => void;
 	updateAgentSettings: (id: number, model: string, effort: string) => void;
 }) {
-	const [input, setInput, clearInput] = useComposerDraft(draftKey);
-	const inputRef = useRef(input);
-	inputRef.current = input;
+	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
+	const nativeInputRef = useRef<TextInput>(null);
+	const inputRef = useRef(loadDraft(draftKey));
+	// defaultValueは入力中に変えない。変化させるとuncontrolledでもネイティブIMEへ
+	// propsが再適用される可能性があるため、下書き対象の切替時だけ更新する。
+	const defaultValueRef = useRef(inputRef.current);
 	const submissionGenerationRef = useRef(0);
 	const draftKeyRef = useRef(draftKey);
+	const [inputMeta, setInputMeta] = useState(() => ({ key: draftKey, sendable: inputRef.current.trim().length > 0 }));
 	const [submitting, setSubmitting] = useState(false);
 	if (draftKeyRef.current !== draftKey) {
 		draftKeyRef.current = draftKey;
-		inputRef.current = input;
+		inputRef.current = loadDraft(draftKey);
+		defaultValueRef.current = inputRef.current;
 		submissionGenerationRef.current++;
 	}
+	const sendable = inputMeta.key === draftKey ? inputMeta.sendable : inputRef.current.trim().length > 0;
 	useEffect(() => {
 		setSubmitting(false);
+		setInputMeta({ key: draftKey, sendable: inputRef.current.trim().length > 0 });
 	}, [draftKey]);
 	const updateInput = useCallback((text: string) => {
 		inputRef.current = text;
-		setInput(text);
-	}, [setInput]);
+		if (draftKey !== undefined) {
+			useAppStore.getState().setAgentDraft(draftKey, text);
+		}
+		const nextSendable = text.trim().length > 0;
+		setInputMeta(current => current.key === draftKey && current.sendable === nextSendable
+			? current
+			: { key: draftKey, sendable: nextSendable });
+	}, [draftKey]);
+	const replaceActiveInput = useCallback((text: string) => {
+		inputRef.current = text;
+		if (draftKeyRef.current !== undefined) {
+			useAppStore.getState().setAgentDraft(draftKeyRef.current, text);
+		}
+		nativeInputRef.current?.setNativeProps({ text });
+		setInputMeta({ key: draftKeyRef.current, sendable: text.trim().length > 0 });
+	}, []);
+	const clearActiveInput = useCallback(() => {
+		inputRef.current = '';
+		if (draftKeyRef.current !== undefined) {
+			useAppStore.getState().clearAgentDraft(draftKeyRef.current);
+		}
+		nativeInputRef.current?.clear();
+		setInputMeta({ key: draftKeyRef.current, sendable: false });
+	}, []);
 
 	const submit = useCallback(() => {
 		if (submitting) {
 			return;
 		}
-		const text = input;
+		const text = inputRef.current;
+		if (text.trim().length === 0) {
+			return;
+		}
 		const submittedDraftKey = draftKey;
 		const generation = ++submissionGenerationRef.current;
 		setSubmitting(true);
 		// 送信本文を先に入力欄から退避し、待機中に次のメッセージを入力できるようにする。
 		// reject時だけ最新入力の前へ戻すため、最初の本文が再送されることはない。
-		inputRef.current = '';
-		clearInput();
+		clearActiveInput();
 		sendText(text).catch((): AgentMessageSendResult => ({ status: 'rejected', message: '送信処理中にエラーが発生しました' })).then(result => {
 			const reconciliation = reconcileSubmittedDraftTarget(
 				draftKeyRef.current, submittedDraftKey, inputRef.current,
@@ -86,8 +115,7 @@ export const AgentComposer = memo(function AgentComposer({
 				text, result.status,
 			);
 			if (reconciliation.kind === 'active' && reconciliation.value !== inputRef.current) {
-				inputRef.current = reconciliation.value;
-				setInput(reconciliation.value);
+				replaceActiveInput(reconciliation.value);
 			} else if (reconciliation.kind === 'stored') {
 				useAppStore.getState().setAgentDraft(reconciliation.key, reconciliation.value);
 			}
@@ -105,7 +133,7 @@ export const AgentComposer = memo(function AgentComposer({
 				setSubmitting(false);
 			}
 		});
-	}, [submitting, input, draftKey, clearInput, sendText, onAfterSubmit]);
+	}, [submitting, draftKey, clearActiveInput, replaceActiveInput, sendText, onAfterSubmit]);
 
 	/**
 	 * 画像添付（+ボタン）。フォトライブラリから選び、PCへアップロードして保存先の
@@ -128,10 +156,10 @@ export const AgentComposer = memo(function AgentComposer({
 			const { path } = await fsUpload(name, asset.base64);
 			// アップロードのawait中に入力が変わっている可能性があるため、最新の下書きを
 			// ストアから読んでパスを追記する（stale closure回避）。
-			const prev = uploadDraftKey !== undefined ? useAppStore.getState().agentDrafts[uploadDraftKey] ?? '' : input;
+			const prev = uploadDraftKey !== undefined ? useAppStore.getState().agentDrafts[uploadDraftKey] ?? '' : inputRef.current;
 			const next = prev.length > 0 ? prev + ' ' + path + ' ' : path + ' ';
 			if (draftKeyRef.current === uploadDraftKey) {
-				updateInput(next);
+				replaceActiveInput(next);
 			} else if (uploadDraftKey !== undefined) {
 				useAppStore.getState().setAgentDraft(uploadDraftKey, next);
 			}
@@ -140,15 +168,17 @@ export const AgentComposer = memo(function AgentComposer({
 		} finally {
 			setUploading(false);
 		}
-	}, [uploading, fsUpload, draftKey, input, updateInput]);
+	}, [uploading, fsUpload, draftKey, replaceActiveInput]);
 
 	return (
 		<GlassComposer
-			value={input}
+			defaultValue={defaultValueRef.current}
+			inputKey={draftKey}
+			inputRef={nativeInputRef}
 			onChangeText={updateInput}
 			onSubmit={submit}
 			placeholder="エージェントへメッセージ…"
-			sendDisabled={submitting || input.trim().length === 0}
+			sendDisabled={submitting || !sendable}
 			tools={
 				<>
 					<Pressable style={styles.attachBtn} onPress={() => { hapticImpact('light'); void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">

@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { memo, ReactNode } from 'react';
+import { forwardRef, memo, ReactNode, type Ref } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
@@ -15,8 +15,12 @@ import { glassComposerTextInputBehavior } from './glassComposerBehavior.js';
  * タブバーと質感を揃える。内側のボタン群はHIGに従いglass化しない（glass on glass回避）。
  * エージェントタブ（モデル/Effortピル）とターミナルタブ（特殊キー列）で共用する。
  */
-export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tools, sendIcon = 'arrow-up', sendDisabled = false, monospace = false }: {
-	value: string;
+export function GlassComposer({ defaultValue, inputKey, inputRef, onChangeText, onSubmit, placeholder, tools, sendIcon = 'arrow-up', sendDisabled = false, monospace = false }: {
+	/** TextInputをネイティブ側で保持するための初期値。入力中はReactから書き戻さない。 */
+	defaultValue: string;
+	/** 下書きの対象が切り替わったときだけTextInputを作り直すためのキー。 */
+	inputKey?: string;
+	inputRef?: Ref<TextInput>;
 	onChangeText: (text: string) => void;
 	onSubmit: () => void;
 	placeholder: string;
@@ -31,7 +35,7 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 	return (
 		// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
 		<GlassSurface style={[styles.wrap, !liquidGlass && styles.wrapFallbackBorder]}>
-			<ComposerTextInput value={value} onChangeText={onChangeText} placeholder={placeholder} monospace={monospace} multiline={inputBehavior.multiline} blurOnSubmit={inputBehavior.blurOnSubmit} />
+			<ComposerTextInput key={inputKey} ref={inputRef} defaultValue={defaultValue} onChangeText={onChangeText} placeholder={placeholder} monospace={monospace} multiline={inputBehavior.multiline} blurOnSubmit={inputBehavior.blurOnSubmit} />
 			<View style={styles.tools}>
 				<View style={styles.toolsLeft}>{tools}</View>
 				<Pressable
@@ -49,19 +53,21 @@ export function GlassComposer({ value, onChangeText, onSubmit, placeholder, tool
 
 /**
  * モデル一覧・Effort・チャット本文など入力以外の状態更新から、変換中のネイティブIMEを隔離する。
- * value/onChangeText等が同一ならReact.memoがTextInputへのprops再適用を止める。
+ * 入力文字列はuncontrolledのTextInputが保持する。Reactの再レンダリングで日本語IMEの
+ * marked textへvalueを書き戻さないため、変換途中の確定・濁点の分離を防げる。
  */
-const ComposerTextInput = memo(function ComposerTextInput({ value, onChangeText, placeholder, monospace, multiline, blurOnSubmit }: {
-	value: string;
+const ComposerTextInput = memo(forwardRef<TextInput, {
+	defaultValue: string;
 	onChangeText: (text: string) => void;
 	placeholder: string;
 	monospace: boolean;
 	multiline: boolean;
 	blurOnSubmit: boolean;
-}) {
+}>(function ComposerTextInput({ defaultValue, onChangeText, placeholder, monospace, multiline, blurOnSubmit }, ref) {
 	return <TextInput
+		ref={ref}
 		style={[styles.input, monospace && styles.inputMono]}
-		value={value}
+		defaultValue={defaultValue}
 		onChangeText={onChangeText}
 		placeholder={placeholder}
 		placeholderTextColor={colors.textDim}
@@ -71,7 +77,7 @@ const ComposerTextInput = memo(function ComposerTextInput({ value, onChangeText,
 		onFocus={hapticSelection}
 		blurOnSubmit={blurOnSubmit}
 	/>;
-});
+}));
 
 const styles = StyleSheet.create({
 	wrap: {
