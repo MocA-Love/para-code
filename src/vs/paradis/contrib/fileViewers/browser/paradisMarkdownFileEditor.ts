@@ -11,9 +11,10 @@
 // と標準プレビュー CSS（DEFAULT_MARKDOWN_STYLES）を流用し、webview に表示する。
 // 相対パスの画像は <base href> と localResourceRoots で解決する。
 
-import { generateUuid } from '../../../../base/common/uuid.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { escape } from '../../../../base/common/strings.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { dirname } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
@@ -62,13 +63,13 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		return false;
 	}
 
-	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview): Promise<string> {
+	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview, token: CancellationToken): Promise<string> {
 		const rendered = await renderMarkdownDocument(text, this._extensionService, this._languageService, {
 			sanitizerConfig: {
 				allowRelativeMediaPaths: true,
 				allowRelativeLinkPaths: true,
 			}
-		});
+		}, token);
 
 		const nonce = generateUuid();
 		const dir = dirname(resource);
