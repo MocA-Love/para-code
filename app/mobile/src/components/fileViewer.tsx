@@ -40,6 +40,8 @@ interface FileViewerProps {
 	mediaData?: string;
 	/** テキスト検索から開いた場合の一致行（1始まり）。その行へスクロールしハイライトする。 */
 	focusLine?: number;
+	/** 指定時は閉じるアイコンの代わりに、遷移元へ戻るラベル付きボタンを表示する。 */
+	backLabel?: string;
 	onClose: () => void;
 }
 
@@ -391,7 +393,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 	);
 }
 
-export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, onClose }: FileViewerProps) {
+export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, onClose }: FileViewerProps) {
 	const name = path.split('/').pop() ?? path;
 	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.docx$/i.test(name) ? 'docx' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
@@ -443,7 +445,12 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 		<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
 			<View style={styles.screen}>
 				<View style={styles.header}>
-					<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
+					{backLabel !== undefined ? (
+						<Pressable style={styles.backButton} onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel={`${backLabel}に戻る`}>
+							<Ionicons name="chevron-back" size={21} color={colors.accent2} />
+							<Text style={styles.backText}>{backLabel}</Text>
+						</Pressable>
+					) : <Ionicons name="document-text-outline" size={16} color={colors.textDim} />}
 					<Text style={styles.title} numberOfLines={1}>{path}</Text>
 					{kind === 'markdown' || kind === 'html' ? (
 						<View style={styles.segment}>
@@ -455,9 +462,11 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 							</Pressable>
 						</View>
 					) : null}
-					<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel="閉じる">
-						<Ionicons name="close" size={22} color={colors.text} />
-					</Pressable>
+					{backLabel === undefined ? (
+						<Pressable onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel="閉じる">
+							<Ionicons name="close" size={22} color={colors.text} />
+						</Pressable>
+					) : null}
 				</View>
 				{kind === 'spreadsheet' && sheets !== undefined && sheets.length > 1 ? (
 					<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.sheetBar} contentContainerStyle={styles.sheetBarContent}>
@@ -499,6 +508,8 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 58, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
+	backButton: { flexDirection: 'row', alignItems: 'center', marginLeft: -7, marginRight: 2 },
+	backText: { color: colors.accent2, fontSize: 14 },
 	title: { flex: 1, color: colors.text, fontSize: 13 },
 	segment: { flexDirection: 'row', backgroundColor: colors.panel, borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	segmentBtn: { paddingHorizontal: 10, paddingVertical: 5 },

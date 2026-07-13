@@ -105,6 +105,7 @@ type ScmInbound =
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
+	| { t: 'resolveLink'; id: string; ws: string; path: string }
 	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean }
 	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number }
 	| { t: 'pdf'; id: string; ws: string; path: string }
@@ -1007,6 +1008,58 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 			} catch (err) {
 				reply({ error: String(err) });
+			}
+			return;
+		}
+		if (msg.t === 'resolveLink') {
+			const root = this.resolveWsRoot(msg.ws);
+			if (!root || root.scheme !== 'file' || typeof msg.path !== 'string' || msg.path.length === 0 || msg.path.length > 4_096 || msg.path.includes('\0')) {
+				reply({ error: 'invalid file link' });
+				return;
+			}
+			try {
+				const normalizeRelative = (input: string): string | undefined => {
+					const segments: string[] = [];
+					for (const segment of input.replace(/\\/g, '/').split('/')) {
+						if (segment.length === 0 || segment === '.') { continue; }
+						if (segment === '..') {
+							if (segments.length === 0) { return undefined; }
+							segments.pop();
+						} else {
+							segments.push(segment);
+						}
+					}
+					return segments.join('/');
+				};
+				const rawPath = msg.path.trim();
+				const windowsAbsolute = /^[A-Za-z]:[\\/]/.test(rawPath) || /^\\\\/.test(rawPath);
+				const posixAbsolute = rawPath.startsWith('/');
+				let relativePath: string | undefined;
+				if (windowsAbsolute || posixAbsolute) {
+					const absoluteUri = URI.file(rawPath);
+					if (extUriBiasedIgnorePathCase.isEqualOrParent(absoluteUri, root)) {
+						relativePath = extUriBiasedIgnorePathCase.relativePath(root, absoluteUri);
+					}
+					// `/src/file.ts` はワークスペースルート基準で生成されることもある。
+					// 実絶対パスがroot外の場合だけ、先頭/を外した相対候補として扱う。
+					if (relativePath === undefined && posixAbsolute) {
+						relativePath = normalizeRelative(rawPath.slice(1));
+					}
+				} else {
+					relativePath = normalizeRelative(rawPath);
+				}
+				if (relativePath === undefined || relativePath.length === 0) {
+					reply({ error: 'file link is outside the workspace' });
+					return;
+				}
+				const uri = await this.resolveWorkspacePathReal(msg.ws, relativePath);
+				if (uri === undefined || (await this.fileService.stat(uri)).isDirectory) {
+					reply({ error: 'file link does not point to a file' });
+					return;
+				}
+				reply({ t: 'resolveLink', path: relativePath });
+			} catch {
+				reply({ error: 'file link could not be resolved' });
 			}
 			return;
 		}
