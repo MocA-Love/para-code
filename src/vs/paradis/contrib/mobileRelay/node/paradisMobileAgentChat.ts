@@ -40,6 +40,7 @@ import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgent
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
+import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -166,6 +167,8 @@ const SNAPSHOT_SEND_LIMIT = 200;
 /** 本文テキストの上限 (モバイル表示用。超過は末尾に…を付けて切る)。 */
 const TEXT_LIMIT = 6000;
 const TOOL_TEXT_LIMIT = 1500;
+const PERSISTED_ACTIVITY_HEAD_BYTES = 256 * 1024;
+const PERSISTED_ACTIVITY_MAX_AGENTS = 100;
 const nodeRequire = createRequire(import.meta.url);
 
 function truncateText(text: string, limit: number): string {
@@ -223,6 +226,107 @@ async function isAllowedOpenTranscriptPath(handle: fs.FileHandle, transcriptPath
 		const [opened, current] = await Promise.all([handle.stat(), fs.stat(await fs.realpath(transcriptPath))]);
 		return opened.dev === current.dev && opened.ino === current.ino && opened.isFile();
 	} catch { return false; }
+}
+
+/** 復元用に先頭メタ情報と末尾状態を上限付きで読み、途中行は採用しない。 */
+async function readPersistedTranscriptLines(transcriptPath: string): Promise<readonly string[]> {
+	if (!await isAllowedTranscriptPath(transcriptPath)) { return []; }
+	let handle: fs.FileHandle | undefined;
+	try {
+		const stat = await fs.stat(transcriptPath);
+		if (!stat.isFile() || stat.size <= 0) { return []; }
+		handle = await fs.open(transcriptPath, 'r');
+		if (!await isAllowedOpenTranscriptPath(handle, transcriptPath)) { return []; }
+		const tailBytes = Math.min(INITIAL_READ_TAIL_BYTES, stat.size);
+		if (stat.size <= PERSISTED_ACTIVITY_HEAD_BYTES + tailBytes) {
+			const buffer = Buffer.alloc(stat.size);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+			return buffer.subarray(0, bytesRead).toString('utf8').split('\n').filter(Boolean);
+		}
+		const head = Buffer.alloc(PERSISTED_ACTIVITY_HEAD_BYTES);
+		const tail = Buffer.alloc(tailBytes);
+		const [headRead, tailRead] = await Promise.all([
+			handle.read(head, 0, head.length, 0),
+			handle.read(tail, 0, tail.length, stat.size - tailBytes),
+		]);
+		const headLines = head.subarray(0, headRead.bytesRead).toString('utf8').split('\n');
+		headLines.pop();
+		const tailLines = tail.subarray(0, tailRead.bytesRead).toString('utf8').split('\n');
+		tailLines.shift();
+		return [...headLines, ...tailLines].filter(Boolean);
+	} catch {
+		return [];
+	} finally {
+		if (handle !== undefined) { await handle.close().catch(() => undefined); }
+	}
+}
+
+async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string): Promise<readonly { readonly id: string; readonly path: string; readonly mtime: number }[]> {
+	const dir = resolve(rootTranscriptPath, '..');
+	const filename = rootTranscriptPath.slice(rootTranscriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
+	const subagentsDir = join(dir, filename, 'subagents');
+	let entries: Dirent[];
+	try { entries = await fs.readdir(subagentsDir, { withFileTypes: true }); } catch { return []; }
+	const files: { id: string; path: string; mtime: number }[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile()) { continue; }
+		const match = /^agent-([A-Za-z0-9._:-]{1,500})\.jsonl$/.exec(entry.name);
+		if (match === null) { continue; }
+		const path = join(subagentsDir, entry.name);
+		if (!await isAllowedTranscriptPath(path)) { continue; }
+		const stat = await fs.stat(path).catch(() => undefined);
+		if (stat?.isFile()) { files.push({ id: match[1], path, mtime: stat.mtimeMs }); }
+	}
+	return files.sort((a, b) => b.mtime - a.mtime).slice(0, PERSISTED_ACTIVITY_MAX_AGENTS);
+}
+
+interface ICodexPersistedSubagentFile {
+	readonly id: string;
+	readonly path: string;
+	readonly source: string;
+	readonly mtime: number;
+}
+
+async function discoverCodexPersistedSubagentFiles(rootThreadId: string): Promise<readonly ICodexPersistedSubagentFile[]> {
+	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(rootThreadId)) { return []; }
+	let database: DatabaseSync | undefined;
+	try {
+		const names = await fs.readdir(paradisCodexHome());
+		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+		if (stateDb === undefined) { return []; }
+		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		const rows = database.prepare(`
+			SELECT id, rollout_path, source, COALESCE(updated_at_ms, updated_at * 1000) AS mtime
+			FROM threads
+			WHERE archived = 0 AND source LIKE '%"thread_spawn"%'
+			ORDER BY mtime DESC
+			LIMIT 1000
+		`).all() as unknown[];
+		const candidates = rows.map(value => {
+			const row = rec(value);
+			const id = str(row?.['id']);
+			const path = str(row?.['rollout_path']);
+			const source = str(row?.['source']);
+			const mtime = num(row?.['mtime']);
+			const relationship = source !== undefined ? paradisParseCodexThreadSource(source) : undefined;
+			return id !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(id) && path !== undefined && isAbsolute(path) && path.endsWith('.jsonl') && source !== undefined && mtime !== undefined && relationship !== undefined
+				? { id, path, source, mtime, parentId: relationship.parentThreadId, depth: relationship.depth }
+				: undefined;
+		}).filter((value): value is ICodexPersistedSubagentFile & { readonly parentId: string; readonly depth: number } => value !== undefined);
+		const selected: ICodexPersistedSubagentFile[] = [];
+		let parents = new Set([rootThreadId]);
+		for (let depth = 1; depth <= 5 && parents.size > 0 && selected.length < PERSISTED_ACTIVITY_MAX_AGENTS; depth++) {
+			const children = candidates.filter(candidate => parents.has(candidate.parentId) && !selected.some(item => item.id === candidate.id));
+			selected.push(...children.slice(0, PERSISTED_ACTIVITY_MAX_AGENTS - selected.length));
+			parents = new Set(children.map(child => child.id));
+		}
+		return selected;
+	} catch {
+		return [];
+	} finally {
+		database?.close();
+	}
 }
 
 // ---- transcript行 → 正規化メッセージ --------------------------------------------------------
@@ -1698,6 +1802,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
 	private readonly activityDetailRequests = new Map<string, string>();
+	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 	constructor(
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
@@ -1748,6 +1853,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.completedActions.clear();
 			this.interactionClaims.clear();
 			this.activityDetailRequests.clear();
+			for (const timer of this.persistedActivityTimers.values()) { clearTimeout(timer); }
+			this.persistedActivityTimers.clear();
 		}));
 	}
 
@@ -2855,6 +2962,90 @@ export class ParadisMobileAgentChat extends Disposable {
 		return tracker;
 	}
 
+	private schedulePersistedAgentActivityReconcile(token: string, delay = 350): void {
+		const previous = this.persistedActivityTimers.get(token);
+		if (previous !== undefined) { clearTimeout(previous); }
+		const timer = setTimeout(() => {
+			this.persistedActivityTimers.delete(token);
+			this.reconcilePersistedAgentActivity(token).catch(error => this.logService.trace('[paradisAgentChat] persisted activity recovery failed', String(error)));
+		}, delay);
+		this.persistedActivityTimers.set(token, timer);
+	}
+
+	/** 現在の親セッションが所有する永続JSONだけから、欠落したSubAgent活動を補完する。 */
+	private async reconcilePersistedAgentActivity(token: string): Promise<void> {
+		const session = this.paneSessions.get(token);
+		const tailer = this.tailers.get(token);
+		if (session === undefined || tailer === undefined || !this.isLiveToken(token)) { return; }
+		const epoch = tailer.epoch;
+		const now = Date.now();
+		const recovered: IParadisRecoveredAgentActivity[] = [];
+		const claudeTranscriptPaths: { readonly id: string; readonly path: string }[] = [];
+		if (session.agent === 'claude') {
+			const owners = new Map<string, IParadisRecoveredAgentActivity>();
+			const spawned = new Map<string, IParadisRecoveredAgentActivity>();
+			const rememberSpawned = (agent: IParadisRecoveredAgentActivity) => {
+				const previous = spawned.get(agent.id);
+				if (previous === undefined || agent.updatedAt >= previous.updatedAt) { spawned.set(agent.id, agent); }
+			};
+			const rootStat = await fs.stat(session.transcriptPath).catch(() => undefined);
+			const rootLines = await readPersistedTranscriptLines(session.transcriptPath);
+			if (rootStat !== undefined) {
+				for (const agent of paradisParseClaudePersistedActivity(undefined, rootLines, rootStat.mtimeMs, now).spawned) { rememberSpawned(agent); }
+			}
+			const files = await discoverClaudePersistedSubagentFiles(session.transcriptPath);
+			for (const file of files) {
+				const parsed = paradisParseClaudePersistedActivity(file.id, await readPersistedTranscriptLines(file.path), file.mtime, now);
+				if (parsed.owner !== undefined) { owners.set(file.id, parsed.owner); }
+				for (const agent of parsed.spawned) { rememberSpawned(agent); }
+				claudeTranscriptPaths.push({ id: file.id, path: file.path });
+			}
+			for (const id of new Set([...owners.keys(), ...spawned.keys()])) {
+				const owner = owners.get(id);
+				const spawn = spawned.get(id);
+				if (owner === undefined) { if (spawn !== undefined) { recovered.push(spawn); } continue; }
+				if (spawn === undefined) { recovered.push(owner); continue; }
+				const explicitTerminal = spawn.status === 'completed' || spawn.status === 'failed' || spawn.status === 'interrupted';
+				recovered.push({
+					...owner,
+					label: spawn.label !== 'SubAgent' ? spawn.label : owner.label,
+					...(spawn.detail !== undefined ? { detail: spawn.detail } : {}),
+					...(spawn.parentId !== undefined ? { parentId: spawn.parentId } : {}),
+					...(spawn.depth !== undefined ? { depth: spawn.depth } : {}),
+					status: explicitTerminal ? spawn.status : owner.status,
+					startedAt: Math.min(spawn.startedAt, owner.startedAt),
+					updatedAt: explicitTerminal ? Math.max(spawn.updatedAt, owner.updatedAt) : owner.updatedAt,
+				});
+			}
+		} else if (session.sessionId !== undefined) {
+			const files = await discoverCodexPersistedSubagentFiles(session.sessionId);
+			for (const file of files) {
+				const parsed = paradisParseCodexPersistedActivity(file.id, file.source, await readPersistedTranscriptLines(file.path), file.mtime, now);
+				if (parsed === undefined) { continue; }
+				if (parsed.parentId === session.sessionId) {
+					const { parentId: _, ...rootChild } = parsed;
+					recovered.push(rootChild);
+				} else {
+					recovered.push(parsed);
+				}
+			}
+		}
+		if (this.paneSessions.get(token) !== session || this.tailers.get(token)?.epoch !== epoch || !this.isLiveToken(token)) { return; }
+		for (const item of claudeTranscriptPaths) {
+			this.claudeSubagentTranscriptPaths.set(`${token}\0${item.id}`, item.path);
+		}
+		const allowedIds = new Set<string>();
+		const bounded = recovered.filter(agent => {
+			if (allowedIds.has(agent.id)) { return true; }
+			if (allowedIds.size >= PERSISTED_ACTIVITY_MAX_AGENTS) { return false; }
+			allowedIds.add(agent.id);
+			return true;
+		});
+		if (bounded.length > 0 && this.activityTracker(token).mergeRecoveredAgents(bounded, now)) {
+			this.pushActivityToSubscribers(token);
+		}
+	}
+
 	private async enrichCodexActivityRelationship(token: string, activityId: string, at: number): Promise<void> {
 		const source = await discoverCodexThreadSourceById(activityId);
 		if (source === undefined || !this.isLiveToken(token)) { return; }
@@ -3093,6 +3284,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (activityChanged || activityEnded) {
 			this.pushActivityToSubscribers(event.token);
 		}
+		this.schedulePersistedAgentActivityReconcile(event.token);
 		if (event.event === 'Stop' || event.event === 'SessionEnd' || event.event === 'StopFailure') {
 			this.activeTurnTokens.delete(event.token);
 		}
@@ -3183,6 +3375,9 @@ export class ParadisMobileAgentChat extends Disposable {
 						}
 					}
 				}
+				if (messages.some(message => message.tool === 'Agent' || message.tool === 'Task' || message.text.startsWith('バックグラウンドタスク'))) {
+					this.schedulePersistedAgentActivityReconcile(token);
+				}
 			},
 			onEpochReset: () => {
 				const terminalId = this.terminalIdForToken(token);
@@ -3221,6 +3416,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					}
 				}
 				if (changed) { this.pushActivityToSubscribers(token); }
+				this.schedulePersistedAgentActivityReconcile(token);
 			},
 			// ターン終了（Codex の task_complete / error / turn_aborted）: 考え中表示を解除し、
 			// ペイン実行状態（working）側の解除は hook バス経由で ParadisAgentBrowserService に任せる。
@@ -3231,11 +3427,19 @@ export class ParadisMobileAgentChat extends Disposable {
 			},
 		}, this.logService);
 		this.tailers.set(token, tailer);
+		tailer.ready.then(() => {
+			if (this.tailers.get(token) === tailer) { this.schedulePersistedAgentActivityReconcile(token, 0); }
+		}).catch(error => this.logService.trace('[paradisAgentChat] initial persisted activity recovery failed', String(error)));
 		return tailer;
 	}
 
 	/** tailer を破棄し、そのペインのアクティビティを「何もしていない」へ戻す（stale な赤/実行中表示の防止）。 */
 	private disposeTailer(token: string): void {
+		const recoveryTimer = this.persistedActivityTimers.get(token);
+		if (recoveryTimer !== undefined) {
+			clearTimeout(recoveryTimer);
+			this.persistedActivityTimers.delete(token);
+		}
 		const tailer = this.tailers.get(token);
 		if (tailer !== undefined) {
 			tailer.dispose();
