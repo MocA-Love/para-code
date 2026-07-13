@@ -446,26 +446,25 @@ function webDomains(msgs: readonly { text: string }[]): string[] {
 	return [...domains];
 }
 
-function Favicon({ domain, remote = false }: { domain: string; remote?: boolean }) {
+function Favicon({ domain }: { domain: string }) {
 	const [failed, setFailed] = useState(false);
-	return <View style={styles.favicon} accessible={false}>{!remote || failed ? <Text style={styles.faviconLetter}>{domain.slice(0, 1).toUpperCase()}</Text> : <Image accessible={false} source={{ uri: `https://www.google.com/s2/favicons?sz=64&domain_url=${encodeURIComponent(`https://${domain}`)}` }} style={styles.faviconImage} onError={() => setFailed(true)} />}</View>;
+	return <View style={styles.favicon} accessible={false}>{failed ? <Text style={styles.faviconLetter}>{domain.slice(0, 1).toUpperCase()}</Text> : <Image accessible={false} source={{ uri: `https://www.google.com/s2/favicons?sz=64&domain_url=${encodeURIComponent(`https://${domain}`)}` }} style={styles.faviconImage} onError={() => setFailed(true)} />}</View>;
 }
 
 /** ChatGPTの検索中表示に近い、クエリ＋発見サイトfaviconの専用アクティビティ。 */
 function WebSearchActivity({ msgs }: { msgs: AgentChatMessage[] }) {
 	const [expanded, setExpanded] = useState(false);
-	const [remoteFavicons, setRemoteFavicons] = useState(false);
 	const query = msgs.find(message => message.kind === 'tool_use' && message.tool === 'web_search')?.text ?? 'Web検索';
 	const domains = webDomains(msgs);
 	const completed = msgs.some(message => message.kind === 'tool_result');
 	const failed = msgs.some(message => message.kind === 'tool_result' && message.text.startsWith('Web検索に失敗しました'));
 	return <View style={styles.webWrap}>
 		<Pressable style={styles.webRow} onPress={() => { hapticSelection(); setExpanded(value => !value); }} accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={expanded ? 'Web検索アクティビティを折りたたむ' : 'Web検索アクティビティを展開'}>
-			<View style={styles.faviconStack}>{domains.length > 0 ? domains.slice(0, 4).map(domain => <Favicon key={domain} domain={domain} remote={remoteFavicons} />) : <View style={styles.favicon}><Ionicons name="search" size={12} color={colors.accent2} /></View>}</View>
+			<View style={styles.faviconStack}>{domains.length > 0 ? domains.slice(0, 4).map(domain => <Favicon key={domain} domain={domain} />) : <View style={styles.favicon}><Ionicons name="search" size={12} color={colors.accent2} /></View>}</View>
 			<View style={styles.webBody}><Text style={[styles.webLabel, failed && { color: colors.red }]}>{failed ? 'Web検索失敗' : domains.length > 0 ? `${domains.length}サイトを参照` : completed ? 'Web検索完了' : 'Webを検索中'}</Text><Text style={styles.webQuery} numberOfLines={1}>{query}</Text></View>
 			<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
 		</Pressable>
-		{expanded ? <View style={styles.activityBody}>{msgs.map(message => <MessageBubble key={message.rev} message={message} />)}{domains.length > 0 && !remoteFavicons ? <Pressable accessibilityRole="button" accessibilityLabel="Googleからサイトアイコンを取得" onPress={() => setRemoteFavicons(true)}><Text style={styles.faviconConsent}>サイトアイコンを表示（ドメイン名をGoogleへ送信）</Text></Pressable> : null}{domains.map(domain => <View key={domain} style={styles.domainRow}><Favicon domain={domain} remote={remoteFavicons} /><Text style={styles.domainText}>{domain}</Text></View>)}</View> : null}
+		{expanded ? <View style={styles.activityBody}>{msgs.map(message => <MessageBubble key={message.rev} message={message} />)}{domains.map(domain => <View key={domain} style={styles.domainRow}><Favicon domain={domain} /><Text style={styles.domainText}>{domain}</Text></View>)}</View> : null}
 	</View>;
 }
 
@@ -599,7 +598,7 @@ const styles = StyleSheet.create({
 	activityText: { color: colors.textDim, fontSize: 11, flex: 1 },
 	activityBody: { gap: 6, paddingLeft: 14, paddingTop: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border, marginLeft: 8 },
 	webWrap: { marginVertical: 2 }, webRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 13, backgroundColor: 'rgba(9,175,217,.07)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(9,175,217,.18)' },
-	faviconStack: { flexDirection: 'row', alignItems: 'center', paddingRight: 4 }, favicon: { width: 22, height: 22, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginRight: -5, overflow: 'hidden' }, faviconImage: { width: 14, height: 14, borderRadius: 3 }, faviconLetter: { color: colors.textDim, fontSize: 9, fontWeight: '800' }, faviconConsent: { color: colors.accent2, fontSize: 9.5, paddingVertical: 5 },
+	faviconStack: { flexDirection: 'row', alignItems: 'center', paddingRight: 4 }, favicon: { width: 22, height: 22, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginRight: -5, overflow: 'hidden' }, faviconImage: { width: 14, height: 14, borderRadius: 3 }, faviconLetter: { color: colors.textDim, fontSize: 9, fontWeight: '800' },
 	webBody: { flex: 1, minWidth: 0 }, webLabel: { color: colors.accent2, fontSize: 9.5, fontWeight: '700' }, webQuery: { color: colors.text, fontSize: 11, marginTop: 1 }, domainRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }, domainText: { color: colors.textDim, fontSize: 10.5 },
 	toolRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 4 },
 	toolText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flex: 1, lineHeight: 15 },

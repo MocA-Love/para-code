@@ -718,6 +718,10 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 						text = subagentType !== undefined && subagentType.length > 0 ? `${description} (${subagentType})` : description;
 					}
 				}
+				if (tool === 'web_search') {
+					// クエリ文字列をそのまま出す（JSON のままだとモバイルの検索カードで読みにくい）。
+					text = str(input?.['query']) ?? '';
+				}
 				if (text.length === 0) {
 					try {
 						text = JSON.stringify(b['input']);
