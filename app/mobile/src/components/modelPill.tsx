@@ -165,7 +165,6 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 				onClose={cancelSheet}
 				onConfirm={() => { void confirmSheet(); }}
 				title="モデルと Effort"
-				fullHeight
 				glass
 			>
 				<ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
@@ -195,7 +194,6 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 							>
 								<View style={styles.modelBody}>
 									<Text style={[styles.modelLabel, isSelected && styles.modelLabelActive]}>{option.label}</Text>
-									<Text style={styles.modelId}>{option.id}</Text>
 								</View>
 								{isCurrent ? <Text style={[styles.currentTag, { color: agentAccent, backgroundColor: agentAccentWash }]}>使用中</Text> : null}
 								{isSelected ? <Ionicons name="checkmark" size={16} color={agentAccent} /> : null}
@@ -248,7 +246,6 @@ const styles = StyleSheet.create({
 	modelBody: { flex: 1, minWidth: 0 },
 	modelLabel: { color: colors.textDim, fontSize: 13.5, fontWeight: '700' },
 	modelLabelActive: { color: colors.text },
-	modelId: { color: colors.textDim, fontSize: 10.5, fontFamily: 'Menlo', marginTop: 1 },
 	currentTag: { color: colors.accent, fontSize: 10, fontWeight: '700', backgroundColor: colors.accentWash, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
 	hint: { color: colors.textDim, fontSize: 10.5, lineHeight: 15, marginTop: 4 },
 });
