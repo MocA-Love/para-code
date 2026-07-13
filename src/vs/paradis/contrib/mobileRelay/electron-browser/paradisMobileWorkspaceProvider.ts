@@ -28,6 +28,7 @@ import { IExtensionService } from '../../../../workbench/services/extensions/com
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
@@ -48,7 +49,9 @@ interface StateSnapshot {
 	activeWs: string | undefined;
 	// parent: worktree（スペース）の親リポジトリid。モバイル側がドロワーで親子グルーピング
 	// （開閉表示）するために使う。旧アプリは無視するため後方互換（フラット表示のまま）。
-	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string }[];
+	// pr: 現在ブランチに紐づく GitHub PR（PC版 Workspaces ビューの PR チップと同じ供給源）。
+	// モバイルのエージェント詳細画面が PR ピルの表示に使う。旧アプリは無視する。
+	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string; pr?: { number: number; state: IParadisPrStatus['state']; url: string } }[];
 	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
@@ -215,6 +218,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// instantiationService.invokeFunction に束ねて渡される。runGit等と同じコールバック方式）
 		private readonly getWorktreeCreateForm: () => Promise<IParadisWorktreeCreateFormData>,
 		private readonly createWorktree: (request: IParadisHeadlessWorktreeRequest) => Promise<IParadisHeadlessWorktreeResult>,
+		// 各パスの現在ブランチに紐づく PR 状態。実体は PC 版 Workspaces ビューと同じ
+		// paradis.workspaceSwitch.getPrStatuses コマンド（contribution側で束ねて渡される）
+		private readonly getPrStatuses: (paths: readonly string[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
 	) {
 		super();
 
@@ -222,7 +228,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// 再送はイベント起点では100msに集約する（特にウィンドウリサイズ中の
 		// onDidChangeInstanceDimensions はインスタンス数×フレーム数で連射されるため、
 		// そのまま送るとリレー帯域を浪費する）。
-		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.refreshBranches(); this.pushStateSoon(); }));
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.refreshBranches(); this.kickPrStatusRefresh(); this.pushStateSoon(); }));
 		// 切替はエディタターミナルのpark/unpark（allInstances の増減）を伴うため、agentペイン対応表も同期し直す
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); this.pushAgentPanes(); }));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
@@ -238,8 +244,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// 生ストリームだけだと「新寸法向けの再描画がモバイルの旧寸法xtermへ書かれる」レースが
 		// 構造的に残り、特に代替バッファ（TUI）はリサイズでリフローされないため崩れたままになる。
 		this._register(this.terminalService.onDidChangeInstanceDimensions(instance => this.scheduleResizeResync(instance)));
-		// worktree（スペース）の増減もワークスペース一覧に反映する
-		this._register(this.worktreeService.onDidChangeWorktrees(() => this.pushStateSoon()));
+		// worktree（スペース）の増減もワークスペース一覧に反映する（PR 状態も前倒しで取り直す）
+		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.kickPrStatusRefresh(); this.pushStateSoon(); }));
 		// agentチャネル用: terminalId ⇔ ペイントークンの対応を shared process へ同期する
 		// （チャットミラーが attach(id) を transcript へ解決するのに使う）。
 		this._register(this.paneTokenService.onDidChange(() => this.pushAgentPanes()));
@@ -284,6 +290,105 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	// リポジトリID → 現在のブランチ名（state スナップショット用の非同期キャッシュ）。
 	private readonly branchCache = new Map<string, string>();
+
+	// ---- PR 状態（ワークスペースid → 現在ブランチの GitHub PR）のポーリング ----
+	// PC版 Workspaces ビューと同じ間隔。gh の GitHub API 呼び出しを伴うため、
+	// モバイルが1台もオンラインでない間はポーリングを止める。
+	private static readonly PR_STATUS_POLL_INTERVAL_MS = 300_000;
+	private readonly prStatusCache = new Map<string, IParadisPrStatus>();
+	private mobileOnline = false;
+	private prStatusesInFlight = false;
+	private readonly prStatusScheduler = this._register(new RunOnceScheduler(() => { this.refreshPrStatuses().catch(() => { /* refreshPrStatuses内で処理済み */ }); }, ParadisMobileWorkspaceProvider.PR_STATUS_POLL_INTERVAL_MS));
+
+	/** リポジトリ/worktree 構成が変わった直後の前倒し取得（オンライン時のみ）。 */
+	private kickPrStatusRefresh(): void {
+		if (this.mobileOnline) {
+			this.prStatusScheduler.schedule(0);
+		}
+	}
+
+	/** contribution が relay の接続状態（オンラインのモバイル台数 > 0）を反映する。 */
+	setMobileOnline(online: boolean): void {
+		if (this.mobileOnline === online) {
+			return;
+		}
+		this.mobileOnline = online;
+		if (online) {
+			// オンラインへ転じた瞬間に1回即時取得し、以後は間隔ポーリング
+			this.prStatusScheduler.schedule(0);
+		} else {
+			this.prStatusScheduler.cancel();
+		}
+	}
+
+	/** 各ワークスペース（リポジトリ本体 + worktree）の PR 状態を取得し、変化があれば state を再送する。 */
+	private async refreshPrStatuses(): Promise<void> {
+		if (!this.mobileOnline) {
+			return;
+		}
+		if (this.prStatusesInFlight) {
+			this.prStatusScheduler.schedule();
+			return;
+		}
+		// fsPath → ワークスペースid（stateスナップショットの workspaces[].id と同じキー体系）
+		const pathToWsId = new Map<string, string>();
+		for (const repo of this.workspaceSwitchService.repositories) {
+			if (repo.uri.scheme !== 'file') {
+				continue;
+			}
+			pathToWsId.set(repo.uri.fsPath, repo.id);
+			for (const worktree of this.worktreeService.getWorktrees(repo.id)) {
+				if (!worktree.missing) {
+					pathToWsId.set(worktree.uri.fsPath, paradisWorktreeStateKey(worktree.uri));
+				}
+			}
+		}
+		if (pathToWsId.size === 0) {
+			this.prStatusScheduler.schedule();
+			return;
+		}
+		this.prStatusesInFlight = true;
+		try {
+			const result = await this.getPrStatuses([...pathToWsId.keys()]);
+			if (result) {
+				const next = new Map<string, IParadisPrStatus>();
+				for (const [path, status] of Object.entries(result)) {
+					const wsId = pathToWsId.get(path);
+					if (wsId !== undefined) {
+						next.set(wsId, status);
+					}
+				}
+				const changed = next.size !== this.prStatusCache.size
+					|| [...next].some(([wsId, status]) => {
+						const prev = this.prStatusCache.get(wsId);
+						return !prev || prev.number !== status.number || prev.state !== status.state || prev.url !== status.url;
+					});
+				if (changed) {
+					this.prStatusCache.clear();
+					for (const [wsId, status] of next) {
+						this.prStatusCache.set(wsId, status);
+					}
+					this.pushStateSoon();
+				}
+			}
+		} catch (err) {
+			// gh 未認証・コマンド未登録等は PR ピルを出さないだけで安全に縮退する
+			this.logService.trace('[paradisMobileRelay] refreshPrStatuses failed', String(err));
+		} finally {
+			this.prStatusesInFlight = false;
+			// 取得中にモバイルが全切断された場合はここで止める（setMobileOnlineのcancelは
+			// スケジューラにしか効かないため、実行中だった1回分の再スケジュールを防ぐ）
+			if (this.mobileOnline) {
+				this.prStatusScheduler.schedule();
+			}
+		}
+	}
+
+	/** stateスナップショットの workspaces[].pr 用に必要最小限のフィールドへ絞る。 */
+	private prForWs(wsId: string): { pr: { number: number; state: IParadisPrStatus['state']; url: string } } | Record<string, never> {
+		const status = this.prStatusCache.get(wsId);
+		return status ? { pr: { number: status.number, state: status.state, url: status.url } } : {};
+	}
 
 	/** 各リポジトリのブランチ名を非同期に更新し、変化があれば state を再送する。 */
 	private refreshBranches(): void {
@@ -396,6 +501,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				name: r.name,
 				...(r.color ? { color: r.color } : {}),
 				...(this.branchCache.has(r.id) ? { branch: this.branchCache.get(r.id) } : {}),
+				...this.prForWs(r.id),
 			});
 			for (const worktree of this.worktreeService.getWorktrees(r.id)) {
 				if (worktree.missing) {
@@ -409,6 +515,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					...(r.color ? { color: r.color } : {}),
 					...(worktree.branch ? { branch: worktree.branch } : {}),
 					parent: r.id,
+					...this.prForWs(paradisWorktreeStateKey(worktree.uri)),
 				});
 			}
 		}

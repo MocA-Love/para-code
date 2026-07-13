@@ -11,6 +11,13 @@
 import { type Frame, type Identity, type NotifyPayload, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity } from '@para/protocol';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
+/** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
+export interface WorkspacePrStatus {
+	number: number;
+	state: 'open' | 'draft' | 'merged' | 'closed';
+	url: string;
+}
+
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
 export interface WorkspaceState {
 	/** PC側ターミナルinstanceIdの名前空間。旧PCでは未設定。 */
@@ -18,7 +25,8 @@ export interface WorkspaceState {
 	activeWs: string | undefined;
 	// parent: worktree（スペース）の親リポジトリid。ドロワーの親子グルーピング（開閉表示）に使う。
 	// 旧PC（parent未配信）ではundefinedのままフラット表示にフォールバックする。
-	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string }[];
+	// pr: 現在ブランチに紐づくGitHub PR（PC側がghでポーリング）。旧PCでは未配信。
+	workspaces: { id: string; name: string; color?: string; branch?: string; parent?: string; pr?: WorkspacePrStatus }[];
 	// agent: そのターミナルでエージェントCLI（claude/codex）が動いた実績があるか（PC側のhook発火実績）。
 	// ホーム一覧・Live Activity はこのフラグで「エージェントのターミナル」だけに絞る。
 	terminals: { id: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
