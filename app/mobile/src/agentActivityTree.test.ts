@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants, flattenAgentActivity } from './agentActivityTree.js';
-import type { AgentActivityAgent } from './store.js';
+import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants, flattenAgentActivity, isRunningAgentActivity, summarizeAgentActivity } from './agentActivityTree.js';
+import type { AgentActivityAgent, AgentActivityState } from './store.js';
 
 const agent = (id: string, parentId?: string): AgentActivityAgent => ({
 	id, label: id, role: 'subagent', provider: 'codex', ...(parentId !== undefined ? { parentId } : {}),
@@ -8,6 +8,19 @@ const agent = (id: string, parentId?: string): AgentActivityAgent => ({
 });
 
 describe('agentActivityTree', () => {
+	it('counts only running activity as currently executing', () => {
+		expect(['running', 'idle', 'completed', 'failed', 'interrupted', 'unknown'].map(status => isRunningAgentActivity(status as AgentActivityAgent['status']))).toEqual([
+			true, false, false, false, false, false,
+		]);
+	});
+
+	it('reports idle agents as waiting instead of completed', () => {
+		const activity: AgentActivityState = {
+			agents: [{ ...agent('researcher'), status: 'idle' }], tasks: [], compactions: [], startedAt: 1, updatedAt: 2,
+		};
+		expect(summarizeAgentActivity(activity)).toBe('エージェント1件・タスク0件・待機1件');
+	});
+
 	it('flattens nested agents in parent-first order with derived depth', () => {
 		const agents = [agent('grandchild', 'child'), agent('root'), agent('child', 'root'), agent('sibling')];
 		expect(flattenAgentActivity(agents).map(row => [row.agent.id, row.depth])).toEqual([

@@ -11,7 +11,7 @@ import { colors } from '../src/theme.js';
 import { hapticSelection } from '../src/haptics.js';
 import { useNow } from '../src/time.js';
 import type { AgentActivityAgent, AgentActivityStatus, AgentActivityTask } from '../src/store.js';
-import { flattenAgentActivity } from '../src/agentActivityTree.js';
+import { flattenAgentActivity, isRunningAgentActivity } from '../src/agentActivityTree.js';
 
 type ActivityRow = { kind: 'section'; title: string; empty?: string } | { kind: 'agent'; value: AgentActivityAgent; depth: number } | { kind: 'task'; value: AgentActivityTask };
 
@@ -49,7 +49,7 @@ export default function AgentActivityScreen() {
 	const chatLoading = !parentMissing && chat === undefined;
 	const activity = chat?.activity;
 	const sessionChanged = chat !== undefined && typeof params.epoch === 'string' && chat.epoch !== params.epoch;
-	const activeAgents = activity?.agents.filter(agent => agent.status === 'running') ?? [];
+	const activeAgents = activity?.agents.filter(agent => isRunningAgentActivity(agent.status)) ?? [];
 	const rows: ActivityRow[] = activity === undefined ? [] : [
 		{ kind: 'section', title: 'Agent tree', ...(activity.agents.length === 0 ? { empty: '検出されたSubAgentはありません' } : {}) },
 		...flattenAgentActivity(activity.agents).map(({ agent: value, depth }) => ({ kind: 'agent' as const, value, depth })),

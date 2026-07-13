@@ -1,10 +1,31 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { AgentActivityAgent } from './store.js';
+import type { AgentActivityAgent, AgentActivityState, AgentActivityStatus } from './store.js';
 
 export interface AgentActivityTreeRow {
 	readonly agent: AgentActivityAgent;
 	readonly depth: number;
+}
+
+/** 固定ヘッダーと「実行中」件数へ含める状態を一箇所で定義する。 */
+export function isRunningAgentActivity(status: AgentActivityStatus): boolean {
+	return status === 'running';
+}
+
+/** 完了・失敗・待機を混同せず、履歴カードの要約文を生成する。 */
+export function summarizeAgentActivity(activity: AgentActivityState): string {
+	const items = [...activity.agents, ...activity.tasks];
+	const failed = items.filter(item => item.status === 'failed').length;
+	const interrupted = items.filter(item => item.status === 'interrupted' || item.status === 'unknown').length;
+	const idle = items.filter(item => item.status === 'idle').length;
+	if (activity.agents.length === 0 && activity.tasks.length === 0 && activity.compactions.length > 0) {
+		return 'コンテキスト圧縮が完了';
+	}
+	const parts = [`エージェント${activity.agents.length}件`, `タスク${activity.tasks.length}件`];
+	if (idle > 0) { parts.push(`待機${idle}件`); }
+	if (failed > 0) { parts.push(`失敗${failed}件`); }
+	if (interrupted > 0) { parts.push(`中断${interrupted}件`); }
+	return `${parts.join('・')}${failed > 0 || interrupted > 0 ? 'で終了' : idle > 0 ? '' : 'が完了'}`;
 }
 
 function indexAgents(agents: readonly AgentActivityAgent[]): Map<string, AgentActivityAgent> {

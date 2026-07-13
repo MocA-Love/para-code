@@ -22,6 +22,7 @@ import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
+import { isRunningAgentActivity } from '../src/agentActivityTree.js';
 
 /**
  * エージェント詳細画面。ホームの一覧（または通知）から1エージェントを選んで開く
@@ -63,7 +64,7 @@ export default function AgentDetailScreen() {
 		?? allTerminals.find(t => (t.ws ?? workspace?.activeWs) === effectiveWsId);
 	const activeId = activeTerminal?.id;
 	const chat = activeId !== undefined ? agentChats.get(activeId) : undefined;
-	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => item.status === 'running' || item.status === 'idle') || chat.activity.tasks.some(item => item.status === 'running' || item.status === 'idle'));
+	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
 	const permissionPending = activeTerminal?.agentStatus === 'permission';
 	const actions = useAgentActions(activeId, chat?.agent);
 

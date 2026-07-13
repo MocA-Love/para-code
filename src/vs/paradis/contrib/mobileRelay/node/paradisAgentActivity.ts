@@ -203,7 +203,15 @@ export class ParadisAgentActivityTracker {
 		return this.finishApply(before, Math.max(previous.updatedAt, at));
 	}
 
-	endTurn(reason: 'completed' | 'failed' | 'interrupted', at: number): boolean {
+	/** 親Agentのターン終了。子Agent/Taskは各自の終了イベントが正本なので変更しない。 */
+	endTurn(at: number): boolean {
+		const before = this.serialized();
+		this.finishCompactions(at);
+		return this.finishApply(before, at);
+	}
+
+	/** セッション自体の終了時だけ、残っている子Agent/Taskも打ち切る。 */
+	endSession(reason: 'completed' | 'failed' | 'interrupted', at: number): boolean {
 		const before = this.serialized();
 		for (const [id, agent] of this.agents) {
 			if ((agent.status === 'running' || agent.status === 'idle') && agent.updatedAt <= at) {
@@ -215,6 +223,11 @@ export class ParadisAgentActivityTracker {
 				this.tasks.set(id, { ...task, status: reason, updatedAt: at });
 			}
 		}
+		this.finishCompactions(at);
+		return this.finishApply(before, at);
+	}
+
+	private finishCompactions(at: number): void {
 		for (const [id, compaction] of this.compactions) {
 			if (compaction.status === 'running' && compaction.updatedAt <= at) {
 				this.compactions.set(id, { ...compaction, status: 'completed', updatedAt: at });
@@ -224,7 +237,6 @@ export class ParadisAgentActivityTracker {
 		if (activeCompaction === undefined || activeCompaction.updatedAt <= at) {
 			this.activeCompactionId = undefined;
 		}
-		return this.finishApply(before, at);
 	}
 
 	sweepStale(now: number): boolean {
