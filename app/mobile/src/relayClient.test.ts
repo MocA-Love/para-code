@@ -179,4 +179,36 @@ describe('RelayClient', () => {
 		await flush();
 		expect(created).toBe(2);
 	});
+
+	it('suspends the foreground socket and reconnects with a fresh socket on resume', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pairs: FakeSocketPair[] = [];
+		const received: Frame[] = [];
+		const client = new RelayClient(mobile, credsFor(pc.publicKey), () => {
+			const pair = new FakeSocketPair();
+			pairs.push(pair);
+			return pair.client;
+		}, { onFrame: frame => received.push(frame) });
+
+		client.connect();
+		const firstPcMuxPromise = drivePcSide(pairs[0]!, pc, mobile.publicKey);
+		pairs[0]!.fireOpen();
+		const firstPcMux = await firstPcMuxPromise;
+		await flush();
+		client.suspend();
+		expect(client.connectionState).toBe('offline');
+
+		firstPcMux.send(Channels.State, new TextEncoder().encode('{"stale":true}'));
+		await flush();
+		expect(received).toEqual([]);
+
+		client.resume();
+		expect(pairs).toHaveLength(2);
+		const secondPcMuxPromise = drivePcSide(pairs[1]!, pc, mobile.publicKey);
+		pairs[1]!.fireOpen();
+		await secondPcMuxPromise;
+		await flush();
+		expect(client.connectionState).toBe('online');
+	});
 });

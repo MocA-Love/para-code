@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { BlurView } from 'expo-blur';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
@@ -20,9 +20,11 @@ import { wsColor } from '../src/components/wsDrawer.js';
 import { useAgentActions } from '../src/hooks/useAgentActions.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
+import { shouldHandleLatestEntry } from '../src/agentNavigation.js';
 
 /**
  * エージェント詳細画面。ホームの一覧（または通知）から1エージェントを選んで開く
@@ -41,6 +43,7 @@ import { isRunningAgentActivity } from '../src/agentActivityTree.js';
  */
 export default function AgentDetailScreen() {
 	const router = useRouter();
+	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
 	const { workspace, agentChats, selectedWs, selectedTerminalId, connection, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
 		selectedTerminalId: s.selectedTerminalId, connection: s.connection,
@@ -200,15 +203,19 @@ export default function AgentDetailScreen() {
 	const userScrollGestureRef = useRef(false);
 	const userDraggingRef = useRef(false);
 	const userMomentumRef = useRef(false);
+	const handledLatestEntryRef = useRef<string | undefined>(undefined);
+	// FlatListは初回に分割レンダリングされるため、最新位置へ到達するまでcontentSize更新ごとに
+	// scrollToEndを繰り返す。到達後またはユーザー操作開始時に解除する。
+	const latestEntryPendingRef = useRef(false);
 	// sticky解除中に届いた新着（確定メッセージ）の件数。ジャンプボタンのバッジに出す。
 	const [newCount, setNewCount] = useState(0);
-	const setSticky = (value: boolean) => {
+	const setSticky = useCallback((value: boolean) => {
 		stickyRef.current = value;
 		setStickyState(value);
 		if (value) {
 			setNewCount(0);
 		}
-	};
+	}, []);
 	const prevCountRef = useRef(0);
 	useEffect(() => {
 		userScrollGestureRef.current = false;
@@ -216,7 +223,20 @@ export default function AgentDetailScreen() {
 		userMomentumRef.current = false;
 		setSticky(true);
 		prevCountRef.current = 0;
-	}, [activeId]);
+	}, [activeId, setSticky]);
+	useEffect(() => {
+		if (activeId === undefined || !shouldHandleLatestEntry(handledLatestEntryRef.current, latestEntry)) {
+			return;
+		}
+		handledLatestEntryRef.current = latestEntry;
+		latestEntryPendingRef.current = true;
+		userScrollGestureRef.current = false;
+		userDraggingRef.current = false;
+		userMomentumRef.current = false;
+		setSticky(true);
+		const frame = requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
+		return () => cancelAnimationFrame(frame);
+	}, [activeId, latestEntry, setSticky]);
 	const messageCount = chat?.messages.length ?? 0;
 	useEffect(() => {
 		const delta = messageCount - prevCountRef.current;
@@ -226,7 +246,7 @@ export default function AgentDetailScreen() {
 		}
 	}, [messageCount]);
 	const onContentSizeChange = () => {
-		if (stickyRef.current) {
+		if (stickyRef.current || latestEntryPendingRef.current) {
 			listRef.current?.scrollToEnd({ animated: false });
 		}
 	};
@@ -234,6 +254,7 @@ export default function AgentDetailScreen() {
 	// 新着やfooter伸長によるcontentSize更新でもonScrollは発火するため、位置だけで
 	// ユーザー操作と判定すると、旧offsetを見た瞬間に追従が誤解除される。
 	const onScrollBeginDrag = () => {
+		latestEntryPendingRef.current = false;
 		userScrollGestureRef.current = true;
 		userDraggingRef.current = true;
 		userMomentumRef.current = false;
@@ -255,11 +276,14 @@ export default function AgentDetailScreen() {
 		userMomentumRef.current = false;
 		setSticky(true);
 		listRef.current?.scrollToEnd({ animated: true });
-	}, []);
+	}, [setSticky]);
 	// sticky判定のしきい値: 下端から80px以内なら「最下部にいる」とみなす。
 	const onListScroll = (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
 		const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
 		const nearBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - 80;
+		if (nearBottom) {
+			latestEntryPendingRef.current = false;
+		}
 		if (nearBottom && !stickyRef.current) {
 			setSticky(true);
 		} else if (!nearBottom && stickyRef.current && (userDraggingRef.current || userMomentumRef.current)) {
@@ -551,21 +575,32 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 	const pulse = useRef(new Animated.Value(0)).current;
 	const [, setClock] = useState(0);
+	const isAppActive = useAppIsActive();
 	useEffect(() => {
+		pulse.stopAnimation();
+		pulse.setValue(0);
+		if (!isAppActive) {
+			return;
+		}
 		const loop = Animated.loop(Animated.sequence([
 			Animated.timing(pulse, { toValue: 1, duration: 600, useNativeDriver: true }),
 			Animated.timing(pulse, { toValue: 0, duration: 600, useNativeDriver: true }),
 		]));
 		loop.start();
-		return () => loop.stop();
-	}, [pulse]);
+		return () => {
+			loop.stop();
+			pulse.stopAnimation();
+			pulse.setValue(0);
+		};
+	}, [isAppActive, pulse]);
 	useEffect(() => {
-		if (live === undefined) {
+		if (live === undefined || !isAppActive) {
 			return;
 		}
+		setClock(Date.now());
 		const timer = setInterval(() => setClock(Date.now()), 1000);
 		return () => clearInterval(timer);
-	}, [live]);
+	}, [isAppActive, live]);
 	const dot = (delay: number) => (
 		<Animated.View
 			style={[styles.workingDot, {

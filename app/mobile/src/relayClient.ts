@@ -73,6 +73,9 @@ export class RelayClient {
 	private mux: FrameMux | null = null;
 	private state: ConnectionState = 'offline';
 	private closedByUser = false;
+	private suspended = false;
+	/** 破棄済みソケットにキューされていたコールバックを無効化する世代番号。 */
+	private socketGeneration = 0;
 	private reconnectAttempt = 0;
 	private reconnectHandle: unknown = null;
 	private connectTimeoutHandle: unknown = null;
@@ -93,19 +96,52 @@ export class RelayClient {
 
 	connect(): void {
 		this.closedByUser = false;
+		this.suspended = false;
 		this.openSocket();
 	}
 
 	close(): void {
 		this.closedByUser = true;
+		this.suspended = false;
 		if (this.reconnectHandle !== null) {
 			this.timers.clearTimeout(this.reconnectHandle);
 			this.reconnectHandle = null;
 		}
 		this.clearConnectTimeout();
-		this.socket?.close(1000, 'client closed');
-		this.socket = null;
+		this.disposeSocket(1000, 'client closed');
 		this.setState('offline');
+	}
+
+	/**
+	 * アプリがバックグラウンドへ移った時にフォアグラウンド用接続を明示的に止める。
+	 * 旧ソケットへキュー済みのフレームも世代番号とハンドラ解除で破棄する。
+	 */
+	suspend(): void {
+		if (this.closedByUser || this.suspended) {
+			return;
+		}
+		this.suspended = true;
+		if (this.reconnectHandle !== null) {
+			this.timers.clearTimeout(this.reconnectHandle);
+			this.reconnectHandle = null;
+		}
+		this.clearConnectTimeout();
+		this.disposeSocket(1000, 'app backgrounded');
+		this.setState('offline');
+	}
+
+	/** フォアグラウンド復帰時に必ず有効なソケットを1本だけ確保する。 */
+	resume(): void {
+		if (this.closedByUser) {
+			return;
+		}
+		if (!this.suspended) {
+			this.ensureConnected();
+			return;
+		}
+		this.suspended = false;
+		this.reconnectAttempt = 0;
+		this.openSocket();
 	}
 
 	/**
@@ -114,7 +150,7 @@ export class RelayClient {
 	 * すでにonlineなら何もしない。ユーザーが明示的に切断した状態は維持する。
 	 */
 	ensureConnected(): void {
-		if (this.closedByUser || this.state === 'online') {
+		if (this.closedByUser || this.suspended || this.state === 'online') {
 			return;
 		}
 		this.reopenSocket();
@@ -127,13 +163,16 @@ export class RelayClient {
 	 * ことがあるため、'online' 表示だけでは生存を信用できない。
 	 */
 	probeLiveness(timeoutMs: number = 5_000): void {
+		if (this.suspended) {
+			return;
+		}
 		if (this.state !== 'online') {
 			this.ensureConnected();
 			return;
 		}
 		const probeAt = Date.now();
 		this.timers.setTimeout(() => {
-			if (!this.closedByUser && this.state === 'online' && this.lastReceivedAt < probeAt) {
+			if (!this.closedByUser && !this.suspended && this.state === 'online' && this.lastReceivedAt < probeAt) {
 				this.reopenSocket();
 			}
 		}, timeoutMs);
@@ -141,6 +180,9 @@ export class RelayClient {
 
 	/** バックオフ待ちを打ち切り、既存ソケットを黙って破棄して接続し直す。 */
 	private reopenSocket(): void {
+		if (this.suspended) {
+			return;
+		}
 		if (this.reconnectHandle !== null) {
 			this.timers.clearTimeout(this.reconnectHandle);
 			this.reconnectHandle = null;
@@ -148,19 +190,26 @@ export class RelayClient {
 		this.reconnectAttempt = 0;
 		// 死んでいる可能性のあるソケットを黙って破棄する（oncloseからの
 		// 二重再接続を防ぐためハンドラを外してから閉じる）。
-		if (this.socket) {
-			const stale = this.socket;
-			this.socket = null;
-			this.mux = null;
-			stale.onclose = null;
-			stale.onerror = null;
-			stale.onmessage = null;
-			try {
-				stale.close(4002, 'superseded');
-			} catch { /* ignore */ }
-		}
+		this.disposeSocket(4002, 'superseded');
 		this.clearConnectTimeout();
 		this.openSocket();
+	}
+
+	private disposeSocket(code: number, reason: string): void {
+		this.socketGeneration++;
+		const stale = this.socket;
+		this.socket = null;
+		this.mux = null;
+		if (!stale) {
+			return;
+		}
+		stale.onopen = null;
+		stale.onclose = null;
+		stale.onerror = null;
+		stale.onmessage = null;
+		try {
+			stale.close(code, reason);
+		} catch { /* ignore */ }
 	}
 
 	private clearConnectTimeout(): void {
@@ -200,8 +249,13 @@ export class RelayClient {
 	}
 
 	private openSocket(): void {
+		if (this.closedByUser || this.suspended) {
+			return;
+		}
 		this.setState('connecting');
 		const socket = this.socketFactory(this.wsUrl(), this.wsProtocols());
+		const generation = ++this.socketGeneration;
+		const isCurrent = () => this.socket === socket && this.socketGeneration === generation;
 		socket.binaryType = 'arraybuffer';
 		this.socket = socket;
 
@@ -209,7 +263,7 @@ export class RelayClient {
 		this.clearConnectTimeout();
 		this.connectTimeoutHandle = this.timers.setTimeout(() => {
 			this.connectTimeoutHandle = null;
-			if (this.socket === socket && this.state !== 'online') {
+			if (isCurrent() && this.state !== 'online') {
 				try {
 					socket.close(4001, 'connect timeout');
 				} catch { /* ignore */ }
@@ -219,6 +273,9 @@ export class RelayClient {
 		const initiator = createInitiator(this.identity, this.credentials.pcPublicKey);
 
 		socket.onopen = () => {
+			if (!isCurrent()) {
+				return;
+			}
 			this.setState('handshaking');
 			// hello（自分のephemeral公開鍵）をバイナリで送る
 			socket.send(toArrayBuffer(initiator.hello));
@@ -226,6 +283,9 @@ export class RelayClient {
 
 		let established = false;
 		socket.onmessage = event => {
+			if (!isCurrent()) {
+				return;
+			}
 			this.lastReceivedAt = Date.now();
 			if (typeof event.data === 'string') {
 				this.handleControl(event.data);
@@ -258,8 +318,16 @@ export class RelayClient {
 			this.mux?.receive(bytes);
 		};
 
-		socket.onerror = error => this.callbacks.onError?.(error);
-		socket.onclose = () => this.onClosed();
+		socket.onerror = error => {
+			if (isCurrent()) {
+				this.callbacks.onError?.(error);
+			}
+		};
+		socket.onclose = () => {
+			if (isCurrent()) {
+				this.onClosed();
+			}
+		};
 	}
 
 	private handleControl(text: string): void {
@@ -284,7 +352,7 @@ export class RelayClient {
 		this.clearConnectTimeout();
 		this.mux = null;
 		this.socket = null;
-		if (this.closedByUser) {
+		if (this.closedByUser || this.suspended) {
 			this.setState('offline');
 			return;
 		}
@@ -297,7 +365,7 @@ export class RelayClient {
 		this.reconnectAttempt++;
 		this.reconnectHandle = this.timers.setTimeout(() => {
 			this.reconnectHandle = null;
-			if (!this.closedByUser) {
+			if (!this.closedByUser && !this.suspended) {
 				this.openSocket();
 			}
 		}, delay);

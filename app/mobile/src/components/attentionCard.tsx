@@ -8,6 +8,7 @@ import type { AgentActions } from '../hooks/useAgentActions.js';
 import { QuestionCard } from './questionCard.js';
 import { ApprovalCard } from './approvalCard.js';
 import { colors } from '../theme.js';
+import { useAppIsActive } from '../hooks/useAppIsActive.js';
 
 /** チャット履歴から最新の未回答質問(question)を探す（agent.tsxの回答済み判定と同じロジック）。 */
 function findPendingQuestion(chat: AgentChatState | undefined): AgentChatMessage | undefined {
@@ -55,14 +56,24 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 	onOpenAgent: () => void;
 }) {
 	const pulse = useRef(new Animated.Value(0)).current;
+	const isAppActive = useAppIsActive();
 	useEffect(() => {
+		pulse.stopAnimation();
+		pulse.setValue(0);
+		if (!isAppActive) {
+			return;
+		}
 		const loop = Animated.loop(Animated.sequence([
 			Animated.timing(pulse, { toValue: 1, duration: 900, useNativeDriver: true }),
 			Animated.timing(pulse, { toValue: 0, duration: 900, useNativeDriver: true }),
 		]));
 		loop.start();
-		return () => loop.stop();
-	}, [pulse]);
+		return () => {
+			loop.stop();
+			pulse.stopAnimation();
+			pulse.setValue(0);
+		};
+	}, [isAppActive, pulse]);
 
 	const question = agentStatus === 'question' ? findPendingQuestion(chat) : undefined;
 	const agentLabel = chat?.agent === 'codex' ? 'Codex' : 'Claude Code';
