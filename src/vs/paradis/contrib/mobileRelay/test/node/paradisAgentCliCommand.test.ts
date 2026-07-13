@@ -37,13 +37,27 @@ suite('ParadisAgentCliCommand', () => {
 		assert.deepStrictEqual([
 			paradisInteractiveAgentCommand('claude'),
 			paradisInteractiveAgentCommand('claude --resume session-id'),
+			paradisInteractiveAgentCommand('claude --continue'),
+			paradisInteractiveAgentCommand('claude -c'),
+			paradisInteractiveAgentCommand('claude --from-pr 123'),
+			paradisInteractiveAgentCommand('claude --from-pr=https://github.com/example/repo/pull/123'),
+			paradisInteractiveAgentCommand('claude --teleport'),
+			paradisInteractiveAgentCommand('claude --continue --fork-session'),
+			paradisInteractiveAgentCommand('claude --resume session-id --fork-session'),
 			paradisInteractiveAgentCommand('claude --model opus "調査して"'),
 		], [
 			{ agent: 'claude', mode: 'new' },
 			{ agent: 'claude', mode: 'resume' },
+			{ agent: 'claude', mode: 'resume' },
+			{ agent: 'claude', mode: 'resume' },
+			{ agent: 'claude', mode: 'resume' },
+			{ agent: 'claude', mode: 'resume' },
+			{ agent: 'claude', mode: 'resume' },
+			{ agent: 'claude', mode: 'fork' },
+			{ agent: 'claude', mode: 'fork' },
 			{ agent: 'claude', mode: 'new' },
 		]);
-		for (const command of ['claude --help', 'claude -v', 'claude --version', 'claude --print test', 'claude --background', 'claude agents', 'claude doctor']) {
+		for (const command of ['claude --help', 'claude -v', 'claude --version', 'claude --print test', 'claude --continue --print test', 'claude --background', 'claude agents', 'claude doctor', 'claude doctor --fork-session']) {
 			assert.strictEqual(paradisInteractiveAgentCommand(command), undefined, command);
 		}
 	});
