@@ -44,6 +44,9 @@ suite('ParadisAgentCliCommand', () => {
 			paradisInteractiveAgentCommand('claude --teleport'),
 			paradisInteractiveAgentCommand('claude --continue --fork-session'),
 			paradisInteractiveAgentCommand('claude --resume session-id --fork-session'),
+			paradisInteractiveAgentCommand('claude -c --fork-session'),
+			paradisInteractiveAgentCommand('claude -r session-id --fork-session'),
+			paradisInteractiveAgentCommand('claude --fork-session'),
 			paradisInteractiveAgentCommand('claude --model opus "調査して"'),
 		], [
 			{ agent: 'claude', mode: 'new' },
@@ -55,6 +58,9 @@ suite('ParadisAgentCliCommand', () => {
 			{ agent: 'claude', mode: 'resume' },
 			{ agent: 'claude', mode: 'fork' },
 			{ agent: 'claude', mode: 'fork' },
+			{ agent: 'claude', mode: 'fork' },
+			{ agent: 'claude', mode: 'fork' },
+			{ agent: 'claude', mode: 'new' },
 			{ agent: 'claude', mode: 'new' },
 		]);
 		for (const command of ['claude --help', 'claude -v', 'claude --version', 'claude --print test', 'claude --continue --print test', 'claude --background', 'claude agents', 'claude doctor', 'claude doctor --fork-session']) {

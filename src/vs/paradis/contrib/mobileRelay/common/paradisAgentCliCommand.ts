@@ -17,7 +17,8 @@ const codexOptionsWithValue = new Set(['-c', '--config', '--enable', '--disable'
 const codexNonInteractiveCommands = new Set(['exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control', 'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'archive', 'delete', 'unarchive', 'cloud', 'exec-server', 'features', 'help']);
 const claudeOptionsWithValue = new Set(['--add-dir', '--agent', '--agents', '--allowedTools', '--allowed-tools', '--append-system-prompt', '--betas', '--debug-file', '--disallowedTools', '--disallowed-tools', '--effort', '--fallback-model', '--file', '--input-format', '--json-schema', '--max-budget-usd', '--mcp-config', '--model', '-n', '--name', '--output-format', '--permission-mode', '--plugin-dir', '--plugin-url', '--remote-control', '-r', '--resume', '--session-id', '--setting-sources']);
 const claudeNonInteractiveCommands = new Set(['agents', 'auth', 'auto-mode', 'doctor', 'gateway', 'install', 'mcp', 'plugin', 'plugins', 'project', 'setup-token', 'ultrareview', 'update', 'upgrade']);
-const claudeResumeOptions = new Set(['-r', '--resume', '-c', '--continue', '--from-pr', '--teleport']);
+const claudeForkableResumeOptions = new Set(['-r', '--resume', '-c', '--continue']);
+const claudeResumeOptions = new Set([...claudeForkableResumeOptions, '--from-pr', '--teleport']);
 
 function shellWords(commandLine: string): string[] {
 	const words: string[] = [];
@@ -71,7 +72,7 @@ export function paradisInteractiveAgentCommand(commandLine: string): ParadisInte
 	if (words.some(argument => argument === '-p' || argument === '--print' || argument === '--bg' || argument === '--background')) { return undefined; }
 	const positional = firstPositional(words, claudeOptionsWithValue);
 	if (positional !== undefined && claudeNonInteractiveCommands.has(positional)) { return undefined; }
-	if (words.includes('--fork-session')) { return { agent: 'claude', mode: 'fork' }; }
 	const resume = words.some(argument => claudeResumeOptions.has(argument) || argument.startsWith('--resume=') || argument.startsWith('--from-pr='));
-	return { agent: 'claude', mode: resume ? 'resume' : 'new' };
+	const fork = words.includes('--fork-session') && words.some(argument => claudeForkableResumeOptions.has(argument) || argument.startsWith('--resume='));
+	return { agent: 'claude', mode: fork ? 'fork' : resume ? 'resume' : 'new' };
 }
