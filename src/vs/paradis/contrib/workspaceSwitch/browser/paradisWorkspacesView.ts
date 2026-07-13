@@ -15,6 +15,9 @@ import { Action, IAction, Separator } from '../../../../base/common/actions.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { FuzzyScore } from '../../../../base/common/filters.js';
+import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -36,7 +39,7 @@ import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisDiffStat } from '../common/paradisWorktreeCreate.js';
+import { IParadisDiffStat, IParadisPrStatus, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
  * createWorktree/removeWorktree コマンドと同様に ID 文字列を直書きする (web ビルドでは
@@ -44,6 +47,13 @@ import { IParadisDiffStat } from '../common/paradisWorktreeCreate.js';
 const GET_DIFF_STATS_COMMAND_ID = 'paradis.workspaceSwitch.getDiffStats';
 /** diff 統計のポーリング間隔。編集の即時反映より、常時ポーリングによる負荷を避けることを優先する。 */
 const DIFF_STATS_POLL_INTERVAL_MS = 10_000;
+const GET_PR_STATUSES_COMMAND_ID = 'paradis.workspaceSwitch.getPrStatuses';
+/**
+ * PR 状態のポーリング間隔。1回のポーリングで worktree ごとに gh の GitHub API 呼び出しが
+ * 発生する (認証済み上限 5,000 req/h) ため、diff 統計より大幅に長くして API 消費を抑える。
+ * PR の open/draft/merged/closed は分単位で変わるものではないので実用上十分。
+ */
+const PR_STATUS_POLL_INTERVAL_MS = 300_000;
 
 export const PARADIS_WORKSPACES_VIEW_ID = 'workbench.view.paradisWorkspaces.repositories';
 
@@ -120,9 +130,35 @@ interface IWorktreeTemplateData {
 	readonly icon: HTMLElement;
 	readonly name: HTMLElement;
 	readonly branch: HTMLElement;
+	readonly pr: HTMLElement;
+	readonly prIcon: HTMLElement;
+	readonly prNumber: HTMLElement;
+	readonly prHover: IManagedHover;
+	/** クリックリスナーが renderElement 後の最新 PR URL を参照するためのホルダー */
+	readonly prContext: { url?: string };
 	readonly diff: HTMLElement;
 	readonly diffAdded: HTMLElement;
 	readonly diffRemoved: HTMLElement;
+	readonly templateDisposables: DisposableStore;
+}
+
+/** PR 状態 → チップ表示に使う codicon。GitHub 本家のアイコンに合わせる。 */
+function prStateIcon(state: ParadisPrState): ThemeIcon {
+	switch (state) {
+		case 'merged': return Codicon.gitMerge;
+		case 'closed': return Codicon.gitPullRequestClosed;
+		case 'draft': return Codicon.gitPullRequestDraft;
+		default: return Codicon.gitPullRequest;
+	}
+}
+
+function prStateLabel(state: ParadisPrState): string {
+	switch (state) {
+		case 'merged': return localize('paradis.pr.merged', "Merged");
+		case 'closed': return localize('paradis.pr.closed', "Closed");
+		case 'draft': return localize('paradis.pr.draft', "Draft");
+		default: return localize('paradis.pr.open', "Open");
+	}
 }
 
 class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement> {
@@ -197,20 +233,42 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly isActive: (worktree: IParadisWorktree) => boolean,
 		private readonly getStatus: (stateKey: string) => ParadisAgentStatus | undefined,
 		private readonly getDiffStat: (worktree: IParadisWorktree) => IParadisDiffStat | undefined,
+		private readonly getPrStatus: (worktree: IParadisWorktree) => IParadisPrStatus | undefined,
 		private readonly getRepositoryColorHex: (repositoryId: string) => string | undefined,
+		private readonly openPrUrl: (url: string) => void,
+		private readonly hoverService: IHoverService,
 	) { }
 
 	renderTemplate(container: HTMLElement): IWorktreeTemplateData {
+		const templateDisposables = new DisposableStore();
 		const row = DOM.append(container, DOM.$('.paradis-worktree-row'));
 		const icon = DOM.append(row, DOM.$('.codicon'));
 		// 名前の下にブランチ名を重ねる2段表示 (リポジトリ行が見出し化される前の従来スタイルを踏襲)
 		const labels = DOM.append(row, DOM.$('.paradis-worktree-labels'));
 		const name = DOM.append(labels, DOM.$('.paradis-worktree-name'));
 		const branch = DOM.append(labels, DOM.$('.paradis-worktree-branch'));
+		// ブランチに紐づく GitHub PR のチップ (Superset の WorkspaceStatusBadge 相当)。
+		// クリックは行の切り替えではなく PR ページを開くため、リスト側のハンドラへ届く前に止める
+		const pr = DOM.append(row, DOM.$('.paradis-worktree-pr'));
+		const prIcon = DOM.append(pr, DOM.$('.codicon'));
+		const prNumber = DOM.append(pr, DOM.$('span.paradis-worktree-pr-number'));
+		const prContext: { url?: string } = {};
+		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
+			templateDisposables.add(DOM.addDisposableListener(pr, eventType, event => {
+				if (!prContext.url) {
+					return;
+				}
+				DOM.EventHelper.stop(event, true);
+				if (eventType === DOM.EventType.CLICK) {
+					this.openPrUrl(prContext.url);
+				}
+			}));
+		}
+		const prHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pr, ''));
 		const diff = DOM.append(row, DOM.$('.paradis-worktree-diff'));
 		const diffAdded = DOM.append(diff, DOM.$('span.paradis-worktree-diff-added'));
 		const diffRemoved = DOM.append(diff, DOM.$('span.paradis-worktree-diff-removed'));
-		return { row, icon, name, branch, diff, diffAdded, diffRemoved };
+		return { row, icon, name, branch, pr, prIcon, prNumber, prHover, prContext, diff, diffAdded, diffRemoved, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
@@ -238,10 +296,30 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			templateData.diffAdded.textContent = diffStat.insertions > 0 ? `+${diffStat.insertions}` : '';
 			templateData.diffRemoved.textContent = diffStat.deletions > 0 ? `-${diffStat.deletions}` : '';
 		}
+
+		const prStatus = worktree.missing ? undefined : this.getPrStatus(worktree);
+		templateData.pr.classList.toggle('hidden', !prStatus);
+		templateData.prContext.url = prStatus?.url;
+		for (const state of ['open', 'draft', 'merged', 'closed'] as const) {
+			templateData.pr.classList.toggle(`paradis-pr-${state}`, prStatus?.state === state);
+		}
+		if (prStatus) {
+			templateData.prIcon.className = ThemeIcon.asClassName(prStateIcon(prStatus.state));
+			templateData.prNumber.textContent = `#${prStatus.number}`;
+			templateData.prHover.update(prStatus.title
+				// allow-any-unicode-next-line
+				? localize('paradis.pr.tooltip', "#{0} {1} — {2}", prStatus.number, prStateLabel(prStatus.state), prStatus.title)
+				: localize('paradis.pr.tooltipNoTitle', "#{0} {1}", prStatus.number, prStateLabel(prStatus.state)));
+		} else {
+			// テンプレート再利用時に前回行のアイコン/番号が残らないようリセットする
+			templateData.prIcon.className = 'codicon';
+			templateData.prNumber.textContent = '';
+			templateData.prHover.update('');
+		}
 	}
 
-	disposeTemplate(_templateData: IWorktreeTemplateData): void {
-		// テンプレートDOMはツリー側が破棄する
+	disposeTemplate(templateData: IWorktreeTemplateData): void {
+		templateData.templateDisposables.dispose();
 	}
 }
 
@@ -255,6 +333,9 @@ export class ParadisWorkspacesView extends ViewPane {
 	/** worktree の uri.fsPath → 未コミット差分統計。ポーリングでのみ更新する (refreshDiffStats 参照) */
 	private readonly _diffStats = new Map<string, IParadisDiffStat>();
 	private readonly _diffStatsScheduler: RunOnceScheduler;
+	/** worktree の uri.fsPath → 現在ブランチに紐づく PR 状態。ポーリングでのみ更新する (refreshPrStatuses 参照) */
+	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
+	private readonly _prStatusScheduler: RunOnceScheduler;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -278,10 +359,11 @@ export class ParadisWorkspacesView extends ViewPane {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
 		this._diffStatsScheduler = this._register(new RunOnceScheduler(() => this.refreshDiffStats(), DIFF_STATS_POLL_INTERVAL_MS));
+		this._prStatusScheduler = this._register(new RunOnceScheduler(() => this.refreshPrStatuses(), PR_STATUS_POLL_INTERVAL_MS));
 
-		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this._diffStatsScheduler.schedule(0); }));
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.updateTree()));
-		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.updateTree(); this._diffStatsScheduler.schedule(0); }));
+		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.updateTree(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
 		// 注意: 引数なしの tree.rerender() は行の renderElement を再実行しないため、
 		// setChildren で作り直す (identityProvider により選択/折りたたみ状態は保持される)
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.updateTree()));
@@ -299,7 +381,10 @@ export class ParadisWorkspacesView extends ViewPane {
 			worktree => this.workspaceSwitchService.activeStateKey === worktreeStateKeyFor(worktree),
 			getStatus,
 			worktree => this._diffStats.get(worktree.uri.fsPath),
-			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color)
+			worktree => this._prStatuses.get(worktree.uri.fsPath),
+			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color),
+			url => { this.openerService.open(URI.parse(url)).catch(error => this.notificationService.error(error)); },
+			this.hoverService
 		);
 
 		this.tree = this._register(this.instantiationService.createInstance(
@@ -348,6 +433,7 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		this.updateTree();
 		this._diffStatsScheduler.schedule(0);
+		this._prStatusScheduler.schedule(0);
 	}
 
 	/** worktree 行 (main checkout の合成行を含む) のクリックで、その作業ツリーへ切り替える。 */
@@ -407,6 +493,53 @@ export class ParadisWorkspacesView extends ViewPane {
 		} finally {
 			this._diffStatsInFlight = false;
 			this._diffStatsScheduler.schedule();
+		}
+	}
+
+	/** refreshPrStatuses の多重実行防止 (await 中に schedule(0) が割り込むと再入しうる) */
+	private _prStatusesInFlight = false;
+
+	/** 各 worktree の現在ブランチに紐づく PR 状態をポーリングで取得する。仕組みは refreshDiffStats と同じ。 */
+	private async refreshPrStatuses(): Promise<void> {
+		if (this._prStatusesInFlight) {
+			this._prStatusScheduler.schedule();
+			return;
+		}
+		if (!this.isBodyVisible()) {
+			this._prStatusScheduler.schedule();
+			return;
+		}
+
+		const paths = new Set<string>();
+		for (const repository of this.workspaceSwitchService.repositories) {
+			paths.add(repository.uri.fsPath);
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing) {
+					paths.add(worktree.uri.fsPath);
+				}
+			}
+		}
+
+		if (paths.size === 0) {
+			this._prStatusScheduler.schedule();
+			return;
+		}
+
+		this._prStatusesInFlight = true;
+		try {
+			const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, [...paths]);
+			if (result) {
+				this._prStatuses.clear();
+				for (const [path, status] of Object.entries(result)) {
+					this._prStatuses.set(path, status);
+				}
+				this.updateTree();
+			}
+		} catch {
+			// web ビルド等でコマンド未登録の場合は無視 (PR チップを出さないだけで安全に成立する)
+		} finally {
+			this._prStatusesInFlight = false;
+			this._prStatusScheduler.schedule();
 		}
 	}
 

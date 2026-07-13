@@ -145,6 +145,49 @@
 	opacity: 0.5;
 }
 
+/* allow-any-unicode-next-line */
+/* ブランチに紐づく GitHub PR のチップ (Superset の WorkspaceStatusBadge 相当)。
+ * 状態色は GitHub 本家に合わせた固定値 (open=緑 / draft=灰 / merged=紫 / closed=赤)。
+ * diff バッジより左・行の右端側に置くため margin-left: auto を持ち、後続の diff バッジ側は
+ * チップ表示中は auto を解除する (下の隣接ルール参照)。 */
+.paradis-workspaces-list .paradis-worktree-pr {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex-shrink: 0;
+	margin-left: auto;
+	padding: 2px 6px;
+	border-radius: 4px;
+	font-size: 0.8em;
+	font-variant-numeric: tabular-nums;
+	cursor: pointer;
+	--paradis-pr-color: var(--vscode-foreground);
+	color: var(--paradis-pr-color);
+	background-color: color-mix(in srgb, var(--paradis-pr-color) 12%, transparent);
+}
+
+.paradis-workspaces-list .paradis-worktree-pr:hover {
+	background-color: color-mix(in srgb, var(--paradis-pr-color) 28%, transparent);
+}
+
+.paradis-workspaces-list .paradis-worktree-pr.hidden {
+	display: none;
+}
+
+.paradis-workspaces-list .paradis-worktree-pr > .codicon {
+	font-size: 12px;
+	color: var(--paradis-pr-color);
+}
+
+.paradis-workspaces-list .paradis-worktree-pr > .paradis-worktree-pr-number {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-open { --paradis-pr-color: #3fb950; }
+.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-draft { --paradis-pr-color: #8b949e; }
+.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-merged { --paradis-pr-color: #a371f7; }
+.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-closed { --paradis-pr-color: #f85149; }
+
 /* 未コミット差分 (+挿入/-削除) バッジ。常に行の右端に固定する */
 .paradis-workspaces-list .paradis-worktree-diff {
 	display: flex;
@@ -154,6 +197,13 @@
 	margin-left: auto;
 	font-size: 0.85em;
 	font-variant-numeric: tabular-nums;
+}
+
+/* allow-any-unicode-next-line */
+/* PR チップが表示されているときはチップ側の margin-left: auto が右寄せを担うため、
+ * diff バッジは通常の gap 間隔で隣に並べる */
+.paradis-workspaces-list .paradis-worktree-pr:not(.hidden) ~ .paradis-worktree-diff {
+	margin-left: 0;
 }
 
 .paradis-workspaces-list .paradis-worktree-diff.hidden {

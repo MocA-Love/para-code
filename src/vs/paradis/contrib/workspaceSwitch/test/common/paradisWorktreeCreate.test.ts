@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
-import { paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisDeduplicateWorktreeDirName, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
+import { paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisDeduplicateWorktreeDirName, paradisParseGhPrStatus, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -86,5 +86,49 @@ suite('paradisWorktreeCreate', () => {
 		assert.match(command, /^powershell\.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
 		assert.ok(!command.includes('%PATH%'));
 		assert.ok(!command.includes('& echo'));
+	});
+
+	test('parses gh pr view output into a PR status', () => {
+		const stdout = JSON.stringify({ number: 42, title: 'feat: mobile relay', url: 'https://github.com/o/r/pull/42', state: 'OPEN', isDraft: false, headRefName: 'feature/mobile-relay' });
+		assert.deepStrictEqual(
+			paradisParseGhPrStatus(stdout, 'feature/mobile-relay'),
+			{ number: 42, title: 'feat: mobile relay', url: 'https://github.com/o/r/pull/42', state: 'open' },
+		);
+	});
+
+	test('maps draft / merged / closed states', () => {
+		const build = (state: string, isDraft: boolean) => JSON.stringify({ number: 1, title: 't', url: 'https://github.com/o/r/pull/1', state, isDraft, headRefName: 'b' });
+		assert.deepStrictEqual(
+			[
+				paradisParseGhPrStatus(build('OPEN', true), 'b')?.state,
+				paradisParseGhPrStatus(build('MERGED', false), 'b')?.state,
+				paradisParseGhPrStatus(build('CLOSED', false), 'b')?.state,
+			],
+			['draft', 'merged', 'closed'],
+		);
+	});
+
+	test('rejects PRs whose head branch does not match the current branch, allowing fork prefixes', () => {
+		const stdout = JSON.stringify({ number: 7, title: 't', url: 'https://github.com/o/r/pull/7', state: 'OPEN', isDraft: false, headRefName: 'feature' });
+		assert.deepStrictEqual(
+			[
+				paradisParseGhPrStatus(stdout, 'other-branch'),
+				paradisParseGhPrStatus(stdout, 'fork-owner/feature')?.number,
+			],
+			[undefined, 7],
+		);
+	});
+
+	test('returns undefined for non-JSON or malformed payloads', () => {
+		assert.deepStrictEqual(
+			[
+				paradisParseGhPrStatus('no pull requests found', 'b'),
+				paradisParseGhPrStatus('null', 'b'),
+				paradisParseGhPrStatus(JSON.stringify({ number: 'x', url: 'https://x', state: 'OPEN', headRefName: 'b' }), 'b'),
+				paradisParseGhPrStatus(JSON.stringify({ number: 1, url: 'https://x', state: 'UNKNOWN', headRefName: 'b' }), 'b'),
+				paradisParseGhPrStatus(JSON.stringify({ number: 1, url: 'file:///etc/passwd', state: 'OPEN', headRefName: 'b' }), 'b'),
+			],
+			[undefined, undefined, undefined, undefined, undefined],
+		);
 	});
 });
