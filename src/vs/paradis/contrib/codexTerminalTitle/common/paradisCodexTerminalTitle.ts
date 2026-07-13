@@ -9,3 +9,15 @@
 export const PARADIS_CODEX_TERMINAL_TITLE_ENABLED_SETTING = 'paradis.codex.terminalTitle.enabled';
 
 export const PARADIS_CODEX_TERMINAL_TITLE_ITEMS = ['app-name', 'thread-title'] as const;
+
+export const PARADIS_CODEX_TERMINAL_TITLE_CHANNEL = 'paradisCodexTerminalTitle';
+
+export interface IParadisCodexThreadPromptRequest {
+	readonly threadId: string;
+	readonly cwd: string;
+	readonly invocation: 'start' | 'resume';
+}
+
+export interface IParadisCodexThreadPromptResult {
+	readonly prompt?: string;
+}

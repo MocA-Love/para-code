@@ -195,6 +195,19 @@ suite('Workbench - TerminalService', () => {
 			strictEqual(backend.lastTitle, 'terminal title');
 			strictEqual(backend.lastIconUserInitiated, true);
 		});
+
+		test('should persist the underlying title while a transient title is displayed', async () => {
+			const instance = createTerminalInstance();
+			(instance as { transientTitle?: string }).transientTitle = 'Codex task';
+			(instance as { persistentTitle?: string }).persistentTitle = 'codex | thread-id';
+			(instance as { persistentTitleSource?: TitleEventSource }).persistentTitleSource = TitleEventSource.Sequence;
+
+			await runWithFakedTimers({}, async () => {
+				updateTitle(terminalService, instance);
+			});
+
+			strictEqual(backend.lastTitle, 'codex | thread-id');
+		});
 	});
 });
 
@@ -229,6 +242,9 @@ function createTerminalInstance(options?: { customPtyImplementation?: boolean })
 		title: 'terminal title',
 		titleSource: TitleEventSource.Process,
 		staticTitle: undefined,
+		transientTitle: undefined,
+		persistentTitle: 'terminal title',
+		persistentTitleSource: TitleEventSource.Process,
 		icon: { id: 'remote' },
 		color: undefined,
 		isDisposed: false,

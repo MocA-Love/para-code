@@ -894,6 +894,12 @@ export interface ITerminalInstance extends IBaseTerminalInstance {
 	readonly processName: string;
 	readonly sequence?: string;
 	readonly staticTitle?: string;
+	/** A renderer-only title override that is never persisted or restored. */
+	readonly transientTitle?: string;
+	/** The title that should be persisted while a transient title is displayed. */
+	readonly persistentTitle: string;
+	/** The title source that should be persisted while a transient title is displayed. */
+	readonly persistentTitleSource: TitleEventSource;
 	readonly progressState?: IProgressState;
 	readonly workspaceFolder?: IWorkspaceFolder;
 	readonly cwd?: string;
@@ -1316,6 +1322,15 @@ export interface ITerminalInstance extends IBaseTerminalInstance {
 	 * @param title The new title.
 	 */
 	rename(title?: string): Promise<void>;
+
+	/**
+	 * Applies a renderer-only title while the current process title is exactly
+	 * `expectedSequence`. Static/API titles always take precedence.
+	 */
+	setTransientTitle(owner: string, title: string, expectedSequence: string): boolean;
+
+	/** Clears a renderer-only title only when it belongs to `owner`. */
+	clearTransientTitle(owner: string): void;
 
 	/**
 	 * Sets or triggers a quick pick to change the icon of this terminal.

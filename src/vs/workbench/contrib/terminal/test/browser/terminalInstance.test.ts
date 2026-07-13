@@ -398,7 +398,7 @@ suite('Workbench - TerminalInstance', () => {
 		let instantiationService: TestInstantiationService;
 		let capabilities: TerminalCapabilityStore;
 
-		function createInstance(partial?: Partial<ITerminalInstance>): Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'userHome' | 'cwd' | 'initialCwd' | 'processName' | 'sequence' | 'workspaceFolder' | 'staticTitle' | 'capabilities' | 'title' | 'description'> {
+		function createInstance(partial?: Partial<ITerminalInstance>): Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'userHome' | 'cwd' | 'initialCwd' | 'processName' | 'sequence' | 'workspaceFolder' | 'staticTitle' | 'transientTitle' | 'capabilities' | 'title' | 'description'> {
 			const capabilities = store.add(new TerminalCapabilityStore());
 			if (!isWindows) {
 				capabilities.add(TerminalCapability.NaiveCwdDetection, null!);
@@ -412,6 +412,7 @@ suite('Workbench - TerminalInstance', () => {
 				sequence: undefined,
 				workspaceFolder: undefined,
 				staticTitle: undefined,
+				transientTitle: undefined,
 				capabilities,
 				title: '',
 				description: '',
@@ -498,6 +499,16 @@ suite('Workbench - TerminalInstance', () => {
 			terminalLabelComputer.refreshLabel(createInstance({ capabilities, processName: 'process', workspaceFolder: { uri: URI.from({ scheme: Schemas.file, path: 'folder' }) } as IWorkspaceFolder, staticTitle: 'my-title' }));
 			strictEqual(terminalLabelComputer.title, 'my-title');
 			strictEqual(terminalLabelComputer.description, 'folder');
+		});
+		test('should prefer transient title over the computed title', () => {
+			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}' } } } });
+			terminalLabelComputer.refreshLabel(createInstance({ capabilities, processName: 'zsh', transientTitle: 'Codex task' }));
+			strictEqual(terminalLabelComputer.title, 'Codex task');
+		});
+		test('should prefer static title over transient title', () => {
+			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}' } } } });
+			terminalLabelComputer.refreshLabel(createInstance({ capabilities, processName: 'zsh', staticTitle: 'Manual name', transientTitle: 'Codex task' }));
+			strictEqual(terminalLabelComputer.title, 'Manual name');
 		});
 		test('should use shellLaunchConfig.titleTemplate as template when set', () => {
 			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}' } } } });
