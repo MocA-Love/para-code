@@ -67,6 +67,10 @@ export interface WorktreeCreateResult {
 export interface FsListResult {
 	entries: { name: string; dir: boolean; size?: number }[];
 }
+/** Markdown内のファイルリンクを、選択ワークスペース内の相対パスへ安全に解決した結果。 */
+export interface FsResolveLinkResult {
+	path: string;
+}
 /** fs read 応答。 */
 export interface FsReadResult {
 	content: string;
@@ -1194,6 +1198,11 @@ export class MobileController {
 	/** ディレクトリ一覧（ワークスペースルート相対パス）。 */
 	fsList(ws: string, path: string): Promise<FsListResult> {
 		return this.request<FsListResult>('fs', { t: 'list', ws, path });
+	}
+
+	/** Markdown内の相対・絶対ファイルリンクをワークスペース内の実在ファイルへ解決する。 */
+	fsResolveLink(ws: string, path: string): Promise<FsResolveLinkResult> {
+		return this.request<FsResolveLinkResult>('fs', { t: 'resolveLink', ws, path });
 	}
 
 	/** ファイル読み取り（上限つき）。highlight=trueでPCテーマのハイライトHTMLも返る。 */

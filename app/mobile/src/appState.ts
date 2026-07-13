@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
@@ -109,6 +109,7 @@ interface AppState extends StoreState {
 	/** worktree（スペース）を作成する（PC版の作成ダイアログと同じ処理がPC側で走る）。 */
 	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string }): Promise<WorktreeCreateResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
+	fsResolveLink(ws: string, path: string): Promise<FsResolveLinkResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult>;
 	fsPdf(ws: string, path: string): Promise<FsPdfResult>;
@@ -530,6 +531,11 @@ export const useAppStore = create<AppState>(set => ({
 	fsList(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.fsList(ws, path);
+	},
+
+	fsResolveLink(ws: string, path: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.fsResolveLink(ws, path);
 	},
 
 	fsRead(ws: string, path: string, highlight?: boolean) {

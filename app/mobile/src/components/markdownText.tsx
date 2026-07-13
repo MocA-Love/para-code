@@ -8,13 +8,18 @@
  *  - 見出し（# 〜 ###）
  *  - 箇条書き（- / * / 1.）
  *  - 表（GFMテーブル: ヘッダー行＋区切り行＋本体行、列アライメント対応）
+ *  - http(s)リンク / ワークスペース内ファイルリンク（カード＋アプリ内ビューアー）
  * それ以外はプレーンテキストとして安全に表示する（未対応記法で壊れない）。
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
-import { Linking, Platform, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { ActivityIndicator, Alert, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
+import { hapticSelection } from '../haptics.js';
 import { colors } from '../theme.js';
+import { WorkspaceFileViewer } from './workspaceFileViewer.js';
 
 type CellAlign = 'left' | 'center' | 'right';
 
@@ -247,43 +252,265 @@ function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 	);
 }
 
-/** [ラベル](URL) 形式のリンク。http(s) のみタップで開く（他スキームは実行しない）。 */
-const LINK_PATTERN = /\[[^\]\n]+\]\(https?:\/\/[^()\s]+\)/;
+interface LocalFileTarget {
+	path: string;
+	line?: number;
+	column?: number;
+}
 
-/** インライン記法（`code` / **bold** / [リンク](url)）をTextノード列へ変換する。 */
-function renderInline(text: string, baseStyle: object): ReactNode[] {
-	const nodes: ReactNode[] = [];
-	// `code` / **bold** / [リンク](url) の位置で分割する（ネストは扱わない）
-	const parts = text.split(new RegExp(`(\`[^\`\n]+\`|\\*\\*[^*\n]+\\*\\*|${LINK_PATTERN.source})`, 'g'));
-	parts.forEach((part, i) => {
-		if (part.length === 0) {
-			return;
+type InlineToken =
+	| { kind: 'text'; text: string }
+	| { kind: 'code'; text: string }
+	| { kind: 'bold'; text: string }
+	| { kind: 'external'; label: string; url: string }
+	| { kind: 'local'; label: string; target: LocalFileTarget };
+
+/** `[` 位置からMarkdownリンク1個を読み取る。山括弧内では空白・括弧を許可する。 */
+function markdownLinkAt(text: string, start: number): { end: number; label: string; destination: string } | undefined {
+	if (start > 0 && text[start - 1] === '!') {
+		return undefined; // 画像記法はファイルを開くカードへ変換しない
+	}
+	const labelEnd = text.indexOf('](', start + 1);
+	if (labelEnd < 0 || text.slice(start + 1, labelEnd).includes('\n')) {
+		return undefined;
+	}
+	const label = text.slice(start + 1, labelEnd);
+	if (label.length === 0) {
+		return undefined;
+	}
+	const destinationStart = labelEnd + 2;
+	if (text[destinationStart] === '<') {
+		const angleEnd = text.indexOf('>', destinationStart + 1);
+		if (angleEnd < 0) {
+			return undefined;
 		}
-		if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
-			nodes.push(<Text key={i} style={[baseStyle, styles.inlineCode]}>{part.slice(1, -1)}</Text>);
-		} else if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
-			nodes.push(<Text key={i} style={[baseStyle, styles.bold]}>{part.slice(2, -2)}</Text>);
-		} else if (part.startsWith('[') && LINK_PATTERN.test(part)) {
-			const match = /^\[(?<label>[^\]\n]+)\]\((?<url>https?:\/\/[^()\s]+)\)$/.exec(part);
-			if (match?.groups?.url !== undefined && match.groups.label !== undefined) {
-				const url = match.groups.url;
-				nodes.push(
-					<Text key={i} style={[baseStyle, styles.link]} onPress={() => { void Linking.openURL(url).catch(() => { /* 開けないURLは無視 */ }); }}>
-						{match.groups.label}
-					</Text>
-				);
-			} else {
-				nodes.push(<Text key={i} style={baseStyle}>{part}</Text>);
+		let cursor = angleEnd + 1;
+		while (text[cursor] === ' ' || text[cursor] === '\t') { cursor++; }
+		if (text[cursor] === '"' || text[cursor] === "'") {
+			const quote = text.charAt(cursor);
+			const titleEnd = text.indexOf(quote, cursor + 1);
+			if (titleEnd < 0) { return undefined; }
+			cursor = titleEnd + 1;
+			while (text[cursor] === ' ' || text[cursor] === '\t') { cursor++; }
+		}
+		if (text[cursor] !== ')') {
+			return undefined;
+		}
+		return { end: cursor + 1, label, destination: text.slice(destinationStart + 1, angleEnd) };
+	}
+
+	let depth = 0;
+	for (let cursor = destinationStart; cursor < text.length && text[cursor] !== '\n'; cursor++) {
+		const char = text[cursor];
+		if (char === '(') {
+			depth++;
+		} else if (char === ')') {
+			if (depth > 0) {
+				depth--;
+				continue;
 			}
-		} else {
-			nodes.push(<Text key={i} style={baseStyle}>{part}</Text>);
+			const body = text.slice(destinationStart, cursor).trim();
+			const match = /^(?<destination>\S+?)(?:\s+(?:"[^"]*"|'[^']*'))?$/.exec(body);
+			if (match?.groups?.destination === undefined) {
+				return undefined;
+			}
+			return { end: cursor + 1, label, destination: match.groups.destination };
 		}
+	}
+	return undefined;
+}
+
+/** 行指定（`:4:2` / `#L4C2` / `#L4-L8`）をパス本体から分離する。 */
+function parseLocalFileTarget(destination: string): LocalFileTarget | undefined {
+	if (/^https?:\/\//i.test(destination)) {
+		return undefined;
+	}
+	let path = destination.trim();
+	let line: number | undefined;
+	let column: number | undefined;
+	const fragmentIndex = path.lastIndexOf('#');
+	if (fragmentIndex >= 0) {
+		const fragment = path.slice(fragmentIndex);
+		const location = /^#L(?<line>\d+)(?:C(?<column>\d+))?(?:-L\d+(?:C\d+)?)?$/i.exec(fragment);
+		if (location?.groups?.line === undefined) {
+			return undefined;
+		}
+		line = Number(location.groups.line);
+		column = location.groups.column !== undefined ? Number(location.groups.column) : undefined;
+		path = path.slice(0, fragmentIndex);
+	}
+	if (line === undefined) {
+		const lineColumnSuffix = /^(?<path>.+):(?<line>\d+):(?<column>\d+)$/.exec(path);
+		const lineSuffix = lineColumnSuffix ?? /^(?<path>.+):(?<line>\d+)$/.exec(path);
+		if (lineSuffix?.groups?.path !== undefined && lineSuffix.groups.line !== undefined) {
+			path = lineSuffix.groups.path;
+			line = Number(lineSuffix.groups.line);
+			column = lineSuffix.groups.column !== undefined ? Number(lineSuffix.groups.column) : undefined;
+		}
+	}
+	if (/^file:\/\//i.test(path)) {
+		path = path.slice('file://'.length);
+		if (/^localhost\//i.test(path)) { path = path.slice('localhost'.length); }
+	} else if (/^[A-Za-z][A-Za-z\d+.-]*:/.test(path) && !/^[A-Za-z]:[\\/]/.test(path)) {
+		return undefined; // javascript: / mailto: 等は実行もファイル解決もしない
+	}
+	try {
+		path = decodeURIComponent(path);
+	} catch {
+		return undefined;
+	}
+	if (path.length === 0 || path.startsWith('#') || line === 0 || column === 0) {
+		return undefined;
+	}
+	if ((line !== undefined && (!Number.isSafeInteger(line) || line > 2_147_483_647))
+		|| (column !== undefined && (!Number.isSafeInteger(column) || column > 2_147_483_647))) {
+		return undefined;
+	}
+	return {
+		path,
+		...(line !== undefined ? { line } : {}),
+		...(column !== undefined ? { column } : {}),
+	};
+}
+
+/** インライン記法を安全な描画トークンへ分解する。 */
+function parseInline(text: string): InlineToken[] {
+	const tokens: InlineToken[] = [];
+	let plain = '';
+	const flush = () => {
+		if (plain.length > 0) { tokens.push({ kind: 'text', text: plain }); plain = ''; }
+	};
+	for (let i = 0; i < text.length;) {
+		if (text[i] === '`') {
+			const end = text.indexOf('`', i + 1);
+			if (end > i + 1 && !text.slice(i + 1, end).includes('\n')) {
+				flush(); tokens.push({ kind: 'code', text: text.slice(i + 1, end) }); i = end + 1; continue;
+			}
+		}
+		if (text.startsWith('**', i)) {
+			const end = text.indexOf('**', i + 2);
+			if (end > i + 2 && !text.slice(i + 2, end).includes('\n')) {
+				flush(); tokens.push({ kind: 'bold', text: text.slice(i + 2, end) }); i = end + 2; continue;
+			}
+		}
+		if (text[i] === '[') {
+			const link = markdownLinkAt(text, i);
+			if (link !== undefined) {
+				if (/^https?:\/\//i.test(link.destination)) {
+					flush(); tokens.push({ kind: 'external', label: link.label, url: link.destination }); i = link.end; continue;
+				}
+				const target = parseLocalFileTarget(link.destination);
+				if (target !== undefined) {
+					flush(); tokens.push({ kind: 'local', label: link.label, target }); i = link.end; continue;
+				}
+			}
+		}
+		plain += text.charAt(i);
+		i++;
+	}
+	flush();
+	return tokens;
+}
+
+function renderInlineTokens(tokens: InlineToken[], baseStyle: object, onOpenLocal: (target: LocalFileTarget) => void): ReactNode[] {
+	return tokens.map((token, i) => {
+		if (token.kind === 'code') {
+			return <Text key={i} style={[baseStyle, styles.inlineCode]}>{token.text}</Text>;
+		}
+		if (token.kind === 'bold') {
+			return <Text key={i} style={[baseStyle, styles.bold]}>{token.text}</Text>;
+		}
+		if (token.kind === 'external') {
+			return <Text key={i} style={[baseStyle, styles.link]} onPress={() => { void Linking.openURL(token.url).catch(() => { /* 開けないURLは無視 */ }); }}>{token.label}</Text>;
+		}
+		if (token.kind === 'local') {
+			return <Text key={i} style={[baseStyle, styles.link]} onPress={() => onOpenLocal(token.target)}>{token.label}</Text>;
+		}
+		return <Text key={i} style={baseStyle}>{token.text}</Text>;
 	});
-	return nodes;
+}
+
+function LocalFileCard({ label, target, opening, onPress }: { label: string; target: LocalFileTarget; opening: boolean; onPress: () => void }) {
+	const name = target.path.split(/[\\/]/).pop() ?? target.path;
+	const location = target.line !== undefined ? `行 ${target.line}${target.column !== undefined ? `、列 ${target.column}` : ''}` : undefined;
+	return (
+		<Pressable style={({ pressed }) => [styles.fileCard, pressed ? styles.fileCardPressed : null]} onPress={onPress} accessibilityRole="button" accessibilityLabel={`${label}を開く`}>
+			<View style={styles.fileIcon}><Ionicons name="document-text-outline" size={18} color={colors.accent} /></View>
+			<View style={styles.fileInfo}>
+				<Text style={styles.fileLabel} numberOfLines={1}>{label || name}</Text>
+				<Text style={styles.filePath} numberOfLines={2}>{target.path}{location !== undefined ? ` · ${location}` : ''}</Text>
+			</View>
+			{opening ? <ActivityIndicator size="small" color={colors.accent} /> : <Ionicons name="chevron-forward" size={18} color={colors.textDim} />}
+		</Pressable>
+	);
+}
+
+function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLocal: (target: LocalFileTarget) => void; openingKey?: string }) {
+	const tokens = parseInline(text);
+	if (!tokens.some(token => token.kind === 'local')) {
+		return <Text style={styles.body} selectable>{renderInlineTokens(tokens, styles.body, onOpenLocal)}</Text>;
+	}
+	const groups: InlineToken[][] = [];
+	for (const token of tokens) {
+		if (token.kind === 'local') {
+			groups.push([token]);
+		} else {
+			const last = groups[groups.length - 1];
+			if (last !== undefined && last[0]?.kind !== 'local') { last.push(token); } else { groups.push([token]); }
+		}
+	}
+	return (
+		<View style={styles.inlineStack}>
+			{groups.map((group, i) => {
+				const local = group[0]?.kind === 'local' ? group[0] : undefined;
+				if (local?.kind === 'local') {
+					const key = `${local.target.path}:${local.target.line ?? ''}:${local.target.column ?? ''}`;
+					return <LocalFileCard key={i} label={local.label} target={local.target} opening={openingKey === key} onPress={() => onOpenLocal(local.target)} />;
+				}
+				return <Text key={i} style={styles.body} selectable>{renderInlineTokens(group, styles.body, onOpenLocal)}</Text>;
+			})}
+		</View>
+	);
 }
 
 export function MarkdownText({ text }: { text: string }) {
+	const { workspace, selectedWs, selectedTerminalId, fsResolveLink } = useAppStore(useShallow(s => ({
+		workspace: s.workspace,
+		selectedWs: s.selectedWs,
+		selectedTerminalId: s.selectedTerminalId,
+		fsResolveLink: s.fsResolveLink,
+	})));
+	const selectedTerminal = workspace?.terminals.find(terminal => terminal.id === selectedTerminalId);
+	const terminalWs = selectedTerminal !== undefined ? (selectedTerminal.ws ?? workspace?.activeWs) : undefined;
+	const ws = terminalWs ?? selectedWs ?? workspace?.activeWs ?? workspace?.workspaces[0]?.id;
+	const [openingKey, setOpeningKey] = useState<string | undefined>();
+	const [viewer, setViewer] = useState<{ ws: string; path: string; line?: number } | undefined>();
+	const openGeneration = useRef(0);
+	useEffect(() => () => { openGeneration.current++; }, []);
 	const blocks = parseBlocks(text);
+	const openLocal = (target: LocalFileTarget) => {
+		if (ws === undefined) {
+			Alert.alert('ファイルを開けません', '対応するワークスペースが見つかりません。');
+			return;
+		}
+		const key = `${target.path}:${target.line ?? ''}:${target.column ?? ''}`;
+		const generation = ++openGeneration.current;
+		hapticSelection();
+		setOpeningKey(key);
+		void fsResolveLink(ws, target.path).then(resolved => {
+			if (openGeneration.current === generation) {
+				setViewer({ ws, path: resolved.path, ...(target.line !== undefined ? { line: target.line } : {}) });
+			}
+		}).catch(error => {
+			if (openGeneration.current === generation) {
+				Alert.alert('ファイルを開けません', String(error instanceof Error ? error.message : error));
+			}
+		}).finally(() => {
+			if (openGeneration.current === generation) {
+				setOpeningKey(current => current === key ? undefined : current);
+			}
+		});
+	};
 	return (
 		<View style={styles.root}>
 			{blocks.map((block, i) => {
@@ -293,7 +520,7 @@ export function MarkdownText({ text }: { text: string }) {
 				if (block.kind === 'heading') {
 					return (
 						<Text key={i} style={[styles.body, styles.heading, block.level === 1 ? styles.h1 : block.level === 2 ? styles.h2 : null]} selectable>
-							{renderInline(block.text, styles.body)}
+							{renderInlineTokens(parseInline(block.text), styles.body, openLocal)}
 						</Text>
 					);
 				}
@@ -301,7 +528,7 @@ export function MarkdownText({ text }: { text: string }) {
 					return (
 						<View key={i} style={styles.bulletRow}>
 							<Text style={[styles.body, styles.bulletMarker]}>{block.marker}</Text>
-							<Text style={[styles.body, styles.bulletBody]} selectable>{renderInline(block.text, styles.body)}</Text>
+							<View style={styles.bulletBody}><InlineBlock text={block.text} onOpenLocal={openLocal} openingKey={openingKey} /></View>
 						</View>
 					);
 				}
@@ -314,7 +541,7 @@ export function MarkdownText({ text }: { text: string }) {
 								{block.header.map((cell, c) => (
 									<View key={c} style={[styles.tableCell, c > 0 ? styles.tableCellBorder : null]}>
 										<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-											{renderInline(cell, styles.body)}
+											{renderInlineTokens(parseInline(cell), styles.body, openLocal)}
 										</Text>
 									</View>
 								))}
@@ -324,7 +551,7 @@ export function MarkdownText({ text }: { text: string }) {
 									{Array.from({ length: cols }, (_, c) => (
 										<View key={c} style={[styles.tableCell, c > 0 ? styles.tableCellBorder : null]}>
 											<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-												{renderInline(row[c] ?? '', styles.body)}
+												{renderInlineTokens(parseInline(row[c] ?? ''), styles.body, openLocal)}
 											</Text>
 										</View>
 									))}
@@ -333,10 +560,11 @@ export function MarkdownText({ text }: { text: string }) {
 						</View>
 					);
 				}
-				return (
-					<Text key={i} style={styles.body} selectable>{renderInline(block.text, styles.body)}</Text>
-				);
+				return <InlineBlock key={i} text={block.text} onOpenLocal={openLocal} openingKey={openingKey} />;
 			})}
+			{viewer !== undefined ? (
+				<WorkspaceFileViewer ws={viewer.ws} path={viewer.path} focusLine={viewer.line} backLabel="エージェント" onClose={() => setViewer(undefined)} />
+			) : null}
 		</View>
 	);
 }
@@ -359,6 +587,13 @@ const styles = StyleSheet.create({
 	bulletRow: { flexDirection: 'row', gap: 6 },
 	bulletMarker: { color: colors.textDim },
 	bulletBody: { flex: 1 },
+	inlineStack: { gap: 6 },
+	fileCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.glassBg, borderWidth: 1, borderColor: colors.glassBorder, borderRadius: 12, paddingVertical: 10, paddingHorizontal: 11 },
+	fileCardPressed: { opacity: 0.72 },
+	fileIcon: { width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.accentWash },
+	fileInfo: { flex: 1, gap: 2 },
+	fileLabel: { color: colors.text, fontSize: 13, fontWeight: '600' },
+	filePath: { color: colors.textDim, fontFamily: mono, fontSize: 10, lineHeight: 14 },
 	table: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: 'hidden', marginVertical: 2 },
 	tableRow: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	tableHead: { backgroundColor: 'rgba(110,118,129,.18)', borderTopWidth: 0 },
