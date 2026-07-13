@@ -29,7 +29,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { IParadisAgentPaneStatus, IParadisCdpScreenshotOptions, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisMcpSetupServerResult, IParadisPaneBinding, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR, ParadisAgentStatus, paradisNormalizeAgentHookEvent } from '../common/paradisAgentBrowser.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
-import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload } from './paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload } from './paradisAgentHookBus.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler } from './paradisAgentHooksSetup.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
@@ -206,6 +206,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		);
 		const agentHooksReconciler = this._register(new ParadisAgentHooksReconciler(logService, {}, () => cachedShellEnv.getEnv()));
 		void agentHooksReconciler.start().catch(error => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
+		this._register(onParadisAgentTurnStarted(({ token, cwd, at }) => {
+			this._agentHookTokens.add(token);
+			this._paneStatuses.set(token, { status: 'working', changedAt: at, ...(cwd !== undefined ? { cwd } : {}) });
+		}));
 		// transcript由来のターン終了（Codex の usage limit エラー・中断等、Stop hook が
 		// 発火しないケース）を working 状態の解除に反映する。Stop hook と同じく、
 		// バックグラウンドタスクが残っていれば working を維持する（stale掃除の対象になる）。

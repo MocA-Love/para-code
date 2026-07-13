@@ -19,7 +19,12 @@ suite('ParadisAgentCliCommand', () => {
 			paradisInteractiveAgentCommand('CODEX_HOME=/tmp/codex /usr/local/bin/codex --search "調査して"'),
 			paradisInteractiveAgentCommand('codex resume --last'),
 			paradisInteractiveAgentCommand('codex fork 019f-thread'),
-		], ['codex', 'codex', 'codex', 'codex']);
+		], [
+			{ agent: 'codex', mode: 'new' },
+			{ agent: 'codex', mode: 'new' },
+			{ agent: 'codex', mode: 'resume' },
+			{ agent: 'codex', mode: 'fork' },
+		]);
 	});
 
 	test('rejects current non-interactive Codex invocations', () => {
@@ -33,7 +38,11 @@ suite('ParadisAgentCliCommand', () => {
 			paradisInteractiveAgentCommand('claude'),
 			paradisInteractiveAgentCommand('claude --resume session-id'),
 			paradisInteractiveAgentCommand('claude --model opus "調査して"'),
-		], ['claude', 'claude', 'claude']);
+		], [
+			{ agent: 'claude', mode: 'new' },
+			{ agent: 'claude', mode: 'resume' },
+			{ agent: 'claude', mode: 'new' },
+		]);
 		for (const command of ['claude --help', 'claude -v', 'claude --version', 'claude --print test', 'claude --background', 'claude agents', 'claude doctor']) {
 			assert.strictEqual(paradisInteractiveAgentCommand(command), undefined, command);
 		}

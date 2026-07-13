@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisClaudeSubagentTranscriptCandidates, paradisConfirmedAgentPaneTokens, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
+import { paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexRootThreadSource, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
 
 suite('ParadisMobileAgentChat', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -32,6 +32,36 @@ suite('ParadisMobileAgentChat', () => {
 			type: 'session_meta',
 			payload: { cwd: '/workspace', id: 'thread-1' },
 		})), { cwd: '/workspace', sessionId: 'thread-1' });
+	});
+
+	test('keeps current Codex nested thread metadata', () => {
+		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({
+			type: 'session_meta', payload: {
+				cwd: '/workspace', id: 'child', parent_thread_id: 'parent', depth: 2,
+				agent_path: '/root/planner/researcher', agent_nickname: 'researcher',
+			},
+		})), {
+			cwd: '/workspace', sessionId: 'child', parentThreadId: 'parent', depth: 2,
+			agentPath: '/root/planner/researcher', agentNickname: 'researcher',
+		});
+	});
+
+	test('distinguishes Codex root threads from nested subagent sources', () => {
+		assert.strictEqual(paradisIsCodexRootThreadSource('cli'), true);
+		assert.strictEqual(paradisIsCodexRootThreadSource(JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: 'parent', depth: 1 } } })), false);
+	});
+
+	test('parses current Codex nested thread source', () => {
+		assert.deepStrictEqual(paradisParseCodexThreadSource(JSON.stringify({
+			subagent: { thread_spawn: { parent_thread_id: 'parent', depth: 3, agent_nickname: 'verifier', agent_role: 'reviewer' } },
+		})), { parentThreadId: 'parent', depth: 3, agentNickname: 'verifier', agentRole: 'reviewer' });
+	});
+
+	test('uses creation time for new sessions and update time for resumed sessions', () => {
+		const oldButUpdated = { mtime: 200, createdAt: 50 };
+		assert.strictEqual(paradisCliDiscoveryCandidateIsFresh(oldButUpdated, 100, 'new'), false);
+		assert.strictEqual(paradisCliDiscoveryCandidateIsFresh(oldButUpdated, 100, 'fork'), false);
+		assert.strictEqual(paradisCliDiscoveryCandidateIsFresh(oldButUpdated, 100, 'resume'), true);
 	});
 
 	test('rejects non-session metadata', () => {
@@ -59,6 +89,13 @@ suite('ParadisMobileAgentChat', () => {
 		});
 	});
 
+	test('extracts Codex task_started so the PC workspace can show working state without hooks', () => {
+		const parsed = paradisParseCodexTranscriptLineForTest(JSON.stringify({
+			timestamp: '2026-07-13T00:00:00.000Z', type: 'event_msg', payload: { type: 'task_started' },
+		}));
+		assert.strictEqual(parsed.turn, 'started');
+	});
+
 	test('builds SubAgent detail from a persisted Codex child rollout', () => {
 		assert.deepStrictEqual(paradisParseCodexDetailLinesForTest([
 			JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '調査して' }] } }),
@@ -78,6 +115,13 @@ suite('ParadisMobileAgentChat', () => {
 			'/Users/test/.claude/projects/workspace/session/subagents/agent-abc-123.jsonl',
 			'/Users/test/.claude/projects/workspace/subagents/agent-abc-123.jsonl',
 		]);
+	});
+
+	test('maps nested Claude hook transcripts back to their parent agent and root session', () => {
+		const path = '/Users/test/.claude/projects/workspace/session/subagents/agent-parent-123.jsonl';
+		assert.strictEqual(paradisClaudeAgentIdFromTranscriptPath(path), 'parent-123');
+		assert.strictEqual(paradisClaudeRootTranscriptPath(path), '/Users/test/.claude/projects/workspace/session.jsonl');
+		assert.strictEqual(paradisClaudeAgentIdFromTranscriptPath('/Users/test/.claude/projects/workspace/session.jsonl'), undefined);
 	});
 
 	test('does not guess when multiple fresh sessions match the same cwd', () => {

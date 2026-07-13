@@ -105,6 +105,23 @@ suite('ParadisAgentActivity', () => {
 		assert.strictEqual(tracker.snapshot()?.agents[0].detail, '設定を調べる');
 	});
 
+	test('normalizes Claude nested subagent parent and depth', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyClaude('SubagentStart', { agent_id: 'parent', agent_type: 'planner' }, 100);
+		tracker.applyClaude('SubagentStart', { agent_id: 'child', agent_type: 'researcher', parent_agent_id: 'parent', depth: 2 }, 110);
+		assert.deepStrictEqual(tracker.snapshot()?.agents.find(agent => agent.id === 'child'), {
+			id: 'child', label: 'researcher', role: 'subagent', provider: 'claude', parentId: 'parent', depth: 2, status: 'running', startedAt: 110, updatedAt: 110,
+		});
+	});
+
+	test('drops self-parent and bounds untrusted depth', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: 'thread-2', parentThreadId: 'thread-2', depth: 999, kind: 'started' } }, 100);
+		assert.deepStrictEqual(tracker.snapshot()?.agents[0], {
+			id: 'thread-2', label: 'SubAgent', role: 'subagent', provider: 'codex', depth: 5, status: 'running', startedAt: 100, updatedAt: 100,
+		});
+	});
+
 	test('uses the current Claude SubagentStop last_assistant_message', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);

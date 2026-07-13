@@ -102,6 +102,14 @@ export function fireParadisAgentHookEvent(event: IParadisAgentHookEvent): void {
 // 検出して発火し、ParadisAgentBrowserService がペイン実行状態（working の解除）に反映する。
 
 const turnEndedEmitter = new Emitter<{ readonly token: string; readonly at: number }>();
+const turnStartedEmitter = new Emitter<{ readonly token: string; readonly cwd?: string; readonly at: number }>();
+
+/** transcript由来のターン開始（Codex hook未発火時のPC処理中表示）。 */
+export const onParadisAgentTurnStarted: Event<{ readonly token: string; readonly cwd?: string; readonly at: number }> = turnStartedEmitter.event;
+
+export function fireParadisAgentTurnStarted(token: string, cwd?: string): void {
+	turnStartedEmitter.fire({ token, ...(cwd !== undefined ? { cwd } : {}), at: Date.now() });
+}
 
 /** transcript由来のターン終了の購読（shared process 内限定）。 */
 export const onParadisAgentTurnEnded: Event<{ readonly token: string; readonly at: number }> = turnEndedEmitter.event;

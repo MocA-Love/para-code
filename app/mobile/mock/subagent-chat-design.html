@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="ja">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+	<title>Para Code — SubAgent chat design</title>
+	<style>
+		:root { color-scheme: dark; --bg:#050506; --surface:#151419; --surface2:#1d1c22; --line:#2c2a32; --text:#f4f1f6; --dim:#96919d; --purple:#d097e2; --cyan:#50d7e5; --cyan-bg:#062b31; --green:#66d69a; --yellow:#e7c56e; }
+		* { box-sizing:border-box; }
+		body { margin:0; background:#0d0c0f; color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Helvetica Neue","Hiragino Sans",sans-serif; }
+		button { font:inherit; }
+		.page { min-height:100vh; padding:24px 12px 60px; }
+		.prototype-note { width:min(100%,440px); margin:0 auto 14px; padding:10px 12px; border:1px solid var(--line); border-radius:13px; color:var(--dim); background:#151419; font-size:11px; line-height:1.5; }
+		.prototype-note strong { color:var(--text); }
+		.phone { width:min(100%,440px); min-height:860px; margin:auto; overflow:hidden; border:1px solid #29272e; border-radius:34px; background:var(--bg); box-shadow:0 24px 80px #0009; }
+		.statusbar { display:flex; justify-content:space-between; padding:18px 25px 10px; font-weight:700; }
+		.header { display:flex; gap:12px; align-items:center; padding:12px 16px 18px; border-bottom:1px solid #17161a; position:sticky; top:0; z-index:2; background:#050506ed; backdrop-filter:blur(20px); }
+		.back { width:48px; height:48px; border-radius:24px; border:1px solid #38363d; background:linear-gradient(145deg,#29282c,#19191c); color:white; font-size:29px; }
+		.head-copy { min-width:0; flex:1; }
+		.breadcrumbs { display:flex; align-items:center; gap:4px; overflow:auto; margin-bottom:3px; scrollbar-width:none; }
+		.breadcrumbs::-webkit-scrollbar { display:none; }
+		.crumb { flex:0 0 auto; padding:0; border:0; color:var(--purple); background:transparent; cursor:pointer; font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace; }
+		.crumb.current { color:#e7c6f1; }
+		.crumb-separator { color:#5d5862; font-size:9px; }
+		h1 { margin:2px 0 0; font-size:24px; line-height:1.05; }
+		.subtitle { color:var(--dim); font:11px ui-monospace,SFMono-Regular,Menlo,monospace; margin-top:4px; }
+		.live { display:inline-flex; gap:5px; align-items:center; color:var(--green); font-size:10px; font-weight:700; }
+		.live::before { content:""; width:7px; height:7px; border-radius:50%; background:currentColor; box-shadow:0 0 10px currentColor; }
+		.content { padding:14px 12px 30px; }
+		.summary { display:grid; grid-template-columns:repeat(4,1fr); gap:1px; overflow:hidden; margin-bottom:14px; border:1px solid var(--line); border-radius:15px; background:var(--line); }
+		.metric { padding:11px 7px; background:var(--surface); text-align:center; }
+		.metric strong { display:block; font-size:17px; }
+		.metric span { color:var(--dim); font-size:9px; }
+		.metric.running strong { color:var(--green); }
+		details.meta { margin-bottom:20px; border:1px solid var(--line); border-radius:14px; background:#111015; }
+		details.meta summary { padding:12px; color:var(--dim); cursor:pointer; font-size:11px; font-weight:700; }
+		.meta-body { padding:0 12px 12px; display:grid; gap:10px; }
+		.meta-row label { display:block; margin-bottom:3px; color:var(--dim); font-size:8px; font-weight:800; text-transform:uppercase; }
+		.meta-row div { font-size:11px; line-height:1.5; }
+		.thread { display:flex; flex-direction:column; gap:16px; }
+		.turn { display:flex; flex-direction:column; max-width:91%; }
+		.turn.parent-turn { align-self:flex-end; align-items:flex-end; }
+		.turn.child-turn { align-self:flex-start; align-items:flex-start; }
+		.role { display:flex; align-items:center; gap:5px; margin:0 6px 5px; color:var(--dim); font-size:9px; font-weight:800; }
+		.role .avatar { display:grid; place-items:center; width:19px; height:19px; border-radius:6px; background:#2e2434; color:var(--purple); }
+		.child-turn .role .avatar { background:#19282c; color:var(--cyan); }
+		.bubble { width:100%; padding:12px 13px; border:1px solid var(--line); border-radius:18px 18px 5px 18px; background:#16121a; font-size:13px; line-height:1.65; }
+		.child-turn .bubble { border-radius:18px 18px 18px 5px; background:var(--surface); }
+		.bubble h2 { margin:0 0 8px; font-size:14px; }
+		.bubble p { margin:0 0 9px; }
+		.bubble p:last-child { margin-bottom:0; }
+		.bubble ul { margin:7px 0 0; padding-left:20px; }
+		.bubble code { padding:2px 4px; border-radius:5px; background:#29272d; color:#f1c6ff; font:11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+		.bubble pre { overflow:auto; margin:9px -3px 0; padding:10px; border:1px solid #33313a; border-radius:10px; background:#09090b; color:#d9d5dc; font:10px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+		.tool-stack { width:100%; display:grid; gap:7px; margin-top:7px; }
+		.tool { overflow:hidden; border:1px solid #34323a; border-radius:12px; background:#121116; }
+		.tool summary { display:flex; align-items:center; gap:8px; padding:10px; cursor:pointer; list-style:none; }
+		.tool summary::-webkit-details-marker { display:none; }
+		.tool-icon { display:grid; place-items:center; width:25px; height:25px; border-radius:8px; background:#27242c; color:var(--cyan); font:700 12px ui-monospace,SFMono-Regular,Menlo,monospace; }
+		.tool-copy { min-width:0; flex:1; }
+		.tool-name { color:#ddd8e1; font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace; }
+		.tool-detail { overflow:hidden; color:var(--dim); font:9px ui-monospace,SFMono-Regular,Menlo,monospace; text-overflow:ellipsis; white-space:nowrap; }
+		.tool-state { color:var(--green); font-size:10px; }
+		.tool-body { max-height:260px; overflow:auto; padding:10px; border-top:1px solid var(--line); color:#bbb6c0; background:#0a090c; white-space:pre-wrap; font:9px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; }
+		.agent-card { width:100%; margin-top:8px; padding:0; overflow:hidden; border:1px solid #39434a; border-radius:14px; color:var(--text); background:linear-gradient(145deg,#111c20,#111217); cursor:pointer; text-align:left; }
+		.agent-card-head { display:flex; align-items:center; gap:9px; padding:11px; }
+		.agent-card-icon { display:grid; place-items:center; width:31px; height:31px; border-radius:10px; color:var(--cyan); background:#173036; font-size:15px; }
+		.agent-card-copy { min-width:0; flex:1; }
+		.agent-card-kicker { color:var(--dim); font-size:8px; font-weight:800; text-transform:uppercase; letter-spacing:.6px; }
+		.agent-card-name { margin-top:2px; font-size:12px; font-weight:750; }
+		.agent-card-status { color:var(--green); font-size:9px; font-weight:700; }
+		.agent-card-arrow { color:var(--dim); font-size:19px; }
+		.agent-card-foot { display:flex; gap:12px; padding:8px 11px; border-top:1px solid #2c373b; color:var(--dim); background:#0b1518; font-size:9px; }
+		.agent-card-foot strong { color:#d7d3da; }
+		.agent-card:hover { border-color:var(--cyan); }
+		.agent-view[hidden] { display:none; }
+		.notice { margin:18px 0 0; padding:10px 12px; border:1px solid #493f25; border-radius:12px; color:#d7c58f; background:#211d12; font-size:10px; line-height:1.5; }
+		@media (max-width:480px) { .page { padding:0; } .phone { width:100%; min-height:100vh; border:0; border-radius:0; } .prototype-note { margin:0; border-width:0 0 1px; border-radius:0; } }
+	</style>
+</head>
+<body>
+	<div class="page">
+		<div class="prototype-note"><strong>操作:</strong> 会話内の子Agentカード、またはヘッダーのパンくずを押すと階層を移動できます。</div>
+		<main class="phone">
+			<div class="statusbar"><span>13:38</span><span>●●● Wi-Fi　90%</span></div>
+			<header class="header">
+				<button class="back" id="back" aria-label="ひとつ上のAgentへ戻る">‹</button>
+				<div class="head-copy">
+					<div class="breadcrumbs" id="breadcrumbs"></div>
+					<h1 id="agent-title">planner</h1>
+					<div class="subtitle"><span id="agent-depth">SubAgent · 深度1</span>　<span class="live" id="agent-status">実行中 1分17秒</span></div>
+				</div>
+			</header>
+			<section class="content">
+				<div class="summary">
+					<div class="metric running"><strong id="metric-running">2</strong><span>実行中</span></div>
+					<div class="metric"><strong id="metric-direct">2</strong><span>直下の子</span></div>
+					<div class="metric"><strong id="metric-descendants">3</strong><span>子孫込み</span></div>
+					<div class="metric"><strong id="metric-completed">1</strong><span>完了履歴</span></div>
+				</div>
+				<details class="meta">
+					<summary>詳細情報を表示　›</summary>
+					<div class="meta-body">
+						<div class="meta-row"><label>Prompt / Description</label><div id="agent-prompt">Issue #1759 の実装計画を作成する</div></div>
+						<div class="meta-row"><label>Agent ID</label><div id="agent-id">a18b1d685da4da315</div></div>
+					</div>
+				</details>
+				<div class="thread agent-view" data-view="planner">
+					<article class="turn parent-turn">
+						<div class="role"><span class="avatar">親</span>親エージェントからの依頼</div>
+						<div class="bubble">
+							<h2>Issue #1759 の実装計画を作成してください</h2>
+							<p>リポジトリ <code>ai-zyusetu-3</code> を調査し、次を整理してください。</p>
+							<ul><li>警告ログの是正</li><li>localStorage の組織スコープ化</li><li>コードは変更しない</li></ul>
+						</div>
+					</article>
+					<article class="turn child-turn">
+						<div class="role"><span class="avatar">子</span>planner</div>
+						<div class="bubble"><p>まず調査から始めます。バックエンドとフロントエンドを別のAgentへ分担します。</p></div>
+						<button class="agent-card" data-open-agent="researcher">
+							<span class="agent-card-head"><span class="agent-card-icon">⑂</span><span class="agent-card-copy"><span class="agent-card-kicker">子Agentを開始 · 深度2</span><span class="agent-card-name">researcher</span><span class="agent-card-status">● 実行中 · 43秒</span></span><span class="agent-card-arrow">›</span></span>
+							<span class="agent-card-foot"><span>直下の子 <strong>1</strong></span><span>子孫込み <strong>1</strong></span></span>
+						</button>
+						<button class="agent-card" data-open-agent="frontend-reviewer">
+							<span class="agent-card-head"><span class="agent-card-icon">⑂</span><span class="agent-card-copy"><span class="agent-card-kicker">子Agentを開始 · 深度2</span><span class="agent-card-name">frontend-reviewer</span><span class="agent-card-status" style="color:var(--green)">✓ 完了 · 31秒</span></span><span class="agent-card-arrow">›</span></span>
+							<span class="agent-card-foot"><span>直下の子 <strong>0</strong></span><span>子孫込み <strong>0</strong></span></span>
+						</button>
+						<div class="tool-stack">
+							<details class="tool">
+								<summary><span class="tool-icon">⌕</span><span class="tool-copy"><span class="tool-name">Read</span><span class="tool-detail">backend/src/resolver/context.ts · 270–390</span></span><span class="tool-state">完了</span></summary>
+								<div class="tool-body">270  requestId,
+271  errorMessage:
+272    error instanceof Error ? error.message : String(error),
+...
+290  const isValidDivisionId = async (...)</div>
+							</details>
+							<details class="tool">
+								<summary><span class="tool-icon">⌕</span><span class="tool-copy"><span class="tool-name">Search</span><span class="tool-detail">selectedDivisionId · frontend/src</span></span><span class="tool-state">完了</span></summary>
+								<div class="tool-body">frontend/src/graphql/config.ts:20
+frontend/src/components/DivisionSwitcher.tsx:72</div>
+							</details>
+						</div>
+					</article>
+					<article class="turn child-turn">
+						<div class="role"><span class="avatar">子</span>planner</div>
+						<div class="bubble">
+							<h2>調査結果</h2>
+							<p>警告は正常なフォールバック経路でも発生しており、監視上の誤検知につながっています。</p>
+							<pre>selectedDivisionId:${organizationId}</pre>
+						</div>
+					</article>
+				</div>
+				<div class="thread agent-view" data-view="researcher" hidden>
+					<article class="turn parent-turn">
+						<div class="role"><span class="avatar">親</span>plannerからの依頼</div>
+						<div class="bubble"><h2>バックエンドの警告経路を調査してください</h2><p><code>context.ts</code> の検証とフォールバックの関係を整理してください。</p></div>
+					</article>
+					<article class="turn child-turn">
+						<div class="role"><span class="avatar">子</span>researcher</div>
+						<div class="bubble"><p>警告箇所と監視設定を確認します。ログの妥当性は別Agentに検証してもらいます。</p></div>
+						<button class="agent-card" data-open-agent="verifier">
+							<span class="agent-card-head"><span class="agent-card-icon">⑂</span><span class="agent-card-copy"><span class="agent-card-kicker">子Agentを開始 · 深度3</span><span class="agent-card-name">verifier</span><span class="agent-card-status">● 実行中 · 12秒</span></span><span class="agent-card-arrow">›</span></span>
+							<span class="agent-card-foot"><span>直下の子 <strong>0</strong></span><span>子孫込み <strong>0</strong></span></span>
+						</button>
+						<div class="tool-stack"><details class="tool"><summary><span class="tool-icon">⌕</span><span class="tool-copy"><span class="tool-name">Search</span><span class="tool-detail">console.warn · context.ts</span></span><span class="tool-state">完了</span></summary><div class="tool-body">context.ts:280  console.warn(...)
+context.ts:338  console.warn(...)</div></details></div>
+					</article>
+				</div>
+				<div class="thread agent-view" data-view="verifier" hidden>
+					<article class="turn parent-turn">
+						<div class="role"><span class="avatar">親</span>researcherからの依頼</div>
+						<div class="bubble"><h2>警告レベルの妥当性を検証してください</h2><p>正常なフォールバックならseverityを下げるべきか確認してください。</p></div>
+					</article>
+					<article class="turn child-turn">
+						<div class="role"><span class="avatar">子</span>verifier</div>
+						<div class="bubble"><h2>検証結果</h2><p>リクエストは失敗せず保存済み選択へ戻るため、現在のWARNINGは運用上の誤検知になります。</p><ul><li>通常経路はinfoへ変更</li><li>判定乖離の観測ログは頻度制限付きで維持</li></ul></div>
+					</article>
+				</div>
+				<div class="thread agent-view" data-view="frontend-reviewer" hidden>
+					<article class="turn parent-turn"><div class="role"><span class="avatar">親</span>plannerからの依頼</div><div class="bubble"><h2>localStorageの利用箇所を確認してください</h2></div></article>
+					<article class="turn child-turn"><div class="role"><span class="avatar">子</span>frontend-reviewer</div><div class="bubble"><h2>調査完了</h2><p><code>selectedDivisionId</code> は組織IDを含まない単一キーでした。組織単位の名前空間化が必要です。</p></div></article>
+				</div>
+				<div class="notice">左右は常に「直接の親＝右、現在のAgent＝左」。子孫の会話は埋め込まず、子Agentカードから一段ずつ開きます。</div>
+			</section>
+		</main>
+	</div>
+	<script>
+		const agents = {
+			planner: { title:'planner', path:['main','planner'], depth:1, status:'実行中 1分17秒', running:2, direct:2, descendants:3, completed:1, prompt:'Issue #1759 の実装計画を作成する', id:'a18b1d685da4da315' },
+			researcher: { title:'researcher', path:['main','planner','researcher'], depth:2, status:'実行中 43秒', running:2, direct:1, descendants:1, completed:0, prompt:'バックエンドの警告経路を調査する', id:'agent-b24f90' },
+			verifier: { title:'verifier', path:['main','planner','researcher','verifier'], depth:3, status:'実行中 12秒', running:1, direct:0, descendants:0, completed:0, prompt:'警告レベルの妥当性を検証する', id:'agent-c91d07' },
+			'frontend-reviewer': { title:'frontend-reviewer', path:['main','planner','frontend-reviewer'], depth:2, status:'完了 31秒', running:0, direct:0, descendants:0, completed:1, prompt:'localStorageの利用箇所を確認する', id:'agent-f37a10' }
+		};
+		let current = 'planner';
+		function openAgent(id) {
+			const agent = agents[id];
+			if (!agent) return;
+			current = id;
+			document.querySelectorAll('[data-view]').forEach(view => view.hidden = view.dataset.view !== id);
+			document.getElementById('agent-title').textContent = agent.title;
+			document.getElementById('agent-depth').textContent = `SubAgent · 深度${agent.depth}`;
+			document.getElementById('agent-status').textContent = agent.status;
+			document.getElementById('agent-status').style.color = agent.running > 0 ? 'var(--green)' : 'var(--dim)';
+			document.getElementById('metric-running').textContent = agent.running;
+			document.getElementById('metric-direct').textContent = agent.direct;
+			document.getElementById('metric-descendants').textContent = agent.descendants;
+			document.getElementById('metric-completed').textContent = agent.completed;
+			document.getElementById('agent-prompt').textContent = agent.prompt;
+			document.getElementById('agent-id').textContent = agent.id;
+			document.getElementById('breadcrumbs').innerHTML = agent.path.map((name,index) => {
+				const target = name === 'main' ? 'planner' : name;
+				const currentClass = index === agent.path.length - 1 ? ' current' : '';
+				const separator = index === 0 ? '' : '<span class="crumb-separator">›</span>';
+				return `${separator}<button class="crumb${currentClass}" data-crumb="${target}">${name}</button>`;
+			}).join('');
+			document.querySelectorAll('[data-crumb]').forEach(button => button.addEventListener('click', () => openAgent(button.dataset.crumb)));
+			window.scrollTo({ top:0, behavior:'smooth' });
+		}
+		document.querySelectorAll('[data-open-agent]').forEach(button => button.addEventListener('click', () => openAgent(button.dataset.openAgent)));
+		document.getElementById('back').addEventListener('click', () => {
+			const path = agents[current].path;
+			if (path.length <= 2) return;
+			openAgent(path[path.length - 2]);
+		});
+		openAgent('planner');
+	</script>
+</body>
+</html>

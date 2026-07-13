@@ -7,7 +7,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-export type ParadisInteractiveAgentCommand = 'claude' | 'codex';
+export type ParadisInteractiveAgentMode = 'new' | 'resume' | 'fork';
+export interface ParadisInteractiveAgentCommand {
+	readonly agent: 'claude' | 'codex';
+	readonly mode: ParadisInteractiveAgentMode;
+}
 
 const codexOptionsWithValue = new Set(['-c', '--config', '--enable', '--disable', '--remote', '--remote-auth-token-env', '-i', '--image', '-m', '--model', '--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd', '--add-dir', '-a', '--ask-for-approval']);
 const codexNonInteractiveCommands = new Set(['exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control', 'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'archive', 'delete', 'unarchive', 'cloud', 'exec-server', 'features', 'help']);
@@ -60,9 +64,12 @@ export function paradisInteractiveAgentCommand(commandLine: string): ParadisInte
 	if (words.some(argument => argument === '-h' || argument === '--help' || argument === '-v' || argument === '-V' || argument === '--version')) { return undefined; }
 	if (executable === 'codex') {
 		const positional = firstPositional(words, codexOptionsWithValue);
-		return positional !== undefined && codexNonInteractiveCommands.has(positional) ? undefined : 'codex';
+		if (positional !== undefined && codexNonInteractiveCommands.has(positional)) { return undefined; }
+		return { agent: 'codex', mode: positional === 'resume' ? 'resume' : positional === 'fork' ? 'fork' : 'new' };
 	}
 	if (words.some(argument => argument === '-p' || argument === '--print' || argument === '--bg' || argument === '--background')) { return undefined; }
 	const positional = firstPositional(words, claudeOptionsWithValue);
-	return positional !== undefined && claudeNonInteractiveCommands.has(positional) ? undefined : 'claude';
+	if (positional !== undefined && claudeNonInteractiveCommands.has(positional)) { return undefined; }
+	const resume = words.some(argument => argument === '-r' || argument === '--resume' || argument.startsWith('--resume='));
+	return { agent: 'claude', mode: resume ? 'resume' : 'new' };
 }

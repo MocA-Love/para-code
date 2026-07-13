@@ -36,13 +36,14 @@ import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js'
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { fireParadisAgentTurnEnded, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
+export type ParadisCliDiscoveryMode = 'new' | 'resume' | 'fork';
 
 /** kind==='question' の選択肢1件。 */
 export interface IParadisAgentQuestionOption {
@@ -248,6 +249,7 @@ interface IRawMessage {
  * tailer がバックグラウンドタスク・質問回答待ち・セッションメタ情報の追跡へ反映する。
  */
 type ICodexTranscriptActivityEvent =
+	| { readonly type: 'turnStart'; readonly at: number }
 	| { readonly type: 'subagent'; readonly id: string; readonly agentPath?: string; readonly kind: 'started' | 'interacted' | 'interrupted'; readonly at: number }
 	| { readonly type: 'turnEnd'; readonly reason: 'completed' | 'failed' | 'interrupted'; readonly at: number };
 
@@ -339,7 +341,16 @@ function stableTextHash(value: string): string {
 }
 
 /** Codex rollout先頭行から、cwdと共有daemonのthread IDを取り出す。 */
-export function paradisParseCodexSessionMeta(firstLine: string): { readonly cwd: string; readonly sessionId?: string } | undefined {
+export interface IParadisCodexSessionMeta {
+	readonly cwd: string;
+	readonly sessionId?: string;
+	readonly parentThreadId?: string;
+	readonly depth?: number;
+	readonly agentPath?: string;
+	readonly agentNickname?: string;
+}
+
+export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSessionMeta | undefined {
 	try {
 		const meta = rec(JSON.parse(firstLine));
 		const payload = rec(meta?.['payload']);
@@ -348,10 +359,53 @@ export function paradisParseCodexSessionMeta(firstLine: string): { readonly cwd:
 			return undefined;
 		}
 		const sessionId = str(payload?.['session_id']) ?? str(payload?.['id']);
-		return { cwd, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}) };
+		const sourceSpawn = rec(rec(rec(payload?.['source'])?.['subagent'])?.['thread_spawn']);
+		const parentThreadId = str(payload?.['parent_thread_id']) ?? str(sourceSpawn?.['parent_thread_id']);
+		const rawDepth = num(payload?.['depth']) ?? num(sourceSpawn?.['depth']);
+		const depth = rawDepth !== undefined ? Math.min(5, Math.max(1, Math.trunc(rawDepth))) : undefined;
+		const agentPath = str(payload?.['agent_path']);
+		const agentNickname = str(payload?.['agent_nickname']) ?? str(sourceSpawn?.['agent_nickname']);
+		return {
+			cwd, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
+			...(parentThreadId !== undefined && parentThreadId !== sessionId ? { parentThreadId } : {}),
+			...(depth !== undefined ? { depth } : {}), ...(agentPath !== undefined ? { agentPath } : {}),
+			...(agentNickname !== undefined ? { agentNickname } : {}),
+		};
 	} catch {
 		return undefined;
 	}
+}
+
+/** state DBのsourceはSubAgentだけJSONで親thread情報を持つ。root探索では混在させない。 */
+export function paradisIsCodexRootThreadSource(source: string): boolean {
+	try {
+		return rec(rec(rec(JSON.parse(source))?.['subagent'])?.['thread_spawn']) === undefined;
+	} catch { return true; }
+}
+
+export interface IParadisCodexThreadSource {
+	readonly parentThreadId: string;
+	readonly depth: number;
+	readonly agentNickname?: string;
+	readonly agentRole?: string;
+}
+
+export function paradisParseCodexThreadSource(source: string): IParadisCodexThreadSource | undefined {
+	try {
+		const spawn = rec(rec(rec(JSON.parse(source))?.['subagent'])?.['thread_spawn']);
+		const parentThreadId = str(spawn?.['parent_thread_id']);
+		const rawDepth = num(spawn?.['depth']);
+		if (parentThreadId === undefined || rawDepth === undefined) { return undefined; }
+		const agentNickname = str(spawn?.['agent_nickname']);
+		const agentRole = str(spawn?.['agent_role']);
+		return { parentThreadId, depth: Math.min(5, Math.max(1, Math.trunc(rawDepth))), ...(agentNickname !== undefined ? { agentNickname } : {}), ...(agentRole !== undefined ? { agentRole } : {}) };
+	} catch { return undefined; }
+}
+
+/** 新規起動は生成時刻、resumeは更新時刻でCLI実行との相関を検証する。 */
+export function paradisCliDiscoveryCandidateIsFresh(candidate: { readonly mtime: number; readonly createdAt?: number }, minMtime: number | undefined, mode: ParadisCliDiscoveryMode): boolean {
+	if (minMtime === undefined) { return true; }
+	return mode === 'resume' ? candidate.mtime >= minMtime : candidate.createdAt !== undefined && candidate.createdAt >= minMtime;
 }
 
 export function paradisSelectUnambiguousSessionCandidate<T extends { readonly transcriptPath: string; readonly mtime: number }>(
@@ -693,7 +747,7 @@ export function paradisParseClaudeTranscriptLineForTest(line: string): { message
 }
 
 /** Codex transcript分類の回帰テスト用。productionと同じparserを1行だけ通す。 */
-export function paradisParseCodexTranscriptLineForTest(line: string): { messages: IRawMessage[]; activity?: Omit<Extract<ICodexTranscriptActivityEvent, { type: 'subagent' }>, 'type'> } {
+export function paradisParseCodexTranscriptLineForTest(line: string): { messages: IRawMessage[]; activity?: Omit<Extract<ICodexTranscriptActivityEvent, { type: 'subagent' }>, 'type'>; turn?: 'started' | 'ended' } {
 	let obj: Record<string, unknown> | undefined;
 	try {
 		obj = rec(JSON.parse(line));
@@ -706,7 +760,8 @@ export function paradisParseCodexTranscriptLineForTest(line: string): { messages
 	const signals = newParseSignals();
 	const messages = JSON.parse(JSON.stringify(parseCodexLine(obj, signals))) as IRawMessage[];
 	const activity = signals.codexActivityTimeline.find((event): event is Extract<ICodexTranscriptActivityEvent, { type: 'subagent' }> => event.type === 'subagent');
-	return { messages, ...(activity !== undefined ? { activity: { id: activity.id, ...(activity.agentPath !== undefined ? { agentPath: activity.agentPath } : {}), kind: activity.kind, at: activity.at } } : {}) };
+	const turn = signals.codexActivityTimeline.find(event => event.type === 'turnStart' || event.type === 'turnEnd');
+	return { messages, ...(activity !== undefined ? { activity: { id: activity.id, ...(activity.agentPath !== undefined ? { agentPath: activity.agentPath } : {}), kind: activity.kind, at: activity.at } } : {}), ...(turn !== undefined ? { turn: turn.type === 'turnStart' ? 'started' : 'ended' } : {}) };
 }
 
 /** Codex子threadのrollout行を、SubAgent詳細用メッセージへ正規化する。 */
@@ -732,6 +787,21 @@ export function paradisClaudeSubagentTranscriptCandidates(transcriptPath: string
 	const filename = transcriptPath.slice(transcriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
 	const agentFile = `${activityId.startsWith('agent-') ? activityId : `agent-${activityId}`}.jsonl`;
 	return [...new Set([...(hookTranscriptPath !== undefined ? [hookTranscriptPath] : []), join(dir, filename, 'subagents', agentFile), join(dir, 'subagents', agentFile)])];
+}
+
+/** Claudeの子transcript pathに埋め込まれた所有Agent ID。root transcriptならundefined。 */
+export function paradisClaudeAgentIdFromTranscriptPath(transcriptPath: string): string | undefined {
+	const normalized = transcriptPath.replace(/\\/g, '/');
+	const match = /\/subagents\/agent-([^/]+)\.jsonl$/i.exec(normalized);
+	return match?.[1];
+}
+
+/** 現行Claudeの `<session>/subagents/agent-*.jsonl` からroot transcriptを復元する。 */
+export function paradisClaudeRootTranscriptPath(transcriptPath: string): string | undefined {
+	const normalized = transcriptPath.replace(/\\/g, '/');
+	const match = /^(.*)\/([^/]+)\/subagents\/agent-[^/]+\.jsonl$/i.exec(normalized);
+	if (match?.[1] === undefined || match[2] === undefined) { return undefined; }
+	return `${match[1]}/${match[2]}.jsonl`;
 }
 
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
@@ -765,6 +835,11 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 			if (id !== undefined && (kind === 'started' || kind === 'interacted' || kind === 'interrupted') && Number.isFinite(at)) {
 				signals.codexActivityTimeline.push({ type: 'subagent', id, ...(str(eventPayload?.['agent_path']) !== undefined ? { agentPath: str(eventPayload?.['agent_path']) } : {}), kind, at });
 			}
+		}
+		if (eventType === 'task_started') {
+			const timestamp = str(obj['timestamp']);
+			const at = timestamp !== undefined ? Date.parse(timestamp) : NaN;
+			if (Number.isFinite(at)) { signals.codexActivityTimeline.push({ type: 'turnStart', at }); }
 		}
 		if (eventType === 'task_complete' || eventType === 'error' || eventType === 'turn_aborted') {
 			signals.turnEnded = eventType === 'task_complete' ? 'completed' : eventType === 'turn_aborted' ? 'interrupted' : 'failed';
@@ -907,7 +982,7 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
 		const rows = database.prepare(`
-			SELECT id, rollout_path, COALESCE(updated_at_ms, updated_at * 1000) AS mtime,
+			SELECT id, rollout_path, source, COALESCE(updated_at_ms, updated_at * 1000) AS mtime,
 				COALESCE(created_at_ms, created_at * 1000) AS created_at
 			FROM threads
 			WHERE cwd = ? AND archived = 0
@@ -921,7 +996,8 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 			const sessionId = str(row?.['id']);
 			const mtime = num(row?.['mtime']);
 			const createdAt = num(row?.['created_at']);
-			if (transcriptPath === undefined || !isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl') || mtime === undefined) {
+			const source = str(row?.['source']);
+			if (transcriptPath === undefined || !isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl') || mtime === undefined || source === undefined || !paradisIsCodexRootThreadSource(source)) {
 				continue;
 			}
 			candidates.push({
@@ -956,6 +1032,21 @@ async function discoverCodexTranscriptByThreadId(threadId: string): Promise<stri
 	} finally {
 		database?.close();
 	}
+}
+
+async function discoverCodexThreadSourceById(threadId: string): Promise<IParadisCodexThreadSource | undefined> {
+	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
+	let database: DatabaseSync | undefined;
+	try {
+		const names = await fs.readdir(paradisCodexHome());
+		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+		if (stateDb === undefined) { return undefined; }
+		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		const row = rec(database.prepare('SELECT source FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
+		const source = str(row?.['source']);
+		return source !== undefined ? paradisParseCodexThreadSource(source) : undefined;
+	} catch { return undefined; } finally { database?.close(); }
 }
 
 /**
@@ -1040,7 +1131,7 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 							await handle.close();
 						}
 						const meta = paradisParseCodexSessionMeta(firstLine);
-						if (meta?.cwd === cwd) {
+						if (meta?.cwd === cwd && meta.parentThreadId === undefined) {
 							const sessionId = meta.sessionId;
 							candidates.push({
 								agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime,
@@ -1634,6 +1725,9 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			}
 			this.cliDiscoveryTimers.clear();
+			for (const timer of this.cliReconciliationTimers.values()) { clearInterval(timer); }
+			this.cliReconciliationTimers.clear();
+			this.cliReconciliationWatermarks.clear();
 			for (const timer of this.pendingHookTimers.values()) {
 				clearTimeout(timer);
 			}
@@ -1795,6 +1889,9 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.cliDiscoveryGenerations.delete(token);
 			}
 		}
+		for (const token of [...this.cliReconciliationTimers.keys()]) {
+			if (!liveTokens.has(token)) { this.onCliCommandFinished(token); this.cliDiscoveryGenerations.delete(token); }
+		}
 		// paneSessions も掃除する（放置するとclose済みターミナルのセッション情報が単調増加する）。
 		// セッション登録側は必ずlive tokenを確認するため、現在liveでないものは即時に破棄できる。
 		for (const token of [...this.paneSessions.keys()]) {
@@ -1822,6 +1919,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** コマンド検知トリガーの再探索タイマー (dispose時に確実に止める)。 */
 	private readonly cliDiscoveryTimers = new Map<string, Set<ReturnType<typeof setTimeout>>>();
 	private readonly cliDiscoveryGenerations = new Map<string, number>();
+	private readonly cliReconciliationTimers = new Map<string, ReturnType<typeof setInterval>>();
+	private readonly cliReconciliationWatermarks = new Map<string, number>();
 
 	/**
 	 * ターミナルで `claude` / `codex` コマンドの実行開始を検知した (shell integration 由来)。
@@ -1830,7 +1929,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 少し待って数回試す。鮮度ガード (コマンド開始時刻より新しい更新のみ受理) により、
 	 * `claude --help` のような空振りで古いセッションを掴む誤検知は起きない。
 	 */
-	onCliCommandDetected(token: string, agent: ParadisAgentKind, cwd: string | undefined): void {
+	onCliCommandDetected(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string | undefined): void {
 		if (!this.isLiveToken(token)) {
 			return;
 		}
@@ -1844,6 +1943,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.cliDiscoveryGenerations.set(token, generation);
 		// resume 直後は既存transcriptへの追記になるため、開始時刻より少し手前まで許容する。
 		const minMtime = Date.now() - 15_000;
+		this.cliReconciliationWatermarks.set(token, minMtime);
 		// 共有daemonは起動済みthreadのrollout初回flushが遅れることがあるため、短い即時探索に
 		// 加えて30秒・60秒でも再確認する。鮮度ガードは維持されるので、待機を延ばしても
 		// コマンド開始前の古いセッションを誤って拾うことはない。
@@ -1857,7 +1957,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (this.cliDiscoveryGenerations.get(token) !== generation) {
 					return;
 				}
-				this.discoverAndNotify(token, agent, effectiveCwd, minMtime, generation).catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
+				this.discoverAndNotify(token, agent, mode, effectiveCwd, minMtime, generation).catch(err => this.logService.warn('[paradisAgentChat] discovery on cli command failed', err));
 			}, delayMs);
 			let timers = this.cliDiscoveryTimers.get(token);
 			if (timers === undefined) {
@@ -1866,6 +1966,27 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			timers.add(timer);
 		}
+		const previousReconciliation = this.cliReconciliationTimers.get(token);
+		if (previousReconciliation !== undefined) { clearInterval(previousReconciliation); }
+		// TUI内の /resume はshell commandを再発火しない。hookが無い環境でも、CLIが
+		// 実行中の間だけroot threadの一意な更新を追跡してsession切替を検出する。
+		const reconciliation = setInterval(() => {
+			if (this.cliDiscoveryGenerations.get(token) !== generation || !this.isLiveToken(token)) { return; }
+			const watermark = this.cliReconciliationWatermarks.get(token) ?? minMtime;
+			this.discoverAndNotify(token, agent, 'resume', effectiveCwd, watermark, generation)
+				.catch(err => this.logService.warn('[paradisAgentChat] cli session reconciliation failed', err));
+		}, 5_000);
+		this.cliReconciliationTimers.set(token, reconciliation);
+	}
+
+	onCliCommandFinished(token: string): void {
+		this.cancelCliDiscovery(token);
+		this.cliDiscoveryGenerations.set(token, (this.cliDiscoveryGenerations.get(token) ?? 0) + 1);
+		this.activeTurnTokens.delete(token);
+		fireParadisAgentTurnEnded(token);
+		const timer = this.cliReconciliationTimers.get(token);
+		if (timer !== undefined) { clearInterval(timer); this.cliReconciliationTimers.delete(token); }
+		this.cliReconciliationWatermarks.delete(token);
 	}
 
 	private cancelCliDiscovery(token: string): void {
@@ -2554,6 +2675,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (this.activityTracker(token).applyCodex(event.method, event.params, now)) {
 			this.pushActivityToSubscribers(token);
 		}
+		const activityItem = rec(event.params['item']);
+		if (str(activityItem?.['type']) === 'subAgentActivity') {
+			const activityId = str(activityItem?.['agentThreadId']);
+			if (activityId !== undefined) { this.enrichCodexActivityRelationship(token, activityId, now).catch(() => { /* state DB未反映中は次イベントで再試行 */ }); }
+		}
 		if (event.method === 'thread/settings/updated') {
 			const settings = rec(event.params['threadSettings']);
 			const model = str(settings?.['model']);
@@ -2566,6 +2692,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		if (event.method === 'turn/started') {
 			this.activeTurnTokens.add(token);
+			fireParadisAgentTurnStarted(token, this.tokenToCwd.get(token));
 			if (this.activityTracker(token).beginTurn()) {
 				this.pushActivityToSubscribers(token);
 			}
@@ -2576,6 +2703,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		if (event.method === 'turn/completed' || event.method === 'turn/failed' || event.method === 'turn/aborted') {
 			this.activeTurnTokens.delete(token);
+			fireParadisAgentTurnEnded(token);
 			// turn/failed は usage limit 等のエラー中断（turn/completed が来ないため、
 			// ここで解除しないと「考え中」表示が残り続ける）。
 			this.codexMessageBuffers.delete(token);
@@ -2724,6 +2852,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		return tracker;
 	}
 
+	private async enrichCodexActivityRelationship(token: string, activityId: string, at: number): Promise<void> {
+		const source = await discoverCodexThreadSourceById(activityId);
+		if (source === undefined || !this.isLiveToken(token)) { return; }
+		const rootThreadId = this.paneSessions.get(token)?.sessionId;
+		const parentId = source.parentThreadId === rootThreadId ? undefined : source.parentThreadId;
+		if (this.activityTracker(token).setAgentRelationship(activityId, parentId, source.depth, at)) {
+			this.pushActivityToSubscribers(token);
+		}
+	}
+
 	private clearClaudeSubagentTranscripts(token: string): void {
 		for (const key of this.claudeSubagentTranscriptPaths.keys()) {
 			if (key.startsWith(`${token}\0`)) { this.claudeSubagentTranscriptPaths.delete(key); }
@@ -2753,7 +2891,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */
-	private async discoverAndNotify(token: string, agent: ParadisAgentKind, cwd: string, minMtime: number | undefined, generation: number): Promise<void> {
+	private async discoverAndNotify(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string, minMtime: number | undefined, generation: number): Promise<void> {
 		const previous = this.paneSessions.get(token);
 		const claimedByOthers = new Set([...this.transcriptClaims]
 			.filter(([, owner]) => owner !== token)
@@ -2773,21 +2911,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 偶然同時に更新されても、新規起動paneへ割り当てない。復元探索はこの制約を使わない。
 		// state DB由来の候補はDBのcreated_atで判定する。Codexは最初のターンまでrollout実ファイルを
 		// 生成しないため、ファイルのbirthtimeを待つと起動直後のセッションを取りこぼす。
-		if (minMtime !== undefined) {
-			if (discovered.createdAt !== undefined) {
-				if (discovered.createdAt < minMtime) {
-					return;
-				}
-			} else {
-				try {
-					const stat = await fs.stat(discovered.transcriptPath);
-					if (stat.birthtimeMs < minMtime) {
-						return;
-					}
-				} catch {
-					return;
-				}
-			}
+		if (minMtime !== undefined && discovered.createdAt !== undefined) {
+			if (!paradisCliDiscoveryCandidateIsFresh(discovered, minMtime, mode)) { return; }
+		} else if (minMtime !== undefined && mode !== 'resume') {
+			try {
+				const stat = await fs.stat(discovered.transcriptPath);
+				if (stat.birthtimeMs < minMtime) { return; }
+			} catch { return; }
 		}
 		if (this.cliDiscoveryGenerations.get(token) !== generation
 			|| !this.isLiveToken(token) || this.tokenToCwd.get(token) !== cwd
@@ -2812,6 +2942,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
 		this.paneSessions.set(token, session);
 		this.transcriptClaims.set(discovered.transcriptPath, token);
+		this.cliReconciliationWatermarks.set(token, Math.max(this.cliReconciliationWatermarks.get(token) ?? 0, discovered.mtime + 1));
 		this.emitConfirmedAgentPanesIfChanged();
 		this.syncCodexDaemonThreads();
 		this.ensureEagerTailer(token, session);
@@ -2860,6 +2991,13 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.pendingHookTimers.set(event.token, timer);
 			return;
 		}
+		// nested SubAgent内で発火したhookのtranscript_pathは子自身を指す。これをpaneの
+		// main sessionとしてclaimすると親会話が子会話へ置換されるため、既知rootまたは
+		// 現行規約から復元したrootへ正規化する。子pathは親子相関にだけ使う。
+		const nestedParentId = paradisClaudeAgentIdFromTranscriptPath(transcriptPath);
+		const sessionTranscriptPath = nestedParentId !== undefined
+			? this.paneSessions.get(event.token)?.transcriptPath ?? paradisClaudeRootTranscriptPath(transcriptPath) ?? transcriptPath
+			: transcriptPath;
 		this.pendingHooks.delete(event.token);
 		const pendingTimer = this.pendingHookTimers.get(event.token);
 		if (pendingTimer !== undefined) {
@@ -2872,8 +3010,14 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.updateLiveFromHook(event);
 		}
 		this.cancelCliDiscovery(event.token);
-		this.cliDiscoveryGenerations.set(event.token, (this.cliDiscoveryGenerations.get(event.token) ?? 0) + 1);
-		const previousOwner = this.transcriptClaims.get(transcriptPath);
+		// shell integrationが対話型CLIの実行中を追跡している場合、TUI内 /resume の
+		// fallback監視は維持する。強いhook証拠の時刻より前へ戻らないようwatermarkだけ進める。
+		if (this.cliReconciliationTimers.has(event.token)) {
+			this.cliReconciliationWatermarks.set(event.token, Math.max(this.cliReconciliationWatermarks.get(event.token) ?? 0, event.at + 1));
+		} else {
+			this.cliDiscoveryGenerations.set(event.token, (this.cliDiscoveryGenerations.get(event.token) ?? 0) + 1);
+		}
+		const previousOwner = this.transcriptClaims.get(sessionTranscriptPath);
 		if (previousOwner !== undefined && previousOwner !== event.token) {
 			// ペイン環境を伴うhookはcwd探索より強い証拠なので、探索由来の誤claimを置き換える。
 			this.paneSessions.delete(previousOwner);
@@ -2893,16 +3037,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		const previous = this.paneSessions.get(event.token);
 		const info: IPaneSessionInfo = {
 			token: event.token,
-			agent: agentKindForPath(transcriptPath),
-			transcriptPath,
+			agent: agentKindForPath(sessionTranscriptPath),
+			transcriptPath: sessionTranscriptPath,
 			sessionId: event.sessionId,
 		};
-		if (previous !== undefined && previous.transcriptPath !== transcriptPath
+		if (previous !== undefined && previous.transcriptPath !== sessionTranscriptPath
 			&& this.transcriptClaims.get(previous.transcriptPath) === event.token) {
 			this.transcriptClaims.delete(previous.transcriptPath);
 		}
 		this.paneSessions.set(event.token, info);
-		this.transcriptClaims.set(transcriptPath, event.token);
+		this.transcriptClaims.set(sessionTranscriptPath, event.token);
 		this.emitConfirmedAgentPanesIfChanged();
 		this.syncCodexDaemonThreads();
 
@@ -2936,7 +3080,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand) {
 			this.activeTurnTokens.add(event.token);
 		}
-		const activityChanged = event.payload !== undefined && this.activityTracker(event.token).applyClaude(event.event, event.payload, event.at);
+		const activityPayload = event.payload !== undefined && nestedParentId !== undefined && event.payload['parent_agent_id'] === undefined
+			? { ...event.payload, parent_agent_id: nestedParentId }
+			: event.payload;
+		const activityChanged = activityPayload !== undefined && this.activityTracker(event.token).applyClaude(event.event, activityPayload, event.at);
 		const activityEnded = event.event === 'Stop' || event.event === 'SessionEnd'
 			? this.activityTracker(event.token).endTurn('completed', event.at)
 			: event.event === 'StopFailure' ? this.activityTracker(event.token).endTurn('failed', event.at) : false;
@@ -3058,9 +3205,17 @@ export class ParadisMobileAgentChat extends Disposable {
 				const tracker = this.activityTracker(token);
 				let changed = false;
 				for (const event of events) {
-					changed = event.type === 'subagent'
-						? tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind } }, event.at) || changed
-						: tracker.endTurn(event.reason, event.at) || changed;
+					if (event.type === 'turnStart') {
+						this.activeTurnTokens.add(token);
+						fireParadisAgentTurnStarted(token, this.tokenToCwd.get(token));
+					} else if (event.type === 'subagent') {
+						changed = tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: event.id, agentPath: event.agentPath, kind: event.kind } }, event.at) || changed;
+						this.enrichCodexActivityRelationship(token, event.id, event.at).catch(err => this.logService.trace('[paradisAgentChat] codex activity relationship lookup failed', String(err)));
+					} else {
+						this.activeTurnTokens.delete(token);
+						fireParadisAgentTurnEnded(token);
+						changed = tracker.endTurn(event.reason, event.at) || changed;
+					}
 				}
 				if (changed) { this.pushActivityToSubscribers(token); }
 			},
