@@ -50,6 +50,9 @@ import { Channels } from '../common/paradisMobileProtocol.js';
 import { paradisInteractiveAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
+import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
@@ -101,6 +104,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IParadisPaneTokenService paneTokenService: IParadisPaneTokenService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IHostService private readonly hostService: IHostService,
+		@ICommandService commandService: ICommandService,
 	) {
 		super();
 
@@ -163,6 +167,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
 			() => instantiationService.invokeFunction(paradisGetWorktreeCreateForm),
 			request => instantiationService.invokeFunction(paradisCreateWorktreeHeadless, request),
+			// PR 状態はPC版 Workspaces ビューと同じコマンド経由（gh 実行は shared process へ委譲）
+			paths => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, [...paths]),
 		));
 
 		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、
@@ -293,6 +299,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// 瞬間には、そのモバイルはまだ最新状態を持っていないため改めて1回 push する。
 		this._register(this.service.onDidChangeStatus(status => {
 			this.renderStatusbar(status);
+			this.provider.setMobileOnline(status.onlineMobiles > 0);
 			if (status.onlineMobiles === 0) {
 				this.provider.detachAll();
 				webrtcStreamer.stopAll();
@@ -364,6 +371,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// 初回描画を取りこぼさないよう、ここでも明示的に反映する（件3: 表示が出ない対策）。
 			const status = await this.service.getStatus();
 			this.renderStatusbar(status);
+			// 既にモバイルが接続済みだった場合（ウィンドウリロード直後など）、
+			// onDidChangeStatus が発火しなくても PR ポーリングを開始できるようにする
+			this.provider.setMobileOnline(status.onlineMobiles > 0);
 		} catch (err) {
 			this.logService.warn('[paradisMobileRelay] initialize failed', err);
 		}

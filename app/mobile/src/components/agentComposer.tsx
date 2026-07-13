@@ -5,9 +5,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { Alert, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
-import type { AgentMessageSendResult, AgentModelControlState, FsUploadResult } from '../store.js';
+import type { AgentMessageSendResult, AgentModelControlState, FsUploadResult, WorkspacePrStatus } from '../store.js';
 import { GlassComposer } from './glassComposer.js';
 import { ModelPill } from './modelPill.js';
+import { PrPill } from './prPill.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
@@ -22,11 +23,11 @@ import { reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agen
  * 変換中（マークドテキスト保持中）にvalueが再適用されると、変換途中の文字列を確定・分解
  * してしまう。React.memoで親の更新も隔離しつつ、入力自体をuncontrolledにすることで、
  * コンポーザー内部の送信状態更新でもIMEの保持領域には触れない。
- * tools（添付ボタン＋ModelPill）も親から要素で受け取らず、このコンポーネント内部で組み立てる
+ * tools（添付ボタン＋ModelPill＋PrPill）も親から要素で受け取らず、このコンポーネント内部で組み立てる
  * （毎レンダリングで新しい要素参照になる props を作らないため）。
  */
 export const AgentComposer = memo(function AgentComposer({
-	draftKey, activeId, sessionEpoch, agent, model, effort, modelControl,
+	draftKey, activeId, sessionEpoch, agent, model, effort, modelControl, pr,
 	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, requestAgentModelCatalog, updateAgentSettings,
 }: {
 	/** 下書きの退避キー（ターミナル単位。切替時のみ変わる）。 */
@@ -38,6 +39,8 @@ export const AgentComposer = memo(function AgentComposer({
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
+	/** 所属ワークスペースの現在ブランチに紐づくPR（無ければピル非表示）。 */
+	pr: WorkspacePrStatus | undefined;
 	sendText: (text: string) => Promise<AgentMessageSendResult>;
 	updateClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<boolean>;
 	/** 送信直後に呼ぶ（最下部への追従スクロール）。 */
@@ -194,6 +197,7 @@ export const AgentComposer = memo(function AgentComposer({
 						onRequestCodexCatalog={() => { if (activeId !== undefined) { requestAgentModelCatalog(activeId); } }}
 						onUpdateCodexSettings={(nextModel, nextEffort) => { if (activeId !== undefined) { updateAgentSettings(activeId, nextModel, nextEffort); } }}
 					/>
+					{pr !== undefined ? <PrPill pr={pr} /> : null}
 				</>
 			}
 		/>

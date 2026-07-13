@@ -80,6 +80,16 @@ export default function AgentDetailScreen() {
 		? wsList.find(w => w.id === (activeTerminal.ws ?? workspace?.activeWs))
 		: undefined;
 
+	// コンポーザーのPRピル用。workspace state はpushごとに丸ごと差し替わり pr も毎回新規
+	// オブジェクトになるため、値が同じ間は参照を安定させて AgentComposer の memo を保つ
+	// （入力中の無関係な再レンダーを避ける設計をPRピルで崩さないため）。
+	const prNumber = agentWs?.pr?.number;
+	const prState = agentWs?.pr?.state;
+	const prUrl = agentWs?.pr?.url;
+	const agentWsPr = useMemo(
+		() => prNumber !== undefined && prState !== undefined && prUrl !== undefined ? { number: prNumber, state: prState, url: prUrl } : undefined,
+		[prNumber, prState, prUrl]);
+
 	// ヘッダーのブラウザボタン用: このエージェントと共有中のブラウザページがあるか
 	// （あればボタンに緑ドットを出す）。表示補助なので取得失敗は無視してバッジ無しにする。
 	const agentToken = activeTerminal?.agentToken;
@@ -379,6 +389,7 @@ export default function AgentDetailScreen() {
 					model={chat?.info?.model}
 					effort={chat?.info?.effort}
 					modelControl={chat?.modelControl}
+					pr={agentWsPr}
 					sendText={actions.sendText}
 					updateClaudeSetting={actions.updateClaudeSetting}
 					onAfterSubmit={scrollToEndSticky}
