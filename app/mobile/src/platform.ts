@@ -8,7 +8,8 @@
 
 import * as SecureStore from 'expo-secure-store';
 import * as Notifications from 'expo-notifications';
-import type { KeyStore } from './store.js';
+import * as LegacyFileSystem from 'expo-file-system/legacy';
+import type { KeyStore, TerminalOperationOutboxStore } from './store.js';
 import type { SocketFactory, SocketLike } from './relayClient.js';
 
 /** expo-secure-store（iOS Keychain / Android Keystore）による KeyStore 実装。 */
@@ -23,6 +24,52 @@ export const secureKeyStore: KeyStore = {
 	},
 	async deleteItem(key: string): Promise<void> {
 		await SecureStore.deleteItemAsync(sanitize(key));
+	},
+};
+
+const TERMINAL_OPERATION_OUTBOX_PATH = LegacyFileSystem.documentDirectory
+	? `${LegacyFileSystem.documentDirectory}terminal-operation-outbox.v1`
+	: undefined;
+const TERMINAL_OPERATION_OUTBOX_NEXT_PATH = TERMINAL_OPERATION_OUTBOX_PATH === undefined ? undefined : `${TERMINAL_OPERATION_OUTBOX_PATH}.next`;
+const TERMINAL_OPERATION_OUTBOX_BACKUP_PATH = TERMINAL_OPERATION_OUTBOX_PATH === undefined ? undefined : `${TERMINAL_OPERATION_OUTBOX_PATH}.backup`;
+
+async function readOperationOutbox(path: string | undefined): Promise<string | null> {
+	if (path === undefined) {
+		return null;
+	}
+	try {
+		return await LegacyFileSystem.readAsStringAsync(path);
+	} catch {
+		return null;
+	}
+}
+
+/** payloadはMobileControllerがidentity由来鍵でAEAD暗号化してから渡す。 */
+export const terminalOperationOutboxStore: TerminalOperationOutboxStore = {
+	async load(): Promise<string | null> {
+		return await readOperationOutbox(TERMINAL_OPERATION_OUTBOX_PATH)
+			?? await readOperationOutbox(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH);
+	},
+	async save(encrypted: string): Promise<void> {
+		if (TERMINAL_OPERATION_OUTBOX_PATH === undefined || TERMINAL_OPERATION_OUTBOX_NEXT_PATH === undefined || TERMINAL_OPERATION_OUTBOX_BACKUP_PATH === undefined) {
+			throw new Error('operation outbox storage is unavailable');
+		}
+		await LegacyFileSystem.writeAsStringAsync(TERMINAL_OPERATION_OUTBOX_NEXT_PATH, encrypted, { encoding: LegacyFileSystem.EncodingType.UTF8 });
+		const current = await LegacyFileSystem.getInfoAsync(TERMINAL_OPERATION_OUTBOX_PATH);
+		if (current.exists) {
+			await LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, { idempotent: true });
+			await LegacyFileSystem.moveAsync({ from: TERMINAL_OPERATION_OUTBOX_PATH, to: TERMINAL_OPERATION_OUTBOX_BACKUP_PATH });
+		}
+		try {
+			await LegacyFileSystem.moveAsync({ from: TERMINAL_OPERATION_OUTBOX_NEXT_PATH, to: TERMINAL_OPERATION_OUTBOX_PATH });
+		} catch (error) {
+			if (current.exists) {
+				await LegacyFileSystem.moveAsync({ from: TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, to: TERMINAL_OPERATION_OUTBOX_PATH }).catch(() => { });
+			}
+			throw error;
+		}
+		// 新ファイルのcommit後の掃除失敗は保存失敗にしない。次回save/loadでもprimaryが優先される。
+		await LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, { idempotent: true }).catch(() => { });
 	},
 };
 

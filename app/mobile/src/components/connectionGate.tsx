@@ -37,13 +37,21 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const canGoBack = router.canGoBack();
-	const { connection, pcOnline, paired, ready, manualOffline, connectRelay } = useAppStore(useShallow(s => ({
+	const { connection, pcOnline, paired, ready, manualOffline, protocolError, connectRelay } = useAppStore(useShallow(s => ({
 		connection: s.connection, pcOnline: s.pcOnline, paired: s.paired, ready: s.ready,
-		manualOffline: s.manualOffline, connectRelay: s.connectRelay,
+		manualOffline: s.manualOffline, protocolError: s.protocolError, connectRelay: s.connectRelay,
 	})));
 
-	if (connection === 'online' && pcOnline) {
+	if (connection === 'online' && pcOnline && protocolError === undefined) {
 		return <>{children}</>;
+	}
+
+	if (protocolError !== undefined) {
+		return <View style={styles.gated}><View style={styles.center} accessibilityLiveRegion="polite">
+			<Ionicons name="refresh-circle-outline" size={40} color={colors.red} />
+			<Text style={styles.title}>アップデートが必要です</Text>
+			<Text style={styles.dim}>{protocolError}</Text>
+		</View>{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
 	}
 
 	if (ready && !paired) {

@@ -27,8 +27,9 @@ import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
  */
 export default function TerminalScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, terminalOutput, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal } = useAppStore(useShallow(s => ({
+	const { workspace, terminalOutput, terminalOperationIssue, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, terminalOutput: s.terminalOutput,
+		terminalOperationIssue: s.terminalOperationIssue,
 		selectedTerminalKey: s.selectedTerminalKey, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, subscribeTerminal: s.subscribeTerminal, sendInput: s.sendInput,
 		sendArrowKey: s.sendArrowKey, sendTextInput: s.sendTextInput, createTerminal: s.createTerminal,
@@ -103,6 +104,7 @@ export default function TerminalScreen() {
 		    クリーンな状態から再計算させる） */}
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90} enabled={isFocused}>
 			<WsHeader title="ターミナル" />
+			{terminalOperationIssue !== undefined ? <View style={styles.operationWarning}><Ionicons name="warning-outline" size={16} color={colors.orange} /><Text style={styles.operationWarningText}>{terminalOperationIssue}</Text></View> : null}
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
 				{terminals.map((t, i) => {
 					const active = t.terminalKey === activeKey;
@@ -166,6 +168,8 @@ const styles = StyleSheet.create({
 	dotRed: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
 	dotGreen: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
 	dim: { color: colors.textDim, fontSize: 12 },
+	operationWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(245,158,11,.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,.35)' },
+	operationWarningText: { flex: 1, color: colors.text, fontSize: 11, lineHeight: 16 },
 	output: { flex: 1, backgroundColor: '#1e1e1e', marginHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	placeholder: { color: colors.textDim, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, padding: 10 },
 	keyRowScroll: { flex: 1, minWidth: 0 },

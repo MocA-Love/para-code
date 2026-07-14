@@ -84,6 +84,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly terminalHintListeners = this._register(new DisposableMap<number>());
 	private readonly terminalHintParsers = new Map<number, ParadisAgentTerminalHintParser>();
+	private readonly windowLeasePromise: Promise<IParadisMobileWindowLease>;
+	private readonly rendererReadyPromise: Promise<void>;
 	private previousOnlineMobiles = 0;
 
 	constructor(
@@ -120,7 +122,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 		this.service = ProxyChannel.toService<IParadisMobileRelayService>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
 		const windowSession = generateUuid();
-		const windowLeasePromise = new ParadisMobileWindowLeaseClient(mainProcessService.getChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL))
+		this.windowLeasePromise = new ParadisMobileWindowLeaseClient(mainProcessService.getChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL))
 			.claim(windowSession)
 			.then(lease => {
 				if (lease === undefined) {
@@ -128,7 +130,10 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 				}
 				return lease;
 			});
-		const withWindowLease = <T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> => windowLeasePromise.then(callback);
+		let markRendererReady!: () => void;
+		this.rendererReadyPromise = new Promise<void>(resolve => { markRendererReady = resolve; });
+		const withWindowLease = <T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> => this.withWindowLease(callback);
+		const withCurrentRendererLease = <T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> => this.withCurrentRendererLease(callback);
 
 		// ウィンドウを閉じるとき、terminal leaseと同時にこのsessionのペイン対応表も破棄する。
 		this._register({ dispose: () => { withWindowLease(lease => this.service.removeTerminalWindow(lease)).catch(() => { }); } });
@@ -142,7 +147,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// 復帰させ、通知が恒久的にサイレント抑制され続けることを防ぐ）。
 		const reportPcFocus = () => {
 			const focused = !mainWindow.document.hidden && this.hostService.hasFocus;
-			withWindowLease(lease => this.service.setPcFocus(lease, focused)).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
+			withCurrentRendererLease(lease => this.service.setPcFocus(lease, focused)).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
 		};
 		this._register(this.hostService.onDidChangeFocus(() => reportPcFocus()));
 		this._register(dom.addDisposableListener(mainWindow.document, 'visibilitychange', () => reportPcFocus()));
@@ -155,7 +160,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);
 
 		this.provider = this._register(new ParadisMobileWorkspaceProvider(
-			frame => { withWindowLease(() => this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
+			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
 			mainWindow.vscodeWindowId,
 			workspaceSwitchService,
 			terminalService,
@@ -173,7 +178,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(repoPath, args) => this.service.runGit(repoPath, args),
 			paneTokenService,
 			terminalIdentityService,
-			state => { withWindowLease(lease => this.service.syncTerminalWindow(lease, state)).catch(err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
+			state => { withWindowLease(lease => this.service.syncTerminalWindow(lease, state)).then(markRendererReady, err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
 			entries => { withWindowLease(lease => this.service.syncAgentPanes(lease, entries)).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
 			(mobileId, operationId, status) => withWindowLease(lease => this.service.completeTerminalOperation(lease, mobileId, operationId, status)),
 			(mobileId, requestId, token, epoch) => withWindowLease(lease => this.service.claimAgentAction(mobileId, requestId, token, epoch, lease)),
@@ -224,7 +229,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			activeAgentCommands.set(paneToken, normalizedCommandLine);
 			this.provider.setProvisionalAgentPaneToken(paneToken, true);
 			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
-			this.service.notifyAgentCliCommand(paneToken, command.agent, command.mode, cwd, command.cwd, command.sessionId).then(() => {
+			withCurrentRendererLease(lease => this.service.notifyAgentCliCommand(lease, paneToken, command.agent, command.mode, cwd, command.cwd, command.sessionId)).then(() => {
 				const retry = agentCommandRetryTimers.get(paneToken);
 				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
 			}, err => {
@@ -272,7 +277,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 				const retry = agentCommandRetryTimers.get(paneToken);
 				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
 				this.provider.setProvisionalAgentPaneToken(paneToken, false);
-				this.service.notifyAgentCliCommandFinished(paneToken).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommandFinished failed', err));
+				withCurrentRendererLease(lease => this.service.notifyAgentCliCommandFinished(lease, paneToken)).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommandFinished failed', err));
 			}
 		}));
 
@@ -289,7 +294,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 				const retry = agentCommandRetryTimers.get(paneToken);
 				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
 				this.provider.setProvisionalAgentPaneToken(paneToken, false);
-				this.service.notifyAgentCliCommandFinished(paneToken).catch(() => { /* shared process終了中は無視 */ });
+				withCurrentRendererLease(lease => this.service.notifyAgentCliCommandFinished(lease, paneToken)).catch(() => { /* shared process終了中は無視 */ });
 			}
 			this.terminalHintListeners.deleteAndDispose(instance.instanceId);
 			this.terminalHintParsers.delete(instance.instanceId);
@@ -297,7 +302,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 		// WebRTCミラーのストリーマ（browser チャネルの webrtc-* シグナリングを処理）。
 		const webrtcStreamer = this._register(new ParadisMobileWebrtcStreamer(
-			frame => { this.service.sendFrame(frame.ch, frame.ws, frame.mobileId, frame.payload).catch(err => this.logService.warn('[paradisMobileRelay] webrtc sendFrame failed', err)); },
+			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] webrtc sendFrame failed', err)); },
 			this.logService,
 		));
 
@@ -307,7 +312,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this._register(this.service.onInboundFrame(([ch, ws, seq, payload, mobileId]) => {
 			if ((ch === Channels.Agent || ch === Channels.Terminal || ch === Channels.Scm || ch === Channels.Fs || ch === Channels.Browser)
 				&& ws !== undefined) {
-				void windowLeasePromise.then(lease => {
+				void this.windowLeasePromise.then(lease => {
 					if (ws === paradisMobileWindowRoute(lease.windowId, lease.windowSession, lease.rendererGeneration)) {
 						if (ch === Channels.Browser) {
 							webrtcStreamer.handleInbound({ ch, ws, seq, payload, mobileId });
@@ -374,6 +379,14 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this.service.setAgentLiveOptions({ codexDaemonStreaming }).catch(err => this.logService.warn('[paradisMobileRelay] setAgentLiveOptions failed', err));
 	}
 
+	private withWindowLease<T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> {
+		return this.windowLeasePromise.then(callback);
+	}
+
+	private withCurrentRendererLease<T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> {
+		return this.rendererReadyPromise.then(() => this.windowLeasePromise).then(callback);
+	}
+
 	private trackTerminalHints(instance: ITerminalInstance): void {
 		if (this.terminalHintListeners.has(instance.instanceId)) {
 			return;
@@ -386,7 +399,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			}
 			const hint = parser.accept(data);
 			if (hint !== undefined) {
-				this.service.notifyAgentTerminalHint(instance.instanceId, hint).catch(err => this.logService.trace('[paradisMobileRelay] terminal hint failed', String(err)));
+				this.withCurrentRendererLease(lease => this.service.notifyAgentTerminalHint(lease, instance.instanceId, hint)).catch(err => this.logService.trace('[paradisMobileRelay] terminal hint failed', String(err)));
 			}
 		}));
 	}

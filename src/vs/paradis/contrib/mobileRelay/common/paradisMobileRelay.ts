@@ -34,6 +34,8 @@ export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudfl
 // ---- IPC チャネル ----
 
 export const PARADIS_MOBILE_RELAY_CHANNEL = 'paradisMobileRelay';
+/** complete/operation sequence/Renderer世代を必須化した公開PC↔mobile契約。 */
+export const PARADIS_MOBILE_PROTOCOL_VERSION = 3;
 
 export interface IParadisConfirmedAgentPanes {
 	readonly revision: number;
@@ -78,20 +80,29 @@ export interface IParadisMobileWorkspaceV2 extends Omit<IParadisMobileWindowWork
 	readonly parent?: string;
 }
 
-/** protocol v2: shared process が付与する所有ウィンドウ付きターミナル。 */
-export interface IParadisMobileTerminalV2 extends IParadisMobileWindowTerminalV2 {
+/** protocol v3: shared process が付与する所有Renderer付きターミナル。 */
+export interface IParadisMobileTerminalV3 extends IParadisMobileWindowTerminalV2 {
 	readonly windowId: number;
+	readonly rendererGeneration: number;
 }
 
-/** protocol v2: モバイルへ一度だけ送る全 PC ウィンドウの統合状態。 */
-export interface IParadisMobileDesktopStateV2 {
-	readonly protocolVersion: 2;
+/** protocol v3: Main manifest上のRendererと、そのstate同期barrier。 */
+export interface IParadisMobileRendererStateV3 {
+	readonly windowId: number;
+	readonly rendererGeneration: number;
+	readonly ready: boolean;
+}
+
+/** protocol v3: モバイルへ送る全PCウィンドウの統合状態。 */
+export interface IParadisMobileDesktopStateV3 {
+	readonly protocolVersion: 3;
 	readonly desktopEpoch: string;
 	readonly revision: number;
 	readonly complete: boolean;
+	readonly renderers: readonly IParadisMobileRendererStateV3[];
 	readonly activeWs: string | undefined;
 	readonly workspaces: readonly IParadisMobileWorkspaceV2[];
-	readonly terminals: readonly IParadisMobileTerminalV2[];
+	readonly terminals: readonly IParadisMobileTerminalV3[];
 }
 
 /** shared process の接続状態。 */
@@ -190,7 +201,7 @@ export interface IParadisMobileRelayService {
 	// payload(VSBuffer)はIPCの引数シリアライザがVSBufferをバイナリのまま転送できるよう
 	// トップレベル引数として渡す（IParadisMobileInboundFrameオブジェクトへネストすると
 	// serialize()のObject分岐でJSON.stringifyされ、VSBufferの中身が壊れる）。
-	sendFrame(ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void>;
+	sendFrame(lease: IParadisMobileWindowLease, ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void>;
 
 	/** renderer 一つ分の protocol v2 状態を shared process の統合 registry へ同期する。 */
 	syncTerminalWindow(lease: IParadisMobileWindowLease, state: IParadisMobileWindowStateV2): Promise<void>;
@@ -235,15 +246,15 @@ export interface IParadisMobileRelayService {
 	 * 前倒しするトリガーとしてのみ使う (実在する新しい transcript の発見をもって確定するため、
 	 * `claude --help` のような空振りは誤検知にならない)。
 	 */
-	notifyAgentCliCommand(paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<void>;
+	notifyAgentCliCommand(lease: IParadisMobileWindowLease, paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<void>;
 	/** 対話型Agent CLIが終了した。TUI内resume監視と一時状態を解除する。 */
-	notifyAgentCliCommandFinished(paneToken: string): Promise<void>;
+	notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string): Promise<void>;
 
 	/** 実験的Codex daemon購読の設定をshared processへ同期する。 */
 	setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void>;
 
 	/** PTY表示からbest-effort抽出した経過時間等を既存ライブ状態へ補足する。 */
-	notifyAgentTerminalHint(terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void>;
+	notifyAgentTerminalHint(lease: IParadisMobileWindowLease, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void>;
 
 	/** fsチャネル用: ripgrepによるファイル名検索（.gitignore尊重・再帰）。 */
 	searchFiles(rootPath: string, query: string, maxResults: number): Promise<{ files: string[]; truncated: boolean }>;

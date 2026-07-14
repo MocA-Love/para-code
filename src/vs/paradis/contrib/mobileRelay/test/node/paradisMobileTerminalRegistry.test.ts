@@ -113,15 +113,49 @@ suite('ParadisMobileTerminalRegistry', () => {
 
 	test('active manifestの全leaseが同期済みの時だけdesktop stateをcompleteにする', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
-		assert.strictEqual(registry.isComplete([]), false);
+		assert.strictEqual(registry.isComplete(), true);
 		registry.syncWindow(1, 'one', 1, { activeWs: undefined, workspaces: [], terminals: [] });
-		const manifest = [
-			{ windowId: 1, windowSession: 'one', rendererGeneration: 1 },
-			{ windowId: 2, windowSession: 'two', rendererGeneration: 2 },
-		];
+		const manifest = {
+			revision: 1, entries: [
+				{ windowId: 1, windowSession: 'one', rendererGeneration: 1, windowRevision: 1, claimed: true },
+				{ windowId: 2, windowSession: 'two', rendererGeneration: 2, windowRevision: 1, claimed: true },
+			]
+		};
 
-		assert.strictEqual(registry.desktopState(registry.isComplete(manifest)).complete, false);
+		registry.reconcile(manifest);
+		assert.strictEqual(registry.desktopState().complete, false);
 		registry.syncWindow(2, 'two', 2, { activeWs: undefined, workspaces: [], terminals: [] });
-		assert.strictEqual(registry.desktopState(registry.isComplete(manifest)).complete, true);
+		assert.strictEqual(registry.desktopState().complete, true);
+		assert.deepStrictEqual(registry.desktopState().renderers, [
+			{ windowId: 1, rendererGeneration: 1, ready: true },
+			{ windowId: 2, rendererGeneration: 2, ready: true },
+		]);
+	});
+
+	test('pending Rendererをcompleteに数えず古いmanifestで新stateを除去しない', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		const validation = { valid: true, manifestRevision: 3, windowRevision: 3 };
+		registry.syncWindow(1, 'new', 2, { activeWs: undefined, workspaces: [], terminals: [] }, validation);
+		registry.reconcile({ revision: 2, entries: [{ windowId: 1, rendererGeneration: 1, windowRevision: 2, claimed: false }] });
+		assert.deepStrictEqual(registry.leaseOfWindow(1), { windowId: 1, windowSession: 'new', rendererGeneration: 2 });
+
+		registry.reconcile({ revision: 4, entries: [{ windowId: 1, rendererGeneration: 3, windowRevision: 4, claimed: false }] });
+		assert.strictEqual(registry.leaseOfWindow(1), undefined);
+		assert.strictEqual(registry.desktopState().complete, false);
+		assert.deepStrictEqual(registry.desktopState().renderers, [{ windowId: 1, rendererGeneration: 3, ready: false }]);
+	});
+
+	test('最後のwindow破棄後は空のcomplete stateでモバイルの旧状態を削除できる', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		registry.syncWindow(1, 'closed', 1, {
+			activeWs: undefined,
+			workspaces: [],
+			terminals: [{ terminalKey: 'closed-terminal', id: 1, title: 'closed' }],
+		});
+
+		const removed = registry.reconcile({ revision: 1, entries: [] });
+		assert.deepStrictEqual(removed, [{ windowId: 1, windowSession: 'closed', rendererGeneration: 1 }]);
+		assert.strictEqual(registry.desktopState().complete, true);
+		assert.deepStrictEqual(registry.desktopState().terminals, []);
 	});
 });

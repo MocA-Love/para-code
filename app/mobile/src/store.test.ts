@@ -2,7 +2,7 @@
 
 import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
-import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore } from './store.js';
+import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
 class MemoryKeyStore implements KeyStore {
@@ -10,6 +10,31 @@ class MemoryKeyStore implements KeyStore {
 	async getItem(k: string) { return this.map.get(k) ?? null; }
 	async setItem(k: string, v: string) { this.map.set(k, v); }
 	async deleteItem(k: string) { this.map.delete(k); }
+}
+
+class MemoryOperationOutboxStore implements TerminalOperationOutboxStore {
+	value: string | null = null;
+	async load() { return this.value; }
+	async save(encrypted: string) { this.value = encrypted; }
+}
+
+class FailingOperationOutboxStore implements TerminalOperationOutboxStore {
+	fail = true;
+	value: string | null = null;
+	async load() { return null; }
+	async save(encrypted: string): Promise<void> {
+		if (this.fail) { throw new Error('disk full'); }
+		this.value = encrypted;
+	}
+}
+
+class DeferredOperationOutboxStore implements TerminalOperationOutboxStore {
+	private releaseSave: (() => void) | undefined;
+	async load() { return null; }
+	save(_encrypted: string): Promise<void> {
+		return new Promise(resolve => { this.releaseSave = resolve; });
+	}
+	release(): void { this.releaseSave?.(); }
 }
 
 describe('key persistence', () => {
@@ -109,7 +134,7 @@ function ab(d: string | ArrayBufferView | ArrayBuffer): ArrayBuffer {
 }
 const flush = () => new Promise<void>(r => setTimeout(r, 0));
 
-function drivePc(pair: FakePair, pc: Identity, mobilePub: Uint8Array): Promise<FrameMux> {
+function drivePc(pair: FakePair, pc: Identity, mobilePub: Uint8Array, onMux?: (mux: FrameMux) => void): Promise<FrameMux> {
 	return new Promise((resolve, reject) => {
 		let responder: ReturnType<typeof respondHandshake> | null = null;
 		let mux: FrameMux | null = null;
@@ -118,7 +143,7 @@ function drivePc(pair: FakePair, pc: Identity, mobilePub: Uint8Array): Promise<F
 				if (typeof d === 'string') { return; }
 				const bytes = new Uint8Array(d);
 				if (!responder) { responder = respondHandshake(pc, mobilePub, bytes); pair.toClient(new Uint8Array(responder.response)); }
-				else if (!mux) { responder.verifyConfirm(bytes); mux = new FrameMux(responder.channel, { sendSealed: s => pair.toClient(new Uint8Array(s)) }); resolve(mux); }
+				else if (!mux) { responder.verifyConfirm(bytes); mux = new FrameMux(responder.channel, { sendSealed: s => pair.toClient(new Uint8Array(s)) }); onMux?.(mux); resolve(mux); }
 				else { mux.receive(bytes); }
 			} catch (e) { reject(e); }
 		});
@@ -127,13 +152,14 @@ function drivePc(pair: FakePair, pc: Identity, mobilePub: Uint8Array): Promise<F
 
 function desktopState(terminals: { id: number; title: string; agentToken?: string; agent?: boolean }[], revision = 1) {
 	return {
-		protocolVersion: 2 as const,
+		protocolVersion: 3 as const,
 		desktopEpoch: 'desktop-test',
 		revision,
 		complete: true,
+		renderers: [{ windowId: 1, rendererGeneration: 1, ready: true }],
 		activeWs: '1:w1',
 		workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'para-code' }],
-		terminals: terminals.map(terminal => ({ ...terminal, terminalKey: `terminal-${terminal.id}`, windowId: 1, ws: '1:w1' })),
+		terminals: terminals.map(terminal => ({ ...terminal, terminalKey: `terminal-${terminal.id}`, windowId: 1, rendererGeneration: 1, ws: '1:w1' })),
 	};
 }
 
@@ -153,18 +179,19 @@ describe('MobileController', () => {
 
 		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
 		pcMux.send(Channels.State, encode({
-			protocolVersion: 2,
+			protocolVersion: 3,
 			desktopEpoch: 'desktop-1',
 			revision: 2,
 			complete: true,
+			renderers: [{ windowId: 1, rendererGeneration: 1, ready: true }, { windowId: 2, rendererGeneration: 2, ready: true }],
 			activeWs: '1:repo-a',
 			workspaces: [
 				{ id: '1:repo-a', sourceId: 'repo-a', windowId: 1, name: 'A' },
 				{ id: '2:repo-b', sourceId: 'repo-b', windowId: 2, name: 'B' },
 			],
 			terminals: [
-				{ terminalKey: 'terminal-a', id: 1, windowId: 1, title: 'A', ws: '1:repo-a' },
-				{ terminalKey: 'terminal-b', id: 1, windowId: 2, title: 'B', ws: '2:repo-b' },
+				{ terminalKey: 'terminal-a', id: 1, windowId: 1, rendererGeneration: 1, title: 'A', ws: '1:repo-a' },
+				{ terminalKey: 'terminal-b', id: 1, windowId: 2, rendererGeneration: 2, title: 'B', ws: '2:repo-b' },
 			],
 		}));
 		await flush();
@@ -188,7 +215,7 @@ describe('MobileController', () => {
 		expect(latest?.terminalOutput.get('terminal-a')).toBe('output-a');
 		expect(latest?.terminalOutput.get('terminal-b')).toBe('output-b');
 		expect(received.find(message => message.t === 'input')).toMatchObject({
-			protocolVersion: 2,
+			protocolVersion: 3,
 			desktopEpoch: 'desktop-1',
 			terminalKey: 'terminal-b',
 			t: 'input',
@@ -196,10 +223,11 @@ describe('MobileController', () => {
 		});
 
 		pcMux.send(Channels.State, encode({
-			protocolVersion: 2,
+			protocolVersion: 3,
 			desktopEpoch: 'desktop-1',
 			revision: 1,
 			complete: true,
+			renderers: [],
 			activeWs: undefined,
 			workspaces: [],
 			terminals: [],
@@ -208,18 +236,19 @@ describe('MobileController', () => {
 		expect(latest?.workspace?.terminals).toHaveLength(2);
 
 		pcMux.send(Channels.State, encode({
-			protocolVersion: 2,
+			protocolVersion: 3,
 			desktopEpoch: 'desktop-2',
 			revision: 1,
 			complete: true,
+			renderers: [{ windowId: 1, rendererGeneration: 1, ready: true }, { windowId: 2, rendererGeneration: 2, ready: true }],
 			activeWs: '1:repo-a',
 			workspaces: [
 				{ id: '1:repo-a', sourceId: 'repo-a', windowId: 1, name: 'A' },
 				{ id: '2:repo-b', sourceId: 'repo-b', windowId: 2, name: 'B' },
 			],
 			terminals: [
-				{ terminalKey: 'terminal-a', id: 8, windowId: 1, title: 'A', ws: '1:repo-a' },
-				{ terminalKey: 'terminal-b', id: 9, windowId: 2, title: 'B', ws: '2:repo-b' },
+				{ terminalKey: 'terminal-a', id: 8, windowId: 1, rendererGeneration: 1, title: 'A', ws: '1:repo-a' },
+				{ terminalKey: 'terminal-b', id: 9, windowId: 2, rendererGeneration: 2, title: 'B', ws: '2:repo-b' },
 			],
 		}));
 		await flush();
@@ -231,6 +260,196 @@ describe('MobileController', () => {
 		const replayAfterEpochChange: import('./store.js').TermStreamEvent[] = [];
 		controller.subscribeTerminal('terminal-a', event => replayAfterEpochChange.push(event));
 		expect(replayAfterEpochChange).toEqual([]);
+	});
+
+	it('keeps partial Renderer state and reattaches once the same terminal appears in a new generation', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const terminalFrames: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Terminal, frame => terminalFrames.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+
+		pcMux.send(Channels.State, encode(desktopState([{ id: 1, title: 'zsh' }], 1)));
+		await flush();
+		const replay: import('./store.js').TermStreamEvent[] = [];
+		controller.subscribeTerminal('terminal-1', event => replay.push(event));
+		controller.attachTerminal('terminal-1');
+		await flush();
+		const firstAttach = terminalFrames.find(frame => frame.t === 'attach')!;
+		pcMux.send(Channels.Terminal, encode({ t: 'data', terminalKey: 'terminal-1', data: 'last screen', snapshot: true, epoch: firstAttach.epoch, seq: 1 }));
+		await flush();
+
+		pcMux.send(Channels.State, encode({
+			protocolVersion: 3, desktopEpoch: 'desktop-test', revision: 2, complete: false,
+			renderers: [{ windowId: 1, rendererGeneration: 2, ready: false }],
+			activeWs: undefined, workspaces: [], terminals: [],
+		}));
+		await flush();
+		expect(latest?.workspace?.terminals[0]?.terminalKey).toBe('terminal-1');
+		expect(latest?.terminalOutput.get('terminal-1')).toBe('last screen');
+		expect(terminalFrames.filter(frame => frame.t === 'attach')).toHaveLength(1);
+		const lateReplay: import('./store.js').TermStreamEvent[] = [];
+		controller.subscribeTerminal('terminal-1', event => lateReplay.push(event));
+		expect(lateReplay).toEqual([{ kind: 'snapshot', data: 'last screen' }]);
+
+		pcMux.send(Channels.State, encode({
+			protocolVersion: 3, desktopEpoch: 'desktop-test', revision: 3, complete: true,
+			renderers: [{ windowId: 1, rendererGeneration: 2, ready: true }], activeWs: '1:w1',
+			workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'para-code' }],
+			terminals: [{ terminalKey: 'terminal-1', id: 9, windowId: 1, rendererGeneration: 2, title: 'zsh', ws: '1:w1' }],
+		}));
+		await flush();
+		const attaches = terminalFrames.filter(frame => frame.t === 'attach');
+		expect(attaches).toHaveLength(2);
+		expect(attaches[1]?.epoch).not.toBe(firstAttach.epoch);
+		expect(latest?.terminalOutput.get('terminal-1')).toBe('last screen');
+	});
+
+	it('persists pending mutations across app restarts and never auto-resends outcome-unknown', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const outbox = new MemoryOperationOutboxStore();
+
+		const firstPair = new FakePair();
+		const first = new MobileController(mobile, () => firstPair.client, () => { }, undefined, undefined, 'prod', undefined, 1, outbox, await outbox.load());
+		const firstMuxPromise = drivePc(firstPair, pc, mobile.publicKey);
+		first.connect(creds);
+		firstPair.fireOpen();
+		const firstMux = await firstMuxPromise;
+		await flush();
+		firstMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh' }]))));
+		const firstFrames: Record<string, unknown>[] = [];
+		firstMux.on(Channels.Terminal, frame => firstFrames.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		await flush();
+		first.ackAgentStatus('terminal-1');
+		await flush();
+		const mutation = firstFrames.find(frame => frame.t === 'ackStatus')!;
+		expect(outbox.value).not.toBeNull();
+
+		const pendingPair = new FakePair();
+		const restoredPending = new MobileController(mobile, () => pendingPair.client, () => { }, undefined, undefined, 'prod', undefined, 2, outbox, await outbox.load());
+		const replayed: Record<string, unknown>[] = [];
+		const pendingMuxPromise = drivePc(pendingPair, pc, mobile.publicKey, mux => {
+			mux.on(Channels.Terminal, frame => replayed.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		});
+		restoredPending.connect(creds);
+		pendingPair.fireOpen();
+		const pendingMux = await pendingMuxPromise;
+		void pendingMux;
+		await flush();
+		expect(replayed.find(frame => frame.t === 'ackStatus')?.operationId).toBe(mutation.operationId);
+
+		firstMux.send(Channels.Terminal, new TextEncoder().encode(JSON.stringify({ t: 'operation-result', operationId: mutation.operationId, status: 'outcome-unknown' })));
+		await flush();
+		const unknownPair = new FakePair();
+		let latest: import('./store.js').StoreState | undefined;
+		const restoredUnknown = new MobileController(mobile, () => unknownPair.client, state => { latest = state; }, undefined, undefined, 'prod', undefined, 3, outbox, await outbox.load());
+		const unknownFrames: Record<string, unknown>[] = [];
+		const unknownMuxPromise = drivePc(unknownPair, pc, mobile.publicKey, mux => {
+			mux.on(Channels.Terminal, frame => unknownFrames.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		});
+		restoredUnknown.connect(creds);
+		unknownPair.fireOpen();
+		const unknownMux = await unknownMuxPromise;
+		void unknownMux;
+		await flush();
+		expect(unknownFrames).toEqual([]);
+		expect(latest?.terminalOperationIssue).toContain('結果を確認できなかった');
+	});
+
+	it('never sends or replays an operation that could not be persisted', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const outbox = new FailingOperationOutboxStore();
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; }, undefined, undefined, 'prod', undefined, 1, outbox);
+		const terminalFrames: Record<string, unknown>[] = [];
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey, mux => {
+			mux.on(Channels.Terminal, frame => terminalFrames.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		});
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh' }]))));
+		await flush();
+		controller.sendInput('terminal-1', 'pwd\n');
+		await flush();
+		expect(terminalFrames.filter(frame => frame.t === 'input')).toEqual([]);
+		expect(latest?.terminalOperationIssue).toContain('安全に保存できなかった');
+		outbox.fail = false;
+		controller.sendInput('terminal-1', 'whoami\n');
+		await flush();
+		expect(terminalFrames.filter(frame => frame.t === 'input').map(frame => frame.data)).toEqual(['whoami\n']);
+
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({
+			...desktopState([{ id: 1, title: 'zsh' }], 2),
+			desktopEpoch: 'desktop-after-restart',
+		})));
+		await flush();
+		expect(terminalFrames.filter(frame => frame.t === 'input').map(frame => frame.data)).toEqual(['whoami\n', 'whoami\n']);
+	});
+
+	it('preserves operation sequence while a mutation waits for durable storage', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const outbox = new DeferredOperationOutboxStore();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { }, undefined, undefined, 'prod', undefined, 1, outbox);
+		const terminalFrames: Record<string, unknown>[] = [];
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey, mux => {
+			mux.on(Channels.Terminal, frame => terminalFrames.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		});
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh' }]))));
+		await flush();
+
+		controller.sendInput('terminal-1', 'date\n');
+		controller.attachTerminal('terminal-1');
+		await flush();
+		expect(terminalFrames).toEqual([]);
+		outbox.release();
+		await flush();
+		expect(terminalFrames.map(frame => frame.t)).toEqual(['input', 'attach']);
+		expect(terminalFrames.map(frame => frame.operationSeq)).toEqual([0, 1]);
+	});
+
+	it('clears actionable workspace state when the PC protocol is incompatible', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh' }]))));
+		await flush();
+		expect(latest?.workspace?.terminals).toHaveLength(1);
+
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ ...desktopState([{ id: 1, title: 'zsh' }], 2), protocolVersion: 2 })));
+		await flush();
+		expect(latest?.workspace).toBeUndefined();
+		expect(latest?.protocolError).toContain('通信バージョン');
 	});
 
 	it('reflects state snapshot and terminal output from PC', async () => {
@@ -270,7 +489,7 @@ describe('MobileController', () => {
 		controller.sendInput('terminal-1', 'ls');
 		await flush();
 		expect(pcGot.find(message => message.t === 'input')).toMatchObject({
-			protocolVersion: 2, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'input', data: 'ls',
+			protocolVersion: 3, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'input', data: 'ls',
 		});
 
 		// PC → notify: 質問通知が state に反映され onNotify が呼ばれる
@@ -320,7 +539,7 @@ describe('MobileController', () => {
 		// PC側: scm/fs リクエストに id 付きで応答するエコーサーバ
 		pcMux.on(Channels.Scm, f => {
 			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; ws: string; protocolVersion: number; desktopEpoch: string; windowId: number };
-			expect(req).toMatchObject({ protocolVersion: 2, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
+			expect(req).toMatchObject({ protocolVersion: 3, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
 			if (req.t === 'status') {
 				pcMux.send(Channels.Scm, new TextEncoder().encode(JSON.stringify({ id: req.id, t: 'status', branch: 'main', files: [{ x: 'M', y: ' ', path: 'a.ts' }] })));
 			} else {
@@ -329,7 +548,7 @@ describe('MobileController', () => {
 		});
 		pcMux.on(Channels.Fs, f => {
 			const req = JSON.parse(new TextDecoder().decode(f.payload)) as { id: string; t: string; path: string; protocolVersion: number; desktopEpoch: string; windowId: number; ws: string };
-			expect(req).toMatchObject({ protocolVersion: 2, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
+			expect(req).toMatchObject({ protocolVersion: 3, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1' });
 			pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify({ id: req.id, t: 'list', entries: [{ name: 'src', dir: true }] })));
 		});
 
@@ -589,7 +808,7 @@ describe('MobileController terminal sync protocol', () => {
 		await flush();
 		expect(events).toEqual([{ kind: 'snapshot', data: 'SNAP', cols: 120, rows: 40, unicode: '11' }]);
 		const ack = pcGot.find(m => m.t === 'ack');
-		expect(ack).toMatchObject({ protocolVersion: 2, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'ack', epoch, seq: 1 });
+		expect(ack).toMatchObject({ protocolVersion: 3, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'ack', epoch, seq: 1 });
 
 		// 連続seqのdataは追記イベントになる
 		pcMux.send(Channels.Terminal, enc({ t: 'data', terminalKey: 'terminal-1', data: 'abc', epoch, seq: 2 }));

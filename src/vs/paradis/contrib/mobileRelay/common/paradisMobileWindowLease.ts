@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 
+import { Event } from '../../../../base/common/event.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 
 export const PARADIS_MOBILE_WINDOW_LEASE_CHANNEL = 'paradisMobileWindowLease';
@@ -15,13 +16,38 @@ export interface IParadisMobileWindowLease {
 	readonly rendererGeneration: number;
 }
 
-/** モバイル機能をclaim済みのactive Renderer一覧。 */
-export type IParadisMobileRendererManifestEntry = IParadisMobileWindowLease;
+/** Main authorityが返す、既知mobile windowのRenderer同期barrier。 */
+export interface IParadisMobileRendererManifestEntry {
+	readonly windowId: number;
+	readonly rendererGeneration: number;
+	readonly windowRevision: number;
+	readonly claimed: boolean;
+	readonly windowSession?: string;
+}
+
+/** manifest RPC/eventの単調snapshot。 */
+export interface IParadisMobileRendererManifest {
+	readonly revision: number;
+	readonly entries: readonly IParadisMobileRendererManifestEntry[];
+}
+
+/** validateと同じ瞬間に観測したauthority revision。 */
+export interface IParadisMobileWindowLeaseValidation {
+	readonly valid: boolean;
+	readonly manifestRevision: number;
+	readonly windowRevision: number | undefined;
+}
 
 interface IActiveRendererConnection {
 	readonly connection: object;
 	readonly rendererGeneration: number;
 	windowSession?: string;
+	windowRevision: number;
+}
+
+interface IPendingRendererConnection {
+	readonly rendererGeneration: number;
+	readonly windowRevision: number;
 }
 
 function windowIdFromContext(context: string): number | undefined {
@@ -39,21 +65,46 @@ function windowIdFromContext(context: string): number | undefined {
  */
 export class ParadisMobileRendererLeaseAuthority {
 	private nextGeneration = 0;
+	private revision = 0;
 	private readonly active = new Map<number, IActiveRendererConnection>();
+	private readonly pending = new Map<number, IPendingRendererConnection>();
+	/** 一度claimしたwindowだけを追跡し、mobile contributionを持たない特殊windowを除外する。 */
+	private readonly tracked = new Set<number>();
 
-	addConnection(context: string, connection: object): void {
+	get manifestRevision(): number { return this.revision; }
+
+	addConnection(context: string, connection: object): boolean {
 		const windowId = windowIdFromContext(context);
 		if (windowId === undefined) {
-			return;
+			return false;
 		}
-		this.active.set(windowId, { connection, rendererGeneration: ++this.nextGeneration });
+		const windowRevision = this.tracked.has(windowId) ? this.bumpRevision() : 0;
+		this.active.set(windowId, { connection, rendererGeneration: ++this.nextGeneration, windowRevision });
+		this.pending.delete(windowId);
+		return this.tracked.has(windowId);
 	}
 
-	removeConnection(context: string, connection: object): void {
+	removeConnection(context: string, connection: object): boolean {
 		const windowId = windowIdFromContext(context);
 		if (windowId !== undefined && this.active.get(windowId)?.connection === connection) {
 			this.active.delete(windowId);
+			if (this.tracked.has(windowId)) {
+				this.pending.set(windowId, { rendererGeneration: ++this.nextGeneration, windowRevision: this.bumpRevision() });
+				return true;
+			}
 		}
+		return false;
+	}
+
+	/** 実windowの破棄だけがreload待ちbarrierをmanifestから除去する。 */
+	destroyWindow(windowId: number): boolean {
+		this.active.delete(windowId);
+		this.pending.delete(windowId);
+		if (!this.tracked.delete(windowId)) {
+			return false;
+		}
+		this.bumpRevision();
+		return true;
 	}
 
 	claim(context: string, windowSession: string): IParadisMobileWindowLease | undefined {
@@ -65,40 +116,67 @@ export class ParadisMobileRendererLeaseAuthority {
 		if (active.windowSession !== undefined && active.windowSession !== windowSession) {
 			return undefined;
 		}
-		active.windowSession = windowSession;
+		if (active.windowSession === undefined || !this.tracked.has(windowId)) {
+			active.windowSession = windowSession;
+			this.tracked.add(windowId);
+			active.windowRevision = this.bumpRevision();
+		}
 		return { windowId, windowSession, rendererGeneration: active.rendererGeneration };
 	}
 
-	validate(lease: IParadisMobileWindowLease): boolean {
+	validate(lease: IParadisMobileWindowLease): IParadisMobileWindowLeaseValidation {
 		const active = this.active.get(lease.windowId);
-		return active?.rendererGeneration === lease.rendererGeneration && active.windowSession === lease.windowSession;
+		return {
+			valid: active?.rendererGeneration === lease.rendererGeneration && active.windowSession === lease.windowSession,
+			manifestRevision: this.revision,
+			windowRevision: active?.windowRevision,
+		};
 	}
 
-	manifest(): IParadisMobileRendererManifestEntry[] {
-		return [...this.active.entries()]
-			.filter(([, active]) => active.windowSession !== undefined)
-			.sort(([a], [b]) => a - b)
-			.map(([windowId, active]) => ({
-				windowId,
-				rendererGeneration: active.rendererGeneration,
-				windowSession: active.windowSession!,
-			}));
+	manifest(): IParadisMobileRendererManifest {
+		const entries: IParadisMobileRendererManifestEntry[] = [];
+		for (const windowId of [...this.tracked].sort((a, b) => a - b)) {
+			const active = this.active.get(windowId);
+			if (active !== undefined) {
+				entries.push({
+					windowId,
+					rendererGeneration: active.rendererGeneration,
+					windowRevision: active.windowRevision,
+					claimed: active.windowSession !== undefined,
+					...(active.windowSession !== undefined ? { windowSession: active.windowSession } : {}),
+				});
+				continue;
+			}
+			const pending = this.pending.get(windowId);
+			if (pending !== undefined) {
+				entries.push({ windowId, rendererGeneration: pending.rendererGeneration, windowRevision: pending.windowRevision, claimed: false });
+			}
+		}
+		return { revision: this.revision, entries };
+	}
+
+	private bumpRevision(): number {
+		return ++this.revision;
 	}
 }
 
 /** Renderer/Shared Process双方からMain authority channelを呼ぶ小さなclient。 */
 export class ParadisMobileWindowLeaseClient {
-	constructor(private readonly channel: IChannel) { }
+	readonly onDidChangeManifest: Event<IParadisMobileRendererManifest>;
+
+	constructor(private readonly channel: IChannel) {
+		this.onDidChangeManifest = channel.listen('onDidChangeManifest');
+	}
 
 	claim(windowSession: string): Promise<IParadisMobileWindowLease | undefined> {
 		return this.channel.call('claim', windowSession);
 	}
 
-	validate(lease: IParadisMobileWindowLease): Promise<boolean> {
+	validate(lease: IParadisMobileWindowLease): Promise<IParadisMobileWindowLeaseValidation> {
 		return this.channel.call('validate', lease);
 	}
 
-	manifest(): Promise<IParadisMobileRendererManifestEntry[]> {
+	manifest(): Promise<IParadisMobileRendererManifest> {
 		return this.channel.call('manifest');
 	}
 }

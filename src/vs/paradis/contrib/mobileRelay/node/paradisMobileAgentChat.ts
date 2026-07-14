@@ -2030,6 +2030,44 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.rebuildPaneMappings();
 	}
 
+	/** Renderer交代時に、そのexact ownerへ配送済みのAction/interaction claimを即時解放する。 */
+	removeOwnerActions(windowId: number, windowSession: string, _rendererGeneration: number): void {
+		const pendingTombstones = new Set<string>();
+		for (const [key, pending] of [...this.pendingActions]) {
+			if (pending.windowId !== windowId || pending.windowSession !== windowSession) {
+				continue;
+			}
+			clearTimeout(pending.timer);
+			this.pendingActions.delete(key);
+			this.releaseInteractionClaim(pending.interactionKey, key);
+			const tombstoneTimer = setTimeout(() => this.completedActions.delete(key), 60_000);
+			this.completedActions.set(key, {
+				token: pending.token,
+				epoch: pending.epoch,
+				terminalId: pending.terminalId,
+				windowId: pending.windowId,
+				windowSession: pending.windowSession,
+				...(pending.interaction !== undefined ? { interaction: pending.interaction } : {}),
+				...(pending.interactionKey !== undefined ? { interactionKey: pending.interactionKey } : {}),
+				...(pending.requirePrompt === true ? { requirePrompt: true } : {}),
+				timer: tombstoneTimer,
+			});
+			pendingTombstones.add(key);
+			const requestId = key.slice(key.indexOf('\0') + 1);
+			this.sendTo(pending.mobileId, { t: 'action-result', id: pending.terminalId, requestId, status: 'rejected', code: 'outcome-unknown', message: 'PCウィンドウが再起動したため操作結果を確認できません' }, pending.token);
+		}
+		for (const [key, completed] of [...this.completedActions]) {
+			if (pendingTombstones.has(key) || completed.windowId !== windowId || completed.windowSession !== windowSession) {
+				continue;
+			}
+			this.releaseInteractionClaim(completed.interactionKey, key);
+			const separator = key.indexOf('\0');
+			const mobileId = key.slice(0, separator);
+			const requestId = key.slice(separator + 1);
+			this.sendTo(mobileId, { t: 'action-result', id: completed.terminalId, requestId, status: 'rejected', code: 'outcome-unknown', message: 'PCウィンドウが再起動したため操作結果を確認できません' }, completed.token);
+		}
+	}
+
 	private rebuildPaneMappings(): void {
 		this.terminalToToken.clear();
 		this.tokenToCwd.clear();
