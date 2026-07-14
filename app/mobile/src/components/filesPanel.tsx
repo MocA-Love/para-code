@@ -12,6 +12,18 @@ import { colors } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../store.js';
 
+function currentRendererTarget(wsId: string | undefined): string | undefined {
+	const state = useAppStore.getState();
+	if (wsId === undefined || state.connection !== 'online' || !state.pcOnline || !state.sessionProtocolReady) {
+		return undefined;
+	}
+	const selectedWorkspace = state.workspace?.workspaces.find(candidate => candidate.id === wsId);
+	const renderer = selectedWorkspace !== undefined ? state.workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	return renderer?.ready === true && state.workspace !== undefined
+		? `${state.workspace.desktopEpoch}:${renderer.windowId}:${renderer.rendererGeneration}`
+		: undefined;
+}
+
 /**
  * ファイルパネル（モックアップ mock-2.html 準拠、「その他」タブのセグメント）。
  * ワークスペースのファイルツリーを閲覧し、タップでのフルスクリーンビューア表示に対応（読み取り専用）。
@@ -24,10 +36,17 @@ import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../
  */
 export function FilesPanel() {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep, connection } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection })));
+	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace })));
+	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws?.id);
+	const selectedRenderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	const rendererTarget = selectedRenderer?.ready === true && workspace !== undefined
+		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
+		: undefined;
+	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
 
 	const tabBarSpacer = useTabBarSpacer();
 	const [path, setPath] = useState('');
+	const pathRef = useRef('');
 	const [listing, setListing] = useState<FsListResult | undefined>();
 	const [filter, setFilter] = useState('');
 	const [searchMode, setSearchMode] = useState<'name' | 'text'>('name');
@@ -36,8 +55,11 @@ export function FilesPanel() {
 	const [searching, setSearching] = useState(false);
 	// 入力デバウンスと応答順序の入れ替わり対策（最後に発行したクエリのみ反映する）
 	const searchGenRef = useRef(0);
+	const lastSearchKeyRef = useRef<string | undefined>();
+	const loadContextRef = useRef<{ wsId: string | undefined; live: boolean; rendererTarget: string | undefined }>({ wsId: undefined, live: false, rendererTarget: undefined });
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
+	const loadGenRef = useRef(0);
 	const [viewerPath, setViewerPath] = useState<string | undefined>();
 	const [viewerResult, setViewerResult] = useState<FsReadResult | undefined>();
 	const [viewerXlsx, setViewerXlsx] = useState<{ html?: string; sheets?: string[]; sheet?: number } | undefined>();
@@ -45,61 +67,133 @@ export function FilesPanel() {
 	const [viewerDocx, setViewerDocx] = useState<string | undefined>();
 	const [viewerMedia, setViewerMedia] = useState<string | undefined>();
 	const [viewerLine, setViewerLine] = useState<number | undefined>();
-	// 開く→閉じる→別ファイルを開く、の間に前のfetchが解決して上書きするのを防ぐ世代ガード
+	// 同じpathを閉じて開き直す場合やworkspaceを跨ぐ場合も、前のfetchが
+	// 新しいビューアを上書きしないようpathとは別に世代を持つ。
 	const viewerPathRef = useRef<string | undefined>(undefined);
+	const viewerGenRef = useRef(0);
+	const reloadViewerRef = useRef<() => void>(() => { });
 	// 同一ファイル内でシートを素早く切り替えた際、古いシート応答が新しい選択を上書きするのを防ぐ世代ガード
 	const sheetGenRef = useRef(0);
 
 	const wsId = ws?.id;
 
-	const load = useCallback(async (p: string) => {
-		if (!wsId || connection !== 'online') {
+	const load = useCallback(async (p: string, clearSearch = false) => {
+		if (!wsId || !live) {
 			return;
 		}
 		setError(undefined);
 		setLoading(true);
+		const gen = ++loadGenRef.current;
+		const requestTarget = rendererTarget;
 		try {
-			setListing(await fsList(wsId, p));
+			const result = await fsList(wsId, p);
+			if (loadGenRef.current !== gen || currentRendererTarget(wsId) !== requestTarget) {
+				return;
+			}
+			setListing(result);
+			pathRef.current = p;
 			setPath(p);
-			setFilter('');
+			if (clearSearch) {
+				setFilter('');
+				setFindResult(undefined);
+				setGrepResult(undefined);
+			}
 		} catch (e) {
-			setError(String(e instanceof Error ? e.message : e));
+			if (loadGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
+				setError(String(e instanceof Error ? e.message : e));
+			}
 		} finally {
-			setLoading(false);
+			if (loadGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
+				setLoading(false);
+			}
 		}
-	}, [fsList, wsId, connection]);
+	}, [fsList, wsId, live, rendererTarget]);
 
 	useEffect(() => {
-		setListing(undefined);
-		setViewerPath(undefined);
-		setViewerResult(undefined);
-		setFindResult(undefined);
-		setGrepResult(undefined);
-		void load('');
-	}, [load]);
+		const previous = loadContextRef.current;
+		loadContextRef.current = { wsId, live, rendererTarget };
+		if (previous.wsId !== wsId) {
+			loadGenRef.current++;
+			searchGenRef.current++;
+			viewerGenRef.current++;
+			sheetGenRef.current++;
+			pathRef.current = '';
+			setPath('');
+			setFilter('');
+			setListing(undefined);
+			setViewerPath(undefined);
+			viewerPathRef.current = undefined;
+			setViewerResult(undefined);
+			setViewerXlsx(undefined);
+			setViewerPdf(undefined);
+			setViewerDocx(undefined);
+			setViewerMedia(undefined);
+			setViewerLine(undefined);
+			setFindResult(undefined);
+			setGrepResult(undefined);
+			lastSearchKeyRef.current = undefined;
+			if (live) {
+				void load('');
+			}
+			return;
+		}
+		const rendererChanged = previous.rendererTarget !== rendererTarget;
+		if ((!live && previous.live) || rendererChanged) {
+			loadGenRef.current++;
+			searchGenRef.current++;
+			viewerGenRef.current++;
+			sheetGenRef.current++;
+			setLoading(false);
+			setSearching(false);
+			if (!live) {
+				return;
+			}
+		}
+		// 同じworkspaceへの再接続では閲覧中ディレクトリを維持し、検索結果は自動再実行せず
+		// キャッシュをそのまま見せる。通常ツリーだけ現在のpathで静かに更新する。
+		if (live && (!previous.live || rendererChanged)) {
+			if (filter.trim().length === 0) {
+				void load(pathRef.current);
+			}
+			reloadViewerRef.current();
+		}
+	}, [wsId, live, rendererTarget, load, filter]);
 
 	// 検索（300msデバウンス）。クエリが空になったら結果をクリアしてツリー表示へ戻る。
 	useEffect(() => {
 		const query = filter.trim();
 		const gen = ++searchGenRef.current;
-		if (!wsId || connection !== 'online' || query.length === 0) {
+		if (query.length === 0) {
+			lastSearchKeyRef.current = undefined;
 			setFindResult(undefined);
 			setGrepResult(undefined);
 			setSearching(false);
 			return;
 		}
+		if (!wsId || !live) {
+			setSearching(false);
+			return;
+		}
+		const searchKey = `${wsId}\0${searchMode}\0${query}`;
+		const requestTarget = rendererTarget;
+		if (lastSearchKeyRef.current === searchKey) {
+			return;
+		}
+		lastSearchKeyRef.current = searchKey;
+		setFindResult(undefined);
+		setGrepResult(undefined);
 		setSearching(true);
 		const timer = setTimeout(async () => {
 			try {
 				if (searchMode === 'name') {
 					const result = await fsFind(wsId, query);
-					if (searchGenRef.current === gen) {
+					if (searchGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
 						setFindResult(result);
 						setGrepResult(undefined);
 					}
 				} else {
 					const result = await fsGrep(wsId, query);
-					if (searchGenRef.current === gen) {
+					if (searchGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
 						setGrepResult(result);
 						setFindResult(undefined);
 					}
@@ -107,15 +201,21 @@ export function FilesPanel() {
 			} catch {
 				// 接続断・タイムアウト等。結果は更新しない（次の入力で再試行）。
 			} finally {
-				if (searchGenRef.current === gen) {
+				if (searchGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
 					setSearching(false);
 				}
 			}
 		}, 300);
 		return () => clearTimeout(timer);
-	}, [filter, searchMode, wsId, connection, fsFind, fsGrep]);
+	}, [filter, searchMode, wsId, live, rendererTarget, fsFind, fsGrep]);
 
 	const openViewer = async (p: string, line?: number) => {
+		if (!live) {
+			return;
+		}
+		const viewerGen = ++viewerGenRef.current;
+		const requestTarget = rendererTarget;
+		sheetGenRef.current++;
 		viewerPathRef.current = p;
 		setViewerPath(p);
 		setViewerResult(undefined);
@@ -132,58 +232,66 @@ export function FilesPanel() {
 				// Excel は PC 側でレンダリングされた静的HTML（1シート分）を受け取る。
 				// シート一覧はビューアのネイティブタブになり、切替時に個別要求する
 				const result = await fsXlsx(wsId, p);
-				if (viewerPathRef.current === p) {
+				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
 					setViewerXlsx({ html: result.html, sheets: result.sheets, sheet: result.sheet });
 				}
 			} else if (/\.pdf$/i.test(p)) {
 				// PDF はバイナリを base64 で受け取り、キャッシュへ書き出して WKWebView でネイティブ表示する
 				const result = await fsPdf(wsId, p);
-				if (viewerPathRef.current === p) {
+				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
 					setViewerPdf(result.data);
 				}
 			} else if (/\.docx$/i.test(p)) {
 				// Word はバイナリを base64 で受け取り、WebView 内の docx-preview（PC版と同じ
 				// vendored ライブラリ）でレンダリングする
 				const result = await fsDocx(wsId, p);
-				if (viewerPathRef.current === p) {
+				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
 					setViewerDocx(result.data);
 				}
 			} else if (MEDIA_FILE_PATTERN.test(p)) {
 				// 画像・動画・音声はバイナリを base64 で受け取る（画像は data URI、
 				// 動画/音声はキャッシュファイル経由の WKWebView ネイティブ再生で表示する）
 				const result = await fsMedia(wsId, p);
-				if (viewerPathRef.current === p) {
+				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
 					setViewerMedia(result.data);
 				}
 			} else {
 				// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
 				const result = await fsRead(wsId, p, true);
-				if (viewerPathRef.current === p) {
+				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
 					setViewerResult(result);
 				}
 			}
 		} catch (e) {
-			if (viewerPathRef.current === p) {
+			if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
 				setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
 			}
+		}
+	};
+	reloadViewerRef.current = () => {
+		const currentPath = viewerPathRef.current;
+		if (currentPath !== undefined) {
+			void openViewer(currentPath, viewerLine);
 		}
 	};
 
 	const selectSheet = async (index: number) => {
 		const p = viewerPath;
-		if (!wsId || p === undefined) {
+		if (!live || !wsId || p === undefined) {
 			return;
 		}
 		// 表示中のHTMLは残したままシートだけ差し替える（タブ位置は即時反映）
 		setViewerXlsx(prev => prev ? { ...prev, sheet: index, html: undefined } : prev);
+		const viewerGen = viewerGenRef.current;
 		const gen = ++sheetGenRef.current;
+		const requestTarget = rendererTarget;
 		try {
 			const result = await fsXlsx(wsId, p, index);
-			if (viewerPathRef.current === p && sheetGenRef.current === gen) {
+			if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && sheetGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
 				setViewerXlsx({ html: result.html, sheets: result.sheets, sheet: result.sheet });
 			}
 		} catch (e) {
-			if (viewerPathRef.current === p && sheetGenRef.current === gen) {
+			if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && sheetGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
 				setViewerResult({ content: `エラー: ${String(e instanceof Error ? e.message : e)}`, truncated: false, size: 0 });
 			}
 		}
@@ -202,6 +310,7 @@ export function FilesPanel() {
 					style={styles.searchInput}
 					value={filter}
 					onChangeText={setFilter}
+					editable={live}
 					placeholder={searchMode === 'name' ? 'ファイル名で検索（全階層）…' : 'テキストで検索（全文）…'}
 					placeholderTextColor={colors.textDim}
 					autoCapitalize="none"
@@ -210,12 +319,14 @@ export function FilesPanel() {
 				/>
 				{searching ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
 				<Pressable
+					disabled={!live}
 					style={[styles.modeChip, searchMode === 'name' && styles.modeChipActive]}
 					onPress={() => { hapticSelection(); setSearchMode('name'); }}
 				>
 					<Text style={[styles.modeText, searchMode === 'name' && styles.modeTextActive]}>名前</Text>
 				</Pressable>
 				<Pressable
+					disabled={!live}
 					style={[styles.modeChip, searchMode === 'text' && styles.modeChipActive]}
 					onPress={() => { hapticSelection(); setSearchMode('text'); }}
 				>
@@ -260,14 +371,14 @@ export function FilesPanel() {
 								{grepResult.truncated ? <Text style={styles.dimNote}>（結果が多いため一部のみ表示しています）</Text> : null}
 							</>
 						) : (
-							<Text style={styles.dimNote}>検索中…</Text>
+							<Text style={styles.dimNote}>{searching ? '検索中…' : '接続後に検索条件を編集すると再検索できます'}</Text>
 						)}
 					</>
 				) : (
 					<>
 						{loading && !listing ? <ActivityIndicator style={styles.spinner} /> : null}
 						{path !== '' ? (
-							<Pressable style={styles.row} onPress={() => { hapticSelection(); void load(parent); }}>
+							<Pressable disabled={!live} style={styles.row} onPress={() => { hapticSelection(); void load(parent, true); }}>
 								<Ionicons name="folder-outline" size={16} color={colors.textDim} />
 								<Text style={styles.rowName}>..</Text>
 							</Pressable>
@@ -277,8 +388,9 @@ export function FilesPanel() {
 							return (
 								<Pressable
 									key={entry.name}
+									disabled={!live}
 									style={styles.row}
-									onPress={() => { hapticSelection(); entry.dir ? void load(childPath) : void openViewer(childPath); }}
+									onPress={() => { hapticSelection(); entry.dir ? void load(childPath, true) : void openViewer(childPath); }}
 								>
 									<Ionicons name={entry.dir ? 'folder-outline' : 'document-text-outline'} size={16} color={entry.dir ? colors.accent : colors.textDim} />
 									<Text style={styles.rowName} numberOfLines={1}>{entry.name}</Text>
@@ -301,7 +413,7 @@ export function FilesPanel() {
 					pdfData={viewerPdf}
 					docxData={viewerDocx}
 					mediaData={viewerMedia}
-					onClose={() => { viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerDocx(undefined); setViewerMedia(undefined); setViewerLine(undefined); }}
+					onClose={() => { viewerGenRef.current++; sheetGenRef.current++; viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerDocx(undefined); setViewerMedia(undefined); setViewerLine(undefined); }}
 				/>
 			) : null}
 		</View>

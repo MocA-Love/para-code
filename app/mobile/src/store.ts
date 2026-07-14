@@ -35,23 +35,32 @@ export interface WorkspaceState {
 	terminals: { terminalKey: string; id: number; windowId: number; rendererGeneration: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
 }
 
+interface RendererRequestTarget {
+	readonly desktopEpoch: string;
+	readonly windowId: number;
+	readonly rendererGeneration: number;
+}
+
 /** partial stateはready windowだけを置換し、pending windowの最後の表示を保持する。 */
 export function mergeWorkspaceState(previous: WorkspaceState | undefined, incoming: WorkspaceState): WorkspaceState {
 	if (previous === undefined || previous.desktopEpoch !== incoming.desktopEpoch || incoming.complete) {
 		return incoming;
 	}
-	const readyWindows = new Set(incoming.renderers.filter(renderer => renderer.ready).map(renderer => renderer.windowId));
-	const workspaces = new Map(previous.workspaces.filter(workspace => !readyWindows.has(workspace.windowId)).map(workspace => [workspace.id, workspace]));
+	const pendingWindows = new Set(incoming.renderers.filter(renderer => !renderer.ready).map(renderer => renderer.windowId));
+	const workspaces = new Map(previous.workspaces.filter(workspace => pendingWindows.has(workspace.windowId)).map(workspace => [workspace.id, workspace]));
 	for (const workspace of incoming.workspaces) {
 		workspaces.set(workspace.id, workspace);
 	}
-	const terminals = new Map(previous.terminals.filter(terminal => !readyWindows.has(terminal.windowId)).map(terminal => [terminal.terminalKey, terminal]));
+	const terminals = new Map(previous.terminals.filter(terminal => pendingWindows.has(terminal.windowId)).map(terminal => [terminal.terminalKey, terminal]));
 	for (const terminal of incoming.terminals) {
 		terminals.set(terminal.terminalKey, terminal);
 	}
+	const previousActiveWorkspace = previous.activeWs === undefined
+		? undefined
+		: previous.workspaces.find(workspace => workspace.id === previous.activeWs);
 	return {
 		...incoming,
-		activeWs: incoming.activeWs ?? previous.activeWs,
+		activeWs: incoming.activeWs ?? (previousActiveWorkspace !== undefined && pendingWindows.has(previousActiveWorkspace.windowId) ? previous.activeWs : undefined),
 		workspaces: [...workspaces.values()],
 		terminals: [...terminals.values()],
 	};
@@ -552,8 +561,9 @@ export interface KeyStore {
 
 /** 暗号化済みoutbox blobの永続ストア。実装はアプリsandbox内ファイル。 */
 export interface TerminalOperationOutboxStore {
-	load(): Promise<string | null>;
+	loadCandidates(): Promise<readonly string[]>;
 	save(encrypted: string): Promise<void>;
+	clear(): Promise<void>;
 }
 
 interface PersistedTerminalOperation {
@@ -569,11 +579,14 @@ const MAX_TERMINAL_OPERATION_OUTBOX = 256;
 export interface StoreState {
 	connection: ConnectionState;
 	pcOnline: boolean;
+	/** 現在の暗号セッションでv3 State handshakeまで完了した。 */
+	sessionProtocolReady: boolean;
 	workspace: WorkspaceState | undefined;
 	/** PC/モバイルの公開プロトコル不一致。黙って操作不能にせず更新案内へ使う。 */
 	protocolError: string | undefined;
 	/** 結果不明になったmutation。新IDで自動再実行せずUIへ明示する。 */
 	terminalOperationIssue: string | undefined;
+	unknownTerminalOperationCount: number;
 	/** ターミナルID → 受信済み出力（末尾のみ保持）。 */
 	terminalOutput: Map<string, string>;
 	/** 受信した通知（新しい順、最大50件）。 */
@@ -678,6 +691,15 @@ export async function saveCredentials(keyStore: KeyStore, creds: PairedCredentia
 	}));
 }
 
+export function terminalOperationPairingScope(creds: PairedCredentials): string {
+	return JSON.stringify({
+		relayUrl: creds.relayUrl.replace(/\/+$/, ''),
+		deviceId: creds.deviceId,
+		mobileId: creds.mobileId,
+		pcPublicKey: toB64(creds.pcPublicKey),
+	});
+}
+
 /**
  * 接続と受信フレームを状態に反映するコントローラ。UIフレームワーク非依存で、
  * onChange コールバックで購読側（Zustand set 等）へ通知する。
@@ -688,9 +710,11 @@ export class MobileController {
 	readonly state: StoreState = {
 		connection: 'offline',
 		pcOnline: false,
+		sessionProtocolReady: false,
 		workspace: undefined,
 		protocolError: undefined,
 		terminalOperationIssue: undefined,
+		unknownTerminalOperationCount: 0,
 		terminalOutput: new Map(),
 		notifications: [],
 		browserFrame: undefined,
@@ -706,14 +730,24 @@ export class MobileController {
 	private attachedAgents = new Map<string, number>();
 	private readonly attachedAgentTargets = new Map<string, string>();
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
-	private readonly agentControlTimers = new Map<string, { requestId: string; timer: ReturnType<typeof setTimeout> }>();
-	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
-	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly agentControlTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly terminalOperationOutbox = new Map<string, { readonly operationRun: number; readonly operationSeq: number; readonly payload: Uint8Array; state: 'pending' | 'unknown'; durable: boolean }>();
 	private terminalOperationSeq = 0;
-	private readonly operationOutboxKey: Uint8Array;
+	private operationOutboxKey: Uint8Array | undefined;
+	private operationOutboxScope: string | undefined;
+	private operationOutboxDirty = false;
+	private resetting = false;
+	private outboxReplayEpoch: string | undefined;
+	private terminalOperationStorageIssue: string | undefined;
+	private terminalOperationCapacityIssue: string | undefined;
+	private terminalOperationEnqueueIssue: string | undefined;
+	private lastNotifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean } | undefined;
+	private readonly pendingNotificationDismissals = new Set<string>();
 	private operationOutboxWrite = Promise.resolve();
 	private terminalOperationDispatchChain = Promise.resolve();
+	private terminalOperationDispatchDepth = 0;
 
 	constructor(
 		private readonly identity: Identity,
@@ -730,10 +764,18 @@ export class MobileController {
 		/** SecureStoreで予約済みのアプリ起動世代。 */
 		private readonly operationRun = 1,
 		private readonly operationOutboxStore?: TerminalOperationOutboxStore,
-		persistedOperationOutbox?: string | null,
+		persistedOperationOutbox?: readonly string[],
+		initialCredentials?: PairedCredentials,
 	) {
-		this.operationOutboxKey = deriveNotifyKey(this.identity.secretKey, this.identity.publicKey);
-		this.restoreTerminalOperationOutbox(persistedOperationOutbox);
+		if (initialCredentials !== undefined) {
+			this.activatePairScope(initialCredentials, persistedOperationOutbox ?? []);
+		}
+	}
+
+	private activatePairScope(creds: PairedCredentials, candidates: readonly string[]): void {
+		this.operationOutboxScope = terminalOperationPairingScope(creds);
+		this.operationOutboxKey = deriveNotifyKey(this.identity.secretKey, creds.pcPublicKey);
+		this.restoreTerminalOperationOutbox(candidates);
 	}
 
 	private static bytesToHexStatic(bytes: Uint8Array): string {
@@ -757,6 +799,17 @@ export class MobileController {
 	}
 
 	connect(creds: PairedCredentials): void {
+		const scope = terminalOperationPairingScope(creds);
+		if (this.operationOutboxScope !== scope) {
+			this.terminalOperationOutbox.clear();
+			this.operationOutboxDirty = false;
+			this.terminalOperationStorageIssue = undefined;
+			this.terminalOperationCapacityIssue = undefined;
+			this.terminalOperationEnqueueIssue = undefined;
+			this.refreshTerminalOperationIssue();
+			this.operationOutboxScope = scope;
+			this.operationOutboxKey = deriveNotifyKey(this.identity.secretKey, creds.pcPublicKey);
+		}
 		this.lastCredentials = creds;
 		// アプリ未起動時のプッシュ本文を Notification Service Extension が復号できるよう、
 		// 長期鍵ペアから導出した通知鍵を共有Keychainへ保存しておく（設計書 §5.2）。
@@ -768,32 +821,39 @@ export class MobileController {
 		}
 		this.client?.close();
 		this.client = new RelayClient(this.identity, creds, this.socketFactory, {
-				onStateChange: s => {
+			onStateChange: s => {
 				this.state.connection = s;
 				if (s !== 'online') {
+					this.state.sessionProtocolReady = false;
+					this.outboxReplayEpoch = undefined;
 					this.cancelPendingAgentActions();
 					this.cancelPendingRequests();
+					const agentChatsChanged = this.cancelStaleRendererRequests();
+					this.emit(agentChatsChanged ? { agentChats: true } : undefined);
+				} else {
+					this.emit();
 				}
-				this.emit();
 				// 再接続完了時: 購読中のagentチャットがあれば手元のepoch/revで再attachする
 				// （PC側はepoch一致なら差分のみ、不一致なら全量スナップショットを返す）。
 				if (s === 'online') {
 					this.requestState();
-					this.resendTerminalOperationOutbox();
-					for (const id of this.attachedAgents.keys()) {
-						this.sendAgentAttach(id);
-					}
-					// 表示中（購読者あり）のターミナルも再attachする。切断中に取り逃した出力は
-					// 再attach応答のsnapshotで補われる（放置すると復帰後も画面が止まったままになる）。
-					for (const [id, stream] of this.termStreams) {
-						if (stream.listeners.size > 0) {
-							this.attachTerminal(id);
-						}
-					}
 					this.registerPushToken();
 				}
 			},
-			onPcPresence: online => { this.state.pcOnline = online; this.emit(); },
+			onPcPresence: online => {
+				this.state.pcOnline = online;
+				let agentChatsChanged = false;
+				if (!online) {
+					this.state.sessionProtocolReady = false;
+					this.outboxReplayEpoch = undefined;
+					this.cancelPendingAgentActions();
+					this.cancelPendingRequests();
+					agentChatsChanged = this.cancelStaleRendererRequests();
+				} else if (this.state.connection === 'online') {
+					this.requestState();
+				}
+				this.emit(agentChatsChanged ? { agentChats: true } : undefined);
+			},
 			onFrame: frame => this.handleFrame(frame),
 		});
 		this.client.connect();
@@ -807,36 +867,69 @@ export class MobileController {
 		this.flushAgentEmit();
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
-		this.emit();
+		this.state.sessionProtocolReady = false;
+		const agentChatsChanged = this.cancelStaleRendererRequests();
+		this.emit(agentChatsChanged ? { agentChats: true } : undefined);
 	}
 
 	/** ペアリング解除時: 接続を閉じ、保持している資格情報と表示状態をすべて初期化する。 */
-	reset(): void {
+	async reset(): Promise<void> {
+		if (this.resetting) {
+			throw new Error('reset is already in progress');
+		}
+		const previousCredentials = this.lastCredentials;
+		this.resetting = true;
 		this.client?.close();
 		this.client = undefined;
-		this.lastCredentials = undefined;
-		this.attachedAgents.clear();
-		this.attachedAgentTargets.clear();
-		for (const pending of this.agentControlTimers.values()) {
-			clearTimeout(pending.timer);
-		}
-		this.agentControlTimers.clear();
 		this.cancelPendingAgentActions();
 		this.cancelPendingRequests();
+		this.cancelStaleRendererRequests();
 		this.flushAgentEmit();
-		this.termStreams.clear();
-		this.terminalOperationOutbox.clear();
-		void this.persistTerminalOperationOutbox();
-		this.state.connection = 'offline';
-		this.state.pcOnline = false;
-		this.state.workspace = undefined;
-		this.state.protocolError = undefined;
-		this.state.terminalOperationIssue = undefined;
-		this.state.terminalOutput = new Map();
-		this.state.notifications = [];
-		this.state.browserFrame = undefined;
-		this.state.agentChats = new Map();
-		this.emit({ term: true, notifications: true, agentChats: true });
+		try {
+			// journal mutationと同じ排他列にclearを積む。reset開始後のframe/discardは
+			// resetting guardで拒否されるため、clear後に旧pair snapshotが再生成されない。
+			await this.enqueueTerminalOperationDispatch(async () => {
+				await this.operationOutboxWrite;
+				await this.operationOutboxStore?.clear();
+				this.terminalOperationOutbox.clear();
+				this.operationOutboxDirty = false;
+			});
+			this.lastCredentials = undefined;
+			this.attachedAgents.clear();
+			this.attachedAgentTargets.clear();
+			for (const pending of this.agentControlTimers.values()) {
+				clearTimeout(pending.timer);
+			}
+			this.agentControlTimers.clear();
+			this.termStreams.clear();
+			this.operationOutboxKey = undefined;
+			this.operationOutboxScope = undefined;
+			this.outboxReplayEpoch = undefined;
+			this.terminalOperationStorageIssue = undefined;
+			this.terminalOperationCapacityIssue = undefined;
+			this.terminalOperationEnqueueIssue = undefined;
+			this.state.connection = 'offline';
+			this.state.pcOnline = false;
+			this.state.sessionProtocolReady = false;
+			this.state.workspace = undefined;
+			this.state.protocolError = undefined;
+			this.refreshTerminalOperationIssue();
+			this.state.terminalOutput = new Map();
+			this.state.notifications = [];
+			this.pendingNotificationDismissals.clear();
+			this.state.browserFrame = undefined;
+			this.state.agentChats = new Map();
+			this.emit({ term: true, notifications: true, agentChats: true });
+		} catch (error) {
+			// durable clearに失敗した場合は旧pairとcached stateを維持し、再試行できる状態へ戻す。
+			this.resetting = false;
+			if (previousCredentials !== undefined) {
+				this.connect(previousCredentials);
+			}
+			throw error;
+		} finally {
+			this.resetting = false;
+		}
 	}
 
 	/** 手動切断後などに、保存済み資格情報で接続し直す。 */
@@ -895,13 +988,13 @@ export class MobileController {
 		stream.unackedChars = 0;
 		// 旧画面は新snapshot到着まで保持する。reload中に空画面へ退行させない。
 		stream.rendererTarget = this.rendererTargetFor(terminalKey);
-		this.sendTerm(terminalKey, { t: 'attach', epoch: stream.epoch });
+		void this.sendTerm(terminalKey, { t: 'attach', epoch: stream.epoch });
 	}
 
 	detachTerminal(terminalKey: string): void {
 		// ストリーム状態は消さない（cache をタブ再訪時の即時再描画に使う）。
 		// epoch はattach時に必ず更新されるため、detach後に届く残りフレームは無害。
-		this.sendTerm(terminalKey, { t: 'detach' });
+		void this.sendTerm(terminalKey, { t: 'detach' });
 	}
 
 	/**
@@ -934,8 +1027,19 @@ export class MobileController {
 	}
 
 	/** ターミナルへ入力を送る。 */
-	sendInput(terminalKey: string, data: string): void {
-		this.sendTerm(terminalKey, { t: 'input', data });
+	sendInput(terminalKey: string, data: string): Promise<boolean> {
+		return this.sendTerm(terminalKey, { t: 'input', data });
+	}
+
+	sendLiveInput(terminalKey: string, data: string): boolean {
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		// legacy TUI fallbackのキー列は遅延配送しない。durable outbox処理が先行中なら
+		// 新しいinteractionへ誤注入するよりfail closedで呼び出し側に再試行させる。
+		if (this.terminalOperationDispatchDepth !== 0 || !this.isLiveAvailable() || this.outboxReplayEpoch !== this.state.workspace?.desktopEpoch || rendererTarget === undefined) {
+			return false;
+		}
+		void this.sendTerm(terminalKey, { t: 'input', data }, false, rendererTarget, this.agentInputContextFor(terminalKey));
+		return true;
 	}
 
 	/**
@@ -945,7 +1049,7 @@ export class MobileController {
 	 */
 	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): void {
 		const fallback = { up: '\u001b[A', down: '\u001b[B', right: '\u001b[C', left: '\u001b[D' }[key];
-		this.sendTerm(terminalKey, { t: 'input', data: fallback, key });
+		void this.sendTerm(terminalKey, { t: 'input', data: fallback, key });
 	}
 
 	/**
@@ -954,16 +1058,16 @@ export class MobileController {
 	 * execute=true で末尾にEnterを付けて実行する。data には改行をEnterへ正規化した
 	 * 生入力も併載する。
 	 */
-	sendTextInput(terminalKey: string, text: string, execute: boolean): void {
+	sendTextInput(terminalKey: string, text: string, execute: boolean): Promise<boolean> {
 		const normalized = text.replace(/\r?\n/g, '\r');
 		const fallback = execute && !normalized.endsWith('\r') ? normalized + '\r' : normalized;
-		this.sendTerm(terminalKey, { t: 'input', data: fallback, text, execute });
+		return this.sendTerm(terminalKey, { t: 'input', data: fallback, text, execute });
 	}
 
 	/** session検証付きAgent Action。 */
 	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult> {
 		const chat = this.state.agentChats.get(terminalKey);
-		if (this.state.connection !== 'online') {
+		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
 		}
 		if (chat === undefined || chat.none || chat.capabilities?.agentActions !== true) {
@@ -976,7 +1080,7 @@ export class MobileController {
 
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean> {
 		const chat = this.state.agentChats.get(terminalKey);
-		if (this.state.connection !== 'online' || chat?.capabilities?.agentActions !== true
+		if (!this.isLiveAvailable() || chat?.capabilities?.agentActions !== true
 			|| chat.interaction?.kind !== 'question' || chat.interaction.id !== interactionId) {
 			return Promise.resolve(false);
 		}
@@ -987,7 +1091,7 @@ export class MobileController {
 
 	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<boolean> {
 		const chat = this.state.agentChats.get(terminalKey);
-		if (this.state.connection !== 'online' || chat?.capabilities?.agentActions !== true
+		if (!this.isLiveAvailable() || chat?.capabilities?.agentActions !== true
 			|| chat.interaction?.kind !== 'approval' || chat.interaction.id !== interactionId
 			|| (chat.interaction.choices !== undefined
 				? !chat.interaction.choices.some(candidate => candidate.id === choice)
@@ -1001,7 +1105,7 @@ export class MobileController {
 
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<boolean> {
 		const chat = this.state.agentChats.get(terminalKey);
-		if (this.state.connection !== 'online' || chat?.agent !== 'claude' || chat.capabilities?.claudeSettings !== true
+		if (!this.isLiveAvailable() || chat?.agent !== 'claude' || chat.capabilities?.claudeSettings !== true
 			|| chat.interaction !== undefined || !/^[A-Za-z0-9._:-]{1,200}$/.test(value)) {
 			return Promise.resolve(false);
 		}
@@ -1013,7 +1117,8 @@ export class MobileController {
 	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]> {
 		const chat = this.state.agentChats.get(terminalKey);
 		const terminal = this.terminalForKey(terminalKey);
-		if (this.state.connection !== 'online' || chat === undefined || terminal === undefined || !chat.activity?.agents.some(agent => agent.id === activityId && agent.role === 'subagent')) {
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		if (!this.isLiveAvailable() || rendererTarget === undefined || chat === undefined || terminal === undefined || !chat.activity?.agents.some(agent => agent.id === activityId && agent.role === 'subagent')) {
 			return Promise.reject(new Error('SubAgentが見つかりません'));
 		}
 		const requestId = `${this.requestPrefix}-agent-detail-${this.requestCounter++}`;
@@ -1022,7 +1127,7 @@ export class MobileController {
 				this.pendingActivityDetails.delete(requestId);
 				reject(new Error('SubAgent詳細の取得がタイムアウトしました'));
 			}, 15_000);
-			this.pendingActivityDetails.set(requestId, { terminalKey, activityId, resolve, reject, timer });
+			this.pendingActivityDetails.set(requestId, { terminalKey, rendererTarget, activityId, resolve, reject, timer });
 			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'activity-detail', id: terminal.id, token: this.agentToken(terminalKey), requestId, epoch: chat.epoch, activityId })));
 		});
 	}
@@ -1032,9 +1137,13 @@ export class MobileController {
 	}
 
 	private sendAgentActionResult(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<AgentMessageSendResult> {
+		if (!this.isLiveAvailable()) {
+			return Promise.resolve({ status: 'rejected', message: 'PCへ再接続してから操作してください' });
+		}
 		const terminal = this.terminalForKey(terminalKey);
-		if (terminal === undefined) {
-			return Promise.resolve({ status: 'rejected' });
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		if (terminal === undefined || rendererTarget === undefined) {
+			return Promise.resolve({ status: 'rejected', message: 'PC画面の再接続が完了してから再送してください' });
 		}
 		const requestId = `${this.requestPrefix}-agent-action-${this.requestCounter++}`;
 		return new Promise(resolve => {
@@ -1043,7 +1152,7 @@ export class MobileController {
 					resolve({ status: 'rejected' });
 				}
 			}, timeoutMs);
-			this.pendingAgentActions.set(requestId, { terminalKey, resolve, timer });
+			this.pendingAgentActions.set(requestId, { terminalKey, rendererTarget, resolve, timer });
 			this.client?.send('agent', encoder.encode(JSON.stringify({ ...body, id: terminal.id, requestId })));
 		});
 	}
@@ -1068,7 +1177,7 @@ export class MobileController {
 		if (workspace === undefined || desktop === undefined) {
 			return;
 		}
-		this.sendTerminalOperation({
+		void this.sendTerminalOperation({
 			protocolVersion: 3,
 			desktopEpoch: desktop.desktopEpoch,
 			t: 'create',
@@ -1079,7 +1188,7 @@ export class MobileController {
 
 	/** ターミナル名を変更する。表示更新はPC側の権威的なstate再送で確定する。 */
 	renameTerminal(terminalKey: string, title: string): void {
-		this.sendTerm(terminalKey, { t: 'rename', title });
+		void this.sendTerm(terminalKey, { t: 'rename', title });
 	}
 
 	/**
@@ -1088,7 +1197,7 @@ export class MobileController {
 	 * 表示更新はPC側の権威的なstate再送で確定する。
 	 */
 	closeTerminal(terminalKey: string): void {
-		this.sendTerm(terminalKey, { t: 'close' });
+		void this.sendTerm(terminalKey, { t: 'close' });
 	}
 
 	/**
@@ -1097,12 +1206,29 @@ export class MobileController {
 	 * 表示更新はPC側の権威的なstate再送で確定する。
 	 */
 	ackAgentStatus(terminalKey: string): void {
-		this.sendTerm(terminalKey, { t: 'ackStatus' });
+		void this.sendTerm(terminalKey, { t: 'ackStatus' });
 	}
 
 	/** 現在の状態スナップショットを要求する。 */
 	requestState(): void {
-		this.client?.send('state', new Uint8Array(0));
+		this.client?.send('state', encoder.encode(JSON.stringify({ protocolVersion: 3 })));
+	}
+
+	private resumeLiveSessionSubscriptions(): void {
+		for (const terminalKey of this.attachedAgents.keys()) {
+			this.sendAgentAttach(terminalKey);
+		}
+		for (const [terminalKey, stream] of this.termStreams) {
+			if (stream.listeners.size > 0) {
+				this.attachTerminal(terminalKey);
+			}
+		}
+		if (this.lastNotifyPrefs !== undefined) {
+			this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...this.lastNotifyPrefs })));
+		}
+		for (const id of this.pendingNotificationDismissals) {
+			this.client?.send('notify', encodeNotifyDismiss(id));
+		}
 	}
 
 	/**
@@ -1110,23 +1236,29 @@ export class MobileController {
 	 * APNsフォールバックプッシュの抑制判定に使う（設定画面参照）。
 	 */
 	sendNotifyPrefs(prefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean }): void {
-		this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...prefs })));
+		this.lastNotifyPrefs = prefs;
+		if (this.isLiveAvailable()) {
+			this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...prefs })));
+		}
 	}
 
-	private sendTerm(terminalKey: string, msg: { t: string; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }): void {
+	private sendTerm(terminalKey: string, msg: { t: string; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
 		const workspace = this.state.workspace;
 		if (workspace === undefined || !workspace.terminals.some(terminal => terminal.terminalKey === terminalKey)) {
-			return;
+			return Promise.resolve(false);
 		}
-		this.sendTerminalOperation({
+		return this.sendTerminalOperation({
 			protocolVersion: 3,
 			desktopEpoch: workspace.desktopEpoch,
 			terminalKey,
 			...msg,
-		});
+		}, durableMutation, expectedRendererTarget, expectedAgentInputContext);
 	}
 
-	private sendTerminalOperation(body: Record<string, unknown>): void {
+	private sendTerminalOperation(body: Record<string, unknown>, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
+		if (this.resetting || this.operationOutboxScope === undefined || this.state.protocolError !== undefined) {
+			return Promise.resolve(false);
+		}
 		const operationSeq = this.terminalOperationSeq++;
 		const operationId = `${this.requestPrefix}-term-${this.operationRun}-${operationSeq}`;
 		const payload = encoder.encode(JSON.stringify({
@@ -1135,83 +1267,300 @@ export class MobileController {
 			operationRun: this.operationRun,
 			operationSeq,
 		}));
-		if (typeof body.t === 'string' && ['input', 'create', 'rename', 'close', 'ackStatus'].includes(body.t)) {
+		if (durableMutation && typeof body.t === 'string' && ['input', 'create', 'rename', 'close', 'ackStatus'].includes(body.t)) {
 			if (this.terminalOperationOutbox.size >= MAX_TERMINAL_OPERATION_OUTBOX) {
-				this.state.terminalOperationIssue = '未確認の操作が多いため、新しい操作を送信しませんでした。PCの状態を確認してからもう一度お試しください。';
+				this.terminalOperationCapacityIssue = '未確認の操作が多いため、新しい操作を送信しませんでした。PCの状態を確認してからもう一度お試しください。';
+				this.terminalOperationEnqueueIssue = this.terminalOperationCapacityIssue;
+				this.refreshTerminalOperationIssue();
 				this.emit();
-				return;
+				return Promise.resolve(false);
 			}
 			const operation = { operationRun: this.operationRun, operationSeq, payload, state: 'pending' as const, durable: false };
 			this.terminalOperationOutbox.set(operationId, operation);
-			this.enqueueTerminalOperationDispatch(async () => {
+			this.operationOutboxDirty = true;
+			return this.enqueueTerminalOperationDispatch(async () => {
+				this.operationOutboxDirty = true;
 				try {
 					await this.persistTerminalOperationOutbox(() => {
 						if (this.terminalOperationOutbox.get(operationId) === operation) {
 							this.terminalOperationOutbox.delete(operationId);
 						}
 					});
-					if (this.terminalOperationOutbox.get(operationId) === operation && operation.state === 'pending' && operation.durable) {
+					const hadEnqueueIssue = this.terminalOperationEnqueueIssue !== undefined || this.terminalOperationCapacityIssue !== undefined;
+					this.terminalOperationEnqueueIssue = undefined;
+					this.terminalOperationCapacityIssue = undefined;
+					this.refreshTerminalOperationIssue();
+					if (hadEnqueueIssue) {
+						this.emit();
+					}
+					if (this.terminalOperationOutbox.get(operationId) === operation && operation.state === 'pending' && operation.durable && this.canDispatchTerminalOperation(operation, true)) {
 						this.client?.send('term', payload);
 					}
+					return true;
 				} catch {
-					this.state.terminalOperationIssue = '操作を安全に保存できなかったため、PCへ送信しませんでした。もう一度お試しください。';
+					this.terminalOperationEnqueueIssue = '操作を安全に保存できなかったため、PCへ送信しませんでした。入力内容を確認して、もう一度お試しください。';
+					this.refreshTerminalOperationIssue();
 					this.emit();
+					return false;
 				}
 			});
-			return;
 		}
-		this.enqueueTerminalOperationDispatch(() => this.client?.send('term', payload));
+		if (this.isLiveAvailable()) {
+			return this.enqueueTerminalOperationDispatch(() => {
+				if ((expectedRendererTarget === undefined || (typeof body.terminalKey === 'string' && this.rendererTargetFor(body.terminalKey) === expectedRendererTarget))
+					&& (expectedAgentInputContext === undefined || (typeof body.terminalKey === 'string' && this.agentInputContextFor(body.terminalKey) === expectedAgentInputContext))
+					&& this.canDispatchTerminalOperation({ payload })) {
+					this.client?.send('term', payload);
+					return true;
+				}
+				return false;
+			});
+		}
+		return Promise.resolve(false);
 	}
 
-	private resendTerminalOperationOutbox(): void {
-		this.enqueueTerminalOperationDispatch(async () => {
-			await this.operationOutboxWrite;
-			for (const operation of [...this.terminalOperationOutbox.values()]
-				.filter(operation => operation.state === 'pending' && operation.durable)
-				.sort((a, b) => a.operationRun - b.operationRun || a.operationSeq - b.operationSeq)) {
-				this.client?.send('term', operation.payload);
+	private async resendTerminalOperationOutboxWithinDispatch(): Promise<void> {
+		await this.operationOutboxWrite;
+		for (const operation of [...this.terminalOperationOutbox.values()]
+			.filter(operation => operation.state === 'pending' && operation.durable && this.canDispatchTerminalOperation(operation, true))
+			.sort((a, b) => a.operationRun - b.operationRun || a.operationSeq - b.operationSeq)) {
+			this.client?.send('term', operation.payload);
+		}
+	}
+
+	private canDispatchTerminalOperation(operation: { readonly payload: Uint8Array }, allowAuthoritativeMissing = false): boolean {
+		if (!this.isLiveAvailable() || this.outboxReplayEpoch === undefined) {
+			return false;
+		}
+		try {
+			const message = JSON.parse(decoder.decode(operation.payload)) as { desktopEpoch?: unknown; t?: unknown; terminalKey?: unknown; windowId?: unknown; ws?: unknown };
+			if (message.desktopEpoch !== this.outboxReplayEpoch) {
+				return false;
+			}
+			const workspace = this.state.workspace;
+			if (workspace === undefined) {
+				return false;
+			}
+			if (message.t === 'create') {
+				const targetWorkspace = typeof message.windowId === 'number' && typeof message.ws === 'string'
+					? workspace.workspaces.find(candidate => candidate.windowId === message.windowId && candidate.sourceId === message.ws)
+					: undefined;
+				return targetWorkspace === undefined
+					? allowAuthoritativeMissing && workspace.complete
+					: workspace.renderers.some(renderer => renderer.windowId === targetWorkspace.windowId && renderer.ready);
+			}
+			const terminal = typeof message.terminalKey === 'string'
+				? workspace.terminals.find(candidate => candidate.terminalKey === message.terminalKey)
+				: undefined;
+			return terminal === undefined
+				? allowAuthoritativeMissing && workspace.complete
+				: workspace.renderers.some(renderer => renderer.windowId === terminal.windowId
+					&& renderer.rendererGeneration === terminal.rendererGeneration && renderer.ready);
+		} catch {
+			return false;
+		}
+	}
+
+	private isLiveAvailable(): boolean {
+		return this.operationOutboxScope !== undefined && this.state.connection === 'online' && this.state.pcOnline
+			&& this.state.sessionProtocolReady && this.state.protocolError === undefined && !this.resetting;
+	}
+
+	private agentInputContextFor(terminalKey: string): string {
+		const chat = this.state.agentChats.get(terminalKey);
+		const interaction = chat?.interaction;
+		return JSON.stringify([
+			chat !== undefined && !chat.none ? chat.epoch : null,
+			interaction?.kind ?? null,
+			interaction?.id ?? null,
+		]);
+	}
+
+	private reconcileTerminalOperationOutbox(desktopEpoch: string): void {
+		void this.enqueueTerminalOperationDispatch(async () => {
+			if (this.resetting) {
+				return;
+			}
+			if (this.outboxReplayEpoch === desktopEpoch) {
+				try {
+					if (this.operationOutboxDirty) {
+						await this.persistTerminalOperationOutbox();
+					}
+					// 同じdesktop epochでもRenderer ready遷移後に保留操作を再評価する。
+					await this.resendTerminalOperationOutboxWithinDispatch();
+				} catch {
+					this.setTerminalOperationStorageIssue('操作状態を安全に保存できなかったため、再送を停止しました。');
+					this.emit();
+				}
+				return;
+			}
+			// 永続化が失敗した同じepochのStateで再試行できるよう、成功するまで確定しない。
+			this.outboxReplayEpoch = undefined;
+			let changed = false;
+			for (const operation of this.terminalOperationOutbox.values()) {
+				if (operation.state !== 'pending') {
+					continue;
+				}
+				try {
+					const payload = JSON.parse(decoder.decode(operation.payload)) as { desktopEpoch?: unknown };
+					if (payload.desktopEpoch !== desktopEpoch) {
+						operation.state = 'unknown';
+						this.operationOutboxDirty = true;
+						changed = true;
+					}
+				} catch {
+					operation.state = 'unknown';
+					this.operationOutboxDirty = true;
+					changed = true;
+				}
+			}
+			this.refreshTerminalOperationIssue();
+			try {
+				if (changed || this.operationOutboxDirty) {
+					await this.persistTerminalOperationOutbox();
+				}
+				this.outboxReplayEpoch = desktopEpoch;
+				this.refreshTerminalOperationIssue();
+				this.emit();
+				await this.resendTerminalOperationOutboxWithinDispatch();
+			} catch {
+				this.setTerminalOperationStorageIssue('操作状態を安全に保存できなかったため、再送を停止しました。');
+				this.emit();
 			}
 		});
 	}
 
-	private enqueueTerminalOperationDispatch(callback: () => void | Promise<void>): void {
-		const run = this.terminalOperationDispatchChain.then(callback);
-		this.terminalOperationDispatchChain = run.catch(() => { });
+	private refreshTerminalOperationIssue(): void {
+		const count = [...this.terminalOperationOutbox.values()].filter(operation => operation.state === 'unknown').length;
+		this.state.unknownTerminalOperationCount = count;
+		const unknownIssue = count > 0
+			? `結果を確認できなかった操作が${count}件あります。PCの状態を確認し、必要な操作だけ手動でやり直してください。`
+			: undefined;
+		this.state.terminalOperationIssue = this.terminalOperationEnqueueIssue ?? this.terminalOperationStorageIssue ?? this.terminalOperationCapacityIssue ?? unknownIssue;
 	}
 
-	private restoreTerminalOperationOutbox(encrypted: string | null | undefined): void {
-		if (!encrypted) {
+	private setTerminalOperationStorageIssue(issue: string | undefined): void {
+		this.terminalOperationStorageIssue = issue;
+		this.refreshTerminalOperationIssue();
+	}
+
+	private handleTerminalOperationResult(operationId: string | undefined, status: string | undefined): void {
+		if (typeof operationId !== 'string' || typeof status !== 'string') {
 			return;
 		}
-		try {
-			const decoded = decoder.decode(openNotify(this.operationOutboxKey, fromB64(encrypted)));
-			const parsed = JSON.parse(decoded) as { version?: unknown; operations?: unknown };
-			if (parsed.version !== 1 || !Array.isArray(parsed.operations)) {
+		void this.enqueueTerminalOperationDispatch(async () => {
+			if (this.resetting) {
 				return;
 			}
-			for (const raw of parsed.operations.slice(0, MAX_TERMINAL_OPERATION_OUTBOX)) {
-				const operation = raw as Partial<PersistedTerminalOperation>;
-				if (typeof operation.operationId !== 'string' || operation.operationId.length === 0 || operation.operationId.length > 200
-					|| !Number.isSafeInteger(operation.operationRun) || (operation.operationRun ?? 0) < 1
-					|| !Number.isSafeInteger(operation.operationSeq) || (operation.operationSeq ?? -1) < 0
-					|| typeof operation.payload !== 'string' || operation.payload.length > 500_000
-					|| (operation.state !== 'pending' && operation.state !== 'unknown')) {
+			const pending = this.terminalOperationOutbox.get(operationId);
+			let changed = false;
+			if (pending !== undefined && (status === 'outcome-unknown' || status === 'stale-epoch')) {
+				pending.state = 'unknown';
+				this.operationOutboxDirty = true;
+				changed = true;
+			} else if (pending !== undefined && ['accepted', 'terminal-not-found', 'failed', 'stale-renderer'].includes(status)) {
+				this.terminalOperationOutbox.delete(operationId);
+				this.operationOutboxDirty = true;
+				changed = true;
+			}
+			if (changed) {
+				this.refreshTerminalOperationIssue();
+				try {
+					await this.persistTerminalOperationOutbox();
+				} catch {
+					// memory上の保守的状態（unknown/削除）は維持する。同じIDの再出現はPC ledgerが
+					final/unknownを再応答し、PC再起動時はdesktopEpoch gateが再実行を止める。
+					this.setTerminalOperationStorageIssue('操作結果を安全に保存できませんでした。再接続後にPCの状態を確認してください。');
+				}
+				this.emit();
+			}
+			if (status !== 'accepted') {
+				this.requestState();
+			}
+		});
+	}
+
+	async discardUnknownTerminalOperations(): Promise<boolean> {
+		return this.enqueueTerminalOperationDispatch(async () => {
+			if (this.resetting) {
+				return false;
+			}
+			const removed = [...this.terminalOperationOutbox].filter(([, operation]) => operation.state === 'unknown');
+			if (removed.length === 0) {
+				return true;
+			}
+			for (const [operationId] of removed) {
+				this.terminalOperationOutbox.delete(operationId);
+			}
+			this.operationOutboxDirty = true;
+			try {
+				await this.persistTerminalOperationOutbox();
+				this.refreshTerminalOperationIssue();
+				this.emit();
+				return true;
+			} catch {
+				for (const [operationId, operation] of removed) {
+					this.terminalOperationOutbox.set(operationId, operation);
+				}
+				this.operationOutboxDirty = true;
+				this.setTerminalOperationStorageIssue('結果不明の操作記録を削除できませんでした。もう一度お試しください。');
+				this.emit();
+				return false;
+			}
+		});
+	}
+
+	private enqueueTerminalOperationDispatch<T>(callback: () => T | Promise<T>): Promise<T> {
+		this.terminalOperationDispatchDepth++;
+		const run = this.terminalOperationDispatchChain.then(callback);
+		const tracked = run.then(
+			value => { this.terminalOperationDispatchDepth--; return value; },
+			error => { this.terminalOperationDispatchDepth--; throw error; },
+		);
+		this.terminalOperationDispatchChain = tracked.then(() => undefined, () => undefined);
+		return tracked;
+	}
+
+	private restoreTerminalOperationOutbox(candidates: readonly string[]): void {
+		const key = this.operationOutboxKey;
+		const scope = this.operationOutboxScope;
+		if (key === undefined || scope === undefined) {
+			return;
+		}
+		for (const encrypted of candidates) {
+			try {
+				const decoded = decoder.decode(openNotify(key, fromB64(encrypted)));
+				const parsed = JSON.parse(decoded) as { version?: unknown; pairingScope?: unknown; operations?: unknown };
+				if (parsed.version !== 2 || parsed.pairingScope !== scope || !Array.isArray(parsed.operations)) {
 					continue;
 				}
-				const payload = encoder.encode(operation.payload);
-				const message = JSON.parse(operation.payload) as { operationId?: unknown; operationRun?: unknown; operationSeq?: unknown };
-				if (message.operationId !== operation.operationId || message.operationRun !== operation.operationRun || message.operationSeq !== operation.operationSeq) {
-					continue;
+				const restored = new Map<string, { readonly operationRun: number; readonly operationSeq: number; readonly payload: Uint8Array; state: 'pending' | 'unknown'; durable: boolean }>();
+				for (const raw of parsed.operations.slice(0, MAX_TERMINAL_OPERATION_OUTBOX)) {
+					const operation = raw as Partial<PersistedTerminalOperation>;
+					if (typeof operation.operationId !== 'string' || operation.operationId.length === 0 || operation.operationId.length > 200
+						|| !Number.isSafeInteger(operation.operationRun) || (operation.operationRun ?? 0) < 1
+						|| !Number.isSafeInteger(operation.operationSeq) || (operation.operationSeq ?? -1) < 0
+						|| typeof operation.payload !== 'string' || operation.payload.length > 500_000
+						|| (operation.state !== 'pending' && operation.state !== 'unknown')) {
+						continue;
+					}
+					const payload = encoder.encode(operation.payload);
+					const message = JSON.parse(operation.payload) as { operationId?: unknown; operationRun?: unknown; operationSeq?: unknown };
+					if (message.operationId !== operation.operationId || message.operationRun !== operation.operationRun || message.operationSeq !== operation.operationSeq) {
+						continue;
+					}
+					restored.set(operation.operationId, {
+						operationRun: operation.operationRun!, operationSeq: operation.operationSeq!, payload, state: operation.state, durable: true,
+					});
 				}
-				this.terminalOperationOutbox.set(operation.operationId, {
-					operationRun: operation.operationRun!, operationSeq: operation.operationSeq!, payload, state: operation.state, durable: true,
-				});
+				for (const [operationId, operation] of restored) {
+					this.terminalOperationOutbox.set(operationId, operation);
+				}
+				this.refreshTerminalOperationIssue();
+				return;
+			} catch {
+				// 改ざん・破損候補は次のjournal候補へフォールバックする。
 			}
-			if ([...this.terminalOperationOutbox.values()].some(operation => operation.state === 'unknown')) {
-				this.state.terminalOperationIssue = 'PCの再起動中に結果を確認できなかった操作があります。状態を確認して、必要な場合だけ再実行してください。';
-			}
-		} catch {
-			// 改ざん・破損・identity再生成時は復元せず、未知のpayloadを送信しない。
 		}
 	}
 
@@ -1220,9 +1569,20 @@ export class MobileController {
 			for (const operation of this.terminalOperationOutbox.values()) {
 				operation.durable = true;
 			}
+			this.operationOutboxDirty = false;
+			const recovered = this.terminalOperationStorageIssue !== undefined;
+			this.setTerminalOperationStorageIssue(undefined);
+			if (recovered) {
+				this.emit();
+			}
 			return Promise.resolve();
 		}
 		const write = this.operationOutboxWrite.then(async () => {
+			const key = this.operationOutboxKey;
+			const pairingScope = this.operationOutboxScope;
+			if (key === undefined || pairingScope === undefined) {
+				throw new Error('operation outbox pair scope is unavailable');
+			}
 			const snapshot = [...this.terminalOperationOutbox];
 			const operations: PersistedTerminalOperation[] = snapshot.map(([operationId, operation]) => ({
 				operationId,
@@ -1231,12 +1591,18 @@ export class MobileController {
 				payload: decoder.decode(operation.payload),
 				state: operation.state,
 			}));
-			const encrypted = toBase64Url(sealNotify(this.operationOutboxKey, encoder.encode(JSON.stringify({ version: 1, operations }))));
+			const encrypted = toBase64Url(sealNotify(key, encoder.encode(JSON.stringify({ version: 2, pairingScope, operations }))));
 			await this.operationOutboxStore!.save(encrypted);
 			for (const [operationId, operation] of snapshot) {
 				if (this.terminalOperationOutbox.get(operationId) === operation) {
 					operation.durable = true;
 				}
+			}
+			this.operationOutboxDirty = false;
+			const recovered = this.terminalOperationStorageIssue !== undefined;
+			this.setTerminalOperationStorageIssue(undefined);
+			if (recovered) {
+				this.emit();
 			}
 		});
 		const handled = write.catch(error => {
@@ -1272,7 +1638,7 @@ export class MobileController {
 			this.attachedAgents.delete(terminalKey);
 			this.attachedAgentTargets.delete(terminalKey);
 			const terminal = this.terminalForKey(terminalKey);
-			if (terminal !== undefined) {
+			if (terminal !== undefined && this.isLiveAvailable() && this.rendererTargetFor(terminalKey) !== undefined) {
 				this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id: terminal.id, token: this.agentToken(terminalKey) })));
 			}
 		} else {
@@ -1282,6 +1648,9 @@ export class MobileController {
 
 	/** チャット表示の再読み込み（セッションが見つからなかった後の再試行にも使う）。 */
 	refreshAgent(terminalKey: string): void {
+		if (!this.isLiveAvailable()) {
+			return;
+		}
 		this.state.agentChats.delete(terminalKey);
 		this.emit({ agentChats: true });
 		if (this.attachedAgents.has(terminalKey)) {
@@ -1293,7 +1662,8 @@ export class MobileController {
 	requestAgentModelCatalog(terminalKey: string): void {
 		const existing = this.state.agentChats.get(terminalKey);
 		const terminal = this.terminalForKey(terminalKey);
-		if (existing === undefined || existing.none || existing.agent !== 'codex'
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		if (!this.isLiveAvailable() || rendererTarget === undefined || existing === undefined || existing.none || existing.agent !== 'codex'
 			|| terminal === undefined || existing.modelControl?.status === 'loading' || existing.modelControl?.status === 'updating') {
 			return;
 		}
@@ -1304,14 +1674,15 @@ export class MobileController {
 		});
 		this.emit({ agentChats: true });
 		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'model-catalog', id: terminal.id, token: this.agentToken(terminalKey), requestId })));
-		this.scheduleAgentControlTimeout(terminalKey, requestId, 'Codexのモデル一覧取得がタイムアウトしました');
+		this.scheduleAgentControlTimeout(terminalKey, requestId, rendererTarget, 'Codexのモデル一覧取得がタイムアウトしました');
 	}
 
 	/** 検証済みカタログのモデルとEffortを、Codexの次ターン設定へ同時適用する。 */
 	updateAgentSettings(terminalKey: string, model: string, effort: string): void {
 		const existing = this.state.agentChats.get(terminalKey);
 		const terminal = this.terminalForKey(terminalKey);
-		if (existing === undefined || existing.none || existing.agent !== 'codex' || terminal === undefined || existing.modelControl?.status === 'updating') {
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		if (!this.isLiveAvailable() || rendererTarget === undefined || existing === undefined || existing.none || existing.agent !== 'codex' || terminal === undefined || existing.modelControl?.status === 'updating') {
 			return;
 		}
 		const selected = existing.modelControl?.models.find(option => option.model === model);
@@ -1328,10 +1699,10 @@ export class MobileController {
 		});
 		this.emit({ agentChats: true });
 		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'settings-update', id: terminal.id, token: this.agentToken(terminalKey), requestId, model, effort })));
-		this.scheduleAgentControlTimeout(terminalKey, requestId, 'Codexの設定変更がタイムアウトしました');
+		this.scheduleAgentControlTimeout(terminalKey, requestId, rendererTarget, 'Codexの設定変更がタイムアウトしました');
 	}
 
-	private scheduleAgentControlTimeout(terminalKey: string, requestId: string, message: string): void {
+	private scheduleAgentControlTimeout(terminalKey: string, requestId: string, rendererTarget: string, message: string): void {
 		this.clearAgentControlTimeout(terminalKey);
 		const timer = setTimeout(() => {
 			const existing = this.state.agentChats.get(terminalKey);
@@ -1344,7 +1715,7 @@ export class MobileController {
 			}
 			this.agentControlTimers.delete(terminalKey);
 		}, 30_000);
-		this.agentControlTimers.set(terminalKey, { requestId, timer });
+		this.agentControlTimers.set(terminalKey, { requestId, rendererTarget, timer });
 	}
 
 	private clearAgentControlTimeout(terminalKey: string, requestId?: string): void {
@@ -1356,6 +1727,9 @@ export class MobileController {
 	}
 
 	private sendAgentAttach(terminalKey: string): void {
+		if (!this.isLiveAvailable()) {
+			return;
+		}
 		const terminal = this.terminalForKey(terminalKey);
 		if (terminal === undefined) {
 			return;
@@ -1386,12 +1760,13 @@ export class MobileController {
 
 	private rendererTargetFor(terminalKey: string): string | undefined {
 		const terminal = this.terminalForKey(terminalKey);
-		if (terminal === undefined) {
+		const desktopEpoch = this.state.workspace?.desktopEpoch;
+		if (terminal === undefined || desktopEpoch === undefined) {
 			return undefined;
 		}
 		const renderer = this.state.workspace?.renderers.find(candidate => candidate.windowId === terminal.windowId);
 		return renderer?.ready === true && renderer.rendererGeneration === terminal.rendererGeneration
-			? `${terminal.windowId}:${terminal.rendererGeneration}:${terminal.id}`
+			? JSON.stringify([desktopEpoch, terminal.windowId, terminal.rendererGeneration, terminal.id, terminal.agentToken ?? null])
 			: undefined;
 	}
 
@@ -1410,23 +1785,29 @@ export class MobileController {
 
 	private readonly requestPrefix = toBase64Url(randomToken(12));
 	private requestCounter = 0;
-	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; rendererTarget?: RendererRequestTarget }>();
 
 	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000): Promise<T> {
 		const client = this.client;
-		if (!client || this.state.connection !== 'online') {
-			return Promise.reject(new Error('not connected'));
+		if (!client || !this.isLiveAvailable()) {
+			return Promise.reject(new Error('PCへ再接続してから操作してください'));
 		}
 		let requestBody = body;
+		let rendererTarget: RendererRequestTarget | undefined;
 		if (channel === 'scm' || channel === 'fs') {
 			const desktop = this.state.workspace;
 			const requestedWs = (body as { ws?: unknown }).ws;
 			const workspace = typeof requestedWs === 'string'
 				? desktop?.workspaces.find(candidate => candidate.id === requestedWs)
-				: desktop?.workspaces[0];
+				: desktop?.workspaces.find(candidate => desktop.renderers.some(renderer => renderer.windowId === candidate.windowId && renderer.ready));
 			if (desktop === undefined || workspace === undefined) {
 				return Promise.reject(new Error('workspace not found'));
 			}
+			const renderer = desktop.renderers.find(candidate => candidate.windowId === workspace.windowId);
+			if (renderer?.ready !== true) {
+				return Promise.reject(new Error('PC画面の再接続が完了してから操作してください'));
+			}
+			rendererTarget = { desktopEpoch: desktop.desktopEpoch, windowId: renderer.windowId, rendererGeneration: renderer.rendererGeneration };
 			requestBody = {
 				...body,
 				protocolVersion: 3,
@@ -1441,7 +1822,7 @@ export class MobileController {
 				this.pending.delete(id);
 				reject(new Error('request timeout'));
 			}, timeoutMs);
-			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, ...(rendererTarget !== undefined ? { rendererTarget } : {}) });
 			client.send(channel, encoder.encode(JSON.stringify({ id, ...requestBody })));
 		});
 	}
@@ -1474,6 +1855,52 @@ export class MobileController {
 		this.pending.clear();
 	}
 
+	private cancelStaleRendererRequests(): boolean {
+		let agentChatsChanged = false;
+		for (const [id, entry] of this.pending) {
+			if (entry.rendererTarget !== undefined && !this.isCurrentRendererRequestTarget(entry.rendererTarget)) {
+				clearTimeout(entry.timer);
+				this.pending.delete(id);
+				entry.reject(new Error('PC画面が再接続されたため操作を中断しました'));
+			}
+		}
+		for (const [requestId, pending] of this.pendingAgentActions) {
+			if (!this.isLiveAvailable() || this.rendererTargetFor(pending.terminalKey) !== pending.rendererTarget) {
+				clearTimeout(pending.timer);
+				this.pendingAgentActions.delete(requestId);
+				pending.resolve({ status: 'rejected', message: 'PC画面が再接続されたため操作を中断しました' });
+			}
+		}
+		for (const [requestId, pending] of this.pendingActivityDetails) {
+			if (!this.isLiveAvailable() || this.rendererTargetFor(pending.terminalKey) !== pending.rendererTarget) {
+				clearTimeout(pending.timer);
+				this.pendingActivityDetails.delete(requestId);
+				pending.reject(new Error('PC画面が再接続されたため取得を中断しました'));
+			}
+		}
+		for (const [terminalKey, pending] of this.agentControlTimers) {
+			if (!this.isLiveAvailable() || this.rendererTargetFor(terminalKey) !== pending.rendererTarget) {
+				clearTimeout(pending.timer);
+				this.agentControlTimers.delete(terminalKey);
+				const existing = this.state.agentChats.get(terminalKey);
+				if (existing?.modelControl?.requestId === pending.requestId) {
+					this.state.agentChats.set(terminalKey, {
+						...existing,
+						modelControl: { status: 'error', models: existing.modelControl.models, errorCode: 'renderer-restarting', errorMessage: 'PC画面の再接続後にもう一度お試しください' },
+					});
+					agentChatsChanged = true;
+				}
+			}
+		}
+		return agentChatsChanged;
+	}
+
+	private isCurrentRendererRequestTarget(target: RendererRequestTarget): boolean {
+		const desktop = this.state.workspace;
+		const renderer = desktop?.renderers.find(candidate => candidate.windowId === target.windowId);
+		return desktop?.desktopEpoch === target.desktopEpoch && renderer?.ready === true && renderer.rendererGeneration === target.rendererGeneration;
+	}
+
 	/** 通知一覧を全消去する（通知一覧画面のクリアボタン用）。 */
 	clearNotifications(): void {
 		if (this.state.notifications.length === 0) {
@@ -1493,7 +1920,10 @@ export class MobileController {
 		}
 		this.state.notifications = this.state.notifications.filter(n => n.id !== id);
 		this.emit({ notifications: true });
-		this.client?.send('notify', encodeNotifyDismiss(id));
+		this.pendingNotificationDismissals.add(id);
+		if (this.isLiveAvailable()) {
+			this.client?.send('notify', encodeNotifyDismiss(id));
+		}
 	}
 
 	/** git status（変更ファイル一覧 + ブランチ名）。 */
@@ -1646,7 +2076,9 @@ export class MobileController {
 	async browserStop(keepFrame = false): Promise<void> {
 		// PC側で停止が効くまでに届く残フレームは読み捨てる（切替直後のJSスレッド飽和対策）
 		this.browserStopping = true;
-		if (!keepFrame) {
+		// オフライン中の画面遷移ではPCへstopを送れないため、最後のframeも消さない。
+		// pair解除/resetだけがcached browser stateを明示的に破棄する。
+		if (!keepFrame && this.isLiveAvailable()) {
 			this.state.browserFrame = undefined;
 			this.emit();
 		}
@@ -1657,7 +2089,9 @@ export class MobileController {
 
 	/** 入力イベントを送る（正規化座標）。 */
 	browserInput(input: { kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate'; nx?: number; ny?: number; dy?: number; dx?: number; text?: string; url?: string }): void {
-		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'input', ...input })));
+		if (this.isLiveAvailable()) {
+			this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'input', ...input })));
+		}
 	}
 
 	// --- browser WebRTC ミラー（app/design/webrtc-mirror-design.md） ---------------
@@ -1677,12 +2111,16 @@ export class MobileController {
 
 	/** 自分の ICE candidate をPCへ送る（fire-and-forget）。 */
 	webrtcSendIce(candidate: object, sid: string): void {
-		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-ice', candidate, sid })));
+		if (this.isLiveAvailable()) {
+			this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-ice', candidate, sid })));
+		}
 	}
 
 	/** PC側のピアを畳ませる（sid が現行セッションと違えばPC側で無視される）。 */
 	webrtcStop(sid: string): void {
-		this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-stop', sid })));
+		if (this.isLiveAvailable()) {
+			this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-stop', sid })));
+		}
 	}
 
 	/**
@@ -1717,6 +2155,11 @@ export class MobileController {
 	}
 
 	private handleFrame(frame: Frame): void {
+		// Stateは現在の暗号セッションでprotocol v3を交渉する唯一のhandshake frame。
+		// それ以外は交渉完了前・不一致後・reset中に一切取り込まず、旧PCのpushでcached stateを汚染しない。
+		if (frame.ch !== 'state' && (!this.state.sessionProtocolReady || this.state.protocolError !== undefined || this.resetting)) {
+			return;
+		}
 		if (frame.ch === 'scm' || frame.ch === 'fs') {
 			this.settleResponse(frame.payload);
 			return;
@@ -1757,10 +2200,16 @@ export class MobileController {
 			try {
 				const incoming = JSON.parse(decoder.decode(frame.payload)) as WorkspaceState;
 				if (incoming.protocolVersion !== 3) {
+					this.state.sessionProtocolReady = false;
 					this.state.protocolError = 'PC版とモバイル版の通信バージョンが一致しません。両方を最新版へ更新してください。';
 					this.state.workspace = undefined;
 					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
+					this.state.browserFrame = undefined;
+					this.state.notifications = [];
+					this.cancelPendingAgentActions();
+					this.cancelPendingRequests();
+					this.cancelStaleRendererRequests();
 					this.attachedAgentTargets.clear();
 					for (const stream of this.termStreams.values()) {
 						stream.epoch = 0;
@@ -1769,7 +2218,7 @@ export class MobileController {
 						stream.cache = undefined;
 						stream.rendererTarget = undefined;
 					}
-					this.emit({ term: true, agentChats: true });
+					this.emit({ term: true, agentChats: true, notifications: true });
 					return;
 				}
 				if (typeof incoming.desktopEpoch !== 'string' || typeof incoming.revision !== 'number' || typeof incoming.complete !== 'boolean'
@@ -1783,14 +2232,25 @@ export class MobileController {
 					|| new Set(incoming.terminals.map(terminal => terminal.terminalKey)).size !== incoming.terminals.length) {
 					return;
 				}
+				this.state.protocolError = undefined;
+				// 有効なv3 Stateそのものがpresenceより強い生存証拠。同一revisionでも
+				// 新しい暗号sessionのgate確立と再attach処理には必ず使う。
+				this.state.pcOnline = true;
+				const firstReadyState = !this.state.sessionProtocolReady;
+				this.state.sessionProtocolReady = true;
 				const previous = this.state.workspace;
 				if (previous?.desktopEpoch === incoming.desktopEpoch
 					&& (incoming.revision < previous.revision || (incoming.revision === previous.revision && (previous.complete || !incoming.complete)))) {
+					this.emit();
+					this.reconcileTerminalOperationOutbox(incoming.desktopEpoch);
+					if (firstReadyState) {
+						this.resumeLiveSessionSubscriptions();
+					}
 					return;
 				}
 				const epochChanged = previous !== undefined && previous.desktopEpoch !== incoming.desktopEpoch;
-				this.state.protocolError = undefined;
 				this.state.workspace = mergeWorkspaceState(previous, incoming);
+				this.cancelStaleRendererRequests();
 				if (epochChanged) {
 					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
@@ -1841,8 +2301,9 @@ export class MobileController {
 				// workspace は再代入で参照が変わる。terminalOutput / agentChats は上の掃除で
 				// ミューテートしうるため、常に新参照へ差し替える（掃除が空振りでも安全側に倒す）。
 				this.emit({ term: true, agentChats: true });
-				if (epochChanged) {
-					this.resendTerminalOperationOutbox();
+				this.reconcileTerminalOperationOutbox(incoming.desktopEpoch);
+				if (firstReadyState) {
+					this.resumeLiveSessionSubscriptions();
 				}
 				for (const [terminalKey, stream] of this.termStreams) {
 					const target = this.rendererTargetFor(terminalKey);
@@ -1861,23 +2322,7 @@ export class MobileController {
 			try {
 				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; operationId?: string; terminalKey?: string; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string; status?: string };
 				if (msg.t === 'operation-result') {
-					const pending = typeof msg.operationId === 'string' ? this.terminalOperationOutbox.get(msg.operationId) : undefined;
-					if (pending !== undefined) {
-						if (msg.status === 'outcome-unknown') {
-							pending.state = 'unknown';
-							this.state.terminalOperationIssue = 'PCの再起動中に結果を確認できなかった操作があります。状態を確認して、必要な場合だけ再実行してください。';
-						} else if (msg.status !== undefined && ['accepted', 'stale-epoch', 'terminal-not-found', 'failed', 'stale-renderer'].includes(msg.status)) {
-							this.terminalOperationOutbox.delete(msg.operationId!);
-							if (![...this.terminalOperationOutbox.values()].some(operation => operation.state === 'unknown')) {
-								this.state.terminalOperationIssue = undefined;
-							}
-						}
-						void this.persistTerminalOperationOutbox();
-						this.emit();
-					}
-					if (msg.status !== 'accepted') {
-						this.requestState();
-					}
+					this.handleTerminalOperationResult(msg.operationId, msg.status);
 					return;
 				}
 				if (typeof msg.terminalKey !== 'string' || !this.state.workspace?.terminals.some(terminal => terminal.terminalKey === msg.terminalKey)) {
@@ -1912,6 +2357,7 @@ export class MobileController {
 		} else if (frame.ch === 'notify') {
 			const control = decodeNotifyControl(frame.payload);
 			if (control?.t === 'dismissed') {
+				this.pendingNotificationDismissals.delete(control.id);
 				// 他端末がこの通知を処理済みにした（本機の一覧からも消す。無ければ何もしない）。
 				if (this.state.notifications.some(n => n.id === control.id)) {
 					this.state.notifications = this.state.notifications.filter(n => n.id !== control.id);
@@ -1931,7 +2377,7 @@ export class MobileController {
 			try {
 				const payload = decodeNotify(frame.payload);
 				// 重複IDは無視。新しい順に最大50件保持。
-				if (!this.state.notifications.some(n => n.id === payload.id)) {
+				if (!this.pendingNotificationDismissals.has(payload.id) && !this.state.notifications.some(n => n.id === payload.id)) {
 					this.state.notifications = [payload, ...this.state.notifications].slice(0, 50);
 					this.emit({ notifications: true });
 					this.onNotify?.(payload);
@@ -1999,7 +2445,7 @@ export class MobileController {
 	private sendTermAck(terminalKey: string, stream: TermStreamState): void {
 		stream.unackedChars = 0;
 		if (stream.lastSeq !== undefined) {
-			this.sendTerm(terminalKey, { t: 'ack', epoch: stream.epoch, seq: stream.lastSeq });
+			void this.sendTerm(terminalKey, { t: 'ack', epoch: stream.epoch, seq: stream.lastSeq });
 		}
 	}
 
@@ -2017,11 +2463,15 @@ export class MobileController {
 			if (terminalKey === undefined) {
 				return; // 別ウィンドウで同じterminalIdを持つペインからの応答
 			}
+			const rendererTarget = this.rendererTargetFor(terminalKey);
+			if (rendererTarget === undefined || this.attachedAgentTargets.get(terminalKey) !== rendererTarget) {
+				return; // pending/交代済みRendererから遅れて届いた応答
+			}
 			const parsedActivity = msg.activity !== null ? parseAgentActivityState(msg.activity) : undefined;
 			const parsedInteraction = msg.interaction !== null ? parseAgentInteraction(msg.interaction) : undefined;
 			if (msg.t === 'activity-detail' && typeof msg.requestId === 'string' && typeof msg.activityId === 'string') {
 				const pending = this.pendingActivityDetails.get(msg.requestId);
-				if (pending === undefined || pending.terminalKey !== terminalKey || pending.activityId !== msg.activityId) { return; }
+				if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || pending.activityId !== msg.activityId) { return; }
 				clearTimeout(pending.timer);
 				this.pendingActivityDetails.delete(msg.requestId);
 				if (typeof msg.error === 'string') { pending.reject(new Error(msg.error)); return; }
@@ -2113,7 +2563,7 @@ export class MobileController {
 			}
 			if (msg.t === 'action-result' && typeof msg.requestId === 'string') {
 				const pending = this.pendingAgentActions.get(msg.requestId);
-				if (pending === undefined || pending.terminalKey !== terminalKey || (msg.status !== 'accepted' && msg.status !== 'rejected')) {
+					if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || (msg.status !== 'accepted' && msg.status !== 'rejected')) {
 					return;
 				}
 				clearTimeout(pending.timer);
@@ -2243,9 +2693,11 @@ export class MobileController {
 		const next: StoreState = {
 			connection: this.state.connection,
 			pcOnline: this.state.pcOnline,
+			sessionProtocolReady: this.state.sessionProtocolReady,
 			workspace: this.state.workspace,
 			protocolError: this.state.protocolError,
 			terminalOperationIssue: this.state.terminalOperationIssue,
+			unknownTerminalOperationCount: this.state.unknownTerminalOperationCount,
 			browserFrame: this.state.browserFrame,
 			terminalOutput: (!prev || changed?.term) ? new Map(this.state.terminalOutput) : prev.terminalOutput,
 			notifications: (!prev || changed?.notifications) ? [...this.state.notifications] : prev.notifications,

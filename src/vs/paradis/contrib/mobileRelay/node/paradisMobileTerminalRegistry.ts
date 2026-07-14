@@ -19,6 +19,7 @@ interface IWindowLease {
 	readonly rendererGeneration: number;
 	readonly authorityManifestRevision: number;
 	readonly authorityWindowRevision: number;
+	readonly ready: boolean;
 	readonly state: IParadisMobileWindowStateV2;
 }
 
@@ -36,12 +37,14 @@ export class ParadisMobileTerminalRegistry {
 	private readonly conflicts = new Set<string>();
 	private manifest: IParadisMobileRendererManifest = { revision: 0, entries: [] };
 	private highestValidatedManifestRevision = 0;
+	private fullManifestRevision = 0;
+	private readonly observedManifestEntries = new Map<number, { entry: IParadisMobileRendererManifest['entries'][number]; observedAtManifestRevision: number }>();
 
 	constructor(desktopEpoch = generateUuid()) {
 		this.desktopEpoch = desktopEpoch;
 	}
 
-	syncWindow(windowId: number, windowSession: string, rendererGeneration: number, state: IParadisMobileWindowStateV2, validation?: IParadisMobileWindowLeaseValidation): IParadisMobileDesktopStateV3 {
+	syncWindow(windowId: number, windowSession: string, rendererGeneration: number, state: IParadisMobileWindowStateV2, validation?: IParadisMobileWindowLeaseValidation, markReady = true): IParadisMobileDesktopStateV3 {
 		if (validation !== undefined) {
 			if (!validation.valid || validation.windowRevision === undefined) {
 				return this.desktopState();
@@ -53,6 +56,14 @@ export class ParadisMobileTerminalRegistry {
 				return this.desktopState();
 			}
 			this.highestValidatedManifestRevision = Math.max(this.highestValidatedManifestRevision, validation.manifestRevision);
+			const observed = this.observedManifestEntries.get(windowId);
+			if (observed === undefined || observed.entry.windowRevision <= validation.windowRevision) {
+				this.observedManifestEntries.set(windowId, {
+					entry: { windowId, windowSession, rendererGeneration, windowRevision: validation.windowRevision, claimed: true },
+					observedAtManifestRevision: validation.manifestRevision,
+				});
+				this.refreshManifestSnapshot();
+			}
 		}
 		const current = this.windows.get(windowId);
 		if (current === undefined && rendererGeneration <= (this.retiredGeneration.get(windowId) ?? -1)) {
@@ -67,11 +78,26 @@ export class ParadisMobileTerminalRegistry {
 			rendererGeneration,
 			authorityManifestRevision: validation?.manifestRevision ?? 0,
 			authorityWindowRevision: validation?.windowRevision ?? 0,
+			ready: markReady || (current?.windowSession === windowSession && current.rendererGeneration === rendererGeneration && current.ready),
 			state,
 		});
 		this.rebuildOwners();
 		this.revision++;
 		return this.desktopState();
+	}
+
+	markWindowReady(windowId: number, windowSession: string, rendererGeneration: number): boolean {
+		const current = this.windows.get(windowId);
+		if (current?.windowSession !== windowSession || current.rendererGeneration !== rendererGeneration) {
+			return false;
+		}
+		if (current.ready) {
+			return false;
+		}
+		this.windows.set(windowId, { ...current, ready: true });
+		this.rebuildOwners();
+		this.revision++;
+		return true;
 	}
 
 	removeWindow(windowId: number, windowSession: string, rendererGeneration: number): boolean {
@@ -94,6 +120,11 @@ export class ParadisMobileTerminalRegistry {
 		return this.windows.has(windowId);
 	}
 
+	isWindowReady(windowId: number, windowSession: string, rendererGeneration: number): boolean {
+		const lease = this.windows.get(windowId);
+		return lease?.windowSession === windowSession && lease.rendererGeneration === rendererGeneration && lease.ready;
+	}
+
 	leaseOfWindow(windowId: number): IParadisMobileWindowOwner | undefined {
 		const lease = this.windows.get(windowId);
 		return lease === undefined ? undefined : { windowId, windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration };
@@ -101,7 +132,7 @@ export class ParadisMobileTerminalRegistry {
 
 	ownerOfWorkspace(windowId: number, sourceId: string): IParadisMobileWindowOwner | undefined {
 		const lease = this.windows.get(windowId);
-		return lease?.state.workspaces.some(workspace => workspace.id === sourceId)
+		return lease?.ready === true && lease.state.workspaces.some(workspace => workspace.id === sourceId)
 			? { windowId, windowSession: lease.windowSession, rendererGeneration: lease.rendererGeneration }
 			: undefined;
 	}
@@ -111,24 +142,41 @@ export class ParadisMobileTerminalRegistry {
 	}
 
 	isComplete(): boolean {
-		return this.manifest.entries.every(entry => entry.claimed
+		return this.fullManifestRevision >= this.highestValidatedManifestRevision && this.manifest.entries.every(entry => entry.claimed
 			&& this.windows.get(entry.windowId)?.rendererGeneration === entry.rendererGeneration
-			&& this.windows.get(entry.windowId)?.windowSession === entry.windowSession);
+			&& this.windows.get(entry.windowId)?.windowSession === entry.windowSession
+			&& this.windows.get(entry.windowId)?.ready === true);
 	}
 
 	reconcile(manifest: IParadisMobileRendererManifest): readonly IParadisMobileWindowLease[] {
-		if (manifest.revision < this.manifest.revision || manifest.revision < this.highestValidatedManifestRevision) {
+		// full manifest同士は単調にだけ進める。新しいsnapshotで削除済みのwindowを、
+		// IPC遅延した古いsnapshotからobservedManifestEntriesへ復活させない。
+		if (manifest.revision < this.fullManifestRevision) {
 			return [];
 		}
 		const previousManifest = JSON.stringify(this.manifest);
-		this.manifest = manifest;
-		const active = new Map(manifest.entries.map(entry => [entry.windowId, entry]));
+		this.fullManifestRevision = Math.max(this.fullManifestRevision, manifest.revision);
+		const incoming = new Map(manifest.entries.map(entry => [entry.windowId, entry]));
+		for (const entry of manifest.entries) {
+			const observed = this.observedManifestEntries.get(entry.windowId);
+			if (observed === undefined || entry.windowRevision > observed.entry.windowRevision
+				|| (entry.windowRevision === observed.entry.windowRevision && manifest.revision >= observed.observedAtManifestRevision)) {
+				this.observedManifestEntries.set(entry.windowId, { entry, observedAtManifestRevision: manifest.revision });
+			}
+		}
+		for (const [windowId, observed] of [...this.observedManifestEntries]) {
+			if (!incoming.has(windowId) && manifest.revision >= observed.observedAtManifestRevision) {
+				this.observedManifestEntries.delete(windowId);
+			}
+		}
+		this.refreshManifestSnapshot();
+		const active = new Map(this.manifest.entries.map(entry => [entry.windowId, entry]));
 		const removed: IParadisMobileWindowLease[] = [];
 		let changed = false;
 		for (const [windowId, lease] of this.windows) {
 			const entry = active.get(windowId);
 			const shouldRemove = entry === undefined
-				? manifest.revision >= lease.authorityManifestRevision
+				? this.fullManifestRevision >= lease.authorityManifestRevision
 				: entry.windowRevision >= lease.authorityWindowRevision && (!entry.claimed
 					|| entry.rendererGeneration !== lease.rendererGeneration || entry.windowSession !== lease.windowSession);
 			if (shouldRemove) {
@@ -138,11 +186,18 @@ export class ParadisMobileTerminalRegistry {
 				changed = true;
 			}
 		}
-		if (changed || previousManifest !== JSON.stringify(manifest)) {
+		if (changed || previousManifest !== JSON.stringify(this.manifest)) {
 			this.rebuildOwners();
 			this.revision++;
 		}
 		return removed;
+	}
+
+	private refreshManifestSnapshot(): void {
+		this.manifest = {
+			revision: Math.max(this.manifest.revision, this.fullManifestRevision, this.highestValidatedManifestRevision),
+			entries: [...this.observedManifestEntries.values()].map(value => value.entry).sort((a, b) => a.windowId - b.windowId),
+		};
 	}
 
 	desktopState(): IParadisMobileDesktopStateV3 {
@@ -178,11 +233,12 @@ export class ParadisMobileTerminalRegistry {
 			windowId: entry.windowId,
 			rendererGeneration: entry.rendererGeneration,
 			ready: entry.claimed && this.windows.get(entry.windowId)?.rendererGeneration === entry.rendererGeneration
-				&& this.windows.get(entry.windowId)?.windowSession === entry.windowSession,
+				&& this.windows.get(entry.windowId)?.windowSession === entry.windowSession
+				&& this.windows.get(entry.windowId)?.ready === true,
 		}]));
 		for (const [windowId, lease] of this.windows) {
 			if (!rendererByWindow.has(windowId)) {
-				rendererByWindow.set(windowId, { windowId, rendererGeneration: lease.rendererGeneration, ready: true });
+				rendererByWindow.set(windowId, { windowId, rendererGeneration: lease.rendererGeneration, ready: lease.ready });
 			}
 		}
 		return {
@@ -201,6 +257,9 @@ export class ParadisMobileTerminalRegistry {
 		this.owners.clear();
 		this.conflicts.clear();
 		for (const [windowId, lease] of this.windows) {
+			if (!lease.ready) {
+				continue;
+			}
 			for (const terminal of lease.state.terminals) {
 				if (this.conflicts.has(terminal.terminalKey)) {
 					continue;

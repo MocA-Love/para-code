@@ -120,12 +120,12 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	const insets = useStableInsets();
 	const router = useRouter();
 	const {
-		workspace, selectedWs, setSelectedWs, homeShowAllWorkspaces, setHomeShowAllWorkspaces, connection, pcOnline, manualOffline,
+		workspace, selectedWs, setSelectedWs, homeShowAllWorkspaces, setHomeShowAllWorkspaces, connection, pcOnline, sessionProtocolReady, manualOffline,
 		disconnectRelay, connectRelay, unpair,
 	} = useAppStore(useShallow(s => ({
 		workspace: s.workspace, selectedWs: s.selectedWs, setSelectedWs: s.setSelectedWs,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces, setHomeShowAllWorkspaces: s.setHomeShowAllWorkspaces,
-		connection: s.connection, pcOnline: s.pcOnline, manualOffline: s.manualOffline,
+		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, manualOffline: s.manualOffline,
 		disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay, unpair: s.unpair,
 	})));
 
@@ -133,7 +133,7 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	const terminals = workspace?.terminals ?? [];
 	const effective = selectedWs !== undefined && list.some(w => w.id === selectedWs) ? selectedWs : list[0]?.id;
 	const waitingTotal = terminals.filter(t => isAgentWaiting(t.agentStatus)).length;
-	const online = connection === 'online' && pcOnline;
+	const online = connection === 'online' && pcOnline && sessionProtocolReady;
 
 	// ── ワークツリー（スペース）の親子グルーピング ──
 	// parent付きエントリを親リポジトリ行の配下にまとめ、開閉できるようにする。
@@ -257,7 +257,11 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 			'このPCとのペアリング情報を削除します。再接続にはPC側でQRコードを再発行してのペアリングが必要です。',
 			[
 				{ text: 'キャンセル', style: 'cancel' },
-				{ text: '解除する', style: 'destructive', onPress: () => { void unpair(); } },
+				{
+					text: '解除する', style: 'destructive', onPress: () => {
+						void unpair().catch(error => Alert.alert('ペアリングを解除できませんでした', error instanceof Error ? error.message : String(error)));
+					},
+				},
 			],
 		);
 	};
@@ -303,7 +307,8 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 				<Text style={styles.sectionTitle}>ワークスペース</Text>
 				{/* PC版の「スペース名右の＋」に対応する、新しいスペース（worktree）作成の入口 */}
 				<Pressable
-					style={styles.addSpaceBtn}
+					disabled={!online}
+					style={[styles.addSpaceBtn, !online && styles.actionDisabled]}
 					hitSlop={8}
 					onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
 					accessibilityLabel="新しいスペースを作成"
@@ -451,6 +456,7 @@ const styles = StyleSheet.create({
 	sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 16 },
 	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 8 },
 	addSpaceBtn: { width: 24, height: 24, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
+	actionDisabled: { opacity: 0.45 },
 	list: { flex: 1 },
 	listContent: { paddingHorizontal: 10, paddingBottom: 8 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, marginBottom: 2 },

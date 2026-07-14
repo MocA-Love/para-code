@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -20,9 +20,11 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 	visible: boolean;
 	onClose: () => void;
 }) {
-	const { workspace, worktreeForm, createWorktree } = useAppStore(useShallow(s => ({
+	const { workspace, worktreeForm, createWorktree, connection, pcOnline, sessionProtocolReady } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, worktreeForm: s.worktreeForm, createWorktree: s.createWorktree,
+		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 	})));
+	const live = connection === 'online' && pcOnline && sessionProtocolReady && workspace?.renderers.some(renderer => renderer.ready) === true;
 	const [form, setForm] = useState<WorktreeFormResult | undefined>(undefined);
 	const [formError, setFormError] = useState<string | undefined>(undefined);
 	const [name, setName] = useState('');
@@ -33,10 +35,19 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 	const [baseRef, setBaseRef] = useState<string | undefined>(undefined);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | undefined>(undefined);
-
-	// 開くたびにフォームを初期化し、材料（リポジトリ/ブランチ/エージェント）をPCから取得する
+	const requestGenerationRef = useRef(0);
+	const activeRequestRef = useRef<number | undefined>();
+	const mountedRef = useRef(true);
+	const visibleRef = useRef(visible);
+	visibleRef.current = visible;
 	useEffect(() => {
-		if (!visible) {
+		mountedRef.current = true;
+		return () => { mountedRef.current = false; };
+	}, []);
+
+	// 開くたびに入力を初期化する。接続の瞬断ではこのeffectは走らないため、入力中の内容を保持する。
+	useEffect(() => {
+		if (!visible || activeRequestRef.current !== undefined) {
 			return;
 		}
 		setForm(undefined);
@@ -49,6 +60,23 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 		setBaseRef(undefined);
 		setBusy(false);
 		setError(undefined);
+	}, [visible]);
+
+	// フォーム材料は未取得時だけ要求する。切断中は既に表示中のフォームと入力を残し、
+	// 再接続後に材料が無い場合だけ自動で読み込む。
+	useEffect(() => {
+		if (!visible) {
+			return;
+		}
+		if (!live) {
+			setFormError('PCへ再接続すると作成フォームを読み込めます。');
+			return;
+		}
+		if (form !== undefined) {
+			setFormError(undefined);
+			return;
+		}
+		setFormError(undefined);
 		let cancelled = false;
 		worktreeForm().then(result => {
 			if (cancelled) {
@@ -68,10 +96,10 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 		});
 		return () => { cancelled = true; };
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [visible]);
+	}, [visible, live, form, worktreeForm, workspace]);
 
 	const repo = form?.repos.find(r => r.id === repoId);
-	const canCreate = repo !== undefined && baseRef !== undefined && !busy;
+	const canCreate = live && repo !== undefined && baseRef !== undefined && !busy;
 
 	const selectRepo = (id: string) => {
 		hapticSelection();
@@ -81,12 +109,14 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 	};
 
 	const create = async () => {
-		if (!repo || !baseRef || busy) {
+		if (!live || !repo || !baseRef || busy) {
 			return;
 		}
 		hapticImpact('medium');
 		setBusy(true);
 		setError(undefined);
+		const requestGeneration = ++requestGenerationRef.current;
+		activeRequestRef.current = requestGeneration;
 		try {
 			const result = await createWorktree({
 				repo: repo.id,
@@ -96,19 +126,35 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 				...(prompt.trim().length > 0 ? { prompt: prompt.trim() } : {}),
 				...(agentId !== 'none' ? { agent: agentId } : {}),
 			});
+			if (!mountedRef.current || activeRequestRef.current !== requestGeneration) {
+				return;
+			}
+			activeRequestRef.current = undefined;
 			setBusy(false);
-			onClose();
+			if (visibleRef.current) {
+				onClose();
+			}
 			if (result.warning) {
 				Alert.alert('スペースを作成しました', `ただし後続の処理でエラーがありました: ${result.warning}`);
 			}
 		} catch (e) {
+			if (!mountedRef.current || activeRequestRef.current !== requestGeneration) {
+				return;
+			}
+			activeRequestRef.current = undefined;
 			setError(String(e instanceof Error ? e.message : e));
 			setBusy(false);
 		}
 	};
 
+	const close = () => {
+		if (activeRequestRef.current === undefined) {
+			onClose();
+		}
+	};
+
 	return (
-		<BottomSheet visible={visible} onClose={onClose} title="新しいスペース（worktree）を作成">
+		<BottomSheet visible={visible} onClose={close} title="新しいスペース（worktree）を作成">
 			<KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					{formError ? <Text style={styles.error}>{formError}</Text> : null}

@@ -160,6 +160,8 @@ import ErrorTelemetry from '../../platform/telemetry/electron-main/errorTelemetr
  * even if the user starts many instances (e.g. from the command line).
  */
 export class CodeApplication extends Disposable {
+	private static readonly SHARED_PROCESS_CRASH_RELAUNCH_AT_KEY = 'paracode.sharedProcessCrashRelaunchAt';
+	private static readonly SHARED_PROCESS_CRASH_RELAUNCH_COOLDOWN = 5 * 60 * 1000;
 
 	private static readonly SECURITY_PROTOCOL_HANDLING_CONFIRMATION_SETTING_KEY = {
 		[Schemas.file]: 'security.promptForLocalFileProtocolHandling' as const,
@@ -169,6 +171,8 @@ export class CodeApplication extends Disposable {
 	private windowsMainService: IWindowsMainService | undefined;
 	private auxiliaryWindowsMainService: IAuxiliaryWindowsMainService | undefined;
 	private nativeHostMainService: INativeHostMainService | undefined;
+	private sharedProcessCrashRecoveryTriggered = false;
+	private applicationShutdownStarted = false;
 
 	constructor(
 		private readonly mainProcessNodeIpcServer: NodeIPCServer,
@@ -483,7 +487,10 @@ export class CodeApplication extends Disposable {
 	private registerListeners(): void {
 
 		// Dispose on shutdown
-		Event.once(this.lifecycleMainService.onWillShutdown)(() => this.dispose());
+		Event.once(this.lifecycleMainService.onWillShutdown)(() => {
+			this.applicationShutdownStarted = true;
+			this.dispose();
+		});
 
 		// Contextmenu via IPC support
 		registerContextMenuListener();
@@ -1086,7 +1093,10 @@ export class CodeApplication extends Disposable {
 	private setupSharedProcess(machineId: string, sqmId: string, devDeviceId: string): { sharedProcessReady: Promise<MessagePortClient>; sharedProcessClient: Promise<MessagePortClient> } {
 		const sharedProcess = this._register(this.mainInstantiationService.createInstance(SharedProcess, machineId, sqmId, devDeviceId));
 
-		this._register(sharedProcess.onDidCrash(() => this.windowsMainService?.sendToFocused('vscode:reportSharedProcessCrash')));
+		this._register(sharedProcess.onDidCrash(() => {
+			this.windowsMainService?.sendToFocused('vscode:reportSharedProcessCrash');
+			this.recoverFromSharedProcessCrash();
+		}));
 
 		const sharedProcessClient = (async () => {
 			this.logService.trace('Main->SharedProcess#connect');
@@ -1105,6 +1115,25 @@ export class CodeApplication extends Disposable {
 		})();
 
 		return { sharedProcessReady, sharedProcessClient };
+	}
+
+	private recoverFromSharedProcessCrash(): void {
+		if (this.applicationShutdownStarted || this.sharedProcessCrashRecoveryTriggered) {
+			return;
+		}
+		const now = Date.now();
+		const previous = this.stateService.getItem<number>(CodeApplication.SHARED_PROCESS_CRASH_RELAUNCH_AT_KEY, 0);
+		if (now - previous < CodeApplication.SHARED_PROCESS_CRASH_RELAUNCH_COOLDOWN) {
+			this.logService.error('[paradisMobileRelay] Shared Process crashed again during the relaunch cooldown; automatic relaunch was suppressed');
+			return;
+		}
+		this.sharedProcessCrashRecoveryTriggered = true;
+		this.stateService.setItem(CodeApplication.SHARED_PROCESS_CRASH_RELAUNCH_AT_KEY, now);
+		this.logService.error('[paradisMobileRelay] Shared Process crashed; relaunching the application to restore one-shot IPC channels');
+		this.lifecycleMainService.relaunch().catch(error => {
+			this.sharedProcessCrashRecoveryTriggered = false;
+			this.logService.error('[paradisMobileRelay] failed to relaunch after Shared Process crash', error);
+		});
 	}
 
 	private async initServices(machineId: string, sqmId: string, devDeviceId: string, sharedProcessReady: Promise<MessagePortClient>): Promise<IInstantiationService> {
@@ -1350,7 +1379,10 @@ export class CodeApplication extends Disposable {
 		// allow-any-unicode-next-line
 		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。
 		const paradisMobileWindowLeaseChannel = disposables.add(new ParadisMobileWindowLeaseChannel(mainProcessElectronServer, accessor.get(IWindowsMainService)));
-		mainProcessElectronServer.registerChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, paradisMobileWindowLeaseChannel);
+		// allow-any-unicode-next-line
+		// Renderer向けchannelは接続固有wrapperをMain authority自身が登録する。
+		// allow-any-unicode-next-line
+		// global登録すると同一windowの旧接続claimを新世代へ誤束縛できるため、Shared Processへだけ直接公開する。
 		sharedProcessClient.then(client => client.registerChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, paradisMobileWindowLeaseChannel));
 
 		// Signing

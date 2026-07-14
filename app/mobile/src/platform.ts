@@ -32,6 +32,7 @@ const TERMINAL_OPERATION_OUTBOX_PATH = LegacyFileSystem.documentDirectory
 	: undefined;
 const TERMINAL_OPERATION_OUTBOX_NEXT_PATH = TERMINAL_OPERATION_OUTBOX_PATH === undefined ? undefined : `${TERMINAL_OPERATION_OUTBOX_PATH}.next`;
 const TERMINAL_OPERATION_OUTBOX_BACKUP_PATH = TERMINAL_OPERATION_OUTBOX_PATH === undefined ? undefined : `${TERMINAL_OPERATION_OUTBOX_PATH}.backup`;
+const TERMINAL_OPERATION_OUTBOX_COMMIT_PATH = TERMINAL_OPERATION_OUTBOX_PATH === undefined ? undefined : `${TERMINAL_OPERATION_OUTBOX_PATH}.next.commit`;
 
 async function readOperationOutbox(path: string | undefined): Promise<string | null> {
 	if (path === undefined) {
@@ -44,32 +45,97 @@ async function readOperationOutbox(path: string | undefined): Promise<string | n
 	}
 }
 
-/** payloadはMobileControllerがidentity由来鍵でAEAD暗号化してから渡す。 */
-export const terminalOperationOutboxStore: TerminalOperationOutboxStore = {
-	async load(): Promise<string | null> {
-		return await readOperationOutbox(TERMINAL_OPERATION_OUTBOX_PATH)
-			?? await readOperationOutbox(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH);
-	},
-	async save(encrypted: string): Promise<void> {
-		if (TERMINAL_OPERATION_OUTBOX_PATH === undefined || TERMINAL_OPERATION_OUTBOX_NEXT_PATH === undefined || TERMINAL_OPERATION_OUTBOX_BACKUP_PATH === undefined) {
-			throw new Error('operation outbox storage is unavailable');
-		}
-		await LegacyFileSystem.writeAsStringAsync(TERMINAL_OPERATION_OUTBOX_NEXT_PATH, encrypted, { encoding: LegacyFileSystem.EncodingType.UTF8 });
-		const current = await LegacyFileSystem.getInfoAsync(TERMINAL_OPERATION_OUTBOX_PATH);
+async function readOperationOutboxStrict(path: string): Promise<string | null> {
+	const info = await LegacyFileSystem.getInfoAsync(path);
+	return info.exists ? LegacyFileSystem.readAsStringAsync(path) : null;
+}
+
+function operationOutboxCommitToken(value: string): string {
+	let first = 0x811c9dc5;
+	let second = 0x9e3779b9;
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		first = Math.imul(first ^ code, 0x01000193) >>> 0;
+		second = Math.imul(second ^ (code + index), 0x85ebca6b) >>> 0;
+	}
+	return `${value.length}:${first.toString(16)}:${second.toString(16)}`;
+}
+
+async function promoteCommittedOperationOutboxNext(): Promise<boolean> {
+	if (TERMINAL_OPERATION_OUTBOX_PATH === undefined || TERMINAL_OPERATION_OUTBOX_NEXT_PATH === undefined
+		|| TERMINAL_OPERATION_OUTBOX_BACKUP_PATH === undefined || TERMINAL_OPERATION_OUTBOX_COMMIT_PATH === undefined) {
+		return false;
+	}
+	const [next, marker] = await Promise.all([
+		readOperationOutboxStrict(TERMINAL_OPERATION_OUTBOX_NEXT_PATH),
+		readOperationOutboxStrict(TERMINAL_OPERATION_OUTBOX_COMMIT_PATH),
+	]);
+	if (next === null || marker !== operationOutboxCommitToken(next)) {
+		return false;
+	}
+	const current = await LegacyFileSystem.getInfoAsync(TERMINAL_OPERATION_OUTBOX_PATH);
+	try {
 		if (current.exists) {
 			await LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, { idempotent: true });
 			await LegacyFileSystem.moveAsync({ from: TERMINAL_OPERATION_OUTBOX_PATH, to: TERMINAL_OPERATION_OUTBOX_BACKUP_PATH });
 		}
+		await LegacyFileSystem.moveAsync({ from: TERMINAL_OPERATION_OUTBOX_NEXT_PATH, to: TERMINAL_OPERATION_OUTBOX_PATH });
+	} catch (error) {
+		if (current.exists) {
+			await LegacyFileSystem.moveAsync({ from: TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, to: TERMINAL_OPERATION_OUTBOX_PATH }).catch(() => { });
+		}
+		throw error;
+	}
+	await LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_COMMIT_PATH, { idempotent: true }).catch(() => { });
+	await LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, { idempotent: true }).catch(() => { });
+	return true;
+}
+
+/** payloadはMobileControllerがidentity由来鍵でAEAD暗号化してから渡す。 */
+export const terminalOperationOutboxStore: TerminalOperationOutboxStore = {
+	async loadCandidates(): Promise<readonly string[]> {
+		const [next, marker, primary, backup] = await Promise.all([
+			readOperationOutbox(TERMINAL_OPERATION_OUTBOX_NEXT_PATH),
+			readOperationOutbox(TERMINAL_OPERATION_OUTBOX_COMMIT_PATH),
+			readOperationOutbox(TERMINAL_OPERATION_OUTBOX_PATH),
+			readOperationOutbox(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH),
+		]);
+		const committedNext = next !== null && marker === operationOutboxCommitToken(next) ? next : null;
+		// marker付き.nextだけをcommit済み最新snapshotとして扱う。保存失敗後に掃除できなかった
+		// 未commit.nextが、再起動後に操作として復活することを防ぐ。
+		return [committedNext, primary, backup].filter((candidate): candidate is string => candidate !== null);
+	},
+	async save(encrypted: string): Promise<void> {
+		if (TERMINAL_OPERATION_OUTBOX_PATH === undefined || TERMINAL_OPERATION_OUTBOX_NEXT_PATH === undefined
+			|| TERMINAL_OPERATION_OUTBOX_BACKUP_PATH === undefined || TERMINAL_OPERATION_OUTBOX_COMMIT_PATH === undefined) {
+			throw new Error('operation outbox storage is unavailable');
+		}
+		// 前回renameだけ失敗したcommit済み.nextを先に昇格する。昇格できない間は新しい
+		// snapshotで上書きせず、既に受理した操作のdurabilityを守る。
+		await promoteCommittedOperationOutboxNext();
+		await LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_COMMIT_PATH, { idempotent: true });
+		await LegacyFileSystem.writeAsStringAsync(TERMINAL_OPERATION_OUTBOX_NEXT_PATH, encrypted, { encoding: LegacyFileSystem.EncodingType.UTF8 });
 		try {
-			await LegacyFileSystem.moveAsync({ from: TERMINAL_OPERATION_OUTBOX_NEXT_PATH, to: TERMINAL_OPERATION_OUTBOX_PATH });
+			await LegacyFileSystem.writeAsStringAsync(TERMINAL_OPERATION_OUTBOX_COMMIT_PATH, operationOutboxCommitToken(encrypted), { encoding: LegacyFileSystem.EncodingType.UTF8 });
 		} catch (error) {
-			if (current.exists) {
-				await LegacyFileSystem.moveAsync({ from: TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, to: TERMINAL_OPERATION_OUTBOX_PATH }).catch(() => { });
-			}
+			await LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_NEXT_PATH, { idempotent: true }).catch(() => { });
 			throw error;
 		}
-		// 新ファイルのcommit後の掃除失敗は保存失敗にしない。次回save/loadでもprimaryが優先される。
-		await LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, { idempotent: true }).catch(() => { });
+		// marker書込み後は.next自体がcommit済み。renameに失敗してもload時に復旧できるため、
+		// 呼び出し元へは保存成功として返し、PC送信とjournalの判断を一致させる。
+		await promoteCommittedOperationOutboxNext().catch(() => { });
+	},
+	async clear(): Promise<void> {
+		if (TERMINAL_OPERATION_OUTBOX_PATH === undefined || TERMINAL_OPERATION_OUTBOX_NEXT_PATH === undefined
+			|| TERMINAL_OPERATION_OUTBOX_BACKUP_PATH === undefined || TERMINAL_OPERATION_OUTBOX_COMMIT_PATH === undefined) {
+			return;
+		}
+		await Promise.all([
+			LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_PATH, { idempotent: true }),
+			LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_NEXT_PATH, { idempotent: true }),
+			LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_BACKUP_PATH, { idempotent: true }),
+			LegacyFileSystem.deleteAsync(TERMINAL_OPERATION_OUTBOX_COMMIT_PATH, { idempotent: true }),
+		]);
 	},
 };
 
@@ -97,6 +163,14 @@ export async function persistNotifyKey(hex: string): Promise<void> {
 	} catch (err) {
 		console.warn('[platform] failed to persist notify key for NSE', err);
 	}
+}
+
+/** ペアリング解除時にNSE用の共有復号鍵を削除し、旧PC通知本文を復号できなくする。 */
+export async function deleteNotifyKey(): Promise<void> {
+	await SecureStore.deleteItemAsync('notifyKey', {
+		keychainService: 'paracode.notify',
+		accessGroup: NOTIFY_KEYCHAIN_ACCESS_GROUP,
+	});
 }
 
 /** React Native の global WebSocket を使う SocketFactory。 */

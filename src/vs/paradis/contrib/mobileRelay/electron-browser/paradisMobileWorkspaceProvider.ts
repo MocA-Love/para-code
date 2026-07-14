@@ -161,6 +161,9 @@ interface TermSyncState {
  * SCM / fs / browser チャネルは本スライスでは未実装（設計書 M2/M3。ここに追加していく）。
  */
 export class ParadisMobileWorkspaceProvider extends Disposable {
+	readonly initialAgentPanesReady: Promise<void>;
+	private readonly markInitialAgentPanesReady: () => void;
+	private agentPanesRevision = 0;
 	private confirmedAgentPaneTokens = new Set<string>();
 	private readonly provisionalAgentPaneTokens = new Set<string>();
 	// ターミナルID → PC側出力listener（全モバイル購読者へ分配するため1端末1本）。
@@ -199,7 +202,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly paneTokenService: IParadisPaneTokenService,
 		private readonly terminalIdentityService: IParadisTerminalIdentityService,
 		private readonly syncTerminalState: (state: IParadisMobileWindowStateV2) => void,
-		private readonly syncAgentPanes: (entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]) => void,
+		private readonly syncAgentPanes: (revision: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]) => Promise<void>,
 		private readonly completeTerminalOperation: (mobileId: string, operationId: string, status: ParadisMobileTerminalOperationStatus) => Promise<void>,
 		private readonly claimAgentAction: (mobileId: string, requestId: string, token: string, epoch: string) => Promise<'claimed' | 'stale' | 'expired'>,
 		private readonly continueAgentInteraction: (mobileId: string, requestId: string, token: string, epoch: string, terminalId: number, windowId: number) => Promise<'valid' | 'completed' | 'stale'>,
@@ -217,6 +220,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly getPrStatuses: (paths: readonly string[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
 	) {
 		super();
+		let markInitialAgentPanesReady!: () => void;
+		this.initialAgentPanesReady = new Promise<void>(resolve => { markInitialAgentPanesReady = resolve; });
+		this.markInitialAgentPanesReady = markInitialAgentPanesReady;
 
 		// 状態が変わったらスナップショットを再送。エージェント状態の変化は通知判定も行う。
 		// 再送はイベント起点では100msに集約する（特にウィンドウリサイズ中の
@@ -224,7 +230,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// そのまま送るとリレー帯域を浪費する）。
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.refreshBranches(); this.kickPrStatusRefresh(); this.pushStateSoon(); }));
 		// 切替はエディタターミナルのpark/unpark（allInstances の増減）を伴うため、agentペイン対応表も同期し直す
-		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); this.pushAgentPanes(); }));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => { this.detectAndNotify(); this.pushStateSoon(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => this.pushStateSoon()));
 		this._register(this.terminalIdentityService.onDidChange(() => this.pushStateSoon()));
@@ -243,9 +249,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.kickPrStatusRefresh(); this.pushStateSoon(); }));
 		// agentチャネル用: terminalId ⇔ ペイントークンの対応を shared process へ同期する
 		// （チャットミラーが attach(id) を transcript へ解決するのに使う）。
-		this._register(this.paneTokenService.onDidChange(() => this.pushAgentPanes()));
-		this._register(this.terminalService.onDidChangeInstances(() => this.pushAgentPanes()));
-		this.pushAgentPanes();
+		this._register(this.paneTokenService.onDidChange(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
+		this._register(this.terminalService.onDidChangeInstances(() => { void this.pushAgentPanes(); }));
+		void this.pushAgentPanes();
 		this.refreshBranches();
 	}
 
@@ -253,9 +259,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * terminalId ⇔ ペイントークン対応表を shared process のチャットミラーへ同期する。
 	 * cwd はhook未発火時のセッション探索フォールバック（~/.claude/projects の逆引き）に使う。
 	 */
-	private pushAgentPanes(): void {
+	private pushAgentPanes(): Promise<void> {
+		const revision = ++this.agentPanesRevision;
 		const instances = this.allInstances();
-		Promise.all(instances.map(async inst => {
+		const result = Promise.all(instances.map(async inst => {
 			const token = this.paneTokenService.getTokenForInstance(inst.instanceId);
 			if (token === undefined) {
 				return undefined;
@@ -269,9 +276,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			const ws = this.terminalScopeService.getStateKeyForInstance(inst.instanceId) ?? this.workspaceSwitchService.activeStateKey;
 			return { terminalId: inst.instanceId, token, ...(cwd !== undefined ? { cwd } : {}), ...(ws !== undefined ? { ws } : {}) };
-		})).then(entries => {
-			this.syncAgentPanes(entries.filter((e): e is { terminalId: number; token: string; cwd?: string; ws?: string } => e !== undefined));
-		}).catch(err => this.logService.warn('[paradisMobileRelay] pushAgentPanes failed', err));
+		})).then(entries => this.syncAgentPanes(
+			revision,
+			entries.filter((e): e is { terminalId: number; token: string; cwd?: string; ws?: string } => e !== undefined),
+		)).then(() => this.markInitialAgentPanesReady());
+		void result.catch(err => this.logService.warn('[paradisMobileRelay] pushAgentPanes failed', err));
+		return result;
 	}
 
 	private readonly pushStateScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 100));

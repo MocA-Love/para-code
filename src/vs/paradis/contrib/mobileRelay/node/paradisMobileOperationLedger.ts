@@ -24,11 +24,6 @@ type OperationBeginResult =
 	| { readonly kind: 'unknown' }
 	| { readonly kind: 'final'; readonly status: ParadisMobileTerminalOperationStatus };
 
-interface IMobileHighWater {
-	operationRun: number;
-	highestSeenSeq: number;
-}
-
 /**
  * operationRun/Seqの高水位を詳細結果キャッシュと分離する。結果を退避しても低い連番は
  * `unknown`としてfail closedになり、同じ操作を再実行しない。
@@ -36,7 +31,11 @@ interface IMobileHighWater {
 export class ParadisMobileOperationLedger {
 	private readonly pending = new Map<string, IPendingOperation>();
 	private readonly final = new Map<string, ParadisMobileTerminalOperationStatus>();
-	private readonly highWaterByMobile = new Map<string, IMobileHighWater>();
+	// operationRunはmobile process全体の世代なので全windowで共有する。一方seqは、
+	// Rendererが独立して復旧するv3では別window向けの保留操作を飛び越えうるため、
+	// 同一run内だけ配送先window単位で追跡する。
+	private readonly highestRunByMobile = new Map<string, number>();
+	private readonly highestSeenSeqByTargetRun = new Map<string, number>();
 
 	constructor(
 		private readonly maxFinalEntries = 1000,
@@ -59,16 +58,26 @@ export class ParadisMobileOperationLedger {
 			return existing;
 		}
 
-		const highWater = this.highWaterByMobile.get(mobileId);
-		if (highWater !== undefined && (operationRun < highWater.operationRun
-			|| (operationRun === highWater.operationRun && operationSeq <= highWater.highestSeenSeq))) {
+		const highestRun = this.highestRunByMobile.get(mobileId);
+		if (highestRun !== undefined && operationRun < highestRun) {
 			return { kind: 'unknown' };
 		}
-		if (highWater === undefined || operationRun > highWater.operationRun) {
-			this.highWaterByMobile.set(mobileId, { operationRun, highestSeenSeq: operationSeq });
-		} else {
-			highWater.highestSeenSeq = operationSeq;
+		if (highestRun === undefined || operationRun > highestRun) {
+			this.highestRunByMobile.set(mobileId, operationRun);
+			const targetPrefix = `${mobileId}\0`;
+			for (const key of this.highestSeenSeqByTargetRun.keys()) {
+				if (key.startsWith(targetPrefix)) {
+					this.highestSeenSeqByTargetRun.delete(key);
+				}
+			}
 		}
+
+		const highWaterKey = this.highWaterKey(mobileId, operationRun, owner);
+		const highestSeenSeq = this.highestSeenSeqByTargetRun.get(highWaterKey);
+		if (highestSeenSeq !== undefined && operationSeq <= highestSeenSeq) {
+			return { kind: 'unknown' };
+		}
+		this.highestSeenSeqByTargetRun.set(highWaterKey, operationSeq);
 
 		let mobilePending = 0;
 		for (const pending of this.pending.values()) {
@@ -163,5 +172,10 @@ export class ParadisMobileOperationLedger {
 
 	private key(mobileId: string, operationId: string): string {
 		return `${mobileId}\0${operationId}`;
+	}
+
+	private highWaterKey(mobileId: string, operationRun: number, owner: IParadisMobileWindowLeaseRef | undefined): string {
+		// owner未指定は防御的な従来互換。Relay本体はowner解決後にbeginする。
+		return `${mobileId}\0${operationRun}\0${owner?.windowId ?? 'unscoped'}`;
 	}
 }

@@ -68,10 +68,25 @@ export class ParadisMobileRendererLeaseAuthority {
 	private revision = 0;
 	private readonly active = new Map<number, IActiveRendererConnection>();
 	private readonly pending = new Map<number, IPendingRendererConnection>();
-	/** 一度claimしたwindowだけを追跡し、mobile contributionを持たない特殊windowを除外する。 */
+	/** 実workbench windowだけを追跡し、mobile contributionを持たない特殊windowを除外する。 */
 	private readonly tracked = new Set<number>();
 
 	get manifestRevision(): number { return this.revision; }
+
+	/** 実workbench windowをRenderer claim前からmanifest barrierへ登録する。 */
+	trackWindow(windowId: number): boolean {
+		if (!Number.isSafeInteger(windowId) || this.tracked.has(windowId)) {
+			return false;
+		}
+		this.tracked.add(windowId);
+		const active = this.active.get(windowId);
+		if (active !== undefined) {
+			active.windowRevision = this.bumpRevision();
+		} else {
+			this.pending.set(windowId, { rendererGeneration: ++this.nextGeneration, windowRevision: this.bumpRevision() });
+		}
+		return true;
+	}
 
 	addConnection(context: string, connection: object): boolean {
 		const windowId = windowIdFromContext(context);
@@ -107,18 +122,17 @@ export class ParadisMobileRendererLeaseAuthority {
 		return true;
 	}
 
-	claim(context: string, windowSession: string): IParadisMobileWindowLease | undefined {
+	claim(context: string, connection: object, windowSession: string): IParadisMobileWindowLease | undefined {
 		const windowId = windowIdFromContext(context);
 		const active = windowId === undefined ? undefined : this.active.get(windowId);
-		if (windowId === undefined || active === undefined || windowSession.length === 0) {
+		if (windowId === undefined || active === undefined || active.connection !== connection || !this.tracked.has(windowId) || windowSession.length === 0) {
 			return undefined;
 		}
 		if (active.windowSession !== undefined && active.windowSession !== windowSession) {
 			return undefined;
 		}
-		if (active.windowSession === undefined || !this.tracked.has(windowId)) {
+		if (active.windowSession === undefined) {
 			active.windowSession = windowSession;
-			this.tracked.add(windowId);
 			active.windowRevision = this.bumpRevision();
 		}
 		return { windowId, windowSession, rendererGeneration: active.rendererGeneration };

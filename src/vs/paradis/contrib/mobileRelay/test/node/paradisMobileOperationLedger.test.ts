@@ -46,6 +46,20 @@ suite('ParadisMobileOperationLedger', () => {
 		assert.deepStrictEqual(ledger.begin('mobile', 'old-run', 4, 99, owner), { kind: 'unknown' });
 	});
 
+	test('別Renderer windowの高水位は保留操作へ影響しない', () => {
+		const ledger = new ParadisMobileOperationLedger();
+		const otherOwner = { windowId: 8, windowSession: 'other', rendererGeneration: 12 };
+		assert.deepStrictEqual(ledger.begin('mobile', 'newer-other-window', 5, 11, otherOwner), { kind: 'started' });
+		assert.deepStrictEqual(ledger.begin('mobile', 'older-this-window', 5, 10, owner), { kind: 'started' });
+	});
+
+	test('新しいmobile runは別Renderer windowにも世代防壁を適用する', () => {
+		const ledger = new ParadisMobileOperationLedger();
+		const otherOwner = { windowId: 8, windowSession: 'other', rendererGeneration: 12 };
+		assert.deepStrictEqual(ledger.begin('mobile', 'new-run', 5, 1, owner), { kind: 'started' });
+		assert.deepStrictEqual(ledger.begin('mobile', 'old-run-other-window', 4, 99, otherOwner), { kind: 'unknown' });
+	});
+
 	test('generationが異なるRendererからの完了を拒否する', () => {
 		const ledger = new ParadisMobileOperationLedger();
 		ledger.begin('mobile', 'operation', 1, 1, owner);

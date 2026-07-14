@@ -39,24 +39,38 @@ interface BrowserTarget {
  * `active` が false の間（画面がフォーカスを失った間）は screencast を停止する。
  */
 export function BrowserPanel({ active, preferredToken }: { active: boolean; preferredToken?: string }) {
-	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, setJpegFramesSuspended, workspace } = useAppStore(useShallow(s => ({
+	const { browserTargets, browserStart, browserStop, browserInput, frame, connection, pcOnline, sessionProtocolReady, setJpegFramesSuspended, workspace, browserSelection, setBrowserSelection } = useAppStore(useShallow(s => ({
 		browserTargets: s.browserTargets, browserStart: s.browserStart, browserStop: s.browserStop,
 		browserInput: s.browserInput, frame: s.browserFrame, connection: s.connection,
+		pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		setJpegFramesSuspended: s.setJpegFramesSuspended, workspace: s.workspace,
+		browserSelection: s.browserSelection, setBrowserSelection: s.setBrowserSelection,
 	})));
+	const live = connection === 'online' && pcOnline && sessionProtocolReady;
+	const cachedSelection = browserSelection;
+	const cachedTargetIsCurrent = cachedSelection?.desktopEpoch === workspace?.desktopEpoch;
+	const liveRef = useRef(live);
+	liveRef.current = live;
+	const activeRef = useRef(active);
+	activeRef.current = active;
+	const workspaceEpochRef = useRef(workspace?.desktopEpoch);
+	workspaceEpochRef.current = workspace?.desktopEpoch;
 
 	const insets = useStableInsets();
 	const [targets, setTargets] = useState<BrowserTarget[] | undefined>();
 	const [error, setError] = useState<string | undefined>();
-	const [activeUrl, setActiveUrl] = useState<string | undefined>();
-	const [activeTargetId, setActiveTargetId] = useState<string | undefined>();
+	const [activeUrl, setActiveUrl] = useState<string | undefined>(cachedSelection?.url);
+	const [activeTargetId, setActiveTargetId] = useState<string | undefined>(cachedSelection?.targetId);
 	const [viewSize, setViewSize] = useState({ w: 1, h: 1 });
 
 	// ミラー中の targetId。ユーザーがチップで切り替えた時は新しい targetId に張り替える。
 	// active の解除→再有効化の往復では、これが残っていれば同じ targetId でミラーを自動で張り直す。
-	const mirrorActiveRef = useRef<string | undefined>(undefined);
+	const mirrorActiveRef = useRef<string | undefined>(cachedTargetIsCurrent ? cachedSelection?.targetId : undefined);
 	// ターゲット一覧到着時の自動ミラー開始を発火済みか（マウントごと・再接続ごとに1回だけ）。
 	const autoStartedRef = useRef(false);
+	const browserStartGenRef = useRef(0);
+	const targetLoadGenRef = useRef(0);
+	const targetsEpochRef = useRef<string | undefined>();
 
 	// WebRTCミラー（低遅延経路）。確立できたら RTCView 表示、失敗・切断時は
 	// 既存のJPEGフレーム表示へ自動フォールバックする（JPEGは並行して流れ続けている）。
@@ -101,7 +115,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 			webrtcDimsRef.current = undefined; // 初回 onDimensionsChange まではJPEGフレーム寸法で代用
 			setWebrtcUrl(session.streamUrl);
 		} catch (e) {
-			console.log('[browser] webrtc unavailable, falling back to JPEG mirror:', e instanceof Error ? e.message : e);
+			console.warn('[browser] webrtc unavailable, falling back to JPEG mirror:', e instanceof Error ? e.message : e);
 			if (gen === webrtcGenRef.current) {
 				setWebrtcUrl(undefined);
 			}
@@ -109,23 +123,54 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 	}, []);
 
 	const loadTargets = useCallback(async () => {
-		if (connection !== 'online') {
+		if (!live) {
 			return;
 		}
+		const gen = ++targetLoadGenRef.current;
+		const requestEpoch = workspace?.desktopEpoch;
 		setError(undefined);
 		try {
 			const result = await browserTargets();
+			if (targetLoadGenRef.current !== gen || !liveRef.current || requestEpoch !== workspaceEpochRef.current) {
+				return;
+			}
+			const currentTarget = mirrorActiveRef.current;
+			if (currentTarget !== undefined && !result.targets.some(target => target.targetId === currentTarget)) {
+				mirrorActiveRef.current = undefined;
+					autoStartedRef.current = false;
+			}
+			targetsEpochRef.current = requestEpoch;
 			setTargets(result.targets);
 		} catch (e) {
-			setError(String(e instanceof Error ? e.message : e));
-			setTargets([]);
+			if (targetLoadGenRef.current === gen) {
+				setError(String(e instanceof Error ? e.message : e));
+				setTargets(current => current ?? []);
+			}
 		}
-	}, [browserTargets, connection]);
+	}, [browserTargets, live, workspace?.desktopEpoch]);
 
 	// ターゲット一覧の読み込みは接続状態に追従させる。
 	useEffect(() => {
 		void loadTargets();
 	}, [loadTargets]);
+
+	const desktopEpochRef = useRef(workspace?.desktopEpoch);
+	useEffect(() => {
+		const previous = desktopEpochRef.current;
+		desktopEpochRef.current = workspace?.desktopEpoch;
+		if (previous === undefined || workspace?.desktopEpoch === undefined || previous === workspace.desktopEpoch) {
+			return;
+		}
+		// PC再起動後は旧target IDを再利用しない。最後のURL/JPEGは新targetが開始するまで残す。
+		browserStartGenRef.current++;
+		targetLoadGenRef.current++;
+		targetsEpochRef.current = undefined;
+		stopWebrtc();
+		mirrorActiveRef.current = undefined;
+		autoStartedRef.current = false;
+		setTargets(undefined);
+		void loadTargets();
+	}, [workspace?.desktopEpoch, loadTargets, stopWebrtc]);
 
 	// screencast の停止は画面のアンマウント時にだけ送る。接続の瞬断で
 	// loadTargets が作り直されても stop が飛ばないよう、この effect は依存を持たず
@@ -136,6 +181,8 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 	stopWebrtcRef.current = stopWebrtc;
 	useEffect(() => {
 		return () => {
+			browserStartGenRef.current++;
+			targetLoadGenRef.current++;
 			stopWebrtcRef.current();
 			void browserStopRef.current();
 		};
@@ -149,46 +196,66 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 		return () => setJpegFramesSuspended(false);
 	}, [webrtcUrl, setJpegFramesSuspended]);
 
-	// 接続が切れたらミラー表示を畳む（復帰時に古い activeUrl のままスピナーで固まるのを
-	// 防ぐ）。ミラー中フラグも落とし、再接続時はターゲット再取得→自動選択からやり直す
-	// （autoStartedRef も戻して自動再開を許可する）。
+	// 接続断では低遅延セッションだけ閉じ、最後のURL・target・JPEGフレームは保持する。
 	useEffect(() => {
-		if (connection !== 'online') {
-			mirrorActiveRef.current = undefined;
-			autoStartedRef.current = false;
-			setActiveUrl(undefined);
-			setActiveTargetId(undefined);
+		if (!live) {
+			browserStartGenRef.current++;
+			targetLoadGenRef.current++;
 			stopWebrtc();
 		}
-	}, [connection, stopWebrtc]);
+	}, [live, stopWebrtc]);
 
 	// active の解除/有効化で screencast を止め／再開する（バッテリー対策）。
 	// 解除時は最後のフレームを残したまま停止し（browserStop(true)）、再有効化時はミラーが
 	// 有効だった場合のみ同じ targetId で張り直す。ユーザーには静止画→最新画面の自然な
 	// 切り替えだけが見え、空白やスピナーは出さない。ミラー未開始時は何もしない。
 	useEffect(() => {
-		if (connection !== 'online' || mirrorActiveRef.current === undefined) {
+		if (!live || mirrorActiveRef.current === undefined) {
 			return;
 		}
 		if (active) {
-			void browserStart(mirrorActiveRef.current).catch(() => undefined);
-			void tryWebrtc(mirrorActiveRef.current);
+			const targetId = mirrorActiveRef.current;
+			const gen = ++browserStartGenRef.current;
+			void browserStart(targetId).then(() => {
+				if (browserStartGenRef.current === gen && liveRef.current && activeRef.current && mirrorActiveRef.current === targetId) {
+					void tryWebrtc(targetId);
+				}
+			}).catch(() => {
+				if (browserStartGenRef.current === gen && mirrorActiveRef.current === targetId) {
+					mirrorActiveRef.current = undefined;
+					autoStartedRef.current = false;
+					void loadTargets();
+				}
+			});
 		} else {
+			browserStartGenRef.current++;
 			stopWebrtc();
 			void browserStop(true);
 		}
-	}, [active, connection, browserStart, browserStop, tryWebrtc, stopWebrtc]);
+	}, [active, live, browserStart, browserStop, tryWebrtc, stopWebrtc, loadTargets]);
 
 	const start = async (targetId: string, url: string) => {
+		const gen = ++browserStartGenRef.current;
+		const startEpoch = workspaceEpochRef.current;
 		setError(undefined);
 		try {
 			await browserStart(targetId);
+			if (browserStartGenRef.current !== gen || !liveRef.current || !activeRef.current || startEpoch !== workspaceEpochRef.current) {
+				return;
+			}
 			mirrorActiveRef.current = targetId;
 			setActiveUrl(url);
 			setActiveTargetId(targetId);
+			if (workspace !== undefined) {
+				setBrowserSelection({ targetId, url, desktopEpoch: workspace.desktopEpoch });
+			}
 			void tryWebrtc(targetId);
 		} catch (e) {
-			setError(String(e instanceof Error ? e.message : e));
+			if (browserStartGenRef.current === gen) {
+				mirrorActiveRef.current = undefined;
+				autoStartedRef.current = false;
+				setError(String(e instanceof Error ? e.message : e));
+			}
 		}
 	};
 
@@ -196,7 +263,8 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 	// preferredToken と共有中のページを最優先、無ければ先頭。ユーザーがチップで切り替えた後や
 	// 一覧の再取得では発火しない（autoStartedRef、マウントごと・再接続ごとに1回だけ）。
 	useEffect(() => {
-		if (autoStartedRef.current || !active || connection !== 'online' || mirrorActiveRef.current !== undefined) {
+		if (autoStartedRef.current || !active || !live || mirrorActiveRef.current !== undefined
+			|| targetsEpochRef.current !== workspace?.desktopEpoch) {
 			return;
 		}
 		const candidate = (preferredToken !== undefined ? targets?.find(t => t.sharedToken === preferredToken) : undefined) ?? targets?.[0];
@@ -206,7 +274,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 		autoStartedRef.current = true;
 		void start(candidate.targetId, candidate.url);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [targets, active, connection, preferredToken]);
+	}, [targets, active, live, preferredToken, workspace?.desktopEpoch]);
 
 	// チップ表示用: 共有トークン → ターミナルタイトル（「2: claude と共有中」の表示に使う）
 	const terminalTitleOf = (token: string | undefined): string | undefined => {
@@ -233,6 +301,9 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 		const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
 		browserInput({ kind: 'navigate', url });
 		setActiveUrl(url);
+		if (activeTargetId !== undefined && workspace !== undefined) {
+			setBrowserSelection({ targetId: activeTargetId, url, desktopEpoch: workspace.desktopEpoch });
+		}
 	};
 
 	const frameRef = useRef(frame);
@@ -256,6 +327,9 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 	contentDimsRef.current = contentDims;
 
 	const onTap = (e: GestureResponderEvent) => {
+		if (!liveRef.current) {
+			return;
+		}
 		const dims = contentDimsRef.current();
 		if (!dims) {
 			return;
@@ -280,7 +354,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 	// 動くため、ローカル座標だと変位がほぼ0になりパン終了を誤タップしてしまう。
 	const tapCandidateRef = useRef<{ pageX: number; pageY: number } | undefined>(undefined);
 	const onFrameTouchStart = (e: GestureResponderEvent) => {
-		if (e.nativeEvent.touches.length === 1) {
+		if (liveRef.current && e.nativeEvent.touches.length === 1) {
 			tapCandidateRef.current = { pageX: e.nativeEvent.pageX, pageY: e.nativeEvent.pageY };
 		} else {
 			tapCandidateRef.current = undefined; // ピンチ等のマルチタッチはタップにしない
@@ -325,8 +399,8 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 		};
 		return PanResponder.create({
 			// タップも拾うため開始時から責任を持つ（ズーム中とマルチタッチはScrollViewへ譲る）
-			onStartShouldSetPanResponder: () => zoomScaleRef.current <= 1.01,
-			onMoveShouldSetPanResponder: (_e, g) => zoomScaleRef.current <= 1.01 && g.numberActiveTouches === 1,
+			onStartShouldSetPanResponder: () => liveRef.current && zoomScaleRef.current <= 1.01,
+			onMoveShouldSetPanResponder: (_e, g) => liveRef.current && zoomScaleRef.current <= 1.01 && g.numberActiveTouches === 1,
 			onPanResponderGrant: () => {
 				lastX = 0;
 				lastY = 0;
@@ -375,9 +449,10 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 					return (
 						<Pressable
 							key={t.targetId}
+							disabled={!live}
 							style={[styles.tabChip, selected && styles.tabChipSelected]}
 							onPress={() => {
-								if (t.targetId === activeTargetId) {
+								if (t.targetId === activeTargetId && mirrorActiveRef.current === t.targetId) {
 									return;
 								}
 								hapticSelection();
@@ -389,7 +464,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 						</Pressable>
 					);
 				})}
-				<Pressable style={styles.tabChip} onPress={() => { hapticImpact('light'); void loadTargets(); }} accessibilityLabel="一覧を更新">
+				<Pressable disabled={!live} style={[styles.tabChip, !live && styles.disabled]} onPress={() => { hapticImpact('light'); autoStartedRef.current = false; void loadTargets(); }} accessibilityLabel="一覧を更新">
 					<Ionicons name="refresh" size={12} color={colors.textDim} />
 				</Pressable>
 			</ScrollView>
@@ -407,7 +482,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 						<Text style={styles.dim}>ミラーできるブラウザページがありません。PCの para-browser でページを開いてください。</Text>
 					) : null}
 					{targets !== undefined ? (
-						<Pressable style={styles.reloadTargets} onPress={() => { hapticImpact('light'); void loadTargets(); }}>
+						<Pressable disabled={!live} style={[styles.reloadTargets, !live && styles.disabled]} onPress={() => { hapticImpact('light'); autoStartedRef.current = false; void loadTargets(); }}>
 							<Text style={styles.link}>一覧を更新</Text>
 						</Pressable>
 					) : null}
@@ -434,6 +509,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 					autoCorrect={false}
 					returnKeyType="go"
 					selectTextOnFocus
+					editable={live}
 				/>
 			</View>
 			{/* ピンチで拡大縮小・ドラッグでパンできるようScrollViewズームに載せる。
@@ -482,11 +558,11 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 				)}
 			</ScrollView>
 			<View style={[styles.toolbar, { paddingBottom: insets.bottom + 10 }]}>
-				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'back' }); }}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
-				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'forward' }); }}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>
-				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'reload' }); }}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
-				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: -0.5 }); }}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
-				<Pressable style={styles.toolBtn} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: 0.5 }); }}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
+				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'back' }); }}><Ionicons name="chevron-back" size={17} color={colors.text} /></Pressable>
+				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'forward' }); }}><Ionicons name="chevron-forward" size={17} color={colors.text} /></Pressable>
+				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'reload' }); }}><Ionicons name="refresh" size={17} color={colors.text} /></Pressable>
+				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: -0.5 }); }}><Ionicons name="chevron-up" size={17} color={colors.text} /></Pressable>
+				<Pressable disabled={!live} style={[styles.toolBtn, !live && styles.disabled]} onPress={() => { hapticImpact('light'); browserInput({ kind: 'scroll', dy: 0.5 }); }}><Ionicons name="chevron-down" size={17} color={colors.text} /></Pressable>
 			</View>
 		</View>
 	);
@@ -502,6 +578,7 @@ const styles = StyleSheet.create({
 		borderRadius: 14, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, maxWidth: 220,
 	},
 	tabChipSelected: { backgroundColor: colors.accentWash, borderColor: 'rgba(9,175,217,0.5)' },
+	disabled: { opacity: 0.45 },
 	tabChipText: { color: colors.textDim, fontSize: 11 },
 	tabChipTextSelected: { color: colors.accent },
 	emptyBox: { flex: 1, justifyContent: 'center', padding: 24 },

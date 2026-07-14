@@ -44,9 +44,9 @@ import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../sr
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
+	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
-		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection,
+		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
 		browserTargets: s.browserTargets,
@@ -103,7 +103,7 @@ export default function AgentDetailScreen() {
 	const [hasSharedPage, setHasSharedPage] = useState(false);
 	useEffect(() => {
 		setHasSharedPage(false);
-		if (agentToken === undefined || connection !== 'online') {
+		if (agentToken === undefined || connection !== 'online' || !pcOnline || !sessionProtocolReady) {
 			return;
 		}
 		let cancelled = false;
@@ -115,7 +115,7 @@ export default function AgentDetailScreen() {
 			})
 			.catch(() => undefined);
 		return () => { cancelled = true; };
-	}, [agentToken, connection, browserTargets]);
+	}, [agentToken, connection, pcOnline, sessionProtocolReady, browserTargets]);
 	const openBrowser = () => {
 		hapticSelection();
 		router.push(agentToken !== undefined ? `/browser?token=${encodeURIComponent(agentToken)}` : '/browser');

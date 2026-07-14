@@ -132,6 +132,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			});
 		let markRendererReady!: () => void;
 		this.rendererReadyPromise = new Promise<void>(resolve => { markRendererReady = resolve; });
+		let markTerminalStateReady!: () => void;
+		const terminalStateReady = new Promise<void>(resolve => { markTerminalStateReady = resolve; });
+		let agentPanesSyncChain = Promise.resolve();
 		const withWindowLease = <T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> => this.withWindowLease(callback);
 		const withCurrentRendererLease = <T>(callback: (lease: IParadisMobileWindowLease) => Promise<T>): Promise<T> => this.withCurrentRendererLease(callback);
 
@@ -178,8 +181,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(repoPath, args) => this.service.runGit(repoPath, args),
 			paneTokenService,
 			terminalIdentityService,
-			state => { withWindowLease(lease => this.service.syncTerminalWindow(lease, state)).then(markRendererReady, err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
-			entries => { withWindowLease(lease => this.service.syncAgentPanes(lease, entries)).catch(err => this.logService.warn('[paradisMobileRelay] syncAgentPanes failed', err)); },
+			state => { withWindowLease(lease => this.service.syncTerminalWindow(lease, state)).then(markTerminalStateReady, err => this.logService.warn('[paradisMobileRelay] syncTerminalWindow failed', err)); },
+			(revision, entries) => {
+				const sync = agentPanesSyncChain.then(() => terminalStateReady).then(() => withWindowLease(lease => this.service.syncAgentPanes(lease, revision, entries)));
+				agentPanesSyncChain = sync.catch(() => { /* 次のsnapshotは継続する */ });
+				return sync;
+			},
 			(mobileId, operationId, status) => withWindowLease(lease => this.service.completeTerminalOperation(lease, mobileId, operationId, status)),
 			(mobileId, requestId, token, epoch) => withWindowLease(lease => this.service.claimAgentAction(mobileId, requestId, token, epoch, lease)),
 			(mobileId, requestId, token, epoch, terminalId) => withWindowLease(lease => this.service.continueAgentInteraction(mobileId, requestId, token, epoch, terminalId, lease)),
@@ -195,6 +202,10 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			paths => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, [...paths]),
 		));
 		this.provider.pushState();
+		Promise.all([terminalStateReady, this.provider.initialAgentPanesReady]).then(
+			() => markRendererReady(),
+			err => this.logService.warn('[paradisMobileRelay] initial renderer state sync failed', err),
+		);
 		reportPcFocus();
 
 		// shared process側では、daemon利用時にhookプロセスがターミナル固有envを継承できなくても、

@@ -20,6 +20,7 @@ export interface IParadisMobilePaneOwner extends IParadisMobilePaneEntry {
 interface IParadisMobilePaneWindowLease {
 	readonly windowSession: string;
 	readonly rendererGeneration: number;
+	readonly revision: number;
 	readonly entries: readonly IParadisMobilePaneEntry[];
 }
 
@@ -27,16 +28,20 @@ interface IParadisMobilePaneWindowLease {
 export class ParadisMobilePaneRegistry {
 	private readonly windows = new Map<number, IParadisMobilePaneWindowLease>();
 	private readonly retiredGeneration = new Map<number, number>();
-	syncWindow(windowId: number, windowSession: string, rendererGeneration: number, entries: readonly IParadisMobilePaneEntry[]): boolean {
+	syncWindow(windowId: number, windowSession: string, rendererGeneration: number, revision: number, entries: readonly IParadisMobilePaneEntry[]): boolean {
+		if (!Number.isSafeInteger(revision) || revision <= 0) {
+			return false;
+		}
 		const current = this.windows.get(windowId);
 		if (current === undefined && rendererGeneration <= (this.retiredGeneration.get(windowId) ?? -1)) {
 			return false;
 		}
 		if (current !== undefined && (rendererGeneration < current.rendererGeneration
-			|| (rendererGeneration === current.rendererGeneration && windowSession !== current.windowSession))) {
+			|| (rendererGeneration === current.rendererGeneration && windowSession !== current.windowSession)
+			|| (rendererGeneration === current.rendererGeneration && windowSession === current.windowSession && revision <= current.revision))) {
 			return false;
 		}
-		this.windows.set(windowId, { windowSession, rendererGeneration, entries });
+		this.windows.set(windowId, { windowSession, rendererGeneration, revision, entries });
 		return true;
 	}
 
@@ -64,6 +69,15 @@ export class ParadisMobilePaneRegistry {
 			}
 		}
 		return owners.length === 1 ? owners[0] : undefined;
+	}
+
+	ownerOfTerminal(windowId: number, windowSession: string, rendererGeneration: number, terminalId: number): IParadisMobilePaneOwner | undefined {
+		const lease = this.windows.get(windowId);
+		if (lease?.windowSession !== windowSession || lease.rendererGeneration !== rendererGeneration) {
+			return undefined;
+		}
+		const entries = lease.entries.filter(entry => entry.terminalId === terminalId);
+		return entries.length === 1 ? { ...entries[0], windowId, windowSession, rendererGeneration } : undefined;
 	}
 
 	allEntries(): readonly IParadisMobilePaneEntry[] {
