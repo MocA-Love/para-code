@@ -6,7 +6,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
-import { PairingRequiredNotice } from '../../src/components/connectionGate.js';
+import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionCard } from '../../src/components/attentionCard.js';
@@ -107,7 +107,7 @@ export default function HomeScreen() {
 		: `${effectiveWs.name}${effectiveWs.branch ? ` · ${effectiveWs.branch}` : ''}`;
 
 	return (
-		<View style={styles.screen}>
+		<ConnectionGate><View style={styles.screen}>
 			<WsHeader
 				title="ホーム"
 				subtitle={headerSubtitle}
@@ -207,7 +207,7 @@ export default function HomeScreen() {
 				onClose={() => setStatusPopover(undefined)}
 				onAck={terminalKey => ackAgentStatus(terminalKey)}
 			/>
-		</View>
+		</View></ConnectionGate>
 	);
 }
 

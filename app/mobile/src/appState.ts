@@ -8,11 +8,11 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
-import { decodePairingUri } from '@para/protocol';
+import { decodePairingUri, deriveNotifyKey } from '@para/protocol';
 import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
-import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
+import { configureNotificationHandler, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
 import { connectionActionForAppState, shouldPresentForegroundNotification, shouldRunForegroundWork } from './appLifecycle.js';
 
 interface AppState extends StoreState {
@@ -37,6 +37,9 @@ interface AppState extends StoreState {
 	/** ターミナル画面で選択中の論理キー（ws切替時はリセット）。 */
 	selectedTerminalKey: string | undefined;
 	setSelectedTerminalKey(terminalKey: string | undefined): void;
+	/** ブラウザ画面を離れても最後のtarget/URLを静止画と一緒に復元するためのUIキャッシュ。 */
+	browserSelection: { targetId: string; url: string; desktopEpoch: string } | undefined;
+	setBrowserSelection(selection: { targetId: string; url: string; desktopEpoch: string } | undefined): void;
 	/**
 	 * 通知設定（設定画面）。agentDone/agentQuestionがfalseの種別はOS通知（バナー）を
 	 * 出さない（アプリ内の通知一覧には残る）。suppressWhenPcFocusedはPC側の判断のみに
@@ -57,6 +60,7 @@ interface AppState extends StoreState {
 	cancelPairing(): void;
 	/** ペアリングを完全に解除する（リレー上の資格情報も失効させ、ローカルの保存分も削除する）。 */
 	unpair(): Promise<void>;
+	discardUnknownTerminalOperations(): Promise<boolean>;
 	attachTerminal(terminalKey: string): void;
 	detachTerminal(terminalKey: string): void;
 	/** ターミナル名を変更する（PC側の実インスタンスにも反映され、他端末にも同期される）。 */
@@ -84,11 +88,12 @@ interface AppState extends StoreState {
 	clearAgentDraft(key: string): void;
 	/** ターミナル同期ストリームの購読（購読時にリプレイキャッシュを同期再生）。 */
 	subscribeTerminal(terminalKey: string, listener: (ev: TermStreamEvent) => void): () => void;
-	sendInput(terminalKey: string, data: string): void;
+	sendInput(terminalKey: string, data: string): Promise<boolean>;
+	sendLiveInput(terminalKey: string, data: string): boolean;
 	/** 矢印キーをセマンティック名で送る（PC側が端末モードに合わせてエンコードする）。 */
 	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): void;
 	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
-	sendTextInput(terminalKey: string, text: string, execute: boolean): void;
+	sendTextInput(terminalKey: string, text: string, execute: boolean): Promise<boolean>;
 	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult>;
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean>;
 	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<boolean>;
@@ -158,9 +163,11 @@ const NOTIFY_BANNER_MAX_AGE_MS = 60_000;
 export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',
 	pcOnline: false,
+	sessionProtocolReady: false,
 	workspace: undefined,
 	protocolError: undefined,
 	terminalOperationIssue: undefined,
+	unknownTerminalOperationCount: 0,
 	terminalOutput: new Map(),
 	notifications: [],
 	browserFrame: undefined,
@@ -171,6 +178,7 @@ export const useAppStore = create<AppState>(set => ({
 	selectedWs: undefined,
 	homeShowAllWorkspaces: true,
 	selectedTerminalKey: undefined,
+	browserSelection: undefined,
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: false },
 	pinnedKeys: new Set(),
 	agentDrafts: {},
@@ -187,7 +195,8 @@ export const useAppStore = create<AppState>(set => ({
 			const loaded = await loadOrCreateIdentity(secureKeyStore);
 			identity = loaded.identity;
 			const operationRun = await reserveOperationRun(secureKeyStore);
-			const persistedOperationOutbox = await terminalOperationOutboxStore.load();
+			const creds = await loadCredentials(secureKeyStore);
+			const persistedOperationOutbox = await terminalOperationOutboxStore.loadCandidates();
 			// 通知設定をロード（保存が無い/壊れている場合は既定値のまま）
 			try {
 				const raw = await secureKeyStore.getItem('notifyPrefs');
@@ -244,6 +253,7 @@ export const useAppStore = create<AppState>(set => ({
 				operationRun,
 				terminalOperationOutboxStore,
 				persistedOperationOutbox,
+				creds,
 			);
 			// オンラインになるたび通知設定をPCへ同期する（PC側の永続値を最新に保つ。
 			// オフライン中に変更した設定もここで追いつく）。init()が後続処理の失敗で
@@ -295,7 +305,6 @@ export const useAppStore = create<AppState>(set => ({
 			if (shouldRunForegroundWork(RNAppState.currentState)) {
 				startHeartbeat();
 			}
-			const creds = await loadCredentials(secureKeyStore);
 			set({ ready: true, paired: !!creds });
 			if (creds) {
 				ensureNotificationPermission().catch(err => console.warn('[appState] notification permission request failed', err));
@@ -329,6 +338,7 @@ export const useAppStore = create<AppState>(set => ({
 		if (!identity) {
 			throw new Error('not initialized');
 		}
+		const previousCredentials = await loadCredentials(secureKeyStore);
 		const payload: PairingPayload = decodePairingUri(uri);
 		// 直前のペアリングが残っていれば畳んでから開始する。
 		pairing?.cancel();
@@ -336,8 +346,27 @@ export const useAppStore = create<AppState>(set => ({
 		pairing = client;
 		try {
 			const creds: PairedCredentials = await client.pair(payload, { onSasCode: onSas });
-			await saveCredentials(secureKeyStore, creds);
-			set({ paired: true });
+			try {
+				// 先に新資格情報をdurable化し、旧pair journalは後続reset成功まで保持する。
+				// この順序ならKeychain書込失敗で旧pending/unknown記録を失わない。
+				await saveCredentials(secureKeyStore, creds);
+			} catch (error) {
+				await revokeSelfOnRelay(creds);
+				throw error;
+			}
+			try {
+				await controller?.reset();
+			} catch (error) {
+				// resetは旧pairへ自動復帰する。永続資格情報も旧値へ補償して新pairを失効する。
+				if (previousCredentials !== undefined) {
+					await saveCredentials(secureKeyStore, previousCredentials);
+				} else {
+					await clearCredentials(secureKeyStore);
+				}
+				await revokeSelfOnRelay(creds);
+				throw error;
+			}
+			set({ paired: true, browserSelection: undefined });
 			controller?.connect(creds);
 		} finally {
 			if (pairing === client) {
@@ -353,15 +382,39 @@ export const useAppStore = create<AppState>(set => ({
 
 	async unpair() {
 		const creds = await loadCredentials(secureKeyStore);
-		// 先にリレー側の資格情報を失効させる（WebSocketとは独立したHTTPなので接続状態に依らず
-		// 送れる）。失敗してもローカル解除は続行する: トークン実体はこの端末にしか無いため、
-		// リレーに残っても悪用はできず、PC側の失効操作でも掃除できる。
-		if (creds) {
-			await revokeSelfOnRelay(creds);
+		try {
+			// 資格情報削除が成功するまではcontroller/journalへ触れず、失敗時に旧pairを完全保持する。
+			await clearCredentials(secureKeyStore);
+			await deleteNotifyKey();
+		} catch (error) {
+			if (creds !== undefined) {
+				await saveCredentials(secureKeyStore, creds);
+			}
+			throw error;
 		}
-		controller?.reset();
-		await clearCredentials(secureKeyStore);
-		set({ paired: false, manualOffline: false, selectedWs: undefined, homeShowAllWorkspaces: true, selectedTerminalKey: undefined });
+		try {
+			await controller?.reset();
+		} catch (error) {
+			// journal clear失敗時はresetが旧接続へ戻す。Keychain側も旧資格情報へ補償する。
+			if (creds !== undefined) {
+				await saveCredentials(secureKeyStore, creds);
+				if (identity !== undefined) {
+					const key = deriveNotifyKey(identity.secretKey, creds.pcPublicKey);
+					await persistNotifyKey([...key].map(byte => byte.toString(16).padStart(2, '0')).join(''));
+				}
+			}
+			throw error;
+		}
+		set({ paired: false, manualOffline: false, selectedWs: undefined, homeShowAllWorkspaces: true, selectedTerminalKey: undefined, browserSelection: undefined });
+		// ローカル削除完了後にrelay資格情報をbest-effort失効する。失敗しても端末上のtokenは
+		// 既に消えており、PC側からも後で失効できるためローカル解除は巻き戻さない。
+		if (creds) {
+			await revokeSelfOnRelay(creds).catch(error => console.warn('[appState] relay credential revocation failed after local unpair', error));
+		}
+	},
+
+	discardUnknownTerminalOperations() {
+		return controller?.discardUnknownTerminalOperations() ?? Promise.resolve(true);
 	},
 
 	attachTerminal(terminalKey: string) {
@@ -428,7 +481,11 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	sendInput(terminalKey: string, data: string) {
-		controller?.sendInput(terminalKey, data);
+		return controller?.sendInput(terminalKey, data) ?? Promise.resolve(false);
+	},
+
+	sendLiveInput(terminalKey: string, data: string) {
+		return controller?.sendLiveInput(terminalKey, data) ?? false;
 	},
 
 	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left') {
@@ -436,7 +493,7 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	sendTextInput(terminalKey: string, text: string, execute: boolean) {
-		controller?.sendTextInput(terminalKey, text, execute);
+		return controller?.sendTextInput(terminalKey, text, execute) ?? Promise.resolve(false);
 	},
 
 	sendAgentMessage(terminalKey: string, text: string) {
@@ -493,6 +550,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	setSelectedTerminalKey(terminalKey: string | undefined) {
 		set({ selectedTerminalKey: terminalKey });
+	},
+
+	setBrowserSelection(selection: { targetId: string; url: string; desktopEpoch: string } | undefined) {
+		set({ browserSelection: selection });
 	},
 
 	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean) {

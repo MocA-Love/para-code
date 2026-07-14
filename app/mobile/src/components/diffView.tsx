@@ -8,7 +8,7 @@
  *   表示し、「レンダー」で現在のブックそのものも見られる。どちらもピンチ拡大縮小可
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
@@ -24,6 +24,18 @@ interface DiffViewProps {
 	path: string;
 	staged: boolean;
 	onClose: () => void;
+}
+
+function currentRendererTarget(ws: string): string | undefined {
+	const state = useAppStore.getState();
+	if (state.connection !== 'online' || !state.pcOnline || !state.sessionProtocolReady) {
+		return undefined;
+	}
+	const selectedWorkspace = state.workspace?.workspaces.find(candidate => candidate.id === ws);
+	const renderer = selectedWorkspace !== undefined ? state.workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	return renderer?.ready === true && state.workspace !== undefined
+		? `${state.workspace.desktopEpoch}:${renderer.windowId}:${renderer.rendererGeneration}`
+		: undefined;
 }
 
 type DiffRowKind = 'hunk' | 'add' | 'del' | 'ctx';
@@ -76,9 +88,16 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 }
 
 export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
-	const { scmDiff, scmXlsxDiff, fsRead, fsXlsx } = useAppStore(useShallow(s => ({
+	const { scmDiff, scmXlsxDiff, fsRead, fsXlsx, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
 		scmDiff: s.scmDiff, scmXlsxDiff: s.scmXlsxDiff, fsRead: s.fsRead, fsXlsx: s.fsXlsx,
+		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
 	})));
+	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws);
+	const selectedRenderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	const rendererTarget = selectedRenderer?.ready === true && workspace !== undefined
+		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
+		: undefined;
+	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
 	const name = path.split('/').pop() ?? path;
 	const kind = /\.(?:md|markdown)$/i.test(name) ? 'markdown'
 		: /\.(?:html?|xhtml)$/i.test(name) ? 'html'
@@ -89,50 +108,66 @@ export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
 	const [diffHtml, setDiffHtml] = useState<string | undefined>();
 	const [renderHtml, setRenderHtml] = useState<string | undefined>();
 	const [error, setError] = useState<string | undefined>();
+	const contentIdentity = `${ws}\0${path}\0${staged}`;
+	const contentIdentityRef = useRef(contentIdentity);
 
 	// Diff モードのデータ取得（初回のみ）
 	useEffect(() => {
 		let cancelled = false;
+		if (contentIdentityRef.current !== contentIdentity) {
+			contentIdentityRef.current = contentIdentity;
+			setDiffText(undefined);
+			setDiffHtml(undefined);
+			setRenderHtml(undefined);
+			setError(undefined);
+		}
+		if (!live) {
+			return;
+		}
+		const requestTarget = rendererTarget;
+		setError(undefined);
 		if (kind === 'spreadsheet') {
 			scmXlsxDiff(ws, path)
-				.then(r => { if (!cancelled) { setDiffHtml(r.html); } })
-				.catch(e => { if (!cancelled) { setError(String(e instanceof Error ? e.message : e)); } });
+				.then(r => { if (!cancelled && currentRendererTarget(ws) === requestTarget) { setDiffHtml(r.html); } })
+				.catch(e => { if (!cancelled && currentRendererTarget(ws) === requestTarget) { setError(String(e instanceof Error ? e.message : e)); } });
 		} else {
 			scmDiff(ws, path, staged)
-				.then(r => { if (!cancelled) { setDiffText(r.diff); } })
-				.catch(e => { if (!cancelled) { setError(String(e instanceof Error ? e.message : e)); } });
+				.then(r => { if (!cancelled && currentRendererTarget(ws) === requestTarget) { setDiffText(r.diff); } })
+				.catch(e => { if (!cancelled && currentRendererTarget(ws) === requestTarget) { setError(String(e instanceof Error ? e.message : e)); } });
 		}
 		return () => { cancelled = true; };
-	}, [ws, path, staged, kind, scmDiff, scmXlsxDiff]);
+	}, [ws, path, staged, kind, contentIdentity, live, rendererTarget, scmDiff, scmXlsxDiff]);
 
 	// レンダーモードのデータ取得（初めて切り替えたときに一度だけ）
 	useEffect(() => {
-		if (mode !== 'render' || renderHtml !== undefined) {
+		if (mode !== 'render' || !live) {
 			return;
 		}
 		let cancelled = false;
+		const requestTarget = rendererTarget;
+		setError(undefined);
 		const load = async () => {
 			try {
 				if (kind === 'spreadsheet') {
 					const r = await fsXlsx(ws, path);
-					if (!cancelled) {
+					if (!cancelled && currentRendererTarget(ws) === requestTarget) {
 						setRenderHtml(r.html);
 					}
 				} else {
 					const r = await fsRead(ws, path);
-					if (!cancelled) {
+					if (!cancelled && currentRendererTarget(ws) === requestTarget) {
 						setRenderHtml(kind === 'markdown' ? buildMarkdownHtml(r) : r.content);
 					}
 				}
 			} catch (e) {
-				if (!cancelled) {
+				if (!cancelled && currentRendererTarget(ws) === requestTarget) {
 					setError(String(e instanceof Error ? e.message : e));
 				}
 			}
 		};
 		void load();
 		return () => { cancelled = true; };
-	}, [mode, renderHtml, kind, ws, path, fsRead, fsXlsx]);
+	}, [mode, kind, ws, path, live, rendererTarget, fsRead, fsXlsx]);
 
 	const rows = useMemo(() => (diffText === undefined ? [] : parseUnifiedDiff(diffText)), [diffText]);
 	const stats = useMemo(() => ({

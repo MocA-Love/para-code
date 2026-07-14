@@ -2,7 +2,7 @@
 
 import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it } from 'vitest';
-import { clearCredentials, loadCredentials, loadOrCreateIdentity, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore } from './store.js';
+import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
 class MemoryKeyStore implements KeyStore {
@@ -14,27 +14,30 @@ class MemoryKeyStore implements KeyStore {
 
 class MemoryOperationOutboxStore implements TerminalOperationOutboxStore {
 	value: string | null = null;
-	async load() { return this.value; }
+	async loadCandidates() { return this.value === null ? [] : [this.value]; }
 	async save(encrypted: string) { this.value = encrypted; }
+	async clear() { this.value = null; }
 }
 
 class FailingOperationOutboxStore implements TerminalOperationOutboxStore {
 	fail = true;
 	value: string | null = null;
-	async load() { return null; }
+	async loadCandidates() { return []; }
 	async save(encrypted: string): Promise<void> {
 		if (this.fail) { throw new Error('disk full'); }
 		this.value = encrypted;
 	}
+	async clear() { this.value = null; }
 }
 
 class DeferredOperationOutboxStore implements TerminalOperationOutboxStore {
 	private releaseSave: (() => void) | undefined;
-	async load() { return null; }
+	async loadCandidates() { return []; }
 	save(_encrypted: string): Promise<void> {
 		return new Promise(resolve => { this.releaseSave = resolve; });
 	}
 	release(): void { this.releaseSave?.(); }
+	async clear() { }
 }
 
 describe('key persistence', () => {
@@ -164,6 +167,21 @@ function desktopState(terminals: { id: number; title: string; agentToken?: strin
 }
 
 describe('MobileController', () => {
+	it('does not retain activeWs from a renderer that is no longer pending or present', () => {
+		const previous: WorkspaceState = {
+			protocolVersion: 3, desktopEpoch: 'desktop', revision: 1, complete: true,
+			renderers: [{ windowId: 1, rendererGeneration: 1, ready: true }], activeWs: '1:w1',
+			workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'one' }], terminals: [],
+		};
+		const incoming: WorkspaceState = {
+			protocolVersion: 3, desktopEpoch: 'desktop', revision: 2, complete: false,
+			renderers: [{ windowId: 2, rendererGeneration: 2, ready: false }], activeWs: undefined,
+			workspaces: [], terminals: [],
+		};
+
+		expect(mergeWorkspaceState(previous, incoming).activeWs).toBeUndefined();
+	});
+
 	it('uses terminalKey when numeric terminal ids collide across windows', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();
@@ -208,7 +226,7 @@ describe('MobileController', () => {
 		pcMux.send(Channels.Terminal, encode({ t: 'data', terminalKey: 'terminal-a', data: 'output-a', snapshot: true, epoch: attachA.epoch, seq: 1 }));
 		pcMux.send(Channels.Terminal, encode({ t: 'data', terminalKey: 'terminal-b', data: 'output-b', snapshot: true, epoch: attachB.epoch, seq: 1 }));
 		await flush();
-		controller.sendInput('terminal-b', 'pwd');
+			await controller.sendInput('terminal-b', 'pwd');
 		await flush();
 
 		expect(latest?.workspace?.terminals.map(terminal => terminal.terminalKey)).toEqual(['terminal-a', 'terminal-b']);
@@ -255,8 +273,9 @@ describe('MobileController', () => {
 		expect(latest?.terminalOutput.size).toBe(0);
 		expect(received.filter(message => message.t === 'attach')).toHaveLength(4);
 		const inputs = received.filter(message => message.t === 'input');
-		expect(inputs).toHaveLength(2);
-		expect(inputs[1]?.operationId).toBe(inputs[0]?.operationId);
+		expect(inputs).toHaveLength(1);
+		expect(latest?.unknownTerminalOperationCount).toBe(1);
+		expect(latest?.terminalOperationIssue).toContain('結果を確認できなかった');
 		const replayAfterEpochChange: import('./store.js').TermStreamEvent[] = [];
 		controller.subscribeTerminal('terminal-a', event => replayAfterEpochChange.push(event));
 		expect(replayAfterEpochChange).toEqual([]);
@@ -321,7 +340,7 @@ describe('MobileController', () => {
 		const outbox = new MemoryOperationOutboxStore();
 
 		const firstPair = new FakePair();
-		const first = new MobileController(mobile, () => firstPair.client, () => { }, undefined, undefined, 'prod', undefined, 1, outbox, await outbox.load());
+		const first = new MobileController(mobile, () => firstPair.client, () => { }, undefined, undefined, 'prod', undefined, 1, outbox, await outbox.loadCandidates(), creds);
 		const firstMuxPromise = drivePc(firstPair, pc, mobile.publicKey);
 		first.connect(creds);
 		firstPair.fireOpen();
@@ -337,7 +356,7 @@ describe('MobileController', () => {
 		expect(outbox.value).not.toBeNull();
 
 		const pendingPair = new FakePair();
-		const restoredPending = new MobileController(mobile, () => pendingPair.client, () => { }, undefined, undefined, 'prod', undefined, 2, outbox, await outbox.load());
+		const restoredPending = new MobileController(mobile, () => pendingPair.client, () => { }, undefined, undefined, 'prod', undefined, 2, outbox, await outbox.loadCandidates(), creds);
 		const replayed: Record<string, unknown>[] = [];
 		const pendingMuxPromise = drivePc(pendingPair, pc, mobile.publicKey, mux => {
 			mux.on(Channels.Terminal, frame => replayed.push(JSON.parse(new TextDecoder().decode(frame.payload))));
@@ -345,7 +364,9 @@ describe('MobileController', () => {
 		restoredPending.connect(creds);
 		pendingPair.fireOpen();
 		const pendingMux = await pendingMuxPromise;
-		void pendingMux;
+		await flush();
+		expect(replayed).toEqual([]);
+		pendingMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh' }]))));
 		await flush();
 		expect(replayed.find(frame => frame.t === 'ackStatus')?.operationId).toBe(mutation.operationId);
 
@@ -353,7 +374,7 @@ describe('MobileController', () => {
 		await flush();
 		const unknownPair = new FakePair();
 		let latest: import('./store.js').StoreState | undefined;
-		const restoredUnknown = new MobileController(mobile, () => unknownPair.client, state => { latest = state; }, undefined, undefined, 'prod', undefined, 3, outbox, await outbox.load());
+		const restoredUnknown = new MobileController(mobile, () => unknownPair.client, state => { latest = state; }, undefined, undefined, 'prod', undefined, 3, outbox, await outbox.loadCandidates(), creds);
 		const unknownFrames: Record<string, unknown>[] = [];
 		const unknownMuxPromise = drivePc(unknownPair, pc, mobile.publicKey, mux => {
 			mux.on(Channels.Terminal, frame => unknownFrames.push(JSON.parse(new TextDecoder().decode(frame.payload))));
@@ -385,12 +406,12 @@ describe('MobileController', () => {
 		await flush();
 		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh' }]))));
 		await flush();
-		controller.sendInput('terminal-1', 'pwd\n');
+			expect(await controller.sendInput('terminal-1', 'pwd\n')).toBe(false);
 		await flush();
 		expect(terminalFrames.filter(frame => frame.t === 'input')).toEqual([]);
 		expect(latest?.terminalOperationIssue).toContain('安全に保存できなかった');
 		outbox.fail = false;
-		controller.sendInput('terminal-1', 'whoami\n');
+			expect(await controller.sendInput('terminal-1', 'whoami\n')).toBe(true);
 		await flush();
 		expect(terminalFrames.filter(frame => frame.t === 'input').map(frame => frame.data)).toEqual(['whoami\n']);
 
@@ -399,7 +420,8 @@ describe('MobileController', () => {
 			desktopEpoch: 'desktop-after-restart',
 		})));
 		await flush();
-		expect(terminalFrames.filter(frame => frame.t === 'input').map(frame => frame.data)).toEqual(['whoami\n', 'whoami\n']);
+		expect(terminalFrames.filter(frame => frame.t === 'input').map(frame => frame.data)).toEqual(['whoami\n']);
+		expect(latest?.terminalOperationIssue).toContain('結果を確認できなかった');
 	});
 
 	it('preserves operation sequence while a mutation waits for durable storage', async () => {
@@ -420,12 +442,13 @@ describe('MobileController', () => {
 		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([{ id: 1, title: 'zsh' }]))));
 		await flush();
 
-		controller.sendInput('terminal-1', 'date\n');
+			const pendingInput = controller.sendInput('terminal-1', 'date\n');
 		controller.attachTerminal('terminal-1');
 		await flush();
 		expect(terminalFrames).toEqual([]);
-		outbox.release();
-		await flush();
+			outbox.release();
+			await pendingInput;
+			await flush();
 		expect(terminalFrames.map(frame => frame.t)).toEqual(['input', 'attach']);
 		expect(terminalFrames.map(frame => frame.operationSeq)).toEqual([0, 1]);
 	});
@@ -486,7 +509,7 @@ describe('MobileController', () => {
 		expect(latest?.terminalOutput.get('terminal-1')).toBe('hello\n');
 
 		// mobile → term input（PC側で受信を確認）
-		controller.sendInput('terminal-1', 'ls');
+			await controller.sendInput('terminal-1', 'ls');
 		await flush();
 		expect(pcGot.find(message => message.t === 'input')).toMatchObject({
 			protocolVersion: 3, desktopEpoch: 'desktop-test', terminalKey: 'terminal-1', t: 'input', data: 'ls',

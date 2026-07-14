@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import type { AgentMessageSendResult } from '../store.js';
@@ -20,7 +20,7 @@ export type QuestionGroupAnswer =
 	| { kind: 'text'; optionCount: number; text: string };
 
 export interface AgentActions {
-	send(data: string): void;
+	send(data: string): boolean;
 	sendText(text: string): Promise<AgentMessageSendResult>;
 	answerQuestion(interactionId: string, optionIndex: number): Promise<boolean>;
 	answerQuestionMulti(interactionId: string, indices: number[]): Promise<boolean>;
@@ -30,8 +30,21 @@ export interface AgentActions {
 	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<boolean>;
 }
 
+type AppStoreSnapshot = ReturnType<typeof useAppStore.getState>;
+
+function agentRendererTarget(state: AppStoreSnapshot, terminalKey: string | undefined): string | undefined {
+	if (state.connection !== 'online' || !state.pcOnline || !state.sessionProtocolReady || state.protocolError !== undefined || terminalKey === undefined) {
+		return undefined;
+	}
+	const terminal = state.workspace?.terminals.find(candidate => candidate.terminalKey === terminalKey);
+	const renderer = terminal !== undefined ? state.workspace?.renderers.find(candidate => candidate.windowId === terminal.windowId) : undefined;
+	return renderer?.ready === true && renderer.rendererGeneration === terminal?.rendererGeneration && state.workspace !== undefined
+		? JSON.stringify([state.workspace.desktopEpoch, terminal.windowId, terminal.rendererGeneration, terminal.id, terminal.agentToken ?? null])
+		: undefined;
+}
+
 export function useAgentActions(terminalKey: string | undefined, agent: string | undefined): AgentActions {
-	const sendInput = useAppStore(s => s.sendInput);
+	const sendLiveInput = useAppStore(s => s.sendLiveInput);
 	const sendAgentMessage = useAppStore(s => s.sendAgentMessage);
 	const answerAgentQuestion = useAppStore(s => s.answerAgentQuestion);
 	const answerAgentApproval = useAppStore(s => s.answerAgentApproval);
@@ -39,20 +52,55 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	const interaction = useAppStore(s => terminalKey !== undefined ? s.agentChats.get(terminalKey)?.interaction : undefined);
 	const supportsAgentActions = useAppStore(s => terminalKey !== undefined && s.agentChats.get(terminalKey)?.capabilities?.agentActions === true);
 	const supportsClaudeSettings = useAppStore(s => terminalKey !== undefined && s.agentChats.get(terminalKey)?.capabilities?.claudeSettings === true);
+	const rendererTarget = useAppStore(s => agentRendererTarget(s, terminalKey));
+	const sequenceWaitsRef = useRef(new Map<ReturnType<typeof setTimeout>, () => void>());
+	const cancelSequences = useCallback(() => {
+		for (const [timer, cancel] of sequenceWaitsRef.current) {
+			clearTimeout(timer);
+			cancel();
+		}
+		sequenceWaitsRef.current.clear();
+	}, []);
+	useEffect(() => {
+		cancelSequences();
+		return cancelSequences;
+	}, [rendererTarget, terminalKey, agent, interaction?.kind, interaction?.id, cancelSequences]);
 
 	const send = useCallback((data: string) => {
-		if (terminalKey !== undefined) {
-			sendInput(terminalKey, data);
-		}
-	}, [terminalKey, sendInput]);
+		return terminalKey !== undefined && rendererTarget !== undefined
+			&& agentRendererTarget(useAppStore.getState(), terminalKey) === rendererTarget
+			&& sendLiveInput(terminalKey, data);
+	}, [terminalKey, rendererTarget, sendLiveInput]);
 
 	/** キー列を一定間隔（300ms）でPTYへ注入する（TUIが1入力ずつ処理する時間を確保する）。 */
-	const sendSequence = useCallback((parts: string[]) => {
-		if (terminalKey === undefined) {
-			return;
+	const sendSequence = useCallback(async (parts: string[]) => {
+		const sequenceTarget = rendererTarget;
+		if (terminalKey === undefined || sequenceTarget === undefined || parts.length === 0) {
+			return false;
 		}
-		parts.forEach((part, i) => setTimeout(() => send(part), i * 300));
-	}, [terminalKey, send]);
+		cancelSequences();
+		for (let index = 0; index < parts.length; index++) {
+			if (agentRendererTarget(useAppStore.getState(), terminalKey) !== sequenceTarget) {
+				return false;
+			}
+			if (index > 0) {
+				const continued = await new Promise<boolean>(resolve => {
+					const timer = setTimeout(() => {
+						sequenceWaitsRef.current.delete(timer);
+						resolve(true);
+					}, 300);
+					sequenceWaitsRef.current.set(timer, () => resolve(false));
+				});
+				if (!continued) {
+					return false;
+				}
+			}
+			if (!send(parts[index]!)) {
+				return false;
+			}
+		}
+		return true;
+	}, [terminalKey, rendererTarget, send, cancelSequences]);
 
 	// TUIの入力欄へテキストを入れ、少し置いてからCRで確定する（貼り付け直後の
 	// 確定はTUI側の取りこぼしがあるため。承認番号注入と同じ250ms方式）。
@@ -74,8 +122,10 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 				? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'option', index: optionIndex }])
 				: Promise.resolve(false);
 		}
-		sendSequence([String(optionIndex + 1), '\r']);
-		return Promise.resolve(true);
+		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
+			return Promise.resolve(false);
+		}
+		return sendSequence([String(optionIndex + 1), '\r']);
 	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	const answerQuestionMulti = useCallback((interactionId: string, indices: number[]) => {
@@ -84,9 +134,11 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 				? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'multi', indices }])
 				: Promise.resolve(false);
 		}
+		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
+			return Promise.resolve(false);
+		}
 		const parts = indices.flatMap(index => [String(index + 1), ' ']);
-		sendSequence([...parts, '\r']);
-		return Promise.resolve(true);
+		return sendSequence([...parts, '\r']);
 	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	/**
@@ -100,8 +152,10 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 					? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'text', optionCount, text }])
 					: Promise.resolve(false);
 			}
-			sendSequence([String(optionCount + 1), '\r', text, '\r']);
-			return Promise.resolve(true);
+			if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
+				return Promise.resolve(false);
+			}
+			return sendSequence([String(optionCount + 1), '\r', text, '\r']);
 		},
 		[terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence],
 	);
@@ -122,6 +176,9 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 				? answerAgentQuestion(terminalKey, interactionId, answers)
 				: Promise.resolve(false);
 		}
+		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
+			return Promise.resolve(false);
+		}
 		const parts: string[] = [];
 		for (const answer of answers) {
 			if (answer.kind === 'option') {
@@ -136,8 +193,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 			}
 		}
 		parts.push('\r'); // 全問確定後にSubmit確認ステップが残っている場合の予備
-		sendSequence(parts);
-		return Promise.resolve(true);
+		return sendSequence(parts);
 	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	/**
@@ -157,19 +213,20 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 				? answerAgentApproval(terminalKey, interactionId, choice)
 				: Promise.resolve(false);
 		}
+		if (interaction?.kind !== 'approval' || interaction.id !== interactionId) {
+			return Promise.resolve(false);
+		}
 		if (choice !== 'yes' && choice !== 'no') {
 			return Promise.resolve(false);
 		}
 		if (agent === 'codex') {
-			send(choice === 'yes' ? 'y' : 'd');
+			return Promise.resolve(send(choice === 'yes' ? 'y' : 'd'));
 		} else if (choice === 'yes') {
-			send('1');
-			setTimeout(() => send('\r'), 250);
+			return sendSequence(['1', '\r']);
 		} else {
-			send('\u001b');
+			return Promise.resolve(send('\u001b'));
 		}
-		return Promise.resolve(true);
-	}, [terminalKey, agent, interaction, supportsAgentActions, answerAgentApproval, send]);
+	}, [terminalKey, agent, interaction, supportsAgentActions, answerAgentApproval, send, sendSequence]);
 
 	const updateClaudeSetting = useCallback((setting: 'model' | 'effort', value: string) => {
 		if (terminalKey === undefined || agent !== 'claude' || interaction !== undefined) {
@@ -178,10 +235,8 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		if (supportsClaudeSettings) {
 			return updateClaudeSettingAction(terminalKey, setting, value);
 		}
-		send(`/${setting} ${value}`);
-		setTimeout(() => send('\r'), 250);
-		return Promise.resolve(true);
-	}, [terminalKey, agent, interaction, supportsClaudeSettings, updateClaudeSettingAction, send]);
+		return sendSequence([`/${setting} ${value}`, '\r']);
+	}, [terminalKey, agent, interaction, supportsClaudeSettings, updateClaudeSettingAction, sendSequence]);
 
 	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, approve, updateClaudeSetting };
 }

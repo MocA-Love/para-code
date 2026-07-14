@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -14,6 +14,18 @@ import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
 
+function currentRendererTarget(wsId: string | undefined): string | undefined {
+	const state = useAppStore.getState();
+	if (wsId === undefined || state.connection !== 'online' || !state.pcOnline || !state.sessionProtocolReady) {
+		return undefined;
+	}
+	const selectedWorkspace = state.workspace?.workspaces.find(candidate => candidate.id === wsId);
+	const renderer = selectedWorkspace !== undefined ? state.workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	return renderer?.ready === true && state.workspace !== undefined
+		? `${state.workspace.desktopEpoch}:${renderer.windowId}:${renderer.rendererGeneration}`
+		: undefined;
+}
+
 /**
  * ソース管理画面（モックアップ準拠）。リポジトリ/ブランチ表示、コミット入力、
  * 変更一覧（タップでフルスクリーンのDiffビューア）、最近のコミット
@@ -21,9 +33,16 @@ import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
  */
 export default function ScmScreen() {
 	const ws = useEffectiveWs();
-	const { scmStatus, scmCommit, scmLog, scmCommitFiles, connection } = useAppStore(useShallow(s => ({
+	const { scmStatus, scmCommit, scmLog, scmCommitFiles, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
 		scmStatus: s.scmStatus, scmCommit: s.scmCommit, scmLog: s.scmLog, scmCommitFiles: s.scmCommitFiles, connection: s.connection,
+		pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
 	})));
+	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws?.id);
+	const selectedRenderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	const rendererTarget = selectedRenderer?.ready === true && workspace !== undefined
+		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
+		: undefined;
+	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
 
 	const tabBarSpacer = useTabBarSpacer();
 	// 相対時刻表示（最近のコミットの「〇分前」）を画面を開いたままでも追従させる
@@ -43,55 +62,117 @@ export default function ScmScreen() {
 	const [commitResult, setCommitResult] = useState<string | undefined>();
 
 	const wsId = ws?.id;
+	const contextGenRef = useRef(0);
+	const wsIdRef = useRef(wsId);
+	const rendererTargetRef = useRef(rendererTarget);
+	const refreshGenRef = useRef(0);
+	const refreshInFlightRef = useRef(false);
+	const commitGenRef = useRef(0);
+	if (wsIdRef.current !== wsId || rendererTargetRef.current !== rendererTarget) {
+		wsIdRef.current = wsId;
+		rendererTargetRef.current = rendererTarget;
+		contextGenRef.current++;
+		refreshGenRef.current++;
+		refreshInFlightRef.current = false;
+		commitGenRef.current++;
+	}
 
 	const refresh = useCallback(async () => {
-		if (!wsId || connection !== 'online') {
+		if (!wsId || !live) {
 			return;
 		}
 		setError(undefined);
 		setLogError(undefined);
 		setLoading(true);
+		setLoadingMore(false);
+		refreshInFlightRef.current = true;
+		const contextGen = contextGenRef.current;
+		const refreshGen = ++refreshGenRef.current;
+		const requestTarget = rendererTarget;
 		try {
 			// 履歴取得の失敗はstatus表示を巻き添えにせず、履歴セクション側にエラーを出す
-			const [st, lg] = await Promise.all([
+			const [statusResult, logResult] = await Promise.allSettled([
 				scmStatus(wsId),
-				scmLog(wsId, { limit: 10 }).catch((e: unknown) => {
-					setLogError(String(e instanceof Error ? e.message : e));
-					return undefined;
-				}),
+				scmLog(wsId, { limit: 10 }),
 			]);
-			setStatus(st);
-			setLog(lg);
+			if (contextGenRef.current !== contextGen || refreshGenRef.current !== refreshGen || currentRendererTarget(wsId) !== requestTarget) {
+				return;
+			}
+			if (statusResult.status === 'rejected') {
+				throw statusResult.reason;
+			}
+			setStatus(statusResult.value);
+			if (logResult.status === 'fulfilled') {
+				setLog(logResult.value);
+			} else {
+				setLogError(String(logResult.reason instanceof Error ? logResult.reason.message : logResult.reason));
+			}
 		} catch (e) {
-			setError(String(e instanceof Error ? e.message : e));
+			if (contextGenRef.current === contextGen && refreshGenRef.current === refreshGen && currentRendererTarget(wsId) === requestTarget) {
+				setError(String(e instanceof Error ? e.message : e));
+			}
 		} finally {
-			setLoading(false);
+			if (contextGenRef.current === contextGen && refreshGenRef.current === refreshGen && currentRendererTarget(wsId) === requestTarget) {
+				refreshInFlightRef.current = false;
+				setLoading(false);
+			}
 		}
-	}, [scmStatus, scmLog, wsId, connection]);
+	}, [scmStatus, scmLog, wsId, live, rendererTarget]);
 
 	useEffect(() => {
+		setLoading(false);
+		setLoadingMore(false);
 		setStatus(undefined);
 		setLog(undefined);
 		setDiffTarget(undefined);
 		setExpandedHash(undefined);
 		setCommitFiles({});
+		setMessage('');
+		setCommitResult(undefined);
+		setCommitting(false);
+	}, [wsId]);
+
+	useEffect(() => {
+		setCommitting(false);
+	}, [rendererTarget]);
+
+	useEffect(() => {
 		void refresh();
 	}, [refresh]);
 
+	useEffect(() => {
+		if (!live) {
+			refreshGenRef.current++;
+			refreshInFlightRef.current = false;
+			setLoading(false);
+			setLoadingMore(false);
+		}
+	}, [live]);
+
 	const loadMore = async () => {
-		if (!wsId || !log || loadingMore) {
+		if (!live || !wsId || !log || loadingMore || refreshInFlightRef.current) {
 			return;
 		}
 		setLoadingMore(true);
+		const contextGen = contextGenRef.current;
+		const refreshGen = refreshGenRef.current;
+		const requestTarget = rendererTarget;
 		try {
 			const more = await scmLog(wsId, { limit: 10, skip: log.commits.length });
+			if (contextGenRef.current !== contextGen || refreshGenRef.current !== refreshGen || currentRendererTarget(wsId) !== requestTarget) {
+				return;
+			}
 			// ページ読み込みの合間に新規コミットが積まれるとウィンドウがずれて同じhashが再来しうるため去重する
 			const seen = new Set(log.commits.map(c => c.hash));
 			setLog({ ...log, commits: [...log.commits, ...more.commits.filter(c => !seen.has(c.hash))], hasMore: more.hasMore });
 		} catch (e) {
-			setLogError(String(e instanceof Error ? e.message : e));
+			if (contextGenRef.current === contextGen && refreshGenRef.current === refreshGen && currentRendererTarget(wsId) === requestTarget) {
+				setLogError(String(e instanceof Error ? e.message : e));
+			}
 		} finally {
-			setLoadingMore(false);
+			if (contextGenRef.current === contextGen && refreshGenRef.current === refreshGen && currentRendererTarget(wsId) === requestTarget) {
+				setLoadingMore(false);
+			}
 		}
 	};
 
@@ -120,30 +201,45 @@ export default function ScmScreen() {
 			setExpandedHash(undefined);
 			return;
 		}
+		if (!commitFiles[hash] && (!live || !wsId)) {
+			return;
+		}
 		setExpandedHash(hash);
 		if (!commitFiles[hash] && wsId) {
+			const contextGen = contextGenRef.current;
+			const requestTarget = rendererTarget;
 			scmCommitFiles(wsId, hash)
-				.then(r => setCommitFiles(prev => ({ ...prev, [hash]: { files: r.files } })))
-				.catch((e: unknown) => setCommitFiles(prev => ({ ...prev, [hash]: { error: String(e instanceof Error ? e.message : e) } })));
+				.then(r => { if (contextGenRef.current === contextGen && currentRendererTarget(wsId) === requestTarget) { setCommitFiles(prev => ({ ...prev, [hash]: { files: r.files } })); } })
+				.catch((e: unknown) => { if (contextGenRef.current === contextGen && currentRendererTarget(wsId) === requestTarget) { setCommitFiles(prev => ({ ...prev, [hash]: { error: String(e instanceof Error ? e.message : e) } })); } });
 		}
 	};
 
 	const commit = async () => {
-		if (!wsId || !message.trim() || committing) {
+		if (!live || !wsId || !message.trim() || committing) {
 			return;
 		}
 		setCommitting(true);
 		setCommitResult(undefined);
 		setError(undefined);
+		const contextGen = contextGenRef.current;
+		const commitGen = ++commitGenRef.current;
+		const requestTarget = rendererTarget;
 		try {
 			const result = await scmCommit(wsId, message.trim(), true);
+			if (contextGenRef.current !== contextGen || commitGenRef.current !== commitGen || currentRendererTarget(wsId) !== requestTarget) {
+				return;
+			}
 			setCommitResult(result.output);
 			setMessage('');
 			await refresh();
 		} catch (e) {
-			setError(String(e instanceof Error ? e.message : e));
+			if (contextGenRef.current === contextGen && commitGenRef.current === commitGen && currentRendererTarget(wsId) === requestTarget) {
+				setError(String(e instanceof Error ? e.message : e));
+			}
 		} finally {
-			setCommitting(false);
+			if (contextGenRef.current === contextGen && commitGenRef.current === commitGen && currentRendererTarget(wsId) === requestTarget) {
+				setCommitting(false);
+			}
 		}
 	};
 
@@ -179,9 +275,9 @@ export default function ScmScreen() {
 					multiline
 				/>
 				<Pressable
-					style={[styles.commitBtn, (!wsId || !message.trim() || committing) && styles.commitBtnDisabled]}
+					style={[styles.commitBtn, (!live || !wsId || !message.trim() || committing) && styles.commitBtnDisabled]}
 					onPress={() => { hapticImpact('medium'); void commit(); }}
-					disabled={!wsId || !message.trim() || committing}
+					disabled={!live || !wsId || !message.trim() || committing}
 				>
 					<Text style={styles.commitBtnText}>{committing ? 'コミット中…' : 'コミット'}</Text>
 				</Pressable>
@@ -199,7 +295,7 @@ export default function ScmScreen() {
 					const letter = (f.x !== ' ' && f.x !== '?' ? f.x : f.y) || '?';
 					return (
 						<View key={`${f.x}${f.y}${f.path}`} style={styles.fileRowWrap}>
-							<Pressable style={styles.fileRow} onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ' }); }}>
+							<Pressable disabled={!live} style={[styles.fileRow, !live && styles.commitBtnDisabled]} onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ' }); }}>
 								<Ionicons name="document-text-outline" size={14} color={colors.textDim} />
 								<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
 								<Text style={[styles.fileLetter, letter === 'M' ? styles.mod : letter === 'A' || letter === '?' ? styles.add : letter === 'D' ? styles.del : undefined]}>{letter === '?' ? 'A' : letter}</Text>
@@ -251,7 +347,7 @@ export default function ScmScreen() {
 					);
 				})}
 				{log?.hasMore ? (
-					<Pressable style={styles.loadMoreBtn} onPress={() => { hapticImpact('light'); void loadMore(); }} disabled={loadingMore}>
+					<Pressable style={[styles.loadMoreBtn, (!live || loading || loadingMore) && styles.commitBtnDisabled]} onPress={() => { hapticImpact('light'); void loadMore(); }} disabled={!live || loading || loadingMore}>
 						<Text style={styles.loadMoreText}>{loadingMore ? '読み込み中…' : 'さらに読み込む'}</Text>
 					</Pressable>
 				) : null}

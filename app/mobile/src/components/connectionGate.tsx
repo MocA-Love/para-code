@@ -15,6 +15,7 @@ import { useAppStore } from '../appState.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+import { ConnectionStatusBanner } from './connectionStatusBanner.js';
 
 /**
  * 未ペアリング時の案内。ConnectionGateと、ホーム画面（独自に接続状態を出す都合上
@@ -37,14 +38,11 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const canGoBack = router.canGoBack();
-	const { connection, pcOnline, paired, ready, manualOffline, protocolError, connectRelay } = useAppStore(useShallow(s => ({
+	const { connection, pcOnline, sessionProtocolReady, workspace, paired, ready, manualOffline, protocolError, connectRelay } = useAppStore(useShallow(s => ({
 		connection: s.connection, pcOnline: s.pcOnline, paired: s.paired, ready: s.ready,
+		sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
 		manualOffline: s.manualOffline, protocolError: s.protocolError, connectRelay: s.connectRelay,
 	})));
-
-	if (connection === 'online' && pcOnline && protocolError === undefined) {
-		return <>{children}</>;
-	}
 
 	if (protocolError !== undefined) {
 		return <View style={styles.gated}><View style={styles.center} accessibilityLiveRegion="polite">
@@ -56,6 +54,14 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 
 	if (ready && !paired) {
 		return <View style={styles.gated}><PairingRequiredNotice onStart={() => router.push('/pair')} />{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
+	}
+
+	if (paired && workspace !== undefined) {
+		return <View style={styles.cached}>{children}<ConnectionStatusBanner /></View>;
+	}
+
+	if (connection === 'online' && pcOnline && sessionProtocolReady) {
+		return <>{children}</>;
 	}
 
 	// PCオフライン（リレーには繋がったがPC側が不在）はハンドシェイク未完了(handshaking)の
@@ -92,6 +98,7 @@ function GateBackButton({ onBack, top }: { onBack: () => void; top: number }) {
 
 const styles = StyleSheet.create({
 	gated: { flex: 1, backgroundColor: colors.bg },
+	cached: { flex: 1, backgroundColor: colors.bg },
 	center: { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center', padding: 32, gap: 14 },
 	back: { position: 'absolute', left: 16, flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 12, backgroundColor: colors.surface }, backText: { color: colors.text, fontSize: 13, fontWeight: '600' },
 	title: { color: colors.text, fontSize: 17, fontWeight: '700' },

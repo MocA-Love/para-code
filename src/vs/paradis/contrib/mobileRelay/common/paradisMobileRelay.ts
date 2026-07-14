@@ -222,7 +222,7 @@ export interface IParadisMobileRelayService {
 	 * renderer がターミナル一覧の変化に合わせて呼び、ウィンドウを閉じる際は空配列で自分の分を消す。
 	 * モバイルの端末操作はwindowId + terminalId、エージェント操作はさらにペイントークンで識別する。
 	 */
-	syncAgentPanes(lease: IParadisMobileWindowLease, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
+	syncAgentPanes(lease: IParadisMobileWindowLease, revision: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void>;
 	/** rendererがAgent Actionを実行する直前に、shared processのsession epochを再検証して一度だけclaimする。 */
 	claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'>;
 	/** interactionキー列の待機区間ごとに、sessionとinteractionが継続中か再検証する。 */

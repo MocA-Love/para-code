@@ -7,7 +7,7 @@
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { IParadisMobileWindowLease, ParadisMobileRendererLeaseAuthority } from '../common/paradisMobileWindowLease.js';
+import { IParadisMobileWindowLease, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileRendererLeaseAuthority } from '../common/paradisMobileWindowLease.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 
 /** Electron IPC connection contextを使ってRenderer世代を発行・検証するMain Process channel。 */
@@ -17,36 +17,56 @@ export class ParadisMobileWindowLeaseChannel extends Disposable implements IServ
 
 	constructor(server: IPCServer<string>, windowsMainService: IWindowsMainService) {
 		super();
-		for (const connection of server.connections) {
-			this.authority.addConnection(connection.ctx, connection);
+		const registerWindow = (window: ReturnType<IWindowsMainService['getWindows']>[number]) => {
+			const trackIfWorkbench = () => {
+				if (window.config !== undefined && window.config.isSessionsWindow !== true && this.authority.trackWindow(window.id)) {
+					this.fireManifest();
+				}
+			};
+			if (window.config !== undefined) {
+				trackIfWorkbench();
+			} else {
+				this._register(Event.once(window.onWillLoad)(trackIfWorkbench));
+			}
+			this._register(Event.once(Event.any(window.onDidClose, window.onDidDestroy))(() => {
+				if (this.authority.destroyWindow(window.id)) {
+					this.fireManifest();
+				}
+			}));
+		};
+		for (const window of windowsMainService.getWindows()) {
+			registerWindow(window);
 		}
-		this._register(server.onDidAddConnection(connection => {
+		const registerConnection = (connection: (typeof server.connections)[number]) => {
+			const windowId = /^window:(\d+)$/.exec(connection.ctx)?.[1];
+			const window = windowId === undefined ? undefined : windowsMainService.getWindowById(Number(windowId));
+			if (window?.config !== undefined && window.config.isSessionsWindow !== true) {
+				this.authority.trackWindow(Number(windowId));
+			}
 			if (this.authority.addConnection(connection.ctx, connection)) {
 				this.fireManifest();
 			}
-		}));
+			connection.channelServer.registerChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, {
+				call: <T>(_context: string, command: string, arg?: unknown) => this.callForConnection<T>(connection, connection.ctx, command, arg),
+				listen: <T>(_context: string, event: string) => this.listen<T>('', event),
+			});
+		};
+		for (const connection of server.connections) {
+			registerConnection(connection);
+		}
+		this._register(server.onDidAddConnection(registerConnection));
 		this._register(server.onDidRemoveConnection(connection => {
 			if (this.authority.removeConnection(connection.ctx, connection)) {
 				this.fireManifest();
 			}
 		}));
-		this._register(windowsMainService.onDidDestroyWindow(window => {
-			if (this.authority.destroyWindow(window.id)) {
-				this.fireManifest();
-			}
-		}));
+		this._register(windowsMainService.onDidOpenWindow(registerWindow));
 	}
 
 	async call<T>(context: string, command: string, arg?: unknown): Promise<T> {
 		switch (command) {
-			case 'claim': {
-				const revision = this.authority.manifestRevision;
-				const lease = this.authority.claim(context, typeof arg === 'string' ? arg : '');
-				if (this.authority.manifestRevision !== revision) {
-					this.fireManifest();
-				}
-				return lease as T;
-			}
+			case 'claim':
+				return undefined as T;
 			case 'validate':
 				return this.authority.validate(arg as IParadisMobileWindowLease) as T;
 			case 'manifest':
@@ -54,6 +74,18 @@ export class ParadisMobileWindowLeaseChannel extends Disposable implements IServ
 			default:
 				throw new Error(`Unknown paradisMobileWindowLease command: ${command}`);
 		}
+	}
+
+	private async callForConnection<T>(connection: object, context: string, command: string, arg?: unknown): Promise<T> {
+		if (command !== 'claim') {
+			return this.call(context, command, arg);
+		}
+		const revision = this.authority.manifestRevision;
+		const lease = this.authority.claim(context, connection, typeof arg === 'string' ? arg : '');
+		if (this.authority.manifestRevision !== revision) {
+			this.fireManifest();
+		}
+		return lease as T;
 	}
 
 	listen<T>(_context: string, event: string): Event<T> {

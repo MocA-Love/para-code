@@ -1865,8 +1865,9 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly tokenToWorkspace = new Map<string, string>();
 	/** ペイントークン → 稼働中の tailer (購読者がいる間のみ)。 */
 	private readonly tailers = new Map<string, TranscriptTailer>();
-	/** ペイントークン → 購読中モバイルID。複数端末から同じエージェントを同時に閲覧できる。 */
-	private readonly subscribers = new Map<string, Set<string>>();
+	/** ペイントークン → 購読中モバイルIDとattach時のexact owner。Renderer交代後は
+	 * 新しいattachまで旧購読へdeltaを流さない。 */
+	private readonly subscribers = new Map<string, Map<string, IParadisMobilePaneOwner>>();
 	/** ペイントークン → transcript確定前の最新ライブ状態。履歴とは独立に置換する。 */
 	private readonly liveStates = new Map<string, IParadisAgentLiveState>();
 	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
@@ -1895,14 +1896,20 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly interactionClaims = new Map<string, string>();
 	private readonly activityDetailRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	/** Stateがpane snapshotより先着したattachを、対応表の同期完了まで短時間だけ保留する。 */
+	private readonly pendingAttaches = new Map<string, { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number }; readonly timer: ReturnType<typeof setTimeout>; attempt: number }>();
+	private readonly attachGenerations = new Map<string, number>();
+	private attachGenerationCounter = 0;
+	private attachDisposed = false;
 
 	constructor(
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
 		private readonly requestAction: (mobileId: string, windowId: number, windowSession: string, rendererGeneration: number, payload: Uint8Array) => void,
 		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
-		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string; ws?: string; agentToken: string }) => void,
+		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }) => void,
 		private readonly logService: ILogService,
 		codexShellEnvResolver?: () => Promise<NodeJS.ProcessEnv>,
+		private readonly authorizeOwner: (owner: IParadisMobilePaneOwner) => Promise<boolean> = async () => true,
 	) {
 		super();
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService, codexShellEnvResolver));
@@ -1917,6 +1924,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		}, 60_000);
 		this._register(toDisposable(() => clearInterval(activitySweepTimer)));
 		this._register(toDisposable(() => {
+			this.attachDisposed = true;
+			this.attachGenerations.clear();
+			for (const pending of this.pendingAttaches.values()) {
+				clearTimeout(pending.timer);
+			}
+			this.pendingAttaches.clear();
 			for (const token of [...this.tailers.keys()]) {
 				this.disposeTailer(token);
 			}
@@ -1969,8 +1982,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** rendererがPTY画面からbest-effort抽出した装飾情報を、既存ライブ状態へだけ合成する。 */
-	onTerminalHint(terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): void {
-		const token = this.terminalToToken.get(terminalId);
+	onTerminalHint(windowId: number, windowSession: string, rendererGeneration: number, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): void {
+		const exactOwner = this.paneRegistry.ownerOfTerminal(windowId, windowSession, rendererGeneration, terminalId);
+		const tokenOwner = exactOwner !== undefined ? this.paneRegistry.ownerOf(exactOwner.token, terminalId) : undefined;
+		const token = exactOwner !== undefined && tokenOwner !== undefined && this.samePaneOwner(exactOwner, tokenOwner) ? exactOwner.token : undefined;
 		const previous = token !== undefined ? this.liveStates.get(token) : undefined;
 		if (token === undefined || previous === undefined) {
 			return; // PTY文字列だけでエージェント起動を確定しない
@@ -2016,11 +2031,15 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 空配列も「生存中だがペインがない」状態として保持する。ウィンドウの破棄は
 	 * removePanesでsession一致を確認してから削除する。
 	 */
-	syncPanes(windowId: number, windowSession: string, rendererGeneration: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): void {
-		if (!this.paneRegistry.syncWindow(windowId, windowSession, rendererGeneration, entries)) {
-			return;
+	syncPanes(windowId: number, windowSession: string, rendererGeneration: number, revision: number, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): boolean {
+		if (!this.paneRegistry.syncWindow(windowId, windowSession, rendererGeneration, revision, entries)) {
+			return false;
 		}
 		this.rebuildPaneMappings();
+		for (const pending of [...this.pendingAttaches.values()]) {
+			this.handleAttach(pending.mobileId, pending.msg, true).catch(err => this.logService.warn('[paradisAgentChat] deferred attach failed', err));
+		}
+		return true;
 	}
 
 	removePanes(windowId: number, windowSession: string, rendererGeneration: number): void {
@@ -2269,6 +2288,18 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.releaseInteractionClaim(completed.interactionKey, key);
 			}
 		}
+		for (const [key, pending] of [...this.pendingAttaches]) {
+			if (pending.mobileId === mobileId) {
+				clearTimeout(pending.timer);
+				this.pendingAttaches.delete(key);
+			}
+		}
+		const attachPrefix = `${mobileId}\0`;
+		for (const key of [...this.attachGenerations.keys()]) {
+			if (key.startsWith(attachPrefix)) {
+				this.attachGenerations.delete(key);
+			}
+		}
 		for (const token of [...this.subscribers.keys()]) {
 			if (this.removeSubscriber(token, mobileId)) {
 				this.stopTailerIfUnsubscribed(token);
@@ -2288,9 +2319,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		} catch {
 			return;
 		}
-		if (msg.t === 'attach' && typeof msg.id === 'number') {
+		if (msg.t === 'attach' && this.isValidAttachRequest(msg)) {
 			this.handleAttach(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] attach failed', err));
-		} else if (msg.t === 'detach' && typeof msg.id === 'number') {
+		} else if (msg.t === 'detach' && this.isValidTerminalIdentity(msg)) {
+			this.cancelAttach(this.pendingAttachKey(mobileId, msg.id, msg.token));
 			const token = this.resolveInboundToken(msg.id, msg.token);
 			if (token !== undefined && this.removeSubscriber(token, mobileId)) {
 				this.stopTailerIfUnsubscribed(token);
@@ -2320,10 +2352,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
 		const known = token !== undefined && this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent' && (agent.provider === undefined || agent.provider === session?.agent));
 		const requestKey = `${mobileId}\0${msg.requestId}`;
 		const inFlightForToken = token !== undefined ? [...this.activityDetailRequests.values()].filter(value => value === token).length : 0;
-		if (token === undefined || session === undefined || tailer?.epoch !== msg.epoch || !known || !this.hasSubscriber(token, mobileId) || this.activityDetailRequests.has(requestKey) || inFlightForToken >= 2) {
+		if (token === undefined || session === undefined || owner === undefined || tailer?.epoch !== msg.epoch || !known || !this.hasSubscriber(token, mobileId) || this.activityDetailRequests.has(requestKey) || inFlightForToken >= 2 || !await this.authorizeOwner(owner)) {
 			this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgentの詳細を確認できません' }, token ?? msg.token);
 			return;
 		}
@@ -2334,15 +2367,15 @@ export class ParadisMobileAgentChat extends Disposable {
 				: await this.readClaudeSubagentMessages(session.transcriptPath, msg.activityId, this.claudeSubagentTranscriptPaths.get(`${token}\0${msg.activityId}`));
 			if (this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)
 				&& this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent')) {
-				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, messages }, token);
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, messages }, token, owner);
 			} else if (this.hasSubscriber(token, mobileId)) {
-				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent詳細の対象セッションが更新されました' }, token);
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent詳細の対象セッションが更新されました' }, token, owner);
 			}
 		} catch {
 			if (this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)) {
-				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent transcriptを取得できませんでした' }, token);
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent transcriptを取得できませんでした' }, token, owner);
 			} else if (this.hasSubscriber(token, mobileId)) {
-				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent詳細の対象セッションが更新されました' }, token);
+				this.sendTo(mobileId, { t: 'activity-detail', id: msg.id, requestId: msg.requestId, activityId: msg.activityId, error: 'SubAgent詳細の対象セッションが更新されました' }, token, owner);
 			}
 		} finally {
 			this.activityDetailRequests.delete(requestKey);
@@ -2566,6 +2599,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の承認要求が変わりました' }, token);
 			return;
 		}
+		if (!await this.authorizeOwner(owner)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '操作対象のウィンドウが切り替わりました' }, token);
+			return;
+		}
+		const currentOwner = this.ownerForPane(msg.id, token);
+		if (currentOwner === undefined || !this.samePaneOwner(owner, currentOwner)
+			|| tailer.epoch !== msg.epoch || !tailer.hasPendingInteraction(interaction)
+			|| !this.hasSubscriber(token, mobileId) || this.interactionClaims.has(interactionKey)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の承認要求が変わりました' }, token);
+			return;
+		}
 		const timer = setTimeout(() => {
 			if (this.pendingActions.delete(key)) {
 				this.releaseInteractionClaim(interactionKey, key);
@@ -2728,18 +2772,29 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private isValidControlRequest(msg: { readonly id: unknown; readonly token?: unknown; readonly requestId?: unknown }): msg is { readonly id: number; readonly token?: string; readonly requestId: string } {
-		return typeof msg.id === 'number' && Number.isInteger(msg.id) && msg.id >= 0
-			&& (msg.token === undefined || (typeof msg.token === 'string' && msg.token.length > 0 && msg.token.length <= 200))
+		return this.isValidTerminalIdentity(msg)
 			&& typeof msg.requestId === 'string' && msg.requestId.length > 0 && msg.requestId.length <= 100;
 	}
 
-	private codexControlSession(mobileId: string, terminalId: number, paneToken?: string): { readonly token: string; readonly threadId: string } | undefined {
+	private isValidTerminalIdentity(msg: { readonly id: unknown; readonly token?: unknown }): msg is { readonly id: number; readonly token?: string } {
+		return typeof msg.id === 'number' && Number.isSafeInteger(msg.id) && msg.id >= 0
+			&& (msg.token === undefined || (typeof msg.token === 'string' && msg.token.length > 0 && msg.token.length <= 200));
+	}
+
+	private isValidAttachRequest(msg: { readonly id: unknown; readonly token?: unknown; readonly epoch?: unknown; readonly afterRev?: unknown }): msg is { readonly id: number; readonly token?: string; readonly epoch?: string; readonly afterRev?: number } {
+		return this.isValidTerminalIdentity(msg)
+			&& (msg.epoch === undefined || (typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200))
+			&& (msg.afterRev === undefined || (typeof msg.afterRev === 'number' && Number.isSafeInteger(msg.afterRev) && msg.afterRev >= -1));
+	}
+
+	private codexControlSession(mobileId: string, terminalId: number, paneToken?: string): { readonly token: string; readonly threadId: string; readonly owner: IParadisMobilePaneOwner } | undefined {
 		const token = this.resolveInboundToken(terminalId, paneToken);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		if (token === undefined || session?.agent !== 'codex' || session.sessionId === undefined || !this.hasSubscriber(token, mobileId)) {
+		const owner = token !== undefined ? this.ownerForPane(terminalId, token) : undefined;
+		if (token === undefined || session?.agent !== 'codex' || session.sessionId === undefined || owner === undefined || !this.hasSubscriber(token, mobileId)) {
 			return undefined;
 		}
-		return { token, threadId: session.sessionId };
+		return { token, threadId: session.sessionId, owner };
 	}
 
 	private async handleModelCatalogRequest(mobileId: string, msg: { readonly id: number; readonly token?: string; readonly requestId: string }): Promise<void> {
@@ -2749,10 +2804,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		try {
+			if (!await this.authorizeOwner(session.owner)) {
+				throw new ParadisCodexControlError('unavailable', '操作対象のウィンドウが切り替わりました');
+			}
 			const models = await this.codexLiveClient.listModels(session.threadId);
-			this.sendTo(mobileId, { t: 'model-catalog', id: msg.id, requestId: msg.requestId, models }, session.token);
+			const current = this.codexControlSession(mobileId, msg.id, msg.token);
+			if (current?.token !== session.token || current.threadId !== session.threadId || !this.samePaneOwner(current.owner, session.owner)) {
+				throw new ParadisCodexControlError('unavailable', '操作対象のCodexセッションが切り替わりました');
+			}
+			this.sendTo(mobileId, { t: 'model-catalog', id: msg.id, requestId: msg.requestId, models }, session.token, session.owner);
 		} catch (error) {
-			this.sendControlError(mobileId, msg.id, msg.requestId, error, msg.token);
+			this.sendControlError(mobileId, msg.id, msg.requestId, error, session.token, session.owner);
 		}
 	}
 
@@ -2762,31 +2824,42 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendControlError(mobileId, msg.id, msg.requestId, new ParadisCodexControlError('unavailable', '操作対象のCodexセッションを確認できません'), msg.token);
 			return;
 		}
-		this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'pending' }, session.token);
+		if (!await this.authorizeOwner(session.owner)) {
+			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed', code: 'stale-session', message: '操作対象のウィンドウが切り替わりました' }, session.token);
+			return;
+		}
+		if (!await this.sendToAuthorized(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'pending' }, session.token, session.owner)) {
+			return;
+		}
 		try {
 			const settings = await this.codexLiveClient.updateThreadSettings(session.threadId, msg.model, msg.effort);
 			const current = this.codexControlSession(mobileId, msg.id, msg.token);
-			if (current?.token !== session.token || current.threadId !== session.threadId) {
+			if (current?.token !== session.token || current.threadId !== session.threadId || !this.samePaneOwner(current.owner, session.owner) || !await this.authorizeOwner(current.owner)) {
 				this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed', code: 'stale-session', message: '操作対象のCodexセッションが切り替わりました' }, current?.token ?? session.token);
 				return;
 			}
 			this.codexThreadSettings.set(session.token, settings);
 			this.pushInfoToSubscribers(session.token);
 			const info = { model: settings.model, ...(settings.effort !== undefined ? { effort: settings.effort } : {}) };
-			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'confirmed', info }, session.token);
+			this.sendTo(mobileId, { t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'confirmed', info }, session.token, session.owner);
 		} catch (error) {
 			const normalized = ParadisMobileAgentChat.controlError(error);
 			const current = this.codexControlSession(mobileId, msg.id, msg.token);
 			this.sendTo(mobileId, {
 				t: 'settings-update', id: msg.id, requestId: msg.requestId, status: 'failed',
 				code: current?.token === session.token && current.threadId === session.threadId ? normalized.code : 'stale-session', message: current?.token === session.token && current.threadId === session.threadId ? normalized.message : '操作対象のCodexセッションが切り替わりました',
-			}, current?.token ?? session.token);
+			}, session.token, session.owner);
 		}
 	}
 
-	private sendControlError(mobileId: string, terminalId: number, requestId: string, error: unknown, token?: string): void {
+	private sendControlError(mobileId: string, terminalId: number, requestId: string, error: unknown, token?: string, owner?: IParadisMobilePaneOwner): void {
 		const normalized = ParadisMobileAgentChat.controlError(error);
-		this.sendTo(mobileId, { t: 'model-control-error', id: terminalId, requestId, code: normalized.code, message: normalized.message }, token);
+		this.sendTo(mobileId, { t: 'model-control-error', id: terminalId, requestId, code: normalized.code, message: normalized.message }, token, owner);
+	}
+
+	private samePaneOwner(a: IParadisMobilePaneOwner, b: IParadisMobilePaneOwner): boolean {
+		return a.windowId === b.windowId && a.windowSession === b.windowSession && a.rendererGeneration === b.rendererGeneration
+			&& a.terminalId === b.terminalId && a.token === b.token;
 	}
 
 	private static controlError(error: unknown): { readonly code: string; readonly message: string } {
@@ -2796,48 +2869,124 @@ export class ParadisMobileAgentChat extends Disposable {
 		return { code: 'unavailable', message: 'Codexのモデル設定を更新できませんでした' };
 	}
 
-	private async handleAttach(mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number }): Promise<void> {
+	private async handleAttach(mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number }, retry = false): Promise<void> {
+		const pendingKey = this.pendingAttachKey(mobileId, msg.id, msg.token);
+		const attachGeneration = retry ? this.attachGenerations.get(pendingKey) : ++this.attachGenerationCounter;
+		if (attachGeneration === undefined || this.attachDisposed) {
+			return;
+		}
+		if (!retry) {
+			this.attachGenerations.set(pendingKey, attachGeneration);
+			this.clearPendingAttach(pendingKey);
+		}
 		const token = this.resolveInboundToken(msg.id, msg.token);
-		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		if (token === undefined || session === undefined) {
-			// エージェント未起動、または探索でも見つからない。モバイル側は
-			// 「ターミナルタブで見る」案内を出す。トークンが分かる場合は購読者として
-			// 記録しておき、後からhookでセッションが判明したら自動でスナップショットを
-			// 送り直す(エージェント起動を待たずにattachしたケースの自己回復)。
-			if (token !== undefined) {
-				this.addSubscriber(token, mobileId);
+		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
+		if (token === undefined || owner === undefined) {
+			if (msg.token !== undefined) {
+				this.deferAttach(pendingKey, mobileId, msg);
+			} else {
+				this.clearAttachGeneration(pendingKey, attachGeneration);
 			}
-			this.sendTo(mobileId, { t: 'none', id: msg.id }, msg.token);
 			return;
 		}
-		this.addSubscriber(token, mobileId);
-		const tailer = this.ensureTailer(token, session);
-		await tailer.ready;
-		// attach処理中に購読またはセッションが置き換わっていたら旧snapshotを送らない。
-		if (!this.hasSubscriber(token, mobileId) || this.paneSessions.get(token) !== session || this.tailers.get(token) !== tailer) {
+		// authority待ちの間もpendingを保持する。Renderer交代syncが先行した場合は同じ
+		// generationのretryが新ownerで走り、detach/drop/期限切れはgenerationを無効化する。
+		const pendingAttach = this.deferAttach(pendingKey, mobileId, msg);
+		const attempt = ++pendingAttach.attempt;
+		const authorized = await this.authorizeOwner(owner);
+		if (this.attachDisposed || this.attachGenerations.get(pendingKey) !== attachGeneration
+			|| this.pendingAttaches.get(pendingKey) !== pendingAttach || pendingAttach.attempt !== attempt) {
 			return;
 		}
-		const afterRev = msg.afterRev;
-		// 差分応答は「afterRevの続きが欠けなくリングに残っている」場合のみ。切断中に
-		// リング上限を超えて古い分が退避済みだと、先頭revが飛んでいてサイレント欠落に
-		// なるため、その場合は全量スナップショットへフォールバックする。
-		const oldestRev = tailer.messages.length > 0 ? tailer.messages[0].rev : tailer.rev;
-		const info = this.infoOf(token, tailer);
-		const live = this.liveStates.get(token) ?? null;
-		const activity = this.activityTrackers.get(token)?.snapshot() ?? null;
-		const interaction = tailer.currentInteraction();
-		if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
-			// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
-			const messages = tailer.messages.filter(m => m.rev > afterRev);
-			this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } }, token);
-		} else {
-			const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
-			this.sendTo(mobileId, {
-				t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
-				...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
-				...(info !== undefined ? { info } : {}),
-				live, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
-			}, token);
+		const currentOwner = this.ownerForPane(msg.id, token);
+		if (!authorized || currentOwner === undefined || !this.samePaneOwner(currentOwner, owner)) {
+			return;
+		}
+		this.clearPendingAttach(pendingKey);
+		try {
+			const currentSession = this.paneSessions.get(token);
+			if (currentSession === undefined) {
+				// エージェント未起動、または探索でも見つからない。モバイル側は
+				// 「ターミナルタブで見る」案内を出す。トークンが分かる場合は購読者として
+				// 記録しておき、後からhookでセッションが判明したら自動でスナップショットを
+				// 送り直す(エージェント起動を待たずにattachしたケースの自己回復)。
+				this.addSubscriber(token, mobileId, owner);
+				this.sendTo(mobileId, { t: 'none', id: msg.id }, token, owner);
+				return;
+			}
+			this.addSubscriber(token, mobileId, owner);
+			const tailer = this.ensureTailer(token, currentSession);
+			await tailer.ready;
+			// attach処理中に購読またはセッションが置き換わっていたら旧snapshotを送らない。
+			if (this.attachDisposed || this.attachGenerations.get(pendingKey) !== attachGeneration
+				|| !this.hasSubscriber(token, mobileId) || this.paneSessions.get(token) !== currentSession || this.tailers.get(token) !== tailer) {
+				return;
+			}
+			const afterRev = msg.afterRev;
+			// 差分応答は「afterRevの続きが欠けなくリングに残っている」場合のみ。切断中に
+			// リング上限を超えて古い分が退避済みだと、先頭revが飛んでいてサイレント欠落に
+			// なるため、その場合は全量スナップショットへフォールバックする。
+			const oldestRev = tailer.messages.length > 0 ? tailer.messages[0].rev : tailer.rev;
+			const info = this.infoOf(token, tailer);
+			const live = this.liveStates.get(token) ?? null;
+			const activity = this.activityTrackers.get(token)?.snapshot() ?? null;
+			const interaction = tailer.currentInteraction();
+			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
+				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
+				const messages = tailer.messages.filter(m => m.rev > afterRev);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } }, token, owner);
+			} else {
+				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
+				this.sendTo(mobileId, {
+					t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
+					...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
+					...(info !== undefined ? { info } : {}),
+					live, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
+				}, token, owner);
+			}
+		} finally {
+			this.clearAttachGeneration(pendingKey, attachGeneration);
+		}
+	}
+
+	private pendingAttachKey(mobileId: string, terminalId: number, token: string | undefined): string {
+		return `${mobileId}\0${terminalId}\0${token ?? ''}`;
+	}
+
+	private deferAttach(key: string, mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number }): { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number }; readonly timer: ReturnType<typeof setTimeout>; attempt: number } {
+		const existing = this.pendingAttaches.get(key);
+		if (existing !== undefined) {
+			return existing;
+		}
+		while (this.pendingAttaches.size >= 256) {
+			const oldest = this.pendingAttaches.keys().next().value;
+			if (oldest === undefined) {
+				break;
+			}
+			this.cancelAttach(oldest);
+		}
+		const timer = setTimeout(() => this.cancelAttach(key), 15_000);
+		const pending = { mobileId, msg, timer, attempt: 0 };
+		this.pendingAttaches.set(key, pending);
+		return pending;
+	}
+
+	private clearPendingAttach(key: string): void {
+		const pending = this.pendingAttaches.get(key);
+		if (pending !== undefined) {
+			clearTimeout(pending.timer);
+			this.pendingAttaches.delete(key);
+		}
+	}
+
+	private cancelAttach(key: string): void {
+		this.clearPendingAttach(key);
+		this.attachGenerations.delete(key);
+	}
+
+	private clearAttachGeneration(key: string, generation: number): void {
+		if (this.attachGenerations.get(key) === generation) {
+			this.attachGenerations.delete(key);
 		}
 	}
 
@@ -3416,7 +3565,7 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** 購読者がいれば、そのペインの現行セッションでattach相当のスナップショットを送る。 */
 	private pushToSubscribers(token: string): void {
-		const subscribers = [...(this.subscribers.get(token) ?? [])];
+		const subscribers = [...(this.subscribers.get(token)?.keys() ?? [])];
 		const terminalId = this.terminalIdForToken(token);
 		if (terminalId !== undefined) {
 			for (const subscriber of subscribers) {
@@ -3635,8 +3784,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					for (const message of messages) {
 						if (message.kind === 'question') {
-							const ws = this.tokenToWorkspace.get(token);
-							this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(message.header !== undefined ? { header: message.header } : {}), ...(ws !== undefined ? { ws } : {}), agentToken: token });
+							this.notifyQuestionForCurrentOwner(token, tailer, terminalId, message);
 						}
 					}
 				}
@@ -3723,6 +3871,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	private notifyQuestionForCurrentOwner(token: string, tailer: TranscriptTailer, terminalId: number, message: IParadisAgentChatMessage): void {
+		const owner = this.ownerForPane(terminalId, token);
+		if (owner === undefined) {
+			return;
+		}
+		void this.authorizeOwner(owner).then(authorized => {
+			const current = this.ownerForPane(terminalId, token);
+			if (!authorized || current === undefined || !this.samePaneOwner(current, owner) || this.tailers.get(token) !== tailer) {
+				return;
+			}
+			const ws = this.tokenToWorkspace.get(token);
+			this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(message.header !== undefined ? { header: message.header } : {}), ...(ws !== undefined ? { ws } : {}), agentToken: token, owner });
+		}, error => this.logService.warn('[paradisAgentChat] question owner validation failed', error));
+	}
+
 	private terminalIdForToken(token: string): number | undefined {
 		return this.paneRegistry.ownerOf(token)?.terminalId;
 	}
@@ -3765,13 +3928,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		this._onDidChangeConfirmedAgentPanes.fire(next);
 	}
 
-	private addSubscriber(token: string, mobileId: string): void {
+	private addSubscriber(token: string, mobileId: string, owner: IParadisMobilePaneOwner): void {
 		let subscribers = this.subscribers.get(token);
 		if (subscribers === undefined) {
-			subscribers = new Set<string>();
+			subscribers = new Map<string, IParadisMobilePaneOwner>();
 			this.subscribers.set(token, subscribers);
 		}
-		subscribers.add(mobileId);
+		subscribers.set(mobileId, owner);
 	}
 
 	private removeSubscriber(token: string, mobileId: string): boolean {
@@ -3786,16 +3949,43 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private hasSubscriber(token: string, mobileId: string): boolean {
-		return this.subscribers.get(token)?.has(mobileId) === true;
+		const subscribedOwner = this.subscribers.get(token)?.get(mobileId);
+		const currentOwner = this.paneRegistry.ownerOf(token);
+		return subscribedOwner !== undefined && currentOwner !== undefined && this.samePaneOwner(subscribedOwner, currentOwner);
 	}
 
 	private sendToSubscribers(token: string, msg: AgentOutbound): void {
-		for (const mobileId of this.subscribers.get(token) ?? []) {
-			this.sendTo(mobileId, msg, token);
+		for (const [mobileId, owner] of this.subscribers.get(token) ?? []) {
+			this.sendTo(mobileId, msg, token, owner);
 		}
 	}
 
-	private sendTo(mobileId: string, msg: AgentOutbound, token?: string): void {
-		this.send(mobileId, encoder.encode(JSON.stringify({ ...msg, ...(token !== undefined ? { token } : {}) })));
+	private sendTo(mobileId: string, msg: AgentOutbound, token?: string, expectedOwner?: IParadisMobilePaneOwner): void {
+		void this.sendToAuthorized(mobileId, msg, token, expectedOwner);
+	}
+
+	private async sendToAuthorized(mobileId: string, msg: AgentOutbound, token?: string, expectedOwner?: IParadisMobilePaneOwner): Promise<boolean> {
+		const payload = encoder.encode(JSON.stringify({ ...msg, ...(token !== undefined ? { token } : {}) }));
+		if (token === undefined) {
+			this.send(mobileId, payload);
+			return true;
+		}
+		const owner = expectedOwner ?? this.subscribers.get(token)?.get(mobileId) ?? this.paneRegistry.ownerOf(token);
+		if (owner === undefined) {
+			return false;
+		}
+		try {
+			const authorized = await this.authorizeOwner(owner);
+			const current = this.paneRegistry.ownerOf(token);
+			const subscribed = this.subscribers.get(token)?.get(mobileId);
+			if (authorized && current !== undefined && subscribed !== undefined
+				&& this.samePaneOwner(current, owner) && this.samePaneOwner(subscribed, owner)) {
+				this.send(mobileId, payload);
+				return true;
+			}
+		} catch (error) {
+			this.logService.warn('[paradisAgentChat] outbound owner validation failed', error);
+		}
+		return false;
 	}
 }

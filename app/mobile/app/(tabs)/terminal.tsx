@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useIsFocused } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -27,14 +27,14 @@ import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
  */
 export default function TerminalScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, terminalOutput, terminalOperationIssue, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal } = useAppStore(useShallow(s => ({
+	const { workspace, terminalOutput, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, terminalOutput: s.terminalOutput,
-		terminalOperationIssue: s.terminalOperationIssue,
 		selectedTerminalKey: s.selectedTerminalKey, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, subscribeTerminal: s.subscribeTerminal, sendInput: s.sendInput,
 		sendArrowKey: s.sendArrowKey, sendTextInput: s.sendTextInput, createTerminal: s.createTerminal,
 	})));
 	const [input, setInput] = useState('');
+	const [submitting, setSubmitting] = useState(false);
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
 	const isFocused = useIsFocused();
@@ -45,6 +45,8 @@ export default function TerminalScreen() {
 		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
 	const activeTerminal = resolveExplicitTerminalSelection(terminals, selectedTerminalKey, () => true);
 	const activeKey = activeTerminal?.terminalKey;
+	const activeKeyRef = useRef(activeKey);
+	activeKeyRef.current = activeKey;
 	const output = activeKey !== undefined ? terminalOutput.get(activeKey) ?? '' : '';
 
 	useEffect(() => {
@@ -74,7 +76,7 @@ export default function TerminalScreen() {
 
 	const send = (data: string) => {
 		if (activeKey !== undefined) {
-			sendInput(activeKey, data);
+			void sendInput(activeKey, data);
 		}
 	};
 	const sendArrow = (key: 'up' | 'down' | 'right' | 'left') => {
@@ -82,19 +84,26 @@ export default function TerminalScreen() {
 			sendArrowKey(activeKey, key);
 		}
 	};
-	const submit = () => {
-		if (activeKey === undefined) {
+	const submit = async () => {
+		if (activeKey === undefined || submitting) {
 			return;
 		}
+		setSubmitting(true);
+		const submitted = input;
+		const submittedKey = activeKey;
+		let accepted = false;
 		if (input === '') {
 			// 空のまま送信 = Enter 単独（TUIの確認プロンプト等に必要）。bracketed paste で
 			// 包むと空ペーストになってしまうため生のEnterを送る。
-			sendInput(activeKey, '\r');
+			accepted = await sendInput(activeKey, '\r');
 		} else {
 			// テキストはPC側でbracketed paste対応の上で実行される（複数行対応）。
-			sendTextInput(activeKey, input, true);
+			accepted = await sendTextInput(activeKey, submitted, true);
 		}
-		setInput('');
+		if (accepted && activeKeyRef.current === submittedKey) {
+			setInput(current => current === submitted ? '' : current);
+		}
+		setSubmitting(false);
 	};
 
 	return (
@@ -104,7 +113,6 @@ export default function TerminalScreen() {
 		    クリーンな状態から再計算させる） */}
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90} enabled={isFocused}>
 			<WsHeader title="ターミナル" />
-			{terminalOperationIssue !== undefined ? <View style={styles.operationWarning}><Ionicons name="warning-outline" size={16} color={colors.orange} /><Text style={styles.operationWarningText}>{terminalOperationIssue}</Text></View> : null}
 			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
 				{terminals.map((t, i) => {
 					const active = t.terminalKey === activeKey;
