@@ -12,7 +12,7 @@ import { decodePairingUri } from '@para/protocol';
 import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
-import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
+import { configureNotificationHandler, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
 import { connectionActionForAppState, shouldPresentForegroundNotification, shouldRunForegroundWork } from './appLifecycle.js';
 
 interface AppState extends StoreState {
@@ -159,6 +159,8 @@ export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',
 	pcOnline: false,
 	workspace: undefined,
+	protocolError: undefined,
+	terminalOperationIssue: undefined,
 	terminalOutput: new Map(),
 	notifications: [],
 	browserFrame: undefined,
@@ -185,6 +187,7 @@ export const useAppStore = create<AppState>(set => ({
 			const loaded = await loadOrCreateIdentity(secureKeyStore);
 			identity = loaded.identity;
 			const operationRun = await reserveOperationRun(secureKeyStore);
+			const persistedOperationOutbox = await terminalOperationOutboxStore.load();
 			// 通知設定をロード（保存が無い/壊れている場合は既定値のまま）
 			try {
 				const raw = await secureKeyStore.getItem('notifyPrefs');
@@ -239,6 +242,8 @@ export const useAppStore = create<AppState>(set => ({
 				__DEV__ ? 'dev' : 'prod',
 				persistNotifyKey,
 				operationRun,
+				terminalOperationOutboxStore,
+				persistedOperationOutbox,
 			);
 			// オンラインになるたび通知設定をPCへ同期する（PC側の永続値を最新に保つ。
 			// オフライン中に変更した設定もここで追いつく）。init()が後続処理の失敗で

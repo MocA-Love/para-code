@@ -22,18 +22,35 @@ suite('ParadisMobileRendererLeaseAuthority', () => {
 
 		assert.strictEqual(oldLease?.rendererGeneration, 1);
 		assert.strictEqual(newLease?.rendererGeneration, 2);
-		assert.strictEqual(authority.validate(oldLease!), false);
-		assert.strictEqual(authority.validate(newLease!), true);
+		assert.strictEqual(authority.validate(oldLease!).valid, false);
+		assert.strictEqual(authority.validate(newLease!).valid, true);
 
 		authority.removeConnection('window:7', oldConnection);
-		assert.deepStrictEqual(authority.manifest(), [newLease]);
+		assert.deepStrictEqual(authority.manifest().entries.map(entry => ({ windowId: entry.windowId, windowSession: entry.windowSession, rendererGeneration: entry.rendererGeneration, claimed: entry.claimed })), [
+			{ ...newLease!, claimed: true },
+		]);
 	});
 
 	test('未claimの特殊windowをmanifestへ混ぜずcontext外からのclaimを拒否する', () => {
 		const authority = new ParadisMobileRendererLeaseAuthority();
 		authority.addConnection('window:3', {});
 
-		assert.deepStrictEqual(authority.manifest(), []);
+		assert.deepStrictEqual(authority.manifest().entries, []);
 		assert.strictEqual(authority.claim('shared-process', 'forged'), undefined);
+	});
+
+	test('claim済みwindowはreloadのIPC gap中もpending manifestへ残りdestroy時だけ消える', () => {
+		const authority = new ParadisMobileRendererLeaseAuthority();
+		const connection = {};
+		authority.addConnection('window:5', connection);
+		authority.claim('window:5', 'session');
+		authority.removeConnection('window:5', connection);
+
+		const pending = authority.manifest();
+		assert.strictEqual(pending.entries.length, 1);
+		assert.strictEqual(pending.entries[0]?.claimed, false);
+		assert.strictEqual(authority.destroyWindow(5), true);
+		assert.deepStrictEqual(authority.manifest().entries, []);
+		assert.ok(authority.manifest().revision > pending.revision);
 	});
 });

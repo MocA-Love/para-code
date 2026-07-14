@@ -34,7 +34,7 @@ import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCr
 import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
-import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus } from '../common/paradisMobileRelay.js';
+import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
@@ -47,7 +47,7 @@ const decoder = new TextDecoder();
 type StateSnapshot = IParadisMobileWindowStateV2;
 
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
-type TermInboundBase = { protocolVersion: 2; desktopEpoch: string; operationId: string };
+type TermInboundBase = { protocolVersion: 3; desktopEpoch: string; operationId: string };
 type TermInbound = TermInboundBase & (
 	// epoch はモバイルが attach ごとに採番する世代番号。指定があると同期プロトコル
 	// （seq 付与・ACKフロー制御・リサイズ時スナップショット再同期）が有効になる。
@@ -1256,7 +1256,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} catch {
 			return;
 		}
-		if (msg.protocolVersion !== 2 || typeof msg.desktopEpoch !== 'string' || typeof msg.operationId !== 'string' || mobileId === undefined) {
+		if (msg.protocolVersion !== PARADIS_MOBILE_PROTOCOL_VERSION || typeof msg.desktopEpoch !== 'string' || typeof msg.operationId !== 'string' || mobileId === undefined) {
 			return;
 		}
 		const complete = (status: ParadisMobileTerminalOperationStatus) => this.completeTerminalOperation(mobileId, msg.operationId, status);

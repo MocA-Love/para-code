@@ -1349,7 +1349,7 @@ export class CodeApplication extends Disposable {
 
 		// allow-any-unicode-next-line
 		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。
-		const paradisMobileWindowLeaseChannel = disposables.add(new ParadisMobileWindowLeaseChannel(mainProcessElectronServer));
+		const paradisMobileWindowLeaseChannel = disposables.add(new ParadisMobileWindowLeaseChannel(mainProcessElectronServer, accessor.get(IWindowsMainService)));
 		mainProcessElectronServer.registerChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, paradisMobileWindowLeaseChannel);
 		sharedProcessClient.then(client => client.registerChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, paradisMobileWindowLeaseChannel));
 

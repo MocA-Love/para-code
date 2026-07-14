@@ -60,6 +60,7 @@ import {
 	IParadisMobileRelayService,
 	IParadisMobileStatus,
 	PARADIS_MOBILE_DEFAULT_RELAY_URL,
+	PARADIS_MOBILE_PROTOCOL_VERSION,
 	ParadisMobileConnectionState,
 	ParadisMobileInboundFrameWire,
 	ParadisMobilePairingEvent,
@@ -67,7 +68,7 @@ import {
 	paradisMobileWindowRoute,
 } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowLeaseRef, ParadisMobileOperationLedger } from './paradisMobileOperationLedger.js';
-import { IParadisMobileWindowLease, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
+import { IParadisMobileRendererManifest, IParadisMobileWindowLease, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
 import { promises as fs } from 'fs';
@@ -302,6 +303,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (this.sharedPageBindings) {
 			this._register(this.sharedPageBindings.onDidAcknowledgePane(token => this.dispatchAgentDismiss(token)));
 		}
+		this._register(this.windowLeaseClient.onDidChangeManifest(manifest => {
+			this.broadcastDesktopState(undefined, manifest).catch(error => this.logService.warn('[paradisMobileRelay] manifest state broadcast failed', error));
+		}));
 		this._register(toDisposable(() => {
 			for (const timer of this.terminalOperationTimers.values()) {
 				clearTimeout(timer);
@@ -724,7 +728,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * （ウィンドウ単位の全置換）。チャットミラーはこの対応でモバイルの attach(id) を transcript へ解決する。
 	 */
 	async syncAgentPanes(lease: IParadisMobileWindowLease, entries: readonly { terminalId: number; token: string; cwd?: string; ws?: string }[]): Promise<void> {
-		if (!await this.windowLeaseClient.validate(lease)) {
+		if (!(await this.windowLeaseClient.validate(lease)).valid) {
 			return;
 		}
 		this.agentChat.syncPanes(lease.windowId, lease.windowSession, lease.rendererGeneration, entries);
@@ -774,11 +778,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * agentチャネル用: `claude` / `codex` コマンドの実行開始検知 (shell integration 由来)。
 	 * cwd ベースのセッション探索を前倒しするトリガーとしてのみ使う (詳細は common の interface コメント)。
 	 */
-	async notifyAgentCliCommand(paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<void> {
+	async notifyAgentCliCommand(lease: IParadisMobileWindowLease, paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<void> {
+		if (!await this.isCurrentRendererLease(lease)) { return; }
 		this.agentChat.onCliCommandDetected(paneToken, agent, mode, cwd, commandCwd, sessionId);
 	}
 
-	async notifyAgentCliCommandFinished(paneToken: string): Promise<void> {
+	async notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string): Promise<void> {
+		if (!await this.isCurrentRendererLease(lease)) { return; }
 		this.agentChat.onCliCommandFinished(paneToken);
 	}
 
@@ -786,7 +792,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.agentChat.setCodexDaemonEnabled(options.codexDaemonStreaming === true);
 	}
 
-	async notifyAgentTerminalHint(terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void> {
+	async notifyAgentTerminalHint(lease: IParadisMobileWindowLease, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void> {
+		if (!await this.isCurrentRendererLease(lease)) { return; }
 		this.agentChat.onTerminalHint(terminalId, hint);
 	}
 
@@ -815,7 +822,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
-	async sendFrame(ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void> {
+	async sendFrame(lease: IParadisMobileWindowLease, ch: ChannelId, ws: string | undefined, mobileId: string | undefined, payload: VSBuffer): Promise<void> {
+		if (!await this.isCurrentRendererLease(lease)) {
+			return;
+		}
 		const bytes = payload.buffer;
 		// Notify のブロードキャストは専用経路へ: オンラインへはフレーム、オフラインへはAPNsプッシュ。
 		// renderer 側の通知（agentStatus遷移由来の emitNotify）もこの1点でプッシュ対応になる。
@@ -840,15 +850,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	async syncTerminalWindow(lease: IParadisMobileWindowLease, state: IParadisMobileWindowStateV2): Promise<void> {
-		if (!await this.windowLeaseClient.validate(lease)) {
+		const validation = await this.windowLeaseClient.validate(lease);
+		if (!validation.valid) {
 			return;
 		}
 		const previous = this.terminalRegistry.leaseOfWindow(lease.windowId);
-		this.terminalRegistry.syncWindow(lease.windowId, lease.windowSession, lease.rendererGeneration, state);
+		this.terminalRegistry.syncWindow(lease.windowId, lease.windowSession, lease.rendererGeneration, state, validation);
 		const current = this.terminalRegistry.leaseOfWindow(lease.windowId);
 		if (this.sameLease(current, lease) && previous !== undefined && !this.sameLease(previous, lease)) {
-			this.markTerminalOperationsUnknownForOwner(previous);
-			this.agentChat.removePanes(previous.windowId, previous.windowSession, previous.rendererGeneration);
+			this.cleanupRemovedRenderer(previous);
 		}
 		const conflicts = this.terminalRegistry.conflictingTerminalKeys();
 		if (conflicts.length > 0) {
@@ -862,31 +872,54 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// terminal stateの初回同期よりpane同期が先に届いた場合も、同じsessionだけは掃除する。
 		this.agentChat.removePanes(lease.windowId, lease.windowSession, lease.rendererGeneration);
 		if (removed) {
+			this.agentChat.removeOwnerActions(lease.windowId, lease.windowSession, lease.rendererGeneration);
 			this.markTerminalOperationsUnknownForOwner(lease);
 			await this.broadcastDesktopState();
 		}
 	}
 
-	private async broadcastDesktopState(mobileId?: string): Promise<void> {
-		let state = this.terminalRegistry.desktopState(false);
-		try {
-			const manifest = await this.windowLeaseClient.manifest();
-			this.terminalRegistry.reconcile(manifest);
-			state = this.terminalRegistry.desktopState(this.terminalRegistry.isComplete(manifest));
-		} catch (error) {
-			this.logService.warn('[paradisMobileRelay] failed to read Renderer lease manifest', error);
-		}
-		const bytes = new TextEncoder().encode(JSON.stringify(state));
-		if (mobileId !== undefined) {
-			const session = this.sessions.get(mobileId);
-			if (session?.isOnline) {
-				await session.sendFrame(Channels.State, undefined, bytes);
+	private desktopStateBroadcastChain = Promise.resolve();
+
+	private broadcastDesktopState(mobileId?: string, suppliedManifest?: IParadisMobileRendererManifest): Promise<void> {
+		const run = this.desktopStateBroadcastChain.then(async () => {
+			try {
+				const manifest = suppliedManifest ?? await this.windowLeaseClient.manifest();
+				for (const removed of this.terminalRegistry.reconcile(manifest)) {
+					this.cleanupRemovedRenderer(removed);
+				}
+			} catch (error) {
+				this.logService.warn('[paradisMobileRelay] failed to read Renderer lease manifest', error);
 			}
-			return;
+			const state = this.terminalRegistry.desktopState();
+			const bytes = new TextEncoder().encode(JSON.stringify(state));
+			if (mobileId !== undefined) {
+				const session = this.sessions.get(mobileId);
+				if (session?.isOnline) {
+					await session.sendFrame(Channels.State, undefined, bytes);
+				}
+				return;
+			}
+			for (const session of this.sessions.values()) {
+				if (session.isOnline) {
+					await session.sendFrame(Channels.State, undefined, bytes);
+				}
+			}
+		});
+		this.desktopStateBroadcastChain = run.catch(() => { });
+		return run;
+	}
+
+	private cleanupRemovedRenderer(lease: IParadisMobileWindowLease): void {
+		this.agentChat.removePanes(lease.windowId, lease.windowSession, lease.rendererGeneration);
+		this.agentChat.removeOwnerActions(lease.windowId, lease.windowSession, lease.rendererGeneration);
+		this.markTerminalOperationsUnknownForOwner(lease);
+		const focus = this.windowFocus.get(lease.windowId);
+		if (focus?.windowSession === lease.windowSession && focus.rendererGeneration === lease.rendererGeneration) {
+			this.windowFocus.delete(lease.windowId);
 		}
-		for (const session of this.sessions.values()) {
-			if (session.isOnline) {
-				await session.sendFrame(Channels.State, undefined, bytes);
+		for (const [mobileId, active] of this.webrtcRendererLeases) {
+			if (this.sameLease(active.owner, lease)) {
+				this.webrtcRendererLeases.delete(mobileId);
 			}
 		}
 	}
@@ -896,8 +929,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private async isCurrentRendererLease(lease: IParadisMobileWindowLease): Promise<boolean> {
-		return this.sameLease(this.terminalRegistry.leaseOfWindow(lease.windowId), lease)
-			&& await this.windowLeaseClient.validate(lease);
+		if (!this.sameLease(this.terminalRegistry.leaseOfWindow(lease.windowId), lease)) {
+			return false;
+		}
+		return (await this.windowLeaseClient.validate(lease)).valid
+			&& this.sameLease(this.terminalRegistry.leaseOfWindow(lease.windowId), lease);
 	}
 
 	private handleTerminalFrame(frame: IParadisMobileInboundFrame): void {
@@ -924,7 +960,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 
-		if (message.protocolVersion !== 2 || message.desktopEpoch !== this.terminalRegistry.desktopEpoch) {
+		if (message.protocolVersion !== PARADIS_MOBILE_PROTOCOL_VERSION || message.desktopEpoch !== this.terminalRegistry.desktopEpoch) {
 			this.finishTerminalOperation(mobileId, operationId, 'stale-epoch');
 			return;
 		}
@@ -968,7 +1004,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		} catch {
 			return;
 		}
-		if (message.protocolVersion !== 2 || message.desktopEpoch !== this.terminalRegistry.desktopEpoch
+		if (message.protocolVersion !== PARADIS_MOBILE_PROTOCOL_VERSION || message.desktopEpoch !== this.terminalRegistry.desktopEpoch
 			|| typeof message.windowId !== 'number' || !Number.isInteger(message.windowId)
 			|| typeof message.ws !== 'string' || message.ws.length === 0) {
 			return;
@@ -1246,7 +1282,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				return;
 			}
 		}
-		if (!this.sameLease(this.terminalRegistry.leaseOfWindow(owner.windowId), owner)) {
+		if (!await this.isCurrentRendererLease(owner)) {
 			this.webrtcRendererLeases.delete(mobileId);
 			return;
 		}
