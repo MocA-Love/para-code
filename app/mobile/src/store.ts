@@ -326,6 +326,56 @@ export interface AgentModelControlState {
 	errorMessage?: string;
 }
 
+/** PC側で正規化し、モバイル側でも再検証したコマンド候補。 */
+export interface AgentCommandOption {
+	name: string;
+	insertText: string;
+	description: string;
+	argumentHint?: string;
+	kind: 'command' | 'skill' | 'prompt';
+	source: 'built-in' | 'user' | 'project';
+}
+
+/** コマンドカタログの取得状態と直近の検証済み候補。 */
+export interface AgentCommandCatalogState {
+	status: 'loading' | 'ready' | 'error';
+	requestId?: string;
+	commands: AgentCommandOption[];
+	errorMessage?: string;
+}
+
+function parseAgentCommandOptions(value: unknown): AgentCommandOption[] {
+	if (!Array.isArray(value) || value.length === 0 || value.length > 200) {
+		return [];
+	}
+	const commands: AgentCommandOption[] = [];
+	const names = new Set<string>();
+	for (const candidate of value) {
+		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+			return [];
+		}
+		const raw = candidate as Record<string, unknown>;
+		if (typeof raw['name'] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(raw['name'])
+			|| raw['insertText'] !== `/${raw['name']}` || typeof raw['description'] !== 'string' || raw['description'].length > 240
+			|| (raw['argumentHint'] !== undefined && (typeof raw['argumentHint'] !== 'string' || raw['argumentHint'].length > 120))
+			|| (raw['kind'] !== 'command' && raw['kind'] !== 'skill' && raw['kind'] !== 'prompt')
+			|| (raw['source'] !== 'built-in' && raw['source'] !== 'user' && raw['source'] !== 'project')) {
+			return [];
+		}
+		const key = raw['name'].toLocaleLowerCase();
+		if (names.has(key)) {
+			return [];
+		}
+		names.add(key);
+		commands.push({
+			name: raw['name'], insertText: raw['insertText'], description: raw['description'],
+			...(typeof raw['argumentHint'] === 'string' ? { argumentHint: raw['argumentHint'] } : {}),
+			kind: raw['kind'], source: raw['source'],
+		});
+	}
+	return commands;
+}
+
 /** relay境界では型注釈を信用せず、UIへ渡す動的カタログを上限つきで正規化する。 */
 function parseAgentModelOptions(value: unknown): AgentModelOption[] {
 	if (!Array.isArray(value)) {
@@ -453,6 +503,8 @@ export interface AgentChatState {
 	activity?: AgentActivityState;
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
 	modelControl?: AgentModelControlState;
+	/** PC側でプロバイダーとcwdを検証して構築したスラッシュコマンド一覧。 */
+	commandCatalog?: AgentCommandCatalogState;
 	/** PC側がsession検証付きAgent Actionを受け付ける。 */
 	capabilities?: { agentActions: true; claudeSettings?: true };
 	interaction?: AgentInteraction;
@@ -731,6 +783,7 @@ export class MobileController {
 	private readonly attachedAgentTargets = new Map<string, string>();
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
 	private readonly agentControlTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
+	private readonly agentCommandCatalogTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly terminalOperationOutbox = new Map<string, { readonly operationRun: number; readonly operationSeq: number; readonly payload: Uint8Array; state: 'pending' | 'unknown'; durable: boolean }>();
@@ -901,6 +954,10 @@ export class MobileController {
 				clearTimeout(pending.timer);
 			}
 			this.agentControlTimers.clear();
+			for (const pending of this.agentCommandCatalogTimers.values()) {
+				clearTimeout(pending.timer);
+			}
+			this.agentCommandCatalogTimers.clear();
 			this.termStreams.clear();
 			this.operationOutboxKey = undefined;
 			this.operationOutboxScope = undefined;
@@ -1469,7 +1526,7 @@ export class MobileController {
 					await this.persistTerminalOperationOutbox();
 				} catch {
 					// memory上の保守的状態（unknown/削除）は維持する。同じIDの再出現はPC ledgerが
-					final/unknownを再応答し、PC再起動時はdesktopEpoch gateが再実行を止める。
+					// final/unknownを再応答し、PC再起動時はdesktopEpoch gateが再実行を止める。
 					this.setTerminalOperationStorageIssue('操作結果を安全に保存できませんでした。再接続後にPCの状態を確認してください。');
 				}
 				this.emit();
@@ -1675,6 +1732,45 @@ export class MobileController {
 		this.emit({ agentChats: true });
 		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'model-catalog', id: terminal.id, token: this.agentToken(terminalKey), requestId })));
 		this.scheduleAgentControlTimeout(terminalKey, requestId, rendererTarget, 'Codexのモデル一覧取得がタイムアウトしました');
+	}
+
+	/** 対象セッションのプロバイダー別スラッシュコマンドとスキル一覧をPCへ要求する。 */
+	requestAgentCommandCatalog(terminalKey: string): void {
+		const existing = this.state.agentChats.get(terminalKey);
+		const terminal = this.terminalForKey(terminalKey);
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		if (!this.isLiveAvailable() || rendererTarget === undefined || existing === undefined || existing.none || terminal === undefined
+			|| existing.commandCatalog?.status === 'loading') {
+			return;
+		}
+		const requestId = `${this.requestPrefix}-agent-commands-${this.requestCounter++}`;
+		this.state.agentChats.set(terminalKey, {
+			...existing,
+			commandCatalog: { status: 'loading', requestId, commands: existing.commandCatalog?.commands ?? [] },
+		});
+		this.emit({ agentChats: true });
+		this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'command-catalog', id: terminal.id, token: this.agentToken(terminalKey), requestId })));
+		this.clearAgentCommandCatalogTimeout(terminalKey);
+		const timer = setTimeout(() => {
+			const current = this.state.agentChats.get(terminalKey);
+			if (current?.commandCatalog?.requestId === requestId) {
+				this.state.agentChats.set(terminalKey, {
+					...current,
+					commandCatalog: { status: 'error', commands: current.commandCatalog.commands, errorMessage: 'コマンド一覧の取得がタイムアウトしました' },
+				});
+				this.emit({ agentChats: true });
+			}
+			this.agentCommandCatalogTimers.delete(terminalKey);
+		}, 15_000);
+		this.agentCommandCatalogTimers.set(terminalKey, { requestId, rendererTarget, timer });
+	}
+
+	private clearAgentCommandCatalogTimeout(terminalKey: string, requestId?: string): void {
+		const pending = this.agentCommandCatalogTimers.get(terminalKey);
+		if (pending !== undefined && (requestId === undefined || pending.requestId === requestId)) {
+			clearTimeout(pending.timer);
+			this.agentCommandCatalogTimers.delete(terminalKey);
+		}
 	}
 
 	/** 検証済みカタログのモデルとEffortを、Codexの次ターン設定へ同時適用する。 */
@@ -1887,6 +1983,20 @@ export class MobileController {
 					this.state.agentChats.set(terminalKey, {
 						...existing,
 						modelControl: { status: 'error', models: existing.modelControl.models, errorCode: 'renderer-restarting', errorMessage: 'PC画面の再接続後にもう一度お試しください' },
+					});
+					agentChatsChanged = true;
+				}
+			}
+		}
+		for (const [terminalKey, pending] of this.agentCommandCatalogTimers) {
+			if (!this.isLiveAvailable() || this.rendererTargetFor(terminalKey) !== pending.rendererTarget) {
+				clearTimeout(pending.timer);
+				this.agentCommandCatalogTimers.delete(terminalKey);
+				const existing = this.state.agentChats.get(terminalKey);
+				if (existing?.commandCatalog?.requestId === pending.requestId) {
+					this.state.agentChats.set(terminalKey, {
+						...existing,
+						commandCatalog: { status: 'error', commands: existing.commandCatalog.commands, errorMessage: 'PC画面の再接続後にもう一度お試しください' },
 					});
 					agentChatsChanged = true;
 				}
@@ -2267,6 +2377,10 @@ export class MobileController {
 						clearTimeout(pending.timer);
 					}
 					this.agentControlTimers.clear();
+					for (const pending of this.agentCommandCatalogTimers.values()) {
+						clearTimeout(pending.timer);
+					}
+					this.agentCommandCatalogTimers.clear();
 				}
 				// 切断中に exit 通知を取り逃したケースに備え、現存しないターミナルの
 				// terminalOutput / agentChats エントリを掃除する。
@@ -2291,6 +2405,12 @@ export class MobileController {
 					if (!live.has(terminalKey)) {
 						clearTimeout(pending.timer);
 						this.agentControlTimers.delete(terminalKey);
+					}
+				}
+				for (const [terminalKey, pending] of this.agentCommandCatalogTimers) {
+					if (!live.has(terminalKey)) {
+						clearTimeout(pending.timer);
+						this.agentCommandCatalogTimers.delete(terminalKey);
 					}
 				}
 				for (const terminalKey of this.termStreams.keys()) {
@@ -2454,7 +2574,7 @@ export class MobileController {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; activity?: AgentActivityState | null;
-				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; status?: string; code?: string; message?: string; consumed?: boolean; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
+				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; commands?: unknown; status?: string; code?: string; message?: string; consumed?: boolean; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
 			};
 			if (typeof msg.id !== 'number') {
 				return;
@@ -2490,6 +2610,7 @@ export class MobileController {
 			}
 			if (msg.t === 'none') {
 				this.clearAgentControlTimeout(terminalKey);
+				this.clearAgentCommandCatalogTimeout(terminalKey);
 				this.state.agentChats.set(terminalKey, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
 				this.emit({ agentChats: true });
 				return;
@@ -2498,6 +2619,7 @@ export class MobileController {
 				const previous = this.state.agentChats.get(terminalKey);
 				if (previous?.epoch !== msg.epoch) {
 					this.clearAgentControlTimeout(terminalKey);
+					this.clearAgentCommandCatalogTimeout(terminalKey);
 				}
 				this.state.agentChats.set(terminalKey, {
 					agent: msg.agent ?? 'claude',
@@ -2511,6 +2633,7 @@ export class MobileController {
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
 					...(previous?.modelControl !== undefined && previous.epoch === msg.epoch ? { modelControl: previous.modelControl } : {}),
+					...(previous?.commandCatalog !== undefined && previous.epoch === msg.epoch ? { commandCatalog: previous.commandCatalog } : {}),
 				});
 				this.emit({ agentChats: true });
 				return;
@@ -2583,6 +2706,35 @@ export class MobileController {
 					modelControl: models.length > 0
 						? { status: 'ready', models }
 						: { status: 'error', models: [], errorCode: 'invalid-response', errorMessage: 'Codexのモデル一覧レスポンスが不正です' },
+				});
+				this.emit({ agentChats: true });
+				return;
+			}
+			if (msg.t === 'command-catalog' && typeof msg.requestId === 'string' && Array.isArray(msg.commands)) {
+				const existing = this.state.agentChats.get(terminalKey);
+				if (existing?.commandCatalog?.requestId !== msg.requestId) {
+					return;
+				}
+				const commands = parseAgentCommandOptions(msg.commands);
+				this.clearAgentCommandCatalogTimeout(terminalKey, msg.requestId);
+				this.state.agentChats.set(terminalKey, {
+					...existing,
+					commandCatalog: commands.length > 0
+						? { status: 'ready', commands }
+						: { status: 'error', commands: [], errorMessage: 'コマンド一覧のレスポンスが不正です' },
+				});
+				this.emit({ agentChats: true });
+				return;
+			}
+			if (msg.t === 'command-catalog-error' && typeof msg.requestId === 'string') {
+				const existing = this.state.agentChats.get(terminalKey);
+				if (existing?.commandCatalog?.requestId !== msg.requestId) {
+					return;
+				}
+				this.clearAgentCommandCatalogTimeout(terminalKey, msg.requestId);
+				this.state.agentChats.set(terminalKey, {
+					...existing,
+					commandCatalog: { status: 'error', commands: existing.commandCatalog.commands, errorMessage: typeof msg.message === 'string' ? msg.message.slice(0, 500) : 'コマンド一覧を取得できませんでした' },
 				});
 				this.emit({ agentChats: true });
 				return;

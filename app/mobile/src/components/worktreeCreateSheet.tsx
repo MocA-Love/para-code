@@ -36,7 +36,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | undefined>(undefined);
 	const requestGenerationRef = useRef(0);
-	const activeRequestRef = useRef<number | undefined>();
+	const activeRequestRef = useRef<number | undefined>(undefined);
 	const mountedRef = useRef(true);
 	const visibleRef = useRef(visible);
 	visibleRef.current = visible;

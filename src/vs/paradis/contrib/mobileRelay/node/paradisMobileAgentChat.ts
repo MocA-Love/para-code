@@ -39,6 +39,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
+import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry } from './paradisMobilePaneRegistry.js';
 import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
@@ -139,6 +140,7 @@ type AgentInbound =
 	| { t: 'action/answerApproval'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; choice: string }
 	| { t: 'action/claudeSetting'; id: number; token?: string; requestId: string; epoch: string; setting: 'model' | 'effort'; value: string }
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
+	| { t: 'command-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
 	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string };
 
@@ -147,6 +149,8 @@ type AgentOutbound =
 	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
 	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
+	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[] }
+	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string; consumed?: boolean }
 	| { t: 'activity-detail'; id: number; requestId: string; activityId: string; messages?: readonly IParadisAgentActivityDetailMessage[]; error?: string }
@@ -511,6 +515,11 @@ function isValidModelCatalogRequest(msg: AgentInboundCandidate): msg is AgentInb
 	return msg.t === 'model-catalog' && isValidControlRequest(msg);
 }
 
+function isValidCommandCatalogRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'command-catalog' }> {
+	return msg.t === 'command-catalog' && Object.keys(msg).every(key => key === 't' || key === 'id' || key === 'token' || key === 'requestId')
+		&& isValidControlRequest(msg);
+}
+
 function isValidSettingsUpdateRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'settings-update' }> {
 	return msg.t === 'settings-update'
 		&& typeof msg.model === 'string' && msg.model.length > 0 && msg.model.length <= 500
@@ -538,6 +547,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'action/answerApproval': return isValidApprovalAction(msg) ? msg : undefined;
 		case 'action/claudeSetting': return isValidClaudeSettingAction(msg) ? msg : undefined;
 		case 'model-catalog': return isValidModelCatalogRequest(msg) ? msg : undefined;
+		case 'command-catalog': return isValidCommandCatalogRequest(msg) ? msg : undefined;
 		case 'settings-update': return isValidSettingsUpdateRequest(msg) ? msg : undefined;
 		case 'activity-detail': return isValidActivityDetailRequest(msg) ? msg : undefined;
 		default: return undefined;
@@ -2137,6 +2147,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private readonly paneRegistry = new ParadisMobilePaneRegistry();
+	/** mobileId + requestId → 対象ペイン。設定ファイル走査の重複と濫用を抑止する。 */
+	private readonly commandCatalogRequests = new Map<string, string>();
 
 	/**
 	 * renderer から同期される「ターミナルinstanceId ⇔ ペイントークン」対応表。
@@ -2463,6 +2475,9 @@ export class ParadisMobileAgentChat extends Disposable {
 				break;
 			case 'model-catalog':
 				this.handleModelCatalogRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] model catalog failed', err));
+				break;
+			case 'command-catalog':
+				this.handleCommandCatalogRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] command catalog failed', err));
 				break;
 			case 'settings-update':
 				this.handleSettingsUpdateRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] settings update failed', err));
@@ -2889,6 +2904,36 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'model-catalog', id: msg.id, requestId: msg.requestId, models }, session.token, session.owner);
 		} catch (error) {
 			this.sendControlError(mobileId, msg.id, msg.requestId, error, session.token, session.owner);
+		}
+	}
+
+	private async handleCommandCatalogRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'command-catalog' }>): Promise<void> {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
+		const cwd = token !== undefined ? this.tokenToCwd.get(token) : undefined;
+		const requestKey = `${mobileId}\0${msg.requestId}`;
+		const inFlightForToken = token !== undefined ? [...this.commandCatalogRequests.values()].filter(value => value === token).length : 0;
+		const authorized = owner !== undefined ? await this.authorizeOwner(owner).catch(() => false) : false;
+		if (token === undefined || session === undefined || owner === undefined || cwd === undefined || !this.hasSubscriber(token, mobileId)
+			|| this.commandCatalogRequests.has(requestKey) || inFlightForToken >= 2 || !authorized) {
+			this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得できませんでした' }, token ?? msg.token, owner);
+			return;
+		}
+		this.commandCatalogRequests.set(requestKey, token);
+		try {
+			const commands = await paradisBuildAgentCommandCatalog(session.agent, cwd);
+			const currentOwner = this.ownerForPane(msg.id, token);
+			if (this.paneSessions.get(token) !== session || this.tokenToCwd.get(token) !== cwd || currentOwner === undefined
+				|| !this.samePaneOwner(currentOwner, owner) || !this.hasSubscriber(token, mobileId) || !await this.authorizeOwner(owner)) {
+				this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: '対象セッションが切り替わりました' }, token, owner);
+				return;
+			}
+			await this.sendToAuthorized(mobileId, { t: 'command-catalog', id: msg.id, requestId: msg.requestId, commands }, token, owner);
+		} catch {
+			this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得できませんでした' }, token, owner);
+		} finally {
+			this.commandCatalogRequests.delete(requestKey);
 		}
 	}
 

@@ -44,11 +44,11 @@ import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../sr
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
+	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
 		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
-		requestAgentModelCatalog: s.requestAgentModelCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
+		requestAgentModelCatalog: s.requestAgentModelCatalog, requestAgentCommandCatalog: s.requestAgentCommandCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
 		browserTargets: s.browserTargets,
 	})));
 	const listRef = useRef<FlatList<ChatRow>>(null);
@@ -424,12 +424,14 @@ export default function AgentDetailScreen() {
 					model={chat?.info?.model}
 					effort={chat?.info?.effort}
 					modelControl={chat?.modelControl}
+					commandCatalog={chat?.commandCatalog}
 					pr={agentWsPr}
 					sendText={actions.sendText}
 					updateClaudeSetting={actions.updateClaudeSetting}
 					onAfterSubmit={scrollToEndSticky}
 					fsUpload={fsUpload}
 					requestAgentModelCatalog={requestAgentModelCatalog}
+					requestAgentCommandCatalog={requestAgentCommandCatalog}
 					updateAgentSettings={updateAgentSettings}
 				/>
 			</View>

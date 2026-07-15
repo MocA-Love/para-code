@@ -5,13 +5,15 @@ import * as ImagePicker from 'expo-image-picker';
 import { Alert, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
-import type { AgentMessageSendResult, AgentModelControlState, FsUploadResult, WorkspacePrStatus } from '../store.js';
+import type { AgentCommandCatalogState, AgentCommandOption, AgentMessageSendResult, AgentModelControlState, FsUploadResult, WorkspacePrStatus } from '../store.js';
 import { GlassComposer } from './glassComposer.js';
 import { ModelPill } from './modelPill.js';
 import { PrPill } from './prPill.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
+import { agentSlashQuery, filterAgentSlashCommands, normalizeAgentSlashSubmission, selectedAgentSlashCommandText } from './agentSlashCommands.js';
+import { AgentSlashCommandMenu } from './agentSlashCommandMenu.js';
 
 /**
  * エージェント詳細画面の入力欄（コンポーザー）を、チャット本文の再レンダリングから
@@ -27,8 +29,8 @@ import { reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agen
  * （毎レンダリングで新しい要素参照になる props を作らないため）。
  */
 export const AgentComposer = memo(function AgentComposer({
-	draftKey, activeTerminalKey, sessionEpoch, agent, model, effort, modelControl, pr,
-	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, requestAgentModelCatalog, updateAgentSettings,
+	draftKey, activeTerminalKey, sessionEpoch, agent, model, effort, modelControl, commandCatalog, pr,
+	sendText, updateClaudeSetting, onAfterSubmit, fsUpload, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings,
 }: {
 	/** 下書きの退避キー（ターミナル単位。切替時のみ変わる）。 */
 	draftKey: string | undefined;
@@ -39,6 +41,7 @@ export const AgentComposer = memo(function AgentComposer({
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
+	commandCatalog: AgentCommandCatalogState | undefined;
 	/** 所属ワークスペースの現在ブランチに紐づくPR（無ければピル非表示）。 */
 	pr: WorkspacePrStatus | undefined;
 	sendText: (text: string) => Promise<AgentMessageSendResult>;
@@ -47,6 +50,7 @@ export const AgentComposer = memo(function AgentComposer({
 	onAfterSubmit: () => void;
 	fsUpload: (name: string, dataBase64: string) => Promise<FsUploadResult>;
 	requestAgentModelCatalog: (terminalKey: string) => void;
+	requestAgentCommandCatalog: (terminalKey: string) => void;
 	updateAgentSettings: (terminalKey: string, model: string, effort: string) => void;
 }) {
 	const loadDraft = (key: string | undefined): string => key !== undefined ? useAppStore.getState().agentDrafts[key] ?? '' : '';
@@ -58,6 +62,7 @@ export const AgentComposer = memo(function AgentComposer({
 	const submissionGenerationRef = useRef(0);
 	const draftKeyRef = useRef(draftKey);
 	const [inputMeta, setInputMeta] = useState(() => ({ key: draftKey, sendable: inputRef.current.trim().length > 0 }));
+	const [slashQuery, setSlashQuery] = useState<string | undefined>(() => agentSlashQuery(inputRef.current));
 	const [submitting, setSubmitting] = useState(false);
 	if (draftKeyRef.current !== draftKey) {
 		draftKeyRef.current = draftKey;
@@ -69,13 +74,20 @@ export const AgentComposer = memo(function AgentComposer({
 	useEffect(() => {
 		setSubmitting(false);
 		setInputMeta({ key: draftKey, sendable: inputRef.current.trim().length > 0 });
+		setSlashQuery(agentSlashQuery(inputRef.current));
 	}, [draftKey]);
+	useEffect(() => {
+		if (slashQuery !== undefined && commandCatalog === undefined && activeTerminalKey !== undefined && agent !== undefined) {
+			requestAgentCommandCatalog(activeTerminalKey);
+		}
+	}, [activeTerminalKey, agent, commandCatalog, requestAgentCommandCatalog, slashQuery]);
 	const updateInput = useCallback((text: string) => {
 		inputRef.current = text;
 		if (draftKey !== undefined) {
 			useAppStore.getState().setAgentDraft(draftKey, text);
 		}
 		const nextSendable = text.trim().length > 0;
+		setSlashQuery(agentSlashQuery(text));
 		setInputMeta(current => current.key === draftKey && current.sendable === nextSendable
 			? current
 			: { key: draftKey, sendable: nextSendable });
@@ -86,6 +98,7 @@ export const AgentComposer = memo(function AgentComposer({
 			useAppStore.getState().setAgentDraft(draftKeyRef.current, text);
 		}
 		nativeInputRef.current?.setNativeProps({ text });
+		setSlashQuery(agentSlashQuery(text));
 		setInputMeta({ key: draftKeyRef.current, sendable: text.trim().length > 0 });
 	}, []);
 	const clearActiveInput = useCallback(() => {
@@ -94,6 +107,7 @@ export const AgentComposer = memo(function AgentComposer({
 			useAppStore.getState().clearAgentDraft(draftKeyRef.current);
 		}
 		nativeInputRef.current?.clear();
+		setSlashQuery(undefined);
 		setInputMeta({ key: draftKeyRef.current, sendable: false });
 	}, []);
 
@@ -111,7 +125,8 @@ export const AgentComposer = memo(function AgentComposer({
 		// 送信本文を先に入力欄から退避し、待機中に次のメッセージを入力できるようにする。
 		// reject時だけ最新入力の前へ戻すため、最初の本文が再送されることはない。
 		clearActiveInput();
-		sendText(text).catch((): AgentMessageSendResult => ({ status: 'rejected', message: '送信処理中にエラーが発生しました' })).then(result => {
+		const submittedText = normalizeAgentSlashSubmission(text, agent, commandCatalog?.commands ?? []);
+		sendText(submittedText).catch((): AgentMessageSendResult => ({ status: 'rejected', message: '送信処理中にエラーが発生しました' })).then(result => {
 			const reconciliation = reconcileSubmittedDraftTarget(
 				draftKeyRef.current, submittedDraftKey, inputRef.current,
 				submittedDraftKey !== undefined ? useAppStore.getState().agentDrafts[submittedDraftKey] ?? '' : '',
@@ -136,7 +151,23 @@ export const AgentComposer = memo(function AgentComposer({
 				setSubmitting(false);
 			}
 		});
-	}, [submitting, draftKey, clearActiveInput, replaceActiveInput, sendText, onAfterSubmit]);
+	}, [submitting, draftKey, clearActiveInput, replaceActiveInput, sendText, onAfterSubmit, agent, commandCatalog?.commands]);
+
+	const visibleCommands = slashQuery !== undefined && commandCatalog?.status === 'ready'
+		? filterAgentSlashCommands(commandCatalog.commands, slashQuery)
+		: [];
+	const codexSlashCatalogPending = agent === 'codex' && /^\/\S/.test(inputRef.current)
+		&& (commandCatalog === undefined || commandCatalog.status === 'loading');
+	const selectSlashCommand = useCallback((command: AgentCommandOption) => {
+		replaceActiveInput(selectedAgentSlashCommandText(command));
+		setSlashQuery(undefined);
+		nativeInputRef.current?.focus();
+	}, [replaceActiveInput]);
+	const retryCommandCatalog = useCallback(() => {
+		if (activeTerminalKey !== undefined) {
+			requestAgentCommandCatalog(activeTerminalKey);
+		}
+	}, [activeTerminalKey, requestAgentCommandCatalog]);
 
 	/**
 	 * 画像添付（+ボタン）。フォトライブラリから選び、PCへアップロードして保存先の
@@ -174,36 +205,42 @@ export const AgentComposer = memo(function AgentComposer({
 	}, [uploading, fsUpload, draftKey, replaceActiveInput]);
 
 	return (
-		<GlassComposer
-			defaultValue={defaultValueRef.current}
-			inputKey={draftKey}
-			inputRef={nativeInputRef}
-			onChangeText={updateInput}
-			onSubmit={submit}
-			placeholder="エージェントへメッセージ…"
-			sendDisabled={submitting || !sendable}
-			tools={
-				<>
-					<Pressable style={styles.attachBtn} onPress={() => { hapticImpact('light'); void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">
-						<Ionicons name={uploading ? 'hourglass-outline' : 'add'} size={20} color={colors.text} />
-					</Pressable>
-					<ModelPill
-						key={`${activeTerminalKey ?? 'none'}:${sessionEpoch ?? 'none'}:${agent ?? 'none'}`}
-						agent={agent}
-						model={model}
-						effort={effort}
-						modelControl={modelControl}
-						onClaudeSetting={updateClaudeSetting}
-						onRequestCodexCatalog={() => { if (activeTerminalKey !== undefined) { requestAgentModelCatalog(activeTerminalKey); } }}
-						onUpdateCodexSettings={(nextModel, nextEffort) => { if (activeTerminalKey !== undefined) { updateAgentSettings(activeTerminalKey, nextModel, nextEffort); } }}
-					/>
-					{pr !== undefined ? <PrPill pr={pr} /> : null}
-				</>
-			}
-		/>
+		<View style={styles.root}>
+			{slashQuery !== undefined ? (
+				<AgentSlashCommandMenu catalog={commandCatalog} commands={visibleCommands} agent={agent} onSelect={selectSlashCommand} onRetry={retryCommandCatalog} />
+			) : null}
+			<GlassComposer
+				defaultValue={defaultValueRef.current}
+				inputKey={draftKey}
+				inputRef={nativeInputRef}
+				onChangeText={updateInput}
+				onSubmit={submit}
+				placeholder="エージェントへメッセージ…"
+				sendDisabled={submitting || !sendable || codexSlashCatalogPending}
+				tools={
+					<>
+						<Pressable style={styles.attachBtn} onPress={() => { hapticImpact('light'); void attachImage(); }} disabled={uploading} accessibilityLabel="画像を添付">
+							<Ionicons name={uploading ? 'hourglass-outline' : 'add'} size={20} color={colors.text} />
+						</Pressable>
+						<ModelPill
+							key={`${activeTerminalKey ?? 'none'}:${sessionEpoch ?? 'none'}:${agent ?? 'none'}`}
+							agent={agent}
+							model={model}
+							effort={effort}
+							modelControl={modelControl}
+							onClaudeSetting={updateClaudeSetting}
+							onRequestCodexCatalog={() => { if (activeTerminalKey !== undefined) { requestAgentModelCatalog(activeTerminalKey); } }}
+							onUpdateCodexSettings={(nextModel, nextEffort) => { if (activeTerminalKey !== undefined) { updateAgentSettings(activeTerminalKey, nextModel, nextEffort); } }}
+						/>
+						{pr !== undefined ? <PrPill pr={pr} /> : null}
+					</>
+				}
+			/>
+		</View>
 	);
 });
 
 const styles = StyleSheet.create({
+	root: { width: '100%' },
 	attachBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 });
