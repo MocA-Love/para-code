@@ -271,6 +271,29 @@ suite('Workbench - TerminalInstance', () => {
 				container.remove();
 			}
 		});
+
+		test('recreates the renderer when reattached to a different window document', async () => {
+			const instance = await createTerminalInstance();
+			const firstContainer = document.createElement('div');
+			const iframe = document.createElement('iframe');
+			document.body.append(firstContainer, iframe);
+			try {
+				const secondContainer = iframe.contentDocument!.createElement('div');
+				iframe.contentDocument!.body.appendChild(secondContainer);
+
+				instance.attachToElement(firstContainer);
+				instance.setVisible(true);
+				let recreations = 0;
+				(instance.xterm as unknown as { recreateRendererAfterWindowChange: () => void }).recreateRendererAfterWindowChange = () => recreations++;
+				instance.detachFromElement();
+				instance.attachToElement(secondContainer);
+
+				strictEqual(recreations, 1);
+			} finally {
+				firstContainer.remove();
+				iframe.remove();
+			}
+		});
 	});
 	suite('DEFAULT_COMMANDS_TO_SKIP_SHELL', () => {
 		test('should include zoom commands so they are not consumed by kitty keyboard protocol', () => {
