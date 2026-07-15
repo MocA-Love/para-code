@@ -154,7 +154,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.WINDOW,
-			description: localize('paradis.editor.openTerminalOnSplit', "Open and focus a new terminal in an editor group immediately after splitting the editor. Existing terminals are never reused.")
+			description: localize('paradis.editor.openTerminalOnSplit', "エディタを分割した直後に、新しいターミナルをそのエディタグループ内で自動的に開いてフォーカスします。既存のターミナルは再利用されません。")
 		}
 	}
 });

@@ -65,7 +65,7 @@ export class ParadisEditorSplitTerminalService extends Disposable implements IPa
 			}
 			this.notificationService.error(localize(
 				'paradis.editor.openTerminalOnSplitFailed',
-				"Could not open a terminal in the new editor group: {0}",
+				"新しいエディタグループにターミナルを開けませんでした: {0}",
 				getErrorMessage(error),
 			));
 		} finally {
@@ -77,7 +77,7 @@ export class ParadisEditorSplitTerminalService extends Disposable implements IPa
 		if (groupDisposed || this.editorGroupsService.getGroup(group.id) !== group) {
 			throw new Error(localize(
 				'paradis.editor.splitDestinationDisposed',
-				"The destination editor group is no longer available.",
+				"分割先のエディタグループは既に存在しません。",
 			));
 		}
 	}
