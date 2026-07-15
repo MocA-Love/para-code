@@ -528,6 +528,17 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		return this._attached?.container.querySelector('.xterm-screen')!;
 	}
 
+	recreateRendererAfterWindowChange(): void {
+		const recreateWebgl = this._webglAddon !== undefined;
+		if (recreateWebgl) {
+			this._disposeOfWebglRenderer();
+		}
+		this.raw.refresh(0, this.raw.rows - 1);
+		if (recreateWebgl && this._shouldLoadWebgl()) {
+			void this._enableWebglRenderer().then(() => this.raw.refresh(0, this.raw.rows - 1));
+		}
+	}
+
 	private _setFocused(isFocused: boolean) {
 		this._onDidChangeFocus.fire(isFocused);
 		this._anyTerminalFocusContextKey.set(isFocused);

@@ -1452,6 +1452,9 @@ export interface IXtermTerminal extends IDisposable {
 	 */
 	attachToElement(container: HTMLElement, options?: Partial<IXtermAttachToElementOptions>): void;
 
+	/** Recreate document-bound renderers after the terminal DOM moves to another window. */
+	recreateRendererAfterWindowChange(): void;
+
 	findResult?: { resultIndex: number; resultCount: number };
 
 	/**
