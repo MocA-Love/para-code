@@ -23,7 +23,9 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPreviewFileResult, PARADIS_AGENT_PREVIEW_CHANNEL } from '../common/paradisAgentBrowser.js';
 
-class ParadisAgentPreviewChannel implements IServerChannel {
+const PREVIEW_FILE_FAILED_MESSAGE = 'Failed to open the file in Para Code.';
+
+export class ParadisAgentPreviewChannel implements IServerChannel {
 
 	constructor(
 		private readonly editorService: IEditorService,
@@ -47,21 +49,21 @@ class ParadisAgentPreviewChannel implements IServerChannel {
 		try {
 			const stat = await this.fileService.stat(resource);
 			if (stat.isDirectory) {
-				return { ok: false, error: `The path is a directory, not a file: ${path}` };
+				return { ok: false, error: PREVIEW_FILE_FAILED_MESSAGE };
 			}
 		} catch {
-			return { ok: false, error: `The file does not exist or is not readable: ${path}` };
+			return { ok: false, error: PREVIEW_FILE_FAILED_MESSAGE };
 		}
 		try {
 			// preserveFocus: ユーザーは大抵ターミナルでエージェントとやり取り中なので、
 			// 入力フォーカスは奪わずエディタを開いて見せるだけにする。
 			const editor = await this.editorService.openEditor({ resource, options: { preserveFocus: true } });
 			if (!editor) {
-				return { ok: false, error: `Para Code did not open an editor for: ${path}` };
+				return { ok: false, error: PREVIEW_FILE_FAILED_MESSAGE };
 			}
 			return { ok: true };
-		} catch (error) {
-			return { ok: false, error: `Failed to open the file: ${error instanceof Error ? error.message : String(error)}` };
+		} catch {
+			return { ok: false, error: PREVIEW_FILE_FAILED_MESSAGE };
 		}
 	}
 }

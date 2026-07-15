@@ -9,7 +9,9 @@
 // ブラウザページ⇔ターミナル上のエージェントCLI（Claude Code / Codex）紐付け機能の共有定義。
 // workbench（browser / electron-browser）と shared process（node）の両方から参照される。
 
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
+import type { ParadisBindingAuthorityStableScope } from './paradisBindingAuthority.js';
 
 /**
  * ターミナルのPTY環境へ注入する、ペインを一意に識別するトークンの環境変数名。
@@ -27,17 +29,10 @@ export const PARADIS_MCP_PORT_FILE_ENV_VAR = 'PARA_CODE_MCP_PORT_FILE';
 
 /**
  * userDataDir 直下に書き出されるポートファイルのファイル名。
- * 内容: `{ "port": number, "pid": number }`
+ * 内容: protocolVersion、port、pid、instanceId、serviceStartedAtを持つ
+ * restart-safeなowner record（厳密な型はnode層のIParadisMcpPortFileRecord）。
  */
 export const PARADIS_MCP_PORT_FILE_NAME = 'paradis-browser-mcp.json';
-
-/**
- * CDPゲートウェイのベースURL（`http://127.0.0.1:<port>/cdp`）を指す環境変数名。
- * chrome-devtools-mcp の `--browserUrl` や browser-use の CDP URL にそのまま渡せる。
- * ポート部分は {@link PARADIS_MCP_DEFAULT_PORT}（PTY起動時点の既定値）で固定注入されるため、
- * サーバーが動的ポートへフォールバックした場合は `get_cdp_endpoint` MCPツールで実URLを取得する。
- */
-export const PARADIS_CDP_URL_ENV_VAR = 'PARA_CODE_CDP_URL';
 
 /**
  * shared process上のMCP+CDPゲートウェイHTTPサーバーが最初に試す固定listenポート。
@@ -45,6 +40,35 @@ export const PARADIS_CDP_URL_ENV_VAR = 'PARA_CODE_CDP_URL';
  * 将来的にはParadis設定に載せる想定（現状はconst固定）。
  */
 export const PARADIS_MCP_DEFAULT_PORT = 47286;
+
+/** shared processで起動済みのMCP+CDPゲートウェイ接続先。 */
+export interface IParadisGatewayEndpoint {
+	readonly port: number;
+}
+
+/** 起動済みゲートウェイの実ポートから、loopback限定のCDP URLを生成する。 */
+export function paradisFormatCdpGatewayUrl(port: number): string {
+	if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) {
+		throw new Error('Invalid Para Browser gateway port');
+	}
+	return `http://127.0.0.1:${port}/cdp`;
+}
+
+/**
+ * PTYの既存環境を保持したまま、内部MCPの動的ポート解決に必要な値だけを追加する。
+ * ユーザーが明示した `PARA_CODE_CDP_URL` を含む未知の環境変数は上書きしない。
+ */
+export function paradisCreateTerminalPaneEnvironment(
+	existing: Readonly<Record<string, string | null | undefined>> | undefined,
+	token: string,
+	portFilePath: string,
+): Record<string, string | null | undefined> {
+	return {
+		...existing,
+		[PARADIS_PANE_TOKEN_ENV_VAR]: token,
+		[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
+	};
+}
 
 /**
  * workbench ⇔ shared process 間のバインディング操作用IPCチャネル名。
@@ -136,8 +160,439 @@ export interface IParadisCdpScreenshotOptions {
 	readonly quality?: number;
 	/** CDP `clip` 由来のページ内矩形（CSSピクセル）。 */
 	readonly pageRect?: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+	/** `pageRect`をドキュメント座標としてビューポート外までCDP captureする。 */
+	readonly captureBeyondViewport?: boolean;
 	/** CDP `captureBeyondViewport`（clipなし）由来のフルページ指定。 */
 	readonly fullPage?: boolean;
+}
+
+/** IPCへ公開するexact BrowserView descriptor各文字列の上限。 */
+export const PARADIS_EXACT_VIEW_ID_MAX_LENGTH = 512;
+export const PARADIS_EXACT_VIEW_TARGET_ID_MAX_LENGTH = 512;
+export const PARADIS_EXACT_VIEW_LEASE_MAX_LENGTH = 200;
+
+/**
+ * Electron Mainが特定のBrowserView実体へ発行する、copy-ownedなexact descriptor。
+ * viewIdが再利用されてもviewLeaseが異なるため、旧bindingを新しいviewへ流用できない。
+ */
+export interface IParadisExactBrowserViewDescriptor {
+	readonly windowId: number;
+	readonly viewId: string;
+	readonly targetId: string;
+	readonly viewLease: string;
+}
+
+/**
+ * shared processからElectron Mainへ呼ぶexact BrowserView操作。
+ * モバイルミラー専用のIParadisCdpFrameSubscriptionとは意図的に分離する。
+ */
+export interface IParadisCdpExactViewService {
+	resolveExactViewDescriptor(windowId: unknown, viewId: unknown): Promise<IParadisExactBrowserViewDescriptor | null>;
+	isExactViewVisible(descriptor: unknown): Promise<boolean | null>;
+	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
+	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;
+	dispatchExactViewInput(descriptor: unknown, method: unknown, paramsJson: unknown): Promise<IParadisCdpInputDispatchResult>;
+}
+
+export const PARADIS_CDP_INPUT_MAX_PARAMS_BYTES = 1024 * 1024;
+const PARADIS_CDP_INPUT_MAX_IDENTIFIER_LENGTH = 128;
+const PARADIS_CDP_INPUT_MAX_TOUCH_POINTS = 32;
+const PARADIS_CDP_INPUT_MAX_DRAG_ITEMS = 64;
+const PARADIS_CDP_INPUT_MAX_COMMANDS = 32;
+const PARADIS_CDP_INPUT_MAX_RESULT_MESSAGE_LENGTH = 1024;
+
+export const PARADIS_CDP_INPUT_METHODS = Object.freeze([
+	'Input.dispatchKeyEvent',
+	'Input.insertText',
+	'Input.imeSetComposition',
+	'Input.dispatchMouseEvent',
+	'Input.dispatchTouchEvent',
+	'Input.dispatchDragEvent',
+] as const);
+
+export type ParadisCdpInputMethod = typeof PARADIS_CDP_INPUT_METHODS[number];
+
+export interface IParadisCdpInputCommand {
+	readonly method: ParadisCdpInputMethod;
+	readonly params: Readonly<Record<string, unknown>>;
+}
+
+export type IParadisCdpInputDispatchResult =
+	| { readonly status: 'success'; readonly result: unknown }
+	| { readonly status: 'retryable'; readonly message: string }
+	| { readonly status: 'outcome-unknown'; readonly message: string };
+
+function paradisIsExactRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function paradisHasExactKeys(value: Readonly<Record<string, unknown>>, required: readonly string[], optional: readonly string[] = []): boolean {
+	const keys = Reflect.ownKeys(value);
+	return required.every(key => Object.hasOwn(value, key))
+		&& keys.every(key => typeof key === 'string' && (required.includes(key) || optional.includes(key)));
+}
+
+function paradisIsBoundedNonEmptyString(value: unknown, maximumLength: number): value is string {
+	return typeof value === 'string' && value.length > 0 && value.length <= maximumLength;
+}
+
+function paradisIsBoundedString(value: unknown, maximumLength = PARADIS_CDP_INPUT_MAX_PARAMS_BYTES): value is string {
+	return typeof value === 'string' && value.length <= maximumLength;
+}
+
+function paradisIsFiniteNumber(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value);
+}
+
+function paradisIsIntegerInRange(value: unknown, minimum: number, maximum: number): value is number {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum && value <= maximum;
+}
+
+function paradisIsBoolean(value: unknown): value is boolean {
+	return typeof value === 'boolean';
+}
+
+function paradisValidateOptionalFields(
+	value: Readonly<Record<string, unknown>>,
+	validators: Readonly<Record<string, (candidate: unknown) => boolean>>,
+): boolean {
+	return Object.entries(validators).every(([key, validate]) => !Object.hasOwn(value, key) || validate(value[key]));
+}
+
+function paradisValidateCdpInputModifiers(value: unknown): boolean {
+	return paradisIsIntegerInRange(value, 0, 15);
+}
+
+function paradisValidateCdpInputTimestamp(value: unknown): boolean {
+	return paradisIsFiniteNumber(value) && value >= 0;
+}
+
+function paradisValidateCdpKeyEvent(value: Readonly<Record<string, unknown>>): boolean {
+	if (!paradisHasExactKeys(value, ['type', 'key', 'code'], [
+		'modifiers', 'timestamp', 'text', 'unmodifiedText', 'windowsVirtualKeyCode', 'nativeVirtualKeyCode',
+		'autoRepeat', 'isKeypad', 'isSystemKey', 'location', 'commands',
+	])) {
+		return false;
+	}
+	if (!['keyDown', 'keyUp', 'rawKeyDown', 'char'].includes(value.type as string)
+		|| !paradisIsBoundedString(value.key, PARADIS_CDP_INPUT_MAX_IDENTIFIER_LENGTH)
+		|| !paradisIsBoundedString(value.code, PARADIS_CDP_INPUT_MAX_IDENTIFIER_LENGTH)) {
+		return false;
+	}
+	return paradisValidateOptionalFields(value, {
+		modifiers: paradisValidateCdpInputModifiers,
+		timestamp: paradisValidateCdpInputTimestamp,
+		text: candidate => paradisIsBoundedString(candidate),
+		unmodifiedText: candidate => paradisIsBoundedString(candidate),
+		windowsVirtualKeyCode: candidate => paradisIsIntegerInRange(candidate, 0, 0x7fffffff),
+		nativeVirtualKeyCode: candidate => paradisIsIntegerInRange(candidate, 0, 0x7fffffff),
+		autoRepeat: paradisIsBoolean,
+		isKeypad: paradisIsBoolean,
+		isSystemKey: paradisIsBoolean,
+		location: candidate => paradisIsIntegerInRange(candidate, 0, 3),
+		commands: candidate => Array.isArray(candidate)
+			&& candidate.length <= PARADIS_CDP_INPUT_MAX_COMMANDS
+			&& candidate.every(command => paradisIsBoundedString(command, PARADIS_CDP_INPUT_MAX_IDENTIFIER_LENGTH)),
+	});
+}
+
+function paradisValidateCdpImeComposition(value: Readonly<Record<string, unknown>>): boolean {
+	if (!paradisHasExactKeys(value, ['text', 'selectionStart', 'selectionEnd'], ['replacementStart', 'replacementEnd'])
+		|| !paradisIsBoundedString(value.text)
+		|| !paradisIsIntegerInRange(value.selectionStart, 0, 0x7fffffff)
+		|| !paradisIsIntegerInRange(value.selectionEnd, 0, 0x7fffffff)) {
+		return false;
+	}
+	return paradisValidateOptionalFields(value, {
+		replacementStart: candidate => paradisIsIntegerInRange(candidate, 0, 0x7fffffff),
+		replacementEnd: candidate => paradisIsIntegerInRange(candidate, 0, 0x7fffffff),
+	});
+}
+
+const paradisPointerOptionalValidators: Readonly<Record<string, (candidate: unknown) => boolean>> = {
+	modifiers: paradisValidateCdpInputModifiers,
+	timestamp: paradisValidateCdpInputTimestamp,
+	button: candidate => typeof candidate === 'string' && ['none', 'left', 'middle', 'right', 'back', 'forward'].includes(candidate),
+	buttons: candidate => paradisIsIntegerInRange(candidate, 0, 31),
+	clickCount: candidate => paradisIsIntegerInRange(candidate, 0, 0x7fffffff),
+	force: candidate => paradisIsFiniteNumber(candidate) && candidate >= 0 && candidate <= 1,
+	tangentialPressure: candidate => paradisIsFiniteNumber(candidate) && candidate >= -1 && candidate <= 1,
+	tiltX: candidate => paradisIsFiniteNumber(candidate) && candidate >= -90 && candidate <= 90,
+	tiltY: candidate => paradisIsFiniteNumber(candidate) && candidate >= -90 && candidate <= 90,
+	twist: candidate => paradisIsFiniteNumber(candidate) && candidate >= 0 && candidate <= 359,
+	deltaX: paradisIsFiniteNumber,
+	deltaY: paradisIsFiniteNumber,
+	pointerType: candidate => candidate === 'mouse' || candidate === 'pen',
+};
+
+function paradisValidateCdpMouseEvent(value: Readonly<Record<string, unknown>>): boolean {
+	if (!paradisHasExactKeys(value, ['type', 'x', 'y'], Object.keys(paradisPointerOptionalValidators))
+		|| !['mousePressed', 'mouseReleased', 'mouseMoved', 'mouseWheel'].includes(value.type as string)
+		|| !paradisIsFiniteNumber(value.x)
+		|| !paradisIsFiniteNumber(value.y)) {
+		return false;
+	}
+	return paradisValidateOptionalFields(value, paradisPointerOptionalValidators);
+}
+
+function paradisValidateCdpTouchPoint(value: unknown): boolean {
+	if (!paradisIsExactRecord(value)
+		|| !paradisHasExactKeys(value, ['x', 'y'], ['radiusX', 'radiusY', 'rotationAngle', 'force', 'tangentialPressure', 'tiltX', 'tiltY', 'twist', 'id'])
+		|| !paradisIsFiniteNumber(value.x)
+		|| !paradisIsFiniteNumber(value.y)) {
+		return false;
+	}
+	return paradisValidateOptionalFields(value, {
+		radiusX: candidate => paradisIsFiniteNumber(candidate) && candidate >= 0,
+		radiusY: candidate => paradisIsFiniteNumber(candidate) && candidate >= 0,
+		rotationAngle: paradisIsFiniteNumber,
+		force: candidate => paradisIsFiniteNumber(candidate) && candidate >= 0 && candidate <= 1,
+		tangentialPressure: candidate => paradisIsFiniteNumber(candidate) && candidate >= -1 && candidate <= 1,
+		tiltX: candidate => paradisIsFiniteNumber(candidate) && candidate >= -90 && candidate <= 90,
+		tiltY: candidate => paradisIsFiniteNumber(candidate) && candidate >= -90 && candidate <= 90,
+		twist: candidate => paradisIsFiniteNumber(candidate) && candidate >= 0 && candidate <= 359,
+		id: candidate => paradisIsIntegerInRange(candidate, 0, 0x7fffffff),
+	});
+}
+
+function paradisValidateCdpTouchEvent(value: Readonly<Record<string, unknown>>): boolean {
+	if (!paradisHasExactKeys(value, ['type', 'touchPoints'], ['modifiers', 'timestamp'])
+		|| !['touchStart', 'touchEnd', 'touchMove', 'touchCancel'].includes(value.type as string)
+		|| !Array.isArray(value.touchPoints)
+		|| value.touchPoints.length > PARADIS_CDP_INPUT_MAX_TOUCH_POINTS
+		|| ((value.type === 'touchStart' || value.type === 'touchMove') && value.touchPoints.length === 0)
+		|| !value.touchPoints.every(paradisValidateCdpTouchPoint)) {
+		return false;
+	}
+	return paradisValidateOptionalFields(value, {
+		modifiers: paradisValidateCdpInputModifiers,
+		timestamp: paradisValidateCdpInputTimestamp,
+	});
+}
+
+function paradisValidateCdpDragItem(value: unknown): boolean {
+	return paradisIsExactRecord(value)
+		&& paradisHasExactKeys(value, ['mimeType', 'data'], ['title', 'baseURL'])
+		&& paradisIsBoundedString(value.mimeType, PARADIS_CDP_INPUT_MAX_IDENTIFIER_LENGTH)
+		&& paradisIsBoundedString(value.data)
+		&& paradisValidateOptionalFields(value, {
+			title: candidate => paradisIsBoundedString(candidate),
+			baseURL: candidate => paradisIsBoundedString(candidate),
+		});
+}
+
+function paradisValidateCdpDragData(value: unknown): boolean {
+	if (!paradisIsExactRecord(value)
+		|| !paradisHasExactKeys(value, ['items', 'dragOperationsMask'], ['files'])
+		|| !Array.isArray(value.items)
+		|| value.items.length > PARADIS_CDP_INPUT_MAX_DRAG_ITEMS
+		|| !value.items.every(paradisValidateCdpDragItem)
+		|| !paradisIsIntegerInRange(value.dragOperationsMask, 0, 0x7fffffff)) {
+		return false;
+	}
+	return !Object.hasOwn(value, 'files')
+		|| (Array.isArray(value.files)
+			&& value.files.length <= PARADIS_CDP_INPUT_MAX_DRAG_ITEMS
+			&& value.files.every(file => paradisIsBoundedString(file)));
+}
+
+function paradisValidateCdpDragEvent(value: Readonly<Record<string, unknown>>): boolean {
+	return paradisHasExactKeys(value, ['type', 'x', 'y', 'data'], ['modifiers'])
+		&& typeof value.type === 'string'
+		&& ['dragEnter', 'dragOver', 'drop', 'dragCancel'].includes(value.type)
+		&& paradisIsFiniteNumber(value.x)
+		&& paradisIsFiniteNumber(value.y)
+		&& paradisValidateCdpDragData(value.data)
+		&& paradisValidateOptionalFields(value, { modifiers: paradisValidateCdpInputModifiers });
+}
+
+function paradisDeepFreeze<T>(value: T): T {
+	if ((typeof value !== 'object' && typeof value !== 'function') || value === null || Object.isFrozen(value)) {
+		return value;
+	}
+	for (const key of Reflect.ownKeys(value)) {
+		paradisDeepFreeze(Reflect.get(value as object, key));
+	}
+	return Object.freeze(value);
+}
+
+/** Strict, non-throwing parser for the only CDP input commands that can use focusless Main dispatch. */
+export function paradisParseCdpInputCommand(methodValue: unknown, paramsJsonValue: unknown): IParadisCdpInputCommand | undefined {
+	try {
+		if (typeof methodValue !== 'string'
+			|| !(PARADIS_CDP_INPUT_METHODS as readonly string[]).includes(methodValue)
+			|| typeof paramsJsonValue !== 'string'
+			|| VSBuffer.fromString(paramsJsonValue).byteLength > PARADIS_CDP_INPUT_MAX_PARAMS_BYTES) {
+			return undefined;
+		}
+		const params: unknown = JSON.parse(paramsJsonValue);
+		if (!paradisIsExactRecord(params)) {
+			return undefined;
+		}
+		const valid = (() => {
+			switch (methodValue as ParadisCdpInputMethod) {
+				case 'Input.dispatchKeyEvent': return paradisValidateCdpKeyEvent(params);
+				case 'Input.insertText': return paradisHasExactKeys(params, ['text']) && paradisIsBoundedString(params.text);
+				case 'Input.imeSetComposition': return paradisValidateCdpImeComposition(params);
+				case 'Input.dispatchMouseEvent': return paradisValidateCdpMouseEvent(params);
+				case 'Input.dispatchTouchEvent': return paradisValidateCdpTouchEvent(params);
+				case 'Input.dispatchDragEvent': return paradisValidateCdpDragEvent(params);
+			}
+		})();
+		return valid
+			? Object.freeze({ method: methodValue as ParadisCdpInputMethod, params: paradisDeepFreeze(params) })
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Strict, copy-owning parser for the Main input IPC result. */
+export function paradisParseCdpInputDispatchResult(value: unknown): IParadisCdpInputDispatchResult | undefined {
+	try {
+		if (!paradisIsExactRecord(value) || typeof value.status !== 'string') {
+			return undefined;
+		}
+		if (value.status === 'success') {
+			if (!paradisHasExactKeys(value, ['status', 'result'])) {
+				return undefined;
+			}
+			const json = JSON.stringify(value.result);
+			if (json === undefined || VSBuffer.fromString(json).byteLength > PARADIS_CDP_INPUT_MAX_PARAMS_BYTES) {
+				return undefined;
+			}
+			return Object.freeze({ status: 'success', result: paradisDeepFreeze(JSON.parse(json)) });
+		}
+		if (value.status !== 'retryable' && value.status !== 'outcome-unknown') {
+			return undefined;
+		}
+		if (!paradisHasExactKeys(value, ['status', 'message'])
+			|| typeof value.message !== 'string'
+			|| value.message.length === 0
+			|| value.message.length > PARADIS_CDP_INPUT_MAX_RESULT_MESSAGE_LENGTH) {
+			return undefined;
+		}
+		const prefix = value.status === 'retryable' ? 'PARA_BROWSER_RETRYABLE:' : 'PARA_BROWSER_OUTCOME_UNKNOWN:';
+		return value.message.startsWith(prefix)
+			? Object.freeze({ status: value.status, message: value.message }) as IParadisCdpInputDispatchResult
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Strict, non-coercing parser for an exact BrowserView owner window ID. */
+export function paradisParseExactBrowserViewWindowId(value: unknown): number | undefined {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/** Strict, non-coercing parser for an exact BrowserView resolver view ID. */
+export function paradisParseExactBrowserViewId(value: unknown): string | undefined {
+	return paradisIsBoundedNonEmptyString(value, PARADIS_EXACT_VIEW_ID_MAX_LENGTH) ? value : undefined;
+}
+
+/** Strict, non-throwing and copy-owning parser for exact BrowserView descriptors. */
+export function paradisParseExactBrowserViewDescriptor(value: unknown): IParadisExactBrowserViewDescriptor | undefined {
+	try {
+		return paradisParseExactBrowserViewDescriptorUnsafe(value);
+	} catch {
+		return undefined;
+	}
+}
+
+function paradisParseExactBrowserViewDescriptorUnsafe(value: unknown): IParadisExactBrowserViewDescriptor | undefined {
+	if (!paradisIsExactRecord(value)
+		|| !paradisHasExactKeys(value, ['windowId', 'viewId', 'targetId', 'viewLease'])) {
+		return undefined;
+	}
+	const windowIdValue = value.windowId;
+	const viewIdValue = value.viewId;
+	const targetId = value.targetId;
+	const viewLease = value.viewLease;
+	const windowId = paradisParseExactBrowserViewWindowId(windowIdValue);
+	const viewId = paradisParseExactBrowserViewId(viewIdValue);
+	if (windowId === undefined
+		|| viewId === undefined
+		|| !paradisIsBoundedNonEmptyString(targetId, PARADIS_EXACT_VIEW_TARGET_ID_MAX_LENGTH)
+		|| !paradisIsBoundedNonEmptyString(viewLease, PARADIS_EXACT_VIEW_LEASE_MAX_LENGTH)) {
+		return undefined;
+	}
+	return Object.freeze({ windowId, viewId, targetId, viewLease });
+}
+
+const PARADIS_CDP_SCREENSHOT_MAX_EDGE = 8_192;
+const PARADIS_CDP_SCREENSHOT_MAX_PIXELS = 16 * 1024 * 1024;
+
+/** Strict, non-throwing and deeply copy-owning parser for exact screenshot options. */
+export function paradisParseExactCdpScreenshotOptions(value: unknown): IParadisCdpScreenshotOptions | undefined {
+	try {
+		return paradisParseExactCdpScreenshotOptionsUnsafe(value);
+	} catch {
+		return undefined;
+	}
+}
+
+function paradisParseExactCdpScreenshotOptionsUnsafe(value: unknown): IParadisCdpScreenshotOptions | undefined {
+	if (!paradisIsExactRecord(value)
+		|| !paradisHasExactKeys(value, [], ['format', 'quality', 'pageRect', 'captureBeyondViewport', 'fullPage'])) {
+		return undefined;
+	}
+	const hasFormat = Object.hasOwn(value, 'format');
+	const hasQuality = Object.hasOwn(value, 'quality');
+	const hasPageRect = Object.hasOwn(value, 'pageRect');
+	const hasCaptureBeyondViewport = Object.hasOwn(value, 'captureBeyondViewport');
+	const hasFullPage = Object.hasOwn(value, 'fullPage');
+	const format = hasFormat ? value.format : undefined;
+	const quality = hasQuality ? value.quality : undefined;
+	const pageRectValue = hasPageRect ? value.pageRect : undefined;
+	const captureBeyondViewport = hasCaptureBeyondViewport ? value.captureBeyondViewport : undefined;
+	const fullPage = hasFullPage ? value.fullPage : undefined;
+	if (hasFormat && format !== 'jpeg' && format !== 'png') {
+		return undefined;
+	}
+	if (hasQuality
+		&& (typeof quality !== 'number' || !Number.isInteger(quality) || quality < 0 || quality > 100)) {
+		return undefined;
+	}
+	if (hasCaptureBeyondViewport && typeof captureBeyondViewport !== 'boolean') {
+		return undefined;
+	}
+	if (hasFullPage && typeof fullPage !== 'boolean') {
+		return undefined;
+	}
+
+	let pageRect: IParadisCdpScreenshotOptions['pageRect'];
+	if (hasPageRect) {
+		if (!paradisIsExactRecord(pageRectValue)
+			|| !paradisHasExactKeys(pageRectValue, ['x', 'y', 'width', 'height'])) {
+			return undefined;
+		}
+		const x = pageRectValue.x;
+		const y = pageRectValue.y;
+		const width = pageRectValue.width;
+		const height = pageRectValue.height;
+		if (![x, y, width, height].every(candidate => typeof candidate === 'number' && Number.isFinite(candidate))
+			|| (width as number) <= 0
+			|| (height as number) <= 0
+			|| (width as number) > PARADIS_CDP_SCREENSHOT_MAX_EDGE
+			|| (height as number) > PARADIS_CDP_SCREENSHOT_MAX_EDGE
+			|| (width as number) * (height as number) > PARADIS_CDP_SCREENSHOT_MAX_PIXELS) {
+			return undefined;
+		}
+		pageRect = Object.freeze({ x: x as number, y: y as number, width: width as number, height: height as number });
+	}
+	if ((pageRect !== undefined && fullPage === true)
+		|| (captureBeyondViewport === true && pageRect === undefined)) {
+		return undefined;
+	}
+
+	return Object.freeze({
+		...(hasFormat ? { format: format as 'jpeg' | 'png' } : {}),
+		...(hasQuality ? { quality: quality as number } : {}),
+		...(pageRect !== undefined ? { pageRect } : {}),
+		...(hasCaptureBeyondViewport ? { captureBeyondViewport: captureBeyondViewport as boolean } : {}),
+		...(hasFullPage ? { fullPage: fullPage as boolean } : {}),
+	});
 }
 
 /**
@@ -156,8 +611,51 @@ export interface IParadisPaneBinding {
 	/** ブラウザビューのID（PlaywrightService の pageId / viewId に相当）。 */
 	readonly pageId: string;
 	readonly pageInfo: IParadisSharedPageInfo;
+	/** 同一トークンのrebind/unbindごとに進む世代。条件付き自動解除に使う。 */
+	readonly generation: number;
 	/** バインドされた時刻（epoch ms）。バインディングダイアログの「共有開始 N分前」表示に使う。 */
 	readonly boundAt: number;
+	/** Stable scope authenticated by the prepare/commit authority transaction. */
+	readonly scope: ParadisBindingAuthorityStableScope;
+}
+
+/** Renderer → shared process bind preparation. All fields are copied and bounded at the IPC edge. */
+export interface IParadisPrepareBindRequest {
+	readonly revision: number;
+	readonly token: string;
+	readonly viewId: string;
+	readonly pageInfo: IParadisSharedPageInfo;
+}
+
+/** Short-lived authority ticket. The exact BrowserView descriptor remains backend-private. */
+export interface IParadisPrepareBindResult {
+	readonly ticketId: string;
+	readonly expiresAt: number;
+	readonly revision: number;
+	readonly scope: ParadisBindingAuthorityStableScope;
+}
+
+export interface IParadisBindingTicketRequest {
+	readonly ticketId: string;
+}
+
+export interface IParadisCommitBindResult {
+	readonly committed: true;
+	readonly binding: IParadisPaneBinding;
+}
+
+export interface IParadisAbortBindResult {
+	readonly aborted: true;
+}
+
+/** Rendererからshared processへ同期する、window単位のペイン/PTY生存manifest。 */
+export interface IParadisPaneShellManifest {
+	/**
+	 * falseはterminal復元途中の増分snapshot。欠落tokenを終了扱いにしてはならない。
+	 * trueはterminal backend再接続完了後のauthoritative snapshot。
+	 */
+	readonly complete: boolean;
+	readonly entries: readonly { readonly token: string; readonly shellPid?: number }[];
 }
 
 // --- エージェント実行状態 (workspaceSwitch のスピナー表示用、Superset 移植) ---------------------
@@ -200,17 +698,9 @@ export type ParadisMcpCli = 'claude' | 'codex';
 /** 1つのMCPサーバー登録の結果。 */
 export type ParadisMcpSetupOutcome = 'success' | 'already' | 'error';
 
-/**
- * ワンボタンMCPセットアップの要求。実行はshared process（node層）で行うが、
- * shimの絶対パスとCDP URLはelectron-browser側でFileAccessから解決して渡す
- * （表示スニペットと同一のパスを使い、二重解決による齟齬を防ぐ）。
- */
+/** ワンボタンMCPセットアップの要求。shim pathはshared processだけが解決する。 */
 export interface IParadisMcpSetupRequest {
 	readonly cli: ParadisMcpCli;
-	/** paradisBrowserMcpShim.js の絶対パス。 */
-	readonly shimPath: string;
-	/** CDPゲートウェイの既定URL（`http://127.0.0.1:<port>/cdp`）。 */
-	readonly cdpUrl: string;
 }
 
 /** 各MCPサーバー（para-browser / chrome-devtools）ごとのセットアップ結果。 */

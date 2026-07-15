@@ -7,7 +7,7 @@ import { Emitter } from '../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { ILogService } from '../../log/common/log.js';
 import { CDPEvent, CDPTargetInfo, ICDPConnection } from '../common/cdp/types.js';
-import { BrowserView } from './browserView.js';
+import type { BrowserView } from './browserView.js';
 
 /**
  * Intercepts a CDP command before it is forwarded to the Electron debugger.
@@ -55,6 +55,9 @@ export class BrowserViewDebugger extends Disposable {
 	/** Fired when targetInfo for a known target changes (e.g. title/url update). */
 	readonly onTargetInfoChanged = this._onTargetInfoChanged.event;
 
+	private readonly _onDidDetach = this._register(new Emitter<void>());
+	readonly onDidDetach = this._onDidDetach.event;
+
 	/** Whether any attached debugger session has paused JavaScript execution. */
 	private _isPaused = false;
 	get isPaused(): boolean { return this._isPaused; }
@@ -62,6 +65,7 @@ export class BrowserViewDebugger extends Disposable {
 	readonly targetId: string;
 
 	private readonly _messageHandler: (event: Electron.Event, method: string, params: unknown, sessionId?: string) => void;
+	private readonly _detachHandler: () => void;
 	private readonly _electronDebugger: Electron.Debugger;
 	private readonly _interceptors = new Set<CDPCommandInterceptor>();
 
@@ -77,6 +81,7 @@ export class BrowserViewDebugger extends Disposable {
 		this._messageHandler = (_event: Electron.Event, method: string, params: unknown, sessionId?: string) => {
 			this.routeCDPEvent(method, params, sessionId);
 		};
+		this._detachHandler = () => this.handleElectronDebuggerDetached();
 	}
 
 	/**
@@ -161,7 +166,14 @@ export class BrowserViewDebugger extends Disposable {
 		}
 
 		this._electronDebugger.on('message', this._messageHandler);
-		this._electronDebugger.attach('1.3');
+		this._electronDebugger.on('detach', this._detachHandler);
+		try {
+			this._electronDebugger.attach('1.3');
+		} catch (error) {
+			this._electronDebugger.removeListener('message', this._messageHandler);
+			this._electronDebugger.removeListener('detach', this._detachHandler);
+			throw error;
+		}
 
 		// We use auto-attach to discover descendent targets.
 		// Regular target discovery doesn't provide ancestor information for workers,
@@ -186,10 +198,21 @@ export class BrowserViewDebugger extends Disposable {
 			}
 
 			this._electronDebugger.removeListener('message', this._messageHandler);
+			this._electronDebugger.removeListener('detach', this._detachHandler);
 			this._electronDebugger.detach();
+			this.handleElectronDebuggerDetached();
 		} catch {
 			// WebContents may already be destroyed or in an inconsistent state
 		}
+	}
+
+	private handleElectronDebuggerDetached(): void {
+		this._electronDebugger.removeListener('message', this._messageHandler);
+		this._electronDebugger.removeListener('detach', this._detachHandler);
+		this._sessions.clearAndDisposeAll();
+		this._knownTargets.clear();
+		this._isPaused = false;
+		this._onDidDetach.fire();
 	}
 
 	/**

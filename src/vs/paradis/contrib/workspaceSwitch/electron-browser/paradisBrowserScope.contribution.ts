@@ -6,73 +6,302 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Emitter, Event } from '../../../../base/common/event.js';
+import { Emitter } from '../../../../base/common/event.js';
 import { combinedDisposable, Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
-import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
+import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { ParadisBrowserScopeState, PARADIS_BROWSER_SCOPE_STORAGE_KEY } from '../common/paradisBrowserScopeState.js';
+import { IParadisBrowserScopeService, IParadisWorkspaceSwitchService, ParadisBindingScope } from '../common/paradisWorkspaceSwitch.js';
 
 /**
- * 内蔵ブラウザのタブをリポジトリ単位でスコープする (機能1 Phase 3)。
+ * BrowserViewのworkspace scope authority。
  *
- * - 新しいブラウザビューは出現時のアクティブリポジトリでタグ付けする
- * - リポジトリ切り替え中 (isSwitching) のエディタクローズによる BrowserEditorInput の
- *   dispose を veto する。input と model (main プロセスの WebContentsView) が生存する
- *   ため、切り替え先から戻って working set が同じ id を getOrCreateLazy すると
- *   生きている実体にそのまま再接続され、ページは**リロードされない**
- * - 切り替え開始時 (onWillSwitchScope) に生存中の全 WebContentsView を即座に隠す。
- *   WCV はワークスペース DOM ではなくウィンドウに重なるネイティブビューで、veto で
- *   生かしたままにする都合上、隠蔽は WebContentsViewRendererFeature の可視性追従
- *   (requestAnimationFrame 遅延 + main への非同期 IPC) だけに頼っている。updateFolders の
- *   再レイアウト中に旧ページが古い bounds のまま数フレーム残る (残像) のを防ぐため、
- *   レイアウトが変わる前にここで先回りして隠す
- * - ユーザーが自分でタブを閉じた場合 (isSwitching ではない) は veto せず通常どおり破棄
- * - contextual filter で、ブラウザタブの一覧系 UI を現リポジトリのタブに絞る
- * - リポジトリがリストから削除されたら、そのリポジトリの退避中タブを強制破棄して
- *   WebContentsView のリークを防ぐ
- *
- * 既知の制限: WebContentsView はウィンドウに紐づくため、ウィンドウリロードを跨ぐと
- * ページ自体は再ロードされる (URL は working set 経由で復元される)。
+ * Unit 1以降、Renderer reload中もMainのWebContentsViewは保持され、新Rendererが同じviewIdへ
+ * re-attachする。このserviceはviewId→stateKeyをWORKSPACE storageへ保存し、inactive scopeの
+ * viewを現在scopeへ誤tagしない。台帳はParadisBrowserScopeState内のMap 1個だけを正とする。
  */
-class ParadisBrowserWorkspaceScope extends Disposable implements IWorkbenchContribution {
+export class ParadisBrowserScopeService extends Disposable implements IParadisBrowserScopeService {
+	declare readonly _serviceBrand: undefined;
 
-	static readonly ID = 'workbench.contrib.paradisBrowserWorkspaceScope';
-
-	/** browser view id → 所属リポジトリID。untagged はスコープ外 (常に表示・veto 対象外) */
-	private readonly _viewRepositories = new Map<string, string>();
-
-	/** input ごとの veto / 破棄追跡リスナー (実 dispose 時に自動解放) */
+	private readonly _state: ParadisBrowserScopeState;
 	private readonly _inputListeners = this._register(new DisposableMap<string>());
+	private readonly _pendingCreatedDuringSwitch = new Set<string>();
+	private readonly _initialPendingViewIds = new Set<string>();
+	private readonly _filterChanged = this._register(new Emitter<void>());
+	private _shutdownStarted = false;
+	private _initialSnapshotSucceeded = false;
+	private _probingPendingContext = false;
+
+	readonly initializationBarrier: Promise<void>;
+	readonly onDidChangeStableScope;
+	get revision(): number { return this._state.revision; }
 
 	constructor(
 		@IBrowserViewWorkbenchService private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IStorageService private readonly storageService: IStorageService,
+		@ILifecycleService private readonly lifecycleService: ILifecycleService,
 	) {
 		super();
 
-		this._register(Event.runAndSubscribe(this.browserViewWorkbenchService.onDidChangeBrowserViews, () => this.hookAndTagViews()));
-		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => this.cleanupRemovedRepositories()));
+		// Synchronous load is intentionally the first observable operation. No view event may tag an
+		// inactive Main-retained view before its persisted scope has been restored.
+		this._state = this._register(new ParadisBrowserScopeState(
+			this.storageService.get(PARADIS_BROWSER_SCOPE_STORAGE_KEY, StorageScope.WORKSPACE),
+		));
+		this.onDidChangeStableScope = this._state.onDidChangeStableScope;
 
-		// 切り替えでレイアウトが変わる前に、生存中のネイティブビューを先回りして隠す (残像対策)。
-		this._register(this.workspaceSwitchService.onWillSwitchScope(() => this.hideAllBrowserViews()));
+		this._register(this.browserViewWorkbenchService.onDidChangeBrowserViews(() => this._hookKnownViews()));
+		this._hookKnownViews();
 
-		// 切り替え完了で contextual filter の結果が変わったことを通知する
-		const filterChanged = this._register(new Emitter<void>());
-		this._register(this.workspaceSwitchService.onDidSwitchScope(() => filterChanged.fire()));
+		this._register(this.lifecycleService.onWillShutdown(() => this._shutdownStarted = true));
+		this._register(this.workspaceSwitchService.onWillSwitchScope(() => {
+			this._hideAllBrowserViews();
+			// isSwitching becomes true before this event. Invalidate immediately so callers cannot
+			// observe an outgoing stable view through a stale contextual collection.
+			this._filterChanged.fire();
+		}));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this._onScopeSwitchCompleted()));
+		this._register(this.workspaceSwitchService.onDidRetireScope(stateKey => this._retireScope(stateKey)));
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => {
+			this._reevaluatePendingContextualViews();
+			this._reevaluateUnscopedViews();
+		}));
+
+		this.initializationBarrier = this._initialize();
+	}
+
+	resolveScope(viewId: string): ParadisBindingScope {
+		if (this.workspaceSwitchService.isSwitching) {
+			return { kind: 'pending' };
+		}
+		return this._state.resolveScope(viewId);
+	}
+
+	private async _initialize(): Promise<void> {
+		// IBrowserViewWorkbenchService guarantees this promise is non-rejecting. Keep the defensive
+		// catch so a third-party/test implementation cannot strand binding UI forever.
+		try {
+			this._initialSnapshotSucceeded = await this.browserViewWorkbenchService.whenInitialized;
+		} catch {
+			this._initialSnapshotSucceeded = false;
+		}
+
+		this._hookKnownViews();
+		const contextualIds = new Set(this.browserViewWorkbenchService.getContextualBrowserViews().keys());
+		let changed = false;
+		for (const [viewId, input] of this.browserViewWorkbenchService.getKnownBrowserViews()) {
+			if (this._state.isRetiredBeforeInitialization(viewId)) {
+				input.dispose(true);
+				if (!this.browserViewWorkbenchService.getKnownBrowserViews().has(viewId)) {
+					this._state.convergeRetiredView(viewId);
+				}
+				continue;
+			}
+			if (this._state.resolveScope(viewId).kind === 'managed') {
+				continue;
+			}
+			if (!this._initialSnapshotSucceeded) {
+				this._state.markPending(viewId);
+				this._initialPendingViewIds.add(viewId);
+				continue;
+			}
+			// Corrupt storage cannot prove which inactive scope owns an initial Main-retained view.
+			if (this._state.storageStatus === 'corrupt' || this.workspaceSwitchService.isSwitching || !contextualIds.has(viewId)) {
+				this._state.markPending(viewId);
+				this._initialPendingViewIds.add(viewId);
+				continue;
+			}
+			const tagged = this._tagForCurrentWorkspace(viewId, 'initialTag');
+			if (!tagged) {
+				this._initialPendingViewIds.add(viewId);
+			}
+			changed = tagged || changed;
+		}
+		this._state.completeInitialization(
+			this._initialSnapshotSucceeded,
+			new Set(this.browserViewWorkbenchService.getKnownBrowserViews().keys()),
+		);
+		if (changed) {
+			this._persist();
+		}
+
+		// Register our filter only after contextual membership was sampled for initial unknown views;
+		// otherwise our own pending filter would make every one of them look inactive.
 		this._register(this.browserViewWorkbenchService.registerContextualFilter({
-			include: input => this.isInActiveScope(input),
-			onDidChange: filterChanged.event
+			include: input => this._isInActiveScope(input),
+			onDidChange: this._filterChanged.event,
 		}));
 	}
 
-	/**
-	 * 生存中の全ブラウザビューのネイティブ WebContentsView を隠す。切り替え完了後に
-	 * 切り替え先の (可視化された) ブラウザエディタが WebContentsViewRendererFeature の
-	 * 可視性追従で自身を再表示するため、ここで隠しても復帰する。model 未解決 (WCV 未生成)
-	 * のビューは隠す対象が無いので何もしない。
-	 */
-	private hideAllBrowserViews(): void {
+	private _hookKnownViews(): void {
+		for (const [viewId, input] of this.browserViewWorkbenchService.getKnownBrowserViews()) {
+			if (this._state.isRetiredBeforeInitialization(viewId)) {
+				input.dispose(true);
+				if (!this.browserViewWorkbenchService.getKnownBrowserViews().has(viewId)) {
+					this._state.convergeRetiredView(viewId);
+				}
+				continue;
+			}
+			this._hookInput(viewId, input);
+			if (!this._state.initialized) {
+				this._state.markPending(viewId);
+				continue;
+			}
+			if (this._state.resolveScope(viewId).kind !== 'pending') {
+				continue;
+			}
+			if (this._initialPendingViewIds.has(viewId)) {
+				continue;
+			}
+			if (this.workspaceSwitchService.isSwitching) {
+				this._pendingCreatedDuringSwitch.add(viewId);
+				continue;
+			}
+			if (this._tagForCurrentWorkspace(viewId, 'initialTag')) {
+				this._persist();
+				this._filterChanged.fire();
+			}
+		}
+	}
+
+	private _hookInput(viewId: string, input: BrowserEditorInput): void {
+		if (this._inputListeners.has(viewId)) {
+			return;
+		}
+		this._inputListeners.set(viewId, combinedDisposable(
+			input.onBeforeDispose(event => {
+				if (this.workspaceSwitchService.isSwitching) {
+					event.veto();
+				}
+			}),
+			input.onWillDispose(() => {
+				this._inputListeners.deleteAndDispose(viewId);
+				this._pendingCreatedDuringSwitch.delete(viewId);
+				// A Renderer/window shutdown is not a user close. Main retains the BrowserView and the
+				// next Renderer must recover the persisted mapping.
+				if (this._shutdownStarted || this.lifecycleService.willShutdown || this.workspaceSwitchService.isSwitching) {
+					return;
+				}
+				this._initialPendingViewIds.delete(viewId);
+				if (this._state.deleteForUserClose(viewId)) {
+					this._persist();
+				}
+				this._filterChanged.fire();
+			}),
+		));
+	}
+
+	private _onScopeSwitchCompleted(): void {
+		this._reevaluatePendingContextualViews();
+		this._reevaluateUnscopedViews();
+		this._filterChanged.fire();
+	}
+
+	private _reevaluatePendingContextualViews(): void {
+		if (!this._state.initialized || this.workspaceSwitchService.isSwitching) {
+			return;
+		}
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		let changed = false;
+		for (const viewId of this._getContextualViewIdsIncludingPending()) {
+			if (this._state.resolveScope(viewId).kind !== 'pending') {
+				continue;
+			}
+			if (this._initialPendingViewIds.has(viewId)
+				&& (!this._initialSnapshotSucceeded || this._state.storageStatus === 'corrupt')) {
+				continue;
+			}
+			if (activeStateKey === undefined && this._isManagedWorkspace()) {
+				continue;
+			}
+			this._tagForCurrentWorkspace(viewId, 'initialTag');
+			this._pendingCreatedDuringSwitch.delete(viewId);
+			this._initialPendingViewIds.delete(viewId);
+			changed = true;
+		}
+		if (changed) {
+			this._persist();
+			this._filterChanged.fire();
+		}
+	}
+
+	private _tagForCurrentWorkspace(viewId: string, reason: 'initialTag' | 'reassign'): boolean {
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		if (activeStateKey !== undefined) {
+			this._state.tagManaged(viewId, activeStateKey, reason);
+			return true;
+		}
+		if (this._isManagedWorkspace()) {
+			this._state.markPending(viewId);
+			return false;
+		}
+		this._state.tagUnscoped(viewId, reason);
+		return true;
+	}
+
+	private _isManagedWorkspace(): boolean {
+		return this.workspaceSwitchService.isManagedWorkspaceWindow;
+	}
+
+	private _getContextualViewIdsIncludingPending(): Set<string> {
+		this._probingPendingContext = true;
+		try {
+			return new Set(this.browserViewWorkbenchService.getContextualBrowserViews().keys());
+		} finally {
+			this._probingPendingContext = false;
+		}
+	}
+
+	private _reevaluateUnscopedViews(): void {
+		if (!this._state.initialized || this.workspaceSwitchService.isSwitching) {
+			return;
+		}
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		if (activeStateKey === undefined) {
+			return;
+		}
+		const contextualIds = new Set(this.browserViewWorkbenchService.getContextualBrowserViews().keys());
+		let changed = false;
+		for (const viewId of contextualIds) {
+			if (this._state.resolveScope(viewId).kind === 'unscoped') {
+				this._state.tagManaged(viewId, activeStateKey, 'reassign');
+				changed = true;
+			}
+		}
+		if (changed) {
+			this._persist();
+			this._filterChanged.fire();
+		}
+	}
+
+	private _retireScope(stateKey: string): void {
+		const retiredViewIds = this._state.retireScope(stateKey);
+		if (retiredViewIds.length === 0) {
+			return;
+		}
+		this._persist();
+		for (const viewId of retiredViewIds) {
+			this._initialPendingViewIds.delete(viewId);
+			this.browserViewWorkbenchService.getKnownBrowserViews().get(viewId)?.dispose(true);
+		}
+		this._filterChanged.fire();
+	}
+
+	private _isInActiveScope(input: BrowserEditorInput): boolean {
+		const scope = this.resolveScope(input.serialize().id);
+		if (scope.kind === 'pending') {
+			return this._probingPendingContext;
+		}
+		return scope.kind === 'unscoped'
+			|| (scope.kind === 'managed' && scope.stateKey === this.workspaceSwitchService.activeStateKey);
+	}
+
+	private _hideAllBrowserViews(): void {
 		for (const [, input] of this.browserViewWorkbenchService.getKnownBrowserViews()) {
 			if (input.model?.visible) {
 				void input.model.setVisible(false);
@@ -80,49 +309,23 @@ class ParadisBrowserWorkspaceScope extends Disposable implements IWorkbenchContr
 		}
 	}
 
-	private isInActiveScope(input: BrowserEditorInput): boolean {
-		const stateKey = this._viewRepositories.get(input.serialize().id);
-		return stateKey === undefined || stateKey === this.workspaceSwitchService.activeStateKey;
-	}
-
-	private hookAndTagViews(): void {
-		const activeStateKey = this.workspaceSwitchService.activeStateKey;
-
-		for (const [id, input] of this.browserViewWorkbenchService.getKnownBrowserViews()) {
-			if (!this._inputListeners.has(id)) {
-				this._inputListeners.set(id, combinedDisposable(
-					input.onBeforeDispose(e => {
-						// 切り替えによるクローズだけ veto して WebContentsView を生かしたまま退避する
-						if (this.workspaceSwitchService.isSwitching) {
-							e.veto();
-						}
-					}),
-					input.onWillDispose(() => {
-						this._viewRepositories.delete(id);
-						this._inputListeners.deleteAndDispose(id);
-					})
-				));
-			}
-
-			if (!this._viewRepositories.has(id) && activeStateKey !== undefined) {
-				this._viewRepositories.set(id, activeStateKey);
-			}
-		}
-	}
-
-	private cleanupRemovedRepositories(): void {
-		const repositoryIds = new Set(this.workspaceSwitchService.repositories.map(repository => repository.id));
-
-		for (const [id, input] of [...this.browserViewWorkbenchService.getKnownBrowserViews()]) {
-			const stateKey = this._viewRepositories.get(id);
-			// worktree スコープ ('worktree:' プレフィックス) はリポジトリ削除の対象外
-			// (worktree の増減は頻繁なので、ページはユーザーが閉じるまで生かしておく)
-			if (stateKey !== undefined && !stateKey.startsWith('worktree:') && !repositoryIds.has(stateKey)) {
-				this._viewRepositories.delete(id);
-				input.dispose(true); // veto を通さず破棄
-			}
-		}
+	private _persist(): void {
+		this.storageService.store(
+			PARADIS_BROWSER_SCOPE_STORAGE_KEY,
+			this._state.serialize(),
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE,
+		);
 	}
 }
 
-registerWorkbenchContribution2(ParadisBrowserWorkspaceScope.ID, ParadisBrowserWorkspaceScope, WorkbenchPhase.AfterRestored);
+registerSingleton(IParadisBrowserScopeService, ParadisBrowserScopeService, InstantiationType.Delayed);
+
+/** AfterRestored starter only. All state lives in the singleton service above. */
+class ParadisBrowserScopeStarter implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.paradisBrowserWorkspaceScope';
+
+	constructor(@IParadisBrowserScopeService _scopeService: IParadisBrowserScopeService) { }
+}
+
+registerWorkbenchContribution2(ParadisBrowserScopeStarter.ID, ParadisBrowserScopeStarter, WorkbenchPhase.AfterRestored);

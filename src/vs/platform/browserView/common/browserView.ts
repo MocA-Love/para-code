@@ -150,6 +150,8 @@ export interface IBrowserViewCaptureScreenshotOptions {
 	format?: 'jpeg' | 'png';
 	screenRect?: IBrowserViewRect;
 	pageRect?: IBrowserViewRect;
+	/** Capture a pageRect in document coordinates beyond the current viewport via CDP. */
+	captureBeyondViewport?: boolean;
 	/**
 	 * When true, capture the full scrollable document, not just the visible viewport.
 	 * Ignored when `screenRect` or `pageRect` is set.
@@ -292,6 +294,7 @@ export interface IBrowserViewKeyDownEvent {
 	key: string;
 	keyCode: number;
 	code: string;
+	location: number;
 	ctrlKey: boolean;
 	shiftKey: boolean;
 	altKey: boolean;

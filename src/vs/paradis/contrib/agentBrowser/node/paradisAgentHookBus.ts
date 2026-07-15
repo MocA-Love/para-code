@@ -13,6 +13,7 @@
 // （同一プロセス内でのみ成立する前提。IPC は介さない）。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
+import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { PARADIS_AGENT_BACKGROUND_TASK_STALE_MS } from '../common/paradisAgentStatusStale.js';
 
 /** notify.sh (v2) がPOSTするhook JSONから抽出した、1回のhook発火の内容。 */
@@ -50,6 +51,10 @@ export interface IParadisAgentHookEvent {
 const HOOK_PAYLOAD_MAX_DEPTH = 5;
 const HOOK_PAYLOAD_MAX_ENTRIES = 100;
 const HOOK_PAYLOAD_MAX_STRING = 10_000;
+const PANE_TOKEN_MAX_LENGTH = 200;
+const BACKGROUND_TASK_MAX_ENTRIES = 4_096;
+const BACKGROUND_TASK_ID_MAX_LENGTH = 200;
+const BACKGROUND_TASK_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 function sanitizeHookValue(value: unknown, depth: number): unknown {
 	if (typeof value === 'string') {
@@ -59,10 +64,10 @@ function sanitizeHookValue(value: unknown, depth: number): unknown {
 		return value;
 	}
 	if (depth >= HOOK_PAYLOAD_MAX_DEPTH) {
-		return Array.isArray(value) ? [] : {};
+		return Object.freeze(Array.isArray(value) ? [] : {});
 	}
 	if (Array.isArray(value)) {
-		return value.slice(0, HOOK_PAYLOAD_MAX_ENTRIES).map(entry => sanitizeHookValue(entry, depth + 1));
+		return Object.freeze(value.slice(0, HOOK_PAYLOAD_MAX_ENTRIES).map(entry => sanitizeHookValue(entry, depth + 1)));
 	}
 	if (typeof value === 'object' && value !== null) {
 		const result: Record<string, unknown> = {};
@@ -72,7 +77,7 @@ function sanitizeHookValue(value: unknown, depth: number): unknown {
 				result[key.slice(0, 200)] = sanitizeHookValue(entry, depth + 1);
 			}
 		}
-		return result;
+		return Object.freeze(result);
 	}
 	return undefined;
 }
@@ -92,7 +97,15 @@ export const onParadisAgentHookEvent: Event<IParadisAgentHookEvent> = emitter.ev
 
 /** hookイベントの発火（ParadisAgentBrowserService の /agent-hook ハンドラ専用）。 */
 export function fireParadisAgentHookEvent(event: IParadisAgentHookEvent): void {
-	emitter.fire(event);
+	const payload = event.payload === undefined ? undefined : paradisSanitizeAgentHookPayload(event.payload);
+	const payloadToolInput = payload?.['tool_input'];
+	const toolInput = payloadToolInput !== undefined ? payloadToolInput : sanitizeHookValue(event.toolInput, 0);
+	const ownedEvent = Object.freeze({
+		...event,
+		...(event.payload !== undefined ? { payload } : {}),
+		...(event.toolInput !== undefined || payloadToolInput !== undefined ? { toolInput } : {}),
+	});
+	emitter.fire(ownedEvent);
 }
 
 // --- ターン終了シグナル（transcript由来） ----------------------------------------------------------
@@ -142,29 +155,91 @@ export interface IParadisAgentPaneActivity {
 /** 完了通知が来ないまま残ったバックグラウンドタスクを無視するまでの時間。 */
 const activities = new Map<string, IParadisAgentPaneActivity>();
 const activityEmitter = new Emitter<{ readonly token: string; readonly activity: IParadisAgentPaneActivity }>();
+let activityGuard: ((token: string) => boolean) | undefined;
+
+const emptyActivity = (): IParadisAgentPaneActivity => ({
+	backgroundTasks: new Map(),
+	pendingQuestion: false,
+	pendingApproval: false,
+});
+
+function copyPaneActivity(activity: IParadisAgentPaneActivity): IParadisAgentPaneActivity {
+	const backgroundTasks = new Map<string, number>();
+	const latestOpenedAt = Date.now() + BACKGROUND_TASK_MAX_FUTURE_SKEW_MS;
+	for (const [taskId, openedAt] of activity.backgroundTasks) {
+		if (backgroundTasks.size >= BACKGROUND_TASK_MAX_ENTRIES) {
+			break;
+		}
+		if (typeof taskId === 'string'
+			&& taskId.length > 0
+			&& taskId.length <= BACKGROUND_TASK_ID_MAX_LENGTH
+			&& typeof openedAt === 'number'
+			&& Number.isSafeInteger(openedAt)
+			&& openedAt >= 0
+			&& openedAt <= latestOpenedAt) {
+			backgroundTasks.set(taskId, openedAt);
+		}
+	}
+	return Object.freeze({
+		backgroundTasks,
+		pendingQuestion: activity.pendingQuestion === true,
+		pendingApproval: activity.pendingApproval === true,
+	});
+}
 
 /** ペインアクティビティの変化の購読（shared process 内限定）。 */
-export const onParadisAgentPaneActivity: Event<{ readonly token: string; readonly activity: IParadisAgentPaneActivity }> = activityEmitter.event;
+export const onParadisAgentPaneActivity: Event<{ readonly token: string; readonly activity: IParadisAgentPaneActivity }> = (listener, thisArgs, disposables) => activityEmitter.event(
+	event => listener.call(thisArgs, Object.freeze({ token: event.token, activity: copyPaneActivity(event.activity) })),
+	undefined,
+	disposables,
+);
+
+/** Installs the shared-process owner gate before transcript activity can enter the singleton map. */
+export function registerParadisAgentPaneActivityGuard(guard: (token: string) => boolean): IDisposable {
+	if (activityGuard !== undefined) {
+		throw new Error('Paradis agent pane activity guard is already registered');
+	}
+	activityGuard = guard;
+	return toDisposable(() => {
+		if (activityGuard === guard) {
+			activityGuard = undefined;
+		}
+	});
+}
 
 /** ペインアクティビティの更新（ParadisMobileAgentChat の tailer 専用）。 */
 export function setParadisAgentPaneActivity(token: string, activity: IParadisAgentPaneActivity): void {
-	if (activity.backgroundTasks.size === 0 && !activity.pendingQuestion && !activity.pendingApproval) {
+	if (typeof token !== 'string' || token.length === 0 || token.length > PANE_TOKEN_MAX_LENGTH) {
+		return;
+	}
+	let permitted = false;
+	try {
+		permitted = activityGuard?.(token) === true;
+	} catch {
+		// Authority checks are fail-closed and must not disrupt transcript processing.
+	}
+	if (!permitted) {
+		return;
+	}
+	const ownedActivity = copyPaneActivity(activity);
+	if (ownedActivity.backgroundTasks.size === 0 && !ownedActivity.pendingQuestion && !ownedActivity.pendingApproval) {
 		activities.delete(token);
 	} else {
-		activities.set(token, activity);
+		activities.set(token, ownedActivity);
 	}
-	activityEmitter.fire({ token, activity });
+	activityEmitter.fire({ token, activity: copyPaneActivity(ownedActivity) });
 }
 
 /** 現在のペインアクティビティ（無ければ「何もしていない」）。 */
 export function getParadisAgentPaneActivity(token: string): IParadisAgentPaneActivity {
-	return activities.get(token) ?? { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false };
+	const activity = activities.get(token);
+	return activity === undefined ? emptyActivity() : copyPaneActivity(activity);
 }
 
 /** terminal/pane終了時にtoken由来のtranscript activityを即時破棄する。 */
 export function clearParadisAgentPaneActivity(token: string): void {
 	if (activities.delete(token)) {
-		activityEmitter.fire({ token, activity: { backgroundTasks: new Map(), pendingQuestion: false, pendingApproval: false } });
+		activityEmitter.fire({ token, activity: emptyActivity() });
 	}
 }
 
