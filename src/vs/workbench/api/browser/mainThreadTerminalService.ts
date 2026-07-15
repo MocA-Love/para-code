@@ -27,6 +27,7 @@ import { TerminalCapability } from '../../../platform/terminal/common/capabiliti
 import { ITerminalCompletionService } from '../../contrib/terminalContrib/suggest/browser/terminalCompletionService.js';
 import { IWorkbenchEnvironmentService } from '../../services/environment/common/environmentService.js';
 import { hasKey } from '../../../base/common/types.js';
+import { paradisCaptureTerminalCreationScopeLease } from '../../contrib/terminal/browser/paradisTerminalCreationScope.js';
 
 interface TerminalProcessProxyEntry extends IDisposable {
 	readonly proxy: ITerminalProcessExtHostProxy;
@@ -137,6 +138,7 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
 	}
 
 	public async $createTerminal(extHostTerminalId: string, launchConfig: TerminalLaunchConfig): Promise<void> {
+		const creationScopeLease = paradisCaptureTerminalCreationScopeLease(launchConfig.paradisTerminalCreationScopeLease);
 		const shellLaunchConfig: IShellLaunchConfig = {
 			name: launchConfig.name,
 			executable: launchConfig.shellPath,
@@ -165,7 +167,8 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
 		const terminal = Promises.withAsyncBody<ITerminalInstance>(async r => {
 			const terminal = await this._terminalService.createTerminal({
 				config: shellLaunchConfig,
-				location: await this._deserializeParentTerminal(launchConfig.location)
+				location: await this._deserializeParentTerminal(launchConfig.location),
+				paradisTerminalCreationScopeLease: creationScopeLease,
 			});
 			r(terminal);
 		});

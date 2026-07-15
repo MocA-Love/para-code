@@ -666,6 +666,8 @@ export interface TerminalLaunchConfig {
 	isTransient?: boolean;
 	shellIntegrationNonce?: string;
 	titleTemplate?: string;
+	/** PARA-CODE: Internal renderer scope authority; not part of the extension API. */
+	paradisTerminalCreationScopeLease?: string;
 }
 
 

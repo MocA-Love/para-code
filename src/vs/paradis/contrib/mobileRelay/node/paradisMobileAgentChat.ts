@@ -40,7 +40,7 @@ import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgent
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
-import { IParadisMobilePaneOwner, ParadisMobilePaneRegistry } from './paradisMobilePaneRegistry.js';
+import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry } from './paradisMobilePaneRegistry.js';
 import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
@@ -432,6 +432,120 @@ function parseClaudePeerMessage(rawText: string, ts: number | undefined): IRawMe
 /** unknown からの安全なプロパティ読み出し。 */
 function rec(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+type AgentInboundCandidate = Record<string, unknown>;
+type ValidTerminalIdentity = AgentInboundCandidate & { readonly id: number; readonly token?: string };
+type ValidControlRequest = ValidTerminalIdentity & { readonly requestId: string };
+
+function isValidTerminalIdentity(msg: AgentInboundCandidate): msg is ValidTerminalIdentity {
+	return typeof msg.id === 'number' && Number.isSafeInteger(msg.id) && msg.id >= 0
+		&& (msg.token === undefined || (typeof msg.token === 'string' && msg.token.length > 0 && msg.token.length <= 200));
+}
+
+function isValidControlRequest(msg: AgentInboundCandidate): msg is ValidControlRequest {
+	return typeof msg.requestId === 'string' && msg.requestId.length > 0 && msg.requestId.length <= 100
+		&& isValidTerminalIdentity(msg);
+}
+
+function isValidAgentQuestionAnswer(value: unknown): value is AgentQuestionAnswer {
+	const answer = rec(value);
+	if (answer === undefined || typeof answer.kind !== 'string') {
+		return false;
+	}
+	if (answer.kind === 'option') {
+		return Number.isInteger(answer.index) && typeof answer.index === 'number' && answer.index >= 0 && answer.index < 100;
+	}
+	if (answer.kind === 'multi') {
+		return Array.isArray(answer.indices) && answer.indices.length > 0 && answer.indices.length <= 100
+			&& answer.indices.every((index: unknown) => typeof index === 'number' && Number.isInteger(index) && index >= 0 && index < 100);
+	}
+	return answer.kind === 'text' && typeof answer.optionCount === 'number' && Number.isInteger(answer.optionCount) && answer.optionCount >= 0 && answer.optionCount < 100
+		&& typeof answer.text === 'string' && answer.text.trim().length > 0 && answer.text.length <= 10_000;
+}
+
+function isValidAttachRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'attach' }> {
+	return msg.t === 'attach'
+		&& (msg.epoch === undefined || (typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200))
+		&& (msg.afterRev === undefined || (typeof msg.afterRev === 'number' && Number.isSafeInteger(msg.afterRev) && msg.afterRev >= -1))
+		&& isValidTerminalIdentity(msg);
+}
+
+function isValidDetachRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'detach' }> {
+	return msg.t === 'detach' && isValidTerminalIdentity(msg);
+}
+
+function isValidSendMessageAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/sendMessage' }> {
+	return msg.t === 'action/sendMessage'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.text === 'string' && msg.text.trim().length > 0 && msg.text.length <= 100_000
+		&& isValidControlRequest(msg);
+}
+
+function isValidQuestionAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/answerQuestion' }> {
+	return msg.t === 'action/answerQuestion'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
+		&& Array.isArray(msg.answers) && msg.answers.length > 0 && msg.answers.length <= 20
+		&& msg.answers.every(isValidAgentQuestionAnswer)
+		&& isValidControlRequest(msg);
+}
+
+function isValidApprovalAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/answerApproval' }> {
+	return msg.t === 'action/answerApproval'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
+		&& typeof msg.choice === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.choice)
+		&& isValidControlRequest(msg);
+}
+
+function isValidClaudeSettingAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/claudeSetting' }> {
+	return msg.t === 'action/claudeSetting'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& (msg.setting === 'model' || msg.setting === 'effort')
+		&& typeof msg.value === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.value)
+		&& isValidControlRequest(msg);
+}
+
+function isValidModelCatalogRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'model-catalog' }> {
+	return msg.t === 'model-catalog' && isValidControlRequest(msg);
+}
+
+function isValidSettingsUpdateRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'settings-update' }> {
+	return msg.t === 'settings-update'
+		&& typeof msg.model === 'string' && msg.model.length > 0 && msg.model.length <= 500
+		&& typeof msg.effort === 'string' && msg.effort.length > 0 && msg.effort.length <= 100
+		&& isValidControlRequest(msg);
+}
+
+function isValidActivityDetailRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'activity-detail' }> {
+	return msg.t === 'activity-detail'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.activityId === 'string' && msg.activityId.length > 0 && msg.activityId.length <= 500
+		&& isValidControlRequest(msg);
+}
+
+function parseAgentInbound(value: unknown): AgentInbound | undefined {
+	const msg = rec(value);
+	if (msg === undefined) {
+		return undefined;
+	}
+	switch (msg.t) {
+		case 'attach': return isValidAttachRequest(msg) ? msg : undefined;
+		case 'detach': return isValidDetachRequest(msg) ? msg : undefined;
+		case 'action/sendMessage': return isValidSendMessageAction(msg) ? msg : undefined;
+		case 'action/answerQuestion': return isValidQuestionAction(msg) ? msg : undefined;
+		case 'action/answerApproval': return isValidApprovalAction(msg) ? msg : undefined;
+		case 'action/claudeSetting': return isValidClaudeSettingAction(msg) ? msg : undefined;
+		case 'model-catalog': return isValidModelCatalogRequest(msg) ? msg : undefined;
+		case 'settings-update': return isValidSettingsUpdateRequest(msg) ? msg : undefined;
+		case 'activity-detail': return isValidActivityDetailRequest(msg) ? msg : undefined;
+		default: return undefined;
+	}
+}
+
+export function paradisIsValidAgentInboundForTest(value: unknown): boolean {
+	return parseAgentInbound(value) !== undefined;
 }
 
 function str(value: unknown): string | undefined {
@@ -1981,6 +2095,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		return this.paneRegistry.ownerOf(token);
 	}
 
+	ownershipOfPaneToken(token: string): ParadisMobilePaneOwnership {
+		return this.paneRegistry.ownershipOf(token);
+	}
+
 	/** rendererがPTY画面からbest-effort抽出した装飾情報を、既存ライブ状態へだけ合成する。 */
 	onTerminalHint(windowId: number, windowSession: string, rendererGeneration: number, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): void {
 		const exactOwner = this.paneRegistry.ownerOfTerminal(windowId, windowSession, rendererGeneration, terminalId);
@@ -2311,40 +2429,47 @@ export class ParadisMobileAgentChat extends Disposable {
 	handleInbound(mobileId: string, payload: Uint8Array): void {
 		let msg: AgentInbound;
 		try {
-			const parsed = JSON.parse(decoder.decode(payload));
-			if (rec(parsed) === undefined) {
+			const parsed = parseAgentInbound(JSON.parse(decoder.decode(payload)));
+			if (parsed === undefined) {
 				return;
 			}
-			msg = parsed as AgentInbound;
+			msg = parsed;
 		} catch {
 			return;
 		}
-		if (msg.t === 'attach' && this.isValidAttachRequest(msg)) {
-			this.handleAttach(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] attach failed', err));
-		} else if (msg.t === 'detach' && this.isValidTerminalIdentity(msg)) {
-			this.cancelAttach(this.pendingAttachKey(mobileId, msg.id, msg.token));
-			const token = this.resolveInboundToken(msg.id, msg.token);
-			if (token !== undefined && this.removeSubscriber(token, mobileId)) {
-				this.stopTailerIfUnsubscribed(token);
+		switch (msg.t) {
+			case 'attach':
+				this.handleAttach(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] attach failed', err));
+				break;
+			case 'detach': {
+				this.cancelAttach(this.pendingAttachKey(mobileId, msg.id, msg.token));
+				const token = this.resolveInboundToken(msg.id, msg.token);
+				if (token !== undefined && this.removeSubscriber(token, mobileId)) {
+					this.stopTailerIfUnsubscribed(token);
+				}
+				break;
 			}
-		} else if (msg.t === 'action/sendMessage' && this.isValidSendMessageAction(msg)) {
-			this.handleSendMessageAction(mobileId, msg);
-		} else if (msg.t === 'action/answerQuestion' && this.isValidQuestionAction(msg)) {
-			this.handleQuestionAction(mobileId, msg);
-		} else if (msg.t === 'action/answerApproval' && this.isValidApprovalAction(msg)) {
-			this.handleApprovalAction(mobileId, msg);
-		} else if (msg.t === 'action/claudeSetting' && this.isValidClaudeSettingAction(msg)) {
-			this.handleClaudeSettingAction(mobileId, msg);
-		} else if (msg.t === 'model-catalog' && this.isValidControlRequest(msg)) {
-			this.handleModelCatalogRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] model catalog failed', err));
-		} else if (msg.t === 'settings-update' && this.isValidControlRequest(msg)
-			&& typeof msg.model === 'string' && msg.model.length > 0 && msg.model.length <= 500
-			&& typeof msg.effort === 'string' && msg.effort.length > 0 && msg.effort.length <= 100) {
-			this.handleSettingsUpdateRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] settings update failed', err));
-		} else if (msg.t === 'activity-detail' && this.isValidControlRequest(msg)
-			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
-			&& typeof msg.activityId === 'string' && msg.activityId.length > 0 && msg.activityId.length <= 500) {
-			this.handleActivityDetailRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] activity detail failed', err));
+			case 'action/sendMessage':
+				this.handleSendMessageAction(mobileId, msg);
+				break;
+			case 'action/answerQuestion':
+				this.handleQuestionAction(mobileId, msg);
+				break;
+			case 'action/answerApproval':
+				this.handleApprovalAction(mobileId, msg);
+				break;
+			case 'action/claudeSetting':
+				this.handleClaudeSettingAction(mobileId, msg);
+				break;
+			case 'model-catalog':
+				this.handleModelCatalogRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] model catalog failed', err));
+				break;
+			case 'settings-update':
+				this.handleSettingsUpdateRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] settings update failed', err));
+				break;
+			case 'activity-detail':
+				this.handleActivityDetailRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] activity detail failed', err));
+				break;
 		}
 	}
 
@@ -2444,12 +2569,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	private isValidSendMessageAction(msg: Extract<AgentInbound, { t: 'action/sendMessage' }>): boolean {
-		return this.isValidControlRequest(msg)
-			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
-			&& typeof msg.text === 'string' && msg.text.trim().length > 0 && msg.text.length <= 100_000;
-	}
-
 	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
@@ -2467,35 +2586,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		}, 5_000);
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, timer });
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({ ...msg, token, windowId: owner.windowId })));
-	}
-
-	private isValidQuestionAction(msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>): boolean {
-		if (!this.isValidControlRequest(msg) || typeof msg.epoch !== 'string' || msg.epoch.length === 0 || msg.epoch.length > 200
-			|| typeof msg.interactionId !== 'string' || msg.interactionId.length === 0 || msg.interactionId.length > 500
-			|| !Array.isArray(msg.answers) || msg.answers.length === 0 || msg.answers.length > 20) {
-			return false;
-		}
-		return msg.answers.every(answer => {
-			if (rec(answer) === undefined || typeof answer.kind !== 'string') { return false; }
-			if (answer.kind === 'option') { return Number.isInteger(answer.index) && answer.index >= 0 && answer.index < 100; }
-			if (answer.kind === 'multi') { return Array.isArray(answer.indices) && answer.indices.length > 0 && answer.indices.length <= 100 && answer.indices.every((index: number) => Number.isInteger(index) && index >= 0 && index < 100); }
-			return answer.kind === 'text' && Number.isInteger(answer.optionCount) && answer.optionCount >= 0 && answer.optionCount < 100
-				&& typeof answer.text === 'string' && answer.text.trim().length > 0 && answer.text.length <= 10_000;
-		});
-	}
-
-	private isValidApprovalAction(msg: Extract<AgentInbound, { t: 'action/answerApproval' }>): boolean {
-		return this.isValidControlRequest(msg)
-			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
-			&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
-			&& typeof msg.choice === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.choice);
-	}
-
-	private isValidClaudeSettingAction(msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>): boolean {
-		return this.isValidControlRequest(msg)
-			&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
-			&& (msg.setting === 'model' || msg.setting === 'effort')
-			&& typeof msg.value === 'string' && /^[A-Za-z0-9._:-]{1,200}$/.test(msg.value);
 	}
 
 	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>): void {
@@ -2769,22 +2859,6 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private ownerForPane(terminalId: number, token: string): IParadisMobilePaneOwner | undefined {
 		return this.paneRegistry.ownerOf(token, terminalId);
-	}
-
-	private isValidControlRequest(msg: { readonly id: unknown; readonly token?: unknown; readonly requestId?: unknown }): msg is { readonly id: number; readonly token?: string; readonly requestId: string } {
-		return this.isValidTerminalIdentity(msg)
-			&& typeof msg.requestId === 'string' && msg.requestId.length > 0 && msg.requestId.length <= 100;
-	}
-
-	private isValidTerminalIdentity(msg: { readonly id: unknown; readonly token?: unknown }): msg is { readonly id: number; readonly token?: string } {
-		return typeof msg.id === 'number' && Number.isSafeInteger(msg.id) && msg.id >= 0
-			&& (msg.token === undefined || (typeof msg.token === 'string' && msg.token.length > 0 && msg.token.length <= 200));
-	}
-
-	private isValidAttachRequest(msg: { readonly id: unknown; readonly token?: unknown; readonly epoch?: unknown; readonly afterRev?: unknown }): msg is { readonly id: number; readonly token?: string; readonly epoch?: string; readonly afterRev?: number } {
-		return this.isValidTerminalIdentity(msg)
-			&& (msg.epoch === undefined || (typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200))
-			&& (msg.afterRev === undefined || (typeof msg.afterRev === 'number' && Number.isSafeInteger(msg.afterRev) && msg.afterRev >= -1));
 	}
 
 	private codexControlSession(mobileId: string, terminalId: number, paneToken?: string): { readonly token: string; readonly threadId: string; readonly owner: IParadisMobilePaneOwner } | undefined {

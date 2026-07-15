@@ -17,6 +17,11 @@ export interface IParadisMobilePaneOwner extends IParadisMobilePaneEntry {
 	readonly rendererGeneration: number;
 }
 
+export type ParadisMobilePaneOwnership =
+	| { readonly kind: 'missing' }
+	| { readonly kind: 'ambiguous' }
+	| { readonly kind: 'owned'; readonly owner: IParadisMobilePaneOwner };
+
 interface IParadisMobilePaneWindowLease {
 	readonly windowSession: string;
 	readonly rendererGeneration: number;
@@ -60,6 +65,11 @@ export class ParadisMobilePaneRegistry {
 	}
 
 	ownerOf(token: string, terminalId?: number): IParadisMobilePaneOwner | undefined {
+		const ownership = this.ownershipOf(token, terminalId);
+		return ownership.kind === 'owned' ? ownership.owner : undefined;
+	}
+
+	ownershipOf(token: string, terminalId?: number): ParadisMobilePaneOwnership {
 		const owners: IParadisMobilePaneOwner[] = [];
 		for (const [windowId, lease] of this.windows) {
 			for (const entry of lease.entries) {
@@ -68,7 +78,10 @@ export class ParadisMobilePaneRegistry {
 				}
 			}
 		}
-		return owners.length === 1 ? owners[0] : undefined;
+		if (owners.length === 0) {
+			return { kind: 'missing' };
+		}
+		return owners.length === 1 ? { kind: 'owned', owner: owners[0] } : { kind: 'ambiguous' };
 	}
 
 	ownerOfTerminal(windowId: number, windowSession: string, rendererGeneration: number, terminalId: number): IParadisMobilePaneOwner | undefined {

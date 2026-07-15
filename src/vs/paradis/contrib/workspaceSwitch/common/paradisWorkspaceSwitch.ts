@@ -6,7 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Event } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -85,6 +86,8 @@ export const IParadisWorktreeService = createDecorator<IParadisWorktreeService>(
  */
 export interface IParadisWorktreeService {
 	readonly _serviceBrand: undefined;
+	/** 初回repository/worktree snapshotが確定した時点で解決する。 */
+	readonly initializationBarrier: Promise<void>;
 	readonly onDidChangeWorktrees: Event<void>;
 	/** 設定による表示対象外も含め、ディスク上で検出した全worktree。 */
 	getDetectedWorktrees(repositoryId: string): readonly IParadisWorktree[];
@@ -113,6 +116,170 @@ export function paradisWorktreeStateKey(uri: URI): string {
 // --- ターミナルスコープ / エージェント状態 -------------------------------------------------------
 
 export const IParadisTerminalScopeService = createDecorator<IParadisTerminalScopeService>('paradisTerminalScopeService');
+export const IParadisBrowserScopeService = createDecorator<IParadisBrowserScopeService>('paradisBrowserScopeService');
+
+export type ParadisBindingScope =
+	| { readonly kind: 'managed'; readonly stateKey: string }
+	| { readonly kind: 'unscoped' }
+	| { readonly kind: 'pending' };
+
+export type ParadisStableBindingScope = Exclude<ParadisBindingScope, { readonly kind: 'pending' }>;
+
+export type ParadisBrowserStableScopeChangeReason = 'initialTag' | 'reassign' | 'scopeRetire';
+
+export interface IParadisBrowserStableScopeChangeEvent {
+	readonly viewId: string;
+	readonly previousScope: ParadisStableBindingScope | undefined;
+	readonly scope: ParadisStableBindingScope | undefined;
+	readonly revision: number;
+	readonly reason: ParadisBrowserStableScopeChangeReason;
+}
+
+export type ParadisBindIneligibilityReason = 'pending' | 'differentScope';
+
+export type IParadisBindEligibility =
+	| { readonly eligible: true; readonly reason?: never }
+	| { readonly eligible: false; readonly reason: ParadisBindIneligibilityReason };
+
+export function paradisEvaluateBindingScopeEligibility(terminalScope: ParadisBindingScope, browserScope: ParadisBindingScope): IParadisBindEligibility {
+	if (terminalScope.kind === 'pending' || browserScope.kind === 'pending') {
+		return { eligible: false, reason: 'pending' };
+	}
+	if (terminalScope.kind !== browserScope.kind) {
+		return { eligible: false, reason: 'differentScope' };
+	}
+	if (terminalScope.kind === 'managed' && browserScope.kind === 'managed' && terminalScope.stateKey !== browserScope.stateKey) {
+		return { eligible: false, reason: 'differentScope' };
+	}
+	return { eligible: true };
+}
+
+export class ParadisBindingScopeEligibilityError extends Error {
+	constructor(readonly reason: ParadisBindIneligibilityReason) {
+		super(`PARA_BROWSER_RETRYABLE: pane and browser scopes cannot be bound (${reason})`);
+		this.name = 'ParadisBindingScopeEligibilityError';
+	}
+}
+
+export function isParadisBindingScopeEligibilityError(error: unknown): error is ParadisBindingScopeEligibilityError {
+	return error instanceof ParadisBindingScopeEligibilityError;
+}
+
+/** Final operation gate. Call immediately before mutating a browser binding. */
+export function paradisRequireBindingScopeEligibility(eligibility: IParadisBindEligibility): void {
+	if (!eligibility.eligible) {
+		throw new ParadisBindingScopeEligibilityError(eligibility.reason);
+	}
+}
+
+export interface IParadisBrowserScopeService {
+	readonly _serviceBrand: undefined;
+	readonly initializationBarrier: Promise<void>;
+	readonly revision: number;
+	readonly onDidChangeStableScope: Event<IParadisBrowserStableScopeChangeEvent>;
+	resolveScope(viewId: string): ParadisBindingScope;
+}
+
+export interface IParadisTerminalScopeResolution {
+	readonly isSwitching: boolean;
+	readonly isTerminalConnected: boolean;
+	/** initial cwdとworktree snapshotによる初期所属判定が確定済みか。省略時は後方互換でtrue。 */
+	readonly isIdentityReady?: boolean;
+	readonly isManagedWorkspace: boolean;
+	readonly recordedStateKey?: string;
+	readonly groupStateKey?: string;
+	readonly parkedEditorStateKey?: string;
+	readonly isLiveInstance: boolean;
+	readonly activeStateKey?: string;
+}
+
+export function paradisResolveTerminalBindingScope(resolution: IParadisTerminalScopeResolution): ParadisBindingScope {
+	if (resolution.isSwitching || !resolution.isTerminalConnected || resolution.isIdentityReady === false) {
+		return { kind: 'pending' };
+	}
+	if (!resolution.isLiveInstance) {
+		return { kind: 'pending' };
+	}
+
+	const managedStateKey = resolution.recordedStateKey ?? resolution.groupStateKey ?? resolution.parkedEditorStateKey;
+	if (managedStateKey !== undefined) {
+		return { kind: 'managed', stateKey: managedStateKey };
+	}
+	if (resolution.activeStateKey !== undefined) {
+		return { kind: 'managed', stateKey: resolution.activeStateKey };
+	}
+	return resolution.isManagedWorkspace ? { kind: 'pending' } : { kind: 'unscoped' };
+}
+
+export interface IParadisTerminalStableScopeChangeEvent {
+	readonly instanceId: number;
+	readonly previousScope: ParadisStableBindingScope | undefined;
+	readonly scope: ParadisStableBindingScope | undefined;
+	readonly revision: number;
+}
+
+export class ParadisTerminalStableScopeTracker extends Disposable {
+	private readonly _onDidChange = this._register(new Emitter<IParadisTerminalStableScopeChangeEvent>());
+	readonly onDidChange = this._onDidChange.event;
+	private readonly _stableScopes = new Map<number, ParadisStableBindingScope>();
+	private _revision = 0;
+
+	get revision(): number { return this._revision; }
+
+	observe(instanceId: number, scope: ParadisBindingScope): void {
+		if (scope.kind === 'pending') {
+			return;
+		}
+		const previousScope = this._stableScopes.get(instanceId);
+		if (paradisBindingScopesEqual(previousScope, scope)) {
+			return;
+		}
+		this._stableScopes.set(instanceId, scope);
+		this._onDidChange.fire({ instanceId, previousScope, scope, revision: ++this._revision });
+	}
+
+	retire(instanceId: number): void {
+		const previousScope = this._stableScopes.get(instanceId);
+		if (previousScope === undefined) {
+			return;
+		}
+		this._stableScopes.delete(instanceId);
+		this._onDidChange.fire({ instanceId, previousScope, scope: undefined, revision: ++this._revision });
+	}
+}
+
+export interface IParadisTerminalRetirementInstance<T = unknown> {
+	readonly instanceId: number;
+	readonly onDisposed: Event<T>;
+}
+
+export class ParadisTerminalInstanceRetirementTracker extends Disposable {
+	private readonly _listeners = this._register(new DisposableMap<number>());
+	private readonly _retiredInstances = new WeakSet<object>();
+
+	track<T>(instance: IParadisTerminalRetirementInstance<T>, onRetire: (instanceId: number) => void): void {
+		const instanceId = instance.instanceId;
+		if (this._retiredInstances.has(instance) || this._listeners.has(instanceId)) {
+			return;
+		}
+		this._listeners.set(instanceId, instance.onDisposed(() => {
+			if (!this._listeners.has(instanceId)) {
+				return;
+			}
+			this._retiredInstances.add(instance);
+			this._listeners.deleteAndDispose(instanceId);
+			onRetire(instanceId);
+		}));
+	}
+}
+
+export function paradisBindingScopesEqual(
+	left: ParadisStableBindingScope | undefined,
+	right: ParadisStableBindingScope | undefined,
+): boolean {
+	return left?.kind === right?.kind
+		&& (left?.kind !== 'managed' || (right?.kind === 'managed' && left.stateKey === right.stateKey));
+}
 
 /**
  * ターミナルグループのリポジトリ別スコープ管理 (park/unpark)。
@@ -120,8 +287,13 @@ export const IParadisTerminalScopeService = createDecorator<IParadisTerminalScop
  */
 export interface IParadisTerminalScopeService {
 	readonly _serviceBrand: undefined;
+	/** Stable scope assignment changes only; transient pending phases do not advance this event. */
+	readonly onDidChangeStableScope: Event<IParadisTerminalStableScopeChangeEvent>;
+	readonly revision: number;
 	/** インスタンスの所属スコープ (park 中のグループも対象)。不明なら undefined */
 	getStateKeyForInstance(instanceId: number): string | undefined;
+	/** Binding authority用。切り替え・再接続中の未確定状態も明示する。 */
+	resolveScope(instanceId: number): ParadisBindingScope;
 	/**
 	 * インスタンスの所属グループを指定スコープへ付け替える。アクティブスコープ以外を
 	 * 指定した場合は即座に park する (モバイル発の「PCで非表示のワークスペース向け
@@ -184,6 +356,12 @@ export interface IParadisWorkspaceSwitchService {
 	readonly onDidSwitchScope: Event<string>;
 
 	readonly repositories: readonly IParadisWorkspaceRepository[];
+
+	/**
+	 * このウィンドウが Para Code のスペース切り替え管理下に入ったことがあるか。
+	 * repository登録数とは独立した明示状態で、activeStateKey未確定時のscope判定に使う。
+	 */
+	readonly isManagedWorkspaceWindow: boolean;
 
 	/**
 	 * 現在アクティブなエントリの状態キー (リポジトリID or worktree キー)。

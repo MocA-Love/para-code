@@ -78,6 +78,8 @@ export interface ITerminalInternalOptions {
 	 * a property we resolve internally
 	 */
 	location?: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean };
+	/** PARA-CODE: Internal renderer scope authority; not part of the extension API. */
+	paradisTerminalCreationScopeLease?: string;
 }
 
 export const IExtHostTerminalService = createDecorator<IExtHostTerminalService>('IExtHostTerminalService');
@@ -196,6 +198,7 @@ export class ExtHostTerminal extends Disposable {
 			isTransient: options.isTransient ?? undefined,
 			shellIntegrationNonce: options.shellIntegrationNonce ?? undefined,
 			titleTemplate: options.titleTemplate ?? undefined,
+			paradisTerminalCreationScopeLease: internalOptions?.paradisTerminalCreationScopeLease,
 		});
 	}
 
@@ -213,6 +216,7 @@ export class ExtHostTerminal extends Disposable {
 			isTransient: true,
 			shellIntegrationNonce: shellIntegrationNonce ?? undefined,
 			titleTemplate: titleTemplate ?? undefined,
+			paradisTerminalCreationScopeLease: internalOptions?.paradisTerminalCreationScopeLease,
 		});
 		// At this point, the id has been set via `$acceptTerminalOpened`
 		if (typeof this._id === 'string') {

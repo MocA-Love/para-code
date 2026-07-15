@@ -20,6 +20,7 @@ import { TerminalContextKeys } from '../common/terminalContextKey.js';
 import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService, ACTIVE_GROUP, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
 import { ILifecycleService } from '../../../services/lifecycle/common/lifecycle.js';
+import { assertParadisExactEditorGroup } from './paradisExactEditorGroup.js';
 
 export class TerminalEditorService extends Disposable implements ITerminalEditorService {
 	declare _serviceBrand: undefined;
@@ -141,8 +142,20 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 	async openEditor(instance: ITerminalInstance, editorOptions?: TerminalEditorLocation): Promise<void> {
 		const resource = this.resolveResource(instance);
 		if (resource) {
-			await this._activeOpenEditorRequest?.promise;
-			this._activeOpenEditorRequest = {
+			while (this._activeOpenEditorRequest) {
+				const previousRequest = this._activeOpenEditorRequest;
+				try {
+					await previousRequest.promise;
+				} catch {
+					// The original caller observes its own failure. A failed request must not poison the queue.
+				}
+			}
+
+			const exactGroup = editorOptions?.paradisExactEditorGroup;
+			if (exactGroup) {
+				assertParadisExactEditorGroup(this._editorGroupsService, exactGroup, editorOptions.viewColumn);
+			}
+			const request = {
 				instanceId: instance.instanceId,
 				promise: this._editorService.openEditor({
 					resource,
@@ -153,10 +166,22 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 						preserveFocus: editorOptions?.preserveFocus,
 						auxiliary: editorOptions?.auxiliary,
 					}
-				}, editorOptions?.viewColumn ?? ACTIVE_GROUP)
+				}, exactGroup ?? editorOptions?.viewColumn ?? ACTIVE_GROUP)
 			};
-			await this._activeOpenEditorRequest?.promise;
-			this._activeOpenEditorRequest = undefined;
+			this._activeOpenEditorRequest = request;
+			try {
+				const editorPane = await request.promise;
+				if (exactGroup) {
+					assertParadisExactEditorGroup(this._editorGroupsService, exactGroup, editorOptions.viewColumn);
+					if (!editorPane || editorPane.group !== exactGroup) {
+						throw new Error('The terminal editor did not open in the exact destination group.');
+					}
+				}
+			} finally {
+				if (this._activeOpenEditorRequest === request) {
+					this._activeOpenEditorRequest = undefined;
+				}
+			}
 		}
 	}
 

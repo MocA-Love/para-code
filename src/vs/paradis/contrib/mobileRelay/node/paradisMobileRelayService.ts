@@ -70,6 +70,7 @@ import {
 import { IParadisMobileWindowLeaseRef, ParadisMobileOperationLedger } from './paradisMobileOperationLedger.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
 import { IParadisMobilePaneOwner } from './paradisMobilePaneRegistry.js';
+import { ParadisAgentCommandAuthority, ParadisAgentCommandDeliveryResult } from '../common/paradisAgentCommandLifecycle.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
 import { promises as fs } from 'fs';
@@ -251,6 +252,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly sessions = new Map<string, MobileSession>();
 	private readonly terminalRegistry = new ParadisMobileTerminalRegistry();
 	private readonly terminalOperations = new ParadisMobileOperationLedger();
+	private readonly agentCommandAuthority = new ParadisAgentCommandAuthority();
 	private readonly terminalOperationTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly webrtcRendererLeases = new Map<string, { readonly sid: string; readonly owner: IParadisMobileWindowLeaseRef }>();
 	private rendererAuthorityChain = Promise.resolve();
@@ -772,6 +774,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				}
 				return;
 			}
+			this.agentCommandAuthority.retain(this.agentCommandOwner(lease), new Set(entries.map(entry => entry.token)));
 			if (this.terminalRegistry.markWindowReady(lease.windowId, lease.windowSession, lease.rendererGeneration)) {
 				await this.broadcastDesktopState();
 			}
@@ -821,20 +824,38 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * agentチャネル用: `claude` / `codex` コマンドの実行開始検知 (shell integration 由来)。
 	 * cwd ベースのセッション探索を前倒しするトリガーとしてのみ使う (詳細は common の interface コメント)。
 	 */
-	async notifyAgentCliCommand(lease: IParadisMobileWindowLease, paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<void> {
-		await this.withCurrentRegisteredLease(lease, async () => {
-			if (this.sameLease(this.agentChat.ownerOfPaneToken(paneToken), lease)) {
+	async notifyAgentCliCommand(lease: IParadisMobileWindowLease, paneToken: string, generation: number, commandLine: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<ParadisAgentCommandDeliveryResult> {
+		return await this.withCurrentRegisteredLease(lease, async () => {
+			const ownership = this.agentChat.ownershipOfPaneToken(paneToken);
+			if (ownership.kind === 'ambiguous') {
+				return 'ambiguous';
+			}
+			if (ownership.kind !== 'owned' || !this.sameLease(ownership.owner, lease)) {
+				return 'stale';
+			}
+			const decision = this.agentCommandAuthority.start(this.agentCommandOwner(lease), paneToken, generation, commandLine);
+			if (decision.apply) {
 				this.agentChat.onCliCommandDetected(paneToken, agent, mode, cwd, commandCwd, sessionId);
 			}
-		});
+			return decision.result;
+		}) ?? 'stale';
 	}
 
-	async notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string): Promise<void> {
-		await this.withCurrentRegisteredLease(lease, async () => {
-			if (this.sameLease(this.agentChat.ownerOfPaneToken(paneToken), lease)) {
+	async notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number): Promise<ParadisAgentCommandDeliveryResult> {
+		return await this.withCurrentRegisteredLease(lease, async () => {
+			const ownership = this.agentChat.ownershipOfPaneToken(paneToken);
+			if (ownership.kind === 'ambiguous') {
+				return 'ambiguous';
+			}
+			if (ownership.kind !== 'owned' || !this.sameLease(ownership.owner, lease)) {
+				return 'stale';
+			}
+			const decision = this.agentCommandAuthority.finish(this.agentCommandOwner(lease), paneToken, generation);
+			if (decision.apply) {
 				this.agentChat.onCliCommandFinished(paneToken);
 			}
-		});
+			return decision.result;
+		}) ?? 'stale';
 	}
 
 	async setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void> {
@@ -954,6 +975,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private cleanupRemovedRenderer(lease: IParadisMobileWindowLease): void {
+		this.agentCommandAuthority.retain(this.agentCommandOwner(lease), new Set());
 		this.agentChat.removePanes(lease.windowId, lease.windowSession, lease.rendererGeneration);
 		this.agentChat.removeOwnerActions(lease.windowId, lease.windowSession, lease.rendererGeneration);
 		this.markTerminalOperationsUnknownForOwner(lease);
@@ -970,6 +992,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	private sameLease(a: IParadisMobileWindowLease | undefined, b: IParadisMobileWindowLease): boolean {
 		return a?.windowId === b.windowId && a.windowSession === b.windowSession && a.rendererGeneration === b.rendererGeneration;
+	}
+
+	private agentCommandOwner(lease: IParadisMobileWindowLease): string {
+		return `${lease.windowId}:${lease.windowSession}:${lease.rendererGeneration}`;
 	}
 
 	private enqueueRendererAuthority<T>(task: () => Promise<T>): Promise<T> {

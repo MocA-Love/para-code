@@ -39,6 +39,7 @@ interface ISerializedKnownWorktree {
 export class ParadisWorktreeService extends Disposable implements IParadisWorktreeService {
 
 	declare readonly _serviceBrand: undefined;
+	readonly initializationBarrier: Promise<void>;
 
 	private static readonly KNOWN_WORKTREES_STORAGE_KEY = 'paradis.workspaceSwitch.knownWorktrees';
 	private static readonly WORKTREE_ORDER_STORAGE_KEY = 'paradis.workspaceSwitch.worktreeOrder';
@@ -82,7 +83,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		}));
 
 		this.installWatchers();
-		this.refresh();
+		this.initializationBarrier = this.refresh();
 	}
 
 	getWorktrees(repositoryId: string): readonly IParadisWorktree[] {

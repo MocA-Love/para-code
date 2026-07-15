@@ -38,7 +38,7 @@ import { getInstanceFromResource, getTerminalUri, parseTerminalUri } from './ter
 import { IRemoteTerminalAttachTarget, IStartExtensionTerminalRequest, ITerminalProcessExtHostProxy, ITerminalProfileService } from '../common/terminal.js';
 import { TerminalContextKeys } from '../common/terminalContextKey.js';
 import { columnToEditorGroup } from '../../../services/editor/common/editorGroupColumn.js';
-import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
 import { ACTIVE_GROUP, ACTIVE_GROUP_TYPE, AUX_WINDOW_GROUP, AUX_WINDOW_GROUP_TYPE, IEditorService, SIDE_GROUP, SIDE_GROUP_TYPE } from '../../../services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { IExtensionService } from '../../../services/extensions/common/extensions.js';
@@ -57,6 +57,8 @@ import { isAuxiliaryWindow, mainWindow } from '../../../../base/browser/window.j
 import { GroupIdentifier } from '../../../common/editor.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { hasKey, isString } from '../../../../base/common/types.js';
+import { assertParadisExactEditorGroup } from './paradisExactEditorGroup.js';
+import { paradisCaptureTerminalCreationScopeLease, paradisSetTerminalCreationScopeLease } from './paradisTerminalCreationScope.js';
 
 interface IBackgroundTerminal {
 	instance: ITerminalInstance;
@@ -411,6 +413,11 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async createContributedTerminalProfile(extensionIdentifier: string, id: string, options: ICreateContributedTerminalProfileOptions): Promise<void> {
+		const creationScopeLease = paradisCaptureTerminalCreationScopeLease(options.paradisTerminalCreationScopeLease);
+		const scopedOptions: ICreateContributedTerminalProfileOptions = {
+			...options,
+			paradisTerminalCreationScopeLease: creationScopeLease,
+		};
 		await this._extensionService.activateByEvent(`onTerminalProfile:${id}`);
 
 		const profileProvider = this._terminalProfileService.getContributedProfileProvider(extensionIdentifier, id);
@@ -419,7 +426,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 			return;
 		}
 		try {
-			await profileProvider.createContributedTerminalProfile(options);
+			await profileProvider.createContributedTerminalProfile(scopedOptions);
 			this._terminalGroupService.setActiveInstanceByIndex(this._terminalGroupService.instances.length - 1);
 			await this._terminalGroupService.activeInstance?.focusWhenReady();
 		} catch (e) {
@@ -976,6 +983,9 @@ export class TerminalService extends Disposable implements ITerminalService {
 	}
 
 	async createTerminal(options?: ICreateTerminalOptions): Promise<ITerminalInstance> {
+		const creationScopeLease = paradisCaptureTerminalCreationScopeLease(options?.paradisTerminalCreationScopeLease);
+		this._assertParadisExactEditorGroupOptions(options);
+
 		// Await the initialization of available profiles as long as this is not a pty terminal or a
 		// local terminal in a remote workspace as profile won't be used in those cases and these
 		// terminals need to be launched before remote connections are established.
@@ -1015,11 +1025,15 @@ export class TerminalService extends Disposable implements ITerminalService {
 			: typeof options?.location === 'object' ? hasKey(options.location, { parentTerminal: true }) : false;
 
 		await this._resolveCwd(shellLaunchConfig, splitActiveTerminal, options);
+		this._assertParadisExactEditorGroupOptions(options);
 
 		// Launch the contributed profile
 		// If it's a custom pty implementation, we did not await the profiles ready, so
 		// we cannot launch the contributed profile and doing so would cause an error
 		if (!shellLaunchConfig.customPtyImplementation && contributedProfile) {
+			if (options?.paradisExactEditorGroup) {
+				throw new Error('Contributed terminal profiles cannot be opened with an exact editor group destination.');
+			}
 			const resolvedLocation = await this.resolveLocation(options?.location);
 			let location: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean } | undefined;
 			if (splitActiveTerminal) {
@@ -1033,6 +1047,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 				location,
 				cwd: shellLaunchConfig.cwd,
 				titleTemplate: contributedProfile.titleTemplate,
+				paradisTerminalCreationScopeLease: creationScopeLease,
 			});
 			const instanceHost = resolvedLocation === TerminalLocation.Editor ? this._terminalEditorService : this._terminalGroupService;
 			// TODO@meganrogge: This returns undefined in the remote & web smoke tests but the function
@@ -1044,6 +1059,9 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		if (!shellLaunchConfig.customPtyImplementation && !this.isProcessSupportRegistered) {
+			if (options?.paradisExactEditorGroup) {
+				throw new Error('A terminal cannot be opened in the exact editor group before process support is registered.');
+			}
 			const resolvedLocation = await this.resolveLocation(options?.location);
 			let location: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean } | undefined;
 			if (splitActiveTerminal) {
@@ -1060,6 +1078,7 @@ export class TerminalService extends Disposable implements ITerminalService {
 					location,
 					cwd: shellLaunchConfig.cwd,
 					titleTemplate: fallbackProfile.titleTemplate,
+					paradisTerminalCreationScopeLease: creationScopeLease,
 				});
 				const instance = instanceHost.instances[instanceCount];
 				if (!instance) {
@@ -1074,8 +1093,10 @@ export class TerminalService extends Disposable implements ITerminalService {
 
 		this._evaluateLocalCwd(shellLaunchConfig);
 		const location = await this.resolveLocation(options?.location) || this._terminalConfigurationService.defaultLocation;
+		this._assertParadisExactEditorGroupOptions(options);
 
 		if (shellLaunchConfig.hideFromUser) {
+			paradisSetTerminalCreationScopeLease(shellLaunchConfig, creationScopeLease);
 			const instance = this._terminalInstanceService.createInstance(shellLaunchConfig, location);
 			this._backgroundedTerminalInstances.push({ instance, terminalLocationOptions: options?.location });
 			this._backgroundedTerminalDisposables.set(instance.instanceId, [
@@ -1092,11 +1113,16 @@ export class TerminalService extends Disposable implements ITerminalService {
 		}
 
 		const parent = await this._getSplitParent(options?.location);
+		// The caller may reuse one config object across concurrent creations. Re-associate immediately
+		// before the synchronous instance creation path so completion order cannot swap their leases.
+		paradisSetTerminalCreationScopeLease(shellLaunchConfig, creationScopeLease);
 		this._terminalHasBeenCreated.set(true);
 		this._extensionService.activateByEvent('onTerminal:*');
 		let instance;
 		if (parent) {
 			instance = await this._splitTerminal(shellLaunchConfig, location, parent);
+		} else if (options?.paradisExactEditorGroup) {
+			instance = await this._createTerminalInExactEditorGroup(shellLaunchConfig, location, options);
 		} else {
 			instance = this._createTerminal(shellLaunchConfig, location, options);
 		}
@@ -1247,6 +1273,22 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return instance;
 	}
 
+	private async _createTerminalInExactEditorGroup(shellLaunchConfig: IShellLaunchConfig, location: TerminalLocation, options: ICreateTerminalOptions): Promise<ITerminalInstance> {
+		this._assertParadisExactEditorGroupOptions(options);
+		if (location !== TerminalLocation.Editor || !options.paradisExactEditorGroup) {
+			throw new Error('An exact terminal editor group requires an editor terminal destination.');
+		}
+		const instance = this._terminalInstanceService.createInstance(shellLaunchConfig, TerminalLocation.Editor);
+		try {
+			const editorOptions = this._getEditorOptions(options.location, options.paradisExactEditorGroup);
+			await this._terminalEditorService.openEditor(instance, editorOptions);
+			return instance;
+		} catch (error) {
+			instance.dispose();
+			throw error;
+		}
+	}
+
 	async resolveLocation(location?: ITerminalLocationOptions): Promise<TerminalLocation | undefined> {
 		if (location && typeof location === 'object') {
 			if (hasKey(location, { parentTerminal: true })) {
@@ -1272,8 +1314,15 @@ export class TerminalService extends Disposable implements ITerminalService {
 		return undefined;
 	}
 
-	private _getEditorOptions(location?: ITerminalLocationOptions): TerminalEditorLocation | undefined {
+	private _getEditorOptions(location?: ITerminalLocationOptions, paradisExactEditorGroup?: IEditorGroup): TerminalEditorLocation | undefined {
 		if (location && typeof location === 'object' && hasKey(location, { viewColumn: true })) {
+			if (paradisExactEditorGroup) {
+				assertParadisExactEditorGroup(this._editorGroupsService, paradisExactEditorGroup, location.viewColumn);
+				return {
+					viewColumn: paradisExactEditorGroup.id,
+					paradisExactEditorGroup,
+				};
+			}
 			// Terminal-specific workaround to resolve the active group in auxiliary windows to
 			// override the locked editor behavior.
 			if (location.viewColumn === ACTIVE_GROUP && isAuxiliaryWindow(getActiveWindow())) {
@@ -1284,6 +1333,18 @@ export class TerminalService extends Disposable implements ITerminalService {
 			return location;
 		}
 		return undefined;
+	}
+
+	private _assertParadisExactEditorGroupOptions(options?: ICreateTerminalOptions): void {
+		const exactGroup = options?.paradisExactEditorGroup;
+		if (!exactGroup) {
+			return;
+		}
+		const location = options?.location;
+		if (!location || typeof location !== 'object' || !hasKey(location, { viewColumn: true })) {
+			throw new Error('An exact terminal editor group requires an explicit editor group destination.');
+		}
+		assertParadisExactEditorGroup(this._editorGroupsService, exactGroup, location.viewColumn);
 	}
 
 	private _evaluateLocalCwd(shellLaunchConfig: IShellLaunchConfig) {

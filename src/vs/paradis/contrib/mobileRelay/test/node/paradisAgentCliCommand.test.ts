@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisInteractiveAgentCommand } from '../../common/paradisAgentCliCommand.js';
+import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } from '../../common/paradisAgentCliCommand.js';
 
 suite('ParadisAgentCliCommand', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -66,5 +66,37 @@ suite('ParadisAgentCliCommand', () => {
 		for (const command of ['claude --help', 'claude -v', 'claude --version', 'claude --print test', 'claude --continue --print test', 'claude --background', 'claude agents', 'claude doctor', 'claude doctor --fork-session']) {
 			assert.strictEqual(paradisInteractiveAgentCommand(command), undefined, command);
 		}
+	});
+
+	test('reconciles a running Agent only after both CommandDetection and the retained pane token are available, regardless of arrival order', () => {
+		const commandFirst = paradisResolveRunningAgentCommand('codex resume 019f-thread', undefined);
+		const tokenFirst = paradisResolveRunningAgentCommand(undefined, 'retained-pane-token');
+		assert.strictEqual(commandFirst, undefined);
+		assert.strictEqual(tokenFirst, undefined);
+
+		assert.deepStrictEqual(
+			paradisResolveRunningAgentCommand('codex resume 019f-thread', 'retained-pane-token'),
+			{
+				paneToken: 'retained-pane-token',
+				commandLine: 'codex resume 019f-thread',
+				command: { agent: 'codex', mode: 'resume', sessionId: '019f-thread' },
+			},
+		);
+	});
+
+	test('allows a failed notification to re-resolve only while the exact same Agent command is still running', () => {
+		const failedAttempt = paradisResolveRunningAgentCommand('claude --continue', 'pane-token');
+		assert.notStrictEqual(failedAttempt, undefined);
+		assert.deepStrictEqual(
+			paradisResolveRunningAgentCommand('claude --continue', 'pane-token'),
+			failedAttempt,
+			'the same command remains retryable',
+		);
+		assert.notDeepStrictEqual(
+			paradisResolveRunningAgentCommand('codex', 'pane-token'),
+			failedAttempt,
+			'a replacement command is a new notification, not a retry of the failed one',
+		);
+		assert.strictEqual(paradisResolveRunningAgentCommand(undefined, 'pane-token'), undefined);
 	});
 });

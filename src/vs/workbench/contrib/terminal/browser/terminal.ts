@@ -35,6 +35,7 @@ import type { IEditorOptions } from '../../../../platform/editor/common/editor.j
 import type { TerminalEditorInput } from './terminalEditorInput.js';
 import type { MaybePromise } from '../../../../base/common/async.js';
 import { isNumber, type SingleOrMany } from '../../../../base/common/types.js';
+import type { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
 
 export const ITerminalService = createDecorator<ITerminalService>('terminalService');
 export const ITerminalConfigurationService = createDecorator<ITerminalConfigurationService>('terminalConfigurationService');
@@ -732,12 +733,23 @@ export interface ICreateTerminalOptions {
 	 * when the workbench is not yet loaded.
 	 */
 	skipContributedProfileCheck?: boolean;
+
+	/**
+	 * PARA-CODE: Fail-closed editor group identity used by the optional terminal-on-split flow.
+	 * This must never be converted through a view-column mapping.
+	 */
+	paradisExactEditorGroup?: IEditorGroup;
+
+	/** PARA-CODE: Internal renderer-to-extension-host creation authority; never exposed in the extension API. */
+	paradisTerminalCreationScopeLease?: string;
 }
 
 export interface TerminalEditorLocation {
 	viewColumn: GroupIdentifier | SIDE_GROUP_TYPE | ACTIVE_GROUP_TYPE | AUX_WINDOW_GROUP_TYPE;
 	preserveFocus?: boolean;
 	auxiliary?: IEditorOptions['auxiliary'];
+	/** PARA-CODE: Object identity guard for an exact destination editor group. */
+	paradisExactEditorGroup?: IEditorGroup;
 }
 
 /**

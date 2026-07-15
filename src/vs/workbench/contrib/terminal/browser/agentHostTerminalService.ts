@@ -24,6 +24,8 @@ export interface IAgentHostTerminalCreateOptions {
 	readonly cwd?: URI;
 	/** Terminal location (panel, editor, split, etc.). */
 	readonly location?: ITerminalLocationOptions;
+	/** PARA-CODE: Internal scope authority propagated through a contributed profile provider. */
+	readonly paradisTerminalCreationScopeLease?: string;
 }
 
 export interface IAgentHostEntry {
@@ -251,6 +253,7 @@ export class AgentHostTerminalService extends Disposable implements IAgentHostTe
 					name: localize('agentHostTerminal.profileName', "Agent Host ({0})", displayName),
 					cwd: options.cwd ? (typeof options.cwd === 'string' ? URI.file(options.cwd) : options.cwd) : this._defaultCwd,
 					location: options.location,
+					paradisTerminalCreationScopeLease: options.paradisTerminalCreationScopeLease,
 				});
 			},
 		};
@@ -311,6 +314,7 @@ export class AgentHostTerminalService extends Disposable implements IAgentHostTe
 				isFeatureTerminal: false,
 			},
 			location: options?.location,
+			paradisTerminalCreationScopeLease: options?.paradisTerminalCreationScopeLease,
 		});
 
 		this._register(instance.onDisposed(() => {

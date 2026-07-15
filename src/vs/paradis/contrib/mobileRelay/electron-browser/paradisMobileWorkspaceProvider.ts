@@ -28,6 +28,7 @@ import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/brows
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
@@ -38,6 +39,7 @@ import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFra
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
+import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
@@ -125,7 +127,6 @@ const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ
 const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
 // --- ターミナル同期プロトコル（epoch対応クライアント向け）の定数 ---
 const TERM_COALESCE_MS = 16; // onData のまとめ送り間隔（1フレーム=1暗号化+relay往復のため細切れ送信を避ける）
-const TERM_COALESCE_FLUSH_CHARS = 64 * 1024; // まとめ送りバッファの即時フラッシュ閾値
 // フロー制御: 未ACK文字数が HIGH を超えたら生ストリーム転送を止め（ptyは止めない）、
 // ACK が LOW まで追いついたらスナップショット1発で最新画面へ追いつく（mosh の
 // 「中間状態スキップ」方式）。値は本家 FlowControlConstants（renderer↔ptyHost間）に合わせる。
@@ -259,14 +260,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * terminalId ⇔ ペイントークン対応表を shared process のチャットミラーへ同期する。
 	 * cwd はhook未発火時のセッション探索フォールバック（~/.claude/projects の逆引き）に使う。
 	 */
-	private pushAgentPanes(): Promise<void> {
+	syncAgentPaneRegistry(): Promise<void> {
 		const revision = ++this.agentPanesRevision;
-		const instances = this.allInstances();
-		const result = Promise.all(instances.map(async inst => {
-			const token = this.paneTokenService.getTokenForInstance(inst.instanceId);
-			if (token === undefined) {
-				return undefined;
-			}
+		const livePanes = paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService);
+		const result = Promise.all(livePanes.map(async ({ instance: inst, token }) => {
 			let cwd: string | undefined;
 			try {
 				const cwdResource = await inst.getCwdResource();
@@ -276,12 +273,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			const ws = this.terminalScopeService.getStateKeyForInstance(inst.instanceId) ?? this.workspaceSwitchService.activeStateKey;
 			return { terminalId: inst.instanceId, token, ...(cwd !== undefined ? { cwd } : {}), ...(ws !== undefined ? { ws } : {}) };
-		})).then(entries => this.syncAgentPanes(
-			revision,
-			entries.filter((e): e is { terminalId: number; token: string; cwd?: string; ws?: string } => e !== undefined),
-		)).then(() => this.markInitialAgentPanesReady());
+		})).then(entries => this.syncAgentPanes(revision, entries.filter(entry =>
+			this.paneTokenService.getInstanceForToken(entry.token) === entry.terminalId
+			&& this.paneTokenService.getTokenForInstance(entry.terminalId) === entry.token,
+		))).then(() => this.markInitialAgentPanesReady());
 		void result.catch(err => this.logService.warn('[paradisMobileRelay] pushAgentPanes failed', err));
 		return result;
+	}
+
+	private pushAgentPanes(): Promise<void> {
+		return this.syncAgentPaneRegistry();
 	}
 
 	private readonly pushStateScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 100));
@@ -451,6 +452,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return result;
 	}
 
+	/** Agent復元・Hint購読向けに、表示中/背景/park済みを含む全live terminalを返す。 */
+	getAllTerminalInstancesForAgentRecovery(): readonly ITerminalInstance[] {
+		return paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService).map(({ instance }) => instance);
+	}
+
+	private findAuthoritativePaneInstance(instanceId: number, token: string): ITerminalInstance | undefined {
+		if (this.paneTokenService.getInstanceForToken(token) !== instanceId) {
+			return undefined;
+		}
+		return this.allInstances().find(candidate => candidate.instanceId === instanceId
+			&& !candidate.isDisposed
+			&& this.paneTokenService.getTokenForInstance(instanceId) === token);
+	}
+
 	private detectAndNotify(): void {
 		for (const inst of this.allInstances()) {
 			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId);
@@ -547,7 +562,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// agent: そのターミナルでエージェントCLIの実在セッションが確認できたか。
 			// 通常はhook発火、共有daemon利用時は鮮度検証済みtranscript探索で確定する。
 			// モバイル側はホーム一覧・Live Activity をこのフラグで絞る。
-			const paneToken = this.paneTokenService.getTokenForInstance(inst.instanceId);
+			const paneToken = this.getPaneTokenForTerminalHint(inst.instanceId);
 			const agent = this.agentStatusStore.isAgentInstance(inst.instanceId)
 				|| (paneToken !== undefined && (this.confirmedAgentPaneTokens.has(paneToken) || this.provisionalAgentPaneTokens.has(paneToken)));
 			return {
@@ -581,6 +596,23 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!changed) { return; }
 		if (active) { this.provisionalAgentPaneTokens.add(token); } else { this.provisionalAgentPaneTokens.delete(token); }
 		this.pushStateSoon();
+	}
+
+	/** Terminal Hintの高頻度出力経路を、実行中世代またはworking状態のexact ownerへ限定する。 */
+	isTerminalHintActive(token: string): boolean {
+		if (this.provisionalAgentPaneTokens.has(token)) {
+			return true;
+		}
+		const instanceId = this.paneTokenService.getInstanceForToken(token);
+		return instanceId !== undefined
+			&& this.paneTokenService.getTokenForInstance(instanceId) === token
+			&& this.agentStatusStore.getInstanceStatus(instanceId) === 'working';
+	}
+
+	/** Terminal Hint対象判定用に、instanceへ現在割り当てられたpane tokenを返す。 */
+	getPaneTokenForTerminalHint(instanceId: number): string | undefined {
+		const token = this.paneTokenService.getTokenForInstance(instanceId);
+		return token !== undefined && this.paneTokenService.getInstanceForToken(token) === instanceId ? token : undefined;
 	}
 
 	/** オンラインのモバイルが居なくなったら、全ターミナル購読を解放する（M-2: 購読リーク防止）。 */
@@ -650,8 +682,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			|| typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string') {
 			return;
 		}
-		const instance = this.allInstances().find(candidate => candidate.instanceId === msg.id
-			&& this.paneTokenService.getTokenForInstance(candidate.instanceId) === msg.token);
+		const instance = this.findAuthoritativePaneInstance(msg.id, msg.token);
 		if (instance === undefined) {
 			// shared processのイベントは全windowへ届く。対象ペインを所有しないwindowは
 			// 拒否を返さず、tokenが一致する所有windowだけに処理を任せる。
@@ -671,9 +702,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					msg.text as string,
 					(text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode),
 					async () => {
-						const currentInstance = this.allInstances().find(candidate => candidate === instance && candidate.instanceId === msg.id
-							&& this.paneTokenService.getTokenForInstance(candidate.instanceId) === msg.token);
-						return currentInstance !== undefined && this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
+						const currentInstance = this.findAuthoritativePaneInstance(msg.id as number, msg.token as string);
+						return currentInstance === instance && this.validateAgentAction(mobileId, msg.requestId as string, msg.token as string, msg.epoch as string, msg.id as number, msg.windowId as number);
 					},
 				);
 				if (!outcome.executed) {
@@ -693,9 +723,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				for (let index = 0; index < parts.length; index++) {
 					if (index > 0) {
 						await new Promise<void>(resolve => setTimeout(resolve, msg.delayMs as number));
-						const currentInstance = this.allInstances().find(candidate => candidate === instance && candidate.instanceId === msg.id
-							&& this.paneTokenService.getTokenForInstance(candidate.instanceId) === msg.token);
-						if (currentInstance === undefined) {
+						const currentInstance = this.findAuthoritativePaneInstance(msg.id, msg.token);
+						if (currentInstance !== instance) {
 							this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '操作対象のターミナルが変わりました');
 							return;
 						}
@@ -1356,7 +1385,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				const store = new DisposableStore();
-				store.add(instance.onData(data => this.sendTermData(id, data)));
+				const relayConsumer = (data: string) => this.sendTermData(id, data);
+				store.add(instance.onData(paradisCreateTerminalOutputConsumer(relayConsumer, undefined)!));
 				store.add(instance.onExit(() => {
 					for (const subscriber of this.terminalSubscribers.get(id) ?? []) {
 						const key = this.termSubscriptionKey(id, subscriber);
@@ -1404,7 +1434,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// PCのフォーカス中自動既読（paradisAgentStatus.contribution.ts）と同じ経路。
 				// shared processの_paneStatusesがクリアされ、ポーラー経由でホーム一覧の表示も
 				// アイドルへ戻り、通知履歴のdismiss（dispatchAgentDismiss）も自動で走る。
-				const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+				const token = this.getPaneTokenForTerminalHint(instance.instanceId);
 				if (token !== undefined) {
 					await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call('acknowledgePaneStatus', [token]);
 				} else {
@@ -1497,17 +1527,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!sync) {
 			return;
 		}
-		if (sync.suspended) {
-			sync.droppedWhileSuspended = true;
-			return;
-		}
-		sync.pending.push(data);
-		sync.pendingChars += data.length;
-		if (sync.pendingChars >= TERM_COALESCE_FLUSH_CHARS) {
-			this.flushTermData(id, mobileId);
-		} else if (sync.coalesceTimer === undefined) {
-			sync.coalesceTimer = setTimeout(() => this.flushTermData(id, mobileId), TERM_COALESCE_MS);
-		}
+		paradisQueueTerminalRelayOutput(
+			sync,
+			data,
+			() => this.flushTermData(id, mobileId),
+			() => { sync.coalesceTimer = setTimeout(() => this.flushTermData(id, mobileId), TERM_COALESCE_MS); },
+		);
 	}
 
 	/** まとめ送りバッファを1フレームとして送信し、未ACK残量が閾値を超えたらsuspendする。 */

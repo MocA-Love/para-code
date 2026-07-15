@@ -17,6 +17,13 @@ export interface ParadisInteractiveAgentCommand {
 	readonly sessionId?: string;
 }
 
+/** 実行中Agentの通知に必要なcommandとretained pane identityの組。 */
+export interface ParadisRunningAgentCommand {
+	readonly paneToken: string;
+	readonly commandLine: string;
+	readonly command: ParadisInteractiveAgentCommand;
+}
+
 const codexOptionsWithValue = new Set(['-c', '--config', '--enable', '--disable', '--remote', '--remote-auth-token-env', '-i', '--image', '-m', '--model', '--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd', '--add-dir', '-a', '--ask-for-approval']);
 const codexNonInteractiveCommands = new Set(['exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control', 'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'archive', 'delete', 'unarchive', 'cloud', 'exec-server', 'features', 'help']);
 const claudeOptionsWithValue = new Set(['--add-dir', '--agent', '--agents', '--allowedTools', '--allowed-tools', '--append-system-prompt', '--betas', '--debug-file', '--disallowedTools', '--disallowed-tools', '--effort', '--fallback-model', '--file', '--input-format', '--json-schema', '--max-budget-usd', '--mcp-config', '--model', '-n', '--name', '--output-format', '--permission-mode', '--plugin-dir', '--plugin-url', '--remote-control', '-r', '--resume', '--session-id', '--setting-sources']);
@@ -106,4 +113,14 @@ export function paradisInteractiveAgentCommand(commandLine: string): ParadisInte
 	const resume = words.some(argument => claudeResumeOptions.has(argument) || argument.startsWith('--resume=') || argument.startsWith('--from-pr='));
 	const fork = words.includes('--fork-session') && words.some(argument => claudeForkableResumeOptions.has(argument) || argument.startsWith('--resume='));
 	return { agent: 'claude', mode: fork ? 'fork' : resume ? 'resume' : 'new' };
+}
+
+/** CommandDetectionとretained pane tokenの到着順に依存せず、両方が揃った時だけ解決する。 */
+export function paradisResolveRunningAgentCommand(commandLine: string | undefined, paneToken: string | undefined): ParadisRunningAgentCommand | undefined {
+	if (commandLine === undefined || paneToken === undefined) {
+		return undefined;
+	}
+	const normalizedCommandLine = commandLine.trim();
+	const command = paradisInteractiveAgentCommand(normalizedCommandLine);
+	return command === undefined ? undefined : { paneToken, commandLine: normalizedCommandLine, command };
 }
