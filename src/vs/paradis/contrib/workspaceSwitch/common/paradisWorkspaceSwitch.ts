@@ -11,6 +11,7 @@ import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js'
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IAuxiliaryEditorPart, IEditorGroup, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 
 export const IParadisWorkspaceSwitchService = createDecorator<IParadisWorkspaceSwitchService>('paradisWorkspaceSwitchService');
 
@@ -122,6 +123,7 @@ export function paradisWorktreeStateKey(uri: URI): string {
 
 export const IParadisTerminalScopeService = createDecorator<IParadisTerminalScopeService>('paradisTerminalScopeService');
 export const IParadisBrowserScopeService = createDecorator<IParadisBrowserScopeService>('paradisBrowserScopeService');
+export const IParadisAuxiliaryWindowScopeService = createDecorator<IParadisAuxiliaryWindowScopeService>('paradisAuxiliaryWindowScopeService');
 
 export type ParadisBindingScope =
 	| { readonly kind: 'managed'; readonly stateKey: string }
@@ -129,6 +131,18 @@ export type ParadisBindingScope =
 	| { readonly kind: 'pending' };
 
 export type ParadisStableBindingScope = Exclude<ParadisBindingScope, { readonly kind: 'pending' }>;
+
+export interface IParadisAuxiliaryWindowScopeService {
+	readonly _serviceBrand: undefined;
+	readonly initializationBarrier: Promise<void>;
+	setMainScope(stateKey: string | undefined, managed: boolean, switching: boolean): void;
+	resolveWindow(windowId: number): ParadisBindingScope;
+	resolvePart(part: IEditorPart): ParadisBindingScope;
+	resolveGroup(group: IEditorGroup): ParadisBindingScope;
+	getPinnedParts(stateKey?: string): readonly IAuxiliaryEditorPart[];
+	hasVisibleScope(stateKey: string): boolean;
+	retireScope(stateKey: string): Promise<boolean>;
+}
 
 export type ParadisBrowserStableScopeChangeReason = 'initialTag' | 'reassign' | 'scopeRetire';
 
@@ -403,6 +417,9 @@ export interface IParadisWorkspaceSwitchService {
 
 	/** worktree へ切り替える (状態キーは paradisWorktreeStateKey(uri)) */
 	switchToWorktree(worktree: IParadisWorktree): Promise<void>;
+
+	/** 固定された補助ウィンドウなど、既知の状態キーを所有するスペースへ切り替える。 */
+	switchToStateKey(stateKey: string): Promise<void>;
 
 	/**
 	 * 指定スコープに紐づく保存済み状態 (working set / パネル表示状態) を破棄し、

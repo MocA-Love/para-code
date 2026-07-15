@@ -623,7 +623,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 				id: generateUuid(),
 				name,
 				main: this.mainPart.createState(),
-				auxiliary: this.createState()
+				auxiliary: options?.includeAuxiliaryWindows === false ? { auxiliary: [], mru: [] } : this.createState()
 			};
 		} finally {
 			this.excludedWorkingSetEditors = undefined;
@@ -668,15 +668,17 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		// editors around that need confirmation by moving them into the main part.
 		// Also, in rare cases, the auxiliary part may not be able to apply the state
 		// for certain editors that cannot move to the main part.
-		const applied = await this.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.auxiliary);
-		if (!applied) {
-			return false;
+		if (!options?.preserveAuxiliaryWindows) {
+			const applied = await this.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.auxiliary);
+			if (!applied) {
+				return false;
+			}
 		}
 		await this.mainPart.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.main, options);
 
 		// Restore Focus unless instructed otherwise
 		if (!options?.preserveFocus) {
-			const mostRecentActivePart = this.mostRecentActiveParts.at(0);
+			const mostRecentActivePart = options?.preserveAuxiliaryWindows ? this.mainPart : this.mostRecentActiveParts.at(0);
 			if (mostRecentActivePart) {
 				await mostRecentActivePart.whenReady;
 				mostRecentActivePart.activeGroup.focus();

@@ -22,6 +22,7 @@ import { IAuxiliaryTitlebarPart } from '../titlebar/titlebarPart.js';
 import { WindowTitle } from '../titlebar/windowTitle.js';
 import { IAuxiliaryWindowOpenOptions, IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { GroupDirection, GroupsOrder, IAuxiliaryEditorPart, GroupActivationReason } from '../../../services/editor/common/editorGroupsService.js';
+import { paradisValidateAuxiliaryWindowClose } from '../../../services/editor/common/paradisAuxiliaryWindowRestore.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IHostService } from '../../../services/host/browser/host.js';
 import { IWorkbenchLayoutService, Parts, shouldShowCustomTitleBar } from '../../../services/layout/browser/layoutService.js';
@@ -277,6 +278,10 @@ export class AuxiliaryEditorPart {
 					}
 				}
 			}
+			const paradisCloseVeto = paradisValidateAuxiliaryWindowClose(editorPart);
+			if (paradisCloseVeto) {
+				event.veto(paradisCloseVeto);
+			}
 		}));
 
 		// Layout: specifically `onWillLayout` to have a chance
@@ -445,6 +450,9 @@ class AuxiliaryEditorPartImpl extends EditorPart implements IAuxiliaryEditorPart
 	}
 
 	private doClose(mergeConfirmingEditorsToMainPart: boolean): boolean {
+		if (paradisValidateAuxiliaryWindowClose(this)) {
+			return false;
+		}
 		let result = true;
 		if (mergeConfirmingEditorsToMainPart) {
 

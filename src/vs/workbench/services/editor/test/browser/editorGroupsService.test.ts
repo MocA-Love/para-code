@@ -2056,6 +2056,34 @@ suite('EditorGroupsService', () => {
 		assert.strictEqual(parts.activeGroup.contains(excluded), false);
 	});
 
+	test('working sets - can save only the main editor part', async function () {
+		const [parts] = await createParts();
+		const createAuxiliaryState = (parts as unknown as { createState: () => unknown }).createState.bind(parts);
+		let auxiliaryStateCreated = false;
+		(parts as unknown as { createState: () => unknown }).createState = () => {
+			auxiliaryStateCreated = true;
+			return createAuxiliaryState();
+		};
+
+		parts.saveWorkingSet('main-only', { includeAuxiliaryWindows: false });
+
+		assert.strictEqual(auxiliaryStateCreated, false);
+	});
+
+	test('working sets - can preserve live auxiliary editor parts while applying main state', async function () {
+		const [parts] = await createParts();
+		const workingSet = parts.saveWorkingSet('main-only');
+		let auxiliaryStateApplied = false;
+		(parts as unknown as { applyState: () => Promise<boolean> }).applyState = async () => {
+			auxiliaryStateApplied = true;
+			return true;
+		};
+
+		await parts.applyWorkingSet(workingSet, { preserveAuxiliaryWindows: true });
+
+		assert.strictEqual(auxiliaryStateApplied, false);
+	});
+
 	test('retained editor can be detached without confirmation or disposal', async function () {
 		const [parts] = await createParts();
 		const input = createTestFileEditorInput(URI.file('foo/live'), TEST_EDITOR_INPUT_ID);

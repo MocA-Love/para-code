@@ -8,14 +8,16 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { combinedDisposable, Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ParadisBrowserScopeState, PARADIS_BROWSER_SCOPE_STORAGE_KEY } from '../common/paradisBrowserScopeState.js';
-import { IParadisBrowserScopeService, IParadisWorkspaceSwitchService, ParadisBindingScope } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IParadisWorkspaceSwitchService, ParadisBindingScope } from '../common/paradisWorkspaceSwitch.js';
 
 /**
  * BrowserViewのworkspace scope authority。
@@ -41,10 +43,26 @@ export class ParadisBrowserScopeService extends Disposable implements IParadisBr
 	get revision(): number { return this._state.revision; }
 
 	constructor(
+		browserViewWorkbenchService: IBrowserViewWorkbenchService,
+		workspaceSwitchService: IParadisWorkspaceSwitchService,
+		storageService: IStorageService,
+		lifecycleService: ILifecycleService,
+	);
+	constructor(
+		browserViewWorkbenchService: IBrowserViewWorkbenchService,
+		workspaceSwitchService: IParadisWorkspaceSwitchService,
+		storageService: IStorageService,
+		lifecycleService: ILifecycleService,
+		auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+		editorGroupsService: IEditorGroupsService,
+	);
+	constructor(
 		@IBrowserViewWorkbenchService private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IStorageService private readonly storageService: IStorageService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
+		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService?: IParadisAuxiliaryWindowScopeService,
+		@IEditorGroupsService private readonly editorGroupsService?: IEditorGroupsService,
 	) {
 		super();
 
@@ -231,12 +249,13 @@ export class ParadisBrowserScopeService extends Disposable implements IParadisBr
 	}
 
 	private _tagForCurrentWorkspace(viewId: string, reason: 'initialTag' | 'reassign'): boolean {
-		const activeStateKey = this.workspaceSwitchService.activeStateKey;
-		if (activeStateKey !== undefined) {
-			this._state.tagManaged(viewId, activeStateKey, reason);
+		const input = this.browserViewWorkbenchService.getKnownBrowserViews().get(viewId);
+		const scope = input ? this._resolveInputWindowScope(input) : this._resolveWindowScope(getActiveWindow().vscodeWindowId);
+		if (scope.kind === 'managed') {
+			this._state.tagManaged(viewId, scope.stateKey, reason);
 			return true;
 		}
-		if (this._isManagedWorkspace()) {
+		if (scope.kind === 'pending' || this._isManagedWorkspace()) {
 			this._state.markPending(viewId);
 			return false;
 		}
@@ -297,16 +316,43 @@ export class ParadisBrowserScopeService extends Disposable implements IParadisBr
 		if (scope.kind === 'pending') {
 			return this._probingPendingContext;
 		}
-		return scope.kind === 'unscoped'
-			|| (scope.kind === 'managed' && scope.stateKey === this.workspaceSwitchService.activeStateKey);
+		const windowScope = this._resolveInputWindowScope(input);
+		return scope.kind === 'unscoped' && windowScope.kind === 'unscoped'
+			|| (scope.kind === 'managed' && windowScope.kind === 'managed' && scope.stateKey === windowScope.stateKey);
 	}
 
 	private _hideAllBrowserViews(): void {
 		for (const [, input] of this.browserViewWorkbenchService.getKnownBrowserViews()) {
-			if (input.model?.visible) {
+			if (input.model?.visible && !this._isInPinnedAuxiliaryPart(input)) {
 				void input.model.setVisible(false);
 			}
 		}
+	}
+
+	private _isInPinnedAuxiliaryPart(input: BrowserEditorInput): boolean {
+		return this.editorGroupsService?.parts.some(part => part !== this.editorGroupsService?.mainPart
+			&& part.groups.some(group => group.contains(input))
+			&& this.auxiliaryWindowScopeService?.resolvePart(part).kind === 'managed') ?? false;
+	}
+
+	private _resolveInputWindowScope(input: BrowserEditorInput): ParadisBindingScope {
+		for (const part of this.editorGroupsService?.parts ?? []) {
+			if (part.groups.some(group => group.contains(input))) {
+				return this.auxiliaryWindowScopeService?.resolvePart(part) ?? this._activeWorkspaceScope();
+			}
+		}
+		return this._resolveWindowScope(getActiveWindow().vscodeWindowId);
+	}
+
+	private _resolveWindowScope(windowId: number): ParadisBindingScope {
+		return this.auxiliaryWindowScopeService?.resolveWindow(windowId) ?? this._activeWorkspaceScope();
+	}
+
+	private _activeWorkspaceScope(): ParadisBindingScope {
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		return activeStateKey !== undefined
+			? { kind: 'managed', stateKey: activeStateKey }
+			: this._isManagedWorkspace() ? { kind: 'pending' } : { kind: 'unscoped' };
 	}
 
 	private _persist(): void {

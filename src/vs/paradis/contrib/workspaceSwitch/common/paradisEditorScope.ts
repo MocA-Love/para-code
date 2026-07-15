@@ -6,6 +6,7 @@
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkingCopyIdentifier } from '../../../../workbench/services/workingCopy/common/workingCopy.js';
 
 const PARADIS_WORKING_COPY_OWNER_LEDGER_VERSION = 1;
@@ -19,6 +20,7 @@ export interface IParadisEditorScopeService {
 	readonly isSwitching: boolean;
 
 	captureScope(stateKey: string, saveSerializedState: (excludedEditors: readonly EditorInput[]) => void): void;
+	captureAuxiliaryPartOnClose(stateKey: string, part: IEditorPart): void;
 	restoreScope(stateKey: string): Promise<void>;
 	beginSwitch(): void;
 	commitSwitch(stateKey: string, uri: URI): Promise<void>;

@@ -17,6 +17,7 @@ import { IEditorService } from '../../../../../workbench/services/editor/common/
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { createEditorParts, registerTestEditor, TestFileDialogService, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { paradisEditorRequiresScopedLiveState, ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
+import { IParadisAuxiliaryWindowScopeService } from '../../common/paradisWorkspaceSwitch.js';
 
 suite('ParadisEditorScopeService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
@@ -62,6 +63,12 @@ suite('ParadisEditorScopeService', () => {
 		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
 		const parts = await createEditorParts(instantiationService, testDisposables);
 		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
 		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
 		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
 
@@ -115,6 +122,12 @@ suite('ParadisEditorScopeService', () => {
 		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
 		const parts = await createEditorParts(instantiationService, testDisposables);
 		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
 		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
 		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
 		await service.commitSwitch('space-a', URI.file('/workspace'));

@@ -9,6 +9,7 @@
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -16,7 +17,7 @@ import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITermina
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
-import { IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisListParkedTerminalEditorInstances, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 
@@ -91,11 +92,15 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalEditorService private readonly terminalEditorService: ITerminalEditorService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
-		this._register(paradisRegisterTerminalCreationScopeProvider(() => this.workspaceSwitchService.activeStateKey));
+		this._register(paradisRegisterTerminalCreationScopeProvider(() => {
+			const scope = this.auxiliaryWindowScopeService.resolveWindow(getActiveWindow().vscodeWindowId);
+			return scope.kind === 'managed' ? scope.stateKey : undefined;
+		}));
 
 		const loadedMapping = this.loadMapping();
 		const initialPartition = paradisPartitionPersistentProcessScopesByKnownScope(loadedMapping, this.knownStateKeys(false));
@@ -261,8 +266,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	private parkExplicitlyScopedEditorIfInactive(instance: ITerminalInstance): void {
 		const stateKey = this._instanceScopes.get(instance.instanceId);
+		const input = this.terminalEditorService.getInputFromResource(instance.resource);
+		const visibleScope = input.group ? this.auxiliaryWindowScopeService.resolveGroup(input.group) : undefined;
 		if (stateKey === undefined
 			|| stateKey === this.workspaceSwitchService.activeStateKey
+			|| (visibleScope?.kind === 'managed' && visibleScope.stateKey === stateKey)
 			|| !this.terminalEditorService.instances.includes(instance)) {
 			return;
 		}

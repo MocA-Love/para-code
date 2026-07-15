@@ -512,6 +512,11 @@ export interface IEditorPart extends IEditorGroupsContainer {
 export interface IAuxiliaryEditorPart extends IEditorPart {
 
 	/**
+	 * Fired immediately before this auxiliary editor part closes.
+	 */
+	readonly onWillClose: Event<void>;
+
+	/**
 	 * Close this auxiliary editor part after moving all
 	 * dirty editors of all groups back to the main editor
 	 * part.
@@ -611,6 +616,11 @@ export interface IEditorWorkingSet {
 
 export interface IEditorWorkingSetOptions {
 	readonly preserveFocus?: boolean;
+	/**
+	 * Keep currently opened auxiliary editor parts alive and apply only the main
+	 * editor part state. This is an explicit opt-in for scoped workspace state.
+	 */
+	readonly preserveAuxiliaryWindows?: boolean;
 }
 
 /**
@@ -619,6 +629,11 @@ export interface IEditorWorkingSetOptions {
  */
 export interface IEditorWorkingSetSaveOptions {
 	readonly excludeEditors?: readonly EditorInput[];
+	/**
+	 * Whether auxiliary editor parts are included in the saved state. Defaults
+	 * to `true` to preserve the upstream Working Set behaviour.
+	 */
+	readonly includeAuxiliaryWindows?: boolean;
 }
 
 export interface IEditorGroupContextKeyProvider<T extends ContextKeyValue> {
