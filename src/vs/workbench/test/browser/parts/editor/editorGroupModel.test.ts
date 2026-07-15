@@ -721,6 +721,28 @@ suite('EditorGroupModel', () => {
 		assert.strictEqual(deserialized.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE).length, 0);
 	});
 
+	test('group serialization excludes selected live inputs without corrupting metadata', function () {
+		inst().invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const group = createEditorGroupModel();
+
+		const sticky = input();
+		const excluded = input();
+		const preview = input();
+
+		group.openEditor(sticky, { pinned: true, active: true });
+		group.stick(sticky);
+		group.openEditor(excluded, { pinned: true, active: true });
+		group.openEditor(preview, { pinned: false, active: true });
+
+		const deserialized = createEditorGroupModel(group.serialize(editor => editor !== excluded));
+
+		assert.strictEqual(deserialized.count, 2);
+		assert.strictEqual(deserialized.getEditors(EditorsOrder.SEQUENTIAL).some(editor => editor.matches(excluded)), false);
+		assert.strictEqual(deserialized.isSticky(0), true);
+		assert.strictEqual(deserialized.isPinned(1), false);
+		assert.strictEqual(deserialized.isActive(preview), true);
+	});
+
 	test('group serialization (sticky editor)', function () {
 		inst().invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
 		const group = createEditorGroupModel();

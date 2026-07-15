@@ -662,7 +662,10 @@ export class ParadisWorkspacesView extends ViewPane {
 				localize('paradis.workspaceSwitch.removeContext', "Remove from List"),
 				undefined,
 				true,
-				() => this.workspaceSwitchService.removeRepository(repository.id).catch(error => this.notificationService.error(error))
+				() => this.workspaceSwitchService.removeRepository(
+					repository.id,
+					this.worktreeService.getKnownWorktreeStateKeys(repository.id)
+				).catch(error => this.notificationService.error(error))
 			)
 		];
 	}

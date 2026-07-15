@@ -4,10 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { localize } from '../../../../nls.js';
-import { EditorGroupLayout, GroupActivationReason, GroupDirection, GroupLocation, GroupOrientation, GroupsArrangement, GroupsOrder, IAuxiliaryEditorPart, IEditorGroupContextKeyProvider, IEditorDropTargetDelegate, IEditorGroupsService, IEditorSideGroup, IEditorWorkingSet, IFindGroupScope, IMergeGroupOptions, IEditorWorkingSetOptions, IEditorPart, IModalEditorPart, IEditorGroupActivationEvent } from '../../../services/editor/common/editorGroupsService.js';
+import { EditorGroupLayout, GroupActivationReason, GroupDirection, GroupLocation, GroupOrientation, GroupsArrangement, GroupsOrder, IAuxiliaryEditorPart, IEditorGroupContextKeyProvider, IEditorDropTargetDelegate, IEditorGroupsService, IEditorSideGroup, IEditorWorkingSet, IFindGroupScope, IMergeGroupOptions, IEditorWorkingSetOptions, IEditorPart, IModalEditorPart, IEditorGroupActivationEvent, IEditorWorkingSetSaveOptions } from '../../../services/editor/common/editorGroupsService.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { GroupIdentifier, IEditorPartOptions } from '../../../common/editor.js';
+import { GroupIdentifier, IEditorPartOptions, SideBySideEditor } from '../../../common/editor.js';
+import { EditorInput } from '../../../common/editor/editorInput.js';
+import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
 import { EditorPart, IEditorPartUIState, MainEditorPart } from './editorPart.js';
 import { IEditorGroupView, IEditorPartsView } from './editor.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -69,6 +71,56 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	// the main window) so this list also acts as a per-window MRU when
 	// filtered by document. See `getMostRecentlyActivePartByDocument`.
 	private mostRecentActiveParts: EditorPart[];
+	private readonly retainedEditors = new Map<EditorInput, number>();
+	private excludedWorkingSetEditors: ReadonlySet<EditorInput> | undefined;
+
+	shouldSerializeEditor(editor: EditorInput): boolean {
+		return !this.excludedWorkingSetEditors?.has(editor);
+	}
+
+	isEditorInputRetained(editor: EditorInput): boolean {
+		return this.retainedEditors.has(editor);
+	}
+
+	retainEditor(editor: EditorInput): IDisposable {
+		const retained = this.collectEditorInputs(editor);
+		for (const input of retained) {
+			this.retainedEditors.set(input, (this.retainedEditors.get(input) ?? 0) + 1);
+		}
+
+		return toDisposable(() => {
+			for (const input of [...retained].reverse()) {
+				const count = this.retainedEditors.get(input);
+				if (count === undefined) {
+					continue;
+				}
+
+				if (count > 1) {
+					this.retainedEditors.set(input, count - 1);
+					continue;
+				}
+
+				this.retainedEditors.delete(input);
+				if (!this.groups.some(group => group.contains(input, { strictEquals: true, supportSideBySide: SideBySideEditor.ANY }))) {
+					input.dispose();
+				}
+			}
+		});
+	}
+
+	private collectEditorInputs(editor: EditorInput, result = new Set<EditorInput>()): ReadonlySet<EditorInput> {
+		if (result.has(editor)) {
+			return result;
+		}
+
+		result.add(editor);
+		if (editor instanceof SideBySideEditorInput) {
+			this.collectEditorInputs(editor.primary, result);
+			this.collectEditorInputs(editor.secondary, result);
+		}
+
+		return result;
+	}
 
 	constructor(
 		@IInstantiationService protected readonly instantiationService: IInstantiationService,
@@ -475,7 +527,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	private createState(): IEditorPartsUIState {
 		return {
 			auxiliary: this.parts
-				.map(part => ({ part, auxiliaryWindow: this.auxiliaryWindowService.getWindow(part.windowId) }))
+				.map(part => ({ part, auxiliaryWindow: this.auxiliaryWindowService?.getWindow(part.windowId) }))
 				.filter(({ auxiliaryWindow }) => auxiliaryWindow !== undefined)
 				.map(({ part, auxiliaryWindow }) => ({
 					state: part.createState(),
@@ -562,13 +614,20 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 	private editorWorkingSets: IEditorWorkingSetState[];
 
-	saveWorkingSet(name: string): IEditorWorkingSet {
-		const workingSet: IEditorWorkingSetState = {
-			id: generateUuid(),
-			name,
-			main: this.mainPart.createState(),
-			auxiliary: this.createState()
-		};
+	saveWorkingSet(name: string, options?: IEditorWorkingSetSaveOptions): IEditorWorkingSet {
+		this.excludedWorkingSetEditors = options?.excludeEditors ? new Set(options.excludeEditors) : undefined;
+
+		let workingSet: IEditorWorkingSetState;
+		try {
+			workingSet = {
+				id: generateUuid(),
+				name,
+				main: this.mainPart.createState(),
+				auxiliary: this.createState()
+			};
+		} finally {
+			this.excludedWorkingSetEditors = undefined;
+		}
 
 		this.editorWorkingSets.push(workingSet);
 

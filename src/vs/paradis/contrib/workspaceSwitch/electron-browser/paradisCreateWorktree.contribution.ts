@@ -202,7 +202,12 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		if (!confirmed) {
 			return;
 		}
+		const stateKey = paradisWorktreeStateKey(uri);
+		if (!await switchService.prepareScopeRetirement(stateKey)) {
+			return;
+		}
 
+		let scopeRetired = false;
 		try {
 			await paradisRemoveWorktreeSequence({
 				runTeardown: async () => {
@@ -234,8 +239,10 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						force: false
 					};
 
+					let removedFromDisk = false;
 					try {
 						await channel.call('removeWorktree', [removeRequest]);
+						removedFromDisk = true;
 					} catch (error) {
 						// 未コミット変更・未追跡ファイルがあると force なしでは失敗する。強制削除を追加確認する
 						const { confirmed: forceConfirmed } = await dialogService.confirm({
@@ -253,6 +260,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						}
 						try {
 							await channel.call('removeWorktree', [{ ...removeRequest, force: true }]);
+							removedFromDisk = true;
 						} catch (forceError) {
 							logService.error('[ParadisRemoveWorktree] force removal failed', forceError);
 							await dialogService.error(
@@ -263,10 +271,13 @@ class ParadisRemoveWorktreeAction extends Action2 {
 							return;
 						}
 					}
+					if (!removedFromDisk) {
+						return;
+					}
 
 					// git worktree remove は .git/worktrees/<name> のメタデータも消すため watcher 経由で
 					// いずれ一覧が更新されるが、既知リストから即座に外して反映を早める
-					worktreeService.removeKnownWorktree({ ...worktree, uri });
+					scopeRetired = await worktreeService.removeKnownWorktree({ ...worktree, uri });
 				},
 			});
 		} catch (error) {
@@ -294,6 +305,10 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				localize('paradis.workspaceSwitch.removeWorktreeUnexpectedFailed', "ワークツリーの削除中に予期しないエラーが発生しました。"),
 				error instanceof Error ? error.message : String(error)
 			);
+		} finally {
+			if (!scopeRetired) {
+				switchService.cancelScopeRetirement(stateKey);
+			}
 		}
 	}
 }

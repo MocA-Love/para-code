@@ -196,6 +196,9 @@ export interface IEditorPartsView {
 
 	readonly count: number;
 
+	shouldSerializeEditor(editor: EditorInput): boolean;
+	isEditorInputRetained(editor: EditorInput): boolean;
+
 	createAuxiliaryEditorPart(options?: IAuxiliaryWindowOpenOptions): Promise<IAuxiliaryEditorPart>;
 	createModalEditorPart(): Promise<IModalEditorPart>;
 

@@ -10,21 +10,22 @@ import { paradisApplySameUriScopeCorrection } from '../../browser/paradisWorkspa
 suite('ParadisWorkspaceSwitchService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('marks the window managed before a same-URI state-key correction returns', () => {
+	test('marks the window managed before a same-URI state-key correction returns', async () => {
 		const calls: string[] = [];
-		paradisApplySameUriScopeCorrection(
+		await paradisApplySameUriScopeCorrection(
 			'space-old',
 			'space-corrected',
 			() => calls.push('set'),
 			stateKey => calls.push(`switch:${stateKey}`),
 			() => calls.push('managed'),
+			async () => { calls.push('scope'); },
 		);
-		assert.deepStrictEqual(calls, ['managed', 'set', 'switch:space-corrected']);
+		assert.deepStrictEqual(calls, ['managed', 'set', 'scope', 'switch:space-corrected']);
 	});
 
-	test('does not emit a duplicate switch when the state key is unchanged', () => {
+	test('does not emit a duplicate switch when the state key is unchanged', async () => {
 		const calls: string[] = [];
-		paradisApplySameUriScopeCorrection(
+		await paradisApplySameUriScopeCorrection(
 			'space-a',
 			'space-a',
 			() => calls.push('set'),

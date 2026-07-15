@@ -8,6 +8,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { EditorsOrder, IEditorIdentifier } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
 import { IWorkingCopy, IWorkingCopyIdentifier } from './workingCopy.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IEditorService } from '../../editor/common/editorService.js';
@@ -41,6 +42,7 @@ export interface IWorkingCopyEditorService {
 	 * An event fired whenever a handler is registered.
 	 */
 	readonly onDidRegisterHandler: Event<IWorkingCopyEditorHandler>;
+	readonly onDidUnregisterHandler: Event<IWorkingCopyEditorHandler>;
 
 	/**
 	 * Register a handler to the working copy editor service.
@@ -59,6 +61,8 @@ export class WorkingCopyEditorService extends Disposable implements IWorkingCopy
 
 	private readonly _onDidRegisterHandler = this._register(new Emitter<IWorkingCopyEditorHandler>());
 	readonly onDidRegisterHandler = this._onDidRegisterHandler.event;
+	private readonly _onDidUnregisterHandler = this._register(new Emitter<IWorkingCopyEditorHandler>());
+	readonly onDidUnregisterHandler = this._onDidUnregisterHandler.event;
 
 	private readonly handlers = new Set<IWorkingCopyEditorHandler>();
 
@@ -72,7 +76,11 @@ export class WorkingCopyEditorService extends Disposable implements IWorkingCopy
 		this.handlers.add(handler);
 		this._onDidRegisterHandler.fire(handler);
 
-		return toDisposable(() => this.handlers.delete(handler));
+		return toDisposable(() => {
+			if (this.handlers.delete(handler)) {
+				this._onDidUnregisterHandler.fire(handler);
+			}
+		});
 	}
 
 	findEditor(workingCopy: IWorkingCopy): IEditorIdentifier | undefined {
@@ -90,6 +98,9 @@ export class WorkingCopyEditorService extends Disposable implements IWorkingCopy
 			if (handler.isOpen(workingCopy, editor)) {
 				return true;
 			}
+		}
+		if (editor instanceof SideBySideEditorInput) {
+			return this.isOpen(workingCopy, editor.primary) || this.isOpen(workingCopy, editor.secondary);
 		}
 
 		return false;

@@ -10,6 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { EditorService } from '../../../editor/browser/editorService.js';
 import { IEditorGroupsService } from '../../../editor/common/editorGroupsService.js';
 import { UntitledTextEditorInput } from '../../../untitled/common/untitledTextEditorInput.js';
+import { SideBySideEditorInput } from '../../../../common/editor/sideBySideEditorInput.js';
 import { IWorkingCopyEditorHandler, WorkingCopyEditorService } from '../../common/workingCopyEditorService.js';
 import { createEditorPart, registerTestResourceEditor, TestEditorService, TestServiceAccessor, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
 import { TestWorkingCopy } from '../../../../test/common/workbenchTestServices.js';
@@ -30,8 +31,12 @@ suite('WorkingCopyEditorService', () => {
 		const service = disposables.add(new WorkingCopyEditorService(disposables.add(new TestEditorService())));
 
 		let handlerEvent: IWorkingCopyEditorHandler | undefined = undefined;
+		let unregisteredHandlerEvent: IWorkingCopyEditorHandler | undefined = undefined;
 		disposables.add(service.onDidRegisterHandler(handler => {
 			handlerEvent = handler;
+		}));
+		disposables.add(service.onDidUnregisterHandler(handler => {
+			unregisteredHandlerEvent = handler;
 		}));
 
 		const editorHandler: IWorkingCopyEditorHandler = {
@@ -40,9 +45,11 @@ suite('WorkingCopyEditorService', () => {
 			createEditor: workingCopy => { throw new Error(); }
 		};
 
-		disposables.add(service.registerHandler(editorHandler));
+		const registration = service.registerHandler(editorHandler);
 
 		assert.strictEqual(handlerEvent, editorHandler);
+		registration.dispose();
+		assert.strictEqual(unregisteredHandlerEvent, editorHandler);
 	});
 
 	test('findEditor', async () => {
@@ -78,6 +85,30 @@ suite('WorkingCopyEditorService', () => {
 		assert.ok(service.findEditor(testWorkingCopy));
 
 		disposables.dispose();
+	});
+
+	test('findEditor resolves a Working Copy owned by a nested side-by-side input', async () => {
+		const testDisposables = new DisposableStore();
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		const part = await createEditorPart(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, part);
+		const editorService = testDisposables.add(instantiationService.createInstance(EditorService, undefined));
+		const accessor = instantiationService.createInstance(TestServiceAccessor);
+		const service = testDisposables.add(new WorkingCopyEditorService(editorService));
+
+		const primary = testDisposables.add(instantiationService.createInstance(UntitledTextEditorInput, accessor.untitledTextEditorService.create({ initialValue: 'primary' })));
+		const secondary = testDisposables.add(instantiationService.createInstance(UntitledTextEditorInput, accessor.untitledTextEditorService.create({ initialValue: 'secondary' })));
+		const compound = testDisposables.add(new SideBySideEditorInput(undefined, undefined, secondary, primary, editorService));
+		await editorService.openEditor(compound);
+		const workingCopy = testDisposables.add(new TestWorkingCopy(primary.resource, false, 'nested'));
+		testDisposables.add(service.registerHandler({
+			handles: () => true,
+			isOpen: (candidate, editor) => candidate === workingCopy && editor === primary,
+			createEditor: () => { throw new Error(); }
+		}));
+
+		assert.strictEqual(service.findEditor(workingCopy)?.editor, compound);
+		testDisposables.dispose();
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();

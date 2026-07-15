@@ -2040,6 +2040,39 @@ suite('EditorGroupsService', () => {
 		assert.strictEqual(part.activeGroup.isEmpty, true);
 	});
 
+	test('working sets - explicitly exclude retained live inputs', async function () {
+		const [parts] = await createParts();
+		const included = createTestFileEditorInput(URI.file('foo/included'), TEST_EDITOR_INPUT_ID);
+		const excluded = createTestFileEditorInput(URI.file('foo/excluded'), TEST_EDITOR_INPUT_ID);
+
+		await parts.activeGroup.openEditor(included, { pinned: true });
+		await parts.activeGroup.openEditor(excluded, { pinned: true });
+		const workingSet = parts.saveWorkingSet('scoped', { excludeEditors: [excluded] });
+
+		await parts.activeGroup.closeAllEditors();
+		await parts.applyWorkingSet(workingSet);
+
+		assert.strictEqual(parts.activeGroup.contains(included), true);
+		assert.strictEqual(parts.activeGroup.contains(excluded), false);
+	});
+
+	test('retained editor can be detached without confirmation or disposal', async function () {
+		const [parts] = await createParts();
+		const input = createTestFileEditorInput(URI.file('foo/live'), TEST_EDITOR_INPUT_ID);
+		input.dirty = true;
+		await parts.activeGroup.openEditor(input, { pinned: true });
+
+		const retention = parts.retainEditor(input);
+		parts.activeGroup.detachEditor!(input);
+
+		assert.strictEqual(parts.activeGroup.contains(input), false);
+		assert.strictEqual(input.isDisposed(), false);
+
+		input.dirty = false;
+		retention.dispose();
+		assert.strictEqual(input.isDisposed(), true);
+	});
+
 	test('working sets - apply state when the part has never been laid out does not throw and registers restored groups', async function () {
 		const [part] = await createPart();
 
