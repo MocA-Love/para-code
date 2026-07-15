@@ -9,7 +9,7 @@
 import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { stripTerminalControls } from './paradisAgentTerminalHints.js';
+import { stripTerminalControls } from '../common/paradisAgentTerminalHints.js';
 
 // モバイル注入後にダイアログ描画を待つ猶予。Claude TUIは Enter 送信後にダイアログを
 // 描画するため、往復遅延・描画遅延を見込んで長めに取る。過ぎたら購読は破棄する。

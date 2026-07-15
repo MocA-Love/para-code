@@ -20,7 +20,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, markParadisManagedWorkspaceWindow, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
 
 interface ISerializedRepository {
@@ -39,6 +39,26 @@ interface ISerializedWorkingSetEntry {
 interface ISerializedActiveEntry {
 	readonly stateKey: string;
 	readonly uri: string;
+}
+
+/**
+ * Applies a same-folder state-key correction and emits a stable scope switch only when the
+ * effective key changed. Extracted so the URI fast path cannot silently skip scope consumers.
+ */
+export function paradisApplySameUriScopeCorrection(
+	previousStateKey: string | undefined,
+	nextStateKey: string,
+	setActiveEntry: () => void,
+	onDidSwitchScope: (stateKey: string) => void,
+	markManagedWorkspaceWindow: () => void,
+): void {
+	// The fast path returns before folder mutation, so it must establish the same durable
+	// managed-window identity explicitly rather than relying on updateFolders side effects.
+	markManagedWorkspaceWindow();
+	setActiveEntry();
+	if (previousStateKey !== nextStateKey) {
+		onDidSwitchScope(nextStateKey);
+	}
 }
 
 /**
@@ -113,6 +133,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	get repositories(): readonly IParadisWorkspaceRepository[] {
 		return this._repositories;
+	}
+
+	get isManagedWorkspaceWindow(): boolean {
+		return isParadisManagedWorkspaceWindow();
 	}
 
 	/** 直近の切り替えで記録したアクティブエントリ (folders が一致する間だけ有効) */
@@ -227,7 +251,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			const previousKey = this.activeStateKey;
 			const folders = this.contextService.getWorkspace().folders;
 			if (folders.length === 1 && isEqual(folders[0].uri, uri)) {
-				this.setActiveEntry(stateKey, uri); // 状態キーの記録だけ矯正
+				paradisApplySameUriScopeCorrection(
+					previousKey,
+					stateKey,
+					() => this.setActiveEntry(stateKey, uri),
+					correctedStateKey => this._onDidSwitchScope.fire(correctedStateKey),
+					markParadisManagedWorkspaceWindow,
+				);
 				return;
 			}
 

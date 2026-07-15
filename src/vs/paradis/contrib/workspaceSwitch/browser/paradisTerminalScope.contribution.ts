@@ -12,17 +12,13 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalService, TerminalConnectionState } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
+import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
-import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
-import { paradisLookupInstanceScope, paradisRecordInstanceScopes } from '../common/paradisTerminalProcessScope.js';
-import { paradisGetParkedTerminalEditorStateKey, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
-
-interface ISerializedTerminalRepositoryEntry {
-	readonly persistentProcessId: number;
-	readonly repositoryId: string;
-}
+import { IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisListParkedTerminalEditorInstances, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 
 /**
  * ターミナルグループをリポジトリ単位でスコープする (機能1 Phase 2)。
@@ -67,33 +63,66 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 跨いで引けることがこのマップの存在意義）。スコープ退役時に retireScope でまとめて掃除する。
 	 */
 	private readonly _instanceScopes = new Map<number, string>();
+	private readonly _persistentProcessIdByInstance = new Map<number, number>();
+	private readonly _instanceIdByPersistentProcessId = new Map<number, number>();
+	private readonly _stableScopeTracker = this._register(new ParadisTerminalStableScopeTracker());
+	private readonly _instanceRetirementTracker = this._register(new ParadisTerminalInstanceRetirementTracker());
+	private readonly _activeScopeCandidates = new Map<number, string | undefined>();
+	private readonly _candidateCapturedInstances = new Set<number>();
+	private readonly _initialCwds = new Map<number, string>();
+	private readonly _initialCwdResolvedInstances = new Set<number>();
+	private readonly _activeFallbackInstances = new Set<number>();
+	private readonly _initialCwdResolutions = new WeakMap<ITerminalInstance, Promise<void>>();
+	private _terminalRestoreComplete = false;
+	private _worktreeSnapshotReady = false;
+	readonly onDidChangeStableScope: Event<IParadisTerminalStableScopeChangeEvent> = this._stableScopeTracker.onDidChange;
+	get revision(): number { return this._stableScopeTracker.revision; }
 
 	/**
-	 * リロード前に保存した {persistentProcessId → repositoryId}。起動時に一度だけ読み込む
-	 * (起動後の persistMapping はこのキーを上書きするため、遅延読み込みだと自分の
-	 * 起動時タグ付けで正しい対応を潰してしまう)。今セッション中の対応は `_instanceScopes` が持つため、
-	 * こちらは「今セッションではまだ一度もタグ付けしていない (前回セッションからの持ち越し)」場合のみ引く。
+	 * {persistentProcessId → repositoryId} の永続台帳。起動時に前回値を読み込み、今セッション中も
+	 * process ID確定・所属変更・破棄に合わせて更新する。前回値は再接続完了までは復元元として保持し、
+	 * 全live terminalとの照合後に対応するprocessがない項目だけを削除する。
 	 */
-	private readonly _restoredMapping: Map<number, string>;
+	private readonly _persistentProcessScopes: Map<number, string>;
+	private readonly _quarantinedPersistentProcessScopes: Map<number, string>;
 
 	constructor(
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalEditorService private readonly terminalEditorService: ITerminalEditorService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
+		this._register(paradisRegisterTerminalCreationScopeProvider(() => this.workspaceSwitchService.activeStateKey));
 
-		this._restoredMapping = this.loadMapping();
+		const loadedMapping = this.loadMapping();
+		const initialPartition = paradisPartitionPersistentProcessScopesByKnownScope(loadedMapping, this.knownStateKeys(false));
+		this._persistentProcessScopes = initialPartition.accepted;
+		this._quarantinedPersistentProcessScopes = initialPartition.quarantined;
 
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
+		this._register(this.terminalService.onDidChangeInstances(() => this.refreshAllStableScopes()));
+		this._register(this.terminalService.onDidChangeConnectionState(() => this.refreshAllStableScopes()));
+		this._register(this.worktreeService.onDidChangeWorktrees(() => {
+			if (this._worktreeSnapshotReady) {
+				this.reevaluateActiveFallbackScopes();
+				this.refreshAllStableScopes();
+				this.tagUntaggedGroups();
+			}
+		}));
 
 		// persistMapping は persistentProcessId が確定済みのインスタンスしか書き出せない。
 		// タグ付け直後はまだ pid 未確定のことがあり、その後どのトリガーも走らないまま
 		// リロードすると復元マッピングから漏れる（非アクティブスコープのターミナルが
 		// リロード後にアクティブスコープへ誤って出現する）。pid 確定のたびに書き直して塞ぐ
-		this._register(this.terminalService.onAnyInstanceProcessIdReady(() => this.persistMapping()));
+		this._register(this.terminalService.onAnyInstanceProcessIdReady(instance => {
+			this.recordRecoveredScopeIfUnassigned(instance);
+			this.recordPersistentProcessScopes([instance]);
+			this.parkExplicitlyScopedEditorIfInactive(instance);
+			this.persistMapping();
+		}));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(stateKey => this.applyScope(stateKey)));
 		this._register(this.terminalGroupService.onDidDisposeGroup(group => this.discardGroup(group)));
 
@@ -107,53 +136,300 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// リロード後は全グループが一旦 groups に復元され、出現し次第 tagUntaggedGroups が
 		// マッピングに基づいて park し直す。再接続完了後に取りこぼし (persistentProcessId が
 		// タグ付け時点で未確定だったグループ) を掃除する
-		terminalService.whenConnected.then(() => this.sweepRestoredGroups());
+		void terminalService.whenConnected.then(() => {
+			if (this._store.isDisposed) {
+				return;
+			}
+			this._terminalRestoreComplete = true;
+			this.sweepRestoredGroups();
+			const liveInstances = this.refreshAllStableScopes();
+			paradisPrunePersistentProcessScopes(this._persistentProcessScopes, liveInstances.map(instance => this.toScopedInstance(instance)));
+			this.persistMapping();
+		});
+		void this.worktreeService.initializationBarrier.then(() => {
+			if (this._store.isDisposed) {
+				return;
+			}
+			this._worktreeSnapshotReady = true;
+			const resolved = paradisPartitionPersistentProcessScopesByKnownScope(this._quarantinedPersistentProcessScopes, this.knownStateKeys(true));
+			for (const [persistentProcessId, stateKey] of resolved.accepted) {
+				if (!this._persistentProcessScopes.has(persistentProcessId)) {
+					this._persistentProcessScopes.set(persistentProcessId, stateKey);
+				}
+			}
+			this._quarantinedPersistentProcessScopes.clear();
+			const liveInstances = this.refreshAllStableScopes();
+			if (this._terminalRestoreComplete) {
+				paradisPrunePersistentProcessScopes(this._persistentProcessScopes, liveInstances.map(instance => this.toScopedInstance(instance)));
+			}
+			this.tagUntaggedGroups();
+			this.persistMapping();
+		}, onUnexpectedError);
+		this.refreshAllStableScopes();
 	}
 
 	getStateKeyForInstance(instanceId: number): string | undefined {
-		for (const [group, stateKey] of this._groupRepositories) {
-			if (group.terminalInstances.some(instance => instance.instanceId === instanceId)) {
-				return stateKey;
-			}
+		const recordedStateKey = this._instanceScopes.get(instanceId);
+		if (recordedStateKey !== undefined) {
+			return recordedStateKey;
+		}
+		const groupStateKey = this.getGroupStateKey(instanceId);
+		if (groupStateKey !== undefined) {
+			return groupStateKey;
 		}
 		// エディタエリアのターミナルはパネルのグループ台帳に乗らない。ここで解決できないと
 		// エージェント状態・通知・モバイル同期がすべて「スコープ外」として捨ててしまう
 		// （エディタターミナルで動くエージェントが常にアイドル表示になる実バグの原因）。
 		// park中なら park 台帳の stateKey を返す。
-		const parkedStateKey = paradisGetParkedTerminalEditorStateKey(instanceId);
+		const parkedStateKey = this.getParkedEditorStateKey(instanceId);
 		if (parkedStateKey !== undefined) {
 			return parkedStateKey;
-		}
-		// このウィンドウに実在する（=どこにも退避されていない）残りのインスタンスは、
-		// 表示中の working set の一部＝アクティブスコープ所属とみなす。エディタエリアの
-		// ターミナルに加え、バックグラウンドターミナル等の台帳外インスタンスも拾う
-		// （スコープ切替時にはこれらも park され、上の台帳解決へ移る）。
-		if (this.terminalService.instances.some(instance => instance.instanceId === instanceId)) {
-			return this.workspaceSwitchService.activeStateKey;
 		}
 		return undefined;
 	}
 
+	resolveScope(instanceId: number): ParadisBindingScope {
+		const groupStateKey = this.getGroupStateKey(instanceId);
+		const parkedEditorStateKey = this.getParkedEditorStateKey(instanceId);
+		const isLiveInstance = groupStateKey !== undefined
+			|| parkedEditorStateKey !== undefined
+			|| this.terminalService.instances.some(instance => instance.instanceId === instanceId && !instance.isDisposed);
+		return paradisResolveTerminalBindingScope({
+			isSwitching: this.workspaceSwitchService.isSwitching,
+			isTerminalConnected: this._terminalRestoreComplete && this.terminalService.connectionState === TerminalConnectionState.Connected,
+			isIdentityReady: this.isScopeIdentityReady(instanceId),
+			isManagedWorkspace: this.workspaceSwitchService.isManagedWorkspaceWindow,
+			recordedStateKey: this._instanceScopes.get(instanceId),
+			groupStateKey,
+			parkedEditorStateKey,
+			isLiveInstance,
+			activeStateKey: this._activeScopeCandidates.get(instanceId),
+		});
+	}
+
+	private isScopeIdentityReady(instanceId: number): boolean {
+		if (this._instanceScopes.has(instanceId)) {
+			return true;
+		}
+		return this._initialCwdResolvedInstances.has(instanceId) && this._worktreeSnapshotReady;
+	}
+
+	private getGroupStateKey(instanceId: number): string | undefined {
+		for (const [group, stateKey] of this._groupRepositories) {
+			if (group.terminalInstances.some(instance => instance.instanceId === instanceId && !instance.isDisposed)) {
+				return stateKey;
+			}
+		}
+		return undefined;
+	}
+
+	private getParkedEditorStateKey(instanceId: number): string | undefined {
+		if (!paradisListParkedTerminalEditorInstances().some(instance => instance.instanceId === instanceId && !instance.isDisposed)) {
+			return undefined;
+		}
+		return paradisGetParkedTerminalEditorStateKey(instanceId);
+	}
+
 	assignInstanceScope(instanceId: number, stateKey: string): void {
+		const instance = this.findLiveInstance(instanceId);
+		if (instance === undefined) {
+			return;
+		}
+		this._instanceScopes.set(instanceId, stateKey);
+		this._activeFallbackInstances.delete(instanceId);
+		this.recordPersistentProcessScopes([instance]);
+		this.trackInstanceRetirement(instance);
+		this._stableScopeTracker.observe(instanceId, { kind: 'managed', stateKey });
+
 		const groupService = this.terminalGroupService;
 		if (!(groupService instanceof TerminalGroupService)) {
+			this.persistMapping();
 			return;
 		}
 		const group = groupService.groups.find(g => g.terminalInstances.some(instance => instance.instanceId === instanceId));
-		if (!group || this._groupRepositories.get(group) === stateKey) {
-			return;
-		}
-		this._groupRepositories.set(group, stateKey);
-		this.recordInstanceScopes(group, stateKey);
-		if (stateKey !== this.workspaceSwitchService.activeStateKey) {
-			this.parkGroup(groupService, group, stateKey);
+		if (group !== undefined && this._groupRepositories.get(group) !== stateKey) {
+			this._groupRepositories.set(group, stateKey);
+			this.recordInstanceScopes(group, stateKey, true);
+			if (stateKey !== this.workspaceSwitchService.activeStateKey) {
+				this.parkGroup(groupService, group, stateKey);
+			}
+		} else if (group === undefined) {
+			this.parkExplicitlyScopedEditorIfInactive(instance);
 		}
 		this.persistMapping();
 	}
 
+	private parkExplicitlyScopedEditorIfInactive(instance: ITerminalInstance): void {
+		const stateKey = this._instanceScopes.get(instance.instanceId);
+		if (stateKey === undefined
+			|| stateKey === this.workspaceSwitchService.activeStateKey
+			|| !this.terminalEditorService.instances.includes(instance)) {
+			return;
+		}
+		if (paradisParkTerminalEditorInstance(instance, stateKey)) {
+			this.terminalEditorService.detachInstance(instance);
+		}
+	}
+
+	private findLiveInstance(instanceId: number): ITerminalInstance | undefined {
+		return this.collectLiveInstances().get(instanceId);
+	}
+
 	/** グループの構成インスタンスの instanceId に、このタグ付けを記録する */
-	private recordInstanceScopes(group: ITerminalGroup, stateKey: string): void {
-		paradisRecordInstanceScopes(this._instanceScopes, group.terminalInstances, stateKey);
+	private recordInstanceScopes(group: ITerminalGroup, stateKey: string, clearActiveFallback = false): void {
+		const liveInstances = group.terminalInstances.filter(instance => !instance.isDisposed);
+		paradisRecordInstanceScopes(this._instanceScopes, liveInstances, stateKey);
+		this.recordPersistentProcessScopes(liveInstances);
+		for (const instance of liveInstances) {
+			if (clearActiveFallback) {
+				this._activeFallbackInstances.delete(instance.instanceId);
+			}
+			this.trackInstanceRetirement(instance);
+			this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
+		}
+	}
+
+	private collectLiveInstances(): Map<number, ITerminalInstance> {
+		const instances = new Map<number, ITerminalInstance>();
+		const add = (instance: ITerminalInstance): void => {
+			if (!instance.isDisposed) {
+				instances.set(instance.instanceId, instance);
+			}
+		};
+		for (const instance of this.terminalService.instances) {
+			add(instance);
+		}
+		for (const instance of this.terminalEditorService.instances) {
+			add(instance);
+		}
+		for (const group of this._groupRepositories.keys()) {
+			for (const instance of group.terminalInstances) {
+				add(instance);
+			}
+		}
+		for (const group of this.terminalGroupService.paradisParkedGroups ?? []) {
+			for (const instance of group.terminalInstances) {
+				add(instance);
+			}
+		}
+		for (const instance of paradisListParkedTerminalEditorInstances()) {
+			add(instance);
+		}
+		return instances;
+	}
+
+	private refreshAllStableScopes(): readonly ITerminalInstance[] {
+		const instances = [...this.collectLiveInstances().values()];
+		for (const instance of instances) {
+			this.ensureScopeCandidate(instance);
+			this.recordRecoveredScopeIfUnassigned(instance);
+			this.trackInstanceRetirement(instance);
+			this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
+		}
+		this.recordPersistentProcessScopes(instances);
+		return instances;
+	}
+
+	private trackInstanceRetirement(instance: ITerminalInstance): void {
+		this._instanceRetirementTracker.track(instance, instanceId => {
+			const persistentProcessId = this.getPersistentProcessId(instance);
+			paradisRetireInstanceScope(
+				this._instanceScopes,
+				this._persistentProcessScopes,
+				this.toScopedInstance(instance),
+				this._instanceIdByPersistentProcessId,
+				instance.exitReason === TerminalExitReason.Shutdown,
+			);
+			if (persistentProcessId !== undefined && this._instanceIdByPersistentProcessId.get(persistentProcessId) === instanceId) {
+				this._instanceIdByPersistentProcessId.delete(persistentProcessId);
+			}
+			this._persistentProcessIdByInstance.delete(instanceId);
+			this._activeScopeCandidates.delete(instanceId);
+			this._candidateCapturedInstances.delete(instanceId);
+			this._initialCwds.delete(instanceId);
+			this._initialCwdResolvedInstances.delete(instanceId);
+			this._activeFallbackInstances.delete(instanceId);
+			this._stableScopeTracker.retire(instanceId);
+			this.persistMapping();
+		});
+	}
+
+	private ensureScopeCandidate(instance: ITerminalInstance): void {
+		if (!this._candidateCapturedInstances.has(instance.instanceId)) {
+			this._candidateCapturedInstances.add(instance.instanceId);
+			this._activeScopeCandidates.set(
+				instance.instanceId,
+				paradisTakeTerminalCreationScopeLease(instance.shellLaunchConfig) ?? this.workspaceSwitchService.activeStateKey,
+			);
+		}
+		if (this._initialCwdResolutions.has(instance)) {
+			return;
+		}
+		const resolution = instance.processReady
+			.then(() => instance.getInitialCwd())
+			.then(initialCwd => {
+				if (instance.isDisposed) {
+					return;
+				}
+				if (initialCwd.length > 0) {
+					this._initialCwds.set(instance.instanceId, initialCwd);
+				}
+				this._initialCwdResolvedInstances.add(instance.instanceId);
+				this.recordRecoveredScopeIfUnassigned(instance);
+				this.tagUntaggedGroups();
+				this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
+				this.recordPersistentProcessScopes([instance]);
+				this.persistMapping();
+			}, () => {
+				if (!instance.isDisposed) {
+					this._initialCwdResolvedInstances.add(instance.instanceId);
+					this.recordRecoveredScopeIfUnassigned(instance);
+					this.tagUntaggedGroups();
+					this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
+					this.recordPersistentProcessScopes([instance]);
+					this.persistMapping();
+				}
+			});
+		this._initialCwdResolutions.set(instance, resolution);
+	}
+
+	private recordPersistentProcessScopes(instances: readonly ITerminalInstance[]): void {
+		for (const instance of instances) {
+			const persistentProcessId = this.getPersistentProcessId(instance);
+			if (persistentProcessId === undefined) {
+				continue;
+			}
+			const previousPersistentProcessId = this._persistentProcessIdByInstance.get(instance.instanceId);
+			if (previousPersistentProcessId !== undefined && previousPersistentProcessId !== persistentProcessId) {
+				if (this._instanceIdByPersistentProcessId.get(previousPersistentProcessId) === instance.instanceId) {
+					this._instanceIdByPersistentProcessId.delete(previousPersistentProcessId);
+					this._persistentProcessScopes.delete(previousPersistentProcessId);
+				}
+			}
+			this._persistentProcessIdByInstance.set(instance.instanceId, persistentProcessId);
+			this._instanceIdByPersistentProcessId.set(persistentProcessId, instance.instanceId);
+		}
+		paradisRecordPersistentProcessScopes(this._instanceScopes, this._persistentProcessScopes, instances.map(instance => this.toScopedInstance(instance)));
+	}
+
+	private getPersistentProcessId(instance: ITerminalInstance): number | undefined {
+		return instance.persistentProcessId
+			?? this._persistentProcessIdByInstance.get(instance.instanceId)
+			?? instance.shellLaunchConfig.attachPersistentProcess?.id;
+	}
+
+	private toScopedInstance(instance: ITerminalInstance): { readonly instanceId: number; readonly persistentProcessId?: number } {
+		const persistentProcessId = this.getPersistentProcessId(instance);
+		return persistentProcessId === undefined
+			? { instanceId: instance.instanceId }
+			: { instanceId: instance.instanceId, persistentProcessId };
+	}
+
+	private toRestoredScopedInstance(instance: ITerminalInstance): { readonly instanceId: number; readonly persistentProcessId?: number } {
+		const persistentProcessId = instance.shellLaunchConfig.attachPersistentProcess?.id;
+		return persistentProcessId === undefined
+			? { instanceId: instance.instanceId }
+			: { instanceId: instance.instanceId, persistentProcessId };
 	}
 
 	/**
@@ -161,10 +437,84 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 今セッション中に一度でもタグ付けしたことがあれば `_instanceScopes` が最新の対応を持つ
 	 * (グループオブジェクトが作り直されても instanceId は安定するため)。
 	 * 今セッションでまだ一度もタグ付けしていない (リロード直後の復元グループ) 場合のみ、
-	 * 前回セッションからの保存済みマッピング `_restoredMapping` にフォールバックする。
+	 * persistent process台帳にフォールバックする。
 	 */
 	private resolveGroupScope(group: ITerminalGroup): string | undefined {
-		return paradisLookupInstanceScope(this._instanceScopes, this._restoredMapping, group.terminalInstances);
+		return paradisLookupInstanceScope(this._instanceScopes, this._persistentProcessScopes, group.terminalInstances.map(instance => this.toRestoredScopedInstance(instance)));
+	}
+
+	private resolveGroupInitialCwdScope(group: ITerminalGroup): string | undefined {
+		for (const instance of group.terminalInstances) {
+			const stateKey = this.resolveInstanceInitialCwdScope(instance);
+			if (stateKey !== undefined) {
+				return stateKey;
+			}
+		}
+		return undefined;
+	}
+
+	private resolveInstanceInitialCwdScope(instance: ITerminalInstance): string | undefined {
+		if (!this._initialCwdResolvedInstances.has(instance.instanceId) || !this._worktreeSnapshotReady) {
+			return undefined;
+		}
+		const roots: IParadisTerminalScopeRoot[] = [];
+		for (const repository of this.workspaceSwitchService.repositories) {
+			if (repository.uri.scheme === 'file') {
+				roots.push({ root: repository.uri.fsPath, stateKey: repository.id });
+			}
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing && worktree.uri.scheme === 'file') {
+					roots.push({ root: worktree.uri.fsPath, stateKey: paradisWorktreeStateKey(worktree.uri) });
+				}
+			}
+		}
+		return paradisResolveInitialCwdScope(this._initialCwds.get(instance.instanceId), roots);
+	}
+
+	private recordRecoveredScopeIfUnassigned(instance: ITerminalInstance): void {
+		this.ensureScopeCandidate(instance);
+		if (this._instanceScopes.has(instance.instanceId)) {
+			return;
+		}
+		const containingStateKey = this.getGroupStateKey(instance.instanceId) ?? this.getParkedEditorStateKey(instance.instanceId);
+		if (containingStateKey !== undefined) {
+			this._instanceScopes.set(instance.instanceId, containingStateKey);
+			this._activeFallbackInstances.delete(instance.instanceId);
+			return;
+		}
+		if (paradisRestorePersistentProcessScope(this._instanceScopes, this._persistentProcessScopes, this.toRestoredScopedInstance(instance)) !== undefined) {
+			this._activeFallbackInstances.delete(instance.instanceId);
+			return;
+		}
+		const initialCwdStateKey = this.resolveInstanceInitialCwdScope(instance);
+		const candidate = paradisResolveTerminalScopeCandidate({
+			initialCwdResolved: this._initialCwdResolvedInstances.has(instance.instanceId),
+			worktreeSnapshotReady: this._worktreeSnapshotReady,
+			initialCwdStateKey,
+			activeStateKeyCandidate: this._activeScopeCandidates.get(instance.instanceId),
+		});
+		if (candidate.status === 'resolved' && candidate.stateKey !== undefined) {
+			this._instanceScopes.set(instance.instanceId, candidate.stateKey);
+			if (initialCwdStateKey === undefined && candidate.stateKey === this._activeScopeCandidates.get(instance.instanceId)) {
+				this._activeFallbackInstances.add(instance.instanceId);
+			} else {
+				this._activeFallbackInstances.delete(instance.instanceId);
+			}
+		}
+	}
+
+	private reevaluateActiveFallbackScopes(): void {
+		for (const instanceId of [...this._activeFallbackInstances]) {
+			const instance = this.findLiveInstance(instanceId);
+			if (instance === undefined) {
+				this._activeFallbackInstances.delete(instanceId);
+				continue;
+			}
+			const initialCwdStateKey = this.resolveInstanceInitialCwdScope(instance);
+			if (initialCwdStateKey !== undefined && initialCwdStateKey !== this._instanceScopes.get(instanceId)) {
+				this.assignInstanceScope(instanceId, initialCwdStateKey);
+			}
+		}
 	}
 
 	private tagUntaggedGroups(): void {
@@ -179,10 +529,14 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			if (this._groupRepositories.has(group)) {
 				continue;
 			}
+			for (const instance of group.terminalInstances) {
+				this.ensureScopeCandidate(instance);
+				this.recordRecoveredScopeIfUnassigned(instance);
+			}
 
 			// 既知の対応 (今セッション中のタグ付け実績、またはリロード前の保存済みマッピング) を
-			// 優先し、対応が無いもの (真に新規のグループ) だけアクティブエントリ所属とする
-			const stateKey = this.resolveGroupScope(group) ?? activeStateKey;
+			// 優先する。initial cwd/worktree snapshotが未確定ならタグ付け自体を保留する。
+			const stateKey = this.resolveGroupScope(group) ?? this.resolveGroupInitialCwdScope(group);
 			if (!stateKey) {
 				continue;
 			}
@@ -241,6 +595,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this.unparkEditorTerminals(targetStateKey);
 
 		this.persistMapping();
+		this.refreshAllStableScopes();
 	}
 
 	/** 切り替え先スコープの park 台帳に残留したエディタターミナルをエディタとして開き直す */
@@ -282,20 +637,40 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * 永続化から除外)、こちらの discardGroup が _groupRepositories / _parkedGroups を掃除する。
 	 */
 	private retireScope(stateKey: string): void {
-		// 退役スコープのライブ記録を掃除する（グループ dispose では意図的に消さないため、
-		// ここで消さないとセッション中に作成・削除を繰り返した分だけ増え続ける）
-		for (const [instanceId, scopeKey] of this._instanceScopes) {
-			if (scopeKey === stateKey) {
-				this._instanceScopes.delete(instanceId);
+		const liveInstances = [...this.collectLiveInstances().values()];
+		const retiringInstanceIds = paradisCollectRetiringTerminalInstanceIds(
+			this._instanceScopes,
+			this._persistentProcessScopes,
+			stateKey,
+			liveInstances.map(instance => this.toScopedInstance(instance)),
+		);
+		const retiringInstanceIdSet = new Set(retiringInstanceIds);
+		const retiringInstances = new Map(liveInstances
+			.filter(instance => retiringInstanceIdSet.has(instance.instanceId))
+			.map(instance => [instance.instanceId, instance] as const));
+		paradisRetireTerminalScope(this._instanceScopes, this._persistentProcessScopes, stateKey);
+		for (const [persistentProcessId, assignedStateKey] of this._quarantinedPersistentProcessScopes) {
+			if (assignedStateKey === stateKey) {
+				this._quarantinedPersistentProcessScopes.delete(persistentProcessId);
 			}
 		}
-		const parked = this._parkedGroups.get(stateKey);
-		if (!parked || parked.length === 0) {
-			return;
+		for (const instanceId of retiringInstanceIds) {
+			const persistentProcessId = this._persistentProcessIdByInstance.get(instanceId);
+			if (persistentProcessId !== undefined && this._instanceIdByPersistentProcessId.get(persistentProcessId) === instanceId) {
+				this._instanceIdByPersistentProcessId.delete(persistentProcessId);
+			}
+			this._persistentProcessIdByInstance.delete(instanceId);
+			this._activeScopeCandidates.delete(instanceId);
+			this._candidateCapturedInstances.delete(instanceId);
+			this._initialCwds.delete(instanceId);
+			this._initialCwdResolvedInstances.delete(instanceId);
+			this._activeFallbackInstances.delete(instanceId);
+			this._stableScopeTracker.retire(instanceId);
 		}
-		// discardGroup が同期で _parkedGroups を書き換えるためコピーを走査する
-		for (const group of [...parked]) {
-			for (const instance of [...group.terminalInstances]) {
+
+		// 台帳削除前にexact ownerとして捕捉したvisible/background/parked instanceだけを破棄する。
+		for (const instance of retiringInstances.values()) {
+			if (!instance.isDisposed) {
 				instance.dispose(TerminalExitReason.User);
 			}
 		}
@@ -326,7 +701,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return;
 		}
 
-		if (this._restoredMapping.size === 0) {
+		if (this._persistentProcessScopes.size === 0) {
 			return;
 		}
 
@@ -339,7 +714,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 
 			this._groupRepositories.set(group, restoredStateKey);
-			this.recordInstanceScopes(group, restoredStateKey);
+			this.recordInstanceScopes(group, restoredStateKey, true);
 			changed = true;
 
 			if (restoredStateKey !== activeStateKey) {
@@ -352,33 +727,37 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	private persistMapping(): void {
-		const entries: ISerializedTerminalRepositoryEntry[] = [];
-		for (const [group, repositoryId] of this._groupRepositories) {
-			for (const instance of group.terminalInstances) {
-				if (typeof instance.persistentProcessId === 'number') {
-					entries.push({ persistentProcessId: instance.persistentProcessId, repositoryId });
-				}
-			}
+		// 初回worktree snapshot前の未知scopeは採用しないが、barrier確定前の別イベントで
+		// storageから失われないよう隔離状態のまま保存対象には残す。今セッション確定値を優先する。
+		const persistedScopes = paradisMergePersistentProcessScopesForStorage(this._quarantinedPersistentProcessScopes, this._persistentProcessScopes);
+		const raw = paradisSerializeTerminalProcessScopeStorage(persistedScopes);
+		if (raw !== undefined) {
+			this.storageService.store(ParadisTerminalWorkspaceScope.MAPPING_STORAGE_KEY, raw, StorageScope.WORKSPACE, StorageTarget.MACHINE);
 		}
-		this.storageService.store(ParadisTerminalWorkspaceScope.MAPPING_STORAGE_KEY, JSON.stringify(entries), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	private loadMapping(): Map<number, string> {
-		const mapping = new Map<number, string>();
 		const raw = this.storageService.get(ParadisTerminalWorkspaceScope.MAPPING_STORAGE_KEY, StorageScope.WORKSPACE);
 		if (!raw) {
-			return mapping;
+			return new Map();
 		}
+		return paradisParseTerminalProcessScopeStorage(raw) ?? new Map();
+	}
 
-		try {
-			const entries: ISerializedTerminalRepositoryEntry[] = JSON.parse(raw);
-			for (const entry of entries) {
-				mapping.set(entry.persistentProcessId, entry.repositoryId);
+	private knownStateKeys(includeWorktrees: boolean): Set<string> {
+		const result = new Set<string>();
+		for (const repository of this.workspaceSwitchService.repositories) {
+			result.add(repository.id);
+			if (!includeWorktrees) {
+				continue;
 			}
-		} catch {
-			// 壊れたデータは無視
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing) {
+					result.add(paradisWorktreeStateKey(worktree.uri));
+				}
+			}
 		}
-		return mapping;
+		return result;
 	}
 }
 

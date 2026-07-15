@@ -706,6 +706,8 @@ export interface ICreateContributedTerminalProfileOptions {
 	location?: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean };
 	cwd?: string | URI;
 	titleTemplate?: string;
+	/** PARA-CODE: Internal scope authority propagated through a contributed profile provider. */
+	paradisTerminalCreationScopeLease?: string;
 }
 
 export enum TerminalLocation {

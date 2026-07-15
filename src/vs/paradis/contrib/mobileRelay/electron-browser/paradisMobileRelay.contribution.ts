@@ -10,7 +10,7 @@ import { localize, localize2 } from '../../../../nls.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
-import { Disposable, DisposableMap, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -49,15 +49,18 @@ import {
 } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
-import { ParadisAgentTerminalHintParser } from './paradisAgentTerminalHints.js';
+import { ParadisAgentTerminalHintParser, paradisShouldAcceptAgentTerminalHint } from '../common/paradisAgentTerminalHints.js';
 import { Channels } from '../common/paradisMobileProtocol.js';
-import { paradisInteractiveAgentCommand } from '../common/paradisAgentCliCommand.js';
+import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { IParadisMobileWindowLease, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
+import { ParadisAgentCommandDeliveryCoordinator, paradisShouldRetireAgentToken } from '../common/paradisAgentCommandLifecycle.js';
+import { ParadisAgentTerminalRecoveryTracker } from '../common/paradisAgentTerminalRecovery.js';
+import { IParadisAgentTerminalHintConsumer, paradisCreateAgentTerminalHintConsumer, paradisCreateTerminalOutputConsumer } from '../common/paradisTerminalOutputHotPath.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
@@ -82,8 +85,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private readonly service: IParadisMobileRelayService;
 	private readonly provider: ParadisMobileWorkspaceProvider;
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
-	private readonly terminalHintListeners = this._register(new DisposableMap<number>());
-	private readonly terminalHintParsers = new Map<number, ParadisAgentTerminalHintParser>();
+	private readonly terminalHintListeners = this._register(new DisposableMap<number, DisposableStore>());
+	private readonly terminalHintConsumers = new Map<number, IParadisAgentTerminalHintConsumer>();
+	private readonly terminalHintTokens = new Map<number, string>();
+	private readonly terminalPaneTokens = new Map<number, string>();
+	private readonly agentCommandsByInstance = new Map<number, { readonly token: string; readonly commandLine: string }>();
+	private agentCommandCoordinator: ParadisAgentCommandDeliveryCoordinator | undefined;
 	private readonly windowLeasePromise: Promise<IParadisMobileWindowLease>;
 	private readonly rendererReadyPromise: Promise<void>;
 	private previousOnlineMobiles = 0;
@@ -109,7 +116,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@ILanguageService languageService: ILanguageService,
 		@IExtensionService extensionService: IExtensionService,
 		@IThemeService themeService: IThemeService,
-		@IParadisPaneTokenService paneTokenService: IParadisPaneTokenService,
+		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@IParadisTerminalIdentityService terminalIdentityService: IParadisTerminalIdentityService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IHostService private readonly hostService: IHostService,
@@ -227,89 +234,93 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// shared process のセッション探索を前倒しするトリガーとして通知する。起動の確定情報には
 		// 使わない (探索側の鮮度ガードで `claude --help` 等の空振りは自然に弾かれる)。
 		// hookがまだ届かない環境 (Codex の hook 未trust等) での検知の主経路になる。
-		const activeAgentCommands = new Map<string, string>();
-		const agentCommandRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
-		this._register({ dispose: () => { for (const timer of agentCommandRetryTimers.values()) { clearTimeout(timer); } agentCommandRetryTimers.clear(); } });
-		const detectAgentCommand = (instance: ITerminalInstance, commandLine: string) => {
-			const normalizedCommandLine = commandLine.trim();
-			const command = paradisInteractiveAgentCommand(normalizedCommandLine);
-			if (command === undefined) { return; }
-			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
-			if (paneToken === undefined) { return; }
-			if (activeAgentCommands.get(paneToken) === normalizedCommandLine) { return; }
-			activeAgentCommands.set(paneToken, normalizedCommandLine);
-			this.provider.setProvisionalAgentPaneToken(paneToken, true);
-			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
-			withCurrentRendererLease(lease => this.service.notifyAgentCliCommand(lease, paneToken, command.agent, command.mode, cwd, command.cwd, command.sessionId)).then(() => {
-				const retry = agentCommandRetryTimers.get(paneToken);
-				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
-			}, err => {
-				this.logService.warn('[paradisMobileRelay] notifyAgentCliCommand failed; retrying while command is active', err);
-				if (activeAgentCommands.get(paneToken) === normalizedCommandLine) { activeAgentCommands.delete(paneToken); }
-				if (!agentCommandRetryTimers.has(paneToken)) {
-					const retry = setTimeout(() => {
-						agentCommandRetryTimers.delete(paneToken);
-						const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
-						if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
-					}, 2_000);
-					agentCommandRetryTimers.set(paneToken, retry);
+		this.agentCommandCoordinator = this._register(new ParadisAgentCommandDeliveryCoordinator({
+			syncRegistry: async () => this.provider.syncAgentPaneRegistry(),
+			onProvisionalChange: (token, active) => {
+				this.provider.setProvisionalAgentPaneToken(token, active);
+				this.updateTerminalHintTracking();
+			},
+			onGenerationEnded: token => {
+				for (const [instanceId, running] of this.agentCommandsByInstance) {
+					if (running.token === token) {
+						this.agentCommandsByInstance.delete(instanceId);
+						this.terminalHintConsumers.get(instanceId)?.reset();
+					}
 				}
-			});
-		};
-		const commandExecuted = this._register(terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandExecuted));
-		this._register(commandExecuted.event(({ instance, data: command }) => {
-			detectAgentCommand(instance, command.command ?? '');
+			},
 		}));
-		for (const instance of terminalService.instances) {
-			const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
-			if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
-		}
+		this._register({
+			dispose: () => {
+				for (const consumer of this.terminalHintConsumers.values()) {
+					consumer.dispose();
+				}
+				this.terminalHintConsumers.clear();
+				this.terminalHintTokens.clear();
+				this.terminalPaneTokens.clear();
+				this.agentCommandsByInstance.clear();
+			}
+		});
+		const detectAgentCommand = (instance: ITerminalInstance, commandLine: string) => {
+			const paneToken = this.provider.getPaneTokenForTerminalHint(instance.instanceId);
+			const running = paradisResolveRunningAgentCommand(commandLine, paneToken);
+			if (running === undefined) { return; }
+			const { paneToken: runningPaneToken, commandLine: normalizedCommandLine, command } = running;
+			const cwd = instance.capabilities.get(TerminalCapability.CommandDetection)?.cwd;
+			this.agentCommandCoordinator?.start(runningPaneToken, normalizedCommandLine, generation => withCurrentRendererLease(lease => this.service.notifyAgentCliCommand(
+				lease, runningPaneToken, generation, normalizedCommandLine, command.agent, command.mode, cwd, command.cwd, command.sessionId,
+			)));
+			this.agentCommandsByInstance.set(instance.instanceId, { token: runningPaneToken, commandLine: normalizedCommandLine });
+			this.terminalPaneTokens.set(instance.instanceId, runningPaneToken);
+		};
+		const finishAgentCommand = (instance: ITerminalInstance, commandLineValue: string) => {
+			const commandLine = commandLineValue.trim();
+			if (paradisInteractiveAgentCommand(commandLine) === undefined) { return; }
+			const running = this.agentCommandsByInstance.get(instance.instanceId);
+			const paneToken = this.provider.getPaneTokenForTerminalHint(instance.instanceId) ?? running?.token;
+			if (paneToken === undefined) { return; }
+			this.agentCommandCoordinator?.finish(paneToken, commandLine, generation => withCurrentRendererLease(lease => this.service.notifyAgentCliCommandFinished(lease, paneToken, generation)));
+		};
+		const recoveryTracker = this._register(new ParadisAgentTerminalRecoveryTracker(
+			() => this.provider.getAllTerminalInstancesForAgentRecovery(),
+			{
+				getAuthorityKey: instance => this.provider.getPaneTokenForTerminalHint(instance.instanceId),
+				onCommandExecuted: detectAgentCommand,
+				onCommandFinished: finishAgentCommand,
+			},
+		));
+		const reconcileTerminalTracking = () => {
+			recoveryTracker.reconcile();
+			this.updateTerminalHintTracking();
+		};
 		// 永続ターミナル再接続ではCommandDetectionよりpane token復元が遅い場合がある。
 		// token割当時に実行中コマンドを再評価し、起動済みAgentの取りこぼしを回収する。
 		this._register(paneTokenService.onDidChange(() => {
-			for (const instance of terminalService.instances) {
-				const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
-				if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
+			for (const [instanceId, token] of this.terminalPaneTokens) {
+				const reverseOwner = paneTokenService.getInstanceForToken(token);
+				if (reverseOwner === instanceId) {
+					continue;
+				}
+				this.terminalPaneTokens.delete(instanceId);
+				this.agentCommandsByInstance.delete(instanceId);
+				this.terminalHintConsumers.get(instanceId)?.reset();
+				if (reverseOwner === undefined) {
+					this.agentCommandCoordinator?.disposeToken(token);
+				}
 			}
+			reconcileTerminalTracking();
 		}));
-		this._register(terminalService.onAnyInstanceAddedCapabilityType(type => {
-			if (type !== TerminalCapability.CommandDetection) { return; }
-			for (const instance of terminalService.instances) {
-				const executingCommand = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
-				if (executingCommand !== undefined) { detectAgentCommand(instance, executingCommand); }
-			}
-		}));
-		const commandFinished = this._register(terminalService.createOnInstanceCapabilityEvent(TerminalCapability.CommandDetection, capability => capability.onCommandFinished));
-		this._register(commandFinished.event(({ instance, data: command }) => {
-			if (paradisInteractiveAgentCommand((command.command ?? '').trim()) === undefined) { return; }
-			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
-			if (paneToken !== undefined) {
-				activeAgentCommands.delete(paneToken);
-				const retry = agentCommandRetryTimers.get(paneToken);
-				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
-				this.provider.setProvisionalAgentPaneToken(paneToken, false);
-				withCurrentRendererLease(lease => this.service.notifyAgentCliCommandFinished(lease, paneToken)).catch(err => this.logService.warn('[paradisMobileRelay] notifyAgentCliCommandFinished failed', err));
-			}
-		}));
-
-		// Omnara旧実装で実績のあるPTY文字列ヒューリスティックは、状態判定には使わず
-		// hook/transcriptで確定したティッカーの経過時間・token数を補う用途だけに限定する。
-		for (const instance of terminalService.instances) {
-			this.trackTerminalHints(instance);
-		}
-		this._register(terminalService.onDidCreateInstance(instance => this.trackTerminalHints(instance)));
+		// panel park/unparkはgroup event、editor park/unparkはscope switch完了、通常生成/破棄は
+		// terminal service eventでexact authority集合へ収束させる。capability add/removeはtrackerが
+		// 各live instanceへ直接一度だけ購読する。
+		this._register(terminalService.onDidCreateInstance(reconcileTerminalTracking));
 		this._register(terminalService.onDidDisposeInstance(instance => {
-			const paneToken = paneTokenService.getTokenForInstance(instance.instanceId);
-			if (paneToken !== undefined) {
-				activeAgentCommands.delete(paneToken);
-				const retry = agentCommandRetryTimers.get(paneToken);
-				if (retry !== undefined) { clearTimeout(retry); agentCommandRetryTimers.delete(paneToken); }
-				this.provider.setProvisionalAgentPaneToken(paneToken, false);
-				withCurrentRendererLease(lease => this.service.notifyAgentCliCommandFinished(lease, paneToken)).catch(() => { /* shared process終了中は無視 */ });
-			}
-			this.terminalHintListeners.deleteAndDispose(instance.instanceId);
-			this.terminalHintParsers.delete(instance.instanceId);
+			this.cleanupTerminalTracking(instance);
+			reconcileTerminalTracking();
 		}));
+		this._register(terminalGroupService.onDidChangeGroups(reconcileTerminalTracking));
+		this._register(workspaceSwitchService.onDidSwitchScope(reconcileTerminalTracking));
+		this._register(agentStatusStore.onDidChangeAgentStatuses(() => this.updateTerminalHintTracking()));
+		reconcileTerminalTracking();
 
 		// WebRTCミラーのストリーマ（browser チャネルの webrtc-* シグナリングを処理）。
 		const webrtcStreamer = this._register(new ParadisMobileWebrtcStreamer(
@@ -366,8 +377,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_MOBILE_ENABLED_KEY)) {
-				this.service.setEnabled(this.isEnabled()).catch(err => this.logService.warn('[paradisMobileRelay] setEnabled failed', err));
+				const enabled = this.isEnabled();
+				this.service.setEnabled(enabled).catch(err => this.logService.warn('[paradisMobileRelay] setEnabled failed', err));
+				if (!enabled) {
+					this.provider.detachAll();
+				}
 				this.syncAgentLiveOptions();
+				this.updateTerminalHintTracking();
 				// 有効/無効の切り替えは shared process の状態変化を待たずに即座に表示へ反映する
 				// （無効化直後の項目消去・有効化直後の項目表示を確実にするため）。
 				this.service.getStatus().then(status => this.renderStatusbar(status)).catch(() => { /* ignore */ });
@@ -398,21 +414,61 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		return this.rendererReadyPromise.then(() => this.windowLeasePromise).then(callback);
 	}
 
-	private trackTerminalHints(instance: ITerminalInstance): void {
-		if (this.terminalHintListeners.has(instance.instanceId)) {
+	private updateTerminalHintTracking(): void {
+		const desired = new Map<number, { readonly instance: ITerminalInstance; readonly token: string }>();
+		if (this.isEnabled()) {
+			for (const instance of this.provider.getAllTerminalInstancesForAgentRecovery()) {
+				const token = this.provider.getPaneTokenForTerminalHint(instance.instanceId);
+				if (token !== undefined && paradisShouldAcceptAgentTerminalHint(true, token, this.provider.isTerminalHintActive(token))) {
+					desired.set(instance.instanceId, { instance, token });
+				}
+			}
+		}
+		for (const instanceId of [...this.terminalHintListeners.keys()]) {
+			if (desired.get(instanceId)?.token !== this.terminalHintTokens.get(instanceId)) {
+				this.stopTerminalHints(instanceId);
+			}
+		}
+		for (const { instance, token } of desired.values()) {
+			this.trackTerminalHints(instance, token);
+		}
+	}
+
+	private trackTerminalHints(instance: ITerminalInstance, paneToken: string): void {
+		if (this.terminalHintListeners.has(instance.instanceId) && this.terminalHintTokens.get(instance.instanceId) === paneToken) {
 			return;
 		}
+		this.stopTerminalHints(instance.instanceId);
 		const parser = new ParadisAgentTerminalHintParser();
-		this.terminalHintParsers.set(instance.instanceId, parser);
-		this.terminalHintListeners.set(instance.instanceId, instance.onData(data => {
-			if (!this.isEnabled()) {
-				return;
-			}
-			const hint = parser.accept(data);
-			if (hint !== undefined) {
-				this.withCurrentRendererLease(lease => this.service.notifyAgentTerminalHint(lease, instance.instanceId, hint)).catch(err => this.logService.trace('[paradisMobileRelay] terminal hint failed', String(err)));
-			}
-		}));
+		this.terminalHintTokens.set(instance.instanceId, paneToken);
+		const store = new DisposableStore();
+		const hintConsumer = paradisCreateAgentTerminalHintConsumer(parser, hint => {
+			this.withCurrentRendererLease(lease => this.service.notifyAgentTerminalHint(lease, instance.instanceId, hint)).catch(err => this.logService.trace('[paradisMobileRelay] terminal hint failed', String(err)));
+		});
+		this.terminalHintConsumers.set(instance.instanceId, hintConsumer);
+		store.add(hintConsumer);
+		store.add(instance.onData(paradisCreateTerminalOutputConsumer(undefined, hintConsumer.accept)!));
+		store.add(instance.onDisposed(() => this.cleanupTerminalTracking(instance)));
+		this.terminalHintListeners.set(instance.instanceId, store);
+	}
+
+	private stopTerminalHints(instanceId: number): void {
+		this.terminalHintTokens.delete(instanceId);
+		this.terminalHintListeners.deleteAndDispose(instanceId);
+		this.terminalHintConsumers.delete(instanceId);
+	}
+
+	private cleanupTerminalTracking(instance: ITerminalInstance): void {
+		const instanceId = instance.instanceId;
+		const paneToken = this.terminalPaneTokens.get(instanceId)
+			?? this.agentCommandsByInstance.get(instanceId)?.token
+			?? this.paneTokenService.getTokenForInstance(instanceId);
+		if (paneToken !== undefined && paradisShouldRetireAgentToken(instanceId, this.paneTokenService.getInstanceForToken(paneToken))) {
+			this.agentCommandCoordinator?.disposeToken(paneToken);
+		}
+		this.agentCommandsByInstance.delete(instanceId);
+		this.terminalPaneTokens.delete(instanceId);
+		this.stopTerminalHints(instanceId);
 	}
 
 	private async initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> {

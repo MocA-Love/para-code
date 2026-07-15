@@ -45,6 +45,20 @@ suite('ParadisMobilePaneRegistry', () => {
 		assert.strictEqual(registry.ownerOf('pane', 1), undefined);
 	});
 
+	test('token ownershipをmissing・ambiguous・ownedに分類する', () => {
+		const registry = new ParadisMobilePaneRegistry();
+		assert.deepStrictEqual(registry.ownershipOf('missing'), { kind: 'missing' });
+
+		registry.syncWindow(1, 'one', 1, 1, [{ terminalId: 1, token: 'pane' }]);
+		assert.deepStrictEqual(registry.ownershipOf('pane'), {
+			kind: 'owned',
+			owner: { windowId: 1, windowSession: 'one', rendererGeneration: 1, terminalId: 1, token: 'pane' },
+		});
+
+		registry.syncWindow(2, 'two', 1, 1, [{ terminalId: 2, token: 'pane' }]);
+		assert.deepStrictEqual(registry.ownershipOf('pane'), { kind: 'ambiguous' });
+	});
+
 	test('新世代の後から届いた旧世代syncとdisposeを拒否する', () => {
 		const registry = new ParadisMobilePaneRegistry();
 		registry.syncWindow(1, 'new', 2, 1, [{ terminalId: 2, token: 'new-pane' }]);

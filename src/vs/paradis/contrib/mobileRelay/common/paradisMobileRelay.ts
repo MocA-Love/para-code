@@ -18,6 +18,7 @@ import { Event } from '../../../../base/common/event.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ChannelId } from './paradisMobileProtocol.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
+import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
 
 // ---- 設定キー ----
 
@@ -246,9 +247,9 @@ export interface IParadisMobileRelayService {
 	 * 前倒しするトリガーとしてのみ使う (実在する新しい transcript の発見をもって確定するため、
 	 * `claude --help` のような空振りは誤検知にならない)。
 	 */
-	notifyAgentCliCommand(lease: IParadisMobileWindowLease, paneToken: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<void>;
+	notifyAgentCliCommand(lease: IParadisMobileWindowLease, paneToken: string, generation: number, commandLine: string, agent: 'claude' | 'codex', mode: 'new' | 'resume' | 'fork', cwd: string | undefined, commandCwd?: string, sessionId?: string): Promise<ParadisAgentCommandDeliveryResult>;
 	/** 対話型Agent CLIが終了した。TUI内resume監視と一時状態を解除する。 */
-	notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string): Promise<void>;
+	notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number): Promise<ParadisAgentCommandDeliveryResult>;
 
 	/** 実験的Codex daemon購読の設定をshared processへ同期する。 */
 	setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void>;

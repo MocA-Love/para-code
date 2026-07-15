@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
+import { paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 suite('ParadisMobileAgentChat', () => {
@@ -26,6 +26,22 @@ suite('ParadisMobileAgentChat', () => {
 			paradisConfirmedAgentPaneTokens(['window-2-pane-1'], ['window-1-pane-1', 'window-2-pane-1']),
 			['window-2-pane-1'],
 		);
+	});
+
+	test('validates each mobile agent inbound shape before dispatch', () => {
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'attach', id: 1, token: 'pane-1', epoch: 'epoch-1', afterRev: -1 }), true);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'model-catalog', id: 1, requestId: 'request-1' }), true);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'settings-update', id: 1, requestId: 'request-1', model: 'gpt-5', effort: 'high' }), true);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'activity-detail', id: 1, requestId: 'request-1', epoch: 'epoch-1', activityId: 'agent-1' }), true);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'action/answerQuestion', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'question-1', answers: [{ kind: 'multi', indices: [0, 2] }] }), true);
+
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'attach', id: 1, epoch: 1 }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'attach', id: 1, afterRev: -2 }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'model-catalog', id: 1 }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'settings-update', id: 1, requestId: 'request-1', model: 'gpt-5', effort: 3 }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'activity-detail', id: 1, requestId: 'request-1', epoch: 'epoch-1' }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'action/answerQuestion', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'question-1', answers: [{ kind: 'multi', indices: [0, '2'] }] }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'unknown', id: 1 }), false);
 	});
 
 	test('keeps the Codex thread ID discovered from rollout session metadata', () => {
