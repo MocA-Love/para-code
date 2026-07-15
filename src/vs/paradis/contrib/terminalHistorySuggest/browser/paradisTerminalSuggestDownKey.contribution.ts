@@ -32,13 +32,13 @@ import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '
 import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ICommandDetectionCapability, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
-import { IPromptInputModelState, PromptInputState } from '../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { ITerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { registerTerminalContribution, type ITerminalContributionContext } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
 import { TerminalSuggestCommandId } from '../../../../workbench/contrib/terminalContrib/suggest/common/terminal.suggest.js';
 import { TerminalSuggestSettingId } from '../../../../workbench/contrib/terminalContrib/suggest/common/terminalSuggestConfiguration.js';
 import { SimpleSuggestContext } from '../../../../workbench/services/suggest/browser/simpleSuggestWidget.js';
+import { paradisIsTerminalPromptSuggestEligible } from '../common/paradisTerminalSuggestEligibility.js';
 
 /**
  * Fork-only context key: whether the active terminal's prompt input (excluding ghost text) is
@@ -80,22 +80,21 @@ class ParadisTerminalPromptTrackerContribution extends Disposable implements ITe
 	private _attach(commandDetection: ICommandDetectionCapability): void {
 		const model = commandDetection.promptInputModel;
 		const store = new DisposableStore();
-		store.add(model.onDidStartInput(e => this._update(e)));
-		store.add(model.onDidChangeInput(e => this._update(e)));
-		// コマンド実行が始まったら必ず false へ(実行中の↓を奪わない)
-		store.add(model.onDidFinishInput(() => this._promptNotEmptyContextKey.set(false)));
+		const update = () => this._update(commandDetection);
+		store.add(model.onDidStartInput(update));
+		store.add(model.onDidChangeInput(update));
+		store.add(model.onDidFinishInput(update));
+		store.add(commandDetection.onCommandExecuted(update));
+		store.add(commandDetection.onCommandFinished(update));
 		this._inputListeners.value = store;
-		if (model.state === PromptInputState.Execute) {
-			this._promptNotEmptyContextKey.set(false);
-		} else {
-			this._update(model);
-		}
+		this._update(commandDetection);
 	}
 
-	private _update(state: IPromptInputModelState): void {
-		// ghost text(シェルのautosuggest表示)は実入力ではないので切り落として判定する
-		const value = state.ghostTextIndex === -1 ? state.value : state.value.substring(0, state.ghostTextIndex);
-		this._promptNotEmptyContextKey.set(value.trim().length > 0);
+	private _update(commandDetection: ICommandDetectionCapability): void {
+		this._promptNotEmptyContextKey.set(paradisIsTerminalPromptSuggestEligible(
+			commandDetection.promptInputModel,
+			commandDetection.executingCommand,
+		));
 	}
 }
 registerTerminalContribution(ParadisTerminalPromptTrackerContribution.ID, ParadisTerminalPromptTrackerContribution);
