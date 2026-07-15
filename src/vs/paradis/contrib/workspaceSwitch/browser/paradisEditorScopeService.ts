@@ -17,14 +17,14 @@ import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/w
 import { EditorInputCapabilities, EditorsOrder, GroupIdentifier, SaveReason } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../../../workbench/common/editor/sideBySideEditorInput.js';
-import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkingCopy, IWorkingCopyIdentifier } from '../../../../workbench/services/workingCopy/common/workingCopy.js';
 import { IWorkingCopyBackupService } from '../../../../workbench/services/workingCopy/common/workingCopyBackup.js';
 import { WorkingCopyBackupRestoreDecision, IWorkingCopyBackupRestoreRouter } from '../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { IWorkingCopyEditorService } from '../../../../workbench/services/workingCopy/common/workingCopyEditorService.js';
 import { IWorkingCopyService } from '../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { IParadisEditorScopeService, ParadisWorkingCopyOwnerLedger, ParadisWorkingCopyOwnerLedgerLoadState } from '../common/paradisEditorScope.js';
-import { PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../common/paradisWorkspaceSwitch.js';
 
 interface IParadisLiveEditorPlacement {
 	readonly editor: EditorInput;
@@ -120,6 +120,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		@IWorkingCopyEditorService private readonly workingCopyEditorService: IWorkingCopyEditorService,
 		@IWorkingCopyBackupRestoreRouter private readonly backupRestoreRouter: IWorkingCopyBackupRestoreRouter,
 		@IWorkingCopyBackupService private readonly workingCopyBackupService: IWorkingCopyBackupService,
+		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@IDialogService private readonly dialogService: IDialogService,
 		@ILogService private readonly logService: ILogService,
@@ -144,6 +145,11 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		for (const workingCopy of this.workingCopyService.modifiedWorkingCopies) {
 			this.observeModifiedWorkingCopy(workingCopy);
 		}
+		void this.auxiliaryWindowScopeService.initializationBarrier.then(() => {
+			for (const workingCopy of this.workingCopyService.modifiedWorkingCopies) {
+				this.observeModifiedWorkingCopy(workingCopy);
+			}
+		});
 	}
 
 	captureScope(stateKey: string, saveSerializedState: (excludedEditors: readonly EditorInput[]) => void): void {
@@ -154,7 +160,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			throw new Error('Editor input retention is not available');
 		}
 
-		const { modifiedEditorOwners, placements } = this.collectVisibleLiveEditorState(true);
+		const { modifiedEditorOwners, placements } = this.collectVisibleLiveEditorState(true, stateKey, true);
 		const excludedEditors = new Set(placements.map(placement => placement.editor));
 
 		for (const editor of excludedEditors) {
@@ -176,6 +182,50 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			}
 
 			this.liveWorkingSets.set(stateKey, { placements, retentions });
+			for (const placement of placements) {
+				this.editorGroupsService.getGroup(placement.groupId)?.detachEditor?.(placement.editor);
+			}
+		} catch (error) {
+			if (!this.liveWorkingSets.has(stateKey)) {
+				retentions.dispose();
+			}
+			throw error;
+		}
+	}
+
+	captureAuxiliaryPartOnClose(stateKey: string, part: IEditorPart): void {
+		if (!this.editorGroupsService.retainEditor) {
+			throw new Error('Editor input retention is not available');
+		}
+
+		const { modifiedEditorOwners, placements } = this.collectVisibleLiveEditorState(true, undefined, false, part);
+		if (placements.length === 0) {
+			return;
+		}
+		const editors = new Set(placements.map(placement => placement.editor));
+		for (const editor of editors) {
+			for (const workingCopy of modifiedEditorOwners.get(editor) ?? []) {
+				this.claimWorkingCopy(workingCopy, stateKey);
+			}
+		}
+
+		const retentions = new DisposableStore();
+		try {
+			for (const editor of editors) {
+				retentions.add(this.editorGroupsService.retainEditor(editor));
+			}
+
+			const existing = this.liveWorkingSets.get(stateKey);
+			if (existing) {
+				existing.retentions.add(retentions);
+				this.liveWorkingSets.set(stateKey, {
+					placements: [...existing.placements, ...placements],
+					retentions: existing.retentions
+				});
+			} else {
+				this.liveWorkingSets.set(stateKey, { placements, retentions });
+			}
+
 			for (const placement of placements) {
 				this.editorGroupsService.getGroup(placement.groupId)?.detachEditor?.(placement.editor);
 			}
@@ -289,7 +339,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		if (this.liveWorkingSets.has(stateKey)) {
 			return true;
 		}
-		if (stateKey === this._activeStateKey && this.collectVisibleLiveEditorState(false).placements.length > 0) {
+		if (this.collectVisibleLiveEditorState(false, stateKey).placements.length > 0) {
 			return true;
 		}
 
@@ -303,8 +353,10 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		}
 
 		const liveWorkingSet = this.liveWorkingSets.get(stateKey);
-		const retirementPlacements = liveWorkingSet?.placements
-			?? (stateKey === this._activeStateKey ? this.collectVisibleLiveEditorState(false).placements : []);
+		const visiblePlacements = this.collectVisibleLiveEditorState(false, stateKey).placements;
+		const retirementPlacements = liveWorkingSet
+			? [...liveWorkingSet.placements, ...visiblePlacements]
+			: visiblePlacements;
 		const editorsToRevert: IParadisPreparedEditorRevert[] = [];
 		if (retirementPlacements.length > 0) {
 			const editors = [...new Set(retirementPlacements.map(placement => placement.editor))];
@@ -452,12 +504,24 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		return result;
 	}
 
-	private collectVisibleLiveEditorState(requireDetach: boolean): { readonly modifiedEditorOwners: Map<EditorInput, IWorkingCopy[]>; readonly placements: readonly IParadisLiveEditorPlacement[] } {
+	private collectVisibleLiveEditorState(requireDetach: boolean, stateKey?: string, mainPartOnly = false, exactPart?: IEditorPart): { readonly modifiedEditorOwners: Map<EditorInput, IWorkingCopy[]>; readonly placements: readonly IParadisLiveEditorPlacement[] } {
 		const modifiedEditorOwners = this.collectModifiedEditorOwners();
 		const modifiedEditors = new Set(modifiedEditorOwners.keys());
 		const placements: IParadisLiveEditorPlacement[] = [];
 
 		for (const part of this.editorGroupsService.parts) {
+			if (exactPart && part !== exactPart) {
+				continue;
+			}
+			if (mainPartOnly && part !== this.editorGroupsService.mainPart) {
+				continue;
+			}
+			if (stateKey !== undefined && !mainPartOnly) {
+				const partScope = this.auxiliaryWindowScopeService.resolvePart(part);
+				if (partScope.kind !== 'managed' || partScope.stateKey !== stateKey) {
+					continue;
+				}
+			}
 			for (const group of part.groups) {
 				for (const [index, editor] of group.getEditors(EditorsOrder.SEQUENTIAL).entries()) {
 					if (!paradisEditorRequiresScopedLiveState(editor, modifiedEditors)) {
@@ -487,14 +551,21 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 	}
 
 	private observeModifiedWorkingCopy(workingCopy: IWorkingCopy): void {
-		if (!workingCopy.isModified() || this._isSwitching || this._activeStateKey === undefined) {
+		if (!workingCopy.isModified() || this._isSwitching) {
 			return;
 		}
-		if (!this.workingCopyEditorService.findEditor(workingCopy)) {
+		const editorIdentifier = this.workingCopyEditorService.findEditor(workingCopy);
+		if (!editorIdentifier) {
 			return;
 		}
-
-		this.claimWorkingCopy(workingCopy, this._activeStateKey);
+		const group = this.editorGroupsService.getGroup(editorIdentifier.groupId);
+		if (!group) {
+			return;
+		}
+		const scope = this.auxiliaryWindowScopeService.resolveGroup(group);
+		if (scope.kind === 'managed' && this.ownerLedger.ownerOf(workingCopy) === undefined) {
+			this.claimWorkingCopy(workingCopy, scope.stateKey);
+		}
 	}
 
 	private claimWorkingCopy(identifier: IWorkingCopyIdentifier, stateKey: string): void {

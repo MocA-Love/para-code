@@ -9,6 +9,7 @@
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -34,12 +35,14 @@ import { ITerminalEditorService, ITerminalService } from '../../../../workbench/
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisEditorSplitTerminalService } from '../../../../workbench/services/editor/common/paradisEditorSplitTerminalService.js';
+import { paradisRegisterAuxiliaryWindowCloseHandler, paradisRegisterAuxiliaryWindowRestoreHandler } from '../../../../workbench/services/editor/common/paradisAuxiliaryWindowRestore.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
-import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
+import { ParadisAuxiliaryWindowScopeService } from './paradisAuxiliaryWindowScopeService.js';
 import { ParadisEditorSplitTerminalService } from './paradisEditorSplitTerminalService.js';
 import { ParadisEditorScopeService } from './paradisEditorScopeService.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
@@ -51,6 +54,7 @@ import './paradisScmRepoScope.contribution.js';
 
 registerSingleton(IParadisWorkspaceSwitchService, ParadisWorkspaceSwitchService, InstantiationType.Delayed);
 registerSingleton(IParadisEditorScopeService, ParadisEditorScopeService, InstantiationType.Delayed);
+registerSingleton(IParadisAuxiliaryWindowScopeService, ParadisAuxiliaryWindowScopeService, InstantiationType.Delayed);
 registerSingleton(IParadisWorktreeService, ParadisWorktreeService, InstantiationType.Delayed);
 registerSingleton(IParadisAgentStatusStore, ParadisAgentStatusStore, InstantiationType.Delayed);
 registerSingleton(IParadisEditorSplitTerminalService, ParadisEditorSplitTerminalService, InstantiationType.Delayed);
@@ -58,10 +62,68 @@ registerSingleton(IParadisEditorSplitTerminalService, ParadisEditorSplitTerminal
 class ParadisEditorScopeStarter implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisEditorScopeStarter';
 
-	constructor(@IParadisEditorScopeService _editorScopeService: IParadisEditorScopeService) { }
+	constructor(
+		@IParadisEditorScopeService _editorScopeService: IParadisEditorScopeService,
+		@IParadisAuxiliaryWindowScopeService _auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+	) { }
 }
 
 registerWorkbenchContribution2(ParadisEditorScopeStarter.ID, ParadisEditorScopeStarter, WorkbenchPhase.BlockRestore);
+
+class ParadisAuxiliaryWindowRestoreContribution extends Disposable {
+	static readonly ID = 'workbench.contrib.paradisAuxiliaryWindowRestore';
+
+	constructor(
+		@IParadisAuxiliaryWindowScopeService auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
+		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IEditorGroupsService editorGroupsService: IEditorGroupsService,
+		@INotificationService notificationService: INotificationService,
+		@IParadisEditorScopeService editorScopeService: IParadisEditorScopeService,
+	) {
+		super();
+		this._register(paradisRegisterAuxiliaryWindowCloseHandler(part => {
+			const scope = auxiliaryWindowScopeService.resolvePart(part);
+			if (scope.kind === 'pending') {
+				return localize('paradis.auxiliaryWindow.pendingClose', "The original space for this window is still being restored.");
+			}
+			if (scope.kind !== 'managed' || scope.stateKey === workspaceSwitchService.activeStateKey) {
+				return undefined;
+			}
+			try {
+				editorScopeService.captureAuxiliaryPartOnClose(scope.stateKey, part);
+				return undefined;
+			} catch {
+				return localize('paradis.auxiliaryWindow.closeProtectionFailed', "The window could not be closed without risking unsaved data.");
+			}
+		}));
+		this._register(paradisRegisterAuxiliaryWindowRestoreHandler(async part => {
+			const scope = auxiliaryWindowScopeService.resolvePart(part);
+			if (scope.kind === 'unscoped') {
+				return false;
+			}
+			if (scope.kind === 'pending') {
+				notificationService.warn(localize('paradis.auxiliaryWindow.pendingRestore', "The original space for this window is still being restored. Try again shortly."));
+				return true;
+			}
+
+			try {
+				if (workspaceSwitchService.activeStateKey !== scope.stateKey) {
+					await workspaceSwitchService.switchToStateKey(scope.stateKey);
+				}
+				if (!part.mergeAllGroups(editorGroupsService.mainPart.activeGroup)) {
+					throw new Error('Failed to merge the auxiliary editor groups');
+				}
+			} catch (error) {
+				notificationService.error(localize('paradis.auxiliaryWindow.restoreFailed', "The window could not be returned to its original space. Its contents remain open in the separate window."));
+				return true;
+			}
+
+			return true;
+		}));
+	}
+}
+
+registerWorkbenchContribution2(ParadisAuxiliaryWindowRestoreContribution.ID, ParadisAuxiliaryWindowRestoreContribution, WorkbenchPhase.AfterRestored);
 
 // worktree 自動同期の Para Code 設定 (セクションは windowTransparency 側と同じ 'paradis' に相乗り)
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
