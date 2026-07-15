@@ -31,14 +31,17 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { WorkbenchObjectTree } from '../../../../platform/list/browser/listService.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { IParadisDiffStat, IParadisPrStatus, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
@@ -336,6 +339,7 @@ export class ParadisWorkspacesView extends ViewPane {
 	/** worktree の uri.fsPath → 現在ブランチに紐づく PR 状態。ポーリングでのみ更新する (refreshPrStatuses 参照) */
 	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
 	private readonly _prStatusScheduler: RunOnceScheduler;
+	private readonly _collapsedRepositoryState: ParadisCollapsedRepositoryStateController;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -355,11 +359,14 @@ export class ParadisWorkspacesView extends ViewPane {
 		@ICommandService private readonly commandService: ICommandService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IStorageService private readonly storageService: IStorageService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
 		this._diffStatsScheduler = this._register(new RunOnceScheduler(() => this.refreshDiffStats(), DIFF_STATS_POLL_INTERVAL_MS));
 		this._prStatusScheduler = this._register(new RunOnceScheduler(() => this.refreshPrStatuses(), PR_STATUS_POLL_INTERVAL_MS));
+		this._collapsedRepositoryState = this._register(new ParadisCollapsedRepositoryStateController(this.storageService, this.logService));
 
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.updateTree()));
@@ -429,6 +436,14 @@ export class ParadisWorkspacesView extends ViewPane {
 					? this.buildWorktreeContextMenuActions(element)
 					: this.buildRepositoryContextMenuActions(element)
 			});
+		}));
+
+		this._register(this.tree.onDidChangeCollapseState(e => {
+			const element = e.node.element;
+			if (!element) {
+				return;
+			}
+			this._collapsedRepositoryState.recordTreeCollapse(element, e.node.collapsed);
 		}));
 
 		this.updateTree();
@@ -557,6 +572,9 @@ export class ParadisWorkspacesView extends ViewPane {
 			return;
 		}
 
+		const repositoryIds = new Set(this.workspaceSwitchService.repositories.map(repository => repository.id));
+		this._collapsedRepositoryState.removeStaleRepositories(repositoryIds);
+
 		const elements: IObjectTreeElement<WorkspaceTreeElement>[] = this.workspaceSwitchService.repositories.map(repository => {
 			const worktrees = this.worktreeService.getWorktrees(repository.id);
 			// リポジトリ行は純粋なグルーピング見出しにしたため、main checkout (リポジトリ本体) も
@@ -574,7 +592,9 @@ export class ParadisWorkspacesView extends ViewPane {
 				element: repository,
 				children: children.map(worktree => ({ element: worktree })),
 				collapsible: true,
-				collapsed: ObjectTreeElementCollapseState.PreserveOrExpanded
+				collapsed: this._collapsedRepositoryState.isRepositoryCollapsed(repository.id)
+					? ObjectTreeElementCollapseState.PreserveOrCollapsed
+					: ObjectTreeElementCollapseState.PreserveOrExpanded
 			};
 		});
 		this.tree.setChildren(null, elements);
