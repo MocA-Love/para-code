@@ -7,13 +7,33 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
+import type { AddressInfo } from 'net';
 import { tmpdir } from 'os';
+import { promisify } from 'util';
 import { join } from '../../../../../base/common/path.js';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, paradisManagedAgentHookCommand } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+
+const execFileAsync = promisify(execFile);
+
+async function writeNotifyFixture(root: string): Promise<string> {
+	const scriptPath = join(root, 'notify.sh');
+	await fs.writeFile(scriptPath, paradisGetNotifyScriptContent(), { mode: 0o755 });
+	await fs.chmod(scriptPath, 0o755);
+	return scriptPath;
+}
+
+async function runPipedNotifyScript(scriptPath: string, payloadPath: string, env: NodeJS.ProcessEnv): Promise<void> {
+	await execFileAsync('/bin/bash', ['-o', 'pipefail', '-c', 'cat "$PAYLOAD_FILE" | "$HOOK_SCRIPT"'], {
+		env: { PATH: process.env['PATH'], HOOK_SCRIPT: scriptPath, PAYLOAD_FILE: payloadPath, ...env },
+		timeout: 10_000,
+	});
+}
 
 suite('ParadisAgentHooksSetup', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -43,6 +63,155 @@ suite('ParadisAgentHooksSetup', () => {
 
 	test('marks managed commands with the current schema', () => {
 		assert.ok(paradisManagedAgentHookCommand().includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
+	});
+
+	test('migrates schema 1 managed hooks to schema 2 without removing user hooks', () => {
+		const schema1Command = '[ -x "$HOME/.para-code/hooks/notify-v1.sh" ] && "$HOME/.para-code/hooks/notify-v1.sh" || true';
+		const userHook = { type: 'command', command: '/tmp/user-hook.sh' };
+		const existing = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: schema1Command }, userHook] }] } });
+		const merged = paradisMergeAgentHooksJson(existing, [{ eventName: 'Stop' }]);
+
+		assert.strictEqual(PARADIS_AGENT_HOOK_SCHEMA_VERSION, 2);
+		assert.ok(merged !== undefined);
+		const parsed = JSON.parse(merged) as { hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
+		assert.deepStrictEqual(parsed.hooks['Stop'].flatMap(definition => definition.hooks.map(hook => hook.command)), [
+			'/tmp/user-hook.sh',
+			paradisManagedAgentHookCommand(),
+		]);
+		assert.ok(!merged.includes('notify-v1.sh'));
+	});
+
+	test('drains a large stdin payload before exiting outside Para Code', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		this.timeout(15_000);
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hook-drain-'));
+		try {
+			const scriptPath = await writeNotifyFixture(root);
+			const payloadPath = join(root, 'large-hook.json');
+			await fs.writeFile(payloadPath, Buffer.alloc(8 * 1024 * 1024, 0x78));
+
+			await runPipedNotifyScript(scriptPath, payloadPath, {});
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('falls back to a bodyless request after draining an oversized active payload', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		this.timeout(15_000);
+		const { createServer } = await import('http');
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hook-oversize-'));
+		const requests: { method: string | undefined; bodyBytes: number }[] = [];
+		const server = createServer((request, response) => {
+			let bodyBytes = 0;
+			request.on('data', chunk => bodyBytes += Buffer.byteLength(chunk));
+			request.on('end', () => {
+				requests.push({ method: request.method, bodyBytes });
+				response.writeHead(200, { 'Content-Type': 'application/json' });
+				response.end('{"ok":true}');
+			});
+		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once('error', reject);
+				server.listen(0, '127.0.0.1', resolve);
+			});
+			const port = (server.address() as AddressInfo).port;
+			const portFilePath = join(root, 'mcp-port.json');
+			await fs.writeFile(portFilePath, JSON.stringify({ port }));
+			const scriptPath = await writeNotifyFixture(root);
+			const payloadPath = join(root, 'oversized-hook.json');
+			const tempDirectory = join(root, 'tmp');
+			const binDirectory = join(root, 'bin');
+			const capturedSpoolSizePath = join(root, 'captured-spool-size.txt');
+			await fs.mkdir(tempDirectory);
+			await fs.mkdir(binDirectory);
+			const wcPath = join(binDirectory, 'wc');
+			await fs.writeFile(wcPath, [
+				'#!/bin/sh',
+				'BYTES=$(/usr/bin/wc -c)',
+				'printf \'%s\' "$BYTES" >"$CAPTURED_SPOOL_SIZE"',
+				'printf \'%s\' "$BYTES"',
+				'',
+			].join('\n'), { mode: 0o755 });
+			await fs.chmod(wcPath, 0o755);
+			const prefix = '{"hook_event_name":"PostToolUse","padding":"';
+			await fs.writeFile(payloadPath, `${prefix}${'x'.repeat(4 * 1024 * 1024)}"}`);
+
+			await runPipedNotifyScript(scriptPath, payloadPath, {
+				[PARADIS_PANE_TOKEN_ENV_VAR]: 'pane-token',
+				[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
+				TMPDIR: tempDirectory,
+				PATH: `${binDirectory}:${process.env['PATH']}`,
+				CAPTURED_SPOOL_SIZE: capturedSpoolSizePath,
+			});
+
+			assert.deepStrictEqual(requests, [{ method: 'GET', bodyBytes: 0 }]);
+			assert.strictEqual(Number(await fs.readFile(capturedSpoolSizePath, 'utf8')), 4 * 1024 * 1024 + 1, 'the spool must retain only enough bytes to detect overflow');
+			assert.deepStrictEqual(await fs.readdir(tempDirectory), [], 'the private spool file must be removed on exit');
+		} finally {
+			if (server.listening) {
+				await new Promise<void>(resolve => server.close(() => resolve()));
+			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('preserves a small active payload as an exact POST body', async function () {
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		this.timeout(15_000);
+		const { createServer } = await import('http');
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hook-post-'));
+		let received: { method: string | undefined; body: string } | undefined;
+		const server = createServer((request, response) => {
+			const chunks: Buffer[] = [];
+			request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+			request.on('end', () => {
+				received = { method: request.method, body: Buffer.concat(chunks).toString('utf8') };
+				response.writeHead(200, { 'Content-Type': 'application/json' });
+				response.end('{"ok":true}');
+			});
+		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once('error', reject);
+				server.listen(0, '127.0.0.1', resolve);
+			});
+			const portFilePath = join(root, 'mcp-port.json');
+			await fs.writeFile(portFilePath, JSON.stringify({ port: (server.address() as AddressInfo).port }));
+			const scriptPath = await writeNotifyFixture(root);
+			const payloadPath = join(root, 'small-hook.json');
+			const payload = '{"hook_event_name":"Stop","message":"完了"}';
+			await fs.writeFile(payloadPath, payload);
+
+			await runPipedNotifyScript(scriptPath, payloadPath, {
+				[PARADIS_PANE_TOKEN_ENV_VAR]: 'pane-token',
+				[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
+			});
+
+			assert.deepStrictEqual(received, { method: 'POST', body: payload });
+		} finally {
+			if (server.listening) {
+				await new Promise<void>(resolve => server.close(() => resolve()));
+			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('PowerShell hook drains stdin on inactive exits and uses the oversized fallback', () => {
+		const script = paradisGetNotifyScriptContentPs1();
+		assert.match(script, /function Drain-StandardInput/);
+		assert.match(script, /Drain-StandardInput\r\n\s*exit 0/);
+		assert.match(script, /function Read-BoundedStandardInput/);
+		assert.match(script, /\$captureLimit = 4194305/);
+		assert.match(script, /if \(\$bodyBytes\.Length -gt 4194304\)/);
+		assert.match(script, /Invoke-RestMethod -Method Get/);
 	});
 
 	test('does not let an older process replace newer managed hooks', () => {

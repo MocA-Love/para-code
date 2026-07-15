@@ -16,7 +16,10 @@
  * このパスが「当fork管理のhookである」ことを識別するマーカーを兼ねる
  * (~/.claude/settings.json / ~/.codex/hooks.json の冪等マージ時)。
  */
-export const PARADIS_AGENT_HOOK_SCHEMA_VERSION = 1;
+export const PARADIS_AGENT_HOOK_SCHEMA_VERSION = 2;
+
+/** notify scriptとshared processで共有するraw hook JSONの受信上限。 */
+export const PARADIS_AGENT_HOOK_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 /** スキーマ版をファイル名に含め、旧Para Codeが新しいhookを管理対象として削除しないようにする。 */
 export const PARADIS_NOTIFY_HOOK_RELATIVE_PATH = `.para-code/hooks/notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`;
