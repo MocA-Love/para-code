@@ -14,8 +14,8 @@
 //
 // 不変条件:
 //   - ブラウザレベル接続（/devtools/browser/…）: クライアントはバインド済みセット内の
-//     targetIdしか観測できない。範囲外への Target.attachToTarget / activateTarget
-//     等はCDPエラーで拒否。Target.createTarget は常に拒否（Para Codeでは
+//     targetIdしか観測できない。Target.attachToTarget は範囲内だけ許可し、
+//     activateTarget / createTarget は常に拒否（Para Codeでは
 //     MCPからの新規タブ生成を提供しない）。Target.closeTarget / Page.close も常に拒否
 //     （共有中のWebContentsView自体が破棄されるため。ALWAYS_DENIED_METHODS参照）。
 //     Target.getTargets の結果も絞り込む。
@@ -23,9 +23,8 @@
 //     Electron未実装（-32601素通し）にせず、-32000で理由と代替（emulate）を明示して拒否。
 //   - セッションスコープの Page.captureScreenshot は、対象がバインド済みprimaryページ
 //     なら electron-main の BrowserView.captureScreenshot()（非表示時の回避策付き）へ
-//     委譲してCDPレスポンスを合成する。マッピング不能なパラメータ組合せは素通し。
-//   - セッションスコープの Input.* は転送直前にバインド済みページへ webContents.focus()
-//     を強制する（Chromium内部フォーカスが別webContentsにあると合成入力が飛ぶ問題の対策）。
+//     委譲してCDPレスポンスを合成する。対応外・委譲失敗は理由付きで明示拒否する。
+//   - 許可した Input.* はupstreamへ流さず、exact BrowserView debugger rootへ直接配送する。
 //   - ページレベル接続（/devtools/page/<id>…）: 単一ページセッションの透過転送。
 //     スコープはゲートウェイのtargetIdチェックで担保済み。
 //   - `Target.setAutoAttach` / `Target.setDiscoverTargets` の `filter` は除去する
@@ -41,7 +40,9 @@ import type { IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
 import type * as wsTypes from 'ws';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX, BROWSER_VIEW_SCREENSHOT_MAX_EDGE, BROWSER_VIEW_SCREENSHOT_MAX_PIXELS, BROWSER_VIEW_SCREENSHOT_TIMEOUT_MS } from '../../../../platform/browserView/common/browserViewScreenshot.js';
 import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
+import { IParadisCdpInputQueueOperation } from './paradisCdpInputQueue.js';
 
 /** 動的import済みの `ws` モジュール（ゲートウェイが1回だけロードして渡す）。 */
 export interface IParadisWsModule {
@@ -57,21 +58,23 @@ export interface IParadisWsModule {
 export interface IParadisBoundContext {
 	/** 現在バインドされているtargetIdのセット。 */
 	boundTargetIds(): ReadonlySet<string>;
+	/** This WebSocket's gateway-issued generation is still the live token authority. */
+	isCurrentLease(): boolean;
 	/** 接続確立時に呼ばれる（バインド変更時の強制切断用に登録する）。 */
 	onOpen(ws: wsTypes.WebSocket): void;
+	/** Same pane authority shared by page- and browser-level WebSocket connections. */
+	readonly rawScreenshotCoordinator: ParadisRawScreenshotCoordinator;
 	/**
 	 * バインド済みprimaryページのスクリーンショットを、electron-mainのupstream実装
 	 * `BrowserView.captureScreenshot()`（非表示時の回避策付き）へ委譲して撮る。
-	 * 戻り値はbase64エンコード済み画像データ。撮れない場合（ビュー消滅等）はundefined
-	 * （呼び出し元は上流CDPへの素通しにフォールバックする）。
+	 * 戻り値はbase64エンコード済み画像データ。ビュー消滅・世代変更・capture失敗は
+	 * `PARA_BROWSER_RETRYABLE` errorとしてrejectする。
 	 */
 	captureBoundPageScreenshot(options: IParadisCdpScreenshotOptions): Promise<string | undefined>;
-	/**
-	 * `Input.*` 転送直前にバインド済みページのwebContentsへChromium内部フォーカスを
-	 * 強制する（fire-and-forget、失敗は無視。Superset知見: 内部フォーカスが別の
-	 * webContentsにあると合成入力がターミナル等へ飛ぶ）。
-	 */
-	focusBoundPage(): void;
+	/** Whether the currently bound BrowserView is visible to the user. */
+	isBoundPageVisible(): Promise<boolean>;
+	dispatchBoundPageInput(expectedTargetId: string, method: string, paramsJson: string, isRouteCurrent?: () => boolean): IParadisCdpInputQueueOperation;
+	closeInputConnection(): void;
 }
 
 interface IJsonRpcMsg {
@@ -81,6 +84,193 @@ interface IJsonRpcMsg {
 	result?: Record<string, unknown>;
 	error?: { code: number; message: string };
 	sessionId?: string;
+}
+
+interface IParadisClientCommand extends IJsonRpcMsg {
+	readonly id: number;
+	readonly method: string;
+	readonly params?: Record<string, unknown>;
+	readonly sessionId?: string;
+}
+
+interface IParadisPendingRequest {
+	readonly method: string;
+	readonly sessionId: string | undefined;
+	readonly targetId: string | undefined;
+	readonly byteLength: number;
+}
+
+const MAX_CDP_PENDING_REQUESTS = 1_024;
+const MAX_CDP_FRAME_BYTES = 1024 * 1024;
+// Raw WebP responses contain base64 image data and legitimately exceed normal CDP control
+// frames. Keep one bounded exception while the exact screenshot request owns the authority.
+const MAX_CDP_SCREENSHOT_FRAME_BYTES = 32 * 1024 * 1024;
+const MAX_CDP_CONNECTING_QUEUE_BYTES = 4 * 1024 * 1024;
+const MAX_CDP_OPEN_BUFFERED_BYTES = 4 * 1024 * 1024;
+const MAX_CDP_METHOD_LENGTH = 256;
+const MAX_CDP_IDENTIFIER_LENGTH = 512;
+const MAX_CDP_ROUTING_ENTRIES = 4_096;
+const MAX_CDP_PENDING_POLICY_BYTES = 1024 * 1024;
+const PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS = 5_000;
+
+interface IParadisForwardedRequestBarrier {
+	readonly sessionId: string | undefined;
+	readonly settled: Promise<void>;
+	resolve(): void;
+}
+
+function registerForwardedRequestBarrier(
+	barriers: Map<number, IParadisForwardedRequestBarrier>,
+	id: number,
+	sessionId: string | undefined,
+): boolean {
+	if (barriers.has(id) || barriers.size >= MAX_CDP_PENDING_REQUESTS) {
+		return false;
+	}
+	let resolve!: () => void;
+	const settled = new Promise<void>(onResolve => resolve = onResolve);
+	barriers.set(id, { sessionId, settled, resolve });
+	return true;
+}
+
+function completeForwardedRequestBarrier(
+	barriers: Map<number, IParadisForwardedRequestBarrier>,
+	id: number,
+	sessionId: string | undefined,
+): void {
+	const barrier = barriers.get(id);
+	if (!barrier || barrier.sessionId !== sessionId) {
+		return;
+	}
+	barriers.delete(id);
+	barrier.resolve();
+}
+
+function clearForwardedRequestBarriers(barriers: Map<number, IParadisForwardedRequestBarrier>): void {
+	for (const barrier of barriers.values()) {
+		barrier.resolve();
+	}
+	barriers.clear();
+}
+
+async function waitForPriorForwardedRequests(
+	barriers: readonly Promise<void>[],
+	connectionClosed: Promise<void>,
+): Promise<'ready' | 'closed' | 'timeout'> {
+	if (barriers.length === 0) {
+		return 'ready';
+	}
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			Promise.all(barriers).then(() => 'ready' as const),
+			connectionClosed.then(() => 'closed' as const),
+			new Promise<'timeout'>(resolve => timeout = setTimeout(() => resolve('timeout'), PARADIS_CDP_PRE_INPUT_BARRIER_TIMEOUT_MS)),
+		]);
+	} finally {
+		if (timeout !== undefined) {
+			clearTimeout(timeout);
+		}
+	}
+}
+
+function rawDataByteLength(data: wsTypes.RawData): number {
+	if (Array.isArray(data)) {
+		return data.reduce((total, chunk) => total + chunk.byteLength, 0);
+	}
+	return data.byteLength;
+}
+
+function rawDataText(data: wsTypes.RawData): string {
+	if (Array.isArray(data)) {
+		return Buffer.concat(data).toString('utf8');
+	}
+	return Buffer.isBuffer(data) ? data.toString('utf8') : Buffer.from(data).toString('utf8');
+}
+
+function payloadByteLength(data: wsTypes.RawData | string): number {
+	return typeof data === 'string' ? Buffer.byteLength(data, 'utf8') : rawDataByteLength(data);
+}
+
+function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false): boolean {
+	const bytes = payloadByteLength(data);
+	const frameLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES;
+	const bufferedLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_OPEN_BUFFERED_BYTES;
+	const bufferedAmount = Number.isSafeInteger(socket.bufferedAmount) && socket.bufferedAmount >= 0 ? socket.bufferedAmount : bufferedLimit + 1;
+	if (bytes > frameLimit || bufferedAmount + bytes > bufferedLimit) {
+		return false;
+	}
+	try {
+		socket.send(data);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function boundedIdentifier(value: unknown): string | undefined {
+	return typeof value === 'string' && value.length > 0 && value.length <= MAX_CDP_IDENTIFIER_LENGTH ? value : undefined;
+}
+
+function hasBoundedRoutingIdentifiers(value: unknown): boolean {
+	if (!isRecord(value)) {
+		return true;
+	}
+	for (const key of ['sessionId', 'targetId', 'openerId', 'browserContextId'] as const) {
+		if (value[key] !== undefined && boundedIdentifier(value[key]) === undefined) {
+			return false;
+		}
+	}
+	return value.targetInfo === undefined || hasBoundedRoutingIdentifiers(value.targetInfo);
+}
+
+function logNonThrowing(logService: ILogService, level: 'trace' | 'debug' | 'warn', message: string): void {
+	try { logService[level](message); } catch { /* diagnostics must not interrupt transport cleanup */ }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseClientCommand(data: wsTypes.RawData): IParadisClientCommand | undefined {
+	if (rawDataByteLength(data) > MAX_CDP_FRAME_BYTES) {
+		return undefined;
+	}
+	let value: unknown;
+	try {
+		value = JSON.parse(rawDataText(data));
+	} catch {
+		return undefined;
+	}
+	if (!isRecord(value)
+		|| !Number.isSafeInteger(value.id)
+		|| (value.id as number) < 0
+		|| typeof value.method !== 'string'
+		|| value.method.length === 0
+		|| value.method.length > MAX_CDP_METHOD_LENGTH
+		|| (value.params !== undefined && !isRecord(value.params))
+		|| !hasBoundedRoutingIdentifiers(value.params)
+		|| (value.sessionId !== undefined && boundedIdentifier(value.sessionId) === undefined)) {
+		return undefined;
+	}
+	return value as unknown as IParadisClientCommand;
+}
+
+function parseJsonRecord(data: wsTypes.RawData, maxBytes = MAX_CDP_FRAME_BYTES): IJsonRpcMsg | undefined {
+	if (rawDataByteLength(data) > maxBytes) {
+		return undefined;
+	}
+	let value: unknown;
+	try {
+		value = JSON.parse(rawDataText(data));
+	} catch {
+		return undefined;
+	}
+	return isRecord(value)
+		&& hasBoundedRoutingIdentifiers(value.params)
+		&& hasBoundedRoutingIdentifiers(value.result)
+		? value as IJsonRpcMsg
+		: undefined;
 }
 
 /**
@@ -94,6 +284,14 @@ const ALWAYS_DENIED_METHODS = new Map<string, string>([
 	['Browser.close', 'Browser.close is not permitted by the Para Code CDP gateway.'],
 	['Browser.crash', 'Browser.crash is not permitted by the Para Code CDP gateway.'],
 	['Browser.crashGpuProcess', 'Browser.crashGpuProcess is not permitted by the Para Code CDP gateway.'],
+	['Target.createTarget', 'Target.createTarget is not permitted: pages must be opened and shared from the Para Code UI.'],
+	['Target.activateTarget', 'Target.activateTarget is not permitted: CDP automation must not move focus away from the user.'],
+	['Target.createBrowserContext', 'Target.createBrowserContext is not permitted by the Para Code CDP gateway.'],
+	['Target.disposeBrowserContext', 'Target.disposeBrowserContext is not permitted by the Para Code CDP gateway.'],
+	['Target.setRemoteLocations', 'Target.setRemoteLocations is not permitted by the Para Code CDP gateway.'],
+	['Target.exposeDevToolsProtocol', 'Target.exposeDevToolsProtocol is not permitted by the Para Code CDP gateway.'],
+	['Target.openDevTools', 'Target.openDevTools is not permitted by the Para Code CDP gateway.'],
+	['Target.sendMessageToTarget', 'Target.sendMessageToTarget is not permitted because its nested JSON-RPC payload cannot bypass the Para Code CDP policy.'],
 	// 共有ページの生存に波及（バインド済みWebContentsView自体が破棄され、Para Code側の
 	// エディタからもページが失われる）。close_page ツールはこの2つに乗る
 	['Target.closeTarget', 'Target.closeTarget is not permitted: the target is a page shared from the Para Code UI, and closing it would destroy the shared browser view. Ask the user to close the page from Para Code instead.'],
@@ -107,6 +305,52 @@ const ALWAYS_DENIED_METHODS = new Map<string, string>([
 	['Network.clearBrowserCookies', 'Network.clearBrowserCookies is not permitted: the embedded browser shares a cookie partition across Para Code, so clearing cookies would affect other pages too.'],
 	['Network.clearBrowserCache', 'Network.clearBrowserCache is not permitted: the embedded browser shares a cache across Para Code, so clearing it would affect other pages too.'],
 ]);
+
+const SHARED_STATE_DENIED_METHODS = new Set([
+	'Storage.getCookies',
+	'Storage.setCookies',
+	'Network.getAllCookies',
+	'Network.getCookies',
+	'Network.setCookie',
+	'Network.setCookies',
+	'Network.deleteCookies',
+	'Page.setDownloadBehavior',
+]);
+
+const SHARED_STATE_DENIED_DOMAINS = [
+	'Browser.',
+	'CacheStorage.',
+	'DOMStorage.',
+	'IndexedDB.',
+	'Security.',
+	'ServiceWorker.',
+	'Storage.',
+] as const;
+
+const BROWSER_ROOT_ALLOWED_METHODS = new Set([
+	'Browser.getVersion',
+	'Target.getBrowserContexts',
+	'Target.setDiscoverTargets',
+	'Target.setAutoAttach',
+	'Target.getTargets',
+	'Target.getTargetInfo',
+	'Target.attachToTarget',
+	'Target.detachFromTarget',
+]);
+
+const BROWSER_SESSION_ALLOWED_TARGET_METHODS = new Set([
+	'Target.setAutoAttach',
+	'Target.getTargetInfo',
+	'Target.attachToTarget',
+	'Target.detachFromTarget',
+]);
+
+function sharedStateDeniedMessage(method: string): string | undefined {
+	if (SHARED_STATE_DENIED_DOMAINS.some(domain => method.startsWith(domain)) || SHARED_STATE_DENIED_METHODS.has(method)) {
+		return `${method} is not permitted: this CDP connection is scoped to one Para Code browser pane and cannot access shared browser state.`;
+	}
+	return undefined;
+}
 
 /**
  * ウィンドウ/コンテンツサイズ操作系のCDPメソッド → 明示エラーメッセージ。
@@ -122,21 +366,293 @@ const LAYOUT_MANAGED_DENIED_METHODS = new Set([
 	'Browser.setContentsSize',
 ]);
 
+const MAX_DELEGATED_CLIP_EDGE = BROWSER_VIEW_SCREENSHOT_MAX_EDGE;
+const MAX_DELEGATED_CLIP_PIXELS = BROWSER_VIEW_SCREENSHOT_MAX_PIXELS;
+
 /**
  * セッションスコープの `Page.captureScreenshot` パラメータを、electron-main委譲用の
  * オプション（{@link IParadisCdpScreenshotOptions}）へマッピングする。
- * 対応できないパラメータ組合せのときは undefined を返す（上流へフォールバック素通し）:
- *   - `format` が jpeg/png 以外（webp等）
- *   - `fromSurface: false` の明示指定（upstream実装はサーフェスキャプチャ相当のみ）
- *   - `clip.scale` が1以外（upstreamのpageRectはスケール指定を持たない）
- *   - `clip` と `captureBeyondViewport: true` の併用（このときのclipは絶対ページ座標系で、
- *     ビューポート相対のpageRectでは表現できない。puppeteerの要素スクリーンショット経路）
+ * PNG/JPEGのviewport、full-page、scale 1 clipを委譲用optionへ分類する。
+ * WebPは表示中に限るraw互換経路、`fromSurface: false`、非unit scale、malformed/巨大clipは
+ * 理由付きの明示拒否へ分類し、委譲失敗を含めてsilent raw fallbackを許可しない。
  */
-function mapCaptureScreenshotParams(params: Record<string, unknown> | undefined): IParadisCdpScreenshotOptions | undefined {
+export type IParadisCaptureScreenshotParameterPolicy =
+	| { readonly kind: 'delegate'; readonly options: IParadisCdpScreenshotOptions }
+	| { readonly kind: 'raw-webp' }
+	| { readonly kind: 'reject'; readonly reason: string };
+
+export interface IParadisCaptureScreenshotRequest {
+	readonly id: number;
+	readonly sessionId?: string;
+	readonly params?: Record<string, unknown>;
+}
+
+export type IParadisCaptureScreenshotResponse = {
+	readonly id: number;
+	readonly sessionId?: string;
+	readonly result?: { readonly data: string };
+	readonly error?: { readonly code: number; readonly message: string };
+};
+
+export type IParadisCaptureScreenshotResolution =
+	| { readonly kind: 'forward' }
+	| { readonly kind: 'respond'; readonly response: IParadisCaptureScreenshotResponse };
+
+interface IParadisRawScreenshotEntry {
+	readonly owner: object;
+	readonly request: IParadisCaptureScreenshotRequest;
+	timer: ReturnType<typeof setTimeout> | undefined;
+	readonly startedAt: number;
+	readonly onComplete: ((durationMs: number) => void) | undefined;
+	timedOut: boolean;
+	closing: boolean;
+}
+
+export interface IParadisRawScreenshotLifecycleCallbacks {
+	readonly onTimeout: (request: IParadisCaptureScreenshotRequest) => void;
+	readonly onComplete?: (durationMs: number) => void;
+}
+
+/** Bounds the one deliberate raw-CDP exception (visible WebP) without allowing overlap after timeout. */
+export class ParadisRawScreenshotCoordinator {
+	private _active: IParadisRawScreenshotEntry | undefined;
+	private _disposed = false;
+
+	constructor(private readonly timeoutMs = BROWSER_VIEW_SCREENSHOT_TIMEOUT_MS) { }
+
+	begin(owner: object, request: IParadisCaptureScreenshotRequest, callbacks: IParadisRawScreenshotLifecycleCallbacks): boolean {
+		if (this._disposed || this._active) {
+			return false;
+		}
+		const entry: IParadisRawScreenshotEntry = {
+			owner,
+			request,
+			startedAt: Date.now(),
+			onComplete: callbacks.onComplete,
+			timedOut: false,
+			closing: false,
+			timer: undefined,
+		};
+		entry.timer = setTimeout(() => {
+			if (this._active !== entry) {
+				return;
+			}
+			entry.timer = undefined;
+			entry.timedOut = true;
+			try { callbacks.onTimeout(request); } catch { /* closing transport */ }
+		}, this.timeoutMs);
+		this._active = entry;
+		return true;
+	}
+
+	complete(owner: object, id: number | undefined, sessionId: string | undefined): { readonly handled: boolean; readonly suppress: boolean; readonly durationMs?: number } {
+		const entry = this._active;
+		if (!entry || entry.owner !== owner || entry.request.id !== id || entry.request.sessionId !== sessionId) {
+			return { handled: false, suppress: false };
+		}
+		if (entry.timer !== undefined) {
+			clearTimeout(entry.timer);
+			entry.timer = undefined;
+		}
+		this._active = undefined;
+		const durationMs = Math.max(0, Date.now() - entry.startedAt);
+		if (!entry.timedOut && !entry.closing) {
+			try { entry.onComplete?.(durationMs); } catch { /* diagnostics must not affect transport */ }
+		}
+		return { handled: true, suppress: entry.timedOut, durationMs };
+	}
+
+	get hasActiveRequest(): boolean {
+		return this._active !== undefined;
+	}
+
+	hasActiveRequestForOwner(owner: object): boolean {
+		return this._active?.owner === owner;
+	}
+
+	get timeoutMilliseconds(): number {
+		return this.timeoutMs;
+	}
+
+	/** Stop the timeout clock while retaining pane-wide ownership until upstream close confirmation. */
+	markClosing(owner: object): void {
+		const entry = this._active;
+		if (entry?.owner !== owner) {
+			return;
+		}
+		entry.closing = true;
+		if (entry.timer !== undefined) {
+			clearTimeout(entry.timer);
+			entry.timer = undefined;
+		}
+	}
+
+	release(owner: object): void {
+		if (this._active?.owner === owner) {
+			if (this._active.timer !== undefined) {
+				clearTimeout(this._active.timer);
+			}
+			this._active = undefined;
+		}
+	}
+
+	dispose(): void {
+		this._disposed = true;
+		if (this._active) {
+			if (this._active.timer !== undefined) {
+				clearTimeout(this._active.timer);
+			}
+			this._active = undefined;
+		}
+	}
+}
+
+/** Gateway-owned token authority registry shared by every page/browser WebSocket context. */
+export class ParadisRawScreenshotAuthorityRegistry {
+	private readonly _coordinators = new Map<string, ParadisRawScreenshotCoordinator>();
+
+	constructor(private readonly timeoutMs = BROWSER_VIEW_SCREENSHOT_TIMEOUT_MS) { }
+
+	forAuthority(authority: string): ParadisRawScreenshotCoordinator {
+		let coordinator = this._coordinators.get(authority);
+		if (!coordinator) {
+			coordinator = new ParadisRawScreenshotCoordinator(this.timeoutMs);
+			this._coordinators.set(authority, coordinator);
+		}
+		return coordinator;
+	}
+
+	retire(authority: string): void {
+		this._coordinators.get(authority)?.dispose();
+		this._coordinators.delete(authority);
+	}
+
+	dispose(): void {
+		for (const coordinator of this._coordinators.values()) {
+			coordinator.dispose();
+		}
+		this._coordinators.clear();
+	}
+}
+
+export interface IParadisRawScreenshotUpstream {
+	readonly readyState: number;
+	terminate?(): void;
+	close(): void;
+}
+
+/** Initiate the strongest available upstream close and report only synchronous CLOSED confirmation. */
+export function paradisForceCloseRawScreenshotUpstream(
+	upstream: IParadisRawScreenshotUpstream,
+	openState: number,
+	closedState: number,
+): boolean {
+	if (upstream.readyState === closedState) {
+		return true;
+	}
+	if (upstream.readyState === openState) {
+		if (upstream.terminate) {
+			try {
+				upstream.terminate();
+			} catch {
+				try { upstream.close(); } catch { /* keep the authority poisoned until retire/dispose */ }
+			}
+		} else {
+			try { upstream.close(); } catch { /* keep the authority poisoned until retire/dispose */ }
+		}
+	} else {
+		try { upstream.close(); } catch { /* keep the authority poisoned until retire/dispose */ }
+	}
+	return upstream.readyState === closedState;
+}
+
+/**
+ * Register the accepted page WebSocket before rechecking the live binding. Once registered,
+ * a later rebind is covered by the gateway's connection sweep; if the rebind already happened,
+ * do not create an upstream CDP connection for the stale target.
+ */
+export function paradisRegisterPageUpgrade<T>(
+	targetId: string,
+	clientWs: wsTypes.WebSocket,
+	ctx: IParadisBoundContext,
+	createUpstream: () => T,
+): T | undefined {
+	if (!ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+		try { clientWs.close(1000, 'para-code: browser binding changed, reconnect'); } catch { /* ignore */ }
+		return undefined;
+	}
+	ctx.onOpen(clientWs);
+	if (!ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+		try { clientWs.close(1000, 'para-code: browser binding changed, reconnect'); } catch { /* ignore */ }
+		return undefined;
+	}
+	return createUpstream();
+}
+
+function screenshotResponse(
+	request: IParadisCaptureScreenshotRequest,
+	body: Pick<IParadisCaptureScreenshotResponse, 'result' | 'error'>,
+): IParadisCaptureScreenshotResponse {
+	return {
+		id: request.id,
+		...(request.sessionId !== undefined ? { sessionId: request.sessionId } : {}),
+		...body,
+	};
+}
+
+export interface IParadisVisibleWebPCaptureCallbacks {
+	readonly respond: (response: IParadisCaptureScreenshotResponse) => void;
+	readonly closeTransport: () => void;
+	readonly onStart?: () => void;
+	readonly onComplete?: (durationMs: number) => void;
+	readonly onTimeout?: () => void;
+}
+
+export function paradisVisibleWebPScreenshotLogMessage(
+	event: 'start' | 'complete',
+	transport: 'page' | 'browser',
+	durationMs?: number,
+): string {
+	return `[ParadisCdpGateway] screenshot ${event} route=visible-webp transport=${transport}${event === 'complete' ? ` durationMs=${Math.max(0, Math.round(durationMs ?? 0))}` : ''}`;
+}
+
+/** Start the sole raw-CDP screenshot exception and force transport cancellation on timeout. */
+export function paradisStartVisibleWebPCapture(
+	coordinator: ParadisRawScreenshotCoordinator,
+	owner: object,
+	request: IParadisCaptureScreenshotRequest,
+	callbacks: IParadisVisibleWebPCaptureCallbacks,
+): boolean {
+	const started = coordinator.begin(owner, request, {
+		onComplete: callbacks.onComplete,
+		onTimeout: timedOutRequest => {
+			try {
+				callbacks.respond(screenshotResponse(timedOutRequest, { error: { code: -32000, message: `PARA_BROWSER_RETRYABLE: visible WebP capture timed out after ${coordinator.timeoutMilliseconds}ms; reconnect and retry.` } }));
+			} catch { /* closing transport */ }
+			try {
+				callbacks.onTimeout?.();
+			} finally {
+				callbacks.closeTransport();
+			}
+		},
+	});
+	if (!started) {
+		callbacks.respond(screenshotResponse(request, { error: { code: -32000, message: 'PARA_BROWSER_RETRYABLE: another visible WebP capture is still in progress for this Para Code pane.' } }));
+	} else {
+		try { callbacks.onStart?.(); } catch { /* diagnostics must not affect transport */ }
+	}
+	return started;
+}
+
+function screenshotError(request: IParadisCaptureScreenshotRequest, message: string): IParadisCaptureScreenshotResolution {
+	return { kind: 'respond', response: screenshotResponse(request, { error: { code: -32000, message } }) };
+}
+
+export function paradisClassifyCaptureScreenshotParams(params: Record<string, unknown> | undefined): IParadisCaptureScreenshotParameterPolicy {
 	const p = (params ?? {}) as {
 		format?: unknown;
 		quality?: unknown;
-		clip?: { x?: unknown; y?: unknown; width?: unknown; height?: unknown; scale?: unknown };
+		clip?: unknown;
 		fromSurface?: unknown;
 		captureBeyondViewport?: unknown;
 	};
@@ -144,28 +660,135 @@ function mapCaptureScreenshotParams(params: Record<string, unknown> | undefined)
 	let format: 'jpeg' | 'png' = 'png';
 	if (p.format === 'jpeg' || p.format === 'png') {
 		format = p.format;
-	} else if (p.format !== undefined) {
-		return undefined;
 	}
 	if (p.fromSurface === false) {
-		return undefined;
+		return { kind: 'reject', reason: 'Page.captureScreenshot with fromSurface: false is not supported for a Para Code embedded browser. Use the default surface capture.' };
 	}
-	const quality = typeof p.quality === 'number' ? p.quality : undefined;
+	if (p.format !== undefined && p.format !== 'jpeg' && p.format !== 'png' && p.format !== 'webp') {
+		return { kind: 'reject', reason: `Page.captureScreenshot format ${String(p.format)} is not supported by the Para Code embedded browser.` };
+	}
+	if (p.quality !== undefined && (typeof p.quality !== 'number' || !Number.isInteger(p.quality) || p.quality < 0 || p.quality > 100)) {
+		return { kind: 'reject', reason: 'Page.captureScreenshot quality must be an integer between 0 and 100.' };
+	}
 	const beyondViewport = p.captureBeyondViewport === true;
 	if (p.clip !== undefined) {
-		const { x, y, width, height, scale } = p.clip;
-		if (typeof x !== 'number' || typeof y !== 'number' || typeof width !== 'number' || typeof height !== 'number') {
-			return undefined;
+		if (typeof p.clip !== 'object' || p.clip === null || Array.isArray(p.clip)) {
+			return { kind: 'reject', reason: 'Page.captureScreenshot clip must be an object.' };
+		}
+		const { x, y, width, height, scale } = p.clip as { x?: unknown; y?: unknown; width?: unknown; height?: unknown; scale?: unknown };
+		if (![x, y, width, height].every(value => typeof value === 'number' && Number.isFinite(value))) {
+			return { kind: 'reject', reason: 'Page.captureScreenshot clip must contain finite numeric x, y, width, and height values.' };
+		}
+		if ((width as number) <= 0 || (height as number) <= 0) {
+			return { kind: 'reject', reason: 'Page.captureScreenshot clip width and height must be greater than zero.' };
+		}
+		if ((width as number) > MAX_DELEGATED_CLIP_EDGE || (height as number) > MAX_DELEGATED_CLIP_EDGE || (width as number) * (height as number) > MAX_DELEGATED_CLIP_PIXELS) {
+			return { kind: 'reject', reason: 'Page.captureScreenshot clip is too large for a Para Code embedded browser capture.' };
 		}
 		if (scale !== undefined && scale !== 1) {
-			return undefined;
+			return { kind: 'reject', reason: 'Page.captureScreenshot clip.scale must be 1 for a Para Code embedded browser.' };
 		}
-		if (beyondViewport) {
-			return undefined;
-		}
-		return { format, quality, pageRect: { x, y, width, height } };
 	}
-	return { format, quality, fullPage: beyondViewport ? true : undefined };
+	if (p.format === 'webp') {
+		return { kind: 'raw-webp' };
+	}
+	const quality = typeof p.quality === 'number' ? p.quality : undefined;
+	if (p.clip !== undefined) {
+		const { x, y, width, height } = p.clip as { x: number; y: number; width: number; height: number };
+		return {
+			kind: 'delegate',
+			options: {
+				format,
+				...(quality !== undefined ? { quality } : {}),
+				pageRect: { x, y, width, height },
+				...(beyondViewport ? { captureBeyondViewport: true } : {}),
+			},
+		};
+	}
+	return {
+		kind: 'delegate',
+		options: {
+			format,
+			...(quality !== undefined ? { quality } : {}),
+			...(beyondViewport ? { fullPage: true } : {}),
+		},
+	};
+}
+
+export function paradisMapCaptureScreenshotParams(params: Record<string, unknown> | undefined): IParadisCdpScreenshotOptions | undefined {
+	const policy = paradisClassifyCaptureScreenshotParams(params);
+	return policy.kind === 'delegate' ? policy.options : undefined;
+}
+
+function retryableScreenshotMessage(error: unknown, fallback: string): string {
+	if (error instanceof Error) {
+		if (error.message.startsWith('PARA_BROWSER_RETRYABLE:') || error.message.startsWith(BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX)) {
+			return error.message;
+		}
+	}
+	return `PARA_BROWSER_RETRYABLE: ${fallback}`;
+}
+
+export async function paradisResolveCaptureScreenshotRequest(
+	request: IParadisCaptureScreenshotRequest,
+	ctx: IParadisBoundContext,
+): Promise<IParadisCaptureScreenshotResolution> {
+	const policy = paradisClassifyCaptureScreenshotParams(request.params);
+	if (policy.kind === 'reject') {
+		return screenshotError(request, policy.reason);
+	}
+	if (policy.kind === 'raw-webp') {
+		try {
+			if (await ctx.isBoundPageVisible()) {
+				return { kind: 'forward' };
+			}
+			return screenshotError(request, 'WebP screenshots are unavailable while the Para Code embedded browser is hidden. Request PNG or JPEG instead.');
+		} catch (error) {
+			return screenshotError(request, retryableScreenshotMessage(error, 'the bound page changed while checking WebP visibility; retry the screenshot.'));
+		}
+	}
+	try {
+		const data = await ctx.captureBoundPageScreenshot(policy.options);
+		if (typeof data !== 'string' || data.length === 0) {
+			return screenshotError(request, 'PARA_BROWSER_RETRYABLE: delegated BrowserView capture returned no image; retry the screenshot.');
+		}
+		return { kind: 'respond', response: screenshotResponse(request, { result: { data } }) };
+	} catch (error) {
+		return screenshotError(request, retryableScreenshotMessage(error, 'delegated BrowserView capture failed; retry the screenshot.'));
+	}
+}
+
+export interface IParadisCaptureScreenshotDispatch {
+	readonly isActive: () => boolean;
+	readonly forward: (request: IParadisCaptureScreenshotRequest) => void;
+	readonly respond: (response: IParadisCaptureScreenshotResponse) => void;
+}
+
+/** Resolve one screenshot request and settle it exactly once while its connection is active. */
+export async function paradisDispatchCaptureScreenshotRequest(
+	request: IParadisCaptureScreenshotRequest,
+	ctx: IParadisBoundContext,
+	dispatch: IParadisCaptureScreenshotDispatch,
+): Promise<void> {
+	const resolution = await paradisResolveCaptureScreenshotRequest(request, ctx);
+	let active = false;
+	try {
+		active = dispatch.isActive();
+	} catch {
+		return;
+	}
+	if (!active) {
+		return;
+	}
+	try {
+		if (resolution.kind === 'forward') {
+			dispatch.forward(request);
+		} else {
+			dispatch.respond(resolution.response);
+		}
+	} catch {
+		// The WebSocket may close between the active check and synchronous send.
+	}
 }
 
 function targetIdOf(obj: unknown): string | undefined {
@@ -173,7 +796,7 @@ function targetIdOf(obj: unknown): string | undefined {
 		return undefined;
 	}
 	const t = (obj as { targetId?: unknown }).targetId;
-	return typeof t === 'string' ? t : undefined;
+	return boundedIdentifier(t);
 }
 
 type ITargetInfoLike = { type?: string } & Record<string, unknown>;
@@ -206,53 +829,266 @@ export function paradisProxyPageUpgrade(
 	logService: ILogService,
 ): void {
 	wss.handleUpgrade(req, socket, head, clientWs => {
-		ctx.onOpen(clientWs);
-		const upstream = new ws.WebSocket(`ws://127.0.0.1:${upstreamPort}/devtools/page/${targetId}`);
+		const upstream = paradisRegisterPageUpgrade(targetId, clientWs, ctx, () => new ws.WebSocket(`ws://127.0.0.1:${upstreamPort}/devtools/page/${targetId}`, { maxPayload: MAX_CDP_SCREENSHOT_FRAME_BYTES }));
+		if (!upstream) {
+			return;
+		}
+		let closed = false;
+		let resolveConnectionClosed!: () => void;
+		const connectionClosed = new Promise<void>(resolve => resolveConnectionClosed = resolve);
+		let pendingBytes = 0;
+		let scheduledClientMessages = 0;
+		let scheduledClientBytes = 0;
+		let clientCommandTail: Promise<void> | undefined;
+		const forwardedRequestBarriers = new Map<number, IParadisForwardedRequestBarrier>();
+		const rawScreenshots = ctx.rawScreenshotCoordinator;
+		const rawScreenshotOwner = {};
 		const closeBoth = () => {
+			if (closed) {
+				return;
+			}
+			closed = true;
+			resolveConnectionClosed();
+			ctx.closeInputConnection();
+			pending.length = 0;
+			pendingBytes = 0;
+			clearForwardedRequestBarriers(forwardedRequestBarriers);
+			rawScreenshots.markClosing(rawScreenshotOwner);
 			try { clientWs.close(); } catch { /* ignore */ }
-			try { upstream.close(); } catch { /* ignore */ }
+			if (paradisForceCloseRawScreenshotUpstream(upstream, ws.WebSocket.OPEN, ws.WebSocket.CLOSED)) {
+				rawScreenshots.release(rawScreenshotOwner);
+			}
 		};
 		const pending: wsTypes.RawData[] = [];
-		clientWs.on('message', data => {
-			// 常時拒否メソッドはページレベル接続でも遮断する（Page.close等は共有ビューを破壊する）
-			let msg: IJsonRpcMsg | undefined;
-			try {
-				msg = JSON.parse(data.toString()) as IJsonRpcMsg;
-			} catch {
-				msg = undefined;
+		const sendToUpstream = (data: wsTypes.RawData) => {
+			if (closed) {
+				return;
 			}
-			if (msg?.method !== undefined) {
-				const denied = ALWAYS_DENIED_METHODS.get(msg.method) ??
-					(LAYOUT_MANAGED_DENIED_METHODS.has(msg.method) ? `${msg.method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}` : undefined);
-				if (denied !== undefined) {
-					if (typeof msg.id === 'number' && clientWs.readyState === ws.WebSocket.OPEN) {
-						try { clientWs.send(JSON.stringify({ id: msg.id, sessionId: msg.sessionId, error: { code: -32000, message: denied } })); } catch { /* ignore */ }
-					}
-					return;
-				}
+			if (!ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+				closeBoth();
+				return;
 			}
 			if (upstream.readyState === ws.WebSocket.OPEN) {
-				upstream.send(data);
-			} else {
+				if (!sendWithBoundedBackpressure(upstream, data)) {
+					closeBoth();
+				}
+			} else if (upstream.readyState === ws.WebSocket.CONNECTING) {
+				const bytes = rawDataByteLength(data);
+				if (bytes > MAX_CDP_FRAME_BYTES || pending.length >= MAX_CDP_PENDING_REQUESTS || pendingBytes + bytes > MAX_CDP_CONNECTING_QUEUE_BYTES) {
+					closeBoth();
+					return;
+				}
 				pending.push(data);
+				pendingBytes += bytes;
 			}
-		});
-		upstream.on('open', () => {
-			for (const buf of pending) {
-				upstream.send(buf);
+		};
+		const sendToClient = (response: unknown) => {
+			if (!ctx.isCurrentLease()) {
+				closeBoth();
+				return;
 			}
-			pending.length = 0;
-			upstream.on('message', data => {
+			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
+				const serialized = JSON.stringify(response);
+				if (!sendWithBoundedBackpressure(clientWs, serialized, Buffer.byteLength(serialized, 'utf8') > MAX_CDP_FRAME_BYTES)) {
+					closeBoth();
+				}
+			}
+		};
+		const dispatchInputAfterPriorRequests = async (msg: IParadisClientCommand, paramsJson: string): Promise<void> => {
+			const barrier = await waitForPriorForwardedRequests(
+				[...forwardedRequestBarriers.values()].map(entry => entry.settled),
+				connectionClosed,
+			);
+			if (barrier !== 'ready' || closed || !ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+				if (barrier === 'timeout' && !closed && ctx.isCurrentLease() && ctx.boundTargetIds().has(targetId)) {
+					sendToClient({
+						id: msg.id,
+						...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}),
+						error: { code: -32000, message: 'PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout' },
+					});
+				}
+				return;
+			}
+			const operation = ctx.dispatchBoundPageInput(
+				targetId,
+				msg.method,
+				paramsJson,
+				() => !closed && ctx.boundTargetIds().has(targetId),
+			);
+			void operation.response.then(result => {
+				if (closed || !ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+					return;
+				}
+				sendToClient(result.status === 'success'
+					? { id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), result: result.result }
+					: { id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: result.message } });
+			}, closeBoth);
+			await Promise.race([operation.drained, connectionClosed]);
+		};
+		const processClientMessage = (data: wsTypes.RawData): Promise<void> | undefined => {
+			if (!ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+				closeBoth();
+				return;
+			}
+			const msg = parseClientCommand(data);
+			if (!msg) {
+				closeBoth();
+				return;
+			}
+			// 常時拒否メソッドはページレベル接続でも遮断する（Page.close等は共有ビューを破壊する）
+			const denied = ALWAYS_DENIED_METHODS.get(msg.method)
+				?? sharedStateDeniedMessage(msg.method)
+				?? (msg.method.startsWith('Target.') ? `${msg.method} is not permitted on a page-scoped CDP connection.` : undefined)
+				?? (LAYOUT_MANAGED_DENIED_METHODS.has(msg.method) ? `${msg.method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}` : undefined);
+			if (denied !== undefined) {
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
-					clientWs.send(data);
+					const serialized = JSON.stringify({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: denied } });
+					if (!sendWithBoundedBackpressure(clientWs, serialized)) {
+						closeBoth();
+					}
+				}
+				return;
+			}
+			if (msg.method.startsWith('Input.')) {
+				let paramsJson: string;
+				try {
+					paramsJson = JSON.stringify(msg.params ?? {});
+				} catch {
+					sendToClient({ id: msg.id, ...(msg.sessionId !== undefined ? { sessionId: msg.sessionId } : {}), error: { code: -32000, message: `PARA_BROWSER_RETRYABLE: ${msg.method} parameters could not be serialized` } });
+					return;
+				}
+				return dispatchInputAfterPriorRequests(msg, paramsJson);
+			}
+			if (msg.method === 'Page.captureScreenshot') {
+				void paradisDispatchCaptureScreenshotRequest(
+					{ id: msg.id, sessionId: msg.sessionId, params: msg.params },
+					ctx,
+					{
+						isActive: () => !closed && ctx.isCurrentLease() && clientWs.readyState === ws.WebSocket.OPEN && ctx.boundTargetIds().has(targetId),
+						forward: request => {
+							if (!paradisStartVisibleWebPCapture(rawScreenshots, rawScreenshotOwner, request, {
+								respond: sendToClient,
+								closeTransport: closeBoth,
+								onStart: () => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('start', 'page')),
+								onComplete: durationMs => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', 'page', durationMs)),
+								onTimeout: () => logNonThrowing(logService, 'warn', '[ParadisCdpGateway] page visible WebP capture timed out; closing CDP connection'),
+							})) {
+								return;
+							}
+							if (!registerForwardedRequestBarrier(forwardedRequestBarriers, request.id, request.sessionId)) {
+								closeBoth();
+								return;
+							}
+							sendToUpstream(data);
+						},
+						respond: sendToClient,
+					},
+				);
+				return;
+			}
+			if (!registerForwardedRequestBarrier(forwardedRequestBarriers, msg.id, msg.sessionId)) {
+				closeBoth();
+				return;
+			}
+			sendToUpstream(data);
+			return undefined;
+		};
+		clientWs.on('message', data => {
+			const bytes = rawDataByteLength(data);
+			if (closed
+				|| bytes > MAX_CDP_FRAME_BYTES
+				|| scheduledClientMessages >= MAX_CDP_PENDING_REQUESTS
+				|| scheduledClientBytes + bytes > MAX_CDP_CONNECTING_QUEUE_BYTES) {
+				closeBoth();
+				return;
+			}
+			const previous = clientCommandTail;
+			if (!previous) {
+				try {
+					const wait = processClientMessage(data);
+					if (wait) {
+						const guarded = wait.catch(closeBoth);
+						clientCommandTail = guarded;
+						void guarded.finally(() => {
+							if (clientCommandTail === guarded) {
+								clientCommandTail = undefined;
+							}
+						});
+					}
+				} catch {
+					closeBoth();
+				}
+				return;
+			}
+			scheduledClientMessages++;
+			scheduledClientBytes += bytes;
+			const next = previous
+				.then(() => processClientMessage(data))
+				.catch(closeBoth)
+				.finally(() => {
+					scheduledClientMessages = Math.max(0, scheduledClientMessages - 1);
+					scheduledClientBytes = Math.max(0, scheduledClientBytes - bytes);
+				});
+			clientCommandTail = next;
+			void next.finally(() => {
+				if (clientCommandTail === next) {
+					clientCommandTail = undefined;
 				}
 			});
 		});
-		upstream.on('error', err => {
-			logService.debug('[ParadisCdpGateway] page upstream error', err);
+		upstream.on('open', () => {
+			if (closed || !ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+				closeBoth();
+				try { upstream.close(); } catch { /* ignore */ }
+				return;
+			}
+			for (const buf of pending) {
+				if (!sendWithBoundedBackpressure(upstream, buf)) { closeBoth(); break; }
+			}
+			pending.length = 0;
+			pendingBytes = 0;
+			upstream.on('message', data => {
+				if (!ctx.isCurrentLease() || !ctx.boundTargetIds().has(targetId)) {
+					closeBoth();
+					return;
+				}
+				const frameBytes = rawDataByteLength(data);
+				const rawScreenshotActive = rawScreenshots.hasActiveRequestForOwner(rawScreenshotOwner);
+				if (frameBytes > (rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES)) {
+					closeBoth();
+					return;
+				}
+				const response = parseJsonRecord(data, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
+				if (typeof response?.id === 'number' && Number.isSafeInteger(response.id)) {
+					completeForwardedRequestBarrier(forwardedRequestBarriers, response.id, response.sessionId);
+				}
+				if (rawScreenshotActive) {
+					let msg: IJsonRpcMsg | undefined;
+					try { msg = JSON.parse(rawDataText(data)) as IJsonRpcMsg; } catch { /* non-JSON frame */ }
+					const completion = rawScreenshots.complete(rawScreenshotOwner, msg?.id, msg?.sessionId);
+					if (frameBytes > MAX_CDP_FRAME_BYTES && !completion.handled) {
+						closeBoth();
+						return;
+					}
+					if (completion.handled && completion.suppress) {
+						return;
+					}
+				}
+				if (clientWs.readyState === ws.WebSocket.OPEN) {
+					if (!sendWithBoundedBackpressure(clientWs, data, frameBytes > MAX_CDP_FRAME_BYTES)) {
+						closeBoth();
+					}
+				}
+			});
+		});
+		upstream.on('error', () => {
+			closeBoth();
+			logNonThrowing(logService, 'debug', '[ParadisCdpGateway] page upstream transport failed');
+		});
+		upstream.on('close', () => {
+			rawScreenshots.release(rawScreenshotOwner);
 			closeBoth();
 		});
-		upstream.on('close', closeBoth);
 		clientWs.on('error', closeBoth);
 		clientWs.on('close', closeBoth);
 	});
@@ -275,503 +1111,724 @@ export async function paradisProxyBrowserUpgrade(
 	logService: ILogService,
 ): Promise<void> {
 	wss.handleUpgrade(req, socket, head, clientWs => {
+		if (!ctx.isCurrentLease()) {
+			try { clientWs.close(1000, 'para-code: browser binding changed, reconnect'); } catch { /* ignore */ }
+			return;
+		}
 		ctx.onOpen(clientWs);
-		const upstream = new ws.WebSocket(upstreamBrowserWsUrl);
+		if (!ctx.isCurrentLease()) {
+			try { clientWs.close(1000, 'para-code: browser binding changed, reconnect'); } catch { /* ignore */ }
+			return;
+		}
 
-		/** クライアント発行の未応答リクエストid → メソッド名（応答フィルタの分岐用）。 */
-		const pendingMethods = new Map<number, string>();
-		/** クライアントに公開済みのCDP sessionId（この集合外のセッションフレームは遮断）。 */
+		const upstream = new ws.WebSocket(upstreamBrowserWsUrl, { maxPayload: MAX_CDP_SCREENSHOT_FRAME_BYTES });
+		const rawScreenshots = ctx.rawScreenshotCoordinator;
+		const rawScreenshotOwner = {};
+		const pendingRequests = new Map<number, IParadisPendingRequest>();
+		const internalPending = new Map<number, IParadisPendingRequest>();
+		const forwardedRequestBarriers = new Map<number, IParadisForwardedRequestBarrier>();
+		let pendingPolicyBytes = 0;
+		const pendingUpstream: string[] = [];
+		let pendingUpstreamBytes = 0;
 		const allowedSessionIds = new Set<string>();
-		/**
-		 * sessionId → targetId の対応表（Supersetの sessionIdToTargetId と同型）。
-		 * セッションスコープの Page.captureScreenshot 委譲と Input.* 直前のフォーカス強制で、
-		 * 「このセッションはバインド済みprimaryページのものか」を判定するために使う。
-		 * Target.attachedToTarget（root/nested/内部attach応答）で記録し、
-		 * Target.detachedFromTarget で削除する。
-		 */
 		const sessionIdToTargetId = new Map<string, string>();
-		/** クライアント発行の Target.attachToTarget リクエストid → 要求targetId（応答のsessionId対応付け用）。 */
-		const pendingAttachTargets = new Map<number, string>();
-		/** プロキシ内部発行の Target.attachToTarget リクエストid → 要求targetId（同上）。 */
-		const internalAttachTargets = new Map<number, string>();
-		/**
-		 * 許可済みtargetIdの動的セット。バインド済みセットから始まり、openerIdが許可済みの
-		 * ターゲット（ポップアップ・OOPIF・ワーカー・prerender等の子孫）を推移的に加える。
-		 * childToParent により、親の破棄時に子孫を再帰的に間引く。
-		 */
-		const allowedTargetIds = new Set<string>(ctx.boundTargetIds());
+		const allowedTargetIds = new Set<string>();
 		const childToParent = new Map<string, string>();
-		/**
-		 * プロキシ自身が上流に発行した内部リクエストid。応答はクライアントに転送しない
-		 * （クライアントが発行していないidを見せないため）。
-		 */
-		const INTERNAL_REQ_BASE = 0x7fff0000;
-		let internalReqSeq = 0;
-		const internalPendingIds = new Set<number>();
-		/** 上流OPEN前にクライアントが送ったフレームのバッファ。 */
-		const pendingUpstream: unknown[] = [];
+		let internalRequestSequence = 0;
+		let closed = false;
+		let resolveConnectionClosed!: () => void;
+		const connectionClosed = new Promise<void>(resolve => resolveConnectionClosed = resolve);
+		let scheduledClientMessages = 0;
+		let scheduledClientBytes = 0;
+		let clientCommandTail: Promise<void> | undefined;
 
-		const refreshBound = () => {
-			for (const tid of ctx.boundTargetIds()) {
-				allowedTargetIds.add(tid);
-			}
-		};
-		const isAllowedTarget = (info: { targetId?: string; openerId?: string } | undefined, fallbackTargetId?: string): boolean => {
-			refreshBound();
-			const tid = info?.targetId ?? fallbackTargetId;
-			if (!tid) {
+		const addAllowedTarget = (targetId: string, openerId?: string): boolean => {
+			if (boundedIdentifier(targetId) === undefined || (openerId !== undefined && boundedIdentifier(openerId) === undefined)) {
+				closeBoth();
 				return false;
 			}
-			if (allowedTargetIds.has(tid)) {
+			if (!allowedTargetIds.has(targetId) && allowedTargetIds.size >= MAX_CDP_ROUTING_ENTRIES) {
+				closeBoth();
+				return false;
+			}
+			if (openerId !== undefined && !childToParent.has(targetId) && childToParent.size >= MAX_CDP_ROUTING_ENTRIES) {
+				closeBoth();
+				return false;
+			}
+			allowedTargetIds.add(targetId);
+			if (openerId !== undefined) {
+				childToParent.set(targetId, openerId);
+			}
+			return true;
+		};
+		const addAllowedSession = (sessionId: string, targetId: string): boolean => {
+			if (boundedIdentifier(sessionId) === undefined || boundedIdentifier(targetId) === undefined
+				|| (!allowedSessionIds.has(sessionId) && allowedSessionIds.size >= MAX_CDP_ROUTING_ENTRIES)
+				|| (!sessionIdToTargetId.has(sessionId) && sessionIdToTargetId.size >= MAX_CDP_ROUTING_ENTRIES)) {
+				closeBoth();
+				return false;
+			}
+			allowedSessionIds.add(sessionId);
+			sessionIdToTargetId.set(sessionId, targetId);
+			return true;
+		};
+		const refreshBound = (): boolean => {
+			for (const targetId of ctx.boundTargetIds()) {
+				if (!addAllowedTarget(targetId)) {
+					return false;
+				}
+			}
+			return true;
+		};
+		const isAllowedTarget = (info: { targetId?: string; openerId?: string } | undefined, fallbackTargetId?: string): boolean => {
+			if (!refreshBound()) {
+				return false;
+			}
+			const targetId = info?.targetId ?? fallbackTargetId;
+			if (!targetId) {
+				return false;
+			}
+			if (allowedTargetIds.has(targetId)) {
 				return true;
 			}
-			const opener = info?.openerId;
-			if (opener && allowedTargetIds.has(opener)) {
-				allowedTargetIds.add(tid);
-				childToParent.set(tid, opener);
-				return true;
+			const openerId = info?.openerId;
+			if (openerId && allowedTargetIds.has(openerId)) {
+				return addAllowedTarget(targetId, openerId);
 			}
 			return false;
 		};
-		const dropTarget = (tid: string | undefined) => {
-			if (!tid) {
+		const dropTarget = (targetId: string | undefined) => {
+			if (!targetId) {
 				return;
 			}
-			// 子孫も再帰的に許可セットから外す（閉じたタブの子が残留してスコープが漏れ続けるのを防ぐ）
-			const queue: string[] = [tid];
+			const queue = [targetId];
 			const visited = new Set<string>();
 			while (queue.length > 0) {
-				const cur = queue.shift() as string;
-				if (visited.has(cur)) {
+				const current = queue.shift() as string;
+				if (visited.has(current)) {
 					continue;
 				}
-				visited.add(cur);
-				allowedTargetIds.delete(cur);
+				visited.add(current);
+				allowedTargetIds.delete(current);
 				for (const [child, parent] of childToParent) {
-					if (parent === cur && !visited.has(child)) {
+					if (parent === current && !visited.has(child)) {
 						queue.push(child);
 					}
 				}
-				childToParent.delete(cur);
+				childToParent.delete(current);
 			}
 			for (const [child, parent] of [...childToParent]) {
 				if (visited.has(parent)) {
 					childToParent.delete(child);
 				}
 			}
-			for (const [sid, mappedTid] of [...sessionIdToTargetId]) {
-				if (visited.has(mappedTid)) {
-					sessionIdToTargetId.delete(sid);
+			for (const [sessionId, mappedTargetId] of [...sessionIdToTargetId]) {
+				if (visited.has(mappedTargetId)) {
+					allowedSessionIds.delete(sessionId);
+					sessionIdToTargetId.delete(sessionId);
 				}
 			}
 		};
 
 		const closeBoth = () => {
-			try { clientWs.close(); } catch { /* ignore */ }
-			try { upstream.close(); } catch { /* ignore */ }
-		};
-		const sendToClient = (obj: unknown) => {
-			if (clientWs.readyState !== ws.WebSocket.OPEN) {
+			if (closed) {
 				return;
 			}
-			try { clientWs.send(JSON.stringify(obj)); } catch { /* ignore */ }
+			closed = true;
+			resolveConnectionClosed();
+			ctx.closeInputConnection();
+			pendingRequests.clear();
+			internalPending.clear();
+			clearForwardedRequestBarriers(forwardedRequestBarriers);
+			pendingPolicyBytes = 0;
+			pendingUpstream.length = 0;
+			pendingUpstreamBytes = 0;
+			allowedSessionIds.clear();
+			sessionIdToTargetId.clear();
+			allowedTargetIds.clear();
+			childToParent.clear();
+			rawScreenshots.markClosing(rawScreenshotOwner);
+			try { clientWs.close(); } catch { /* ignore */ }
+			if (paradisForceCloseRawScreenshotUpstream(upstream, ws.WebSocket.OPEN, ws.WebSocket.CLOSED)) {
+				rawScreenshots.release(rawScreenshotOwner);
+			}
 		};
-		const sendToUpstream = (obj: unknown) => {
-			if (upstream.readyState === ws.WebSocket.CONNECTING) {
-				pendingUpstream.push(obj);
+		const sendToClient = (message: unknown) => {
+			if (!ctx.isCurrentLease()) {
+				closeBoth();
 				return;
+			}
+			if (!closed && clientWs.readyState === ws.WebSocket.OPEN) {
+				let serialized: string;
+				try { serialized = JSON.stringify(message); } catch { closeBoth(); return; }
+				if (!sendWithBoundedBackpressure(clientWs, serialized, Buffer.byteLength(serialized, 'utf8') > MAX_CDP_FRAME_BYTES)) {
+					closeBoth();
+				}
+			}
+		};
+		const sendToUpstream = (message: unknown): boolean => {
+			if (closed) {
+				return false;
+			}
+			if (!ctx.isCurrentLease()) {
+				closeBoth();
+				return false;
+			}
+			let serialized: string;
+			try {
+				serialized = JSON.stringify(message);
+			} catch {
+				closeBoth();
+				return false;
+			}
+			const bytes = Buffer.byteLength(serialized, 'utf8');
+			if (bytes > MAX_CDP_FRAME_BYTES) {
+				closeBoth();
+				return false;
+			}
+			if (upstream.readyState === ws.WebSocket.CONNECTING) {
+				if (pendingUpstream.length >= MAX_CDP_PENDING_REQUESTS || pendingUpstreamBytes + bytes > MAX_CDP_CONNECTING_QUEUE_BYTES) {
+					closeBoth();
+					return false;
+				}
+				pendingUpstream.push(serialized);
+				pendingUpstreamBytes += bytes;
+				return true;
 			}
 			if (upstream.readyState !== ws.WebSocket.OPEN) {
+				closeBoth();
+				return false;
+			}
+			try {
+				if (sendWithBoundedBackpressure(upstream, serialized)) {
+					return true;
+				}
+				closeBoth();
+				return false;
+			} catch {
+				closeBoth();
+				return false;
+			}
+		};
+		const pendingRecord = (method: string, sessionId: string | undefined, targetId: string | undefined): IParadisPendingRequest => {
+			const byteLength = Buffer.byteLength(method, 'utf8')
+				+ (sessionId === undefined ? 0 : Buffer.byteLength(sessionId, 'utf8'))
+				+ (targetId === undefined ? 0 : Buffer.byteLength(targetId, 'utf8'))
+				+ 32;
+			return Object.freeze({ method, sessionId, targetId, byteLength });
+		};
+		const registerClientRequest = (message: IParadisClientCommand, targetId?: string): boolean => {
+			const record = pendingRecord(message.method, message.sessionId, targetId);
+			if (pendingRequests.has(message.id)
+				|| pendingRequests.size >= MAX_CDP_PENDING_REQUESTS
+				|| pendingPolicyBytes + record.byteLength > MAX_CDP_PENDING_POLICY_BYTES) {
+				closeBoth();
+				return false;
+			}
+			pendingRequests.set(message.id, record);
+			pendingPolicyBytes += record.byteLength;
+			return true;
+		};
+		const forwardClientRequest = (message: IParadisClientCommand, targetId?: string, rewrittenMessage: unknown = message): boolean => {
+			if (!registerClientRequest(message, targetId)) {
+				return false;
+			}
+			if (!registerForwardedRequestBarrier(forwardedRequestBarriers, message.id, message.sessionId)) {
+				closeBoth();
+				return false;
+			}
+			if (!sendToUpstream(rewrittenMessage)) {
+				completeForwardedRequestBarrier(forwardedRequestBarriers, message.id, message.sessionId);
+				return false;
+			}
+			return true;
+		};
+		const completeLocalRequest = (id: number, sessionId: string | undefined, response: unknown) => {
+			const pending = pendingRequests.get(id);
+			if (!pending || pending.sessionId !== sessionId) {
+				closeBoth();
 				return;
 			}
-			try { upstream.send(JSON.stringify(obj)); } catch { /* ignore */ }
+			pendingRequests.delete(id);
+			pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+			sendToClient(response);
 		};
-		const sendInternal = (method: string, params: Record<string, unknown>): number => {
-			internalReqSeq++;
-			const id = INTERNAL_REQ_BASE + internalReqSeq;
-			internalPendingIds.add(id);
-			sendToUpstream({ id, method, params });
+		const rejectRequest = (message: Pick<IParadisClientCommand, 'id' | 'sessionId'>, reason: string) => {
+			sendToClient({ id: message.id, ...(message.sessionId !== undefined ? { sessionId: message.sessionId } : {}), error: { code: -32000, message: reason } });
+		};
+		const dispatchInputAfterPriorRequests = async (
+			message: IParadisClientCommand,
+			sessionTargetId: string,
+			paramsJson: string,
+			isRouteCurrent: () => boolean,
+		): Promise<void> => {
+			const barrier = await waitForPriorForwardedRequests(
+				[...forwardedRequestBarriers.values()].map(entry => entry.settled),
+				connectionClosed,
+			);
+			if (barrier !== 'ready' || closed || !ctx.isCurrentLease() || !isRouteCurrent()) {
+				if (barrier === 'timeout' && !closed && ctx.isCurrentLease() && isRouteCurrent()) {
+					rejectRequest(message, 'PARA_BROWSER_RETRYABLE: prior CDP request did not complete before the input barrier timeout');
+				}
+				return;
+			}
+			if (!registerClientRequest(message, sessionTargetId)) {
+				return;
+			}
+			const requestSessionId = message.sessionId;
+			const operation = ctx.dispatchBoundPageInput(sessionTargetId, message.method, paramsJson, isRouteCurrent);
+			void operation.response.then(result => {
+				if (closed || pendingRequests.get(message.id)?.sessionId !== requestSessionId) {
+					return;
+				}
+				completeLocalRequest(message.id, requestSessionId, result.status === 'success'
+					? { id: message.id, sessionId: requestSessionId, result: result.result }
+					: { id: message.id, sessionId: requestSessionId, error: { code: -32000, message: result.message } });
+			}, closeBoth);
+			await Promise.race([operation.drained, connectionClosed]);
+		};
+		const sendInternal = (method: string, params: Record<string, unknown>, sessionId?: string, targetId?: string): number | undefined => {
+			const record = pendingRecord(method, sessionId, targetId);
+			if (internalPending.size >= MAX_CDP_PENDING_REQUESTS
+				|| pendingPolicyBytes + record.byteLength > MAX_CDP_PENDING_POLICY_BYTES
+				|| internalRequestSequence >= Number.MAX_SAFE_INTEGER) {
+				closeBoth();
+				return undefined;
+			}
+			const id = -(++internalRequestSequence);
+			internalPending.set(id, record);
+			pendingPolicyBytes += record.byteLength;
+			if (!sendToUpstream({ id, method, params, ...(sessionId !== undefined ? { sessionId } : {}) })) {
+				return undefined;
+			}
 			return id;
-		};
-		// -32601（method not found）ではなく-32000を返す: CDPクライアントに
-		// 「このChromiumに存在しないメソッド」フォールバック経路へ入らせないため（Superset知見）
-		const rejectRequest = (id: number, message: string) => {
-			sendToClient({ id, error: { code: -32000, message } });
 		};
 
 		upstream.on('open', () => {
-			for (const obj of pendingUpstream) {
-				try { upstream.send(JSON.stringify(obj)); } catch { /* ignore */ }
+			if (closed || !ctx.isCurrentLease()) {
+				closeBoth();
+				try { upstream.close(); } catch { /* ignore */ }
+				return;
+			}
+			for (const message of pendingUpstream) {
+				if (!sendWithBoundedBackpressure(upstream, message)) {
+					closeBoth();
+					break;
+				}
 			}
 			pendingUpstream.length = 0;
+			pendingUpstreamBytes = 0;
 		});
 
-		// --- クライアント → 上流 ---
-		clientWs.on('message', (data: wsTypes.RawData) => {
-			let msg: IJsonRpcMsg;
-			try {
-				msg = JSON.parse(data.toString()) as IJsonRpcMsg;
-			} catch {
+		const processClientMessage = (data: wsTypes.RawData): Promise<void> | undefined => {
+			if (!ctx.isCurrentLease()) {
+				closeBoth();
 				return;
 			}
-			const id = typeof msg.id === 'number' ? msg.id : undefined;
-			const method = msg.method ?? '';
-
-			const deniedMessage = ALWAYS_DENIED_METHODS.get(method);
-			if (deniedMessage !== undefined) {
-				if (id !== undefined) {
-					rejectRequest(id, deniedMessage);
-				}
+			const message = parseClientCommand(data);
+			if (!message) {
+				closeBoth();
+				return;
+			}
+			if (pendingRequests.has(message.id)) {
+				closeBoth();
 				return;
 			}
 
-			// ウィンドウサイズ操作系: Electron未実装（-32601）を素通しせず、理由と代替手段を明示する
-			if (LAYOUT_MANAGED_DENIED_METHODS.has(method)) {
-				if (id !== undefined) {
-					rejectRequest(id, `${method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}`);
-				}
+			const alwaysDenied = ALWAYS_DENIED_METHODS.get(message.method);
+			if (alwaysDenied !== undefined) {
+				rejectRequest(message, alwaysDenied);
+				return;
+			}
+			if (LAYOUT_MANAGED_DENIED_METHODS.has(message.method)) {
+				rejectRequest(message, `${message.method} is not supported: ${LAYOUT_MANAGED_DENIED_MESSAGE}`);
 				return;
 			}
 
-			// セッションスコープのフレーム: 公開済みsessionIdのみ通す
-			if (msg.sessionId) {
-				if (!allowedSessionIds.has(msg.sessionId)) {
-					if (id !== undefined) {
-						rejectRequest(id, 'The supplied CDP sessionId is not authorized for this Para Code pane binding.');
-					}
+			if (message.sessionId !== undefined) {
+				if (!allowedSessionIds.has(message.sessionId)) {
+					rejectRequest(message, 'The supplied CDP sessionId is not authorized for this Para Code pane binding.');
 					return;
 				}
-				const sessionTargetId = sessionIdToTargetId.get(msg.sessionId);
-				const isBoundPrimary = sessionTargetId !== undefined && ctx.boundTargetIds().has(sessionTargetId);
-				// Input.* の転送直前にバインド済みページへChromium内部フォーカスを強制する
-				// （内部フォーカスが別webContents—ターミナル等—にあると合成入力がそちらへ
-				// 飛ぶElectronの既知問題への対策。Superset cdp-filter-proxy.ts の移植）。
-				// 失敗は握りつぶし、転送自体は常に行う。
-				if (isBoundPrimary && method.startsWith('Input.')) {
-					ctx.focusBoundPage();
+				if (message.method.startsWith('Target.') && !BROWSER_SESSION_ALLOWED_TARGET_METHODS.has(message.method)) {
+					rejectRequest(message, `${message.method} is not permitted on a target-scoped CDP session.`);
+					return;
 				}
-				// Page.captureScreenshot はバインド済みprimaryページ宛てなら electron-main の
-				// upstream実装（BrowserView.captureScreenshot: 可視化キック + capturePage(stayHidden) +
-				// リトライ）へ委譲する。素通しだとWebContentsView非表示時（背面タブ・オーバーレイ・
-				// 最小化）にChromiumのサーフェスコピーが失敗するため。マッピングできない
-				// パラメータ組合せと委譲失敗時は上流へフォールバック素通しする。
-				if (isBoundPrimary && method === 'Page.captureScreenshot' && id !== undefined) {
-					const mapped = mapCaptureScreenshotParams(msg.params);
-					if (mapped) {
-						const requestSessionId = msg.sessionId;
-						ctx.captureBoundPageScreenshot(mapped).then(
-							data => {
-								if (data !== undefined) {
-									sendToClient({ id, sessionId: requestSessionId, result: { data } });
-								} else {
-									sendToUpstream(msg);
-								}
-							},
-							() => sendToUpstream(msg),
-						);
+				const sharedStateDenied = sharedStateDeniedMessage(message.method);
+				if (sharedStateDenied !== undefined) {
+					rejectRequest(message, sharedStateDenied);
+					return;
+				}
+				const referencedTargetId = targetIdOf(message.params);
+				const referencedSessionId = boundedIdentifier(message.params?.sessionId);
+				if ((referencedTargetId && !allowedTargetIds.has(referencedTargetId)) || (referencedSessionId && !allowedSessionIds.has(referencedSessionId))) {
+					rejectRequest(message, `${message.method} references a target or session outside this Para Code pane binding.`);
+					return;
+				}
+				const sessionTargetId = sessionIdToTargetId.get(message.sessionId);
+				const isBoundPrimary = sessionTargetId !== undefined && ctx.boundTargetIds().has(sessionTargetId);
+				if (message.method.startsWith('Input.')) {
+					if (!isBoundPrimary || sessionTargetId === undefined) {
+						rejectRequest(message, `${message.method} is permitted only on the bound primary BrowserView session.`);
 						return;
 					}
+					let paramsJson: string;
+					try {
+						paramsJson = JSON.stringify(message.params ?? {});
+					} catch {
+						rejectRequest(message, `PARA_BROWSER_RETRYABLE: ${message.method} parameters could not be serialized`);
+						return;
+					}
+					const requestSessionId = message.sessionId;
+					return dispatchInputAfterPriorRequests(
+						message,
+						sessionTargetId,
+						paramsJson,
+						() => !closed
+							&& allowedSessionIds.has(requestSessionId)
+							&& sessionIdToTargetId.get(requestSessionId) === sessionTargetId
+							&& ctx.boundTargetIds().has(sessionTargetId),
+					);
 				}
-				sendToUpstream(msg);
-				return;
-			}
-
-			refreshBound();
-			const bound = allowedTargetIds;
-
-			// `filter` の除去（puppeteer/cdp-use対策、ファイル先頭コメント参照）
-			if ((method === 'Target.setAutoAttach' || method === 'Target.setDiscoverTargets') && id !== undefined) {
-				const original = (msg.params ?? {}) as Record<string, unknown>;
-				const rewritten: Record<string, unknown> = { ...original };
-				delete rewritten.filter;
-				pendingMethods.set(id, method);
-				sendToUpstream({ id, method, params: rewritten });
-				return;
-			}
-
-			if (method === 'Target.attachToTarget' && id !== undefined) {
-				const tid = targetIdOf(msg.params);
-				if (tid && !bound.has(tid)) {
-					rejectRequest(id, 'This connection is scoped to the browser page bound to your terminal pane; attachToTarget for other targets is refused.');
+				if (isBoundPrimary && message.method === 'Page.captureScreenshot') {
+					if (!registerClientRequest(message, sessionTargetId)) {
+						return;
+					}
+					const requestSessionId = message.sessionId;
+					const requestTargetId = sessionTargetId;
+					void paradisDispatchCaptureScreenshotRequest(
+						{ id: message.id, sessionId: requestSessionId, params: message.params },
+						ctx,
+						{
+							isActive: () => !closed
+								&& pendingRequests.get(message.id)?.sessionId === requestSessionId
+								&& ctx.isCurrentLease()
+								&& clientWs.readyState === ws.WebSocket.OPEN
+								&& sessionIdToTargetId.get(requestSessionId) === requestTargetId
+								&& ctx.boundTargetIds().has(requestTargetId),
+							forward: request => {
+								if (!paradisStartVisibleWebPCapture(rawScreenshots, rawScreenshotOwner, request, {
+									respond: response => completeLocalRequest(message.id, requestSessionId, response),
+									closeTransport: closeBoth,
+									onStart: () => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('start', 'browser')),
+									onComplete: durationMs => logNonThrowing(logService, 'trace', paradisVisibleWebPScreenshotLogMessage('complete', 'browser', durationMs)),
+									onTimeout: () => logNonThrowing(logService, 'warn', '[ParadisCdpGateway] browser visible WebP capture timed out; closing CDP connection'),
+								})) {
+									return;
+								}
+								if (!registerForwardedRequestBarrier(forwardedRequestBarriers, message.id, requestSessionId)) {
+									closeBoth();
+									return;
+								}
+								sendToUpstream({ ...message, ...request });
+							},
+							respond: response => completeLocalRequest(message.id, requestSessionId, response),
+						},
+					);
 					return;
 				}
-				pendingMethods.set(id, method);
-				if (tid) {
-					pendingAttachTargets.set(id, tid);
-				}
-				sendToUpstream(msg);
-				return;
-			}
-
-			// Target.closeTarget は ALWAYS_DENIED_METHODS で常時拒否済み（共有ページの破棄防止）
-			if (method === 'Target.activateTarget' && id !== undefined) {
-				const tid = targetIdOf(msg.params);
-				if (!tid || !bound.has(tid)) {
-					rejectRequest(id, `${method} for targets outside the bound scope is refused by the Para Code CDP gateway.`);
+				if (message.method === 'Target.setAutoAttach') {
+					const rewrittenParams = { ...(message.params ?? {}) };
+					delete rewrittenParams.filter;
+					forwardClientRequest(message, sessionTargetId, { ...message, params: rewrittenParams });
 					return;
 				}
-				pendingMethods.set(id, method);
-				sendToUpstream(msg);
+				forwardClientRequest(message, sessionTargetId);
 				return;
 			}
 
-			if (method === 'Target.createTarget' && id !== undefined) {
-				// Para CodeではMCP起点の新規タブ/ページ生成は提供しない（バインドは共有された1ページ単位）。
-				rejectRequest(id, 'Target.createTarget is not supported by the Para Code CDP gateway. Ask the user to open and share a page from Para Code instead.');
+			if (!refreshBound()) {
 				return;
 			}
-
-			if (method === 'Target.getTargets' || method === 'Target.getTargetInfo') {
-				if (id !== undefined) {
-					pendingMethods.set(id, method);
-				}
-				sendToUpstream(msg);
+			if (!BROWSER_ROOT_ALLOWED_METHODS.has(message.method)) {
+				rejectRequest(message, `${message.method} is not permitted on the browser root by the Para Code CDP gateway.`);
 				return;
 			}
-
-			if (method === 'Target.detachFromTarget' && id !== undefined) {
-				const sid = (msg.params as { sessionId?: string } | undefined)?.sessionId;
-				const tid = targetIdOf(msg.params);
-				if ((sid && !allowedSessionIds.has(sid)) || (tid && !bound.has(tid))) {
-					rejectRequest(id, 'Target.detachFromTarget outside the bound scope is refused by the Para Code CDP gateway.');
+			if (message.method === 'Target.getBrowserContexts') {
+				sendToClient({ id: message.id, result: { browserContextIds: [] } });
+				return;
+			}
+			if (message.method === 'Target.setAutoAttach' || message.method === 'Target.setDiscoverTargets') {
+				const rewrittenParams = { ...(message.params ?? {}) };
+				delete rewrittenParams.filter;
+				forwardClientRequest(message, undefined, { ...message, params: rewrittenParams });
+				return;
+			}
+			if (message.method === 'Target.attachToTarget') {
+				const targetId = targetIdOf(message.params);
+				if (!targetId || !allowedTargetIds.has(targetId)) {
+					rejectRequest(message, 'Target.attachToTarget outside the bound scope is refused by the Para Code CDP gateway.');
 					return;
 				}
-				pendingMethods.set(id, method);
-				sendToUpstream(msg);
+				forwardClientRequest(message, targetId);
 				return;
 			}
-
-			// その他の Target.*: targetId / sessionId が指定されていればスコープ内か検証する
-			if (method.startsWith('Target.') && id !== undefined) {
-				const tid = targetIdOf(msg.params);
-				const sid = (msg.params as { sessionId?: string } | undefined)?.sessionId;
-				if (tid && !bound.has(tid)) {
-					rejectRequest(id, `${method} targetId is outside the bound scope.`);
+			if (message.method === 'Target.getTargetInfo') {
+				const targetId = targetIdOf(message.params);
+				if (!targetId || !allowedTargetIds.has(targetId)) {
+					rejectRequest(message, 'Target.getTargetInfo outside the bound scope is refused by the Para Code CDP gateway.');
 					return;
 				}
-				if (sid && !allowedSessionIds.has(sid)) {
-					rejectRequest(id, `${method} sessionId is not authorized for this Para Code pane binding.`);
-					return;
-				}
-				pendingMethods.set(id, method);
-				sendToUpstream(msg);
+				forwardClientRequest(message, targetId);
 				return;
 			}
-
-			if (id !== undefined) {
-				pendingMethods.set(id, method);
+			if (message.method === 'Target.detachFromTarget') {
+				const targetId = targetIdOf(message.params);
+				const sessionId = boundedIdentifier(message.params?.sessionId);
+				if ((!targetId && !sessionId)
+					|| (targetId !== undefined && !allowedTargetIds.has(targetId))
+					|| (sessionId !== undefined && !allowedSessionIds.has(sessionId))) {
+					rejectRequest(message, `${message.method} outside the bound scope is refused by the Para Code CDP gateway.`);
+					return;
+				}
+				forwardClientRequest(message, targetId ?? (sessionId ? sessionIdToTargetId.get(sessionId) : undefined));
+				return;
 			}
-			sendToUpstream(msg);
+			forwardClientRequest(message);
+			return undefined;
+		};
+		clientWs.on('message', (data: wsTypes.RawData) => {
+			const bytes = rawDataByteLength(data);
+			if (closed
+				|| bytes > MAX_CDP_FRAME_BYTES
+				|| scheduledClientMessages >= MAX_CDP_PENDING_REQUESTS
+				|| scheduledClientBytes + bytes > MAX_CDP_CONNECTING_QUEUE_BYTES) {
+				closeBoth();
+				return;
+			}
+			const previous = clientCommandTail;
+			if (!previous) {
+				try {
+					const wait = processClientMessage(data);
+					if (wait) {
+						const guarded = wait.catch(closeBoth);
+						clientCommandTail = guarded;
+						void guarded.finally(() => {
+							if (clientCommandTail === guarded) {
+								clientCommandTail = undefined;
+							}
+						});
+					}
+				} catch {
+					closeBoth();
+				}
+				return;
+			}
+			scheduledClientMessages++;
+			scheduledClientBytes += bytes;
+			const next = previous
+				.then(() => processClientMessage(data))
+				.catch(closeBoth)
+				.finally(() => {
+					scheduledClientMessages = Math.max(0, scheduledClientMessages - 1);
+					scheduledClientBytes = Math.max(0, scheduledClientBytes - bytes);
+				});
+			clientCommandTail = next;
+			void next.finally(() => {
+				if (clientCommandTail === next) {
+					clientCommandTail = undefined;
+				}
+			});
 		});
 
-		// --- 上流 → クライアント ---
 		upstream.on('message', (data: wsTypes.RawData) => {
-			let msg: IJsonRpcMsg;
-			try {
-				msg = JSON.parse(data.toString()) as IJsonRpcMsg;
-			} catch {
+			if (!ctx.isCurrentLease()) {
+				closeBoth();
 				return;
 			}
-			refreshBound();
-			const bound = allowedTargetIds;
-
-			// プロキシ内部発行リクエストへの応答は、sessionId付き（スコープ外ターゲットへ
-			// セッションスコープで送った Runtime.runIfWaitingForDebugger 等）でも必ずここで回収する。
-			// この応答は下の sessionId ガード（許可外セッションを早期 return）で握りつぶされ、
-			// 従来は internalPendingIds の削除に到達せず id が永久残留していた。ガードより前に
-			// 処理することで、正常応答（sessionId付き）とセッション消滅時のエラー応答（root宛）の
-			// 双方を取りこぼしなく回収する。
-			if (typeof msg.id === 'number' && internalPendingIds.has(msg.id)) {
-				internalPendingIds.delete(msg.id);
-				// プロキシ内部発行（先行attach等）への応答は握りつぶす。
-				// attach成功時のsessionIdは許可セットへ加える（イベント経由と二重でも無害）。
-				const sid = (msg.result as { sessionId?: string } | undefined)?.sessionId;
-				const attachTid = internalAttachTargets.get(msg.id);
-				internalAttachTargets.delete(msg.id);
-				if (sid) {
-					allowedSessionIds.add(sid);
-					if (attachTid) {
-						sessionIdToTargetId.set(sid, attachTid);
-					}
-				}
+			const frameBytes = rawDataByteLength(data);
+			const rawScreenshotActive = rawScreenshots.hasActiveRequestForOwner(rawScreenshotOwner);
+			const message = parseJsonRecord(data, rawScreenshotActive ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES);
+			if (!message
+				|| (message.params !== undefined && !isRecord(message.params))
+				|| (message.sessionId !== undefined && boundedIdentifier(message.sessionId) === undefined)) {
+				closeBoth();
+				return;
+			}
+			if (!refreshBound()) {
 				return;
 			}
 
-			// セッションスコープのフレーム
-			if (msg.sessionId) {
-				if (!allowedSessionIds.has(msg.sessionId)) {
+			if (message.id !== undefined) {
+				if (typeof message.id !== 'number' || !Number.isSafeInteger(message.id)) {
+					closeBoth();
 					return;
 				}
-				if (msg.method === 'Target.attachedToTarget') {
-					// ネストされたattach（許可済みターゲットのworker / iframe / prerender）。
-					// 親セッションを信頼して子sessionId・子targetIdを許可セットへ加える。
-					const params = msg.params as { sessionId?: string; targetInfo?: { targetId?: string; openerId?: string } } | undefined;
-					if (params?.sessionId) {
-						allowedSessionIds.add(params.sessionId);
+				if (message.id < 0) {
+					if (frameBytes > MAX_CDP_FRAME_BYTES) {
+						closeBoth();
+						return;
 					}
-					const childTid = params?.targetInfo?.targetId;
-					if (childTid) {
-						allowedTargetIds.add(childTid);
-						const opener = params?.targetInfo?.openerId;
-						if (opener) {
-							childToParent.set(childTid, opener);
-						}
-						if (params?.sessionId) {
-							sessionIdToTargetId.set(params.sessionId, childTid);
+					const pending = internalPending.get(message.id);
+					if (!pending || pending.sessionId !== message.sessionId) {
+						closeBoth();
+						return;
+					}
+					internalPending.delete(message.id);
+					pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+					if (pending.method === 'Target.attachToTarget') {
+						const sessionId = boundedIdentifier(message.result?.sessionId);
+						if (sessionId && pending.targetId && allowedTargetIds.has(pending.targetId)) {
+							addAllowedSession(sessionId, pending.targetId);
 						}
 					}
-				} else if (msg.method === 'Target.detachedFromTarget') {
-					const params = msg.params as { sessionId?: string; targetId?: string } | undefined;
+					return;
+				}
+
+				const pending = pendingRequests.get(message.id);
+				if (!pending || pending.sessionId !== message.sessionId) {
+					closeBoth();
+					return;
+				}
+				completeForwardedRequestBarrier(forwardedRequestBarriers, message.id, message.sessionId);
+				pendingRequests.delete(message.id);
+				pendingPolicyBytes = Math.max(0, pendingPolicyBytes - pending.byteLength);
+				const rawCompletion = rawScreenshots.complete(rawScreenshotOwner, message.id, message.sessionId);
+				if (frameBytes > MAX_CDP_FRAME_BYTES && !rawCompletion.handled) {
+					closeBoth();
+					return;
+				}
+				if (rawCompletion.handled && rawCompletion.suppress) {
+					return;
+				}
+				if (pending.method === 'Target.getTargets' && message.result) {
+					const infos = Array.isArray(message.result.targetInfos) ? message.result.targetInfos : [];
+					const filtered = infos
+						.filter(isRecord)
+						.filter(info => {
+							const targetId = targetIdOf(info);
+							return targetId !== undefined && allowedTargetIds.has(targetId);
+						})
+						.map(info => rewriteTargetInfoType(info));
+					sendToClient({ ...message, result: { ...message.result, targetInfos: filtered } });
+					return;
+				}
+				if (pending.method === 'Target.attachToTarget' && message.result) {
+					const sessionId = boundedIdentifier(message.result.sessionId);
+					if (sessionId && pending.targetId) {
+						if (!addAllowedSession(sessionId, pending.targetId)) {
+							return;
+						}
+					}
+				}
+				if (pending.method === 'Target.getTargetInfo' && message.result?.targetInfo) {
+					const targetId = targetIdOf(message.result.targetInfo);
+					if (!targetId || targetId !== pending.targetId || !allowedTargetIds.has(targetId)) {
+						sendToClient({ id: message.id, error: { code: -32000, message: 'target not found' } });
+						return;
+					}
+					sendToClient({ ...message, result: { ...message.result, targetInfo: rewriteTargetInfoType(message.result.targetInfo as ITargetInfoLike) } });
+					return;
+				}
+				sendToClient(message);
+				return;
+			}
+			if (frameBytes > MAX_CDP_FRAME_BYTES) {
+				closeBoth();
+				return;
+			}
+
+			if (typeof message.method !== 'string' || message.method.length === 0 || message.method.length > MAX_CDP_METHOD_LENGTH) {
+				closeBoth();
+				return;
+			}
+			if (message.sessionId !== undefined) {
+				if (!allowedSessionIds.has(message.sessionId) || sharedStateDeniedMessage(message.method) !== undefined) {
+					return;
+				}
+				if (message.method === 'Target.attachedToTarget') {
+					const params = message.params as { sessionId?: string; targetInfo?: { targetId?: string; openerId?: string } } | undefined;
+					const childSessionId = params?.sessionId;
+					const childTargetId = params?.targetInfo?.targetId;
+					if (childSessionId && childTargetId) {
+						if (!addAllowedTarget(childTargetId, params?.targetInfo?.openerId)
+							|| !addAllowedSession(childSessionId, childTargetId)) {
+							return;
+						}
+					}
+				} else if (message.method === 'Target.detachedFromTarget') {
+					const params = message.params as { sessionId?: string; targetId?: string } | undefined;
 					if (params?.sessionId) {
 						allowedSessionIds.delete(params.sessionId);
 						sessionIdToTargetId.delete(params.sessionId);
 					}
 					dropTarget(params?.targetId);
 				}
-				sendToClient(msg);
+				sendToClient(message);
 				return;
 			}
 
-			// リクエストへの応答（プロキシ内部発行のidは上で回収済み）
-			if (typeof msg.id === 'number') {
-				const origMethod = pendingMethods.get(msg.id);
-				pendingMethods.delete(msg.id);
-				const clientAttachTid = pendingAttachTargets.get(msg.id);
-				pendingAttachTargets.delete(msg.id);
-				if (origMethod === 'Target.getTargets' && msg.result) {
-					const infos = (msg.result.targetInfos ?? []) as Array<{ type?: string } & Record<string, unknown>>;
-					const filtered = infos
-						.filter(i => {
-							const tid = targetIdOf(i);
-							return tid !== undefined && bound.has(tid);
-						})
-						.map(i => rewriteTargetInfoType(i));
-					sendToClient({ ...msg, result: { ...msg.result, targetInfos: filtered } });
-					return;
-				}
-				if (origMethod === 'Target.attachToTarget' && msg.result) {
-					const sid = (msg.result as { sessionId?: string }).sessionId;
-					if (sid) {
-						allowedSessionIds.add(sid);
-						if (clientAttachTid) {
-							sessionIdToTargetId.set(sid, clientAttachTid);
-						}
-					}
-				}
-				if (origMethod === 'Target.getTargetInfo' && msg.result?.targetInfo) {
-					const tid = targetIdOf(msg.result.targetInfo);
-					if (!tid || !bound.has(tid)) {
-						sendToClient({ id: msg.id, error: { code: -32000, message: 'target not found' } });
-						return;
-					}
-					sendToClient({ ...msg, result: { ...msg.result, targetInfo: rewriteTargetInfoType(msg.result.targetInfo as { type?: string }) } });
-					return;
-				}
-				sendToClient(msg);
-				return;
-			}
-
-			// ルートセッションのイベント
-			const method = msg.method ?? '';
-			if (method === 'Target.targetCreated' || method === 'Target.targetInfoChanged') {
-				const params = msg.params as { targetInfo?: { type?: string; targetId?: string; openerId?: string; attached?: boolean }; targetId?: string } | undefined;
+			if (message.method === 'Target.targetCreated' || message.method === 'Target.targetInfoChanged') {
+				const params = message.params as { targetInfo?: { type?: string; targetId?: string; openerId?: string; attached?: boolean }; targetId?: string } | undefined;
 				const info = params?.targetInfo;
 				if (!isAllowedTarget(info, params?.targetId)) {
 					return;
 				}
-				const tid = info?.targetId ?? params?.targetId;
-				// Chromiumのauto-attachはElectronホストの一部ターゲット（ページ由来のワーカー・
-				// ポップアップ・prerender等）を取りこぼす。attachedToTargetが来ないターゲットは
-				// puppeteer/playwrightから不可視のままになるため、スコープ内の新規ターゲットには
-				// 内部リクエストで先行attachし、本物のattachedToTargetイベントを発火させる。
-				const t = info?.type;
-				if (method === 'Target.targetCreated' && tid && info?.attached !== true &&
-					(t === 'page' || t === 'iframe' || t === 'service_worker' || t === 'shared_worker' || t === 'worker' || t === 'prerender' || t === 'webview')) {
-					const internalId = sendInternal('Target.attachToTarget', { targetId: tid, flatten: true });
-					internalAttachTargets.set(internalId, tid);
+				const targetId = info?.targetId ?? params?.targetId;
+				const type = info?.type;
+				if (message.method === 'Target.targetCreated' && targetId && info?.attached !== true
+					&& (type === 'page' || type === 'iframe' || type === 'service_worker' || type === 'shared_worker' || type === 'worker' || type === 'prerender' || type === 'webview')) {
+					sendInternal('Target.attachToTarget', { targetId, flatten: true }, undefined, targetId);
 				}
-				sendToClient(info ? { ...msg, params: { ...params, targetInfo: rewriteTargetInfoType(info) } } : msg);
+				sendToClient(info ? { ...message, params: { ...params, targetInfo: rewriteTargetInfoType(info) } } : message);
 				return;
 			}
-			if (method === 'Target.targetDestroyed' || method === 'Target.targetCrashed') {
-				const params = msg.params as { targetInfo?: { type?: string; targetId?: string }; targetId?: string } | undefined;
-				const tid = params?.targetInfo?.targetId ?? params?.targetId;
-				if (!tid || !bound.has(tid)) {
+			if (message.method === 'Target.targetDestroyed' || message.method === 'Target.targetCrashed') {
+				const params = message.params as { targetInfo?: { type?: string; targetId?: string }; targetId?: string } | undefined;
+				const targetId = params?.targetInfo?.targetId ?? params?.targetId;
+				if (!targetId || !allowedTargetIds.has(targetId)) {
 					return;
 				}
-				dropTarget(tid);
-				sendToClient(params?.targetInfo ? { ...msg, params: { ...params, targetInfo: rewriteTargetInfoType(params.targetInfo) } } : msg);
+				dropTarget(targetId);
+				sendToClient(params?.targetInfo ? { ...message, params: { ...params, targetInfo: rewriteTargetInfoType(params.targetInfo) } } : message);
 				return;
 			}
-			if (method === 'Target.attachedToTarget') {
-				const params = msg.params as { sessionId?: string; targetInfo?: { type?: string; targetId?: string; openerId?: string } } | undefined;
+			if (message.method === 'Target.attachedToTarget') {
+				const params = message.params as { sessionId?: string; targetInfo?: { type?: string; targetId?: string; openerId?: string } } | undefined;
 				if (!isAllowedTarget(params?.targetInfo)) {
-					// スコープ外ターゲットへのauto-attach。イベントは握りつぶすが、
-					// waitForDebuggerOnStartで一時停止したまま放置しないよう解放してデタッチする。
 					if (params?.sessionId) {
-						// runIfWaitingForDebugger は対象セッションスコープで送る必要があるため、
-						// sessionId付きの内部フレームを直接構築する
-						internalReqSeq++;
-						const rid = INTERNAL_REQ_BASE + internalReqSeq;
-						internalPendingIds.add(rid);
-						sendToUpstream({ id: rid, method: 'Runtime.runIfWaitingForDebugger', params: {}, sessionId: params.sessionId });
+						sendInternal('Runtime.runIfWaitingForDebugger', {}, params.sessionId);
 						sendInternal('Target.detachFromTarget', { sessionId: params.sessionId });
 					}
 					return;
 				}
-				if (params?.sessionId) {
-					allowedSessionIds.add(params.sessionId);
-					const attachedTid = params?.targetInfo?.targetId;
-					if (attachedTid) {
-						sessionIdToTargetId.set(params.sessionId, attachedTid);
+				if (params?.sessionId && params.targetInfo?.targetId) {
+					if (!addAllowedSession(params.sessionId, params.targetInfo.targetId)) {
+						return;
 					}
 				}
-				sendToClient({ ...msg, params: { ...(params ?? {}), targetInfo: rewriteTargetInfoType(params?.targetInfo) } });
+				sendToClient({ ...message, params: { ...(params ?? {}), targetInfo: rewriteTargetInfoType(params?.targetInfo) } });
 				return;
 			}
-			if (method === 'Target.detachedFromTarget') {
-				const sid = (msg.params as { sessionId?: string } | undefined)?.sessionId;
-				if (!sid || !allowedSessionIds.has(sid)) {
+			if (message.method === 'Target.detachedFromTarget') {
+				const sessionId = boundedIdentifier(message.params?.sessionId);
+				if (!sessionId || !allowedSessionIds.has(sessionId)) {
 					return;
 				}
-				allowedSessionIds.delete(sid);
-				sessionIdToTargetId.delete(sid);
-				sendToClient(msg);
+				allowedSessionIds.delete(sessionId);
+				sessionIdToTargetId.delete(sessionId);
+				sendToClient(message);
 				return;
 			}
-			// 非flatten経路のセッションペイロード: スコープ外なら遮断
-			if (method === 'Target.receivedMessageFromTarget') {
-				const params = msg.params as { sessionId?: string; targetId?: string } | undefined;
-				if (params?.sessionId && !allowedSessionIds.has(params.sessionId)) {
+			if (message.method === 'Target.receivedMessageFromTarget') {
+				const targetId = targetIdOf(message.params);
+				const sessionId = boundedIdentifier(message.params?.sessionId);
+				if ((!targetId && !sessionId) || (targetId && !allowedTargetIds.has(targetId)) || (sessionId && !allowedSessionIds.has(sessionId))) {
 					return;
 				}
-				if (params?.targetId && !bound.has(params.targetId)) {
-					return;
-				}
-				sendToClient(msg);
-				return;
+				sendToClient(message);
 			}
-			// その他の Target.* イベントも targetId / sessionId をスコープ検証する
-			if (method.startsWith('Target.')) {
-				const tid = targetIdOf(msg.params) ?? (msg.params as { targetInfo?: { targetId?: string } } | undefined)?.targetInfo?.targetId;
-				const sid = (msg.params as { sessionId?: string } | undefined)?.sessionId;
-				if (tid && !bound.has(tid)) {
-					return;
-				}
-				if (sid && !allowedSessionIds.has(sid)) {
-					return;
-				}
-				sendToClient(msg);
-				return;
-			}
-			sendToClient(msg);
+			// Unknown root events are not part of the browser-root capability surface.
 		});
 
-		upstream.on('error', err => {
-			logService.debug('[ParadisCdpGateway] browser upstream error', err);
+		upstream.on('error', () => {
+			closeBoth();
+			logNonThrowing(logService, 'debug', '[ParadisCdpGateway] browser upstream transport failed');
+		});
+		upstream.on('close', () => {
+			rawScreenshots.release(rawScreenshotOwner);
 			closeBoth();
 		});
-		upstream.on('close', closeBoth);
 		clientWs.on('error', closeBoth);
 		clientWs.on('close', closeBoth);
 	});

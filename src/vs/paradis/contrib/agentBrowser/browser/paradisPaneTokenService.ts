@@ -21,7 +21,8 @@ import { IShellLaunchConfig } from '../../../../platform/terminal/common/termina
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paneTokenFromShellIntegrationNonce, restoredPaneToken } from '../../mobileRelay/common/paradisTerminalPersistence.js';
-import { PARADIS_CDP_URL_ENV_VAR, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_MCP_PORT_FILE_NAME, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
+import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
 
@@ -41,6 +42,9 @@ export interface IParadisPaneTokenService {
 
 	/** 指定トークンが割り当てられたインスタンスIDを返す。 */
 	getInstanceForToken(token: string): number | undefined;
+
+	/** UI上のactive/park状態に関係なく、disposeされていない全ペイントークンを返す。 */
+	listPaneTokens(): readonly { readonly instanceId: number; readonly token: string }[];
 
 	/**
 	 * PTY起動前の {@link IShellLaunchConfig} にペイントークン等のenvを注入する。
@@ -79,6 +83,10 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 		return this._instanceIdByToken.get(token);
 	}
 
+	listPaneTokens(): readonly { readonly instanceId: number; readonly token: string }[] {
+		return paradisListCurrentPaneTokens(this._tokenByInstanceId, this._instanceIdByToken);
+	}
+
 	prepareShellLaunchConfig(shellLaunchConfig: IShellLaunchConfig): void {
 		if (shellLaunchConfig.attachPersistentProcess) {
 			// 再接続: プロセスは生きていて元のenvを保持しているため注入しない。
@@ -96,16 +104,8 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 			return;
 		}
 		const token = paneTokenFromShellIntegrationNonce(nonce);
-		// 既存の env を壊さないよう新しいオブジェクトにマージする（上書きしない）。
-		// PARA_CODE_CDP_URL は固定既定ポート前提の値を注入する（サーバーは同ポートを第一候補で
-		// listenする。専有時の動的フォールバック中のみ古くなるが、その場合も get_cdp_endpoint
-		// MCPツール／ポートファイル経由で実URLを取得できる）。
-		shellLaunchConfig.env = {
-			...shellLaunchConfig.env,
-			[PARADIS_PANE_TOKEN_ENV_VAR]: token,
-			[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
-			[PARADIS_CDP_URL_ENV_VAR]: `http://127.0.0.1:${PARADIS_MCP_DEFAULT_PORT}/cdp`,
-		};
+		// CDP URLは動的ポート確定前に固定注入せず、ユーザーが指定済みならその値を保持する。
+		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath);
 	}
 
 	private _getPortFilePath(): string | undefined {

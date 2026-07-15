@@ -20,11 +20,7 @@
 // 正常に起動し、initialize / tools/list には応答する（＝CLIのMCP接続自体は成功させる）。
 // 実際のツール呼び出し時のみ、LLMが読んで状況を理解できる明確なエラーメッセージを返す。
 
-import type * as http from 'http';
-import { readFileSync } from 'fs';
-
-// eslint警告(local/code-no-http-import)対応: httpは動的importで遅延ロードする
-const httpModulePromise: Promise<typeof http> = import('http');
+import { IParadisMcpPortFileRecord, IParadisMcpStdioWritable, PARADIS_MCP_MAX_INFLIGHT_REQUESTS, ParadisMcpInflightTracker, ParadisMcpStdioLineBuffer, ParadisMcpStdioWriter, paradisMcpShouldPauseStdin, postParadisMcpRequest, resolveLiveParadisMcpPortFile, shouldEmitParadisMcpHttpResponse } from './paradisBrowserMcpShimCore.js';
 
 const PORT_FILE_ENV = 'PARA_CODE_MCP_PORT_FILE';
 const TOKEN_ENV = 'PARA_CODE_TERMINAL_PANE_ID';
@@ -90,15 +86,6 @@ interface IJsonRpcMessage {
 	params?: unknown;
 }
 
-function resolvePort(): number {
-	const raw = readFileSync(portFilePath!, 'utf8');
-	const parsed: unknown = JSON.parse(raw);
-	if (!parsed || typeof parsed !== 'object' || typeof (parsed as { port?: unknown }).port !== 'number') {
-		throw new Error(`Invalid port file: ${portFilePath}`);
-	}
-	return (parsed as { port: number }).port;
-}
-
 /**
  * Para Code に接続できない理由を判定する。undefined = 接続可能。
  * ペイン外（トークン無し）と Para Code 未起動（ポートファイル読めない）を区別する。
@@ -108,11 +95,6 @@ function getUnavailableMessage(): string | undefined {
 		return OUTSIDE_PANE_MESSAGE;
 	}
 	if (!portFilePath) {
-		return NO_SERVER_MESSAGE;
-	}
-	try {
-		resolvePort();
-	} catch {
 		return NO_SERVER_MESSAGE;
 	}
 	return undefined;
@@ -129,44 +111,21 @@ function localInitializeResult(params: unknown): unknown {
 	};
 }
 
-function writeResponse(payload: unknown): void {
-	process.stdout.write(JSON.stringify(payload) + '\n');
+const stdoutWriter = new ParadisMcpStdioWriter(process.stdout as unknown as IParadisMcpStdioWritable, {
+	onDidChangeBackpressure: () => drainInput(),
+	onError: error => failOutput(error),
+});
+
+function writeResponse(payload: unknown): Promise<void> {
+	return stdoutWriter.write(JSON.stringify(payload) + '\n');
 }
 
-function writeResult(id: number | string | null, result: unknown): void {
-	writeResponse({ jsonrpc: '2.0', id, result });
+function writeResult(id: number | string | null, result: unknown): Promise<void> {
+	return writeResponse({ jsonrpc: '2.0', id, result });
 }
 
-function writeErrorResponse(id: number | string | null, message: string): void {
-	writeResponse({ jsonrpc: '2.0', id, error: { code: -32000, message } });
-}
-
-async function postToServer(port: number, line: string): Promise<{ status: number; body: string }> {
-	const httpModule = await httpModulePromise;
-	return new Promise((resolve, reject) => {
-		const request = httpModule.request(
-			{
-				host: '127.0.0.1',
-				port,
-				path: '/mcp',
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Accept': 'application/json, text/event-stream',
-					'Authorization': `Bearer ${paneToken}`,
-					'Content-Length': Buffer.byteLength(line),
-				},
-			},
-			response => {
-				const chunks: Buffer[] = [];
-				response.on('data', (chunk: Buffer) => chunks.push(chunk));
-				response.on('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }));
-				response.on('error', reject);
-			}
-		);
-		request.on('error', reject);
-		request.end(line);
-	});
+function writeErrorResponse(id: number | string | null, message: string): Promise<void> {
+	return writeResponse({ jsonrpc: '2.0', id, error: { code: -32000, message } });
 }
 
 async function forwardLine(line: string): Promise<void> {
@@ -190,7 +149,16 @@ async function forwardLine(line: string): Promise<void> {
 
 	// Para Code に接続できない場合はローカルで応答して MCP 接続自体は成立させる。
 	// initialize / tools/list は正常応答し、ツール呼び出しだけ guidance を返す。
-	const unavailable = getUnavailableMessage();
+	let unavailable = getUnavailableMessage();
+	let record: IParadisMcpPortFileRecord | undefined;
+	if (unavailable === undefined) {
+		try {
+			// Resolve for every forwarded line. A stale shared-process PID triggers exactly one re-read.
+			record = resolveLiveParadisMcpPortFile(portFilePath!);
+		} catch {
+			unavailable = NO_SERVER_MESSAGE;
+		}
+	}
 	if (unavailable !== undefined) {
 		if (!isRequest) {
 			// idの無いnotification/レスポンスは応答不要（サーバーへも送れないため破棄）
@@ -198,92 +166,168 @@ async function forwardLine(line: string): Promise<void> {
 		}
 		switch (method) {
 			case 'initialize':
-				writeResult(id, localInitializeResult(params));
+				await writeResult(id, localInitializeResult(params));
 				return;
 			case 'ping':
-				writeResult(id, {});
+				await writeResult(id, {});
 				return;
 			case 'tools/list':
-				writeResult(id, { tools: LOCAL_TOOLS });
+				await writeResult(id, { tools: LOCAL_TOOLS });
 				return;
 			case 'tools/call':
 				// ツール実行エラーは JSON-RPC エラーではなく isError 付きの結果で返す（LLMが本文を読める）
-				writeResult(id, { content: [{ type: 'text', text: unavailable }], isError: true });
+				await writeResult(id, { content: [{ type: 'text', text: unavailable }], isError: true });
 				return;
 			default:
-				writeErrorResponse(id, unavailable);
+				await writeErrorResponse(id, unavailable);
 				return;
 		}
 	}
 
-	let port: number;
+	let status: number;
+	let body: string;
 	try {
-		port = resolvePort();
+		({ status, body } = await postParadisMcpRequest({ record: record!, body: line, token: paneToken! }));
 	} catch (error) {
-		const detail = `Para Code MCP server is not running (failed to read port file ${portFilePath}: ${error instanceof Error ? error.message : String(error)}). Is Para Code running?`;
+		const detail = `Failed to reach Para Code MCP server on 127.0.0.1:${record!.port}: ${error instanceof Error ? error.message : String(error)}`;
 		if (isRequest) {
-			writeErrorResponse(id, detail);
+			await writeErrorResponse(id, detail);
 		} else {
 			process.stderr.write(`[para-browser-mcp-shim] ${detail}\n`);
 		}
 		return;
 	}
-
+	if (!shouldEmitParadisMcpHttpResponse(status, body, isRequest)) {
+		// notificationへの受理応答: stdoutには何も書かない
+		return;
+	}
+	let parsedBody: unknown;
 	try {
-		const { status, body } = await postToServer(port, line);
-		if (status === 202 || body.trim().length === 0) {
-			// notificationへの受理応答: stdoutには何も書かない
-			return;
-		}
-		let parsedBody: unknown;
-		try {
-			parsedBody = JSON.parse(body);
-		} catch {
-			parsedBody = undefined;
-		}
-		if (status >= 400 || !parsedBody || typeof parsedBody !== 'object' || (parsedBody as IJsonRpcMessage).jsonrpc !== '2.0') {
-			// 401/405等のJSON-RPC以外の応答はJSON-RPCエラーに変換してクライアントへ返す
-			const detail = `Para Code MCP server returned HTTP ${status}: ${body.slice(0, 500)}`;
-			if (isRequest) {
-				writeErrorResponse(id, detail);
-			} else {
-				process.stderr.write(`[para-browser-mcp-shim] ${detail}\n`);
-			}
-			return;
-		}
-		writeResponse(parsedBody);
-	} catch (error) {
-		const detail = `Failed to reach Para Code MCP server on 127.0.0.1:${port}: ${error instanceof Error ? error.message : String(error)}`;
+		parsedBody = JSON.parse(body);
+	} catch {
+		parsedBody = undefined;
+	}
+	if (status >= 400 || !parsedBody || typeof parsedBody !== 'object' || (parsedBody as IJsonRpcMessage).jsonrpc !== '2.0') {
+		// 401/405等のJSON-RPC以外の応答はJSON-RPCエラーに変換してクライアントへ返す
+		const detail = `Para Code MCP server returned HTTP ${status} or an invalid JSON-RPC response`;
 		if (isRequest) {
-			writeErrorResponse(id, detail);
+			await writeErrorResponse(id, detail);
 		} else {
 			process.stderr.write(`[para-browser-mcp-shim] ${detail}\n`);
 		}
+		return;
+	}
+	await writeResponse(parsedBody);
+}
+
+const input = new ParadisMcpStdioLineBuffer();
+let stdinEnded = false;
+let stdinPaused = false;
+let inputFailed = false;
+let exitSettlementStarted = false;
+
+const inflight = new ParadisMcpInflightTracker(PARADIS_MCP_MAX_INFLIGHT_REQUESTS, () => drainInput());
+
+function settleAndExit(exitCode: number, finalOutput: Promise<void> = Promise.resolve()): void {
+	if (exitSettlementStarted) {
+		return;
+	}
+	exitSettlementStarted = true;
+	void Promise.allSettled([inflight.waitForSettled(), finalOutput])
+		.then(() => stdoutWriter.end())
+		.then(() => process.exitCode = exitCode);
+}
+
+function stopInput(): void {
+	input.clear();
+	try {
+		process.stdin.pause();
+		stdinPaused = true;
+	} catch {
+		// Continue settling accepted work even when stdin is already closed.
+	}
+	try {
+		process.stdin.destroy();
+	} catch {
+		// Natural process exit still waits for all accepted forwarding work below.
 	}
 }
 
-const inflight = new Set<Promise<void>>();
-
-function track(promise: Promise<void>): void {
-	inflight.add(promise);
-	void promise.finally(() => inflight.delete(promise));
+function failOutput(error: Error): void {
+	if (inputFailed) {
+		return;
+	}
+	inputFailed = true;
+	stopInput();
+	process.stderr.write(`[para-browser-mcp-shim] ${error.message}\n`);
+	settleAndExit(1);
 }
 
-let buffered = '';
+function failInput(error: unknown): void {
+	if (inputFailed) {
+		return;
+	}
+	inputFailed = true;
+	const message = error instanceof Error ? error.message : String(error);
+	stopInput();
+	settleAndExit(1, writeErrorResponse(null, message));
+}
+
+function updateInputFlowControl(): void {
+	if (inputFailed || stdinEnded) {
+		return;
+	}
+	const shouldPause = paradisMcpShouldPauseStdin(inflight.hasCapacity, stdoutWriter.isBackpressured);
+	if (shouldPause && !stdinPaused) {
+		process.stdin.pause();
+		stdinPaused = true;
+	} else if (!shouldPause && stdinPaused) {
+		stdinPaused = false;
+		process.stdin.resume();
+	}
+}
+
+function drainInput(): void {
+	if (inputFailed) {
+		return;
+	}
+	try {
+		while (inflight.hasCapacity && !stdoutWriter.isBackpressured) {
+			const line = input.takeLine();
+			if (line === undefined) {
+				break;
+			}
+			if (line.length > 0 && !inflight.track(forwardLine(line))) {
+				throw new Error('Para Code MCP inflight request capacity changed unexpectedly');
+			}
+		}
+		updateInputFlowControl();
+		if (!stdinEnded) {
+			return;
+		}
+		if (input.hasCompleteLine) {
+			// EOF may arrive while the bounded set of accepted requests is still in flight. Their settlement callback
+			// re-enters this drain without allocating another waiter or forwarding Promise.
+			return;
+		}
+		input.finish();
+		settleAndExit(0);
+	} catch (error) {
+		failInput(error);
+	}
+}
+
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk: string) => {
-	buffered += chunk;
-	let newlineIndex = buffered.indexOf('\n');
-	while (newlineIndex !== -1) {
-		const line = buffered.slice(0, newlineIndex).trim();
-		buffered = buffered.slice(newlineIndex + 1);
-		if (line.length > 0) {
-			track(forwardLine(line));
-		}
-		newlineIndex = buffered.indexOf('\n');
+	try {
+		input.append(chunk);
+		drainInput();
+	} catch (error) {
+		failInput(error);
 	}
 });
 process.stdin.on('end', () => {
-	// stdinクローズ後も処理中のリクエストのレスポンスは書き切ってから終了する
-	void Promise.allSettled([...inflight]).then(() => process.exit(0));
+	stdinEnded = true;
+	drainInput();
 });
+process.stdin.on('error', error => failInput(error));

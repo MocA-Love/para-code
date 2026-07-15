@@ -209,6 +209,12 @@ export interface IBrowserViewOpenHandler {
 export interface IBrowserViewWorkbenchService {
 	readonly _serviceBrand: undefined;
 
+	/**
+	 * Resolves after the desktop main-process snapshot of already existing views has converged.
+	 * The promise never rejects. Web implementations resolve immediately.
+	 */
+	readonly whenInitialized: Promise<boolean>;
+
 	/** Returns true if the remote proxy is enabled; i.e. we are in a remote workspace and the setting is enabled. */
 	willUseRemoteProxy(): boolean;
 

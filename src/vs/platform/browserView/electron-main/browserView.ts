@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { screen, WebContentsView, webContents } from 'electron';
+import { nativeImage, screen, WebContentsView, webContents, type NativeImage, type WebFrameMain } from 'electron';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../base/common/event.js';
 import { VSBuffer } from '../../../base/common/buffer.js';
@@ -22,6 +22,18 @@ import { IAuxiliaryWindow } from '../../auxiliaryWindow/electron-main/auxiliaryW
 import { SCAN_CODE_STR_TO_EVENT_KEY_CODE } from '../../../base/common/keyCodes.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { logBrowserOpen } from '../common/browserViewTelemetry.js';
+import { BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/browserViewScreenshot.js';
+import { BrowserViewAutomationKeyExpectationQueue, browserViewAutomationKeySignatureFromCdp, browserViewAutomationKeySignatureFromElectron, type IBrowserViewAutomationKeyRegistration, type IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
+
+const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 1_000;
+
+interface IPendingAutomationKeyAck {
+	readonly phase: 'register' | 'activate';
+	readonly frames: readonly WebFrameMain[];
+	readonly acknowledged: Set<WebFrameMain>;
+	readonly resolve: (accepted: boolean) => void;
+	readonly timer: ReturnType<typeof setTimeout>;
+}
 
 enum NewPageLocation {
 	Foreground = 'foreground',
@@ -64,6 +76,12 @@ export class BrowserView extends Disposable {
 
 	private static readonly MAX_CONSOLE_LOG_ENTRIES = 1000;
 	private readonly _consoleLogs: string[] = [];
+	private readonly _screenshotCoordinator = new BrowserViewScreenshotCoordinator();
+	private readonly _automationKeyExpectations = this._register(new BrowserViewAutomationKeyExpectationQueue(sequence => this._automationKeyFrames.delete(sequence)));
+	private readonly _pendingAutomationKeyAcks = new Map<number, IPendingAutomationKeyAck>();
+	private readonly _automationKeyFrames = new Map<number, readonly WebFrameMain[]>();
+	private _automationKeySequence = 0;
+	private _automationInputFocusAuthority: object = Object.freeze({});
 
 	/**
 	 * Resize a full-page screenshot so its largest dimension never exceeds this many pixels. A very tall
@@ -224,6 +242,7 @@ export class BrowserView extends Disposable {
 		});
 
 		this.debugger = new BrowserViewDebugger(this, this.logService);
+		this._register(this.debugger.onDidDetach(() => this.clearAutomationKeyExpectations()));
 		this.emulator = this._register(new BrowserViewEmulator(this, this.logService));
 		this.inspector = this._register(new BrowserViewInspector(this));
 
@@ -380,6 +399,7 @@ export class BrowserView extends Disposable {
 			}
 		});
 		webContents.on('did-finish-load', () => fireLoadingEvent(false));
+		webContents.on('did-start-navigation', () => this.clearAutomationKeyExpectations());
 
 		this.session.trust.installCertErrorHandler(webContents);
 
@@ -434,16 +454,61 @@ export class BrowserView extends Disposable {
 
 		// Focus events
 		webContents.on('focus', () => {
+			this._automationInputFocusAuthority = Object.freeze({});
+			this.invalidateAutomationKeyExpectationsForUserFocus();
 			this._onDidChangeFocus.fire({ focused: true });
 		});
 
 		webContents.on('blur', () => {
+			this._automationInputFocusAuthority = Object.freeze({});
 			this._onDidChangeFocus.fire({ focused: false });
 		});
 
 		const onCommandKeydown = (_event: unknown, keyEvent: IBrowserViewKeyDownEvent) => {
 			this._onDidKeyCommand.fire(keyEvent);
 		};
+
+		webContents.on('ipc-message', (event, channel, ...args) => {
+			const senderFrame = (event as { senderFrame?: WebFrameMain }).senderFrame;
+			const payload = args[0];
+			if (!senderFrame || typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+				return;
+			}
+			const record = payload as Readonly<Record<string, unknown>>;
+			if (channel === 'vscode:browserView:automationKeyExpected' || channel === 'vscode:browserView:automationKeyActivated') {
+				const sequence = record.sequence;
+				if (!Number.isSafeInteger(sequence) || (sequence as number) <= 0 || typeof record.accepted !== 'boolean') {
+					return;
+				}
+				const pending = this._pendingAutomationKeyAcks.get(sequence as number);
+				const expectedPhase = channel === 'vscode:browserView:automationKeyExpected' ? 'register' : 'activate';
+				if (!pending || pending.phase !== expectedPhase || !pending.frames.includes(senderFrame)) {
+					return;
+				}
+				if (!record.accepted) {
+					pending.resolve(false);
+					return;
+				}
+				pending.acknowledged.add(senderFrame);
+				if (pending.acknowledged.size === pending.frames.length) {
+					pending.resolve(true);
+				}
+			} else if (channel === 'vscode:browserView:automationKeyConsumed') {
+				const sequence = record.sequence;
+				const signature = browserViewAutomationKeySignatureFromCdp(record.signature);
+				const frames = Number.isSafeInteger(sequence) ? this._automationKeyFrames.get(sequence as number) : undefined;
+				if (Number.isSafeInteger(sequence) && signature && frames?.includes(senderFrame)) {
+					const consumed = this._automationKeyExpectations.consume(signature, 'preload-keydown', sequence as number);
+					if (consumed !== sequence) {
+						try {
+							this.logService.warn('Ignored mismatched BrowserView automation key consumption acknowledgement.');
+						} catch {
+							// Diagnostics must never change input delivery or suppression state.
+						}
+					}
+				}
+			}
+		});
 
 		// Forward key down events that weren't handled by the page to the workbench for shortcut handling.
 		webContents.ipc.on('vscode:browserView:keydown', onCommandKeydown);
@@ -455,6 +520,10 @@ export class BrowserView extends Disposable {
 
 		// If the page won't be able to handle events, forward key down events directly.
 		webContents.on('before-input-event', (event, input) => {
+			const automationSignature = browserViewAutomationKeySignatureFromElectron(input);
+			if (automationSignature && this._automationKeyExpectations.consume(automationSignature, 'before-input-event') !== undefined) {
+				return;
+			}
 			if (input.type !== 'keyDown') {
 				return;
 			}
@@ -478,6 +547,7 @@ export class BrowserView extends Disposable {
 				key: input.key,
 				keyCode: eventKeyCode,
 				code: input.code,
+				location: input.location,
 				ctrlKey: input.control,
 				shiftKey: input.shift,
 				altKey: input.alt,
@@ -524,6 +594,200 @@ export class BrowserView extends Disposable {
 				this._consoleLogs.splice(0, this._consoleLogs.length - BrowserView.MAX_CONSOLE_LOG_ENTRIES);
 			}
 		});
+	}
+
+	/** Opaque Main-local authority that changes on every focus or blur transition. */
+	captureAutomationInputFocusAuthority(): object | undefined {
+		if (this._isDisposed || this.webContents.isDestroyed()) {
+			return undefined;
+		}
+		return this._automationInputFocusAuthority;
+	}
+
+	/** Register one exact automation key signature in every currently live preload before CDP dispatch. */
+	async prepareAutomationKeyInput(signature: IBrowserViewAutomationKeySignature): Promise<IBrowserViewAutomationKeyRegistration | undefined> {
+		if (this._isDisposed || this.webContents.isDestroyed()) {
+			return undefined;
+		}
+		const frames = this.getLiveAutomationFrames();
+		if (frames.length === 0) {
+			return undefined;
+		}
+		const sequence = this.nextAutomationKeySequence();
+		if (sequence === undefined || !this._automationKeyExpectations.register({ sequence, signature })) {
+			return undefined;
+		}
+
+		let resolveAck!: (accepted: boolean) => void;
+		const ack = new Promise<boolean>(resolve => resolveAck = resolve);
+		const pending: IPendingAutomationKeyAck = {
+			phase: 'register',
+			frames,
+			acknowledged: new Set(),
+			resolve: resolveAck,
+			timer: setTimeout(() => resolveAck(false), BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS),
+		};
+		this._pendingAutomationKeyAcks.set(sequence, pending);
+		try {
+			for (const frame of frames) {
+				frame.postMessage('vscode:browserView:expectAutomationKey', { sequence, signature });
+			}
+		} catch {
+			resolveAck(false);
+		}
+
+		const accepted = await ack;
+		clearTimeout(pending.timer);
+		if (this._pendingAutomationKeyAcks.get(sequence) === pending) {
+			this._pendingAutomationKeyAcks.delete(sequence);
+		}
+		if (!accepted || !this._automationKeyExpectations.has(sequence) || !this.hasSameLiveAutomationFrames(frames)) {
+			this._automationKeyExpectations.cancel(sequence);
+			this.cancelPreloadAutomationKey(frames, sequence);
+			return undefined;
+		}
+		this._automationKeyFrames.set(sequence, frames);
+		let settled = false;
+		let activationStarted = false;
+		let activated = false;
+		return Object.freeze({
+			sequence,
+			activate: async () => {
+				if (settled || activationStarted || this._isDisposed || this.webContents.isDestroyed()
+					|| !this._automationKeyExpectations.has(sequence)
+					|| this._automationKeyFrames.get(sequence) !== frames || !this.hasSameLiveAutomationFrames(frames)) {
+					return false;
+				}
+				try {
+					if (this.webContents.isFocused()) {
+						return false;
+					}
+				} catch {
+					return false;
+				}
+				activationStarted = true;
+				let resolveActivationAck!: (accepted: boolean) => void;
+				const activationAck = new Promise<boolean>(resolve => resolveActivationAck = resolve);
+				const activationPending: IPendingAutomationKeyAck = {
+					phase: 'activate',
+					frames,
+					acknowledged: new Set(),
+					resolve: resolveActivationAck,
+					timer: setTimeout(() => resolveActivationAck(false), BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS),
+				};
+				this._pendingAutomationKeyAcks.set(sequence, activationPending);
+				try {
+					for (const frame of frames) {
+						frame.postMessage('vscode:browserView:activateAutomationKey', { sequence });
+					}
+				} catch {
+					resolveActivationAck(false);
+				}
+				const accepted = await activationAck;
+				clearTimeout(activationPending.timer);
+				if (this._pendingAutomationKeyAcks.get(sequence) === activationPending) {
+					this._pendingAutomationKeyAcks.delete(sequence);
+				}
+				if (!accepted || settled || !this._automationKeyExpectations.has(sequence)
+					|| this._automationKeyFrames.get(sequence) !== frames || !this.hasSameLiveAutomationFrames(frames)) {
+					return false;
+				}
+				if (!this._automationKeyExpectations.activate(sequence)) {
+					return false;
+				}
+				activated = true;
+				return true;
+			},
+			commit: () => !settled && activated && this._automationKeyExpectations.commit(sequence),
+			complete: () => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				this._automationKeyExpectations.complete(sequence);
+				for (const frame of frames) {
+					try {
+						if (!frame.detached && !frame.isDestroyed()) {
+							frame.postMessage('vscode:browserView:completeAutomationKey', { sequence });
+						}
+					} catch {
+						// A navigated or detached frame already discarded its isolated preload state.
+					}
+				}
+			},
+			cancel: () => {
+				if (settled) {
+					return;
+				}
+				settled = true;
+				this._automationKeyExpectations.cancel(sequence);
+				this.cancelPreloadAutomationKey(frames, sequence);
+			},
+		});
+	}
+
+	private nextAutomationKeySequence(): number | undefined {
+		for (let attempt = 0; attempt < Number.MAX_SAFE_INTEGER; attempt++) {
+			this._automationKeySequence = this._automationKeySequence >= Number.MAX_SAFE_INTEGER ? 1 : this._automationKeySequence + 1;
+			if (!this._pendingAutomationKeyAcks.has(this._automationKeySequence)
+				&& !this._automationKeyFrames.has(this._automationKeySequence)) {
+				return this._automationKeySequence;
+			}
+		}
+		return undefined;
+	}
+
+	private getLiveAutomationFrames(): readonly WebFrameMain[] {
+		try {
+			return this.webContents.mainFrame.framesInSubtree.filter(frame => !frame.detached && !frame.isDestroyed());
+		} catch {
+			return [];
+		}
+	}
+
+	private hasSameLiveAutomationFrames(expected: readonly WebFrameMain[]): boolean {
+		const current = this.getLiveAutomationFrames();
+		return current.length === expected.length && current.every(frame => expected.includes(frame));
+	}
+
+	private clearAutomationKeyExpectations(): void {
+		for (const [sequence, pending] of this._pendingAutomationKeyAcks) {
+			clearTimeout(pending.timer);
+			pending.resolve(false);
+			this.cancelPreloadAutomationKey(pending.frames, sequence);
+		}
+		for (const [sequence, frames] of this._automationKeyFrames) {
+			this.cancelPreloadAutomationKey(frames, sequence);
+		}
+		this._pendingAutomationKeyAcks.clear();
+		this._automationKeyExpectations.clear();
+		this._automationKeyFrames.clear();
+	}
+
+	private invalidateAutomationKeyExpectationsForUserFocus(): void {
+		for (const [sequence, pending] of this._pendingAutomationKeyAcks) {
+			clearTimeout(pending.timer);
+			pending.resolve(false);
+			this.cancelPreloadAutomationKey(pending.frames, sequence);
+			this._automationKeyExpectations.invalidateForUserFocus(sequence);
+		}
+		this._pendingAutomationKeyAcks.clear();
+		for (const [sequence, frames] of [...this._automationKeyFrames]) {
+			this._automationKeyExpectations.invalidateForUserFocus(sequence);
+			this.cancelPreloadAutomationKey(frames, sequence);
+		}
+	}
+
+	private cancelPreloadAutomationKey(frames: readonly WebFrameMain[], sequence: number): void {
+		for (const frame of frames) {
+			try {
+				if (!frame.detached && !frame.isDestroyed()) {
+					frame.postMessage('vscode:browserView:cancelAutomationKey', { sequence });
+				}
+			} catch {
+				// Detached and navigating frames discard their isolated preload state themselves.
+			}
+		}
 	}
 
 	private consumePopupPermission(location: NewPageLocation): boolean {
@@ -748,75 +1012,139 @@ export class BrowserView extends Disposable {
 	 * Capture a screenshot of this view
 	 */
 	async captureScreenshot(options?: IBrowserViewCaptureScreenshotOptions): Promise<VSBuffer> {
-		if (!this._view.getVisible()) {
-			// This ensures the webContents rendering pipeline is ready so background tabs can be captured too.
-			this._view.setVisible(true);
-			this._view.setVisible(false);
+		const route = browserViewScreenshotRoute(options);
+		const startedAt = Date.now();
+		this.logService.trace(`[BrowserView] screenshot start route=${route}`);
+		try {
+			const result = await captureBrowserViewScreenshotWithPolicy(this._screenshotCoordinator, options, {
+				isVisible: () => this._view.getVisible(),
+				setPrivateVisible: visible => this._view.setVisible(visible),
+				waitForNextPaint: () => this._waitForNextPaint(),
+				capture: (currentRoute, signal) => this._captureScreenshot(options, currentRoute, signal),
+			});
+			this.logService.trace(`[BrowserView] screenshot complete route=${route} durationMs=${Date.now() - startedAt}`);
+			return result;
+		} catch (error) {
+			const reason = error instanceof Error && error.message.includes('timed out') ? 'timeout'
+				: error instanceof Error && error.message.includes('still in progress') ? 'in-progress'
+					: error instanceof Error ? error.name : 'unknown';
+			this.logService.warn(`[BrowserView] screenshot failed route=${route} durationMs=${Date.now() - startedAt} reason=${reason}`);
+			throw error;
 		}
+	}
 
+	private async _captureScreenshot(options: IBrowserViewCaptureScreenshotOptions | undefined, route: BrowserViewScreenshotRoute, signal: AbortSignal): Promise<VSBuffer> {
+		browserViewThrowIfScreenshotAborted(signal);
 		const quality = options?.quality ?? 80;
 		const format = options?.format ?? 'jpeg';
 
-		if (options?.fullPage && !options.screenRect && !options.pageRect) {
-			return this._captureFullPageScreenshot(format, quality);
+		if (route === 'full-page') {
+			return this._captureFullPageScreenshot(format, quality, signal);
 		}
 
+		if (route === 'document-rect' && options?.pageRect) {
+			const zoomFactor = this._view.webContents.getZoomFactor();
+			const visualViewportScale = await this.inspector.getVisualViewportScale();
+			browserViewThrowIfScreenshotAborted(signal);
+			const emulationScale = this.emulator.emulatedScaleFactor;
+			browserViewAssertScreenshotPixelBudget({
+				width: options.pageRect.width,
+				height: options.pageRect.height,
+				devicePixelRatio: this._captureBeyondViewportDevicePixelRatio(),
+				zoomFactor,
+				visualViewportScale,
+				emulationScale,
+			});
+			return this._captureDocumentRectScreenshot(options.pageRect, format, quality, signal, route);
+		}
+
+		let screenRect = options?.screenRect;
 		if (options?.pageRect) {
 			const zoomFactor = this._view.webContents.getZoomFactor();
 			// The visual viewport scale accounts for pinch-to-zoom magnification, which is separate from the regular zoom factor.
 			const visualViewportScale = await this.inspector.getVisualViewportScale();
+			browserViewThrowIfScreenshotAborted(signal);
 			const emulationScale = this.emulator.emulatedScaleFactor;
-			options.screenRect = {
+			screenRect = {
 				x: options.pageRect.x * visualViewportScale * zoomFactor * emulationScale,
 				y: options.pageRect.y * visualViewportScale * zoomFactor * emulationScale,
 				width: options.pageRect.width * visualViewportScale * zoomFactor * emulationScale,
 				height: options.pageRect.height * visualViewportScale * zoomFactor * emulationScale
 			};
 		}
-		if (options?.awaitNextPaint) {
-			await this._waitForNextPaint();
+		const surfaceRect = screenRect ?? this._view.getBounds();
+		// capturePage copies the existing compositor surface. Its bitmap allocation follows the
+		// host display scale; an emulated deviceScaleFactor changes page rasterization, not this surface size.
+		browserViewAssertScreenshotPixelBudget({
+			width: surfaceRect.width,
+			height: surfaceRect.height,
+			devicePixelRatio: this._devicePixelRatio(),
+		});
+		const candidate = await captureBrowserViewWithRetry(
+			async (captureSignal, attempt) => {
+				const image = await this._view.webContents.capturePage(screenRect, { stayHidden: true });
+				browserViewThrowIfScreenshotAborted(captureSignal);
+				return this._validateAndEncodeScreenshot(image, format, quality, route, attempt);
+			},
+			current => current.valid,
+			() => this._waitForNextPaint(),
+			5,
+			{ signal, onRetry: event => this.logService.trace(`[BrowserView] screenshot retry route=${route} attempt=${event.attempt} reason=${event.reason}`) },
+		);
+		if (!candidate.valid) {
+			throw new Error('BrowserView screenshot validation exhausted without a valid image.');
 		}
-		const image = await (async () => {
-			const maxAttempts = 5;
-			let lastError: Error | undefined;
-			for (let i = 0; i < maxAttempts; i++) {
-				try {
-					return await this._view.webContents.capturePage(options?.screenRect, {
-						stayHidden: true
-					});
-				} catch (error) {
-					// `UnknownVizError` is a transient Electron error when no frame is available yet
-					// (e.g. offscreen scenarios where rendering has just been kicked off by `setVisible(true)`),
-					// so retry a few times.
-					if (error instanceof Error && error.message === 'UnknownVizError') {
-						lastError = error;
-						await new Promise(resolve => setTimeout(resolve, 16));
-						continue;
-					} else {
-						throw error;
-					}
-				}
-			}
-			throw new Error(`Failed to capture screenshot after ${maxAttempts} attempts`, { cause: lastError });
-		})();
-		const buffer = format === 'png' ? image.toPNG() : image.toJPEG(quality);
-		const screenshot = VSBuffer.wrap(buffer);
+		const screenshot = VSBuffer.wrap(candidate.encoded);
 		// Only update _lastScreenshot if capturing the full view
-		if (!options?.screenRect) {
+		if (!screenRect) {
 			this._lastScreenshot = screenshot;
 		}
 		return screenshot;
 	}
 
+	private async _captureDocumentRectScreenshot(
+		pageRect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+		format: 'jpeg' | 'png',
+		quality: number,
+		signal: AbortSignal,
+		route: BrowserViewScreenshotRoute,
+	): Promise<VSBuffer> {
+		const candidate = await captureBrowserViewWithRetry(
+			async (captureSignal, attempt) => {
+				const image = await this._captureBeyondViewportImage({
+					format,
+					...(format === 'jpeg' ? { quality } : {}),
+					captureBeyondViewport: true,
+					clip: { ...pageRect, scale: 1 },
+				}, captureSignal);
+				browserViewThrowIfScreenshotAborted(captureSignal);
+				return this._validateAndEncodeScreenshot(image, format, quality, route, attempt);
+			},
+			current => current.valid,
+			() => this._waitForNextPaint(),
+			5,
+			{ signal, onRetry: event => this.logService.trace(`[BrowserView] screenshot retry route=${route} attempt=${event.attempt} reason=${event.reason}`) },
+		);
+		if (!candidate.valid) {
+			throw new Error('BrowserView screenshot validation exhausted without a valid image.');
+		}
+		return VSBuffer.wrap(candidate.encoded);
+	}
+
 	// Capture a screenshot of the full scrollable document (beyond the viewport) via CDP.
-	private async _captureFullPageScreenshot(format: 'jpeg' | 'png', quality: number): Promise<VSBuffer> {
+	private async _captureFullPageScreenshot(format: 'jpeg' | 'png', quality: number, signal: AbortSignal): Promise<VSBuffer> {
+		browserViewThrowIfScreenshotAborted(signal);
 		const metrics = await this.debugger.sendCommand('Page.getLayoutMetrics') as { cssContentSize?: { width: number; height: number } };
+		browserViewThrowIfScreenshotAborted(signal);
 		// Size in CSS pixels
 		const size = metrics.cssContentSize;
 		if (!size) {
 			throw new Error('Page.getLayoutMetrics did not return a cssContentSize');
 		}
 		const zoomFactor = this._view.webContents.getZoomFactor();
+		const visualViewportScale = await this.inspector.getVisualViewportScale();
+		browserViewThrowIfScreenshotAborted(signal);
+		const emulationScale = this.emulator.emulatedScaleFactor;
 		const clipWidth = size.width * zoomFactor;
 		const clipHeight = size.height * zoomFactor;
 		// CDP renders the screenshot at device pixels, so the output bitmap dimensions are roughly
@@ -828,35 +1156,90 @@ export class BrowserView extends Disposable {
 		// window can be resolved (e.g. during teardown).
 		const hostWindow = this._hostWindow;
 		const display = hostWindow ? screen.getDisplayMatching(hostWindow.getBounds()) : screen.getPrimaryDisplay();
-		const devicePixelRatio = display.scaleFactor;
-		const maxClipDimension = BrowserView.MAX_FULL_PAGE_SCREENSHOT_DIMENSION / Math.max(devicePixelRatio, 1);
-		const scale = Math.min(1, maxClipDimension / Math.max(clipWidth, clipHeight));
-		try {
-			const result = await this.debugger.sendCommand('Page.captureScreenshot', {
-				format,
-				...(format === 'jpeg' ? { quality } : {}),
-				captureBeyondViewport: true,
-				// In theory, `clip` defaults to the full area when not explicitly passed, but in practice it doesn't work when
-				// the zoom level isn't 100, because it doesn't multiply the width and height by zoomFactor like we do here.
-				// Setting the clip explicitly, we can multiply by zoomFactor and thus work around this Chromium bug.
-				// Note that even with this workaround, we often see that the page isn't fully captured and might repeat
-				// visual content from the top at the bottom, instead of showing the bottom of the page.
-				// - Another sidenote: Currently the scrollbar width isn't accounted for. If a scrollbar exists, we should add the
-				//   vertical scrollbar's width and horizontal scrollbar's height to the clip dimensions, since the image is currently
-				//   clipped by that amount (this also happens when no clip parameter is provided; ideally it should be fixed upstream
-				//   in Chromium).
-				clip: { x: 0, y: 0, width: clipWidth, height: clipHeight, scale }
-			}) as { data: string };
-			return VSBuffer.wrap(Buffer.from(result.data, 'base64'));
-		} finally {
-			// `Page.captureScreenshot` with `captureBeyondViewport` resets and
-			// disables pinch-to-zoom until the next navigation. Re-enable it so
-			// the user can still pinch-to-zoom even immediately after
-			// capturing a full-page screenshot.
-			void this._view.webContents.setVisualZoomLevelLimits(1, 3).catch(error => {
-				this.logService.error('Failed to restore visual zoom level limits after full-page screenshot.', error);
-			});
+		const devicePixelRatio = browserViewEffectiveCaptureBeyondDevicePixelRatio(display.scaleFactor, this.emulator.device?.deviceScaleFactor);
+		const scale = browserViewCalculateBoundedCaptureScale({
+			width: size.width,
+			height: size.height,
+			devicePixelRatio,
+			zoomFactor,
+			visualViewportScale,
+			emulationScale,
+		}, BrowserView.MAX_FULL_PAGE_SCREENSHOT_DIMENSION);
+		browserViewAssertScreenshotPixelBudget({
+			width: size.width,
+			height: size.height,
+			devicePixelRatio,
+			zoomFactor,
+			visualViewportScale,
+			emulationScale,
+			captureScale: scale,
+		}, BrowserView.MAX_FULL_PAGE_SCREENSHOT_DIMENSION, BrowserView.MAX_FULL_PAGE_SCREENSHOT_DIMENSION ** 2);
+		const route: BrowserViewScreenshotRoute = 'full-page';
+		const candidate = await captureBrowserViewWithRetry(
+			async (captureSignal, attempt) => {
+				const image = await this._captureBeyondViewportImage({
+					format,
+					...(format === 'jpeg' ? { quality } : {}),
+					captureBeyondViewport: true,
+					// In theory, `clip` defaults to the full area when not explicitly passed, but in practice it doesn't work when
+					// the zoom level isn't 100, because it doesn't multiply the width and height by zoomFactor like we do here.
+					// Setting the clip explicitly, we can multiply by zoomFactor and thus work around this Chromium bug.
+					// Note that even with this workaround, we often see that the page isn't fully captured and might repeat
+					// visual content from the top at the bottom, instead of showing the bottom of the page.
+					// - Another sidenote: Currently the scrollbar width isn't accounted for. If a scrollbar exists, we should add the
+					//   vertical scrollbar's width and horizontal scrollbar's height to the clip dimensions, since the image is currently
+					//   clipped by that amount (this also happens when no clip parameter is provided; ideally it should be fixed upstream
+					//   in Chromium).
+					clip: { x: 0, y: 0, width: clipWidth, height: clipHeight, scale }
+				}, captureSignal);
+				browserViewThrowIfScreenshotAborted(captureSignal);
+				return this._validateAndEncodeScreenshot(image, format, quality, route, attempt);
+			},
+			current => current.valid,
+			() => this._waitForNextPaint(),
+			5,
+			{ signal, onRetry: event => this.logService.trace(`[BrowserView] screenshot retry route=${route} attempt=${event.attempt} reason=${event.reason}`) },
+		);
+		if (!candidate.valid) {
+			throw new Error('BrowserView screenshot validation exhausted without a valid image.');
 		}
+		return VSBuffer.wrap(candidate.encoded);
+	}
+
+	private async _captureBeyondViewportImage(params: Record<string, unknown>, signal: AbortSignal): Promise<NativeImage> {
+		return captureBrowserViewWithRestore(async () => {
+			const result = await this.debugger.sendCommand('Page.captureScreenshot', params) as { data?: unknown };
+			browserViewThrowIfScreenshotAborted(signal);
+			const encoded = typeof result.data === 'string' ? Buffer.from(result.data, 'base64') : Buffer.alloc(0);
+			return nativeImage.createFromBuffer(encoded);
+		}, () => this._view.webContents.setVisualZoomLevelLimits(1, 3), () => {
+			this.logService.warn('[BrowserView] screenshot zoom restore failed route=capture-beyond-viewport');
+		});
+	}
+
+	private _validateAndEncodeScreenshot(image: NativeImage, format: 'jpeg' | 'png', quality: number, route: BrowserViewScreenshotRoute, attempt: number): IBrowserViewScreenshotValidation<Buffer> {
+		const size = image.getSize();
+		const result = browserViewValidateAndEncodeScreenshot({
+			empty: image.isEmpty(),
+			width: size.width,
+			height: size.height,
+			// Keep bitmap extraction lazy so an unexpectedly oversized decoded image is rejected
+			// before Electron copies its full pixel buffer into JavaScript memory.
+			bitmap: () => image.toBitmap(),
+			encode: () => format === 'png' ? image.toPNG() : image.toJPEG(quality),
+		});
+		const status = result.valid ? 'valid' : result.reason;
+		this.logService.trace(`[BrowserView] screenshot validation route=${route} attempt=${attempt} width=${size.width} height=${size.height} status=${status}`);
+		return result;
+	}
+
+	private _devicePixelRatio(): number {
+		const hostWindow = this._hostWindow;
+		return (hostWindow ? screen.getDisplayMatching(hostWindow.getBounds()) : screen.getPrimaryDisplay()).scaleFactor;
+	}
+
+	private _captureBeyondViewportDevicePixelRatio(): number {
+		return browserViewEffectiveCaptureBeyondDevicePixelRatio(this._devicePixelRatio(), this.emulator.device?.deviceScaleFactor);
 	}
 
 	private async _waitForNextPaint(): Promise<void> {
@@ -985,6 +1368,7 @@ export class BrowserView extends Disposable {
 			return;
 		}
 		this._isDisposed = true;
+		this.clearAutomationKeyExpectations();
 
 		// Dispose debugger. This detaches debug sessions first.
 		this.debugger.dispose();

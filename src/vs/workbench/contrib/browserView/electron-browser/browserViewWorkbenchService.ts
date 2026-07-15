@@ -11,7 +11,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
-import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { combinedDisposable, Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ACTIVE_GROUP, AUX_WINDOW_GROUP, IEditorService, PreferredGroup, USE_MODAL_EDITOR_SETTING, UseModalEditorMode } from '../../../services/editor/common/editorService.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -37,6 +37,233 @@ import { localChatSessionType } from '../../chat/common/chatSessionsService.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { ITunnelProxyInfo } from '../../../../platform/tunnel/common/tunnelProxy.js';
 
+export interface IParadisBrowserViewInitialization<T> {
+	readonly listener: IDisposable;
+	readonly whenInitialized: Promise<boolean>;
+}
+
+export interface IParadisBrowserViewInitializationOptions {
+	readonly attemptTimeoutMs?: number;
+	readonly initialRetryDelayMs?: number;
+	readonly maximumRetryDelayMs?: number;
+	readonly maximumTimedOutAttempts?: number;
+	readonly logIntervalMs?: number;
+	readonly setTimeout?: (callback: () => void, delay: number) => unknown;
+	readonly clearTimeout?: (handle: unknown) => void;
+	readonly now?: () => number;
+}
+
+const PARADIS_BROWSER_VIEW_SNAPSHOT_ATTEMPT_TIMEOUT_MS = 10_000;
+const PARADIS_BROWSER_VIEW_SNAPSHOT_INITIAL_RETRY_DELAY_MS = 250;
+const PARADIS_BROWSER_VIEW_SNAPSHOT_MAXIMUM_RETRY_DELAY_MS = 30_000;
+const PARADIS_BROWSER_VIEW_SNAPSHOT_MAX_TIMED_OUT_ATTEMPTS = 4;
+const PARADIS_BROWSER_VIEW_SNAPSHOT_LOG_INTERVAL_MS = 30_000;
+
+/**
+ * Registers the create listener before starting the main-process snapshot, closing the
+ * snapshot/listen gap. Transient failures retain one bounded retry timer until a snapshot is
+ * accepted. The barrier is non-rejecting and resolves false only when its owner is disposed.
+ */
+export function paradisCreateBrowserViewInitialization<T>(
+	subscribe: (listener: (view: T) => void) => IDisposable,
+	snapshot: () => Promise<readonly T[]>,
+	accept: (view: T) => void,
+	onSnapshotError: (error: unknown) => void,
+	options: IParadisBrowserViewInitializationOptions = {},
+): IParadisBrowserViewInitialization<T> {
+	const listener = subscribe(accept);
+	const attemptTimeoutMs = options.attemptTimeoutMs ?? PARADIS_BROWSER_VIEW_SNAPSHOT_ATTEMPT_TIMEOUT_MS;
+	const initialRetryDelayMs = options.initialRetryDelayMs ?? PARADIS_BROWSER_VIEW_SNAPSHOT_INITIAL_RETRY_DELAY_MS;
+	const maximumRetryDelayMs = options.maximumRetryDelayMs ?? PARADIS_BROWSER_VIEW_SNAPSHOT_MAXIMUM_RETRY_DELAY_MS;
+	const maximumTimedOutAttempts = options.maximumTimedOutAttempts ?? PARADIS_BROWSER_VIEW_SNAPSHOT_MAX_TIMED_OUT_ATTEMPTS;
+	const logIntervalMs = options.logIntervalMs ?? PARADIS_BROWSER_VIEW_SNAPSHOT_LOG_INTERVAL_MS;
+	for (const [name, value] of [
+		['attemptTimeoutMs', attemptTimeoutMs],
+		['initialRetryDelayMs', initialRetryDelayMs],
+		['maximumRetryDelayMs', maximumRetryDelayMs],
+		['logIntervalMs', logIntervalMs],
+	] as const) {
+		if (!Number.isSafeInteger(value) || value <= 0) {
+			listener.dispose();
+			throw new RangeError(`${name} must be a positive safe integer`);
+		}
+	}
+	if (initialRetryDelayMs > maximumRetryDelayMs) {
+		listener.dispose();
+		throw new RangeError('initialRetryDelayMs must not exceed maximumRetryDelayMs');
+	}
+	if (!Number.isSafeInteger(maximumTimedOutAttempts) || maximumTimedOutAttempts <= 0 || maximumTimedOutAttempts > PARADIS_BROWSER_VIEW_SNAPSHOT_MAX_TIMED_OUT_ATTEMPTS) {
+		listener.dispose();
+		throw new RangeError(`maximumTimedOutAttempts must be between 1 and ${PARADIS_BROWSER_VIEW_SNAPSHOT_MAX_TIMED_OUT_ATTEMPTS}`);
+	}
+	const schedule = options.setTimeout ?? ((callback: () => void, delay: number) => setTimeout(callback, delay));
+	const cancel = options.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
+	const now = options.now ?? Date.now;
+
+	let disposed = false;
+	let settled = false;
+	let attemptEpoch = 0;
+	let retryDelayMs = initialRetryDelayMs;
+	let timer: unknown;
+	let lastLogTime: number | undefined;
+	let waitingForTimedOutCapacity = false;
+	const timedOutAttempts = new Set<number>();
+	let resolveInitialization!: (succeeded: boolean) => void;
+	const whenInitialized = new Promise<boolean>(resolve => resolveInitialization = resolve);
+
+	const clearTimer = () => {
+		if (timer !== undefined) {
+			try {
+				cancel(timer);
+			} catch {
+				// Timer cleanup is best-effort during workbench disposal.
+			}
+			timer = undefined;
+		}
+	};
+	const settle = (succeeded: boolean) => {
+		if (settled) {
+			return;
+		}
+		settled = true;
+		attemptEpoch++;
+		waitingForTimedOutCapacity = false;
+		timedOutAttempts.clear();
+		clearTimer();
+		resolveInitialization(succeeded);
+	};
+	const logFailure = (error: unknown) => {
+		let currentTime: number;
+		try {
+			currentTime = now();
+		} catch {
+			currentTime = 0;
+		}
+		if (lastLogTime !== undefined && currentTime - lastLogTime < logIntervalMs) {
+			return;
+		}
+		lastLogTime = currentTime;
+		try {
+			onSnapshotError(error);
+		} catch {
+			// Diagnostics must not violate the non-rejecting initialization contract.
+		}
+	};
+
+	const scheduleRetry = () => {
+		if (disposed || settled) {
+			return;
+		}
+		if (timedOutAttempts.size >= maximumTimedOutAttempts) {
+			waitingForTimedOutCapacity = true;
+			clearTimer();
+			return;
+		}
+		waitingForTimedOutCapacity = false;
+		clearTimer();
+		const delay = retryDelayMs;
+		retryDelayMs = Math.min(maximumRetryDelayMs, retryDelayMs * 2);
+		try {
+			timer = schedule(() => {
+				timer = undefined;
+				startAttempt();
+			}, delay);
+		} catch (error) {
+			logFailure(error);
+			settle(false);
+		}
+	};
+	const failAttempt = (epoch: number, error: unknown) => {
+		if (disposed || settled || epoch !== attemptEpoch) {
+			return;
+		}
+		// Fence the failed attempt before the backoff window. A timed-out IPC may still resolve, but
+		// it must never publish a stale snapshot while the retry timer is pending.
+		attemptEpoch++;
+		clearTimer();
+		logFailure(error);
+		scheduleRetry();
+	};
+	const timeoutAttempt = (epoch: number, error: unknown) => {
+		if (disposed || settled || epoch !== attemptEpoch) {
+			return;
+		}
+		// The IPC promise remains live after the public timeout. Retain only a bounded set of these
+		// stale attempts and stop issuing new IPC until one of them actually settles.
+		attemptEpoch++;
+		clearTimer();
+		timedOutAttempts.add(epoch);
+		logFailure(error);
+		scheduleRetry();
+	};
+	const releaseTimedOutAttempt = (epoch: number): boolean => {
+		if (!timedOutAttempts.delete(epoch)) {
+			return false;
+		}
+		if (!disposed && !settled && waitingForTimedOutCapacity && timedOutAttempts.size < maximumTimedOutAttempts) {
+			waitingForTimedOutCapacity = false;
+			scheduleRetry();
+		}
+		return true;
+	};
+	function startAttempt(): void {
+		if (disposed || settled) {
+			return;
+		}
+		clearTimer();
+		const epoch = ++attemptEpoch;
+		let operation: Promise<readonly T[]>;
+		try {
+			operation = Promise.resolve(snapshot());
+		} catch (error) {
+			failAttempt(epoch, error);
+			return;
+		}
+		try {
+			timer = schedule(
+				() => timeoutAttempt(epoch, new Error(`BrowserView snapshot timeout after ${attemptTimeoutMs}ms`)),
+				attemptTimeoutMs,
+			);
+		} catch (error) {
+			timeoutAttempt(epoch, error);
+			return;
+		}
+		void operation.then(
+			views => {
+				if (disposed || settled || releaseTimedOutAttempt(epoch) || epoch !== attemptEpoch) {
+					return;
+				}
+				clearTimer();
+				try {
+					for (const view of views) {
+						accept(view);
+					}
+				} catch (error) {
+					failAttempt(epoch, error);
+					return;
+				}
+				settle(true);
+			},
+			error => {
+				if (disposed || settled || releaseTimedOutAttempt(epoch)) {
+					return;
+				}
+				failAttempt(epoch, error);
+			},
+		);
+	}
+
+	const initializationLifetime = combinedDisposable(listener, toDisposable(() => {
+		if (disposed) {
+			return;
+		}
+		disposed = true;
+		settle(false);
+	}));
+	startAttempt();
+	return { listener: initializationLifetime, whenInitialized };
+}
+
 /**
  * When enabled, integrated browser tools are exposed as client-provided tools
  * to agent host sessions in the Sessions window. Has no effect outside the
@@ -55,6 +282,7 @@ const browserViewContextMenuCommands = [
 
 export class BrowserViewWorkbenchService extends Disposable implements IBrowserViewWorkbenchService {
 	declare readonly _serviceBrand: undefined;
+	readonly whenInitialized: Promise<boolean>;
 
 	private readonly _browserViewService: IBrowserViewService;
 	private readonly _known = new Map<string, BrowserEditorInput>();
@@ -147,27 +375,16 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 			}
 		}));
 
-		// Start asynchronously creating models for all views we already own.
-		void this._initializeExistingViews().catch(e => {
-			this.logService.error('[BrowserViewWorkbenchService] Failed to initialize existing browser views.', e);
-		});
-
-		// Listen for new browser views
-		this._register(this._browserViewService.onDidCreateBrowserView(e => {
-			if (e.info.owner.mainWindowId !== this._mainWindowId) {
-				return; // Not for this window
-			}
-
-			// Eagerly create the model from the state we already have
-			this._createModel(e.info.id, e.info.owner, e.info.state);
-
-			const editor = this._known.get(e.info.id);
-			if (editor && e.openOptions) {
-				void this._openEditorForCreatedView(editor, e.info.owner, e.openOptions).catch(error => {
-					this.logService.error('[BrowserViewWorkbenchService] Failed to open editor for created browser view.', error);
-				});
-			}
-		}));
+		// The listener must exist before the existing-view snapshot starts. Otherwise a view
+		// created between getBrowserViews() and listener registration can remain unknown forever.
+		const initialization = paradisCreateBrowserViewInitialization(
+			listener => this._browserViewService.onDidCreateBrowserView(event => listener(event)),
+			async () => (await this._browserViewService.getBrowserViews(this._mainWindowId)).map(info => ({ info })),
+			event => this._acceptInitializedView(event),
+			error => this.logService.error('[BrowserViewWorkbenchService] Failed to initialize existing browser views.', error),
+		);
+		this._register(initialization.listener);
+		this.whenInitialized = initialization.whenInitialized;
 	}
 
 	willUseRemoteProxy(): boolean {
@@ -307,10 +524,16 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 	 * Fetch all views owned by this window from the main service and create
 	 * models for them so they are available synchronously.
 	 */
-	private async _initializeExistingViews(): Promise<void> {
-		const views = await this._browserViewService.getBrowserViews(this._mainWindowId);
-		for (const info of views) {
-			this._createModel(info.id, info.owner, info.state);
+	private _acceptInitializedView(event: { readonly info: { readonly id: string; readonly owner: IBrowserViewOwner; readonly state: IBrowserViewState }; readonly openOptions?: IBrowserViewOpenOptions }): void {
+		if (event.info.owner.mainWindowId !== this._mainWindowId) {
+			return;
+		}
+		this._createModel(event.info.id, event.info.owner, event.info.state);
+		const editor = this._known.get(event.info.id);
+		if (editor && event.openOptions) {
+			void this._openEditorForCreatedView(editor, event.info.owner, event.openOptions).catch(error => {
+				this.logService.error('[BrowserViewWorkbenchService] Failed to open editor for created browser view.', error);
+			});
 		}
 	}
 

@@ -8,6 +8,7 @@
 
 // Only `import type` is allowed in preload scripts — Electron preloads cannot resolve module imports at runtime.
 import type { IBrowserViewTheme, IBrowserViewRect } from '../common/browserView.js';
+import type { BrowserViewAutomationTrustedFocusPredicate, IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
 
 /**
  * Preload script for pages loaded in Integrated Browser
@@ -22,6 +23,153 @@ import type { IBrowserViewTheme, IBrowserViewRect } from '../common/browserView.
 function init() {
 	const { contextBridge, ipcRenderer } = require('electron');
 
+	interface IAutomationKeyExpectation {
+		readonly signature: IBrowserViewAutomationKeySignature;
+		active: boolean;
+		consumed: boolean;
+		timer: ReturnType<typeof setTimeout> | undefined;
+	}
+	const automationKeyExpectations = new Map<number, IAutomationKeyExpectation>();
+	const automationKeyLimit = 32;
+	const automationKeyTtlMs = 250;
+	const parseAutomationSignature = (value: unknown): IBrowserViewAutomationKeySignature | undefined => {
+		if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+			return undefined;
+		}
+		const record = value as Readonly<Record<string, unknown>>;
+		if (!['keyDown', 'keyUp', 'char'].includes(record.type as string)
+			|| typeof record.key !== 'string' || record.key.length > 128
+			|| typeof record.code !== 'string' || record.code.length > 128
+			|| typeof record.location !== 'number' || !Number.isInteger(record.location) || record.location < 0 || record.location > 3
+			|| typeof record.modifiers !== 'number' || !Number.isInteger(record.modifiers) || record.modifiers < 0 || record.modifiers > 15
+			|| typeof record.repeat !== 'boolean') {
+			return undefined;
+		}
+		return {
+			type: record.type as IBrowserViewAutomationKeySignature['type'],
+			key: record.key,
+			code: record.code,
+			location: record.location,
+			modifiers: record.modifiers,
+			repeat: record.repeat,
+		};
+	};
+	const automationSignatureForEvent = (event: KeyboardEvent): IBrowserViewAutomationKeySignature => ({
+		type: 'keyDown',
+		key: event.key,
+		code: event.code,
+		location: event.location,
+		modifiers: (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0),
+		repeat: event.repeat,
+	});
+	const sameAutomationSignature = (left: IBrowserViewAutomationKeySignature, right: IBrowserViewAutomationKeySignature): boolean =>
+		left.type === right.type
+		&& left.key === right.key
+		&& left.code === right.code
+		&& left.location === right.location
+		&& left.modifiers === right.modifiers
+		&& left.repeat === right.repeat;
+	const documentHasUserFocus = (): boolean => {
+		try {
+			return document.hasFocus();
+		} catch {
+			// Focus uncertainty must never suppress a possible real user event.
+			return true;
+		}
+	};
+	const isTrustedFocusEvent: BrowserViewAutomationTrustedFocusPredicate = value =>
+		typeof value === 'object' && value !== null && !Array.isArray(value)
+		&& (value as Readonly<Record<string, unknown>>).isTrusted === true;
+	const consumeAutomationKey = (event: KeyboardEvent): boolean => {
+		if (documentHasUserFocus()) {
+			return false;
+		}
+		const signature = automationSignatureForEvent(event);
+		for (const [sequence, expectation] of automationKeyExpectations) {
+			if (!expectation.active || expectation.consumed || !sameAutomationSignature(expectation.signature, signature)) {
+				continue;
+			}
+			expectation.consumed = true;
+			ipcRenderer.send('vscode:browserView:automationKeyConsumed', { sequence, signature: expectation.signature });
+			return true;
+		}
+		return false;
+	};
+	ipcRenderer.on('vscode:browserView:expectAutomationKey', (_event: unknown, payload: unknown) => {
+		let sequence: number | undefined;
+		let accepted = false;
+		if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
+			const record = payload as Readonly<Record<string, unknown>>;
+			if (typeof record.sequence === 'number' && Number.isSafeInteger(record.sequence) && record.sequence > 0) {
+				sequence = record.sequence;
+				const signature = parseAutomationSignature(record.signature);
+				if (signature && !documentHasUserFocus() && !automationKeyExpectations.has(sequence) && automationKeyExpectations.size < automationKeyLimit) {
+					automationKeyExpectations.set(sequence, { signature, active: false, consumed: false, timer: undefined });
+					accepted = true;
+				}
+			}
+		}
+		ipcRenderer.send('vscode:browserView:automationKeyExpected', { sequence: sequence ?? 0, accepted });
+	});
+	ipcRenderer.on('vscode:browserView:activateAutomationKey', (_event: unknown, payload: unknown) => {
+		let sequence: number | undefined;
+		let accepted = false;
+		if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
+			const candidate = (payload as Readonly<Record<string, unknown>>).sequence;
+			if (typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate > 0) {
+				sequence = candidate;
+				const expectation = automationKeyExpectations.get(sequence);
+				if (expectation && !expectation.active && expectation.timer === undefined && !documentHasUserFocus()) {
+					expectation.active = true;
+					accepted = true;
+				}
+			}
+		}
+		ipcRenderer.send('vscode:browserView:automationKeyActivated', { sequence: sequence ?? 0, accepted });
+	});
+	ipcRenderer.on('vscode:browserView:completeAutomationKey', (_event: unknown, payload: unknown) => {
+		if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+			return;
+		}
+		const sequence = (payload as Readonly<Record<string, unknown>>).sequence;
+		if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence)) {
+			return;
+		}
+		const expectation = automationKeyExpectations.get(sequence);
+		if (!expectation?.active || expectation.timer !== undefined) {
+			return;
+		}
+		expectation.timer = setTimeout(() => {
+			if (automationKeyExpectations.get(sequence) === expectation) {
+				automationKeyExpectations.delete(sequence);
+			}
+		}, automationKeyTtlMs);
+	});
+	ipcRenderer.on('vscode:browserView:cancelAutomationKey', (_event: unknown, payload: unknown) => {
+		if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+			return;
+		}
+		const sequence = (payload as Readonly<Record<string, unknown>>).sequence;
+		if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence)) {
+			return;
+		}
+		const expectation = automationKeyExpectations.get(sequence);
+		if (expectation?.timer !== undefined) {
+			clearTimeout(expectation.timer);
+		}
+		automationKeyExpectations.delete(sequence);
+	});
+	window.addEventListener('focus', event => {
+		if (!isTrustedFocusEvent(event)) {
+			return;
+		}
+		for (const [sequence, expectation] of automationKeyExpectations) {
+			if (expectation.timer !== undefined) {
+				clearTimeout(expectation.timer);
+			}
+			automationKeyExpectations.delete(sequence);
+		}
+	});
 	// #######################################################################
 	// ###                                                                 ###
 	// ###       !!! DO NOT USE GET/SET PROPERTIES ANYWHERE HERE !!!       ###
@@ -48,6 +196,9 @@ function init() {
 	window.addEventListener('keydown', (event) => {
 		// Require that the event is trusted -- i.e. user-initiated.
 		if (!(event instanceof KeyboardEvent) || !event.isTrusted) {
+			return;
+		}
+		if (consumeAutomationKey(event)) {
 			return;
 		}
 
@@ -111,6 +262,7 @@ function init() {
 			key: event.key,
 			keyCode: event.keyCode,
 			code: event.code,
+			location: event.location,
 			ctrlKey: event.ctrlKey,
 			shiftKey: event.shiftKey,
 			altKey: event.altKey,

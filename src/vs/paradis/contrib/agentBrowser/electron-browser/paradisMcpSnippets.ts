@@ -11,21 +11,13 @@
 // （挙動の二重実装を避けるための共通化モジュール）。
 
 import { FileAccess } from '../../../../base/common/network.js';
-import { PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { isWindows } from '../../../../base/common/platform.js';
+import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { encodeParadisPosixShellArgument, encodeParadisPowerShellArgument, encodeParadisTomlBasicString } from '../common/paradisMcpSetupEncoding.js';
 
 /** stdioシム（毎起動時にポートファイルから実ポートを解決する）の絶対パス。 */
 export function getParadisShimPath(): string {
 	return FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js').fsPath;
-}
-
-/** CDPゲートウェイの既定URL（PTYへ注入される `PARA_CODE_CDP_URL` と同じ値）。 */
-export function getParadisCdpUrl(): string {
-	return `http://127.0.0.1:${PARADIS_MCP_DEFAULT_PORT}/cdp`;
-}
-
-/** 指定ペイントークン用のMCPエンドポイントURL（参考表示用）。 */
-export function getParadisMcpEndpointForToken(token: string): string {
-	return `http://127.0.0.1:${PARADIS_MCP_DEFAULT_PORT}/mcp?pane=${encodeURIComponent(token)}`;
 }
 
 /**
@@ -42,8 +34,13 @@ export function getParadisMcpEndpointForToken(token: string): string {
  * 内蔵プロキシはこれらを一覧から除外して提示する）。
  */
 export function getParadisClaudeSetupSnippet(): string {
+	const shimPath = getParadisShimPath();
+	const quotedShimPath = isWindows
+		? encodeParadisPowerShellArgument(shimPath)
+		: encodeParadisPosixShellArgument(shimPath);
 	return [
-		`claude mcp add -s user para-browser -- node "${getParadisShimPath()}"`,
+		...(isWindows ? ['# PowerShell'] : []),
+		`claude mcp add -s user para-browser -- node ${quotedShimPath}`,
 		'',
 	].join('\n');
 }
@@ -53,14 +50,13 @@ export function getParadisClaudeSetupSnippet(): string {
  * （TOMLは#コメント可、シェルには貼らない前提）。
  */
 export function getParadisCodexSetupSnippet(): string {
-	// TOML basic string ではバックスラッシュがエスケープ扱いになるため、Windowsパスを考慮して二重化する
-	const shimPathToml = getParadisShimPath().replace(/\\/g, '\\\\');
+	const shimPathToml = encodeParadisTomlBasicString(getParadisShimPath());
 	return [
 		'# Add to ~/.codex/config.toml',
 		'# Note: chrome-devtools tools are built into the para-browser server (no separate chrome-devtools entry needed).',
 		'[mcp_servers.para-browser]',
 		'command = "node"',
-		`args = ["${shimPathToml}"]`,
+		`args = [${shimPathToml}]`,
 		`env_vars = ["${PARADIS_PANE_TOKEN_ENV_VAR}", "${PARADIS_MCP_PORT_FILE_ENV_VAR}"]`,
 		'',
 	].join('\n');

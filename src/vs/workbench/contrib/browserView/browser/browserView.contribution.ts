@@ -12,8 +12,9 @@ import { CDPEvent, CDPRequest, CDPResponse } from '../../../../platform/browserV
 import { ITunnelProxyInfo } from '../../../../platform/tunnel/common/tunnelProxy.js';
 import { BrowserEditorInput } from '../common/browserEditorInput.js';
 
-class WebBrowserViewWorkbenchService implements IBrowserViewWorkbenchService {
+export class WebBrowserViewWorkbenchService implements IBrowserViewWorkbenchService {
 	declare readonly _serviceBrand: undefined;
+	readonly whenInitialized = Promise.resolve(true);
 
 	willUseRemoteProxy(): boolean {
 		return false;
