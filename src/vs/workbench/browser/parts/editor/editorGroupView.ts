@@ -689,6 +689,10 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	private canDispose(editor: EditorInput): boolean {
+		if (this.editorPartsView.isEditorInputRetained(editor)) {
+			return false;
+		}
+
 		for (const groupView of this.editorPartsView.groups) {
 			if (groupView instanceof EditorGroupView && groupView.model.contains(editor, {
 				strictEquals: true,						// only if this input is not shared across editor groups
@@ -1525,6 +1529,14 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		return this.doCloseEditorWithConfirmationHandling(editor, options);
 	}
 
+	detachEditor(editor: EditorInput): void {
+		if (!this.model.contains(editor, { strictEquals: true })) {
+			return;
+		}
+
+		this.doCloseEditor(editor, true, { context: EditorCloseContext.MOVE });
+	}
+
 	private async doCloseEditorWithConfirmationHandling(editor: EditorInput | undefined = this.activeEditor || undefined, options?: ICloseEditorOptions, internalOptions?: IInternalEditorCloseOptions): Promise<boolean> {
 		if (!editor) {
 			return false;
@@ -2198,7 +2210,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	toJSON(): ISerializedEditorGroupModel {
-		return this.model.serialize();
+		return this.model.serialize(editor => this.editorPartsView.shouldSerializeEditor(editor));
 	}
 
 	//#endregion

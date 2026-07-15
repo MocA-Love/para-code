@@ -14,6 +14,9 @@ import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowse
 
 export const IParadisWorkspaceSwitchService = createDecorator<IParadisWorkspaceSwitchService>('paradisWorkspaceSwitchService');
 
+export const PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY = 'paradis.workspaceSwitch.repositories';
+export const PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY = 'paradis.workspaceSwitch.activeEntry';
+
 /**
  * ワークスペース切り替え(機能1)の切り替え対象として登録されたリポジトリ1件分。
  * uri がワークスペースのルートフォルダとして folders に投入される。
@@ -91,13 +94,15 @@ export interface IParadisWorktreeService {
 	readonly onDidChangeWorktrees: Event<void>;
 	/** 設定による表示対象外も含め、ディスク上で検出した全worktree。 */
 	getDetectedWorktrees(repositoryId: string): readonly IParadisWorktree[];
+	/** 永続化済みの既知worktreeを、表示・missing状態に関係なくstateKeyとして返す。 */
+	getKnownWorktreeStateKeys(repositoryId: string): readonly string[];
 	getWorktrees(repositoryId: string): readonly IParadisWorktree[];
 	/** リポジトリ本体 (main checkout) のブランチ名 (detached HEAD なら短縮SHA)。git 管理外なら undefined */
 	getRepositoryBranch(repositoryId: string): string | undefined;
 	/** 作成直後など、表示名を伴う worktree を既知リストへ登録する */
 	addKnownWorktree(worktree: IParadisWorktree): void;
 	/** 自動削除OFFで残った missing エントリを手動でリストから外す */
-	removeKnownWorktree(worktree: IParadisWorktree): void;
+	removeKnownWorktree(worktree: IParadisWorktree): Promise<boolean>;
 	/**
 	 * リポジトリ内の worktree の表示順を指定する (Workspaces ビューの「上へ移動/下へ移動」用)。
 	 * orderedUris は getWorktrees が返す worktree の uri.toString() の配列。
@@ -384,7 +389,7 @@ export interface IParadisWorkspaceSwitchService {
 	readonly isSwitching: boolean;
 
 	addRepository(uri: URI, name?: string): Promise<IParadisWorkspaceRepository>;
-	removeRepository(id: string): Promise<void>;
+	removeRepository(id: string, descendantStateKeys?: readonly string[]): Promise<void>;
 	renameRepository(id: string, name: string): Promise<void>;
 	/** color は PARADIS_WORKSPACE_COLORS のID。undefined でデフォルトに戻す */
 	setRepositoryColor(id: string, color: string | undefined): Promise<void>;
@@ -405,7 +410,10 @@ export interface IParadisWorkspaceSwitchService {
 	 * 呼び、二度と到達できなくなったスコープの状態が WORKSPACE ストレージや park 中の
 	 * ターミナルとして残り続けるのを防ぐ。
 	 */
-	discardScopeState(stateKey: string): void;
+	hasScopeRetirementData(stateKey: string): Promise<boolean>;
+	prepareScopeRetirement(stateKey: string): Promise<boolean>;
+	cancelScopeRetirement(stateKey: string): void;
+	discardScopeState(stateKey: string): Promise<boolean>;
 }
 
 // --- Extension Host 再起動の抑止フラグ ---------------------------------------------------------

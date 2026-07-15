@@ -28,6 +28,7 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
+import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation } from '../../../../workbench/common/views.js';
 import { ITerminalEditorService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
@@ -36,9 +37,11 @@ import { IParadisEditorSplitTerminalService } from '../../../../workbench/servic
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
 import { ParadisEditorSplitTerminalService } from './paradisEditorSplitTerminalService.js';
+import { ParadisEditorScopeService } from './paradisEditorScopeService.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
 import { ParadisWorktreeService } from './paradisWorktreeService.js';
@@ -47,9 +50,18 @@ import './paradisScmInputScope.contribution.js';
 import './paradisScmRepoScope.contribution.js';
 
 registerSingleton(IParadisWorkspaceSwitchService, ParadisWorkspaceSwitchService, InstantiationType.Delayed);
+registerSingleton(IParadisEditorScopeService, ParadisEditorScopeService, InstantiationType.Delayed);
 registerSingleton(IParadisWorktreeService, ParadisWorktreeService, InstantiationType.Delayed);
 registerSingleton(IParadisAgentStatusStore, ParadisAgentStatusStore, InstantiationType.Delayed);
 registerSingleton(IParadisEditorSplitTerminalService, ParadisEditorSplitTerminalService, InstantiationType.Delayed);
+
+class ParadisEditorScopeStarter implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.paradisEditorScopeStarter';
+
+	constructor(@IParadisEditorScopeService _editorScopeService: IParadisEditorScopeService) { }
+}
+
+registerWorkbenchContribution2(ParadisEditorScopeStarter.ID, ParadisEditorScopeStarter, WorkbenchPhase.BlockRestore);
 
 // worktree 自動同期の Para Code 設定 (セクションは windowTransparency 側と同じ 'paradis' に相乗り)
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
@@ -258,6 +270,7 @@ class ParadisRemoveRepositoryAction extends Action2 {
 
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const service = accessor.get(IParadisWorkspaceSwitchService);
+		const worktreeService = accessor.get(IParadisWorktreeService);
 		const quickInputService = accessor.get(IQuickInputService);
 
 		if (service.repositories.length === 0) {
@@ -268,7 +281,8 @@ class ParadisRemoveRepositoryAction extends Action2 {
 			placeHolder: localize('paradis.workspaceSwitch.removePlaceholder', "Select a repository to remove from the list")
 		});
 		if (pick) {
-			await service.removeRepository(pick.repository.id);
+			const descendantStateKeys = worktreeService.getKnownWorktreeStateKeys(pick.repository.id);
+			await service.removeRepository(pick.repository.id, descendantStateKeys);
 		}
 	}
 }

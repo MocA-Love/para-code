@@ -15,12 +15,15 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
 
 interface ISerializedRepository {
@@ -45,17 +48,19 @@ interface ISerializedActiveEntry {
  * Applies a same-folder state-key correction and emits a stable scope switch only when the
  * effective key changed. Extracted so the URI fast path cannot silently skip scope consumers.
  */
-export function paradisApplySameUriScopeCorrection(
+export async function paradisApplySameUriScopeCorrection(
 	previousStateKey: string | undefined,
 	nextStateKey: string,
 	setActiveEntry: () => void,
 	onDidSwitchScope: (stateKey: string) => void,
 	markManagedWorkspaceWindow: () => void,
-): void {
+	beforeEmit: () => Promise<void> = async () => { },
+): Promise<void> {
 	// The fast path returns before folder mutation, so it must establish the same durable
 	// managed-window identity explicitly rather than relying on updateFolders side effects.
 	markManagedWorkspaceWindow();
 	setActiveEntry();
+	await beforeEmit();
 	if (previousStateKey !== nextStateKey) {
 		onDidSwitchScope(nextStateKey);
 	}
@@ -74,9 +79,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	declare readonly _serviceBrand: undefined;
 
-	private static readonly REPOSITORIES_STORAGE_KEY = 'paradis.workspaceSwitch.repositories';
 	private static readonly WORKING_SETS_STORAGE_KEY = 'paradis.workspaceSwitch.workingSets';
-	private static readonly ACTIVE_ENTRY_STORAGE_KEY = 'paradis.workspaceSwitch.activeEntry';
 
 	private readonly _onDidChangeRepositories = this._register(new Emitter<void>());
 	readonly onDidChangeRepositories = this._onDidChangeRepositories.event;
@@ -116,6 +119,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		@IEditorService private readonly editorService: IEditorService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 		@ITerminalEditorService private readonly terminalEditorService: ITerminalEditorService,
+		@IParadisEditorScopeService private readonly editorScopeService: IParadisEditorScopeService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 
@@ -186,19 +191,73 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		return repository;
 	}
 
-	async removeRepository(id: string): Promise<void> {
+	async removeRepository(id: string, descendantStateKeys: readonly string[] = []): Promise<void> {
 		const index = this._repositories.findIndex(repository => repository.id === id);
 		if (index === -1) {
 			return;
 		}
+		const retirementStateKeys = [...new Set([id, ...descendantStateKeys])];
+		const preparedStateKeys: string[] = [];
+		for (const stateKey of retirementStateKeys) {
+			if (!await this.prepareScopeRetirement(stateKey)) {
+				for (const preparedStateKey of preparedStateKeys) {
+					this.cancelScopeRetirement(preparedStateKey);
+				}
+				return;
+			}
+			preparedStateKeys.push(stateKey);
+		}
 
-		this._repositories.splice(index, 1);
+		const removesActiveScope = this.activeStateKey !== undefined && retirementStateKeys.includes(this.activeStateKey);
+		const fallbackRepository = removesActiveScope ? this._repositories.find(repository => repository.id !== id) : undefined;
+		if (fallbackRepository) {
+			try {
+				await this.switchRepository(fallbackRepository.id);
+			} catch (error) {
+				for (const preparedStateKey of preparedStateKeys) {
+					this.cancelScopeRetirement(preparedStateKey);
+				}
+				throw error;
+			}
+		}
+
+		for (const stateKey of preparedStateKeys) {
+			if (!await this.discardScopeState(stateKey)) {
+				for (const preparedStateKey of preparedStateKeys) {
+					this.cancelScopeRetirement(preparedStateKey);
+				}
+				return;
+			}
+		}
+		const currentIndex = this._repositories.findIndex(repository => repository.id === id);
+		if (currentIndex === -1) {
+			return;
+		}
+		this._repositories.splice(currentIndex, 1);
 		this.saveRepositories();
-		this.discardScopeState(id);
+		if (removesActiveScope && !fallbackRepository) {
+			this.clearActiveEntry();
+			await this.editorScopeService.leaveManagedWorkspace();
+		}
 		this._onDidChangeRepositories.fire();
 	}
 
-	discardScopeState(stateKey: string): void {
+	hasScopeRetirementData(stateKey: string): Promise<boolean> {
+		return this.editorScopeService.hasRetirementData(stateKey);
+	}
+
+	prepareScopeRetirement(stateKey: string): Promise<boolean> {
+		return this.editorScopeService.prepareScopeRetirement(stateKey);
+	}
+
+	cancelScopeRetirement(stateKey: string): void {
+		this.editorScopeService.cancelScopeRetirement(stateKey);
+	}
+
+	async discardScopeState(stateKey: string): Promise<boolean> {
+		if (!await this.editorScopeService.retireScope(stateKey)) {
+			return false;
+		}
 		this.deleteWorkingSetFor(stateKey);
 		this._panelVisibility.delete(stateKey);
 		// この scope の working set に載っていたエディタターミナルは park 台帳に生き続けている。
@@ -206,6 +265,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// パネルグループの retireScope (onDidRetireScope 購読) と対をなすエディタ側の掃除。
 		paradisRetireParkedTerminalEditorInstances(stateKey);
 		this._onDidRetireScope.fire(stateKey);
+		return true;
 	}
 
 	async renameRepository(id: string, name: string): Promise<void> {
@@ -250,13 +310,15 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		return this._switchSequencer.queue(async () => {
 			const previousKey = this.activeStateKey;
 			const folders = this.contextService.getWorkspace().folders;
+			const previousUri = folders.length === 1 ? folders[0].uri : undefined;
 			if (folders.length === 1 && isEqual(folders[0].uri, uri)) {
-				paradisApplySameUriScopeCorrection(
+				await paradisApplySameUriScopeCorrection(
 					previousKey,
 					stateKey,
 					() => this.setActiveEntry(stateKey, uri),
 					correctedStateKey => this._onDidSwitchScope.fire(correctedStateKey),
 					markParadisManagedWorkspaceWindow,
+					() => this.editorScopeService.correctActiveScope(previousKey, stateKey, uri),
 				);
 				return;
 			}
@@ -267,13 +329,17 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			markParadisManagedWorkspaceWindow();
 
 			this._switching = true;
+			this.editorScopeService.beginSwitch();
 			let completed = false;
+			let sourceCaptured = false;
+			let switchError: unknown;
 			try {
 				this._onWillSwitchScope.fire(previousKey);
 
 				// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 				if (previousKey !== undefined) {
-					this.saveWorkingSetFor(previousKey);
+					this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
+					sourceCaptured = true;
 					this.savePanelVisibilityFor(previousKey);
 
 					// エディタターミナルは working set の保存後・適用前にインスタンスを input から
@@ -292,23 +358,49 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// 「可視エディタが使用中のリポジトリ」を close しない (extensions/git/src/model.ts の
 				// onDidChangeWorkspaceFolders)。updateFolders を先にすると旧リポジトリのエディタが
 				// まだ開いているため SCM にリポジトリが残留してスコープが漏れる。
-				// dirty なエディタは upstream の applyWorkingSet 仕様により閉じられず
-				// 切り替え先レイアウトへ持ち越される (excludeConfirming、確認ダイアログは出ない)。
+				// 未保存入力はcaptureScopeでretain/detach済みなので、ここでは保存済み入力だけが
+				// upstream Working Setの通常挙動に従って切り替わる。
 				await this.applyWorkingSetFor(stateKey);
 
 				await this.trustUris(uri);
 				await this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]);
 
 				this.setActiveEntry(stateKey, uri);
+				await this.editorScopeService.commitSwitch(stateKey, uri);
+				await this.editorScopeService.restoreScope(stateKey);
+				await this.editorScopeService.restoreBackups();
 				this.restorePanelVisibilityFor(stateKey);
 				completed = true;
+			} catch (error) {
+				switchError = error;
+				try {
+					const currentFolders = this.contextService.getWorkspace().folders;
+					if (previousUri && (currentFolders.length !== 1 || !isEqual(currentFolders[0].uri, previousUri))) {
+						await this.workspaceEditingService.updateFolders(0, currentFolders.length, [{ uri: previousUri }]);
+					}
+					if (previousKey !== undefined && sourceCaptured) {
+						await this.applyWorkingSetFor(previousKey);
+						await this.editorScopeService.restoreScope(previousKey);
+						if (previousUri) {
+							this.setActiveEntry(previousKey, previousUri);
+						}
+						this.restorePanelVisibilityFor(previousKey);
+					} else if (previousKey === undefined) {
+						this.clearActiveEntry();
+					}
+					await this.editorScopeService.rollbackSwitch(previousKey, previousUri);
+					await this.editorScopeService.restoreBackups();
+				} catch (rollbackError) {
+					this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back workspace switch', rollbackError);
+				}
+				throw error;
 			} finally {
 				this._switching = false;
 
 				// 完了時は切り替え先スコープへ、途中で例外が起きた場合は元スコープへ発火する。
 				// onWillSwitchScope で退避済みの状態 (SCM入力の下書き・park済みターミナル) は
 				// onDidSwitchScope を受け皿として復元されるため、失敗時に発火しないと迷子のまま残る
-				const restoreKey = completed ? stateKey : previousKey;
+				const restoreKey = completed ? stateKey : switchError !== undefined ? previousKey : undefined;
 				if (restoreKey !== undefined) {
 					this._onDidSwitchScope.fire(restoreKey);
 				}
@@ -318,11 +410,16 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	private setActiveEntry(stateKey: string, uri: URI): void {
 		this._activeEntry = { stateKey, uri: uri.toString() };
-		this.storageService.store(ParadisWorkspaceSwitchService.ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify(this._activeEntry), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		this.storageService.store(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, JSON.stringify(this._activeEntry), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	private clearActiveEntry(): void {
+		this._activeEntry = undefined;
+		this.storageService.remove(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, StorageScope.WORKSPACE);
 	}
 
 	private loadActiveEntry(): ISerializedActiveEntry | undefined {
-		const raw = this.storageService.get(ParadisWorkspaceSwitchService.ACTIVE_ENTRY_STORAGE_KEY, StorageScope.WORKSPACE);
+		const raw = this.storageService.get(PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, StorageScope.WORKSPACE);
 		if (!raw) {
 			return undefined;
 		}
@@ -333,14 +430,19 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 	}
 
-	private saveWorkingSetFor(stateKey: string): void {
-		// 同一エントリの古い working set は捨てて常に最新の1つだけ持つ
-		// (EditorParts 側の 'editor.workingSets' ストレージを無限に肥やさないため)
-		this.deleteWorkingSetFor(stateKey);
-
+	private saveWorkingSetFor(stateKey: string, excludedEditors: readonly EditorInput[] = []): void {
+		const previousWorkingSet = this._workingSets.get(stateKey);
 		if (this.editorService.visibleEditors.length > 0) {
-			const workingSet = this.editorGroupsService.saveWorkingSet(`paradis-workspace:${stateKey}`);
+			const workingSet = this.editorGroupsService.saveWorkingSet(`paradis-workspace:${stateKey}`, { excludeEditors: excludedEditors });
 			this._workingSets.set(stateKey, workingSet);
+			if (previousWorkingSet) {
+				// 新しいスナップショットが確定してから古いものを捨てる。保存失敗時も、
+				// 直前に成功した Working Set を失わないため。
+				this.editorGroupsService.deleteWorkingSet(previousWorkingSet);
+			}
+		} else if (previousWorkingSet) {
+			this.editorGroupsService.deleteWorkingSet(previousWorkingSet);
+			this._workingSets.delete(stateKey);
 		}
 		this.saveWorkingSets();
 	}
@@ -410,7 +512,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	private loadRepositories(): IParadisWorkspaceRepository[] {
-		const raw = this.storageService.get(ParadisWorkspaceSwitchService.REPOSITORIES_STORAGE_KEY, StorageScope.WORKSPACE);
+		const raw = this.storageService.get(PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, StorageScope.WORKSPACE);
 		if (!raw) {
 			return [];
 		}
@@ -435,7 +537,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			uri: repository.uri.toString(),
 			color: repository.color
 		}));
-		this.storageService.store(ParadisWorkspaceSwitchService.REPOSITORIES_STORAGE_KEY, JSON.stringify(serialized), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		this.storageService.store(PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, JSON.stringify(serialized), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	private loadWorkingSets(): void {

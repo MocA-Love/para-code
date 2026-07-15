@@ -29,6 +29,7 @@ import { IWorkingCopyEditorHandler, IWorkingCopyEditorService } from '../../comm
 import { bufferToReadable, VSBuffer } from '../../../../../base/common/buffer.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { Schemas } from '../../../../../base/common/network.js';
+import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../common/workingCopyBackupRestoreRouter.js';
 
 suite('WorkingCopyBackupTracker (browser)', function () {
 	let accessor: TestServiceAccessor;
@@ -54,8 +55,9 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 			@ILogService logService: ILogService,
 			@IWorkingCopyEditorService workingCopyEditorService: IWorkingCopyEditorService,
 			@IEditorService editorService: IEditorService,
+			@IWorkingCopyBackupRestoreRouter workingCopyBackupRestoreRouter: IWorkingCopyBackupRestoreRouter,
 		) {
-			super(workingCopyBackupService, filesConfigurationService, workingCopyService, lifecycleService, logService, workingCopyEditorService, editorService);
+			super(workingCopyBackupService, filesConfigurationService, workingCopyService, lifecycleService, logService, workingCopyEditorService, editorService, workingCopyBackupRestoreRouter);
 		}
 
 		protected override getBackupScheduleDelay(): number {
@@ -88,6 +90,7 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 		const workingCopyBackupService = disposables.add(new InMemoryTestWorkingCopyBackupService());
 		const instantiationService = workbenchInstantiationService(undefined, disposables);
 		instantiationService.stub(IWorkingCopyBackupService, workingCopyBackupService);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, disposables.add(new WorkingCopyBackupRestoreRouter()));
 
 		const part = await createEditorPart(instantiationService, disposables);
 		instantiationService.stub(IEditorGroupsService, part);
@@ -182,7 +185,7 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 		assert.strictEqual(workingCopyBackupService.hasBackupSync(customWorkingCopy), false);
 	});
 
-	async function restoreBackupsInit(): Promise<[TestWorkingCopyBackupTracker, TestServiceAccessor]> {
+	async function restoreBackupsInit(route?: (identifier: { readonly resource: URI; readonly typeId: string }) => WorkingCopyBackupRestoreDecision): Promise<[TestWorkingCopyBackupTracker, TestServiceAccessor, WorkingCopyBackupRestoreRouter]> {
 		const fooFile = URI.file(isWindows ? 'c:\\Foo' : '/Foo');
 		const barFile = URI.file(isWindows ? 'c:\\Bar' : '/Bar');
 		const untitledFile1 = URI.from({ scheme: Schemas.untitled, path: 'Untitled-1' });
@@ -191,6 +194,11 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 		const workingCopyBackupService = disposables.add(new InMemoryTestWorkingCopyBackupService());
 		const instantiationService = workbenchInstantiationService(undefined, disposables);
 		instantiationService.stub(IWorkingCopyBackupService, workingCopyBackupService);
+		const restoreRouter = disposables.add(new WorkingCopyBackupRestoreRouter());
+		if (route) {
+			disposables.add(restoreRouter.registerProvider({ route }));
+		}
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, restoreRouter);
 
 		const part = await createEditorPart(instantiationService, disposables);
 		instantiationService.stub(IEditorGroupsService, part);
@@ -215,8 +223,30 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 
 		accessor.lifecycleService.phase = LifecyclePhase.Restored;
 
-		return [tracker, accessor];
+		return [tracker, accessor, restoreRouter];
 	}
+
+	test('Restore backups keeps deferred backups pending and retries them on request', async function () {
+		let decision = WorkingCopyBackupRestoreDecision.Defer;
+		const [tracker, accessor, restoreRouter] = await restoreBackupsInit(() => decision);
+		let createEditorCounter = 0;
+		const handler: IWorkingCopyEditorHandler = {
+			handles: () => true,
+			isOpen: () => false,
+			createEditor: () => {
+				createEditorCounter++;
+				return disposables.add(accessor.instantiationService.createInstance(TestUntitledTextEditorInput, accessor.untitledTextEditorService.create({ initialValue: 'foo' })));
+			}
+		};
+
+		await tracker.testRestoreBackups(handler);
+		assert.deepStrictEqual({ created: createEditorCounter, pending: tracker.getUnrestoredBackups().size }, { created: 0, pending: 4 });
+
+		decision = WorkingCopyBackupRestoreDecision.Restore;
+		disposables.add(accessor.workingCopyEditorService.registerHandler(handler));
+		await restoreRouter.requestRestore();
+		assert.deepStrictEqual({ created: createEditorCounter, pending: tracker.getUnrestoredBackups().size }, { created: 4, pending: 0 });
+	});
 
 	test('Restore backups (basics, some handled)', async function () {
 		const [tracker, accessor] = await restoreBackupsInit();

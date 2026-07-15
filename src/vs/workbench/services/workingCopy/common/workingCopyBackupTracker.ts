@@ -16,6 +16,7 @@ import { Promises } from '../../../../base/common/async.js';
 import { IEditorService } from '../../editor/common/editorService.js';
 import { EditorsOrder } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision } from './workingCopyBackupRestoreRouter.js';
 
 /**
  * The working copy backup tracker deals with:
@@ -34,6 +35,7 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 		protected readonly filesConfigurationService: IFilesConfigurationService,
 		private readonly workingCopyEditorService: IWorkingCopyEditorService,
 		protected readonly editorService: IEditorService,
+		private readonly workingCopyBackupRestoreRouter: IWorkingCopyBackupRestoreRouter,
 	) {
 		super();
 
@@ -60,7 +62,12 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 		this._register(this.lifecycleService.onWillShutdown(() => this.onWillShutdown()));
 
 		// Once a handler registers, restore backups
-		this._register(this.workingCopyEditorService.onDidRegisterHandler(handler => this.restoreBackups(handler)));
+		this._register(this.workingCopyEditorService.onDidRegisterHandler(handler => {
+			this.workingCopyEditorHandlers.add(handler);
+			void this.workingCopyBackupRestoreRouter.requestRestore();
+		}));
+		this._register(this.workingCopyEditorService.onDidUnregisterHandler(handler => this.workingCopyEditorHandlers.delete(handler)));
+		this._register(this.workingCopyBackupRestoreRouter.registerRestorer(() => this.restoreRegisteredBackups()));
 	}
 
 	protected abstract onFinalBeforeShutdown(reason: ShutdownReason): boolean | Promise<boolean>;
@@ -336,6 +343,7 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 
 	protected readonly unrestoredBackups = new Set<IWorkingCopyIdentifier>();
 	protected readonly whenReady: Promise<void>;
+	private readonly workingCopyEditorHandlers = new Set<IWorkingCopyEditorHandler>();
 
 	private _isReady = false;
 	protected get isReady(): boolean { return this._isReady; }
@@ -367,6 +375,10 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 		// associated editor.
 		const restoredBackups = new Set<IWorkingCopyIdentifier>();
 		for (const unrestoredBackup of this.unrestoredBackups) {
+			if (await this.workingCopyBackupRestoreRouter.route(unrestoredBackup) === WorkingCopyBackupRestoreDecision.Defer) {
+				continue;
+			}
+
 			const canHandleUnrestoredBackup = await handler.handles(unrestoredBackup);
 			if (!canHandleUnrestoredBackup) {
 				continue;
@@ -424,6 +436,16 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 		// Finally, remove all handled backups from the list
 		for (const restoredBackup of restoredBackups) {
 			this.unrestoredBackups.delete(restoredBackup);
+		}
+	}
+
+	private async restoreRegisteredBackups(): Promise<void> {
+		for (const handler of this.workingCopyEditorHandlers) {
+			try {
+				await this.restoreBackups(handler);
+			} catch (error) {
+				this.logService.error('[backup tracker] failed to restore registered backups', error);
+			}
 		}
 	}
 

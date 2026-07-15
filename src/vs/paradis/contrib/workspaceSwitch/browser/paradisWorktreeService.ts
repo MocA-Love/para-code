@@ -94,6 +94,12 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		return this._detectedWorktrees.get(repositoryId) ?? [];
 	}
 
+	getKnownWorktreeStateKeys(repositoryId: string): readonly string[] {
+		return this._known
+			.filter(known => known.repositoryId === repositoryId)
+			.map(known => paradisWorktreeStateKey(URI.parse(known.path)));
+	}
+
 	getRepositoryBranch(repositoryId: string): string | undefined {
 		return this._branches.get(repositoryId);
 	}
@@ -110,13 +116,21 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		this._refreshScheduler.schedule();
 	}
 
-	removeKnownWorktree(worktree: IParadisWorktree): void {
+	async removeKnownWorktree(worktree: IParadisWorktree): Promise<boolean> {
 		const before = this._known.length;
+		if (!this._known.some(known => known.repositoryId === worktree.repositoryId && known.path === worktree.uri.toString())) {
+			return false;
+		}
+
+		const stateKey = paradisWorktreeStateKey(worktree.uri);
+		if (!await this.workspaceSwitchService.discardScopeState(stateKey)) {
+			return false;
+		}
+
 		this._known = this._known.filter(known => !(known.repositoryId === worktree.repositoryId && known.path === worktree.uri.toString()));
 		if (this._known.length !== before) {
 			// この worktree の切り替えスコープ状態 (working set / パネル / SCM入力 / park 中ターミナル)
 			// を破棄する。二度と開かれないキーの状態が WORKSPACE ストレージに残り続けるのを防ぐ。
-			this.workspaceSwitchService.discardScopeState(paradisWorktreeStateKey(worktree.uri));
 			this.saveKnown();
 			this._refreshScheduler.schedule();
 		}
@@ -126,6 +140,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			this._order.set(worktree.repositoryId, order.filter(uri => uri !== worktree.uri.toString()));
 			this.saveOrder();
 		}
+		return true;
 	}
 
 	setWorktreeOrder(repositoryId: string, orderedUris: readonly string[]): void {
@@ -223,9 +238,10 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			// OFF なら missing として残す (手動 removeKnownWorktree 可能)
 			for (const known of knownForRepository) {
 				if (!scannedPaths.has(known.path)) {
-					if (autoRemove) {
+					const missingStateKey = paradisWorktreeStateKey(URI.parse(known.path));
+					if (autoRemove && !await this.workspaceSwitchService.hasScopeRetirementData(missingStateKey)) {
 						this._known = this._known.filter(candidate => candidate !== known);
-						this.workspaceSwitchService.discardScopeState(paradisWorktreeStateKey(URI.parse(known.path)));
+						await this.workspaceSwitchService.discardScopeState(missingStateKey);
 						knownChanged = true;
 					} else {
 						list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), missing: true });
@@ -247,11 +263,13 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		// スコープ状態を破棄する。リポジトリ削除で連鎖的に到達不能になるため)
 		const repositoryIds = new Set(repositories.map(repository => repository.id));
 		const orphanedKnown = this._known.filter(known => !repositoryIds.has(known.repositoryId));
-		if (orphanedKnown.length > 0) {
-			this._known = this._known.filter(known => repositoryIds.has(known.repositoryId));
-			for (const known of orphanedKnown) {
-				this.workspaceSwitchService.discardScopeState(paradisWorktreeStateKey(URI.parse(known.path)));
+		for (const known of orphanedKnown) {
+			const stateKey = paradisWorktreeStateKey(URI.parse(known.path));
+			if (await this.workspaceSwitchService.hasScopeRetirementData(stateKey)) {
+				continue;
 			}
+			this._known = this._known.filter(candidate => candidate !== known);
+			await this.workspaceSwitchService.discardScopeState(stateKey);
 			knownChanged = true;
 		}
 

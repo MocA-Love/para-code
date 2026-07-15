@@ -1160,7 +1160,7 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 		return clone;
 	}
 
-	serialize(): ISerializedEditorGroupModel {
+	serialize(shouldSerialize: (editor: EditorInput) => boolean = () => true): ISerializedEditorGroupModel {
 		const registry = Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory);
 
 		// Serialize all editor inputs so that we can store them.
@@ -1175,7 +1175,7 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 			const editor = this.editors[i];
 			let canSerializeEditor = false;
 
-			const editorSerializer = registry.getEditorSerializer(editor);
+			const editorSerializer = shouldSerialize(editor) ? registry.getEditorSerializer(editor) : undefined;
 			if (editorSerializer) {
 				const value = editorSerializer.canSerialize(editor) ? editorSerializer.serialize(editor) : undefined;
 

@@ -613,6 +613,14 @@ export interface IEditorWorkingSetOptions {
 	readonly preserveFocus?: boolean;
 }
 
+/**
+ * Options that control which editor inputs are persisted in a newly created
+ * working set. Excluded inputs remain the responsibility of the caller.
+ */
+export interface IEditorWorkingSetSaveOptions {
+	readonly excludeEditors?: readonly EditorInput[];
+}
+
 export interface IEditorGroupContextKeyProvider<T extends ContextKeyValue> {
 
 	/**
@@ -695,7 +703,13 @@ export interface IEditorGroupsService extends IEditorGroupsContainer {
 	 * Save a new editor working set from the currently opened
 	 * editors and group layout.
 	 */
-	saveWorkingSet(name: string): IEditorWorkingSet;
+	saveWorkingSet(name: string, options?: IEditorWorkingSetSaveOptions): IEditorWorkingSet;
+
+	/**
+	 * Prevents an editor input from being disposed when its final group reference
+	 * is removed. The retention ends when the returned disposable is disposed.
+	 */
+	retainEditor?(editor: EditorInput): IDisposable;
 
 	/**
 	 * Returns all known editor working sets.
@@ -995,6 +1009,13 @@ export interface IEditorGroup {
 	 * is dirty.
 	 */
 	closeEditor(editor?: EditorInput, options?: ICloseEditorOptions): Promise<boolean>;
+
+	/**
+	 * Removes an editor from this group without confirmation while retaining move
+	 * semantics. Callers must retain the input separately when it has no other
+	 * group references and needs to stay alive.
+	 */
+	detachEditor?(editor: EditorInput): void;
 
 	/**
 	 * Closes specific editors in this group. This may trigger a confirmation dialog if
