@@ -32,11 +32,13 @@ import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, 
 import { ITerminalEditorService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { IParadisEditorSplitTerminalService } from '../../../../workbench/services/editor/common/paradisEditorSplitTerminalService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
+import { ParadisEditorSplitTerminalService } from './paradisEditorSplitTerminalService.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
 import { ParadisWorktreeService } from './paradisWorktreeService.js';
@@ -47,6 +49,7 @@ import './paradisScmRepoScope.contribution.js';
 registerSingleton(IParadisWorkspaceSwitchService, ParadisWorkspaceSwitchService, InstantiationType.Delayed);
 registerSingleton(IParadisWorktreeService, ParadisWorktreeService, InstantiationType.Delayed);
 registerSingleton(IParadisAgentStatusStore, ParadisAgentStatusStore, InstantiationType.Delayed);
+registerSingleton(IParadisEditorSplitTerminalService, ParadisEditorSplitTerminalService, InstantiationType.Delayed);
 
 // worktree 自動同期の Para Code 設定 (セクションは windowTransparency 側と同じ 'paradis' に相乗り)
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
@@ -72,6 +75,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: true,
 			scope: ConfigurationScope.WINDOW,
 			description: localize('paradis.workspaceSwitch.scopeScmRepositories', "ソース管理ビューの表示を、現在開いているスペース（ワークスペースフォルダ）に関係するリポジトリだけに自動的に絞ります。git 拡張が裏で開いたままの他スペースや worktree の親リポジトリは非表示になります（リポジトリ自体は閉じられないため、ガター差分などの機能はそのまま使えます）。")
+		},
+		'paradis.editor.openTerminalOnSplit': {
+			type: 'boolean',
+			default: false,
+			scope: ConfigurationScope.WINDOW,
+			description: localize('paradis.editor.openTerminalOnSplit', "Open and focus a new terminal in an editor group immediately after splitting the editor. Existing terminals are never reused.")
 		}
 	}
 });

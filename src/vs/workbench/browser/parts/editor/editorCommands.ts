@@ -36,6 +36,7 @@ import { EditorGroupLayout, GroupDirection, GroupLocation, GroupsOrder, IEditorG
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
 import { IEditorService, SIDE_GROUP } from '../../../services/editor/common/editorService.js';
+import { IParadisEditorSplitTerminalService } from '../../../services/editor/common/paradisEditorSplitTerminalService.js';
 import { IPathService } from '../../../services/path/common/pathService.js';
 import { ITextFileService } from '../../../services/textfile/common/textfiles.js';
 import { IUntitledTextEditorService } from '../../../services/untitled/common/untitledTextEditorService.js';
@@ -748,7 +749,7 @@ function registerFocusEditorGroupAtIndexCommands(): void {
 	}
 }
 
-export function splitEditor(editorGroupsService: IEditorGroupsService, direction: GroupDirection, resolvedContext: IResolvedEditorCommandsContext): void {
+export async function splitEditor(accessor: ServicesAccessor, editorGroupsService: IEditorGroupsService, direction: GroupDirection, resolvedContext: IResolvedEditorCommandsContext): Promise<void> {
 	if (!resolvedContext.groupedEditors.length) {
 		return;
 	}
@@ -762,6 +763,9 @@ export function splitEditor(editorGroupsService: IEditorGroupsService, direction
 
 	// Focus
 	newGroup.focus();
+
+	// PARA-PATCH: retain the exact destination group object across asynchronous terminal setup.
+	await accessor.get(IParadisEditorSplitTerminalService).openTerminalInGroup(newGroup);
 }
 
 function registerSplitEditorCommands() {
@@ -773,7 +777,7 @@ function registerSplitEditorCommands() {
 	].forEach(({ id, direction }) => {
 		CommandsRegistry.registerCommand(id, function (accessor, ...args) {
 			const resolvedContext = resolveCommandsContext(args, accessor.get(IEditorService), accessor.get(IEditorGroupsService), accessor.get(IListService));
-			splitEditor(accessor.get(IEditorGroupsService), direction, resolvedContext);
+			return splitEditor(accessor, accessor.get(IEditorGroupsService), direction, resolvedContext);
 		});
 	});
 }
