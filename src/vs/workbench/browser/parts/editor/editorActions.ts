@@ -72,7 +72,7 @@ abstract class AbstractSplitEditorAction extends Action2 {
 		const direction = this.getDirection(configurationService);
 		const commandContext = resolveCommandsContext(args, editorService, editorGroupsService, listService);
 
-		splitEditor(editorGroupsService, direction, commandContext);
+		await splitEditor(accessor, editorGroupsService, direction, commandContext);
 	}
 }
 
