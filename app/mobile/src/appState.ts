@@ -104,6 +104,7 @@ interface AppState extends StoreState {
 	detachAgent(terminalKey: string): void;
 	refreshAgent(terminalKey: string): void;
 	requestAgentModelCatalog(terminalKey: string): void;
+	requestAgentCommandCatalog(terminalKey: string): void;
 	updateAgentSettings(terminalKey: string, model: string, effort: string): void;
 	scmStatus(ws: string): Promise<ScmStatusResult>;
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult>;
@@ -534,6 +535,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	requestAgentModelCatalog(terminalKey: string) {
 		controller?.requestAgentModelCatalog(terminalKey);
+	},
+
+	requestAgentCommandCatalog(terminalKey: string) {
+		controller?.requestAgentCommandCatalog(terminalKey);
 	},
 
 	updateAgentSettings(terminalKey: string, model: string, effort: string) {

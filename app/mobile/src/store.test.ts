@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
@@ -273,7 +273,8 @@ describe('MobileController', () => {
 		expect(latest?.terminalOutput.size).toBe(0);
 		expect(received.filter(message => message.t === 'attach')).toHaveLength(4);
 		const inputs = received.filter(message => message.t === 'input');
-		expect(inputs).toHaveLength(1);
+		expect(inputs).toHaveLength(2);
+		expect(inputs[1]?.operationId).toBe(inputs[0]?.operationId);
 		expect(latest?.unknownTerminalOperationCount).toBe(1);
 		expect(latest?.terminalOperationIssue).toContain('結果を確認できなかった');
 		const replayAfterEpochChange: import('./store.js').TermStreamEvent[] = [];
@@ -608,6 +609,8 @@ describe('MobileController', () => {
 		pcMux.send(Channels.State, enc(desktopState([{ id: 1, title: 'claude', agentToken: 'agent-1' }])));
 		await flush();
 		controller.subscribeTerminal('terminal-1', () => { });
+		controller.attachAgent('terminal-1');
+		await flush();
 
 		// term 出力更新: terminalOutput だけ新参照になり、agentChats/notifications は据え置き。
 		const beforeTerm = emits[emits.length - 1]!;
@@ -656,6 +659,10 @@ describe('MobileController Codex model control', () => {
 		const requests: Record<string, unknown>[] = [];
 		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
 		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'codex', agentToken: 'agent-7' }])));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		requests.length = 0;
 		pcMux.send(Channels.Agent, encode({ t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [], info: { model: 'gpt-5.6-sol', effort: 'low' } }));
 		await flush();
 		return { controller, pcMux, encode, requests, latestState: () => latest };
@@ -736,6 +743,92 @@ describe('MobileController Codex model control', () => {
 
 });
 
+describe('MobileController agent command catalog', () => {
+	async function setup() {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const requests: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'codex', agentToken: 'agent-7' }])));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		requests.length = 0;
+		pcMux.send(Channels.Agent, encode({ t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [] }));
+		await flush();
+		return { controller, pcMux, encode, requests, latestState: () => latest };
+	}
+
+	it('roundtrips a validated catalog for the active agent session', async () => {
+		const { controller, pcMux, encode, requests, latestState } = await setup();
+		controller.requestAgentCommandCatalog('terminal-7');
+		await flush();
+		const request = requests[0] as { t: string; id: number; token: string; requestId: string };
+		expect(request).toEqual({ t: 'command-catalog', id: 7, token: 'agent-7', requestId: request.requestId });
+
+		pcMux.send(Channels.Agent, encode({
+			t: 'command-catalog', id: 7, token: 'agent-7', requestId: request.requestId,
+			commands: [
+				{ name: 'model', insertText: '/model', description: 'choose model', kind: 'command', source: 'built-in' },
+				{ name: 'aivis', insertText: '/aivis', description: 'voice', argumentHint: '[text]', kind: 'skill', source: 'user' },
+			],
+		}));
+		await flush();
+		expect(latestState()?.agentChats.get('terminal-7')?.commandCatalog).toEqual({
+			status: 'ready', commands: [
+				{ name: 'model', insertText: '/model', description: 'choose model', kind: 'command', source: 'built-in' },
+				{ name: 'aivis', insertText: '/aivis', description: 'voice', argumentHint: '[text]', kind: 'skill', source: 'user' },
+			],
+		});
+	});
+
+	it('ignores stale responses and rejects malformed command entries', async () => {
+		const { controller, pcMux, encode, requests, latestState } = await setup();
+		controller.requestAgentCommandCatalog('terminal-7');
+		await flush();
+		const request = requests[0] as { requestId: string };
+		pcMux.send(Channels.Agent, encode({
+			t: 'command-catalog', id: 7, token: 'agent-7', requestId: `${request.requestId}-stale`,
+			commands: [{ name: 'stale', insertText: '/stale', description: '', kind: 'command', source: 'built-in' }],
+		}));
+		await flush();
+		expect(latestState()?.agentChats.get('terminal-7')?.commandCatalog?.status).toBe('loading');
+
+		pcMux.send(Channels.Agent, encode({
+			t: 'command-catalog', id: 7, token: 'agent-7', requestId: request.requestId,
+			commands: [{ name: '../bad', insertText: '/bad', description: '', kind: 'skill', source: 'user' }],
+		}));
+		await flush();
+		expect(latestState()?.agentChats.get('terminal-7')?.commandCatalog).toEqual({
+			status: 'error', commands: [], errorMessage: 'コマンド一覧のレスポンスが不正です',
+		});
+	});
+
+	it('moves a pending catalog request to an error state after its timeout', async () => {
+		const { controller, latestState } = await setup();
+		vi.useFakeTimers();
+		try {
+			controller.requestAgentCommandCatalog('terminal-7');
+			await vi.advanceTimersByTimeAsync(15_000);
+			expect(latestState()?.agentChats.get('terminal-7')?.commandCatalog).toEqual({
+				status: 'error', commands: [], errorMessage: 'コマンド一覧の取得がタイムアウトしました',
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe('agent message action result', () => {
 	it('keeps pasted-but-not-executed distinct from accepted', () => {
 		expect(toAgentMessageSendResult('rejected', true, '本文は貼り付け済みです')).toEqual({ status: 'consumed', message: '本文は貼り付け済みです' });
@@ -760,6 +853,10 @@ describe('MobileController agent approval', () => {
 		const requests: Record<string, unknown>[] = [];
 		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
 		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'codex', agentToken: 'agent-7' }])));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		requests.length = 0;
 		pcMux.send(Channels.Agent, encode({
 			t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'codex-e1', rev: 0, messages: [],
 			capabilities: { agentActions: true },

@@ -70,7 +70,7 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 	const autoStartedRef = useRef(false);
 	const browserStartGenRef = useRef(0);
 	const targetLoadGenRef = useRef(0);
-	const targetsEpochRef = useRef<string | undefined>();
+	const targetsEpochRef = useRef<string | undefined>(undefined);
 
 	// WebRTCミラー（低遅延経路）。確立できたら RTCView 表示、失敗・切断時は
 	// 既存のJPEGフレーム表示へ自動フォールバックする（JPEGは並行して流れ続けている）。

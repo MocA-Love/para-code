@@ -6,7 +6,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = dirname(fileURLToPath(import.meta.url));
-const file = join(root, 'agent-ui-catalog.html');
+const pages = new Map([
+	['/', 'agent-ui-catalog.html'],
+	['/agent-ui-catalog.html', 'agent-ui-catalog.html'],
+	['/slash-command-catalog.html', 'slash-command-catalog.html'],
+]);
 const portFlag = process.argv.indexOf('--port');
 const requestedPort = portFlag >= 0 ? Number(process.argv[portFlag + 1]) : 4179;
 const port = Number.isInteger(requestedPort) && requestedPort > 0 && requestedPort < 65_536 ? requestedPort : 4179;
@@ -23,12 +27,14 @@ const server = createServer(async (request, response) => {
 		response.end();
 		return;
 	}
-	if (url.pathname !== '/' && url.pathname !== '/agent-ui-catalog.html') {
+	const page = pages.get(url.pathname);
+	if (page === undefined) {
 		response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
 		response.end('Not Found');
 		return;
 	}
 	try {
+		const file = join(root, page);
 		const metadata = await stat(file);
 		response.writeHead(200, {
 			'Content-Type': 'text/html; charset=utf-8',

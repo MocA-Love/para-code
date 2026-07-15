@@ -55,7 +55,7 @@ export function FilesPanel() {
 	const [searching, setSearching] = useState(false);
 	// 入力デバウンスと応答順序の入れ替わり対策（最後に発行したクエリのみ反映する）
 	const searchGenRef = useRef(0);
-	const lastSearchKeyRef = useRef<string | undefined>();
+	const lastSearchKeyRef = useRef<string | undefined>(undefined);
 	const loadContextRef = useRef<{ wsId: string | undefined; live: boolean; rendererTarget: string | undefined }>({ wsId: undefined, live: false, rendererTarget: undefined });
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
