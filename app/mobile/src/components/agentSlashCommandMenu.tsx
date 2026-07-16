@@ -70,9 +70,12 @@ function sourceLabel(source: AgentCommandOption['source']): string {
 }
 
 const styles = StyleSheet.create({
-	surface: { maxHeight: 292, borderRadius: 20, overflow: 'hidden', marginBottom: 8 },
+	// flexShrink: キーボードが高い端末でヘッダー（＋Subagentストリップ）と重なる場合は
+	// maxHeightより優先して縮む（親チェーンのminHeight/flexShrink制約による。内容はScrollViewで送る）
+	surface: { maxHeight: 292, flexShrink: 1, borderRadius: 20, overflow: 'hidden', marginBottom: 8 },
 	fallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
-	list: { maxHeight: 292 },
+	// flexShrink: surfaceの圧縮にビューポートを追随させ、クリップされた行へもスクロールで到達できるようにする
+	list: { maxHeight: 292, flexShrink: 1 },
 	row: { minHeight: 54, paddingHorizontal: 14, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	rowPressed: { backgroundColor: colors.surface2 },
 	commandBody: { flex: 1, minWidth: 0 },

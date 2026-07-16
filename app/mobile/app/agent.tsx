@@ -316,7 +316,10 @@ export default function AgentDetailScreen() {
 	return (
 		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-			<View style={styles.chatArea}>
+			{/* minHeight: スラッシュメニュー等でinputBarが伸びても、チャット領域が
+			    ヘッダー（＋Subagentストリップ表示中はその帯）より上まで潰れないようにする下限。
+			    これによりinputBar側（flexShrink: 1）が縮み、メニューはヘッダー/ストリップの下に収まる */}
+			<View style={[styles.chatArea, { minHeight: headerHeight + (hasActivityHistory ? 54 : 8) }]}>
 				{activeKey === undefined ? (
 					<Text style={[styles.placeholder, { marginTop: headerHeight }]}>ターミナルがありません。ターミナルタブから作成し、claude / codex を起動してください。</Text>
 				) : chat === undefined ? (
@@ -698,5 +701,5 @@ const styles = StyleSheet.create({
 	jumpBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minWidth: 40, height: 40, borderRadius: 20, paddingHorizontal: 12, overflow: 'hidden' },
 	jumpFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	jumpText: { color: colors.text, fontSize: 12, fontWeight: '600' },
-	inputBar: { paddingHorizontal: 12, paddingTop: 10 },
+	inputBar: { paddingHorizontal: 12, paddingTop: 10, flexShrink: 1 },
 });

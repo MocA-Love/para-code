@@ -241,6 +241,8 @@ export const AgentComposer = memo(function AgentComposer({
 });
 
 const styles = StyleSheet.create({
-	root: { width: '100%' },
+	// flexShrink: 画面の空きが足りないとき、GlassComposer本体ではなくスラッシュメニュー側
+	// （agentSlashCommandMenu の flexShrink: 1）が縮んで収まるように、rootまで縮小を伝播させる
+	root: { width: '100%', flexShrink: 1 },
 	attachBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 });
