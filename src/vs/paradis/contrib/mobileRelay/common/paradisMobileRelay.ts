@@ -215,6 +215,8 @@ export interface IParadisMobileRelayService {
 	/** hookまたは検証済みtranscriptで実在セッションが確定したペイントークン一覧。 */
 	readonly onDidChangeConfirmedAgentPanes: Event<IParadisConfirmedAgentPanes>;
 	getConfirmedAgentPanes(): Promise<IParadisConfirmedAgentPanes>;
+	/** shared process requests a fresh cwd/pane snapshot from the exact owning Renderer. */
+	readonly onDidRequestAgentPaneSync: Event<IParadisMobileWindowLease>;
 	// renderer → shared process: PC→モバイルフレームを封緘して送出。
 	// payload(VSBuffer)はIPCの引数シリアライザがVSBufferをバイナリのまま転送できるよう
 	// トップレベル引数として渡す（IParadisMobileInboundFrameオブジェクトへネストすると

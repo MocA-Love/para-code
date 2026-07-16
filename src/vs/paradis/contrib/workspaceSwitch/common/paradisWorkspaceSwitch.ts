@@ -431,7 +431,7 @@ export interface IParadisWorkspaceSwitchService {
 	 */
 	hasScopeRetirementData(stateKey: string): Promise<boolean>;
 	prepareScopeRetirement(stateKey: string): Promise<boolean>;
-	cancelScopeRetirement(stateKey: string): void;
+	cancelScopeRetirement(stateKey: string): Promise<void>;
 	discardScopeState(stateKey: string): Promise<boolean>;
 }
 

@@ -239,6 +239,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	private readonly _onDidChangeConfirmedAgentPanes = this._register(new Emitter<IParadisConfirmedAgentPanes>());
 	readonly onDidChangeConfirmedAgentPanes = this._onDidChangeConfirmedAgentPanes.event;
+	private readonly _onDidRequestAgentPaneSync = this._register(new Emitter<IParadisMobileWindowLease>());
+	readonly onDidRequestAgentPaneSync = this._onDidRequestAgentPaneSync.event;
 	private confirmedAgentPanes: IParadisConfirmedAgentPanes = { revision: 0, tokens: [] };
 
 	private state: PersistedState = { mobiles: [] };
@@ -321,6 +323,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.logService,
 			() => this.cachedShellEnv.getEnv(),
 			owner => this.withCurrentRegisteredLease(owner, async () => true).then(result => result === true, () => false),
+			owner => this._onDidRequestAgentPaneSync.fire({
+				windowId: owner.windowId,
+				windowSession: owner.windowSession,
+				rendererGeneration: owner.rendererGeneration,
+			}),
 		));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(tokens => {
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens };

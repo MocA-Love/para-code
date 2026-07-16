@@ -2041,6 +2041,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		private readonly logService: ILogService,
 		codexShellEnvResolver?: () => Promise<NodeJS.ProcessEnv>,
 		private readonly authorizeOwner: (owner: IParadisMobilePaneOwner) => Promise<boolean> = async () => true,
+		private readonly requestPaneSync: (owner: IParadisMobilePaneOwner) => void = () => { },
 	) {
 		super();
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService, codexShellEnvResolver));
@@ -2921,30 +2922,23 @@ export class ParadisMobileAgentChat extends Disposable {
 		const requestKey = `${mobileId}\0${msg.requestId}`;
 		const inFlightForMobile = [...this.commandCatalogRequests.keys()].filter(key => key.startsWith(`${mobileId}\0`)).length;
 		if (this.commandCatalogRequests.has(requestKey) || inFlightForMobile >= 4) {
-			this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得中です。少し待ってからお試しください' }, msg.token);
+			this.sendCommandCatalogError(mobileId, msg, 'コマンド一覧を取得中です。少し待ってからお試しください');
 			return;
 		}
 
 		// Reserve before waiting so reconnect races cannot create unbounded waiters.
 		this.commandCatalogRequests.set(requestKey, msg.token ?? '');
-		let responseToken = msg.token;
-		let responseOwner: IParadisMobilePaneOwner | undefined;
 		try {
 			const context = await this.waitForCommandCatalogContext(mobileId, msg);
 			if (context === undefined) {
-				this.sendTo(mobileId, {
-					t: 'command-catalog-error', id: msg.id, requestId: msg.requestId,
-					message: 'PC側のエージェント接続を同期中です。詳細画面を再接続してからお試しください'
-				}, msg.token);
+				this.sendCommandCatalogError(mobileId, msg, 'PC側のエージェント接続を同期中です。詳細画面を再接続してからお試しください');
 				return;
 			}
 			const { token, session, owner, cwd } = context;
-			responseToken = token;
-			responseOwner = owner;
 			const inFlightForToken = [...this.commandCatalogRequests.entries()]
 				.filter(([key, value]) => key !== requestKey && value === token).length;
 			if (inFlightForToken >= 2) {
-				this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得中です。少し待ってからお試しください' }, token, owner);
+				this.sendCommandCatalogError(mobileId, msg, 'コマンド一覧を取得中です。少し待ってからお試しください');
 				return;
 			}
 			this.commandCatalogRequests.set(requestKey, token);
@@ -2953,23 +2947,37 @@ export class ParadisMobileAgentChat extends Disposable {
 			const currentOwner = this.ownerForPane(msg.id, token);
 			if (this.paneSessions.get(token) !== session || this.tokenToCwd.get(token) !== cwd || currentOwner === undefined
 				|| !this.samePaneOwner(currentOwner, owner) || !this.hasSubscriber(token, mobileId) || !await this.authorizeOwner(owner)) {
-				this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: '対象セッションが切り替わりました' }, token, owner);
+				this.sendCommandCatalogError(mobileId, msg, '対象セッションが切り替わりました');
 				return;
 			}
-			await this.sendToAuthorized(mobileId, { t: 'command-catalog', id: msg.id, requestId: msg.requestId, commands }, token, owner);
+			if (!await this.sendToAuthorized(mobileId, { t: 'command-catalog', id: msg.id, requestId: msg.requestId, commands }, token, owner)) {
+				this.sendCommandCatalogError(mobileId, msg, '対象セッションが切り替わりました');
+			}
 		} catch {
-			this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得できませんでした' }, responseToken, responseOwner);
+			this.sendCommandCatalogError(mobileId, msg, 'コマンド一覧を取得できませんでした');
 		} finally {
 			this.commandCatalogRequests.delete(requestKey);
 		}
 	}
 
 	private async waitForCommandCatalogContext(mobileId: string, msg: Extract<AgentInbound, { t: 'command-catalog' }>): Promise<ICommandCatalogContext | undefined> {
+		let requestedOwner: string | undefined;
 		for (let attempt = 0; attempt < 20; attempt++) {
 			const token = this.resolveInboundToken(msg.id, msg.token);
 			const session = token !== undefined ? this.paneSessions.get(token) : undefined;
 			const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
 			const cwd = token !== undefined ? this.tokenToCwd.get(token) : undefined;
+			if (owner !== undefined && cwd === undefined) {
+				const ownerKey = `${owner.windowId}\0${owner.windowSession}\0${owner.rendererGeneration}`;
+				if (requestedOwner !== ownerKey) {
+					requestedOwner = ownerKey;
+					try {
+						this.requestPaneSync(owner);
+					} catch (error) {
+						this.logService.warn('[paradisAgentChat] renderer pane sync request failed', error);
+					}
+				}
+			}
 			if (token !== undefined && session !== undefined && owner !== undefined && cwd !== undefined
 				&& this.hasSubscriber(token, mobileId) && await this.authorizeOwner(owner).catch(() => false)) {
 				const currentOwner = this.ownerForPane(msg.id, token);
@@ -2983,6 +2991,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			await new Promise<void>(resolve => setTimeout(resolve, 50));
 		}
 		return undefined;
+	}
+
+	private sendCommandCatalogError(mobileId: string, msg: Extract<AgentInbound, { t: 'command-catalog' }>, message: string): void {
+		// Request failures contain no pane data and must reach the paired mobile even
+		// before attach/subscriber recovery completes. The original token and
+		// requestId let the mobile reject a same-terminal-id response from another window.
+		const token = msg.token;
+		const response: AgentOutbound = {
+			t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message
+		};
+		this.send(mobileId, encoder.encode(JSON.stringify({ ...response, ...(token !== undefined ? { token } : {}) })));
 	}
 
 	private async handleSettingsUpdateRequest(mobileId: string, msg: { readonly id: number; readonly token?: string; readonly requestId: string; readonly model: string; readonly effort: string }): Promise<void> {
