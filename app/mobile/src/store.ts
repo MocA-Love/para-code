@@ -437,7 +437,7 @@ export interface AgentLiveState {
 
 export type AgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
 export interface AgentActivityAgent { id: string; label: string; role: 'subagent' | 'teammate'; provider?: 'claude' | 'codex'; detail?: string; parentId?: string; depth?: number; status: AgentActivityStatus; startedAt: number; updatedAt: number }
-export interface AgentActivityTask { id: string; label: string; detail?: string; assignee?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
+export interface AgentActivityTask { id: string; label: string; detail?: string; assignee?: string; agentId?: string; status: AgentActivityStatus; startedAt: number; updatedAt: number }
 export interface AgentActivityCompaction { id: string; trigger?: string; status: 'running' | 'completed'; startedAt: number; updatedAt: number }
 export interface AgentActivityState {
 	agents: AgentActivityAgent[];
@@ -468,7 +468,7 @@ function parseAgentActivityState(value: unknown): AgentActivityState | undefined
 		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
 		const item = candidate as Record<string, unknown>;
 		if (typeof item['id'] === 'string' && typeof item['label'] === 'string' && statuses.has(item['status'] as AgentActivityStatus) && typeof item['startedAt'] === 'number' && typeof item['updatedAt'] === 'number') {
-			tasks.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), ...(typeof item['detail'] === 'string' ? { detail: item['detail'].slice(0, 2_000) } : {}), ...(typeof item['assignee'] === 'string' ? { assignee: item['assignee'].slice(0, 500) } : {}), status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
+			tasks.push({ id: item['id'].slice(0, 500), label: item['label'].slice(0, 1_000), ...(typeof item['detail'] === 'string' ? { detail: item['detail'].slice(0, 2_000) } : {}), ...(typeof item['assignee'] === 'string' ? { assignee: item['assignee'].slice(0, 500) } : {}), ...(typeof item['agentId'] === 'string' ? { agentId: item['agentId'].slice(0, 500) } : {}), status: item['status'] as AgentActivityStatus, startedAt: item['startedAt'], updatedAt: item['updatedAt'] });
 		}
 	}
 	const compactions: AgentActivityCompaction[] = [];
