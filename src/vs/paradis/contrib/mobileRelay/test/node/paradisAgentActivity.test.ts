@@ -49,22 +49,48 @@ suite('ParadisAgentActivity', () => {
 		tracker.applyCodex('item/completed', { item: { id: 'c1', type: 'contextCompaction' } }, 260);
 		assert.deepStrictEqual(tracker.snapshot(), {
 			agents: [{ id: 'thread-2', label: 'Codex調査', role: 'subagent', provider: 'codex', detail: 'Codex調査', status: 'completed', startedAt: 200, updatedAt: 250 }],
-			tasks: [], compactions: [{ id: 'c1', status: 'completed', startedAt: 260, updatedAt: 260 }], startedAt: 200, updatedAt: 260,
+			tasks: [{ id: 'codex:thread-2', label: 'Codex調査', detail: 'Codex調査', assignee: 'SubAgent', agentId: 'thread-2', status: 'completed', startedAt: 200, updatedAt: 250 }],
+			compactions: [{ id: 'c1', status: 'completed', startedAt: 260, updatedAt: 260 }], startedAt: 200, updatedAt: 260,
 		});
+	});
+
+	test('keeps a completed Codex spawn tool call running without an explicit child status', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyCodex('item/completed', { item: { type: 'collabAgentToolCall', tool: 'spawnAgent', receiverThreadIds: ['thread-2'], prompt: '実装を進める' } }, 100);
+		assert.deepStrictEqual(tracker.snapshot()?.tasks, [{
+			id: 'codex:thread-2', label: '実装を進める', detail: '実装を進める', assignee: 'SubAgent', agentId: 'thread-2', status: 'running', startedAt: 100, updatedAt: 100,
+		}]);
+	});
+
+	test('normalizes the documented Codex collaboration shape and later agent status', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyCodex('item/completed', { item: { type: 'collabToolCall', tool: 'spawn_agent', newThreadId: 'thread-3', prompt: 'APIを調査する\n公式仕様を確認', agentStatus: 'running' } }, 100);
+		tracker.applyCodex('item/completed', { item: { type: 'collabToolCall', tool: 'wait', receiverThreadId: 'thread-3', agentStatus: { status: 'completed' } } }, 200);
+		assert.deepStrictEqual(tracker.snapshot()?.tasks, [{
+			id: 'codex:thread-3', label: 'APIを調査する', detail: 'APIを調査する\n公式仕様を確認', assignee: 'SubAgent', agentId: 'thread-3', status: 'completed', startedAt: 100, updatedAt: 200,
+		}]);
+	});
+
+	test('does not create a Codex task for collaboration that was not spawned in this activity', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyCodex('item/completed', { item: { type: 'collabAgentToolCall', tool: 'sendInput', receiverThreadIds: ['thread-2'], prompt: '追加確認', agentsStates: { 'thread-2': { status: 'running' } } } }, 100);
+		assert.deepStrictEqual(tracker.snapshot()?.tasks, []);
 	});
 
 	test('does not revive completed Codex collaboration after a delayed running event', () => {
 		const tracker = new ParadisAgentActivityTracker();
-		tracker.applyCodex('item/completed', { item: { type: 'collabAgentToolCall', receiverThreadIds: ['thread-2'], agentsStates: { 'thread-2': { status: 'completed' } } } }, 100);
-		tracker.applyCodex('item/started', { item: { type: 'collabAgentToolCall', receiverThreadIds: ['thread-2'], agentsStates: { 'thread-2': { status: 'running' } } } }, 50);
+		tracker.applyCodex('item/completed', { item: { type: 'collabAgentToolCall', tool: 'spawnAgent', receiverThreadIds: ['thread-2'], prompt: '調査する', agentsStates: { 'thread-2': { status: 'completed' } } } }, 100);
+		tracker.applyCodex('item/started', { item: { type: 'collabAgentToolCall', tool: 'spawnAgent', receiverThreadIds: ['thread-2'], prompt: '古い指示', agentsStates: { 'thread-2': { status: 'running' } } } }, 50);
 		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'completed');
+		assert.deepStrictEqual({ status: tracker.snapshot()?.tasks[0].status, label: tracker.snapshot()?.tasks[0].label }, { status: 'completed', label: '調査する' });
 	});
 
 	test('allows a newer Codex interaction to reactivate the same child thread', () => {
 		const tracker = new ParadisAgentActivityTracker();
-		tracker.applyCodex('item/completed', { item: { type: 'collabAgentToolCall', receiverThreadIds: ['thread-2'], agentsStates: { 'thread-2': { status: 'completed' } } } }, 100);
-		tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: 'thread-2', kind: 'interacted' } }, 200);
+		tracker.applyCodex('item/completed', { item: { type: 'collabAgentToolCall', tool: 'spawnAgent', receiverThreadIds: ['thread-2'], prompt: '調査する', agentsStates: { 'thread-2': { status: 'completed' } } } }, 100);
+		tracker.applyCodex('item/started', { item: { type: 'subAgentActivity', agentThreadId: 'thread-2', agentPath: '/root/researcher', kind: 'interacted' } }, 200);
 		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'running');
+		assert.deepStrictEqual({ status: tracker.snapshot()?.tasks[0].status, assignee: tracker.snapshot()?.tasks[0].assignee }, { status: 'running', assignee: 'researcher' });
 	});
 
 	test('keeps active child work when only the parent turn fails', () => {
