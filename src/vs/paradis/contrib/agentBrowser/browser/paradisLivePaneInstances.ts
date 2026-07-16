@@ -16,29 +16,20 @@ export interface IParadisLivePaneInstance {
 	readonly token: string;
 }
 
-export function paradisCollectLivePaneInstances(
+/** Lists visible and parked terminal instances without depending on a concrete group service implementation. */
+export function paradisCollectAllTerminalInstances(
 	terminalService: Pick<ITerminalService, 'instances'>,
 	terminalGroupService: Pick<ITerminalGroupService, 'paradisParkedGroups'>,
-	paneTokenService: Pick<IParadisPaneTokenService, 'getTokenForInstance' | 'getInstanceForToken'>,
 	parkedEditorInstances: readonly ITerminalInstance[] = paradisListParkedTerminalEditorInstances(),
-): IParadisLivePaneInstance[] {
-	const result: IParadisLivePaneInstance[] = [];
+): ITerminalInstance[] {
+	const result: ITerminalInstance[] = [];
 	const seenInstanceIds = new Set<number>();
-	const seenTokens = new Set<string>();
 	const add = (instance: ITerminalInstance): void => {
-		if (instance.isDisposed || seenInstanceIds.has(instance.instanceId)) {
-			return;
+		if (!instance.isDisposed && !seenInstanceIds.has(instance.instanceId)) {
+			seenInstanceIds.add(instance.instanceId);
+			result.push(instance);
 		}
-		seenInstanceIds.add(instance.instanceId);
-
-		const token = paneTokenService.getTokenForInstance(instance.instanceId);
-		if (!token || paneTokenService.getInstanceForToken(token) !== instance.instanceId || seenTokens.has(token)) {
-			return;
-		}
-		seenTokens.add(token);
-		result.push({ instance, token });
 	};
-
 	for (const instance of terminalService.instances) {
 		add(instance);
 	}
@@ -48,6 +39,29 @@ export function paradisCollectLivePaneInstances(
 		}
 	}
 	for (const instance of parkedEditorInstances) {
+		add(instance);
+	}
+	return result;
+}
+
+export function paradisCollectLivePaneInstances(
+	terminalService: Pick<ITerminalService, 'instances'>,
+	terminalGroupService: Pick<ITerminalGroupService, 'paradisParkedGroups'>,
+	paneTokenService: Pick<IParadisPaneTokenService, 'getTokenForInstance' | 'getInstanceForToken'>,
+	parkedEditorInstances: readonly ITerminalInstance[] = paradisListParkedTerminalEditorInstances(),
+): IParadisLivePaneInstance[] {
+	const result: IParadisLivePaneInstance[] = [];
+	const seenTokens = new Set<string>();
+	const add = (instance: ITerminalInstance): void => {
+		const token = paneTokenService.getTokenForInstance(instance.instanceId);
+		if (!token || paneTokenService.getInstanceForToken(token) !== instance.instanceId || seenTokens.has(token)) {
+			return;
+		}
+		seenTokens.add(token);
+		result.push({ instance, token });
+	};
+
+	for (const instance of paradisCollectAllTerminalInstances(terminalService, terminalGroupService, parkedEditorInstances)) {
 		add(instance);
 	}
 	return result;

@@ -141,6 +141,8 @@ export interface IParadisAuxiliaryWindowScopeService {
 	resolveGroup(group: IEditorGroup): ParadisBindingScope;
 	getPinnedParts(stateKey?: string): readonly IAuxiliaryEditorPart[];
 	hasVisibleScope(stateKey: string): boolean;
+	closeScopeWindowsForRetirement(stateKey: string): Promise<boolean>;
+	commitScopeRetirement(stateKey: string): void;
 	retireScope(stateKey: string): Promise<boolean>;
 }
 

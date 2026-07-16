@@ -29,7 +29,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
-import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { setParadisPaneIndicatorHost } from '../browser/paradisPaneIndicator.js';
 import { paradisFormatCdpGatewayUrl } from '../common/paradisAgentBrowser.js';
@@ -37,8 +37,8 @@ import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingMo
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
-import { IParadisBrowserScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { paradisGetBindingErrorMessage, paradisGetPaneQuickPickState, paradisResolveDialogPage } from './paradisDialogPageResolver.js';
+import { paradisGetBindingErrorMessage, paradisGetPaneQuickPickState } from './paradisDialogPageResolver.js';
+import { resolveDialogPageModel } from './paradisDialogPageModelResolver.js';
 
 const CATEGORY = localize2('paradis.category', "Para Code");
 
@@ -56,41 +56,12 @@ interface ITerminalPanePickItem extends IQuickPickItem {
 }
 
 /** アクティブエディタがブラウザビューであればその解決済みモデルを返す。 */
-function getActiveBrowserViewModel(accessor: ServicesAccessor): IBrowserViewModel | undefined {
-	const editorService = accessor.get(IEditorService);
+function getActiveBrowserViewModel(editorService: IEditorService): IBrowserViewModel | undefined {
 	const input = editorService.activeEditor;
 	if (input instanceof BrowserEditorInput) {
 		return input.model;
 	}
 	return undefined;
-}
-
-/**
- * バインディングダイアログの対象ページを解決する。優先順:
- * 指定ペインのexact binding → アクティブなブラウザエディタ → contextual browser view。
- */
-export async function resolveDialogPageModel(accessor: ServicesAccessor, instanceId?: number): Promise<IBrowserViewModel | undefined> {
-	const browserViewWorkbenchService = accessor.get(IBrowserViewWorkbenchService);
-	const browserScopeService = accessor.get(IParadisBrowserScopeService);
-	let exactPageId: string | undefined;
-	if (instanceId !== undefined) {
-		const bindingModel = accessor.get(IParadisAgentBrowserBindingModel);
-		const paneTokenService = accessor.get(IParadisPaneTokenService);
-		const token = paneTokenService.getTokenForInstance(instanceId);
-		exactPageId = token ? bindingModel.getBindingForToken(token)?.pageId : undefined;
-	}
-
-	return paradisResolveDialogPage({
-		exactPageId,
-		getKnownPage: pageId => browserViewWorkbenchService.getKnownBrowserViews().get(pageId)?.model,
-		initializationBarrier: browserScopeService.initializationBarrier,
-		getActivePage: () => getActiveBrowserViewModel(accessor),
-		getContextualPage: () => [...browserViewWorkbenchService.getContextualBrowserViews().values()].find(input => !!input.model)?.model,
-		isStableContextualPage: page => {
-			const contextualInput = browserViewWorkbenchService.getContextualBrowserViews().get(page.id);
-			return contextualInput?.model === page && browserScopeService.resolveScope(page.id).kind !== 'pending';
-		},
-	});
 }
 
 // --- ダイアログのオープン管理（同時に1つだけ） ---
@@ -151,7 +122,7 @@ class ParadisShareBrowserPageWithTerminalPaneAction extends Action2 {
 		const notificationService = accessor.get(INotificationService);
 		const bindingModel = accessor.get(IParadisAgentBrowserBindingModel);
 
-		const model = getActiveBrowserViewModel(accessor);
+		const model = getActiveBrowserViewModel(accessor.get(IEditorService));
 		if (!model) {
 			notificationService.warn(localize('paradis.share.noBrowserPage', "Open an integrated browser page as the active editor first."));
 			return;
@@ -225,7 +196,7 @@ class ParadisUnshareBrowserPageAction extends Action2 {
 		const notificationService = accessor.get(INotificationService);
 		const bindingModel = accessor.get(IParadisAgentBrowserBindingModel);
 
-		const model = getActiveBrowserViewModel(accessor);
+		const model = getActiveBrowserViewModel(accessor.get(IEditorService));
 		if (!model) {
 			notificationService.warn(localize('paradis.unshare.noBrowserPage', "Open the shared integrated browser page as the active editor first."));
 			return;

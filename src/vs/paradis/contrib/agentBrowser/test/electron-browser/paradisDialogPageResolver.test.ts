@@ -6,8 +6,12 @@
 import * as assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisBindingScopeEligibilityError } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
+import { IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
+import { IParadisBrowserScopeService, ParadisBindingScopeEligibilityError } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisGetPaneQuickPickState, paradisResolveDialogPage, paradisRunDialogBind } from '../../electron-browser/paradisDialogPageResolver.js';
+import { resolveDialogPageModel } from '../../electron-browser/paradisDialogPageModelResolver.js';
 
 suite('paradisResolveDialogPage', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -42,6 +46,42 @@ suite('paradisResolveDialogPage', () => {
 		assert.strictEqual(settled, false);
 		barrier.complete();
 		assert.strictEqual(await result, active);
+	});
+
+	test('captures services synchronously before waiting for browser initialization', async () => {
+		const barrier = new DeferredPromise<void>();
+		let accessorValid = true;
+		const editorService = { activeEditor: undefined };
+		const browserViewWorkbenchService = {
+			getKnownBrowserViews: () => new Map(),
+			getContextualBrowserViews: () => new Map(),
+		};
+		const browserScopeService = {
+			initializationBarrier: barrier.p,
+			resolveScope: () => ({ kind: 'unscoped' }),
+		};
+		const accessor: ServicesAccessor = {
+			get: service => {
+				if (!accessorValid) {
+					throw new Error('service accessor expired');
+				}
+				if (service === IEditorService) {
+					return editorService as never;
+				}
+				if (service === IBrowserViewWorkbenchService) {
+					return browserViewWorkbenchService as never;
+				}
+				if (service === IParadisBrowserScopeService) {
+					return browserScopeService as never;
+				}
+				throw new Error(`Unexpected service: ${service.toString()}`);
+			}
+		};
+
+		const result = resolveDialogPageModel(accessor);
+		accessorValid = false;
+		barrier.complete();
+		assert.strictEqual(await result, undefined);
 	});
 
 	test('rechecks exact binding after the barrier before active fallback', async () => {

@@ -6,10 +6,21 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisMobilePaneRegistry } from '../../node/paradisMobilePaneRegistry.js';
+import { ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from '../../node/paradisMobilePaneRegistry.js';
 
 suite('ParadisMobilePaneRegistry', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('preserves cwd and workspace while a live reattached pane sends a partial snapshot', () => {
+		const previous = new Map([['live', '/workspace/a'], ['closed', '/workspace/closed']]);
+		assert.deepStrictEqual([...paradisMergeLivePaneMetadata(previous, [
+			{ terminalId: 2, token: 'live' },
+			{ terminalId: 3, token: 'new', cwd: '/workspace/new' },
+		], 'cwd')], [
+			['live', '/workspace/a'],
+			['new', '/workspace/new'],
+		]);
+	});
 
 	test('旧Rendererの遅延disposeで新Rendererの対応表を消さない', () => {
 		const registry = new ParadisMobilePaneRegistry();

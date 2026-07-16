@@ -6,11 +6,17 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisMobileWindowRoute } from '../../common/paradisMobileRelay.js';
+import { paradisMobileWindowRoute, paradisResolveMobileTerminalStateKey } from '../../common/paradisMobileRelay.js';
 import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalRegistry.js';
 
 suite('ParadisMobileTerminalRegistry', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('pending terminal ownershipをactive spaceへ推測しない', () => {
+		assert.strictEqual(paradisResolveMobileTerminalStateKey(undefined, { kind: 'pending' }, 'space-b'), undefined);
+		assert.strictEqual(paradisResolveMobileTerminalStateKey('space-a', { kind: 'pending' }, 'space-b'), 'space-a');
+		assert.strictEqual(paradisResolveMobileTerminalStateKey(undefined, { kind: 'unscoped' }, 'space-b'), 'space-b');
+	});
 
 	test('同じ数値IDを持つ別ウィンドウのターミナルをterminalKeyで分離する', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');

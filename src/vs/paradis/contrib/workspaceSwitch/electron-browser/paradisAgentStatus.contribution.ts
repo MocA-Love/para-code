@@ -25,7 +25,7 @@ import { ITerminalInstance, ITerminalInstanceService, ITerminalService } from '.
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { paradisShouldClearAgentStatusAfterPollFailures } from '../../agentBrowser/common/paradisAgentStatusStale.js';
+import { ParadisAgentTokenScopeMemory, paradisShouldClearAgentStatusAfterPollFailures } from '../../agentBrowser/common/paradisAgentStatusStale.js';
 import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 
@@ -92,6 +92,8 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 	private readonly exitListeners = this._register(new DisposableMap<number, IDisposable>());
 	private preserveTerminalsForReload = false;
 	private consecutivePollFailures = 0;
+	private pollGeneration = 0;
+	private readonly tokenScopeMemory = new ParadisAgentTokenScopeMemory();
 
 	private watchInstanceExit(instance: ITerminalInstance): void {
 		if (this.exitListeners.has(instance.instanceId)) {
@@ -151,6 +153,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 	}
 
 	private async poll(): Promise<void> {
+		const pollGeneration = ++this.pollGeneration;
 		let statuses: IParadisAgentPaneStatus[];
 		let agentTokens: string[];
 		try {
@@ -160,6 +163,9 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 				channel.call<string[]>('listAgentHookTokens'),
 			]);
 		} catch (error) {
+			if (pollGeneration !== this.pollGeneration) {
+				return;
+			}
 			this.logService.trace('[ParadisAgentStatus] poll failed', String(error));
 			this.consecutivePollFailures++;
 			if (paradisShouldClearAgentStatusAfterPollFailures(this.consecutivePollFailures)) {
@@ -168,7 +174,11 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 			}
 			return; // shared process 未起動 (起動直後の20〜30秒) は静かにスキップ
 		}
+		if (pollGeneration !== this.pollGeneration) {
+			return;
+		}
 		this.consecutivePollFailures = 0;
+		this.tokenScopeMemory.prune(new Set(statuses.map(status => status.token)));
 
 		const activeStateKey = this.workspaceSwitchService.activeStateKey;
 		const scopeStatuses = new Map<string, ParadisAgentStatus>();
@@ -191,13 +201,23 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 			if (instanceId !== undefined) {
 				instanceStatuses.set(instanceId, paneStatus.status);
 			}
-			let stateKey = instanceId !== undefined ? this.terminalScopeService.getStateKeyForInstance(instanceId) : undefined;
+			let stateKey: string | undefined;
+			let allowRememberedScope = instanceId === undefined;
+			if (instanceId !== undefined) {
+				const scope = this.terminalScopeService.resolveScope(instanceId);
+				if (scope.kind === 'managed') {
+					stateKey = scope.stateKey;
+				} else if (scope.kind === 'pending') {
+					allowRememberedScope = true;
+				}
+			}
 			// 第二解決: hookが報告したcwd → リポジトリ/worktreeルートの最長一致。
 			// インスタンス未解決 (リロード後の未復元park等) でも「そのリポジトリでエージェントが
 			// 動いている」事実は変わらないため、スコープ表示としてはこれで正しい。
 			if (stateKey === undefined) {
 				stateKey = this.resolveStateKeyByCwd(paneStatus.cwd);
 			}
+			stateKey = this.tokenScopeMemory.resolve(paneStatus.token, stateKey, allowRememberedScope);
 			if (stateKey === undefined) {
 				continue; // どの解決経路でもスコープ不明 (登録外フォルダ等)
 			}

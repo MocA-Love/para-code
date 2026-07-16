@@ -63,4 +63,14 @@ suite('ParadisWorkingCopyOwnerLedger', () => {
 			second: 'other'
 		});
 	});
+
+	test('releases a saved or closed Working Copy only when the expected owner still matches', () => {
+		const ledger = ParadisWorkingCopyOwnerLedger.load(undefined).ledger;
+		ledger.assign(first, 'space-a');
+
+		assert.strictEqual(ledger.release(first, 'space-b'), false);
+		assert.strictEqual(ledger.ownerOf(first), 'space-a');
+		assert.strictEqual(ledger.release(first, 'space-a'), true);
+		assert.strictEqual(ledger.ownerOf(first), undefined);
+	});
 });

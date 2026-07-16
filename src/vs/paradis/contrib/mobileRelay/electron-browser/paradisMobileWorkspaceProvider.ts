@@ -8,7 +8,7 @@
 
 import { RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
-import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -22,20 +22,19 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { editorBackground, editorForeground } from '../../../../platform/theme/common/colorRegistry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/browser/xterm/xtermAddonImporter.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
+import { paradisCollectAllTerminalInstances, paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { paradisListParkedTerminalEditorInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
-import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus } from '../common/paradisMobileRelay.js';
+import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
@@ -252,6 +251,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// （チャットミラーが attach(id) を transcript へ解決するのに使う）。
 		this._register(this.paneTokenService.onDidChange(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => { void this.pushAgentPanes(); }));
+		this._register(this.terminalService.onAnyInstanceProcessIdReady(() => { void this.pushAgentPanes(); }));
+		this._register(this.terminalService.onDidChangeInstanceCapability(() => { void this.pushAgentPanes(); }));
 		void this.pushAgentPanes();
 		this.refreshBranches();
 	}
@@ -261,6 +262,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * cwd はhook未発火時のセッション探索フォールバック（~/.claude/projects の逆引き）に使う。
 	 */
 	syncAgentPaneRegistry(): Promise<void> {
+		this.refreshAgentPaneCwdListeners();
 		const revision = ++this.agentPanesRevision;
 		const livePanes = paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService);
 		const result = Promise.all(livePanes.map(async ({ instance: inst, token }) => {
@@ -271,7 +273,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} catch {
 				cwd = undefined;
 			}
-			const ws = this.terminalScopeService.getStateKeyForInstance(inst.instanceId) ?? this.workspaceSwitchService.activeStateKey;
+			const ws = this.resolveTerminalStateKey(inst.instanceId);
 			return { terminalId: inst.instanceId, token, ...(cwd !== undefined ? { cwd } : {}), ...(ws !== undefined ? { ws } : {}) };
 		})).then(entries => this.syncAgentPanes(revision, entries.filter(entry =>
 			this.paneTokenService.getInstanceForToken(entry.token) === entry.terminalId
@@ -283,6 +285,39 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	private pushAgentPanes(): Promise<void> {
 		return this.syncAgentPaneRegistry();
+	}
+
+	private readonly agentPaneCwdListeners = this._register(new DisposableMap<number>());
+
+	private refreshAgentPaneCwdListeners(): void {
+		const instances = paradisCollectAllTerminalInstances(this.terminalService, this.terminalGroupService);
+		const liveInstanceIds = new Set(instances.map(instance => instance.instanceId));
+		for (const instanceId of [...this.agentPaneCwdListeners.keys()]) {
+			if (!liveInstanceIds.has(instanceId)) {
+				this.agentPaneCwdListeners.deleteAndDispose(instanceId);
+			}
+		}
+
+		for (const instance of instances) {
+			if (this.agentPaneCwdListeners.has(instance.instanceId)) {
+				continue;
+			}
+			const listeners = new DisposableStore();
+			const cwdListener = listeners.add(new MutableDisposable());
+			const bindCwdListener = () => {
+				const capability = instance.capabilities.get(TerminalCapability.CwdDetection)
+					?? instance.capabilities.get(TerminalCapability.NaiveCwdDetection);
+				cwdListener.value = capability?.onDidChangeCwd(() => { void this.pushAgentPanes(); });
+			};
+			bindCwdListener();
+			listeners.add(instance.capabilities.onDidAddCapability(() => {
+				bindCwdListener();
+				void this.pushAgentPanes();
+			}));
+			listeners.add(instance.capabilities.onDidRemoveCapability(() => bindCwdListener()));
+			listeners.add(instance.onDisposed(() => this.agentPaneCwdListeners.deleteAndDispose(instance.instanceId)));
+			this.agentPaneCwdListeners.set(instance.instanceId, listeners);
+		}
 	}
 
 	private readonly pushStateScheduler = this._register(new RunOnceScheduler(() => this.pushState(), 100));
@@ -424,32 +459,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * これを使わないとモバイル側は「PCで選択中のワークスペースのターミナル」しか見えない。
 	 */
 	private allInstances(): ITerminalInstance[] {
-		const seen = new Set<number>();
-		const result: ITerminalInstance[] = [];
-		const add = (inst: ITerminalInstance) => {
-			if (!seen.has(inst.instanceId)) {
-				seen.add(inst.instanceId);
-				result.push(inst);
-			}
-		};
-		for (const inst of this.terminalService.instances) {
-			add(inst);
-		}
-		if (this.terminalGroupService instanceof TerminalGroupService) {
-			for (const group of this.terminalGroupService.paradisParkedGroups) {
-				for (const inst of group.terminalInstances) {
-					add(inst);
-				}
-			}
-		}
-		// エディタエリアのターミナルはワークスペース切り替え時に専用台帳へパークされ、
-		// terminalService.instances からも paradisParkedGroups からも消える。ここを列挙しないと
-		// 他ワークスペースのエディタターミナル（Claude Code等をエディタタブで開いている場合）が
-		// モバイルから一切見えなくなる。
-		for (const inst of paradisListParkedTerminalEditorInstances()) {
-			add(inst);
-		}
-		return result;
+		return paradisCollectAllTerminalInstances(this.terminalService, this.terminalGroupService);
+	}
+
+	private resolveTerminalStateKey(instanceId: number): string | undefined {
+		const recordedStateKey = this.terminalScopeService.getStateKeyForInstance(instanceId);
+		return paradisResolveMobileTerminalStateKey(
+			recordedStateKey,
+			this.terminalScopeService.resolveScope(instanceId),
+			this.workspaceSwitchService.activeStateKey,
+		);
 	}
 
 	/** Agent復元・Hint購読向けに、表示中/背景/park済みを含む全live terminalを返す。 */
@@ -552,9 +571,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			if (terminalKey === undefined) {
 				return [];
 			}
-			// スコープ未タグのターミナルはPC側では「常に表示」扱いだが、モバイルでは
-			// 全ワークスペースに重複表示されてしまうため、アクティブワークスペース所属として送る。
-			const stateKey = this.terminalScopeService.getStateKeyForInstance(inst.instanceId) ?? this.workspaceSwitchService.activeStateKey;
+			// 確定した未スコープ端末だけをactiveへフォールバックする。切替・再attach中の
+			// pending端末をactiveへ誤配送せず、次の確定スナップショットまで所属を保留する。
+			const stateKey = this.resolveTerminalStateKey(inst.instanceId);
 			// 状態はペイン単位の値を使う。スコープ集約値（getScopeStatus）を付けると、
 			// 同スコープで別のエージェントが動いているだけで無関係なプレーンターミナルまで
 			// 「実行中」に見えてしまう（ホーム一覧・Live Activity の誤表示の原因）。

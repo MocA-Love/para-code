@@ -5,7 +5,8 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisApplySameUriScopeCorrection } from '../../browser/paradisWorkspaceSwitchService.js';
+import { paradisApplySameUriScopeCorrection, paradisRunBestEffortPhases } from '../../browser/paradisWorkspaceSwitchService.js';
+import { paradisShouldAutoRetireMissingWorktree } from '../../browser/paradisWorktreeService.js';
 
 suite('ParadisWorkspaceSwitchService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -33,5 +34,26 @@ suite('ParadisWorkspaceSwitchService', () => {
 			() => calls.push('managed'),
 		);
 		assert.deepStrictEqual(calls, ['managed', 'set']);
+	});
+
+	test('runs identity and pending-state cleanup even when content restoration fails', async () => {
+		const calls: string[] = [];
+		const errors: string[] = [];
+		await paradisRunBestEffortPhases([
+			() => { calls.push('workingSet'); throw new Error('restore failed'); },
+			() => { calls.push('liveEditors'); throw new Error('live restore failed'); },
+			() => { calls.push('identity'); },
+			() => { calls.push('pending'); },
+			() => { calls.push('backups'); },
+		], error => errors.push((error as Error).message));
+
+		assert.deepStrictEqual(calls, ['workingSet', 'liveEditors', 'identity', 'pending', 'backups']);
+		assert.deepStrictEqual(errors, ['restore failed', 'live restore failed']);
+	});
+
+	test('never auto-retires the active missing worktree', () => {
+		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, false, true), false);
+		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, false, false), true);
+		assert.strictEqual(paradisShouldAutoRetireMissingWorktree(true, true, false), false);
 	});
 });

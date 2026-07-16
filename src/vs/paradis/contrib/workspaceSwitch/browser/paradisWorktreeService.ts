@@ -23,6 +23,11 @@ interface ISerializedKnownWorktree {
 	readonly name: string;
 }
 
+/** Auto-removal is safe only for an inactive missing worktree with no retained scope data. */
+export function paradisShouldAutoRetireMissingWorktree(autoRemove: boolean, hasRetirementData: boolean, isActive: boolean): boolean {
+	return autoRemove && !hasRetirementData && !isActive;
+}
+
 /**
  * IParadisWorktreeService の実装。
  *
@@ -76,6 +81,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			this.pruneOrderForRemovedRepositories();
 			this._refreshScheduler.schedule();
 		}));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this._refreshScheduler.schedule()));
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration('paradis.workspaceSwitch')) {
 				this._refreshScheduler.schedule();
@@ -123,6 +129,9 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		}
 
 		const stateKey = paradisWorktreeStateKey(worktree.uri);
+		if (this.workspaceSwitchService.activeStateKey === stateKey) {
+			await this.workspaceSwitchService.switchRepository(worktree.repositoryId);
+		}
 		if (!await this.workspaceSwitchService.discardScopeState(stateKey)) {
 			return false;
 		}
@@ -239,7 +248,8 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			for (const known of knownForRepository) {
 				if (!scannedPaths.has(known.path)) {
 					const missingStateKey = paradisWorktreeStateKey(URI.parse(known.path));
-					if (autoRemove && !await this.workspaceSwitchService.hasScopeRetirementData(missingStateKey)) {
+					const hasRetirementData = autoRemove ? await this.workspaceSwitchService.hasScopeRetirementData(missingStateKey) : false;
+					if (paradisShouldAutoRetireMissingWorktree(autoRemove, hasRetirementData, this.workspaceSwitchService.activeStateKey === missingStateKey)) {
 						this._known = this._known.filter(candidate => candidate !== known);
 						await this.workspaceSwitchService.discardScopeState(missingStateKey);
 						knownChanged = true;
