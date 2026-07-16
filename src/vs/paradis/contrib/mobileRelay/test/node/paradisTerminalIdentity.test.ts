@@ -6,7 +6,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paneTokenFromShellIntegrationNonce, restoredPaneToken, terminalKeyFromShellIntegrationNonce } from '../../common/paradisTerminalPersistence.js';
+import { paneTokenFromShellIntegrationNonce, ParadisTerminalIdentityIndex, restoredPaneToken, terminalKeyFromShellIntegrationNonce } from '../../common/paradisTerminalPersistence.js';
 
 suite('ParadisTerminalIdentity', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -50,5 +50,26 @@ suite('ParadisTerminalIdentity', () => {
 	test('不正な復元tokenは採用せずnonceへフォールバックする', () => {
 		assert.strictEqual(restoredPaneToken('stable-nonce', ''), 'stable-nonce');
 		assert.strictEqual(restoredPaneToken('stable-nonce', 'x'.repeat(201)), 'stable-nonce');
+	});
+
+	test('detachとreattachが同じ永続キーを一時共有しても新しいinstanceだけを所有者にする', () => {
+		const index = new ParadisTerminalIdentityIndex();
+		index.bind(10, 'terminal:stable-nonce');
+		index.bind(20, 'terminal:stable-nonce');
+
+		assert.deepStrictEqual({
+			oldKey: index.getTerminalKey(10),
+			newKey: index.getTerminalKey(20),
+			owner: index.getInstanceId('terminal:stable-nonce'),
+		}, {
+			oldKey: undefined,
+			newKey: 'terminal:stable-nonce',
+			owner: 20,
+		});
+
+		index.unbind(10);
+		assert.strictEqual(index.getInstanceId('terminal:stable-nonce'), 20);
+		index.unbind(20);
+		assert.strictEqual(index.getInstanceId('terminal:stable-nonce'), undefined);
 	});
 });

@@ -29,6 +29,23 @@ interface IParadisMobilePaneWindowLease {
 	readonly entries: readonly IParadisMobilePaneEntry[];
 }
 
+/** Preserves metadata omitted by a partial sync only while the pane token remains live. */
+export function paradisMergeLivePaneMetadata(
+	previous: ReadonlyMap<string, string>,
+	entries: readonly IParadisMobilePaneEntry[],
+	field: 'cwd' | 'ws',
+): Map<string, string> {
+	const liveTokens = new Set(entries.map(entry => entry.token));
+	const merged = new Map([...previous].filter(([token]) => liveTokens.has(token)));
+	for (const entry of entries) {
+		const value = entry[field];
+		if (typeof value === 'string' && value.length > 0) {
+			merged.set(entry.token, value);
+		}
+	}
+	return merged;
+}
+
 /** Renderer世代付きのペイン対応表。交代済み世代の遅延sync/disposeは受理しない。 */
 export class ParadisMobilePaneRegistry {
 	private readonly windows = new Map<number, IParadisMobilePaneWindowLease>();

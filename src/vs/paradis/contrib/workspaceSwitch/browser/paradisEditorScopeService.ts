@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { timeout } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { isEqual, isEqualOrParent } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -41,17 +42,33 @@ interface IParadisLiveEditorPlacement {
 
 interface IParadisLiveWorkingSet {
 	readonly placements: readonly IParadisLiveEditorPlacement[];
+	readonly workingCopiesByEditor: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>;
 	readonly retentions: DisposableStore;
 }
 
 interface IParadisPreparedEditorRevert {
 	readonly editor: EditorInput;
 	readonly groupId: GroupIdentifier;
+	readonly workingCopies: readonly IWorkingCopy[];
+}
+
+interface IParadisPreparedWorkingCopyState {
+	readonly workingCopy: IWorkingCopy;
+	readonly revision: number;
+	readonly modified: boolean;
+}
+
+interface IParadisPreparedEditorState {
+	readonly editor: EditorInput;
+	readonly modified: boolean;
 }
 
 interface IParadisPreparedRetirement {
 	readonly backups: readonly IWorkingCopyIdentifier[];
 	readonly editorsToRevert: readonly IParadisPreparedEditorRevert[];
+	readonly editorStates: readonly IParadisPreparedEditorState[];
+	readonly workingCopyStates: readonly IParadisPreparedWorkingCopyState[];
+	readonly handledWorkingCopyKeys: ReadonlySet<string>;
 }
 
 interface ISerializedWorkspaceRepository {
@@ -101,6 +118,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 
 	private readonly liveWorkingSets = new Map<string, IParadisLiveWorkingSet>();
 	private readonly preparedRetirements = new Map<string, IParadisPreparedRetirement>();
+	private readonly workingCopyRevisions = new WeakMap<IWorkingCopy, number>();
 	private readonly ownerLedger: ParadisWorkingCopyOwnerLedger;
 	private readonly ownershipStorageWasCorrupt: boolean;
 	private legacyMigrationMode: boolean;
@@ -138,10 +156,21 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		this.activeUri = initialIdentity.uri;
 
 		this._register(this.backupRestoreRouter.registerProvider({ route: identifier => this.routeBackup(identifier) }));
-		this._register(this.workingCopyService.onDidRegister(workingCopy => this.observeModifiedWorkingCopy(workingCopy)));
-		this._register(this.workingCopyService.onDidChangeDirty(workingCopy => this.observeModifiedWorkingCopy(workingCopy)));
-		this._register(this.workingCopyService.onDidChangeContent(workingCopy => this.observeModifiedWorkingCopy(workingCopy)));
+		this._register(this.workingCopyService.onDidRegister(workingCopy => {
+			this.ensureWorkingCopyRevision(workingCopy);
+			this.observeModifiedWorkingCopy(workingCopy);
+		}));
+		this._register(this.workingCopyService.onDidChangeDirty(workingCopy => this.onDidChangeWorkingCopyModifiedState(workingCopy)));
+		this._register(this.workingCopyService.onDidChangeContent(workingCopy => {
+			this.workingCopyRevisions.set(workingCopy, this.workingCopyRevision(workingCopy) + 1);
+			this.onDidChangeWorkingCopyModifiedState(workingCopy);
+		}));
+		this._register(this.workingCopyService.onDidSave(({ workingCopy }) => this.releaseWorkingCopyOwnerWhenSafe(workingCopy)));
+		this._register(this.workingCopyService.onDidUnregister(workingCopy => this.releaseWorkingCopyOwnerWhenSafe(workingCopy)));
 
+		for (const workingCopy of this.workingCopyService.workingCopies) {
+			this.ensureWorkingCopyRevision(workingCopy);
+		}
 		for (const workingCopy of this.workingCopyService.modifiedWorkingCopies) {
 			this.observeModifiedWorkingCopy(workingCopy);
 		}
@@ -181,7 +210,11 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				return;
 			}
 
-			this.liveWorkingSets.set(stateKey, { placements, retentions });
+			this.liveWorkingSets.set(stateKey, {
+				placements,
+				workingCopiesByEditor: this.selectWorkingCopyOwners(modifiedEditorOwners, excludedEditors),
+				retentions
+			});
 			for (const placement of placements) {
 				this.editorGroupsService.getGroup(placement.groupId)?.detachEditor?.(placement.editor);
 			}
@@ -220,10 +253,18 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				existing.retentions.add(retentions);
 				this.liveWorkingSets.set(stateKey, {
 					placements: [...existing.placements, ...placements],
+					workingCopiesByEditor: this.mergeWorkingCopyOwners(
+						existing.workingCopiesByEditor,
+						this.selectWorkingCopyOwners(modifiedEditorOwners, editors)
+					),
 					retentions: existing.retentions
 				});
 			} else {
-				this.liveWorkingSets.set(stateKey, { placements, retentions });
+				this.liveWorkingSets.set(stateKey, {
+					placements,
+					workingCopiesByEditor: this.selectWorkingCopyOwners(modifiedEditorOwners, editors),
+					retentions
+				});
 			}
 
 			for (const placement of placements) {
@@ -353,15 +394,21 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		}
 
 		const liveWorkingSet = this.liveWorkingSets.get(stateKey);
-		const visiblePlacements = this.collectVisibleLiveEditorState(false, stateKey).placements;
+		const visibleState = this.collectVisibleLiveEditorState(false, stateKey);
+		const visiblePlacements = visibleState.placements;
 		const retirementPlacements = liveWorkingSet
 			? [...liveWorkingSet.placements, ...visiblePlacements]
 			: visiblePlacements;
+		const visibleEditors = new Set(visiblePlacements.map(placement => placement.editor));
+		const workingCopiesByEditor = this.mergeWorkingCopyOwners(
+			liveWorkingSet?.workingCopiesByEditor ?? new Map(),
+			this.selectWorkingCopyOwners(visibleState.modifiedEditorOwners, visibleEditors)
+		);
 		const editorsToRevert: IParadisPreparedEditorRevert[] = [];
 		if (retirementPlacements.length > 0) {
 			const editors = [...new Set(retirementPlacements.map(placement => placement.editor))];
 			for (const editor of editors) {
-				const result = await this.prepareLiveEditorRetirement(editor, retirementPlacements);
+				const result = await this.prepareLiveEditorRetirement(editor, retirementPlacements, workingCopiesByEditor.get(editor) ?? []);
 				if (!result.confirmed) {
 					return false;
 				}
@@ -373,7 +420,11 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 
 		const ownedKeys = new Set(this.ownerLedger.entries.filter(entry => entry.stateKey === stateKey).map(entry => this.identifierKey(entry.identifier)));
 		const backups = (await this.workingCopyBackupService.getBackups()).filter(identifier => ownedKeys.has(this.identifierKey(identifier)));
-		if (retirementPlacements.length === 0 && backups.length > 0) {
+		const handledWorkingCopyKeys = new Set(
+			[...workingCopiesByEditor.values()].flat().map(workingCopy => this.identifierKey(workingCopy))
+		);
+		const unrestoredBackups = backups.filter(identifier => !handledWorkingCopyKeys.has(this.identifierKey(identifier)));
+		if (unrestoredBackups.length > 0) {
 			const { confirmed } = await this.dialogService.confirm({
 				type: 'warning',
 				message: localize('paradis.editorScope.backupRetirementMessage', "This space contains unsaved backup data."),
@@ -385,7 +436,19 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			}
 		}
 
-		this.preparedRetirements.set(stateKey, { backups, editorsToRevert });
+		const editors = [...new Set(retirementPlacements.map(placement => placement.editor))];
+		const workingCopies = [...new Set(editors.flatMap(editor => [...(workingCopiesByEditor.get(editor) ?? [])]))];
+		this.preparedRetirements.set(stateKey, {
+			backups,
+			editorsToRevert,
+			editorStates: editors.map(editor => ({ editor, modified: editor.isModified() })),
+			workingCopyStates: workingCopies.map(workingCopy => ({
+				workingCopy,
+				revision: this.workingCopyRevision(workingCopy),
+				modified: workingCopy.isModified()
+			})),
+			handledWorkingCopyKeys
+		});
 		return true;
 	}
 
@@ -394,53 +457,113 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 	}
 
 	async retireScope(stateKey: string): Promise<boolean> {
-		if (!this.preparedRetirements.has(stateKey) && !await this.prepareScopeRetirement(stateKey)) {
-			return false;
-		}
+		return this.retireScopes([stateKey]);
+	}
 
-		const preparedRetirement = this.preparedRetirements.get(stateKey);
-		if (!preparedRetirement) {
-			return false;
-		}
-		for (const { editor, groupId } of preparedRetirement.editorsToRevert) {
-			try {
-				await editor.revert(groupId);
-			} catch (error) {
-				this.logService.error('[ParadisEditorScope] Editor revert failed during scope retirement', error);
-				try {
-					await editor.revert(groupId, { soft: true });
-				} catch (softRevertError) {
-					this.logService.error('[ParadisEditorScope] Editor soft revert failed during scope retirement', softRevertError);
-					return false;
-				}
-			}
-			if (editor.isModified()) {
+	async retireScopes(stateKeys: readonly string[]): Promise<boolean> {
+		const uniqueStateKeys = [...new Set(stateKeys)];
+		for (const stateKey of uniqueStateKeys) {
+			if (!this.preparedRetirements.has(stateKey) && !await this.prepareScopeRetirement(stateKey)) {
 				return false;
 			}
 		}
-		const ownedKeys = new Set(this.ownerLedger.entries.filter(entry => entry.stateKey === stateKey).map(entry => this.identifierKey(entry.identifier)));
-		const currentBackups = (await this.workingCopyBackupService.getBackups()).filter(identifier => ownedKeys.has(this.identifierKey(identifier)));
-		const backupsToDiscard = new Map([...preparedRetirement.backups, ...currentBackups].map(identifier => [this.identifierKey(identifier), identifier]));
-		for (const identifier of backupsToDiscard.values()) {
-			await this.workingCopyBackupService.discardBackup(identifier);
-		}
-		this.preparedRetirements.delete(stateKey);
 
-		const liveWorkingSet = this.liveWorkingSets.get(stateKey);
-		if (liveWorkingSet) {
-			this.liveWorkingSets.delete(stateKey);
-			liveWorkingSet.retentions.dispose();
+		const prepared = uniqueStateKeys.map(stateKey => ({ stateKey, retirement: this.preparedRetirements.get(stateKey) }));
+		if (prepared.some(entry => entry.retirement === undefined)) {
+			return false;
 		}
-		this.ownerLedger.retire(stateKey);
-		this.saveOwnerLedger();
+		const consumedEditors = new Map(uniqueStateKeys.map(stateKey => [stateKey, new Set<EditorInput>()]));
+		const validateAll = async (): Promise<boolean> => {
+			for (const entry of prepared) {
+				if (!await this.validatePreparedRetirement(entry.stateKey, entry.retirement!, consumedEditors.get(entry.stateKey)!)) {
+					for (const stateKey of uniqueStateKeys) {
+						this.preparedRetirements.delete(stateKey);
+					}
+					return false;
+				}
+			}
+			return true;
+		};
+
+		if (!await validateAll()) {
+			return false;
+		}
+		for (const { stateKey, retirement } of prepared) {
+			for (const { editor, groupId, workingCopies } of retirement!.editorsToRevert) {
+				if (!await validateAll()) {
+					return false;
+				}
+				try {
+					await editor.revert(groupId);
+				} catch (error) {
+					this.logService.error('[ParadisEditorScope] Editor revert failed during scope retirement', error);
+					try {
+						await editor.revert(groupId, { soft: true });
+					} catch (softRevertError) {
+						this.logService.error('[ParadisEditorScope] Editor soft revert failed during scope retirement', softRevertError);
+						return false;
+					}
+				}
+				consumedEditors.get(stateKey)!.add(editor);
+				if (editor.isModified() || workingCopies.some(workingCopy => workingCopy.isModified())) {
+					return false;
+				}
+			}
+		}
+
+		for (const { stateKey, retirement } of prepared) {
+			const ownedKeys = new Set(this.ownerLedger.entries.filter(entry => entry.stateKey === stateKey).map(entry => this.identifierKey(entry.identifier)));
+			const currentBackups = (await this.workingCopyBackupService.getBackups()).filter(identifier => ownedKeys.has(this.identifierKey(identifier)));
+			const backupsToDiscard = new Map([...retirement!.backups, ...currentBackups].map(identifier => [this.identifierKey(identifier), identifier]));
+			for (const identifier of backupsToDiscard.values()) {
+				if (!await validateAll()) {
+					return false;
+				}
+				await this.workingCopyBackupService.discardBackup(identifier);
+				if (!await validateAll()) {
+					return false;
+				}
+			}
+		}
+
+		const retiredOwners = this.ownerLedger.entries.filter(entry => uniqueStateKeys.includes(entry.stateKey));
+		const retentionsToDispose: DisposableStore[] = [];
+		for (const stateKey of uniqueStateKeys) {
+			this.preparedRetirements.delete(stateKey);
+			const liveWorkingSet = this.liveWorkingSets.get(stateKey);
+			if (liveWorkingSet) {
+				this.liveWorkingSets.delete(stateKey);
+				retentionsToDispose.push(liveWorkingSet.retentions);
+			}
+			this.ownerLedger.retire(stateKey);
+		}
+		try {
+			this.saveOwnerLedger();
+		} catch (error) {
+			// Destructive work is already committed. Continue finalizing all scopes;
+			// retaining an old owner entry is safer than leaving half the batch live.
+			for (const entry of retiredOwners) {
+				this.ownerLedger.assign(entry.identifier, entry.stateKey);
+			}
+			this.logService.error('[ParadisEditorScope] Failed to persist retired Working Copy ownership', error);
+		}
+		for (const retentions of retentionsToDispose) {
+			try {
+				retentions.dispose();
+			} catch (error) {
+				this.logService.error('[ParadisEditorScope] Failed to dispose retired editor retentions', error);
+			}
+		}
 		return true;
 	}
 
-	private async prepareLiveEditorRetirement(editor: EditorInput, placements: readonly IParadisLiveEditorPlacement[]): Promise<{ readonly confirmed: boolean; readonly editorToRevert?: IParadisPreparedEditorRevert }> {
-		let shouldConfirm = editor.isModified();
+	private async prepareLiveEditorRetirement(editor: EditorInput, placements: readonly IParadisLiveEditorPlacement[], workingCopies: readonly IWorkingCopy[]): Promise<{ readonly confirmed: boolean; readonly editorToRevert?: IParadisPreparedEditorRevert }> {
+		let shouldConfirm = editor.isModified() || workingCopies.some(workingCopy => workingCopy.isModified());
+		let closeHandlerWantsConfirm = false;
 		if (editor.closeHandler) {
 			try {
-				shouldConfirm = editor.closeHandler.showConfirm();
+				closeHandlerWantsConfirm = editor.closeHandler.showConfirm();
+				shouldConfirm ||= closeHandlerWantsConfirm;
 			} catch (error) {
 				this.logService.error('[ParadisEditorScope] Editor close handler failed during scope retirement', error);
 				shouldConfirm = true;
@@ -456,7 +579,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		}
 
 		let confirmation: ConfirmResult;
-		if (editor.closeHandler) {
+		if (editor.closeHandler && closeHandlerWantsConfirm) {
 			try {
 				confirmation = await editor.closeHandler.confirm([{ editor, groupId: placement.groupId }]);
 			} catch (error) {
@@ -470,13 +593,171 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		switch (confirmation) {
 			case ConfirmResult.SAVE: {
 				const saved = await editor.save(placement.groupId, { reason: SaveReason.EXPLICIT });
-				return { confirmed: saved !== undefined && !editor.isModified() };
+				return { confirmed: saved !== undefined && !editor.isModified() && workingCopies.every(workingCopy => !workingCopy.isModified()) };
 			}
 			case ConfirmResult.DONT_SAVE:
-				return { confirmed: true, editorToRevert: { editor, groupId: placement.groupId } };
+				return { confirmed: true, editorToRevert: { editor, groupId: placement.groupId, workingCopies } };
 			case ConfirmResult.CANCEL:
 				return { confirmed: false };
 		}
+	}
+
+	private async validatePreparedRetirement(stateKey: string, retirement: IParadisPreparedRetirement, consumedEditors: ReadonlySet<EditorInput>): Promise<boolean> {
+		if (!this.validatePreparedRetirementState(stateKey, retirement, consumedEditors)) {
+			return false;
+		}
+
+		const allBackups = await this.workingCopyBackupService.getBackups();
+		// getBackups() can yield to user input. Revalidate revisions and modified
+		// state after it completes before allowing any destructive phase to run.
+		if (!this.validatePreparedRetirementState(stateKey, retirement, consumedEditors)) {
+			return false;
+		}
+
+		const preparedBackupKeys = new Set(retirement.backups.map(identifier => this.identifierKey(identifier)));
+		const ownedKeys = new Set(this.ownerLedger.entries.filter(entry => entry.stateKey === stateKey).map(entry => this.identifierKey(entry.identifier)));
+		return allBackups
+			.filter(identifier => ownedKeys.has(this.identifierKey(identifier)))
+			.every(identifier => {
+				const key = this.identifierKey(identifier);
+				return preparedBackupKeys.has(key) || retirement.handledWorkingCopyKeys.has(key);
+			});
+	}
+
+	private validatePreparedRetirementState(stateKey: string, retirement: IParadisPreparedRetirement, consumedEditors: ReadonlySet<EditorInput>): boolean {
+		const preparedEditors = new Set(retirement.editorStates.map(({ editor }) => editor));
+		const currentEditors = new Set([
+			...(this.liveWorkingSets.get(stateKey)?.placements ?? []),
+			...this.collectVisibleLiveEditorState(false, stateKey).placements,
+		].map(placement => placement.editor));
+		if ([...currentEditors].some(editor => !preparedEditors.has(editor))) {
+			return false;
+		}
+		for (const workingCopy of this.workingCopyService.modifiedWorkingCopies) {
+			if (this.ownerLedger.ownerOf(workingCopy) === stateKey && !retirement.handledWorkingCopyKeys.has(this.identifierKey(workingCopy))) {
+				return false;
+			}
+		}
+
+		for (const { editor, modified } of retirement.editorStates) {
+			if (consumedEditors.has(editor)) {
+				if (editor.isModified()) {
+					return false;
+				}
+			} else if (editor.isModified() !== modified) {
+				return false;
+			}
+		}
+
+		const consumedWorkingCopies = new Set(
+			retirement.editorsToRevert
+				.filter(({ editor }) => consumedEditors.has(editor))
+				.flatMap(({ workingCopies }) => [...workingCopies])
+		);
+		for (const { workingCopy, revision, modified } of retirement.workingCopyStates) {
+			const current = this.workingCopyService.get(workingCopy);
+			if (current !== undefined && current !== workingCopy) {
+				return false;
+			}
+			if (consumedWorkingCopies.has(workingCopy)) {
+				if (workingCopy.isModified()) {
+					return false;
+				}
+			} else if (this.workingCopyRevision(workingCopy) !== revision || workingCopy.isModified() !== modified) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private selectWorkingCopyOwners(owners: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>, editors: ReadonlySet<EditorInput>): ReadonlyMap<EditorInput, readonly IWorkingCopy[]> {
+		const selected = new Map<EditorInput, readonly IWorkingCopy[]>();
+		for (const editor of editors) {
+			const workingCopies = owners.get(editor);
+			if (workingCopies?.length) {
+				selected.set(editor, [...workingCopies]);
+			}
+		}
+		return selected;
+	}
+
+	private mergeWorkingCopyOwners(...ownerMaps: readonly ReadonlyMap<EditorInput, readonly IWorkingCopy[]>[]): ReadonlyMap<EditorInput, readonly IWorkingCopy[]> {
+		const merged = new Map<EditorInput, readonly IWorkingCopy[]>();
+		for (const owners of ownerMaps) {
+			for (const [editor, workingCopies] of owners) {
+				merged.set(editor, [...new Set([...(merged.get(editor) ?? []), ...workingCopies])]);
+			}
+		}
+		return merged;
+	}
+
+	private ensureWorkingCopyRevision(workingCopy: IWorkingCopy): void {
+		if (!this.workingCopyRevisions.has(workingCopy)) {
+			this.workingCopyRevisions.set(workingCopy, 0);
+		}
+	}
+
+	private workingCopyRevision(workingCopy: IWorkingCopy): number {
+		return this.workingCopyRevisions.get(workingCopy) ?? 0;
+	}
+
+	private onDidChangeWorkingCopyModifiedState(workingCopy: IWorkingCopy): void {
+		if (workingCopy.isModified()) {
+			this.observeModifiedWorkingCopy(workingCopy);
+		} else {
+			this.releaseWorkingCopyOwnerWhenSafe(workingCopy);
+		}
+	}
+
+	private releaseWorkingCopyOwnerWhenSafe(workingCopy: IWorkingCopy): void {
+		if (workingCopy.isModified()) {
+			return;
+		}
+		const owner = this.ownerLedger.ownerOf(workingCopy);
+		if (owner === undefined) {
+			return;
+		}
+
+		const revision = this.workingCopyRevision(workingCopy);
+		void (async () => {
+			try {
+				// The upstream backup tracker owns backup deletion. Calling discardBackup
+				// here would race a subsequent edit and could delete its newer backup.
+				// Poll briefly until the tracker's deletion is observable, then release
+				// only if the same clean Working Copy and revision are still authoritative.
+				for (let attempt = 0; attempt < 20; attempt++) {
+					await timeout(attempt === 0 ? 0 : 50);
+					const current = this.workingCopyService.get(workingCopy);
+					if (workingCopy.isModified()
+						|| this.workingCopyRevision(workingCopy) !== revision
+						|| (current !== undefined && current !== workingCopy)
+						|| this.ownerLedger.ownerOf(workingCopy) !== owner) {
+						return;
+					}
+					if (await this.workingCopyBackupService.resolve(workingCopy) !== undefined) {
+						continue;
+					}
+					const currentAfterResolve = this.workingCopyService.get(workingCopy);
+					if (workingCopy.isModified()
+						|| this.workingCopyRevision(workingCopy) !== revision
+						|| (currentAfterResolve !== undefined && currentAfterResolve !== workingCopy)) {
+						return;
+					}
+					if (this.ownerLedger.release(workingCopy, owner)) {
+						try {
+							this.saveOwnerLedger();
+						} catch (error) {
+							this.ownerLedger.assign(workingCopy, owner);
+							throw error;
+						}
+					}
+					return;
+				}
+			} catch (error) {
+				this.logService.error('[ParadisEditorScope] Failed to verify saved Working Copy ownership release', error);
+			}
+		})();
 	}
 
 	private identifierKey(identifier: IWorkingCopyIdentifier): string {
@@ -590,6 +871,9 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		const owner = this.ownerLedger.ownerOf(identifier);
 		if (owner !== undefined) {
 			return owner === this._activeStateKey ? WorkingCopyBackupRestoreDecision.Restore : WorkingCopyBackupRestoreDecision.Defer;
+		}
+		if (this.ownershipStorageWasCorrupt) {
+			return WorkingCopyBackupRestoreDecision.Defer;
 		}
 
 		const resourceBelongsToActiveScope = this.activeUri !== undefined && isEqualOrParent(identifier.resource, this.activeUri);

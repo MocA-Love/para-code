@@ -65,6 +65,20 @@ export async function paradisApplySameUriScopeCorrection(
 	}
 }
 
+/** Runs every phase even when an earlier phase fails. */
+export async function paradisRunBestEffortPhases(
+	steps: readonly (() => void | Promise<void>)[],
+	onError: (error: unknown) => void,
+): Promise<void> {
+	for (const step of steps) {
+		try {
+			await step();
+		} catch (error) {
+			onError(error);
+		}
+	}
+}
+
 /**
  * IParadisWorkspaceSwitchService の実装。
  *
@@ -198,14 +212,22 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 		const retirementStateKeys = [...new Set([id, ...descendantStateKeys])];
 		const preparedStateKeys: string[] = [];
-		for (const stateKey of retirementStateKeys) {
-			if (!await this.prepareScopeRetirement(stateKey)) {
-				for (const preparedStateKey of preparedStateKeys) {
-					this.cancelScopeRetirement(preparedStateKey);
+		try {
+			for (const stateKey of retirementStateKeys) {
+				if (!await this.prepareScopeRetirement(stateKey)) {
+					for (const preparedStateKey of preparedStateKeys) {
+						this.cancelScopeRetirement(preparedStateKey);
+					}
+					return;
 				}
-				return;
+				preparedStateKeys.push(stateKey);
 			}
-			preparedStateKeys.push(stateKey);
+		} catch (error) {
+			for (const preparedStateKey of preparedStateKeys) {
+				this.cancelScopeRetirement(preparedStateKey);
+			}
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to prepare scope retirement transaction', error);
+			return;
 		}
 
 		const removesActiveScope = this.activeStateKey !== undefined && retirementStateKeys.includes(this.activeStateKey);
@@ -221,13 +243,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			}
 		}
 
-		for (const stateKey of preparedStateKeys) {
-			if (!await this.discardScopeState(stateKey)) {
-				for (const preparedStateKey of preparedStateKeys) {
-					this.cancelScopeRetirement(preparedStateKey);
-				}
-				return;
+		if (!await this.discardScopeStates(preparedStateKeys)) {
+			for (const preparedStateKey of preparedStateKeys) {
+				this.cancelScopeRetirement(preparedStateKey);
 			}
+			return;
 		}
 		const currentIndex = this._repositories.findIndex(repository => repository.id === id);
 		if (currentIndex === -1) {
@@ -256,19 +276,49 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	async discardScopeState(stateKey: string): Promise<boolean> {
-		if (!await this.auxiliaryWindowScopeService.retireScope(stateKey)) {
+		return this.discardScopeStates([stateKey]);
+	}
+
+	private async discardScopeStates(stateKeys: readonly string[]): Promise<boolean> {
+		const uniqueStateKeys = [...new Set(stateKeys)];
+		const cancelPrepared = () => {
+			for (const stateKey of uniqueStateKeys) {
+				this.editorScopeService.cancelScopeRetirement(stateKey);
+			}
+		};
+		try {
+			for (const stateKey of uniqueStateKeys) {
+				if (!await this.editorScopeService.prepareScopeRetirement(stateKey)) {
+					cancelPrepared();
+					return false;
+				}
+			}
+			for (const stateKey of uniqueStateKeys) {
+				if (!await this.auxiliaryWindowScopeService.closeScopeWindowsForRetirement(stateKey)) {
+					cancelPrepared();
+					return false;
+				}
+			}
+			if (!await this.editorScopeService.retireScopes(uniqueStateKeys)) {
+				cancelPrepared();
+				return false;
+			}
+		} catch (error) {
+			cancelPrepared();
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to retire scope transaction', error);
 			return false;
 		}
-		if (!await this.editorScopeService.retireScope(stateKey)) {
-			return false;
-		}
-		this.deleteWorkingSetFor(stateKey);
-		this._panelVisibility.delete(stateKey);
-		// この scope の working set に載っていたエディタターミナルは park 台帳に生き続けている。
-		// working set を消すと二度と revive されず PTY/xterm が孤児化するため、ここで実体ごと破棄する。
-		// パネルグループの retireScope (onDidRetireScope 購読) と対をなすエディタ側の掃除。
-		paradisRetireParkedTerminalEditorInstances(stateKey);
-		this._onDidRetireScope.fire(stateKey);
+
+		await paradisRunBestEffortPhases(uniqueStateKeys.flatMap(stateKey => [
+			() => this.auxiliaryWindowScopeService.commitScopeRetirement(stateKey),
+			() => this.deleteWorkingSetFor(stateKey),
+			() => { this._panelVisibility.delete(stateKey); },
+			// この scope の working set に載っていたエディタターミナルは park 台帳に生き続けている。
+			// working set を消すと二度と revive されず PTY/xterm が孤児化するため、ここで実体ごと破棄する。
+			// パネルグループの retireScope (onDidRetireScope 購読) と対をなすエディタ側の掃除。
+			() => paradisRetireParkedTerminalEditorInstances(stateKey),
+			() => { this._onDidRetireScope.fire(stateKey); },
+		]), error => this.logService.error('[ParadisWorkspaceSwitch] Failed to finalize retired scope phase', error));
 		return true;
 	}
 
@@ -397,27 +447,39 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				completed = true;
 			} catch (error) {
 				switchError = error;
-				try {
-					const currentFolders = this.contextService.getWorkspace().folders;
-					if (previousUri && (currentFolders.length !== 1 || !isEqual(currentFolders[0].uri, previousUri))) {
-						await this.workspaceEditingService.updateFolders(0, currentFolders.length, [{ uri: previousUri }]);
-					}
-					if (previousKey !== undefined && sourceCaptured) {
-						await this.applyWorkingSetFor(previousKey);
-						await this.editorScopeService.restoreScope(previousKey);
-						if (previousUri) {
-							this.setActiveEntry(previousKey, previousUri);
+				await paradisRunBestEffortPhases([
+					async () => {
+						const currentFolders = this.contextService.getWorkspace().folders;
+						if (previousUri && (currentFolders.length !== 1 || !isEqual(currentFolders[0].uri, previousUri))) {
+							await this.workspaceEditingService.updateFolders(0, currentFolders.length, [{ uri: previousUri }]);
 						}
-						this.restorePanelVisibilityFor(previousKey);
-					} else if (previousKey === undefined) {
-						this.clearActiveEntry();
-					}
-					await this.editorScopeService.rollbackSwitch(previousKey, previousUri);
-					this.auxiliaryWindowScopeService.setMainScope(previousKey, this.isManagedWorkspaceWindow, false);
-					await this.editorScopeService.restoreBackups();
-				} catch (rollbackError) {
-					this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back workspace switch', rollbackError);
-				}
+					},
+					async () => {
+						if (previousKey !== undefined && sourceCaptured) {
+							await this.applyWorkingSetFor(previousKey);
+						}
+					},
+					async () => {
+						if (previousKey !== undefined && sourceCaptured) {
+							await this.editorScopeService.restoreScope(previousKey);
+						}
+					},
+					() => {
+						if (previousKey !== undefined && sourceCaptured && previousUri) {
+							this.setActiveEntry(previousKey, previousUri);
+						} else if (previousKey === undefined) {
+							this.clearActiveEntry();
+						}
+					},
+					() => {
+						if (previousKey !== undefined && sourceCaptured) {
+							this.restorePanelVisibilityFor(previousKey);
+						}
+					},
+					() => this.editorScopeService.rollbackSwitch(previousKey, previousUri),
+					() => this.auxiliaryWindowScopeService.setMainScope(previousKey, this.isManagedWorkspaceWindow, false),
+					() => this.editorScopeService.restoreBackups(),
+				], rollbackError => this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back workspace switch phase', rollbackError));
 				throw error;
 			} finally {
 				this._switching = false;

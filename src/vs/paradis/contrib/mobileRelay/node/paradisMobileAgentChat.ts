@@ -41,7 +41,7 @@ import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/nod
 import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
-import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry } from './paradisMobilePaneRegistry.js';
+import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
@@ -1957,6 +1957,13 @@ interface IPaneSessionInfo {
 	readonly sessionId: string | undefined;
 }
 
+interface ICommandCatalogContext {
+	readonly token: string;
+	readonly session: IPaneSessionInfo;
+	readonly owner: IParadisMobilePaneOwner;
+	readonly cwd: string;
+}
+
 /** セッション確定済みかつ現在rendererから生存同期されているペインだけを公開する。 */
 export function paradisConfirmedAgentPaneTokens(
 	confirmedTokens: Iterable<string>,
@@ -2218,11 +2225,14 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private rebuildPaneMappings(): void {
+		const entries = this.paneRegistry.allEntries();
+		const nextCwds = paradisMergeLivePaneMetadata(this.tokenToCwd, entries, 'cwd');
+		const nextWorkspaces = paradisMergeLivePaneMetadata(this.tokenToWorkspace, entries, 'ws');
 		this.terminalToToken.clear();
 		this.tokenToCwd.clear();
 		this.tokenToWorkspace.clear();
 		const ambiguousTerminalIds = new Set<number>();
-		for (const entry of this.paneRegistry.allEntries()) {
+		for (const entry of entries) {
 			if (typeof entry.terminalId === 'number' && typeof entry.token === 'string' && entry.token.length > 0) {
 				const previous = this.terminalToToken.get(entry.terminalId);
 				if (previous !== undefined && previous !== entry.token) {
@@ -2231,13 +2241,13 @@ export class ParadisMobileAgentChat extends Disposable {
 				} else if (!ambiguousTerminalIds.has(entry.terminalId)) {
 					this.terminalToToken.set(entry.terminalId, entry.token);
 				}
-				if (typeof entry.cwd === 'string' && entry.cwd.length > 0) {
-					this.tokenToCwd.set(entry.token, entry.cwd);
-				}
-				if (typeof entry.ws === 'string' && entry.ws.length > 0) {
-					this.tokenToWorkspace.set(entry.token, entry.ws);
-				}
 			}
+		}
+		for (const [token, cwd] of nextCwds) {
+			this.tokenToCwd.set(token, cwd);
+		}
+		for (const [token, workspace] of nextWorkspaces) {
+			this.tokenToWorkspace.set(token, workspace);
 		}
 		// セッションは判明済みだが terminalId 対応が今届いたペインの常時tailを開始する
 		// （hookが先・ペイン同期が後の順で来るケース）。
@@ -2908,20 +2918,37 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private async handleCommandCatalogRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'command-catalog' }>): Promise<void> {
-		const token = this.resolveInboundToken(msg.id, msg.token);
-		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
-		const cwd = token !== undefined ? this.tokenToCwd.get(token) : undefined;
 		const requestKey = `${mobileId}\0${msg.requestId}`;
-		const inFlightForToken = token !== undefined ? [...this.commandCatalogRequests.values()].filter(value => value === token).length : 0;
-		const authorized = owner !== undefined ? await this.authorizeOwner(owner).catch(() => false) : false;
-		if (token === undefined || session === undefined || owner === undefined || cwd === undefined || !this.hasSubscriber(token, mobileId)
-			|| this.commandCatalogRequests.has(requestKey) || inFlightForToken >= 2 || !authorized) {
-			this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得できませんでした' }, token ?? msg.token, owner);
+		const inFlightForMobile = [...this.commandCatalogRequests.keys()].filter(key => key.startsWith(`${mobileId}\0`)).length;
+		if (this.commandCatalogRequests.has(requestKey) || inFlightForMobile >= 4) {
+			this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得中です。少し待ってからお試しください' }, msg.token);
 			return;
 		}
-		this.commandCatalogRequests.set(requestKey, token);
+
+		// Reserve before waiting so reconnect races cannot create unbounded waiters.
+		this.commandCatalogRequests.set(requestKey, msg.token ?? '');
+		let responseToken = msg.token;
+		let responseOwner: IParadisMobilePaneOwner | undefined;
 		try {
+			const context = await this.waitForCommandCatalogContext(mobileId, msg);
+			if (context === undefined) {
+				this.sendTo(mobileId, {
+					t: 'command-catalog-error', id: msg.id, requestId: msg.requestId,
+					message: 'PC側のエージェント接続を同期中です。詳細画面を再接続してからお試しください'
+				}, msg.token);
+				return;
+			}
+			const { token, session, owner, cwd } = context;
+			responseToken = token;
+			responseOwner = owner;
+			const inFlightForToken = [...this.commandCatalogRequests.entries()]
+				.filter(([key, value]) => key !== requestKey && value === token).length;
+			if (inFlightForToken >= 2) {
+				this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得中です。少し待ってからお試しください' }, token, owner);
+				return;
+			}
+			this.commandCatalogRequests.set(requestKey, token);
+
 			const commands = await paradisBuildAgentCommandCatalog(session.agent, cwd);
 			const currentOwner = this.ownerForPane(msg.id, token);
 			if (this.paneSessions.get(token) !== session || this.tokenToCwd.get(token) !== cwd || currentOwner === undefined
@@ -2931,10 +2958,31 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			await this.sendToAuthorized(mobileId, { t: 'command-catalog', id: msg.id, requestId: msg.requestId, commands }, token, owner);
 		} catch {
-			this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得できませんでした' }, token, owner);
+			this.sendTo(mobileId, { t: 'command-catalog-error', id: msg.id, requestId: msg.requestId, message: 'コマンド一覧を取得できませんでした' }, responseToken, responseOwner);
 		} finally {
 			this.commandCatalogRequests.delete(requestKey);
 		}
+	}
+
+	private async waitForCommandCatalogContext(mobileId: string, msg: Extract<AgentInbound, { t: 'command-catalog' }>): Promise<ICommandCatalogContext | undefined> {
+		for (let attempt = 0; attempt < 20; attempt++) {
+			const token = this.resolveInboundToken(msg.id, msg.token);
+			const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+			const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
+			const cwd = token !== undefined ? this.tokenToCwd.get(token) : undefined;
+			if (token !== undefined && session !== undefined && owner !== undefined && cwd !== undefined
+				&& this.hasSubscriber(token, mobileId) && await this.authorizeOwner(owner).catch(() => false)) {
+				const currentOwner = this.ownerForPane(msg.id, token);
+				if (currentOwner !== undefined && this.samePaneOwner(currentOwner, owner)
+					&& this.hasSubscriber(token, mobileId)
+					&& this.paneSessions.get(token) === session
+					&& this.tokenToCwd.get(token) === cwd) {
+					return { token, session, owner, cwd };
+				}
+			}
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+		}
+		return undefined;
 	}
 
 	private async handleSettingsUpdateRequest(mobileId: string, msg: { readonly id: number; readonly token?: string; readonly requestId: string; readonly model: string; readonly effort: string }): Promise<void> {

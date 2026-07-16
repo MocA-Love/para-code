@@ -134,15 +134,26 @@ export class ParadisAuxiliaryWindowScopeService extends Disposable implements IP
 	}
 
 	async retireScope(stateKey: string): Promise<boolean> {
+		if (!await this.closeScopeWindowsForRetirement(stateKey)) {
+			return false;
+		}
+		this.commitScopeRetirement(stateKey);
+		return true;
+	}
+
+	async closeScopeWindowsForRetirement(stateKey: string): Promise<boolean> {
 		const parts = [...this.getPinnedParts(stateKey)];
 		for (const part of parts) {
 			if (!part.close()) {
 				return false;
 			}
 		}
+		return true;
+	}
+
+	commitScopeRetirement(stateKey: string): void {
 		this.ledger.retire(stateKey);
 		this.persist();
-		return true;
 	}
 
 	private get mainScope(): ParadisBindingScope {

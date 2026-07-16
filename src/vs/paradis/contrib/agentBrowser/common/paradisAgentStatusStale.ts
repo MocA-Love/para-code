@@ -21,3 +21,24 @@ export function paradisShouldClearAgentStatusAfterPollFailures(consecutiveFailur
 export function paradisShouldSweepStaleWorkingStatus(status: string, backgroundCompletionFallback: boolean | undefined, changedAt: number, now: number): boolean {
 	return status === 'working' && backgroundCompletionFallback === true && now - changedAt > PARADIS_BACKGROUND_COMPLETION_STALE_MS;
 }
+
+/** Keeps a token's last stable scope through a transient terminal detach/reattach window. */
+export class ParadisAgentTokenScopeMemory {
+	private readonly stateKeys = new Map<string, string>();
+
+	resolve(token: string, observedStateKey: string | undefined, allowRemembered: boolean): string | undefined {
+		if (observedStateKey !== undefined) {
+			this.stateKeys.set(token, observedStateKey);
+			return observedStateKey;
+		}
+		return allowRemembered ? this.stateKeys.get(token) : undefined;
+	}
+
+	prune(liveTokens: ReadonlySet<string>): void {
+		for (const token of this.stateKeys.keys()) {
+			if (!liveTokens.has(token)) {
+				this.stateKeys.delete(token);
+			}
+		}
+	}
+}

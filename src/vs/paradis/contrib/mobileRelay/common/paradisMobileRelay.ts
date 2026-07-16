@@ -19,6 +19,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { ChannelId } from './paradisMobileProtocol.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
+import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 // ---- 設定キー ----
 
@@ -37,6 +38,22 @@ export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudfl
 export const PARADIS_MOBILE_RELAY_CHANNEL = 'paradisMobileRelay';
 /** complete/operation sequence/Renderer世代を必須化した公開PC↔mobile契約。 */
 export const PARADIS_MOBILE_PROTOCOL_VERSION = 3;
+
+/** Keeps pending terminal ownership unassigned instead of guessing the active space. */
+export function paradisResolveMobileTerminalStateKey(
+	recordedStateKey: string | undefined,
+	resolvedScope: ParadisBindingScope,
+	activeStateKey: string | undefined,
+): string | undefined {
+	if (recordedStateKey !== undefined) {
+		return recordedStateKey;
+	}
+	return resolvedScope.kind === 'managed'
+		? resolvedScope.stateKey
+		: resolvedScope.kind === 'unscoped'
+			? activeStateKey
+			: undefined;
+}
 
 export interface IParadisConfirmedAgentPanes {
 	readonly revision: number;

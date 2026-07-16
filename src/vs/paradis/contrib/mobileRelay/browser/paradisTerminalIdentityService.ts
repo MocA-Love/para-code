@@ -13,7 +13,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig } from '../../../../platform/terminal/common/terminal.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { terminalKeyFromShellIntegrationNonce } from '../common/paradisTerminalPersistence.js';
+import { ParadisTerminalIdentityIndex, terminalKeyFromShellIntegrationNonce } from '../common/paradisTerminalPersistence.js';
 
 export const IParadisTerminalIdentityService = createDecorator<IParadisTerminalIdentityService>('paradisTerminalIdentityService');
 
@@ -31,8 +31,7 @@ class ParadisTerminalIdentityService extends Disposable implements IParadisTermi
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
-	private readonly keyByInstanceId = new Map<number, string>();
-	private readonly instanceIdByKey = new Map<string, number>();
+	private readonly index = new ParadisTerminalIdentityIndex();
 	private readonly instanceListeners = this._register(new DisposableMap<number, IDisposable>());
 
 	constructor(
@@ -49,11 +48,11 @@ class ParadisTerminalIdentityService extends Disposable implements IParadisTermi
 	}
 
 	getTerminalKey(instanceId: number): string | undefined {
-		return this.keyByInstanceId.get(instanceId);
+		return this.index.getTerminalKey(instanceId);
 	}
 
 	getInstanceId(terminalKey: string): number | undefined {
-		return this.instanceIdByKey.get(terminalKey);
+		return this.index.getInstanceId(terminalKey);
 	}
 
 	private handleInstanceCreated(instance: ITerminalInstance): void {
@@ -61,17 +60,9 @@ class ParadisTerminalIdentityService extends Disposable implements IParadisTermi
 	}
 
 	private registerInstance(instance: ITerminalInstance, terminalKey: string): void {
-		const existingInstanceId = this.instanceIdByKey.get(terminalKey);
-		if (existingInstanceId !== undefined && existingInstanceId !== instance.instanceId) {
-			return;
-		}
-		this.keyByInstanceId.set(instance.instanceId, terminalKey);
-		this.instanceIdByKey.set(terminalKey, instance.instanceId);
+		this.index.bind(instance.instanceId, terminalKey);
 		this.instanceListeners.set(instance.instanceId, instance.onDisposed(() => {
-			this.keyByInstanceId.delete(instance.instanceId);
-			if (this.instanceIdByKey.get(terminalKey) === instance.instanceId) {
-				this.instanceIdByKey.delete(terminalKey);
-			}
+			this.index.unbind(instance.instanceId);
 			this.instanceListeners.deleteAndDispose(instance.instanceId);
 			this._onDidChange.fire();
 		}));

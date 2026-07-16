@@ -11,7 +11,7 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import type { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
-import { ParadisPaneProcessReadyTracker, paradisCollectLivePaneInstances, paradisCreatePaneShellManifestEntries, paradisListCurrentPaneTokens } from '../../browser/paradisLivePaneInstances.js';
+import { ParadisPaneProcessReadyTracker, paradisCollectAllTerminalInstances, paradisCollectLivePaneInstances, paradisCreatePaneShellManifestEntries, paradisListCurrentPaneTokens } from '../../browser/paradisLivePaneInstances.js';
 import { ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 function terminal(instanceId: number, title: string, processId?: number): ITerminalInstance {
@@ -53,6 +53,19 @@ suite('Paradis live pane instances', () => {
 			[4, 'four'],
 			[5, 'five'],
 		]);
+	});
+
+	test('collects inactive-space terminals without requiring the concrete terminal group service class', () => {
+		const active = terminal(6, 'active');
+		const parkedPanel = terminal(7, 'parked panel');
+		const parkedEditor = terminal(8, 'parked editor');
+		const result = paradisCollectAllTerminalInstances(
+			{ instances: [active] },
+			{ paradisParkedGroups: [{ terminalInstances: [parkedPanel] }] } as unknown as Pick<ITerminalGroupService, 'paradisParkedGroups'>,
+			[parkedEditor]
+		);
+
+		assert.deepStrictEqual(result.map(instance => instance.instanceId), [6, 7, 8]);
 	});
 
 	test('keeps only the current instance when detach and reattach temporarily share a token', () => {

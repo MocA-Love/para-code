@@ -33,6 +33,7 @@ export interface IParadisEditorScopeService {
 	prepareScopeRetirement(stateKey: string): Promise<boolean>;
 	cancelScopeRetirement(stateKey: string): void;
 	retireScope(stateKey: string): Promise<boolean>;
+	retireScopes(stateKeys: readonly string[]): Promise<boolean>;
 }
 
 interface ISerializedWorkingCopyOwnerEntry {
@@ -122,6 +123,15 @@ export class ParadisWorkingCopyOwnerLedger {
 			identifier: { resource: identifier.resource, typeId: identifier.typeId },
 			stateKey
 		});
+	}
+
+	release(identifier: IWorkingCopyIdentifier, expectedStateKey?: string): boolean {
+		const key = workingCopyIdentifierKey(identifier);
+		const entry = this.owners.get(key);
+		if (!entry || (expectedStateKey !== undefined && entry.stateKey !== expectedStateKey)) {
+			return false;
+		}
+		return this.owners.delete(key);
 	}
 
 	rekey(previousStateKey: string, nextStateKey: string): void {
