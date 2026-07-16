@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
@@ -14,6 +15,7 @@ import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForT
 
 suite('ParadisMobileAgentChat', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+	teardown(() => sinon.restore());
 
 	test('publishes only live panes with a confirmed agent session', () => {
 		assert.deepStrictEqual(
@@ -51,6 +53,7 @@ suite('ParadisMobileAgentChat', () => {
 	test('requests an owning renderer cwd sync and delivers a reconnect error without a subscriber', async () => {
 		const sent: unknown[] = [];
 		const syncRequests: unknown[] = [];
+		const clock = sinon.useFakeTimers();
 		const chat = new ParadisMobileAgentChat(
 			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
 			() => { },
@@ -65,9 +68,9 @@ suite('ParadisMobileAgentChat', () => {
 			chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({
 				t: 'command-catalog', id: 7, token: 'pane-7', requestId: 'request-1'
 			})));
-			await new Promise(resolve => setTimeout(resolve, 25));
+			await clock.tickAsync(25);
 			chat.removePanes(1, 'window-session', 3);
-			await new Promise(resolve => setTimeout(resolve, 1175));
+			await clock.tickAsync(1175);
 
 			assert.deepStrictEqual(syncRequests, [{
 				windowId: 1,
@@ -85,6 +88,7 @@ suite('ParadisMobileAgentChat', () => {
 			}]);
 		} finally {
 			chat.dispose();
+			clock.restore();
 		}
 	});
 

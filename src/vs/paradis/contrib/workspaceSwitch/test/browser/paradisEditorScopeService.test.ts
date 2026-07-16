@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import * as sinon from 'sinon';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
@@ -25,12 +26,13 @@ import { IWorkingCopyEditorService } from '../../../../../workbench/services/wor
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { createEditorParts, registerTestEditor, TestFileDialogService, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestWorkingCopy } from '../../../../../workbench/test/common/workbenchTestServices.js';
-import { paradisEditorRequiresScopedLiveState, ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
+import { paradisEditorRequiresScopedLiveState, paradisOwnerReleaseRetryDelay, ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
 import { ParadisWorkingCopyOwnerLedger } from '../../common/paradisEditorScope.js';
 import { IParadisAuxiliaryWindowScopeService } from '../../common/paradisWorkspaceSwitch.js';
 
 suite('ParadisEditorScopeService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
+	teardown(() => sinon.restore());
 
 	function input(name: string): TestFileEditorInput {
 		return disposables.add(new TestFileEditorInput(URI.file(`/workspace/${name}`), 'test'));
@@ -53,6 +55,13 @@ suite('ParadisEditorScopeService', () => {
 			paradisEditorRequiresScopedLiveState(scratchpad, new Set()),
 			paradisEditorRequiresScopedLiveState(workingCopyBacked, new Set([workingCopyBacked]))
 		], [false, true, true, true, true]);
+	});
+
+	test('backs off clean owner release checks up to thirty seconds', () => {
+		assert.deepStrictEqual(
+			[0, 1, 2, 3, 10, 11, 100].map(paradisOwnerReleaseRetryDelay),
+			[0, 50, 100, 200, 25_600, 30_000, 30_000]
+		);
 	});
 
 	test('classifies a compound editor when either nested input is live', () => {
@@ -249,6 +258,98 @@ suite('ParadisEditorScopeService', () => {
 			firstReverted: true,
 			firstDisposed: true,
 			secondDisposed: true,
+		});
+	});
+
+	test('fences the complete scope while committed retirement is in progress', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const typeId = 'paradisCompleteRetirementFenceEditorInputTest';
+		testDisposables.add(registerTestEditor('paradisCompleteRetirementFenceEditorTest', [new SyncDescriptor(TestFileEditorInput)], typeId));
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		const revertStarted = new DeferredPromise<void>();
+		const continueRevert = new DeferredPromise<void>();
+		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await service.commitSwitch('space-a', URI.file('/workspace'));
+
+		const dirty = testDisposables.add(new class extends TestFileEditorInput {
+			override async revert(): Promise<void> {
+				revertStarted.complete();
+				await continueRevert.p;
+				this.dirty = false;
+			}
+		}(URI.file('/workspace/dirty.txt'), typeId));
+		dirty.dirty = true;
+		const clean = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/clean.txt'), typeId));
+		const newlyOpened = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/new.txt'), typeId));
+		await parts.activeGroup.openEditor(dirty, { pinned: true });
+		await parts.activeGroup.openEditor(clean, { pinned: true });
+		(instantiationService.get(IFileDialogService) as TestFileDialogService).setConfirmResult(ConfirmResult.DONT_SAVE);
+		assert.strictEqual(await service.prepareScopeRetirement('space-a'), true);
+
+		const retirement = service.retireScope('space-a');
+		await revertStarted.p;
+		const opened = await parts.activeGroup.openEditor(newlyOpened, { pinned: true });
+		assert.deepStrictEqual({
+			cleanVisible: parts.activeGroup.contains(clean),
+			newEditorOpened: opened !== undefined || parts.activeGroup.contains(newlyOpened),
+		}, {
+			cleanVisible: false,
+			newEditorOpened: false,
+		});
+
+		continueRevert.complete();
+		assert.strictEqual(await retirement, true);
+		assert.strictEqual(await parts.activeGroup.openEditor(newlyOpened, { pinned: true }), undefined);
+		service.completeScopeRetirement('space-a');
+		assert.notStrictEqual(await parts.activeGroup.openEditor(newlyOpened, { pinned: true }), undefined);
+	});
+
+	test('restores the complete scope when the retirement journal cannot be persisted', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const typeId = 'paradisFailedRetirementJournalEditorInputTest';
+		testDisposables.add(registerTestEditor('paradisFailedRetirementJournalEditorTest', [new SyncDescriptor(TestFileEditorInput)], typeId));
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
+		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await service.commitSwitch('space-a', URI.file('/workspace'));
+
+		const dirty = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/journal-dirty.txt'), typeId));
+		dirty.dirty = true;
+		const clean = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/journal-clean.txt'), typeId));
+		await parts.activeGroup.openEditor(dirty, { pinned: true });
+		await parts.activeGroup.openEditor(clean, { pinned: true });
+		(instantiationService.get(IFileDialogService) as TestFileDialogService).setConfirmResult(ConfirmResult.DONT_SAVE);
+		assert.strictEqual(await service.prepareScopeRetirement('space-a'), true);
+
+		assert.strictEqual(await service.retireScopes(['space-a'], () => { throw new Error('journal write failed'); }), false);
+		assert.deepStrictEqual({
+			dirtyVisible: parts.activeGroup.contains(dirty),
+			cleanVisible: parts.activeGroup.contains(clean),
+			dirtyReverted: dirty.gotReverted,
+		}, {
+			dirtyVisible: true,
+			cleanVisible: true,
+			dirtyReverted: false,
 		});
 	});
 
@@ -730,11 +831,17 @@ suite('ParadisEditorScopeService', () => {
 		testDisposables.add(instantiationService.get(IWorkingCopyService).registerWorkingCopy(workingCopy));
 		const storageService = instantiationService.get(IStorageService);
 
-		workingCopy.setDirty(false);
-		await releaseReady.p;
-		await timeout(0);
-		const savedLedger = ParadisWorkingCopyOwnerLedger.load(storageService.get('paradis.workspaceSwitch.workingCopyOwners', StorageScope.WORKSPACE)).ledger;
-		assert.deepStrictEqual({ resolveCalls, owner: savedLedger.ownerOf(workingCopy) }, { resolveCalls: 26, owner: undefined });
+		const clock = sinon.useFakeTimers();
+		try {
+			workingCopy.setDirty(false);
+			await clock.tickAsync(600_000);
+			await releaseReady.p;
+			await clock.tickAsync(0);
+			const savedLedger = ParadisWorkingCopyOwnerLedger.load(storageService.get('paradis.workspaceSwitch.workingCopyOwners', StorageScope.WORKSPACE)).ledger;
+			assert.deepStrictEqual({ resolveCalls, owner: savedLedger.ownerOf(workingCopy) }, { resolveCalls: 26, owner: undefined });
+		} finally {
+			clock.restore();
+		}
 	});
 
 	test('resumes a clean Working Copy owner release when the editor scope service restarts', async () => {

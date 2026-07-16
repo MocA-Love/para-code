@@ -403,6 +403,8 @@ export interface IParadisWorkspaceSwitchService {
 	 * タブクローズ」を区別して dispose を veto するために使う。
 	 */
 	readonly isSwitching: boolean;
+	/** Scope keys whose approved retirement still has an external durable boundary to finalize. */
+	readonly pendingCommittedRetirementStateKeys: readonly string[];
 
 	addRepository(uri: URI, name?: string): Promise<IParadisWorkspaceRepository>;
 	removeRepository(id: string, descendantStateKeys?: readonly string[]): Promise<void>;
@@ -433,6 +435,8 @@ export interface IParadisWorkspaceSwitchService {
 	prepareScopeRetirement(stateKey: string): Promise<boolean>;
 	cancelScopeRetirement(stateKey: string): Promise<void>;
 	discardScopeState(stateKey: string): Promise<boolean>;
+	acknowledgeScopeRetirement(stateKey: string): void;
+	replayCommittedScopeRetirements(): Promise<void>;
 }
 
 // --- Extension Host 再起動の抑止フラグ ---------------------------------------------------------

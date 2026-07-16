@@ -22,6 +22,7 @@ import { SyncDescriptor } from '../../../../platform/instantiation/common/descri
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -124,6 +125,22 @@ class ParadisAuxiliaryWindowRestoreContribution extends Disposable {
 }
 
 registerWorkbenchContribution2(ParadisAuxiliaryWindowRestoreContribution.ID, ParadisAuxiliaryWindowRestoreContribution, WorkbenchPhase.AfterRestored);
+
+class ParadisScopeRetirementRecoveryContribution implements IWorkbenchContribution {
+	static readonly ID = 'workbench.contrib.paradisScopeRetirementRecovery';
+
+	constructor(
+		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IParadisWorktreeService _worktreeService: IParadisWorktreeService,
+		@ILogService logService: ILogService,
+	) {
+		void workspaceSwitchService.replayCommittedScopeRetirements().catch(error => {
+			logService.error('[ParadisWorkspaceSwitch] Failed to replay a committed scope retirement', error);
+		});
+	}
+}
+
+registerWorkbenchContribution2(ParadisScopeRetirementRecoveryContribution.ID, ParadisScopeRetirementRecoveryContribution, WorkbenchPhase.Eventually);
 
 // worktree 自動同期の Para Code 設定 (セクションは windowTransparency 側と同じ 'paradis' に相乗り)
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({

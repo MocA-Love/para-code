@@ -84,6 +84,17 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 		this._known = this.loadKnown();
 		this._order = this.loadOrder();
+		const recoveredStateKeys = new Set(this.workspaceSwitchService.pendingCommittedRetirementStateKeys);
+		if (recoveredStateKeys.size > 0) {
+			const previousLength = this._known.length;
+			this._known = this._known.filter(known => !recoveredStateKeys.has(paradisWorktreeStateKey(URI.parse(known.path))));
+			if (this._known.length !== previousLength) {
+				this.saveKnown();
+			}
+			for (const stateKey of recoveredStateKeys) {
+				this.workspaceSwitchService.acknowledgeScopeRetirement(stateKey);
+			}
+		}
 
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => {
 			this.installWatchers();
@@ -150,6 +161,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			// この worktree の切り替えスコープ状態 (working set / パネル / SCM入力 / park 中ターミナル)
 			// を破棄する。二度と開かれないキーの状態が WORKSPACE ストレージに残り続けるのを防ぐ。
 			this.saveKnown();
+			this.workspaceSwitchService.acknowledgeScopeRetirement(stateKey);
 			this._refreshScheduler.schedule();
 		}
 		// 手動並び順からも消しておく (残っても末尾フォールバックで無害だが、蓄積を防ぐ)
@@ -228,6 +240,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		const detectedWorktrees = new Map<string, IParadisWorktree[]>();
 		const branches = new Map<string, string>();
 		let knownChanged = false;
+		const retiredStateKeys = new Set<string>();
 
 		for (const repository of repositories) {
 			const branch = await this.readRepositoryBranch(repository);
@@ -265,6 +278,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 						);
 						if (removed) {
 							knownChanged = true;
+							retiredStateKeys.add(missingStateKey);
 						} else {
 							list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), missing: true });
 						}
@@ -298,16 +312,30 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 				() => { this._known = this._known.filter(candidate => candidate !== known); }
 			)) {
 				knownChanged = true;
+				retiredStateKeys.add(stateKey);
 			}
 		}
 
 		if (knownChanged) {
 			this.saveKnown();
+			for (const stateKey of retiredStateKeys) {
+				this.workspaceSwitchService.acknowledgeScopeRetirement(stateKey);
+			}
 		}
 		this._worktrees = result;
 		this._detectedWorktrees = detectedWorktrees;
 		this._branches = branches;
+		this.acknowledgeAbsentCommittedRetirements();
 		this._onDidChangeWorktrees.fire();
+	}
+
+	private acknowledgeAbsentCommittedRetirements(): void {
+		const knownStateKeys = new Set(this._known.map(known => paradisWorktreeStateKey(URI.parse(known.path))));
+		for (const stateKey of this.workspaceSwitchService.pendingCommittedRetirementStateKeys) {
+			if (!knownStateKeys.has(stateKey)) {
+				this.workspaceSwitchService.acknowledgeScopeRetirement(stateKey);
+			}
+		}
 	}
 
 	/**

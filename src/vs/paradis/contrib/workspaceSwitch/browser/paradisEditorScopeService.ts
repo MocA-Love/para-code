@@ -20,6 +20,7 @@ import { EditorInputCapabilities, EditorsOrder, GroupIdentifier, SaveReason } fr
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../../../workbench/common/editor/sideBySideEditorInput.js';
 import { IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { paradisRegisterEditorOpenFenceHandler } from '../../../../workbench/services/editor/common/paradisEditorRetirementFence.js';
 import { IWorkingCopy, IWorkingCopyIdentifier } from '../../../../workbench/services/workingCopy/common/workingCopy.js';
 import { IWorkingCopyBackupService } from '../../../../workbench/services/workingCopy/common/workingCopyBackup.js';
 import { WorkingCopyBackupRestoreDecision, IWorkingCopyBackupRestoreRouter } from '../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
@@ -67,11 +68,11 @@ interface IParadisPreparedEditorState {
 interface IParadisPreparedRetirement {
 	readonly backups: readonly IWorkingCopyIdentifier[];
 	readonly editorsToRevert: readonly IParadisPreparedEditorRevert[];
-	readonly editorStates: readonly IParadisPreparedEditorState[];
-	readonly workingCopyStates: readonly IParadisPreparedWorkingCopyState[];
-	readonly handledWorkingCopyKeys: ReadonlySet<string>;
-	readonly frozenPlacements: readonly IParadisLiveEditorPlacement[];
-	readonly frozenWorkingCopiesByEditor: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>;
+	readonly editorStates: IParadisPreparedEditorState[];
+	readonly workingCopyStates: IParadisPreparedWorkingCopyState[];
+	readonly handledWorkingCopyKeys: Set<string>;
+	readonly frozenPlacements: IParadisLiveEditorPlacement[];
+	frozenWorkingCopiesByEditor: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>;
 	readonly frozenRetentions: DisposableStore;
 }
 
@@ -118,6 +119,14 @@ export function paradisEditorRequiresScopedLiveState(editor: EditorInput, modifi
 			|| paradisEditorRequiresScopedLiveState(editor.secondary, modifiedEditors));
 }
 
+/** Returns the delay before the next clean Working Copy backup inspection. */
+export function paradisOwnerReleaseRetryDelay(attempt: number): number {
+	if (attempt <= 0) {
+		return 0;
+	}
+	return Math.min(50 * (2 ** (attempt - 1)), 30_000);
+}
+
 /**
  * Owns both runtime live EditorInputs and persistent Working Copy backup
  * ownership. It deliberately does not depend on the workspace switch service,
@@ -132,6 +141,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 	private readonly pendingBackupDiscards = this._register(new DisposableMap<string, DisposableStore>());
 	private readonly pendingBackupDiscardJournal = new Map<string, { readonly identifier: IWorkingCopyIdentifier; readonly stateKey: string }>();
 	private readonly pendingOwnerReleases = this._register(new DisposableMap<string, DisposableStore>());
+	private readonly retirementFences = new Set<string>();
 	private readonly workingCopyRevisions = new WeakMap<IWorkingCopy, number>();
 	private readonly ownerLedger: ParadisWorkingCopyOwnerLedger;
 	private readonly ownershipStorageWasCorrupt: boolean;
@@ -171,6 +181,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		this.activeUri = initialIdentity.uri;
 
 		this._register(this.backupRestoreRouter.registerProvider({ route: identifier => this.routeBackup(identifier) }));
+		this._register(paradisRegisterEditorOpenFenceHandler(groupId => this.isEditorGroupFenced(groupId)));
 		this._register(this.workingCopyService.onDidRegister(workingCopy => {
 			this.ensureWorkingCopyRevision(workingCopy);
 			if (workingCopy.isModified()) {
@@ -191,6 +202,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				retirement.frozenRetentions.dispose();
 			}
 			this.preparedRetirements.clear();
+			this.retirementFences.clear();
 		}));
 
 		for (const workingCopy of this.workingCopyService.workingCopies) {
@@ -503,9 +515,11 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 	async cancelScopeRetirement(stateKey: string): Promise<void> {
 		const retirement = this.preparedRetirements.get(stateKey);
 		if (!retirement) {
+			this.retirementFences.delete(stateKey);
 			return;
 		}
 		this.preparedRetirements.delete(stateKey);
+		this.retirementFences.delete(stateKey);
 		await this.restoreFrozenRetirement(
 			stateKey,
 			retirement.frozenPlacements,
@@ -518,7 +532,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		return this.retireScopes([stateKey]);
 	}
 
-	async retireScopes(stateKeys: readonly string[]): Promise<boolean> {
+	async retireScopes(stateKeys: readonly string[], onWillCommit?: () => void): Promise<boolean> {
 		const uniqueStateKeys = [...new Set(stateKeys)];
 		for (const stateKey of uniqueStateKeys) {
 			if (!this.preparedRetirements.has(stateKey) && !await this.prepareScopeRetirement(stateKey)) {
@@ -548,6 +562,22 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 
 		const currentBackups = await validateAll();
 		if (!currentBackups) {
+			return false;
+		}
+		try {
+			for (const entry of prepared) {
+				this.freezeRetiringScope(entry.stateKey, entry.retirement!);
+			}
+			onWillCommit?.();
+		} catch (error) {
+			this.logService.error('[ParadisEditorScope] Failed to fence or journal a retiring editor scope', error);
+			for (const stateKey of uniqueStateKeys) {
+				try {
+					await this.cancelScopeRetirement(stateKey);
+				} catch (cancellationError) {
+					this.logService.error('[ParadisEditorScope] Failed to restore a scope after retirement fencing failed', cancellationError);
+				}
+			}
 			return false;
 		}
 		const retiredOwners = this.ownerLedger.entries.filter(entry => uniqueStateKeys.includes(entry.stateKey));
@@ -647,6 +677,61 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			this.schedulePendingBackupDiscard(pending.identifier, pending.stateKey);
 		}
 		return true;
+	}
+
+	completeScopeRetirement(stateKey: string): void {
+		this.retirementFences.delete(stateKey);
+	}
+
+	private freezeRetiringScope(stateKey: string, retirement: IParadisPreparedRetirement): void {
+		if (this.retirementFences.has(stateKey)) {
+			return;
+		}
+
+		// Install the synchronous fence before enumerating or detaching editors. No
+		// user input or extension callback can open another editor into the scope
+		// between the final validation and the complete-scope snapshot.
+		this.retirementFences.add(stateKey);
+		const visibleState = this.collectVisibleLiveEditorState(true, stateKey, false, undefined, true);
+		const frozenEditors = new Set(retirement.frozenPlacements.map(placement => placement.editor));
+		const visibleEditors = new Set(visibleState.placements.map(placement => placement.editor));
+		for (const editor of visibleEditors) {
+			this.freezeVisibleEditor(editor, visibleState.placements, frozenEditors, retirement.frozenPlacements, retirement.frozenRetentions);
+		}
+
+		const existingEditors = new Set(retirement.editorStates.map(state => state.editor));
+		for (const editor of visibleEditors) {
+			if (!existingEditors.has(editor)) {
+				retirement.editorStates.push({ editor, modified: editor.isModified() });
+			}
+		}
+
+		const additionalWorkingCopies = this.selectWorkingCopyOwners(visibleState.modifiedEditorOwners, visibleEditors);
+		retirement.frozenWorkingCopiesByEditor = this.mergeWorkingCopyOwners(retirement.frozenWorkingCopiesByEditor, additionalWorkingCopies);
+		const existingWorkingCopies = new Set(retirement.workingCopyStates.map(state => state.workingCopy));
+		for (const workingCopy of [...additionalWorkingCopies.values()].flat()) {
+			retirement.handledWorkingCopyKeys.add(this.identifierKey(workingCopy));
+			if (!existingWorkingCopies.has(workingCopy)) {
+				retirement.workingCopyStates.push({
+					workingCopy,
+					revision: this.workingCopyRevision(workingCopy),
+					modified: workingCopy.isModified()
+				});
+				existingWorkingCopies.add(workingCopy);
+			}
+		}
+	}
+
+	private isEditorGroupFenced(groupId: GroupIdentifier): boolean {
+		if (this.retirementFences.size === 0) {
+			return false;
+		}
+		const group = this.editorGroupsService.getGroup(groupId);
+		if (!group) {
+			return false;
+		}
+		const scope = this.auxiliaryWindowScopeService.resolveGroup(group);
+		return scope.kind === 'managed' && this.retirementFences.has(scope.stateKey);
 	}
 
 	private async prepareLiveEditorRetirement(editor: EditorInput, placements: readonly IParadisLiveEditorPlacement[], workingCopies: readonly IWorkingCopy[]): Promise<{ readonly confirmed: boolean; readonly editorToRevert?: IParadisPreparedEditorRevert }> {
@@ -984,10 +1069,9 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				// here would race a subsequent edit and could delete its newer backup.
 				// Keep this release pending until the tracker deletion is observable, or
 				// until a new revision/owner/Working Copy cancels this attempt.
-				let firstAttempt = true;
+				let attempt = 0;
 				while (!cancellation.token.isCancellationRequested) {
-					await timeout(firstAttempt ? 0 : 50, cancellation.token);
-					firstAttempt = false;
+					await timeout(paradisOwnerReleaseRetryDelay(attempt++), cancellation.token);
 					const current = this.workingCopyService.get(workingCopy);
 					if (workingCopy.isModified()
 						|| this.workingCopyRevision(workingCopy) !== revision
@@ -1058,7 +1142,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		return result;
 	}
 
-	private collectVisibleLiveEditorState(requireDetach: boolean, stateKey?: string, mainPartOnly = false, exactPart?: IEditorPart): { readonly modifiedEditorOwners: Map<EditorInput, IWorkingCopy[]>; readonly placements: readonly IParadisLiveEditorPlacement[] } {
+	private collectVisibleLiveEditorState(requireDetach: boolean, stateKey?: string, mainPartOnly = false, exactPart?: IEditorPart, includeClean = false): { readonly modifiedEditorOwners: Map<EditorInput, IWorkingCopy[]>; readonly placements: readonly IParadisLiveEditorPlacement[] } {
 		const modifiedEditorOwners = this.collectModifiedEditorOwners();
 		const modifiedEditors = new Set(modifiedEditorOwners.keys());
 		const placements: IParadisLiveEditorPlacement[] = [];
@@ -1078,7 +1162,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			}
 			for (const group of part.groups) {
 				for (const [index, editor] of group.getEditors(EditorsOrder.SEQUENTIAL).entries()) {
-					if (!paradisEditorRequiresScopedLiveState(editor, modifiedEditors)) {
+					if (!includeClean && !paradisEditorRequiresScopedLiveState(editor, modifiedEditors)) {
 						continue;
 					}
 					if (requireDetach && !group.detachEditor) {
@@ -1117,12 +1201,18 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			return;
 		}
 		const scope = this.auxiliaryWindowScopeService.resolveGroup(group);
+		if (scope.kind === 'managed' && this.retirementFences.has(scope.stateKey)) {
+			return;
+		}
 		if (scope.kind === 'managed' && this.ownerLedger.ownerOf(workingCopy) === undefined) {
 			this.claimWorkingCopy(workingCopy, scope.stateKey);
 		}
 	}
 
 	private claimWorkingCopy(identifier: IWorkingCopyIdentifier, stateKey: string): void {
+		if (this.retirementFences.has(stateKey)) {
+			throw new Error(`Working Copy cannot enter a retiring Para Code scope: ${identifier.resource.toString()}`);
+		}
 		this.pendingOwnerReleases.deleteAndDispose(this.identifierKey(identifier));
 		const owner = this.ownerLedger.ownerOf(identifier);
 		if (owner !== undefined && owner !== stateKey) {
