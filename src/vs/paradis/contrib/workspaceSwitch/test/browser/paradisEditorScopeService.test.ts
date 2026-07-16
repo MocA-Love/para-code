@@ -12,6 +12,7 @@ import { EditorExtensions, EditorInputCapabilities, IEditorFactoryRegistry } fro
 import { SideBySideEditorInput } from '../../../../../workbench/common/editor/sideBySideEditorInput.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
+import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { ConfirmResult, IDialogService, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
@@ -19,7 +20,7 @@ import { IEditorGroupsService } from '../../../../../workbench/services/editor/c
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IWorkingCopyBackupService } from '../../../../../workbench/services/workingCopy/common/workingCopyBackup.js';
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
-import { IWorkingCopy } from '../../../../../workbench/services/workingCopy/common/workingCopy.js';
+import { IWorkingCopy, IWorkingCopyIdentifier } from '../../../../../workbench/services/workingCopy/common/workingCopy.js';
 import { IWorkingCopyEditorService } from '../../../../../workbench/services/workingCopy/common/workingCopyEditorService.js';
 import { IWorkingCopyService } from '../../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { createEditorParts, registerTestEditor, TestFileDialogService, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
@@ -79,6 +80,7 @@ suite('ParadisEditorScopeService', () => {
 			hasVisibleScope: () => false,
 		} as never);
 		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
 		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
 
 		const clean = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/clean.txt'), typeId));
@@ -138,6 +140,7 @@ suite('ParadisEditorScopeService', () => {
 			hasVisibleScope: () => false,
 		} as never);
 		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
 		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
 		await service.commitSwitch('space-a', URI.file('/workspace'));
 
@@ -153,13 +156,232 @@ suite('ParadisEditorScopeService', () => {
 		fileDialogService.setConfirmResult(ConfirmResult.DONT_SAVE);
 		assert.strictEqual(await service.prepareScopeRetirement('space-a'), true);
 		assert.strictEqual(live.gotReverted, false);
-		assert.strictEqual(parts.activeGroup.contains(live), true);
+		assert.strictEqual(parts.activeGroup.contains(live), false);
 
-		service.cancelScopeRetirement('space-a');
+		await service.cancelScopeRetirement('space-a');
 		assert.strictEqual(live.gotReverted, false);
+		assert.strictEqual(parts.activeGroup.contains(live), true);
 		assert.strictEqual(await service.prepareScopeRetirement('space-a'), true);
 		assert.strictEqual(await service.retireScope('space-a'), true);
 		assert.strictEqual(live.gotReverted, true);
+	});
+
+	test('keeps cancelled retirement editors hidden when the main scope already switched', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const typeId = 'paradisCancelledRetirementAfterSwitchEditorInputTest';
+		testDisposables.add(registerTestEditor('paradisCancelledRetirementAfterSwitchEditorTest', [new SyncDescriptor(TestFileEditorInput)], typeId));
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		let activeStateKey = 'space-a';
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: activeStateKey }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: activeStateKey }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await service.commitSwitch('space-a', URI.file('/workspace-a'));
+
+		const editor = testDisposables.add(new TestFileEditorInput(URI.file('/workspace-a/unsaved.txt'), typeId));
+		editor.dirty = true;
+		await parts.activeGroup.openEditor(editor, { pinned: true });
+		(instantiationService.get(IFileDialogService) as TestFileDialogService).setConfirmResult(ConfirmResult.DONT_SAVE);
+		assert.strictEqual(await service.prepareScopeRetirement('space-a'), true);
+		assert.strictEqual(parts.activeGroup.contains(editor), false);
+
+		activeStateKey = 'space-b';
+		await service.commitSwitch('space-b', URI.file('/workspace-b'));
+		await service.cancelScopeRetirement('space-a');
+		assert.strictEqual(parts.activeGroup.contains(editor), false);
+		assert.strictEqual(service.hasLiveState('space-a'), true);
+
+		activeStateKey = 'space-a';
+		await service.commitSwitch('space-a', URI.file('/workspace-a'));
+		await service.restoreScope('space-a');
+		assert.strictEqual(parts.activeGroup.contains(editor), true);
+	});
+
+	test('finishes a confirmed retirement after one EditorInput cannot revert', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const typeId = 'paradisFailurelessRetirementEditorInputTest';
+		testDisposables.add(registerTestEditor('paradisFailurelessRetirementEditorTest', [new SyncDescriptor(TestFileEditorInput)], typeId));
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
+		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await service.commitSwitch('space-a', URI.file('/workspace'));
+
+		const first = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/first.txt'), typeId));
+		first.dirty = true;
+		const second = testDisposables.add(new class extends TestFileEditorInput {
+			override async revert(): Promise<void> {
+				throw new Error('revert failed');
+			}
+		}(URI.file('/workspace/second.txt'), typeId));
+		second.dirty = true;
+		await parts.activeGroup.openEditor(first, { pinned: true });
+		await parts.activeGroup.openEditor(second, { pinned: true });
+		(instantiationService.get(IFileDialogService) as TestFileDialogService).setConfirmResult(ConfirmResult.DONT_SAVE);
+
+		assert.strictEqual(await service.prepareScopeRetirement('space-a'), true);
+		assert.deepStrictEqual([
+			parts.activeGroup.contains(first),
+			parts.activeGroup.contains(second),
+		], [false, false]);
+		assert.strictEqual(await service.retireScope('space-a'), true);
+		assert.deepStrictEqual({
+			firstReverted: first.gotReverted,
+			firstDisposed: first.isDisposed(),
+			secondDisposed: second.isDisposed(),
+		}, {
+			firstReverted: true,
+			firstDisposed: true,
+			secondDisposed: true,
+		});
+	});
+
+	test('commits the retirement and retries a backup discard that fails after another backup was removed', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
+		instantiationService.stub(IDialogService, new class extends TestDialogService {
+			override async confirm(): Promise<{ confirmed: boolean }> {
+				return { confirmed: true };
+			}
+		}());
+		const first = { resource: URI.parse('untitled:/first'), typeId: 'untitled' };
+		const second = { resource: URI.parse('untitled:/second'), typeId: 'untitled' };
+		const remaining = new Map([[first.resource.toString(), first], [second.resource.toString(), second]]);
+		let secondAttempts = 0;
+		const secondDiscarded = new DeferredPromise<void>();
+		instantiationService.stub(IWorkingCopyBackupService, {
+			getBackups: async () => [...remaining.values()],
+			discardBackup: async (identifier: IWorkingCopyIdentifier) => {
+				if (identifier.resource.toString() === second.resource.toString() && secondAttempts++ === 0) {
+					throw new Error('temporary backup deletion failure');
+				}
+				remaining.delete(identifier.resource.toString());
+				if (identifier.resource.toString() === second.resource.toString()) {
+					secondDiscarded.complete();
+				}
+			},
+			resolve: async (identifier: IWorkingCopyIdentifier) => remaining.has(identifier.resource.toString()) ? {} : undefined,
+		} as never);
+		const ledger = ParadisWorkingCopyOwnerLedger.load(undefined).ledger;
+		ledger.assign(first, 'space-a');
+		ledger.assign(second, 'space-a');
+		const storageService = instantiationService.get(IStorageService);
+		storageService.store('paradis.workspaceSwitch.workingCopyOwners', ledger.serialize(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await service.commitSwitch('space-a', URI.file('/workspace'));
+
+		assert.strictEqual(await service.prepareScopeRetirement('space-a'), true);
+		assert.strictEqual(await service.retireScope('space-a'), true);
+		await secondDiscarded.p;
+		await timeout(0);
+		const savedLedger = ParadisWorkingCopyOwnerLedger.load(storageService.get('paradis.workspaceSwitch.workingCopyOwners', StorageScope.WORKSPACE)).ledger;
+		assert.deepStrictEqual([savedLedger.ownerOf(first), savedLedger.ownerOf(second)], [undefined, undefined]);
+	});
+
+	test('resumes a committed backup discard after renderer restart', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-b' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-b' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
+		const identifier = { resource: URI.parse('untitled:/restart-cleanup'), typeId: 'untitled' };
+		let discarded = false;
+		let discardCalls = 0;
+		const cleanupCompleted = new DeferredPromise<void>();
+		instantiationService.stub(IWorkingCopyBackupService, {
+			getBackups: async () => discarded ? [] : [identifier],
+			discardBackup: async () => { discardCalls++; discarded = true; cleanupCompleted.complete(); },
+			resolve: async () => discarded ? undefined : {},
+		} as never);
+		const ledger = ParadisWorkingCopyOwnerLedger.load(undefined).ledger;
+		ledger.assign(identifier, 'space-a');
+		const storageService = instantiationService.get(IStorageService);
+		storageService.store('paradis.workspaceSwitch.workingCopyOwners', ledger.serialize(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		storageService.store('paradis.workspaceSwitch.pendingBackupDiscards', JSON.stringify([{
+			resource: identifier.resource.toString(),
+			typeId: identifier.typeId,
+			stateKey: 'space-a'
+		}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+
+		testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await cleanupCompleted.p;
+		await timeout(0);
+
+		const savedLedger = ParadisWorkingCopyOwnerLedger.load(storageService.get('paradis.workspaceSwitch.workingCopyOwners', StorageScope.WORKSPACE)).ledger;
+		assert.deepStrictEqual({ discardCalls, owner: savedLedger.ownerOf(identifier) }, { discardCalls: 1, owner: undefined });
+		assert.strictEqual(storageService.get('paradis.workspaceSwitch.pendingBackupDiscards', StorageScope.WORKSPACE), undefined);
+	});
+
+	test('never applies stale backup cleanup intent to a newer scope owner', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-b' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-b' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
+		const identifier = { resource: URI.parse('untitled:/reused-identifier'), typeId: 'untitled' };
+		let discardCalls = 0;
+		instantiationService.stub(IWorkingCopyBackupService, {
+			getBackups: async () => [identifier],
+			discardBackup: async () => { discardCalls++; },
+			resolve: async () => ({}),
+		} as never);
+		const ledger = ParadisWorkingCopyOwnerLedger.load(undefined).ledger;
+		ledger.assign(identifier, 'space-b');
+		const storageService = instantiationService.get(IStorageService);
+		storageService.store('paradis.workspaceSwitch.workingCopyOwners', ledger.serialize(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		storageService.store('paradis.workspaceSwitch.pendingBackupDiscards', JSON.stringify([{
+			resource: identifier.resource.toString(),
+			typeId: identifier.typeId,
+			stateKey: 'space-a'
+		}]), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+
+		testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await timeout(100);
+
+		assert.strictEqual(discardCalls, 0);
+		const savedLedger = ParadisWorkingCopyOwnerLedger.load(storageService.get('paradis.workspaceSwitch.workingCopyOwners', StorageScope.WORKSPACE)).ledger;
+		assert.strictEqual(savedLedger.ownerOf(identifier), 'space-b');
+		assert.strictEqual(storageService.get('paradis.workspaceSwitch.pendingBackupDiscards', StorageScope.WORKSPACE), undefined);
 	});
 
 	test('requires confirmation for a modified Scratchpad Working Copy even when its EditorInput is clean', async () => {
@@ -267,8 +489,8 @@ suite('ParadisEditorScopeService', () => {
 		instantiationService.stub(IWorkingCopyBackupService, {
 			getBackups: async () => {
 				getBackupsCalls++;
-				// prepare=1, initial validation=2, validation immediately before revert=3
-				if (getBackupsCalls === 3) {
+				// prepare=1, final pre-commit validation=2
+				if (getBackupsCalls === 2) {
 					validationStarted.complete();
 					await continueValidation.p;
 				}
@@ -463,5 +685,88 @@ suite('ParadisEditorScopeService', () => {
 		await timeout(10);
 		assert.strictEqual(ParadisWorkingCopyOwnerLedger.load(storageService.get('paradis.workspaceSwitch.workingCopyOwners', StorageScope.WORKSPACE)).ledger.ownerOf(workingCopy), undefined);
 		assert.strictEqual(discardCalls, 0);
+	});
+
+	test('keeps a clean Working Copy owner release pending beyond the former polling limit', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const typeId = 'paradisLongPendingOwnerReleaseEditorInputTest';
+		testDisposables.add(registerTestEditor('paradisLongPendingOwnerReleaseEditorTest', [new SyncDescriptor(TestFileEditorInput)], typeId));
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		const mapping: { workingCopy?: TestWorkingCopy; editor?: TestFileEditorInput } = {};
+		instantiationService.stub(IWorkingCopyEditorService, {
+			findEditor: (candidate: IWorkingCopy) => candidate === mapping.workingCopy && mapping.editor ? { editor: mapping.editor, groupId: parts.activeGroup.id } : undefined,
+		} as never);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
+		let resolveCalls = 0;
+		const releaseReady = new DeferredPromise<void>();
+		instantiationService.stub(IWorkingCopyBackupService, {
+			getBackups: async () => [],
+			resolve: async () => {
+				resolveCalls++;
+				if (resolveCalls === 26) {
+					releaseReady.complete();
+					return undefined;
+				}
+				return {};
+			},
+			discardBackup: async () => { },
+		} as never);
+		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await service.commitSwitch('space-a', URI.file('/workspace'));
+
+		const editor = mapping.editor = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/slow-release.txt'), typeId));
+		await parts.activeGroup.openEditor(editor, { pinned: true });
+		const workingCopy = mapping.workingCopy = testDisposables.add(new TestWorkingCopy(editor.resource, true, 'file'));
+		testDisposables.add(instantiationService.get(IWorkingCopyService).registerWorkingCopy(workingCopy));
+		const storageService = instantiationService.get(IStorageService);
+
+		workingCopy.setDirty(false);
+		await releaseReady.p;
+		await timeout(0);
+		const savedLedger = ParadisWorkingCopyOwnerLedger.load(storageService.get('paradis.workspaceSwitch.workingCopyOwners', StorageScope.WORKSPACE)).ledger;
+		assert.deepStrictEqual({ resolveCalls, owner: savedLedger.ownerOf(workingCopy) }, { resolveCalls: 26, owner: undefined });
+	});
+
+	test('resumes a clean Working Copy owner release when the editor scope service restarts', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IWorkingCopyEditorService, { findEditor: () => undefined } as never);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(IWorkingCopyBackupService, {
+			getBackups: async () => [],
+			resolve: async () => undefined,
+			discardBackup: async () => { },
+		} as never);
+
+		const workingCopy = testDisposables.add(new TestWorkingCopy(URI.file('/workspace/restarted-clean.txt'), false, 'file'));
+		testDisposables.add(instantiationService.get(IWorkingCopyService).registerWorkingCopy(workingCopy));
+		const ledger = ParadisWorkingCopyOwnerLedger.load(undefined).ledger;
+		ledger.assign(workingCopy, 'space-a');
+		const storageService = instantiationService.get(IStorageService);
+		storageService.store('paradis.workspaceSwitch.workingCopyOwners', ledger.serialize(), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+
+		testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+		await timeout(10);
+
+		const savedLedger = ParadisWorkingCopyOwnerLedger.load(storageService.get('paradis.workspaceSwitch.workingCopyOwners', StorageScope.WORKSPACE)).ledger;
+		assert.strictEqual(savedLedger.ownerOf(workingCopy), undefined);
 	});
 });

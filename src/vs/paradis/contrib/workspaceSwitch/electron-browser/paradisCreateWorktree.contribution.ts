@@ -307,7 +307,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			);
 		} finally {
 			if (!scopeRetired) {
-				switchService.cancelScopeRetirement(stateKey);
+				await switchService.cancelScopeRetirement(stateKey);
 			}
 		}
 	}

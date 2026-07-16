@@ -8,7 +8,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 suite('ParadisMobileAgentChat', () => {
@@ -45,6 +46,46 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'activity-detail', id: 1, requestId: 'request-1', epoch: 'epoch-1' }), false);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'action/answerQuestion', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'question-1', answers: [{ kind: 'multi', indices: [0, '2'] }] }), false);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'unknown', id: 1 }), false);
+	});
+
+	test('requests an owning renderer cwd sync and delivers a reconnect error without a subscriber', async () => {
+		const sent: unknown[] = [];
+		const syncRequests: unknown[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { },
+			() => { },
+			new NullLogService(),
+			undefined,
+			async () => true,
+			owner => syncRequests.push(owner),
+		);
+		try {
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 3, 1, [{ terminalId: 7, token: 'pane-7' }]), true);
+			chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({
+				t: 'command-catalog', id: 7, token: 'pane-7', requestId: 'request-1'
+			})));
+			await new Promise(resolve => setTimeout(resolve, 25));
+			chat.removePanes(1, 'window-session', 3);
+			await new Promise(resolve => setTimeout(resolve, 1175));
+
+			assert.deepStrictEqual(syncRequests, [{
+				windowId: 1,
+				windowSession: 'window-session',
+				rendererGeneration: 3,
+				terminalId: 7,
+				token: 'pane-7',
+			}]);
+			assert.deepStrictEqual(sent, [{
+				t: 'command-catalog-error',
+				id: 7,
+				token: 'pane-7',
+				requestId: 'request-1',
+				message: 'PC側のエージェント接続を同期中です。詳細画面を再接続してからお試しください'
+			}]);
+		} finally {
+			chat.dispose();
+		}
 	});
 
 	test('keeps the Codex thread ID discovered from rollout session metadata', () => {

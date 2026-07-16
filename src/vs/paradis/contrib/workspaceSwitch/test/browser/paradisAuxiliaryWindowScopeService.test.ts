@@ -102,4 +102,16 @@ suite('ParadisAuxiliaryWindowScopeService', () => {
 			child: { kind: 'managed', stateKey: 'scope:a' }
 		});
 	});
+
+	test('makes a surviving auxiliary window unscoped when its scope is retired', async () => {
+		const storage = disposables.add(new TestStorageService());
+		const { service, part } = createService(storage);
+		await service.initializationBarrier;
+		service.setMainScope('scope:a', true, false);
+
+		service.commitScopeRetirement('scope:a');
+
+		assert.deepStrictEqual(service.resolvePart(part), { kind: 'unscoped' });
+		assert.strictEqual(service.getPinnedParts('scope:a').length, 0);
+	});
 });

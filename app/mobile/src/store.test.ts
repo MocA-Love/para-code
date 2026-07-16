@@ -827,6 +827,23 @@ describe('MobileController agent command catalog', () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it('accepts a direct catalog error matched by agent token and request id', async () => {
+		const { controller, pcMux, encode, requests, latestState } = await setup();
+		controller.requestAgentCommandCatalog('terminal-7');
+		await flush();
+		const request = requests[0] as { requestId: string };
+
+		pcMux.send(Channels.Agent, encode({
+			t: 'command-catalog-error', id: 7, token: 'agent-7', requestId: request.requestId,
+			message: 'PC側のエージェント接続を同期中です',
+		}));
+		await flush();
+
+		expect(latestState()?.agentChats.get('terminal-7')?.commandCatalog).toEqual({
+			status: 'error', commands: [], errorMessage: 'PC側のエージェント接続を同期中です',
+		});
+	});
 });
 
 describe('agent message action result', () => {

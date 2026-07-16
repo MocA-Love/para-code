@@ -7,7 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { timeout } from '../../../../base/common/async.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isEqual, isEqualOrParent } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -69,6 +70,9 @@ interface IParadisPreparedRetirement {
 	readonly editorStates: readonly IParadisPreparedEditorState[];
 	readonly workingCopyStates: readonly IParadisPreparedWorkingCopyState[];
 	readonly handledWorkingCopyKeys: ReadonlySet<string>;
+	readonly frozenPlacements: readonly IParadisLiveEditorPlacement[];
+	readonly frozenWorkingCopiesByEditor: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>;
+	readonly frozenRetentions: DisposableStore;
 }
 
 interface ISerializedWorkspaceRepository {
@@ -81,7 +85,14 @@ interface ISerializedActiveEntry {
 	readonly uri: string;
 }
 
+interface ISerializedPendingBackupDiscard {
+	readonly resource: string;
+	readonly typeId: string;
+	readonly stateKey: string;
+}
+
 const PARADIS_WORKING_COPY_OWNERS_STORAGE_KEY = 'paradis.workspaceSwitch.workingCopyOwners';
+const PARADIS_PENDING_BACKUP_DISCARDS_STORAGE_KEY = 'paradis.workspaceSwitch.pendingBackupDiscards';
 
 /** Returns whether an input must stay alive across a Para Code space switch. */
 export function paradisEditorRequiresScopedLiveState(editor: EditorInput, modifiedEditors: ReadonlySet<EditorInput>): boolean {
@@ -118,6 +129,9 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 
 	private readonly liveWorkingSets = new Map<string, IParadisLiveWorkingSet>();
 	private readonly preparedRetirements = new Map<string, IParadisPreparedRetirement>();
+	private readonly pendingBackupDiscards = this._register(new DisposableMap<string, DisposableStore>());
+	private readonly pendingBackupDiscardJournal = new Map<string, { readonly identifier: IWorkingCopyIdentifier; readonly stateKey: string }>();
+	private readonly pendingOwnerReleases = this._register(new DisposableMap<string, DisposableStore>());
 	private readonly workingCopyRevisions = new WeakMap<IWorkingCopy, number>();
 	private readonly ownerLedger: ParadisWorkingCopyOwnerLedger;
 	private readonly ownershipStorageWasCorrupt: boolean;
@@ -149,6 +163,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		this.ownerLedger = loadedLedger.ledger;
 		this.ownershipStorageWasCorrupt = loadedLedger.state === ParadisWorkingCopyOwnerLedgerLoadState.Corrupt;
 		this.legacyMigrationMode = loadedLedger.state === ParadisWorkingCopyOwnerLedgerLoadState.Missing;
+		this.loadPendingBackupDiscards();
 
 		const initialIdentity = this.resolveInitialIdentity();
 		this.managedWorkspace = initialIdentity.managed;
@@ -158,7 +173,11 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		this._register(this.backupRestoreRouter.registerProvider({ route: identifier => this.routeBackup(identifier) }));
 		this._register(this.workingCopyService.onDidRegister(workingCopy => {
 			this.ensureWorkingCopyRevision(workingCopy);
-			this.observeModifiedWorkingCopy(workingCopy);
+			if (workingCopy.isModified()) {
+				this.observeModifiedWorkingCopy(workingCopy);
+			} else {
+				this.releaseWorkingCopyOwnerWhenSafe(workingCopy);
+			}
 		}));
 		this._register(this.workingCopyService.onDidChangeDirty(workingCopy => this.onDidChangeWorkingCopyModifiedState(workingCopy)));
 		this._register(this.workingCopyService.onDidChangeContent(workingCopy => {
@@ -167,9 +186,18 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		}));
 		this._register(this.workingCopyService.onDidSave(({ workingCopy }) => this.releaseWorkingCopyOwnerWhenSafe(workingCopy)));
 		this._register(this.workingCopyService.onDidUnregister(workingCopy => this.releaseWorkingCopyOwnerWhenSafe(workingCopy)));
+		this._register(toDisposable(() => {
+			for (const retirement of this.preparedRetirements.values()) {
+				retirement.frozenRetentions.dispose();
+			}
+			this.preparedRetirements.clear();
+		}));
 
 		for (const workingCopy of this.workingCopyService.workingCopies) {
 			this.ensureWorkingCopyRevision(workingCopy);
+			if (!workingCopy.isModified()) {
+				this.releaseWorkingCopyOwnerWhenSafe(workingCopy);
+			}
 		}
 		for (const workingCopy of this.workingCopyService.modifiedWorkingCopies) {
 			this.observeModifiedWorkingCopy(workingCopy);
@@ -179,6 +207,9 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				this.observeModifiedWorkingCopy(workingCopy);
 			}
 		});
+		for (const pending of this.pendingBackupDiscardJournal.values()) {
+			this.schedulePendingBackupDiscard(pending.identifier, pending.stateKey);
+		}
 	}
 
 	captureScope(stateKey: string, saveSerializedState: (excludedEditors: readonly EditorInput[]) => void): void {
@@ -284,10 +315,16 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			return;
 		}
 
+		await this.restoreEditorPlacements(liveWorkingSet.placements);
+		this.liveWorkingSets.delete(stateKey);
+		liveWorkingSet.retentions.dispose();
+	}
+
+	private async restoreEditorPlacements(placementsToRestore: readonly IParadisLiveEditorPlacement[]): Promise<void> {
 		const opened: { readonly group: IEditorGroup; readonly editor: EditorInput }[] = [];
 		const restoredPlacements: { readonly group: IEditorGroup; readonly placement: IParadisLiveEditorPlacement }[] = [];
 		try {
-			const placements = [...liveWorkingSet.placements].sort((left, right) => Number(left.active) - Number(right.active));
+			const placements = [...placementsToRestore].sort((left, right) => Number(left.active) - Number(right.active));
 			for (const placement of placements) {
 				const group = this.resolveRestoreGroup(placement);
 				const wasOpen = group.contains(placement.editor, { strictEquals: true });
@@ -322,9 +359,6 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			}
 			throw error;
 		}
-
-		this.liveWorkingSets.delete(stateKey);
-		liveWorkingSet.retentions.dispose();
 	}
 
 	beginSwitch(): void {
@@ -405,55 +439,79 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			this.selectWorkingCopyOwners(visibleState.modifiedEditorOwners, visibleEditors)
 		);
 		const editorsToRevert: IParadisPreparedEditorRevert[] = [];
-		if (retirementPlacements.length > 0) {
-			const editors = [...new Set(retirementPlacements.map(placement => placement.editor))];
-			for (const editor of editors) {
-				const result = await this.prepareLiveEditorRetirement(editor, retirementPlacements, workingCopiesByEditor.get(editor) ?? []);
-				if (!result.confirmed) {
+		const frozenRetentions = new DisposableStore();
+		const frozenPlacements: IParadisLiveEditorPlacement[] = [];
+		const frozenEditors = new Set<EditorInput>();
+		try {
+			if (retirementPlacements.length > 0) {
+				const editors = [...new Set(retirementPlacements.map(placement => placement.editor))];
+				for (const editor of editors) {
+					const result = await this.prepareLiveEditorRetirement(editor, retirementPlacements, workingCopiesByEditor.get(editor) ?? []);
+					if (!result.confirmed) {
+						await this.restoreFrozenRetirement(stateKey, frozenPlacements, workingCopiesByEditor, frozenRetentions);
+						return false;
+					}
+					if (result.editorToRevert) {
+						editorsToRevert.push(result.editorToRevert);
+					}
+					this.freezeVisibleEditor(editor, visiblePlacements, frozenEditors, frozenPlacements, frozenRetentions);
+				}
+			}
+
+			const ownedKeys = new Set(this.ownerLedger.entries.filter(entry => entry.stateKey === stateKey).map(entry => this.identifierKey(entry.identifier)));
+			const backups = (await this.workingCopyBackupService.getBackups()).filter(identifier => ownedKeys.has(this.identifierKey(identifier)));
+			const handledWorkingCopyKeys = new Set(
+				[...workingCopiesByEditor.values()].flat().map(workingCopy => this.identifierKey(workingCopy))
+			);
+			const unrestoredBackups = backups.filter(identifier => !handledWorkingCopyKeys.has(this.identifierKey(identifier)));
+			if (unrestoredBackups.length > 0) {
+				const { confirmed } = await this.dialogService.confirm({
+					type: 'warning',
+					message: localize('paradis.editorScope.backupRetirementMessage', "This space contains unsaved backup data."),
+					detail: localize('paradis.editorScope.backupRetirementDetail', "Removing the space will permanently discard its unrestored editor backups."),
+					primaryButton: localize('paradis.editorScope.backupRetirementConfirm', "Discard Backups and Remove")
+				});
+				if (!confirmed) {
+					await this.restoreFrozenRetirement(stateKey, frozenPlacements, workingCopiesByEditor, frozenRetentions);
 					return false;
 				}
-				if (result.editorToRevert) {
-					editorsToRevert.push(result.editorToRevert);
-				}
 			}
-		}
 
-		const ownedKeys = new Set(this.ownerLedger.entries.filter(entry => entry.stateKey === stateKey).map(entry => this.identifierKey(entry.identifier)));
-		const backups = (await this.workingCopyBackupService.getBackups()).filter(identifier => ownedKeys.has(this.identifierKey(identifier)));
-		const handledWorkingCopyKeys = new Set(
-			[...workingCopiesByEditor.values()].flat().map(workingCopy => this.identifierKey(workingCopy))
-		);
-		const unrestoredBackups = backups.filter(identifier => !handledWorkingCopyKeys.has(this.identifierKey(identifier)));
-		if (unrestoredBackups.length > 0) {
-			const { confirmed } = await this.dialogService.confirm({
-				type: 'warning',
-				message: localize('paradis.editorScope.backupRetirementMessage', "This space contains unsaved backup data."),
-				detail: localize('paradis.editorScope.backupRetirementDetail', "Removing the space will permanently discard its unrestored editor backups."),
-				primaryButton: localize('paradis.editorScope.backupRetirementConfirm', "Discard Backups and Remove")
+			const editors = [...new Set(retirementPlacements.map(placement => placement.editor))];
+			const workingCopies = [...new Set(editors.flatMap(editor => [...(workingCopiesByEditor.get(editor) ?? [])]))];
+			this.preparedRetirements.set(stateKey, {
+				backups,
+				editorsToRevert,
+				editorStates: editors.map(editor => ({ editor, modified: editor.isModified() })),
+				workingCopyStates: workingCopies.map(workingCopy => ({
+					workingCopy,
+					revision: this.workingCopyRevision(workingCopy),
+					modified: workingCopy.isModified()
+				})),
+				handledWorkingCopyKeys,
+				frozenPlacements,
+				frozenWorkingCopiesByEditor: this.selectWorkingCopyOwners(workingCopiesByEditor, frozenEditors),
+				frozenRetentions
 			});
-			if (!confirmed) {
-				return false;
-			}
+			return true;
+		} catch (error) {
+			await this.restoreFrozenRetirement(stateKey, frozenPlacements, workingCopiesByEditor, frozenRetentions);
+			throw error;
 		}
-
-		const editors = [...new Set(retirementPlacements.map(placement => placement.editor))];
-		const workingCopies = [...new Set(editors.flatMap(editor => [...(workingCopiesByEditor.get(editor) ?? [])]))];
-		this.preparedRetirements.set(stateKey, {
-			backups,
-			editorsToRevert,
-			editorStates: editors.map(editor => ({ editor, modified: editor.isModified() })),
-			workingCopyStates: workingCopies.map(workingCopy => ({
-				workingCopy,
-				revision: this.workingCopyRevision(workingCopy),
-				modified: workingCopy.isModified()
-			})),
-			handledWorkingCopyKeys
-		});
-		return true;
 	}
 
-	cancelScopeRetirement(stateKey: string): void {
+	async cancelScopeRetirement(stateKey: string): Promise<void> {
+		const retirement = this.preparedRetirements.get(stateKey);
+		if (!retirement) {
+			return;
+		}
 		this.preparedRetirements.delete(stateKey);
+		await this.restoreFrozenRetirement(
+			stateKey,
+			retirement.frozenPlacements,
+			retirement.frozenWorkingCopiesByEditor,
+			retirement.frozenRetentions
+		);
 	}
 
 	async retireScope(stateKey: string): Promise<boolean> {
@@ -472,27 +530,35 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		if (prepared.some(entry => entry.retirement === undefined)) {
 			return false;
 		}
-		const consumedEditors = new Map(uniqueStateKeys.map(stateKey => [stateKey, new Set<EditorInput>()]));
-		const validateAll = async (): Promise<boolean> => {
+		const validateAll = async (): Promise<readonly IWorkingCopyIdentifier[] | undefined> => {
 			for (const entry of prepared) {
-				if (!await this.validatePreparedRetirement(entry.stateKey, entry.retirement!, consumedEditors.get(entry.stateKey)!)) {
-					for (const stateKey of uniqueStateKeys) {
-						this.preparedRetirements.delete(stateKey);
-					}
-					return false;
+				if (!this.validatePreparedRetirementState(entry.stateKey, entry.retirement!)) {
+					return undefined;
 				}
 			}
-			return true;
+			const allBackups = await this.workingCopyBackupService.getBackups();
+			for (const entry of prepared) {
+				if (!this.validatePreparedRetirementState(entry.stateKey, entry.retirement!)
+					|| !this.validatePreparedRetirementBackups(entry.stateKey, entry.retirement!, allBackups)) {
+					return undefined;
+				}
+			}
+			return allBackups;
 		};
 
-		if (!await validateAll()) {
+		const currentBackups = await validateAll();
+		if (!currentBackups) {
 			return false;
 		}
-		for (const { stateKey, retirement } of prepared) {
+		const retiredOwners = this.ownerLedger.entries.filter(entry => uniqueStateKeys.includes(entry.stateKey));
+		try {
+			this.stagePendingBackupDiscards(retiredOwners);
+		} catch (error) {
+			this.logService.error('[ParadisEditorScope] Failed to persist committed scope-retirement cleanup', error);
+			return false;
+		}
+		for (const { retirement } of prepared) {
 			for (const { editor, groupId, workingCopies } of retirement!.editorsToRevert) {
-				if (!await validateAll()) {
-					return false;
-				}
 				try {
 					await editor.revert(groupId);
 				} catch (error) {
@@ -501,32 +567,32 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 						await editor.revert(groupId, { soft: true });
 					} catch (softRevertError) {
 						this.logService.error('[ParadisEditorScope] Editor soft revert failed during scope retirement', softRevertError);
-						return false;
 					}
 				}
-				consumedEditors.get(stateKey)!.add(editor);
 				if (editor.isModified() || workingCopies.some(workingCopy => workingCopy.isModified())) {
-					return false;
+					this.logService.warn('[ParadisEditorScope] Confirmed editor remained modified during committed scope retirement');
 				}
 			}
 		}
 
+		const failedBackupDiscards = new Map<string, { readonly identifier: IWorkingCopyIdentifier; readonly stateKey: string }>();
 		for (const { stateKey, retirement } of prepared) {
 			const ownedKeys = new Set(this.ownerLedger.entries.filter(entry => entry.stateKey === stateKey).map(entry => this.identifierKey(entry.identifier)));
-			const currentBackups = (await this.workingCopyBackupService.getBackups()).filter(identifier => ownedKeys.has(this.identifierKey(identifier)));
-			const backupsToDiscard = new Map([...retirement!.backups, ...currentBackups].map(identifier => [this.identifierKey(identifier), identifier]));
+			const scopedCurrentBackups = currentBackups.filter(identifier => ownedKeys.has(this.identifierKey(identifier)));
+			const backupsToDiscard = new Map([...retirement!.backups, ...scopedCurrentBackups].map(identifier => [this.identifierKey(identifier), identifier]));
 			for (const identifier of backupsToDiscard.values()) {
-				if (!await validateAll()) {
-					return false;
-				}
-				await this.workingCopyBackupService.discardBackup(identifier);
-				if (!await validateAll()) {
-					return false;
+				try {
+					await this.workingCopyBackupService.discardBackup(identifier);
+					if (await this.workingCopyBackupService.resolve(identifier) !== undefined) {
+						throw new Error('Backup is still present after discard');
+					}
+				} catch (error) {
+					this.logService.error('[ParadisEditorScope] Backup discard failed during committed scope retirement; retrying in the background', error);
+					failedBackupDiscards.set(this.identifierKey(identifier), { identifier, stateKey });
 				}
 			}
 		}
 
-		const retiredOwners = this.ownerLedger.entries.filter(entry => uniqueStateKeys.includes(entry.stateKey));
 		const retentionsToDispose: DisposableStore[] = [];
 		for (const stateKey of uniqueStateKeys) {
 			this.preparedRetirements.delete(stateKey);
@@ -535,10 +601,17 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 				this.liveWorkingSets.delete(stateKey);
 				retentionsToDispose.push(liveWorkingSet.retentions);
 			}
-			this.ownerLedger.retire(stateKey);
+			retentionsToDispose.push(prepared.find(entry => entry.stateKey === stateKey)!.retirement!.frozenRetentions);
+			for (const entry of retiredOwners.filter(entry => entry.stateKey === stateKey)) {
+				if (!failedBackupDiscards.has(this.identifierKey(entry.identifier))) {
+					this.ownerLedger.release(entry.identifier, stateKey);
+				}
+			}
 		}
+		let ownerLedgerSaved = false;
 		try {
 			this.saveOwnerLedger();
+			ownerLedgerSaved = true;
 		} catch (error) {
 			// Destructive work is already committed. Continue finalizing all scopes;
 			// retaining an old owner entry is safer than leaving half the batch live.
@@ -553,6 +626,25 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			} catch (error) {
 				this.logService.error('[ParadisEditorScope] Failed to dispose retired editor retentions', error);
 			}
+		}
+		if (ownerLedgerSaved) {
+			for (const entry of retiredOwners) {
+				if (!failedBackupDiscards.has(this.identifierKey(entry.identifier))) {
+					try {
+						this.completePendingBackupDiscard(entry.identifier, entry.stateKey);
+					} catch (error) {
+						this.logService.error('[ParadisEditorScope] Failed to persist completed backup cleanup; retrying in the background', error);
+						failedBackupDiscards.set(this.identifierKey(entry.identifier), entry);
+					}
+				}
+			}
+		} else {
+			for (const entry of retiredOwners) {
+				failedBackupDiscards.set(this.identifierKey(entry.identifier), entry);
+			}
+		}
+		for (const pending of failedBackupDiscards.values()) {
+			this.schedulePendingBackupDiscard(pending.identifier, pending.stateKey);
 		}
 		return true;
 	}
@@ -602,18 +694,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		}
 	}
 
-	private async validatePreparedRetirement(stateKey: string, retirement: IParadisPreparedRetirement, consumedEditors: ReadonlySet<EditorInput>): Promise<boolean> {
-		if (!this.validatePreparedRetirementState(stateKey, retirement, consumedEditors)) {
-			return false;
-		}
-
-		const allBackups = await this.workingCopyBackupService.getBackups();
-		// getBackups() can yield to user input. Revalidate revisions and modified
-		// state after it completes before allowing any destructive phase to run.
-		if (!this.validatePreparedRetirementState(stateKey, retirement, consumedEditors)) {
-			return false;
-		}
-
+	private validatePreparedRetirementBackups(stateKey: string, retirement: IParadisPreparedRetirement, allBackups: readonly IWorkingCopyIdentifier[]): boolean {
 		const preparedBackupKeys = new Set(retirement.backups.map(identifier => this.identifierKey(identifier)));
 		const ownedKeys = new Set(this.ownerLedger.entries.filter(entry => entry.stateKey === stateKey).map(entry => this.identifierKey(entry.identifier)));
 		return allBackups
@@ -624,7 +705,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			});
 	}
 
-	private validatePreparedRetirementState(stateKey: string, retirement: IParadisPreparedRetirement, consumedEditors: ReadonlySet<EditorInput>): boolean {
+	private validatePreparedRetirementState(stateKey: string, retirement: IParadisPreparedRetirement): boolean {
 		const preparedEditors = new Set(retirement.editorStates.map(({ editor }) => editor));
 		const currentEditors = new Set([
 			...(this.liveWorkingSets.get(stateKey)?.placements ?? []),
@@ -640,35 +721,206 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		}
 
 		for (const { editor, modified } of retirement.editorStates) {
-			if (consumedEditors.has(editor)) {
-				if (editor.isModified()) {
-					return false;
-				}
-			} else if (editor.isModified() !== modified) {
+			if (editor.isModified() !== modified) {
 				return false;
 			}
 		}
 
-		const consumedWorkingCopies = new Set(
-			retirement.editorsToRevert
-				.filter(({ editor }) => consumedEditors.has(editor))
-				.flatMap(({ workingCopies }) => [...workingCopies])
-		);
 		for (const { workingCopy, revision, modified } of retirement.workingCopyStates) {
 			const current = this.workingCopyService.get(workingCopy);
 			if (current !== undefined && current !== workingCopy) {
 				return false;
 			}
-			if (consumedWorkingCopies.has(workingCopy)) {
-				if (workingCopy.isModified()) {
-					return false;
-				}
-			} else if (this.workingCopyRevision(workingCopy) !== revision || workingCopy.isModified() !== modified) {
+			if (this.workingCopyRevision(workingCopy) !== revision || workingCopy.isModified() !== modified) {
 				return false;
 			}
 		}
 
 		return true;
+	}
+
+	private schedulePendingBackupDiscard(identifier: IWorkingCopyIdentifier, stateKey: string): void {
+		const key = this.identifierKey(identifier);
+		const cancellation = new CancellationTokenSource();
+		const disposables = new DisposableStore();
+		disposables.add(toDisposable(() => cancellation.dispose(true)));
+		this.pendingBackupDiscards.set(key, disposables);
+		void (async () => {
+			let retryDelay = 50;
+			try {
+				while (!cancellation.token.isCancellationRequested) {
+					await timeout(retryDelay, cancellation.token);
+					try {
+						const owner = this.ownerLedger.ownerOf(identifier);
+						if (owner !== stateKey) {
+							// An absent owner means the old cleanup already committed. If a backup
+							// exists now it is ambiguous/new and must never be deleted by stale intent.
+							this.completePendingBackupDiscard(identifier, stateKey);
+							return;
+						}
+						if (await this.workingCopyBackupService.resolve(identifier) !== undefined) {
+							await this.workingCopyBackupService.discardBackup(identifier, cancellation.token);
+							if (cancellation.token.isCancellationRequested || await this.workingCopyBackupService.resolve(identifier) !== undefined) {
+								continue;
+							}
+						}
+						if (this.ownerLedger.release(identifier, stateKey)) {
+							try {
+								this.saveOwnerLedger();
+							} catch (error) {
+								this.ownerLedger.assign(identifier, stateKey);
+								throw error;
+							}
+						}
+						this.completePendingBackupDiscard(identifier, stateKey);
+						return;
+					} catch (error) {
+						if (!cancellation.token.isCancellationRequested) {
+							this.logService.warn('[ParadisEditorScope] Pending retired backup cleanup failed; it will be retried', error);
+						}
+					}
+					retryDelay = Math.min(retryDelay * 2, 30_000);
+				}
+			} finally {
+				if (this.pendingBackupDiscards.get(key) === disposables) {
+					this.pendingBackupDiscards.deleteAndDispose(key);
+				}
+			}
+		})();
+	}
+
+	private loadPendingBackupDiscards(): void {
+		const raw = this.storageService.get(PARADIS_PENDING_BACKUP_DISCARDS_STORAGE_KEY, StorageScope.WORKSPACE);
+		if (raw === undefined) {
+			return;
+		}
+		try {
+			const parsed = JSON.parse(raw);
+			if (!Array.isArray(parsed)) {
+				throw new Error('Expected an array');
+			}
+			for (const candidate of parsed) {
+				if (!candidate || typeof candidate.resource !== 'string' || typeof candidate.typeId !== 'string' || typeof candidate.stateKey !== 'string') {
+					throw new Error('Invalid pending backup discard entry');
+				}
+				const identifier = { resource: URI.parse(candidate.resource), typeId: candidate.typeId };
+				this.pendingBackupDiscardJournal.set(this.identifierKey(identifier), { identifier, stateKey: candidate.stateKey });
+			}
+		} catch (error) {
+			// Corrupt cleanup intent must not become permission to discard a backup.
+			this.pendingBackupDiscardJournal.clear();
+			this.logService.error('[ParadisEditorScope] Pending backup discard journal is corrupt; leaving backups untouched', error);
+		}
+	}
+
+	private stagePendingBackupDiscards(entries: readonly { readonly identifier: IWorkingCopyIdentifier; readonly stateKey: string }[]): void {
+		const previous = new Map(this.pendingBackupDiscardJournal);
+		for (const entry of entries) {
+			this.pendingBackupDiscardJournal.set(this.identifierKey(entry.identifier), entry);
+		}
+		try {
+			this.savePendingBackupDiscards();
+		} catch (error) {
+			this.pendingBackupDiscardJournal.clear();
+			for (const [key, entry] of previous) {
+				this.pendingBackupDiscardJournal.set(key, entry);
+			}
+			throw error;
+		}
+	}
+
+	private completePendingBackupDiscard(identifier: IWorkingCopyIdentifier, stateKey: string): void {
+		const key = this.identifierKey(identifier);
+		const pending = this.pendingBackupDiscardJournal.get(key);
+		if (pending?.stateKey !== stateKey) {
+			return;
+		}
+		this.pendingBackupDiscardJournal.delete(key);
+		try {
+			this.savePendingBackupDiscards();
+		} catch (error) {
+			this.pendingBackupDiscardJournal.set(key, pending);
+			throw error;
+		}
+	}
+
+	private savePendingBackupDiscards(): void {
+		if (this.pendingBackupDiscardJournal.size === 0) {
+			this.storageService.remove(PARADIS_PENDING_BACKUP_DISCARDS_STORAGE_KEY, StorageScope.WORKSPACE);
+			return;
+		}
+		const serialized: ISerializedPendingBackupDiscard[] = [...this.pendingBackupDiscardJournal.values()].map(entry => ({
+			resource: entry.identifier.resource.toString(),
+			typeId: entry.identifier.typeId,
+			stateKey: entry.stateKey
+		}));
+		this.storageService.store(PARADIS_PENDING_BACKUP_DISCARDS_STORAGE_KEY, JSON.stringify(serialized), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	private freezeVisibleEditor(editor: EditorInput, visiblePlacements: readonly IParadisLiveEditorPlacement[], frozenEditors: Set<EditorInput>, frozenPlacements: IParadisLiveEditorPlacement[], retentions: DisposableStore): void {
+		const placements = visiblePlacements.filter(placement => placement.editor === editor);
+		if (placements.length === 0 || frozenEditors.has(editor)) {
+			return;
+		}
+		if (!this.editorGroupsService.retainEditor) {
+			throw new Error('Editor input retention is not available');
+		}
+		for (const placement of placements) {
+			if (!this.editorGroupsService.getGroup(placement.groupId)?.detachEditor) {
+				throw new Error('Editor input detach is not available');
+			}
+		}
+
+		retentions.add(this.editorGroupsService.retainEditor(editor));
+		frozenEditors.add(editor);
+		frozenPlacements.push(...placements);
+		for (const placement of placements) {
+			this.editorGroupsService.getGroup(placement.groupId)?.detachEditor?.(editor);
+		}
+	}
+
+	private async restoreFrozenRetirement(stateKey: string, placements: readonly IParadisLiveEditorPlacement[], workingCopiesByEditor: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>, retentions: DisposableStore): Promise<void> {
+		if (placements.length === 0) {
+			retentions.dispose();
+			return;
+		}
+		const restorable = placements.filter(placement => {
+			const group = this.editorGroupsService.getGroup(placement.groupId);
+			if (!group) {
+				return this._activeStateKey === stateKey;
+			}
+			const scope = this.auxiliaryWindowScopeService.resolveGroup(group);
+			return scope.kind === 'managed' && scope.stateKey === stateKey;
+		});
+		let deferred = placements.filter(placement => !restorable.includes(placement));
+		if (restorable.length > 0) {
+			try {
+				await this.restoreEditorPlacements(restorable);
+			} catch (error) {
+				deferred = [...placements];
+				this.logService.error('[ParadisEditorScope] Failed to restore frozen editors; retained them as scoped live state', error);
+			}
+		}
+		if (deferred.length === 0) {
+			retentions.dispose();
+			return;
+		}
+		const deferredEditors = new Set(deferred.map(placement => placement.editor));
+		const existing = this.liveWorkingSets.get(stateKey);
+		if (existing) {
+			existing.retentions.add(retentions);
+			this.liveWorkingSets.set(stateKey, {
+				placements: [...existing.placements, ...deferred],
+				workingCopiesByEditor: this.mergeWorkingCopyOwners(existing.workingCopiesByEditor, this.selectWorkingCopyOwners(workingCopiesByEditor, deferredEditors)),
+				retentions: existing.retentions
+			});
+		} else {
+			this.liveWorkingSets.set(stateKey, {
+				placements: deferred,
+				workingCopiesByEditor: this.selectWorkingCopyOwners(workingCopiesByEditor, deferredEditors),
+				retentions
+			});
+		}
 	}
 
 	private selectWorkingCopyOwners(owners: ReadonlyMap<EditorInput, readonly IWorkingCopy[]>, editors: ReadonlySet<EditorInput>): ReadonlyMap<EditorInput, readonly IWorkingCopy[]> {
@@ -704,6 +956,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 
 	private onDidChangeWorkingCopyModifiedState(workingCopy: IWorkingCopy): void {
 		if (workingCopy.isModified()) {
+			this.pendingOwnerReleases.deleteAndDispose(this.identifierKey(workingCopy));
 			this.observeModifiedWorkingCopy(workingCopy);
 		} else {
 			this.releaseWorkingCopyOwnerWhenSafe(workingCopy);
@@ -719,15 +972,22 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			return;
 		}
 
+		const key = this.identifierKey(workingCopy);
 		const revision = this.workingCopyRevision(workingCopy);
+		const cancellation = new CancellationTokenSource();
+		const disposables = new DisposableStore();
+		disposables.add(toDisposable(() => cancellation.dispose(true)));
+		this.pendingOwnerReleases.set(key, disposables);
 		void (async () => {
 			try {
 				// The upstream backup tracker owns backup deletion. Calling discardBackup
 				// here would race a subsequent edit and could delete its newer backup.
-				// Poll briefly until the tracker's deletion is observable, then release
-				// only if the same clean Working Copy and revision are still authoritative.
-				for (let attempt = 0; attempt < 20; attempt++) {
-					await timeout(attempt === 0 ? 0 : 50);
+				// Keep this release pending until the tracker deletion is observable, or
+				// until a new revision/owner/Working Copy cancels this attempt.
+				let firstAttempt = true;
+				while (!cancellation.token.isCancellationRequested) {
+					await timeout(firstAttempt ? 0 : 50, cancellation.token);
+					firstAttempt = false;
 					const current = this.workingCopyService.get(workingCopy);
 					if (workingCopy.isModified()
 						|| this.workingCopyRevision(workingCopy) !== revision
@@ -735,7 +995,14 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 						|| this.ownerLedger.ownerOf(workingCopy) !== owner) {
 						return;
 					}
-					if (await this.workingCopyBackupService.resolve(workingCopy) !== undefined) {
+					try {
+						if (await this.workingCopyBackupService.resolve(workingCopy) !== undefined) {
+							continue;
+						}
+					} catch (error) {
+						if (!cancellation.token.isCancellationRequested) {
+							this.logService.warn('[ParadisEditorScope] Failed to inspect a clean Working Copy backup; owner release remains pending', error);
+						}
 						continue;
 					}
 					const currentAfterResolve = this.workingCopyService.get(workingCopy);
@@ -755,7 +1022,13 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 					return;
 				}
 			} catch (error) {
-				this.logService.error('[ParadisEditorScope] Failed to verify saved Working Copy ownership release', error);
+				if (!cancellation.token.isCancellationRequested) {
+					this.logService.error('[ParadisEditorScope] Failed to verify saved Working Copy ownership release', error);
+				}
+			} finally {
+				if (this.pendingOwnerReleases.get(key) === disposables) {
+					this.pendingOwnerReleases.deleteAndDispose(key);
+				}
 			}
 		})();
 	}
@@ -850,6 +1123,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 	}
 
 	private claimWorkingCopy(identifier: IWorkingCopyIdentifier, stateKey: string): void {
+		this.pendingOwnerReleases.deleteAndDispose(this.identifierKey(identifier));
 		const owner = this.ownerLedger.ownerOf(identifier);
 		if (owner !== undefined && owner !== stateKey) {
 			throw new Error(`Working Copy belongs to a different Para Code scope: ${identifier.resource.toString()}`);

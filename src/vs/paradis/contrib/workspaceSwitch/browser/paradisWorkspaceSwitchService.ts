@@ -80,6 +80,54 @@ export async function paradisRunBestEffortPhases(
 }
 
 /**
+ * Commits data-bearing editor retirement before any irreversible window/UI cleanup.
+ * Once editor retirement succeeds, cleanup is failureless from the caller's point of
+ * view: every phase runs and a transient UI failure cannot turn a committed discard
+ * into a misleading rollback.
+ */
+export async function paradisCommitPreparedScopeRetirement(
+	retireEditors: () => Promise<boolean>,
+	finalize: readonly (() => void | Promise<void>)[],
+	onError: (error: unknown) => void,
+): Promise<boolean> {
+	if (!await retireEditors()) {
+		return false;
+	}
+	await paradisRunBestEffortPhases(finalize, onError);
+	return true;
+}
+
+/**
+ * A prepared retirement can have detached editors from the main part. If the
+ * repository removal switched to a fallback first, restore that source scope
+ * before cancelling; otherwise those editors would leak into the fallback.
+ * On rollback failure the prepared retention intentionally stays alive.
+ */
+export async function paradisCancelRetirementAfterScopeRollback(
+	retirementSourceStateKey: string | undefined,
+	currentStateKey: string | undefined,
+	switchBack: (stateKey: string) => Promise<void>,
+	cancelRetirement: () => Promise<void>,
+	onError: (error: unknown) => void,
+): Promise<boolean> {
+	if (retirementSourceStateKey !== undefined && currentStateKey !== retirementSourceStateKey) {
+		try {
+			await switchBack(retirementSourceStateKey);
+		} catch (error) {
+			onError(error);
+			return false;
+		}
+	}
+	try {
+		await cancelRetirement();
+		return true;
+	} catch (error) {
+		onError(error);
+		return false;
+	}
+}
+
+/**
  * IParadisWorkspaceSwitchService の実装。
  *
  * リポジトリ登録リストは WORKSPACE スコープの storage に永続化する。workspace id は
@@ -210,22 +258,30 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		if (index === -1) {
 			return;
 		}
+		const retirementSourceStateKey = this.activeStateKey;
 		const retirementStateKeys = [...new Set([id, ...descendantStateKeys])];
 		const preparedStateKeys: string[] = [];
+		const cancelPrepared = () => paradisRunBestEffortPhases(
+			preparedStateKeys.map(stateKey => () => this.cancelScopeRetirement(stateKey)),
+			error => this.logService.error('[ParadisWorkspaceSwitch] Failed to cancel prepared scope retirement', error)
+		);
+		const cancelPreparedAfterScopeRollback = () => paradisCancelRetirementAfterScopeRollback(
+			retirementSourceStateKey,
+			this.activeStateKey,
+			stateKey => this.switchToStateKey(stateKey),
+			cancelPrepared,
+			error => this.logService.error('[ParadisWorkspaceSwitch] Failed to restore source scope before cancelling retirement', error)
+		);
 		try {
 			for (const stateKey of retirementStateKeys) {
 				if (!await this.prepareScopeRetirement(stateKey)) {
-					for (const preparedStateKey of preparedStateKeys) {
-						this.cancelScopeRetirement(preparedStateKey);
-					}
+					await cancelPrepared();
 					return;
 				}
 				preparedStateKeys.push(stateKey);
 			}
 		} catch (error) {
-			for (const preparedStateKey of preparedStateKeys) {
-				this.cancelScopeRetirement(preparedStateKey);
-			}
+			await cancelPrepared();
 			this.logService.error('[ParadisWorkspaceSwitch] Failed to prepare scope retirement transaction', error);
 			return;
 		}
@@ -236,17 +292,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			try {
 				await this.switchRepository(fallbackRepository.id);
 			} catch (error) {
-				for (const preparedStateKey of preparedStateKeys) {
-					this.cancelScopeRetirement(preparedStateKey);
-				}
+				await cancelPreparedAfterScopeRollback();
 				throw error;
 			}
 		}
 
-		if (!await this.discardScopeStates(preparedStateKeys)) {
-			for (const preparedStateKey of preparedStateKeys) {
-				this.cancelScopeRetirement(preparedStateKey);
-			}
+		if (!await this.discardScopeStates(preparedStateKeys, false)) {
+			await cancelPreparedAfterScopeRollback();
 			return;
 		}
 		const currentIndex = this._repositories.findIndex(repository => repository.id === id);
@@ -271,54 +323,62 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		return this.editorScopeService.prepareScopeRetirement(stateKey);
 	}
 
-	cancelScopeRetirement(stateKey: string): void {
-		this.editorScopeService.cancelScopeRetirement(stateKey);
+	cancelScopeRetirement(stateKey: string): Promise<void> {
+		return this.editorScopeService.cancelScopeRetirement(stateKey);
 	}
 
 	async discardScopeState(stateKey: string): Promise<boolean> {
 		return this.discardScopeStates([stateKey]);
 	}
 
-	private async discardScopeStates(stateKeys: readonly string[]): Promise<boolean> {
+	private async discardScopeStates(stateKeys: readonly string[], cancelOnFailure = true): Promise<boolean> {
 		const uniqueStateKeys = [...new Set(stateKeys)];
-		const cancelPrepared = () => {
-			for (const stateKey of uniqueStateKeys) {
-				this.editorScopeService.cancelScopeRetirement(stateKey);
+		const cancelPrepared = async () => {
+			if (!cancelOnFailure) {
+				return;
 			}
+			await paradisRunBestEffortPhases(
+				uniqueStateKeys.map(stateKey => () => this.editorScopeService.cancelScopeRetirement(stateKey)),
+				error => this.logService.error('[ParadisWorkspaceSwitch] Failed to cancel scope retirement', error)
+			);
 		};
 		try {
 			for (const stateKey of uniqueStateKeys) {
 				if (!await this.editorScopeService.prepareScopeRetirement(stateKey)) {
-					cancelPrepared();
+					await cancelPrepared();
 					return false;
 				}
 			}
-			for (const stateKey of uniqueStateKeys) {
-				if (!await this.auxiliaryWindowScopeService.closeScopeWindowsForRetirement(stateKey)) {
-					cancelPrepared();
-					return false;
-				}
-			}
-			if (!await this.editorScopeService.retireScopes(uniqueStateKeys)) {
-				cancelPrepared();
+			if (!await paradisCommitPreparedScopeRetirement(
+				() => this.editorScopeService.retireScopes(uniqueStateKeys),
+				uniqueStateKeys.flatMap(stateKey => [
+					async () => {
+						const closed = await this.auxiliaryWindowScopeService.closeScopeWindowsForRetirement(stateKey);
+						// Even if a native window refuses to close, its deleted scope must no longer
+						// own future editors, terminals, or backups.
+						this.auxiliaryWindowScopeService.commitScopeRetirement(stateKey);
+						if (!closed) {
+							throw new Error(`Failed to close auxiliary editor window for retired scope: ${stateKey}`);
+						}
+					},
+					() => this.deleteWorkingSetFor(stateKey),
+					() => { this._panelVisibility.delete(stateKey); },
+					// この scope の working set に載っていたエディタターミナルは park 台帳に生き続けている。
+					// working set を消すと二度と revive されず PTY/xterm が孤児化するため、ここで実体ごと破棄する。
+					// パネルグループの retireScope (onDidRetireScope 購読) と対をなすエディタ側の掃除。
+					() => paradisRetireParkedTerminalEditorInstances(stateKey),
+					() => { this._onDidRetireScope.fire(stateKey); },
+				]),
+				error => this.logService.error('[ParadisWorkspaceSwitch] Failed to finalize retired scope phase', error)
+			)) {
+				await cancelPrepared();
 				return false;
 			}
 		} catch (error) {
-			cancelPrepared();
+			await cancelPrepared();
 			this.logService.error('[ParadisWorkspaceSwitch] Failed to retire scope transaction', error);
 			return false;
 		}
-
-		await paradisRunBestEffortPhases(uniqueStateKeys.flatMap(stateKey => [
-			() => this.auxiliaryWindowScopeService.commitScopeRetirement(stateKey),
-			() => this.deleteWorkingSetFor(stateKey),
-			() => { this._panelVisibility.delete(stateKey); },
-			// この scope の working set に載っていたエディタターミナルは park 台帳に生き続けている。
-			// working set を消すと二度と revive されず PTY/xterm が孤児化するため、ここで実体ごと破棄する。
-			// パネルグループの retireScope (onDidRetireScope 購読) と対をなすエディタ側の掃除。
-			() => paradisRetireParkedTerminalEditorInstances(stateKey),
-			() => { this._onDidRetireScope.fire(stateKey); },
-		]), error => this.logService.error('[ParadisWorkspaceSwitch] Failed to finalize retired scope phase', error));
 		return true;
 	}
 

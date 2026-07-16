@@ -47,6 +47,31 @@ const decoder = new TextDecoder();
 
 type StateSnapshot = IParadisMobileWindowStateV2;
 
+/**
+ * Resolves the best local cwd available for agent command discovery. CwdDetection
+ * is authoritative when present; local terminals then fall back to the terminal's
+ * speculative resolver, which also includes NaiveCwdDetection and the initial cwd.
+ */
+export async function paradisResolveLocalAgentPaneCwd(instance: Pick<ITerminalInstance, 'remoteAuthority' | 'getCwdResource' | 'getSpeculativeCwd'>): Promise<string | undefined> {
+	try {
+		const detected = await instance.getCwdResource();
+		if (detected !== undefined) {
+			return detected.scheme === 'file' ? detected.fsPath : undefined;
+		}
+	} catch {
+		// A local speculative cwd can still be available without shell integration.
+	}
+	if (instance.remoteAuthority !== undefined) {
+		return undefined;
+	}
+	try {
+		const speculative = await instance.getSpeculativeCwd();
+		return speculative.length > 0 ? speculative : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** ターミナルのサブプロトコル（termチャネルのペイロード、JSON）。 */
 type TermInboundBase = { protocolVersion: 3; desktopEpoch: string; operationId: string };
 type TermInbound = TermInboundBase & (
@@ -266,13 +291,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const revision = ++this.agentPanesRevision;
 		const livePanes = paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService);
 		const result = Promise.all(livePanes.map(async ({ instance: inst, token }) => {
-			let cwd: string | undefined;
-			try {
-				const cwdResource = await inst.getCwdResource();
-				cwd = cwdResource?.scheme === 'file' ? cwdResource.fsPath : undefined;
-			} catch {
-				cwd = undefined;
-			}
+			const cwd = await paradisResolveLocalAgentPaneCwd(inst);
 			const ws = this.resolveTerminalStateKey(inst.instanceId);
 			return { terminalId: inst.instanceId, token, ...(cwd !== undefined ? { cwd } : {}), ...(ws !== undefined ? { ws } : {}) };
 		})).then(entries => this.syncAgentPanes(revision, entries.filter(entry =>

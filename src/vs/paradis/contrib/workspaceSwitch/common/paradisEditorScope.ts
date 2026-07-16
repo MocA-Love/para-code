@@ -31,7 +31,7 @@ export interface IParadisEditorScopeService {
 	hasLiveState(stateKey: string): boolean;
 	hasRetirementData(stateKey: string): Promise<boolean>;
 	prepareScopeRetirement(stateKey: string): Promise<boolean>;
-	cancelScopeRetirement(stateKey: string): void;
+	cancelScopeRetirement(stateKey: string): Promise<void>;
 	retireScope(stateKey: string): Promise<boolean>;
 	retireScopes(stateKeys: readonly string[]): Promise<boolean>;
 }

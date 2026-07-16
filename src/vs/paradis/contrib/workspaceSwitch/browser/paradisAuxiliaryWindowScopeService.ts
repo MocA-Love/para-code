@@ -153,6 +153,14 @@ export class ParadisAuxiliaryWindowScopeService extends Disposable implements IP
 
 	commitScopeRetirement(stateKey: string): void {
 		this.ledger.retire(stateKey);
+		// A native window can exceptionally refuse to close after the data-bearing
+		// editor retirement has committed. Do not leave that live window assigning
+		// new state to an unreachable retired key.
+		for (const live of [...this.liveScopes.values()]) {
+			if (live.scope.kind === 'managed' && live.scope.stateKey === stateKey) {
+				this.registerPart(live.part, { kind: 'unscoped' });
+			}
+		}
 		this.persist();
 	}
 

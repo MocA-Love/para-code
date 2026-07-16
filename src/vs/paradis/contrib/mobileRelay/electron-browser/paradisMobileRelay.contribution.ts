@@ -209,6 +209,15 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			paths => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, [...paths]),
 		));
 		this.provider.pushState();
+		this._register(this.service.onDidRequestAgentPaneSync(request => {
+			withCurrentRendererLease(async lease => {
+				if (lease.windowId === request.windowId
+					&& lease.windowSession === request.windowSession
+					&& lease.rendererGeneration === request.rendererGeneration) {
+					await this.provider.syncAgentPaneRegistry();
+				}
+			}).catch(err => this.logService.warn('[paradisMobileRelay] requested agent pane sync failed', err));
+		}));
 		Promise.all([terminalStateReady, this.provider.initialAgentPanesReady]).then(
 			() => markRendererReady(),
 			err => this.logService.warn('[paradisMobileRelay] initial renderer state sync failed', err),

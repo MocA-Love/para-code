@@ -28,6 +28,15 @@ export function paradisShouldAutoRetireMissingWorktree(autoRemove: boolean, hasR
 	return autoRemove && !hasRetirementData && !isActive;
 }
 
+/** Keeps the durable known-worktree entry reachable until all scoped state was retired. */
+export async function paradisDiscardScopeBeforeRemovingKnownWorktree(discardScope: () => Promise<boolean>, removeKnown: () => void): Promise<boolean> {
+	if (!await discardScope()) {
+		return false;
+	}
+	removeKnown();
+	return true;
+}
+
 /**
  * IParadisWorktreeService の実装。
  *
@@ -250,9 +259,15 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 					const missingStateKey = paradisWorktreeStateKey(URI.parse(known.path));
 					const hasRetirementData = autoRemove ? await this.workspaceSwitchService.hasScopeRetirementData(missingStateKey) : false;
 					if (paradisShouldAutoRetireMissingWorktree(autoRemove, hasRetirementData, this.workspaceSwitchService.activeStateKey === missingStateKey)) {
-						this._known = this._known.filter(candidate => candidate !== known);
-						await this.workspaceSwitchService.discardScopeState(missingStateKey);
-						knownChanged = true;
+						const removed = await paradisDiscardScopeBeforeRemovingKnownWorktree(
+							() => this.workspaceSwitchService.discardScopeState(missingStateKey),
+							() => { this._known = this._known.filter(candidate => candidate !== known); }
+						);
+						if (removed) {
+							knownChanged = true;
+						} else {
+							list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), missing: true });
+						}
 					} else {
 						list.push({ repositoryId: repository.id, name: known.name, uri: URI.parse(known.path), missing: true });
 					}
@@ -278,9 +293,12 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			if (await this.workspaceSwitchService.hasScopeRetirementData(stateKey)) {
 				continue;
 			}
-			this._known = this._known.filter(candidate => candidate !== known);
-			await this.workspaceSwitchService.discardScopeState(stateKey);
-			knownChanged = true;
+			if (await paradisDiscardScopeBeforeRemovingKnownWorktree(
+				() => this.workspaceSwitchService.discardScopeState(stateKey),
+				() => { this._known = this._known.filter(candidate => candidate !== known); }
+			)) {
+				knownChanged = true;
+			}
 		}
 
 		if (knownChanged) {
