@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 import { describe, expect, it } from 'vitest';
-import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants, flattenAgentActivity, isRunningAgentActivity, summarizeAgentActivity } from './agentActivityTree.js';
-import type { AgentActivityAgent, AgentActivityState } from './store.js';
+import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants, agentActivityTasksForAgent, flattenAgentActivity, isRunningAgentActivity, summarizeAgentActivity } from './agentActivityTree.js';
+import type { AgentActivityAgent, AgentActivityState, AgentActivityTask } from './store.js';
 
 const agent = (id: string, parentId?: string): AgentActivityAgent => ({
 	id, label: id, role: 'subagent', provider: 'codex', ...(parentId !== undefined ? { parentId } : {}),
@@ -34,6 +34,18 @@ describe('agentActivityTree', () => {
 		expect(agentActivityChildren(agents, 'root').map(value => value.id)).toEqual(['child']);
 		expect(agentActivityDescendants(agents, 'root').map(value => value.id)).toEqual(['child', 'grandchild']);
 		expect(agentActivityAncestors(agents, 'grandchild').map(value => value.id)).toEqual(['root', 'child']);
+	});
+
+	it('matches Codex tasks by agent id while preserving legacy assignee matching', () => {
+		const selected = { ...agent('thread-2'), label: '/root/researcher' };
+		const task = (id: string, fields: Partial<AgentActivityTask>): AgentActivityTask => ({ id, label: id, status: 'running', startedAt: 1, updatedAt: 2, ...fields });
+		const tasks = [
+			task('codex', { agentId: 'thread-2', assignee: 'researcher' }),
+			task('legacy-id', { assignee: 'thread-2' }),
+			task('legacy-label', { assignee: '/root/researcher' }),
+			task('other', { agentId: 'thread-3', assignee: '/root/researcher' }),
+		];
+		expect(agentActivityTasksForAgent(tasks, selected).map(value => value.id)).toEqual(['codex', 'legacy-id', 'legacy-label']);
 	});
 
 	it('breaks cycles and orphaned parent references safely', () => {

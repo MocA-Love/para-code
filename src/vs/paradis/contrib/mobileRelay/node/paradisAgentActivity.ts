@@ -28,6 +28,7 @@ export interface IParadisAgentActivityTask {
 	readonly label: string;
 	readonly detail?: string;
 	readonly assignee?: string;
+	readonly agentId?: string;
 	readonly status: ParadisAgentActivityStatus;
 	readonly startedAt: number;
 	readonly updatedAt: number;
@@ -82,6 +83,65 @@ function codexStatus(value: unknown): ParadisAgentActivityStatus {
 		case 'running': case 'pendingInit': return 'running';
 		default: return 'unknown';
 	}
+}
+
+interface ICodexCollaboration {
+	readonly tool: string | undefined;
+	readonly prompt: string | undefined;
+	readonly itemStatus: string | undefined;
+	readonly agentStatuses: ReadonlyMap<string, unknown>;
+}
+
+function codexCollaboration(item: Readonly<Record<string, unknown>>): ICodexCollaboration {
+	const tool = text(item['tool']);
+	const states = record(item['agentsStates']);
+	const agentStatuses = new Map<string, unknown>();
+	const legacyIds = Array.isArray(item['receiverThreadIds']) ? item['receiverThreadIds'].map(text).filter((id): id is string => id !== undefined) : [];
+	const documentedReceiverId = text(item['receiverThreadId']);
+	const documentedNewThreadId = text(item['newThreadId']);
+	const isSpawn = tool === 'spawnAgent' || tool === 'spawn_agent';
+	const receiverIds = isSpawn && documentedNewThreadId !== undefined
+		? [documentedNewThreadId]
+		: [...legacyIds, ...(documentedReceiverId !== undefined ? [documentedReceiverId] : []), ...(documentedNewThreadId !== undefined ? [documentedNewThreadId] : [])];
+	for (const id of receiverIds) {
+		agentStatuses.set(id, undefined);
+	}
+	for (const rawId of Object.keys(states ?? {})) {
+		const id = text(rawId);
+		if (id === undefined) { continue; }
+		agentStatuses.set(id, record(states?.[rawId])?.['status']);
+	}
+	const documentedStatus = record(item['agentStatus'])?.['status'] ?? item['agentStatus'];
+	if (documentedStatus !== undefined) {
+		for (const id of agentStatuses.keys()) {
+			if (agentStatuses.get(id) === undefined) { agentStatuses.set(id, documentedStatus); }
+		}
+	}
+	return { tool, prompt: text(item['prompt']), itemStatus: text(item['status']), agentStatuses };
+}
+
+function codexTaskId(agentId: string): string {
+	return `codex:${agentId.slice(0, 493)}`;
+}
+
+function codexTaskLabel(prompt: string | undefined, previous: IParadisAgentActivityTask | undefined): string {
+	const firstLine = prompt?.split(/\r?\n/).map(line => line.trim()).find(line => line.length > 0);
+	return firstLine?.slice(0, 200) ?? previous?.label ?? 'SubAgent task';
+}
+
+function codexAssignee(agentPath: unknown): string | undefined {
+	const path = text(agentPath);
+	if (path === undefined) { return undefined; }
+	const segments = path.split('/').map(segment => segment.trim()).filter(segment => segment.length > 0);
+	return segments[segments.length - 1];
+}
+
+function codexCollaborationStatus(collaboration: ICodexCollaboration, agentId: string, previous: ParadisAgentActivityStatus | undefined, method: string): ParadisAgentActivityStatus {
+	const explicitStatus = collaboration.agentStatuses.get(agentId);
+	if (explicitStatus !== undefined) { return codexStatus(explicitStatus); }
+	if (collaboration.itemStatus === 'failed') { return 'failed'; }
+	if ((collaboration.tool === 'closeAgent' || collaboration.tool === 'close_agent') && method === 'item/completed') { return 'completed'; }
+	return previous ?? 'running';
 }
 
 /** Claude hookとCodex app-serverイベントを同一の完全状態へ収束させる。 */
@@ -169,22 +229,34 @@ export class ParadisAgentActivityTracker {
 				if (!(previous !== undefined && (at < previous.updatedAt || (terminal(previous.status) && status === 'running' && at === previous.updatedAt)))) {
 					this.agents.set(id, { id, label: text(item?.['agentPath']) ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(previous?.detail ? { detail: previous.detail } : {}), ...relationship(id, item?.['parentThreadId'], item?.['depth'], previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
+				this.updateCodexTask(id, status, at, { assignee: codexAssignee(item?.['agentPath']) });
 			}
-		} else if (type === 'collabAgentToolCall') {
-			const prompt = text(item?.['prompt']);
-			const ids = Array.isArray(item?.['receiverThreadIds']) ? item['receiverThreadIds'].filter((id): id is string => typeof id === 'string') : [];
-			const states = record(item?.['agentsStates']);
-			const allIds = new Set([...ids, ...Object.keys(states ?? {})]);
-			for (const id of allIds) {
+		} else if ((type === 'collabAgentToolCall' || type === 'collabToolCall') && item !== undefined) {
+			const collaboration = codexCollaboration(item);
+			const isSpawn = collaboration.tool === 'spawnAgent' || collaboration.tool === 'spawn_agent';
+			for (const id of collaboration.agentStatuses.keys()) {
 				const previous = this.agents.get(id);
-				const state = record(states?.[id]);
-				const status = state !== undefined ? codexStatus(state['status']) : method === 'item/completed' ? 'completed' : 'running';
+				const status = codexCollaborationStatus(collaboration, id, previous?.status, method);
 				if (!(previous !== undefined && (at < previous.updatedAt || (terminal(previous.status) && status === 'running' && at === previous.updatedAt)))) {
-					this.agents.set(id, { id, label: prompt ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(prompt ?? previous?.detail ? { detail: prompt ?? previous?.detail } : {}), ...relationship(id, item?.['parentThreadId'], item?.['depth'], previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
+					this.agents.set(id, { id, label: collaboration.prompt ?? previous?.label ?? 'SubAgent', role: 'subagent', provider: 'codex', ...(collaboration.prompt ?? previous?.detail ? { detail: collaboration.prompt ?? previous?.detail } : {}), ...relationship(id, item['parentThreadId'], item['depth'], previous), status, startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
+				this.updateCodexTask(id, status, at, { create: isSpawn, ...(isSpawn && collaboration.prompt !== undefined ? { prompt: collaboration.prompt } : {}) });
 			}
 		}
 		return this.finishApply(before, at);
+	}
+
+	private updateCodexTask(agentId: string, status: ParadisAgentActivityStatus, at: number, options: { readonly create?: boolean; readonly prompt?: string; readonly assignee?: string }): void {
+		const id = codexTaskId(agentId);
+		const previous = this.tasks.get(id);
+		if (previous === undefined && options.create !== true) { return; }
+		if (previous !== undefined && (at < previous.updatedAt || (terminal(previous.status) && status === 'running' && at === previous.updatedAt))) { return; }
+		const detail = options.prompt ?? previous?.detail;
+		const assignee = options.assignee ?? previous?.assignee ?? 'SubAgent';
+		this.tasks.set(id, {
+			id, label: codexTaskLabel(options.prompt, previous), ...(detail !== undefined ? { detail } : {}), assignee, agentId,
+			status, startedAt: previous?.startedAt ?? at, updatedAt: at,
+		});
 	}
 
 	/** 永続メタデータから判明した親子関係を、循環を作らず既存Agentへ反映する。 */
