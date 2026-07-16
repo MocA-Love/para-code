@@ -65,13 +65,13 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.ok(paradisManagedAgentHookCommand().includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
 	});
 
-	test('migrates schema 1 managed hooks to schema 2 without removing user hooks', () => {
+	test('migrates older-schema managed hooks to the current schema without removing user hooks', () => {
 		const schema1Command = '[ -x "$HOME/.para-code/hooks/notify-v1.sh" ] && "$HOME/.para-code/hooks/notify-v1.sh" || true';
 		const userHook = { type: 'command', command: '/tmp/user-hook.sh' };
 		const existing = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: schema1Command }, userHook] }] } });
 		const merged = paradisMergeAgentHooksJson(existing, [{ eventName: 'Stop' }]);
 
-		assert.strictEqual(PARADIS_AGENT_HOOK_SCHEMA_VERSION, 2);
+		assert.strictEqual(PARADIS_AGENT_HOOK_SCHEMA_VERSION, 3);
 		assert.ok(merged !== undefined);
 		const parsed = JSON.parse(merged) as { hooks: Record<string, readonly { hooks: readonly { command: string }[] }[]> };
 		assert.deepStrictEqual(parsed.hooks['Stop'].flatMap(definition => definition.hooks.map(hook => hook.command)), [

@@ -194,4 +194,24 @@ suite('ParadisAgentActivity', () => {
 		tracker.endTurn(200);
 		assert.strictEqual(tracker.snapshot()?.compactions[0].status, 'completed');
 	});
+
+	test('projects a nested child agent as a subagent and completes it on Stop', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		assert.strictEqual(tracker.applyNestedAgentHook('codex', 'thread-1', 'SessionStart', 100), true);
+		tracker.applyNestedAgentHook('codex', 'thread-1', 'UserPromptSubmit', 110, '調査タスク\n詳細...');
+		tracker.applyNestedAgentHook('codex', 'thread-1', 'PreToolUse', 120);
+		tracker.applyNestedAgentHook('codex', 'thread-1', 'Stop', 130);
+		assert.deepStrictEqual(tracker.snapshot()?.agents, [
+			{ id: 'nested:codex:thread-1', label: 'Codex', role: 'subagent', provider: 'codex', detail: '調査タスク', status: 'completed', startedAt: 100, updatedAt: 130 },
+		]);
+	});
+
+	test('ignores a Stop for an unknown nested agent and a late liveness event after completion', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		assert.strictEqual(tracker.applyNestedAgentHook('codex', 'thread-x', 'Stop', 100), false);
+		tracker.applyNestedAgentHook('claude', 'child-1', 'SessionStart', 110);
+		tracker.applyNestedAgentHook('claude', 'child-1', 'SessionEnd', 120);
+		assert.strictEqual(tracker.applyNestedAgentHook('claude', 'child-1', 'PostToolUse', 130), false);
+		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'completed');
+	});
 });

@@ -210,6 +210,38 @@ export class ParadisAgentActivityTracker {
 		return this.finishApply(before, at);
 	}
 
+	/**
+	 * ネストした子エージェント（ペイン所有者のCLI配下で起動された別のエージェントCLI。
+	 * ingress の所有権分類が 'nested' としたhook）を活動ツリーへ投影する。
+	 * ペインの親セッション・ライブ状態には一切影響しない。
+	 */
+	applyNestedAgentHook(provider: 'claude' | 'codex', key: string, event: string, at: number, prompt?: string): boolean {
+		const before = this.serialized();
+		const id = `nested:${provider}:${key}`.slice(0, 500);
+		const previous = this.agents.get(id);
+		let status: ParadisAgentActivityStatus;
+		if (event === 'Stop' || event === 'StopFailure' || event === 'SessionEnd') {
+			if (previous === undefined) {
+				return false;
+			}
+			status = 'completed';
+		} else if (event === 'SessionStart' || event === 'UserPromptSubmit') {
+			status = 'running';
+		} else if (previous !== undefined && terminal(previous.status)) {
+			// ツール実行等の生存シグナルの遅着で、終了済み表示を蘇生させない。
+			return false;
+		} else {
+			status = previous?.status ?? 'running';
+		}
+		const detail = text(prompt?.split(/\r?\n/).map(line => line.trim()).find(line => line.length > 0)) ?? previous?.detail;
+		this.agents.set(id, {
+			id, label: provider === 'codex' ? 'Codex' : 'Claude', role: 'subagent', provider,
+			...(detail !== undefined ? { detail } : {}),
+			status, startedAt: previous?.startedAt ?? at, updatedAt: at,
+		});
+		return this.finishApply(before, at);
+	}
+
 	applyCodex(method: string, params: Readonly<Record<string, unknown>>, at: number): boolean {
 		const before = this.serialized();
 		if (method === 'thread/compacted') {

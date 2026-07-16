@@ -95,6 +95,32 @@ const emitter = new Emitter<IParadisAgentHookEvent>();
 /** hookイベントの購読（shared process 内限定）。 */
 export const onParadisAgentHookEvent: Event<IParadisAgentHookEvent> = emitter.event;
 
+/**
+ * ネストした子エージェント（ペイン所有者の配下で動く別エージェントプロセス。例:
+ * Claude Code が plugin 経由で起動した `codex exec`）由来のhookイベント。
+ * ingress の所有権分類 (paradisAgentHookOwnership.ts) が 'nested' と判定したもので、
+ * ペイン状態・セッションrebindには一切影響させず、活動ツリー（Agent tree & Tasks）への
+ * 投影にだけ使う。
+ */
+export interface IParadisAgentNestedHookEvent extends IParadisAgentHookEvent {
+	/** 子エージェントの種別（プロセスコマンドライン由来。不明なら undefined）。 */
+	readonly nestedAgent: 'claude' | 'codex' | undefined;
+}
+
+const nestedEmitter = new Emitter<IParadisAgentNestedHookEvent>();
+
+/** ネストした子エージェントのhookイベントの購読（shared process 内限定）。 */
+export const onParadisAgentNestedHookEvent: Event<IParadisAgentNestedHookEvent> = nestedEmitter.event;
+
+/** ネストhookイベントの発火（ParadisAgentBrowserService の /agent-hook ハンドラ専用）。 */
+export function fireParadisAgentNestedHookEvent(event: IParadisAgentNestedHookEvent): void {
+	const payload = event.payload === undefined ? undefined : paradisSanitizeAgentHookPayload(event.payload);
+	nestedEmitter.fire(Object.freeze({
+		...event,
+		...(event.payload !== undefined ? { payload } : {}),
+	}));
+}
+
 /** hookイベントの発火（ParadisAgentBrowserService の /agent-hook ハンドラ専用）。 */
 export function fireParadisAgentHookEvent(event: IParadisAgentHookEvent): void {
 	const payload = event.payload === undefined ? undefined : paradisSanitizeAgentHookPayload(event.payload);
