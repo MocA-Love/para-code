@@ -23,6 +23,7 @@ import { IWorkspaceEditingService } from '../../../../workbench/services/workspa
 import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
+import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
 
 interface ISerializedRepository {
@@ -141,6 +142,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	declare readonly _serviceBrand: undefined;
 
 	private static readonly WORKING_SETS_STORAGE_KEY = 'paradis.workspaceSwitch.workingSets';
+	private static readonly RETIREMENT_JOURNAL_STORAGE_KEY = 'paradis.workspaceSwitch.scopeRetirementJournal';
 
 	private readonly _onDidChangeRepositories = this._register(new Emitter<void>());
 	readonly onDidChangeRepositories = this._onDidChangeRepositories.event;
@@ -155,6 +157,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	readonly onDidSwitchScope = this._onDidSwitchScope.event;
 
 	private readonly _repositories: IParadisWorkspaceRepository[];
+	private readonly retirementJournal: ParadisScopeRetirementJournal;
+	private recoveredRepositoriesChanged = false;
 
 	/**
 	 * リポジトリID → エディタ working set ハンドル。working set の実体 (グループレイアウト +
@@ -188,6 +192,19 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		this._repositories = this.loadRepositories();
 		this.loadWorkingSets();
 		this._activeEntry = this.loadActiveEntry();
+		const loadedRetirementJournal = ParadisScopeRetirementJournal.load(
+			this.storageService.get(ParadisWorkspaceSwitchService.RETIREMENT_JOURNAL_STORAGE_KEY, StorageScope.WORKSPACE)
+		);
+		this.retirementJournal = loadedRetirementJournal.journal;
+		if (loadedRetirementJournal.state === ParadisScopeRetirementJournalLoadState.Corrupt) {
+			this.logService.error('[ParadisWorkspaceSwitch] Scope retirement journal is corrupt; leaving registered scope state untouched');
+		} else {
+			try {
+				this.recoverCommittedScopeRetirementCore();
+			} catch (error) {
+				this.logService.error('[ParadisWorkspaceSwitch] Failed to finalize committed scope retirement during startup', error);
+			}
+		}
 
 		// リロード後も relauncher 側の再起動抑止を効かせる。登録済みリポジトリが
 		// 読めた時点でこのウィンドウは Para Code 管理下のワークスペースと判断できる
@@ -204,6 +221,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	get isManagedWorkspaceWindow(): boolean {
 		return isParadisManagedWorkspaceWindow();
+	}
+
+	get pendingCommittedRetirementStateKeys(): readonly string[] {
+		return this.retirementJournal.pendingStateKeys;
 	}
 
 	/** 直近の切り替えで記録したアクティブエントリ (folders が一致する間だけ有効) */
@@ -297,22 +318,22 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			}
 		}
 
-		if (!await this.discardScopeStates(preparedStateKeys, false)) {
+		if (!await this.discardScopeStates(preparedStateKeys, false, id)) {
 			await cancelPreparedAfterScopeRollback();
 			return;
 		}
 		const currentIndex = this._repositories.findIndex(repository => repository.id === id);
-		if (currentIndex === -1) {
-			return;
+		if (currentIndex !== -1) {
+			this._repositories.splice(currentIndex, 1);
+			this.saveRepositories();
 		}
-		this._repositories.splice(currentIndex, 1);
-		this.saveRepositories();
 		if (removesActiveScope && !fallbackRepository) {
 			this.clearActiveEntry();
 			await this.editorScopeService.leaveManagedWorkspace();
 			this.auxiliaryWindowScopeService.setMainScope(undefined, false, false);
 		}
 		this._onDidChangeRepositories.fire();
+		this.completeRepositoryRetirement(id);
 	}
 
 	hasScopeRetirementData(stateKey: string): Promise<boolean> {
@@ -331,8 +352,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		return this.discardScopeStates([stateKey]);
 	}
 
-	private async discardScopeStates(stateKeys: readonly string[], cancelOnFailure = true): Promise<boolean> {
+	private async discardScopeStates(stateKeys: readonly string[], cancelOnFailure = true, repositoryId?: string): Promise<boolean> {
 		const uniqueStateKeys = [...new Set(stateKeys)];
+		let retirementTransactionId: string | undefined;
 		const cancelPrepared = async () => {
 			if (!cancelOnFailure) {
 				return;
@@ -349,26 +371,45 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					return false;
 				}
 			}
+			const finalize = uniqueStateKeys.flatMap(stateKey => [
+				async () => {
+					const closed = await this.auxiliaryWindowScopeService.closeScopeWindowsForRetirement(stateKey);
+					// Even if a native window refuses to close, its deleted scope must no longer
+					// own future editors, terminals, or backups.
+					this.auxiliaryWindowScopeService.commitScopeRetirement(stateKey);
+					if (!closed) {
+						throw new Error(`Failed to close auxiliary editor window for retired scope: ${stateKey}`);
+					}
+				},
+				() => this.deleteWorkingSetFor(stateKey),
+				() => { this._panelVisibility.delete(stateKey); },
+				// この scope の working set に載っていたエディタターミナルは park 台帳に生き続けている。
+				// working set を消すと二度と revive されず PTY/xterm が孤児化するため、ここで実体ごと破棄する。
+				// パネルグループの retireScope (onDidRetireScope 購読) と対をなすエディタ側の掃除。
+				() => paradisRetireParkedTerminalEditorInstances(stateKey),
+				() => { this._onDidRetireScope.fire(stateKey); },
+			]);
+			finalize.push(
+				() => {
+					if (retirementTransactionId !== undefined) {
+						this.retirementJournal.completeEvents(retirementTransactionId);
+						this.saveRetirementJournal();
+					}
+				},
+				...uniqueStateKeys.map(stateKey => () => { this.editorScopeService.completeScopeRetirement(stateKey); })
+			);
 			if (!await paradisCommitPreparedScopeRetirement(
-				() => this.editorScopeService.retireScopes(uniqueStateKeys),
-				uniqueStateKeys.flatMap(stateKey => [
-					async () => {
-						const closed = await this.auxiliaryWindowScopeService.closeScopeWindowsForRetirement(stateKey);
-						// Even if a native window refuses to close, its deleted scope must no longer
-						// own future editors, terminals, or backups.
-						this.auxiliaryWindowScopeService.commitScopeRetirement(stateKey);
-						if (!closed) {
-							throw new Error(`Failed to close auxiliary editor window for retired scope: ${stateKey}`);
-						}
-					},
-					() => this.deleteWorkingSetFor(stateKey),
-					() => { this._panelVisibility.delete(stateKey); },
-					// この scope の working set に載っていたエディタターミナルは park 台帳に生き続けている。
-					// working set を消すと二度と revive されず PTY/xterm が孤児化するため、ここで実体ごと破棄する。
-					// パネルグループの retireScope (onDidRetireScope 購読) と対をなすエディタ側の掃除。
-					() => paradisRetireParkedTerminalEditorInstances(stateKey),
-					() => { this._onDidRetireScope.fire(stateKey); },
-				]),
+				async () => {
+					const retired = await this.editorScopeService.retireScopes(uniqueStateKeys, () => {
+						retirementTransactionId = this.stageScopeRetirement(uniqueStateKeys, repositoryId);
+					});
+					if (!retired && retirementTransactionId !== undefined) {
+						this.abortScopeRetirement(retirementTransactionId);
+						retirementTransactionId = undefined;
+					}
+					return retired;
+				},
+				finalize,
 				error => this.logService.error('[ParadisWorkspaceSwitch] Failed to finalize retired scope phase', error)
 			)) {
 				await cancelPrepared();
@@ -380,6 +421,128 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			return false;
 		}
 		return true;
+	}
+
+	acknowledgeScopeRetirement(stateKey: string): void {
+		this.retirementJournal.acknowledgeStateKey(stateKey);
+		try {
+			this.saveRetirementJournal();
+		} catch (error) {
+			// The persisted entry remains a safe, idempotent retry point. Do not make a
+			// successfully removed worktree appear to have failed after its own save.
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to persist a scope-retirement acknowledgement', error);
+		}
+	}
+
+	async replayCommittedScopeRetirements(): Promise<void> {
+		this.recoverCommittedScopeRetirementCore();
+		await this.auxiliaryWindowScopeService.initializationBarrier;
+		for (const transaction of this.retirementJournal.entries.filter(entry => entry.eventsPending)) {
+			for (const stateKey of transaction.stateKeys) {
+				try {
+					await this.auxiliaryWindowScopeService.closeScopeWindowsForRetirement(stateKey);
+				} catch (error) {
+					this.logService.error('[ParadisWorkspaceSwitch] Failed to close a recovered retired auxiliary window', error);
+				}
+				this.auxiliaryWindowScopeService.commitScopeRetirement(stateKey);
+				paradisRetireParkedTerminalEditorInstances(stateKey);
+				this._onDidRetireScope.fire(stateKey);
+				this.editorScopeService.completeScopeRetirement(stateKey);
+			}
+			this.retirementJournal.completeEvents(transaction.id);
+			this.saveRetirementJournal();
+		}
+		if (this.recoveredRepositoriesChanged) {
+			this.recoveredRepositoriesChanged = false;
+			this._onDidChangeRepositories.fire();
+		}
+	}
+
+	private stageScopeRetirement(stateKeys: readonly string[], repositoryId?: string): string {
+		const transactionId = generateUuid();
+		this.retirementJournal.stage(transactionId, stateKeys, repositoryId);
+		try {
+			this.saveRetirementJournal();
+		} catch (error) {
+			this.retirementJournal.abort(transactionId);
+			try {
+				this.saveRetirementJournal();
+			} catch (rollbackError) {
+				this.logService.error('[ParadisWorkspaceSwitch] Failed to roll back a partially persisted scope retirement journal', rollbackError);
+			}
+			throw error;
+		}
+		return transactionId;
+	}
+
+	private abortScopeRetirement(transactionId: string): void {
+		this.retirementJournal.abort(transactionId);
+		this.saveRetirementJournal();
+	}
+
+	private completeRepositoryRetirement(repositoryId: string): void {
+		this.retirementJournal.completeRepository(repositoryId);
+		// Worktree ownership is persisted by ParadisWorktreeService. It acknowledges
+		// each state key only after its own known-worktree registry is durable.
+		try {
+			this.saveRetirementJournal();
+		} catch (error) {
+			// Repository storage is already committed. The old durable journal safely
+			// repeats this idempotent completion after the next renderer start.
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to persist repository-retirement completion', error);
+		}
+	}
+
+	private recoverCommittedScopeRetirementCore(): void {
+		for (const transaction of this.retirementJournal.entries) {
+			for (const stateKey of transaction.stateKeys) {
+				try {
+					this.deleteWorkingSetFor(stateKey);
+				} catch (error) {
+					this.logService.error('[ParadisWorkspaceSwitch] Failed to delete a recovered retired Working Set', error);
+				}
+				this._panelVisibility.delete(stateKey);
+				paradisRetireParkedTerminalEditorInstances(stateKey);
+			}
+
+			if (transaction.repositoryPending && transaction.repositoryId !== undefined) {
+				try {
+					const previousLength = this._repositories.length;
+					for (let index = this._repositories.length - 1; index >= 0; index--) {
+						if (this._repositories[index].id === transaction.repositoryId) {
+							this._repositories.splice(index, 1);
+						}
+					}
+					this.saveRepositories();
+					this.recoveredRepositoriesChanged ||= this._repositories.length !== previousLength;
+					this.retirementJournal.completeRepository(transaction.repositoryId);
+				} catch (error) {
+					this.logService.error('[ParadisWorkspaceSwitch] Failed to finalize a recovered repository retirement', error);
+				}
+			}
+
+			if (this._activeEntry && transaction.stateKeys.includes(this._activeEntry.stateKey)) {
+				this.clearActiveEntry();
+				if (this._repositories.length === 0) {
+					void this.editorScopeService.leaveManagedWorkspace();
+					this.auxiliaryWindowScopeService.setMainScope(undefined, false, false);
+				}
+			}
+		}
+		this.saveRetirementJournal();
+	}
+
+	private saveRetirementJournal(): void {
+		if (this.retirementJournal.entries.length === 0) {
+			this.storageService.remove(ParadisWorkspaceSwitchService.RETIREMENT_JOURNAL_STORAGE_KEY, StorageScope.WORKSPACE);
+			return;
+		}
+		this.storageService.store(
+			ParadisWorkspaceSwitchService.RETIREMENT_JOURNAL_STORAGE_KEY,
+			this.retirementJournal.serialize(),
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE
+		);
 	}
 
 	async renameRepository(id: string, name: string): Promise<void> {

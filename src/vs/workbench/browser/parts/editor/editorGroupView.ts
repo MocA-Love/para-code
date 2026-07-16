@@ -58,6 +58,7 @@ import { IEditorResolverService } from '../../../services/editor/common/editorRe
 import { IHostService } from '../../../services/host/browser/host.js';
 import { DiffEditorInput } from '../../../common/editor/diffEditorInput.js';
 import { FileSystemProviderCapabilities, IFileService } from '../../../../platform/files/common/files.js';
+import { paradisIsEditorOpenFenced } from '../../../services/editor/common/paradisEditorRetirementFence.js';
 
 export class EditorGroupView extends Themable implements IEditorGroupView {
 
@@ -1163,6 +1164,9 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		// should never open because they emit no events
 		// e.g. to indicate dirty changes.
 		if (!editor || editor.isDisposed()) {
+			return;
+		}
+		if (paradisIsEditorOpenFenced(this.id)) {
 			return;
 		}
 

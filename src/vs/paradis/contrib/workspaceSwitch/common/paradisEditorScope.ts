@@ -33,7 +33,8 @@ export interface IParadisEditorScopeService {
 	prepareScopeRetirement(stateKey: string): Promise<boolean>;
 	cancelScopeRetirement(stateKey: string): Promise<void>;
 	retireScope(stateKey: string): Promise<boolean>;
-	retireScopes(stateKeys: readonly string[]): Promise<boolean>;
+	retireScopes(stateKeys: readonly string[], onWillCommit?: () => void): Promise<boolean>;
+	completeScopeRetirement(stateKey: string): void;
 }
 
 interface ISerializedWorkingCopyOwnerEntry {
