@@ -12,7 +12,7 @@ import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useNow } from '../src/time.js';
 import { colors } from '../src/theme.js';
 import { hapticSelection } from '../src/haptics.js';
-import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants } from '../src/agentActivityTree.js';
+import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants, agentActivityTasksForAgent } from '../src/agentActivityTree.js';
 import type { AgentActivityAgent, AgentActivityDetailMessage, AgentActivityStatus } from '../src/store.js';
 
 type ConversationItem = { kind: 'message'; value: AgentActivityDetailMessage; index: number } | { kind: 'child'; value: AgentActivityAgent };
@@ -57,7 +57,7 @@ export default function AgentActivityDetailScreen() {
 	const ancestors = agent !== undefined ? agentActivityAncestors(agents, agent.id) : [];
 	const children = agent !== undefined ? agentActivityChildren(agents, agent.id) : [];
 	const descendants = agent !== undefined ? agentActivityDescendants(agents, agent.id) : [];
-	const tasks = agent === undefined ? [] : chat?.activity?.tasks.filter(task => task.assignee === agent.id || task.assignee === agent.label) ?? [];
+	const tasks = agent === undefined ? [] : agentActivityTasksForAgent(chat?.activity?.tasks ?? [], agent);
 	const [messages, setMessages] = useState<AgentActivityDetailMessage[]>([]);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | undefined>();

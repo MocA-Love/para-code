@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { AgentActivityAgent, AgentActivityState, AgentActivityStatus } from './store.js';
+import type { AgentActivityAgent, AgentActivityState, AgentActivityStatus, AgentActivityTask } from './store.js';
 
 export interface AgentActivityTreeRow {
 	readonly agent: AgentActivityAgent;
@@ -10,6 +10,11 @@ export interface AgentActivityTreeRow {
 /** 固定ヘッダーと「実行中」件数へ含める状態を一箇所で定義する。 */
 export function isRunningAgentActivity(status: AgentActivityStatus): boolean {
 	return status === 'running';
+}
+
+/** 新形式のAgent IDを優先し、保存済み旧データのassignee照合も維持する。 */
+export function agentActivityTasksForAgent(tasks: readonly AgentActivityTask[], agent: AgentActivityAgent): AgentActivityTask[] {
+	return tasks.filter(task => task.agentId !== undefined ? task.agentId === agent.id : task.assignee === agent.id || task.assignee === agent.label);
 }
 
 /** 完了・失敗・待機を混同せず、履歴カードの要約文を生成する。 */
