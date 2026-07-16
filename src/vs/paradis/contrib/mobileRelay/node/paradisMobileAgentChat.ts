@@ -36,7 +36,7 @@ import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js'
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, onParadisAgentHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
@@ -2046,6 +2046,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		super();
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService, codexShellEnvResolver));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
+		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
 		const activitySweepTimer = setInterval(() => {
 			const now = Date.now();
 			for (const [token, tracker] of this.activityTrackers) {
@@ -3666,6 +3667,25 @@ export class ParadisMobileAgentChat extends Disposable {
 		const sequence = (this.hookSequences.get(event.token) ?? 0) + 1;
 		this.hookSequences.set(event.token, sequence);
 		this.onHookEventChecked(event, event.transcriptPath, sequence, false).catch(err => this.logService.warn('[paradisAgentChat] hook event handling failed', err));
+	}
+
+	/**
+	 * ネストした子エージェント（ingress の所有権分類が 'nested' としたhook）を
+	 * Agent tree & Tasks へ投影する。ペインの親セッション・tailer・ライブ状態は触らない。
+	 */
+	private onNestedHookEvent(event: IParadisAgentNestedHookEvent): void {
+		if (!this.isLiveToken(event.token)) {
+			return;
+		}
+		const provider = event.nestedAgent
+			?? (event.transcriptPath !== undefined && event.transcriptPath.length > 0 ? agentKindForPath(event.transcriptPath) : undefined);
+		const key = event.sessionId ?? event.transcriptPath;
+		if (provider === undefined || key === undefined || key.length === 0) {
+			return;
+		}
+		if (this.activityTracker(event.token).applyNestedAgentHook(provider, key, event.event, event.at, str(event.payload?.['prompt']))) {
+			this.pushActivityToSubscribers(event.token);
+		}
 	}
 
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */

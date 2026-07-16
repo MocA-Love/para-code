@@ -34,7 +34,8 @@ import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBinding
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
-import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
+import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
+import { ParadisAgentHookOwnership } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler } from './paradisAgentHooksSetup.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
@@ -393,6 +394,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ペイン消滅（TerminalExit）でのみ削除する。
 	 */
 	private readonly _agentHookTokens = new Set<string>();
+	/**
+	 * hook発信元プロセスの所有権レジストリ（ネストした子エージェントのhookによるペイン
+	 * セッション乗っ取り・状態汚染の防止）。詳細は paradisAgentHookOwnership.ts 参照。
+	 */
+	private readonly _hookOwnership = new ParadisAgentHookOwnership();
 	/** TerminalExit後、owner retirementまでHTTP/hook ingressを抑止するowner-bounded tombstone。 */
 	private readonly _terminalExitedTokens = new Set<string>();
 	/** {@link IParadisSharedPageBindings.onDidAcknowledgePane} の実体。モバイルリレーが購読する。 */
@@ -1648,6 +1654,41 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._sendIngressRejected(res);
 				return;
 			}
+			// 発信元プロセスの所有権分類。ペイントークンはターミナル配下の全子プロセスへ
+			// 継承されるため、所有エージェントの配下で動く別エージェント（例: plugin 経由の
+			// `codex exec`）のhookをここで仕分けないと、ペインのセッションrebind・状態・通知の
+			// すべてが子に乗っ取られる。分類は状態更新とhookバス発火のどちらよりも前に行う。
+			if (eventType === 'TerminalExit') {
+				this._hookOwnership.clear(token);
+			} else if (eventType) {
+				const pidParam = url.searchParams.get('pid');
+				const hookPid = pidParam !== null && /^\d{1,10}$/.test(pidParam) ? Number.parseInt(pidParam, 10) : undefined;
+				const hookOrigin = await this._hookOwnership.classify({ token, hookPid, transcriptPath, at: Date.now() });
+				if (controller.signal.aborted) {
+					return;
+				}
+				if (!this.isIngressLeaseCurrent(ingressLease)) {
+					this._sendIngressRejected(res);
+					return;
+				}
+				if (hookOrigin.origin === 'invalid') {
+					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] agent-hook rejected (origin mismatch): ${eventType}`));
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: false, reason: 'origin rejected' }));
+					return;
+				}
+				if (hookOrigin.origin === 'nested') {
+					fireParadisAgentNestedHookEvent({
+						token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput,
+						toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,
+						at: Date.now(), nestedAgent: hookOrigin.agentKind,
+					});
+					this._runNonThrowingDiagnostic(() => this.logService.trace(`[ParadisAgentBrowser] agent-hook (nested ${hookOrigin.agentKind ?? 'unknown'}): ${eventType}`));
+					res.writeHead(200, { 'Content-Type': 'application/json' });
+					res.end(JSON.stringify({ ok: true, nested: true }));
+					return;
+				}
+			}
 			if (eventType) {
 				if (eventType === 'TerminalExit') {
 					this._agentHookTokens.delete(token);
@@ -1759,6 +1800,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._bindingAuthority.recordBindingMutation(token, undefined);
 		this._terminalExitedTokens.add(token);
 		this._cleanupTokenLocalState(token, generation, true);
+		this._hookOwnership.clear(token);
 		this._runNonThrowingCleanup('terminal-exit-hook', () => fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: Date.now() }));
 		this._runNonThrowingCleanup('terminal-exit-acknowledgement', () => this._onDidAcknowledgePane.fire(token));
 		return true;

@@ -12,6 +12,7 @@ import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/pa
 import { ParadisAgentBrowserChannel } from '../../node/paradisAgentBrowserChannel.js';
 import { ParadisAgentBrowserService, ParadisDevtoolsGenerationCoordinator } from '../../node/paradisAgentBrowserService.js';
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../node/paradisAgentHookBus.js';
+import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
 
 interface ITestBinding {
 	readonly windowCtx: string;
@@ -117,6 +118,8 @@ function createFixture(): {
 		_paneStatuses: new Map<string, { status: string; changedAt: number }>(),
 		_activityApprovalTokens: new Set<string>(),
 		_agentHookTokens: new Set<string>(),
+		// プロセス表なし = 発信元不特定の fail-closed ポリシー（同一/無transcriptは素通し）。
+		_hookOwnership: new ParadisAgentHookOwnership({ snapshot: async () => undefined }),
 		_seenTokens: new Set<string>(),
 		_rendererConnections: new Map<string, object>(),
 		_rendererConnectionContexts: new Map<object, string>(),
