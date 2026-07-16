@@ -10,7 +10,7 @@ import { IContextKey, IContextKeyService } from '../../../../platform/contextkey
 import { EditorActivation } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
-import { IEditorPane } from '../../../common/editor.js';
+import { EditorCloseContext, IEditorPane } from '../../../common/editor.js'; // PARA-PATCH: EditorCloseContext for MOVE-aware close handling
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IDeserializedTerminalEditorInput, ITerminalEditorService, ITerminalInstance, ITerminalInstanceService, TerminalEditorLocation } from './terminal.js';
 import { TerminalEditorInput } from './terminalEditorInput.js';
@@ -98,6 +98,17 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 		this._register(this._editorService.onDidCloseEditor(e => {
 			const instance = e.editor instanceof TerminalEditorInput ? e.editor.terminalInstance : undefined;
 			if (instance) {
+				// PARA-PATCH: an editor moved between groups (drag to another window, aux window
+				// merge-back via mergeAllGroups, ...) is closed in the source group with the MOVE
+				// context after it was already opened in the target group. Removing the instance
+				// here would drop a still-open terminal from `instances` — the re-registration in
+				// onDidVisibleEditorsChange only covers visible (active) editors, so a non-active
+				// moved terminal would silently vanish from all enumeration (e.g. mobile relay)
+				// and leave activeInstance bookkeeping broken. Keep the instance when the same
+				// input is still open in any group.
+				if (e.context === EditorCloseContext.MOVE && this._editorGroupsService.groups.some(g => g.contains(e.editor))) {
+					return;
+				}
 				const instanceIndex = this.instances.findIndex(e => e === instance);
 				if (instanceIndex !== -1) {
 					const wasActiveInstance = this.instances[instanceIndex] === this.activeInstance;

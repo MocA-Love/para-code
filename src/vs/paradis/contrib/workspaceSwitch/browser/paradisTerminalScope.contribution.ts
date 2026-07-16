@@ -271,6 +271,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (stateKey === undefined
 			|| stateKey === this.workspaceSwitchService.activeStateKey
 			|| (visibleScope?.kind === 'managed' && visibleScope.stateKey === stateKey)
+			// スコープが未確定 (pending) のウィンドウに見えているターミナルは park しない。
+			// ウィンドウ移動直後などにスコープ解決が一瞬 pending になるだけで、実際には
+			// 表示中のターミナルを detach してしまうと復元経路が無い（誤 park の防止）。
+			|| visibleScope?.kind === 'pending'
 			|| !this.terminalEditorService.instances.includes(instance)) {
 			return;
 		}
