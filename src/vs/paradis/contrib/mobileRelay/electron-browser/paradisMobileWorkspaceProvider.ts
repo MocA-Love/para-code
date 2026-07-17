@@ -275,6 +275,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// agentチャネル用: terminalId ⇔ ペイントークンの対応を shared process へ同期する
 		// （チャットミラーが attach(id) を transcript へ解決するのに使う）。
 		this._register(this.paneTokenService.onDidChange(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
+		// 起動時の孤児エディタターミナル復活（reviveOrphanedScopedEditorTerminals）等、
+		// park台帳への登録はterminalServiceのイベントに乗らない。スコープ確定の変化を
+		// 再送のトリガーにして、復活したペインが state / agentペイン対応表へ確実に載るようにする。
+		this._register(this.terminalScopeService.onDidChangeStableScope(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
 		this._register(this.terminalService.onDidChangeInstances(() => { void this.pushAgentPanes(); }));
 		this._register(this.terminalService.onAnyInstanceProcessIdReady(() => { void this.pushAgentPanes(); }));
 		this._register(this.terminalService.onDidChangeInstanceCapability(() => { void this.pushAgentPanes(); }));

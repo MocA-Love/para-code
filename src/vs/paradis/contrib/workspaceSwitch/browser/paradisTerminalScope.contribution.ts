@@ -10,10 +10,12 @@ import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { getActiveWindow } from '../../../../base/browser/dom.js';
-import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
+import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalService, TerminalConnectionState } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -95,6 +97,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IStorageService private readonly storageService: IStorageService,
+		@ITerminalInstanceService private readonly terminalInstanceService: ITerminalInstanceService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
 		this._register(paradisRegisterTerminalCreationScopeProvider(() => {
@@ -141,12 +146,25 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// リロード後は全グループが一旦 groups に復元され、出現し次第 tagUntaggedGroups が
 		// マッピングに基づいて park し直す。再接続完了後に取りこぼし (persistentProcessId が
 		// タグ付け時点で未確定だったグループ) を掃除する
-		void terminalService.whenConnected.then(() => {
+		void terminalService.whenConnected.then(async () => {
 			if (this._store.isDisposed) {
 				return;
 			}
 			this._terminalRestoreComplete = true;
 			this.sweepRestoredGroups();
+			// 非アクティブスコープのエディタターミナルは working set (シリアライズ済みエディタ入力)
+			// の中にしか存在せず、リロード後はそのスコープへ切り替えるまで live インスタンスに
+			// ならない。この間、PTY は生きているのに端末はどの一覧にも現れず、モバイルからは
+			// 存在ごと消える。pty host の孤児プロセスから所属スコープ既知のものを再接続して
+			// park 台帳へ戻し、prune がマッピングを失う前に live へ復帰させる。
+			// マッピングは await 中に別の起動ハンドラ (worktree 初期化バリア等) の prune で
+			// 消され得るため、ここで同期的に確定した写しを渡す。worktree スコープ分は
+			// バリア完了まで quarantine 側に居るので、両方を合わせて引けるようにする。
+			const scopeSnapshot = new Map([...this._quarantinedPersistentProcessScopes, ...this._persistentProcessScopes]);
+			await this.reviveOrphanedScopedEditorTerminals(scopeSnapshot);
+			if (this._store.isDisposed) {
+				return;
+			}
 			const liveInstances = this.refreshAllStableScopes();
 			paradisPrunePersistentProcessScopes(this._persistentProcessScopes, liveInstances.map(instance => this.toScopedInstance(instance)));
 			this.persistMapping();
@@ -266,6 +284,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	private parkExplicitlyScopedEditorIfInactive(instance: ITerminalInstance): void {
 		const stateKey = this._instanceScopes.get(instance.instanceId);
+		// エディタターミナル以外 (パネル端末等) で getInputFromResource を呼ぶと例外になり、
+		// 呼び出し元リスナーの後続処理 (persistMapping 等) まで巻き添えで中断してしまう。
+		if (!this.terminalEditorService.instances.includes(instance)) {
+			return;
+		}
 		const input = this.terminalEditorService.getInputFromResource(instance.resource);
 		const visibleScope = input.group ? this.auxiliaryWindowScopeService.resolveGroup(input.group) : undefined;
 		if (stateKey === undefined
@@ -274,8 +297,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// スコープが未確定 (pending) のウィンドウに見えているターミナルは park しない。
 			// ウィンドウ移動直後などにスコープ解決が一瞬 pending になるだけで、実際には
 			// 表示中のターミナルを detach してしまうと復元経路が無い（誤 park の防止）。
-			|| visibleScope?.kind === 'pending'
-			|| !this.terminalEditorService.instances.includes(instance)) {
+			|| visibleScope?.kind === 'pending') {
 			return;
 		}
 		if (paradisParkTerminalEditorInstance(instance, stateKey)) {
@@ -328,6 +350,66 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			add(instance);
 		}
 		return instances;
+	}
+
+	/**
+	 * 所属スコープが分かっている pty host の孤児プロセス (どのウィンドウにも接続されていない
+	 * 永続プロセス) を再接続し、park 台帳へ登録する。
+	 *
+	 * 対象は実質「非アクティブスコープの working set に閉じ込められたエディタターミナル」。
+	 * パネルターミナルは park 中グループもレイアウト永続化で復元される (PARA-PATCH) が、
+	 * エディタターミナルの復元は working set の適用 (= そのスコープへの切り替え) まで起きない。
+	 * ここで park 台帳へ戻しておけば、切り替え時は reviveInput の台帳ルックアップがそのまま
+	 * 再利用し、モバイルからもスペースを問わず一覧・操作できる。
+	 */
+	private async reviveOrphanedScopedEditorTerminals(persistentProcessScopes: ReadonlyMap<number, string>): Promise<void> {
+		let details;
+		try {
+			const backend = await this.terminalInstanceService.getBackend(this.environmentService.remoteAuthority);
+			details = await backend?.listProcesses();
+		} catch (error) {
+			onUnexpectedError(error);
+			return;
+		}
+		if (details === undefined || this._store.isDisposed) {
+			return;
+		}
+		const workspaceId = this.workspaceContextService.getWorkspace().id;
+		const livePersistentProcessIds = new Set<number>();
+		for (const instance of this.collectLiveInstances().values()) {
+			if (typeof instance.persistentProcessId === 'number') {
+				livePersistentProcessIds.add(instance.persistentProcessId);
+			}
+		}
+		for (const detail of details) {
+			const stateKey = persistentProcessScopes.get(detail.id);
+			if (!detail.isOrphan
+				|| detail.workspaceId !== workspaceId
+				|| detail.isFeatureTerminal === true
+				|| detail.hideFromUser === true
+				|| livePersistentProcessIds.has(detail.id)
+				|| stateKey === undefined
+				|| stateKey === this.workspaceSwitchService.activeStateKey) {
+				continue;
+			}
+			try {
+				const instance = this.terminalInstanceService.createInstance({ attachPersistentProcess: { ...detail, findRevivedId: true } }, TerminalLocation.Editor);
+				await instance.processReady;
+				if (this._store.isDisposed || !paradisParkTerminalEditorInstance(instance, stateKey)) {
+					// 再接続に失敗した (persistentProcessId が確定しなかった) インスタンスは
+					// どの一覧にも属さないため、放置すると不可視のままリークする。
+					instance.dispose(TerminalExitReason.Shutdown);
+					continue;
+				}
+				livePersistentProcessIds.add(detail.id);
+				// park台帳への登録はterminalServiceのイベントに乗らないため、スコープ確定の
+				// 変更イベントで購読側（モバイルリレー等）へ「新しいliveペインが増えた」ことを伝える。
+				this._instanceScopes.set(instance.instanceId, stateKey);
+				this._stableScopeTracker.observe(instance.instanceId, { kind: 'managed', stateKey });
+			} catch (error) {
+				onUnexpectedError(error);
+			}
+		}
 	}
 
 	private refreshAllStableScopes(): readonly ITerminalInstance[] {
