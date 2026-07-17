@@ -53,6 +53,7 @@ import { ParadisAgentTerminalHintParser, paradisShouldAcceptAgentTerminalHint } 
 import { Channels } from '../common/paradisMobileProtocol.js';
 import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
+import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
@@ -168,6 +169,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 		// ccusage ダッシュボードデータ取得（PC版と同じ shared process 経由のクライアントを再利用する）
 		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);
+		// AIリミット(Rate Limit)スナップショット取得（PC版タイトルバーのリミットモニターと同じクライアント）
+		const limitsClient = instantiationService.createInstance(ParadisLimitsMonitorClient);
 
 		this.provider = this._register(new ParadisMobileWorkspaceProvider(
 			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
@@ -202,6 +205,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
+			bypassCache => limitsClient.getSnapshot(bypassCache),
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
 			() => instantiationService.invokeFunction(paradisGetWorktreeCreateForm),
 			request => instantiationService.invokeFunction(paradisCreateWorktreeHeadless, request),
