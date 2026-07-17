@@ -42,6 +42,7 @@ import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCod
 import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
+import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
@@ -1986,6 +1987,16 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** ペイントークン → 既知のセッション情報 (hookバスから学習、購読の有無に関わらず保持)。 */
 	private readonly paneSessions = new Map<string, IPaneSessionInfo>();
+	/**
+	 * tokenが一時的にliveでなくなった（renderer交代・ウィンドウ間移動・shared process再起動を
+	 * またぐ再同期の隙間）ペインのセッション退避先。tokenが再びliveになった時点で検証して
+	 * paneSessionsへ復活させる。即時破棄すると、リロードや再起動のたびに全ペインの
+	 * エージェント確定が失われ、モバイルのホームからエージェントが消える。
+	 */
+	private readonly retiredSessions = new Map<string, { readonly session: IPaneSessionInfo; readonly retiredAt: number }>();
+	private readonly sessionReviveInFlight = new Set<string>();
+	private lastPersistedSessionSignature: string | undefined;
+	private static readonly RETIRED_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 	/** transcriptPath → 所有ペイントークン。同一threadを複数ペインへ誤割当しない。 */
 	private readonly transcriptClaims = new Map<string, string>();
 	/** ターミナルinstanceId → ペイントークン (rendererから同期)。 */
@@ -2042,10 +2053,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		codexShellEnvResolver?: () => Promise<NodeJS.ProcessEnv>,
 		private readonly authorizeOwner: (owner: IParadisMobilePaneOwner) => Promise<boolean> = async () => true,
 		private readonly requestPaneSync: (owner: IParadisMobilePaneOwner) => void = () => { },
+		private readonly sessionStore?: ParadisAgentSessionStore,
 	) {
 		super();
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService, codexShellEnvResolver));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
+		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
 		const activitySweepTimer = setInterval(() => {
 			const now = Date.now();
@@ -2305,13 +2318,19 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (!liveTokens.has(token)) { this.onCliCommandFinished(token); this.cliDiscoveryGenerations.delete(token); }
 		}
 		// paneSessions も掃除する（放置するとclose済みターミナルのセッション情報が単調増加する）。
-		// セッション登録側は必ずlive tokenを確認するため、現在liveでないものは即時に破棄できる。
+		// ただし即時破棄はしない: renderer交代・ウィンドウ間移動・再起動後の再同期では、tokenが
+		// 「一時的にliveでない」だけの隙間が必ずできる。ここで破棄するとリロードのたびに全ペインの
+		// エージェント確定が失われるため、retiredSessionsへ退避し、tokenが再びliveになった時点で
+		// 復活させる（TTL経過分はloadPersistedSessions/persistSessions側で失効する）。
 		for (const token of [...this.paneSessions.keys()]) {
 			if (!liveTokens.has(token)) {
 				const removed = this.paneSessions.get(token);
 				this.paneSessions.delete(token);
-				if (removed !== undefined && this.transcriptClaims.get(removed.transcriptPath) === token) {
-					this.transcriptClaims.delete(removed.transcriptPath);
+				if (removed !== undefined) {
+					this.retiredSessions.set(token, { session: removed, retiredAt: Date.now() });
+					if (this.transcriptClaims.get(removed.transcriptPath) === token) {
+						this.transcriptClaims.delete(removed.transcriptPath);
+					}
 				}
 				this.liveStates.delete(token);
 				this.liveToolIds.delete(token);
@@ -2324,8 +2343,119 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.activeTurnTokens.delete(token);
 			}
 		}
+		for (const token of liveTokens) {
+			if (!this.paneSessions.has(token) && this.retiredSessions.has(token)) {
+				this.reviveRetiredSession(token);
+			}
+		}
+		this.persistSessions();
 		this.syncCodexDaemonThreads();
 		this.emitConfirmedAgentPanesIfChanged();
+	}
+
+	/** 前回起動時に確定していたセッション対応表を読み込み、liveなペインへ復活を試みる。 */
+	private async loadPersistedSessions(): Promise<void> {
+		if (this.sessionStore === undefined) {
+			return;
+		}
+		try {
+			const entries = await this.sessionStore.load();
+			if (this.attachDisposed) {
+				return;
+			}
+			for (const entry of entries) {
+				if (this.paneSessions.has(entry.token) || this.retiredSessions.has(entry.token)) {
+					continue;
+				}
+				this.retiredSessions.set(entry.token, {
+					session: { token: entry.token, agent: entry.agent, transcriptPath: entry.transcriptPath, sessionId: entry.sessionId },
+					retiredAt: entry.savedAt,
+				});
+			}
+			for (const token of [...this.retiredSessions.keys()]) {
+				if (this.isLiveToken(token) && !this.paneSessions.has(token)) {
+					this.reviveRetiredSession(token);
+				}
+			}
+		} catch (err) {
+			this.logService.warn('[paradisAgentChat] failed to load persisted agent sessions', err);
+		}
+	}
+
+	/** paneSessions + 退避分をまとめて永続化する（storeが未設定なら何もしない）。 */
+	private persistSessions(): void {
+		if (this.sessionStore === undefined) {
+			return;
+		}
+		const now = Date.now();
+		for (const [token, entry] of [...this.retiredSessions]) {
+			if (now - entry.retiredAt > ParadisMobileAgentChat.RETIRED_SESSION_TTL_MS) {
+				this.retiredSessions.delete(token);
+			}
+		}
+		// pane syncのたびに呼ばれるため、対応表の実内容が変わった時だけ書き出す。
+		const signature = [
+			...[...this.paneSessions.values()].map(session => `${session.token} ${session.agent} ${session.transcriptPath} ${session.sessionId ?? ''}`),
+			...[...this.retiredSessions.values()].map(({ session }) => `${session.token} ${session.agent} ${session.transcriptPath} ${session.sessionId ?? ''} retired`),
+		].sort().join('\n');
+		if (signature === this.lastPersistedSessionSignature) {
+			return;
+		}
+		this.lastPersistedSessionSignature = signature;
+		this.sessionStore.persist([
+			...[...this.paneSessions.values()].map(session => ({
+				token: session.token, agent: session.agent, transcriptPath: session.transcriptPath,
+				...(session.sessionId !== undefined ? { sessionId: session.sessionId } : {}),
+				savedAt: now,
+			})),
+			...[...this.retiredSessions.values()].map(({ session, retiredAt }) => ({
+				token: session.token, agent: session.agent, transcriptPath: session.transcriptPath,
+				...(session.sessionId !== undefined ? { sessionId: session.sessionId } : {}),
+				savedAt: retiredAt,
+			})),
+		]);
+	}
+
+	/** 退避済みセッションを、tokenが再びliveになったペインへ検証付きで復活させる。 */
+	private reviveRetiredSession(token: string): void {
+		if (this.sessionReviveInFlight.has(token)) {
+			return;
+		}
+		const entry = this.retiredSessions.get(token);
+		if (entry === undefined || this.paneSessions.has(token) || !this.isLiveToken(token)) {
+			return;
+		}
+		this.sessionReviveInFlight.add(token);
+		(async () => {
+			try {
+				const session = entry.session;
+				if (!(await isAllowedTranscriptPath(session.transcriptPath))) {
+					this.retiredSessions.delete(token);
+					return;
+				}
+				const stat = await fs.stat(session.transcriptPath).catch(() => undefined);
+				if (stat === undefined || !stat.isFile()) {
+					this.retiredSessions.delete(token);
+					return;
+				}
+				// await中にhook・探索・別ペインのclaimが先行していたら復活しない（強い証拠を優先）。
+				if (this.attachDisposed || this.paneSessions.has(token) || !this.isLiveToken(token)
+					|| this.retiredSessions.get(token) !== entry
+					|| this.transcriptClaimedByOther(session.transcriptPath, token)) {
+					return;
+				}
+				this.retiredSessions.delete(token);
+				this.paneSessions.set(token, session);
+				this.transcriptClaims.set(session.transcriptPath, token);
+				this.persistSessions();
+				this.ensureEagerTailer(token, session);
+				this.emitConfirmedAgentPanesIfChanged();
+				this.syncCodexDaemonThreads();
+				this.pushToSubscribers(token);
+			} finally {
+				this.sessionReviveInFlight.delete(token);
+			}
+		})().catch(err => this.logService.warn('[paradisAgentChat] agent session revive failed', err));
 	}
 
 	/** コマンド検知トリガーの再探索タイマー (dispose時に確実に止める)。 */
@@ -3754,6 +3884,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const session: IPaneSessionInfo = { token, agent: discovered.agent, transcriptPath: discovered.transcriptPath, sessionId: discovered.sessionId };
 		this.paneSessions.set(token, session);
+		this.retiredSessions.delete(token);
+		this.persistSessions();
 		this.transcriptClaims.set(discovered.transcriptPath, token);
 		this.cliReconciliationWatermarks.set(token, Math.max(this.cliReconciliationWatermarks.get(token) ?? 0, discovered.mtime + 1));
 		this.emitConfirmedAgentPanesIfChanged();
@@ -3859,6 +3991,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.transcriptClaims.delete(previous.transcriptPath);
 		}
 		this.paneSessions.set(event.token, info);
+		this.retiredSessions.delete(event.token);
+		this.persistSessions();
 		this.transcriptClaims.set(sessionTranscriptPath, event.token);
 		this.emitConfirmedAgentPanesIfChanged();
 		this.syncCodexDaemonThreads();

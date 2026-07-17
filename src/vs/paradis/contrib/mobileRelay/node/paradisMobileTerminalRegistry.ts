@@ -142,6 +142,15 @@ export class ParadisMobileTerminalRegistry {
 	}
 
 	isComplete(): boolean {
+		// manifest revision 0 = shared process起動直後で、Main authorityのwindow一覧をまだ一度も
+		// 観測していない。この間のstateを完全スナップショット扱いすると、PC再起動のたびにモバイルへ
+		// 「complete:true・端末0件」が届き、モバイル側キャッシュ（全ワークスペース・端末・
+		// エージェント表示）が破壊的に削除される。manifestを観測するまでは部分スナップショットとして
+		// 扱い、モバイルに手元の表示を保持させる（全window破棄後の空manifestはrevision>0なので
+		// 従来どおりcompleteとなり、モバイル側の掃除は行われる）。
+		if (this.manifest.revision === 0) {
+			return false;
+		}
 		return this.fullManifestRevision >= this.highestValidatedManifestRevision && this.manifest.entries.every(entry => entry.claimed
 			&& this.windows.get(entry.windowId)?.rendererGeneration === entry.rendererGeneration
 			&& this.windows.get(entry.windowId)?.windowSession === entry.windowSession

@@ -81,6 +81,8 @@ export class RelayClient {
 	private connectTimeoutHandle: unknown = null;
 	/** 最後に何かを受信した時刻（onlineのまま死んだソケットの検出用）。 */
 	private lastReceivedAt = 0;
+	/** 直近のPC presence。offline→online遷移（=PC再起動）の検出に使う。 */
+	private lastPcOnline: boolean | undefined;
 
 	constructor(
 		private readonly identity: Identity,
@@ -334,7 +336,20 @@ export class RelayClient {
 		try {
 			const msg = decodeRelayControl(text);
 			if (msg.type === 'presence' && msg.peer === 'pc') {
+				const wasOnline = this.lastPcOnline;
+				this.lastPcOnline = msg.online;
 				this.callbacks.onPcPresence?.(msg.online);
+				// PCがoffline→onlineへ戻った = PC側プロセスが再起動し、E2Eセッション（ephemeral鍵）
+				// が新しくなった。モバイル側のソケットはリレーDOに保持されたまま生きているため、
+				// 旧セッション鍵のmuxで送受信を続けると、新PCは最初のsealed frameをhandshake helloと
+				// 誤解してセッションを拒否し、以後この接続では何も受信できなくなる。ソケットを
+				// 閉じて即再接続し、新しいhelloからhandshakeをやり直す。
+				if (msg.online && wasOnline === false && this.mux !== null) {
+					this.reconnectAttempt = 0;
+					try {
+						this.socket?.close(4002, 'pc restarted');
+					} catch { /* onclose経由の再接続に任せる */ }
+				}
 			} else if (msg.type === 'error') {
 				this.callbacks.onError?.(new Error(`relay: ${msg.message}`));
 			}

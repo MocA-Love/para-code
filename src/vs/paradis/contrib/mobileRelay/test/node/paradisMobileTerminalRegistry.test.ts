@@ -119,7 +119,9 @@ suite('ParadisMobileTerminalRegistry', () => {
 
 	test('active manifestの全leaseが同期済みの時だけdesktop stateをcompleteにする', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
-		assert.strictEqual(registry.isComplete(), true);
+		// 起動直後（window未観測）のstateをcompleteにすると、PC再起動のたびに
+		// 「complete:true・空」のstateがモバイルのキャッシュを破壊的に消してしまう。
+		assert.strictEqual(registry.isComplete(), false);
 		registry.syncWindow(1, 'one', 1, { activeWs: undefined, workspaces: [], terminals: [] });
 		const manifest = {
 			revision: 1, entries: [
