@@ -10,7 +10,7 @@ import assert from 'assert';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 suite('ParadisMobileAgentChat', () => {
@@ -288,5 +288,103 @@ suite('ParadisMobileAgentChat', () => {
 		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({ type: 'user', message: { content: text } }));
 		assert.strictEqual(parsed.userText, true);
 		assert.deepStrictEqual(parsed.messages, [{ role: 'user', kind: 'text', text }]);
+	});
+
+	test('matches a transcript question to the injected live question by exact content key', () => {
+		const liveQuestions = new Map([['進めますか？\0はい\x01いいえ', ['live:1:0']]]);
+		assert.deepStrictEqual({
+			taken: paradisTakeLiveQuestionSyntheticId(liveQuestions, { text: '進めますか？', options: [{ label: 'はい' }, { label: 'いいえ' }] }),
+			remaining: liveQuestions.size,
+		}, { taken: 'live:1:0', remaining: 0 });
+	});
+
+	test('falls back to a text-only match when one side lost its options (e.g. Windows hook mangling)', () => {
+		// ライブ注入側は選択肢つき、transcript 側は選択肢欠落 → 内容キー完全一致は外れるが
+		// 質問文のみで曖昧さなく1件に絞れるため間引く（逆方向も同じ経路で一致する）
+		const liveQuestions = new Map([['進めますか？\0はい\x01いいえ', ['live:1:0']]]);
+		assert.deepStrictEqual({
+			taken: paradisTakeLiveQuestionSyntheticId(liveQuestions, { text: '進めますか？' }),
+			remaining: liveQuestions.size,
+		}, { taken: 'live:1:0', remaining: 0 });
+	});
+
+	test('does not text-match when multiple live questions share the same text (ambiguous)', () => {
+		const liveQuestions = new Map([
+			['進めますか？\0はい\x01いいえ', ['live:1:0']],
+			['進めますか？\0A\x01B', ['live:1:1']],
+		]);
+		assert.deepStrictEqual({
+			taken: paradisTakeLiveQuestionSyntheticId(liveQuestions, { text: '進めますか？' }),
+			remaining: liveQuestions.size,
+		}, { taken: undefined, remaining: 2 });
+	});
+
+	test('does not text-match a different question text or a partial prefix', () => {
+		const liveQuestions = new Map([['進めますか？（詳細版）\0はい', ['live:1:0']]]);
+		assert.deepStrictEqual({
+			differentText: paradisTakeLiveQuestionSyntheticId(liveQuestions, { text: '止めますか？' }),
+			prefixText: paradisTakeLiveQuestionSyntheticId(liveQuestions, { text: '進めますか？' }),
+			remaining: liveQuestions.size,
+		}, { differentText: undefined, prefixText: undefined, remaining: 1 });
+	});
+
+	test('skips a live injection when the transcript already shows the same unanswered question', () => {
+		// transcript が先着（選択肢つき）、hook 遅延側は選択肢欠落 → 質問文一致で重複注入を抑止。
+		// 回答済みの同文質問しか無い場合は抑止しない（新しい質問として注入される）
+		const messages = [
+			{ kind: 'question' as const, text: '進めますか？', options: [{ label: 'はい' }, { label: 'いいえ' }], toolUseId: 'tool-1' },
+		];
+		assert.deepStrictEqual({
+			pending: paradisHasPendingDuplicateQuestion(messages, new Set(['tool-1']), { text: '進めますか？' }),
+			answered: paradisHasPendingDuplicateQuestion(messages, new Set(), { text: '進めますか？' }),
+			differentText: paradisHasPendingDuplicateQuestion(messages, new Set(['tool-1']), { text: '止めますか？' }),
+		}, { pending: true, answered: false, differentText: false });
+	});
+
+	test('never text-matches when both sides carry different non-empty options (distinct questions)', () => {
+		// 同文でも両側に選択肢が付いていて食い違う場合は別質問。誤 dedup で実在質問を隠したり、
+		// 回答を別質問へ誤紐付けしたりしない
+		const liveQuestions = new Map([['進めますか？\0A\x01B', ['live:1:0']]]);
+		const messages = [
+			{ kind: 'question' as const, text: '進めますか？', options: [{ label: 'A' }, { label: 'B' }], toolUseId: 'tool-1' },
+		];
+		assert.deepStrictEqual({
+			taken: paradisTakeLiveQuestionSyntheticId(liveQuestions, { text: '進めますか？', options: [{ label: 'C' }, { label: 'D' }] }),
+			remaining: liveQuestions.size,
+			suppressed: paradisHasPendingDuplicateQuestion(messages, new Set(['tool-1']), { text: '進めますか？', options: [{ label: 'C' }, { label: 'D' }] }),
+		}, { taken: undefined, remaining: 1, suppressed: false });
+	});
+
+	test('text-matches in the reverse direction: existing question lost its options, incoming has them', () => {
+		const liveQuestions = new Map([['進めますか？\0', ['live:1:0']]]);
+		const messages = [
+			{ kind: 'question' as const, text: '進めますか？', toolUseId: 'tool-1' },
+		];
+		assert.deepStrictEqual({
+			taken: paradisTakeLiveQuestionSyntheticId(liveQuestions, { text: '進めますか？', options: [{ label: 'はい' }, { label: 'いいえ' }] }),
+			suppressed: paradisHasPendingDuplicateQuestion(messages, new Set(['tool-1']), { text: '進めますか？', options: [{ label: 'はい' }, { label: 'いいえ' }] }),
+		}, { taken: 'live:1:0', suppressed: true });
+	});
+
+	test('prefers the exact content-key match and shifts synthetic ids one at a time', () => {
+		const liveQuestions = new Map([
+			['進めますか？\0はい\x01いいえ', ['live:1:0', 'live:1:1']],
+			['進めますか？\0', ['live:1:9']],
+		]);
+		const withOptions = { text: '進めますか？', options: [{ label: 'はい' }, { label: 'いいえ' }] };
+		assert.deepStrictEqual({
+			first: paradisTakeLiveQuestionSyntheticId(liveQuestions, withOptions),
+			sizeAfterFirst: liveQuestions.size,
+			second: paradisTakeLiveQuestionSyntheticId(liveQuestions, withOptions),
+			sizeAfterSecond: liveQuestions.size,
+		}, { first: 'live:1:0', sizeAfterFirst: 2, second: 'live:1:1', sizeAfterSecond: 1 });
+	});
+
+	test('ignores non-question messages and questions without a toolUseId in the pending scan', () => {
+		const messages = [
+			{ kind: 'text' as const, text: '進めますか？' },
+			{ kind: 'question' as const, text: '進めますか？' },
+		];
+		assert.strictEqual(paradisHasPendingDuplicateQuestion(messages, new Set(['tool-1']), { text: '進めますか？' }), false);
 	});
 });
