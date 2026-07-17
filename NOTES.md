@@ -42,7 +42,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - `origin`: このGitHubリポジトリ（public、2026-07-13確認）
 - ブランチ運用は今後要検討（upstreamのタグを定期的に取り込む前提。マージ戦略は未確定）
 - **`main`の起点はupstreamスナップショットを1コミットに圧縮したもの**（`git checkout --orphan` + `git add -A`）。以後のPara Code開発コミットは通常どおり積み上げている。Microsoft側のフル履歴は`upstream`から`git log upstream/main`等で参照可能。理由は下記「pushトラブル」参照
-- **スナップショット元のupstreamコミットを特定済み（2026-07-18）**: 起点コミット `21e6e7d858c`（`chore: para-code baseline from microsoft/vscode`）は upstream の **`7ad5744c6852a42e070b6d6045e3e1215cc120fd`**（2026-07-01、1.128系）のツリーと完全一致（差分はfork追加のNOTES.md/mise.tomlのみ）。upstream取り込み時はこのコミットをマージベースとして使う（例: `git replace --graft 21e6e7d858c 7ad5744c685` でローカルに共通祖先を教えてから3-wayマージ。replace refはpushされないためリモートには影響しない）。マージをsquashで確定した場合は、確定後にこの行を「現在のツリーが対応するupstreamコミット」で更新すること
+- **現在のツリーが対応するupstreamコミット: タグ `1.129.0`**（2026-07-18のsquashマージ `para: merge upstream 1.129.0` で取り込み済み。それ以前のベースはupstream `7ad5744c6852a42e070b6d6045e3e1215cc120fd`＝1.128系だった）。次回のupstream取り込み手順: (1) `git fetch upstream --tags` (2) `git replace --graft <1.129.0を取り込んだsquashコミット> <その実親> 1.129.0` で「squashコミットが1.129.0を第2親に持つマージコミットだった」とローカルに教える（replace refはpushされないためリモートには影響しない） (3) `git merge --squash <新タグ>` で3-wayマージ→解消→`para: merge upstream <新タグ>` でコミット (4) `git replace -d`で後片付けし、この行を新タグで更新する。1.129取り込み時の実績: コンフリクト10ファイル/20hunk、解消方針の詳細はgit log参照。**マージ前に必ず監査（下記「upstream取り込み前監査」）とマージ後のtypecheck/valid-layers-check/意味的レビューを行うこと**
 
 ## upstream取り込み前監査の記録（2026-07-18、1.129取り込み準備）
 

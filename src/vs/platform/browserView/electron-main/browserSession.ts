@@ -187,10 +187,13 @@ export class BrowserSession {
 	}
 
 	private static readonly _trustedFileRoots = TernarySearchTree.forPaths<true>(!isLinux);
+	private static _trustAllFiles = false;
+
 	/**
 	 * Set trusted file roots for all browser sessions.
 	 */
-	static setTrustedFileRoots(roots: readonly string[]): void {
+	static setTrustedFileRoots(roots: readonly string[], trustAllFiles: boolean): void {
+		BrowserSession._trustAllFiles = trustAllFiles;
 		BrowserSession._trustedFileRoots.clear();
 		for (const root of roots) {
 			if (root) {
@@ -279,7 +282,7 @@ export class BrowserSession {
 		});
 		this.electronSession.protocol.handle(Schemas.file, request => {
 			const filePath = normalize(URI.parse(request.url).fsPath);
-			if (!BrowserSession._trustedFileRoots.findSubstr(filePath)) {
+			if (!BrowserSession._trustAllFiles && !BrowserSession._trustedFileRoots.findSubstr(filePath)) {
 				return new Response(localize('browserSession.untrustedFile', 'Forbidden. File does not reside within a trusted folder.'), { status: 403 });
 			}
 			return this.electronSession.fetch(request, { bypassCustomProtocolHandlers: true });

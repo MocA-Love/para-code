@@ -41,7 +41,7 @@ export class WebBrowserViewWorkbenchService implements IBrowserViewWorkbenchServ
 		return this._known;
 	}
 
-	getPreferredGroup(preferredGroup?: PreferredGroup): PreferredGroup | undefined {
+	async getPreferredGroup(preferredGroup?: PreferredGroup): Promise<PreferredGroup | undefined> {
 		return preferredGroup;
 	}
 
