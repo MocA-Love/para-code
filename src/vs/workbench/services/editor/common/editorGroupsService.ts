@@ -727,6 +727,13 @@ export interface IEditorGroupsService extends IEditorGroupsContainer {
 	retainEditor?(editor: EditorInput): IDisposable;
 
 	/**
+	 * PARA-PATCH: expose the retention state of `retainEditor` so consumers (e.g. the
+	 * terminal editor service) can tell a retention detach apart from a real close and
+	 * keep live terminal instances enumerable while their editor is detached.
+	 */
+	isEditorInputRetained?(editor: EditorInput): boolean;
+
+	/**
 	 * Returns all known editor working sets.
 	 */
 	getWorkingSets(): IEditorWorkingSet[];

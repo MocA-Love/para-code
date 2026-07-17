@@ -228,6 +228,137 @@ suite('Paradis TerminalEditorService move bookkeeping', () => {
 	}
 });
 
+suite('Paradis TerminalEditorService retained input bookkeeping', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+	let TerminalEditorServiceCtor: typeof import('../../browser/terminalEditorService.js').TerminalEditorService;
+	let TerminalEditorInputCtor: typeof import('../../browser/terminalEditorInput.js').TerminalEditorInput;
+
+	suiteSetup(async () => {
+		(globalThis as typeof globalThis & { MouseEvent: typeof MouseEvent }).MouseEvent ??= class { } as unknown as typeof MouseEvent;
+		({ TerminalEditorService: TerminalEditorServiceCtor } = await import('../../browser/terminalEditorService.js'));
+		({ TerminalEditorInput: TerminalEditorInputCtor } = await import('../../browser/terminalEditorInput.js'));
+	});
+
+	test('keeps the instance when the closed editor input is retained by the Paradis scope capture', () => {
+		const { service, onDidCloseEditor, retainedInputs } = createRetentionService();
+		const instance = createDisposableInstance(1);
+		const input = createInput(instance.instance);
+		service.instances.push(instance.instance);
+		retainedInputs.add(input);
+
+		onDidCloseEditor.fire({ editor: input, context: EditorCloseContext.MOVE, groupId: 0, index: 0, sticky: false });
+
+		assert.deepStrictEqual(service.instances.map(i => i.instanceId), [1]);
+	});
+
+	test('clears the active instance when a retained editor closes (the editor is now hidden)', () => {
+		const { service, onDidCloseEditor, retainedInputs } = createRetentionService();
+		const instance = createDisposableInstance(2);
+		const input = createInput(instance.instance);
+		service.instances.push(instance.instance);
+		service.setActiveInstance(instance.instance);
+		retainedInputs.add(input);
+
+		onDidCloseEditor.fire({ editor: input, context: EditorCloseContext.MOVE, groupId: 0, index: 0, sticky: false });
+
+		assert.deepStrictEqual(
+			{ instanceIds: service.instances.map(i => i.instanceId), activeInstance: service.activeInstance },
+			{ instanceIds: [2], activeInstance: undefined },
+		);
+	});
+
+	test('removes the kept instance when the retained input is disposed without reopening', () => {
+		const { service, onDidCloseEditor, retainedInputs } = createRetentionService();
+		const instance = createDisposableInstance(3);
+		const input = createInput(instance.instance);
+		service.instances.push(instance.instance);
+		retainedInputs.add(input);
+		onDidCloseEditor.fire({ editor: input, context: EditorCloseContext.MOVE, groupId: 0, index: 0, sticky: false });
+
+		instance.disposeInstance();
+
+		assert.deepStrictEqual(service.instances, []);
+	});
+
+	test('removes the instance on a non-retained close as before', () => {
+		const { service, onDidCloseEditor } = createRetentionService();
+		const instance = createDisposableInstance(4);
+		const input = createInput(instance.instance);
+		service.instances.push(instance.instance);
+
+		onDidCloseEditor.fire({ editor: input, context: EditorCloseContext.UNKNOWN, groupId: 0, index: 0, sticky: false });
+
+		assert.deepStrictEqual(service.instances, []);
+	});
+
+	function createRetentionService(): { service: TerminalEditorService; onDidCloseEditor: Emitter<IEditorCloseEvent>; retainedInputs: Set<TerminalEditorInput> } {
+		const onDidCloseEditor = store.add(new Emitter<IEditorCloseEvent>());
+		const retainedInputs = new Set<TerminalEditorInput>();
+		const editorService = {
+			activeEditor: undefined,
+			activeEditorPane: undefined,
+			visibleEditors: [],
+			onDidActiveEditorChange: Event.None,
+			onDidVisibleEditorsChange: Event.None,
+			onDidCloseEditor: onDidCloseEditor.event,
+		} as Partial<IEditorService> as IEditorService;
+		const editorGroupsService = {
+			groups: [],
+			isEditorInputRetained: (editor: unknown) => retainedInputs.has(editor as TerminalEditorInput),
+		} as Partial<IEditorGroupsService> as IEditorGroupsService;
+		const service = store.add(new TerminalEditorServiceCtor(
+			editorService,
+			editorGroupsService,
+			{} as ITerminalInstanceService,
+			{} as IInstantiationService,
+			{ onWillShutdown: Event.None } as ILifecycleService,
+			retentionContextKeyService(),
+		));
+		return { service, onDidCloseEditor, retainedInputs };
+	}
+
+	function createInput(instance: ITerminalInstance): TerminalEditorInput {
+		const input = store.add(new TerminalEditorInputCtor(
+			instance.resource,
+			instance,
+			{} as IThemeService,
+			{} as ITerminalInstanceService,
+			{} as IInstantiationService,
+			{} as IConfigurationService,
+			{ onWillShutdown: Event.None } as ILifecycleService,
+			retentionContextKeyService(),
+			{} as IDialogService,
+		));
+		return input;
+	}
+
+	function retentionContextKeyService(): IContextKeyService {
+		return {
+			createKey: () => ({ set() { }, reset() { }, get: () => false }),
+		} as Partial<IContextKeyService> as IContextKeyService;
+	}
+
+	function createDisposableInstance(instanceId: number): { instance: ITerminalInstance; disposeInstance: () => void } {
+		const onDisposedEmitter = store.add(new Emitter<ITerminalInstance>());
+		const instance = {
+			instanceId,
+			resource: URI.parse(`vscode-terminal:/test/${instanceId}`),
+			description: undefined,
+			shellLaunchConfig: {},
+			onDidFocus: Event.None,
+			onDidBlur: Event.None,
+			onExit: Event.None,
+			onDisposed: onDisposedEmitter.event,
+			onTitleChanged: Event.None,
+			onIconChanged: Event.None,
+			statusList: { onDidChangePrimaryStatus: Event.None },
+			dispose: () => onDisposedEmitter.fire(instance),
+			resetFocusContextKey: () => { },
+		} as Partial<ITerminalInstance> as ITerminalInstance;
+		return { instance, disposeInstance: () => onDisposedEmitter.fire(instance) };
+	}
+});
+
 function createInstance(instanceId: number): ITerminalInstance {
 	return {
 		instanceId,

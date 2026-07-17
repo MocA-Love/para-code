@@ -15,6 +15,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ITerminalEditorService, ITerminalGroup, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { TerminalGroupService } from '../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
@@ -100,6 +101,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		@ITerminalInstanceService private readonly terminalInstanceService: ITerminalInstanceService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
+		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	) {
 		super();
 		this._register(paradisRegisterTerminalCreationScopeProvider(() => {
@@ -290,6 +292,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return;
 		}
 		const input = this.terminalEditorService.getInputFromResource(instance.resource);
+		// スペース切替の captureScope が retain 済みの入力は、エディタから detach されたまま
+		// terminalEditorService の一覧に残る (terminalEditorService.ts の PARA-PATCH)。ここで
+		// park + detachInstance すると retain 中の入力を dispose してしまい restoreScope の
+		// 復元経路が壊れるため、retain が解除されるまで park 対象にしない。
+		if (this.editorGroupsService.isEditorInputRetained?.(input)) {
+			return;
+		}
 		const visibleScope = input.group ? this.auxiliaryWindowScopeService.resolveGroup(input.group) : undefined;
 		if (stateKey === undefined
 			|| stateKey === this.workspaceSwitchService.activeStateKey
