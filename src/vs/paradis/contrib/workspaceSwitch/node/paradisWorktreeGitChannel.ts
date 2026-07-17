@@ -12,7 +12,10 @@
 // 同じ execFile('git', ...) 直叩き。upstream サービスの改変を避けるため fork 側に独立させている。
 
 import * as cp from 'child_process';
-import { Event } from '../../../../base/common/event.js';
+import { existsSync, promises as fs } from 'fs';
+import { CancellationError } from '../../../../base/common/errors.js';
+import { dirname } from '../../../../base/common/path.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { isWindows } from '../../../../base/common/platform.js';
@@ -22,6 +25,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { localize } from '../../../../nls.js';
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, paradisParseGhPrStatus, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
 
 /**
@@ -33,6 +37,13 @@ const PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS = PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MIN
 
 /** setup/teardown スクリプトの stdout/stderr 上限。超過時は打ち切ってエラーにする。 */
 const PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+
+/**
+ * git clone の無進捗タイムアウト。総時間ではなく「stderr の進捗出力が途絶えてから」の時間で
+ * 打ち切る (巨大リポジトリの正常な長時間クローンは進捗が出続けるので誤爆しない)。
+ * ネットワークストール等で close が永久に来ないケースの保険。
+ */
+const PARADIS_CLONE_IDLE_TIMEOUT_MS = 5 * 60_000;
 
 export class ParadisWorktreeGitService {
 
@@ -268,6 +279,146 @@ export class ParadisWorktreeGitService {
 			childRef.pid = child?.pid;
 		});
 	}
+
+	// --- git clone -----------------------------------------------------------------------------
+
+	private readonly _onCloneProgress = new Emitter<IParadisCloneProgressEvent>();
+	/** git clone の進捗 (プロセス寿命のサービスのため Emitter は dispose しない)。 */
+	readonly onCloneProgress = this._onCloneProgress.event;
+
+	/** 実行中の clone。cloneId → プロセスとキャンセル済みフラグ。 */
+	private readonly runningClones = new Map<string, { child: cp.ChildProcess; canceled: boolean }>();
+
+	/**
+	 * git clone --progress を実行する。stderr のステージ進捗を onCloneProgress で配信し、
+	 * 完了/失敗はこの呼び出しの resolve/reject で伝える。キャンセル時は CancellationError
+	 * (name: 'Canceled') で reject する。失敗・キャンセル時は作りかけのディレクトリを削除する
+	 * (開始前に未存在を確認しているので、消してよいのはこの clone が作ったものに限られる)。
+	 */
+	async cloneRepository(request: IParadisCloneRepositoryRequest): Promise<void> {
+		const { url, targetPath, cloneId } = request ?? {};
+		// IPC 境界の防御: 位置引数が git のオプションとして解釈されないことを保証する
+		// (url は '--' の後ろに置くが、多層防御として '-' 始まりも拒否する)
+		for (const value of [url, targetPath, cloneId]) {
+			if (typeof value !== 'string' || value.length === 0 || value.startsWith('-')) {
+				throw new Error(`Invalid argument: ${String(value)}`);
+			}
+		}
+		if (this.runningClones.has(cloneId)) {
+			throw new Error(`Clone already running: ${cloneId}`);
+		}
+		if (existsSync(targetPath)) {
+			throw new Error(localize('paradis.repositoryClone.targetExists', "The folder already exists: {0}", targetPath));
+		}
+		await fs.mkdir(dirname(targetPath), { recursive: true });
+		const env = await this.cachedShellEnv.getEnv();
+
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const child = cp.spawn('git', ['clone', '--progress', '--', url, targetPath], {
+					env: { ...env, GIT_TERMINAL_PROMPT: '0' },
+					stdio: ['ignore', 'ignore', 'pipe'],
+				});
+				const entry = { child, canceled: false };
+				this.runningClones.set(cloneId, entry);
+
+				let idleTimedOut = false;
+				let idleTimer: Timeout | undefined;
+				const resetIdleTimer = () => {
+					clearTimeout(idleTimer);
+					idleTimer = setTimeout(() => {
+						idleTimedOut = true;
+						child.kill('SIGKILL');
+					}, PARADIS_CLONE_IDLE_TIMEOUT_MS);
+				};
+				resetIdleTimer();
+
+				let overallPercent = 0;
+				let pendingChunk = '';
+				let errorLines: string[] = [];
+				const consumeLine = (line: string) => {
+					const trimmed = line.trim();
+					if (!trimmed) {
+						return;
+					}
+					const progress = paradisParseCloneProgressLine(trimmed);
+					if (progress) {
+						overallPercent = Math.max(overallPercent, paradisCloneOverallPercent(progress.stage, progress.percent) ?? overallPercent);
+					} else {
+						// 進捗以外の行 ("Cloning into ...", fatal: 等)。失敗時のエラーメッセージ用に末尾を保持
+						errorLines = [...errorLines, trimmed].slice(-8);
+					}
+					this._onCloneProgress.fire({ cloneId, message: trimmed.slice(0, 200), overallPercent });
+				};
+				child.stderr!.setEncoding('utf8');
+				child.stderr!.on('data', (chunk: string) => {
+					resetIdleTimer();
+					pendingChunk += chunk;
+					// git の進捗は \r で同一行を上書きしてくるため \r も行区切りとして扱う
+					const lines = pendingChunk.split(/[\r\n]/);
+					pendingChunk = lines.pop() ?? '';
+					for (const line of lines) {
+						consumeLine(line);
+					}
+				});
+
+				let settled = false;
+				const settle = (error?: Error) => {
+					if (settled) {
+						return;
+					}
+					settled = true;
+					clearTimeout(idleTimer);
+					this.runningClones.delete(cloneId);
+					if (error) {
+						reject(error);
+					} else {
+						resolve();
+					}
+				};
+				child.on('error', error => {
+					const enoent = (error as { code?: unknown }).code === 'ENOENT';
+					settle(enoent ? new Error(localize('paradis.repositoryClone.gitNotFound', "The 'git' command was not found. Install Git and try again.")) : error);
+				});
+				child.on('close', code => {
+					consumeLine(pendingChunk);
+					if (entry.canceled) {
+						settle(new CancellationError());
+					} else if (idleTimedOut) {
+						settle(new Error(localize('paradis.repositoryClone.stalled', "git clone made no progress for {0} minutes and was aborted.", PARADIS_CLONE_IDLE_TIMEOUT_MS / 60_000)));
+					} else if (code === 0) {
+						settle();
+					} else {
+						this.logService.warn(`[ParadisWorktreeGit] git clone ${url} failed (exit ${code}): ${errorLines.join(' / ')}`);
+						settle(new Error(errorLines.join('\n') || localize('paradis.repositoryClone.failed', "git clone failed (exit {0}).", String(code))));
+					}
+				});
+			});
+		} catch (error) {
+			// 開始前に targetPath の未存在を確認済みなので、残骸はこの clone が作ったもの。
+			// git は kill 時にディレクトリを掃除しないことがあるため明示的に消す (ベストエフォート)
+			try {
+				await fs.rm(targetPath, { recursive: true, force: true });
+			} catch {
+				// 削除失敗は元のエラーを優先する
+			}
+			throw error;
+		}
+	}
+
+	/** 実行中の clone を中断する。該当があれば true。 */
+	cancelClone(cloneId: string): boolean {
+		const entry = this.runningClones.get(cloneId);
+		if (!entry) {
+			return false;
+		}
+		entry.canceled = true;
+		entry.child.kill('SIGTERM');
+		// SIGTERM で終了しない場合の保険。close 済みなら kill は no-op
+		// (shared process は常駐のため、この短命タイマーが寿命へ影響することはない)
+		setTimeout(() => entry.child.kill('SIGKILL'), 5000);
+		return true;
+	}
 }
 
 export class ParadisWorktreeGitChannel implements IServerChannel<string> {
@@ -275,12 +426,17 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 	constructor(private readonly service: ParadisWorktreeGitService) { }
 
 	listen<T>(_ctx: string, event: string): Event<T> {
+		if (event === 'onCloneProgress') {
+			return this.service.onCloneProgress as Event<T>;
+		}
 		throw new Error(`Event not found: ${event}`);
 	}
 
 	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
+			case 'cloneRepository': return this.service.cloneRepository(args[0] as IParadisCloneRepositoryRequest) as Promise<T>;
+			case 'cancelClone': return Promise.resolve(this.service.cancelClone(String(args[0]))) as Promise<T>;
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest) as Promise<T>;
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
