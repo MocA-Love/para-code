@@ -180,6 +180,52 @@ describe('RelayClient', () => {
 		expect(created).toBe(2);
 	});
 
+	it('re-handshakes with a fresh socket when the PC comes back online', async () => {
+		// PC再起動時、モバイル側ソケットはリレーDOに保持されたまま生き続ける。旧セッション鍵の
+		// まま送受信を続けると新PCは最初のsealed frameをhelloと誤解して受信不能になるため、
+		// presenceのoffline→online遷移で必ずソケットを張り直して新しいhandshakeを行う。
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pairs: FakeSocketPair[] = [];
+		let scheduled: (() => void) | null = null;
+		const timers = {
+			setTimeout: (h: () => void) => { scheduled = h; return 1; },
+			clearTimeout: () => { scheduled = null; },
+		};
+		const client = new RelayClient(mobile, credsFor(pc.publicKey), () => {
+			const pair = new FakeSocketPair();
+			pairs.push(pair);
+			return pair.client;
+		}, {}, timers);
+
+		client.connect();
+		const firstPcMuxPromise = drivePcSide(pairs[0]!, pc, mobile.publicKey);
+		pairs[0]!.fireOpen();
+		await firstPcMuxPromise;
+		await flush();
+		expect(client.connectionState).toBe('online');
+
+		// PC再起動: presence offline → online
+		pairs[0]!.sendToClient(JSON.stringify({ type: 'presence', peer: 'pc', online: false }));
+		await flush();
+		pairs[0]!.sendToClient(JSON.stringify({ type: 'presence', peer: 'pc', online: true }));
+		await flush();
+		// 旧ソケットが閉じられ、再接続がスケジュールされる
+		expect(scheduled).not.toBeNull();
+		scheduled!();
+		expect(pairs).toHaveLength(2);
+		const secondPcMuxPromise = drivePcSide(pairs[1]!, pc, mobile.publicKey);
+		pairs[1]!.fireOpen();
+		await secondPcMuxPromise;
+		await flush();
+		expect(client.connectionState).toBe('online');
+
+		// online→online（変化なし）では張り直さない
+		pairs[1]!.sendToClient(JSON.stringify({ type: 'presence', peer: 'pc', online: true }));
+		await flush();
+		expect(pairs).toHaveLength(2);
+	});
+
 	it('suspends the foreground socket and reconnects with a fresh socket on resume', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();

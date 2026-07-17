@@ -43,8 +43,31 @@ interface RendererRequestTarget {
 
 /** partial stateはready windowだけを置換し、pending windowの最後の表示を保持する。 */
 export function mergeWorkspaceState(previous: WorkspaceState | undefined, incoming: WorkspaceState): WorkspaceState {
-	if (previous === undefined || previous.desktopEpoch !== incoming.desktopEpoch || incoming.complete) {
+	if (previous === undefined || incoming.complete) {
 		return incoming;
+	}
+	// desktopEpochが変わった = PC(shared process)が再起動した。起動直後の部分state
+	// （windowがまだclaim/syncしていない）で旧表示を破壊すると、PC再起動のたびにホームの
+	// ワークスペース・ターミナル・エージェントが全消えする。新epochのwindowが1つでも
+	// readyになるまでは旧表示を保持し、以降は「未観測のwindow=pending」として扱う。
+	if (previous.desktopEpoch !== incoming.desktopEpoch) {
+		if (!incoming.renderers.some(renderer => renderer.ready)) {
+			return previous;
+		}
+		const readyWindows = new Set(incoming.renderers.filter(renderer => renderer.ready).map(renderer => renderer.windowId));
+		const workspaces = new Map(previous.workspaces.filter(workspace => !readyWindows.has(workspace.windowId)).map(workspace => [workspace.id, workspace]));
+		for (const workspace of incoming.workspaces) {
+			workspaces.set(workspace.id, workspace);
+		}
+		const terminals = new Map(previous.terminals.filter(terminal => !readyWindows.has(terminal.windowId)).map(terminal => [terminal.terminalKey, terminal]));
+		for (const terminal of incoming.terminals) {
+			terminals.set(terminal.terminalKey, terminal);
+		}
+		return {
+			...incoming,
+			workspaces: [...workspaces.values()],
+			terminals: [...terminals.values()],
+		};
 	}
 	const pendingWindows = new Set(incoming.renderers.filter(renderer => !renderer.ready).map(renderer => renderer.windowId));
 	const workspaces = new Map(previous.workspaces.filter(workspace => pendingWindows.has(workspace.windowId)).map(workspace => [workspace.id, workspace]));
@@ -792,6 +815,11 @@ export class MobileController {
 	private operationOutboxScope: string | undefined;
 	private operationOutboxDirty = false;
 	private resetting = false;
+	/** 最後に何らかのframeを受信した時刻。presence欠落時のPC再起動検出（死活監視）に使う。 */
+	private lastFrameAt = 0;
+	private livenessTimer: ReturnType<typeof setInterval> | undefined;
+	private static readonly LIVENESS_IDLE_MS = 45_000;
+	private static readonly LIVENESS_CHECK_INTERVAL_MS = 20_000;
 	private outboxReplayEpoch: string | undefined;
 	private terminalOperationStorageIssue: string | undefined;
 	private terminalOperationCapacityIssue: string | undefined;
@@ -907,12 +935,28 @@ export class MobileController {
 				}
 				this.emit(agentChatsChanged ? { agentChats: true } : undefined);
 			},
-			onFrame: frame => this.handleFrame(frame),
+			onFrame: frame => { this.lastFrameAt = Date.now(); this.handleFrame(frame); },
 		});
 		this.client.connect();
+		// presence遷移が届かないPC再起動（リレーがPC切断を検知し損ねた場合等）でも自己修復する
+		// 死活監視。'online' 表示のまま一定時間何も受信していなければ、応答が必ず返るstate要求を
+		// 送り、無応答なら接続を作り直す（フォアグラウンド復帰時のensureConnectedと同じ経路）。
+		if (this.livenessTimer !== undefined) {
+			clearInterval(this.livenessTimer);
+		}
+		this.lastFrameAt = Date.now();
+		this.livenessTimer = setInterval(() => {
+			if (this.client !== undefined && this.state.connection === 'online' && Date.now() - this.lastFrameAt > MobileController.LIVENESS_IDLE_MS) {
+				this.ensureConnected();
+			}
+		}, MobileController.LIVENESS_CHECK_INTERVAL_MS);
 	}
 
 	disconnect(): void {
+		if (this.livenessTimer !== undefined) {
+			clearInterval(this.livenessTimer);
+			this.livenessTimer = undefined;
+		}
 		this.client?.close();
 		this.client = undefined;
 		this.cancelPendingAgentActions();
@@ -2358,8 +2402,12 @@ export class MobileController {
 					}
 					return;
 				}
-				const epochChanged = previous !== undefined && previous.desktopEpoch !== incoming.desktopEpoch;
-				this.state.workspace = mergeWorkspaceState(previous, incoming);
+				// PC再起動直後の部分state（新epochだがwindow未ready）はmergeWorkspaceStateが旧表示を
+				// 保持する。その間はterminal出力・agentチャットのキャッシュも道連れに消さないよう、
+				// 「実際に適用されたworkspaceのepochが変わったか」で判定する。
+				const applied = mergeWorkspaceState(previous, incoming);
+				const epochChanged = previous !== undefined && applied.desktopEpoch !== previous.desktopEpoch;
+				this.state.workspace = applied;
 				this.cancelStaleRendererRequests();
 				if (epochChanged) {
 					this.state.terminalOutput.clear();

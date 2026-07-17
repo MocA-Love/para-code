@@ -182,6 +182,37 @@ describe('MobileController', () => {
 		expect(mergeWorkspaceState(previous, incoming).activeWs).toBeUndefined();
 	});
 
+	it('keeps the last known workspace view while a restarted PC has no ready renderer yet', () => {
+		// PC再起動 = desktopEpochが変わる。起動直後の部分state（window未claim）で旧表示を
+		// 破壊すると、再起動のたびにホームからエージェント・ターミナルが全消えする。
+		const previous: WorkspaceState = {
+			protocolVersion: 3, desktopEpoch: 'old-desktop', revision: 9, complete: true,
+			renderers: [{ windowId: 1, rendererGeneration: 3, ready: true }], activeWs: '1:w1',
+			workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'one' }],
+			terminals: [{ terminalKey: 'terminal-1', id: 1, windowId: 1, rendererGeneration: 3, title: 'agent', agent: true }],
+		};
+		const bootState: WorkspaceState = {
+			protocolVersion: 3, desktopEpoch: 'new-desktop', revision: 1, complete: false,
+			renderers: [], activeWs: undefined, workspaces: [], terminals: [],
+		};
+		expect(mergeWorkspaceState(previous, bootState)).toBe(previous);
+
+		// 新epochのwindowがreadyになったら、そのwindowの内容は新stateへ置換し、未観測分は残す。
+		const firstReady: WorkspaceState = {
+			protocolVersion: 3, desktopEpoch: 'new-desktop', revision: 2, complete: false,
+			renderers: [{ windowId: 1, rendererGeneration: 1, ready: true }], activeWs: '1:w1',
+			workspaces: [{ id: '1:w1', sourceId: 'w1', windowId: 1, name: 'one' }],
+			terminals: [{ terminalKey: 'terminal-1', id: 1, windowId: 1, rendererGeneration: 1, title: 'agent', agent: true }],
+		};
+		const merged = mergeWorkspaceState(previous, firstReady);
+		expect(merged.desktopEpoch).toBe('new-desktop');
+		expect(merged.terminals.map(t => [t.terminalKey, t.rendererGeneration])).toEqual([['terminal-1', 1]]);
+
+		// 全windowが揃ったcomplete:trueは従来どおり全置換（本当に閉じた端末はここで消える）。
+		const complete: WorkspaceState = { ...firstReady, revision: 3, complete: true, terminals: [] };
+		expect(mergeWorkspaceState(previous, complete).terminals).toEqual([]);
+	});
+
 	it('uses terminalKey when numeric terminal ids collide across windows', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();

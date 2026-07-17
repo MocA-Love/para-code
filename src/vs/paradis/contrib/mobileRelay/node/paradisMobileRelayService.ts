@@ -30,6 +30,7 @@ import { FrameMux } from '../common/paradisMobileMux.js';
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
+import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { IParadisFileSearchResult, IParadisTextSearchResult, paradisSearchFiles, paradisSearchText } from './paradisMobileSearch.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
 import { ParadisMobileTerminalRegistry } from './paradisMobileTerminalRegistry.js';
@@ -302,6 +303,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			createParadisShellEnvResolver(logService, configurationService, args),
 		);
 		this.statePath = join(this.userDataPath, 'paradis-mobile-relay.json');
+		// エージェントセッション対応表の永続化先。shared process再起動（=PC再起動・アップデート）を
+		// またいで、実行中エージェントのモバイル表示を復元するために使う。
+		const agentSessionStore = new ParadisAgentSessionStore(join(this.userDataPath, 'paradis-agent-sessions.json'), this.logService);
 		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), cdpFrames, sharedPageBindings, this.logService));
 		this.agentChat = this._register(new ParadisMobileAgentChat(
 			(mobileId, payload) => {
@@ -328,7 +332,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				windowSession: owner.windowSession,
 				rendererGeneration: owner.rendererGeneration,
 			}),
+			agentSessionStore,
 		));
+		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(tokens => {
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);

@@ -9,13 +9,14 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IParadisMobileWindowLease, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileRendererLeaseAuthority } from '../common/paradisMobileWindowLease.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
+import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
 
 /** Electron IPC connection contextを使ってRenderer世代を発行・検証するMain Process channel。 */
 export class ParadisMobileWindowLeaseChannel extends Disposable implements IServerChannel<string> {
 	private readonly authority = new ParadisMobileRendererLeaseAuthority();
 	private readonly _onDidChangeManifest = this._register(new Emitter<ReturnType<ParadisMobileRendererLeaseAuthority['manifest']>>());
 
-	constructor(server: IPCServer<string>, windowsMainService: IWindowsMainService) {
+	constructor(server: IPCServer<string>, windowsMainService: IWindowsMainService, lifecycleMainService?: ILifecycleMainService) {
 		super();
 		const registerWindow = (window: ReturnType<IWindowsMainService['getWindows']>[number]) => {
 			const trackIfWorkbench = () => {
@@ -29,6 +30,12 @@ export class ParadisMobileWindowLeaseChannel extends Disposable implements IServ
 				this._register(Event.once(window.onWillLoad)(trackIfWorkbench));
 			}
 			this._register(Event.once(Event.any(window.onDidClose, window.onDidDestroy))(() => {
+				// アプリ終了中のwindow closeは「windowを本当に閉じた」ではない。ここでmanifestを
+				// 空にすると、終了間際のshared processが「complete:true・空」のstateを配信し、
+				// モバイル側のワークスペース・端末・エージェント表示が毎回全消去される。
+				if (lifecycleMainService?.quitRequested === true) {
+					return;
+				}
 				if (this.authority.destroyWindow(window.id)) {
 					this.fireManifest();
 				}
