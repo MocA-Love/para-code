@@ -11,6 +11,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+// PARA-PATCH: add combinedDisposable for the initialization barrier's combined listener/lifetime disposable (Para Browser MCP recovery hardening)
 import { combinedDisposable, Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ACTIVE_GROUP, AUX_WINDOW_GROUP, IEditorService, PreferredGroup, USE_MODAL_EDITOR_SETTING, UseModalEditorMode } from '../../../services/editor/common/editorService.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -37,6 +38,7 @@ import { localChatSessionType } from '../../chat/common/chatSessionsService.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { ITunnelProxyInfo } from '../../../../platform/tunnel/common/tunnelProxy.js';
 
+// PARA-PATCH: introduce paradisCreateBrowserViewInitialization and its options/result types - a non-rejecting barrier that subscribes before snapshotting existing views, with bounded backoff/timeout retries, to close the snapshot/listen gap on recovery (Para Browser MCP recovery hardening)
 export interface IParadisBrowserViewInitialization<T> {
 	readonly listener: IDisposable;
 	readonly whenInitialized: Promise<boolean>;
@@ -282,6 +284,7 @@ const browserViewContextMenuCommands = [
 
 export class BrowserViewWorkbenchService extends Disposable implements IBrowserViewWorkbenchService {
 	declare readonly _serviceBrand: undefined;
+	// PARA-PATCH: expose whenInitialized barrier so callers can await the existing-view snapshot (Para Browser MCP recovery hardening)
 	readonly whenInitialized: Promise<boolean>;
 
 	private readonly _browserViewService: IBrowserViewService;
@@ -375,6 +378,7 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 			}
 		}));
 
+		// PARA-PATCH: replace the fire-and-forget _initializeExistingViews() + create listener with the ordered initialization barrier so no view created during startup is lost (Para Browser MCP recovery hardening)
 		// The listener must exist before the existing-view snapshot starts. Otherwise a view
 		// created between getBrowserViews() and listener registration can remain unknown forever.
 		const initialization = paradisCreateBrowserViewInitialization(
@@ -524,6 +528,7 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 	 * Fetch all views owned by this window from the main service and create
 	 * models for them so they are available synchronously.
 	 */
+	// PARA-PATCH: replace _initializeExistingViews() with a per-view accept handler shared by the create listener and the snapshot barrier, also opening the editor when openOptions are present (Para Browser MCP recovery hardening)
 	private _acceptInitializedView(event: { readonly info: { readonly id: string; readonly owner: IBrowserViewOwner; readonly state: IBrowserViewState }; readonly openOptions?: IBrowserViewOpenOptions }): void {
 		if (event.info.owner.mainWindowId !== this._mainWindowId) {
 			return;

@@ -3,6 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-PATCH: import nativeImage/NativeImage for screenshot encoding and WebFrameMain for per-frame automation key delivery (Para Browser MCP screenshot + automation input hardening)
 import { nativeImage, screen, WebContentsView, webContents, type NativeImage, type WebFrameMain } from 'electron';
 import { Disposable } from '../../../base/common/lifecycle.js';
 import { Emitter, Event } from '../../../base/common/event.js';
@@ -22,9 +23,12 @@ import { IAuxiliaryWindow } from '../../auxiliaryWindow/electron-main/auxiliaryW
 import { SCAN_CODE_STR_TO_EVENT_KEY_CODE } from '../../../base/common/keyCodes.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 import { logBrowserOpen } from '../common/browserViewTelemetry.js';
+// PARA-PATCH: import the fork's screenshot policy helpers (route selection, pixel-budget guard, bounded scale, retry/restore) for the hardened capture pipeline (Para Browser MCP screenshot hardening)
 import { BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, type BrowserViewScreenshotRoute, type IBrowserViewScreenshotValidation } from '../common/browserViewScreenshot.js';
+// PARA-PATCH: import automation-key signature helpers and the expectation queue used to isolate injected keystrokes (Para Browser MCP automation input isolation)
 import { BrowserViewAutomationKeyExpectationQueue, browserViewAutomationKeySignatureFromCdp, browserViewAutomationKeySignatureFromElectron, type IBrowserViewAutomationKeyRegistration, type IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
 
+// PARA-PATCH: bound how long the main process waits for preload acks and track per-sequence automation key acks in flight (Para Browser MCP automation input isolation)
 const BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS = 1_000;
 
 interface IPendingAutomationKeyAck {
@@ -76,6 +80,7 @@ export class BrowserView extends Disposable {
 
 	private static readonly MAX_CONSOLE_LOG_ENTRIES = 1000;
 	private readonly _consoleLogs: string[] = [];
+	// PARA-PATCH: state for the hardened screenshot pipeline and automation-key isolation - serialize captures, track key expectations/frames/sequence, and hold a focus authority that rotates on every focus/blur (Para Browser MCP screenshot + automation input hardening)
 	private readonly _screenshotCoordinator = new BrowserViewScreenshotCoordinator();
 	private readonly _automationKeyExpectations = this._register(new BrowserViewAutomationKeyExpectationQueue(sequence => this._automationKeyFrames.delete(sequence)));
 	private readonly _pendingAutomationKeyAcks = new Map<number, IPendingAutomationKeyAck>();
@@ -242,6 +247,7 @@ export class BrowserView extends Disposable {
 		});
 
 		this.debugger = new BrowserViewDebugger(this, this.logService);
+		// PARA-PATCH: drop stale automation key expectations when the debugger detaches so recovery starts clean (Para Browser MCP automation input isolation)
 		this._register(this.debugger.onDidDetach(() => this.clearAutomationKeyExpectations()));
 		this.emulator = this._register(new BrowserViewEmulator(this, this.logService));
 		this.inspector = this._register(new BrowserViewInspector(this));
@@ -399,6 +405,7 @@ export class BrowserView extends Disposable {
 			}
 		});
 		webContents.on('did-finish-load', () => fireLoadingEvent(false));
+		// PARA-PATCH: navigation discards the preload's isolated state, so clear any pending automation key expectations (Para Browser MCP automation input isolation)
 		webContents.on('did-start-navigation', () => this.clearAutomationKeyExpectations());
 
 		this.session.trust.installCertErrorHandler(webContents);
@@ -454,12 +461,14 @@ export class BrowserView extends Disposable {
 
 		// Focus events
 		webContents.on('focus', () => {
+			// PARA-PATCH: real user focus rotates the input authority and invalidates any pending automation key so injected input can never masquerade as user input (Para Browser MCP automation input isolation)
 			this._automationInputFocusAuthority = Object.freeze({});
 			this.invalidateAutomationKeyExpectationsForUserFocus();
 			this._onDidChangeFocus.fire({ focused: true });
 		});
 
 		webContents.on('blur', () => {
+			// PARA-PATCH: rotate the input authority on blur so a stale authority can never authorize a later automation key (Para Browser MCP automation input isolation)
 			this._automationInputFocusAuthority = Object.freeze({});
 			this._onDidChangeFocus.fire({ focused: false });
 		});
@@ -468,6 +477,7 @@ export class BrowserView extends Disposable {
 			this._onDidKeyCommand.fire(keyEvent);
 		};
 
+		// PARA-PATCH: handle preload acks for automation key register/activate and preload-consumed notifications, validating sender frame, sequence and signature before mutating expectation state (Para Browser MCP automation input isolation)
 		webContents.on('ipc-message', (event, channel, ...args) => {
 			const senderFrame = (event as { senderFrame?: WebFrameMain }).senderFrame;
 			const payload = args[0];
@@ -520,6 +530,7 @@ export class BrowserView extends Disposable {
 
 		// If the page won't be able to handle events, forward key down events directly.
 		webContents.on('before-input-event', (event, input) => {
+			// PARA-PATCH: swallow inputs matching an active automation expectation before the direct-forward path so injected keys are not delivered as workbench key commands (Para Browser MCP automation input isolation)
 			const automationSignature = browserViewAutomationKeySignatureFromElectron(input);
 			if (automationSignature && this._automationKeyExpectations.consume(automationSignature, 'before-input-event') !== undefined) {
 				return;
@@ -547,6 +558,7 @@ export class BrowserView extends Disposable {
 				key: input.key,
 				keyCode: eventKeyCode,
 				code: input.code,
+				// PARA-PATCH: include the key location so automation key signatures can be matched on the workbench side (Para Browser MCP automation input isolation)
 				location: input.location,
 				ctrlKey: input.control,
 				shiftKey: input.shift,
@@ -596,6 +608,7 @@ export class BrowserView extends Disposable {
 		});
 	}
 
+	// PARA-PATCH: automation key isolation API - prepare/activate/commit/complete/cancel an exact keystroke across all live preload frames with acks, plus focus-authority capture and the frame/expectation cleanup helpers, so injected CDP keys are delivered exactly once and never confused with real user input (Para Browser MCP automation input isolation)
 	/** Opaque Main-local authority that changes on every focus or blur transition. */
 	captureAutomationInputFocusAuthority(): object | undefined {
 		if (this._isDisposed || this.webContents.isDestroyed()) {
@@ -1011,6 +1024,7 @@ export class BrowserView extends Disposable {
 	/**
 	 * Capture a screenshot of this view
 	 */
+	// PARA-PATCH: route the capture through the serialized screenshot policy (coordinator + timing/trace + failure classification) instead of the inline capturePage path (Para Browser MCP screenshot hardening)
 	async captureScreenshot(options?: IBrowserViewCaptureScreenshotOptions): Promise<VSBuffer> {
 		const route = browserViewScreenshotRoute(options);
 		const startedAt = Date.now();
@@ -1033,6 +1047,7 @@ export class BrowserView extends Disposable {
 		}
 	}
 
+	// PARA-PATCH: per-route capture body (full-page / document-rect / screen-rect) with abort checks, pixel-budget guards and validated retry-until-valid encoding (Para Browser MCP screenshot hardening)
 	private async _captureScreenshot(options: IBrowserViewCaptureScreenshotOptions | undefined, route: BrowserViewScreenshotRoute, signal: AbortSignal): Promise<VSBuffer> {
 		browserViewThrowIfScreenshotAborted(signal);
 		const quality = options?.quality ?? 80;
@@ -1102,6 +1117,7 @@ export class BrowserView extends Disposable {
 		return screenshot;
 	}
 
+	// PARA-PATCH: capture a document-coordinate pageRect beyond the viewport via CDP with validated retry (Para Browser MCP screenshot hardening)
 	private async _captureDocumentRectScreenshot(
 		pageRect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
 		format: 'jpeg' | 'png',
@@ -1132,6 +1148,7 @@ export class BrowserView extends Disposable {
 	}
 
 	// Capture a screenshot of the full scrollable document (beyond the viewport) via CDP.
+	// PARA-PATCH: rewrite full-page capture to add abort checks, emulation-aware pixel budgeting/scaling and validated retry-until-valid encoding (Para Browser MCP screenshot hardening)
 	private async _captureFullPageScreenshot(format: 'jpeg' | 'png', quality: number, signal: AbortSignal): Promise<VSBuffer> {
 		browserViewThrowIfScreenshotAborted(signal);
 		const metrics = await this.debugger.sendCommand('Page.getLayoutMetrics') as { cssContentSize?: { width: number; height: number } };
@@ -1206,6 +1223,7 @@ export class BrowserView extends Disposable {
 		return VSBuffer.wrap(candidate.encoded);
 	}
 
+	// PARA-PATCH: run Page.captureScreenshot and always restore pinch-to-zoom limits afterwards, returning a NativeImage for validation (Para Browser MCP screenshot hardening)
 	private async _captureBeyondViewportImage(params: Record<string, unknown>, signal: AbortSignal): Promise<NativeImage> {
 		return captureBrowserViewWithRestore(async () => {
 			const result = await this.debugger.sendCommand('Page.captureScreenshot', params) as { data?: unknown };
@@ -1217,6 +1235,7 @@ export class BrowserView extends Disposable {
 		});
 	}
 
+	// PARA-PATCH: reject empty/oversized images with lazy bitmap extraction before encoding, tracing the validation outcome (Para Browser MCP screenshot hardening)
 	private _validateAndEncodeScreenshot(image: NativeImage, format: 'jpeg' | 'png', quality: number, route: BrowserViewScreenshotRoute, attempt: number): IBrowserViewScreenshotValidation<Buffer> {
 		const size = image.getSize();
 		const result = browserViewValidateAndEncodeScreenshot({
@@ -1233,6 +1252,7 @@ export class BrowserView extends Disposable {
 		return result;
 	}
 
+	// PARA-PATCH: host-display and emulation-adjusted device pixel ratios used by the screenshot pixel-budget guards (Para Browser MCP screenshot hardening)
 	private _devicePixelRatio(): number {
 		const hostWindow = this._hostWindow;
 		return (hostWindow ? screen.getDisplayMatching(hostWindow.getBounds()) : screen.getPrimaryDisplay()).scaleFactor;
@@ -1368,6 +1388,7 @@ export class BrowserView extends Disposable {
 			return;
 		}
 		this._isDisposed = true;
+		// PARA-PATCH: clear pending automation key expectations on disposal so no preload ack or timer outlives the view (Para Browser MCP automation input isolation)
 		this.clearAutomationKeyExpectations();
 
 		// Dispose debugger. This detaches debug sessions first.

@@ -29,6 +29,7 @@ import { IWorkingCopyEditorHandler, IWorkingCopyEditorService } from '../../comm
 import { bufferToReadable, VSBuffer } from '../../../../../base/common/buffer.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { Schemas } from '../../../../../base/common/network.js';
+// PARA-PATCH: import the backup restore router to exercise deferred backup restoration
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision, WorkingCopyBackupRestoreRouter } from '../../common/workingCopyBackupRestoreRouter.js';
 
 suite('WorkingCopyBackupTracker (browser)', function () {
@@ -55,6 +56,7 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 			@ILogService logService: ILogService,
 			@IWorkingCopyEditorService workingCopyEditorService: IWorkingCopyEditorService,
 			@IEditorService editorService: IEditorService,
+			// PARA-PATCH: inject the backup restore router and forward it to the base tracker
 			@IWorkingCopyBackupRestoreRouter workingCopyBackupRestoreRouter: IWorkingCopyBackupRestoreRouter,
 		) {
 			super(workingCopyBackupService, filesConfigurationService, workingCopyService, lifecycleService, logService, workingCopyEditorService, editorService, workingCopyBackupRestoreRouter);
@@ -90,6 +92,7 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 		const workingCopyBackupService = disposables.add(new InMemoryTestWorkingCopyBackupService());
 		const instantiationService = workbenchInstantiationService(undefined, disposables);
 		instantiationService.stub(IWorkingCopyBackupService, workingCopyBackupService);
+		// PARA-PATCH: stub the backup restore router the base tracker now depends on
 		instantiationService.stub(IWorkingCopyBackupRestoreRouter, disposables.add(new WorkingCopyBackupRestoreRouter()));
 
 		const part = await createEditorPart(instantiationService, disposables);
@@ -185,6 +188,7 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 		assert.strictEqual(workingCopyBackupService.hasBackupSync(customWorkingCopy), false);
 	});
 
+	// PARA-PATCH: accept an optional route callback and also return the router so tests can drive deferral
 	async function restoreBackupsInit(route?: (identifier: { readonly resource: URI; readonly typeId: string }) => WorkingCopyBackupRestoreDecision): Promise<[TestWorkingCopyBackupTracker, TestServiceAccessor, WorkingCopyBackupRestoreRouter]> {
 		const fooFile = URI.file(isWindows ? 'c:\\Foo' : '/Foo');
 		const barFile = URI.file(isWindows ? 'c:\\Bar' : '/Bar');
@@ -194,6 +198,7 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 		const workingCopyBackupService = disposables.add(new InMemoryTestWorkingCopyBackupService());
 		const instantiationService = workbenchInstantiationService(undefined, disposables);
 		instantiationService.stub(IWorkingCopyBackupService, workingCopyBackupService);
+		// PARA-PATCH: build a backup restore router (optionally with the given route) and stub it
 		const restoreRouter = disposables.add(new WorkingCopyBackupRestoreRouter());
 		if (route) {
 			disposables.add(restoreRouter.registerProvider({ route }));
@@ -223,9 +228,11 @@ suite('WorkingCopyBackupTracker (browser)', function () {
 
 		accessor.lifecycleService.phase = LifecyclePhase.Restored;
 
+		// PARA-PATCH: also return the router so callers can request restore
 		return [tracker, accessor, restoreRouter];
 	}
 
+	// PARA-PATCH: new test covering deferred backups that stay pending until the router requests restore
 	test('Restore backups keeps deferred backups pending and retries them on request', async function () {
 		let decision = WorkingCopyBackupRestoreDecision.Defer;
 		const [tracker, accessor, restoreRouter] = await restoreBackupsInit(() => decision);

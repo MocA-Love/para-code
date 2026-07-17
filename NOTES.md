@@ -42,6 +42,16 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - `origin`: このGitHubリポジトリ（public、2026-07-13確認）
 - ブランチ運用は今後要検討（upstreamのタグを定期的に取り込む前提。マージ戦略は未確定）
 - **`main`の起点はupstreamスナップショットを1コミットに圧縮したもの**（`git checkout --orphan` + `git add -A`）。以後のPara Code開発コミットは通常どおり積み上げている。Microsoft側のフル履歴は`upstream`から`git log upstream/main`等で参照可能。理由は下記「pushトラブル」参照
+- **スナップショット元のupstreamコミットを特定済み（2026-07-18）**: 起点コミット `21e6e7d858c`（`chore: para-code baseline from microsoft/vscode`）は upstream の **`7ad5744c6852a42e070b6d6045e3e1215cc120fd`**（2026-07-01、1.128系）のツリーと完全一致（差分はfork追加のNOTES.md/mise.tomlのみ）。upstream取り込み時はこのコミットをマージベースとして使う（例: `git replace --graft 21e6e7d858c 7ad5744c685` でローカルに共通祖先を教えてから3-wayマージ。replace refはpushされないためリモートには影響しない）。マージをsquashで確定した場合は、確定後にこの行を「現在のツリーが対応するupstreamコミット」で更新すること
+
+## upstream取り込み前監査の記録（2026-07-18、1.129取り込み準備）
+
+1.129取り込み準備中に、ベースコミット（上記`7ad5744c685`）との全差分をマーカーと突き合わせる監査を実施した。結果と対処:
+
+- upstream由来ファイルへのfork変更153ファイルのうち、**32個の.tsファイルにPARA-PATCHマーカーが無かった**。全て`para:`プレフィックスも無い一連のコミット由来（`ff54c8f7aa5` fix: harden Para Browser MCP isolation and recovery / `e07c045da85` fix: preserve terminal recovery and workspace ownership / `8f9c774d82f` fix: harden mobile relay routing and recovery / `b22aec2a71c` feat: pin auxiliary windows to spaces / `ae344defc3d` feat: scope unsaved editors to spaces / `fcbac0e0e4c` feat: optionally open a terminal when splitting editors / `fb3726df103` fix: make scoped retirement crash-safe / `e7ec0beb0a9` feat: add automatic Codex terminal titles / `478af1a1ea8` fix: redraw terminals after window moves）
+- 対処: 32ファイル全てにPARA-PATCHマーカーを後付けした（コメント行のみ121行追加、挙動変更なし、typecheck-client通過）。コミットプレフィックス違反の過去履歴は書き換えない（force push回避）。**今後のコミットは必ず`para:`プレフィックスを付けること**
+- 判明した副次的な問題: terminal系のupstream由来ファイル（`terminal.ts`等）のフィールド説明コメントに`PARA-CODE:`マーカーが使われている箇所がある。`PARA-CODE`は「fork新規作成ファイル全体」用のマーカーなので、`grep -rl "PARA-CODE:"`のfork所有ファイル一覧に誤って載る。将来の整理候補（実害は小さいので未修正）
+- 監査の再現方法: `git diff --name-status <ベースコミット> HEAD` でM（変更）ファイルを列挙し、各ファイルの`PARA-PATCH`有無をgrep。コメント不能ファイルは本ファイルの台帳と突き合わせる
 
 ## pushトラブルの記録（2026-07-01）
 

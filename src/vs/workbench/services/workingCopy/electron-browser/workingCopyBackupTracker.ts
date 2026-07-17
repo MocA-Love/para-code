@@ -24,6 +24,7 @@ import { CancellationToken, CancellationTokenSource } from '../../../../base/com
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { Promises, raceCancellation } from '../../../../base/common/async.js';
 import { IWorkingCopyEditorService } from '../common/workingCopyEditorService.js';
+// PARA-PATCH: import the backup restore router so backups can be deferred per space
 import { IWorkingCopyBackupRestoreRouter } from '../common/workingCopyBackupRestoreRouter.js';
 
 export class NativeWorkingCopyBackupTracker extends WorkingCopyBackupTracker implements IWorkbenchContribution {
@@ -44,6 +45,7 @@ export class NativeWorkingCopyBackupTracker extends WorkingCopyBackupTracker imp
 		@IProgressService private readonly progressService: IProgressService,
 		@IWorkingCopyEditorService workingCopyEditorService: IWorkingCopyEditorService,
 		@IEditorService editorService: IEditorService,
+		// PARA-PATCH: inject the backup restore router and forward it to the base tracker
 		@IWorkingCopyBackupRestoreRouter workingCopyBackupRestoreRouter: IWorkingCopyBackupRestoreRouter,
 	) {
 		super(workingCopyBackupService, workingCopyService, logService, lifecycleService, filesConfigurationService, workingCopyEditorService, editorService, workingCopyBackupRestoreRouter);

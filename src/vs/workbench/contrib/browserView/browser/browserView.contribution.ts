@@ -12,6 +12,7 @@ import { CDPEvent, CDPRequest, CDPResponse } from '../../../../platform/browserV
 import { ITunnelProxyInfo } from '../../../../platform/tunnel/common/tunnelProxy.js';
 import { BrowserEditorInput } from '../common/browserEditorInput.js';
 
+// PARA-PATCH: export the web service and resolve whenInitialized immediately (web has no main-process snapshot to wait for) (Para Browser MCP recovery hardening)
 export class WebBrowserViewWorkbenchService implements IBrowserViewWorkbenchService {
 	declare readonly _serviceBrand: undefined;
 	readonly whenInitialized = Promise.resolve(true);

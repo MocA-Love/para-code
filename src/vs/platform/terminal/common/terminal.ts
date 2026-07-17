@@ -206,6 +206,7 @@ export interface IPtyHostAttachTarget {
 	type?: TerminalType;
 	hasChildProcesses: boolean;
 	shellIntegrationNonce: string;
+	// PARA-PATCH: mobile relay recovery — expose the revived/detached PTY pane token on attach targets
 	/** PARA-CODE: The actual pane token retained by the revived or detached PTY. */
 	paradisPaneToken?: string;
 	tabActions?: ITerminalTabAction[];
@@ -582,6 +583,7 @@ export interface IShellLaunchConfig {
 		hideFromUser?: boolean;
 		isFeatureTerminal?: boolean;
 		shellIntegrationNonce: string;
+		// PARA-PATCH: mobile relay recovery — carry the pane token through persistent process reattach
 		/** PARA-CODE: The actual pane token retained by the revived or detached PTY. */
 		paradisPaneToken?: string;
 		tabActions?: ITerminalTabAction[];
@@ -706,6 +708,7 @@ export interface ICreateContributedTerminalProfileOptions {
 	location?: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean };
 	cwd?: string | URI;
 	titleTemplate?: string;
+	// PARA-PATCH: preserve workspace ownership — thread the terminal creation scope lease through contributed profiles
 	/** PARA-CODE: Internal scope authority propagated through a contributed profile provider. */
 	paradisTerminalCreationScopeLease?: string;
 }

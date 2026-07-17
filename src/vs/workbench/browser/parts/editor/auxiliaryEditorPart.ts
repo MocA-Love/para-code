@@ -22,6 +22,7 @@ import { IAuxiliaryTitlebarPart } from '../titlebar/titlebarPart.js';
 import { WindowTitle } from '../titlebar/windowTitle.js';
 import { IAuxiliaryWindowOpenOptions, IAuxiliaryWindowService } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { GroupDirection, GroupsOrder, IAuxiliaryEditorPart, GroupActivationReason } from '../../../services/editor/common/editorGroupsService.js';
+// PARA-PATCH: pin auxiliary windows to spaces — import close validator that vetoes closing pinned aux windows
 import { paradisValidateAuxiliaryWindowClose } from '../../../services/editor/common/paradisAuxiliaryWindowRestore.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IHostService } from '../../../services/host/browser/host.js';
@@ -278,6 +279,7 @@ export class AuxiliaryEditorPart {
 					}
 				}
 			}
+			// PARA-PATCH: pin auxiliary windows to spaces — veto window close when an editor is pinned to a space
 			const paradisCloseVeto = paradisValidateAuxiliaryWindowClose(editorPart);
 			if (paradisCloseVeto) {
 				event.veto(paradisCloseVeto);
@@ -450,6 +452,7 @@ class AuxiliaryEditorPartImpl extends EditorPart implements IAuxiliaryEditorPart
 	}
 
 	private doClose(mergeConfirmingEditorsToMainPart: boolean): boolean {
+		// PARA-PATCH: pin auxiliary windows to spaces — block programmatic close when an editor is pinned to a space
 		if (paradisValidateAuxiliaryWindowClose(this)) {
 			return false;
 		}

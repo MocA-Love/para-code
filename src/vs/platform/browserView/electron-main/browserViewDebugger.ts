@@ -7,6 +7,7 @@ import { Emitter } from '../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 import { ILogService } from '../../log/common/log.js';
 import { CDPEvent, CDPTargetInfo, ICDPConnection } from '../common/cdp/types.js';
+// PARA-PATCH: import BrowserView as a type only to break a runtime require cycle (Para Browser MCP isolation hardening)
 import type { BrowserView } from './browserView.js';
 
 /**
@@ -55,6 +56,7 @@ export class BrowserViewDebugger extends Disposable {
 	/** Fired when targetInfo for a known target changes (e.g. title/url update). */
 	readonly onTargetInfoChanged = this._onTargetInfoChanged.event;
 
+	// PARA-PATCH: fire onDidDetach so the browser view can recover CDP state after an unexpected debugger detach (Para Browser MCP recovery hardening)
 	private readonly _onDidDetach = this._register(new Emitter<void>());
 	readonly onDidDetach = this._onDidDetach.event;
 
@@ -65,6 +67,7 @@ export class BrowserViewDebugger extends Disposable {
 	readonly targetId: string;
 
 	private readonly _messageHandler: (event: Electron.Event, method: string, params: unknown, sessionId?: string) => void;
+	// PARA-PATCH: keep a stable detach handler reference so it can be added and removed on the Electron debugger (Para Browser MCP recovery hardening)
 	private readonly _detachHandler: () => void;
 	private readonly _electronDebugger: Electron.Debugger;
 	private readonly _interceptors = new Set<CDPCommandInterceptor>();
@@ -81,6 +84,7 @@ export class BrowserViewDebugger extends Disposable {
 		this._messageHandler = (_event: Electron.Event, method: string, params: unknown, sessionId?: string) => {
 			this.routeCDPEvent(method, params, sessionId);
 		};
+		// PARA-PATCH: bind the detach handler once so it can be attached/removed as the same listener (Para Browser MCP recovery hardening)
 		this._detachHandler = () => this.handleElectronDebuggerDetached();
 	}
 
@@ -166,6 +170,7 @@ export class BrowserViewDebugger extends Disposable {
 		}
 
 		this._electronDebugger.on('message', this._messageHandler);
+		// PARA-PATCH: register the detach listener and roll back both listeners if attach() throws, so a failed attach leaves no stale handlers (Para Browser MCP recovery hardening)
 		this._electronDebugger.on('detach', this._detachHandler);
 		try {
 			this._electronDebugger.attach('1.3');
@@ -198,6 +203,7 @@ export class BrowserViewDebugger extends Disposable {
 			}
 
 			this._electronDebugger.removeListener('message', this._messageHandler);
+			// PARA-PATCH: also remove the detach listener and run the shared detached cleanup so state resets on manual detach (Para Browser MCP recovery hardening)
 			this._electronDebugger.removeListener('detach', this._detachHandler);
 			this._electronDebugger.detach();
 			this.handleElectronDebuggerDetached();
@@ -206,6 +212,7 @@ export class BrowserViewDebugger extends Disposable {
 		}
 	}
 
+	// PARA-PATCH: reset sessions, known targets and pause state on any debugger detach so a reattach starts clean (Para Browser MCP recovery hardening)
 	private handleElectronDebuggerDetached(): void {
 		this._electronDebugger.removeListener('message', this._messageHandler);
 		this._electronDebugger.removeListener('detach', this._detachHandler);

@@ -721,6 +721,7 @@ suite('EditorGroupModel', () => {
 		assert.strictEqual(deserialized.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE).length, 0);
 	});
 
+	// PARA-PATCH: scope unsaved editors to spaces — cover the serialize predicate excluding a live input without corrupting metadata
 	test('group serialization excludes selected live inputs without corrupting metadata', function () {
 		inst().invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
 		const group = createEditorGroupModel();

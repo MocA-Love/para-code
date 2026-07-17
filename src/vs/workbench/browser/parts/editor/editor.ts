@@ -196,6 +196,7 @@ export interface IEditorPartsView {
 
 	readonly count: number;
 
+	// PARA-PATCH: scope unsaved editors to spaces — expose serialization/retention hooks on the parts view
 	shouldSerializeEditor(editor: EditorInput): boolean;
 	isEditorInputRetained(editor: EditorInput): boolean;
 

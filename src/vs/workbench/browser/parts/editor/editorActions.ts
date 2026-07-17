@@ -14,6 +14,7 @@ import { IKeybindingService } from '../../../../platform/keybinding/common/keybi
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { CLOSE_EDITOR_COMMAND_ID, MOVE_ACTIVE_EDITOR_COMMAND_ID, SelectedEditorsMoveCopyArguments, SPLIT_EDITOR_LEFT, SPLIT_EDITOR_RIGHT, SPLIT_EDITOR_UP, SPLIT_EDITOR_DOWN, splitEditor, LAYOUT_EDITOR_GROUPS_COMMAND_ID, UNPIN_EDITOR_COMMAND_ID, COPY_ACTIVE_EDITOR_COMMAND_ID, SPLIT_EDITOR, TOGGLE_MAXIMIZE_EDITOR_GROUP, MOVE_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, COPY_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, MOVE_EDITOR_GROUP_INTO_NEW_WINDOW_COMMAND_ID, COPY_EDITOR_GROUP_INTO_NEW_WINDOW_COMMAND_ID, NEW_EMPTY_EDITOR_WINDOW_COMMAND_ID, MOVE_EDITOR_INTO_RIGHT_GROUP, MOVE_EDITOR_INTO_LEFT_GROUP, MOVE_EDITOR_INTO_ABOVE_GROUP, MOVE_EDITOR_INTO_BELOW_GROUP, REOPEN_ACTIVE_EDITOR_WITH_COMMAND_ID } from './editorCommands.js';
 import { IEditorGroupsService, IEditorGroup, GroupsArrangement, GroupLocation, GroupDirection, preferredSideBySideGroupDirection, IFindGroupScope, GroupOrientation, EditorGroupLayout, GroupsOrder, MergeGroupMode } from '../../../services/editor/common/editorGroupsService.js';
+// PARA-PATCH: pin auxiliary windows to spaces — import aux window restore handler used before merging groups
 import { paradisHandleAuxiliaryWindowRestore } from '../../../services/editor/common/paradisAuxiliaryWindowRestore.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -73,6 +74,7 @@ abstract class AbstractSplitEditorAction extends Action2 {
 		const direction = this.getDirection(configurationService);
 		const commandContext = resolveCommandsContext(args, editorService, editorGroupsService, listService);
 
+		// PARA-PATCH: optionally open a terminal when splitting editors — await async splitEditor(accessor, ...)
 		await splitEditor(accessor, editorGroupsService, direction, commandContext);
 	}
 }
@@ -2705,6 +2707,7 @@ export class RestoreEditorsToMainWindowAction extends Action2 {
 
 	override async run(accessor: ServicesAccessor): Promise<void> {
 		const editorGroupService = accessor.get(IEditorGroupsService);
+		// PARA-PATCH: pin auxiliary windows to spaces — let a pinned aux window handle restore before merging into the main part
 		const activePart = editorGroupService.parts.find(part => part.windowId === editorGroupService.activeGroup.windowId);
 		if (activePart && activePart !== editorGroupService.mainPart
 			&& await paradisHandleAuxiliaryWindowRestore(activePart)) {

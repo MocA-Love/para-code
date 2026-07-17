@@ -209,6 +209,7 @@ export interface IBrowserViewOpenHandler {
 export interface IBrowserViewWorkbenchService {
 	readonly _serviceBrand: undefined;
 
+	// PARA-PATCH: expose whenInitialized so callers can await the main-process existing-view snapshot (Para Browser MCP recovery hardening)
 	/**
 	 * Resolves after the desktop main-process snapshot of already existing views has converged.
 	 * The promise never rejects. Web implementations resolve immediately.

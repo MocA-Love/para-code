@@ -78,6 +78,7 @@ export interface ITerminalInternalOptions {
 	 * a property we resolve internally
 	 */
 	location?: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean };
+	// PARA-PATCH: preserve workspace ownership — internal terminal creation scope lease option
 	/** PARA-CODE: Internal renderer scope authority; not part of the extension API. */
 	paradisTerminalCreationScopeLease?: string;
 }
@@ -198,6 +199,7 @@ export class ExtHostTerminal extends Disposable {
 			isTransient: options.isTransient ?? undefined,
 			shellIntegrationNonce: options.shellIntegrationNonce ?? undefined,
 			titleTemplate: options.titleTemplate ?? undefined,
+			// PARA-PATCH: preserve workspace ownership — forward the creation scope lease when creating a terminal
 			paradisTerminalCreationScopeLease: internalOptions?.paradisTerminalCreationScopeLease,
 		});
 	}
@@ -216,6 +218,7 @@ export class ExtHostTerminal extends Disposable {
 			isTransient: true,
 			shellIntegrationNonce: shellIntegrationNonce ?? undefined,
 			titleTemplate: titleTemplate ?? undefined,
+			// PARA-PATCH: preserve workspace ownership — forward the creation scope lease when opening an ext host terminal
 			paradisTerminalCreationScopeLease: internalOptions?.paradisTerminalCreationScopeLease,
 		});
 		// At this point, the id has been set via `$acceptTerminalOpened`

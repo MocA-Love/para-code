@@ -4,9 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { localize } from '../../../../nls.js';
+// PARA-PATCH: scope unsaved editors to spaces / pin auxiliary windows to spaces — import IEditorWorkingSetSaveOptions for working-set save options
 import { EditorGroupLayout, GroupActivationReason, GroupDirection, GroupLocation, GroupOrientation, GroupsArrangement, GroupsOrder, IAuxiliaryEditorPart, IEditorGroupContextKeyProvider, IEditorDropTargetDelegate, IEditorGroupsService, IEditorSideGroup, IEditorWorkingSet, IFindGroupScope, IMergeGroupOptions, IEditorWorkingSetOptions, IEditorPart, IModalEditorPart, IEditorGroupActivationEvent, IEditorWorkingSetSaveOptions } from '../../../services/editor/common/editorGroupsService.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+// PARA-PATCH: scope unsaved editors to spaces — import editor-input types used for retained-editor tracking
 import { GroupIdentifier, IEditorPartOptions, SideBySideEditor } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
@@ -71,6 +73,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	// the main window) so this list also acts as a per-window MRU when
 	// filtered by document. See `getMostRecentlyActivePartByDocument`.
 	private mostRecentActiveParts: EditorPart[];
+	// PARA-PATCH: scope unsaved editors to spaces — track retained live inputs and working-set exclusions plus their serialize/retain helpers
 	private readonly retainedEditors = new Map<EditorInput, number>();
 	private excludedWorkingSetEditors: ReadonlySet<EditorInput> | undefined;
 
@@ -527,6 +530,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 	private createState(): IEditorPartsUIState {
 		return {
 			auxiliary: this.parts
+				// PARA-PATCH: scope unsaved editors to spaces — optional-chain aux window service so createState survives scoped teardown
 				.map(part => ({ part, auxiliaryWindow: this.auxiliaryWindowService?.getWindow(part.windowId) }))
 				.filter(({ auxiliaryWindow }) => auxiliaryWindow !== undefined)
 				.map(({ part, auxiliaryWindow }) => ({
@@ -614,6 +618,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 	private editorWorkingSets: IEditorWorkingSetState[];
 
+	// PARA-PATCH: scope unsaved editors to spaces / pin auxiliary windows to spaces — honor excludeEditors and includeAuxiliaryWindows save options
 	saveWorkingSet(name: string, options?: IEditorWorkingSetSaveOptions): IEditorWorkingSet {
 		this.excludedWorkingSetEditors = options?.excludeEditors ? new Set(options.excludeEditors) : undefined;
 
@@ -668,6 +673,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 		// editors around that need confirmation by moving them into the main part.
 		// Also, in rare cases, the auxiliary part may not be able to apply the state
 		// for certain editors that cannot move to the main part.
+		// PARA-PATCH: pin auxiliary windows to spaces — skip applying aux state when preserving live aux windows
 		if (!options?.preserveAuxiliaryWindows) {
 			const applied = await this.applyState(workingSetState === 'empty' ? workingSetState : workingSetState.auxiliary);
 			if (!applied) {
@@ -678,6 +684,7 @@ export class EditorParts extends MultiWindowParts<EditorPart, IEditorPartsMement
 
 		// Restore Focus unless instructed otherwise
 		if (!options?.preserveFocus) {
+			// PARA-PATCH: pin auxiliary windows to spaces — focus the main part when aux windows are preserved
 			const mostRecentActivePart = options?.preserveAuxiliaryWindows ? this.mainPart : this.mostRecentActiveParts.at(0);
 			if (mostRecentActivePart) {
 				await mostRecentActivePart.whenReady;

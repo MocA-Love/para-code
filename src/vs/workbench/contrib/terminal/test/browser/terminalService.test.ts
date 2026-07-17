@@ -196,6 +196,7 @@ suite('Workbench - TerminalService', () => {
 			strictEqual(backend.lastIconUserInitiated, true);
 		});
 
+		// PARA-PATCH: automatic Codex titles — test that the persistent title is sent while a transient title shows
 		test('should persist the underlying title while a transient title is displayed', async () => {
 			const instance = createTerminalInstance();
 			(instance as { transientTitle?: string }).transientTitle = 'Codex task';
@@ -242,6 +243,7 @@ function createTerminalInstance(options?: { customPtyImplementation?: boolean })
 		title: 'terminal title',
 		titleSource: TitleEventSource.Process,
 		staticTitle: undefined,
+		// PARA-PATCH: automatic Codex titles — seed transient/persistent title fields on the test instance
 		transientTitle: undefined,
 		persistentTitle: 'terminal title',
 		persistentTitleSource: TitleEventSource.Process,

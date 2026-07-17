@@ -640,6 +640,7 @@ export class PtyService extends Disposable implements IPtyService {
 		// If the process was just revived, don't do the orphan check as it will
 		// take some time
 		const [cwd, isOrphan] = await Promise.all([persistentProcess.getCwd(), wasRevived ? true : persistentProcess.isOrphaned()]);
+		// PARA-PATCH: mobile relay recovery — read the pane token injected at PTY launch
 		// PARA-CODE: Carry the exact token injected at PTY launch across revive and detach.
 		const paneToken = persistentProcess.shellLaunchConfig.env?.['PARA_CODE_TERMINAL_PANE_ID'];
 		const result = {
@@ -662,6 +663,7 @@ export class PtyService extends Disposable implements IPtyService {
 			type: persistentProcess.shellLaunchConfig.type,
 			hasChildProcesses: persistentProcess.hasChildProcesses,
 			shellIntegrationNonce: persistentProcess.processLaunchOptions.options.shellIntegration.nonce,
+			// PARA-PATCH: mobile relay recovery — include the validated pane token in process details
 			...(typeof paneToken === 'string' && paneToken.length > 0 && paneToken.length <= 200 ? { paradisPaneToken: paneToken } : {}),
 			tabActions: persistentProcess.shellLaunchConfig.tabActions
 		};

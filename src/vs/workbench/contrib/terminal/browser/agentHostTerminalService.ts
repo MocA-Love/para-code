@@ -24,6 +24,7 @@ export interface IAgentHostTerminalCreateOptions {
 	readonly cwd?: URI;
 	/** Terminal location (panel, editor, split, etc.). */
 	readonly location?: ITerminalLocationOptions;
+	// PARA-PATCH: preserve workspace ownership — accept a creation scope lease on agent host terminal options
 	/** PARA-CODE: Internal scope authority propagated through a contributed profile provider. */
 	readonly paradisTerminalCreationScopeLease?: string;
 }
@@ -253,6 +254,7 @@ export class AgentHostTerminalService extends Disposable implements IAgentHostTe
 					name: localize('agentHostTerminal.profileName', "Agent Host ({0})", displayName),
 					cwd: options.cwd ? (typeof options.cwd === 'string' ? URI.file(options.cwd) : options.cwd) : this._defaultCwd,
 					location: options.location,
+					// PARA-PATCH: preserve workspace ownership — forward the scope lease through the contributed profile
 					paradisTerminalCreationScopeLease: options.paradisTerminalCreationScopeLease,
 				});
 			},
@@ -314,6 +316,7 @@ export class AgentHostTerminalService extends Disposable implements IAgentHostTe
 				isFeatureTerminal: false,
 			},
 			location: options?.location,
+			// PARA-PATCH: preserve workspace ownership — forward the scope lease when creating the agent host terminal
 			paradisTerminalCreationScopeLease: options?.paradisTerminalCreationScopeLease,
 		});
 
