@@ -158,6 +158,8 @@ import { registerParadisMobileRelay } from '../../../paradis/contrib/mobileRelay
 import { registerParadisCcusage } from '../../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
 // PARA-PATCH: Codex terminal title metadata reader（fork独自、read-only SQLite）
 import { registerParadisCodexTerminalTitle } from '../../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
+// PARA-PATCH: AIリミットモニターバックエンド（cswap/wham usage取得。fork独自、src/vs/paradis/contrib/limitsMonitor/ 参照）
+import { registerParadisLimitsMonitor } from '../../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
 import { LocalGitService } from '../../../platform/git/node/localGitService.js';
@@ -538,6 +540,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: Codex terminal title metadata reader（Codex App Serverは起動しない）
 		this._register(registerParadisCodexTerminalTitle(this.server, accessor.get(ILogService)));
+
+		// PARA-PATCH: AIリミットモニターバックエンド（src/vs/paradis/contrib/limitsMonitor/ 参照）
+		this._register(registerParadisLimitsMonitor(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
 
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);

@@ -1791,6 +1791,9 @@ export default defineConfig(
 						// PARA-PATCH: electron-browser/parts/titlebar/titlebarPart.ts が CPU/RAMモニタの
 						// タイトルバーウィジェット(createParadisResourceMonitorWidget)を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/resourceMonitor/~',
+						// PARA-PATCH: 同titlebarPart.ts が AIリミットモニターのタイトルバーウィジェット
+						// (createParadisLimitsMonitorWidget)を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/limitsMonitor/~',
 						'assert',
 						{
 							'when': 'test',
