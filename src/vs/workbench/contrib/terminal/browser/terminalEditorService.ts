@@ -3,8 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Emitter } from '../../../../base/common/event.js';
-import { Disposable, dispose, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { Disposable, DisposableMap, dispose, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IContextKey, IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { EditorActivation } from '../../../../platform/editor/common/editor.js';
@@ -34,6 +34,9 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 
 	private _editorInputs: Map</*resource*/string, TerminalEditorInput> = new Map();
 	private _instanceDisposables: Map</*resource*/string, IDisposable[]> = new Map();
+	// PARA-PATCH: dispose watchers for instances kept while their editor input is retained
+	// by the Paradis space switch (see the onDidCloseEditor listener)
+	private readonly _retainedInstanceListeners = this._register(new DisposableMap</*resource*/string, IDisposable>());
 
 	private readonly _onDidDisposeInstance = this._register(new Emitter<ITerminalInstance>());
 	readonly onDidDisposeInstance = this._onDidDisposeInstance.event;
@@ -107,6 +110,20 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 				// and leave activeInstance bookkeeping broken. Keep the instance when the same
 				// input is still open in any group.
 				if (e.context === EditorCloseContext.MOVE && this._editorGroupsService.groups.some(g => g.contains(e.editor))) {
+					return;
+				}
+				// PARA-PATCH: the Paradis space switch retains editor inputs with live state
+				// (terminals with running child processes) and detaches them from their group
+				// without disposing. Removing the instance here would drop a live terminal from
+				// all enumeration (incl. the mobile relay) until the space is revisited. Keep it
+				// registered; only clear the active instance since its editor is now hidden. If
+				// the retained input is later disposed without reopening (e.g. scope retirement),
+				// remove the instance at that point so no disposed instance lingers in the list.
+				if (this._editorGroupsService.isEditorInputRetained?.(e.editor)) {
+					if (instance === this.activeInstance) {
+						this.setActiveInstance(undefined);
+					}
+					this._retainedInstanceListeners.set(instance.resource.path, Event.once(instance.onDisposed)(() => this._removeInstance(instance)));
 					return;
 				}
 				const instanceIndex = this.instances.findIndex(e => e === instance);
@@ -232,6 +249,7 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 
 	private _removeInstance(instance: ITerminalInstance) {
 		const inputKey = instance.resource.path;
+		this._retainedInstanceListeners.deleteAndDispose(inputKey); // PARA-PATCH: see _retainedInstanceListeners
 		this._editorInputs.delete(inputKey);
 		const instanceIndex = this.instances.findIndex(e => e === instance);
 		if (instanceIndex !== -1) {

@@ -639,9 +639,21 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// PTY ごと破棄され、戻ってきた際に死んだ pty への再接続で壊れたターミナルが復元される
 					// (詳細は paradisTerminalEditorPark.ts のコメント参照)。working set を保存して
 					// いない場合 (previousKey なし) は復元先が無くインスタンスが孤児化するためパークしない。
+					//
+					// captureScope が retain 済みの入力 (子プロセス実行中の端末 = closeHandler が確認を
+					// 要求する入力) は対象外とする。retain された入力は close 時も terminalEditorService の
+					// 一覧に残り続け (terminalEditorService.ts の PARA-PATCH)、restoreScope の再アタッチで
+					// そのまま復帰する。ここで detachInstance すると retain 中の入力を dispose してしまい
+					// 復元経路が壊れる上、park 台帳と一覧の二重管理になる。
 					for (const instance of [...this.terminalEditorService.instances]) {
 						const input = this.terminalEditorService.getInputFromResource(instance.resource);
-						if (input.group && this.editorGroupsService.getPart(input.group) !== this.editorGroupsService.mainPart) {
+						if (this.editorGroupsService.isEditorInputRetained?.(input)) {
+							continue;
+						}
+						// input.group はキャッシュで detach 後に古い値が残り得るため、実際に入力を
+						// 含むグループを検索して補助ウィンドウ所属を判定する
+						const containingGroup = this.editorGroupsService.groups.find(group => group.contains(input));
+						if (containingGroup && this.editorGroupsService.getPart(containingGroup) !== this.editorGroupsService.mainPart) {
 							continue;
 						}
 						if (paradisParkTerminalEditorInstance(instance, previousKey)) {
