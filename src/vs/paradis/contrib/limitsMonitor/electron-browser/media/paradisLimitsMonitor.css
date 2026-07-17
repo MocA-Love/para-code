@@ -1,0 +1,492 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * AI limits monitor: title bar ring-gauge trigger (paradisLimitsMonitorWidget.ts), the
+ * click-to-open per-account panel (paradisLimitsMonitorPanel.ts) and the add-account
+ * dialog (paradisLimitsSetupDialog.ts). Layout mirrors the resource monitor widget
+ * (paradisResourceMonitor.css); colors come from --vscode-* theme tokens except the fixed
+ * severity accents (green/amber/red), which match the rest of Para Code.
+ */
+
+/* ---------- trigger (title bar) ---------- */
+
+.paradis-limits-trigger {
+	/* Same drag-region caveat as .paradis-resource-monitor-trigger: explicit z-index needed. */
+	z-index: 2500;
+	-webkit-app-region: no-drag;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 22px;
+	padding: 0 6px;
+	margin: 0 2px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-titleBar-inactiveForeground, var(--vscode-foreground));
+	font-size: 12px;
+	cursor: pointer;
+}
+
+.paradis-limits-trigger:hover,
+.paradis-limits-trigger.active {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-titleBar-activeForeground, var(--vscode-foreground));
+}
+
+.paradis-limits-logo {
+	width: 14px;
+	height: 14px;
+	border-radius: 3px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	margin-left: 2px;
+}
+
+.paradis-limits-logo:first-child {
+	margin-left: 0;
+}
+
+.paradis-limits-logo svg {
+	width: 10px;
+	height: 10px;
+	display: block;
+}
+
+.paradis-limits-logo.claude {
+	background: #d97757;
+}
+
+.paradis-limits-logo.codex {
+	background: #f5f5f5;
+}
+
+.paradis-limits-ring {
+	width: 17px;
+	height: 17px;
+	flex: none;
+}
+
+.paradis-limits-ring .paradis-limits-ring-track {
+	stroke: rgba(128, 128, 128, 0.45);
+}
+
+.paradis-limits-ring .paradis-limits-ring-arc {
+	stroke: #2ea043;
+}
+
+.paradis-limits-ring.elevated .paradis-limits-ring-arc {
+	stroke: #f59e0b;
+}
+
+.paradis-limits-ring.high .paradis-limits-ring-arc,
+.paradis-limits-ring.error .paradis-limits-ring-arc {
+	stroke: #ef4444;
+}
+
+.paradis-limits-ring.error .paradis-limits-ring-error-mark {
+	fill: #ef4444;
+	font-size: 10px;
+	font-weight: 700;
+}
+
+/* ---------- panel ---------- */
+
+.paradis-limits-panel {
+	position: fixed;
+	z-index: 2500;
+	width: 400px;
+	max-height: 70vh;
+	display: flex;
+	flex-direction: column;
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: 6px;
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	font-size: 12px;
+	outline: none;
+	overflow: hidden;
+}
+
+.paradis-limits-panel .plm-body {
+	overflow-y: auto;
+	flex: 1;
+}
+
+.paradis-limits-panel .plm-provider-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 14px 6px;
+	font-weight: 600;
+}
+
+.paradis-limits-panel .plm-provider-header .plm-provider-count {
+	font-weight: 400;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
+.paradis-limits-panel .plm-provider-header .plm-add-btn {
+	margin-left: auto;
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+	font-size: 11px;
+	font-weight: 400;
+	white-space: nowrap;
+}
+
+.paradis-limits-panel .plm-provider-header .plm-add-btn:hover {
+	text-decoration: underline;
+}
+
+.paradis-limits-panel .plm-source-error,
+.paradis-limits-panel .plm-empty {
+	padding: 4px 14px 10px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-limits-panel .plm-account {
+	padding: 8px 14px 10px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-limits-panel .plm-account:last-child {
+	border-bottom: none;
+}
+
+.paradis-limits-panel .plm-account-top {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 7px;
+	min-width: 0;
+}
+
+.paradis-limits-panel .plm-account-mail {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-limits-panel .plm-badge {
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: 8px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	flex: none;
+	white-space: nowrap;
+}
+
+.paradis-limits-panel .plm-badge.active {
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+}
+
+.paradis-limits-panel .plm-badge.err {
+	background: #ef4444;
+	color: #ffffff;
+}
+
+.paradis-limits-panel .plm-account-reset {
+	margin-left: auto;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	flex: none;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.paradis-limits-panel .plm-meter {
+	display: grid;
+	grid-template-columns: 64px 1fr 84px;
+	align-items: center;
+	gap: 8px;
+	margin: 4px 0;
+}
+
+.paradis-limits-panel .plm-meter-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-limits-panel .plm-meter-track {
+	height: 4px;
+	border-radius: 2px;
+	/* 空き(未使用)部分。fillの緑/amber/赤と紛れないよう、背景から一段浮く中立グレー固定にする */
+	background: rgba(128, 128, 128, 0.28);
+	overflow: hidden;
+}
+
+.paradis-limits-panel .plm-meter-fill {
+	display: block;
+	height: 100%;
+	border-radius: 2px;
+	background: #2ea043;
+}
+
+.paradis-limits-panel .plm-meter-fill.elevated {
+	background: #f59e0b;
+}
+
+.paradis-limits-panel .plm-meter-fill.high {
+	background: #ef4444;
+}
+
+.paradis-limits-panel .plm-meter-value {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+/* ---------- cswap setup guide ---------- */
+
+.paradis-limits-panel .plm-install {
+	padding: 4px 14px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.paradis-limits-panel .plm-install-message,
+.paradis-limits-panel .plm-install-hint {
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.6;
+}
+
+.paradis-limits-panel .plm-install-command {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.15));
+	border-radius: 4px;
+	padding: 4px 4px 4px 10px;
+}
+
+.paradis-limits-panel .plm-install-command code {
+	flex: 1;
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+	overflow-x: auto;
+	white-space: nowrap;
+}
+
+.paradis-limits-panel .plm-install-link {
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+}
+
+.paradis-limits-panel .plm-install-link:hover {
+	text-decoration: underline;
+}
+
+.paradis-limits-panel .plm-error-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 2px 0 2px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-limits-panel .plm-relogin-btn,
+.paradis-limits-setup .pls-btn {
+	background: var(--vscode-button-secondaryBackground, #313131);
+	border: 1px solid var(--vscode-contrastBorder, transparent);
+	border-radius: 3px;
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	font-size: 11px;
+	padding: 2px 10px;
+	cursor: pointer;
+}
+
+.paradis-limits-panel .plm-relogin-btn {
+	margin-left: auto;
+}
+
+.paradis-limits-panel .plm-relogin-btn:hover,
+.paradis-limits-setup .pls-btn:hover {
+	background: var(--vscode-button-secondaryHoverBackground, #3c3c3c);
+}
+
+.paradis-limits-panel .plm-footer {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 14px;
+	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-limits-panel .plm-footer .plm-updated {
+	margin-left: auto;
+}
+
+.paradis-limits-panel .plm-icon-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	border-radius: 4px;
+	cursor: pointer;
+	color: inherit;
+}
+
+.paradis-limits-panel .plm-icon-btn:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-limits-panel .plm-icon-btn.spinning .codicon {
+	animation: paradis-limits-spin 1s linear infinite;
+}
+
+@keyframes paradis-limits-spin {
+	from { transform: rotate(0deg); }
+	to { transform: rotate(360deg); }
+}
+
+/* ---------- add-account / re-login dialog ---------- */
+
+.paradis-limits-setup-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 2600;
+	background: rgba(0, 0, 0, 0.35);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.paradis-limits-setup {
+	width: 440px;
+	background: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: 6px;
+	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.5));
+	color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+	font-size: 12px;
+	outline: none;
+}
+
+.paradis-limits-setup .pls-body {
+	padding: 18px 20px;
+}
+
+.paradis-limits-setup .pls-title {
+	font-size: 14px;
+	font-weight: 600;
+	margin-bottom: 4px;
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.paradis-limits-setup .pls-desc {
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.7;
+	margin-bottom: 14px;
+}
+
+.paradis-limits-setup .pls-steps {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-bottom: 14px;
+}
+
+.paradis-limits-setup .pls-step {
+	display: flex;
+	gap: 10px;
+	align-items: flex-start;
+}
+
+.paradis-limits-setup .pls-step-num {
+	width: 18px;
+	height: 18px;
+	border-radius: 50%;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 10px;
+	flex: none;
+}
+
+.paradis-limits-setup .pls-step.done .pls-step-num {
+	background: #2ea043;
+	color: #ffffff;
+}
+
+.paradis-limits-setup .pls-step.now .pls-step-num {
+	background: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+}
+
+.paradis-limits-setup .pls-step-detail {
+	display: block;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 1px;
+	font-size: 11px;
+	word-break: break-all;
+}
+
+.paradis-limits-setup .pls-step-detail a {
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+}
+
+.paradis-limits-setup .pls-input {
+	width: 100%;
+	box-sizing: border-box;
+	background: var(--vscode-input-background);
+	border: 1px solid var(--vscode-input-border, transparent);
+	border-radius: 3px;
+	color: var(--vscode-input-foreground);
+	font-size: 12px;
+	padding: 6px 8px;
+	font-family: var(--monaco-monospace-font);
+}
+
+.paradis-limits-setup .pls-error {
+	color: var(--vscode-errorForeground, #ef4444);
+	margin-top: 10px;
+	word-break: break-word;
+}
+
+.paradis-limits-setup .pls-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding: 12px 20px;
+	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-limits-setup .pls-btn.primary {
+	background: var(--vscode-button-background, #0e639c);
+	border-color: var(--vscode-button-background, #0e639c);
+	color: var(--vscode-button-foreground, #ffffff);
+}
+
+.paradis-limits-setup .pls-btn.primary:hover {
+	background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.paradis-limits-setup .pls-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}

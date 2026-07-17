@@ -9,6 +9,8 @@ import { $, addDisposableListener, append, EventType, getWindow, getWindowId, hi
 import { IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 // PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
 import { createParadisResourceMonitorWidget } from '../../../../paradis/contrib/resourceMonitor/electron-browser/paradisResourceMonitorWidget.js';
+// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
+import { createParadisLimitsMonitorWidget } from '../../../../paradis/contrib/limitsMonitor/electron-browser/paradisLimitsMonitorWidget.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -62,6 +64,8 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 
 	// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
 	private readonly paradisResourceMonitorWidget = this._register(new MutableDisposable<IDisposable>());
+	// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
+	private readonly paradisLimitsMonitorWidget = this._register(new MutableDisposable<IDisposable>());
 
 	private cachedWindowControlStyles: { bgColor: string; fgColor: string } | undefined;
 	private cachedWindowControlHeight: number | undefined;
@@ -168,6 +172,8 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 
 		// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
 		this.paradisResourceMonitorWidget.value = createParadisResourceMonitorWidget(this.instantiationService, this.leftContent);
+		// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
+		this.paradisLimitsMonitorWidget.value = createParadisLimitsMonitorWidget(this.instantiationService, this.leftContent);
 
 		// Native menu controller
 		if (isMacintosh || hasNativeMenu(this.configurationService)) {
