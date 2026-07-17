@@ -36,19 +36,25 @@ export default function SettingsScreen() {
 			</View>
 			<ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
 				<Text style={styles.sectionTitle}>使用量</Text>
-				<Pressable
-					style={styles.card}
-					onPress={() => { hapticSelection(); router.push('/ccusage'); }}
-				>
-					<View style={styles.row}>
+				<View style={styles.card}>
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/ccusage'); }}>
 						<Ionicons name="stats-chart-outline" size={18} color={colors.accent} />
 						<View style={styles.rowBody}>
 							<Text style={styles.rowTitle}>Ccusage</Text>
 							<Text style={styles.rowDesc}>コーディングエージェントのトークン使用量・コストを確認します</Text>
 						</View>
 						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
-					</View>
-				</Pressable>
+					</Pressable>
+					<View style={styles.separator} />
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/ratelimit'); }}>
+						<Ionicons name="speedometer-outline" size={18} color={colors.accent} />
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>Rate Limit</Text>
+							<Text style={styles.rowDesc}>Claude Code / Codex のレート制限と残量をアカウントごとに確認します</Text>
+						</View>
+						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+					</Pressable>
+				</View>
 
 				<Text style={styles.sectionTitle}>通知</Text>
 				<View style={styles.card}>
