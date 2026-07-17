@@ -1160,6 +1160,7 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 		return clone;
 	}
 
+	// PARA-PATCH: scope unsaved editors to spaces — accept a predicate so excluded editors are skipped during serialization
 	serialize(shouldSerialize: (editor: EditorInput) => boolean = () => true): ISerializedEditorGroupModel {
 		const registry = Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory);
 
@@ -1175,6 +1176,7 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 			const editor = this.editors[i];
 			let canSerializeEditor = false;
 
+			// PARA-PATCH: scope unsaved editors to spaces — skip the serializer for editors the predicate excludes
 			const editorSerializer = shouldSerialize(editor) ? registry.getEditorSerializer(editor) : undefined;
 			if (editorSerializer) {
 				const value = editorSerializer.canSerialize(editor) ? editorSerializer.serialize(editor) : undefined;

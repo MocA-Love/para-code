@@ -8,6 +8,7 @@
 
 // Only `import type` is allowed in preload scripts — Electron preloads cannot resolve module imports at runtime.
 import type { IBrowserViewTheme, IBrowserViewRect } from '../common/browserView.js';
+// PARA-PATCH: import automation-input types so the preload can suppress synthetic automation keystrokes (Para Browser MCP automation input isolation)
 import type { BrowserViewAutomationTrustedFocusPredicate, IBrowserViewAutomationKeySignature } from '../common/browserViewAutomationInput.js';
 
 /**
@@ -23,6 +24,7 @@ import type { BrowserViewAutomationTrustedFocusPredicate, IBrowserViewAutomation
 function init() {
 	const { contextBridge, ipcRenderer } = require('electron');
 
+	// PARA-PATCH: track and consume expected automation keystrokes (register/activate/complete/cancel over IPC, invalidate on real user focus) so injected keys are never confused with genuine input (Para Browser MCP automation input isolation)
 	interface IAutomationKeyExpectation {
 		readonly signature: IBrowserViewAutomationKeySignature;
 		active: boolean;
@@ -198,6 +200,7 @@ function init() {
 		if (!(event instanceof KeyboardEvent) || !event.isTrusted) {
 			return;
 		}
+		// PARA-PATCH: swallow keydowns that match an active automation expectation so injected keys are not forwarded as user shortcuts (Para Browser MCP automation input isolation)
 		if (consumeAutomationKey(event)) {
 			return;
 		}
@@ -262,6 +265,7 @@ function init() {
 			key: event.key,
 			keyCode: event.keyCode,
 			code: event.code,
+			// PARA-PATCH: forward the key location so the main process can match automation key signatures (Para Browser MCP automation input isolation)
 			location: event.location,
 			ctrlKey: event.ctrlKey,
 			shiftKey: event.shiftKey,

@@ -2040,6 +2040,7 @@ suite('EditorGroupsService', () => {
 		assert.strictEqual(part.activeGroup.isEmpty, true);
 	});
 
+	// PARA-PATCH: scope unsaved editors to spaces — cover excluding retained live inputs from a working set
 	test('working sets - explicitly exclude retained live inputs', async function () {
 		const [parts] = await createParts();
 		const included = createTestFileEditorInput(URI.file('foo/included'), TEST_EDITOR_INPUT_ID);
@@ -2056,6 +2057,7 @@ suite('EditorGroupsService', () => {
 		assert.strictEqual(parts.activeGroup.contains(excluded), false);
 	});
 
+	// PARA-PATCH: pin auxiliary windows to spaces — cover saving only the main editor part
 	test('working sets - can save only the main editor part', async function () {
 		const [parts] = await createParts();
 		const createAuxiliaryState = (parts as unknown as { createState: () => unknown }).createState.bind(parts);
@@ -2070,6 +2072,7 @@ suite('EditorGroupsService', () => {
 		assert.strictEqual(auxiliaryStateCreated, false);
 	});
 
+	// PARA-PATCH: pin auxiliary windows to spaces — cover preserving live aux parts while applying main state
 	test('working sets - can preserve live auxiliary editor parts while applying main state', async function () {
 		const [parts] = await createParts();
 		const workingSet = parts.saveWorkingSet('main-only');
@@ -2084,6 +2087,7 @@ suite('EditorGroupsService', () => {
 		assert.strictEqual(auxiliaryStateApplied, false);
 	});
 
+	// PARA-PATCH: scope unsaved editors to spaces — cover detaching a retained editor without confirmation or disposal
 	test('retained editor can be detached without confirmation or disposal', async function () {
 		const [parts] = await createParts();
 		const input = createTestFileEditorInput(URI.file('foo/live'), TEST_EDITOR_INPUT_ID);

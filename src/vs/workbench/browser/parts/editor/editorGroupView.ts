@@ -58,6 +58,7 @@ import { IEditorResolverService } from '../../../services/editor/common/editorRe
 import { IHostService } from '../../../services/host/browser/host.js';
 import { DiffEditorInput } from '../../../common/editor/diffEditorInput.js';
 import { FileSystemProviderCapabilities, IFileService } from '../../../../platform/files/common/files.js';
+// PARA-PATCH: make scoped retirement crash-safe — import editor-open fence guard
 import { paradisIsEditorOpenFenced } from '../../../services/editor/common/paradisEditorRetirementFence.js';
 
 export class EditorGroupView extends Themable implements IEditorGroupView {
@@ -690,6 +691,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	private canDispose(editor: EditorInput): boolean {
+		// PARA-PATCH: scope unsaved editors to spaces — keep retained live inputs alive across group disposal
 		if (this.editorPartsView.isEditorInputRetained(editor)) {
 			return false;
 		}
@@ -1166,6 +1168,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		if (!editor || editor.isDisposed()) {
 			return;
 		}
+		// PARA-PATCH: make scoped retirement crash-safe — suppress editor-open notifications while the group is fenced
 		if (paradisIsEditorOpenFenced(this.id)) {
 			return;
 		}
@@ -1533,6 +1536,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		return this.doCloseEditorWithConfirmationHandling(editor, options);
 	}
 
+	// PARA-PATCH: scope unsaved editors to spaces — detach a retained editor without confirmation or disposal
 	detachEditor(editor: EditorInput): void {
 		if (!this.model.contains(editor, { strictEquals: true })) {
 			return;
@@ -2214,6 +2218,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	toJSON(): ISerializedEditorGroupModel {
+		// PARA-PATCH: scope unsaved editors to spaces — pass the serialization predicate so excluded editors are skipped
 		return this.model.serialize(editor => this.editorPartsView.shouldSerializeEditor(editor));
 	}
 

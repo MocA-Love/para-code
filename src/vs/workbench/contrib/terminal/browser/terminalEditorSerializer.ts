@@ -38,6 +38,7 @@ export class TerminalInputSerializer implements IEditorSerializer {
 		return {
 			id: instance.persistentProcessId!,
 			pid: instance.processId || 0,
+			// PARA-PATCH: automatic Codex titles — serialize the persistent title, not the transient display title
 			title: instance.persistentTitle,
 			titleSource: instance.persistentTitleSource,
 			cwd: '',

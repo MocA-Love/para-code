@@ -150,6 +150,7 @@ export interface IBrowserViewCaptureScreenshotOptions {
 	format?: 'jpeg' | 'png';
 	screenRect?: IBrowserViewRect;
 	pageRect?: IBrowserViewRect;
+	// PARA-PATCH: add captureBeyondViewport option so pageRect screenshots can reach content outside the viewport via CDP (Para Browser MCP screenshot hardening)
 	/** Capture a pageRect in document coordinates beyond the current viewport via CDP. */
 	captureBeyondViewport?: boolean;
 	/**
@@ -294,6 +295,7 @@ export interface IBrowserViewKeyDownEvent {
 	key: string;
 	keyCode: number;
 	code: string;
+	// PARA-PATCH: carry the key location so automation input signatures can distinguish left/right/numpad variants (Para Browser MCP automation input)
 	location: number;
 	ctrlKey: boolean;
 	shiftKey: boolean;

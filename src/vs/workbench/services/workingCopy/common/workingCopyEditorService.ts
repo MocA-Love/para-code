@@ -8,6 +8,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { EditorsOrder, IEditorIdentifier } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+// PARA-PATCH: import side-by-side editor input so nested working copies can be resolved
 import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
 import { IWorkingCopy, IWorkingCopyIdentifier } from './workingCopy.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -42,6 +43,7 @@ export interface IWorkingCopyEditorService {
 	 * An event fired whenever a handler is registered.
 	 */
 	readonly onDidRegisterHandler: Event<IWorkingCopyEditorHandler>;
+	// PARA-PATCH: expose an unregister event so the backup tracker can drop stale handlers
 	readonly onDidUnregisterHandler: Event<IWorkingCopyEditorHandler>;
 
 	/**
@@ -61,6 +63,7 @@ export class WorkingCopyEditorService extends Disposable implements IWorkingCopy
 
 	private readonly _onDidRegisterHandler = this._register(new Emitter<IWorkingCopyEditorHandler>());
 	readonly onDidRegisterHandler = this._onDidRegisterHandler.event;
+	// PARA-PATCH: back the unregister event with its own emitter
 	private readonly _onDidUnregisterHandler = this._register(new Emitter<IWorkingCopyEditorHandler>());
 	readonly onDidUnregisterHandler = this._onDidUnregisterHandler.event;
 
@@ -76,6 +79,7 @@ export class WorkingCopyEditorService extends Disposable implements IWorkingCopy
 		this.handlers.add(handler);
 		this._onDidRegisterHandler.fire(handler);
 
+		// PARA-PATCH: upstream just deleted the handler; also fire the unregister event on removal
 		return toDisposable(() => {
 			if (this.handlers.delete(handler)) {
 				this._onDidUnregisterHandler.fire(handler);
@@ -99,6 +103,7 @@ export class WorkingCopyEditorService extends Disposable implements IWorkingCopy
 				return true;
 			}
 		}
+		// PARA-PATCH: also match working copies nested inside a side-by-side editor input
 		if (editor instanceof SideBySideEditorInput) {
 			return this.isOpen(workingCopy, editor.primary) || this.isOpen(workingCopy, editor.secondary);
 		}

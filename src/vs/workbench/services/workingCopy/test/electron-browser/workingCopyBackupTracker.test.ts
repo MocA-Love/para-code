@@ -45,6 +45,7 @@ import { joinPath } from '../../../../../base/common/resources.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { TestServiceAccessor, workbenchInstantiationService } from '../../../../test/electron-browser/workbenchTestServices.js';
 import { UriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentityService.js';
+// PARA-PATCH: import the backup restore router the base tracker now depends on
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../common/workingCopyBackupRestoreRouter.js';
 
 suite('WorkingCopyBackupTracker (native)', function () {
@@ -65,6 +66,7 @@ suite('WorkingCopyBackupTracker (native)', function () {
 			@IEnvironmentService environmentService: IEnvironmentService,
 			@IProgressService progressService: IProgressService,
 			@IWorkingCopyEditorService workingCopyEditorService: IWorkingCopyEditorService,
+			// PARA-PATCH: inject the backup restore router and forward it to the base tracker
 			@IWorkingCopyBackupRestoreRouter workingCopyBackupRestoreRouter: IWorkingCopyBackupRestoreRouter,
 		) {
 			super(workingCopyBackupService, filesConfigurationService, workingCopyService, lifecycleService, fileDialogService, dialogService, contextService, nativeHostService, logService, environmentService, progressService, workingCopyEditorService, editorService, workingCopyBackupRestoreRouter);
@@ -144,6 +146,7 @@ suite('WorkingCopyBackupTracker (native)', function () {
 
 	async function createTracker(autoSaveEnabled = false): Promise<{ accessor: TestServiceAccessor; part: EditorPart; tracker: TestWorkingCopyBackupTracker; instantiationService: IInstantiationService; cleanup: () => Promise<void> }> {
 		const instantiationService = workbenchInstantiationService(undefined, disposables);
+		// PARA-PATCH: stub the backup restore router the base tracker now depends on
 		instantiationService.stub(IWorkingCopyBackupRestoreRouter, disposables.add(new WorkingCopyBackupRestoreRouter()));
 
 		const configurationService = new TestConfigurationService();

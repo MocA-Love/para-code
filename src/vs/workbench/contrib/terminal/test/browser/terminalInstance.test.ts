@@ -272,6 +272,7 @@ suite('Workbench - TerminalInstance', () => {
 			}
 		});
 
+		// PARA-PATCH: redraw terminals after window moves — test renderer recreation on cross-window reattach
 		test('recreates the renderer when reattached to a different window document', async () => {
 			const instance = await createTerminalInstance();
 			const firstContainer = document.createElement('div');
@@ -421,6 +422,7 @@ suite('Workbench - TerminalInstance', () => {
 		let instantiationService: TestInstantiationService;
 		let capabilities: TerminalCapabilityStore;
 
+		// PARA-PATCH: automatic Codex titles — include transientTitle in the picked instance shape
 		function createInstance(partial?: Partial<ITerminalInstance>): Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'userHome' | 'cwd' | 'initialCwd' | 'processName' | 'sequence' | 'workspaceFolder' | 'staticTitle' | 'transientTitle' | 'capabilities' | 'title' | 'description'> {
 			const capabilities = store.add(new TerminalCapabilityStore());
 			if (!isWindows) {
@@ -435,6 +437,7 @@ suite('Workbench - TerminalInstance', () => {
 				sequence: undefined,
 				workspaceFolder: undefined,
 				staticTitle: undefined,
+				// PARA-PATCH: automatic Codex titles — default transientTitle in the test instance shape
 				transientTitle: undefined,
 				capabilities,
 				title: '',
@@ -523,6 +526,7 @@ suite('Workbench - TerminalInstance', () => {
 			strictEqual(terminalLabelComputer.title, 'my-title');
 			strictEqual(terminalLabelComputer.description, 'folder');
 		});
+		// PARA-PATCH: automatic Codex titles — test transient vs static title precedence in the label computer
 		test('should prefer transient title over the computed title', () => {
 			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}' } } } });
 			terminalLabelComputer.refreshLabel(createInstance({ capabilities, processName: 'zsh', transientTitle: 'Codex task' }));

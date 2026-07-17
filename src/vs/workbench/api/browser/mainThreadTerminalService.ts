@@ -27,6 +27,7 @@ import { TerminalCapability } from '../../../platform/terminal/common/capabiliti
 import { ITerminalCompletionService } from '../../contrib/terminalContrib/suggest/browser/terminalCompletionService.js';
 import { IWorkbenchEnvironmentService } from '../../services/environment/common/environmentService.js';
 import { hasKey } from '../../../base/common/types.js';
+// PARA-PATCH: preserve workspace ownership — import the terminal creation scope lease helper
 import { paradisCaptureTerminalCreationScopeLease } from '../../contrib/terminal/browser/paradisTerminalCreationScope.js';
 
 interface TerminalProcessProxyEntry extends IDisposable {
@@ -138,6 +139,7 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
 	}
 
 	public async $createTerminal(extHostTerminalId: string, launchConfig: TerminalLaunchConfig): Promise<void> {
+		// PARA-PATCH: preserve workspace ownership — capture the creation scope lease before building the launch config
 		const creationScopeLease = paradisCaptureTerminalCreationScopeLease(launchConfig.paradisTerminalCreationScopeLease);
 		const shellLaunchConfig: IShellLaunchConfig = {
 			name: launchConfig.name,
@@ -168,6 +170,7 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
 			const terminal = await this._terminalService.createTerminal({
 				config: shellLaunchConfig,
 				location: await this._deserializeParentTerminal(launchConfig.location),
+				// PARA-PATCH: preserve workspace ownership — forward the captured scope lease to terminal creation
 				paradisTerminalCreationScopeLease: creationScopeLease,
 			});
 			r(terminal);

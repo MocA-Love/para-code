@@ -59,6 +59,7 @@ export interface IProcessDetails {
 	type?: TerminalType;
 	hasChildProcesses: boolean;
 	shellIntegrationNonce: string;
+	// PARA-PATCH: mobile relay recovery — carry the exact pane token across PTY revive and detach
 	/** PARA-CODE: Carries the exact pane token across PTY revive and detach. */
 	paradisPaneToken?: string;
 	tabActions?: ITerminalTabAction[];

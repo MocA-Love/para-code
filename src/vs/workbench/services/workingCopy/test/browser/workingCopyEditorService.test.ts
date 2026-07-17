@@ -10,6 +10,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { EditorService } from '../../../editor/browser/editorService.js';
 import { IEditorGroupsService } from '../../../editor/common/editorGroupsService.js';
 import { UntitledTextEditorInput } from '../../../untitled/common/untitledTextEditorInput.js';
+// PARA-PATCH: import side-by-side editor input to test nested working copy resolution
 import { SideBySideEditorInput } from '../../../../common/editor/sideBySideEditorInput.js';
 import { IWorkingCopyEditorHandler, WorkingCopyEditorService } from '../../common/workingCopyEditorService.js';
 import { createEditorPart, registerTestResourceEditor, TestEditorService, TestServiceAccessor, workbenchInstantiationService } from '../../../../test/browser/workbenchTestServices.js';
@@ -31,10 +32,12 @@ suite('WorkingCopyEditorService', () => {
 		const service = disposables.add(new WorkingCopyEditorService(disposables.add(new TestEditorService())));
 
 		let handlerEvent: IWorkingCopyEditorHandler | undefined = undefined;
+		// PARA-PATCH: also capture the unregister event to assert it fires on dispose
 		let unregisteredHandlerEvent: IWorkingCopyEditorHandler | undefined = undefined;
 		disposables.add(service.onDidRegisterHandler(handler => {
 			handlerEvent = handler;
 		}));
+		// PARA-PATCH: subscribe to the new unregister event
 		disposables.add(service.onDidUnregisterHandler(handler => {
 			unregisteredHandlerEvent = handler;
 		}));
@@ -45,9 +48,11 @@ suite('WorkingCopyEditorService', () => {
 			createEditor: workingCopy => { throw new Error(); }
 		};
 
+		// PARA-PATCH: upstream discarded the registration; keep it so it can be disposed below
 		const registration = service.registerHandler(editorHandler);
 
 		assert.strictEqual(handlerEvent, editorHandler);
+		// PARA-PATCH: disposing the registration must fire the unregister event
 		registration.dispose();
 		assert.strictEqual(unregisteredHandlerEvent, editorHandler);
 	});
@@ -87,6 +92,7 @@ suite('WorkingCopyEditorService', () => {
 		disposables.dispose();
 	});
 
+	// PARA-PATCH: new test covering findEditor resolving a working copy nested in a side-by-side input
 	test('findEditor resolves a Working Copy owned by a nested side-by-side input', async () => {
 		const testDisposables = new DisposableStore();
 		const instantiationService = workbenchInstantiationService(undefined, testDisposables);

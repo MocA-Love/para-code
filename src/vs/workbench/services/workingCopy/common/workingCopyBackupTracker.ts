@@ -16,6 +16,7 @@ import { Promises } from '../../../../base/common/async.js';
 import { IEditorService } from '../../editor/common/editorService.js';
 import { EditorsOrder } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+// PARA-PATCH: import the backup restore router so backup restoration can be scoped to spaces
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreDecision } from './workingCopyBackupRestoreRouter.js';
 
 /**
@@ -35,6 +36,7 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 		protected readonly filesConfigurationService: IFilesConfigurationService,
 		private readonly workingCopyEditorService: IWorkingCopyEditorService,
 		protected readonly editorService: IEditorService,
+		// PARA-PATCH: inject the backup restore router used to gate/defer backup restoration
 		private readonly workingCopyBackupRestoreRouter: IWorkingCopyBackupRestoreRouter,
 	) {
 		super();
@@ -62,6 +64,7 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 		this._register(this.lifecycleService.onWillShutdown(() => this.onWillShutdown()));
 
 		// Once a handler registers, restore backups
+		// PARA-PATCH: upstream restored backups directly on handler register; instead track handlers, route restore through the router, and follow unregister
 		this._register(this.workingCopyEditorService.onDidRegisterHandler(handler => {
 			this.workingCopyEditorHandlers.add(handler);
 			void this.workingCopyBackupRestoreRouter.requestRestore();
@@ -343,6 +346,7 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 
 	protected readonly unrestoredBackups = new Set<IWorkingCopyIdentifier>();
 	protected readonly whenReady: Promise<void>;
+	// PARA-PATCH: remember registered handlers so deferred backups can be re-restored on request
 	private readonly workingCopyEditorHandlers = new Set<IWorkingCopyEditorHandler>();
 
 	private _isReady = false;
@@ -375,6 +379,7 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 		// associated editor.
 		const restoredBackups = new Set<IWorkingCopyIdentifier>();
 		for (const unrestoredBackup of this.unrestoredBackups) {
+			// PARA-PATCH: let the router defer a backup so it is kept pending and retried later
 			if (await this.workingCopyBackupRestoreRouter.route(unrestoredBackup) === WorkingCopyBackupRestoreDecision.Defer) {
 				continue;
 			}
@@ -439,6 +444,7 @@ export abstract class WorkingCopyBackupTracker extends Disposable {
 		}
 	}
 
+	// PARA-PATCH: re-run restore across all registered handlers when the router requests it
 	private async restoreRegisteredBackups(): Promise<void> {
 		for (const handler of this.workingCopyEditorHandlers) {
 			try {
