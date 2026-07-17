@@ -308,7 +308,8 @@ export class ParadisWorktreeGitService {
 			throw new Error(`Clone already running: ${cloneId}`);
 		}
 		if (existsSync(targetPath)) {
-			throw new Error(localize('paradis.repositoryClone.targetExists', "The folder already exists: {0}", targetPath));
+			// allow-any-unicode-next-line
+			throw new Error(localize('paradis.repositoryClone.targetExists', "フォルダが既に存在します: {0}", targetPath));
 		}
 		await fs.mkdir(dirname(targetPath), { recursive: true });
 		const env = await this.cachedShellEnv.getEnv();
@@ -378,19 +379,22 @@ export class ParadisWorktreeGitService {
 				};
 				child.on('error', error => {
 					const enoent = (error as { code?: unknown }).code === 'ENOENT';
-					settle(enoent ? new Error(localize('paradis.repositoryClone.gitNotFound', "The 'git' command was not found. Install Git and try again.")) : error);
+					// allow-any-unicode-next-line
+					settle(enoent ? new Error(localize('paradis.repositoryClone.gitNotFound', "git コマンドが見つかりません。Git をインストールしてから再試行してください。")) : error);
 				});
 				child.on('close', code => {
 					consumeLine(pendingChunk);
 					if (entry.canceled) {
 						settle(new CancellationError());
 					} else if (idleTimedOut) {
-						settle(new Error(localize('paradis.repositoryClone.stalled', "git clone made no progress for {0} minutes and was aborted.", PARADIS_CLONE_IDLE_TIMEOUT_MS / 60_000)));
+						// allow-any-unicode-next-line
+						settle(new Error(localize('paradis.repositoryClone.stalled', "git clone が {0} 分間進捗しなかったため中断しました。", PARADIS_CLONE_IDLE_TIMEOUT_MS / 60_000)));
 					} else if (code === 0) {
 						settle();
 					} else {
 						this.logService.warn(`[ParadisWorktreeGit] git clone ${url} failed (exit ${code}): ${errorLines.join(' / ')}`);
-						settle(new Error(errorLines.join('\n') || localize('paradis.repositoryClone.failed', "git clone failed (exit {0}).", String(code))));
+						// allow-any-unicode-next-line
+						settle(new Error(errorLines.join('\n') || localize('paradis.repositoryClone.failed', "git clone が失敗しました (exit {0})。", String(code))));
 					}
 				});
 			});

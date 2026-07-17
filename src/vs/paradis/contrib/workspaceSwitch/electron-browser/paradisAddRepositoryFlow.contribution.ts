@@ -110,8 +110,10 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 			}
 			if (result.kind === 'changeDestination') {
 				const picked = await fileDialogService.showOpenDialog({
-					title: localize('paradis.repositoryClone.pickDestination', "Select Clone Destination"),
-					openLabel: localize('paradis.repositoryClone.pickDestinationLabel', "Select"),
+					// allow-any-unicode-next-line
+					title: localize('paradis.repositoryClone.pickDestination', "クローン先を選択"),
+					// allow-any-unicode-next-line
+					openLabel: localize('paradis.repositoryClone.pickDestinationLabel', "選択"),
 					canSelectFiles: false,
 					canSelectFolders: true,
 					canSelectMany: false
@@ -135,8 +137,10 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		const disposables = new DisposableStore();
 		return new Promise<ParadisAddRepositoryFlowResult | undefined>(resolve => {
 			const quickPick = disposables.add(quickInputService.createQuickPick<IParadisAddRepositoryFlowItem>({ useSeparators: true }));
-			quickPick.title = localize('paradis.repositoryClone.title', "Add Repository");
-			quickPick.placeholder = localize('paradis.repositoryClone.placeholder', "Paste a Git repository URL (https:// or git@host:path), or pick an option below");
+			// allow-any-unicode-next-line
+			quickPick.title = localize('paradis.repositoryClone.title', "リポジトリを追加");
+			// allow-any-unicode-next-line
+			quickPick.placeholder = localize('paradis.repositoryClone.placeholder', "GitリポジトリのURLを貼り付け (https:// または git@host:path)、または下の項目を選択");
 			quickPick.value = initialValue;
 
 			const updateItems = () => {
@@ -147,23 +151,29 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 				if (parsed) {
 					items.push({
 						kind: 'clone',
-						label: `$(repo-clone) ${localize('paradis.repositoryClone.cloneItem', "Clone and Add: {0}", parsed.name)}`,
+						// allow-any-unicode-next-line
+						label: `$(repo-clone) ${localize('paradis.repositoryClone.cloneItem', "クローンして追加: {0}", parsed.name)}`,
 						description: destinationDisplay ? `${destinationDisplay}/${parsed.name}` : undefined,
 						alwaysShow: true
 					});
-					items.push({ type: 'separator', label: localize('paradis.repositoryClone.otherSeparator', "Other") });
+					// allow-any-unicode-next-line
+					items.push({ type: 'separator', label: localize('paradis.repositoryClone.otherSeparator', "その他") });
 				}
 				items.push({
 					kind: 'local',
-					label: `$(folder) ${localize('paradis.repositoryClone.localItem', "Add Local Folder...")}`,
+					// allow-any-unicode-next-line
+					label: `$(folder) ${localize('paradis.repositoryClone.localItem', "ローカルフォルダを追加...")}`,
 					alwaysShow: true
 				});
 				items.push({
 					kind: 'changeDestination',
-					label: `$(gear) ${localize('paradis.repositoryClone.destinationItem', "Change Clone Destination...")}`,
+					// allow-any-unicode-next-line
+					label: `$(gear) ${localize('paradis.repositoryClone.destinationItem', "クローン先を変更...")}`,
 					description: destinationDisplay
-						? localize('paradis.repositoryClone.destinationCurrent', "Current: {0}", destinationDisplay)
-						: localize('paradis.repositoryClone.destinationAsk', "Currently asking every time"),
+						// allow-any-unicode-next-line
+						? localize('paradis.repositoryClone.destinationCurrent', "現在: {0}", destinationDisplay)
+						// allow-any-unicode-next-line
+						: localize('paradis.repositoryClone.destinationAsk', "現在: 毎回確認"),
 					alwaysShow: true
 				});
 				quickPick.items = items as (IParadisAddRepositoryFlowItem | { type: 'separator' })[];
@@ -219,8 +229,10 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 			return URI.file(raw);
 		}
 		const picked = await fileDialogService.showOpenDialog({
-			title: localize('paradis.repositoryClone.pickDestination', "Select Clone Destination"),
-			openLabel: localize('paradis.repositoryClone.pickDestinationLabel', "Select"),
+			// allow-any-unicode-next-line
+			title: localize('paradis.repositoryClone.pickDestination', "クローン先を選択"),
+			// allow-any-unicode-next-line
+			openLabel: localize('paradis.repositoryClone.pickDestinationLabel', "選択"),
 			canSelectFiles: false,
 			canSelectFolders: true,
 			canSelectMany: false
@@ -250,12 +262,14 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		// 同じパスが登録済みならクローンせず、そのリポジトリへ切り替える (Superset と同じ挙動)
 		const existing = switchService.repositories.find(repository => repository.uri.fsPath === target.fsPath);
 		if (existing) {
-			notificationService.info(localize('paradis.repositoryClone.alreadyRegistered', "{0} is already registered. Switching to it.", existing.name));
+			// allow-any-unicode-next-line
+			notificationService.info(localize('paradis.repositoryClone.alreadyRegistered', "{0} は登録済みです。そのリポジトリへ切り替えます。", existing.name));
 			await switchService.switchRepository(existing.id);
 			return;
 		}
 		if (await fileService.exists(target)) {
-			notificationService.error(localize('paradis.repositoryClone.folderExists', "A folder named \"{0}\" already exists in {1}. Choose a different destination or add it as a local folder.", name, parentDir.fsPath));
+			// allow-any-unicode-next-line
+			notificationService.error(localize('paradis.repositoryClone.folderExists', "\"{0}\" という名前のフォルダが {1} に既に存在します。クローン先を変更するか、ローカルフォルダとして追加してください。", name, parentDir.fsPath));
 			return;
 		}
 
@@ -264,7 +278,8 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		try {
 			await progressService.withProgress({
 				location: ProgressLocation.Notification,
-				title: localize('paradis.repositoryClone.progressTitle', "Cloning {0}", url),
+				// allow-any-unicode-next-line
+				title: localize('paradis.repositoryClone.progressTitle', "{0} をクローンしています", url),
 				cancellable: true
 			}, async progress => {
 				const listeners = new DisposableStore();
@@ -290,7 +305,8 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 			});
 		} catch (error) {
 			if (!isCancellationError(error)) {
-				notificationService.error(localize('paradis.repositoryClone.failedNotification', "Failed to clone {0}: {1}", url, toErrorMessage(error)));
+				// allow-any-unicode-next-line
+				notificationService.error(localize('paradis.repositoryClone.failedNotification', "{0} のクローンに失敗しました: {1}", url, toErrorMessage(error)));
 			}
 			return;
 		}
@@ -300,7 +316,8 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		if (contextService.getWorkspace().folders.length === 0) {
 			await switchService.switchRepository(added.id);
 		} else {
-			notificationService.info(localize('paradis.repositoryClone.done', "Cloned {0} and added it to Workspaces.", added.name));
+			// allow-any-unicode-next-line
+			notificationService.info(localize('paradis.repositoryClone.done', "{0} をクローンして Workspaces に追加しました。", added.name));
 		}
 	}
 }
