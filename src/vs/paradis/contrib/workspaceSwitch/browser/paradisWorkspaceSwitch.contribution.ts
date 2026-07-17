@@ -261,8 +261,10 @@ class ParadisInitializeWorkspaceAction extends Action2 {
  */
 export async function paradisPickAndAddLocalRepositories(service: IParadisWorkspaceSwitchService, fileDialogService: IFileDialogService, contextService: IWorkspaceContextService): Promise<void> {
 	const uris = await fileDialogService.showOpenDialog({
-		title: localize('paradis.workspaceSwitch.addRepositoryDialog', "Add Repository"),
-		openLabel: localize('paradis.workspaceSwitch.addRepositoryLabel', "Add Repository"),
+		// allow-any-unicode-next-line
+		title: localize('paradis.workspaceSwitch.addRepositoryDialog', "リポジトリを追加"),
+		// allow-any-unicode-next-line
+		openLabel: localize('paradis.workspaceSwitch.addRepositoryLabel', "追加"),
 		canSelectFiles: false,
 		canSelectFolders: true,
 		canSelectMany: true
