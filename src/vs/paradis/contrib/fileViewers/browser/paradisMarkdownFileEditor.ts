@@ -34,6 +34,7 @@ import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/b
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { DEFAULT_MARKDOWN_STYLES, renderMarkdownDocument } from '../../../../workbench/contrib/markdown/browser/markdownDocumentRenderer.js';
+import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES, ParadisFrontMatterStyle } from './paradisMarkdownFrontMatter.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
 
@@ -63,8 +64,25 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		return false;
 	}
 
+	/** 標準 Markdown プレビューと同じ `markdown.preview.frontMatter` 設定を読む（不正値は既定の table 扱い）。 */
+	private _getFrontMatterStyle(resource: URI): ParadisFrontMatterStyle {
+		const value = this._configurationService.getValue<string>('markdown.preview.frontMatter', { resource });
+		switch (value) {
+			case 'hide':
+			case 'codeBlock':
+				return value;
+			default:
+				return 'table';
+		}
+	}
+
 	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview, token: CancellationToken): Promise<string> {
-		const rendered = await renderMarkdownDocument(text, this._extensionService, this._languageService, {
+		// フロントマターを素の Markdown として marked に渡すと、先頭の `---` が水平線、
+		// 閉じの `---` が setext 見出し記法と解釈されて YAML 全体が巨大な見出しに化ける。
+		// 事前に分離し、設定スタイルに応じた表示（非表示 / YAML コードブロック / テーブル）に置き換える。
+		const frontMatter = applyParadisFrontMatter(text, this._getFrontMatterStyle(resource));
+
+		const rendered = await renderMarkdownDocument(frontMatter.markdown, this._extensionService, this._languageService, {
 			sanitizerConfig: {
 				allowRelativeMediaPaths: true,
 				allowRelativeLinkPaths: true,
@@ -89,12 +107,13 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; media-src https: data:; style-src 'nonce-${nonce}'; font-src https: data:;">
 		<style nonce="${nonce}">
 			${DEFAULT_MARKDOWN_STYLES}
+			${PARADIS_FRONTMATTER_STYLES}
 			${tokenCss}
 			${this.getTransparencyBackgroundCssRule('body.paradis-markdown-body')}
 		</style>
 	</head>
 	<body class="paradis-markdown-body">
-		${rendered}
+		${frontMatter.htmlPrefix}${rendered}
 	</body>
 </html>`;
 	}

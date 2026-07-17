@@ -92,7 +92,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@ITextModelService private readonly _textModelService: ITextModelService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
-		@IConfigurationService private readonly _configurationService: IConfigurationService,
+		@IConfigurationService protected readonly _configurationService: IConfigurationService,
 	) {
 		super(id, group, telemetryService, themeService, storageService);
 
