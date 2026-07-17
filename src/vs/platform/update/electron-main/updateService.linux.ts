@@ -14,7 +14,7 @@ import { IProductService } from '../../product/common/productService.js';
 import { asJson, IRequestService } from '../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
-import { AvailableForDownload, IUpdate, State, UpdateType } from '../common/update.js';
+import { AvailableForDownload, IUpdate, State, StateType, UpdateType } from '../common/update.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, IUpdateURLOptions } from './abstractUpdateService.js'; // PARA-PATCH: +getUpdateAccessHeaders/getUpdateRequestHeaders (Cloudflare Access service token headers, see CLAUDE.md)
 
 export class LinuxUpdateService extends AbstractUpdateService {
@@ -55,6 +55,11 @@ export class LinuxUpdateService extends AbstractUpdateService {
 		this.requestService.request({ url, headers, callSite: 'updateService.linux.checkForUpdates' }, CancellationToken.None)
 			.then<IUpdate | null>(asJson)
 			.then(update => {
+				// If updates were disabled mid-check, ignore the result so we don't leave the Disabled state.
+				if (this.state.type !== StateType.CheckingForUpdates) {
+					return;
+				}
+
 				if (!update || !update.url || !update.version || !update.productVersion) {
 					this.setState(State.Idle(UpdateType.Archive, undefined, explicit || undefined));
 				} else {
@@ -62,6 +67,10 @@ export class LinuxUpdateService extends AbstractUpdateService {
 				}
 			})
 			.then(undefined, err => {
+				if (this.state.type !== StateType.CheckingForUpdates) {
+					return;
+				}
+
 				this.logService.error(err);
 				// only show message when explicitly checking for updates
 				const message: string | undefined = explicit ? (err.message || err) : undefined;
