@@ -773,8 +773,73 @@ function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts
  * ライブ質問（hook注入）と transcript 上の本物の質問を突き合わせるための内容キー。
  * 両者とも parseAskUserQuestions を通るため、truncate 後のテキストが一致する。
  */
-function liveQuestionContentKey(m: IRawMessage): string {
+function liveQuestionContentKey(m: Pick<IRawMessage, 'text' | 'options'>): string {
 	return `${m.text}\0${(m.options ?? []).map(o => o.label).join('\x01')}`;
+}
+
+/**
+ * transcript に現れた質問に対応する注入済みライブ質問の合成IDを台帳から取り出す。
+ * まず内容キー（質問文+選択肢ラベル列）の完全一致で引き、外れた場合は質問文のみの
+ * 第2段マッチへフォールバックする。第2段は hook 側/transcript 側の一方で選択肢が
+ * 欠落した場合（Windows の PowerShell hook が tool_input の深い配列を落とす等）の救済で、
+ * 同文の別質問を誤って間引かないよう、候補が1エントリに絞れるときだけ適用する。
+ * 内容キーは `text + '\0' + labels` 形式のため、`text + '\0'` の前方一致 = 質問文の完全一致。
+ */
+export function paradisTakeLiveQuestionSyntheticId(liveQuestions: Map<string, string[]>, message: Pick<IRawMessage, 'text' | 'options'>): string | undefined {
+	let key = liveQuestionContentKey(message);
+	let ids = liveQuestions.get(key);
+	if (ids === undefined || ids.length === 0) {
+		// 選択肢欠落は「一方の options が空」の形でしか起きないため、第2段は
+		// 「incoming が選択肢なし、または台帳側エントリが選択肢なし（キーが text+'\0' のみ）」
+		// に限定する。両側に異なる選択肢が付いた同文の質問は別物として素通しする
+		// （誤 dedup で実在質問を隠し、回答を別質問へ誤紐付けするのを防ぐ）。
+		const textPrefix = `${message.text}\0`;
+		const incomingHasNoOptions = (message.options ?? []).length === 0;
+		const candidates = [...liveQuestions.entries()].filter(([entryKey, entryIds]) =>
+			entryIds.length > 0 && entryKey.startsWith(textPrefix) && (incomingHasNoOptions || entryKey === textPrefix));
+		if (candidates.length !== 1) {
+			return undefined;
+		}
+		[key, ids] = candidates[0];
+	}
+	const syntheticId = ids.shift();
+	if (syntheticId !== undefined && ids.length === 0) {
+		liveQuestions.delete(key);
+	}
+	return syntheticId;
+}
+
+/**
+ * メッセージ列に未回答のまま残っている同内容の質問があるかを返す。突き合わせは内容キーの
+ * 完全一致に加え、どちらかの選択肢が欠落しているケースを質問文のみでも拾う
+ * （前方一致は `'\0'` 区切りのため質問文の完全一致と等価）。回答済みの同文質問とは衝突しない。
+ */
+export function paradisHasPendingDuplicateQuestion(
+	messages: readonly Pick<IParadisAgentChatMessage, 'kind' | 'text' | 'options' | 'toolUseId'>[],
+	pendingQuestions: ReadonlySet<string>,
+	message: Pick<IRawMessage, 'text' | 'options'>,
+): boolean {
+	const contentKey = liveQuestionContentKey(message);
+	const textPrefix = `${message.text}\0`;
+	const incomingHasNoOptions = (message.options ?? []).length === 0;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const existing = messages[index];
+		if (existing.kind !== 'question' || existing.toolUseId === undefined || !pendingQuestions.has(existing.toolUseId)) {
+			continue;
+		}
+		const existingKey = liveQuestionContentKey(existing);
+		if (existingKey === contentKey) {
+			return true;
+		}
+		// 質問文のみの一致は「どちらかの選択肢が欠落している」場合に限る
+		// （take 側と同じ理由: 同文・異選択肢の別質問を誤って抑制しない）
+		const existingHasNoOptions = (existing.options ?? []).length === 0;
+		if ((incomingHasNoOptions && existingKey.startsWith(textPrefix))
+			|| (existingHasNoOptions && contentKey.startsWith(`${existing.text}\0`))) {
+			return true;
+		}
+	}
+	return false;
 }
 
 /**
@@ -1676,9 +1741,7 @@ class TranscriptTailer {
 				// 現れたら間引き（合成カードで表示済み）、対応する tool_result は合成IDへ
 				// 付け替える（モバイル側の合成カードが「回答済み」になる）。
 				if (message.kind === 'question') {
-					const contentKey = liveQuestionContentKey(message);
-					const syntheticIds = this.liveQuestions.get(contentKey);
-					const syntheticId = syntheticIds?.shift();
+					const syntheticId = this.takeLiveQuestionMatch(message);
 					if (syntheticId !== undefined) {
 						if (message.toolUseId !== undefined) {
 							const ids = this.liveQuestionRealIds.get(message.toolUseId);
@@ -1687,9 +1750,6 @@ class TranscriptTailer {
 							} else {
 								this.liveQuestionRealIds.set(message.toolUseId, [syntheticId]);
 							}
-						}
-						if (syntheticIds?.length === 0) {
-							this.liveQuestions.delete(contentKey);
 						}
 						continue;
 					}
@@ -1854,6 +1914,14 @@ class TranscriptTailer {
 			.sort((a, b) => (a.questionIndex ?? 0) - (b.questionIndex ?? 0));
 	}
 
+	private takeLiveQuestionMatch(message: IRawMessage): string | undefined {
+		return paradisTakeLiveQuestionSyntheticId(this.liveQuestions, message);
+	}
+
+	private hasPendingQuestionForText(message: IRawMessage): boolean {
+		return paradisHasPendingDuplicateQuestion(this.messages, this.pendingQuestions, message);
+	}
+
 	/**
 	 * PreToolUse hook で受けた AskUserQuestion の tool_input をライブ質問カードとして注入する。
 	 * transcript の読み取りと同じキューで直列化し、rev 採番・リング更新の競合を防ぐ。
@@ -1863,6 +1931,16 @@ class TranscriptTailer {
 	injectLiveQuestions(input: unknown): void {
 		this.enqueue(async () => {
 			const parsed = parseAskUserQuestions(input, undefined, Date.now());
+			// transcript 側が先に同じ質問群を出している（hook の配送が transcript 読み取りより
+			// 遅れた）場合は注入しない。内容キー完全一致に加えて質問文のみでも突き合わせるのは、
+			// 一方の経路で選択肢が欠落しても（Windows の PowerShell hook が tool_input の深い
+			// 配列を落とす等）二重カードにしないため。判定は未回答の質問に限る（回答済みの
+			// 同文質問との誤衝突を防ぐ）。群の一部だけ一致する状態は transcript が tool_use を
+			// 行単位で原子的に書くため起きない想定だが、万一の際は質問の取りこぼし防止を優先
+			// して注入する
+			if (parsed.length > 0 && parsed.every(message => this.hasPendingQuestionForText(message))) {
+				return;
+			}
 			// 1回の hook = 1つの AskUserQuestion 呼び出し。複数質問をモバイル側で1枚の
 			// ステップ式カードへ集約できるよう、共通の合成グループキーを付与する
 			const groupId = `liveg:${this.epoch}:${this.liveQuestionGroupSeq++}`;
