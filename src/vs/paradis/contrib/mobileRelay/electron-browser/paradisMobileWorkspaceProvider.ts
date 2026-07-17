@@ -36,6 +36,7 @@ import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from '.
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
 import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
+import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
@@ -136,6 +137,8 @@ type FsInbound =
 	| { t: 'grep'; id: string; ws: string; query: string }
 	| { t: 'upload'; id: string; name: string; data: string }
 	| { t: 'usage'; id: string; bypassCache?: boolean }
+	// Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）
+	| { t: 'limits'; id: string; bypassCache?: boolean }
 	// テキスト断片のシンタックスハイライト（エージェントチャットのコードブロック用）。
 	// lang はMarkdownフェンスの言語名（ts / typescript / python 等）。
 	| { t: 'hl'; id: string; text: string; lang?: string };
@@ -236,6 +239,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
+		// AIリミット(Rate Limit)スナップショット。実体は limitsMonitor の shared process バックエンド
+		private readonly fetchLimitsSnapshot: (bypassCache: boolean) => Promise<IParadisLimitsSnapshot>,
 		// worktree（スペース）作成。実体は paradisWorktreeHeadlessCreate.ts（contribution側で
 		// instantiationService.invokeFunction に束ねて渡される。runGit等と同じコールバック方式）
 		private readonly getWorktreeCreateForm: () => Promise<IParadisWorktreeCreateFormData>,
@@ -1168,6 +1173,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			try {
 				const data = await this.fetchUsageDashboard(!!msg.bypassCache);
 				reply({ t: 'usage', data });
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
+		// AIリミット(Rate Limit)。usage と同じくワークスペース非依存(閲覧専用。追加・再ログインはPC側のみ)。
+		if (msg.t === 'limits') {
+			try {
+				const data = await this.fetchLimitsSnapshot(!!msg.bypassCache);
+				reply({ t: 'limits', data });
 			} catch (err) {
 				reply({ error: String(err) });
 			}

@@ -269,6 +269,41 @@ export interface UsageDashboardResult {
 	fetchedAt: number;
 }
 
+/** Rate Limit(AIリミット)の1ウィンドウ(5時間/7日/モデル別)。PC側 IParadisLimitsWindow と同形。 */
+export interface RateLimitWindow {
+	usedPercent: number;
+	/** epoch ms。 */
+	resetsAt?: number;
+	label?: string;
+}
+export type RateLimitAccountStatus = 'ok' | 'token_expired' | 'no_credentials' | 'error';
+/** Rate Limitの1アカウント。PC側 IParadisLimitsAccount と同形。 */
+export interface RateLimitAccount {
+	provider: 'claude' | 'codex';
+	id: string;
+	email?: string;
+	active?: boolean;
+	homeLabel?: string;
+	slot?: number;
+	status: RateLimitAccountStatus;
+	statusDetail?: string;
+	planType?: string;
+	fiveHour?: RateLimitWindow;
+	sevenDay?: RateLimitWindow;
+	scoped?: RateLimitWindow[];
+}
+export interface RateLimitProviderSnapshot {
+	accounts: RateLimitAccount[];
+	sourceError?: string;
+	cswapMissing?: boolean;
+}
+/** limits 応答（PC側で正規化済みのRate Limitスナップショット）。 */
+export interface RateLimitsResult {
+	claude: RateLimitProviderSnapshot;
+	codex: RateLimitProviderSnapshot;
+	fetchedAt: number;
+}
+
 /** browser targets 応答。sharedToken はそのページを共有中のターミナルペインのトークン（PC側 agentBrowser のバインディング由来）。 */
 export interface BrowserTargetsResult {
 	targets: { targetId: string; title: string; url: string; sharedToken?: string }[];
@@ -2190,6 +2225,18 @@ export class MobileController {
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty usage response');
+				}
+				return response.data;
+			});
+	}
+
+	/** Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）。 */
+	rateLimits(bypassCache?: boolean): Promise<RateLimitsResult> {
+		// usageDashboard と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
+		return this.request<{ data?: RateLimitsResult }>('fs', { t: 'limits', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+			.then(response => {
+				if (!response.data) {
+					throw new Error('empty limits response');
 				}
 				return response.data;
 			});
