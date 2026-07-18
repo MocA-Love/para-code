@@ -529,6 +529,45 @@ suite('Paradis CDP gateway ingress authority', () => {
 		}
 	});
 
+	test('keeps the last-known bound target across a transient delegate gap and empties only on revocation', () => {
+		let owned = true;
+		const lease = Object.freeze({ token: 'pane-token' });
+		let boundTarget: string | undefined = 'target-1';
+		const delegate = {
+			captureIngressLease: (token: string) => owned && token === lease.token ? lease : undefined,
+			isIngressLeaseCurrent: (candidate: ITestLease) => owned && candidate === lease,
+			getBoundTargetId: () => boundTarget,
+			ensureBoundTargetId: async () => boundTarget,
+			getTokenForShellPid: () => lease.token,
+			captureBoundPageScreenshot: async () => 'image',
+			isBoundPageVisible: async () => true,
+			dispatchBoundPageInput: () => ({ response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() }),
+			closeInputConnection: () => undefined,
+		} as unknown as IParadisCdpGatewayDelegate;
+		const gateway = new ParadisCdpGateway(delegate, {} as unknown as ParadisCdpUpstream, createLogService());
+		const state = gateway as unknown as {
+			_makeContext(access: { token: string; lease: ITestLease }): { isCurrentLease(): boolean; boundTargetIds(): Set<string> };
+		};
+		try {
+			const ctx = state._makeContext({ token: 'pane-token', lease });
+			assert.deepStrictEqual(ctx.boundTargetIds(), new Set(['target-1']));
+			// A transient undefined from the delegate (lease bookkeeping race) must not empty the set.
+			boundTarget = undefined;
+			assert.deepStrictEqual(ctx.boundTargetIds(), new Set(['target-1']));
+			// A newly bound target replaces the snapshot, and a later gap keeps the newest value.
+			boundTarget = 'target-2';
+			assert.deepStrictEqual(ctx.boundTargetIds(), new Set(['target-2']));
+			boundTarget = undefined;
+			assert.deepStrictEqual(ctx.boundTargetIds(), new Set(['target-2']));
+			// A permanent revocation still empties the set (the connection is closed elsewhere).
+			owned = false;
+			assert.strictEqual(ctx.isCurrentLease(), false);
+			assert.deepStrictEqual(ctx.boundTargetIds(), new Set());
+		} finally {
+			gateway.dispose();
+		}
+	});
+
 	test('composes browser-session route authority into the queued input lease', async () => {
 		const fixture = createUpgradeFixture('/devtools/browser/stored?pane=pane-token');
 		const state = fixture.gateway as unknown as {

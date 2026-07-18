@@ -520,12 +520,26 @@ export class ParadisCdpGateway extends Disposable {
 			inputConnectionClosed = true;
 			this.delegate.closeInputConnection(inputConnection);
 		};
+		// 接続ローカルに「最後に確認できたバインド済みtargetId」をスナップショットする。
+		// captureIngressLease側の一時変動（_terminalExitedTokens/_authorityFaulted/tokenOwners）で
+		// getBoundTargetIdが瞬間的にundefinedを返す窓があり、その空集合がブラウザプロキシの
+		// force-detach誤爆（健全な共有セッションの恒久切断）を引き起こすため、リースが生存している間は
+		// 直近の値で埋める。恒久失効時はcloseConnectionsForTokenが世代をbumpしてisCurrentLeaseを偽にし、
+		// 接続ごと殺すのでスナップショットが古い値を返し続ける心配はない。
+		let lastKnownBoundTargetId: string | undefined;
 		return {
 			rawScreenshotCoordinator: this._rawScreenshotAuthorities.forAuthority(token),
 			isCurrentLease,
 			boundTargetIds: () => {
-				const tid = isCurrentLease() ? this.delegate.getBoundTargetId(token) : undefined;
-				return tid ? new Set([tid]) : new Set<string>();
+				if (!isCurrentLease()) {
+					return new Set<string>();
+				}
+				const tid = this.delegate.getBoundTargetId(token);
+				if (tid) {
+					lastKnownBoundTargetId = tid;
+					return new Set([tid]);
+				}
+				return lastKnownBoundTargetId ? new Set([lastKnownBoundTargetId]) : new Set<string>();
 			},
 			captureBoundPageScreenshot: async options => {
 				if (!isCurrentLease()) {
