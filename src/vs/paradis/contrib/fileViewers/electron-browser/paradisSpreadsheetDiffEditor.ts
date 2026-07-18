@@ -23,6 +23,7 @@ import { localize } from '../../../../nls.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { IHoverLifecycleOptions } from '../../../../base/browser/ui/hover/hover.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -429,7 +430,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			if (details) {
 				// reducedDelay: 既定の workbench.hover.delay は macOS で 1500ms と長く、差分詳細の
 				// 初回表示が体感で遅い。短い方の workbench.hover.reducedDelay (既定 500ms) を使う。
-				this._hoverService.showDelayedHover({ target: cell, content: formatDiffDetails(details) }, { groupId: 'paradis-spreadsheet-diff-details', reducedDelay: true });
+				// 注: showDelayedHover の実装 (hoverService.ts) は reducedDelay を受け付けるが、
+				// インターフェース (vs/base/.../hover.ts) の Pick が 'groupId' のみで未追随のため
+				// アサーションで渡す (vs/base は fork では改変しない規約)。
+				const lifecycleOptions: IHoverLifecycleOptions = { groupId: 'paradis-spreadsheet-diff-details', reducedDelay: true };
+				this._hoverService.showDelayedHover({ target: cell, content: formatDiffDetails(details) }, lifecycleOptions as Pick<IHoverLifecycleOptions, 'groupId'>);
 			}
 		}));
 
