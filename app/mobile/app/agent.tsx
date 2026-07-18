@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Image, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, FlatList, Image, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { BlurView } from 'expo-blur';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -511,16 +511,18 @@ function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
 	);
 }
 
-function webDomains(msgs: readonly { text: string }[]): string[] {
-	const domains = new Set<string>();
+interface WebSite { readonly domain: string; readonly url: string }
+
+function webSites(msgs: readonly { text: string }[]): WebSite[] {
+	const sites = new Map<string, string>();
 	for (const message of msgs) {
-		for (const match of message.text.matchAll(/https?:\/\/([^\s/)>\]}"']+)/gi)) {
+		for (const match of message.text.matchAll(/https?:\/\/([^\s/)>\]}"']+)(\/(?:(?!https?:\/\/)[^\s)>\]}"'])*)?/gi)) {
 			const domain = match[1]?.toLowerCase().replace(/^www\./, '').replace(/[.,;:]$/, '');
-			if (domain !== undefined && /^[a-z0-9.-]+$/.test(domain) && domain.includes('.') && !/^\d+(?:\.\d+){3}$/.test(domain) && !domain.endsWith('.local') && !domain.endsWith('.internal') && domain !== 'localhost') { domains.add(domain); }
-			if (domains.size >= 6) { return [...domains]; }
+			if (domain !== undefined && /^[a-z0-9.-]+$/.test(domain) && domain.includes('.') && !/^\d+(?:\.\d+){3}$/.test(domain) && !domain.endsWith('.local') && !domain.endsWith('.internal') && domain !== 'localhost' && !sites.has(domain)) { sites.set(domain, match[0].replace(/[.,;:]+$/, '')); }
+			if (sites.size >= 6) { return [...sites].map(([domain, url]) => ({ domain, url })); }
 		}
 	}
-	return [...domains];
+	return [...sites].map(([domain, url]) => ({ domain, url }));
 }
 
 function Favicon({ domain }: { domain: string }) {
@@ -532,16 +534,16 @@ function Favicon({ domain }: { domain: string }) {
 function WebSearchActivity({ msgs }: { msgs: AgentChatMessage[] }) {
 	const [expanded, setExpanded] = useState(false);
 	const query = msgs.find(message => message.kind === 'tool_use' && message.tool === 'web_search')?.text ?? 'Web検索';
-	const domains = webDomains(msgs);
+	const sites = webSites(msgs);
 	const completed = msgs.some(message => message.kind === 'tool_result');
 	const failed = msgs.some(message => message.kind === 'tool_result' && message.text.startsWith('Web検索に失敗しました'));
 	return <View style={styles.webWrap}>
 		<Pressable style={styles.webRow} onPress={() => { hapticSelection(); setExpanded(value => !value); }} accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={expanded ? 'Web検索アクティビティを折りたたむ' : 'Web検索アクティビティを展開'}>
-			<View style={styles.faviconStack}>{domains.length > 0 ? domains.slice(0, 4).map(domain => <Favicon key={domain} domain={domain} />) : <View style={styles.favicon}><Ionicons name="search" size={12} color={colors.accent2} /></View>}</View>
-			<View style={styles.webBody}><Text style={[styles.webLabel, failed && { color: colors.red }]}>{failed ? 'Web検索失敗' : domains.length > 0 ? `${domains.length}サイトを参照` : completed ? 'Web検索完了' : 'Webを検索中'}</Text><Text style={styles.webQuery} numberOfLines={1}>{query}</Text></View>
+			<View style={styles.faviconStack}>{sites.length > 0 ? sites.slice(0, 4).map(site => <Favicon key={site.domain} domain={site.domain} />) : <View style={styles.favicon}><Ionicons name="search" size={12} color={colors.accent2} /></View>}</View>
+			<View style={styles.webBody}><Text style={[styles.webLabel, failed && { color: colors.red }]}>{failed ? 'Web検索失敗' : sites.length > 0 ? `${sites.length}サイトを参照` : completed ? 'Web検索完了' : 'Webを検索中'}</Text><Text style={styles.webQuery} numberOfLines={1}>{query}</Text></View>
 			<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
 		</Pressable>
-		{expanded ? <View style={styles.activityBody}>{msgs.map(message => <MessageBubble key={message.rev} message={message} />)}{domains.map(domain => <View key={domain} style={styles.domainRow}><Favicon domain={domain} /><Text style={styles.domainText}>{domain}</Text></View>)}</View> : null}
+		{expanded ? <View style={styles.activityBody}>{msgs.map(message => <MessageBubble key={message.rev} message={message} />)}{sites.map(site => <Pressable key={site.domain} style={styles.domainRow} onPress={() => { hapticSelection(); void Linking.openURL(site.url).catch(() => { /* 開けないURLは無視 */ }); }} accessibilityRole="link" accessibilityLabel={`${site.domain} をブラウザで開く`}><Favicon domain={site.domain} /><Text style={styles.domainText}>{site.domain}</Text><Ionicons name="open-outline" size={11} color={colors.textDim} /></Pressable>)}</View> : null}
 	</View>;
 }
 
@@ -636,9 +638,9 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 			: live?.phase === 'permission' ? '確認待ち' : '考え中';
 	const preview = live?.phase === 'message' ? live.text?.trim() : live?.detail;
 	const isWebSearch = live?.phase === 'tool' && (live.tool === 'web_search' || live.tool === 'webSearch');
-	const liveDomains = preview !== undefined ? webDomains([{ text: preview }]) : [];
+	const liveSites = preview !== undefined ? webSites([{ text: preview }]) : [];
 	if (isWebSearch) {
-		return <View style={styles.webWrap} accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Webを検索中"><View style={styles.webRow}><View style={styles.faviconStack}>{liveDomains.length > 0 ? liveDomains.map(domain => <Favicon key={domain} domain={domain} />) : <View style={styles.favicon}><Ionicons name="search" size={12} color={colors.accent2} /></View>}</View><View style={styles.webBody}><Text style={styles.webLabel}>Webを検索中{metrics.length > 0 ? ` · ${metrics}` : ''}</Text><Text style={styles.webQuery} numberOfLines={2}>{preview ?? '検索結果を確認しています'}</Text></View></View></View>;
+		return <View style={styles.webWrap} accessibilityRole="progressbar" accessibilityLiveRegion="polite" accessibilityLabel="Webを検索中"><View style={styles.webRow}><View style={styles.faviconStack}>{liveSites.length > 0 ? liveSites.map(site => <Favicon key={site.domain} domain={site.domain} />) : <View style={styles.favicon}><Ionicons name="search" size={12} color={colors.accent2} /></View>}</View><View style={styles.webBody}><Text style={styles.webLabel}>Webを検索中{metrics.length > 0 ? ` · ${metrics}` : ''}</Text><Text style={styles.webQuery} numberOfLines={2}>{preview ?? '検索結果を確認しています'}</Text></View></View></View>;
 	}
 	return (
 		<View style={styles.workingRow}>
