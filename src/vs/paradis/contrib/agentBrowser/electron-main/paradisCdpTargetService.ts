@@ -225,6 +225,7 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		if (!view) {
 			return null;
 		}
+		this.ensureViewInitializedForBind(view);
 		const firstTargetId = this.readViewIdentity(view, windowId);
 		if (firstTargetId === undefined) {
 			return null;
@@ -448,6 +449,29 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		}
 		this.viewLeases.set(view, created);
 		return created;
+	}
+
+	/**
+	 * Guarantee a bound view's webContents has navigated at least once.
+	 *
+	 * A brand-new internal-browser tab whose webContents has never loaded a URL reports an empty
+	 * URL. puppeteer (the vendored chrome-devtools-mcp on the pane side) treats such a target as
+	 * uninitialized and omits it from `browser.pages()`, so every DOM tool on the pane fails with
+	 * "No page selected" — and the agent cannot even `navigate_page` its way out. A single in-place
+	 * navigation to about:blank initializes the target. Because about:blank is an in-place navigation
+	 * (it does not recreate the webContents), the DevTools targetId is unchanged, so firing this
+	 * best-effort and un-awaited cannot race the descriptor's targetId resolution in the caller.
+	 */
+	private ensureViewInitializedForBind(view: BrowserView): void {
+		try {
+			const wc = view.webContents;
+			if (wc.isDestroyed() || wc.isLoadingMainFrame() || wc.getURL() !== '') {
+				return;
+			}
+			void wc.loadURL('about:blank').catch(() => undefined);
+		} catch {
+			// Best-effort initialization; never block or fail the bind on this.
+		}
 	}
 
 	/** Read owner, destroyed state and target from one known BrowserView object. */
