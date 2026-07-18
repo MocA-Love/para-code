@@ -13,8 +13,8 @@
 // 必要なため、別クラスとして実装している（互いに独立してポーリングする）。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { IntervalTimer } from '../../../../base/common/async.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { disposableTimeout, IntervalTimer } from '../../../../base/common/async.js';
+import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -32,6 +32,12 @@ import { IParadisNotificationsSettingsService } from '../browser/paradisNotifica
 import { IParadisAivisPlaceholders, IParadisNotifyAudioRequest, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
 
 const POLL_INTERVAL = 2000;
+
+// permission / question は Codex の AutoMode や Claude の hook 自動応答で「要求→即自動解決」される
+// ことがあり、遷移した瞬間に鳴らすと人間の対応が不要なケースでも通知してしまう。遷移後この時間
+// 待って、まだ同じステータスに留まっている場合のみ発火する (自動処理は数秒以内に working へ戻る)。
+// 代償として正当な許可要求・質問の通知はこの時間だけ遅れる。review (作業完了) は即時のまま。
+const ACTION_CONFIRM_DELAY = 5000;
 
 type NotifyStatus = 'review' | 'permission' | 'question';
 
@@ -62,6 +68,9 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 
 	/** token → 直近確認したステータス（遷移検知用。エントリが消えた=idleに戻ったとみなす）。 */
 	private readonly _previousStatus = new Map<string, ParadisAgentStatus>();
+
+	/** token → permission/question 遷移の発火待ちタイマー (ACTION_CONFIRM_DELAY 参照)。 */
+	private readonly _pendingActionTimers = this._register(new DisposableMap<string>());
 
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -117,6 +126,9 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			if (previous === paneStatus.status) {
 				continue; // 遷移なし
 			}
+			// ステータスが変わったら、前回の permission/question 遷移の発火待ちは破棄する
+			// (自動応答等で working へ戻った場合はここで通知がキャンセルされる)。
+			this._pendingActionTimers.deleteAndDispose(paneStatus.token);
 			if (paneStatus.status !== 'review' && paneStatus.status !== 'permission' && paneStatus.status !== 'question') {
 				continue; // working への遷移は通知対象外
 			}
@@ -125,9 +137,25 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 			// (paradisMobileAgentChat) が質問本文付きで別経路発火するため、ここはPC向けのみ。
 			// status は {{event}} で区別できるよう question のまま渡し、テンプレート選択や
 			// 優先度の分岐箇所で permission と同扱いにする。
-			void this._handleTransition(paneStatus.token, paneStatus.status).catch(error => {
-				this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
-			});
+			if (paneStatus.status === 'review') {
+				void this._handleTransition(paneStatus.token, paneStatus.status).catch(error => {
+					this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
+				});
+				continue;
+			}
+			// permission / question は即発火せず ACTION_CONFIRM_DELAY 待ち、その間の
+			// ポーリングでステータスが維持されている場合のみ発火する (自動処理の抑制)。
+			const token = paneStatus.token;
+			const status = paneStatus.status;
+			this._pendingActionTimers.set(token, disposableTimeout(() => {
+				this._pendingActionTimers.deleteAndDispose(token);
+				if (this._previousStatus.get(token) !== status) {
+					return; // 待機中に自動応答・終了等で解消済み
+				}
+				void this._handleTransition(token, status).catch(error => {
+					this.logService.warn('[ParadisNotifications] failed to handle status transition', error);
+				});
+			}, ACTION_CONFIRM_DELAY));
 		}
 
 		// トークンが listPaneStatuses から消えた（idleに戻った/ペイン終了）場合は履歴を捨てる。
@@ -135,6 +163,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 		for (const token of [...this._previousStatus.keys()]) {
 			if (!seenTokens.has(token)) {
 				this._previousStatus.delete(token);
+				this._pendingActionTimers.deleteAndDispose(token);
 			}
 		}
 	}
