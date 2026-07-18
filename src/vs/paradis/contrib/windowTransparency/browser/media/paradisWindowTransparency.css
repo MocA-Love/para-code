@@ -168,3 +168,29 @@
 .monaco-workbench.paradis-transparent .paradis-resource-monitor-trigger-dot {
 	box-shadow: 0 0 0 2px color-mix(in srgb, var(--paradis-titlebar-bg, var(--vscode-titleBar-activeBackground, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent);
 }
+
+/* Modern UI / floating panels (`workbench.experimental.modernUI`, upstream 1.129). The floating
+	shell paints an opaque editor-colored backdrop on the grid view behind the floating cards
+	(floatingPanels.css: `.monaco-workbench.floating-panels > .monaco-grid-view`), which sits over
+	the translucent workbench root and hides the desktop entirely. Re-apply the same translucent
+	mix on that backdrop, and on the floating cards' own backgrounds (which floatingPanels.css
+	sets with !important; card tokens mirror that file: sidebar = agentsPanel, auxiliarybar =
+	sideBar, panel = panel). The extra `.floating-panels` class keeps these selectors one class
+	more specific than upstream's, so they win regardless of stylesheet order. Title/status/
+	activity bars are made fully transparent by floating mode ("blend into the shell") and show
+	this translucent backdrop, which is exactly what we want. */
+.monaco-workbench.paradis-transparent.floating-panels > .monaco-grid-view {
+	background-color: color-mix(in srgb, var(--vscode-editor-background) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent.floating-panels .part.sidebar {
+	background-color: color-mix(in srgb, var(--vscode-agentsPanel-background, var(--vscode-sideBar-background, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent.floating-panels .part.auxiliarybar {
+	background-color: color-mix(in srgb, var(--vscode-sideBar-background, var(--vscode-editor-background)) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+.monaco-workbench.paradis-transparent.floating-panels .part.panel {
+	background-color: color-mix(in srgb, var(--vscode-panel-background, var(--vscode-editor-background)) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}

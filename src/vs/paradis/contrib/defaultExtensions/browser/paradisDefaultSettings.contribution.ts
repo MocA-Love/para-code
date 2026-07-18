@@ -15,6 +15,11 @@ import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '.
 // 対象拡張が未インストールの時点で登録されても問題なく、拡張側の設定スキーマ登録時に defaults として合流する。
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerDefaultConfigurations([{
 	overrides: {
+		// upstream 1.129 の実験的 Modern UI（サイドバー/パネルのフローティングカード表示）を Para Code では既定で有効にする。
+		// default レイヤーへの注入なのでユーザーが settings.json で false にすれば従来 UI に戻せる。
+		// ウィンドウ透過との両立は paradisWindowTransparency.css の .floating-panels ルールで対応済み。
+		// upstream が将来この設定を削除/改名した場合、このエントリは未知キーとして無害な no-op になる。
+		'workbench.experimental.modernUI': true,
 		'workbench.iconTheme': 'material-icon-theme',
 		'workbench.colorTheme': 'Houston',
 		// ステータスバーの Bongo Cat（pixl-garden.BongoCat）を表示するための必須設定。
