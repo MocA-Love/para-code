@@ -192,7 +192,7 @@ function payloadByteLength(data: wsTypes.RawData | string): number {
 	return typeof data === 'string' ? Buffer.byteLength(data, 'utf8') : rawDataByteLength(data);
 }
 
-function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false): boolean {
+function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.RawData | string, allowScreenshotFrame = false, forceText = false): boolean {
 	const bytes = payloadByteLength(data);
 	const frameLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_FRAME_BYTES;
 	const bufferedLimit = allowScreenshotFrame ? MAX_CDP_SCREENSHOT_FRAME_BYTES : MAX_CDP_OPEN_BUFFERED_BYTES;
@@ -201,7 +201,14 @@ function sendWithBoundedBackpressure(socket: wsTypes.WebSocket, data: wsTypes.Ra
 		return false;
 	}
 	try {
-		socket.send(data);
+		// CDPはテキスト専用プロトコル。Bufferをそのまま送るとwsがバイナリフレーム化し、
+		// Chromium DevToolsエンドポイントが最初のバイナリフレーム受信で接続を切断する。
+		// ページ経路はRawData(Buffer)を素通しするため、テキストフレームを強制する。
+		if (forceText) {
+			socket.send(data, { binary: false });
+		} else {
+			socket.send(data);
+		}
 		return true;
 	} catch {
 		return false;
@@ -869,7 +876,7 @@ export function paradisProxyPageUpgrade(
 				return;
 			}
 			if (upstream.readyState === ws.WebSocket.OPEN) {
-				if (!sendWithBoundedBackpressure(upstream, data)) {
+				if (!sendWithBoundedBackpressure(upstream, data, false, true)) {
 					closeBoth();
 				}
 			} else if (upstream.readyState === ws.WebSocket.CONNECTING) {
@@ -1043,7 +1050,7 @@ export function paradisProxyPageUpgrade(
 				return;
 			}
 			for (const buf of pending) {
-				if (!sendWithBoundedBackpressure(upstream, buf)) { closeBoth(); break; }
+				if (!sendWithBoundedBackpressure(upstream, buf, false, true)) { closeBoth(); break; }
 			}
 			pending.length = 0;
 			pendingBytes = 0;
@@ -1075,7 +1082,7 @@ export function paradisProxyPageUpgrade(
 					}
 				}
 				if (clientWs.readyState === ws.WebSocket.OPEN) {
-					if (!sendWithBoundedBackpressure(clientWs, data, frameBytes > MAX_CDP_FRAME_BYTES)) {
+					if (!sendWithBoundedBackpressure(clientWs, data, frameBytes > MAX_CDP_FRAME_BYTES, true)) {
 						closeBoth();
 					}
 				}
@@ -1748,11 +1755,20 @@ export async function paradisProxyBrowserUpgrade(
 					}
 				} else if (message.method === 'Target.detachedFromTarget') {
 					const params = message.params as { sessionId?: string; targetId?: string } | undefined;
+					const detachedTargetId = (params?.sessionId ? sessionIdToTargetId.get(params.sessionId) : undefined) ?? params?.targetId;
 					if (params?.sessionId) {
 						allowedSessionIds.delete(params.sessionId);
 						sessionIdToTargetId.delete(params.sessionId);
 					}
 					dropTarget(params?.targetId);
+					// 保険: バインド済みtargetのセッションが剥離されたら、イベントを転送した上で接続を閉じる。
+					// 子プロセスは次のツール呼び出しでbrowser.connected===falseを検知して再接続し、
+					// コンテキストを再構築するので自己回復する。スコープ外targetのdetachには影響させない。
+					if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId)) {
+						sendToClient(message);
+						closeBoth();
+						return;
+					}
 				}
 				sendToClient(message);
 				return;
@@ -1805,8 +1821,16 @@ export async function paradisProxyBrowserUpgrade(
 				if (!sessionId || !allowedSessionIds.has(sessionId)) {
 					return;
 				}
+				const detachedTargetId = sessionIdToTargetId.get(sessionId);
 				allowedSessionIds.delete(sessionId);
 				sessionIdToTargetId.delete(sessionId);
+				// 保険: バインド済みtargetのセッションが剥離されたら、イベントを転送した上で接続を閉じる。
+				// 子プロセスは再接続でコンテキストを再構築するので自己回復する。
+				if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId)) {
+					sendToClient(message);
+					closeBoth();
+					return;
+				}
 				sendToClient(message);
 				return;
 			}

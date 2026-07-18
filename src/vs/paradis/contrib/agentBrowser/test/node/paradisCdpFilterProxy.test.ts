@@ -434,6 +434,61 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.strictEqual(fixture.client.closeCalls, 1);
 	});
 
+	test('page proxy forwards every frame as a text WebSocket frame (never binary)', () => {
+		const fixture = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'target-1', fixture.ctx, fixture.logService);
+
+		// Buffered while CONNECTING, flushed on open.
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: '1' } })));
+		fixture.upstream.readyState = TestWebSocket.OPEN;
+		fixture.upstream.emit('open');
+		// Forwarded directly while OPEN.
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, method: 'Runtime.evaluate', params: { expression: '2' } })));
+		// Upstream response forwarded back to the client.
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ id: 1, result: {} })));
+
+		assert.strictEqual(fixture.upstream.sent.length, 2);
+		assert.strictEqual(fixture.client.sent.length, 1);
+		assert.ok([...fixture.upstream.sentOptions, ...fixture.client.sentOptions].every(options => options?.binary === false));
+	});
+
+	test('browser proxy closes the connection when the bound target is force-detached upstream', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		publishAllowedSession(fixture, 'primary-session');
+		fixture.client.sent.length = 0;
+		fixture.client.sentOptions.length = 0;
+
+		// The upstream detaches the bound target's session; the event must reach the client and close the transport.
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({
+			method: 'Target.detachedFromTarget',
+			params: { sessionId: 'primary-session' },
+		})));
+
+		const detach = parseSent(fixture.client).find(message => (message as { method?: string }).method === 'Target.detachedFromTarget');
+		assert.ok(detach, 'detach event was forwarded to the client');
+		assert.ok(fixture.client.closeCalls >= 1, 'connection was closed so the child reconnects');
+	});
+
+	test('browser proxy does not close on detach of an out-of-scope (non-bound) target', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		// A child session attached under the bound target, then detached: not the bound target itself.
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({
+			method: 'Target.attachedToTarget',
+			params: { sessionId: 'child-session', targetInfo: { targetId: 'child-target', type: 'iframe', openerId: 'target-1' } },
+		})));
+		fixture.client.sent.length = 0;
+		fixture.client.sentOptions.length = 0;
+
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({
+			method: 'Target.detachedFromTarget',
+			params: { sessionId: 'child-session' },
+		})));
+
+		const detach = parseSent(fixture.client).find(message => (message as { method?: string }).method === 'Target.detachedFromTarget');
+		assert.ok(detach, 'detach event was forwarded to the client');
+		assert.strictEqual(fixture.client.closeCalls, 0, 'the shared connection stays open for out-of-scope churn');
+	});
+
 	test('browser proxy rejects all new client commands after its connection lease is revoked', async () => {
 		let current = true;
 		const fixture = createProxyFixture(context({ isCurrentLease: () => current }));
@@ -1115,25 +1170,29 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.strictEqual(parseSent(fixture.upstream).some(message => (message as { id?: number }).id === 11), false);
 		const response = parseSent(fixture.client).find(message => (message as { id?: number }).id === 11) as { error?: { message?: string } };
 		assert.match(response.error?.message ?? '', /^PARA_BROWSER_OUTCOME_UNKNOWN:/);
+		// Detaching the bound primary session revokes the input route (and now closes the transport so the child reconnects).
 		fixture.upstream.emit('message', Buffer.from(JSON.stringify({
 			method: 'Target.detachedFromTarget',
 			params: { sessionId: 'primary-session' },
 		})));
 		assert.strictEqual(isInputRouteCurrent?.(), false);
+		assert.ok(fixture.client.closeCalls >= 1);
 
-		fixture.upstream.emit('message', Buffer.from(JSON.stringify({
+		// A non-bound (child) session's Input is denied, verified on a fresh connection.
+		const child = await createOpenBrowserProxyFixture();
+		publishAllowedSession(child, 'primary-session');
+		child.upstream.emit('message', Buffer.from(JSON.stringify({
 			method: 'Target.attachedToTarget',
 			params: { sessionId: 'child-session', targetInfo: { targetId: 'child-target', type: 'iframe', openerId: 'target-1' } },
 		})));
-		fixture.client.emit('message', Buffer.from(JSON.stringify({
+		child.client.emit('message', Buffer.from(JSON.stringify({
 			id: 12,
 			sessionId: 'child-session',
 			method: 'Input.insertText',
 			params: { text: 'blocked' },
 		})));
 		await new Promise(resolve => setTimeout(resolve, 0));
-		assert.strictEqual(dispatches, 1);
-		const denied = parseSent(fixture.client).find(message => (message as { id?: number }).id === 12) as { error?: { message?: string } };
+		const denied = parseSent(child.client).find(message => (message as { id?: number }).id === 12) as { error?: { message?: string } };
 		assert.match(denied.error?.message ?? '', /bound primary BrowserView session/);
 	});
 
@@ -1243,10 +1302,12 @@ class TestWebSocket extends EventEmitter {
 	readyState = TestWebSocket.CONNECTING;
 	bufferedAmount = 0;
 	readonly sent: unknown[] = [];
+	readonly sentOptions: Array<{ binary?: boolean } | undefined> = [];
 	closeCalls = 0;
 
-	send(data: unknown): void {
+	send(data: unknown, options?: { binary?: boolean }): void {
 		this.sent.push(data);
+		this.sentOptions.push(options);
 	}
 
 	close(): void {
