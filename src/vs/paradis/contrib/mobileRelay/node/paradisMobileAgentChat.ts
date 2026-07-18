@@ -28,7 +28,6 @@
 //    truncate/置き換え (サイズ減少) を検知したら epoch を切り替えて読み直す
 
 import { watch, type Dirent, FSWatcher, promises as fs } from 'fs';
-// eslint-disable-next-line local/code-import-patterns
 import { createRequire } from 'module';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
@@ -2473,8 +2472,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// pane syncのたびに呼ばれるため、対応表の実内容が変わった時だけ書き出す。
 		const signature = [
-			...[...this.paneSessions.values()].map(session => `${session.token} ${session.agent} ${session.transcriptPath} ${session.sessionId ?? ''}`),
-			...[...this.retiredSessions.values()].map(({ session }) => `${session.token} ${session.agent} ${session.transcriptPath} ${session.sessionId ?? ''} retired`),
+			...[...this.paneSessions.values()].map(session => `${session.token}\u0000${session.agent}\u0000${session.transcriptPath}\u0000${session.sessionId ?? ''}`),
+			...[...this.retiredSessions.values()].map(({ session }) => `${session.token}\u0000${session.agent}\u0000${session.transcriptPath}\u0000${session.sessionId ?? ''}\u0000retired`),
 		].sort().join('\n');
 		if (signature === this.lastPersistedSessionSignature) {
 			return;
