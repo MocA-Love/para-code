@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
+import { ProviderLogo } from '../src/components/providerLogo.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
 import { colors } from '../src/theme.js';
@@ -173,9 +174,7 @@ export default function RateLimitScreen() {
 	const renderProvider = (provider: 'claude' | 'codex', title: string, snapshot: RateLimitProviderSnapshot) => (
 		<>
 			<View style={styles.sectionTitleRow}>
-				<View style={[styles.logo, provider === 'claude' ? styles.logoClaude : styles.logoCodex]}>
-					<Text style={[styles.logoText, provider === 'codex' && styles.logoTextCodex]}>{provider === 'claude' ? 'C' : 'X'}</Text>
-				</View>
+				<ProviderLogo provider={provider} size={15} />
 				<Text style={styles.sectionTitle}>{title} · {snapshot.accounts.length} アカウント</Text>
 			</View>
 			<View style={styles.card}>
@@ -256,11 +255,6 @@ const styles = StyleSheet.create({
 	kpiSub: { color: colors.textDim, fontSize: 11 },
 	sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 18, marginBottom: 8 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
-	logo: { width: 15, height: 15, borderRadius: 4, alignItems: 'center', justifyContent: 'center' },
-	logoClaude: { backgroundColor: colors.claude },
-	logoCodex: { backgroundColor: '#f5f5f5' },
-	logoText: { color: '#ffffff', fontSize: 9, fontWeight: '800' },
-	logoTextCodex: { color: '#111111' },
 	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 2 },
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 10, lineHeight: 18 },
 	acct: { paddingVertical: 10 },
