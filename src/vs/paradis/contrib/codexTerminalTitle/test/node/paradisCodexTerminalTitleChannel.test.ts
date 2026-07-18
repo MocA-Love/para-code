@@ -5,7 +5,6 @@
 
 import assert from 'assert';
 import * as fs from 'fs/promises';
-// eslint-disable-next-line local/code-import-patterns
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
@@ -19,6 +18,8 @@ suite('ParadisCodexTerminalTitleService', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	const threadId = '019f4d58-4ce0-7f50-89a8-d2bbec6b2743';
+	const vscodeThreadId = '019f4d58-4ce0-7f50-89a8-d2bbec6b2744';
+	const execThreadId = '019f4d58-4ce0-7f50-89a8-d2bbec6b2745';
 	let codexHome: string;
 
 	setup(async () => {
@@ -38,8 +39,10 @@ suite('ParadisCodexTerminalTitleService', () => {
 					archived INTEGER NOT NULL
 				)
 			`);
-			database.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-				.run(threadId, 'cli', '/workspace/original', 'Fix terminal titles', '', '', '/outside/not-used.jsonl', 0);
+			const insert = database.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+			insert.run(threadId, 'cli', '/workspace/original', 'Fix terminal titles', '', '', '/outside/not-used.jsonl', 0);
+			insert.run(vscodeThreadId, 'vscode', '/workspace/original', 'Refactor the tree view', '', '', '/outside/not-used.jsonl', 0);
+			insert.run(execThreadId, 'exec', '/workspace/original', 'Run the linter', '', '', '/outside/not-used.jsonl', 0);
 		} finally {
 			database.close();
 		}
@@ -58,6 +61,16 @@ suite('ParadisCodexTerminalTitleService', () => {
 	test('allows a resumed Codex session to originate in another cwd', async () => {
 		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome);
 		assert.deepStrictEqual(await service.findThreadPrompt({ threadId, cwd: '/workspace/other', invocation: 'resume' }), { prompt: 'Fix terminal titles' });
+	});
+
+	test('accepts a thread recorded from an integrated terminal (source vscode)', async () => {
+		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome);
+		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: vscodeThreadId, cwd: '/workspace/original', invocation: 'start' }), { prompt: 'Refactor the tree view' });
+	});
+
+	test('rejects non-interactive thread sources', async () => {
+		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome);
+		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: execThreadId, cwd: '/workspace/original', invocation: 'start' }), {});
 	});
 
 	test('rejects non-canonical thread ids', async () => {

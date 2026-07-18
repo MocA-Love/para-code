@@ -8,7 +8,6 @@
 
 import { createReadStream } from 'fs';
 import * as fs from 'fs/promises';
-// eslint-disable-next-line local/code-import-patterns
 import { createRequire } from 'module';
 import { createInterface } from 'readline';
 import { Event } from '../../../../base/common/event.js';
@@ -24,6 +23,11 @@ import {
 } from '../common/paradisCodexTerminalTitle.js';
 
 const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+// Codex records interactively started threads with source 'cli' in a plain terminal, but
+// 'vscode' when launched inside a VS Code-family integrated terminal (detected via
+// TERM_PROGRAM) — which is exactly where this feature runs. Accept both; keep excluding
+// non-interactive sources such as 'exec'.
+const ALLOWED_THREAD_SOURCES: ReadonlySet<string> = new Set(['cli', 'vscode']);
 const MAX_PROMPT_LENGTH = 16_384;
 const MAX_ROLLOUT_BYTES = 2 * 1024 * 1024;
 const nodeRequire = createRequire(import.meta.url);
@@ -146,11 +150,11 @@ export class ParadisCodexTerminalTitleService {
 			const realCwd = await fs.realpath(request.cwd).catch(() => request.cwd);
 			const selectedColumns = ['source', 'cwd', ...optionalColumns].join(', ');
 			const cwdClause = request.invocation === 'start' ? ' AND (cwd = ? OR cwd = ?)' : '';
-			const statement = database.prepare(`SELECT ${selectedColumns} FROM threads WHERE id = ? AND source = 'cli'${cwdClause}${archivedClause} LIMIT 1`);
+			const statement = database.prepare(`SELECT ${selectedColumns} FROM threads WHERE id = ? AND source IN ('cli', 'vscode')${cwdClause}${archivedClause} LIMIT 1`);
 			const row = (request.invocation === 'start'
 				? statement.get(request.threadId, request.cwd, realCwd)
 				: statement.get(request.threadId)) as ICodexThreadRow | undefined;
-			if (!row || row.source !== 'cli' || (request.invocation === 'start' && row.cwd !== request.cwd && row.cwd !== realCwd)) {
+			if (!row || typeof row.source !== 'string' || !ALLOWED_THREAD_SOURCES.has(row.source) || (request.invocation === 'start' && row.cwd !== request.cwd && row.cwd !== realCwd)) {
 				return {};
 			}
 			const prompt = nonEmptyString(row.title) ?? nonEmptyString(row.first_user_message) ?? nonEmptyString(row.preview);
