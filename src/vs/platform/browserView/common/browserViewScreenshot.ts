@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 /**
  * Electron's NativeImage bitmap uses four bytes per pixel and stores alpha at byte offset 3.
  */
@@ -39,30 +41,83 @@ export function browserViewThrowIfScreenshotAborted(signal: AbortSignal | undefi
 	}
 }
 
-export class BrowserViewScreenshotCoordinator {
-	private _activeCapture: object | undefined;
+// default bound for the coalescing screenshot coordinator's FIFO of distinct-parameter captures (Para Browser MCP multi-pane screenshot fairness)
+export const BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH = 4;
 
-	constructor(private readonly timeoutMs = BROWSER_VIEW_SCREENSHOT_TIMEOUT_MS) {
+// coalesce/queue options so callers can single-flight identical captures (Para Browser MCP multi-pane screenshot fairness)
+export interface IBrowserViewScreenshotRunOptions {
+	/**
+	 * Requests sharing a key coalesce (single-flight) onto the capture that is already active
+	 * or queued for that key, so the same page shared to multiple panes issues one capture and
+	 * every caller receives its result. Distinct keys run serially through a bounded FIFO.
+	 * Omitting the key opts out of coalescing entirely (every call is treated as distinct).
+	 */
+	readonly key?: string;
+}
+
+interface IBrowserViewScreenshotQueueEntry {
+	readonly key: string | undefined;
+	readonly operation: (signal: AbortSignal) => Promise<unknown>;
+	readonly promise: Promise<unknown>;
+	readonly resolve: (value: unknown) => void;
+	readonly reject: (reason: unknown) => void;
+}
+
+// single-flight coalescing + bounded FIFO so a long full-page capture on a page shared
+// to multiple panes no longer rejects every other pane's request (Para Browser MCP multi-pane screenshot fairness)
+export class BrowserViewScreenshotCoordinator {
+	private _active: { readonly key: string | undefined; readonly promise: Promise<unknown> } | undefined;
+	private readonly _queue: IBrowserViewScreenshotQueueEntry[] = [];
+
+	constructor(
+		private readonly timeoutMs = BROWSER_VIEW_SCREENSHOT_TIMEOUT_MS,
+		private readonly maxQueueDepth = BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH,
+	) {
 		if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
 			throw new Error('BrowserView screenshot timeout must be a positive finite number.');
 		}
+		if (!Number.isInteger(maxQueueDepth) || maxQueueDepth < 1) {
+			throw new Error('BrowserView screenshot queue depth must be a positive integer.');
+		}
 	}
 
-	run<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-		if (this._activeCapture) {
+	run<T>(operation: (signal: AbortSignal) => Promise<T>, options?: IBrowserViewScreenshotRunOptions): Promise<T> {
+		const key = options?.key;
+		// Single-flight: an identical-parameter request shares the active or a queued capture's result.
+		if (key !== undefined) {
+			if (this._active && this._active.key === key) {
+				return this._active.promise as Promise<T>;
+			}
+			const queued = this._queue.find(entry => entry.key === key);
+			if (queued) {
+				return queued.promise as Promise<T>;
+			}
+		}
+		// Distinct parameters wait in a bounded FIFO; overflow keeps the original retryable-reject contract.
+		if (this._queue.length >= this.maxQueueDepth) {
 			return Promise.reject(new Error('PARA_BROWSER_RETRYABLE: a previous BrowserView screenshot capture is still in progress; retry after it settles.'));
 		}
-		const capture = {};
-		this._activeCapture = capture;
+		let resolve!: (value: unknown) => void;
+		let reject!: (reason: unknown) => void;
+		const promise = new Promise<unknown>((res, rej) => {
+			resolve = res;
+			reject = rej;
+		});
+		// Coalesced observers may attach late; keep an explicit rejection observer so a timeout never surfaces as unhandled.
+		void promise.catch(() => undefined);
+		this._queue.push({ key, operation: operation as (signal: AbortSignal) => Promise<unknown>, promise, resolve, reject });
+		this._processQueue();
+		return promise as Promise<T>;
+	}
+
+	private _processQueue(): void {
+		if (this._active || this._queue.length === 0) {
+			return;
+		}
+		const entry = this._queue.shift()!;
 		const controller = new AbortController();
-		const underlying = Promise.resolve()
-			.then(() => operation(controller.signal))
-			.finally(() => {
-				if (this._activeCapture === capture) {
-					this._activeCapture = undefined;
-				}
-			});
-		// Keep an explicit rejection observer after a timeout wins the public race.
+		const underlying = Promise.resolve().then(() => entry.operation(controller.signal));
+		// Keep explicit rejection observers after a timeout wins the public race or the queue advances.
 		void underlying.catch(() => undefined);
 
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -73,10 +128,22 @@ export class BrowserViewScreenshotCoordinator {
 				reject(error);
 			}, this.timeoutMs);
 		});
-		return Promise.race([underlying, timeout]).finally(() => {
+		const raced = Promise.race([underlying, timeout]).finally(() => {
 			if (timer !== undefined) {
 				clearTimeout(timer);
 			}
+		});
+		this._active = { key: entry.key, promise: raced };
+		// Callers (including coalesced ones via `raced`) settle on the timeout-bounded race...
+		raced.then(entry.resolve, entry.reject);
+		void raced.catch(() => undefined);
+		// ...but the next queued capture waits for the underlying capture to fully settle, so two
+		// captures never run concurrently on the same page even after a timeout aborts the first.
+		underlying.catch(() => undefined).finally(() => {
+			if (this._active && this._active.promise === raced) {
+				this._active = undefined;
+			}
+			this._processQueue();
 		});
 	}
 }
@@ -201,6 +268,23 @@ export function browserViewScreenshotRoute(options: IBrowserViewScreenshotRouteO
 
 export interface IBrowserViewScreenshotPolicyOptions extends IBrowserViewScreenshotRouteOptions {
 	readonly awaitNextPaint?: boolean;
+	// format/quality participate in the coalescing key so only truly identical captures single-flight (Para Browser MCP multi-pane screenshot fairness)
+	readonly format?: 'jpeg' | 'png';
+	readonly quality?: number;
+}
+
+// stable key identifying captures whose parameters are equivalent, so concurrent requests for the same page/params coalesce (Para Browser MCP multi-pane screenshot fairness)
+export function browserViewScreenshotCoalesceKey(options: IBrowserViewScreenshotPolicyOptions | undefined): string {
+	return JSON.stringify([
+		browserViewScreenshotRoute(options),
+		options?.format ?? 'jpeg',
+		options?.quality ?? 80,
+		options?.fullPage ?? false,
+		options?.captureBeyondViewport ?? false,
+		options?.pageRect ?? null,
+		options?.screenRect ?? null,
+		options?.awaitNextPaint ?? false,
+	]);
 }
 
 export interface IBrowserViewScreenshotPolicyDependencies<T> {
@@ -217,6 +301,8 @@ export function captureBrowserViewScreenshotWithPolicy<T>(
 	dependencies: IBrowserViewScreenshotPolicyDependencies<T>,
 ): Promise<T> {
 	const route = browserViewScreenshotRoute(options);
+	// coalesce identical concurrent captures (e.g. one page shared to multiple panes) via a single-flight key (Para Browser MCP multi-pane screenshot fairness)
+	const key = browserViewScreenshotCoalesceKey(options);
 	return coordinator.run(async signal => {
 		await prepareBrowserViewScreenshotCapture(
 			dependencies.isVisible(),
@@ -226,7 +312,7 @@ export function captureBrowserViewScreenshotWithPolicy<T>(
 			signal,
 		);
 		return dependencies.capture(route, signal);
-	});
+	}, { key });
 }
 
 export interface IBrowserViewScreenshotPixelEstimateInput {
