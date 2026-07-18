@@ -427,7 +427,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 			const details = this._diffDetailsByCell.get(cell);
 			if (details) {
-				this._hoverService.showDelayedHover({ target: cell, content: formatDiffDetails(details) }, { groupId: 'paradis-spreadsheet-diff-details' });
+				// reducedDelay: 既定の workbench.hover.delay は macOS で 1500ms と長く、差分詳細の
+				// 初回表示が体感で遅い。短い方の workbench.hover.reducedDelay (既定 500ms) を使う。
+				this._hoverService.showDelayedHover({ target: cell, content: formatDiffDetails(details) }, { groupId: 'paradis-spreadsheet-diff-details', reducedDelay: true });
 			}
 		}));
 
