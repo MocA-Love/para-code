@@ -8,11 +8,11 @@
 /*
  * Agent Browser Binding dialog (see paradisBindingDialog.ts) and the per-pane terminal grid
  * indicator (see paradisPaneIndicator.ts). The layout/structure mirrors the approved UI mock
- * (para-code-agent-browser-binding-mock.html); all colors come from --vscode-* theme tokens
- * (alpha variants are derived via color-mix) so the dialog adapts to any color theme.
+ * (aaaa.html: single page bar + in-row share/unshare buttons + an "MCP接続設定" tab); all colors
+ * come from --vscode-* theme tokens (alpha variants via color-mix) so the dialog adapts to any theme.
  */
 
-/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css): rgba(0,0,0,.5) block, editor-background panel (translucent when window transparency is on), radius 8px, shadow-xl. */
+/* Backdrop/panel colors follow the upstream modal editor part (modalEditorPart.css). */
 .paradis-binding-dialog-backdrop {
 	position: absolute;
 	inset: 0;
@@ -24,14 +24,13 @@
 }
 
 .paradis-binding-dialog {
-	width: 1180px;
+	width: 600px;
 	max-width: 94vw;
-	height: 700px;
 	max-height: 92vh;
 	background: var(--vscode-editor-background);
 	color: var(--vscode-foreground);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
+	border-radius: 10px;
 	display: flex;
 	flex-direction: column;
 	box-shadow: var(--vscode-shadow-xl);
@@ -40,7 +39,7 @@
 	outline: none;
 }
 
-/* The modal receives focus (tabindex=-1) for Escape handling; the workbench-wide keyboard-focus rule ([tabindex="-1"]:focus in workbench media/style.css) would otherwise draw a focusBorder frame around the whole dialog. */
+/* The modal receives focus (tabindex=-1) for Escape handling; suppress the workbench focus frame. */
 .monaco-workbench .paradis-binding-dialog:focus {
 	outline: none !important;
 }
@@ -49,31 +48,73 @@
 	font-size: 14px;
 }
 
+/* ---------- shared dots/pills ---------- */
+
+.paradis-binding-dialog .pbd-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	flex: none;
+}
+
+.paradis-binding-dialog .pbd-dot.green {
+	background: var(--vscode-charts-green);
+}
+
+.paradis-binding-dialog .pbd-dot.amber {
+	background: var(--vscode-charts-yellow);
+}
+
+.paradis-binding-dialog .pbd-dot.red {
+	background: var(--vscode-errorForeground);
+}
+
+.paradis-binding-dialog .pbd-dot.gray {
+	background: color-mix(in srgb, var(--vscode-descriptionForeground) 70%, transparent);
+}
+
+.paradis-binding-dialog .pbd-pill,
+.paradis-binding-dialog .pbd-page-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	border-radius: 999px;
+	padding: 2px 9px;
+	font-size: 11px;
+	white-space: nowrap;
+	flex: none;
+}
+
+.paradis-binding-dialog .pbd-pill.green,
+.paradis-binding-dialog .pbd-page-pill.shared {
+	background: color-mix(in srgb, var(--vscode-charts-green) 14%, transparent);
+	color: var(--vscode-charts-green);
+}
+
+.paradis-binding-dialog .pbd-pill.amber {
+	background: color-mix(in srgb, var(--vscode-charts-yellow) 14%, transparent);
+	color: var(--vscode-charts-yellow);
+}
+
+.paradis-binding-dialog .pbd-pill.red {
+	background: color-mix(in srgb, var(--vscode-errorForeground) 14%, transparent);
+	color: var(--vscode-errorForeground);
+}
+
+.paradis-binding-dialog .pbd-pill.gray,
+.paradis-binding-dialog .pbd-page-pill.unshared {
+	background: color-mix(in srgb, var(--vscode-descriptionForeground) 13%, transparent);
+	color: var(--vscode-descriptionForeground);
+}
+
 /* ---------- header ---------- */
 
 .paradis-binding-dialog .pbd-header {
-	padding: 16px 20px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	padding: 14px 16px 10px;
 	display: flex;
 	align-items: center;
-	gap: 12px;
+	gap: 10px;
 	flex-shrink: 0;
-}
-
-.paradis-binding-dialog .pbd-icon-wrap {
-	width: 34px;
-	height: 34px;
-	border-radius: 8px;
-	background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 33%, transparent);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	color: var(--vscode-textLink-foreground);
-}
-
-.paradis-binding-dialog .pbd-icon-wrap .codicon {
-	font-size: 18px;
 }
 
 .paradis-binding-dialog .pbd-titles {
@@ -83,18 +124,9 @@
 
 .paradis-binding-dialog .pbd-header h2 {
 	margin: 0;
-	font-size: 14.5px;
+	font-size: 14px;
 	font-weight: 600;
 	color: var(--vscode-foreground);
-}
-
-.paradis-binding-dialog .pbd-sub {
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
-	margin-top: 2px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .paradis-binding-dialog .pbd-close {
@@ -114,53 +146,68 @@
 	color: var(--vscode-foreground);
 }
 
-/* ---------- summary bar ---------- */
+/* ---------- page bar ---------- */
 
-.paradis-binding-dialog .pbd-summary-bar {
+.paradis-binding-dialog .pbd-pagebar {
 	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 10px 16px;
+	background: linear-gradient(180deg, color-mix(in srgb, var(--vscode-focusBorder) 7%, transparent), transparent);
 	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	min-width: 0;
 	flex-shrink: 0;
 }
 
-.paradis-binding-dialog .pbd-summary-chip {
-	flex: 1;
-	padding: 9px 18px;
-	font-size: 11px;
+.paradis-binding-dialog .pbd-favicon {
+	width: 22px;
+	height: 22px;
+	border-radius: 5px;
+	background: var(--vscode-editor-background);
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-}
-
-.paradis-binding-dialog .pbd-summary-chip:last-child {
-	border-right: none;
-}
-
-.paradis-binding-dialog .pbd-summary-chip .pbd-dot {
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
-}
-
-.paradis-binding-dialog .pbd-summary-chip.green .pbd-dot {
-	background: var(--vscode-charts-green);
-}
-
-.paradis-binding-dialog .pbd-summary-chip.amber .pbd-dot {
-	background: var(--vscode-charts-yellow);
-}
-
-.paradis-binding-dialog .pbd-summary-chip.gray .pbd-dot {
-	background: var(--vscode-descriptionForeground);
-}
-
-.paradis-binding-dialog .pbd-summary-chip b {
-	color: var(--vscode-foreground);
-	font-weight: 600;
-}
-
-.paradis-binding-dialog .pbd-summary-chip .pbd-lbl {
+	justify-content: center;
+	flex: none;
 	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-binding-dialog .pbd-favicon img {
+	width: 15px;
+	height: 15px;
+}
+
+.paradis-binding-dialog .pbd-favicon .codicon {
+	font-size: 13px;
+}
+
+.paradis-binding-dialog .pbd-pb-text {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.paradis-binding-dialog .pbd-pb-title {
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--vscode-foreground);
+	flex: none;
+	max-width: 45%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-binding-dialog .pbd-pb-url {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 /* ---------- tabs ---------- */
@@ -168,24 +215,24 @@
 .paradis-binding-dialog .pbd-tabs {
 	display: flex;
 	gap: 2px;
-	padding: 10px 20px 0;
+	padding: 8px 12px 0;
 	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	flex-shrink: 0;
 }
 
 .paradis-binding-dialog .pbd-tab {
-	padding: 8px 14px;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 7px 13px;
 	font-size: 12px;
 	color: var(--vscode-descriptionForeground);
 	border-bottom: 2px solid transparent;
 	cursor: pointer;
-	display: flex;
-	align-items: center;
-	gap: 6px;
 }
 
-.paradis-binding-dialog .pbd-tab .codicon {
-	font-size: 13px;
+.paradis-binding-dialog .pbd-tab:hover {
+	color: var(--vscode-foreground);
 }
 
 .paradis-binding-dialog .pbd-tab.active {
@@ -193,194 +240,29 @@
 	border-bottom-color: var(--vscode-focusBorder);
 }
 
-/* ---------- columns ---------- */
-
-.paradis-binding-dialog .pbd-columns {
-	flex: 1;
-	display: flex;
-	min-height: 0;
-}
-
-.paradis-binding-dialog .pbd-col-left {
-	width: 280px;
-	border-right: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	flex-direction: column;
-	flex-shrink: 0;
-	overflow-y: auto;
-}
-
-.paradis-binding-dialog .pbd-col-mid {
-	flex: 1;
-	display: flex;
-	flex-direction: column;
-	min-width: 0;
-	overflow-y: auto;
-}
-
-/* The setup column is only shown on the "MCP接続設定" tab (the middle column is hidden there), so it fills the remaining width instead of a fixed 340px sidebar. */
-.paradis-binding-dialog .pbd-col-right {
-	flex: 1;
-	min-width: 0;
-	border-left: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	flex-direction: column;
-	overflow-y: auto;
-}
-
-.paradis-binding-dialog .pbd-col-right .pbd-setup-card {
-	max-width: 720px;
-}
-
-/* ---------- left: page identity card ---------- */
-
-.paradis-binding-dialog .pbd-page-card {
-	margin: 14px;
-	padding: 14px;
-	background: color-mix(in srgb, var(--vscode-editorWidget-background) 94%, var(--vscode-foreground) 6%);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 10px;
-}
-
-.paradis-binding-dialog .pbd-favicon-row {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	margin-bottom: 10px;
-	min-width: 0;
-}
-
-.paradis-binding-dialog .pbd-favicon {
-	width: 28px;
-	height: 28px;
-	border-radius: 6px;
-	background: var(--vscode-editor-background);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	flex-shrink: 0;
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-binding-dialog .pbd-favicon img {
-	width: 16px;
-	height: 16px;
-}
-
-.paradis-binding-dialog .pbd-page-title {
-	font-size: 12.5px;
-	color: var(--vscode-foreground);
-	font-weight: 600;
-	line-height: 1.3;
-}
-
-.paradis-binding-dialog .pbd-page-url {
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
-	margin-top: 2px;
-	word-break: break-all;
-}
-
-.paradis-binding-dialog .pbd-status-pill {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	font-size: 10.5px;
-	padding: 3px 9px;
-	border-radius: 20px;
-	margin-top: 10px;
-}
-
-.paradis-binding-dialog .pbd-status-pill.bound {
-	background: color-mix(in srgb, var(--vscode-charts-green) 13%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-charts-green) 33%, transparent);
-	color: var(--vscode-charts-green);
-}
-
-.paradis-binding-dialog .pbd-status-pill.unbound {
-	background: color-mix(in srgb, var(--vscode-descriptionForeground) 13%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-descriptionForeground) 27%, transparent);
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-binding-dialog .pbd-pulse {
-	width: 5px;
-	height: 5px;
+.paradis-binding-dialog .pbd-tab-badge {
+	width: 7px;
+	height: 7px;
 	border-radius: 50%;
-	background: var(--vscode-charts-green);
-	animation: pbd-pulse 1.6s infinite;
 }
 
-@keyframes pbd-pulse {
-	0%, 100% { opacity: 1; }
-	50% { opacity: 0.3; }
+.paradis-binding-dialog .pbd-tab-badge.warn {
+	background: var(--vscode-charts-yellow);
 }
 
-.paradis-binding-dialog .pbd-divider {
-	height: 1px;
-	background: var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	margin: 12px 0;
-}
+/* ---------- body ---------- */
 
-.paradis-binding-dialog .pbd-kv {
+.paradis-binding-dialog .pbd-body {
 	display: flex;
-	justify-content: space-between;
-	font-size: 11px;
-	padding: 3px 0;
-	color: var(--vscode-descriptionForeground);
+	flex-direction: column;
+	min-height: 240px;
+	overflow-y: auto;
 }
 
-.paradis-binding-dialog .pbd-kv b {
-	color: var(--vscode-foreground);
-	font-weight: 500;
-}
-
-.paradis-binding-dialog .pbd-disconnect-btn {
-	width: 100%;
-	margin-top: 12px;
-	padding: 7px;
-	border-radius: 6px;
-	border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 25%, transparent);
-	background: color-mix(in srgb, var(--vscode-errorForeground) 10%, transparent);
-	color: var(--vscode-errorForeground);
-	font-size: 11.5px;
-	font-family: inherit;
-	text-align: center;
-	cursor: pointer;
-}
-
-.paradis-binding-dialog .pbd-disconnect-btn:hover {
-	background: color-mix(in srgb, var(--vscode-errorForeground) 18%, transparent);
-}
-
-.paradis-binding-dialog .pbd-left-hint {
-	margin: 0 14px 14px;
-	padding: 10px 12px;
-	background: color-mix(in srgb, var(--vscode-focusBorder) 6%, transparent);
-	border: 1px dashed color-mix(in srgb, var(--vscode-focusBorder) 33%, transparent);
-	border-radius: 8px;
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
-	line-height: 1.6;
-}
-
-.paradis-binding-dialog .pbd-left-hint b {
-	color: var(--vscode-textLink-foreground);
-}
-
-.paradis-binding-dialog .pbd-left-hint code {
-	background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 80%, transparent);
-	padding: 1px 4px;
-	border-radius: 3px;
-	font-family: var(--monaco-monospace-font);
-	color: var(--vscode-textLink-foreground);
-}
-
-/* ---------- mid: pane list ---------- */
+/* ---------- panes tab ---------- */
 
 .paradis-binding-dialog .pbd-list-search {
-	margin: 14px 14px 6px;
+	margin: 12px 14px 4px;
 	height: 30px;
 	background: var(--vscode-input-background);
 	border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
@@ -409,307 +291,202 @@
 }
 
 .paradis-binding-dialog .pbd-pane-list {
-	padding: 6px 14px 14px;
+	padding: 6px 12px 4px;
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: 3px;
 }
 
 .paradis-binding-dialog .pbd-empty {
-	padding: 20px 4px;
+	padding: 22px 12px;
 	color: var(--vscode-descriptionForeground);
 	font-size: 11.5px;
 	line-height: 1.6;
 }
 
-.paradis-binding-dialog .pbd-pane-card {
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 9px;
-	padding: 12px 14px;
-	background: color-mix(in srgb, var(--vscode-editorWidget-background) 94%, var(--vscode-foreground) 6%);
-	cursor: pointer;
-	position: relative;
-}
-
-.paradis-binding-dialog .pbd-pane-card:hover {
-	border-color: color-mix(in srgb, var(--vscode-editorWidget-border, var(--vscode-widget-border)) 50%, var(--vscode-foreground) 50%);
-}
-
-.paradis-binding-dialog .pbd-pane-card.selected {
-	border-color: color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent);
-	background: color-mix(in srgb, var(--vscode-focusBorder) 10%, transparent);
-}
-
-.paradis-binding-dialog .pbd-row1 {
+.paradis-binding-dialog .pbd-pane-row {
 	display: flex;
 	align-items: center;
 	gap: 10px;
-	min-width: 0;
+	padding: 10px 12px;
+	border-radius: 8px;
 }
 
-.paradis-binding-dialog .pbd-agent-icon {
-	width: 30px;
-	height: 30px;
-	border-radius: 7px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	flex-shrink: 0;
+.paradis-binding-dialog .pbd-pane-row:hover {
+	background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
 }
 
-.paradis-binding-dialog .pbd-agent-icon .codicon {
-	font-size: 16px;
-}
-
-.paradis-binding-dialog .pbd-agent-icon.claude {
-	background: color-mix(in srgb, var(--vscode-charts-orange) 13%, transparent);
-	color: var(--vscode-charts-orange);
-}
-
-.paradis-binding-dialog .pbd-agent-icon.codex {
-	background: color-mix(in srgb, var(--vscode-descriptionForeground) 13%, transparent);
-	color: var(--vscode-foreground);
-}
-
-.paradis-binding-dialog .pbd-agent-icon.shell {
-	background: color-mix(in srgb, var(--vscode-charts-blue) 13%, transparent);
-	color: var(--vscode-charts-blue);
-}
-
-.paradis-binding-dialog .pbd-pane-card .pbd-titles {
+.paradis-binding-dialog .pbd-row-main {
 	flex: 1;
 	min-width: 0;
 }
 
-.paradis-binding-dialog .pbd-name {
+.paradis-binding-dialog .pbd-row-title {
 	font-size: 12.5px;
 	color: var(--vscode-foreground);
-	font-weight: 600;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.paradis-binding-dialog .pbd-meta {
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
-	margin-top: 2px;
-	font-family: var(--monaco-monospace-font);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.paradis-binding-dialog .pbd-pane-pill {
-	font-size: 9.5px;
-	padding: 3px 8px;
-	border-radius: 20px;
-	white-space: nowrap;
-	font-weight: 600;
-	letter-spacing: 0.02em;
-	flex-shrink: 0;
-}
-
-.paradis-binding-dialog .pbd-pane-pill.driving-here {
-	background: color-mix(in srgb, var(--vscode-charts-green) 13%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-charts-green) 33%, transparent);
-	color: var(--vscode-charts-green);
-}
-
-.paradis-binding-dialog .pbd-pane-pill.driving-else {
-	background: color-mix(in srgb, var(--vscode-charts-yellow) 13%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-charts-yellow) 33%, transparent);
-	color: var(--vscode-charts-yellow);
-}
-
-.paradis-binding-dialog .pbd-pane-pill.ready {
-	background: color-mix(in srgb, var(--vscode-descriptionForeground) 13%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-descriptionForeground) 27%, transparent);
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-binding-dialog .pbd-pane-pill.needs-mcp {
-	background: color-mix(in srgb, var(--vscode-errorForeground) 13%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-errorForeground) 27%, transparent);
-	color: var(--vscode-errorForeground);
-}
-
-.paradis-binding-dialog .pbd-row2 {
-	margin-top: 10px;
-	padding-top: 10px;
-	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-}
-
-.paradis-binding-dialog .pbd-grid-loc {
-	font-size: 10px;
-	color: var(--vscode-descriptionForeground);
-	display: flex;
-	align-items: center;
-	gap: 5px;
-}
-
-.paradis-binding-dialog .pbd-grid-loc .codicon {
+.paradis-binding-dialog .pbd-row-sub {
 	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 1px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
-.paradis-binding-dialog .pbd-bind-btn {
-	font-size: 10.5px;
-	padding: 4px 10px;
+.paradis-binding-dialog .pbd-row-btn {
+	flex: none;
 	border-radius: 5px;
-	border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 33%, transparent);
-	background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
-	color: var(--vscode-textLink-foreground);
+	padding: 4px 12px;
+	font-size: 12px;
 	font-family: inherit;
 	cursor: pointer;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
+	color: var(--vscode-foreground);
 }
 
-.paradis-binding-dialog .pbd-bind-btn:hover {
-	background: color-mix(in srgb, var(--vscode-focusBorder) 19%, transparent);
+.paradis-binding-dialog .pbd-row-btn:hover {
+	background: color-mix(in srgb, var(--vscode-foreground) 13%, transparent);
 }
 
-.paradis-binding-dialog .pbd-bind-btn.unbind {
+.paradis-binding-dialog .pbd-row-btn.share {
+	background: var(--vscode-button-background);
+	border-color: var(--vscode-button-border, var(--vscode-button-background));
+	color: var(--vscode-button-foreground);
+}
+
+.paradis-binding-dialog .pbd-row-btn.share:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.paradis-binding-dialog .pbd-row-btn.unshare {
 	border-color: color-mix(in srgb, var(--vscode-errorForeground) 25%, transparent);
 	background: color-mix(in srgb, var(--vscode-errorForeground) 10%, transparent);
 	color: var(--vscode-errorForeground);
 }
 
-.paradis-binding-dialog .pbd-bind-btn[disabled] {
+.paradis-binding-dialog .pbd-row-btn[disabled] {
 	opacity: 0.4;
 	cursor: not-allowed;
 }
 
-/* ---------- perms tab ---------- */
-
-.paradis-binding-dialog .pbd-perm-list {
-	padding: 16px;
-}
-
-.paradis-binding-dialog .pbd-perm-item {
-	display: flex;
-	gap: 10px;
-	padding: 10px 0;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-}
-
-.paradis-binding-dialog .pbd-perm-item:last-child {
-	border-bottom: none;
-}
-
-.paradis-binding-dialog .pbd-perm-item > .codicon {
-	font-size: 15px;
-	color: var(--vscode-charts-yellow);
-	flex-shrink: 0;
-	margin-top: 1px;
-}
-
-.paradis-binding-dialog .pbd-perm-title {
-	font-size: 11.5px;
-	color: var(--vscode-foreground);
-	font-weight: 600;
-}
-
-.paradis-binding-dialog .pbd-perm-desc {
-	font-size: 10.5px;
+.paradis-binding-dialog .pbd-scope-note {
+	margin: 4px 14px 12px;
+	padding: 6px 12px;
+	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
-	margin-top: 2px;
 	line-height: 1.5;
 }
 
-/* ---------- right: setup card ---------- */
+/* ---------- MCP接続設定 tab ---------- */
 
-.paradis-binding-dialog .pbd-setup-card {
-	padding: 16px;
+.paradis-binding-dialog .pbd-mcp {
+	padding: 14px 16px 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
 }
 
-.paradis-binding-dialog .pbd-setup-card h3 {
-	margin: 0 0 4px;
-	font-size: 12px;
+.paradis-binding-dialog .pbd-mcp-card {
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--vscode-editorWidget-background) 94%, var(--vscode-foreground) 6%);
+	padding: 12px 14px;
+}
+
+.paradis-binding-dialog .pbd-mcp-card.ok {
+	border-color: color-mix(in srgb, var(--vscode-charts-green) 30%, var(--vscode-editorWidget-border, var(--vscode-widget-border)));
+}
+
+.paradis-binding-dialog .pbd-mcp-card.warn {
+	border-color: color-mix(in srgb, var(--vscode-charts-yellow) 40%, var(--vscode-editorWidget-border, var(--vscode-widget-border)));
+}
+
+.paradis-binding-dialog .pbd-mc-head {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+}
+
+.paradis-binding-dialog .pbd-mcp-logo {
+	width: 22px;
+	height: 22px;
+	border-radius: 5px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+}
+
+.paradis-binding-dialog .pbd-mcp-logo svg {
+	width: 15px;
+	height: 15px;
+	display: block;
+}
+
+.paradis-binding-dialog .pbd-mcp-logo.claude {
+	background: #d97757;
+}
+
+.paradis-binding-dialog .pbd-mcp-logo.codex {
+	background: #f5f5f5;
+}
+
+.paradis-binding-dialog .pbd-mc-name {
+	font-size: 12.5px;
+	font-weight: 600;
+	flex: 1;
 	color: var(--vscode-foreground);
 }
 
-.paradis-binding-dialog .pbd-desc {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	line-height: 1.6;
-	margin-bottom: 14px;
-}
-
-.paradis-binding-dialog .pbd-cli-tabs {
-	display: flex;
-	gap: 6px;
-	margin-bottom: 12px;
-}
-
-.paradis-binding-dialog .pbd-cli-tab {
-	flex: 1;
-	padding: 7px;
-	text-align: center;
-	border-radius: 6px;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	cursor: pointer;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	gap: 6px;
-}
-
-.paradis-binding-dialog .pbd-cli-tab .codicon {
-	font-size: 13px;
-}
-
-.paradis-binding-dialog .pbd-cli-tab.active {
-	border-color: color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent);
-	background: color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent);
-	color: var(--vscode-textLink-foreground);
-}
-
-/* ---------- right: one-click MCP setup ---------- */
-
-.paradis-binding-dialog .pbd-auto-setup {
-	margin-bottom: 12px;
-}
-
-.paradis-binding-dialog .pbd-auto-setup-btn {
-	width: 100%;
-	padding: 8px;
-	border-radius: 6px;
-	border: 1px solid var(--vscode-button-border, var(--vscode-button-background));
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
+.paradis-binding-dialog .pbd-mc-detail {
+	margin-top: 7px;
 	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.65;
+}
+
+.paradis-binding-dialog .pbd-mc-actions {
+	margin-top: 9px;
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.paradis-binding-dialog .pbd-mc-btn {
+	border-radius: 5px;
+	padding: 5px 13px;
+	font-size: 12px;
 	font-family: inherit;
 	font-weight: 600;
 	cursor: pointer;
+	border: 1px solid var(--vscode-button-border, var(--vscode-button-background));
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
 	display: flex;
 	align-items: center;
-	justify-content: center;
 	gap: 6px;
 }
 
-.paradis-binding-dialog .pbd-auto-setup-btn:hover {
+.paradis-binding-dialog .pbd-mc-btn:hover {
 	background: var(--vscode-button-hoverBackground);
 }
 
-.paradis-binding-dialog .pbd-auto-setup-btn[disabled] {
+.paradis-binding-dialog .pbd-mc-btn[disabled] {
 	opacity: 0.6;
 	cursor: default;
 }
 
-.paradis-binding-dialog .pbd-auto-setup-btn .codicon {
+.paradis-binding-dialog .pbd-mc-btn .codicon {
 	font-size: 13px;
 }
 
-.paradis-binding-dialog .pbd-auto-setup-hint {
-	font-size: 10px;
-	color: var(--vscode-descriptionForeground);
-	line-height: 1.5;
-	margin-top: 6px;
-}
+/* ---------- setup / fix result rows (shared) ---------- */
 
 .paradis-binding-dialog .pbd-setup-result {
 	margin-top: 10px;
@@ -730,7 +507,7 @@
 	display: flex;
 	align-items: flex-start;
 	gap: 6px;
-	font-size: 10.5px;
+	font-size: 11px;
 	line-height: 1.5;
 }
 
@@ -750,6 +527,29 @@
 
 .paradis-binding-dialog .pbd-setup-result-row.error {
 	color: var(--vscode-errorForeground);
+}
+
+/* ---------- manual setup (collapsible) ---------- */
+
+.paradis-binding-dialog .pbd-mcp-manual {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+}
+
+.paradis-binding-dialog .pbd-mcp-manual summary {
+	cursor: pointer;
+	padding: 4px 2px;
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-binding-dialog .pbd-field-label {
+	font-size: 10px;
+	letter-spacing: 0.04em;
+	color: var(--vscode-descriptionForeground);
+	text-transform: uppercase;
+	margin: 10px 0 6px;
+	font-weight: 700;
 }
 
 .paradis-binding-dialog .pbd-code-block {
@@ -796,79 +596,15 @@
 	color: var(--vscode-foreground);
 }
 
-.paradis-binding-dialog .pbd-copy-btn.copied,
-.paradis-binding-dialog .pbd-icon-btn.copied {
+.paradis-binding-dialog .pbd-copy-btn.copied {
 	color: var(--vscode-charts-green);
 	border-color: color-mix(in srgb, var(--vscode-charts-green) 33%, transparent);
-}
-
-.paradis-binding-dialog .pbd-field-label {
-	font-size: 10px;
-	letter-spacing: 0.04em;
-	color: var(--vscode-descriptionForeground);
-	text-transform: uppercase;
-	margin: 14px 0 6px;
-	font-weight: 700;
-}
-
-.paradis-binding-dialog .pbd-endpoint-row {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	background: color-mix(in srgb, var(--vscode-editorWidget-background) 94%, var(--vscode-foreground) 6%);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
-	padding: 7px 10px;
-}
-
-.paradis-binding-dialog .pbd-url {
-	flex: 1;
-	font-family: var(--monaco-monospace-font);
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.paradis-binding-dialog .pbd-icon-btn {
-	width: 20px;
-	height: 20px;
-	color: var(--vscode-descriptionForeground);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	cursor: pointer;
-	flex-shrink: 0;
-}
-
-.paradis-binding-dialog .pbd-icon-btn .codicon {
-	font-size: 12px;
-}
-
-.paradis-binding-dialog .pbd-icon-btn:hover {
-	color: var(--vscode-foreground);
-}
-
-.paradis-binding-dialog .pbd-info-box {
-	margin-top: 16px;
-	padding: 10px 12px;
-	background: color-mix(in srgb, var(--vscode-focusBorder) 6%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 33%, transparent);
-	border-radius: 7px;
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
-	line-height: 1.7;
-}
-
-.paradis-binding-dialog .pbd-info-box b {
-	color: var(--vscode-textLink-foreground);
 }
 
 /* ---------- footer ---------- */
 
 .paradis-binding-dialog .pbd-footer {
-	padding: 12px 20px;
+	padding: 10px 16px 14px;
 	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	display: flex;
 	align-items: center;
@@ -878,19 +614,21 @@
 
 .paradis-binding-dialog .pbd-hint {
 	flex: 1;
-	font-size: 10.5px;
+	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	display: flex;
 	align-items: center;
 	gap: 6px;
+	min-width: 0;
 }
 
 .paradis-binding-dialog .pbd-hint .codicon {
 	font-size: 12px;
+	flex: none;
 }
 
 .paradis-binding-dialog .pbd-btn {
-	padding: 7px 16px;
+	padding: 6px 16px;
 	border-radius: 6px;
 	font-size: 12px;
 	font-family: inherit;
@@ -898,26 +636,11 @@
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	background: transparent;
 	color: var(--vscode-foreground);
+	flex: none;
 }
 
 .paradis-binding-dialog .pbd-btn:hover {
 	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-binding-dialog .pbd-btn.primary {
-	background: var(--vscode-button-background);
-	border-color: var(--vscode-button-border, var(--vscode-button-background));
-	color: var(--vscode-button-foreground);
-	font-weight: 600;
-}
-
-.paradis-binding-dialog .pbd-btn.primary:hover {
-	background: var(--vscode-button-hoverBackground);
-}
-
-.paradis-binding-dialog .pbd-btn.primary[disabled] {
-	opacity: 0.5;
-	cursor: not-allowed;
 }
 
 /* ---------- terminal grid cell indicator (paradisPaneIndicator.ts) ---------- */

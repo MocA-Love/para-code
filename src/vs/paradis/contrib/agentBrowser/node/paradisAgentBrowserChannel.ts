@@ -97,6 +97,13 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.setupMcp(requireMcpSetupRequest(args[0])) as Promise<T>;
 			}
+			case 'getMcpConfigStatus':
+				requireArgs(arg, 0);
+				return this.service.getMcpConfigStatus() as Promise<T>;
+			case 'fixMcp': {
+				const args = requireArgs(arg, 1);
+				return this.service.fixMcp(requireMcpSetupRequest(args[0])) as Promise<T>;
+			}
 			case 'bind':
 			case 'syncPaneShells':
 			default:
