@@ -8,8 +8,8 @@
 
 // ブラウザページ⇔ターミナルペイン紐付けのバインディングダイアログ（モーダル）。
 // upstreamの Dialog ウィジェットには依存せず、workbenchコンテナへ自前のbackdrop+モーダルDOMを
-// 重ねる方式（見た目・構造は scratchpad の UIモック para-code-agent-browser-binding-mock.html 準拠、
-// 色はハードコードせず --vscode-* テーマトークンを使う）。
+// 重ねる方式。構造は確定デザインモック（aaaa.html: ページバー1本 + ペイン行の行内「共有/解除」+
+// 「MCP接続設定」タブ）に準拠し、色はハードコードせず --vscode-* テーマトークンを使う。
 
 import './media/paradisBindingDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -22,9 +22,9 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
-import { IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
+import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
+import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor } from './paradisAgentBrowserBindingModel.js';
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunDialogBind } from './paradisDialogPageResolver.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
@@ -35,71 +35,91 @@ const $ = dom.$;
 // allow-any-unicode-next-line
 const STR_DIALOG_TITLE = localize('paradis.bindingDialog.title', "ブラウザページをエージェントと共有");
 // allow-any-unicode-next-line
-const STR_SUMMARY_SHARED = localize('paradis.bindingDialog.summaryShared', "共有中");
-// allow-any-unicode-next-line
-const STR_SUMMARY_NEEDS_MCP = localize('paradis.bindingDialog.summaryNeedsMcp', "MCP未接続");
-// allow-any-unicode-next-line
-const STR_SUMMARY_IDLE = localize('paradis.bindingDialog.summaryIdle', "未接続のペイン");
+const STR_CLOSE_ARIA = localize('paradis.bindingDialog.closeAria', "閉じる");
 // allow-any-unicode-next-line
 const STR_TAB_PANES = localize('paradis.bindingDialog.tabPanes', "ターミナルペイン");
 // allow-any-unicode-next-line
-const STR_TAB_SETUP = localize('paradis.bindingDialog.tabSetup', "MCP接続設定");
+const STR_TAB_MCP = localize('paradis.bindingDialog.tabMcp', "MCP接続設定");
 // allow-any-unicode-next-line
-const STR_TAB_PERMS = localize('paradis.bindingDialog.tabPerms', "権限");
+const STR_TAB_MCP_WARN_ARIA = localize('paradis.bindingDialog.tabMcpWarnAria', "要対応の設定があります");
 // allow-any-unicode-next-line
-const STR_PILL_BOUND_HERE = localize('paradis.bindingDialog.pillBoundHere', "このページを共有中");
+const STR_PAGE_PILL_SHARED = localize('paradis.bindingDialog.pagePillShared', "共有中");
 // allow-any-unicode-next-line
-const STR_PILL_BOUND_ELSE = localize('paradis.bindingDialog.pillBoundElse', "別のページを共有中");
+const STR_PAGE_PILL_UNSHARED = localize('paradis.bindingDialog.pagePillUnshared', "未共有");
 // allow-any-unicode-next-line
-const STR_PILL_READY_AGENT = localize('paradis.bindingDialog.pillReadyAgent', "接続済み・空き");
+const STR_SEARCH_PLACEHOLDER = localize('paradis.bindingDialog.searchPlaceholder', "ペインを検索…");
 // allow-any-unicode-next-line
-const STR_PILL_NEEDS_MCP = localize('paradis.bindingDialog.pillNeedsMcp', "MCP未接続");
+const STR_NO_PANES = localize('paradis.bindingDialog.noPanes', "共有できるターミナルペインがありません。新しいターミナルでエージェントCLIを起動してください。");
 // allow-any-unicode-next-line
-const STR_META_NO_MCP = localize('paradis.bindingDialog.metaNoMcp', "MCPサーバー未接続");
+const STR_SCOPE_NOTE = localize('paradis.bindingDialog.scopeNote', "別のスペースにあるペインはここには表示されません（スペースを跨ぐ共有は未対応）");
+// allow-any-unicode-next-line
+const strSubBoundHere = (since: string) => localize('paradis.bindingDialog.subBoundHere', "このページを共有中 · {0}から", since);
+// allow-any-unicode-next-line
+const strSubBoundElse = (title: string) => localize('paradis.bindingDialog.subBoundElse', "別のページを共有中: {0}", title);
+// allow-any-unicode-next-line
+const STR_SUB_READY = localize('paradis.bindingDialog.subReady', "接続済み・空き");
+// allow-any-unicode-next-line
+const STR_SUB_NEEDS_MCP = localize('paradis.bindingDialog.subNeedsMcp', "MCP未接続 — 共有は可能。接続はMCP接続設定タブから");
+// allow-any-unicode-next-line
+const STR_BTN_ROW_SHARE = localize('paradis.bindingDialog.btnRowShare', "共有");
+// allow-any-unicode-next-line
+const STR_BTN_ROW_UNSHARE = localize('paradis.bindingDialog.btnRowUnshare', "解除");
+// allow-any-unicode-next-line
+const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "エージェントは共有したこのページだけを読み取り・操作できます");
+// allow-any-unicode-next-line
+const STR_BTN_CLOSE = localize('paradis.bindingDialog.btnClose', "閉じる");
+// allow-any-unicode-next-line
+const strBindFailed = (detail: string) => localize('paradis.bindingDialog.bindFailed', "共有に失敗しました: {0}", detail);
 // allow-any-unicode-next-line
 const STR_META_SCOPE_PENDING = localize('paradis.bindingDialog.metaScopePending', "スペース情報の同期中です。しばらくしてから再試行してください。");
 // allow-any-unicode-next-line
 const STR_META_SCOPE_MISMATCH = localize('paradis.bindingDialog.metaScopeMismatch', "このページとは別のスペースにあるため共有できません。");
 // allow-any-unicode-next-line
-const STR_BTN_UNBIND = localize('paradis.bindingDialog.btnUnbind', "共有を解除");
+const strMinutesAgo = (minutes: number) => localize('paradis.bindingDialog.minutesAgo', "{0}分前", minutes);
 // allow-any-unicode-next-line
-const STR_BTN_BIND = localize('paradis.bindingDialog.btnBind', "このページと共有");
+const strHoursAgo = (hours: number) => localize('paradis.bindingDialog.hoursAgo', "{0}時間前", hours);
 // allow-any-unicode-next-line
-const strTerminalId = (id: number) => localize('paradis.bindingDialog.terminalId', "ターミナルID: {0}", id);
+const STR_JUST_NOW = localize('paradis.bindingDialog.justNow', "たった今");
+
+// --- MCP接続設定タブ ---
 // allow-any-unicode-next-line
-const STR_PAGE_PILL_UNBOUND = localize('paradis.bindingDialog.pagePillUnbound', "未共有");
+const STR_MCP_PILL_CONFIGURED = localize('paradis.bindingDialog.mcpPillConfigured', "設定済み");
 // allow-any-unicode-next-line
-const strPagePillBound = (paneName: string) => localize('paradis.bindingDialog.pagePillBound', "{0} と共有中", paneName);
+const STR_MCP_PILL_UNCONFIGURED = localize('paradis.bindingDialog.mcpPillUnconfigured', "未設定");
 // allow-any-unicode-next-line
-const STR_KV_WINDOW = localize('paradis.bindingDialog.kvWindow', "ウィンドウ");
+const STR_MCP_PILL_NEEDS_FIX = localize('paradis.bindingDialog.mcpPillNeedsFix', "要修正");
 // allow-any-unicode-next-line
-const STR_KV_SINCE = localize('paradis.bindingDialog.kvSince', "共有開始");
+const STR_MCP_PILL_FAILED = localize('paradis.bindingDialog.mcpPillFailed', "判定できません");
 // allow-any-unicode-next-line
-const STR_KV_PERMS = localize('paradis.bindingDialog.kvPerms', "権限");
+const STR_MCP_PILL_LOADING = localize('paradis.bindingDialog.mcpPillLoading', "確認中");
 // allow-any-unicode-next-line
-const STR_KV_PERMS_VALUE = localize('paradis.bindingDialog.kvPermsValue', "読み取り+操作");
+const STR_BTN_AUTO_SETUP = localize('paradis.bindingDialog.btnAutoSetup', "自動セットアップ");
 // allow-any-unicode-next-line
-const STR_SEARCH_PLACEHOLDER = localize('paradis.bindingDialog.searchPlaceholder', "ペインを検索…");
+const STR_BTN_FIX = localize('paradis.bindingDialog.btnFix', "ワンクリックで修正");
 // allow-any-unicode-next-line
-const STR_SETUP_TITLE = localize('paradis.bindingDialog.setupTitle', "MCP接続設定");
+const STR_SETUP_RUNNING = localize('paradis.bindingDialog.setupRunning', "実行中…");
 // allow-any-unicode-next-line
-const strSetupDesc = (paneName: string) => localize('paradis.bindingDialog.setupDesc', "選択中のペイン（{0}）にPara CodeのMCPサーバーを登録します。コマンドはこのペインの環境変数を参照するため、コピーしてそのまま実行するだけでこのペイン専用のエンドポイントに接続されます。", paneName);
+const strMcpDetailConfigured = (path: string) => localize('paradis.bindingDialog.mcpDetailConfigured', "{0} に para-browser（shim方式）を検出しました。Para Codeの再起動後もサーバーポートに自動追従します。", path);
 // allow-any-unicode-next-line
-const STR_SETUP_DESC_NO_PANE = localize('paradis.bindingDialog.setupDescNoPane', "ターミナルペインにPara CodeのMCPサーバーを登録します。コマンドはペインの環境変数を参照するため、コピーしてそのまま実行するだけでそのペイン専用のエンドポイントに接続されます。");
+const strMcpDetailUnconfigured = (path: string) => localize('paradis.bindingDialog.mcpDetailUnconfigured', "para-browser（MCPサーバー）が未登録です。自動セットアップで {0} に追加します。", path);
 // allow-any-unicode-next-line
-const STR_SETUP_CLAUDE_LABEL = localize('paradis.bindingDialog.setupClaudeLabel', "セットアップコマンド（stdio型、初回のみ）");
+const strMcpDetailNeedsFix = (port: number) => localize('paradis.bindingDialog.mcpDetailNeedsFix', "chrome-devtools 系エントリが古いポート（127.0.0.1:{0}）を固定参照しています。現在のエンドポイントに接続できません。ワンクリックでポートファイル参照方式（shim）へ書き換えます。", port);
+// allow-any-unicode-next-line
+const strMcpDetailManualOnly = (path: string) => localize('paradis.bindingDialog.mcpDetailManualOnly', "para-browser（MCPサーバー）が未登録です。{0} に既存のMCP設定があるため自動セットアップは行えません。下の「手動でセットアップする」からコマンドをコピーして追加してください。", path);
+// allow-any-unicode-next-line
+const STR_MCP_DETAIL_FAILED = localize('paradis.bindingDialog.mcpDetailFailed', "設定ファイルを読み取れませんでした。下の「手動でセットアップする」を参照してください。");
+// allow-any-unicode-next-line
+const STR_MCP_DETAIL_LOADING = localize('paradis.bindingDialog.mcpDetailLoading', "設定を確認しています…");
+// allow-any-unicode-next-line
+const STR_MANUAL_SUMMARY = localize('paradis.bindingDialog.manualSummary', "手動でセットアップする（コマンドを表示）");
+// allow-any-unicode-next-line
+const STR_SETUP_CLAUDE_LABEL = localize('paradis.bindingDialog.setupClaudeLabel', "Claude Code（stdio型、初回のみ）");
 // allow-any-unicode-next-line
 const STR_SETUP_CODEX_LABEL = localize('paradis.bindingDialog.setupCodexLabel', "~/.codex/config.toml に追記");
 // allow-any-unicode-next-line
-const STR_AUTO_SETUP = localize('paradis.bindingDialog.autoSetup', "自動セットアップ");
-// allow-any-unicode-next-line
-const STR_AUTO_SETUP_HINT = localize('paradis.bindingDialog.autoSetupHint', "para-browser と chrome-devtools をユーザーレベルで自動登録します（下のコマンドを手で実行するのと同じ）。");
-// allow-any-unicode-next-line
-const STR_SETUP_RUNNING = localize('paradis.bindingDialog.setupRunning', "セットアップを実行中…");
-// allow-any-unicode-next-line
 const STR_SETUP_CLAUDE_UNAVAILABLE = localize('paradis.bindingDialog.setupClaudeUnavailable', "claude CLI が PATH 上に見つかりませんでした。下のコマンドをターミナルにコピーして手動で登録してください。");
 // allow-any-unicode-next-line
-const strSetupChannelError = (detail: string) => localize('paradis.bindingDialog.setupChannelError', "セットアップの実行に失敗しました: {0}", detail);
+const strSetupChannelError = (detail: string) => localize('paradis.bindingDialog.setupChannelError', "実行に失敗しました: {0}", detail);
 // allow-any-unicode-next-line
 const strSetupCodexTarget = (path: string) => localize('paradis.bindingDialog.setupCodexTarget', "設定ファイル: {0}", path);
 // allow-any-unicode-next-line
@@ -108,46 +128,16 @@ const strSetupServerSuccess = (server: string) => localize('paradis.bindingDialo
 const strSetupServerAlready = (server: string) => localize('paradis.bindingDialog.setupServerAlready', "{0} は既に設定済みです", server);
 // allow-any-unicode-next-line
 const strSetupServerError = (server: string, detail: string) => localize('paradis.bindingDialog.setupServerError', "{0} の登録に失敗しました: {1}", server, detail);
-// allow-any-unicode-next-line
-const STR_FOOTER_HINT = localize('paradis.bindingDialog.footerHint', "共有中は該当ペインの接続アイコンが緑色になります");
-// allow-any-unicode-next-line
-const strBindFailed = (detail: string) => localize('paradis.bindingDialog.bindFailed', "共有に失敗しました: {0}", detail);
-// allow-any-unicode-next-line
-const STR_BTN_CLOSE = localize('paradis.bindingDialog.btnClose', "閉じる");
-// allow-any-unicode-next-line
-const strBtnBindPrimary = (paneName: string) => localize('paradis.bindingDialog.btnBindPrimary', "{0} と共有する", paneName);
-// allow-any-unicode-next-line
-const strBtnUnbindPrimary = (paneName: string) => localize('paradis.bindingDialog.btnUnbindPrimary', "{0} との共有を解除する", paneName);
-// allow-any-unicode-next-line
-const strMinutesAgo = (minutes: number) => localize('paradis.bindingDialog.minutesAgo', "{0}分前", minutes);
-// allow-any-unicode-next-line
-const strHoursAgo = (hours: number) => localize('paradis.bindingDialog.hoursAgo', "{0}時間前", hours);
-// allow-any-unicode-next-line
-const STR_JUST_NOW = localize('paradis.bindingDialog.justNow', "たった今");
-// allow-any-unicode-next-line
-const STR_NO_PANES = localize('paradis.bindingDialog.noPanes', "ペイントークンを持つターミナルペインがありません。新しいターミナルを開いてください。");
-// allow-any-unicode-next-line
-const STR_BTN_NO_PANES = localize('paradis.bindingDialog.btnNoPanes', "共有できるペインがありません");
-// allow-any-unicode-next-line
-const STR_CLOSE_ARIA = localize('paradis.bindingDialog.closeAria', "閉じる");
-// allow-any-unicode-next-line
-const STR_PERM_READ_TITLE = localize('paradis.bindingDialog.permReadTitle', "ページの読み取り");
-// allow-any-unicode-next-line
-const STR_PERM_READ_DESC = localize('paradis.bindingDialog.permReadDesc', "共有したページのURL・タイトル・アクセシビリティスナップショットを、バインド先ペインのエージェントが読み取れます。");
-// allow-any-unicode-next-line
-const STR_PERM_DRIVE_TITLE = localize('paradis.bindingDialog.permDriveTitle', "ページの操作（CDP）");
-// allow-any-unicode-next-line
-const STR_PERM_DRIVE_DESC = localize('paradis.bindingDialog.permDriveDesc', "chrome-devtools-mcp等のCDPツールから、共有したページのクリック・入力・スクリーンショット取得などの操作ができます。Cookie等の保存データにも触れる可能性があります。");
-// allow-any-unicode-next-line
-const STR_PERM_ISOLATION_TITLE = localize('paradis.bindingDialog.permIsolationTitle', "ペイン分離");
-// allow-any-unicode-next-line
-const STR_PERM_ISOLATION_DESC = localize('paradis.bindingDialog.permIsolationDesc', "アクセスできるのは各ペインに共有されたページのみです。他のペインに共有されたページや、共有していないブラウザタブへのアタッチは拒否されます。");
 
-type DialogTab = 'panes' | 'setup' | 'perms';
+/** エージェントCLIのユーザー向け表示名（製品名のため非localize）。 */
+const CLI_DISPLAY_NAME: Readonly<Record<ParadisMcpCli, string>> = { claude: 'Claude Code', codex: 'Codex' };
+/** 設定ファイルの表示用フレンドリーパス（未設定時は絶対パスが取れないため既定パスを出す）。 */
+const CLI_CONFIG_PATH: Readonly<Record<ParadisMcpCli, string>> = { claude: '~/.claude.json', codex: '~/.codex/config.toml' };
 
-/** 「自動セットアップ」ボタンの実行状態（現在選択中のCLIについてのみ保持する）。 */
+type DialogTab = 'panes' | 'mcp';
+
+/** CLIごとの「自動セットアップ / 修正」実行状態。 */
 interface IParadisSetupState {
-	readonly cli: 'claude' | 'codex';
 	readonly busy: boolean;
 	readonly result?: IParadisMcpSetupResult;
 	/** IPC呼び出し自体が失敗したときのメッセージ（shared process未起動等）。 */
@@ -165,35 +155,29 @@ export interface IParadisBindingDialogOptions {
 export class ParadisBindingDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
-	private readonly _summaryBar: HTMLElement;
-	private readonly _colLeft: HTMLElement;
-	private readonly _colMid: HTMLElement;
-	private readonly _colRight: HTMLElement;
+	private readonly _pageBar: HTMLElement;
+	private readonly _body: HTMLElement;
 	private readonly _footer: HTMLElement;
 	private readonly _tabElements = new Map<DialogTab, HTMLElement>();
+	private _mcpTabBadge: HTMLElement | undefined;
 	private readonly _renderDisposables = this._register(new DisposableStore());
 
 	private _activeTab: DialogTab = 'panes';
-	private _activeCli: 'claude' | 'codex' = 'claude';
-	private _selectedToken: string | undefined;
 	private _filterText = '';
-	private _setupState: IParadisSetupState | undefined;
 	private _bindError: string | undefined;
+	private _mcpStatus: IParadisMcpConfigStatus | undefined;
+	private readonly _setupStates = new Map<ParadisMcpCli, IParadisSetupState>();
 
 	constructor(
 		private readonly pageModel: IBrowserViewModel,
-		options: IParadisBindingDialogOptions | undefined,
+		// 呼び出し元ペインの識別に使われていたが、行内アクションUIでは選択の概念がないため未使用。
+		// API互換のため引数は維持する。
+		_options: IParadisBindingDialogOptions | undefined,
 		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
 		@ILayoutService layoutService: ILayoutService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
-		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 	) {
 		super();
-
-		if (options?.selectInstanceId !== undefined) {
-			const pane = this.bindingModel.getPanes().find(p => p.instanceId === options.selectInstanceId);
-			this._selectedToken = pane?.token;
-		}
 
 		this._backdrop = $('.paradis-binding-dialog-backdrop');
 		const modal = $('.paradis-binding-dialog');
@@ -209,20 +193,16 @@ export class ParadisBindingDialog extends Disposable {
 		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
 		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.close()));
 
-		// --- summary bar ---
-		this._summaryBar = dom.append(modal, $('.pbd-summary-bar'));
+		// --- page bar ---
+		this._pageBar = dom.append(modal, $('.pbd-pagebar'));
 
 		// --- tabs ---
 		const tabsBar = dom.append(modal, $('.pbd-tabs'));
-		this._createTab(tabsBar, 'panes', Codicon.layout, STR_TAB_PANES);
-		this._createTab(tabsBar, 'setup', Codicon.plug, STR_TAB_SETUP);
-		this._createTab(tabsBar, 'perms', Codicon.lock, STR_TAB_PERMS);
+		this._createTab(tabsBar, 'panes', STR_TAB_PANES);
+		this._createTab(tabsBar, 'mcp', STR_TAB_MCP);
 
-		// --- columns ---
-		const columns = dom.append(modal, $('.pbd-columns'));
-		this._colLeft = dom.append(columns, $('.pbd-col-left'));
-		this._colMid = dom.append(columns, $('.pbd-col-mid'));
-		this._colRight = dom.append(columns, $('.pbd-col-right'));
+		// --- body ---
+		this._body = dom.append(modal, $('.pbd-body'));
 
 		// --- footer ---
 		this._footer = dom.append(modal, $('.pbd-footer'));
@@ -250,6 +230,7 @@ export class ParadisBindingDialog extends Disposable {
 		this._render();
 		modal.focus();
 		void this.bindingModel.refresh();
+		void this._loadMcpStatus();
 	}
 
 	close(): void {
@@ -263,10 +244,14 @@ export class ParadisBindingDialog extends Disposable {
 
 	// --- rendering ------------------------------------------------------
 
-	private _createTab(container: HTMLElement, tab: DialogTab, icon: ThemeIcon, label: string): void {
+	private _createTab(container: HTMLElement, tab: DialogTab, label: string): void {
 		const element = dom.append(container, $('.pbd-tab'));
-		element.appendChild($(`span${ThemeIcon.asCSSSelector(icon)}`));
-		dom.append(element, $('span')).textContent = label;
+		dom.append(element, $('span.pbd-tab-label')).textContent = label;
+		if (tab === 'mcp') {
+			this._mcpTabBadge = dom.append(element, $('.pbd-tab-badge.warn'));
+			this._mcpTabBadge.title = STR_TAB_MCP_WARN_ARIA;
+			this._mcpTabBadge.style.display = 'none';
+		}
 		this._register(dom.addDisposableListener(element, 'click', () => {
 			this._activeTab = tab;
 			this._render();
@@ -282,67 +267,38 @@ export class ParadisBindingDialog extends Disposable {
 		return `${pane.title} — pane #${pane.instanceId}`;
 	}
 
-	private _selectedPane(): IParadisPaneDescriptor | undefined {
-		const panes = this._panes();
-		const selected = this._selectedToken ? panes.find(p => p.token === this._selectedToken) : undefined;
-		if (selected) {
-			return selected;
-		}
-		// 既定の選択: このページにバインド済みのペイン → 共有可能なエージェントペイン → 先頭。
-		return panes.find(p => p.binding?.pageId === this.pageModel.id)
-			?? panes.find(p => p.agentKind !== 'shell' && !p.binding)
-			?? panes[0];
-	}
-
-	private _isBindablePane(pane: IParadisPaneDescriptor): boolean {
-		// トークンを持つペインは、CLIの起動状況やMCP接続実績に関係なく常にバインド可能。
-		// （バインド → CLI起動 → 接続、の順序も普通なので、事前にブロックしない。）
-		return pane.bindEligibility?.eligible === true && pane.binding?.pageId !== this.pageModel.id;
-	}
-
 	private _render(): void {
 		if (this._store.isDisposed) {
 			return;
 		}
 		this._renderDisposables.clear();
 
-		const panes = this._panes();
-		const pageBindings = this.bindingModel.getBindingsForPage(this.pageModel.id);
-		const boundPanes = panes.filter(p => !!p.binding);
-		const needsMcpPanes = panes.filter(p => !p.binding && p.agentKind !== 'shell' && !p.mcpConnected);
-		const idlePanes = panes.filter(p => !p.binding && !needsMcpPanes.includes(p));
-
-		// tabs active state
 		for (const [tab, element] of this._tabElements) {
 			element.classList.toggle('active', tab === this._activeTab);
 		}
-
-		this._renderSummary(boundPanes.length, needsMcpPanes.length, idlePanes.length);
-		this._renderLeft(panes, pageBindings);
-		this._renderMid(panes);
-		this._renderRight();
+		this._renderMcpTabBadge();
+		this._renderPageBar();
+		dom.clearNode(this._body);
+		if (this._activeTab === 'panes') {
+			this._renderPanesTab();
+		} else {
+			this._renderMcpTab();
+		}
 		this._renderFooter();
 	}
 
-	private _renderSummary(shared: number, needsMcp: number, idle: number): void {
-		dom.clearNode(this._summaryBar);
-		const chip = (kind: string, count: number, label: string) => {
-			const element = dom.append(this._summaryBar, $(`.pbd-summary-chip.${kind}`));
-			dom.append(element, $('.pbd-dot'));
-			dom.append(element, $('b')).textContent = String(count);
-			dom.append(element, $('span.pbd-lbl')).textContent = label;
-		};
-		chip('green', shared, STR_SUMMARY_SHARED);
-		chip('amber', needsMcp, STR_SUMMARY_NEEDS_MCP);
-		chip('gray', idle, STR_SUMMARY_IDLE);
+	private _renderMcpTabBadge(): void {
+		if (!this._mcpTabBadge) {
+			return;
+		}
+		const needsAttention = this._mcpStatus !== undefined
+			&& (this._mcpStatus.claude.state !== 'configured' || this._mcpStatus.codex.state !== 'configured');
+		this._mcpTabBadge.style.display = needsAttention ? '' : 'none';
 	}
 
-	private _renderLeft(panes: IParadisPaneDescriptor[], pageBindings: readonly { readonly token: string; readonly boundAt: number }[]): void {
-		dom.clearNode(this._colLeft);
-
-		const card = dom.append(this._colLeft, $('.pbd-page-card'));
-		const faviconRow = dom.append(card, $('.pbd-favicon-row'));
-		const favicon = dom.append(faviconRow, $('.pbd-favicon'));
+	private _renderPageBar(): void {
+		dom.clearNode(this._pageBar);
+		const favicon = dom.append(this._pageBar, $('.pbd-favicon'));
 		if (this.pageModel.favicon) {
 			const img = dom.append(favicon, $('img')) as HTMLImageElement;
 			img.src = this.pageModel.favicon;
@@ -350,130 +306,80 @@ export class ParadisBindingDialog extends Disposable {
 		} else {
 			favicon.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.globe)}`));
 		}
-		const titleWrap = dom.append(faviconRow, $('div'));
-		dom.append(titleWrap, $('.pbd-page-title')).textContent = this.pageModel.title || this.pageModel.url;
-		dom.append(titleWrap, $('.pbd-page-url')).textContent = this.pageModel.url;
+		const text = dom.append(this._pageBar, $('.pbd-pb-text'));
+		dom.append(text, $('span.pbd-pb-title')).textContent = this.pageModel.title || this.pageModel.url;
+		dom.append(text, $('span.pbd-pb-url')).textContent = this.pageModel.url;
 
-		const isBound = pageBindings.length > 0;
-		const pill = dom.append(card, $(`.pbd-status-pill.${isBound ? 'bound' : 'unbound'}`));
-		if (isBound) {
-			dom.append(pill, $('.pbd-pulse'));
-			const firstBoundPane = panes.find(p => p.binding?.pageId === this.pageModel.id);
-			const name = firstBoundPane ? this._paneDisplayName(firstBoundPane) : '';
-			dom.append(pill, $('span')).textContent = strPagePillBound(name);
+		const isShared = this.bindingModel.getBindingsForPage(this.pageModel.id).length > 0;
+		const pill = dom.append(this._pageBar, $(`.pbd-page-pill.${isShared ? 'shared' : 'unshared'}`));
+		if (isShared) {
+			dom.append(pill, $('.pbd-dot.green'));
+			dom.append(pill, $('span')).textContent = STR_PAGE_PILL_SHARED;
 		} else {
-			dom.append(pill, $('span')).textContent = STR_PAGE_PILL_UNBOUND;
-		}
-
-		dom.append(card, $('.pbd-divider'));
-		const kv = (key: string, value: string) => {
-			const row = dom.append(card, $('.pbd-kv'));
-			dom.append(row, $('span')).textContent = key;
-			dom.append(row, $('b')).textContent = value;
-		};
-		kv(STR_KV_WINDOW, this.workspaceContextService.getWorkspace().folders[0]?.name ?? '—');
-		if (isBound) {
-			const earliest = Math.min(...pageBindings.map(b => b.boundAt));
-			kv(STR_KV_SINCE, formatRelativeTime(earliest));
-		}
-		kv(STR_KV_PERMS, STR_KV_PERMS_VALUE);
-
-		if (isBound) {
-			const disconnect = dom.append(card, $('button.pbd-disconnect-btn'));
-			disconnect.textContent = STR_BTN_UNBIND;
-			this._renderDisposables.add(dom.addDisposableListener(disconnect, 'click', () => {
-				void this.bindingModel.unbindPage(this.pageModel);
-			}));
+			dom.append(pill, $('.pbd-dot.gray'));
+			dom.append(pill, $('span')).textContent = STR_PAGE_PILL_UNSHARED;
 		}
 	}
 
-	private _renderMid(panes: IParadisPaneDescriptor[]): void {
-		dom.clearNode(this._colMid);
-		this._colMid.style.display = this._activeTab === 'setup' ? 'none' : 'flex';
-		if (this._activeTab === 'setup') {
-			return;
-		}
-		if (this._activeTab === 'perms') {
-			this._renderPerms();
-			return;
-		}
+	// --- panes tab ---
 
-		// search box
-		const search = dom.append(this._colMid, $('.pbd-list-search'));
+	private _visiblePanes(): IParadisPaneDescriptor[] {
+		// スコープ外（別スペース）のペインは一覧に出さない。ただし現在このページに共有中の行は
+		// 解除できるよう常に残す。
+		return this._panes().filter(pane =>
+			pane.bindEligibility?.eligible === true || pane.binding?.pageId === this.pageModel.id);
+	}
+
+	private _renderPanesTab(): void {
+		const search = dom.append(this._body, $('.pbd-list-search'));
 		search.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
 		const input = dom.append(search, $('input')) as HTMLInputElement;
 		input.type = 'text';
 		input.placeholder = STR_SEARCH_PLACEHOLDER;
 		input.value = this._filterText;
+
+		const list = dom.append(this._body, $('.pbd-pane-list'));
+		this._renderPaneList(list);
 		this._renderDisposables.add(dom.addDisposableListener(input, 'input', () => {
 			this._filterText = input.value;
-			this._renderPaneList(listContainer, panes);
+			this._renderPaneList(list);
 		}));
 
-		const listContainer = dom.append(this._colMid, $('.pbd-pane-list'));
-		this._renderPaneList(listContainer, panes);
+		dom.append(this._body, $('.pbd-scope-note')).textContent = STR_SCOPE_NOTE;
 	}
 
-	private _renderPaneList(container: HTMLElement, panes: IParadisPaneDescriptor[]): void {
+	private _renderPaneList(container: HTMLElement): void {
 		dom.clearNode(container);
 		const filter = this._filterText.trim().toLowerCase();
-		const visible = filter
-			? panes.filter(p => this._paneDisplayName(p).toLowerCase().includes(filter))
-			: panes;
+		const visible = this._visiblePanes().filter(pane =>
+			filter.length === 0 || this._paneDisplayName(pane).toLowerCase().includes(filter));
 		if (visible.length === 0) {
 			dom.append(container, $('.pbd-empty')).textContent = STR_NO_PANES;
 			return;
 		}
-		const selected = this._selectedPane();
 		for (const pane of visible) {
-			container.appendChild(this._renderPaneCard(pane, pane === selected));
+			container.appendChild(this._renderPaneRow(pane));
 		}
 	}
 
-	private _renderPaneCard(pane: IParadisPaneDescriptor, selected: boolean): HTMLElement {
-		const card = $('.pbd-pane-card');
-		card.classList.toggle('selected', selected);
-
-		const row1 = dom.append(card, $('.pbd-row1'));
-		const agentIcon = dom.append(row1, $(`.pbd-agent-icon.${pane.agentKind}`));
-		agentIcon.appendChild($(`span${ThemeIcon.asCSSSelector(agentIconFor(pane.agentKind))}`));
-		const titles = dom.append(row1, $('.pbd-titles'));
-		dom.append(titles, $('.pbd-name')).textContent = this._paneDisplayName(pane);
-		dom.append(titles, $('.pbd-meta')).textContent = this._paneMeta(pane);
-
+	private _renderPaneRow(pane: IParadisPaneDescriptor): HTMLElement {
+		const row = $('.pbd-pane-row');
 		const boundHere = pane.binding?.pageId === this.pageModel.id;
 		const boundElse = !!pane.binding && !boundHere;
-		let pillClass: string;
-		let pillText: string;
-		if (boundHere) {
-			pillClass = 'driving-here';
-			pillText = STR_PILL_BOUND_HERE;
-		} else if (boundElse) {
-			pillClass = 'driving-else';
-			pillText = STR_PILL_BOUND_ELSE;
-		} else if (pane.mcpConnected) {
-			// MCP/CDP接続実績あり（このペインのCLIが実際にMCPを叩いた）。
-			pillClass = 'ready';
-			pillText = STR_PILL_READY_AGENT;
-		} else {
-			// 接続実績なし。バインドは可能。CLI未起動/未接続というヒントに留める。
-			pillClass = 'needs-mcp';
-			pillText = STR_PILL_NEEDS_MCP;
-		}
-		dom.append(row1, $(`.pbd-pane-pill.${pillClass}`)).textContent = pillText;
 
-		const row2 = dom.append(card, $('.pbd-row2'));
-		const gridLoc = dom.append(row2, $('.pbd-grid-loc'));
-		gridLoc.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.layout)}`));
-		dom.append(gridLoc, $('span')).textContent = strTerminalId(pane.instanceId);
+		const dotClass = (pane.binding || pane.mcpConnected) ? 'green' : 'amber';
+		dom.append(row, $(`.pbd-dot.${dotClass}`));
 
-		const button = dom.append(row2, $('button.pbd-bind-btn')) as HTMLButtonElement;
+		const main = dom.append(row, $('.pbd-row-main'));
+		dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
+		dom.append(main, $('.pbd-row-sub')).textContent = this._paneSubText(pane, boundHere, boundElse);
+
 		const action = paradisGetPaneBindingAction(pane.binding?.pageId, this.pageModel.id, pane.bindEligibility);
+		const button = dom.append(row, $('button.pbd-row-btn')) as HTMLButtonElement;
 		if (action === 'unbind') {
-			button.classList.add('unbind');
-			button.textContent = STR_BTN_UNBIND;
-			this._renderDisposables.add(dom.addDisposableListener(button, 'click', e => {
-				e.stopPropagation();
+			button.classList.add('unshare');
+			button.textContent = STR_BTN_ROW_UNSHARE;
+			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
 				if (boundHere) {
 					void this.bindingModel.unbindPane(this.pageModel, pane.token);
 				} else {
@@ -481,116 +387,123 @@ export class ParadisBindingDialog extends Disposable {
 				}
 			}));
 		} else {
-			button.textContent = STR_BTN_BIND;
+			button.classList.add('share');
+			button.textContent = STR_BTN_ROW_SHARE;
 			button.disabled = action === 'disabled';
-			this._renderDisposables.add(dom.addDisposableListener(button, 'click', e => {
-				e.stopPropagation();
+			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
 				if (action === 'bind') {
 					void this._bindPane(pane.token);
 				}
 			}));
 		}
-
-		this._renderDisposables.add(dom.addDisposableListener(card, 'click', () => {
-			this._selectedToken = pane.token;
-			this._render();
-		}));
-		return card;
+		return row;
 	}
 
-	private _paneMeta(pane: IParadisPaneDescriptor): string {
-		if (pane.bindEligibility?.reason === 'pending') {
-			return STR_META_SCOPE_PENDING;
+	private _paneSubText(pane: IParadisPaneDescriptor, boundHere: boolean, boundElse: boolean): string {
+		if (boundHere) {
+			return strSubBoundHere(pane.binding ? formatRelativeTime(pane.binding.boundAt) : STR_JUST_NOW);
 		}
-		if (pane.bindEligibility?.reason === 'differentScope') {
-			return STR_META_SCOPE_MISMATCH;
+		if (boundElse && pane.binding) {
+			return strSubBoundElse(pane.binding.pageInfo.title || pane.binding.pageInfo.url);
 		}
-		// エージェント種別の推定はタイトルからのベストエフォートで外れやすい（claude起動中でも
-		// タイトルにclaudeが出ない等）。誤って「未起動」と断定すると紛らわしいので、
-		// トークンを常に表示し、MCP未接続はヒントとしてのみ出す。
-		if (!pane.mcpConnected && !pane.binding) {
-			return STR_META_NO_MCP;
+		if (pane.mcpConnected) {
+			return STR_SUB_READY;
 		}
-		return `${PARADIS_PANE_TOKEN_ENV_VAR}=${abbreviateToken(pane.token)}`;
+		return STR_SUB_NEEDS_MCP;
 	}
 
-	private _renderPerms(): void {
-		const list = dom.append(this._colMid, $('.pbd-perm-list'));
-		const item = (icon: ThemeIcon, title: string, desc: string) => {
-			const element = dom.append(list, $('.pbd-perm-item'));
-			element.appendChild($(`span${ThemeIcon.asCSSSelector(icon)}`));
-			const body = dom.append(element, $('div'));
-			dom.append(body, $('.pbd-perm-title')).textContent = title;
-			dom.append(body, $('.pbd-perm-desc')).textContent = desc;
-		};
-		item(Codicon.eye, STR_PERM_READ_TITLE, STR_PERM_READ_DESC);
-		item(Codicon.warning, STR_PERM_DRIVE_TITLE, STR_PERM_DRIVE_DESC);
-		item(Codicon.lock, STR_PERM_ISOLATION_TITLE, STR_PERM_ISOLATION_DESC);
+	// --- MCP接続設定 tab ---
+
+	private _renderMcpTab(): void {
+		const wrap = dom.append(this._body, $('.pbd-mcp'));
+		this._renderMcpCard(wrap, 'claude');
+		this._renderMcpCard(wrap, 'codex');
+		this._renderMcpManual(wrap);
 	}
 
-	private _renderRight(): void {
-		dom.clearNode(this._colRight);
-		// MCP接続設定は「MCP接続設定」タブ専用（ターミナルペイン/権限タブとの重複表示を避ける）
-		this._colRight.style.display = this._activeTab === 'setup' ? 'flex' : 'none';
-		if (this._activeTab !== 'setup') {
-			return;
+	private _renderMcpCard(container: HTMLElement, cli: ParadisMcpCli): void {
+		const status = this._mcpStatus?.[cli];
+		const state = status?.failed ? 'failed' : status?.state;
+		const cardKind = state === 'configured' ? 'ok' : state === 'needsFix' ? 'warn' : 'off';
+		const card = dom.append(container, $(`.pbd-mcp-card.${cardKind}`));
+
+		const head = dom.append(card, $('.pbd-mc-head'));
+		const logo = dom.append(head, $(`.pbd-mcp-logo.${cli}`));
+		appendParadisAgentLogoSvg(logo, cli);
+		dom.append(head, $('.pbd-mc-name')).textContent = CLI_DISPLAY_NAME[cli];
+		this._appendMcpPill(head, state);
+
+		dom.append(card, $('.pbd-mc-detail')).textContent = this._mcpDetailText(cli, status, state);
+
+		const setupState = this._setupStates.get(cli);
+		// manualOnly のとき（Codexで既存MCP設定があり自動追記が失敗する場合）は自動ボタンを出さず、
+		// 下部の「手動でセットアップする」だけに誘導する。
+		const actionable = (state === 'unconfigured' && status?.manualOnly !== true)
+			|| state === 'needsFix'
+			|| state === 'failed';
+		if (actionable) {
+			this._renderMcpAction(card, cli, state, setupState?.busy === true);
 		}
-		const pane = this._selectedPane();
-
-		const card = dom.append(this._colRight, $('.pbd-setup-card'));
-		dom.append(card, $('h3')).textContent = STR_SETUP_TITLE;
-		dom.append(card, $('.pbd-desc')).textContent = pane
-			? strSetupDesc(this._paneDisplayName(pane))
-			: STR_SETUP_DESC_NO_PANE;
-
-		// CLI tabs
-		const cliTabs = dom.append(card, $('.pbd-cli-tabs'));
-		const cliTab = (kind: 'claude' | 'codex', label: string) => {
-			const element = dom.append(cliTabs, $('.pbd-cli-tab'));
-			element.classList.toggle('active', this._activeCli === kind);
-			dom.append(element, $('span')).textContent = label;
-			this._renderDisposables.add(dom.addDisposableListener(element, 'click', () => {
-				// CLIを切り替えたら前のCLIのセットアップ結果表示はクリアする。
-				this._setupState = undefined;
-				this._activeCli = kind;
-				this._render();
-			}));
-		};
-		cliTab('claude', 'Claude Code CLI');
-		cliTab('codex', 'Codex CLI');
-
-		// ワンボタンMCPセットアップ（ユーザーレベル導入）。
-		this._renderAutoSetup(card);
-
-		// snippet
-		const label = this._activeCli === 'claude' ? STR_SETUP_CLAUDE_LABEL : STR_SETUP_CODEX_LABEL;
-		const snippet = this._activeCli === 'claude' ? getParadisClaudeSetupSnippet() : getParadisCodexSetupSnippet();
-		dom.append(card, $('.pbd-field-label')).textContent = label;
-		const codeBlock = dom.append(card, $('.pbd-code-block'));
-		dom.append(codeBlock, $('pre')).textContent = snippet.trimEnd();
-		this._appendCopyButton(codeBlock, snippet, 'pbd-copy-btn');
-
+		if (setupState && !setupState.busy) {
+			this._renderSetupResult(card, setupState);
+		}
 	}
 
-	private _renderAutoSetup(card: HTMLElement): void {
-		const wrap = dom.append(card, $('.pbd-auto-setup'));
-		const busy = this._setupState?.busy === true && this._setupState.cli === this._activeCli;
+	private _appendMcpPill(head: HTMLElement, state: string | undefined): void {
+		let pillClass: string;
+		let dotClass: string;
+		let label: string;
+		switch (state) {
+			case 'configured': pillClass = 'green'; dotClass = 'green'; label = STR_MCP_PILL_CONFIGURED; break;
+			case 'needsFix': pillClass = 'amber'; dotClass = 'amber'; label = STR_MCP_PILL_NEEDS_FIX; break;
+			case 'unconfigured': pillClass = 'gray'; dotClass = 'gray'; label = STR_MCP_PILL_UNCONFIGURED; break;
+			case 'failed': pillClass = 'red'; dotClass = 'red'; label = STR_MCP_PILL_FAILED; break;
+			default: pillClass = 'gray'; dotClass = 'gray'; label = STR_MCP_PILL_LOADING; break;
+		}
+		const pill = dom.append(head, $(`.pbd-pill.${pillClass}`));
+		dom.append(pill, $(`.pbd-dot.${dotClass}`));
+		dom.append(pill, $('span')).textContent = label;
+	}
 
-		const button = dom.append(wrap, $('button.pbd-auto-setup-btn')) as HTMLButtonElement;
-		const icon = button.appendChild($(`span${ThemeIcon.asCSSSelector(busy ? Codicon.loading : Codicon.zap)}`));
+	private _mcpDetailText(cli: ParadisMcpCli, status: IParadisMcpCliConfigStatus | undefined, state: string | undefined): string {
+		switch (state) {
+			case 'configured': return strMcpDetailConfigured(status?.configPath ?? CLI_CONFIG_PATH[cli]);
+			case 'needsFix': return strMcpDetailNeedsFix(status?.detectedPort ?? 0);
+			case 'unconfigured': return status?.manualOnly
+				? strMcpDetailManualOnly(CLI_CONFIG_PATH[cli])
+				: strMcpDetailUnconfigured(CLI_CONFIG_PATH[cli]);
+			case 'failed': return STR_MCP_DETAIL_FAILED;
+			default: return STR_MCP_DETAIL_LOADING;
+		}
+	}
+
+	private _renderMcpAction(card: HTMLElement, cli: ParadisMcpCli, state: string, busy: boolean): void {
+		const actions = dom.append(card, $('.pbd-mc-actions'));
+		const button = dom.append(actions, $('button.pbd-mc-btn')) as HTMLButtonElement;
+		const icon = button.appendChild($(`span${ThemeIcon.asCSSSelector(busy ? Codicon.loading : (state === 'needsFix' ? Codicon.wrench : Codicon.zap))}`));
 		if (busy) {
 			icon.classList.add('codicon-modifier-spin');
 		}
-		dom.append(button, $('span')).textContent = busy ? STR_SETUP_RUNNING : STR_AUTO_SETUP;
+		dom.append(button, $('span')).textContent = busy
+			? STR_SETUP_RUNNING
+			: state === 'needsFix' ? STR_BTN_FIX : STR_BTN_AUTO_SETUP;
 		button.disabled = busy;
-		this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => void this._runAutoSetup()));
+		const kind = state === 'needsFix' ? 'fix' : 'setup';
+		this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => void this._runCliAction(cli, kind)));
+	}
 
-		dom.append(wrap, $('.pbd-auto-setup-hint')).textContent = STR_AUTO_SETUP_HINT;
+	private _renderMcpManual(container: HTMLElement): void {
+		const details = dom.append(container, $('details.pbd-mcp-manual')) as HTMLDetailsElement;
+		dom.append(details, $('summary')).textContent = STR_MANUAL_SUMMARY;
+		this._appendManualSnippet(details, STR_SETUP_CLAUDE_LABEL, getParadisClaudeSetupSnippet());
+		this._appendManualSnippet(details, STR_SETUP_CODEX_LABEL, getParadisCodexSetupSnippet());
+	}
 
-		const state = this._setupState;
-		if (state && state.cli === this._activeCli && !state.busy) {
-			this._renderSetupResult(card, state);
-		}
+	private _appendManualSnippet(container: HTMLElement, label: string, snippet: string): void {
+		dom.append(container, $('.pbd-field-label')).textContent = label;
+		const codeBlock = dom.append(container, $('.pbd-code-block'));
+		dom.append(codeBlock, $('pre')).textContent = snippet.trimEnd();
+		this._appendCopyButton(codeBlock, snippet, 'pbd-copy-btn');
 	}
 
 	private _renderSetupResult(card: HTMLElement, state: IParadisSetupState): void {
@@ -628,24 +541,47 @@ export class ParadisBindingDialog extends Disposable {
 		dom.append(row, $('span')).textContent = text;
 	}
 
-	private async _runAutoSetup(): Promise<void> {
-		if (this._setupState?.busy) {
+	private async _runCliAction(cli: ParadisMcpCli, kind: 'setup' | 'fix'): Promise<void> {
+		if (this._setupStates.get(cli)?.busy) {
 			return;
 		}
-		const cli = this._activeCli;
-		this._setupState = { cli, busy: true };
+		this._setupStates.set(cli, { busy: true });
 		this._render();
 		try {
-			const result = await this.bindingModel.setupMcp(cli);
+			const result = kind === 'fix'
+				? await this.bindingModel.fixMcp(cli)
+				: await this.bindingModel.setupMcp(cli);
 			if (this._store.isDisposed) {
 				return;
 			}
-			this._setupState = { cli, busy: false, result };
+			this._setupStates.set(cli, { busy: false, result });
 		} catch (error) {
 			if (this._store.isDisposed) {
 				return;
 			}
-			this._setupState = { cli, busy: false, error: error instanceof Error ? error.message : String(error) };
+			this._setupStates.set(cli, { busy: false, error: error instanceof Error ? error.message : String(error) });
+		}
+		this._render();
+		// 実行結果を反映するためステータスを取り直す（ピル・タブの黄色ドットを更新）。
+		void this._loadMcpStatus();
+	}
+
+	private async _loadMcpStatus(): Promise<void> {
+		try {
+			const status = await this.bindingModel.getMcpConfigStatus();
+			if (this._store.isDisposed) {
+				return;
+			}
+			this._mcpStatus = status;
+		} catch {
+			if (this._store.isDisposed) {
+				return;
+			}
+			// 取得失敗時は両CLIを「判定できません」で表示する。
+			this._mcpStatus = {
+				claude: { cli: 'claude', state: 'unconfigured', failed: true },
+				codex: { cli: 'codex', state: 'unconfigured', failed: true },
+			};
 		}
 		this._render();
 	}
@@ -667,33 +603,12 @@ export class ParadisBindingDialog extends Disposable {
 	private _renderFooter(): void {
 		dom.clearNode(this._footer);
 		const hint = dom.append(this._footer, $('.pbd-hint'));
-		hint.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.info)}`));
+		hint.appendChild($(`span${ThemeIcon.asCSSSelector(this._bindError ? Codicon.error : Codicon.shield)}`));
 		dom.append(hint, $('span')).textContent = this._bindError ?? STR_FOOTER_HINT;
 
 		const closeButton = dom.append(this._footer, $('button.pbd-btn')) as HTMLButtonElement;
 		closeButton.textContent = STR_BTN_CLOSE;
 		this._renderDisposables.add(dom.addDisposableListener(closeButton, 'click', () => this.close()));
-
-		const pane = this._selectedPane();
-		const primary = dom.append(this._footer, $('button.pbd-btn.primary')) as HTMLButtonElement;
-		if (pane && pane.binding?.pageId === this.pageModel.id) {
-			primary.textContent = strBtnUnbindPrimary(this._paneDisplayName(pane));
-			this._renderDisposables.add(dom.addDisposableListener(primary, 'click', () => {
-				void this.bindingModel.unbindPane(this.pageModel, pane.token);
-			}));
-		} else if (pane && this._isBindablePane(pane)) {
-			primary.textContent = strBtnBindPrimary(this._paneDisplayName(pane));
-			this._renderDisposables.add(dom.addDisposableListener(primary, 'click', () => {
-				void this._bindPane(pane.token);
-			}));
-		} else {
-			primary.textContent = pane?.bindEligibility?.reason === 'pending'
-				? STR_META_SCOPE_PENDING
-				: pane?.bindEligibility?.reason === 'differentScope'
-					? STR_META_SCOPE_MISMATCH
-					: STR_BTN_NO_PANES;
-			primary.disabled = true;
-		}
 	}
 
 	private async _bindPane(token: string): Promise<void> {
@@ -716,21 +631,6 @@ export class ParadisBindingDialog extends Disposable {
 }
 
 // --- helpers -------------------------------------------------------------
-
-function agentIconFor(kind: 'claude' | 'codex' | 'shell'): ThemeIcon {
-	switch (kind) {
-		case 'claude': return Codicon.sparkle;
-		case 'codex': return Codicon.hubot;
-		case 'shell': return Codicon.terminal;
-	}
-}
-
-function abbreviateToken(token: string): string {
-	if (token.length <= 12) {
-		return token;
-	}
-	return `${token.slice(0, 4)}…${token.slice(-3)}`;
-}
 
 function formatRelativeTime(epochMs: number): string {
 	const deltaMinutes = Math.floor((Date.now() - epochMs) / 60000);

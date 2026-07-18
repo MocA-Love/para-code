@@ -25,9 +25,12 @@ const CODEX_PATH = 'M9.064 3.344a4.578 4.578 0 012.285-.312c1 .115 1.891.54 2.67
 /** グラデーションIDの重複を避けるための連番(1ドキュメント内に複数ロゴが並ぶため)。 */
 let gradientSequence = 0;
 
-/** プロバイダーロゴ(角丸地＋グリフ)をcontainerへ追加して返す。 */
-export function appendParadisLimitsLogo(container: HTMLElement, provider: ParadisLimitsProvider): HTMLElement {
-	const badge = dom.append(container, dom.$(`.paradis-limits-logo.${provider}`));
+/**
+ * エージェントCLI(Claude Code / Codex)の本物のロゴSVG(グリフのみ)をcontainerへ追加して返す。
+ * 角丸地・サイズはcontainer側のCSSで指定する(このヘルパはCSSクラスに依存しない)ため、
+ * limitsMonitorのタイトルバーウィジェットとagentBrowserのバインディングダイアログの両方から使える。
+ */
+export function appendParadisAgentLogoSvg(container: HTMLElement, provider: ParadisLimitsProvider): SVGSVGElement {
 	const svg = document.createElementNS(SVG_NS, 'svg');
 	svg.setAttribute('viewBox', '0 0 24 24');
 	svg.setAttribute('aria-hidden', 'true');
@@ -36,7 +39,7 @@ export function appendParadisLimitsLogo(container: HTMLElement, provider: Paradi
 		path.setAttribute('d', CLAUDE_PATH);
 		path.setAttribute('fill', '#ffffff');
 	} else {
-		const gradientId = `paradis-limits-codex-gradient-${gradientSequence++}`;
+		const gradientId = `paradis-codex-logo-gradient-${gradientSequence++}`;
 		const defs = document.createElementNS(SVG_NS, 'defs');
 		const gradient = document.createElementNS(SVG_NS, 'linearGradient');
 		gradient.setAttribute('id', gradientId);
@@ -57,6 +60,13 @@ export function appendParadisLimitsLogo(container: HTMLElement, provider: Paradi
 		path.setAttribute('fill', `url(#${gradientId})`);
 	}
 	svg.appendChild(path);
-	badge.appendChild(svg);
+	container.appendChild(svg);
+	return svg;
+}
+
+/** プロバイダーロゴ(角丸地＋グリフ)をcontainerへ追加して返す。 */
+export function appendParadisLimitsLogo(container: HTMLElement, provider: ParadisLimitsProvider): HTMLElement {
+	const badge = dom.append(container, dom.$(`.paradis-limits-logo.${provider}`));
+	appendParadisAgentLogoSvg(badge, provider);
 	return badge;
 }

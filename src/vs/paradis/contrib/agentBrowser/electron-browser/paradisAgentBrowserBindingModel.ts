@@ -23,7 +23,7 @@ import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../.
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { paradisCollectLivePaneInstances } from '../browser/paradisLivePaneInstances.js';
-import { IParadisAbortBindResult, IParadisCommitBindResult, IParadisGatewayEndpoint, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPrepareBindRequest, IParadisPrepareBindResult, ParadisMcpCli, IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisCommitBindResult, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPrepareBindRequest, IParadisPrepareBindResult, ParadisMcpCli, IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler } from '../common/paradisBrowserBindingLifecycle.js';
 import { IParadisBindEligibility, IParadisBrowserScopeService, IParadisTerminalScopeService, ParadisStableBindingScope, paradisBindingScopesEqual, paradisEvaluateBindingScopeEligibility, paradisRequireBindingScopeEligibility } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
@@ -103,6 +103,12 @@ export interface IParadisAgentBrowserBindingModel {
 	 * 自動登録する（shared process経由）。実行結果を返す。
 	 */
 	setupMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult>;
+
+	/** 「MCP接続設定」タブ表示用に、Claude Code / Codex のMCP設定ステータスを取得する。 */
+	getMcpConfigStatus(): Promise<IParadisMcpConfigStatus>;
+
+	/** 「ワンクリックで修正」/「自動セットアップ」を実行する（codexの古いポート決め打ちをshim方式へ）。 */
+	fixMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult>;
 
 	/** shared processで起動済みのMCP+CDPゲートウェイ実ポートを取得する。 */
 	getGatewayEndpoint(): Promise<IParadisGatewayEndpoint>;
@@ -697,6 +703,17 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		const request: IParadisMcpSetupRequest = { cli };
 		return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 			.call<IParadisMcpSetupResult>('setupMcp', [request]);
+	}
+
+	async getMcpConfigStatus(): Promise<IParadisMcpConfigStatus> {
+		return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+			.call<IParadisMcpConfigStatus>('getMcpConfigStatus');
+	}
+
+	async fixMcp(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
+		const request: IParadisMcpFixRequest = { cli };
+		return this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+			.call<IParadisMcpSetupResult>('fixMcp', [request]);
 	}
 
 	getGatewayEndpoint(): Promise<IParadisGatewayEndpoint> {

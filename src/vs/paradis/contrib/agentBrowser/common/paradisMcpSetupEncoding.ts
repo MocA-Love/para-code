@@ -62,9 +62,9 @@ export function encodeParadisPowerShellArgument(value: string): string {
 	return `${quote}${value.replaceAll(quote, `${quote}${quote}`)}${quote}`;
 }
 
-type MultilineDelimiter = '"""' | '\x27\x27\x27';
+export type MultilineDelimiter = '"""' | '\x27\x27\x27';
 
-interface ICommentScanResult {
+export interface ICommentScanResult {
 	readonly code: string;
 	readonly multiline?: MultilineDelimiter;
 }
@@ -97,7 +97,7 @@ function findMultilineClose(line: string, start: number, delimiter: MultilineDel
 	return -1;
 }
 
-function scanTomlLine(line: string, initialMultiline?: MultilineDelimiter): ICommentScanResult {
+export function scanTomlLine(line: string, initialMultiline?: MultilineDelimiter): ICommentScanResult {
 	let multiline = initialMultiline;
 	let code = '';
 	let index = 0;
@@ -154,7 +154,7 @@ function decodeBasicKey(source: string): string | undefined {
 	}
 }
 
-function parseTomlKeyPath(source: string): readonly string[] | undefined {
+export function parseTomlKeyPath(source: string): readonly string[] | undefined {
 	const result: string[] = [];
 	let index = 0;
 	const skipSpace = () => {

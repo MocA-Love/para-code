@@ -721,6 +721,47 @@ export interface IParadisMcpSetupResult {
 	readonly servers: readonly IParadisMcpSetupServerResult[];
 }
 
+// --- MCP接続設定ステータス（バインディングダイアログの「MCP接続設定」タブ用） -----------------
+
+/**
+ * 各エージェントCLIのMCP設定状態。
+ * - configured: para-browser（shim方式）が設定済み（緑）
+ * - unconfigured: 未設定（グレー・「自動セットアップ」で導入）
+ * - needsFix: 古いポートを決め打ち参照するchrome-devtools系エントリを検出（黄・「ワンクリックで修正」）
+ */
+export type ParadisMcpConfigState = 'configured' | 'unconfigured' | 'needsFix';
+
+/** 1つのCLIのMCP設定ステータス（shared processが実設定ファイルを読んで判定）。 */
+export interface IParadisMcpCliConfigStatus {
+	readonly cli: ParadisMcpCli;
+	readonly state: ParadisMcpConfigState;
+	/** needsFix時に検出した、決め打ちされた古いゲートウェイポート（表示用）。 */
+	readonly detectedPort?: number;
+	/** configured時に設定を検出したファイルの絶対パス（表示用、任意）。 */
+	readonly configPath?: string;
+	/** 判定自体が失敗した場合（設定ファイルが読めない等）。trueなら state は既定値でUIはエラー表示する。 */
+	readonly failed?: boolean;
+	/**
+	 * unconfigured時、自動セットアップが安全に行えない（既存のMCP設定があり自動追記が
+	 * 曖昧になる）ため手動セットアップへ誘導すべきか。trueならUIは「自動セットアップ」ボタンを
+	 * 出さず、手動コマンドの折りたたみだけを見せる。
+	 */
+	readonly manualOnly?: boolean;
+}
+
+/** MCP接続設定タブ全体のステータス。 */
+export interface IParadisMcpConfigStatus {
+	readonly claude: IParadisMcpCliConfigStatus;
+	readonly codex: IParadisMcpCliConfigStatus;
+	/** 判定基準に使った現在のゲートウェイポート（表示・デバッグ用、任意）。 */
+	readonly gatewayPort?: number;
+}
+
+/** 「ワンクリックで修正」/「自動セットアップ」の要求（cli種別のみ）。 */
+export interface IParadisMcpFixRequest {
+	readonly cli: ParadisMcpCli;
+}
+
 export function paradisNormalizeAgentHookEvent(eventType: string, message?: string): ParadisAgentStatus | 'idle' | undefined {
 	switch (eventType) {
 		// 完了系: Claude Code / Codex / OpenCode
