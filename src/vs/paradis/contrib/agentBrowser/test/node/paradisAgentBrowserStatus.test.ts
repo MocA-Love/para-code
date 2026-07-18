@@ -182,12 +182,43 @@ suite('ParadisAgentBrowserStatus', () => {
 	});
 
 	test('bounds hook payload depth and string size', () => {
+		let deep: unknown = { bottom: true };
+		for (let i = 0; i < 25; i++) {
+			deep = { nest: deep };
+		}
 		const result = paradisSanitizeAgentHookPayload({
 			value: 'x'.repeat(20_000),
-			deep: { a: { b: { c: { d: { e: true } } } } },
+			deep,
 		});
 		assert.ok(typeof result?.['value'] === 'string' && result['value'].length < 20_000);
-		assert.deepStrictEqual(result?.['deep'], { a: { b: { c: { d: {} } } } });
+		let cursor = result?.['deep'] as Record<string, unknown> | undefined;
+		let depth = 1;
+		while (cursor !== undefined && cursor['nest'] !== undefined) {
+			cursor = cursor['nest'] as Record<string, unknown>;
+			depth++;
+		}
+		assert.ok(depth < 25, `depth must be bounded, got ${depth}`);
+		assert.deepStrictEqual(cursor, {});
+	});
+
+	test('keeps AskUserQuestion option labels through payload sanitization', () => {
+		// 選択肢は payload ルートから深さ6（tool_input.questions[i].options[i].label）にある。
+		// 深さ上限がこれを下回るとモバイルの質問カードが選択肢なしになる（実際に起きた退行）。
+		const result = paradisSanitizeAgentHookPayload({
+			session_id: 's', hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion',
+			tool_input: {
+				questions: [{
+					question: 'どうしますか？', header: '方針', multiSelect: false,
+					options: [{ label: 'A案', description: '説明A' }, { label: 'B案' }],
+				}],
+			},
+		});
+		assert.deepStrictEqual(result?.['tool_input'], {
+			questions: [{
+				question: 'どうしますか？', header: '方針', multiSelect: false,
+				options: [{ label: 'A案', description: '説明A' }, { label: 'B案' }],
+			}],
+		});
 	});
 
 	test('drops prototype mutation keys from hook payloads', () => {

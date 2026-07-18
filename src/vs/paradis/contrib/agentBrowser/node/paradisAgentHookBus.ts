@@ -48,7 +48,11 @@ export interface IParadisAgentHookEvent {
 	readonly at: number;
 }
 
-const HOOK_PAYLOAD_MAX_DEPTH = 5;
+// 深さは再帰の暴走防止のためだけの上限で、正規のhookデータが届かない値にする。
+// AskUserQuestion の選択肢は payload ルートから tool_input.questions[i].options[i].label で
+// 深さ6に達する（5だと選択肢が空オブジェクトへ潰され、モバイルの質問カードが
+// 「選択肢を取得できませんでした」になるリグレッションが実際に起きた）。
+const HOOK_PAYLOAD_MAX_DEPTH = 20;
 const HOOK_PAYLOAD_MAX_ENTRIES = 100;
 const HOOK_PAYLOAD_MAX_STRING = 10_000;
 const PANE_TOKEN_MAX_LENGTH = 200;
