@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { BROWSER_VIEW_SCREENSHOT_MAX_ENCODED_BYTES, BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewBitmapHasVisibleAlpha, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, prepareBrowserViewScreenshotCapture } from '../../common/browserViewScreenshot.js';
+import { BROWSER_VIEW_SCREENSHOT_MAX_ENCODED_BYTES, BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH, BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewBitmapHasVisibleAlpha, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotCoalesceKey, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, prepareBrowserViewScreenshotCapture } from '../../common/browserViewScreenshot.js';
 
 suite('BrowserView screenshot', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -90,24 +90,97 @@ suite('BrowserView screenshot', () => {
 		assert.strictEqual(paints, 0);
 	});
 
-	test('times out, aborts, and rejects concurrent capture until the underlying attempt settles', async () => {
+	test('times out, aborts, and holds the slot for a queued distinct capture until the underlying attempt settles', async () => {
 		let release!: () => void;
 		let signal!: AbortSignal;
+		let secondStarted = false;
 		const gate = new Promise<void>(resolve => release = resolve);
 		const coordinator = new BrowserViewScreenshotCoordinator(10);
 		const first = coordinator.run(async currentSignal => {
 			signal = currentSignal;
 			await gate;
 			return 'late';
-		});
+		}, { key: 'a' });
 
 		await assert.rejects(first, /timed out after 10ms/);
 		assert.strictEqual(signal.aborted, true);
-		await assert.rejects(coordinator.run(async () => 'overlap'), /still in progress/);
+
+		// A distinct-key request queues behind the still-running underlying capture instead of rejecting.
+		const second = coordinator.run(async () => {
+			secondStarted = true;
+			return 'recovered';
+		}, { key: 'b' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.strictEqual(secondStarted, false, 'queued capture must wait for the underlying capture to settle');
 
 		release();
+		assert.strictEqual(await second, 'recovered');
+	});
+
+	test('coalesces concurrent identical-key captures into a single in-flight capture', async () => {
+		let release!: () => void;
+		let captures = 0;
+		const gate = new Promise<void>(resolve => release = resolve);
+		const coordinator = new BrowserViewScreenshotCoordinator(1000);
+		const operation = async () => {
+			captures++;
+			await gate;
+			return `image-${captures}`;
+		};
+		const first = coordinator.run(operation, { key: 'same' });
+		const second = coordinator.run(operation, { key: 'same' });
+
+		release();
+		const [a, b] = await Promise.all([first, second]);
+		assert.strictEqual(captures, 1);
+		assert.strictEqual(a, 'image-1');
+		assert.strictEqual(b, 'image-1');
+	});
+
+	test('runs distinct-key captures serially through the FIFO and rejects on overflow', async () => {
+		const order: string[] = [];
+		const gates: Array<() => void> = [];
+		const coordinator = new BrowserViewScreenshotCoordinator(1000, 2);
+		const make = (name: string) => coordinator.run(async () => {
+			order.push(`start-${name}`);
+			await new Promise<void>(resolve => gates.push(() => { order.push(`end-${name}`); resolve(); }));
+			return name;
+		}, { key: name });
+
+		const active = make('a'); // becomes active immediately
+		const queued1 = make('b'); // queue depth 1
+		const queued2 = make('c'); // queue depth 2 (full)
+		// Queue is full (depth 2); a further distinct request rejects retryable.
+		await assert.rejects(make('d'), /still in progress/);
+
+		// Drain in order: each capture only starts after the previous one settles.
 		await new Promise(resolve => setTimeout(resolve, 0));
-		assert.strictEqual(await coordinator.run(async () => 'recovered'), 'recovered');
+		assert.deepStrictEqual(order, ['start-a']);
+		gates.shift()!();
+		assert.strictEqual(await active, 'a');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		gates.shift()!();
+		assert.strictEqual(await queued1, 'b');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		gates.shift()!();
+		assert.strictEqual(await queued2, 'c');
+		assert.deepStrictEqual(order, ['start-a', 'end-a', 'start-b', 'end-b', 'start-c', 'end-c']);
+	});
+
+	test('derives a coalescing key that is stable for equal parameters and distinct otherwise', () => {
+		assert.strictEqual(
+			browserViewScreenshotCoalesceKey({ fullPage: true, format: 'png', quality: 90 }),
+			browserViewScreenshotCoalesceKey({ fullPage: true, format: 'png', quality: 90 }),
+		);
+		assert.notStrictEqual(
+			browserViewScreenshotCoalesceKey({ fullPage: true, format: 'png' }),
+			browserViewScreenshotCoalesceKey({ fullPage: true, format: 'jpeg' }),
+		);
+		assert.notStrictEqual(
+			browserViewScreenshotCoalesceKey({ pageRect: { x: 0, y: 0, width: 10, height: 10 } }),
+			browserViewScreenshotCoalesceKey({ pageRect: { x: 0, y: 0, width: 20, height: 10 } }),
+		);
+		assert.strictEqual(BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH, 4);
 	});
 
 	test('does not retry a timed-out attempt after its underlying capture returns late', async () => {
