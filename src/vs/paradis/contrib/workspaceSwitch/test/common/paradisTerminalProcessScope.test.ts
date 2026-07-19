@@ -96,6 +96,22 @@ suite('paradisRecordInstanceScopes / paradisLookupInstanceScope', () => {
 		assert.deepStrictEqual([...instanceScopes], [[8, 'worktree:B']]);
 	});
 
+	test('restores ownership by the previous process id after a full restart renumbers ptys', () => {
+		const instanceScopes = new Map<number, string>();
+		const restoredScopes = new Map<number, string>([[2, 'scope:wrong-collision'], [3, 'scope:expected']]);
+		const revivedInstance = {
+			instanceId: 8,
+			persistentProcessId: 2,
+			restoredPersistentProcessId: 3,
+		};
+
+		assert.strictEqual(
+			paradisRestorePersistentProcessScope(instanceScopes, restoredScopes, revivedInstance),
+			'scope:expected',
+		);
+		assert.deepStrictEqual([...instanceScopes], [[8, 'scope:expected']]);
+	});
+
 	test('prunes restored process entries that have no live terminal after reconnect', () => {
 		const persistentScopes = new Map<number, string>([
 			[11, 'scope:live-panel'],

@@ -209,6 +209,8 @@ export interface IPtyHostAttachTarget {
 	// PARA-PATCH: mobile relay recovery — expose the revived/detached PTY pane token on attach targets
 	/** PARA-CODE: The actual pane token retained by the revived or detached PTY. */
 	paradisPaneToken?: string;
+	/** PARA-CODE: The process ID used by the previous PTY host before full application revival. */
+	paradisRevivedFromPersistentProcessId?: number;
 	tabActions?: ITerminalTabAction[];
 }
 
@@ -586,6 +588,8 @@ export interface IShellLaunchConfig {
 		// PARA-PATCH: mobile relay recovery — carry the pane token through persistent process reattach
 		/** PARA-CODE: The actual pane token retained by the revived or detached PTY. */
 		paradisPaneToken?: string;
+		/** PARA-CODE: The process ID used by the previous PTY host before full application revival. */
+		paradisRevivedFromPersistentProcessId?: number;
 		tabActions?: ITerminalTabAction[];
 	};
 
