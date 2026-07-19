@@ -6,7 +6,7 @@
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { equals as objectsEqual } from '../../../../base/common/objects.js';
-import { IParadisMobileDesktopStateV3, IParadisMobileTerminalV3, IParadisMobileWindowStateV2, IParadisMobileWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION } from '../common/paradisMobileRelay.js';
+import { IParadisMobileDesktopBattery, IParadisMobileDesktopStateV3, IParadisMobileTerminalV3, IParadisMobileWindowStateV2, IParadisMobileWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION } from '../common/paradisMobileRelay.js';
 import { PARADIS_FS_BINARY_UPLOAD_ENCODING } from '../common/paradisMobileFileUpload.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
 
@@ -221,9 +221,14 @@ export class ParadisMobileTerminalRegistry {
 		const workspaces: IParadisMobileWorkspaceV2[] = [];
 		const terminals: IParadisMobileTerminalV3[] = [];
 		let activeWs: string | undefined;
+		// バッテリーは同一PCなので全windowで同値のはず。最初に報告したwindowの値を採用する。
+		let battery: IParadisMobileDesktopBattery | undefined;
 		for (const [windowId, lease] of [...this.windows].sort(([a], [b]) => a - b)) {
 			if (activeWs === undefined && lease.state.activeWs !== undefined) {
 				activeWs = this.workspaceKey(windowId, lease.state.activeWs);
+			}
+			if (battery === undefined && lease.state.battery !== undefined) {
+				battery = lease.state.battery;
 			}
 			for (const workspace of lease.state.workspaces) {
 				workspaces.push({
@@ -268,6 +273,7 @@ export class ParadisMobileTerminalRegistry {
 			activeWs,
 			workspaces,
 			terminals,
+			...(battery !== undefined ? { battery } : {}),
 		};
 	}
 

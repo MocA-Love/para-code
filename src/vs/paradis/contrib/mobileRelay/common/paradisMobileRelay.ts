@@ -70,6 +70,12 @@ export interface IParadisMobileWindowWorkspaceV2 {
 	readonly pr?: { readonly number: number; readonly state: 'open' | 'draft' | 'merged' | 'closed'; readonly url: string };
 }
 
+/** PC本体のバッテリー状態（Live Activity等の表示用）。level は 0〜100 の整数。 */
+export interface IParadisMobileDesktopBattery {
+	readonly level: number;
+	readonly charging: boolean;
+}
+
 /** protocol v2: renderer 内のターミナル。id はこのウィンドウ内でのみ一意。 */
 export interface IParadisMobileWindowTerminalV2 {
 	readonly terminalKey: string;
@@ -88,6 +94,8 @@ export interface IParadisMobileWindowStateV2 {
 	readonly activeWs: string | undefined;
 	readonly workspaces: readonly IParadisMobileWindowWorkspaceV2[];
 	readonly terminals: readonly IParadisMobileWindowTerminalV2[];
+	/** PC本体のバッテリー（取得できたrendererのみ付与。同一PCなので全windowで同値）。 */
+	readonly battery?: IParadisMobileDesktopBattery;
 }
 
 /** protocol v2: shared process が付与する、全ウィンドウで一意なワークスペース。 */
@@ -122,6 +130,8 @@ export interface IParadisMobileDesktopStateV3 {
 	readonly activeWs: string | undefined;
 	readonly workspaces: readonly IParadisMobileWorkspaceV2[];
 	readonly terminals: readonly IParadisMobileTerminalV3[];
+	/** PC本体のバッテリー（旧PCでは未配信。モバイルはLive Activity等の表示に使う）。 */
+	readonly battery?: IParadisMobileDesktopBattery;
 }
 
 /** shared process の接続状態。 */

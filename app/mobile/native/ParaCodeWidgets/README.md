@@ -37,6 +37,10 @@ PARA-CODE: fork-owned directory (Para Code).
   （`modules/para-live-activity/ios/ParaLiveActivityModule.swift`）にも同名で複製してある。
   ActivityKit はプロセス間を「型名の一致」で対応付けるため、両者のフィールド定義を
   常に一致させること（片方だけ変更すると Live Activity が表示されなくなる）
-- ContentState: `waitingCount` / `runningCount` / `agents`（最大2件の {name, status}）/
-  `questionPreview`。JS側の構築は `liveActivitySync.ts`
+- ContentState: `waitingCount` / `runningCount` / `agents`（最大2件の {name, ws, status}）/
+  `questionPreview` / `battery`（PC本体の {level, charging}。旧PCでは未配信＝nil）。
+  JS側の構築は `liveActivitySync.ts`
+- 展開面/ロック画面のデザインは `plan.html`（B-2確定デザイン）: 稼働数の内訳は
+  ステータスリング（赤=応答待ち/緑=実行中、中央が合計数）、ヘッダーにバッテリーピル。
+  低残量（非充電・20%未満）は文言を出さず、枠の赤リングとピルの赤字だけで示す
 - 現状の更新はアプリのJSが動いている間のみ（プッシュ経由のバックグラウンド更新は将来対応）
