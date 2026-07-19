@@ -40,6 +40,7 @@ import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimits
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
+import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsResponse } from '../common/paradisMobileFileResponse.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
@@ -130,9 +131,9 @@ type FsInbound =
 	| { t: 'resolveLink'; id: string; ws: string; path: string }
 	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean }
 	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number }
-	| { t: 'pdf'; id: string; ws: string; path: string }
-	| { t: 'docx'; id: string; ws: string; path: string }
-	| { t: 'media'; id: string; ws: string; path: string }
+	| { t: 'pdf'; id: string; ws: string; path: string; responseEncoding?: string }
+	| { t: 'docx'; id: string; ws: string; path: string; responseEncoding?: string }
+	| { t: 'media'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'find'; id: string; ws: string; query: string }
 	| { t: 'grep'; id: string; ws: string; query: string }
 	| { t: 'upload'; id: string; name: string; data: string }
@@ -1144,6 +1145,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const reply = (body: object) => {
 			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ id: msg.id, ...body }))), mobileId: mobileId || undefined });
 		};
+		const replyBinary = (type: ParadisBinaryFsResponseType, size: number, data: Uint8Array): boolean => {
+			const responseEncoding = msg.t === 'pdf' || msg.t === 'docx' || msg.t === 'media' ? msg.responseEncoding : undefined;
+			const encoded = paradisEncodeNegotiatedBinaryFsResponse(responseEncoding, type, msg.id, size, data);
+			if (encoded === undefined) {
+				return false;
+			}
+			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoded), mobileId: mobileId || undefined });
+			return true;
+		};
 		// 画像アップロード（エージェントへの添付用）。ワークスペースを汚さないよう
 		// userData 配下の専用ディレクトリへ保存し、フルパスを返す（モバイル側がPTYへ
 		// パスを貼り付け、エージェントCLIがそのパスの画像を読む）。パスは取らないため
@@ -1296,7 +1306,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
 				// 標準base64（パディング付き）。モバイル側は expo-file-system の Base64 エンコーディング指定で
 				// ネイティブデコードしながらファイルへ書くため、JSでのデコードは発生しない。
-				reply({ t: 'pdf', data: encodeBase64(content.value), size: stat.size ?? 0 });
+				const size = stat.size ?? 0;
+				if (!replyBinary('pdf', size, content.value.buffer)) {
+					reply({ t: 'pdf', data: encodeBase64(content.value), size });
+				}
 			} else if (msg.t === 'docx') {
 				// Word文書もバイナリのまま base64 で返す（レンダリングはモバイル側の WebView が
 				// PC版ビューアと同じ vendored docx-preview で行う。PC側でHTML化しないのは、
@@ -1308,7 +1321,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
-				reply({ t: 'docx', data: encodeBase64(content.value), size: stat.size ?? 0 });
+				const size = stat.size ?? 0;
+				if (!replyBinary('docx', size, content.value.buffer)) {
+					reply({ t: 'docx', data: encodeBase64(content.value), size });
+				}
 			} else if (msg.t === 'media') {
 				// 画像・動画・音声もバイナリのまま base64 で返す（表示はモバイル側。画像は data URI、
 				// 動画/音声はキャッシュファイル経由で WKWebView のネイティブ再生を使う）。
@@ -1319,7 +1335,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				const content = await this.fileService.readFile(uri, { length: BINARY_READ_LIMIT });
-				reply({ t: 'media', data: encodeBase64(content.value), size: stat.size ?? 0 });
+				const size = stat.size ?? 0;
+				if (!replyBinary('media', size, content.value.buffer)) {
+					reply({ t: 'media', data: encodeBase64(content.value), size });
+				}
 			} else if (msg.t === 'list') {
 				const stat = await this.fileService.resolve(uri);
 				const entries = (stat.children ?? [])
