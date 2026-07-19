@@ -17,6 +17,15 @@ struct ParaCodeActivityAttributes: ActivityAttributes {
 		var agents: [AgentRow]
 		/// 応答待ちが1件だけのときの質問文プレビュー（L2ハイブリッド）。
 		var questionPreview: String?
+		/// PC本体のバッテリー（旧PCでは未配信。nilならピル非表示）。
+		var battery: Battery?
+	}
+
+	public struct Battery: Codable, Hashable {
+		/// 残量（0〜100、PC側で5%刻みに量子化済み）。
+		var level: Int
+		/// 充電中か。
+		var charging: Bool
 	}
 
 	public struct AgentRow: Codable, Hashable {

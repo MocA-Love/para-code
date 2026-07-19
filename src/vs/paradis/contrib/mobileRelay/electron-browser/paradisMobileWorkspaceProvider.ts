@@ -8,7 +8,7 @@
 
 import { RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
-import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -34,7 +34,7 @@ import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspa
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
-import { IParadisGitResult, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
+import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -52,6 +52,14 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 type StateSnapshot = IParadisMobileWindowStateV2;
+
+/** Battery Status API（Chromium実装）。lib.domに型が無いため最小限を自前定義する。 */
+interface INavigatorBatteryManager {
+	readonly level: number;
+	readonly charging: boolean;
+	addEventListener(type: 'levelchange' | 'chargingchange', listener: () => void): void;
+	removeEventListener(type: 'levelchange' | 'chargingchange', listener: () => void): void;
+}
 
 /**
  * Resolves the best local cwd available for agent command discovery. CwdDetection
@@ -217,6 +225,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly termSyncStates = new Map<string, TermSyncState>();
 	// モバイル発の /model・/effort 切替でClaude TUIが出す確認ダイアログを自動確定するガード。
 	private readonly modelSwitchGuard = this._register(new ParadisAgentModelSwitchGuard(this.logService));
+	// PC本体のバッテリー状態（Battery Status API）。未対応環境ではundefinedのまま＝state未配信。
+	private battery: IParadisMobileDesktopBattery | undefined;
 
 	constructor(
 		private readonly sendFrame: (frame: IParadisMobileInboundFrame) => void,
@@ -297,6 +307,44 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.terminalService.onDidChangeInstanceCapability(() => { void this.pushAgentPanes(); }));
 		void this.pushAgentPanes();
 		this.refreshBranches();
+		void this.trackBattery();
+	}
+
+	/**
+	 * PC本体のバッテリー状態を購読してstateへ載せる（モバイルのLive Activity表示用）。
+	 * levelは5%刻みへ量子化し、1%ごとのstate全体再送でリレー帯域を浪費しないようにする。
+	 */
+	private async trackBattery(): Promise<void> {
+		const getBattery = (navigator as Partial<{ getBattery(): Promise<INavigatorBatteryManager> }>).getBattery;
+		if (typeof getBattery !== 'function') {
+			return;
+		}
+		let manager: INavigatorBatteryManager;
+		try {
+			manager = await getBattery.call(navigator);
+		} catch (err) {
+			this.logService.trace('[paradisMobileRelay] battery status unavailable', err);
+			return;
+		}
+		if (this._store.isDisposed) {
+			return;
+		}
+		const apply = () => {
+			const level = Math.max(0, Math.min(100, Math.round(manager.level * 100 / 5) * 5));
+			const next: IParadisMobileDesktopBattery = { level, charging: manager.charging };
+			if (this.battery?.level === next.level && this.battery.charging === next.charging) {
+				return;
+			}
+			this.battery = next;
+			this.pushStateSoon();
+		};
+		manager.addEventListener('levelchange', apply);
+		manager.addEventListener('chargingchange', apply);
+		this._register(toDisposable(() => {
+			manager.removeEventListener('levelchange', apply);
+			manager.removeEventListener('chargingchange', apply);
+		}));
+		apply();
 	}
 
 	/**
@@ -631,7 +679,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				...(inst.cols > 0 && inst.rows > 0 ? { cols: inst.cols, rows: inst.rows } : {}),
 			};
 		});
-		return { activeWs: this.workspaceSwitchService.activeStateKey, workspaces, terminals };
+		return {
+			activeWs: this.workspaceSwitchService.activeStateKey,
+			workspaces,
+			terminals,
+			...(this.battery !== undefined ? { battery: this.battery } : {}),
+		};
 	}
 
 	/** shared processがhookまたは検証済みtranscriptから確定したエージェント端末を反映する。 */

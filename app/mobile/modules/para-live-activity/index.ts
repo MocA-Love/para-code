@@ -14,6 +14,8 @@ export interface LiveActivityState {
 	runningCount: number;
 	agents: LiveActivityAgentRow[];
 	questionPreview?: string;
+	/** PC本体のバッテリー（旧PCでは未配信。undefinedならピル非表示）。levelは0〜100。 */
+	battery?: { level: number; charging: boolean };
 }
 
 interface NativeModuleShape {

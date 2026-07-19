@@ -12,6 +12,12 @@ struct ParaCodeActivityAttributes: ActivityAttributes {
 		var runningCount: Int
 		var agents: [AgentRow]
 		var questionPreview: String?
+		var battery: Battery?
+	}
+
+	public struct Battery: Codable, Hashable {
+		var level: Int
+		var charging: Bool
 	}
 
 	public struct AgentRow: Codable, Hashable {

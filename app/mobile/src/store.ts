@@ -37,6 +37,8 @@ export interface WorkspaceState {
 	// agent: そのターミナルでエージェントCLI（claude/codex）が動いた実績があるか（PC側のhook発火実績）。
 	// ホーム一覧・Live Activity はこのフラグで「エージェントのターミナル」だけに絞る。
 	terminals: { terminalKey: string; id: number; windowId: number; rendererGeneration: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
+	// PC本体のバッテリー（旧PCでは未配信）。Live Activityのバッテリーピル表示に使う。levelは0〜100。
+	battery?: { level: number; charging: boolean };
 }
 
 interface RendererRequestTarget {
@@ -71,6 +73,8 @@ export function mergeWorkspaceState(previous: WorkspaceState | undefined, incomi
 			...incoming,
 			workspaces: [...workspaces.values()],
 			terminals: [...terminals.values()],
+			// バッテリーは新epochのrendererが報告し直すまで直前の値を保持する（表示のちらつき防止）
+			...(incoming.battery === undefined && previous.battery !== undefined ? { battery: previous.battery } : {}),
 		};
 	}
 	const pendingWindows = new Set(incoming.renderers.filter(renderer => !renderer.ready).map(renderer => renderer.windowId));
@@ -90,6 +94,7 @@ export function mergeWorkspaceState(previous: WorkspaceState | undefined, incomi
 		activeWs: incoming.activeWs ?? (previousActiveWorkspace !== undefined && pendingWindows.has(previousActiveWorkspace.windowId) ? previous.activeWs : undefined),
 		workspaces: [...workspaces.values()],
 		terminals: [...terminals.values()],
+		...(incoming.battery === undefined && previous.battery !== undefined ? { battery: previous.battery } : {}),
 	};
 }
 

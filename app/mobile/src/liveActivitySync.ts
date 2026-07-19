@@ -89,5 +89,7 @@ function buildState(state: Pick<StoreState, 'workspace' | 'agentChats'>): LiveAc
 		runningCount: running.length,
 		agents: rows,
 		...(questionPreview !== undefined ? { questionPreview } : {}),
+		// PC本体のバッテリー（B-2デザイン: 展開ビュー/ロック画面のバッテリーピル）
+		...(state.workspace?.battery !== undefined ? { battery: state.workspace.battery } : {}),
 	};
 }
