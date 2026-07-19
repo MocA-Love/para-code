@@ -9,6 +9,8 @@
  */
 
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
+import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
+import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -542,6 +544,10 @@ function parseAgentActivityState(value: unknown): AgentActivityState | undefined
 	return { agents, tasks, compactions, startedAt: raw['startedAt'], updatedAt: raw['updatedAt'] };
 }
 
+function isNonNegativeSafeInteger(value: unknown): value is number {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
 /** ターミナル1つ分のエージェントチャット状態。 */
 export interface AgentChatState {
 	/** 'claude' | 'codex'。 */
@@ -559,6 +565,8 @@ export interface AgentChatState {
 	info?: AgentSessionInfo;
 	/** 生成中本文・実行中ツール等の一時状態。 */
 	live?: AgentLiveState;
+	/** live差分を厳密に適用するためのPC側改訂番号。 */
+	liveRevision?: number;
 	/** SubAgent、タスク、圧縮のプロバイダー非依存な最新状態。 */
 	activity?: AgentActivityState;
 	/** Codex app-server由来の動的モデルカタログと設定更新状態。 */
@@ -846,6 +854,7 @@ export class MobileController {
 	private readonly agentCommandCatalogTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingAgentLiveResyncs = new Set<string>();
 	private readonly terminalOperationOutbox = new Map<string, { readonly operationRun: number; readonly operationSeq: number; readonly payload: Uint8Array; state: 'pending' | 'unknown'; durable: boolean }>();
 	private terminalOperationSeq = 0;
 	private operationOutboxKey: Uint8Array | undefined;
@@ -863,6 +872,7 @@ export class MobileController {
 	private terminalOperationEnqueueIssue: string | undefined;
 	private lastNotifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean } | undefined;
 	private readonly pendingNotificationDismissals = new Set<string>();
+	private readonly fsContentHashCache = new ContentHashResponseCache();
 	private operationOutboxWrite = Promise.resolve();
 	private terminalOperationDispatchChain = Promise.resolve();
 	private terminalOperationDispatchDepth = 0;
@@ -1036,6 +1046,8 @@ export class MobileController {
 			this.lastCredentials = undefined;
 			this.attachedAgents.clear();
 			this.attachedAgentTargets.clear();
+			this.pendingAgentLiveResyncs.clear();
+			this.fsContentHashCache.clear();
 			for (const pending of this.agentControlTimers.values()) {
 				clearTimeout(pending.timer);
 			}
@@ -1781,6 +1793,7 @@ export class MobileController {
 		if (count <= 1) {
 			this.attachedAgents.delete(terminalKey);
 			this.attachedAgentTargets.delete(terminalKey);
+			this.pendingAgentLiveResyncs.delete(terminalKey);
 			const terminal = this.terminalForKey(terminalKey);
 			if (terminal !== undefined && this.isLiveAvailable() && this.rendererTargetFor(terminalKey) !== undefined) {
 				this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id: terminal.id, token: this.agentToken(terminalKey) })));
@@ -1796,6 +1809,7 @@ export class MobileController {
 			return;
 		}
 		this.state.agentChats.delete(terminalKey);
+		this.pendingAgentLiveResyncs.delete(terminalKey);
 		this.emit({ agentChats: true });
 		if (this.attachedAgents.has(terminalKey)) {
 			this.sendAgentAttach(terminalKey);
@@ -1932,8 +1946,8 @@ export class MobileController {
 			? existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1
 			: undefined;
 		const body = existing !== undefined && !existing.none && lastMessageRev !== undefined
-			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev }
-			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey) };
+			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev, liveEncoding: AGENT_LIVE_APPEND_ENCODING }
+			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), liveEncoding: AGENT_LIVE_APPEND_ENCODING };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
 	}
 
@@ -1968,14 +1982,17 @@ export class MobileController {
 
 	private readonly requestPrefix = toBase64Url(randomToken(12));
 	private requestCounter = 0;
-	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; rendererTarget?: RendererRequestTarget }>();
+	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; rendererTarget?: RendererRequestTarget; contentHash?: { readonly key: string; readonly prepared: PreparedContentHashRequest } }>();
 
-	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000, encodePayload?: (id: string, requestBody: object) => Uint8Array | undefined): Promise<T> {
+	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000, encodePayload?: (id: string, requestBody: object) => Uint8Array | undefined, contentHashCacheKey?: string): Promise<T> {
 		const client = this.client;
 		if (!client || !this.isLiveAvailable()) {
 			return Promise.reject(new Error('PCへ再接続してから操作してください'));
 		}
-		let requestBody = body;
+		const contentHash = contentHashCacheKey !== undefined
+			? { key: contentHashCacheKey, prepared: this.fsContentHashCache.prepare(contentHashCacheKey) }
+			: undefined;
+		let requestBody = contentHash !== undefined ? { ...body, ...contentHash.prepared.fields } : body;
 		let rendererTarget: RendererRequestTarget | undefined;
 		if (channel === 'scm' || channel === 'fs') {
 			const desktop = this.state.workspace;
@@ -1992,7 +2009,7 @@ export class MobileController {
 			}
 			rendererTarget = { desktopEpoch: desktop.desktopEpoch, windowId: renderer.windowId, rendererGeneration: renderer.rendererGeneration };
 			requestBody = {
-				...body,
+				...requestBody,
 				protocolVersion: 3,
 				desktopEpoch: desktop.desktopEpoch,
 				windowId: workspace.windowId,
@@ -2006,7 +2023,7 @@ export class MobileController {
 				this.pending.delete(id);
 				reject(new Error('request timeout'));
 			}, timeoutMs);
-			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, ...(rendererTarget !== undefined ? { rendererTarget } : {}) });
+			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, ...(rendererTarget !== undefined ? { rendererTarget } : {}), ...(contentHash !== undefined ? { contentHash } : {}) });
 			client.send(channel, payload);
 		});
 	}
@@ -2037,6 +2054,13 @@ export class MobileController {
 			clearTimeout(entry.timer);
 			if (msg.error) {
 				entry.reject(new Error(msg.error));
+			} else if (entry.contentHash !== undefined) {
+				const resolved = this.fsContentHashCache.resolve(entry.contentHash.key, entry.contentHash.prepared, msg);
+				if (resolved.ok) {
+					entry.resolve(resolved.value);
+				} else {
+					entry.reject(new Error(resolved.error));
+				}
 			} else {
 				entry.resolve(msg);
 			}
@@ -2186,12 +2210,14 @@ export class MobileController {
 
 	/** ファイル読み取り（上限つき）。highlight=trueでPCテーマのハイライトHTMLも返る。 */
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult> {
-		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING });
+		const cacheKey = JSON.stringify(['read', ws, path, highlight === true]);
+		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 30_000, undefined, cacheKey);
 	}
 
 	/** xlsx の1シートをPC側でレンダリングした静的HTMLを取得する（重いブックはPC側の生成に時間がかかるため長め）。 */
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult> {
-		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path, ...(sheet !== undefined ? { sheet } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 120_000);
+		const cacheKey = JSON.stringify(['xlsx', ws, path, sheet ?? 0]);
+		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path, ...(sheet !== undefined ? { sheet } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 120_000, undefined, cacheKey);
 	}
 
 	/** PDF バイナリを base64 で取得する（大きい PDF はチャンク転送で時間がかかるため長め）。 */
@@ -2443,6 +2469,7 @@ export class MobileController {
 					this.state.workspace = undefined;
 					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
+					this.pendingAgentLiveResyncs.clear();
 					this.state.browserFrame = undefined;
 					this.state.notifications = [];
 					this.cancelPendingAgentActions();
@@ -2497,6 +2524,7 @@ export class MobileController {
 				if (epochChanged) {
 					this.state.terminalOutput.clear();
 					this.state.agentChats.clear();
+					this.pendingAgentLiveResyncs.clear();
 					for (const stream of this.termStreams.values()) {
 						stream.epoch = 0;
 						stream.lastSeq = undefined;
@@ -2532,6 +2560,7 @@ export class MobileController {
 					if (!live.has(terminalKey)) {
 						this.attachedAgents.delete(terminalKey);
 						this.attachedAgentTargets.delete(terminalKey);
+						this.pendingAgentLiveResyncs.delete(terminalKey);
 					}
 				}
 				for (const [terminalKey, pending] of this.agentControlTimers) {
@@ -2605,6 +2634,7 @@ export class MobileController {
 					this.state.agentChats.delete(msg.terminalKey);
 					this.attachedAgents.delete(msg.terminalKey);
 					this.attachedAgentTargets.delete(msg.terminalKey);
+					this.pendingAgentLiveResyncs.delete(msg.terminalKey);
 					this.emit({ term: true, agentChats: true });
 				}
 			} catch { /* ignore */ }
@@ -2707,7 +2737,7 @@ export class MobileController {
 		try {
 			const msg = JSON.parse(decoder.decode(payload)) as {
 				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
-				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; activity?: AgentActivityState | null;
+				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; liveRevision?: number; liveAppend?: unknown; activity?: AgentActivityState | null;
 				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; commands?: unknown; status?: string; code?: string; message?: string; consumed?: boolean; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
 			};
 			if (typeof msg.id !== 'number') {
@@ -2745,12 +2775,14 @@ export class MobileController {
 			if (msg.t === 'none') {
 				this.clearAgentControlTimeout(terminalKey);
 				this.clearAgentCommandCatalogTimeout(terminalKey);
+				this.pendingAgentLiveResyncs.delete(terminalKey);
 				this.state.agentChats.set(terminalKey, { agent: '', epoch: '', rev: -1, messages: [], truncated: false, none: true });
 				this.emit({ agentChats: true });
 				return;
 			}
 			if (msg.t === 'snapshot') {
 				const previous = this.state.agentChats.get(terminalKey);
+				this.pendingAgentLiveResyncs.delete(terminalKey);
 				if (previous?.epoch !== msg.epoch) {
 					this.clearAgentControlTimeout(terminalKey);
 					this.clearAgentCommandCatalogTimeout(terminalKey);
@@ -2763,6 +2795,7 @@ export class MobileController {
 					truncated: msg.truncated === true,
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
+					...(isNonNegativeSafeInteger(msg.liveRevision) ? { liveRevision: msg.liveRevision } : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
@@ -2781,6 +2814,20 @@ export class MobileController {
 					}
 					return;
 				}
+				const appliedLiveAppend = msg.liveAppend !== undefined
+					? applyAgentLiveAppendPatch(existing.live, existing.liveRevision, msg.liveAppend)
+					: undefined;
+				if (msg.liveAppend !== undefined && appliedLiveAppend === undefined) {
+					// 表示中の全文は保持し、壊れた差分ごとにattachを連打しない。
+					if (this.attachedAgents.has(terminalKey) && !this.pendingAgentLiveResyncs.has(terminalKey)) {
+						this.pendingAgentLiveResyncs.add(terminalKey);
+						this.sendAgentAttach(terminalKey);
+					}
+					return;
+				}
+				if (msg.live !== undefined || appliedLiveAppend !== undefined) {
+					this.pendingAgentLiveResyncs.delete(terminalKey);
+				}
 				// rev の飛び（リレーのフレーム落ち等）を検出したら、黙って継ぎ足さず差分を
 				// 取り直す（sendAgentAttach が afterRev 付きで欠落分から再取得する）。
 				const incoming = msg.messages ?? [];
@@ -2794,7 +2841,9 @@ export class MobileController {
 				}
 				// 重複revは捨てる（再attach応答と押し出しdeltaの競合対策）。
 				const fresh = incoming.filter(m => !existing.messages.some(e => e.rev === m.rev));
-				const withoutLive = msg.live === null ? (({ live: _live, ...rest }) => rest)(existing) : existing;
+				const withoutLive = msg.live !== undefined
+					? (({ live: _live, liveRevision: _liveRevision, ...rest }) => rest)(existing)
+					: existing;
 				const withoutActivity = msg.activity === null ? (({ activity: _activity, ...rest }) => rest)(withoutLive) : withoutLive;
 				const base = msg.interaction === null ? (({ interaction: _interaction, ...rest }) => rest)(withoutActivity) : withoutActivity;
 				this.state.agentChats.set(terminalKey, {
@@ -2803,6 +2852,8 @@ export class MobileController {
 					messages: [...existing.messages, ...fresh].slice(-500),
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
+					...(msg.live !== undefined && isNonNegativeSafeInteger(msg.liveRevision) ? { liveRevision: msg.liveRevision } : {}),
+					...(appliedLiveAppend !== undefined ? appliedLiveAppend : {}),
 					...(parsedActivity !== undefined ? { activity: parsedActivity } : {}),
 					...(msg.capabilities?.agentActions === true ? { capabilities: { agentActions: true as const, ...(msg.capabilities.claudeSettings === true ? { claudeSettings: true as const } : {}) } } : {}),
 					...(parsedInteraction !== undefined ? { interaction: parsedInteraction } : {}),
@@ -2810,7 +2861,7 @@ export class MobileController {
 				// ターン継続中（live あり）の高頻度な delta だけ throttle でまとめる。ターン終了
 				// （live === null）や live 情報を伴わない確定 delta は即時反映する（追従の遅延・
 				// 取りこぼしを避ける）。
-				if (msg.live !== undefined && msg.live !== null) {
+				if ((msg.live !== undefined && msg.live !== null) || appliedLiveAppend !== undefined) {
 					this.emitAgentStreamThrottled();
 				} else {
 					this.flushAgentEmit();

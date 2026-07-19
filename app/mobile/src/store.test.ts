@@ -2,7 +2,7 @@
 
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, decodeBinaryFsUpload, encodeBinaryTerminalData, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
+import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type FsReadResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
 class MemoryKeyStore implements KeyStore {
@@ -686,6 +686,73 @@ describe('MobileController', () => {
 		await expect(malformed).rejects.toThrow('接続が切断されました');
 	});
 
+	it('reuses exact read/xlsx content hashes, refreshes changed content, and preserves legacy PC responses', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+		await flush();
+
+		const hashA = 'a'.repeat(64);
+		const hashB = 'b'.repeat(64);
+		const hashXlsx = 'c'.repeat(64);
+		const requests: Array<{ id: string; t: string; path: string; sheet?: number; highlight?: boolean; cacheEncoding?: string; ifContentHash?: string }> = [];
+		let readCount = 0;
+		pcMux.on(Channels.Fs, frame => {
+			const request = JSON.parse(new TextDecoder().decode(frame.payload)) as typeof requests[number];
+			requests.push(request);
+			let response: object;
+			if (request.path === 'legacy.ts') {
+				response = { id: request.id, t: 'read', content: 'legacy', truncated: false, size: 6 };
+			} else if (request.t === 'xlsx') {
+				response = request.ifContentHash === hashXlsx
+					? { id: request.id, t: 'xlsx', notModified: true, contentHash: hashXlsx }
+					: { id: request.id, t: 'xlsx', html: '<table>sheet</table>', sheets: ['Sheet1'], sheet: 0, contentHash: hashXlsx };
+			} else if (request.highlight === true) {
+				response = { id: request.id, t: 'read', content: 'v2', html: '<span>v2</span>', css: '.mtk1{}', truncated: false, size: 2, contentHash: hashB };
+			} else {
+				readCount++;
+				response = readCount === 1
+					? { id: request.id, t: 'read', content: 'v1', truncated: false, size: 2, contentHash: hashA }
+					: readCount === 2
+						? { id: request.id, t: 'read', notModified: true, contentHash: hashA }
+						: { id: request.id, t: 'read', content: 'v2', truncated: false, size: 2, contentHash: hashB };
+			}
+			pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify(response)));
+		});
+
+		const first = await controller.fsRead('1:w1', 'a.ts') as FsReadResult & { id?: string; contentHash?: string };
+		const matched = await controller.fsRead('1:w1', 'a.ts') as FsReadResult & { id?: string; contentHash?: string };
+		const changed = await controller.fsRead('1:w1', 'a.ts') as FsReadResult & { contentHash?: string };
+		expect({ first: first.content, matched: matched.content, changed: changed.content }).toEqual({ first: 'v1', matched: 'v1', changed: 'v2' });
+		expect(matched.id).not.toBe(first.id);
+		expect([first.contentHash, matched.contentHash, changed.contentHash]).toEqual([undefined, undefined, undefined]);
+
+		await expect(controller.fsRead('1:w1', 'a.ts', true)).resolves.toMatchObject({ content: 'v2', html: '<span>v2</span>', css: '.mtk1{}' });
+		await expect(controller.fsXlsx('1:w1', 'book.xlsx')).resolves.toMatchObject({ html: '<table>sheet</table>', sheet: 0 });
+		await expect(controller.fsXlsx('1:w1', 'book.xlsx', 0)).resolves.toMatchObject({ html: '<table>sheet</table>', sheet: 0 });
+		await expect(controller.fsRead('1:w1', 'legacy.ts')).resolves.toMatchObject({ content: 'legacy' });
+		await expect(controller.fsRead('1:w1', 'legacy.ts')).resolves.toMatchObject({ content: 'legacy' });
+
+		expect(requests.map(request => [request.t, request.path, request.highlight === true, request.sheet ?? 0, request.cacheEncoding, request.ifContentHash])).toEqual([
+			['read', 'a.ts', false, 0, 'content-hash-v1', undefined],
+			['read', 'a.ts', false, 0, 'content-hash-v1', hashA],
+			['read', 'a.ts', false, 0, 'content-hash-v1', hashA],
+			['read', 'a.ts', true, 0, 'content-hash-v1', undefined],
+			['xlsx', 'book.xlsx', false, 0, 'content-hash-v1', undefined],
+			['xlsx', 'book.xlsx', false, 0, 'content-hash-v1', hashXlsx],
+			['read', 'legacy.ts', false, 0, 'content-hash-v1', undefined],
+			['read', 'legacy.ts', false, 0, 'content-hash-v1', undefined],
+		]);
+	});
+
 	it('negotiates binary file responses, preserves bytes, ignores a mismatched id, and accepts legacy JSON', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();
@@ -911,6 +978,72 @@ describe('MobileController', () => {
 		pcMux.send(Channels.Browser, binary);
 		await flush();
 		expect(latest?.browserFrame).toEqual({ data: 'AAAA', w: 10, h: 20 });
+	});
+});
+
+describe('MobileController agent live append protocol', () => {
+	it('negotiates append patches, applies exact revisions, and requests one full resync after invalid input', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const requests: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'codex', agentToken: 'agent-7' }])));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		expect(requests[0]).toMatchObject({ t: 'attach', id: 7, token: 'agent-7', liveEncoding: 'agent-live-append-v1' });
+
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'e1', rev: 0, messages: [], liveRevision: 1,
+			live: { phase: 'message', source: 'codex-daemon', startedAt: 10, updatedAt: 20, text: '日本' },
+		}));
+		await flush();
+		pcMux.send(Channels.Agent, encode({
+			t: 'delta', id: 7, token: 'agent-7', epoch: 'e1', rev: 0,
+			liveAppend: { baseRevision: 1, revision: 2, source: 'codex-daemon', startedAt: 10, updatedAt: 30, append: '🙂追記' },
+		}));
+		await flush();
+		expect(latest?.agentChats.get('terminal-7')).toMatchObject({
+			liveRevision: 2,
+			live: { phase: 'message', source: 'codex-daemon', startedAt: 10, updatedAt: 30, text: '日本🙂追記' },
+		});
+
+		const invalid = {
+			t: 'delta', id: 7, token: 'agent-7', epoch: 'e1', rev: 0,
+			liveAppend: { baseRevision: 0, revision: 1, source: 'codex-daemon', startedAt: 10, updatedAt: 40, append: 'broken' },
+		};
+		pcMux.send(Channels.Agent, encode(invalid));
+		pcMux.send(Channels.Agent, encode(invalid));
+		await flush();
+		expect(requests.filter(request => request['t'] === 'attach')).toHaveLength(2);
+		expect(latest?.agentChats.get('terminal-7')?.live?.text).toBe('日本🙂追記');
+
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'codex', epoch: 'e1', rev: 0, messages: [], liveRevision: 4,
+			live: { phase: 'message', source: 'codex-daemon', startedAt: 10, updatedAt: 50, text: '正式全文' },
+		}));
+		await flush();
+		pcMux.send(Channels.Agent, encode(invalid));
+		await flush();
+		expect(requests.filter(request => request['t'] === 'attach')).toHaveLength(3);
+
+		pcMux.send(Channels.Agent, encode({
+			t: 'delta', id: 7, token: 'agent-7', epoch: 'e1', rev: 0,
+			live: { phase: 'tool', source: 'hook', startedAt: 60, updatedAt: 60, tool: 'shell' },
+		}));
+		await new Promise(resolve => setTimeout(resolve, 150));
+		expect(latest?.agentChats.get('terminal-7')?.live).toMatchObject({ phase: 'tool', tool: 'shell' });
+		expect(latest?.agentChats.get('terminal-7')?.liveRevision).toBeUndefined();
 	});
 });
 
