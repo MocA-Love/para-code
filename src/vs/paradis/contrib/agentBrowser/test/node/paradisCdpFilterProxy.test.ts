@@ -795,7 +795,7 @@ suite('Paradis CDP screenshot filter', () => {
 
 	test('rejects oversized client frames and bounded CDP identifiers before forwarding', async () => {
 		for (const frame of [
-			Buffer.alloc(1024 * 1024 + 1, 0x20),
+			Buffer.alloc(32 * 1024 * 1024 + 1, 0x20),
 			Buffer.from(JSON.stringify({ id: 1, method: 'X'.repeat(257) })),
 			Buffer.from(JSON.stringify({ id: 1, method: 'Browser.getVersion', sessionId: 's'.repeat(513) })),
 		]) {
@@ -809,8 +809,8 @@ suite('Paradis CDP screenshot filter', () => {
 	test('bounds the connecting queue by aggregate encoded bytes', async () => {
 		const fixture = createProxyFixture(context());
 		await paradisProxyBrowserUpgrade({} as never, {} as never, Buffer.alloc(0), fixture.ws, fixture.wss, 41001, 'ws://127.0.0.1:41001/devtools/browser/live', fixture.ctx, fixture.logService);
-		const payload = 'x'.repeat(900_000);
-		for (let id = 0; id < 8; id++) {
+		const payload = 'x'.repeat(8 * 1024 * 1024);
+		for (let id = 0; id < 5; id++) {
 			fixture.client.emit('message', Buffer.from(JSON.stringify({ id, method: 'Browser.getVersion', params: { payload } })));
 		}
 		assert.ok(fixture.client.closeCalls >= 1);
@@ -821,14 +821,14 @@ suite('Paradis CDP screenshot filter', () => {
 
 	test('fail-closes OPEN transports when either direction exceeds buffered backpressure', async () => {
 		const upstreamBlocked = await createOpenBrowserProxyFixture();
-		upstreamBlocked.upstream.bufferedAmount = 4 * 1024 * 1024;
+		upstreamBlocked.upstream.bufferedAmount = 32 * 1024 * 1024;
 		upstreamBlocked.client.emit('message', Buffer.from(JSON.stringify({ id: 1, method: 'Browser.getVersion' })));
 		assert.ok(upstreamBlocked.client.closeCalls >= 1);
 		assert.deepStrictEqual(upstreamBlocked.upstream.sent, []);
 
 		const clientBlocked = await createOpenBrowserProxyFixture();
 		clientBlocked.client.emit('message', Buffer.from(JSON.stringify({ id: 2, method: 'Browser.getVersion' })));
-		clientBlocked.client.bufferedAmount = 4 * 1024 * 1024;
+		clientBlocked.client.bufferedAmount = 32 * 1024 * 1024;
 		clientBlocked.upstream.emit('message', Buffer.from(JSON.stringify({ id: 2, result: { product: 'Chrome/1' } })));
 		assert.ok(clientBlocked.client.closeCalls >= 1);
 	});
@@ -855,9 +855,27 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.strictEqual(retired.client.closeCalls, 0);
 	});
 
-	test('rejects oversized ordinary upstream frames but permits a bounded raw screenshot response', async () => {
+	test('forwards valid ordinary upstream frames larger than 1 MiB', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		publishAllowedSession(fixture, 'session-1');
+		fixture.client.sent.length = 0;
+		fixture.client.sentOptions.length = 0;
+		const sourceMapUrl = `data:application/json;base64,${'x'.repeat(2 * 1024 * 1024)}`;
+
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({
+			sessionId: 'session-1',
+			method: 'Debugger.scriptParsed',
+			params: { scriptId: '1', url: 'https://example.test/app.js', sourceMapURL: sourceMapUrl },
+		})));
+
+		assert.strictEqual(fixture.client.closeCalls, 0);
+		const forwarded = parseSent(fixture.client)[0] as { params?: { sourceMapURL?: string } };
+		assert.strictEqual(forwarded.params?.sourceMapURL, sourceMapUrl);
+	});
+
+	test('rejects ordinary upstream frames above 32 MiB but permits a bounded raw screenshot response', async () => {
 		const ordinary = await createOpenBrowserProxyFixture();
-		ordinary.upstream.emit('message', Buffer.alloc(1024 * 1024 + 1, 0x20));
+		ordinary.upstream.emit('message', Buffer.alloc(32 * 1024 * 1024 + 1, 0x20));
 		assert.ok(ordinary.client.closeCalls >= 1);
 
 		const screenshot = createProxyFixture(context());
