@@ -41,6 +41,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import {
 	IParadisLimitsAccount,
+	IParadisLimitsCodexRemovalTarget,
 	IParadisLimitsFetchOptions,
 	IParadisLimitsProviderSnapshot,
 	IParadisLimitsSetupHandle,
@@ -48,7 +49,8 @@ import {
 	IParadisLimitsSnapshot,
 	IParadisLimitsWindow,
 	PARADIS_LIMITS_MONITOR_CHANNEL,
-	ParadisLimitsAccountStatus
+	ParadisLimitsAccountStatus,
+	ParadisLimitsDuplicateDecision
 } from '../common/paradisLimitsMonitor.js';
 
 /** スナップショットのTTL。リミットの変化は緩やかなので1分共有で十分。 */
@@ -152,6 +154,10 @@ interface ICodexAccountResult {
 interface ISetupSession {
 	readonly id: string;
 	state: IParadisLimitsSetupState;
+	/** Codex新規追加時に作成したホーム。重複確認の解決時だけ使う。 */
+	codexHomePath?: string;
+	/** 重複判定へ含める設定由来の追加Codexホーム。 */
+	codexExtraHomes?: readonly string[];
 	/** セッション終了時の後始末(子プロセスkill等)。 */
 	dispose(): void;
 	/** Claudeセットアップのみ: 確認コードの投入。 */
@@ -166,6 +172,8 @@ export class ParadisLimitsMonitorService {
 	/** RPCフォールバックまで失敗したCodexホーム → 失敗時刻(クールダウン用)。 */
 	private readonly rpcFailureAt = new Map<string, number>();
 	private readonly setupSessions = new Map<string, ISetupSession>();
+	/** 同時ログイン完了時の重複判定・確定を直列化する。 */
+	private codexFinalizationQueue = Promise.resolve();
 	private readonly cachedShellEnv: ParadisCachedShellEnv;
 
 	constructor(
@@ -382,6 +390,72 @@ export class ParadisLimitsMonitorService {
 		}
 	}
 
+	async validateCodexHomeRemoval(homePath: string): Promise<IParadisLimitsCodexRemovalTarget> {
+		if (typeof homePath !== 'string' || homePath.length === 0 || homePath.length > 4096 || !path.isAbsolute(homePath)) {
+			throw new Error('invalid Codex home path');
+		}
+		const resolved = path.resolve(homePath);
+		const knownHomes = await this.discoverCodexHomes(undefined);
+		if (!knownHomes.includes(resolved) || !await this.isRemovableCodexHome(resolved)) {
+			throw new Error('Codex home is not removable');
+		}
+		return { homePath: resolved };
+	}
+
+	private async readCodexIdentity(homePath: string): Promise<{ accountId?: string; email?: string }> {
+		try {
+			const auth = JSON.parse(await fs.promises.readFile(path.join(homePath, 'auth.json'), 'utf8')) as ICodexAuthJson;
+			const rawAccountId = auth.tokens?.account_id;
+			return {
+				accountId: typeof rawAccountId === 'string' && rawAccountId.trim().length > 0 ? rawAccountId.trim() : undefined,
+				email: this.emailFromIdToken(auth.tokens?.id_token),
+			};
+		} catch {
+			return {};
+		}
+	}
+
+	private async findDuplicateCodexHomeLabels(homePath: string, accountId: string | undefined, extraHomes: readonly string[] | undefined): Promise<string[]> {
+		if (!accountId) {
+			return [];
+		}
+		const homes = (await this.discoverCodexHomes(extraHomes)).filter(home => home !== homePath);
+		const identities = await Promise.all(homes.map(async home => ({ home, identity: await this.readCodexIdentity(home) })));
+		return identities
+			.filter(candidate => candidate.identity.accountId === accountId)
+			.map(candidate => this.codexHomeLabel(candidate.home));
+	}
+
+	private async finalizeCodexLogin(session: ISetupSession, homePath: string, isNewHome: boolean): Promise<void> {
+		const previous = this.codexFinalizationQueue;
+		let releaseQueue: () => void = () => { };
+		this.codexFinalizationQueue = new Promise<void>(resolve => { releaseQueue = resolve; });
+		await previous;
+		try {
+			const identity = await this.readCodexIdentity(homePath);
+			if (isNewHome) {
+				const duplicateHomeLabels = await this.findDuplicateCodexHomeLabels(homePath, identity.accountId, session.codexExtraHomes);
+				if (duplicateHomeLabels.length > 0) {
+					session.codexHomePath = homePath;
+					session.state = {
+						...session.state,
+						phase: 'waiting_duplicate',
+						email: identity.email,
+						homePath,
+						duplicateHomeLabels,
+					};
+					return;
+				}
+			}
+			this.snapshotCache = undefined;
+			this.rpcFailureAt.delete(homePath);
+			session.state = { ...session.state, phase: 'done', email: identity.email };
+			this.scheduleSetupCleanup(session);
+		} finally {
+			releaseQueue();
+		}
+	}
+
 	private async fetchCodexAccount(homePath: string): Promise<ICodexAccountResult> {
 		const base: { provider: 'codex'; id: string; homeLabel: string; removable: boolean } = {
 			provider: 'codex',
@@ -539,11 +613,12 @@ export class ParadisLimitsMonitorService {
 
 	// ---------- アカウント追加: Codex ----------
 
-	async startCodexLogin(existingHome: string | undefined): Promise<IParadisLimitsSetupHandle> {
+	async startCodexLogin(existingHome: string | undefined, extraHomes: readonly string[] | undefined): Promise<IParadisLimitsSetupHandle> {
 		const sessionId = generateUuid();
 		const session: ISetupSession = {
 			id: sessionId,
 			state: { phase: 'starting' },
+			codexExtraHomes: extraHomes,
 			dispose: () => { },
 		};
 		this.setupSessions.set(sessionId, session);
@@ -561,7 +636,7 @@ export class ParadisLimitsMonitorService {
 		if (existingHome) {
 			// 再ログイン: 既存ホームに対してcodex自身のloginを実行するだけ(ファイルは一切触らない)。
 			// IPC経由の任意パスに対してcodexを起動しないよう、発見済みホームのみに制限する
-			const knownHomes = await this.discoverCodexHomes(undefined);
+			const knownHomes = await this.discoverCodexHomes(session.codexExtraHomes);
 			if (!knownHomes.includes(existingHome)) {
 				throw new Error(`not a recognized Codex home: ${existingHome}`);
 			}
@@ -611,17 +686,7 @@ export class ParadisLimitsMonitorService {
 
 		const loginSucceeded = exitCode === 0 && await this.fileExists(path.join(homePath, 'auth.json'));
 		if (loginSucceeded) {
-			let email: string | undefined;
-			try {
-				const auth = JSON.parse(await fs.promises.readFile(path.join(homePath, 'auth.json'), 'utf8')) as ICodexAuthJson;
-				email = this.emailFromIdToken(auth.tokens?.id_token);
-			} catch {
-				// 表示用のみ
-			}
-			this.snapshotCache = undefined;
-			this.rpcFailureAt.delete(homePath);
-			session.state = { ...session.state, phase: 'done', email };
-			this.scheduleSetupCleanup(session);
+			await this.finalizeCodexLogin(session, homePath, createdHome);
 			return;
 		}
 
@@ -792,6 +857,24 @@ export class ParadisLimitsMonitorService {
 	}
 
 	// ---------- セットアップセッション共通 ----------
+
+	async resolveCodexDuplicate(sessionId: string, decision: ParadisLimitsDuplicateDecision): Promise<void> {
+		if (decision !== 'keep' && decision !== 'discard') {
+			throw new Error('invalid duplicate-account decision');
+		}
+		const session = this.setupSessions.get(sessionId);
+		if (!session || session.state.phase !== 'waiting_duplicate' || !session.codexHomePath) {
+			throw new Error('setup session is not waiting for a duplicate-account decision');
+		}
+		if (decision === 'discard' && await this.fileExists(session.codexHomePath)) {
+			throw new Error('Codex home must be moved to the trash before discarding the duplicate account');
+		}
+		this.snapshotCache = undefined;
+		this.rpcFailureAt.delete(session.codexHomePath);
+		session.codexHomePath = undefined;
+		session.state = { ...session.state, phase: 'done' };
+		this.scheduleSetupCleanup(session);
+	}
 
 	getSetupState(sessionId: string): IParadisLimitsSetupState {
 		const session = this.setupSessions.get(sessionId);
@@ -1025,7 +1108,12 @@ export class ParadisLimitsMonitorChannel implements IServerChannel<string> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'getSnapshot': return this.service.getSnapshot((args[0] ?? {}) as IParadisLimitsFetchOptions) as Promise<T>;
-			case 'startCodexLogin': return this.service.startCodexLogin(typeof args[0] === 'string' ? args[0] : undefined) as Promise<T>;
+			case 'startCodexLogin': return this.service.startCodexLogin(
+				typeof args[0] === 'string' ? args[0] : undefined,
+				Array.isArray(args[1]) ? args[1].filter((entry): entry is string => typeof entry === 'string') : undefined,
+			) as Promise<T>;
+			case 'validateCodexHomeRemoval': return this.service.validateCodexHomeRemoval(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
+			case 'resolveCodexDuplicate': return this.service.resolveCodexDuplicate(String(args[0]), args[1] as ParadisLimitsDuplicateDecision) as Promise<T>;
 			case 'startClaudeSetup': return this.service.startClaudeSetup(typeof args[0] === 'number' ? args[0] : undefined) as Promise<T>;
 			case 'getSetupState': return Promise.resolve(this.service.getSetupState(String(args[0]))) as Promise<T>;
 			case 'submitClaudeSetupCode': return Promise.resolve(this.service.submitClaudeSetupCode(String(args[0]), String(args[1]))) as Promise<T>;

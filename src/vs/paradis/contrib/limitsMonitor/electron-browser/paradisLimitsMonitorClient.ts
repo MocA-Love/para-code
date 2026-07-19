@@ -10,14 +10,18 @@
 // 設定値(cswapパス・追加Codexホーム)の解決もここで行い、ウィジェット/パネル/ダイアログは
 // このクライアント経由でのみバックエンドへアクセスする。
 
+import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import {
+	IParadisLimitsCodexRemovalTarget,
 	IParadisLimitsFetchOptions,
 	IParadisLimitsSetupHandle,
 	IParadisLimitsSetupState,
 	IParadisLimitsSnapshot,
-	PARADIS_LIMITS_MONITOR_CHANNEL
+	PARADIS_LIMITS_MONITOR_CHANNEL,
+	ParadisLimitsDuplicateDecision
 } from '../common/paradisLimitsMonitor.js';
 
 export const PARADIS_LIMITS_SETTING_ENABLED = 'paradis.limitsMonitor.enabled';
@@ -29,6 +33,7 @@ export class ParadisLimitsMonitorClient {
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IFileService private readonly fileService: IFileService,
 	) { }
 
 	private get channel() {
@@ -57,7 +62,16 @@ export class ParadisLimitsMonitorClient {
 
 	/** Codexアカウント追加(existingHome指定時は既存ホームの再ログイン)を開始する。 */
 	startCodexLogin(existingHome?: string): Promise<IParadisLimitsSetupHandle> {
-		return this.channel.call<IParadisLimitsSetupHandle>('startCodexLogin', [existingHome]);
+		return this.channel.call<IParadisLimitsSetupHandle>('startCodexLogin', [existingHome, this.fetchOptions(false).codexHomes]);
+	}
+
+	async moveCodexHomeToTrash(homePath: string): Promise<void> {
+		const target = await this.channel.call<IParadisLimitsCodexRemovalTarget>('validateCodexHomeRemoval', [homePath]);
+		await this.fileService.del(URI.file(target.homePath), { recursive: true, useTrash: true });
+	}
+
+	resolveCodexDuplicate(sessionId: string, decision: ParadisLimitsDuplicateDecision): Promise<void> {
+		return this.channel.call<void>('resolveCodexDuplicate', [sessionId, decision]);
 	}
 
 	/** Claudeアカウント追加(slot指定時は既存スロットの再ログイン)を開始する。 */
