@@ -41,9 +41,11 @@ export class ParadisLimitsSetupDialog extends Disposable {
 
 	private readonly overlay: HTMLElement;
 	private readonly stepsElement: HTMLElement;
+	private readonly duplicateElement: HTMLElement;
 	private readonly inputRow: HTMLElement;
 	private readonly codeInput: HTMLInputElement;
 	private readonly submitButton: HTMLButtonElement;
+	private readonly keepDuplicateButton: HTMLButtonElement;
 	private readonly errorElement: HTMLElement;
 	private readonly cancelButton: HTMLButtonElement;
 
@@ -53,6 +55,8 @@ export class ParadisLimitsSetupDialog extends Disposable {
 	private sessionId: string | undefined;
 	private latestState: IParadisLimitsSetupState = { phase: 'starting' };
 	private codeSubmitted = false;
+	private resolvingDuplicate = false;
+	private duplicateHomeTrashed = false;
 	private closed = false;
 
 	constructor(
@@ -74,6 +78,8 @@ export class ParadisLimitsSetupDialog extends Disposable {
 
 		dom.append(body, $('.pls-desc')).textContent = this.descriptionText();
 		this.stepsElement = dom.append(body, $('.pls-steps'));
+		this.duplicateElement = dom.append(body, $('.pls-duplicate'));
+		this.duplicateElement.style.display = 'none';
 
 		this.inputRow = dom.append(body, $('.pls-input-row'));
 		this.inputRow.style.display = 'none';
@@ -97,11 +103,23 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		this.cancelButton.textContent = localize('paradis.limitsSetup.cancel', "キャンセル");
 		this._register(dom.addDisposableListener(this.cancelButton, 'click', () => this.close(false)));
 
+		this.keepDuplicateButton = dom.append(footer, $('button.pls-btn')) as HTMLButtonElement;
+		this.keepDuplicateButton.type = 'button';
+		this.keepDuplicateButton.textContent = localize('paradis.limitsSetup.keepDuplicate', "それでも追加");
+		this.keepDuplicateButton.style.display = 'none';
+		this._register(dom.addDisposableListener(this.keepDuplicateButton, 'click', () => void this.keepDuplicate()));
+
 		this.submitButton = dom.append(footer, $('button.pls-btn.primary')) as HTMLButtonElement;
 		this.submitButton.type = 'button';
 		this.submitButton.textContent = localize('paradis.limitsSetup.submitCode', "登録");
 		this.submitButton.style.display = 'none';
-		this._register(dom.addDisposableListener(this.submitButton, 'click', () => this.submitCode()));
+		this._register(dom.addDisposableListener(this.submitButton, 'click', () => {
+			if (this.latestState.phase === 'waiting_duplicate') {
+				void this.discardDuplicate();
+			} else {
+				void this.submitCode();
+			}
+		}));
 
 		this._register(dom.addDisposableListener(dialog, 'keydown', e => {
 			if (e.key === 'Escape') {
@@ -189,8 +207,47 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		}
 	}
 
+	private async discardDuplicate(): Promise<void> {
+		if (!this.sessionId || !this.latestState.homePath || this.resolvingDuplicate) {
+			return;
+		}
+		this.setDuplicateResolving(true);
+		try {
+			if (!this.duplicateHomeTrashed) {
+				await this.client.moveCodexHomeToTrash(this.latestState.homePath);
+				this.duplicateHomeTrashed = true;
+			}
+			await this.client.resolveCodexDuplicate(this.sessionId, 'discard');
+			await this.pollState();
+		} catch (error) {
+			this.setDuplicateResolving(false);
+			this.showError((error as Error).message);
+		}
+	}
+
+	private async keepDuplicate(): Promise<void> {
+		if (!this.sessionId || this.resolvingDuplicate) {
+			return;
+		}
+		this.setDuplicateResolving(true);
+		try {
+			await this.client.resolveCodexDuplicate(this.sessionId, 'keep');
+			await this.pollState();
+		} catch (error) {
+			this.setDuplicateResolving(false);
+			this.showError((error as Error).message);
+		}
+	}
+
+	private setDuplicateResolving(resolving: boolean): void {
+		this.resolvingDuplicate = resolving;
+		this.cancelButton.disabled = resolving;
+		this.keepDuplicateButton.disabled = resolving;
+		this.submitButton.disabled = resolving;
+	}
+
 	private close(completed: boolean): void {
-		if (this.closed) {
+		if (this.closed || (!completed && this.resolvingDuplicate)) {
 			return;
 		}
 		this.closed = true;
@@ -198,7 +255,8 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		if (!completed && this.sessionId) {
 			void this.client.cancelSetup(this.sessionId);
 		}
-		this.options.onClose(completed);
+		// 重複確認を閉じてもログイン済みホームは残るため、一覧を再取得してカードから判断できるようにする。
+		this.options.onClose(completed || this.latestState.phase === 'waiting_duplicate');
 	}
 
 	private showError(message: string): void {
@@ -226,6 +284,7 @@ export class ParadisLimitsSetupDialog extends Disposable {
 
 	private renderCodexSteps(state: IParadisLimitsSetupState): void {
 		const preparing = state.phase === 'starting';
+		const waitingDuplicate = state.phase === 'waiting_duplicate';
 		this.appendStep(
 			preparing ? 'now' : 'done',
 			this.options.reloginAccount
@@ -241,14 +300,57 @@ export class ParadisLimitsSetupDialog extends Disposable {
 			state.url,
 		);
 		this.appendStep(
-			state.phase === 'done' ? 'done' : 'pending',
+			state.phase === 'done' ? 'done' : (waitingDuplicate ? 'now' : 'pending'),
 			localize('paradis.limitsSetup.stepRegister', "モニターに登録"),
-			state.email ?? '',
+			waitingDuplicate ? localize('paradis.limitsSetup.duplicateNeedsDecision', "同じアカウントが既に登録されています") : (state.email ?? ''),
 			undefined,
 		);
+
+		this.renderCodexDuplicate(state);
+	}
+
+	private renderCodexDuplicate(state: IParadisLimitsSetupState): void {
+		const waitingDuplicate = state.phase === 'waiting_duplicate';
+		this.duplicateElement.style.display = waitingDuplicate ? '' : 'none';
+		this.keepDuplicateButton.style.display = waitingDuplicate ? '' : 'none';
+		this.submitButton.style.display = waitingDuplicate ? '' : 'none';
+		this.cancelButton.textContent = waitingDuplicate
+			? localize('paradis.limitsSetup.closeDuplicate', "閉じる")
+			: localize('paradis.limitsSetup.cancel', "キャンセル");
+		if (!waitingDuplicate) {
+			return;
+		}
+
+		dom.clearNode(this.duplicateElement);
+		dom.append(this.duplicateElement, $('.pls-duplicate-title')).textContent = localize('paradis.limitsSetup.duplicateTitle', "同じCodexアカウントです");
+		dom.append(this.duplicateElement, $('.pls-duplicate-message')).textContent = localize('paradis.limitsSetup.duplicateMessage', "通常は新しい保存先を残す必要はありません。必要な場合は重複したまま追加できます。");
+		if (state.email) {
+			this.appendDuplicateDetail(localize('paradis.limitsSetup.duplicateAccount', "アカウント"), state.email);
+		}
+		this.appendDuplicateDetail(localize('paradis.limitsSetup.duplicateExistingHomes', "登録済み"), (state.duplicateHomeLabels ?? []).join(', '));
+		this.appendDuplicateDetail(localize('paradis.limitsSetup.duplicateNewHome', "新しい保存先"), state.homeLabel ?? '');
+
+		this.keepDuplicateButton.textContent = localize('paradis.limitsSetup.keepDuplicate', "それでも追加");
+		this.submitButton.textContent = this.duplicateHomeTrashed
+			? localize('paradis.limitsSetup.finishDiscardDuplicate', "削除を完了")
+			: localize('paradis.limitsSetup.discardDuplicate', "新規ホームをゴミ箱へ移動");
+		this.setDuplicateResolving(this.resolvingDuplicate);
+	}
+
+	private appendDuplicateDetail(label: string, value: string): void {
+		if (!value) {
+			return;
+		}
+		const row = dom.append(this.duplicateElement, $('.pls-duplicate-detail'));
+		dom.append(row, $('span.pls-duplicate-label')).textContent = label;
+		dom.append(row, $('code')).textContent = value;
 	}
 
 	private renderClaudeSteps(state: IParadisLimitsSetupState): void {
+		this.duplicateElement.style.display = 'none';
+		this.keepDuplicateButton.style.display = 'none';
+		this.cancelButton.textContent = localize('paradis.limitsSetup.cancel', "キャンセル");
+		this.submitButton.textContent = localize('paradis.limitsSetup.submitCode', "登録");
 		const waitingLaunch = state.phase === 'starting';
 		this.appendStep(
 			waitingLaunch ? 'now' : 'done',

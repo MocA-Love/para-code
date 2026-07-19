@@ -450,6 +450,44 @@
 	cursor: pointer;
 }
 
+.paradis-limits-setup .pls-duplicate {
+	margin-bottom: 12px;
+	padding: 10px 12px;
+	background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.12));
+	border: var(--vscode-strokeThickness, 1px) solid var(--vscode-textBlockQuote-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+}
+
+.paradis-limits-setup .pls-duplicate-title {
+	font-weight: 600;
+	margin-bottom: 4px;
+}
+
+.paradis-limits-setup .pls-duplicate-message {
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.6;
+	margin-bottom: 8px;
+}
+
+.paradis-limits-setup .pls-duplicate-detail {
+	display: grid;
+	grid-template-columns: 72px minmax(0, 1fr);
+	gap: 8px;
+	align-items: baseline;
+	margin-top: 4px;
+}
+
+.paradis-limits-setup .pls-duplicate-label {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-limits-setup .pls-duplicate-detail code {
+	font-family: var(--monaco-monospace-font);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .paradis-limits-setup .pls-input {
 	width: 100%;
 	box-sizing: border-box;
