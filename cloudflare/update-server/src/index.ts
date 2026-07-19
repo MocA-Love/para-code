@@ -50,10 +50,14 @@ export default {
 			return new Response(null, { status: 204 });
 		}
 
+		// The Windows updater uses IUpdate.version as a build-specific cache key.
+		// Keep the native updaters on their existing semantic-version contract.
+		const updateVersion = platform.startsWith('win32-') ? record.commit : record.version;
+
 		return Response.json({
 			url: record.url,
 			name: `${platform}-${record.version}`,
-			version: record.version,
+			version: updateVersion,
 			productVersion: record.productVersion,
 			timestamp: record.timestamp,
 			sha256hash: record.sha256hash
