@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
@@ -670,6 +670,65 @@ describe('MobileController', () => {
 		expect(afterFrame.terminalOutput).toBe(beforeFrame.terminalOutput);
 		expect(afterFrame.agentChats).toBe(beforeFrame.agentChats);
 		expect(afterFrame.notifications).toBe(beforeFrame.notifications);
+	});
+
+	it('requests binary JPEG frames, accepts them losslessly, and drops them before conversion while suspended', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+
+		const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+		pcMux.send(Channels.State, enc(desktopState([])));
+		await flush();
+		let startRequest: { id: string; frameEncoding?: string } | undefined;
+		pcMux.on(Channels.Browser, frame => {
+			const msg = JSON.parse(new TextDecoder().decode(frame.payload)) as { id: string; t: string; frameEncoding?: string };
+			if (msg.t === 'start') {
+				startRequest = msg;
+				pcMux.send(Channels.Browser, enc({ id: msg.id, t: 'started' }));
+			} else if (msg.t === 'stop') {
+				pcMux.send(Channels.Browser, enc({ id: msg.id, t: 'stopped' }));
+			}
+		});
+
+		await controller.browserStart('target-a');
+		expect(startRequest?.frameEncoding).toBe(BROWSER_JPEG_BINARY_ENCODING);
+
+		const jpeg = new Uint8Array([0xff, 0xd8, 0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff, 0xd9]);
+		const binary = new Uint8Array(12 + jpeg.length);
+		binary.set([0x50, 0x4a, 0x46, 0x01], 0);
+		const view = new DataView(binary.buffer);
+		view.setUint32(4, 1200, false);
+		view.setUint32(8, 800, false);
+		binary.set(jpeg, 12);
+		pcMux.send(Channels.Browser, binary);
+		await flush();
+		expect(latest?.browserFrame).toEqual({ data: '/9gAAX+A/v/Z', w: 1200, h: 800 });
+
+		controller.setJpegFramesSuspended(true);
+		const suspended = binary.slice();
+		new DataView(suspended.buffer).setUint32(4, 640, false);
+		pcMux.send(Channels.Browser, suspended);
+		await flush();
+		expect(latest?.browserFrame).toEqual({ data: '/9gAAX+A/v/Z', w: 1200, h: 800 });
+
+		controller.setJpegFramesSuspended(false);
+		pcMux.send(Channels.Browser, enc({ t: 'frame', data: 'AAAA', w: 10, h: 20 }));
+		await flush();
+		expect(latest?.browserFrame).toEqual({ data: 'AAAA', w: 10, h: 20 });
+
+		await controller.browserStop(true);
+		pcMux.send(Channels.Browser, binary);
+		await flush();
+		expect(latest?.browserFrame).toEqual({ data: 'AAAA', w: 10, h: 20 });
 	});
 });
 

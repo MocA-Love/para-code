@@ -18,6 +18,7 @@
 // 最小化・オクルージョン等でペイントが起きない）のみ Page.captureScreenshot の
 // 低頻度ポーリングへ自動フォールバックする。入力は従来どおりCDPで注入する。
 
+import { decodeBase64 } from '../../../../base/common/buffer.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisCdpFrameEvent, IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -26,7 +27,7 @@ import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.j
 /** モバイル→PC の browser チャネル要求。 */
 type BrowserInbound =
 	| { t: 'targets'; id: string }
-	| { t: 'start'; id: string; targetId: string }
+	| { t: 'start'; id: string; targetId: string; frameEncoding?: string }
 	| { t: 'stop'; id: string }
 	| {
 		t: 'input'; kind: 'tap' | 'scroll' | 'back' | 'forward' | 'reload' | 'text' | 'navigate';
@@ -61,6 +62,8 @@ interface MirrorSession {
 	lastPushFrameAt: number;
 	/** 直近にビューポート寸法を取得した時刻（プッシュ中の取得間引き用）。 */
 	lastMetricsAt: number;
+	/** Mobileが明示した場合だけBase64を外してbinary JPEG v1を送る。 */
+	binaryFrames: boolean;
 	send: (payload: Uint8Array) => void;
 }
 
@@ -72,6 +75,27 @@ const PUSH_STALE_MS = 1500;
 const CDP_CALL_TIMEOUT_MS = 5000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const BROWSER_JPEG_BINARY_ENCODING = 'jpeg-binary-v1';
+const BROWSER_JPEG_BINARY_HEADER_BYTES = 12;
+
+function encodeBrowserFrame(data: string, w: number, h: number, binary: boolean): Uint8Array {
+	if (!binary) {
+		return encoder.encode(JSON.stringify({ t: 'frame', data, w, h }));
+	}
+	try {
+		const jpeg = decodeBase64(data);
+		const payload = new Uint8Array(BROWSER_JPEG_BINARY_HEADER_BYTES + jpeg.byteLength);
+		payload.set([0x50, 0x4a, 0x46, 0x01], 0); // "PJF" + wire version 1
+		const view = new DataView(payload.buffer);
+		view.setUint32(4, w, false);
+		view.setUint32(8, h, false);
+		payload.set(jpeg.buffer, BROWSER_JPEG_BINARY_HEADER_BYTES);
+		return payload;
+	} catch {
+		// 内部CDPが万一不正Base64を返しても、従来JSON経路の配送挙動を維持する。
+		return encoder.encode(JSON.stringify({ t: 'frame', data, w, h }));
+	}
+}
 
 export class ParadisMobileBrowserMirror extends Disposable {
 
@@ -104,7 +128,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 			}
 			// フォールバックポーリングが同一フレームを再送しないようdedup基準も更新する。
 			session.lastFrameData = e.data;
-			session.send(encoder.encode(JSON.stringify({ t: 'frame', data: e.data, w: e.w, h: e.h })));
+			session.send(encodeBrowserFrame(e.data, e.w, e.h, session.binaryFrames));
 		}
 	}
 
@@ -172,7 +196,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 					});
 				reply({ id: msg.id, t: 'targets', targets });
 			} else if (msg.t === 'start') {
-				await this.start(mobileId, msg.targetId, send);
+				await this.start(mobileId, msg.targetId, send, msg.frameEncoding === BROWSER_JPEG_BINARY_ENCODING);
 				reply({ id: msg.id, t: 'started' });
 			} else if (msg.t === 'stop') {
 				this.stopSession(mobileId);
@@ -189,7 +213,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		}
 	}
 
-	private async start(mobileId: string, targetId: string, send: (payload: Uint8Array) => void): Promise<void> {
+	private async start(mobileId: string, targetId: string, send: (payload: Uint8Array) => void, binaryFrames = false): Promise<void> {
 		this.stopSession(mobileId);
 		const port = await this.upstream.resolvePort();
 		if (!port) {
@@ -199,7 +223,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 		const session: MirrorSession = {
 			socket, targetId, nextId: 1, viewWidth: 0, viewHeight: 0,
 			captureTimer: undefined, captureInFlight: false, lastFrameData: undefined, handlers: new Map(),
-			pushMode: false, pushStarted: false, lastPushFrameAt: 0, lastMetricsAt: 0, send,
+			pushMode: false, pushStarted: false, lastPushFrameAt: 0, lastMetricsAt: 0, binaryFrames, send,
 		};
 		this.sessions.set(mobileId, session);
 
@@ -320,12 +344,7 @@ export class ParadisMobileBrowserMirror extends Disposable {
 				// 画面に変化が無ければ送らない（モバイル側の再描画と帯域の節約）
 				if (data && data !== session.lastFrameData) {
 					session.lastFrameData = data;
-					session.send(encoder.encode(JSON.stringify({
-						t: 'frame',
-						data,
-						w: session.viewWidth,
-						h: session.viewHeight,
-					})));
+					session.send(encodeBrowserFrame(data, session.viewWidth, session.viewHeight, session.binaryFrames));
 				}
 			});
 		});
