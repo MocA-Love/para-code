@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { BROWSER_JPEG_BINARY_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -2003,6 +2003,17 @@ export class MobileController {
 	}
 
 	private settleResponse(payload: Uint8Array): void {
+		const binary = decodeBinaryFsResponse(payload);
+		if (binary !== undefined) {
+			const entry = this.pending.get(binary.id);
+			if (!entry) {
+				return;
+			}
+			this.pending.delete(binary.id);
+			clearTimeout(entry.timer);
+			entry.resolve({ id: binary.id, t: binary.t, data: toBase64(binary.data), size: binary.size });
+			return;
+		}
 		try {
 			const msg = JSON.parse(decoder.decode(payload)) as { id?: string; error?: string };
 			if (!msg.id) {
@@ -2175,17 +2186,17 @@ export class MobileController {
 
 	/** PDF バイナリを base64 で取得する（大きい PDF はチャンク転送で時間がかかるため長め）。 */
 	fsPdf(ws: string, path: string): Promise<FsPdfResult> {
-		return this.request<FsPdfResult>('fs', { t: 'pdf', ws, path }, 120_000);
+		return this.request<FsPdfResult>('fs', { t: 'pdf', ws, path, responseEncoding: FS_BINARY_RESPONSE_ENCODING }, 120_000);
 	}
 
 	/** Word(.docx) バイナリを base64 で取得する（レンダリングはモバイルの WebView 内で行う）。 */
 	fsDocx(ws: string, path: string): Promise<FsDocxResult> {
-		return this.request<FsDocxResult>('fs', { t: 'docx', ws, path }, 120_000);
+		return this.request<FsDocxResult>('fs', { t: 'docx', ws, path, responseEncoding: FS_BINARY_RESPONSE_ENCODING }, 120_000);
 	}
 
 	/** 画像・動画・音声バイナリを base64 で取得する（大きいファイルはチャンク転送で時間がかかるため長め）。 */
 	fsMedia(ws: string, path: string): Promise<FsMediaResult> {
-		return this.request<FsMediaResult>('fs', { t: 'media', ws, path }, 120_000);
+		return this.request<FsMediaResult>('fs', { t: 'media', ws, path, responseEncoding: FS_BINARY_RESPONSE_ENCODING }, 120_000);
 	}
 
 	/**

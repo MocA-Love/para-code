@@ -11,6 +11,8 @@ export type { FrameHandler, FrameMuxOptions } from './mux.js';
 export { toBase64, toBase64Url, fromBase64Url, concatBytes, bytesEqual } from './util.js';
 export { BROWSER_JPEG_BINARY_ENCODING, decodeBinaryBrowserJpegFrame, isBinaryBrowserJpegFrame } from './browserFrame.js';
 export type { BrowserJpegFrame } from './browserFrame.js';
+export { FS_BINARY_RESPONSE_ENCODING, decodeBinaryFsResponse, isBinaryFsResponse } from './fileResponse.js';
+export type { BinaryFsResponse, BinaryFsResponseType } from './fileResponse.js';
 export { RELAY_DATA_VERSION, MOBILE_ID_LENGTH, packPcData, unpackPcData, mobileIdToString, mobileIdFromString, encodeRelayControl, decodeRelayControl } from './relay.js';
 export type { RelayControlMessage } from './relay.js';
 export { encodeNotify, decodeNotify, encodeNotifyDismiss, encodeNotifyDismissed, decodeNotifyControl } from './notify.js';

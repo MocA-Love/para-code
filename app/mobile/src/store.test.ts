@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { BROWSER_JPEG_BINARY_ENCODING, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
@@ -619,6 +619,59 @@ describe('MobileController', () => {
 		const pendingBrowser = controller.browserTargets();
 		controller.disconnect();
 		await expect(pendingBrowser).rejects.toThrow('接続が切断されました');
+	});
+
+	it('negotiates binary file responses, preserves bytes, ignores a mismatched id, and accepts legacy JSON', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+		await flush();
+
+		const requests: Array<{ t: string; responseEncoding?: string }> = [];
+		const enc = (o: unknown) => new TextEncoder().encode(JSON.stringify(o));
+		const binary = (kind: number, id: string, size: number, data: Uint8Array) => {
+			const idBytes = new TextEncoder().encode(id);
+			const payload = new Uint8Array(12 + idBytes.length + data.length);
+			payload.set([0x50, 0x46, 0x42, 0x01, kind, 0], 0);
+			const view = new DataView(payload.buffer);
+			view.setUint16(6, idBytes.length, false);
+			view.setUint32(8, size, false);
+			payload.set(idBytes, 12);
+			payload.set(data, 12 + idBytes.length);
+			return payload;
+		};
+		pcMux.on(Channels.Fs, frame => {
+			const req = JSON.parse(new TextDecoder().decode(frame.payload)) as { id: string; t: string; responseEncoding?: string };
+			requests.push(req);
+			if (req.t === 'pdf' && req.responseEncoding === FS_BINARY_RESPONSE_ENCODING) {
+				pcMux.send(Channels.Fs, binary(1, req.id, 101, new Uint8Array([0x00, 0x01, 0xff])));
+			} else if (req.t === 'docx' && req.responseEncoding === FS_BINARY_RESPONSE_ENCODING) {
+				pcMux.send(Channels.Fs, binary(2, `${req.id}-stale`, 999, new Uint8Array([0xff])));
+				pcMux.send(Channels.Fs, binary(2, req.id, 202, new Uint8Array([0x7f, 0x80])));
+			} else if (req.t === 'media') {
+				// 新Mobile + 旧PC相当: 交渉フィールドを無視して従来JSONで返す。
+				pcMux.send(Channels.Fs, enc({ id: req.id, t: 'media', data: '/9g=', size: 303 }));
+			} else {
+				pcMux.send(Channels.Fs, enc({ id: req.id, t: req.t, data: 'legacy', size: 0 }));
+			}
+		});
+
+		await expect(controller.fsPdf('1:w1', 'a.pdf')).resolves.toEqual({ id: expect.any(String), t: 'pdf', data: 'AAH/', size: 101 });
+		await expect(controller.fsDocx('1:w1', 'a.docx')).resolves.toEqual({ id: expect.any(String), t: 'docx', data: 'f4A=', size: 202 });
+		await expect(controller.fsMedia('1:w1', 'a.jpg')).resolves.toEqual({ id: expect.any(String), t: 'media', data: '/9g=', size: 303 });
+		expect(requests.map(request => [request.t, request.responseEncoding])).toEqual([
+			['pdf', FS_BINARY_RESPONSE_ENCODING],
+			['docx', FS_BINARY_RESPONSE_ENCODING],
+			['media', FS_BINARY_RESPONSE_ENCODING],
+		]);
 	});
 
 	it('emit only swaps references for the collection that actually changed', async () => {
