@@ -103,6 +103,74 @@ suite('ParadisMobileTerminalRegistry', () => {
 		assert.strictEqual(after.revision, before.revision + 1);
 	});
 
+	test('同じleaseと同じWindow Stateの再同期ではrevisionを増やさない', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		const state = {
+			activeWs: 'repo',
+			workspaces: [{ id: 'repo', name: 'Repo', branch: 'main' }],
+			terminals: [{ terminalKey: 'terminal', id: 1, title: 'Terminal', ws: 'repo', cols: 120, rows: 40 }],
+		};
+		const first = registry.syncWindow(1, 'session', 1, state);
+		const second = registry.syncWindow(1, 'session', 1, state);
+
+		assert.strictEqual(second.revision, first.revision);
+		assert.deepStrictEqual(second, first);
+	});
+
+	test('validation metadataだけの更新ではrevisionを増やさない', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		const state = { activeWs: undefined, workspaces: [], terminals: [] };
+		const first = registry.syncWindow(1, 'session', 1, state, { valid: true, manifestRevision: 1, windowRevision: 1 });
+		const second = registry.syncWindow(1, 'session', 1, state, { valid: true, manifestRevision: 2, windowRevision: 2 });
+
+		assert.strictEqual(second.revision, first.revision);
+		assert.deepStrictEqual(second, first);
+	});
+
+	test('公開Stateの内容・順序・Renderer generationの変化ではrevisionを増やす', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		const initial = registry.syncWindow(1, 'session', 1, {
+			activeWs: 'repo-a',
+			workspaces: [{ id: 'repo-a', name: 'A' }, { id: 'repo-b', name: 'B' }],
+			terminals: [{ terminalKey: 'terminal', id: 1, title: 'Before', ws: 'repo-a' }],
+		});
+		const contentChanged = registry.syncWindow(1, 'session', 1, {
+			activeWs: 'repo-a',
+			workspaces: [{ id: 'repo-a', name: 'A' }, { id: 'repo-b', name: 'B' }],
+			terminals: [{ terminalKey: 'terminal', id: 1, title: 'After', ws: 'repo-a' }],
+		});
+		const orderChanged = registry.syncWindow(1, 'session', 1, {
+			activeWs: 'repo-a',
+			workspaces: [{ id: 'repo-b', name: 'B' }, { id: 'repo-a', name: 'A' }],
+			terminals: [{ terminalKey: 'terminal', id: 1, title: 'After', ws: 'repo-a' }],
+		});
+		const generationChanged = registry.syncWindow(1, 'new-session', 2, {
+			activeWs: 'repo-a',
+			workspaces: [{ id: 'repo-b', name: 'B' }, { id: 'repo-a', name: 'A' }],
+			terminals: [{ terminalKey: 'terminal', id: 1, title: 'After', ws: 'repo-a' }],
+		});
+
+		assert.strictEqual(contentChanged.revision, initial.revision + 1);
+		assert.strictEqual(orderChanged.revision, contentChanged.revision + 1);
+		assert.strictEqual(generationChanged.revision, orderChanged.revision + 1);
+	});
+
+	test('validationでcompleteが変化する場合は同じWindow Stateでもrevisionを増やす', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		const state = { activeWs: undefined, workspaces: [], terminals: [] };
+		registry.syncWindow(1, 'session', 1, state, { valid: true, manifestRevision: 1, windowRevision: 1 });
+		registry.reconcile({
+			revision: 1,
+			entries: [{ windowId: 1, windowSession: 'session', rendererGeneration: 1, windowRevision: 1, claimed: true }],
+		});
+		const complete = registry.desktopState();
+		const pendingNewManifest = registry.syncWindow(1, 'session', 1, state, { valid: true, manifestRevision: 2, windowRevision: 2 });
+
+		assert.strictEqual(complete.complete, true);
+		assert.strictEqual(pendingNewManifest.complete, false);
+		assert.strictEqual(pendingNewManifest.revision, complete.revision + 1);
+	});
+
 	test('新Rendererの後から届いた旧Rendererの初回syncで世代を巻き戻さない', () => {
 		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
 		registry.syncWindow(1, 'new-session', 2, {

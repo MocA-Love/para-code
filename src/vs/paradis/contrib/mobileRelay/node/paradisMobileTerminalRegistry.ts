@@ -5,6 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { equals as objectsEqual } from '../../../../base/common/objects.js';
 import { IParadisMobileDesktopStateV3, IParadisMobileTerminalV3, IParadisMobileWindowStateV2, IParadisMobileWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION } from '../common/paradisMobileRelay.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
 
@@ -45,6 +46,7 @@ export class ParadisMobileTerminalRegistry {
 	}
 
 	syncWindow(windowId: number, windowSession: string, rendererGeneration: number, state: IParadisMobileWindowStateV2, validation?: IParadisMobileWindowLeaseValidation, markReady = true): IParadisMobileDesktopStateV3 {
+		const previousDesktopState = this.desktopState();
 		if (validation !== undefined) {
 			if (!validation.valid || validation.windowRevision === undefined) {
 				return this.desktopState();
@@ -82,7 +84,12 @@ export class ParadisMobileTerminalRegistry {
 			state,
 		});
 		this.rebuildOwners();
-		this.revision++;
+		// validation/lease metadataは毎回更新する一方、wire上のrevisionはモバイルから
+		// 見えるDesktop Stateが変わった時だけ進める。broadcast自体はservice側で維持し、
+		// 新規sessionや送信失敗後の再試行をPhase 2の配送ゲートへ委ねる。
+		if (!objectsEqual(previousDesktopState, this.desktopState())) {
+			this.revision++;
+		}
 		return this.desktopState();
 	}
 
