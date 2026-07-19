@@ -41,6 +41,7 @@ import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradis
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
 import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsResponse } from '../common/paradisMobileFileResponse.js';
+import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
@@ -136,7 +137,7 @@ type FsInbound =
 	| { t: 'media'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'find'; id: string; ws: string; query: string }
 	| { t: 'grep'; id: string; ws: string; query: string }
-	| { t: 'upload'; id: string; name: string; data: string }
+	| { t: 'upload'; id: string; name: string; data: string | Uint8Array; base64Length?: number }
 	| { t: 'usage'; id: string; bypassCache?: boolean }
 	// Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）
 	| { t: 'limits'; id: string; bypassCache?: boolean }
@@ -150,6 +151,7 @@ const FS_READ_LIMIT = 1024 * 1024; // ファイル読み取り上限（バイト
 const BINARY_READ_LIMIT = 20 * 1024 * 1024;
 const UPLOAD_LIMIT = 10 * 1024 * 1024; // モバイルからの添付アップロード上限（バイト）
 const UPLOAD_BASE64_LIMIT = Math.ceil(UPLOAD_LIMIT * 4 / 3) + 4; // 同、base64文字列長での事前判定用
+const UPLOAD_DECODED_LIMIT = Math.floor(UPLOAD_BASE64_LIMIT * 3 / 4); // unpadded Base64を含む従来許容範囲のraw上限
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
 const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字。serialize不可時のフォールバック用）
 const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
@@ -1137,10 +1139,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	private async handleFsInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
 		let msg: FsInbound;
-		try {
-			msg = JSON.parse(decoder.decode(payload.buffer)) as FsInbound;
-		} catch {
-			return;
+		const binaryUpload = paradisDecodeBinaryFsUpload(payload.buffer);
+		if (binaryUpload !== undefined) {
+			msg = binaryUpload;
+		} else {
+			try {
+				msg = JSON.parse(decoder.decode(payload.buffer)) as FsInbound;
+			} catch {
+				return;
+			}
 		}
 		const reply = (body: object) => {
 			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ id: msg.id, ...body }))), mobileId: mobileId || undefined });
@@ -1160,12 +1167,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// パス解決の前に処理する。ファイル名はサニタイズし、脱出の余地を残さない。
 		if (msg.t === 'upload') {
 			try {
-				if (msg.data.length > UPLOAD_BASE64_LIMIT) {
+				const encodedLength = typeof msg.data === 'string' ? msg.data.length : msg.base64Length;
+				if (encodedLength === undefined || encodedLength > UPLOAD_BASE64_LIMIT || (msg.data instanceof Uint8Array && msg.data.byteLength > UPLOAD_DECODED_LIMIT)) {
 					// allow-any-unicode-next-line
 					reply({ error: `ファイルが大きすぎます。添付は ${Math.round(UPLOAD_LIMIT / 1024 / 1024)}MB までです。` });
 					return;
 				}
-				const content = decodeBase64(msg.data);
+				const content = typeof msg.data === 'string' ? decodeBase64(msg.data) : VSBuffer.wrap(msg.data);
 				const dot = msg.name.lastIndexOf('.');
 				const ext = dot >= 0 ? msg.name.slice(dot + 1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) : '';
 				const dir = joinPath(this.environmentService.userRoamingDataHome, 'paraMobileUploads');

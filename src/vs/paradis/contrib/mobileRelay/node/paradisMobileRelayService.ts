@@ -74,6 +74,7 @@ import { IParadisMobilePaneOwner } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentCommandAuthority, ParadisAgentCommandDeliveryResult } from '../common/paradisAgentCommandLifecycle.js';
 import { ParadisMobileTrafficDiagnostics, startParadisMobileTrafficDiagnostics } from './paradisMobileTrafficDiagnostics.js';
 import { ParadisMobileStateDelivery } from './paradisMobileStateDelivery.js';
+import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
 import { promises as fs } from 'fs';
@@ -1156,10 +1157,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	private async handleWindowFrame(frame: IParadisMobileInboundFrame): Promise<void> {
 		let message: { id?: unknown; protocolVersion?: unknown; desktopEpoch?: unknown; windowId?: unknown; ws?: unknown };
-		try {
-			message = JSON.parse(new TextDecoder().decode(frame.payload.buffer)) as typeof message;
-		} catch {
-			return;
+		const binaryUpload = frame.ch === Channels.Fs ? paradisDecodeBinaryFsUpload(frame.payload.buffer) : undefined;
+		if (binaryUpload !== undefined) {
+			message = binaryUpload;
+		} else {
+			try {
+				message = JSON.parse(new TextDecoder().decode(frame.payload.buffer)) as typeof message;
+			} catch {
+				return;
+			}
 		}
 		if (typeof message.id !== 'string' || message.id.length === 0 || message.id.length > 200) {
 			return;

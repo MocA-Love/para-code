@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -21,6 +21,8 @@ export interface WorkspacePrStatus {
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
 export interface WorkspaceState {
 	protocolVersion: 3;
+	/** 新PCだけが通知する任意能力。旧PCではundefined。 */
+	fsUploadEncoding?: 'fs-binary-v1';
 	desktopEpoch: string;
 	revision: number;
 	complete: boolean;
@@ -864,6 +866,8 @@ export class MobileController {
 	private operationOutboxWrite = Promise.resolve();
 	private terminalOperationDispatchChain = Promise.resolve();
 	private terminalOperationDispatchDepth = 0;
+	/** 現在の暗号接続で受信したStateだけから確定する。画面保持Stateからは復元しない。 */
+	private liveFsUploadEncoding: string | undefined;
 
 	constructor(
 		private readonly identity: Identity,
@@ -941,6 +945,7 @@ export class MobileController {
 				this.state.connection = s;
 				if (s !== 'online') {
 					this.state.sessionProtocolReady = false;
+					this.liveFsUploadEncoding = undefined;
 					this.outboxReplayEpoch = undefined;
 					this.cancelPendingAgentActions();
 					this.cancelPendingRequests();
@@ -961,6 +966,7 @@ export class MobileController {
 				let agentChatsChanged = false;
 				if (!online) {
 					this.state.sessionProtocolReady = false;
+					this.liveFsUploadEncoding = undefined;
 					this.outboxReplayEpoch = undefined;
 					this.cancelPendingAgentActions();
 					this.cancelPendingRequests();
@@ -1000,6 +1006,7 @@ export class MobileController {
 		this.state.connection = 'offline';
 		this.state.pcOnline = false;
 		this.state.sessionProtocolReady = false;
+		this.liveFsUploadEncoding = undefined;
 		const agentChatsChanged = this.cancelStaleRendererRequests();
 		this.emit(agentChatsChanged ? { agentChats: true } : undefined);
 	}
@@ -1047,6 +1054,7 @@ export class MobileController {
 			this.state.connection = 'offline';
 			this.state.pcOnline = false;
 			this.state.sessionProtocolReady = false;
+			this.liveFsUploadEncoding = undefined;
 			this.state.workspace = undefined;
 			this.state.protocolError = undefined;
 			this.refreshTerminalOperationIssue();
@@ -1962,7 +1970,7 @@ export class MobileController {
 	private requestCounter = 0;
 	private readonly pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout>; rendererTarget?: RendererRequestTarget }>();
 
-	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000): Promise<T> {
+	private request<T>(channel: 'scm' | 'fs' | 'browser', body: object, timeoutMs = 30_000, encodePayload?: (id: string, requestBody: object) => Uint8Array | undefined): Promise<T> {
 		const client = this.client;
 		if (!client || !this.isLiveAvailable()) {
 			return Promise.reject(new Error('PCへ再接続してから操作してください'));
@@ -1992,13 +2000,14 @@ export class MobileController {
 			};
 		}
 		const id = `${this.requestPrefix}-r-${this.requestCounter++}`;
+		const payload = encodePayload?.(id, requestBody) ?? encoder.encode(JSON.stringify({ id, ...requestBody }));
 		return new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
 				reject(new Error('request timeout'));
 			}, timeoutMs);
 			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, ...(rendererTarget !== undefined ? { rendererTarget } : {}) });
-			client.send(channel, encoder.encode(JSON.stringify({ id, ...requestBody })));
+			client.send(channel, payload);
 		});
 	}
 
@@ -2204,7 +2213,13 @@ export class MobileController {
 	 * PC側は userData 配下の専用ディレクトリに保存し、モバイルはパスをPTYへ貼り付ける）。
 	 */
 	fsUpload(name: string, dataBase64: string): Promise<FsUploadResult> {
-		return this.request<FsUploadResult>('fs', { t: 'upload', name, data: dataBase64 }, 120_000);
+		const binaryEncoder = this.liveFsUploadEncoding === FS_BINARY_UPLOAD_ENCODING
+			? (id: string, requestBody: object) => {
+				const request = requestBody as { protocolVersion: 3; desktopEpoch: string; windowId: number; ws: string };
+				return encodeBinaryFsUpload({ id, protocolVersion: request.protocolVersion, desktopEpoch: request.desktopEpoch, windowId: request.windowId, ws: request.ws, name }, dataBase64);
+			}
+			: undefined;
+		return this.request<FsUploadResult>('fs', { t: 'upload', name, data: dataBase64 }, 120_000, binaryEncoder);
 	}
 
 	/** ファイル名検索（ワークスペース全体、.gitignore尊重、PC側ripgrep）。 */
@@ -2422,6 +2437,7 @@ export class MobileController {
 				const incoming = JSON.parse(decoder.decode(frame.payload)) as WorkspaceState;
 				if (incoming.protocolVersion !== 3) {
 					this.state.sessionProtocolReady = false;
+					this.liveFsUploadEncoding = undefined;
 					this.state.protocolError = 'PC版とモバイル版の通信バージョンが一致しません。両方を最新版へ更新してください。';
 					this.state.workspace = undefined;
 					this.state.terminalOutput.clear();
@@ -2454,6 +2470,7 @@ export class MobileController {
 					return;
 				}
 				this.state.protocolError = undefined;
+				this.liveFsUploadEncoding = incoming.fsUploadEncoding === FS_BINARY_UPLOAD_ENCODING ? FS_BINARY_UPLOAD_ENCODING : undefined;
 				// 有効なv3 Stateそのものがpresenceより強い生存証拠。同一revisionでも
 				// 新しい暗号sessionのgate確立と再attach処理には必ず使う。
 				this.state.pcOnline = true;

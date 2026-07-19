@@ -13,6 +13,8 @@ export { BROWSER_JPEG_BINARY_ENCODING, decodeBinaryBrowserJpegFrame, isBinaryBro
 export type { BrowserJpegFrame } from './browserFrame.js';
 export { FS_BINARY_RESPONSE_ENCODING, decodeBinaryFsResponse, isBinaryFsResponse } from './fileResponse.js';
 export type { BinaryFsResponse, BinaryFsResponseType } from './fileResponse.js';
+export { FS_BINARY_UPLOAD_ENCODING, decodeBinaryFsUpload, encodeBinaryFsUpload, isBinaryFsUpload } from './fileUpload.js';
+export type { BinaryFsUpload, BinaryFsUploadMetadata } from './fileUpload.js';
 export { RELAY_DATA_VERSION, MOBILE_ID_LENGTH, packPcData, unpackPcData, mobileIdToString, mobileIdFromString, encodeRelayControl, decodeRelayControl } from './relay.js';
 export type { RelayControlMessage } from './relay.js';
 export { encodeNotify, decodeNotify, encodeNotifyDismiss, encodeNotifyDismissed, decodeNotifyControl } from './notify.js';

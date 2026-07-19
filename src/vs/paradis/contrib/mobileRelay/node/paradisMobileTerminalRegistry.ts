@@ -7,6 +7,7 @@
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { equals as objectsEqual } from '../../../../base/common/objects.js';
 import { IParadisMobileDesktopStateV3, IParadisMobileTerminalV3, IParadisMobileWindowStateV2, IParadisMobileWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION } from '../common/paradisMobileRelay.js';
+import { PARADIS_FS_BINARY_UPLOAD_ENCODING } from '../common/paradisMobileFileUpload.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
 
 export interface IParadisMobileTerminalOwner extends IParadisMobileWindowLease {
@@ -259,6 +260,7 @@ export class ParadisMobileTerminalRegistry {
 		}
 		return {
 			protocolVersion: PARADIS_MOBILE_PROTOCOL_VERSION,
+			fsUploadEncoding: PARADIS_FS_BINARY_UPLOAD_ENCODING,
 			desktopEpoch: this.desktopEpoch,
 			revision: this.revision,
 			complete: this.isComplete(),
