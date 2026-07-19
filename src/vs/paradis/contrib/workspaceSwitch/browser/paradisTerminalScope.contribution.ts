@@ -21,7 +21,7 @@ import { TerminalGroupService } from '../../../../workbench/contrib/terminal/bro
 import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreationScopeLease } from '../../../../workbench/contrib/terminal/browser/paradisTerminalCreationScope.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
+import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisListParkedTerminalEditorInstances, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 
 /**
@@ -83,11 +83,16 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	get revision(): number { return this._stableScopeTracker.revision; }
 
 	/**
-	 * {persistentProcessId → repositoryId} の永続台帳。起動時に前回値を読み込み、今セッション中も
-	 * process ID確定・所属変更・破棄に合わせて更新する。前回値は再接続完了までは復元元として保持し、
-	 * 全live terminalとの照合後に対応するprocessがない項目だけを削除する。
+	 * {persistentProcessId → repositoryId} の永続台帳。起動時に前回値を読み込み、今セッション中の
+	 * process ID確定・所属変更・破棄に合わせて更新する。
 	 */
 	private readonly _persistentProcessScopes: Map<number, string>;
+	/**
+	 * 起動時に読み込んだ復元専用snapshot。完全再起動ではPTY IDが振り直されるため、
+	 * revived attach targetが保持する前回IDは、今セッションのIDを書き込む可変台帳と分離して引く。
+	 * current processの確定では更新せず、起動時worktree検証とscope退役だけを反映する。
+	 */
+	private readonly _restoredPersistentProcessScopes: Map<number, string>;
 	private readonly _quarantinedPersistentProcessScopes: Map<number, string>;
 
 	constructor(
@@ -111,7 +116,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 		const loadedMapping = this.loadMapping();
 		const initialPartition = paradisPartitionPersistentProcessScopesByKnownScope(loadedMapping, this.knownStateKeys(false));
-		this._persistentProcessScopes = initialPartition.accepted;
+		this._persistentProcessScopes = new Map(initialPartition.accepted);
+		this._restoredPersistentProcessScopes = new Map(initialPartition.accepted);
 		this._quarantinedPersistentProcessScopes = initialPartition.quarantined;
 
 		this._register(Event.runAndSubscribe(this.terminalGroupService.onDidChangeGroups, () => this.tagUntaggedGroups()));
@@ -162,7 +168,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// マッピングは await 中に別の起動ハンドラ (worktree 初期化バリア等) の prune で
 			// 消され得るため、ここで同期的に確定した写しを渡す。worktree スコープ分は
 			// バリア完了まで quarantine 側に居るので、両方を合わせて引けるようにする。
-			const scopeSnapshot = new Map([...this._quarantinedPersistentProcessScopes, ...this._persistentProcessScopes]);
+			const scopeSnapshot = new Map([...this._quarantinedPersistentProcessScopes, ...this._restoredPersistentProcessScopes]);
 			await this.reviveOrphanedScopedEditorTerminals(scopeSnapshot);
 			if (this._store.isDisposed) {
 				return;
@@ -181,6 +187,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				if (!this._persistentProcessScopes.has(persistentProcessId)) {
 					this._persistentProcessScopes.set(persistentProcessId, stateKey);
 				}
+				this._restoredPersistentProcessScopes.set(persistentProcessId, stateKey);
 			}
 			this._quarantinedPersistentProcessScopes.clear();
 			const liveInstances = this.refreshAllStableScopes();
@@ -528,11 +535,15 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			: { instanceId: instance.instanceId, persistentProcessId };
 	}
 
-	private toRestoredScopedInstance(instance: ITerminalInstance): { readonly instanceId: number; readonly persistentProcessId?: number } {
-		const persistentProcessId = instance.shellLaunchConfig.attachPersistentProcess?.id;
-		return persistentProcessId === undefined
+	private toRestoredScopedInstance(instance: ITerminalInstance): IParadisScopedTerminalInstanceLike {
+		const attachTarget = instance.shellLaunchConfig.attachPersistentProcess;
+		return attachTarget === undefined
 			? { instanceId: instance.instanceId }
-			: { instanceId: instance.instanceId, persistentProcessId };
+			: {
+				instanceId: instance.instanceId,
+				persistentProcessId: attachTarget.id,
+				restoredPersistentProcessId: attachTarget.paradisRevivedFromPersistentProcessId,
+			};
 	}
 
 	/**
@@ -543,7 +554,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * persistent process台帳にフォールバックする。
 	 */
 	private resolveGroupScope(group: ITerminalGroup): string | undefined {
-		return paradisLookupInstanceScope(this._instanceScopes, this._persistentProcessScopes, group.terminalInstances.map(instance => this.toRestoredScopedInstance(instance)));
+		return paradisLookupInstanceScope(this._instanceScopes, this._restoredPersistentProcessScopes, group.terminalInstances.map(instance => this.toRestoredScopedInstance(instance)));
 	}
 
 	private resolveGroupInitialCwdScope(group: ITerminalGroup): string | undefined {
@@ -585,7 +596,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._activeFallbackInstances.delete(instance.instanceId);
 			return;
 		}
-		if (paradisRestorePersistentProcessScope(this._instanceScopes, this._persistentProcessScopes, this.toRestoredScopedInstance(instance)) !== undefined) {
+		if (paradisRestorePersistentProcessScope(this._instanceScopes, this._restoredPersistentProcessScopes, this.toRestoredScopedInstance(instance)) !== undefined) {
 			this._activeFallbackInstances.delete(instance.instanceId);
 			return;
 		}
@@ -752,6 +763,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			.filter(instance => retiringInstanceIdSet.has(instance.instanceId))
 			.map(instance => [instance.instanceId, instance] as const));
 		paradisRetireTerminalScope(this._instanceScopes, this._persistentProcessScopes, stateKey);
+		for (const [persistentProcessId, assignedStateKey] of this._restoredPersistentProcessScopes) {
+			if (assignedStateKey === stateKey) {
+				this._restoredPersistentProcessScopes.delete(persistentProcessId);
+			}
+		}
 		for (const [persistentProcessId, assignedStateKey] of this._quarantinedPersistentProcessScopes) {
 			if (assignedStateKey === stateKey) {
 				this._quarantinedPersistentProcessScopes.delete(persistentProcessId);

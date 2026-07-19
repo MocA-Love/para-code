@@ -101,6 +101,7 @@ export class PtyService extends Disposable implements IPtyService {
 	private readonly _workspaceLayoutInfos = new Map<WorkspaceId, ISetTerminalLayoutInfoArgs>();
 	private readonly _detachInstanceRequestStore: RequestStore<IProcessDetails | undefined, { workspaceId: string; instanceId: number }>;
 	private readonly _revivedPtyIdMap: Map<string, { newId: number; state: ISerializedTerminalState }> = new Map();
+	private readonly _revivedPtyOldIdByNewId: Map<string, number> = new Map();
 
 	// #region Pty service contribution RPC calls
 
@@ -306,6 +307,7 @@ export class PtyService extends Disposable implements IPtyService {
 		// Don't start the process here as there's no terminal to answer CPR
 		const oldId = this._getRevivingProcessId(workspaceId, terminal.id);
 		this._revivedPtyIdMap.set(oldId, { newId, state: terminal });
+		this._revivedPtyOldIdByNewId.set(this._getRevivingProcessId(workspaceId, newId), terminal.id);
 		this._logService.info(`Revived process, old id ${oldId} -> new id ${newId}`);
 	}
 
@@ -342,6 +344,7 @@ export class PtyService extends Disposable implements IPtyService {
 		};
 		const persistentProcess = new PersistentTerminalProcess(id, process, workspaceId, workspaceName, shouldPersist, cols, rows, processLaunchOptions, unicodeVersion, this._reconnectConstants, this._logService, isReviving && isString(shellLaunchConfig.initialText) ? shellLaunchConfig.initialText : undefined, rawReviveBuffer, shellLaunchConfig.icon, shellLaunchConfig.color, shellLaunchConfig.name, shellLaunchConfig.fixedDimensions);
 		process.onProcessExit(event => {
+			this._revivedPtyOldIdByNewId.delete(this._getRevivingProcessId(workspaceId, id));
 			for (const contrib of this._contributions) {
 				contrib.handleProcessDispose(id);
 			}
@@ -416,7 +419,16 @@ export class PtyService extends Disposable implements IPtyService {
 		const persistentProcesses = Array.from(this._ptys.entries()).filter(([_, pty]) => pty.shouldPersistTerminal);
 
 		this._logService.info(`Listing ${persistentProcesses.length} persistent terminals, ${this._ptys.size} total terminals`);
-		const promises = persistentProcesses.map(async ([id, terminalProcessData]) => this._buildProcessDetails(id, terminalProcessData));
+		const promises = persistentProcesses.map(async ([id, terminalProcessData]) => {
+			const processDetails = await this._buildProcessDetails(id, terminalProcessData);
+			if (!processDetails.isOrphan) {
+				return processDetails;
+			}
+			const revivedFromPersistentProcessId = this._getRevivedFromPersistentProcessId(terminalProcessData.workspaceId, id);
+			return revivedFromPersistentProcessId === undefined
+				? processDetails
+				: { ...processDetails, paradisRevivedFromPersistentProcessId: revivedFromPersistentProcessId };
+		});
 		const allTerminals = await Promise.all(promises);
 		return allTerminals.filter(entry => entry.isOrphan);
 	}
@@ -613,9 +625,13 @@ export class PtyService extends Disposable implements IPtyService {
 			}
 			doneSet.add(persistentProcessId);
 			const persistentProcess = this._throwIfNoPty(persistentProcessId);
-			const processDetails = persistentProcess && await this._buildProcessDetails(ptyId, persistentProcess, revivedPtyId !== undefined);
+			const processDetails = persistentProcess && await this._buildProcessDetails(
+				persistentProcessId,
+				persistentProcess,
+				revivedPtyId !== undefined ? ptyId : undefined,
+			);
 			return {
-				terminal: { ...processDetails, id: persistentProcessId },
+				terminal: processDetails,
 				relativeSize: hasLayout ? t.relativeSize : 0
 			};
 		} catch (e) {
@@ -635,10 +651,15 @@ export class PtyService extends Disposable implements IPtyService {
 		return `${workspaceId}-${ptyId}`;
 	}
 
-	private async _buildProcessDetails(id: number, persistentProcess: PersistentTerminalProcess, wasRevived: boolean = false): Promise<IProcessDetails> {
+	private _getRevivedFromPersistentProcessId(workspaceId: string, persistentProcessId: number): number | undefined {
+		return this._revivedPtyOldIdByNewId.get(this._getRevivingProcessId(workspaceId, persistentProcessId));
+	}
+
+	private async _buildProcessDetails(id: number, persistentProcess: PersistentTerminalProcess, revivedFromPersistentProcessId?: number): Promise<IProcessDetails> {
 		performance.mark(`code/willBuildProcessDetails/${id}`);
 		// If the process was just revived, don't do the orphan check as it will
 		// take some time
+		const wasRevived = revivedFromPersistentProcessId !== undefined;
 		const [cwd, isOrphan] = await Promise.all([persistentProcess.getCwd(), wasRevived ? true : persistentProcess.isOrphaned()]);
 		// PARA-PATCH: mobile relay recovery — read the pane token injected at PTY launch
 		// PARA-CODE: Carry the exact token injected at PTY launch across revive and detach.
@@ -665,6 +686,7 @@ export class PtyService extends Disposable implements IPtyService {
 			shellIntegrationNonce: persistentProcess.processLaunchOptions.options.shellIntegration.nonce,
 			// PARA-PATCH: mobile relay recovery — include the validated pane token in process details
 			...(typeof paneToken === 'string' && paneToken.length > 0 && paneToken.length <= 200 ? { paradisPaneToken: paneToken } : {}),
+			...(revivedFromPersistentProcessId !== undefined ? { paradisRevivedFromPersistentProcessId: revivedFromPersistentProcessId } : {}),
 			tabActions: persistentProcess.shellLaunchConfig.tabActions
 		};
 		performance.mark(`code/didBuildProcessDetails/${id}`);

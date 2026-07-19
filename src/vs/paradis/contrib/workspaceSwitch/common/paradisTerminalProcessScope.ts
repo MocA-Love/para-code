@@ -28,6 +28,11 @@ import { isWindows } from '../../../../base/common/platform.js';
 export interface IParadisScopedTerminalInstanceLike {
 	readonly instanceId: number;
 	readonly persistentProcessId?: number;
+	readonly restoredPersistentProcessId?: number;
+}
+
+function restoredPersistentProcessId(instance: IParadisScopedTerminalInstanceLike): number | undefined {
+	return instance.restoredPersistentProcessId ?? instance.persistentProcessId;
 }
 
 export interface IParadisTerminalScopeCandidateInput {
@@ -156,10 +161,11 @@ export function paradisRecordPersistentProcessScopes(instanceScopes: ReadonlyMap
 /** 再接続されたinstanceへ、前回セッションのpersistent process台帳から所属を復元する。 */
 export function paradisRestorePersistentProcessScope(instanceScopes: Map<number, string>, persistentProcessScopes: ReadonlyMap<number, string>, instance: IParadisScopedTerminalInstanceLike): string | undefined {
 	const recordedStateKey = instanceScopes.get(instance.instanceId);
-	if (recordedStateKey !== undefined || typeof instance.persistentProcessId !== 'number') {
+	const persistentProcessId = restoredPersistentProcessId(instance);
+	if (recordedStateKey !== undefined || persistentProcessId === undefined) {
 		return recordedStateKey;
 	}
-	const restoredStateKey = persistentProcessScopes.get(instance.persistentProcessId);
+	const restoredStateKey = persistentProcessScopes.get(persistentProcessId);
 	if (restoredStateKey !== undefined) {
 		instanceScopes.set(instance.instanceId, restoredStateKey);
 	}
@@ -195,8 +201,9 @@ export function paradisLookupInstanceScope(instanceScopes: ReadonlyMap<number, s
 		}
 	}
 	for (const instance of instances) {
-		if (typeof instance.persistentProcessId === 'number') {
-			const restored = restoredMapping.get(instance.persistentProcessId);
+		const persistentProcessId = restoredPersistentProcessId(instance);
+		if (persistentProcessId !== undefined) {
+			const restored = restoredMapping.get(persistentProcessId);
 			if (restored) {
 				return restored;
 			}
