@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, decodeBinaryFsUpload, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
@@ -672,6 +672,70 @@ describe('MobileController', () => {
 			['docx', FS_BINARY_RESPONSE_ENCODING],
 			['media', FS_BINARY_RESPONSE_ENCODING],
 		]);
+	});
+
+	it('uploads raw file bytes only after the current PC advertises binary upload support', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ ...desktopState([]), fsUploadEncoding: FS_BINARY_UPLOAD_ENCODING })));
+		await flush();
+
+		let upload: ReturnType<typeof decodeBinaryFsUpload>;
+		let legacyUpload: Record<string, unknown> | undefined;
+		pcMux.on(Channels.Fs, frame => {
+			upload = decodeBinaryFsUpload(frame.payload);
+			if (upload !== undefined) {
+				pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify({ id: upload.id, t: 'upload', path: '/tmp/photo.jpg' })));
+			} else {
+				legacyUpload = JSON.parse(new TextDecoder().decode(frame.payload)) as Record<string, unknown>;
+				pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify({ id: legacyUpload.id, t: 'upload', path: '/tmp/legacy.jpg' })));
+			}
+		});
+
+		await expect(controller.fsUpload('photo.jpg', 'AAF/gP7/')).resolves.toMatchObject({ t: 'upload', path: '/tmp/photo.jpg' });
+		expect(upload).toEqual({
+			t: 'upload', id: expect.any(String), protocolVersion: 3, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1', name: 'photo.jpg', base64Length: 8,
+			data: new Uint8Array([0x00, 0x01, 0x7f, 0x80, 0xfe, 0xff]),
+		});
+
+		// 同一revisionで画面Stateが更新されなくても、現在の接続で能力が撤回されたら
+		// 保持中Workspace Stateの古い能力を使わず従来JSONへ戻す。
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+		await flush();
+		await expect(controller.fsUpload('legacy.jpg', 'AA==')).resolves.toMatchObject({ path: '/tmp/legacy.jpg' });
+		expect(legacyUpload).toMatchObject({ t: 'upload', name: 'legacy.jpg', data: 'AA==' });
+	});
+
+	it('keeps the legacy JSON upload for a PC that does not advertise binary support', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+		await flush();
+
+		let upload: Record<string, unknown> | undefined;
+		pcMux.on(Channels.Fs, frame => {
+			upload = JSON.parse(new TextDecoder().decode(frame.payload)) as Record<string, unknown>;
+			pcMux.send(Channels.Fs, new TextEncoder().encode(JSON.stringify({ id: upload.id, t: 'upload', path: '/tmp/photo.jpg' })));
+		});
+
+		await expect(controller.fsUpload('photo.jpg', 'AAF/gP7/')).resolves.toMatchObject({ t: 'upload', path: '/tmp/photo.jpg' });
+		expect(upload).toMatchObject({ t: 'upload', protocolVersion: 3, desktopEpoch: 'desktop-test', windowId: 1, ws: 'w1', name: 'photo.jpg', data: 'AAF/gP7/' });
 	});
 
 	it('emit only swaps references for the collection that actually changed', async () => {

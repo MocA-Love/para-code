@@ -114,6 +114,7 @@ export interface IParadisMobileRendererStateV3 {
 /** protocol v3: モバイルへ送る全PCウィンドウの統合状態。 */
 export interface IParadisMobileDesktopStateV3 {
 	readonly protocolVersion: 3;
+	readonly fsUploadEncoding: 'fs-binary-v1';
 	readonly desktopEpoch: string;
 	readonly revision: number;
 	readonly complete: boolean;

@@ -12,6 +12,11 @@ import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalR
 suite('ParadisMobileTerminalRegistry', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	test('binary upload対応をDesktop Stateで通知する', () => {
+		const registry = new ParadisMobileTerminalRegistry('desktop-epoch');
+		assert.strictEqual(registry.desktopState().fsUploadEncoding, 'fs-binary-v1');
+	});
+
 	test('pending terminal ownershipをactive spaceへ推測しない', () => {
 		assert.strictEqual(paradisResolveMobileTerminalStateKey(undefined, { kind: 'pending' }, 'space-b'), undefined);
 		assert.strictEqual(paradisResolveMobileTerminalStateKey('space-a', { kind: 'pending' }, 'space-b'), 'space-a');
