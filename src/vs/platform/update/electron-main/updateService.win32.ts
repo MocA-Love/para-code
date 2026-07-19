@@ -280,9 +280,14 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 
 				return this.cleanup(update.version).then(() => {
 					return this.getUpdatePackagePath(update.version).then(updatePackagePath => {
-						return pfs.Promises.exists(updatePackagePath).then(exists => {
+						return pfs.Promises.exists(updatePackagePath).then(async exists => {
 							if (exists) {
-								return Promise.resolve(updatePackagePath);
+								if (await this.isUpdatePackageValid(updatePackagePath, update.sha256hash)) {
+									return updatePackagePath;
+								}
+
+								this.logService.warn(`update#doCheckForUpdates - deleting invalid cached update ${basename(updatePackagePath)}`);
+								await unlink(updatePackagePath);
 							}
 
 							const downloadPath = `${updatePackagePath}.tmp`;
@@ -381,6 +386,19 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 	private async getUpdatePackagePath(version: string): Promise<string> {
 		const cachePath = await this.cachePath;
 		return path.join(cachePath, `CodeSetup-${this.productService.quality}-${version}.exe`);
+	}
+
+	private async isUpdatePackageValid(packagePath: string, expectedSha256Hash: string | undefined): Promise<boolean> {
+		if (!expectedSha256Hash) {
+			return false;
+		}
+
+		try {
+			await checksum(packagePath, expectedSha256Hash);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	private async cleanup(exceptVersion: string | null = null): Promise<void> {
