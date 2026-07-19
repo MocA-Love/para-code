@@ -73,6 +73,7 @@ import { IParadisMobileRendererManifest, IParadisMobileWindowLease, ParadisMobil
 import { IParadisMobilePaneOwner } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentCommandAuthority, ParadisAgentCommandDeliveryResult } from '../common/paradisAgentCommandLifecycle.js';
 import { ParadisMobileTrafficDiagnostics, startParadisMobileTrafficDiagnostics } from './paradisMobileTrafficDiagnostics.js';
+import { ParadisMobileStateDelivery } from './paradisMobileStateDelivery.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
 import { promises as fs } from 'fs';
@@ -100,11 +101,12 @@ interface PersistedState {
 }
 
 /** 1つのモバイルとのデータ接続（ハンドシェイク進行 + 確立後のFrameMux）。 */
-class MobileSession {
+export class MobileSession {
 	private channel: SecureChannel | undefined;
 	private mux: FrameMux | undefined;
 	private confirmed = false;
 	private negotiatedProtocolVersion: number | undefined;
+	private readonly stateDelivery = new ParadisMobileStateDelivery();
 	// 受信payloadを厳密に直列化する（H-2/#17）。confirmed遷移をまたぐハンドシェイク期は
 	// mux外なので、ここで直列化しないと同一TCPチャンクで届いたconfirmとアプリフレームが
 	// 並行してpendingVerifyに流れ、nonceカウンタが恒久desyncする。
@@ -199,6 +201,7 @@ class MobileSession {
 				this.confirmed = false;
 				this.negotiatedProtocolVersion = undefined;
 				this.pendingVerify = undefined;
+				this.stateDelivery.reset();
 				await this.handlePayload(payload);
 				return;
 			}
@@ -218,6 +221,19 @@ class MobileSession {
 		if (this.mux) {
 			await this.mux.send(ch, payload, ws);
 		}
+	}
+
+	/**
+	 * PC→モバイルのDesktop Stateを送る。
+	 * `force`はrequestStateなど応答必須の宛先指定送信で使い、完全一致でも必ず送る。
+	 * 戻り値は実際に送信した場合だけtrueになり、成功したpayloadだけが次回の比較対象になる。
+	 */
+	async sendDesktopState(payload: Uint8Array, force: boolean): Promise<boolean> {
+		const mux = this.mux;
+		if (mux === undefined) {
+			return false;
+		}
+		return this.stateDelivery.deliver(payload, force, state => mux.send(Channels.State, state));
 	}
 
 	get idBytes(): Uint8Array {
@@ -985,13 +1001,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (mobileId !== undefined) {
 				const session = this.sessions.get(mobileId);
 				if (session?.isOnline) {
-					await session.sendFrame(Channels.State, undefined, bytes);
+					await session.sendDesktopState(bytes, true);
 				}
 				return;
 			}
 			for (const session of this.sessions.values()) {
 				if (session.isOnline) {
-					await session.sendFrame(Channels.State, undefined, bytes);
+					await session.sendDesktopState(bytes, false);
 				}
 			}
 		});
