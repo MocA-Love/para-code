@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { type Frame, type Identity, type NotifyPayload, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity, openNotify, randomToken, sealNotify, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64Url } from '@para/protocol';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -2267,7 +2267,7 @@ export class MobileController {
 	/** screencast を開始する（フレームは state.browserFrame に流れ込む）。 */
 	browserStart(targetId: string): Promise<void> {
 		this.browserStopping = false;
-		return this.request<void>('browser', { t: 'start', targetId });
+		return this.request<void>('browser', { t: 'start', targetId, frameEncoding: BROWSER_JPEG_BINARY_ENCODING });
 	}
 
 	/**
@@ -2375,10 +2375,19 @@ export class MobileController {
 			// 停止処理中）は先頭バイトのプレフィックス判定だけでフルパース前に読み捨てる
 			// （PC側のシリアライズは常に t が先頭キー）。
 			if (this.jpegFramesSuspended || this.browserStopping) {
+				if (isBinaryBrowserJpegFrame(frame.payload)) {
+					return;
+				}
 				const head = decoder.decode(frame.payload.subarray(0, 12));
 				if (head.startsWith('{"t":"frame"')) {
 					return;
 				}
+			}
+			const binaryFrame = decodeBinaryBrowserJpegFrame(frame.payload);
+			if (binaryFrame !== undefined) {
+				this.state.browserFrame = binaryFrame;
+				this.emit();
+				return;
 			}
 			try {
 				const msg = JSON.parse(decoder.decode(frame.payload)) as { t?: string; id?: string; data?: string; w?: number; h?: number; candidate?: object; sid?: string };
