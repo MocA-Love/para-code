@@ -15,12 +15,14 @@
 import './media/paradisLimitsMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import {
 	IParadisLimitsAccount,
@@ -43,6 +45,7 @@ export interface IParadisLimitsMonitorPanelOptions {
 	readonly onClose: () => void;
 	readonly onAddAccount: (provider: ParadisLimitsProvider) => void;
 	readonly onRelogin: (account: IParadisLimitsAccount) => void;
+	readonly onRemoveAccount: (account: IParadisLimitsAccount) => void;
 }
 
 export class ParadisLimitsMonitorPanel extends Disposable {
@@ -54,6 +57,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 
 	/** renderBody() は毎ポーリングでDOMを作り直すため、行リスナーはここへ登録し再描画のたびにclearする。 */
 	private readonly _bodyListeners = this._register(new DisposableStore());
+	private readonly hoverDelegate = getDefaultHoverDelegate('mouse');
 
 	constructor(
 		private readonly anchor: HTMLElement,
@@ -61,6 +65,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		@ILayoutService layoutService: ILayoutService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
@@ -230,6 +235,35 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		if (account.active) {
 			dom.append(top, $('.plm-badge.active')).textContent = localize('paradis.limitsMonitor.activeBadge', "使用中");
 		}
+		if (account.duplicateHomeLabels?.length) {
+			const duplicateBadge = dom.append(top, $('.plm-badge.duplicate'));
+			duplicateBadge.textContent = localize('paradis.limitsMonitor.duplicateBadge', "重複");
+			this._bodyListeners.add(this.hoverService.setupManagedHover(
+				this.hoverDelegate,
+				duplicateBadge,
+				localize('paradis.limitsMonitor.duplicateHomes', "同じアカウント: {0}", account.duplicateHomeLabels.join(', ')),
+			));
+		}
+
+		const nextReset = account.status === 'ok' ? this.nextResetLabel(account) : undefined;
+		if (nextReset || (account.provider === 'codex' && account.removable)) {
+			const actions = dom.append(top, $('.plm-account-actions'));
+			if (nextReset) {
+				dom.append(actions, $('.plm-account-reset')).textContent = nextReset;
+			}
+			if (account.provider === 'codex' && account.removable) {
+				const removeButton = dom.append(actions, $('button.plm-account-delete')) as HTMLButtonElement;
+				removeButton.type = 'button';
+				const removeLabel = localize('paradis.limitsMonitor.removeAccount', "{0} を削除", account.homeLabel ?? account.email ?? account.id);
+				removeButton.setAttribute('aria-label', removeLabel);
+				removeButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.trash)}`));
+				this._bodyListeners.add(dom.addDisposableListener(removeButton, 'click', e => {
+					e.preventDefault();
+					this.options.onRemoveAccount(account);
+				}));
+				this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, removeButton, removeLabel));
+			}
+		}
 
 		if (account.status !== 'ok') {
 			dom.append(top, $('.plm-badge.err')).textContent = account.status === 'token_expired'
@@ -242,11 +276,6 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			reloginButton.textContent = localize('paradis.limitsMonitor.relogin', "再ログイン…");
 			this._bodyListeners.add(dom.addDisposableListener(reloginButton, 'click', () => this.options.onRelogin(account)));
 			return;
-		}
-
-		const nextReset = this.nextResetLabel(account);
-		if (nextReset) {
-			dom.append(top, $('.plm-account-reset')).textContent = nextReset;
 		}
 
 		if (account.fiveHour) {

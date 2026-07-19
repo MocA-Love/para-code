@@ -196,13 +196,57 @@
 	color: #ffffff;
 }
 
-.paradis-limits-panel .plm-account-reset {
+.paradis-limits-panel .plm-badge.duplicate {
+	background: var(--vscode-inputValidation-warningBackground, var(--vscode-badge-background));
+	color: var(--vscode-inputValidation-warningForeground, var(--vscode-badge-foreground));
+	border: var(--vscode-strokeThickness, 1px) solid var(--vscode-inputValidation-warningBorder, transparent);
+}
+
+.paradis-limits-panel .plm-account-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
 	margin-left: auto;
+	flex: none;
+}
+
+.paradis-limits-panel .plm-account-reset {
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	flex: none;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
+}
+
+.paradis-limits-panel .plm-account-delete {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+	opacity: 0.65;
+}
+
+.paradis-limits-panel .plm-account-delete .codicon {
+	font-size: 12px;
+}
+
+.paradis-limits-panel .plm-account-delete:hover {
+	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+	opacity: 1;
+}
+
+.paradis-limits-panel .plm-account-delete:focus-visible {
+	outline: var(--vscode-strokeThickness, 1px) solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+	opacity: 1;
 }
 
 .paradis-limits-panel .plm-meter {
