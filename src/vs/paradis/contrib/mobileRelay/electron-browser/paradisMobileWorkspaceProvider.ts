@@ -43,6 +43,7 @@ import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } 
 import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsResponse } from '../common/paradisMobileFileResponse.js';
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTerminalData } from '../common/paradisMobileTerminalData.js';
+import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
@@ -117,8 +118,8 @@ type TermOutbound =
 /** scm チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type ScmInbound =
 	| { t: 'status'; id: string; ws: string }
-	| { t: 'diff'; id: string; ws: string; path?: string; staged?: boolean }
-	| { t: 'xlsxDiff'; id: string; ws: string; path: string }
+	| { t: 'diff'; id: string; ws: string; path?: string; staged?: boolean; responseEncoding?: string }
+	| { t: 'xlsxDiff'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'commit'; id: string; ws: string; message: string; all?: boolean }
 	| { t: 'log'; id: string; ws: string; limit?: number; skip?: number }
 	| { t: 'commitFiles'; id: string; ws: string; hash: string }
@@ -131,8 +132,8 @@ type ScmInbound =
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
 	| { t: 'resolveLink'; id: string; ws: string; path: string }
-	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean }
-	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number }
+	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean; responseEncoding?: string }
+	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number; responseEncoding?: string }
 	| { t: 'pdf'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'docx'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'media'; id: string; ws: string; path: string; responseEncoding?: string }
@@ -865,8 +866,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} catch {
 			return;
 		}
+		const sendReply = (replyPayload: Uint8Array) => {
+			this.sendFrame({ ch: Channels.Scm, ws: undefined, seq: 0, payload: VSBuffer.wrap(replyPayload), mobileId: mobileId || undefined });
+		};
+		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...body }));
 		const reply = (body: object) => {
-			this.sendFrame({ ch: Channels.Scm, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ id: msg.id, ...body }))), mobileId: mobileId || undefined });
+			sendReply(jsonReply(body));
+		};
+		const replyCompressed = async (body: object) => {
+			const json = jsonReply(body);
+			const responseEncoding = msg.t === 'diff' || msg.t === 'xlsxDiff' ? msg.responseEncoding : undefined;
+			sendReply(await paradisEncodeJsonResponsePayload('scm', msg.t, responseEncoding, json));
 		};
 		// worktree作成系は特定ワークスペースに紐づかない（wsを持たない）ため、repoPath解決より先に処理する
 		if (msg.t === 'worktreeForm' || msg.t === 'createWorktree') {
@@ -925,7 +935,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						diff = read.split('\n').map(l => `+${l}`).join('\n');
 					}
 				}
-				reply({ t: 'diff', diff });
+				await replyCompressed({ t: 'diff', diff });
 			} else if (msg.t === 'commit') {
 				if (!msg.message.trim()) {
 					reply({ error: 'empty commit message' });
@@ -955,7 +965,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 				const original = modified.with({ scheme: 'git', query: JSON.stringify({ path: modified.fsPath, ref: 'HEAD' }) });
 				const html = await renderSpreadsheetDiffMobileHtml(this.fileService, this.sharedProcessService, original, modified, 'HEAD', '作業ツリー');
-				reply({ t: 'xlsxDiff', html });
+				await replyCompressed({ t: 'xlsxDiff', html });
 			} else if (msg.t === 'log') {
 				const limit = Math.min(Math.max(Math.trunc(msg.limit ?? 10), 1), 100);
 				const skip = Math.max(Math.trunc(msg.skip ?? 0), 0);
@@ -1152,8 +1162,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				return;
 			}
 		}
+		const sendReply = (replyPayload: Uint8Array) => {
+			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(replyPayload), mobileId: mobileId || undefined });
+		};
+		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...body }));
 		const reply = (body: object) => {
-			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(encoder.encode(JSON.stringify({ id: msg.id, ...body }))), mobileId: mobileId || undefined });
+			sendReply(jsonReply(body));
+		};
+		const replyCompressed = async (body: object) => {
+			const json = jsonReply(body);
+			const responseEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.responseEncoding : undefined;
+			sendReply(await paradisEncodeJsonResponsePayload('fs', msg.t, responseEncoding, json));
 		};
 		const replyBinary = (type: ParadisBinaryFsResponseType, size: number, data: Uint8Array): boolean => {
 			const responseEncoding = msg.t === 'pdf' || msg.t === 'docx' || msg.t === 'media' ? msg.responseEncoding : undefined;
@@ -1305,7 +1324,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// シート単位の遅延読み込み(sheet省略時は先頭)。シート一覧はモバイルの
 				// ネイティブタブに使われ、切替時に該当sheetだけ再要求される。
 				const result = await renderSpreadsheetMobileSheet(this.fileService, this.sharedProcessService, uri, typeof msg.sheet === 'number' ? msg.sheet : 0);
-				reply({ t: 'xlsx', html: result.html, sheets: result.sheets, sheet: result.sheet });
+				await replyCompressed({ t: 'xlsx', html: result.html, sheets: result.sheets, sheet: result.sheet });
 			} else if (msg.t === 'pdf') {
 				// PDF はバイナリのまま base64 で返す（'read' の UTF-8 デコード経路はバイナリを壊すため使えない）。
 				const stat = await this.fileService.stat(uri);
@@ -1368,7 +1387,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						Object.assign(body, highlighted);
 					}
 				}
-				reply(body);
+				await replyCompressed(body);
 			}
 		} catch (err) {
 			reply({ error: String(err) });

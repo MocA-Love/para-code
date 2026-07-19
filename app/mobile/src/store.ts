@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -2023,8 +2023,9 @@ export class MobileController {
 			entry.resolve({ id: binary.id, t: binary.t, data: toBase64(binary.data), size: binary.size });
 			return;
 		}
+		const jsonPayload = decodeGzipJsonResponse(payload) ?? payload;
 		try {
-			const msg = JSON.parse(decoder.decode(payload)) as { id?: string; error?: string };
+			const msg = JSON.parse(decoder.decode(jsonPayload)) as { id?: string; error?: string };
 			if (!msg.id) {
 				return;
 			}
@@ -2142,7 +2143,7 @@ export class MobileController {
 
 	/** git diff（path省略で全体、staged=trueでステージ済み）。 */
 	scmDiff(ws: string, path?: string, staged?: boolean): Promise<ScmDiffResult> {
-		return this.request<ScmDiffResult>('scm', { t: 'diff', ws, path, staged });
+		return this.request<ScmDiffResult>('scm', { t: 'diff', ws, path, staged, responseEncoding: JSON_GZIP_RESPONSE_ENCODING });
 	}
 
 	/** コミット（all=trueで git add -A してから）。 */
@@ -2185,12 +2186,12 @@ export class MobileController {
 
 	/** ファイル読み取り（上限つき）。highlight=trueでPCテーマのハイライトHTMLも返る。 */
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult> {
-		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}) });
+		return this.request<FsReadResult>('fs', { t: 'read', ws, path, ...(highlight ? { highlight: true } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING });
 	}
 
 	/** xlsx の1シートをPC側でレンダリングした静的HTMLを取得する（重いブックはPC側の生成に時間がかかるため長め）。 */
 	fsXlsx(ws: string, path: string, sheet?: number): Promise<FsXlsxResult> {
-		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path, ...(sheet !== undefined ? { sheet } : {}) }, 120_000);
+		return this.request<FsXlsxResult>('fs', { t: 'xlsx', ws, path, ...(sheet !== undefined ? { sheet } : {}), responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 120_000);
 	}
 
 	/** PDF バイナリを base64 で取得する（大きい PDF はチャンク転送で時間がかかるため長め）。 */
@@ -2234,7 +2235,7 @@ export class MobileController {
 
 	/** xlsx の差分(HEAD vs 作業ツリー)をPC側でレンダリングした静的HTMLを取得する。 */
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult> {
-		return this.request<ScmXlsxDiffResult>('scm', { t: 'xlsxDiff', ws, path }, 120_000);
+		return this.request<ScmXlsxDiffResult>('scm', { t: 'xlsxDiff', ws, path, responseEncoding: JSON_GZIP_RESPONSE_ENCODING }, 120_000);
 	}
 
 	/** コード断片のシンタックスハイライト（PCの現行テーマ。エージェントチャットのコードブロック用）。 */
