@@ -8,7 +8,7 @@
  * （本番は expo-secure-store、テストはメモリ実装）。
  */
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -1132,7 +1132,7 @@ export class MobileController {
 		stream.unackedChars = 0;
 		// 旧画面は新snapshot到着まで保持する。reload中に空画面へ退行させない。
 		stream.rendererTarget = this.rendererTargetFor(terminalKey);
-		void this.sendTerm(terminalKey, { t: 'attach', epoch: stream.epoch });
+		void this.sendTerm(terminalKey, { t: 'attach', epoch: stream.epoch, dataEncoding: TERMINAL_BINARY_DATA_ENCODING });
 	}
 
 	detachTerminal(terminalKey: string): void {
@@ -1386,7 +1386,7 @@ export class MobileController {
 		}
 	}
 
-	private sendTerm(terminalKey: string, msg: { t: string; data?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
+	private sendTerm(terminalKey: string, msg: { t: string; data?: string; dataEncoding?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
 		const workspace = this.state.workspace;
 		if (workspace === undefined || !workspace.terminals.some(terminal => terminal.terminalKey === terminalKey)) {
 			return Promise.resolve(false);
@@ -2572,7 +2572,8 @@ export class MobileController {
 			} catch { /* ignore malformed */ }
 		} else if (frame.ch === 'term') {
 			try {
-				const msg = JSON.parse(decoder.decode(frame.payload)) as { t: string; operationId?: string; terminalKey?: string; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string; status?: string };
+				const msg = decodeBinaryTerminalData(frame.payload)
+					?? JSON.parse(decoder.decode(frame.payload)) as { t: string; operationId?: string; terminalKey?: string; data?: string; snapshot?: boolean; epoch?: number; seq?: number; cols?: number; rows?: number; unicode?: string; status?: string };
 				if (msg.t === 'operation-result') {
 					this.handleTerminalOperationResult(msg.operationId, msg.status);
 					return;
