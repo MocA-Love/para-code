@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, decodeBinaryFsUpload, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, TERMINAL_BINARY_DATA_ENCODING, decodeBinaryFsUpload, encodeBinaryTerminalData, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
@@ -1132,7 +1132,7 @@ describe('MobileController terminal sync protocol', () => {
 		const enc = (o: object) => new TextEncoder().encode(JSON.stringify(o));
 		pcMux.send(Channels.State, enc(desktopState([{ id: 1, title: 'zsh' }])));
 		await flush();
-		const pcGot: { t: string; terminalKey?: string; epoch?: number; seq?: number; protocolVersion?: number; desktopEpoch?: string }[] = [];
+		const pcGot: { t: string; terminalKey?: string; epoch?: number; seq?: number; protocolVersion?: number; desktopEpoch?: string; dataEncoding?: string }[] = [];
 		pcMux.on(Channels.Terminal, f => pcGot.push(JSON.parse(new TextDecoder().decode(f.payload))));
 		return { controller, pcMux, enc, pcGot, latestState: () => latest };
 	}
@@ -1159,6 +1159,35 @@ describe('MobileController terminal sync protocol', () => {
 		await flush();
 		expect(events[1]).toEqual({ kind: 'data', data: 'abc' });
 
+	});
+
+	it('negotiates and applies binary terminal snapshot and data without changing sync behavior', async () => {
+		const { controller, pcMux, pcGot, latestState } = await setup();
+		const events: import('./store.js').TermStreamEvent[] = [];
+		controller.subscribeTerminal('terminal-1', ev => events.push(ev));
+		controller.attachTerminal('terminal-1');
+		await flush();
+		const attach = pcGot[0]!;
+		expect(attach).toMatchObject({ t: 'attach', dataEncoding: TERMINAL_BINARY_DATA_ENCODING });
+		const epoch = attach.epoch!;
+
+		pcMux.send(Channels.Terminal, encodeBinaryTerminalData({ terminalKey: 'terminal-1', epoch, seq: 1, snapshot: true, cols: 120, rows: 40, unicode: '11' }, '\x1b[2J日本語🙂')!);
+		await flush();
+		expect(events).toEqual([{ kind: 'snapshot', data: '\x1b[2J日本語🙂', cols: 120, rows: 40, unicode: '11' }]);
+		expect(latestState()?.terminalOutput.get('terminal-1')).toBe('\x1b[2J日本語🙂');
+		expect(pcGot.find(message => message.t === 'ack')).toMatchObject({ terminalKey: 'terminal-1', epoch, seq: 1 });
+
+		pcMux.send(Channels.Terminal, encodeBinaryTerminalData({ terminalKey: 'terminal-1', epoch, seq: 2 }, '\r\ntail')!);
+		await flush();
+		expect(events[1]).toEqual({ kind: 'data', data: '\r\ntail' });
+		expect(latestState()?.terminalOutput.get('terminal-1')).toBe('\x1b[2J日本語🙂\r\ntail');
+
+		const malformed = encodeBinaryTerminalData({ terminalKey: 'terminal-1', epoch, seq: 3 }, 'ignored')!.slice();
+		new DataView(malformed.buffer).setUint32(8, 100, false);
+		pcMux.send(Channels.Terminal, malformed);
+		await flush();
+		expect(events).toHaveLength(2);
+		expect(latestState()?.terminalOutput.get('terminal-1')).toBe('\x1b[2J日本語🙂\r\ntail');
 	});
 
 	it('discards frames from a stale epoch and pre-snapshot data', async () => {
