@@ -354,6 +354,21 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _bindings = new Map<string, IBindingEntry>();
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue());
 	private readonly _quarantinedBindings = new Set<IBindingEntry>();
+	/**
+	 * リタイア不整合で隔離した個別ペイントークン。authority全体を殺す({@link _authorityFaulted})代わりに、
+	 * 該当tokenだけを以後バインド不可・ingress不可にして他ペインの共有は生かす。ウィンドウのクローズ/リロード/
+	 * スペース切替1回で全ペインが恒久停止するのを避けるための token 単位の隔離。解除は2経路のみで、無条件解除はしない:
+	 * (1) {@link notifyTerminalExit}（そのペインのシェルが死んだ＝隔離を続ける理由が消える）、
+	 * (2) {@link syncBindingAuthority} で同tokenが**別のシェルPID**を持つ新しいペインとして正当に入り直した時
+	 * （＝新しい binding lifecycle。ウィンドウclose後の再オープンで隔離tokenを救う唯一の経路）。
+	 */
+	private readonly _faultedTokens = new Set<string>();
+	/**
+	 * 隔離した各tokenの回収メタデータ。{@link _quarantinedBindings} に退避したbinding実体（あれば）と、
+	 * 隔離時点のシェルPID（新しいlifecycle判定に使う）を保持する。隔離解除時にこの記録を辿って
+	 * {@link _quarantinedBindings} の容量占有を回収する（同一シェルの再syncでは解除しないための世代印でもある）。
+	 */
+	private readonly _quarantinedTokenState = new Map<string, { readonly binding: IBindingEntry | undefined; readonly shellPid: number | undefined }>();
 	private readonly _backgroundThrottlingCoordinator = new ParadisExactViewBackgroundThrottlingCoordinator();
 	private _backgroundThrottlingDispatcher: ParadisExactViewBackgroundThrottlingDispatcher | undefined;
 	private readonly _bindingAuthority = new ParadisBindingAuthority<string, object, IPreparedBindingDescriptor, IBindingEntry>({
@@ -574,6 +589,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (parsedWindow === undefined || pageInfo === undefined) {
 			throw new Error('Para Browser bind preparation rejected');
 		}
+		// A quarantined token is isolated at the earliest rebind choke point so no new ticket is issued.
+		if (this._faultedTokens.has(request.token)) {
+			throw new Error('Para Browser bind preparation rejected');
+		}
 
 		let snapshot: IParadisBindingPrepareSnapshot;
 		try {
@@ -624,6 +643,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			throw new Error('Para Browser binding ticket rejected');
 		}
 
+		// Defense in depth against a quarantined token: reject the rebind before touching capacity,
+		// coordinator, or registry state. prepareBind already blocks the ticket issuance path.
+		if (this._faultedTokens.has(preparation.token)) {
+			throw new Error('Para Browser binding token rejected');
+		}
+
 		const previous = this._bindings.get(preparation.token);
 		if (previous === undefined && this._bindings.size + this._quarantinedBindings.size >= MAX_EXTERNAL_BINDINGS) {
 			throw new Error('Para Browser binding capacity reached');
@@ -637,6 +662,13 @@ export class ParadisAgentBrowserService extends Disposable {
 		} catch {
 			// A registry/coordinator mismatch means a previous internal transition did not converge.
 			// Reject before consuming the ticket and fail closed instead of publishing split state.
+			// assertCanSetBinding validates the whole binding registry against the coordinator, so the
+			// divergence is not provably scoped to this token; fault globally (conservative) rather than
+			// risk leaving split state published on another pane. Only genuinely unrecoverable path that
+			// still sets _authorityFaulted outside dispose().
+			this._runNonThrowingDiagnostic(() => this.logService.warn(
+				`[ParadisAgentBrowser] commitBind: coordinator/registry mismatch; faulting authority for pane ${this._tokenFingerprint(preparation.token)} in ${windowCtx}`,
+			));
 			this._authorityFaulted = true;
 			throw new Error('Para Browser binding state rejected');
 		}
@@ -857,6 +889,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			if (desiredShellPid !== undefined) {
 				this._paneShells.set(pane.token, { windowCtx, token: pane.token, shellPid: desiredShellPid });
+				// A quarantined token re-entering as a live pane under a different shell PID is a genuinely
+				// new binding lifecycle (e.g. the pane was reopened after its window was closed). Lift the
+				// isolation so a closed-window quarantine that never receives a TerminalExit can recover.
+				this._maybeReleaseQuarantineOnFreshShell(pane.token, desiredShellPid);
 			}
 		}
 		this._processOwnerRelease(acceptance);
@@ -1018,6 +1054,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			|| token.length > MAX_PANE_TOKEN_LENGTH
 			|| this._serverDisposed
 			|| this._authorityFaulted
+			|| this._faultedTokens.has(token)
 			|| this._terminalExitedTokens.has(token)) {
 			return undefined;
 		}
@@ -1035,6 +1072,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		return ownerLease !== undefined
 			&& !this._serverDisposed
 			&& !this._authorityFaulted
+			&& !this._faultedTokens.has(lease.token)
 			&& !this._terminalExitedTokens.has(lease.token)
 			&& this._bindingAuthority.isOwnedTokenLeaseCurrent(ownerLease);
 	}
@@ -1058,13 +1096,28 @@ export class ParadisAgentBrowserService extends Disposable {
 					generation = this._advanceBindingGeneration(retirement.token);
 				}
 				this._bindingAuthority.abandonBindingRetirement(retirement);
-				this._authorityFaulted = true;
+				// A retirement handle that no longer matches the live binding is a token-scoped
+				// service/authority divergence, not a process-wide corruption. Isolate only this token
+				// (block its rebind + ingress) and keep the rest of the authority live so a single window
+				// close/reload/space switch can no longer stall every pane. Released on terminal exit or a
+				// genuinely new pane lifecycle. Capture the quarantine record before token-local cleanup
+				// deletes the pane shell entry we read the shellPid from.
+				this._quarantineToken(retirement.token, active);
+				this._runNonThrowingDiagnostic(() => this.logService.warn(
+					`[ParadisAgentBrowser] processOwnerRelease: binding identity mismatch; quarantining pane ${this._tokenFingerprint(retirement.token)} generation=${generation ?? 'none'}`,
+				));
 				this._cleanupTokenLocalState(retirement.token, generation);
 				continue;
 			}
 			if (!this._bindingAuthority.completeBindingRetirement(retirement)) {
-				this._authorityFaulted = true;
+				// The handle is stale because the token was re-bound to a new, legitimate owner after the
+				// handle was issued (ABA), or the retirement was already consumed. The current binding and
+				// authority state stay consistent, so preserve them and keep the authority live; do not
+				// quarantine (the binding is a valid owner) and do not fault globally.
 				preservedTokens.add(retirement.token);
+				this._runNonThrowingDiagnostic(() => this.logService.warn(
+					`[ParadisAgentBrowser] processOwnerRelease: completeBindingRetirement failed (superseded/stale handle); preserving pane ${this._tokenFingerprint(retirement.token)}`,
+				));
 				continue;
 			}
 			const generation = active === undefined
@@ -1081,7 +1134,14 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._bindings.delete(token);
 				this._dispatchBackgroundThrottlingEffects(this._backgroundThrottlingCoordinator.releaseBinding(token));
 				this._quarantinedBindings.add(binding);
-				this._authorityFaulted = true;
+				// A binding still attached to a destroyed window that the authority never retired is a
+				// token-scoped residual, not a reason to stop every other pane. Quarantine just this token
+				// and keep the authority live; released on terminal exit or a genuinely new pane lifecycle.
+				// Capture the quarantine record before the pane shell loop below deletes it.
+				this._quarantineToken(token, binding);
+				this._runNonThrowingDiagnostic(() => this.logService.warn(
+					`[ParadisAgentBrowser] cleanupRemainingWindowState: residual binding for destroyed window ${windowCtx}; quarantining pane ${this._tokenFingerprint(token)}`,
+				));
 				this._cleanupTokenLocalState(token, this._advanceBindingGeneration(token));
 			}
 		}
@@ -1090,6 +1150,46 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._cleanupTokenLocalState(token);
 			}
 		}
+	}
+
+	/**
+	 * Isolates a single token after a token-scoped divergence: blocks its rebind + ingress and records
+	 * the quarantined binding (if any) plus the shell PID observed at quarantine time so the isolation
+	 * can be lifted, and its capacity reclaimed, once the pane's lifecycle genuinely resets.
+	 */
+	private _quarantineToken(token: string, binding: IBindingEntry | undefined): void {
+		this._faultedTokens.add(token);
+		this._quarantinedTokenState.set(token, { binding, shellPid: this._paneShells.get(token)?.shellPid });
+	}
+
+	/**
+	 * Lifts a token quarantine and reclaims the capacity its quarantined binding was holding. The binding
+	 * was already removed from `_bindings`, had its generation advanced, and its gateway/devtools state
+	 * retired at quarantine time, so nothing can reference it again once the pane lifecycle has reset.
+	 */
+	private _releaseTokenQuarantine(token: string): void {
+		this._faultedTokens.delete(token);
+		const record = this._quarantinedTokenState.get(token);
+		if (record === undefined) {
+			return;
+		}
+		this._quarantinedTokenState.delete(token);
+		if (record.binding !== undefined) {
+			this._quarantinedBindings.delete(record.binding);
+		}
+	}
+
+	/**
+	 * Releases a quarantine only when the token re-enters as a genuinely new pane lifecycle, identified by
+	 * a shell PID that differs from the one seen at quarantine time. The same shell re-syncing (e.g. a
+	 * still-diverged window) keeps the isolation, so this never nullifies the quarantine.
+	 */
+	private _maybeReleaseQuarantineOnFreshShell(token: string, shellPid: number): void {
+		const record = this._quarantinedTokenState.get(token);
+		if (record === undefined || record.shellPid === shellPid) {
+			return;
+		}
+		this._releaseTokenQuarantine(token);
 	}
 
 	private _cleanupTokenLocalState(token: string, generation?: number, preserveTerminalExit: boolean = false): void {
@@ -1790,6 +1890,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * ライブ状態（考え中表示）も解除する。
 	 */
 	async notifyTerminalExit(connection: object, token: string): Promise<boolean> {
+		// The pane's shell process is gone, so there is no reason to keep this token isolated and its
+		// quarantined binding can never be referenced again. Release before the eligibility gate: a
+		// closed/reloaded window drops the connection (so eligibility can fail), and a token whose shell
+		// has died must never stay quarantined until the shared process restarts.
+		this._releaseTokenQuarantine(token);
 		if (!this._isEligibleToken(connection, token)) {
 			return false;
 		}
@@ -2310,6 +2415,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._backgroundThrottlingDispatcher = undefined;
 		this._bindings.clear();
 		this._quarantinedBindings.clear();
+		this._faultedTokens.clear();
+		this._quarantinedTokenState.clear();
 		this._paneShells.clear();
 		this._paneStatuses.clear();
 		this._activityApprovalTokens.clear();

@@ -91,6 +91,7 @@ function createFixture(): {
 	readonly bindings: Map<string, ITestBinding>;
 	readonly paneShells: Map<string, { windowCtx: string; token: string; shellPid: number }>;
 	readonly quarantined: Set<ITestBinding>;
+	readonly faultedTokens: Set<string>;
 	readonly effects: string[];
 	readonly mainCalls: { readonly command: string; readonly args: readonly unknown[] }[];
 	readonly seedBinding: (token: string, windowCtx?: string, pageId?: string) => ITestBinding;
@@ -104,6 +105,8 @@ function createFixture(): {
 	const bindings = new Map<string, ITestBinding>();
 	const paneShells = new Map<string, { windowCtx: string; token: string; shellPid: number }>();
 	const quarantined = new Set<ITestBinding>();
+	const faultedTokens = new Set<string>();
+	const quarantinedTokenState = new Map<string, { readonly binding: ITestBinding | undefined; readonly shellPid: number | undefined }>();
 	const effects: string[] = [];
 	const mainCalls: { command: string; args: readonly unknown[] }[] = [];
 	const backgroundThrottlingCoordinator = new ParadisExactViewBackgroundThrottlingCoordinator();
@@ -113,6 +116,8 @@ function createFixture(): {
 		_backgroundThrottlingCoordinator: backgroundThrottlingCoordinator,
 		_ingressLeaseStates: new WeakMap<object, object>(),
 		_quarantinedBindings: quarantined,
+		_faultedTokens: faultedTokens,
+		_quarantinedTokenState: quarantinedTokenState,
 		_terminalExitedTokens: new Set<string>(),
 		_paneShells: paneShells,
 		_paneStatuses: new Map<string, { status: string; changedAt: number }>(),
@@ -177,6 +182,7 @@ function createFixture(): {
 		bindings,
 		paneShells,
 		quarantined,
+		faultedTokens,
 		effects,
 		mainCalls,
 		seedBinding: (token, windowCtx = 'window:1', pageId = 'page-1') => {
@@ -1139,7 +1145,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(fixture.bindings.size, 0);
 	});
 
-	test('quarantines an external identity mismatch count-neutrally, consumes the handle, and latches fault', async () => {
+	test('quarantines an external identity mismatch count-neutrally and isolates only that token', async () => {
 		const fixture = createFixture();
 		const connection = {};
 		fixture.service.registerRendererConnection('window:1', connection);
@@ -1154,17 +1160,106 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(fixture.bindings.size, 0);
 		assert.strictEqual(fixture.quarantined.has(newer), true);
 		assert.strictEqual(fixture.bindings.size + fixture.quarantined.size, 1);
-		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), true);
+		// The drifted token is isolated per-token; the authority itself is NOT globally faulted.
+		assert.strictEqual(fixture.faultedTokens.has('token'), true);
+		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), false);
 		assert.deepStrictEqual(fixture.mainCalls, [{
 			command: 'setExactViewBackgroundThrottling',
 			args: [original.exactView, true],
 		}]);
+		// The quarantined token can neither rebind nor capture non-Renderer ingress.
 		await assert.rejects(
-			fixture.service.syncBindingAuthority(connection, authorityManifest(3, true, [])),
-			/protocol/i,
+			fixture.service.prepareBind(connection, { token: 'token', viewId: 'page-1', revision: 2, pageInfo: { url: 'https://example.test', title: 'Example' } } as never),
+			/preparation rejected/i,
 		);
-		assert.strictEqual(await fixture.service.unbind(connection, 'token'), false);
-		assert.strictEqual(fixture.service.registerRendererConnection('window:2', {}), false);
+		assert.strictEqual(fixture.service.captureIngressLease('token'), undefined);
+		// A later manifest and a fresh window registration still succeed: the authority stays live.
+		assert.strictEqual(
+			(await fixture.service.syncBindingAuthority(connection, authorityManifest(3, true, []))).accepted,
+			true,
+		);
+		assert.strictEqual(fixture.service.registerRendererConnection('window:2', {}), true);
+	});
+
+	test('an isolated token blocks only its own rebind and ingress while other panes keep sharing', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token-a', shellPid: 101 }, { token: 'token-b', shellPid: 102 }]));
+		fixture.seedBinding('token-a', 'window:1', 'page-a');
+		fixture.seedBinding('token-b', 'window:1', 'page-b');
+		// Simulate a prior per-token quarantine of token-a (binding removed, token isolated).
+		fixture.bindings.delete('token-a');
+		fixture.faultedTokens.add('token-a');
+
+		// token-a cannot capture ingress or issue a fresh bind ticket...
+		assert.strictEqual(fixture.service.captureIngressLease('token-a'), undefined);
+		await assert.rejects(
+			fixture.service.prepareBind(connection, { token: 'token-a', viewId: 'page-a', revision: 1, pageInfo: { url: 'https://example.test', title: 'Example' } } as never),
+			/preparation rejected/i,
+		);
+		// ...but token-b is unaffected and keeps sharing, and the authority is never globally faulted.
+		assert.notStrictEqual(fixture.service.captureIngressLease('token-b'), undefined);
+		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), false);
+	});
+
+	test('notifyTerminalExit lifts a per-token quarantine when the pane lifecycle resets', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 101 }]));
+		fixture.seedBinding('token');
+		fixture.faultedTokens.add('token');
+		assert.strictEqual(fixture.service.captureIngressLease('token'), undefined);
+
+		assert.strictEqual(await fixture.service.notifyTerminalExit(connection, 'token'), true);
+		// The shell process is gone, so the token is released from quarantine (a fresh lifecycle can rebind).
+		assert.strictEqual(fixture.faultedTokens.has('token'), false);
+	});
+
+	test('a terminal exit lifts a quarantine even when the closed window left the token ineligible', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 101 }]));
+		fixture.seedBinding('token');
+		const newer: ITestBinding = { windowCtx: 'window:1', pageId: 'new-page', pageInfo: { url: '', title: '' }, generation: 2, boundAt: 2, exactView: { windowId: 1, viewId: 'new-page', targetId: 'new-target', viewLease: 'new-lease' }, scope: { kind: 'unscoped' } };
+		fixture.bindings.set('token', newer);
+		// Identity mismatch on the empty-manifest retirement quarantines the token and retires its owner,
+		// so the token is no longer eligible (mirrors a closed window that also dropped its connection).
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(2, true, []));
+		assert.strictEqual(fixture.faultedTokens.has('token'), true);
+		assert.strictEqual(fixture.quarantined.has(newer), true);
+
+		// The release runs before the eligibility gate, so a dead shell never stays quarantined.
+		assert.strictEqual(await fixture.service.notifyTerminalExit(connection, 'token'), false);
+		assert.strictEqual(fixture.faultedTokens.has('token'), false);
+		// W2: the quarantined binding's capacity is reclaimed on release.
+		assert.strictEqual(fixture.quarantined.has(newer), false);
+		assert.strictEqual(fixture.quarantined.size, 0);
+	});
+
+	test('a reopened pane under a new shell PID lifts a quarantine, but the same shell keeps it', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 101 }]));
+		fixture.seedBinding('token');
+		const newer: ITestBinding = { windowCtx: 'window:1', pageId: 'new-page', pageInfo: { url: '', title: '' }, generation: 2, boundAt: 2, exactView: { windowId: 1, viewId: 'new-page', targetId: 'new-target', viewLease: 'new-lease' }, scope: { kind: 'unscoped' } };
+		fixture.bindings.set('token', newer);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(2, true, []));
+		assert.strictEqual(fixture.faultedTokens.has('token'), true);
+
+		// The same shell PID re-syncing must NOT lift the quarantine (would nullify the isolation).
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(3, true, [{ token: 'token', shellPid: 101 }]));
+		assert.strictEqual(fixture.faultedTokens.has('token'), true);
+		assert.strictEqual(fixture.quarantined.has(newer), true);
+
+		// A genuinely new shell PID (the pane was reopened) is a new lifecycle: lift and reclaim capacity.
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(4, true, [{ token: 'token', shellPid: 202 }]));
+		assert.strictEqual(fixture.faultedTokens.has('token'), false);
+		assert.strictEqual(fixture.quarantined.has(newer), false);
+		assert.strictEqual(fixture.quarantined.size, 0);
 	});
 
 	test('continues every retirement after a nonessential cleanup failure', async () => {
@@ -1221,7 +1316,11 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(fixture.bindings.size, 0);
 		assert.strictEqual(fixture.quarantined.has(mismatched), true);
 		assert.strictEqual(Reflect.get(fixture.authority, 'bindingStates').size, 0);
-		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), true);
+		// Only the mismatched token is quarantined; the authority is not globally faulted.
+		assert.strictEqual(fixture.faultedTokens.has('token-b'), true);
+		assert.strictEqual(fixture.faultedTokens.has('token-a'), false);
+		assert.strictEqual(fixture.faultedTokens.has('token-c'), false);
+		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), false);
 
 		fixture.service.observeRendererManifest(mainManifest(0, []) as never);
 		assert.strictEqual(Reflect.get(fixture.service, '_knownRendererContexts').size, 0);
@@ -1251,7 +1350,10 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(Reflect.get(fixture.service, '_paneStatuses').has('token'), true);
 		assert.strictEqual(Reflect.get(fixture.service, '_seenTokens').has('token'), true);
 		assert.strictEqual(fixture.authority.isCurrentOwnedToken(replacement, 'token'), true);
-		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), true);
+		// The preserved binding is a valid new owner (ABA), so the token is not quarantined and the
+		// authority is not globally faulted.
+		assert.strictEqual(fixture.faultedTokens.has('token'), false);
+		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), false);
 	});
 
 	test('Main destroy cleanup preserves a binding and token-local state after a false retirement claim', async () => {
@@ -1280,7 +1382,9 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(fixture.paneShells.get('token')?.shellPid, 101);
 		assert.strictEqual(Reflect.get(fixture.service, '_paneStatuses').has('token'), true);
 		assert.strictEqual(Reflect.get(fixture.service, '_seenTokens').has('token'), true);
-		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), true);
+		// Preserved valid owner: neither quarantined nor globally faulted.
+		assert.strictEqual(fixture.faultedTokens.has('token'), false);
+		assert.strictEqual(Reflect.get(fixture.service, '_authorityFaulted'), false);
 	});
 
 	test('a throwing debug logger cannot stop the remaining retirement cohort', async () => {
