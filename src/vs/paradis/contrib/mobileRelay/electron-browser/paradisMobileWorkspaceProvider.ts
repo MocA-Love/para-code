@@ -44,6 +44,7 @@ import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsRespon
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTerminalData } from '../common/paradisMobileTerminalData.js';
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
+import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
@@ -132,8 +133,8 @@ type ScmInbound =
 type FsInbound =
 	| { t: 'list'; id: string; ws: string; path: string }
 	| { t: 'resolveLink'; id: string; ws: string; path: string }
-	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean; responseEncoding?: string }
-	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number; responseEncoding?: string }
+	| { t: 'read'; id: string; ws: string; path: string; highlight?: boolean; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
+	| { t: 'xlsx'; id: string; ws: string; path: string; sheet?: number; responseEncoding?: string; cacheEncoding?: string; ifContentHash?: string }
 	| { t: 'pdf'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'docx'; id: string; ws: string; path: string; responseEncoding?: string }
 	| { t: 'media'; id: string; ws: string; path: string; responseEncoding?: string }
@@ -1174,6 +1175,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			const responseEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.responseEncoding : undefined;
 			sendReply(await paradisEncodeJsonResponsePayload('fs', msg.t, responseEncoding, json));
 		};
+		const replyCacheable = async (body: { readonly t: string } & Record<string, unknown>) => {
+			const cacheEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.cacheEncoding : undefined;
+			const ifContentHash = msg.t === 'read' || msg.t === 'xlsx' ? msg.ifContentHash : undefined;
+			await replyCompressed(await paradisContentHashResponse(cacheEncoding, ifContentHash, body));
+		};
 		const replyBinary = (type: ParadisBinaryFsResponseType, size: number, data: Uint8Array): boolean => {
 			const responseEncoding = msg.t === 'pdf' || msg.t === 'docx' || msg.t === 'media' ? msg.responseEncoding : undefined;
 			const encoded = paradisEncodeNegotiatedBinaryFsResponse(responseEncoding, type, msg.id, size, data);
@@ -1324,7 +1330,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// シート単位の遅延読み込み(sheet省略時は先頭)。シート一覧はモバイルの
 				// ネイティブタブに使われ、切替時に該当sheetだけ再要求される。
 				const result = await renderSpreadsheetMobileSheet(this.fileService, this.sharedProcessService, uri, typeof msg.sheet === 'number' ? msg.sheet : 0);
-				await replyCompressed({ t: 'xlsx', html: result.html, sheets: result.sheets, sheet: result.sheet });
+				await replyCacheable({ t: 'xlsx', html: result.html, sheets: result.sheets, sheet: result.sheet });
 			} else if (msg.t === 'pdf') {
 				// PDF はバイナリのまま base64 で返す（'read' の UTF-8 デコード経路はバイナリを壊すため使えない）。
 				const stat = await this.fileService.stat(uri);
@@ -1380,14 +1386,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const stat = await this.fileService.stat(uri);
 				const content = await this.fileService.readFile(uri, { length: FS_READ_LIMIT });
 				const text = content.value.toString();
-				const body: Record<string, unknown> = { t: 'read', content: text, truncated: (stat.size ?? 0) > FS_READ_LIMIT, size: stat.size ?? 0 };
+				const body: { t: 'read' } & Record<string, unknown> = { t: 'read', content: text, truncated: (stat.size ?? 0) > FS_READ_LIMIT, size: stat.size ?? 0 };
 				if (msg.highlight) {
 					const highlighted = await this.highlightFile(uri, text);
 					if (highlighted) {
 						Object.assign(body, highlighted);
 					}
 				}
-				await replyCompressed(body);
+				await replyCacheable(body);
 			}
 		} catch (err) {
 			reply({ error: String(err) });

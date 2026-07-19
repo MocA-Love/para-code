@@ -43,6 +43,7 @@ import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './parad
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
+import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -133,7 +134,7 @@ export interface IParadisAgentActivityDetailMessage {
 
 /** agentチャネルのモバイル→PCメッセージ。 */
 type AgentInbound =
-	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number }
+	| { t: 'attach'; id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }
 	| { t: 'detach'; id: number; token?: string }
 	| { t: 'action/sendMessage'; id: number; token?: string; requestId: string; epoch: string; text: string }
 	| { t: 'action/answerQuestion'; id: number; token?: string; requestId: string; epoch: string; interactionId: string; answers: readonly AgentQuestionAnswer[] }
@@ -146,8 +147,8 @@ type AgentInbound =
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
-	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
-	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
+	| { t: 'snapshot'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; truncated?: boolean; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
+	| { t: 'delta'; id: number; agent: ParadisAgentKind; epoch: string; rev: number; messages: IParadisAgentChatMessage[]; info?: IParadisAgentSessionInfo; live?: IParadisAgentLiveState | null; liveRevision?: number; liveAppend?: IParadisAgentLiveAppendPatch; activity?: IParadisAgentActivityState | null; interaction?: IParadisAgentInteraction | null; capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } }
 	| { t: 'model-catalog'; id: number; requestId: string; models: readonly IParadisCodexModelOption[] }
 	| { t: 'command-catalog'; id: number; requestId: string; commands: readonly IParadisAgentCommandOption[] }
 	| { t: 'command-catalog-error'; id: number; requestId: string; message: string }
@@ -472,6 +473,7 @@ function isValidAttachRequest(msg: AgentInboundCandidate): msg is AgentInboundCa
 	return msg.t === 'attach'
 		&& (msg.epoch === undefined || (typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200))
 		&& (msg.afterRev === undefined || (typeof msg.afterRev === 'number' && Number.isSafeInteger(msg.afterRev) && msg.afterRev >= -1))
+		&& (msg.liveEncoding === undefined || (typeof msg.liveEncoding === 'string' && msg.liveEncoding.length > 0 && msg.liveEncoding.length <= 100))
 		&& isValidTerminalIdentity(msg);
 }
 
@@ -2042,6 +2044,11 @@ interface ICommandCatalogContext {
 	readonly cwd: string;
 }
 
+interface IAgentSubscriber {
+	readonly owner: IParadisMobilePaneOwner;
+	readonly liveEncoding: string | undefined;
+}
+
 /** セッション確定済みかつ現在rendererから生存同期されているペインだけを公開する。 */
 export function paradisConfirmedAgentPaneTokens(
 	confirmedTokens: Iterable<string>,
@@ -2086,9 +2093,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly tailers = new Map<string, TranscriptTailer>();
 	/** ペイントークン → 購読中モバイルIDとattach時のexact owner。Renderer交代後は
 	 * 新しいattachまで旧購読へdeltaを流さない。 */
-	private readonly subscribers = new Map<string, Map<string, IParadisMobilePaneOwner>>();
+	private readonly subscribers = new Map<string, Map<string, IAgentSubscriber>>();
 	/** ペイントークン → transcript確定前の最新ライブ状態。履歴とは独立に置換する。 */
 	private readonly liveStates = new Map<string, IParadisAgentLiveState>();
+	/** ペイントークン → live state更新の単調増加revision。append欠落・逆順検出に使う。 */
+	private readonly liveRevisions = new Map<string, number>();
 	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
 	/** Claude SubagentStopが通知した子transcript（pane token + agent ID → 許可済みpath）。 */
 	private readonly claudeSubagentTranscriptPaths = new Map<string, string>();
@@ -2116,7 +2125,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly activityDetailRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** Stateがpane snapshotより先着したattachを、対応表の同期完了まで短時間だけ保留する。 */
-	private readonly pendingAttaches = new Map<string, { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number }; readonly timer: ReturnType<typeof setTimeout>; attempt: number }>();
+	private readonly pendingAttaches = new Map<string, { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }; readonly timer: ReturnType<typeof setTimeout>; attempt: number }>();
 	private readonly attachGenerations = new Map<string, number>();
 	private attachGenerationCounter = 0;
 	private attachDisposed = false;
@@ -2410,6 +2419,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					}
 				}
 				this.liveStates.delete(token);
+				this.liveRevisions.delete(token);
 				this.liveToolIds.delete(token);
 				this.liveMessageBuffers.delete(token);
 				this.codexMessageBuffers.delete(token);
@@ -3263,7 +3273,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		return { code: 'unavailable', message: 'Codexのモデル設定を更新できませんでした' };
 	}
 
-	private async handleAttach(mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number }, retry = false): Promise<void> {
+	private async handleAttach(mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }, retry = false): Promise<void> {
 		const pendingKey = this.pendingAttachKey(mobileId, msg.id, msg.token);
 		const attachGeneration = retry ? this.attachGenerations.get(pendingKey) : ++this.attachGenerationCounter;
 		if (attachGeneration === undefined || this.attachDisposed) {
@@ -3304,11 +3314,11 @@ export class ParadisMobileAgentChat extends Disposable {
 				// 「ターミナルタブで見る」案内を出す。トークンが分かる場合は購読者として
 				// 記録しておき、後からhookでセッションが判明したら自動でスナップショットを
 				// 送り直す(エージェント起動を待たずにattachしたケースの自己回復)。
-				this.addSubscriber(token, mobileId, owner);
+				this.addSubscriber(token, mobileId, owner, msg.liveEncoding);
 				this.sendTo(mobileId, { t: 'none', id: msg.id }, token, owner);
 				return;
 			}
-			this.addSubscriber(token, mobileId, owner);
+			this.addSubscriber(token, mobileId, owner, msg.liveEncoding);
 			const tailer = this.ensureTailer(token, currentSession);
 			await tailer.ready;
 			// attach処理中に購読またはセッションが置き換わっていたら旧snapshotを送らない。
@@ -3323,19 +3333,20 @@ export class ParadisMobileAgentChat extends Disposable {
 			const oldestRev = tailer.messages.length > 0 ? tailer.messages[0].rev : tailer.rev;
 			const info = this.infoOf(token, tailer);
 			const live = this.liveStates.get(token) ?? null;
+			const liveRevision = this.liveRevisions.get(token) ?? 0;
 			const activity = this.activityTrackers.get(token)?.snapshot() ?? null;
 			const interaction = tailer.currentInteraction();
 			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 				const messages = tailer.messages.filter(m => m.rev > afterRev);
-				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } }, token, owner);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } }, token, owner);
 			} else {
 				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 				this.sendTo(mobileId, {
 					t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
 					...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 					...(info !== undefined ? { info } : {}),
-					live, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
+					live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
 				}, token, owner);
 			}
 		} finally {
@@ -3347,7 +3358,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		return `${mobileId}\0${terminalId}\0${token ?? ''}`;
 	}
 
-	private deferAttach(key: string, mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number }): { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number }; readonly timer: ReturnType<typeof setTimeout>; attempt: number } {
+	private deferAttach(key: string, mobileId: string, msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }): { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }; readonly timer: ReturnType<typeof setTimeout>; attempt: number } {
 		const existing = this.pendingAttaches.get(key);
 		if (existing !== undefined) {
 			return existing;
@@ -3487,8 +3498,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private setLiveState(token: string, state: IParadisAgentLiveState): void {
+		const previous = this.liveStates.get(token);
+		const baseRevision = this.liveRevisions.get(token) ?? 0;
+		const revision = baseRevision + 1;
 		this.liveStates.set(token, state);
-		this.pushLiveToSubscribers(token, state);
+		this.liveRevisions.set(token, revision);
+		this.pushLiveToSubscribers(token, previous, state, baseRevision, revision);
 	}
 
 	private clearLiveState(token: string): void {
@@ -3496,7 +3511,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.liveToolIds.delete(token);
 		this.liveMessageBuffers.delete(token);
 		if (hadState) {
-			this.pushLiveToSubscribers(token, null);
+			const revision = (this.liveRevisions.get(token) ?? 0) + 1;
+			this.liveRevisions.set(token, revision);
+			this.pushFullLiveToSubscribers(token, null, revision);
 		}
 	}
 
@@ -3733,16 +3750,29 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/** 現在attach中の全モバイルへライブ状態だけを空deltaとして送る。 */
-	private pushLiveToSubscribers(token: string, live: IParadisAgentLiveState | null): void {
+	private pushLiveToSubscribers(token: string, previous: IParadisAgentLiveState | undefined, live: IParadisAgentLiveState, baseRevision: number, revision: number): void {
 		const terminalId = this.terminalIdForToken(token);
 		const tailer = this.tailers.get(token);
-		if (terminalId === undefined || tailer === undefined) {
-			return;
+		if (terminalId !== undefined && tailer !== undefined) {
+			for (const [mobileId, subscriber] of this.subscribers.get(token) ?? []) {
+				const livePayload = paradisAgentLivePayloadForEncoding(subscriber.liveEncoding, previous, live, baseRevision, revision);
+				this.sendTo(mobileId, {
+					t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev,
+					messages: [], ...livePayload,
+				}, token, subscriber.owner);
+			}
 		}
-		this.sendToSubscribers(token, {
-			t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev,
-			messages: [], live,
-		});
+	}
+
+	private pushFullLiveToSubscribers(token: string, live: IParadisAgentLiveState | null, liveRevision: number): void {
+		const terminalId = this.terminalIdForToken(token);
+		const tailer = this.tailers.get(token);
+		if (terminalId !== undefined && tailer !== undefined) {
+			this.sendToSubscribers(token, {
+				t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev,
+				messages: [], live, liveRevision,
+			});
+		}
 	}
 
 	private activityTracker(token: string): ParadisAgentActivityTracker {
@@ -4045,6 +4075,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.paneSessions.delete(previousOwner);
 			this.disposeTailer(previousOwner);
 			this.liveStates.delete(previousOwner);
+			this.liveRevisions.delete(previousOwner);
 			this.liveToolIds.delete(previousOwner);
 			this.liveMessageBuffers.delete(previousOwner);
 			this.codexMessageBuffers.delete(previousOwner);
@@ -4214,7 +4245,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } });
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } });
 				}
 			},
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
@@ -4345,13 +4376,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		this._onDidChangeConfirmedAgentPanes.fire(next);
 	}
 
-	private addSubscriber(token: string, mobileId: string, owner: IParadisMobilePaneOwner): void {
+	private addSubscriber(token: string, mobileId: string, owner: IParadisMobilePaneOwner, liveEncoding: string | undefined): void {
 		let subscribers = this.subscribers.get(token);
 		if (subscribers === undefined) {
-			subscribers = new Map<string, IParadisMobilePaneOwner>();
+			subscribers = new Map<string, IAgentSubscriber>();
 			this.subscribers.set(token, subscribers);
 		}
-		subscribers.set(mobileId, owner);
+		subscribers.set(mobileId, {
+			owner,
+			liveEncoding: liveEncoding === PARADIS_AGENT_LIVE_APPEND_ENCODING ? PARADIS_AGENT_LIVE_APPEND_ENCODING : undefined,
+		});
 	}
 
 	private removeSubscriber(token: string, mobileId: string): boolean {
@@ -4366,14 +4400,14 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private hasSubscriber(token: string, mobileId: string): boolean {
-		const subscribedOwner = this.subscribers.get(token)?.get(mobileId);
+		const subscribedOwner = this.subscribers.get(token)?.get(mobileId)?.owner;
 		const currentOwner = this.paneRegistry.ownerOf(token);
 		return subscribedOwner !== undefined && currentOwner !== undefined && this.samePaneOwner(subscribedOwner, currentOwner);
 	}
 
 	private sendToSubscribers(token: string, msg: AgentOutbound): void {
-		for (const [mobileId, owner] of this.subscribers.get(token) ?? []) {
-			this.sendTo(mobileId, msg, token, owner);
+		for (const [mobileId, subscriber] of this.subscribers.get(token) ?? []) {
+			this.sendTo(mobileId, msg, token, subscriber.owner);
 		}
 	}
 
@@ -4387,14 +4421,14 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.send(mobileId, payload);
 			return true;
 		}
-		const owner = expectedOwner ?? this.subscribers.get(token)?.get(mobileId) ?? this.paneRegistry.ownerOf(token);
+		const owner = expectedOwner ?? this.subscribers.get(token)?.get(mobileId)?.owner ?? this.paneRegistry.ownerOf(token);
 		if (owner === undefined) {
 			return false;
 		}
 		try {
 			const authorized = await this.authorizeOwner(owner);
 			const current = this.paneRegistry.ownerOf(token);
-			const subscribed = this.subscribers.get(token)?.get(mobileId);
+			const subscribed = this.subscribers.get(token)?.get(mobileId)?.owner;
 			if (authorized && current !== undefined && subscribed !== undefined
 				&& this.samePaneOwner(current, owner) && this.samePaneOwner(subscribed, owner)) {
 				this.send(mobileId, payload);
