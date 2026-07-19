@@ -26,7 +26,7 @@ import {
 	respondHandshake,
 	sealNotify,
 } from '../common/paradisMobileCrypto.js';
-import { FrameMux } from '../common/paradisMobileMux.js';
+import { FrameMux, IParadisMobileFrameTrafficSample } from '../common/paradisMobileMux.js';
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
@@ -72,6 +72,7 @@ import { IParadisMobileWindowLeaseRef, ParadisMobileOperationLedger } from './pa
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
 import { IParadisMobilePaneOwner } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentCommandAuthority, ParadisAgentCommandDeliveryResult } from '../common/paradisAgentCommandLifecycle.js';
+import { ParadisMobileTrafficDiagnostics, startParadisMobileTrafficDiagnostics } from './paradisMobileTrafficDiagnostics.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
 import { promises as fs } from 'fs';
@@ -116,6 +117,7 @@ class MobileSession {
 		private readonly pcIdentity: MobileIdentity,
 		private readonly sendToRelay: (payload: Uint8Array) => void,
 		private readonly onFrame: (frame: IParadisMobileInboundFrame) => void,
+		private readonly onTraffic: ((sample: IParadisMobileFrameTrafficSample) => void) | undefined,
 		private readonly logService: ILogService,
 	) { }
 
@@ -171,6 +173,7 @@ class MobileSession {
 				this.mux = new FrameMux(this.channel, {
 					sendSealed: (sealed: Uint8Array) => this.sendToRelay(sealed),
 					onError: (err: unknown) => this.logService.warn('[paradisMobileRelay] frame open failed', err),
+					...(this.onTraffic !== undefined ? { onTraffic: this.onTraffic } : {}),
 				});
 				this.mux.on(Channels.State, f => this.emit(f));
 				this.mux.on(Channels.Terminal, f => this.emit(f));
@@ -283,6 +286,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly agentChat: ParadisMobileAgentChat;
 	/** GUI起動でもcodex CLIを解決できるログインシェル環境。 */
 	private readonly cachedShellEnv: ParadisCachedShellEnv;
+	private readonly trafficDiagnostics: ParadisMobileTrafficDiagnostics | undefined;
 
 	constructor(
 		private readonly userDataPath: string,
@@ -297,6 +301,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		args?: NativeParsedArgs,
 	) {
 		super();
+		const trafficDiagnosticsSession = startParadisMobileTrafficDiagnostics(
+			process.env.PARADIS_MOBILE_TRAFFIC_DIAGNOSTICS,
+			line => this.logService.info(`[paradisMobileRelay][traffic] ${line}`),
+		);
+		this.trafficDiagnostics = trafficDiagnosticsSession?.diagnostics;
+		if (trafficDiagnosticsSession !== undefined) {
+			this._register(trafficDiagnosticsSession);
+		}
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
 			'ParadisMobileRelay',
@@ -1319,6 +1331,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			if (!paired || !this.identity) {
 				return; // 未知のモバイル。無視。
 			}
+			const trafficDiagnostics = this.trafficDiagnostics;
 			session = new MobileSession(
 				idStr,
 				mobileId,
@@ -1384,6 +1397,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 					}
 					this._onInboundFrame.fire([frame.ch, frame.ws, frame.seq, frame.payload, frame.mobileId]);
 				},
+				trafficDiagnostics === undefined ? undefined : sample => trafficDiagnostics.record(sample),
 				this.logService,
 			);
 			this.sessions.set(idStr, session);

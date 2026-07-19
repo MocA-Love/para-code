@@ -14,9 +14,18 @@ import { ChannelId, decodeFrame, encodeFrame, Frame } from './paradisMobileProto
 
 export type FrameHandler = (frame: Frame) => void;
 
+export interface IParadisMobileFrameTrafficSample {
+	readonly direction: 'sent' | 'received';
+	readonly channel: ChannelId;
+	readonly payloadBytes: number;
+	readonly sealedBytes: number;
+	readonly more: boolean;
+}
+
 export interface FrameMuxOptions {
 	readonly sendSealed: (sealed: Uint8Array) => void;
 	readonly onError?: (error: unknown) => void;
+	readonly onTraffic?: (sample: IParadisMobileFrameTrafficSample) => void;
 }
 
 /**
@@ -45,6 +54,14 @@ export class FrameMux {
 
 	constructor(private readonly channel: SecureChannel, private readonly options: FrameMuxOptions) { }
 
+	private reportTraffic(observer: (sample: IParadisMobileFrameTrafficSample) => void, sample: IParadisMobileFrameTrafficSample): void {
+		try {
+			observer(sample);
+		} catch {
+			// Diagnostics must never affect frame delivery or the ordered cipher chains.
+		}
+	}
+
 	on(channel: ChannelId, handler: FrameHandler): void {
 		this.handlers.set(channel, handler);
 	}
@@ -66,7 +83,18 @@ export class FrameMux {
 					...(more ? { more: true } : {}),
 				};
 				// seal(nonce採番+暗号化)と送出を不可分にする。
-				this.options.sendSealed(await this.channel.seal(encodeFrame(frame)));
+				const sealed = await this.channel.seal(encodeFrame(frame));
+				this.options.sendSealed(sealed);
+				const trafficObserver = this.options.onTraffic;
+				if (trafficObserver !== undefined) {
+					this.reportTraffic(trafficObserver, {
+						direction: 'sent',
+						channel,
+						payloadBytes: frame.payload.length,
+						sealedBytes: sealed.length,
+						more,
+					});
+				}
 				if (!more) {
 					return;
 				}
@@ -89,6 +117,16 @@ export class FrameMux {
 				// onErrorで握り潰すと確立済みセッションが永久に新しいhelloを無視し再接続不能になる。
 				this.options.onError?.(error);
 				throw error;
+			}
+			const trafficObserver = this.options.onTraffic;
+			if (trafficObserver !== undefined) {
+				this.reportTraffic(trafficObserver, {
+					direction: 'received',
+					channel: frame.ch,
+					payloadBytes: frame.payload.length,
+					sealedBytes: sealed.length,
+					more: frame.more === true,
+				});
 			}
 			const pending = this.reassembly.get(frame.ch);
 			if (frame.more === true) {
