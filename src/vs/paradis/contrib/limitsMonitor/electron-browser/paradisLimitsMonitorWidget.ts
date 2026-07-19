@@ -22,8 +22,11 @@ import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsSnapshot,
@@ -65,12 +68,17 @@ class ParadisLimitsMonitorWidget extends Disposable {
 
 	private latestSnapshot: IParadisLimitsSnapshot | undefined;
 	private isFetching = false;
+	private refreshRequested = false;
+	private readonly removingHomes = new Set<string>();
 
 	constructor(
 		container: HTMLElement,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IDialogService private readonly dialogService: IDialogService,
+		@INotificationService private readonly notificationService: INotificationService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 
@@ -140,6 +148,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			onClose: () => this.closePanel(),
 			onAddAccount: provider => this.openSetupDialog(provider, undefined),
 			onRelogin: account => this.openSetupDialog(account.provider, account),
+			onRemoveAccount: account => void this.removeAccount(account),
 		};
 		this.button.classList.add('active');
 		this.panel.value = this.instantiationService.createInstance(ParadisLimitsMonitorPanel, this.button, options);
@@ -167,6 +176,37 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		});
 	}
 
+	private async removeAccount(account: IParadisLimitsAccount): Promise<void> {
+		if (account.provider !== 'codex' || !account.removable || this.removingHomes.has(account.id)) {
+			return;
+		}
+		this.removingHomes.add(account.id);
+		try {
+			const accountName = account.email ?? localize('paradis.limitsMonitor.unknownAccount', "不明なアカウント");
+			const homeLabel = account.homeLabel ?? account.id;
+			const { confirmed } = await this.dialogService.confirm({
+				message: localize('paradis.limitsMonitor.removeConfirm', "このCodexアカウントを削除しますか？"),
+				detail: localize(
+					'paradis.limitsMonitor.removeDetail',
+					"{0} ({1}) の認証情報、設定、セッション履歴を含むホーム全体をゴミ箱へ移動します。利用中のCodexプロセスに影響する可能性があります。ゴミ箱から復元できます。",
+					accountName,
+					homeLabel,
+				),
+				primaryButton: localize('paradis.limitsMonitor.moveToTrash', "ゴミ箱へ移動"),
+			});
+			if (!confirmed) {
+				return;
+			}
+			await this.client.moveCodexHomeToTrash(account.id);
+			await this.poll(true);
+		} catch (error) {
+			this.logService.error('[ParadisLimitsMonitor] Failed to move Codex home to trash', error);
+			this.notificationService.error(localize('paradis.limitsMonitor.removeFailed', "Codexアカウントをゴミ箱へ移動できませんでした。もう一度お試しください。"));
+		} finally {
+			this.removingHomes.delete(account.id);
+		}
+	}
+
 	private async poll(force: boolean): Promise<void> {
 		// アイドルポーリングはウィンドウ不可視中スキップ(resourceMonitorと同じ)。復帰は
 		// visibilitychange購読と次tickのhidden判定で担保される
@@ -174,6 +214,9 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			return;
 		}
 		if (this.isFetching) {
+			if (force) {
+				this.refreshRequested = true;
+			}
 			return;
 		}
 		this.isFetching = true;
@@ -188,6 +231,10 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		} finally {
 			this.isFetching = false;
 			this.panel.value?.setFetching(false);
+			if (this.refreshRequested) {
+				this.refreshRequested = false;
+				void this.poll(true);
+			}
 		}
 	}
 
