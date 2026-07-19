@@ -106,7 +106,12 @@ const MAX_CDP_FRAME_BYTES = 1024 * 1024;
 // frames. Keep one bounded exception while the exact screenshot request owns the authority.
 const MAX_CDP_SCREENSHOT_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_CDP_CONNECTING_QUEUE_BYTES = 4 * 1024 * 1024;
-const MAX_CDP_OPEN_BUFFERED_BYTES = 4 * 1024 * 1024;
+// Event floods from heavy pages (a vite dev app emits thousands of Debugger.scriptParsed /
+// CSS.styleSheetAdded frames — measured ~9MB in 400ms — right after puppeteer enables the
+// domains on connect) must not trip the backpressure guard: exceeding it closes the whole
+// connection, which surfaces as a permanent "Target closed" for every embedded DevTools tool.
+// Matches the screenshot frame allowance above; localhost sockets drain in milliseconds.
+const MAX_CDP_OPEN_BUFFERED_BYTES = 32 * 1024 * 1024;
 const MAX_CDP_METHOD_LENGTH = 256;
 const MAX_CDP_IDENTIFIER_LENGTH = 512;
 const MAX_CDP_ROUTING_ENTRIES = 4_096;
