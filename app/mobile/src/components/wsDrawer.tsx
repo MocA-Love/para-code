@@ -134,6 +134,10 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	const effective = selectedWs !== undefined && list.some(w => w.id === selectedWs) ? selectedWs : list[0]?.id;
 	const waitingTotal = terminals.filter(t => isAgentWaiting(t.agentStatus)).length;
 	const online = connection === 'online' && pcOnline && sessionProtocolReady;
+	// PC本体のバッテリー（旧PCでは未配信）。接続中のときだけ「● 接続中」の右に併記する
+	// （オフライン系の長い文言と同居させると行崩れするため）。低残量判定はLive Activityと同ルール。
+	const battery = workspace?.battery;
+	const batteryLow = battery !== undefined && !battery.charging && battery.level < 20;
 
 	// ── ワークツリー（スペース）の親子グルーピング ──
 	// parent付きエントリを親リポジトリ行の配下にまとめ、開閉できるようにする。
@@ -274,9 +278,29 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 					<Image source={require('../../assets/pairing-logo.png')} style={styles.pcIcon} resizeMode="contain" />
 					<View style={styles.pcBody}>
 						<Text style={styles.pcName}>Para Code</Text>
-						<Text style={[styles.pcState, !online && styles.pcStateOff]}>
-							{online ? '● 接続中' : (connection === 'online' || connection === 'handshaking') && !pcOnline ? '○ PCオフライン' : manualOffline ? '○ 切断中' : '接続中…'}
-						</Text>
+						<View style={styles.pcStateRow}>
+							<Text style={[styles.pcState, !online && styles.pcStateOff]}>
+								{online ? '● 接続中' : (connection === 'online' || connection === 'handshaking') && !pcOnline ? '○ PCオフライン' : manualOffline ? '○ 切断中' : '接続中…'}
+							</Text>
+							{online && battery !== undefined && (
+								<>
+									<Text style={styles.batterySep}>・</Text>
+									{battery.charging && <Ionicons name="flash" size={9} color={colors.yellow} />}
+									<View style={[styles.batteryBody, batteryLow && styles.batteryBodyLow]}>
+										<View
+											style={[
+												styles.batteryFill,
+												{ width: `${Math.max(8, battery.level)}%` },
+												battery.charging && styles.batteryFillCharging,
+												batteryLow && styles.batteryFillLow,
+											]}
+										/>
+									</View>
+									<View style={[styles.batteryTip, batteryLow && styles.batteryTipLow]} />
+									<Text style={[styles.batteryPct, batteryLow && styles.batteryPctLow]}>{battery.level}%</Text>
+								</>
+							)}
+						</View>
 					</View>
 					<Pressable
 						style={styles.settingsBtn}
@@ -446,8 +470,20 @@ const styles = StyleSheet.create({
 	settingsBtn: { width: 32, height: 32, borderRadius: 10, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
 	pcBody: { flex: 1, minWidth: 0 },
 	pcName: { color: colors.text, fontSize: 14, fontWeight: '700' },
-	pcState: { color: colors.green, fontSize: 11, marginTop: 1 },
+	pcState: { color: colors.green, fontSize: 11 },
 	pcStateOff: { color: colors.textDim },
+	// 「● 接続中」の右に併記するPC本体バッテリー（aaa.html 案1。低残量=赤/充電中=⚡+黄はLive Activityと同ルール）
+	pcStateRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
+	batterySep: { color: 'rgba(255,255,255,0.25)', fontSize: 11 },
+	batteryBody: { width: 17, height: 9, borderRadius: 2.5, borderWidth: 1.2, borderColor: 'rgba(255,255,255,0.5)', padding: 1.5, justifyContent: 'center' },
+	batteryBodyLow: { borderColor: 'rgba(244,114,114,0.7)' },
+	batteryFill: { height: '100%', borderRadius: 1, backgroundColor: colors.green },
+	batteryFillCharging: { backgroundColor: colors.yellow },
+	batteryFillLow: { backgroundColor: colors.red },
+	batteryTip: { width: 2, height: 3.5, borderTopRightRadius: 1, borderBottomRightRadius: 1, backgroundColor: 'rgba(255,255,255,0.5)', marginLeft: -3 },
+	batteryTipLow: { backgroundColor: 'rgba(244,114,114,0.7)' },
+	batteryPct: { color: colors.textDim, fontSize: 10.5, fontWeight: '700' },
+	batteryPctLow: { color: colors.red },
 	statsRow: { flexDirection: 'row', gap: 6, marginTop: 12 },
 	stat: { flex: 1, backgroundColor: colors.surface2, borderRadius: 10, paddingVertical: 7, alignItems: 'center' },
 	statValue: { color: colors.accent, fontSize: 15, fontWeight: '700' },
