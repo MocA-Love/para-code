@@ -41,6 +41,10 @@ export interface IParadisLimitsAccount {
 	readonly homeLabel?: string;
 	/** Claude: cswapのスロット番号(再ログイン時の --slot 指定に使う)。 */
 	readonly slot?: number;
+	/** Codex: Para Codeが自動作成した追加ホームで、安全な削除条件を満たすか。 */
+	readonly removable?: boolean;
+	/** Codex: 同じaccount_idを持つ、自分以外のホームの表示用ラベル。 */
+	readonly duplicateHomeLabels?: readonly string[];
 	readonly status: ParadisLimitsAccountStatus;
 	/** status が ok 以外のときの補足(cswapのusageStatus生値やHTTPエラー等)。 */
 	readonly statusDetail?: string;
@@ -78,6 +82,7 @@ export type ParadisLimitsSetupPhase =
 	| 'waiting_browser'
 	| 'waiting_code'
 	| 'registering'
+	| 'waiting_duplicate'
 	| 'done'
 	| 'error';
 
@@ -89,11 +94,21 @@ export interface IParadisLimitsSetupState {
 	readonly email?: string;
 	/** Codex: 追加先ホームの表示ラベル(~/.codex-3 等)。 */
 	readonly homeLabel?: string;
+	/** Codex: 重複確認時にゴミ箱へ移動する新規ホームの絶対パス。 */
+	readonly homePath?: string;
+	/** Codex: 同じaccount_idが見つかった既存ホームの表示用ラベル。 */
+	readonly duplicateHomeLabels?: readonly string[];
 	readonly error?: string;
 }
 
 export interface IParadisLimitsSetupHandle {
 	readonly sessionId: string;
+}
+
+export type ParadisLimitsDuplicateDecision = 'keep' | 'discard';
+
+export interface IParadisLimitsCodexRemovalTarget {
+	readonly homePath: string;
 }
 
 export type ParadisLimitsSeverity = 'normal' | 'elevated' | 'high';
