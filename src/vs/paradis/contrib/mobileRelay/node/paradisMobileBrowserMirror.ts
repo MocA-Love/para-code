@@ -97,7 +97,12 @@ export class ParadisMobileBrowserMirror extends Disposable {
 				continue;
 			}
 			session.lastPushFrameAt = Date.now();
-			// フォールバックポーリングが同一フレームを再送しないよう dedup 基準も更新する
+			// 同じJPEGの再描画通知は表示を変えない。生存時刻だけは上で更新し、
+			// プッシュ停滞と誤認してポーリングへフォールバックしないようにする。
+			if (session.lastFrameData === e.data) {
+				continue;
+			}
+			// フォールバックポーリングが同一フレームを再送しないようdedup基準も更新する。
 			session.lastFrameData = e.data;
 			session.send(encoder.encode(JSON.stringify({ t: 'frame', data: e.data, w: e.w, h: e.h })));
 		}
