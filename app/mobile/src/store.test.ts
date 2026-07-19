@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, TERMINAL_BINARY_DATA_ENCODING, decodeBinaryFsUpload, encodeBinaryTerminalData, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
+import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, decodeBinaryFsUpload, encodeBinaryTerminalData, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
@@ -136,6 +136,17 @@ function ab(d: string | ArrayBufferView | ArrayBuffer): ArrayBuffer {
 	return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) as ArrayBuffer;
 }
 const flush = () => new Promise<void>(r => setTimeout(r, 0));
+
+async function gzipJsonResponse(value: object): Promise<Uint8Array> {
+	const json = new TextEncoder().encode(JSON.stringify(value));
+	const readable = new Blob([json.slice()]).stream().pipeThrough(new CompressionStream('gzip'));
+	const compressed = new Uint8Array(await new Response(readable).arrayBuffer());
+	const payload = new Uint8Array(12 + compressed.length);
+	payload.set([0x50, 0x43, 0x4a, 0x01, 1, 0, 0, 0], 0);
+	new DataView(payload.buffer).setUint32(8, json.length, false);
+	payload.set(compressed, 12);
+	return payload;
+}
 
 function drivePc(pair: FakePair, pc: Identity, mobilePub: Uint8Array, onMux?: (mux: FrameMux) => void): Promise<FrameMux> {
 	return new Promise((resolve, reject) => {
@@ -619,6 +630,60 @@ describe('MobileController', () => {
 		const pendingBrowser = controller.browserTargets();
 		controller.disconnect();
 		await expect(pendingBrowser).rejects.toThrow('接続が切断されました');
+	});
+
+	it('negotiates gzip JSON responses for heavy reads and preserves the existing results', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+		await flush();
+
+		const requests: Array<{ id: string; t: string; responseEncoding?: string; path?: string }> = [];
+		pcMux.on(Channels.Scm, frame => {
+			const req = JSON.parse(new TextDecoder().decode(frame.payload)) as { id: string; t: string; responseEncoding?: string; path?: string };
+			requests.push(req);
+			const body = req.t === 'diff'
+				? { id: req.id, t: 'diff', diff: 'line 1\n+line 2' }
+				: { id: req.id, t: 'xlsxDiff', html: '<table>diff</table>' };
+			void gzipJsonResponse(body).then(payload => pcMux.send(Channels.Scm, payload));
+		});
+		pcMux.on(Channels.Fs, frame => {
+			const req = JSON.parse(new TextDecoder().decode(frame.payload)) as { id: string; t: string; responseEncoding?: string; path?: string };
+			requests.push(req);
+			if (req.path === 'malformed.ts') {
+				const malformed = new Uint8Array([0x50, 0x43, 0x4a, 0x01, 1, 0, 0, 0, 0, 0, 0, 10, 0, 0]);
+				pcMux.send(Channels.Fs, malformed);
+				return;
+			}
+			const body = req.t === 'read'
+				? { id: req.id, t: 'read', content: 'const x = 1;\n', truncated: false, size: 13 }
+				: { id: req.id, t: 'xlsx', html: '<table>sheet</table>', sheets: ['Sheet1'], sheet: 0 };
+			void gzipJsonResponse(body).then(payload => pcMux.send(Channels.Fs, payload));
+		});
+
+		await expect(controller.scmDiff('1:w1')).resolves.toMatchObject({ t: 'diff', diff: 'line 1\n+line 2' });
+		await expect(controller.scmXlsxDiff('1:w1', 'book.xlsx')).resolves.toMatchObject({ t: 'xlsxDiff', html: '<table>diff</table>' });
+		await expect(controller.fsRead('1:w1', 'a.ts')).resolves.toMatchObject({ t: 'read', content: 'const x = 1;\n', truncated: false, size: 13 });
+		await expect(controller.fsXlsx('1:w1', 'book.xlsx')).resolves.toMatchObject({ t: 'xlsx', html: '<table>sheet</table>', sheets: ['Sheet1'], sheet: 0 });
+		expect(requests.map(request => [request.t, request.responseEncoding])).toEqual([
+			['diff', JSON_GZIP_RESPONSE_ENCODING],
+			['xlsxDiff', JSON_GZIP_RESPONSE_ENCODING],
+			['read', JSON_GZIP_RESPONSE_ENCODING],
+			['xlsx', JSON_GZIP_RESPONSE_ENCODING],
+		]);
+
+		const malformed = controller.fsRead('1:w1', 'malformed.ts');
+		await flush();
+		controller.disconnect();
+		await expect(malformed).rejects.toThrow('接続が切断されました');
 	});
 
 	it('negotiates binary file responses, preserves bytes, ignores a mismatched id, and accepts legacy JSON', async () => {
