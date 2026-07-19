@@ -76,6 +76,8 @@ function createFixture(): {
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 		_bindings: bindings,
 		_quarantinedBindings: quarantinedBindings,
+		_faultedTokens: new Set<string>(),
+		_quarantinedTokenState: new Map(),
 		_bindingAuthority: authority,
 		_backgroundThrottlingCoordinator: coordinator,
 		_pendingBindPreparations: 0,

@@ -725,6 +725,8 @@ function createServiceFixture(generation: number): {
 		_bindingAuthority: authority,
 		_backgroundThrottlingCoordinator: new ParadisExactViewBackgroundThrottlingCoordinator(),
 		_quarantinedBindings: new Set(),
+		_faultedTokens: new Set<string>(),
+		_quarantinedTokenState: new Map(),
 		_terminalExitedTokens: new Set(),
 		_paneShells: paneShells,
 		_paneStatuses: new Map(),
