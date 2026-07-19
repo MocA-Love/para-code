@@ -143,6 +143,12 @@ interface ICodexAuthJson {
 	};
 }
 
+interface ICodexAccountResult {
+	readonly account: IParadisLimitsAccount;
+	/** rendererへは返さず、shared process内の重複判定だけに使う。 */
+	readonly accountId?: string;
+}
+
 interface ISetupSession {
 	readonly id: string;
 	state: IParadisLimitsSetupState;
@@ -302,7 +308,19 @@ export class ParadisLimitsMonitorService {
 		if (homes.length === 0) {
 			return { accounts: [], sourceError: 'no Codex homes with auth.json found' };
 		}
-		const accounts = await Promise.all(homes.map(home => this.fetchCodexAccount(home)));
+		const results = await Promise.all(homes.map(home => this.fetchCodexAccount(home)));
+		const accounts = results.map((result, index) => {
+			if (!result.accountId) {
+				return result.account;
+			}
+			const duplicateHomeLabels = results
+				.filter((other, otherIndex) => otherIndex !== index && other.accountId === result.accountId)
+				.map(other => other.account.homeLabel)
+				.filter(homeLabel => homeLabel !== undefined);
+			return duplicateHomeLabels.length > 0
+				? { ...result.account, duplicateHomeLabels }
+				: result.account;
+		});
 		return { accounts };
 	}
 
@@ -343,47 +361,71 @@ export class ParadisLimitsMonitorService {
 		return homePath.startsWith(home) ? `~${homePath.slice(home.length)}` : homePath;
 	}
 
-	private async fetchCodexAccount(homePath: string): Promise<IParadisLimitsAccount> {
-		const base: { provider: 'codex'; id: string; homeLabel: string } = {
+	private async isRemovableCodexHome(homePath: string): Promise<boolean> {
+		try {
+			const resolvedHome = path.resolve(os.homedir());
+			const resolvedCandidate = path.resolve(homePath);
+			if (path.dirname(resolvedCandidate) !== resolvedHome) {
+				return false;
+			}
+			const match = /^\.codex-(\d+)$/.exec(path.basename(resolvedCandidate));
+			const index = match ? Number(match[1]) : NaN;
+			if (!match || !Number.isSafeInteger(index) || index < 2 || String(index) !== match[1]) {
+				return false;
+			}
+			const stat = await fs.promises.lstat(resolvedCandidate);
+			return stat.isDirectory()
+				&& !stat.isSymbolicLink()
+				&& await this.fileExists(path.join(resolvedCandidate, 'auth.json'));
+		} catch {
+			return false;
+		}
+	}
+
+	private async fetchCodexAccount(homePath: string): Promise<ICodexAccountResult> {
+		const base: { provider: 'codex'; id: string; homeLabel: string; removable: boolean } = {
 			provider: 'codex',
 			id: homePath,
 			homeLabel: this.codexHomeLabel(homePath),
+			removable: await this.isRemovableCodexHome(homePath),
 		};
 		let auth: ICodexAuthJson;
 		try {
 			auth = JSON.parse(await fs.promises.readFile(path.join(homePath, 'auth.json'), 'utf8')) as ICodexAuthJson;
 		} catch (error) {
-			return { ...base, status: 'error', statusDetail: `failed to read auth.json: ${(error as Error).message}` };
+			return { account: { ...base, status: 'error', statusDetail: `failed to read auth.json: ${(error as Error).message}` } };
 		}
+		const rawAccountId = auth.tokens?.account_id;
+		const accountId = typeof rawAccountId === 'string' && rawAccountId.trim().length > 0 ? rawAccountId.trim() : undefined;
 		const accessToken = auth.tokens?.access_token;
 		if (!accessToken) {
-			return { ...base, status: 'no_credentials', statusDetail: 'auth.json has no access token' };
+			return { account: { ...base, status: 'no_credentials', statusDetail: 'auth.json has no access token' }, accountId };
 		}
 		const email = this.emailFromIdToken(auth.tokens?.id_token);
 
 		try {
-			const usage = await this.fetchWhamUsage(accessToken, auth.tokens?.account_id);
-			return { ...base, email, ...this.mapWhamUsage(usage), status: 'ok' };
+			const usage = await this.fetchWhamUsage(accessToken, accountId);
+			return { account: { ...base, email, ...this.mapWhamUsage(usage), status: 'ok' }, accountId };
 		} catch (error) {
 			const httpStatus = (error as { httpStatus?: number }).httpStatus;
 			if (httpStatus !== 401 && httpStatus !== 403) {
-				return { ...base, email, status: 'error', statusDetail: (error as Error).message };
+				return { account: { ...base, email, status: 'error', statusDetail: (error as Error).message }, accountId };
 			}
 		}
 
 		// access token失効 → codex app-server RPCへフォールバック(codex CLI自身にリフレッシュさせる)
 		const lastFailure = this.rpcFailureAt.get(homePath);
 		if (lastFailure !== undefined && Date.now() - lastFailure < RPC_FAILURE_COOLDOWN_MS) {
-			return { ...base, email, status: 'token_expired', statusDetail: 'access token expired (re-login required)' };
+			return { account: { ...base, email, status: 'token_expired', statusDetail: 'access token expired (re-login required)' }, accountId };
 		}
 		try {
 			const viaRpc = await this.fetchCodexAccountViaRpc(homePath);
 			this.rpcFailureAt.delete(homePath);
-			return { ...base, email: viaRpc.email ?? email, ...viaRpc.windows, planType: viaRpc.planType, status: 'ok' };
+			return { account: { ...base, email: viaRpc.email ?? email, ...viaRpc.windows, planType: viaRpc.planType, status: 'ok' }, accountId };
 		} catch (error) {
 			this.rpcFailureAt.set(homePath, Date.now());
 			this.logService.warn(`[ParadisLimitsMonitor] codex app-server fallback failed for ${base.homeLabel}: ${(error as Error).message}`);
-			return { ...base, email, status: 'token_expired', statusDetail: (error as Error).message };
+			return { account: { ...base, email, status: 'token_expired', statusDetail: (error as Error).message }, accountId };
 		}
 	}
 
