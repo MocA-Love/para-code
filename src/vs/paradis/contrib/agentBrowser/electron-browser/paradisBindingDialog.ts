@@ -267,6 +267,10 @@ export class ParadisBindingDialog extends Disposable {
 		return `${pane.title} — pane #${pane.instanceId}`;
 	}
 
+	private _paneMcpConnected(pane: IParadisPaneDescriptor): boolean {
+		return !!pane.binding || !!pane.mcpConnected;
+	}
+
 	private _render(): void {
 		if (this._store.isDisposed) {
 			return;
@@ -351,8 +355,9 @@ export class ParadisBindingDialog extends Disposable {
 	private _renderPaneList(container: HTMLElement): void {
 		dom.clearNode(container);
 		const filter = this._filterText.trim().toLowerCase();
-		const visible = this._visiblePanes().filter(pane =>
-			filter.length === 0 || this._paneDisplayName(pane).toLowerCase().includes(filter));
+		const visible = this._visiblePanes()
+			.filter(pane => filter.length === 0 || this._paneDisplayName(pane).toLowerCase().includes(filter))
+			.sort((a, b) => Number(this._paneMcpConnected(b)) - Number(this._paneMcpConnected(a)));
 		if (visible.length === 0) {
 			dom.append(container, $('.pbd-empty')).textContent = STR_NO_PANES;
 			return;
