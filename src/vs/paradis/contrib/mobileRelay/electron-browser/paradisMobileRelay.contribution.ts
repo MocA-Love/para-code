@@ -54,7 +54,7 @@ import { Channels } from '../common/paradisMobileProtocol.js';
 import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
-import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
@@ -209,6 +209,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理
 			() => instantiationService.invokeFunction(paradisGetWorktreeCreateForm),
 			request => instantiationService.invokeFunction(paradisCreateWorktreeHeadless, request),
+			// 既存スペースへのエージェント起動（モバイルのホーム＋ボタン）
+			request => instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, request),
 			// PR 状態はPC版 Workspaces ビューと同じコマンド経由（gh 実行は shared process へ委譲）
 			paths => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, [...paths]),
 		));

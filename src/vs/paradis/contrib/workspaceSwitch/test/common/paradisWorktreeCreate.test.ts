@@ -64,11 +64,18 @@ suite('paradisWorktreeCreate', () => {
 
 	test('creates a default terminal when no agent command will run', () => {
 		assert.strictEqual(paradisShouldCreateDefaultTerminal('none', 'build this'), true);
-		assert.strictEqual(paradisShouldCreateDefaultTerminal('codex', '   '), true);
 	});
 
 	test('does not create an extra default terminal when an agent command will run', () => {
 		assert.strictEqual(paradisShouldCreateDefaultTerminal('codex', 'build this'), false);
+		// プロンプト未入力でもエージェント選択時は対話モードで起動するため、既定ターミナルは作らない
+		assert.strictEqual(paradisShouldCreateDefaultTerminal('codex', '   '), false);
+	});
+
+	test('omits the prompt argument entirely when the prompt is empty', () => {
+		const template = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		assert.strictEqual(paradisBuildAgentCommand(template, '', PosixShellType.Bash), 'codex');
+		assert.strictEqual(paradisBuildAgentCommand(template, '  ', WindowsShellType.CommandPrompt), 'codex');
 	});
 
 	test('quotes agent prompts for POSIX and PowerShell terminals', () => {

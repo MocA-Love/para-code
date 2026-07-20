@@ -46,7 +46,7 @@ import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTer
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
-import type { IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -134,8 +134,12 @@ type ScmInbound =
 	| { t: 'commitFiles'; id: string; ws: string; hash: string }
 	// worktree（スペース）作成のフォーム材料と作成本体。他のscmメッセージと違い特定の
 	// ワークスペースに紐づかないため ws を持たない（repo はリポジトリid）。
+	// model/effort/permission はエージェント定義（worktreeForm の agents）の各オプションid。
 	| { t: 'worktreeForm'; id: string; ws?: undefined }
-	| { t: 'createWorktree'; id: string; ws?: undefined; repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string };
+	| { t: 'createWorktree'; id: string; ws?: undefined; repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }
+	// 既存ワークスペース（スペース）でのエージェント起動（モバイルのホーム＋ボタン）。
+	// 新しいターミナルを作ってエージェントCLIコマンドを送る。
+	| { t: 'launchAgent'; id: string; ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string };
 
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
@@ -263,6 +267,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// instantiationService.invokeFunction に束ねて渡される。runGit等と同じコールバック方式）
 		private readonly getWorktreeCreateForm: () => Promise<IParadisWorktreeCreateFormData>,
 		private readonly createWorktree: (request: IParadisHeadlessWorktreeRequest) => Promise<IParadisHeadlessWorktreeResult>,
+		// 既存ワークスペースへのエージェント起動。実体は paradisLaunchAgentInWorkspace
+		private readonly launchAgentInWorkspace: (request: IParadisAgentLaunchInWorkspaceRequest) => Promise<void>,
 		// 各パスの現在ブランチに紐づく PR 状態。実体は PC 版 Workspaces ビューと同じ
 		// paradis.workspaceSwitch.getPrStatuses コマンド（contribution側で束ねて渡される）
 		private readonly getPrStatuses: (paths: readonly string[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
@@ -949,9 +955,41 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						...(typeof msg.base === 'string' ? { baseRef: msg.base } : {}),
 						...(typeof msg.prompt === 'string' ? { prompt: msg.prompt } : {}),
 						...(typeof msg.agent === 'string' ? { agentId: msg.agent } : {}),
+						...(typeof msg.model === 'string' ? { modelId: msg.model } : {}),
+						...(typeof msg.effort === 'string' ? { effortId: msg.effort } : {}),
+						...(typeof msg.permission === 'string' ? { permissionId: msg.permission } : {}),
+						...(typeof msg.runSetup === 'boolean' ? { runSetup: msg.runSetup } : {}),
 					});
 					reply({ t: 'createWorktree', ...result });
 				}
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
+		// 既存ワークスペースへのエージェント起動。git実行を伴わないため repoPath 解決より先に処理する
+		if (msg.t === 'launchAgent') {
+			try {
+				if (typeof msg.agent !== 'string' || msg.agent.length === 0) {
+					reply({ error: 'agent is required' });
+					return;
+				}
+				const root = this.resolveWsRoot(msg.ws);
+				if (root === undefined) {
+					reply({ error: `unknown workspace: ${msg.ws}` });
+					return;
+				}
+				await this.launchAgentInWorkspace({
+					rootUri: root,
+					stateKey: msg.ws,
+					agentId: msg.agent,
+					...(typeof msg.prompt === 'string' ? { prompt: msg.prompt } : {}),
+					...(typeof msg.model === 'string' ? { modelId: msg.model } : {}),
+					...(typeof msg.effort === 'string' ? { effortId: msg.effort } : {}),
+					...(typeof msg.permission === 'string' ? { permissionId: msg.permission } : {}),
+				});
+				this.pushState();
+				reply({ t: 'launchAgent' });
 			} catch (err) {
 				reply({ error: String(err) });
 			}
@@ -1064,6 +1102,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return { status: parts[0][0] ?? '?', path: parts[parts.length - 1] };
 				});
 				reply({ t: 'commitFiles', files });
+			} else {
+				// 新しいモバイルアプリが古いPCへ未知のサブタイプを送った場合に、無応答のまま
+				// タイムアウトさせず即座にエラーを返す（将来の互換フェイルセーフ）
+				reply({ error: `unsupported request: ${(msg as { t: string }).t}` });
 			}
 		} catch (err) {
 			reply({ error: String(err) });

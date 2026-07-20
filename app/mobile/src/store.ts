@@ -126,10 +126,39 @@ export interface ScmCommitResult {
 export interface ScmCommitFilesResult {
 	files: { status: string; path: string }[];
 }
+/** エージェント定義のモデル選択肢（PC側 IParadisAgentModelOption と同形）。 */
+export interface WorktreeAgentModel {
+	id: string;
+	label?: string;
+	/** 選択時にコマンドへ付くフラグ（例: --model opus）。コマンドプレビューの組み立てに使う。 */
+	flag: string;
+	/** このモデルで選べるエフォートid。空配列=エフォート非対応。未定義=エージェント共通語彙を許可。 */
+	efforts?: string[];
+	/** 「既定」表示に添える、そのモデルの実際の既定エフォート。 */
+	defaultEffort?: string;
+}
+/** エージェント定義の権限モード選択肢（PC側 IParadisAgentPermissionOption と同形）。 */
+export interface WorktreeAgentPermission {
+	id: string;
+	label: string;
+	flag: string;
+	danger?: boolean;
+	hint?: string;
+}
+/** エージェント定義（PC側 IParadisAgentCommandTemplate と同形。旧PCは id/label のみ配信）。 */
+export interface WorktreeAgentDef {
+	id: string;
+	label: string;
+	command?: string;
+	models?: WorktreeAgentModel[];
+	efforts?: { id: string; flag: string }[];
+	permissions?: WorktreeAgentPermission[];
+}
 /** worktree（スペース）作成フォームの材料（scm worktreeForm 応答）。 */
 export interface WorktreeFormResult {
-	repos: { id: string; name: string; branches: string[]; head?: string }[];
-	agents: { id: string; label: string }[];
+	/** setupScript: リポジトリの .paracode.json 定義（旧PCは未配信）。 */
+	repos: { id: string; name: string; branches: string[]; head?: string; setupScript?: string }[];
+	agents: WorktreeAgentDef[];
 }
 /** worktree（スペース）作成の応答。warning は「作成はできたが後続処理が失敗した」場合。 */
 export interface WorktreeCreateResult {
@@ -2199,8 +2228,16 @@ export class MobileController {
 	 * スペース切り替え・setupスクリプト・エージェント起動）がPC側で走るため、タイムアウトは
 	 * かなり長め（setupスクリプト次第で数分かかりうる。超過時もPC側の作成処理自体は継続する）。
 	 */
-	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string }): Promise<WorktreeCreateResult> {
+	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }): Promise<WorktreeCreateResult> {
 		return this.request<WorktreeCreateResult>('scm', { t: 'createWorktree', ...opts }, 300_000);
+	}
+
+	/**
+	 * 既存ワークスペース（スペース）で新しいターミナルを作ってエージェントCLIを起動する
+	 * （ホームの＋ボタン）。model/effort/permission は worktreeForm の agents 定義の各オプションid。
+	 */
+	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }): Promise<void> {
+		return this.request<void>('scm', { t: 'launchAgent', ...opts }, 60_000);
 	}
 
 	/** ディレクトリ一覧（ワークスペースルート相対パス）。 */
