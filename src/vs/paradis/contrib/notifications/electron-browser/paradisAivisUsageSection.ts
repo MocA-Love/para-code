@@ -52,6 +52,23 @@ const strApiKeyBreakdown = (n: number) => localize('paradis.notif.usage.apiKeyBr
 
 type Period = '7' | '30';
 
+/** グラフに描く指標。クレジットは無料枠だと全日 0 でバーが最小高さに張り付くため、既定はリクエスト数。 */
+type ChartMetric = 'requests' | 'chars' | 'credits';
+
+interface IChartMetricDef {
+	readonly id: ChartMetric;
+	readonly label: string;
+	value(day: IParadisAivisUsageDayEntry): number;
+	format(day: IParadisAivisUsageDayEntry): string;
+}
+
+/** ラベルは使用量テーブルのヘッダー表記（Requests / Chars / Credits）と揃える。 */
+const CHART_METRICS: readonly IChartMetricDef[] = [
+	{ id: 'requests', label: 'Requests', value: day => day.requestCount, format: day => `${day.requestCount.toLocaleString()} req` },
+	{ id: 'chars', label: 'Chars', value: day => day.characterCount, format: day => `${day.characterCount.toLocaleString()} chars` },
+	{ id: 'credits', label: 'Credits', value: day => day.creditConsumed, format: day => `${day.creditConsumed.toFixed(2)} credits` },
+];
+
 function toIsoDate(d: Date): string {
 	const y = d.getFullYear();
 	const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -83,6 +100,7 @@ export class ParadisAivisUsageSection extends Disposable {
 
 	private readonly _renderDisposables = this._register(new DisposableStore());
 	private _period: Period = '30';
+	private _metric: ChartMetric = 'requests';
 
 	constructor(
 		private readonly container: HTMLElement,
@@ -165,15 +183,40 @@ export class ParadisAivisUsageSection extends Disposable {
 		this._statCard(statGrid, STR_CHARACTERS, total.characterCount.toLocaleString(), strDaysTotal(range.days));
 		this._statCard(statGrid, STR_CREDITS, total.creditConsumed.toFixed(2), me?.creditBalance !== null && me?.creditBalance !== undefined ? strBalance(me.creditBalance.toLocaleString()) : '—');
 
-		const maxValue = Math.max(1, ...filled.map(d => d.creditConsumed));
+		// グラフ指標トグル（Requests / Chars / Credits）＋バーチャート。指標の切り替えは
+		// 取得済みデータのままチャートだけ描き直す（再フェッチしない）
 		const chartBox = dom.append(container, $('div'));
 		chartBox.style.marginBottom = '14px';
+		const metricGroup = dom.append(chartBox, $('div'));
+		metricGroup.style.display = 'flex';
+		metricGroup.style.justifyContent = 'flex-end';
+		metricGroup.style.gap = '4px';
+		metricGroup.style.marginBottom = '6px';
+		const metricButtons = new Map<ChartMetric, HTMLButtonElement>();
 		const chart = dom.append(chartBox, $('.pns-bar-chart'));
-		for (const day of filled) {
-			const bar = dom.append(chart, $('.pns-bar')) as HTMLElement;
-			bar.style.height = `${Math.max(2, (day.creditConsumed / maxValue) * 100)}%`;
-			bar.title = `${day.date}: ${day.creditConsumed.toFixed(2)} credits`;
+		const renderChart = () => {
+			for (const [id, button] of metricButtons) {
+				button.classList.toggle('pns-btn-primary', id === this._metric);
+			}
+			const metric = CHART_METRICS.find(candidate => candidate.id === this._metric) ?? CHART_METRICS[0];
+			dom.clearNode(chart);
+			const maxValue = Math.max(1, ...filled.map(day => metric.value(day)));
+			for (const day of filled) {
+				const bar = dom.append(chart, $('.pns-bar')) as HTMLElement;
+				bar.style.height = `${Math.max(2, (metric.value(day) / maxValue) * 100)}%`;
+				bar.title = `${day.date}: ${metric.format(day)}`;
+			}
+		};
+		for (const metric of CHART_METRICS) {
+			const button = dom.append(metricGroup, $('button.pns-btn')) as HTMLButtonElement;
+			button.textContent = metric.label;
+			metricButtons.set(metric.id, button);
+			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
+				this._metric = metric.id;
+				renderChart();
+			}));
 		}
+		renderChart();
 
 		const table = dom.append(container, $('table.pns-usage-table'));
 		const thead = dom.append(table, $('thead'));
