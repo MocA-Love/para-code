@@ -101,6 +101,134 @@
 	font-size: 12px;
 }
 
+/* --- エージェント詳細オプション（モデル/エフォート/権限＋コマンドプレビュー） --- */
+
+.paradis-create-worktree-dialog .pcw-agent-options {
+	padding: 10px 12px;
+	background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.paradis-create-worktree-dialog .pcw-agent-options.hidden,
+.paradis-create-worktree-dialog .pcw-opt-group.hidden,
+.paradis-create-worktree-dialog .pcw-row.hidden,
+.paradis-create-worktree-dialog .pcw-setup-row.hidden {
+	display: none;
+}
+
+.paradis-create-worktree-dialog .pcw-opt-group {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.paradis-create-worktree-dialog .pcw-seg {
+	display: inline-flex;
+	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+	border-radius: 5px;
+	overflow: hidden;
+}
+
+.paradis-create-worktree-dialog .pcw-seg-btn {
+	background: transparent;
+	border: none;
+	color: var(--vscode-descriptionForeground);
+	padding: 4px 12px;
+	font-size: 12px;
+	font-family: inherit;
+	cursor: pointer;
+	border-right: 1px solid var(--vscode-input-border, var(--vscode-widget-border));
+}
+
+.paradis-create-worktree-dialog .pcw-seg-btn:last-child {
+	border-right: none;
+}
+
+.paradis-create-worktree-dialog .pcw-seg-btn.active {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+/* 危険な権限モード（全許可/全バイパス）の選択中は赤系ハイライトで明示する */
+.paradis-create-worktree-dialog .pcw-seg-btn.active.pcw-seg-danger {
+	background: var(--vscode-inputValidation-errorBorder, #8e3d3d);
+	color: var(--vscode-button-foreground);
+}
+
+.paradis-create-worktree-dialog .pcw-perm-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-create-worktree-dialog .pcw-perm-hint:empty {
+	display: none;
+}
+
+.paradis-create-worktree-dialog .pcw-perm-hint-danger {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-errorForeground));
+}
+
+.paradis-create-worktree-dialog .pcw-cmd-preview {
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-textCodeBlock-background, var(--vscode-input-background));
+	border-radius: 4px;
+	padding: 5px 8px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* --- setup スクリプトの実行トグル --- */
+
+.paradis-create-worktree-dialog .pcw-setup-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	border-radius: 6px;
+}
+
+.paradis-create-worktree-dialog .pcw-setup-label {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.paradis-create-worktree-dialog .pcw-setup-checkbox {
+	margin: 0;
+}
+
+.paradis-create-worktree-dialog .pcw-setup-script {
+	font-family: var(--monaco-monospace-font);
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	background: var(--vscode-textCodeBlock-background, var(--vscode-input-background));
+	border-radius: 3px;
+	padding: 1px 6px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* OFF 時は薄表示＋取り消し線で「実行されない」ことを明示する */
+.paradis-create-worktree-dialog .pcw-setup-row.off {
+	opacity: 0.65;
+}
+
+.paradis-create-worktree-dialog .pcw-setup-row.off .pcw-setup-script {
+	text-decoration: line-through;
+}
+
 .paradis-create-worktree-dialog .pcw-path-preview {
 	color: var(--vscode-descriptionForeground);
 	font-family: var(--monaco-monospace-font);

@@ -7,49 +7,39 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 「新しいスペース（worktree）を作成」ダイアログ（Superset の New Workspace モーダル相当）。
-// 自然言語プロンプト＋エージェント選択＋ベースブランチ選択から、
-//   1. git worktree add -b <branch>（shared process の paradisWorktreeGitChannel 経由）
-//   2. ブランチ名の自動命名（手入力 > Copilot 小型モデル > 決定的フォールバック）
-//   3. 新スペースへの切り替え（IParadisWorkspaceSwitchService.switchToWorktree）
-//   4. エージェントCLI をエディタ領域ターミナルで起動（プロンプトを初期引数として渡す）
-// までを一括で行う。プロンプト未入力・エージェント「なし」なら純粋な worktree 作成として動く。
+// 自然言語プロンプト＋エージェント選択（モデル/エフォート/権限モード付き）＋ベースブランチ選択＋
+// setup スクリプト実行有無を入力し、作成要求をバックグラウンドキュー
+// (paradisWorktreeCreateQueue.ts) へ投入して即座に閉じる。実際の作成
+// （ブランチ命名 → git worktree add → setup → エージェント起動）はキュー側が実行し、
+// 進行状況は通知トースト・ステータスバー・Workspaces ビューの「作成中」行に表示される。
 
 import './media/paradisCreateWorktreeDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { raceTimeout } from '../../../../base/common/async.js';
-import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { toErrorMessage } from '../../../../base/common/errorMessage.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
-import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
-import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
-import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
-import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
-import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAgentCommandTemplate,
+	IParadisAgentLaunchOptions,
 	IParadisGitBranches,
 	PARADIS_DEFAULT_AGENT_COMMANDS,
 	PARADIS_WORKTREE_GIT_CHANNEL,
 	paradisBuildAgentCommand,
-	paradisBuildWorktreeNames,
-	paradisDeduplicateBranchName,
 	paradisDeduplicateWorktreeDirName,
 	paradisSanitizeBranchName,
-	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
+import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
+import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
+import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
 
 const $ = dom.$;
 
@@ -88,6 +78,18 @@ const STR_AGENT_LABEL = localize('paradis.createWorktree.agentLabel', "エージ
 // allow-any-unicode-next-line
 const STR_AGENT_NONE = localize('paradis.createWorktree.agentNone', "実行しない");
 // allow-any-unicode-next-line
+const STR_MODEL_LABEL = localize('paradis.createWorktree.modelLabel', "モデル");
+// allow-any-unicode-next-line
+const STR_EFFORT_LABEL = localize('paradis.createWorktree.effortLabel', "エフォート");
+// allow-any-unicode-next-line
+const STR_PERMISSION_LABEL = localize('paradis.createWorktree.permissionLabel', "権限");
+// allow-any-unicode-next-line
+const STR_OPTION_DEFAULT = localize('paradis.createWorktree.optionDefault', "既定");
+// allow-any-unicode-next-line
+const STR_EFFORT_UNSUPPORTED = localize('paradis.createWorktree.effortUnsupported', "対応なし");
+// allow-any-unicode-next-line
+const STR_RUN_SETUP = localize('paradis.createWorktree.runSetup', "setup スクリプトを実行");
+// allow-any-unicode-next-line
 const STR_BASE_REPO_LABEL = localize('paradis.createWorktree.baseRepoLabel', "リポジトリ");
 // allow-any-unicode-next-line
 const STR_BASE_BRANCH_LABEL = localize('paradis.createWorktree.baseBranchLabel', "ベースブランチ");
@@ -98,34 +100,31 @@ const STR_CANCEL = localize('paradis.createWorktree.cancel', "キャンセル");
 // allow-any-unicode-next-line
 const STR_CREATE = localize('paradis.createWorktree.create', "作成 (⌘⏎)");
 // allow-any-unicode-next-line
-const STR_CREATING = localize('paradis.createWorktree.creating', "作成中…");
-// allow-any-unicode-next-line
-const STR_NAMING = localize('paradis.createWorktree.naming', "ブランチ名を生成中…");
-// allow-any-unicode-next-line
 const STR_NO_BRANCHES = localize('paradis.createWorktree.noBranches', "ブランチを取得できませんでした");
 // allow-any-unicode-next-line
 const STR_AUTO = localize('paradis.createWorktree.autoName', "(自動生成)");
-/** LLM 命名の待ち時間上限。Superset の 5 秒に合わせつつ余裕を持たせる。 */
-const NAMING_TIMEOUT_MS = 8000;
 /** 前回選択したエージェント id の保存キー（StorageScope.PROFILE）。 */
 const STORAGE_KEY_LAST_AGENT = 'paradis.workspaceSwitch.lastSelectedAgent';
+/** エージェントごとのモデル/エフォート/権限の前回選択の保存キー（StorageScope.PROFILE）。 */
+const STORAGE_KEY_AGENT_OPTIONS = 'paradis.workspaceSwitch.agentLaunchOptions';
+/** setup スクリプトをOFFにしたリポジトリ id 一覧の保存キー（StorageScope.PROFILE）。 */
+const STORAGE_KEY_SETUP_DISABLED = 'paradis.workspaceSwitch.setupDisabledRepositories';
+/** コマンドプレビューに埋め込むプロンプトの省略表示長。 */
+const PREVIEW_PROMPT_MAX_LENGTH = 40;
 
-export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, preselectedRepositoryId?: string): void {
+export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, preselectedRepositoryId?: string, prefill?: IParadisHeadlessWorktreeRequest): void {
 	const dialog = new ParadisCreateWorktreeDialog(
 		accessor.get(ILayoutService),
 		accessor.get(ISharedProcessService),
 		accessor.get(IParadisWorkspaceSwitchService),
 		accessor.get(IParadisWorktreeService),
 		accessor.get(IConfigurationService),
-		accessor.get(ITerminalService),
-		accessor.get(IEditorGroupsService),
-		accessor.get(ILanguageModelsService),
+		accessor.get(IFileService),
 		accessor.get(ILogService),
-		accessor.get(INotificationService),
-		accessor.get(IInstantiationService),
-		accessor.get(IParadisTerminalScopeService),
 		accessor.get(IStorageService),
+		accessor.get(IParadisWorktreeCreateQueueService),
 		preselectedRepositoryId,
+		prefill,
 	);
 	// ダイアログは自身の close で自己 dispose する
 	void dialog;
@@ -140,6 +139,18 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private _branchInput!: HTMLInputElement;
 	private _promptInput!: HTMLTextAreaElement;
 	private _agentSelect!: HTMLSelectElement;
+	private _agentOptionsEl!: HTMLElement;
+	private _modelGroup!: HTMLElement;
+	private _modelSelect!: HTMLSelectElement;
+	private _effortGroup!: HTMLElement;
+	private _effortSelect!: HTMLSelectElement;
+	private _permissionRow!: HTMLElement;
+	private _permissionSeg!: HTMLElement;
+	private _permissionHint!: HTMLElement;
+	private _cmdPreview!: HTMLElement;
+	private _setupRow!: HTMLElement;
+	private _setupCheckbox!: HTMLInputElement;
+	private _setupScriptEl!: HTMLElement;
 	private _repoSelect!: HTMLSelectElement;
 	private _branchSelect!: HTMLSelectElement;
 	private _pathPreview!: HTMLElement;
@@ -148,7 +159,14 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private _cancelBtn!: HTMLButtonElement;
 
 	private _branches: IParadisGitBranches | undefined;
-	private _busy = false;
+	/** 権限セグメントボタンのリスナー（エージェント切り替えのたびに作り直すため個別管理）。 */
+	private readonly _permissionListeners = this._register(new DisposableStore());
+	private _permissionButtons: HTMLButtonElement[] = [];
+	private _selectedPermissionId: string | undefined;
+	/** 選択中リポジトリの setup スクリプト（未定義なら setup 行を非表示）。 */
+	private _setupScript: string | undefined;
+	/** 再表示（prefill）時にブランチ一覧ロード後へ引き継ぐベースブランチ。 */
+	private _pendingBaseRef: string | undefined;
 
 	constructor(
 		layoutService: ILayoutService,
@@ -156,15 +174,12 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly switchService: IParadisWorkspaceSwitchService,
 		private readonly worktreeService: IParadisWorktreeService,
 		private readonly configurationService: IConfigurationService,
-		private readonly terminalService: ITerminalService,
-		private readonly editorGroupsService: IEditorGroupsService,
-		private readonly languageModelsService: ILanguageModelsService,
+		private readonly fileService: IFileService,
 		private readonly logService: ILogService,
-		private readonly notificationService: INotificationService,
-		private readonly instantiationService: IInstantiationService,
-		private readonly terminalScopeService: IParadisTerminalScopeService,
 		private readonly storageService: IStorageService,
+		private readonly createQueueService: IParadisWorktreeCreateQueueService,
 		preselectedRepositoryId: string | undefined,
+		prefill: IParadisHeadlessWorktreeRequest | undefined,
 	) {
 		super();
 
@@ -173,22 +188,22 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		this._backdrop.appendChild(this._dialog);
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
-			if (e.target === this._backdrop && !this._busy) {
+			if (e.target === this._backdrop) {
 				this.dispose();
 			}
 		}));
 		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			if (e.key === 'Escape' && !this._busy) {
+			if (e.key === 'Escape') {
 				e.preventDefault();
 				this.dispose();
 			} else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
 				e.preventDefault();
-				void this._doCreate();
+				this._doCreate();
 			}
 		}));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
-		this._renderForm(preselectedRepositoryId);
+		this._renderForm(preselectedRepositoryId ?? prefill?.repositoryId, prefill);
 	}
 
 	override dispose(): void {
@@ -210,7 +225,11 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		return this.switchService.repositories.find(repository => repository.id === this._repoSelect.value);
 	}
 
-	private _renderForm(preselectedRepositoryId: string | undefined): void {
+	private get _selectedAgent(): IParadisAgentCommandTemplate | undefined {
+		return this._agents.find(agent => agent.id === this._agentSelect.value);
+	}
+
+	private _renderForm(preselectedRepositoryId: string | undefined, prefill: IParadisHeadlessWorktreeRequest | undefined): void {
 		dom.clearNode(this._dialog);
 
 		dom.append(this._dialog, $('h3.pcw-title')).textContent = STR_TITLE;
@@ -244,10 +263,35 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		}
 		// 前回選択したエージェントを復元する。保存値が現在の選択肢に無い場合
 		// （設定から削除された等）は既定の「実行しない」のままにする
-		const lastAgentId = this.storageService.get(STORAGE_KEY_LAST_AGENT, StorageScope.PROFILE);
+		const lastAgentId = prefill?.agentId ?? this.storageService.get(STORAGE_KEY_LAST_AGENT, StorageScope.PROFILE);
 		if (lastAgentId && (lastAgentId === 'none' || this._agents.some(agent => agent.id === lastAgentId))) {
 			this._agentSelect.value = lastAgentId;
 		}
+
+		// エージェント詳細オプション（モデル/エフォート/権限＋コマンドプレビュー）。
+		// 「実行しない」選択時は囲みごと非表示にする
+		this._agentOptionsEl = dom.append(this._dialog, $('.pcw-agent-options'));
+		const optionRow = dom.append(this._agentOptionsEl, $('.pcw-row'));
+		this._modelGroup = dom.append(optionRow, $('.pcw-opt-group'));
+		dom.append(this._modelGroup, $('label.pcw-label')).textContent = STR_MODEL_LABEL;
+		this._modelSelect = dom.append(this._modelGroup, $('select.pcw-select')) as HTMLSelectElement;
+		this._effortGroup = dom.append(optionRow, $('.pcw-opt-group'));
+		dom.append(this._effortGroup, $('label.pcw-label')).textContent = STR_EFFORT_LABEL;
+		this._effortSelect = dom.append(this._effortGroup, $('select.pcw-select')) as HTMLSelectElement;
+		this._permissionRow = dom.append(this._agentOptionsEl, $('.pcw-row'));
+		dom.append(this._permissionRow, $('label.pcw-label')).textContent = STR_PERMISSION_LABEL;
+		this._permissionSeg = dom.append(this._permissionRow, $('.pcw-seg'));
+		this._permissionHint = dom.append(this._permissionRow, $('span.pcw-perm-hint'));
+		this._cmdPreview = dom.append(this._agentOptionsEl, $('.pcw-cmd-preview'));
+
+		// setup スクリプトの実行トグル（リポジトリに setupScript がある場合のみ表示）
+		this._setupRow = dom.append(this._dialog, $('.pcw-setup-row'));
+		this._setupRow.classList.add('hidden');
+		const setupLabel = dom.append(this._setupRow, $('label.pcw-setup-label'));
+		this._setupCheckbox = dom.append(setupLabel, $('input.pcw-setup-checkbox')) as HTMLInputElement;
+		this._setupCheckbox.type = 'checkbox';
+		dom.append(setupLabel, $('span')).textContent = STR_RUN_SETUP;
+		this._setupScriptEl = dom.append(this._setupRow, $('span.pcw-setup-script'));
 
 		// ベースリポジトリ + ベースブランチ
 		const baseRow = dom.append(this._dialog, $('.pcw-row.pcw-field-row'));
@@ -276,14 +320,224 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		this._register(dom.addDisposableListener(this._cancelBtn, 'click', () => this.dispose()));
 		this._createBtn = dom.append(footer, $('button.pcw-btn.pcw-btn-primary')) as HTMLButtonElement;
 		this._createBtn.textContent = STR_CREATE;
-		this._register(dom.addDisposableListener(this._createBtn, 'click', () => void this._doCreate()));
+		this._register(dom.addDisposableListener(this._createBtn, 'click', () => this._doCreate()));
 
-		this._register(dom.addDisposableListener(this._repoSelect, 'change', () => void this._loadBranches()));
+		this._register(dom.addDisposableListener(this._repoSelect, 'change', () => this._onRepositoryChanged()));
 		this._register(dom.addDisposableListener(this._branchInput, 'input', () => this._updatePathPreview()));
+		this._register(dom.addDisposableListener(this._agentSelect, 'change', () => this._onAgentChanged(undefined)));
+		this._register(dom.addDisposableListener(this._modelSelect, 'change', () => this._onModelChanged()));
+		this._register(dom.addDisposableListener(this._effortSelect, 'change', () => this._updateCommandPreview()));
+		this._register(dom.addDisposableListener(this._promptInput, 'input', () => this._updateCommandPreview()));
+		this._register(dom.addDisposableListener(this._setupCheckbox, 'change', () => {
+			this._setupRow.classList.toggle('off', !this._setupCheckbox.checked);
+		}));
 
-		void this._loadBranches();
-		this._updatePathPreview();
+		// 再表示（作成失敗時の「ダイアログを再表示」）ではフォーム値を復元する
+		if (prefill) {
+			this._nameInput.value = prefill.name ?? '';
+			this._branchInput.value = prefill.branch ?? '';
+			this._promptInput.value = prefill.prompt ?? '';
+			this._pendingBaseRef = prefill.baseRef;
+		}
+
+		this._onAgentChanged(prefill);
+		this._onRepositoryChanged(prefill?.runSetup);
 		this._promptInput.focus();
+	}
+
+	// --- エージェント詳細オプション -------------------------------------------------------------
+
+	/** エージェントごとの前回選択（モデル/エフォート/権限）を読む。壊れた保存値は無視する。 */
+	private _loadStoredAgentOptions(): Record<string, IParadisAgentLaunchOptions> {
+		try {
+			const raw = JSON.parse(this.storageService.get(STORAGE_KEY_AGENT_OPTIONS, StorageScope.PROFILE, '{}'));
+			return raw && typeof raw === 'object' ? raw as Record<string, IParadisAgentLaunchOptions> : {};
+		} catch {
+			return {};
+		}
+	}
+
+	/** エージェント切り替え時: モデル/エフォート/権限のUIを選択エージェントの定義で組み直す。 */
+	private _onAgentChanged(prefill: IParadisHeadlessWorktreeRequest | undefined): void {
+		const agent = this._selectedAgent;
+		this._agentOptionsEl.classList.toggle('hidden', !agent || (!agent.models && !agent.efforts && !agent.permissions));
+		if (!agent) {
+			this._updateCommandPreview();
+			return;
+		}
+		const stored: IParadisAgentLaunchOptions = prefill?.agentId === agent.id
+			? { modelId: prefill.modelId, effortId: prefill.effortId, permissionId: prefill.permissionId }
+			: this._loadStoredAgentOptions()[agent.id] ?? {};
+
+		// モデル
+		this._modelGroup.classList.toggle('hidden', !agent.models || agent.models.length === 0);
+		dom.clearNode(this._modelSelect);
+		const defaultModelOption = dom.append(this._modelSelect, $('option')) as HTMLOptionElement;
+		defaultModelOption.value = '';
+		defaultModelOption.textContent = STR_OPTION_DEFAULT;
+		for (const model of agent.models ?? []) {
+			const option = dom.append(this._modelSelect, $('option')) as HTMLOptionElement;
+			option.value = model.id;
+			option.textContent = model.label ?? model.id;
+		}
+		if (stored.modelId && agent.models?.some(model => model.id === stored.modelId)) {
+			this._modelSelect.value = stored.modelId;
+		}
+
+		// 権限（セグメントトグル）。先頭要素を既定として選択する
+		this._permissionRow.classList.toggle('hidden', !agent.permissions || agent.permissions.length === 0);
+		dom.clearNode(this._permissionSeg);
+		this._permissionListeners.clear();
+		this._permissionButtons = [];
+		this._selectedPermissionId = undefined;
+		const permissions = agent.permissions ?? [];
+		const initialPermissionId = stored.permissionId && permissions.some(permission => permission.id === stored.permissionId)
+			? stored.permissionId
+			: permissions[0]?.id;
+		for (const permission of permissions) {
+			const button = dom.append(this._permissionSeg, $('button.pcw-seg-btn')) as HTMLButtonElement;
+			button.type = 'button';
+			button.textContent = permission.label;
+			button.classList.toggle('pcw-seg-danger', !!permission.danger);
+			this._permissionButtons.push(button);
+			this._permissionListeners.add(dom.addDisposableListener(button, 'click', () => this._selectPermission(permission.id)));
+		}
+		if (initialPermissionId !== undefined) {
+			this._selectPermission(initialPermissionId);
+		}
+
+		// エフォートはモデル選択に依存するため最後に組み立てる（保存値の復元込み）
+		this._rebuildEffortOptions(stored.effortId);
+		this._updateCommandPreview();
+	}
+
+	/** モデル切り替え時: エフォート選択肢を選択モデルの対応表で絞り直す。 */
+	private _onModelChanged(): void {
+		this._rebuildEffortOptions(this._effortSelect.value || undefined);
+		this._updateCommandPreview();
+	}
+
+	/**
+	 * エフォート選択肢を組み直す。選択中モデルの efforts で絞り込み、空配列（非対応）なら
+	 * 選択UIを無効化する。preferredEffortId が新しい選択肢に無い場合は「既定」に戻す。
+	 */
+	private _rebuildEffortOptions(preferredEffortId: string | undefined): void {
+		const agent = this._selectedAgent;
+		dom.clearNode(this._effortSelect);
+		this._effortGroup.classList.toggle('hidden', !agent?.efforts || agent.efforts.length === 0);
+		if (!agent?.efforts || agent.efforts.length === 0) {
+			return;
+		}
+		const model = agent.models?.find(candidate => candidate.id === this._modelSelect.value);
+		const allowedIds = model?.efforts;
+		if (allowedIds !== undefined && allowedIds.length === 0) {
+			// モデルがエフォート非対応（例: Claude Code の haiku）
+			const unsupportedOption = dom.append(this._effortSelect, $('option')) as HTMLOptionElement;
+			unsupportedOption.value = '';
+			unsupportedOption.textContent = STR_EFFORT_UNSUPPORTED;
+			this._effortSelect.disabled = true;
+			return;
+		}
+		this._effortSelect.disabled = false;
+		const efforts = allowedIds === undefined
+			? agent.efforts
+			: agent.efforts.filter(effort => allowedIds.includes(effort.id));
+		const defaultOption = dom.append(this._effortSelect, $('option')) as HTMLOptionElement;
+		defaultOption.value = '';
+		defaultOption.textContent = model?.defaultEffort
+			// allow-any-unicode-next-line
+			? localize('paradis.createWorktree.optionDefaultWith', "既定（{0}）", model.defaultEffort)
+			: STR_OPTION_DEFAULT;
+		for (const effort of efforts) {
+			const option = dom.append(this._effortSelect, $('option')) as HTMLOptionElement;
+			option.value = effort.id;
+			option.textContent = effort.id;
+		}
+		if (preferredEffortId && efforts.some(effort => effort.id === preferredEffortId)) {
+			this._effortSelect.value = preferredEffortId;
+		}
+	}
+
+	private _selectPermission(permissionId: string): void {
+		const agent = this._selectedAgent;
+		const permissions = agent?.permissions ?? [];
+		const selected = permissions.find(permission => permission.id === permissionId) ?? permissions[0];
+		this._selectedPermissionId = selected?.id;
+		permissions.forEach((permission, index) => {
+			this._permissionButtons[index]?.classList.toggle('active', permission.id === this._selectedPermissionId);
+		});
+		this._permissionHint.textContent = selected?.hint ?? '';
+		this._permissionHint.classList.toggle('pcw-perm-hint-danger', !!selected?.danger);
+		this._updateCommandPreview();
+	}
+
+	/** 現在の選択でエージェント起動オプションを組み立てる（既定選択は undefined = フラグなし）。 */
+	private _currentLaunchOptions(): IParadisAgentLaunchOptions {
+		return {
+			modelId: this._modelSelect.value || undefined,
+			effortId: this._effortSelect.disabled ? undefined : (this._effortSelect.value || undefined),
+			permissionId: this._selectedPermissionId,
+		};
+	}
+
+	/** 実際に実行されるコマンドラインのプレビュー（プロンプトは省略表示）。 */
+	private _updateCommandPreview(): void {
+		const agent = this._selectedAgent;
+		if (!agent) {
+			this._cmdPreview.textContent = '';
+			return;
+		}
+		let prompt = this._promptInput.value.trim().replace(/\s+/g, ' ');
+		if (prompt.length > PREVIEW_PROMPT_MAX_LENGTH) {
+			// allow-any-unicode-next-line
+			prompt = `${prompt.slice(0, PREVIEW_PROMPT_MAX_LENGTH)}…`;
+		}
+		// プレビューは POSIX シェル表記で統一する（実行時は実際のシェルに合わせて組み直される）
+		const command = paradisBuildAgentCommand(agent, prompt, undefined, this._currentLaunchOptions());
+		this._cmdPreview.textContent = `$ ${prompt.length === 0 ? command.trimEnd().replace(/ ''$/, '') : command}`;
+	}
+
+	// --- リポジトリ / setup スクリプト ----------------------------------------------------------
+
+	private _loadSetupDisabledRepositories(): string[] {
+		try {
+			const raw = JSON.parse(this.storageService.get(STORAGE_KEY_SETUP_DISABLED, StorageScope.PROFILE, '[]'));
+			return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === 'string') : [];
+		} catch {
+			return [];
+		}
+	}
+
+	private _onRepositoryChanged(prefillRunSetup?: boolean): void {
+		void this._loadBranches();
+		void this._loadSetupScript(prefillRunSetup);
+	}
+
+	/** 選択中リポジトリの .paracode.json から setupScript を読み、setup 行の表示を更新する。 */
+	private async _loadSetupScript(prefillRunSetup?: boolean): Promise<void> {
+		const repository = this._selectedRepository;
+		this._setupScript = undefined;
+		this._setupRow.classList.add('hidden');
+		if (!repository) {
+			return;
+		}
+		try {
+			const config = await paradisReadWorkspaceLifecycleConfig(this.fileService, repository.uri);
+			if (this._store.isDisposed || this._selectedRepository?.id !== repository.id) {
+				return;
+			}
+			this._setupScript = config.setupScript;
+		} catch (error) {
+			this.logService.warn('[ParadisCreateWorktree] failed to read lifecycle config', error);
+			return;
+		}
+		if (!this._setupScript) {
+			return;
+		}
+		this._setupRow.classList.remove('hidden');
+		this._setupScriptEl.textContent = this._setupScript;
+		this._setupCheckbox.checked = prefillRunSetup ?? !this._loadSetupDisabledRepositories().includes(repository.id);
+		this._setupRow.classList.toggle('off', !this._setupCheckbox.checked);
 	}
 
 	private async _loadBranches(): Promise<void> {
@@ -309,7 +563,11 @@ class ParadisCreateWorktreeDialog extends Disposable {
 				option.value = branch;
 				option.textContent = branch;
 			}
-			if (branches.head && branches.branches.includes(branches.head)) {
+			const pendingBaseRef = this._pendingBaseRef;
+			this._pendingBaseRef = undefined;
+			if (pendingBaseRef && branches.branches.includes(pendingBaseRef)) {
+				this._branchSelect.value = pendingBaseRef;
+			} else if (branches.head && branches.branches.includes(branches.head)) {
 				this._branchSelect.value = branches.head;
 			}
 			if (branches.branches.length === 0) {
@@ -357,172 +615,47 @@ class ParadisCreateWorktreeDialog extends Disposable {
 		this._errorEl.textContent = error instanceof Error ? error.message : String(error);
 	}
 
-	private _setBusy(busy: boolean, label?: string): void {
-		this._busy = busy;
-		for (const el of [this._nameInput, this._branchInput, this._promptInput, this._agentSelect, this._repoSelect, this._branchSelect, this._createBtn, this._cancelBtn]) {
-			(el as HTMLInputElement | HTMLButtonElement).disabled = busy;
-		}
-		this._createBtn.textContent = busy ? (label ?? STR_CREATING) : STR_CREATE;
-	}
+	// --- 作成（バックグラウンドキューへ投入して即クローズ） --------------------------------------
 
-	/** Copilot の小型モデルでプロンプトからブランチ名を生成する。使えなければ undefined。 */
-	private async _generateBranchName(prompt: string): Promise<string | undefined> {
-		try {
-			const modelIds = await this.languageModelsService.selectLanguageModels({ vendor: 'copilot', id: 'copilot-utility-small' });
-			if (modelIds.length === 0) {
-				return undefined;
-			}
-			const cts = new CancellationTokenSource();
-			try {
-				const request = (async () => {
-					const response = await this.languageModelsService.sendChatRequest(modelIds[0], undefined, [{
-						role: ChatMessageRole.User,
-						content: [{
-							type: 'text',
-							value: `Generate a git branch name for the following development task. Output ONLY the branch name: kebab-case, lowercase ascii letters/digits/hyphens, at most 30 characters, no quotes, no slashes.\n\nTask: ${prompt}`,
-						}],
-					}], {}, cts.token);
-					return getTextResponseFromStream(response);
-				})();
-				const text = await raceTimeout(request, NAMING_TIMEOUT_MS, () => cts.cancel());
-				const candidate = text?.trim().split('\n')[0].replace(/^["'`]+|["'`]+$/g, '').toLowerCase();
-				// 40文字カットで末尾に - や . が残ると git が拒否するため、カット後にもう一度トリムする
-				const sliced = candidate ? paradisSanitizeBranchName(candidate)?.slice(0, 40).replace(/[-./]+$/, '') : undefined;
-				return sliced ? sliced : undefined;
-			} finally {
-				cts.dispose();
-			}
-		} catch (error) {
-			this.logService.info('[ParadisCreateWorktree] LLM naming unavailable, falling back', error);
-			return undefined;
-		}
-	}
-
-	/** LLM が使えない場合の決定的なフォールバック名。 */
-	private _fallbackBranchName(): string {
-		const now = new Date();
-		const pad = (value: number) => String(value).padStart(2, '0');
-		return `para-${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
-	}
-
-	private async _doCreate(): Promise<void> {
-		if (this._busy) {
-			return;
-		}
+	private _doCreate(): void {
 		const repository = this._selectedRepository;
 		const baseRef = this._branchSelect.value;
 		if (!repository || !baseRef) {
 			return;
 		}
-		this._errorEl.textContent = '';
 
-		const prompt = this._promptInput.value.trim();
 		const agentId = this._agentSelect.value;
-		// 次回ダイアログを開いたときに同じエージェントを既定選択にするため記憶する
+		const launchOptions = this._currentLaunchOptions();
+
+		// 次回ダイアログを開いたときに同じ選択を既定にするため記憶する
 		this.storageService.store(STORAGE_KEY_LAST_AGENT, agentId, StorageScope.PROFILE, StorageTarget.MACHINE);
-		let worktreeCreated = false;
-
-		try {
-			// 1. ブランチ名の決定（手入力 > LLM > フォールバック）
-			let branch = paradisSanitizeBranchName(this._branchInput.value);
-			if (!branch) {
-				if (prompt.length > 0) {
-					this._setBusy(true, STR_NAMING);
-					branch = await this._generateBranchName(prompt);
-				}
-				branch = branch ?? this._fallbackBranchName();
-			}
-			branch = paradisDeduplicateBranchName(branch, this._branches?.branches ?? []);
-
-			// 2. worktree 作成
-			this._setBusy(true, STR_CREATING);
-			const existingDirNames = this.worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
-			const { displayName, dirName } = paradisBuildWorktreeNames(this._nameInput.value, branch, this._branches?.branches ?? [], existingDirNames);
-			const worktreeUri = this._computeWorktreeUri(repository, dirName);
-			// このworktreeの状態キー。setup スクリプト～自動実行プリセットの実行中にユーザーが
-			// PC側で別スペースへ切り替えても、これから作るターミナルを常にこの worktree へ
-			// 明示的に紐付けるために使う（既定の暗黙タグ付けは「生成時点でアクティブなスコープ」
-			// になってしまい、別スペース表示中に紐付け漏れが起きる）。
-			const targetStateKey = paradisWorktreeStateKey(worktreeUri);
-			await this.sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('addWorktree', [{
-				repoPath: repository.uri.fsPath,
-				worktreePath: worktreeUri.fsPath,
-				newBranch: branch,
-				baseRef,
-			}]);
-			worktreeCreated = true;
-
-			this.worktreeService.addKnownWorktree({
-				repositoryId: repository.id,
-				name: displayName,
-				branch,
-				uri: worktreeUri,
-			});
-
-			// 3. 新スペースへ切り替え（worktree サービスの自動検出を待たず、その場で対象を組み立てて切り替える）
-			await this.switchService.switchToWorktree({
-				repositoryId: repository.id,
-				name: displayName,
-				branch,
-				uri: worktreeUri,
-			});
-
-			// 4. setup スクリプト → 自動実行プリセット → （なければ既定ターミナル） → エージェント起動、の順に実行する。
-			//    setup の失敗はここで例外として伝播し、後続はすべて打ち切る（下の catch で処理される）。
-			await paradisCompleteCreatedWorktree({
-				runSetup: async () => {
-					await this.instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'setup', repository, worktreeUri);
-				},
-				runAutoRun: async () => {
-					// .paracode.json / ユーザー設定の autoRun（dev サーバー等の下準備）。失敗しても作成自体は成功扱い
-					try {
-						return await this.instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath, targetStateKey);
-					} catch (error) {
-						this.logService.warn('[ParadisCreateWorktree] auto-run presets failed', error);
-						return false;
-					}
-				},
-				openDefaultTerminal: async () => {
-					// エージェントも自動実行プリセットも何も起動しない場合のみ、既定のターミナルを開く
-					if (!paradisShouldCreateDefaultTerminal(agentId, prompt)) {
-						return;
-					}
-					const instance = await this.terminalService.createTerminal({
-						cwd: worktreeUri,
-						location: TerminalLocation.Panel,
-					});
-					this.terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
-					instance.focus(true);
-				},
-				launchAgent: async () => {
-					// エディタ領域ターミナル。pane トークンが自動注入されるため Workspaces ビューの稼働状態表示もそのまま効く
-					const agent = this._agents.find(candidate => candidate.id === agentId);
-					if (!agent || prompt.length === 0) {
-						return;
-					}
-					const instance = await this.terminalService.createTerminal({
-						cwd: worktreeUri,
-						location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
-					});
-					this.terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
-					instance.focus(true);
-					await instance.processReady;
-					const command = paradisBuildAgentCommand(agent, prompt, instance.shellType);
-					await instance.sendText(command, true);
-				},
-			});
-
-			this.dispose();
-		} catch (error) {
-			this.logService.error('[ParadisCreateWorktree] failed', error);
-			if (worktreeCreated) {
-				// allow-any-unicode-next-line
-				this.notificationService.error(localize('paradis.createWorktree.createdWithError', "worktree は作成されましたが、その後のセットアップに失敗しました: {0}", toErrorMessage(error)));
-				this.dispose();
-				return;
-			}
-			this._setBusy(false);
-			this._showError(error);
+		if (agentId !== 'none') {
+			const storedOptions = this._loadStoredAgentOptions();
+			storedOptions[agentId] = launchOptions;
+			this.storageService.store(STORAGE_KEY_AGENT_OPTIONS, JSON.stringify(storedOptions), StorageScope.PROFILE, StorageTarget.MACHINE);
 		}
+		if (this._setupScript) {
+			const disabled = new Set(this._loadSetupDisabledRepositories());
+			if (this._setupCheckbox.checked) {
+				disabled.delete(repository.id);
+			} else {
+				disabled.add(repository.id);
+			}
+			this.storageService.store(STORAGE_KEY_SETUP_DISABLED, JSON.stringify([...disabled]), StorageScope.PROFILE, StorageTarget.MACHINE);
+		}
+
+		// 実際の作成はバックグラウンドキューが行う。進行状況は通知トースト・ステータスバー・
+		// Workspaces ビューに表示され、完了通知の「このスペースに切り替える」で切り替える
+		this.createQueueService.enqueue({
+			repositoryId: repository.id,
+			name: this._nameInput.value,
+			branch: this._branchInput.value,
+			baseRef,
+			prompt: this._promptInput.value.trim(),
+			agentId,
+			...launchOptions,
+			runSetup: this._setupScript ? this._setupCheckbox.checked : true,
+		});
+		this.dispose();
 	}
 }

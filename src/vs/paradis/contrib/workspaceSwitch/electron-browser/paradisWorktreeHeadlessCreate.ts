@@ -26,7 +26,7 @@ import { TerminalLocation } from '../../../../platform/terminal/common/terminal.
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
-import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAgentCommandTemplate,
 	IParadisGitBranches,
@@ -63,6 +63,14 @@ export interface IParadisHeadlessWorktreeRequest {
 	readonly prompt?: string;
 	/** 起動するエージェントID（'none' または未指定で起動しない）。 */
 	readonly agentId?: string;
+	/** エージェント起動時のモデル（エージェント定義の models の id。未指定 = 既定 = フラグなし）。 */
+	readonly modelId?: string;
+	/** エージェント起動時のエフォート（エージェント定義の efforts の id。未指定 = 既定）。 */
+	readonly effortId?: string;
+	/** エージェント起動時の権限モード（エージェント定義の permissions の id。未指定 = 既定）。 */
+	readonly permissionId?: string;
+	/** false でリポジトリ定義の setup スクリプトをスキップする（既定 true）。 */
+	readonly runSetup?: boolean;
 }
 
 export interface IParadisHeadlessWorktreeResult {
@@ -70,6 +78,28 @@ export interface IParadisHeadlessWorktreeResult {
 	readonly branch: string;
 	/** worktree自体は作成できたが後続（setup・エージェント起動等）が失敗した場合の警告。 */
 	readonly warning?: string;
+}
+
+/** 作成フローの進行段階。キューサービスがトースト/サイドバーの工程表示に使う。 */
+export type ParadisWorktreeCreateStage = 'naming' | 'creating' | 'setup' | 'starting';
+
+/** バックグラウンド作成時に進行状況を受け取るコールバック。 */
+export interface IParadisWorktreeCreateFlowCallbacks {
+	/** 各工程の開始時に呼ばれる。 */
+	onStage?(stage: ParadisWorktreeCreateStage): void;
+	/** ブランチ名（＝表示名）が確定した時点で呼ばれる。LLM生成の完了を待つため naming の後になる。 */
+	onNameResolved?(name: string, branch: string): void;
+}
+
+export interface IParadisWorktreeCreateFlowOptions {
+	/** true なら作成完了後に新スペースへ切り替える（従来のダイアログ/モバイルの挙動）。 */
+	readonly switchToCreated: boolean;
+	readonly callbacks?: IParadisWorktreeCreateFlowCallbacks;
+}
+
+export interface IParadisWorktreeCreateFlowResult extends IParadisHeadlessWorktreeResult {
+	/** 作成された worktree（完了通知の「切り替える」アクションに使う）。 */
+	readonly worktree: IParadisWorktree;
 }
 
 /** 設定 paradis.workspaceSwitch.agents（無ければ既定）からエージェント定義を得る（ダイアログの _agents と同じ規則）。 */
@@ -154,8 +184,18 @@ export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): 
  * worktree（スペース）をヘッドレスに作成する。成功時は表示名と確定ブランチ名を返す。
  * worktree作成後の後続処理（setup・自動実行・エージェント起動）の失敗は warning として
  * 返し、作成自体は成功扱いにする（ダイアログの「作成されましたが〜」通知と同じ方針）。
+ * モバイル発の作成では従来どおり作成後に新スペースへ切り替える。
  */
 export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, request: IParadisHeadlessWorktreeRequest): Promise<IParadisHeadlessWorktreeResult> {
+	return paradisRunWorktreeCreateFlow(accessor, request, { switchToCreated: true });
+}
+
+/**
+ * worktree 作成フローの本体。ダイアログ発のバックグラウンド作成（キューサービス）と
+ * モバイル発のヘッドレス作成の両方から使う。switchToCreated が false の場合は現在の
+ * スペースに留まったまま作成し、ターミナルはスコープ割り当てにより新スペース側へ park される。
+ */
+export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, request: IParadisHeadlessWorktreeRequest, options: IParadisWorktreeCreateFlowOptions): Promise<IParadisWorktreeCreateFlowResult> {
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
 	const worktreeService = accessor.get(IParadisWorktreeService);
 	const sharedProcessService = accessor.get(ISharedProcessService);
@@ -185,10 +225,13 @@ export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, 
 		throw new Error('base branch is not specified and HEAD is detached');
 	}
 
+	const callbacks = options.callbacks;
+
 	// 1. ブランチ名の決定（手入力 > LLM > フォールバック）
 	let branch = paradisSanitizeBranchName(request.branch ?? '');
 	if (!branch) {
 		if (prompt.length > 0) {
+			callbacks?.onStage?.('naming');
 			branch = await generateBranchName(languageModelsService, logService, prompt);
 		}
 		branch = branch ?? fallbackBranchName();
@@ -196,8 +239,10 @@ export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, 
 	branch = paradisDeduplicateBranchName(branch, branchesInfo.branches);
 
 	// 2. worktree 作成
+	callbacks?.onStage?.('creating');
 	const existingDirNames = worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
 	const { displayName, dirName } = paradisBuildWorktreeNames(request.name ?? '', branch, branchesInfo.branches, existingDirNames);
+	callbacks?.onNameResolved?.(displayName, branch);
 	const worktreeUri = computeWorktreeUri(configurationService, repository, dirName);
 	// ダイアログ実装と同じく、これから作るターミナルを常にこのworktreeへ明示的に紐付ける
 	const targetStateKey = paradisWorktreeStateKey(worktreeUri);
@@ -208,28 +253,32 @@ export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, 
 		baseRef,
 	}]);
 
-	worktreeService.addKnownWorktree({
+	const createdWorktree: IParadisWorktree = {
 		repositoryId: repository.id,
 		name: displayName,
 		branch,
 		uri: worktreeUri,
-	});
+	};
+	worktreeService.addKnownWorktree(createdWorktree);
 
 	try {
-		// 3. 新スペースへ切り替え（PC版ダイアログと同じ挙動。モバイルのホーム一覧も追従する）
-		await switchService.switchToWorktree({
-			repositoryId: repository.id,
-			name: displayName,
-			branch,
-			uri: worktreeUri,
-		});
+		// 3. 新スペースへ切り替え（モバイル発・従来ダイアログ相当の挙動）。バックグラウンド作成
+		//    （ダイアログ発のキュー実行）では切り替えず、現在のスペースに留まる
+		if (options.switchToCreated) {
+			await switchService.switchToWorktree(createdWorktree);
+		}
 
 		// 4. setup → 自動実行プリセット →（なければ既定ターミナル）→ エージェント起動
 		await paradisCompleteCreatedWorktree({
 			runSetup: async () => {
+				if (request.runSetup === false) {
+					return;
+				}
+				callbacks?.onStage?.('setup');
 				await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'setup', repository, worktreeUri);
 			},
 			runAutoRun: async () => {
+				callbacks?.onStage?.('starting');
 				try {
 					return await instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, repository.uri.fsPath, targetStateKey);
 				} catch (error) {
@@ -252,22 +301,28 @@ export async function paradisCreateWorktreeHeadless(accessor: ServicesAccessor, 
 				if (!agent || prompt.length === 0) {
 					return;
 				}
-				// ダイアログはエディタ領域ターミナルを使うが、ヘッドレス（モバイル発）では
-				// エディタレイアウトへの依存を避けてパネル側に作る。paneトークンは同様に
-				// 自動注入されるため、ホーム一覧の稼働状態表示はそのまま効く。
+				// ダイアログ発の従来実装はエディタ領域ターミナルを使っていたが、ヘッドレス・
+				// バックグラウンド作成ではエディタレイアウトへの依存を避けてパネル側に作る。
+				// 非アクティブスコープへの assignInstanceScope は即座に park されるため、
+				// 現在のスペースの表示は乱れない。paneトークンは同様に自動注入されるため、
+				// 稼働状態表示（Workspaces ビュー/モバイルのホーム一覧）はそのまま効く。
 				const instance = await terminalService.createTerminal({
 					cwd: worktreeUri,
 					location: TerminalLocation.Panel,
 				});
 				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
 				await instance.processReady;
-				const command = paradisBuildAgentCommand(agent, prompt, instance.shellType);
+				const command = paradisBuildAgentCommand(agent, prompt, instance.shellType, {
+					modelId: request.modelId,
+					effortId: request.effortId,
+					permissionId: request.permissionId,
+				});
 				await instance.sendText(command, true);
 			},
 		});
 	} catch (error) {
 		logService.error('[ParadisWorktreeHeadlessCreate] post-create steps failed', error);
-		return { name: displayName, branch, warning: toErrorMessage(error) };
+		return { name: displayName, branch, warning: toErrorMessage(error), worktree: createdWorktree };
 	}
-	return { name: displayName, branch };
+	return { name: displayName, branch, worktree: createdWorktree };
 }

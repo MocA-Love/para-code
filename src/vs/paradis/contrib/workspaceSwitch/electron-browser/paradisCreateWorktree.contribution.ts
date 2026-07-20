@@ -13,6 +13,7 @@
 import { Codicon } from '../../../../base/common/codicons.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
+import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
@@ -30,6 +31,11 @@ import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js'
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { openParadisWorkspaceLifecycleDialog } from './paradisWorkspaceLifecycleDialog.js';
+import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
+import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
+
+// バックグラウンド作成キュー（ダイアログの「作成」が投入し、進行状況を通知/ステータスバー/ビューへ流す）
+registerSingleton(IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService, InstantiationType.Delayed);
 
 export const PARADIS_CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
 export const PARADIS_REMOVE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.removeWorktree';
@@ -59,7 +65,49 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				properties: {
 					id: { type: 'string', not: { const: 'none' }, description: localize('paradis.workspaceSwitch.agents.id', "エージェントの識別子。'none' は「実行しない」の予約識別子のため使用不可。") },
 					label: { type: 'string', description: localize('paradis.workspaceSwitch.agents.label', "選択肢として表示する名前。") },
-					command: { type: 'string', description: localize('paradis.workspaceSwitch.agents.command', "ターミナルで実行するコマンド。例: claude {prompt}") }
+					command: { type: 'string', description: localize('paradis.workspaceSwitch.agents.command', "ターミナルで実行するコマンド。{prompt} に加えて {model} / {effort} / {permission} プレースホルダも使えます（省略時は選択されたフラグをプロンプト直前へ挿入）。例: claude {prompt}") },
+					models: {
+						type: 'array',
+						description: localize('paradis.workspaceSwitch.agents.models', "モデルの選択肢。未定義ならモデル欄を表示しません。"),
+						items: {
+							type: 'object',
+							required: ['id', 'flag'],
+							properties: {
+								id: { type: 'string' },
+								label: { type: 'string' },
+								flag: { type: 'string', description: localize('paradis.workspaceSwitch.agents.models.flag', "選択時にコマンドへ付与するフラグ。例: --model opus") },
+								efforts: { type: 'array', items: { type: 'string' }, description: localize('paradis.workspaceSwitch.agents.models.efforts', "このモデルで選べるエフォート id。空配列でエフォート非対応、未定義で全エフォートを許可。") },
+								defaultEffort: { type: 'string', description: localize('paradis.workspaceSwitch.agents.models.defaultEffort', "「既定」選択時の表示に添える実際の既定エフォート。") }
+							}
+						}
+					},
+					efforts: {
+						type: 'array',
+						description: localize('paradis.workspaceSwitch.agents.efforts', "エフォートの語彙（id とフラグ）。未定義ならエフォート欄を表示しません。"),
+						items: {
+							type: 'object',
+							required: ['id', 'flag'],
+							properties: {
+								id: { type: 'string' },
+								flag: { type: 'string', description: localize('paradis.workspaceSwitch.agents.efforts.flag', "選択時にコマンドへ付与するフラグ。例: --effort high") }
+							}
+						}
+					},
+					permissions: {
+						type: 'array',
+						description: localize('paradis.workspaceSwitch.agents.permissions', "権限モードの選択肢。先頭要素が既定（通常はフラグなし）。未定義なら権限欄を表示しません。"),
+						items: {
+							type: 'object',
+							required: ['id', 'label', 'flag'],
+							properties: {
+								id: { type: 'string' },
+								label: { type: 'string' },
+								flag: { type: 'string', description: localize('paradis.workspaceSwitch.agents.permissions.flag', "選択時にコマンドへ付与するフラグ。例: --dangerously-skip-permissions") },
+								danger: { type: 'boolean', description: localize('paradis.workspaceSwitch.agents.permissions.danger', "true なら危険な選択肢として赤系ハイライト＋警告表示にします。") },
+								hint: { type: 'string', description: localize('paradis.workspaceSwitch.agents.permissions.hint', "選択時に表示する補足説明。") }
+							}
+						}
+					}
 				}
 			},
 			default: PARADIS_DEFAULT_AGENT_COMMANDS.map(agent => ({ ...agent }))
@@ -78,7 +126,7 @@ class ParadisCreateWorktreeAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor, repositoryId?: string): Promise<void> {
+	async run(accessor: ServicesAccessor, repositoryId?: string, prefill?: IParadisHeadlessWorktreeRequest): Promise<void> {
 		const contextService = accessor.get(IWorkspaceContextService);
 		const notificationService = accessor.get(INotificationService);
 		const commandService = accessor.get(ICommandService);
@@ -108,7 +156,8 @@ class ParadisCreateWorktreeAction extends Action2 {
 			return;
 		}
 
-		openParadisCreateWorktreeDialog(accessor, typeof repositoryId === 'string' ? repositoryId : undefined);
+		// prefill はバックグラウンド作成の失敗通知「ダイアログを再表示」から渡される入力値の復元用
+		openParadisCreateWorktreeDialog(accessor, typeof repositoryId === 'string' ? repositoryId : undefined, prefill);
 	}
 }
 

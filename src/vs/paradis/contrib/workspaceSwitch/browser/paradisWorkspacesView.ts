@@ -42,7 +42,7 @@ import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
-import { IParadisDiffStat, IParadisPrStatus, ParadisPrState } from '../common/paradisWorktreeCreate.js';
+import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
  * createWorktree/removeWorktree コマンドと同様に ID 文字列を直書きする (web ビルドでは
@@ -60,10 +60,26 @@ const PR_STATUS_POLL_INTERVAL_MS = 300_000;
 
 export const PARADIS_WORKSPACES_VIEW_ID = 'workbench.view.paradisWorkspaces.repositories';
 
-type WorkspaceTreeElement = IParadisWorkspaceRepository | IParadisWorktree;
+/** バックグラウンド作成中のジョブを表す「作成中」プレースホルダ行。クリック・メニュー対象外。 */
+interface ICreatingSpaceElement {
+	readonly creatingJob: IParadisWorktreeCreateJobSnapshot;
+}
+
+type WorkspaceTreeElement = IParadisWorkspaceRepository | IParadisWorktree | ICreatingSpaceElement;
+
+function isCreating(element: WorkspaceTreeElement): element is ICreatingSpaceElement {
+	return (element as ICreatingSpaceElement).creatingJob !== undefined;
+}
 
 function isWorktree(element: WorkspaceTreeElement): element is IParadisWorktree {
-	return (element as IParadisWorktree).repositoryId !== undefined;
+	return !isCreating(element) && (element as IParadisWorktree).repositoryId !== undefined;
+}
+
+// allow-any-unicode-next-line
+const STR_CREATING_UNNAMED = localize('paradis.workspaceSwitch.creatingUnnamed', "(名前を生成中…)");
+
+function creatingElementLabel(element: ICreatingSpaceElement): string {
+	return element.creatingJob.name ?? STR_CREATING_UNNAMED;
 }
 
 /** パレットIDの表示名 (Superset の12色) */
@@ -167,13 +183,58 @@ function prStateLabel(state: ParadisPrState): string {
 class WorkspaceTreeDelegate implements IListVirtualDelegate<WorkspaceTreeElement> {
 	getHeight(element: WorkspaceTreeElement): number {
 		// リポジトリ行は純粋なグルーピング見出し (main checkout も worktree 行として
-		// 子要素に含まれる)。worktree 行は名前の下にブランチ名を重ねる2段表示のため高くする
-		return isWorktree(element) ? 44 : 30;
+		// 子要素に含まれる)。worktree 行・作成中行は名前の下に2段目を重ねる表示のため高くする
+		return isWorktree(element) || isCreating(element) ? 44 : 30;
 	}
 
 	getTemplateId(element: WorkspaceTreeElement): string {
+		if (isCreating(element)) {
+			return CreatingSpaceRenderer.TEMPLATE_ID;
+		}
 		return isWorktree(element) ? WorktreeRenderer.TEMPLATE_ID : RepositoryRenderer.TEMPLATE_ID;
 	}
+}
+
+interface ICreatingSpaceTemplateData {
+	readonly row: HTMLElement;
+	readonly icon: HTMLElement;
+	readonly name: HTMLElement;
+	readonly stage: HTMLElement;
+}
+
+/**
+ * バックグラウンド作成中のジョブを表す「作成中」行。worktree 行と同じ2段構成で、
+ * 上段に（仮）表示名、下段に現在の工程を出す。クリック・コンテキストメニューは無効。
+ */
+class CreatingSpaceRenderer implements ITreeRenderer<ICreatingSpaceElement, FuzzyScore, ICreatingSpaceTemplateData> {
+
+	static readonly TEMPLATE_ID = 'paradisCreatingSpace';
+	readonly templateId = CreatingSpaceRenderer.TEMPLATE_ID;
+
+	constructor(
+		private readonly getRepositoryColorHex: (repositoryId: string) => string | undefined,
+	) { }
+
+	renderTemplate(container: HTMLElement): ICreatingSpaceTemplateData {
+		const row = DOM.append(container, DOM.$('.paradis-worktree-row.paradis-creating-row'));
+		const icon = DOM.append(row, DOM.$('.codicon'));
+		const labels = DOM.append(row, DOM.$('.paradis-worktree-labels'));
+		const name = DOM.append(labels, DOM.$('.paradis-worktree-name'));
+		const stage = DOM.append(labels, DOM.$('.paradis-worktree-branch.paradis-creating-stage'));
+		return { row, icon, name, stage };
+	}
+
+	renderElement(node: ITreeNode<ICreatingSpaceElement, FuzzyScore>, _index: number, templateData: ICreatingSpaceTemplateData): void {
+		const element = node.element;
+		applyStatusIcon(templateData.icon, 'working', Codicon.gitBranch);
+		templateData.name.textContent = creatingElementLabel(element);
+		templateData.stage.textContent = element.creatingJob.stageLabel;
+		// リポジトリ見出し行と同じ色を継続させる (WorktreeRenderer.renderElement 参照)
+		const colorHex = this.getRepositoryColorHex(element.creatingJob.repositoryId);
+		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--paradis-workspace-color', colorHex ?? 'transparent');
+	}
+
+	disposeTemplate(_templateData: ICreatingSpaceTemplateData): void { }
 }
 
 /**
@@ -355,6 +416,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
+		@IParadisWorktreeCreateProgressStore private readonly createProgressStore: IParadisWorktreeCreateProgressStore,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
@@ -374,6 +436,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		// 注意: 引数なしの tree.rerender() は行の renderElement を再実行しないため、
 		// setChildren で作り直す (identityProvider により選択/折りたたみ状態は保持される)
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.updateTree()));
+		// バックグラウンド作成の進行状況（「作成中」行の追加・工程更新・完了時の除去）
+		this._register(this.createProgressStore.onDidChangeJobs(() => this.updateTree()));
 	}
 
 	protected override renderBody(container: HTMLElement): void {
@@ -393,23 +457,28 @@ export class ParadisWorkspacesView extends ViewPane {
 			url => { this.openerService.open(URI.parse(url)).catch(error => this.notificationService.error(error)); },
 			this.hoverService
 		);
+		const creatingRenderer = new CreatingSpaceRenderer(
+			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color)
+		);
 
 		this.tree = this._register(this.instantiationService.createInstance(
 			WorkbenchObjectTree<WorkspaceTreeElement, FuzzyScore>,
 			'ParadisWorkspaces',
 			treeContainer,
 			new WorkspaceTreeDelegate(),
-			[repositoryRenderer, worktreeRenderer],
+			[repositoryRenderer, worktreeRenderer, creatingRenderer],
 			{
 				identityProvider: {
-					getId: (element: WorkspaceTreeElement) => isWorktree(element) ? `worktree:${worktreeStateKeyFor(element)}` : `repo:${element.id}`
+					getId: (element: WorkspaceTreeElement) => isCreating(element)
+						? `creating:${element.creatingJob.id}`
+						: isWorktree(element) ? `worktree:${worktreeStateKeyFor(element)}` : `repo:${element.id}`
 				},
 				horizontalScrolling: false,
 				// worktree 行本体のクリックは「切り替え」専用にし、リポジトリ見出しの開閉は
 				// 左端の chevron でのみ行う (見出し行本体のクリックは何もしない)
 				expandOnlyOnTwistieClick: true,
 				accessibilityProvider: {
-					getAriaLabel: (element: WorkspaceTreeElement) => element.name,
+					getAriaLabel: (element: WorkspaceTreeElement) => isCreating(element) ? creatingElementLabel(element) : element.name,
 					getWidgetAriaLabel: () => localize('paradisWorkspaces', "Workspaces")
 				}
 			}
@@ -427,7 +496,7 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		this._register(this.tree.onContextMenu(e => {
 			const element = e.element;
-			if (!element) {
+			if (!element || isCreating(element)) {
 				return;
 			}
 			this.contextMenuService.showContextMenu({
@@ -440,7 +509,7 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		this._register(this.tree.onDidChangeCollapseState(e => {
 			const element = e.node.element;
-			if (!element) {
+			if (!element || isCreating(element)) {
 				return;
 			}
 			this._collapsedRepositoryState.recordTreeCollapse(element, e.node.collapsed);
@@ -587,7 +656,11 @@ export class ParadisWorkspacesView extends ViewPane {
 				uri: repository.uri,
 				isMainCheckout: true
 			};
-			const children: WorkspaceTreeElement[] = [mainCheckout, ...worktrees];
+			// バックグラウンド作成中のジョブは「作成中」プレースホルダ行として末尾に混ぜ込む
+			const creatingJobs: ICreatingSpaceElement[] = this.createProgressStore.jobs
+				.filter(job => job.repositoryId === repository.id)
+				.map(job => ({ creatingJob: job }));
+			const children: WorkspaceTreeElement[] = [mainCheckout, ...worktrees, ...creatingJobs];
 			return {
 				element: repository,
 				children: children.map(worktree => ({ element: worktree })),
