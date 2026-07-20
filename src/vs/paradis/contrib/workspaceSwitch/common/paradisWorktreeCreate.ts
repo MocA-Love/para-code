@@ -11,7 +11,10 @@
 // workbench 側のダイアログ (paradisCreateWorktreeDialog.ts) の間で共有する。
 
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
+import { Event } from '../../../../base/common/event.js';
 import { isLinux } from '../../../../base/common/platform.js';
+import { localize } from '../../../../nls.js';
+import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { GeneralShellType, TerminalShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
 import { ParadisWorkspaceLifecycleKind } from './paradisWorkspaceLifecycle.js';
 
@@ -117,23 +120,148 @@ export interface IParadisRemoveWorktreeRequest {
 	readonly force: boolean;
 }
 
+/** エージェントのモデル選択肢1件分。 */
+export interface IParadisAgentModelOption {
+	readonly id: string;
+	/** 選択肢として表示する名前。無ければ id を表示する。 */
+	readonly label?: string;
+	/** 選択時にコマンドへ付与するフラグ（例: --model opus）。 */
+	readonly flag: string;
+	/**
+	 * このモデルで選べるエフォート id の一覧。空配列 = エフォート非対応（選択UIを無効化）。
+	 * 未定義 = エージェント共通の全エフォート語彙（efforts）をそのまま許可する。
+	 */
+	readonly efforts?: readonly string[];
+	/** 「既定」選択時に表示へ添える、そのモデルの実際の既定エフォート。 */
+	readonly defaultEffort?: string;
+}
+
+/** エージェントのエフォート語彙1件分（id とフラグの組み立て方）。 */
+export interface IParadisAgentEffortOption {
+	readonly id: string;
+	readonly flag: string;
+}
+
+/** エージェントの権限モード選択肢1件分。先頭要素を既定（通常はフラグなし）とする。 */
+export interface IParadisAgentPermissionOption {
+	readonly id: string;
+	readonly label: string;
+	readonly flag: string;
+	/** true なら危険な選択肢として赤系ハイライト＋警告表示にする。 */
+	readonly danger?: boolean;
+	/** 選択時に表示する補足説明。 */
+	readonly hint?: string;
+}
+
 /**
  * エージェント CLI の起動コマンドテンプレート。
  * `{prompt}` プレースホルダがシェルエスケープ済みのプロンプトに置換される。
  * プレースホルダが無い場合は末尾にエスケープ済みプロンプトを追加する。
+ * `{model}` / `{effort}` / `{permission}` プレースホルダには選択したオプションのフラグが
+ * 入る（未選択なら空文字）。これらのプレースホルダが無いテンプレートでは、選択された
+ * フラグ一式をプロンプトの直前（プロンプトも無ければ末尾）へ挿入する。
  */
 export interface IParadisAgentCommandTemplate {
 	readonly id: string;
 	readonly label: string;
 	readonly command: string;
+	/** モデル選択肢。未定義ならモデル選択UI自体を出さない。 */
+	readonly models?: readonly IParadisAgentModelOption[];
+	/** エフォート語彙。未定義ならエフォート選択UI自体を出さない。 */
+	readonly efforts?: readonly IParadisAgentEffortOption[];
+	/** 権限モード選択肢。未定義なら権限選択UI自体を出さない。 */
+	readonly permissions?: readonly IParadisAgentPermissionOption[];
 }
+
+/** エージェント起動時のオプション選択（いずれも undefined = 既定 = フラグを付けない）。 */
+export interface IParadisAgentLaunchOptions {
+	readonly modelId?: string;
+	readonly effortId?: string;
+	readonly permissionId?: string;
+}
+
+/** Claude Code のエフォート語彙（2026-07時点の公式ドキュメント準拠）。 */
+const CLAUDE_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** Codex GPT-5.6 系のエフォート語彙。旧世代モデルは ultra 非対応。 */
+const CODEX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const CODEX_LEGACY_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+// allow-any-unicode-next-line
+const STR_PERMISSION_DEFAULT = localize('paradis.agentPermission.default', "通常（確認あり）");
+// allow-any-unicode-next-line
+const STR_PERMISSION_SKIP_ALL = localize('paradis.agentPermission.skipAll', "全許可");
+// allow-any-unicode-next-line
+const STR_PERMISSION_SKIP_ALL_HINT = localize('paradis.agentPermission.skipAllHint', "確認なしでコマンド実行・ファイル編集を行います");
 
 /** 既定のエージェント定義。設定 paradis.workspaceSwitch.agents で上書き・追加できる。 */
 export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTemplate[] = [
-	{ id: 'claude', label: 'Claude Code', command: 'claude {prompt}' },
-	{ id: 'codex', label: 'Codex', command: 'codex {prompt}' },
-	{ id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' },
+	{
+		id: 'claude', label: 'Claude Code', command: 'claude {prompt}',
+		models: [
+			{ id: 'fable', label: 'fable (Fable 5)', flag: '--model fable', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+			{ id: 'opus', label: 'opus (Opus 4.8)', flag: '--model opus', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+			{ id: 'sonnet', label: 'sonnet (Sonnet 5)', flag: '--model sonnet', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+			// Haiku 4.5 はエフォート非対応（efforts: [] でエフォート欄を無効化する）
+			{ id: 'haiku', label: 'haiku (Haiku 4.5)', flag: '--model haiku', efforts: [] },
+			{ id: 'opusplan', label: 'opusplan', flag: '--model opusplan', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+		],
+		efforts: CLAUDE_EFFORT_IDS.map(id => ({ id, flag: `--effort ${id}` })),
+		permissions: [
+			{ id: 'default', label: STR_PERMISSION_DEFAULT, flag: '' },
+			{ id: 'skip-permissions', label: STR_PERMISSION_SKIP_ALL, flag: '--dangerously-skip-permissions', danger: true, hint: STR_PERMISSION_SKIP_ALL_HINT },
+		],
+	},
+	{
+		id: 'codex', label: 'Codex', command: 'codex {prompt}',
+		models: [
+			{ id: 'gpt-5.6-sol', flag: '--model gpt-5.6-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-5.6-terra', flag: '--model gpt-5.6-terra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-5.6-luna', flag: '--model gpt-5.6-luna', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-5.5', flag: '--model gpt-5.5', efforts: CODEX_LEGACY_EFFORT_IDS, defaultEffort: 'medium' },
+			{ id: 'gpt-5.4', flag: '--model gpt-5.4', efforts: CODEX_LEGACY_EFFORT_IDS, defaultEffort: 'medium' },
+		],
+		efforts: CODEX_EFFORT_IDS.map(id => ({ id, flag: `--effort ${id}` })),
+		permissions: [
+			{ id: 'default', label: STR_PERMISSION_DEFAULT, flag: '' },
+			{
+				id: 'full-auto', label: 'full-auto', flag: '--full-auto',
+				// allow-any-unicode-next-line
+				hint: localize('paradis.agentPermission.fullAutoHint', "sandbox内で自動実行し、失敗時のみ確認します")
+			},
+			{
+				// allow-any-unicode-next-line
+				id: 'bypass', label: localize('paradis.agentPermission.bypass', "全バイパス"), flag: '--dangerously-bypass-approvals-and-sandbox', danger: true,
+				// allow-any-unicode-next-line
+				hint: localize('paradis.agentPermission.bypassHint', "承認もsandboxもすべて無効化します")
+			},
+		],
+	},
+	{
+		id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}',
+		permissions: [
+			{ id: 'default', label: STR_PERMISSION_DEFAULT, flag: '' },
+			{ id: 'yolo', label: STR_PERMISSION_SKIP_ALL, flag: '--yolo', danger: true, hint: STR_PERMISSION_SKIP_ALL_HINT },
+		],
+	},
 ];
+
+/**
+ * 選択されたモデル/エフォート/権限をテンプレート定義に照らしてフラグ文字列へ解決する。
+ * 選択されたエフォートが選択中モデルの対応外（model.efforts に無い）の場合は付与しない。
+ */
+export function paradisResolveAgentLaunchFlags(template: IParadisAgentCommandTemplate, options: IParadisAgentLaunchOptions | undefined): { model: string; effort: string; permission: string } {
+	const modelOption = options?.modelId ? template.models?.find(model => model.id === options.modelId) : undefined;
+	const model = modelOption?.flag ?? '';
+	let effort = '';
+	if (options?.effortId) {
+		const allowedEfforts = modelOption?.efforts;
+		if (allowedEfforts === undefined || allowedEfforts.includes(options.effortId)) {
+			effort = template.efforts?.find(candidate => candidate.id === options.effortId)?.flag ?? '';
+		}
+	}
+	const permission = options?.permissionId ? (template.permissions?.find(candidate => candidate.id === options.permissionId)?.flag ?? '') : '';
+	return { model, effort, permission };
+}
 
 function paradisQuotePosixShellArg(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -153,30 +281,52 @@ function paradisEncodeUtf16LeBase64(value: string): string {
 	return encodeBase64(VSBuffer.wrap(bytes));
 }
 
-function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string): string {
-	if (template.command.includes('{prompt}')) {
-		return template.command.replace('{prompt}', promptExpression);
+function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string, options: IParadisAgentLaunchOptions | undefined): string {
+	const flags = paradisResolveAgentLaunchFlags(template, options);
+	let command = template.command;
+	// プレースホルダがあるフラグはその位置へ置換し、無いフラグはプロンプトの直前
+	// （プロンプトも無ければ末尾）へまとめて挿入する。プレースホルダを一部だけ書いた
+	// カスタムテンプレートでも、選択されたフラグが黙って消えないようにする
+	const leftoverFlags: string[] = [];
+	for (const [placeholder, flag] of [['{model}', flags.model], ['{effort}', flags.effort], ['{permission}', flags.permission]] as const) {
+		if (command.includes(placeholder)) {
+			command = command.replace(placeholder, flag);
+		} else if (flag.length > 0) {
+			leftoverFlags.push(flag);
+		}
 	}
-	return `${template.command} ${promptExpression}`;
+	if (leftoverFlags.length > 0) {
+		const combined = leftoverFlags.join(' ');
+		command = command.includes('{prompt}')
+			? command.replace('{prompt}', `${combined} {prompt}`)
+			: `${command} ${combined}`;
+	}
+	// 未選択プレースホルダの空置換で残る連続スペースを、プロンプト挿入前に正規化する
+	// （プロンプト本文内の空白を巻き込まないよう、必ず置換前に行う）
+	command = command.replace(/ {2,}/g, ' ').trim();
+	if (command.includes('{prompt}')) {
+		return command.replace('{prompt}', promptExpression);
+	}
+	return `${command} ${promptExpression}`;
 }
 
 /** cmd.exeでは任意文字列の安全な引数化が困難なため、Base64化したPowerShellスクリプトへ委譲する。 */
-function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTemplate, prompt: string): string {
+function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, options: IParadisAgentLaunchOptions | undefined): string {
 	const promptBase64 = encodeBase64(VSBuffer.fromString(prompt));
-	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt');
+	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt', options);
 	const script = `$paradisPrompt = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${promptBase64}')); ${command}`;
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${paradisEncodeUtf16LeBase64(script)}`;
 }
 
 /** 実際のターミナルシェルに合わせ、テンプレートの {prompt} を安全な単一引数へ置換する。 */
-export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, shellType: TerminalShellType): string {
+export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
 	if (shellType === WindowsShellType.CommandPrompt) {
-		return paradisBuildCommandPromptAgentCommand(template, prompt);
+		return paradisBuildCommandPromptAgentCommand(template, prompt, options);
 	}
 	const quoted = shellType === GeneralShellType.PowerShell
 		? paradisQuotePowerShellArg(prompt)
 		: paradisQuotePosixShellArg(prompt);
-	return paradisApplyPromptToTemplate(template, quoted);
+	return paradisApplyPromptToTemplate(template, quoted, options);
 }
 
 /**
@@ -253,4 +403,32 @@ export function paradisBuildWorktreeNames(spaceName: string, branchName: string,
 /** エージェント用ターミナルが作られない作成では、空の通常ターミナルを表示する。 */
 export function paradisShouldCreateDefaultTerminal(agentId: string, prompt: string): boolean {
 	return agentId === 'none' || prompt.trim().length === 0;
+}
+
+// --- バックグラウンド作成の進行状況ストア -------------------------------------------------------
+
+/** バックグラウンド作成中のジョブ1件分のスナップショット（Workspaces ビューの「作成中」行の材料）。 */
+export interface IParadisWorktreeCreateJobSnapshot {
+	readonly id: number;
+	readonly repositoryId: string;
+	/** 表示名。ブランチ名のLLM生成中でまだ確定していない間は undefined。 */
+	readonly name?: string;
+	/** 現在の工程の短い表示ラベル（例: setup スクリプトを実行中…）。 */
+	readonly stageLabel: string;
+}
+
+export const IParadisWorktreeCreateProgressStore = createDecorator<IParadisWorktreeCreateProgressStore>('paradisWorktreeCreateProgressStore');
+
+/**
+ * バックグラウンド作成ジョブの進行状況ストア。
+ * 書き込みは electron-browser のキューサービス (paradisWorktreeCreateQueue.ts) が行い、
+ * Workspaces ビュー (browser 層) はここから読むだけ。Web ビルドでは常に空
+ * （IParadisAgentStatusStore と同じ構成）。
+ */
+export interface IParadisWorktreeCreateProgressStore {
+	readonly _serviceBrand: undefined;
+	readonly onDidChangeJobs: Event<void>;
+	readonly jobs: readonly IParadisWorktreeCreateJobSnapshot[];
+	/** キューサービス専用の書き込み口。 */
+	setJobs(jobs: readonly IParadisWorktreeCreateJobSnapshot[]): void;
 }

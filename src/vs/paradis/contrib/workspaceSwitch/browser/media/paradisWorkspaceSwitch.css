@@ -159,6 +159,21 @@
 	opacity: 0.5;
 }
 
+/* バックグラウンド作成中の「作成中」プレースホルダ行 (paradisWorkspacesView.ts の CreatingSpaceRenderer)。
+ * クリック・メニュー対象外のため、切り替え可能な行と区別できるよう薄い斜体表示にする */
+.paradis-workspaces-list .paradis-worktree-row.paradis-creating-row {
+	opacity: 0.75;
+	cursor: default;
+}
+
+.paradis-workspaces-list .paradis-creating-row .paradis-worktree-name {
+	font-style: italic;
+}
+
+.paradis-workspaces-list .paradis-creating-row .paradis-creating-stage {
+	color: var(--vscode-descriptionForeground);
+}
+
 /* allow-any-unicode-next-line */
 /* ブランチに紐づく GitHub PR のチップ (Superset の WorkspaceStatusBadge 相当)。
  * 状態色は GitHub 本家に合わせた固定値 (open=緑 / draft=灰 / merged=紫 / closed=赤)。

@@ -43,7 +43,9 @@ import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadis
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID } from '../common/paradisRepositoryClone.js';
 import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
+import { IParadisWorktreeCreateProgressStore } from '../common/paradisWorktreeCreate.js';
 import { ParadisAgentStatusStore } from './paradisAgentStatusStore.js';
+import { ParadisWorktreeCreateProgressStore } from './paradisWorktreeCreateProgressStore.js';
 import { ParadisAuxiliaryWindowScopeService } from './paradisAuxiliaryWindowScopeService.js';
 import { ParadisEditorSplitTerminalService } from './paradisEditorSplitTerminalService.js';
 import { ParadisEditorScopeService } from './paradisEditorScopeService.js';
@@ -59,6 +61,7 @@ registerSingleton(IParadisEditorScopeService, ParadisEditorScopeService, Instant
 registerSingleton(IParadisAuxiliaryWindowScopeService, ParadisAuxiliaryWindowScopeService, InstantiationType.Delayed);
 registerSingleton(IParadisWorktreeService, ParadisWorktreeService, InstantiationType.Delayed);
 registerSingleton(IParadisAgentStatusStore, ParadisAgentStatusStore, InstantiationType.Delayed);
+registerSingleton(IParadisWorktreeCreateProgressStore, ParadisWorktreeCreateProgressStore, InstantiationType.Delayed);
 registerSingleton(IParadisEditorSplitTerminalService, ParadisEditorSplitTerminalService, InstantiationType.Delayed);
 
 class ParadisEditorScopeStarter implements IWorkbenchContribution {
