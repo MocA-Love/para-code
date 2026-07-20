@@ -74,6 +74,7 @@ export function AgentLaunchSheet({ visible, onClose }: {
 	const [prompt, setPrompt] = useState('');
 	const [toast, setToast] = useState<LaunchToastState | undefined>(undefined);
 	const toastTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const scrollRef = useRef<ScrollView>(null);
 	const mountedRef = useRef(true);
 	useEffect(() => {
 		mountedRef.current = true;
@@ -284,7 +285,7 @@ export function AgentLaunchSheet({ visible, onClose }: {
 		<>
 			<BottomSheet visible={visible} onClose={onClose} title="新しいエージェントを起動">
 				<KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-					<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+					<ScrollView ref={scrollRef} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 						{formError ? <Text style={styles.error}>{formError}</Text> : null}
 						{!form && !formError ? <ActivityIndicator style={styles.spinner} /> : null}
 						{form && agent !== undefined ? (
@@ -470,6 +471,9 @@ export function AgentLaunchSheet({ visible, onClose }: {
 									placeholder="何をしますか？（エージェントへの最初の指示）"
 									placeholderTextColor={colors.textDim}
 									multiline
+									// シートがキーボード分持ち上がって縮んだ後に、入力欄が見える位置まで送る
+									// （キーボードアニメーションとシートのLayoutAnimation完了を待つ）
+									onFocus={() => setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 300)}
 								/>
 
 								{commandPreview !== undefined ? (
