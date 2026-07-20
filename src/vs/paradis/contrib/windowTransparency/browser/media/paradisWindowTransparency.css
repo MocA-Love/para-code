@@ -30,8 +30,22 @@
 	background-color: color-mix(in srgb, var(--paradis-titlebar-bg, var(--vscode-titleBar-activeBackground, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent) !important;
 }
 
+/* Status bar (footer): keep a dimmed tint but never show the desktop through it. Instead of
+	mixing the themed color into `transparent` (like every other part), mix it into an opaque
+	slate base, so the footer reads as the familiar muted tone while staying fully opaque. The
+	fixed 44% / #727290 pairing is tuned by eye (independent of the transparency slider): with the
+	default theme's statusBar accent it lands on the preferred muted blue (#448db0-ish) and keeps
+	state colors (debugging etc.) recognizably tinted. */
 .monaco-workbench.paradis-transparent .part.statusbar {
-	background-color: color-mix(in srgb, var(--paradis-statusbar-bg, var(--vscode-statusBar-background, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent) !important;
+	background-color: color-mix(in srgb, var(--paradis-statusbar-bg, var(--vscode-statusBar-background, var(--vscode-editor-background))) 44%, #727290) !important;
+}
+
+/* Modern UI's statusBar.css neutralizes the status bar foreground to the general
+	`--vscode-foreground` because it assumes the bar's background was neutralized to match the
+	window. Para Code keeps a colored (muted) status bar background above, so restore the theme's
+	own statusBar foreground for legibility; the module's hover rule uses `inherit` and follows. */
+.monaco-workbench.paradis-transparent.style-override .part.statusbar {
+	color: var(--vscode-statusBar-foreground, var(--vscode-foreground)) !important;
 }
 
 .monaco-workbench.paradis-transparent .part.activitybar {
@@ -130,9 +144,13 @@
 /* translucent layer shows through; `!important` outranks the inline style. The Para Code spreadsheet */
 /* editor (Excel viewer) is excluded so its sheet backdrop keeps today's opaque rendering; webview */
 /* based editors (browser tabs, md/html Rendered) composite above this layer and are unaffected. */
-.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-spreadsheet, .paradis-spreadsheet-diff)) {
+.monaco-workbench.paradis-transparent .part.editor .editor-container:not(:has(.paradis-spreadsheet, .paradis-spreadsheet-diff, .settings-editor, .keybindings-editor, .extension-editor, .profiles-editor)) {
 	background-color: transparent !important;
 }
+
+/* Settings-like full-page editors (settings / keyboard shortcuts / extension details / profiles)
+	are excluded above so they keep the opaque inline editorBackground: these pages are dense
+	configuration UIs where desktop show-through hurts readability, unlike code editors. */
 
 /* Terminal (xterm). Under window transparency the xterm theme background alpha is dropped to 0 while */
 /* the RGB is kept (see xtermTerminal.ts PARA-PATCH), so the GPU surface itself renders see-through; */
@@ -193,4 +211,17 @@
 
 .monaco-workbench.paradis-transparent.floating-panels .part.panel {
 	background-color: color-mix(in srgb, var(--vscode-panel-background, var(--vscode-editor-background)) var(--paradis-transparency-opacity, 90%), transparent) !important;
+}
+
+/* Modern UI (workbench.experimental.modernUI) pane cards. styleOverrides' paneHeaders.css paints an
+	opaque sideBar-background with !important on every pane card (.monaco-pane-view .pane) and on the
+	pane headers at rest, covering the side bars' interior completely. The translucent layer is
+	already carried by the .part.sidebar / .part.auxiliarybar / .part.panel rules above, so the card
+	fill must be cleared to transparent — re-painting it with the same color-mix would stack two
+	translucent layers into near-opacity. The extra classes outrank the module's selectors at equal
+	!important. Hover is excluded on the header so the module's hover tint keeps working; the card
+	look is preserved by the module's rounded corners, gaps and shadows, which paint no background. */
+.monaco-workbench.paradis-transparent.style-override .monaco-pane-view .pane,
+.monaco-workbench.paradis-transparent.style-override .monaco-pane-view .pane > .pane-header:not(:hover) {
+	background-color: transparent !important;
 }
