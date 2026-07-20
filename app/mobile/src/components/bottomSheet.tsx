@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { ReactNode, useEffect, useRef, useState } from 'react';
-import { Animated, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Keyboard, KeyboardEvent, LayoutAnimation, Modal, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { colors } from '../theme.js';
@@ -12,7 +12,48 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
  * ボトムシート共通コンポーネント。Modalの標準アニメーション（animationType="slide"）は
  * オーバーレイ（暗幕）がシートより先に一括表示されて不自然なため、暗幕のフェードと
  * シートのスライドを同じAnimated値で同期させる（wsBarのシートと同じ挙動）。
+ *
+ * キーボード対応: シートは画面下端に固定されているため、シート内のKeyboardAvoidingViewでは
+ * シート自体が持ち上がらず、下部の入力欄がキーボードに完全に隠れる。iOSではキーボードの
+ * 実フレーム（keyboardWillChangeFrame）を監視してシートの bottom をその高さぶん持ち上げ、
+ * 併せて maxHeight を残りの表示領域に収まるよう縮める（useKeyboardVisible と同じ理由で
+ * 80px以下の小フレームはハードウェアキーボードのアクセサリバーとして無視する）。
+ * AndroidはwindowSoftInputMode=adjustResizeがModalごと縮めるため何もしない。
  */
+
+/** iOSのキーボード被覆高さ（画面下端から）。シートの持ち上げ量に使う。 */
+function useKeyboardInset(): number {
+	const [inset, setInset] = useState(0);
+	const windowHeight = useWindowDimensions().height;
+	useEffect(() => {
+		if (Platform.OS !== 'ios') {
+			return;
+		}
+		const applyInset = (next: number, event: KeyboardEvent) => {
+			setInset(current => {
+				if (current === next) {
+					return current;
+				}
+				// キーボードのアニメーションカーブに合わせてレイアウト変化を滑らかにする
+				LayoutAnimation.configureNext({
+					duration: event.duration > 0 ? event.duration : 250,
+					update: { type: 'keyboard' },
+				});
+				return next;
+			});
+		};
+		const change = Keyboard.addListener('keyboardWillChangeFrame', event => {
+			const covered = Math.max(0, windowHeight - event.endCoordinates.screenY);
+			applyInset(covered > 80 ? covered : 0, event);
+		});
+		const hide = Keyboard.addListener('keyboardWillHide', event => applyInset(0, event));
+		return () => {
+			change.remove();
+			hide.remove();
+		};
+	}, [windowHeight]);
+	return inset;
+}
 export function BottomSheet({ visible, onClose, onConfirm, title, children, fullHeight = false, glass = false }: {
 	visible: boolean;
 	/** 背景タップ・Androidバックボタン・（onConfirm未指定時は唯一の）閉じるボタンで呼ばれる「キャンセル」。 */
@@ -29,6 +70,8 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 	const anim = useRef(new Animated.Value(0)).current;
 	const [mounted, setMounted] = useState(visible);
 	const insets = useStableInsets();
+	const keyboardInset = useKeyboardInset();
+	const windowHeight = useWindowDimensions().height;
 
 	useEffect(() => {
 		if (visible) {
@@ -50,7 +93,18 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 			<Animated.View style={[StyleSheet.absoluteFill, styles.overlay, { opacity: anim }]}>
 				<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="閉じる" />
 			</Animated.View>
-			<Animated.View style={[styles.sheet, glass && styles.glassSheet, fullHeight && { maxHeight: undefined, top: insets.top }, { transform: [{ translateY }] }]}>
+			<Animated.View
+				style={[
+					styles.sheet,
+					glass && styles.glassSheet,
+					fullHeight && { maxHeight: undefined, top: insets.top },
+					// キーボード表示中はその高さぶん持ち上げ、残りの表示領域に収める
+					// （fullHeightはtop固定なのでbottomの持ち上げだけで自然に縮む）
+					keyboardInset > 0 && { bottom: keyboardInset },
+					keyboardInset > 0 && !fullHeight && { maxHeight: Math.max(240, Math.min(windowHeight * 0.72, windowHeight - keyboardInset - insets.top - 12)) },
+					{ transform: [{ translateY }] },
+				]}
+			>
 				{glass ? <GlassSurface style={styles.glassBackdrop} /> : null}
 				<View style={styles.handle} />
 				<View style={styles.head}>
