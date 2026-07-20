@@ -19,12 +19,13 @@ import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
-import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
@@ -39,15 +40,17 @@ import {
 	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
-import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
+import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 
 /** LLM 命名の待ち時間上限（ダイアログ側 NAMING_TIMEOUT_MS と同値）。 */
 const NAMING_TIMEOUT_MS = 8000;
 
-/** 作成フォームの材料（モバイルの作成シートが選択肢を組み立てるのに使う）。 */
+/** 作成フォームの材料（モバイルの作成シート・エージェント起動シートが選択肢を組み立てるのに使う）。 */
 export interface IParadisWorktreeCreateFormData {
-	readonly repos: { id: string; name: string; branches: string[]; head?: string }[];
-	readonly agents: { id: string; label: string }[];
+	/** setupScript はリポジトリ直下の .paracode.json 定義（モバイル側のトグル表示用。無ければ未定義）。 */
+	readonly repos: { id: string; name: string; branches: string[]; head?: string; setupScript?: string }[];
+	/** エージェント定義一式（コマンドテンプレート・モデル/エフォート/権限の選択肢を含む）。 */
+	readonly agents: IParadisAgentCommandTemplate[];
 }
 
 /** ヘッドレス作成の要求。ダイアログのフォーム値に対応する。 */
@@ -103,7 +106,7 @@ export interface IParadisWorktreeCreateFlowResult extends IParadisHeadlessWorktr
 }
 
 /** 設定 paradis.workspaceSwitch.agents（無ければ既定）からエージェント定義を得る（ダイアログの _agents と同じ規則）。 */
-function configuredAgents(configurationService: IConfigurationService): readonly IParadisAgentCommandTemplate[] {
+export function paradisConfiguredAgents(configurationService: IConfigurationService): readonly IParadisAgentCommandTemplate[] {
 	const configured = configurationService.getValue<IParadisAgentCommandTemplate[]>('paradis.workspaceSwitch.agents');
 	if (Array.isArray(configured) && configured.length > 0) {
 		return configured.filter(agent => agent && typeof agent.id === 'string' && agent.id !== 'none' && typeof agent.command === 'string');
@@ -165,6 +168,7 @@ export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): 
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
 	const sharedProcessService = accessor.get(ISharedProcessService);
 	const configurationService = accessor.get(IConfigurationService);
+	const fileService = accessor.get(IFileService);
 	const logService = accessor.get(ILogService);
 	const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
 	const repos = await Promise.all(switchService.repositories.map(async r => {
@@ -174,10 +178,80 @@ export async function paradisGetWorktreeCreateForm(accessor: ServicesAccessor): 
 		} catch (error) {
 			logService.warn('[ParadisWorktreeHeadlessCreate] listBranches failed', r.name, error);
 		}
-		return { id: r.id, name: r.name, branches: [...branches.branches], ...(branches.head !== undefined ? { head: branches.head } : {}) };
+		// setupスクリプトの有無と内容（モバイルの「setupスクリプトを実行」トグルの表示材料）。
+		// 読み取り失敗は「無し」扱いでフォーム本体を巻き添えにしない。
+		let setupScript: string | undefined;
+		try {
+			setupScript = (await paradisReadWorkspaceLifecycleConfig(fileService, r.uri)).setupScript?.trim() || undefined;
+		} catch (error) {
+			logService.warn('[ParadisWorktreeHeadlessCreate] read lifecycle config failed', r.name, error);
+		}
+		return {
+			id: r.id, name: r.name, branches: [...branches.branches],
+			...(branches.head !== undefined ? { head: branches.head } : {}),
+			...(setupScript !== undefined ? { setupScript } : {}),
+		};
 	}));
-	const agents = configuredAgents(configurationService).map(agent => ({ id: agent.id, label: agent.label }));
+	// エージェント定義はテンプレートごと渡す（モバイル側がモデル/エフォート/権限の選択UIと
+	// コマンドプレビューをPC側と同じ材料で組み立てるため）。設定由来のplain JSONなのでそのまま送れる。
+	const agents = paradisConfiguredAgents(configurationService).map(agent => ({ ...agent }));
 	return { repos, agents };
+}
+
+/** 既存ワークスペース（スペース）へのエージェント起動要求（モバイルの起動シートから）。 */
+export interface IParadisAgentLaunchInWorkspaceRequest {
+	/** 起動先のルートディレクトリ。 */
+	readonly rootUri: URI;
+	/** ワークスペースの状態キー（リポジトリid または worktree:...）。ターミナルのスコープ付けに使う。 */
+	readonly stateKey: string;
+	readonly agentId: string;
+	readonly prompt?: string;
+	readonly modelId?: string;
+	readonly effortId?: string;
+	readonly permissionId?: string;
+}
+
+/**
+ * 既存ワークスペースに新しいターミナルを作り、エージェントCLIを起動する。
+ * worktree作成フローの launchAgent 工程と同じ規則（パネル側に作成・非アクティブスコープは
+ * assignInstanceScope で即park・paneトークン自動注入で稼働状態表示が効く）で、
+ * ワークスペース作成を伴わない分だけを切り出したもの。
+ */
+export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, request: IParadisAgentLaunchInWorkspaceRequest): Promise<void> {
+	const configurationService = accessor.get(IConfigurationService);
+	const terminalService = accessor.get(ITerminalService);
+	const terminalGroupService = accessor.get(ITerminalGroupService);
+	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
+	const switchService = accessor.get(IParadisWorkspaceSwitchService);
+	const logService = accessor.get(ILogService);
+	const agent = paradisConfiguredAgents(configurationService).find(candidate => candidate.id === request.agentId);
+	if (!agent) {
+		throw new Error(`unknown agent: ${request.agentId}`);
+	}
+	const instance = await terminalService.createTerminal({
+		cwd: request.rootUri,
+		location: TerminalLocation.Panel,
+	});
+	if (request.stateKey !== switchService.activeStateKey) {
+		// PC側で非表示のワークスペース向け: スコープを付け替えて即parkさせる（表示を乱さない）
+		terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
+	} else {
+		// PCのアクティブワークスペース向け: モバイル発の新規ターミナル作成と同様にアクティブ化して
+		// パネルを表示する（表示失敗は起動自体の失敗にしない）
+		terminalService.setActiveInstance(instance);
+		try {
+			await terminalGroupService.showPanel(false);
+		} catch (error) {
+			logService.warn('[ParadisWorktreeHeadlessCreate] showPanel failed', error);
+		}
+	}
+	await instance.processReady;
+	const command = paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), instance.shellType, {
+		modelId: request.modelId,
+		effortId: request.effortId,
+		permissionId: request.permissionId,
+	});
+	await instance.sendText(command, true);
 }
 
 /**
@@ -297,8 +371,8 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
 			},
 			launchAgent: async () => {
-				const agent = configuredAgents(configurationService).find(candidate => candidate.id === agentId);
-				if (!agent || prompt.length === 0) {
+				const agent = paradisConfiguredAgents(configurationService).find(candidate => candidate.id === agentId);
+				if (!agent) {
 					return;
 				}
 				// ダイアログ発の従来実装はエディタ領域ターミナルを使っていたが、ヘッドレス・

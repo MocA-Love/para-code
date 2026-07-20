@@ -492,9 +492,10 @@ class ParadisCreateWorktreeDialog extends Disposable {
 			// allow-any-unicode-next-line
 			prompt = `${prompt.slice(0, PREVIEW_PROMPT_MAX_LENGTH)}…`;
 		}
-		// プレビューは POSIX シェル表記で統一する（実行時は実際のシェルに合わせて組み直される）
+		// プレビューは POSIX シェル表記で統一する（実行時は実際のシェルに合わせて組み直される。
+		// 空プロンプトは paradisBuildAgentCommand 側で引数ごと省かれる）
 		const command = paradisBuildAgentCommand(agent, prompt, undefined, this._currentLaunchOptions());
-		this._cmdPreview.textContent = `$ ${prompt.length === 0 ? command.trimEnd().replace(/ ''$/, '') : command}`;
+		this._cmdPreview.textContent = `$ ${command}`;
 	}
 
 	// --- リポジトリ / setup スクリプト ----------------------------------------------------------

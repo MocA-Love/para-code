@@ -114,7 +114,9 @@ interface AppState extends StoreState {
 	/** worktree（スペース）作成フォームの材料。 */
 	worktreeForm(): Promise<WorktreeFormResult>;
 	/** worktree（スペース）を作成する（PC版の作成ダイアログと同じ処理がPC側で走る）。 */
-	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string }): Promise<WorktreeCreateResult>;
+	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }): Promise<WorktreeCreateResult>;
+	/** 既存ワークスペースで新しいターミナルを作ってエージェントCLIを起動する（ホームの＋ボタン）。 */
+	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }): Promise<void>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsResolveLink(ws: string, path: string): Promise<FsResolveLinkResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
@@ -610,9 +612,14 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.worktreeForm();
 	},
 
-	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string }) {
+	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.createWorktree(opts);
+	},
+
+	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.launchAgent(opts);
 	},
 
 	fsList(ws: string, path: string) {

@@ -318,8 +318,15 @@ function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTem
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${paradisEncodeUtf16LeBase64(script)}`;
 }
 
-/** 実際のターミナルシェルに合わせ、テンプレートの {prompt} を安全な単一引数へ置換する。 */
+/**
+ * 実際のターミナルシェルに合わせ、テンプレートの {prompt} を安全な単一引数へ置換する。
+ * プロンプトが空の場合は引数自体を付けない（`claude ''` のような空引数はTUIの初回入力を
+ * 汚すため。{prompt} プレースホルダは空置換して連続スペースを正規化する）。
+ */
 export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
+	if (prompt.trim().length === 0) {
+		return paradisApplyPromptToTemplate(template, '', options).replace(/ {2,}/g, ' ').trim();
+	}
 	if (shellType === WindowsShellType.CommandPrompt) {
 		return paradisBuildCommandPromptAgentCommand(template, prompt, options);
 	}
@@ -400,9 +407,13 @@ export function paradisBuildWorktreeNames(spaceName: string, branchName: string,
 	return { displayName, dirName };
 }
 
-/** エージェント用ターミナルが作られない作成では、空の通常ターミナルを表示する。 */
-export function paradisShouldCreateDefaultTerminal(agentId: string, prompt: string): boolean {
-	return agentId === 'none' || prompt.trim().length === 0;
+/**
+ * エージェント用ターミナルが作られない作成では、空の通常ターミナルを表示する。
+ * （旧仕様ではプロンプト未入力でもtrueだったが、エージェント選択時はプロンプト無しでも
+ * エージェントCLIを対話モードで起動するよう変更した。モバイルの起動シートと挙動を揃えるため）
+ */
+export function paradisShouldCreateDefaultTerminal(agentId: string, _prompt: string): boolean {
+	return agentId === 'none';
 }
 
 // --- バックグラウンド作成の進行状況ストア -------------------------------------------------------

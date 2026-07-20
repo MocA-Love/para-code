@@ -6,6 +6,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
+import { AgentLaunchButton, AgentLaunchSheet } from '../../src/components/agentLaunchSheet.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
@@ -46,6 +47,8 @@ export default function HomeScreen() {
 	const rowRefs = useRef(new Map<string, View>());
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
 	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
+	// ヘッダー＋ボタンで開く「新しいエージェントを起動」シートの表示状態。
+	const [launchSheetOpen, setLaunchSheetOpen] = useState(false);
 
 	const tabBarSpacer = useTabBarSpacer();
 	// ホームは横スクロール要素を持たないため、フォーカス中は画面全域の右スワイプで
@@ -112,7 +115,12 @@ export default function HomeScreen() {
 				title="ホーム"
 				subtitle={headerSubtitle}
 				allWorkspaces={homeShowAllWorkspaces}
-				right={<NotificationsButton notifications={notifications} />}
+				right={
+					<View style={styles.headerActions}>
+						<AgentLaunchButton onPress={() => setLaunchSheetOpen(true)} />
+						<NotificationsButton notifications={notifications} />
+					</View>
+				}
 			/>
 			<ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingBottom: tabBarSpacer }]}>
 				{waitingTerminal && waitingWs && (waitingTerminal.agentStatus === 'permission' || waitingTerminal.agentStatus === 'question') ? (
@@ -207,6 +215,7 @@ export default function HomeScreen() {
 				onClose={() => setStatusPopover(undefined)}
 				onAck={terminalKey => ackAgentStatus(terminalKey)}
 			/>
+			<AgentLaunchSheet visible={launchSheetOpen} onClose={() => setLaunchSheetOpen(false)} />
 		</View></ConnectionGate>
 	);
 }
@@ -220,5 +229,6 @@ const styles = StyleSheet.create({
 	scroll: { flex: 1 },
 	content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 32 },
 	dimSmall: { color: colors.textDim, fontSize: 12, marginTop: 4, lineHeight: 18 },
+	headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginTop: 6, marginBottom: 8, letterSpacing: 0.5 },
 });
