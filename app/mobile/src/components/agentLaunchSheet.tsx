@@ -130,6 +130,8 @@ export function AgentLaunchSheet({ visible, onClose }: {
 			if (cancelled) {
 				return;
 			}
+			// Gemini CLI はモバイルの起動シートでは提供しない（Claude/Codex＋カスタム定義のみ）
+			result = { ...result, agents: result.agents.filter(candidate => candidate.id !== 'gemini') };
 			setForm(result);
 			const firstAgent = result.agents[0];
 			setAgentId(firstAgent?.id);
