@@ -1,0 +1,183 @@
+#!/bin/sh
+
+# PARA-CODE: Start interactive Codex sessions against a pane-scoped app-server so
+# MCP servers inherit the terminal pane environment. Non-interactive commands are
+# delegated unchanged to the user's Codex executable.
+
+set -u
+
+launcher_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1
+original_path=${PATH:-}
+clean_path=
+old_ifs=$IFS
+IFS=:
+for path_entry in $original_path; do
+	if [ "$path_entry" = "$launcher_dir" ]; then
+		continue
+	fi
+	if [ -z "$clean_path" ]; then
+		clean_path=$path_entry
+	else
+		clean_path=$clean_path:$path_entry
+	fi
+done
+IFS=$old_ifs
+
+real_codex=$(PATH=$clean_path command -v codex 2>/dev/null || true)
+if [ -z "$real_codex" ] || [ "$real_codex" = "$0" ]; then
+	echo "Para Code: Codex executable was not found after the pane launcher." >&2
+	exit 127
+fi
+
+managed=1
+skip_next=0
+first_positional=1
+for argument in "$@"; do
+	if [ "$skip_next" -eq 1 ]; then
+		skip_next=0
+		continue
+	fi
+	case "$argument" in
+		--remote|--remote=*)
+			managed=0
+			break
+			;;
+		--)
+			break
+			;;
+		-c|--config|--enable|--disable|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval)
+			skip_next=1
+			;;
+		--help|-h|--version|-V)
+			managed=0
+			break
+			;;
+		-*)
+			;;
+		exec|review|login|logout|mcp|mcp-server|app-server|completion|cloud|debug|apply|sandbox|features|remote-control)
+			if [ "$first_positional" -eq 1 ]; then
+				managed=0
+				break
+			fi
+			;;
+		*)
+			first_positional=0
+			;;
+	esac
+done
+
+if [ "$managed" -eq 0 ]; then
+	exec env PATH="$clean_path" "$real_codex" "$@"
+fi
+
+socket_path=${PARA_CODE_CODEX_APP_SERVER_SOCKET:-}
+case "$socket_path" in
+	/*/*.sock) ;;
+	*)
+		echo "Para Code: PARA_CODE_CODEX_APP_SERVER_SOCKET is missing or invalid." >&2
+		exit 2
+		;;
+esac
+socket_name=${socket_path##*/}
+case "$socket_name" in
+	''|*[!A-Za-z0-9._-]*)
+		echo "Para Code: Codex app-server socket name is invalid." >&2
+		exit 2
+		;;
+esac
+
+runtime_dir=${socket_path%/*}
+case "$runtime_dir" in
+	*/pcx) ;;
+	*)
+		echo "Para Code: Codex app-server socket must be inside the Para Code pcx runtime directory." >&2
+		exit 2
+		;;
+esac
+pid_path=$socket_path.pid
+owner_path=$socket_path.owner
+log_path=$socket_path.log
+umask 077
+mkdir -p "$runtime_dir" || exit 1
+chmod 700 "$runtime_dir" || exit 1
+
+server_pid=
+owns_server=0
+if [ -f "$pid_path" ]; then
+	IFS= read -r server_pid < "$pid_path" || server_pid=
+	case "$server_pid" in
+		''|*[!0-9]*) server_pid= ;;
+	esac
+	if [ -n "$server_pid" ] && ! kill -0 "$server_pid" 2>/dev/null; then
+		server_pid=
+	fi
+	if [ -n "$server_pid" ]; then
+		server_command=$(ps -p "$server_pid" -o command= 2>/dev/null || true)
+		if ! printf '%s\n' "$server_command" | grep -F -- "app-server --listen unix://$socket_path" >/dev/null 2>&1; then
+			server_pid=
+		fi
+	fi
+fi
+
+if [ -z "$server_pid" ]; then
+	rm -f "$socket_path" "$pid_path" "$owner_path"
+	: > "$log_path"
+	PATH=$clean_path "$real_codex" app-server --listen "unix://$socket_path" </dev/null >>"$log_path" 2>&1 &
+	server_pid=$!
+	owns_server=1
+	if ! printf '%s\n' "$server_pid" > "$pid_path" || ! printf '%s\n' "$$" > "$owner_path"; then
+		kill "$server_pid" 2>/dev/null || true
+		wait "$server_pid" 2>/dev/null || true
+		rm -f "$socket_path" "$pid_path" "$owner_path"
+		echo "Para Code: could not record pane Codex app-server ownership." >&2
+		exit 1
+	fi
+else
+	owner_pid=
+	if [ -f "$owner_path" ]; then
+		IFS= read -r owner_pid < "$owner_path" || owner_pid=
+		case "$owner_pid" in
+			''|*[!0-9]*) owner_pid= ;;
+		esac
+	fi
+	if [ -z "$owner_pid" ] || ! kill -0 "$owner_pid" 2>/dev/null; then
+		owns_server=1
+		printf '%s\n' "$$" > "$owner_path"
+	fi
+fi
+
+cleanup() {
+	current_owner=
+	if [ -f "$owner_path" ]; then
+		IFS= read -r current_owner < "$owner_path" || current_owner=
+	fi
+	if [ "$owns_server" -eq 1 ] && [ "$current_owner" = "$$" ] && [ -n "$server_pid" ]; then
+		kill "$server_pid" 2>/dev/null || true
+		wait "$server_pid" 2>/dev/null || true
+		rm -f "$socket_path" "$pid_path" "$owner_path"
+		owns_server=0
+	fi
+}
+
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+attempt=0
+while [ ! -S "$socket_path" ]; do
+	if ! kill -0 "$server_pid" 2>/dev/null; then
+		echo "Para Code: pane Codex app-server failed to start. See $log_path" >&2
+		exit 1
+	fi
+	attempt=$((attempt + 1))
+	if [ "$attempt" -ge 100 ]; then
+		echo "Para Code: timed out waiting for pane Codex app-server. See $log_path" >&2
+		exit 1
+	fi
+	sleep 0.1
+done
+
+PATH=$clean_path "$real_codex" --remote "unix://$socket_path" "$@"
+status=$?
+exit "$status"
