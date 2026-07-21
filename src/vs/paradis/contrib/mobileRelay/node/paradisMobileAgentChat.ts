@@ -37,7 +37,7 @@ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
-import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
+import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, IParadisCodexThreadTarget, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
@@ -2037,6 +2037,24 @@ interface IPaneSessionInfo {
 	readonly sessionId: string | undefined;
 }
 
+/** pane session集合を、Mobileのsocket別Codex購読ターゲットへ正規化する。 */
+export function paradisCodexThreadTargetsForPaneSessions(
+	sessions: Iterable<readonly [string, Pick<IPaneSessionInfo, 'agent' | 'sessionId'>]>,
+	socketPathResolver: (token: string) => string | undefined,
+): readonly IParadisCodexThreadTarget[] {
+	const targetsByThread = new Map<string, IParadisCodexThreadTarget>();
+	for (const [token, session] of sessions) {
+		if (session.agent !== 'codex' || session.sessionId === undefined || session.sessionId.length === 0) {
+			continue;
+		}
+		const socketPath = socketPathResolver(token);
+		if (socketPath !== undefined) {
+			targetsByThread.set(session.sessionId, { threadId: session.sessionId, socketPath });
+		}
+	}
+	return [...targetsByThread.values()];
+}
+
 interface ICommandCatalogContext {
 	readonly token: string;
 	readonly session: IPaneSessionInfo;
@@ -2136,13 +2154,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
 		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }) => void,
 		private readonly logService: ILogService,
-		codexShellEnvResolver?: () => Promise<NodeJS.ProcessEnv>,
+		private readonly codexSocketPathResolver?: (token: string) => string | undefined,
 		private readonly authorizeOwner: (owner: IParadisMobilePaneOwner) => Promise<boolean> = async () => true,
 		private readonly requestPaneSync: (owner: IParadisMobilePaneOwner) => void = () => { },
 		private readonly sessionStore?: ParadisAgentSessionStore,
 	) {
 		super();
-		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService, codexShellEnvResolver));
+		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
 		this._register(onParadisAgentHookEvent(event => this.onHookEvent(event)));
 		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
@@ -2195,7 +2213,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}));
 	}
 
-	/** 実験的Codex daemon購読の有効/無効（既定false、renderer設定から同期）。 */
+	/** Codex pane app-server購読の有効/無効（renderer設定から同期）。 */
 	setCodexDaemonEnabled(enabled: boolean): void {
 		this.codexLiveClient.setEnabled(enabled);
 		this.syncCodexDaemonThreads();
@@ -2732,7 +2750,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.activityDetailRequests.set(requestKey, token);
 		try {
 			const messages = session.agent === 'codex'
-				? await this.readCodexSubagentMessages(msg.activityId)
+				? await this.readCodexSubagentMessages(msg.activityId, session.sessionId)
 				: await this.readClaudeSubagentMessages(session.transcriptPath, msg.activityId, this.claudeSubagentTranscriptPaths.get(`${token}\0${msg.activityId}`));
 			if (this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)
 				&& this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent')) {
@@ -2755,9 +2773,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		return message;
 	}
 
-	private async readCodexSubagentMessages(activityId: string): Promise<readonly IParadisAgentActivityDetailMessage[]> {
+	private async readCodexSubagentMessages(activityId: string, ownerThreadId: string | undefined): Promise<readonly IParadisAgentActivityDetailMessage[]> {
 		try {
-			return (await this.codexLiveClient.readThreadMessages(activityId)).map(ParadisMobileAgentChat.codexDetailMessage);
+			return (await this.codexLiveClient.readThreadMessages(activityId, ownerThreadId)).map(ParadisMobileAgentChat.codexDetailMessage);
 		} catch {
 			const transcriptPath = await discoverCodexTranscriptByThreadId(activityId);
 			if (transcriptPath === undefined || !(await isAllowedTranscriptPath(transcriptPath))) { throw new Error('Codex SubAgent transcript not found'); }
@@ -3541,15 +3559,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		});
 	}
 
-	/** daemonへ購読させるのは、hookまたはrolloutメタ情報でthread IDを確定できたCodexセッションだけ。 */
+	/** pane app-serverへ購読させるのは、hookまたはrolloutメタ情報でthread IDを確定できたCodexセッションだけ。 */
 	private syncCodexDaemonThreads(): void {
-		const threadIds = new Set<string>();
-		for (const session of this.paneSessions.values()) {
-			if (session.agent === 'codex' && session.sessionId !== undefined && session.sessionId.length > 0) {
-				threadIds.add(session.sessionId);
-			}
-		}
-		this.codexLiveClient.setThreads([...threadIds]);
+		this.codexLiveClient.setThreads(paradisCodexThreadTargetsForPaneSessions(
+			this.paneSessions,
+			token => this.codexSocketPathResolver?.(token),
+		));
 	}
 
 	/** Codex daemonの通知を対応するペインの置換型ライブ状態へ投影する。 */

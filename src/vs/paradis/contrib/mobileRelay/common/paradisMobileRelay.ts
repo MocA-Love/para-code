@@ -27,7 +27,7 @@ import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWo
 export const PARADIS_MOBILE_ENABLED_KEY = 'paradis.mobile.enabled';
 /** リレーのベースURL（セルフホスト用）。 */
 export const PARADIS_MOBILE_RELAY_URL_KEY = 'paradis.mobile.relayUrl';
-/** 実験的: 稼働中Codex app-server daemonからトークン単位の進捗通知を購読する。 */
+/** 稼働中Codex pane app-serverからトークン単位の進捗通知を購読する（設定キー名は互換維持）。 */
 export const PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY = 'paradis.mobile.agent.codexDaemonStreaming';
 
 // 2026-07-05 デプロイ済み（本番Cloudflareアカウント、app/relay/wrangler.jsonc参照）。
@@ -281,7 +281,7 @@ export interface IParadisMobileRelayService {
 	/** 対話型Agent CLIが終了した。TUI内resume監視と一時状態を解除する。 */
 	notifyAgentCliCommandFinished(lease: IParadisMobileWindowLease, paneToken: string, generation: number): Promise<ParadisAgentCommandDeliveryResult>;
 
-	/** 実験的Codex daemon購読の設定をshared processへ同期する。 */
+	/** Codex pane app-server購読の設定をshared processへ同期する。 */
 	setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void>;
 
 	/** PTY表示からbest-effort抽出した経過時間等を既存ライブ状態へ補足する。 */

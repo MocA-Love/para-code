@@ -11,10 +11,16 @@ import * as agentBrowser from '../../common/paradisAgentBrowser.js';
 
 interface IParadisGatewayEndpointTestExports {
 	readonly paradisFormatCdpGatewayUrl?: (port: number) => string;
+	readonly paradisCodexPaneSocketPath?: (userDataPath: string, token: string) => string | undefined;
 	readonly paradisCreateTerminalPaneEnvironment?: (
 		existing: Readonly<Record<string, string | null | undefined>> | undefined,
 		token: string,
 		portFilePath: string,
+		codexRuntime?: {
+			readonly launcherDirectory: string;
+			readonly socketPath: string;
+			readonly pathDelimiter: string;
+		},
 	) => Record<string, string | null | undefined>;
 }
 
@@ -43,6 +49,36 @@ suite('ParadisGatewayEndpoint', () => {
 			KEEP_ME: 'yes',
 			PARA_CODE_TERMINAL_PANE_ID: 'pane-token',
 			PARA_CODE_MCP_PORT_FILE: '/tmp/paradis-browser-mcp.json',
+		});
+	});
+
+	test('adds a pane-specific Codex launcher and app-server socket without losing PATH state', () => {
+		const createEnvironment = (agentBrowser as IParadisGatewayEndpointTestExports).paradisCreateTerminalPaneEnvironment;
+		const socketPath = (agentBrowser as IParadisGatewayEndpointTestExports).paradisCodexPaneSocketPath;
+		assert.ok(createEnvironment);
+		assert.ok(socketPath);
+
+		const token = '12345678-1234-4234-8234-123456789abc';
+		assert.strictEqual(socketPath('/Users/test/Library/Application Support/Para Code', token),
+			'/Users/test/Library/Application Support/Para Code/pcx/12345678-1234-4234-8234-123456789abc.sock');
+		assert.strictEqual(socketPath('/Users/test/Library/Application Support/Para Code', '../escape'), undefined);
+
+		assert.deepStrictEqual(createEnvironment({
+			PATH: '/user/bin:/usr/bin',
+			VSCODE_PATH_PREFIX: '/existing/prefix:',
+			KEEP_ME: 'yes',
+		}, token, '/tmp/paradis-browser-mcp.json', {
+			launcherDirectory: '/Applications/Para Code.app/Contents/Resources/app/resources/paradis/bin',
+			socketPath: '/Users/test/Library/Application Support/Para Code/pcx/pane.sock',
+			pathDelimiter: ':',
+		}), {
+			PATH: '/Applications/Para Code.app/Contents/Resources/app/resources/paradis/bin:/user/bin:/usr/bin',
+			VSCODE_PATH_PREFIX: '/Applications/Para Code.app/Contents/Resources/app/resources/paradis/bin:/existing/prefix:',
+			KEEP_ME: 'yes',
+			PARA_CODE_TERMINAL_PANE_ID: token,
+			PARA_CODE_MCP_PORT_FILE: '/tmp/paradis-browser-mcp.json',
+			PARA_CODE_CODEX_LAUNCHER_DIR: '/Applications/Para Code.app/Contents/Resources/app/resources/paradis/bin',
+			PARA_CODE_CODEX_APP_SERVER_SOCKET: '/Users/test/Library/Application Support/Para Code/pcx/pane.sock',
 		});
 	});
 });
