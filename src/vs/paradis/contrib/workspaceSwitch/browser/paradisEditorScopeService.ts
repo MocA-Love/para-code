@@ -327,9 +327,17 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			return;
 		}
 
-		await this.restoreEditorPlacements(liveWorkingSet.placements);
-		this.liveWorkingSets.delete(stateKey);
-		liveWorkingSet.retentions.dispose();
+		// Always clear the live working set, even on failure. Otherwise a scope
+		// that fails to restore once (e.g. an unexpected error outside of
+		// restoreEditorPlacements' own per-placement recovery) would keep the
+		// same dead entry around forever and repeat the same failure on every
+		// subsequent switch into this scope.
+		try {
+			await this.restoreEditorPlacements(liveWorkingSet.placements);
+		} finally {
+			this.liveWorkingSets.delete(stateKey);
+			liveWorkingSet.retentions.dispose();
+		}
 	}
 
 	private async restoreEditorPlacements(placementsToRestore: readonly IParadisLiveEditorPlacement[]): Promise<void> {
@@ -340,17 +348,25 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			for (const placement of placements) {
 				const group = this.resolveRestoreGroup(placement);
 				const wasOpen = group.contains(placement.editor, { strictEquals: true });
-				await group.openEditor(placement.editor, {
-					index: placement.index,
-					pinned: placement.pinned,
-					sticky: placement.sticky,
-					transient: placement.transient,
-					inactive: !placement.active,
-					preserveFocus: true,
-					viewState: placement.viewState
-				});
-				if (!group.contains(placement.editor, { strictEquals: true })) {
-					throw new Error(`Failed to restore scoped editor ${placement.editor.getName()}`);
+				try {
+					await group.openEditor(placement.editor, {
+						index: placement.index,
+						pinned: placement.pinned,
+						sticky: placement.sticky,
+						transient: placement.transient,
+						inactive: !placement.active,
+						preserveFocus: true,
+						viewState: placement.viewState
+					});
+					if (!group.contains(placement.editor, { strictEquals: true })) {
+						throw new Error(`Failed to restore scoped editor ${placement.editor.getName()}`);
+					}
+				} catch (error) {
+					// A single lost editor (e.g. disposed while parked) must not fail
+					// the whole scope restore and roll back the entire space switch.
+					// Leave it closed and continue restoring the rest of the scope.
+					this.logService.error('[ParadisEditorScope] Failed to restore a scoped editor; leaving it closed', error);
+					continue;
 				}
 				if (!wasOpen) {
 					opened.push({ group, editor: placement.editor });
