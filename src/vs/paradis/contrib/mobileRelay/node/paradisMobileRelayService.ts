@@ -15,7 +15,6 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import {
 	MobileIdentity,
 	SecureChannel,
@@ -27,7 +26,7 @@ import {
 	sealNotify,
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux, IParadisMobileFrameTrafficSample } from '../common/paradisMobileMux.js';
-import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, paradisCodexPaneSocketPath } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
@@ -301,8 +300,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	// ファイルI/O・hookバス購読とも shared process 側の仕事なのでここで直接処理する
 	// （browser チャネルと同じ方針。renderer は経由しない）。
 	private readonly agentChat: ParadisMobileAgentChat;
-	/** GUI起動でもcodex CLIを解決できるログインシェル環境。 */
-	private readonly cachedShellEnv: ParadisCachedShellEnv;
 	private readonly trafficDiagnostics: ParadisMobileTrafficDiagnostics | undefined;
 
 	constructor(
@@ -314,8 +311,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		private readonly sharedPageBindings: IParadisSharedPageBindings | undefined,
 		private readonly windowLeaseClient: ParadisMobileWindowLeaseClient,
 		private readonly logService: ILogService,
-		configurationService?: IConfigurationService,
-		args?: NativeParsedArgs,
+		_configurationService?: IConfigurationService,
+		_args?: NativeParsedArgs,
 	) {
 		super();
 		const trafficDiagnosticsSession = startParadisMobileTrafficDiagnostics(
@@ -326,11 +323,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (trafficDiagnosticsSession !== undefined) {
 			this._register(trafficDiagnosticsSession);
 		}
-		this.cachedShellEnv = new ParadisCachedShellEnv(
-			logService,
-			'ParadisMobileRelay',
-			createParadisShellEnvResolver(logService, configurationService, args),
-		);
 		this.statePath = join(this.userDataPath, 'paradis-mobile-relay.json');
 		// エージェントセッション対応表の永続化先。shared process再起動（=PC再起動・アップデート）を
 		// またいで、実行中エージェントのモバイル表示を復元するために使う。
@@ -354,7 +346,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// 発火しないことがあるため、こちらが質問通知の主経路。
 			info => this.notifyAgentQuestion(info),
 			this.logService,
-			() => this.cachedShellEnv.getEnv(),
+			token => paradisCodexPaneSocketPath(this.userDataPath, token),
 			owner => this.withCurrentRegisteredLease(owner, async () => true).then(result => result === true, () => false),
 			owner => this._onDidRequestAgentPaneSync.fire({
 				windowId: owner.windowId,

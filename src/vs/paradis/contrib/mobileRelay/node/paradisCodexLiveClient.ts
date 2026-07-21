@@ -6,21 +6,16 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { execFile, spawn } from 'child_process';
 import { promises as fs } from 'fs';
 import { createConnection, type Socket } from 'net';
 import { WebSocket, type RawData } from 'ws';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
 
 const RETRY_INTERVAL_MS = 10_000;
 const LOADED_POLL_INTERVAL_MS = 2_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 const SETTINGS_CONFIRM_TIMEOUT_MS = 8_000;
-const DAEMON_START_RETRY_MS = 60_000;
-const DIRECT_APP_SERVER_START_TIMEOUT_MS = 10_000;
 const CATALOG_CACHE_MS = 60_000;
 const MAX_LIVE_TEXT_LENGTH = 6_000;
 const MAX_RPC_PAYLOAD_BYTES = 4 * 1024 * 1024;
@@ -328,18 +323,6 @@ function rawDataToString(data: RawData): string {
 	return Buffer.from(data).toString('utf8');
 }
 
-function runManagedCodexDaemonStart(env: NodeJS.ProcessEnv): Promise<void> {
-	return new Promise((resolve, reject) => {
-		execFile('codex', ['app-server', 'daemon', 'start'], { timeout: 10_000, windowsHide: true, env }, error => {
-			if (error) {
-				reject(error);
-			} else {
-				resolve();
-			}
-		});
-	});
-}
-
 async function pathExists(path: string): Promise<boolean> {
 	try {
 		await fs.access(path);
@@ -347,26 +330,6 @@ async function pathExists(path: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
-}
-
-function canConnectUnixSocket(socketPath: string): Promise<boolean> {
-	return new Promise(resolve => {
-		const socket = createConnection(socketPath);
-		let settled = false;
-		const finish = (connected: boolean) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			clearTimeout(timeout);
-			socket.removeAllListeners();
-			socket.destroy();
-			resolve(connected);
-		};
-		const timeout = setTimeout(() => finish(false), 500);
-		socket.once('connect', () => finish(true));
-		socket.once('error', () => finish(false));
-	});
 }
 
 function createUnixWebSocketConnection(socketPath: string): typeof createConnection {
@@ -381,80 +344,13 @@ function createUnixWebSocketConnection(socketPath: string): typeof createConnect
 }
 
 /**
- * 公式インストーラ管理外のCodexでも、公開されているUnix socket transportを使って
- * 同じ共有app-serverを起動する。プロセスはCodex TUIからも利用されるためdetachし、
- * Para Code終了時には停止しない。
- */
-function startDirectCodexAppServer(socketPath: string, env: NodeJS.ProcessEnv): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const child = spawn('codex', ['app-server', '--listen', 'unix://'], {
-			detached: true,
-			env,
-			stdio: 'ignore',
-			windowsHide: true,
-		});
-		let settled = false;
-		const finish = (error?: Error) => {
-			if (settled) {
-				return;
-			}
-			settled = true;
-			clearTimeout(timeout);
-			clearInterval(poll);
-			child.removeListener('error', onError);
-			child.removeListener('exit', onExit);
-			if (error !== undefined) {
-				reject(error);
-			} else {
-				resolve();
-			}
-		};
-		const onError = (error: Error) => finish(error);
-		const onExit = (code: number | null) => {
-			void canConnectUnixSocket(socketPath).then(connected => finish(connected
-				? undefined
-				: new Error(`Codex app-server exited before its socket was ready (code ${code ?? 'unknown'})`)));
-		};
-		const poll = setInterval(() => {
-			void canConnectUnixSocket(socketPath).then(connected => {
-				if (connected) {
-					finish();
-				}
-			});
-		}, 100);
-		const timeout = setTimeout(() => finish(new Error('Codex app-server did not create its socket in time')), DIRECT_APP_SERVER_START_TIMEOUT_MS);
-		child.once('error', onError);
-		child.once('exit', onExit);
-		child.unref();
-	});
-}
-
-async function ensureCodexDaemonStarted(socketPath: string, env: NodeJS.ProcessEnv): Promise<void> {
-	try {
-		await runManagedCodexDaemonStart(env);
-		return;
-	} catch (managedError) {
-		// managed commandは既存daemonがあればインストール方式を問わず成功する。ここへ
-		// 来た時点でsocketができていれば、別プロセスとの起動競合が解決済みなので再利用する。
-		if (await canConnectUnixSocket(socketPath)) {
-			return;
-		}
-		try {
-			await startDirectCodexAppServer(socketPath, env);
-		} catch (directError) {
-			throw new Error(`Codex daemon start failed: ${String(managedError)}; direct app-server fallback failed: ${String(directError)}`);
-		}
-	}
-}
-
-/**
- * Codex app-server daemonの共有JSON-RPC接続。
- * - 明示設定時だけdaemonをensure-startし、停止はしない（実行中TUIが利用し得るため）
- * - thread/loaded/listでdaemon所有を確認できたthreadだけresume/購読する
+ * 1つのpane app-server socketに対するJSON-RPC接続。
+ * - app-serverの起動と停止はターミナルのCodexランチャーが所有する
+ * - thread/loaded/listでsocket所有を確認できたthreadだけresume/購読する
  * - model/listをカタログの正本とし、thread/settings/updateを確認通知つきで適用する
  * - 承認server requestは観測だけ行い、モバイルでユーザーが明示選択した時だけ同じ接続から応答する
  */
-export class ParadisCodexLiveClient extends Disposable {
+class ParadisCodexServerConnection extends Disposable {
 	private enabled = false;
 	private socket: WebSocket | undefined;
 	private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -462,9 +358,6 @@ export class ParadisCodexLiveClient extends Disposable {
 	private initialized = false;
 	private connectionGeneration = 0;
 	private nextRequestId = 1;
-	private lastDaemonStartAttempt = 0;
-	private daemonStartInFlight: Promise<void> | undefined;
-	private daemonEnsured = false;
 	private loadedRefreshInFlight = false;
 	private readonly pendingRequests = new Map<number, IPendingRequest>();
 	private readonly wantedThreads = new Set<string>();
@@ -480,22 +373,20 @@ export class ParadisCodexLiveClient extends Disposable {
 	constructor(
 		private readonly onEvent: (event: IParadisCodexDaemonEvent) => void,
 		private readonly logService: ILogService,
-		/** GUI起動時もログインシェル由来のPATHでcodexを解決する。 */
-		private readonly shellEnvResolver: () => Promise<NodeJS.ProcessEnv> = () => Promise.resolve({ ...process.env }),
+		private readonly socketPath: string,
 	) {
 		super();
 	}
 
-	/** 明示的な実験設定に合わせてdaemon連携を開始・停止する。 */
+	/** 明示的な実験設定に合わせてsocket連携を開始・停止する。 */
 	setEnabled(enabled: boolean): void {
 		if (this.enabled === enabled) {
 			return;
 		}
 		this.enabled = enabled;
 		if (enabled) {
-			void this.ensureDaemonAndConnect();
+			void this.ensureConnected();
 		} else {
-			this.daemonEnsured = false;
 			this.stop();
 		}
 	}
@@ -520,13 +411,10 @@ export class ParadisCodexLiveClient extends Disposable {
 		}
 		if (this.wantedThreads.size === 0) {
 			this.stop();
-			if (this.enabled) {
-				void this.ensureDaemonAndConnect();
-			}
 			return;
 		}
 		if (this.enabled) {
-			void this.ensureDaemonAndConnect();
+			void this.ensureConnected();
 			void this.refreshLoadedThreads();
 		}
 	}
@@ -683,51 +571,21 @@ export class ParadisCodexLiveClient extends Disposable {
 		super.dispose();
 	}
 
-	private async ensureDaemonAndConnect(): Promise<void> {
+	private async ensureConnected(): Promise<void> {
 		if (!this.enabled || this.socket !== undefined || process.platform === 'win32') {
 			return;
 		}
-		const socketPath = join(paradisCodexHome(), 'app-server-control', 'app-server-control.sock');
-		if (!this.daemonEnsured) {
-			const now = Date.now();
-			if (this.daemonStartInFlight === undefined) {
-				if (now - this.lastDaemonStartAttempt < DAEMON_START_RETRY_MS) {
-					this.scheduleRetry();
-					return;
-				}
-				this.lastDaemonStartAttempt = now;
-				this.daemonStartInFlight = this.shellEnvResolver()
-					.then(env => ensureCodexDaemonStarted(socketPath, env))
-					.finally(() => this.daemonStartInFlight = undefined);
-			}
-			try {
-				await this.daemonStartInFlight;
-				this.daemonEnsured = true;
-			} catch (error) {
-				this.logService.trace('[paradisCodexLive] could not start app-server daemon', String(error));
-				// 起動競合で別プロセスが先にreadyになった場合だけ再利用する。単なるstaleな
-				// socketファイルをreadyと誤認すると、永遠に再起動できなくなる。
-				this.daemonEnsured = await canConnectUnixSocket(socketPath);
-				if (!this.daemonEnsured) {
-					this.scheduleRetry();
-					return;
-				}
-			}
-		}
-		if (!(await this.pathExists(socketPath)) || !this.enabled || this.socket !== undefined) {
+		if (!(await this.pathExists(this.socketPath)) || !this.enabled || this.socket !== undefined) {
 			this.scheduleRetry();
 			return;
 		}
-		// 設定を有効にした時点でdaemonだけは先に起動しておく。Codex TUIがdaemonを
-		// 利用するには起動前からsocketが存在する必要がある一方、購読対象のthreadが
-		// 無い段階でPara Code自身が常時WebSocketを保持する必要はない。
 		if (this.wantedThreads.size === 0) {
 			return;
 		}
 		try {
 			const generation = ++this.connectionGeneration;
 			const socket = new WebSocket('ws://localhost/rpc', {
-				createConnection: createUnixWebSocketConnection(socketPath),
+				createConnection: createUnixWebSocketConnection(this.socketPath),
 				handshakeTimeout: 3_000,
 				maxPayload: MAX_RPC_PAYLOAD_BYTES,
 				// tokio-tungsteniteのUnix socket acceptorはpermessage-deflateを交渉しない。
@@ -739,14 +597,12 @@ export class ParadisCodexLiveClient extends Disposable {
 			socket.on('error', error => this.logService.trace('[paradisCodexLive] daemon socket error', String(error)));
 			socket.on('close', () => {
 				if (this.socket === socket) {
-					this.daemonEnsured = false;
 					this.resetConnection(new ParadisCodexControlError('unavailable', 'Codex app-serverとの接続が切れました'));
 					this.scheduleRetry();
 				}
 			});
 		} catch (error) {
 			this.logService.trace('[paradisCodexLive] daemon connection failed', String(error));
-			this.daemonEnsured = false;
 			this.resetConnection(new Error(String(error)));
 			this.scheduleRetry();
 		}
@@ -978,14 +834,14 @@ export class ParadisCodexLiveClient extends Disposable {
 		if (!this.wantedThreads.has(threadId)) {
 			throw new ParadisCodexControlError('not-loaded', 'このCodexセッションを確認できません');
 		}
-		void this.ensureDaemonAndConnect();
+		void this.ensureConnected();
 		void this.refreshLoadedThreads();
 		const deadline = Date.now() + REQUEST_TIMEOUT_MS;
 		while (!this.isThreadReady(threadId) && Date.now() < deadline) {
 			await new Promise(resolve => setTimeout(resolve, 200));
 		}
 		if (!this.isThreadReady(threadId)) {
-			throw new ParadisCodexControlError('not-loaded', 'このセッションはCodex daemon上で動作していません。連携を有効にしてCodexを起動し直してください');
+			throw new ParadisCodexControlError('not-loaded', 'このセッションのCodex app-serverへ接続できません。Para CodeのターミナルでCodexを起動し直してください');
 		}
 	}
 
@@ -1035,7 +891,7 @@ export class ParadisCodexLiveClient extends Disposable {
 		}
 		this.retryTimer = setTimeout(() => {
 			this.retryTimer = undefined;
-			void this.ensureDaemonAndConnect();
+			void this.ensureConnected();
 		}, RETRY_INTERVAL_MS);
 	}
 
@@ -1105,6 +961,129 @@ export class ParadisCodexLiveClient extends Disposable {
 				params: { threadId, requestId: approval.requestId }, requestId: approval.requestId, approval: approval.interaction,
 			});
 		}
+	}
+}
+
+/** Mobileで追跡するCodex threadと、そのpane専用app-server socket。 */
+export interface IParadisCodexThreadTarget {
+	readonly threadId: string;
+	readonly socketPath: string;
+}
+
+/**
+ * pane socket単位で必要な接続だけを保持し、thread操作を所有socketへルーティングする。
+ * app-serverプロセスは起動せず、ターミナルでCodexが動作している間だけ再接続する。
+ */
+export class ParadisCodexLiveClient extends Disposable {
+	private enabled = false;
+	private readonly connections = new Map<string, ParadisCodexServerConnection>();
+	private readonly threadConnections = new Map<string, ParadisCodexServerConnection>();
+
+	constructor(
+		private readonly onEvent: (event: IParadisCodexDaemonEvent) => void,
+		private readonly logService: ILogService,
+	) {
+		super();
+	}
+
+	setEnabled(enabled: boolean): void {
+		if (this.enabled === enabled) {
+			return;
+		}
+		this.enabled = enabled;
+		for (const connection of this.connections.values()) {
+			connection.setEnabled(enabled);
+		}
+	}
+
+	setThreads(targets: readonly IParadisCodexThreadTarget[]): void {
+		const targetByThread = new Map<string, string>();
+		for (const target of targets) {
+			if (target.threadId.length > 0 && target.socketPath.length > 0) {
+				targetByThread.set(target.threadId, target.socketPath);
+			}
+		}
+
+		const threadsBySocket = new Map<string, string[]>();
+		for (const [threadId, socketPath] of targetByThread) {
+			const threads = threadsBySocket.get(socketPath) ?? [];
+			threads.push(threadId);
+			threadsBySocket.set(socketPath, threads);
+		}
+
+		for (const socketPath of threadsBySocket.keys()) {
+			if (this.connections.has(socketPath)) {
+				continue;
+			}
+			const connection = new ParadisCodexServerConnection(event => {
+				const currentConnection = this.connections.get(socketPath);
+				if (currentConnection !== undefined && this.threadConnections.get(event.threadId) === currentConnection) {
+					this.onEvent(event);
+				}
+			}, this.logService, socketPath);
+			this.connections.set(socketPath, connection);
+		}
+
+		this.threadConnections.clear();
+		for (const [threadId, socketPath] of targetByThread) {
+			const connection = this.connections.get(socketPath);
+			if (connection !== undefined) {
+				this.threadConnections.set(threadId, connection);
+			}
+		}
+
+		for (const [socketPath, connection] of [...this.connections]) {
+			const threads = threadsBySocket.get(socketPath);
+			if (threads === undefined) {
+				connection.dispose();
+				this.connections.delete(socketPath);
+				continue;
+			}
+			connection.setThreads(threads);
+			connection.setEnabled(this.enabled);
+		}
+	}
+
+	isThreadReady(threadId: string): boolean {
+		return this.threadConnections.get(threadId)?.isThreadReady(threadId) === true;
+	}
+
+	hasPendingApproval(threadId: string, interactionId: string): boolean {
+		return this.threadConnections.get(threadId)?.hasPendingApproval(threadId, interactionId) === true;
+	}
+
+	answerApproval(threadId: string, interactionId: string, choiceId: string): Promise<void> {
+		return this.connectionFor(threadId).answerApproval(threadId, interactionId, choiceId);
+	}
+
+	listModels(threadId: string): Promise<readonly IParadisCodexModelOption[]> {
+		return this.connectionFor(threadId).listModels(threadId);
+	}
+
+	updateThreadSettings(threadId: string, model: string, effort: string): Promise<IParadisCodexThreadSettings> {
+		return this.connectionFor(threadId).updateThreadSettings(threadId, model, effort);
+	}
+
+	readThreadMessages(threadId: string, ownerThreadId: string = threadId): Promise<readonly IParadisCodexThreadMessage[]> {
+		return this.connectionFor(ownerThreadId).readThreadMessages(threadId);
+	}
+
+	override dispose(): void {
+		this.enabled = false;
+		this.threadConnections.clear();
+		for (const connection of this.connections.values()) {
+			connection.dispose();
+		}
+		this.connections.clear();
+		super.dispose();
+	}
+
+	private connectionFor(threadId: string): ParadisCodexServerConnection {
+		const connection = this.threadConnections.get(threadId);
+		if (connection === undefined) {
+			throw new ParadisCodexControlError('not-loaded', 'このCodexセッションを確認できません');
+		}
+		return connection;
 	}
 }
 

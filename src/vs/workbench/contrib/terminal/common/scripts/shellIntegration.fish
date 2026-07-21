@@ -80,6 +80,14 @@ function __vsc_apply_env_vars
 		end
 		set -e VSCODE_ENV_APPEND
 	end
+
+	# PARA-PATCH: User config may prepend another Codex executable after the PTY
+	# environment is created. Re-apply the pane launcher after config loading.
+	if test -n "$PARA_CODE_CODEX_LAUNCHER_DIR"; and test -x "$PARA_CODE_CODEX_LAUNCHER_DIR/codex"
+		if not set -q PATH[1]; or test "$PATH[1]" != "$PARA_CODE_CODEX_LAUNCHER_DIR"
+			set -gx PATH "$PARA_CODE_CODEX_LAUNCHER_DIR" $PATH
+		end
+	end
 end
 
 # Register Python shell activate hooks

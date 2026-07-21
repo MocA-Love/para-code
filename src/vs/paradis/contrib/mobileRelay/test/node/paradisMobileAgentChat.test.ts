@@ -10,7 +10,7 @@ import assert from 'assert';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 suite('ParadisMobileAgentChat', () => {
@@ -29,6 +29,18 @@ suite('ParadisMobileAgentChat', () => {
 			paradisConfirmedAgentPaneTokens(['window-2-pane-1'], ['window-1-pane-1', 'window-2-pane-1']),
 			['window-2-pane-1'],
 		);
+	});
+
+	test('routes each Codex Mobile thread to its newest pane socket', () => {
+		assert.deepStrictEqual(paradisCodexThreadTargetsForPaneSessions([
+			['pane-old', { agent: 'codex', sessionId: 'thread-1' }],
+			['pane-claude', { agent: 'claude', sessionId: 'claude-session' }],
+			['pane-two', { agent: 'codex', sessionId: 'thread-2' }],
+			['pane-new', { agent: 'codex', sessionId: 'thread-1' }],
+		], token => `/user-data/pcx/${token}.sock`), [
+			{ threadId: 'thread-1', socketPath: '/user-data/pcx/pane-new.sock' },
+			{ threadId: 'thread-2', socketPath: '/user-data/pcx/pane-two.sock' },
+		]);
 	});
 
 	test('validates each mobile agent inbound shape before dispatch', () => {
