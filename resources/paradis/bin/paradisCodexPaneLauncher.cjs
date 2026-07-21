@@ -130,8 +130,13 @@ function findNativeCodexUnder(rootDir) {
  * Resolves the user's real Codex after removing this launcher's directory from PATH.
  * Preferred forms, per PATH directory:
  *  1. a native `codex.exe` (spawned directly — no cmd re-parsing of arguments)
- *  2. an npm shim (`codex.cmd` / `codex.ps1` / `codex`): run its `bin/codex.js` with
- *     our own Node runtime, or spawn the vendored native exe found under it
+ *  2. an npm shim (`codex.cmd` / `codex.ps1` / `codex`): spawn the vendored native
+ *     exe found under it, or run its `bin/codex.js` with our own Node runtime.
+ *     The vendored exe comes first: codex.js selects its native package from
+ *     `process.arch`, and our runtime (the Para Code executable) can have a
+ *     different architecture than the npm-installed one (for example an arm64
+ *     Para Code with an x64 Node on Windows ARM), which makes codex.js throw
+ *     "Missing optional dependency" even though the installed exe runs fine.
  *  3. a directly spawnable extensionless `codex` (non-Windows dev/test environments)
  */
 function resolveRealCodex(pathEntries) {
@@ -144,13 +149,13 @@ function resolveRealCodex(pathEntries) {
 		if (!shimCandidates.some(fileExists)) {
 			continue;
 		}
-		const npmEntry = path.join(dir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
-		if (fileExists(npmEntry)) {
-			return { command: process.execPath, prefixArgs: [npmEntry], useOwnNode: true };
-		}
 		const vendored = findNativeCodexUnder(path.join(dir, 'node_modules', '@openai'));
 		if (vendored !== undefined) {
 			return { command: vendored, prefixArgs: [], useOwnNode: false };
+		}
+		const npmEntry = path.join(dir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+		if (fileExists(npmEntry)) {
+			return { command: process.execPath, prefixArgs: [npmEntry], useOwnNode: true };
 		}
 		const plain = path.join(dir, 'codex');
 		if (process.platform !== 'win32' && fileExists(plain)) {
