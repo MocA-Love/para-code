@@ -76,6 +76,49 @@ export interface IParadisLimitsFetchOptions {
 	readonly codexHomes?: readonly string[];
 }
 
+const CODEX_FIVE_HOUR_WINDOW_MINUTES = 5 * 60;
+const CODEX_SEVEN_DAY_WINDOW_MINUTES = 7 * 24 * 60;
+
+type ParadisCodexLimitWindowRole = 'fiveHour' | 'sevenDay' | 'unknown';
+
+function paradisCodexLimitWindowRole(durationMinutes: number | undefined): ParadisCodexLimitWindowRole {
+	switch (durationMinutes) {
+		case CODEX_FIVE_HOUR_WINDOW_MINUTES:
+			return 'fiveHour';
+		case CODEX_SEVEN_DAY_WINDOW_MINUTES:
+			return 'sevenDay';
+		default:
+			return 'unknown';
+	}
+}
+
+/** Codexのprimary/secondaryを実際の期間から5時間枠・7日枠へ正規化する。 */
+export function paradisNormalizeCodexLimitWindows<T>(
+	primary: T | null | undefined,
+	secondary: T | null | undefined,
+	durationMinutes: (window: T) => number | undefined,
+): { readonly fiveHour?: T; readonly sevenDay?: T } {
+	if (primary !== null && primary !== undefined && secondary !== null && secondary !== undefined) {
+		const primaryRole = paradisCodexLimitWindowRole(durationMinutes(primary));
+		const secondaryRole = paradisCodexLimitWindowRole(durationMinutes(secondary));
+		if (primaryRole === 'sevenDay' && secondaryRole !== 'sevenDay') {
+			return { fiveHour: secondary, sevenDay: primary };
+		}
+		return { fiveHour: primary, sevenDay: secondary };
+	}
+	if (primary !== null && primary !== undefined) {
+		return paradisCodexLimitWindowRole(durationMinutes(primary)) === 'sevenDay'
+			? { sevenDay: primary }
+			: { fiveHour: primary };
+	}
+	if (secondary !== null && secondary !== undefined) {
+		return paradisCodexLimitWindowRole(durationMinutes(secondary)) === 'sevenDay'
+			? { sevenDay: secondary }
+			: { fiveHour: secondary };
+	}
+	return {};
+}
+
 /** アカウント追加/再ログインセッションの進行状態。renderer側ダイアログがポーリングで参照する。 */
 export type ParadisLimitsSetupPhase =
 	| 'starting'

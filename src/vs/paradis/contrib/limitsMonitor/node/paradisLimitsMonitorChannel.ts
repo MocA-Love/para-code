@@ -50,7 +50,8 @@ import {
 	IParadisLimitsWindow,
 	PARADIS_LIMITS_MONITOR_CHANNEL,
 	ParadisLimitsAccountStatus,
-	ParadisLimitsDuplicateDecision
+	ParadisLimitsDuplicateDecision,
+	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
 
 /** スナップショットのTTL。リミットの変化は緩やかなので1分共有で十分。 */
@@ -106,14 +107,14 @@ interface IWhamWindow {
 }
 
 interface IWhamRateLimit {
-	readonly primary_window?: IWhamWindow;
-	readonly secondary_window?: IWhamWindow;
+	readonly primary_window?: IWhamWindow | null;
+	readonly secondary_window?: IWhamWindow | null;
 }
 
 interface IWhamUsageResponse {
 	readonly plan_type?: string;
-	readonly rate_limit?: IWhamRateLimit;
-	readonly additional_rate_limits?: readonly { readonly limit_name?: string; readonly rate_limit?: IWhamRateLimit }[];
+	readonly rate_limit?: IWhamRateLimit | null;
+	readonly additional_rate_limits?: readonly { readonly limit_name?: string; readonly rate_limit?: IWhamRateLimit | null }[];
 }
 
 // ---------- codex app-server RPC レスポンス型 ----------
@@ -127,10 +128,10 @@ interface IRpcRateLimitWindow {
 
 interface IRpcRateLimitsResult {
 	readonly rateLimits?: {
-		readonly primary?: IRpcRateLimitWindow;
-		readonly secondary?: IRpcRateLimitWindow;
+		readonly primary?: IRpcRateLimitWindow | null;
+		readonly secondary?: IRpcRateLimitWindow | null;
 		readonly planType?: string;
-	};
+	} | null;
 }
 
 interface IRpcAccountResult {
@@ -549,7 +550,7 @@ export class ParadisLimitsMonitorService {
 	}
 
 	private mapWhamUsage(usage: IWhamUsageResponse): { planType?: string; fiveHour?: IParadisLimitsWindow; sevenDay?: IParadisLimitsWindow; scoped?: IParadisLimitsWindow[] } {
-		const mapWindow = (window: IWhamWindow | undefined, label?: string): IParadisLimitsWindow | undefined => {
+		const mapWindow = (window: IWhamWindow | null | undefined, label?: string): IParadisLimitsWindow | undefined => {
 			if (typeof window?.used_percent !== 'number') {
 				return undefined;
 			}
@@ -566,10 +567,15 @@ export class ParadisLimitsMonitorService {
 				scoped.push(mapped);
 			}
 		}
+		const windows = paradisNormalizeCodexLimitWindows(
+			usage.rate_limit?.primary_window,
+			usage.rate_limit?.secondary_window,
+			window => typeof window.limit_window_seconds === 'number' ? window.limit_window_seconds / 60 : undefined,
+		);
 		return {
 			planType: usage.plan_type,
-			fiveHour: mapWindow(usage.rate_limit?.primary_window),
-			sevenDay: mapWindow(usage.rate_limit?.secondary_window),
+			fiveHour: mapWindow(windows.fiveHour),
+			sevenDay: mapWindow(windows.sevenDay),
 			scoped: scoped.length > 0 ? scoped : undefined,
 		};
 	}
@@ -598,12 +604,17 @@ export class ParadisLimitsMonitorService {
 					resetsAt: typeof window.resetsAt === 'number' ? window.resetsAt * 1000 : undefined,
 				};
 			};
+			const windows = paradisNormalizeCodexLimitWindows(
+				rateLimits.rateLimits?.primary,
+				rateLimits.rateLimits?.secondary,
+				window => typeof window.windowDurationMins === 'number' ? window.windowDurationMins : undefined,
+			);
 			return {
 				email: account?.account?.email,
 				planType: account?.account?.planType ?? rateLimits.rateLimits?.planType,
 				windows: {
-					fiveHour: mapWindow(rateLimits.rateLimits?.primary),
-					sevenDay: mapWindow(rateLimits.rateLimits?.secondary),
+					fiveHour: mapWindow(windows.fiveHour),
+					sevenDay: mapWindow(windows.sevenDay),
 				},
 			};
 		} finally {
