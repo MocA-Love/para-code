@@ -62,6 +62,43 @@
 	visibility: visible;
 }
 
+.paradis-file-viewer-status {
+	position: absolute;
+	inset: 0;
+	z-index: 2;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	padding: 24px;
+	box-sizing: border-box;
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-descriptionForeground);
+	text-align: center;
+}
+
+.paradis-file-viewer-status[hidden] {
+	display: none;
+}
+
+.paradis-file-viewer-status.error {
+	color: var(--vscode-errorForeground);
+}
+
+.paradis-file-viewer-status-reload {
+	padding: 4px 12px;
+	border: 1px solid var(--vscode-button-border, transparent);
+	border-radius: var(--vscode-cornerRadius-xSmall);
+	background-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	cursor: pointer;
+}
+
+.paradis-file-viewer-status-reload:hover {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
 /* Segmented Rendered/Raw toggle (Superset FileViewerToolbar ToggleGroup equivalent). */
 .paradis-file-viewer-toggle {
 	display: inline-flex;
@@ -133,4 +170,3 @@
 .paradis-html-zoom-percent:hover {
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
-

@@ -16,12 +16,12 @@
 // （src/vs/workbench/contrib/webviewPanel/browser/webviewEditor.ts 参照）。overlay は workbench の
 // webview レイヤーに生き続けるため、タブ切替・ペインの hide/再表示・グループ移動でも webview のコンテンツ
 // プロセスが破棄されない。ペインが可視かつ Rendered のときだけ claim + setAnchorElement でアンカーへ重ね、
-// Raw / 非可視のときは release する。claim 直後は下地が作り直され内容が失われ得るため、復帰時は必ず再 setHtml する。
+// Raw / 非可視のときは release する。新規描画は did-load まで確認し、失敗時は overlay 自体を再生成する。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { onUnexpectedError } from '../../../../base/common/errors.js';
+import { DeferredPromise, raceTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { CancellationError, isCancellationError, onUnexpectedError } from '../../../../base/common/errors.js';
 import { DisposableStore, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -46,6 +46,7 @@ import { ITextFileService } from '../../../../workbench/services/textfile/common
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { clampParadisTransparencyOpacity, PARADIS_TRANSPARENCY_ENABLED_KEY, PARADIS_TRANSPARENCY_OPACITY_KEY, PARADIS_TRANSPARENT_CLASS } from '../../windowTransparency/common/paradisTransparency.js';
 import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
+import { ParadisRenderCoordinator, runParadisRenderWithRetries } from './paradisRenderCoordinator.js';
 
 import './media/paradisFileViewer.css';
 
@@ -54,6 +55,11 @@ const RAW_EDITOR_OPTIONS: IEditorConstructionOptions = {
 	scrollBeyondLastLine: false,
 	readOnly: false,
 };
+
+const RENDER_LOAD_TIMEOUT_MS = 5000;
+const RENDER_MAX_ATTEMPTS = 3;
+
+type RenderStatus = 'hidden' | 'loading' | 'error';
 
 /**
  * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
@@ -67,18 +73,26 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	private _toolbarRightElement: HTMLElement | undefined;
 	private _renderedBtn: HTMLButtonElement | undefined;
 	private _rawBtn: HTMLButtonElement | undefined;
+	private _statusElement: HTMLElement | undefined;
+	private _statusMessageElement: HTMLElement | undefined;
+	private _statusReloadButton: HTMLButtonElement | undefined;
 
-	private _webview: IOverlayWebview | undefined;
+	private readonly _webview = this._register(new MutableDisposable<IOverlayWebview>());
+	private readonly _webviewDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private _webviewClaimed = false;
+	private _presentedResource: URI | undefined;
+	private _presentationWebview: IOverlayWebview | undefined;
+	private _renderDirty = true;
 	private _editorVisible = false;
 	private _codeEditor: ICodeEditor | undefined;
 	private readonly _modelRef = this._register(new MutableDisposable<IReference<IResolvedTextEditorModel>>());
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
+	private readonly _inputCancellation = this._register(new MutableDisposable<CancellationTokenSource>());
+	private readonly _activeRenderCancellation = this._register(new MutableDisposable<CancellationTokenSource>());
+	private readonly _renderCoordinator: ParadisRenderCoordinator;
 	private _currentResource: URI | undefined;
 	private _mode: ParadisFileViewerMode = 'rendered';
-	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
-	private _renderGeneration = 0;
 
 	constructor(
 		id: string,
@@ -95,6 +109,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@IConfigurationService protected readonly _configurationService: IConfigurationService,
 	) {
 		super(id, group, telemetryService, themeService, storageService);
+		this._renderCoordinator = this._register(new ParadisRenderCoordinator(() => this._renderCurrentResource()));
 
 		// ウィンドウ透過（paradis.window.transparency.*）の状態変化に追従して Rendered を描き直す。
 		// 透過背景は renderDocument が HTML へ焼き込む（webview 内からは --paradis-* カスタムプロパティを
@@ -121,8 +136,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	/** 透過状態の変化時、Rendered 表示中なら現在のリソースを描き直す。 */
 	private _rerenderIfShowingRendered(): void {
+		this._renderDirty = true;
 		const resource = this._currentResource;
-		if (resource && this._webviewClaimed && this._mode === 'rendered') {
+		if (resource && this._editorVisible && this._mode === 'rendered') {
 			this._renderResourceInBackground(resource);
 		}
 	}
@@ -155,7 +171,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	/** 現在アクティブな webview（存在すれば）。 */
 	protected get webview(): IOverlayWebview | undefined {
-		return this._webview;
+		return this._webview.value;
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
@@ -179,6 +195,13 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		// workbench の webview レイヤーに属し、ここには描画されない。常にレイアウトさせておく(矩形が必要)。
 		this._webviewContainer = dom.append(content, dom.$('.paradis-file-viewer-webview'));
 		this._editorContainer = dom.append(content, dom.$('.paradis-file-viewer-editor'));
+		this._statusElement = dom.append(content, dom.$('.paradis-file-viewer-status'));
+		this._statusElement.hidden = true;
+		this._statusElement.setAttribute('aria-live', 'polite');
+		this._statusMessageElement = dom.append(this._statusElement, dom.$('.paradis-file-viewer-status-message'));
+		this._statusReloadButton = dom.append(this._statusElement, dom.$('button.paradis-file-viewer-status-reload')) as HTMLButtonElement;
+		this._statusReloadButton.textContent = localize('paradis.fileViewer.reloadRendered', "Reload");
+		this._register(dom.addDisposableListener(this._statusReloadButton, dom.EventType.CLICK, () => this._reloadRenderedPreview()));
 		// 既定は Rendered。Raw エディタコンテナは active クラス(visibility)でのみ切り替える。
 	}
 
@@ -187,9 +210,14 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 		const viewerInput = input as ParadisFileViewerInput;
 		const resource = viewerInput.resource;
-		// 同じ URI の入力を設定し直す経路でも、旧入力から継続中の描画を無効化する。
-		this._renderGeneration++;
+		// 同じ URI の入力を設定し直す経路でも、旧入力から継続中の描画を中止する。
+		this._inputCancellation.value?.cancel();
+		this._inputCancellation.clear();
+		this._resetWebview();
+		const inputCancellation = new CancellationTokenSource(token);
+		this._inputCancellation.value = inputCancellation;
 		this._currentResource = resource;
+		this._renderDirty = true;
 		// 別ファイルに切り替わったので前のモデル参照を解放する。
 		this._modelRef.clear();
 		this._codeEditor?.setModel(null);
@@ -199,7 +227,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		let initialViewApplied = false;
 		let rerenderAfterInitial = false;
 		const rerender = () => {
-			if (isEqual(this._currentResource, resource) && this._webviewClaimed && this._mode === 'rendered') {
+			if (isEqual(this._currentResource, resource) && this._editorVisible && this._mode === 'rendered') {
 				this._renderResourceInBackground(resource);
 			}
 		};
@@ -207,8 +235,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		// watch エラーはワークスペース全体から連続して届く場合があるため、通常の変更通知より長く抑制する。
 		const watchRecoveryScheduler = store.add(new RunOnceScheduler(rerender, 1000));
 		const scheduleRerender = (scheduler: RunOnceScheduler) => {
-			// 初回描画より先に watcher 描画を開始すると、世代更新によって setInput が待つ描画を
-			// 無効化してしまう。初回完了まで通知を記録し、直後に最新内容を読み直す。
+			this._renderDirty = true;
+			// 初回描画より先に watcher 描画を追加しないよう、初回完了まで通知を記録して
+			// 直後に最新内容を読み直す。
 			if (!initialViewApplied) {
 				rerenderAfterInitial = true;
 				return;
@@ -236,15 +265,50 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		store.add(this._fileService.onDidWatchError(() => scheduleRerender(watchRecoveryScheduler)));
 
 		// Rendered の配置と実描画は _applyViewMode がまとめて担う。
-		await this._applyViewMode(viewerInput.viewMode, resource, token);
+		await this._applyViewMode(viewerInput.viewMode, resource);
 		initialViewApplied = true;
 		if (rerenderAfterInitial) {
 			rerenderScheduler.schedule();
 		}
 	}
 
-	private async renderResource(resource: URI, token: CancellationToken): Promise<void> {
-		const generation = ++this._renderGeneration;
+	private async _renderCurrentResource(): Promise<void> {
+		const resource = this._currentResource;
+		const token = this._inputCancellation.value?.token;
+		if (!resource || !token || token.isCancellationRequested || this._mode !== 'rendered' || !this._editorVisible) {
+			return;
+		}
+
+		const renderCancellation = new CancellationTokenSource(token);
+		this._activeRenderCancellation.value = renderCancellation;
+		try {
+			await this._renderResource(resource, renderCancellation.token);
+		} catch (error) {
+			const inputStillCurrent = this._isRenderCurrent(resource, token);
+			if (renderCancellation.token.isCancellationRequested || isCancellationError(error)) {
+				// Raw 切替や一時非表示による描画中止は入力自体の失敗ではない。入力交換時だけ呼出元へ伝播する。
+				if (inputStillCurrent) {
+					return;
+				}
+				throw error;
+			}
+			if (!inputStillCurrent) {
+				throw new CancellationError();
+			}
+			this._resetWebview();
+			this._showRenderStatus('error');
+		} finally {
+			if (this._activeRenderCancellation.value === renderCancellation) {
+				this._activeRenderCancellation.clear();
+			}
+		}
+	}
+
+	private async _renderResource(resource: URI, token: CancellationToken): Promise<void> {
+		this._throwIfRenderStale(resource, token);
+		this._showRenderStatus('loading');
+		this._setWebviewReady(this._webview.value, false);
+
 		let text: string;
 		// Raw で開いたモデルがあれば、その現在値(未保存の編集を含む)から Rendered を作る。
 		const model = this._modelRef.value?.object.textEditorModel;
@@ -254,42 +318,94 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			const content = await this._textFileService.read(resource, { acceptTextOnly: false });
 			text = content.value;
 		}
-		if (!this._isRenderCurrent(generation, resource, token)) {
-			return;
-		}
+		this._throwIfRenderStale(resource, token);
 
-		const webview = this.ensureWebview(resource);
-		webview.contentOptions = {
-			allowScripts: this.allowScripts,
-			localResourceRoots: [dirname(resource)]
-		};
-
+		// 新しい HTML に対する did-load だけを待てるよう、描画ごとに空の overlay から開始する。
+		this._resetWebview();
+		const webview = this._ensureWebview(resource);
 		const html = await this.renderDocument(text, resource, webview, token);
-		if (!this._isRenderCurrent(generation, resource, token)) {
+		this._throwIfRenderStale(resource, token);
+		await this._presentHtml(html, resource, token);
+	}
+
+	private async _presentHtml(html: string, resource: URI, token: CancellationToken): Promise<void> {
+		try {
+			await runParadisRenderWithRetries(RENDER_MAX_ATTEMPTS, async attempt => {
+				this._throwIfRenderStale(resource, token);
+				if (attempt > 1) {
+					this._resetWebview();
+				}
+
+				const webview = this._ensureWebview(resource);
+				const loaded = new DeferredPromise<boolean>();
+				const listeners = new DisposableStore();
+				listeners.add(webview.onDidLoad(() => loaded.complete(true)));
+				listeners.add(webview.onFatalError(error => loaded.error(new Error(error.message))));
+				listeners.add(token.onCancellationRequested(() => loaded.error(new CancellationError())));
+
+				this._presentationWebview = webview;
+				try {
+					this._claimWebview(webview);
+					this._setWebviewReady(webview, false);
+					webview.setHtml(html);
+					const didLoad = await raceTimeout(loaded.p, RENDER_LOAD_TIMEOUT_MS);
+					if (didLoad !== true) {
+						throw new Error(`Rendered preview did not load within ${RENDER_LOAD_TIMEOUT_MS}ms`);
+					}
+					this._throwIfRenderStale(resource, token);
+					this._presentedResource = resource;
+					this._renderDirty = false;
+					this._showRenderStatus('hidden');
+					this._setWebviewReady(webview, true);
+				} finally {
+					listeners.dispose();
+					if (this._presentationWebview === webview) {
+						this._presentationWebview = undefined;
+					}
+				}
+			}, error => !isCancellationError(error));
+		} catch (error) {
+			if (isCancellationError(error) || !this._isRenderCurrent(resource, token)) {
+				throw error;
+			}
+			this._resetWebview();
+			this._showRenderStatus('error');
+		}
+	}
+
+	private _isRenderCurrent(resource: URI, token: CancellationToken): boolean {
+		return !token.isCancellationRequested && isEqual(this._currentResource, resource);
+	}
+
+	private _throwIfRenderStale(resource: URI, token: CancellationToken): void {
+		if (!this._isRenderCurrent(resource, token)) {
+			throw new CancellationError();
+		}
+	}
+
+	/** UI イベント由来の再描画を直列化し、未処理の Promise を残さない。 */
+	private _renderResourceInBackground(resource: URI): void {
+		if (!isEqual(this._currentResource, resource)) {
 			return;
 		}
-		webview.setHtml(html);
+		this._renderCoordinator.request().catch(error => {
+			if (!isCancellationError(error)) {
+				onUnexpectedError(error);
+			}
+		});
 	}
 
-	private _isRenderCurrent(generation: number, resource: URI, token: CancellationToken): boolean {
-		return generation === this._renderGeneration && !token.isCancellationRequested && isEqual(this._currentResource, resource);
-	}
-
-	/** UI イベント由来の再描画。失敗時は現在の HTML を保持し、未処理の Promise を残さない。 */
-	private _renderResourceInBackground(resource: URI): void {
-		this.renderResource(resource, CancellationToken.None).catch(onUnexpectedError);
-	}
-
-	private ensureWebview(resource: URI): IOverlayWebview {
-		if (this._webview) {
-			return this._webview;
+	private _ensureWebview(resource: URI): IOverlayWebview {
+		if (this._webview.value) {
+			return this._webview.value;
 		}
 		const webview = this._webviewService.createWebviewOverlay({
 			title: undefined,
 			options: {
 				purpose: WebviewContentPurpose.CustomEditor,
 				enableFindWidget: true,
-				tryRestoreScrollPosition: true
+				tryRestoreScrollPosition: true,
+				retainContextWhenHidden: true,
 			},
 			contentOptions: {
 				allowScripts: this.allowScripts,
@@ -297,35 +413,104 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			},
 			extension: undefined
 		});
-		this._webview = webview;
-		this._register(webview);
+		this._webview.value = webview;
+		const disposables = new DisposableStore();
+		disposables.add(webview.onFatalError(() => {
+			if (this._presentationWebview === webview || this._webview.value !== webview) {
+				return;
+			}
+			this._resetWebview(webview);
+			this._renderDirty = true;
+			this._showRenderStatus('loading');
+			const resource = this._currentResource;
+			if (resource && this._mode === 'rendered') {
+				this._renderResourceInBackground(resource);
+			}
+		}));
+		this._webviewDisposables.value = disposables;
 		this.onWebviewCreated(webview);
 		return webview;
 	}
 
-	/**
-	 * overlay webview を「可視 かつ Rendered」のときだけ claim してアンカーへ重ね、それ以外では release する。
-	 * claim で下地要素が作り直され内容が失われ得るため、true を返した呼出元は必ず再描画する。
-	 */
-	private _updateWebviewPlacement(): boolean {
-		const resource = this._currentResource;
-		const shouldShow = this._editorVisible && this._mode === 'rendered' && !!resource;
-		if (!shouldShow) {
-			if (this._webview && this._webviewClaimed) {
-				this._webview.release(this);
-				this._webviewClaimed = false;
-			}
-			return false;
+	private _claimWebview(webview: IOverlayWebview): void {
+		if (!this._editorVisible || this._mode !== 'rendered' || this._webview.value !== webview) {
+			return;
 		}
-		const webview = this.ensureWebview(resource);
-		const justClaimed = !this._webviewClaimed;
-		if (justClaimed) {
+		if (!this._webviewClaimed) {
 			webview.claim(this, this.window, undefined);
 			this._webviewClaimed = true;
 		}
 		dom.setParentFlowTo(webview.container, this._webviewContainer!);
 		webview.setAnchorElement(this._webviewContainer!, this._layoutService.getContainer(this.window, Parts.EDITOR_PART));
-		return justClaimed;
+	}
+
+	private _resetWebview(expected?: IOverlayWebview): void {
+		const webview = this._webview.value;
+		if (!webview || (expected && webview !== expected)) {
+			return;
+		}
+		if (this._webviewClaimed) {
+			webview.release(this);
+			this._webviewClaimed = false;
+		}
+		this._webviewDisposables.clear();
+		this._webview.clear();
+		this._presentedResource = undefined;
+		if (this._presentationWebview === webview) {
+			this._presentationWebview = undefined;
+		}
+	}
+
+	private _setWebviewReady(webview: IOverlayWebview | undefined, ready: boolean): void {
+		if (!webview) {
+			return;
+		}
+		webview.container.style.opacity = ready ? '' : '0';
+		webview.container.style.pointerEvents = ready ? '' : 'none';
+	}
+
+	private _showRenderStatus(status: RenderStatus): void {
+		if (!this._statusElement || !this._statusMessageElement || !this._statusReloadButton) {
+			return;
+		}
+		const visible = status !== 'hidden' && this._mode === 'rendered';
+		this._statusElement.hidden = !visible;
+		this._statusElement.classList.toggle('error', status === 'error');
+		this._statusElement.setAttribute('role', status === 'error' ? 'alert' : 'status');
+		this._statusMessageElement.textContent = status === 'error'
+			? localize('paradis.fileViewer.renderError', "Unable to load the rendered preview.")
+			: localize('paradis.fileViewer.renderLoading', "Loading preview…");
+		this._statusReloadButton.hidden = status !== 'error';
+	}
+
+	private _reloadRenderedPreview(): void {
+		const resource = this._currentResource;
+		if (!resource || this._mode !== 'rendered') {
+			return;
+		}
+		this._resetWebview();
+		this._renderDirty = true;
+		this._showRenderStatus('loading');
+		this._renderResourceInBackground(resource);
+	}
+
+	/** overlay webview を「可視 かつ Rendered」のときだけ claim し、それ以外では release する。 */
+	private _updateWebviewPlacement(): void {
+		const resource = this._currentResource;
+		const shouldShow = this._editorVisible && this._mode === 'rendered' && !!resource;
+		if (!shouldShow) {
+			if (this._webview.value && this._webviewClaimed) {
+				this._webview.value.release(this);
+				this._webviewClaimed = false;
+			}
+			return;
+		}
+
+		const webview = this._webview.value;
+		if (webview && (isEqual(this._presentedResource, resource) || this._presentationWebview === webview)) {
+			this._claimWebview(webview);
+			this._setWebviewReady(webview, isEqual(this._presentedResource, resource));
+		}
 	}
 
 	/** Rendered/Raw を内部切替する（エディタは開き直さない）。 */
@@ -345,8 +530,11 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		return this._mode;
 	}
 
-	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI, token: CancellationToken = CancellationToken.None): Promise<void> {
+	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI): Promise<void> {
 		this._mode = mode;
+		if (mode === 'raw') {
+			this._activeRenderCancellation.value?.cancel();
+		}
 		this._renderedBtn?.classList.toggle('active', mode === 'rendered');
 		this._rawBtn?.classList.toggle('active', mode === 'raw');
 
@@ -360,11 +548,17 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		}
 		// Raw エディタは active クラス(visibility)で表示切替。Rendered(webview overlay)は claim/release で制御する。
 		this._editorContainer?.classList.toggle('active', mode === 'raw');
+		if (mode === 'raw') {
+			this._showRenderStatus('hidden');
+		} else {
+			this._renderDirty = true;
+			this._showRenderStatus('loading');
+			this._setWebviewReady(this._webview.value, false);
+		}
 		this._updateWebviewPlacement();
 		if (mode === 'rendered') {
-			// setInput はこの描画を待つ。既に別経路で claim 済みでも必ず最新世代を開始し、
-			// 非表示の入力も事前描画して、Raw の未保存編集やファイルの現在値を反映する。
-			await this.renderResource(resource, token);
+			// setInput とモード切替は直列化された描画を待ち、Raw の未保存編集やファイルの現在値を反映する。
+			await this._renderCoordinator.request();
 		}
 		if (!isEqual(this._currentResource, resource) || this._mode !== mode) {
 			return;
@@ -372,7 +566,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (mode === 'raw') {
 			this._codeEditor?.focus();
 		} else {
-			this._webview?.focus();
+			this._webview.value?.focus();
 		}
 	}
 
@@ -393,31 +587,37 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		this._codeEditor.setModel(ref.object.textEditorModel);
 	}
 
+	override dispose(): void {
+		this._activeRenderCancellation.value?.cancel();
+		this._inputCancellation.value?.cancel();
+		this._resetWebview();
+		super.dispose();
+	}
+
 	override clearInput(): void {
 		this._inputDisposables.clear();
-		this._renderGeneration++;
+		this._inputCancellation.value?.cancel();
+		this._inputCancellation.clear();
 		this._currentResource = undefined;
+		this._renderDirty = true;
 		this._codeEditor?.setModel(null);
 		this._modelRef.clear();
-		// overlay の所有権を手放す（内容プロセスは webview レイヤー側で管理される）。
-		if (this._webview && this._webviewClaimed) {
-			this._webview.release(this);
-			this._webviewClaimed = false;
-		}
-		// 次の入力を claim した直後に前ファイルの内容が一瞬表示されないよう、保持 HTML も消去する。
-		this._webview?.setHtml('');
+		this._resetWebview();
+		this._showRenderStatus('hidden');
 		super.clearInput();
 	}
 
 	protected override setEditorVisible(visible: boolean): void {
 		if (visible !== this._editorVisible) {
 			this._editorVisible = visible;
-			// 可視 かつ Rendered のときだけ overlay を claim、非可視では release する（webviewEditor と同じ挙動）。
-			if (this._updateWebviewPlacement()) {
-				const resource = this._currentResource;
-				if (resource) {
-					this._renderResourceInBackground(resource);
-				}
+			if (!visible) {
+				this._activeRenderCancellation.value?.cancel();
+			}
+			this._updateWebviewPlacement();
+			const resource = this._currentResource;
+			if (visible && resource && this._mode === 'rendered' && (this._renderDirty || !isEqual(this._presentedResource, resource))) {
+				this._showRenderStatus('loading');
+				this._renderResourceInBackground(resource);
 			}
 		}
 		super.setEditorVisible(visible);
@@ -432,7 +632,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (this._mode === 'raw') {
 			this._codeEditor?.focus();
 		} else {
-			this._webview?.focus();
+			this._webview.value?.focus();
 		}
 	}
 

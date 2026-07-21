@@ -1144,6 +1144,7 @@
 							contentWindow.postMessage(message.message, window.origin, message.transfer);
 						});
 						pendingMessages = [];
+						hostMessaging.postMessage('did-load', undefined);
 					}
 				};
 

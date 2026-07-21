@@ -244,6 +244,10 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 			this._hasFindResult.fire(didFind);
 		}));
 
+		this._register(this.on('did-load', () => {
+			this._onDidLoad.fire();
+		}));
+
 		this._register(this.on('fatal-error', (e) => {
 			notificationService.error(localize('fatalErrorMessage', "Error loading webview: {0}", e.message));
 			this._onFatalError.fire({ message: e.message });
@@ -385,6 +389,9 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 
 	private readonly _onDidUpdateState = this._register(new Emitter<string | undefined>());
 	public readonly onDidUpdateState = this._onDidUpdateState.event;
+
+	private readonly _onDidLoad = this._register(new Emitter<void>());
+	public readonly onDidLoad = this._onDidLoad.event;
 
 	private readonly _onDidFocus = this._register(new Emitter<void>());
 	public readonly onDidFocus = this._onDidFocus.event;
