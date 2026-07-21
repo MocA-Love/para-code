@@ -28,17 +28,35 @@ export const PARADIS_PANE_TOKEN_ENV_VAR = 'PARA_CODE_TERMINAL_PANE_ID';
  */
 export const PARADIS_MCP_PORT_FILE_ENV_VAR = 'PARA_CODE_MCP_PORT_FILE';
 
-/** ペイン専用Codex app-serverのUnix socket絶対パス。 */
+/** ペイン専用Codex app-serverのUnix socket絶対パス（macOS/Linux）。 */
 export const PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR = 'PARA_CODE_CODEX_APP_SERVER_SOCKET';
+
+/**
+ * ペイン専用Codex app-serverのエンドポイント記述ファイル（JSON）の絶対パス（Windows）。
+ * WindowsのNode(libuv)はAF_UNIXを扱えないため、ランチャーが `ws://127.0.0.1:<動的ポート>` で
+ * app-serverを起動し、実ポート等をこのファイルへ書き出す。認証はペイントークンを
+ * capability tokenとして使う（`--ws-token-sha256`、平文はディスクへ書かない）。
+ */
+export const PARADIS_CODEX_APP_SERVER_ENDPOINT_ENV_VAR = 'PARA_CODE_CODEX_APP_SERVER_ENDPOINT';
 
 /** 再帰せず実Codexを解決するため、ランチャー自身がPATHから除外するディレクトリ。 */
 export const PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_DIR';
 
-/** CodexペインランチャーをPTY環境へ追加するための実行時情報。 */
+/** Windowsランチャー(.cmd/.ps1)がJS本体の実行に使うNode互換実行体（Para Code自身のexe）。 */
+export const PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_NODE';
+
+/**
+ * CodexペインランチャーをPTY環境へ追加するための実行時情報。
+ * `socketPath`（macOS/Linux: unix socket方式）と `endpointFilePath`（Windows: loopback ws方式）は
+ * どちらか一方だけを指定する。
+ */
 export interface IParadisCodexPaneRuntime {
 	readonly launcherDirectory: string;
-	readonly socketPath: string;
 	readonly pathDelimiter: string;
+	readonly socketPath?: string;
+	readonly endpointFilePath?: string;
+	/** Windowsのみ: `ELECTRON_RUN_AS_NODE=1` でランチャーJSを実行するexeパス。 */
+	readonly nodeExecutablePath?: string;
 }
 
 /**
@@ -65,6 +83,18 @@ export function paradisCodexPaneSocketPath(userDataPath: string, token: string):
 	}
 	const socketPath = join(userDataPath, 'pcx', `${token}.sock`);
 	return new TextEncoder().encode(socketPath).length <= 100 ? socketPath : undefined;
+}
+
+/**
+ * Windows用: userDataDir配下のペイン固有endpoint記述ファイル（`pcx/<token>.endpoint.json`）の
+ * パスを作る。unix socketと違いsun_path長の制約はないが、トークンの文字集合は同じ制約で
+ * 検証する（パストラバーサル防止）。
+ */
+export function paradisCodexPaneEndpointFilePath(userDataPath: string, token: string): string | undefined {
+	if (userDataPath.length === 0 || !/^[A-Za-z0-9._-]{1,64}$/.test(token)) {
+		return undefined;
+	}
+	return join(userDataPath, 'pcx', `${token}.endpoint.json`);
 }
 
 /** shared processで起動済みのMCP+CDPゲートウェイ接続先。 */
@@ -95,7 +125,13 @@ export function paradisCreateTerminalPaneEnvironment(
 		[PARADIS_PANE_TOKEN_ENV_VAR]: token,
 		[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
 	};
-	if (codexRuntime === undefined || codexRuntime.launcherDirectory.length === 0 || codexRuntime.socketPath.length === 0 || codexRuntime.pathDelimiter.length === 0) {
+	const socketPath = codexRuntime?.socketPath ?? '';
+	const endpointFilePath = codexRuntime?.endpointFilePath ?? '';
+	const nodeExecutablePath = codexRuntime?.nodeExecutablePath ?? '';
+	if (codexRuntime === undefined || codexRuntime.launcherDirectory.length === 0 || codexRuntime.pathDelimiter.length === 0
+		|| (socketPath.length === 0) === (endpointFilePath.length === 0)
+		// endpoint方式のランチャー(.cmd/.ps1)はnode実行体が無いと起動できないため、揃わない場合は注入しない。
+		|| (endpointFilePath.length > 0 && nodeExecutablePath.length === 0)) {
 		return environment;
 	}
 	const pathPrefix = `${codexRuntime.launcherDirectory}${codexRuntime.pathDelimiter}`;
@@ -104,7 +140,12 @@ export function paradisCreateTerminalPaneEnvironment(
 	environment['PATH'] = `${pathPrefix}${typeof currentPath === 'string' ? currentPath : '${env:PATH}'}`;
 	environment['VSCODE_PATH_PREFIX'] = `${pathPrefix}${typeof currentPathPrefix === 'string' ? currentPathPrefix : ''}`;
 	environment[PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR] = codexRuntime.launcherDirectory;
-	environment[PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR] = codexRuntime.socketPath;
+	if (socketPath.length > 0) {
+		environment[PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR] = socketPath;
+	} else {
+		environment[PARADIS_CODEX_APP_SERVER_ENDPOINT_ENV_VAR] = endpointFilePath;
+		environment[PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR] = nodeExecutablePath;
+	}
 	return environment;
 }
 

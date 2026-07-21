@@ -26,7 +26,7 @@ import {
 	sealNotify,
 } from '../common/paradisMobileCrypto.js';
 import { FrameMux, IParadisMobileFrameTrafficSample } from '../common/paradisMobileMux.js';
-import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, paradisCodexPaneSocketPath } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
@@ -346,7 +346,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// 発火しないことがあるため、こちらが質問通知の主経路。
 			info => this.notifyAgentQuestion(info),
 			this.logService,
-			token => paradisCodexPaneSocketPath(this.userDataPath, token),
+			// WindowsはUnix socketの代わりに、ランチャーが書くws endpointファイルを接続targetにする。
+			token => process.platform === 'win32'
+				? paradisCodexPaneEndpointFilePath(this.userDataPath, token)
+				: paradisCodexPaneSocketPath(this.userDataPath, token),
 			owner => this.withCurrentRegisteredLease(owner, async () => true).then(result => result === true, () => false),
 			owner => this._onDidRequestAgentPaneSync.fire({
 				windowId: owner.windowId,

@@ -22,7 +22,7 @@ import { IShellLaunchConfig } from '../../../../platform/terminal/common/termina
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paneTokenFromShellIntegrationNonce, restoredPaneToken } from '../../mobileRelay/common/paradisTerminalPersistence.js';
-import { IParadisCodexPaneRuntime, paradisCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
+import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
@@ -110,26 +110,31 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 	}
 
 	private _getCodexRuntime(token: string): IParadisCodexPaneRuntime | undefined {
-		if (isWindows) {
-			return undefined;
-		}
 		const desktopEnvironment = this.environmentService as IWorkbenchEnvironmentService & {
 			readonly appRoot?: string;
 			readonly userDataPath?: string;
+			readonly execPath?: string;
 		};
-		const { appRoot, userDataPath } = desktopEnvironment;
+		const { appRoot, userDataPath, execPath } = desktopEnvironment;
 		if (typeof appRoot !== 'string' || typeof userDataPath !== 'string') {
 			return undefined;
+		}
+		const launcherDirectory = join(appRoot, 'resources', 'paradis', 'bin');
+		if (isWindows) {
+			// WindowsのNode(libuv)はAF_UNIXを扱えないため、ランチャーがloopback ws + capability
+			// tokenでapp-serverを立て、実ポートをendpointファイルへ書く（設計はNOTES.md参照）。
+			// ランチャーJSはPara Code自身のexeを ELECTRON_RUN_AS_NODE=1 で実行する。
+			const endpointFilePath = paradisCodexPaneEndpointFilePath(userDataPath, token);
+			if (endpointFilePath === undefined || typeof execPath !== 'string' || execPath.length === 0) {
+				return undefined;
+			}
+			return { launcherDirectory, endpointFilePath, nodeExecutablePath: execPath, pathDelimiter: ';' };
 		}
 		const socketPath = paradisCodexPaneSocketPath(userDataPath, token);
 		if (socketPath === undefined) {
 			return undefined;
 		}
-		return {
-			launcherDirectory: join(appRoot, 'resources', 'paradis', 'bin'),
-			socketPath,
-			pathDelimiter: ':',
-		};
+		return { launcherDirectory, socketPath, pathDelimiter: ':' };
 	}
 
 	private _getPortFilePath(): string | undefined {

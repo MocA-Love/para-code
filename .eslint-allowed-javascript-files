@@ -87,6 +87,9 @@ extensions/vscode-colorize-tests/test/colorize-fixtures/test.js
 extensions/vscode-colorize-tests/test/colorize-fixtures/test6916.js
 extensions/yaml/build/update-grammar.js
 gulpfile.mjs
+# PARA-PATCH: fork-owned Windows Codex pane launcher body; runs standalone under ELECTRON_RUN_AS_NODE
+# outside the TypeScript build, so it must stay plain CommonJS (Para Code).
+resources/paradis/bin/paradisCodexPaneLauncher.cjs
 scripts/chat-simulation/common/perf-scenarios.js
 scripts/chat-simulation/common/utils.js
 scripts/chat-simulation/merge-ci-summary.js
