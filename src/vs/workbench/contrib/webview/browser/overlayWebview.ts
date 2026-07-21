@@ -239,6 +239,7 @@ export class OverlayWebview extends Disposable implements IOverlayWebview {
 			this._webviewEvents.add(webview.onMessage(x => { this._onMessage.fire(x); }));
 			this._webviewEvents.add(webview.onMissingCsp(x => { this._onMissingCsp.fire(x); }));
 			this._webviewEvents.add(webview.onDidWheel(x => { this._onDidWheel.fire(x); }));
+			this._webviewEvents.add(webview.onDidLoad(() => { this._onDidLoad.fire(); }));
 			this._webviewEvents.add(webview.onFatalError(x => { this._onFatalError.fire(x); }));
 			this._webviewEvents.add(autorun(reader => {
 				this.intrinsicContentSize.set(reader.readObservable(webview.intrinsicContentSize), undefined, undefined);
@@ -330,6 +331,9 @@ export class OverlayWebview extends Disposable implements IOverlayWebview {
 
 	private readonly _onDidUpdateState = this._register(new Emitter<string | undefined>());
 	public readonly onDidUpdateState = this._onDidUpdateState.event;
+
+	private readonly _onDidLoad = this._register(new Emitter<void>());
+	public readonly onDidLoad = this._onDidLoad.event;
 
 	private readonly _onMessage = this._register(new Emitter<WebviewMessageReceivedEvent>());
 	public readonly onMessage = this._onMessage.event;

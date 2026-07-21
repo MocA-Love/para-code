@@ -249,6 +249,11 @@ export interface IWebview extends IDisposable {
 	readonly onDidUpdateState: Event<string | undefined>;
 
 	/**
+	 * Fired after newly assigned HTML has become the active, visible inner frame.
+	 */
+	readonly onDidLoad: Event<void>;
+
+	/**
 	 * The natural size of the content inside the webview.
 	 *
 	 * This is computed by looking at the size of the webview's the document element.
