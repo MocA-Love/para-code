@@ -430,6 +430,9 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 		// Merged before the electron() stage so they land inside the app bundle; at runtime they are
 		// resolved relative to appRoot at resources/paradis/extensions/*.vsix and installed.
 		all = es.merge(all, gulp.src('resources/paradis/extensions/*.vsix', { base: '.', allowEmpty: true }));
+		if (platform !== 'win32') {
+			all = es.merge(all, gulp.src('resources/paradis/bin/codex', { base: '.', allowEmpty: false }));
+		}
 
 		if (platform === 'win32') {
 			all = es.merge(all, gulp.src([

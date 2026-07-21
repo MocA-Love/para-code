@@ -68,6 +68,16 @@ if [ -n "${VSCODE_ENV_APPEND:-}" ]; then
 	unset VSCODE_ENV_APPEND
 fi
 
+# PARA-PATCH: User rc files may prepend another Codex executable after the PTY
+# environment is created. Re-apply the pane launcher after rc initialization so
+# an interactive `codex` inherits this terminal's pane/MCP environment.
+if [[ -n "${PARA_CODE_CODEX_LAUNCHER_DIR:-}" && -x "$PARA_CODE_CODEX_LAUNCHER_DIR/codex" ]]; then
+	case "$PATH" in
+		"$PARA_CODE_CODEX_LAUNCHER_DIR"|"$PARA_CODE_CODEX_LAUNCHER_DIR":*) ;;
+		*) export PATH="$PARA_CODE_CODEX_LAUNCHER_DIR:$PATH" ;;
+	esac
+fi
+
 # Register Python shell activate hooks
 # Prevent multiple activation with guard
 if [ -z "${VSCODE_PYTHON_AUTOACTIVATE_GUARD:-}" ]; then

@@ -11,6 +11,7 @@
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
+import { join } from '../../../../base/common/path.js';
 import type { ParadisBindingAuthorityStableScope } from './paradisBindingAuthority.js';
 
 /**
@@ -27,6 +28,19 @@ export const PARADIS_PANE_TOKEN_ENV_VAR = 'PARA_CODE_TERMINAL_PANE_ID';
  */
 export const PARADIS_MCP_PORT_FILE_ENV_VAR = 'PARA_CODE_MCP_PORT_FILE';
 
+/** ペイン専用Codex app-serverのUnix socket絶対パス。 */
+export const PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR = 'PARA_CODE_CODEX_APP_SERVER_SOCKET';
+
+/** 再帰せず実Codexを解決するため、ランチャー自身がPATHから除外するディレクトリ。 */
+export const PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_DIR';
+
+/** CodexペインランチャーをPTY環境へ追加するための実行時情報。 */
+export interface IParadisCodexPaneRuntime {
+	readonly launcherDirectory: string;
+	readonly socketPath: string;
+	readonly pathDelimiter: string;
+}
+
 /**
  * userDataDir 直下に書き出されるポートファイルのファイル名。
  * 内容: protocolVersion、port、pid、instanceId、serviceStartedAtを持つ
@@ -40,6 +54,18 @@ export const PARADIS_MCP_PORT_FILE_NAME = 'paradis-browser-mcp.json';
  * 将来的にはParadis設定に載せる想定（現状はconst固定）。
  */
 export const PARADIS_MCP_DEFAULT_PORT = 47286;
+
+/**
+ * userDataDir配下に、Unixのsun_path上限へ収まるペイン固有socketパスを作る。
+ * パストラバーサルを防ぐため、復元された旧トークンも安全な文字だけを許可する。
+ */
+export function paradisCodexPaneSocketPath(userDataPath: string, token: string): string | undefined {
+	if (userDataPath.length === 0 || !/^[A-Za-z0-9._-]{1,64}$/.test(token)) {
+		return undefined;
+	}
+	const socketPath = join(userDataPath, 'pcx', `${token}.sock`);
+	return new TextEncoder().encode(socketPath).length <= 100 ? socketPath : undefined;
+}
 
 /** shared processで起動済みのMCP+CDPゲートウェイ接続先。 */
 export interface IParadisGatewayEndpoint {
@@ -62,12 +88,24 @@ export function paradisCreateTerminalPaneEnvironment(
 	existing: Readonly<Record<string, string | null | undefined>> | undefined,
 	token: string,
 	portFilePath: string,
+	codexRuntime?: IParadisCodexPaneRuntime,
 ): Record<string, string | null | undefined> {
-	return {
+	const environment: Record<string, string | null | undefined> = {
 		...existing,
 		[PARADIS_PANE_TOKEN_ENV_VAR]: token,
 		[PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath,
 	};
+	if (codexRuntime === undefined || codexRuntime.launcherDirectory.length === 0 || codexRuntime.socketPath.length === 0 || codexRuntime.pathDelimiter.length === 0) {
+		return environment;
+	}
+	const pathPrefix = `${codexRuntime.launcherDirectory}${codexRuntime.pathDelimiter}`;
+	const currentPath = existing?.['PATH'];
+	const currentPathPrefix = existing?.['VSCODE_PATH_PREFIX'];
+	environment['PATH'] = `${pathPrefix}${typeof currentPath === 'string' ? currentPath : '${env:PATH}'}`;
+	environment['VSCODE_PATH_PREFIX'] = `${pathPrefix}${typeof currentPathPrefix === 'string' ? currentPathPrefix : ''}`;
+	environment[PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR] = codexRuntime.launcherDirectory;
+	environment[PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR] = codexRuntime.socketPath;
+	return environment;
 }
 
 /**

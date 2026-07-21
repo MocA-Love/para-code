@@ -15,13 +15,14 @@
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
+import { isWindows } from '../../../../base/common/platform.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paneTokenFromShellIntegrationNonce, restoredPaneToken } from '../../mobileRelay/common/paradisTerminalPersistence.js';
-import { paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
+import { IParadisCodexPaneRuntime, paradisCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
@@ -105,7 +106,30 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 		}
 		const token = paneTokenFromShellIntegrationNonce(nonce);
 		// CDP URLは動的ポート確定前に固定注入せず、ユーザーが指定済みならその値を保持する。
-		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath);
+		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(token));
+	}
+
+	private _getCodexRuntime(token: string): IParadisCodexPaneRuntime | undefined {
+		if (isWindows) {
+			return undefined;
+		}
+		const desktopEnvironment = this.environmentService as IWorkbenchEnvironmentService & {
+			readonly appRoot?: string;
+			readonly userDataPath?: string;
+		};
+		const { appRoot, userDataPath } = desktopEnvironment;
+		if (typeof appRoot !== 'string' || typeof userDataPath !== 'string') {
+			return undefined;
+		}
+		const socketPath = paradisCodexPaneSocketPath(userDataPath, token);
+		if (socketPath === undefined) {
+			return undefined;
+		}
+		return {
+			launcherDirectory: join(appRoot, 'resources', 'paradis', 'bin'),
+			socketPath,
+			pathDelimiter: ':',
+		};
 	}
 
 	private _getPortFilePath(): string | undefined {
