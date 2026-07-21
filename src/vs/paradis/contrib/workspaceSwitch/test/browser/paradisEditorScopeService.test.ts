@@ -133,6 +133,52 @@ suite('ParadisEditorScopeService', () => {
 		assert.strictEqual(live.isDisposed(), true);
 	});
 
+	test('restores the remaining editors when one parked editor was disposed out of band', async () => {
+		const testDisposables = disposables.add(new DisposableStore());
+		const editorId = 'paradisLostParkedEditorTest';
+		const typeId = 'paradisLostParkedEditorInputTest';
+		testDisposables.add(registerTestEditor(editorId, [new SyncDescriptor(TestFileEditorInput)], typeId));
+		const instantiationService = workbenchInstantiationService(undefined, testDisposables);
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const parts = await createEditorParts(instantiationService, testDisposables);
+		instantiationService.stub(IEditorGroupsService, parts);
+		instantiationService.stub(IParadisAuxiliaryWindowScopeService, {
+			initializationBarrier: Promise.resolve(),
+			resolvePart: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			resolveGroup: () => ({ kind: 'managed', stateKey: 'space-a' }),
+			hasVisibleScope: () => false,
+		} as never);
+		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
+		instantiationService.stub(ILogService, new NullLogService());
+		const service = testDisposables.add(instantiationService.createInstance(ParadisEditorScopeService));
+
+		const lost = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/lost.txt'), typeId));
+		lost.modified = true;
+		const survivor = testDisposables.add(new TestFileEditorInput(URI.file('/workspace/survivor.txt'), typeId));
+		survivor.modified = true;
+		await parts.activeGroup.openEditor(lost, { pinned: true });
+		await parts.activeGroup.openEditor(survivor, { pinned: true });
+
+		service.captureScope('space-a', () => { });
+		assert.deepStrictEqual({
+			lostVisible: parts.activeGroup.contains(lost),
+			survivorVisible: parts.activeGroup.contains(survivor)
+		}, { lostVisible: false, survivorVisible: false });
+
+		// Simulate the parked EditorInput being disposed out of band (e.g. an
+		// Untitled model reverting) while it is detached from every group,
+		// bypassing the retainEditor reference count.
+		lost.dispose();
+
+		await service.restoreScope('space-a');
+		assert.deepStrictEqual({
+			lostVisible: parts.activeGroup.contains(lost),
+			survivorVisible: parts.activeGroup.contains(survivor)
+		}, { lostVisible: false, survivorVisible: true });
+		// The scope must not keep re-attempting the same dead editor forever.
+		assert.strictEqual(service.hasLiveState('space-a'), false);
+	});
+
 	test('preflights visible dirty editors when retiring the active scope', async () => {
 		const testDisposables = disposables.add(new DisposableStore());
 		const editorId = 'paradisActiveRetirementEditorTest';
