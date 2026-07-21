@@ -293,11 +293,13 @@ function startPaneServer(real, pathEntries, endpointPath, paneToken) {
 		const tokenDigest = crypto.createHash('sha256').update(paneToken, 'utf8').digest('hex');
 		const logPath = `${endpointPath}.log`;
 		const logStream = fs.createWriteStream(logPath, { flags: 'w' });
+		// このターミナルのコンソールを共有して起動する。detached/windowsHideでコンソールを
+		// 切り離すと、app-serverがspawnする各MCPサーバー（コンソールアプリ）が自前の
+		// コンソールウィンドウを確保して黒いウィンドウが乱立する（Windows実機で確認）。
+		// 共有により、ターミナルタブを閉じればapp-serverも自動的に終了する。
 		const server = spawnCodex(real, [
 			'app-server', '--listen', 'ws://127.0.0.1:0', '--ws-auth', 'capability-token', '--ws-token-sha256', tokenDigest,
 		], {
-			detached: true,
-			windowsHide: true,
 			stdio: ['ignore', 'ignore', 'pipe'],
 			env: childEnvironment(pathEntries, real.useOwnNode),
 		});
