@@ -332,6 +332,27 @@ async function pathExists(path: string): Promise<boolean> {
 	}
 }
 
+/** Windows: `pcx/<paneToken>.endpoint.json` 形式のtargetからペイントークン（=Bearer認証トークン）を復元する。 */
+interface IParadisCodexWsEndpointTarget {
+	readonly paneToken: string;
+}
+
+export function paradisParseCodexWsEndpointTarget(targetPath: string): IParadisCodexWsEndpointTarget | undefined {
+	const match = /[\\/]pcx[\\/]([A-Za-z0-9._-]{1,64})\.endpoint\.json$/.exec(targetPath);
+	return match !== null ? { paneToken: match[1] } : undefined;
+}
+
+/** ランチャーが書いたendpointファイルから、検証済みのloopbackポートを読む。 */
+async function readCodexEndpointPort(endpointPath: string): Promise<number | undefined> {
+	try {
+		const parsed: unknown = JSON.parse(await fs.readFile(endpointPath, 'utf8'));
+		const port = record(parsed)?.['port'];
+		return typeof port === 'number' && Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function createUnixWebSocketConnection(socketPath: string): typeof createConnection {
 	// @types/wsはnet.createConnection型を公開しているが、実行時のws/httpはNode Agentの
 	// (error, socket) callbackを渡す。接続完了通知が無いとUnix socket handshakeが切断
@@ -344,7 +365,8 @@ function createUnixWebSocketConnection(socketPath: string): typeof createConnect
 }
 
 /**
- * 1つのpane app-server socketに対するJSON-RPC接続。
+ * 1つのpane app-serverに対するJSON-RPC接続。macOS/LinuxはUnix socket上のWebSocket、
+ * Windowsはランチャーが書いたendpointファイル経由のloopback WebSocket（Bearer=ペイントークン）。
  * - app-serverの起動と停止はターミナルのCodexランチャーが所有する
  * - thread/loaded/listでsocket所有を確認できたthreadだけresume/購読する
  * - model/listをカタログの正本とし、thread/settings/updateを確認通知つきで適用する
@@ -370,12 +392,16 @@ class ParadisCodexServerConnection extends Disposable {
 	private readonly resolvingApprovals = new Set<string>();
 	private catalogCache: { readonly at: number; readonly models: readonly IParadisCodexModelOption[] } | undefined;
 
+	/** Windows方式（endpointファイル）のtargetなら、その認証情報。undefinedならUnix socket方式。 */
+	private readonly endpointTarget: IParadisCodexWsEndpointTarget | undefined;
+
 	constructor(
 		private readonly onEvent: (event: IParadisCodexDaemonEvent) => void,
 		private readonly logService: ILogService,
 		private readonly socketPath: string,
 	) {
 		super();
+		this.endpointTarget = paradisParseCodexWsEndpointTarget(socketPath);
 	}
 
 	/** 明示的な実験設定に合わせてsocket連携を開始・停止する。 */
@@ -572,7 +598,7 @@ class ParadisCodexServerConnection extends Disposable {
 	}
 
 	private async ensureConnected(): Promise<void> {
-		if (!this.enabled || this.socket !== undefined || process.platform === 'win32') {
+		if (!this.enabled || this.socket !== undefined) {
 			return;
 		}
 		if (!(await this.pathExists(this.socketPath)) || !this.enabled || this.socket !== undefined) {
@@ -582,15 +608,30 @@ class ParadisCodexServerConnection extends Disposable {
 		if (this.wantedThreads.size === 0) {
 			return;
 		}
+		let endpointPort: number | undefined;
+		if (this.endpointTarget !== undefined) {
+			endpointPort = await readCodexEndpointPort(this.socketPath);
+			if (endpointPort === undefined || !this.enabled || this.socket !== undefined) {
+				this.scheduleRetry();
+				return;
+			}
+		}
 		try {
 			const generation = ++this.connectionGeneration;
-			const socket = new WebSocket('ws://localhost/rpc', {
-				createConnection: createUnixWebSocketConnection(this.socketPath),
-				handshakeTimeout: 3_000,
-				maxPayload: MAX_RPC_PAYLOAD_BYTES,
-				// tokio-tungsteniteのUnix socket acceptorはpermessage-deflateを交渉しない。
-				perMessageDeflate: false,
-			});
+			const socket = this.endpointTarget !== undefined && endpointPort !== undefined
+				? new WebSocket(`ws://127.0.0.1:${endpointPort}/`, {
+					headers: { authorization: `Bearer ${this.endpointTarget.paneToken}` },
+					handshakeTimeout: 3_000,
+					maxPayload: MAX_RPC_PAYLOAD_BYTES,
+					perMessageDeflate: false,
+				})
+				: new WebSocket('ws://localhost/rpc', {
+					createConnection: createUnixWebSocketConnection(this.socketPath),
+					handshakeTimeout: 3_000,
+					maxPayload: MAX_RPC_PAYLOAD_BYTES,
+					// tokio-tungsteniteのUnix socket acceptorはpermessage-deflateを交渉しない。
+					perMessageDeflate: false,
+				});
 			this.socket = socket;
 			socket.on('open', () => void this.initialize(generation));
 			socket.on('message', data => this.handleMessage(data));
@@ -828,9 +869,6 @@ class ParadisCodexServerConnection extends Disposable {
 		if (!this.enabled) {
 			throw new ParadisCodexControlError('disabled', 'Codex app-server連携が無効です');
 		}
-		if (process.platform === 'win32') {
-			throw new ParadisCodexControlError('unsupported', 'Codex app-server連携は現在macOS/Linuxのみ対応しています');
-		}
 		if (!this.wantedThreads.has(threadId)) {
 			throw new ParadisCodexControlError('not-loaded', 'このCodexセッションを確認できません');
 		}
@@ -886,7 +924,7 @@ class ParadisCodexServerConnection extends Disposable {
 	}
 
 	private scheduleRetry(): void {
-		if (!this.enabled || this.retryTimer !== undefined || process.platform === 'win32') {
+		if (!this.enabled || this.retryTimer !== undefined) {
 			return;
 		}
 		this.retryTimer = setTimeout(() => {
@@ -964,7 +1002,11 @@ class ParadisCodexServerConnection extends Disposable {
 	}
 }
 
-/** Mobileで追跡するCodex threadと、そのpane専用app-server socket。 */
+/**
+ * Mobileで追跡するCodex threadと、そのpane専用app-serverへの接続先。
+ * `socketPath` はmacOS/LinuxではUnix socketパス、Windowsではランチャーが書く
+ * endpointファイル（`pcx/<token>.endpoint.json`）のパス。
+ */
 export interface IParadisCodexThreadTarget {
 	readonly threadId: string;
 	readonly socketPath: string;

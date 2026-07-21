@@ -72,6 +72,16 @@ if ($env:VSCODE_ENV_APPEND) {
 	$env:VSCODE_ENV_APPEND = $null
 }
 
+# PARA-PATCH: User profile scripts may prepend another Codex executable after the PTY
+# environment is created. Re-apply the pane launcher after profile initialization so an
+# interactive `codex` inherits this terminal's pane/MCP environment.
+if ($env:PARA_CODE_CODEX_LAUNCHER_DIR -and ((Test-Path -LiteralPath (Join-Path $env:PARA_CODE_CODEX_LAUNCHER_DIR 'codex.cmd')) -or (Test-Path -LiteralPath (Join-Path $env:PARA_CODE_CODEX_LAUNCHER_DIR 'codex')))) {
+	$paraCodexLauncherDir = $env:PARA_CODE_CODEX_LAUNCHER_DIR
+	if (-not ($env:Path.Equals($paraCodexLauncherDir, [StringComparison]::OrdinalIgnoreCase) -or $env:Path.StartsWith($paraCodexLauncherDir + [IO.Path]::PathSeparator, [StringComparison]::OrdinalIgnoreCase))) {
+		$env:Path = $paraCodexLauncherDir + [IO.Path]::PathSeparator + $env:Path
+	}
+}
+
 # Register Python shell activate hooks
 # Prevent multiple activation with guard
 if (-not $env:VSCODE_PYTHON_AUTOACTIVATE_GUARD) {

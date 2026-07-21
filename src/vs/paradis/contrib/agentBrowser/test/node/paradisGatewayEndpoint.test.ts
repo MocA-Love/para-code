@@ -12,14 +12,17 @@ import * as agentBrowser from '../../common/paradisAgentBrowser.js';
 interface IParadisGatewayEndpointTestExports {
 	readonly paradisFormatCdpGatewayUrl?: (port: number) => string;
 	readonly paradisCodexPaneSocketPath?: (userDataPath: string, token: string) => string | undefined;
+	readonly paradisCodexPaneEndpointFilePath?: (userDataPath: string, token: string) => string | undefined;
 	readonly paradisCreateTerminalPaneEnvironment?: (
 		existing: Readonly<Record<string, string | null | undefined>> | undefined,
 		token: string,
 		portFilePath: string,
 		codexRuntime?: {
 			readonly launcherDirectory: string;
-			readonly socketPath: string;
 			readonly pathDelimiter: string;
+			readonly socketPath?: string;
+			readonly endpointFilePath?: string;
+			readonly nodeExecutablePath?: string;
 		},
 	) => Record<string, string | null | undefined>;
 }
@@ -79,6 +82,44 @@ suite('ParadisGatewayEndpoint', () => {
 			PARA_CODE_MCP_PORT_FILE: '/tmp/paradis-browser-mcp.json',
 			PARA_CODE_CODEX_LAUNCHER_DIR: '/Applications/Para Code.app/Contents/Resources/app/resources/paradis/bin',
 			PARA_CODE_CODEX_APP_SERVER_SOCKET: '/Users/test/Library/Application Support/Para Code/pcx/pane.sock',
+		});
+	});
+
+	test('adds the Windows ws endpoint launcher variables instead of a unix socket', () => {
+		const createEnvironment = (agentBrowser as IParadisGatewayEndpointTestExports).paradisCreateTerminalPaneEnvironment;
+		const endpointFilePath = (agentBrowser as IParadisGatewayEndpointTestExports).paradisCodexPaneEndpointFilePath;
+		assert.ok(createEnvironment);
+		assert.ok(endpointFilePath);
+
+		const token = '12345678-1234-4234-8234-123456789abc';
+		assert.strictEqual(endpointFilePath('C:\\Users\\test\\AppData\\Roaming\\Para Code', '../escape'), undefined);
+		const endpoint = endpointFilePath('C:\\Users\\test\\AppData\\Roaming\\Para Code', token);
+		assert.ok(endpoint !== undefined && endpoint.endsWith(`${token}.endpoint.json`));
+
+		assert.deepStrictEqual(createEnvironment({ PATH: 'C:\\user\\bin' }, token, 'C:\\tmp\\paradis-browser-mcp.json', {
+			launcherDirectory: 'C:\\Para Code\\resources\\app\\resources\\paradis\\bin',
+			endpointFilePath: endpoint,
+			nodeExecutablePath: 'C:\\Para Code\\Para Code.exe',
+			pathDelimiter: ';',
+		}), {
+			PATH: `C:\\Para Code\\resources\\app\\resources\\paradis\\bin;C:\\user\\bin`,
+			VSCODE_PATH_PREFIX: 'C:\\Para Code\\resources\\app\\resources\\paradis\\bin;',
+			PARA_CODE_TERMINAL_PANE_ID: token,
+			PARA_CODE_MCP_PORT_FILE: 'C:\\tmp\\paradis-browser-mcp.json',
+			PARA_CODE_CODEX_LAUNCHER_DIR: 'C:\\Para Code\\resources\\app\\resources\\paradis\\bin',
+			PARA_CODE_CODEX_APP_SERVER_ENDPOINT: endpoint,
+			PARA_CODE_CODEX_LAUNCHER_NODE: 'C:\\Para Code\\Para Code.exe',
+		});
+
+		// socketとendpointの両方（または両方欠落）は不正としてCodex変数を注入しない。
+		assert.deepStrictEqual(createEnvironment(undefined, token, '/tmp/port.json', {
+			launcherDirectory: '/launcher',
+			socketPath: '/tmp/pcx/pane.sock',
+			endpointFilePath: '/tmp/pcx/pane.endpoint.json',
+			pathDelimiter: ':',
+		}), {
+			PARA_CODE_TERMINAL_PANE_ID: token,
+			PARA_CODE_MCP_PORT_FILE: '/tmp/port.json',
 		});
 	});
 });

@@ -18,15 +18,27 @@ import { IParadisCodexDaemonEvent, ParadisCodexLiveClient } from '../../node/par
 interface IFakeAppServer extends AsyncDisposable {
 	readonly socketPath: string;
 	readonly resumedThreads: readonly string[];
+	readonly rejectedUpgrades: readonly (string | undefined)[];
 }
 
-async function createFakeAppServer(testRoot: string, name: string, loadedThreads: readonly string[]): Promise<IFakeAppServer> {
+/**
+ * `paneToken` を渡すとWindows方式（loopback TCP + Bearer認証 + endpointファイル）で待ち受け、
+ * 省略時は従来のUnix socket方式で待ち受ける偽app-server。
+ */
+async function createFakeAppServer(testRoot: string, name: string, loadedThreads: readonly string[], paneToken?: string): Promise<IFakeAppServer> {
 	const { createServer } = await import('http');
-	const socketPath = join(testRoot, `${name}.sock`);
 	const resumedThreads: string[] = [];
+	const rejectedUpgrades: (string | undefined)[] = [];
 	const server: Server = createServer();
 	const webSockets = new WebSocketServer({ noServer: true });
-	server.on('upgrade', (request, socket, head) => webSockets.handleUpgrade(request, socket, head, connection => webSockets.emit('connection', connection, request)));
+	server.on('upgrade', (request, socket, head) => {
+		if (paneToken !== undefined && request.headers['authorization'] !== `Bearer ${paneToken}`) {
+			rejectedUpgrades.push(request.headers['authorization']);
+			socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+			return;
+		}
+		webSockets.handleUpgrade(request, socket, head, connection => webSockets.emit('connection', connection, request));
+	});
 	webSockets.on('connection', connection => connection.on('message', data => {
 		const message = JSON.parse(data.toString()) as { readonly id?: number; readonly method?: string; readonly params?: { readonly threadId?: string } };
 		if (message.id === undefined) {
@@ -55,13 +67,28 @@ async function createFakeAppServer(testRoot: string, name: string, loadedThreads
 			connection.send(JSON.stringify({ method: 'item/started', params: { threadId: message.params.threadId, item: { type: 'reasoning' } } }));
 		}
 	}));
-	await new Promise<void>((resolve, reject) => {
-		server.once('error', reject);
-		server.listen(socketPath, resolve);
-	});
+	let socketPath: string;
+	if (paneToken !== undefined) {
+		await new Promise<void>((resolve, reject) => {
+			server.once('error', reject);
+			server.listen(0, '127.0.0.1', resolve);
+		});
+		const address = server.address();
+		assert.ok(address !== null && typeof address === 'object');
+		socketPath = join(testRoot, 'pcx', `${paneToken}.endpoint.json`);
+		await fs.mkdir(join(testRoot, 'pcx'), { recursive: true });
+		await fs.writeFile(socketPath, JSON.stringify({ port: address.port, pid: process.pid, ownerPid: process.pid }));
+	} else {
+		socketPath = join(testRoot, `${name}.sock`);
+		await new Promise<void>((resolve, reject) => {
+			server.once('error', reject);
+			server.listen(socketPath, resolve);
+		});
+	}
 	return {
 		socketPath,
 		resumedThreads,
+		rejectedUpgrades,
 		async [Symbol.asyncDispose]() {
 			for (const connection of webSockets.clients) {
 				connection.terminate();
@@ -113,6 +140,25 @@ suite('ParadisCodexLiveClient', function () {
 			assert.deepStrictEqual(second.resumedThreads, ['thread-2', 'thread-1']);
 			assert.throws(() => client.readThreadMessages('child-2', 'thread-2'), /確認できません/);
 			assert.deepStrictEqual(await client.readThreadMessages('child-1', 'thread-1'), [{ role: 'assistant', kind: 'text', text: 'second:child-1' }]);
+		} finally {
+			client.dispose();
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
+
+	test('connects to a Windows ws endpoint target with the pane token as Bearer auth', async () => {
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-live-'));
+		await using paneServer = await createFakeAppServer(testRoot, 'winpane', ['thread-9'], 'pane-token-w1');
+		const events: IParadisCodexDaemonEvent[] = [];
+		const client = new ParadisCodexLiveClient(event => events.push(event), new NullLogService());
+		try {
+			client.setThreads([{ threadId: 'thread-9', socketPath: paneServer.socketPath }]);
+			client.setEnabled(true);
+			await waitFor(() => client.isThreadReady('thread-9'));
+
+			assert.deepStrictEqual(paneServer.resumedThreads, ['thread-9']);
+			assert.deepStrictEqual(paneServer.rejectedUpgrades, []);
+			assert.strictEqual((await client.listModels('thread-9'))[0].model, 'winpane-model');
 		} finally {
 			client.dispose();
 			await fs.rm(testRoot, { recursive: true, force: true });
