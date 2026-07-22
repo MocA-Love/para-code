@@ -1707,6 +1707,9 @@ export default defineConfig(
 						// PARA-PATCH: browserSession.ts が内蔵ブラウザUAのElectronトークン除去
 						// (paradisApplyChromeLikeUserAgent) を呼ぶための逆方向 import
 						'vs/paradis/contrib/browserUserAgent/~',
+						// PARA-PATCH: browserSession.ts が内蔵ブラウザのダウンロード自動保存
+						// (paradisConfigureBrowserDownloads) を呼ぶための逆方向 import
+						'vs/paradis/contrib/browserDownloads/~',
 						'tas-client', // node module allowed even in /common/
 						'@microsoft/1ds-core-js', // node module allowed even in /common/
 						'@microsoft/1ds-post-js', // node module allowed even in /common/

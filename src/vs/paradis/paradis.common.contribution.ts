@@ -31,3 +31,4 @@ import './contrib/keepAwake/browser/paradisKeepAwakeSettings.contribution.js';
 import './contrib/mobileRelay/browser/paradisMobileRelaySettings.contribution.js';
 import './contrib/terminalShiftEnter/browser/paradisTerminalShiftEnter.contribution.js';
 import './contrib/codexTerminalTitle/browser/paradisCodexTerminalTitleSettings.contribution.js';
+import './contrib/browserDownloads/browser/paradisBrowserDownloadsSettings.contribution.js';

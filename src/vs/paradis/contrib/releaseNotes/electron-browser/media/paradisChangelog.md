@@ -4,6 +4,12 @@
 
 Para Code が本家 VS Code に加えた変更の一覧です。新しいバージョンが上に来ます。
 
+## 未リリース
+
+### 新機能
+
+- 内蔵ブラウザでファイルをダウンロードすると、保存先を選ぶシステムダイアログを出さずに自動保存されるようになりました。既定の保存先はOS標準のダウンロードフォルダ配下の `Paracode` フォルダです。設定 `paradis.browser.downloads.path` で保存先を、`paradis.browser.downloads.enabled` で自動保存自体のON/OFFを変更できます
+
 ## paracode-65（2026-07-22）
 
 ### 新機能
