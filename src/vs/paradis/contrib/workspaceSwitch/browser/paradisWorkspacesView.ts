@@ -9,8 +9,10 @@
 import './media/paradisWorkspaceSwitch.css';
 import * as DOM from '../../../../base/browser/dom.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
-import { IListVirtualDelegate } from '../../../../base/browser/ui/list/list.js';
-import { IObjectTreeElement, ITreeNode, ITreeRenderer, ObjectTreeElementCollapseState } from '../../../../base/browser/ui/tree/tree.js';
+import { IListVirtualDelegate, ListDragOverEffectPosition, ListDragOverEffectType } from '../../../../base/browser/ui/list/list.js';
+import { ElementsDragAndDropData, ListViewTargetSector } from '../../../../base/browser/ui/list/listView.js';
+import { IDragAndDropData } from '../../../../base/browser/dnd.js';
+import { IObjectTreeElement, ITreeDragAndDrop, ITreeDragOverReaction, ITreeNode, ITreeRenderer, ObjectTreeElementCollapseState } from '../../../../base/browser/ui/tree/tree.js';
 import { Action, IAction, Separator } from '../../../../base/common/actions.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -42,6 +44,7 @@ import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
+import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 
 /** browser 層は electron-browser 層のコマンドIDを直接 import できないため、既存の
@@ -388,6 +391,103 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 }
 
 /**
+ * ツリーのドラッグ&ドロップ並び替え (案B)。
+ * - リポジトリ行同士: reorderRepositories で並べ替え
+ * - worktree 行同士: 同一リポジトリ内でのみ setWorktreeOrder で並べ替え
+ * - main checkout (isMainCheckout) 行・「作成中」(isCreating) 行はドラッグ不可・ドロップ先不可
+ *   (main checkout は常に先頭固定を維持する)
+ * targetSector の上寄り/下寄りで挿入位置 (before/after) を判定する。
+ */
+class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElement> {
+
+	constructor(
+		private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		private readonly worktreeService: IParadisWorktreeService,
+	) { }
+
+	getDragURI(element: WorkspaceTreeElement): string | null {
+		if (isCreating(element)) {
+			return null;
+		}
+		if (isWorktree(element)) {
+			// main checkout (リポジトリ本体) は常に先頭固定のためドラッグ不可
+			return element.isMainCheckout ? null : `worktree:${worktreeStateKeyFor(element)}`;
+		}
+		return `repo:${element.id}`;
+	}
+
+	getDragLabel(elements: WorkspaceTreeElement[]): string | undefined {
+		const element = elements[0];
+		return element && !isCreating(element) ? element.name : undefined;
+	}
+
+	onDragOver(data: IDragAndDropData, targetElement: WorkspaceTreeElement | undefined, targetIndex: number | undefined, targetSector: ListViewTargetSector | undefined): boolean | ITreeDragOverReaction {
+		const dragged = this.singleDragged(data);
+		if (!dragged || !targetElement || !this.isSameKindReorderTarget(dragged, targetElement)) {
+			return false;
+		}
+		const placeAfter = targetSector === ListViewTargetSector.CENTER_BOTTOM || targetSector === ListViewTargetSector.BOTTOM;
+		const position = placeAfter ? ListDragOverEffectPosition.After : ListDragOverEffectPosition.Before;
+		return { accept: true, effect: { type: ListDragOverEffectType.Move, position }, feedback: [targetIndex ?? -1] };
+	}
+
+	drop(data: IDragAndDropData, targetElement: WorkspaceTreeElement | undefined, _targetIndex: number | undefined, targetSector: ListViewTargetSector | undefined): void {
+		const dragged = this.singleDragged(data);
+		if (!dragged || !targetElement || !this.isSameKindReorderTarget(dragged, targetElement)) {
+			return;
+		}
+		const placeAfter = targetSector === ListViewTargetSector.CENTER_BOTTOM || targetSector === ListViewTargetSector.BOTTOM;
+
+		if (isWorktree(dragged) && isWorktree(targetElement)) {
+			const siblings = this.worktreeService.getWorktrees(dragged.repositoryId);
+			const orderedUris = siblings.map(worktree => worktree.uri.toString());
+			const reordered = paradisReorderByDrop(orderedUris, dragged.uri.toString(), targetElement.uri.toString(), placeAfter);
+			if (reordered) {
+				this.worktreeService.setWorktreeOrder(dragged.repositoryId, reordered);
+			}
+			return;
+		}
+
+		if (!isWorktree(dragged) && !isCreating(targetElement) && !isWorktree(targetElement)) {
+			const ids = this.workspaceSwitchService.repositories.map(repository => repository.id);
+			const reordered = paradisReorderByDrop(ids, dragged.id, targetElement.id, placeAfter);
+			if (reordered) {
+				this.workspaceSwitchService.reorderRepositories(reordered);
+			}
+		}
+	}
+
+	dispose(): void { }
+
+	/** 単一要素のドラッグのみ扱う (複数選択の並び替えは非対応)。 */
+	private singleDragged(data: IDragAndDropData): IParadisWorkspaceRepository | IParadisWorktree | undefined {
+		if (!(data instanceof ElementsDragAndDropData)) {
+			return undefined;
+		}
+		const elements = (data as ElementsDragAndDropData<WorkspaceTreeElement>).elements;
+		if (elements.length !== 1) {
+			return undefined;
+		}
+		const dragged = elements[0];
+		if (isCreating(dragged) || (isWorktree(dragged) && dragged.isMainCheckout)) {
+			return undefined;
+		}
+		return dragged;
+	}
+
+	/**
+	 * dragged と target が同じ階層で並べ替え可能か。worktree は同一リポジトリ内、かつ
+	 * main checkout / 作成中行を除く実 worktree のみ。リポジトリはリポジトリ行同士のみ。
+	 */
+	private isSameKindReorderTarget(dragged: IParadisWorkspaceRepository | IParadisWorktree, target: WorkspaceTreeElement): boolean {
+		if (isWorktree(dragged)) {
+			return isWorktree(target) && !target.isMainCheckout && target.repositoryId === dragged.repositoryId;
+		}
+		return !isCreating(target) && !isWorktree(target);
+	}
+}
+
+/**
  * FleetView 風のリポジトリ一覧ビュー (機能1 Phase 4 / Phase B)。
  * リポジトリを親、git worktree を子とする2階層ツリー。クリックで即座に切り替える。
  */
@@ -474,6 +574,8 @@ export class ParadisWorkspacesView extends ViewPane {
 						: isWorktree(element) ? `worktree:${worktreeStateKeyFor(element)}` : `repo:${element.id}`
 				},
 				horizontalScrolling: false,
+				// ドラッグ&ドロップ並び替え (案B)。リポジトリ同士・同一リポジトリ内 worktree 同士のみ許可
+				dnd: new ParadisWorkspacesDragAndDrop(this.workspaceSwitchService, this.worktreeService),
 				// worktree 行本体のクリックは「切り替え」専用にし、リポジトリ見出しの開閉は
 				// 左端の chevron でのみ行う (見出し行本体のクリックは何もしない)
 				expandOnlyOnTwistieClick: true,
@@ -674,7 +776,24 @@ export class ParadisWorkspacesView extends ViewPane {
 		this._onDidChangeViewWelcomeState.fire();
 	}
 
+	/** リポジトリ一覧内での対象リポジトリの位置。存在しなければ -1。 */
+	private repositorySiblingIndex(repository: IParadisWorkspaceRepository): { repositories: readonly IParadisWorkspaceRepository[]; index: number } {
+		const repositories = this.workspaceSwitchService.repositories;
+		const index = repositories.findIndex(candidate => candidate.id === repository.id);
+		return { repositories, index };
+	}
+
+	/** 隣接するリポジトリと表示順を入れ替える (Move Up/Down)。 */
+	private moveRepository(repository: IParadisWorkspaceRepository, direction: -1 | 1): void {
+		const { repositories, index } = this.repositorySiblingIndex(repository);
+		const reordered = paradisSwapAdjacent(repositories.map(candidate => candidate.id), index, direction);
+		if (reordered) {
+			this.workspaceSwitchService.reorderRepositories(reordered);
+		}
+	}
+
 	private buildRepositoryContextMenuActions(repository: IParadisWorkspaceRepository): IAction[] {
+		const { repositories, index } = this.repositorySiblingIndex(repository);
 		return [
 			new Action(
 				'paradis.workspaceSwitch.createWorktreeContext',
@@ -703,6 +822,21 @@ export class ParadisWorkspacesView extends ViewPane {
 				undefined,
 				true,
 				() => this.promptColor(repository)
+			),
+			new Separator(),
+			new Action(
+				'paradis.workspaceSwitch.repository.moveUp',
+				localize('paradis.workspaceSwitch.moveUp', "Move Up"),
+				undefined,
+				index > 0,
+				() => this.moveRepository(repository, -1)
+			),
+			new Action(
+				'paradis.workspaceSwitch.repository.moveDown',
+				localize('paradis.workspaceSwitch.moveDown', "Move Down"),
+				undefined,
+				index >= 0 && index < repositories.length - 1,
+				() => this.moveRepository(repository, 1)
 			),
 			new Separator(),
 			new Action(
@@ -753,13 +887,10 @@ export class ParadisWorkspacesView extends ViewPane {
 	/** 隣接する worktree と表示順を入れ替える (Move Up/Down)。 */
 	private moveWorktree(worktree: IParadisWorktree, direction: -1 | 1): void {
 		const { siblings, index } = this.worktreeSiblingIndex(worktree);
-		const targetIndex = index + direction;
-		if (index < 0 || targetIndex < 0 || targetIndex >= siblings.length) {
-			return;
+		const reordered = paradisSwapAdjacent(siblings.map(candidate => candidate.uri.toString()), index, direction);
+		if (reordered) {
+			this.worktreeService.setWorktreeOrder(worktree.repositoryId, reordered);
 		}
-		const reordered = siblings.map(candidate => candidate.uri.toString());
-		[reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
-		this.worktreeService.setWorktreeOrder(worktree.repositoryId, reordered);
 	}
 
 	private buildWorktreeContextMenuActions(worktree: IParadisWorktree): IAction[] {
