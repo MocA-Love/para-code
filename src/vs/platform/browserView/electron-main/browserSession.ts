@@ -16,11 +16,14 @@ import { BrowserSessionHistory, IBrowserSessionHistory } from './browserSessionH
 import { BrowserSessionPermissions, IBrowserSessionPermissions } from './browserSessionPermissions.js';
 import { BrowserSessionRemote, IBrowserSessionRemote } from './browserSessionRemote.js';
 import { FileAccess, Schemas } from '../../../base/common/network.js';
+import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IInstantiationService } from '../../instantiation/common/instantiation.js';
 import { localize } from '../../../nls.js';
 // PARA-PATCH: load bundled devtools extensions (React DevTools) into browser view sessions
 import { paradisInstallBrowserExtensions } from '../../../paradis/contrib/browserExtensions/electron-main/paradisBrowserExtensions.js';
 import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisBrowserUserAgent.js';
+// PARA-PATCH: auto-save browser downloads to a fixed folder instead of showing a native save dialog
+import { paradisConfigureBrowserDownloads } from '../../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloads.js';
 
 /**
  * Holds an Electron session along with its storage scope and unique browser
@@ -67,7 +70,7 @@ export class BrowserSession {
 	 * they point to is garbage-collected.
 	 */
 	private static readonly _finalizer = new FinalizationRegistry<string>((id) => {
-		BrowserSession._byId.delete(id);
+		this._byId.delete(id);
 	});
 
 	/**
@@ -225,6 +228,8 @@ export class BrowserSession {
 		readonly electronSession: Electron.Session,
 		/** Resolved storage scope. */
 		readonly storageScope: BrowserViewStorageScope,
+		// PARA-PATCH: read paradis.browser.downloads.* to auto-save downloads without a save dialog
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		this._trust = new BrowserSessionTrust(this);
 		this._history = new BrowserSessionHistory(this);
@@ -275,6 +280,7 @@ export class BrowserSession {
 	private configure(): void {
 		paradisInstallBrowserExtensions(this.electronSession); // PARA-PATCH: bundled React DevTools
 		paradisApplyChromeLikeUserAgent(this.electronSession); // PARA-PATCH: strip Electron token from UA so Google sign-in works
+		paradisConfigureBrowserDownloads(this.electronSession, this.configurationService); // PARA-PATCH: auto-save downloads to a fixed folder, no save dialog
 		this._permissions.configure(this.electronSession);
 		this.electronSession.registerPreloadScript({
 			type: 'frame',
