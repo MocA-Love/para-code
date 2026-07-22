@@ -199,7 +199,12 @@ class ParadisPresetEditorDialog extends Disposable {
 		if (presets.length === 0) {
 			dom.append(list, $('.ppe-empty')).textContent = STR_EMPTY;
 		}
-		for (const preset of presets) {
+		// スコープ（および workspace は定義元ファイル）が同じプリセットのみ ↑↓ で入れ替えられる。
+		// presets は workspace 群（フォルダ・ファイルごと連続）→ user 群の順に並ぶため、
+		// 直前／直後のプリセットのグループキーが一致するかで移動可否を判定できる。
+		const groupKey = (preset: IParadisResolvedPreset): string =>
+			preset.source === 'workspace' ? `workspace:${preset.sourceUri?.toString() ?? ''}` : 'user';
+		presets.forEach((preset, index) => {
 			const row = dom.append(list, $('.ppe-row'));
 			const iconEl = dom.append(row, $('span.ppe-row-icon'));
 			iconEl.classList.add(...ThemeIcon.asClassNameArray(preset.icon ? ThemeIcon.fromId(preset.icon) : ThemeIcon.fromId('play')));
@@ -212,6 +217,19 @@ class ParadisPresetEditorDialog extends Disposable {
 			dom.append(main, $('.ppe-row-detail')).textContent = preset.description || paradisPresetCommandSignature(preset, ' && ');
 
 			const actions = dom.append(row, $('.ppe-row-actions'));
+			const canMoveUp = index > 0 && groupKey(presets[index - 1]) === groupKey(preset);
+			const canMoveDown = index < presets.length - 1 && groupKey(presets[index + 1]) === groupKey(preset);
+			const moveBtn = (label: string, disabled: boolean, direction: -1 | 1): void => {
+				const btn = dom.append(actions, $('button.ppe-btn.ppe-task-btn')) as HTMLButtonElement;
+				btn.type = 'button';
+				btn.textContent = label;
+				btn.disabled = disabled;
+				this._viewStore.add(dom.addDisposableListener(btn, 'click', () => { void this.presetService.movePreset(preset, direction); }));
+			};
+			// allow-any-unicode-next-line
+			moveBtn('↑', !canMoveUp, -1);
+			// allow-any-unicode-next-line
+			moveBtn('↓', !canMoveDown, 1);
 			const runBtn = dom.append(actions, $('button.ppe-btn')) as HTMLButtonElement;
 			runBtn.textContent = STR_RUN;
 			this._viewStore.add(dom.addDisposableListener(runBtn, 'click', async () => {
@@ -229,7 +247,7 @@ class ParadisPresetEditorDialog extends Disposable {
 					await this.presetService.deletePreset(preset);
 				}
 			}));
-		}
+		});
 
 		const footer = dom.append(this._dialog, $('.ppe-footer'));
 		const closeBtn = dom.append(footer, $('button.ppe-btn')) as HTMLButtonElement;

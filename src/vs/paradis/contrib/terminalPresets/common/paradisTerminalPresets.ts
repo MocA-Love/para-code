@@ -138,6 +138,12 @@ export interface IParadisPresetService {
 	/** プリセットを保存する（新規または name 一致の既存を置換）。 */
 	savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, replaceName?: string): Promise<void>;
 
+	/**
+	 * プリセットを同一スコープ内で1つ前(-1)／後ろ(+1)へ移動する（表示順＝配列順を入れ替える）。
+	 * スコープ（user / workspace）や workspace の定義元ファイルをまたぐ移動はしない（no-op）。
+	 */
+	movePreset(preset: IParadisResolvedPreset, direction: -1 | 1): Promise<void>;
+
 	/** プリセットを定義元から削除する。 */
 	deletePreset(preset: IParadisResolvedPreset): Promise<void>;
 }

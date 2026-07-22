@@ -268,7 +268,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 			renderDropdownAsChildElement: this.renderDropdownAsChildElement,
 			telemetrySource: 'editorPart',
 			resetMenu: editorActionsMenuId,
-			overflowBehavior: { maxItems: 9, exempted: EDITOR_CORE_NAVIGATION_COMMANDS },
+			overflowBehavior: { maxItems: 16, exempted: EDITOR_CORE_NAVIGATION_COMMANDS }, // PARA-PATCH: raise editor-title toolbar overflow cap (9 -> 16) so more pinned terminal preset buttons stay inline before collapsing into the "..." overflow
 			highlightToggledItems: true
 		}));
 

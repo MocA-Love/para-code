@@ -229,6 +229,61 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		}
 	}
 
+	async movePreset(preset: IParadisResolvedPreset, direction: -1 | 1): Promise<void> {
+		// 表示順（this.presets）を基準に、同一スコープの隣接プリセットと入れ替える。
+		// appliesTo でユーザープリセットの一部が非表示でも、実際に隣り合って見えている2件を
+		// 入れ替えるため、表示上の直感どおりに並び替えられる。
+		const ordered = this.presets;
+		const currentIndex = ordered.findIndex(candidate => candidate.key === preset.key);
+		if (currentIndex < 0) {
+			return;
+		}
+		const targetIndex = currentIndex + direction;
+		if (targetIndex < 0 || targetIndex >= ordered.length) {
+			return;
+		}
+		const neighbor = ordered[targetIndex];
+		// スコープをまたぐ移動は不可（workspace 群は常に user 群より前）
+		if (neighbor.source !== preset.source) {
+			return;
+		}
+		if (preset.source === 'user') {
+			await this._swapUserPresets(preset.name, neighbor.name);
+		} else {
+			// 同一 .paracode.json 内でのみ入れ替える
+			if (!preset.sourceUri || !neighbor.sourceUri || preset.sourceUri.toString() !== neighbor.sourceUri.toString()) {
+				return;
+			}
+			await this._swapWorkspacePresets(preset.sourceUri, preset.name, neighbor.name);
+		}
+	}
+
+	private async _swapUserPresets(nameA: string, nameB: string): Promise<void> {
+		const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
+		const list: unknown[] = Array.isArray(raw) ? [...raw] : [];
+		const indexA = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameA);
+		const indexB = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameB);
+		if (indexA < 0 || indexB < 0) {
+			return;
+		}
+		[list[indexA], list[indexB]] = [list[indexB], list[indexA]];
+		await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
+	}
+
+	private async _swapWorkspacePresets(presetFile: URI, nameA: string, nameB: string): Promise<void> {
+		const content = await this.fileService.readFile(presetFile);
+		const parsed = parseJsonc<{ presets?: unknown[];[key: string]: unknown }>(content.value.toString()) ?? {};
+		const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
+		const indexA = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameA);
+		const indexB = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameB);
+		if (indexA < 0 || indexB < 0) {
+			return;
+		}
+		[list[indexA], list[indexB]] = [list[indexB], list[indexA]];
+		parsed.presets = list;
+		await this.fileService.writeFile(presetFile, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
+	}
+
 	async deletePreset(preset: IParadisResolvedPreset): Promise<void> {
 		if (preset.source === 'user') {
 			const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
