@@ -5,7 +5,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisLoadCollapsedRepositoryIds, paradisParseCollapsedRepositoryIds, paradisRemoveStaleCollapsedRepositoryIds, paradisSerializeCollapsedRepositoryIds, paradisSetRepositoryCollapsed } from '../../common/paradisWorkspaceTreeState.js';
+import { paradisApplyDesiredOrder, paradisLoadCollapsedRepositoryIds, paradisParseCollapsedRepositoryIds, paradisRemoveStaleCollapsedRepositoryIds, paradisReorderByDrop, paradisSerializeCollapsedRepositoryIds, paradisSetRepositoryCollapsed, paradisSwapAdjacent } from '../../common/paradisWorkspaceTreeState.js';
 
 suite('ParadisWorkspaceTreeState', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -69,5 +69,30 @@ suite('ParadisWorkspaceTreeState', () => {
 		assert.strictEqual(paradisRemoveStaleCollapsedRepositoryIds(ids, new Set(['repo-a', 'repo-b'])), true);
 		assert.deepStrictEqual(ids, new Set(['repo-a']));
 		assert.strictEqual(paradisRemoveStaleCollapsedRepositoryIds(ids, new Set(['repo-a'])), false);
+	});
+
+	test('swaps adjacent items and refuses out-of-range moves', () => {
+		assert.deepStrictEqual(paradisSwapAdjacent(['a', 'b', 'c'], 1, -1), ['b', 'a', 'c']);
+		assert.deepStrictEqual(paradisSwapAdjacent(['a', 'b', 'c'], 1, 1), ['a', 'c', 'b']);
+		assert.strictEqual(paradisSwapAdjacent(['a', 'b', 'c'], 0, -1), null);
+		assert.strictEqual(paradisSwapAdjacent(['a', 'b', 'c'], 2, 1), null);
+		assert.strictEqual(paradisSwapAdjacent(['a', 'b', 'c'], -1, 1), null);
+	});
+
+	test('reorders by drop before/after with source-index correction', () => {
+		assert.deepStrictEqual(paradisReorderByDrop(['a', 'b', 'c', 'd'], 'a', 'c', false), ['b', 'a', 'c', 'd']);
+		assert.deepStrictEqual(paradisReorderByDrop(['a', 'b', 'c', 'd'], 'a', 'c', true), ['b', 'c', 'a', 'd']);
+		assert.deepStrictEqual(paradisReorderByDrop(['a', 'b', 'c', 'd'], 'd', 'b', false), ['a', 'd', 'b', 'c']);
+		// 同一要素・未知ID・移動しても順序が変わらないケースは null
+		assert.strictEqual(paradisReorderByDrop(['a', 'b', 'c'], 'a', 'a', false), null);
+		assert.strictEqual(paradisReorderByDrop(['a', 'b', 'c'], 'a', 'b', false), null);
+		assert.strictEqual(paradisReorderByDrop(['a', 'b', 'c'], 'x', 'b', false), null);
+	});
+
+	test('applies a desired order and keeps unlisted items in their relative order', () => {
+		assert.deepStrictEqual(paradisApplyDesiredOrder(['a', 'b', 'c'], id => id, ['c', 'a', 'b']), ['c', 'a', 'b']);
+		assert.deepStrictEqual(paradisApplyDesiredOrder(['a', 'b', 'c', 'd'], id => id, ['c', 'a']), ['c', 'a', 'b', 'd']);
+		assert.strictEqual(paradisApplyDesiredOrder(['a', 'b', 'c'], id => id, ['a', 'b', 'c']), null);
+		assert.strictEqual(paradisApplyDesiredOrder(['a', 'b', 'c'], id => id, ['x', 'y']), null);
 	});
 });

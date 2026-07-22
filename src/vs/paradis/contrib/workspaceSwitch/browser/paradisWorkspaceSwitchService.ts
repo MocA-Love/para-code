@@ -24,6 +24,7 @@ import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/b
 import { IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
+import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
 import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
 
 interface ISerializedRepository {
@@ -551,6 +552,16 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	async setRepositoryColor(id: string, color: string | undefined): Promise<void> {
 		this.updateRepository(id, repository => ({ ...repository, color }));
+	}
+
+	reorderRepositories(orderedIds: readonly string[]): void {
+		const reordered = paradisApplyDesiredOrder(this._repositories, repository => repository.id, orderedIds);
+		if (!reordered) {
+			return;
+		}
+		this._repositories.splice(0, this._repositories.length, ...reordered);
+		this.saveRepositories();
+		this._onDidChangeRepositories.fire();
 	}
 
 	private updateRepository(id: string, update: (repository: IParadisWorkspaceRepository) => IParadisWorkspaceRepository): void {

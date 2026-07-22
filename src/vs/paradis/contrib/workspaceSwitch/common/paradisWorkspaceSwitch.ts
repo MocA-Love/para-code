@@ -413,6 +413,13 @@ export interface IParadisWorkspaceSwitchService {
 	setRepositoryColor(id: string, color: string | undefined): Promise<void>;
 
 	/**
+	 * リポジトリの表示順を指定する (Workspaces ビューの「上へ移動/下へ移動」・ドラッグ&ドロップ用。
+	 * worktree 側の setWorktreeOrder と同じ流儀で、並べ替え後の id 配列を丸ごと受け取る)。
+	 * orderedIds に無いリポジトリは既存の相対順で末尾に残り、未知IDは無視される。
+	 */
+	reorderRepositories(orderedIds: readonly string[]): void;
+
+	/**
 	 * ワークスペースの folders を対象リポジトリ1つに入れ替える。
 	 * マルチルート (WORKSPACE) 状態でのみ動作する (単一フォルダ状態から呼ぶと
 	 * upstream が新規 untitled workspace を作ってしまい workspace id が変わるため拒否する)。
