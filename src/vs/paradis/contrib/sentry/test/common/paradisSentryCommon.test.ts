@@ -75,7 +75,9 @@ suite('ParadisSentryCommon', () => {
 		assert.strictEqual(event.request, undefined);
 		assert.deepStrictEqual(event.extra, { safe_count: 4 });
 		assert.strictEqual(event.tags?.['para.scope'], 'owned');
-		assert.strictEqual(event.tags?.unsafe, '[Filtered]');
+		// The sanitizer intentionally keeps the credential label and filters only the
+		// secret itself (same shape as `OPENAI_API_KEY=[Filtered]` asserted above).
+		assert.strictEqual(event.tags?.unsafe, 'Bearer [Filtered]');
 		assert.strictEqual(event.exception?.values?.[0].stacktrace?.frames?.[0].abs_path, 'app:///out/main.js');
 		assert.ok(!String(event.message).includes('alice'));
 		assert.ok(!String(event.logentry?.message).includes('alice'));

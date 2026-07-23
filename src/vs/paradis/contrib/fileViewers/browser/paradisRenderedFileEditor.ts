@@ -21,7 +21,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { onUnexpectedError } from '../../../../base/common/errors.js';
+import { isCancellationError, onUnexpectedError } from '../../../../base/common/errors.js';
 import { DisposableStore, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -41,6 +41,7 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
@@ -244,6 +245,19 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	}
 
 	private async renderResource(resource: URI, token: CancellationToken): Promise<void> {
+		try {
+			await this._doRenderResource(resource, token);
+		} catch (err) {
+			// レンダリング経路の失敗(読み込み・変換・setHtml)も白紙表示の原因候補なので
+			// Sentry へ送る(キャンセルは正常系)。呼出元のエラー処理はそのまま生かす。
+			if (!isCancellationError(err)) {
+				reportParadisDiagnosticError('owned', 'file-viewers', 'render', err, { safe_viewer: this.getId() });
+			}
+			throw err;
+		}
+	}
+
+	private async _doRenderResource(resource: URI, token: CancellationToken): Promise<void> {
 		const generation = ++this._renderGeneration;
 		let text: string;
 		// Raw で開いたモデルがあれば、その現在値(未保存の編集を含む)から Rendered を作る。
@@ -299,6 +313,13 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		});
 		this._webview = webview;
 		this._register(webview);
+		// 「Rendered だけ間欠的に白紙になる」フィールド報告の調査用: webview 基盤の致命
+		// エラー(service worker 登録失敗等)を Sentry へ送る。リソースのパスは含めない
+		// (エディタ種別 ID だけで Markdown/HTML ビューアのどちらかは判別できる)。
+		this._register(webview.onFatalError(e => {
+			// `safe_` 接頭辞はサニタイザの extra allowlist を通すために必須（素のキーは破棄される）。
+			reportParadisDiagnosticError('owned', 'file-viewers', 'webview-fatal-error', new Error(e.message), { safe_viewer: this.getId() });
+		}));
 		this.onWebviewCreated(webview);
 		return webview;
 	}
