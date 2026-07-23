@@ -35,6 +35,19 @@ export function reportParadisDiagnosticError(
 	reporter?.(scope, feature, operation, error, safeExtra);
 }
 
+/**
+ * Reports webview infrastructure failures (e.g. the "Could not register service
+ * worker" fatal error) surfaced by the upstream webview element. Field reports
+ * of intermittently blank webviews (image preview, rendered Markdown/HTML
+ * viewers) cannot be diagnosed otherwise — upstream-scoped errors are dropped
+ * by the Sentry scope filter, so this explicit `patched`-scope report is the
+ * only way they reach Sentry. The message is an upstream template string plus
+ * an error name; it carries no paths or user content.
+ */
+export function reportParadisWebviewFatalError(message: string, safeExtra?: Record<string, unknown>): void {
+	reportParadisDiagnosticError('patched', 'webview', 'fatal-error', new Error(message), safeExtra);
+}
+
 export function reportParadisShellEnvDiagnosticError(
 	operation: 'resolve' | 'slow-resolve',
 	error: unknown,

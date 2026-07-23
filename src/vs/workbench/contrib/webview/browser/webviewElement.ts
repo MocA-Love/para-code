@@ -38,6 +38,8 @@ import { WebviewThemeDataProvider } from './themeing.js';
 import { areWebviewContentOptionsEqual, IWebviewElement, WebviewContentOptions, WebviewExtensionDescription, WebviewInitInfo, WebviewMessageReceivedEvent, WebviewOptions } from './webview.js';
 import { WebviewFindDelegate, WebviewFindWidget } from './webviewFindWidget.js';
 import { FromWebviewMessage, KeyEvent, ToWebviewMessage, WebViewDragEvent } from './webviewMessages.js';
+// PARA-PATCH: Sentry reporting for webview fatal errors (see fatal-error handler below)
+import { reportParadisWebviewFatalError } from '../../../../paradis/contrib/sentry/common/paradisSentryDiagnostics.js';
 
 interface WebviewContent {
 	readonly html: string;
@@ -246,6 +248,10 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 
 		this._register(this.on('fatal-error', (e) => {
 			notificationService.error(localize('fatalErrorMessage', "Error loading webview: {0}", e.message));
+			// PARA-PATCH: report to Para Code Sentry — needed to diagnose intermittent
+			// blank webviews in the field (service worker registration failures etc.);
+			// upstream-scoped errors are otherwise dropped by the Sentry scope filter.
+			reportParadisWebviewFatalError(e.message);
 			this._onFatalError.fire({ message: e.message });
 		}));
 

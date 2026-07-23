@@ -1870,6 +1870,9 @@ export default defineConfig(
 						'vs/paradis/contrib/workspaceSwitch/~',
 						// PARA-PATCH: xtermTerminal.ts がウィンドウ透過時のターミナル背景透明化ヘルパーを呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/windowTransparency/~',
+						// PARA-PATCH: webviewElement.ts が webview 致命エラー(service worker 登録失敗等)を
+						// Para Code Sentry へ報告 (reportParadisWebviewFatalError) するための唯一の逆方向 import
+						'vs/paradis/contrib/sentry/~',
 						'vs/workbench/contrib/terminal/terminalContribChatExports*',
 						'vs/workbench/contrib/terminal/terminalContribExports*',
 						'vscode-notebook-renderer', // Type only import
