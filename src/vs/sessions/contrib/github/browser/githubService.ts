@@ -8,6 +8,8 @@ import { createDecorator, IInstantiationService } from '../../../../platform/ins
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IGitHubChangedFile } from '../common/types.js';
 import { GitHubApiClient } from './githubApiClient.js';
+// PARA-PATCH: rate-limit gate for all sessions GitHub traffic (see sessionGithubRequestGate.ts)
+import { SessionGithubGatedApiClient } from './sessionGithubRequestGate.js';
 import { GitHubRepositoryModel, GitHubRepositoryModelReferenceCollection } from './models/githubRepositoryModel.js';
 import { GitHubPullRequestModel, GitHubPullRequestModelReferenceCollection } from './models/githubPullRequestModel.js';
 import { GitHubPullRequestReviewThreadsModel, GitHubPullRequestReviewThreadsModelReferenceCollection } from './models/githubPullRequestReviewThreadsModel.js';
@@ -95,6 +97,15 @@ export class GitHubService extends Disposable implements IGitHubService {
 	 */
 	private readonly _findPRByBranchCache = new Map<string, Promise<number | undefined>>();
 
+	// PARA-PATCH: negative/failure TTL cache for PR-number lookups. Dropping the
+	// cache entry immediately (upstream behavior) lets reactive callers re-issue
+	// the lookup right away — with hundreds of sessions that turns into a retry
+	// storm against GitHub. Instead, "no PR" and failed lookups stay cached until
+	// the deadline recorded here, after which the next call retries.
+	private readonly _findPRByBranchCacheExpiry = new Map<string, number>();
+	private static readonly FIND_PR_NO_MATCH_TTL_MS = 600_000; // 10 min
+	private static readonly FIND_PR_FAILURE_TTL_MS = 60_000; // 1 min
+
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
 		@ISessionsService sessionsService: ISessionsService,
@@ -102,7 +113,10 @@ export class GitHubService extends Disposable implements IGitHubService {
 	) {
 		super();
 
-		const apiClient = this._register(instantiationService.createInstance(GitHubApiClient));
+		// PARA-PATCH: route ALL sessions GitHub traffic (REST + GraphQL) through the
+		// budget/backoff gate so hundreds of worktree sessions cannot exceed GitHub's
+		// rate limits. Drop-in subclass; every fetcher/model below inherits the gating.
+		const apiClient: GitHubApiClient = this._register(instantiationService.createInstance(SessionGithubGatedApiClient));
 		this._apiClient = apiClient;
 
 		this._changesFetcher = new GitHubChangesFetcher(apiClient);
@@ -204,6 +218,14 @@ export class GitHubService extends Disposable implements IGitHubService {
 	findPullRequestNumberByHeadBranch(owner: string, repo: string, branch: string): Promise<number | undefined> {
 		const key = `${owner}/${repo}#${branch}`;
 		let promise = this._findPRByBranchCache.get(key);
+		// PARA-PATCH: expire cached negative/failed lookups only after their TTL
+		const expiry = this._findPRByBranchCacheExpiry.get(key);
+		if (promise && expiry !== undefined && Date.now() >= expiry) {
+			this._logService.trace(`${TRACE_PREFIX} [GitHubService] findPullRequestNumberByHeadBranch negative cache for ${key} expired; allowing a retry`);
+			this._findPRByBranchCache.delete(key);
+			this._findPRByBranchCacheExpiry.delete(key);
+			promise = undefined;
+		}
 		if (!promise) {
 			this._logService.trace(`${TRACE_PREFIX} [GitHubService] findPullRequestNumberByHeadBranch cache MISS for ${key}; starting lookup`);
 			promise = this._fetchPullRequestNumberByHeadBranch(owner, repo, branch);
@@ -215,15 +237,17 @@ export class GitHubService extends Disposable implements IGitHubService {
 			promise.then(
 				value => {
 					if (typeof value !== 'number') {
-						this._logService.trace(`${TRACE_PREFIX} [GitHubService] findPullRequestNumberByHeadBranch for ${key} resolved with NO pr number; dropping cache entry so a later call retries`);
-						this._findPRByBranchCache.delete(key);
+						// PARA-PATCH: cache the negative result for a TTL instead of dropping it
+						this._logService.trace(`${TRACE_PREFIX} [GitHubService] findPullRequestNumberByHeadBranch for ${key} resolved with NO pr number; caching the negative result for ${GitHubService.FIND_PR_NO_MATCH_TTL_MS / 1000}s`);
+						this._findPRByBranchCacheExpiry.set(key, Date.now() + GitHubService.FIND_PR_NO_MATCH_TTL_MS);
 					} else {
 						this._logService.trace(`${TRACE_PREFIX} [GitHubService] findPullRequestNumberByHeadBranch for ${key} resolved PR #${value}; caching indefinitely`);
 					}
 				},
 				err => {
-					this._logService.trace(`${TRACE_PREFIX} [GitHubService] findPullRequestNumberByHeadBranch for ${key} FAILED; dropping cache entry.`, err);
-					this._findPRByBranchCache.delete(key);
+					// PARA-PATCH: cache the failure briefly instead of dropping it (retry-storm guard)
+					this._logService.trace(`${TRACE_PREFIX} [GitHubService] findPullRequestNumberByHeadBranch for ${key} FAILED; caching the failure for ${GitHubService.FIND_PR_FAILURE_TTL_MS / 1000}s.`, err);
+					this._findPRByBranchCacheExpiry.set(key, Date.now() + GitHubService.FIND_PR_FAILURE_TTL_MS);
 				},
 			);
 		} else {
