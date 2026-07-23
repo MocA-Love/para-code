@@ -28,6 +28,7 @@
     }
   },
   "enabledApiProposals": [
+    "agentsWindowConfiguration",
     "canonicalUriProvider",
     "chatSessionsProvider",
     "contribEditSessions",
@@ -193,7 +194,10 @@
             "type": "boolean",
             "scope": "resource",
             "default": true,
-            "description": "%config.branchProtection%"
+            "description": "%config.branchProtection%",
+            "agentsWindow": {
+              "default": false
+            }
           },
           "github.gitAuthentication": {
             "type": "boolean",
