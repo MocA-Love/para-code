@@ -15,6 +15,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	MobileIdentity,
 	SecureChannel,
@@ -1266,6 +1267,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			socket = new WebSocket(url, [`para-auth.${this.state.device.pcToken}`]);
 		} catch (err) {
 			this.logService.error('[paradisMobileRelay] failed to open socket', err);
+			reportParadisDiagnosticError('owned', 'desktop-relay', 'open-socket', err, {
+				phase: 'connecting',
+				reconnect_count: this.reconnectAttempt,
+				transport: 'websocket',
+			});
 			this.scheduleReconnect();
 			return;
 		}
@@ -1277,7 +1283,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.setConnectionState('online');
 		};
 		socket.onmessage = event => { void this.onSocketMessage(event.data); };
-		socket.onerror = () => { /* onclose が続く */ };
+		socket.onerror = event => {
+			reportParadisDiagnosticError('owned', 'desktop-relay', 'socket-error', event, {
+				phase: this.connectionState,
+				reconnect_count: this.reconnectAttempt,
+				transport: 'websocket',
+			});
+		};
 		socket.onclose = () => {
 			this.socket = undefined;
 			// PC自身のリレーWSが切れた場合も、presence offline経路と同じ3点セットで
@@ -1289,6 +1301,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.sessions.clear();
 			this.webrtcRendererLeases.clear();
 			if (this.enabled) {
+				reportParadisDiagnosticError('owned', 'desktop-relay', 'unexpected-close', new Error('Desktop relay connection closed'), {
+					phase: this.connectionState,
+					reconnect_count: this.reconnectAttempt,
+					transport: 'websocket',
+				});
 				this.setConnectionState('disconnected');
 				this.scheduleReconnect();
 			} else {

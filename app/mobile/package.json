@@ -5,8 +5,8 @@
 	"main": "index.ts",
 	"scripts": {
 		"start": "expo start",
-		"ios": "expo run:ios",
-		"android": "expo run:android",
+		"ios": "node scripts/run-expo-with-sentry.ts run:ios",
+		"android": "node scripts/run-expo-with-sentry.ts run:android",
 		"mock:agent-ui": "node --experimental-strip-types mock/serve.mts",
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit"
@@ -14,6 +14,7 @@
 	"dependencies": {
 		"@expo/vector-icons": "^15.1.1",
 		"@para/protocol": "workspace:*",
+		"@sentry/react-native": "8.19.0",
 		"expo": "~57.0.4",
 		"expo-blur": "~57.0.0",
 		"expo-camera": "~57.0.1",

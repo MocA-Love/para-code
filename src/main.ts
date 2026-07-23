@@ -19,6 +19,8 @@ import { resolveNLSConfiguration } from './vs/base/node/nls.js';
 import { getUNCHost, addUNCHostToAllowlist } from './vs/base/node/unc.js';
 import { INLSConfiguration } from './vs/nls.js';
 import { NativeParsedArgs } from './vs/platform/environment/common/argv.js';
+// PARA-PATCH: Initialize Para Code Sentry before Electron's crash reporter is configured.
+import { initializeParadisSentryMain } from './vs/paradis/contrib/sentry/electron-main/paradisSentryMain.js';
 
 perf.mark('code/didStartMain');
 
@@ -71,6 +73,7 @@ Menu.setApplicationMenu(null);
 
 // Configure crash reporter
 perf.mark('code/willStartCrashReporter');
+const paradisSentryEnabled = initializeParadisSentryMain(product.commit);
 // If a crash-reporter-directory is specified we store the crash reports
 // in the specified directory and don't upload them to the crash server.
 //
@@ -79,7 +82,7 @@ perf.mark('code/willStartCrashReporter');
 // * --disable-crash-reporter command line parameter is not set
 //
 // Disable crash reporting in all other cases.
-if (args['crash-reporter-directory'] || (argvConfig['enable-crash-reporter'] && !args['disable-crash-reporter'])) {
+if (!paradisSentryEnabled && (args['crash-reporter-directory'] || (argvConfig['enable-crash-reporter'] && !args['disable-crash-reporter']))) {
 	configureCrashReporter();
 }
 perf.mark('code/didStartCrashReporter');

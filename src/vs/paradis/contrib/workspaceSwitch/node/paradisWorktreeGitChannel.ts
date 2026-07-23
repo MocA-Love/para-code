@@ -24,6 +24,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { localize } from '../../../../nls.js';
+import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, paradisParseGhPrStatus, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
@@ -60,6 +61,8 @@ export class ParadisWorktreeGitService {
 			logService,
 			'ParadisWorktreeGit',
 			shellEnvResolver ?? createParadisShellEnvResolver(logService, configurationService, args),
+			Date.now,
+			reportParadisShellEnvDiagnosticError,
 		);
 	}
 

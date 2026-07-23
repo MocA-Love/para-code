@@ -182,7 +182,9 @@ task.task(bundleVSCodeTask);
 
 const sourceMappingURLBase = `https://main.vscode-cdn.net/sourcemaps/${commit}`;
 const isCI = !!process.env['CI'] || !!process.env['BUILD_ARTIFACTSTAGINGDIRECTORY'] || !!process.env['GITHUB_WORKSPACE'];
-const useCdnSourceMapsForPackagingTasks = isCI;
+// PARA-PATCH: Para Code publishes desktop source maps to Sentry. Keep local sibling map references
+// so sentry-cli can inject the same Debug ID into each minified bundle and its map before packaging.
+const useCdnSourceMapsForPackagingTasks = false;
 const stripSourceMapsInPackagingTasks = isCI;
 const minifyVSCodeTask = task.define('minify-vscode', task.series(
 	bundleVSCodeTask,
@@ -709,6 +711,19 @@ function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinati
 
 const buildRoot = path.dirname(root);
 
+// PARA-PATCH: Inject Debug IDs before packageTask computes integrity checksums and copies JavaScript
+// into the platform app. Source maps remain outside the shipped app and are uploaded by para-release.
+const injectParadisSentrySourceMapsTask = task.define('inject-paradis-sentry-source-maps', () => new Promise<void>((resolve, reject) => {
+	const sentryCli = path.join(root, 'node_modules', '@sentry', 'cli', 'bin', 'sentry-cli');
+	const child = cp.spawn(process.execPath, [sentryCli, 'sourcemaps', 'inject', 'out-vscode-min'], {
+		cwd: root,
+		stdio: 'inherit',
+	});
+	child.on('error', reject);
+	child.on('exit', code => code === 0 ? resolve() : reject(new Error(`sentry-cli sourcemaps inject exited with code ${code}`)));
+}));
+task.task(injectParadisSentrySourceMapsTask);
+
 const BUILD_TARGETS = [
 	{ platform: 'win32', arch: 'x64' },
 	{ platform: 'win32', arch: 'arm64' },
@@ -731,6 +746,7 @@ BUILD_TARGETS.forEach(buildTarget => {
 		const packageTasks: task.Task[] = [
 			compileNativeExtensionsBuildTask,
 			util.rimraf(path.join(buildRoot, destinationFolderName)),
+			...(minified ? [injectParadisSentrySourceMapsTask] : []),
 			packageTask(platform, arch, sourceFolderName, destinationFolderName, opts),
 			prepareCopilotRipgrepShimTask(platform, arch, destinationFolderName)
 		];

@@ -11,6 +11,7 @@
 // INativeHostService 等、electron-main プロセスの実装を必要とする contribution はここに追加する。
 // web/desktop 両対応の contribution は paradis.common.contribution.ts 側に追加すること。
 
+import './contrib/sentry/electron-browser/paradisSentryRenderer.js';
 import './contrib/windowTransparency/electron-browser/paradisWindowTransparency.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentBrowser.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisAgentPreview.contribution.js';
