@@ -15,3 +15,7 @@
 @vscode/windows-registry/*.txt
 @vscode/windows-registry/package.json
 !@vscode/windows-registry/dist/index.d.ts
+
+# PARA-PATCH: @sentry/node-native-stacktrace ships prebuilds for every platform; keep only darwin ones.
+@sentry/node-native-stacktrace/lib/*.node
+!@sentry/node-native-stacktrace/lib/stack-trace-darwin-*.node

@@ -15,3 +15,9 @@
 @vscode/windows-registry/*.txt
 @vscode/windows-registry/package.json
 !@vscode/windows-registry/dist/index.d.ts
+
+# PARA-PATCH: @sentry/node-native-stacktrace ships prebuilds for every platform.
+# Keep only the linux x64 glibc ones — foreign-arch ELFs break dpkg-shlibdeps in
+# the .deb build (our linux release builds are x64-only today).
+@sentry/node-native-stacktrace/lib/*.node
+!@sentry/node-native-stacktrace/lib/stack-trace-linux-x64-glibc-*.node
