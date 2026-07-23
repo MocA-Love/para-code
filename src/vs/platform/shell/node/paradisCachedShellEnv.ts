@@ -17,9 +17,15 @@ import { ILogService } from '../../log/common/log.js';
 import { getResolvedShellEnv } from './shellEnv.js';
 
 export type ParadisRawShellEnvResolver = () => Promise<NodeJS.ProcessEnv>;
+export type ParadisShellEnvDiagnosticReporter = (
+	operation: 'resolve' | 'slow-resolve',
+	error: unknown,
+	durationMs: number,
+) => void;
 
 /** 失敗後、同じ操作内で高コストなシェル解決を繰り返さないための待機時間。 */
 const SHELL_ENV_FAILURE_RETRY_DELAY_MS = 5_000;
+const SHELL_ENV_SLOW_RESOLVE_MS = 3_000;
 
 /**
  * ログインシェル由来の環境変数(PATH等)を process.env にマージした結果をキャッシュして返す。
@@ -36,6 +42,7 @@ export class ParadisCachedShellEnv {
 		private readonly logPrefix: string,
 		private readonly resolveRawEnv: ParadisRawShellEnvResolver,
 		private readonly now: () => number = Date.now,
+		private readonly reportDiagnostic?: ParadisShellEnvDiagnosticReporter,
 	) { }
 
 	getEnv(): Promise<NodeJS.ProcessEnv> {
@@ -44,12 +51,18 @@ export class ParadisCachedShellEnv {
 			this.retryAfter = 0;
 		}
 		if (!this.mergedEnvPromise) {
+			const startedAt = this.now();
 			const promise = this.resolveRawEnv()
 				.then(shellEnv => {
+					const duration = this.now() - startedAt;
+					if (duration >= SHELL_ENV_SLOW_RESOLVE_MS) {
+						this.reportDiagnostic?.('slow-resolve', new Error('Shell environment resolution was slow'), duration);
+					}
 					this.retryAfter = 0;
 					return { ...process.env, ...shellEnv };
 				})
 				.catch(error => {
+					this.reportDiagnostic?.('resolve', error, this.now() - startedAt);
 					this.logService.warn(`[${this.logPrefix}] failed to resolve shell environment, falling back to inherited PATH: ${error instanceof Error ? error.message : error}`);
 					this.retryAfter = this.now() + SHELL_ENV_FAILURE_RETRY_DELAY_MS;
 					return { ...process.env };

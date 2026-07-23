@@ -5,6 +5,8 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 
 import { hostname, release } from 'os';
+// PARA-PATCH: Capture Para Code shared-process failures through Sentry's Electron utility transport.
+import '../../../paradis/contrib/sentry/electron-utility/paradisSentryUtility.js';
 import { MessagePortMain, MessageEvent } from '../../../base/parts/sandbox/node/electronTypes.js';
 import { toErrorMessage } from '../../../base/common/errorMessage.js';
 import { onUnexpectedError, setUnexpectedErrorHandler } from '../../../base/common/errors.js';

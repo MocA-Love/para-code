@@ -5,6 +5,7 @@ import { StyleSheet } from 'react-native';
 import { DarkTheme, Stack, ThemeProvider, useRouter } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Notifications from 'expo-notifications';
+import * as Sentry from '@sentry/react-native';
 import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
@@ -44,7 +45,7 @@ const appTheme = {
  * OS通知（ローカル/リモート双方）のタップをエージェント画面へのディープリンクに変換する。
  * AuthGateでロック中に届いた場合は解除まで遷移を保留する。
  */
-export default function RootLayout() {
+function RootLayout() {
 	const router = useRouter();
 	const init = useAppStore(s => s.init);
 	const setSelectedWs = useAppStore(s => s.setSelectedWs);
@@ -60,7 +61,7 @@ export default function RootLayout() {
 	const pendingRef = useRef<NotificationDeepLinkData | undefined>(undefined);
 
 	useEffect(() => {
-		void init();
+		void init().finally(() => Sentry.appLoaded());
 		startLiveActivitySync();
 	}, [init]);
 
@@ -145,3 +146,5 @@ export default function RootLayout() {
 const styles = StyleSheet.create({
 	root: { flex: 1 },
 });
+
+export default Sentry.wrap(RootLayout);

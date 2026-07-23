@@ -39,6 +39,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
+import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsCodexRemovalTarget,
@@ -186,6 +187,8 @@ export class ParadisLimitsMonitorService {
 			logService,
 			'ParadisLimitsMonitor',
 			createParadisShellEnvResolver(logService, configurationService, args),
+			Date.now,
+			reportParadisShellEnvDiagnosticError,
 		);
 	}
 
@@ -499,6 +502,10 @@ export class ParadisLimitsMonitorService {
 			return { account: { ...base, email: viaRpc.email ?? email, ...viaRpc.windows, planType: viaRpc.planType, status: 'ok' }, accountId };
 		} catch (error) {
 			this.rpcFailureAt.set(homePath, Date.now());
+			reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
+				phase: 'refresh',
+				transport: 'stdio',
+			});
 			this.logService.warn(`[ParadisLimitsMonitor] codex app-server fallback failed for ${base.homeLabel}: ${(error as Error).message}`);
 			return { account: { ...base, email, status: 'token_expired', statusDetail: (error as Error).message }, accountId };
 		}

@@ -22,6 +22,7 @@
 #   PARA_UPDATE_ACCESS_CLIENT_ID/_SECRET    — stamped into product.json by
 #     build/gulpfile.vscode.ts so the client sends Cloudflare Access service
 #     token headers (see abstractUpdateService.ts getUpdateAccessHeaders)
+#   SENTRY_AUTH_TOKEN                       — source map upload only (never shipped)
 #
 # Windows code signing is intentionally deferred (unsigned builds ship first,
 # see NOTES.md) — Azure Trusted Signing wiring is a follow-up phase.
@@ -105,6 +106,11 @@ jobs:
 
       - name: Package (vscode-darwin-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-darwin-${{ matrix.arch }}-min"
+
+      - name: Upload desktop source maps to Sentry
+        run: node build/sentry/upload-desktop-sourcemaps.ts darwin "${{ matrix.arch }}"
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
       - name: Packaging failure diagnostics
         if: failure()
@@ -214,6 +220,11 @@ jobs:
       - name: Package (vscode-win32-${{ matrix.arch }}-min)
         run: npm run gulp "vscode-win32-${{ matrix.arch }}-min"
 
+      - name: Upload desktop source maps to Sentry
+        run: node build/sentry/upload-desktop-sourcemaps.ts win32 "${{ matrix.arch }}"
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
       - name: Build Inno Setup updater helper + user installer
         run: |
           npm run gulp "vscode-win32-${{ matrix.arch }}-inno-updater"
@@ -296,6 +307,11 @@ jobs:
 
       - name: Package (vscode-linux-x64-min)
         run: npm run gulp "vscode-linux-x64-min"
+
+      - name: Upload desktop source maps to Sentry
+        run: node build/sentry/upload-desktop-sourcemaps.ts linux x64
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
       - name: Place tunnel CLI into client build
         run: |

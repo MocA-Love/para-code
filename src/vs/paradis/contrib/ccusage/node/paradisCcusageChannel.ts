@@ -22,6 +22,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
+import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
@@ -92,6 +93,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			logService,
 			'ParadisCcusage',
 			createParadisShellEnvResolver(logService, configurationService, args),
+			Date.now,
+			reportParadisShellEnvDiagnosticError,
 		);
 	}
 

@@ -22,6 +22,7 @@ import {
 	decodeRelayControl,
 	encodeRelayControl,
 } from '@para/protocol';
+import { reportMobileDiagnosticError } from './mobileDiagnostics.js';
 
 /** 最小限の WebSocket インターフェース（RNのWebSocketと互換）。 */
 export interface SocketLike {
@@ -255,7 +256,19 @@ export class RelayClient {
 			return;
 		}
 		this.setState('connecting');
-		const socket = this.socketFactory(this.wsUrl(), this.wsProtocols());
+		let socket: SocketLike;
+		try {
+			socket = this.socketFactory(this.wsUrl(), this.wsProtocols());
+		} catch (error) {
+			reportMobileDiagnosticError('relay', 'open-socket', error, {
+				phase: 'connecting',
+				reconnect_count: this.reconnectAttempt,
+				transport: 'websocket',
+			});
+			this.setState('offline');
+			this.scheduleReconnect();
+			return;
+		}
 		const generation = ++this.socketGeneration;
 		const isCurrent = () => this.socket === socket && this.socketGeneration === generation;
 		socket.binaryType = 'arraybuffer';
@@ -266,6 +279,11 @@ export class RelayClient {
 		this.connectTimeoutHandle = this.timers.setTimeout(() => {
 			this.connectTimeoutHandle = null;
 			if (isCurrent() && this.state !== 'online') {
+				reportMobileDiagnosticError('relay', 'connect-timeout', new Error('Relay connection timed out'), {
+					phase: this.state,
+					reconnect_count: this.reconnectAttempt,
+					transport: 'websocket',
+				});
 				try {
 					socket.close(4001, 'connect timeout');
 				} catch { /* ignore */ }
@@ -322,6 +340,11 @@ export class RelayClient {
 
 		socket.onerror = error => {
 			if (isCurrent()) {
+				reportMobileDiagnosticError('relay', 'socket-error', error, {
+					phase: this.state,
+					reconnect_count: this.reconnectAttempt,
+					transport: 'websocket',
+				});
 				this.callbacks.onError?.(error);
 			}
 		};
@@ -354,11 +377,19 @@ export class RelayClient {
 				this.callbacks.onError?.(new Error(`relay: ${msg.message}`));
 			}
 		} catch (error) {
+			reportMobileDiagnosticError('relay', 'decode-control', error, {
+				phase: this.state,
+				transport: 'websocket',
+			});
 			this.callbacks.onError?.(error);
 		}
 	}
 
 	private onFatal(error: unknown): void {
+		reportMobileDiagnosticError('relay', 'secure-channel', error, {
+			phase: this.state,
+			transport: 'websocket',
+		});
 		this.callbacks.onError?.(error);
 		this.socket?.close(4000, 'protocol error');
 	}

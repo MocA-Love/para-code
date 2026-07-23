@@ -11,6 +11,7 @@ import { createConnection, type Socket } from 'net';
 import { WebSocket, type RawData } from 'ws';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const RETRY_INTERVAL_MS = 10_000;
 const LOADED_POLL_INTERVAL_MS = 2_000;
@@ -379,6 +380,8 @@ class ParadisCodexServerConnection extends Disposable {
 	private loadedPollTimer: ReturnType<typeof setTimeout> | undefined;
 	private initialized = false;
 	private connectionGeneration = 0;
+	private connectStartedAt: number | undefined;
+	private slowConnectReported = false;
 	private nextRequestId = 1;
 	private loadedRefreshInFlight = false;
 	private readonly pendingRequests = new Map<number, IPendingRequest>();
@@ -601,17 +604,20 @@ class ParadisCodexServerConnection extends Disposable {
 		if (!this.enabled || this.socket !== undefined) {
 			return;
 		}
-		if (!(await this.pathExists(this.socketPath)) || !this.enabled || this.socket !== undefined) {
-			this.scheduleRetry();
+		if (this.wantedThreads.size === 0) {
 			return;
 		}
-		if (this.wantedThreads.size === 0) {
+		this.connectStartedAt ??= Date.now();
+		if (!(await this.pathExists(this.socketPath)) || !this.enabled || this.socket !== undefined) {
+			this.reportSlowConnectIfNeeded('waiting-for-endpoint');
+			this.scheduleRetry();
 			return;
 		}
 		let endpointPort: number | undefined;
 		if (this.endpointTarget !== undefined) {
 			endpointPort = await readCodexEndpointPort(this.socketPath);
 			if (endpointPort === undefined || !this.enabled || this.socket !== undefined) {
+				this.reportSlowConnectIfNeeded('waiting-for-endpoint');
 				this.scheduleRetry();
 				return;
 			}
@@ -635,15 +641,31 @@ class ParadisCodexServerConnection extends Disposable {
 			this.socket = socket;
 			socket.on('open', () => void this.initialize(generation));
 			socket.on('message', data => this.handleMessage(data));
-			socket.on('error', error => this.logService.trace('[paradisCodexLive] daemon socket error', String(error)));
+			socket.on('error', error => {
+				this.logService.trace('[paradisCodexLive] daemon socket error', String(error));
+				reportParadisDiagnosticError('owned', 'codex-app-server', 'socket-error', error, {
+					phase: this.initialized ? 'online' : 'connecting',
+					transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+				});
+			});
 			socket.on('close', () => {
 				if (this.socket === socket) {
+					if (this.enabled && this.initialized) {
+						reportParadisDiagnosticError('owned', 'codex-app-server', 'unexpected-close', new Error('Codex app-server connection closed'), {
+							phase: 'online',
+							transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+						});
+					}
 					this.resetConnection(new ParadisCodexControlError('unavailable', 'Codex app-serverとの接続が切れました'));
 					this.scheduleRetry();
 				}
 			});
 		} catch (error) {
 			this.logService.trace('[paradisCodexLive] daemon connection failed', String(error));
+			reportParadisDiagnosticError('owned', 'codex-app-server', 'connect', error, {
+				phase: 'connecting',
+				transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+			});
 			this.resetConnection(new Error(String(error)));
 			this.scheduleRetry();
 		}
@@ -659,10 +681,25 @@ class ParadisCodexServerConnection extends Disposable {
 				return;
 			}
 			this.initialized = true;
+			const connectDuration = this.connectStartedAt === undefined ? undefined : Date.now() - this.connectStartedAt;
+			if (connectDuration !== undefined && connectDuration >= 5_000 && !this.slowConnectReported) {
+				this.slowConnectReported = true;
+				reportParadisDiagnosticError('owned', 'codex-app-server', 'slow-initialize', new Error('Codex app-server initialization was slow'), {
+					duration_ms: connectDuration,
+					phase: 'initializing',
+					transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+				});
+			}
+			this.connectStartedAt = undefined;
+			this.slowConnectReported = false;
 			this.sendNotification('initialized');
 			await this.refreshLoadedThreads();
 		} catch (error) {
 			this.logService.warn(`[paradisCodexLive] initialize failed: ${error instanceof Error ? error.message : String(error)}`);
+			reportParadisDiagnosticError('owned', 'codex-app-server', 'initialize', error, {
+				phase: 'initializing',
+				transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+			});
 			this.socket?.close();
 		}
 	}
@@ -973,6 +1010,8 @@ class ParadisCodexServerConnection extends Disposable {
 			clearTimeout(this.loadedPollTimer);
 			this.loadedPollTimer = undefined;
 		}
+		this.connectStartedAt = undefined;
+		this.slowConnectReported = false;
 		const socket = this.socket;
 		this.resetConnection(new ParadisCodexControlError('disabled', 'Codex app-server連携が停止しました'));
 		if (socket !== undefined) {
@@ -987,6 +1026,22 @@ class ParadisCodexServerConnection extends Disposable {
 
 	private async pathExists(path: string): Promise<boolean> {
 		return pathExists(path);
+	}
+
+	private reportSlowConnectIfNeeded(phase: string): void {
+		if (this.connectStartedAt === undefined || this.slowConnectReported) {
+			return;
+		}
+		const duration = Date.now() - this.connectStartedAt;
+		if (duration < 10_000) {
+			return;
+		}
+		this.slowConnectReported = true;
+		reportParadisDiagnosticError('owned', 'codex-app-server', 'endpoint-not-ready', new Error('Codex app-server endpoint was not ready'), {
+			duration_ms: duration,
+			phase,
+			transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+		});
 	}
 
 	private clearThreadApprovals(threadId: string): void {

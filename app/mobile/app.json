@@ -22,6 +22,14 @@
 		},
 		"plugins": [
 			"expo-router",
+			[
+				"@sentry/react-native/expo",
+				{
+					"organization": "maguro-bot-corp",
+					"project": "para-code-mobile",
+					"url": "https://sentry.io/"
+				}
+			],
 			"expo-secure-store",
 			"expo-notifications",
 			[

@@ -27,6 +27,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../platform/browserView/common/browserViewScreenshot.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
+import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
@@ -480,10 +481,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._register(windowLeaseChannel.listen<IParadisMobileRendererManifest>('onDidChangeManifest')(manifest => this.observeRendererManifest(manifest)));
 		void windowLeaseChannel.call<IParadisMobileRendererManifest>('manifest').then(
 			manifest => this.observeRendererManifest(manifest),
-			error => this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to read authoritative window manifest', error)),
+			error => {
+				reportParadisDiagnosticError('owned', 'agent-browser', 'read-window-manifest', error, { phase: 'startup' });
+				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Failed to read authoritative window manifest', error));
+			},
 		);
 		this._serverStartPromise = this._startServer().catch(error => {
 			this._httpServer = undefined;
+			reportParadisDiagnosticError('owned', 'agent-browser', 'start-mcp-server', error, { phase: 'startup' });
 			this._runNonThrowingDiagnostic(() => this.logService.error('[ParadisAgentBrowser] Failed to start MCP server', error));
 		});
 		// エージェントCLI (Claude Code / Codex) の通知hookを冪等に自動設置する
@@ -492,14 +497,22 @@ export class ParadisAgentBrowserService extends Disposable {
 			logService,
 			'ParadisAgentHooks',
 			createParadisShellEnvResolver(logService, configurationService, args),
+			Date.now,
+			reportParadisShellEnvDiagnosticError,
 		);
 		this._mcpSetupController = createParadisMcpSetupController(
 			() => cachedShellEnv.getEnv(),
 			paradisCodexHome(),
-			(message, error) => this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${message}`, error)),
+			(message, error) => {
+				reportParadisDiagnosticError('owned', 'agent-browser', 'configure-mcp', error ?? new Error(message), { phase: 'setup' });
+				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${message}`, error));
+			},
 		);
 		const agentHooksReconciler = this._register(new ParadisAgentHooksReconciler(logService, {}, () => cachedShellEnv.getEnv()));
-		void agentHooksReconciler.start().catch(error => this._runNonThrowingDiagnostic(() => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error)));
+		void agentHooksReconciler.start().catch(error => {
+			reportParadisDiagnosticError('owned', 'agent-browser', 'configure-agent-hooks', error, { phase: 'setup' });
+			this._runNonThrowingDiagnostic(() => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
+		});
 		this._register(registerParadisAgentPaneActivityGuard(token => this.captureIngressLease(token) !== undefined));
 		this._register(onParadisAgentTurnStarted(({ token, cwd, at }) => {
 			const ingressLease = this.captureIngressLease(token);
@@ -1545,6 +1558,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			await reconciler.start();
 			this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentBrowser] MCP server listening on 127.0.0.1:${this._port} (port file: ${this._portFilePath})`));
 		} catch (error) {
+			reportParadisDiagnosticError('owned', 'agent-browser', 'publish-mcp-port', error, { phase: 'startup' });
 			this._runNonThrowingDiagnostic(() => this.logService.error('[ParadisAgentBrowser] Failed to write MCP port file', error));
 		}
 	}

@@ -1914,6 +1914,19 @@ export default defineConfig(
 							'when': 'hasBrowser',
 							'pattern': '@xterm/addon-webgl'
 						},
+						// PARA-PATCH: fork独自のSentry初期化層だけがプロセス別SDKを静的importする。
+						{
+							'when': 'hasBrowser',
+							'pattern': '@sentry/electron/renderer'
+						},
+						{
+							'when': 'hasNode',
+							'pattern': '@sentry/electron/main'
+						},
+						{
+							'when': 'hasNode',
+							'pattern': '@sentry/electron/utility'
+						},
 					]
 				},
 				{
@@ -2138,6 +2151,8 @@ export default defineConfig(
 					'restrictions': [
 						'vs/**/common/*',
 						'vs/**/node/*',
+						// PARA-PATCH: Electron crash reporterより先にfork独自Sentryを初期化する。
+						'vs/paradis/contrib/sentry/electron-main/paradisSentryMain.js',
 						'vs/nls.js',
 						'src/*.js',
 						'*' // node.js

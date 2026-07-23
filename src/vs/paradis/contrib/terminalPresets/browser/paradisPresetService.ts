@@ -31,6 +31,7 @@ import { ITerminalInstance, ITerminalService } from '../../../../workbench/contr
 import { editorGroupToColumn } from '../../../../workbench/services/editor/common/editorGroupColumn.js';
 import { GroupDirection, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	IParadisPresetDefinition,
 	IParadisPresetService,
@@ -320,10 +321,10 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 					this.terminalScopeService.assignInstanceScope(instance.instanceId, options.stateKey);
 				}
 				options?.onDidStart?.();
-				await instance.processReady;
+				await this._waitForTerminalProcess(instance);
 				await instance.sendText(paradisJoinPresetCommands(commands, instance.shellType), true);
 			} else {
-				await instance.processReady;
+				await this._waitForTerminalProcess(instance);
 				if (preset.cwd && cwd) {
 					// 既存ターミナルは作業ディレクトリが不明なので cd を前置する
 					const changeDirectory = await this._buildChangeDirectoryCommand(instance, cwd);
@@ -358,7 +359,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			}
 			options?.onDidStart?.();
 			first ??= instance;
-			await instance.processReady;
+			await this._waitForTerminalProcess(instance);
 			await instance.sendText(paradisJoinPresetCommands(task.commands, instance.shellType), true);
 		}
 		first?.focus(true);
@@ -406,5 +407,27 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			cwd,
 			location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
 		});
+	}
+
+	private async _waitForTerminalProcess(instance: ITerminalInstance): Promise<void> {
+		const startedAt = Date.now();
+		try {
+			await instance.processReady;
+		} catch (error) {
+			reportParadisDiagnosticError('owned', 'terminal-preset', 'process-ready', error, {
+				duration_ms: Date.now() - startedAt,
+				phase: 'startup',
+				shell_kind: String(instance.shellType ?? 'unknown'),
+			});
+			throw error;
+		}
+		const duration = Date.now() - startedAt;
+		if (duration >= 5_000) {
+			reportParadisDiagnosticError('owned', 'terminal-preset', 'slow-process-ready', new Error('Terminal process startup was slow'), {
+				duration_ms: duration,
+				phase: 'startup',
+				shell_kind: String(instance.shellType ?? 'unknown'),
+			});
+		}
 	}
 }
