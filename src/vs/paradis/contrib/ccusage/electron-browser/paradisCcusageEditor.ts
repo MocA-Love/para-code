@@ -1034,7 +1034,7 @@ function agentDisplayName(agent: ParadisCcusageAgent): string {
 	}
 }
 
-/** "claude-opus-4-8" → "Opus 4.8"、"gpt-5.5" → "GPT-5.5" のような表示名を作る。 */
+/** "claude-opus-5" → "Opus 5"、"gpt-5.5" → "GPT-5.5" のような表示名を作る。 */
 function prettyModelName(modelName: string): string {
 	let name = modelName;
 	if (name.toLowerCase().startsWith('claude-')) {

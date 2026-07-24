@@ -17,7 +17,7 @@ export interface AgentModelOption {
 
 const CLAUDE_MODELS: readonly AgentModelOption[] = [
 	{ id: 'fable', label: 'Fable 5', aliases: ['claude-fable-5'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
-	{ id: 'opus', label: 'Opus 4.8', aliases: ['claude-opus-4-8'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
+	{ id: 'opus', label: 'Opus 5', aliases: ['claude-opus-5'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
 	{ id: 'sonnet', label: 'Sonnet 5', aliases: ['claude-sonnet-5'], efforts: ['low', 'medium', 'high', 'xhigh', 'max'] },
 	{ id: 'haiku', label: 'Haiku 4.5', aliases: ['claude-haiku-4-5', 'claude-haiku-4-5-20251001'], efforts: ['low', 'medium', 'high'] },
 ];

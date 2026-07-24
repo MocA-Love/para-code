@@ -7,7 +7,7 @@ import type { WorktreeAgentDef } from '../store.js';
 const claude: WorktreeAgentDef = {
 	id: 'claude', label: 'Claude Code', command: 'claude {prompt}',
 	models: [
-		{ id: 'opus', label: 'opus (Opus 4.8)', flag: '--model opus', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'high' },
+		{ id: 'opus', label: 'opus (Opus 5)', flag: '--model opus', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'high' },
 		{ id: 'haiku', label: 'haiku (Haiku 4.5)', flag: '--model haiku', efforts: [] },
 	],
 	efforts: [{ id: 'high', flag: '--effort high' }, { id: 'xhigh', flag: '--effort xhigh' }],
