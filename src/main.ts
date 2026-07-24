@@ -19,7 +19,9 @@ import { resolveNLSConfiguration } from './vs/base/node/nls.js';
 import { getUNCHost, addUNCHostToAllowlist } from './vs/base/node/unc.js';
 import { INLSConfiguration } from './vs/nls.js';
 import { NativeParsedArgs } from './vs/platform/environment/common/argv.js';
-// PARA-PATCH: Initialize Para Code Sentry before Electron's crash reporter is configured.
+// PARA-PATCH: Initialize Para Code Sentry before Electron's crash reporter is configured. Keep this
+// import ahead of the protocol.registerSchemesAsPrivileged() call below: evaluating the module wraps
+// that API so privileged schemes registered here survive Sentry's own later registration.
 import { initializeParadisSentryMain } from './vs/paradis/contrib/sentry/electron-main/paradisSentryMain.js';
 
 perf.mark('code/didStartMain');

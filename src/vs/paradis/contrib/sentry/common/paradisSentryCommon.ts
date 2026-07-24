@@ -15,6 +15,7 @@ export interface IParadisSentryFrame {
 }
 
 export interface IParadisSentryEvent {
+	platform?: string;
 	message?: string;
 	logentry?: {
 		message?: string;
@@ -50,6 +51,7 @@ export interface IParadisSentryEvent {
 	};
 	debug_meta?: {
 		images?: Array<{
+			type?: string;
 			code_file?: string | null;
 			debug_file?: string | null;
 		}>;
@@ -71,8 +73,17 @@ const PARADIS_SENTRY_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1_000;
 const PARADIS_SENTRY_RATE_LIMIT_MAX_EVENTS = 3;
 const PARADIS_SENTRY_MAX_TEXT_LENGTH = 2_000;
 
+/**
+ * Extra/breadcrumb payload keys that carry no user content and may be sent as-is. Everything else
+ * is dropped. Callers can also prefix a key with `safe_` to opt in without editing this list.
+ */
+export function isParadisSafeExtraKey(key: string): boolean {
+	return safeExtraKeys.has(key) || key.startsWith('safe_');
+}
+
 const safeExtraKeys = new Set([
 	'attempt',
+	'close_code',
 	'duration_ms',
 	'exit_code',
 	'failure_code',
@@ -85,6 +96,9 @@ const safeExtraKeys = new Set([
 	'suppressed_count',
 	'transport',
 ]);
+
+/** Debug image types produced by native crash reporting, per platform. */
+const nativeDebugImageTypes = new Set(['macho', 'pe', 'pe_dotnet', 'elf']);
 
 const safeContextKeys = new Set(['app', 'device', 'electron', 'gpu', 'os', 'runtime', 'trace']);
 const unsafeObjectKeys = /(?:authorization|cookie|credential|cwd|dsn|environment|env|header|password|passwd|path|prompt|secret|session|terminal|token)/i;
@@ -169,9 +183,20 @@ export function paradisClassifySentryEvent(event: IParadisSentryEvent): ParadisS
 		return 'owned';
 	}
 
-	// Native minidumps cannot be attributed to an individual TypeScript module. Keep only events
-	// that carry native debug images; ordinary upstream JS errors still fall through and are dropped.
-	return event.debug_meta?.images?.length ? 'unknown' : undefined;
+	// Native crashes (minidumps, renderer OOM) cannot be attributed to an individual TypeScript
+	// module, so they are kept as 'unknown' rather than dropped. The Electron SDK marks them on the
+	// event itself; `debug_meta` cannot be used for this, because the SDK attaches a `sourcemap`
+	// debug image to *every* JavaScript event — accepting any image at all let the whole upstream
+	// error stream through, which is exactly what happened until paracode-70.
+	if (event.platform === 'native' || event.tags?.['event.environment'] === 'native') {
+		return 'unknown';
+	}
+
+	// Debug images are only consulted as an allow-list, for events shaped by something other than
+	// the JS SDK. Anything unrecognised is treated as JavaScript and dropped.
+	const hasNativeImage = event.debug_meta?.images?.some(
+		image => image.type === undefined || nativeDebugImageTypes.has(image.type)) === true;
+	return hasNativeImage ? 'unknown' : undefined;
 }
 
 /**
@@ -235,14 +260,14 @@ export function paradisSanitizeSentryEvent<T extends IParadisSentryEvent>(event:
 			key,
 			value === undefined ? value : paradisSanitizeSentryText(String(value)),
 		])) : event.tags,
-		extra: event.extra ? paradisSanitizeRecord(event.extra, key => safeExtraKeys.has(key) || key.startsWith('safe_')) : event.extra,
+		extra: event.extra ? paradisSanitizeRecord(event.extra, isParadisSafeExtraKey) : event.extra,
 		contexts: event.contexts ? Object.fromEntries(Object.entries(event.contexts)
 			.filter(([key]) => safeContextKeys.has(key))
 			.map(([key, value]) => [key, value ? paradisSanitizeRecord(value, nestedKey => !unsafeObjectKeys.test(nestedKey)) : value])) : event.contexts,
 		breadcrumbs: event.breadcrumbs?.filter(breadcrumb => breadcrumb.category?.startsWith('para.')).map(breadcrumb => ({
 			...breadcrumb,
 			message: breadcrumb.message ? paradisSanitizeSentryText(breadcrumb.message) : breadcrumb.message,
-			data: breadcrumb.data ? paradisSanitizeRecord(breadcrumb.data, key => safeExtraKeys.has(key) || key.startsWith('safe_')) : breadcrumb.data,
+			data: breadcrumb.data ? paradisSanitizeRecord(breadcrumb.data, isParadisSafeExtraKey) : breadcrumb.data,
 		})),
 		exception,
 		threads,

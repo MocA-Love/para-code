@@ -8,6 +8,7 @@
 import {
 	IParadisSentryEvent,
 	ParadisSentryRateLimiter,
+	isParadisSafeExtraKey,
 	paradisClassifySentryEvent,
 	paradisSanitizeSentryEvent,
 	paradisSanitizeSentryText,
@@ -76,18 +77,9 @@ export function paradisPrepareSentryBreadcrumb<T extends {
 	return {
 		...breadcrumb,
 		message: breadcrumb.message ? paradisSanitizeSentryText(breadcrumb.message) : breadcrumb.message,
+		// The allow-list lives in paradisSentryCommon: keeping a second copy here let the two drift.
 		data: breadcrumb.data ? Object.fromEntries(Object.entries(breadcrumb.data)
-			.filter(([key]) => key.startsWith('safe_') || [
-				'attempt',
-				'duration_ms',
-				'exit_code',
-				'failure_code',
-				'phase',
-				'reconnect_count',
-				'shell_kind',
-				'signal',
-				'transport',
-			].includes(key))
+			.filter(([key]) => isParadisSafeExtraKey(key))
 			.map(([key, value]) => [key, typeof value === 'string' ? paradisSanitizeSentryText(value) : value])) : breadcrumb.data,
 	};
 }

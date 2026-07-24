@@ -30,6 +30,21 @@ try {
 	console.error('[Para Code] Failed to initialize renderer Sentry.', error);
 }
 
+try {
+	// Regression sentinel. `vscode-file` must stay registered as a secure scheme, otherwise the
+	// workbench is not a secure context, `crypto.subtle` is undefined, and every webview (Markdown
+	// preview, the Para Code file viewers, the changelog, extension webviews) fails to mount.
+	// Upstream surfaces this only as an unhandled rejection the first time a webview is opened, and
+	// the scope filter drops upstream-only events — so report it here instead: once per window, at
+	// startup, whether or not the user ever opens a webview.
+	if (!globalThis.isSecureContext || !globalThis.crypto?.subtle) {
+		captureParadisRendererException('patched', 'webview', 'insecure-context',
+			new Error('Renderer is not a secure context, so crypto.subtle is unavailable and webviews cannot mount'));
+	}
+} catch (error) {
+	console.error('[Para Code] Failed to report the insecure-context sentinel.', error);
+}
+
 export function captureParadisRendererException(
 	scope: 'owned' | 'patched',
 	feature: string,

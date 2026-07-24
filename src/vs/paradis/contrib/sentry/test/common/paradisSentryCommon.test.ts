@@ -158,5 +158,41 @@ suite('ParadisSentryCommon', () => {
 		assert.strictEqual(paradisClassifySentryEvent({
 			debug_meta: { images: [{ code_file: 'Para Code Framework' }] },
 		}), 'unknown');
+		// The SDK attaches a `sourcemap` debug image to every JavaScript event, so it must not be
+		// mistaken for a native crash image — otherwise upstream errors bypass the scope filter.
+		assert.strictEqual(paradisClassifySentryEvent({
+			exception: {
+				values: [{
+					stacktrace: {
+						frames: [{ filename: 'app:///out/vs/workbench/browser/workbench.js' }],
+					},
+				}],
+			},
+			debug_meta: { images: [{ type: 'sourcemap', code_file: 'app:///out/main.js' }] },
+		}), undefined);
+		// Native crashes are marked on the event itself and must survive, even though the SDK
+		// attaches the same sourcemap image to them.
+		assert.strictEqual(paradisClassifySentryEvent({
+			platform: 'native',
+			debug_meta: { images: [{ type: 'sourcemap', code_file: 'app:///out/main.js' }] },
+		}), 'unknown');
+		assert.strictEqual(paradisClassifySentryEvent({
+			tags: { 'event.environment': 'native' },
+		}), 'unknown');
+		assert.strictEqual(paradisClassifySentryEvent({
+			debug_meta: { images: [{ type: 'sourcemap' }, { type: 'macho', code_file: 'Para Code Framework' }] },
+		}), 'unknown');
+	});
+
+	test('keeps diagnostic-only extras and drops everything else', () => {
+		const sanitized = paradisSanitizeSentryEvent({
+			extra: {
+				close_code: 1006,
+				safe_close_reason: 'superseded',
+				cwd: '/Users/example/secret-project',
+			},
+		});
+
+		assert.deepStrictEqual(sanitized.extra, { close_code: 1006, safe_close_reason: 'superseded' });
 	});
 });

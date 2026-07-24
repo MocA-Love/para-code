@@ -5,13 +5,46 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { app } from 'electron';
+// NOTE: main-process only, and importing this module has a side effect: it wraps
+// `protocol.registerSchemesAsPrivileged` (see below). Importing it from a process without Electron's
+// `protocol` API (utility/shared process) would throw at import time, not at first call.
+
+import { app, protocol } from 'electron';
 import type * as SentryMain from '@sentry/electron/main';
+import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
 import { PARADIS_SENTRY_DESKTOP_DSN, PARADIS_SENTRY_ENVIRONMENT, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
 import { configureParadisDiagnosticReporter } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
 let sentry: typeof SentryMain | undefined;
+
+type ParadisCustomScheme = Parameters<typeof protocol.registerSchemesAsPrivileged>[0][number];
+
+/**
+ * Keeps every privileged scheme registration alive, no matter who registers last.
+ *
+ * `protocol.registerSchemesAsPrivileged()` rebuilds the Chromium command-line switches
+ * (`--secure-schemes`, `--cors-schemes`, `--fetch-schemes`, …) from the schemes of whichever call
+ * ran last, so a later caller silently strips the privileges an earlier caller registered.
+ * `@sentry/electron` registers its own `sentry-ipc` scheme from inside `Sentry.init()`, and because
+ * our init is deferred behind a dynamic import (see below) it always runs *after* `src/main.ts` has
+ * registered `vscode-file` and `vscode-webview`. The renderer then launched with
+ * `--secure-schemes=sentry-ipc` only: the workbench stopped being a secure context, `crypto.subtle`
+ * became undefined and every webview failed to mount (paracode-68/69).
+ *
+ * The wrapper is installed at module evaluation — `src/main.ts` imports this file, and ESM
+ * evaluates imports before the importing module's body, so it is in place before the first
+ * registration. Every call then re-registers the accumulated set, which also covers registrations
+ * made after Sentry's, and does not depend on Sentry's own overwrite-guarding proxy.
+ */
+const originalRegisterSchemesAsPrivileged = protocol.registerSchemesAsPrivileged;
+const privilegedSchemeRecorder = new ParadisPrivilegedSchemeRecorder<ParadisCustomScheme>(
+	// `call` is required here: the recorder replaces a method on Electron's `protocol` object.
+	schemes => originalRegisterSchemesAsPrivileged.call(protocol, schemes),
+);
+protocol.registerSchemesAsPrivileged = function paradisRecordingRegisterSchemesAsPrivileged(customSchemes: ParadisCustomScheme[]): void {
+	privilegedSchemeRecorder.add(customSchemes);
+};
 
 export function initializeParadisSentryMain(commit: string | undefined, onUnavailable: () => void): void {
 	if (sentry) {
