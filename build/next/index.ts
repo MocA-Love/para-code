@@ -7,6 +7,8 @@ import * as esbuild from 'esbuild';
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
+// PARA-PATCH: used by the @sentry inlining rule in inlineParadisSentryPlugin below.
+import { fileURLToPath } from 'url';
 
 import glob from 'glob';
 import gulpWatch from '../lib/watch/index.ts';
@@ -644,6 +646,26 @@ function inlineMinimistPlugin(): esbuild.Plugin {
 	};
 }
 
+// PARA-PATCH: '@sentry/electron/renderer' is statically imported by the workbench bundle,
+// but packaged renderer windows load over vscode-file:// where a bare specifier can never
+// resolve (no Node resolver and no importmap for npm packages) — so statically imported
+// @sentry modules are inlined into the importing bundle. Dynamic @sentry imports (main and
+// shared/utility processes) stay external and resolve from node_modules.asar at runtime
+// via the bootstrap loader hooks.
+function inlineParadisSentryPlugin(): esbuild.Plugin {
+	return {
+		name: 'inline-paradis-sentry',
+		setup(build) {
+			build.onResolve({ filter: /^@sentry(-internal)?\// }, (args) => {
+				if (args.kind === 'dynamic-import') {
+					return { path: args.path, external: true };
+				}
+				return { path: fileURLToPath(import.meta.resolve(args.path)), external: false };
+			});
+		},
+	};
+}
+
 function cssExternalPlugin(): esbuild.Plugin {
 	// Mark CSS imports as external so they stay as import statements
 	// The CSS files are copied separately and loaded by the browser at runtime
@@ -862,6 +884,8 @@ ${tslib}`,
 		const plugins: esbuild.Plugin[] = bundleCssEntryPoints.has(entryPoint) ? [] : [cssExternalPlugin()];
 		// Add content mapper plugin to inject product config and builtin extensions
 		plugins.push(contentMapperPlugin);
+		// PARA-PATCH: inline statically imported @sentry modules (see inlineParadisSentryPlugin).
+		plugins.push(inlineParadisSentryPlugin());
 		if (doNls) {
 			plugins.unshift(nlsPlugin({
 				baseDir: path.join(REPO_ROOT, SRC_DIR),

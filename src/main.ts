@@ -73,7 +73,10 @@ Menu.setApplicationMenu(null);
 
 // Configure crash reporter
 perf.mark('code/willStartCrashReporter');
-const paradisSentryEnabled = initializeParadisSentryMain(product.commit);
+// PARA-PATCH: Sentry replaces Electron's crash reporter. It loads asynchronously (a
+// static import of '@sentry/electron/main' crashes packaged builds at ESM link time,
+// see paradisSentryMain.ts); if it fails to load, run the original upstream gate below
+// as fallback.
 // If a crash-reporter-directory is specified we store the crash reports
 // in the specified directory and don't upload them to the crash server.
 //
@@ -82,9 +85,11 @@ const paradisSentryEnabled = initializeParadisSentryMain(product.commit);
 // * --disable-crash-reporter command line parameter is not set
 //
 // Disable crash reporting in all other cases.
-if (!paradisSentryEnabled && (args['crash-reporter-directory'] || (argvConfig['enable-crash-reporter'] && !args['disable-crash-reporter']))) {
-	configureCrashReporter();
-}
+initializeParadisSentryMain(product.commit, () => {
+	if (args['crash-reporter-directory'] || (argvConfig['enable-crash-reporter'] && !args['disable-crash-reporter'])) {
+		configureCrashReporter();
+	}
+});
 perf.mark('code/didStartCrashReporter');
 
 // Set logs path before app 'ready' event if running portable

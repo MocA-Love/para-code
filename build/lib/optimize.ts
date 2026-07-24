@@ -15,6 +15,8 @@ import fancyLog from 'fancy-log';
 import ansiColors from 'ansi-colors';
 import { getTargetStringFromTsConfig } from './tsconfigUtils.ts';
 import { createRequire } from 'module';
+// PARA-PATCH: used by the @sentry inlining rule in the external-override esbuild plugin below.
+import { fileURLToPath } from 'url';
 
 const require = createRequire(import.meta.url);
 
@@ -130,6 +132,19 @@ function bundleESMTask(opts: IBundleESMTaskOpts): NodeJS.ReadWriteStream {
 					// a conditional `await import(...)` by hooking into the resolution.
 					build.onResolve({ filter: /^minimist$/ }, () => {
 						return { path: path.join(REPO_ROOT_PATH, 'node_modules', 'minimist', 'index.js'), external: false };
+					});
+					// PARA-PATCH: '@sentry/electron/renderer' is statically imported by the
+					// workbench bundle, but packaged renderer windows load over vscode-file://
+					// where a bare specifier can never resolve (no Node resolver and no
+					// importmap for npm packages) — so statically imported @sentry modules are
+					// inlined into the importing bundle. Dynamic @sentry imports (main and
+					// shared/utility processes) stay external and resolve from
+					// node_modules.asar at runtime via the bootstrap loader hooks.
+					build.onResolve({ filter: /^@sentry(-internal)?\// }, args => {
+						if (args.kind === 'dynamic-import') {
+							return { path: args.path, external: true };
+						}
+						return { path: fileURLToPath(import.meta.resolve(args.path)), external: false };
 					});
 				},
 			};

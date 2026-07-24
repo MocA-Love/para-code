@@ -5,11 +5,18 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import * as Sentry from '@sentry/electron/utility';
+import type * as SentryUtility from '@sentry/electron/utility';
 import { configureParadisDiagnosticReporter } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
-try {
+let sentry: typeof SentryUtility | undefined;
+
+// '@sentry/electron/utility' is loaded with a dynamic import so the bundler keeps it
+// external and it resolves from node_modules.asar at runtime via the bootstrap loader
+// hooks (a static import would get inlined into the shared-process bundle by the
+// build-time @sentry inlining rule in build/lib/optimize.ts, dragging the whole
+// node/opentelemetry graph — with its dynamic requires — into the bundle).
+import('@sentry/electron/utility').then(Sentry => {
 	Sentry.init({
 		sendDefaultPii: false,
 		includeLocalVariables: false,
@@ -29,9 +36,10 @@ try {
 	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
 		captureParadisUtilityException(scope, feature, operation, error, safeExtra);
 	});
-} catch (error) {
+	sentry = Sentry;
+}).catch(error => {
 	console.error('[Para Code] Failed to initialize shared-process Sentry.', error);
-}
+});
 
 export function captureParadisUtilityException(
 	scope: 'owned' | 'patched',
@@ -40,6 +48,10 @@ export function captureParadisUtilityException(
 	error: unknown,
 	safeExtra?: Record<string, unknown>,
 ): string {
+	if (!sentry) {
+		return '';
+	}
+	const Sentry = sentry;
 	return Sentry.withScope(sentryScope => {
 		sentryScope.setTags({
 			'para.scope': scope,
@@ -59,7 +71,10 @@ export function startParadisUtilitySpan<T>(
 	operation: string,
 	callback: () => T,
 ): T {
-	return Sentry.startSpan({
+	if (!sentry) {
+		return callback();
+	}
+	return sentry.startSpan({
 		name: `para.${feature}.${operation}`,
 		op: `para.${feature}`,
 		attributes: {
