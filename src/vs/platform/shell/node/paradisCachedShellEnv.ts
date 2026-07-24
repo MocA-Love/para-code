@@ -25,7 +25,13 @@ export type ParadisShellEnvDiagnosticReporter = (
 
 /** 失敗後、同じ操作内で高コストなシェル解決を繰り返さないための待機時間。 */
 const SHELL_ENV_FAILURE_RETRY_DELAY_MS = 5_000;
-const SHELL_ENV_SLOW_RESOLVE_MS = 3_000;
+/**
+ * Sentryへ遅延レポートを送る閾値。3秒では初期化の重い .zshrc/.bashrc を持つ環境が日常的に超え、
+ * 対処のしようがないレポートだけが積み上がったため、明らかに異常と言える水準まで引き上げる。
+ * 解決自体のタイムアウト(shellEnv.ts、既定60秒・application.shellEnvironmentResolutionTimeoutで
+ * 変更可)よりは十分手前で、かつ体感で「固まった」と感じる範囲に置く。
+ */
+const SHELL_ENV_SLOW_RESOLVE_MS = 8_000;
 
 /**
  * ログインシェル由来の環境変数(PATH等)を process.env にマージした結果をキャッシュして返す。

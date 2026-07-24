@@ -1279,18 +1279,29 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.socket = socket;
 
 		socket.onopen = () => {
+			if (this.socket !== socket) {
+				return;
+			}
 			this.reconnectAttempt = 0;
 			this.setConnectionState('online');
 		};
 		socket.onmessage = event => { void this.onSocketMessage(event.data); };
+		// WebSocketの 'error' は close の直前に必ず来るうえ、ErrorEvent 自体は理由を持たない
+		// （Sentryでは "[object ErrorEvent]" という中身のないissueになる）。切断1回につき
+		// 2件report されるのも避けたいので、ここでは記録だけして onclose 側でまとめて送る。
+		let socketErrorMessage = '';
 		socket.onerror = event => {
-			reportParadisDiagnosticError('owned', 'desktop-relay', 'socket-error', event, {
-				phase: this.connectionState,
-				reconnect_count: this.reconnectAttempt,
-				transport: 'websocket',
-			});
+			// Nodeには ErrorEvent のグローバルが無い(instanceof は ReferenceError)ので、message を直接見る。
+			const message = (event as { message?: unknown }).message;
+			socketErrorMessage = typeof message === 'string' && message ? message : 'error';
 		};
-		socket.onclose = () => {
+		socket.onclose = event => {
+			// disconnect() や新しい接続への張り替えで破棄済みのソケットからも onclose は届く。
+			// 以降の後始末・再接続・reportはいずれも「現在の接続が落ちた」ときだけの処理なので、
+			// 古いソケットのイベントはここで捨てる（意図した切断のreportで統計を汚さないためでもある）。
+			if (this.socket !== socket) {
+				return;
+			}
 			this.socket = undefined;
 			// PC自身のリレーWSが切れた場合も、presence offline経路と同じ3点セットで
 			// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
@@ -1301,10 +1312,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.sessions.clear();
 			this.webrtcRendererLeases.clear();
 			if (this.enabled) {
-				reportParadisDiagnosticError('owned', 'desktop-relay', 'unexpected-close', new Error('Desktop relay connection closed'), {
+				// 切断元の判別材料はcodeとreasonしかない（1006=経路側の異常切断、1000+'superseded'=
+				// リレーが新しいPC接続で置き換え、1000+'revoked'=ペアリング解除、等）。operationにcodeを
+				// 含めるのは、fingerprintがoperation単位で、混ぜるとレアなcodeが10分3件の制限に埋もれるため。
+				const closeCode = event.code;
+				reportParadisDiagnosticError('owned', 'desktop-relay', `unexpected-close-${closeCode}`, new Error(`Desktop relay connection closed (code ${closeCode})`), {
 					phase: this.connectionState,
 					reconnect_count: this.reconnectAttempt,
 					transport: 'websocket',
+					close_code: closeCode,
+					safe_close_reason: event.reason ? event.reason.slice(0, 64) : '',
+					safe_socket_error: socketErrorMessage,
 				});
 				this.setConnectionState('disconnected');
 				this.scheduleReconnect();
