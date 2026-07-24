@@ -199,7 +199,7 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 		id: 'claude', label: 'Claude Code', command: 'claude {prompt}',
 		models: [
 			{ id: 'fable', label: 'fable (Fable 5)', flag: '--model fable', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
-			{ id: 'opus', label: 'opus (Opus 4.8)', flag: '--model opus', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
+			{ id: 'opus', label: 'opus (Opus 5)', flag: '--model opus', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
 			{ id: 'sonnet', label: 'sonnet (Sonnet 5)', flag: '--model sonnet', efforts: CLAUDE_EFFORT_IDS, defaultEffort: 'high' },
 			// Haiku 4.5 はエフォート非対応（efforts: [] でエフォート欄を無効化する）
 			{ id: 'haiku', label: 'haiku (Haiku 4.5)', flag: '--model haiku', efforts: [] },

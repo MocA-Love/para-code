@@ -81,7 +81,7 @@ suite('ParadisAgentModelSwitchGuard', () => {
 	test('still auto-confirms a dialog that appears after the grace resolution', async () => {
 		const terminal = createTerminal();
 		const guard = createGuard({ watchMs: 1_000, graceMs: 5 });
-		await guard.execute(terminal, '/model claude-opus-4-8', async () => true, noDelay);
+		await guard.execute(terminal, '/model claude-opus-5', async () => true, noDelay);
 		assert.strictEqual(terminal.sent.length, 3);
 		terminal.emitData(DIALOG);
 		await waitUntil(() => terminal.sent.length === 4);
