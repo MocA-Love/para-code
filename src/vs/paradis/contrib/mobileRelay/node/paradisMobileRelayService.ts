@@ -48,6 +48,7 @@ import {
 	fromBase64Url,
 	mobileIdToString,
 	NotifyPayload,
+	PARADIS_RELAY_KEEPALIVE_PING,
 	packPcData,
 	toBase64Url,
 	unpackPcData,
@@ -78,6 +79,16 @@ import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.j
 
 // Node（shared process）で使うファイルシステム / crypto。
 import { promises as fs } from 'fs';
+
+/**
+ * リレー接続の保活間隔。経路のアイドルタイムアウトより十分短く、かつ常時接続の台数分だけ
+ * 発生するトラフィックなので無駄に短くもしない値として45秒を採る。死活検知は最悪2tick（90秒）。
+ */
+const RELAY_KEEPALIVE_INTERVAL_MS = 45_000;
+/** WSハンドシェイクの応答を待つ上限（undiciの既定headersTimeout 300秒では復帰が遅すぎる）。 */
+const RELAY_CONNECT_TIMEOUT_MS = 15_000;
+/** これだけ連続でpongが返らなければ「このリレーは保活に応答しない」と学習し直す。 */
+const RELAY_KEEPALIVE_TIMEOUT_GIVE_UP = 3;
 
 interface PairedMobile {
 	readonly mobileId: string;
@@ -272,6 +283,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private socket: WebSocket | undefined;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private reconnectAttempt = 0;
+	private keepaliveTimer: ReturnType<typeof setInterval> | undefined;
+	private connectTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 連続でpongが返らなかった回数。リレー側の保活対応をいつ学習し直すかの判断に使う。 */
+	private consecutiveKeepaliveTimeouts = 0;
+	/** 直前のpingにpongが返っていない。次のtickでも返っていなければ経路が死んだとみなす。 */
+	private awaitingPong = false;
+	/**
+	 * このリレーがpongを返すと確認できたか。保活未対応のリレー（PC側だけ先に更新された場合など）を
+	 * 死活判定に使わないためのフラグで、リレーの能力を表すので接続をまたいで保持する。
+	 */
+	private keepaliveAcknowledged = false;
 	private readonly sessions = new Map<string, MobileSession>();
 	private readonly terminalRegistry = new ParadisMobileTerminalRegistry();
 	private readonly terminalOperations = new ParadisMobileOperationLedger();
@@ -1277,15 +1299,41 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		socket.binaryType = 'arraybuffer';
 		this.socket = socket;
+		// ハンドシェイクの応答が返ってこない経路では onopen も onclose も来ない（undiciの既定は
+		// headersTimeout 300秒）。this.socket が埋まったままだと connect() は早期returnするので、
+		// 保活タイムアウトと同じくローカル側で見切りをつける。保活タイムアウト直後の再接続は
+		// まさに同じ死んだ経路へ張りに行くため、ここが無いと復帰が5分遅れる。
+		this.connectTimer = setTimeout(() => {
+			this.connectTimer = undefined;
+			if (this.socket !== socket) {
+				return;
+			}
+			try { socket.close(4002, 'connect timeout'); } catch { /* すでに死んでいる */ }
+			this.socket = undefined;
+			this.handleDisconnected('connect-timeout', 'Desktop relay connection attempt timed out', {
+				close_code: 4002,
+				safe_close_reason: 'connect timeout',
+				safe_socket_error: '',
+			});
+		}, RELAY_CONNECT_TIMEOUT_MS);
 
 		socket.onopen = () => {
 			if (this.socket !== socket) {
 				return;
 			}
+			this.clearConnectTimer();
 			this.reconnectAttempt = 0;
 			this.setConnectionState('online');
+			this.startKeepalive(socket);
 		};
-		socket.onmessage = event => { void this.onSocketMessage(event.data); };
+		// 張り替え直後は旧ソケットからもメッセージが届きうる。pongが現在の接続の死活状態を
+		// 書き換えてしまわないよう、現行ソケット以外のメッセージは捨てる。
+		socket.onmessage = event => {
+			if (this.socket !== socket) {
+				return;
+			}
+			void this.onSocketMessage(event.data);
+		};
 		// WebSocketの 'error' は close の直前に必ず来るうえ、ErrorEvent 自体は理由を持たない
 		// （Sentryでは "[object ErrorEvent]" という中身のないissueになる）。切断1回につき
 		// 2件report されるのも避けたいので、ここでは記録だけして onclose 側でまとめて送る。
@@ -1296,40 +1344,141 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			socketErrorMessage = typeof message === 'string' && message ? message : 'error';
 		};
 		socket.onclose = event => {
-			// disconnect() や新しい接続への張り替えで破棄済みのソケットからも onclose は届く。
-			// 以降の後始末・再接続・reportはいずれも「現在の接続が落ちた」ときだけの処理なので、
-			// 古いソケットのイベントはここで捨てる（意図した切断のreportで統計を汚さないためでもある）。
+			// disconnect() や新しい接続への張り替え、保活タイムアウトで破棄済みのソケットからも
+			// onclose は届く。以降の後始末・再接続・reportはいずれも「現在の接続が落ちた」ときだけの
+			// 処理なので、古いソケットのイベントはここで捨てる（意図した切断のreportで統計を汚さない
+			// ためでもある）。
 			if (this.socket !== socket) {
 				return;
 			}
 			this.socket = undefined;
-			// PC自身のリレーWSが切れた場合も、presence offline経路と同じ3点セットで
-			// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
-			for (const id of this.sessions.keys()) {
-				this.browserMirror.stopSession(id);
-				this.agentChat.dropSubscriber(id);
-			}
-			this.sessions.clear();
-			this.webrtcRendererLeases.clear();
-			if (this.enabled) {
-				// 切断元の判別材料はcodeとreasonしかない（1006=経路側の異常切断、1000+'superseded'=
-				// リレーが新しいPC接続で置き換え、1000+'revoked'=ペアリング解除、等）。operationにcodeを
-				// 含めるのは、fingerprintがoperation単位で、混ぜるとレアなcodeが10分3件の制限に埋もれるため。
-				const closeCode = event.code;
-				reportParadisDiagnosticError('owned', 'desktop-relay', `unexpected-close-${closeCode}`, new Error(`Desktop relay connection closed (code ${closeCode})`), {
-					phase: this.connectionState,
-					reconnect_count: this.reconnectAttempt,
-					transport: 'websocket',
-					close_code: closeCode,
-					safe_close_reason: event.reason ? event.reason.slice(0, 64) : '',
-					safe_socket_error: socketErrorMessage,
-				});
-				this.setConnectionState('disconnected');
-				this.scheduleReconnect();
-			} else {
-				this.setConnectionState('disabled');
-			}
+			this.clearConnectTimer();
+			this.stopKeepalive();
+			// 切断元の判別材料はcodeとreasonしかない（1006=経路側の異常切断、1000+'superseded'=
+			// リレーが新しいPC接続で置き換え、1000+'revoked'=ペアリング解除、等）。operationにcodeを
+			// 含めるのは、fingerprintがoperation単位で、混ぜるとレアなcodeが10分3件の制限に埋もれるため。
+			this.handleDisconnected(`unexpected-close-${event.code}`, `Desktop relay connection closed (code ${event.code})`, {
+				close_code: event.code,
+				safe_close_reason: event.reason ? event.reason.slice(0, 64) : '',
+				safe_socket_error: socketErrorMessage,
+			});
 		};
+	}
+
+	/**
+	 * リレーへの接続を定期的なpingで保活する。
+	 *
+	 * 実測では切断がすべて close code 1006（closeフレーム無し）＋reason空で、リレー自身が閉じる
+	 * 1000/'superseded' とは別物だった。つまり経路（NAT/エッジ）がアイドル接続を落としている。
+	 * pingはリレー側のエッジが自動応答するのでDurable Objectは起きない（＝コストが増えない）。
+	 * 送ったpingに次のtick（45秒）までpongが返らなければ経路が死んだとみなして自分から閉じ、
+	 * 通常の再接続に載せる。切断からの検知は最悪90秒（切れた直後にpingを撃った場合）。
+	 * 4001で閉じるのは、Sentry上で「こちらが死活検知で閉じた」ケースを1006と区別するため。
+	 *
+	 * ただし死活判定は「このリレーがpongを返すと分かっている」場合に限る。保活に未対応のリレーへ
+	 * 繋いだ場合（PC側だけ先に更新された場合など）にpong無しを異常と見なすと、90秒ごとに自分から
+	 * 切って再接続する状態に化けてしまう。pingの送信自体は経路の保活として無害なので続ける。
+	 * 接続直後に1回pingを撃つのは、この判定材料（pongが返るか）を数百msで確定させるため。
+	 */
+	private startKeepalive(socket: WebSocket): void {
+		this.stopKeepalive();
+		this.sendKeepalivePing(socket);
+		const timer = setInterval(() => {
+			if (this.socket !== socket || socket.readyState !== WebSocket.OPEN) {
+				// 自分のタイマーだけを止める。this.keepaliveTimer は既に次の接続のものかもしれない。
+				clearInterval(timer);
+				return;
+			}
+			if (this.awaitingPong && this.keepaliveAcknowledged) {
+				this.onKeepaliveTimeout(socket);
+				return;
+			}
+			this.sendKeepalivePing(socket);
+		}, RELAY_KEEPALIVE_INTERVAL_MS);
+		this.keepaliveTimer = timer;
+	}
+
+	private sendKeepalivePing(socket: WebSocket): void {
+		this.awaitingPong = true;
+		try {
+			socket.send(PARADIS_RELAY_KEEPALIVE_PING);
+		} catch {
+			this.awaitingPong = false;
+		}
+	}
+
+	/**
+	 * 経路が死んだと判定したときの後始末。
+	 *
+	 * `close()` を呼ぶだけでは足りない。undiciのWebSocketはcloseフレームを書いてCLOSINGにするだけで
+	 * ソケットを破棄せず、まさにこの状況（相手に何も届かない経路）ではcloseイベントがTCPの再送を
+	 * 諦めるまで（数分〜十数分）発火しない。その間 `this.socket` が埋まったままだと `connect()` は
+	 * 早期returnして再接続に入れないので、ローカル側は即座に切断済みとして扱う。
+	 */
+	private onKeepaliveTimeout(socket: WebSocket): void {
+		this.stopKeepalive();
+		try { socket.close(4001, 'keepalive timeout'); } catch { /* すでに死んでいる */ }
+		// pongを返さないリレーへ張り替わった場合（Workerのロールバックや段階デプロイ）、
+		// 「pongを返すリレーだ」という学習が残ったままだと45秒ごとの自己切断ループになる。
+		// 連続でタイムアウトしたら学習を取り消し、ping送出だけの経路保活へ戻す。
+		this.consecutiveKeepaliveTimeouts++;
+		if (this.consecutiveKeepaliveTimeouts >= RELAY_KEEPALIVE_TIMEOUT_GIVE_UP) {
+			this.keepaliveAcknowledged = false;
+			this.consecutiveKeepaliveTimeouts = 0;
+		}
+		if (this.socket !== socket) {
+			return;
+		}
+		this.socket = undefined;
+		// close codeは往復しない（相手からcloseフレームが返らない場合、undiciは1006で上書きする）ので、
+		// 「こちらが死活検知で切った」ことはoperation名で区別する。
+		this.handleDisconnected('keepalive-timeout', 'Desktop relay keepalive timed out', {
+			close_code: 4001,
+			safe_close_reason: 'keepalive timeout',
+			safe_socket_error: '',
+		});
+	}
+
+	private stopKeepalive(): void {
+		if (this.keepaliveTimer) {
+			clearInterval(this.keepaliveTimer);
+			this.keepaliveTimer = undefined;
+		}
+		this.awaitingPong = false;
+	}
+
+	private clearConnectTimer(): void {
+		if (this.connectTimer) {
+			clearTimeout(this.connectTimer);
+			this.connectTimer = undefined;
+		}
+	}
+
+	/**
+	 * リレーとの接続が失われたあとの共通処理。onclose と保活タイムアウトの両方から呼ぶ。
+	 * 呼び出し側が `this.socket` を先にクリアしていること。
+	 */
+	private handleDisconnected(operation: string, message: string, extras: Record<string, unknown>): void {
+		// PC自身のリレーWSが切れた場合も、presence offline経路と同じ3点セットで
+		// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
+		for (const id of this.sessions.keys()) {
+			this.browserMirror.stopSession(id);
+			this.agentChat.dropSubscriber(id);
+		}
+		this.sessions.clear();
+		this.webrtcRendererLeases.clear();
+		if (!this.enabled) {
+			this.setConnectionState('disabled');
+			return;
+		}
+		reportParadisDiagnosticError('owned', 'desktop-relay', operation, new Error(message), {
+			phase: this.connectionState,
+			reconnect_count: this.reconnectAttempt,
+			transport: 'websocket',
+			...extras,
+		});
+		this.setConnectionState('disconnected');
+		this.scheduleReconnect();
 	}
 
 	private disconnect(): void {
@@ -1337,12 +1486,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = undefined;
 		}
+		this.stopKeepalive();
+		this.clearConnectTimer();
 		// onclose と同様、セッション破棄前に per-mobile リソースを解放する。
 		for (const id of this.sessions.keys()) {
 			this.browserMirror.stopSession(id);
 			this.agentChat.dropSubscriber(id);
 		}
 		this.sessions.clear();
+		this.webrtcRendererLeases.clear();
 		if (this.socket) {
 			try { this.socket.close(); } catch { /* ignore */ }
 			this.socket = undefined;
@@ -1586,6 +1738,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 		} else if (msg.type === 'mobile-revoked' && typeof msg.mobileId === 'string') {
 			await this.onMobileRevoked(msg.mobileId);
+		} else if (msg.type === 'pong') {
+			this.awaitingPong = false;
+			this.keepaliveAcknowledged = true;
+			this.consecutiveKeepaliveTimeouts = 0;
 		}
 	}
 

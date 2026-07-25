@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { SELF } from 'cloudflare:test';
-import { decodeRelayControl, encodeRelayControl, generateIdentity, mobileIdFromString, packPcData, toBase64Url, unpackPcData } from '@para/protocol';
+import { PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, decodeRelayControl, encodeRelayControl, generateIdentity, mobileIdFromString, packPcData, toBase64Url, unpackPcData } from '@para/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 /**
@@ -176,6 +176,33 @@ describe('relay pairing + routing', () => {
 			headers: { Upgrade: 'websocket' },
 		});
 		expect(res.status).toBe(401);
+	});
+
+	it('answers the keepalive ping and flaps pc presence when a pc socket is superseded', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		pairWs.send(encodeRelayControl({ type: 'pairing-msg', data: 'aGVsbG8' }));
+		await pcWs.next(); // pairing-msg
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'iPhone' }));
+		const paired = decodeRelayControl(await pairWs.next() as string);
+		if (paired.type !== 'paired') { throw new Error('unreachable'); }
+		await pcWs.next(); // paired(pc向け)
+
+		// 保活のpingにpongが返る（本番ではエッジの自動応答、ここではDO側のフォールバック）。
+		pcWs.send(PARADIS_RELAY_KEEPALIVE_PING);
+		expect(await pcWs.next()).toBe(PARADIS_RELAY_KEEPALIVE_PONG);
+
+		const mobileWs = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=${paired.mobileToken}`);
+		await pcWs.next(); // presence(mobile online)
+		expect(decodeRelayControl(await mobileWs.next() as string)).toEqual({ type: 'presence', peer: 'pc', online: true });
+
+		// PCが張り替えたら、モバイルは offline→online を必ず見る。これが無いと、モバイルは
+		// 破棄済みのE2Eセッションのまま送り続けてPCに無視される（再ハンドシェイクの契機が消える）。
+		await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		expect(decodeRelayControl(await mobileWs.next() as string)).toEqual({ type: 'presence', peer: 'pc', online: false });
+		expect(decodeRelayControl(await mobileWs.next() as string)).toEqual({ type: 'presence', peer: 'pc', online: true });
 	});
 
 	it('rejects mobile connection with a bad token', async () => {

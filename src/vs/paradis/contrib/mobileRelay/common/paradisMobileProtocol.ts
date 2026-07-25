@@ -111,7 +111,17 @@ export type RelayControlMessage =
 	| { readonly type: 'register-push'; readonly token: string; readonly env?: 'prod' | 'dev' }
 	| { readonly type: 'push-notify'; readonly mobileId: string; readonly payload: string }
 	// リレー→PC: モバイル自身がペアリングを解除した（self-revoke）。PCは登録一覧から取り除く
-	| { readonly type: 'mobile-revoked'; readonly mobileId: string };
+	| { readonly type: 'mobile-revoked'; readonly mobileId: string }
+	// 保活。pingにはリレーのDurable Objectを起こさずエッジが自動応答する（setWebSocketAutoResponse）
+	| { readonly type: 'ping' }
+	| { readonly type: 'pong' };
+
+/**
+ * 保活メッセージの正準表現。リレー側の自動応答はバイト列の完全一致で照合するため、
+ * `encodeRelayControl({ type: 'ping' })` の出力とこの定数は一致していなければならない。
+ */
+export const PARADIS_RELAY_KEEPALIVE_PING = '{"type":"ping"}';
+export const PARADIS_RELAY_KEEPALIVE_PONG = '{"type":"pong"}';
 
 export function encodeRelayControl(message: RelayControlMessage): string {
 	return JSON.stringify(message);
