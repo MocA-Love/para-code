@@ -18,7 +18,7 @@ export type { BinaryFsUpload, BinaryFsUploadMetadata } from './fileUpload.js';
 export { TERMINAL_BINARY_DATA_ENCODING, decodeBinaryTerminalData, encodeBinaryTerminalData, isBinaryTerminalData } from './terminalData.js';
 export type { BinaryTerminalData, BinaryTerminalDataMetadata } from './terminalData.js';
 export { JSON_GZIP_RESPONSE_ENCODING, decodeGzipJsonResponse, isGzipJsonResponse } from './gzipJson.js';
-export { RELAY_DATA_VERSION, MOBILE_ID_LENGTH, packPcData, unpackPcData, mobileIdToString, mobileIdFromString, encodeRelayControl, decodeRelayControl } from './relay.js';
+export { RELAY_DATA_VERSION, MOBILE_ID_LENGTH, PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, packPcData, unpackPcData, mobileIdToString, mobileIdFromString, encodeRelayControl, decodeRelayControl } from './relay.js';
 export type { RelayControlMessage } from './relay.js';
 export { encodeNotify, decodeNotify, encodeNotifyDismiss, encodeNotifyDismissed, decodeNotifyControl } from './notify.js';
 export type { NotifyKind, NotifyPayload, NotifyControlMessage } from './notify.js';

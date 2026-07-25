@@ -15,7 +15,7 @@
  * ソケットのtagはhibernation復帰後も getTags() で復元できるので、ルーティングはtagのみに依存する。
  */
 
-import { decodeRelayControl, encodeRelayControl, mobileIdFromString, mobileIdToString, packPcData, unpackPcData, type RelayControlMessage } from '@para/protocol';
+import { PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG, decodeRelayControl, encodeRelayControl, mobileIdFromString, mobileIdToString, packPcData, unpackPcData, type RelayControlMessage } from '@para/protocol';
 import { sendApnsNotification, type ApnsEnv, type ApnsJwtCache } from './apns.js';
 import { extractToken, hashToken, randomTokenB64u, subprotocolAuthHeader, timingSafeEqualHex } from './auth.js';
 
@@ -60,6 +60,12 @@ export class DeviceDO implements DurableObject {
 		// 後方互換マイグレーション: 既存DOの mobiles テーブルにAPNs列を追加する。
 		// SQLiteは `ADD COLUMN IF NOT EXISTS` を持たないため、既に存在する場合の例外は握りつぶす。
 		this.migrateMobilesForPush();
+		// 保活のping/pongはエッジが自動応答する。hibernation中のDOを起こさないので、
+		// アイドル接続を維持するコストがほぼゼロで済む（起こすと課金対象の実行時間が発生する）。
+		// 照合はバイト列の完全一致なので、クライアントは必ず同じ定数を送ること。
+		this.state.setWebSocketAutoResponse(
+			new WebSocketRequestResponsePair(PARADIS_RELAY_KEEPALIVE_PING, PARADIS_RELAY_KEEPALIVE_PONG),
+		);
 	}
 
 	private migrateMobilesForPush(): void {
@@ -258,8 +264,16 @@ export class DeviceDO implements DurableObject {
 			return new Response('unauthorized', { status: 401 });
 		}
 		// 既存PCソケットは閉じる（1本に限定）
-		for (const ws of this.state.getWebSockets('pc')) {
+		const superseded = this.state.getWebSockets('pc');
+		for (const ws of superseded) {
 			try { ws.close(1000, 'superseded'); } catch { /* ignore */ }
+		}
+		// 張り替え時はモバイルへ offline→online のフラップを見せる。webSocketClose の offline通知は
+		// 「PCソケットが1本も無い」ときだけなので、張り替えでは発火しない。しかしPCが張り替える＝
+		// PC側のE2Eセッションは破棄済みなので、モバイルが再ハンドシェイクしないまま旧muxで送り続けると
+		// PCがそれをhelloと誤解して恒久的に無視する（acceptMobile側と同じ理由の措置）。
+		if (superseded.length > 0) {
+			this.notifyPcPresence(false);
 		}
 		return this.upgrade(ws => this.state.acceptWebSocket(ws, ['pc']), () => {
 			this.notifyPcPresence(true);
@@ -361,6 +375,15 @@ export class DeviceDO implements DurableObject {
 			if (msg.type === 'pairing-msg') {
 				this.sendToPc({ type: 'pairing-msg', data: msg.data, pairId });
 			}
+			return;
+		}
+
+		// 保活pingは通常エッジが自動応答するのでここには来ない。自動応答が効かない環境
+		// （将来のランタイム変更など）で無応答になると、クライアントが死活判定を諦めて保活が
+		// 静かに無効化されるだけなので、DO側でも応答できるようにしておく。
+		// ペアリングソケットは上で return 済み＝対象外。保活するのはPC/モバイルの常時接続だけ。
+		if (msg.type === 'ping') {
+			try { ws.send(PARADIS_RELAY_KEEPALIVE_PONG); } catch { /* 送れないソケットは間もなく閉じる */ }
 			return;
 		}
 

@@ -68,7 +68,19 @@ export type RelayControlMessage =
 	// リレー→PC: モバイル自身がペアリングを解除した（self-revoke）。PCは登録デバイス一覧から
 	// この mobileId を取り除く。
 	| { readonly type: 'mobile-revoked'; readonly mobileId: string }
+	// 保活。クライアント→リレーの ping にはリレーのDurable Objectを起こさずエッジが pong を
+	// 自動応答する（setWebSocketAutoResponse）。JSONは自動応答の照合に使うため、
+	// PARADIS_RELAY_KEEPALIVE_PING/PONG の文字列と完全一致していなければならない。
+	| { readonly type: 'ping' }
+	| { readonly type: 'pong' }
 	| { readonly type: 'error'; readonly message: string };
+
+/**
+ * 保活メッセージの正準表現。`setWebSocketAutoResponse` はバイト列の完全一致で照合するので、
+ * リレーとクライアントは必ずこの定数を使う（`encodeRelayControl` の出力と一致する）。
+ */
+export const PARADIS_RELAY_KEEPALIVE_PING = '{"type":"ping"}';
+export const PARADIS_RELAY_KEEPALIVE_PONG = '{"type":"pong"}';
 
 export function encodeRelayControl(message: RelayControlMessage): string {
 	return JSON.stringify(message);

@@ -382,6 +382,8 @@ class ParadisCodexServerConnection extends Disposable {
 	private connectionGeneration = 0;
 	private connectStartedAt: number | undefined;
 	private slowConnectReported = false;
+	/** 接続前失敗の報告済みフラグ。再試行のたびに同じ失敗を送らないための一発限り。 */
+	private connectFailedReported = false;
 	private nextRequestId = 1;
 	private loadedRefreshInFlight = false;
 	private readonly pendingRequests = new Map<number, IPendingRequest>();
@@ -641,19 +643,37 @@ class ParadisCodexServerConnection extends Disposable {
 			this.socket = socket;
 			socket.on('open', () => void this.initialize(generation));
 			socket.on('message', data => this.handleMessage(data));
+			// 'error' の直後には必ず 'close' が来る。切断1回で2件reportしても情報が増えないので、
+			// メッセージだけ持ち回って close 側の1件にまとめる（desktop-relay 側と同じ扱い）。
+			let socketErrorMessage = '';
 			socket.on('error', error => {
 				this.logService.trace('[paradisCodexLive] daemon socket error', String(error));
-				reportParadisDiagnosticError('owned', 'codex-app-server', 'socket-error', error, {
-					phase: this.initialized ? 'online' : 'connecting',
-					transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
-				});
+				socketErrorMessage = error instanceof Error ? error.message : String(error);
 			});
-			socket.on('close', () => {
+			socket.on('close', (code, reason) => {
 				if (this.socket === socket) {
+					// close code/reason が無いと「切れた」以上のことが分からない。app-server自身が
+					// 閉じたのか経路が落ちたのかはここでしか区別できないので必ず載せる。
+					const closeExtras = {
+						transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+						close_code: code,
+						safe_close_reason: reason ? reason.toString('utf8').slice(0, 64) : '',
+						safe_socket_error: socketErrorMessage,
+					};
 					if (this.enabled && this.initialized) {
-						reportParadisDiagnosticError('owned', 'codex-app-server', 'unexpected-close', new Error('Codex app-server connection closed'), {
+						reportParadisDiagnosticError('owned', 'codex-app-server', `unexpected-close-${code}`, new Error(`Codex app-server connection closed (code ${code})`), {
 							phase: 'online',
-							transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+							...closeExtras,
+						});
+					} else if (this.enabled && socketErrorMessage && !this.connectFailedReported) {
+						// 接続確立前に落ちたケース。socket自体はapp-serverのソケットが存在してから
+						// 作っているので、ここでの失敗は「口はあるのに繋がらない」という別の異常。
+						// 失敗が続くと10秒ごとの再試行のたびに報告してしまうので、初回だけ送り、
+						// initializeが通ったら（＝状況が変わったら）また送れるようにする。
+						this.connectFailedReported = true;
+						reportParadisDiagnosticError('owned', 'codex-app-server', 'connect-failed', new Error('Codex app-server connection failed before initialize'), {
+							phase: 'connecting',
+							...closeExtras,
 						});
 					}
 					this.resetConnection(new ParadisCodexControlError('unavailable', 'Codex app-serverとの接続が切れました'));
@@ -692,6 +712,7 @@ class ParadisCodexServerConnection extends Disposable {
 			}
 			this.connectStartedAt = undefined;
 			this.slowConnectReported = false;
+			this.connectFailedReported = false;
 			this.sendNotification('initialized');
 			await this.refreshLoadedThreads();
 		} catch (error) {
