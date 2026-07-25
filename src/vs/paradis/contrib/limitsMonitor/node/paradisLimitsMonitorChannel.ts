@@ -73,6 +73,21 @@ const SETUP_RETENTION_MS = 5 * 60_000;
 /** 追加先Codexホームの番号探索の上限。 */
 const MAX_CODEX_HOME_INDEX = 20;
 
+/**
+ * 再ログインでしか解決しない失敗か。この種の失敗はユーザーが対処するまで毎ポーリングで再発し、
+ * かつパネル上に復帰導線（「再ログイン…」ボタン）が出ているので、Sentryへは報告しない。
+ */
+function isCodexAuthFailure(error: unknown): boolean {
+	const httpStatus = (error as { httpStatus?: number } | undefined)?.httpStatus;
+	if (httpStatus === 401 || httpStatus === 403) {
+		return true;
+	}
+	// 数字では判定しない。RPCのエラー文にはリクエストIDや所要msが混ざるので、`401` 単独で
+	// 拾うと本物の障害まで無言で握りつぶす。認証を指す語が出ていることを条件にする。
+	const message = error instanceof Error ? error.message : String(error ?? '');
+	return /unauthorized|forbidden|re-?login|token (?:has )?expired|expired token/i.test(message);
+}
+
 // ---------- cswap --list --json の出力型(schemaVersion 1) ----------
 
 interface ICswapWindow {
@@ -502,10 +517,15 @@ export class ParadisLimitsMonitorService {
 			return { account: { ...base, email: viaRpc.email ?? email, ...viaRpc.windows, planType: viaRpc.planType, status: 'ok' }, accountId };
 		} catch (error) {
 			this.rpcFailureAt.set(homePath, Date.now());
-			reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
-				phase: 'refresh',
-				transport: 'stdio',
-			});
+			// 認証切れはユーザーが再ログインするまで続くので、報告すると同じ内容が積み上がる。
+			// パネル側は status='token_expired' を受けて「トークン失効」バッジと「再ログイン…」
+			// ボタンを出す（paradisLimitsMonitorPanel.ts）ため、ユーザーはそこから復帰できる。
+			if (!isCodexAuthFailure(error)) {
+				reportParadisDiagnosticError('owned', 'limits-monitor', 'codex-app-server-fallback', error, {
+					phase: 'refresh',
+					transport: 'stdio',
+				});
+			}
 			this.logService.warn(`[ParadisLimitsMonitor] codex app-server fallback failed for ${base.homeLabel}: ${(error as Error).message}`);
 			return { account: { ...base, email, status: 'token_expired', statusDetail: (error as Error).message }, accountId };
 		}
