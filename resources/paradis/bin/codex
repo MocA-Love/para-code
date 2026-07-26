@@ -3,6 +3,13 @@
 # PARA-CODE: Start interactive Codex sessions against a pane-scoped app-server so
 # MCP servers inherit the terminal pane environment. Non-interactive commands are
 # delegated unchanged to the user's Codex executable.
+#
+# The pane app-server is an enhancement, not a requirement: if it cannot be started
+# (a broken Codex state directory, a full disk, a stale runtime directory, …) this
+# launcher warns and runs the user's Codex directly rather than failing. Because this
+# launcher is injected into every Para Code terminal's PATH unconditionally and there
+# is no setting to bypass it, exiting here would leave the user with no way to run
+# Codex at all — `resume` is not on the delegated-command list either.
 
 set -u
 
@@ -70,19 +77,56 @@ if [ "$managed" -eq 0 ]; then
 	exec env PATH="$clean_path" "$real_codex" "$@"
 fi
 
+# Every path below can fall back to the unmanaged Codex, so the cleanup helper has to be
+# callable before the app-server exists. `owns_server` stays 0 until we actually start one,
+# which keeps cleanup a no-op for the early validation failures.
+socket_path=
+pid_path=
+owner_path=
+log_path=
+server_pid=
+owns_server=0
+
+cleanup() {
+	if [ "$owns_server" -ne 1 ] || [ -z "$server_pid" ]; then
+		return
+	fi
+	current_owner=
+	if [ -f "$owner_path" ]; then
+		IFS= read -r current_owner < "$owner_path" || current_owner=
+	fi
+	if [ "$current_owner" = "$$" ]; then
+		kill "$server_pid" 2>/dev/null || true
+		wait "$server_pid" 2>/dev/null || true
+		# `.log` is deliberately kept: it is the only record of why an app-server died, and
+		# both the user and Para Code's diagnostics read it after the fact.
+		rm -f "$socket_path" "$pid_path" "$owner_path"
+	fi
+	owns_server=0
+}
+
+# Give up on the pane app-server and hand the session to the user's Codex unchanged.
+# `exec` does not run the EXIT trap, so release the app-server before replacing the process.
+fallback_direct() {
+	fallback_reason=$1
+	shift
+	echo "Para Code: $fallback_reason Starting Codex without the pane app-server; MCP servers will not inherit this pane's environment." >&2
+	cleanup
+	trap - EXIT
+	exec env PATH="$clean_path" "$real_codex" "$@"
+}
+
 socket_path=${PARA_CODE_CODEX_APP_SERVER_SOCKET:-}
 case "$socket_path" in
 	/*/*.sock) ;;
 	*)
-		echo "Para Code: PARA_CODE_CODEX_APP_SERVER_SOCKET is missing or invalid." >&2
-		exit 2
+		fallback_direct "PARA_CODE_CODEX_APP_SERVER_SOCKET is missing or invalid." "$@"
 		;;
 esac
 socket_name=${socket_path##*/}
 case "$socket_name" in
 	''|*[!A-Za-z0-9._-]*)
-		echo "Para Code: Codex app-server socket name is invalid." >&2
-		exit 2
+		fallback_direct "Codex app-server socket name is invalid." "$@"
 		;;
 esac
 
@@ -90,19 +134,16 @@ runtime_dir=${socket_path%/*}
 case "$runtime_dir" in
 	*/pcx) ;;
 	*)
-		echo "Para Code: Codex app-server socket must be inside the Para Code pcx runtime directory." >&2
-		exit 2
+		fallback_direct "Codex app-server socket must be inside the Para Code pcx runtime directory." "$@"
 		;;
 esac
 pid_path=$socket_path.pid
 owner_path=$socket_path.owner
 log_path=$socket_path.log
 umask 077
-mkdir -p "$runtime_dir" || exit 1
-chmod 700 "$runtime_dir" || exit 1
+mkdir -p "$runtime_dir" || fallback_direct "could not create the Para Code pcx runtime directory." "$@"
+chmod 700 "$runtime_dir" || fallback_direct "could not secure the Para Code pcx runtime directory." "$@"
 
-server_pid=
-owns_server=0
 if [ -f "$pid_path" ]; then
 	IFS= read -r server_pid < "$pid_path" || server_pid=
 	case "$server_pid" in
@@ -129,8 +170,10 @@ if [ -z "$server_pid" ]; then
 		kill "$server_pid" 2>/dev/null || true
 		wait "$server_pid" 2>/dev/null || true
 		rm -f "$socket_path" "$pid_path" "$owner_path"
-		echo "Para Code: could not record pane Codex app-server ownership." >&2
-		exit 1
+		# Already released above, so keep cleanup from killing an unrelated recycled pid.
+		owns_server=0
+		server_pid=
+		fallback_direct "could not record pane Codex app-server ownership." "$@"
 	fi
 else
 	owner_pid=
@@ -146,19 +189,6 @@ else
 	fi
 fi
 
-cleanup() {
-	current_owner=
-	if [ -f "$owner_path" ]; then
-		IFS= read -r current_owner < "$owner_path" || current_owner=
-	fi
-	if [ "$owns_server" -eq 1 ] && [ "$current_owner" = "$$" ] && [ -n "$server_pid" ]; then
-		kill "$server_pid" 2>/dev/null || true
-		wait "$server_pid" 2>/dev/null || true
-		rm -f "$socket_path" "$pid_path" "$owner_path"
-		owns_server=0
-	fi
-}
-
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
@@ -167,13 +197,11 @@ trap 'exit 143' TERM
 attempt=0
 while [ ! -S "$socket_path" ]; do
 	if ! kill -0 "$server_pid" 2>/dev/null; then
-		echo "Para Code: pane Codex app-server failed to start. See $log_path" >&2
-		exit 1
+		fallback_direct "pane Codex app-server failed to start (see $log_path)." "$@"
 	fi
 	attempt=$((attempt + 1))
 	if [ "$attempt" -ge 100 ]; then
-		echo "Para Code: timed out waiting for pane Codex app-server. See $log_path" >&2
-		exit 1
+		fallback_direct "timed out waiting for pane Codex app-server (see $log_path)." "$@"
 	fi
 	sleep 0.1
 done
