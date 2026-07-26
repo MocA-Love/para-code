@@ -182,4 +182,38 @@ suite('ParadisCodexPaneWinLauncher', () => {
 			await fs.rm(setup.testRoot, { recursive: true, force: true });
 		}
 	});
+
+	// Mirrors the POSIX launcher: the pane app-server is an enhancement, so a Codex that cannot
+	// host one must still start. The app-server's log is kept as the only record of the cause.
+	test('falls back to the unmanaged Codex when the app-server cannot start', async () => {
+		const setup = await createSetup();
+		try {
+			await fs.writeFile(setup.fakeCodexPath, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === 'app-server') {
+	process.stderr.write('Error: failed to initialize sqlite state runtime under /fake/.codex\\n');
+	process.exit(3);
+}
+fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify({ args }));
+`, { mode: 0o700 });
+
+			const { stderr } = await execFileAsync(process.execPath, [launcherJsPath, 'resume', 'thread-1'], { env: setup.env, timeout: 15_000 });
+			const tui = JSON.parse(await fs.readFile(setup.tuiRecordPath, 'utf8')) as IFakeCodexRecord;
+
+			assert.deepStrictEqual({
+				tuiArgs: tui.args,
+				warned: stderr.includes('without the pane app-server'),
+				log: await fs.readFile(`${setup.endpointPath}.log`, 'utf8'),
+				endpointLeft: await fs.access(setup.endpointPath).then(() => true, () => false),
+			}, {
+				tuiArgs: ['resume', 'thread-1'],
+				warned: true,
+				log: 'Error: failed to initialize sqlite state runtime under /fake/.codex\n',
+				endpointLeft: false,
+			});
+		} finally {
+			await fs.rm(setup.testRoot, { recursive: true, force: true });
+		}
+	});
 });

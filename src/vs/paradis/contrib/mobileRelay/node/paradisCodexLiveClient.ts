@@ -12,6 +12,12 @@ import { WebSocket, type RawData } from 'ws';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import {
+	IParadisCodexPaneFailureInput,
+	PARADIS_CODEX_PANE_LOG_TAIL_BYTES,
+	ParadisCodexPaneFailureKind,
+	paradisClassifyCodexPaneFailure,
+} from '../common/paradisCodexPaneFailure.js';
 
 const RETRY_INTERVAL_MS = 10_000;
 const LOADED_POLL_INTERVAL_MS = 2_000;
@@ -331,6 +337,70 @@ async function pathExists(path: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * ランチャーが app-server の出力を書き出した `<socket>.log` の末尾を読む。
+ *
+ * Codexのログは上限なく伸びる（実機で1GB超のsqliteログを確認しており、この`.log`も
+ * 数十KBまで育つ）ので、必ず末尾だけを読む。ファイルが無い場合だけ undefined を返し、
+ * 「ログが無い」と「ログが空」を呼び出し側が区別できるようにする。
+ */
+async function readCodexPaneLogTail(logPath: string): Promise<string | undefined> {
+	let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+	try {
+		handle = await fs.open(logPath, 'r');
+		const { size } = await handle.stat();
+		const length = Math.min(size, PARADIS_CODEX_PANE_LOG_TAIL_BYTES);
+		if (length <= 0) {
+			return '';
+		}
+		const buffer = Buffer.allocUnsafe(length);
+		await handle.read(buffer, 0, length, size - length);
+		return buffer.toString('utf8');
+	} catch {
+		return undefined;
+	} finally {
+		try {
+			await handle?.close();
+		} catch {
+			// best effort
+		}
+	}
+}
+
+/** ランチャーが記録した app-server の pid。Unixは`<socket>.pid`、Windowsはendpointファイル内。 */
+async function readCodexPaneServerPid(socketPath: string, isEndpointTarget: boolean): Promise<number | undefined> {
+	try {
+		if (isEndpointTarget) {
+			const parsed: unknown = JSON.parse(await fs.readFile(socketPath, 'utf8'));
+			const pid = record(parsed)?.['pid'];
+			return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+		}
+		const raw = (await fs.readFile(`${socketPath}.pid`, 'utf8')).trim();
+		const pid = Number(raw);
+		return /^\d+$/.test(raw) && Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function processIsAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		// EPERMは「居るが触れない」なので生存とみなす。ESRCHだけが本当に居ない。
+		return (error as NodeJS.ErrnoException | undefined)?.code === 'EPERM';
+	}
+}
+
+async function readCodexPaneFailureInput(socketPath: string, isEndpointTarget: boolean): Promise<IParadisCodexPaneFailureInput> {
+	const [log, pid] = await Promise.all([
+		readCodexPaneLogTail(`${socketPath}.log`),
+		readCodexPaneServerPid(socketPath, isEndpointTarget),
+	]);
+	return { log, serverAlive: pid !== undefined && processIsAlive(pid) };
 }
 
 /** Windows: `pcx/<paneToken>.endpoint.json` 形式のtargetからペイントークン（=Bearer認証トークン）を復元する。 */
@@ -1058,10 +1128,38 @@ class ParadisCodexServerConnection extends Disposable {
 			return;
 		}
 		this.slowConnectReported = true;
-		reportParadisDiagnosticError('owned', 'codex-app-server', 'endpoint-not-ready', new Error('Codex app-server endpoint was not ready'), {
+		// ファイル読みを待たずに報告済みフラグを立てているので、多重報告にはならない。
+		void this.reportEndpointNotReady(phase, duration);
+	}
+
+	/**
+	 * ソケットが現れない理由を、その隣にあるランチャーのログから特定して報告する。
+	 *
+	 * ランチャーはapp-serverが立たなければ素のCodexへフォールバックする（=ユーザーは
+	 * 困らなくなる）ため、この報告が「動いていないのに誰も気づかない」状態を検知する
+	 * 唯一の手段になる。
+	 *
+	 * 分類をextraではなくoperationへ載せるのは、Sentry側のレートリミッタがfingerprint
+	 * （para.operationを含む）単位で10分3件だから。extraに入れると頻出する'server-alive'に
+	 * 埋もれて、レアで重大な'state-runtime'が握り潰される。desktop-relayの
+	 * `unexpected-close-<code>`と同じ理由・同じ形。
+	 */
+	private async reportEndpointNotReady(phase: string, duration: number): Promise<void> {
+		let kind: ParadisCodexPaneFailureKind = 'unclassified';
+		let logTailBytes = 0;
+		try {
+			const input = await readCodexPaneFailureInput(this.socketPath, this.endpointTarget !== undefined);
+			kind = paradisClassifyCodexPaneFailure(input);
+			logTailBytes = input.log?.length ?? 0;
+		} catch (error) {
+			this.logService.trace('[paradisCodexLive] could not inspect the pane app-server log', String(error));
+		}
+		// `kind`は許可リスト由来の固定語彙なので、operationとメッセージに含めてもログ本文は漏れない。
+		reportParadisDiagnosticError('owned', 'codex-app-server', `endpoint-not-ready-${kind}`, new Error(`Codex app-server endpoint was not ready (${kind})`), {
 			duration_ms: duration,
 			phase,
 			transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
+			safe_log_tail_bytes: logTailBytes,
 		});
 	}
 

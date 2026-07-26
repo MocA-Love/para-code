@@ -190,4 +190,83 @@ if (args[0] === 'app-server') {
 			await fs.rm(testRoot, { recursive: true, force: true });
 		}
 	});
+
+	// The launcher is on every Para Code terminal's PATH with no way to bypass it, and `resume`
+	// is not a delegated command, so exiting when the app-server cannot start would leave the
+	// user unable to run Codex at all. Field reports of a broken Codex state directory produced
+	// exactly that. The app-server's log must survive: it is the only record of the cause.
+	test('falls back to the unmanaged Codex when the app-server cannot start', async () => {
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
+		try {
+			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
+			const fakeBin = join(testRoot, 'bin');
+			const fakeCodexPath = join(fakeBin, 'codex');
+			const socketPath = join(testRoot, 'pcx', 'pane.sock');
+			const recordPath = join(testRoot, 'record.json');
+			await fs.mkdir(fakeBin, { recursive: true });
+			await fs.writeFile(fakeCodexPath, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === 'app-server') {
+	process.stderr.write('Error: failed to initialize sqlite state runtime under /fake/.codex\\n');
+	process.exit(3);
+}
+fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
+`, { mode: 0o700 });
+			const env = {
+				...process.env,
+				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
+				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
+				PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
+				PARADIS_TEST_TUI_RECORD: recordPath,
+			};
+			const { stderr } = await execFileAsync(launcherPath, ['resume', 'thread-1'], { env, timeout: 15_000 });
+
+			assert.deepStrictEqual({
+				tuiArgs: JSON.parse(await fs.readFile(recordPath, 'utf8')),
+				warned: stderr.includes('without the pane app-server'),
+				log: await fs.readFile(`${socketPath}.log`, 'utf8'),
+				socketLeft: await fs.access(socketPath).then(() => true, () => false),
+				pidLeft: await fs.access(`${socketPath}.pid`).then(() => true, () => false),
+			}, {
+				tuiArgs: ['resume', 'thread-1'],
+				warned: true,
+				log: 'Error: failed to initialize sqlite state runtime under /fake/.codex\n',
+				socketLeft: false,
+				pidLeft: false,
+			});
+		} finally {
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
+
+	// A launcher that runs outside a Para Code terminal (a leaked PATH entry, a detached shell)
+	// has no pane socket to manage; it must still run Codex rather than refusing to start.
+	test('falls back when the pane socket environment is missing', async () => {
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
+		try {
+			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
+			const fakeBin = join(testRoot, 'bin');
+			const recordPath = join(testRoot, 'record.json');
+			await fs.mkdir(fakeBin, { recursive: true });
+			await fs.writeFile(join(fakeBin, 'codex'), `#!/usr/bin/env node
+require('fs').writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(process.argv.slice(2)));
+`, { mode: 0o700 });
+			const env = {
+				...process.env,
+				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
+				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
+				PARA_CODE_CODEX_APP_SERVER_SOCKET: '',
+				PARADIS_TEST_TUI_RECORD: recordPath,
+			};
+			const { stderr } = await execFileAsync(launcherPath, ['resume', 'thread-2'], { env, timeout: 15_000 });
+
+			assert.deepStrictEqual({
+				tuiArgs: JSON.parse(await fs.readFile(recordPath, 'utf8')),
+				warned: stderr.includes('without the pane app-server'),
+			}, { tuiArgs: ['resume', 'thread-2'], warned: true });
+		} finally {
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
 });

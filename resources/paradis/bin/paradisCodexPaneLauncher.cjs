@@ -42,6 +42,21 @@ function fail(message, code) {
 	process.exit(code);
 }
 
+/**
+ * Gives up on the pane app-server and runs the user's Codex unchanged.
+ *
+ * The pane app-server is an enhancement (it lets MCP servers inherit the pane
+ * environment), not a requirement. This launcher is injected into every Para Code
+ * terminal's PATH unconditionally with no setting to bypass it, and `resume` is not on
+ * the delegated-command list, so failing here would leave the user unable to run Codex
+ * at all. Warn about the lost capability and keep going instead.
+ */
+function fallbackToDirect(reason, real, pathEntries, args) {
+	process.stderr.write(
+		`Para Code: ${reason} Starting Codex without the pane app-server; MCP servers will not inherit this pane's environment.${os.EOL}`);
+	runDelegated(real, pathEntries, args);
+}
+
 function samePath(a, b) {
 	const normalize = value => process.platform === 'win32'
 		? path.resolve(value).toLowerCase().replace(/[\\/]+$/, '')
@@ -308,6 +323,13 @@ function startPaneServer(real, pathEntries, endpointPath, paneToken) {
 		const settle = result => {
 			if (!settled) {
 				settled = true;
+				// On the failure paths nobody else owns the stream, and the launcher now keeps
+				// running (it falls back to the unmanaged Codex) instead of exiting immediately,
+				// so the descriptor has to be released here. The file itself is kept: it is the
+				// only record of why the app-server died.
+				if (result.error !== undefined) {
+					logStream.end();
+				}
 				resolve(result);
 			}
 		};
@@ -346,14 +368,21 @@ async function runManaged(real, pathEntries, args) {
 	const endpointName = path.basename(endpointPath);
 	if (!path.isAbsolute(endpointPath) || !/^[A-Za-z0-9._-]{1,64}\.endpoint\.json$/.test(endpointName)
 		|| path.basename(path.dirname(endpointPath)) !== 'pcx') {
-		fail(`${ENDPOINT_ENV_VAR} is missing or invalid.`, 2);
+		fallbackToDirect(`${ENDPOINT_ENV_VAR} is missing or invalid.`, real, pathEntries, args);
+		return;
 	}
 	const paneToken = process.env[PANE_TOKEN_ENV_VAR] || '';
 	if (!/^[A-Za-z0-9._-]{1,64}$/.test(paneToken)) {
-		fail(`${PANE_TOKEN_ENV_VAR} is missing or invalid.`, 2);
+		fallbackToDirect(`${PANE_TOKEN_ENV_VAR} is missing or invalid.`, real, pathEntries, args);
+		return;
 	}
 	const runtimeDir = path.dirname(endpointPath);
-	fs.mkdirSync(runtimeDir, { recursive: true });
+	try {
+		fs.mkdirSync(runtimeDir, { recursive: true });
+	} catch (error) {
+		fallbackToDirect(`could not create the Para Code pcx runtime directory: ${error.message}.`, real, pathEntries, args);
+		return;
+	}
 	sweepDeadEndpoints(runtimeDir);
 
 	let port;
@@ -370,7 +399,8 @@ async function runManaged(real, pathEntries, args) {
 	} else {
 		const started = await startPaneServer(real, pathEntries, endpointPath, paneToken);
 		if (started.error !== undefined) {
-			fail(started.error, 1);
+			fallbackToDirect(`${started.error}.`, real, pathEntries, args);
+			return;
 		}
 		port = started.port;
 		ownedServer = { pid: started.server.pid, port, child: started.server, logStream: started.logStream };
@@ -378,7 +408,9 @@ async function runManaged(real, pathEntries, args) {
 			writeEndpointRecord(endpointPath, { port, pid: started.server.pid, ownerPid: process.pid });
 		} catch (error) {
 			killServerTree(started.server.pid);
-			fail(`could not record the pane Codex app-server endpoint: ${error.message}`, 1);
+			started.logStream.end();
+			fallbackToDirect(`could not record the pane Codex app-server endpoint: ${error.message}.`, real, pathEntries, args);
+			return;
 		}
 		started.server.unref();
 	}
