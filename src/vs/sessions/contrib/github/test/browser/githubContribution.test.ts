@@ -22,6 +22,7 @@ import { IGitHubService } from '../../browser/githubService.js';
 import { ChatInteractivity, IChat, IGitHubInfo, ISession, ISessionCapabilities, ISessionChangeset, IChatCheckpoints, ISessionFileChange, ISessionWorkspace, SessionStatus } from '../../../../services/sessions/common/session.js';
 import { IActiveSession, ISessionsChangeEvent, ISessionsManagementService } from '../../../../services/sessions/common/sessionsManagement.js';
 import { ISessionsService } from '../../../../services/sessions/browser/sessionsService.js';
+import { IHostService } from '../../../../../workbench/services/host/browser/host.js';
 
 // PARA-PATCH: expectations updated for tiered polling — only the ACTIVE session
 // calls `startPolling` (fast cadence); non-active sessions join the shared
@@ -36,6 +37,12 @@ suite('GitHubPullRequestPollingContribution', () => {
 	let sessionsService: ISessionsService;
 	let gitHubService: TestGitHubService;
 	let activeSession: ISettableObservable<IActiveSession | undefined>;
+	// PARA-PATCH: polling is suspended while the window is unfocused; these tests
+	// all run against a focused window.
+	const hostService = new class extends mock<IHostService>() {
+		override readonly onDidChangeFocus = Event.None;
+		override readonly hasFocus = true;
+	};
 
 	setup(() => {
 		sessionsManagementService = new TestSessionsManagementService(store);
@@ -54,7 +61,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 		const existingSession = sessionsManagementService.addSession('existing', makeGitHubInfo(1));
 		activeSession.set(existingSession as unknown as IActiveSession, undefined);
 
-		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		const addedSession = sessionsManagementService.addSession('added', makeGitHubInfo(2));
 		sessionsManagementService.fireSessionsChanged({ added: [addedSession] });
@@ -69,7 +76,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 	test('stops polling when a session is archived, then resumes when unarchived', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
 		activeSession.set(session as unknown as IActiveSession, undefined);
-		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		sessionsManagementService.setArchived(session, true);
 		sessionsManagementService.fireSessionsChanged({ changed: [session] });
@@ -89,7 +96,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 	test('does not poll archived sessions until they are unarchived', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1), true);
 		activeSession.set(session as unknown as IActiveSession, undefined);
-		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		assert.deepStrictEqual(gitHubService.snapshot(), {});
 
@@ -104,7 +111,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 	test('stops polling tracked pull requests when disposed', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
 		activeSession.set(session as unknown as IActiveSession, undefined);
-		const contribution = store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		const contribution = store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		contribution.dispose();
 
@@ -114,10 +121,13 @@ suite('GitHubPullRequestPollingContribution', () => {
 		assert.strictEqual(session.isArchived.get(), false);
 	});
 
-	test('polls CI checks and review threads once an open pull request resolves', () => {
+	// PARA-PATCH: review threads are no longer polled per session — they are driven
+	// by the active session's pull-request change token instead (see
+	// sessionGithubReviewThreadsRefresh.ts), so only CI is polled here.
+	test('polls CI checks once an open pull request resolves', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
 		activeSession.set(session as unknown as IActiveSession, undefined);
-		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		// Until the PR details load, only the PR model is polled.
 		assert.deepStrictEqual(gitHubService.statusModelSnapshot(), { ci: {}, reviewThreads: {} });
@@ -126,14 +136,30 @@ suite('GitHubPullRequestPollingContribution', () => {
 
 		assert.deepStrictEqual(gitHubService.statusModelSnapshot(), {
 			ci: { 'owner/repo/1/sha1': { startPollingCalls: 1, refreshCalls: 1 } },
-			reviewThreads: { 'owner/repo/1': { startPollingCalls: 1, refreshCalls: 1 } },
+			reviewThreads: {},
+		});
+	});
+
+	// PARA-PATCH: a routine pull-request refresh produces a new object every cycle;
+	// the CI model must not be torn down and re-acquired unless the head SHA moves.
+	test('keeps the CI model across pull request refreshes with an unchanged head SHA', () => {
+		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
+		activeSession.set(session as unknown as IActiveSession, undefined);
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
+
+		gitHubService.setPullRequestDetails('owner', 'repo', 1, { state: GitHubPullRequestState.Open, isDraft: false, headSha: 'sha1' });
+		gitHubService.setPullRequestDetails('owner', 'repo', 1, { state: GitHubPullRequestState.Open, isDraft: false, headSha: 'sha1' });
+
+		assert.deepStrictEqual(gitHubService.statusModelSnapshot(), {
+			ci: { 'owner/repo/1/sha1': { startPollingCalls: 1, refreshCalls: 1 } },
+			reviewThreads: {},
 		});
 	});
 
 	test('does not poll CI checks or review threads for draft pull requests', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
 		activeSession.set(session as unknown as IActiveSession, undefined);
-		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		gitHubService.setPullRequestDetails('owner', 'repo', 1, { state: GitHubPullRequestState.Open, isDraft: true, headSha: 'sha1' });
 
@@ -143,7 +169,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 	// PARA-PATCH: new coverage for the active-session-only CI/review-thread gate
 	test('does not poll CI checks or review threads for non-active sessions', () => {
 		sessionsManagementService.addSession('session', makeGitHubInfo(1));
-		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		gitHubService.setPullRequestDetails('owner', 'repo', 1, { state: GitHubPullRequestState.Open, isDraft: false, headSha: 'sha1' });
 
@@ -155,7 +181,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 		// number (it is resolved asynchronously via findPullRequestNumberByHeadBranch).
 		const session = sessionsManagementService.addSession('async', { owner: 'owner', repo: 'repo' });
 		activeSession.set(session as unknown as IActiveSession, undefined);
-		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		// No PR number yet → nothing is polled.
 		assert.deepStrictEqual(gitHubService.snapshot(), {});
@@ -170,7 +196,7 @@ suite('GitHubPullRequestPollingContribution', () => {
 
 	test('stops polling a merged pull request unless it is the active session', () => {
 		const session = sessionsManagementService.addSession('session', makeGitHubInfo(1));
-		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService));
+		store.add(new GitHubPullRequestPollingContribution(gitHubService, sessionsManagementService, sessionsService, logService, hostService));
 
 		// PARA-PATCH: a non-active open PR is tracked in the background round-robin,
 		// not via the fast `startPolling` cadence.

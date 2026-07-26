@@ -7,6 +7,7 @@
 
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { IObservable } from '../../../../base/common/observable.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
 const LOG_PREFIX = '[SessionGithubBackgroundRefreshScheduler]';
@@ -53,6 +54,12 @@ export class SessionGithubBackgroundRefreshScheduler extends Disposable {
 	constructor(
 		private readonly _logService: ILogService,
 		private readonly _now: () => number = Date.now,
+		/**
+		 * When given, ticks are skipped while this reads `false` (the window is in
+		 * the background). Registered models keep their timers, so a focus
+		 * round-trip does not reset the round-robin.
+		 */
+		private readonly _isWindowActive?: IObservable<boolean>,
 	) {
 		super();
 
@@ -91,6 +98,10 @@ export class SessionGithubBackgroundRefreshScheduler extends Disposable {
 	 * internal timer.
 	 */
 	tick(): void {
+		if (this._isWindowActive && !this._isWindowActive.get()) {
+			return;
+		}
+
 		const now = this._now();
 
 		let candidate: ISessionGithubRefreshable | undefined;

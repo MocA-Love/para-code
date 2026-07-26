@@ -184,6 +184,18 @@ suite('GitHubPRFetcher', () => {
 		assert.strictEqual(thread2.isResolved, true);
 	});
 
+	// PARA-PATCH: GitHub prices a GraphQL query by the product of its connection
+	// page sizes, so asking for 100 comments per thread costs ~101 points against
+	// the 5,000/hour GraphQL budget instead of 2. Only the first comment is ever
+	// read, so the page size must stay at 1.
+	test('getReviewThreads asks for a single comment per thread', async () => {
+		mockApi.setNextResponse(makeGraphQLReviewThreadsResponse([makeGraphQLReviewThread({})]));
+
+		await fetcher.getReviewThreads('owner', 'repo', 1);
+
+		assert.ok(mockApi.graphqlCalls[0].query.includes('comments(first: 1)'), mockApi.graphqlCalls[0].query);
+	});
+
 	test('resolveThread uses GraphQL mutation', async () => {
 		mockApi.setNextResponse({
 			resolveReviewThread: {

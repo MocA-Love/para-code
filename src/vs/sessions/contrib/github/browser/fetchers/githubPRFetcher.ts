@@ -104,6 +104,13 @@ interface IGitHubGraphQLResolveReviewThreadResponse {
 
 //#endregion
 
+// PARA-PATCH: `comments(first: 100)` made this query cost ~101 GraphQL rate-limit
+// points (GitHub scores a query as the product of its connection page sizes,
+// divided by 100: 100 threads x 100 comments = 10,100 nodes). Polled once a
+// minute that is ~6,060 points/hour against a 5,000 points/hour limit — the
+// request gate counts requests, not points, so it never saw it. Every consumer
+// only reads the thread's first comment (see `codeReviewService.ts`), so one
+// comment per thread brings the query down to 200 nodes = 2 points.
 const GET_REVIEW_THREADS_QUERY = [
 	'query GetReviewThreads($owner: String!, $repo: String!, $prNumber: Int!) {',
 	'  repository(owner: $owner, name: $repo) {',
@@ -114,7 +121,7 @@ const GET_REVIEW_THREADS_QUERY = [
 	'          isResolved',
 	'          path',
 	'          line',
-	'          comments(first: 100) {',
+	'          comments(first: 1) {',
 	'            nodes {',
 	'              databaseId',
 	'              body',

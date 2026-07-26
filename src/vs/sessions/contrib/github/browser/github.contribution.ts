@@ -11,6 +11,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+// PARA-PATCH: window-focus gating for this window's GitHub polling
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ISession } from '../../../services/sessions/common/session.js';
 import { ISessionsChangeEvent, ISessionsManagementService } from '../../../services/sessions/common/sessionsManagement.js';
 import { ISessionsService } from '../../../services/sessions/browser/sessionsService.js';
@@ -22,6 +24,8 @@ import './pullRequestActions.js';
 
 // PARA-PATCH: tiered PR polling + one-shot settings migration (GitHub rate-limit work)
 import { SessionGithubBackgroundRefreshScheduler } from './sessionGithubBackgroundPolling.js';
+import { startChangeDrivenReviewThreadsRefresh } from './sessionGithubReviewThreadsRefresh.js';
+import { SessionGithubWindowActivity } from './sessionGithubWindowActivity.js';
 import './sessionParaGithubSettingsMigration.js';
 
 const TRACE_PREFIX = '[PR-ICON-TRACE]';
@@ -50,16 +54,22 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 	// (bounded background traffic regardless of session count)
 	private readonly _backgroundRefreshScheduler: SessionGithubBackgroundRefreshScheduler;
 
+	// PARA-PATCH: suspends this window's polling while nobody is looking at it —
+	// the request gate is per window, so N windows would otherwise cost N budgets.
+	private readonly _windowActivity: SessionGithubWindowActivity;
+
 	constructor(
 		@IGitHubService private readonly _gitHubService: IGitHubService,
 		@ISessionsManagementService private readonly _sessionsManagementService: ISessionsManagementService,
 		@ISessionsService private readonly _sessionsService: ISessionsService,
 		@ILogService private readonly _logService: ILogService,
+		@IHostService hostService: IHostService,
 	) {
 		super();
 
 		// PARA-PATCH: see field declaration
-		this._backgroundRefreshScheduler = this._register(new SessionGithubBackgroundRefreshScheduler(this._logService));
+		this._windowActivity = this._register(new SessionGithubWindowActivity(hostService));
+		this._backgroundRefreshScheduler = this._register(new SessionGithubBackgroundRefreshScheduler(this._logService, undefined, this._windowActivity.isActive));
 
 		const activeSessionResourceObs = derivedOpts<URI | undefined>({ equalsFn: isEqual }, reader => {
 			const activeSession = this._sessionsService.activeSession.read(reader);
@@ -73,7 +83,9 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 		// Pull request model
 		this._register(autorun(reader => {
 			const activeSessionResource = activeSessionResourceObs.read(reader);
-			if (!activeSessionResource) {
+			// PARA-PATCH: also re-runs when the window becomes active again, so a
+			// suspended window catches up immediately instead of at the next tick.
+			if (!activeSessionResource || !this._windowActivity.isActive.read(reader)) {
 				return;
 			}
 
@@ -84,7 +96,8 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 		// Pull request CI model
 		this._register(autorun(reader => {
 			const activeSessionResource = activeSessionResourceObs.read(reader);
-			if (!activeSessionResource) {
+			// PARA-PATCH: see above
+			if (!activeSessionResource || !this._windowActivity.isActive.read(reader)) {
 				return;
 			}
 
@@ -97,10 +110,17 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 			reader.store.add(model.startPolling());
 		}));
 
+		// PARA-PATCH: change token for the active session's review threads. Kept
+		// separate from the model reference above so a pull-request update moves
+		// this value without re-creating (and therefore re-fetching) any model.
+		const activePullRequestUpdatedAtObs = derived(this, reader =>
+			this._gitHubService.activeSessionPullRequestObs.read(reader)?.pullRequest.read(reader)?.updatedAt);
+
 		// Pull request review threads model
 		this._register(autorun(reader => {
 			const activeSessionResource = activeSessionResourceObs.read(reader);
-			if (!activeSessionResource) {
+			// PARA-PATCH: see above
+			if (!activeSessionResource || !this._windowActivity.isActive.read(reader)) {
 				return;
 			}
 
@@ -109,8 +129,13 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 				return;
 			}
 
-			model.refresh();
-			reader.store.add(model.startPolling());
+			// PARA-PATCH: review threads used to run their own 60s poll. They are
+			// fetched over GraphQL, which bills by query size (~2 points here) against
+			// a separate 5,000 points/hour budget and cannot use ETags, so polling
+			// them burned quota continuously for data that only moves when a human
+			// comments. They now ride along with the pull-request model's (free,
+			// conditional) REST polling — see sessionGithubReviewThreadsRefresh.ts.
+			reader.store.add(startChangeDrivenReviewThreadsRefresh(model, activePullRequestUpdatedAtObs, this._logService));
 		}));
 
 		this._sessionsManagementService.onDidChangeSessions(this._onDidChangeSessions, this, this._store);
@@ -249,38 +274,57 @@ export class GitHubPullRequestPollingContribution extends Disposable implements 
 				// background round-robin, so total traffic stays bounded regardless of
 				// how many worktree sessions are open.
 				if (isActiveObs.read(pollReader)) {
-					pollReader.store.add(model.startPolling());
+					// PARA-PATCH: suspend while the window is in the background. The
+					// background tier is suspended inside the scheduler instead, so its
+					// per-model timers survive a focus round-trip.
+					if (this._windowActivity.isActive.read(pollReader)) {
+						pollReader.store.add(model.startPolling());
+					}
 				} else {
 					pollReader.store.add(this._backgroundRefreshScheduler.register(model, model.pullRequest.read(undefined) !== undefined));
 				}
 			}));
 
-			// Poll CI checks and review threads so the session's PR icon can reflect
-			// failing checks / unresolved comments even when the session is not active.
-			// Only open, non-draft PRs need this (merged/closed/draft don't surface it).
+			// Poll CI checks so the session's PR icon can reflect failing checks. Only
+			// open, non-draft PRs need this (merged/closed/draft don't surface it).
+			//
+			// PARA-PATCH: CI polling is restricted to the active session. With hundreds
+			// of sessions these per-session polls dominated the GitHub quota; non-active
+			// session icons now reflect PR state only, which the background PR-model
+			// refresh keeps warm. Review threads used to be polled here too — they are
+			// now driven by the active session's change token instead (see the
+			// constructor), so they no longer need a per-session poll at all.
+			//
+			// The head SHA is projected through a structurally-compared observable so a
+			// routine pull-request refresh (which produces a new object every minute)
+			// does not tear down and re-acquire the CI model on every cycle.
+			const ciTargetObs = derivedOpts<{ readonly headSha: string } | undefined>(
+				{ owner: this, equalsFn: structuralEquals },
+				statusReader => {
+					// PARA-PATCH: `isActive` also covers window focus — see above.
+					if (!isActiveObs.read(statusReader) || !this._windowActivity.isActive.read(statusReader)) {
+						return undefined;
+					}
+
+					const prDetails = model.pullRequest.read(statusReader);
+					if (!prDetails || prDetails.isDraft || prDetails.state !== GitHubPullRequestState.Open) {
+						return undefined;
+					}
+
+					return { headSha: prDetails.headSha };
+				});
+
 			reader.store.add(autorun(statusReader => {
-				// PARA-PATCH: CI + review-thread polling is restricted to the active
-				// session. With hundreds of sessions these per-session polls (check-runs
-				// has no ETag) dominated the GitHub quota; non-active session icons now
-				// reflect PR state only, which the background PR-model refresh keeps warm.
-				if (!isActiveObs.read(statusReader)) {
+				const ciTarget = ciTargetObs.read(statusReader);
+				if (!ciTarget) {
 					return;
 				}
 
-				const prDetails = model.pullRequest.read(statusReader);
-				if (!prDetails || prDetails.isDraft || prDetails.state !== GitHubPullRequestState.Open) {
-					return;
-				}
+				this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} starting CI polling for ${owner}/${repo}#${prNumber}@${ciTarget.headSha}`);
 
-				this._logService.trace(`${TRACE_PREFIX} [PollingContribution] Session ${session.sessionId} starting CI + review-thread polling for ${owner}/${repo}#${prNumber}@${prDetails.headSha}`);
-
-				const ciModelRef = statusReader.store.add(this._gitHubService.createPullRequestCIModelReference(owner, repo, prNumber, prDetails.headSha));
+				const ciModelRef = statusReader.store.add(this._gitHubService.createPullRequestCIModelReference(owner, repo, prNumber, ciTarget.headSha));
 				ciModelRef.object.refresh();
 				statusReader.store.add(ciModelRef.object.startPolling());
-
-				const reviewThreadsModelRef = statusReader.store.add(this._gitHubService.createPullRequestReviewThreadsModelReference(owner, repo, prNumber));
-				reviewThreadsModelRef.object.refresh();
-				statusReader.store.add(reviewThreadsModelRef.object.startPolling());
 			}));
 		});
 	}

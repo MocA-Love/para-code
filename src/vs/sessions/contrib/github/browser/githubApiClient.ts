@@ -34,6 +34,21 @@ interface IGitHubGraphQLResponse<T> {
 	readonly errors?: readonly IGitHubGraphQLError[];
 }
 
+// PARA-PATCH: GitHub meters REST and GraphQL against completely separate budgets
+// (and GraphQL bills by query size, not by request), so consumers that want to
+// stay under the limits have to track them apart. See sessionGithubRequestGate.ts.
+export type GitHubApiResource = 'rest' | 'graphql';
+
+/** PARA-PATCH: one `x-ratelimit-*` reading, as reported by GitHub. */
+export interface IGitHubRateLimitSnapshot {
+	readonly resource: GitHubApiResource;
+	/** Budget for the current window — requests for REST, points for GraphQL. */
+	readonly limit: number | undefined;
+	readonly remaining: number | undefined;
+	/** When the current window resets, in epoch milliseconds. */
+	readonly resetAtMs: number | undefined;
+}
+
 export class GitHubApiError extends Error {
 	constructor(
 		message: string,
@@ -118,6 +133,17 @@ export class GitHubApiClient extends Disposable {
 			this._logService.warn(`${LOG_PREFIX} GitHub API rate limit low: ${rateLimitRemaining} remaining`);
 		}
 
+		// PARA-PATCH: hand the full rate-limit reading to subclasses. GitHub's own
+		// guidance is to read these headers rather than to query the budget, and they
+		// are the only way to tell the REST and GraphQL windows apart (GraphQL is
+		// billed in points, so a request count says nothing about what is left).
+		this._onRateLimitSnapshot({
+			resource: parseRateLimitResourceHeader(response.res.headers?.['x-ratelimit-resource'], url === GITHUB_GRAPHQL_ENDPOINT),
+			limit: parseRateLimitHeader(response.res.headers?.['x-ratelimit-limit']),
+			remaining: rateLimitRemaining,
+			resetAtMs: parseRateLimitResetHeader(response.res.headers?.['x-ratelimit-reset']),
+		});
+
 		const statusCode = response.res.statusCode ?? 0;
 		const responseETag = response.res.headers?.['etag'];
 
@@ -151,6 +177,13 @@ export class GitHubApiClient extends Disposable {
 		return { data, statusCode, etag: responseETag };
 	}
 
+	/**
+	 * PARA-PATCH: called for every response that carried rate-limit headers.
+	 * No-op here; {@link SessionGithubGatedApiClient} uses it to keep the shared
+	 * request gate's per-resource budgets in sync with GitHub's own accounting.
+	 */
+	protected _onRateLimitSnapshot(_snapshot: IGitHubRateLimitSnapshot): void { }
+
 	private async _getAuthToken(): Promise<string> {
 		let sessions = await this._authenticationService.getSessions('github', [], { silent: true });
 		if (!sessions || sessions.length === 0) {
@@ -173,4 +206,23 @@ function parseRateLimitHeader(value: string | string[] | undefined): number | un
 	const str = Array.isArray(value) ? value[0] : value;
 	const parsed = parseInt(str, 10);
 	return isNaN(parsed) ? undefined : parsed;
+}
+
+// PARA-PATCH: `x-ratelimit-reset` is a UTC epoch **second**.
+function parseRateLimitResetHeader(value: string | string[] | undefined): number | undefined {
+	const seconds = parseRateLimitHeader(value);
+	return seconds === undefined ? undefined : seconds * 1000;
+}
+
+// PARA-PATCH: `x-ratelimit-resource` names the bucket the response was billed to
+// ('core', 'graphql', 'search', ...). Fall back to the endpoint when it is absent.
+function parseRateLimitResourceHeader(value: string | string[] | undefined, isGraphQLEndpoint: boolean): GitHubApiResource {
+	const str = Array.isArray(value) ? value[0] : value;
+	if (str === 'graphql') {
+		return 'graphql';
+	}
+	if (str !== undefined) {
+		return 'rest';
+	}
+	return isGraphQLEndpoint ? 'graphql' : 'rest';
 }
