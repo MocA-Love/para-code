@@ -75,7 +75,7 @@ suite('SessionGithubRequestGate', () => {
 		await Promise.all(runs);
 	});
 
-	test('pauses all traffic after a rate-limit error and resumes after the backoff', async () => {
+	test('pauses a resource after a rate-limit error and resumes after the backoff', async () => {
 		const gate = store.add(new SessionGithubRequestGate(new NullLogService(), { maxConcurrent: 1, backoffInitialMs: 8 }));
 		let dispatched = 0;
 
@@ -86,6 +86,58 @@ suite('SessionGithubRequestGate', () => {
 
 		await next;
 		assert.strictEqual(dispatched, 1);
+	});
+
+	test('a REST success does not lift a GraphQL backoff', async () => {
+		const gate = new SessionGithubRequestGate(new NullLogService(), { backoffInitialMs: 30_000 });
+		const dispatched: string[] = [];
+
+		await gate.run('test.call', () => Promise.reject(new GitHubApiError('API rate limit exceeded', 403, 0)), 'graphql').catch(() => { });
+
+		// REST has its own budget and keeps running...
+		await gate.run('test.call', async () => { dispatched.push('rest'); }, 'rest');
+		// ...but its success says nothing about the GraphQL budget, which stays paused.
+		const queued = gate.run('test.call', async () => { dispatched.push('graphql'); }, 'graphql')
+			.catch(err => { assert.ok(isCancellationError(err)); });
+		await timeout(1);
+
+		gate.dispose();
+		await queued;
+		assert.deepStrictEqual(dispatched, ['rest']);
+	});
+
+	test('a paused resource does not stall the other lane', async () => {
+		const gate = new SessionGithubRequestGate(new NullLogService(), { backoffInitialMs: 30_000 });
+		const dispatched: string[] = [];
+
+		// GraphQL is rate-limited, so its queued high-lane work cannot run for a while.
+		await gate.run('test.call', () => Promise.reject(new GitHubApiError('API rate limit exceeded', 403, 0)), 'graphql').catch(() => { });
+		const stuck = gate.run('test.interactive', async () => { dispatched.push('graphql'); }, 'graphql')
+			.catch(err => { assert.ok(isCancellationError(err)); });
+
+		// A bulk REST lookup must not be stuck behind it.
+		await gate.run(LOW_PRIORITY_CALL_SITE, async () => { dispatched.push('low-rest'); }, 'rest');
+
+		gate.dispose();
+		await stuck;
+		assert.deepStrictEqual(dispatched, ['low-rest']);
+	});
+
+	test('holds a resource until its window resets once the budget is nearly exhausted', async () => {
+		const nowMs = 1_000_000;
+		const gate = new SessionGithubRequestGate(new NullLogService(), { now: () => nowMs });
+		const dispatched: string[] = [];
+
+		gate.noteRateLimitSnapshot({ resource: 'graphql', limit: 5_000, remaining: 40, resetAtMs: nowMs + 600_000 });
+
+		await gate.run('test.call', async () => { dispatched.push('rest'); }, 'rest');
+		const queued = gate.run('test.call', async () => { dispatched.push('graphql'); }, 'graphql')
+			.catch(err => { assert.ok(isCancellationError(err)); });
+		await timeout(1);
+
+		gate.dispose();
+		await queued;
+		assert.deepStrictEqual(dispatched, ['rest']);
 	});
 
 	test('rejects queued requests with a cancellation error on dispose', async () => {
