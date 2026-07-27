@@ -274,6 +274,11 @@ export class RelayClient {
 		socket.binaryType = 'arraybuffer';
 		this.socket = socket;
 
+		let established = false;
+		// ハンドシェイク中に読み飛ばした「応答ではないバイナリ」の数。connect timeout の報告に
+		// 載せて、黙って捨てた事実がSentryから見えるようにする。
+		let skippedDuringHandshake = 0;
+
 		// 一定時間内にE2E確立まで到達しなければ強制的に閉じる（onclose経由で再接続）。
 		this.clearConnectTimeout();
 		this.connectTimeoutHandle = this.timers.setTimeout(() => {
@@ -283,6 +288,7 @@ export class RelayClient {
 					phase: this.state,
 					reconnect_count: this.reconnectAttempt,
 					transport: 'websocket',
+					safe_skipped_handshake_frames: skippedDuringHandshake,
 				});
 				try {
 					socket.close(4001, 'connect timeout');
@@ -301,7 +307,6 @@ export class RelayClient {
 			socket.send(toArrayBuffer(initiator.hello));
 		};
 
-		let established = false;
 		socket.onmessage = event => {
 			if (!isCurrent()) {
 				return;
@@ -331,7 +336,18 @@ export class RelayClient {
 					this.clearConnectTimeout();
 					this.setState('online');
 				} catch (error) {
-					this.onFatal(error);
+					// ここへ来る最頻ケースは「PCがまだ再接続に気づいていない」ことによる取りこぼしで、
+					// 壊れた相手ではない。リレーは同一mobileIdの旧ソケットを閉じてから新ソケットを
+					// 受理し、PCへは presence online:true しか送らない（旧ソケットのclose由来のofflineは
+					// 残ソケット数が0のときだけなので飛ばない）。そのためPCは古いSecureChannelを保持した
+					// ままで、こちらが hello を送るより前に送出済みのフレームが新ソケットへ届く。
+					// established前のバイナリを無条件に応答とみなすと、それを封緘ackとして開封して
+					// nonce不一致で落ち、接続をやり直す羽目になる（＝復帰直後に一瞬オフラインになる）。
+					// PC側には「復号できない32Bは新しいhello」という自己修復があるので、こちらは
+					// 読み飛ばして正規の応答を待てばよい。相手が本当に壊れている場合（鍵の食い違い等）は
+					// 応答が永遠に来ないが、それは connect timeout が拾う。
+					skippedDuringHandshake++;
+					return;
 				}
 				return;
 			}
