@@ -243,7 +243,8 @@ const styles = StyleSheet.create({
 	heading: { color: colors.text, fontSize: 14.5, fontWeight: '700', marginTop: 12, marginBottom: 2 },
 	text: { color: colors.textDim, fontSize: 13.5, lineHeight: 23 },
 	task: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingVertical: 3 },
-	check: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center', marginTop: 2 },
+	// 未チェックが空白に見えないよう、枠と面のコントラストをPC側と揃える
+	check: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)', backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center', marginTop: 2 },
 	checkDone: { backgroundColor: colors.accent, borderColor: colors.accent },
 	taskLabel: { flex: 1, color: colors.text, fontSize: 13.5, lineHeight: 23 },
 	taskLabelDone: { color: colors.textDim, textDecorationLine: 'line-through' },

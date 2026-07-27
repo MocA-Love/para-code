@@ -110,6 +110,85 @@ export function paradisToggleSpaceNoteTask(text: string, lineIndex: number): str
 	return lines.join('\n');
 }
 
+/** 継続行 (Shift+Enter で足した2行目以降) のインデント。 */
+const CONTINUATION_INDENT = '  ';
+
+/** caret を含む行の範囲 [start, end) を返す (end は改行を含まない)。 */
+function lineRangeAt(text: string, caret: number): { start: number; end: number } {
+	const start = text.lastIndexOf('\n', caret - 1) + 1;
+	const newline = text.indexOf('\n', caret);
+	return { start, end: newline === -1 ? text.length : newline };
+}
+
+/**
+ * 編集中に Enter を押したときのチェックリスト継続。
+ * - チェックリスト行なら次の行へ同じインデントの `- [ ] ` を足す
+ * - 中身が空のチェックリスト行なら、マーカーを外して普通の行に戻す (リストの終わり)
+ * - チェックリスト行でなければ undefined を返し、通常の改行に任せる
+ */
+export function paradisContinueSpaceNoteList(text: string, caret: number): { text: string; caret: number } | undefined {
+	const { start, end } = lineRangeAt(text, caret);
+	const line = text.slice(start, end);
+	const task = TASK_PATTERN.exec(line);
+	if (!task) {
+		return undefined;
+	}
+	if (task[2].trim().length === 0) {
+		return { text: text.slice(0, start) + text.slice(end), caret: start };
+	}
+	const indent = /^\s*/.exec(line)?.[0] ?? '';
+	const inserted = `\n${indent}- [ ] `;
+	return { text: text.slice(0, caret) + inserted + text.slice(caret), caret: caret + inserted.length };
+}
+
+/**
+ * 選択範囲に掛かる行をチェックリストにする / 解除する (すべてがチェックリストなら解除)。
+ * 空行は変えない。変化しない場合は undefined を返す。
+ */
+export function paradisToggleSpaceNoteListMarkers(text: string, selectionStart: number, selectionEnd: number): { text: string; selectionStart: number; selectionEnd: number } | undefined {
+	const from = lineRangeAt(text, selectionStart).start;
+	const to = lineRangeAt(text, selectionEnd).end;
+	const lines = text.slice(from, to).split('\n');
+	const meaningful = lines.filter(line => line.trim().length > 0);
+	if (meaningful.length === 0) {
+		return undefined;
+	}
+	const remove = meaningful.every(line => TASK_PATTERN.test(line));
+	const converted = lines.map(line => {
+		if (line.trim().length === 0) {
+			return line;
+		}
+		if (remove) {
+			return line.replace(/^(\s*)[-*] \[[ xX]\] ?/, '$1');
+		}
+		if (TASK_PATTERN.test(line)) {
+			return line;
+		}
+		const indent = /^\s*/.exec(line)?.[0] ?? '';
+		return `${indent}- [ ] ${line.slice(indent.length)}`;
+	}).join('\n');
+	if (converted === text.slice(from, to)) {
+		return undefined;
+	}
+	return { text: text.slice(0, from) + converted + text.slice(to), selectionStart: from, selectionEnd: from + converted.length };
+}
+
+/**
+ * 「やることを追加」で1件足した本文を返す。複数行 (Shift+Enter で改行) の場合、
+ * 2行目以降はインデント付きの継続行として書き、チェックリストの行数を増やさない。
+ * 中身が空なら undefined を返す。
+ */
+export function paradisAppendSpaceNoteTask(text: string, task: string): string | undefined {
+	const lines = task.split('\n').map(line => line.trimEnd());
+	const [first, ...rest] = lines;
+	if ((first ?? '').trim().length === 0) {
+		return undefined;
+	}
+	const entry = [`- [ ] ${first.trim()}`, ...rest.filter(line => line.trim().length > 0).map(line => `${CONTINUATION_INDENT}${line.trim()}`)].join('\n');
+	const body = text.replace(/\s*$/, '');
+	return body.length === 0 ? entry : `${body}\n${entry}`;
+}
+
 /** 保存前に本文を上限へ丸める (入力側の maxlength をすり抜けた経路への保険)。 */
 export function paradisNormalizeSpaceNoteText(text: string): string {
 	return text.length > PARADIS_SPACE_NOTE_MAX_LENGTH ? text.slice(0, PARADIS_SPACE_NOTE_MAX_LENGTH) : text;
