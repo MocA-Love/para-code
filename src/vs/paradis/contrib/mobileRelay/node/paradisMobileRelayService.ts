@@ -1618,6 +1618,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private handleDisconnected(operation: string, message: string, extras: Record<string, unknown>): void {
 		// PC自身のリレーWSが切れた場合も、presence offline経路と同じ3点セットで
 		// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
+		const mobileSessionCount = this.sessions.size;
 		for (const id of this.sessions.keys()) {
 			this.browserMirror.stopSession(id);
 			this.agentChat.dropSubscriber(id);
@@ -1637,7 +1638,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			safe_relay_kind: this.relayUrlOverride === undefined ? 'default' : 'custom',
 			safe_keepalive_acked: this.keepaliveAcknowledged,
 			safe_consecutive_timeouts: this.consecutiveKeepaliveTimeouts,
-			safe_mobile_sessions: this.sessions.size,
+			safe_mobile_sessions: mobileSessionCount,
 			...extras,
 		});
 		this.setConnectionState('disconnected');

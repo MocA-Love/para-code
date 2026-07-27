@@ -131,7 +131,7 @@ export function paradisIsCodexDaemonApprovalInteraction(interactionId: string): 
  *
  * これらを取りこぼすと live 状態と activeTurnTokens が stuck し、モバイルが
  * 「応答を生成中」のまま固着したうえ、モデル変更なども入力待ち判定に弾かれ続ける。
- * 通常の hook は「最新勝ち」で古いものを捨ててよいが、終了だけは捨てると復帰手段が無い。
+ * 終了時は質問・承認・活動表示も同じ完了処理へ収束させる必要がある。
  */
 export function paradisIsTurnEndHookEvent(eventName: string): boolean {
 	return eventName === 'Stop' || eventName === 'StopFailure' || eventName === 'SessionEnd' || eventName === 'agent-turn-complete';
@@ -261,6 +261,9 @@ const PERSISTED_ACTIVITY_MAX_AGENTS = 100;
  * でも更新は途切れるので、誤発火しない長さに倒す。
  */
 const LIVE_STALE_MS = 30 * 60_000;
+/** ペイン同期前に受けたhookを保持する時間とtoken単位の上限。 */
+const PENDING_HOOK_TTL_MS = 120_000;
+const PENDING_HOOK_LIMIT = 256;
 /**
  * ターン終了後、遅れて届いた live 更新を無視する猶予。
  *
@@ -2293,8 +2296,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly activeTurnTokens = new Set<string>();
 	/** daemonが確認した次ターンのCodexモデル設定。transcriptの直近ターン値より優先表示する。 */
 	private readonly codexThreadSettings = new Map<string, IParadisCodexThreadSettings>();
-	private readonly hookSequences = new Map<string, number>();
-	private readonly pendingHooks = new Map<string, { readonly event: IParadisAgentHookEvent; readonly transcriptPath: string; readonly sequence: number; readonly receivedAt: number }>();
+	/** tokenごとにhookの検証と反映を受信順へ直列化する。 */
+	private readonly hookProcessing = new Map<string, Promise<void>>();
+	/** ペイン同期より先着したhook。質問など一度しか来ないイベントを順序付きで保持する。 */
+	private readonly pendingHooks = new Map<string, { readonly event: IParadisAgentHookEvent; readonly transcriptPath: string; readonly receivedAt: number }[]>();
 	private readonly pendingHookTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly codexLiveClient: ParadisCodexLiveClient;
 	/** ペアリング済みモバイル向けのライブ質問/承認注入を有効にする。status用tailは常時動作する。 */
@@ -2360,7 +2365,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			this.pendingHookTimers.clear();
 			this.pendingHooks.clear();
-			this.hookSequences.clear();
+			this.hookProcessing.clear();
 			for (const pending of this.pendingActions.values()) {
 				clearTimeout(pending.timer);
 			}
@@ -2541,16 +2546,20 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 消えたターミナル（PC側でclose等）の購読・tailerを掃除する。detachは
 		// terminalId→token解決に依存するため、ここで拾わないとtailerがリークする。
 		const liveTokens = this.allLiveTokens();
+		const now = Date.now();
 		for (const [token, pending] of [...this.pendingHooks]) {
-			if (Date.now() - pending.receivedAt > 120_000) {
+			const fresh = pending.filter(entry => now - entry.receivedAt <= PENDING_HOOK_TTL_MS);
+			if (fresh.length === 0) {
 				this.pendingHooks.delete(token);
-				this.hookSequences.delete(token);
 				const timer = this.pendingHookTimers.get(token);
 				if (timer !== undefined) {
 					clearTimeout(timer);
 					this.pendingHookTimers.delete(token);
 				}
 				continue;
+			}
+			if (fresh.length !== pending.length) {
+				this.pendingHooks.set(token, fresh);
 			}
 			if (liveTokens.has(token)) {
 				this.pendingHooks.delete(token);
@@ -2559,7 +2568,9 @@ export class ParadisMobileAgentChat extends Disposable {
 					clearTimeout(timer);
 					this.pendingHookTimers.delete(token);
 				}
-				this.onHookEventChecked(pending.event, pending.transcriptPath, pending.sequence, true).catch(err => this.logService.warn('[paradisAgentChat] pending hook handling failed', err));
+				for (const entry of fresh) {
+					this.enqueueHookEvent(entry.event, entry.transcriptPath, true);
+				}
 			}
 		}
 		for (const token of [...this.subscribers.keys()]) {
@@ -3666,14 +3677,6 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'MessageDisplay':
 				this.updateLiveMessage(event);
 				return;
-			case 'Stop':
-			case 'StopFailure':
-			case 'SessionEnd':
-			case 'TerminalExit':
-			case 'agent-turn-complete':
-				this.lastTurnEndedAt.set(event.token, event.at);
-				this.clearLiveState(event.token);
-				return;
 		}
 	}
 
@@ -3723,26 +3726,28 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	/**
-	 * 取りこぼされたターン終了イベントから、live 状態の後始末だけを行う。
-	 *
-	 * この経路はシーケンスガードを意図的に外して呼ばれるので、実行時点では既に新しいターンが
-	 * 始まっていることがある（hook の解決順は投入順と一致しない: 手前に realpath の実I/Oが挟まる）。
-	 * そのため触るのは「固着させないための最小限」に絞る:
-	 *  - 質問と承認は消さない。ここで force clear すると、直前に注入された正当な承認カードを
-	 *    消してしまい、CLI はプロンプトで止まったままモバイルから回答できなくなる。決着は本来の
-	 *    シグナル（PostToolUse / PermissionDenied / Codex daemon）に任せる。
-	 *  - 新しいターンの live が既に立っていれば何もしない（消すと実行中なのに入力待ち扱いになり、
-	 *    モバイルからの /model 等が実行中のCLIへ注入されうる）。
-	 */
-	private applyTurnEndFromLateHook(event: IParadisAgentHookEvent): void {
+	/** Stop系hookを通常経路・保留経路とも同じ完全な終了状態へ収束させる。 */
+	private completeTurnFromHook(event: IParadisAgentHookEvent): boolean {
 		const live = this.liveStates.get(event.token);
 		if (live !== undefined && live.startedAt > event.at) {
-			return; // この終了より後に始まったターンが進行中
+			return false; // この終了より後に始まったターンが進行中
 		}
 		this.lastTurnEndedAt.set(event.token, event.at);
 		this.activeTurnTokens.delete(event.token);
 		this.clearLiveState(event.token);
+		const tracker = this.activityTrackers.get(event.token);
+		const activityEnded = event.event === 'SessionEnd'
+			? tracker?.endSession('interrupted', event.at) === true
+			: tracker?.endTurn(event.at) === true;
+		if (activityEnded) {
+			this.pushActivityToSubscribers(event.token);
+		}
+		const tailer = this.tailers.get(event.token);
+		tailer?.clearApprovalRequest(undefined, true);
+		tailer?.clearPendingQuestions();
+		this.releaseInteractionClaimsFor(event.token);
+		this.schedulePersistedAgentActivityReconcile(event.token);
+		return true;
 	}
 
 	/**
@@ -4170,9 +4175,27 @@ export class ParadisMobileAgentChat extends Disposable {
 			// CLI検知経路がagent種別付きで鮮度検証済み探索を行う。
 			return;
 		}
-		const sequence = (this.hookSequences.get(event.token) ?? 0) + 1;
-		this.hookSequences.set(event.token, sequence);
-		this.onHookEventChecked(event, event.transcriptPath, sequence, false).catch(err => this.logService.warn('[paradisAgentChat] hook event handling failed', err));
+		this.enqueueHookEvent(event, event.transcriptPath, false);
+	}
+
+	/**
+	 * realpath検証を含むhook処理をtoken単位で直列化する。
+	 *
+	 * hookは別々のHTTP要求として並行到着する。検証完了順を「最新」とみなして先行イベントを
+	 * 捨てると、AskUserQuestionやStopのような一度しか来ない状態遷移まで失われるため、受信順を
+	 * 保ったまま全イベントを処理する。
+	 */
+	private enqueueHookEvent(event: IParadisAgentHookEvent, transcriptPath: string, pathAlreadyChecked: boolean): void {
+		const previous = this.hookProcessing.get(event.token) ?? Promise.resolve();
+		const current = previous
+			.then(() => this.onHookEventChecked(event, transcriptPath, pathAlreadyChecked))
+			.catch(err => this.logService.warn('[paradisAgentChat] hook event handling failed', err));
+		this.hookProcessing.set(event.token, current);
+		void current.then(() => {
+			if (this.hookProcessing.get(event.token) === current) {
+				this.hookProcessing.delete(event.token);
+			}
+		});
 	}
 
 	/**
@@ -4288,41 +4311,31 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string, sequence: number, pathAlreadyChecked: boolean): Promise<void> {
+	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string, pathAlreadyChecked: boolean): Promise<void> {
 		if (!pathAlreadyChecked && !(await isAllowedTranscriptPath(transcriptPath))) {
 			this.logService.warn(`[paradisAgentChat] rejected transcript path outside allowed roots: ${transcriptPath}`);
 			return;
 		}
-		// 後続の hook に追い越された古いイベントは捨てる（最新勝ち）。ただしターン終了だけは
-		// 例外で、捨てると live 状態と activeTurnTokens が永久に残り、モバイルが「応答を生成中」
-		// のまま固着する。hook は curl の別プロセスから並行 POST されるうえ、この判定の手前に
-		// transcript パスの実I/O（realpath）が挟まるため、終了が追い越されるのは現実に起きる。
-		// セッション探索や claim の付け替えは最新イベントに任せ、終了の反映だけを適用する。
 		const isTurnEnd = paradisIsTurnEndHookEvent(event.event);
-		if (this.hookSequences.get(event.token) !== sequence) {
-			if (isTurnEnd) {
-				this.applyTurnEndFromLateHook(event);
-			}
-			return;
-		}
 		if (!this.isLiveToken(event.token)) {
-			// 保留スロットは token あたり1件の最新勝ちなので、ここに入れた終了イベントは
-			// 後続の hook に上書きされて消えうる。終了だけは保留と併せて即時に反映しておく。
+			// 終了はペイン同期を待つと表示が固着するため、保留と併せて即時にも反映しておく。
 			if (isTurnEnd) {
-				this.applyTurnEndFromLateHook(event);
+				this.completeTurnFromHook(event);
 			}
-			this.pendingHooks.set(event.token, { event, transcriptPath, sequence, receivedAt: Date.now() });
+			const pending = this.pendingHooks.get(event.token) ?? [];
+			pending.push({ event, transcriptPath, receivedAt: Date.now() });
+			if (pending.length > PENDING_HOOK_LIMIT) {
+				pending.splice(0, pending.length - PENDING_HOOK_LIMIT);
+			}
+			this.pendingHooks.set(event.token, pending);
 			const previousTimer = this.pendingHookTimers.get(event.token);
 			if (previousTimer !== undefined) {
 				clearTimeout(previousTimer);
 			}
 			const timer = setTimeout(() => {
-				if (this.pendingHooks.get(event.token)?.sequence === sequence) {
-					this.pendingHooks.delete(event.token);
-					this.hookSequences.delete(event.token);
-				}
+				this.pendingHooks.delete(event.token);
 				this.pendingHookTimers.delete(event.token);
-			}, 120_000);
+			}, PENDING_HOOK_TTL_MS);
 			this.pendingHookTimers.set(event.token, timer);
 			return;
 		}
@@ -4341,7 +4354,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const submittedPrompt = str(event.payload?.['prompt'])?.trimStart();
 		const isLocalSettingCommand = event.event === 'UserPromptSubmit' && submittedPrompt !== undefined && /^\/(?:model|effort)\s+\S/.test(submittedPrompt);
-		if (!isLocalSettingCommand) {
+		if (!isLocalSettingCommand && !isTurnEnd) {
 			this.updateLiveFromHook(event);
 		}
 		this.cancelCliDiscovery(event.token);
@@ -4423,15 +4436,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			? { ...event.payload, parent_agent_id: nestedParentId }
 			: event.payload;
 		const activityChanged = activityPayload !== undefined && this.activityTracker(event.token).applyClaude(event.event, activityPayload, event.at);
-		const activityEnded = event.event === 'SessionEnd'
-			? this.activityTracker(event.token).endSession('interrupted', event.at)
-			: event.event === 'Stop' || event.event === 'StopFailure' ? this.activityTracker(event.token).endTurn(event.at) : false;
-		if (activityChanged || activityEnded) {
+		if (activityChanged) {
 			this.pushActivityToSubscribers(event.token);
 		}
 		this.schedulePersistedAgentActivityReconcile(event.token);
-		if (event.event === 'Stop' || event.event === 'SessionEnd' || event.event === 'StopFailure') {
-			this.activeTurnTokens.delete(event.token);
+		if (isTurnEnd) {
+			this.completeTurnFromHook(event);
 		}
 
 		// AskUserQuestion のライブ検出: Claude Code は質問の tool_use を決着（回答/中断）まで
@@ -4455,8 +4465,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (this.eagerTailing || this.subscribers.has(event.token))) {
 			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, event.toolUseId);
 		}
-		const turnEnded = event.event === 'Stop' || event.event === 'SessionEnd' || event.event === 'StopFailure';
-		const forceApprovalClear = turnEnded || event.event === 'PermissionDenied';
+		const forceApprovalClear = event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
 		if ((forceApprovalClear || matchingApprovalClear) && this.tailers.has(event.token)) {
 			this.tailers.get(event.token)?.clearApprovalRequest(event.toolUseId, forceApprovalClear);
@@ -4466,15 +4475,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 本命は AskUserQuestion の PostToolUse: 質問の決着を即時かつ確実に知らせる唯一の信号で、
 		// transcript の内容キー突合に依存しない。ターン終了を待つ設計だと、同じターン内で本物の
 		// 許可プロンプトが出た場合にそのターンが承認待ちで止まるため Stop が原理的に来ず、
-		// 一番効かせたい場面で効かない。turnEnded は Stop 系を取りこぼさなかった場合の保険。
+		// 一番効かせたい場面で効かない。ターン終了時の解除は completeTurnFromHook がまとめて行う。
 		// PermissionDenied は承認の拒否であってターン終了ではないので質問は残す。
 		const questionSettled = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolName === 'AskUserQuestion';
-		if (questionSettled || turnEnded) {
+		if (questionSettled) {
 			this.tailers.get(event.token)?.clearPendingQuestions();
 			// 決着した interaction の claim も解放する（残すと次の回答が60秒間ロックされる）。
 			// 質問の決着では question の claim だけを解く。まとめて解放すると、同じターンで
 			// 進行中の承認の claim まで解けて二重注入（'1'+CR がもう一度PTYへ）の窓ができる。
-			this.releaseInteractionClaimsFor(event.token, turnEnded ? undefined : 'question');
+			this.releaseInteractionClaimsFor(event.token, 'question');
 		}
 	}
 
