@@ -17,8 +17,9 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
 export default function SettingsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
-	const { notifyPrefs, setNotifyPref } = useAppStore(useShallow(s => ({
+	const { notifyPrefs, setNotifyPref, drawerBehavior, setDrawerBehavior } = useAppStore(useShallow(s => ({
 		notifyPrefs: s.notifyPrefs, setNotifyPref: s.setNotifyPref,
+		drawerBehavior: s.drawerBehavior, setDrawerBehavior: s.setDrawerBehavior,
 	})));
 
 	const toggle = (key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused') => (value: boolean) => {
@@ -96,6 +97,24 @@ export default function SettingsScreen() {
 				</View>
 				<Text style={styles.note}>
 					OFFにするとバナー通知が止まります（アプリ内の通知一覧には残ります）。「PC作業中は通知しない」がONの間は、PCの画面を見ている間に発生した通知はこのアプリに一切届きません。
+				</Text>
+
+				<Text style={styles.sectionTitle}>表示</Text>
+				<View style={styles.card}>
+					<View style={styles.row}>
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>メニューを一緒にスライド</Text>
+							<Text style={styles.rowDesc}>ワークスペースメニューが画面と一緒に左から出てきます</Text>
+						</View>
+						<Switch
+							value={drawerBehavior === 'slide'}
+							onValueChange={value => { hapticSelection(); setDrawerBehavior(value ? 'slide' : 'back'); }}
+							trackColor={{ true: colors.accent2 }}
+						/>
+					</View>
+				</View>
+				<Text style={styles.note}>
+					OFFにすると、メニューは動かずに待ち構え、画面がどくことで現れます。
 				</Text>
 			</ScrollView>
 		</View>
