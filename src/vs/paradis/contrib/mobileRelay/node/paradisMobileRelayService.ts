@@ -89,6 +89,19 @@ const RELAY_KEEPALIVE_INTERVAL_MS = 45_000;
 const RELAY_CONNECT_TIMEOUT_MS = 15_000;
 /** これだけ連続でpongが返らなければ「このリレーは保活に応答しない」と学習し直す。 */
 const RELAY_KEEPALIVE_TIMEOUT_GIVE_UP = 3;
+/**
+ * 切断してからSentryへ報告するまでの猶予。
+ *
+ * 実測ではこの接続の切断はほぼ全てが経路側の異常切断（close code 1006、closeフレーム無し）で、
+ * Macのスリープ復帰やネットワーク切替、リレー（Cloudflare Durable Object）の退避で日に数回起きる。
+ * 再接続は初回500msで、ユーザーから見ればモバイルが一瞬オフラインになるだけの正常系なので、
+ * 1回ごとにerrorとして上げると本物の障害がそのノイズに埋もれる。逆に完全に黙らせると、
+ * リレーが実際に死んでいるケース（トークン失効で毎回1006、Worker障害）に気づけない。
+ * そこで「猶予内に復帰できたら報告しない、できなければ報告する」に振り分ける。
+ *
+ * 60秒はバックオフ（500ms×2^n、上限30秒）で7回試行できる長さ＝一過性の切断なら必ず復帰している。
+ */
+const RELAY_DISCONNECT_REPORT_DELAY_MS = 60_000;
 
 interface PairedMobile {
 	readonly mobileId: string;
@@ -283,6 +296,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private socket: WebSocket | undefined;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private reconnectAttempt = 0;
+	/**
+	 * 復帰できなかった場合にだけ送る切断レポート。オフラインが続く間の最初の切断理由を保持する
+	 * （2回目以降で上書きすると、最初に何が起きたのかが失われる）。
+	 */
+	private pendingDisconnectReport: { readonly operation: string; readonly message: string; readonly extras: Record<string, unknown>; readonly at: number } | undefined;
+	private disconnectReportTimer: ReturnType<typeof setTimeout> | undefined;
 	private keepaliveTimer: ReturnType<typeof setInterval> | undefined;
 	private connectTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 連続でpongが返らなかった回数。リレー側の保活対応をいつ学習し直すかの判断に使う。 */
@@ -1323,6 +1342,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			this.clearConnectTimer();
 			this.reconnectAttempt = 0;
+			// 復帰できたので、直前の切断は報告しない（詳細は RELAY_DISCONNECT_REPORT_DELAY_MS 参照）。
+			this.clearDisconnectReport();
 			this.setConnectionState('online');
 			this.startKeepalive(socket);
 		};
@@ -1471,7 +1492,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.setConnectionState('disabled');
 			return;
 		}
-		reportParadisDiagnosticError('owned', 'desktop-relay', operation, new Error(message), {
+		this.armDisconnectReport(operation, message, {
 			phase: this.connectionState,
 			reconnect_count: this.reconnectAttempt,
 			transport: 'websocket',
@@ -1481,6 +1502,40 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.scheduleReconnect();
 	}
 
+	/**
+	 * 切断を「猶予内に復帰しなければ報告する」予約に変える。復帰（onopen）で取り消される。
+	 */
+	private armDisconnectReport(operation: string, message: string, extras: Record<string, unknown>): void {
+		if (this.pendingDisconnectReport || this.disconnectReportTimer) {
+			// すでにオフラインが続いている。最初の切断理由と、その時刻からの経過を残したいので触らない。
+			return;
+		}
+		this.pendingDisconnectReport = { operation, message, extras, at: Date.now() };
+		this.disconnectReportTimer = setTimeout(() => {
+			this.disconnectReportTimer = undefined;
+			const pending = this.pendingDisconnectReport;
+			this.pendingDisconnectReport = undefined;
+			if (!pending || !this.enabled) {
+				return;
+			}
+			reportParadisDiagnosticError('owned', 'desktop-relay', pending.operation, new Error(pending.message), {
+				...pending.extras,
+				// 切断時点ではなく報告時点の値。「何回再試行しても戻れなかったか」が復帰不能の度合いを表す。
+				duration_ms: Date.now() - pending.at,
+				reconnect_count: this.reconnectAttempt,
+			});
+		}, RELAY_DISCONNECT_REPORT_DELAY_MS);
+	}
+
+	/** 復帰したので予約済みの切断レポートを取り消す。 */
+	private clearDisconnectReport(): void {
+		if (this.disconnectReportTimer) {
+			clearTimeout(this.disconnectReportTimer);
+			this.disconnectReportTimer = undefined;
+		}
+		this.pendingDisconnectReport = undefined;
+	}
+
 	private disconnect(): void {
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
@@ -1488,6 +1543,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.stopKeepalive();
 		this.clearConnectTimer();
+		// 意図した切断なので、予約済みの切断レポートは破棄する（機能を無効化しただけで
+		// 「復帰できなかった」と報告してしまわないように）。
+		this.clearDisconnectReport();
 		// onclose と同様、セッション破棄前に per-mobile リソースを解放する。
 		for (const id of this.sessions.keys()) {
 			this.browserMirror.stopSession(id);
@@ -1729,13 +1787,19 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// モバイルが切断/再接続したら、そのmobileIdの確立済みセッションを破棄する。
 			// これをしないと、再接続時のモバイルの新しい hello を確立済みセッションが
 			// アプリフレーム扱いして復号失敗し、恒久的に通信不能になる（H-3）。
-			if (!msg.online) {
-				this.sessions.delete(msg.mobileId);
-				this.webrtcRendererLeases.delete(msg.mobileId);
-				this.browserMirror.stopSession(msg.mobileId);
-				this.agentChat.dropSubscriber(msg.mobileId);
-				this._onDidChangeStatus.fire(this.snapshot());
-			}
+			//
+			// online:true でも破棄するのは、リレーが同一mobileIdの旧ソケットを閉じてから新ソケットを
+			// 受理するとき、旧ソケットのclose由来のofflineが飛ばないため（残ソケット数が0のときだけ
+			// 通知する仕様）。offlineを待っていると古いチャネルを保持したままモバイルへ封緘フレームを
+			// 送り続け、ハンドシェイク中の相手がそれを応答と誤読して接続をやり直す。online:true は
+			// リレーが新しいモバイルソケットを受理したときにしか出ないので、破棄して取り違えはない。
+			// なお、この制御はリレーが新ソケットへ101を返す前にPCソケットへ書かれるため、同じ接続を
+			// 流れてくるモバイルのhelloより必ず先に届く（＝確立直後のセッションを消す心配はない）。
+			this.sessions.delete(msg.mobileId);
+			this.webrtcRendererLeases.delete(msg.mobileId);
+			this.browserMirror.stopSession(msg.mobileId);
+			this.agentChat.dropSubscriber(msg.mobileId);
+			this._onDidChangeStatus.fire(this.snapshot());
 		} else if (msg.type === 'mobile-revoked' && typeof msg.mobileId === 'string') {
 			await this.onMobileRevoked(msg.mobileId);
 		} else if (msg.type === 'pong') {
