@@ -8,10 +8,23 @@
 
 import assert from 'assert';
 import * as sinon from 'sinon';
+import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { paradisClaudeConfigDir } from '../../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisPickCurrentInteraction, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
+
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+	const deadline = Date.now() + 2_000;
+	while (!predicate()) {
+		if (Date.now() >= deadline) {
+			throw new Error(message);
+		}
+		await new Promise<void>(resolve => setTimeout(resolve, 5));
+	}
+}
 
 suite('ParadisMobileAgentChat', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -104,6 +117,109 @@ suite('ParadisMobileAgentChat', () => {
 		} finally {
 			chat.dispose();
 			clock.restore();
+		}
+	});
+
+	test('preserves AskUserQuestion when a later hook arrives during path validation', async () => {
+		const token = 'pane-question-order';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'question-order.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			tailers: Map<string, { currentInteraction(): { readonly kind: string } | null }>;
+		};
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+
+			fireParadisAgentHookEvent({
+				token, event: 'PreToolUse', sessionId: 'session-question-order', transcriptPath, cwd: '/workspace',
+				toolName: 'AskUserQuestion', toolUseId: 'question-1', at: Date.now(),
+				toolInput: { questions: [{ question: '進めますか？', header: '確認', options: [{ label: 'はい' }, { label: 'いいえ' }] }] },
+			});
+			fireParadisAgentHookEvent({
+				token, event: 'PermissionRequest', sessionId: 'session-question-order', transcriptPath, cwd: '/workspace',
+				toolName: 'AskUserQuestion', toolUseId: 'question-1', at: Date.now(),
+			});
+
+			await waitFor(() => access.tailers.get(token)?.currentInteraction()?.kind === 'question', 'AskUserQuestion was discarded');
+			assert.strictEqual(access.tailers.get(token)?.currentInteraction()?.kind, 'question');
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('preserves AskUserQuestion hooks that arrive before the pane sync', async () => {
+		const token = 'pane-pending-question-order';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'pending-question-order.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			hookProcessing: Map<string, Promise<void>>;
+			tailers: Map<string, { currentInteraction(): { readonly kind: string } | null }>;
+		};
+		try {
+			chat.setEagerTailing(true);
+			fireParadisAgentHookEvent({
+				token, event: 'PreToolUse', sessionId: 'session-pending-question-order', transcriptPath, cwd: '/workspace',
+				toolName: 'AskUserQuestion', toolUseId: 'question-1', at: Date.now(),
+				toolInput: { questions: [{ question: '同期後も表示しますか？', header: '確認', options: [{ label: 'はい' }] }] },
+			});
+			fireParadisAgentHookEvent({
+				token, event: 'PermissionRequest', sessionId: 'session-pending-question-order', transcriptPath, cwd: '/workspace',
+				toolName: 'AskUserQuestion', toolUseId: 'question-1', at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'pending hooks did not finish validation');
+
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			await waitFor(() => access.tailers.get(token)?.currentInteraction()?.kind === 'question', 'pending AskUserQuestion was discarded');
+			assert.strictEqual(access.tailers.get(token)?.currentInteraction()?.kind, 'question');
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('applies complete turn cleanup when Stop is overtaken during path validation', async () => {
+		const token = 'pane-stop-order';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'stop-order.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			activeTurnTokens: Set<string>;
+			lastTurnEndedAt: Map<string, number>;
+			tailers: Map<string, { currentInteraction(): { readonly kind: string } | null }>;
+		};
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({
+				token, event: 'UserPromptSubmit', sessionId: 'session-stop-order', transcriptPath, cwd: '/workspace',
+				payload: { prompt: '作業を開始して' }, at: Date.now(),
+			});
+			await waitFor(() => access.activeTurnTokens.has(token), 'turn did not start');
+			fireParadisAgentHookEvent({
+				token, event: 'PreToolUse', sessionId: 'session-stop-order', transcriptPath, cwd: '/workspace',
+				toolName: 'AskUserQuestion', toolUseId: 'question-1', at: Date.now(),
+				toolInput: { questions: [{ question: '続けますか？', header: '確認', options: [{ label: '続ける' }] }] },
+			});
+			await waitFor(() => access.tailers.get(token)?.currentInteraction()?.kind === 'question', 'question was not injected');
+
+			fireParadisAgentHookEvent({
+				token, event: 'Stop', sessionId: 'session-stop-order', transcriptPath, cwd: '/workspace', at: Date.now(),
+			});
+			fireParadisAgentHookEvent({
+				token, event: 'MessageDisplay', sessionId: 'session-stop-order', transcriptPath, cwd: '/workspace',
+				messageId: 'late-message', messageIndex: 0, messageDelta: '完了', messageFinal: true, at: Date.now(),
+			});
+
+			await waitFor(() => access.lastTurnEndedAt.has(token), 'turn end was not applied');
+			await waitFor(() => access.tailers.get(token)?.currentInteraction() === null, 'turn end did not clear the pending interaction');
+			assert.deepStrictEqual({
+				active: access.activeTurnTokens.has(token),
+				interaction: access.tailers.get(token)?.currentInteraction(),
+			}, {
+				active: false,
+				interaction: null,
+			});
+		} finally {
+			chat.dispose();
 		}
 	});
 

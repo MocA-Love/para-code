@@ -121,4 +121,42 @@ suite('ParadisMobileRelay State delivery', () => {
 		assert.strictEqual(await session.sendDesktopState(payload, false), true);
 		assert.deepStrictEqual(delivered, [[1, 2, 3], [1, 2, 3]]);
 	});
+
+	test('切断レポートにはクリア前のモバイルセッション数を記録する', () => {
+		const reports: { readonly extras: Record<string, unknown> }[] = [];
+		const stopped: string[] = [];
+		const dropped: string[] = [];
+		const sessions = new Map<string, object>([['mobile-1', {}], ['mobile-2', {}]]);
+		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
+			sessions,
+			webrtcRendererLeases: new Map(),
+			enabled: true,
+			connectionState: 'online',
+			reconnectAttempt: 0,
+			relayUrlOverride: undefined,
+			keepaliveAcknowledged: true,
+			consecutiveKeepaliveTimeouts: 0,
+			browserMirror: { stopSession: (id: string) => stopped.push(id) },
+			agentChat: { dropSubscriber: (id: string) => dropped.push(id) },
+			armDisconnectReport: (_operation: string, _message: string, extras: Record<string, unknown>) => reports.push({ extras }),
+			setConnectionState: () => { },
+			scheduleReconnect: () => { },
+		}) as unknown as {
+			handleDisconnected(operation: string, message: string, extras: Record<string, unknown>): void;
+		};
+
+		service.handleDisconnected('test-disconnect', 'test disconnect', {});
+
+		assert.deepStrictEqual({
+			safeMobileSessions: reports[0]?.extras['safe_mobile_sessions'],
+			remainingSessions: sessions.size,
+			stopped,
+			dropped,
+		}, {
+			safeMobileSessions: 2,
+			remainingSessions: 0,
+			stopped: ['mobile-1', 'mobile-2'],
+			dropped: ['mobile-1', 'mobile-2'],
+		});
+	});
 });
