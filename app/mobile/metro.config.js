@@ -6,15 +6,22 @@
 // `.js` で終わる相対importだけ `.ts`/`.tsx` を先に試すリゾルバを追加する。
 
 const path = require('path');
-const { getDefaultConfig } = require('expo/metro-config');
-const { withSentryConfig } = require('@sentry/react-native/metro');
+const { getSentryExpoConfig } = require('@sentry/react-native/metro');
 
-const config = getDefaultConfig(__dirname);
+const config = getSentryExpoConfig(__dirname, {
+	annotateReactComponents: false,
+	includeWebReplay: false,
+	includeWebFeedback: false,
+	autoWrapExpoRouterErrorBoundary: true,
+});
 const upstreamResolveRequest = config.resolver.resolveRequest;
 
-// このプロジェクト自身のコード（app/mobile/src, app/mobile/app, ワークスペース内の
-// @para/protocol）だけを対象にする。expo-router 等の内部が生成する相対requireまで
+// このプロジェクト自身のコード（app/mobile/index.ts, app/mobile/src, app/mobile/app,
+// ワークスペース内の @para/protocol）だけを対象にする。expo-router 等の内部が生成する相対requireまで
 // 書き換えてしまうと、ルーター自身の解決ロジックを壊しうるため範囲を厳密に絞る。
+const OWN_CODE_FILES = [
+	path.join(__dirname, 'index.ts'),
+];
 const OWN_CODE_ROOTS = [
 	path.join(__dirname, 'src'),
 	path.join(__dirname, 'app'),
@@ -22,7 +29,7 @@ const OWN_CODE_ROOTS = [
 ];
 
 function isOwnCode(originModulePath) {
-	return OWN_CODE_ROOTS.some(root => originModulePath.startsWith(root + path.sep));
+	return OWN_CODE_FILES.includes(originModulePath) || OWN_CODE_ROOTS.some(root => originModulePath.startsWith(root + path.sep));
 }
 
 config.resolver.resolveRequest = (context, moduleName, platform) => {
@@ -42,9 +49,4 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
 	return context.resolveRequest(context, moduleName, platform);
 };
 
-module.exports = withSentryConfig(config, {
-	annotateReactComponents: false,
-	includeWebReplay: false,
-	includeWebFeedback: false,
-	autoWrapExpoRouterErrorBoundary: true,
-});
+module.exports = config;
