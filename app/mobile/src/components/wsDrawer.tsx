@@ -3,7 +3,6 @@
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Image, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
-import Animated, { SharedValue, useAnimatedStyle } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -85,30 +84,26 @@ export function useWsDrawer(): WsDrawerApi {
  *
  * 開閉の見せ方はX（Twitter）の実機スクリーンショットをピクセル解析した実測値に合わせている:
  *  - コンテンツは縮小しない（scale=1.0のまま）。ドロワー幅ぶんちょうど右へ押し出すだけ
- *  - コンテンツに端末のディスプレイ角丸と同じ半径を進捗連動で付ける（開いた瞬間に角が丸くなる）
+ *  - コンテンツの角は端末のディスプレイ角丸と同じ半径で丸める。開いたときに覗く左端の角丸が
+ *    「iPhoneの枠が見えながら出てくる」という見え方の正体で、コンテンツの縮小ではない
  *  - 暗転オーバーレイは掛けない（実機では文字がrgb(255,255,255)のまま = 一切暗くなっていない）
- * 「iPhoneの枠が見えながら出てくる」という見え方の正体はこの角丸で、コンテンツの縮小ではない。
+ *
+ * 角丸は開閉に合わせてアニメーションさせる必要がない。閉じている間はコンテンツの角が端末の
+ * 画面角とぴったり重なって見えないため、常に同じ半径を当てておけば足りる（半径が端末の実値と
+ * 一致していることが前提なので `screenCornerRadius` で機種ごとの値を引く）。
  */
 export function WsDrawerLayout({ children }: { children: ReactNode }) {
 	const ref = useRef<DrawerLayoutMethods>(null);
 	const { width } = useWindowDimensions();
 	const [fullWidthSwipe, setFullWidthSwipe] = useState(false);
-	const drawerBehavior = useAppStore(s => s.drawerBehavior);
 	const api = useMemo<WsDrawerApi>(() => ({
-		open: () => {
-			hapticImpact('light');
-			ref.current?.openDrawer();
-		},
+		// 触覚フィードバックは開き切った/閉じ切った瞬間（onDrawerOpen/onDrawerClose）に鳴らす。
+		// ここで鳴らすとスワイプで開いたときだけ無音になり、かつ「開き始め」に鳴って早すぎる。
+		open: () => ref.current?.openDrawer(),
 		close: () => ref.current?.closeDrawer(),
 		setFullWidthSwipe,
 	}), []);
 	const renderDrawer = useCallback(() => <WsDrawerContent onClose={api.close} />, [api]);
-	// children を関数で渡すと開閉進捗のSharedValue（0=閉、1=開）を受け取れる。
-	// これで角丸のアニメーションもUIスレッド（worklet）で駆動できる。
-	const renderContent = useCallback(
-		(openValue?: SharedValue<number>) => <WsDrawerContentFrame progress={openValue}>{children}</WsDrawerContentFrame>,
-		[children],
-	);
 
 	return (
 		<WsDrawerContext.Provider value={api}>
@@ -116,37 +111,30 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 				ref={ref}
 				drawerWidth={Math.min(width * 0.82, 360)}
 				drawerPosition={DrawerPosition.LEFT}
-				// SLIDE=ドロワーもコンテンツと一緒に左から出てくる（X等と同じ）。
-				// BACK=ドロワーは定位置で待ち、コンテンツがどくことで露出する。
-				drawerType={drawerBehavior === 'back' ? DrawerType.BACK : DrawerType.SLIDE}
+				// ドロワーは定位置で待ち、コンテンツがどくことで露出する。
+				drawerType={DrawerType.BACK}
 				// 実測どおり暗転させない。RNGHはoverlayをコンテンツの上に必ず1枚敷くため、
 				// 無効化は透明色の指定で行う（overlayタップでの閉じる操作はこのままでも効く）。
 				overlayColor="transparent"
-				// 角丸の外側（隅の三角形の部分）から下のドロワーが覗かないよう、コンテンツを載せる
-				// コンテナ自体を黒く塗る。実機のXも角丸の外は純黒になっている。
+				// コンテンツを載せるコンテナ自体を角丸にする（角丸の外側は下のドロワーが覗く）。
 				contentContainerStyle={styles.contentContainer}
 				// 通常は左端エッジのみでスワイプ開始を受け付ける（ターミナル/ブラウザWebViewの
 				// 横操作との競合を最小化。認識はネイティブなので閾値未満のタップは阻害しない）。
 				// ホームタブのフォーカス中のみ画面全域の右スワイプで開ける（X方式）。
 				edgeWidth={fullWidthSwipe ? width : 24}
 				renderNavigationView={renderDrawer}
+				onDrawerOpen={onDrawerSettled}
+				onDrawerClose={onDrawerSettled}
 			>
-				{renderContent}
+				{children}
 			</ReanimatedDrawerLayout>
 		</WsDrawerContext.Provider>
 	);
 }
 
-/**
- * タブ画面全体を包み、ドロワーの開閉進捗に合わせて角丸を付けるフレーム。
- * 半径は端末のディスプレイ角丸（`screenCornerRadius`）に合わせ、`borderCurve: 'continuous'`で
- * iOSの連続曲線（cornerCurve = .continuous）にする。単純な円弧だと実機の画面角と曲率が合わない。
- */
-function WsDrawerContentFrame({ progress, children }: { progress?: SharedValue<number>; children: ReactNode }) {
-	const animatedStyle = useAnimatedStyle(() => ({
-		borderRadius: (progress?.value ?? 0) * screenCornerRadius,
-	}));
-	return <Animated.View style={[styles.contentFrame, animatedStyle]}>{children}</Animated.View>;
+/** 開き切った/閉じ切った瞬間の触覚フィードバック（スワイプ・タップのどちらで操作しても鳴る）。 */
+function onDrawerSettled() {
+	hapticImpact('light');
 }
 
 /** ドロワーの中身。ReanimatedDrawerLayoutのrenderNavigationViewから描画される。 */
@@ -493,9 +481,13 @@ const styles = StyleSheet.create({
 	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3 },
 	subtitle: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
 
-	// ドロワー開閉時のコンテンツ（角丸の外側は黒地。下のドロワーを覗かせない）
-	contentContainer: { backgroundColor: '#000' },
-	contentFrame: { flex: 1, overflow: 'hidden', backgroundColor: colors.bg, borderCurve: 'continuous' },
+	// ドロワーを開いたときに右へどくコンテンツ。角丸は端末のディスプレイ角丸に合わせ、
+	// borderCurve: 'continuous' でiOSの連続曲線（cornerCurve = .continuous）にする
+	// （単純な円弧だと閉じているときに実機の画面角と曲率が合わず、隅に隙間が見える）。
+	contentContainer: {
+		borderRadius: screenCornerRadius, overflow: 'hidden',
+		backgroundColor: colors.bg, borderCurve: 'continuous',
+	},
 
 	// ドロワー
 	drawer: {
