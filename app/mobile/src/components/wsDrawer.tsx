@@ -3,12 +3,14 @@
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Image, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
+import Animated, { SharedValue, useAnimatedStyle } from 'react-native-reanimated';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { isAgentWaiting } from '../store.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+import { screenCornerRadius } from '../screenCornerRadius.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
 import { colors } from '../theme.js';
@@ -80,11 +82,18 @@ export function useWsDrawer(): WsDrawerApi {
 /**
  * タブナビゲータ全体を包むドロワーレイアウト（`(tabs)/_layout.tsx` から1回だけ使う）。
  * ドロワーはタブバーごと覆う（X等と同じ全画面オーバーレイ）。
+ *
+ * 開閉の見せ方はX（Twitter）の実機スクリーンショットをピクセル解析した実測値に合わせている:
+ *  - コンテンツは縮小しない（scale=1.0のまま）。ドロワー幅ぶんちょうど右へ押し出すだけ
+ *  - コンテンツに端末のディスプレイ角丸と同じ半径を進捗連動で付ける（開いた瞬間に角が丸くなる）
+ *  - 暗転オーバーレイは掛けない（実機では文字がrgb(255,255,255)のまま = 一切暗くなっていない）
+ * 「iPhoneの枠が見えながら出てくる」という見え方の正体はこの角丸で、コンテンツの縮小ではない。
  */
 export function WsDrawerLayout({ children }: { children: ReactNode }) {
 	const ref = useRef<DrawerLayoutMethods>(null);
 	const { width } = useWindowDimensions();
 	const [fullWidthSwipe, setFullWidthSwipe] = useState(false);
+	const drawerBehavior = useAppStore(s => s.drawerBehavior);
 	const api = useMemo<WsDrawerApi>(() => ({
 		open: () => {
 			hapticImpact('light');
@@ -94,6 +103,12 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 		setFullWidthSwipe,
 	}), []);
 	const renderDrawer = useCallback(() => <WsDrawerContent onClose={api.close} />, [api]);
+	// children を関数で渡すと開閉進捗のSharedValue（0=閉、1=開）を受け取れる。
+	// これで角丸のアニメーションもUIスレッド（worklet）で駆動できる。
+	const renderContent = useCallback(
+		(openValue?: SharedValue<number>) => <WsDrawerContentFrame progress={openValue}>{children}</WsDrawerContentFrame>,
+		[children],
+	);
 
 	return (
 		<WsDrawerContext.Provider value={api}>
@@ -101,18 +116,37 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 				ref={ref}
 				drawerWidth={Math.min(width * 0.82, 360)}
 				drawerPosition={DrawerPosition.LEFT}
-				drawerType={DrawerType.FRONT}
-				overlayColor="rgba(0,0,0,0.55)"
+				// SLIDE=ドロワーもコンテンツと一緒に左から出てくる（X等と同じ）。
+				// BACK=ドロワーは定位置で待ち、コンテンツがどくことで露出する。
+				drawerType={drawerBehavior === 'back' ? DrawerType.BACK : DrawerType.SLIDE}
+				// 実測どおり暗転させない。RNGHはoverlayをコンテンツの上に必ず1枚敷くため、
+				// 無効化は透明色の指定で行う（overlayタップでの閉じる操作はこのままでも効く）。
+				overlayColor="transparent"
+				// 角丸の外側（隅の三角形の部分）から下のドロワーが覗かないよう、コンテンツを載せる
+				// コンテナ自体を黒く塗る。実機のXも角丸の外は純黒になっている。
+				contentContainerStyle={styles.contentContainer}
 				// 通常は左端エッジのみでスワイプ開始を受け付ける（ターミナル/ブラウザWebViewの
 				// 横操作との競合を最小化。認識はネイティブなので閾値未満のタップは阻害しない）。
 				// ホームタブのフォーカス中のみ画面全域の右スワイプで開ける（X方式）。
 				edgeWidth={fullWidthSwipe ? width : 24}
 				renderNavigationView={renderDrawer}
 			>
-				{children}
+				{renderContent}
 			</ReanimatedDrawerLayout>
 		</WsDrawerContext.Provider>
 	);
+}
+
+/**
+ * タブ画面全体を包み、ドロワーの開閉進捗に合わせて角丸を付けるフレーム。
+ * 半径は端末のディスプレイ角丸（`screenCornerRadius`）に合わせ、`borderCurve: 'continuous'`で
+ * iOSの連続曲線（cornerCurve = .continuous）にする。単純な円弧だと実機の画面角と曲率が合わない。
+ */
+function WsDrawerContentFrame({ progress, children }: { progress?: SharedValue<number>; children: ReactNode }) {
+	const animatedStyle = useAnimatedStyle(() => ({
+		borderRadius: (progress?.value ?? 0) * screenCornerRadius,
+	}));
+	return <Animated.View style={[styles.contentFrame, animatedStyle]}>{children}</Animated.View>;
 }
 
 /** ドロワーの中身。ReanimatedDrawerLayoutのrenderNavigationViewから描画される。 */
@@ -458,6 +492,10 @@ const styles = StyleSheet.create({
 	textCol: { flex: 1, minWidth: 0 },
 	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3 },
 	subtitle: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
+
+	// ドロワー開閉時のコンテンツ（角丸の外側は黒地。下のドロワーを覗かせない）
+	contentContainer: { backgroundColor: '#000' },
+	contentFrame: { flex: 1, overflow: 'hidden', backgroundColor: colors.bg, borderCurve: 'continuous' },
 
 	// ドロワー
 	drawer: {
