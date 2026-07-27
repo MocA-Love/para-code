@@ -19,7 +19,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
-import { IParadisSpaceNoteLine, IParadisSpaceNotesService, PARADIS_SPACE_NOTE_MAX_LENGTH, paradisParseSpaceNote } from '../common/paradisSpaceNotes.js';
+import { IParadisSpaceNoteLine, IParadisSpaceNotesService, PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisContinueSpaceNoteList, paradisParseSpaceNote, paradisToggleSpaceNoteListMarkers } from '../common/paradisSpaceNotes.js';
 
 const HEADER_HEIGHT = 26;
 const MIN_BODY_HEIGHT = 72;
@@ -91,6 +91,8 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	private expanded: boolean;
 	private bodyHeight: number;
 	private editing = false;
+	/** 「やることを追加」行が入力状態か。 */
+	private adding = false;
 	private availableHeight = 0;
 
 	constructor(
@@ -158,7 +160,9 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		}));
 
 		this._register(DOM.addDisposableListener(this.bodyElement, DOM.EventType.CLICK, event => {
-			if ((event.target as HTMLElement).closest('.paradis-space-notes-check')) {
+			// チェックリスト行と「やることを追加」行は自前の操作を持つので、編集モードへは入らない
+			const target = event.target as HTMLElement;
+			if (target.closest('.paradis-space-notes-task') || target.closest('.paradis-space-notes-add')) {
 				return;
 			}
 			this.setEditing(true);
@@ -167,10 +171,30 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		this._register(DOM.addDisposableListener(this.editorElement, DOM.EventType.BLUR, () => this.setEditing(false)));
 		this._register(DOM.addDisposableListener(this.editorElement, DOM.EventType.KEY_DOWN, (event: KeyboardEvent) => {
 			const keyboardEvent = new StandardKeyboardEvent(event);
-			// Escape / Cmd+Enter で編集を終える (Enter 単独は改行のまま)
+			// Escape / Cmd+Enter で編集を終える (Enter 単独は改行 or チェックリストの継続)
 			if (keyboardEvent.equals(KeyCode.Escape) || keyboardEvent.equals(KeyMod.CtrlCmd | KeyCode.Enter)) {
 				DOM.EventHelper.stop(event, true);
 				this.setEditing(false);
+				return;
+			}
+			// Enter: チェックリスト行なら次の行へ `- [ ] ` を継続する
+			if (keyboardEvent.equals(KeyCode.Enter) && this.editorElement.selectionStart === this.editorElement.selectionEnd) {
+				const continued = paradisContinueSpaceNoteList(this.editorElement.value, this.editorElement.selectionStart);
+				if (continued) {
+					DOM.EventHelper.stop(event, true);
+					this.editorElement.value = continued.text;
+					this.editorElement.setSelectionRange(continued.caret, continued.caret);
+				}
+				return;
+			}
+			// Cmd+L: 選択行をチェックリストにする / 解除する
+			if (keyboardEvent.equals(KeyMod.CtrlCmd | KeyCode.KeyL)) {
+				DOM.EventHelper.stop(event, true);
+				const toggled = paradisToggleSpaceNoteListMarkers(this.editorElement.value, this.editorElement.selectionStart, this.editorElement.selectionEnd);
+				if (toggled) {
+					this.editorElement.value = toggled.text;
+					this.editorElement.setSelectionRange(toggled.selectionStart, toggled.selectionEnd);
+				}
 			}
 		}));
 
@@ -215,6 +239,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			return;
 		}
 		this.currentColorHex = colorHex;
+		this.adding = false;
 		if (this.editing) {
 			// 切り替え前の編集内容は切り替え先へ持ち越さず、元のスペースへ保存する
 			this.setEditing(false);
@@ -298,6 +323,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 				return;
 			}
 			this.editing = true;
+			this.adding = false;
 			this.editorElement.value = this.notesService.read(this.stateKey);
 			this.render();
 			this.editorElement.focus();
@@ -344,12 +370,92 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		if (text.trim().length === 0) {
 			// allow-any-unicode-next-line
 			DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-placeholder')).textContent = localize('paradis.spaceNotes.empty', "このスペースのメモはまだありません。クリックして書き始められます。");
+		} else {
+			for (const line of paradisParseSpaceNote(text)) {
+				this.renderLine(line);
+			}
+		}
+		this.renderAddRow();
+	}
+
+	/**
+	 * 末尾の「やることを追加」行。編集モードへ入らずにチェックリストを1件足せる。
+	 * Enter で確定して続けて次を入力、Shift+Enter で改行 (2行目以降は継続行として保存)、
+	 * Escape で終了する。
+	 */
+	private renderAddRow(): void {
+		const row = DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-add'));
+		const icon = DOM.append(row, DOM.$('.codicon'));
+		icon.className = `codicon ${ThemeIcon.asClassName(Codicon.add).replace('codicon ', '')}`;
+
+		if (!this.adding) {
+			row.tabIndex = 0;
+			row.setAttribute('role', 'button');
+			// allow-any-unicode-next-line
+			DOM.append(row, DOM.$('span.paradis-space-notes-add-label')).textContent = localize('paradis.spaceNotes.addTask', "やることを追加");
+			const start = () => { this.adding = true; this.render(); };
+			this.bodyDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CLICK, event => { DOM.EventHelper.stop(event, true); start(); }));
+			this.bodyDisposables.add(DOM.addDisposableListener(row, DOM.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+				const keyboardEvent = new StandardKeyboardEvent(event);
+				if (keyboardEvent.equals(KeyCode.Enter) || keyboardEvent.equals(KeyCode.Space)) {
+					DOM.EventHelper.stop(event, true);
+					start();
+				}
+			}));
 			return;
 		}
 
-		for (const line of paradisParseSpaceNote(text)) {
-			this.renderLine(line);
-		}
+		const input = DOM.append(row, DOM.$('textarea.paradis-space-notes-add-input')) as HTMLTextAreaElement;
+		input.rows = 1;
+		input.spellcheck = false;
+		input.maxLength = PARADIS_SPACE_NOTE_MAX_LENGTH;
+		// allow-any-unicode-next-line
+		input.placeholder = localize('paradis.spaceNotes.addPlaceholder', "やること（Shift+Enter で改行）");
+		const autoGrow = () => {
+			input.style.height = 'auto';
+			input.style.height = `${input.scrollHeight}px`;
+		};
+		this.bodyDisposables.add(DOM.addDisposableListener(input, DOM.EventType.INPUT, autoGrow));
+
+		const commit = () => {
+			if (this.stateKey === undefined) {
+				return;
+			}
+			const appended = paradisAppendSpaceNoteTask(this.notesService.read(this.stateKey), input.value);
+			if (appended !== undefined) {
+				this.notesService.write(this.stateKey, appended);
+			}
+			// 続けて次を入力できるよう、行は開いたままにする
+			input.value = '';
+			autoGrow();
+			this.render();
+		};
+
+		this.bodyDisposables.add(DOM.addDisposableListener(input, DOM.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+			const keyboardEvent = new StandardKeyboardEvent(event);
+			if (keyboardEvent.equals(KeyCode.Enter)) {
+				// Shift+Enter は改行なので触らない (equals は修飾キー込みで一致を見る)
+				DOM.EventHelper.stop(event, true);
+				commit();
+				return;
+			}
+			if (keyboardEvent.equals(KeyCode.Escape)) {
+				DOM.EventHelper.stop(event, true);
+				this.adding = false;
+				this.render();
+			}
+		}));
+		this.bodyDisposables.add(DOM.addDisposableListener(input, DOM.EventType.BLUR, () => {
+			// 書きかけを捨てない: 中身があれば足してから閉じる
+			if (input.value.trim().length > 0) {
+				commit();
+			}
+			this.adding = false;
+			this.render();
+		}));
+
+		input.focus();
+		autoGrow();
 	}
 
 	private renderLine(line: IParadisSpaceNoteLine): void {
@@ -380,7 +486,8 @@ export class ParadisSpaceNotesPanel extends Disposable {
 						this.notesService.toggleTask(this.stateKey, line.index);
 					}
 				};
-				this.bodyDisposables.add(DOM.addDisposableListener(check, DOM.EventType.CLICK, event => {
+				// 14px のチェックボックスだけを的にせず、行のどこを押してもトグルできるようにする
+				this.bodyDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CLICK, event => {
 					DOM.EventHelper.stop(event, true);
 					toggle();
 				}));

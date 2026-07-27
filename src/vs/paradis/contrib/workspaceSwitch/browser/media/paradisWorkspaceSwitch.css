@@ -434,23 +434,46 @@
 	opacity: 0.8;
 }
 
+/* allow-any-unicode-next-line */
+/* チェックリスト行。小さなチェックボックスだけを的にすると押しづらいので、行のどこを
+ * クリックしてもトグルする (本文クリックで編集モードへ入る挙動からは除外している)。 */
 .paradis-space-notes-task {
 	display: flex;
 	align-items: flex-start;
 	gap: 7px;
+	margin: 0 -6px;
+	padding: 0 6px;
+	border-radius: 4px;
+	cursor: pointer;
 }
 
+.paradis-space-notes-task:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+/* allow-any-unicode-next-line */
+/* 枠線に checkbox.border を使うと Dark Modern では #3c3c3c となり、パネル背景との差が
+ * ほとんど無く未チェックが空白に見える。前景色からの相対値で枠と面を作って、
+ * 「押せる四角」として見えるようにする。 */
 .paradis-space-notes-check {
 	flex-shrink: 0;
-	width: 14px;
-	height: 14px;
+	width: 15px;
+	height: 15px;
 	margin-top: 3px;
-	border: 1px solid var(--vscode-checkbox-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.6)));
-	border-radius: 3px;
+	border: 1px solid color-mix(in srgb, var(--vscode-foreground) 45%, transparent);
+	border-radius: 4px;
+	background-color: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	cursor: pointer;
+}
+
+/* allow-any-unicode-next-line */
+/* ホバー中は未チェックにも薄いチェックを出す (押すと何になるかを見せる) */
+.paradis-space-notes-task:hover .paradis-space-notes-check {
+	border-color: var(--vscode-foreground);
+	background-color: color-mix(in srgb, var(--vscode-foreground) 16%, transparent);
 }
 
 .paradis-space-notes-check:focus-visible {
@@ -463,16 +486,21 @@
  * .monaco-workbench を前置して詳細度を上げる (PR チップと同じ理由) */
 .monaco-workbench .paradis-space-notes-check > .codicon {
 	font-size: 12px;
-	color: var(--vscode-charts-blue);
+	color: var(--vscode-foreground);
 	opacity: 0;
 }
 
+.paradis-space-notes-task:hover .paradis-space-notes-check > .codicon {
+	opacity: 0.45;
+}
+
 .paradis-space-notes-task.done .paradis-space-notes-check {
-	background-color: color-mix(in srgb, var(--vscode-charts-blue) 18%, transparent);
+	background-color: var(--vscode-charts-blue);
 	border-color: var(--vscode-charts-blue);
 }
 
 .monaco-workbench .paradis-space-notes-task.done .paradis-space-notes-check > .codicon {
+	color: #fff;
 	opacity: 1;
 }
 
@@ -484,6 +512,52 @@
 	color: var(--vscode-descriptionForeground);
 	text-decoration: line-through;
 	opacity: 0.75;
+}
+
+/* allow-any-unicode-next-line */
+/* 末尾の「やることを追加」行。編集モードへ入らずに1件足せる入口。 */
+.paradis-space-notes-add {
+	display: flex;
+	align-items: flex-start;
+	gap: 7px;
+	margin: 2px -6px 0;
+	padding: 2px 6px;
+	border-radius: 4px;
+	color: var(--vscode-descriptionForeground);
+	cursor: text;
+	opacity: 0.75;
+}
+
+.paradis-space-notes-add:hover,
+.paradis-space-notes-add:focus-within {
+	background-color: var(--vscode-list-hoverBackground);
+	opacity: 1;
+}
+
+.paradis-space-notes-add:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.monaco-workbench .paradis-space-notes-add > .codicon {
+	font-size: 13px;
+	margin-top: 3px;
+}
+
+.paradis-space-notes-add-input {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: none;
+	outline: none;
+	resize: none;
+	overflow: hidden;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: inherit;
+	line-height: inherit;
 }
 
 .paradis-space-notes-editor {
