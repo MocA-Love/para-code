@@ -5,8 +5,18 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 /* allow-any-unicode-comment-file (Para Code: this file contains Japanese comments) */
 
-.paradis-workspaces-list {
+/* allow-any-unicode-next-line */
+/* ツリー (可変) とメモ欄 (下端固定) を縦に積む。実際の配分はビュー側の layoutBody が
+ * tree.layout(height - メモ欄の高さ) で決めるので、ここでは重なりを防ぐだけでよい。 */
+.paradis-workspaces-pane-body {
+	display: flex;
+	flex-direction: column;
 	height: 100%;
+}
+
+.paradis-workspaces-list {
+	flex: 1;
+	min-height: 0;
 }
 
 /* allow-any-unicode-next-line */
@@ -222,6 +232,37 @@
 .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-merged { --paradis-pr-color: #a371f7; }
 .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-closed { --paradis-pr-color: #f85149; }
 
+/* allow-any-unicode-next-line */
+/* メモ (paradisSpaceNotesPanel) の未完了件数バッジ。未完了が0件の行では非表示にして
+ * 行の情報量を増やさない。PR チップと差分バッジの間に置く。 */
+.paradis-workspaces-list .paradis-worktree-note {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	flex-shrink: 0;
+	margin-left: auto;
+	font-size: 0.8em;
+	line-height: 1;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-note > .codicon {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-workspaces-list .paradis-worktree-note.hidden {
+	display: none;
+}
+
+/* allow-any-unicode-next-line */
+/* 右寄せ (margin-left: auto) は「行内で最初に現れる右側バッジ」だけが担う。
+ * PR チップが出ていればメモバッジは通常の gap 間隔で隣に並ぶ。 */
+.paradis-workspaces-list .paradis-worktree-pr:not(.hidden) ~ .paradis-worktree-note {
+	margin-left: 0;
+}
+
 /* 未コミット差分 (+挿入/-削除) バッジ。常に行の右端に固定する */
 .paradis-workspaces-list .paradis-worktree-diff {
 	display: flex;
@@ -234,9 +275,10 @@
 }
 
 /* allow-any-unicode-next-line */
-/* PR チップが表示されているときはチップ側の margin-left: auto が右寄せを担うため、
+/* PR チップ / メモバッジが表示されているときはそちらの margin-left: auto が右寄せを担うため、
  * diff バッジは通常の gap 間隔で隣に並べる */
-.paradis-workspaces-list .paradis-worktree-pr:not(.hidden) ~ .paradis-worktree-diff {
+.paradis-workspaces-list .paradis-worktree-pr:not(.hidden) ~ .paradis-worktree-diff,
+.paradis-workspaces-list .paradis-worktree-note:not(.hidden) ~ .paradis-worktree-diff {
 	margin-left: 0;
 }
 
@@ -256,3 +298,211 @@
 /* 色選択のスウォッチは QuickPick の iconPath (SVG data URI) で描画する
  * (paradisWorkspacesView.ts の promptColor 参照)。以前ここにあったコンテキストメニュー用の
  * aria-label 属性セレクタ方式は、macOS のネイティブメニューでは効かないため廃止した。 */
+
+/* allow-any-unicode-next-line */
+/* --- スペースのメモ欄 (paradisSpaceNotesPanel.ts) -------------------------------------------
+ * ビュー下端に固定されるセクション。高さはビュー側の layoutBody から
+ * ParadisSpaceNotesPanel.layout() で決まるため、ここでは中身の見た目だけを定義する。 */
+/* allow-any-unicode-next-line */
+/* overflow は本文側だけに掛ける。ここで hidden にすると、上端に置いた Sash (top: -2px) の
+ * 上半分がクリップされて掴みしろが半分になる。 */
+.paradis-space-notes {
+	flex-shrink: 0;
+	display: flex;
+	flex-direction: column;
+	position: relative;
+	border-top: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.paradis-space-notes-header {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 26px;
+	flex-shrink: 0;
+	overflow: hidden;
+	padding: 0 6px 0 4px;
+	cursor: pointer;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.paradis-space-notes-header:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-space-notes-header:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-space-notes-title {
+	font-size: 11px;
+	font-weight: 600;
+	flex-shrink: 0;
+}
+
+.paradis-space-notes-space {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-space-notes-space-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-space-notes-dot {
+	flex-shrink: 0;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+}
+
+.paradis-space-notes-dot.hidden {
+	display: none;
+}
+
+.paradis-space-notes-badge {
+	margin-left: auto;
+	flex-shrink: 0;
+	padding: 1px 7px;
+	border-radius: 9px;
+	font-size: 10px;
+	line-height: 15px;
+	font-variant-numeric: tabular-nums;
+	background-color: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.paradis-space-notes-badge.hidden {
+	display: none;
+}
+
+/* allow-any-unicode-next-line */
+/* バッジが無い場合でもアクションは右端に寄せる */
+.paradis-space-notes-badge.hidden + .paradis-space-notes-actions {
+	margin-left: auto;
+}
+
+.paradis-space-notes-actions {
+	flex-shrink: 0;
+}
+
+.paradis-space-notes-body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 2px 12px 8px 12px;
+	font-size: 12.5px;
+	line-height: 1.65;
+	cursor: text;
+}
+
+.paradis-space-notes.collapsed .paradis-space-notes-body,
+.paradis-space-notes-body.hidden {
+	display: none;
+}
+
+.paradis-space-notes-heading {
+	font-weight: 600;
+	margin-top: 6px;
+}
+
+.paradis-space-notes-heading:first-child {
+	margin-top: 0;
+}
+
+.paradis-space-notes-text {
+	color: var(--vscode-descriptionForeground);
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.paradis-space-notes-blank {
+	height: 6px;
+}
+
+.paradis-space-notes-placeholder {
+	color: var(--vscode-descriptionForeground);
+	font-style: italic;
+	opacity: 0.8;
+}
+
+.paradis-space-notes-task {
+	display: flex;
+	align-items: flex-start;
+	gap: 7px;
+}
+
+.paradis-space-notes-check {
+	flex-shrink: 0;
+	width: 14px;
+	height: 14px;
+	margin-top: 3px;
+	border: 1px solid var(--vscode-checkbox-border, var(--vscode-contrastBorder, rgba(128, 128, 128, 0.6)));
+	border-radius: 3px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+}
+
+.paradis-space-notes-check:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: 1px;
+}
+
+/* allow-any-unicode-next-line */
+/* upstream の `.monaco-workbench .codicon[class*="codicon-"] { font-size: 16px }` に勝つため
+ * .monaco-workbench を前置して詳細度を上げる (PR チップと同じ理由) */
+.monaco-workbench .paradis-space-notes-check > .codicon {
+	font-size: 12px;
+	color: var(--vscode-charts-blue);
+	opacity: 0;
+}
+
+.paradis-space-notes-task.done .paradis-space-notes-check {
+	background-color: color-mix(in srgb, var(--vscode-charts-blue) 18%, transparent);
+	border-color: var(--vscode-charts-blue);
+}
+
+.monaco-workbench .paradis-space-notes-task.done .paradis-space-notes-check > .codicon {
+	opacity: 1;
+}
+
+.paradis-space-notes-task-label {
+	word-break: break-word;
+}
+
+.paradis-space-notes-task.done .paradis-space-notes-task-label {
+	color: var(--vscode-descriptionForeground);
+	text-decoration: line-through;
+	opacity: 0.75;
+}
+
+.paradis-space-notes-editor {
+	flex: 1;
+	min-height: 0;
+	margin: 2px 8px 8px 8px;
+	padding: 4px 6px;
+	resize: none;
+	outline: none;
+	font-family: inherit;
+	font-size: 12.5px;
+	line-height: 1.65;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-focusBorder);
+	border-radius: 2px;
+}
+
+.paradis-space-notes.collapsed .paradis-space-notes-editor,
+.paradis-space-notes-editor.hidden {
+	display: none;
+}

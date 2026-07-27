@@ -68,6 +68,12 @@ export interface IParadisMobileWindowWorkspaceV2 {
 	readonly branch?: string;
 	readonly parent?: string;
 	readonly pr?: { readonly number: number; readonly state: 'open' | 'draft' | 'merged' | 'closed'; readonly url: string };
+	/**
+	 * スペースのメモ（PC版 Workspaces ビュー下部のメモ欄）のチェックリスト集計。
+	 * 本文は state に載せず、必要になった時点で scm チャネルの noteGet で取りに行く。
+	 * チェックリストが1件も無いスペースでは省略する。
+	 */
+	readonly note?: { readonly open: number; readonly done: number };
 }
 
 /** PC本体のバッテリー状態（Live Activity等の表示用）。level は 0〜100 の整数。 */

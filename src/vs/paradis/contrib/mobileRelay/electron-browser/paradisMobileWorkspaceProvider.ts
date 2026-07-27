@@ -30,6 +30,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisCollectAllTerminalInstances, paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
+import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
@@ -139,7 +140,11 @@ type ScmInbound =
 	| { t: 'createWorktree'; id: string; ws?: undefined; repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }
 	// 既存ワークスペース（スペース）でのエージェント起動（モバイルのホーム＋ボタン）。
 	// 新しいターミナルを作ってエージェントCLIコマンドを送る。
-	| { t: 'launchAgent'; id: string; ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string };
+	| { t: 'launchAgent'; id: string; ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }
+	// スペースのメモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）の取得・更新。
+	// git 実行を伴わないが、ws 単位のリクエストという点で他の scm メッセージと同じ扱いにする。
+	| { t: 'noteGet'; id: string; ws: string }
+	| { t: 'noteSet'; id: string; ws: string; text: string };
 
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
@@ -240,6 +245,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly terminalGroupService: ITerminalGroupService,
 		private readonly terminalScopeService: IParadisTerminalScopeService,
 		private readonly worktreeService: IParadisWorktreeService,
+		private readonly spaceNotesService: IParadisSpaceNotesService,
 		private readonly agentStatusStore: IParadisAgentStatusStore,
 		private readonly logService: ILogService,
 		private readonly fileService: IFileService,
@@ -301,6 +307,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this._register(this.terminalService.onDidChangeInstanceDimensions(instance => this.scheduleResizeResync(instance)));
 		// worktree（スペース）の増減もワークスペース一覧に反映する（PR 状態も前倒しで取り直す）
 		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.kickPrStatusRefresh(); this.pushStateSoon(); }));
+		// メモの未完了件数はワークスペース一覧に載るため、PC側で編集されたらモバイルへも反映する
+		this._register(this.spaceNotesService.onDidChangeNotes(() => this.pushStateSoon()));
 		// agentチャネル用: terminalId ⇔ ペイントークンの対応を shared process へ同期する
 		// （チャットミラーが attach(id) を transcript へ解決するのに使う）。
 		this._register(this.paneTokenService.onDidChange(() => { this.pushStateSoon(); void this.pushAgentPanes(); }));
@@ -521,6 +529,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return status ? { pr: { number: status.number, state: status.state, url: status.url } } : {};
 	}
 
+	/**
+	 * stateスナップショットの workspaces[].note 用の集計。本文は載せず（毎回のpushを太らせないため）、
+	 * チェックリストが1件も無いスペースではフィールドごと省略する。
+	 */
+	private noteForWs(wsId: string): { note: { open: number; done: number } } | Record<string, never> {
+		const summary = this.spaceNotesService.summary(wsId);
+		return summary.open > 0 || summary.done > 0 ? { note: { open: summary.open, done: summary.done } } : {};
+	}
+
 	/** 各リポジトリのブランチ名を非同期に更新し、変化があれば state を再送する。 */
 	private refreshBranches(): void {
 		for (const repo of this.workspaceSwitchService.repositories) {
@@ -639,6 +656,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				...(r.color ? { color: r.color } : {}),
 				...(this.branchCache.has(r.id) ? { branch: this.branchCache.get(r.id) } : {}),
 				...this.prForWs(r.id),
+				...this.noteForWs(r.id),
 			});
 			for (const worktree of this.worktreeService.getWorktrees(r.id)) {
 				if (worktree.missing) {
@@ -653,6 +671,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					...(worktree.branch ? { branch: worktree.branch } : {}),
 					parent: r.id,
 					...this.prForWs(paradisWorktreeStateKey(worktree.uri)),
+					...this.noteForWs(paradisWorktreeStateKey(worktree.uri)),
 				});
 			}
 		}
@@ -965,6 +984,28 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} catch (err) {
 				reply({ error: String(err) });
 			}
+			return;
+		}
+		// スペースのメモ。git実行を伴わないため repoPath 解決より先に処理する
+		if (msg.t === 'noteGet' || msg.t === 'noteSet') {
+			if (typeof msg.ws !== 'string' || msg.ws.length === 0) {
+				reply({ error: 'ws is required' });
+				return;
+			}
+			// 未知のワークスペースキーでメモ領域を増やされないよう、実在するスペースだけを受ける
+			// （launchAgent 等と同じく resolveWsRoot で確認する）
+			if (this.resolveWsRoot(msg.ws) === undefined) {
+				reply({ error: `unknown workspace: ${msg.ws}` });
+				return;
+			}
+			if (msg.t === 'noteSet') {
+				if (typeof msg.text !== 'string') {
+					reply({ error: 'text is required' });
+					return;
+				}
+				this.spaceNotesService.write(msg.ws, msg.text);
+			}
+			reply({ t: 'note', ws: msg.ws, text: this.spaceNotesService.read(msg.ws) });
 			return;
 		}
 		// 既存ワークスペースへのエージェント起動。git実行を伴わないため repoPath 解決より先に処理する

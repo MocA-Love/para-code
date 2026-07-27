@@ -20,6 +20,12 @@ export interface WorkspacePrStatus {
 	url: string;
 }
 
+/** スペースのメモに含まれるチェックリストの集計（open=未完了、done=完了）。 */
+export interface WorkspaceNoteSummary {
+	open: number;
+	done: number;
+}
+
 /** PCから届くワークスペース状態（stateチャネルのJSON）。 */
 export interface WorkspaceState {
 	protocolVersion: 3;
@@ -33,7 +39,9 @@ export interface WorkspaceState {
 	// parent: worktree（スペース）の親リポジトリid。ドロワーの親子グルーピング（開閉表示）に使う。
 	// 旧PC（parent未配信）ではundefinedのままフラット表示にフォールバックする。
 	// pr: 現在ブランチに紐づくGitHub PR（PC側がghでポーリング）。旧PCでは未配信。
-	workspaces: { id: string; sourceId: string; windowId: number; name: string; color?: string; branch?: string; parent?: string; pr?: WorkspacePrStatus }[];
+	// note: スペースのメモ（PC版 Workspaces ビュー下部のメモ欄）のチェックリスト集計。
+	// 本文は含まず、必要になった時点で scmNoteGet で取りに行く。旧PCでは未配信。
+	workspaces: { id: string; sourceId: string; windowId: number; name: string; color?: string; branch?: string; parent?: string; pr?: WorkspacePrStatus; note?: WorkspaceNoteSummary }[];
 	// agent: そのターミナルでエージェントCLI（claude/codex）が動いた実績があるか（PC側のhook発火実績）。
 	// ホーム一覧・Live Activity はこのフラグで「エージェントのターミナル」だけに絞る。
 	terminals: { terminalKey: string; id: number; windowId: number; rendererGeneration: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
@@ -98,6 +106,11 @@ export function mergeWorkspaceState(previous: WorkspaceState | undefined, incomi
 	};
 }
 
+/** scm noteGet / noteSet 応答（更新後の本文をそのまま返す）。 */
+export interface SpaceNoteResult {
+	ws: string;
+	text: string;
+}
 /** scm status 応答。 */
 export interface ScmStatusResult {
 	branch: string;
@@ -2238,6 +2251,16 @@ export class MobileController {
 	 */
 	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }): Promise<void> {
 		return this.request<void>('scm', { t: 'launchAgent', ...opts }, 60_000);
+	}
+
+	/** スペースのメモ本文（PC版 Workspaces ビュー下部のメモ欄と同じ内容）。 */
+	noteGet(ws: string): Promise<SpaceNoteResult> {
+		return this.request<SpaceNoteResult>('scm', { t: 'noteGet', ws });
+	}
+
+	/** スペースのメモ本文を更新する。PC側の表示・未完了バッジにも即反映される。 */
+	noteSet(ws: string, text: string): Promise<SpaceNoteResult> {
+		return this.request<SpaceNoteResult>('scm', { t: 'noteSet', ws, text });
 	}
 
 	/** ディレクトリ一覧（ワークスペースルート相対パス）。 */

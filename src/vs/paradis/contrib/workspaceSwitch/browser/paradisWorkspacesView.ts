@@ -43,7 +43,9 @@ import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
+import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 
@@ -158,6 +160,10 @@ interface IWorktreeTemplateData {
 	readonly prHover: IManagedHover;
 	/** クリックリスナーが renderElement 後の最新 PR URL を参照するためのホルダー */
 	readonly prContext: { url?: string };
+	/** メモの未完了件数バッジ (paradisSpaceNotesPanel と同じ内容の要約表示) */
+	readonly note: HTMLElement;
+	readonly noteCount: HTMLElement;
+	readonly noteHover: IManagedHover;
 	readonly diff: HTMLElement;
 	readonly diffAdded: HTMLElement;
 	readonly diffRemoved: HTMLElement;
@@ -301,6 +307,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly getStatus: (stateKey: string) => ParadisAgentStatus | undefined,
 		private readonly getDiffStat: (worktree: IParadisWorktree) => IParadisDiffStat | undefined,
 		private readonly getPrStatus: (worktree: IParadisWorktree) => IParadisPrStatus | undefined,
+		private readonly getNoteSummary: (worktree: IParadisWorktree) => IParadisSpaceNoteSummary,
 		private readonly getRepositoryColorHex: (repositoryId: string) => string | undefined,
 		private readonly openPrUrl: (url: string) => void,
 		private readonly hoverService: IHoverService,
@@ -332,10 +339,16 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			}));
 		}
 		const prHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pr, ''));
+		// メモの未完了件数。行の情報量を増やしすぎないよう、未完了が1件以上あるときだけ出す
+		const note = DOM.append(row, DOM.$('.paradis-worktree-note'));
+		const noteIcon = DOM.append(note, DOM.$('.codicon'));
+		noteIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.checklist).replace('codicon ', '')}`;
+		const noteCount = DOM.append(note, DOM.$('span.paradis-worktree-note-count'));
+		const noteHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), note, ''));
 		const diff = DOM.append(row, DOM.$('.paradis-worktree-diff'));
 		const diffAdded = DOM.append(diff, DOM.$('span.paradis-worktree-diff-added'));
 		const diffRemoved = DOM.append(diff, DOM.$('span.paradis-worktree-diff-removed'));
-		return { row, icon, name, branch, pr, prIcon, prNumber, prHover, prContext, diff, diffAdded, diffRemoved, templateDisposables };
+		return { row, icon, name, branch, pr, prIcon, prNumber, prHover, prContext, note, noteCount, noteHover, diff, diffAdded, diffRemoved, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
@@ -362,6 +375,18 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		if (hasDiff && diffStat) {
 			templateData.diffAdded.textContent = diffStat.insertions > 0 ? `+${diffStat.insertions}` : '';
 			templateData.diffRemoved.textContent = diffStat.deletions > 0 ? `-${diffStat.deletions}` : '';
+		}
+
+		const noteSummary = worktree.missing ? undefined : this.getNoteSummary(worktree);
+		const hasOpenTasks = !!noteSummary && noteSummary.open > 0;
+		templateData.note.classList.toggle('hidden', !hasOpenTasks);
+		if (hasOpenTasks && noteSummary) {
+			templateData.noteCount.textContent = String(noteSummary.open);
+			// allow-any-unicode-next-line
+			templateData.noteHover.update(localize('paradis.spaceNotes.badgeTooltip', "メモ: 未完了 {0} 件 / 全 {1} 件", noteSummary.open, noteSummary.open + noteSummary.done));
+		} else {
+			templateData.noteCount.textContent = '';
+			templateData.noteHover.update('');
 		}
 
 		const prStatus = worktree.missing ? undefined : this.getPrStatus(worktree);
@@ -501,6 +526,10 @@ export class ParadisWorkspacesView extends ViewPane {
 	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
 	private readonly _prStatusScheduler: RunOnceScheduler;
 	private readonly _collapsedRepositoryState: ParadisCollapsedRepositoryStateController;
+	/** ビュー下端に固定される「いま開いているスペースのメモ」欄 */
+	private notesPanel: ParadisSpaceNotesPanel | undefined;
+	/** メモ欄の高さが変わったときにツリーを再レイアウトするため、直近のレイアウト値を覚えておく */
+	private lastLayout: { height: number; width: number } | undefined;
 
 	constructor(
 		options: IViewPaneOptions,
@@ -517,6 +546,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
 		@IParadisWorktreeCreateProgressStore private readonly createProgressStore: IParadisWorktreeCreateProgressStore,
+		@IParadisSpaceNotesService private readonly spaceNotesService: IParadisSpaceNotesService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
@@ -530,9 +560,11 @@ export class ParadisWorkspacesView extends ViewPane {
 		this._prStatusScheduler = this._register(new RunOnceScheduler(() => this.refreshPrStatuses(), PR_STATUS_POLL_INTERVAL_MS));
 		this._collapsedRepositoryState = this._register(new ParadisCollapsedRepositoryStateController(this.storageService, this.logService));
 
-		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
-		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.updateTree()));
-		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.updateTree(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
+		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this.updateNotesPanelSpace(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
+		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
+		// メモの未完了バッジは行の表示内容なので、メモが変わったらツリーを描き直す
+		this._register(this.spaceNotesService.onDidChangeNotes(() => this.updateTree()));
+		this._register(this.worktreeService.onDidChangeWorktrees(() => { this.updateTree(); this.updateNotesPanelSpace(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
 		// 注意: 引数なしの tree.rerender() は行の renderElement を再実行しないため、
 		// setChildren で作り直す (identityProvider により選択/折りたたみ状態は保持される)
 		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.updateTree()));
@@ -543,6 +575,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	protected override renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 
+		// ツリーとメモ欄を縦に積む (メモ欄は下端固定、ツリーが残りを占める)
+		container.classList.add('paradis-workspaces-pane-body');
 		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
 		const getStatus = (stateKey: string) => this.agentStatusStore.getScopeStatus(stateKey);
 		const repositoryRenderer = new RepositoryRenderer(
@@ -553,6 +587,7 @@ export class ParadisWorkspacesView extends ViewPane {
 			getStatus,
 			worktree => this._diffStats.get(worktree.uri.fsPath),
 			worktree => this._prStatuses.get(worktree.uri.fsPath),
+			worktree => this.spaceNotesService.summary(worktreeStateKeyFor(worktree)),
 			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color),
 			url => { this.openerService.open(URI.parse(url)).catch(error => this.notificationService.error(error)); },
 			this.hoverService
@@ -617,9 +652,53 @@ export class ParadisWorkspacesView extends ViewPane {
 			this._collapsedRepositoryState.recordTreeCollapse(element, e.node.collapsed);
 		}));
 
+		this.notesPanel = this._register(this.instantiationService.createInstance(ParadisSpaceNotesPanel, container));
+		this._register(this.notesPanel.onDidChangeHeight(() => this.relayout()));
+
 		this.updateTree();
+		this.updateNotesPanelSpace();
 		this._diffStatsScheduler.schedule(0);
 		this._prStatusScheduler.schedule(0);
+	}
+
+	/** メモ欄の対象を、いま開いているスペースに追従させる。 */
+	private updateNotesPanelSpace(): void {
+		if (!this.notesPanel) {
+			return;
+		}
+		const stateKey = this.workspaceSwitchService.activeStateKey;
+		if (stateKey === undefined) {
+			this.notesPanel.setSpace(undefined, '', undefined);
+			return;
+		}
+		for (const repository of this.workspaceSwitchService.repositories) {
+			const colorHex = paradisWorkspaceColorHex(repository.color);
+			if (repository.id === stateKey) {
+				this.notesPanel.setSpace(stateKey, `${repository.name} / ${STR_MAIN_CHECKOUT_NAME}`, colorHex);
+				return;
+			}
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (paradisWorktreeStateKey(worktree.uri) === stateKey) {
+					this.notesPanel.setSpace(stateKey, worktree.name, colorHex);
+					return;
+				}
+			}
+		}
+		// 登録リポジトリの外にあるスペース (固定された補助ウィンドウ等) でもメモは書ける
+		this.notesPanel.setSpace(stateKey, '', undefined);
+	}
+
+	/** メモ欄の高さが変わったときに、直近のレイアウト値でツリーを配分し直す。 */
+	private relayout(): void {
+		if (this.lastLayout) {
+			this.layoutContents(this.lastLayout.height, this.lastLayout.width);
+		}
+	}
+
+	/** ビューの高さをメモ欄とツリーへ配分する (layoutBody とメモ欄の高さ変更の共通処理)。 */
+	private layoutContents(height: number, width: number): void {
+		const notesHeight = this.notesPanel?.layout(height) ?? 0;
+		this.tree?.layout(Math.max(0, height - notesHeight), width);
 	}
 
 	/** worktree 行 (main checkout の合成行を含む) のクリックで、その作業ツリーへ切り替える。 */
@@ -731,7 +810,8 @@ export class ParadisWorkspacesView extends ViewPane {
 
 	protected override layoutBody(height: number, width: number): void {
 		super.layoutBody(height, width);
-		this.tree?.layout(height, width);
+		this.lastLayout = { height, width };
+		this.layoutContents(height, width);
 	}
 
 	override shouldShowWelcome(): boolean {
