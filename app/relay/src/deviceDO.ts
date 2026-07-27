@@ -97,6 +97,9 @@ export class DeviceDO implements DurableObject {
 		if (action === 'turn-credentials') {
 			return this.turnCredentials(request);
 		}
+		if (action === 'pc-check') {
+			return this.checkPcToken(request);
+		}
 		if (request.headers.get('Upgrade') !== 'websocket') {
 			return new Response('expected websocket', { status: 426 });
 		}
@@ -164,6 +167,21 @@ export class DeviceDO implements DurableObject {
 		const tokenHash = await hashToken(pairingToken);
 		this.sql.exec('INSERT INTO pending (pairId, tokenHash, expiresAt) VALUES (?, ?, ?)', pairId, tokenHash, Date.now() + PAIRING_TTL_MS);
 		return Response.json({ pairId, pairingToken, expiresAt: Date.now() + PAIRING_TTL_MS });
+	}
+
+	/**
+	 * pcToken の有効性だけを返す（副作用なし）。
+	 * WebSocket のハンドシェイク失敗は、認証拒否でも経路断でもクライアントには同じ
+	 * close 1006 として届く。PC 側が「待てば直る」のか「再ペアリングが要る」のかを
+	 * 判別するための唯一の手段。
+	 */
+	private async checkPcToken(request: Request): Promise<Response> {
+		const device = this.device();
+		const token = extractToken(request);
+		if (!device || token === null || !timingSafeEqualHex(await hashToken(token), device.pcTokenHash)) {
+			return new Response('unauthorized', { status: 401 });
+		}
+		return Response.json({ ok: true });
 	}
 
 	private cleanupPairings(): void {

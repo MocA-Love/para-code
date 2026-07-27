@@ -23,6 +23,7 @@ import { findExecutable } from '../../../../base/node/processes.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../common/paradisAgentBrowser.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from './paradisAgentHome.js';
 
 /**
@@ -407,6 +408,13 @@ export async function paradisMergeAgentHooksFile(filePath: string, managedEvents
 			const merged = paradisMergeAgentHooksJson(existingRaw, managedEvents, hookCommand);
 			if (merged === undefined) {
 				logService?.warn(`[ParadisAgentHooks] Could not parse ${filePath}; skipping hook merge (user file left untouched)`);
+				// ここで見送ると hook が1つも設置されず、エージェントの状態表示・通知・モバイルの
+				// 応答性がまとめて静かに縮退する。ログしか残らないと後から原因に到達できないので
+				// 記録する（ファイルパスや中身は載せない）。
+				reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-unparseable', new Error('Managed hook file could not be parsed'), {
+					phase: 'setup',
+					safe_target: basename(filePath),
+				});
 				return;
 			}
 			// 既存ファイルの末尾改行は維持する (余計な毎回書き込みを防ぐ)
@@ -423,8 +431,19 @@ export async function paradisMergeAgentHooksFile(filePath: string, managedEvents
 			return;
 		}
 		logService?.warn(`[ParadisAgentHooks] ${filePath} kept changing during hook merge; skipped update to preserve external changes`);
+		reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-contended', new Error('Managed hook file kept changing during merge'), {
+			phase: 'setup',
+			safe_target: basename(filePath),
+			attempt: 3,
+		});
 	} catch (error) {
 		logService?.warn(`[ParadisAgentHooks] Failed to update ${filePath}`, error);
+		// error は fs のエラーで、message に絶対パスを含む（EACCES: ... open '/Users/.../settings.json'）。
+		// ホームディレクトリは送信前のサニタイズで ~ に置換されるが、それ以上の詳細は載せない。
+		reportParadisDiagnosticError('owned', 'agent-hooks', 'merge-failed', error, {
+			phase: 'setup',
+			safe_target: basename(filePath),
+		});
 	}
 }
 
@@ -636,6 +655,17 @@ export class ParadisAgentHooksReconciler extends Disposable {
 				const detail = result.detail ? ` (${result.detail})` : '';
 				const exhausted = attempt >= PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS ? '; retry limit reached for this process' : '';
 				this.logService?.warn(`[ParadisAgentHooks] Claude version probe failed at ${result.stage}, attempt ${attempt}/${PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS}${detail}${exhausted}`);
+				// 失敗すると activity hook と MessageDisplay が無効のまま続行する（機能が静かに縮退する）。
+				// 基本の hook は設置されるので全損ではないが、Windows の PATH 解決やシェル差の
+				// 切り分けにはこの stage が要る。detail（パス・stderr）は載せず語彙だけを送る。
+				// not-found は「Claude Code を入れていない」という正常な構成で、Codex だけを使う
+				// ユーザー全員から起動ごとに飛んでしまうため対象外にする。
+				if (attempt >= PARADIS_CLAUDE_VERSION_MAX_ATTEMPTS && result.stage !== 'not-found') {
+					reportParadisDiagnosticError('owned', 'agent-hooks', `version-probe-${result.stage}`, new Error('Claude version probe failed'), {
+						phase: 'setup',
+						attempt,
+					});
+				}
 				return undefined;
 			}).finally(() => {
 				this.claudeVersionProbePromise = undefined;

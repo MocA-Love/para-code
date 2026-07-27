@@ -29,7 +29,8 @@ export interface SocketLike {
 	send(data: string | ArrayBufferView | ArrayBuffer): void;
 	close(code?: number, reason?: string): void;
 	onopen: (() => void) | null;
-	onclose: (() => void) | null;
+	/** RN の WebSocket は CloseEvent を渡す。close code は切断理由の唯一の手掛かり。 */
+	onclose: ((event?: { code?: number; reason?: string }) => void) | null;
 	onerror: ((error: unknown) => void) | null;
 	onmessage: ((event: { data: string | ArrayBuffer }) => void) | null;
 	binaryType?: string;
@@ -354,8 +355,10 @@ export class RelayClient {
 			this.mux?.receive(bytes);
 		};
 
+		let sawSocketError = false;
 		socket.onerror = error => {
 			if (isCurrent()) {
+				sawSocketError = true;
 				reportMobileDiagnosticError('relay', 'socket-error', error, {
 					phase: this.state,
 					reconnect_count: this.reconnectAttempt,
@@ -364,8 +367,20 @@ export class RelayClient {
 				this.callbacks.onError?.(error);
 			}
 		};
-		socket.onclose = () => {
+		socket.onclose = event => {
 			if (isCurrent()) {
+				// onerror を伴わない切断（リレー側の superseded、iOS のバックグラウンド回収）は
+				// これまで一切記録が残らず、同じ事象がPC側の close code だけで語られる非対称に
+				// なっていた。onerror 済みのときは二重計上しない。
+				if (!sawSocketError && !this.closedByUser && !this.suspended) {
+					const code = event?.code ?? 0;
+					reportMobileDiagnosticError('relay', `unexpected-close-${code}`, new Error(`Relay connection closed (code ${code})`), {
+						phase: this.state,
+						reconnect_count: this.reconnectAttempt,
+						transport: 'websocket',
+						safe_close_code: code,
+					});
+				}
 				this.onClosed();
 			}
 		};

@@ -20,6 +20,21 @@ import {
 } from '../common/paradisCodexPaneFailure.js';
 
 const RETRY_INTERVAL_MS = 10_000;
+/**
+ * 接続を試み始めてからこの時間を過ぎてもエンドポイントが現れないなら、再試行間隔を落とす。
+ *
+ * socketPath はペイントークンから機械的に導出されるだけで、ランチャーが app-server を
+ * 起動できたかは見ていない。POSIX ランチャーは10秒で立たなければ素の Codex へフォールバック
+ * して終了するので、その場合ソケットは永遠に生成されないのに10秒間隔で pathExists を
+ * 延々と繰り返していた（PC側では Codex が普通に動いて見えるのにモバイルだけ壊れる状態）。
+ *
+ * 判定に試行「回数」を使ってはいけない。ensureConnected はリトライタイマー以外に
+ * setEnabled / setThreads からも呼ばれ、後者はセッション確定のたびに走るため、起動直後に
+ * 数秒で回数だけが積み上がる。経過時間なら「実際に待った長さ」と一致する。
+ */
+const ENDPOINT_WAIT_BACKOFF_AFTER_MS = 60_000;
+/** 上記を超えた後の再試行間隔。後から app-server が立つ可能性は残るので停止はしない。 */
+const RETRY_INTERVAL_BACKOFF_MS = 60_000;
 const LOADED_POLL_INTERVAL_MS = 2_000;
 const REQUEST_TIMEOUT_MS = 8_000;
 const SETTINGS_CONFIRM_TIMEOUT_MS = 8_000;
@@ -81,6 +96,16 @@ export interface IParadisCodexDaemonEvent {
 	readonly requestId?: number | string;
 	readonly approval?: IParadisCodexApprovalInteraction;
 }
+
+/**
+ * app-server との接続が切れたことを購読中スレッドへ伝える synthetic なイベント名。
+ * app-server 由来ではなくこのクライアントが自分で作る。
+ *
+ * 切断時に turn/completed や turn/aborted を捏造すると「エージェントが作業を完了しました」の
+ * 偽プッシュ通知が飛ぶ。実際にはターンが続いているかどうか分からない場面なので、
+ * 表示（伸び続ける「応答を生成中」）だけを畳むための専用シグナルにしている。
+ */
+export const PARADIS_CODEX_DAEMON_DISCONNECTED = 'paradis/daemon-disconnected';
 
 /** model/listが広告するreasoning effort 1件。 */
 export interface IParadisCodexReasoningEffort {
@@ -507,8 +532,21 @@ class ParadisCodexServerConnection extends Disposable {
 				}
 			}
 		}
+		let added = false;
 		for (const threadId of next) {
+			if (!this.wantedThreads.has(threadId)) {
+				added = true;
+			}
 			this.wantedThreads.add(threadId);
+		}
+		if (added) {
+			// 新しいセッションが現れた＝状況が変わった。エンドポイント待ちのバックオフ
+			// （経過時間ベース）を解いて、すぐ次の試行へ戻す。
+			this.connectStartedAt = undefined;
+			if (this.retryTimer !== undefined) {
+				clearTimeout(this.retryTimer);
+				this.retryTimer = undefined;
+			}
 		}
 		if (this.wantedThreads.size === 0) {
 			this.stop();
@@ -1055,10 +1093,14 @@ class ParadisCodexServerConnection extends Disposable {
 		if (!this.enabled || this.retryTimer !== undefined) {
 			return;
 		}
+		// ソケットが現れない状態が続くなら間隔を落とす。10秒ポーリングを永久に回しても、
+		// ランチャーが素の Codex へフォールバック済みならソケットは二度と生成されない。
+		const waited = this.connectStartedAt !== undefined ? Date.now() - this.connectStartedAt : 0;
+		const delay = waited >= ENDPOINT_WAIT_BACKOFF_AFTER_MS ? RETRY_INTERVAL_BACKOFF_MS : RETRY_INTERVAL_MS;
 		this.retryTimer = setTimeout(() => {
 			this.retryTimer = undefined;
 			void this.ensureConnected();
-		}, RETRY_INTERVAL_MS);
+		}, delay);
 	}
 
 	private resetConnection(error: Error): void {
@@ -1074,6 +1116,20 @@ class ParadisCodexServerConnection extends Disposable {
 		this.pendingRequests.clear();
 		for (const threadId of [...this.settingsWaiters.keys()]) {
 			this.rejectSettingsWaiter(threadId, error);
+		}
+		// 購読中スレッドは、接続が切れた時点で「ターンがまだ続いているか」を知る術が無くなる。
+		// 再接続は thread/resume { excludeTurns: true } で turn 状態を照合しないため、切断時に
+		// 応答生成中だったスレッドの live 状態は誰にも解除されず残り続ける。
+		//
+		// この2つのループの順序は仕様。購読者側は FIFO キューで処理するため、切断通知を先に
+		// 積まないと、直後の synthetic な解決処理で承認が消えてから案内カードを出そうとして
+		// 「宙に浮いた承認がある」という判定に掛からなくなる（＝案内カードが出せなくなる）。
+		// 逆に、ユーザーが既に回答済みで実サーバから解決が届いていたケースでは pendingApprovals に
+		// 残っていないので、この順序でも幻の案内カードは出ない。
+		for (const threadId of this.subscribedThreads) {
+			if (this.wantedThreads.has(threadId)) {
+				this.onEvent({ threadId, method: PARADIS_CODEX_DAEMON_DISCONNECTED, params: {} });
+			}
 		}
 		for (const approval of this.pendingApprovals.values()) {
 			if (this.wantedThreads.has(approval.threadId)) {
@@ -1202,11 +1258,23 @@ export class ParadisCodexLiveClient extends Disposable {
 		super();
 	}
 
+	/**
+	 * 無効化は「意図した停止」なので、切断由来の synthetic イベント
+	 * （PARADIS_CODEX_DAEMON_DISCONNECTED）を購読者へ流さない。dispose / setThreads と同じく、
+	 * 先に threadConnections を空にしてイベントを濾過してから停止させる。
+	 *
+	 * その副作用として、**再度有効化したあとは必ず setThreads を呼ぶ必要がある**
+	 * （threadConnections はここでは復元されず、setThreads だけが再構築するため。
+	 * 復元しないままだと全イベントが濾過されて消える）。
+	 */
 	setEnabled(enabled: boolean): void {
 		if (this.enabled === enabled) {
 			return;
 		}
 		this.enabled = enabled;
+		if (!enabled) {
+			this.threadConnections.clear();
+		}
 		for (const connection of this.connections.values()) {
 			connection.setEnabled(enabled);
 		}

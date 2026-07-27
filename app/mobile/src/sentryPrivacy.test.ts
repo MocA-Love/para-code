@@ -41,7 +41,7 @@ describe('mobile Sentry privacy', () => {
 		expect(event.extra).toEqual({ safe_count: 2 });
 		expect(event.tags?.['para.feature']).toBe('mobile-relay');
 		expect(event.tags?.unsafe).toBe('secret=[Filtered]');
-		expect(event.exception?.values?.[0].stacktrace?.frames?.[0].filename).not.toContain('alice');
-		expect(event.threads?.values[0].stacktrace?.frames?.[0].abs_path).not.toContain('alice');
+		expect(event.exception?.values?.[0]?.stacktrace?.frames?.[0]?.filename).not.toContain('alice');
+		expect(event.threads?.values?.[0]?.stacktrace?.frames?.[0]?.abs_path).not.toContain('alice');
 	});
 });

@@ -8,7 +8,7 @@ import { EffortSlider } from './effortSlider.js';
 import { agentModelOptions, matchAgentModel } from '../agentModels.js';
 import { colors } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
-import type { AgentModelControlState } from '../store.js';
+import type { AgentMessageSendResult, AgentModelControlState } from '../store.js';
 
 /**
  * エージェントコンポーザーのモデル/Effortピル（mo.html 案A2）。セッションの現在値を
@@ -22,7 +22,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 	model: string | undefined;
 	effort: string | undefined;
 	modelControl: AgentModelControlState | undefined;
-	onClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<boolean>;
+	onClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<AgentMessageSendResult>;
 	onRequestCodexCatalog: () => void;
 	onUpdateCodexSettings: (model: string, effort: string) => void;
 }) {
@@ -120,21 +120,27 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			return;
 		}
 		setSubmitting(true);
+		// 失敗理由はPC側が返した内容をそのまま出す（固定文言だと、接続断・回答待ち・
+		// セッション未対応のどれで失敗したのか切り分けられない）。
+		const failureDetail = (result: AgentMessageSendResult): string =>
+			(result.status === 'rejected' && result.message) || 'Claude Codeが入力待ちであることを確認してください';
 		if (modelChanged) {
-			const accepted = await onClaudeSetting('model', selected.id).catch(() => false);
+			const result = await onClaudeSetting('model', selected.id)
+				.catch((): AgentMessageSendResult => ({ status: 'rejected' }));
 			if (!mounted.current) { return; }
-			if (!accepted) {
+			if (result.status !== 'accepted') {
 				setSubmitting(false);
-				Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください');
+				Alert.alert('設定を変更できませんでした', failureDetail(result));
 				return;
 			}
 		}
 		if (effortChanged && effectiveEffort !== undefined) {
-			const accepted = await onClaudeSetting('effort', effectiveEffort).catch(() => false);
+			const result = await onClaudeSetting('effort', effectiveEffort)
+				.catch((): AgentMessageSendResult => ({ status: 'rejected' }));
 			if (!mounted.current) { return; }
-			if (!accepted) {
+			if (result.status !== 'accepted') {
 				setSubmitting(false);
-				Alert.alert('設定を変更できませんでした', 'Claude Codeが入力待ちであることを確認してください');
+				Alert.alert('設定を変更できませんでした', failureDetail(result));
 				return;
 			}
 		}

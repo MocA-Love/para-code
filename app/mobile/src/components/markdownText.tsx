@@ -178,6 +178,13 @@ function parseTokenizedHtml(html: string, css: string): HighlightRun[][] | undef
 /** ハイライト結果のメモリキャッシュ（同一コード片の再取得を避ける）。null = 取得失敗（再試行しない）。 */
 const highlightCache = new Map<string, HighlightData | null>();
 const HIGHLIGHT_CACHE_LIMIT = 120;
+/**
+ * ハイライト要求を投げるまでの静止待ち。
+ *
+ * ストリーミング中は本文が最大8Hzで伸び、そのたびに cacheKey が変わる。都度要求すると
+ * PCへの往復が氾濫し、キャッシュも未完成のコード片で埋まって本当に必要な結果を押し出す。
+ */
+const HIGHLIGHT_REQUEST_DELAY_MS = 250;
 
 /**
  * コードブロック。まずプレーンで即描画し、PCの現行テーマによるハイライト
@@ -187,40 +194,67 @@ const HIGHLIGHT_CACHE_LIMIT = 120;
 function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 	const fsHighlight = useAppStore(s => s.fsHighlight);
 	const cacheKey = `${lang ?? ''} ${text}`;
-	const [data, setData] = useState<HighlightData | undefined>(() => highlightCache.get(cacheKey) ?? undefined);
+	// 結果は「どの内容に対するものか」と一緒に持つ。紐づけずに持つと、ストリーミングで本文が
+	// 伸びた後も前の（短い）ハイライト行を描き続け、ブロックの高さが実際の内容とずれたまま
+	// 固まって遅れて塊で跳ねる（会話の追従が引っかかる原因）。
+	const requestedOnceRef = useRef(false);
+	const mountedRef = useRef(true);
+	useEffect(() => () => { mountedRef.current = false; }, []);
+	const [data, setData] = useState<{ readonly key: string; readonly value: HighlightData } | undefined>(() => {
+		const cached = highlightCache.get(cacheKey);
+		return cached ? { key: cacheKey, value: cached } : undefined;
+	});
 
 	useEffect(() => {
 		if (highlightCache.has(cacheKey)) {
 			const cached = highlightCache.get(cacheKey);
-			setData(cached ?? undefined);
+			setData(cached ? { key: cacheKey, value: cached } : undefined);
 			return;
 		}
-		let cancelled = false;
-		fsHighlight(text, lang).then(result => {
-			let parsed: HighlightData | null = null;
-			if (result.html !== undefined && result.css !== undefined) {
-				const lines = parseTokenizedHtml(result.html, result.css);
-				if (lines !== undefined) {
-					parsed = { lines, ...(result.bg !== undefined ? { bg: result.bg } : {}), ...(result.fg !== undefined ? { fg: result.fg } : {}) };
+		// この実行が「キー変化で置き換えられた」ことを表すローカルフラグ。ref に持たせると
+		// cleanup と次の effect body が同一コミット内で同期に走るため即座に false へ戻り、
+		// 判定として機能しない（アンマウントとキー変化も区別できない）。
+		let superseded = false;
+		// 本文が伸びている間は投げない（静止してから1回だけ要求する）。ただし初回マウントは
+		// 待たない。履歴スクロールで再マウントされるたびに待つと、FlatList のリサイクルで
+		// 画面外へ出た瞬間に要求が捨てられ、色が付かないまま残る。
+		const delay = requestedOnceRef.current ? HIGHLIGHT_REQUEST_DELAY_MS : 0;
+		requestedOnceRef.current = true;
+		const timer = setTimeout(() => {
+			fsHighlight(text, lang).then(result => {
+				let parsed: HighlightData | null = null;
+				if (result.html !== undefined && result.css !== undefined) {
+					const lines = parseTokenizedHtml(result.html, result.css);
+					if (lines !== undefined) {
+						parsed = { lines, ...(result.bg !== undefined ? { bg: result.bg } : {}), ...(result.fg !== undefined ? { fg: result.fg } : {}) };
+					}
 				}
-			}
-			if (highlightCache.size >= HIGHLIGHT_CACHE_LIMIT) {
-				const oldest = highlightCache.keys().next().value;
-				if (oldest !== undefined) {
-					highlightCache.delete(oldest);
+				// 未完成のコード片への応答（＝まだマウントされたままキーが差し替わった）は
+				// キャッシュへ入れない。二度と再来しないキーなので、120件の枠から有用な
+				// エントリを押し出すだけになる。アンマウント（FlatList のリサイクル）は
+				// キー自体は有効なので保存する。
+				if (superseded && mountedRef.current) {
+					return;
 				}
-			}
-			highlightCache.set(cacheKey, parsed);
-			if (!cancelled && parsed !== null) {
-				setData(parsed);
-			}
-		}).catch(() => {
-			// 未接続・タイムアウト等は次回マウント時に再試行できるようキャッシュしない
-		});
-		return () => { cancelled = true; };
+				if (highlightCache.size >= HIGHLIGHT_CACHE_LIMIT) {
+					const oldest = highlightCache.keys().next().value;
+					if (oldest !== undefined) {
+						highlightCache.delete(oldest);
+					}
+				}
+				highlightCache.set(cacheKey, parsed);
+				if (parsed !== null && !superseded) {
+					setData({ key: cacheKey, value: parsed });
+				}
+			}).catch(() => {
+				// 未接続・タイムアウト等は次回マウント時に再試行できるようキャッシュしない
+			});
+		}, delay);
+		return () => { superseded = true; clearTimeout(timer); };
 	}, [cacheKey, text, lang, fsHighlight]);
 
-	if (data === undefined) {
+	const highlighted = data?.key === cacheKey ? data.value : undefined;
+	if (highlighted === undefined) {
 		return (
 			<View style={styles.codeBlock}>
 				<Text style={styles.codeText} selectable>{text}</Text>
@@ -228,9 +262,9 @@ function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 		);
 	}
 	return (
-		<View style={[styles.codeBlock, data.bg !== undefined ? { backgroundColor: data.bg } : null]}>
-			<Text style={[styles.codeText, data.fg !== undefined ? { color: data.fg } : null]} selectable>
-				{data.lines.map((line, li) => (
+		<View style={[styles.codeBlock, highlighted.bg !== undefined ? { backgroundColor: highlighted.bg } : null]}>
+			<Text style={[styles.codeText, highlighted.fg !== undefined ? { color: highlighted.fg } : null]} selectable>
+				{highlighted.lines.map((line, li) => (
 					<Text key={li}>
 						{li > 0 ? '\n' : ''}
 						{line.map((run, ri) => (

@@ -1,0 +1,77 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import * as assert from 'assert';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import type { IParadisSentryEvent } from '../../common/paradisSentryCommon.js';
+import { paradisPrepareSentryEvent } from '../../common/paradisSentryEvent.js';
+
+suite('ParadisSentryEvent', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	/**
+	 * fork 所有のスタックを持つイベント（分類が 'owned' になる最小形）。
+	 *
+	 * limiter はモジュールスコープの共有インスタンスなので、テストごとに fingerprint を
+	 * 散らしておかないと（para.operation は fingerprint の構成要素）10分3件の上限に当たり、
+	 * テストを足した順に落ちるようになる。
+	 */
+	function ownedEvent(operation: string, tags: Record<string, unknown> = {}): IParadisSentryEvent {
+		return {
+			tags: { 'para.operation': operation, ...tags },
+			user: { id: 'device-1' },
+			request: { url: 'wss://relay.example/?token=secret' },
+			server_name: 'somebodys-macbook-pro.local',
+			exception: {
+				values: [{
+					stacktrace: { frames: [{ filename: '/Users/alice/app/out/vs/paradis/contrib/mobileRelay/node/x.js' }] },
+				}],
+			},
+		};
+	}
+
+	// 各プロセスは init 直後に para.scope / process.type をグローバルスコープへ設定しており、
+	// スコープのタグは beforeSend の前にイベントへマージされる。これを「処理済み」の判定に
+	// 使うと全イベントが素通りし、上流エラーの除外・PII除去・レートリミットが丸ごと無効になる。
+	test('still sanitizes events that already carry the globally-set scope tags', () => {
+		const prepared = paradisPrepareSentryEvent(ownedEvent('globally-tagged', { 'para.scope': 'unknown', 'process.type': 'main' }), 'main');
+		assert.deepStrictEqual({
+			classified: prepared?.tags?.['para.scope'],
+			processType: prepared?.tags?.['process.type'],
+			user: prepared?.user,
+			serverName: prepared?.server_name,
+		}, { classified: 'owned', processType: 'main', user: undefined, serverName: undefined });
+	});
+
+	// renderer/utility の envelope は main 側で captureEvent され直すため beforeSend が二度走る。
+	// 二度目は発生元の process.type を保ち、レートリミットも二重に消費しない。
+	test('keeps the originating process type when the main process re-processes a forwarded event', () => {
+		const first = paradisPrepareSentryEvent(ownedEvent('forwarded'), 'utility');
+		const second = paradisPrepareSentryEvent(first!, 'main');
+		assert.deepStrictEqual({
+			processType: second?.tags?.['process.type'],
+			scope: second?.tags?.['para.scope'],
+		}, { processType: 'utility', scope: 'owned' });
+	});
+
+	// 転送元のサニタイズでは落とせない値（送信直前に Node クライアントが入れる hostname）は、
+	// 二度目の処理でも必ず落とす。
+	test('drops the host identity the node client adds after the originating sanitize', () => {
+		const forwarded = { ...ownedEvent('host-identity', { 'para.prepared': '1' }), server_name: 'somebodys-macbook-pro.local' };
+		const prepared = paradisPrepareSentryEvent(forwarded, 'main');
+		assert.deepStrictEqual({
+			serverName: prepared?.server_name,
+			user: prepared?.user,
+			request: prepared?.request,
+		}, { serverName: undefined, user: undefined, request: undefined });
+	});
+
+	test('drops events that are not attributable to fork-owned code', () => {
+		assert.strictEqual(paradisPrepareSentryEvent({ tags: {}, message: 'upstream failure' }, 'renderer'), null);
+	});
+});

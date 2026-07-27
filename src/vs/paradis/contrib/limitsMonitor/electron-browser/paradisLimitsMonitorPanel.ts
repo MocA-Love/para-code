@@ -30,6 +30,7 @@ import {
 	IParadisLimitsSnapshot,
 	IParadisLimitsWindow,
 	paradisLimitsFormatCountdown,
+	paradisLimitsFormatResetClock,
 	paradisLimitsSeverity,
 	ParadisLimitsProvider
 } from '../common/paradisLimitsMonitor.js';
@@ -245,24 +246,18 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			));
 		}
 
-		const nextReset = account.status === 'ok' ? this.nextResetLabel(account) : undefined;
-		if (nextReset || (account.provider === 'codex' && account.removable)) {
+		if (account.provider === 'codex' && account.removable) {
 			const actions = dom.append(top, $('.plm-account-actions'));
-			if (nextReset) {
-				dom.append(actions, $('.plm-account-reset')).textContent = nextReset;
-			}
-			if (account.provider === 'codex' && account.removable) {
-				const removeButton = dom.append(actions, $('button.plm-account-delete')) as HTMLButtonElement;
-				removeButton.type = 'button';
-				const removeLabel = localize('paradis.limitsMonitor.removeAccount', "{0} を削除", account.homeLabel ?? account.email ?? account.id);
-				removeButton.setAttribute('aria-label', removeLabel);
-				removeButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.trash)}`));
-				this._bodyListeners.add(dom.addDisposableListener(removeButton, 'click', e => {
-					e.preventDefault();
-					this.options.onRemoveAccount(account);
-				}));
-				this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, removeButton, removeLabel));
-			}
+			const removeButton = dom.append(actions, $('button.plm-account-delete')) as HTMLButtonElement;
+			removeButton.type = 'button';
+			const removeLabel = localize('paradis.limitsMonitor.removeAccount', "{0} を削除", account.homeLabel ?? account.email ?? account.id);
+			removeButton.setAttribute('aria-label', removeLabel);
+			removeButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.trash)}`));
+			this._bodyListeners.add(dom.addDisposableListener(removeButton, 'click', e => {
+				e.preventDefault();
+				this.options.onRemoveAccount(account);
+			}));
+			this._bodyListeners.add(this.hoverService.setupManagedHover(this.hoverDelegate, removeButton, removeLabel));
 		}
 
 		if (account.status !== 'ok') {
@@ -292,24 +287,14 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		}
 	}
 
-	/** 直近に迫っているリセットを1つだけ右肩に出す(カード内の情報過多を避ける)。 */
-	private nextResetLabel(account: IParadisLimitsAccount): string | undefined {
-		const now = Date.now();
-		const windows: IParadisLimitsWindow[] = [];
-		if (account.fiveHour) {
-			windows.push(account.fiveHour);
-		}
-		if (account.sevenDay) {
-			windows.push(account.sevenDay);
-		}
-		windows.push(...(account.scoped ?? []));
-		const upcoming = windows
-			.filter(window => window.resetsAt !== undefined && window.resetsAt > now && window.usedPercent > 0)
-			.sort((a, b) => a.resetsAt! - b.resetsAt!)[0];
-		const countdown = paradisLimitsFormatCountdown(upcoming?.resetsAt, now);
-		return countdown ? localize('paradis.limitsMonitor.resetIn', "リセットまで {0}", countdown) : undefined;
-	}
-
+	/**
+	 * 枠ごとに「使用率」と「リセットまで」を並べる。
+	 *
+	 * 以前は5時間枠・7日枠・モデル別枠を混ぜて「最も近い1つ」だけをカード右肩に枠名なしで
+	 * 出していたため、表示された残り時間がどの制限のものか分からなかった（アカウントによって
+	 * 5時間枠を指したり7日枠を指したりする）。使用率0%の枠は候補から外れるので、使っていない
+	 * 枠のリセット時刻は永久に見えなかった。
+	 */
 	private renderMeter(card: HTMLElement, label: string, window: IParadisLimitsWindow): void {
 		const meter = dom.append(card, $('.plm-meter'));
 		dom.append(meter, $('.plm-meter-label')).textContent = label;
@@ -321,6 +306,18 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		if (severity !== 'normal') {
 			fill.classList.add(severity);
 		}
-		dom.append(meter, $('.plm-meter-value')).textContent = localize('paradis.limitsMonitor.percentUsed', "{0}% 使用", Math.round(window.usedPercent));
+		// 「使用」は隣のバーがある以上冗長で、リセット列の幅を圧迫するだけなので付けない。
+		dom.append(meter, $('.plm-meter-value')).textContent = localize('paradis.limitsMonitor.percentValue', "{0}%", Math.round(window.usedPercent));
+		const now = Date.now();
+		const countdown = paradisLimitsFormatCountdown(window.resetsAt, now);
+		const clock = paradisLimitsFormatResetClock(window.resetsAt, now);
+		const reset = dom.append(meter, $('.plm-meter-reset'));
+		// 2つのフォーマッタは同じ条件（未来かつ有限）で undefined を返すので、実際には
+		// 片方だけが得られることはない。clock 側のガードは将来どちらかの条件が変わったときの保険。
+		if (countdown !== undefined && clock !== undefined) {
+			reset.textContent = localize('paradis.limitsMonitor.resetInAt', "{0}後（{1}）", countdown, clock);
+		} else if (countdown !== undefined) {
+			reset.textContent = countdown;
+		}
 	}
 }

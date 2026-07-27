@@ -119,8 +119,34 @@ function sanitizeMobileUrl(rawUrl: string): string {
 	}
 }
 
-function sanitizeMobileRecord(record: Record<string, unknown>): Record<string, unknown> {
+/**
+ * PC側の paradisSanitizeRecord と挙動を揃える。ネストした record にも再帰しないと、
+ * `safe_` 配下のオブジェクトが無検査で素通りしてしまう（両側で非対称だった）。
+ */
+/** 自己参照を含む値で無限再帰しないための深さ上限（PC側と同じ）。 */
+const SANITIZE_MAX_DEPTH = 4;
+
+function sanitizeMobileRecord(record: Record<string, unknown>, depth: number = 0): Record<string, unknown> {
+	if (depth >= SANITIZE_MAX_DEPTH) {
+		return {};
+	}
 	return Object.fromEntries(Object.entries(record)
 		.filter(([key]) => safeExtraKeys.has(key) || key.startsWith('safe_'))
-		.map(([key, value]) => [key, typeof value === 'string' ? sanitizeMobileSentryText(value) : value]));
+		.map(([key, value]) => [key, sanitizeMobileValue(value, depth)]));
+}
+
+function sanitizeMobileValue(value: unknown, depth: number): unknown {
+	if (typeof value === 'string') {
+		return sanitizeMobileSentryText(value);
+	}
+	if (depth >= SANITIZE_MAX_DEPTH) {
+		return undefined;
+	}
+	if (Array.isArray(value)) {
+		return value.map(entry => sanitizeMobileValue(entry, depth + 1));
+	}
+	if (value !== null && typeof value === 'object') {
+		return sanitizeMobileRecord(value as Record<string, unknown>, depth + 1);
+	}
+	return value;
 }

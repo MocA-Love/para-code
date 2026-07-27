@@ -63,6 +63,7 @@ import { IParadisMobileWindowLease, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, Paradis
 import { ParadisAgentCommandDeliveryCoordinator, paradisShouldRetireAgentToken } from '../common/paradisAgentCommandLifecycle.js';
 import { ParadisAgentTerminalRecoveryTracker } from '../common/paradisAgentTerminalRecovery.js';
 import { IParadisAgentTerminalHintConsumer, paradisCreateAgentTerminalHintConsumer, paradisCreateTerminalOutputConsumer } from '../common/paradisTerminalOutputHotPath.js';
+import { setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 const PAIR_COMMAND = 'paradis.mobile.connectDevice';
@@ -87,6 +88,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private readonly service: IParadisMobileRelayService;
 	private readonly provider: ParadisMobileWorkspaceProvider;
 	private readonly statusbarEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	/** 相関タグを設定済みの deviceId（同じ値で毎回ハッシュし直さないため）。 */
+	private correlationDeviceId: string | undefined;
 	private readonly terminalHintListeners = this._register(new DisposableMap<number, DisposableStore>());
 	private readonly terminalHintConsumers = new Map<number, IParadisAgentTerminalHintConsumer>();
 	private readonly terminalHintTokens = new Map<number, string>();
@@ -510,7 +513,27 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		}
 	}
 
+	/**
+	 * renderer 側の計装（モバイル発のターミナル作成など）にもPC⇄モバイルの相関IDを付ける。
+	 *
+	 * shared process では同じ値をリレーサービスが設定しているが、tag はプロセスごとに独立
+	 * しているため、renderer で起きた事象は相関IDを持たないままだった。deviceId は status に
+	 * 載っているのでここで拾える。生の deviceId ではなくハッシュ断片だけを送る（PC/モバイル
+	 * 双方と同じ規則: SHA-256 先頭8桁）。
+	 */
+	private applyDiagnosticCorrelation(deviceId: string | undefined): void {
+		if (deviceId === undefined || this.correlationDeviceId === deviceId) {
+			return;
+		}
+		this.correlationDeviceId = deviceId;
+		crypto.subtle.digest('SHA-256', new TextEncoder().encode(deviceId)).then(digest => {
+			const hex = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+			setParadisDiagnosticCorrelationTag('para.pairing', hex.slice(0, 8));
+		}).catch(() => { /* 相関IDは補助情報なので失敗しても機能に影響しない */ });
+	}
+
 	private renderStatusbar(status: IParadisMobileStatus): void {
+		this.applyDiagnosticCorrelation(status.deviceId);
 		// 表示可否は「設定でリレーが有効か」だけで決める。shared process の state に依存すると、
 		// 初期化前・再接続中・ウィンドウリロード直後などに一瞬 'disabled'/'disconnected' が
 		// 返ってきた時に項目が消えてしまう（「接続状態表示が出ない時がある」の原因）。
@@ -522,7 +545,14 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const online = status.onlineMobiles > 0;
 		let label: string;
 		let icon: string;
-		if (status.state === 'online') {
+		let tooltip = localize('paradis.mobile.statusbar.tooltip', "Para Code Mobile のリレー接続状態。クリックでメニューを開きます。");
+		// 認証切れは待っても復帰しない（再ペアリングが要る）。「切断中」と同じ見た目にすると
+		// 30秒ごとに切断中↔接続中…を往復するだけで、何をすればよいか分からなかった。
+		if (status.unauthorized === true) {
+			label = localize('paradis.mobile.statusbar.unauthorized', "モバイル: 再ペアリングが必要");
+			icon = '$(warning)';
+			tooltip = localize('paradis.mobile.statusbar.unauthorizedTooltip', "リレーがこのPCの資格情報を受け付けませんでした。クリックしてメニューから再度ペアリングしてください。");
+		} else if (status.state === 'online') {
 			label = online
 				? localize('paradis.mobile.statusbar.active', "モバイル接続中 ({0})", status.onlineMobiles)
 				: localize('paradis.mobile.statusbar.ready', "モバイル待機中");
@@ -538,7 +568,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			name: localize('paradis.mobile.statusbar.name', "Para Code Mobile"),
 			text: `${icon} ${label}`,
 			ariaLabel: label,
-			tooltip: localize('paradis.mobile.statusbar.tooltip', "Para Code Mobile のリレー接続状態。クリックでメニューを開きます。"),
+			tooltip,
 			command: MENU_COMMAND,
 		};
 		if (this.statusbarEntry.value) {
@@ -555,9 +585,29 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, true);
 		}
 
+		// リレーがこのPCの資格情報を拒否している場合、同じ資格情報のままでは何度試しても
+		// 失敗する。登録をやり直すしかないが、それは接続済みモバイルを全て失う操作なので
+		// 明示的に同意を取る（2台目を追加するつもりの操作で既存端末を失わせない）。
+		let resetRegistration = false;
+		const status = await this.service.getStatus();
+		if (status.unauthorized === true) {
+			const { confirmed } = await this.dialogService.confirm({
+				type: 'warning',
+				message: localize('paradis.mobile.resetRegistration', "このPCの登録をやり直しますか？"),
+				detail: status.pairedDevices.length > 0
+					? localize('paradis.mobile.resetRegistrationDetail', "リレーが現在の資格情報を受け付けていません。登録をやり直すと、接続済みのモバイル {0} 台はすべて解除され、各端末で再ペアリングが必要になります。", status.pairedDevices.length)
+					: localize('paradis.mobile.resetRegistrationDetailEmpty', "リレーが現在の資格情報を受け付けていません。登録をやり直してから、あらためてペアリングします。"),
+				primaryButton: localize('paradis.mobile.resetRegistrationConfirm', "登録をやり直す"),
+			});
+			if (!confirmed) {
+				return;
+			}
+			resetRegistration = true;
+		}
+
 		let session;
 		try {
-			session = await this.service.beginPairing();
+			session = await this.service.beginPairing(resetRegistration);
 		} catch (err) {
 			this.notificationService.error(localize('paradis.mobile.pairFailed', "ペアリングを開始できませんでした: {0}", String(err)));
 			return;

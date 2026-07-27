@@ -151,6 +151,12 @@ export interface IParadisMobileStatus {
 	readonly pairedDevices: readonly string[];
 	/** 現在オンラインのモバイル接続数。 */
 	readonly onlineMobiles: number;
+	/**
+	 * 保存済みの pcToken をリレーが拒否しており、再ペアリングしない限り復帰しない状態。
+	 * WebSocket の close 1006 だけでは認証拒否と経路断を区別できないため、HTTPでの確認が
+	 * 取れたときにだけ true になる（判別できない間は undefined のまま）。
+	 */
+	readonly unauthorized?: boolean;
 }
 
 /** ペアリング開始時に renderer へ返す、QR/検証コード表示用の情報。 */
@@ -221,7 +227,8 @@ export interface IParadisMobileRelayService {
 
 	// ペアリング
 	readonly onPairingEvent: Event<ParadisMobilePairingEvent>;
-	beginPairing(): Promise<IParadisMobilePairingSession>;
+	/** resetRegistration は失効した登録を捨てて作り直す（接続済みモバイルは全て解除される）。 */
+	beginPairing(resetRegistration?: boolean): Promise<IParadisMobilePairingSession>;
 	approvePairing(): Promise<void>;
 	cancelPairing(): Promise<void>;
 	/** 承認済みデバイスを失効させる。 */

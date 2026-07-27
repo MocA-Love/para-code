@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
-import type { AgentChatMessage } from '../store.js';
+import type { AgentChatMessage, AgentMessageSendResult } from '../store.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
@@ -19,18 +19,21 @@ import { hapticImpact, hapticSelection } from '../haptics.js';
 export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText }: {
 	message: AgentChatMessage;
 	answered: boolean;
-	onAnswer: (interactionId: string, optionIndex: number) => Promise<boolean>;
-	onMulti: (interactionId: string, indices: number[]) => Promise<boolean>;
-	onFreeText: (interactionId: string, optionCount: number, text: string) => Promise<boolean>;
+	onAnswer: (interactionId: string, optionIndex: number) => Promise<AgentMessageSendResult>;
+	onMulti: (interactionId: string, indices: number[]) => Promise<AgentMessageSendResult>;
+	onFreeText: (interactionId: string, optionCount: number, text: string) => Promise<AgentMessageSendResult>;
 }) {
 	// 二度押し防止のローカル状態（tool_result が届くまでの間）
 	const [selected, setSelected] = useState<number | undefined>(undefined);
 	const [toggled, setToggled] = useState<Set<number>>(new Set());
 	const [freeText, setFreeText] = useState('');
 	const [submitted, setSubmitted] = useState(false);
+	const [error, setError] = useState<string | undefined>(undefined);
 	const multiSelect = message.multiSelect === true;
 	const options = message.options ?? [];
 	const interactionId = message.questionGroup ?? message.toolUseId;
+	// PC側で回答された（answered）か、対象が入れ替わったら直前の失敗表示は用済み。
+	useEffect(() => { setError(undefined); }, [answered, interactionId]);
 	const disabled = answered || submitted || interactionId === undefined;
 	const isToggled = (i: number) => toggled.has(i);
 	const toggle = (i: number) => {
@@ -44,10 +47,20 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 			return next;
 		});
 	};
-	const submit = (action: () => Promise<boolean>) => {
+	// 失敗理由は必ず画面へ出す。boolean だけを見ていた頃は、接続断・対象変更・PC側の
+	// stale-interaction のどれで落ちても「押したのに何も起きない」としか見えなかった。
+	const submit = (action: () => Promise<AgentMessageSendResult>) => {
 		setSubmitted(true);
+		setError(undefined);
 		const retry = setTimeout(() => setSubmitted(false), 15_000);
-		void action().then(accepted => { if (!accepted) { clearTimeout(retry); setSubmitted(false); } });
+		void action().then(result => {
+			if (result.status !== 'rejected') {
+				return; // accepted / consumed（TUIへ貼り付け済み）は失敗ではない
+			}
+			clearTimeout(retry);
+			setSubmitted(false);
+			setError(result.message ?? '回答を送信できませんでした');
+		});
 	};
 	return (
 		<View style={[styles.questionCard, answered && styles.questionCardAnswered]}>
@@ -120,6 +133,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 				<Text style={styles.hint}>選択肢を取得できませんでした。TUI側と番号がずれる可能性があるため、ターミナルタブでの回答が確実です</Text>
 			) : null}
 			{!answered && interactionId === undefined ? <Text style={styles.hint}>この質問はモバイルから安全に回答できません。ターミナルタブで回答してください</Text> : null}
+			{error !== undefined ? <Text style={styles.questionError}>{error}</Text> : null}
 			{!disabled && options.length > 0 ? <Text style={styles.hint}>{multiSelect ? 'タップで選択し「決定」で回答します' : 'タップで回答します'}</Text> : null}
 		</View>
 	);
@@ -135,13 +149,16 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 	/** 同一 questionGroup の質問（questionIndex 順）。 */
 	messages: AgentChatMessage[];
 	answered: boolean;
-	onSubmit: (interactionId: string, answers: QuestionGroupAnswer[]) => Promise<boolean>;
+	onSubmit: (interactionId: string, answers: QuestionGroupAnswer[]) => Promise<AgentMessageSendResult>;
 }) {
 	const [step, setStep] = useState(0);
 	const [answers, setAnswers] = useState<(QuestionGroupAnswer | undefined)[]>(() => messages.map(() => undefined));
 	const [freeTexts, setFreeTexts] = useState<string[]>(() => messages.map(() => ''));
 	const [submitted, setSubmitted] = useState(false);
+	const [error, setError] = useState<string | undefined>(undefined);
 	const interactionId = messages[0]?.questionGroup ?? messages[0]?.toolUseId;
+	// PC側で回答された（answered）か、対象が入れ替わったら直前の失敗表示は用済み。
+	useEffect(() => { setError(undefined); }, [answered, interactionId]);
 	const disabled = answered || submitted || interactionId === undefined;
 	const current = messages[step];
 	const options = current?.options ?? [];
@@ -247,9 +264,17 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 						if (interactionId === undefined) { return; }
 						hapticImpact('medium');
 						setSubmitted(true);
+						setError(undefined);
 						const retry = setTimeout(() => setSubmitted(false), 15_000);
 						void onSubmit(interactionId, answers.filter((a): a is QuestionGroupAnswer => a !== undefined))
-							.then(accepted => { if (!accepted) { clearTimeout(retry); setSubmitted(false); } });
+							.then(result => {
+								if (result.status !== 'rejected') {
+									return; // accepted / consumed は失敗ではない
+								}
+								clearTimeout(retry);
+								setSubmitted(false);
+								setError(result.message ?? '回答を送信できませんでした');
+							});
 					}}
 				>
 					<Text style={styles.confirmBtnText}>回答を送信（{answeredCount}/{messages.length}）</Text>
@@ -257,6 +282,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 			) : null}
 			{!disabled ? <Text style={styles.hint}>すべての質問に回答してから送信されます（1問ずつは送信されません）</Text> : null}
 			{!answered && interactionId === undefined ? <Text style={styles.hint}>この質問グループはターミナルタブで回答してください</Text> : null}
+			{error !== undefined ? <Text style={styles.questionError}>{error}</Text> : null}
 		</View>
 	);
 }
@@ -280,6 +306,7 @@ const styles = StyleSheet.create({
 	confirmBtnDisabled: { opacity: 0.4 },
 	confirmBtnText: { color: '#fff', fontSize: 12.5, fontWeight: '700' },
 	hint: { color: colors.textDim, fontSize: 10 },
+	questionError: { color: colors.red, fontSize: 11, lineHeight: 15 },
 	stepTabs: { flexDirection: 'row', gap: 6 },
 	stepTab: { backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 11, paddingVertical: 5 },
 	stepTabActive: { borderColor: colors.accent, backgroundColor: colors.accentWash },

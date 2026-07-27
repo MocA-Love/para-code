@@ -6,7 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type * as SentryUtility from '@sentry/electron/utility';
-import { configureParadisDiagnosticReporter } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
 let sentry: typeof SentryUtility | undefined;
@@ -33,6 +33,7 @@ import('@sentry/electron/utility').then(Sentry => {
 		'device.arch': process.arch,
 		'os.name': process.platform,
 	});
+	configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
 	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
 		captureParadisUtilityException(scope, feature, operation, error, safeExtra);
 	});

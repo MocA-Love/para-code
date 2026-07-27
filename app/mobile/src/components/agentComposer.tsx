@@ -45,7 +45,7 @@ export const AgentComposer = memo(function AgentComposer({
 	/** 所属ワークスペースの現在ブランチに紐づくPR（無ければピル非表示）。 */
 	pr: WorkspacePrStatus | undefined;
 	sendText: (text: string) => Promise<AgentMessageSendResult>;
-	updateClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<boolean>;
+	updateClaudeSetting: (setting: 'model' | 'effort', value: string) => Promise<AgentMessageSendResult>;
 	/** 送信直後に呼ぶ（最下部への追従スクロール）。 */
 	onAfterSubmit: () => void;
 	fsUpload: (name: string, dataBase64: string) => Promise<FsUploadResult>;

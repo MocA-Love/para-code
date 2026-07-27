@@ -12,8 +12,23 @@ import { decodePairingUri, deriveNotifyKey } from '@para/protocol';
 import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type TermStreamEvent, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
+import { sha256 } from '@noble/hashes/sha256';
+import { bytesToHex } from '@noble/hashes/utils';
+import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
 import { configureNotificationHandler, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
 import { connectionActionForAppState, shouldPresentForegroundNotification, shouldRunForegroundWork } from './appLifecycle.js';
+
+/**
+ * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
+ * PC側と同じ規則（deviceId の SHA-256 先頭8桁）。生の deviceId は送らない。
+ * 起動時だけでなくペアリング成立時にも呼ぶ（E2Eの版数不一致やハンドシェイク失敗は
+ * まさに初回ペアリング直後に出るので、そのセッションで欠けていると突き合わせられない）。
+ */
+function applyPairingCorrelationTag(deviceId: string | undefined): void {
+	if (deviceId !== undefined) {
+		setMobileDiagnosticCorrelationTag('para.pairing', bytesToHex(sha256(new TextEncoder().encode(deviceId))).slice(0, 8));
+	}
+}
 
 interface AppState extends StoreState {
 	ready: boolean;
@@ -95,9 +110,9 @@ interface AppState extends StoreState {
 	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
 	sendTextInput(terminalKey: string, text: string, execute: boolean): Promise<boolean>;
 	sendAgentMessage(terminalKey: string, text: string): Promise<AgentMessageSendResult>;
-	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean>;
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<boolean>;
-	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<boolean>;
+	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<AgentMessageSendResult>;
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<AgentMessageSendResult>;
+	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]>;
 	createTerminal(ws?: string): void;
 	attachAgent(terminalKey: string): void;
@@ -205,6 +220,7 @@ export const useAppStore = create<AppState>(set => ({
 			identity = loaded.identity;
 			const operationRun = await reserveOperationRun(secureKeyStore);
 			const creds = await loadCredentials(secureKeyStore);
+			applyPairingCorrelationTag(creds?.deviceId);
 			const persistedOperationOutbox = await terminalOperationOutboxStore.loadCandidates();
 			// 通知設定をロード（保存が無い/壊れている場合は既定値のまま）
 			try {
@@ -359,6 +375,7 @@ export const useAppStore = create<AppState>(set => ({
 				// 先に新資格情報をdurable化し、旧pair journalは後続reset成功まで保持する。
 				// この順序ならKeychain書込失敗で旧pending/unknown記録を失わない。
 				await saveCredentials(secureKeyStore, creds);
+				applyPairingCorrelationTag(creds.deviceId);
 			} catch (error) {
 				await revokeSelfOnRelay(creds);
 				throw error;
@@ -398,6 +415,7 @@ export const useAppStore = create<AppState>(set => ({
 		} catch (error) {
 			if (creds !== undefined) {
 				await saveCredentials(secureKeyStore, creds);
+				applyPairingCorrelationTag(creds.deviceId);
 			}
 			throw error;
 		}
@@ -407,6 +425,7 @@ export const useAppStore = create<AppState>(set => ({
 			// journal clear失敗時はresetが旧接続へ戻す。Keychain側も旧資格情報へ補償する。
 			if (creds !== undefined) {
 				await saveCredentials(secureKeyStore, creds);
+				applyPairingCorrelationTag(creds.deviceId);
 				if (identity !== undefined) {
 					const key = deriveNotifyKey(identity.secretKey, creds.pcPublicKey);
 					await persistNotifyKey([...key].map(byte => byte.toString(16).padStart(2, '0')).join(''));
@@ -510,15 +529,18 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]) {
-		return controller?.answerAgentQuestion(terminalKey, interactionId, answers) ?? Promise.resolve(false);
+		return controller?.answerAgentQuestion(terminalKey, interactionId, answers)
+			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 
 	answerAgentApproval(terminalKey: string, interactionId: string, choice: string) {
-		return controller?.answerAgentApproval(terminalKey, interactionId, choice) ?? Promise.resolve(false);
+		return controller?.answerAgentApproval(terminalKey, interactionId, choice)
+			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string) {
-		return controller?.updateClaudeSetting(terminalKey, setting, value) ?? Promise.resolve(false);
+		return controller?.updateClaudeSetting(terminalKey, setting, value)
+			?? Promise.resolve<AgentMessageSendResult>({ status: 'rejected', message: 'PCとの接続が切れています' });
 	},
 
 	requestAgentActivityDetail(terminalKey: string, activityId: string) {
