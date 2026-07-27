@@ -48,13 +48,6 @@ interface AppState extends StoreState {
 	 */
 	notifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean };
 	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean): void;
-	/**
-	 * ワークスペースドロワーを開くときのメニューの動き方（設定画面で切り替え）。
-	 * 'slide' はメニューがコンテンツと一緒に左から出てくる（X等と同じ）。
-	 * 'back' はメニューが定位置にあり、コンテンツがどくことで露出する。
-	 */
-	drawerBehavior: 'slide' | 'back';
-	setDrawerBehavior(behavior: 'slide' | 'back'): void;
 	/** 通知一覧を全消去する（通知一覧画面のクリアボタン）。 */
 	clearNotifications(): void;
 	/** 通知一覧から単一項目を消す（項目タップで遷移した時）。他端末の一覧にも同期される。 */
@@ -192,7 +185,6 @@ export const useAppStore = create<AppState>(set => ({
 	selectedTerminalKey: undefined,
 	browserSelection: undefined,
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: false },
-	drawerBehavior: 'slide',
 	pinnedKeys: new Set(),
 	agentDrafts: {},
 
@@ -225,15 +217,6 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load notifyPrefs', err);
-			}
-			// ドロワーの動き方をロード（保存が無い/壊れている場合は既定の'slide'のまま）
-			try {
-				const raw = await secureKeyStore.getItem('drawerBehavior');
-				if (raw === 'back' || raw === 'slide') {
-					set({ drawerBehavior: raw });
-				}
-			} catch (err) {
-				console.warn('[appState] failed to load drawerBehavior', err);
 			}
 			// ピン留め状態をロード（保存が無い/壊れている場合は空集合のまま）
 			try {
@@ -589,11 +572,6 @@ export const useAppStore = create<AppState>(set => ({
 		// PC側にも同期する（アプリ未起動時のAPNsリモートプッシュはPC側で抑制判定するため）。
 		// オフライン中の変更は再接続時のonStateChange('online')フックで再送される。
 		controller?.sendNotifyPrefs(next);
-	},
-
-	setDrawerBehavior(behavior: 'slide' | 'back') {
-		set({ drawerBehavior: behavior });
-		secureKeyStore.setItem('drawerBehavior', behavior).catch(err => console.warn('[appState] failed to save drawerBehavior', err));
 	},
 
 	clearNotifications() {
