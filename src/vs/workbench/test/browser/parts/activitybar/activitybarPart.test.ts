@@ -139,7 +139,7 @@ suite('ActivitybarPart', () => {
 			},
 			{
 				width: 36,
-				actionHeight: 32,
+				actionHeight: 28,
 				iconSize: 16,
 			}
 		);
@@ -153,9 +153,9 @@ suite('ActivitybarPart', () => {
 				compactWidth: ActivitybarPart.FLOATING_COMPACT_ACTIVITYBAR_WIDTH,
 			},
 			{
-				width: 44,
-				actionHeight: 44,
-				compactWidth: 32,
+				width: 36,
+				actionHeight: 36,
+				compactWidth: 28,
 			}
 		);
 	});

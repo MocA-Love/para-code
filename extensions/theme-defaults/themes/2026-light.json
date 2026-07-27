@@ -147,6 +147,7 @@
 		"editorSuggestWidget.selectedBackground": "#00000025",
 		"editorSuggestWidget.selectedForeground": "#202020",
 		"editorSuggestWidget.selectedIconForeground": "#202020",
+		"editorSuggestWidget.focusOutline": "#0598BDFF",
 		"editorHoverWidget.background": "#FAFAFD",
 		"editorHoverWidget.border": "#E4E5E6FF",
 		"peekView.border": "#0598BD",
