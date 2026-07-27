@@ -25,7 +25,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
@@ -108,6 +108,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@ITerminalService terminalService: ITerminalService,
 		@ITerminalGroupService terminalGroupService: ITerminalGroupService,
+		@ITerminalEditorService terminalEditorService: ITerminalEditorService,
 		@IParadisTerminalScopeService terminalScopeService: IParadisTerminalScopeService,
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
 		@IParadisSpaceNotesService spaceNotesService: IParadisSpaceNotesService,
@@ -180,6 +181,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			workspaceSwitchService,
 			terminalService,
 			terminalGroupService,
+			terminalEditorService,
 			terminalScopeService,
 			worktreeService,
 			spaceNotesService,

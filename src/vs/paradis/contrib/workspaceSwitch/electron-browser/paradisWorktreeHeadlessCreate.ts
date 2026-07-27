@@ -25,7 +25,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
-import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
@@ -220,30 +220,27 @@ export interface IParadisAgentLaunchInWorkspaceRequest {
 export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, request: IParadisAgentLaunchInWorkspaceRequest): Promise<void> {
 	const configurationService = accessor.get(IConfigurationService);
 	const terminalService = accessor.get(ITerminalService);
-	const terminalGroupService = accessor.get(ITerminalGroupService);
+	const terminalEditorService = accessor.get(ITerminalEditorService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
-	const logService = accessor.get(ILogService);
 	const agent = paradisConfiguredAgents(configurationService).find(candidate => candidate.id === request.agentId);
 	if (!agent) {
 		throw new Error(`unknown agent: ${request.agentId}`);
 	}
 	const instance = await terminalService.createTerminal({
 		cwd: request.rootUri,
-		location: TerminalLocation.Panel,
+		location: TerminalLocation.Editor,
 	});
 	if (request.stateKey !== switchService.activeStateKey) {
-		// PC側で非表示のワークスペース向け: スコープを付け替えて即parkさせる（表示を乱さない）
+		// PC側で非表示のワークスペース向け: スコープを付け替えて即parkさせる（表示を乱さない）。
+		// エディタターミナルの park は persistentProcessId を鍵にするため PTY 起動を待ってから
+		// assign する。あわせて createTerminal は openEditor の完了を待たないため先に開き切らせる。
+		await instance.processReady;
+		await terminalEditorService.openEditor(instance);
 		terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
 	} else {
-		// PCのアクティブワークスペース向け: モバイル発の新規ターミナル作成と同様にアクティブ化して
-		// パネルを表示する（表示失敗は起動自体の失敗にしない）
+		// PCのアクティブワークスペース向け: エディタタブとしてそのまま見える
 		terminalService.setActiveInstance(instance);
-		try {
-			await terminalGroupService.showPanel(false);
-		} catch (error) {
-			logService.warn('[ParadisWorktreeHeadlessCreate] showPanel failed', error);
-		}
 	}
 	await instance.processReady;
 	const command = paradisBuildAgentCommand(agent, (request.prompt ?? '').trim(), instance.shellType, {
@@ -276,6 +273,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	const configurationService = accessor.get(IConfigurationService);
 	const languageModelsService = accessor.get(ILanguageModelsService);
 	const terminalService = accessor.get(ITerminalService);
+	const terminalEditorService = accessor.get(ITerminalEditorService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const instantiationService = accessor.get(IInstantiationService);
 	const logService = accessor.get(ILogService);
@@ -366,8 +364,11 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				}
 				const instance = await terminalService.createTerminal({
 					cwd: worktreeUri,
-					location: TerminalLocation.Panel,
+					location: TerminalLocation.Editor,
 				});
+				// park は persistentProcessId を鍵にするため PTY 起動と openEditor の完了を待ってから assign する
+				await instance.processReady;
+				await terminalEditorService.openEditor(instance);
 				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
 			},
 			launchAgent: async () => {
@@ -375,17 +376,19 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				if (!agent) {
 					return;
 				}
-				// ダイアログ発の従来実装はエディタ領域ターミナルを使っていたが、ヘッドレス・
-				// バックグラウンド作成ではエディタレイアウトへの依存を避けてパネル側に作る。
-				// 非アクティブスコープへの assignInstanceScope は即座に park されるため、
-				// 現在のスペースの表示は乱れない。paneトークンは同様に自動注入されるため、
-				// 稼働状態表示（Workspaces ビュー/モバイルのホーム一覧）はそのまま効く。
+				// ダイアログ発の従来実装と同じくエディタ領域に作る。非アクティブスコープへの
+				// assignInstanceScope は即座に park され、切り替えで戻ったときに
+				// unparkEditorTerminals がエディタとして開き直すため現在のスペースの表示は乱れない。
+				// paneトークンは同様に自動注入されるため、稼働状態表示（Workspaces ビュー/
+				// モバイルのホーム一覧）はそのまま効く。
+				// park は persistentProcessId を鍵にするため PTY 起動と openEditor の完了を待ってから assign する。
 				const instance = await terminalService.createTerminal({
 					cwd: worktreeUri,
-					location: TerminalLocation.Panel,
+					location: TerminalLocation.Editor,
 				});
-				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
 				await instance.processReady;
+				await terminalEditorService.openEditor(instance);
+				terminalScopeService.assignInstanceScope(instance.instanceId, targetStateKey);
 				const command = paradisBuildAgentCommand(agent, prompt, instance.shellType, {
 					modelId: request.modelId,
 					effortId: request.effortId,

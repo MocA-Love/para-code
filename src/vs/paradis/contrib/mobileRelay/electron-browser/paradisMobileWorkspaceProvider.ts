@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { RunOnceScheduler, timeout } from '../../../../base/common/async.js';
+import { raceTimeout, RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -23,7 +23,7 @@ import { editorBackground, editorForeground } from '../../../../platform/theme/c
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { TerminalExitReason, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
-import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { XtermAddonImporter } from '../../../../workbench/contrib/terminal/browser/xterm/xtermAddonImporter.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -183,6 +183,7 @@ const TERM_COALESCE_MS = 16; // onData のまとめ送り間隔（1フレーム=
 const TERM_HIGH_WATERMARK_CHARS = 100_000;
 const TERM_LOW_WATERMARK_CHARS = 5_000;
 const TERM_RESIZE_SNAPSHOT_DELAY_MS = 200; // リサイズ確定からスナップショット再同期までのデバウンス
+const TERMINAL_CREATE_READY_TIMEOUT_MS = 10_000; // 非表示スペース向け作成時にPTY起動を待つ上限（park に persistentProcessId が要る）
 
 /** epoch対応クライアントがattach中のターミナル1つ分の同期プロトコル状態。 */
 interface TermSyncState {
@@ -243,6 +244,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		private readonly terminalService: ITerminalService,
 		private readonly terminalGroupService: ITerminalGroupService,
+		private readonly terminalEditorService: ITerminalEditorService,
 		private readonly terminalScopeService: IParadisTerminalScopeService,
 		private readonly worktreeService: IParadisWorktreeService,
 		private readonly spaceNotesService: IParadisSpaceNotesService,
@@ -1560,28 +1562,29 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				return;
 			}
 			// 作成時点でのPC側アクティブスコープ。指定wsがこれと一致（または未指定）なら
-			// PCの現在の作業ワークスペース宛なので、通常の「新規ターミナル」と同じくパネルに表示する。
+			// PCの現在の作業ワークスペース宛なので、そのままエディタタブとして見える。
 			const activeStateKey = this.workspaceSwitchService.activeStateKey;
 			try {
-				const instance = await this.terminalService.createTerminal({ cwd: root });
+				// モバイル発の端末は常にエディタ領域に作る（PC側の手動作成分とパネルで混ざらないようにする）。
+				const instance = await this.terminalService.createTerminal({ cwd: root, location: TerminalLocation.Editor });
 				if (ws !== activeStateKey) {
 					// PC側で非表示のワークスペース向け: 既定のタグ付け（アクティブスコープ所属）を
 					// 指定wsへ付け替える。アクティブ外なので assignInstanceScope が即 park し、
 					// そのワークスペースへ切り替えたときにだけ表示される。
+					// エディタターミナルの park は persistentProcessId を鍵に台帳へ載せるため、
+					// PTY が起動し切る前に assign すると park されずタブが現スコープに残ってしまう
+					// （パネルのグループ park はIDに依存しないので従来は不要だった）。
+					// あわせて createTerminal は openEditor の完了を待たないため、先に開き切ってから
+					// park させる（detachInstance が先行すると、進行中の openEditor が
+					// 実体のない入力を開いてしまう）。
+					// PTY 起動が失敗すると processReady は解決しないため、待ち切らない場合でも操作は
+					// 成功として返す（未完了のままだとモバイルが再試行して二重作成になる）。
+					await raceTimeout(instance.processReady, TERMINAL_CREATE_READY_TIMEOUT_MS);
+					await this.terminalEditorService.openEditor(instance);
 					this.terminalScopeService.assignInstanceScope(instance.instanceId, ws);
 				} else {
 					// PCのアクティブws向け: 既定タグ付けのままアクティブに残る。
-					// createTerminal はパネルを開かないため、通常の「新規ターミナル」コマンドと同様に
-					// アクティブ化してターミナルパネルを表示し、PC側にちゃんと出るようにする。
 					this.terminalService.setActiveInstance(instance);
-					if (instance.target !== TerminalLocation.Editor) {
-						try {
-							await this.terminalGroupService.showPanel(false);
-						} catch (err) {
-							// PTY作成は完了済み。パネル表示失敗を操作失敗にすると再試行で二重作成になる。
-							this.logService.warn('[paradisMobileRelay] showPanel failed', err);
-						}
-					}
 				}
 				this.pushState();
 				await complete('accepted');
