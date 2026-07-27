@@ -37,6 +37,7 @@ import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdentityService.js';
 import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
+import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisMobileRelayService,
@@ -109,6 +110,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@ITerminalGroupService terminalGroupService: ITerminalGroupService,
 		@IParadisTerminalScopeService terminalScopeService: IParadisTerminalScopeService,
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
+		@IParadisSpaceNotesService spaceNotesService: IParadisSpaceNotesService,
 		@IParadisAgentStatusStore agentStatusStore: IParadisAgentStatusStore,
 		@IWebviewWorkbenchService private readonly webviewWorkbenchService: IWebviewWorkbenchService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
@@ -180,6 +182,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			terminalGroupService,
 			terminalScopeService,
 			worktreeService,
+			spaceNotesService,
 			agentStatusStore,
 			this.logService,
 			fileService,

@@ -41,6 +41,7 @@ import { IHostService } from '../../../../workbench/services/host/browser/host.j
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
+import { IParadisSpaceNotesService } from '../common/paradisSpaceNotes.js';
 import { PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID } from '../common/paradisRepositoryClone.js';
 import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { IParadisWorktreeCreateProgressStore } from '../common/paradisWorktreeCreate.js';
@@ -49,6 +50,7 @@ import { ParadisWorktreeCreateProgressStore } from './paradisWorktreeCreateProgr
 import { ParadisAuxiliaryWindowScopeService } from './paradisAuxiliaryWindowScopeService.js';
 import { ParadisEditorSplitTerminalService } from './paradisEditorSplitTerminalService.js';
 import { ParadisEditorScopeService } from './paradisEditorScopeService.js';
+import { ParadisSpaceNotesService } from './paradisSpaceNotesService.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
 import { ParadisWorktreeService } from './paradisWorktreeService.js';
@@ -63,6 +65,7 @@ registerSingleton(IParadisWorktreeService, ParadisWorktreeService, Instantiation
 registerSingleton(IParadisAgentStatusStore, ParadisAgentStatusStore, InstantiationType.Delayed);
 registerSingleton(IParadisWorktreeCreateProgressStore, ParadisWorktreeCreateProgressStore, InstantiationType.Delayed);
 registerSingleton(IParadisEditorSplitTerminalService, ParadisEditorSplitTerminalService, InstantiationType.Delayed);
+registerSingleton(IParadisSpaceNotesService, ParadisSpaceNotesService, InstantiationType.Delayed);
 
 class ParadisEditorScopeStarter implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisEditorScopeStarter';

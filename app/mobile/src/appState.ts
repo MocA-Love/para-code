@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri, deriveNotifyKey } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type StoreState, type TermStreamEvent, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type TermStreamEvent, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { configureNotificationHandler, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
@@ -117,6 +117,10 @@ interface AppState extends StoreState {
 	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }): Promise<WorktreeCreateResult>;
 	/** 既存ワークスペースで新しいターミナルを作ってエージェントCLIを起動する（ホームの＋ボタン）。 */
 	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }): Promise<void>;
+	/** スペースのメモ本文（PC版 Workspaces ビュー下部のメモ欄と同じ内容）。 */
+	noteGet(ws: string): Promise<SpaceNoteResult>;
+	/** スペースのメモ本文を更新する。 */
+	noteSet(ws: string, text: string): Promise<SpaceNoteResult>;
 	fsList(ws: string, path: string): Promise<FsListResult>;
 	fsResolveLink(ws: string, path: string): Promise<FsResolveLinkResult>;
 	fsRead(ws: string, path: string, highlight?: boolean): Promise<FsReadResult>;
@@ -620,6 +624,16 @@ export const useAppStore = create<AppState>(set => ({
 	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.launchAgent(opts);
+	},
+
+	noteGet(ws: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.noteGet(ws);
+	},
+
+	noteSet(ws: string, text: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.noteSet(ws, text);
 	},
 
 	fsList(ws: string, path: string) {

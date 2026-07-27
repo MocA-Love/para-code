@@ -11,6 +11,7 @@ import { isAgentWaiting } from '../store.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { SpaceNoteSheet } from './spaceNoteSheet.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
@@ -38,7 +39,7 @@ if (Platform.OS === 'android') {
 }
 
 /** stateスナップショットのワークスペースエントリ（parentはworktreeの親リポジトリid）。 */
-type WsEntry = { id: string; name: string; color?: string; branch?: string; parent?: string };
+type WsEntry = { id: string; name: string; color?: string; branch?: string; parent?: string; note?: { open: number; done: number } };
 
 /** ワークスペースの表示色。PC側がcolorを配信していればそれを、無ければ名前のハッシュで安定に決める。 */
 const WS_PALETTE = [colors.accent, colors.purple, colors.green, colors.orange, colors.yellow, colors.red] as const;
@@ -173,6 +174,8 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	const [collapsedRepos, setCollapsedRepos] = useState<ReadonlySet<string>>(new Set());
 	// 「新しいスペース（worktree）を作成」シートの表示状態（見出し右の＋から開く）。
 	const [createSheetOpen, setCreateSheetOpen] = useState(false);
+	// メモシートの対象スペース（各行のメモボタンから開く）。
+	const [noteTarget, setNoteTarget] = useState<WsEntry | undefined>(undefined);
 
 	// 選択が閉じたグループ内へ移ったときだけ自動展開する（選択行が隠れたままにならないように）。
 	// 依存をeffective/selectedParentに絞ることで、選択中グループを手動で閉じ直す操作は妨げない。
@@ -257,6 +260,16 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 				{waiting > 0 ? (
 					<View style={styles.alertBadge}><Text style={styles.alertBadgeText}>{waiting > 1 ? `質問あり ${waiting}` : '質問あり'}</Text></View>
 				) : null}
+				{/* メモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）。未完了があれば件数を出す */}
+				<Pressable
+					style={[styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive]}
+					hitSlop={6}
+					onPress={() => { hapticSelection(); setNoteTarget(ws); }}
+					accessibilityLabel={(ws.note?.open ?? 0) > 0 ? `メモ（未完了 ${ws.note?.open} 件）` : 'メモ'}
+				>
+					<Ionicons name="checkbox-outline" size={12} color={(ws.note?.open ?? 0) > 0 ? colors.accent : colors.textDim} />
+					{(ws.note?.open ?? 0) > 0 ? <Text style={styles.noteBtnText}>{ws.note?.open}</Text> : null}
+				</Pressable>
 				{running > 0 ? <View style={styles.runOrb} /> : null}
 				{!grouped && wsTerminals.length === 0 ? <Text style={styles.countText}>0</Text> : null}
 				{grouped ? (
@@ -414,6 +427,14 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 				</Pressable>
 			</View>
 			<WorktreeCreateSheet visible={createSheetOpen} onClose={() => setCreateSheetOpen(false)} />
+			<SpaceNoteSheet
+				visible={noteTarget !== undefined}
+				ws={noteTarget?.id}
+				name={(noteTarget?.name ?? '').replace(/^✦ /, '')}
+				branch={noteTarget?.branch}
+				color={noteTarget ? wsColor(noteTarget) : colors.accent}
+				onClose={() => setNoteTarget(undefined)}
+			/>
 		</View>
 	);
 }
@@ -543,6 +564,9 @@ const styles = StyleSheet.create({
 	alertBadgeText: { color: colors.red, fontSize: 9.5, fontWeight: '700' },
 	runOrb: { width: 8, height: 8, borderRadius: 5, backgroundColor: colors.green },
 	countText: { color: colors.textDim, fontSize: 10, backgroundColor: colors.surface3, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
+	noteBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 3 },
+	noteBtnActive: { backgroundColor: 'rgba(9,175,217,0.14)' },
+	noteBtnText: { color: colors.accent, fontSize: 10, fontWeight: '700', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	// ワークツリー（グループ子行）: インデント＋左端の縦ガイド線で親子関係を示す
 	wtRow: { marginLeft: 27, paddingLeft: 14, paddingVertical: 9 },
 	wtGuide: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 1.5, borderRadius: 1, backgroundColor: colors.borderStrong },
