@@ -1308,7 +1308,7 @@ describe('MobileController agent approval', () => {
 			epoch: 'codex-e1', interactionId: 'codex:s:approval-1', choice: '1',
 		});
 		pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-7', requestId: requests[0]?.requestId, status: 'accepted' }));
-		await expect(answer).resolves.toBe(true);
+		await expect(answer).resolves.toEqual({ status: 'accepted' });
 	});
 });
 

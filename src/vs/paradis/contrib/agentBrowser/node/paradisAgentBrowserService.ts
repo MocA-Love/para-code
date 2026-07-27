@@ -570,7 +570,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			// hookが報告済みのcwd (スコープ解決フォールバック用) は補正更新でも維持する
 			const cwd = entry?.cwd;
 			if (activity.pendingQuestion) {
-				if (current !== 'question' && current !== 'permission') {
+				// permission からも question へ昇格させる。質問検知(pendingQuestion)より先に
+				// permission を書き込む経路があり、以前はそこから復帰できずモバイルの
+				// 許可/拒否カードが質問中ずっと表示され続けていた。
+				if (current !== 'question') {
 					this._paneStatuses.set(token, { status: 'question', changedAt: Date.now(), ...(cwd !== undefined ? { cwd } : {}) });
 				}
 				return; // 質問への回答待ちが最優先。バックグラウンドタスク補正で上書きさせない
@@ -1848,9 +1851,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			// Notification("permission"を含む本文) や tool_name が取れなかった PermissionRequest
 			// でも permission を発火させることがあり、そのまま通すと質問カードの下に
 			// 許可/拒否バーが一瞬出る（質問回答待ち中に本物の許可プロンプトは並存しない）。
+			// 逆に question は approval で上書きしない: PreToolUse/PermissionRequest の
+			// AskUserQuestion 明示検知より、解除され損ねた古い pendingApproval が優先されると
+			// 質問中もペインが permission のまま張り付き、モバイルに許可/拒否の2択が出続ける。
 			if ((normalized === 'working' || normalized === 'permission') && activity.pendingQuestion) {
 				normalized = 'question';
-			} else if ((normalized === 'working' || normalized === 'question') && activity.pendingApproval) {
+			} else if (normalized === 'working' && activity.pendingApproval) {
 				normalized = 'permission';
 			}
 

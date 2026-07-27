@@ -72,8 +72,13 @@ export default function AgentDetailScreen() {
 	const chat = activeKey !== undefined ? agentChats.get(activeKey) : undefined;
 	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);
 	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
-	const permissionPending = activeTerminal?.agentStatus === 'permission' || chat?.interaction?.kind === 'approval';
+	// 承認バーの出現条件も chat.interaction（PC側の currentInteraction）を正本にする。
+	// agentStatus は hook 由来の派生値で、解除され損ねた承認要求が残っていると質問中でも
+	// permission に化けるため、以前は質問カードの下に押しても効かない許可/拒否バーが併存していた。
 	const approval = chat?.interaction?.kind === 'approval' ? chat.interaction : undefined;
+	// interaction が届いていないのに permission と言われている状態。実IDが無く回答を送れない
+	// （PC側の hasPendingInteraction と一致しない）ので、押せない二択ではなく誘導だけを出す。
+	const approvalUnavailable = chat?.interaction === undefined && activeTerminal?.agentStatus === 'permission';
 	const actions = useAgentActions(activeKey, chat?.agent);
 
 	// 入力中テキストは画面を離れても消えないよう、エージェント（ターミナル）単位の
@@ -221,12 +226,16 @@ export default function AgentDetailScreen() {
 		}
 	}, []);
 	const prevCountRef = useRef(0);
+	// 対象を切り替えたときは前回の高さを引き継がない（長いチャットから短いチャットへ移ると
+	// 初回の onContentSizeChange が「縮んだ」と判定され、下端へ寄らなくなる）。
+	const lastContentHeightRef = useRef(0);
 	useEffect(() => {
 		userScrollGestureRef.current = false;
 		userDraggingRef.current = false;
 		userMomentumRef.current = false;
 		setSticky(true);
 		prevCountRef.current = 0;
+		lastContentHeightRef.current = 0;
 	}, [activeKey, setSticky]);
 	useEffect(() => {
 		if (activeKey === undefined || !shouldHandleLatestEntry(handledLatestEntryRef.current, latestEntry)) {
@@ -234,6 +243,7 @@ export default function AgentDetailScreen() {
 		}
 		handledLatestEntryRef.current = latestEntry;
 		latestEntryPendingRef.current = true;
+		lastContentHeightRef.current = 0;
 		userScrollGestureRef.current = false;
 		userDraggingRef.current = false;
 		userMomentumRef.current = false;
@@ -249,7 +259,21 @@ export default function AgentDetailScreen() {
 			setNewCount(c => c + delta);
 		}
 	}, [messageCount]);
-	const onContentSizeChange = () => {
+	const onContentSizeChange = (_width: number, height: number) => {
+		const previousHeight = lastContentHeightRef.current;
+		lastContentHeightRef.current = height;
+		// 指が触れている間（慣性を含む）は自動追従で引き戻さない。sticky の解除側だけが
+		// ドラッグを見ていたため、下端付近で少し上へずらす操作とライブ更新の追従が
+		// 数Hz で綱引きになっていた。
+		if (userDraggingRef.current || userMomentumRef.current) {
+			return;
+		}
+		// 縮んだ方向へは追従しない。ライブ表示フッターはツールの開始/終了ごとに
+		// 高さが増減するので、縮小時にも末尾へ寄せると本文が上下に往復して震える。
+		// 縮小方向の位置合わせは OS のクランプに任せれば十分。
+		if (height < previousHeight) {
+			return;
+		}
 		if (stickyRef.current || latestEntryPendingRef.current) {
 			listRef.current?.scrollToEnd({ animated: false });
 		}
@@ -405,16 +429,23 @@ export default function AgentDetailScreen() {
 			</View>
 			{hasActivityHistory && chat?.activity !== undefined ? <View style={[styles.activityStripOverlay, { top: headerHeight + 4 }]}><AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} /></View> : null}
 
-			{permissionPending && activeKey !== undefined ? (
+			{approval !== undefined && activeKey !== undefined ? (
 				<View style={styles.approvalBarWrap}>
 					<ApprovalCard
-						key={approval?.id ?? `legacy:${chat?.epoch ?? activeKey}`}
-						interactionId={approval?.id ?? `legacy:${chat?.epoch ?? activeKey}`}
+						key={approval.id}
+						interactionId={approval.id}
 						onApprove={actions.approve}
-						title={approval?.title}
-						detail={approval?.detail ?? findLatestApprovalRequest(chat)}
-						choices={approval?.choices}
+						title={approval.title}
+						detail={approval.detail ?? findLatestApprovalRequest(chat)}
+						choices={approval.choices}
 					/>
+				</View>
+			) : approvalUnavailable && activeKey !== undefined ? (
+				<View style={styles.approvalBarWrap}>
+					<View style={styles.approvalSyncing}>
+						<Text style={styles.approvalSyncingText}>PCで内容を確認してください</Text>
+						<Text style={styles.approvalSyncingHint}>許可の内容を取得できていないため、ここからは回答できません</Text>
+					</View>
 				</View>
 			) : null}
 
@@ -594,6 +625,7 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 	const pulse = useRef(new Animated.Value(0)).current;
 	const [, setClock] = useState(0);
 	const isAppActive = useAppIsActive();
+	const isLive = live !== undefined;
 	useEffect(() => {
 		pulse.stopAnimation();
 		pulse.setValue(0);
@@ -611,14 +643,16 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 			pulse.setValue(0);
 		};
 	}, [isAppActive, pulse]);
+	// 依存を live オブジェクトにすると delta のたび（最大8Hz）に interval を張り直し、
+	// そのつど setClock で余分な再レンダーが走る。必要なのは「live があるか」だけ。
 	useEffect(() => {
-		if (live === undefined || !isAppActive) {
+		if (!isLive || !isAppActive) {
 			return;
 		}
 		setClock(Date.now());
 		const timer = setInterval(() => setClock(Date.now()), 1000);
 		return () => clearInterval(timer);
-	}, [isAppActive, live]);
+	}, [isAppActive, isLive]);
 	const dot = (delay: number) => (
 		<Animated.View
 			style={[styles.workingDot, {
@@ -636,7 +670,23 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 		? `実行中: ${formatToolName(live.tool ?? 'tool')}`
 		: live?.phase === 'message' ? '応答を生成中'
 			: live?.phase === 'permission' ? '確認待ち' : '考え中';
-	const preview = live?.phase === 'message' ? live.text?.trim() : live?.detail;
+	// preview はツールの開始で現れ、終了（phase='thinking'）で消えるため、そのままだと
+	// フッターの高さがツール1回ごとに 0〜4行ぶん振れる。下端に張り付いている以上、
+	// その伸縮がそのまま会話本文の上下動になる（ツール連打時は毎秒数回＝「高速にガクガク」）。
+	// 直前の内容を保持し、かつ下の workingPreview で高さを固定して振動源を断つ。
+	const rawPreview = live?.phase === 'message' ? live.text?.trim() : live?.detail;
+	const hasRawPreview = rawPreview !== undefined && rawPreview.length > 0;
+	// レンダー中に ref を読む形（effect で書いて render で読む）は並行レンダーで壊れうるので、
+	// 保持は state で行う。live が消えた時点で忘れる。
+	const [retainedPreview, setRetainedPreview] = useState<string | undefined>(undefined);
+	useEffect(() => {
+		if (hasRawPreview) {
+			setRetainedPreview(rawPreview);
+		} else if (!isLive) {
+			setRetainedPreview(undefined);
+		}
+	}, [hasRawPreview, rawPreview, isLive]);
+	const preview = hasRawPreview ? rawPreview : (isLive ? retainedPreview : undefined);
 	const isWebSearch = live?.phase === 'tool' && (live.tool === 'web_search' || live.tool === 'webSearch');
 	const liveSites = preview !== undefined ? webSites([{ text: preview }]) : [];
 	if (isWebSearch) {
@@ -646,9 +696,11 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 		<View style={styles.workingRow}>
 			<View style={styles.workingHeader}>
 				{dot(0)}{dot(1)}{dot(2)}
-				<Text style={styles.workingText}>{label}{metrics.length > 0 ? `（${metrics}）` : '…'}</Text>
+				<Text style={styles.workingText} numberOfLines={1}>{label}{metrics.length > 0 ? `（${metrics}）` : '…'}</Text>
 			</View>
-			{preview !== undefined && preview.length > 0 ? <Text style={styles.workingPreview} numberOfLines={4}>{preview}</Text> : null}
+			{/* preview は常時マウントして高さを固定する。条件付きレンダーだと行ごと消えて
+			    フッターの高さが跳ね、下端固定のぶん本文が上下に振動する。 */}
+			<Text style={styles.workingPreview} numberOfLines={2}>{preview ?? ''}</Text>
 		</View>
 	);
 }
@@ -693,11 +745,17 @@ const styles = StyleSheet.create({
 	toolRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 4 },
 	toolText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flex: 1, lineHeight: 15 },
 	approvalBarWrap: { marginHorizontal: 12, marginTop: 8 },
+	approvalSyncing: { backgroundColor: 'rgba(255,255,255,.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,.10)', borderRadius: 16, paddingVertical: 12, paddingHorizontal: 14, gap: 4 },
+	approvalSyncingText: { color: colors.text, fontSize: 13, fontWeight: '600' },
+	approvalSyncingHint: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
 	workingRow: { gap: 5, paddingHorizontal: 4, paddingVertical: 10 },
 	workingHeader: { flexDirection: 'row', alignItems: 'center', gap: 5 },
 	workingDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.accent2 },
-	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4 },
-	workingPreview: { color: colors.text, fontSize: 12, lineHeight: 18, marginLeft: 4, opacity: 0.82 },
+	// flexShrink が無いと row 内で折り返さず右へはみ出す。長いMCPツール名でも1行に収める。
+	workingText: { color: colors.textDim, fontSize: 12, marginLeft: 4, flexShrink: 1 },
+	// minHeight 固定（lineHeight 18 × 2行）。preview の有無・行数でフッターの高さを動かさない。
+	// height ではなく minHeight なのは、Dynamic Type で文字を大きくしたときに2行目が切れないようにするため。
+	workingPreview: { color: colors.text, fontSize: 12, lineHeight: 18, minHeight: 36, marginLeft: 4, opacity: 0.82 },
 	jumpWrap: { position: 'absolute', bottom: 12, right: 14 },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く（他のglassボタンと同じ流儀）
 	jumpBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minWidth: 40, height: 40, borderRadius: 20, paddingHorizontal: 12, overflow: 'hidden' },

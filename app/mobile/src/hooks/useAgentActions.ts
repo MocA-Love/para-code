@@ -22,12 +22,22 @@ export type QuestionGroupAnswer =
 export interface AgentActions {
 	send(data: string): boolean;
 	sendText(text: string): Promise<AgentMessageSendResult>;
-	answerQuestion(interactionId: string, optionIndex: number): Promise<boolean>;
-	answerQuestionMulti(interactionId: string, indices: number[]): Promise<boolean>;
-	answerQuestionFreeText(interactionId: string, optionCount: number, text: string): Promise<boolean>;
-	answerQuestionGroup(interactionId: string, answers: QuestionGroupAnswer[]): Promise<boolean>;
-	approve(interactionId: string, choice: string): Promise<boolean>;
-	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<boolean>;
+	// 回答系はテキスト送信と同じく理由付きの結果を返す。失敗の理由をUIまで運べないと
+	// 「押したのに何も起きない」としか見えず、接続断・対象変更・PC側の拒否を区別できない。
+	answerQuestion(interactionId: string, optionIndex: number): Promise<AgentMessageSendResult>;
+	answerQuestionMulti(interactionId: string, indices: number[]): Promise<AgentMessageSendResult>;
+	answerQuestionFreeText(interactionId: string, optionCount: number, text: string): Promise<AgentMessageSendResult>;
+	answerQuestionGroup(interactionId: string, answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult>;
+	approve(interactionId: string, choice: string): Promise<AgentMessageSendResult>;
+	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
+}
+
+const STALE_INTERACTION_RESULT: AgentMessageSendResult = { status: 'rejected', message: '回答の対象が変わりました。最新の内容を確認してください。' };
+const NO_TARGET_RESULT: AgentMessageSendResult = { status: 'rejected', message: '送信先のエージェントが見つかりません' };
+
+/** PTY注入（agentActions 非対応セッション向けのレガシー経路）の成否を同じ結果型へ揃える。 */
+function fromInjection(ok: boolean): AgentMessageSendResult {
+	return ok ? { status: 'accepted' } : { status: 'rejected', message: 'ターミナルへ入力を送信できませんでした' };
 }
 
 type AppStoreSnapshot = ReturnType<typeof useAppStore.getState>;
@@ -116,29 +126,31 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	 * 承認注入と同じ「番号 → CR」方式で選んで確定する（複数質問タブは回答すると
 	 * 自動で次のタブへ進むので、順に回答すれば最後に Submit される）。
 	 */
-	const answerQuestion = useCallback((interactionId: string, optionIndex: number) => {
-		if (supportsAgentActions) {
-			return terminalKey !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
-				? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'option', index: optionIndex }])
-				: Promise.resolve(false);
-		}
+	const answerQuestion = useCallback((interactionId: string, optionIndex: number): Promise<AgentMessageSendResult> => {
 		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
-			return Promise.resolve(false);
+			return Promise.resolve(STALE_INTERACTION_RESULT);
 		}
-		return sendSequence([String(optionIndex + 1), '\r']);
+		if (terminalKey === undefined) {
+			return Promise.resolve(NO_TARGET_RESULT);
+		}
+		if (supportsAgentActions) {
+			return answerAgentQuestion(terminalKey, interactionId, [{ kind: 'option', index: optionIndex }]);
+		}
+		return sendSequence([String(optionIndex + 1), '\r']).then(fromInjection);
 	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
-	const answerQuestionMulti = useCallback((interactionId: string, indices: number[]) => {
-		if (supportsAgentActions) {
-			return terminalKey !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
-				? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'multi', indices }])
-				: Promise.resolve(false);
-		}
+	const answerQuestionMulti = useCallback((interactionId: string, indices: number[]): Promise<AgentMessageSendResult> => {
 		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
-			return Promise.resolve(false);
+			return Promise.resolve(STALE_INTERACTION_RESULT);
+		}
+		if (terminalKey === undefined) {
+			return Promise.resolve(NO_TARGET_RESULT);
+		}
+		if (supportsAgentActions) {
+			return answerAgentQuestion(terminalKey, interactionId, [{ kind: 'multi', indices }]);
 		}
 		const parts = indices.flatMap(index => [String(index + 1), ' ']);
-		return sendSequence([...parts, '\r']);
+		return sendSequence([...parts, '\r']).then(fromInjection);
 	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	/**
@@ -146,16 +158,17 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	 * 持つため、「Otherの番号 → CR（入力欄が開く） → テキスト → CR（確定）」を注入する。
 	 */
 	const answerQuestionFreeText = useCallback(
-		(interactionId: string, optionCount: number, text: string) => {
-			if (supportsAgentActions) {
-				return terminalKey !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
-					? answerAgentQuestion(terminalKey, interactionId, [{ kind: 'text', optionCount, text }])
-					: Promise.resolve(false);
-			}
+		(interactionId: string, optionCount: number, text: string): Promise<AgentMessageSendResult> => {
 			if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
-				return Promise.resolve(false);
+				return Promise.resolve(STALE_INTERACTION_RESULT);
 			}
-			return sendSequence([String(optionCount + 1), '\r', text, '\r']);
+			if (terminalKey === undefined) {
+				return Promise.resolve(NO_TARGET_RESULT);
+			}
+			if (supportsAgentActions) {
+				return answerAgentQuestion(terminalKey, interactionId, [{ kind: 'text', optionCount, text }]);
+			}
+			return sendSequence([String(optionCount + 1), '\r', text, '\r']).then(fromInjection);
 		},
 		[terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence],
 	);
@@ -170,14 +183,15 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	 * 自由入力は「Other番号 → CR（入力欄）→ テキスト → CR」。
 	 * 末尾の予備Enterは、最終問の確定で自動Submitされた場合は空の入力欄に落ちるだけで無害。
 	 */
-	const answerQuestionGroup = useCallback((interactionId: string, answers: QuestionGroupAnswer[]) => {
-		if (supportsAgentActions) {
-			return terminalKey !== undefined && interaction?.kind === 'question' && interaction.id === interactionId
-				? answerAgentQuestion(terminalKey, interactionId, answers)
-				: Promise.resolve(false);
-		}
+	const answerQuestionGroup = useCallback((interactionId: string, answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult> => {
 		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
-			return Promise.resolve(false);
+			return Promise.resolve(STALE_INTERACTION_RESULT);
+		}
+		if (terminalKey === undefined) {
+			return Promise.resolve(NO_TARGET_RESULT);
+		}
+		if (supportsAgentActions) {
+			return answerAgentQuestion(terminalKey, interactionId, answers);
 		}
 		const parts: string[] = [];
 		for (const answer of answers) {
@@ -193,7 +207,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 			}
 		}
 		parts.push('\r'); // 全問確定後にSubmit確認ステップが残っている場合の予備
-		return sendSequence(parts);
+		return sendSequence(parts).then(fromInjection);
 	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
 
 	/**
@@ -204,38 +218,42 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	 *    依存せずキャンセル=拒否として機能する）。
 	 *  - Codex: y / d のショートカット1文字（Enter不要）。
 	 */
-	const approve = useCallback((interactionId: string, choice: string) => {
+	const approve = useCallback((interactionId: string, choice: string): Promise<AgentMessageSendResult> => {
+		if (interaction?.kind !== 'approval' || interaction.id !== interactionId) {
+			return Promise.resolve(STALE_INTERACTION_RESULT);
+		}
 		if (terminalKey === undefined) {
-			return Promise.resolve(false);
+			return Promise.resolve(NO_TARGET_RESULT);
 		}
 		if (supportsAgentActions) {
-			return interaction?.kind === 'approval' && interaction.id === interactionId
-				? answerAgentApproval(terminalKey, interactionId, choice)
-				: Promise.resolve(false);
-		}
-		if (interaction?.kind !== 'approval' || interaction.id !== interactionId) {
-			return Promise.resolve(false);
+			return answerAgentApproval(terminalKey, interactionId, choice);
 		}
 		if (choice !== 'yes' && choice !== 'no') {
-			return Promise.resolve(false);
+			return Promise.resolve({ status: 'rejected', message: 'この選択肢は送信できません' });
 		}
 		if (agent === 'codex') {
-			return Promise.resolve(send(choice === 'yes' ? 'y' : 'd'));
+			return Promise.resolve(fromInjection(send(choice === 'yes' ? 'y' : 'd')));
 		} else if (choice === 'yes') {
-			return sendSequence(['1', '\r']);
+			return sendSequence(['1', '\r']).then(fromInjection);
 		} else {
-			return Promise.resolve(send('\u001b'));
+			return Promise.resolve(fromInjection(send('\u001b')));
 		}
 	}, [terminalKey, agent, interaction, supportsAgentActions, answerAgentApproval, send, sendSequence]);
 
-	const updateClaudeSetting = useCallback((setting: 'model' | 'effort', value: string) => {
-		if (terminalKey === undefined || agent !== 'claude' || interaction !== undefined) {
-			return Promise.resolve(false);
+	const updateClaudeSetting = useCallback((setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult> => {
+		if (terminalKey === undefined) {
+			return Promise.resolve(NO_TARGET_RESULT);
+		}
+		if (agent !== 'claude') {
+			return Promise.resolve({ status: 'rejected', message: 'このエージェントでは変更できません' });
+		}
+		if (interaction !== undefined) {
+			return Promise.resolve({ status: 'rejected', message: '質問や許可への回答が先に必要です' });
 		}
 		if (supportsClaudeSettings) {
 			return updateClaudeSettingAction(terminalKey, setting, value);
 		}
-		return sendSequence([`/${setting} ${value}`, '\r']);
+		return sendSequence([`/${setting} ${value}`, '\r']).then(fromInjection);
 	}, [terminalKey, agent, interaction, supportsClaudeSettings, updateClaudeSettingAction, sendSequence]);
 
 	return { send, sendText, answerQuestion, answerQuestionMulti, answerQuestionFreeText, answerQuestionGroup, approve, updateClaudeSetting };

@@ -1281,38 +1281,64 @@ export class MobileController {
 		});
 	}
 
-	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<boolean> {
+	// 回答系は sendAgentMessage と同じく理由付きの結果を返す。boolean だけを返していた頃は、
+	// 接続断・対象変更・PC側の stale-interaction のどれで失敗しても画面上は「押したのに
+	// 何も起きない」としか見えず、ユーザーが切り分けられなかった。
+	answerAgentQuestion(terminalKey: string, interactionId: string, answers: readonly AgentQuestionAnswer[]): Promise<AgentMessageSendResult> {
 		const chat = this.state.agentChats.get(terminalKey);
-		if (!this.isLiveAvailable() || chat?.capabilities?.agentActions !== true
-			|| chat.interaction?.kind !== 'question' || chat.interaction.id !== interactionId) {
-			return Promise.resolve(false);
+		if (!this.isLiveAvailable()) {
+			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
 		}
-		return this.sendAgentAction(terminalKey, {
+		if (chat?.capabilities?.agentActions !== true) {
+			return Promise.resolve({ status: 'rejected', message: 'エージェントセッションを準備中です。少し待ってから試してください。' });
+		}
+		if (chat.interaction?.kind !== 'question' || chat.interaction.id !== interactionId) {
+			return Promise.resolve({ status: 'rejected', message: '回答の対象が変わりました。最新の内容を確認してください。' });
+		}
+		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/answerQuestion', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId, answers,
 		}, 60_000);
 	}
 
-	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<boolean> {
+	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<AgentMessageSendResult> {
 		const chat = this.state.agentChats.get(terminalKey);
-		if (!this.isLiveAvailable() || chat?.capabilities?.agentActions !== true
-			|| chat.interaction?.kind !== 'approval' || chat.interaction.id !== interactionId
-			|| (chat.interaction.choices !== undefined
-				? !chat.interaction.choices.some(candidate => candidate.id === choice)
-				: choice !== 'yes' && choice !== 'no')) {
-			return Promise.resolve(false);
+		if (!this.isLiveAvailable()) {
+			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
 		}
-		return this.sendAgentAction(terminalKey, {
+		if (chat?.capabilities?.agentActions !== true) {
+			return Promise.resolve({ status: 'rejected', message: 'エージェントセッションを準備中です。少し待ってから試してください。' });
+		}
+		if (chat.interaction?.kind !== 'approval' || chat.interaction.id !== interactionId) {
+			return Promise.resolve({ status: 'rejected', message: '確認の対象が変わりました。最新の内容を確認してください。' });
+		}
+		const choiceIsValid = chat.interaction.choices !== undefined
+			? chat.interaction.choices.some(candidate => candidate.id === choice)
+			: choice === 'yes' || choice === 'no';
+		if (!choiceIsValid) {
+			return Promise.resolve({ status: 'rejected', message: 'この選択肢は送信できません' });
+		}
+		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/answerApproval', token: this.agentToken(terminalKey), epoch: chat.epoch, interactionId, choice,
 		}, 60_000);
 	}
 
-	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<boolean> {
+	// 回答系と同じく理由付きで返す。ここは「Claude Codeが入力待ちの時だけ変更できます」という
+	// 最も説明が要る失敗が起きる経路で、boolean だけだと固定文言しか出せない。
+	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult> {
 		const chat = this.state.agentChats.get(terminalKey);
-		if (!this.isLiveAvailable() || chat?.agent !== 'claude' || chat.capabilities?.claudeSettings !== true
-			|| chat.interaction !== undefined || !/^[A-Za-z0-9._:-]{1,200}$/.test(value)) {
-			return Promise.resolve(false);
+		if (!this.isLiveAvailable()) {
+			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
 		}
-		return this.sendAgentAction(terminalKey, {
+		if (chat?.agent !== 'claude' || chat.capabilities?.claudeSettings !== true) {
+			return Promise.resolve({ status: 'rejected', message: 'このセッションでは設定を変更できません' });
+		}
+		if (chat.interaction !== undefined) {
+			return Promise.resolve({ status: 'rejected', message: '質問や許可への回答が先に必要です' });
+		}
+		if (!/^[A-Za-z0-9._:-]{1,200}$/.test(value)) {
+			return Promise.resolve({ status: 'rejected', message: '指定された値は送信できません' });
+		}
+		return this.sendAgentActionResult(terminalKey, {
 			t: 'action/claudeSetting', token: this.agentToken(terminalKey), epoch: chat.epoch, setting, value,
 		});
 	}

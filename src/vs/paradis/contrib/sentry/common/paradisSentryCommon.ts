@@ -261,8 +261,11 @@ export function paradisSanitizeSentryEvent<T extends IParadisSentryEvent>(event:
 			value === undefined ? value : paradisSanitizeSentryText(String(value)),
 		])) : event.tags,
 		extra: event.extra ? paradisSanitizeRecord(event.extra, isParadisSafeExtraKey) : event.extra,
+		// `para.` で始まる自前の context は残す。allow-list だけだと、まとまった診断情報
+		// （リレー接続の状態一式など）を送る手段が extra の平坦なキーしか無くなる。
+		// 値は既存の contexts と同じく unsafeObjectKeys の否定リストで濾す。
 		contexts: event.contexts ? Object.fromEntries(Object.entries(event.contexts)
-			.filter(([key]) => safeContextKeys.has(key))
+			.filter(([key]) => safeContextKeys.has(key) || key.startsWith('para.'))
 			.map(([key, value]) => [key, value ? paradisSanitizeRecord(value, nestedKey => !unsafeObjectKeys.test(nestedKey)) : value])) : event.contexts,
 		breadcrumbs: event.breadcrumbs?.filter(breadcrumb => breadcrumb.category?.startsWith('para.')).map(breadcrumb => ({
 			...breadcrumb,
@@ -306,20 +309,40 @@ function paradisNormalizeSentryFramePath(value: string): string {
 	return paradisSanitizeSentryText(normalized);
 }
 
+/** Guards against self-referencing payloads: recursing forever would throw inside beforeSend. */
+const PARADIS_SANITIZE_MAX_DEPTH = 4;
+
 function paradisSanitizeRecord(
 	record: Record<string, unknown>,
 	keep: (key: string) => boolean,
+	depth: number = 0,
 ): Record<string, unknown> {
+	if (depth >= PARADIS_SANITIZE_MAX_DEPTH) {
+		return {};
+	}
 	return Object.fromEntries(Object.entries(record)
 		.filter(([key]) => keep(key))
-		.map(([key, value]) => [
-			key,
-			typeof value === 'string'
-				? paradisSanitizeSentryText(value)
-				: isRecord(value)
-					? paradisSanitizeRecord(value, keep)
-					: value,
-		]));
+		.map(([key, value]) => [key, paradisSanitizeValue(value, keep, depth)]));
+}
+
+/**
+ * Arrays were previously passed through untouched, so a value such as
+ * `{ safe_paths: ['/Users/alice/...'] }` reached Sentry unsanitized.
+ */
+function paradisSanitizeValue(value: unknown, keep: (key: string) => boolean, depth: number): unknown {
+	if (typeof value === 'string') {
+		return paradisSanitizeSentryText(value);
+	}
+	if (depth >= PARADIS_SANITIZE_MAX_DEPTH) {
+		return undefined;
+	}
+	if (Array.isArray(value)) {
+		return value.map(entry => paradisSanitizeValue(entry, keep, depth + 1));
+	}
+	if (isRecord(value)) {
+		return paradisSanitizeRecord(value, keep, depth + 1);
+	}
+	return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

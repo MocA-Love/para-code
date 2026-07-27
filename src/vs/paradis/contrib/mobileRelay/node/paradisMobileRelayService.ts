@@ -15,7 +15,8 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IEncryptionService } from '../../../../platform/encryption/common/encryptionService.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { createHash } from 'crypto';
+import { reportParadisDiagnosticError, setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	MobileIdentity,
 	SecureChannel,
@@ -102,6 +103,17 @@ const RELAY_KEEPALIVE_TIMEOUT_GIVE_UP = 3;
  * 60秒はバックオフ（500ms×2^n、上限30秒）で7回試行できる長さ＝一過性の切断なら必ず復帰している。
  */
 const RELAY_DISCONNECT_REPORT_DELAY_MS = 60_000;
+/**
+ * 1006 での再接続がこの回数続いたら、pcToken がまだ有効かをHTTPで確かめる。
+ *
+ * WebSocketのハンドシェイクは、リレーが401で拒否した場合も経路が死んだ場合も undici からは
+ * 全く同じ形（close 1006 / reason 空 / error メッセージ空）に見える。区別できないまま
+ * 30秒間隔で永久に再試行していたため、トークンが失効すると再起動しても直らないのに
+ * ユーザーには「なぜか繋がらない」としか見えなかった。
+ */
+const RELAY_AUTH_PROBE_AFTER_ATTEMPTS = 3;
+/** 認証切れが確定した後の再接続間隔。復帰は再ペアリングでしか起きないので長く取る。 */
+const RELAY_UNAUTHORIZED_RETRY_MS = 5 * 60_000;
 
 interface PairedMobile {
 	readonly mobileId: string;
@@ -157,13 +169,25 @@ export class MobileSession {
 	}
 
 	negotiateProtocol(payload: Uint8Array): boolean {
+		let received: unknown;
 		try {
 			const request = JSON.parse(new TextDecoder().decode(payload)) as { protocolVersion?: unknown };
+			received = request.protocolVersion;
 			this.negotiatedProtocolVersion = request.protocolVersion === PARADIS_MOBILE_PROTOCOL_VERSION
 				? PARADIS_MOBILE_PROTOCOL_VERSION
 				: undefined;
 		} catch {
 			this.negotiatedProtocolVersion = undefined;
+		}
+		if (!this.hasCurrentProtocol) {
+			// 版数不一致は「繋がっているのに何も表示されない」形で現れる（アプリだけ更新した等）。
+			// 無言で undefined にすると、片側の nonce エラーしか手掛かりが残らない。
+			reportParadisDiagnosticError('owned', 'mobile-e2e', 'protocol-mismatch', new Error('Mobile protocol version mismatch'), {
+				phase: 'handshaking',
+				transport: 'websocket',
+				safe_expected: PARADIS_MOBILE_PROTOCOL_VERSION,
+				safe_received: typeof received === 'number' ? received : -1,
+			});
 		}
 		return this.hasCurrentProtocol;
 	}
@@ -199,7 +223,11 @@ export class MobileSession {
 				this.confirmed = true;
 				this.mux = new FrameMux(this.channel, {
 					sendSealed: (sealed: Uint8Array) => this.sendToRelay(sealed),
-					onError: (err: unknown) => this.logService.warn('[paradisMobileRelay] frame open failed', err),
+					// FrameMux は onError を渡すと復号失敗を握り潰して throw しない。ここで捕まえて
+					// 下の catch へ載せ直さないと、「復号できない32Bは新しい hello とみなして
+					// セッションをリセットする」自己回復も計装も、確立後は一切効かない
+					// （旧セッションに固着したモバイルが二度と接続できなくなる経路）。
+					onError: (err: unknown) => { this.lastMuxError = err; },
 					...(this.onTraffic !== undefined ? { onTraffic: this.onTraffic } : {}),
 				});
 				this.mux.on(Channels.State, f => this.emit(f));
@@ -211,7 +239,13 @@ export class MobileSession {
 				this.mux.on(Channels.Notify, f => this.emit(f));
 				return;
 			}
+			this.lastMuxError = undefined;
 			await this.mux!.receive(payload);
+			if (this.lastMuxError !== undefined) {
+				const muxError = this.lastMuxError;
+				this.lastMuxError = undefined;
+				throw muxError;
+			}
 		} catch (err) {
 			// 自己回復: ハンドシェイク確立中/確立後に処理できない32Bのペイロードが届いた場合、
 			// それはモバイルが再接続して送り直した新しい hello（ephemeral公開鍵32B）である
@@ -230,11 +264,21 @@ export class MobileSession {
 				await this.handlePayload(payload);
 				return;
 			}
+			// セッションリセット（上の32B分岐）は正常な自己回復なのでイベント化しない。
+			// ここに来るのは復号にも hello 解釈にも失敗した本物の異常（鍵の固着、フレーム破損、
+			// 受信ハンドラ自体の例外）で、それらを検知する唯一の窓口になる。鍵やペイロードは載せない。
+			reportParadisDiagnosticError('owned', 'mobile-e2e', 'frame-open-failed', err, {
+				phase: this.confirmed ? 'online' : 'handshaking',
+				transport: 'websocket',
+				safe_payload_bytes: payload.length,
+			});
 			this.logService.warn(`[paradisMobileRelay] session ${this.mobileId} error`, err);
 		}
 	}
 
 	private pendingVerify: ((confirm: Uint8Array) => Promise<void>) | undefined;
+	/** FrameMux が握り潰した直近の復号失敗（handlePayload が拾い直して共通処理へ載せる）。 */
+	private lastMuxError: unknown;
 
 	private emit(frame: { ch: ChannelId; ws?: string; seq: number; payload: Uint8Array }): void {
 		// 送信元モバイルのIDを付けて renderer へ渡す（要求元にのみ返すべき応答の宛先解決に使う）。
@@ -306,6 +350,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private connectTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 連続でpongが返らなかった回数。リレー側の保活対応をいつ学習し直すかの判断に使う。 */
 	private consecutiveKeepaliveTimeouts = 0;
+	/** pcToken が失効していると確認できた状態。再ペアリングするまで復帰しない。 */
+	private unauthorized = false;
+	private authProbeInFlight = false;
 	/** 直前のpingにpongが返っていない。次のtickでも返っていなければ経路が死んだとみなす。 */
 	private awaitingPong = false;
 	/**
@@ -523,7 +570,58 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			deviceId: this.state.device?.deviceId,
 			pairedDevices: this.state.mobiles.map(m => m.name),
 			onlineMobiles: [...this.sessions.values()].filter(s => s.hasCurrentProtocol).length,
+			...(this.unauthorized ? { unauthorized: true } : {}),
 		};
+	}
+
+	/**
+	 * pcToken の失効が確定した（またはしなくなった）ことを記録し、UIへ通知する。
+	 * 状態が変わったときだけ通知するのは、5分間隔の再試行のたびに再描画させないため。
+	 */
+	private setUnauthorized(unauthorized: boolean): void {
+		if (this.unauthorized === unauthorized) {
+			return;
+		}
+		this.unauthorized = unauthorized;
+		this._onDidChangeStatus.fire(this.snapshot());
+	}
+
+	/**
+	 * pcToken がまだ有効かをHTTPで確かめる（副作用のない pc/check を叩く）。
+	 *
+	 * WebSocket のハンドシェイクは、リレーが401で拒否した場合も経路が死んだ場合も undici からは
+	 * 同じ close 1006 に見えるため、これが両者を区別する唯一の手段。404 を返す古いリレーや
+	 * 5xx・ネットワーク例外は「判別不能」なので何も確定させない（誤って再ペアリングを促さない）。
+	 */
+	private async probeAuthorization(): Promise<void> {
+		const device = this.state.device;
+		if (this.authProbeInFlight || !device || !this.enabled) {
+			return;
+		}
+		this.authProbeInFlight = true;
+		try {
+			const res = await fetch(`${this.relayHttpBase()}/device/${device.deviceId}/pc/check`, {
+				method: 'POST',
+				headers: { authorization: `Bearer ${device.pcToken}` },
+				// ハーフオープンな経路では undici の既定(300秒)まで待ってしまい、その間ずっと
+				// authProbeInFlight が立って検知が遅れる。
+				signal: AbortSignal.timeout(10_000),
+			});
+			// 401 だけを認証切れとみなす。リレーが返すのは 401 のみで、403 は WAF・企業プロキシ・
+			// キャプティブポータルが返す典型コード。そうした経路では WS も 1006 で落ちるため、
+			// 403 を受理すると「案内どおり再ペアリングしても直らない」誤検知になる。
+			if (res.status === 401) {
+				this.logService.warn('[paradisMobileRelay] relay rejected the stored pcToken; re-pairing is required');
+				this.setUnauthorized(true);
+			} else if (res.ok) {
+				this.setUnauthorized(false);
+			}
+		} catch (err) {
+			// ネットワーク自体が死んでいる＝認証の問題ではないので何も確定させない。
+			this.logService.trace('[paradisMobileRelay] auth probe failed', String(err));
+		} finally {
+			this.authProbeInFlight = false;
+		}
 	}
 
 	private setConnectionState(state: ParadisMobileConnectionState): void {
@@ -536,6 +634,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	async initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> {
 		this.relayUrlOverride = relayUrl;
 		await this.load();
+		this.updateDiagnosticCorrelation();
 		this.enabled = enabled;
 		if (enabled && this.state.device) {
 			this.connect();
@@ -728,6 +827,21 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 	}
 
+	/**
+	 * PC側とモバイル側のイベントを突き合わせるための非PIIな相関IDを設定する。
+	 *
+	 * 両側とも Sentry の `user` を落としているため、これが無いと「PC側の切断」と「同時刻の
+	 * モバイル側のエラー」が同じ事象なのかを判定できず、1件の事象が2件に見える。
+	 * deviceId 自体はペアリングURIに載る値なので、そのままではなくハッシュ断片だけを送る。
+	 */
+	private updateDiagnosticCorrelation(): void {
+		const deviceId = this.state.device?.deviceId;
+		if (deviceId === undefined) {
+			return;
+		}
+		setParadisDiagnosticCorrelationTag('para.pairing', createHash('sha256').update(deviceId).digest('hex').slice(0, 8));
+	}
+
 	private relayHttpBase(): string {
 		const ws = (this.relayUrlOverride ?? PARADIS_MOBILE_DEFAULT_RELAY_URL).replace(/\/$/, '');
 		return ws.replace(/^ws/, 'http');
@@ -737,11 +851,22 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return (this.relayUrlOverride ?? PARADIS_MOBILE_DEFAULT_RELAY_URL).replace(/\/$/, '');
 	}
 
-	async beginPairing(): Promise<IParadisMobilePairingSession> {
+	/**
+	 * ペアリングを開始する。
+	 *
+	 * resetRegistration を渡すと、既存のデバイス登録を捨てて新規 provision からやり直す。
+	 * リレーが保存済みの pcToken を拒否している状態（unauthorized）では、同じ資格情報で
+	 * pair/begin を叩いても必ず401になり、ユーザーには復旧手段が無くなるため。ただし
+	 * 破棄はペアリング済みモバイルを全て失う操作なので、呼び出し側で同意を取ってから渡すこと
+	 * （2台目を追加するだけのつもりで押した操作で既存端末を失わせない）。
+	 */
+	async beginPairing(resetRegistration = false): Promise<IParadisMobilePairingSession> {
 		const identity = await this.ensureIdentity();
 
-		// 初回はデバイスをprovisionする。
-		if (!this.state.device) {
+		// 破棄は新しい登録が取れてからにする。先に捨てるとオフラインやリレー障害のときに
+		// 「失っただけ」が確定し、しかも device が無いので connect() が即 return して
+		// 再接続も走らなくなる。
+		if (!this.state.device || resetRegistration) {
 			const pcToken = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
 			const res = await fetch(`${this.relayHttpBase()}/device/new/provision`, {
 				method: 'POST',
@@ -752,7 +877,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				throw new Error(`provision failed: ${res.status}`);
 			}
 			const body = await res.json() as { deviceId: string };
+			if (resetRegistration && this.state.device) {
+				this.logService.warn('[paradisMobileRelay] replacing the rejected device registration');
+				// 旧 deviceId の Durable Object へは二度と到達できないので、そこに紐づいていた
+				// ペアリング済みモバイルも同時に無効になる。
+				this.state.mobiles = [];
+				this.disconnect();
+			}
 			this.state.device = { deviceId: body.deviceId, pcToken };
+			this.setUnauthorized(false);
+			this.updateEagerTailing();
+			this.updateDiagnosticCorrelation();
 			await this.save();
 		}
 		// ペアリング中はメッセージを受けるため必ず接続する（既に接続済みなら no-op）。
@@ -1342,6 +1477,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			this.clearConnectTimer();
 			this.reconnectAttempt = 0;
+			this.setUnauthorized(false);
 			// 復帰できたので、直前の切断は報告しない（詳細は RELAY_DISCONNECT_REPORT_DELAY_MS 参照）。
 			this.clearDisconnectReport();
 			this.setConnectionState('online');
@@ -1496,9 +1632,20 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			phase: this.connectionState,
 			reconnect_count: this.reconnectAttempt,
 			transport: 'websocket',
+			// close code だけでは「既定リレーか自前か」「保活が効いていたか」「そもそも
+			// モバイルが繋がっていたか」が分からず、経路都合とリレー障害を切り分けられない。
+			safe_relay_kind: this.relayUrlOverride === undefined ? 'default' : 'custom',
+			safe_keepalive_acked: this.keepaliveAcknowledged,
+			safe_consecutive_timeouts: this.consecutiveKeepaliveTimeouts,
+			safe_mobile_sessions: this.sessions.size,
 			...extras,
 		});
 		this.setConnectionState('disconnected');
+		// 再接続が続くなら、経路の問題なのか認証切れなのかを確かめる（close code だけでは区別
+		// できない。1006 は経路断でも401拒否でも同じ形で届く）。
+		if (this.reconnectAttempt >= RELAY_AUTH_PROBE_AFTER_ATTEMPTS) {
+			void this.probeAuthorization();
+		}
 		this.scheduleReconnect();
 	}
 
@@ -1563,7 +1710,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (this.reconnectTimer || !this.enabled) {
 			return;
 		}
-		const delay = Math.min(500 * 2 ** this.reconnectAttempt, 30_000);
+		// 認証切れが確定しているなら、30秒間隔で叩き続けても復帰しない（再ペアリング待ち）。
+		const delay = this.unauthorized
+			? RELAY_UNAUTHORIZED_RETRY_MS
+			: Math.min(500 * 2 ** this.reconnectAttempt, 30_000);
 		this.reconnectAttempt++;
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = undefined;

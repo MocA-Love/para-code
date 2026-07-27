@@ -10,7 +10,7 @@ import assert from 'assert';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisParseCodexTranscriptLineForTest, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisPickCurrentInteraction, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 suite('ParadisMobileAgentChat', () => {
@@ -401,5 +401,65 @@ suite('ParadisMobileAgentChat', () => {
 			{ kind: 'question' as const, text: '進めますか？' },
 		];
 		assert.strictEqual(paradisHasPendingDuplicateQuestion(messages, new Set(['tool-1']), { text: '進めますか？' }), false);
+	});
+
+	// 承認と質問の優先順位は過去に両方向のバグを出しているので、境界を固定しておく。
+	suite('current interaction priority', () => {
+		const approval = { kind: 'approval' as const, id: 'approval:1:0', title: '操作の許可' };
+		const question = { role: 'assistant' as const, kind: 'question' as const, text: '進めますか？', ts: 0, rev: 1, toolUseId: 'live:1:0' };
+		const answered = { role: 'assistant' as const, kind: 'question' as const, text: '古い質問', ts: 0, rev: 0, toolUseId: 'live:1:9' };
+
+		test('prefers an unanswered question over a stale approval that never got cleared', () => {
+			assert.deepStrictEqual(
+				paradisPickCurrentInteraction([answered, question], new Set(['live:1:0']), approval),
+				{ kind: 'question', id: 'live:1:0' },
+			);
+		});
+
+		test('falls back to the approval once every question has been answered', () => {
+			assert.deepStrictEqual(
+				paradisPickCurrentInteraction([answered, question], new Set(), approval),
+				approval,
+			);
+		});
+
+		test('groups multi-question batches under their shared group id', () => {
+			const grouped = { ...question, questionGroup: 'liveg:1:0' };
+			assert.deepStrictEqual(
+				paradisPickCurrentInteraction([grouped], new Set(['live:1:0']), undefined),
+				{ kind: 'question', id: 'liveg:1:0' },
+			);
+		});
+
+		test('returns null when neither a pending question nor an approval exists', () => {
+			assert.strictEqual(paradisPickCurrentInteraction([answered], new Set(), undefined), null);
+		});
+	});
+
+	// ターン終了直後に折り返してくる hook で live 状態を作り直すと、それを消すイベントが
+	// 二度と来ない（モバイルの「応答を生成中」が伸び続ける症状）。
+	suite('late hooks after a turn ended', () => {
+		test('drops live updates that arrive just after the turn ended', () => {
+			assert.deepStrictEqual({
+				messageDisplay: paradisIsLateHookAfterTurnEnd('MessageDisplay', 1_000_500, 1_000_000),
+				postToolUse: paradisIsLateHookAfterTurnEnd('PostToolUse', 1_002_999, 1_000_000),
+				permissionRequest: paradisIsLateHookAfterTurnEnd('PermissionRequest', 1_000_000, 1_000_000),
+			}, { messageDisplay: true, postToolUse: true, permissionRequest: true });
+		});
+
+		test('keeps updates once the window has passed or no turn has ended', () => {
+			assert.deepStrictEqual({
+				afterWindow: paradisIsLateHookAfterTurnEnd('MessageDisplay', 1_003_001, 1_000_000),
+				noTurnEnd: paradisIsLateHookAfterTurnEnd('MessageDisplay', 1_000_500, undefined),
+			}, { afterWindow: false, noTurnEnd: false });
+		});
+
+		test('never drops turn boundaries themselves', () => {
+			assert.deepStrictEqual({
+				userPromptSubmit: paradisIsLateHookAfterTurnEnd('UserPromptSubmit', 1_000_500, 1_000_000),
+				stop: paradisIsLateHookAfterTurnEnd('Stop', 1_000_500, 1_000_000),
+				sessionEnd: paradisIsLateHookAfterTurnEnd('SessionEnd', 1_000_500, 1_000_000),
+			}, { userPromptSubmit: false, stop: false, sessionEnd: false });
+		});
 	});
 });

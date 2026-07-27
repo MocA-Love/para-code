@@ -30,6 +30,8 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import {
 	IParadisLimitsAccount,
 	IParadisLimitsSnapshot,
+	IParadisLimitsWindow,
+	paradisLimitsFormatCountdown,
 	paradisLimitsSeverity,
 	paradisLimitsWorstPercent,
 	ParadisLimitsProvider
@@ -308,23 +310,38 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		}
 
 		this.button.appendChild(svg);
-		this.ringDisposables.add(this.hoverService.setupManagedHover(this.hoverDelegate, svg as unknown as HTMLElement, this.ringTooltip(account)));
+		// 関数で渡してホバー時に評価する。文字列を確定させると、リングの再描画間隔
+		// （パネル非表示中は120秒）まで固定され、分単位のカウントダウンが最大2分ズレる。
+		this.ringDisposables.add(this.hoverService.setupManagedHover(this.hoverDelegate, svg as unknown as HTMLElement, () => this.ringTooltip(account)));
 	}
 
+	/**
+	 * ホバーだけで各枠の使用率とリセットまでの時間が読めるようにする。
+	 * 以前は使用率しか無く、「あと何分待てば5時間枠が空くか」を知るのに毎回パネルを開く
+	 * 必要があった。なお表示はポーリング間隔ぶん（パネル非表示中は120秒）古くなりうる。
+	 */
 	private ringTooltip(account: IParadisLimitsAccount): string {
 		const name = account.email ?? account.homeLabel ?? account.id;
 		if (account.status !== 'ok') {
 			return `${name} — ${account.statusDetail ?? account.status}`;
 		}
+		const now = Date.now();
+		const describe = (window: IParadisLimitsWindow): string => {
+			const percent = Math.round(window.usedPercent);
+			const countdown = paradisLimitsFormatCountdown(window.resetsAt, now);
+			return countdown !== undefined
+				? localize('paradis.limitsMonitor.tooltipWindowReset', "{0}%（{1}後）", percent, countdown)
+				: localize('paradis.limitsMonitor.tooltipWindow', "{0}%", percent);
+		};
 		const parts: string[] = [];
 		if (account.fiveHour) {
-			parts.push(localize('paradis.limitsMonitor.tooltip5h', "5時間 {0}%", Math.round(account.fiveHour.usedPercent)));
+			parts.push(localize('paradis.limitsMonitor.tooltipWindow5h', "5時間 {0}", describe(account.fiveHour)));
 		}
 		if (account.sevenDay) {
-			parts.push(localize('paradis.limitsMonitor.tooltip7d', "7日 {0}%", Math.round(account.sevenDay.usedPercent)));
+			parts.push(localize('paradis.limitsMonitor.tooltipWindow7d', "7日 {0}", describe(account.sevenDay)));
 		}
 		for (const scoped of account.scoped ?? []) {
-			parts.push(`${scoped.label ?? '?'} ${Math.round(scoped.usedPercent)}%`);
+			parts.push(`${scoped.label ?? '?'} ${describe(scoped)}`);
 		}
 		return parts.length > 0 ? `${name} — ${parts.join(' · ')}` : name;
 	}

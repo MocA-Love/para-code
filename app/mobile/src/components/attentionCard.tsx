@@ -75,12 +75,21 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 		};
 	}, [isAppActive, pulse]);
 
-	const question = agentStatus === 'question' ? findPendingQuestion(chat) : undefined;
+	// カード種別の正本は chat.interaction（PC側の currentInteraction）。agentStatus は
+	// hook 由来の派生値で、解除され損ねた承認要求が1つ残っているだけで質問中でも
+	// permission に化ける。interaction がまだ届いていない場合（attach直後・購読失敗）
+	// だけ agentStatus をフォールバックに使う。なお store は PC が送る interaction:null を
+	// キー削除へ正規化するため、ここでは「未受信」と「interaction 無し」を区別できない
+	// （どちらもフォールバックさせたい現状の挙動とは一致している）。
+	const interaction = chat?.interaction;
+	const question = interaction?.kind === 'question' || (interaction === undefined && agentStatus === 'question')
+		? findPendingQuestion(chat)
+		: undefined;
 	const agentLabel = chat?.agent === 'codex' ? 'Codex' : 'Claude Code';
 	// 複数質問グループの一部なら、ホームの単発カードでは回答させない（1問だけの回答で
 	// フォーム全体がSubmitされる事故を防ぐ）。エージェント画面のステップ式カードへ誘導する。
 	const isGroupedQuestion = question !== undefined && question.questionGroup !== undefined && (question.questionCount ?? 1) > 1;
-	const approval = chat?.interaction?.kind === 'approval' ? chat.interaction : undefined;
+	const approval = interaction?.kind === 'approval' ? interaction : undefined;
 
 	return (
 		<View style={styles.card}>
@@ -108,15 +117,24 @@ export function AttentionCard({ wsName, terminalTitle, agentStatus, chat, action
 					onMulti={actions.answerQuestionMulti}
 					onFreeText={actions.answerQuestionFreeText}
 				/>
-			) : (
+			) : approval ? (
 				<ApprovalCard
-					key={approval?.id ?? `legacy:${chat?.epoch ?? 'unknown'}`}
-					interactionId={approval?.id ?? `legacy:${chat?.epoch ?? 'unknown'}`}
+					key={approval.id}
+					interactionId={approval.id}
 					onApprove={actions.approve}
-					title={approval?.title}
-					detail={approval?.detail ?? findLatestApprovalRequest(chat)}
-					choices={approval?.choices}
+					title={approval.title}
+					detail={approval.detail ?? findLatestApprovalRequest(chat)}
+					choices={approval.choices}
 				/>
+			) : (
+				// 質問も承認も特定できないときに許可/拒否カードを出さない。以前は合成の
+				// `legacy:<epoch>` を interactionId にしていたためPC側の実IDと決して一致せず、
+				// 押しても必ず無反応な二択カードが出ていた（「許可しか出ない・回答が効かない」の実体）。
+				// interaction が届かないまま終わる経路もあるため「同期中」とは書かない。
+				<View style={styles.waiting}>
+					<Text style={styles.waitingText}>PCで内容を確認してください</Text>
+					<Text style={styles.waitingHint}>回答の種類を取得できていないため、ここからは回答できません</Text>
+				</View>
 			)}
 			<Pressable style={styles.openLink} onPress={onOpenAgent}>
 				<Text style={styles.openLinkText}>エージェント画面で詳しく見る ›</Text>
@@ -135,6 +153,9 @@ const styles = StyleSheet.create({
 	pulseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.red },
 	openLink: { alignItems: 'center', paddingTop: 2 },
 	openLinkText: { color: colors.textDim, fontSize: 11 },
+	waiting: { backgroundColor: 'rgba(255,255,255,.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,.10)', borderRadius: 16, padding: 14, gap: 4 },
+	waitingText: { color: colors.text, fontSize: 13, fontWeight: '600' },
+	waitingHint: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
 	groupNotice: { backgroundColor: 'rgba(9,175,217,.10)', borderWidth: 1, borderColor: colors.accent2, borderRadius: 16, padding: 14, gap: 4 },
 	groupNoticeTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
 	groupNoticeBody: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },

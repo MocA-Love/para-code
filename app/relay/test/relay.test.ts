@@ -95,6 +95,17 @@ describe('relay pairing + routing', () => {
 		expect(res2.status).toBe(401);
 	});
 
+	// PC側はこの応答だけを頼りに「経路の問題」と「トークン失効」を区別する
+	// （WebSocketのハンドシェイク失敗はどちらも close 1006 で見分けがつかない）。
+	it('answers pc/check with 200 for a valid pc token and 401 otherwise', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const ok = await SELF.fetch(`https://relay/device/${deviceId}/pc/check`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } });
+		const missing = await SELF.fetch(`https://relay/device/${deviceId}/pc/check`, { method: 'POST' });
+		const wrong = await SELF.fetch(`https://relay/device/${deviceId}/pc/check`, { method: 'POST', headers: { authorization: 'Bearer wrong' } });
+		expect({ ok: ok.status, body: await ok.json(), missing: missing.status, wrong: wrong.status })
+			.toEqual({ ok: 200, body: { ok: true }, missing: 401, wrong: 401 });
+	});
+
 	it('routes pairing approval to mint mobile credentials', async () => {
 		const { deviceId, pcToken } = await provisionDevice();
 		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);

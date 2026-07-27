@@ -210,14 +210,6 @@
 	flex: none;
 }
 
-.paradis-limits-panel .plm-account-reset {
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
-	flex: none;
-	font-variant-numeric: tabular-nums;
-	white-space: nowrap;
-}
-
 .paradis-limits-panel .plm-account-delete {
 	display: inline-flex;
 	align-items: center;
@@ -251,9 +243,13 @@
 
 .paradis-limits-panel .plm-meter {
 	display: grid;
-	grid-template-columns: 64px 1fr 84px;
+	/* 枠名 / バー / 使用率 / リセット の4カラム。使用率とリセットは内容に合わせ、余りをバーが
+	吸う。固定幅にすると `3d 12h後（7/29 00:30）` のような最長ケース（7日枠＝この表示の主目的）が
+	右から省略され、一番読ませたい絶対時刻が消える。枠名はモデル別枠のラベルが識別子そのものなので、
+	最低幅だけ確保して内容に合わせて伸ばす。 */
+	grid-template-columns: minmax(48px, max-content) 1fr max-content max-content;
 	align-items: center;
-	gap: 8px;
+	gap: 6px;
 	margin: 4px 0;
 }
 
@@ -294,6 +290,17 @@
 	text-align: right;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
+}
+
+.paradis-limits-panel .plm-meter-reset {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.85;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* ---------- cswap setup guide ---------- */

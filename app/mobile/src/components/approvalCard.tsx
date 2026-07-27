@@ -1,10 +1,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors } from '../theme.js';
 import { hapticSuccess, hapticWarning } from '../haptics.js';
-import type { AgentApprovalChoice } from '../store.js';
+import type { AgentApprovalChoice, AgentMessageSendResult } from '../store.js';
 
 /**
  * エージェントの許可確認(permission)カード。Codex app-serverが広告した選択肢は
@@ -13,20 +13,33 @@ import type { AgentApprovalChoice } from '../store.js';
  */
 export function ApprovalCard({ interactionId, onApprove, title, detail, choices }: {
 	interactionId: string;
-	onApprove: (interactionId: string, choice: string) => Promise<boolean>;
+	onApprove: (interactionId: string, choice: string) => Promise<AgentMessageSendResult>;
 	title?: string;
 	detail?: string;
 	choices?: readonly AgentApprovalChoice[];
 }) {
 	const [submitting, setSubmitting] = useState(false);
+	const [error, setError] = useState<string | undefined>(undefined);
+	// 対象が入れ替わったら直前の失敗表示は用済み。
+	useEffect(() => { setError(undefined); }, [interactionId]);
 	const effectiveChoices: readonly AgentApprovalChoice[] = choices ?? [
 		{ id: 'yes', label: '許可', tone: 'approve' },
 		{ id: 'no', label: '拒否', tone: 'deny' },
 	];
+	// 失敗理由は必ず画面へ出す。boolean だけを見ていた頃は、接続断・対象変更・PC側の
+	// stale-interaction のどれで落ちても「押したのに何も起きない」としか見えなかった。
 	const submit = (choice: AgentApprovalChoice) => {
 		setSubmitting(true);
+		setError(undefined);
 		const retry = setTimeout(() => setSubmitting(false), 15_000);
-		void onApprove(interactionId, choice.id).then(accepted => { if (!accepted) { clearTimeout(retry); setSubmitting(false); } });
+		void onApprove(interactionId, choice.id).then(result => {
+			if (result.status !== 'rejected') {
+				return; // accepted / consumed（TUIへ貼り付け済み）は失敗ではない
+			}
+			clearTimeout(retry);
+			setSubmitting(false);
+			setError(result.message ?? '回答を送信できませんでした');
+		});
 	};
 	return (
 		<View style={styles.approvalBar}>
@@ -50,6 +63,7 @@ export function ApprovalCard({ interactionId, onApprove, title, detail, choices 
 					))}
 				</View>
 			) : null}
+			{error !== undefined ? <Text style={styles.approvalError}>{error}</Text> : null}
 			<Text style={styles.approvalHint}>{effectiveChoices.length > 0 ? 'PC側で回答した場合も自動的に閉じます' : 'PCのCodex画面で承認内容を確認してください'}</Text>
 		</View>
 	);
@@ -69,4 +83,5 @@ const styles = StyleSheet.create({
 	neutralBtnText: { color: colors.text, fontSize: 12, fontWeight: '600', textAlign: 'center' },
 	denyBtnText: { color: colors.red, fontSize: 13, fontWeight: '700' },
 	approvalHint: { color: colors.textDim, fontSize: 10 },
+	approvalError: { color: colors.red, fontSize: 11, lineHeight: 15 },
 });

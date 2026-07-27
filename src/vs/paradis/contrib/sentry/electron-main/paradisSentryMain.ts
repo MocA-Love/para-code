@@ -13,7 +13,7 @@ import { app, protocol } from 'electron';
 import type * as SentryMain from '@sentry/electron/main';
 import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
 import { PARADIS_SENTRY_DESKTOP_DSN, PARADIS_SENTRY_ENVIRONMENT, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
-import { configureParadisDiagnosticReporter } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
 let sentry: typeof SentryMain | undefined;
@@ -46,6 +46,11 @@ protocol.registerSchemesAsPrivileged = function paradisRecordingRegisterSchemesA
 	privilegedSchemeRecorder.add(customSchemes);
 };
 
+/** パッケージ版へのCIスモークは VSCODE_DEV を立てないため、実ユーザーと同じ環境に混ざるのを防ぐ。 */
+function isTruthyEnv(value: string | undefined): boolean {
+	return value !== undefined && value !== '' && value !== 'false' && value !== '0';
+}
+
 export function initializeParadisSentryMain(commit: string | undefined, onUnavailable: () => void): void {
 	if (sentry) {
 		return;
@@ -62,7 +67,12 @@ export function initializeParadisSentryMain(commit: string | undefined, onUnavai
 	import('@sentry/electron/main').then(Sentry => {
 		Sentry.init({
 			dsn: PARADIS_SENTRY_DESKTOP_DSN,
-			environment: process.env['VSCODE_DEV'] ? 'local' : PARADIS_SENTRY_ENVIRONMENT,
+			// パッケージ版に対する CI のスモークテストは VSCODE_DEV を立てないため、
+			// これが無いと自動テストのクラッシュが実ユーザーと同じ production に混ざる。
+			// CI=false を明示するツールがあるので truthy 判定にはしない。
+			environment: process.env['VSCODE_DEV'] || isTruthyEnv(process.env['CI']) || isTruthyEnv(process.env['GITHUB_ACTIONS'])
+				? 'local'
+				: PARADIS_SENTRY_ENVIRONMENT,
 			release: paradisSentryRelease(app.getVersion(), commit),
 			dist: `${process.platform}-${process.arch}`,
 			sendDefaultPii: false,
@@ -81,6 +91,7 @@ export function initializeParadisSentryMain(commit: string | undefined, onUnavai
 			'device.arch': process.arch,
 			'os.name': process.platform,
 		});
+		configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
 		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
 			captureParadisMainException(scope, feature, operation, error, safeExtra);
 		});

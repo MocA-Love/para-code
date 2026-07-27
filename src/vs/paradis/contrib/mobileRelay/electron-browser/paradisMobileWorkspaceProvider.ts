@@ -10,6 +10,7 @@ import { raceTimeout, RunOnceScheduler, timeout } from '../../../../base/common/
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
@@ -1579,7 +1580,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					// 実体のない入力を開いてしまう）。
 					// PTY 起動が失敗すると processReady は解決しないため、待ち切らない場合でも操作は
 					// 成功として返す（未完了のままだとモバイルが再試行して二重作成になる）。
-					await raceTimeout(instance.processReady, TERMINAL_CREATE_READY_TIMEOUT_MS);
+					// 待ち切れなくても操作は成功として返す（未完了だとモバイルが再試行して
+					// 二重作成になる）。ただし黙って進むと、PTY が遅い環境で park 台帳に
+					// 載らず端末が見えなくなる過去の症状が再発しても記録が残らない。
+					if (await raceTimeout(instance.processReady, TERMINAL_CREATE_READY_TIMEOUT_MS) === undefined) {
+						reportParadisDiagnosticError('owned', 'mobile-terminal', 'create-not-ready', new Error('PTY was not ready before parking the terminal'), {
+							phase: 'create',
+							duration_ms: TERMINAL_CREATE_READY_TIMEOUT_MS,
+						});
+					}
 					await this.terminalEditorService.openEditor(instance);
 					this.terminalScopeService.assignInstanceScope(instance.instanceId, ws);
 				} else {
@@ -1590,6 +1599,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				await complete('accepted');
 			} catch (err) {
 				this.logService.warn('[paradisMobileRelay] createTerminal failed', err);
+				reportParadisDiagnosticError('owned', 'mobile-terminal', 'create-failed', err, { phase: 'create' });
 				await complete('failed');
 			}
 			return;

@@ -37,7 +37,7 @@ import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
-import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, IParadisCodexThreadTarget, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
+import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, IParadisCodexThreadTarget, PARADIS_CODEX_DAEMON_DISCONNECTED, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
@@ -126,6 +126,72 @@ export function paradisIsCodexDaemonApprovalInteraction(interactionId: string): 
 	return interactionId.startsWith('codex:') || interactionId.startsWith('codex-status:');
 }
 
+/**
+ * ターンやセッションの終了を伝える hook か。
+ *
+ * これらを取りこぼすと live 状態と activeTurnTokens が stuck し、モバイルが
+ * 「応答を生成中」のまま固着したうえ、モデル変更なども入力待ち判定に弾かれ続ける。
+ * 通常の hook は「最新勝ち」で古いものを捨ててよいが、終了だけは捨てると復帰手段が無い。
+ */
+export function paradisIsTurnEndHookEvent(eventName: string): boolean {
+	return eventName === 'Stop' || eventName === 'StopFailure' || eventName === 'SessionEnd' || eventName === 'agent-turn-complete';
+}
+
+/**
+ * 終了済みのターンを live 状態として蘇生させる遅着 hook かどうか。
+ *
+ * hook は curl の別プロセスから並行 POST されるため、Stop と前後して MessageDisplay や
+ * PostToolUse が届く。発火時刻は Emitter が同期で採番するので単純な前後比較では「Stop より
+ * 後に発火した遅着」を捕まえられず、時間の窓で判定する必要がある。
+ * MessageDisplay だけでなく PreToolUse / PostToolUse / PermissionRequest も setLiveState を
+ * 呼ぶので、どれが遅れて届いても同じ「二度と消えない live」を作れてしまう。
+ * ターンの開始（UserPromptSubmit）と終了そのものは窓の対象外。
+ */
+export function paradisIsLateHookAfterTurnEnd(eventName: string, at: number, turnEndedAt: number | undefined): boolean {
+	switch (eventName) {
+		case 'UserPromptSubmit':
+		case 'Stop':
+		case 'StopFailure':
+		case 'SessionEnd':
+		case 'TerminalExit':
+		case 'agent-turn-complete':
+			return false;
+		default:
+			break;
+	}
+	// 負の差分（pendingHooks の replay で古い at が再投入された場合など）も窓の内側として扱う。
+	// この経路で来るのは「終了より前に発火した更新」＝終了後に反映してはいけないものなので、
+	// 遅着と同じく捨てるのが正しい。at は同一プロセスの Date.now() なので、壁時計の巻き戻しで
+	// 大きく負に振れることは実質ない。
+	const sinceTurnEnd = turnEndedAt === undefined ? undefined : Math.max(0, at - turnEndedAt);
+	return sinceTurnEnd !== undefined && sinceTurnEnd <= LATE_HOOK_AFTER_TURN_END_MS;
+}
+
+/**
+ * 現在モバイルへ提示すべき interaction を決める。未回答の質問を承認より優先する。
+ *
+ * 承認と質問はエージェント側で同時に成立しないが、tool_use_id を伴わない PermissionRequest から
+ * 作られた pendingApproval は合成IDになり PostToolUse と一致しないためターン終了まで解除されない。
+ * 承認を先に返していた頃は、それが後続の質問を覆い隠してモバイルからの回答が全て
+ * stale-interaction で弾かれていた（「質問なのに許可/拒否しか出ず、押しても効かない」の実体）。
+ *
+ * 逆向きの固着（質問が承認を永久に覆う）を防ぐため、pendingQuestions 側にも
+ * ターン終了での解除経路（ParadisAgentChatTailer.clearPendingQuestions）を用意してある。
+ */
+export function paradisPickCurrentInteraction(
+	messages: readonly IParadisAgentChatMessage[],
+	pendingQuestions: ReadonlySet<string>,
+	pendingApproval: Extract<IParadisAgentInteraction, { readonly kind: 'approval' }> | undefined,
+): IParadisAgentInteraction | null {
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.kind === 'question' && message.toolUseId !== undefined && pendingQuestions.has(message.toolUseId)) {
+			return { kind: 'question', id: message.questionGroup ?? message.toolUseId };
+		}
+	}
+	return pendingApproval ?? null;
+}
+
 export interface IParadisAgentActivityDetailMessage {
 	readonly role: 'user' | 'assistant' | 'tool';
 	readonly kind: 'text' | 'thinking' | 'tool';
@@ -181,6 +247,31 @@ const TEXT_LIMIT = 6000;
 const TOOL_TEXT_LIMIT = 1500;
 const PERSISTED_ACTIVITY_HEAD_BYTES = 256 * 1024;
 const PERSISTED_ACTIVITY_MAX_AGENTS = 100;
+/**
+ * live ティッカー（モバイルの「応答を生成中（NN分NN秒）」）を強制失効させるまでの無更新時間。
+ * 完了シグナル（Claude の Stop hook / Codex の turn/completed）は単一障害点で、1つでも
+ * 取りこぼすと経過カウンタが永久に伸び続け、さらに isAgentPrompt が false のままになって
+ * モバイルからのモデル・Effort 変更まで拒否され続ける。SubAgent活動やペインstatusには
+ * 同種のsweepが既にあるので、live状態にも最終防衛線を置く。
+ *
+ * ターン進行中かどうかで閾値を変えないのは、shared process の再起動やリレー再ロードで
+ * ターン途中から参加すると UserPromptSubmit を取りこぼし「実行中なのに終了済み扱い」に
+ * なるため。短い閾値を当てると実行中の live を誤って消し、さらに isAgentPrompt が true に
+ * なって実行中のCLIへ /model 等が注入されうる。progress を出さない長時間ツール（Bash等）
+ * でも更新は途切れるので、誤発火しない長さに倒す。
+ */
+const LIVE_STALE_MS = 30 * 60_000;
+/**
+ * ターン終了後、遅れて届いた live 更新を無視する猶予。
+ *
+ * hook は curl の別プロセスから並行 POST されるため、Stop と前後して MessageDisplay や
+ * PostToolUse が届く。clearLiveState は liveMessageBuffers も消すので遅着分は重複判定にも
+ * 掛からず、prefix 無し・startedAt=遅着時刻 で live を作り直してしまい、そしてそれを消す
+ * イベントはもう来ない（モバイルの「応答を生成中(NN分NN秒)」が伸び続ける直接原因）。
+ * 発火時刻の単純な前後比較では、Stop より後に発火した遅着を捕まえられないため窓で判定する。
+ * 新しいターンが始まれば UserPromptSubmit が窓を解除するので、次ターンの更新は捨てない。
+ */
+const LATE_HOOK_AFTER_TURN_END_MS = 3_000;
 const nodeRequire = createRequire(import.meta.url);
 
 function truncateText(text: string, limit: number): string {
@@ -1798,6 +1889,10 @@ class TranscriptTailer {
 	 */
 	injectApprovalRequest(toolName: string | undefined, toolInput: unknown, toolUseId?: string): void {
 		this.enqueue(async () => {
+			// ここで pendingQuestions を見て注入自体を捨ててはいけない。PermissionRequest hook は
+			// 1プロンプトにつき1回しか来ないため、落とすと承認要求が永久に復元されない。
+			// AskUserQuestion 由来の二重カードは currentInteraction が質問を優先することで
+			// 表示上隠れる（承認は解除されるまで保持しておく必要がある）。
 			const input = rec(toolInput);
 			const detail = str(input?.['description']) ?? str(input?.['command']) ?? (input !== undefined ? JSON.stringify(input) : '');
 			const text = [toolName, detail].filter(v => v !== undefined && v.length > 0).join(': ');
@@ -1856,14 +1951,31 @@ class TranscriptTailer {
 		});
 	}
 
-	injectCodexApprovalFallback(threadId: string): void {
+	/**
+	 * 承認内容を同期できないときの案内カードを出す。
+	 *
+	 * replaceExisting は app-server との接続が切れた場合に使う。切断で app-server 側の
+	 * pendingApprovals は捨てられるため、構造化された承認カード（codex:<thread>:<id>）を
+	 * 残したままにすると、押しても daemon 経路に乗らず必ず失敗する。
+	 */
+	injectCodexApprovalFallback(threadId: string, replaceExisting = false): void {
 		this.enqueue(async () => {
-			if (this.pendingApproval !== undefined) { return; }
+			const fallbackId = `codex-status:${threadId}`;
+			// replaceExisting は「今ある daemon 承認を案内カードへ差し替える」モード。判定は必ず
+			// キューの内側で行う（呼び出し側で同期に覗くと、先にキューへ積まれた解決処理が
+			// まだ走っておらず、既に回答済みの承認に対して案内カードを生やしてしまう）。
+			if (replaceExisting && this.pendingApproval === undefined) {
+				return;
+			}
+			if (this.pendingApproval !== undefined
+				&& (!replaceExisting || this.pendingApproval.id === fallbackId || !paradisIsCodexDaemonApprovalInteraction(this.pendingApproval.id))) {
+				return;
+			}
 			this.pendingApproval = {
-				kind: 'approval', id: `codex-status:${threadId}`, title: 'Codexが許可を待っています',
+				kind: 'approval', id: fallbackId, title: 'Codexが許可を待っています',
 				detail: '承認内容を同期できませんでした。PCのCodex画面で確認してください。', choices: [],
 			};
-			this.lastApprovalKey = `codex-status:${threadId}`;
+			this.lastApprovalKey = fallbackId;
 			this.delegate.onDelta([]);
 			this.delegate.onActivity();
 		});
@@ -1892,16 +2004,52 @@ class TranscriptTailer {
 	}
 
 	currentInteraction(): IParadisAgentInteraction | null {
-		if (this.pendingApproval !== undefined) {
-			return this.pendingApproval;
-		}
-		for (let index = this.messages.length - 1; index >= 0; index--) {
-			const message = this.messages[index];
-			if (message.kind === 'question' && message.toolUseId !== undefined && this.pendingQuestions.has(message.toolUseId)) {
-				return { kind: 'question', id: message.questionGroup ?? message.toolUseId };
+		return paradisPickCurrentInteraction(this.messages, this.pendingQuestions, this.pendingApproval);
+	}
+
+	/**
+	 * 承認要求が回答待ちかどうか。currentInteraction は質問を優先して承認を隠すため、
+	 * 「承認が存在するか」という事実が必要な箇所（ペイン状態の補正など）はこちらを使う。
+	 */
+	hasPendingApproval(): boolean {
+		return this.pendingApproval !== undefined;
+	}
+
+	/**
+	 * 質問の決着（PostToolUse）またはターン終了で、未回答のまま残った質問の回答待ちを解除する。
+	 *
+	 * pendingQuestions は本来 transcript の tool_result 到達で消えるが、hook 由来のライブ質問は
+	 * 合成IDのため内容キーで突き合わせており（paradisTakeLiveQuestionSyntheticId）、Windows の
+	 * PowerShell hook が選択肢を落とすなどでマッチを外すと永久に残る。currentInteraction が
+	 * 質問を承認より優先する以上、これが残ると今度は承認が回答不能になるため対の解除経路を置く。
+	 */
+	clearPendingQuestions(): void {
+		this.enqueue(async () => {
+			if (!this.discardPendingQuestions()) {
+				return;
 			}
+			this.delegate.onDelta([]);
+			this.delegate.onActivity();
+		});
+	}
+
+	/**
+	 * 未回答の質問と、合成IDの突合台帳をまとめて捨てる。
+	 *
+	 * pendingQuestions だけを消すと台帳（liveQuestions / liveQuestionRealIds）に古い合成IDが
+	 * 残り、次に同じ質問文が出たときに先頭の古いIDが shift される。すると transcript の本物の
+	 * 質問が「表示済み」として間引かれ、その tool_result も古いIDへ付け替えられて、新しく
+	 * 注入したカードだけが未回答で残る＝同じ固着が即座に再発する。epoch reset の経路と同じ
+	 * 組で消すのが不変条件。
+	 */
+	private discardPendingQuestions(): boolean {
+		if (this.pendingQuestions.size === 0 && this.liveQuestions.size === 0 && this.liveQuestionRealIds.size === 0) {
+			return false;
 		}
-		return null;
+		this.pendingQuestions.clear();
+		this.liveQuestions.clear();
+		this.liveQuestionRealIds.clear();
+		return true;
 	}
 
 	hasPendingInteraction(interaction: IParadisAgentInteraction): boolean {
@@ -1964,6 +2112,15 @@ class TranscriptTailer {
 			if (added.length === 0) {
 				return;
 			}
+			// 質問が始まった以上、hook 由来の解除されずに残った承認要求は既に無効。合成IDの
+			// pendingApproval は PostToolUse と一致せずターン終了まで残るため、ここで落として
+			// おく（currentInteraction の質問優先と合わせた二重の保険）。
+			// ただし Codex app-server 由来の承認は実際に serverRequest が応答待ちなので消さない。
+			// 消すと handleApprovalAction の daemon 経路に乗らず Codex が永久にブロックされる。
+			if (this.pendingApproval !== undefined && !paradisIsCodexDaemonApprovalInteraction(this.pendingApproval.id)) {
+				this.pendingApproval = undefined;
+				this.lastApprovalKey = undefined;
+			}
 			this.messages.push(...added);
 			if (this.messages.length > MESSAGE_RING_LIMIT) {
 				this.messages.splice(0, this.messages.length - MESSAGE_RING_LIMIT);
@@ -2001,7 +2158,7 @@ class TranscriptTailer {
 		// 保険: 実ユーザーのテキスト発話が現れた＝会話は先へ進んでいる。未回答のまま残った
 		// 質問（形式外の回答・割り込み等）は回答待ち扱いを解除し、赤表示が残らないようにする。
 		if (signals.userText && this.pendingQuestions.size > 0) {
-			this.pendingQuestions.clear();
+			this.discardPendingQuestions();
 			activityChanged = true;
 		}
 		let infoChanged = false;
@@ -2123,6 +2280,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly liveToolIds = new Map<string, string>();
 	/** Claude MessageDisplayの行バッチをメッセージ単位で連結する内部バッファ。 */
 	private readonly liveMessageBuffers = new Map<string, { messageId: string; lastIndex: number; text: string; startedAt: number; final: boolean }>();
+	/**
+	 * ターンが終了した時刻（hook の at）。遅れて届いた MessageDisplay で live 状態を
+	 * 蘇生させないためのガードに使う。SubAgent活動側の「終了済みは蘇生させない」規約と対。
+	 */
+	private readonly lastTurnEndedAt = new Map<string, number>();
 	/** Codex daemonのagentMessage deltaをitem単位で連結する内部バッファ。 */
 	private readonly codexMessageBuffers = new Map<string, { itemId: string; text: string; startedAt: number }>();
 	/** Codex daemonで現在表示中のitem ID。古いitem/completedによる巻き戻しを防ぐ。 */
@@ -2171,6 +2333,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.pushActivityToSubscribers(token);
 				}
 			}
+			this.sweepStaleLiveStates(now);
 		}, 60_000);
 		this._register(toDisposable(() => clearInterval(activitySweepTimer)));
 		this._register(toDisposable(() => {
@@ -2440,6 +2603,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.liveRevisions.delete(token);
 				this.liveToolIds.delete(token);
 				this.liveMessageBuffers.delete(token);
+				this.lastTurnEndedAt.delete(token);
 				this.codexMessageBuffers.delete(token);
 				this.codexActiveItems.delete(token);
 				this.codexThreadSettings.delete(token);
@@ -3009,9 +3173,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		const interactionKey = token !== undefined ? `${token}\0${msg.epoch}\0${interaction.kind}\0${interaction.id}` : undefined;
 		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
 			|| !this.hasSubscriber(token, mobileId) || !tailer.hasPendingInteraction(interaction)
-			|| interactionKey === undefined || this.interactionClaims.has(interactionKey)
+			|| interactionKey === undefined
 			|| parts.length === 0 || parts.length > 100 || this.pendingActions.has(key) || this.completedActions.has(key)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' }, token ?? msg.token);
+			return;
+		}
+		// 同じ interaction への回答が既にPC側へ渡っている。TUI が消費し損ねてカードが残った場合、
+		// ユーザーは押し直すしかないが、これを stale-interaction と同じ扱いで黙って弾くと
+		// 「押しても何も起きない」ようにしか見えない。状態を区別して伝える。
+		if (this.interactionClaims.has(interactionKey)) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'interaction-locked', message: 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください' }, token);
 			return;
 		}
 		const timer = setTimeout(() => {
@@ -3106,10 +3277,22 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	private releaseInteractionClaimsFor(token: string, interactionId?: string): void {
+	/**
+	 * このペインの interaction claim を解放する。
+	 *
+	 * 以前は approval だけを対象にしていたため、質問の claim は 60 秒タイマーでしか解けなかった。
+	 * モバイルのカードは 15 秒で再タップ可能に戻るので、TUI が回答を消費し損ねたケースでは
+	 * 残り 45 秒のあいだ何度押しても無言で拒否され続けていた。
+	 */
+	private releaseInteractionClaimsFor(token: string, filter?: string): void {
+		// filter は 'question' / 'approval'（kind 単位）か、interaction id そのもの。
+		// キーは `token\0epoch\0kind\0id`。
 		for (const key of [...this.interactionClaims.keys()]) {
 			const parts = key.split('\0');
-			if (parts[0] === token && parts[2] === 'approval' && (interactionId === undefined || parts[3] === interactionId)) {
+			if (parts[0] !== token) {
+				continue;
+			}
+			if (filter === undefined || parts[2] === filter || parts[3] === filter) {
 				this.interactionClaims.delete(key);
 			}
 		}
@@ -3430,10 +3613,14 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/** hookを履歴とは独立したライブ状態へ反映する。 */
 	private updateLiveFromHook(event: IParadisAgentHookEvent): void {
+		if (paradisIsLateHookAfterTurnEnd(event.event, event.at, this.lastTurnEndedAt.get(event.token))) {
+			return;
+		}
 		switch (event.event) {
 			case 'UserPromptSubmit':
 				this.liveToolIds.delete(event.token);
 				this.liveMessageBuffers.delete(event.token);
+				this.lastTurnEndedAt.delete(event.token);
 				this.setLiveState(event.token, {
 					phase: 'thinking', source: 'hook', startedAt: event.at, updatedAt: event.at,
 				});
@@ -3484,6 +3671,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'SessionEnd':
 			case 'TerminalExit':
 			case 'agent-turn-complete':
+				this.lastTurnEndedAt.set(event.token, event.at);
 				this.clearLiveState(event.token);
 				return;
 		}
@@ -3532,6 +3720,51 @@ export class ParadisMobileAgentChat extends Disposable {
 			const revision = (this.liveRevisions.get(token) ?? 0) + 1;
 			this.liveRevisions.set(token, revision);
 			this.pushFullLiveToSubscribers(token, null, revision);
+		}
+	}
+
+	/**
+	 * 取りこぼされたターン終了イベントから、live 状態の後始末だけを行う。
+	 *
+	 * この経路はシーケンスガードを意図的に外して呼ばれるので、実行時点では既に新しいターンが
+	 * 始まっていることがある（hook の解決順は投入順と一致しない: 手前に realpath の実I/Oが挟まる）。
+	 * そのため触るのは「固着させないための最小限」に絞る:
+	 *  - 質問と承認は消さない。ここで force clear すると、直前に注入された正当な承認カードを
+	 *    消してしまい、CLI はプロンプトで止まったままモバイルから回答できなくなる。決着は本来の
+	 *    シグナル（PostToolUse / PermissionDenied / Codex daemon）に任せる。
+	 *  - 新しいターンの live が既に立っていれば何もしない（消すと実行中なのに入力待ち扱いになり、
+	 *    モバイルからの /model 等が実行中のCLIへ注入されうる）。
+	 */
+	private applyTurnEndFromLateHook(event: IParadisAgentHookEvent): void {
+		const live = this.liveStates.get(event.token);
+		if (live !== undefined && live.startedAt > event.at) {
+			return; // この終了より後に始まったターンが進行中
+		}
+		this.lastTurnEndedAt.set(event.token, event.at);
+		this.activeTurnTokens.delete(event.token);
+		this.clearLiveState(event.token);
+	}
+
+	/**
+	 * 完了シグナルを取りこぼした live 状態を失効させる最終防衛線（60秒周期）。
+	 *
+	 * activeTurnTokens も一緒に落とすのは、Stop hook が破棄されるとターン管理も同時に stuck
+	 * するため。これを残すと live を消しても isAgentPrompt が false のままになり、モバイルからの
+	 * モデル・Effort 変更が「Claude Codeが入力待ちの時だけ設定を変更できます」で拒否され続ける。
+	 *
+	 * 一方 fireParadisAgentTurnEnded は意図的に発火しない。発火するとペイン状態が review へ移り
+	 * 「エージェントが作業を完了しました」の偽プッシュ通知が飛ぶ。ここは「完了を検知した」のでは
+	 * なく「完了を検知できなかった」場面なので、通知は出さず表示の固着だけを解く。
+	 */
+	private sweepStaleLiveStates(now: number): void {
+		for (const [token, live] of [...this.liveStates]) {
+			const idleMs = now - live.updatedAt;
+			if (idleMs <= LIVE_STALE_MS) {
+				continue;
+			}
+			this.logService.warn(`[ParadisMobileAgentChat] sweeping stale live state after ${Math.round(idleMs / 1000)}s without updates (phase=${live.phase})`);
+			this.activeTurnTokens.delete(token);
+			this.clearLiveState(token);
 		}
 	}
 
@@ -3632,6 +3865,27 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.codexMessageBuffers.delete(token);
 			this.codexActiveItems.delete(token);
 			this.setLiveState(token, { phase: 'thinking', source: 'codex-daemon', startedAt: now, updatedAt: now });
+			return;
+		}
+		if (event.method === PARADIS_CODEX_DAEMON_DISCONNECTED) {
+			// app-server との接続が切れた。ターンが終わったのか単に経路が落ちたのかは区別
+			// できないので、turn-ended は発火せず（偽の完了通知を避ける）、伸び続ける
+			// 「応答を生成中」だけを「考え中」へ畳む。実際の完了は rollout の task_complete か、
+			// それも来なければ live の staleness sweep が回収する。
+			this.codexMessageBuffers.delete(token);
+			this.codexActiveItems.delete(token);
+			const disconnectedLive = this.liveStates.get(token);
+			if (disconnectedLive?.phase === 'message') {
+				this.setLiveState(token, {
+					phase: 'thinking', source: 'codex-daemon', startedAt: disconnectedLive.startedAt, updatedAt: now,
+				});
+			}
+			// app-server 側の pendingApprovals は切断で捨てられるため、構造化された承認カードを
+			// 残したままにすると押しても daemon 経路に乗らず必ず失敗する。PCで確認するよう促す
+			// フォールバックカードへ差し替える（承認が残っているかの判定は tailer のキュー内側で行う。
+			// 切断時は解決イベントが先にキューへ積まれるため、ここで同期に覗くと既に回答済みの
+			// 承認に対して案内カードを出してしまう）。
+			tailer?.injectCodexApprovalFallback(event.threadId, true);
 			return;
 		}
 		if (event.method === 'turn/completed' || event.method === 'turn/failed' || event.method === 'turn/aborted') {
@@ -4039,10 +4293,24 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.logService.warn(`[paradisAgentChat] rejected transcript path outside allowed roots: ${transcriptPath}`);
 			return;
 		}
+		// 後続の hook に追い越された古いイベントは捨てる（最新勝ち）。ただしターン終了だけは
+		// 例外で、捨てると live 状態と activeTurnTokens が永久に残り、モバイルが「応答を生成中」
+		// のまま固着する。hook は curl の別プロセスから並行 POST されるうえ、この判定の手前に
+		// transcript パスの実I/O（realpath）が挟まるため、終了が追い越されるのは現実に起きる。
+		// セッション探索や claim の付け替えは最新イベントに任せ、終了の反映だけを適用する。
+		const isTurnEnd = paradisIsTurnEndHookEvent(event.event);
 		if (this.hookSequences.get(event.token) !== sequence) {
+			if (isTurnEnd) {
+				this.applyTurnEndFromLateHook(event);
+			}
 			return;
 		}
 		if (!this.isLiveToken(event.token)) {
+			// 保留スロットは token あたり1件の最新勝ちなので、ここに入れた終了イベントは
+			// 後続の hook に上書きされて消えうる。終了だけは保留と併せて即時に反映しておく。
+			if (isTurnEnd) {
+				this.applyTurnEndFromLateHook(event);
+			}
 			this.pendingHooks.set(event.token, { event, transcriptPath, sequence, receivedAt: Date.now() });
 			const previousTimer = this.pendingHookTimers.get(event.token);
 			if (previousTimer !== undefined) {
@@ -4093,6 +4361,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.liveRevisions.delete(previousOwner);
 			this.liveToolIds.delete(previousOwner);
 			this.liveMessageBuffers.delete(previousOwner);
+			this.lastTurnEndedAt.delete(previousOwner);
 			this.codexMessageBuffers.delete(previousOwner);
 			this.codexActiveItems.delete(previousOwner);
 			this.codexThreadSettings.delete(previousOwner);
@@ -4186,10 +4455,26 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (this.eagerTailing || this.subscribers.has(event.token))) {
 			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, event.toolUseId);
 		}
-		const forceApprovalClear = event.event === 'Stop' || event.event === 'SessionEnd' || event.event === 'StopFailure' || event.event === 'PermissionDenied';
+		const turnEnded = event.event === 'Stop' || event.event === 'SessionEnd' || event.event === 'StopFailure';
+		const forceApprovalClear = turnEnded || event.event === 'PermissionDenied';
 		const matchingApprovalClear = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolUseId !== undefined;
 		if ((forceApprovalClear || matchingApprovalClear) && this.tailers.has(event.token)) {
 			this.tailers.get(event.token)?.clearApprovalRequest(event.toolUseId, forceApprovalClear);
+		}
+		// 未回答のまま残った質問の解除。質問を承認より優先するようになったため、決着し損ねた
+		// 合成IDの質問が残ると以後の承認が回答不能になる（clearPendingQuestions 参照）。
+		// 本命は AskUserQuestion の PostToolUse: 質問の決着を即時かつ確実に知らせる唯一の信号で、
+		// transcript の内容キー突合に依存しない。ターン終了を待つ設計だと、同じターン内で本物の
+		// 許可プロンプトが出た場合にそのターンが承認待ちで止まるため Stop が原理的に来ず、
+		// 一番効かせたい場面で効かない。turnEnded は Stop 系を取りこぼさなかった場合の保険。
+		// PermissionDenied は承認の拒否であってターン終了ではないので質問は残す。
+		const questionSettled = (event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && event.toolName === 'AskUserQuestion';
+		if (questionSettled || turnEnded) {
+			this.tailers.get(event.token)?.clearPendingQuestions();
+			// 決着した interaction の claim も解放する（残すと次の回答が60秒間ロックされる）。
+			// 質問の決着では question の claim だけを解く。まとめて解放すると、同じターンで
+			// 進行中の承認の claim まで解けて二重注入（'1'+CR がもう一度PTYへ）の窓ができる。
+			this.releaseInteractionClaimsFor(event.token, turnEnded ? undefined : 'question');
 		}
 	}
 
@@ -4228,7 +4513,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			setParadisAgentPaneActivity(token, {
 				backgroundTasks: new Map(tailer.backgroundTasks),
 				pendingQuestion: tailer.pendingQuestions.size > 0,
-				pendingApproval: tailer.currentInteraction()?.kind === 'approval',
+				// currentInteraction は質問を優先して承認を隠すため、ここは「承認が存在するか」の事実を渡す
+				pendingApproval: tailer.hasPendingApproval(),
 			});
 		};
 		const tailer = new TranscriptTailer(session.transcriptPath, session.agent, {

@@ -6,6 +6,7 @@
  * ルーティング（すべて deviceId ベースで DeviceDO へ委譲）:
  *  - POST /device/:deviceId/provision   PC初期登録（PCトークン発行）
  *  - POST /device/:deviceId/pair/begin  ペアリングトークン発行（QR用）
+ *  - POST /device/:deviceId/pc/check    pcTokenの有効性確認（副作用なし。1006の原因判別用）
  *  - POST /device/:deviceId/mobile/revoke        PCによるモバイル失効（pcToken認証）
  *  - POST /device/:deviceId/mobile/self-revoke   モバイル自身のペアリング解除（mobileToken認証）
  *  - GET  /device/:deviceId/ws?role=pc|mobile|pair&...   WebSocket
@@ -85,6 +86,12 @@ export default {
 
 		if (request.method === 'POST' && parts[2] === 'pair' && parts[3] === 'begin') {
 			return stub.fetch(new Request('https://do/?action=begin-pairing', request));
+		}
+		// PC の pcToken がまだ有効かだけを確かめる（副作用なし）。WebSocket のハンドシェイクは
+		// 認証拒否も経路断もクライアントからは同じ close 1006 に見えるため、再接続が続くときに
+		// PC 側がこれを叩いて「再ペアリングが必要」を確定させる。
+		if (request.method === 'POST' && parts[2] === 'pc' && parts[3] === 'check') {
+			return stub.fetch(new Request('https://do/?action=pc-check', request));
 		}
 		if (request.method === 'POST' && parts[2] === 'mobile' && parts[3] === 'revoke') {
 			return stub.fetch(new Request('https://do/?action=revoke', request));

@@ -44,6 +44,17 @@ function formatCountdown(resetsAt: number | undefined, now: number): string | un
 	return `${minutes}m`;
 }
 
+/**
+ * リセットの絶対時刻（PC版 paradisLimitsFormatResetClock と同じ規則）。
+ * PCは epoch ms だけを送り、見せ方は端末側で決める（タイムゾーン差の混入を避ける）。
+ */
+function formatResetClock(resetsAt: number | undefined, now: number): string | undefined {
+	if (resetsAt === undefined || !isFinite(resetsAt) || resetsAt <= now) { return undefined; }
+	const date = new Date(resetsAt);
+	const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+	return new Date(now).toDateString() === date.toDateString() ? time : `${date.getMonth() + 1}/${date.getDate()} ${time}`;
+}
+
 function accountWindows(account: RateLimitAccount): { label: string; window: RateLimitWindow }[] {
 	const rows: { label: string; window: RateLimitWindow }[] = [];
 	if (account.fiveHour) { rows.push({ label: '5時間', window: account.fiveHour }); }
@@ -127,26 +138,30 @@ export default function RateLimitScreen() {
 	const worst = useMemo(() => data ? worstUsage(data) : undefined, [data]);
 	const upcoming = useMemo(() => data ? nextReset(data, now) : undefined, [data, now]);
 
-	const renderMeter = (label: string, window: RateLimitWindow) => {
+	// 枠ごとに使用率とリセットを並べる。以前は5時間枠・7日枠・モデル別枠を混ぜて
+	// 「最も近い1つ」だけを枠名なしでアカウント行に出していたため、表示された残り時間が
+	// どの制限のものか分からず、使っていない枠のリセットは永久に見えなかった。
+	// key は label だけだと scoped.label の重複や '5時間' との衝突で React の警告になる。
+	const renderMeter = (label: string, window: RateLimitWindow, index: number) => {
 		const percent = Math.min(100, Math.max(0, window.usedPercent));
+		const countdown = formatCountdown(window.resetsAt, now);
+		const clock = formatResetClock(window.resetsAt, now);
 		return (
-			<View key={label} style={styles.meterRow}>
+			<View key={`${label}-${index}`} style={styles.meterRow}>
 				<Text style={styles.meterLabel} numberOfLines={1}>{label}</Text>
 				<View style={styles.barTrack}>
 					<View style={[styles.barFill, { width: `${percent}%`, backgroundColor: severityColor(window.usedPercent) }]} />
 				</View>
 				<Text style={styles.meterValue}>{Math.round(window.usedPercent)}%</Text>
+				<Text style={styles.meterReset} numberOfLines={1}>
+					{countdown !== undefined ? (clock !== undefined ? `${countdown}後（${clock}）` : `${countdown}後`) : ''}
+				</Text>
 			</View>
 		);
 	};
 
 	const renderAccount = (account: RateLimitAccount, index: number) => {
 		const windows = accountWindows(account);
-		const countdown = formatCountdown(
-			windows.filter(row => (row.window.resetsAt ?? 0) > now && row.window.usedPercent > 0)
-				.sort((a, b) => a.window.resetsAt! - b.window.resetsAt!)[0]?.window.resetsAt,
-			now,
-		);
 		return (
 			<View key={account.id} style={[styles.acct, index > 0 && styles.acctSeparator]}>
 				<View style={styles.acctTop}>
@@ -158,12 +173,11 @@ export default function RateLimitScreen() {
 					{account.status !== 'ok' ? (
 						<Text style={[styles.badge, styles.badgeErr]}>{account.status === 'token_expired' ? 'トークン失効' : 'エラー'}</Text>
 					) : null}
-					{account.status === 'ok' && countdown ? <Text style={styles.acctReset}>リセットまで {countdown}</Text> : null}
 				</View>
 				{account.status !== 'ok' ? (
 					<Text style={styles.errText}>再ログインが必要です — PC側のリミットモニターから操作してください</Text>
 				) : windows.length > 0 ? (
-					windows.map(row => renderMeter(row.label, row.window))
+					windows.map((row, meterIndex) => renderMeter(row.label, row.window, meterIndex))
 				) : (
 					<Text style={styles.errText}>使用状況データがありません</Text>
 				)}
@@ -264,12 +278,13 @@ const styles = StyleSheet.create({
 	badge: { fontSize: 10, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 9, overflow: 'hidden', backgroundColor: colors.surface3, color: colors.textDim },
 	badgeActive: { backgroundColor: colors.accentWash, color: colors.accent },
 	badgeErr: { backgroundColor: 'rgba(244,114,114,0.16)', color: colors.red },
-	acctReset: { color: colors.textDim, fontSize: 11, marginLeft: 'auto', fontVariant: ['tabular-nums'] },
-	meterRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 4 },
+	meterRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
 	meterLabel: { color: colors.text, fontSize: 11.5, width: 64 },
 	barTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: colors.surface3, overflow: 'hidden' },
 	barFill: { height: 8, borderRadius: 4 },
-	meterValue: { color: colors.textDim, fontSize: 11.5, width: 44, textAlign: 'right', fontVariant: ['tabular-nums'] },
+	meterValue: { color: colors.textDim, fontSize: 11.5, width: 40, textAlign: 'right', fontVariant: ['tabular-nums'] },
+	// 固定幅にすると '3d 12h後（7/29 00:30）' が末尾から切れる（7日枠＝この表示の主目的）。
+	meterReset: { color: colors.textDim, fontSize: 11, opacity: 0.85, flexShrink: 0, textAlign: 'right', fontVariant: ['tabular-nums'] },
 	errText: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
 	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 14, paddingHorizontal: 4 },
 });

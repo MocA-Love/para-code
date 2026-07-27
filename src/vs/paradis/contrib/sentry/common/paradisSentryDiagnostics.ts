@@ -25,6 +25,38 @@ export function configureParadisDiagnosticReporter(value: ParadisDiagnosticRepor
 	reporter = value;
 }
 
+let tagSetter: ((key: string, value: string) => void) | undefined;
+/**
+ * Tags set before the SDK finished loading. The Sentry import is dynamic, so callers that run
+ * during startup (relay service load, pairing) would otherwise lose their correlation tag for
+ * the whole session — unlike errors, there is no later retry that would re-set it.
+ */
+const pendingTags = new Map<string, string>();
+
+/** Connects the correlation-tag setter to the process-specific Sentry SDK. */
+export function configureParadisDiagnosticTagSetter(value: (key: string, value: string) => void): void {
+	tagSetter = value;
+	for (const [key, tagValue] of pendingTags) {
+		value(key, tagValue);
+	}
+	pendingTags.clear();
+}
+
+/**
+ * Sets a non-PII correlation tag so desktop and mobile events for the same pairing can be
+ * matched up in Sentry. Both sides drop `user`, so without this a desktop disconnect and the
+ * mobile error it caused look like two unrelated issues.
+ *
+ * Only ever pass a hash fragment — never a raw device id, token or URL.
+ */
+export function setParadisDiagnosticCorrelationTag(key: 'para.pairing', value: string): void {
+	if (tagSetter === undefined) {
+		pendingTags.set(key, value);
+		return;
+	}
+	tagSetter(key, value);
+}
+
 export function reportParadisDiagnosticError(
 	scope: Exclude<ParadisSentryScope, 'unknown'>,
 	feature: string,
