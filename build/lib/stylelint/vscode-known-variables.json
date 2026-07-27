@@ -356,6 +356,7 @@
 		"--vscode-editorSuggestWidget-background",
 		"--vscode-editorSuggestWidget-border",
 		"--vscode-editorSuggestWidget-focusHighlightForeground",
+		"--vscode-editorSuggestWidget-focusOutline",
 		"--vscode-editorSuggestWidget-foreground",
 		"--vscode-editorSuggestWidget-highlightForeground",
 		"--vscode-editorSuggestWidget-selectedBackground",
@@ -942,11 +943,8 @@
 		"--vscode-window-inactiveBorder"
 	],
 	"others": [
-		"--paradis-pr-color",
-		"--paradis-statusbar-bg",
-		"--paradis-titlebar-bg",
-		"--paradis-transparency-opacity",
-		"--paradis-workspace-color",
+		"--action-widget-close-start-opacity",
+		"--action-widget-close-start-transform",
 		"--activity-bar-action-height",
 		"--activity-bar-icon-size",
 		"--activity-bar-width",
@@ -1099,7 +1097,12 @@
 		"--vscode-inline-chat-affordance-height",
 		"--collapse-from-width",
 		"--slide-from-x",
-		"--slide-from-y"
+		"--slide-from-y",
+		"--paradis-pr-color",
+		"--paradis-statusbar-bg",
+		"--paradis-titlebar-bg",
+		"--paradis-transparency-opacity",
+		"--paradis-workspace-color"
 	],
 	"sizes": [
 		"--vscode-agents-fontSize-body1",
@@ -1112,6 +1115,7 @@
 		"--vscode-agents-fontSize-label3",
 		"--vscode-agents-fontWeight-regular",
 		"--vscode-agents-fontWeight-semiBold",
+		"--vscode-agents-layout-floatingPanelGap",
 		"--vscode-bodyFontSize",
 		"--vscode-bodyFontSize-small",
 		"--vscode-bodyFontSize-xSmall",
