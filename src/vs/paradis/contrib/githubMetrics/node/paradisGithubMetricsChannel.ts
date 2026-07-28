@@ -29,6 +29,7 @@ import {
 	paradisClearGithubCallSink,
 	paradisParseGhRateLimit,
 	paradisSetGithubCallSink,
+	paradisTruncateGithubErrorMessage,
 	ParadisGithubCallLog,
 	ParadisGithubRateLimitHistory,
 	PARADIS_GITHUB_METRICS_CHANNEL,
@@ -158,7 +159,8 @@ export class ParadisGithubMetricsService {
 			}
 			this.rateLimitFetchedAt = finishedAt;
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
+			// gh の stderr がそのまま入るため、UI へ出す前にここで丸める（呼び出しログと同じ上限）。
+			const message = paradisTruncateGithubErrorMessage(error instanceof Error ? error.message : String(error));
 			this.consecutiveFailures++;
 			this.rateLimitError = message;
 			this.rateLimitFetchedAt = this.now();
