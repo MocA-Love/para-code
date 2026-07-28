@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'expo-router';
+import { useIsFocused, useRouter } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 // 一覧のScrollViewはRNGH版を使う。RN版は子孫へのタッチ配送を遅らせるため、行に付けた
 // スワイプが指の動き出しを取りこぼして反応しない（祖先側のドロワーだけが効く状態になる）。
@@ -14,7 +14,11 @@ import { AgentLaunchButton, AgentLaunchToastView } from '../../src/components/ag
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
-import { AttentionCard } from '../../src/components/attentionCard.js';
+import { AttentionStack, type AttentionStackItem } from '../../src/components/attentionStack.js';
+import {
+	ATTENTION_VISIBLE_LIMIT, CLOSED_ATTENTION, reconcileAttention, sortWaiting, toggleAttention, visibleWaiting,
+	type AttentionOpenState,
+} from '../../src/components/attentionStackBehavior.js';
 import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
 import { AgentBadge, AgentRowContent, agentRowStyles, type AgentRowData, type AgentRowRect } from '../../src/components/agentRow.js';
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
@@ -30,7 +34,8 @@ import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
  * ホーム画面（mock.html 案A準拠のリデザイン）。旧デザインの「接続中のPC」カードと
  * ワークスペース別グループ表示を廃止し、全ワークスペース横断のエージェント一覧に
  * 再定義した（PCステータス・接続管理はワークスペースドロワーへ移設）。
- * 応答待ちのエージェントがいる場合は最上部のアテンションカードでその場で回答できる。
+ * 応答待ちのエージェントは最上部の「応答待ち」スタックに全件を積み、開いた1件にその場で
+ * 回答できる（積んだぶんは下の一覧からは外す）。
  *
  * ドロワーで特定のワークスペースを選択している間（homeShowAllWorkspaces=false）は、
  * 一覧をそのワークスペース（＋配下のworktree）だけに絞り込む。ドロワー上部の
@@ -47,8 +52,9 @@ export default function HomeScreen() {
 	})));
 	const effectiveWs = useEffectiveWs();
 	// 長押しで開くアクションメニュー（名前を変更/ピン留め/削除）の表示状態。
-	// rect/rowData は「リフト&ディム」で対象行を前面へ浮かせるクローン描画に使う。
-	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number }; rect?: AgentRowRect; rowData: AgentRowData } | undefined>(undefined);
+	// rect/rowData は「リフト&ディム」で対象行を前面へ浮かせるクローン描画に使う
+	// （上部スタックの行から開いたときは持たないため、その場合はクローン無しでメニューだけ出す）。
+	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number }; rect?: AgentRowRect; rowData?: AgentRowData } | undefined>(undefined);
 	// 各行の実ビューへの参照。長押し時に measureInWindow でウィンドウ座標を取得するために持つ。
 	const rowRefs = useRef(new Map<string, View>());
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
@@ -87,11 +93,74 @@ export default function HomeScreen() {
 		return ws !== undefined && scopeIds.has(ws.id);
 	};
 
-	// 応答待ちのターミナル（複数あれば先頭の1件をアテンションカードで扱う。絞り込み中は対象外のワークスペース分は無視する）
-	const waitingTerminal = (workspace?.terminals ?? []).find(t => isAgentWaiting(t.agentStatus) && inScope(t));
-	const waitingWs = waitingTerminal ? (workspace?.workspaces ?? []).find(w => w.id === waitingTerminal.ws) : undefined;
-	const waitingChat = useAgentChatSubscription(waitingTerminal?.terminalKey);
-	const waitingActions = useAgentActions(waitingTerminal?.terminalKey, waitingChat?.agent);
+	// 応答待ちのターミナル（絞り込み中は対象外のワークスペース分は無視する）。全件を上部の
+	// スタックに積み、開いた1件だけ中身を購読する。同時に複数へ attach しないのは、
+	// フックが1ターミナル単位であることと、閉じた行に中身が要らないため。
+	// 一覧と同じく、エージェントCLIが動いた実績のあるターミナルだけを対象にする
+	// （プレーンなターミナルが状態を拾って最上部に居座るのを防ぐ）。
+	const waitingTerminals = sortWaiting((workspace?.terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus) && inScope(t)));
+	const waitingKeys = waitingTerminals.map(t => t.terminalKey);
+	// 「見たことがある」の記録は絞り込みの外側で取る（ドロワーで表示範囲を往復しただけで
+	// 記録が消え、自分で畳んだ1件が開き直るのを防ぐ）。
+	const knownWaitingKeys = (workspace?.terminals ?? []).filter(t => t.agent === true && isAgentWaiting(t.agentStatus)).map(t => t.terminalKey);
+	const [attention, setAttention] = useState<AttentionOpenState>(CLOSED_ATTENTION);
+	const [attentionExpanded, setAttentionExpanded] = useState(false);
+	// 顔ぶれの変化に合わせた開閉は描画に即反映したいので、レンダー中に解決してから状態へ書き戻す
+	// （reconcileAttention は変化が無ければ同じ参照を返すため、ここで更新が繰り返されることはない）。
+	const openState = reconcileAttention(attention, waitingKeys, knownWaitingKeys);
+	useEffect(() => {
+		if (openState !== attention) {
+			setAttention(openState);
+		}
+	}, [openState, attention]);
+	// 書き戻し前のタップでも必ず解決済みの状態から遷移させる（自動で開いた直後に畳もうとした
+	// タップが、まだ古い state を見て「開く」に化けるのを防ぐ）。
+	const waitingKeysRef = useRef({ keys: waitingKeys, known: knownWaitingKeys });
+	waitingKeysRef.current = { keys: waitingKeys, known: knownWaitingKeys };
+	const toggleAttentionRow = (terminalKey: string) => {
+		hapticSelection();
+		setAttention(current => toggleAttention(
+			reconcileAttention(current, waitingKeysRef.current.keys, waitingKeysRef.current.known),
+			terminalKey,
+		));
+	};
+	// 件数が上限以下に戻ったら「他N件を表示」も畳み直す（次に増えたとき勝手に全件出さない）。
+	useEffect(() => {
+		if (waitingKeys.length <= ATTENTION_VISIBLE_LIMIT) {
+			setAttentionExpanded(false);
+		}
+	}, [waitingKeys.length]);
+	// 開く行が変わったら、その行のチャットを取り直してから描く。detach してもスナップショットは
+	// 残るため、これが無いと「前に開いたときの質問・承認」が現在の内容として一瞬出てしまう
+	// （古い承認カードを押すと、回答APIを持たない旧PCへは生のキーが飛んでしまう）。
+	//
+	// ホームが前面にあるときだけ走らせる。refreshAgent は共有の agentChats から対象を消すので、
+	// 背面のまま実行するとエージェント詳細画面を読んでいる最中に会話が消えてしまう
+	// （質問が届いて自動オープンした瞬間に前面が真っ白になる）。
+	// またこの effect は useAgentChatSubscription より**前**に置くこと。detach → refresh → attach
+	// の順になり、attach 要求が1通で済む（後ろに置くと refresh 側からも attach が飛ぶ）。
+	const homeFocused = useIsFocused();
+	const refreshAgent = useAppStore(s => s.refreshAgent);
+	useEffect(() => {
+		if (homeFocused && openState.openKey !== undefined) {
+			refreshAgent(openState.openKey);
+		}
+	}, [homeFocused, openState.openKey, refreshAgent]);
+	const openChat = useAgentChatSubscription(openState.openKey);
+	const openActions = useAgentActions(openState.openKey, openChat?.agent);
+	const visibleWaitingTerminals = visibleWaiting(waitingTerminals, openState.openKey, attentionExpanded);
+	const stackItems: AttentionStackItem[] = visibleWaitingTerminals.map(t => {
+		const ws = resolveWs(t);
+		return {
+			terminalKey: t.terminalKey,
+			title: t.title,
+			wsName: ws?.name ?? '—',
+			wsColor: ws ? wsColor(ws) : colors.accent,
+			branch: ws?.branch,
+			pinned: pinnedKeys.has(pinKeyForTerminal(t)),
+			agentStatus: t.agentStatus === 'permission' ? 'permission' : 'question',
+		};
+	});
 
 	if (ready && !paired) {
 		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
@@ -104,10 +173,11 @@ export default function HomeScreen() {
 		setSelectedTerminalKey(terminalKey);
 		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
 	};
-	// エージェント一覧（応答待ち → 実行中 → その他 → アイドルの順）。絞り込み中は選択中
+	// エージェント一覧（実行中 → その他 → アイドルの順）。絞り込み中は選択中
 	// ワークスペース分だけに絞る。エージェントCLIが動いた実績のあるターミナルだけを載せる
 	// （プレーンなターミナルを開いただけでホームに行が増えないように）。
-	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)))
+	// 応答待ちは上部のスタックが受け持つので、ここには載せない（同じ行を上下に二度出さない）。
+	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)) && !isAgentWaiting(t.agentStatus))
 		.sort((a, b) => {
 			const pinDiff = (pinnedKeys.has(pinKeyForTerminal(b)) ? 1 : 0) - (pinnedKeys.has(pinKeyForTerminal(a)) ? 1 : 0);
 			return pinDiff !== 0 ? pinDiff : statusOrder(a.agentStatus) - statusOrder(b.agentStatus);
@@ -157,26 +227,39 @@ export default function HomeScreen() {
 				}
 			/>
 			<ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingBottom: tabBarSpacer }]}>
-				{waitingTerminal && waitingWs && (waitingTerminal.agentStatus === 'permission' || waitingTerminal.agentStatus === 'question') ? (
-					<AttentionCard
-						wsName={waitingWs.name}
-						terminalTitle={waitingTerminal.title}
-						agentStatus={waitingTerminal.agentStatus}
-						chat={waitingChat}
-						actions={waitingActions}
-						onOpenAgent={() => openAgent(waitingWs.id, waitingTerminal.terminalKey)}
-					/>
-				) : null}
+				<AttentionStack
+					items={stackItems}
+					total={waitingTerminals.length}
+					openKey={openState.openKey}
+					onToggle={toggleAttentionRow}
+					onLongPress={(item, anchor) => {
+						hapticImpact('medium');
+						setMenu({ target: { terminalKey: item.terminalKey, title: item.title, pinned: item.pinned }, anchor });
+					}}
+					hiddenCount={waitingTerminals.length - stackItems.length}
+					onShowAll={() => { hapticSelection(); setAttentionExpanded(true); }}
+					chat={openChat}
+					actions={openActions}
+					onOpenAgent={terminalKey => {
+						const terminal = waitingTerminals.find(t => t.terminalKey === terminalKey);
+						const ws = terminal ? resolveWs(terminal) : undefined;
+						if (ws) {
+							openAgent(ws.id, terminalKey);
+						}
+					}}
+				/>
 
-				<Text style={styles.sectionTitle}>
-					{homeShowAllWorkspaces || effectiveWs === undefined ? 'エージェント — 全ワークスペース' : `エージェント — ${effectiveWs.name}`}
-				</Text>
+				{/* 応答待ちしか居ないときは、上のスタックが全部を映しているので見出しごと省く。 */}
+				{rows.length > 0 || waitingTerminals.length === 0 ? (
+					<Text style={styles.sectionTitle}>
+						{homeShowAllWorkspaces || effectiveWs === undefined ? 'エージェント — 全ワークスペース' : `エージェント — ${effectiveWs.name}`}
+					</Text>
+				) : null}
 				{rows.map(t => {
 					const ws = resolveWs(t);
-					const waiting = isAgentWaiting(t.agentStatus);
 					const color = ws ? wsColor(ws) : colors.accent;
 					const pinned = pinnedKeys.has(pinKeyForTerminal(t));
-					const rowData: AgentRowData = { title: t.title, wsName: ws?.name ?? '—', wsColor: color, branch: ws?.branch, pinned, agentStatus: t.agentStatus, waiting };
+					const rowData: AgentRowData = { title: t.title, wsName: ws?.name ?? '—', wsColor: color, branch: ws?.branch, pinned, agentStatus: t.agentStatus };
 					const badge = t.agentStatus === 'review' ? (
 						// レビューのみタップで「確認済みにする」ポップオーバーを開ける
 						// （応答待ち/質問は回答して解消するもの、実行中/アイドルは既読の概念が無い）
@@ -197,7 +280,7 @@ export default function HomeScreen() {
 					const row = (
 						<Pressable
 							ref={node => { if (node) { rowRefs.current.set(t.terminalKey, node); } else { rowRefs.current.delete(t.terminalKey); } }}
-							style={[agentRowStyles.container, waiting && agentRowStyles.containerWaiting]}
+							style={agentRowStyles.container}
 							onPress={() => { if (ws) { openAgent(ws.id, t.terminalKey); } }}
 							// 既定の500msは一覧の行に対しては待たされ過ぎるので半分にする。
 							delayLongPress={250}
@@ -217,9 +300,9 @@ export default function HomeScreen() {
 							<AgentRowContent data={rowData} badge={badge} />
 						</Pressable>
 					);
-					// 左スワイプでアーカイブ。回答待ちの行は片付けても自動で戻ってくるので、
-					// 誤解を生まないようスワイプ自体を出さない。
-					return waiting ? <View key={t.terminalKey}>{row}</View> : (
+					// 左スワイプでアーカイブ。応答待ちの行はここには来ない（上部のスタックが持つ）ので、
+					// 片付けても自動で戻ってくる行にスワイプを出してしまう心配はない。
+					return (
 						<SwipeRow
 							key={t.terminalKey}
 							direction="left"
@@ -232,7 +315,7 @@ export default function HomeScreen() {
 						</SwipeRow>
 					);
 				})}
-				{rows.length === 0 ? (
+				{rows.length === 0 && waitingTerminals.length === 0 ? (
 					<Text style={styles.dimSmall}>
 						{homeShowAllWorkspaces || effectiveWs === undefined
 							? 'エージェントはまだありません。ターミナルタブでターミナルを作成し、claude / codex を起動すると表示されます。'
