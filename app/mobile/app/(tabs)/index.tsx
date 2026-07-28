@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useIsFocused, useRouter } from 'expo-router';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
@@ -14,6 +15,8 @@ import { AttentionCard } from '../../src/components/attentionCard.js';
 import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
 import { AgentBadge, AgentRowContent, agentRowStyles, type AgentRowData, type AgentRowRect } from '../../src/components/agentRow.js';
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
+import { SwipeRow } from '../../src/components/swipeRow.js';
+import { GlassSurface } from '../../src/components/glassSurface.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
@@ -32,12 +35,12 @@ import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus } = useAppStore(useShallow(s => ({
+	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus, archivedKeys, setArchived } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		pinnedKeys: s.pinnedKeys, renameTerminal: s.renameTerminal, togglePin: s.togglePin, closeTerminal: s.closeTerminal,
-		ackAgentStatus: s.ackAgentStatus,
+		ackAgentStatus: s.ackAgentStatus, archivedKeys: s.archivedKeys, setArchived: s.setArchived,
 	})));
 	const effectiveWs = useEffectiveWs();
 	// 長押しで開くアクションメニュー（名前を変更/ピン留め/削除）の表示状態。
@@ -99,7 +102,7 @@ export default function HomeScreen() {
 	// エージェント一覧（応答待ち → 実行中 → その他 → アイドルの順）。絞り込み中は選択中
 	// ワークスペース分だけに絞る。エージェントCLIが動いた実績のあるターミナルだけを載せる
 	// （プレーンなターミナルを開いただけでホームに行が増えないように）。
-	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t))
+	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)))
 		.sort((a, b) => {
 			const pinDiff = (pinnedKeys.has(pinKeyForTerminal(b)) ? 1 : 0) - (pinnedKeys.has(pinKeyForTerminal(a)) ? 1 : 0);
 			return pinDiff !== 0 ? pinDiff : statusOrder(a.agentStatus) - statusOrder(b.agentStatus);
@@ -107,6 +110,21 @@ export default function HomeScreen() {
 	const headerSubtitle = homeShowAllWorkspaces || effectiveWs === undefined
 		? 'Para Code Mobile'
 		: `${effectiveWs.name}${effectiveWs.branch ? ` · ${effectiveWs.branch}` : ''}`;
+	// アーカイブ入口は、しまってあるものが1件でもある時だけ出す（常設だと空のボタンが並ぶ）。
+	const archivedCount = (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))).length;
+
+	/** アーカイブ直後の「元に戻す」。数秒で自然に消える。 */
+	const [undoArchive, setUndoArchive] = useState<{ key: string; title: string } | undefined>(undefined);
+	const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	useEffect(() => () => { if (undoTimer.current !== undefined) { clearTimeout(undoTimer.current); } }, []);
+	const archive = (terminalKey: string, title: string) => {
+		setArchived(pinKeyForTerminal({ terminalKey }), true);
+		setUndoArchive({ key: pinKeyForTerminal({ terminalKey }), title });
+		if (undoTimer.current !== undefined) {
+			clearTimeout(undoTimer.current);
+		}
+		undoTimer.current = setTimeout(() => { undoTimer.current = undefined; setUndoArchive(undefined); }, 4_000);
+	};
 
 	return (
 		<ConnectionGate><View style={styles.screen}>
@@ -116,6 +134,18 @@ export default function HomeScreen() {
 				allWorkspaces={homeShowAllWorkspaces}
 				right={
 					<View style={styles.headerActions}>
+						{archivedCount > 0 ? (
+							<Pressable
+								style={styles.archiveBtn}
+								onPress={() => { hapticImpact('light'); router.push('/archive'); }}
+								accessibilityRole="button"
+								accessibilityLabel={`アーカイブ ${archivedCount}件を見る`}
+							>
+								{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される） */}
+								<GlassSurface style={styles.archiveBtnGlass} interactive />
+								<Ionicons name="file-tray-full-outline" size={18} color={colors.text} />
+							</Pressable>
+						) : null}
 						<AgentLaunchButton />
 						<NotificationsButton notifications={notifications} />
 					</View>
@@ -159,12 +189,13 @@ export default function HomeScreen() {
 							<AgentBadge status={t.agentStatus} />
 						</Pressable>
 					) : undefined;
-					return (
+					const row = (
 						<Pressable
-							key={t.terminalKey}
 							ref={node => { if (node) { rowRefs.current.set(t.terminalKey, node); } else { rowRefs.current.delete(t.terminalKey); } }}
 							style={[agentRowStyles.container, waiting && agentRowStyles.containerWaiting]}
 							onPress={() => { if (ws) { openAgent(ws.id, t.terminalKey); } }}
+							// 既定の500msは一覧の行に対しては待たされ過ぎるので半分にする。
+							delayLongPress={250}
 							onLongPress={e => {
 								hapticImpact('medium');
 								const target = { terminalKey: t.terminalKey, title: t.title, pinned };
@@ -181,6 +212,20 @@ export default function HomeScreen() {
 							<AgentRowContent data={rowData} badge={badge} />
 						</Pressable>
 					);
+					// 左スワイプでアーカイブ。回答待ちの行は片付けても自動で戻ってくるので、
+					// 誤解を生まないようスワイプ自体を出さない。
+					return waiting ? <View key={t.terminalKey}>{row}</View> : (
+						<SwipeRow
+							key={t.terminalKey}
+							direction="left"
+							label="アーカイブ"
+							icon="file-tray-full-outline"
+							color={colors.surface3}
+							onTrigger={() => archive(t.terminalKey, t.title)}
+						>
+							{row}
+						</SwipeRow>
+					);
 				})}
 				{rows.length === 0 ? (
 					<Text style={styles.dimSmall}>
@@ -193,6 +238,19 @@ export default function HomeScreen() {
 					<Text style={styles.dimSmall}>ワークスペース情報を取得中… PCの Para Code でリポジトリを登録すると表示されます。</Text>
 				) : null}
 			</ScrollView>
+			{undoArchive !== undefined ? (
+				<View style={[styles.undoWrap, { bottom: tabBarSpacer + 10 }]} pointerEvents="box-none">
+					<GlassSurface style={styles.undoGlass} />
+					<Text style={styles.undoText} numberOfLines={1}>「{undoArchive.title}」をアーカイブしました</Text>
+					<Pressable
+						hitSlop={8}
+						onPress={() => { hapticSelection(); setArchived(undoArchive.key, false); setUndoArchive(undefined); }}
+						accessibilityRole="button"
+					>
+						<Text style={styles.undoAction}>元に戻す</Text>
+					</Pressable>
+				</View>
+			) : null}
 			<TerminalActionsMenu
 				target={menu?.target}
 				anchor={menu?.anchor}
@@ -229,5 +287,15 @@ const styles = StyleSheet.create({
 	content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 32 },
 	dimSmall: { color: colors.textDim, fontSize: 12, marginTop: 4, lineHeight: 18 },
 	headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+	archiveBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+	archiveBtnGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 20, overflow: 'hidden' },
+	// アーカイブ直後の「元に戻す」（タブバーの上のLiquid Glass）
+	undoWrap: {
+		position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10,
+		borderRadius: 16, paddingVertical: 11, paddingHorizontal: 14,
+	},
+	undoGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 16, overflow: 'hidden' },
+	undoText: { color: colors.text, fontSize: 12, flex: 1 },
+	undoAction: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginTop: 6, marginBottom: 8, letterSpacing: 0.5 },
 });

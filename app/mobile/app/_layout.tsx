@@ -138,6 +138,8 @@ function RootLayout() {
 						<Stack.Screen name="ratelimit" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継） */}
 						<Stack.Screen name="browser" options={{ headerShown: false, animation: 'slide_from_right' }} />
+						{/* アーカイブ一覧。ホームヘッダーの箱アイコンから開く */}
+						<Stack.Screen name="archive" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* 更新履歴。設定画面の項目とお知らせシートから開く */}
 						<Stack.Screen name="changelog" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>

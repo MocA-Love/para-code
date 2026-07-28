@@ -67,6 +67,17 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'file-tray-full-outline',
+				title: '終わったエージェントをホームから片付けられるように',
+				body: '一覧を左へスワイプするとアーカイブに入り、PCではそのまま動き続けます。ヘッダーの箱から見返して戻せます。質問や応答待ちになったものは自動でホームへ戻ります。',
+			},
+			{
+				icon: 'hand-left-outline',
+				title: '一覧の長押しメニューが早く開くように',
+				body: '押してからメニューが出るまでの待ち時間を半分にしました。',
+				tone: 'green',
+			},
+			{
 				icon: 'pin',
 				title: 'よく使うスペースをドロワーに残せるように',
 				body: 'PCでピン留めしたスペースは、リポジトリを折りたたんでも一覧に残ります。ピンの印が付いた行がそれです。',
