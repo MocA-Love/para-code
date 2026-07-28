@@ -4,9 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+// PARA-PATCH: swapped in to scope the repository list to the current space (see paradisScopedScmViewService.ts)
+import { ParadisScopedScmViewService } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisScopedScmViewService.js';
 import { ISCMService, ISCMViewService } from '../common/scm.js';
 import { SCMService } from '../common/scmService.js';
-import { SCMViewService } from './scmViewService.js';
 
 registerSingleton(ISCMService, SCMService, InstantiationType.Delayed);
-registerSingleton(ISCMViewService, SCMViewService, InstantiationType.Delayed);
+// PARA-PATCH: fork implementation that wraps the upstream one, swapped in at this single line
+registerSingleton(ISCMViewService, ParadisScopedScmViewService, InstantiationType.Delayed);

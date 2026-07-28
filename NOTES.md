@@ -187,6 +187,7 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 - **ビュー登録の罠**: `registerViews` の `openCommandActionDescriptor.id` に `<viewId>.focus` を指定してはいけない（ビュー登録が自動生成する focus コマンドと衝突して **workbench 全体が起動不能**になる）
 - **キーバインド**: mac の `ctrl+cmd+1`/`ctrl+cmd+9` は upstream の Move Editor into First/Last Group と衝突するため weight +1 で上書き（1〜9の一貫性を優先）。切り替えは `ctrl+cmd+1..9` / `ctrl+cmd+[` `]`（win/linux: `ctrl+alt+…`）
 - **SCMコミットメッセージ入力**はリポジトリ close で消える唯一の transient 状態。`onWillSwitchRepository` で退避し、Git再スキャン完了（`onDidAddRepository`）を待って復元する
+- **SCMリポジトリ一覧の残留は「閉じる」では解決しない（2026-07-29確定）**: 旧スペースのリポジトリを `git.close` で消そうとしても、GitHub Pull Requests 等の他拡張がそのリポジトリを掴んでいると即座に開き直され、close↔open が繰り返される（実機ログで3往復を確認: `[Model][close]` → 7秒後に `[Model][openRepository]`）。`paradisScmRepoScope` は無限ループ回避のため3回で諦めて「開いたまま非表示」に妥協するが、その非表示は `visibleRepositories`＝「変更」ビューにしか効かず、「リポジトリ」一覧セクションは `ISCMViewService.repositories` を直接描画するため残り続けていた。**対策は閉じることではなく、`ISCMViewService` を fork 実装（`paradisScopedScmViewService.ts`、upstream の `SCMViewService` を内包）へ差し替えて一覧そのものを絞ること**。あわせて `scmRepositoriesViewPane.ts` に1行 PARA-PATCH が必要 — ツリー再構築のトリガーは `ISCMService.onDidAddRepository/onDidRemoveRepository` だけで、`ISCMViewService.onDidChangeRepositories` は upstream では誰も購読していないため、リポジトリの開閉を伴わないフォルダ入れ替えでは一覧が更新されない
 - 既知の制限: ブラウザページはウィンドウリロードを跨ぐと再ロードされる（WebContentsViewがウィンドウに紐づくため。URLはworking set経由で復元）。ブラウザのCookieパーティションは全リポジトリ共有。2Dグリッドの正確な比率はpark/unparkでは保持されるがウィンドウリロードでは1D劣化（機能2の既知の制約と同じ）
 
 ## リリース手順（runbook、2026-07-03確立・v1.128.0-paracode-2で全自動を実証済み）

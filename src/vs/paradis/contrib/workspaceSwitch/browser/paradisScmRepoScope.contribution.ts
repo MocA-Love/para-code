@@ -16,6 +16,7 @@ import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uri
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ISCMRepository, ISCMService, ISCMViewService } from '../../../../workbench/contrib/scm/common/scm.js';
+import { PARADIS_SCM_SCOPE_SETTING_ID, paradisIsScmRootInScope } from '../common/paradisScmScope.js';
 
 /**
  * ソース管理ビューのリポジトリを「現在のワークスペースフォルダに関係するもの」だけに絞る (機能1)。
@@ -42,7 +43,7 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisScmRepoScope';
 
-	private static readonly SETTING_ID = 'paradis.workspaceSwitch.scopeScmRepositories';
+	private static readonly SETTING_ID = PARADIS_SCM_SCOPE_SETTING_ID;
 
 	/** 自身の非表示化・絞り込み操作が発火させる可視変更イベントへの再入を防ぐ。 */
 	private _enforcing = false;
@@ -99,6 +100,9 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		// どちらも個別に追うのではなく、「表示に追加された」イベントを監視してスコープ外なら隠すことで
 		// 一律に打ち消す。この結果、ユーザーがスコープ外リポジトリを手動で表示する操作も維持されなく
 		// なるが、全リポジトリを見たい場合は設定 (SETTING_ID) を無効にすればよい。
+		// なお ISCMViewService が ParadisScopedScmViewService に差し替わって以降、added はスコープ内に
+		// 絞られて届くため、この打ち消しは通常到達しない。設定を無効にした状態 (= 絞り込みを外した状態)
+		// でも表示制御だけは効かせるための保険として残している。
 		// 自身の hide は removed のみのイベントで added は空のため、このハンドラが自身の操作へ
 		// 再帰することはない (_enforcing は同期発火するセッターイベントへの保険)。
 		this._register(this.scmViewService.onDidChangeVisibleRepositories(({ added }) => {
@@ -140,25 +144,10 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		return this.configurationService.getValue<boolean>(ParadisScmRepoScope.SETTING_ID) !== false;
 	}
 
-	/**
-	 * 「リポジトリのルートがワークスペースフォルダ配下にある」か「ワークスペースフォルダが
-	 * リポジトリ配下にある」(リポジトリ内のサブフォルダだけを開いている場合) をスコープ内とする。
-	 * worktree の親リポジトリや切り替え前のスペースはどちらにも該当せず、非表示になる。
-	 */
+	/** 判定は {@link paradisIsScmRootInScope} と共有する ({@link ParadisScopedScmViewService} も同じ基準で一覧を絞る)。 */
 	private isInScope(repository: ISCMRepository): boolean {
-		const root = repository.provider.rootUri;
-		if (!root) {
-			return true;
-		}
-
-		const folders = this.contextService.getWorkspace().folders;
-		if (folders.length === 0) {
-			// 空ウィンドウでは絞り込まない
-			return true;
-		}
-
-		const extUri = this.uriIdentityService.extUri;
-		return folders.some(folder => extUri.isEqualOrParent(root, folder.uri) || extUri.isEqualOrParent(folder.uri, root));
+		const folders = this.contextService.getWorkspace().folders.map(folder => folder.uri);
+		return paradisIsScmRootInScope(repository.provider.rootUri, folders, this.uriIdentityService.extUri);
 	}
 
 	/** reconcile の直列化フラグ。実行中の再スケジュールは末尾で1回だけ追い掛け実行する。 */
