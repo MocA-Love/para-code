@@ -30,7 +30,19 @@ const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab]
 const ALLOWED_THREAD_SOURCES: ReadonlySet<string> = new Set(['cli', 'vscode']);
 const MAX_PROMPT_LENGTH = 16_384;
 const MAX_ROLLOUT_BYTES = 2 * 1024 * 1024;
+// `MAX_ROLLOUT_BYTES` budgets the scanned prefix, which says nothing about a single line: a prompt
+// carrying an inline image puts a whole base64 data URL on one line. Parsing that synchronously
+// would stall the shared process, so lines past this size end the scan instead.
+const MAX_ROLLOUT_LINE_BYTES = 1024 * 1024;
 const nodeRequire = createRequire(import.meta.url);
+
+/** Bounds on the rollout scan, injectable so tests can reach the limits without huge fixtures. */
+export interface IRolloutScanLimits {
+	readonly maxBytes: number;
+	readonly maxLineBytes: number;
+}
+
+const DEFAULT_ROLLOUT_SCAN_LIMITS: IRolloutScanLimits = { maxBytes: MAX_ROLLOUT_BYTES, maxLineBytes: MAX_ROLLOUT_LINE_BYTES };
 
 interface ICodexThreadRow {
 	readonly source?: unknown;
@@ -84,33 +96,43 @@ function extractUserText(value: unknown): string | undefined {
 	return text.slice(0, MAX_PROMPT_LENGTH);
 }
 
-async function readFirstUserPrompt(codexHome: string, rolloutPath: string): Promise<string | undefined> {
+async function readFirstUserPrompt(codexHome: string, rolloutPath: string, limits: IRolloutScanLimits): Promise<IParadisCodexThreadPromptResult> {
 	if (!isAbsolute(rolloutPath) || !rolloutPath.endsWith('.jsonl')) {
-		return undefined;
+		return {};
 	}
 	const [realHome, realRollout] = await Promise.all([fs.realpath(codexHome), fs.realpath(rolloutPath)]);
 	if (!isPathInside(realHome, realRollout)) {
-		return undefined;
+		return {};
 	}
 	const input = createReadStream(realRollout, { encoding: 'utf8' });
 	const lines = createInterface({ input, crlfDelay: Infinity });
 	let bytes = 0;
 	try {
 		for await (const line of lines) {
-			bytes += Buffer.byteLength(line, 'utf8') + 1;
-			if (bytes > MAX_ROLLOUT_BYTES) {
-				break;
+			const lineBytes = Buffer.byteLength(line, 'utf8');
+			if (lineBytes > limits.maxLineBytes) {
+				return { rolloutScanExhausted: true };
 			}
+			bytes += lineBytes + 1;
 			try {
 				const prompt = extractUserText(JSON.parse(line));
 				if (prompt) {
-					return prompt;
+					return { prompt };
 				}
 			} catch {
 				// Ignore an incomplete/corrupt line and keep scanning within the bounded prefix.
 			}
+			if (bytes > limits.maxBytes) {
+				// A rollout this large without a user prompt in its prefix will not gain one by
+				// being re-read, so tell the caller to stop paying for this scan. The line that
+				// crossed the budget is parsed above rather than below, because skipping it would
+				// drop a prompt permanently now that exhaustion is not retried.
+				return { rolloutScanExhausted: true };
+			}
 		}
-		return undefined;
+		// Reaching end of file is not exhaustion: Codex appends to the rollout as the thread runs,
+		// so a later poll can still find the first user prompt.
+		return {};
 	} finally {
 		lines.close();
 		input.destroy();
@@ -123,6 +145,7 @@ export class ParadisCodexTerminalTitleService {
 	constructor(
 		private readonly logService: ILogService,
 		private readonly codexHome: string = paradisCodexHome(),
+		private readonly rolloutScanLimits: IRolloutScanLimits = DEFAULT_ROLLOUT_SCAN_LIMITS,
 	) { }
 
 	/** Returns a prompt only after UUID, source, invocation, cwd, and schema validation. */
@@ -161,8 +184,8 @@ export class ParadisCodexTerminalTitleService {
 			if (prompt) {
 				return { prompt };
 			}
-			const rolloutPath = nonEmptyString(row.rollout_path);
-			return rolloutPath ? { prompt: await readFirstUserPrompt(this.codexHome, rolloutPath) } : {};
+			const rolloutPath = request.skipRolloutScan ? undefined : nonEmptyString(row.rollout_path);
+			return rolloutPath ? await readFirstUserPrompt(this.codexHome, rolloutPath, this.rolloutScanLimits) : {};
 		} catch (error) {
 			this.logService.debug('[ParadisCodexTerminalTitle] unable to read Codex thread metadata', error);
 			return {};
