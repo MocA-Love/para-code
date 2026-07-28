@@ -32,7 +32,6 @@ import { Sequencer, Throttler } from '../../../../base/common/async.js';
 import { SCMArtifactGroupTreeElement, SCMArtifactTreeElement } from '../common/artifact.js';
 import { FuzzyScore } from '../../../../base/common/fuzzyScorer.js';
 import { IconLabel } from '../../../../base/browser/ui/iconLabel/iconLabel.js';
-import { SCMViewService } from './scmViewService.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { WorkbenchToolBar } from '../../../../platform/actions/browser/toolbar.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -286,7 +285,11 @@ class RepositoryTreeDataSource extends Disposable implements IAsyncDataSource<IS
 		}
 
 		// Explorer mode
-		if (inputOrElement instanceof SCMViewService) {
+		// PARA-PATCH: compare identity instead of using `instanceof SCMViewService`. The tree root is
+		// the ISCMViewService passed to setInput, and this fork replaces that service with an
+		// implementation that wraps upstream's SCMViewService rather than extending it
+		// (see paradis/contrib/workspaceSwitch/browser/paradisScopedScmViewService.ts).
+		if (inputOrElement === this.scmViewService) {
 			// Get all top level repositories
 			const repositories = this.scmViewService.repositories
 				.filter(r => r.provider.parentId === undefined);
@@ -384,7 +387,8 @@ class RepositoryTreeDataSource extends Disposable implements IAsyncDataSource<IS
 		}
 
 		// Explorer mode
-		if (inputOrElement instanceof SCMViewService) {
+		// PARA-PATCH: identity check, same reason as in getChildren above
+		if (inputOrElement === this.scmViewService) {
 			return this.scmViewService.repositories.length > 0;
 		} else if (isSCMRepository(inputOrElement)) {
 			return true;
@@ -523,6 +527,10 @@ export class SCMRepositoriesViewPane extends ViewPane {
 				// Add/Remove event handlers
 				this.scmService.onDidAddRepository(this.onDidAddRepository, this, this.visibilityDisposables);
 				this.scmService.onDidRemoveRepository(this.onDidRemoveRepository, this, this.visibilityDisposables);
+				// PARA-PATCH: rebuild on ISCMViewService changes as well. Switching spaces can change
+				// which repositories belong in the list without opening or closing any of them, and
+				// the events above would not fire in that case.
+				this.scmViewService.onDidChangeRepositories(() => this.updateChildren(), this, this.visibilityDisposables);
 				for (const repository of this.scmService.repositories) {
 					this.onDidAddRepository(repository);
 				}
