@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useState } from 'react';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { useAppStore } from '../appState.js';
 import type { AgentChatMessage } from '../store.js';
@@ -19,18 +20,13 @@ import { hapticSelection } from '../haptics.js';
  * expo-clipboard は build/ExpoClipboard.js のトップレベルで requireNativeModule() を呼ぶため、
  * ネイティブ側にモジュールが入っていないアプリ（依存追加後に再ビルドしていない状態）では
  * **import しただけで例外**になり、この画面を開いた瞬間にアプリごと落ちる。
- * 遅延requireにして、解決できなければコピーボタンを出さないだけにする
+ * Native module をoptionalに引き、解決できなければコピーボタンを出さないだけにする
  * （screenCornerRadius.ts の requireOptionalNativeModule と同じ考え方）。
  */
 let clipboardModule: { setStringAsync(text: string): Promise<boolean> } | null | undefined;
 function clipboard(): { setStringAsync(text: string): Promise<boolean> } | undefined {
 	if (clipboardModule === undefined) {
-		try {
-			// eslint-disable-next-line @typescript-eslint/no-require-imports
-			clipboardModule = require('expo-clipboard') as { setStringAsync(text: string): Promise<boolean> };
-		} catch {
-			clipboardModule = null;
-		}
+		clipboardModule = requireOptionalNativeModule<{ setStringAsync(text: string): Promise<boolean> }>('ExpoClipboard');
 	}
 	return clipboardModule ?? undefined;
 }
