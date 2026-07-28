@@ -3,9 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { strictEqual } from 'assert';
+import { deepStrictEqual, strictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { createCodexTerminalTitle, isCodexTuiCommand } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
+import { classifyTrackableCodexCommand, createCodexTerminalTitle, ICodexTrackableCommand, isCodexTuiCommand } from '../../electron-browser/paradisCodexTerminalTitle.contribution.js';
 
 suite('ParadisCodexTerminalTitle', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -37,6 +37,51 @@ suite('ParadisCodexTerminalTitle', () => {
 		]) {
 			test(`rejects ${command}`, () => strictEqual(isCodexTuiCommand(command), false));
 		}
+	});
+
+	suite('classifyTrackableCodexCommand', () => {
+		function command(overrides: Partial<ICodexTrackableCommand> = {}): ICodexTrackableCommand {
+			return { command: 'codex', commandLineConfidence: 'high', isTrusted: true, wasReplayed: false, cwd: '/workspace', ...overrides };
+		}
+
+		test('tracks a command line the shell vouched for', () => {
+			deepStrictEqual(classifyTrackableCodexCommand(command()), { invocation: 'start', cwd: '/workspace' });
+			deepStrictEqual(classifyTrackableCodexCommand(command({ command: 'codex resume' })), { invocation: 'resume', cwd: '/workspace' });
+		});
+
+		// A prompt that suppresses VS Code's shell integration (powerlevel10k unsets the flag that
+		// enables it) leaves every command untrusted at 'medium', recovered from the screen buffer.
+		// Refusing that left the feature dead for those users.
+		test('tracks a command line recovered from the buffer', () => {
+			deepStrictEqual(classifyTrackableCodexCommand(command({ commandLineConfidence: 'medium', isTrusted: false })), { invocation: 'start', cwd: '/workspace' });
+		});
+
+		// The buffer contains autosuggestion ghost text, so `codex` under a `codex resume --last`
+		// suggestion is recovered whole. Honouring that resume would waive the cwd check and put
+		// another directory's thread on this tab.
+		test('never grants resume to a command line the shell did not vouch for', () => {
+			deepStrictEqual(classifyTrackableCodexCommand(command({ command: 'codex resume --last', commandLineConfidence: 'medium', isTrusted: false })), { invocation: 'start', cwd: '/workspace' });
+			// 'high' without the nonce is any OSC 633;E, so it is spoofable and gets the same treatment.
+			deepStrictEqual(classifyTrackableCodexCommand(command({ command: 'codex resume --last', isTrusted: false })), { invocation: 'start', cwd: '/workspace' });
+		});
+
+		test('refuses a bare buffer guess', () => {
+			strictEqual(classifyTrackableCodexCommand(command({ commandLineConfidence: 'low', isTrusted: false })), undefined);
+			// An empty command line is what the buffer yields before anything is recovered.
+			strictEqual(classifyTrackableCodexCommand(command({ command: '', commandLineConfidence: 'medium', isTrusted: false })), undefined);
+			strictEqual(classifyTrackableCodexCommand(command({ command: '', commandLineConfidence: 'low', isTrusted: false })), undefined);
+		});
+
+		test('refuses replayed commands and non-absolute directories', () => {
+			strictEqual(classifyTrackableCodexCommand(command({ wasReplayed: true })), undefined);
+			strictEqual(classifyTrackableCodexCommand(command({ cwd: 'relative/path' })), undefined);
+			strictEqual(classifyTrackableCodexCommand(command({ cwd: undefined })), undefined);
+		});
+
+		test('refuses commands that do not start the Codex TUI', () => {
+			strictEqual(classifyTrackableCodexCommand(command({ command: 'codex exec "fix it"' })), undefined);
+			strictEqual(classifyTrackableCodexCommand(command({ command: 'codex && echo spoofed' })), undefined);
+		});
 	});
 
 	suite('createCodexTerminalTitle', () => {

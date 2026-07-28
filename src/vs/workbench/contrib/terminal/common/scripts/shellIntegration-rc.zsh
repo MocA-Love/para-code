@@ -104,6 +104,17 @@ elif [ -n "${STARSHIP_SESSION_KEY:-}" ]; then
 	builtin printf '\e]633;P;PromptType=starship\a'
 fi
 
+# PARA-PATCH: powerlevel10k runs an unconditional `unset VSCODE_SHELL_INTEGRATION` (guarded only
+# by setting __p9k_force_term_shell_integration first) because it emits its own OSC 133 markers.
+# That makes the check below abort, so VS Code never receives OSC 633;E and no command line is
+# ever reported: confidence stays at 'medium' and isTrusted stays false for every command. Each
+# feature that requires a trusted command line then fails silently. p10k's OSC 133 markers and
+# ours coexist without conflict (verified on a live window: confidence went from 'medium' to
+# 'high' with the prompt intact), so restore the flag when p10k is what cleared it.
+if [ -z "$VSCODE_SHELL_INTEGRATION" ] && [ -n "${__p9k_force_term_shell_integration:-}" ]; then
+	VSCODE_SHELL_INTEGRATION=1
+fi
+
 # Shell integration was disabled by the shell, exit without warning assuming either the shell has
 # explicitly disabled shell integration as it's incompatible or it implements the protocol.
 if [ -z "$VSCODE_SHELL_INTEGRATION" ]; then
