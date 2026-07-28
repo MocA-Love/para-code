@@ -1,12 +1,13 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import type { PendingAgentMessage } from '../pendingAgentMessages.js';
 import { BottomSheet } from './bottomSheet.js';
 import { GlassSurface } from './glassSurface.js';
 import { colors } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
+import { useStableInsets } from '../hooks/useStableInsets.js';
 
 /**
  * 「送ったが、まだ読まれていない」メッセージの件数を示すLiquid Glassのチップ。
@@ -36,27 +37,37 @@ export function PendingMessagesChip({ count, onPress }: { count: number; onPress
 	);
 }
 
+/** 最後の行とホームインジケータの間に空ける余白（これにセーフエリアを足す）。 */
+const BOTTOM_GAP = 24;
+
 /**
  * 送信予定の中身。読まれる順に並べる。
  * すでにエージェントへ渡っているので、ここから取り消すことはできない（その旨を明記する）。
+ *
+ * BottomSheetは高さ72%で内容をクリップするだけなので、スクロールと余白はここで持つ
+ * （他のシートと同じ構成）。本文は長文になりうるうえ件数も増えるため、ScrollViewが無いと
+ * 枠を超えた分に到達する手段が無くなる。下端はホームインジケータに接しないようinsetを足す。
  */
 export function PendingMessagesSheet({ visible, messages, onClose }: {
 	visible: boolean;
 	messages: readonly PendingAgentMessage[];
 	onClose: () => void;
 }) {
+	const insets = useStableInsets();
 	return (
 		<BottomSheet visible={visible} onClose={onClose} title={`送信予定 ${messages.length}件`} glass>
-			<Text style={styles.note}>エージェントが手を空けたら、この順で読まれます。送信済みのため、ここから取り消すことはできません。</Text>
-			{/* glassの上にglassを重ねない（Apple HIG）。行は不透明のまま置く */}
-			<View style={styles.list}>
-				{messages.map((message, index) => (
-					<View key={message.id} style={styles.row}>
-						<View style={styles.num}><Text style={styles.numText}>{index + 1}</Text></View>
-						<Text style={styles.rowText} selectable>{message.text}</Text>
-					</View>
-				))}
-			</View>
+			<ScrollView style={styles.body} contentContainerStyle={{ paddingBottom: BOTTOM_GAP + insets.bottom }}>
+				<Text style={styles.note}>エージェントが手を空けたら、この順で読まれます。送信済みのため、ここから取り消すことはできません。</Text>
+				{/* glassの上にglassを重ねない（Apple HIG）。行は不透明のまま置く */}
+				<View style={styles.list}>
+					{messages.map((message, index) => (
+						<View key={message.id} style={styles.row}>
+							<View style={styles.num}><Text style={styles.numText}>{index + 1}</Text></View>
+							<Text style={styles.rowText} selectable>{message.text}</Text>
+						</View>
+					))}
+				</View>
+			</ScrollView>
 		</BottomSheet>
 	);
 }
@@ -69,6 +80,7 @@ const styles = StyleSheet.create({
 	chipGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 999, overflow: 'hidden' },
 	chipDot: { width: 5, height: 5, borderRadius: 2.5, backgroundColor: colors.yellow },
 	chipText: { color: colors.text, fontSize: 10.5, fontWeight: '600' },
+	body: { paddingHorizontal: 20 },
 	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginBottom: 12 },
 	list: { gap: 8 },
 	row: {
