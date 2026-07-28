@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { Platform, Pressable, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
 import { useAppStore } from '../appState.js';
 import type { AgentChatMessage } from '../store.js';
 import { colors, mono } from '../theme.js';
@@ -15,6 +14,26 @@ import { hapticSelection } from '../haptics.js';
  * - 縦は上限を決めて枠内スクロール（会話本文の流れを押し流さない）
  * - PC側で切り詰められている場合だけ、下端から全文をオンデマンド取得する
  */
+
+/**
+ * expo-clipboard は build/ExpoClipboard.js のトップレベルで requireNativeModule() を呼ぶため、
+ * ネイティブ側にモジュールが入っていないアプリ（依存追加後に再ビルドしていない状態）では
+ * **import しただけで例外**になり、この画面を開いた瞬間にアプリごと落ちる。
+ * 遅延requireにして、解決できなければコピーボタンを出さないだけにする
+ * （screenCornerRadius.ts の requireOptionalNativeModule と同じ考え方）。
+ */
+let clipboardModule: { setStringAsync(text: string): Promise<boolean> } | null | undefined;
+function clipboard(): { setStringAsync(text: string): Promise<boolean> } | undefined {
+	if (clipboardModule === undefined) {
+		try {
+			// eslint-disable-next-line @typescript-eslint/no-require-imports
+			clipboardModule = require('expo-clipboard') as { setStringAsync(text: string): Promise<boolean> };
+		} catch {
+			clipboardModule = null;
+		}
+	}
+	return clipboardModule ?? undefined;
+}
 
 /**
  * PC側で切り詰められた本文の全文取り寄せ。展開したときだけ通信するので、
@@ -68,9 +87,10 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 	// 全文取得後は取得結果（＝元の生テキスト）へ切り替える。
 	const body = (full ?? text ?? message.text).replace(/\n+$/, '');
 	const lineCount = body.length === 0 ? 0 : body.split('\n').length;
+	const clip = clipboard();
 	const copy = () => {
 		hapticSelection();
-		void Clipboard.setStringAsync(body).then(() => {
+		void clip?.setStringAsync(body).then(() => {
 			setCopied(true);
 			setTimeout(() => setCopied(false), 1200);
 		}).catch(() => { /* コピー不可の環境では黙って何もしない */ });
@@ -87,9 +107,11 @@ export function IOBlock({ label, message, terminalKey, lines, text }: { label: s
 				>
 					<Text style={[styles.ioActionText, wrap ? styles.ioActionOn : null]}>折り返し</Text>
 				</Pressable>
-				<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction}>
-					<Text style={[styles.ioActionText, copied ? styles.ioActionDone : null]}>{copied ? 'コピー済' : 'コピー'}</Text>
-				</Pressable>
+				{clip !== undefined ? (
+					<Pressable onPress={copy} accessibilityRole="button" accessibilityLabel="内容をコピー" style={styles.ioAction}>
+						<Text style={[styles.ioActionText, copied ? styles.ioActionDone : null]}>{copied ? 'コピー済' : 'コピー'}</Text>
+					</Pressable>
+				) : null}
 			</View>
 			<ScrollView style={styles.ioScroll} nestedScrollEnabled contentContainerStyle={styles.ioScrollContent}>
 				{wrap
