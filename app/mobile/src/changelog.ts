@@ -49,6 +49,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: 'アーカイブしようと横に引いても行が動かず、ワークスペースを開く右スワイプまで効かなくなっていました。',
 				tone: 'green',
 			},
+			{
+				icon: 'paper-plane-outline',
+				title: '送信予定の一覧が最後まで読めるように',
+				body: '下の端で切れて続きに進めず、本文も画面の端に張り付いていました。指でたどって最後まで読めます。',
+				tone: 'green',
+			},
 		],
 	},
 	{
