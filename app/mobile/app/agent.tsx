@@ -15,6 +15,7 @@ import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.
 import { ApprovalCard } from '../src/components/approvalCard.js';
 import { AgentActivityCard, AgentActivityStrip } from '../src/components/agentActivityCard.js';
 import { AgentTimeline } from '../src/components/agentTimeline.js';
+import { ToolImageCards } from '../src/components/agentToolBodies.js';
 import { IOBlock } from '../src/components/agentIoBlock.js';
 import { formatToolName } from '../src/agentToolMeta.js';
 import { findLatestApprovalRequest } from '../src/components/attentionStack.js';
@@ -459,7 +460,7 @@ export default function AgentDetailScreen() {
 							? <WorkingIndicator live={chat?.live} pendingCount={pendingMessages.length} onOpenPending={() => setPendingSheetOpen(true)} />
 							: null}
 						renderItem={({ item }) =>
-							item.type === 'msg' ? <MessageBubble message={item.m} />
+							item.type === 'msg' ? <MessageBubble message={item.m} terminalKey={activeKey} />
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
 								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
 									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} terminalKey={activeKey} />
@@ -619,7 +620,7 @@ function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; te
 	</View>;
 }
 
-function MessageBubble({ message }: { message: AgentChatMessage }) {
+function MessageBubble({ message, terminalKey }: { message: AgentChatMessage; terminalKey?: string }) {
 	if (message.kind === 'peer_message') {
 		return (
 			<View style={styles.peerMessageCard}>
@@ -633,11 +634,17 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 		);
 	}
 	const isUser = message.role === 'user';
+	// ユーザーが貼った画像は発言と一緒に届く。本文の下にプレビューを添える
+	// （タップで全画面。取り寄せの仕組みはツール結果の画像と共通）。
+	const hasImages = (message.images?.length ?? 0) > 0;
 	return (
 		<View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}>
-			{isUser
-				? <Text style={styles.bubbleText} selectable>{message.text}</Text>
-				: <MarkdownText text={message.text} />}
+			{message.text.trim().length > 0 ? (
+				isUser
+					? <Text style={styles.bubbleText} selectable>{message.text}</Text>
+					: <MarkdownText text={message.text} />
+			) : null}
+			{hasImages ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
 		</View>
 	);
 }

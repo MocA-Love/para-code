@@ -114,8 +114,9 @@ export interface IParadisAgentChatMessage {
 	 */
 	readonly truncated?: boolean;
 	/**
-	 * kind==='tool_result' のとき: 結果に含まれていた画像のメタ情報（Readで読んだ画像、
-	 * MCPのスクリーンショット等）。実体は 'tool-image' で別途取り寄せる。
+	 * 画像のメタ情報。ツール結果に含まれていた画像（Readで読んだ画像、MCPのスクリーンショット、
+	 * Codex の view_image）と、ユーザーが発言に貼った画像の両方で付く。
+	 * 実体は 'tool-image' で別途取り寄せる。
 	 */
 	readonly images?: readonly IParadisAgentChatImage[];
 }
@@ -627,6 +628,12 @@ interface IParseSignals {
 	 */
 	turnEnded: 'completed' | 'failed' | 'interrupted' | undefined;
 	readonly codexActivityTimeline: ICodexTranscriptActivityEvent[];
+	/**
+	 * 直前に現れた Codex の view_image 呼び出しの call_id。
+	 * Codex は読んだ画像の実体を「関数の結果」ではなく直後の user メッセージへ書くため、
+	 * その画像をユーザーの発言ではなく view_image の結果として繋ぐのに使う。
+	 */
+	pendingCodexImageCallId?: string;
 	model?: string;
 	effort?: string;
 }
@@ -1007,6 +1014,38 @@ interface IFlattenedContent {
 	readonly images: readonly IFlattenedImage[];
 }
 
+function isImageMediaType(value: string): boolean {
+	return /^image\/[a-zA-Z0-9.+-]{1,60}$/.test(value);
+}
+
+/**
+ * 平坦化後の本文が画像のプレースホルダだけか（＝読める文が1つも無いか）。
+ * 画像ブロックは `[image]` の行として残るため、本文の有無はこれで判定する。
+ */
+function isImagePlaceholderOnly(text: string): boolean {
+	return text.split('\n').every(line => {
+		const trimmed = line.trim();
+		return trimmed.length === 0 || trimmed === '[image]';
+	});
+}
+
+/**
+ * Codex が rollout に書く画像は data URI 形式（`data:image/png;base64,...`）。
+ * 想定外の形（外部URL・base64以外のエンコード）は取り込まない。
+ */
+export function parseImageDataUri(value: string | undefined): IFlattenedImage | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/.exec(value);
+	const mediaType = match?.[1];
+	const base64 = match?.[2];
+	if (mediaType === undefined || base64 === undefined || base64.length === 0 || !isImageMediaType(mediaType)) {
+		return undefined;
+	}
+	return { mediaType, base64 };
+}
+
 /** tool_result 等の content (string | ブロック配列) を表示テキストへ平坦化する。 */
 function flattenContent(content: unknown): string {
 	return flattenContentParts(content).text;
@@ -1032,12 +1071,20 @@ function flattenContentParts(content: unknown): IFlattenedContent {
 			if (text !== undefined) {
 				parts.push(text);
 			} else if (b['type'] === 'image') {
+				// Claude: { type:'image', source:{ type:'base64', media_type, data } }
 				parts.push('[image]');
 				const source = rec(b['source']);
 				const base64 = str(source?.['data']);
 				const mediaType = str(source?.['media_type']);
-				if (str(source?.['type']) === 'base64' && base64 !== undefined && base64.length > 0 && mediaType !== undefined && /^image\/[a-zA-Z0-9.+-]{1,60}$/.test(mediaType)) {
+				if (str(source?.['type']) === 'base64' && base64 !== undefined && base64.length > 0 && mediaType !== undefined && isImageMediaType(mediaType)) {
 					images.push({ mediaType, base64 });
+				}
+			} else if (b['type'] === 'input_image') {
+				// Codex: { type:'input_image', image_url:'data:image/png;base64,...' }
+				parts.push('[image]');
+				const image = parseImageDataUri(str(b['image_url']));
+				if (image !== undefined) {
+					images.push(image);
 				}
 			}
 		}
@@ -1263,6 +1310,9 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 			return out;
 		}
 		if (Array.isArray(content)) {
+			// ユーザーが貼った画像は tool_result ではなく content 直下に image ブロックとして入る。
+			// 本文と同じ発言の一部なので、テキスト側のメッセージへまとめて添える。
+			const pastedImages: IFlattenedImage[] = [];
 			for (const block of content) {
 				const b = rec(block);
 				if (!b) {
@@ -1270,6 +1320,11 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 				}
 				if (b['type'] === 'text') {
 					pushClaudeUserText(out, str(b['text']) ?? '', ts, signals);
+				} else if (b['type'] === 'image') {
+					const image = flattenContentParts([b]).images[0];
+					if (image !== undefined) {
+						pastedImages.push(image);
+					}
 				} else if (b['type'] === 'tool_result') {
 					const { text, images } = flattenContentParts(b['content']);
 					// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う（本文が空でも回答は成立する）。
@@ -1293,6 +1348,17 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 							...(images.length > 0 ? { imageData: images } : {}),
 						});
 					}
+				}
+			}
+			if (pastedImages.length > 0) {
+				// 直前のユーザー発言に添える。画像だけを貼った（本文なし）ときは
+				// 画像だけの発言として1件作る。
+				const last = out.at(-1);
+				if (last?.role === 'user' && last.kind === 'text' && last.imageData === undefined) {
+					out[out.length - 1] = { ...last, imageData: pastedImages };
+				} else {
+					signals.userText = true;
+					out.push({ role: 'user', kind: 'text', text: '', ts, imageData: pastedImages });
 				}
 			}
 		}
@@ -1395,6 +1461,27 @@ export function paradisParseCodexTranscriptLineForTest(line: string): { messages
 	const activity = signals.codexActivityTimeline.find((event): event is Extract<ICodexTranscriptActivityEvent, { type: 'subagent' }> => event.type === 'subagent');
 	const turn = signals.codexActivityTimeline.find(event => event.type === 'turnStart' || event.type === 'turnEnd');
 	return { messages, ...(activity !== undefined ? { activity: { id: activity.id, ...(activity.agentPath !== undefined ? { agentPath: activity.agentPath } : {}), kind: activity.kind, at: activity.at } } : {}), ...(turn !== undefined ? { turn: turn.type === 'turnStart' ? 'started' : 'ended' } : {}) };
+}
+
+/**
+ * 連続する Codex rollout 行を1つの signals で通す（view_image のように、呼び出しと
+ * 画像の実体が別の行に分かれる並びを検証するため）。
+ */
+export function paradisParseCodexTranscriptLinesForTest(lines: readonly string[]): IRawMessage[] {
+	const signals = newParseSignals();
+	const out: IRawMessage[] = [];
+	for (const line of lines) {
+		let obj: Record<string, unknown> | undefined;
+		try {
+			obj = rec(JSON.parse(line));
+		} catch {
+			continue;
+		}
+		if (obj !== undefined) {
+			out.push(...parseCodexLine(obj, signals));
+		}
+	}
+	return JSON.parse(JSON.stringify(out)) as IRawMessage[];
 }
 
 /** Codex子threadのrollout行を、SubAgent詳細用メッセージへ正規化する。 */
@@ -1549,14 +1636,33 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		if (role !== 'user' && role !== 'assistant') {
 			return []; // developer / system プロンプトは出さない
 		}
-		const text = flattenContent(payload['content']);
+		const { text, images } = flattenContentParts(payload['content']);
 		// Codexはuserメッセージとして環境コンテキスト/プロジェクト指示を注入するため表示から除く。
 		// 旧CLI(0.4x): <environment_context> / <user_instructions>
 		// 新CLI(0.80+): 「# AGENTS.md instructions for <path>」見出し＋<INSTRUCTIONS>ラッパー
 		const trimmedText = text.trim();
-		if (trimmedText.length === 0
-			|| /^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(trimmedText)
+		if (/^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(trimmedText)
 			|| trimmedText.startsWith('# AGENTS.md instructions for')) {
+			return [];
+		}
+		if (images.length > 0) {
+			// Codex は view_image の実体を「関数の結果」ではなく直後の user メッセージへ
+			// input_image として書く。本文のない画像だけのメッセージがそれで、ユーザーの発言
+			// ではなく直前の view_image の結果なので、ツール結果として繋ぐ（signals が覚えた
+			// call_id を使う）。本文つき = ユーザーが貼った画像はそのまま発言として出す。
+			const viewImageCallId = isImagePlaceholderOnly(trimmedText) ? signals.pendingCodexImageCallId : undefined;
+			if (viewImageCallId !== undefined) {
+				signals.pendingCodexImageCallId = undefined;
+				out.push({
+					role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts,
+					toolUseId: viewImageCallId, imageData: images,
+				});
+				return out;
+			}
+			out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts, imageData: images });
+			return out;
+		}
+		if (trimmedText.length === 0) {
 			return [];
 		}
 		out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
@@ -1569,6 +1675,10 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
 		const tool = str(payload['name']) ?? 'tool';
 		const text = str(payload['arguments']) ?? str(payload['input']) ?? '';
+		if (tool === 'view_image') {
+			// 実体は直後の user メッセージへ書かれる。その画像をこの呼び出しへ繋ぐため覚えておく。
+			signals.pendingCodexImageCallId = callId;
+		}
 		out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'web_search_call' || ptype === 'tool_search_call') {
 		// web_search_call は action.query、tool_search_call は arguments(オブジェクト)にクエリが入る
@@ -1644,7 +1754,10 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 				}
 			}
 		}
-		if (text.trim().length > 0) {
+		// view_image は結果本文を持たず（"attached local image path" とだけ書く）、実体は直後の
+		// user メッセージに来る。この定型文を出すと画像カードと同じ枠が二重に並ぶので落とす。
+		const isViewImagePlaceholder = callId !== undefined && callId === signals.pendingCodexImageCallId && text.trim() === 'attached local image path';
+		if (text.trim().length > 0 && !isViewImagePlaceholder) {
 			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(failed ? { isError: true } : {}) });
 		}
 	}

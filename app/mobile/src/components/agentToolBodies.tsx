@@ -165,7 +165,7 @@ export function ToolStepBody({ step, terminalKey }: { step: AgentTimelineStep; t
  * 画像がある結果はテキスト側が `[image]` だけになるため、呼び出し側は結果の
  * IOBlock を出さない。
  */
-function ToolImageCards({ result, terminalKey, path }: { result: AgentChatMessage; terminalKey?: string; path?: string }) {
+export function ToolImageCards({ result, terminalKey, path }: { result: AgentChatMessage; terminalKey?: string; path?: string }) {
 	const images = result.images ?? [];
 	const [openIndex, setOpenIndex] = useState<number | undefined>(undefined);
 	if (images.length === 0) {
