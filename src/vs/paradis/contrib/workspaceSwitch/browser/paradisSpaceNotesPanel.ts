@@ -9,14 +9,17 @@
 import * as DOM from '../../../../base/browser/dom.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { Orientation, Sash, SashState } from '../../../../base/browser/ui/sash/sash.js';
-import { Action } from '../../../../base/common/actions.js';
+import { Action, Separator } from '../../../../base/common/actions.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
+import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisSpaceNoteLine, IParadisSpaceNotesService, PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisContinueSpaceNoteList, paradisParseSpaceNote, paradisToggleSpaceNoteListMarkers } from '../common/paradisSpaceNotes.js';
@@ -62,7 +65,8 @@ function parsePanelState(raw: string | undefined): IPanelState {
  *
  * - 表示モードでは Markdown のチェックリスト (`- [ ]` / `- [x]`) をチェックボックスとして描画し、
  *   クリックで完了をトグルして即保存する
- * - 本文をクリックすると textarea による編集モードになり、フォーカスアウト / Escape で保存する
+ * - ヘッダー右のペンを押すと textarea による編集モードになり、フォーカスアウト / Escape で保存する
+ *   (本文のクリックでは編集モードに入らない)
  * - ヘッダーで開閉、上端の Sash で高さを変更でき、いずれも WORKSPACE ストレージに永続化する
  */
 export class ParadisSpaceNotesPanel extends Disposable {
@@ -93,6 +97,8 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	private editing = false;
 	/** 「やることを追加」行が入力状態か。 */
 	private adding = false;
+	/** 「この項目を編集」で1行だけ入力状態にしているチェックリストの行番号。 */
+	private editingTaskIndex: number | undefined;
 	private availableHeight = 0;
 
 	constructor(
@@ -100,6 +106,8 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		@IParadisSpaceNotesService private readonly notesService: IParadisSpaceNotesService,
 		@IStorageService private readonly storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
+		@IContextMenuService private readonly contextMenuService: IContextMenuService,
+		@IClipboardService private readonly clipboardService: IClipboardService,
 	) {
 		super();
 
@@ -159,15 +167,6 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			}
 		}));
 
-		this._register(DOM.addDisposableListener(this.bodyElement, DOM.EventType.CLICK, event => {
-			// チェックリスト行と「やることを追加」行は自前の操作を持つので、編集モードへは入らない
-			const target = event.target as HTMLElement;
-			if (target.closest('.paradis-space-notes-task') || target.closest('.paradis-space-notes-add')) {
-				return;
-			}
-			this.setEditing(true);
-		}));
-
 		this._register(DOM.addDisposableListener(this.editorElement, DOM.EventType.BLUR, () => this.setEditing(false)));
 		this._register(DOM.addDisposableListener(this.editorElement, DOM.EventType.KEY_DOWN, (event: KeyboardEvent) => {
 			const keyboardEvent = new StandardKeyboardEvent(event);
@@ -200,6 +199,9 @@ export class ParadisSpaceNotesPanel extends Disposable {
 
 		this._register(this.notesService.onDidChangeNotes(changed => {
 			if (this.stateKey !== undefined && changed.includes(this.stateKey) && !this.editing) {
+				// 他ウィンドウが同じスペースを書き換えると行番号の指す先が変わりうるので、
+				// 1行編集は開いたままにせず閉じる
+				this.editingTaskIndex = undefined;
 				this.render();
 			}
 		}));
@@ -240,6 +242,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		}
 		this.currentColorHex = colorHex;
 		this.adding = false;
+		this.editingTaskIndex = undefined;
 		if (this.editing) {
 			// 切り替え前の編集内容は切り替え先へ持ち越さず、元のスペースへ保存する
 			this.setEditing(false);
@@ -295,8 +298,13 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			return;
 		}
 		this.expanded = expanded;
-		if (!expanded && this.editing) {
-			this.setEditing(false);
+		if (!expanded) {
+			// 畳んだ本文の中で入力欄にフォーカスが残らないようにする
+			this.adding = false;
+			this.editingTaskIndex = undefined;
+			if (this.editing) {
+				this.setEditing(false);
+			}
 		}
 		this.applyHeight();
 		this.render();
@@ -324,6 +332,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			}
 			this.editing = true;
 			this.adding = false;
+			this.editingTaskIndex = undefined;
 			this.editorElement.value = this.notesService.read(this.stateKey);
 			this.render();
 			this.editorElement.focus();
@@ -369,7 +378,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		}
 		if (text.trim().length === 0) {
 			// allow-any-unicode-next-line
-			DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-placeholder')).textContent = localize('paradis.spaceNotes.empty', "このスペースのメモはまだありません。クリックして書き始められます。");
+			DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-placeholder')).textContent = localize('paradis.spaceNotes.empty', "このスペースのメモはまだありません。右上のペンから書き始められます。");
 		} else {
 			for (const line of paradisParseSpaceNote(text)) {
 				this.renderLine(line);
@@ -470,15 +479,17 @@ export class ParadisSpaceNotesPanel extends Disposable {
 				DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-text')).textContent = line.text;
 				return;
 			case 'task': {
+				if (this.editingTaskIndex === line.index) {
+					this.renderTaskEditRow(line);
+					return;
+				}
 				const row = DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-task'));
 				row.classList.toggle('done', line.done);
-				const check = DOM.append(row, DOM.$('.paradis-space-notes-check'));
+				const check = this.appendTaskCheck(row);
 				check.tabIndex = 0;
 				check.setAttribute('role', 'checkbox');
 				check.setAttribute('aria-checked', String(line.done));
 				check.setAttribute('aria-label', line.text);
-				const checkIcon = DOM.append(check, DOM.$('.codicon'));
-				checkIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.check).replace('codicon ', '')}`;
 				DOM.append(row, DOM.$('.paradis-space-notes-task-label')).textContent = line.text;
 
 				const toggle = () => {
@@ -487,7 +498,11 @@ export class ParadisSpaceNotesPanel extends Disposable {
 					}
 				};
 				// 14px のチェックボックスだけを的にせず、行のどこを押してもトグルできるようにする
-				this.bodyDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CLICK, event => {
+				this.bodyDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CLICK, (event: MouseEvent) => {
+					// macOS の Ctrl+クリックは右クリックと同じ扱い (メニューを出してトグルはしない)
+					if (event.button !== 0 || event.ctrlKey) {
+						return;
+					}
 					DOM.EventHelper.stop(event, true);
 					toggle();
 				}));
@@ -498,9 +513,142 @@ export class ParadisSpaceNotesPanel extends Disposable {
 						toggle();
 					}
 				}));
+				this.bodyDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CONTEXT_MENU, (event: MouseEvent) => {
+					DOM.EventHelper.stop(event, true);
+					this.showTaskContextMenu(line, row, new StandardMouseEvent(DOM.getWindow(row), event));
+				}));
 				return;
 			}
 		}
+	}
+
+	private appendTaskCheck(row: HTMLElement): HTMLElement {
+		const check = DOM.append(row, DOM.$('.paradis-space-notes-check'));
+		const checkIcon = DOM.append(check, DOM.$('.codicon'));
+		checkIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.check).replace('codicon ', '')}`;
+		return check;
+	}
+
+	/**
+	 * 右クリックした1件だけに効くメニュー。チェックリスト行からのみ開く
+	 * (見出し・本文行・「やることを追加」行では出さない)。
+	 */
+	private showTaskContextMenu(line: IParadisSpaceNoteLine, row: HTMLElement, anchor: StandardMouseEvent): void {
+		const stateKey = this.stateKey;
+		if (stateKey === undefined) {
+			return;
+		}
+		// どの行に対するメニューなのかを、開いているあいだ見えるようにする
+		row.classList.add('context-open');
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => anchor,
+			onHide: () => row.classList.remove('context-open'),
+			getActions: () => [
+				new Action(
+					'paradis.spaceNotes.task.toggle',
+					line.done
+						// allow-any-unicode-next-line
+						? localize('paradis.spaceNotes.task.undone', "未完了に戻す")
+						// allow-any-unicode-next-line
+						: localize('paradis.spaceNotes.task.done', "完了にする"),
+					undefined,
+					true,
+					async () => this.notesService.toggleTask(stateKey, line.index)
+				),
+				new Separator(),
+				new Action(
+					'paradis.spaceNotes.task.edit',
+					// allow-any-unicode-next-line
+					localize('paradis.spaceNotes.task.edit', "この項目を編集"),
+					undefined,
+					true,
+					async () => this.startEditingTask(line.index)
+				),
+				new Action(
+					'paradis.spaceNotes.task.copy',
+					// allow-any-unicode-next-line
+					localize('paradis.spaceNotes.task.copy', "テキストをコピー"),
+					undefined,
+					true,
+					async () => this.clipboardService.writeText(line.text)
+				),
+				new Separator(),
+				new Action(
+					'paradis.spaceNotes.task.delete',
+					// allow-any-unicode-next-line
+					localize('paradis.spaceNotes.task.delete', "削除"),
+					undefined,
+					true,
+					async () => this.notesService.removeTask(stateKey, line.index)
+				)
+			]
+		});
+	}
+
+	private startEditingTask(lineIndex: number): void {
+		this.adding = false;
+		this.editingTaskIndex = lineIndex;
+		this.render();
+	}
+
+	/**
+	 * 「この項目を編集」で開く1行入力。チェック状態とぶら下がる継続行は保ったまま文言だけ差し替える。
+	 * Enter で確定、Escape で取り消し、フォーカスアウトでも確定する (メモ全体の編集と揃える)。
+	 */
+	private renderTaskEditRow(line: IParadisSpaceNoteLine): void {
+		const row = DOM.append(this.bodyElement, DOM.$('.paradis-space-notes-task.editing'));
+		row.classList.toggle('done', line.done);
+		this.appendTaskCheck(row);
+
+		const input = DOM.append(row, DOM.$('textarea.paradis-space-notes-task-input')) as HTMLTextAreaElement;
+		input.rows = 1;
+		input.spellcheck = false;
+		input.maxLength = PARADIS_SPACE_NOTE_MAX_LENGTH;
+		input.value = line.text;
+		// allow-any-unicode-next-line
+		input.setAttribute('aria-label', localize('paradis.spaceNotes.task.editAriaLabel', "やることを編集"));
+		const autoGrow = () => {
+			input.style.height = 'auto';
+			input.style.height = `${input.scrollHeight}px`;
+		};
+		this.bodyDisposables.add(DOM.addDisposableListener(input, DOM.EventType.INPUT, autoGrow));
+
+		// 確定・取り消しのどちらでも行を組み直すため、外れた入力欄からの blur で二重に走らせない
+		let finished = false;
+		const finish = (commit: boolean) => {
+			// 他ウィンドウの更新などで編集が閉じられた後に届いた blur では書き戻さない
+			// (行番号が指す先が変わっている可能性があるため)
+			if (finished || this.editingTaskIndex !== line.index) {
+				finished = true;
+				return;
+			}
+			finished = true;
+			const value = input.value;
+			this.editingTaskIndex = undefined;
+			if (commit && this.stateKey !== undefined) {
+				this.notesService.updateTaskText(this.stateKey, line.index, value);
+			}
+			this.render();
+		};
+
+		this.bodyDisposables.add(DOM.addDisposableListener(input, DOM.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+			const keyboardEvent = new StandardKeyboardEvent(event);
+			// 1行のやることを直す場所なので、Shift+Enter でも行は増やさない
+			if (keyboardEvent.equals(KeyCode.Enter) || keyboardEvent.equals(KeyMod.Shift | KeyCode.Enter)) {
+				DOM.EventHelper.stop(event, true);
+				finish(true);
+				return;
+			}
+			if (keyboardEvent.equals(KeyCode.Escape)) {
+				DOM.EventHelper.stop(event, true);
+				finish(false);
+			}
+		}));
+		this.bodyDisposables.add(DOM.addDisposableListener(input, DOM.EventType.BLUR, () => finish(true)));
+
+		input.focus();
+		input.setSelectionRange(input.value.length, input.value.length);
+		autoGrow();
 	}
 
 	private persistPanelState(): void {

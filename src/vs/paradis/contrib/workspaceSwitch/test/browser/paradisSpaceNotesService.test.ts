@@ -63,6 +63,29 @@ suite('ParadisSpaceNotesService', () => {
 		assert.strictEqual(service.read('worktree:a'), '- [ ] a\n- [x] b');
 	});
 
+	test('removes and edits a single checklist line', () => {
+		const context = createContext(store, JSON.stringify({ 'worktree:a': { text: '- [ ] a\n  補足\n- [x] b', updatedAt: 1 } }));
+		const service = store.add(context.create());
+
+		service.updateTaskText('worktree:a', 2, 'b を書き直した');
+		assert.strictEqual(service.read('worktree:a'), '- [ ] a\n  補足\n- [x] b を書き直した');
+
+		service.removeTask('worktree:a', 0);
+		assert.strictEqual(service.read('worktree:a'), '- [x] b を書き直した');
+
+		// チェックリストでない行・存在しないスペースでは何も起きない
+		service.removeTask('worktree:a', 3);
+		service.removeTask('worktree:missing', 0);
+		service.updateTaskText('worktree:a', 0, '   ');
+		assert.strictEqual(service.read('worktree:a'), '- [x] b を書き直した');
+
+		// 最後の1件を消したらエントリごと片付ける
+		service.removeTask('worktree:a', 0);
+		assert.strictEqual(service.read('worktree:a'), '');
+		service.dispose();
+		assert.deepStrictEqual(JSON.parse(context.storage.value!), {});
+	});
+
 	test('adopts notes written by another window', () => {
 		const context = createContext(store, JSON.stringify({ 'worktree:a': { text: '古い', updatedAt: 1 } }));
 		const service = store.add(context.create());

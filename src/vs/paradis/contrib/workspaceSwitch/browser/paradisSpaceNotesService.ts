@@ -20,6 +20,8 @@ import {
 	PARADIS_SPACE_NOTES_STORAGE_KEY,
 	paradisNormalizeSpaceNoteText,
 	paradisParseSpaceNotes,
+	paradisRemoveSpaceNoteTask,
+	paradisReplaceSpaceNoteTaskText,
 	paradisSerializeSpaceNotes,
 	paradisSpaceNoteSummary,
 	paradisToggleSpaceNoteTask
@@ -125,6 +127,31 @@ export class ParadisSpaceNotesService extends Disposable implements IParadisSpac
 		}
 		this.notes.set(stateKey, { text: toggled, updatedAt: Date.now() });
 		this.markDirty([stateKey]);
+	}
+
+	removeTask(stateKey: string, lineIndex: number): void {
+		const current = this.notes.get(stateKey)?.text;
+		if (current === undefined) {
+			return;
+		}
+		const removed = paradisRemoveSpaceNoteTask(current, lineIndex);
+		if (removed === undefined) {
+			return;
+		}
+		// 最後の1件を消して空になったらエントリごと片付けたいので write() を通す
+		this.write(stateKey, removed);
+	}
+
+	updateTaskText(stateKey: string, lineIndex: number, taskText: string): void {
+		const current = this.notes.get(stateKey)?.text;
+		if (current === undefined) {
+			return;
+		}
+		const replaced = paradisReplaceSpaceNoteTaskText(current, lineIndex, taskText);
+		if (replaced === undefined) {
+			return;
+		}
+		this.write(stateKey, replaced);
 	}
 
 	remove(stateKey: string): void {
