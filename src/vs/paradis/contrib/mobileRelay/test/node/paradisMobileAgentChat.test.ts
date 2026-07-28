@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
@@ -578,6 +578,65 @@ suite('ParadisMobileAgentChat', () => {
 		assert.deepStrictEqual(parsed.messages, [{
 			role: 'tool', kind: 'tool_result', text: '[image]', toolUseId: 'toolu_shot_1',
 			imageData: [{ mediaType: 'image/jpeg', base64: 'Zm9v' }],
+		}]);
+	});
+
+	test('attaches images the user pasted to their own message', () => {
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({
+			type: 'user',
+			message: {
+				content: [
+					{ type: 'text', text: 'これでいい?' },
+					{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAECAwQ=' } },
+				],
+			},
+		}));
+		assert.strictEqual(parsed.userText, true);
+		assert.deepStrictEqual(parsed.messages, [{
+			role: 'user', kind: 'text', text: 'これでいい?',
+			imageData: [{ mediaType: 'image/png', base64: 'AAECAwQ=' }],
+		}]);
+	});
+
+	test('keeps an image-only user message instead of dropping it', () => {
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({
+			type: 'user',
+			message: { content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'Zm9v' } }] },
+		}));
+		assert.deepStrictEqual(parsed.messages, [{
+			role: 'user', kind: 'text', text: '', imageData: [{ mediaType: 'image/png', base64: 'Zm9v' }],
+		}]);
+	});
+
+	test('ties a Codex view_image image back to the call instead of the user', () => {
+		// Codex は読んだ画像を「関数の結果」ではなく直後の user メッセージへ書く。
+		const messages = paradisParseCodexTranscriptLinesForTest([
+			JSON.stringify({ type: 'response_item', payload: { type: 'function_call', name: 'view_image', arguments: '{"path":"/tmp/a.png"}', call_id: 'call_1' } }),
+			JSON.stringify({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_1', output: 'attached local image path' } }),
+			JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_image', image_url: 'data:image/png;base64,AAECAwQ=' }] } }),
+		]);
+		assert.deepStrictEqual(messages, [
+			{ role: 'assistant', kind: 'tool_use', tool: 'view_image', text: '{"path":"/tmp/a.png"}', toolUseId: 'call_1' },
+			{ role: 'tool', kind: 'tool_result', text: '[image]', toolUseId: 'call_1', imageData: [{ mediaType: 'image/png', base64: 'AAECAwQ=' }] },
+		]);
+	});
+
+	test('keeps a Codex image the user pasted as their own message', () => {
+		const messages = paradisParseCodexTranscriptLinesForTest([
+			JSON.stringify({
+				type: 'response_item', payload: {
+					type: 'message', role: 'user', content: [
+						{ type: 'input_text', text: '幅が変わっている' },
+						{ type: 'input_image', image_url: 'data:image/png;base64,Zm9v' },
+						// 外部URLの画像は実体を持たないので取り込まない
+						{ type: 'input_image', image_url: 'https://example.com/a.png' },
+					],
+				},
+			}),
+		]);
+		assert.deepStrictEqual(messages, [{
+			role: 'user', kind: 'text', text: '幅が変わっている\n[image]\n[image]',
+			imageData: [{ mediaType: 'image/png', base64: 'Zm9v' }],
 		}]);
 	});
 

@@ -45,8 +45,8 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		items: [
 			{
 				icon: 'image-outline',
-				title: 'Claude Codeが読んだ画像を、その場で見られるようになりました',
-				body: 'スクリーンショットを読んだステップに小さなプレビューが出ます。タップすると全画面で開けます。これまでは「[image]」とだけ表示されていました。',
+				title: 'やり取りの中の画像が、その場で見られるようになりました',
+				body: 'エージェントが読んだスクリーンショットや、自分が貼った画像に小さなプレビューが出ます。タップすると全画面で開けます。これまでは「[image]」とだけ表示されていました。',
 			},
 			{
 				icon: 'add-circle-outline',
