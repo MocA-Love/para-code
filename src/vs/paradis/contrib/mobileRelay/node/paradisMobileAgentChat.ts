@@ -56,6 +56,24 @@ export interface IParadisAgentQuestionOption {
 	readonly description?: string;
 }
 
+/**
+ * tool_result に含まれていた画像1枚のメタ情報。実体（base64）はここには載せず、
+ * モバイルがステップを開いたときの 'tool-image' 要求で初めて転送する。
+ */
+export interface IParadisAgentChatImage {
+	/** 同一メッセージ内での並び順。'tool-image' 要求のキー（rev と組で1枚を指す）。 */
+	readonly index: number;
+	/** 'image/png' 等。モバイルは data URI の組み立てに使う。 */
+	readonly mediaType: string;
+	/** デコード後のおおよそのバイト数（モバイルの容量表示用）。 */
+	readonly bytes: number;
+	/**
+	 * 大きすぎて実体を保持していない。モバイルは取り寄せを試みず、その旨を表示する
+	 * （保持期限切れと区別するためのフラグ）。
+	 */
+	readonly oversize?: true;
+}
+
 /** モバイルへ送る正規化済みチャットメッセージ1件。 */
 export interface IParadisAgentChatMessage {
 	/** epoch内で単調増加する連番 (差分同期用)。 */
@@ -95,6 +113,11 @@ export interface IParadisAgentChatMessage {
 	 * リクエストで全文を取り寄せられる（展開時のオンデマンド取得）。
 	 */
 	readonly truncated?: boolean;
+	/**
+	 * kind==='tool_result' のとき: 結果に含まれていた画像のメタ情報（Readで読んだ画像、
+	 * MCPのスクリーンショット等）。実体は 'tool-image' で別途取り寄せる。
+	 */
+	readonly images?: readonly IParadisAgentChatImage[];
 }
 
 /** transcript確定前に表示する一時的な実行状況。履歴revには含めず、常に最新値で置換する。 */
@@ -240,7 +263,8 @@ type AgentInbound =
 	| { t: 'command-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
 	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string }
-	| { t: 'tool-full'; id: number; token?: string; requestId: string; epoch: string; rev: number };
+	| { t: 'tool-full'; id: number; token?: string; requestId: string; epoch: string; rev: number }
+	| { t: 'tool-image'; id: number; token?: string; requestId: string; epoch: string; rev: number; index: number };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
@@ -253,6 +277,7 @@ type AgentOutbound =
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string; consumed?: boolean }
 	| { t: 'activity-detail'; id: number; requestId: string; activityId: string; messages?: readonly IParadisAgentActivityDetailMessage[]; error?: string }
 	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
+	| { t: 'tool-image'; id: number; requestId: string; rev: number; index: number; mediaType?: string; data?: string; error?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
 	| { t: 'none'; id: number };
 
@@ -266,10 +291,16 @@ const decoder = new TextDecoder();
 
 const POLL_INTERVAL_MS = 1500;
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
-const INITIAL_READ_MAX_BYTES = 4 * 1024 * 1024;
-const INITIAL_READ_TAIL_BYTES = 1024 * 1024;
+const INITIAL_READ_MAX_BYTES = 8 * 1024 * 1024;
+const INITIAL_READ_TAIL_BYTES = 4 * 1024 * 1024;
 const APPEND_READ_CHUNK_BYTES = 1024 * 1024;
-const MAX_TRANSCRIPT_LINE_BYTES = 1024 * 1024;
+/**
+ * 1行の上限。行はチャンクをまたいで remainder に積むため、この値を超えた行は
+ * 先頭が落ちて JSON として壊れ、行ごと捨てられる。tool_result に入る画像
+ * (base64) は1行が数MBになるので、TOOL_IMAGE_BASE64_LIMIT より大きく取る。
+ * 初回読みの末尾窓 (INITIAL_READ_TAIL_BYTES) も同様に、画像行が丸ごと収まる幅が要る。
+ */
+const MAX_TRANSCRIPT_LINE_BYTES = 4 * 1024 * 1024;
 /** 保持するメッセージ数の上限 (超過分は古いものから捨てる)。 */
 const MESSAGE_RING_LIMIT = 400;
 /** attach応答スナップショットで送る最大件数。 */
@@ -285,6 +316,26 @@ const FULL_TEXT_LIMIT = 64 * 1024;
 /** 1ペインが保持する全文キャッシュの上限（件数・合計バイト）。古いrevから捨てる。 */
 const FULL_TEXT_CACHE_ENTRIES = 40;
 const FULL_TEXT_CACHE_BYTES = 2 * 1024 * 1024;
+/**
+ * 'tool-image'（モバイルの展開時オンデマンド取得）で扱う画像1枚あたりの上限。
+ * transcript には base64 のまま入っているため、その文字数で判定する（生バイトの約4/3 =
+ * 生 2.2MB 程度まで）。MAX_TRANSCRIPT_LINE_BYTES より小さくしておくこと（それを超える行は
+ * そもそも transcript から読めない）。超過した画像はメタに oversize を立てて実体を捨てる。
+ */
+const TOOL_IMAGE_BASE64_LIMIT = 3 * 1024 * 1024;
+/**
+ * 1ペインが保持する画像キャッシュの上限（枚数・base64合計文字数）。参照の古い順に捨てる。
+ * 画像は1枚で全文キャッシュ全体に匹敵するため、全文とは別枠で会計する。
+ */
+const IMAGE_CACHE_ENTRIES = 12;
+const IMAGE_CACHE_BYTES = 16 * 1024 * 1024;
+/**
+ * 1メッセージから拾う画像の枚数上限。'tool-image' 要求の index 上限（100未満）と揃える
+ * （取り寄せられない画像のカードをモバイルに出さないため）。
+ */
+const MAX_IMAGES_PER_MESSAGE = 100;
+/** 1ペインで同時に送れる 'tool-image' の数（画面に見えている枚数ぶんは通す）。 */
+const TOOL_IMAGE_MAX_IN_FLIGHT = 4;
 const PERSISTED_ACTIVITY_HEAD_BYTES = 256 * 1024;
 const PERSISTED_ACTIVITY_MAX_AGENTS = 100;
 const PERSISTED_ACTIVITY_META_MAX_BYTES = 64 * 1024;
@@ -545,6 +596,8 @@ interface IRawMessage {
 	readonly isError?: boolean;
 	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
 	readonly fullText?: string;
+	/** 画像の実体。モバイルへは送らず tailer が 'tool-image' 用に保持する。 */
+	readonly imageData?: readonly IFlattenedImage[];
 }
 
 /**
@@ -730,6 +783,14 @@ function isValidToolFullRequest(msg: AgentInboundCandidate): msg is AgentInbound
 		&& isValidControlRequest(msg);
 }
 
+function isValidToolImageRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'tool-image' }> {
+	return msg.t === 'tool-image'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.rev === 'number' && Number.isInteger(msg.rev) && msg.rev >= 0
+		&& typeof msg.index === 'number' && Number.isInteger(msg.index) && msg.index >= 0 && msg.index < 100
+		&& isValidControlRequest(msg);
+}
+
 function parseAgentInbound(value: unknown): AgentInbound | undefined {
 	const msg = rec(value);
 	if (msg === undefined) {
@@ -747,6 +808,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'settings-update': return isValidSettingsUpdateRequest(msg) ? msg : undefined;
 		case 'activity-detail': return isValidActivityDetailRequest(msg) ? msg : undefined;
 		case 'tool-full': return isValidToolFullRequest(msg) ? msg : undefined;
+		case 'tool-image': return isValidToolImageRequest(msg) ? msg : undefined;
 		default: return undefined;
 	}
 }
@@ -909,13 +971,58 @@ function parseClaudeProgress(obj: Record<string, unknown>): ITranscriptProgress 
 	return undefined;
 }
 
+/**
+ * 画像1枚のメタ情報（モバイルへ送る側）を作る。実体を保持できるかの判定も兼ねる:
+ * transcript の1行上限を超える画像はそもそも読めないため、保持できる上限
+ * （TOOL_IMAGE_BASE64_LIMIT）を超えたものは oversize として実体を捨てる。
+ */
+export function paradisToolImageMeta(index: number, image: { readonly mediaType: string; readonly base64: string }): IParadisAgentChatImage {
+	// base64 の実バイト数（末尾パディングを除いた概算）。モバイルの容量表示にだけ使う。
+	const padding = image.base64.endsWith('==') ? 2 : image.base64.endsWith('=') ? 1 : 0;
+	const bytes = Math.max(0, Math.floor(image.base64.length * 3 / 4) - padding);
+	return {
+		index, mediaType: image.mediaType, bytes,
+		...(image.base64.length > TOOL_IMAGE_BASE64_LIMIT ? { oversize: true as const } : {}),
+	};
+}
+
+/** 上限どうしの整合（画像は transcript の1行に収まる範囲でしか扱えない）を検査するため公開する。 */
+export const paradisAgentChatImageLimitsForTest = {
+	get toolImageBase64Limit() { return TOOL_IMAGE_BASE64_LIMIT; },
+	get maxTranscriptLineBytes() { return MAX_TRANSCRIPT_LINE_BYTES; },
+	get maxImagesPerMessage() { return MAX_IMAGES_PER_MESSAGE; },
+	get initialReadTailBytes() { return INITIAL_READ_TAIL_BYTES; },
+} as const;
+
+/** tool_result の content に含まれていた画像1枚（実体つき）。 */
+interface IFlattenedImage {
+	readonly mediaType: string;
+	/** transcript に入っていた base64 そのまま。モバイルへは 'tool-image' でのみ渡す。 */
+	readonly base64: string;
+}
+
+/** tool_result 等の content (string | ブロック配列) を表示テキストと画像へ分解した結果。 */
+interface IFlattenedContent {
+	readonly text: string;
+	readonly images: readonly IFlattenedImage[];
+}
+
 /** tool_result 等の content (string | ブロック配列) を表示テキストへ平坦化する。 */
 function flattenContent(content: unknown): string {
+	return flattenContentParts(content).text;
+}
+
+/**
+ * flattenContent の画像つき版。画像ブロックは表示テキストでは従来どおり `[image]` の
+ * プレースホルダにしつつ（この行しか読めない旧モバイルのため）、実体を別に取り出す。
+ */
+function flattenContentParts(content: unknown): IFlattenedContent {
 	if (typeof content === 'string') {
-		return content;
+		return { text: content, images: [] };
 	}
 	if (Array.isArray(content)) {
 		const parts: string[] = [];
+		const images: IFlattenedImage[] = [];
 		for (const block of content) {
 			const b = rec(block);
 			if (!b) {
@@ -926,11 +1033,17 @@ function flattenContent(content: unknown): string {
 				parts.push(text);
 			} else if (b['type'] === 'image') {
 				parts.push('[image]');
+				const source = rec(b['source']);
+				const base64 = str(source?.['data']);
+				const mediaType = str(source?.['media_type']);
+				if (str(source?.['type']) === 'base64' && base64 !== undefined && base64.length > 0 && mediaType !== undefined && /^image\/[a-zA-Z0-9.+-]{1,60}$/.test(mediaType)) {
+					images.push({ mediaType, base64 });
+				}
 			}
 		}
-		return parts.join('\n');
+		return { text: parts.join('\n'), images };
 	}
-	return '';
+	return { text: '', images: [] };
 }
 
 /**
@@ -1158,7 +1271,7 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 				if (b['type'] === 'text') {
 					pushClaudeUserText(out, str(b['text']) ?? '', ts, signals);
 				} else if (b['type'] === 'tool_result') {
-					const text = flattenContent(b['content']);
+					const { text, images } = flattenContentParts(b['content']);
 					// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う（本文が空でも回答は成立する）。
 					const toolUseId = str(b['tool_use_id']);
 					if (toolUseId !== undefined) {
@@ -1171,12 +1284,13 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 							signals.openedTasks.set(idMatch[1], ts ?? Date.now());
 						}
 					}
-					if (text.trim().length > 0) {
+					if (text.trim().length > 0 || images.length > 0) {
 						out.push({
 							role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts,
 							...(toolUseId !== undefined ? { toolUseId } : {}),
 							// transcript の is_error。モバイルは失敗ステップを赤で示す（推定に頼らない）。
 							...(b['is_error'] === true ? { isError: true } : {}),
+							...(images.length > 0 ? { imageData: images } : {}),
 						});
 					}
 				}
@@ -1795,6 +1909,13 @@ class TranscriptTailer {
 	 */
 	private readonly fullTexts = new Map<number, string>();
 	private fullTextBytes = 0;
+	/**
+	 * tool_result に含まれていた画像の実体: `rev:index` → base64。全文と同じく、モバイルが
+	 * ステップを展開したときだけ 'tool-image' で取りに来る。1枚が全文キャッシュ全体に匹敵する
+	 * サイズになりうるため、全文とは独立した枠で会計する。
+	 */
+	private readonly images = new Map<string, IFlattenedImage>();
+	private imageBytes = 0;
 	/** 実行中バックグラウンドタスク（サブエージェント等）: id → 起動時刻 (epoch ms)。 */
 	readonly backgroundTasks = new Map<string, number>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
@@ -1959,6 +2080,9 @@ class TranscriptTailer {
 				this.lastApprovalKey = undefined;
 				this.liveQuestions.clear();
 				this.liveQuestionRealIds.clear();
+				// rev が 0 から振り直されるため、退避済みの全文・画像をそのまま残すと新しい rev の
+				// 中身と取り違えられる（epoch の検証は通ってしまう）。ここで必ず捨てる。
+				this.clearRetainedPayloads();
 				this.model = undefined;
 				this.effort = undefined;
 				await handle.close().catch(() => { /* ignore */ });
@@ -2011,13 +2135,74 @@ class TranscriptTailer {
 		return this.fullTexts.get(rev);
 	}
 
+	/**
+	 * 画像の実体を保持し、モバイルへ送るメタ情報（index/mediaType/バイト数）だけを返す。
+	 * 上限超過の画像は実体を捨ててメタだけ残す（モバイルは「大きすぎる」表示にできる）。
+	 */
+	private retainImages(rev: number, images: readonly IFlattenedImage[]): readonly IParadisAgentChatImage[] {
+		const meta: IParadisAgentChatImage[] = [];
+		for (let index = 0; index < Math.min(images.length, MAX_IMAGES_PER_MESSAGE); index++) {
+			const image = images[index];
+			if (image === undefined) {
+				continue;
+			}
+			// 大きすぎる画像は実体を持たない。モバイルが「保持期限切れ」と取り違えないよう
+			// メタで区別できるようにする。
+			const imageMeta = paradisToolImageMeta(index, image);
+			meta.push(imageMeta);
+			if (imageMeta.oversize === true) {
+				continue;
+			}
+			this.images.set(`${rev}:${index}`, image);
+			this.imageBytes += image.base64.length;
+			// 1メッセージに複数枚あるとき、全部積んでから削ると一時的に上限を大きく超える。
+			this.evictImages();
+		}
+		return meta;
+	}
+
+	/** 件数・合計バイトのどちらかが上限を超えている間、参照の古いものから捨てる。 */
+	private evictImages(): void {
+		while (this.images.size > IMAGE_CACHE_ENTRIES || this.imageBytes > IMAGE_CACHE_BYTES) {
+			const oldest = this.images.keys().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.imageBytes -= this.images.get(oldest.value)?.base64.length ?? 0;
+			this.images.delete(oldest.value);
+		}
+	}
+
+	/**
+	 * 'tool-image' 応答用。保持期限を過ぎた画像・上限超過の画像は undefined。
+	 * 取り出した画像は最近参照した扱いに直す（ビューアでページ送りしている最中の画像が
+	 * 新着の画像に押し出されないようにするため）。
+	 */
+	imageFor(rev: number, index: number): IFlattenedImage | undefined {
+		const key = `${rev}:${index}`;
+		const image = this.images.get(key);
+		if (image !== undefined) {
+			this.images.delete(key);
+			this.images.set(key, image);
+		}
+		return image;
+	}
+
+	/** rev を振り直す（epochリセット）際に、rev をキーにした退避データを捨てる。 */
+	private clearRetainedPayloads(): void {
+		this.fullTexts.clear();
+		this.fullTextBytes = 0;
+		this.images.clear();
+		this.imageBytes = 0;
+	}
+
 	/** 読み取ったテキストを行に分割してパースし、リングへ追加する。末尾の不完全行は持ち越す。 */
 	private consumeText(text: string, emitDelta: boolean): void {
 		const combined = this.remainder + text;
 		const lines = combined.split('\n');
 		this.remainder = (lines.pop() ?? '').slice(-MAX_TRANSCRIPT_LINE_BYTES);
-		// fullText はここでだけ通過する（この直後に retainFullText へ移して送信対象から外す）。
-		const added: (IParadisAgentChatMessage & { fullText?: string })[] = [];
+		// fullText / imageData はここでだけ通過する（この直後に退避して送信対象から外す）。
+		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
 		const signals = newParseSignals();
 		let latestProgress: ITranscriptProgress | undefined;
 		for (const line of lines) {
@@ -2074,14 +2259,25 @@ class TranscriptTailer {
 				added.push({ ...message, rev: this.rev++ });
 			}
 		}
-		// fullText は送信メッセージから外し、rev 単位でここに退避する（'tool-full' 用）。
+		// fullText / 画像の実体は送信メッセージから外し、rev 単位でここに退避する
+		// （'tool-full' / 'tool-image' の取り寄せ用）。画像はメタ情報だけをメッセージに残す。
 		for (let i = 0; i < added.length; i++) {
 			const message = added[i];
-			if (message?.fullText !== undefined) {
-				this.retainFullText(message.rev, message.fullText);
-				const { fullText, ...rest } = message;
-				added[i] = rest;
+			if (message === undefined) {
+				continue;
 			}
+			let replacement = message;
+			if (replacement.fullText !== undefined) {
+				this.retainFullText(replacement.rev, replacement.fullText);
+				const { fullText, ...rest } = replacement;
+				replacement = rest;
+			}
+			if (replacement.imageData !== undefined) {
+				const images = this.retainImages(replacement.rev, replacement.imageData);
+				const { imageData, ...rest } = replacement;
+				replacement = images.length > 0 ? { ...rest, images } : rest;
+			}
+			added[i] = replacement;
 		}
 		this.applySignals(signals, emitDelta);
 		if (latestProgress !== undefined) {
@@ -2533,6 +2729,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
 	private readonly activityDetailRequests = new Map<string, string>();
+	/** 送信中の 'tool-image': `mobileId\0requestId` → token。1件あたり数MBのため同時数を抑える。 */
+	private readonly toolImageRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** Stateがpane snapshotより先着したattachを、対応表の同期完了まで短時間だけ保留する。 */
 	private readonly pendingAttaches = new Map<string, { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }; readonly timer: ReturnType<typeof setTimeout>; attempt: number }>();
@@ -2595,6 +2793,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.completedActions.clear();
 			this.interactionClaims.clear();
 			this.activityDetailRequests.clear();
+			this.toolImageRequests.clear();
 			for (const timer of this.persistedActivityTimers.values()) { clearTimeout(timer); }
 			this.persistedActivityTimers.clear();
 		}));
@@ -3129,6 +3328,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'tool-full':
 				this.handleToolFullRequest(mobileId, msg);
 				break;
+			case 'tool-image':
+				this.handleToolImageRequest(mobileId, msg);
+				break;
 		}
 	}
 
@@ -3150,6 +3352,38 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		this.sendTo(mobileId, { t: 'tool-full', id: msg.id, requestId: msg.requestId, rev: msg.rev, text }, token);
+	}
+
+	/**
+	 * tool_result に含まれていた画像の取り寄せ。モバイルがステップを開いたときだけ呼ばれる。
+	 * 全文と同じく transcript は読み直さず、tailer が退避しておいた実体だけを返す。
+	 */
+	private handleToolImageRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'tool-image' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const fail = (message: string): void => {
+			this.sendTo(mobileId, { t: 'tool-image', id: msg.id, requestId: msg.requestId, rev: msg.rev, index: msg.index, error: message }, token ?? msg.token);
+		};
+		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)) {
+			fail('画像を取得できません');
+			return;
+		}
+		// 1件で数MBを stringify + seal する重い経路なので、activity-detail と同じく
+		// ペイン単位で同時実行数を抑える（画面に見えている枚数ぶんは通す）。
+		const requestKey = `${mobileId}\0${msg.requestId}`;
+		const inFlightForToken = [...this.toolImageRequests.values()].filter(value => value === token).length;
+		if (this.toolImageRequests.has(requestKey) || inFlightForToken >= TOOL_IMAGE_MAX_IN_FLIGHT) {
+			fail('画像の取得が混み合っています。少し待ってから開き直してください');
+			return;
+		}
+		const image = tailer.imageFor(msg.rev, msg.index);
+		if (image === undefined) {
+			fail('この画像は保持期限を過ぎています');
+			return;
+		}
+		this.toolImageRequests.set(requestKey, token);
+		void this.sendToAuthorized(mobileId, { t: 'tool-image', id: msg.id, requestId: msg.requestId, rev: msg.rev, index: msg.index, mediaType: image.mediaType, data: image.base64 }, token)
+			.finally(() => this.toolImageRequests.delete(requestKey));
 	}
 
 	private async handleActivityDetailRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'activity-detail' }>): Promise<void> {

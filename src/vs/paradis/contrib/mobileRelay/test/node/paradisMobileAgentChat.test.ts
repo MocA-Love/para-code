@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
@@ -75,6 +75,11 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'settings-update', id: 1, requestId: 'request-1', model: 'gpt-5', effort: 3 }), false);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'activity-detail', id: 1, requestId: 'request-1', epoch: 'epoch-1' }), false);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'action/answerQuestion', id: 1, requestId: 'request-1', epoch: 'epoch-1', interactionId: 'question-1', answers: [{ kind: 'multi', indices: [0, '2'] }] }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'tool-image', id: 1, requestId: 'request-1', epoch: 'epoch-1', rev: 3, index: 0 }), true);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'tool-image', id: 1, requestId: 'request-1', epoch: 'epoch-1', rev: 3 }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'tool-image', id: 1, requestId: 'request-1', epoch: 'epoch-1', rev: 3, index: -1 }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'tool-image', id: 1, requestId: 'request-1', epoch: 'epoch-1', rev: 3, index: 100 }), false);
+		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'tool-image', id: 1, requestId: 'request-1', rev: 3, index: 0 }), false);
 		assert.strictEqual(paradisIsValidAgentInboundForTest({ t: 'unknown', id: 1 }), false);
 	});
 
@@ -514,6 +519,66 @@ suite('ParadisMobileAgentChat', () => {
 			{ transcriptPath: '/sessions/a.jsonl', mtime: 20 },
 			{ transcriptPath: '/sessions/b.jsonl', mtime: 21 },
 		], 10, new Set(['/sessions/a.jsonl'])), { transcriptPath: '/sessions/b.jsonl', mtime: 21 });
+	});
+
+	test('keeps the image limits inside what a transcript line can carry', () => {
+		const limits = paradisAgentChatImageLimitsForTest;
+		// 1行がこの上限を超えると先頭が落ちてJSONごと壊れ、tool_result が丸ごと消える。
+		// 画像1枚（base64）+ JSONの外枠が必ず収まる関係を保つこと。
+		assert.ok(limits.toolImageBase64Limit < limits.maxTranscriptLineBytes, 'image limit must fit in one transcript line');
+		// 初回読み込みの末尾窓に画像行が丸ごと収まらないと、開き直すたびに直近の画像が消える。
+		assert.ok(limits.maxTranscriptLineBytes <= limits.initialReadTailBytes, 'initial tail must fit a full line');
+		// 取り寄せ要求の index 上限（100未満）を超える画像はカードを出しても取得できない。
+		assert.ok(limits.maxImagesPerMessage <= 100, 'image count must match the tool-image index bound');
+	});
+
+	test('marks an oversize image instead of pretending it is retained', () => {
+		const small = paradisToolImageMeta(0, { mediaType: 'image/png', base64: 'AAECAwQ=' });
+		const large = paradisToolImageMeta(1, { mediaType: 'image/png', base64: 'A'.repeat(paradisAgentChatImageLimitsForTest.toolImageBase64Limit + 1) });
+		assert.deepStrictEqual([small, { ...large, bytes: 0 }], [
+			{ index: 0, mediaType: 'image/png', bytes: 5 },
+			{ index: 1, mediaType: 'image/png', bytes: 0, oversize: true },
+		]);
+	});
+
+	test('extracts tool result images with their実体 kept out of the display text', () => {
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({
+			type: 'user',
+			message: {
+				content: [{
+					type: 'tool_result',
+					tool_use_id: 'toolu_read_1',
+					content: [
+						{ type: 'text', text: 'スクリーンショットです' },
+						{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAECAwQ=' } },
+						// source が base64 でないもの・mediaTypeが画像でないものは実体として扱わない
+						{ type: 'image', source: { type: 'url', url: 'https://example.com/a.png' } },
+						{ type: 'image', source: { type: 'base64', media_type: 'application/pdf', data: 'AAEC' } },
+					],
+				}],
+			},
+		}));
+		assert.deepStrictEqual(parsed.messages, [{
+			role: 'tool', kind: 'tool_result', text: 'スクリーンショットです\n[image]\n[image]\n[image]', toolUseId: 'toolu_read_1',
+			imageData: [{ mediaType: 'image/png', base64: 'AAECAwQ=' }],
+		}]);
+	});
+
+	test('keeps an image-only tool result instead of dropping it as empty', () => {
+		const parsed = paradisParseClaudeTranscriptLineForTest(JSON.stringify({
+			type: 'user',
+			message: {
+				content: [{
+					type: 'tool_result',
+					tool_use_id: 'toolu_shot_1',
+					content: [{ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'Zm9v' } }],
+				}],
+			},
+		}));
+		assert.deepStrictEqual(parsed.messages, [{
+			role: 'tool', kind: 'tool_result', text: '[image]', toolUseId: 'toolu_shot_1',
+			imageData: [{ mediaType: 'image/jpeg', base64: 'Zm9v' }],
+		}]);
 	});
 
 	test('classifies a teammate report separately from user input', () => {
