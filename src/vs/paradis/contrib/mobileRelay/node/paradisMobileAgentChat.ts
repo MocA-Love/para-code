@@ -305,6 +305,8 @@ const LIVE_STALE_MS = 30 * 60_000;
 /** ペイン同期前に受けたhookを保持する時間とtoken単位の上限。 */
 const PENDING_HOOK_TTL_MS = 120_000;
 const PENDING_HOOK_LIMIT = 256;
+/** rollout path → root/SubAgent 判定の記憶上限（無制限な成長の防止のみが目的）。 */
+const CODEX_ROLLOUT_ORIGIN_CACHE_LIMIT = 512;
 /**
  * ターン終了後、遅れて届いた live 更新を無視する猶予。
  *
@@ -773,8 +775,16 @@ function stableTextHash(value: string): string {
 /** Codex rollout先頭行から、cwdと共有daemonのthread IDを取り出す。 */
 export interface IParadisCodexSessionMeta {
 	readonly cwd: string;
+	/**
+	 * 共有daemonのthread ID。**SubAgentのrolloutでは「親の」thread IDが入る**
+	 * （現行Codexは子rolloutの `session_id` へ親のIDを書き、自分のIDは `id` 側にある）。
+	 * root判定にこの値を使ってはいけない。{@link subagent} を見ること。
+	 */
 	readonly sessionId?: string;
+	/** SubAgentのthreadなら親のthread ID（親IDを読めなかった子では undefined になりうる）。 */
 	readonly parentThreadId?: string;
+	/** SubAgentとして生成されたthreadのrolloutか。root判定はこのフラグで行う。 */
+	readonly subagent?: true;
 	readonly depth?: number;
 	readonly agentPath?: string;
 	readonly agentNickname?: string;
@@ -793,11 +803,19 @@ export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSe
 		const parentThreadId = str(payload?.['parent_thread_id']) ?? str(sourceSpawn?.['parent_thread_id']);
 		const rawDepth = num(payload?.['depth']) ?? num(sourceSpawn?.['depth']);
 		const depth = rawDepth !== undefined ? Math.min(5, Math.max(1, Math.trunc(rawDepth))) : undefined;
-		const agentPath = str(payload?.['agent_path']);
+		const agentPath = str(payload?.['agent_path']) ?? str(sourceSpawn?.['agent_path']);
 		const agentNickname = str(payload?.['agent_nickname']) ?? str(sourceSpawn?.['agent_nickname']);
+		// SubAgentのthreadは `source.subagent.thread_spawn` / `thread_source` で名乗る。これが無い
+		// 形式でも、親を指すthread IDを持つなら子とみなす。比較相手はこのrollout自身のID (`id`) で
+		// あって `session_id` ではない: 現行Codexは子rolloutの `session_id` へ「親の」thread IDを
+		// 書くため、session_idと比べると子が必ずrootへ化ける（このペインのセッションが子の会話に
+		// 差し替わり、モバイルに「親セッションが切り替わりました」が出る）。
+		const ownThreadId = str(payload?.['id']) ?? sessionId;
+		const spawnedAsSubagent = sourceSpawn !== undefined || str(payload?.['thread_source']) === 'subagent';
+		const subagent = spawnedAsSubagent || (parentThreadId !== undefined && parentThreadId !== ownThreadId);
 		return {
 			cwd, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
-			...(parentThreadId !== undefined && parentThreadId !== sessionId ? { parentThreadId } : {}),
+			...(subagent ? { subagent: true as const, ...(parentThreadId !== undefined ? { parentThreadId } : {}) } : {}),
 			...(depth !== undefined ? { depth } : {}), ...(agentPath !== undefined ? { agentPath } : {}),
 			...(agentNickname !== undefined ? { agentNickname } : {}),
 		};
@@ -1304,6 +1322,52 @@ export function paradisClaudeRootTranscriptPath(transcriptPath: string): string 
 	return `${match[1]}/${match[2]}.jsonl`;
 }
 
+/**
+ * hookの発信元rolloutが root thread か SubAgent か。'unknown' は session_meta を読めなかった
+ * （生成直後で先頭行がまだ書かれていない等）ことを表し、root と断定してはいけない状態。
+ */
+export type ParadisCodexRolloutOrigin = 'root' | 'subagent' | 'unknown';
+
+/**
+ * hookのtranscript_pathを「ペインの親セッション」のtranscriptへ正規化する。
+ *
+ * ネストした子エージェント（Claudeのsidechain / Codexのsubagent thread）で発火したhookは
+ * 子自身のtranscriptを指す。これをそのままペインのセッションとしてclaimすると、親の会話が
+ * 子の会話へ置き換わり（モバイルの「親セッションが切り替わりました」）、tailerも張り替わる。
+ *
+ * Claudeは子pathから root transcript を復元できるが、Codexの子threadは親と同じ
+ * `rollout-*.jsonl` 命名・同じcwdで別ファイルになるため、pathから親を復元する手段が無い。
+ * よって親が未確定なら 'drop' を返し、子でペインのセッションをbootstrapさせない
+ * （親はcwd探索/state DB探索が root thread だけを候補にして確定させる）。
+ *
+ * 素性を判定できなかったCodex rollout ('unknown') は、確定済みのペインでは現行セッションを
+ * 保ち、rebindだけを見送る（子の生成直後に飛んできた最初のhookで乗っ取られないため）。
+ * セッション未確定のペインでは従来どおり確定させる（新規セッションの検知を止めない）。
+ */
+export function paradisResolveHookSessionTranscript(input: {
+	readonly hookTranscriptPath: string;
+	readonly paneTranscriptPath: string | undefined;
+	readonly claudeNestedAgentId: string | undefined;
+	readonly codexOrigin: ParadisCodexRolloutOrigin | undefined;
+}): { readonly kind: 'session'; readonly transcriptPath: string; readonly nested: 'claude' | 'codex' | undefined } | { readonly kind: 'drop' } {
+	const { hookTranscriptPath, paneTranscriptPath, claudeNestedAgentId, codexOrigin } = input;
+	if (claudeNestedAgentId !== undefined) {
+		return {
+			kind: 'session', nested: 'claude',
+			transcriptPath: paneTranscriptPath ?? paradisClaudeRootTranscriptPath(hookTranscriptPath) ?? hookTranscriptPath,
+		};
+	}
+	if (codexOrigin === 'subagent') {
+		return paneTranscriptPath !== undefined
+			? { kind: 'session', transcriptPath: paneTranscriptPath, nested: 'codex' }
+			: { kind: 'drop' };
+	}
+	if (codexOrigin === 'unknown' && paneTranscriptPath !== undefined && paneTranscriptPath !== hookTranscriptPath) {
+		return { kind: 'session', transcriptPath: paneTranscriptPath, nested: 'codex' };
+	}
+	return { kind: 'session', transcriptPath: hookTranscriptPath, nested: undefined };
+}
+
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
 function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): IRawMessage[] {
 	// rollout行: { timestamp, type, payload }
@@ -1577,6 +1641,28 @@ async function discoverCodexThreadSourceById(threadId: string): Promise<IParadis
 }
 
 /**
+ * Codex rollout の先頭行（session_meta）を読む。cwd探索とhookの親子判定の両方が使う。
+ * session_meta は書き出し後に変わらないため、先頭16KBだけ読めば足りる。
+ */
+async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadisCodexSessionMeta | undefined> {
+	let handle: fs.FileHandle;
+	try {
+		handle = await fs.open(rolloutPath, 'r');
+	} catch {
+		return undefined;
+	}
+	try {
+		const buffer = Buffer.alloc(16 * 1024);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		return paradisParseCodexSessionMeta(buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '');
+	} catch {
+		return undefined;
+	} finally {
+		await handle.close().catch(() => { /* ignore */ });
+	}
+}
+
+/**
  * ターミナルのcwdから実行中らしいエージェントセッションのtranscriptを探す。
  * hookは「アプリ起動後に発火したイベント」しか知れないため、Para Code起動前から
  * 動いているセッションや発言がまだ無いセッションはこれで拾う（後からhookが発火したら
@@ -1648,17 +1734,8 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 				rollouts.sort((a, b) => b.mtime - a.mtime);
 				for (const rollout of rollouts) {
 					try {
-						const handle = await fs.open(rollout.path, 'r');
-						let firstLine: string;
-						try {
-							const buffer = Buffer.alloc(16 * 1024);
-							const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-							firstLine = buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '';
-						} finally {
-							await handle.close();
-						}
-						const meta = paradisParseCodexSessionMeta(firstLine);
-						if (meta?.cwd === cwd && meta.parentThreadId === undefined) {
+						const meta = await readCodexRolloutSessionMeta(rollout.path);
+						if (meta?.cwd === cwd && meta.subagent !== true) {
 							const sessionId = meta.sessionId;
 							candidates.push({
 								agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime,
@@ -2422,6 +2499,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
 	/** Claude SubagentStopが通知した子transcript（pane token + agent ID → 許可済みpath）。 */
 	private readonly claudeSubagentTranscriptPaths = new Map<string, string>();
+	/**
+	 * Codex rollout path → root thread か SubAgent か。session_meta は書き出し後に
+	 * 変わらないため、hookのたびに読み直さずここへ覚える（'unknown' は覚えない）。
+	 */
+	private readonly codexRolloutOrigins = new Map<string, ParadisCodexRolloutOrigin>();
 	/** PreToolUse/PostToolUseの対応付け。並行ツールの古い完了で最新表示を消さないために使う。 */
 	private readonly liveToolIds = new Map<string, string>();
 	/** Claude MessageDisplayの行バッチをメッセージ単位で連結する内部バッファ。 */
@@ -4320,6 +4402,35 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	/**
+	 * hookの発信元rolloutが root thread か SubAgent かを返す（非Codexは undefined）。
+	 * 判定材料は rollout 先頭行の session_meta だけで、これは書き出し後に変わらないため
+	 * path単位で結果を保持する。読めなかった場合は 'unknown' を返し、覚えない
+	 * （子の生成直後は先頭行がまだ書かれておらず、rootと断定すると乗っ取りが再発する）。
+	 */
+	private async codexRolloutOrigin(transcriptPath: string): Promise<ParadisCodexRolloutOrigin | undefined> {
+		if (agentKindForPath(transcriptPath) !== 'codex') {
+			return undefined;
+		}
+		const cached = this.codexRolloutOrigins.get(transcriptPath);
+		if (cached !== undefined) {
+			return cached;
+		}
+		const meta = await readCodexRolloutSessionMeta(transcriptPath);
+		if (meta === undefined) {
+			return 'unknown';
+		}
+		if (this.codexRolloutOrigins.size >= CODEX_ROLLOUT_ORIGIN_CACHE_LIMIT) {
+			const oldest = this.codexRolloutOrigins.keys().next();
+			if (oldest.done !== true) {
+				this.codexRolloutOrigins.delete(oldest.value);
+			}
+		}
+		const origin: ParadisCodexRolloutOrigin = meta.subagent === true ? 'subagent' : 'root';
+		this.codexRolloutOrigins.set(transcriptPath, origin);
+		return origin;
+	}
+
 	private clearClaudeSubagentTranscripts(token: string): void {
 		for (const key of this.claudeSubagentTranscriptPaths.keys()) {
 			if (key.startsWith(`${token}\0`)) { this.claudeSubagentTranscriptPaths.delete(key); }
@@ -4510,10 +4621,30 @@ export class ParadisMobileAgentChat extends Disposable {
 		// nested SubAgent内で発火したhookのtranscript_pathは子自身を指す。これをpaneの
 		// main sessionとしてclaimすると親会話が子会話へ置換されるため、既知rootまたは
 		// 現行規約から復元したrootへ正規化する。子pathは親子相関にだけ使う。
-		const nestedParentId = paradisClaudeAgentIdFromTranscriptPath(transcriptPath);
-		const sessionTranscriptPath = nestedParentId !== undefined
-			? this.paneSessions.get(event.token)?.transcriptPath ?? paradisClaudeRootTranscriptPath(transcriptPath) ?? transcriptPath
-			: transcriptPath;
+		// Claudeのsidechain（pathで判別可能）に加え、Codexのsubagent thread（親と同じ
+		// rollout命名・同じcwdのためsession_metaを読まないと判別できない）も対象にする。
+		const claudeNestedAgentId = paradisClaudeAgentIdFromTranscriptPath(transcriptPath);
+		// 既知の親からのhookは素性が確定しているので、rolloutを読み直さない（生成直後の
+		// 未書き込みウィンドウに晒されるのは、本当に未知のpathだけになる）。
+		const knownPaneTranscriptPath = this.paneSessions.get(event.token)?.transcriptPath;
+		const codexOrigin = claudeNestedAgentId !== undefined || knownPaneTranscriptPath === transcriptPath
+			? undefined
+			: await this.codexRolloutOrigin(transcriptPath);
+		const resolved = paradisResolveHookSessionTranscript({
+			hookTranscriptPath: transcriptPath,
+			paneTranscriptPath: this.paneSessions.get(event.token)?.transcriptPath,
+			claudeNestedAgentId,
+			codexOrigin,
+		});
+		if (resolved.kind === 'drop') {
+			// 親未確定のペインへ届いた Codex subagent thread のhook。ここで確定させると
+			// 子の会話がペインの会話になるため捨てる（親はcwd/state DB探索が確定させる）。
+			// このとき子の質問カード・承認カードのライブ注入も落ちる。親が未確定のままでは
+			// 注入先の tailer が子rolloutのものになってしまい、それがこのバグ自体だから。
+			this.logService.trace(`[paradisAgentChat] dropped nested codex subagent hook for pane without a session: ${event.event}`);
+			return;
+		}
+		const { transcriptPath: sessionTranscriptPath, nested } = resolved;
 		this.pendingHooks.delete(event.token);
 		const pendingTimer = this.pendingHookTimers.get(event.token);
 		if (pendingTimer !== undefined) {
@@ -4557,7 +4688,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			token: event.token,
 			agent: agentKindForPath(sessionTranscriptPath),
 			transcriptPath: sessionTranscriptPath,
-			sessionId: event.sessionId,
+			// nestedなhookのsession_idを、親のsessionId（Codexのroot thread ID等、SubAgent探索や
+			// daemon照合の基準）へ書き込ませない。Codexの子threadのsession_idは「子自身の」IDなので
+			// 親が未知でも採らない。Claudeのsidechainは親のsession_idを持つのでfallbackしてよい。
+			sessionId: nested === 'codex' ? previous?.sessionId
+				: nested === 'claude' ? previous?.sessionId ?? event.sessionId
+					: event.sessionId,
 		};
 		if (previous !== undefined && previous.transcriptPath !== sessionTranscriptPath
 			&& this.transcriptClaims.get(previous.transcriptPath) === event.token) {
@@ -4600,8 +4736,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand) {
 			this.activeTurnTokens.add(event.token);
 		}
-		const activityPayload = event.payload !== undefined && nestedParentId !== undefined && event.payload['parent_agent_id'] === undefined
-			? { ...event.payload, parent_agent_id: nestedParentId }
+		// Claudeのsidechainだけ、hook payloadへ親Agent IDを補って活動ツリーへ繋ぐ。
+		// Codexのsubagent threadはrolloutのタイムラインとstate DBから関係を復元済みなので、
+		// ここでClaude形式の親子を注入すると同じSubAgentが二重に現れる。
+		const activityPayload = event.payload !== undefined && claudeNestedAgentId !== undefined && event.payload['parent_agent_id'] === undefined
+			? { ...event.payload, parent_agent_id: claudeNestedAgentId }
 			: event.payload;
 		const activityChanged = activityPayload !== undefined && this.activityTracker(event.token).applyClaude(event.event, activityPayload, event.at);
 		if (activityChanged) {
