@@ -23,7 +23,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { GeneralShellType, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, ITerminalEnvironment, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
@@ -314,7 +314,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			const cwd = this._resolveCwd(preset, preset.cwd, options?.cwd);
 			let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
 			if (!instance) {
-				instance = await this._createTerminalInActiveGroup(cwd, preset.name);
+				instance = await this._createTerminalInActiveGroup(cwd, preset.name, options?.env);
 				if (options?.stateKey) {
 					// 生成〜表示の間にユーザーが別スコープへ切り替えても、既定の（生成時点で
 					// アクティブなスコープへの）暗黙タグ付けを明示的に上書きし、正しいスコープに紐付ける。
@@ -350,10 +350,13 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				group = this.editorGroupsService.addGroup(group, index % 2 === 1 ? GroupDirection.RIGHT : GroupDirection.DOWN);
 			}
 			const instance = await this.terminalService.createTerminal({
-				config: { name },
+				// env は解決の過程で in-place に書き換えられ、そのままインスタンスに保持されるため、
+				// タスクごとに複製して他のターミナルへ影響が伝播しないようにする
+				config: { name, env: options?.env ? { ...options.env } : undefined },
 				cwd,
 				location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
 			});
+			this._warnIfEnvDropped(instance, options?.env);
 			if (options?.stateKey) {
 				this.terminalScopeService.assignInstanceScope(instance.instanceId, options.stateKey);
 			}
@@ -401,12 +404,27 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return `cd ${await instance.preparePathForShell(cwd.fsPath)}`;
 	}
 
-	private async _createTerminalInActiveGroup(cwd: URI | undefined, name?: string): Promise<ITerminalInstance> {
-		return this.terminalService.createTerminal({
-			config: name ? { name } : undefined,
+	private async _createTerminalInActiveGroup(cwd: URI | undefined, name?: string, env?: ITerminalEnvironment): Promise<ITerminalInstance> {
+		const instance = await this.terminalService.createTerminal({
+			// config を渡すと terminalService 側の既定プロファイル先行解決が走らないため、
+			// 渡すものが無いときは undefined のままにする（従来の経路を維持する）
+			config: (name || env) ? { name, env: env ? { ...env } : undefined } : undefined,
 			cwd,
 			location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
 		});
+		this._warnIfEnvDropped(instance, env);
+		return instance;
+	}
+
+	/**
+	 * 拡張が提供するプロファイルが既定になっている場合、ターミナル生成側が icon/cwd 等しか
+	 * 引き継がず、指定した環境変数が無言で捨てられる。原因不明の失敗（プリセット内で
+	 * 環境変数が空に展開される等）を追えるようにログだけ残す。
+	 */
+	private _warnIfEnvDropped(instance: ITerminalInstance, env: ITerminalEnvironment | undefined): void {
+		if (env && !instance.shellLaunchConfig.env) {
+			this.logService.warn('[ParadisPresets] Environment variables were dropped by the default terminal profile');
+		}
 	}
 
 	private async _waitForTerminalProcess(instance: ITerminalInstance): Promise<void> {

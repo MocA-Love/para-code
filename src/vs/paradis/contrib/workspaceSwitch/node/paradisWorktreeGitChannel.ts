@@ -28,6 +28,7 @@ import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradi
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, paradisParseGhPrStatus, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
+import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
 
 /**
  * setup/teardown スクリプトの最長実行時間。スクリプトはユーザー任意のシェルコマンドのため、
@@ -245,7 +246,7 @@ export class ParadisWorktreeGitService {
 			// bun install 等は 1MiB (Node 既定) を超える出力を吐き得る。上限は明示しつつ余裕を持たせる
 			maxBuffer: PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES,
 			detached: !isWindows,
-			env: { ...env, PARACODE_PROJECT_ROOT_PATH: request.repoPath }
+			env: { ...env, [PARADIS_PROJECT_ROOT_ENV_VAR]: request.repoPath }
 		};
 		await new Promise<void>((resolve, reject) => {
 			// callback から child 自体を参照すると、テスト用モックの同期 callback 呼び出しで

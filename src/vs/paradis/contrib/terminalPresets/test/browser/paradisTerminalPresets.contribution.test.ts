@@ -14,9 +14,9 @@ import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.j
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
-import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, ITerminalEnvironment, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
 import { paradisRunAutoRunPresets } from '../../browser/paradisTerminalPresets.contribution.js';
-import { IParadisPresetService, IParadisResolvedPreset, IParadisRunPresetOptions, paradisJoinPresetCommands } from '../../common/paradisTerminalPresets.js';
+import { IParadisPresetService, IParadisResolvedPreset, IParadisRunPresetOptions, paradisJoinPresetCommands, PARADIS_PROJECT_ROOT_ENV_VAR } from '../../common/paradisTerminalPresets.js';
 
 const TEST_FOLDER = URI.file('/repo-worktrees/feature');
 
@@ -27,10 +27,11 @@ function createPreset(name: string): IParadisResolvedPreset {
 suite('paradisRunAutoRunPresets', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createInstantiationService(failingPresets: ReadonlySet<string>, partiallyStartedPresets: ReadonlySet<string> = new Set()): { instantiationService: TestInstantiationService; runs: string[]; forceNewTerminal: boolean[]; stateKeys: (string | undefined)[] } {
+	function createInstantiationService(failingPresets: ReadonlySet<string>, partiallyStartedPresets: ReadonlySet<string> = new Set()): { instantiationService: TestInstantiationService; runs: string[]; forceNewTerminal: boolean[]; stateKeys: (string | undefined)[]; envs: (ITerminalEnvironment | undefined)[] } {
 		const runs: string[] = [];
 		const forceNewTerminal: boolean[] = [];
 		const stateKeys: (string | undefined)[] = [];
+		const envs: (ITerminalEnvironment | undefined)[] = [];
 		const presets = [createPreset('first'), createPreset('second'), createPreset('third')];
 		const instantiationService = store.add(new TestInstantiationService());
 		instantiationService.stub(IParadisPresetService, new class extends mock<IParadisPresetService>() {
@@ -42,6 +43,7 @@ suite('paradisRunAutoRunPresets', () => {
 				runs.push(preset.name);
 				forceNewTerminal.push(options?.forceNewTerminal === true);
 				stateKeys.push(options?.stateKey);
+				envs.push(options?.env);
 				if (partiallyStartedPresets.has(preset.name)) {
 					options?.onDidStart?.();
 				}
@@ -53,7 +55,7 @@ suite('paradisRunAutoRunPresets', () => {
 		instantiationService.stub(IDialogService, new (mock<IDialogService>())());
 		instantiationService.stub(IStorageService, new (mock<IStorageService>())());
 		instantiationService.stub(ILogService, new NullLogService());
-		return { instantiationService, runs, forceNewTerminal, stateKeys };
+		return { instantiationService, runs, forceNewTerminal, stateKeys, envs };
 	}
 
 	test('preserves partial success and continues after a preset fails', async () => {
@@ -93,6 +95,14 @@ suite('paradisRunAutoRunPresets', () => {
 		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo', 'worktree:test-scope');
 
 		assert.deepStrictEqual(stateKeys, ['worktree:test-scope', 'worktree:test-scope', 'worktree:test-scope']);
+	});
+
+	test('forwards the parent repository path to every preset run, so commands can reach the parent repository the same way setup scripts do', async () => {
+		const { instantiationService, envs } = createInstantiationService(new Set());
+
+		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
+
+		assert.deepStrictEqual(envs, Array(3).fill({ [PARADIS_PROJECT_ROOT_ENV_VAR]: '/repo' }));
 	});
 });
 
