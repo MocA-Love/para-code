@@ -1,8 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useRef, useState } from 'react';
-import { useIsFocused, useRouter } from 'expo-router';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'expo-router';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+// 一覧のScrollViewはRNGH版を使う。RN版は子孫へのタッチ配送を遅らせるため、行に付けた
+// スワイプが指の動き出しを取りこぼして反応しない（祖先側のドロワーだけが効く状態になる）。
+import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -53,14 +56,16 @@ export default function HomeScreen() {
 	// ヘッダー＋ボタンで開く「新しいエージェントを起動」シートの表示状態。
 
 	const tabBarSpacer = useTabBarSpacer();
-	// ホームは横スクロール要素を持たないため、フォーカス中は画面全域の右スワイプで
-	// ドロワーを開ける（X方式）。他タブへ移ったら左端エッジのみに戻す。
-	const { setFullWidthSwipe } = useWsDrawer();
-	const isFocused = useIsFocused();
-	useEffect(() => {
-		setFullWidthSwipe(isFocused);
-		return () => setFullWidthSwipe(false);
-	}, [isFocused, setFullWidthSwipe]);
+	// 画面のどこからでも右スワイプでドロワーを開ける（X方式）。ドロワー側の全画面モード
+	// （setFullWidthSwipe）は使わない。あちらのジェスチャは**向きを問わず最初の1pxで発動する**
+	// 作りのため、一覧の行に付けた左スワイプが毎回そこで潰されてしまう。ここで向きを限った
+	// 自前のジェスチャに置き換え、左方向はそのまま行へ渡す。
+	const drawer = useWsDrawer();
+	const openDrawerPan = useMemo(() => Gesture.Pan()
+		.runOnJS(true)
+		.activeOffsetX(24)
+		.failOffsetY([-16, 16])
+		.onStart(() => drawer.open()), [drawer]);
 	// 絞り込み中は選択中ワークスペース（selectedWs）＋その配下のworktreeだけを対象にする。
 	// selectedWsは他タブや通知タップ・エージェント遷移でも更新される全画面共有の値なので、
 	// それらの操作でワークスペースが切り替わった後にホームへ戻ると、絞り込み先も追従する
@@ -127,7 +132,7 @@ export default function HomeScreen() {
 	};
 
 	return (
-		<ConnectionGate><View style={styles.screen}>
+		<ConnectionGate><GestureDetector gesture={openDrawerPan}><View style={styles.screen}>
 			<WsHeader
 				title="ホーム"
 				subtitle={headerSubtitle}
@@ -273,7 +278,7 @@ export default function HomeScreen() {
 				onAck={terminalKey => ackAgentStatus(terminalKey)}
 			/>
 			<AgentLaunchToastView />
-		</View></ConnectionGate>
+		</View></GestureDetector></ConnectionGate>
 	);
 }
 
