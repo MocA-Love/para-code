@@ -10,7 +10,7 @@ import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisWorkspaceRepository, IParadisWorktree } from '../common/paradisWorkspaceSwitch.js';
-import { PARADIS_COLLAPSED_REPOSITORIES_STORAGE_KEY, paradisLoadCollapsedRepositoryIds, paradisRemoveStaleCollapsedRepositoryIds, paradisSerializeCollapsedRepositoryIds, paradisSetRepositoryCollapsed } from '../common/paradisWorkspaceTreeState.js';
+import { PARADIS_COLLAPSED_REPOSITORIES_STORAGE_KEY, paradisLoadCollapsedRepositoryIds, paradisRemoveStaleIds, paradisSerializeCollapsedRepositoryIds, paradisSetRepositoryCollapsed } from '../common/paradisWorkspaceTreeState.js';
 
 const SAVE_DELAY_MS = 100;
 const RETRY_DELAY_MS = 1_000;
@@ -50,17 +50,20 @@ export class ParadisCollapsedRepositoryStateController extends Disposable {
 		return this.collapsedRepositoryIds.has(repositoryId);
 	}
 
-	recordTreeCollapse(element: IParadisWorkspaceRepository | IParadisWorktree, collapsed: boolean): void {
+	/** 折りたたみ状態が実際に変わったら true を返す (呼び出し側が再描画の要否を判断する)。 */
+	recordTreeCollapse(element: IParadisWorkspaceRepository | IParadisWorktree, collapsed: boolean): boolean {
 		if (isWorktree(element)) {
-			return;
+			return false;
 		}
-		if (paradisSetRepositoryCollapsed(this.collapsedRepositoryIds, element.id, collapsed)) {
-			this.markDirty();
+		if (!paradisSetRepositoryCollapsed(this.collapsedRepositoryIds, element.id, collapsed)) {
+			return false;
 		}
+		this.markDirty();
+		return true;
 	}
 
 	removeStaleRepositories(liveRepositoryIds: ReadonlySet<string>): void {
-		if (paradisRemoveStaleCollapsedRepositoryIds(this.collapsedRepositoryIds, liveRepositoryIds)) {
+		if (paradisRemoveStaleIds(this.collapsedRepositoryIds, liveRepositoryIds)) {
 			this.markDirty();
 		}
 	}

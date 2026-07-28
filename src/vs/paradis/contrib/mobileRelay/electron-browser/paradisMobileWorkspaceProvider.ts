@@ -660,6 +660,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				...(this.branchCache.has(r.id) ? { branch: this.branchCache.get(r.id) } : {}),
 				...this.prForWs(r.id),
 				...this.noteForWs(r.id),
+				...(this.worktreeService.isPinned(r.id) ? { pinned: true } : {}),
 			});
 			for (const worktree of this.worktreeService.getWorktrees(r.id)) {
 				if (worktree.missing) {
@@ -675,6 +676,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					parent: r.id,
 					...this.prForWs(paradisWorktreeStateKey(worktree.uri)),
 					...this.noteForWs(paradisWorktreeStateKey(worktree.uri)),
+					...(this.worktreeService.isPinned(paradisWorktreeStateKey(worktree.uri)) ? { pinned: true } : {}),
 				});
 			}
 		}

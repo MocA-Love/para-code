@@ -74,6 +74,11 @@ export interface IParadisMobileWindowWorkspaceV2 {
 	 * チェックリストが1件も無いスペースでは省略する。
 	 */
 	readonly note?: { readonly open: number; readonly done: number };
+	/**
+	 * PC 側の Workspaces ビューでピン留めされているか。ピン留めしたスペースは、
+	 * 親リポジトリを折りたたんでもドロワーに表示され続ける。
+	 */
+	readonly pinned?: boolean;
 }
 
 /** PC本体のバッテリー状態（Live Activity等の表示用）。level は 0〜100 の整数。 */

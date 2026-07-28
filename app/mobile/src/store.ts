@@ -41,7 +41,8 @@ export interface WorkspaceState {
 	// pr: 現在ブランチに紐づくGitHub PR（PC側がghでポーリング）。旧PCでは未配信。
 	// note: スペースのメモ（PC版 Workspaces ビュー下部のメモ欄）のチェックリスト集計。
 	// 本文は含まず、必要になった時点で scmNoteGet で取りに行く。旧PCでは未配信。
-	workspaces: { id: string; sourceId: string; windowId: number; name: string; color?: string; branch?: string; parent?: string; pr?: WorkspacePrStatus; note?: WorkspaceNoteSummary }[];
+	// pinned: PC側でピン留めされたスペース。親リポジトリを折りたたんでもドロワーに残す。旧PCでは未配信。
+	workspaces: { id: string; sourceId: string; windowId: number; name: string; color?: string; branch?: string; parent?: string; pr?: WorkspacePrStatus; note?: WorkspaceNoteSummary; pinned?: boolean }[];
 	// agent: そのターミナルでエージェントCLI（claude/codex）が動いた実績があるか（PC側のhook発火実績）。
 	// ホーム一覧・Live Activity はこのフラグで「エージェントのターミナル」だけに絞る。
 	terminals: { terminalKey: string; id: number; windowId: number; rendererGeneration: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];

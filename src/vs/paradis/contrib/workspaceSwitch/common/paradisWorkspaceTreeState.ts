@@ -4,27 +4,36 @@
  *--------------------------------------------------------------------------------------------*/
 
 export const PARADIS_COLLAPSED_REPOSITORIES_STORAGE_KEY = 'paradis.workspaceSwitch.collapsedRepositories.v1';
+export const PARADIS_PINNED_WORKTREES_STORAGE_KEY = 'paradis.workspaceSwitch.pinnedWorktrees.v1';
 
 const MAX_COLLAPSED_REPOSITORIES = 1024;
 const MAX_REPOSITORY_ID_LENGTH = 512;
 const MAX_COLLAPSED_REPOSITORIES_STORAGE_LENGTH = MAX_COLLAPSED_REPOSITORIES * (MAX_REPOSITORY_ID_LENGTH + 3) + 2;
 
-/** Parse persisted view state defensively. A partially valid value is not accepted. */
-export function paradisParseCollapsedRepositoryIds(raw: string | undefined): Set<string> {
+/**
+ * ピン留めは worktree の状態キー (`worktree:<uri>` = 絶対パスを含む) を持つため、
+ * リポジトリID より長い1件あたりの上限を取る。
+ */
+const MAX_PINNED_WORKTREES = 512;
+const MAX_PINNED_WORKTREE_KEY_LENGTH = 2048;
+const MAX_PINNED_WORKTREES_STORAGE_LENGTH = MAX_PINNED_WORKTREES * (MAX_PINNED_WORKTREE_KEY_LENGTH + 3) + 2;
+
+/** 永続化された文字列集合を防御的に読む。一部でも不正なら全体を捨てる。 */
+function parseIdSet(raw: string | undefined, maxCount: number, maxIdLength: number, maxStorageLength: number): Set<string> {
 	if (raw === undefined) {
 		return new Set();
 	}
-	if (raw.length > MAX_COLLAPSED_REPOSITORIES_STORAGE_LENGTH) {
+	if (raw.length > maxStorageLength) {
 		return new Set();
 	}
 	try {
 		const value = JSON.parse(raw) as unknown;
-		if (!Array.isArray(value) || value.length > MAX_COLLAPSED_REPOSITORIES) {
+		if (!Array.isArray(value) || value.length > maxCount) {
 			return new Set();
 		}
 		const result = new Set<string>();
 		for (const id of value) {
-			if (typeof id !== 'string' || id.length === 0 || id.length > MAX_REPOSITORY_ID_LENGTH) {
+			if (typeof id !== 'string' || id.length === 0 || id.length > maxIdLength) {
 				return new Set();
 			}
 			result.add(id);
@@ -33,6 +42,34 @@ export function paradisParseCollapsedRepositoryIds(raw: string | undefined): Set
 	} catch {
 		return new Set();
 	}
+}
+
+/** reader と同じ上限を満たす snapshot だけを返す。 */
+function serializeIdSet(ids: ReadonlySet<string>, maxCount: number, maxIdLength: number, maxStorageLength: number): string | undefined {
+	if (ids.size > maxCount) {
+		return undefined;
+	}
+	const sorted = [...ids].sort();
+	if (sorted.some(id => id.length === 0 || id.length > maxIdLength)) {
+		return undefined;
+	}
+	const serialized = JSON.stringify(sorted);
+	return serialized.length <= maxStorageLength ? serialized : undefined;
+}
+
+/** Parse persisted view state defensively. A partially valid value is not accepted. */
+export function paradisParseCollapsedRepositoryIds(raw: string | undefined): Set<string> {
+	return parseIdSet(raw, MAX_COLLAPSED_REPOSITORIES, MAX_REPOSITORY_ID_LENGTH, MAX_COLLAPSED_REPOSITORIES_STORAGE_LENGTH);
+}
+
+/** ピン留めされた worktree の状態キー集合を読む (collapsed 状態と同じ防御的な読み方)。 */
+export function paradisParsePinnedWorktreeKeys(raw: string | undefined): Set<string> {
+	return parseIdSet(raw, MAX_PINNED_WORKTREES, MAX_PINNED_WORKTREE_KEY_LENGTH, MAX_PINNED_WORKTREES_STORAGE_LENGTH);
+}
+
+/** ピン留めの snapshot。上限を超える場合は undefined を返し、呼び出し側が既存storageを保持する。 */
+export function paradisSerializePinnedWorktreeKeys(keys: ReadonlySet<string>): string | undefined {
+	return serializeIdSet(keys, MAX_PINNED_WORKTREES, MAX_PINNED_WORKTREE_KEY_LENGTH, MAX_PINNED_WORKTREES_STORAGE_LENGTH);
 }
 
 export function paradisLoadCollapsedRepositoryIds(read: () => string | undefined, onReadError: () => void): Set<string> {
@@ -50,15 +87,7 @@ export function paradisLoadCollapsedRepositoryIds(read: () => string | undefined
 
 /** readerと同じ上限を満たすsnapshotだけを返す。拒否時は呼び出し側が既存storageを保持する。 */
 export function paradisSerializeCollapsedRepositoryIds(ids: ReadonlySet<string>): string | undefined {
-	if (ids.size > MAX_COLLAPSED_REPOSITORIES) {
-		return undefined;
-	}
-	const sorted = [...ids].sort();
-	if (sorted.some(id => id.length === 0 || id.length > MAX_REPOSITORY_ID_LENGTH)) {
-		return undefined;
-	}
-	const serialized = JSON.stringify(sorted);
-	return serialized.length <= MAX_COLLAPSED_REPOSITORIES_STORAGE_LENGTH ? serialized : undefined;
+	return serializeIdSet(ids, MAX_COLLAPSED_REPOSITORIES, MAX_REPOSITORY_ID_LENGTH, MAX_COLLAPSED_REPOSITORIES_STORAGE_LENGTH);
 }
 
 export function paradisSetRepositoryCollapsed(ids: Set<string>, repositoryId: string, collapsed: boolean): boolean {
@@ -72,10 +101,11 @@ export function paradisSetRepositoryCollapsed(ids: Set<string>, repositoryId: st
 	return ids.delete(repositoryId);
 }
 
-export function paradisRemoveStaleCollapsedRepositoryIds(ids: Set<string>, liveRepositoryIds: ReadonlySet<string>): boolean {
+/** 生きていないIDを取り除く。ストレージが到達不能なキーで肥大化するのを防ぐ。 */
+export function paradisRemoveStaleIds(ids: Set<string>, liveIds: ReadonlySet<string>): boolean {
 	let changed = false;
 	for (const id of ids) {
-		if (!liveRepositoryIds.has(id)) {
+		if (!liveIds.has(id)) {
 			ids.delete(id);
 			changed = true;
 		}

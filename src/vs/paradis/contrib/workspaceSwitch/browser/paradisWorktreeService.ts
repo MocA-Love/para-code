@@ -15,6 +15,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { PARADIS_PINNED_WORKTREES_STORAGE_KEY, paradisParsePinnedWorktreeKeys, paradisRemoveStaleIds, paradisSerializePinnedWorktreeKeys } from '../common/paradisWorkspaceTreeState.js';
 
 interface ISerializedKnownWorktree {
 	readonly repositoryId: string;
@@ -68,6 +69,8 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	private _known: ISerializedKnownWorktree[];
 	/** リポジトリID → 表示順 (worktree の uri.toString() の配列)。手動並び替え (Move Up/Down) で更新される */
 	private _order: Map<string, string[]>;
+	/** ピン留めされた状態キー (リポジトリ本体は repositoryId、worktree は worktree:<uri>)。 */
+	private _pinned: Set<string>;
 
 	/** リポジトリID → .git/worktrees 監視の disposable */
 	private readonly _watchers = this._register(new DisposableMap<string>());
@@ -84,6 +87,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 		this._known = this.loadKnown();
 		this._order = this.loadOrder();
+		this._pinned = paradisParsePinnedWorktreeKeys(this.storageService.get(PARADIS_PINNED_WORKTREES_STORAGE_KEY, StorageScope.WORKSPACE));
 		const recoveredStateKeys = new Set(this.workspaceSwitchService.pendingCommittedRetirementStateKeys);
 		if (recoveredStateKeys.size > 0) {
 			const previousLength = this._known.length;
@@ -177,6 +181,24 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		this._order.set(repositoryId, [...orderedUris]);
 		this.saveOrder();
 		this._refreshScheduler.schedule();
+	}
+
+	isPinned(stateKey: string): boolean {
+		return this._pinned.has(stateKey);
+	}
+
+	setPinned(stateKey: string, pinned: boolean): void {
+		if (pinned) {
+			if (this._pinned.has(stateKey)) {
+				return;
+			}
+			this._pinned.add(stateKey);
+		} else if (!this._pinned.delete(stateKey)) {
+			return;
+		}
+		this.savePinned();
+		// 一覧の見え方だけが変わるので、ディスク再スキャン (refresh) は挟まず即座に通知する
+		this._onDidChangeWorktrees.fire();
 	}
 
 	/** リポジトリ一覧から消えた repositoryId の手動並び順を掃除する (ストレージ肥大化防止) */
@@ -325,6 +347,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		this._worktrees = result;
 		this._detectedWorktrees = detectedWorktrees;
 		this._branches = branches;
+		this.pruneStalePinned();
 		this.acknowledgeAbsentCommittedRetirements();
 		this._onDidChangeWorktrees.fire();
 	}
@@ -421,5 +444,28 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 	private saveOrder(): void {
 		this.storageService.store(ParadisWorktreeService.WORKTREE_ORDER_STORAGE_KEY, JSON.stringify(Object.fromEntries(this._order)), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	private savePinned(): void {
+		const serialized = paradisSerializePinnedWorktreeKeys(this._pinned);
+		if (serialized === undefined) {
+			// 上限超過。既存の保存内容をそのまま残す (collapsed 状態の永続化と同じ方針)
+			return;
+		}
+		this.storageService.store(PARADIS_PINNED_WORKTREES_STORAGE_KEY, serialized, StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	/** 一覧から消えたリポジトリ/worktree のピン留めを落とす (到達不能なキーの蓄積を防ぐ)。 */
+	private pruneStalePinned(): void {
+		const live = new Set<string>();
+		for (const [repositoryId, worktrees] of this._worktrees) {
+			live.add(repositoryId);
+			for (const worktree of worktrees) {
+				live.add(paradisWorktreeStateKey(worktree.uri));
+			}
+		}
+		if (paradisRemoveStaleIds(this._pinned, live)) {
+			this.savePinned();
+		}
 	}
 }

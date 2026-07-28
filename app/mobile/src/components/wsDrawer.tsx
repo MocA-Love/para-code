@@ -38,7 +38,7 @@ if (Platform.OS === 'android') {
 }
 
 /** stateスナップショットのワークスペースエントリ（parentはworktreeの親リポジトリid）。 */
-type WsEntry = { id: string; name: string; color?: string; branch?: string; parent?: string; note?: { open: number; done: number } };
+type WsEntry = { id: string; name: string; color?: string; branch?: string; parent?: string; note?: { open: number; done: number }; pinned?: boolean };
 
 /** ワークスペースの表示色。PC側がcolorを配信していればそれを、無ければ名前のハッシュで安定に決める。 */
 const WS_PALETTE = [colors.accent, colors.purple, colors.green, colors.orange, colors.yellow, colors.red] as const;
@@ -227,7 +227,7 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	 * （ワークツリー数＋開閉シェブロン付き。折りたたみ中はaggWaiting/aggRunningで配下の
 	 * 応答待ち・実行中を集約表示し、閉じていても見落とさないようにする）。
 	 */
-	const renderRow = (ws: WsEntry, opts: { child?: boolean; childCount?: number; open?: boolean; aggWaiting?: number; aggRunning?: number } = {}) => {
+	const renderRow = (ws: WsEntry, opts: { child?: boolean; childCount?: number; open?: boolean; aggWaiting?: number; aggRunning?: number; kept?: boolean } = {}) => {
 		// 「すべて表示」が選ばれている間はどのワークスペース行もアクティブ表示にしない
 		// （ホームの絞り込み先が無いことを一目で示す）。
 		const active = !homeShowAllWorkspaces && ws.id === effective;
@@ -239,9 +239,9 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 		const name = opts.child ? ws.name.replace(/^✦ /, '') : ws.name;
 		const grouped = (opts.childCount ?? 0) > 0;
 		return (
-			<Pressable key={ws.id} style={[styles.row, opts.child && styles.wtRow, active && styles.rowActive]} onPress={() => select(ws.id)}>
+			<Pressable key={ws.id} style={[styles.row, opts.child && styles.wtRow, opts.kept && styles.wtRowKept, active && styles.rowActive]} onPress={() => select(ws.id)}>
 				{active && !opts.child ? <View style={styles.rowIndicator} /> : null}
-				{opts.child ? <View style={[styles.wtGuide, active && styles.wtGuideActive]} /> : null}
+				{opts.child ? <View style={[styles.wtGuide, (active || opts.kept) && styles.wtGuideActive]} /> : null}
 				<View style={[styles.avatar, opts.child && styles.wtAvatar, { backgroundColor: color + '22' }]}>
 					<Text style={[styles.avatarText, opts.child && styles.wtAvatarText, { color }]}>{opts.child ? '✦' : name.charAt(0).toUpperCase()}</Text>
 				</View>
@@ -254,6 +254,9 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 						</View>
 					) : null}
 				</View>
+				{/* PC側でピン留めされた印。折りたたんでも残る理由がひと目で分かるようにする
+				    （留め外しはPC側の Workspaces ビューで行う） */}
+				{ws.pinned ? <Ionicons name="pin" size={11} color={colors.accent} /> : null}
 				{waiting > 0 ? (
 					<View style={styles.alertBadge}><Text style={styles.alertBadgeText}>{waiting > 1 ? `質問あり ${waiting}` : '質問あり'}</Text></View>
 				) : null}
@@ -396,13 +399,17 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 						return renderRow(repo);
 					}
 					const open = !collapsedRepos.has(repo.id);
-					// 折りたたみ中は配下の応答待ち/実行中を親行に集約表示する
-					const aggWaiting = open ? 0 : children.reduce((n, c) => n + wsTerminalsOf(c.id).filter(t => isAgentWaiting(t.agentStatus)).length, 0);
-					const aggRunning = open ? 0 : children.reduce((n, c) => n + wsTerminalsOf(c.id).filter(t => t.agentStatus === 'working').length, 0);
+					// 折りたたみ中もピン留めされたスペースは残す（PC版 Workspaces ビューと同じ挙動）
+					const shown = open ? children : children.filter(c => c.pinned);
+					// 折りたたみ中は配下の応答待ち/実行中を親行に集約表示する。残して見せている
+					// ピン留め行のぶんは、その行自体が出しているので二重に数えない
+					const hidden = open ? [] : children.filter(c => !c.pinned);
+					const aggWaiting = hidden.reduce((n, c) => n + wsTerminalsOf(c.id).filter(t => isAgentWaiting(t.agentStatus)).length, 0);
+					const aggRunning = hidden.reduce((n, c) => n + wsTerminalsOf(c.id).filter(t => t.agentStatus === 'working').length, 0);
 					return (
 						<View key={repo.id}>
 							{renderRow(repo, { childCount: children.length, open, aggWaiting, aggRunning })}
-							{open ? children.map(c => renderRow(c, { child: true })) : null}
+							{shown.map(c => renderRow(c, { child: true, kept: !open }))}
 						</View>
 					);
 				})}
@@ -565,6 +572,8 @@ const styles = StyleSheet.create({
 	noteBtnText: { color: colors.accent, fontSize: 10, fontWeight: '700', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	// ワークツリー（グループ子行）: インデント＋左端の縦ガイド線で親子関係を示す
 	wtRow: { marginLeft: 27, paddingLeft: 14, paddingVertical: 9 },
+	// 折りたたみ中もピン留めで残している行（閉じたグループにぶら下がっていることを薄い地色で示す）
+	wtRowKept: { backgroundColor: 'rgba(9,175,217,0.05)' },
 	wtGuide: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 1.5, borderRadius: 1, backgroundColor: colors.borderStrong },
 	wtGuideActive: { backgroundColor: colors.accent },
 	wtAvatar: { width: 26, height: 26, borderRadius: 8 },

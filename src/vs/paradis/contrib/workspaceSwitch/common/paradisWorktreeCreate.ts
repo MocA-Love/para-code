@@ -426,6 +426,12 @@ export interface IParadisWorktreeCreateJobSnapshot {
 	readonly name?: string;
 	/** 現在の工程の短い表示ラベル（例: setup スクリプトを実行中…）。 */
 	readonly stageLabel: string;
+	/**
+	 * `git worktree add` が済んで実体ができた後の状態キー（それ以前は undefined）。
+	 * これが付いたジョブは Workspaces ビューで専用の「作成中」行を出さず、実物の worktree 行の
+	 * 2段目に工程ラベルを重ねる（同じ名前の行が2つ並ばないようにするため）。
+	 */
+	readonly stateKey?: string;
 }
 
 export const IParadisWorktreeCreateProgressStore = createDecorator<IParadisWorktreeCreateProgressStore>('paradisWorktreeCreateProgressStore');

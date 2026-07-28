@@ -180,8 +180,13 @@
 	font-style: italic;
 }
 
-.paradis-workspaces-list .paradis-creating-row .paradis-creating-stage {
+/* allow-any-unicode-next-line */
+/* 工程ラベル。実体ができるまでは専用の「作成中」行に、実体ができた後は通常の worktree 行の
+ * 2段目 (ブランチ名の位置) に出る (paradisWorkspacesView.ts の pendingStageFor 参照)。 */
+.paradis-workspaces-list .paradis-creating-row .paradis-creating-stage,
+.paradis-workspaces-list .paradis-worktree-branch.paradis-creating-stage {
 	color: var(--vscode-descriptionForeground);
+	font-style: italic;
 }
 
 /* allow-any-unicode-next-line */
@@ -292,6 +297,50 @@
 
 .paradis-workspaces-list .paradis-worktree-diff-removed:not(:empty) {
 	color: var(--vscode-gitDecoration-deletedResourceForeground, #e5534b);
+}
+
+/* allow-any-unicode-next-line */
+/* ピン留めの留め外しボタン。留めていない行では邪魔にならないようホバー時だけ現れ、
+ * 留めてある行では常に見えることでピン留めの目印そのものになる。 */
+.paradis-workspaces-list .paradis-worktree-pin {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	opacity: 0;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-workspaces-list .monaco-tl-row:hover .paradis-worktree-pin {
+	opacity: 0.85;
+}
+
+.paradis-workspaces-list .paradis-worktree-pin.pinned {
+	opacity: 1;
+	color: var(--vscode-charts-blue);
+}
+
+.monaco-workbench .paradis-workspaces-list .paradis-worktree-pin > .codicon {
+	font-size: 13px;
+}
+
+/* allow-any-unicode-next-line */
+/* 折りたたんだリポジトリの下に残すピン留めの控え行。ツリー上はルート要素なので、
+ * 子行と同じ位置に見えるようインデント1段ぶんだけ内側へ寄せる (幅は設定
+ * workbench.tree.indent に追従させるため、レンダラが padding-left を直接与える)。
+ * 閉じたグループにぶら下がっていることは左の細い縦線で示す。 */
+.paradis-workspaces-list .paradis-worktree-row.paradis-pinned-keep {
+	position: relative;
+}
+
+.paradis-workspaces-list .paradis-worktree-row.paradis-pinned-keep::before {
+	content: '';
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 1px;
+	background-color: var(--vscode-charts-blue);
+	opacity: 0.35;
 }
 
 /* allow-any-unicode-next-line */
