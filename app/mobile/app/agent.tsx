@@ -19,6 +19,8 @@ import { IOBlock } from '../src/components/agentIoBlock.js';
 import { formatToolName } from '../src/agentToolMeta.js';
 import { findLatestApprovalRequest } from '../src/components/attentionCard.js';
 import { AgentComposer } from '../src/components/agentComposer.js';
+import { PendingMessagesChip, PendingMessagesSheet } from '../src/components/pendingMessages.js';
+import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../src/pendingAgentMessages.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useAgentActions } from '../src/hooks/useAgentActions.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
@@ -83,6 +85,54 @@ export default function AgentDetailScreen() {
 	// （PC側の hasPendingInteraction と一致しない）ので、押せない二択ではなく誘導だけを出す。
 	const approvalUnavailable = chat?.interaction === undefined && activeTerminal?.agentStatus === 'permission';
 	const actions = useAgentActions(activeKey, chat?.agent);
+
+	// 送ったがまだ読まれていないメッセージの控え。エージェントが作業中に送ると、読まれるまで
+	// 会話に現れない（＝画面から本文が消える）ため、ここで預かって件数を見せる。
+	const pendingMessages = usePendingAgentMessages(s => activeKey !== undefined ? s.byTerminal[activeKey] : undefined) ?? NO_PENDING_MESSAGES;
+	const [pendingSheetOpen, setPendingSheetOpen] = useState(false);
+	// 送信時点までの最大 rev。これより後に現れた発言だけを「読まれた」の照合に使う
+	// （同じ指示を送り直したとき、過去の同じ発言で控えが消えないようにする）。
+	const messagesRef = useRef<readonly AgentChatMessage[] | undefined>(undefined);
+	messagesRef.current = chat?.messages;
+	const chatEpoch = chat?.epoch;
+	// 送信予定のチップは実行中インジケータに同居させる。動いていないのに控えが残っている
+	// 場合（読まれないまま終わった等）だけ、単独の行として入力欄の上に出す。
+	const workingVisible = activeTerminal?.agentStatus === 'working' || chat?.live !== undefined;
+	// 控えは「動作中に送ったとき」だけ持つ。手が空いているときに送ったぶんは1秒ほどで
+	// 会話に現れるので、預かると毎回チップが一瞬光るだけになる。
+	const workingRef = useRef(false);
+	workingRef.current = workingVisible;
+	// AgentComposer は memo 化されているので、依存は actions ではなく actions.sendText
+	// （hook内で安定）にする。actions は毎レンダー新しい object になり、入力中の無関係な
+	// 再レンダーを招く。
+	const sendTextAction = actions.sendText;
+	const sendText = useCallback((text: string) => {
+		const afterRev = (messagesRef.current ?? []).reduce((max, message) => Math.max(max, message.rev), 0);
+		const wasWorking = workingRef.current;
+		return sendTextAction(text).then(result => {
+			if (wasWorking && result.status === 'accepted' && activeKey !== undefined && chatEpoch !== undefined) {
+				usePendingAgentMessages.getState().add(activeKey, text, afterRev, chatEpoch);
+			}
+			return result;
+		});
+	}, [sendTextAction, activeKey, chatEpoch]);
+	const messages = chat?.messages;
+	useEffect(() => {
+		if (activeKey === undefined) {
+			return;
+		}
+		usePendingAgentMessages.getState().reconcile(
+			activeKey,
+			chatEpoch,
+			(messages ?? []).filter(message => message.role === 'user' && message.kind === 'text'),
+		);
+	}, [activeKey, chatEpoch, messages]);
+	// 全部読まれたらシートを閉じる（開けたまま空になると「送信予定 0件」が残る）。
+	useEffect(() => {
+		if (pendingMessages.length === 0) {
+			setPendingSheetOpen(false);
+		}
+	}, [pendingMessages.length]);
 
 	// 入力中テキストは画面を離れても消えないよう、エージェント（ターミナル）単位の
 	// 一意キーでメモリ上に退避する。キーが分離されるので別エージェントの入力欄には混ざらない。
@@ -369,7 +419,9 @@ export default function AgentDetailScreen() {
 						data={rows}
 						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
 						ListHeaderComponent={<>{chat.activity !== undefined && !hasActiveActivity ? <AgentActivityCard activity={chat.activity} onOpen={openAgentActivity} /> : null}{chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}</>}
-						ListFooterComponent={activeTerminal?.agentStatus === 'working' || chat?.live !== undefined ? <WorkingIndicator live={chat?.live} /> : null}
+						ListFooterComponent={workingVisible
+							? <WorkingIndicator live={chat?.live} pendingCount={pendingMessages.length} onOpenPending={() => setPendingSheetOpen(true)} />
+							: null}
 						renderItem={({ item }) =>
 							item.type === 'msg' ? <MessageBubble message={item.m} />
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
@@ -452,6 +504,14 @@ export default function AgentDetailScreen() {
 				</View>
 			) : null}
 
+			{pendingMessages.length > 0 && !workingVisible ? (
+				<View style={styles.pendingRow}>
+					<PendingMessagesChip count={pendingMessages.length} onPress={() => setPendingSheetOpen(true)} />
+				</View>
+			) : null}
+
+			<PendingMessagesSheet visible={pendingSheetOpen} messages={pendingMessages} onClose={() => setPendingSheetOpen(false)} />
+
 			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
 				<AgentComposer
 					draftKey={draftKey}
@@ -463,7 +523,7 @@ export default function AgentDetailScreen() {
 					modelControl={chat?.modelControl}
 					commandCatalog={chat?.commandCatalog}
 					pr={agentWsPr}
-					sendText={actions.sendText}
+					sendText={sendText}
 					updateClaudeSetting={actions.updateClaudeSetting}
 					onAfterSubmit={scrollToEndSticky}
 					fsUpload={fsUpload}
@@ -547,7 +607,12 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 }
 
 /** エージェントがターン実行中に出す「考え中」インジケータ（ドットの脈動アニメーション）。 */
-function WorkingIndicator({ live }: { live?: AgentLiveState }) {
+function WorkingIndicator({ live, pendingCount = 0, onOpenPending }: {
+	live?: AgentLiveState;
+	/** 送ったがまだ読まれていないメッセージの件数（0なら何も出さない）。 */
+	pendingCount?: number;
+	onOpenPending?: () => void;
+}) {
 	const pulse = useRef(new Animated.Value(0)).current;
 	const [, setClock] = useState(0);
 	const isAppActive = useAppIsActive();
@@ -623,6 +688,7 @@ function WorkingIndicator({ live }: { live?: AgentLiveState }) {
 			<View style={styles.workingHeader}>
 				{dot(0)}{dot(1)}{dot(2)}
 				<Text style={styles.workingText} numberOfLines={1}>{label}{metrics.length > 0 ? `（${metrics}）` : '…'}</Text>
+				{onOpenPending !== undefined ? <PendingMessagesChip count={pendingCount} onPress={onOpenPending} /> : null}
 			</View>
 			{/* preview は常時マウントして高さを固定する。条件付きレンダーだと行ごと消えて
 			    フッターの高さが跳ね、下端固定のぶん本文が上下に振動する。 */}
@@ -683,4 +749,6 @@ const styles = StyleSheet.create({
 	jumpFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	jumpText: { color: colors.text, fontSize: 12, fontWeight: '600' },
 	inputBar: { paddingHorizontal: 12, paddingTop: 10, flexShrink: 1 },
+	// 実行中インジケータが出ていないときの送信予定チップ（右寄せで入力欄の上）
+	pendingRow: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 6 },
 });
