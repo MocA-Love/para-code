@@ -28,6 +28,16 @@ const MAX_CALL_EVENTS = 2000;
 const MAX_LAST_ERRORS = 20;
 /** 記録するエラーメッセージの最大長。gh の stderr をそのまま溜め込まないための上限。 */
 const MAX_ERROR_MESSAGE_LENGTH = 500;
+
+/**
+ * gh の stderr 由来のメッセージを表示・保持できる長さへ丸める。
+ * プロキシ環境などで stderr が数十行になることがあり、そのまま持つとダッシュボードの
+ * 表示が崩れ、デバッグバンドルにも丸ごと載る。呼び出し・レート枠の双方でこれを通す。
+ */
+export function paradisTruncateGithubErrorMessage(message: string): string {
+	return message.length > MAX_ERROR_MESSAGE_LENGTH ? `${message.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…` : message;
+}
+
 /**
  * レート枠サンプルの保持件数。取得間隔は状況により20秒〜数分と幅があるため、
  * 保持できる時間も数時間〜1日と変動する（1時間窓の集計には十分な数）。
@@ -304,9 +314,8 @@ export class ParadisGithubCallLog {
 
 	record(rawEvent: IParadisGithubCallEvent): void {
 		// エラーメッセージはデバッグバンドルにも載るので、記録の時点で長さを抑える
-		const event: IParadisGithubCallEvent = rawEvent.errorMessage && rawEvent.errorMessage.length > MAX_ERROR_MESSAGE_LENGTH
-			? { ...rawEvent, errorMessage: `${rawEvent.errorMessage.slice(0, MAX_ERROR_MESSAGE_LENGTH)}…` }
-			: rawEvent;
+		const truncated = rawEvent.errorMessage !== undefined ? paradisTruncateGithubErrorMessage(rawEvent.errorMessage) : undefined;
+		const event: IParadisGithubCallEvent = truncated !== rawEvent.errorMessage ? { ...rawEvent, errorMessage: truncated } : rawEvent;
 
 		this.events.push(event);
 		if (this.events.length > MAX_CALL_EVENTS) {
