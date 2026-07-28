@@ -1,16 +1,16 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type NativeSyntheticEvent, type TextInputSelectionChangeEventData } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
-import { GlassSurface } from '../src/components/glassSurface.js';
+import { GlassSurface, liquidGlass } from '../src/components/glassSurface.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { SPACE_NOTE_MAX_LENGTH, parseSpaceNote, spaceNoteSummary, toggleSpaceNoteTask } from '../src/spaceNote.js';
+import { appendSpaceNoteEntry, applySpaceNotePrefix, continueSpaceNoteChecklist, parseSpaceNote, SPACE_NOTE_MAX_LENGTH, spaceNoteSummary, toggleSpaceNoteTask, trimSpaceNoteTrailingEmptyTask, type SpaceNotePrefix } from '../src/spaceNote.js';
 import { colors, mono } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
@@ -22,10 +22,18 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
  *
  * - 表示中は `- [ ]` / `- [x]` をチェックボックスとして描き、タップで完了をトグルする
  *   （楽観更新してから noteSet を送り、失敗したら元に戻す）
+ * - 一覧末尾の「項目を追加」から、編集モードに入らずチェック項目を足せる。改行で1件確定し
+ *   入力欄は残るので、続けて何件でも書ける（記号を手打ちしなくてよい）
  * - 「編集」で本文全体を書き換えられる。保存はPC側の storage へ反映され、PCの表示・
  *   一覧の未完了バッジ・他のモバイル端末にも波及する
  * - 確定操作（キャンセル／保存）はヘッダーに置く。キーボードのすぐ上に置くと
  *   フリック入力の指と重なって誤タップするため
+ *
+ * 日本語IMEについて（エージェントタブと同じ扱い。glassComposer.tsx のコメント参照）:
+ * 入力欄はいずれもuncontrolled（`value` を渡さない）で、文字列はネイティブ側が保持する。
+ * PCや他端末からの同期pushで再レンダしても未確定文字列（marked text）へ書き戻さないため、
+ * 変換途中で確定される・濁点が分離する、といった事故が起きない。ストアの購読も
+ * この画面が描く値だけに絞ってある（`workspace` 全体を購読すると無関係な更新で再レンダする）。
  */
 export default function SpaceNoteScreen() {
 	const router = useRouter();
@@ -34,15 +42,23 @@ export default function SpaceNoteScreen() {
 	// SafeArea ぶんの余白を足すと二重になる（入力欄がキーボードから浮く）。
 	const keyboardVisible = useKeyboardVisible();
 	const { ws } = useLocalSearchParams<{ ws?: string }>();
-	const { workspace, noteGet, noteSet } = useAppStore(useShallow(s => ({ workspace: s.workspace, noteGet: s.noteGet, noteSet: s.noteSet })));
-	const entry = (workspace?.workspaces ?? []).find(w => w.id === ws);
-	// グループ表示ではPCが旧アプリ互換のために付ける「✦ 」接頭辞を取り除く
-	const name = (entry?.name ?? '').replace(/^✦ /, '');
-	const color = entry ? wsColor(entry) : colors.accent;
+	// 描画に使う値だけを取り出す。ここで `workspace` をそのまま受け取ると、
+	// エージェントの進捗など無関係な同期のたびに画面全体が再レンダされる。
+	const { name, branch, color, noteGet, noteSet } = useAppStore(useShallow(s => {
+		const entry = (s.workspace?.workspaces ?? []).find(w => w.id === ws);
+		return {
+			// グループ表示ではPCが旧アプリ互換のために付ける「✦ 」接頭辞を取り除く
+			name: (entry?.name ?? '').replace(/^✦ /, ''),
+			branch: entry?.branch,
+			color: entry ? wsColor(entry) : colors.accent,
+			noteGet: s.noteGet,
+			noteSet: s.noteSet,
+		};
+	}));
 
 	const [text, setText] = useState('');
-	const [draft, setDraft] = useState('');
 	const [editing, setEditing] = useState(false);
+	const [adding, setAdding] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | undefined>(undefined);
@@ -55,6 +71,20 @@ export default function SpaceNoteScreen() {
 	/** アンマウント時の保存判定で最新の本文を読むための控え。 */
 	const textRef = useRef('');
 	textRef.current = text;
+
+	const scrollRef = useRef<ScrollView>(null);
+	const editorRef = useRef<TextInput>(null);
+	/** 編集欄に渡す初期値。uncontrolledなので、編集を始めた時点の本文をここで固定する。 */
+	const editorInitial = useRef('');
+	/** 編集欄を作り直す契機。編集を開始するたびに変えて、前回の下書きが残らないようにする。 */
+	const [editorKey, setEditorKey] = useState(0);
+	/** 自動継続の差分検出に使う「1つ前の本文」。setNativePropsでの書き換えも必ずここへ反映する。 */
+	const editorBaseline = useRef('');
+	/** ツールバーが記号を差し込む位置。 */
+	const editorSelection = useRef(0);
+	const addRef = useRef<TextInput>(null);
+	/** 追加行の入力内容（uncontrolledなのでReactのstateには置かない）。 */
+	const addDraft = useRef('');
 
 	useEffect(() => {
 		if (ws === undefined) {
@@ -85,8 +115,13 @@ export default function SpaceNoteScreen() {
 	// 画面が消えた後の送信になるため、store から直接呼ぶ（この時点でこの画面の state は触らない）。
 	useEffect(() => () => {
 		const draftText = pendingDraft.current;
-		if (draftText !== undefined && ws !== undefined && draftText !== textRef.current) {
-			void useAppStore.getState().noteSet(ws, draftText).catch(() => undefined);
+		if (draftText === undefined || ws === undefined) {
+			return;
+		}
+		// 保存経路はどこを通っても、自動継続が残した末尾の空項目を落としてから送る
+		const trimmed = trimSpaceNoteTrailingEmptyTask(draftText);
+		if (trimmed !== textRef.current) {
+			void useAppStore.getState().noteSet(ws, trimmed).catch(() => undefined);
 		}
 	}, [ws]);
 
@@ -131,10 +166,53 @@ export default function SpaceNoteScreen() {
 	const summary = spaceNoteSummary(text);
 	const lines = parseSpaceNote(text);
 
+	/**
+	 * 編集欄の中身をこちらから書き換える。uncontrolledなTextInputの唯一の書き換え口。
+	 *
+	 * 呼ぶのは改行の直後（＝IMEの変換が確定した後なので未確定文字列は無い）とツールバー操作の2経路。
+	 * 後者は変換中でも押せてしまい、未確定文字列を抱えたまま書き戻すと変換が乱れる余地が残る
+	 * （ネイティブの変換状態をReact側から知る手段がないため、ここは実機での確認が要る既知の制約）。
+	 *
+	 * テキストと選択範囲でAPIを分けているのは、`selection` を setNativeProps に混ぜても
+	 * New Architecture では反映されないため。カーソル移動は公式の setSelection を使う。
+	 */
+	const writeEditor = useCallback((next: string, selection: number) => {
+		// maxLength はユーザーの打鍵にしか効かないので、こちらの書き換えでも上限を守る
+		if (next.length > SPACE_NOTE_MAX_LENGTH) {
+			return;
+		}
+		editorBaseline.current = next;
+		pendingDraft.current = next;
+		editorSelection.current = selection;
+		editorRef.current?.setNativeProps({ text: next });
+		editorRef.current?.setSelection(selection, selection);
+	}, []);
+
+	const handleEditorChange = useCallback((next: string) => {
+		const previous = editorBaseline.current;
+		editorBaseline.current = next;
+		pendingDraft.current = next;
+		// 改行はIMEの変換確定より後にしか発生しないので、ここで書き換えても未確定文字列を壊さない
+		const continued = continueSpaceNoteChecklist(previous, next);
+		if (continued !== undefined) {
+			writeEditor(continued.text, continued.selection);
+		}
+	}, [writeEditor]);
+
+	const applyPrefix = useCallback((prefix: SpaceNotePrefix) => {
+		hapticSelection();
+		const result = applySpaceNotePrefix(editorBaseline.current, editorSelection.current, prefix);
+		writeEditor(result.text, result.selection);
+	}, [writeEditor]);
+
 	const startEditing = () => {
 		hapticImpact('light');
-		setDraft(text);
+		editorInitial.current = text;
+		editorBaseline.current = text;
+		editorSelection.current = text.length;
 		pendingDraft.current = text;
+		setEditorKey(key => key + 1);
+		setAdding(false);
 		setEditing(true);
 	};
 
@@ -146,12 +224,67 @@ export default function SpaceNoteScreen() {
 
 	const commitEditing = () => {
 		hapticImpact('light');
+		// 自動継続が置いた末尾の空項目は、未完了1件として数えられてしまうので保存前に落とす
+		const next = trimSpaceNoteTrailingEmptyTask(pendingDraft.current ?? text);
 		const previous = text;
 		pendingDraft.current = undefined;
-		setText(draft);
+		setText(next);
 		setEditing(false);
-		void save(draft, previous);
+		void save(next, previous);
 	};
+
+	const startAdding = () => {
+		hapticImpact('light');
+		addDraft.current = '';
+		setError(undefined);
+		setAdding(true);
+	};
+
+	const stopAdding = useCallback(() => {
+		addDraft.current = '';
+		setAdding(false);
+	}, []);
+
+	/**
+	 * 追加行の内容を1件として確定する。既定では入力欄を空にして残し、続けて書けるようにする。
+	 * `close` を渡すとそのまま閉じる（フォーカスが外れたときの取りこぼし防止に使う）。
+	 */
+	const commitAdding = useCallback((kind: 'task' | 'text', close = false) => {
+		const next = appendSpaceNoteEntry(text, addDraft.current, kind);
+		if (next === undefined) {
+			stopAdding();
+			return;
+		}
+		if (next.length > SPACE_NOTE_MAX_LENGTH) {
+			setError('メモが上限に達しているため追加できません。');
+			return;
+		}
+		hapticSelection();
+		setError(undefined);
+		const previous = text;
+		setText(next);
+		addDraft.current = '';
+		addRef.current?.clear();
+		if (close) {
+			setAdding(false);
+		} else {
+			requestAnimationFrame(() => scrollRef.current?.scrollToEnd({ animated: true }));
+		}
+		void save(next, previous);
+	}, [text, save, stopAdding]);
+
+	/**
+	 * 入力欄からフォーカスが外れたら、書きかけを捨てずに1件として確定する。
+	 * 一覧の余白タップやキーボードを閉じる操作でもここへ来るため、破棄すると打った内容が黙って消える
+	 * （編集モードは pendingDraft で離脱時に保存しており、それと非対称にしない）。
+	 */
+	const handleAddBlur = useCallback(() => {
+		if (addDraft.current.trim().length === 0) {
+			stopAdding();
+			return;
+		}
+		commitAdding('task', true);
+	}, [commitAdding, stopAdding]);
 
 	return (
 		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
@@ -175,7 +308,7 @@ export default function SpaceNoteScreen() {
 				</View>
 				<View style={styles.spaceBody}>
 					<Text style={styles.spaceName} numberOfLines={1}>{name || 'スペース'}</Text>
-					{entry?.branch ? <Text style={styles.spaceBranch} numberOfLines={1}>{entry.branch}</Text> : null}
+					{branch ? <Text style={styles.spaceBranch} numberOfLines={1}>{branch}</Text> : null}
 				</View>
 				{summary.open + summary.done > 0 ? (
 					<View style={styles.summaryChip}>
@@ -192,22 +325,27 @@ export default function SpaceNoteScreen() {
 					<View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
 				) : editing ? (
 					<TextInput
-						style={[styles.editor, { marginBottom: keyboardVisible ? 14 : insets.bottom + 14 }]}
-						value={draft}
-						onChangeText={next => { setDraft(next); pendingDraft.current = next; }}
+						key={editorKey}
+						ref={editorRef}
+						style={styles.editor}
+						// value は渡さない。渡すと再レンダのたびにIMEの未確定文字列へ書き戻ってしまう
+						defaultValue={editorInitial.current}
+						onChangeText={handleEditorChange}
+						onSelectionChange={(e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => { editorSelection.current = e.nativeEvent.selection.start; }}
 						multiline
 						autoFocus
 						spellCheck={false}
 						autoCorrect={false}
 						// PC側と同じ上限。超過分はPC側で切り詰められるため、入力段階で止める
 						maxLength={SPACE_NOTE_MAX_LENGTH}
-						placeholder={'やることを書けます\n- [ ] のように書くとチェックリストになります'}
+						placeholder={'やることを書けます\n下のボタンでチェックリストにできます'}
 						placeholderTextColor={colors.textDim}
+						accessibilityLabel="メモの本文"
 					/>
 				) : (
-					<ScrollView style={styles.flex} contentContainerStyle={[styles.bodyContent, { paddingBottom: insets.bottom + 32 }]} keyboardShouldPersistTaps="handled">
-						{lines.length === 0 ? (
-							<Text style={styles.placeholder}>このスペースのメモはまだありません。「編集」から書き始められます。</Text>
+					<ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={[styles.bodyContent, { paddingBottom: adding ? 16 : insets.bottom + 32 }]} keyboardShouldPersistTaps="handled">
+						{lines.length === 0 && !adding ? (
+							<Text style={styles.placeholder}>このスペースのメモはまだありません。下の「項目を追加」からすぐ書き始められます。</Text>
 						) : lines.map(line => {
 							if (line.kind === 'blank') {
 								return <View key={line.index} style={styles.blank} />;
@@ -227,16 +365,91 @@ export default function SpaceNoteScreen() {
 								</Pressable>
 							);
 						})}
+
+						{adding ? (
+							<View style={styles.task}>
+								<View style={[styles.check, styles.checkGhost]} importantForAccessibility="no" accessibilityElementsHidden />
+								<TextInput
+									ref={addRef}
+									style={styles.addInput}
+									// ここも uncontrolled。確定後のクリアだけ命令APIで行う
+									onChangeText={next => { addDraft.current = next; }}
+									onSubmitEditing={() => commitAdding('task')}
+									onBlur={handleAddBlur}
+									autoFocus
+									spellCheck={false}
+									autoCorrect={false}
+									returnKeyType="done"
+									submitBehavior="submit"
+									maxLength={SPACE_NOTE_MAX_LENGTH}
+									placeholder="項目を書いて確定"
+									placeholderTextColor={colors.textDim}
+									accessibilityLabel="チェック項目を追加"
+								/>
+							</View>
+						) : (
+							<Pressable style={styles.addRow} onPress={startAdding} disabled={loading || ws === undefined} accessibilityRole="button" accessibilityLabel="項目を追加">
+								<View style={styles.addPlus}><Ionicons name="add" size={14} color={colors.textDim} /></View>
+								<Text style={styles.addLabel}>項目を追加</Text>
+							</Pressable>
+						)}
 					</ScrollView>
 				)}
+
+				{editing || adding ? (
+					<SpaceNoteToolbar
+						bottomInset={keyboardVisible ? 8 : insets.bottom + 8}
+						actions={editing ? [
+							{ key: 'task', icon: 'checkbox-outline', label: 'チェック', onPress: () => applyPrefix('task') },
+							{ key: 'heading', icon: 'text', label: '見出し', onPress: () => applyPrefix('heading') },
+							{ key: 'bullet', icon: 'list', label: '箇条書き', onPress: () => applyPrefix('bullet') },
+							{ key: 'none', icon: 'remove-outline', label: '記号なし', onPress: () => applyPrefix('none') },
+						] : [
+							{ key: 'task', icon: 'checkbox-outline', label: 'チェック', onPress: () => commitAdding('task') },
+							{ key: 'text', icon: 'text', label: 'ふつうの行', onPress: () => commitAdding('text') },
+							{ key: 'close', icon: 'chevron-down', label: '閉じる', onPress: stopAdding },
+						]}
+					/>
+				) : null}
 			</KeyboardAvoidingView>
 		</View>
 	);
 }
 
 /**
+ * キーボード直上に出す入力補助バー。面はLiquid Glass（非対応環境ではBlurViewへ自動フォールバック）で、
+ * ヘッダーのボタンと質感を合わせる。Apple HIGに従い、バーの上に載るボタン自体はglass化しない。
+ */
+function SpaceNoteToolbar({ actions, bottomInset }: {
+	actions: { key: string; icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void }[];
+	/** キーボードが出ていないときにSafeAreaぶんだけ持ち上げるための下余白。 */
+	bottomInset: number;
+}) {
+	return (
+		<View style={[styles.toolbar, { marginBottom: bottomInset }]}>
+			{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される） */}
+			<GlassSurface style={[styles.toolbarGlass, !liquidGlass && styles.toolbarGlassFallbackBorder]} />
+			{actions.map(action => (
+				<Pressable
+					key={action.key}
+					style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed]}
+					onPress={action.onPress}
+					accessibilityRole="button"
+					accessibilityLabel={action.label}
+				>
+					<Ionicons name={action.icon} size={15} color={colors.text} />
+					{/* 狭い端末（iPhone SE幅）でも折り返してバーの高さを崩さない */}
+					<Text style={styles.toolbarLabel} numberOfLines={1}>{action.label}</Text>
+				</Pressable>
+			))}
+		</View>
+	);
+}
+
+/**
  * ヘッダーの操作ボタン。面はLiquid Glass（非対応環境ではBlurViewへ自動フォールバック）。
- * glassの上にglassを重ねないため（Apple HIG）、この画面ではここ以外にglass面を置かない。
+ * glassの上にglassを重ねないため（Apple HIG）、glass面はここと入力補助バーだけに置き、
+ * 互いに重ならない位置（画面上端と下端）へ分けている。
  */
 function GlassButton({ label, icon, onPress, disabled, tint, strong, accessibilityLabel }: {
 	label?: string;
@@ -299,7 +512,20 @@ const styles = StyleSheet.create({
 	// 未チェックが空白に見えないよう、枠と面のコントラストをPC側と揃える
 	check: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,0.45)', backgroundColor: 'rgba(255,255,255,0.08)', alignItems: 'center', justifyContent: 'center', marginTop: 2 },
 	checkDone: { backgroundColor: colors.accent, borderColor: colors.accent },
+	// 追加中の行。まだ存在しない項目なので、枠を弱めて「これから増える1件」に見せる
+	checkGhost: { borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', backgroundColor: 'transparent' },
 	taskLabel: { flex: 1, color: colors.text, fontSize: 13.5, lineHeight: 23 },
 	taskLabelDone: { color: colors.textDim, textDecorationLine: 'line-through' },
-	editor: { flex: 1, marginHorizontal: 14, padding: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 14, color: colors.text, fontSize: 14, lineHeight: 23, textAlignVertical: 'top' },
+	addInput: { flex: 1, color: colors.text, fontSize: 13.5, lineHeight: 23, padding: 0, marginTop: Platform.OS === 'ios' ? 0 : -4 },
+	addRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 7 },
+	addPlus: { width: 20, height: 20, borderRadius: 6, borderWidth: 1, borderStyle: 'dashed', borderColor: 'rgba(255,255,255,0.3)', alignItems: 'center', justifyContent: 'center' },
+	addLabel: { color: colors.textDim, fontSize: 13.5 },
+	editor: { flex: 1, marginHorizontal: 14, marginBottom: 10, padding: 12, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 14, color: colors.text, fontSize: 14, lineHeight: 23, textAlignVertical: 'top' },
+	toolbar: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 14, paddingHorizontal: 6, paddingVertical: 6, borderRadius: 20 },
+	toolbarGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: 20, overflow: 'hidden' },
+	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
+	toolbarGlassFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
+	toolbarBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 34, borderRadius: 14, paddingHorizontal: 4 },
+	toolbarBtnPressed: { backgroundColor: 'rgba(255,255,255,0.10)' },
+	toolbarLabel: { color: colors.text, fontSize: 12, fontWeight: '600' },
 });
