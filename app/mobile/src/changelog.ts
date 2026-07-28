@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-07-28',
 		items: [
 			{
+				icon: 'image-outline',
+				title: 'Claude Codeが読んだ画像を、その場で見られるようになりました',
+				body: 'スクリーンショットを読んだステップに小さなプレビューが出ます。タップすると全画面で開けます。これまでは「[image]」とだけ表示されていました。',
+			},
+			{
 				icon: 'add-circle-outline',
 				title: 'メモの項目をその場で足せるようになりました',
 				body: '編集に入らなくても、一覧の下の「項目を追加」から書けます。改行するたびに1件ずつ増え、記号を打つ必要はありません。',

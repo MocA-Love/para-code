@@ -403,6 +403,27 @@ export interface AgentChatMessage {
 	isError?: boolean;
 	/** text がPC側で切り詰められている。requestAgentToolFullText で全文を取り寄せられる。 */
 	truncated?: boolean;
+	/** kind==='tool_result': 結果に含まれていた画像のメタ情報。実体は requestAgentToolImage で取り寄せる。 */
+	images?: AgentChatImage[];
+}
+
+/** tool_result に含まれていた画像1枚のメタ情報（実体は含まない）。 */
+export interface AgentChatImage {
+	/** 同一メッセージ内での並び順。rev と組で1枚を指す。 */
+	index: number;
+	/** 'image/png' 等。data URI の組み立てに使う。 */
+	mediaType: string;
+	/** デコード後のおおよそのバイト数（容量表示用）。 */
+	bytes: number;
+	/** PC側が大きすぎて実体を保持していない（取り寄せても返らない）。 */
+	oversize?: true;
+}
+
+/** requestAgentToolImage の結果（PCが保持していた画像の実体）。 */
+export interface AgentToolImage {
+	mediaType: string;
+	/** base64（data URI のペイロード部分そのもの）。 */
+	data: string;
 }
 
 /** セッションのメタ情報（PC側 transcript から学習した最新値）。 */
@@ -488,6 +509,44 @@ function parseAgentCommandOptions(value: unknown): AgentCommandOption[] {
 		});
 	}
 	return commands;
+}
+
+/**
+ * チャットメッセージに載ってくる画像メタを正規化する。ここだけ構造が深く、値をそのまま
+ * `mediaType.replace(...)` のように使うため、壊れた形で行のレンダリングごと落ちないようにする。
+ */
+function parseAgentChatImages(value: unknown): AgentChatImage[] | undefined {
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+	const images: AgentChatImage[] = [];
+	for (const candidate of value.slice(0, 100)) {
+		if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+			continue;
+		}
+		const raw = candidate as Record<string, unknown>;
+		const index = raw['index'];
+		const mediaType = raw['mediaType'];
+		const bytes = raw['bytes'];
+		if (typeof index !== 'number' || !Number.isInteger(index) || index < 0
+			|| typeof mediaType !== 'string' || !/^image\/[a-zA-Z0-9.+-]{1,60}$/.test(mediaType)
+			|| typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
+			continue;
+		}
+		images.push({ index, mediaType, bytes, ...(raw['oversize'] === true ? { oversize: true as const } : {}) });
+	}
+	return images.length > 0 ? images : undefined;
+}
+
+/** relay境界で受けたチャットメッセージ配列の、検証が必要な部分だけを差し替える。 */
+function normalizeAgentChatMessages(value: AgentChatMessage[] | undefined): AgentChatMessage[] {
+	return (value ?? []).map(message => {
+		if (message?.images === undefined) {
+			return message;
+		}
+		const images = parseAgentChatImages(message.images);
+		return images !== undefined ? { ...message, images } : (({ images: _images, ...rest }) => rest)(message);
+	});
 }
 
 /** relay境界では型注釈を信用せず、UIへ渡す動的カタログを上限つきで正規化する。 */
@@ -918,6 +977,7 @@ export class MobileController {
 	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	/** ツール出力の全文取得（展開時オンデマンド）。rev単位で1件だけ在庫させる。 */
 	private readonly pendingToolFulls = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly rev: number; readonly resolve: (text: string) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	private readonly pendingToolImages = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly rev: number; readonly index: number; readonly resolve: (image: AgentToolImage) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentLiveResyncs = new Set<string>();
 	private readonly terminalOperationOutbox = new Map<string, { readonly operationRun: number; readonly operationSeq: number; readonly payload: Uint8Array; state: 'pending' | 'unknown'; durable: boolean }>();
 	private terminalOperationSeq = 0;
@@ -1401,6 +1461,29 @@ export class MobileController {
 		});
 	}
 
+	/**
+	 * ツール結果に含まれていた画像を取り寄せる（ステップを展開したときだけ呼ぶ）。
+	 * PC側は transcript を読み直さず、退避しておいた実体だけを返す。全文より1件が大きいので
+	 * タイムアウトも長めに取る。保持期限切れはエラーになるので、呼び出し側は枠だけ残す。
+	 */
+	requestAgentToolImage(terminalKey: string, rev: number, index: number): Promise<AgentToolImage> {
+		const chat = this.state.agentChats.get(terminalKey);
+		const terminal = this.terminalForKey(terminalKey);
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		if (!this.isLiveAvailable() || rendererTarget === undefined || chat === undefined || terminal === undefined) {
+			return Promise.reject(new Error('PCへ再接続してから開いてください'));
+		}
+		const requestId = `${this.requestPrefix}-tool-image-${this.requestCounter++}`;
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pendingToolImages.delete(requestId);
+				reject(new Error('画像の取得がタイムアウトしました'));
+			}, 30_000);
+			this.pendingToolImages.set(requestId, { terminalKey, rendererTarget, rev, index, resolve, reject, timer });
+			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'tool-image', id: terminal.id, token: this.agentToken(terminalKey), requestId, epoch: chat.epoch, rev, index })));
+		});
+	}
+
 	private sendAgentAction(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
 		return this.sendAgentActionResult(terminalKey, body, timeoutMs).then(result => result.status === 'accepted');
 	}
@@ -1442,6 +1525,11 @@ export class MobileController {
 			pending.reject(new Error('接続が切断されました'));
 		}
 		this.pendingToolFulls.clear();
+		for (const pending of this.pendingToolImages.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(new Error('接続が切断されました'));
+		}
+		this.pendingToolImages.clear();
 	}
 
 	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
@@ -2223,6 +2311,13 @@ export class MobileController {
 				pending.reject(new Error('PC画面が再接続されたため取得を中断しました'));
 			}
 		}
+		for (const [requestId, pending] of this.pendingToolImages) {
+			if (!this.isLiveAvailable() || this.rendererTargetFor(pending.terminalKey) !== pending.rendererTarget) {
+				clearTimeout(pending.timer);
+				this.pendingToolImages.delete(requestId);
+				pending.reject(new Error('PC画面が再接続されたため取得を中断しました'));
+			}
+		}
 		for (const [terminalKey, pending] of this.agentControlTimers) {
 			if (!this.isLiveAvailable() || this.rendererTargetFor(terminalKey) !== pending.rendererTarget) {
 				clearTimeout(pending.timer);
@@ -2879,7 +2974,7 @@ export class MobileController {
 	private handleAgentFrame(payload: Uint8Array): void {
 		try {
 			const msg = JSON.parse(decoder.decode(payload)) as {
-				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number;
+				t: string; id: number; token?: string; agent?: string; epoch?: string; rev?: number; index?: number;
 				messages?: AgentChatMessage[]; truncated?: boolean; info?: AgentSessionInfo; live?: AgentLiveState | null; liveRevision?: number; liveAppend?: unknown; activity?: AgentActivityState | null;
 				requestId?: string; activityId?: string; error?: string; models?: AgentModelOption[]; commands?: unknown; status?: string; code?: string; message?: string; consumed?: boolean; capabilities?: { agentActions?: unknown; claudeSettings?: unknown }; interaction?: AgentInteraction | null;
 			};
@@ -2933,6 +3028,22 @@ export class MobileController {
 				pending.resolve(text);
 				return;
 			}
+			if (msg.t === 'tool-image' && typeof msg.requestId === 'string') {
+				const pending = this.pendingToolImages.get(msg.requestId);
+				if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || pending.rev !== msg.rev || pending.index !== msg.index) { return; }
+				clearTimeout(pending.timer);
+				this.pendingToolImages.delete(msg.requestId);
+				if (typeof msg.error === 'string') { pending.reject(new Error(msg.error)); return; }
+				const raw = msg as unknown as { mediaType?: unknown; data?: unknown };
+				// data URI へそのまま埋めるため、base64 と mediaType の形をここで確かめる。
+				if (typeof raw.mediaType !== 'string' || !/^image\/[a-zA-Z0-9.+-]{1,60}$/.test(raw.mediaType)
+					|| typeof raw.data !== 'string' || raw.data.length === 0 || !/^[A-Za-z0-9+/=]+$/.test(raw.data)) {
+					pending.reject(new Error('画像の応答が不正です'));
+					return;
+				}
+				pending.resolve({ mediaType: raw.mediaType, data: raw.data });
+				return;
+			}
 			if (msg.t === 'none') {
 				this.clearAgentControlTimeout(terminalKey);
 				this.clearAgentCommandCatalogTimeout(terminalKey);
@@ -2952,7 +3063,7 @@ export class MobileController {
 					agent: msg.agent ?? 'claude',
 					epoch: msg.epoch ?? '',
 					rev: msg.rev ?? -1,
-					messages: msg.messages ?? [],
+					messages: normalizeAgentChatMessages(msg.messages),
 					truncated: msg.truncated === true,
 					...(msg.info !== undefined ? { info: msg.info } : {}),
 					...(msg.live !== undefined && msg.live !== null ? { live: msg.live } : {}),
@@ -2991,7 +3102,7 @@ export class MobileController {
 				}
 				// rev の飛び（リレーのフレーム落ち等）を検出したら、黙って継ぎ足さず差分を
 				// 取り直す（sendAgentAttach が afterRev 付きで欠落分から再取得する）。
-				const incoming = msg.messages ?? [];
+				const incoming = normalizeAgentChatMessages(msg.messages);
 				const lastKnownRev = existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1;
 				const minIncomingRev = incoming.length > 0 ? Math.min(...incoming.map(m => m.rev)) : undefined;
 				if (minIncomingRev !== undefined && minIncomingRev > lastKnownRev + 1) {
