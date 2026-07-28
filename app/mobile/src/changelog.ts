@@ -60,6 +60,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '「その他」に自由入力したときや、複数選択の質問が混ざっているときに、答えが1問ずつずれてPCに入っていました。',
 				tone: 'green',
 			},
+			{
+				icon: 'pin',
+				title: 'よく使うスペースをドロワーに残せるように',
+				body: 'PCでピン留めしたスペースは、リポジトリを折りたたんでも一覧に残ります。ピンの印が付いた行がそれです。',
+			},
 		],
 	},
 	{
