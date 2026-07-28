@@ -1,0 +1,481 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* GitHub API 利用状況: ステータスバーのポップオーバー(案A)とダッシュボード(案B)の共通スタイル。 */
+/* 色は workbench テーマの CSS 変数のみを使い、ダーク/ライト両方で成立させる。 */
+
+/* ---- 共通パーツ ---- */
+
+.paradis-ghm-gauge {
+	height: 5px;
+	border-radius: 3px;
+	overflow: hidden;
+	background: var(--vscode-progressBar-background, rgba(128, 128, 128, 0.25));
+	opacity: 0.85;
+}
+
+.paradis-ghm-gauge > span {
+	display: block;
+	height: 100%;
+	border-radius: 3px;
+	background: var(--vscode-charts-green);
+}
+
+.paradis-ghm-gauge > span.warning {
+	background: var(--vscode-charts-yellow);
+}
+
+.paradis-ghm-gauge > span.critical {
+	background: var(--vscode-charts-red);
+}
+
+.paradis-ghm-badge {
+	font-size: 10px;
+	font-weight: 600;
+	letter-spacing: 0.2px;
+	border-radius: 3px;
+	padding: 1px 5px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.paradis-ghm-badge.graphql {
+	background: var(--vscode-charts-purple);
+	color: var(--vscode-editor-background);
+}
+
+.paradis-ghm-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	font-family: inherit;
+	font-size: 12px;
+	padding: 4px 10px;
+	border-radius: 4px;
+	cursor: pointer;
+	border: 1px solid var(--vscode-button-border, transparent);
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.paradis-ghm-button:hover {
+	background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.paradis-ghm-button.primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.paradis-ghm-button.primary:hover {
+	background: var(--vscode-button-hoverBackground);
+}
+
+.paradis-ghm-button .codicon.spin {
+	animation: paradis-ghm-spin 1s linear infinite;
+}
+
+@keyframes paradis-ghm-spin {
+	100% {
+		transform: rotate(360deg);
+	}
+}
+
+.paradis-ghm-mono {
+	font-family: var(--monaco-monospace-font);
+	font-size: 12px;
+}
+
+.paradis-ghm-sub {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 2px;
+	word-break: break-all;
+}
+
+.paradis-ghm-sub.bad,
+.paradis-ghm-table td.num.bad {
+	color: var(--vscode-errorForeground);
+}
+
+/* ---- ポップオーバー(案A) ---- */
+
+.paradis-ghm-popover {
+	width: 340px;
+	max-width: 100%;
+	user-select: text;
+}
+
+.paradis-ghm-popover-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding-bottom: 8px;
+	margin-bottom: 8px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+
+.paradis-ghm-popover-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 600;
+}
+
+.paradis-ghm-popover-updated {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-ghm-popover-message {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	padding: 6px 0;
+}
+
+.paradis-ghm-popover-divider {
+	height: 1px;
+	background: var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+	margin: 10px 0 6px;
+}
+
+.paradis-ghm-limit {
+	margin-bottom: 12px;
+}
+
+.paradis-ghm-limit-top {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 5px;
+}
+
+.paradis-ghm-limit-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ghm-limit-value {
+	font-family: var(--monaco-monospace-font);
+	font-size: 12px;
+}
+
+.paradis-ghm-limit-sub {
+	display: flex;
+	justify-content: space-between;
+	gap: 8px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 4px;
+}
+
+.paradis-ghm-kv {
+	display: flex;
+	justify-content: space-between;
+	gap: 12px;
+	font-size: 12px;
+	padding: 3px 0;
+}
+
+.paradis-ghm-kv .k {
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ghm-kv .v {
+	font-family: var(--monaco-monospace-font);
+}
+
+.paradis-ghm-kv .v.warning {
+	color: var(--vscode-charts-yellow);
+}
+
+.paradis-ghm-popover-error {
+	margin-top: 10px;
+	padding: 7px 9px;
+	border-radius: 4px;
+	border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+	background: var(--vscode-inputValidation-errorBackground, transparent);
+}
+
+.paradis-ghm-popover-error-title {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-errorForeground);
+}
+
+.paradis-ghm-popover-error-body {
+	font-size: 11px;
+	margin-top: 3px;
+	word-break: break-word;
+}
+
+.paradis-ghm-popover-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding-top: 10px;
+	margin-top: 10px;
+	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+
+/* ---- ダッシュボード(案B) ---- */
+
+.paradis-ghm {
+	position: relative;
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	color: var(--vscode-foreground);
+	background-color: var(--vscode-editor-background);
+	user-select: text;
+}
+
+.paradis-ghm-toolbar {
+	flex: none;
+	display: flex;
+	align-items: flex-start;
+	gap: 12px;
+	padding: 14px 20px 12px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+
+.paradis-ghm-toolbar-spacer {
+	flex: 1;
+}
+
+.paradis-ghm-titles h2 {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+}
+
+.paradis-ghm-titles p {
+	margin: 4px 0 0;
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ghm-updated {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 6px;
+}
+
+.paradis-ghm-body {
+	flex: 1;
+	overflow-y: auto;
+	padding: 16px 20px 40px;
+	outline: none;
+}
+
+.paradis-ghm-message,
+.paradis-ghm-empty {
+	font-size: 12px;
+	color: var(--vscode-descriptionForeground);
+	padding: 16px 0;
+	text-align: center;
+}
+
+.paradis-ghm-banner {
+	font-size: 12px;
+	padding: 8px 11px;
+	border-radius: 5px;
+	margin-bottom: 14px;
+	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+
+.paradis-ghm-banner.warning {
+	border-color: var(--vscode-charts-yellow);
+}
+
+.paradis-ghm-banner.error {
+	border-color: var(--vscode-errorForeground);
+}
+
+.paradis-ghm-grid {
+	display: grid;
+	gap: 10px;
+}
+
+.paradis-ghm-grid.cols4 {
+	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+
+.paradis-ghm-grid.cols3 {
+	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.paradis-ghm-card {
+	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+	border-radius: 6px;
+	padding: 11px 13px;
+	background: var(--vscode-editorWidget-background, transparent);
+}
+
+.paradis-ghm-card .k {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ghm-card .v {
+	font-size: 20px;
+	font-weight: 600;
+	margin-top: 4px;
+	letter-spacing: -0.3px;
+}
+
+.paradis-ghm-card .v small {
+	font-size: 12px;
+	font-weight: 400;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ghm-card .s {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 5px;
+}
+
+.paradis-ghm-card .paradis-ghm-gauge {
+	margin-top: 7px;
+}
+
+.paradis-ghm-section-title {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.5px;
+	text-transform: uppercase;
+	color: var(--vscode-descriptionForeground);
+	margin: 22px 0 8px;
+}
+
+.paradis-ghm-panel {
+	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.paradis-ghm-panel.padded {
+	padding: 12px 14px;
+}
+
+.paradis-ghm-limit-row {
+	padding: 11px 14px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-ghm-limit-row:last-child {
+	border-bottom: none;
+}
+
+.paradis-ghm-limit-head {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	margin-bottom: 6px;
+}
+
+.paradis-ghm-limit-percent {
+	margin-left: auto;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ghm-limit-facts {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 6px;
+}
+
+.paradis-ghm-chart-caption {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 8px;
+}
+
+.paradis-ghm-chart {
+	display: block;
+	width: 100%;
+	height: 56px;
+}
+
+.paradis-ghm-chart rect {
+	fill: var(--vscode-charts-blue);
+}
+
+.paradis-ghm-table {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+}
+
+.paradis-ghm-table th {
+	text-align: left;
+	font-weight: 600;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	padding: 7px 12px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+
+.paradis-ghm-table td {
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+	vertical-align: top;
+}
+
+.paradis-ghm-table tr:last-child td {
+	border-bottom: none;
+}
+
+.paradis-ghm-table th.num,
+.paradis-ghm-table td.num {
+	text-align: right;
+	font-family: var(--monaco-monospace-font);
+	white-space: nowrap;
+}
+
+.paradis-ghm-error-row {
+	display: flex;
+	gap: 12px;
+	padding: 9px 14px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-ghm-error-row:last-child {
+	border-bottom: none;
+}
+
+.paradis-ghm-error-when {
+	flex: none;
+	width: 90px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-ghm-error-detail {
+	min-width: 0;
+}
+
+.paradis-ghm-error-message {
+	font-size: 12px;
+	margin-top: 2px;
+	color: var(--vscode-errorForeground);
+	word-break: break-word;
+}
+
+.paradis-ghm-hint {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-top: 8px;
+}
