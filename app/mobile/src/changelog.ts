@@ -44,6 +44,29 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-07-28',
 		items: [
 			{
+				icon: 'people-outline',
+				title: 'SubAgent一覧が、いま動いているものと直近の履歴だけになりました',
+				body: '長く続いたセッションでは終わった子エージェントが何十件もたまり、今の状況が埋もれていました。1日より前のものは下の「過去の履歴を表示」にまとめています。',
+			},
+			{
+				icon: 'pricetag-outline',
+				title: 'SubAgentの名前と依頼内容が出るようになりました',
+				body: 'これまでは一覧も詳細も「SubAgent」と並ぶだけで、どれが何をしていたのか見分けられませんでした。',
+				tone: 'green',
+			},
+			{
+				icon: 'help-circle-outline',
+				title: '終わったエージェントが「状態不明」と表示されなくなりました',
+				body: '終了の合図を取りこぼしても記録から判断します。長く走っている子エージェントも、生きているか確かめてから状態を落とすようにしました。',
+				tone: 'green',
+			},
+			{
+				icon: 'list-outline',
+				title: 'SubAgentの詳細で、ツール履歴がアイコンだけになる問題を直しました',
+				body: 'ツール名や対象が押し潰されて見えず、四角い印だけが並んでいました。',
+				tone: 'green',
+			},
+			{
 				icon: 'swap-horizontal-outline',
 				title: 'ホーム一覧の左スワイプが効くようになりました',
 				body: 'アーカイブしようと横に引いても行が動かず、ワークスペースを開く右スワイプまで効かなくなっていました。',
