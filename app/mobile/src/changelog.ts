@@ -44,6 +44,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-07-28',
 		items: [
 			{
+				icon: 'chevron-down-circle-outline',
+				title: 'エージェントを開いた瞬間から最新のやり取りが見えるようになりました',
+				body: '開いたあとに履歴が上から流れ落ちて、最新まで一気にスクロールしていくことがありました。',
+				tone: 'green',
+			},
+			{
 				icon: 'people-outline',
 				title: 'SubAgent一覧が、いま動いているものと直近の履歴だけになりました',
 				body: '長く続いたセッションでは終わった子エージェントが何十件もたまり、今の状況が埋もれていました。1日より前のものは下の「過去の履歴を表示」にまとめています。',

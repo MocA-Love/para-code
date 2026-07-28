@@ -30,6 +30,7 @@ import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
 import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../src/agentNavigation.js';
+import { AgentInitialRevealGate } from '../src/agentInitialReveal.js';
 
 /**
  * エージェント詳細画面。ホームの一覧（または通知）から1エージェントを選んで開く
@@ -75,6 +76,7 @@ export default function AgentDetailScreen() {
 	);
 	const activeKey = activeTerminal?.terminalKey;
 	const chat = activeKey !== undefined ? agentChats.get(activeKey) : undefined;
+	const chatReady = chat !== undefined && !chat.none;
 	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);
 	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
 	// 承認バーの出現条件も chat.interaction（PC側の currentInteraction）を正本にする。
@@ -262,6 +264,18 @@ export default function AgentDetailScreen() {
 	// 動かさない（遡り読みを妨げない）。下端付近まで手で戻ると自動で復帰する。
 	const [sticky, setStickyState] = useState(true);
 	const stickyRef = useRef(true);
+	// 初回表示は最下部へ到達してから見せる（分割描画の追いかけ過程を見せると、開いた直後に
+	// 履歴が上から流れ落ちて最新へ飛ぶように映る）。判定は agentInitialReveal.ts 側。
+	// タイマーを持つのでキャッシュ破棄が許される useMemo ではなく ref で保持する。
+	const [listRevealed, setListRevealed] = useState(false);
+	const revealGate = useRef(new AgentInitialRevealGate(() => {
+		// 上限時間で表示に転じたときは追いかけの途中なので、見せる直前に一度寄せ直す
+		// （遡り読みを始めていたら動かさない）。
+		if (stickyRef.current) {
+			listRef.current?.scrollToEnd({ animated: false });
+		}
+		setListRevealed(true);
+	})).current;
 	const userScrollGestureRef = useRef(false);
 	const userDraggingRef = useRef(false);
 	const userMomentumRef = useRef(false);
@@ -290,6 +304,19 @@ export default function AgentDetailScreen() {
 		prevCountRef.current = 0;
 		lastContentHeightRef.current = 0;
 	}, [activeKey, setSticky]);
+	// リストが実際にマウントされた（＝チャットが手元に届いた）ところから隠し始める。
+	// 条件は FlatList の描画条件（chat があって none でない）と必ず同値にすること。ずれると
+	// 「隠したのに描画されない＝戻せない」空白が生まれる。epoch が変わると keyExtractor 経由で
+	// 全行が作り直され追いかけが再発するため、そこでも隠し直す。
+	// 到達前にアンマウントされても保留中のタイマーを残さない。
+	useEffect(() => {
+		if (activeKey === undefined || !chatReady) {
+			return;
+		}
+		setListRevealed(false);
+		revealGate.begin();
+		return () => revealGate.dispose();
+	}, [activeKey, chatReady, chat?.epoch, revealGate]);
 	useEffect(() => {
 		if (activeKey === undefined || !shouldHandleLatestEntry(handledLatestEntryRef.current, latestEntry)) {
 			return;
@@ -329,12 +356,16 @@ export default function AgentDetailScreen() {
 		}
 		if (stickyRef.current || latestEntryPendingRef.current) {
 			listRef.current?.scrollToEnd({ animated: false });
+			revealGate.noteGrowth();
 		}
 	};
 	// stickyを解除するのは、ユーザーが指で動かしている間（慣性スクロールを含む）だけ。
 	// 新着やfooter伸長によるcontentSize更新でもonScrollは発火するため、位置だけで
 	// ユーザー操作と判定すると、旧offsetを見た瞬間に追従が誤解除される。
 	const onScrollBeginDrag = () => {
+		// 隠している間は触れないので通常ここは表示済み。隠したまま指が届く経路が
+		// できたときに取り残されないための保険として呼ぶ。
+		revealGate.revealNow();
 		latestEntryPendingRef.current = false;
 		userScrollGestureRef.current = true;
 		userDraggingRef.current = true;
@@ -416,6 +447,11 @@ export default function AgentDetailScreen() {
 				) : (
 					<FlatList
 						ref={listRef}
+						// 最下部へ到達するまでは見せない。見えないものに触れると誤タップになるので、
+						// この間の操作は受け取らずに捨てる（隠すのは長くても上限時間まで）。
+						// 参照が変わるとFlatListごと再描画されるためStyleSheetの定数を出し分ける。
+						style={listRevealed ? styles.listShown : styles.listHidden}
+						pointerEvents={listRevealed ? 'auto' : 'none'}
 						data={rows}
 						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
 						ListHeaderComponent={<>{chat.activity !== undefined && !hasActiveActivity ? <AgentActivityCard activity={chat.activity} onOpen={openAgentActivity} /> : null}{chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}</>}
@@ -715,6 +751,8 @@ const styles = StyleSheet.create({
 	// 案A「フルフラット」: チャット領域の外枠カードを廃止し、背景に直接描画する
 	// （Claude公式アプリ風。コードブロックや長文が画面幅を最大限使える）。
 	chatArea: { flex: 1 },
+	listShown: { opacity: 1 },
+	listHidden: { opacity: 0 },
 	listContent: { paddingHorizontal: 14, paddingVertical: 10, gap: 9 },
 	placeholder: { color: colors.textDim, fontSize: 13, lineHeight: 20, padding: 16 },
 	noneBox: { alignItems: 'flex-start' },
