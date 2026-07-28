@@ -19,6 +19,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { hapticSelection } from '../haptics.js';
 import { colors } from '../theme.js';
+import { HorizontalScrollFade } from './horizontalScrollFade.js';
 import { WorkspaceFileViewer } from './workspaceFileViewer.js';
 
 type CellAlign = 'left' | 'center' | 'right';
@@ -29,6 +30,30 @@ type Block =
 	| { kind: 'bullet'; marker: string; text: string }
 	| { kind: 'table'; header: string[]; aligns: CellAlign[]; rows: string[][] }
 	| { kind: 'para'; text: string };
+
+/** 表セルの表示幅（fontSize 12 相当）。全角は2文字ぶんとして数える。 */
+function estimateTextWidth(text: string): number {
+	let width = 0;
+	for (const char of text) {
+		// 記号混じりでも大きく外さない程度の粗い見積もり（半角6.6px / 全角12px）。
+		width += /[　-鿿＀-￯]/.test(char) ? 12 : 6.6;
+	}
+	return width;
+}
+
+/** 列ごとに「一番長いセル」を基準に幅を決める。極端に長い列は上限で頭打ちにする。 */
+function tableColumnWidths(block: { header: string[]; rows: string[][] }, cols: number): number[] {
+	const widths: number[] = [];
+	for (let c = 0; c < cols; c++) {
+		let max = estimateTextWidth(block.header[c] ?? '');
+		for (const row of block.rows) {
+			max = Math.max(max, estimateTextWidth(row[c] ?? ''));
+		}
+		// +14 はセル左右のパディング、+8 は見積もり誤差ぶんの余白（足りないと折り返す）。
+		widths.push(Math.min(260, Math.max(52, Math.ceil(max) + 22)));
+	}
+	return widths;
+}
 
 /** `| a | b |` 形式の行をセル配列へ分解する（前後のパイプは落とす）。 */
 function splitTableRow(line: string): string[] {
@@ -254,15 +279,16 @@ function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 	}, [cacheKey, text, lang, fsHighlight]);
 
 	const highlighted = data?.key === cacheKey ? data.value : undefined;
+	// コードは折り返さず横スクロールにする（インデントと桁が崩れないようにする）。
 	if (highlighted === undefined) {
 		return (
-			<View style={styles.codeBlock}>
+			<HorizontalScrollFade style={styles.codeBlock} contentStyle={styles.codeContent}>
 				<Text style={styles.codeText} selectable>{text}</Text>
-			</View>
+			</HorizontalScrollFade>
 		);
 	}
 	return (
-		<View style={[styles.codeBlock, highlighted.bg !== undefined ? { backgroundColor: highlighted.bg } : null]}>
+		<HorizontalScrollFade style={[styles.codeBlock, highlighted.bg !== undefined ? { backgroundColor: highlighted.bg } : null]} contentStyle={styles.codeContent}>
 			<Text style={[styles.codeText, highlighted.fg !== undefined ? { color: highlighted.fg } : null]} selectable>
 				{highlighted.lines.map((line, li) => (
 					<Text key={li}>
@@ -282,7 +308,7 @@ function CodeBlock({ text, lang }: { text: string; lang?: string }) {
 					</Text>
 				))}
 			</Text>
-		</View>
+		</HorizontalScrollFade>
 	);
 }
 
@@ -569,29 +595,34 @@ export function MarkdownText({ text }: { text: string }) {
 				if (block.kind === 'table') {
 					// 列数はヘッダー基準（本体行の過不足セルは空/切り捨てで揃える）
 					const cols = block.header.length;
+					// 列幅は内容から見積もって固定する。flex:1 で画面幅へ押し込むと列が潰れて
+					// 縦に折り返し、桁が崩れるため（本家Claudeアプリと同じく表だけ横に流す）。
+					const widths = tableColumnWidths(block, cols);
 					return (
-						<View key={i} style={styles.table}>
-							<View style={[styles.tableRow, styles.tableHead]}>
-								{block.header.map((cell, c) => (
-									<View key={c} style={[styles.tableCell, c > 0 ? styles.tableCellBorder : null]}>
-										<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-											{renderInlineTokens(parseInline(cell), styles.body, openLocal)}
-										</Text>
-									</View>
-								))}
-							</View>
-							{block.rows.map((row, r) => (
-								<View key={r} style={[styles.tableRow, r % 2 === 1 ? styles.tableRowAlt : null]}>
-									{Array.from({ length: cols }, (_, c) => (
-										<View key={c} style={[styles.tableCell, c > 0 ? styles.tableCellBorder : null]}>
-											<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
-												{renderInlineTokens(parseInline(row[c] ?? ''), styles.body, openLocal)}
+						<HorizontalScrollFade key={i} style={styles.tableWrap}>
+							<View style={styles.table}>
+								<View style={[styles.tableRow, styles.tableHead]}>
+									{block.header.map((cell, c) => (
+										<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
+											<Text style={[styles.body, styles.tableHeadText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
+												{renderInlineTokens(parseInline(cell), styles.body, openLocal)}
 											</Text>
 										</View>
 									))}
 								</View>
-							))}
-						</View>
+								{block.rows.map((row, r) => (
+									<View key={r} style={[styles.tableRow, r % 2 === 1 ? styles.tableRowAlt : null]}>
+										{Array.from({ length: cols }, (_, c) => (
+											<View key={c} style={[styles.tableCell, { width: widths[c] }, c > 0 ? styles.tableCellBorder : null]}>
+												<Text style={[styles.body, styles.tableCellText, { textAlign: block.aligns[c] ?? 'left' }]} selectable>
+													{renderInlineTokens(parseInline(row[c] ?? ''), styles.body, openLocal)}
+												</Text>
+											</View>
+										))}
+									</View>
+								))}
+							</View>
+						</HorizontalScrollFade>
 					);
 				}
 				return <InlineBlock key={i} text={block.text} onOpenLocal={openLocal} openingKey={openingKey} />;
@@ -614,7 +645,8 @@ const styles = StyleSheet.create({
 	heading: { fontWeight: '700' },
 	h1: { fontSize: 16 },
 	h2: { fontSize: 15 },
-	codeBlock: { backgroundColor: '#161b22', borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: 8 },
+	codeBlock: { backgroundColor: '#161b22', borderRadius: 8, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	codeContent: { padding: 8 },
 	codeText: { color: colors.text, fontFamily: mono, fontSize: 11, lineHeight: 16 },
 	codeItalic: { fontStyle: 'italic' },
 	codeBold: { fontWeight: '700' },
@@ -628,11 +660,12 @@ const styles = StyleSheet.create({
 	fileInfo: { flex: 1, gap: 2 },
 	fileLabel: { color: colors.text, fontSize: 13, fontWeight: '600' },
 	filePath: { color: colors.textDim, fontFamily: mono, fontSize: 10, lineHeight: 14 },
-	table: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: 'hidden', marginVertical: 2 },
+	tableWrap: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, overflow: 'hidden', marginVertical: 2 },
+	table: { flexDirection: 'column' },
 	tableRow: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	tableHead: { backgroundColor: 'rgba(110,118,129,.18)', borderTopWidth: 0 },
 	tableRowAlt: { backgroundColor: 'rgba(110,118,129,.07)' },
-	tableCell: { flex: 1, paddingVertical: 5, paddingHorizontal: 7 },
+	tableCell: { paddingVertical: 5, paddingHorizontal: 7 },
 	tableCellBorder: { borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
 	tableHeadText: { fontWeight: '700', fontSize: 12, lineHeight: 17 },
 	tableCellText: { fontSize: 12, lineHeight: 17 },

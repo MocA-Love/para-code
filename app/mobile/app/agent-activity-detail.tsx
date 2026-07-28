@@ -8,6 +8,8 @@ import { useAppStore } from '../src/appState.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
 import { GlassSurface } from '../src/components/glassSurface.js';
 import { MarkdownText } from '../src/components/markdownText.js';
+import { AgentTimeline } from '../src/components/agentTimeline.js';
+import { detailToChatMessages } from '../src/agentToolMeta.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useNow } from '../src/time.js';
 import { colors } from '../src/theme.js';
@@ -36,53 +38,12 @@ function groupConversation(messages: readonly AgentActivityDetailMessage[]): Con
 	return result;
 }
 
-/** アクティビティ群の要約文（例: `思考 ×2 ・ ツール5件`）。 */
-function summarizeActivity(values: readonly AgentActivityDetailMessage[]): string {
-	const thinking = values.filter(value => value.kind === 'thinking').length;
-	const tools = values.filter(value => value.kind === 'tool').length;
-	const parts: string[] = [];
-	if (thinking > 0) {
-		// allow-any-unicode-next-line
-		parts.push(thinking === 1 ? '思考' : `思考 ×${thinking}`);
-	}
-	if (tools > 0) {
-		parts.push(`ツール${tools}件`);
-	}
-	if (parts.length === 0) {
-		// allow-any-unicode-next-line
-		parts.push(`${values.length}件のアクティビティ`);
-	}
-	// allow-any-unicode-next-line
-	return parts.join(' ・ ');
-}
-
-/** thinking / tool 群の集約行。デフォルト折りたたみ、タップで展開。 */
-function ActivityGroup({ values, parentLabel }: { values: AgentActivityDetailMessage[]; parentLabel: string }) {
-	const [expanded, setExpanded] = useState(false);
-	return <View style={styles.leftLane}>
-		<Pressable style={styles.activityRow} accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={expanded ? 'アクティビティを折りたたむ' : 'アクティビティを展開'} onPress={() => { hapticSelection(); setExpanded(value => !value); }}>
-			<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
-			<Text style={styles.activityText} numberOfLines={1}>{summarizeActivity(values)}</Text>
-		</Pressable>
-		{expanded ? <View style={styles.activityBody}>{values.map((value, index) => <ActivityMessage key={index} message={value} parentLabel={parentLabel} />)}</View> : null}
-	</View>;
-}
-
 function statusLabel(status: AgentActivityStatus): string {
 	return status === 'running' ? '実行中' : status === 'idle' ? '待機中' : status === 'completed' ? '完了' : status === 'failed' ? '失敗' : status === 'interrupted' ? '中断' : '状態不明';
 }
 
+/** 本文（text）1件。thinking / tool は AgentTimeline が受け持つ。 */
 function ActivityMessage({ message, parentLabel }: { message: AgentActivityDetailMessage; parentLabel: string }) {
-	const [expanded, setExpanded] = useState(false);
-	if (message.kind === 'tool') {
-		return <View style={styles.leftLane}><Pressable accessibilityRole="button" accessibilityState={{ expanded }} onPress={() => setExpanded(value => !value)} style={styles.toolCard}>
-			<View style={styles.toolHeader}><Ionicons name="construct-outline" size={12} color={colors.textDim} /><Text style={styles.toolLabel}>Tool</Text><Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={11} color={colors.textDim} /></View>
-			<Text style={styles.toolText} selectable numberOfLines={expanded ? undefined : 5}>{message.text}</Text>
-		</Pressable></View>;
-	}
-	if (message.kind === 'thinking') {
-		return <View style={styles.leftLane}><Pressable accessibilityRole="button" accessibilityLabel="思考内容を展開" accessibilityState={{ expanded }} onPress={() => setExpanded(value => !value)} style={styles.thinkingCard}><Text style={styles.thinkingLabel}>Thinking</Text><Text style={styles.thinkingText} selectable numberOfLines={expanded ? undefined : 4}>{message.text}</Text></Pressable></View>;
-	}
 	const fromParent = message.role === 'user';
 	return <View style={fromParent ? styles.rightLane : styles.leftLane}>
 		<Text style={[styles.speaker, fromParent && styles.speakerRight]}>{fromParent ? parentLabel : 'SubAgent'}</Text>
@@ -159,7 +120,7 @@ export default function AgentActivityDetailScreen() {
 				<Text style={styles.section}>会話・ツール履歴</Text>
 			</View> : null}
 			ListEmptyComponent={<View style={styles.empty}>{sessionChanged ? <Text style={styles.error}>親セッションが切り替わりました。親エージェントから開き直してください。</Text> : loading ? <Text style={styles.emptyText}>SubAgent transcriptを読み込み中…</Text> : error !== undefined ? <Text style={styles.error}>{error}</Text> : <Text style={styles.emptyText}>保存済みの子セッション履歴はありません</Text>}</View>}
-			renderItem={({ item }) => item.kind === 'message' ? <ActivityMessage message={item.value} parentLabel={parentLabel} /> : item.kind === 'activity' ? <ActivityGroup values={item.values} parentLabel={parentLabel} /> : <View style={styles.leftLane}><Pressable accessibilityRole="button" accessibilityLabel={`${item.value.label}を開く`} onPress={() => navigateAgent(item.value)} style={styles.childCard}><View style={styles.childIcon}><Ionicons name="git-branch-outline" size={14} color={colors.purple} /></View><View style={styles.childBody}><Text style={styles.childCaption}>子Agentを起動</Text><Text style={styles.childTitle} numberOfLines={1}>{item.value.label}</Text><Text style={styles.childMeta}>{statusLabel(item.value.status)} · 配下 {agentActivityDescendants(agents, item.value.id).length}</Text></View><Ionicons name="chevron-forward" size={14} color={colors.textDim} /></Pressable></View>}
+			renderItem={({ item }) => item.kind === 'message' ? <ActivityMessage message={item.value} parentLabel={parentLabel} /> : item.kind === 'activity' ? <View style={styles.leftLane}><AgentTimeline msgs={detailToChatMessages(item.values)} /></View> : <View style={styles.leftLane}><Pressable accessibilityRole="button" accessibilityLabel={`${item.value.label}を開く`} onPress={() => navigateAgent(item.value)} style={styles.childCard}><View style={styles.childIcon}><Ionicons name="git-branch-outline" size={14} color={colors.purple} /></View><View style={styles.childBody}><Text style={styles.childCaption}>子Agentを起動</Text><Text style={styles.childTitle} numberOfLines={1}>{item.value.label}</Text><Text style={styles.childMeta}>{statusLabel(item.value.status)} · 配下 {agentActivityDescendants(agents, item.value.id).length}</Text></View><Ionicons name="chevron-forward" size={14} color={colors.textDim} /></Pressable></View>}
 		/>
 	</View></ConnectionGate>;
 }
@@ -168,7 +129,5 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg }, header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }, backBtn: { width: 44, height: 44, borderRadius: 22, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }, headerBody: { flex: 1, minWidth: 0 }, breadcrumbs: { flexDirection: 'row', minWidth: 0, overflow: 'hidden' }, crumb: { color: colors.purple, fontSize: 8.5, fontWeight: '700', maxWidth: 105 }, headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' }, headerSub: { color: colors.textDim, fontSize: 9.5, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	content: { padding: 14, gap: 10 }, summaryCard: { flexDirection: 'row', backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 16, paddingVertical: 12, marginBottom: 10 }, metric: { flex: 1, alignItems: 'center', paddingHorizontal: 3 }, metricValue: { color: colors.text, fontSize: 12, fontWeight: '700' }, metricLabel: { color: colors.textDim, fontSize: 8, marginTop: 3 }, promptCard: { backgroundColor: 'rgba(193,147,217,.08)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(193,147,217,.28)', borderRadius: 16, padding: 13, gap: 7, marginBottom: 8 }, promptLabel: { color: colors.textDim, fontSize: 8.5, fontWeight: '700', textTransform: 'uppercase' }, agentId: { color: colors.purple, fontSize: 8.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }, taskCard: { backgroundColor: colors.surface, borderRadius: 14, padding: 11, gap: 7, marginBottom: 8 }, task: { flexDirection: 'row', gap: 7, alignItems: 'center' }, taskTitle: { color: colors.text, fontSize: 10.5, flex: 1 }, section: { color: colors.textDim, fontSize: 9, fontWeight: '700', textTransform: 'uppercase', marginTop: 6, marginBottom: 2 },
 	leftLane: { alignSelf: 'flex-start', maxWidth: '92%', gap: 3 }, rightLane: { alignSelf: 'flex-end', maxWidth: '88%', gap: 3 }, speaker: { color: colors.textDim, fontSize: 8, fontWeight: '700', marginLeft: 5 }, speakerRight: { textAlign: 'right', marginRight: 5 }, chatBubble: { paddingHorizontal: 12, paddingVertical: 9, borderRadius: 15, borderWidth: StyleSheet.hairlineWidth }, parentBubble: { backgroundColor: colors.accentWash, borderColor: 'rgba(71,190,255,.28)', borderBottomRightRadius: 4 }, agentBubble: { backgroundColor: colors.surface, borderColor: colors.border, borderBottomLeftRadius: 4 },
-	activityRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 3 }, activityText: { color: colors.textDim, fontSize: 11, flex: 1 }, activityBody: { gap: 6, paddingLeft: 14, paddingTop: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border, marginLeft: 8 },
-	toolCard: { backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: 12, padding: 10, gap: 6 }, toolHeader: { flexDirection: 'row', alignItems: 'center', gap: 5 }, toolLabel: { color: colors.textDim, fontSize: 8.5, fontWeight: '700', textTransform: 'uppercase', flex: 1 }, toolText: { color: colors.text, fontSize: 9.5, lineHeight: 14, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }, thinkingCard: { paddingHorizontal: 8, paddingVertical: 5, borderLeftWidth: 2, borderLeftColor: colors.border }, thinkingLabel: { color: colors.textDim, fontSize: 8, fontWeight: '700', textTransform: 'uppercase' }, thinkingText: { color: colors.textDim, fontSize: 9.5, lineHeight: 14, fontStyle: 'italic' },
 	childCard: { minWidth: 245, flexDirection: 'row', alignItems: 'center', gap: 9, backgroundColor: 'rgba(193,147,217,.08)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(193,147,217,.30)', borderRadius: 14, padding: 11 }, childIcon: { width: 30, height: 30, borderRadius: 9, backgroundColor: 'rgba(193,147,217,.12)', alignItems: 'center', justifyContent: 'center' }, childBody: { flex: 1, minWidth: 0 }, childCaption: { color: colors.textDim, fontSize: 8 }, childTitle: { color: colors.text, fontSize: 11.5, fontWeight: '700' }, childMeta: { color: colors.purple, fontSize: 8.5, marginTop: 2 }, empty: { paddingVertical: 40, alignItems: 'center' }, emptyText: { color: colors.textDim, fontSize: 11 }, error: { color: colors.red, fontSize: 11, textAlign: 'center' },
 });
