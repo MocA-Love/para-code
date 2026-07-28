@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import type { AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
 import type { AgentChatMessage, AgentMessageSendResult } from '../store.js';
 import { colors } from '../theme.js';
@@ -10,18 +11,19 @@ import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /**
  * 質問カード（Claude Code の AskUserQuestion 等）。
- *  - 単一選択: 選択肢タップで番号+EnterをPTYへ注入して即回答
- *  - 複数選択(multiSelect): タップでトグル（番号+スペース注入）し、「決定」でEnter注入
+ *  - 単一選択: 選択肢タップで即回答
+ *  - 複数選択(multiSelect): タップでトグルし、「決定」で回答
  *  - 自由入力: カード内の入力欄からTUIの「Other」（常に選択肢の末尾に存在）経由で回答
+ * どれもTUIのキー操作へ翻訳して送る（規則は agentQuestionKeys.ts）。
  * 同じ toolUseId の tool_result が届いたら回答済み表示になる。
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
 export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText }: {
 	message: AgentChatMessage;
 	answered: boolean;
-	onAnswer: (interactionId: string, optionIndex: number) => Promise<AgentMessageSendResult>;
-	onMulti: (interactionId: string, indices: number[]) => Promise<AgentMessageSendResult>;
-	onFreeText: (interactionId: string, optionCount: number, text: string) => Promise<AgentMessageSendResult>;
+	onAnswer: (interactionId: string, question: AgentQuestionShape, optionIndex: number) => Promise<AgentMessageSendResult>;
+	onMulti: (interactionId: string, question: AgentQuestionShape, indices: number[]) => Promise<AgentMessageSendResult>;
+	onFreeText: (interactionId: string, question: AgentQuestionShape, text: string) => Promise<AgentMessageSendResult>;
 }) {
 	// 二度押し防止のローカル状態（tool_result が届くまでの間）
 	const [selected, setSelected] = useState<number | undefined>(undefined);
@@ -31,6 +33,8 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 	const [error, setError] = useState<string | undefined>(undefined);
 	const multiSelect = message.multiSelect === true;
 	const options = message.options ?? [];
+	/** TUI上の形。回答をキー列に直すのに要る（agentQuestionKeys.ts）。 */
+	const question: AgentQuestionShape = { optionCount: options.length, multiSelect };
 	const interactionId = message.questionGroup ?? message.toolUseId;
 	// PC側で回答された（answered）か、対象が入れ替わったら直前の失敗表示は用済み。
 	useEffect(() => { setError(undefined); }, [answered, interactionId]);
@@ -85,7 +89,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 						} else {
 							setSelected(i);
 							if (interactionId !== undefined) {
-								submit(() => onAnswer(interactionId, i));
+								submit(() => onAnswer(interactionId, question, i));
 							}
 						}
 					}}
@@ -100,7 +104,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 					disabled={toggled.size === 0 || interactionId === undefined}
 					accessibilityRole="button"
 					accessibilityState={{ disabled: toggled.size === 0 || interactionId === undefined }}
-					onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onMulti(interactionId, [...toggled].sort((a, b) => a - b))); } }}
+					onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onMulti(interactionId, question, [...toggled].sort((a, b) => a - b))); } }}
 				>
 					<Text style={styles.confirmBtnText}>決定（{toggled.size}件）</Text>
 				</Pressable>
@@ -122,7 +126,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 						disabled={freeText.trim().length === 0 || interactionId === undefined}
 						accessibilityRole="button"
 						accessibilityState={{ disabled: freeText.trim().length === 0 || interactionId === undefined }}
-						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onFreeText(interactionId, options.length, freeText.trim())); } }}
+						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onFreeText(interactionId, question, freeText.trim())); } }}
 						accessibilityLabel="自由入力で回答"
 					>
 						<Ionicons name="arrow-up" size={16} color="#fff" />
@@ -149,7 +153,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 	/** 同一 questionGroup の質問（questionIndex 順）。 */
 	messages: AgentChatMessage[];
 	answered: boolean;
-	onSubmit: (interactionId: string, answers: QuestionGroupAnswer[]) => Promise<AgentMessageSendResult>;
+	onSubmit: (interactionId: string, questions: readonly AgentQuestionShape[], answers: QuestionGroupAnswer[]) => Promise<AgentMessageSendResult>;
 }) {
 	const [step, setStep] = useState(0);
 	const [answers, setAnswers] = useState<(QuestionGroupAnswer | undefined)[]>(() => messages.map(() => undefined));
@@ -163,6 +167,8 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 	const current = messages[step];
 	const options = current?.options ?? [];
 	const multiSelect = current?.multiSelect === true;
+	/** TUI上の形（質問の並び順）。回答をキー列に直すのに要る（agentQuestionKeys.ts）。 */
+	const questions: AgentQuestionShape[] = messages.map(m => ({ optionCount: m.options?.length ?? 0, multiSelect: m.multiSelect === true }));
 	const answeredCount = answers.filter(a => a !== undefined).length;
 	const allAnswered = answeredCount === messages.length;
 	useEffect(() => {
@@ -266,7 +272,7 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 						setSubmitted(true);
 						setError(undefined);
 						const retry = setTimeout(() => setSubmitted(false), 15_000);
-						void onSubmit(interactionId, answers.filter((a): a is QuestionGroupAnswer => a !== undefined))
+						void onSubmit(interactionId, questions, answers.filter((a): a is QuestionGroupAnswer => a !== undefined))
 							.then(result => {
 								if (result.status !== 'rejected') {
 									return; // accepted / consumed は失敗ではない

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
+import { agentQuestionKeySequence, type AgentQuestionKeyAnswer, type AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { AgentMessageSendResult } from '../store.js';
 
 /**
@@ -13,21 +14,19 @@ import type { AgentMessageSendResult } from '../store.js';
  *  - 承認（Codex）: y / d / a のショートカット1文字（Enter不要）
  * agent.tsx（TUIチャット画面）とホーム画面のアテンションカードの両方から使う。
  */
-/** 複数質問グループ（AskUserQuestion の questions が2つ以上）の1問ぶんの回答。 */
-export type QuestionGroupAnswer =
-	| { kind: 'option'; index: number }
-	| { kind: 'multi'; indices: number[] }
-	| { kind: 'text'; optionCount: number; text: string };
+/** 1問ぶんの回答（複数質問グループでは質問の並び順に1つずつ持つ）。 */
+export type QuestionGroupAnswer = AgentQuestionKeyAnswer;
 
 export interface AgentActions {
 	send(data: string): boolean;
 	sendText(text: string): Promise<AgentMessageSendResult>;
 	// 回答系はテキスト送信と同じく理由付きの結果を返す。失敗の理由をUIまで運べないと
 	// 「押したのに何も起きない」としか見えず、接続断・対象変更・PC側の拒否を区別できない。
-	answerQuestion(interactionId: string, optionIndex: number): Promise<AgentMessageSendResult>;
-	answerQuestionMulti(interactionId: string, indices: number[]): Promise<AgentMessageSendResult>;
-	answerQuestionFreeText(interactionId: string, optionCount: number, text: string): Promise<AgentMessageSendResult>;
-	answerQuestionGroup(interactionId: string, answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult>;
+	// question / questions はTUI上の形（選択肢の数と複数選択か）。キー列の組み立てに要る。
+	answerQuestion(interactionId: string, question: AgentQuestionShape, optionIndex: number): Promise<AgentMessageSendResult>;
+	answerQuestionMulti(interactionId: string, question: AgentQuestionShape, indices: number[]): Promise<AgentMessageSendResult>;
+	answerQuestionFreeText(interactionId: string, question: AgentQuestionShape, text: string): Promise<AgentMessageSendResult>;
+	answerQuestionGroup(interactionId: string, questions: readonly AgentQuestionShape[], answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult>;
 	approve(interactionId: string, choice: string): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 }
@@ -122,43 +121,12 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 	}, [terminalKey, sendAgentMessage]);
 
 	/**
-	 * 質問(AskUserQuestion)への回答。TUIの選択プロンプトは番号キーで選択肢へジャンプするため、
-	 * 承認注入と同じ「番号 → CR」方式で選んで確定する（複数質問タブは回答すると
-	 * 自動で次のタブへ進むので、順に回答すれば最後に Submit される）。
+	 * 質問(AskUserQuestion)への回答。新しいPCではPC側が同じ規則でキー列を組み立てて注入する。
+	 * 回答APIを持たない古いPCへは、ここから直接PTYへ注入する（キー列の規則は
+	 * agentQuestionKeys.ts に集約。TUIの実挙動と、素朴な「番号 → Enter」が壊れる理由もそこ）。
 	 */
-	const answerQuestion = useCallback((interactionId: string, optionIndex: number): Promise<AgentMessageSendResult> => {
-		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
-			return Promise.resolve(STALE_INTERACTION_RESULT);
-		}
-		if (terminalKey === undefined) {
-			return Promise.resolve(NO_TARGET_RESULT);
-		}
-		if (supportsAgentActions) {
-			return answerAgentQuestion(terminalKey, interactionId, [{ kind: 'option', index: optionIndex }]);
-		}
-		return sendSequence([String(optionIndex + 1), '\r']).then(fromInjection);
-	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
-
-	const answerQuestionMulti = useCallback((interactionId: string, indices: number[]): Promise<AgentMessageSendResult> => {
-		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
-			return Promise.resolve(STALE_INTERACTION_RESULT);
-		}
-		if (terminalKey === undefined) {
-			return Promise.resolve(NO_TARGET_RESULT);
-		}
-		if (supportsAgentActions) {
-			return answerAgentQuestion(terminalKey, interactionId, [{ kind: 'multi', indices }]);
-		}
-		const parts = indices.flatMap(index => [String(index + 1), ' ']);
-		return sendSequence([...parts, '\r']).then(fromInjection);
-	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
-
-	/**
-	 * 自由入力での回答。AskUserQuestion のTUIは選択肢の末尾に常に「Other」（自由入力）を
-	 * 持つため、「Otherの番号 → CR（入力欄が開く） → テキスト → CR（確定）」を注入する。
-	 */
-	const answerQuestionFreeText = useCallback(
-		(interactionId: string, optionCount: number, text: string): Promise<AgentMessageSendResult> => {
+	const answerQuestions = useCallback(
+		(interactionId: string, questions: readonly AgentQuestionShape[], answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult> => {
 			if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
 				return Promise.resolve(STALE_INTERACTION_RESULT);
 			}
@@ -166,49 +134,33 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 				return Promise.resolve(NO_TARGET_RESULT);
 			}
 			if (supportsAgentActions) {
-				return answerAgentQuestion(terminalKey, interactionId, [{ kind: 'text', optionCount, text }]);
+				return answerAgentQuestion(terminalKey, interactionId, answers);
 			}
-			return sendSequence([String(optionCount + 1), '\r', text, '\r']).then(fromInjection);
+			return sendSequence(agentQuestionKeySequence(questions, answers)).then(fromInjection);
 		},
 		[terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence],
 	);
 
+	const answerQuestion = useCallback((interactionId: string, question: AgentQuestionShape, optionIndex: number): Promise<AgentMessageSendResult> => {
+		return answerQuestions(interactionId, [question], [{ kind: 'option', index: optionIndex }]);
+	}, [answerQuestions]);
+
+	const answerQuestionMulti = useCallback((interactionId: string, question: AgentQuestionShape, indices: number[]): Promise<AgentMessageSendResult> => {
+		return answerQuestions(interactionId, [question], [{ kind: 'multi', indices }]);
+	}, [answerQuestions]);
+
+	/** 自由入力での回答。TUIは選択肢の末尾に常に「Other」（自由入力）を持つ。 */
+	const answerQuestionFreeText = useCallback((interactionId: string, question: AgentQuestionShape, text: string): Promise<AgentMessageSendResult> => {
+		return answerQuestions(interactionId, [question], [{ kind: 'text', optionCount: question.optionCount, text }]);
+	}, [answerQuestions]);
+
 	/**
-	 * 複数質問グループの一括回答。TUIの選択プロンプトは「番号キー = 選択肢へジャンプ
-	 * （ハイライト移動のみ）」「Enter = 現在の質問を確定して次の質問へ前進（最終問なら
-	 * Submit）」なので、単一質問（answerQuestion）と同じく1問ごとに「番号 → Enter」で
-	 * 確定しながら前進する。番号だけを連打すると全てが1問目のハイライト移動に消費され、
-	 * 1問目しか選択されず送信もされない（既知バグの原因）。
-	 * multiSelect は「番号 → スペース」でトグルし、Enterでその質問を確定。
-	 * 自由入力は「Other番号 → CR（入力欄）→ テキスト → CR」。
-	 * 末尾の予備Enterは、最終問の確定で自動Submitされた場合は空の入力欄に落ちるだけで無害。
+	 * 複数質問グループの一括回答。1問ずつ送るとTUI側のEnterがフォーム全体をSubmitしてしまうため、
+	 * 全問揃えてから1本のキー列にする。
 	 */
-	const answerQuestionGroup = useCallback((interactionId: string, answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult> => {
-		if (interaction?.kind !== 'question' || interaction.id !== interactionId) {
-			return Promise.resolve(STALE_INTERACTION_RESULT);
-		}
-		if (terminalKey === undefined) {
-			return Promise.resolve(NO_TARGET_RESULT);
-		}
-		if (supportsAgentActions) {
-			return answerAgentQuestion(terminalKey, interactionId, answers);
-		}
-		const parts: string[] = [];
-		for (const answer of answers) {
-			if (answer.kind === 'option') {
-				parts.push(String(answer.index + 1), '\r');
-			} else if (answer.kind === 'multi') {
-				for (const i of answer.indices) {
-					parts.push(String(i + 1), ' ');
-				}
-				parts.push('\r');
-			} else {
-				parts.push(String(answer.optionCount + 1), '\r', answer.text, '\r');
-			}
-		}
-		parts.push('\r'); // 全問確定後にSubmit確認ステップが残っている場合の予備
-		return sendSequence(parts).then(fromInjection);
-	}, [terminalKey, interaction, supportsAgentActions, answerAgentQuestion, sendSequence]);
+	const answerQuestionGroup = useCallback((interactionId: string, questions: readonly AgentQuestionShape[], answers: QuestionGroupAnswer[]): Promise<AgentMessageSendResult> => {
+		return answerQuestions(interactionId, questions, answers);
+	}, [answerQuestions]);
 
 	/**
 	 * 承認クイックアクション。
