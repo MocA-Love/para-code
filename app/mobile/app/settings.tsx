@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { APP_VERSION } from '../src/components/updateSheet.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
@@ -97,6 +98,19 @@ export default function SettingsScreen() {
 				<Text style={styles.note}>
 					OFFにするとバナー通知が止まります（アプリ内の通知一覧には残ります）。「PC作業中は通知しない」がONの間は、PCの画面を見ている間に発生した通知はこのアプリに一切届きません。
 				</Text>
+
+				<Text style={styles.sectionTitle}>このアプリについて</Text>
+				<View style={styles.card}>
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/changelog'); }}>
+						<Ionicons name="sparkles-outline" size={18} color={colors.accent} />
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>更新履歴</Text>
+							<Text style={styles.rowDesc}>アプリの各バージョンで何が変わったかを確認します</Text>
+						</View>
+						<Text style={styles.rowValue}>{APP_VERSION}</Text>
+						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+					</Pressable>
+				</View>
 			</ScrollView>
 		</View>
 	);
@@ -106,6 +120,7 @@ const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 10 },
 	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
+	rowValue: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
 	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8, marginBottom: 8 },

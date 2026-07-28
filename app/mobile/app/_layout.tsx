@@ -9,6 +9,7 @@ import * as Sentry from '@sentry/react-native';
 import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
+import { UpdateSheetHost } from '../src/components/updateSheet.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
@@ -133,10 +134,14 @@ function RootLayout() {
 						<Stack.Screen name="ratelimit" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継） */}
 						<Stack.Screen name="browser" options={{ headerShown: false, animation: 'slide_from_right' }} />
+						{/* 更新履歴。設定画面の項目とお知らせシートから開く */}
+						<Stack.Screen name="changelog" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>
 					{/* glass対応メニュー/ダイアログの描画先（overlayHost.tsx参照）。
 					    再ロック時にロック画面より上へ残らないよう、AuthGateの内側に置く */}
 					<OverlayHost />
+					{/* 更新後の初回起動でだけ出るお知らせ。ロック中に出ないようAuthGateの内側に置く */}
+					<UpdateSheetHost />
 				</AuthGate>
 			</ThemeProvider>
 		</GestureHandlerRootView>
