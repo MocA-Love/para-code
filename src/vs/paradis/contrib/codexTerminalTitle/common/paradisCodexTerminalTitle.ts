@@ -16,8 +16,16 @@ export interface IParadisCodexThreadPromptRequest {
 	readonly threadId: string;
 	readonly cwd: string;
 	readonly invocation: 'start' | 'resume';
+	/**
+	 * Skips the bounded rollout scan because an earlier lookup already read the scan's byte
+	 * budget without finding a prompt. Repeating that scan on every poll would be the only
+	 * expensive part of an otherwise sub-millisecond lookup.
+	 */
+	readonly skipRolloutScan?: boolean;
 }
 
 export interface IParadisCodexThreadPromptResult {
 	readonly prompt?: string;
+	/** Set when the rollout scan stopped at its byte budget instead of reaching end of file. */
+	readonly rolloutScanExhausted?: boolean;
 }

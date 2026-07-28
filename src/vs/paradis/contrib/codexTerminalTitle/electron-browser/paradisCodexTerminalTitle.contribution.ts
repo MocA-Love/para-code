@@ -7,7 +7,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { timeout } from '../../../../base/common/async.js';
+import { raceCancellation, timeout } from '../../../../base/common/async.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { isCancellationError } from '../../../../base/common/errors.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { joinPath } from '../../../../base/common/resources.js';
@@ -31,8 +33,20 @@ import {
 
 const CODEX_THREAD_TITLE_PATTERN = /^codex \| ([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 const TRANSIENT_TITLE_OWNER_PREFIX = 'para.codexTerminalTitle';
-const PROMPT_LOOKUP_ATTEMPTS = 8;
-const PROMPT_LOOKUP_DELAY_MS = 250;
+// Codex prints the `codex | <thread id>` title the moment the TUI starts, but it only writes the
+// thread row (and therefore any title, first user message, or rollout) once the first turn is
+// submitted. The gap between the two is however long the user takes to type their first prompt,
+// so the lookup has to outlive that pause instead of sampling a fixed window right after launch.
+// Each poll costs well under a millisecond in the shared process, so waiting is cheap. The delay
+// is capped low enough that the row is picked up promptly once it appears: Codex may rewrite the
+// title itself later in the session, which drops our transient title, so a late win is no win.
+const PROMPT_LOOKUP_INITIAL_DELAY_MS = 250;
+const PROMPT_LOOKUP_MAX_DELAY_MS = 2_000;
+// The poll ends on its own when the Codex command finishes, so this only bounds a session that is
+// started and then left sitting at an empty prompt.
+const PROMPT_LOOKUP_DEADLINE_MS = 30 * 60 * 1_000;
+// Keeps a shared process restart from permanently giving up on an otherwise healthy session.
+const PROMPT_LOOKUP_MAX_CONSECUTIVE_ERRORS = 5;
 const CODEX_SUBCOMMANDS = new Set([
 	'app-server', 'apply', 'cloud', 'completion', 'debug', 'exec', 'features', 'fork', 'login', 'logout',
 	'mcp', 'mcp-server', 'review', 'sandbox',
@@ -186,6 +200,7 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 	private readonly instance: ITerminalContributionContext['instance'];
 	private readonly owner: string;
 	private readonly commandListeners = this._register(new MutableDisposable<DisposableStore>());
+	private readonly lookupCancellation = this._register(new MutableDisposable<CancellationTokenSource>());
 	private generation = 0;
 	private runState: ICodexTerminalRunState | undefined;
 
@@ -275,33 +290,65 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 		state.threadId = match[1].toLowerCase();
 		state.expectedSequence = sequence;
 		state.lookupStarted = true;
-		void this.resolveTitle(state);
+		this.startLookup(state);
 	}
 
-	private async resolveTitle(state: ICodexTerminalRunState): Promise<void> {
-		const request: IParadisCodexThreadPromptRequest = { threadId: state.threadId!, cwd: state.cwd, invocation: state.invocation };
-		for (let attempt = 0; attempt < PROMPT_LOOKUP_ATTEMPTS; attempt++) {
-			if (!this.isCurrent(state)) {
-				return;
+	private startLookup(state: ICodexTerminalRunState): void {
+		// Assigning to a `MutableDisposable` only disposes the previous source, and disposing a
+		// `CancellationTokenSource` does not cancel it, so any lookup already in flight has to be
+		// cancelled here as well as in `reset()` — otherwise it would run out its own backoff.
+		this.lookupCancellation.value?.cancel();
+		const cancellation = this.lookupCancellation.value = new CancellationTokenSource();
+		this.resolveTitle(state, cancellation.token).catch(error => {
+			if (!isCancellationError(error)) {
+				this.logService.debug('[ParadisCodexTerminalTitle] prompt lookup stopped', error);
 			}
+		});
+	}
+
+	private async resolveTitle(state: ICodexTerminalRunState, token: CancellationToken): Promise<void> {
+		// Monotonic so that suspending the machine mid-session does not silently burn the deadline.
+		const deadline = performance.now() + PROMPT_LOOKUP_DEADLINE_MS;
+		let delay = PROMPT_LOOKUP_INITIAL_DELAY_MS;
+		let skipRolloutScan = false;
+		let consecutiveErrors = 0;
+		while (!token.isCancellationRequested && this.isCurrent(state)) {
+			const request: IParadisCodexThreadPromptRequest = {
+				threadId: state.threadId!,
+				cwd: state.cwd,
+				invocation: state.invocation,
+				skipRolloutScan,
+			};
 			try {
-				const result = await this.sharedProcessService.getChannel(PARADIS_CODEX_TERMINAL_TITLE_CHANNEL)
-					.call<IParadisCodexThreadPromptResult>('findThreadPrompt', [request]);
-				if (!this.isCurrent(state)) {
+				const result = await raceCancellation(this.sharedProcessService.getChannel(PARADIS_CODEX_TERMINAL_TITLE_CHANNEL)
+					.call<IParadisCodexThreadPromptResult>('findThreadPrompt', [request]), token);
+				if (!result || token.isCancellationRequested || !this.isCurrent(state)) {
 					return;
 				}
-				const title = result.prompt ? createCodexTerminalTitle(result.prompt) : undefined;
-				if (title) {
-					this.instance.setTransientTitle(this.owner, title, state.expectedSequence!);
+				consecutiveErrors = 0;
+				if (result.prompt) {
+					// The row can still gain a better title later, but Codex rewrites its own OSC
+					// title at the same point, which drops the transient title anyway — so there is
+					// nothing left for this lookup to win by staying alive.
+					const title = createCodexTerminalTitle(result.prompt);
+					if (title) {
+						this.instance.setTransientTitle(this.owner, title, state.expectedSequence!);
+					}
 					return;
 				}
+				skipRolloutScan ||= result.rolloutScanExhausted === true;
 			} catch (error) {
 				this.logService.debug('[ParadisCodexTerminalTitle] prompt lookup failed', error);
+				if (++consecutiveErrors >= PROMPT_LOOKUP_MAX_CONSECUTIVE_ERRORS) {
+					return;
+				}
+			}
+			const remaining = deadline - performance.now();
+			if (remaining <= 0) {
 				return;
 			}
-			if (attempt + 1 < PROMPT_LOOKUP_ATTEMPTS) {
-				await timeout(PROMPT_LOOKUP_DELAY_MS);
-			}
+			await timeout(Math.min(delay, remaining), token);
+			delay = Math.min(delay * 2, PROMPT_LOOKUP_MAX_DELAY_MS);
 		}
 	}
 
@@ -321,6 +368,10 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 	private reset(): void {
 		this.generation++;
 		this.runState = undefined;
+		// `MutableDisposable` only disposes the source, which on its own leaves a pending lookup
+		// waiting out its backoff, so cancel before clearing.
+		this.lookupCancellation.value?.cancel();
+		this.lookupCancellation.clear();
 		this.instance.clearTransientTitle(this.owner);
 	}
 
