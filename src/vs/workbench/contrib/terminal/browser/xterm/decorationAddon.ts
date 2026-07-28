@@ -364,29 +364,53 @@ export class DecorationAddon extends Disposable implements ITerminalAddon, IDeco
 		}));
 	}
 
+	// PARA-PATCH: build the desired class set first and only write the difference, so a decoration
+	// that is already correct does not touch the DOM at all. Rewriting the whole class list on every
+	// render made Blink widen each change into a whole-document style recalc (the stylesheet contains
+	// `:has()` rules), which took ~70% of the main thread with 13 terminals open and showed up as
+	// typing latency. Note this also normalizes the result: the previous code removed classes while
+	// iterating the live DOMTokenList, so about half survived and a stale `default` on a
+	// running-to-error transition kept the error decoration from turning red.
 	private _updateClasses(element?: HTMLElement, command?: ITerminalCommand, markProperties?: IMarkProperties): void {
 		if (!element) {
 			return;
 		}
-		for (const classes of element.classList) {
-			element.classList.remove(classes);
-		}
-		element.classList.add(DecorationSelector.CommandDecoration, DecorationSelector.Codicon, DecorationSelector.XtermDecoration);
+		const desiredClasses = new Set<string>([DecorationSelector.CommandDecoration, DecorationSelector.Codicon, DecorationSelector.XtermDecoration]);
 
 		if (markProperties) {
-			element.classList.add(DecorationSelector.DefaultColor, ...ThemeIcon.asClassNameArray(terminalDecorationMark));
+			desiredClasses.add(DecorationSelector.DefaultColor);
+			for (const className of ThemeIcon.asClassNameArray(terminalDecorationMark)) {
+				desiredClasses.add(className);
+			}
 			if (!markProperties.hoverMessage) {
 				//disable the mouse pointer
-				element.classList.add(DecorationSelector.Default);
+				desiredClasses.add(DecorationSelector.Default);
 			}
 		} else {
 			// command decoration
 			const state = getTerminalCommandDecorationState(command);
-			this._updateCommandDecorationVisibility(element);
+			// Mirrors `_updateCommandDecorationVisibility`, which is folded into the desired set so a
+			// decoration that is already in the right state does not touch the DOM at all.
+			if (!this._showGutterDecorations) {
+				desiredClasses.add(DecorationSelector.Hide);
+			}
 			for (const className of state.classNames) {
+				desiredClasses.add(className);
+			}
+			for (const className of ThemeIcon.asClassNameArray(state.icon)) {
+				desiredClasses.add(className);
+			}
+		}
+
+		for (const className of [...element.classList]) {
+			if (!desiredClasses.has(className)) {
+				element.classList.remove(className);
+			}
+		}
+		for (const className of desiredClasses) {
+			if (!element.classList.contains(className)) {
 				element.classList.add(className);
 			}
-			element.classList.add(...ThemeIcon.asClassNameArray(state.icon));
 		}
 		element.removeAttribute('title');
 		element.removeAttribute('aria-label');
