@@ -10,6 +10,7 @@ import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri, deriveNotifyKey } from '@para/protocol';
 import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type TermStreamEvent, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { sha256 } from '@noble/hashes/sha256';
@@ -90,6 +91,13 @@ interface AppState extends StoreState {
 	 */
 	pinnedKeys: Set<string>;
 	togglePin(key: string): void;
+	/**
+	 * アーカイブ状態（キーは pinKeyForTerminal 参照）。ピン留めと同じくこの端末ローカルのみで、
+	 * PCへは同期しない。ホーム一覧から外すだけで、PC側のターミナルはそのまま動き続ける。
+	 * 質問・応答待ちになったエージェントは自動で解除される（releaseArchivedOnAttention）。
+	 */
+	archivedKeys: Set<string>;
+	setArchived(key: string, archived: boolean): void;
 	/**
 	 * コンポーザーの下書き（キーは pinKeyForTerminal 等のエージェント/ターミナル単位の一意ID）。
 	 * 画面遷移で入力中テキストが消えないようメモリ上に退避する。キーごとに分離されるため
@@ -206,6 +214,7 @@ export const useAppStore = create<AppState>(set => ({
 	browserSelection: undefined,
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: false },
 	pinnedKeys: new Set(),
+	archivedKeys: new Set(),
 	agentDrafts: {},
 
 	async init() {
@@ -251,10 +260,37 @@ export const useAppStore = create<AppState>(set => ({
 			} catch (err) {
 				console.warn('[appState] failed to load pinnedTerminals', err);
 			}
+			// アーカイブ状態をロード（保存が無い/壊れている場合は空集合のまま）
+			try {
+				const raw = await secureKeyStore.getItem('archivedTerminals');
+				if (raw) {
+					const parsed = JSON.parse(raw) as unknown;
+					if (Array.isArray(parsed)) {
+						set({ archivedKeys: new Set(parsed.filter((k): k is string => typeof k === 'string')) });
+					}
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load archivedTerminals', err);
+			}
 			controller = new MobileController(
 				identity,
 				rnSocketFactory,
-				s => set({ ...s }),
+				s => {
+					// 状態が届くたびにアーカイブの印を点検する（回答待ちになったものは
+					// 一覧へ戻し、消えたターミナルの印は捨てる）。archivedAgents.ts 参照。
+					// workspace が無い間（切断時にクリアされる）は点検しない。ターミナルが
+					// 0件に見えるため、全部の印を「消えたターミナル」として捨ててしまう。
+					const archivedKeys = useAppStore.getState().archivedKeys;
+					const nextArchived = s.workspace !== undefined
+						? releaseArchivedOnAttention(archivedKeys, s.workspace.terminals)
+						: archivedKeys;
+					if (nextArchived !== archivedKeys) {
+						const value = nextArchived as Set<string>;
+						set({ archivedKeys: value });
+						secureKeyStore.setItem('archivedTerminals', JSON.stringify([...value])).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
+					}
+					set({ ...s });
+				},
 				payload => {
 					// 通知設定でOFFの種別はOS通知を出さない（アプリ内の通知一覧には残る）
 					const prefs = useAppStore.getState().notifyPrefs;
@@ -476,6 +512,21 @@ export const useAppStore = create<AppState>(set => ({
 		}
 		set({ pinnedKeys: next });
 		secureKeyStore.setItem('pinnedTerminals', JSON.stringify([...next])).catch(err => console.warn('[appState] failed to save pinnedTerminals', err));
+	},
+
+	setArchived(key: string, archived: boolean) {
+		const current = useAppStore.getState().archivedKeys;
+		if (current.has(key) === archived) {
+			return;
+		}
+		const next = new Set(current);
+		if (archived) {
+			next.add(key);
+		} else {
+			next.delete(key);
+		}
+		set({ archivedKeys: next });
+		secureKeyStore.setItem('archivedTerminals', JSON.stringify([...next])).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
 	},
 
 	setAgentDraft(key: string, text: string) {
