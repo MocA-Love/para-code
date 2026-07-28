@@ -10,12 +10,18 @@ import { effortSliderGestureBehavior } from './effortSliderBehavior.js';
  * モデルが提供する順序を保ったまま選択する、コンポーザー用のEffortスライダー。
  * ここでの選択はローカルな仮選択にとどまり、送信は呼び出し元（モデルセレクターの確定操作）が行う。
  */
-export function EffortSlider({ efforts, value, disabled, accentColor, onChange }: {
+export function EffortSlider({ efforts, value, disabled, accentColor, onChange, onDragChange }: {
 	efforts: readonly string[];
 	value: string | undefined;
 	disabled: boolean;
 	accentColor: string;
 	onChange: (effort: string) => void;
+	/**
+	 * つまみを掴んでいる間だけ true。ネイティブのジェスチャ（ズーム遷移で開いた画面の
+	 * スワイプで閉じる操作など）と横ドラッグが競合する場所で、掴んでいる間だけ
+	 * そちらを止めるために使う。
+	 */
+	onDragChange?: (dragging: boolean) => void;
 }) {
 	const selectedIndex = Math.max(0, efforts.indexOf(value ?? ''));
 	const [previewIndex, setPreviewIndex] = useState(selectedIndex);
@@ -32,10 +38,12 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 	const effortsRef = useRef(efforts);
 	const valueRef = useRef(value);
 	const onChangeRef = useRef(onChange);
+	const onDragChangeRef = useRef(onDragChange);
 	selectedIndexRef.current = selectedIndex;
 	effortsRef.current = efforts;
 	valueRef.current = value;
 	onChangeRef.current = onChange;
+	onDragChangeRef.current = onDragChange;
 	const progress = efforts.length <= 1 ? 0 : previewIndex / (efforts.length - 1);
 	const activeEffort = efforts[previewIndex] ?? efforts[0] ?? '';
 	const isMaximum = activeEffort === 'max' || activeEffort === 'ultra';
@@ -145,17 +153,22 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 		onMoveShouldSetPanResponder: () => gesture.enabled,
 		onPanResponderGrant: event => {
 			dragging.current = true;
+			// 指を置いた時点で通知する（動き出してからでは、競合するネイティブ
+			// ジェスチャの開始判定に間に合わない）。
+			onDragChangeRef.current?.(true);
 			setPreview(indexFromPageX(event.nativeEvent.pageX));
 		},
 		onPanResponderMove: (_event, gestureState) => { setPreview(indexFromPageX(gestureState.moveX)); },
 		onPanResponderRelease: (event, gestureState) => {
 			const pageX = gestureState.moveX === 0 ? event.nativeEvent.pageX : gestureState.moveX;
 			dragging.current = false;
+			onDragChangeRef.current?.(false);
 			commitIndex(indexFromPageX(pageX));
 		},
 		onPanResponderTerminationRequest: () => gesture.allowTermination,
 		onPanResponderTerminate: () => {
 			dragging.current = false;
+			onDragChangeRef.current?.(false);
 			setPreviewIndex(selectedIndexRef.current);
 		},
 	}), [commitIndex, gesture.allowTermination, gesture.enabled, indexFromPageX, setPreview]);
