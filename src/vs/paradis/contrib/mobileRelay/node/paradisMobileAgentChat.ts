@@ -87,6 +87,13 @@ export interface IParadisAgentChatMessage {
 	/** kind==='peer_message': Claude Code Agent Teamsの送信元と要約。 */
 	readonly peerName?: string;
 	readonly peerSummary?: string;
+	/** kind==='tool_result' のとき: ツールがエラーを返したか（transcriptの is_error）。 */
+	readonly isError?: boolean;
+	/**
+	 * text が TOOL_TEXT_LIMIT / TEXT_LIMIT で切り詰められている。モバイルは 'tool-full'
+	 * リクエストで全文を取り寄せられる（展開時のオンデマンド取得）。
+	 */
+	readonly truncated?: boolean;
 }
 
 /** transcript確定前に表示する一時的な実行状況。履歴revには含めず、常に最新値で置換する。 */
@@ -196,6 +203,28 @@ export interface IParadisAgentActivityDetailMessage {
 	readonly role: 'user' | 'assistant' | 'tool';
 	readonly kind: 'text' | 'thinking' | 'tool';
 	readonly text: string;
+	/**
+	 * kind==='tool' のとき、呼び出しか結果か。モバイルはこれと toolUseId で
+	 * 親のチャット画面と同じタイムライン（ツール名つきのステップ）を組み立てる。
+	 */
+	readonly toolKind?: 'tool_use' | 'tool_result';
+	readonly tool?: string;
+	readonly toolUseId?: string;
+	readonly ts?: number;
+	readonly isError?: boolean;
+}
+
+/** transcriptの生メッセージを SubAgent詳細用へ落とす（Claude / Codex 共通）。 */
+function toDetailMessage(message: IRawMessage): IParadisAgentActivityDetailMessage {
+	const kind: IParadisAgentActivityDetailMessage['kind'] = message.kind === 'thinking' ? 'thinking' : message.kind === 'tool_use' || message.kind === 'tool_result' ? 'tool' : 'text';
+	return {
+		role: message.role, kind, text: message.text,
+		...(message.kind === 'tool_use' || message.kind === 'tool_result' ? { toolKind: message.kind } : {}),
+		...(message.tool !== undefined ? { tool: message.tool } : {}),
+		...(message.toolUseId !== undefined ? { toolUseId: message.toolUseId } : {}),
+		...(message.ts !== undefined ? { ts: message.ts } : {}),
+		...(message.isError === true ? { isError: true } : {}),
+	};
 }
 
 /** agentチャネルのモバイル→PCメッセージ。 */
@@ -209,7 +238,8 @@ type AgentInbound =
 	| { t: 'model-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'command-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
-	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string };
+	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string }
+	| { t: 'tool-full'; id: number; token?: string; requestId: string; epoch: string; rev: number };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
@@ -221,6 +251,7 @@ type AgentOutbound =
 	| { t: 'settings-update'; id: number; requestId: string; status: 'pending' | 'confirmed' | 'failed'; info?: IParadisAgentSessionInfo; code?: string; message?: string }
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string; consumed?: boolean }
 	| { t: 'activity-detail'; id: number; requestId: string; activityId: string; messages?: readonly IParadisAgentActivityDetailMessage[]; error?: string }
+	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
 	| { t: 'none'; id: number };
 
@@ -245,6 +276,14 @@ const SNAPSHOT_SEND_LIMIT = 200;
 /** 本文テキストの上限 (モバイル表示用。超過は末尾に…を付けて切る)。 */
 const TEXT_LIMIT = 6000;
 const TOOL_TEXT_LIMIT = 1500;
+/**
+ * 'tool-full'（モバイルの展開時オンデマンド取得）で返せる全文の1件あたり上限。
+ * 転送とPCメモリの両方を有界にするため、これを超える出力はここで打ち切る。
+ */
+const FULL_TEXT_LIMIT = 64 * 1024;
+/** 1ペインが保持する全文キャッシュの上限（件数・合計バイト）。古いrevから捨てる。 */
+const FULL_TEXT_CACHE_ENTRIES = 40;
+const FULL_TEXT_CACHE_BYTES = 2 * 1024 * 1024;
 const PERSISTED_ACTIVITY_HEAD_BYTES = 256 * 1024;
 const PERSISTED_ACTIVITY_MAX_AGENTS = 100;
 /**
@@ -280,6 +319,19 @@ const nodeRequire = createRequire(import.meta.url);
 function truncateText(text: string, limit: number): string {
 	// allow-any-unicode-next-line
 	return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+/**
+ * 表示用に切り詰めつつ、切り詰めたときだけ全文（FULL_TEXT_LIMIT まで）を添えて返す。
+ * 全文は送信メッセージには載せず、tailer が rev 単位で保持してモバイルの
+ * 'tool-full' リクエスト（展開時のオンデマンド取得）に応答するために使う。
+ */
+function withTruncation(text: string, limit: number): { readonly text: string; readonly truncated?: true; readonly fullText?: string } {
+	if (text.length <= limit) {
+		return { text };
+	}
+	// allow-any-unicode-next-line
+	return { text: `${text.slice(0, limit)}…`, truncated: true, fullText: text.slice(0, FULL_TEXT_LIMIT) };
 }
 
 /** 生成中テキストは後続deltaが見えるよう、上限超過時は末尾を保持する。 */
@@ -452,6 +504,9 @@ interface IRawMessage {
 	readonly questionCount?: number;
 	readonly peerName?: string;
 	readonly peerSummary?: string;
+	readonly isError?: boolean;
+	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
+	readonly fullText?: string;
 }
 
 /**
@@ -630,6 +685,13 @@ function isValidActivityDetailRequest(msg: AgentInboundCandidate): msg is AgentI
 		&& isValidControlRequest(msg);
 }
 
+function isValidToolFullRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'tool-full' }> {
+	return msg.t === 'tool-full'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.rev === 'number' && Number.isInteger(msg.rev) && msg.rev >= 0
+		&& isValidControlRequest(msg);
+}
+
 function parseAgentInbound(value: unknown): AgentInbound | undefined {
 	const msg = rec(value);
 	if (msg === undefined) {
@@ -646,6 +708,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'command-catalog': return isValidCommandCatalogRequest(msg) ? msg : undefined;
 		case 'settings-update': return isValidSettingsUpdateRequest(msg) ? msg : undefined;
 		case 'activity-detail': return isValidActivityDetailRequest(msg) ? msg : undefined;
+		case 'tool-full': return isValidToolFullRequest(msg) ? msg : undefined;
 		default: return undefined;
 	}
 }
@@ -979,7 +1042,7 @@ function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | un
 		if (result !== undefined && result.length > 0) {
 			parts.push(result);
 		}
-		out.push({ role: 'tool', kind: 'tool_result', text: truncateText(parts.join('\n'), TOOL_TEXT_LIMIT), ts });
+		out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(parts.join('\n'), TOOL_TEXT_LIMIT), ts });
 		return;
 	}
 	// スラッシュコマンドの実行記録（/compact 等）。コマンド名だけを短く出す。
@@ -1056,8 +1119,10 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 					}
 					if (text.trim().length > 0) {
 						out.push({
-							role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts,
+							role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts,
 							...(toolUseId !== undefined ? { toolUseId } : {}),
+							// transcript の is_error。モバイルは失敗ステップを赤で示す（推定に頼らない）。
+							...(b['is_error'] === true ? { isError: true } : {}),
 						});
 					}
 				}
@@ -1085,7 +1150,7 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 			} else if (b['type'] === 'thinking') {
 				const text = str(b['thinking']) ?? '';
 				if (text.trim().length > 0) {
-					out.push({ role: 'assistant', kind: 'thinking', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+					out.push({ role: 'assistant', kind: 'thinking', ...withTruncation(text, TOOL_TEXT_LIMIT), ts });
 				}
 			} else if (b['type'] === 'tool_use') {
 				const rawTool = str(b['name']) ?? 'tool';
@@ -1123,7 +1188,7 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 						text = JSON.stringify(b['input']);
 					} catch { /* 表示は空でよい */ }
 				}
-				out.push({ role: 'assistant', kind: 'tool_use', tool, text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(toolUseId !== undefined ? { toolUseId } : {}) });
+				out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(toolUseId !== undefined ? { toolUseId } : {}) });
 			}
 		}
 	}
@@ -1173,8 +1238,7 @@ export function paradisParseCodexDetailLinesForTest(lines: readonly string[]): I
 		if (parsed === undefined) { continue; }
 		for (const message of parseCodexLine(parsed, newParseSignals())) {
 			if (message.kind === 'question' || message.kind === 'peer_message') { continue; }
-			const kind: IParadisAgentActivityDetailMessage['kind'] = message.kind === 'thinking' ? 'thinking' : message.kind === 'tool_use' || message.kind === 'tool_result' ? 'tool' : 'text';
-			out.push({ role: message.role, kind, text: message.text });
+			out.push(toDetailMessage(message));
 		}
 	}
 	return out.slice(-200);
@@ -1285,13 +1349,13 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 	} else if (ptype === 'reasoning') {
 		const text = flattenContent(payload['summary']);
 		if (text.trim().length > 0) {
-			out.push({ role: 'assistant', kind: 'thinking', text: truncateText(text, TOOL_TEXT_LIMIT), ts });
+			out.push({ role: 'assistant', kind: 'thinking', ...withTruncation(text, TOOL_TEXT_LIMIT), ts });
 		}
 	} else if (ptype === 'function_call' || ptype === 'custom_tool_call' || ptype === 'mcp_tool_call') {
 		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
 		const tool = str(payload['name']) ?? 'tool';
 		const text = str(payload['arguments']) ?? str(payload['input']) ?? '';
-		out.push({ role: 'assistant', kind: 'tool_use', tool, text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+		out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'web_search_call' || ptype === 'tool_search_call') {
 		// web_search_call は action.query、tool_search_call は arguments(オブジェクト)にクエリが入る
 		const action = rec(payload['action']);
@@ -1311,10 +1375,10 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		if (ptype === 'web_search_call' && callId === undefined && tsRaw !== undefined) {
 			callId = `web:${tsRaw}:${stableTextHash(query)}`;
 		}
-		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', text: truncateText(query, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+		out.push({ role: 'assistant', kind: 'tool_use', tool: ptype === 'web_search_call' ? 'web_search' : 'tool_search', ...withTruncation(query, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		if (ptype === 'web_search_call' && (payload['status'] === 'completed' || payload['status'] === 'failed')) {
 			const resultText = payload['status'] === 'failed' ? `Web検索に失敗しました${query ? `\n${query}` : ''}` : query || 'Web検索完了';
-			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(resultText, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(resultText, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(payload['status'] === 'failed' ? { isError: true } : {}) });
 		}
 	} else if (ptype === 'tool_search_output') {
 		// tool_search_call の結果 ({ call_id, status, execution, tools: [...] })。見つかった
@@ -1333,27 +1397,31 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 			text = str(payload['status']) ?? '';
 		}
 		if (text.trim().length > 0) {
-			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		}
 	} else if (ptype === 'custom_tool_call_output') {
 		const text = str(payload['output']) ?? '';
 		if (text.trim().length > 0) {
-			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 		}
 	} else if (ptype === 'local_shell_call') {
 		let text = '';
 		try {
 			text = JSON.stringify(payload['action']);
 		} catch { /* 表示は空でよい */ }
-		out.push({ role: 'assistant', kind: 'tool_use', tool: 'shell', text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+		out.push({ role: 'assistant', kind: 'tool_use', tool: 'shell', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'function_call_output') {
 		const output = payload['output'];
 		let text: string;
+		let failed = false;
 		if (typeof output === 'string') {
 			text = output;
 		} else {
 			const o = rec(output);
 			text = str(o?.['content']) ?? flattenContent(output) ?? '';
+			// Codex は成否を output.success / metadata.exit_code で示す（形は実装依存なので取れた方だけ見る）。
+			const exitCode = rec(o?.['metadata'])?.['exit_code'];
+			failed = o?.['success'] === false || (typeof exitCode === 'number' && exitCode !== 0);
 			if (!text) {
 				try {
 					text = JSON.stringify(output);
@@ -1363,7 +1431,7 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 			}
 		}
 		if (text.trim().length > 0) {
-			out.push({ role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
+			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(failed ? { isError: true } : {}) });
 		}
 	}
 	return out;
@@ -1607,6 +1675,13 @@ class TranscriptTailer {
 	epoch = newEpoch();
 	rev = 0;
 	readonly messages: IParadisAgentChatMessage[] = [];
+	/**
+	 * 切り詰めたツール出力の全文: rev → 全文。モバイルがステップを展開したときだけ
+	 * 'tool-full' で取りに来る（常時送るとリレーの転送量が跳ねるため）。
+	 * 件数・合計バイトの両方に上限を置き、古い rev から捨てる。
+	 */
+	private readonly fullTexts = new Map<number, string>();
+	private fullTextBytes = 0;
 	/** 実行中バックグラウンドタスク（サブエージェント等）: id → 起動時刻 (epoch ms)。 */
 	readonly backgroundTasks = new Map<string, number>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
@@ -1801,12 +1876,35 @@ class TranscriptTailer {
 		}
 	}
 
+	/**
+	 * 切り詰め前の全文を rev 単位で保持する。件数・合計バイトのどちらかが上限を超えたら
+	 * 古い rev から捨てる（長時間セッションでPCのメモリが伸び続けないようにするため）。
+	 */
+	private retainFullText(rev: number, text: string): void {
+		this.fullTexts.set(rev, text);
+		this.fullTextBytes += text.length;
+		while (this.fullTexts.size > FULL_TEXT_CACHE_ENTRIES || this.fullTextBytes > FULL_TEXT_CACHE_BYTES) {
+			const oldest = this.fullTexts.keys().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.fullTextBytes -= this.fullTexts.get(oldest.value)?.length ?? 0;
+			this.fullTexts.delete(oldest.value);
+		}
+	}
+
+	/** 'tool-full' 応答用。保持期限を過ぎた rev は undefined（モバイルは切り詰め表示のまま）。 */
+	fullTextFor(rev: number): string | undefined {
+		return this.fullTexts.get(rev);
+	}
+
 	/** 読み取ったテキストを行に分割してパースし、リングへ追加する。末尾の不完全行は持ち越す。 */
 	private consumeText(text: string, emitDelta: boolean): void {
 		const combined = this.remainder + text;
 		const lines = combined.split('\n');
 		this.remainder = (lines.pop() ?? '').slice(-MAX_TRANSCRIPT_LINE_BYTES);
-		const added: IParadisAgentChatMessage[] = [];
+		// fullText はここでだけ通過する（この直後に retainFullText へ移して送信対象から外す）。
+		const added: (IParadisAgentChatMessage & { fullText?: string })[] = [];
 		const signals = newParseSignals();
 		let latestProgress: ITranscriptProgress | undefined;
 		for (const line of lines) {
@@ -1861,6 +1959,15 @@ class TranscriptTailer {
 					}
 				}
 				added.push({ ...message, rev: this.rev++ });
+			}
+		}
+		// fullText は送信メッセージから外し、rev 単位でここに退避する（'tool-full' 用）。
+		for (let i = 0; i < added.length; i++) {
+			const message = added[i];
+			if (message?.fullText !== undefined) {
+				this.retainFullText(message.rev, message.fullText);
+				const { fullText, ...rest } = message;
+				added[i] = rest;
 			}
 		}
 		this.applySignals(signals, emitDelta);
@@ -2907,7 +3014,30 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'activity-detail':
 				this.handleActivityDetailRequest(mobileId, msg).catch(err => this.logService.warn('[paradisAgentChat] activity detail failed', err));
 				break;
+			case 'tool-full':
+				this.handleToolFullRequest(mobileId, msg);
+				break;
 		}
+	}
+
+	/**
+	 * ツール出力の全文取得。モバイルがステップを展開したときだけ呼ばれる。
+	 * transcript は読み直さず、tailer が切り詰め時に退避しておいた全文だけを返す
+	 * （読み直しは長大セッションで重く、rev の再現性も保証できないため）。
+	 */
+	private handleToolFullRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'tool-full' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)) {
+			this.sendTo(mobileId, { t: 'tool-full', id: msg.id, requestId: msg.requestId, rev: msg.rev, error: '全文を取得できません' }, token ?? msg.token);
+			return;
+		}
+		const text = tailer.fullTextFor(msg.rev);
+		if (text === undefined) {
+			this.sendTo(mobileId, { t: 'tool-full', id: msg.id, requestId: msg.requestId, rev: msg.rev, error: 'この出力の全文は保持期限を過ぎています' }, token);
+			return;
+		}
+		this.sendTo(mobileId, { t: 'tool-full', id: msg.id, requestId: msg.requestId, rev: msg.rev, text }, token);
 	}
 
 	private async handleActivityDetailRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'activity-detail' }>): Promise<void> {
@@ -2996,8 +3126,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (parsed === undefined) { continue; }
 				for (const message of parseClaudeLine(parsed, newParseSignals(), true)) {
 					if (message.kind === 'question' || message.kind === 'peer_message') { continue; }
-					const kind: IParadisAgentActivityDetailMessage['kind'] = message.kind === 'thinking' ? 'thinking' : message.kind === 'tool_use' || message.kind === 'tool_result' ? 'tool' : 'text';
-					out.push({ role: message.role, kind, text: message.text });
+					out.push(toDetailMessage(message));
 				}
 			}
 			return out.slice(-200);

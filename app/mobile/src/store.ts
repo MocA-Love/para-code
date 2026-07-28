@@ -398,6 +398,10 @@ export interface AgentChatMessage {
 	/** kind==='peer_message': Claude Code Agent Teamsの送信元と要約。 */
 	peerName?: string;
 	peerSummary?: string;
+	/** kind==='tool_result': ツールがエラーを返した（transcriptの is_error）。 */
+	isError?: boolean;
+	/** text がPC側で切り詰められている。requestAgentToolFullText で全文を取り寄せられる。 */
+	truncated?: boolean;
 }
 
 /** セッションのメタ情報（PC側 transcript から学習した最新値）。 */
@@ -555,7 +559,17 @@ export interface AgentActivityState {
 	startedAt: number;
 	updatedAt: number;
 }
-export interface AgentActivityDetailMessage { role: 'user' | 'assistant' | 'tool'; kind: 'text' | 'thinking' | 'tool'; text: string }
+export interface AgentActivityDetailMessage {
+	role: 'user' | 'assistant' | 'tool';
+	kind: 'text' | 'thinking' | 'tool';
+	text: string;
+	/** kind==='tool': 呼び出しか結果か（親画面と同じタイムラインを組むために使う）。 */
+	toolKind?: 'tool_use' | 'tool_result';
+	tool?: string;
+	toolUseId?: string;
+	ts?: number;
+	isError?: boolean;
+}
 
 function parseAgentActivityState(value: unknown): AgentActivityState | undefined {
 	if (value === null || typeof value !== 'object' || Array.isArray(value)) { return undefined; }
@@ -901,6 +915,8 @@ export class MobileController {
 	private readonly agentCommandCatalogTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingActivityDetails = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly activityId: string; readonly resolve: (messages: AgentActivityDetailMessage[]) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
+	/** ツール出力の全文取得（展開時オンデマンド）。rev単位で1件だけ在庫させる。 */
+	private readonly pendingToolFulls = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly rev: number; readonly resolve: (text: string) => void; readonly reject: (error: Error) => void; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentLiveResyncs = new Set<string>();
 	private readonly terminalOperationOutbox = new Map<string, { readonly operationRun: number; readonly operationSeq: number; readonly payload: Uint8Array; state: 'pending' | 'unknown'; durable: boolean }>();
 	private terminalOperationSeq = 0;
@@ -1361,6 +1377,29 @@ export class MobileController {
 		});
 	}
 
+	/**
+	 * ツール出力の全文を取り寄せる（タイムラインでステップを展開したときだけ呼ぶ）。
+	 * PC側は切り詰め時に退避した全文を返す。保持期限を過ぎていればエラーになるので、
+	 * 呼び出し側は切り詰め表示のままにする。
+	 */
+	requestAgentToolFullText(terminalKey: string, rev: number): Promise<string> {
+		const chat = this.state.agentChats.get(terminalKey);
+		const terminal = this.terminalForKey(terminalKey);
+		const rendererTarget = this.rendererTargetFor(terminalKey);
+		if (!this.isLiveAvailable() || rendererTarget === undefined || chat === undefined || terminal === undefined) {
+			return Promise.reject(new Error('PCへ再接続してから開いてください'));
+		}
+		const requestId = `${this.requestPrefix}-tool-full-${this.requestCounter++}`;
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.pendingToolFulls.delete(requestId);
+				reject(new Error('全文の取得がタイムアウトしました'));
+			}, 15_000);
+			this.pendingToolFulls.set(requestId, { terminalKey, rendererTarget, rev, resolve, reject, timer });
+			this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'tool-full', id: terminal.id, token: this.agentToken(terminalKey), requestId, epoch: chat.epoch, rev })));
+		});
+	}
+
 	private sendAgentAction(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
 		return this.sendAgentActionResult(terminalKey, body, timeoutMs).then(result => result.status === 'accepted');
 	}
@@ -1397,6 +1436,11 @@ export class MobileController {
 			pending.reject(new Error('接続が切断されました'));
 		}
 		this.pendingActivityDetails.clear();
+		for (const pending of this.pendingToolFulls.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(new Error('接続が切断されました'));
+		}
+		this.pendingToolFulls.clear();
 	}
 
 	/** PC側に新規ターミナルを作成する（ws指定でそのリポジトリをcwdに）。 */
@@ -2171,6 +2215,13 @@ export class MobileController {
 				pending.reject(new Error('PC画面が再接続されたため取得を中断しました'));
 			}
 		}
+		for (const [requestId, pending] of this.pendingToolFulls) {
+			if (!this.isLiveAvailable() || this.rendererTargetFor(pending.terminalKey) !== pending.rendererTarget) {
+				clearTimeout(pending.timer);
+				this.pendingToolFulls.delete(requestId);
+				pending.reject(new Error('PC画面が再接続されたため取得を中断しました'));
+			}
+		}
 		for (const [terminalKey, pending] of this.agentControlTimers) {
 			if (!this.isLiveAvailable() || this.rendererTargetFor(terminalKey) !== pending.rendererTarget) {
 				clearTimeout(pending.timer);
@@ -2857,10 +2908,28 @@ export class MobileController {
 					if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) { continue; }
 					const item = candidate as Record<string, unknown>;
 					if ((item['role'] === 'user' || item['role'] === 'assistant' || item['role'] === 'tool') && (item['kind'] === 'text' || item['kind'] === 'thinking' || item['kind'] === 'tool') && typeof item['text'] === 'string') {
-						messages.push({ role: item['role'], kind: item['kind'], text: item['text'].slice(0, 6_000) });
+						messages.push({
+							role: item['role'], kind: item['kind'], text: item['text'].slice(0, 6_000),
+							...(item['toolKind'] === 'tool_use' || item['toolKind'] === 'tool_result' ? { toolKind: item['toolKind'] } : {}),
+							...(typeof item['tool'] === 'string' && item['tool'].length <= 200 ? { tool: item['tool'] } : {}),
+							...(typeof item['toolUseId'] === 'string' && item['toolUseId'].length <= 500 ? { toolUseId: item['toolUseId'] } : {}),
+							...(typeof item['ts'] === 'number' && Number.isFinite(item['ts']) ? { ts: item['ts'] } : {}),
+							...(item['isError'] === true ? { isError: true } : {}),
+						});
 					}
 				}
 				pending.resolve(messages);
+				return;
+			}
+			if (msg.t === 'tool-full' && typeof msg.requestId === 'string') {
+				const pending = this.pendingToolFulls.get(msg.requestId);
+				if (pending === undefined || pending.terminalKey !== terminalKey || pending.rendererTarget !== rendererTarget || pending.rev !== msg.rev) { return; }
+				clearTimeout(pending.timer);
+				this.pendingToolFulls.delete(msg.requestId);
+				if (typeof msg.error === 'string') { pending.reject(new Error(msg.error)); return; }
+				const text = (msg as unknown as { text?: unknown }).text;
+				if (typeof text !== 'string') { pending.reject(new Error('全文の応答が不正です')); return; }
+				pending.resolve(text);
 				return;
 			}
 			if (msg.t === 'none') {

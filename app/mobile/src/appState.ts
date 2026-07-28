@@ -114,6 +114,7 @@ interface AppState extends StoreState {
 	answerAgentApproval(terminalKey: string, interactionId: string, choice: string): Promise<AgentMessageSendResult>;
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]>;
+	requestAgentToolFullText(terminalKey: string, rev: number): Promise<string>;
 	createTerminal(ws?: string): void;
 	attachAgent(terminalKey: string): void;
 	detachAgent(terminalKey: string): void;
@@ -545,6 +546,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	requestAgentActivityDetail(terminalKey: string, activityId: string) {
 		return controller?.requestAgentActivityDetail(terminalKey, activityId) ?? Promise.reject(new Error('not connected'));
+	},
+
+	requestAgentToolFullText(terminalKey: string, rev: number) {
+		return controller?.requestAgentToolFullText(terminalKey, rev) ?? Promise.reject(new Error('not connected'));
 	},
 
 	createTerminal(ws?: string) {

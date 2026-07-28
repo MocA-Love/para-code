@@ -14,6 +14,9 @@ import { GlassSurface, liquidGlass } from '../src/components/glassSurface.js';
 import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.js';
 import { ApprovalCard } from '../src/components/approvalCard.js';
 import { AgentActivityCard, AgentActivityStrip } from '../src/components/agentActivityCard.js';
+import { AgentTimeline } from '../src/components/agentTimeline.js';
+import { IOBlock } from '../src/components/agentIoBlock.js';
+import { formatToolName } from '../src/agentToolMeta.js';
 import { findLatestApprovalRequest } from '../src/components/attentionCard.js';
 import { AgentComposer } from '../src/components/agentComposer.js';
 import { wsColor } from '../src/components/wsDrawer.js';
@@ -371,8 +374,8 @@ export default function AgentDetailScreen() {
 							item.type === 'msg' ? <MessageBubble message={item.m} />
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
 								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
-									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} />
-									: <ActivityGroup msgs={item.msgs} />}
+									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} terminalKey={activeKey} />
+									: <AgentTimeline msgs={item.msgs} terminalKey={activeKey} />}
 						contentContainerStyle={[styles.listContent, { paddingTop: headerHeight + (hasActivityHistory ? 52 : 6) }]}
 						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
 						onContentSizeChange={onContentSizeChange}
@@ -482,66 +485,6 @@ type ChatRow =
 	| { type: 'web'; key: string; msgs: AgentChatMessage[] }
 	| { type: 'group'; key: string; msgs: AgentChatMessage[] };
 
-/**
- * ツール名の表示整形。MCPツールの内部名（mcp__sentry__search_issues）は読みにくいため、
- * 「search_issues · sentry MCP」の形に直す。それ以外はそのまま。
- */
-function formatToolName(tool: string): string {
-	const mcp = /^mcp__(.+?)__(.+)$/.exec(tool);
-	// allow-any-unicode-next-line
-	return mcp ? `${mcp[2]} · ${mcp[1]} MCP` : tool;
-}
-
-/** アクティビティ群の要約文（例: `思考 ×2 ・ ツール5件 (Bash, Read) ・ 48秒`）。 */
-function summarizeActivity(msgs: readonly AgentChatMessage[]): string {
-	const thinking = msgs.filter(m => m.kind === 'thinking').length;
-	const tools = msgs.filter(m => m.kind === 'tool_use');
-	const names: string[] = [];
-	for (const t of tools) {
-		const name = t.tool !== undefined ? formatToolName(t.tool) : undefined;
-		if (name !== undefined && !names.includes(name)) {
-			names.push(name);
-		}
-	}
-	const parts: string[] = [];
-	if (thinking > 0) {
-		parts.push(thinking === 1 ? '思考' : `思考 ×${thinking}`);
-	}
-	if (tools.length > 0) {
-		const shown = names.slice(0, 3).join(', ');
-		parts.push(`ツール${tools.length}件${shown ? ` (${shown}${names.length > 3 ? '…' : ''})` : ''}`);
-	}
-	if (parts.length === 0) {
-		parts.push(`${msgs.length}件のアクティビティ`);
-	}
-	const stamps = msgs.map(m => m.ts).filter((t): t is number => typeof t === 'number');
-	if (stamps.length >= 2) {
-		const sec = Math.round((Math.max(...stamps) - Math.min(...stamps)) / 1000);
-		if (sec >= 1) {
-			parts.push(sec >= 60 ? `${Math.floor(sec / 60)}分${sec % 60}秒` : `${sec}秒`);
-		}
-	}
-	return parts.join(' ・ ');
-}
-
-/** thinking / tool 群の集約行。デフォルト折りたたみ、タップで展開。 */
-function ActivityGroup({ msgs }: { msgs: AgentChatMessage[] }) {
-	const [expanded, setExpanded] = useState(false);
-	return (
-		<View>
-			<Pressable style={styles.activityRow} onPress={() => { hapticSelection(); setExpanded(e => !e); }} accessibilityLabel={expanded ? 'アクティビティを折りたたむ' : 'アクティビティを展開'}>
-				<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
-				<Text style={styles.activityText} numberOfLines={1}>{summarizeActivity(msgs)}</Text>
-			</Pressable>
-			{expanded ? (
-				<View style={styles.activityBody}>
-					{msgs.map(m => <MessageBubble key={m.rev} message={m} />)}
-				</View>
-			) : null}
-		</View>
-	);
-}
-
 interface WebSite { readonly domain: string; readonly url: string }
 
 function webSites(msgs: readonly { text: string }[]): WebSite[] {
@@ -562,7 +505,7 @@ function Favicon({ domain }: { domain: string }) {
 }
 
 /** ChatGPTの検索中表示に近い、クエリ＋発見サイトfaviconの専用アクティビティ。 */
-function WebSearchActivity({ msgs }: { msgs: AgentChatMessage[] }) {
+function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; terminalKey?: string }) {
 	const [expanded, setExpanded] = useState(false);
 	const query = msgs.find(message => message.kind === 'tool_use' && message.tool === 'web_search')?.text ?? 'Web検索';
 	const sites = webSites(msgs);
@@ -574,7 +517,9 @@ function WebSearchActivity({ msgs }: { msgs: AgentChatMessage[] }) {
 			<View style={styles.webBody}><Text style={[styles.webLabel, failed && { color: colors.red }]}>{failed ? 'Web検索失敗' : sites.length > 0 ? `${sites.length}サイトを参照` : completed ? 'Web検索完了' : 'Webを検索中'}</Text><Text style={styles.webQuery} numberOfLines={1}>{query}</Text></View>
 			<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={12} color={colors.textDim} />
 		</Pressable>
-		{expanded ? <View style={styles.activityBody}>{msgs.map(message => <MessageBubble key={message.rev} message={message} />)}{sites.map(site => <Pressable key={site.domain} style={styles.domainRow} onPress={() => { hapticSelection(); void Linking.openURL(site.url).catch(() => { /* 開けないURLは無視 */ }); }} accessibilityRole="link" accessibilityLabel={`${site.domain} をブラウザで開く`}><Favicon domain={site.domain} /><Text style={styles.domainText}>{site.domain}</Text><Ionicons name="open-outline" size={11} color={colors.textDim} /></Pressable>)}</View> : null}
+		{/* 展開時は結果を IOBlock（横スクロール・全文取得つき）に載せる。旧実装は
+		    numberOfLines で切っていたため、開いても続きが読めなかった */}
+		{expanded ? <View style={styles.activityBody}>{msgs.filter(message => message.kind === 'tool_result').map(message => <IOBlock key={message.rev} label="検索結果" message={message} terminalKey={terminalKey} lines />)}{sites.map(site => <Pressable key={site.domain} style={styles.domainRow} onPress={() => { hapticSelection(); void Linking.openURL(site.url).catch(() => { /* 開けないURLは無視 */ }); }} accessibilityRole="link" accessibilityLabel={`${site.domain} をブラウザで開く`}><Favicon domain={site.domain} /><Text style={styles.domainText}>{site.domain}</Text><Ionicons name="open-outline" size={11} color={colors.textDim} /></Pressable>)}</View> : null}
 	</View>;
 }
 
@@ -590,25 +535,6 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 				<MarkdownText text={message.text} />
 			</View>
 		);
-	}
-	if (message.kind === 'tool_use') {
-		return (
-			<View style={styles.toolRow}>
-				<Ionicons name="construct-outline" size={12} color={colors.textDim} />
-				<Text style={styles.toolText} numberOfLines={3}>{message.tool === 'approval_request' ? '許可要求' : formatToolName(message.tool ?? 'tool')}: {message.text}</Text>
-			</View>
-		);
-	}
-	if (message.kind === 'tool_result') {
-		return (
-			<View style={styles.toolRow}>
-				<Ionicons name="return-down-forward-outline" size={12} color={colors.textDim} />
-				<Text style={styles.toolText} numberOfLines={4}>{message.text}</Text>
-			</View>
-		);
-	}
-	if (message.kind === 'thinking') {
-		return <Text style={styles.thinkingText} numberOfLines={6}>{message.text}</Text>;
 	}
 	const isUser = message.role === 'user';
 	return (
@@ -735,15 +661,10 @@ const styles = StyleSheet.create({
 	bubbleUser: { alignSelf: 'flex-end', backgroundColor: colors.surface2, borderRadius: 16, borderBottomRightRadius: 5, paddingHorizontal: 12, paddingVertical: 8, maxWidth: '86%' },
 	bubbleAssistant: { alignSelf: 'stretch', paddingHorizontal: 2 },
 	bubbleText: { color: colors.text, fontSize: 13, lineHeight: 19 },
-	thinkingText: { color: colors.textDim, fontSize: 11, fontStyle: 'italic', lineHeight: 16, paddingHorizontal: 4 },
-	activityRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 3 },
-	activityText: { color: colors.textDim, fontSize: 11, flex: 1 },
-	activityBody: { gap: 6, paddingLeft: 14, paddingTop: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border, marginLeft: 8 },
+	activityBody:{ gap: 6, paddingLeft: 14, paddingTop: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border, marginLeft: 8 },
 	webWrap: { marginVertical: 2 }, webRow: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 13, backgroundColor: 'rgba(9,175,217,.07)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(9,175,217,.18)' },
 	faviconStack: { flexDirection: 'row', alignItems: 'center', paddingRight: 4 }, favicon: { width: 22, height: 22, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', marginRight: -5, overflow: 'hidden' }, faviconImage: { width: 14, height: 14, borderRadius: 3 }, faviconLetter: { color: colors.textDim, fontSize: 9, fontWeight: '800' },
 	webBody: { flex: 1, minWidth: 0 }, webLabel: { color: colors.accent2, fontSize: 9.5, fontWeight: '700' }, webQuery: { color: colors.text, fontSize: 11, marginTop: 1 }, domainRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 }, domainText: { color: colors.textDim, fontSize: 10.5 },
-	toolRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, paddingHorizontal: 4 },
-	toolText: { color: colors.textDim, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flex: 1, lineHeight: 15 },
 	approvalBarWrap: { marginHorizontal: 12, marginTop: 8 },
 	approvalSyncing: { backgroundColor: 'rgba(255,255,255,.04)', borderWidth: 1, borderColor: 'rgba(255,255,255,.10)', borderRadius: 16, paddingVertical: 12, paddingHorizontal: 14, gap: 4 },
 	approvalSyncingText: { color: colors.text, fontSize: 13, fontWeight: '600' },
