@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { useState } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,9 +12,9 @@ import { colors } from '../src/theme.js';
 import { hapticSelection } from '../src/haptics.js';
 import { useNow } from '../src/time.js';
 import type { AgentActivityAgent, AgentActivityStatus, AgentActivityTask } from '../src/store.js';
-import { flattenAgentActivity, isRunningAgentActivity } from '../src/agentActivityTree.js';
+import { flattenAgentActivity, isRunningAgentActivity, partitionRecentAgentActivity } from '../src/agentActivityTree.js';
 
-type ActivityRow = { kind: 'section'; title: string; empty?: string } | { kind: 'agent'; value: AgentActivityAgent; depth: number } | { kind: 'task'; value: AgentActivityTask };
+type ActivityRow = { kind: 'section'; title: string; empty?: string } | { kind: 'agent'; value: AgentActivityAgent; depth: number } | { kind: 'task'; value: AgentActivityTask } | { kind: 'more'; count: number; expanded: boolean };
 
 function statusLabel(status: AgentActivityStatus): string {
 	switch (status) {
@@ -50,9 +51,13 @@ export default function AgentActivityScreen() {
 	const activity = chat?.activity;
 	const sessionChanged = chat !== undefined && typeof params.epoch === 'string' && chat.epoch !== params.epoch;
 	const activeAgents = activity?.agents.filter(agent => isRunningAgentActivity(agent.status)) ?? [];
+	const [historyExpanded, setHistoryExpanded] = useState(false);
+	const { recent, older } = partitionRecentAgentActivity(activity?.agents ?? [], now);
+	const visibleAgents = historyExpanded || older.length === 0 ? activity?.agents ?? [] : recent;
 	const rows: ActivityRow[] = activity === undefined ? [] : [
 		{ kind: 'section', title: 'Agent tree', ...(activity.agents.length === 0 ? { empty: '検出されたSubAgentはありません' } : {}) },
-		...flattenAgentActivity(activity.agents).map(({ agent: value, depth }) => ({ kind: 'agent' as const, value, depth })),
+		...flattenAgentActivity(visibleAgents).map(({ agent: value, depth }) => ({ kind: 'agent' as const, value, depth })),
+		...(older.length > 0 ? [{ kind: 'more' as const, count: older.length, expanded: historyExpanded }] : []),
 		{ kind: 'section', title: 'Tasks', ...(activity.tasks.length === 0 ? { empty: 'Task API / hook由来のTaskはありません' } : {}) },
 		...activity.tasks.map(value => ({ kind: 'task' as const, value })),
 	];
@@ -81,7 +86,7 @@ export default function AgentActivityScreen() {
 					{parentMissing ? <View style={styles.empty}><Ionicons name="alert-circle-outline" size={24} color={colors.yellow} /><Text style={styles.emptyTitle}>親エージェントを確認できません</Text><Text style={styles.emptyText}>元のエージェント画面へ戻り、最新のセッションを開き直してください。</Text></View> : chatLoading ? <View style={styles.empty}><Ionicons name="sync-outline" size={24} color={colors.textDim} /><Text style={styles.emptyTitle}>Agent sessionを読み込み中</Text></View> : sessionChanged ? <View style={styles.empty}><Ionicons name="alert-circle-outline" size={24} color={colors.yellow} /><Text style={styles.emptyTitle}>親セッションが切り替わりました</Text><Text style={styles.emptyText}>親エージェントへ戻り、新しいセッションから開き直してください。</Text></View> : activity === undefined ? <View style={styles.empty}><Ionicons name="people-outline" size={24} color={colors.textDim} /><Text style={styles.emptyTitle}>SubAgentの活動はありません</Text><Text style={styles.emptyText}>親エージェントがSubAgentやTaskを開始すると、ここへ表示されます。</Text></View> : (
 						<FlatList
 							data={rows}
-							keyExtractor={row => row.kind === 'section' ? `section:${row.title}` : `${row.kind}:${row.value.id}`}
+							keyExtractor={row => row.kind === 'section' ? `section:${row.title}` : row.kind === 'more' ? 'more' : `${row.kind}:${row.value.id}`}
 							contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }]}
 							ListHeaderComponent={<View style={styles.overview}>
 								<View><Text style={styles.metric}>{activeAgents.length}</Text><Text style={styles.metricLabel}>実行中</Text></View>
@@ -90,7 +95,12 @@ export default function AgentActivityScreen() {
 								<View style={styles.metricDivider} />
 								<View><Text style={styles.metric}>{activity.tasks.length}</Text><Text style={styles.metricLabel}>Tasks</Text></View>
 							</View>}
-							renderItem={({ item }) => item.kind === 'section' ? <View><Text style={styles.sectionTitle}>{item.title}</Text>{item.empty ? <Text style={styles.muted}>{item.empty}</Text> : null}</View> : item.kind === 'agent' ? (() => { const agent = item.value; return (
+							renderItem={({ item }) => item.kind === 'section' ? <View><Text style={styles.sectionTitle}>{item.title}</Text>{item.empty ? <Text style={styles.muted}>{item.empty}</Text> : null}</View> : item.kind === 'more' ? (
+								<Pressable accessibilityRole="button" accessibilityState={{ expanded: item.expanded }} accessibilityLabel={item.expanded ? '過去の履歴を隠す' : `過去の履歴${item.count}件を表示`} onPress={() => { hapticSelection(); setHistoryExpanded(value => !value); }} style={styles.moreRow}>
+									<Ionicons name={item.expanded ? 'chevron-up' : 'chevron-down'} size={13} color={colors.textDim} />
+									<Text style={styles.moreText}>{item.expanded ? '過去の履歴を隠す' : `過去の履歴を表示（${item.count}件）`}</Text>
+								</Pressable>
+							) : item.kind === 'agent' ? (() => { const agent = item.value; return (
 								<Pressable key={agent.id} disabled={agent.role !== 'subagent'} accessibilityRole={agent.role === 'subagent' ? 'button' : undefined} accessibilityLabel={agent.role === 'subagent' ? `${agent.label}の詳細を開く` : `${agent.label} teammate`} onPress={() => selectAgent(agent)} style={[styles.agentRow, { marginLeft: Math.min(54, (item.depth - 1) * 18) }]}>
 									{item.depth > 1 ? <Text style={styles.treeBranch}>└</Text> : null}
 									<View style={[styles.avatar, { backgroundColor: agent.provider === 'claude' ? 'rgba(216,142,92,.16)' : colors.accentWash }]}><Text style={[styles.avatarText, { color: agent.provider === 'claude' ? colors.claude : colors.accent }]}>{agent.role === 'teammate' ? 'T' : 'A'}</Text></View>
@@ -123,6 +133,8 @@ const styles = StyleSheet.create({
 	avatar: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' }, avatarText: { fontSize: 11, fontWeight: '800' }, agentBody: { flex: 1, minWidth: 0 }, agentLabel: { color: colors.text, fontSize: 12.5, fontWeight: '600' }, agentMeta: { color: colors.textDim, fontSize: 9.5, marginTop: 2, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	status: { borderRadius: 9, paddingHorizontal: 7, paddingVertical: 4 }, statusText: { fontSize: 8.5, fontWeight: '700' },
 	treeBranch: { color: colors.textDim, fontSize: 13, marginRight: -3 },
+	moreRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 10, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderStyle: 'dashed' },
+	moreText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
 	detailCard: { backgroundColor: 'rgba(193,147,217,.08)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(193,147,217,.30)', borderRadius: 16, padding: 13, gap: 6 }, detailHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }, detailTitle: { color: colors.text, fontSize: 12, fontWeight: '700' }, detailLabel: { color: colors.textDim, fontSize: 8.5, fontWeight: '700', textTransform: 'uppercase', marginTop: 5 }, detailText: { color: colors.text, fontSize: 11.5, lineHeight: 17 }, code: { color: colors.purple, fontSize: 9.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	message: { padding: 9, borderRadius: 11, backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, gap: 3 }, messageUser: { backgroundColor: colors.accentWash }, messageTool: { backgroundColor: colors.surface2 }, messageRole: { color: colors.textDim, fontSize: 8, fontWeight: '700', textTransform: 'uppercase' }, messageText: { color: colors.text, fontSize: 10.5, lineHeight: 15 }, errorText: { color: colors.red, fontSize: 10.5, lineHeight: 15 },
 	taskRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 9, padding: 11, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, backgroundColor: colors.surface }, taskBody: { flex: 1, minWidth: 0 }, taskLabel: { color: colors.text, fontSize: 12, fontWeight: '600' }, taskDetail: { color: colors.textDim, fontSize: 10.5, lineHeight: 15, marginTop: 3 }, taskStatus: { fontSize: 9, fontWeight: '700' },

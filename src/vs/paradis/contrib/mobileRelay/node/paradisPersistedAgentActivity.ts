@@ -25,6 +25,13 @@ export interface IParadisClaudePersistedActivity {
 	readonly spawned: readonly IParadisRecoveredAgentActivity[];
 }
 
+/** `agent-<id>.meta.json`（Claude Codeが子transcriptの隣に書く素性メタ）。 */
+export interface IParadisClaudeSubagentMeta {
+	readonly agentType?: string;
+	readonly description?: string;
+	readonly spawnDepth?: number;
+}
+
 const ID_PATTERN = /^[A-Za-z0-9._:-]{1,500}$/;
 const TEXT_LIMIT = 1_000;
 const STALE_ACTIVITY_MS = 15 * 60 * 1_000;
@@ -67,8 +74,30 @@ function normalizedStatus(value: string | undefined): ParadisRecoveredAgentStatu
 	}
 }
 
-function activeOrUnknown(mtime: number, now: number): ParadisRecoveredAgentStatus {
-	return now - mtime <= STALE_ACTIVITY_MS ? 'running' : 'unknown';
+/**
+ * 終端イベントを確認できていない活動の扱い。まだ書き込みが続いている間は実行中、
+ * 十分に古い（＝もう誰も書いていない）ものは打ち切られたものとして扱う。
+ * 「状態不明」は判断材料が全く無い場合のためだけに残す。
+ */
+function activeOrEnded(mtime: number, now: number): ParadisRecoveredAgentStatus {
+	return now - mtime <= STALE_ACTIVITY_MS ? 'running' : 'interrupted';
+}
+
+function hasBlock(content: unknown, type: string): boolean {
+	return Array.isArray(content) && content.some(item => record(item)?.['type'] === type);
+}
+
+/**
+ * assistant 1行から親の終端状態を推定する。`stop_reason` は正本だが、ストリーミング中に
+ * 書かれた行では欠落することがある（実データで確認済み）。その場合はブロック構成で補う:
+ * tool_use を含むならまだ作業中、text で終わっているなら応答を返し切っている。
+ */
+function assistantTurnStatus(stopReason: string | undefined, content: unknown, mtime: number, now: number): ParadisRecoveredAgentStatus | undefined {
+	if (stopReason === 'end_turn') { return 'completed'; }
+	if (stopReason === 'tool_use') { return activeOrEnded(mtime, now); }
+	if (stopReason !== undefined) { return undefined; }
+	if (hasBlock(content, 'tool_use')) { return activeOrEnded(mtime, now); }
+	return hasBlock(content, 'text') ? 'completed' : undefined;
 }
 
 function agentIdFromToolResult(value: string): string | undefined {
@@ -79,14 +108,14 @@ function agentIdFromToolResult(value: string): string | undefined {
 }
 
 /** Claude root／子transcriptから、所有Agent自身と直接生成した子Agentを復元する。 */
-export function paradisParseClaudePersistedActivity(ownerId: string | undefined, lines: readonly string[], mtime: number, now: number): IParadisClaudePersistedActivity {
+export function paradisParseClaudePersistedActivity(ownerId: string | undefined, lines: readonly string[], mtime: number, now: number, meta?: IParadisClaudeSubagentMeta): IParadisClaudePersistedActivity {
 	const pendingTools = new Map<string, { readonly label: string; readonly detail?: string; readonly at: number }>();
 	const spawned = new Map<string, IParadisRecoveredAgentActivity>();
 	let ownerDetail: string | undefined;
-	let ownerLabel = 'SubAgent';
+	let ownerLabel = text(meta?.agentType) ?? 'SubAgent';
 	let ownerStartedAt = mtime;
 	let ownerUpdatedAt = mtime;
-	let ownerStatus: ParadisRecoveredAgentStatus = activeOrUnknown(mtime, now);
+	let ownerStatus: ParadisRecoveredAgentStatus = activeOrEnded(mtime, now);
 	let sawOwnerLine = false;
 
 	for (const line of lines) {
@@ -107,9 +136,10 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 			if (candidate.length > 0 && !candidate.startsWith('<task-notification>')) { ownerDetail = candidate.slice(0, TEXT_LIMIT); }
 		}
 		if (ownerId !== undefined && type === 'assistant') {
-			const stopReason = text(message?.['stop_reason']);
-			if (stopReason === 'end_turn') { ownerStatus = 'completed'; }
-			else if (stopReason === 'tool_use') { ownerStatus = activeOrUnknown(mtime, now); }
+			ownerStatus = assistantTurnStatus(text(message?.['stop_reason']), content, mtime, now) ?? ownerStatus;
+		} else if (ownerId !== undefined && type === 'user' && hasBlock(content, 'tool_result')) {
+			// ツール結果が返っている＝直前の応答は終端ではない。暫定completedを取り消す。
+			ownerStatus = activeOrEnded(mtime, now);
 		}
 		const rawText = flattenContent(content);
 		if (rawText.includes('<task-notification>')) {
@@ -146,15 +176,18 @@ export function paradisParseClaudePersistedActivity(ownerId: string | undefined,
 				if (id !== undefined && (tool !== undefined || /Async agent launched|running in the background/i.test(resultText))) {
 					spawned.set(id, {
 						id, label: tool?.label ?? 'SubAgent', provider: 'claude', ...(tool?.detail !== undefined ? { detail: tool.detail } : {}),
-						...(ownerId !== undefined ? { parentId: ownerId } : {}), status: activeOrUnknown(mtime, now), startedAt: tool?.at ?? at, updatedAt: at,
+						...(ownerId !== undefined ? { parentId: ownerId } : {}), status: activeOrEnded(mtime, now), startedAt: tool?.at ?? at, updatedAt: at,
 					});
 				}
 			}
 		}
 	}
 
+	const ownerDepth = typeof meta?.spawnDepth === 'number' && Number.isFinite(meta.spawnDepth) ? Math.min(5, Math.max(1, Math.trunc(meta.spawnDepth))) : undefined;
+	const detail = ownerDetail ?? text(meta?.description);
 	const owner = ownerId !== undefined && ID_PATTERN.test(ownerId) ? {
-		id: ownerId, label: ownerLabel, provider: 'claude' as const, ...(ownerDetail !== undefined ? { detail: ownerDetail } : {}),
+		id: ownerId, label: ownerLabel, provider: 'claude' as const, ...(detail !== undefined ? { detail } : {}),
+		...(ownerDepth !== undefined ? { depth: ownerDepth } : {}),
 		status: ownerStatus, startedAt: ownerStartedAt, updatedAt: ownerUpdatedAt,
 	} : undefined;
 	return { ...(owner !== undefined ? { owner } : {}), spawned: [...spawned.values()] };
@@ -181,7 +214,7 @@ export function paradisParseCodexPersistedActivity(id: string, source: string, l
 	let startedAt = mtime;
 	let updatedAt = mtime;
 	let sawLine = false;
-	let status: ParadisRecoveredAgentStatus = activeOrUnknown(mtime, now);
+	let status: ParadisRecoveredAgentStatus = activeOrEnded(mtime, now);
 	for (const line of lines) {
 		let entry: Record<string, unknown> | undefined;
 		try { entry = record(JSON.parse(line)); } catch { continue; }
@@ -201,7 +234,7 @@ export function paradisParseCodexPersistedActivity(id: string, source: string, l
 		} else if (entry['type'] === 'event_msg') {
 			const payload = record(entry['payload']);
 			switch (text(payload?.['type'])) {
-				case 'task_started': status = activeOrUnknown(mtime, now); break;
+				case 'task_started': status = activeOrEnded(mtime, now); break;
 				case 'task_complete': status = 'completed'; break;
 				case 'error': status = 'failed'; break;
 				case 'turn_aborted': status = 'interrupted'; break;

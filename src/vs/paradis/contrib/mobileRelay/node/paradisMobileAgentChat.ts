@@ -42,7 +42,7 @@ import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
-import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
+import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 
@@ -287,6 +287,7 @@ const FULL_TEXT_CACHE_ENTRIES = 40;
 const FULL_TEXT_CACHE_BYTES = 2 * 1024 * 1024;
 const PERSISTED_ACTIVITY_HEAD_BYTES = 256 * 1024;
 const PERSISTED_ACTIVITY_MAX_AGENTS = 100;
+const PERSISTED_ACTIVITY_META_MAX_BYTES = 64 * 1024;
 /**
  * live ティッカー（モバイルの「応答を生成中（NN分NN秒）」）を強制失効させるまでの無更新時間。
  * 完了シグナル（Claude の Stop hook / Codex の turn/completed）は単一障害点で、1つでも
@@ -420,7 +421,37 @@ async function readPersistedTranscriptLines(transcriptPath: string): Promise<rea
 	}
 }
 
-async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string): Promise<readonly { readonly id: string; readonly path: string; readonly mtime: number }[]> {
+interface IClaudePersistedSubagentFile {
+	readonly id: string;
+	readonly path: string;
+	readonly mtime: number;
+	readonly meta?: IParadisClaudeSubagentMeta;
+}
+
+/**
+ * `agent-<id>.meta.json`（Claude Codeが子transcriptと並べて書く素性メタ）を読む。
+ * 種別・依頼内容・階層はここにしか無く、これが無いと一覧が「SubAgent」だらけになる。
+ */
+async function readClaudeSubagentMeta(transcriptPath: string): Promise<IParadisClaudeSubagentMeta | undefined> {
+	const raw = await fs.readFile(transcriptPath.replace(/\.jsonl$/i, '.meta.json'), 'utf8').catch(() => undefined);
+	if (raw === undefined || raw.length > PERSISTED_ACTIVITY_META_MAX_BYTES) { return undefined; }
+	try {
+		const parsed = rec(JSON.parse(raw));
+		const agentType = str(parsed?.['agentType']);
+		const description = str(parsed?.['description']);
+		const spawnDepth = num(parsed?.['spawnDepth']);
+		if (agentType === undefined && description === undefined && spawnDepth === undefined) { return undefined; }
+		return {
+			...(agentType !== undefined ? { agentType } : {}),
+			...(description !== undefined ? { description } : {}),
+			...(spawnDepth !== undefined ? { spawnDepth } : {}),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string): Promise<readonly IClaudePersistedSubagentFile[]> {
 	const dir = resolve(rootTranscriptPath, '..');
 	const filename = rootTranscriptPath.slice(rootTranscriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
 	const subagentsDir = join(dir, filename, 'subagents');
@@ -436,7 +467,11 @@ async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string):
 		const stat = await fs.stat(path).catch(() => undefined);
 		if (stat?.isFile()) { files.push({ id: match[1], path, mtime: stat.mtimeMs }); }
 	}
-	return files.sort((a, b) => b.mtime - a.mtime).slice(0, PERSISTED_ACTIVITY_MAX_AGENTS);
+	const selected = files.sort((a, b) => b.mtime - a.mtime).slice(0, PERSISTED_ACTIVITY_MAX_AGENTS);
+	return Promise.all(selected.map(async file => {
+		const meta = await readClaudeSubagentMeta(file.path);
+		return { ...file, ...(meta !== undefined ? { meta } : {}) };
+	}));
 }
 
 interface ICodexPersistedSubagentFile {
@@ -2440,13 +2475,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
 		const activitySweepTimer = setInterval(() => {
-			const now = Date.now();
-			for (const [token, tracker] of this.activityTrackers) {
-				if (tracker.sweepStale(now)) {
-					this.pushActivityToSubscribers(token);
-				}
-			}
-			this.sweepStaleLiveStates(now);
+			void this.sweepAgentActivity();
 		}, 60_000);
 		this._register(toDisposable(() => clearInterval(activitySweepTimer)));
 		this._register(toDisposable(() => {
@@ -4178,6 +4207,25 @@ export class ParadisMobileAgentChat extends Disposable {
 		return tracker;
 	}
 
+	/**
+	 * 60秒周期の失効処理。落とす前に必ず永続transcriptで生存を確認する。
+	 *
+	 * 親のhookは子Agentが走っている間は届かないため、確認なしに失効させると
+	 * 「まだ動いている子Agentが状態不明になる」誤表示が必ず起きる。
+	 */
+	private async sweepAgentActivity(): Promise<void> {
+		const active = [...this.activityTrackers].filter(([, tracker]) => tracker.hasActiveWork()).map(([token]) => token);
+		await Promise.all(active.map(token => this.reconcilePersistedAgentActivity(token)
+			.catch(error => this.logService.trace('[paradisAgentChat] activity liveness check failed', String(error)))));
+		const now = Date.now();
+		for (const [token, tracker] of this.activityTrackers) {
+			if (tracker.sweepStale(now)) {
+				this.pushActivityToSubscribers(token);
+			}
+		}
+		this.sweepStaleLiveStates(now);
+	}
+
 	private schedulePersistedAgentActivityReconcile(token: string, delay = 350): void {
 		const previous = this.persistedActivityTimers.get(token);
 		if (previous !== undefined) { clearTimeout(previous); }
@@ -4211,7 +4259,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			const files = await discoverClaudePersistedSubagentFiles(session.transcriptPath);
 			for (const file of files) {
-				const parsed = paradisParseClaudePersistedActivity(file.id, await readPersistedTranscriptLines(file.path), file.mtime, now);
+				const parsed = paradisParseClaudePersistedActivity(file.id, await readPersistedTranscriptLines(file.path), file.mtime, now, file.meta);
 				if (parsed.owner !== undefined) { owners.set(file.id, parsed.owner); }
 				for (const agent of parsed.spawned) { rememberSpawned(agent); }
 				claudeTranscriptPaths.push({ id: file.id, path: file.path });
