@@ -125,6 +125,8 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-screen-corner-radius@^1.1.0` を依存に追加 | ワークスペースドロワーを開いたときにコンテンツへ付ける角丸を、端末のディスプレイ角丸（iPhone 16 Pro=62pt、14 Pro〜16=55pt等）に一致させるため。iOSではプライベートAPI（`UIScreen._displayCornerRadius`）ではなく`uname()`のモデル識別子＋ルックアップテーブルで解決するためApp Store審査を通せる（同種の`react-native-screen-corner-radius`はプライベートAPIを難読化して使うため不採用）。JS側は`src/screenCornerRadius.ts`が`requireOptionalNativeModule`で引き、未リンク時はiOS 55pt/Android 0へフォールバックする |
 
+| `app/mobile/app.json` | `expo.version` を `0.1.0` → `0.2.0` へ | アプリ内「アップデートのお知らせ」の導入にあわせた最初のバージョン。`src/changelog.ts` の `MOBILE_CHANGELOG` 先頭と一致していないとお知らせが出ない／古い内容が出るため、以後この2つは必ず同時に上げる（`src/changelog.test.ts` が一致を検査する） |
+
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-clipboard@~57.0.1` を依存に追加 | エージェント詳細画面のタイムライン（`src/components/agentIoBlock.tsx`）で、ツールの入力・出力をコピーするボタンを出すため。RN本体の `Clipboard` は非推奨で、Expo SDK 57 の標準モジュールを使う。ネイティブモジュールのため追加後は iOS/Android の再ビルドが必要 |
 
 | `app/mobile/native/ParaCodeWidgets/paracode-logo.png` | 新規追加（fork所有バイナリ）。`app/mobile/assets/pairing-logo.png` を `sips -Z 128` で縮小したコピー（gitignoreされた `ios/ParaCodeWidgets/` にも同一物を配置し、Widgetターゲットの Resources に pbxproj 手動登録済み） | Live Activity / Dynamic Island のロゴをホームタブのPCカードと同じPara Codeロゴにするため（`ParaCodeWidgetsBundle.swift` の LogoBadge が `UIImage(named:)` で読む。復元手順は同ディレクトリ README 参照）。PNGのためマーカーを埋め込めない |
