@@ -450,7 +450,6 @@
 	padding: 2px 12px 8px 12px;
 	font-size: 12.5px;
 	line-height: 1.65;
-	cursor: text;
 }
 
 .paradis-space-notes.collapsed .paradis-space-notes-body,
@@ -485,7 +484,7 @@
 
 /* allow-any-unicode-next-line */
 /* チェックリスト行。小さなチェックボックスだけを的にすると押しづらいので、行のどこを
- * クリックしてもトグルする (本文クリックで編集モードへ入る挙動からは除外している)。 */
+ * クリックしてもトグルする。 */
 .paradis-space-notes-task {
 	display: flex;
 	align-items: flex-start;
@@ -498,6 +497,37 @@
 
 .paradis-space-notes-task:hover {
 	background-color: var(--vscode-list-hoverBackground);
+}
+
+/* allow-any-unicode-next-line */
+/* 右クリックメニューを開いているあいだ、どの行に対する操作かを見せる */
+.paradis-space-notes-task.context-open {
+	background-color: var(--vscode-list-hoverBackground);
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* allow-any-unicode-next-line */
+/* 「この項目を編集」で開く1行入力。行の見た目のままテキストだけ差し替わるようにする */
+.paradis-space-notes-task.editing {
+	background-color: var(--vscode-list-hoverBackground);
+	cursor: default;
+}
+
+.paradis-space-notes-task-input {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: none;
+	outline: none;
+	resize: none;
+	overflow: hidden;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: inherit;
+	line-height: inherit;
 }
 
 /* allow-any-unicode-next-line */

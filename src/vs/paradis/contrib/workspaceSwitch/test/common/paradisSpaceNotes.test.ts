@@ -5,7 +5,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisContinueSpaceNoteList, paradisNormalizeSpaceNoteText, paradisParseSpaceNote, paradisParseSpaceNotes, paradisSerializeSpaceNotes, paradisSpaceNoteSummary, paradisToggleSpaceNoteListMarkers, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
+import { PARADIS_SPACE_NOTE_MAX_LENGTH, paradisAppendSpaceNoteTask, paradisContinueSpaceNoteList, paradisNormalizeSpaceNoteText, paradisParseSpaceNote, paradisParseSpaceNotes, paradisRemoveSpaceNoteTask, paradisReplaceSpaceNoteTaskText, paradisSerializeSpaceNotes, paradisSpaceNoteSummary, paradisToggleSpaceNoteListMarkers, paradisToggleSpaceNoteTask } from '../../common/paradisSpaceNotes.js';
 
 suite('ParadisSpaceNotes', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -91,6 +91,33 @@ suite('ParadisSpaceNotes', () => {
 		assert.strictEqual(paradisAppendSpaceNoteTask('既存', 'タイトル\n補足\n\n二つ目の補足'), '既存\n- [ ] タイトル\n  補足\n  二つ目の補足');
 		assert.deepStrictEqual(paradisSpaceNoteSummary(paradisAppendSpaceNoteTask('', 'a\nb')!), { open: 1, done: 0 });
 		assert.strictEqual(paradisAppendSpaceNoteTask('既存', '   '), undefined);
+	});
+
+	test('removes a checklist together with its continuation lines', () => {
+		const note = '## いまここ\n- [ ] タイトル\n  補足\n- [x] つぎ\nただの行';
+		assert.strictEqual(paradisRemoveSpaceNoteTask(note, 1), '## いまここ\n- [x] つぎ\nただの行');
+		assert.strictEqual(paradisRemoveSpaceNoteTask(note, 3), '## いまここ\n- [ ] タイトル\n  補足\nただの行');
+		// ネストしたチェックリストと見出しは、それ自体が独立した行なので巻き込まない
+		assert.strictEqual(paradisRemoveSpaceNoteTask('- [ ] 親\n  - [ ] 子', 0), '  - [ ] 子');
+		// チェックリスト以外の行と範囲外は対象にしない
+		assert.strictEqual(paradisRemoveSpaceNoteTask(note, 0), undefined);
+		assert.strictEqual(paradisRemoveSpaceNoteTask(note, 4), undefined);
+		assert.strictEqual(paradisRemoveSpaceNoteTask(note, 9), undefined);
+		// 最後の1件を消すと空になる (呼び出し側でエントリごと片付ける)
+		assert.strictEqual(paradisRemoveSpaceNoteTask('- [ ] さいご', 0), '');
+	});
+
+	test('replaces only the label of a checklist line', () => {
+		const note = '  * [x] まえの文言\n  補足\n- [ ] つぎ';
+		// インデント・マーカー・チェック状態・継続行はそのまま残す
+		assert.strictEqual(paradisReplaceSpaceNoteTaskText(note, 0, 'あとの文言'), '  * [x] あとの文言\n  補足\n- [ ] つぎ');
+		// 貼り付けなどで入った改行は行を増やさないように空白へ潰す
+		assert.strictEqual(paradisReplaceSpaceNoteTaskText(note, 2, ' 前後の空白\nと改行 '), '  * [x] まえの文言\n  補足\n- [ ] 前後の空白 と改行');
+		// 空・変化なし・チェックリスト以外・範囲外は書き込ませない
+		assert.strictEqual(paradisReplaceSpaceNoteTaskText(note, 0, '   '), undefined);
+		assert.strictEqual(paradisReplaceSpaceNoteTaskText(note, 0, 'まえの文言'), undefined);
+		assert.strictEqual(paradisReplaceSpaceNoteTaskText(note, 1, 'なにか'), undefined);
+		assert.strictEqual(paradisReplaceSpaceNoteTaskText(note, 9, 'なにか'), undefined);
 	});
 
 	test('normalizes oversized text', () => {

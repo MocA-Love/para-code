@@ -110,6 +110,62 @@ export function paradisToggleSpaceNoteTask(text: string, lineIndex: number): str
 	return lines.join('\n');
 }
 
+/**
+ * 直前のチェックリスト行にぶら下がる継続行 (Shift+Enter で足した2行目以降) か。
+ * ネストしたチェックリストと見出しは、それ自体が独立した行なので継続行に含めない。
+ */
+function isSpaceNoteContinuationLine(line: string): boolean {
+	return /^\s+\S/.test(line) && !TASK_PATTERN.test(line) && !HEADING_PATTERN.test(line);
+}
+
+/**
+ * 指定行のチェックリストを削除した本文を返す。ぶら下がる継続行も一緒に消す
+ * (残すと、どのやることの説明だったのか分からない行だけが浮いてしまう)。
+ * 対象行がチェックリストでなければ undefined を返す。
+ */
+export function paradisRemoveSpaceNoteTask(text: string, lineIndex: number): string | undefined {
+	const lines = text.split('\n');
+	const line = lines[lineIndex];
+	if (line === undefined || !TASK_PATTERN.test(line)) {
+		return undefined;
+	}
+	let end = lineIndex + 1;
+	while (end < lines.length && isSpaceNoteContinuationLine(lines[end])) {
+		end++;
+	}
+	lines.splice(lineIndex, end - lineIndex);
+	return lines.join('\n');
+}
+
+/**
+ * 指定行のチェックリストの文言だけを差し替えた本文を返す。チェック状態・インデント・
+ * マーカー (`-` / `*`) と、ぶら下がる継続行はそのまま残す。改行は行が増えないように
+ * 空白へ潰す。中身が空、または変化しない場合は undefined を返す。
+ */
+export function paradisReplaceSpaceNoteTaskText(text: string, lineIndex: number, taskText: string): string | undefined {
+	const lines = text.split('\n');
+	const line = lines[lineIndex];
+	if (line === undefined) {
+		return undefined;
+	}
+	const task = TASK_PATTERN.exec(line);
+	if (!task) {
+		return undefined;
+	}
+	const normalized = taskText.replace(/[\r\n]+/g, ' ').trim();
+	if (normalized.length === 0) {
+		return undefined;
+	}
+	const indent = /^\s*/.exec(line)?.[0] ?? '';
+	const marker = line.charAt(indent.length);
+	const replaced = `${indent}${marker} [${task[1].toLowerCase() === 'x' ? 'x' : ' '}] ${normalized}`;
+	if (replaced === line) {
+		return undefined;
+	}
+	lines[lineIndex] = replaced;
+	return lines.join('\n');
+}
+
 /** 継続行 (Shift+Enter で足した2行目以降) のインデント。 */
 const CONTINUATION_INDENT = '  ';
 
@@ -273,6 +329,12 @@ export interface IParadisSpaceNotesService {
 
 	/** 指定行のチェックボックスを反転する。対象行がチェックリストでなければ何もしない。 */
 	toggleTask(stateKey: string, lineIndex: number): void;
+
+	/** 指定行のチェックリストを継続行ごと削除する。対象行がチェックリストでなければ何もしない。 */
+	removeTask(stateKey: string, lineIndex: number): void;
+
+	/** 指定行のチェックリストの文言だけを差し替える。チェック状態と継続行は保つ。 */
+	updateTaskText(stateKey: string, lineIndex: number, taskText: string): void;
 
 	/** スペースが失われた (worktree 削除など) ときにメモも捨てる。 */
 	remove(stateKey: string): void;
