@@ -92,6 +92,8 @@ export interface IParadisWorktreeCreateFlowCallbacks {
 	onStage?(stage: ParadisWorktreeCreateStage): void;
 	/** ブランチ名（＝表示名）が確定した時点で呼ばれる。LLM生成の完了を待つため naming の後になる。 */
 	onNameResolved?(name: string, branch: string): void;
+	/** `git worktree add` が完了し、一覧に実体の行が出せるようになった時点で呼ばれる。 */
+	onWorktreeCreated?(stateKey: string): void;
 }
 
 export interface IParadisWorktreeCreateFlowOptions {
@@ -332,6 +334,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		uri: worktreeUri,
 	};
 	worktreeService.addKnownWorktree(createdWorktree);
+	callbacks?.onWorktreeCreated?.(targetStateKey);
 
 	try {
 		// 3. 新スペースへ切り替え（モバイル発・従来ダイアログ相当の挙動）。バックグラウンド作成

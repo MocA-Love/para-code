@@ -79,6 +79,8 @@ interface IQueueJob {
 	readonly request: IParadisHeadlessWorktreeRequest;
 	/** 確定した表示名（naming 完了まで undefined）。 */
 	name?: string;
+	/** `git worktree add` 完了後の状態キー（それ以前は undefined）。 */
+	stateKey?: string;
 	stage: QueueJobStage;
 	finished: boolean;
 }
@@ -161,6 +163,10 @@ export class ParadisWorktreeCreateQueueService extends Disposable implements IPa
 						job.name = name;
 						this._publish();
 					},
+					onWorktreeCreated: stateKey => {
+						job.stateKey = stateKey;
+						this._publish();
+					},
 				},
 			});
 			this._notifyFinished(result.name, result.worktree, result.warning);
@@ -216,6 +222,7 @@ export class ParadisWorktreeCreateQueueService extends Disposable implements IPa
 				id: job.id,
 				repositoryId: job.request.repositoryId,
 				...(name !== undefined ? { name } : {}),
+				...(job.stateKey !== undefined ? { stateKey: job.stateKey } : {}),
 				stageLabel: stageLabel(job.stage),
 			};
 		});

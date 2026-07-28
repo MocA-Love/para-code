@@ -109,6 +109,13 @@ export interface IParadisWorktreeService {
 	 * orderedUris は getWorktrees が返す worktree の uri.toString() の配列。
 	 */
 	setWorktreeOrder(repositoryId: string, orderedUris: readonly string[]): void;
+	/**
+	 * ピン留めされているか。stateKey はリポジトリ本体なら repositoryId、worktree なら
+	 * paradisWorktreeStateKey(uri)。ピン留めした worktree はリポジトリを折りたたんでも
+	 * Workspaces ビュー / モバイルのドロワーに表示され続ける。
+	 */
+	isPinned(stateKey: string): boolean;
+	setPinned(stateKey: string, pinned: boolean): void;
 }
 
 /**

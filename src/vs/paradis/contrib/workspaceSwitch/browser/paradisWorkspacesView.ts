@@ -65,12 +65,28 @@ const PR_STATUS_POLL_INTERVAL_MS = 300_000;
 
 export const PARADIS_WORKSPACES_VIEW_ID = 'workbench.view.paradisWorkspaces.repositories';
 
+/** listService がツリーの indent を決めるのと同じ設定キー (と、未設定時の既定値)。 */
+const TREE_INDENT_CONFIGURATION_KEY = 'workbench.tree.indent';
+const DEFAULT_TREE_INDENT = 8;
+
 /** バックグラウンド作成中のジョブを表す「作成中」プレースホルダ行。クリック・メニュー対象外。 */
 interface ICreatingSpaceElement {
 	readonly creatingJob: IParadisWorktreeCreateJobSnapshot;
 }
 
+/**
+ * 折りたたまれたリポジトリの下に残す、ピン留め済み worktree の控え行。
+ * ツリーの折りたたみは「子を全部隠す」動作なので、ピン留め行はリポジトリ行の直後に
+ * ルート要素として差し込む（子の実体は隠れたまま残るため、identity が衝突しないよう
+ * このフラグで別IDを振る）。インデントは CSS で子行に合わせる。
+ */
+type IPinnedKeepElement = IParadisWorktree & { readonly paradisPinnedKeep: true };
+
 type WorkspaceTreeElement = IParadisWorkspaceRepository | IParadisWorktree | ICreatingSpaceElement;
+
+function isPinnedKeep(element: WorkspaceTreeElement): element is IPinnedKeepElement {
+	return (element as IPinnedKeepElement).paradisPinnedKeep === true;
+}
 
 function isCreating(element: WorkspaceTreeElement): element is ICreatingSpaceElement {
 	return (element as ICreatingSpaceElement).creatingJob !== undefined;
@@ -167,6 +183,12 @@ interface IWorktreeTemplateData {
 	readonly diff: HTMLElement;
 	readonly diffAdded: HTMLElement;
 	readonly diffRemoved: HTMLElement;
+	/** ピン留めの留め外しボタン。未ピンは行のホバー時のみ、ピン済みは常に見える (CSS) */
+	readonly pin: HTMLElement;
+	readonly pinIcon: HTMLElement;
+	readonly pinHover: IManagedHover;
+	/** クリックリスナーが renderElement 後の最新の行を参照するためのホルダー */
+	readonly pinContext: { worktree?: IParadisWorktree };
 	readonly templateDisposables: DisposableStore;
 }
 
@@ -309,6 +331,12 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		private readonly getPrStatus: (worktree: IParadisWorktree) => IParadisPrStatus | undefined,
 		private readonly getNoteSummary: (worktree: IParadisWorktree) => IParadisSpaceNoteSummary,
 		private readonly getRepositoryColorHex: (repositoryId: string) => string | undefined,
+		/** バックグラウンド作成が進行中なら、その工程ラベル (ブランチ名の代わりに出す) */
+		private readonly getPendingStage: (worktree: IParadisWorktree) => string | undefined,
+		private readonly isPinned: (worktree: IParadisWorktree) => boolean,
+		private readonly togglePin: (worktree: IParadisWorktree) => void,
+		/** ツリーのインデント1段ぶんの幅 (控え行を子行の位置に揃えるのに使う) */
+		private readonly getTreeIndent: () => number,
 		private readonly openPrUrl: (url: string) => void,
 		private readonly hoverService: IHoverService,
 	) { }
@@ -348,21 +376,55 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		const diff = DOM.append(row, DOM.$('.paradis-worktree-diff'));
 		const diffAdded = DOM.append(diff, DOM.$('span.paradis-worktree-diff-added'));
 		const diffRemoved = DOM.append(diff, DOM.$('span.paradis-worktree-diff-removed'));
-		return { row, icon, name, branch, pr, prIcon, prNumber, prHover, prContext, note, noteCount, noteHover, diff, diffAdded, diffRemoved, templateDisposables };
+		// ピンの留め外し。PR チップと同じく、行のクリック (切り替え) へ届く前に止める
+		const pinContext: { worktree?: IParadisWorktree } = {};
+		const pin = DOM.append(row, DOM.$('.paradis-worktree-pin'));
+		const pinIcon = DOM.append(pin, DOM.$('.codicon'));
+		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
+			templateDisposables.add(DOM.addDisposableListener(pin, eventType, event => {
+				if (!pinContext.worktree) {
+					return;
+				}
+				DOM.EventHelper.stop(event, true);
+				if (eventType === DOM.EventType.CLICK) {
+					this.togglePin(pinContext.worktree);
+				}
+			}));
+		}
+		const pinHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pin, ''));
+		return { row, icon, name, branch, pr, prIcon, prNumber, prHover, prContext, note, noteCount, noteHover, diff, diffAdded, diffRemoved, pin, pinIcon, pinHover, pinContext, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
 		const worktree = node.element;
 		const active = this.isActive(worktree);
-		const status = worktree.missing ? undefined : this.getStatus(worktreeStateKeyFor(worktree));
+		// 作成直後で setup 等がまだ走っている間は、エージェント状態の有無に関わらず稼働中として見せる
+		const pendingStage = worktree.missing ? undefined : this.getPendingStage(worktree);
+		const status = worktree.missing ? undefined : pendingStage !== undefined ? 'working' : this.getStatus(worktreeStateKeyFor(worktree));
 		const fallback = worktree.missing ? Codicon.warning : active ? Codicon.check : worktree.isMainCheckout ? Codicon.repo : Codicon.gitBranch;
 		applyStatusIcon(templateData.icon, status, fallback);
 		templateData.name.textContent = worktree.name;
 		templateData.branch.textContent = worktree.missing
 			? localize('paradis.workspaceSwitch.worktreeMissing', "missing")
-			: worktree.branch ?? '';
+			: pendingStage ?? worktree.branch ?? '';
+		templateData.branch.classList.toggle('paradis-creating-stage', pendingStage !== undefined);
 		templateData.row.classList.toggle('active', active);
 		templateData.row.classList.toggle('missing', !!worktree.missing);
+		// 折りたたまれたリポジトリの下に残している控え行 (updateTree が差し込むルート要素)。
+		// ルート要素はツリーが字下げしないため、子行と同じ位置に見えるよう1段ぶん自分で寄せる
+		const keep = isPinnedKeep(worktree);
+		templateData.row.classList.toggle('paradis-pinned-keep', keep);
+		templateData.row.style.paddingLeft = keep ? `${this.getTreeIndent()}px` : '';
+
+		const pinned = this.isPinned(worktree);
+		templateData.pinContext.worktree = worktree;
+		templateData.pin.classList.toggle('pinned', pinned);
+		templateData.pinIcon.className = ThemeIcon.asClassName(pinned ? Codicon.pinned : Codicon.pin);
+		templateData.pinHover.update(pinned
+			// allow-any-unicode-next-line
+			? localize('paradis.workspaceSwitch.unpinTooltip', "ピン留めを解除")
+			// allow-any-unicode-next-line
+			: localize('paradis.workspaceSwitch.pinTooltip', "ピン留めする（リポジトリを折りたたんでも表示したままにする）"));
 
 		// リポジトリ見出し行と同じ色を worktree 行にも継続させる (RepositoryRenderer.renderElement 参照)。
 		// 別要素の .monaco-tl-row なのでカスタムプロパティは継承されず、ここで明示的に設定する必要がある
@@ -431,7 +493,8 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 	) { }
 
 	getDragURI(element: WorkspaceTreeElement): string | null {
-		if (isCreating(element)) {
+		// 折りたたみ中の控え行は実体の写しなので、並び替えの対象にしない
+		if (isCreating(element) || isPinnedKeep(element)) {
 			return null;
 		}
 		if (isWorktree(element)) {
@@ -505,6 +568,9 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 	 * main checkout / 作成中行を除く実 worktree のみ。リポジトリはリポジトリ行同士のみ。
 	 */
 	private isSameKindReorderTarget(dragged: IParadisWorkspaceRepository | IParadisWorktree, target: WorkspaceTreeElement): boolean {
+		if (isPinnedKeep(target)) {
+			return false;
+		}
 		if (isWorktree(dragged)) {
 			return isWorktree(target) && !target.isMainCheckout && target.repositoryId === dragged.repositoryId;
 		}
@@ -526,6 +592,10 @@ export class ParadisWorkspacesView extends ViewPane {
 	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
 	private readonly _prStatusScheduler: RunOnceScheduler;
 	private readonly _collapsedRepositoryState: ParadisCollapsedRepositoryStateController;
+	/** 折りたたみ操作の最中にツリーを組み直さないための遅延実行 (onDidChangeCollapseState 参照) */
+	private readonly _updateTreeScheduler: RunOnceScheduler;
+	/** ツリーのインデント1段ぶんの幅 (workbench.tree.indent に追従する) */
+	private treeIndent = DEFAULT_TREE_INDENT;
 	/** ビュー下端に固定される「いま開いているスペースのメモ」欄 */
 	private notesPanel: ParadisSpaceNotesPanel | undefined;
 	/** メモ欄の高さが変わったときにツリーを再レイアウトするため、直近のレイアウト値を覚えておく */
@@ -559,6 +629,7 @@ export class ParadisWorkspacesView extends ViewPane {
 		this._diffStatsScheduler = this._register(new RunOnceScheduler(() => this.refreshDiffStats(), DIFF_STATS_POLL_INTERVAL_MS));
 		this._prStatusScheduler = this._register(new RunOnceScheduler(() => this.refreshPrStatuses(), PR_STATUS_POLL_INTERVAL_MS));
 		this._collapsedRepositoryState = this._register(new ParadisCollapsedRepositoryStateController(this.storageService, this.logService));
+		this._updateTreeScheduler = this._register(new RunOnceScheduler(() => this.updateTree(), 0));
 
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => { this.updateTree(); this.updateNotesPanelSpace(); this._diffStatsScheduler.schedule(0); this._prStatusScheduler.schedule(0); }));
 		this._register(this.workspaceSwitchService.onDidSwitchScope(() => { this.updateTree(); this.updateNotesPanelSpace(); }));
@@ -578,6 +649,15 @@ export class ParadisWorkspacesView extends ViewPane {
 		// ツリーとメモ欄を縦に積む (メモ欄は下端固定、ツリーが残りを占める)
 		container.classList.add('paradis-workspaces-pane-body');
 		const treeContainer = DOM.append(container, DOM.$('.paradis-workspaces-list'));
+		// ピン留めの控え行を子行と同じ位置に見せるため、ツリーと同じインデント幅を持っておく
+		// (listService が同じ設定値でツリーの indent を決めている)
+		this.updateTreeIndent();
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(TREE_INDENT_CONFIGURATION_KEY)) {
+				this.updateTreeIndent();
+				this.updateTree();
+			}
+		}));
 		const getStatus = (stateKey: string) => this.agentStatusStore.getScopeStatus(stateKey);
 		const repositoryRenderer = new RepositoryRenderer(
 			repository => this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', repository.id)
@@ -589,6 +669,10 @@ export class ParadisWorkspacesView extends ViewPane {
 			worktree => this._prStatuses.get(worktree.uri.fsPath),
 			worktree => this.spaceNotesService.summary(worktreeStateKeyFor(worktree)),
 			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color),
+			worktree => this.pendingStageFor(worktree),
+			worktree => this.worktreeService.isPinned(worktreeStateKeyFor(worktree)),
+			worktree => this.togglePin(worktree),
+			() => this.treeIndent,
 			url => { this.openerService.open(URI.parse(url)).catch(error => this.notificationService.error(error)); },
 			this.hoverService
 		);
@@ -606,7 +690,9 @@ export class ParadisWorkspacesView extends ViewPane {
 				identityProvider: {
 					getId: (element: WorkspaceTreeElement) => isCreating(element)
 						? `creating:${element.creatingJob.id}`
-						: isWorktree(element) ? `worktree:${worktreeStateKeyFor(element)}` : `repo:${element.id}`
+						// ピン留めの控え行は、折りたたまれた子として隠れている実体と同時に存在するため別IDにする
+						: isPinnedKeep(element) ? `pinnedKeep:${worktreeStateKeyFor(element)}`
+							: isWorktree(element) ? `worktree:${worktreeStateKeyFor(element)}` : `repo:${element.id}`
 				},
 				horizontalScrolling: false,
 				// ドラッグ&ドロップ並び替え (案B)。リポジトリ同士・同一リポジトリ内 worktree 同士のみ許可
@@ -649,7 +735,11 @@ export class ParadisWorkspacesView extends ViewPane {
 			if (!element || isCreating(element)) {
 				return;
 			}
-			this._collapsedRepositoryState.recordTreeCollapse(element, e.node.collapsed);
+			if (this._collapsedRepositoryState.recordTreeCollapse(element, e.node.collapsed)) {
+				// ピン留めの控え行は折りたたみ中だけ差し込むので、状態が変わったら組み直す。
+				// ツリー自身の折りたたみ処理の途中で setChildren を呼び返さないよう、次のタスクへ回す
+				this._updateTreeScheduler.schedule();
+			}
 		}));
 
 		this.notesPanel = this._register(this.instantiationService.createInstance(ParadisSpaceNotesPanel, container));
@@ -826,7 +916,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		const repositoryIds = new Set(this.workspaceSwitchService.repositories.map(repository => repository.id));
 		this._collapsedRepositoryState.removeStaleRepositories(repositoryIds);
 
-		const elements: IObjectTreeElement<WorkspaceTreeElement>[] = this.workspaceSwitchService.repositories.map(repository => {
+		const elements: IObjectTreeElement<WorkspaceTreeElement>[] = [];
+		for (const repository of this.workspaceSwitchService.repositories) {
 			const worktrees = this.worktreeService.getWorktrees(repository.id);
 			// リポジトリ行は純粋なグルーピング見出しにしたため、main checkout (リポジトリ本体) も
 			// worktree 行として先頭に混ぜ込む。これにより「今開いているのはどれか」の表示・切り替え・
@@ -838,22 +929,57 @@ export class ParadisWorkspacesView extends ViewPane {
 				uri: repository.uri,
 				isMainCheckout: true
 			};
-			// バックグラウンド作成中のジョブは「作成中」プレースホルダ行として末尾に混ぜ込む
+			// バックグラウンド作成中のジョブは「作成中」プレースホルダ行として末尾に混ぜ込む。
+			// `git worktree add` が済んだジョブは実体の行が既に一覧にあるため、同じ名前の行が
+			// 2つ並ばないようここでは出さず、工程は実体の行の2段目に出す (pendingStageFor)
 			const creatingJobs: ICreatingSpaceElement[] = this.createProgressStore.jobs
-				.filter(job => job.repositoryId === repository.id)
+				.filter(job => job.repositoryId === repository.id && job.stateKey === undefined)
 				.map(job => ({ creatingJob: job }));
 			const children: WorkspaceTreeElement[] = [mainCheckout, ...worktrees, ...creatingJobs];
-			return {
+			const collapsed = this._collapsedRepositoryState.isRepositoryCollapsed(repository.id);
+			elements.push({
 				element: repository,
 				children: children.map(worktree => ({ element: worktree })),
 				collapsible: true,
-				collapsed: this._collapsedRepositoryState.isRepositoryCollapsed(repository.id)
+				collapsed: collapsed
 					? ObjectTreeElementCollapseState.PreserveOrCollapsed
 					: ObjectTreeElementCollapseState.PreserveOrExpanded
-			};
-		});
+			});
+
+			// 折りたたみ中はピン留めした行だけをリポジトリ行の直後に残す。ツリーの折りたたみは
+			// 子を一律に隠すため、控えを兄弟 (ルート要素) として差し込む
+			if (collapsed) {
+				for (const worktree of [mainCheckout, ...worktrees]) {
+					if (this.worktreeService.isPinned(worktreeStateKeyFor(worktree))) {
+						const keep: IPinnedKeepElement = { ...worktree, paradisPinnedKeep: true };
+						elements.push({ element: keep });
+					}
+				}
+			}
+		}
 		this.tree.setChildren(null, elements);
 		this._onDidChangeViewWelcomeState.fire();
+	}
+
+	/**
+	 * その worktree でバックグラウンド作成の続き (setup・エージェント起動) がまだ走っていれば、
+	 * 現在の工程ラベルを返す。実体ができた後は専用の「作成中」行を出さず、この工程を
+	 * 実体の行の2段目 (ブランチ名の位置) に出す。
+	 */
+	private pendingStageFor(worktree: IParadisWorktree): string | undefined {
+		const stateKey = worktreeStateKeyFor(worktree);
+		return this.createProgressStore.jobs.find(job => job.stateKey === stateKey)?.stageLabel;
+	}
+
+	/** ツリーのインデント幅 (workbench.tree.indent) を控え行の字下げ用に控えておく。 */
+	private updateTreeIndent(): void {
+		const configured = this.configurationService.getValue(TREE_INDENT_CONFIGURATION_KEY);
+		this.treeIndent = typeof configured === 'number' ? configured : DEFAULT_TREE_INDENT;
+	}
+
+	private togglePin(worktree: IParadisWorktree): void {
+		const stateKey = worktreeStateKeyFor(worktree);
+		this.worktreeService.setPinned(stateKey, !this.worktreeService.isPinned(stateKey));
 	}
 
 	/** リポジトリ一覧内での対象リポジトリの位置。存在しなければ -1。 */
@@ -974,7 +1100,22 @@ export class ParadisWorkspacesView extends ViewPane {
 	}
 
 	private buildWorktreeContextMenuActions(worktree: IParadisWorktree): IAction[] {
+		const pinned = this.worktreeService.isPinned(worktreeStateKeyFor(worktree));
 		const actions: IAction[] = [
+			new Action(
+				'paradis.workspaceSwitch.worktree.togglePin',
+				pinned
+					// allow-any-unicode-next-line
+					? localize('paradis.workspaceSwitch.unpinContext', "ピン留めを解除")
+					// allow-any-unicode-next-line
+					: localize('paradis.workspaceSwitch.pinContext', "ピン留め"),
+				undefined,
+				// 実体が消えた (missing) 行でもピンは外せるようにする。外せないと、リストから
+				// 消すまでピン留めが残り続けてしまう
+				true,
+				() => this.togglePin(worktree)
+			),
+			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.worktree.reveal',
 				revealLabel(),
@@ -1013,23 +1154,30 @@ export class ParadisWorkspacesView extends ViewPane {
 				undefined,
 				!worktree.missing,
 				() => this.promptRenameWorktree(worktree)
-			),
-			new Separator(),
-			new Action(
-				'paradis.workspaceSwitch.worktree.moveUp',
-				localize('paradis.workspaceSwitch.moveUp', "Move Up"),
-				undefined,
-				index > 0,
-				() => this.moveWorktree(worktree, -1)
-			),
-			new Action(
-				'paradis.workspaceSwitch.worktree.moveDown',
-				localize('paradis.workspaceSwitch.moveDown', "Move Down"),
-				undefined,
-				index >= 0 && index < siblings.length - 1,
-				() => this.moveWorktree(worktree, 1)
 			)
 		);
+
+		// 折りたたみ中の控え行から並び替えても、動いた結果はリポジトリを開くまで見えない。
+		// 何も起きていないように見えるので、控え行では並び替えを出さない
+		if (!isPinnedKeep(worktree)) {
+			actions.push(
+				new Separator(),
+				new Action(
+					'paradis.workspaceSwitch.worktree.moveUp',
+					localize('paradis.workspaceSwitch.moveUp', "Move Up"),
+					undefined,
+					index > 0,
+					() => this.moveWorktree(worktree, -1)
+				),
+				new Action(
+					'paradis.workspaceSwitch.worktree.moveDown',
+					localize('paradis.workspaceSwitch.moveDown', "Move Down"),
+					undefined,
+					index >= 0 && index < siblings.length - 1,
+					() => this.moveWorktree(worktree, 1)
+				)
+			);
+		}
 
 		if (worktree.missing) {
 			actions.push(

@@ -5,7 +5,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisApplyDesiredOrder, paradisLoadCollapsedRepositoryIds, paradisParseCollapsedRepositoryIds, paradisRemoveStaleCollapsedRepositoryIds, paradisReorderByDrop, paradisSerializeCollapsedRepositoryIds, paradisSetRepositoryCollapsed, paradisSwapAdjacent } from '../../common/paradisWorkspaceTreeState.js';
+import { paradisApplyDesiredOrder, paradisLoadCollapsedRepositoryIds, paradisParseCollapsedRepositoryIds, paradisParsePinnedWorktreeKeys, paradisRemoveStaleIds, paradisReorderByDrop, paradisSerializeCollapsedRepositoryIds, paradisSerializePinnedWorktreeKeys, paradisSetRepositoryCollapsed, paradisSwapAdjacent } from '../../common/paradisWorkspaceTreeState.js';
 
 suite('ParadisWorkspaceTreeState', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -66,9 +66,28 @@ suite('ParadisWorkspaceTreeState', () => {
 
 	test('removes only collapsed ids for deleted repositories', () => {
 		const ids = new Set(['repo-a', 'repo-deleted']);
-		assert.strictEqual(paradisRemoveStaleCollapsedRepositoryIds(ids, new Set(['repo-a', 'repo-b'])), true);
+		assert.strictEqual(paradisRemoveStaleIds(ids, new Set(['repo-a', 'repo-b'])), true);
 		assert.deepStrictEqual(ids, new Set(['repo-a']));
-		assert.strictEqual(paradisRemoveStaleCollapsedRepositoryIds(ids, new Set(['repo-a'])), false);
+		assert.strictEqual(paradisRemoveStaleIds(ids, new Set(['repo-a'])), false);
+	});
+
+	test('parses pinned worktree keys and keeps long state keys', () => {
+		const worktreeKey = `worktree:file://${'/deep-directory'.repeat(60)}`;
+		assert.deepStrictEqual(paradisParsePinnedWorktreeKeys(undefined), new Set());
+		assert.deepStrictEqual(
+			paradisParsePinnedWorktreeKeys(JSON.stringify(['repo-a', worktreeKey, 'repo-a'])),
+			new Set(['repo-a', worktreeKey]));
+	});
+
+	test('treats malformed or oversized pinned state as empty', () => {
+		for (const raw of ['{', '[1]', '[""]', JSON.stringify([`x${'y'.repeat(2048)}`]), JSON.stringify(Array.from({ length: 513 }, (_, index) => `worktree:${index}`))]) {
+			assert.deepStrictEqual(paradisParsePinnedWorktreeKeys(raw), new Set(), raw);
+		}
+	});
+
+	test('serializes pinned worktree keys deterministically and refuses what its reader rejects', () => {
+		assert.strictEqual(paradisSerializePinnedWorktreeKeys(new Set(['worktree:b', 'repo-a'])), '["repo-a","worktree:b"]');
+		assert.strictEqual(paradisSerializePinnedWorktreeKeys(new Set([`x${'y'.repeat(2048)}`])), undefined);
 	});
 
 	test('swaps adjacent items and refuses out-of-range moves', () => {
