@@ -31,6 +31,7 @@ import {
 	paradisPresetCommandSignature,
 	ParadisPresetLayout,
 	ParadisPresetSource,
+	PARADIS_PROJECT_ROOT_ENV_VAR,
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
 
@@ -84,6 +85,8 @@ const STR_PINNED = localize('paradis.presetEditor.pinned', "ターミナルタ�
 const STR_PINNED_LABEL = localize('paradis.presetEditor.pinnedLabel', "ボタンにアイコンに加えて名前も表示する");
 // allow-any-unicode-next-line
 const STR_AUTORUN = localize('paradis.presetEditor.autoRun', "「新しいスペース（worktree）を作成」直後に自動実行する");
+// allow-any-unicode-next-line
+const STR_AUTORUN_HINT = localize('paradis.presetEditor.autoRunHint', "実行時は環境変数 {0} に親リポジトリの絶対パスが渡されます", PARADIS_PROJECT_ROOT_ENV_VAR);
 // allow-any-unicode-next-line
 const STR_TARGET = localize('paradis.presetEditor.target', "保存先");
 // allow-any-unicode-next-line
@@ -443,6 +446,7 @@ class ParadisPresetEditorDialog extends Disposable {
 		updatePinnedLabelVisibility();
 		this._viewStore.add(dom.addDisposableListener(pinnedInput, 'change', updatePinnedLabelVisibility));
 		const autoRunInput = checkbox(STR_AUTORUN, editing?.autoRun === true);
+		dom.append(form, $('.ppe-check-hint')).textContent = STR_AUTORUN_HINT;
 
 		// 保存先（既存編集時は変更不可）
 		const folder = this.contextService.getWorkspace().folders[0];

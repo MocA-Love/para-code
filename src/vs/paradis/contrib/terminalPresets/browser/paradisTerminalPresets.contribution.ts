@@ -46,6 +46,7 @@ import {
 	PARADIS_PRESET_LAUNCH_MODES,
 	PARADIS_PRESET_LAYOUTS,
 	PARADIS_PRESETS_SETTING,
+	PARADIS_PROJECT_ROOT_ENV_VAR,
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
 import { ParadisPresetService } from './paradisPresetService.js';
@@ -120,7 +121,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 					},
 					pinned: { type: 'boolean', default: true, description: localize('paradis.terminal.presets.pinned', "ターミナルタブバー右側にボタンとして表示する。") },
 					pinnedLabel: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.pinnedLabel', "ピン留めボタンにアイコンに加えて名前も表示する。") },
-					autoRun: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.autoRun', "「新しいスペース（worktree）を作成」直後に自動実行する。") },
+					autoRun: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.autoRun', "「新しいスペース（worktree）を作成」直後に自動実行する。実行時は環境変数 {0} に親リポジトリの絶対パスが渡される。", PARADIS_PROJECT_ROOT_ENV_VAR) },
 					appliesTo: {
 						type: 'array',
 						items: { type: 'string' },
@@ -365,6 +366,10 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 				// 切り替え元の park 済み端末が activeInstance に残っていても再利用しない。
 				forceNewTerminal: true,
 				stateKey,
+				// setup スクリプトと同じ環境変数を渡す（同じ .paracode.json に書いたコマンドでも、
+				// setupScript か autoRun プリセットかで親リポジトリのパスを取れたり取れなかったり
+				// する食い違いをなくす）。
+				env: { [PARADIS_PROJECT_ROOT_ENV_VAR]: repositoryPath },
 				onDidStart: () => {
 					ranAny = true;
 				},

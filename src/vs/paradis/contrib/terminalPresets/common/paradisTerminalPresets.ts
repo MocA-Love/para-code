@@ -15,10 +15,18 @@
 import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
-import { GeneralShellType, TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
+import { GeneralShellType, ITerminalEnvironment, TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
 
 /** ワークスペースフォルダ直下で認識する設定ファイル名。 */
 export const PARADIS_WORKSPACE_PRESET_FILE = '.paracode.json';
+
+/**
+ * 親リポジトリの絶対パスを渡す環境変数名。
+ * .paracode.json に書ける2種類のコマンド（setup/teardown スクリプトと、worktree 作成直後に
+ * 自動実行されるプリセット）の両方へ同じ名前で渡す。片方でしか使えないと「同じファイルに
+ * 書いたのに動かない」という混乱を生むため、置き場所によらず同じ変数名で解決できるようにする。
+ */
+export const PARADIS_PROJECT_ROOT_ENV_VAR = 'PARACODE_PROJECT_ROOT_PATH';
 
 /** 設定キー（ユーザーレベルのプリセット定義）。 */
 export const PARADIS_PRESETS_SETTING = 'paradis.terminal.presets';
@@ -107,6 +115,15 @@ export interface IParadisRunPresetOptions {
 	 * 誤った (現在アクティブな) スコープへ紐付いてしまう競合を防ぐ。
 	 */
 	readonly stateKey?: string;
+	/**
+	 * 新規作成するターミナルへ渡す環境変数。既存の環境（ウィンドウの環境と
+	 * terminal.integrated.env.* 設定）へマージされる（strictEnv を立てないため）。
+	 * ただし既定プロファイル自身が同じキーを持つ場合はプロファイル側が優先される。
+	 * 値に null を入れるとその変数を削除できる。
+	 * 既存ターミナルを再利用する経路（layout: current かつ forceNewTerminal 未指定）では、
+	 * 起動済みプロセスの環境を変更できないため反映されない。
+	 */
+	readonly env?: ITerminalEnvironment;
 	/** 最初のターミナルまたはコマンドを開始した時点で呼び出す。 */
 	readonly onDidStart?: () => void;
 }

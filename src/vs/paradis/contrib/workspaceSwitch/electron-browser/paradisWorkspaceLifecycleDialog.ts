@@ -22,14 +22,14 @@ import { ServicesAccessor } from '../../../../platform/instantiation/common/inst
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IParadisWorkspaceRepository } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisWorkspaceLifecycleConfig, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES, paradisParseWorkspaceLifecycleConfig, paradisUpdateWorkspaceLifecycleConfig } from '../common/paradisWorkspaceLifecycle.js';
-import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { PARADIS_PROJECT_ROOT_ENV_VAR, PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
 
 const $ = dom.$;
 
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.workspaceLifecycle.title', "Setup / Teardown スクリプト");
 // allow-any-unicode-next-line
-const STR_DESCRIPTION = localize('paradis.workspaceLifecycle.description', "{0} に保存されます（コミットすればチーム全体・全 worktree に反映されます）。このリポジトリで worktree を作成・削除するたびに自動実行され、最長 {2} 分で打ち切られます。実行時は環境変数 {1} に親リポジトリの絶対パスが渡されます。保存時、コメント付き JSONC のコメントは保持されません。", PARADIS_WORKSPACE_PRESET_FILE, 'PARACODE_PROJECT_ROOT_PATH', PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES);
+const STR_DESCRIPTION = localize('paradis.workspaceLifecycle.description', "{0} に保存されます（コミットすればチーム全体・全 worktree に反映されます）。このリポジトリで worktree を作成・削除するたびに自動実行され、最長 {2} 分で打ち切られます。実行時は環境変数 {1} に親リポジトリの絶対パスが渡されます。保存時、コメント付き JSONC のコメントは保持されません。", PARADIS_WORKSPACE_PRESET_FILE, PARADIS_PROJECT_ROOT_ENV_VAR, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES);
 // allow-any-unicode-next-line
 const STR_SETUP_LABEL = localize('paradis.workspaceLifecycle.setupLabel', "Setup スクリプト（worktree 作成直後、対象 worktree を作業ディレクトリとして実行）");
 // allow-any-unicode-next-line

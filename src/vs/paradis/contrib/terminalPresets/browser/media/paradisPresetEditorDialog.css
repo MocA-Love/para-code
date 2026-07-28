@@ -279,6 +279,13 @@
 	cursor: pointer;
 }
 
+.paradis-preset-editor-dialog .ppe-check-hint {
+	margin-left: 20px;
+	margin-top: -4px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+}
+
 .paradis-preset-editor-dialog .ppe-target-row {
 	display: flex;
 	flex-direction: column;
