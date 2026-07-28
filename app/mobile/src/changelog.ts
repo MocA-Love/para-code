@@ -40,6 +40,23 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.2.1',
+		date: '2026-07-28',
+		items: [
+			{
+				icon: 'reader-outline',
+				title: 'メモと新しいエージェントの開き方を刷新',
+				body: '下からせり上がるシートをやめ、通知と同じく押したところから画面が広がる開き方になりました。どちらも全画面になり、項目が窮屈でなくなりました。',
+			},
+			{
+				icon: 'create-outline',
+				title: 'メモの保存とキャンセルを画面上部に',
+				body: 'キーボードのすぐ上にあって押し間違えていたボタンを、指の届く上端へ移しました。',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.2.0',
 		date: '2026-07-28',
 		headline: 'エージェントの作業が読めるように',

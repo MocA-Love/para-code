@@ -3,7 +3,7 @@
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Image, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
-import { useRouter } from 'expo-router';
+import { Link, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -11,7 +11,6 @@ import { isAgentWaiting } from '../store.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
-import { SpaceNoteSheet } from './spaceNoteSheet.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
@@ -174,8 +173,6 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	const [collapsedRepos, setCollapsedRepos] = useState<ReadonlySet<string>>(new Set());
 	// 「新しいスペース（worktree）を作成」シートの表示状態（見出し右の＋から開く）。
 	const [createSheetOpen, setCreateSheetOpen] = useState(false);
-	// メモシートの対象スペース（各行のメモボタンから開く）。
-	const [noteTarget, setNoteTarget] = useState<WsEntry | undefined>(undefined);
 
 	// 選択が閉じたグループ内へ移ったときだけ自動展開する（選択行が隠れたままにならないように）。
 	// 依存をeffective/selectedParentに絞ることで、選択中グループを手動で閉じ直す操作は妨げない。
@@ -260,16 +257,23 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 				{waiting > 0 ? (
 					<View style={styles.alertBadge}><Text style={styles.alertBadgeText}>{waiting > 1 ? `質問あり ${waiting}` : '質問あり'}</Text></View>
 				) : null}
-				{/* メモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）。未完了があれば件数を出す */}
-				<Pressable
-					style={[styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive]}
-					hitSlop={6}
-					onPress={() => { hapticSelection(); setNoteTarget(ws); }}
-					accessibilityLabel={(ws.note?.open ?? 0) > 0 ? `メモ（未完了 ${ws.note?.open} 件）` : 'メモ'}
-				>
-					<Ionicons name="checkbox-outline" size={12} color={(ws.note?.open ?? 0) > 0 ? colors.accent : colors.textDim} />
-					{(ws.note?.open ?? 0) > 0 ? <Text style={styles.noteBtnText}>{ws.note?.open}</Text> : null}
-				</Pressable>
+				{/* メモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）。未完了があれば件数を出す。
+				    ヘッダーの通知ベルと同じく Link.AppleZoom で開き、押したボタンから画面がせり出す
+				    ネイティブのズーム遷移にする（iOS 18未満は通常のpush遷移）。
+				    ドロワーはここで閉じない: ズームの起点になるこのボタンが消えると遷移が成立しないため */}
+				<Link href={{ pathname: '/space-note', params: { ws: ws.id } }} asChild>
+					<Link.AppleZoom>
+						<Pressable
+							style={[styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive]}
+							hitSlop={6}
+							onPress={() => hapticSelection()}
+							accessibilityLabel={(ws.note?.open ?? 0) > 0 ? `メモ（未完了 ${ws.note?.open} 件）` : 'メモ'}
+						>
+							<Ionicons name="checkbox-outline" size={12} color={(ws.note?.open ?? 0) > 0 ? colors.accent : colors.textDim} />
+							{(ws.note?.open ?? 0) > 0 ? <Text style={styles.noteBtnText}>{ws.note?.open}</Text> : null}
+						</Pressable>
+					</Link.AppleZoom>
+				</Link>
 				{running > 0 ? <View style={styles.runOrb} /> : null}
 				{!grouped && wsTerminals.length === 0 ? <Text style={styles.countText}>0</Text> : null}
 				{grouped ? (
@@ -427,14 +431,6 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 				</Pressable>
 			</View>
 			<WorktreeCreateSheet visible={createSheetOpen} onClose={() => setCreateSheetOpen(false)} />
-			<SpaceNoteSheet
-				visible={noteTarget !== undefined}
-				ws={noteTarget?.id}
-				name={(noteTarget?.name ?? '').replace(/^✦ /, '')}
-				branch={noteTarget?.branch}
-				color={noteTarget ? wsColor(noteTarget) : colors.accent}
-				onClose={() => setNoteTarget(undefined)}
-			/>
 		</View>
 	);
 }
