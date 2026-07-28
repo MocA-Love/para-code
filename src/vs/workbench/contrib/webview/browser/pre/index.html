@@ -242,6 +242,115 @@
 				`;
 		}
 
+		// PARA-PATCH: service worker control recovery + health signals. Fork-owned block, see CLAUDE.md.
+		// Field reports of intermittently blank rendered viewers (Markdown / HTML / image preview) all
+		// come down to this webview never being claimed by its service worker: the registration reaches
+		// `activated`, but `navigator.serviceWorker.controller` stays null, so the original unbounded
+		// `controllerchange` wait never resolves. Nothing throws, so neither the notification nor Sentry
+		// ever sees it. We poll for a missed event, then re-register once to force a fresh
+		// install -> activate -> clients.claim(), and finally fail loudly so the host can recover.
+		const PARA_SW_CONTROL_TIMEOUT_MS = 5000;
+		const PARA_SW_CONTROL_POLL_MS = 100;
+
+		/**
+		 * Reports a fork-owned health signal to the host. Never throws: the caller is on the critical
+		 * rendering path, and a missing signal must not turn into a blank webview by itself.
+		 *
+		 * @param {string} code
+		 * @param {Record<string, string | number | boolean>} [detail]
+		 */
+		function paraReportSignal(code, detail) {
+			try {
+				hostMessaging.postMessage('para-webview-signal', { code, detail });
+			} catch (e) {
+				console.error(`Could not report webview signal '${code}': ${e}`);
+			}
+		}
+
+		/**
+		 * Resolves once a worker *other than* `previousController` controls this client, or after
+		 * `timeoutMs`. Comparing against the worker that was in charge before matters: the caller also
+		 * waits when a new worker is installing, and upstream relies on that wait so a stale worker
+		 * cannot serve resources after a VS Code update. Merely checking "is there a controller"
+		 * would let that case through.
+		 *
+		 * @param {ServiceWorker | null} previousController
+		 * @param {number} timeoutMs
+		 * @return {Promise<boolean>} whether a new worker took control
+		 */
+		function paraWaitForController(previousController, timeoutMs) {
+			const hasNewController = () => {
+				const current = navigator.serviceWorker.controller;
+				return !!current && current !== previousController;
+			};
+			if (hasNewController()) {
+				return Promise.resolve(true);
+			}
+			return new Promise(resolve => {
+				let settled = false;
+				const finish = (/** @type {boolean} */ controlled) => {
+					if (settled) {
+						return;
+					}
+					settled = true;
+					clearInterval(poll);
+					clearTimeout(timer);
+					navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+					resolve(controlled);
+				};
+				const onControllerChange = () => {
+					if (hasNewController()) {
+						finish(true);
+					}
+				};
+				navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
+				// Polling covers the race the listener cannot: `controllerchange` may already have fired
+				// between `register()` resolving and this listener being attached.
+				const poll = setInterval(() => {
+					if (hasNewController()) {
+						finish(true);
+					}
+				}, PARA_SW_CONTROL_POLL_MS);
+				const timer = setTimeout(() => finish(hasNewController()), timeoutMs);
+			});
+		}
+
+		/**
+		 * Waits for the service worker to control this client, re-registering once if it does not.
+		 * Throws if control cannot be established, so the caller surfaces a fatal error instead of
+		 * leaving the webview blank forever.
+		 *
+		 * @param {ServiceWorkerRegistration} registration
+		 * @param {string} swPath
+		 */
+		async function paraWaitForServiceWorkerControl(registration, swPath) {
+			const startedAt = Date.now();
+			const previousController = navigator.serviceWorker.controller;
+
+			if (await paraWaitForController(previousController, PARA_SW_CONTROL_TIMEOUT_MS)) {
+				return;
+			}
+
+			// Re-registering runs install -> activate -> clients.claim() again, which fires
+			// `controllerchange` for this client. Each webview gets its own origin, so this does
+			// not disturb unrelated webviews.
+			paraReportSignal('sw-control-timeout', { duration_ms: Date.now() - startedAt });
+			let reregistered;
+			try {
+				await registration.unregister();
+				reregistered = await navigator.serviceWorker.register(swPath, { type: 'module', updateViaCache: 'none' });
+			} catch (error) {
+				throw new Error(`Service worker did not take control and could not be re-registered: ${error}`);
+			}
+
+			if (await paraWaitForController(previousController, PARA_SW_CONTROL_TIMEOUT_MS)) {
+				paraReportSignal('sw-control-recovered', { duration_ms: Date.now() - startedAt });
+				return;
+			}
+
+			throw new Error(`Service worker did not take control of this webview within ${PARA_SW_CONTROL_TIMEOUT_MS}ms after re-registering (active: ${!!reregistered.active}, installing: ${!!reregistered.installing}, waiting: ${!!reregistered.waiting}).`);
+		}
+
 		/** @type {Promise<void>} */
 		const workerReady = new Promise((resolve, reject) => {
 			if (disableServiceWorker) {
@@ -271,9 +380,12 @@
 						// First ever load
 						|| !navigator.serviceWorker.controller
 					) {
-						await new Promise(r => {
-							navigator.serviceWorker.addEventListener('controllerchange', r, { once: true });
-						});
+						// PARA-PATCH: bounded wait instead of an open-ended `controllerchange` listener.
+						// Under load the event can fire before this listener is attached (or `clients.claim()`
+						// never reaches this client), and the original wait then never settles: `await workerReady`
+						// below blocks forever, so the content is never written and the webview stays blank
+						// without throwing anything. See paraWaitForServiceWorkerControl.
+						await paraWaitForServiceWorkerControl(registration, swPath);
 					}
 
 					return resolve();
@@ -963,11 +1075,17 @@
 			let updateId = 0;
 			hostMessaging.onMessage('content', async (_event, /** @type {import('../webviewMessages').UpdateContentEvent} */ data) => {
 				perfMark('content/started');
+				// PARA-PATCH: tell the host that the content message arrived, so its blank-webview
+				// watchdog can start counting from here instead of from the send.
+				paraReportSignal('content-started', {});
 
 				const currentUpdateId = ++updateId;
 				try {
 					await workerReady;
 					perfMark('content/workerReady');
+					// PARA-PATCH: the service worker wait is over, so the host can stop allowing for it
+					// and go back to timing just the rendering itself.
+					paraReportSignal('content-worker-ready', {});
 				} catch (e) {
 					console.error(`Webview fatal error: ${e}`);
 					hostMessaging.postMessage('fatal-error', { message: e + '' });
@@ -1144,6 +1262,11 @@
 							contentWindow.postMessage(message.message, window.origin, message.transfer);
 						});
 						pendingMessages = [];
+
+						// PARA-PATCH: acknowledge only once the frame is actually promoted and visible.
+						// Writing into the pending frame is not enough — if the promotion above is skipped
+						// the webview stays blank, and the host must be able to tell that apart.
+						paraReportSignal('content-applied', {});
 					}
 				};
 
