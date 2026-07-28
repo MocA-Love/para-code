@@ -126,6 +126,10 @@ function RootLayout() {
 						<Stack.Screen name="agent-activity-detail" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* 通知一覧。ベルからのズーム遷移（Link.AppleZoom）で開くため独自ヘッダーを使う */}
 						<Stack.Screen name="notifications" options={{ headerShown: false }} />
+						{/* スペースのメモ。ドロワーのメモボタンから同じくズーム遷移で開く */}
+						<Stack.Screen name="space-note" options={{ headerShown: false }} />
+						{/* エージェント起動フォーム。ホームヘッダーの＋から同じくズーム遷移で開く */}
+						<Stack.Screen name="agent-launch" options={{ headerShown: false }} />
 						{/* 設定。ワークスペースドロワーの設定アイコンから開く */}
 						<Stack.Screen name="settings" options={{ headerShown: false, presentation: 'modal' }} />
 						{/* Ccusage ダッシュボード。設定画面の項目から開く（設定のmodalと区別するため水平pushにする） */}

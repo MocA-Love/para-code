@@ -6,7 +6,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
-import { AgentLaunchButton, AgentLaunchSheet } from '../../src/components/agentLaunchSheet.js';
+import { AgentLaunchButton, AgentLaunchToastView } from '../../src/components/agentLaunchButton.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
@@ -48,7 +48,6 @@ export default function HomeScreen() {
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
 	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 	// ヘッダー＋ボタンで開く「新しいエージェントを起動」シートの表示状態。
-	const [launchSheetOpen, setLaunchSheetOpen] = useState(false);
 
 	const tabBarSpacer = useTabBarSpacer();
 	// ホームは横スクロール要素を持たないため、フォーカス中は画面全域の右スワイプで
@@ -117,7 +116,7 @@ export default function HomeScreen() {
 				allWorkspaces={homeShowAllWorkspaces}
 				right={
 					<View style={styles.headerActions}>
-						<AgentLaunchButton onPress={() => setLaunchSheetOpen(true)} />
+						<AgentLaunchButton />
 						<NotificationsButton notifications={notifications} />
 					</View>
 				}
@@ -215,7 +214,7 @@ export default function HomeScreen() {
 				onClose={() => setStatusPopover(undefined)}
 				onAck={terminalKey => ackAgentStatus(terminalKey)}
 			/>
-			<AgentLaunchSheet visible={launchSheetOpen} onClose={() => setLaunchSheetOpen(false)} />
+			<AgentLaunchToastView />
 		</View></ConnectionGate>
 	);
 }
