@@ -55,3 +55,6 @@ dist
 .github/skills/.local/
 # PARA-PATCH: ignore local environment files used in Para Code development
 .env
+# PARA-PATCH: ignore local tooling artifacts (Serena project state, ad-hoc screenshots)
+.serena/
+screenshots/
