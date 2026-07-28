@@ -1,20 +1,30 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { ReactNode, useRef } from 'react';
+import { ReactNode, useCallback, useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import ReanimatedSwipeable, { type SwipeableMethods } from 'react-native-gesture-handler/ReanimatedSwipeable';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
-import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 
 /**
  * 一覧の行を横スワイプで片付けるための包み。ホームは左スワイプで「アーカイブ」、
  * アーカイブ画面は右スワイプで「戻す」に使う。
  *
- * ジェスチャ認識はRNGH（ネイティブ）で行う。ホームはフォーカス中に画面全域の
- * 右スワイプでワークスペースドロワーが開くため、**ホーム側では左スワイプだけ**を
- * 有効にして取り合いを避ける（direction で使う側を分ける）。
+ * RNGHの`ReanimatedSwipeable`は使わない。あれは動く幅をアクション面の`measure()`から
+ * 決めるため、この一覧では幅が取れずに**指を横に動かしても行が1pxも動かない**うえ、
+ * 横方向のジェスチャだけは掴んでしまい、ホームの全画面スワイプ（ドロワーを開く）まで
+ * 効かなくなった。ここでは幅を定数で持ち、自前のPanで動かす。
+ *
+ * **`direction`の向きにしか反応しない**のが要点。ホームは左スワイプだけを取るので、
+ * 右スワイプはそのままドロワーへ抜ける（アーカイブ画面はドロワーの対象外なので逆向き）。
  */
+
+/** アクション面の幅。指を離す判定もこの半分強で行う。 */
+const ACTION_WIDTH = 108;
+const TRIGGER_DISTANCE = 64;
+const TRIGGER_VELOCITY = 700;
+
 export function SwipeRow({ direction, label, icon, color, onTrigger, children }: {
 	/** 'left' は指を左へ引く（右側からアクションが出る）。'right' はその逆。 */
 	direction: 'left' | 'right';
@@ -25,44 +35,64 @@ export function SwipeRow({ direction, label, icon, color, onTrigger, children }:
 	onTrigger: () => void;
 	children: ReactNode;
 }) {
-	const ref = useRef<SwipeableMethods>(null);
-	const action = () => (
-		<View style={[styles.action, { backgroundColor: color }, direction === 'right' && styles.actionStart]}>
-			<Ionicons name={icon} size={17} color="#fff" />
-			<Text style={styles.actionText}>{label}</Text>
-		</View>
-	);
+	const dx = useSharedValue(0);
+	const toLeft = direction === 'left';
+	const trigger = useCallback(() => {
+		hapticImpact('medium');
+		onTrigger();
+	}, [onTrigger]);
+
+	const pan = useMemo(() => Gesture.Pan()
+		// この向きのときだけ掴む。逆向きは触らないので、ドロワーや縦スクロールを妨げない。
+		.activeOffsetX(toLeft ? -14 : 14)
+		.failOffsetY([-12, 12])
+		.onUpdate(event => {
+			const limit = ACTION_WIDTH * 1.25;
+			dx.value = toLeft
+				? Math.min(0, Math.max(event.translationX, -limit))
+				: Math.max(0, Math.min(event.translationX, limit));
+		})
+		.onEnd(event => {
+			const passed = toLeft
+				? event.translationX < -TRIGGER_DISTANCE || event.velocityX < -TRIGGER_VELOCITY
+				: event.translationX > TRIGGER_DISTANCE || event.velocityX > TRIGGER_VELOCITY;
+			// 発動しても指を離した位置で止めない。片付いた行はそのまま一覧から消えるので、
+			// 残った場合（消えなかった場合）だけ元の位置へ戻る形になる。
+			dx.value = withSpring(0, { damping: 22, stiffness: 260 });
+			if (passed) {
+				runOnJS(trigger)();
+			}
+		}), [dx, toLeft, trigger]);
+
+	const rowStyle = useAnimatedStyle(() => ({ transform: [{ translateX: dx.value }] }));
+	// 引き始めてすぐに面が見え、離すと一緒に消える。
+	const actionStyle = useAnimatedStyle(() => ({ opacity: Math.min(1, Math.abs(dx.value) / 28) }));
+
 	return (
-		<ReanimatedSwipeable
-			ref={ref}
-			friction={1.6}
-			// 行の高さぶんも引かないと発動しないと重いので、3分の1ほどで開く。
-			rightThreshold={56}
-			leftThreshold={56}
-			overshootRight={false}
-			overshootLeft={false}
-			enableTrackpadTwoFingerGesture
-			{...(direction === 'left' ? { renderRightActions: action } : { renderLeftActions: action })}
-			onSwipeableOpen={() => {
-				hapticImpact('medium');
-				// 閉じてから実行する。実行で行が消える場合、開いたままの内部状態が
-				// 次に同じ位置へ来た行へ引き継がれてしまう。
-				ref.current?.close();
-				onTrigger();
-			}}
-		>
-			{children}
-		</ReanimatedSwipeable>
+		<View style={styles.wrap}>
+			<Animated.View
+				style={[styles.action, toLeft ? styles.actionRight : styles.actionLeft, { backgroundColor: color }, actionStyle]}
+				pointerEvents="none"
+			>
+				<Ionicons name={icon} size={17} color="#fff" />
+				<Text style={styles.actionText}>{label}</Text>
+			</Animated.View>
+			<GestureDetector gesture={pan}>
+				<Animated.View style={rowStyle}>{children}</Animated.View>
+			</GestureDetector>
+		</View>
 	);
 }
 
 const styles = StyleSheet.create({
-	// 行（agentRowStyles.container）と同じ角丸・同じ下マージンにする。揃えないと
-	// 行の下の隙間にもアクション面が残り、帯が1本ぶん長く見える。
+	wrap: { position: 'relative' },
+	// 行（agentRowStyles.container）の下マージン8ぶんを避け、行と同じ高さ・角丸にする。
 	action: {
-		flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end',
-		gap: 7, paddingHorizontal: 20, borderRadius: 14, marginBottom: 8,
+		position: 'absolute', top: 0, bottom: 8, width: ACTION_WIDTH,
+		flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7,
+		borderRadius: 14,
 	},
-	actionStart: { justifyContent: 'flex-start' },
+	actionRight: { right: 0 },
+	actionLeft: { left: 0 },
 	actionText: { color: '#fff', fontSize: 12, fontWeight: '700' },
 });

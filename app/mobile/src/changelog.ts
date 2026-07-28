@@ -40,6 +40,18 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.2.2',
+		date: '2026-07-28',
+		items: [
+			{
+				icon: 'swap-horizontal-outline',
+				title: 'ホーム一覧の左スワイプが効くようになりました',
+				body: 'アーカイブしようと横に引いても行が動かず、ワークスペースを開く右スワイプまで効かなくなっていました。',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.2.1',
 		date: '2026-07-28',
 		items: [
