@@ -61,6 +61,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'paper-plane-outline',
+				title: '作業中に送ったメッセージが「送信予定」として見えるように',
+				body: 'エージェントが手を空けるまで会話に現れず、送れたのか分からなくなっていました。実行中の表示に件数が出て、タップすると読まれる順に確認できます。',
+				tone: 'green',
+			},
+			{
 				icon: 'pin',
 				title: 'よく使うスペースをドロワーに残せるように',
 				body: 'PCでピン留めしたスペースは、リポジトリを折りたたんでも一覧に残ります。ピンの印が付いた行がそれです。',
