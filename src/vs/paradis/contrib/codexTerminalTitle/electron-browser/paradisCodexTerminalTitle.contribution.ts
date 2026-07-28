@@ -130,7 +130,9 @@ function tokenizeShellCommand(command: string): string[] | undefined {
 
 function classifyCodexTuiCommand(command: string): 'start' | 'resume' | undefined {
 	const tokens = tokenizeShellCommand(command);
-	const executableName = tokens?.[0].split(/[\\/]/).pop();
+	// Tokenizing an empty command line yields an empty array, which the buffer produces whenever a
+	// command executes before its line has been recovered.
+	const executableName = tokens?.[0]?.split(/[\\/]/).pop();
 	if (!tokens?.length || !executableName || !/^codex(?:\.exe|\.cmd)?$/i.test(executableName)) {
 		return undefined;
 	}
@@ -159,6 +161,50 @@ function classifyCodexTuiCommand(command: string): 'start' | 'resume' | undefine
 /** Returns whether a trusted shell command starts the supported interactive Codex TUI. */
 export function isCodexTuiCommand(command: string): boolean {
 	return classifyCodexTuiCommand(command) !== undefined;
+}
+
+/** The properties of an executed command that decide whether it can be tracked. */
+export interface ICodexTrackableCommand {
+	readonly command: string;
+	readonly commandLineConfidence: 'low' | 'medium' | 'high';
+	readonly isTrusted: boolean;
+	readonly wasReplayed?: boolean;
+	readonly cwd?: string;
+}
+
+/** How a tracked command started Codex, alongside the directory the lookup is scoped to. */
+export interface ICodexCommandInvocation {
+	readonly invocation: 'start' | 'resume';
+	readonly cwd: string;
+}
+
+/**
+ * Returns how a just-executed command invoked the Codex TUI, or `undefined` when it cannot be
+ * tracked.
+ *
+ * Only `isTrusted` means the shell itself reported this command line under the shell integration
+ * nonce; `'high'` confidence alone is set for any `OSC 633;E` and so is spoofable. Every other
+ * command line was recovered from the screen buffer, which is all a prompt that suppresses VS
+ * Code's shell integration (powerlevel10k unsets the flag that enables it) can ever offer.
+ * `'medium'` at least requires prompt markers, a single line and a prompt that is not at column
+ * zero, and whatever it recovers still has to survive `classifyCodexTuiCommand`, so it is accepted
+ * rather than losing the feature entirely on those prompts. Only `'low'`, a bare guess, is refused.
+ *
+ * A recovered line is still reported as `'start'` even when it reads like a resume, because the
+ * buffer includes autosuggestion ghost text: typing `codex` under a `codex resume --last`
+ * suggestion recovers the whole line. `'resume'` waives the cwd check that keeps another
+ * directory's thread off this tab, so it is granted only to a line the shell vouched for.
+ */
+export function classifyTrackableCodexCommand(command: ICodexTrackableCommand): ICodexCommandInvocation | undefined {
+	if (command.wasReplayed || command.commandLineConfidence === 'low' || !command.cwd || !isAbsolute(command.cwd)) {
+		return undefined;
+	}
+	const invocation = classifyCodexTuiCommand(command.command);
+	if (!invocation) {
+		return undefined;
+	}
+	const vouchedFor = command.isTrusted && command.commandLineConfidence === 'high';
+	return { invocation: vouchedFor ? invocation : 'start', cwd: command.cwd };
 }
 
 /** Creates a bounded, display-safe tab title from Codex thread metadata. */
@@ -250,18 +296,20 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 
 	private handleCommandExecuted(commandDetection: ICommandDetectionCapability, command: ITerminalCommand): void {
 		this.reset();
-		const invocation = classifyCodexTuiCommand(command.command);
-		if (!this.enabled || !this.terminalEligible || command.wasReplayed || !command.isTrusted || command.commandLineConfidence !== 'high'
-			|| !invocation || !command.cwd || !isAbsolute(command.cwd)) {
+		const tracked = classifyTrackableCodexCommand(command);
+		if (!this.enabled || !this.terminalEligible || !tracked) {
 			return;
 		}
+		// A prompt that emits its own OSC 133 alongside ours reports the same command twice: once
+		// from its marker with the buffer-recovered line, then again once `OSC 633;E` lands. The
+		// second pass resets this state and rebuilds it from the vouched-for line.
 		this.runState = {
 			generation: this.generation,
 			commandKey: command.id ?? `${command.timestamp}:${command.command}`,
 			commandDetection,
 			processId: this.instance.processId,
-			cwd: command.cwd,
-			invocation,
+			cwd: tracked.cwd,
+			invocation: tracked.invocation,
 		};
 		this.handleTitleChanged();
 	}
