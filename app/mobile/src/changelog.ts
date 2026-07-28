@@ -54,6 +54,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: 'キーボードのすぐ上にあって押し間違えていたボタンを、指の届く上端へ移しました。',
 				tone: 'green',
 			},
+			{
+				icon: 'help-circle-outline',
+				title: '複数ステップの質問に正しく答えられるように',
+				body: '「その他」に自由入力したときや、複数選択の質問が混ざっているときに、答えが1問ずつずれてPCに入っていました。',
+				tone: 'green',
+			},
 		],
 	},
 	{

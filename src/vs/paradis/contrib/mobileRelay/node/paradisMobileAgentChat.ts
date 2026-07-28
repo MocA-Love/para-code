@@ -44,6 +44,7 @@ import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneR
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
+import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -3195,22 +3196,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '質問の選択肢が更新されました' }, token ?? msg.token);
 			return;
 		}
-		const parts: string[] = [];
-		for (const answer of msg.answers) {
-			if (answer.kind === 'option') {
-				parts.push(String(answer.index + 1), '\r');
-			} else if (answer.kind === 'multi') {
-				for (const index of [...new Set(answer.indices)].sort((a, b) => a - b)) {
-					parts.push(String(index + 1), ' ');
-				}
-				parts.push('\r');
-			} else {
-				parts.push(String(answer.optionCount + 1), '\r', answer.text.trim(), '\r');
-			}
-		}
-		if (msg.answers.length > 1) {
-			parts.push('\r');
-		}
+		const parts = paradisAgentQuestionKeySequence(
+			questions.map(question => ({ optionCount: question.options?.length ?? 0, multiSelect: question.multiSelect === true })),
+			msg.answers,
+		);
 		this.dispatchInteractionAction(mobileId, msg, { kind: 'question', id: msg.interactionId }, parts);
 	}
 
@@ -3314,7 +3303,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
 			|| !this.hasSubscriber(token, mobileId) || !tailer.hasPendingInteraction(interaction)
 			|| interactionKey === undefined
-			|| parts.length === 0 || parts.length > 100 || this.pendingActions.has(key) || this.completedActions.has(key)) {
+			// 上限は暴走した列を弾くための安全弁。複数選択の質問は送信ボタンまでの移動キーが
+			// 選択肢の数だけ増えるため、多問ぶんを見込んだ余裕を持たせている。
+			|| parts.length === 0 || parts.length > 400 || this.pendingActions.has(key) || this.completedActions.has(key)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' }, token ?? msg.token);
 			return;
 		}
