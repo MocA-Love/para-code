@@ -17,11 +17,8 @@ import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { colors, mono } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
-/**
- * ズーム遷移で開いた画面の「どこからでもスワイプで閉じる」を、掴んでいる間だけ止めるための境界。
- * 開始できる領域を空にする指定で、expo-router 自身が gestureEnabled:false を表すのに使う値と同じ。
- */
-const BLOCK_DISMISSAL = { unstable_dismissalBoundsRect: { maxX: 0, maxY: 0 } } as const;
+/** 画面上端の余白（ヘッダーはこの下に置く）。ディスミス可能な範囲の計算にも使う。 */
+const SCREEN_TOP_GAP = 8;
 
 /**
  * 「新しいエージェントを起動」画面。ホームヘッダーの＋から Link.AppleZoom で開く独立ルート
@@ -62,12 +59,20 @@ export default function AgentLaunchScreen() {
 	const [modelId, setModelId] = useState<string>('default');
 	const [effortId, setEffortId] = useState<string | undefined>(undefined);
 	const [prompt, setPrompt] = useState('');
-	const [effortDragging, setEffortDragging] = useState(false);
+	const [headerHeight, setHeaderHeight] = useState(0);
 	const scrollRef = useRef<ScrollView>(null);
 
-	// Effortのつまみを掴んでいる間だけ、ズーム遷移の「スワイプで閉じる」を止める。
-	// 止めないと横方向のドラッグがネイティブ側に取られ、値を変える途中で画面が閉じてホームへ戻る。
-	usePreventZoomTransitionDismissal(effortDragging ? BLOCK_DISMISSAL : undefined);
+	// ズーム遷移で開いたこの画面には「どこからでもスワイプで閉じる」が付く。本文には Effort の
+	// ように横へドラッグする操作があり、そのままだと値を変える途中でネイティブ側にジェスチャを
+	// 取られて画面が閉じてしまう。そこで閉じる操作をヘッダーの帯だけで受け付ける。
+	//
+	// つまみを掴んでいる間だけ止める作りにはしない。ブロックはReactのstate更新を2段階
+	// （この画面 → expo-router 側のプロバイダ）経てからネイティブへ届くのに対し、UIKitは指が
+	// 触れた直後に開始を判定するため、素早く動かすと間に合わない。画面を出した時点で決まる
+	// 静的な範囲にすれば、その競走自体が無くなる。
+	usePreventZoomTransitionDismissal(headerHeight > 0
+		? { unstable_dismissalBoundsRect: { maxY: insets.top + SCREEN_TOP_GAP + headerHeight } }
+		: undefined);
 
 	// 既定リポジトリ算出用のworkspaceスナップショット。stateのpushで頻繁に更新されるため、
 	// フォーム取得effectの依存には入れずrefで最新値だけ参照する（更新のたびの再フェッチを防ぐ）。
@@ -211,8 +216,8 @@ export default function AgentLaunchScreen() {
 	};
 
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-			<View style={styles.header}>
+		<View style={[styles.screen, { paddingTop: insets.top + SCREEN_TOP_GAP }]}>
+			<View style={styles.header} onLayout={event => setHeaderHeight(event.nativeEvent.layout.height)}>
 				<Pressable
 					style={styles.iconBtn}
 					onPress={() => { hapticImpact('light'); router.back(); }}
@@ -397,7 +402,6 @@ export default function AgentLaunchScreen() {
 													disabled={false}
 													accentColor={agentAccent}
 													onChange={effort => setEffortId(effort)}
-													onDragChange={setEffortDragging}
 												/>
 											) : selectedModel !== undefined ? (
 												<Text style={styles.hint}>このモデルは Effort 指定に対応していません</Text>
