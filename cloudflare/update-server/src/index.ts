@@ -10,7 +10,8 @@ import type { Env, IReleaseRecord } from './types';
  * Response: 204 when the client is already on the latest known commit (or
  * the platform/quality pair has no published release yet); otherwise 200
  * with an IUpdate JSON body ({ url, version, productVersion, timestamp,
- * sha256hash }). The client treats any other shape as "no update".
+ * sha256hash }) plus the `name` / `notes` pair that Squirrel.Mac reads on
+ * macOS. The client treats any other shape as "no update".
  *
  * Access control for this route is enforced by a Cloudflare Access
  * Application (Service Auth, non-interactive) configured separately in the
@@ -54,9 +55,18 @@ export default {
 		// Keep the native updaters on their existing semantic-version contract.
 		const updateVersion = platform.startsWith('win32-') ? record.commit : record.version;
 
+		// macOS never parses this JSON itself: Squirrel.Mac reads only `notes` and
+		// `name` and hands them to Electron's `update-downloaded` event, which the
+		// client stores as IUpdate.version and IUpdate.productVersion respectively.
+		// The commit therefore has to travel in `notes` — without it the pending
+		// update carries an empty version, and the client's periodic "is the pending
+		// update still the latest?" re-check bails out on that empty value, pinning
+		// macOS to whichever build it downloaded first until the app is restarted.
+		// Windows and Linux parse the payload themselves and ignore both fields.
 		return Response.json({
 			url: record.url,
-			name: `${platform}-${record.version}`,
+			name: record.productVersion,
+			notes: record.commit,
 			version: updateVersion,
 			productVersion: record.productVersion,
 			timestamp: record.timestamp,
