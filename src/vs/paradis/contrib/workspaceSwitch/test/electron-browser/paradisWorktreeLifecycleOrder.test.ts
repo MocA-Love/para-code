@@ -13,18 +13,30 @@ import { paradisRemoveWorktreeSequence } from '../../electron-browser/paradisCre
 suite('worktree lifecycle order', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('setup runs before auto-run and agent launch', async () => {
+	test('agent launches while setup is still running, auto-run waits for it', async () => {
 		const events: string[] = [];
-		await paradisCompleteCreatedWorktree({
-			runSetup: async () => { events.push('setup'); },
+		let finishSetup!: () => void;
+		const setupFinished = new Promise<void>(resolve => { finishSetup = resolve; });
+		let agentLaunched!: () => void;
+		const agentDone = new Promise<void>(resolve => { agentLaunched = resolve; });
+
+		const flow = paradisCompleteCreatedWorktree({
+			runSetup: async () => { events.push('setup:start'); await setupFinished; events.push('setup:end'); },
 			runAutoRun: async () => { events.push('autoRun'); return true; },
 			openDefaultTerminal: async () => { events.push('terminal'); },
-			launchAgent: async () => { events.push('agent'); }
+			launchAgent: async () => { events.push('agent'); agentLaunched(); }
 		});
-		assert.deepStrictEqual(events, ['setup', 'autoRun', 'agent']);
+
+		// setup を止めたままエージェントが起動しきることが、待ち合わせていない証拠になる
+		await agentDone;
+		assert.deepStrictEqual(events, ['setup:start', 'agent']);
+
+		finishSetup();
+		await flow;
+		assert.deepStrictEqual(events, ['setup:start', 'agent', 'setup:end', 'autoRun']);
 	});
 
-	test('setup failure skips all later creation actions', async () => {
+	test('setup failure still launches the agent but skips auto-run', async () => {
 		const events: string[] = [];
 		await assert.rejects(paradisCompleteCreatedWorktree({
 			runSetup: async () => { events.push('setup'); throw new Error('failed'); },
@@ -32,7 +44,7 @@ suite('worktree lifecycle order', () => {
 			openDefaultTerminal: async () => { events.push('terminal'); },
 			launchAgent: async () => { events.push('agent'); }
 		}), /failed/);
-		assert.deepStrictEqual(events, ['setup']);
+		assert.deepStrictEqual(events, ['setup', 'agent']);
 	});
 
 	test('teardown failure prevents switch and removal', async () => {
