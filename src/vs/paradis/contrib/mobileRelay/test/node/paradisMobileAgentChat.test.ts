@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
@@ -530,6 +530,29 @@ suite('ParadisMobileAgentChat', () => {
 		assert.ok(limits.maxTranscriptLineBytes <= limits.initialReadTailBytes, 'initial tail must fit a full line');
 		// 取り寄せ要求の index 上限（100未満）を超える画像はカードを出しても取得できない。
 		assert.ok(limits.maxImagesPerMessage <= 100, 'image count must match the tool-image index bound');
+	});
+
+	test('shares one image budget across panes instead of one budget each', () => {
+		const cache = paradisSharedImageCacheForTest;
+		const owners = ['pane-a', 'pane-b', 'pane-c'];
+		try {
+			// 1枚 4M 文字 = 上限(16M)の1/4。ペインごとに枠を持っていた頃はペイン数だけ積み上がった。
+			const image = { mediaType: 'image/png', base64: 'A'.repeat(4 * 1024 * 1024) };
+			for (const owner of owners) {
+				for (let rev = 0; rev < 3; rev++) {
+					cache.set(owner, rev, 0, image);
+				}
+			}
+			assert.ok(cache.stats().bytes <= 16 * 1024 * 1024, `shared budget exceeded: ${cache.stats().bytes}`);
+			// 最後に積んだペインのものは残り、押し出されたペインは「保持期限切れ」として返る。
+			assert.ok(cache.get('pane-c', 2, 0) !== undefined, 'the most recent image must survive');
+			assert.strictEqual(cache.get('pane-a', 0, 0), undefined);
+			// ペインが消えたら、LRU の押し出しを待たずにその場で返す。
+			cache.releaseOwner('pane-c');
+			assert.strictEqual(cache.get('pane-c', 2, 0), undefined);
+		} finally {
+			for (const owner of owners) { cache.releaseOwner(owner); }
+		}
 	});
 
 	test('marks an oversize image instead of pretending it is retained', () => {

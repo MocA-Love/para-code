@@ -325,10 +325,14 @@ const FULL_TEXT_CACHE_BYTES = 2 * 1024 * 1024;
  */
 const TOOL_IMAGE_BASE64_LIMIT = 3 * 1024 * 1024;
 /**
- * 1ペインが保持する画像キャッシュの上限（枚数・base64合計文字数）。参照の古い順に捨てる。
+ * 保持する画像キャッシュの上限（枚数・base64合計文字数）。参照の古い順に捨てる。
  * 画像は1枚で全文キャッシュ全体に匹敵するため、全文とは別枠で会計する。
+ *
+ * **上限は全ペインの合計**である点に注意（{@link ParadisSharedImageCache}）。ペインごとに
+ * この枠を持たせると、エージェントを開いているペインの数だけメモリが積み上がる。base64 は
+ * JS の文字列なので実メモリは文字数の約2倍で、16M 文字 = 約32MB。ここが常駐の上限になる。
  */
-const IMAGE_CACHE_ENTRIES = 12;
+const IMAGE_CACHE_ENTRIES = 24;
 const IMAGE_CACHE_BYTES = 16 * 1024 * 1024;
 /**
  * 1メッセージから拾う画像の枚数上限。'tool-image' 要求の index 上限（100未満）と揃える
@@ -1645,14 +1649,18 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 			|| trimmedText.startsWith('# AGENTS.md instructions for')) {
 			return [];
 		}
+		// view_image の実体が来るのは「直後の」メッセージだけなので、ここで必ず手放す。
+		// 持ち越すと、実体が来ないまま後で貼られた無関係な画像がその呼び出しの結果として
+		// 繋がってしまう（環境コンテキストの注入は上で弾いた後なので巻き込まれない）。
+		const pendingImageCallId = signals.pendingCodexImageCallId;
+		signals.pendingCodexImageCallId = undefined;
 		if (images.length > 0) {
 			// Codex は view_image の実体を「関数の結果」ではなく直後の user メッセージへ
 			// input_image として書く。本文のない画像だけのメッセージがそれで、ユーザーの発言
 			// ではなく直前の view_image の結果なので、ツール結果として繋ぐ（signals が覚えた
 			// call_id を使う）。本文つき = ユーザーが貼った画像はそのまま発言として出す。
-			const viewImageCallId = isImagePlaceholderOnly(trimmedText) ? signals.pendingCodexImageCallId : undefined;
+			const viewImageCallId = isImagePlaceholderOnly(trimmedText) ? pendingImageCallId : undefined;
 			if (viewImageCallId !== undefined) {
-				signals.pendingCodexImageCallId = undefined;
 				out.push({
 					role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts,
 					toolUseId: viewImageCallId, imageData: images,
@@ -2007,6 +2015,83 @@ interface ITailerDelegate {
 }
 
 /**
+ * ツール結果に含まれていた画像の実体を、**全ペイン合計**で上限を張って保持する LRU。
+ *
+ * 保持はペイン（tailer）ごとに持つのが自然だが、それだと上限がペイン数だけ掛け算になる。
+ * 画像は1枚で数MBあり、base64 は JS 文字列なので実メモリは文字数の約2倍になるため、
+ * エージェントを開いたペインが増えるほど常駐が積み上がってしまう。表示に必要なのは
+ * 「いま開いているステップの画像」だけなので、合計で1つの枠を分け合う。
+ *
+ * 所有者（tailer）は取り出しキーの名前空間としてのみ使い、ペインが消えるときと epoch が
+ * 振り直されるときに {@link releaseOwner} でまとめて捨てる。
+ */
+class ParadisSharedImageCache {
+
+	/** `owner\0rev:index` → 実体。Map の挿入順を LRU として使う。 */
+	private readonly entries = new Map<string, IFlattenedImage>();
+	private bytes = 0;
+
+	private static key(owner: string, rev: number, index: number): string {
+		return `${owner}\0${rev}:${index}`;
+	}
+
+	set(owner: string, rev: number, index: number, image: IFlattenedImage): void {
+		const key = ParadisSharedImageCache.key(owner, rev, index);
+		this.drop(key);
+		this.entries.set(key, image);
+		this.bytes += image.base64.length;
+		// 1メッセージに複数枚あるとき、全部積んでから削ると一時的に上限を大きく超える。
+		while (this.entries.size > IMAGE_CACHE_ENTRIES || this.bytes > IMAGE_CACHE_BYTES) {
+			const oldest = this.entries.keys().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.drop(oldest.value);
+		}
+	}
+
+	/** 取り出した画像は最近参照した扱いに直す（ページ送り中の画像が新着に押し出されないため）。 */
+	get(owner: string, rev: number, index: number): IFlattenedImage | undefined {
+		const key = ParadisSharedImageCache.key(owner, rev, index);
+		const image = this.entries.get(key);
+		if (image !== undefined) {
+			this.entries.delete(key);
+			this.entries.set(key, image);
+		}
+		return image;
+	}
+
+	/** そのペインぶんを丸ごと捨てる（ペインの破棄・epoch リセット）。 */
+	releaseOwner(owner: string): void {
+		const prefix = `${owner}\0`;
+		for (const key of [...this.entries.keys()]) {
+			if (key.startsWith(prefix)) {
+				this.drop(key);
+			}
+		}
+	}
+
+	/** テストから合計の在庫を確かめるため。 */
+	stats(): { readonly count: number; readonly bytes: number } {
+		return { count: this.entries.size, bytes: this.bytes };
+	}
+
+	private drop(key: string): void {
+		const existing = this.entries.get(key);
+		if (existing !== undefined) {
+			this.bytes -= existing.base64.length;
+			this.entries.delete(key);
+		}
+	}
+}
+
+/** 画像キャッシュはプロセスで1つ（上限がペイン数に比例しないようにするため）。 */
+const sharedImageCache = new ParadisSharedImageCache();
+
+/** 上限の整合とペイン間の枠共有を検証するため公開する。 */
+export const paradisSharedImageCacheForTest = sharedImageCache;
+
+/**
  * 1つの transcript ファイルの追記を追いかけ、正規化メッセージのリングバッファを維持する。
  * fs.watch (即時性) + ポーリング (确実性) の二重化。ファイル未作成・一時的な読み取り失敗は
  * 次のポーリングで自然に回復する。読み取りは Promise チェーンで直列化する。
@@ -2023,12 +2108,11 @@ class TranscriptTailer {
 	private readonly fullTexts = new Map<number, string>();
 	private fullTextBytes = 0;
 	/**
-	 * tool_result に含まれていた画像の実体: `rev:index` → base64。全文と同じく、モバイルが
-	 * ステップを展開したときだけ 'tool-image' で取りに来る。1枚が全文キャッシュ全体に匹敵する
-	 * サイズになりうるため、全文とは独立した枠で会計する。
+	 * 画像キャッシュ内でこのペインぶんを指す名前空間。全文と違い、画像の実体は
+	 * {@link sharedImageCache} が全ペイン合計の枠で持つ（1枚が全文キャッシュ全体に匹敵する
+	 * サイズになるため、ペインごとに枠を持たせると常駐がペイン数に比例してしまう）。
 	 */
-	private readonly images = new Map<string, IFlattenedImage>();
-	private imageBytes = 0;
+	private readonly imageOwner = `tailer-${newEpoch()}`;
 	/** 実行中バックグラウンドタスク（サブエージェント等）: id → 起動時刻 (epoch ms)。 */
 	readonly backgroundTasks = new Map<string, number>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
@@ -2104,6 +2188,8 @@ class TranscriptTailer {
 			clearInterval(this.pollTimer);
 			this.pollTimer = undefined;
 		}
+		// 画像の実体だけは共有の枠にあるので、ペインが消えても LRU の押し出しを待たずに返す。
+		sharedImageCache.releaseOwner(this.imageOwner);
 	}
 
 	private enqueue(work: () => Promise<void>): Promise<void> {
@@ -2266,47 +2352,24 @@ class TranscriptTailer {
 			if (imageMeta.oversize === true) {
 				continue;
 			}
-			this.images.set(`${rev}:${index}`, image);
-			this.imageBytes += image.base64.length;
-			// 1メッセージに複数枚あるとき、全部積んでから削ると一時的に上限を大きく超える。
-			this.evictImages();
+			sharedImageCache.set(this.imageOwner, rev, index, image);
 		}
 		return meta;
 	}
 
-	/** 件数・合計バイトのどちらかが上限を超えている間、参照の古いものから捨てる。 */
-	private evictImages(): void {
-		while (this.images.size > IMAGE_CACHE_ENTRIES || this.imageBytes > IMAGE_CACHE_BYTES) {
-			const oldest = this.images.keys().next();
-			if (oldest.done === true) {
-				break;
-			}
-			this.imageBytes -= this.images.get(oldest.value)?.base64.length ?? 0;
-			this.images.delete(oldest.value);
-		}
-	}
-
 	/**
-	 * 'tool-image' 応答用。保持期限を過ぎた画像・上限超過の画像は undefined。
-	 * 取り出した画像は最近参照した扱いに直す（ビューアでページ送りしている最中の画像が
-	 * 新着の画像に押し出されないようにするため）。
+	 * 'tool-image' 応答用。保持期限を過ぎた画像・上限超過の画像は undefined
+	 * （他のペインが新しい画像を読み込むと、こちらの古い画像が押し出されることもある）。
 	 */
 	imageFor(rev: number, index: number): IFlattenedImage | undefined {
-		const key = `${rev}:${index}`;
-		const image = this.images.get(key);
-		if (image !== undefined) {
-			this.images.delete(key);
-			this.images.set(key, image);
-		}
-		return image;
+		return sharedImageCache.get(this.imageOwner, rev, index);
 	}
 
 	/** rev を振り直す（epochリセット）際に、rev をキーにした退避データを捨てる。 */
 	private clearRetainedPayloads(): void {
 		this.fullTexts.clear();
 		this.fullTextBytes = 0;
-		this.images.clear();
-		this.imageBytes = 0;
+		sharedImageCache.releaseOwner(this.imageOwner);
 	}
 
 	/** 読み取ったテキストを行に分割してパースし、リングへ追加する。末尾の不完全行は持ち越す。 */
