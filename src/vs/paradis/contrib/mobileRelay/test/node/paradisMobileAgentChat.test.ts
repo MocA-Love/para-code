@@ -12,8 +12,8 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
-import { paradisClaudeConfigDir } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisPickCurrentInteraction, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
+import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
+import { ParadisMobileAgentChat, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisTakeLiveQuestionSyntheticId } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
@@ -291,7 +291,7 @@ suite('ParadisMobileAgentChat', () => {
 				agent_path: '/root/planner/researcher', agent_nickname: 'researcher',
 			},
 		})), {
-			cwd: '/workspace', sessionId: 'child', parentThreadId: 'parent', depth: 2,
+			cwd: '/workspace', sessionId: 'child', subagent: true, parentThreadId: 'parent', depth: 2,
 			agentPath: '/root/planner/researcher', agentNickname: 'researcher',
 		});
 	});
@@ -372,6 +372,134 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisClaudeAgentIdFromTranscriptPath(path), 'parent-123');
 		assert.strictEqual(paradisClaudeRootTranscriptPath(path), '/Users/test/.claude/projects/workspace/session.jsonl');
 		assert.strictEqual(paradisClaudeAgentIdFromTranscriptPath('/Users/test/.claude/projects/workspace/session.jsonl'), undefined);
+	});
+
+	test('keeps the pane session and epoch when a Codex subagent thread fires a hook', async () => {
+		const token = 'pane-codex-subagent';
+		const parentPath = join(paradisCodexHome(), 'sessions', 'para-code-tests', 'rollout-parent.jsonl');
+		const childPath = join(paradisCodexHome(), 'sessions', 'para-code-tests', 'rollout-child.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			paneSessions: Map<string, { readonly transcriptPath: string; readonly sessionId?: string }>;
+			codexRolloutOrigins: Map<string, string>;
+			tailers: Map<string, { readonly epoch: string }>;
+			hookProcessing: Map<string, Promise<void>>;
+		};
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			// rolloutの素性判定そのものは paradisParseCodexSessionMeta 側のテストで担保する。
+			// ここは「子と分かっているhookがペインを乗っ取らないこと」だけを見る。
+			access.codexRolloutOrigins.set(parentPath, 'root');
+			access.codexRolloutOrigins.set(childPath, 'subagent');
+
+			fireParadisAgentHookEvent({
+				token, event: 'UserPromptSubmit', sessionId: 'thread-parent', transcriptPath: parentPath,
+				cwd: '/workspace', payload: { prompt: 'テストを直して' }, at: Date.now(),
+			});
+			await waitFor(() => access.paneSessions.get(token)?.transcriptPath === parentPath, 'parent session was not confirmed');
+			const epoch = access.tailers.get(token)?.epoch;
+
+			// SubAgentのthreadが自分のrolloutを指すhookを撃つ（tool実行のたびに起きる）。
+			fireParadisAgentHookEvent({
+				token, event: 'PreToolUse', sessionId: 'thread-child', transcriptPath: childPath,
+				cwd: '/workspace', toolName: 'Bash', toolUseId: 'tool-1', at: Date.now(),
+			});
+			await waitFor(() => !access.hookProcessing.has(token), 'child hook was not processed');
+
+			assert.deepStrictEqual({
+				transcriptPath: access.paneSessions.get(token)?.transcriptPath,
+				sessionId: access.paneSessions.get(token)?.sessionId,
+				epochChanged: access.tailers.get(token)?.epoch !== epoch,
+			}, {
+				transcriptPath: parentPath,
+				sessionId: 'thread-parent',
+				epochChanged: false,
+			});
+		} finally {
+			chat.dispose();
+		}
+	});
+
+	test('detects a Codex subagent rollout whose session_id names the parent thread', () => {
+		// 現行Codexが実際に書く形。子rolloutの session_id は「親の」thread IDで、自分のIDは id 側。
+		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({
+			type: 'session_meta', payload: {
+				cwd: '/workspace', session_id: 'thread-parent', id: 'thread-child', parent_thread_id: 'thread-parent',
+				thread_source: 'subagent',
+				source: { subagent: { thread_spawn: { parent_thread_id: 'thread-parent', depth: 1, agent_path: '/root/tests', agent_nickname: 'Mill' } } },
+			},
+		})), {
+			cwd: '/workspace', sessionId: 'thread-parent', subagent: true, parentThreadId: 'thread-parent',
+			depth: 1, agentPath: '/root/tests', agentNickname: 'Mill',
+		});
+	});
+
+	test('detects a Codex subagent rollout that only differs by its own thread id', () => {
+		// source / thread_source が無い形。親を指すIDは、session_id（=親）ではなく id（=自分）と
+		// 比べないと子だと分からない。この比較先がこの修正の本丸。
+		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({
+			type: 'session_meta', payload: { cwd: '/workspace', session_id: 'thread-parent', id: 'thread-child', parent_thread_id: 'thread-parent' },
+		})), { cwd: '/workspace', sessionId: 'thread-parent', subagent: true, parentThreadId: 'thread-parent' });
+	});
+
+	test('detects a Codex subagent rollout from either spawn marker alone', () => {
+		const parse = (payload: object) => paradisParseCodexSessionMeta(JSON.stringify({ type: 'session_meta', payload: { cwd: '/workspace', ...payload } }));
+		assert.deepStrictEqual([
+			// thread_source だけ（親IDが読めなくても子と分かる）。
+			parse({ id: 'thread-child', thread_source: 'subagent' }),
+			// source.subagent.thread_spawn だけ。
+			parse({ id: 'thread-child', source: { subagent: { thread_spawn: { parent_thread_id: 'thread-parent' } } } }),
+		], [
+			{ cwd: '/workspace', sessionId: 'thread-child', subagent: true },
+			{ cwd: '/workspace', sessionId: 'thread-child', subagent: true, parentThreadId: 'thread-parent' },
+		]);
+	});
+
+	test('keeps a root Codex rollout free of a subagent marker', () => {
+		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({
+			type: 'session_meta', payload: { cwd: '/workspace', session_id: 'thread-root', id: 'thread-root' },
+		})), { cwd: '/workspace', sessionId: 'thread-root' });
+		// forkやresumeで自分自身を指す parent_thread_id が入っても root のまま。
+		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({
+			type: 'session_meta', payload: { cwd: '/workspace', id: 'thread-root', parent_thread_id: 'thread-root' },
+		})), { cwd: '/workspace', sessionId: 'thread-root' });
+	});
+
+	test('never lets a nested agent hook claim the pane session', () => {
+		const claudeChild = '/Users/test/.claude/projects/workspace/session/subagents/agent-parent-123.jsonl';
+		const claudeRoot = '/Users/test/.claude/projects/workspace/session.jsonl';
+		const codexChild = '/Users/test/.codex/sessions/2026/07/29/rollout-child.jsonl';
+		const codexParent = '/Users/test/.codex/sessions/2026/07/29/rollout-parent.jsonl';
+		const resolve = (hookTranscriptPath: string, paneTranscriptPath: string | undefined, claudeNestedAgentId?: string, codexOrigin?: 'root' | 'subagent' | 'unknown') =>
+			paradisResolveHookSessionTranscript({ hookTranscriptPath, paneTranscriptPath, claudeNestedAgentId, codexOrigin });
+
+		assert.deepStrictEqual([
+			// root threadのhookはそのままペインのセッションになる（未確定でも、別セッションからの切替でも）。
+			resolve(codexParent, undefined, undefined, 'root'),
+			resolve(codexParent, '/Users/test/.codex/sessions/2026/07/29/rollout-previous.jsonl', undefined, 'root'),
+			// Claudeのsidechain: 既知rootを保ち、未確定ならpathからrootを復元する。
+			resolve(claudeChild, claudeRoot, 'parent-123'),
+			resolve(claudeChild, undefined, 'parent-123'),
+			// 規約外のpathでrootを復元できないsidechainは、hookのpathへフォールバックする。
+			resolve('/subagents/agent-parent-123.jsonl', undefined, 'parent-123'),
+			// Codexのsubagent thread: 親のrolloutを保つ。親が未確定なら子で確定させない。
+			resolve(codexChild, codexParent, undefined, 'subagent'),
+			resolve(codexChild, undefined, undefined, 'subagent'),
+			// 素性を読めなかったrollout: 確定済みペインではrebindを見送り、未確定なら確定させる。
+			resolve(codexChild, codexParent, undefined, 'unknown'),
+			resolve(codexChild, undefined, undefined, 'unknown'),
+		], [
+			{ kind: 'session', transcriptPath: codexParent, nested: undefined },
+			{ kind: 'session', transcriptPath: codexParent, nested: undefined },
+			{ kind: 'session', transcriptPath: claudeRoot, nested: 'claude' },
+			{ kind: 'session', transcriptPath: claudeRoot, nested: 'claude' },
+			{ kind: 'session', transcriptPath: '/subagents/agent-parent-123.jsonl', nested: 'claude' },
+			{ kind: 'session', transcriptPath: codexParent, nested: 'codex' },
+			{ kind: 'drop' },
+			{ kind: 'session', transcriptPath: codexParent, nested: 'codex' },
+			{ kind: 'session', transcriptPath: codexChild, nested: undefined },
+		]);
 	});
 
 	test('does not guess when multiple fresh sessions match the same cwd', () => {
