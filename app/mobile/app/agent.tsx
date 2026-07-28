@@ -17,7 +17,7 @@ import { AgentActivityCard, AgentActivityStrip } from '../src/components/agentAc
 import { AgentTimeline } from '../src/components/agentTimeline.js';
 import { IOBlock } from '../src/components/agentIoBlock.js';
 import { formatToolName } from '../src/agentToolMeta.js';
-import { findLatestApprovalRequest } from '../src/components/attentionCard.js';
+import { findLatestApprovalRequest } from '../src/components/attentionStack.js';
 import { AgentComposer } from '../src/components/agentComposer.js';
 import { PendingMessagesChip, PendingMessagesSheet } from '../src/components/pendingMessages.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../src/pendingAgentMessages.js';

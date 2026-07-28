@@ -73,7 +73,7 @@ export default function ArchiveScreen() {
 					const rowData: AgentRowData = {
 						title: t.title, wsName: ws?.name ?? '—', wsColor: ws ? wsColor(ws) : colors.accent,
 						// ピン留めはアーカイブしても外さない（戻せば元の並びに戻る）ので、ここでも印を出す
-						branch: ws?.branch, pinned: pinnedKeys.has(pinKeyForTerminal(t)), agentStatus: t.agentStatus, waiting: false,
+						branch: ws?.branch, pinned: pinnedKeys.has(pinKeyForTerminal(t)), agentStatus: t.agentStatus,
 					};
 					return (
 						<SwipeRow
