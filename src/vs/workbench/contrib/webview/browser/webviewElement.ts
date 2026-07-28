@@ -38,8 +38,10 @@ import { WebviewThemeDataProvider } from './themeing.js';
 import { areWebviewContentOptionsEqual, IWebviewElement, WebviewContentOptions, WebviewExtensionDescription, WebviewInitInfo, WebviewMessageReceivedEvent, WebviewOptions } from './webview.js';
 import { WebviewFindDelegate, WebviewFindWidget } from './webviewFindWidget.js';
 import { FromWebviewMessage, KeyEvent, ToWebviewMessage, WebViewDragEvent } from './webviewMessages.js';
-// PARA-PATCH: Sentry reporting for webview fatal errors (see fatal-error handler below)
+// PARA-PATCH: Sentry reporting for webview fatal errors and fork-owned health signals
+// (see the fatal-error and para-webview-signal handlers below)
 import { reportParadisWebviewFatalError } from '../../../../paradis/contrib/sentry/common/paradisSentryDiagnostics.js';
+import { notifyParadisWebviewSignal } from '../../../../paradis/contrib/sentry/common/paradisWebviewSignals.js';
 
 interface WebviewContent {
 	readonly html: string;
@@ -253,6 +255,12 @@ export class WebviewElement extends Disposable implements IWebviewElement, Webvi
 			// upstream-scoped errors are otherwise dropped by the Sentry scope filter.
 			reportParadisWebviewFatalError(e.message);
 			this._onFatalError.fire({ message: e.message });
+		}));
+
+		// PARA-PATCH: forward fork-owned health signals (service worker recovery, content applied) so
+		// the rendered file viewers can tell a blank webview apart from a rendered one and rebuild it.
+		this._register(this.on('para-webview-signal', (e) => {
+			notifyParadisWebviewSignal({ origin: this.origin, code: e.code, detail: e.detail });
 		}));
 
 		this._register(this.on('did-keydown', (data) => {

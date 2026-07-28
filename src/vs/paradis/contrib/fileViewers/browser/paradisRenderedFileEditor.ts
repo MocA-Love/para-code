@@ -19,10 +19,10 @@
 // Raw / 非可視のときは release する。claim 直後は下地が作り直され内容が失われ得るため、復帰時は必ず再 setHtml する。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { isCancellationError, onUnexpectedError } from '../../../../base/common/errors.js';
-import { DisposableStore, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, IReference, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -33,6 +33,7 @@ import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -42,6 +43,8 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IOverlayWebview, IWebviewService, WebviewContentPurpose } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { onParadisWebviewSignal, ParadisWebviewSignalCode } from '../../sentry/common/paradisWebviewSignals.js';
+import { PARADIS_VIEWER_CONTENT_TIMEOUT_MS, PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS, paradisViewerContentTimeout, ParadisViewerRecoveryPolicy } from '../common/paradisViewerRecovery.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
@@ -70,8 +73,17 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	private _rawBtn: HTMLButtonElement | undefined;
 
 	private _webview: IOverlayWebview | undefined;
+	// webview 本体とその購読をまとめて捨てられるようにする（白紙からの復帰で作り直すため）。
+	private readonly _webviewStore = this._register(new MutableDisposable<DisposableStore>());
 	private _webviewClaimed = false;
 	private _editorVisible = false;
+	// setHtml しても内容が届かない（白紙）ことを検知するウォッチドッグ。
+	private readonly _contentWatchdog = this._register(new MutableDisposable<IDisposable>());
+	// webview のイベント通知中に webview 自身を捨てないよう、立て直しは次のタイミングまで遅らせる。
+	private readonly _deferredRecovery = this._register(new MutableDisposable<IDisposable>());
+	private readonly _recoveryPolicy = new ParadisViewerRecoveryPolicy();
+	private _watchdogGeneration = -1;
+	private _watchdogTimeoutMs = PARADIS_VIEWER_CONTENT_TIMEOUT_MS;
 	private _codeEditor: ICodeEditor | undefined;
 	private readonly _modelRef = this._register(new MutableDisposable<IReference<IResolvedTextEditorModel>>());
 
@@ -94,6 +106,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 		@IConfigurationService protected readonly _configurationService: IConfigurationService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super(id, group, telemetryService, themeService, storageService);
 
@@ -148,8 +161,13 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	/** 読み込んだテキストから webview に表示する完全な HTML ドキュメント文字列を生成する。 */
 	protected abstract renderDocument(text: string, resource: URI, webview: IOverlayWebview, token: CancellationToken): Promise<string> | string;
 
-	/** webview 要素の生成直後に呼ばれるフック（サブクラスがメッセージ購読等を行う）。 */
-	protected onWebviewCreated(_webview: IOverlayWebview): void { }
+	/**
+	 * webview 要素の生成直後に呼ばれるフック（サブクラスがメッセージ購読等を行う）。
+	 *
+	 * webview は白紙からの復帰で作り直されることがあるため、ここで足す購読は必ず `store` に
+	 * 登録すること（`this._register` に足すと作り直すたびに溜まり、古い webview を掴んだままになる）。
+	 */
+	protected onWebviewCreated(_webview: IOverlayWebview, _store: DisposableStore): void { }
 
 	/** ツールバー右側（トグルの隣）へサブクラス固有のコントロール（HTMLズーム等）を追加するためのフック。 */
 	protected onCreateToolbar(_toolbarRight: HTMLElement): void { }
@@ -190,6 +208,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		const resource = viewerInput.resource;
 		// 同じ URI の入力を設定し直す経路でも、旧入力から継続中の描画を無効化する。
 		this._renderGeneration++;
+		// ペインは別のファイルを開くときも使い回されるので、前のファイルの失敗回数を持ち越さない。
+		this._recoveryPolicy.reset();
 		this._currentResource = resource;
 		// 別ファイルに切り替わったので前のモデル参照を解放する。
 		this._modelRef.clear();
@@ -283,6 +303,102 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			return;
 		}
 		webview.setHtml(html);
+		// setHtml は「送った」だけで「表示された」ことは保証しない。webview 側が内容を書き終えたら
+		// content-applied シグナルが返るので、それが来なければ白紙とみなして立て直す。
+		this._startContentWatchdog(generation, paradisViewerContentTimeout(html.length));
+	}
+
+	/** 内容が届かないまま時間切れになったら復帰処理へ回す。 */
+	private _startContentWatchdog(generation: number, timeoutMs: number): void {
+		this._watchdogGeneration = generation;
+		this._watchdogTimeoutMs = timeoutMs;
+		// ここでは service worker の猶予を足さない。制御待ちは webview が内容を受け取ってから
+		// 始まるので、その合図（content-started）が来た時点で足す。webview がそもそも動いていない
+		// ケースまで長く待つと、読める状態に戻すのがいたずらに遅くなる。
+		this._armContentWatchdog(timeoutMs);
+	}
+
+	private _armContentWatchdog(timeoutMs: number): void {
+		const generation = this._watchdogGeneration;
+		this._contentWatchdog.value = disposableTimeout(() => {
+			if (generation !== this._renderGeneration) {
+				return;
+			}
+			this._handleRenderFailure('content-timeout');
+		}, timeoutMs);
+	}
+
+	/**
+	 * 白紙を検知したときの立て直し。まずは webview を作り直し、繰り返すようなら中身が確実に読める
+	 * Raw へ倒す（白紙のまま放置しない）。
+	 */
+	private _handleRenderFailure(reason: 'fatal-error' | 'content-timeout'): void {
+		this._contentWatchdog.clear();
+		this._deferredRecovery.clear();
+		const resource = this._currentResource;
+		// Raw 表示中や非表示のペインは描画していないので、失敗として数えない。
+		if (!resource || this._mode !== 'rendered' || !this._editorVisible) {
+			return;
+		}
+
+		const action = this._recoveryPolicy.recordFailure();
+		reportParadisDiagnosticError('owned', 'file-viewers', 'blank-recovery', new Error(`Rendered view stayed blank (${reason})`), {
+			safe_viewer: this.getId(),
+			safe_reason: reason,
+			safe_action: action,
+		});
+
+		// 壊れた webview は作り直す。Raw へ倒す場合も、掴めなくなったコンテンツプロセスを
+		// タブが閉じるまで抱え続けないよう同じように捨てる。
+		this._disposeWebview();
+
+		if (action === 'retry') {
+			// 直前に mode/可視性/リソースを確かめているので claim は必ず成立するが、状態が変わって
+			// いた場合に描画だけ走らせないよう戻り値で確認する。
+			if (this._updateWebviewPlacement()) {
+				this._renderResourceInBackground(resource);
+			}
+			return;
+		}
+
+		this._notificationService.notify({
+			severity: Severity.Warning,
+			message: localize('paradis.fileViewer.blankFallback', "The rendered preview could not be displayed, so the file was opened in Raw view."),
+		});
+		this._applyViewModeFromRecovery('raw');
+	}
+
+	/** 復帰処理から Raw へ倒す。失敗の記録は残す（ユーザーが Rendered を選び直すまでやり直さない）。 */
+	private _applyViewModeFromRecovery(mode: ParadisFileViewerMode): void {
+		if (this.input instanceof ParadisFileViewerInput) {
+			this.input.setViewMode(mode);
+		}
+		const resource = this._currentResource;
+		if (resource) {
+			this._applyViewMode(mode, resource).catch(onUnexpectedError);
+		}
+	}
+
+	/** webview 側から内容の反映を知らせるシグナルが来た。 */
+	private _onContentApplied(): void {
+		this._contentWatchdog.clear();
+		this._recoveryPolicy.recordSuccess();
+	}
+
+	/**
+	 * claim を解いてから webview 本体と購読を捨てる。次の描画で作り直される。
+	 *
+	 * 作り直すとスクロール位置や検索の状態は失われるが、これは白紙から立て直すときにしか通らない
+	 * 経路なので、何も見えないままにするより読める状態に戻すことを優先する。
+	 */
+	private _disposeWebview(): void {
+		if (this._webview && this._webviewClaimed) {
+			this._webview.release(this);
+		}
+		this._webviewClaimed = false;
+		this._webview = undefined;
+		this._contentWatchdog.clear();
+		this._webviewStore.clear();
 	}
 
 	private _isRenderCurrent(generation: number, resource: URI, token: CancellationToken): boolean {
@@ -298,7 +414,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		if (this._webview) {
 			return this._webview;
 		}
-		const webview = this._webviewService.createWebviewOverlay({
+		const store = new DisposableStore();
+		this._webviewStore.value = store;
+		const webview = store.add(this._webviewService.createWebviewOverlay({
 			title: undefined,
 			options: {
 				purpose: WebviewContentPurpose.CustomEditor,
@@ -310,17 +428,40 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 				localResourceRoots: [dirname(resource)]
 			},
 			extension: undefined
-		});
+		}));
 		this._webview = webview;
-		this._register(webview);
 		// 「Rendered だけ間欠的に白紙になる」フィールド報告の調査用: webview 基盤の致命
 		// エラー(service worker 登録失敗等)を Sentry へ送る。リソースのパスは含めない
 		// (エディタ種別 ID だけで Markdown/HTML ビューアのどちらかは判別できる)。
-		this._register(webview.onFatalError(e => {
+		store.add(webview.onFatalError(e => {
 			// `safe_` 接頭辞はサニタイザの extra allowlist を通すために必須（素のキーは破棄される）。
 			reportParadisDiagnosticError('owned', 'file-viewers', 'webview-fatal-error', new Error(e.message), { safe_viewer: this.getId() });
+			// このコールバックは webview 自身のイベント配信中なので、その場で dispose せず一拍おく。
+			this._deferredRecovery.value = disposableTimeout(() => this._handleRenderFailure('fatal-error'), 0);
 		}));
-		this.onWebviewCreated(webview);
+		// webview 内から届く健全性シグナル。origin は overlay ごとに一意なので自分宛かを照合できる。
+		store.add(onParadisWebviewSignal(signal => {
+			// webview は世代をまたいで使い回されるので、いま待っている描画のシグナルだけを見る。
+			// （古い描画のシグナルが遅れて届いても、次の描画の監視を解いてしまわないようにする）
+			if (signal.origin !== webview.origin || this._watchdogGeneration !== this._renderGeneration) {
+				return;
+			}
+			switch (signal.code) {
+				case ParadisWebviewSignalCode.ContentApplied:
+					this._onContentApplied();
+					break;
+				case ParadisWebviewSignalCode.ContentStarted:
+					// 内容が webview に届いたところから数え直す。webview の起動待ちで時間を使い切って
+					// しまい、描画は正常なのに作り直す、という誤判定を避ける。
+					this._armContentWatchdog(PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS + this._watchdogTimeoutMs);
+					break;
+				case ParadisWebviewSignalCode.ContentWorkerReady:
+					// service worker 待ちを抜けたので、あとは描画の時間だけを測る。
+					this._armContentWatchdog(this._watchdogTimeoutMs);
+					break;
+			}
+		}));
+		this.onWebviewCreated(webview, store);
 		return webview;
 	}
 
@@ -336,6 +477,10 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 				this._webview.release(this);
 				this._webviewClaimed = false;
 			}
+			// 描画を見せていない間は白紙の監視も止める（復帰させる相手がいない）。
+			// 世代も外しておかないと、遅れて届いたシグナルが監視を張り直してしまう。
+			this._watchdogGeneration = -1;
+			this._contentWatchdog.clear();
 			return false;
 		}
 		const webview = this.ensureWebview(resource);
@@ -351,6 +496,11 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	/** Rendered/Raw を内部切替する（エディタは開き直さない）。 */
 	setViewMode(mode: ParadisFileViewerMode): void {
+		if (mode === 'rendered') {
+			// ユーザーが自分で Rendered を選んだ＝もう一度試したいということなので、
+			// 直前までの失敗の記録を捨てる（さもないと押した瞬間また Raw へ戻される）。
+			this._recoveryPolicy.reset();
+		}
 		if (this.input instanceof ParadisFileViewerInput) {
 			this.input.setViewMode(mode);
 		}
@@ -417,6 +567,9 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	override clearInput(): void {
 		this._inputDisposables.clear();
 		this._renderGeneration++;
+		this._watchdogGeneration = -1;
+		this._contentWatchdog.clear();
+		this._recoveryPolicy.reset();
 		this._currentResource = undefined;
 		this._codeEditor?.setModel(null);
 		this._modelRef.clear();
