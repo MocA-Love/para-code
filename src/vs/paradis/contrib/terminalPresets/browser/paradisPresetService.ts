@@ -23,6 +23,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { GeneralShellType, ITerminalEnvironment, WindowsShellType } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService, IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
@@ -45,6 +46,33 @@ import {
 	paradisJoinPresetCommands,
 } from '../common/paradisTerminalPresets.js';
 
+/**
+ * プリセット名をターミナルの初期タイトルとしてどう渡すかを決める。
+ *
+ * `name` で渡すと terminalInstance 側で「ユーザーが手で付けた固定タイトル」扱いになり、
+ * **xterm の OSC タイトル購読自体が張られない**（terminalInstance.ts の `if (name && !titleTemplate)`
+ * 側に入り、購読を張る else 側を通らない）。その結果 `sequence` が永久に未設定になり、
+ * Claude / Codex が自分で出すタイトルも、そこから行うエージェント CLI の判別も一切効かなくなる。
+ *
+ * `titleTemplate` で渡せば購読が張られ、固定タイトルも付かないので、エージェントが動き出したら
+ * そのタイトルへ切り替わる（切り替えの優先順位は terminalInstance.ts の PARA-PATCH が持つ）。
+ *
+ * ただし titleTemplate は `${cwd}` 等を展開するテンプレートで、`$` 以降が閉じ `}` まで変数名として
+ * 食われ、閉じが無ければ丸ごと捨てられる（base/common/labels.ts の template）。`$` を含む名前だけは
+ * 従来どおり `name` で渡す（その名前では自動リネームは効かないが、名前が壊れるよりはよい）。
+ */
+export function paradisPresetTitleConfig(name: string | undefined): { name?: string; titleTemplate?: string } {
+	if (!name) {
+		return {};
+	}
+	return name.includes('$') ? { name } : { titleTemplate: name };
+}
+
+/** リロードをまたいでプリセット名を戻すための台帳（永続プロセスID → プリセット名）。 */
+const PRESET_TITLE_STORAGE_KEY = 'paradis.terminal.presets.restoredTitles';
+/** 台帳に残す件数の上限。消えた端末の分を確実に掃除する手がないので、古いものから捨てる。 */
+const MAX_REMEMBERED_PRESET_TITLES = 200;
+
 export class ParadisPresetService extends Disposable implements IParadisPresetService {
 
 	declare readonly _serviceBrand: undefined;
@@ -65,8 +93,16 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@IWorkspaceTrustManagementService private readonly workspaceTrustService: IWorkspaceTrustManagementService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
+		@IStorageService private readonly storageService: IStorageService,
 	) {
 		super();
+
+		// リロードで復元されたターミナルにプリセット名を戻す。すでに復元済みのものと、これから
+		// 復元されるものの両方を見る（このサービスの生成と復元の順序は保証されていない）。
+		for (const instance of this.terminalService.instances) {
+			this._restorePresetTitle(instance);
+		}
+		this._register(this.terminalService.onDidCreateInstance(instance => this._restorePresetTitle(instance)));
 
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_PRESETS_SETTING)) {
@@ -352,10 +388,11 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			const instance = await this.terminalService.createTerminal({
 				// env は解決の過程で in-place に書き換えられ、そのままインスタンスに保持されるため、
 				// タスクごとに複製して他のターミナルへ影響が伝播しないようにする
-				config: { name, env: options?.env ? { ...options.env } : undefined },
+				config: { ...paradisPresetTitleConfig(name), env: options?.env ? { ...options.env } : undefined },
 				cwd,
 				location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
 			});
+			void this._rememberPresetTitle(instance, name);
 			this._warnIfEnvDropped(instance, options?.env);
 			if (options?.stateKey) {
 				this.terminalScopeService.assignInstanceScope(instance.instanceId, options.stateKey);
@@ -366,6 +403,63 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			await instance.sendText(paradisJoinPresetCommands(task.commands, instance.shellType), true);
 		}
 		first?.focus(true);
+	}
+
+	/**
+	 * プリセット名は `titleTemplate` で渡しているが、これはターミナルの復元情報に含まれない
+	 * （`IPtyHostAttachTarget` に無い）。リロードすると名前だけ失われて `${process}`（zsh 等）に
+	 * 戻ってしまうので、永続プロセスの ID をキーに自前で覚えておいて復元時に貼り直す。
+	 */
+	private async _rememberPresetTitle(instance: ITerminalInstance, name: string | undefined): Promise<void> {
+		if (!name || !instance.shellLaunchConfig.titleTemplate) {
+			return;
+		}
+		await instance.processReady;
+		const persistentProcessId = instance.persistentProcessId;
+		if (persistentProcessId === undefined || instance.isDisposed) {
+			return;
+		}
+		const entries = this._readPresetTitles().filter(entry => entry.id !== persistentProcessId);
+		entries.push({ id: persistentProcessId, name });
+		// 消えた端末の分を確実に掃除する手がない（リロードでは onDisposed を当てにできない）ので、
+		// 件数で頭打ちにして古いものから捨てる。
+		this.storageService.store(
+			PRESET_TITLE_STORAGE_KEY,
+			JSON.stringify(entries.slice(-MAX_REMEMBERED_PRESET_TITLES)),
+			StorageScope.WORKSPACE,
+			StorageTarget.MACHINE,
+		);
+	}
+
+	/** 復元されたターミナルに、覚えておいたプリセット名を貼り直す。 */
+	private _restorePresetTitle(instance: ITerminalInstance): void {
+		const attachedId = instance.shellLaunchConfig.attachPersistentProcess?.id;
+		// 復元された端末だけを対象にする。新規作成の端末は台帳の ID とたまたま一致しようがない。
+		if (attachedId === undefined || instance.shellLaunchConfig.titleTemplate || instance.shellLaunchConfig.name) {
+			return;
+		}
+		const name = this._readPresetTitles().find(entry => entry.id === attachedId)?.name;
+		if (!name) {
+			return;
+		}
+		instance.shellLaunchConfig.titleTemplate = name;
+		// ラベルはもう計算済みなので、計算し直させる。`rename(undefined)` は固定タイトルを付けずに
+		// reset 付きの再計算だけを起こす（_updateTitleProperties が title === undefined で早期 return する）。
+		void instance.rename(undefined);
+	}
+
+	private _readPresetTitles(): { id: number; name: string }[] {
+		try {
+			const raw = this.storageService.get(PRESET_TITLE_STORAGE_KEY, StorageScope.WORKSPACE);
+			const parsed: unknown = raw ? JSON.parse(raw) : undefined;
+			return Array.isArray(parsed)
+				? parsed.filter((entry): entry is { id: number; name: string } =>
+					!!entry && typeof entry.id === 'number' && typeof entry.name === 'string')
+				: [];
+		} catch {
+			// 壊れた台帳で名前が戻らないのは許容する（機能そのものは動く）。
+			return [];
+		}
 	}
 
 	private _resolveCwd(preset: IParadisResolvedPreset, cwdSpec: string | undefined, baseOverride?: URI): URI | undefined {
@@ -408,10 +502,11 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		const instance = await this.terminalService.createTerminal({
 			// config を渡すと terminalService 側の既定プロファイル先行解決が走らないため、
 			// 渡すものが無いときは undefined のままにする（従来の経路を維持する）
-			config: (name || env) ? { name, env: env ? { ...env } : undefined } : undefined,
+			config: (name || env) ? { ...paradisPresetTitleConfig(name), env: env ? { ...env } : undefined } : undefined,
 			cwd,
 			location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
 		});
+		void this._rememberPresetTitle(instance, name);
 		this._warnIfEnvDropped(instance, env);
 		return instance;
 	}

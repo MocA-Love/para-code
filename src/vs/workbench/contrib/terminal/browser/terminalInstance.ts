@@ -2788,7 +2788,13 @@ export class TerminalLabelComputer extends Disposable {
 	refreshLabel(instance: Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'cwd' | 'fixedCols' | 'fixedRows' | 'initialCwd' | 'processName' | 'sequence' | 'userHome' | 'workspaceFolder' | 'staticTitle' | 'transientTitle' | 'capabilities' | 'title' | 'description'>, reset?: boolean): void {
 		const tabs = this._terminalConfigurationService.config.tabs;
 		const useAgentCliTitle = tabs.allowAgentCliTitle && TerminalLabelComputer.agentCliShellTypes.has(instance.shellType as GeneralShellType);
-		const titleTemplate = instance.shellLaunchConfig.titleTemplate ?? (useAgentCliTitle ? '${sequence}' : tabs.title);
+		// PARA-PATCH: prefer the agent CLI title over a caller-supplied titleTemplate (upstream has
+		// these the other way around). Para Code passes command preset names as a titleTemplate --
+		// passing them as `name` makes them a static title, which stops the OSC title from ever
+		// being subscribed to, so no automatic rename can happen at all. With upstream's order that
+		// preset name would always win and the tab would never follow Claude / Codex. While no agent
+		// is running the titleTemplate is still used, so the preset name comes back when it exits.
+		const titleTemplate = useAgentCliTitle ? '${sequence}' : (instance.shellLaunchConfig.titleTemplate ?? tabs.title);
 		this._title = this.computeLabel(instance, titleTemplate, TerminalLabelType.Title, reset);
 		this._description = this.computeLabel(instance, tabs.description, TerminalLabelType.Description);
 		if (this._title !== instance.title || this._description !== instance.description || reset) {

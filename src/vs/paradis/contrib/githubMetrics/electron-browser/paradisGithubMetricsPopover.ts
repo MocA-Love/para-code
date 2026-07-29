@@ -9,8 +9,9 @@
 // ステータスバーの GitHub 項目をクリックしたときに出るポップオーバー（案A）。
 // 「今このマシンが GitHub の枠をどれだけ食っているか」を数秒で確認することだけに絞り、
 // 表や履歴は「詳細を開く」でダッシュボード(EditorPane)へ送る。
-// 実体は status bar entry の tooltip(HTMLElement) なので、ShowTooltipCommand によって
-// クリックで開く。upstream の Copilot ステータス(chatStatusEntry.ts)と同じ仕組み。
+// 表示は status bar entry のクリック（内部コマンド paradis.githubMetrics.showPopover）から
+// hoverService.showInstantHover で固定表示のホバーとして重ねる。ホバー（マウスオーバー）では
+// 開かない: 詳細をホバーに載せると通りすがりに開閉を繰り返して点滅して見えるため。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
@@ -41,8 +42,8 @@ export interface IParadisGithubMetricsPopoverOptions {
 }
 
 /**
- * ポップオーバー本体。`element` を status bar entry の tooltip として返す。
- * 破棄は tooltip 側の CancellationToken に紐づけて呼び出し元が行う。
+ * ポップオーバー本体。`element` をホバーの内容として渡す。
+ * 破棄はホバーの `onDidHide` に紐づけて呼び出し元が行う。
  */
 export class ParadisGithubMetricsPopover extends Disposable {
 

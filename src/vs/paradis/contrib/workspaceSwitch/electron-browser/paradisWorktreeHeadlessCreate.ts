@@ -25,7 +25,13 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } from '../../../../workbench/contrib/chat/common/languageModels.js';
+import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
 import { ITerminalEditorService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import {
+	IParadisCopilotUtilityRequest,
+	IParadisCopilotUtilityResult,
+	PARADIS_COPILOT_UTILITY_CHANNEL,
+} from '../../copilotUtility/common/paradisCopilotUtility.js';
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
@@ -42,8 +48,17 @@ import {
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 
-/** LLM 命名の待ち時間上限（ダイアログ側 NAMING_TIMEOUT_MS と同値）。 */
-const NAMING_TIMEOUT_MS = 8000;
+/**
+ * 命名にかけてよい合計時間。ここを過ぎたらフォールバック名で worktree 作成へ進む。
+ *
+ * 2経路を直列に試すので、前段が食い潰すと後段が実質0秒になる。前段には別途の上限を持たせて、
+ * 残りを後段に回す。
+ */
+const NAMING_TOTAL_TIMEOUT_MS = 10_000;
+/** Copilot API 経路（1段目）の上限。初回はエンドポイント探索とトークン発行で往復が増える。 */
+const NAMING_COPILOT_TIMEOUT_MS = 5_000;
+/** 残り時間がこれを下回ったら2段目は起動しない（結果を待てないリクエストを投げるだけになる）。 */
+const NAMING_MIN_REMAINING_MS = 1_000;
 
 /** 作成フォームの材料（モバイルの作成シート・エージェント起動シートが選択肢を組み立てるのに使う）。 */
 export interface IParadisWorktreeCreateFormData {
@@ -125,8 +140,101 @@ function computeWorktreeUri(configurationService: IConfigurationService, reposit
 	return joinPath(dirname(repository.uri), `${basename(repository.uri)}-worktrees`, dirName);
 }
 
-/** Copilot の小型モデルでプロンプトからブランチ名を生成する（ダイアログの _generateBranchName と同じ規則）。 */
-async function generateBranchName(languageModelsService: ILanguageModelsService, logService: ILogService, prompt: string): Promise<string | undefined> {
+const BRANCH_NAME_INSTRUCTION = 'Generate a git branch name for the following development task. Output ONLY the branch name: kebab-case, lowercase ascii letters/digits/hyphens, at most 30 characters, no quotes, no slashes.';
+
+/** Copilot へ送る依頼文の上限。長い依頼文ほど命名が効かない、という逆転を避けるために切り詰める。 */
+const NAMING_PROMPT_MAX_CHARS = 2_000;
+
+/** LLM の返答やユーザーの入力を、ブランチ名として使える形に整える。使えなければ undefined。 */
+function toBranchName(text: string | undefined): string | undefined {
+	const candidate = text?.trim().split('\n')[0].replace(/^["'`]+|["'`]+$/g, '').toLowerCase();
+	if (!candidate) {
+		return undefined;
+	}
+	// ブランチ名は worktree のディレクトリ名にもなる（paradisBuildWorktreeNames）。git が許す文字でも
+	// Windows のファイル名に使えない文字が混ざると作成そのものが失敗するので、ここで落とす。
+	// LLM 由来なら現れない字だが、依頼文をそのまま名前にするフォールバックでは普通に混ざる。
+	// 空文字ではなく `-` に置換するのは、`a<b` が `ab` と繋がって読めなくなるのを避けるため。
+	const portable = paradisSanitizeBranchName(candidate.replace(/[<>|"]/g, '-'));
+	// 40文字カットで末尾に - や . が残ると git が拒否するため、カット後にもう一度トリムする。
+	// サロゲートペアの途中で切ると壊れた文字が残るので、コードポイント単位で数える。
+	const sliced = portable ? Array.from(portable).slice(0, 40).join('').replace(/[-./]+$/, '') : undefined;
+	// Windows の予約デバイス名はディレクトリ名にできない（拡張子を付けても不可）。
+	return sliced && !WINDOWS_RESERVED_NAME_PATTERN.test(sliced) ? sliced : undefined;
+}
+
+/** Windows が予約しているデバイス名。大小を問わず、`con.txt` のように拡張子が付いても使えない。 */
+const WINDOWS_RESERVED_NAME_PATTERN = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+/**
+ * GitHub のトークンで Copilot の小型モデルを直接叩いてブランチ名を作る。
+ *
+ * renderer の ILanguageModelsService（vendor: 'copilot'）は Copilot Chat 拡張がモデルを登録し終えて
+ * いないと黙って0件を返し、GitHub にログイン済みでも命名が効かないことがある。こちらは shared process
+ * 側で CAPI を直接叩く（コミットメッセージ生成と同じ経路）ので、拡張の起動状態に左右されない。
+ */
+async function generateBranchNameViaCopilotApi(
+	authenticationService: IAuthenticationService,
+	sharedProcessService: ISharedProcessService,
+	logService: ILogService,
+	prompt: string,
+): Promise<string | undefined> {
+	try {
+		const githubToken = await paradisFindGithubAccessToken(authenticationService);
+		if (!githubToken) {
+			return undefined;
+		}
+		const result = await sharedProcessService.getChannel(PARADIS_COPILOT_UTILITY_CHANNEL)
+			.call<IParadisCopilotUtilityResult>('complete', [{
+				githubToken,
+				messages: [
+					{ role: 'system', content: BRANCH_NAME_INSTRUCTION },
+					{ role: 'user', content: `Task: ${prompt.slice(0, NAMING_PROMPT_MAX_CHARS)}` },
+				],
+			} satisfies IParadisCopilotUtilityRequest]);
+		return toBranchName(result?.text);
+	} catch (error) {
+		logService.info('[ParadisWorktreeHeadlessCreate] Copilot API naming unavailable, falling back', error);
+		return undefined;
+	}
+}
+
+/** Copilot のセッショントークン発行に必要なスコープ（platform/agentHost の gitHubCopilotResource と同じ）。 */
+const GITHUB_COPILOT_SCOPES = ['read:user', 'user:email'];
+
+/**
+ * ログイン済みの GitHub セッションから、Copilot に使えそうなアクセストークンを1つ選ぶ。
+ *
+ * スコープ指定の `getSessions` は**完全一致**（github-authentication の実装）なので、ちょうど
+ * `read:user`+`user:email` のセッションを探しても普通は0件になる。かといって「両方を含むもの」に
+ * 絞ると、`read:user` だけのセッション（Copilot 系の拡張が作る典型形）まで落ちてしまう。
+ * そこで絞り込まず、必要スコープの一致数で並べて一番近いものを採る。
+ *
+ * 素朴に先頭を採ると、`repo` だけのセッション（git 連携が作る）や Copilot 契約の無い別アカウントを
+ * 引いて 401 になり、「たまに命名が効かない」が残る。一方で、このリポジトリのどのコードも
+ * `read:user`/`user:email` 付きのセッションを作らない（実際のスコープはサインインした拡張が決める）ため、
+ * 一致数0でも最後は手持ちで試す。ここで諦めると機能ごと死ぬ。
+ *
+ * 考え方は upstream の resolveTokenForResource と同じだが、あちらは agentHost 専用の深い階層にあり
+ * 取り込み時のコンフリクト面になるので import せず、同じ選び方をここに持つ。
+ * サインイン画面は出さない（命名のためにログインを迫らない）。
+ */
+async function paradisFindGithubAccessToken(authenticationService: IAuthenticationService): Promise<string | undefined> {
+	const sessions = await authenticationService.getSessions('github');
+	let best: { token: string; hits: number; extras: number } | undefined;
+	for (const session of sessions) {
+		const scopes = new Set(session.scopes);
+		const hits = GITHUB_COPILOT_SCOPES.filter(scope => scopes.has(scope)).length;
+		const extras = scopes.size;
+		if (!best || hits > best.hits || (hits === best.hits && extras < best.extras)) {
+			best = { token: session.accessToken, hits, extras };
+		}
+	}
+	return best?.token;
+}
+
+/** Copilot Chat 拡張が登録した小型モデル経由でブランチ名を生成する（Copilot API 経路が使えない場合の二段目）。 */
+async function generateBranchName(languageModelsService: ILanguageModelsService, logService: ILogService, prompt: string, timeoutMs: number): Promise<string | undefined> {
 	try {
 		const modelIds = await languageModelsService.selectLanguageModels({ vendor: 'copilot', id: 'copilot-utility-small' });
 		if (modelIds.length === 0) {
@@ -139,16 +247,12 @@ async function generateBranchName(languageModelsService: ILanguageModelsService,
 					role: ChatMessageRole.User,
 					content: [{
 						type: 'text',
-						value: `Generate a git branch name for the following development task. Output ONLY the branch name: kebab-case, lowercase ascii letters/digits/hyphens, at most 30 characters, no quotes, no slashes.\n\nTask: ${prompt}`,
+						value: `${BRANCH_NAME_INSTRUCTION}\n\nTask: ${prompt.slice(0, NAMING_PROMPT_MAX_CHARS)}`,
 					}],
 				}], {}, cts.token);
 				return getTextResponseFromStream(response);
 			})();
-			const text = await raceTimeout(request, NAMING_TIMEOUT_MS, () => cts.cancel());
-			const candidate = text?.trim().split('\n')[0].replace(/^["'`]+|["'`]+$/g, '').toLowerCase();
-			// 40文字カットで末尾に - や . が残ると git が拒否するため、カット後にもう一度トリムする
-			const sliced = candidate ? paradisSanitizeBranchName(candidate)?.slice(0, 40).replace(/[-./]+$/, '') : undefined;
-			return sliced ? sliced : undefined;
+			return toBranchName(await raceTimeout(request, timeoutMs, () => cts.cancel()));
 		} finally {
 			cts.dispose();
 		}
@@ -158,8 +262,19 @@ async function generateBranchName(languageModelsService: ILanguageModelsService,
 	}
 }
 
-/** LLM が使えない場合の決定的なフォールバック名（ダイアログの _fallbackBranchName と同じ規則）。 */
-function fallbackBranchName(): string {
+/**
+ * LLM がどれも使えない場合のフォールバック名。
+ *
+ * まずユーザーが自分で書いた文字（スペース名 → 依頼文）からブランチ名を作る。日時だけの名前
+ * （para-0729-2013）は一意ではあるが、ブランチ一覧で中身が全く分からないため最後の手段にする。
+ */
+function fallbackBranchName(seeds: readonly (string | undefined)[]): string {
+	for (const seed of seeds) {
+		const candidate = toBranchName(seed);
+		if (candidate) {
+			return candidate;
+		}
+	}
 	const now = new Date();
 	const pad = (value: number) => String(value).padStart(2, '0');
 	return `para-${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}`;
@@ -274,6 +389,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	const sharedProcessService = accessor.get(ISharedProcessService);
 	const configurationService = accessor.get(IConfigurationService);
 	const languageModelsService = accessor.get(ILanguageModelsService);
+	const authenticationService = accessor.get(IAuthenticationService);
 	const terminalService = accessor.get(ITerminalService);
 	const terminalEditorService = accessor.get(ITerminalEditorService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
@@ -301,14 +417,27 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 
 	const callbacks = options.callbacks;
 
-	// 1. ブランチ名の決定（手入力 > LLM > フォールバック）
+	// 1. ブランチ名の決定（手入力 > Copilot API > Copilot Chat 拡張のモデル > フォールバック）
 	let branch = paradisSanitizeBranchName(request.branch ?? '');
 	if (!branch) {
 		if (prompt.length > 0) {
 			callbacks?.onStage?.('naming');
-			branch = await generateBranchName(languageModelsService, logService, prompt);
+			// Copilot API 側はエンドポイント探索とトークン発行が呼び出し側の中断要求を意図的に無視する
+			// 作りなので、shared process のタイムアウトだけでは止まらない。ここで打ち切らないと、
+			// 命名で待たされて worktree 作成が始まらない。
+			const deadline = Date.now() + NAMING_TOTAL_TIMEOUT_MS;
+			branch = await raceTimeout(
+				generateBranchNameViaCopilotApi(authenticationService, sharedProcessService, logService, prompt),
+				NAMING_COPILOT_TIMEOUT_MS,
+			);
+			// 1段目が食い潰した分だけ2段目を短くする。残りが無いなら、結果を待てないリクエストを
+			// 投げるだけになるので起動しない。
+			const remaining = deadline - Date.now();
+			if (!branch && remaining >= NAMING_MIN_REMAINING_MS) {
+				branch = await generateBranchName(languageModelsService, logService, prompt, remaining);
+			}
 		}
-		branch = branch ?? fallbackBranchName();
+		branch = branch ?? fallbackBranchName([request.name, prompt]);
 	}
 	branch = paradisDeduplicateBranchName(branch, branchesInfo.branches);
 
