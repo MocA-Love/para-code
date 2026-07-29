@@ -118,6 +118,159 @@ export interface IParadisRemoveWorktreeRequest {
 	readonly worktreePath: string;
 	/** true の場合 `git worktree remove --force`（未コミット変更や未追跡ファイルがあっても強制削除）。 */
 	readonly force: boolean;
+	/**
+	 * true の場合、削除の前に `git worktree unlock` を試みる。
+	 *
+	 * ロック済みの worktree は `--force` を1つ付けただけでは消えない（git は `-f -f` を要求する。
+	 * 1つ目は未コミット変更の上書き、2つ目がロックの上書きで意味が別）。ロックは「いま誰かが
+	 * この作業ツリーを使っている」という主張なので、黙って2段目を付けるのではなく、呼び出し側が
+	 * ロック理由をユーザーに見せて同意を取ったうえでこれを立てる。
+	 */
+	readonly unlock?: boolean;
+}
+
+/** `git worktree list --porcelain` の1エントリ（ロック判定に要るものだけ）。 */
+export interface IParadisWorktreeListEntry {
+	/** git が報告する作業ツリーのパス（macOS では実体解決済みで返る）。 */
+	readonly path: string;
+	readonly locked: boolean;
+	/** ロック理由。理由なしでロックされている場合は空文字。 */
+	readonly lockReason: string;
+}
+
+/** 1つの worktree のロック状態。 */
+export interface IParadisWorktreeLockInfo {
+	readonly locked: boolean;
+	/**
+	 * ロック理由の生の値。理由なし、または非ロック時は空文字。
+	 * 表示に使うときは必ず {@link paradisFormatWorktreeLockReason} を通すこと
+	 * （任意長・改行込みの文字列で、ダイアログのボタンを画面外へ押し出せる）。
+	 */
+	readonly reason: string;
+}
+
+/** ロック状態を問い合わせる要求（読み取り専用なので削除要求とは別の型にする）。 */
+export interface IParadisWorktreeLockQuery {
+	readonly repoPath: string;
+	readonly worktreePath: string;
+}
+
+/** ロック理由を確認ダイアログに載せる上限。これを超えたぶんは切る。 */
+const PARADIS_LOCK_REASON_MAX_LENGTH = 200;
+
+/**
+ * ロック理由を1行に均して切り詰める。
+ *
+ * 理由はリポジトリ内の `.git/worktrees/<name>/locked` に誰でも書ける任意の文字列で、
+ * clone してきたリポジトリにも付いてくる。長大な理由や大量の改行をそのままダイアログへ
+ * 流すと、確認ボタンが画面の外へ出て「消せないし閉じられない」状態になりうる。
+ */
+export function paradisFormatWorktreeLockReason(reason: string): string {
+	const flattened = reason.replace(/\s+/g, ' ').trim();
+	// コードポイント単位で切る。`slice` だと絵文字の途中で割れて孤立サロゲートが残る。
+	const points = Array.from(flattened);
+	return points.length > PARADIS_LOCK_REASON_MAX_LENGTH
+		? `${points.slice(0, PARADIS_LOCK_REASON_MAX_LENGTH).join('')}…`
+		: flattened;
+}
+
+/** パスの突き合わせ方（プラットフォームで変わるので呼び出し側から渡す）。 */
+export interface IParadisWorktreePathComparison {
+	/** 大文字小文字を無視するか（Windows / macOS の既定のファイルシステム）。 */
+	readonly ignoreCase: boolean;
+	/** バックスラッシュを区切りとみなすか（Windows のみ）。 */
+	readonly backslashIsSeparator: boolean;
+}
+
+/**
+ * `git worktree list` の結果から、対象パスのロック状態を引く。
+ *
+ * パスを素の `===` で比べないのは、git が返す形と手元の形が揃わないため:
+ *  - Windows では git はフォワードスラッシュで返す（`C:/Users/foo/wt`）が、`URI.fsPath` は
+ *    バックスラッシュ（`C:\Users\foo\wt`）。ドライブレターの大小も揃わない
+ *  - 末尾の区切りの有無も揃わない
+ * ここが外れると「ロックされていない」と誤判定し、修正前とまったく同じ詰み（強制削除が
+ * ロックで失敗する）に戻る。例外は出ないので、効いていないことに気づけない。
+ *
+ * 同じパスのエントリが複数あった場合はロックを OR で畳む。`.git/worktrees/<name>/locked` へ
+ * 直接 NUL を書くと偽のエントリを注入でき、先頭一致だけを見ていると
+ * 「ロックされていない」側の偽エントリでロックを隠せてしまうため。
+ */
+export function paradisFindWorktreeLock(
+	entries: readonly IParadisWorktreeListEntry[],
+	worktreePath: string,
+	options: IParadisWorktreePathComparison,
+): IParadisWorktreeLockInfo {
+	let locked = false;
+	let reason = '';
+	for (const entry of entries) {
+		if (!paradisSameWorktreePath(entry.path, worktreePath, options)) {
+			continue;
+		}
+		if (entry.locked) {
+			locked = true;
+			reason ||= entry.lockReason;
+		}
+	}
+	return { locked, reason };
+}
+
+/** 区切りと末尾スラッシュ、必要なら大文字小文字を無視してパスを比べる。 */
+function paradisSameWorktreePath(a: string, b: string, options: IParadisWorktreePathComparison): boolean {
+	const normalize = (value: string) => {
+		// バックスラッシュを区切りとして潰すのは Windows だけ。Linux / macOS ではバックスラッシュは
+		// 正当なファイル名文字なので、無条件に潰すと別々の作業ツリーを同一視してしまう。
+		const separated = options.backslashIsSeparator ? value.replace(/\\/g, '/') : value;
+		const trimmed = separated.replace(/\/+$/, '');
+		return options.ignoreCase ? trimmed.toLowerCase() : trimmed;
+	};
+	const left = normalize(a);
+	return left.length > 0 && left === normalize(b);
+}
+
+/**
+ * `git worktree list --porcelain -z` の出力を解析する。
+ *
+ * `-z` を使うのは、ロック理由が任意のユーザー文字列で改行を含み得るため
+ * （改行区切りの porcelain だと理由の2行目がそのまま次の属性行に見えてしまう）。
+ * `-z` では各属性が NUL 終端で、エントリの区切りは空レコード（NUL の連続）になる。
+ */
+export function paradisParseWorktreeListPorcelain(output: string): IParadisWorktreeListEntry[] {
+	const entries: IParadisWorktreeListEntry[] = [];
+	let path: string | undefined;
+	let locked = false;
+	let lockReason = '';
+	const flush = () => {
+		if (path !== undefined) {
+			entries.push({ path, locked, lockReason });
+		}
+		path = undefined;
+		locked = false;
+		lockReason = '';
+	};
+	for (const record of output.split('\0')) {
+		if (record === '') {
+			// 空レコード＝エントリの切れ目。末尾の余分な空レコードは flush が握り潰す。
+			flush();
+			continue;
+		}
+		if (record.startsWith('worktree ')) {
+			// 区切りの空レコードが無い実装差に備えて、次の worktree 行でも確定させる。
+			flush();
+			path = record.slice('worktree '.length);
+			continue;
+		}
+		if (record === 'locked') {
+			locked = true;
+			continue;
+		}
+		if (record.startsWith('locked ')) {
+			locked = true;
+			lockReason = record.slice('locked '.length);
+		}
+	}
+	flush();
+	return entries;
 }
 
 /** エージェントのモデル選択肢1件分。 */
