@@ -6,7 +6,10 @@
 import assert from 'assert';
 import * as sinon from 'sinon';
 import { DeferredPromise, timeout } from '../../../../base/common/async.js';
+import { bufferToStream, VSBuffer } from '../../../../base/common/buffer.js';
 import { Event } from '../../../../base/common/event.js';
+import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
+import { IRequestContext, IRequestOptions } from '../../../../base/parts/request/common/request.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationOverrides, IConfigurationValue } from '../../../configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../configuration/test/common/testConfigurationService.js';
@@ -19,7 +22,7 @@ import { IRequestService } from '../../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../../storage/electron-main/storageMainService.js';
 import { NullTelemetryService } from '../../../telemetry/common/telemetryUtils.js';
 import { DisablementReason, State, StateType } from '../../common/update.js';
-import { AbstractUpdateService, IUpdateURLOptions } from '../../electron-main/abstractUpdateService.js';
+import { AbstractUpdateService, getUpdateAccessHeaders, IUpdateURLOptions } from '../../electron-main/abstractUpdateService.js';
 
 class TestUpdateService extends AbstractUpdateService {
 
@@ -92,7 +95,13 @@ suite('AbstractUpdateService', () => {
 
 	let configurationService: PolicyTestConfigurationService;
 
-	function createService(mode: string, options?: { isBuilt?: boolean; disableUpdates?: boolean; updateUrl?: string }): TestUpdateService {
+	function createService(mode: string, options?: {
+		isBuilt?: boolean;
+		disableUpdates?: boolean;
+		updateUrl?: string;
+		requestService?: IRequestService;
+		productService?: Partial<IProductService>;
+	}): TestUpdateService {
 		configurationService = new PolicyTestConfigurationService();
 		configurationService.setUserConfiguration('update.mode', mode);
 
@@ -108,7 +117,7 @@ suite('AbstractUpdateService', () => {
 			disableUpdates: options?.disableUpdates ?? false
 		} as unknown as IEnvironmentMainService;
 
-		const requestService = {
+		const requestService = options?.requestService ?? {
 			request: () => Promise.reject(new Error('not expected'))
 		} as unknown as IRequestService;
 
@@ -117,7 +126,8 @@ suite('AbstractUpdateService', () => {
 			commit: 'abc123',
 			quality: 'stable',
 			version: '1.0.0',
-			target: 'user'
+			target: 'user',
+			...options?.productService
 		} as unknown as IProductService;
 
 		const applicationStorageMainService = {
@@ -144,6 +154,17 @@ suite('AbstractUpdateService', () => {
 		return store.add(service);
 	}
 
+	function createRequestService(handler: (options: IRequestOptions) => Promise<IRequestContext>): IRequestService {
+		return { request: handler } as unknown as IRequestService;
+	}
+
+	function createResponse(statusCode: number): IRequestContext {
+		return {
+			res: { headers: {}, statusCode },
+			stream: bufferToStream(VSBuffer.fromString(''))
+		};
+	}
+
 	function changeMode(service: TestUpdateService, mode: string): Promise<unknown> {
 		configurationService.setUserConfiguration('update.mode', mode);
 		const next = Event.toPromise(service.onStateChange);
@@ -160,6 +181,89 @@ suite('AbstractUpdateService', () => {
 
 	teardown(() => {
 		sinon.restore();
+	});
+
+	test('getUpdateAccessHeaders returns both Cloudflare Access headers when both credentials are present', () => {
+		const headers = getUpdateAccessHeaders({
+			updateAccessClientId: 'client-id',
+			updateAccessClientSecret: 'client-secret'
+		} as IProductService);
+
+		assert.deepStrictEqual(headers, {
+			'CF-Access-Client-Id': 'client-id',
+			'CF-Access-Client-Secret': 'client-secret'
+		});
+	});
+
+	for (const [name, productService] of [
+		['both credentials are absent', {}],
+		['the client id is absent', { updateAccessClientSecret: 'client-secret' }],
+		['the client secret is absent', { updateAccessClientId: 'client-id' }],
+		['the client id is empty', { updateAccessClientId: '', updateAccessClientSecret: 'client-secret' }],
+		['the client secret is empty', { updateAccessClientId: 'client-id', updateAccessClientSecret: '' }]
+	] satisfies [string, Partial<IProductService>][]) {
+		test(`getUpdateAccessHeaders returns no authentication headers when ${name}`, () => {
+			assert.strictEqual(getUpdateAccessHeaders(productService as IProductService), undefined);
+		});
+	}
+
+	test('isLatestVersion preserves the platform User-Agent when adding Cloudflare Access headers', async () => {
+		let requestOptions: IRequestOptions | undefined;
+		const requestService = createRequestService(async options => {
+			requestOptions = options;
+			return createResponse(204);
+		});
+		const service = createService('default', {
+			requestService,
+			productService: {
+				updateAccessClientId: 'client-id',
+				updateAccessClientSecret: 'client-secret'
+			}
+		});
+		await service.whenInitialized;
+
+		await service.isLatestVersion();
+
+		assert.deepStrictEqual({
+			url: requestOptions?.url,
+			callSite: requestOptions?.callSite,
+			clientId: requestOptions?.headers?.['CF-Access-Client-Id'],
+			clientSecret: requestOptions?.headers?.['CF-Access-Client-Secret']
+		}, {
+			url: 'https://update.example/feed',
+			callSite: 'updateService.isLatestVersion',
+			clientId: 'client-id',
+			clientSecret: 'client-secret'
+		});
+
+		const userAgent = requestOptions?.headers?.['User-Agent'];
+		if (isMacintosh) {
+			assert.match(userAgent as string, /^Code\/1\.0\.0 Darwin\/.+$/);
+		} else if (isWindows) {
+			assert.match(userAgent as string, /^Code\/1\.0\.0 Electron\/.+ Windows NT \d+\.\d+$/);
+		} else {
+			assert.strictEqual(userAgent, undefined);
+		}
+	});
+
+	for (const [statusCode, expected] of [[204, true], [200, false]] as const) {
+		test(`isLatestVersion returns ${expected} for a ${statusCode} response`, async () => {
+			const service = createService('default', {
+				requestService: createRequestService(() => Promise.resolve(createResponse(statusCode)))
+			});
+			await service.whenInitialized;
+
+			assert.strictEqual(await service.isLatestVersion(), expected);
+		});
+	}
+
+	test('isLatestVersion returns undefined when the update request fails', async () => {
+		const service = createService('default', {
+			requestService: createRequestService(() => Promise.reject(new Error('request failed')))
+		});
+		await service.whenInitialized;
+
+		assert.strictEqual(await service.isLatestVersion(), undefined);
 	});
 
 	test('mode none disables updates at startup', async () => {

@@ -5,7 +5,14 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisNormalizeCodexLimitWindows } from '../../common/paradisLimitsMonitor.js';
+import {
+	IParadisLimitsAccount,
+	paradisLimitsFormatCountdown,
+	paradisLimitsFormatResetClock,
+	paradisLimitsSeverity,
+	paradisLimitsWorstPercent,
+	paradisNormalizeCodexLimitWindows,
+} from '../../common/paradisLimitsMonitor.js';
 
 suite('ParadisLimitsMonitor', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -30,5 +37,87 @@ suite('ParadisLimitsMonitor', () => {
 			sessionOnlyInSecondary: { fiveHour },
 			unknownOnly: { fiveHour: unknown },
 		});
+	});
+
+	test('recognizes exact duration boundaries and keeps unknown durations positional', () => {
+		type WindowFixture = { id: string; durationMinutes?: number };
+		const exactFiveHour: WindowFixture = { id: 'exact-five-hour', durationMinutes: 300 };
+		const exactSevenDay: WindowFixture = { id: 'exact-seven-day', durationMinutes: 10_080 };
+		const belowSevenDay: WindowFixture = { id: 'below-seven-day', durationMinutes: 10_079 };
+		const missingDuration: WindowFixture = { id: 'missing-duration' };
+		const durationMinutes = (window: WindowFixture) => window.durationMinutes;
+
+		assert.deepStrictEqual({
+			exactFiveHourOnly: paradisNormalizeCodexLimitWindows(undefined, exactFiveHour, durationMinutes),
+			exactSevenDayOnly: paradisNormalizeCodexLimitWindows(undefined, exactSevenDay, durationMinutes),
+			belowSevenDayOnly: paradisNormalizeCodexLimitWindows(undefined, belowSevenDay, durationMinutes),
+			missingDurationOnly: paradisNormalizeCodexLimitWindows(missingDuration, undefined, durationMinutes),
+		}, {
+			exactFiveHourOnly: { fiveHour: exactFiveHour },
+			exactSevenDayOnly: { sevenDay: exactSevenDay },
+			belowSevenDayOnly: { fiveHour: belowSevenDay },
+			missingDurationOnly: { fiveHour: { id: 'missing-duration' } },
+		});
+	});
+
+	test('returns no windows or worst percentage for missing usage payloads', () => {
+		const account: IParadisLimitsAccount = {
+			provider: 'codex',
+			id: '/tmp/.codex-test',
+			status: 'ok',
+		};
+
+		assert.deepStrictEqual(paradisNormalizeCodexLimitWindows(undefined, null, () => undefined), {});
+		assert.strictEqual(paradisLimitsWorstPercent(account), undefined);
+		assert.strictEqual(paradisLimitsWorstPercent({ ...account, scoped: [] }), undefined);
+		assert.strictEqual(paradisLimitsFormatResetClock(undefined, Date.now()), undefined);
+		assert.strictEqual(paradisLimitsFormatCountdown(undefined, Date.now()), undefined);
+	});
+
+	test('uses the documented severity boundaries', () => {
+		assert.deepStrictEqual([
+			paradisLimitsSeverity(59.999),
+			paradisLimitsSeverity(60),
+			paradisLimitsSeverity(84.999),
+			paradisLimitsSeverity(85),
+		], [
+			'normal',
+			'elevated',
+			'elevated',
+			'high',
+		]);
+	});
+
+	test('selects the worst percentage from each account window family', () => {
+		const account: IParadisLimitsAccount = {
+			provider: 'codex',
+			id: '/tmp/.codex-test',
+			status: 'ok',
+		};
+
+		assert.deepStrictEqual([
+			paradisLimitsWorstPercent({
+				...account,
+				fiveHour: { usedPercent: 92 },
+				sevenDay: { usedPercent: 84 },
+				scoped: [{ usedPercent: 91, label: 'model' }],
+			}),
+			paradisLimitsWorstPercent({
+				...account,
+				fiveHour: { usedPercent: 59 },
+				sevenDay: { usedPercent: 93 },
+				scoped: [{ usedPercent: 91, label: 'model' }],
+			}),
+			paradisLimitsWorstPercent({
+				...account,
+				fiveHour: { usedPercent: 59 },
+				sevenDay: { usedPercent: 84 },
+				scoped: [{ usedPercent: 94, label: 'model' }],
+			}),
+		], [
+			92,
+			93,
+			94,
+		]);
 	});
 });

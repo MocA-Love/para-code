@@ -99,6 +99,46 @@ jobs:
       - name: Check cyclic dependencies
         run: node build/lib/checkCyclicDependencies.ts out-build
 
+  para-fork-tests:
+    name: Para Code Fork Tests
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        # PARA-PATCH: Reuse the self-hosted workspace while keeping the fork-selected checkout version.
+        uses: actions/checkout@v7
+        with:
+          clean: false
+
+      - name: Verify preinstalled toolchain
+        run: |
+          NODE_VERSION="$(node --version)"
+          EXPECTED_NODE_VERSION="v$(cat .nvmrc)"
+          test "$NODE_VERSION" = "$EXPECTED_NODE_VERSION"
+          test "$(pnpm --version | cut -d. -f1)" = "10"
+          npm --version
+
+      - name: Install Update Worker dependencies
+        working-directory: cloudflare/update-server
+        run: npm ci
+
+      - name: Install mobile workspace dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check and test Update Worker
+        working-directory: cloudflare/update-server
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Type check and test mobile workspace
+        working-directory: app
+        run: |
+          pnpm typecheck
+          pnpm test
+
   linux-cli-tests:
     name: Linux
     uses: ./.github/workflows/pr-linux-cli-test.yml
@@ -431,5 +471,3 @@ jobs:
       - name: Run Completions Core lib tests using VS Code
         working-directory: extensions/copilot
         run: npm run test:completions-core
-
-
