@@ -14,6 +14,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, IReference, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { DiffEditorWidget } from '../../../../editor/browser/widget/diffEditor/diffEditorWidget.js';
 import { IDiffEditor } from '../../../../editor/browser/editorBrowser.js';
@@ -74,12 +75,22 @@ export class ParadisFileDiffEditor extends EditorPane {
 		const store = new DisposableStore();
 		this._modelRefs.value = store;
 
-		let originalRef: IReference<IResolvedTextEditorModel>;
-		let modifiedRef: IReference<IResolvedTextEditorModel>;
+		const acquireModelReference = async (resource: URI): Promise<IReference<IResolvedTextEditorModel> | undefined> => {
+			const reference = await this._textModelService.createModelReference(resource);
+			if (token.isCancellationRequested || this.input !== input || this._modelRefs.value !== store) {
+				reference.dispose();
+				return undefined;
+			}
+			store.add(reference);
+			return reference;
+		};
+
+		let originalRef: IReference<IResolvedTextEditorModel> | undefined;
+		let modifiedRef: IReference<IResolvedTextEditorModel> | undefined;
 		try {
 			[originalRef, modifiedRef] = await Promise.all([
-				this._textModelService.createModelReference(diffInput.originalResource),
-				this._textModelService.createModelReference(diffInput.modifiedResource),
+				acquireModelReference(diffInput.originalResource),
+				acquireModelReference(diffInput.modifiedResource),
 			]);
 		} catch (error) {
 			// 自分がまだ現役の store のときだけ共有状態を破棄する。
@@ -90,17 +101,14 @@ export class ParadisFileDiffEditor extends EditorPane {
 			throw error;
 		}
 
-		// await 中に入力が切り替わった/キャンセルされた場合、共有の _modelRefs は既に
-		// 後続 setInput の store を指している可能性がある。共有状態には触れず、自分が
-		// 取得した参照だけを破棄して return する（誤破棄・リークの両方を防ぐ）。
-		if (token.isCancellationRequested || this.input !== input || this._modelRefs.value !== store) {
-			originalRef.dispose();
-			modifiedRef.dispose();
+		if (!originalRef || !modifiedRef || token.isCancellationRequested || this.input !== input || this._modelRefs.value !== store) {
+			if (this._modelRefs.value === store) {
+				this._modelRefs.clear();
+			} else {
+				store.dispose();
+			}
 			return;
 		}
-
-		store.add(originalRef);
-		store.add(modifiedRef);
 
 		const widget = this._ensureWidget();
 		widget.setModel({

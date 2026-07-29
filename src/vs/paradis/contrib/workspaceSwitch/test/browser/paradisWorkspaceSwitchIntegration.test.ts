@@ -39,6 +39,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		const terminalIds = createUniqueTerminalIds();
 		let sourceTerminal: ITerminalInstance | undefined;
 		let didPark = false;
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
 
 		try {
 			const preexisting = paradisTakeParkedTerminalEditorInstance(terminalIds.persistentProcessId);
@@ -47,7 +48,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			} finally {
 				preexisting?.dispose();
 			}
-			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
 			const sourceEditor = harness.createEditor('/workspace-a/unsaved.txt', true);
 			const terminalInput = harness.createEditor('/workspace-a/terminal', false);
 			await harness.parts.activeGroup.openEditor(sourceEditor, { pinned: true });
@@ -107,6 +108,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				if (sourceTerminal !== undefined && parked !== sourceTerminal) {
 					sourceTerminal.dispose();
 				}
+				await harness?.parts.activeGroup.closeAllEditors();
 				testDisposables.dispose();
 			}
 		}

@@ -198,6 +198,10 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		this._register(this.workingCopyService.onDidSave(({ workingCopy }) => this.releaseWorkingCopyOwnerWhenSafe(workingCopy)));
 		this._register(this.workingCopyService.onDidUnregister(workingCopy => this.releaseWorkingCopyOwnerWhenSafe(workingCopy)));
 		this._register(toDisposable(() => {
+			for (const liveWorkingSet of this.liveWorkingSets.values()) {
+				liveWorkingSet.retentions.dispose();
+			}
+			this.liveWorkingSets.clear();
 			for (const retirement of this.preparedRetirements.values()) {
 				retirement.frozenRetentions.dispose();
 			}

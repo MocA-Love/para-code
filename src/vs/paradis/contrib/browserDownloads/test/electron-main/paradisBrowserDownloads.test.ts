@@ -10,7 +10,7 @@ import type { DownloadItem, Event, Session, WebContents } from 'electron';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IConfigurationOverrides, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
-import { paradisConfigureBrowserDownloads } from '../../electron-main/paradisBrowserDownloads.js';
+import { paradisConfigureBrowserDownloadsWithPath } from '../../electron-main/paradisBrowserDownloadsCore.js';
 
 type WillDownloadListener = (event: Event, item: DownloadItem, webContents: WebContents) => void;
 type DownloadItemFake = Pick<DownloadItem, 'getFilename' | 'setSavePath'>;
@@ -45,8 +45,12 @@ suite('ParadisBrowserDownloads', () => {
 		} satisfies Pick<IConfigurationService, 'getValue'>;
 
 		try {
-			paradisConfigureBrowserDownloads(session as unknown as Session, configurationService as IConfigurationService);
-			paradisConfigureBrowserDownloads(session as unknown as Session, configurationService as IConfigurationService);
+			paradisConfigureBrowserDownloadsWithPath(session as unknown as Session, configurationService as IConfigurationService, () => {
+				throw new Error('the configured absolute path must not consult the Electron default');
+			});
+			paradisConfigureBrowserDownloadsWithPath(session as unknown as Session, configurationService as IConfigurationService, () => {
+				throw new Error('the configured absolute path must not consult the Electron default');
+			});
 			assert.strictEqual(listenerRegistrations, 1, 'a session must have only one will-download listener');
 			assert.ok(listener);
 
@@ -89,7 +93,9 @@ suite('ParadisBrowserDownloads', () => {
 			getValue,
 		} satisfies Pick<IConfigurationService, 'getValue'>;
 
-		paradisConfigureBrowserDownloads(session as unknown as Session, configurationService as IConfigurationService);
+		paradisConfigureBrowserDownloadsWithPath(session as unknown as Session, configurationService as IConfigurationService, () => {
+			throw new Error('disabled downloads must not consult the Electron default');
+		});
 		assert.ok(listener);
 		let savePathCalls = 0;
 		const item = {

@@ -14,17 +14,8 @@
 // ここではmainプロセス側で恒久的に配線する。呼び出し元は browserSession.ts の configure()（PARA-PATCH 1行）。
 
 import { app } from 'electron';
-import * as fs from 'fs';
-import { basename, extname, isAbsolute, join } from '../../../../base/common/path.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { PARADIS_BROWSER_DOWNLOADS_DEFAULT_SUBFOLDER, PARADIS_BROWSER_DOWNLOADS_ENABLED_KEY, PARADIS_BROWSER_DOWNLOADS_PATH_KEY } from '../common/paradisBrowserDownloads.js';
-
-/**
- * `will-download` を配線済みのElectronセッション。同一セッションへの二重配線
- * （リスナー累積による `setSavePath` の多重呼び出し）を防ぐためのガード。
- * `browserExtensions` の `attemptedSessions` と同じ理由・同じ形。
- */
-const configuredSessions = new WeakSet<Electron.Session>();
+import { paradisConfigureBrowserDownloadsWithPath } from './paradisBrowserDownloadsCore.js';
 
 /**
  * 内蔵ブラウザ用のElectronセッションへダウンロード自動保存を配線する。設定は `will-download` の
@@ -35,43 +26,5 @@ const configuredSessions = new WeakSet<Electron.Session>();
  * `undefined` を「既定へフォールバック」側へ倒すため、既定ON・既定パスの意図した挙動になる。
  */
 export function paradisConfigureBrowserDownloads(session: Electron.Session, configurationService: IConfigurationService): void {
-	if (configuredSessions.has(session)) {
-		return;
-	}
-	configuredSessions.add(session);
-
-	session.on('will-download', (_event, item) => {
-		if (configurationService.getValue<boolean>(PARADIS_BROWSER_DOWNLOADS_ENABLED_KEY) === false) {
-			return; // 無効化時はElectron既定の保存ダイアログにフォールバックさせる
-		}
-
-		// 相対パスはmainプロセスのcwd基準で予測不能な場所を指しかねないため、絶対パスのみ受け入れる。
-		const customPath = configurationService.getValue<string>(PARADIS_BROWSER_DOWNLOADS_PATH_KEY)?.trim();
-		const targetDirectory = customPath && isAbsolute(customPath)
-			? customPath
-			: join(app.getPath('downloads'), PARADIS_BROWSER_DOWNLOADS_DEFAULT_SUBFOLDER);
-
-		try {
-			fs.mkdirSync(targetDirectory, { recursive: true });
-		} catch (error) {
-			console.error('[paradis] Failed to create the browser downloads directory, falling back to the save dialog:', error);
-			return;
-		}
-
-		// ダウンロード先ファイル名はナビゲーション先のサイトやCDP経由の自動操作の影響を受けるため、
-		// パス区切りを剥がして targetDirectory の外へ書き込めないようにする。
-		item.setSavePath(paradisResolveUniqueDownloadPath(targetDirectory, basename(item.getFilename())));
-	});
-}
-
-/** 同名ファイルが既にある場合、ブラウザの一般的な挙動に合わせて ` (1)`, ` (2)`, ... を付けて衝突を避ける。 */
-function paradisResolveUniqueDownloadPath(directory: string, filename: string): string {
-	const ext = extname(filename);
-	const base = filename.slice(0, filename.length - ext.length);
-
-	let candidate = join(directory, filename);
-	for (let i = 1; fs.existsSync(candidate); i++) {
-		candidate = join(directory, `${base} (${i})${ext}`);
-	}
-	return candidate;
+	paradisConfigureBrowserDownloadsWithPath(session, configurationService, () => app.getPath('downloads'));
 }
