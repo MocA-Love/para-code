@@ -32,6 +32,7 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
 import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../src/agentNavigation.js';
 import { AgentInitialRevealGate } from '../src/agentInitialReveal.js';
+import { AgentStickyScroll } from '../src/agentStickyScroll.js';
 
 /**
  * エージェント詳細画面。ホームの一覧（または通知）から1エージェントを選んで開く
@@ -256,15 +257,11 @@ export default function AgentDetailScreen() {
 		return () => detachAgent(activeKey);
 	}, [activeKey, attachAgent, detachAgent]);
 
-	// 自動スクロールは「sticky（最下部追従）モード」の状態ベースで制御する。
-	// 開いた直後・対象切替直後は sticky で、onContentSizeChange のたびに末尾へ
-	// 即時ジャンプする（FlatListは長い履歴を分割レンダリングして contentSize が
-	// 段階的に伸びるため、初回表示もこれで最新まで張り付く）。確定メッセージの追加
-	// だけでなく、実行中インジケータ（live/activity のフッター）の伸縮にも追従する。
-	// ユーザーが上へスクロールして下端から離れたら解除し、以後は何が届いても位置を
-	// 動かさない（遡り読みを妨げない）。下端付近まで手で戻ると自動で復帰する。
+	// 自動スクロールは「sticky（最下部追従）モード」で制御する。判断そのものは
+	// agentStickyScroll.ts の状態機械が持つ（画面を動かさずに検証できるようにするため）。
+	// ここはイベントを渡し、返ってきた指示どおりにリストを動かすだけにする。
+	const scrollState = useRef(new AgentStickyScroll()).current;
 	const [sticky, setStickyState] = useState(true);
-	const stickyRef = useRef(true);
 	// 初回表示は最下部へ到達してから見せる（分割描画の追いかけ過程を見せると、開いた直後に
 	// 履歴が上から流れ落ちて最新へ飛ぶように映る）。判定は agentInitialReveal.ts 側。
 	// タイマーを持つのでキャッシュ破棄が許される useMemo ではなく ref で保持する。
@@ -272,39 +269,29 @@ export default function AgentDetailScreen() {
 	const revealGate = useRef(new AgentInitialRevealGate(() => {
 		// 上限時間で表示に転じたときは追いかけの途中なので、見せる直前に一度寄せ直す
 		// （遡り読みを始めていたら動かさない）。
-		if (stickyRef.current) {
+		if (scrollState.sticky) {
 			listRef.current?.scrollToEnd({ animated: false });
 		}
 		setListRevealed(true);
 	})).current;
-	const userScrollGestureRef = useRef(false);
-	const userDraggingRef = useRef(false);
-	const userMomentumRef = useRef(false);
 	const handledLatestEntryRef = useRef<string | undefined>(undefined);
-	// FlatListは初回に分割レンダリングされるため、最新位置へ到達するまでcontentSize更新ごとに
-	// scrollToEndを繰り返す。到達後またはユーザー操作開始時に解除する。
-	const latestEntryPendingRef = useRef(false);
 	// sticky解除中に届いた新着（確定メッセージ）の件数。ジャンプボタンのバッジに出す。
 	const [newCount, setNewCount] = useState(0);
-	const setSticky = useCallback((value: boolean) => {
-		stickyRef.current = value;
-		setStickyState(value);
-		if (value) {
+	// 状態機械の sticky を画面へ映す。追従へ戻ったところで新着バッジは用済みになる
+	// （バッジは sticky でない間しか増えないので、無条件に 0 でよい）。
+	const syncSticky = useCallback(() => {
+		const next = scrollState.sticky;
+		setStickyState(next);
+		if (next) {
 			setNewCount(0);
 		}
-	}, []);
+	}, [scrollState]);
 	const prevCountRef = useRef(0);
-	// 対象を切り替えたときは前回の高さを引き継がない（長いチャットから短いチャットへ移ると
-	// 初回の onContentSizeChange が「縮んだ」と判定され、下端へ寄らなくなる）。
-	const lastContentHeightRef = useRef(0);
 	useEffect(() => {
-		userScrollGestureRef.current = false;
-		userDraggingRef.current = false;
-		userMomentumRef.current = false;
-		setSticky(true);
+		scrollState.reset();
+		syncSticky();
 		prevCountRef.current = 0;
-		lastContentHeightRef.current = 0;
-	}, [activeKey, setSticky]);
+	}, [activeKey, scrollState, syncSticky]);
 	// リストが実際にマウントされた（＝チャットが手元に届いた）ところから隠し始める。
 	// 条件は FlatList の描画条件（chat があって none でない）と必ず同値にすること。ずれると
 	// 「隠したのに描画されない＝戻せない」空白が生まれる。epoch が変わると keyExtractor 経由で
@@ -323,84 +310,44 @@ export default function AgentDetailScreen() {
 			return;
 		}
 		handledLatestEntryRef.current = latestEntry;
-		latestEntryPendingRef.current = true;
-		lastContentHeightRef.current = 0;
-		userScrollGestureRef.current = false;
-		userDraggingRef.current = false;
-		userMomentumRef.current = false;
-		setSticky(true);
+		scrollState.followFromNavigation();
+		syncSticky();
 		const frame = requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: false }));
 		return () => cancelAnimationFrame(frame);
-	}, [activeKey, latestEntry, setSticky]);
+	}, [activeKey, latestEntry, scrollState, syncSticky]);
 	const messageCount = chat?.messages.length ?? 0;
 	useEffect(() => {
 		const delta = messageCount - prevCountRef.current;
 		prevCountRef.current = messageCount;
-		if (delta > 0 && !stickyRef.current) {
+		if (delta > 0 && !scrollState.sticky) {
 			setNewCount(c => c + delta);
 		}
-	}, [messageCount]);
+	}, [messageCount, scrollState]);
 	const onContentSizeChange = (_width: number, height: number) => {
-		const previousHeight = lastContentHeightRef.current;
-		lastContentHeightRef.current = height;
-		// 指が触れている間（慣性を含む）は自動追従で引き戻さない。sticky の解除側だけが
-		// ドラッグを見ていたため、下端付近で少し上へずらす操作とライブ更新の追従が
-		// 数Hz で綱引きになっていた。
-		if (userDraggingRef.current || userMomentumRef.current) {
-			return;
-		}
-		// 縮んだ方向へは追従しない。ライブ表示フッターはツールの開始/終了ごとに
-		// 高さが増減するので、縮小時にも末尾へ寄せると本文が上下に往復して震える。
-		// 縮小方向の位置合わせは OS のクランプに任せれば十分。
-		if (height < previousHeight) {
-			return;
-		}
-		if (stickyRef.current || latestEntryPendingRef.current) {
+		if (scrollState.handleContentSize(height)) {
 			listRef.current?.scrollToEnd({ animated: false });
 			revealGate.noteGrowth();
 		}
 	};
-	// stickyを解除するのは、ユーザーが指で動かしている間（慣性スクロールを含む）だけ。
-	// 新着やfooter伸長によるcontentSize更新でもonScrollは発火するため、位置だけで
-	// ユーザー操作と判定すると、旧offsetを見た瞬間に追従が誤解除される。
 	const onScrollBeginDrag = () => {
 		// 隠している間は触れないので通常ここは表示済み。隠したまま指が届く経路が
 		// できたときに取り残されないための保険として呼ぶ。
 		revealGate.revealNow();
-		latestEntryPendingRef.current = false;
-		userScrollGestureRef.current = true;
-		userDraggingRef.current = true;
-		userMomentumRef.current = false;
+		scrollState.beginDrag();
 	};
-	const onScrollEndDrag = () => {
-		userDraggingRef.current = false;
-	};
-	const onMomentumScrollBegin = () => {
-		userMomentumRef.current = userScrollGestureRef.current;
-	};
-	const onMomentumScrollEnd = () => {
-		userMomentumRef.current = false;
-		userScrollGestureRef.current = false;
-	};
+	const onScrollEndDrag = () => scrollState.endDrag();
+	const onMomentumScrollBegin = () => scrollState.beginMomentum();
+	const onMomentumScrollEnd = () => scrollState.endMomentum();
 	// AgentComposer へ安定参照で渡すため useCallback 化（ref と安定な setState のみ参照）。
 	const scrollToEndSticky = useCallback(() => {
-		userScrollGestureRef.current = false;
-		userDraggingRef.current = false;
-		userMomentumRef.current = false;
-		setSticky(true);
+		scrollState.followNow();
+		syncSticky();
 		listRef.current?.scrollToEnd({ animated: true });
-	}, [setSticky]);
-	// sticky判定のしきい値: 下端から80px以内なら「最下部にいる」とみなす。
+	}, [scrollState, syncSticky]);
 	const onListScroll = (e: { nativeEvent: { contentOffset: { y: number }; contentSize: { height: number }; layoutMeasurement: { height: number } } }) => {
 		const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-		const nearBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - 80;
-		if (nearBottom) {
-			latestEntryPendingRef.current = false;
-		}
-		if (nearBottom && !stickyRef.current) {
-			setSticky(true);
-		} else if (!nearBottom && stickyRef.current && (userDraggingRef.current || userMomentumRef.current)) {
-			setSticky(false);
+		if (scrollState.handleScroll({ offsetY: contentOffset.y, layoutHeight: layoutMeasurement.height, contentHeight: contentSize.height })) {
+			syncSticky();
 		}
 	};
 	const jumpToLatest = () => {
@@ -417,7 +364,7 @@ export default function AgentDetailScreen() {
 		const height = e.nativeEvent.layout.height;
 		const shrank = height < listHeightRef.current;
 		listHeightRef.current = height;
-		if (shrank && stickyRef.current) {
+		if (shrank && scrollState.shouldPinOnViewportShrink()) {
 			listRef.current?.scrollToEnd({ animated: false });
 		}
 	};
