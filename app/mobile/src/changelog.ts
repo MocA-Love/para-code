@@ -40,6 +40,18 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.2.3',
+		date: '2026-07-29',
+		items: [
+			{
+				icon: 'lock-open-outline',
+				title: '画面を消したままでも、通知で起こされたときに繋がるようになりました',
+				body: 'ロック中はペアリング情報を読み出せず、そのまま接続に失敗することがありました。ロック解除を一度でも済ませていれば読めるように保存し直します。',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.2.2',
 		date: '2026-07-28',
 		items: [
