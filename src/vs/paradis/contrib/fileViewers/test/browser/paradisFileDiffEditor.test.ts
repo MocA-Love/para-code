@@ -287,6 +287,7 @@ suite('ParadisFileDiffEditor', () => {
 		cancellation.cancel();
 		completeReference(modifiedReference);
 		await settingInput;
+		editor.dispose();
 
 		strictEqual(originalReference.disposeCount, 1);
 		strictEqual(modifiedReference.disposeCount, 1);
