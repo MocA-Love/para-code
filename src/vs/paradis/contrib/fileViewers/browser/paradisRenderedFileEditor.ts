@@ -35,6 +35,7 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { ParadisWebviewOriginPool } from './paradisWebviewOriginPool.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
@@ -92,6 +93,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	private _mode: ParadisFileViewerMode = 'rendered';
 	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
 	private _renderGeneration = 0;
+	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
+	private readonly _originPool: ParadisWebviewOriginPool;
 
 	constructor(
 		id: string,
@@ -109,6 +112,7 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super(id, group, telemetryService, themeService, storageService);
+		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
 
 		// ウィンドウ透過（paradis.window.transparency.*）の状態変化に追従して Rendered を描き直す。
 		// 透過背景は renderDocument が HTML へ焼き込む（webview 内からは --paradis-* カスタムプロパティを
@@ -416,7 +420,12 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		}
 		const store = new DisposableStore();
 		this._webviewStore.value = store;
+		// origin を渡さないと webview ごとに新しい service worker 登録が増え、二度と消えない。
+		// スロットを借りるので、同時に開いている他のビューアとは必ず別の origin になる
+		// （下のシグナル照合が origin の一意性に依存している）。
+		const originLease = store.add(this._originPool.acquire(this.getId()));
 		const webview = store.add(this._webviewService.createWebviewOverlay({
+			origin: originLease.origin,
 			title: undefined,
 			options: {
 				purpose: WebviewContentPurpose.CustomEditor,
