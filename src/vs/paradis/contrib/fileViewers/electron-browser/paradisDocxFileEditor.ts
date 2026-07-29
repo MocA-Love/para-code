@@ -23,6 +23,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
+import { ParadisWebviewOriginPool } from '../browser/paradisWebviewOriginPool.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
@@ -46,6 +47,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _rootElement: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
 	private _webview: IOverlayWebview | undefined;
+	/** webview の origin の貸し出し元（service worker の登録を開き直しで増やさないため）。 */
+	private readonly _originPool: ParadisWebviewOriginPool;
 	private _webviewClaimed = false;
 	private _editorVisible = false;
 	private _currentResource: URI | undefined;
@@ -61,6 +64,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		@IWorkbenchLayoutService private readonly _layoutService: IWorkbenchLayoutService,
 	) {
 		super(PARADIS_DOCX_EDITOR_ID, group, telemetryService, themeService, storageService);
+		this._originPool = ParadisWebviewOriginPool.getShared(storageService);
 	}
 
 	protected override createEditor(parent: HTMLElement): void {
@@ -102,7 +106,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (this._webview) {
 			return this._webview;
 		}
+		// origin を渡さないと webview ごとに新しい service worker 登録が増え、二度と消えない。
+		const originLease = this._register(this._originPool.acquire(PARADIS_DOCX_EDITOR_ID));
 		const webview = this._webviewService.createWebviewOverlay({
+			origin: originLease.origin,
 			title: undefined,
 			options: {
 				purpose: WebviewContentPurpose.CustomEditor,
