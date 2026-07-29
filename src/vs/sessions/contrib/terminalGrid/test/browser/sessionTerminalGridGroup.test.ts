@@ -348,13 +348,13 @@ suite('SessionTerminalGridGroup', () => {
 		);
 	});
 
-	test('disposing the group releases its instance event listeners', () => {
+	test('disposing the final instance releases its event listeners', () => {
 		const harness = createTestHarness(disposables);
 		const terminal = harness.createTerminal();
 		const group = harness.createGroup(terminal.instance);
 		const listenerCountsAfterAdd = { ...terminal.listenerCounts };
 
-		group.dispose();
+		terminal.fireDisposed();
 		const listenerCountsAfterDispose = { ...terminal.listenerCounts };
 
 		assert.deepStrictEqual(

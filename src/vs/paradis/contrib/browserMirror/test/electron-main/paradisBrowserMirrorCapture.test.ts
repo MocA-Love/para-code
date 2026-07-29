@@ -4,14 +4,13 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { type WebContents, type WebFrameMain, webContents as electronWebContents } from 'electron';
+import type { WebContents, WebFrameMain } from 'electron';
 import * as sinon from 'sinon';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	PARADIS_MIRROR_CAPTURE_ENV,
-	paradisArmMirrorCapture,
-	paradisResolveMirrorCaptureFrame,
-} from '../../electron-main/paradisBrowserMirrorCapture.js';
+	ParadisBrowserMirrorCapture,
+} from '../../electron-main/paradisBrowserMirrorCaptureCore.js';
 
 function webContentsWith(frame: WebFrameMain | null, destroyed = false): WebContents {
 	return {
@@ -30,80 +29,98 @@ suite('Paradis browser mirror capture', () => {
 
 	teardown(() => {
 		delete process.env[PARADIS_MIRROR_CAPTURE_ENV];
-		try {
-			paradisArmMirrorCapture('test-cleanup-target');
-			paradisResolveMirrorCaptureFrame();
-		} finally {
-			try {
-				sinon.restore();
-			} finally {
-				if (initialMirrorCaptureEnvironment === undefined) {
-					delete process.env[PARADIS_MIRROR_CAPTURE_ENV];
-				} else {
-					process.env[PARADIS_MIRROR_CAPTURE_ENV] = initialMirrorCaptureEnvironment;
-				}
-			}
+		sinon.restore();
+		if (initialMirrorCaptureEnvironment === undefined) {
+			delete process.env[PARADIS_MIRROR_CAPTURE_ENV];
+		} else {
+			process.env[PARADIS_MIRROR_CAPTURE_ENV] = initialMirrorCaptureEnvironment;
 		}
 	});
 
 	test('returns the exact armed target frame', () => {
 		const expectedFrame = Object.freeze({ target: 'expected' }) as unknown as WebFrameMain;
-		sinon.stub(electronWebContents, 'fromDevToolsTargetId').callsFake(targetId =>
-			targetId === 'target-expected' ? webContentsWith(expectedFrame) : undefined,
-		);
+		const { capture, targetWebContents } = createCaptureHarness();
+		targetWebContents.set('target-expected', webContentsWith(expectedFrame));
 
-		paradisArmMirrorCapture('target-expected');
+		capture.arm('target-expected');
 
-		assert.strictEqual(paradisResolveMirrorCaptureFrame(), expectedFrame);
+		assert.strictEqual(capture.resolve(), expectedFrame);
 	});
 
 	test('denies an armed target mismatch without consulting multiple environment fallback candidates', () => {
 		const firstUnrelatedFrame = Object.freeze({ target: 'unrelated-1' }) as unknown as WebFrameMain;
 		const secondUnrelatedFrame = Object.freeze({ target: 'unrelated-2' }) as unknown as WebFrameMain;
-		sinon.stub(electronWebContents, 'fromDevToolsTargetId').returns(undefined);
-		const fallbackLookup = sinon.stub(electronWebContents, 'getAllWebContents').returns([
+		const { capture, fallbackWebContents, fallbackLookupCount } = createCaptureHarness();
+		fallbackWebContents.push(
 			webContentsWith(firstUnrelatedFrame),
 			webContentsWith(secondUnrelatedFrame),
-		]);
+		);
 		process.env[PARADIS_MIRROR_CAPTURE_ENV] = 'fallback-enabled';
 
-		paradisArmMirrorCapture('target-missing');
+		capture.arm('target-missing');
 
-		assert.strictEqual(paradisResolveMirrorCaptureFrame(), 'deny');
-		sinon.assert.notCalled(fallbackLookup);
+		assert.strictEqual(capture.resolve(), 'deny');
+		assert.strictEqual(fallbackLookupCount(), 0);
 	});
 
 	test('denies an armed target whose web contents is destroyed or has no frame', () => {
-		const lookup = sinon.stub(electronWebContents, 'fromDevToolsTargetId');
-		lookup.onFirstCall().returns(webContentsWith(Object.freeze({}) as unknown as WebFrameMain, true));
-		lookup.onSecondCall().returns(webContentsWith(null));
+		const { capture, targetWebContents } = createCaptureHarness();
+		targetWebContents.set('target-destroyed', webContentsWith(Object.freeze({}) as unknown as WebFrameMain, true));
+		targetWebContents.set('target-without-frame', webContentsWith(null));
 
-		paradisArmMirrorCapture('target-destroyed');
-		assert.strictEqual(paradisResolveMirrorCaptureFrame(), 'deny');
+		capture.arm('target-destroyed');
+		assert.strictEqual(capture.resolve(), 'deny');
 
-		paradisArmMirrorCapture('target-without-frame');
-		assert.strictEqual(paradisResolveMirrorCaptureFrame(), 'deny');
+		capture.arm('target-without-frame');
+		assert.strictEqual(capture.resolve(), 'deny');
 	});
 
 	test('consumes a successful arm exactly once', () => {
 		const expectedFrame = Object.freeze({ target: 'one-shot' }) as unknown as WebFrameMain;
-		sinon.stub(electronWebContents, 'fromDevToolsTargetId').returns(webContentsWith(expectedFrame));
+		const { capture, targetWebContents } = createCaptureHarness();
+		targetWebContents.set('target-one-shot', webContentsWith(expectedFrame));
 
-		paradisArmMirrorCapture('target-one-shot');
+		capture.arm('target-one-shot');
 
-		assert.strictEqual(paradisResolveMirrorCaptureFrame(), expectedFrame);
-		assert.strictEqual(paradisResolveMirrorCaptureFrame(), undefined);
+		assert.strictEqual(capture.resolve(), expectedFrame);
+		assert.strictEqual(capture.resolve(), undefined);
 	});
 
 	test('fails closed once after an armed request expires and consumes the arm', () => {
 		const clock = sinon.useFakeTimers({ now: 1_000 });
 		const expectedFrame = Object.freeze({ target: 'expired' }) as unknown as WebFrameMain;
-		sinon.stub(electronWebContents, 'fromDevToolsTargetId').returns(webContentsWith(expectedFrame));
+		const { capture, targetWebContents } = createCaptureHarness();
+		targetWebContents.set('target-expired', webContentsWith(expectedFrame));
 
-		paradisArmMirrorCapture('target-expired');
+		capture.arm('target-expired');
 		clock.tick(15_001);
 
-		assert.strictEqual(paradisResolveMirrorCaptureFrame(), 'deny');
-		assert.strictEqual(paradisResolveMirrorCaptureFrame(), undefined);
+		assert.strictEqual(capture.resolve(), 'deny');
+		assert.strictEqual(capture.resolve(), undefined);
 	});
 });
+
+function createCaptureHarness(): {
+	readonly capture: ParadisBrowserMirrorCapture;
+	readonly targetWebContents: Map<string, WebContents>;
+	readonly fallbackWebContents: WebContents[];
+	readonly fallbackLookupCount: () => number;
+} {
+	const targetWebContents = new Map<string, WebContents>();
+	const fallbackWebContents: WebContents[] = [];
+	let fallbackLookups = 0;
+	const capture = new ParadisBrowserMirrorCapture({
+		fromDevToolsTargetId: targetId => targetWebContents.get(targetId),
+		getAllWebContents: () => {
+			fallbackLookups++;
+			return fallbackWebContents;
+		},
+		isBrowserViewWebContents: () => true,
+	});
+	return {
+		capture,
+		targetWebContents,
+		fallbackWebContents,
+		fallbackLookupCount: () => fallbackLookups,
+	};
+}

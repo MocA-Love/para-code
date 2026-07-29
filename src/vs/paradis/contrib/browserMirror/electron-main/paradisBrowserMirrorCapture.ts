@@ -25,26 +25,22 @@
 
 import { webContents as electronWebContents, WebFrameMain } from 'electron';
 import { BrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
+import { PARADIS_MIRROR_CAPTURE_ENV, ParadisBrowserMirrorCapture } from './paradisBrowserMirrorCaptureCore.js';
 
-/** スパイク用の env ゲート。値が truthy のときだけミラーキャプチャを arm する。 */
-export const PARADIS_MIRROR_CAPTURE_ENV = 'PARADIS_MIRROR_CAPTURE_VIEW';
+export { PARADIS_MIRROR_CAPTURE_ENV };
 
-/**
- * 本実装の arm 状態（モバイルの webrtc-offer 受信時に shared process 経由で設定される）。
- * one-shot: resolve で消費する。TTL を過ぎた arm は無効（腐った arm が後続の無関係な
- * getDisplayMedia を乗っ取らないように）。
- */
-let armedTargetId: string | undefined;
-let armedExpiresAt = 0;
-const ARM_TTL_MS = 15_000;
+const capture = new ParadisBrowserMirrorCapture({
+	fromDevToolsTargetId: targetId => electronWebContents.fromDevToolsTargetId(targetId),
+	getAllWebContents: () => electronWebContents.getAllWebContents(),
+	isBrowserViewWebContents: webContents => BrowserViewMainService.isBrowserViewWebContents(webContents as Electron.WebContents),
+});
 
 /**
  * 指定 DevTools targetId の WebContentsView 単体キャプチャを次の1回の getDisplayMedia
  * に対して arm する。shared process の ParadisCdpTargetService.armMirrorCapture から呼ばれる。
  */
 export function paradisArmMirrorCapture(targetId: string): void {
-	armedTargetId = targetId;
-	armedExpiresAt = Date.now() + ARM_TTL_MS;
+	capture.arm(targetId);
 }
 
 /**
@@ -57,42 +53,5 @@ export function paradisArmMirrorCapture(targetId: string): void {
  * 明示解決する（下記コメント参照）。
  */
 export function paradisResolveMirrorCaptureFrame(): WebFrameMain | 'deny' | undefined {
-	// 本実装経路: webrtc-offer 起点の one-shot arm（targetId 明示）。
-	// arm されていた要求は必ず fail-closed（frame か 'deny'）で返す。undefined で
-	// 素通しすると呼び出し側が全画面キャプチャへフォールバックし、ブラウザビュー
-	// 1枚のつもりがデスクトップ全体をモバイルへ配信してしまう（TTL失効・ビュー破棄・
-	// 不正な targetId のいずれでも）。
-	if (armedTargetId !== undefined) {
-		const targetId = armedTargetId;
-		const expired = Date.now() > armedExpiresAt;
-		armedTargetId = undefined;
-		if (expired) {
-			return 'deny';
-		}
-		const wc = electronWebContents.fromDevToolsTargetId(targetId);
-		if (wc && !wc.isDestroyed() && wc.mainFrame) {
-			return wc.mainFrame;
-		}
-		return 'deny';
-	}
-
-	const spec = process.env[PARADIS_MIRROR_CAPTURE_ENV];
-	if (!spec) {
-		return undefined;
-	}
-
-	// 本番: browserViewMainService.tryGetBrowserView(spec)?.webContents.mainFrame で
-	// viewId 明示解決する。スパイクでは列挙して最初の内蔵ブラウザビューを拾う。
-	for (const wc of electronWebContents.getAllWebContents()) {
-		if (wc.isDestroyed()) {
-			continue;
-		}
-		if (BrowserViewMainService.isBrowserViewWebContents(wc)) {
-			const frame = wc.mainFrame;
-			// mainFrame は破棄済み webContents では null になり得る。
-			return frame ?? undefined;
-		}
-	}
-
-	return undefined;
+	return capture.resolve();
 }
