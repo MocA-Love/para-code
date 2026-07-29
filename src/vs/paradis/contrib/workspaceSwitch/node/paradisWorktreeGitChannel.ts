@@ -15,11 +15,11 @@ import * as cp from 'child_process';
 import { existsSync, promises as fs } from 'fs';
 import { homedir } from 'os';
 import { CancellationError } from '../../../../base/common/errors.js';
-import { dirname } from '../../../../base/common/path.js';
+import { basename, dirname, join } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { isWindows } from '../../../../base/common/platform.js';
+import { isLinux, isWindows } from '../../../../base/common/platform.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -27,7 +27,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEn
 import { localize } from '../../../../nls.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisGithubCallSiteFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
-import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, paradisParseGhPrStatus, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -231,6 +231,11 @@ export class ParadisWorktreeGitService {
 	 * git worktree remove [--force] <worktreePath> を実行する。
 	 * 未コミット変更や未追跡ファイルがある場合、force なしだと git が失敗する（呼び出し側で
 	 * force 付き再試行を確認する）。stale なメタデータで失敗しないよう先に prune する。
+	 *
+	 * `unlock` が立っている場合は先に `git worktree unlock` を試す。ロック済みの作業ツリーは
+	 * `--force` を1つ付けても消えず、git は `-f -f` を要求するため（詳細は
+	 * {@link IParadisRemoveWorktreeRequest.unlock}）。`-f` を2つ渡す代わりに unlock を挟むのは、
+	 * ロックの解除という取り消せない操作を、呼び出し側がユーザーの同意を得た場合だけに限るため。
 	 */
 	async removeWorktree(request: IParadisRemoveWorktreeRequest): Promise<void> {
 		// IPC 境界の防御: 位置引数が git のオプションとして解釈されないことを保証する
@@ -242,12 +247,95 @@ export class ParadisWorktreeGitService {
 		} catch {
 			// prune の失敗は致命的ではない
 		}
+		// ロック解除は取り消せない副作用で、しかも「消せるかどうか」とは独立している。
+		// remove が別の理由（ファイルを掴んでいるプロセス、権限、ネットワークボリューム等）で
+		// 失敗すると、削除できていないのに他セッションの保護だけが消えた状態になる。
+		// 解除する前に理由を控えておき、失敗したら掛け直す。
+		let restoreLock: IParadisWorktreeLockInfo | undefined;
+		if (request.unlock === true) {
+			const lock = await this.readWorktreeLock(request);
+			try {
+				await this.exec(['-C', request.repoPath, 'worktree', 'unlock', request.worktreePath]);
+				// 掛け直すかどうかは **unlock が成功したこと** から決める。`git worktree unlock` は
+				// ロックされていない相手には必ず失敗するので、成功＝確かにロックされていた。
+				// 直前の読み取り結果を根拠にすると、`git worktree list` の spawn が一過性の理由で
+				// 転けただけのときに「ロックされていなかった」と誤解し、掛け直さずに終わってしまう。
+				// 理由が読めていなくても掛け直す（理由なしのロックとして戻すほうが、失うよりよい）。
+				restoreLock = { locked: true, reason: lock.reason };
+			} catch {
+				// ロックされていなかった場合も失敗するので、ここでは中断しない（remove 側で判断する）
+			}
+		}
 		const args = ['-C', request.repoPath, 'worktree', 'remove'];
 		if (request.force) {
 			args.push('--force');
 		}
 		args.push(request.worktreePath);
-		await this.exec(args);
+		try {
+			await this.exec(args);
+		} catch (error) {
+			if (restoreLock !== undefined) {
+				const relock = ['-C', request.repoPath, 'worktree', 'lock'];
+				if (restoreLock.reason) {
+					relock.push('--reason', restoreLock.reason);
+				}
+				relock.push(request.worktreePath);
+				try {
+					await this.exec(relock);
+				} catch {
+					// 掛け直せなくても削除失敗そのものは伝える（呼び出し側がエラーを出す）
+				}
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * 対象 worktree がロックされているかと、その理由を返す。
+	 *
+	 * 判定に git のエラー文言を使わないのは、それが翻訳対象で環境の locale に左右されるため。
+	 * `--porcelain` は機械可読で翻訳されない。
+	 */
+	async readWorktreeLock(request: IParadisWorktreeLockQuery): Promise<IParadisWorktreeLockInfo> {
+		const notLocked: IParadisWorktreeLockInfo = { locked: false, reason: '' };
+		if (typeof request.worktreePath !== 'string' || request.worktreePath.length === 0) {
+			return notLocked;
+		}
+		let output: string;
+		try {
+			output = await this.exec(['-C', request.repoPath, 'worktree', 'list', '--porcelain', '-z']);
+		} catch {
+			return notLocked;
+		}
+		// git は実体解決済みのパスを返す（macOS の /tmp → /private/tmp 等）ので、
+		// 素の文字列比較では取り違える。両側を解決してから突き合わせる。
+		const target = await this.resolveWorktreePath(request.worktreePath);
+		const entries = await Promise.all(paradisParseWorktreeListPorcelain(output)
+			.map(async entry => ({ ...entry, path: await this.resolveWorktreePath(entry.path) })));
+		return paradisFindWorktreeLock(entries, target, { ignoreCase: !isLinux, backslashIsSeparator: isWindows });
+	}
+
+	/**
+	 * 実体解決したパスを返す。
+	 *
+	 * 末尾（作業ツリー自身）は既に消えていることがある——ロック済みエントリは
+	 * `git worktree prune` で刈られないので、実体だけ `rm -rf` された状態が普通に残る。
+	 * そこで親ディレクトリだけを解決して名前を継ぎ足す。丸ごと realpath して失敗し、
+	 * 生パスへ落ちると、途中に symlink が1つでもあるだけで（macOS の /tmp、symlink された
+	 * home、/Volumes 配下）git 側の解決済みパスと噛み合わずロックを見逃す。
+	 */
+	private async resolveWorktreePath(path: string): Promise<string> {
+		try {
+			return await fs.realpath(path);
+		} catch {
+			// 葉が無いだけかもしれない。親が解決できるならそちらで組み立てる。
+		}
+		try {
+			const parent = dirname(path);
+			return parent === path ? path : join(await fs.realpath(parent), basename(path));
+		} catch {
+			return path;
+		}
 	}
 
 	/**
@@ -478,6 +566,7 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'getPrStatus': return this.service.getPrStatus(String(args[0])) as Promise<T>;
 			case 'removeWorktree': return this.service.removeWorktree(args[0] as IParadisRemoveWorktreeRequest) as Promise<T>;
+			case 'readWorktreeLock': return this.service.readWorktreeLock(args[0] as IParadisWorktreeLockQuery) as Promise<T>;
 			case 'runLifecycleScript': return this.service.runLifecycleScript(args[0] as IParadisRunLifecycleScriptRequest) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);

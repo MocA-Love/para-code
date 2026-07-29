@@ -26,7 +26,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
-import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, PARADIS_DEFAULT_AGENT_COMMANDS, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
+import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisWorktreeLockInfo, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { PARADIS_WORKSPACES_VIEW_ID } from '../browser/paradisWorkspacesView.js';
 import { openParadisCreateWorktreeDialog } from './paradisCreateWorktreeDialog.js';
 import { paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
@@ -293,22 +293,49 @@ class ParadisRemoveWorktreeAction extends Action2 {
 						await channel.call('removeWorktree', [removeRequest]);
 						removedFromDisk = true;
 					} catch (error) {
-						// 未コミット変更・未追跡ファイルがあると force なしでは失敗する。強制削除を追加確認する
+						// 失敗の理由は2種類あり、求めるべき同意も違う。
+						//  - 未コミット変更・未追跡ファイル → --force で消せる（失うのは自分の編集だけ）
+						//  - ロック済み → git は -f を2つ要求する。ロックは「いまこの作業ツリーを使っている人が
+						//    いる」という主張なので、2段目を黙って付けず、誰が掴んでいるのかを見せたうえで
+						//    unlock の同意を取る
+						// ロックの判定に git のエラー文言を使わないのは、それが翻訳対象で環境依存のため。
+						const lock = await channel.call<IParadisWorktreeLockInfo>('readWorktreeLock', [{ repoPath: removeRequest.repoPath, worktreePath: removeRequest.worktreePath }])
+							.catch(() => ({ locked: false, reason: '' }));
+						// ロックが理由とは限らない（掴んでいるプロセス、権限、ネットワークボリューム等）。
+						// locked 側はダイアログに元のエラーを載せないので、調査できるようログへ残す。
+						// 未コミット変更があるだけの失敗は「強制削除するか聞く」正常系なので warn に留める。
+						if (lock.locked) {
+							logService.error('[ParadisRemoveWorktree] removal failed on a locked worktree', error);
+						} else {
+							logService.warn('[ParadisRemoveWorktree] removal failed, asking to force', error);
+						}
+						const lockReason = paradisFormatWorktreeLockReason(lock.reason);
 						const { confirmed: forceConfirmed } = await dialogService.confirm({
 							type: 'warning',
-							// allow-any-unicode-next-line
-							message: localize('paradis.workspaceSwitch.removeWorktreeForceConfirm', "ワークツリーを削除できませんでした。強制削除しますか？"),
-							detail: `${error instanceof Error ? error.message : String(error)}\n\n`
+							message: lock.locked
 								// allow-any-unicode-next-line
-								+ localize('paradis.workspaceSwitch.removeWorktreeForceDetail', "--force で強制削除します。未コミットの変更や未追跡ファイルは完全に失われます。"),
-							// allow-any-unicode-next-line
-							primaryButton: localize('paradis.workspaceSwitch.removeWorktreeForceAction', "強制削除")
+								? localize('paradis.workspaceSwitch.removeWorktreeLockedConfirm', "このワークツリーは使用中としてロックされています。ロックを解除して削除しますか？")
+								// allow-any-unicode-next-line
+								: localize('paradis.workspaceSwitch.removeWorktreeForceConfirm', "ワークツリーを削除できませんでした。強制削除しますか？"),
+							detail: lock.locked
+								? (lockReason
+									// allow-any-unicode-next-line
+									? localize('paradis.workspaceSwitch.removeWorktreeLockedDetailWithReason', "ロックの理由: {0}\n\nロックを解除してから強制削除します。このワークツリーで作業中のセッションがあれば、その作業ごと失われます。未コミットの変更や未追跡ファイルも完全に失われます。", lockReason)
+									// allow-any-unicode-next-line
+									: localize('paradis.workspaceSwitch.removeWorktreeLockedDetail', "ロックを解除してから強制削除します。このワークツリーで作業中のセッションがあれば、その作業ごと失われます。未コミットの変更や未追跡ファイルも完全に失われます。"))
+								// allow-any-unicode-next-line
+								: localize('paradis.workspaceSwitch.removeWorktreeForceDetail', "{0}\n\n--force で強制削除します。未コミットの変更や未追跡ファイルは完全に失われます。", error instanceof Error ? error.message : String(error)),
+							primaryButton: lock.locked
+								// allow-any-unicode-next-line
+								? localize('paradis.workspaceSwitch.removeWorktreeUnlockAction', "ロックを解除して削除")
+								// allow-any-unicode-next-line
+								: localize('paradis.workspaceSwitch.removeWorktreeForceAction', "強制削除")
 						});
 						if (!forceConfirmed) {
 							return;
 						}
 						try {
-							await channel.call('removeWorktree', [{ ...removeRequest, force: true }]);
+							await channel.call('removeWorktree', [{ ...removeRequest, force: true, unlock: lock.locked }]);
 							removedFromDisk = true;
 						} catch (forceError) {
 							logService.error('[ParadisRemoveWorktree] force removal failed', forceError);
