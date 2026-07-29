@@ -7,7 +7,7 @@
 
 import { deepStrictEqual, rejects, strictEqual } from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Event } from '../../../../../base/common/event.js';
 import { IReference } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -256,5 +256,95 @@ suite('ParadisFileDiffEditor', () => {
 
 		await rejects(settingInput, /original model failed/);
 		strictEqual(modifiedReference.disposeCount, 1);
+	});
+
+	test('releases each model reference once when cancellation wins a pending acquisition', async () => {
+		const original = URI.parse('git:/workspace/readme.md?ref=HEAD');
+		const modified = URI.file('/workspace/readme.md');
+		const originalReference = createControlledReference();
+		const modifiedReference = createControlledReference();
+		const modelService = {
+			createModelReference(resource: URI): Promise<IReference<IResolvedTextEditorModel>> {
+				return resource.scheme === 'git' ? originalReference.deferred.p : modifiedReference.deferred.p;
+			}
+		} as unknown as ITextModelService;
+		const editor = disposables.add(new ParadisFileDiffEditor(
+			new TestEditorGroupView(1),
+			NullTelemetryService,
+			new TestThemeService(),
+			disposables.add(new TestStorageService()),
+			disposables.add(new TestInstantiationService()),
+			modelService,
+		));
+		const input = disposables.add(createInput(original, modified));
+		const cancellation = disposables.add(new CancellationTokenSource());
+
+		const settingInput = editor.setInput(input, undefined, Object.create(null), cancellation.token);
+		completeReference(originalReference);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		cancellation.cancel();
+		completeReference(modifiedReference);
+		await settingInput;
+
+		strictEqual(originalReference.disposeCount, 1);
+		strictEqual(modifiedReference.disposeCount, 1);
+	});
+
+	test('releases stale references without disposing the replacement input references', async () => {
+		const firstOriginal = URI.parse('git:/workspace/first.md?ref=HEAD');
+		const firstModified = URI.file('/workspace/first.md');
+		const secondOriginal = URI.parse('git:/workspace/second.md?ref=HEAD');
+		const secondModified = URI.file('/workspace/second.md');
+		const references = new Map([
+			[firstOriginal.toString(), createControlledReference()],
+			[firstModified.toString(), createControlledReference()],
+			[secondOriginal.toString(), createControlledReference()],
+			[secondModified.toString(), createControlledReference()],
+		]);
+		const modelService = {
+			createModelReference(resource: URI): Promise<IReference<IResolvedTextEditorModel>> {
+				return references.get(resource.toString())!.deferred.p;
+			}
+		} as unknown as ITextModelService;
+		const instantiationService = disposables.add(new TestInstantiationService());
+		instantiationService.stubInstance(DiffEditorWidget, {
+			setModel: () => { },
+			dispose: () => { },
+		});
+		const editor = new ParadisFileDiffEditor(
+			new TestEditorGroupView(1),
+			NullTelemetryService,
+			new TestThemeService(),
+			disposables.add(new TestStorageService()),
+			instantiationService,
+			modelService,
+		);
+		const firstInput = disposables.add(createInput(firstOriginal, firstModified));
+		const secondInput = disposables.add(createInput(secondOriginal, secondModified));
+
+		const settingFirstInput = editor.setInput(firstInput, undefined, Object.create(null), CancellationToken.None);
+		completeReference(references.get(firstOriginal.toString())!);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const settingSecondInput = editor.setInput(secondInput, undefined, Object.create(null), CancellationToken.None);
+		completeReference(references.get(secondOriginal.toString())!);
+		completeReference(references.get(secondModified.toString())!);
+		await settingSecondInput;
+
+		strictEqual(references.get(firstOriginal.toString())!.disposeCount, 1);
+		strictEqual(references.get(secondOriginal.toString())!.disposeCount, 0);
+		strictEqual(references.get(secondModified.toString())!.disposeCount, 0);
+
+		completeReference(references.get(firstModified.toString())!);
+		await settingFirstInput;
+		editor.dispose();
+
+		strictEqual(references.get(firstOriginal.toString())!.disposeCount, 1);
+		strictEqual(references.get(firstModified.toString())!.disposeCount, 1);
+		strictEqual(references.get(secondOriginal.toString())!.disposeCount, 1);
+		strictEqual(references.get(secondModified.toString())!.disposeCount, 1);
 	});
 });
