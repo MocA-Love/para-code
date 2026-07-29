@@ -13,6 +13,7 @@ import { paradisAgentQuestionKeySequence } from '../../common/paradisAgentQuesti
 suite('paradisAgentQuestionKeySequence', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
+	const DOWN = '\u001b[B';
 	const single = (optionCount: number) => ({ optionCount, multiSelect: false });
 	const multi = (optionCount: number) => ({ optionCount, multiSelect: true });
 
@@ -47,17 +48,17 @@ suite('paradisAgentQuestionKeySequence', () => {
 		);
 	});
 
-	test('複数選択は番号でトグルし、Tabで送信ボタンまで移動してEnterで次へ進む', () => {
+	test('複数選択は番号でトグルし、下矢印で送信ボタンまで降りてEnterで次へ進む', () => {
 		assert.deepStrictEqual(
 			paradisAgentQuestionKeySequence([multi(3)], [{ kind: 'multi', indices: [2, 0] }]),
-			['1', '3', '\t', '\t', '\t', '\t', '\r', '\r'],
+			['1', '3', DOWN, DOWN, DOWN, DOWN, '\r', '\r'],
 		);
 	});
 
-	test('複数選択の自由入力はTabで入力欄まで移動してから本文を入れる', () => {
+	test('複数選択の自由入力は下矢印で入力欄まで降りてから本文を入れる', () => {
 		assert.deepStrictEqual(
 			paradisAgentQuestionKeySequence([multi(2)], [{ kind: 'text', optionCount: 2, text: 'その他の案' }]),
-			['\t', '\t', 'その他の案', '\t', '\r', '\r'],
+			[DOWN, DOWN, 'その他の案', DOWN, '\r', '\r'],
 		);
 	});
 
@@ -67,7 +68,7 @@ suite('paradisAgentQuestionKeySequence', () => {
 				[multi(2), single(3)],
 				[{ kind: 'multi', indices: [1] }, { kind: 'option', index: 2 }],
 			),
-			['2', '\t', '\t', '\t', '\r', '3', '\r'],
+			['2', DOWN, DOWN, DOWN, '\r', '3', '\r'],
 		);
 	});
 
@@ -80,5 +81,20 @@ suite('paradisAgentQuestionKeySequence', () => {
 
 	test('回答が無ければ何も送らない', () => {
 		assert.deepStrictEqual(paradisAgentQuestionKeySequence([single(2)], []), []);
+	});
+
+	// これが今回の回帰そのもの。列のどこにもタブが現れてはいけない。キーとして送れば
+	// 「次の質問へ切り替え」になるのはもちろん、**自由入力の本文に混ざっていても同じ**
+	// （本文は bracketed paste で包まずそのまま流れ、TUI が打鍵に分解する）。
+	test('列のどこにもタブを出さない（キーでも本文でもtabs:nextとして食われる）', () => {
+		const parts = paradisAgentQuestionKeySequence([multi(1), multi(4), single(3), multi(2)], [
+			{ kind: 'multi', indices: [0] },
+			{ kind: 'text', optionCount: 4, text: 'タブ\tを含む回答' },
+			{ kind: 'text', optionCount: 3, text: 'タブ\tを含む回答' },
+			{ kind: 'multi', indices: [1] },
+		]);
+		assert.deepStrictEqual(parts.filter(part => part.includes('\t')), []);
+		// 本文は失われず、タブが空白に置き換わって残る。
+		assert.deepStrictEqual(parts.filter(part => part.startsWith('タブ')), ['タブ を含む回答', 'タブ を含む回答']);
 	});
 });
