@@ -22,6 +22,7 @@ suite('ParadisMobileBrowserMirror', () => {
 			startFrameSubscription: async () => true,
 			stopFrameSubscription: async () => undefined,
 			resolveTargetWindowId: async () => 1,
+			resolveUpstreamPort: async () => null,
 			armMirrorCapture: async () => undefined,
 		};
 		const delivered: Uint8Array[] = [];
@@ -80,6 +81,7 @@ suite('ParadisMobileBrowserMirror', () => {
 			startFrameSubscription: async () => true,
 			stopFrameSubscription: async () => undefined,
 			resolveTargetWindowId: async () => 1,
+			resolveUpstreamPort: async () => null,
 			armMirrorCapture: async () => undefined,
 		};
 		const logService = new NullLogService();

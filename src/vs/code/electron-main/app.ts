@@ -1434,7 +1434,11 @@ export class CodeApplication extends Disposable {
 		sharedProcessClient.then(client => client.registerChannel(ipcBrowserViewGroupChannelName, browserViewGroupChannel));
 
 		// PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway (shared process only)
-		const paradisCdpTargetChannel = ProxyChannel.fromService(new ParadisCdpTargetService(accessor.get(IBrowserViewMainService)), disposables);
+		const paradisCdpTargetService = new ParadisCdpTargetService(accessor.get(IBrowserViewMainService));
+		// PARA-PATCH: pin the real remote-debugging port now, before a second instance can overwrite
+		// DevToolsActivePort — this process is the one that wrote it (see paradisCdpUpstreamPortPin.ts).
+		paradisCdpTargetService.pinUpstreamPort();
+		const paradisCdpTargetChannel = ProxyChannel.fromService(paradisCdpTargetService, disposables);
 		sharedProcessClient.then(client => client.registerChannel(PARADIS_CDP_TARGET_CHANNEL, paradisCdpTargetChannel));
 
 		// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator (main process only)

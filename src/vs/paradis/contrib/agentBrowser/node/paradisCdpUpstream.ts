@@ -60,6 +60,15 @@ export interface IParadisCdpUpstreamOptions {
 	 * テストは素の Node で走り `process.versions.chrome` を持たないため、明示できるようにしてある。
 	 */
 	readonly chromeVersion?: string;
+	/**
+	 * electron-main が起動直後に確定させた上流ポートを返す。
+	 *
+	 * `DevToolsActivePort` が起動より前に他インスタンスへ上書きされていた場合、こちらには
+	 * 実績ポートが無く、ファイルには死んだ番号しか無い＝自力では絶対に戻れない。main は
+	 * そのファイルを書いた本人なので、上書きより先に読んだ正しい値を持っている。
+	 * 未接続・未確定なら undefined を返すこと（そのときは従来どおりファイルへ落ちる）。
+	 */
+	readonly resolveMainPort?: () => Promise<number | undefined>;
 }
 
 export interface IParadisCdpUpstreamJsonResult<T> {
@@ -71,6 +80,47 @@ export interface IParadisCdpUpstreamJsonResult<T> {
 
 function delay(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * `<userDataPath>/DevToolsActivePort` の1行目を読む。読めない・形が違う場合は undefined。
+ *
+ * 中身は信用できない（下のクラスの注記を参照）ので、**この関数の戻り値は「候補」でしかない**。
+ * electron-main 側（`paradisCdpUpstreamPortPin.ts`）と shared process 側で同じ読み方をするため、
+ * クラスから切り出してある。
+ */
+export async function paradisReadDevToolsActivePort(userDataPath: string, openFile: typeof fs.open = fs.open): Promise<number | undefined> {
+	let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+	try {
+		handle = await openFile(join(userDataPath, DEVTOOLS_PORT_FILE), 'r');
+		const buffer = Buffer.allocUnsafe(MAX_DEVTOOLS_PORT_FILE_BYTES + 1);
+		let bytesRead = 0;
+		while (bytesRead < buffer.byteLength) {
+			const requested = buffer.byteLength - bytesRead;
+			const read = await handle.read(buffer, bytesRead, requested, bytesRead);
+			if (!Number.isSafeInteger(read.bytesRead) || read.bytesRead < 0 || read.bytesRead > requested) {
+				return undefined;
+			}
+			if (read.bytesRead === 0) {
+				break;
+			}
+			bytesRead += read.bytesRead;
+		}
+		if (bytesRead > MAX_DEVTOOLS_PORT_FILE_BYTES) {
+			return undefined;
+		}
+		const contents = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, bytesRead));
+		const firstLine = contents.split(/\r?\n/, 1)[0];
+		if (!firstLine || !/^[1-9][0-9]{0,4}$/.test(firstLine)) {
+			return undefined;
+		}
+		const port = Number(firstLine);
+		return Number.isSafeInteger(port) && port <= 65_535 ? port : undefined;
+	} catch {
+		return undefined;
+	} finally {
+		try { await handle?.close(); } catch { /* port discovery remains best-effort */ }
+	}
 }
 
 /**
@@ -101,6 +151,7 @@ export class ParadisCdpUpstream {
 	private readonly fetchImpl: NonNullable<IParadisCdpUpstreamOptions['fetch']>;
 	private readonly fetchTimeoutMs: number;
 	private readonly chromeVersion: string | undefined;
+	private readonly resolveMainPort: (() => Promise<number | undefined>) | undefined;
 
 	constructor(
 		private readonly userDataPath: string,
@@ -111,6 +162,20 @@ export class ParadisCdpUpstream {
 		this.fetchImpl = options.fetch ?? fetch;
 		this.fetchTimeoutMs = options.fetchTimeoutMs ?? UPSTREAM_FETCH_TIMEOUT_MS;
 		this.chromeVersion = options.chromeVersion ?? process.versions.chrome;
+		this.resolveMainPort = options.resolveMainPort;
+	}
+
+	/** electron-main の確定値。問い合わせられない場合は undefined（呼び出し側はファイルへ落ちる）。 */
+	private async _readMainPort(): Promise<number | undefined> {
+		if (this.resolveMainPort === undefined) {
+			return undefined;
+		}
+		try {
+			const port = await this.resolveMainPort();
+			return typeof port === 'number' && Number.isSafeInteger(port) && port > 0 && port <= 65_535 ? port : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	/**
@@ -125,6 +190,11 @@ export class ParadisCdpUpstream {
 		const verified = this._cachedPort ?? this._lastKnownGoodPort;
 		if (verified !== undefined) {
 			return verified;
+		}
+		const fromMain = await this._readMainPort();
+		if (fromMain !== undefined) {
+			this._infoNonThrowing('[ParadisCdpGateway] Upstream CDP port resolved by the main process');
+			return fromMain;
 		}
 		const port = await this._readPortFileWithRetry(timeoutMs);
 		if (port !== undefined) {
@@ -193,8 +263,15 @@ export class ParadisCdpUpstream {
 		if (verified) {
 			return verified;
 		}
-		// 検証済みのポートが1つも無いときだけファイルを読む。起動直後はまだ書かれていないことが
-		// あるので、その場合に限って短くリトライする。
+		// 実績が無い＝冷スタート。ここで初めて main に聞く（main は `DevToolsActivePort` を
+		// 書いた本人のプロセスで、上書きより先に読んだ値を持っている）。ファイルより先に置くのは、
+		// ファイルだけが上書きで嘘になりうる情報源だから。
+		const fromMain = await attempt(await this._readMainPort());
+		if (fromMain) {
+			return fromMain;
+		}
+		// それも駄目ならファイルを読む。起動直後はまだ書かれていないことがあるので、
+		// 何も試せていない場合に限って短くリトライする。
 		const fromFile = await attempt(tried.length === 0
 			? await this._readPortFileWithRetry(PORT_FILE_RETRY_TIMEOUT_MS)
 			: await this._readPortFile());
@@ -248,38 +325,8 @@ export class ParadisCdpUpstream {
 		}
 	}
 
-	private async _readPortFile(): Promise<number | undefined> {
-		let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
-		try {
-			handle = await this.openFileImpl(join(this.userDataPath, DEVTOOLS_PORT_FILE), 'r');
-			const buffer = Buffer.allocUnsafe(MAX_DEVTOOLS_PORT_FILE_BYTES + 1);
-			let bytesRead = 0;
-			while (bytesRead < buffer.byteLength) {
-				const requested = buffer.byteLength - bytesRead;
-				const read = await handle.read(buffer, bytesRead, requested, bytesRead);
-				if (!Number.isSafeInteger(read.bytesRead) || read.bytesRead < 0 || read.bytesRead > requested) {
-					return undefined;
-				}
-				if (read.bytesRead === 0) {
-					break;
-				}
-				bytesRead += read.bytesRead;
-			}
-			if (bytesRead > MAX_DEVTOOLS_PORT_FILE_BYTES) {
-				return undefined;
-			}
-			const contents = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, bytesRead));
-			const firstLine = contents.split(/\r?\n/, 1)[0];
-			if (!firstLine || !/^[1-9][0-9]{0,4}$/.test(firstLine)) {
-				return undefined;
-			}
-			const port = Number(firstLine);
-			return Number.isSafeInteger(port) && port <= 65_535 ? port : undefined;
-		} catch {
-			return undefined;
-		} finally {
-			try { await handle?.close(); } catch { /* port discovery remains best-effort */ }
-		}
+	private _readPortFile(): Promise<number | undefined> {
+		return paradisReadDevToolsActivePort(this.userDataPath, this.openFileImpl);
 	}
 
 	private async _readBoundedJson(response: ParadisCdpFetchResponse): Promise<unknown> {

@@ -540,7 +540,12 @@ export class ParadisAgentBrowserService extends Disposable {
 					this._dispatchBoundPageInput(token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent),
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
 			},
-			new ParadisCdpUpstream(userDataPath, logService),
+			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
+			// 上流へ辿り着けるよう、electron-main が確定させたポートを候補に加える。
+			new ParadisCdpUpstream(userDataPath, logService, {
+				resolveMainPort: async () => await mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
+					.call<number | null>('resolveUpstreamPort') ?? undefined,
+			}),
 			logService,
 		));
 		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService));
