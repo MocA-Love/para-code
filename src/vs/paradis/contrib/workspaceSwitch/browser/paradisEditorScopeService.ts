@@ -8,7 +8,7 @@
 
 import { timeout } from '../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, dispose, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isEqual, isEqualOrParent } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -198,15 +198,14 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		this._register(this.workingCopyService.onDidSave(({ workingCopy }) => this.releaseWorkingCopyOwnerWhenSafe(workingCopy)));
 		this._register(this.workingCopyService.onDidUnregister(workingCopy => this.releaseWorkingCopyOwnerWhenSafe(workingCopy)));
 		this._register(toDisposable(() => {
-			for (const liveWorkingSet of this.liveWorkingSets.values()) {
-				liveWorkingSet.retentions.dispose();
-			}
+			const retentions = [
+				...Array.from(this.liveWorkingSets.values(), liveWorkingSet => liveWorkingSet.retentions),
+				...Array.from(this.preparedRetirements.values(), retirement => retirement.frozenRetentions),
+			];
 			this.liveWorkingSets.clear();
-			for (const retirement of this.preparedRetirements.values()) {
-				retirement.frozenRetentions.dispose();
-			}
 			this.preparedRetirements.clear();
 			this.retirementFences.clear();
+			dispose(retentions);
 		}));
 
 		for (const workingCopy of this.workingCopyService.workingCopies) {

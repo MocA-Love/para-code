@@ -108,8 +108,11 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				if (sourceTerminal !== undefined && parked !== sourceTerminal) {
 					sourceTerminal.dispose();
 				}
-				await harness?.parts.activeGroup.closeAllEditors();
-				testDisposables.dispose();
+				try {
+					await harness?.parts.activeGroup.closeAllEditors();
+				} finally {
+					testDisposables.dispose();
+				}
 			}
 		}
 	});
