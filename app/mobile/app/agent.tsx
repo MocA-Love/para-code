@@ -15,9 +15,10 @@ import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.
 import { ApprovalCard } from '../src/components/approvalCard.js';
 import { AgentActivityCard, AgentActivityStrip } from '../src/components/agentActivityCard.js';
 import { AgentTimeline } from '../src/components/agentTimeline.js';
+import { ToolImageCards } from '../src/components/agentToolBodies.js';
 import { IOBlock } from '../src/components/agentIoBlock.js';
 import { formatToolName } from '../src/agentToolMeta.js';
-import { findLatestApprovalRequest } from '../src/components/attentionCard.js';
+import { findLatestApprovalRequest } from '../src/components/attentionStack.js';
 import { AgentComposer } from '../src/components/agentComposer.js';
 import { PendingMessagesChip, PendingMessagesSheet } from '../src/components/pendingMessages.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../src/pendingAgentMessages.js';
@@ -30,6 +31,7 @@ import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
 import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../src/agentNavigation.js';
+import { AgentInitialRevealGate } from '../src/agentInitialReveal.js';
 
 /**
  * エージェント詳細画面。ホームの一覧（または通知）から1エージェントを選んで開く
@@ -75,6 +77,7 @@ export default function AgentDetailScreen() {
 	);
 	const activeKey = activeTerminal?.terminalKey;
 	const chat = activeKey !== undefined ? agentChats.get(activeKey) : undefined;
+	const chatReady = chat !== undefined && !chat.none;
 	const hasActivityHistory = chat?.activity !== undefined && (chat.activity.agents.length > 0 || chat.activity.tasks.length > 0);
 	const hasActiveActivity = chat?.activity !== undefined && (chat.activity.agents.some(item => isRunningAgentActivity(item.status)) || chat.activity.tasks.some(item => isRunningAgentActivity(item.status)));
 	// 承認バーの出現条件も chat.interaction（PC側の currentInteraction）を正本にする。
@@ -262,6 +265,18 @@ export default function AgentDetailScreen() {
 	// 動かさない（遡り読みを妨げない）。下端付近まで手で戻ると自動で復帰する。
 	const [sticky, setStickyState] = useState(true);
 	const stickyRef = useRef(true);
+	// 初回表示は最下部へ到達してから見せる（分割描画の追いかけ過程を見せると、開いた直後に
+	// 履歴が上から流れ落ちて最新へ飛ぶように映る）。判定は agentInitialReveal.ts 側。
+	// タイマーを持つのでキャッシュ破棄が許される useMemo ではなく ref で保持する。
+	const [listRevealed, setListRevealed] = useState(false);
+	const revealGate = useRef(new AgentInitialRevealGate(() => {
+		// 上限時間で表示に転じたときは追いかけの途中なので、見せる直前に一度寄せ直す
+		// （遡り読みを始めていたら動かさない）。
+		if (stickyRef.current) {
+			listRef.current?.scrollToEnd({ animated: false });
+		}
+		setListRevealed(true);
+	})).current;
 	const userScrollGestureRef = useRef(false);
 	const userDraggingRef = useRef(false);
 	const userMomentumRef = useRef(false);
@@ -290,6 +305,19 @@ export default function AgentDetailScreen() {
 		prevCountRef.current = 0;
 		lastContentHeightRef.current = 0;
 	}, [activeKey, setSticky]);
+	// リストが実際にマウントされた（＝チャットが手元に届いた）ところから隠し始める。
+	// 条件は FlatList の描画条件（chat があって none でない）と必ず同値にすること。ずれると
+	// 「隠したのに描画されない＝戻せない」空白が生まれる。epoch が変わると keyExtractor 経由で
+	// 全行が作り直され追いかけが再発するため、そこでも隠し直す。
+	// 到達前にアンマウントされても保留中のタイマーを残さない。
+	useEffect(() => {
+		if (activeKey === undefined || !chatReady) {
+			return;
+		}
+		setListRevealed(false);
+		revealGate.begin();
+		return () => revealGate.dispose();
+	}, [activeKey, chatReady, chat?.epoch, revealGate]);
 	useEffect(() => {
 		if (activeKey === undefined || !shouldHandleLatestEntry(handledLatestEntryRef.current, latestEntry)) {
 			return;
@@ -329,12 +357,16 @@ export default function AgentDetailScreen() {
 		}
 		if (stickyRef.current || latestEntryPendingRef.current) {
 			listRef.current?.scrollToEnd({ animated: false });
+			revealGate.noteGrowth();
 		}
 	};
 	// stickyを解除するのは、ユーザーが指で動かしている間（慣性スクロールを含む）だけ。
 	// 新着やfooter伸長によるcontentSize更新でもonScrollは発火するため、位置だけで
 	// ユーザー操作と判定すると、旧offsetを見た瞬間に追従が誤解除される。
 	const onScrollBeginDrag = () => {
+		// 隠している間は触れないので通常ここは表示済み。隠したまま指が届く経路が
+		// できたときに取り残されないための保険として呼ぶ。
+		revealGate.revealNow();
 		latestEntryPendingRef.current = false;
 		userScrollGestureRef.current = true;
 		userDraggingRef.current = true;
@@ -416,6 +448,11 @@ export default function AgentDetailScreen() {
 				) : (
 					<FlatList
 						ref={listRef}
+						// 最下部へ到達するまでは見せない。見えないものに触れると誤タップになるので、
+						// この間の操作は受け取らずに捨てる（隠すのは長くても上限時間まで）。
+						// 参照が変わるとFlatListごと再描画されるためStyleSheetの定数を出し分ける。
+						style={listRevealed ? styles.listShown : styles.listHidden}
+						pointerEvents={listRevealed ? 'auto' : 'none'}
 						data={rows}
 						keyExtractor={row => row.type === 'group' || row.type === 'questionGroup' || row.type === 'web' ? `${chat.epoch}:${row.key}` : `${chat.epoch}:${row.m.rev}`}
 						ListHeaderComponent={<>{chat.activity !== undefined && !hasActiveActivity ? <AgentActivityCard activity={chat.activity} onOpen={openAgentActivity} /> : null}{chat.truncated ? <Text style={styles.truncatedNote}>（古い履歴は省略されています）</Text> : null}</>}
@@ -423,7 +460,7 @@ export default function AgentDetailScreen() {
 							? <WorkingIndicator live={chat?.live} pendingCount={pendingMessages.length} onOpenPending={() => setPendingSheetOpen(true)} />
 							: null}
 						renderItem={({ item }) =>
-							item.type === 'msg' ? <MessageBubble message={item.m} />
+							item.type === 'msg' ? <MessageBubble message={item.m} terminalKey={activeKey} />
 								: item.type === 'question' ? <QuestionCard message={item.m} answered={item.answered} onAnswer={actions.answerQuestion} onMulti={actions.answerQuestionMulti} onFreeText={actions.answerQuestionFreeText} />
 								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
 									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} terminalKey={activeKey} />
@@ -583,7 +620,7 @@ function WebSearchActivity({ msgs, terminalKey }: { msgs: AgentChatMessage[]; te
 	</View>;
 }
 
-function MessageBubble({ message }: { message: AgentChatMessage }) {
+function MessageBubble({ message, terminalKey }: { message: AgentChatMessage; terminalKey?: string }) {
 	if (message.kind === 'peer_message') {
 		return (
 			<View style={styles.peerMessageCard}>
@@ -597,11 +634,17 @@ function MessageBubble({ message }: { message: AgentChatMessage }) {
 		);
 	}
 	const isUser = message.role === 'user';
+	// ユーザーが貼った画像は発言と一緒に届く。本文の下にプレビューを添える
+	// （タップで全画面。取り寄せの仕組みはツール結果の画像と共通）。
+	const hasImages = (message.images?.length ?? 0) > 0;
 	return (
 		<View style={[styles.bubble, isUser ? styles.bubbleUser : styles.bubbleAssistant]}>
-			{isUser
-				? <Text style={styles.bubbleText} selectable>{message.text}</Text>
-				: <MarkdownText text={message.text} />}
+			{message.text.trim().length > 0 ? (
+				isUser
+					? <Text style={styles.bubbleText} selectable>{message.text}</Text>
+					: <MarkdownText text={message.text} />
+			) : null}
+			{hasImages ? <ToolImageCards result={message} terminalKey={terminalKey} /> : null}
 		</View>
 	);
 }
@@ -715,6 +758,8 @@ const styles = StyleSheet.create({
 	// 案A「フルフラット」: チャット領域の外枠カードを廃止し、背景に直接描画する
 	// （Claude公式アプリ風。コードブロックや長文が画面幅を最大限使える）。
 	chatArea: { flex: 1 },
+	listShown: { opacity: 1 },
+	listHidden: { opacity: 0 },
 	listContent: { paddingHorizontal: 14, paddingVertical: 10, gap: 9 },
 	placeholder: { color: colors.textDim, fontSize: 13, lineHeight: 20, padding: 16 },
 	noneBox: { alignItems: 'flex-start' },

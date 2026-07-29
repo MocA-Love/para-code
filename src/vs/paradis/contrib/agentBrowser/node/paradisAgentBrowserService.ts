@@ -28,6 +28,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../platform/browserView/common/browserViewScreenshot.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
@@ -217,6 +218,12 @@ function parseMainRendererManifest(value: unknown): IParadisMobileRendererManife
 // allow-any-unicode-next-line
 const NOT_BOUND_MESSAGE = 'このターミナルペインに共有されたブラウザページはありません。Para Code側でブラウザページを開き、コマンドパレットから「Para Code: Share Browser Page with Terminal Pane」を実行してこのペインに共有してください。注意: 共有はPara Codeの再起動（自動アップデート適用を含む）でリセットされるため、以前共有していた場合も再共有が必要です。再共有しても届かない場合は、このCLIをペインで起動し直してから再共有してください（ペインの識別トークンが再起動で変わっている可能性があります）。';
 
+/** メモ系ツールに共通の `space` 引数（未指定＝呼び出し元ペインが属するスペース）。 */
+const SPACE_ARGUMENT = {
+	type: 'string',
+	description: 'Space key from list_space_notes (a repository id or "worktree:<uri>"). Omit to use the space this terminal pane belongs to.',
+} as const;
+
 const TOOLS = [
 	{
 		name: 'get_shared_page',
@@ -239,6 +246,69 @@ const TOOLS = [
 		name: 'get_cdp_endpoint',
 		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools (take_snapshot, click, navigate_page, take_screenshot, ...) are built into this MCP server and already target the page shared with this terminal pane. Note: the gateway exposes exactly one shared page, so new_page, resize_page and close_page are not supported (use the emulate tool to change the viewport, and ask the user to open/close pages from Para Code).',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'list_space_notes',
+		description: 'List the spaces (registered repositories and their worktrees) of the Para Code window that owns this terminal pane, with the note checklist counts of each. Use the returned "space" key with the other space note tools; the space of this terminal pane is marked with "current": true.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'read_space_note',
+		description: 'Read the note of a Para Code space. The note is a Markdown scratchpad the user keeps per space, where checklist items look like "- [ ] todo" and "- [x] done". Returns the raw text plus every line with its 0-based "line" number, which the check and delete tools take. Defaults to the space this terminal pane belongs to.',
+		inputSchema: { type: 'object', properties: { space: SPACE_ARGUMENT }, additionalProperties: false },
+	},
+	{
+		name: 'write_space_note',
+		description: 'Replace the entire note text of a Para Code space (Markdown; checklist items look like "- [ ] todo"). This overwrites everything the user wrote, so prefer add_space_note_task / check_space_note_task / delete_space_note_task for single-item edits, and read_space_note first if you must rewrite. Pass an empty string to clear the note.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: SPACE_ARGUMENT,
+				text: { type: 'string', description: 'The full note text to store (empty string clears the note).' },
+			},
+			required: ['text'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'add_space_note_task',
+		description: 'Append one checklist item ("- [ ] ...") to the note of a Para Code space, leaving everything else untouched.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: SPACE_ARGUMENT,
+				task: { type: 'string', description: 'The checklist item text (without the "- [ ] " marker). Extra lines are kept as indented notes under the item, so do not start them with "- [ ]" unless you want a separate nested item.' },
+			},
+			required: ['task'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'check_space_note_task',
+		description: 'Check or uncheck one checklist item of a Para Code space note, addressed by the 0-based "line" number returned by read_space_note. Omit "done" to toggle it.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: SPACE_ARGUMENT,
+				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
+				done: { type: 'boolean', description: 'true to check the item, false to uncheck it. Omit to toggle.' },
+			},
+			required: ['line'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'delete_space_note_task',
+		description: 'Delete one checklist item (together with its indented continuation lines) from a Para Code space note, addressed by the 0-based "line" number returned by read_space_note.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: SPACE_ARGUMENT,
+				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
+			},
+			required: ['line'],
+			additionalProperties: false,
+		},
 	},
 ] as const;
 
@@ -2033,6 +2103,10 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._previewFile(ingressLease, path, signal);
 		}
 
+		if (PARADIS_AGENT_NOTE_TOOL_OPERATIONS.has(name)) {
+			return this._spaceNote(ingressLease, name, params?.arguments, signal);
+		}
+
 		if (name === 'get_cdp_endpoint') {
 			// CDPエンドポイント自体はバインド無しでも案内する（バインド状況も添える）。
 			const boundEntry = this._bindings.get(token);
@@ -2150,23 +2224,87 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	private async _previewFile(ingressLease: IParadisAgentBrowserIngressLease, path: string | undefined, signal?: AbortSignal): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
 		if (!path || !isAbsolute(path)) {
 			return this._toolError(`preview_file requires an absolute file path (got: ${String(path)}). Resolve the path against your working directory first.`);
 		}
+		const call = await this._callOwningWindow<IParadisPreviewFileResult>(ingressLease, {
+			channelName: PARADIS_AGENT_PREVIEW_CHANNEL,
+			method: 'previewFile',
+			args: [path],
+			failureLabel: 'preview_file',
+			failureMessage: 'Failed to open the file in Para Code.',
+		}, signal);
+		if (!call.ok) {
+			return this._toolError(call.error);
+		}
+		if (!call.value.ok) {
+			return this._toolError('Failed to open the file in Para Code.');
+		}
+		return this._toolText(`Opened ${path} in the Para Code window that owns this terminal pane.`);
+	}
+
+	/**
+	 * スペースのメモ系ツール（list/read/write/add/check/delete）の実体。引数の検証は common の
+	 * パーサに任せ、実際の読み書きは `preview_file` と同じく「呼び出し元ペインのウィンドウ」
+	 * に登録された {@link PARADIS_AGENT_NOTES_CHANNEL} へ委ねる（メモの実体は workbench 側の
+	 * ストレージにあるため）。ページ共有（bind）とは独立して、ペイントークンだけで使える。
+	 */
+	private async _spaceNote(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal): Promise<unknown> {
+		this._requireIngressLease(ingressLease);
+		const parsed = paradisParseAgentNoteToolArgs(name, args);
+		if (!parsed.ok) {
+			return this._toolError(parsed.error);
+		}
+		const call = await this._callOwningWindow<IParadisAgentNoteResult>(ingressLease, {
+			channelName: PARADIS_AGENT_NOTES_CHANNEL,
+			method: PARADIS_AGENT_NOTES_METHOD,
+			// トークンはウィンドウ内で「どのスペースが既定か」を解くためだけに渡す
+			args: [ingressLease.token, parsed.request],
+			failureLabel: name,
+			failureMessage: 'Failed to read or update the space note in Para Code.',
+		}, signal);
+		if (!call.ok) {
+			return this._toolError(call.error);
+		}
+		const result = call.value;
+		if (!result.ok) {
+			return this._toolError(result.error);
+		}
+		return this._toolText(JSON.stringify(
+			result.kind === 'spaces'
+				? { spaces: result.spaces }
+				// replaced: 全文置換で消えた本文。メモにundoが無いため、復元できるよう応答に残す
+				: { note: result.note, ...(result.replaced !== undefined ? { replaced: result.replaced } : {}) },
+			null,
+			2,
+		));
+	}
+
+	/**
+	 * 呼び出し元ペインを所有するウィンドウの IPC チャネルを1回だけ呼ぶ。ウィンドウ特定は
+	 * `_paneShells`（トークン → ウィンドウctx）で行い、取り違えを防ぐ。
+	 * 失敗理由は LLM がそのまま読める英語メッセージで返し、内部例外は外へ出さない。
+	 */
+	private async _callOwningWindow<T>(
+		ingressLease: IParadisAgentBrowserIngressLease,
+		request: { readonly channelName: string; readonly method: string; readonly args: unknown[]; readonly failureLabel: string; readonly failureMessage: string },
+		signal?: AbortSignal,
+	): Promise<{ readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: string }> {
+		this._requireIngressLease(ingressLease);
+		const token = ingressLease.token;
 		const pane = this._paneShells.get(token);
 		if (!pane) {
-			return this._toolError('Para Code could not identify the window that owns this terminal pane (the pane may have just been created, or Para Code was restarted after this CLI started). Retry in a few seconds; if it keeps failing, re-launch this CLI in a terminal pane inside Para Code.');
+			return { ok: false, error: 'Para Code could not identify the window that owns this terminal pane (the pane may have just been created, or Para Code was restarted after this CLI started). Retry in a few seconds; if it keeps failing, re-launch this CLI in a terminal pane inside Para Code.' };
 		}
 		// getChannel の ctx フィルタは「接続が現れるまで待つ」ため、ウィンドウが既に閉じて
 		// いると永久に解決しない。先に接続の存在を確認し、呼び出し自体にもタイムアウトを張る。
 		if (!this.ipcServer.connections.some(connection => connection.ctx === pane.windowCtx)) {
-			return this._toolError('The Para Code window that owns this terminal pane is not connected (it may have been closed or is reloading). Retry in a few seconds.');
+			return { ok: false, error: 'The Para Code window that owns this terminal pane is not connected (it may have been closed or is reloading). Retry in a few seconds.' };
 		}
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let onAbort: (() => void) | undefined;
 		try {
-			const channel = this.ipcServer.getChannel(PARADIS_AGENT_PREVIEW_CHANNEL, client => client.ctx === pane.windowCtx);
+			const channel = this.ipcServer.getChannel(request.channelName, client => client.ctx === pane.windowCtx);
 			const aborted = new Promise<never>((_, reject) => {
 				onAbort = () => reject(new ParadisIngressLeaseError());
 				if (signal?.aborted) {
@@ -2175,22 +2313,19 @@ export class ParadisAgentBrowserService extends Disposable {
 					signal?.addEventListener('abort', onAbort, { once: true });
 				}
 			});
-			const result = await Promise.race([
-				channel.call<IParadisPreviewFileResult>('previewFile', [path]),
+			const value = await Promise.race([
+				channel.call<T>(request.method, request.args),
 				new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('timed out after 10s')), 10000); }),
 				aborted,
 			]);
 			this._requireIngressLease(ingressLease);
-			if (!result.ok) {
-				return this._toolError('Failed to open the file in Para Code.');
-			}
-			return this._toolText(`Opened ${path} in the Para Code window that owns this terminal pane.`);
+			return { ok: true, value };
 		} catch (error) {
 			if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 				throw new ParadisIngressLeaseError();
 			}
-			this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] preview_file failed for pane ${this._tokenFingerprint(token)}`, error));
-			return this._toolError('Failed to open the file in Para Code.');
+			this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${request.failureLabel} failed for pane ${this._tokenFingerprint(token)}`, error));
+			return { ok: false, error: request.failureMessage };
 		} finally {
 			if (timer !== undefined) {
 				clearTimeout(timer);

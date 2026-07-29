@@ -11,18 +11,68 @@ import * as Notifications from 'expo-notifications';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import type { KeyStore, TerminalOperationOutboxStore } from './store.js';
 import type { SocketFactory, SocketLike } from './relayClient.js';
+import {
+	KeychainLockedError,
+	isKeychainLockedError,
+	migrateKeychainAccessibility,
+	type KeychainAccessible,
+} from './keychainAccessibility.js';
+
+function keychainAccessibleValue(accessible: KeychainAccessible): SecureStore.KeychainAccessibilityConstant {
+	return accessible === 'afterFirstUnlock'
+		? SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY
+		: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY;
+}
+
+/**
+ * 端末ロック中に起こされた起動でも読めるようにする（keychainAccessibility.ts 参照）。
+ * NSE と共有する通知鍵と同じ水準。
+ */
+const DEFAULT_KEYCHAIN_ACCESSIBLE: KeychainAccessible = 'afterFirstUnlock';
+
+/**
+ * 既存項目のアクセシビリティ移行。全操作の手前で1度だけ走らせる。
+ * 失敗しても呼び出し側の操作は止めない（番人を立てないので次回起動でやり直す）。
+ */
+let keychainMigration: Promise<void> | undefined;
+function ensureKeychainMigrated(): Promise<void> {
+	// `sanitize` は KeyStore の書き込みと同じ正規化。移行が素のキーを触ると、記号を含むキーが
+	// 追加されたときに「別の項目を作り直す」に化ける。
+	keychainMigration ??= migrateKeychainAccessibility({
+		read: key => SecureStore.getItemAsync(sanitize(key)),
+		write: (key, value, accessible) => SecureStore.setItemAsync(sanitize(key), value, {
+			keychainAccessible: keychainAccessibleValue(accessible),
+		}),
+		remove: key => SecureStore.deleteItemAsync(sanitize(key)),
+	}).then(() => undefined).catch(error => {
+		console.warn('[platform] keychain accessibility migration deferred', error);
+	});
+	return keychainMigration;
+}
 
 /** expo-secure-store（iOS Keychain / Android Keystore）による KeyStore 実装。 */
 export const secureKeyStore: KeyStore = {
 	async getItem(key: string): Promise<string | null> {
-		return SecureStore.getItemAsync(sanitize(key));
+		await ensureKeychainMigrated();
+		try {
+			return await SecureStore.getItemAsync(sanitize(key));
+		} catch (error) {
+			// 「ロックされていて読めない」を null にしてはいけない。呼び出し側は null を
+			// 「まだ保存されていない」と解釈し、鍵を作り直してペアリングを捨てる。
+			if (isKeychainLockedError(error)) {
+				throw new KeychainLockedError(key, error);
+			}
+			throw error;
+		}
 	},
 	async setItem(key: string, value: string): Promise<void> {
+		await ensureKeychainMigrated();
 		await SecureStore.setItemAsync(sanitize(key), value, {
-			keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+			keychainAccessible: keychainAccessibleValue(DEFAULT_KEYCHAIN_ACCESSIBLE),
 		});
 	},
 	async deleteItem(key: string): Promise<void> {
+		await ensureKeychainMigrated();
 		await SecureStore.deleteItemAsync(sanitize(key));
 	},
 };

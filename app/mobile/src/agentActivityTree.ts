@@ -80,6 +80,28 @@ export function agentActivityAncestors(agents: readonly AgentActivityAgent[], ag
 	return result.slice(-4); // メインAgentを含め最大5階層の表示幅に収める
 }
 
+/** 一覧の既定表示に載せる「直近の活動」の窓。これより古い履歴は折りたたむ。 */
+export const RECENT_AGENT_ACTIVITY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 一覧を直近ぶんと過去の履歴に分ける。長く続いたセッションでは子Agentが数十〜百件たまり、
+ * そのまま並べると今動いているものが埋もれるため。
+ *
+ * 直近に残した子の祖先は、階層が飛ばないよう常に一緒に残す。
+ */
+export function partitionRecentAgentActivity(agents: readonly AgentActivityAgent[], now: number, windowMs = RECENT_AGENT_ACTIVITY_MS): { readonly recent: AgentActivityAgent[]; readonly older: AgentActivityAgent[] } {
+	const byId = indexAgents(agents);
+	const keep = new Set<string>();
+	for (const agent of agents) {
+		if (agent.status !== 'running' && agent.status !== 'idle' && now - agent.updatedAt > windowMs) { continue; }
+		for (let cursor: AgentActivityAgent | undefined = agent; cursor !== undefined && !keep.has(cursor.id);) {
+			keep.add(cursor.id);
+			cursor = cursor.parentId !== undefined ? byId.get(cursor.parentId) : undefined;
+		}
+	}
+	return { recent: agents.filter(agent => keep.has(agent.id)), older: agents.filter(agent => !keep.has(agent.id)) };
+}
+
 export function flattenAgentActivity(agents: readonly AgentActivityAgent[]): AgentActivityTreeRow[] {
 	const rows: AgentActivityTreeRow[] = [];
 	const visited = new Set<string>();

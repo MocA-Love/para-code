@@ -74,4 +74,40 @@ suite('ParadisSentryEvent', () => {
 	test('drops events that are not attributable to fork-owned code', () => {
 		assert.strictEqual(paradisPrepareSentryEvent({ tags: {}, message: 'upstream failure' }, 'renderer'), null);
 	});
+
+	// ウィンドウを畳むと進行中の要求が全て cancellation sentinel で reject され、
+	// onunhandledrejection に落ちる。壊れていないので送らない。
+	test('drops cancellation, including one already prepared by another process', () => {
+		const canceled: IParadisSentryEvent = {
+			tags: { 'para.scope': 'unknown' },
+			exception: {
+				values: [{ type: 'Canceled', value: 'Canceled', mechanism: { type: 'auto.node.onunhandledrejection', handled: false } }],
+			},
+		};
+		assert.strictEqual(paradisPrepareSentryEvent(canceled, 'renderer'), null);
+		assert.strictEqual(paradisPrepareSentryEvent({ ...canceled, tags: { ...canceled.tags, 'para.prepared': '1' } }, 'main'), null);
+	});
+
+	// 実地では30件中3件の cancellation が、無関係な withScope から漏れた 'owned' / 'file-viewers'
+	// を身にまとって届いていた。scope タグで判定していると、この3件だけ落とせない。
+	test('drops an automatic cancellation even when scope tags leaked onto it', () => {
+		assert.strictEqual(paradisPrepareSentryEvent({
+			tags: { 'para.scope': 'owned', 'para.feature': 'file-viewers', 'para.operation': 'webview-fatal-error' },
+			exception: {
+				values: [{ type: 'Canceled', value: 'Canceled', mechanism: { type: 'auto.node.onunhandledrejection', handled: false } }],
+			},
+		}, 'main'), null);
+	});
+
+	// 自分から報告したものは落とさない。cancellation を意図して報告することは無いが、
+	// 「明示report は必ず届く」という不変条件をここで固定しておく。
+	test('keeps a cancellation that fork-owned code reported on purpose', () => {
+		const reported = paradisPrepareSentryEvent({
+			tags: { 'para.scope': 'owned', 'para.operation': 'deliberate-cancel' },
+			exception: {
+				values: [{ type: 'Canceled', value: 'Canceled', mechanism: { type: 'generic', handled: true } }],
+			},
+		}, 'main');
+		assert.strictEqual(reported?.tags?.['para.scope'], 'owned');
+	});
 });

@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 import { describe, expect, it } from 'vitest';
-import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants, agentActivityTasksForAgent, flattenAgentActivity, isRunningAgentActivity, summarizeAgentActivity } from './agentActivityTree.js';
+import { agentActivityAncestors, agentActivityChildren, agentActivityDescendants, agentActivityTasksForAgent, flattenAgentActivity, isRunningAgentActivity, partitionRecentAgentActivity, summarizeAgentActivity } from './agentActivityTree.js';
 import type { AgentActivityAgent, AgentActivityState, AgentActivityTask } from './store.js';
 
 const agent = (id: string, parentId?: string): AgentActivityAgent => ({
@@ -46,6 +46,21 @@ describe('agentActivityTree', () => {
 			task('other', { agentId: 'thread-3', assignee: '/root/researcher' }),
 		];
 		expect(agentActivityTasksForAgent(tasks, selected).map(value => value.id)).toEqual(['codex', 'legacy-id', 'legacy-label']);
+	});
+
+	it('keeps running work and recent history while folding away older agents', () => {
+		const now = 10 * 24 * 60 * 60 * 1000;
+		const at = (id: string, updatedAt: number, parentId?: string): AgentActivityAgent => ({ ...agent(id, parentId), status: 'completed', startedAt: updatedAt - 1, updatedAt });
+		const agents = [
+			{ ...at('running-old', now - 5 * 24 * 60 * 60 * 1000), status: 'running' as const },
+			at('fresh', now - 60 * 1000),
+			at('old-parent', now - 5 * 24 * 60 * 60 * 1000),
+			at('fresh-child', now - 60 * 1000, 'old-parent'),
+			at('old', now - 5 * 24 * 60 * 60 * 1000),
+		];
+		const { recent, older } = partitionRecentAgentActivity(agents, now);
+		expect(recent.map(value => value.id)).toEqual(['running-old', 'fresh', 'old-parent', 'fresh-child']);
+		expect(older.map(value => value.id)).toEqual(['old']);
 	});
 
 	it('breaks cycles and orphaned parent references safely', () => {

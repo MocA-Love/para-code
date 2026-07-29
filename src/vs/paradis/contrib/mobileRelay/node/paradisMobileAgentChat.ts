@@ -42,7 +42,7 @@ import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
-import { type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
+import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
 
@@ -54,6 +54,24 @@ export type ParadisCliDiscoveryMode = 'new' | 'resume' | 'fork';
 export interface IParadisAgentQuestionOption {
 	readonly label: string;
 	readonly description?: string;
+}
+
+/**
+ * tool_result に含まれていた画像1枚のメタ情報。実体（base64）はここには載せず、
+ * モバイルがステップを開いたときの 'tool-image' 要求で初めて転送する。
+ */
+export interface IParadisAgentChatImage {
+	/** 同一メッセージ内での並び順。'tool-image' 要求のキー（rev と組で1枚を指す）。 */
+	readonly index: number;
+	/** 'image/png' 等。モバイルは data URI の組み立てに使う。 */
+	readonly mediaType: string;
+	/** デコード後のおおよそのバイト数（モバイルの容量表示用）。 */
+	readonly bytes: number;
+	/**
+	 * 大きすぎて実体を保持していない。モバイルは取り寄せを試みず、その旨を表示する
+	 * （保持期限切れと区別するためのフラグ）。
+	 */
+	readonly oversize?: true;
 }
 
 /** モバイルへ送る正規化済みチャットメッセージ1件。 */
@@ -95,6 +113,12 @@ export interface IParadisAgentChatMessage {
 	 * リクエストで全文を取り寄せられる（展開時のオンデマンド取得）。
 	 */
 	readonly truncated?: boolean;
+	/**
+	 * 画像のメタ情報。ツール結果に含まれていた画像（Readで読んだ画像、MCPのスクリーンショット、
+	 * Codex の view_image）と、ユーザーが発言に貼った画像の両方で付く。
+	 * 実体は 'tool-image' で別途取り寄せる。
+	 */
+	readonly images?: readonly IParadisAgentChatImage[];
 }
 
 /** transcript確定前に表示する一時的な実行状況。履歴revには含めず、常に最新値で置換する。 */
@@ -240,7 +264,8 @@ type AgentInbound =
 	| { t: 'command-catalog'; id: number; token?: string; requestId: string }
 	| { t: 'settings-update'; id: number; token?: string; requestId: string; model: string; effort: string }
 	| { t: 'activity-detail'; id: number; token?: string; requestId: string; epoch: string; activityId: string }
-	| { t: 'tool-full'; id: number; token?: string; requestId: string; epoch: string; rev: number };
+	| { t: 'tool-full'; id: number; token?: string; requestId: string; epoch: string; rev: number }
+	| { t: 'tool-image'; id: number; token?: string; requestId: string; epoch: string; rev: number; index: number };
 
 /** agentチャネルのPC→モバイルメッセージ。 */
 type AgentOutbound =
@@ -253,6 +278,7 @@ type AgentOutbound =
 	| { t: 'action-result'; id: number; requestId: string; status: 'accepted' | 'rejected'; code?: string; message?: string; consumed?: boolean }
 	| { t: 'activity-detail'; id: number; requestId: string; activityId: string; messages?: readonly IParadisAgentActivityDetailMessage[]; error?: string }
 	| { t: 'tool-full'; id: number; requestId: string; rev: number; text?: string; error?: string }
+	| { t: 'tool-image'; id: number; requestId: string; rev: number; index: number; mediaType?: string; data?: string; error?: string }
 	| { t: 'model-control-error'; id: number; requestId: string; code: string; message: string }
 	| { t: 'none'; id: number };
 
@@ -266,10 +292,16 @@ const decoder = new TextDecoder();
 
 const POLL_INTERVAL_MS = 1500;
 /** 初回読み込みでファイルがこれより大きい場合、末尾のみ読む (長大セッション対策)。 */
-const INITIAL_READ_MAX_BYTES = 4 * 1024 * 1024;
-const INITIAL_READ_TAIL_BYTES = 1024 * 1024;
+const INITIAL_READ_MAX_BYTES = 8 * 1024 * 1024;
+const INITIAL_READ_TAIL_BYTES = 4 * 1024 * 1024;
 const APPEND_READ_CHUNK_BYTES = 1024 * 1024;
-const MAX_TRANSCRIPT_LINE_BYTES = 1024 * 1024;
+/**
+ * 1行の上限。行はチャンクをまたいで remainder に積むため、この値を超えた行は
+ * 先頭が落ちて JSON として壊れ、行ごと捨てられる。tool_result に入る画像
+ * (base64) は1行が数MBになるので、TOOL_IMAGE_BASE64_LIMIT より大きく取る。
+ * 初回読みの末尾窓 (INITIAL_READ_TAIL_BYTES) も同様に、画像行が丸ごと収まる幅が要る。
+ */
+const MAX_TRANSCRIPT_LINE_BYTES = 4 * 1024 * 1024;
 /** 保持するメッセージ数の上限 (超過分は古いものから捨てる)。 */
 const MESSAGE_RING_LIMIT = 400;
 /** attach応答スナップショットで送る最大件数。 */
@@ -285,8 +317,33 @@ const FULL_TEXT_LIMIT = 64 * 1024;
 /** 1ペインが保持する全文キャッシュの上限（件数・合計バイト）。古いrevから捨てる。 */
 const FULL_TEXT_CACHE_ENTRIES = 40;
 const FULL_TEXT_CACHE_BYTES = 2 * 1024 * 1024;
+/**
+ * 'tool-image'（モバイルの展開時オンデマンド取得）で扱う画像1枚あたりの上限。
+ * transcript には base64 のまま入っているため、その文字数で判定する（生バイトの約4/3 =
+ * 生 2.2MB 程度まで）。MAX_TRANSCRIPT_LINE_BYTES より小さくしておくこと（それを超える行は
+ * そもそも transcript から読めない）。超過した画像はメタに oversize を立てて実体を捨てる。
+ */
+const TOOL_IMAGE_BASE64_LIMIT = 3 * 1024 * 1024;
+/**
+ * 保持する画像キャッシュの上限（枚数・base64合計文字数）。参照の古い順に捨てる。
+ * 画像は1枚で全文キャッシュ全体に匹敵するため、全文とは別枠で会計する。
+ *
+ * **上限は全ペインの合計**である点に注意（{@link ParadisSharedImageCache}）。ペインごとに
+ * この枠を持たせると、エージェントを開いているペインの数だけメモリが積み上がる。base64 は
+ * JS の文字列なので実メモリは文字数の約2倍で、16M 文字 = 約32MB。ここが常駐の上限になる。
+ */
+const IMAGE_CACHE_ENTRIES = 24;
+const IMAGE_CACHE_BYTES = 16 * 1024 * 1024;
+/**
+ * 1メッセージから拾う画像の枚数上限。'tool-image' 要求の index 上限（100未満）と揃える
+ * （取り寄せられない画像のカードをモバイルに出さないため）。
+ */
+const MAX_IMAGES_PER_MESSAGE = 100;
+/** 1ペインで同時に送れる 'tool-image' の数（画面に見えている枚数ぶんは通す）。 */
+const TOOL_IMAGE_MAX_IN_FLIGHT = 4;
 const PERSISTED_ACTIVITY_HEAD_BYTES = 256 * 1024;
 const PERSISTED_ACTIVITY_MAX_AGENTS = 100;
+const PERSISTED_ACTIVITY_META_MAX_BYTES = 64 * 1024;
 /**
  * live ティッカー（モバイルの「応答を生成中（NN分NN秒）」）を強制失効させるまでの無更新時間。
  * 完了シグナル（Claude の Stop hook / Codex の turn/completed）は単一障害点で、1つでも
@@ -304,6 +361,8 @@ const LIVE_STALE_MS = 30 * 60_000;
 /** ペイン同期前に受けたhookを保持する時間とtoken単位の上限。 */
 const PENDING_HOOK_TTL_MS = 120_000;
 const PENDING_HOOK_LIMIT = 256;
+/** rollout path → root/SubAgent 判定の記憶上限（無制限な成長の防止のみが目的）。 */
+const CODEX_ROLLOUT_ORIGIN_CACHE_LIMIT = 512;
 /**
  * ターン終了後、遅れて届いた live 更新を無視する猶予。
  *
@@ -420,7 +479,37 @@ async function readPersistedTranscriptLines(transcriptPath: string): Promise<rea
 	}
 }
 
-async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string): Promise<readonly { readonly id: string; readonly path: string; readonly mtime: number }[]> {
+interface IClaudePersistedSubagentFile {
+	readonly id: string;
+	readonly path: string;
+	readonly mtime: number;
+	readonly meta?: IParadisClaudeSubagentMeta;
+}
+
+/**
+ * `agent-<id>.meta.json`（Claude Codeが子transcriptと並べて書く素性メタ）を読む。
+ * 種別・依頼内容・階層はここにしか無く、これが無いと一覧が「SubAgent」だらけになる。
+ */
+async function readClaudeSubagentMeta(transcriptPath: string): Promise<IParadisClaudeSubagentMeta | undefined> {
+	const raw = await fs.readFile(transcriptPath.replace(/\.jsonl$/i, '.meta.json'), 'utf8').catch(() => undefined);
+	if (raw === undefined || raw.length > PERSISTED_ACTIVITY_META_MAX_BYTES) { return undefined; }
+	try {
+		const parsed = rec(JSON.parse(raw));
+		const agentType = str(parsed?.['agentType']);
+		const description = str(parsed?.['description']);
+		const spawnDepth = num(parsed?.['spawnDepth']);
+		if (agentType === undefined && description === undefined && spawnDepth === undefined) { return undefined; }
+		return {
+			...(agentType !== undefined ? { agentType } : {}),
+			...(description !== undefined ? { description } : {}),
+			...(spawnDepth !== undefined ? { spawnDepth } : {}),
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string): Promise<readonly IClaudePersistedSubagentFile[]> {
 	const dir = resolve(rootTranscriptPath, '..');
 	const filename = rootTranscriptPath.slice(rootTranscriptPath.lastIndexOf(sep) + 1).replace(/\.jsonl$/i, '');
 	const subagentsDir = join(dir, filename, 'subagents');
@@ -436,7 +525,11 @@ async function discoverClaudePersistedSubagentFiles(rootTranscriptPath: string):
 		const stat = await fs.stat(path).catch(() => undefined);
 		if (stat?.isFile()) { files.push({ id: match[1], path, mtime: stat.mtimeMs }); }
 	}
-	return files.sort((a, b) => b.mtime - a.mtime).slice(0, PERSISTED_ACTIVITY_MAX_AGENTS);
+	const selected = files.sort((a, b) => b.mtime - a.mtime).slice(0, PERSISTED_ACTIVITY_MAX_AGENTS);
+	return Promise.all(selected.map(async file => {
+		const meta = await readClaudeSubagentMeta(file.path);
+		return { ...file, ...(meta !== undefined ? { meta } : {}) };
+	}));
 }
 
 interface ICodexPersistedSubagentFile {
@@ -508,6 +601,8 @@ interface IRawMessage {
 	readonly isError?: boolean;
 	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
 	readonly fullText?: string;
+	/** 画像の実体。モバイルへは送らず tailer が 'tool-image' 用に保持する。 */
+	readonly imageData?: readonly IFlattenedImage[];
 }
 
 /**
@@ -537,6 +632,12 @@ interface IParseSignals {
 	 */
 	turnEnded: 'completed' | 'failed' | 'interrupted' | undefined;
 	readonly codexActivityTimeline: ICodexTranscriptActivityEvent[];
+	/**
+	 * 直前に現れた Codex の view_image 呼び出しの call_id。
+	 * Codex は読んだ画像の実体を「関数の結果」ではなく直後の user メッセージへ書くため、
+	 * その画像をユーザーの発言ではなく view_image の結果として繋ぐのに使う。
+	 */
+	pendingCodexImageCallId?: string;
 	model?: string;
 	effort?: string;
 }
@@ -693,6 +794,14 @@ function isValidToolFullRequest(msg: AgentInboundCandidate): msg is AgentInbound
 		&& isValidControlRequest(msg);
 }
 
+function isValidToolImageRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'tool-image' }> {
+	return msg.t === 'tool-image'
+		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& typeof msg.rev === 'number' && Number.isInteger(msg.rev) && msg.rev >= 0
+		&& typeof msg.index === 'number' && Number.isInteger(msg.index) && msg.index >= 0 && msg.index < 100
+		&& isValidControlRequest(msg);
+}
+
 function parseAgentInbound(value: unknown): AgentInbound | undefined {
 	const msg = rec(value);
 	if (msg === undefined) {
@@ -710,6 +819,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 		case 'settings-update': return isValidSettingsUpdateRequest(msg) ? msg : undefined;
 		case 'activity-detail': return isValidActivityDetailRequest(msg) ? msg : undefined;
 		case 'tool-full': return isValidToolFullRequest(msg) ? msg : undefined;
+		case 'tool-image': return isValidToolImageRequest(msg) ? msg : undefined;
 		default: return undefined;
 	}
 }
@@ -738,8 +848,16 @@ function stableTextHash(value: string): string {
 /** Codex rollout先頭行から、cwdと共有daemonのthread IDを取り出す。 */
 export interface IParadisCodexSessionMeta {
 	readonly cwd: string;
+	/**
+	 * 共有daemonのthread ID。**SubAgentのrolloutでは「親の」thread IDが入る**
+	 * （現行Codexは子rolloutの `session_id` へ親のIDを書き、自分のIDは `id` 側にある）。
+	 * root判定にこの値を使ってはいけない。{@link subagent} を見ること。
+	 */
 	readonly sessionId?: string;
+	/** SubAgentのthreadなら親のthread ID（親IDを読めなかった子では undefined になりうる）。 */
 	readonly parentThreadId?: string;
+	/** SubAgentとして生成されたthreadのrolloutか。root判定はこのフラグで行う。 */
+	readonly subagent?: true;
 	readonly depth?: number;
 	readonly agentPath?: string;
 	readonly agentNickname?: string;
@@ -758,11 +876,19 @@ export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSe
 		const parentThreadId = str(payload?.['parent_thread_id']) ?? str(sourceSpawn?.['parent_thread_id']);
 		const rawDepth = num(payload?.['depth']) ?? num(sourceSpawn?.['depth']);
 		const depth = rawDepth !== undefined ? Math.min(5, Math.max(1, Math.trunc(rawDepth))) : undefined;
-		const agentPath = str(payload?.['agent_path']);
+		const agentPath = str(payload?.['agent_path']) ?? str(sourceSpawn?.['agent_path']);
 		const agentNickname = str(payload?.['agent_nickname']) ?? str(sourceSpawn?.['agent_nickname']);
+		// SubAgentのthreadは `source.subagent.thread_spawn` / `thread_source` で名乗る。これが無い
+		// 形式でも、親を指すthread IDを持つなら子とみなす。比較相手はこのrollout自身のID (`id`) で
+		// あって `session_id` ではない: 現行Codexは子rolloutの `session_id` へ「親の」thread IDを
+		// 書くため、session_idと比べると子が必ずrootへ化ける（このペインのセッションが子の会話に
+		// 差し替わり、モバイルに「親セッションが切り替わりました」が出る）。
+		const ownThreadId = str(payload?.['id']) ?? sessionId;
+		const spawnedAsSubagent = sourceSpawn !== undefined || str(payload?.['thread_source']) === 'subagent';
+		const subagent = spawnedAsSubagent || (parentThreadId !== undefined && parentThreadId !== ownThreadId);
 		return {
 			cwd, ...(sessionId !== undefined && sessionId.length > 0 ? { sessionId } : {}),
-			...(parentThreadId !== undefined && parentThreadId !== sessionId ? { parentThreadId } : {}),
+			...(subagent ? { subagent: true as const, ...(parentThreadId !== undefined ? { parentThreadId } : {}) } : {}),
 			...(depth !== undefined ? { depth } : {}), ...(agentPath !== undefined ? { agentPath } : {}),
 			...(agentNickname !== undefined ? { agentNickname } : {}),
 		};
@@ -856,13 +982,90 @@ function parseClaudeProgress(obj: Record<string, unknown>): ITranscriptProgress 
 	return undefined;
 }
 
+/**
+ * 画像1枚のメタ情報（モバイルへ送る側）を作る。実体を保持できるかの判定も兼ねる:
+ * transcript の1行上限を超える画像はそもそも読めないため、保持できる上限
+ * （TOOL_IMAGE_BASE64_LIMIT）を超えたものは oversize として実体を捨てる。
+ */
+export function paradisToolImageMeta(index: number, image: { readonly mediaType: string; readonly base64: string }): IParadisAgentChatImage {
+	// base64 の実バイト数（末尾パディングを除いた概算）。モバイルの容量表示にだけ使う。
+	const padding = image.base64.endsWith('==') ? 2 : image.base64.endsWith('=') ? 1 : 0;
+	const bytes = Math.max(0, Math.floor(image.base64.length * 3 / 4) - padding);
+	return {
+		index, mediaType: image.mediaType, bytes,
+		...(image.base64.length > TOOL_IMAGE_BASE64_LIMIT ? { oversize: true as const } : {}),
+	};
+}
+
+/** 上限どうしの整合（画像は transcript の1行に収まる範囲でしか扱えない）を検査するため公開する。 */
+export const paradisAgentChatImageLimitsForTest = {
+	get toolImageBase64Limit() { return TOOL_IMAGE_BASE64_LIMIT; },
+	get maxTranscriptLineBytes() { return MAX_TRANSCRIPT_LINE_BYTES; },
+	get maxImagesPerMessage() { return MAX_IMAGES_PER_MESSAGE; },
+	get initialReadTailBytes() { return INITIAL_READ_TAIL_BYTES; },
+} as const;
+
+/** tool_result の content に含まれていた画像1枚（実体つき）。 */
+interface IFlattenedImage {
+	readonly mediaType: string;
+	/** transcript に入っていた base64 そのまま。モバイルへは 'tool-image' でのみ渡す。 */
+	readonly base64: string;
+}
+
+/** tool_result 等の content (string | ブロック配列) を表示テキストと画像へ分解した結果。 */
+interface IFlattenedContent {
+	readonly text: string;
+	readonly images: readonly IFlattenedImage[];
+}
+
+function isImageMediaType(value: string): boolean {
+	return /^image\/[a-zA-Z0-9.+-]{1,60}$/.test(value);
+}
+
+/**
+ * 平坦化後の本文が画像のプレースホルダだけか（＝読める文が1つも無いか）。
+ * 画像ブロックは `[image]` の行として残るため、本文の有無はこれで判定する。
+ */
+function isImagePlaceholderOnly(text: string): boolean {
+	return text.split('\n').every(line => {
+		const trimmed = line.trim();
+		return trimmed.length === 0 || trimmed === '[image]';
+	});
+}
+
+/**
+ * Codex が rollout に書く画像は data URI 形式（`data:image/png;base64,...`）。
+ * 想定外の形（外部URL・base64以外のエンコード）は取り込まない。
+ */
+export function parseImageDataUri(value: string | undefined): IFlattenedImage | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	const match = /^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/.exec(value);
+	const mediaType = match?.[1];
+	const base64 = match?.[2];
+	if (mediaType === undefined || base64 === undefined || base64.length === 0 || !isImageMediaType(mediaType)) {
+		return undefined;
+	}
+	return { mediaType, base64 };
+}
+
 /** tool_result 等の content (string | ブロック配列) を表示テキストへ平坦化する。 */
 function flattenContent(content: unknown): string {
+	return flattenContentParts(content).text;
+}
+
+/**
+ * flattenContent の画像つき版。画像ブロックは表示テキストでは従来どおり `[image]` の
+ * プレースホルダにしつつ（この行しか読めない旧モバイルのため）、実体を別に取り出す。
+ */
+function flattenContentParts(content: unknown): IFlattenedContent {
 	if (typeof content === 'string') {
-		return content;
+		return { text: content, images: [] };
 	}
 	if (Array.isArray(content)) {
 		const parts: string[] = [];
+		const images: IFlattenedImage[] = [];
 		for (const block of content) {
 			const b = rec(block);
 			if (!b) {
@@ -872,12 +1075,26 @@ function flattenContent(content: unknown): string {
 			if (text !== undefined) {
 				parts.push(text);
 			} else if (b['type'] === 'image') {
+				// Claude: { type:'image', source:{ type:'base64', media_type, data } }
 				parts.push('[image]');
+				const source = rec(b['source']);
+				const base64 = str(source?.['data']);
+				const mediaType = str(source?.['media_type']);
+				if (str(source?.['type']) === 'base64' && base64 !== undefined && base64.length > 0 && mediaType !== undefined && isImageMediaType(mediaType)) {
+					images.push({ mediaType, base64 });
+				}
+			} else if (b['type'] === 'input_image') {
+				// Codex: { type:'input_image', image_url:'data:image/png;base64,...' }
+				parts.push('[image]');
+				const image = parseImageDataUri(str(b['image_url']));
+				if (image !== undefined) {
+					images.push(image);
+				}
 			}
 		}
-		return parts.join('\n');
+		return { text: parts.join('\n'), images };
 	}
-	return '';
+	return { text: '', images: [] };
 }
 
 /**
@@ -1097,6 +1314,9 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 			return out;
 		}
 		if (Array.isArray(content)) {
+			// ユーザーが貼った画像は tool_result ではなく content 直下に image ブロックとして入る。
+			// 本文と同じ発言の一部なので、テキスト側のメッセージへまとめて添える。
+			const pastedImages: IFlattenedImage[] = [];
 			for (const block of content) {
 				const b = rec(block);
 				if (!b) {
@@ -1104,8 +1324,13 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 				}
 				if (b['type'] === 'text') {
 					pushClaudeUserText(out, str(b['text']) ?? '', ts, signals);
+				} else if (b['type'] === 'image') {
+					const image = flattenContentParts([b]).images[0];
+					if (image !== undefined) {
+						pastedImages.push(image);
+					}
 				} else if (b['type'] === 'tool_result') {
-					const text = flattenContent(b['content']);
+					const { text, images } = flattenContentParts(b['content']);
 					// toolUseId は質問(AskUserQuestion)の「回答済み」判定に使う（本文が空でも回答は成立する）。
 					const toolUseId = str(b['tool_use_id']);
 					if (toolUseId !== undefined) {
@@ -1118,14 +1343,26 @@ function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, i
 							signals.openedTasks.set(idMatch[1], ts ?? Date.now());
 						}
 					}
-					if (text.trim().length > 0) {
+					if (text.trim().length > 0 || images.length > 0) {
 						out.push({
 							role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts,
 							...(toolUseId !== undefined ? { toolUseId } : {}),
 							// transcript の is_error。モバイルは失敗ステップを赤で示す（推定に頼らない）。
 							...(b['is_error'] === true ? { isError: true } : {}),
+							...(images.length > 0 ? { imageData: images } : {}),
 						});
 					}
+				}
+			}
+			if (pastedImages.length > 0) {
+				// 直前のユーザー発言に添える。画像だけを貼った（本文なし）ときは
+				// 画像だけの発言として1件作る。
+				const last = out.at(-1);
+				if (last?.role === 'user' && last.kind === 'text' && last.imageData === undefined) {
+					out[out.length - 1] = { ...last, imageData: pastedImages };
+				} else {
+					signals.userText = true;
+					out.push({ role: 'user', kind: 'text', text: '', ts, imageData: pastedImages });
 				}
 			}
 		}
@@ -1230,6 +1467,27 @@ export function paradisParseCodexTranscriptLineForTest(line: string): { messages
 	return { messages, ...(activity !== undefined ? { activity: { id: activity.id, ...(activity.agentPath !== undefined ? { agentPath: activity.agentPath } : {}), kind: activity.kind, at: activity.at } } : {}), ...(turn !== undefined ? { turn: turn.type === 'turnStart' ? 'started' : 'ended' } : {}) };
 }
 
+/**
+ * 連続する Codex rollout 行を1つの signals で通す（view_image のように、呼び出しと
+ * 画像の実体が別の行に分かれる並びを検証するため）。
+ */
+export function paradisParseCodexTranscriptLinesForTest(lines: readonly string[]): IRawMessage[] {
+	const signals = newParseSignals();
+	const out: IRawMessage[] = [];
+	for (const line of lines) {
+		let obj: Record<string, unknown> | undefined;
+		try {
+			obj = rec(JSON.parse(line));
+		} catch {
+			continue;
+		}
+		if (obj !== undefined) {
+			out.push(...parseCodexLine(obj, signals));
+		}
+	}
+	return JSON.parse(JSON.stringify(out)) as IRawMessage[];
+}
+
 /** Codex子threadのrollout行を、SubAgent詳細用メッセージへ正規化する。 */
 export function paradisParseCodexDetailLinesForTest(lines: readonly string[]): IParadisAgentActivityDetailMessage[] {
 	const out: IParadisAgentActivityDetailMessage[] = [];
@@ -1267,6 +1525,52 @@ export function paradisClaudeRootTranscriptPath(transcriptPath: string): string 
 	const match = /^(.*)\/([^/]+)\/subagents\/agent-[^/]+\.jsonl$/i.exec(normalized);
 	if (match?.[1] === undefined || match[2] === undefined) { return undefined; }
 	return `${match[1]}/${match[2]}.jsonl`;
+}
+
+/**
+ * hookの発信元rolloutが root thread か SubAgent か。'unknown' は session_meta を読めなかった
+ * （生成直後で先頭行がまだ書かれていない等）ことを表し、root と断定してはいけない状態。
+ */
+export type ParadisCodexRolloutOrigin = 'root' | 'subagent' | 'unknown';
+
+/**
+ * hookのtranscript_pathを「ペインの親セッション」のtranscriptへ正規化する。
+ *
+ * ネストした子エージェント（Claudeのsidechain / Codexのsubagent thread）で発火したhookは
+ * 子自身のtranscriptを指す。これをそのままペインのセッションとしてclaimすると、親の会話が
+ * 子の会話へ置き換わり（モバイルの「親セッションが切り替わりました」）、tailerも張り替わる。
+ *
+ * Claudeは子pathから root transcript を復元できるが、Codexの子threadは親と同じ
+ * `rollout-*.jsonl` 命名・同じcwdで別ファイルになるため、pathから親を復元する手段が無い。
+ * よって親が未確定なら 'drop' を返し、子でペインのセッションをbootstrapさせない
+ * （親はcwd探索/state DB探索が root thread だけを候補にして確定させる）。
+ *
+ * 素性を判定できなかったCodex rollout ('unknown') は、確定済みのペインでは現行セッションを
+ * 保ち、rebindだけを見送る（子の生成直後に飛んできた最初のhookで乗っ取られないため）。
+ * セッション未確定のペインでは従来どおり確定させる（新規セッションの検知を止めない）。
+ */
+export function paradisResolveHookSessionTranscript(input: {
+	readonly hookTranscriptPath: string;
+	readonly paneTranscriptPath: string | undefined;
+	readonly claudeNestedAgentId: string | undefined;
+	readonly codexOrigin: ParadisCodexRolloutOrigin | undefined;
+}): { readonly kind: 'session'; readonly transcriptPath: string; readonly nested: 'claude' | 'codex' | undefined } | { readonly kind: 'drop' } {
+	const { hookTranscriptPath, paneTranscriptPath, claudeNestedAgentId, codexOrigin } = input;
+	if (claudeNestedAgentId !== undefined) {
+		return {
+			kind: 'session', nested: 'claude',
+			transcriptPath: paneTranscriptPath ?? paradisClaudeRootTranscriptPath(hookTranscriptPath) ?? hookTranscriptPath,
+		};
+	}
+	if (codexOrigin === 'subagent') {
+		return paneTranscriptPath !== undefined
+			? { kind: 'session', transcriptPath: paneTranscriptPath, nested: 'codex' }
+			: { kind: 'drop' };
+	}
+	if (codexOrigin === 'unknown' && paneTranscriptPath !== undefined && paneTranscriptPath !== hookTranscriptPath) {
+		return { kind: 'session', transcriptPath: paneTranscriptPath, nested: 'codex' };
+	}
+	return { kind: 'session', transcriptPath: hookTranscriptPath, nested: undefined };
 }
 
 /** Codex rollout JSONL の1行をパースする。表示対象外の行は空配列。 */
@@ -1336,14 +1640,37 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		if (role !== 'user' && role !== 'assistant') {
 			return []; // developer / system プロンプトは出さない
 		}
-		const text = flattenContent(payload['content']);
+		const { text, images } = flattenContentParts(payload['content']);
 		// Codexはuserメッセージとして環境コンテキスト/プロジェクト指示を注入するため表示から除く。
 		// 旧CLI(0.4x): <environment_context> / <user_instructions>
 		// 新CLI(0.80+): 「# AGENTS.md instructions for <path>」見出し＋<INSTRUCTIONS>ラッパー
 		const trimmedText = text.trim();
-		if (trimmedText.length === 0
-			|| /^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(trimmedText)
+		if (/^<(environment_context|user_instructions|ENVIRONMENT_CONTEXT|INSTRUCTIONS)/.test(trimmedText)
 			|| trimmedText.startsWith('# AGENTS.md instructions for')) {
+			return [];
+		}
+		// view_image の実体が来るのは「直後の」メッセージだけなので、ここで必ず手放す。
+		// 持ち越すと、実体が来ないまま後で貼られた無関係な画像がその呼び出しの結果として
+		// 繋がってしまう（環境コンテキストの注入は上で弾いた後なので巻き込まれない）。
+		const pendingImageCallId = signals.pendingCodexImageCallId;
+		signals.pendingCodexImageCallId = undefined;
+		if (images.length > 0) {
+			// Codex は view_image の実体を「関数の結果」ではなく直後の user メッセージへ
+			// input_image として書く。本文のない画像だけのメッセージがそれで、ユーザーの発言
+			// ではなく直前の view_image の結果なので、ツール結果として繋ぐ（signals が覚えた
+			// call_id を使う）。本文つき = ユーザーが貼った画像はそのまま発言として出す。
+			const viewImageCallId = isImagePlaceholderOnly(trimmedText) ? pendingImageCallId : undefined;
+			if (viewImageCallId !== undefined) {
+				out.push({
+					role: 'tool', kind: 'tool_result', text: truncateText(text, TOOL_TEXT_LIMIT), ts,
+					toolUseId: viewImageCallId, imageData: images,
+				});
+				return out;
+			}
+			out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts, imageData: images });
+			return out;
+		}
+		if (trimmedText.length === 0) {
 			return [];
 		}
 		out.push({ role, kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
@@ -1356,6 +1683,10 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 		// custom_tool_call は arguments でなく input にテキストが入る（それ以外は function_call と同形）
 		const tool = str(payload['name']) ?? 'tool';
 		const text = str(payload['arguments']) ?? str(payload['input']) ?? '';
+		if (tool === 'view_image') {
+			// 実体は直後の user メッセージへ書かれる。その画像をこの呼び出しへ繋ぐため覚えておく。
+			signals.pendingCodexImageCallId = callId;
+		}
 		out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}) });
 	} else if (ptype === 'web_search_call' || ptype === 'tool_search_call') {
 		// web_search_call は action.query、tool_search_call は arguments(オブジェクト)にクエリが入る
@@ -1431,7 +1762,10 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 				}
 			}
 		}
-		if (text.trim().length > 0) {
+		// view_image は結果本文を持たず（"attached local image path" とだけ書く）、実体は直後の
+		// user メッセージに来る。この定型文を出すと画像カードと同じ枠が二重に並ぶので落とす。
+		const isViewImagePlaceholder = callId !== undefined && callId === signals.pendingCodexImageCallId && text.trim() === 'attached local image path';
+		if (text.trim().length > 0 && !isViewImagePlaceholder) {
 			out.push({ role: 'tool', kind: 'tool_result', ...withTruncation(text, TOOL_TEXT_LIMIT), ts, ...(callId !== undefined ? { toolUseId: callId } : {}), ...(failed ? { isError: true } : {}) });
 		}
 	}
@@ -1542,6 +1876,28 @@ async function discoverCodexThreadSourceById(threadId: string): Promise<IParadis
 }
 
 /**
+ * Codex rollout の先頭行（session_meta）を読む。cwd探索とhookの親子判定の両方が使う。
+ * session_meta は書き出し後に変わらないため、先頭16KBだけ読めば足りる。
+ */
+async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadisCodexSessionMeta | undefined> {
+	let handle: fs.FileHandle;
+	try {
+		handle = await fs.open(rolloutPath, 'r');
+	} catch {
+		return undefined;
+	}
+	try {
+		const buffer = Buffer.alloc(16 * 1024);
+		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+		return paradisParseCodexSessionMeta(buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '');
+	} catch {
+		return undefined;
+	} finally {
+		await handle.close().catch(() => { /* ignore */ });
+	}
+}
+
+/**
  * ターミナルのcwdから実行中らしいエージェントセッションのtranscriptを探す。
  * hookは「アプリ起動後に発火したイベント」しか知れないため、Para Code起動前から
  * 動いているセッションや発言がまだ無いセッションはこれで拾う（後からhookが発火したら
@@ -1613,17 +1969,8 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 				rollouts.sort((a, b) => b.mtime - a.mtime);
 				for (const rollout of rollouts) {
 					try {
-						const handle = await fs.open(rollout.path, 'r');
-						let firstLine: string;
-						try {
-							const buffer = Buffer.alloc(16 * 1024);
-							const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-							firstLine = buffer.subarray(0, bytesRead).toString('utf8').split('\n')[0] ?? '';
-						} finally {
-							await handle.close();
-						}
-						const meta = paradisParseCodexSessionMeta(firstLine);
-						if (meta?.cwd === cwd && meta.parentThreadId === undefined) {
+						const meta = await readCodexRolloutSessionMeta(rollout.path);
+						if (meta?.cwd === cwd && meta.subagent !== true) {
 							const sessionId = meta.sessionId;
 							candidates.push({
 								agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime,
@@ -1668,6 +2015,83 @@ interface ITailerDelegate {
 }
 
 /**
+ * ツール結果に含まれていた画像の実体を、**全ペイン合計**で上限を張って保持する LRU。
+ *
+ * 保持はペイン（tailer）ごとに持つのが自然だが、それだと上限がペイン数だけ掛け算になる。
+ * 画像は1枚で数MBあり、base64 は JS 文字列なので実メモリは文字数の約2倍になるため、
+ * エージェントを開いたペインが増えるほど常駐が積み上がってしまう。表示に必要なのは
+ * 「いま開いているステップの画像」だけなので、合計で1つの枠を分け合う。
+ *
+ * 所有者（tailer）は取り出しキーの名前空間としてのみ使い、ペインが消えるときと epoch が
+ * 振り直されるときに {@link releaseOwner} でまとめて捨てる。
+ */
+class ParadisSharedImageCache {
+
+	/** `owner\0rev:index` → 実体。Map の挿入順を LRU として使う。 */
+	private readonly entries = new Map<string, IFlattenedImage>();
+	private bytes = 0;
+
+	private static key(owner: string, rev: number, index: number): string {
+		return `${owner}\0${rev}:${index}`;
+	}
+
+	set(owner: string, rev: number, index: number, image: IFlattenedImage): void {
+		const key = ParadisSharedImageCache.key(owner, rev, index);
+		this.drop(key);
+		this.entries.set(key, image);
+		this.bytes += image.base64.length;
+		// 1メッセージに複数枚あるとき、全部積んでから削ると一時的に上限を大きく超える。
+		while (this.entries.size > IMAGE_CACHE_ENTRIES || this.bytes > IMAGE_CACHE_BYTES) {
+			const oldest = this.entries.keys().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.drop(oldest.value);
+		}
+	}
+
+	/** 取り出した画像は最近参照した扱いに直す（ページ送り中の画像が新着に押し出されないため）。 */
+	get(owner: string, rev: number, index: number): IFlattenedImage | undefined {
+		const key = ParadisSharedImageCache.key(owner, rev, index);
+		const image = this.entries.get(key);
+		if (image !== undefined) {
+			this.entries.delete(key);
+			this.entries.set(key, image);
+		}
+		return image;
+	}
+
+	/** そのペインぶんを丸ごと捨てる（ペインの破棄・epoch リセット）。 */
+	releaseOwner(owner: string): void {
+		const prefix = `${owner}\0`;
+		for (const key of [...this.entries.keys()]) {
+			if (key.startsWith(prefix)) {
+				this.drop(key);
+			}
+		}
+	}
+
+	/** テストから合計の在庫を確かめるため。 */
+	stats(): { readonly count: number; readonly bytes: number } {
+		return { count: this.entries.size, bytes: this.bytes };
+	}
+
+	private drop(key: string): void {
+		const existing = this.entries.get(key);
+		if (existing !== undefined) {
+			this.bytes -= existing.base64.length;
+			this.entries.delete(key);
+		}
+	}
+}
+
+/** 画像キャッシュはプロセスで1つ（上限がペイン数に比例しないようにするため）。 */
+const sharedImageCache = new ParadisSharedImageCache();
+
+/** 上限の整合とペイン間の枠共有を検証するため公開する。 */
+export const paradisSharedImageCacheForTest = sharedImageCache;
+
+/**
  * 1つの transcript ファイルの追記を追いかけ、正規化メッセージのリングバッファを維持する。
  * fs.watch (即時性) + ポーリング (确実性) の二重化。ファイル未作成・一時的な読み取り失敗は
  * 次のポーリングで自然に回復する。読み取りは Promise チェーンで直列化する。
@@ -1683,6 +2107,12 @@ class TranscriptTailer {
 	 */
 	private readonly fullTexts = new Map<number, string>();
 	private fullTextBytes = 0;
+	/**
+	 * 画像キャッシュ内でこのペインぶんを指す名前空間。全文と違い、画像の実体は
+	 * {@link sharedImageCache} が全ペイン合計の枠で持つ（1枚が全文キャッシュ全体に匹敵する
+	 * サイズになるため、ペインごとに枠を持たせると常駐がペイン数に比例してしまう）。
+	 */
+	private readonly imageOwner = `tailer-${newEpoch()}`;
 	/** 実行中バックグラウンドタスク（サブエージェント等）: id → 起動時刻 (epoch ms)。 */
 	readonly backgroundTasks = new Map<string, number>();
 	/** 回答待ちの質問 (AskUserQuestion) の tool_use_id。 */
@@ -1758,6 +2188,8 @@ class TranscriptTailer {
 			clearInterval(this.pollTimer);
 			this.pollTimer = undefined;
 		}
+		// 画像の実体だけは共有の枠にあるので、ペインが消えても LRU の押し出しを待たずに返す。
+		sharedImageCache.releaseOwner(this.imageOwner);
 	}
 
 	private enqueue(work: () => Promise<void>): Promise<void> {
@@ -1847,6 +2279,9 @@ class TranscriptTailer {
 				this.lastApprovalKey = undefined;
 				this.liveQuestions.clear();
 				this.liveQuestionRealIds.clear();
+				// rev が 0 から振り直されるため、退避済みの全文・画像をそのまま残すと新しい rev の
+				// 中身と取り違えられる（epoch の検証は通ってしまう）。ここで必ず捨てる。
+				this.clearRetainedPayloads();
 				this.model = undefined;
 				this.effort = undefined;
 				await handle.close().catch(() => { /* ignore */ });
@@ -1899,13 +2334,51 @@ class TranscriptTailer {
 		return this.fullTexts.get(rev);
 	}
 
+	/**
+	 * 画像の実体を保持し、モバイルへ送るメタ情報（index/mediaType/バイト数）だけを返す。
+	 * 上限超過の画像は実体を捨ててメタだけ残す（モバイルは「大きすぎる」表示にできる）。
+	 */
+	private retainImages(rev: number, images: readonly IFlattenedImage[]): readonly IParadisAgentChatImage[] {
+		const meta: IParadisAgentChatImage[] = [];
+		for (let index = 0; index < Math.min(images.length, MAX_IMAGES_PER_MESSAGE); index++) {
+			const image = images[index];
+			if (image === undefined) {
+				continue;
+			}
+			// 大きすぎる画像は実体を持たない。モバイルが「保持期限切れ」と取り違えないよう
+			// メタで区別できるようにする。
+			const imageMeta = paradisToolImageMeta(index, image);
+			meta.push(imageMeta);
+			if (imageMeta.oversize === true) {
+				continue;
+			}
+			sharedImageCache.set(this.imageOwner, rev, index, image);
+		}
+		return meta;
+	}
+
+	/**
+	 * 'tool-image' 応答用。保持期限を過ぎた画像・上限超過の画像は undefined
+	 * （他のペインが新しい画像を読み込むと、こちらの古い画像が押し出されることもある）。
+	 */
+	imageFor(rev: number, index: number): IFlattenedImage | undefined {
+		return sharedImageCache.get(this.imageOwner, rev, index);
+	}
+
+	/** rev を振り直す（epochリセット）際に、rev をキーにした退避データを捨てる。 */
+	private clearRetainedPayloads(): void {
+		this.fullTexts.clear();
+		this.fullTextBytes = 0;
+		sharedImageCache.releaseOwner(this.imageOwner);
+	}
+
 	/** 読み取ったテキストを行に分割してパースし、リングへ追加する。末尾の不完全行は持ち越す。 */
 	private consumeText(text: string, emitDelta: boolean): void {
 		const combined = this.remainder + text;
 		const lines = combined.split('\n');
 		this.remainder = (lines.pop() ?? '').slice(-MAX_TRANSCRIPT_LINE_BYTES);
-		// fullText はここでだけ通過する（この直後に retainFullText へ移して送信対象から外す）。
-		const added: (IParadisAgentChatMessage & { fullText?: string })[] = [];
+		// fullText / imageData はここでだけ通過する（この直後に退避して送信対象から外す）。
+		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
 		const signals = newParseSignals();
 		let latestProgress: ITranscriptProgress | undefined;
 		for (const line of lines) {
@@ -1962,14 +2435,25 @@ class TranscriptTailer {
 				added.push({ ...message, rev: this.rev++ });
 			}
 		}
-		// fullText は送信メッセージから外し、rev 単位でここに退避する（'tool-full' 用）。
+		// fullText / 画像の実体は送信メッセージから外し、rev 単位でここに退避する
+		// （'tool-full' / 'tool-image' の取り寄せ用）。画像はメタ情報だけをメッセージに残す。
 		for (let i = 0; i < added.length; i++) {
 			const message = added[i];
-			if (message?.fullText !== undefined) {
-				this.retainFullText(message.rev, message.fullText);
-				const { fullText, ...rest } = message;
-				added[i] = rest;
+			if (message === undefined) {
+				continue;
 			}
+			let replacement = message;
+			if (replacement.fullText !== undefined) {
+				this.retainFullText(replacement.rev, replacement.fullText);
+				const { fullText, ...rest } = replacement;
+				replacement = rest;
+			}
+			if (replacement.imageData !== undefined) {
+				const images = this.retainImages(replacement.rev, replacement.imageData);
+				const { imageData, ...rest } = replacement;
+				replacement = images.length > 0 ? { ...rest, images } : rest;
+			}
+			added[i] = replacement;
 		}
 		this.applySignals(signals, emitDelta);
 		if (latestProgress !== undefined) {
@@ -2387,6 +2871,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly activityTrackers = new Map<string, ParadisAgentActivityTracker>();
 	/** Claude SubagentStopが通知した子transcript（pane token + agent ID → 許可済みpath）。 */
 	private readonly claudeSubagentTranscriptPaths = new Map<string, string>();
+	/**
+	 * Codex rollout path → root thread か SubAgent か。session_meta は書き出し後に
+	 * 変わらないため、hookのたびに読み直さずここへ覚える（'unknown' は覚えない）。
+	 */
+	private readonly codexRolloutOrigins = new Map<string, ParadisCodexRolloutOrigin>();
 	/** PreToolUse/PostToolUseの対応付け。並行ツールの古い完了で最新表示を消さないために使う。 */
 	private readonly liveToolIds = new Map<string, string>();
 	/** Claude MessageDisplayの行バッチをメッセージ単位で連結する内部バッファ。 */
@@ -2416,6 +2905,8 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
 	private readonly activityDetailRequests = new Map<string, string>();
+	/** 送信中の 'tool-image': `mobileId\0requestId` → token。1件あたり数MBのため同時数を抑える。 */
+	private readonly toolImageRequests = new Map<string, string>();
 	private readonly persistedActivityTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** Stateがpane snapshotより先着したattachを、対応表の同期完了まで短時間だけ保留する。 */
 	private readonly pendingAttaches = new Map<string, { readonly mobileId: string; readonly msg: { id: number; token?: string; epoch?: string; afterRev?: number; liveEncoding?: string }; readonly timer: ReturnType<typeof setTimeout>; attempt: number }>();
@@ -2440,13 +2931,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		void this.loadPersistedSessions();
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
 		const activitySweepTimer = setInterval(() => {
-			const now = Date.now();
-			for (const [token, tracker] of this.activityTrackers) {
-				if (tracker.sweepStale(now)) {
-					this.pushActivityToSubscribers(token);
-				}
-			}
-			this.sweepStaleLiveStates(now);
+			void this.sweepAgentActivity();
 		}, 60_000);
 		this._register(toDisposable(() => clearInterval(activitySweepTimer)));
 		this._register(toDisposable(() => {
@@ -2484,6 +2969,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.completedActions.clear();
 			this.interactionClaims.clear();
 			this.activityDetailRequests.clear();
+			this.toolImageRequests.clear();
 			for (const timer of this.persistedActivityTimers.values()) { clearTimeout(timer); }
 			this.persistedActivityTimers.clear();
 		}));
@@ -3018,6 +3504,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'tool-full':
 				this.handleToolFullRequest(mobileId, msg);
 				break;
+			case 'tool-image':
+				this.handleToolImageRequest(mobileId, msg);
+				break;
 		}
 	}
 
@@ -3039,6 +3528,38 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		this.sendTo(mobileId, { t: 'tool-full', id: msg.id, requestId: msg.requestId, rev: msg.rev, text }, token);
+	}
+
+	/**
+	 * tool_result に含まれていた画像の取り寄せ。モバイルがステップを開いたときだけ呼ばれる。
+	 * 全文と同じく transcript は読み直さず、tailer が退避しておいた実体だけを返す。
+	 */
+	private handleToolImageRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'tool-image' }>): void {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const fail = (message: string): void => {
+			this.sendTo(mobileId, { t: 'tool-image', id: msg.id, requestId: msg.requestId, rev: msg.rev, index: msg.index, error: message }, token ?? msg.token);
+		};
+		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)) {
+			fail('画像を取得できません');
+			return;
+		}
+		// 1件で数MBを stringify + seal する重い経路なので、activity-detail と同じく
+		// ペイン単位で同時実行数を抑える（画面に見えている枚数ぶんは通す）。
+		const requestKey = `${mobileId}\0${msg.requestId}`;
+		const inFlightForToken = [...this.toolImageRequests.values()].filter(value => value === token).length;
+		if (this.toolImageRequests.has(requestKey) || inFlightForToken >= TOOL_IMAGE_MAX_IN_FLIGHT) {
+			fail('画像の取得が混み合っています。少し待ってから開き直してください');
+			return;
+		}
+		const image = tailer.imageFor(msg.rev, msg.index);
+		if (image === undefined) {
+			fail('この画像は保持期限を過ぎています');
+			return;
+		}
+		this.toolImageRequests.set(requestKey, token);
+		void this.sendToAuthorized(mobileId, { t: 'tool-image', id: msg.id, requestId: msg.requestId, rev: msg.rev, index: msg.index, mediaType: image.mediaType, data: image.base64 }, token)
+			.finally(() => this.toolImageRequests.delete(requestKey));
 	}
 
 	private async handleActivityDetailRequest(mobileId: string, msg: Extract<AgentInbound, { t: 'activity-detail' }>): Promise<void> {
@@ -4178,6 +4699,25 @@ export class ParadisMobileAgentChat extends Disposable {
 		return tracker;
 	}
 
+	/**
+	 * 60秒周期の失効処理。落とす前に必ず永続transcriptで生存を確認する。
+	 *
+	 * 親のhookは子Agentが走っている間は届かないため、確認なしに失効させると
+	 * 「まだ動いている子Agentが状態不明になる」誤表示が必ず起きる。
+	 */
+	private async sweepAgentActivity(): Promise<void> {
+		const active = [...this.activityTrackers].filter(([, tracker]) => tracker.hasActiveWork()).map(([token]) => token);
+		await Promise.all(active.map(token => this.reconcilePersistedAgentActivity(token)
+			.catch(error => this.logService.trace('[paradisAgentChat] activity liveness check failed', String(error)))));
+		const now = Date.now();
+		for (const [token, tracker] of this.activityTrackers) {
+			if (tracker.sweepStale(now)) {
+				this.pushActivityToSubscribers(token);
+			}
+		}
+		this.sweepStaleLiveStates(now);
+	}
+
 	private schedulePersistedAgentActivityReconcile(token: string, delay = 350): void {
 		const previous = this.persistedActivityTimers.get(token);
 		if (previous !== undefined) { clearTimeout(previous); }
@@ -4211,7 +4751,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			const files = await discoverClaudePersistedSubagentFiles(session.transcriptPath);
 			for (const file of files) {
-				const parsed = paradisParseClaudePersistedActivity(file.id, await readPersistedTranscriptLines(file.path), file.mtime, now);
+				const parsed = paradisParseClaudePersistedActivity(file.id, await readPersistedTranscriptLines(file.path), file.mtime, now, file.meta);
 				if (parsed.owner !== undefined) { owners.set(file.id, parsed.owner); }
 				for (const agent of parsed.spawned) { rememberSpawned(agent); }
 				claudeTranscriptPaths.push({ id: file.id, path: file.path });
@@ -4270,6 +4810,35 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (this.activityTracker(token).setAgentRelationship(activityId, parentId, source.depth, at)) {
 			this.pushActivityToSubscribers(token);
 		}
+	}
+
+	/**
+	 * hookの発信元rolloutが root thread か SubAgent かを返す（非Codexは undefined）。
+	 * 判定材料は rollout 先頭行の session_meta だけで、これは書き出し後に変わらないため
+	 * path単位で結果を保持する。読めなかった場合は 'unknown' を返し、覚えない
+	 * （子の生成直後は先頭行がまだ書かれておらず、rootと断定すると乗っ取りが再発する）。
+	 */
+	private async codexRolloutOrigin(transcriptPath: string): Promise<ParadisCodexRolloutOrigin | undefined> {
+		if (agentKindForPath(transcriptPath) !== 'codex') {
+			return undefined;
+		}
+		const cached = this.codexRolloutOrigins.get(transcriptPath);
+		if (cached !== undefined) {
+			return cached;
+		}
+		const meta = await readCodexRolloutSessionMeta(transcriptPath);
+		if (meta === undefined) {
+			return 'unknown';
+		}
+		if (this.codexRolloutOrigins.size >= CODEX_ROLLOUT_ORIGIN_CACHE_LIMIT) {
+			const oldest = this.codexRolloutOrigins.keys().next();
+			if (oldest.done !== true) {
+				this.codexRolloutOrigins.delete(oldest.value);
+			}
+		}
+		const origin: ParadisCodexRolloutOrigin = meta.subagent === true ? 'subagent' : 'root';
+		this.codexRolloutOrigins.set(transcriptPath, origin);
+		return origin;
 	}
 
 	private clearClaudeSubagentTranscripts(token: string): void {
@@ -4462,10 +5031,30 @@ export class ParadisMobileAgentChat extends Disposable {
 		// nested SubAgent内で発火したhookのtranscript_pathは子自身を指す。これをpaneの
 		// main sessionとしてclaimすると親会話が子会話へ置換されるため、既知rootまたは
 		// 現行規約から復元したrootへ正規化する。子pathは親子相関にだけ使う。
-		const nestedParentId = paradisClaudeAgentIdFromTranscriptPath(transcriptPath);
-		const sessionTranscriptPath = nestedParentId !== undefined
-			? this.paneSessions.get(event.token)?.transcriptPath ?? paradisClaudeRootTranscriptPath(transcriptPath) ?? transcriptPath
-			: transcriptPath;
+		// Claudeのsidechain（pathで判別可能）に加え、Codexのsubagent thread（親と同じ
+		// rollout命名・同じcwdのためsession_metaを読まないと判別できない）も対象にする。
+		const claudeNestedAgentId = paradisClaudeAgentIdFromTranscriptPath(transcriptPath);
+		// 既知の親からのhookは素性が確定しているので、rolloutを読み直さない（生成直後の
+		// 未書き込みウィンドウに晒されるのは、本当に未知のpathだけになる）。
+		const knownPaneTranscriptPath = this.paneSessions.get(event.token)?.transcriptPath;
+		const codexOrigin = claudeNestedAgentId !== undefined || knownPaneTranscriptPath === transcriptPath
+			? undefined
+			: await this.codexRolloutOrigin(transcriptPath);
+		const resolved = paradisResolveHookSessionTranscript({
+			hookTranscriptPath: transcriptPath,
+			paneTranscriptPath: this.paneSessions.get(event.token)?.transcriptPath,
+			claudeNestedAgentId,
+			codexOrigin,
+		});
+		if (resolved.kind === 'drop') {
+			// 親未確定のペインへ届いた Codex subagent thread のhook。ここで確定させると
+			// 子の会話がペインの会話になるため捨てる（親はcwd/state DB探索が確定させる）。
+			// このとき子の質問カード・承認カードのライブ注入も落ちる。親が未確定のままでは
+			// 注入先の tailer が子rolloutのものになってしまい、それがこのバグ自体だから。
+			this.logService.trace(`[paradisAgentChat] dropped nested codex subagent hook for pane without a session: ${event.event}`);
+			return;
+		}
+		const { transcriptPath: sessionTranscriptPath, nested } = resolved;
 		this.pendingHooks.delete(event.token);
 		const pendingTimer = this.pendingHookTimers.get(event.token);
 		if (pendingTimer !== undefined) {
@@ -4509,7 +5098,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			token: event.token,
 			agent: agentKindForPath(sessionTranscriptPath),
 			transcriptPath: sessionTranscriptPath,
-			sessionId: event.sessionId,
+			// nestedなhookのsession_idを、親のsessionId（Codexのroot thread ID等、SubAgent探索や
+			// daemon照合の基準）へ書き込ませない。Codexの子threadのsession_idは「子自身の」IDなので
+			// 親が未知でも採らない。Claudeのsidechainは親のsession_idを持つのでfallbackしてよい。
+			sessionId: nested === 'codex' ? previous?.sessionId
+				: nested === 'claude' ? previous?.sessionId ?? event.sessionId
+					: event.sessionId,
 		};
 		if (previous !== undefined && previous.transcriptPath !== sessionTranscriptPath
 			&& this.transcriptClaims.get(previous.transcriptPath) === event.token) {
@@ -4552,8 +5146,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (event.event === 'UserPromptSubmit' && !isLocalSettingCommand) {
 			this.activeTurnTokens.add(event.token);
 		}
-		const activityPayload = event.payload !== undefined && nestedParentId !== undefined && event.payload['parent_agent_id'] === undefined
-			? { ...event.payload, parent_agent_id: nestedParentId }
+		// Claudeのsidechainだけ、hook payloadへ親Agent IDを補って活動ツリーへ繋ぐ。
+		// Codexのsubagent threadはrolloutのタイムラインとstate DBから関係を復元済みなので、
+		// ここでClaude形式の親子を注入すると同じSubAgentが二重に現れる。
+		const activityPayload = event.payload !== undefined && claudeNestedAgentId !== undefined && event.payload['parent_agent_id'] === undefined
+			? { ...event.payload, parent_agent_id: claudeNestedAgentId }
 			: event.payload;
 		const activityChanged = activityPayload !== undefined && this.activityTracker(event.token).applyClaude(event.event, activityPayload, event.at);
 		if (activityChanged) {

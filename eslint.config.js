@@ -1866,7 +1866,8 @@ export default defineConfig(
 						// PARA-PATCH: terminalInstanceService.ts がモバイル用terminalKey予約ヘルパー(paradisPrepareTerminalIdentity)を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/mobileRelay/~',
 						// PARA-PATCH: relauncher.contribution.ts がワークスペース切替時の拡張ホスト再起動抑止フラグ
-						// (isParadisManagedWorkspaceWindow) を読むための唯一の逆方向 import
+						// (isParadisManagedWorkspaceWindow) を読むための逆方向 import。
+						// scm.service.contribution.ts のスコープ付き ISCMViewService 差し替えも同じ許可を使う
 						'vs/paradis/contrib/workspaceSwitch/~',
 						// PARA-PATCH: xtermTerminal.ts がウィンドウ透過時のターミナル背景透明化ヘルパーを呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/windowTransparency/~',
