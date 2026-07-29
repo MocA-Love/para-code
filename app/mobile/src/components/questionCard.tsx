@@ -230,6 +230,9 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 						accessibilityState={{ selected, disabled }}
 						onPress={() => {
 							hapticSelection();
+							// 選択肢で答えたら自由入力欄は空に戻す。両方が残っていると、本文が見えているのに
+							// 回答は選択肢、という食い違った表示になる（回答として送れるのはどちらか一方だけ）。
+							setFreeTexts(prev => prev.map((v, j) => (j === step ? '' : v)));
 							if (multiSelect) {
 								const next = toggledIndices.includes(i) ? toggledIndices.filter(v => v !== i) : [...toggledIndices, i].sort((a, b) => a - b);
 								setAnswer(step, next.length > 0 ? { kind: 'multi', indices: next } : undefined);
@@ -251,7 +254,14 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 					value={freeTexts[step] ?? ''}
 					onChangeText={text => {
 						setFreeTexts(prev => prev.map((v, i) => (i === step ? text : v)));
-						setAnswer(step, text.trim().length > 0 ? { kind: 'text', optionCount: options.length, text: text.trim() } : undefined);
+						const trimmed = text.trim();
+						if (trimmed.length > 0) {
+							setAnswer(step, { kind: 'text', optionCount: options.length, text: trimmed });
+						} else if (answers[step]?.kind === 'text') {
+							// 空に戻したときに取り消すのは、この欄で入れた回答だけ。選択肢で答えたあとに
+							// ここを一度触って消すと選択まで無かったことになり、送信ボタンが再び死んでいた。
+							setAnswer(step, undefined);
+						}
 					}}
 					placeholder="自由に入力して回答…"
 					placeholderTextColor={colors.textDim}

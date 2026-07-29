@@ -40,6 +40,24 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.2.4',
+		date: '2026-07-30',
+		items: [
+			{
+				icon: 'list-outline',
+				title: '複数の質問への回答が、ずれずに届くようになりました',
+				body: '全部答えて送っても、回答が1問ずつずれて入ったり、途中で止まったままになることがありました。PC側へ送る操作の送り方を直しています。',
+				tone: 'green',
+			},
+			{
+				icon: 'create-outline',
+				title: '自由入力欄に触れても、選んだ回答が消えなくなりました',
+				body: '選択肢を選んだあとに自由入力欄を一度触って空にすると、選んだ内容まで取り消されて送信ボタンが押せなくなっていました。',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.2.3',
 		date: '2026-07-29',
 		items: [

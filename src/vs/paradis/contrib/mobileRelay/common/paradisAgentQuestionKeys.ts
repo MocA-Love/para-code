@@ -18,12 +18,21 @@
  *    その状態でEnterを送ると空のまま確定を試み、単一選択では質問全体がキャンセルされる。
  *    正しくは「番号 → 本文 → Enter」の順
  *  - **複数選択の質問はEnterでも数字でも次へ進まない**。数字はトグル、Enter/スペースは
- *    フォーカス中の項目のトグルで、前進するには末尾の送信ボタンへTabで移動してEnterが要る。
+ *    フォーカス中の項目のトグルで、前進するには末尾の送信ボタンへ移動してEnterが要る。
  *    進めないまま次の答えを送ると、すべて同じ質問に降り注いでチェックが増え続ける
+ *  - **送信ボタンへの移動にTabは使えない**。TUIはTabを「次の質問へのタブ切り替え」に
+ *    割り当てていて（`{context:"Tabs", bindings:{tab:"tabs:next", right:"tabs:next", ...}}`）、
+ *    そちらが選択肢リスト側のフォーカス移動より先に食う。実機（2.1.220）で、4選択肢の質問へ
+ *    Tabを5回送ると Q1→Q2→確認画面 まで飛び、締めのEnterが未回答のまま送信を叩いた。
+ *    下矢印にはこの割り当てが無いので、そちらで送信ボタンまで降りる
  *  - 単問かつ単一選択のときだけ確認画面が出ない。それ以外は最後に「Review your answers」
  *    が出るので、締めのEnterが1回要る
  *
  * 送信側（PC/モバイル）で同じ列を組み立てられるよう、副作用のない関数だけを置く。
+ * この段取りは Claude Code 2.1.220 の TUI に**生バイトを PTY へ書き込んで**実測したもので、
+ * 注入の形式（`\u001b[B` をそのまま流す）まで本番と同じ条件で確かめてある。行の並びが前提なので、
+ * **Claude Code を更新したら測り直すこと**。前提が崩れると、行き過ぎた Enter がチャットを開き、
+ * 以降の回答キーがそのままエージェントへのメッセージとして送られる。
  */
 
 /** 1問ぶんのTUI上の形（キー列の組み立てに要るものだけ）。 */
@@ -40,23 +49,42 @@ export type ParadisAgentQuestionAnswer =
 	| { readonly kind: 'text'; readonly optionCount: number; readonly text: string };
 
 const ENTER = '\r';
-const TAB = '\t';
+const DOWN = '\u001b[B';
 
 /**
- * 自由入力の本文をTUIの1行入力に流せる形へ均す。改行はそのまま送ると確定扱いになり、
- * 残りが次の質問へ流れ込むため、空白に潰す。
+ * 自由入力の本文をTUIの1行入力に流せる形へ均す。
+ *
+ * 潰すのは改行だけではない。本文は bracketed paste で包まずそのまま PTY へ流れ、TUI は届いた
+ * チャンクを打鍵に分解するので、**制御文字はキーとして食われる**:
+ *  - 改行はその場で確定扱いになり、残りが次の質問へ流れ込む
+ *  - タブは `tabs:next`（次の質問へのタブ切り替え）に割り当てられている。PCからコピーした
+ *    コードを貼ると普通に混入するので、これがいちばん踏みやすい
+ *  - ESC はエスケープシーケンスの開始として解釈され、後続の文字次第で矢印やキャンセルに化ける
+ * どれも「本文の途中から別の質問へ答えが降り始める」形で壊れるため、まとめて空白にする。
  */
 function flattenText(text: string): string {
-	return text.replace(/[\r\n]+/g, ' ').trim();
+	return text.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
 }
 
 /**
- * 複数選択の質問で、末尾の送信ボタン（Next/Submit）へフォーカスを移すためのTab数。
- * 選択肢＋Otherの行数ぶん送れば、どこから始まっても必ず送信ボタンに届く
- * （送信ボタン上でのTabは何もしないので、多く送っても行き過ぎない）。
+ * 選択肢の並びの末尾にある Other（自由入力）行まで降りるための下矢印。
+ *
+ * 起点が0行目であることに依存している。質問が出た直後のフォーカスは常に先頭の選択肢で、
+ * 数字キーはトグルするだけでフォーカスを動かさない（どちらも実機 2.1.220 で確認）。
  */
-function tabsToSubmitButton(optionCount: number): string[] {
-	return new Array<string>(optionCount + 1).fill(TAB);
+function downsToOtherRow(optionCount: number): string[] {
+	return new Array<string>(optionCount).fill(DOWN);
+}
+
+/**
+ * 送信ボタン（Next/Submit）まで降りるための下矢印。Other 行のちょうど1つ下にある。
+ *
+ * Tab と違い**多く送ると行き過ぎる**（送信ボタンの先に「Chat about this」があり、そこで
+ * Enter を送るとチャットが開く。以降のキーは入力欄へ流れ込み、最後の Enter で混ざった文字列が
+ * エージェントへ送信されてしまう）ので、過不足の無い数でなければならない。
+ */
+function downsToSubmitButton(optionCount: number): string[] {
+	return [...downsToOtherRow(optionCount), DOWN];
 }
 
 /**
@@ -85,14 +113,14 @@ export function paradisAgentQuestionKeySequence(
 			for (const optionIndex of [...new Set(answer.indices)].sort((a, b) => a - b)) {
 				parts.push(String(optionIndex + 1));
 			}
-			parts.push(...tabsToSubmitButton(question.optionCount), ENTER);
+			parts.push(...downsToSubmitButton(question.optionCount), ENTER);
 			continue;
 		}
 		const text = flattenText(answer.text);
 		if (question.multiSelect) {
-			// 複数選択のOther行は数字では選べない（数字はトグル）。Tabで入力欄まで移動して
-			// 本文を入れると自動で選択され、そこからもう1つTabで送信ボタンへ。
-			parts.push(...new Array<string>(question.optionCount).fill(TAB), text, TAB, ENTER);
+			// 複数選択のOther行は数字では選べない（数字はトグル）。下矢印で入力欄まで降りて
+			// 本文を入れると自動で選択され、そこからもう1つ下で送信ボタンへ。
+			parts.push(...downsToOtherRow(question.optionCount), text, DOWN, ENTER);
 			continue;
 		}
 		// 単一選択のOther: 番号でフォーカスを移し、本文を入れてからEnterで確定する。
