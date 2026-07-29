@@ -69,6 +69,18 @@ const BASE_BACKOFF_MS = 500;
 // 接続開始〜E2E確立までの上限。RNのWebSocketは接続失敗やPC不在時にonclose/oncloseが
 // 届かないまま黙り込むことがあり、これが無いと'connecting'/'handshaking'で永久に止まる。
 const CONNECT_TIMEOUT_MS = 12_000;
+/**
+ * 接続失敗をSentryへ報告するまでに要求する連続失敗回数。
+ *
+ * 電車での圏外や画面復帰直後の一過性の失敗は、ユーザーから見れば「一瞬オフライン表示が出た」
+ * だけの正常系で、1回ごとにerrorとして上げると本物の障害がそのノイズに埋もれる。PC側は同じ
+ * 問題を「60秒の猶予内に復帰できなければ報告する」で解いているが（paradisMobileRelayService
+ * の RELAY_DISCONNECT_REPORT_DELAY_MS）、モバイルはOSにいつ凍結されるか分からないため
+ * タイマーで猶予を測れない。代わりに「何回連続で失敗したか」で同じ振り分けをする。
+ *
+ * 3回＝接続上限12秒＋バックオフ(0.5s→1s→2s)で概ね40秒。一過性の切断なら必ず復帰している。
+ */
+const RELAY_REPORT_AFTER_ATTEMPTS = 3;
 
 export class RelayClient {
 	private socket: SocketLike | null = null;
@@ -85,6 +97,14 @@ export class RelayClient {
 	private lastReceivedAt = 0;
 	/** 直近のPC presence。offline→online遷移（=PC再起動）の検出に使う。 */
 	private lastPcOnline: boolean | undefined;
+	/**
+	 * いま張っているソケットについてリレーが伝えてきたPCの在否。ソケットごとに引き直す。
+	 *
+	 * `lastPcOnline` を流用してはいけない。あちらは接続をまたいで持ち越すので、リレーそのものへ
+	 * 到達できていない場合でも前回の`true`が残り、「PCは居るのに繋がらない」と誤判定する。
+	 * `undefined` は「リレーから presence が届いていない」＝リレーまで届いていない可能性を指す。
+	 */
+	private pcOnlineForCurrentSocket: boolean | undefined;
 
 	constructor(
 		private readonly identity: Identity,
@@ -274,23 +294,32 @@ export class RelayClient {
 		const isCurrent = () => this.socket === socket && this.socketGeneration === generation;
 		socket.binaryType = 'arraybuffer';
 		this.socket = socket;
+		this.pcOnlineForCurrentSocket = undefined;
 
 		let established = false;
 		// ハンドシェイク中に読み飛ばした「応答ではないバイナリ」の数。connect timeout の報告に
 		// 載せて、黙って捨てた事実がSentryから見えるようにする。
 		let skippedDuringHandshake = 0;
 
+		// 自分がタイムアウト検知で閉じたソケットか。close code では判定できない: RNのWebSocketは
+		// ローカルの close code を onclose へ往復させず 0 に潰すため、下の `socket.close(4001)` は
+		// `unexpected-close-0` として届く（PC側が「operation名で区別する」としているのと同じ事情）。
+		let closedByConnectTimeout = false;
 		// 一定時間内にE2E確立まで到達しなければ強制的に閉じる（onclose経由で再接続）。
 		this.clearConnectTimeout();
 		this.connectTimeoutHandle = this.timers.setTimeout(() => {
 			this.connectTimeoutHandle = null;
 			if (isCurrent() && this.state !== 'online') {
-				reportMobileDiagnosticError('relay', 'connect-timeout', new Error('Relay connection timed out'), {
-					phase: this.state,
-					reconnect_count: this.reconnectAttempt,
-					transport: 'websocket',
-					safe_skipped_handshake_frames: skippedDuringHandshake,
-				});
+				if (this.shouldReportConnectFailure()) {
+					reportMobileDiagnosticError('relay', 'connect-timeout', new Error('Relay connection timed out'), {
+						phase: this.state,
+						reconnect_count: this.reconnectAttempt,
+						transport: 'websocket',
+						safe_skipped_handshake_frames: skippedDuringHandshake,
+						safe_pc_presence: this.pcOnlineForCurrentSocket === undefined ? 'unknown' : String(this.pcOnlineForCurrentSocket),
+					});
+				}
+				closedByConnectTimeout = true;
 				try {
 					socket.close(4001, 'connect timeout');
 				} catch { /* ignore */ }
@@ -371,8 +400,9 @@ export class RelayClient {
 			if (isCurrent()) {
 				// onerror を伴わない切断（リレー側の superseded、iOS のバックグラウンド回収）は
 				// これまで一切記録が残らず、同じ事象がPC側の close code だけで語られる非対称に
-				// なっていた。onerror 済みのときは二重計上しない。
-				if (!sawSocketError && !this.closedByUser && !this.suspended) {
+				// なっていた。onerror 済みのときと、自分がタイムアウトで閉じたとき（直前に
+				// connect-timeout を出す判断を済ませている）は二重計上しない。
+				if (!sawSocketError && !closedByConnectTimeout && !this.closedByUser && !this.suspended) {
 					const code = event?.code ?? 0;
 					reportMobileDiagnosticError('relay', `unexpected-close-${code}`, new Error(`Relay connection closed (code ${code})`), {
 						phase: this.state,
@@ -392,6 +422,9 @@ export class RelayClient {
 			if (msg.type === 'presence' && msg.peer === 'pc') {
 				const wasOnline = this.lastPcOnline;
 				this.lastPcOnline = msg.online;
+				// リレーはモバイルのソケットを受理した直後に必ず現在のPC在否を送る（deviceDOのacceptMobile）。
+				// つまりE2Eハンドシェイクが始まる前にこの値は埋まる。
+				this.pcOnlineForCurrentSocket = msg.online;
 				this.callbacks.onPcPresence?.(msg.online);
 				// PCがoffline→onlineへ戻った = PC側プロセスが再起動し、E2Eセッション（ephemeral鍵）
 				// が新しくなった。モバイル側のソケットはリレーDOに保持されたまま生きているため、
@@ -414,6 +447,22 @@ export class RelayClient {
 			});
 			this.callbacks.onError?.(error);
 		}
+	}
+
+	/**
+	 * 接続失敗をSentryへ報告してよいかを返す。
+	 *
+	 * E2Eハンドシェイクの相手はPCなので、PCがリレーに繋がっていなければ応答は原理的に来ず、
+	 * connect timeout は必ず起きる。これは「PCがスリープしている / Para Codeを閉じている」
+	 * だけの正常系で、報告するとモバイルを開くたびにerrorが積み上がる（実際にこれが
+	 * Sentry上で最多のノイズ源になっていた）。リレーが presence を返してこない場合
+	 * （`undefined`）はリレーまで届いていない疑いがあるので、そちらは黙らせない。
+	 */
+	private shouldReportConnectFailure(): boolean {
+		if (this.pcOnlineForCurrentSocket === false) {
+			return false;
+		}
+		return this.reconnectAttempt >= RELAY_REPORT_AFTER_ATTEMPTS;
 	}
 
 	private onFatal(error: unknown): void {
