@@ -12,6 +12,8 @@ export interface IParadisSentryFrame {
 	filename?: string;
 	abs_path?: string;
 	function?: string;
+	/** Minidump frames name their module here instead of `filename` (an absolute binary path). */
+	package?: string;
 }
 
 export interface IParadisSentryEvent {
@@ -37,6 +39,10 @@ export interface IParadisSentryEvent {
 		values?: Array<{
 			type?: string;
 			value?: string;
+			mechanism?: {
+				type?: string;
+				handled?: boolean;
+			};
 			stacktrace?: {
 				frames?: IParadisSentryFrame[];
 			};
@@ -166,6 +172,97 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 }
 
 /**
+ * Exception types VS Code uses for its cancellation sentinel (`CancellationError` / `canceled()`).
+ */
+const paradisCancellationTypes = new Set(['Canceled', 'CancellationError']);
+
+/**
+ * Whether the SDK captured this exception on its own rather than our code reporting it.
+ *
+ * `para.scope` cannot be used for this. The tag is set on the current scope, and a `withScope()`
+ * block leaks it onto unrelated async work started inside it: of the 30 cancellation events observed
+ * in the field, three carried `para.scope: 'owned'` and `para.feature: 'file-viewers'` from a
+ * concurrent explicit report they had nothing to do with. The mechanism is attached by whoever
+ * captured the event, so it stays truthful.
+ */
+function paradisIsAutomaticCapture(mechanism: { type?: string; handled?: boolean } | undefined): boolean {
+	if (mechanism === undefined) {
+		return false;
+	}
+	return mechanism.handled === false || mechanism.type?.startsWith('auto.') === true;
+}
+
+/**
+ * Cancellation is control flow, not a failure.
+ *
+ * Tearing a window down rejects every in-flight request with this sentinel, and the rejections land
+ * on `onunhandledrejection`. Nothing is broken and the user sees nothing, yet these were the single
+ * largest issue group in the project (about 40 events in two weeks) — enough to bury real failures.
+ *
+ * Only automatic captures are dropped, so an explicit report always survives.
+ */
+export function paradisIsCancellationEvent(event: IParadisSentryEvent): boolean {
+	return event.exception?.values?.some(value =>
+		value.type !== undefined
+		&& paradisCancellationTypes.has(value.type)
+		&& paradisIsAutomaticCapture(value.mechanism)) === true;
+}
+
+/**
+ * Module paths that identify a native crash as coming from a process we own.
+ *
+ * Kept deliberately loose so it holds on every platform and in development builds: the packaged app
+ * lives under `Para Code.app` / `Para Code.exe` / `para-code`, and its always-loaded framework and
+ * dev-build binary are named `Electron`. The Codex app-server is a child process we spawn, and its
+ * crashes explain our own `endpoint-not-ready` reports, so it counts as ours too.
+ */
+const paradisOwnNativeModulePatterns: readonly RegExp[] = [/para[ _-]?code/i, /electron/i, /@openai\/codex/i];
+
+/** Collects every module path a native event names, ignoring the SDK's JavaScript sourcemap image. */
+function paradisNativeModulePaths(event: IParadisSentryEvent): string[] {
+	const paths: string[] = [];
+	const addFrames = (frames: IParadisSentryFrame[] | undefined) => {
+		for (const frame of frames ?? []) {
+			const path = frame.package ?? frame.filename ?? frame.abs_path;
+			if (path) {
+				paths.push(path);
+			}
+		}
+	};
+	for (const value of event.exception?.values ?? []) {
+		addFrames(value.stacktrace?.frames);
+	}
+	for (const thread of event.threads?.values ?? []) {
+		addFrames(thread.stacktrace?.frames);
+	}
+	for (const image of event.debug_meta?.images ?? []) {
+		if ((image.type === undefined || nativeDebugImageTypes.has(image.type)) && image.code_file) {
+			paths.push(image.code_file);
+		}
+	}
+	return paths;
+}
+
+/**
+ * Whether a native crash belongs to a process that merely inherited our crash handler.
+ *
+ * On macOS the crashpad handler is installed as a Mach exception handler, which every child process
+ * inherits — so anything the user starts from the integrated terminal reports its crashes as ours.
+ * A Homebrew `ffplay` failing to load a dylib produced nine "Para Code crashes" this way, complete
+ * with the user's own paths.
+ *
+ * Fails open: an event that names no module at all (renderer OOM, for instance) is kept, because
+ * losing a real crash costs far more than keeping a foreign one.
+ */
+export function paradisIsForeignNativeCrash(event: IParadisSentryEvent): boolean {
+	const paths = paradisNativeModulePaths(event);
+	if (paths.length === 0) {
+		return false;
+	}
+	return !paths.some(path => paradisOwnNativeModulePatterns.some(pattern => pattern.test(path)));
+}
+
+/**
  * Keeps explicitly classified patched code and automatic errors whose stack enters fork-owned
  * source. Upstream-only VS Code errors are deliberately not sent to the Para Code project.
  */
@@ -189,14 +286,17 @@ export function paradisClassifySentryEvent(event: IParadisSentryEvent): ParadisS
 	// debug image to *every* JavaScript event — accepting any image at all let the whole upstream
 	// error stream through, which is exactly what happened until paracode-70.
 	if (event.platform === 'native' || event.tags?.['event.environment'] === 'native') {
-		return 'unknown';
+		return paradisIsForeignNativeCrash(event) ? undefined : 'unknown';
 	}
 
 	// Debug images are only consulted as an allow-list, for events shaped by something other than
 	// the JS SDK. Anything unrecognised is treated as JavaScript and dropped.
 	const hasNativeImage = event.debug_meta?.images?.some(
 		image => image.type === undefined || nativeDebugImageTypes.has(image.type)) === true;
-	return hasNativeImage ? 'unknown' : undefined;
+	if (!hasNativeImage) {
+		return undefined;
+	}
+	return paradisIsForeignNativeCrash(event) ? undefined : 'unknown';
 }
 
 /**

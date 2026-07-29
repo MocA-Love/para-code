@@ -42,6 +42,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { IParadisSpaceNotesService } from '../common/paradisSpaceNotes.js';
+import { PARADIS_SCM_SCOPE_SETTING_ID } from '../common/paradisScmScope.js';
 import { PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID } from '../common/paradisRepositoryClone.js';
 import { paradisWorkspaceSwitchCommandId, paradisWorkspaceSwitchKeybinding } from '../common/paradisWorkspaceSwitchKeybindings.js';
 import { IParadisWorktreeCreateProgressStore } from '../common/paradisWorktreeCreate.js';
@@ -168,7 +169,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.WINDOW,
 			description: localize('paradis.workspaceSwitch.autoRemoveMissingWorktrees', "削除された git worktree を Workspaces ビューから自動的に取り除きます。無効にした場合、見つからない worktree はリストに残り、手動で削除できます。")
 		},
-		'paradis.workspaceSwitch.scopeScmRepositories': {
+		[PARADIS_SCM_SCOPE_SETTING_ID]: {
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.WINDOW,

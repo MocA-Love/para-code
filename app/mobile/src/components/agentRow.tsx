@@ -24,8 +24,6 @@ export interface AgentRowData {
 	branch?: string;
 	pinned: boolean;
 	agentStatus: string | undefined;
-	/** 応答待ち（permission/question）。行の左端に赤いアクセントを出す。 */
-	waiting: boolean;
 }
 
 /** measureInWindow で得た対象行のウィンドウ座標（pageX/pageY と同じ座標系）。 */
@@ -95,7 +93,7 @@ export function AgentRowClone({ data, rect }: { data: AgentRowData; rect: AgentR
 			pointerEvents="none"
 			style={[styles.clonePos, { top: rect.y, left: rect.x, width: rect.width }, animatedStyle]}
 		>
-			<View style={[agentRowStyles.container, styles.cloneRow, data.waiting && agentRowStyles.containerWaiting]}>
+			<View style={[agentRowStyles.container, styles.cloneRow]}>
 				<AgentRowContent data={data} />
 			</View>
 		</Animated.View>
@@ -109,7 +107,6 @@ export const agentRowStyles = StyleSheet.create({
 		backgroundColor: colors.surface, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14,
 		borderWidth: 1, borderColor: colors.border, marginBottom: 8,
 	},
-	containerWaiting: { borderLeftWidth: 3, borderLeftColor: colors.red },
 });
 
 const styles = StyleSheet.create({

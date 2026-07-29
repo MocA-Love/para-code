@@ -1,10 +1,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Platform, StyleSheet, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import type { AgentChatMessage } from '../store.js';
+import type { AgentChatImage, AgentChatMessage } from '../store.js';
 import { basename, countLines, parseToolInput, splitMcpTool, type AgentTimelineStep } from '../agentToolMeta.js';
 import { ExpandableText, IOBlock, ioStyles } from './agentIoBlock.js';
+import { ToolImageLightbox, ToolImagePreview, isPreviewableToolImage, useToolImage } from './toolImage.js';
+import { formatImageBytes } from '../agentToolImages.js';
+import { hapticSelection } from '../haptics.js';
 import { colors, mono } from '../theme.js';
 
 /**
@@ -18,10 +22,15 @@ import { colors, mono } from '../theme.js';
 export function ToolStepBody({ step, terminalKey }: { step: AgentTimelineStep; terminalKey?: string }) {
 	const use = step.use;
 	const result = step.result;
+	const images = result?.images ?? [];
+	// 画像だけの結果は本文が `[image]` の羅列になるので結果欄を出さない。MCPのスクショのように
+	// 説明文と画像が両方返るときは、テキストも読めないと困るので今までどおり出す。
+	const textOnlyImages = result !== undefined && images.length > 0 && !hasTextBesidesImages(result.text);
 	if (use === undefined) {
 		return (
 			<View style={ioStyles.body}>
-				{result !== undefined ? <IOBlock label="結果" message={result} terminalKey={terminalKey} lines /> : null}
+				{result !== undefined ? <ToolImageCards result={result} terminalKey={terminalKey} /> : null}
+				{result !== undefined && !textOnlyImages ? <IOBlock label="結果" message={result} terminalKey={terminalKey} lines /> : null}
 			</View>
 		);
 	}
@@ -47,12 +56,15 @@ export function ToolStepBody({ step, terminalKey }: { step: AgentTimelineStep; t
 		const oldText = typeof input?.['old_string'] === 'string' ? input['old_string'] : undefined;
 		const newText = typeof input?.['new_string'] === 'string' ? input['new_string'] : undefined;
 		const content = typeof input?.['content'] === 'string' ? input['content'] : undefined;
+		// 画像を読んだときはファイルカード自体をプレビュー付きのカードに置き換える
+		// （同じファイル名の行が2つ並ばないようにする）。
 		return (
 			<View style={ioStyles.body}>
-				{path !== undefined ? <FileCard path={path} /> : null}
+				{path !== undefined && images.length === 0 ? <FileCard path={path} /> : null}
+				{result !== undefined ? <ToolImageCards result={result} terminalKey={terminalKey} path={path} /> : null}
 				{oldText !== undefined || newText !== undefined ? <EditDiff oldText={oldText ?? ''} newText={newText ?? ''} /> : null}
 				{content !== undefined ? <IOBlock label="書き込む内容" message={use} terminalKey={terminalKey} text={content} lines /> : null}
-				{result !== undefined && tool === 'Read' ? <IOBlock label="内容" message={result} terminalKey={terminalKey} lines /> : null}
+				{result !== undefined && tool === 'Read' && !textOnlyImages ? <IOBlock label="内容" message={result} terminalKey={terminalKey} lines /> : null}
 				{result !== undefined && tool !== 'Read' ? <IOBlock label="結果" message={result} terminalKey={terminalKey} lines /> : null}
 				{pending}
 			</View>
@@ -139,9 +151,87 @@ export function ToolStepBody({ step, terminalKey }: { step: AgentTimelineStep; t
 	return (
 		<View style={ioStyles.body}>
 			{use.text.trim().length > 0 ? <IOBlock label="入力" message={use} terminalKey={terminalKey} text={prettyInput} /> : null}
-			{result !== undefined ? <IOBlock label="結果" message={result} terminalKey={terminalKey} lines /> : null}
+			{result !== undefined ? <ToolImageCards result={result} terminalKey={terminalKey} /> : null}
+			{result !== undefined && !textOnlyImages ? <IOBlock label="結果" message={result} terminalKey={terminalKey} lines /> : null}
 			{pending}
 		</View>
+	);
+}
+
+/**
+ * ツール結果に含まれていた画像を1枚1行のカードで並べる。左のプレビューはステップを
+ * 開いたときに取り寄せ、押すと全画面で開く（案C+案E）。
+ *
+ * 画像がある結果はテキスト側が `[image]` だけになるため、呼び出し側は結果の
+ * IOBlock を出さない。
+ */
+export function ToolImageCards({ result, terminalKey, path }: { result: AgentChatMessage; terminalKey?: string; path?: string }) {
+	const images = result.images ?? [];
+	const [openIndex, setOpenIndex] = useState<number | undefined>(undefined);
+	if (images.length === 0) {
+		return null;
+	}
+	const name = path !== undefined ? basename(path) : undefined;
+	const dir = path !== undefined && name !== undefined ? path.slice(0, Math.max(0, path.length - name.length)) : undefined;
+	return (
+		<>
+			{images.map((image, position) => (
+				<ToolImageCard
+					key={image.index}
+					terminalKey={terminalKey}
+					rev={result.rev}
+					image={image}
+					title={imageCardTitle(name, position, images.length)}
+					{...(dir !== undefined && dir.length > 0 ? { dir } : {})}
+					onOpen={() => { hapticSelection(); setOpenIndex(position); }}
+				/>
+			))}
+			{openIndex !== undefined ? (
+				<ToolImageLightbox
+					terminalKey={terminalKey}
+					rev={result.rev}
+					images={images}
+					initialIndex={openIndex}
+					title={name ?? '画像'}
+					{...(dir !== undefined && dir.length > 0 ? { subtitle: dir } : {})}
+					onClose={() => setOpenIndex(undefined)}
+				/>
+			) : null}
+		</>
+	);
+}
+
+/**
+ * 画像1枚の行。左のプレビューと副題は同じ取り寄せ状態から描くので、1枚につき
+ * 通信は1回だけになる。取れなかったときは理由を副題に出す（押す前に分かるように）。
+ */
+function ToolImageCard({ terminalKey, rev, image, title, dir, onOpen }: {
+	terminalKey?: string;
+	rev: number;
+	image: AgentChatImage;
+	title: string;
+	dir?: string;
+	onOpen: () => void;
+}) {
+	// 大きい画像はプレビューを自動で読み込まない（表示サイズに関わらず原寸でデコードされ、
+	// メモリを大きく食うため）。カードを押して全画面で開いたときにだけ読み込む。
+	const previewable = isPreviewableToolImage(image);
+	const load = useToolImage(terminalKey, rev, image, previewable);
+	const size = formatImageBytes(image.bytes);
+	const type = typeof image.mediaType === 'string' ? image.mediaType.replace(/^image\//, '').toUpperCase() : '';
+	const detail = load.status === 'error'
+		? load.message
+		: [dir, type, size, previewable ? undefined : 'タップで表示']
+			.filter(part => part !== undefined && part.length > 0).join(' · ');
+	return (
+		<Pressable style={ioStyles.card} onPress={onOpen} accessibilityRole="button" accessibilityLabel={`${title}を開く`}>
+			<ToolImagePreview load={load} />
+			<View style={ioStyles.cardBody}>
+				<Text style={ioStyles.cardTitle} numberOfLines={1}>{title}</Text>
+				<Text style={[ioStyles.cardSub, load.status === 'error' && styles.imageError]} numberOfLines={1} ellipsizeMode="head">{detail}</Text>
+			</View>
+			<Ionicons name="chevron-forward" size={14} color={colors.textDim} />
+		</Pressable>
 	);
 }
 
@@ -168,6 +258,26 @@ function firstString(input: Record<string, unknown> | undefined, keys: readonly 
 
 function hasError(message: AgentChatMessage): boolean {
 	return message.isError === true;
+}
+
+/**
+ * 画像カードの見出し。1回の結果に複数枚あるときは、同じファイル名の行が並んでも
+ * 見分けられるように枚数を添える。
+ */
+function imageCardTitle(name: string | undefined, position: number, count: number): string {
+	if (name === undefined) {
+		return count > 1 ? `画像 ${position + 1}` : '画像';
+	}
+	return count > 1 ? `${name}（${position + 1}/${count}）` : name;
+}
+
+/**
+ * ツール結果の本文に、画像のプレースホルダ以外の中身があるか。
+ * PC側は画像ブロックを `[image]` の行として本文に残すため、それだけの結果は
+ * 画像カードで置き換えられる（説明文つきのMCPスクショはテキストも残す）。
+ */
+function hasTextBesidesImages(text: string): boolean {
+	return text.split('\n').some(line => line.trim().length > 0 && line.trim() !== '[image]');
 }
 
 function safeStringify(value: unknown): string | undefined {
@@ -305,6 +415,7 @@ export function resultLineCount(message: AgentChatMessage | undefined): number {
 
 const styles = StyleSheet.create({
 	pending: { color: colors.textDim, fontSize: 11, fontStyle: 'italic' },
+	imageError: { color: colors.red },
 	caption: { color: colors.textDim, fontSize: 11, lineHeight: 16 },
 	pattern: { color: colors.text, fontSize: 11, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default, backgroundColor: colors.surface2, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 4, alignSelf: 'flex-start' },
 	query: { color: colors.text, fontSize: 12 },

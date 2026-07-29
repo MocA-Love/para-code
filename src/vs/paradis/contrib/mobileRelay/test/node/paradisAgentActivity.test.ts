@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js';
+import { PARADIS_ACTIVITY_STALE_MS, ParadisAgentActivityTracker } from '../../node/paradisAgentActivity.js';
 
 suite('ParadisAgentActivity', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -100,13 +100,15 @@ suite('ParadisAgentActivity', () => {
 		assert.deepStrictEqual(tracker.snapshot()?.agents[0].status, 'running');
 	});
 
-	test('sweeps only unchanged active work after fifteen minutes', () => {
+	test('sweeps only unchanged active work after the stale grace period', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100);
-		assert.strictEqual(tracker.sweepStale(100 + 15 * 60 * 1000), false);
-		assert.strictEqual(tracker.sweepStale(101 + 15 * 60 * 1000), true);
+		assert.strictEqual(tracker.hasActiveWork(), true);
+		assert.strictEqual(tracker.sweepStale(100 + PARADIS_ACTIVITY_STALE_MS), false);
+		assert.strictEqual(tracker.sweepStale(101 + PARADIS_ACTIVITY_STALE_MS), true);
 		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'unknown');
-		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100 + 16 * 60 * 1000);
+		assert.strictEqual(tracker.hasActiveWork(), false);
+		tracker.applyClaude('SubagentStart', { agent_id: 'a1', agent_type: 'Explore' }, 100 + PARADIS_ACTIVITY_STALE_MS + 60 * 1000);
 		assert.strictEqual(tracker.snapshot()?.agents[0].status, 'running');
 	});
 

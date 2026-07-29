@@ -184,6 +184,59 @@ suite('ParadisSentryCommon', () => {
 		}), 'unknown');
 	});
 
+	// macOS の crashpad ハンドラは Mach 例外ポート越しに子プロセスへ継承されるため、統合ターミナル
+	// から起動しただけの無関係なプログラムのクラッシュが Para Code のクラッシュとして届く。
+	test('drops native crashes from processes that merely inherited the crash handler', () => {
+		// 実地の例: Homebrew の ffplay が dylib を読めず dyld が abort した minidump。
+		assert.strictEqual(paradisClassifySentryEvent({
+			platform: 'native',
+			exception: {
+				values: [{
+					stacktrace: {
+						frames: [
+							{ package: '/opt/homebrew/Cellar/opus/1.6.1/lib/libopus.0.dylib' },
+							{ package: '/usr/lib/dyld', function: '__abort_with_payload' },
+						],
+					},
+				}],
+			},
+		}), undefined);
+	});
+
+	test('keeps native crashes from the app itself and from the Codex app-server we spawn', () => {
+		assert.strictEqual(paradisClassifySentryEvent({
+			platform: 'native',
+			exception: {
+				values: [{
+					stacktrace: {
+						frames: [{ package: '/Applications/Para Code.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Electron Framework' }],
+					},
+				}],
+			},
+		}), 'unknown');
+		// Codex app-server は自分で起動した子プロセス。その abort は endpoint-not-ready の説明になる。
+		assert.strictEqual(paradisClassifySentryEvent({
+			platform: 'native',
+			exception: {
+				values: [{
+					stacktrace: {
+						frames: [
+							{ package: '~/.npm-global/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex' },
+							{ package: '/usr/lib/system/libsystem_c.dylib', function: 'abort' },
+						],
+					},
+				}],
+			},
+		}), 'unknown');
+		// スレッド側にしか手掛かりが無い形（exception が合成されるケース）でも同じ判定になる。
+		assert.strictEqual(paradisClassifySentryEvent({
+			platform: 'native',
+			threads: {
+				values: [{ stacktrace: { frames: [{ package: 'C:\\Program Files\\Para Code\\Para Code.exe' }] } }],
+			},
+		}), 'unknown');
+	});
+
 	test('keeps diagnostic-only extras and drops everything else', () => {
 		const sanitized = paradisSanitizeSentryEvent({
 			extra: {

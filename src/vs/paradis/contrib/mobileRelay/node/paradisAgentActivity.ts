@@ -10,6 +10,15 @@ import type { IParadisRecoveredAgentActivity } from './paradisPersistedAgentActi
 
 export type ParadisAgentActivityStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
 
+/**
+ * 完了シグナルを取りこぼした活動を「状態不明」へ落とすまでの猶予。
+ *
+ * 親のhookは子Agentの実行中には一切届かない（Agent toolの完了まで無音）ため、これを短くすると
+ * 長く走っている子Agentが実際には動いているのに状態不明として表示されてしまう。呼び出し側は
+ * 失効させる前に永続transcriptで生存を確認する。
+ */
+export const PARADIS_ACTIVITY_STALE_MS = 30 * 60 * 1000;
+
 export interface IParadisAgentActivityAgent {
 	readonly id: string;
 	readonly label: string;
@@ -390,9 +399,15 @@ export class ParadisAgentActivityTracker {
 		}
 	}
 
+	/** 実行中とみなしている子Agent/Taskを抱えているか（失効前の生存確認に使う）。 */
+	hasActiveWork(): boolean {
+		return [...this.agents.values()].some(agent => agent.status === 'running' || agent.status === 'idle')
+			|| [...this.tasks.values()].some(task => task.status === 'running');
+	}
+
 	sweepStale(now: number): boolean {
 		const before = this.serialized();
-		const cutoff = now - 15 * 60 * 1000;
+		const cutoff = now - PARADIS_ACTIVITY_STALE_MS;
 		for (const [id, agent] of this.agents) {
 			if ((agent.status === 'running' || agent.status === 'idle') && agent.updatedAt < cutoff) {
 				this.agents.set(id, { ...agent, status: 'unknown', updatedAt: now });

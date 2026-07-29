@@ -43,6 +43,8 @@ export type FromWebviewMessage = {
 	'drag-start': void;
 	'drag': WebViewDragEvent;
 	'updated-intrinsic-content-size': { width: number; height: number };
+	// PARA-PATCH: fork-owned health channel (service worker recovery, content applied). See CLAUDE.md.
+	'para-webview-signal': { code: string; detail?: { readonly [key: string]: string | number | boolean } };
 };
 
 interface UpdateContentEvent {

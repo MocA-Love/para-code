@@ -13,6 +13,7 @@
 
 import * as cp from 'child_process';
 import { existsSync, promises as fs } from 'fs';
+import { homedir } from 'os';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { dirname } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -25,6 +26,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { localize } from '../../../../nls.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisGithubCallSiteFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, paradisParseGhPrStatus, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
@@ -89,6 +91,13 @@ export class ParadisWorktreeGitService {
 
 	private async execGh(args: string[], cwd: string): Promise<string> {
 		const env = await this.cachedShellEnv.getEnv();
+		// GitHub API 利用状況ビュー用の計測。gh CLI 経由の呼び出しはすべてここを通るので、
+		// 「どの処理がどれだけ gh を呼んでいるか」はこの1箇所で数えられる
+		// (src/vs/paradis/contrib/githubMetrics/ 参照。拡張機能や他ツールの消費はレート枠側に現れる)
+		const startedAt = Date.now();
+		const callSite = paradisGithubCallSiteFromArgs(args);
+		// 記録はダッシュボードに出るうえデバッグバンドルとして共有されるためユーザー名を残さない
+		const worktreePath = paradisRedactHomePath(cwd, homedir());
 		return new Promise<string>((resolve, reject) => {
 			// gh はネットワーク I/O のためタイムアウト必須。無いとプロキシ環境等でハングしたとき
 			// 呼び出し側 (Workspaces ビュー) の in-flight ガードが永久に解除されなくなる
@@ -97,8 +106,27 @@ export class ParadisWorktreeGitService {
 					if ((err as { code?: unknown }).code === 'ENOENT') {
 						this.ghUnavailable = true;
 					}
-					reject(new Error(stderr?.trim() || err.message));
+					const message = stderr?.trim() || err.message;
+					paradisRecordGithubCall({
+						at: Date.now(),
+						callSite,
+						durationMs: Date.now() - startedAt,
+						// 「PR が無い」は gh が終了コード1で返すだけの正常系なので失敗に数えない
+						success: paradisIsGithubNoPullRequestMessage(message),
+						rateLimited: paradisIsGithubRateLimitMessage(message),
+						errorMessage: message,
+						worktreePath,
+					});
+					reject(new Error(message));
 				} else {
+					paradisRecordGithubCall({
+						at: Date.now(),
+						callSite,
+						durationMs: Date.now() - startedAt,
+						success: true,
+						rateLimited: false,
+						worktreePath,
+					});
 					resolve(stdout);
 				}
 			});

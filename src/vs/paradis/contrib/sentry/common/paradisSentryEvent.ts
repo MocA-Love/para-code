@@ -10,6 +10,7 @@ import {
 	ParadisSentryRateLimiter,
 	isParadisSafeExtraKey,
 	paradisClassifySentryEvent,
+	paradisIsCancellationEvent,
 	paradisSanitizeSentryEvent,
 	paradisSanitizeSentryText,
 	paradisSentryFingerprint,
@@ -55,6 +56,10 @@ export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
 	event: T,
 	processType: string,
 ): T | null {
+	// 分類より先に落とす。転送されてきたイベントにも効かせたいので isAlreadyPrepared より前に置く。
+	if (paradisIsCancellationEvent(event)) {
+		return null;
+	}
 	if (isAlreadyPrepared(event)) {
 		return sanitizeForwardedEvent(event);
 	}

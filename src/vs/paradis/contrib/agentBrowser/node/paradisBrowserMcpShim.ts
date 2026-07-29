@@ -51,6 +51,12 @@ const NO_SERVER_MESSAGE =
 	`not be read). Start Para Code and re-launch your agent CLI from a terminal pane inside it to use ` +
 	`this tool, or simply continue working without this MCP server.`;
 
+/** メモ系ツールに共通の `space` 引数（未指定＝呼び出し元ペインが属するスペース）。 */
+const SPACE_ARGUMENT = {
+	type: 'string',
+	description: 'Space key from list_space_notes (a repository id or "worktree:<uri>"). Omit to use the space this terminal pane belongs to.',
+} as const;
+
 // オフライン時の tools/list 応答に使うツール定義（shared process側の TOOLS と同一内容の複製。
 // このシムは vs/* を import できないためインラインで持つ）。オンライン時はサーバーへ透過転送
 // されるため、内蔵chrome-devtools-mcp由来の動的ツールはここには載せない（オフラインでは元々使えない）。
@@ -76,6 +82,69 @@ const LOCAL_TOOLS = [
 		name: 'get_cdp_endpoint',
 		description: 'Get the Chrome DevTools Protocol (CDP) gateway endpoint of Para Code, for connecting an external raw-CDP client such as browser-use. You normally do NOT need this: the chrome-devtools tools are built into this MCP server and already target the page shared with this terminal pane.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'list_space_notes',
+		description: 'List the spaces (registered repositories and their worktrees) of the Para Code window that owns this terminal pane, with the note checklist counts of each. Use the returned "space" key with the other space note tools; the space of this terminal pane is marked with "current": true.',
+		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+	},
+	{
+		name: 'read_space_note',
+		description: 'Read the note of a Para Code space. The note is a Markdown scratchpad the user keeps per space, where checklist items look like "- [ ] todo" and "- [x] done". Returns the raw text plus every line with its 0-based "line" number, which the check and delete tools take. Defaults to the space this terminal pane belongs to.',
+		inputSchema: { type: 'object', properties: { space: SPACE_ARGUMENT }, additionalProperties: false },
+	},
+	{
+		name: 'write_space_note',
+		description: 'Replace the entire note text of a Para Code space (Markdown; checklist items look like "- [ ] todo"). This overwrites everything the user wrote, so prefer add_space_note_task / check_space_note_task / delete_space_note_task for single-item edits, and read_space_note first if you must rewrite. Pass an empty string to clear the note.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: SPACE_ARGUMENT,
+				text: { type: 'string', description: 'The full note text to store (empty string clears the note).' },
+			},
+			required: ['text'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'add_space_note_task',
+		description: 'Append one checklist item ("- [ ] ...") to the note of a Para Code space, leaving everything else untouched.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: SPACE_ARGUMENT,
+				task: { type: 'string', description: 'The checklist item text (without the "- [ ] " marker). Extra lines are kept as indented notes under the item, so do not start them with "- [ ]" unless you want a separate nested item.' },
+			},
+			required: ['task'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'check_space_note_task',
+		description: 'Check or uncheck one checklist item of a Para Code space note, addressed by the 0-based "line" number returned by read_space_note. Omit "done" to toggle it.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: SPACE_ARGUMENT,
+				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
+				done: { type: 'boolean', description: 'true to check the item, false to uncheck it. Omit to toggle.' },
+			},
+			required: ['line'],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'delete_space_note_task',
+		description: 'Delete one checklist item (together with its indented continuation lines) from a Para Code space note, addressed by the 0-based "line" number returned by read_space_note.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: SPACE_ARGUMENT,
+				line: { type: 'number', description: '0-based line number of the checklist item, as returned by read_space_note.' },
+			},
+			required: ['line'],
+			additionalProperties: false,
+		},
 	},
 ] as const;
 

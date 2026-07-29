@@ -162,6 +162,8 @@ import { registerParadisCcusage } from '../../../paradis/contrib/ccusage/node/pa
 import { registerParadisCodexTerminalTitle } from '../../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
 // PARA-PATCH: AIリミットモニターバックエンド（cswap/wham usage取得。fork独自、src/vs/paradis/contrib/limitsMonitor/ 参照）
 import { registerParadisLimitsMonitor } from '../../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
+// PARA-PATCH: GitHub API 利用状況バックエンド（gh api rate_limit + gh 呼び出しの計測。fork独自、src/vs/paradis/contrib/githubMetrics/ 参照）
+import { registerParadisGithubMetrics } from '../../../paradis/contrib/githubMetrics/node/paradisGithubMetricsChannel.js';
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
 import { LocalGitService } from '../../../platform/git/node/localGitService.js';
@@ -545,6 +547,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: AIリミットモニターバックエンド（src/vs/paradis/contrib/limitsMonitor/ 参照）
 		this._register(registerParadisLimitsMonitor(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
+
+		// PARA-PATCH: GitHub API 利用状況バックエンド（src/vs/paradis/contrib/githubMetrics/ 参照）
+		this._register(registerParadisGithubMetrics(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
 
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);

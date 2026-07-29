@@ -2,8 +2,10 @@
 
 import * as Sentry from '@sentry/react-native';
 import type { ErrorEvent, Event } from '@sentry/react-native';
+import Constants from 'expo-constants';
 import { configureMobileDiagnosticReporter, configureMobileDiagnosticTagSetter } from './mobileDiagnostics.js';
 import { sanitizeMobileSentryEvent, sanitizeMobileSentryText } from './sentryPrivacy.js';
+import { mobileSentryRelease } from './sentryRelease.js';
 
 const PARA_CODE_MOBILE_SENTRY_DSN = 'https://adaabae68f7bbdee1d0d9fbc1fad3463@o4511131276804096.ingest.us.sentry.io/4511784070807552';
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1_000;
@@ -22,6 +24,13 @@ try {
 		// PC側（PARADIS_SENTRY_ENVIRONMENT）と揃える。'development' 固定だった頃は配布ビルドの
 		// 実使用も全部 development になり、実ユーザーの障害とローカル検証を区別できなかった。
 		environment: __DEV__ ? 'local' : 'production',
+		// ネイティブ由来のバージョンは prebuild しないと app.json に追従しない（sentryRelease.ts 参照）。
+		release: mobileSentryRelease({
+			version: Constants.expoConfig?.version,
+			buildNumber: Constants.nativeBuildVersion ?? undefined,
+			bundleIdentifier: Constants.expoConfig?.ios?.bundleIdentifier,
+		}),
+		dist: Constants.nativeBuildVersion ?? undefined,
 		sendDefaultPii: false,
 		enableNative: true,
 		enableNativeCrashHandling: true,

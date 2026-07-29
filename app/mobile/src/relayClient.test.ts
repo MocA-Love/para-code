@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Channels, generateIdentity, respondHandshake, type Frame, type Identity, FrameMux } from '@para/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { configureMobileDiagnosticReporter } from './mobileDiagnostics.js';
 import { RelayClient, type PairedCredentials, type SocketLike } from './relayClient.js';
 
 /**
@@ -256,5 +257,118 @@ describe('RelayClient', () => {
 		await secondPcMuxPromise;
 		await flush();
 		expect(client.connectionState).toBe('online');
+	});
+});
+
+/**
+ * 登録順に1件ずつ発火できるタイマー。接続タイムアウトと再接続バックオフが交互に積まれるため、
+ * 既存テストの「最後の1件だけ覚える」fakeでは接続の試行を回せない。
+ */
+class StepTimers {
+	private readonly handlers = new Map<number, () => void>();
+	private nextId = 1;
+
+	setTimeout(handler: () => void): unknown {
+		const id = this.nextId++;
+		this.handlers.set(id, handler);
+		return id;
+	}
+
+	clearTimeout(handle: unknown): void {
+		this.handlers.delete(handle as number);
+	}
+
+	get pending(): number {
+		return this.handlers.size;
+	}
+
+	/** 登録済みのうち最も古い1件を発火し、その結果のマイクロタスクまで流す。 */
+	async runNext(): Promise<void> {
+		const entry = [...this.handlers.entries()][0];
+		if (entry === undefined) {
+			throw new Error('no timer scheduled');
+		}
+		this.handlers.delete(entry[0]);
+		entry[1]();
+		await flush();
+	}
+}
+
+describe('RelayClient diagnostics', () => {
+	afterEach(() => {
+		configureMobileDiagnosticReporter(() => undefined);
+	});
+
+	/** 接続タイムアウト→自分でclose→再接続、を1周ぶん進める。 */
+	async function runFailedAttempt(timers: StepTimers): Promise<void> {
+		await timers.runNext(); // 接続タイムアウト
+		await timers.runNext(); // 再接続バックオフ
+	}
+
+	function startClient(timers: StepTimers, pairs: FakeSocketPair[]): RelayClient {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		return new RelayClient(mobile, credsFor(pc.publicKey), () => {
+			const pair = new FakeSocketPair();
+			pairs.push(pair);
+			return pair.client;
+		}, {}, timers);
+	}
+
+	it('reports a stuck connection once, not once per timeout and once per close', async () => {
+		// 実地(Sentry PARA-CODE-MOBILE-4/5)では1回の接続失敗が connect-timeout と
+		// unexpected-close-0 の2件になっていた。タイムアウト検知で自分が閉じたcloseは数えない。
+		const operations: string[] = [];
+		configureMobileDiagnosticReporter((_feature, operation) => { operations.push(operation); });
+		const timers = new StepTimers();
+		const pairs: FakeSocketPair[] = [];
+		const client = startClient(timers, pairs);
+
+		client.connect();
+		// 3回目までは一過性の失敗と区別できないので黙り、4回目で初めて報告する。
+		await runFailedAttempt(timers);
+		await runFailedAttempt(timers);
+		await runFailedAttempt(timers);
+		expect(operations).toEqual([]);
+
+		await timers.runNext();
+		expect(operations).toEqual(['connect-timeout']);
+		client.close();
+	});
+
+	it('stays silent while the relay says the PC is offline', async () => {
+		// PCがスリープしていればハンドシェイクの相手が居ないので、接続タイムアウトは必ず起きる。
+		// 何度繰り返しても障害ではないため報告しない。
+		const operations: string[] = [];
+		configureMobileDiagnosticReporter((_feature, operation) => { operations.push(operation); });
+		const timers = new StepTimers();
+		const pairs: FakeSocketPair[] = [];
+		const client = startClient(timers, pairs);
+
+		client.connect();
+		for (let attempt = 0; attempt < 6; attempt++) {
+			pairs[attempt]!.sendToClient(JSON.stringify({ type: 'presence', peer: 'pc', online: false }));
+			await flush();
+			await runFailedAttempt(timers);
+		}
+
+		expect(operations).toEqual([]);
+		client.close();
+	});
+
+	it('still reports a socket that dies on its own', async () => {
+		// 二重計上を止めたせいで本物の切断まで黙ってしまわないことを確かめる。
+		const operations: string[] = [];
+		configureMobileDiagnosticReporter((_feature, operation) => { operations.push(operation); });
+		const timers = new StepTimers();
+		const pairs: FakeSocketPair[] = [];
+		const client = startClient(timers, pairs);
+
+		client.connect();
+		pairs[0]!.fireClose();
+		await flush();
+
+		expect(operations).toEqual(['unexpected-close-0']);
+		client.close();
 	});
 });

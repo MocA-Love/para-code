@@ -9,8 +9,9 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri, deriveNotifyKey } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type TermStreamEvent, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type TermStreamEvent, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
+import { toolImageCache } from './agentToolImages.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
 import { sha256 } from '@noble/hashes/sha256';
@@ -123,6 +124,7 @@ interface AppState extends StoreState {
 	updateClaudeSetting(terminalKey: string, setting: 'model' | 'effort', value: string): Promise<AgentMessageSendResult>;
 	requestAgentActivityDetail(terminalKey: string, activityId: string): Promise<AgentActivityDetailMessage[]>;
 	requestAgentToolFullText(terminalKey: string, rev: number): Promise<string>;
+	requestAgentToolImage(terminalKey: string, rev: number, index: number): Promise<AgentToolImage>;
 	createTerminal(ws?: string): void;
 	attachAgent(terminalKey: string): void;
 	detachAgent(terminalKey: string): void;
@@ -471,6 +473,8 @@ export const useAppStore = create<AppState>(set => ({
 			throw error;
 		}
 		set({ paired: false, manualOffline: false, selectedWs: undefined, homeShowAllWorkspaces: true, selectedTerminalKey: undefined, browserSelection: undefined });
+		// PC画面の一部が写り込んだ画像をメモリに残さない（取得済みの画像はストア外のキャッシュにある）。
+		toolImageCache.clear();
 		// ローカル削除完了後にrelay資格情報をbest-effort失効する。失敗しても端末上のtokenは
 		// 既に消えており、PC側からも後で失効できるためローカル解除は巻き戻さない。
 		if (creds) {
@@ -601,6 +605,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	requestAgentToolFullText(terminalKey: string, rev: number) {
 		return controller?.requestAgentToolFullText(terminalKey, rev) ?? Promise.reject(new Error('not connected'));
+	},
+
+	requestAgentToolImage(terminalKey: string, rev: number, index: number) {
+		return controller?.requestAgentToolImage(terminalKey, rev, index) ?? Promise.reject(new Error('not connected'));
 	},
 
 	createTerminal(ws?: string) {
