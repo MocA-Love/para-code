@@ -15,6 +15,7 @@ import { ITextModelService } from '../../../../../editor/common/services/resolve
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
+import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
 import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../../workbench/contrib/webview/browser/webview.js';
@@ -52,6 +53,7 @@ suite('ParadisHtmlFileEditor', () => {
 			disposables.add(new TestInstantiationService()),
 			new TestLayoutService(),
 			new TestConfigurationService(),
+			new TestNotificationService(),
 		));
 	}
 
@@ -68,6 +70,7 @@ suite('ParadisHtmlFileEditor', () => {
 			disposables.add(new TestInstantiationService()),
 			new TestLayoutService(),
 			new TestConfigurationService(),
+			new TestNotificationService(),
 		));
 	}
 
