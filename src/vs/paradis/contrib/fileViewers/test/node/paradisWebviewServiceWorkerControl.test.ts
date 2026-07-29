@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -85,6 +86,36 @@ function createHarness(source: string, initialController: object | null = null):
 
 suite('ParadisWebviewServiceWorkerControl', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	/**
+	 * index.html の CSP は、同じファイルに埋め込まれたインラインスクリプトの sha256 を許可リストに
+	 * 持つ（`script-src 'sha256-…' 'self'` の 'self' は外部スクリプト用で、インラインは通さない）。
+	 *
+	 * この fork はそのスクリプトを PARA-PATCH で書き換えているため、ハッシュを更新し忘れると
+	 * **全 webview のスクリプトが CSP で黙って落とされる**。例外も出ず、webview は真っ白のまま
+	 * 固まるだけなので、実際に paracode-80 で混入した。ここで機械的に突き合わせる。
+	 */
+	test('the CSP hash in index.html matches the inline script it ships', function () {
+		const indexHtmlPath = findRepositoryFile('src/vs/workbench/contrib/webview/browser/pre/index.html');
+		if (indexHtmlPath === undefined) {
+			this.skip();
+		}
+
+		// 改行を LF に寄せる。`.gitattributes` の `text=auto` により Windows のチェックアウトは CRLF に
+		// なるが、HTML パーサは入力ストリームの前処理で CRLF を LF に潰してからスクリプトを取り出す
+		// ため、ブラウザが実際にハッシュ化するのは常に LF 版。生バイトのまま数えると Windows でだけ落ちる。
+		const html = readFileSync(indexHtmlPath!, 'utf8').replace(/\r\n/g, '\n');
+		const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map(match => match[1]);
+		const declared = /script-src '(sha256-[^']+)'/.exec(html)?.[1];
+		// ハッシュは1つしか宣言していないので、インラインスクリプトが増えた時点で前提が崩れる。
+		assert.strictEqual(scripts.length, 1, 'index.html still ships exactly one inline script');
+		assert.ok(declared, 'index.html still declares an inline script hash in its Content-Security-Policy');
+		assert.strictEqual(
+			`sha256-${createHash('sha256').update(scripts[0], 'utf8').digest('base64')}`,
+			declared,
+			'the Content-Security-Policy hash in index.html must be recomputed whenever its inline script changes',
+		);
+	});
 
 	test('the viewer waits out the worst-case service worker wait before calling a webview blank', function () {
 		const indexHtmlPath = findRepositoryFile('src/vs/workbench/contrib/webview/browser/pre/index.html');

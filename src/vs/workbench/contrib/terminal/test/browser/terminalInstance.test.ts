@@ -610,10 +610,30 @@ suite('Workbench - TerminalInstance', () => {
 			terminalLabelComputer.refreshLabel(createInstance({ capabilities, shellType: GeneralShellType.CommandCode, sequence: 'Fix Parser Bug', processName: 'node' }));
 			strictEqual(terminalLabelComputer.title, 'Fix Parser Bug');
 		});
-		test('should prefer shellLaunchConfig.titleTemplate over agent CLI shell type override', () => {
+		// PARA-PATCH: upstream pinned the opposite order here. Para Code passes command preset names
+		// as a titleTemplate (passing them as `name` makes them a static title, which stops the OSC
+		// title from ever being subscribed to), so letting that template always win would keep the
+		// tab from ever following the agent. The template is still used while no agent is running.
+		test('should prefer the agent CLI title over shellLaunchConfig.titleTemplate', () => {
 			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}', allowAgentCliTitle: true } } } });
 			terminalLabelComputer.refreshLabel(createInstance({ capabilities, shellType: GeneralShellType.Copilot, sequence: 'Copilot Agent', processName: 'copilot', shellLaunchConfig: { titleTemplate: '${process}' } }));
-			strictEqual(terminalLabelComputer.title, 'copilot');
+			strictEqual(terminalLabelComputer.title, 'Copilot Agent');
+		});
+
+		// PARA-PATCH: with no agent CLI running the titleTemplate is used, as upstream does.
+		test('should use shellLaunchConfig.titleTemplate when no agent CLI is running', () => {
+			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}', allowAgentCliTitle: true } } } });
+			terminalLabelComputer.refreshLabel(createInstance({ capabilities, shellType: PosixShellType.Bash, sequence: 'some title', processName: 'bash', shellLaunchConfig: { titleTemplate: 'My Preset' } }));
+			strictEqual(terminalLabelComputer.title, 'My Preset');
+		});
+
+		// PARA-PATCH: Codex only ever puts its thread id in the OSC title (measured on codex-cli
+		// 0.146.0). The readable title is the one this fork derives from the prompt and applies as a
+		// transient title, so it has to win on preset terminals, which carry a titleTemplate.
+		test('should prefer a transient title over shellLaunchConfig.titleTemplate', () => {
+			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}', allowAgentCliTitle: true } } } });
+			terminalLabelComputer.refreshLabel(createInstance({ capabilities, shellType: GeneralShellType.Codex, sequence: 'codex | 019f4d58-4ce0-7f50-89a8-d2bbec6b2743', transientTitle: 'Fix the parser bug', processName: 'node', shellLaunchConfig: { titleTemplate: 'My Preset' } }));
+			strictEqual(terminalLabelComputer.title, 'Fix the parser bug');
 		});
 		test('should fall back to configured title when allowAgentCliTitle is disabled', () => {
 			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${process}', description: '${cwd}', allowAgentCliTitle: false } } } });

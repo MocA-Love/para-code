@@ -8,20 +8,19 @@
 
 // GitHub API 利用状況ビューの登録入り口。paradis.electron-browser.contribution.ts から import される。
 // - ステータスバー右側（ccusage の右・通知ベルの左）の GitHub 項目。表示は残量%（主要資源のうち最小）
-// - クリックでポップオーバー（案A）。ShowTooltipCommand + tooltip(HTMLElement) で開く
+// - ホバーは短いテキストだけ。ポップオーバー（案A）はクリックでのみ開き、開いたら固定表示にする
 // - ポップオーバーの「詳細を開く」でダッシュボード EditorPane（案B）
 // - 設定 `paradis.githubMetrics.*` のスキーマ登録
 // レート枠取得と計測本体は shared process 側(node/paradisGithubMetricsChannel.ts)にある。
 
-import { disposableWindowInterval } from '../../../../base/browser/dom.js';
-import { mainWindow } from '../../../../base/browser/window.js';
+import { $ } from '../../../../base/browser/dom.js';
+import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
-import { CancellationToken } from '../../../../base/common/cancellation.js';
-import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
@@ -32,7 +31,7 @@ import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../workbench/common/editor.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
-import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, ShowTooltipCommand, StatusbarAlignment, StatusbarEntryKind } from '../../../../workbench/services/statusbar/browser/statusbar.js';
+import { IStatusbarEntry, IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment, StatusbarEntryKind } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import {
 	IParadisGithubMetricsSnapshot,
 	paradisGithubSeverity,
@@ -45,13 +44,13 @@ import { ParadisGithubMetricsInput, ParadisGithubMetricsInputSerializer, PARADIS
 import { ParadisGithubMetricsPopover } from './paradisGithubMetricsPopover.js';
 
 const SHOW_DASHBOARD_COMMAND_ID = 'paradis.githubMetrics.showDashboard';
+/** ステータスバー項目のクリックでポップオーバーを開く内部コマンド（コマンドパレットには出さない）。 */
+const SHOW_POPOVER_COMMAND_ID = 'paradis.githubMetrics.showPopover';
 
 /** ステータスバー表示の更新間隔。gh を1回起動するだけだが、常駐表示なので控えめにする。 */
 const STATUS_POLL_INTERVAL_MS = 2 * 60 * 1000;
 /** 起動直後の負荷を避けるための初回取得ディレイ。 */
 const STATUS_INITIAL_DELAY_MS = 20 * 1000;
-/** ポップオーバーが閉じられたことを検知して破棄するための確認間隔。 */
-const POPOVER_DISCONNECT_CHECK_MS = 2000;
 /** ccusage(-9990) の右・通知ベル(-Infinity) の左。 */
 const STATUS_BAR_PRIORITY = -9991;
 
@@ -118,11 +117,13 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 	private readonly initialFetch = this._register(new RunOnceScheduler(() => void this.update(), STATUS_INITIAL_DELAY_MS));
 	private readonly client: ParadisGithubMetricsClient;
 	/**
-	 * tooltip は「同じオブジェクトかどうか」で更新要否が判定される（statusbarItem.ts の isEqualTooltip）。
-	 * 毎回作り直すと残量%を更新するたびにホバーが作り直され、開いているポップオーバーが閉じてしまうため、
-	 * 生成は1回だけにして以降は使い回す。
+	 * ポップオーバーを重ねる位置の基準。ステータスバー項目の中に空の span として置かれるので
+	 * （statusbarItem.ts が `content` をそのまま項目の器へ追加する）、項目そのものを掴まなくても
+	 * 位置が決められる。
 	 */
-	private readonly popoverTooltip: IStatusbarEntry['tooltip'] = { element: (token: CancellationToken) => this.createPopover(token) };
+	private readonly entryAnchor = $('span.paradis-ghm-anchor');
+	/** 開いているポップオーバー（クリックのたびに開閉する）。 */
+	private readonly popover = this._register(new MutableDisposable<IDisposable>());
 
 	private snapshot: IParadisGithubMetricsSnapshot | undefined;
 	private fetching = false;
@@ -136,6 +137,7 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 	) {
 		super();
 		this.client = this.instantiationService.createInstance(ParadisGithubMetricsClient);
+		this._register(CommandsRegistry.registerCommand(SHOW_POPOVER_COMMAND_ID, () => this.togglePopover()));
 
 		this.applyEnabled();
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
@@ -153,6 +155,7 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 		if (!this.enabled) {
 			this.pollTimer.cancel();
 			this.initialFetch.cancel();
+			this.popover.clear();
 			this.entry.clear();
 			return;
 		}
@@ -173,8 +176,14 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 			ariaLabel: ratio !== undefined
 				? localize('paradis.githubMetrics.statusAria', "GitHub API rate limit: {0}% left", paradisGithubRoundedPercent(ratio))
 				: localize('paradis.githubMetrics.statusAriaNoData', "GitHub API usage"),
-			tooltip: this.popoverTooltip,
-			command: ShowTooltipCommand,
+			// ホバーは短いテキストだけにする。ここに詳細（HTMLElement）を載せると、ステータスバーを
+			// 通り過ぎるだけで 500ms 後に開き（statusbarPart の dynamicDelay）、離れて閉じ、
+			// 直後は instantHover の猶予で遅延ゼロになって即また開く、を繰り返す。
+			tooltip: ratio !== undefined
+				? localize('paradis.githubMetrics.statusTooltip', "GitHub API rate limit: {0}% left — click for details", paradisGithubRoundedPercent(ratio))
+				: localize('paradis.githubMetrics.statusTooltipNoData', "GitHub API usage — click for details"),
+			command: SHOW_POPOVER_COMMAND_ID,
+			content: this.entryAnchor,
 			kind,
 		};
 
@@ -186,13 +195,41 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 	}
 
 	/**
-	 * クリック時に開くポップオーバー本体を作る。tooltip の CancellationToken で破棄されるが、
-	 * 閉じ方によっては token が発火しないことがある（upstream の Copilot ステータスも同じ回避策を持つ）
-	 * ため、DOM から外れたことを検知して確実に破棄する。
+	 * ステータスバー項目のクリックでポップオーバーを開閉する。
+	 *
+	 * 固定表示（sticky）なのでマウスが離れても閉じない。ホバーで開いていた頃は、通りすがりに開いては
+	 * 閉じ、閉じた直後は遅延ゼロで即また開く、を繰り返していた。取得のたびに表示が `$(github)` →
+	 * `$(github) NN%` と変わって項目の幅が動くのも重なり、点滅しているように見えていた。
 	 */
-	private createPopover(token: CancellationToken): HTMLElement {
+	private togglePopover(): void {
+		// コマンドはキーバインドやコマンドパレットからも呼べるが、項目を出していないときに開くと
+		// 基準にする要素が DOM に無く、画面の隅に貼り付いてしまう。
+		if (!this.enabled || !this.entry.value) {
+			return;
+		}
+		if (this.popover.value) {
+			this.popover.clear();
+			return;
+		}
+		this.popover.value = this.createPopover();
+	}
+
+	/**
+	 * ホバーが自分の外側のクリックやウィンドウのフォーカス喪失で閉じたときに、こちらの参照も畳む。
+	 * 残したままだと次のクリックが「閉じる」と解釈されて一度空振りする。
+	 */
+	private onPopoverHidden(store: IDisposable): void {
+		// `MutableDisposable` は「旧値を dispose してから `_value` を更新する」ので、自分で畳んだ
+		// ときもここへ再入し、その時点ではまだ自分が入って見える。今保持しているのが自分のときだけ触る
+		// （`DisposableStore.dispose` は冪等なので、再入しても2周目で止まる）。
+		if (this.popover.value === store) {
+			this.popover.clear();
+		}
+	}
+
+	/** ポップオーバー本体を作って固定表示のホバーとして重ねる。表示できなかった場合は undefined。 */
+	private createPopover(): IDisposable | undefined {
 		const store = new DisposableStore();
-		store.add(token.onCancellationRequested(() => store.dispose()));
 
 		const popover = store.add(new ParadisGithubMetricsPopover({
 			fetch: async (force: boolean) => {
@@ -205,18 +242,33 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 				return snapshot;
 			},
 			openDashboard: () => {
-				this.hoverService.hideHover();
+				this.popover.clear();
 				void this.commandService.executeCommand(SHOW_DASHBOARD_COMMAND_ID);
 			},
 		}));
 
-		store.add(disposableWindowInterval(mainWindow, () => {
-			if (!popover.element.isConnected) {
-				store.dispose();
-			}
-		}, POPOVER_DISCONNECT_CHECK_MS));
+		const hover = this.hoverService.showInstantHover({
+			content: popover.element,
+			// 空の span 自体には大きさが無いので、器（ステータスバー項目）に沿わせる。
+			target: this.entryAnchor.parentElement ?? this.entryAnchor,
+			position: { hoverPosition: HoverPosition.ABOVE },
+			appearance: { showPointer: true, skipFadeInAnimation: true },
+			// sticky なホバーでは hoverService 側の keydown 監視が付かないので、Escape で閉じられるのは
+			// フォーカスがホバー内にある場合だけ。focus と trapFocus はそのための組み合わせでもある
+			// （trapFocus を省くと、閉じたときに元の要素へフォーカスが戻らない）。
+			persistence: { sticky: true },
+			trapFocus: true,
+			onDidHide: () => this.onPopoverHidden(store),
+		}, true /* focus */);
+		if (!hover) {
+			// 他に固定表示のホバーが出ている等で表示されなかった。参照を残すとトグルが
+			// 「閉じる」側に倒れたまま二度と開かなくなる。
+			store.dispose();
+			return undefined;
+		}
+		store.add(toDisposable(() => hover.dispose()));
 
-		return popover.element;
+		return store;
 	}
 
 	private async update(): Promise<void> {

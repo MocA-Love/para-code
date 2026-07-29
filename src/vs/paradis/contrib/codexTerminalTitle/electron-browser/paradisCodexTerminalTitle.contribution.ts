@@ -31,9 +31,14 @@ import {
 	PARADIS_CODEX_TERMINAL_TITLE_ITEMS,
 } from '../common/paradisCodexTerminalTitle.js';
 
-const CODEX_THREAD_TITLE_PATTERN = /^codex \| ([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+// `[tui].terminal_title` asks for the app name (PARADIS_CODEX_TERMINAL_TITLE_ITEMS), so the title
+// normally arrives as `codex | <thread id>`. The prefix is still optional here as a safety net: a
+// user who edited that config themselves, or a Codex build that renders the items differently,
+// should not lose the feature outright. That raw title is what the tab shows until the transient
+// title below replaces it with something readable.
+const CODEX_THREAD_TITLE_PATTERN = /^(?:codex \| )?([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 const TRANSIENT_TITLE_OWNER_PREFIX = 'para.codexTerminalTitle';
-// Codex prints the `codex | <thread id>` title the moment the TUI starts, but it only writes the
+// Codex prints the thread id as its title the moment the TUI starts, but it only writes the
 // thread row (and therefore any title, first user message, or rollout) once the first turn is
 // submitted. The gap between the two is however long the user takes to type their first prompt,
 // so the lookup has to outlive that pause instead of sampling a fixed window right after launch.
@@ -223,8 +228,9 @@ export function createCodexTerminalTitle(prompt: string): string | undefined {
 		return undefined;
 	}
 	const characters = Array.from(cleaned);
-	const summary = characters.length > 36 ? `${characters.slice(0, 36).join('')}…` : cleaned;
-	return `codex | ${summary}`;
+	// 接頭辞は付けない。ここで作るのがタブに出る唯一の「読めるタイトル」で、`codex | ` は
+	// どのタブにも同じように付くぶん、肝心のタイトルを読みにくくするだけだから。
+	return characters.length > 36 ? `${characters.slice(0, 36).join('')}…` : cleaned;
 }
 
 interface ICodexTerminalRunState {
@@ -281,9 +287,17 @@ class ParadisCodexTerminalTitleTrackerContribution extends Disposable implements
 			&& this.configurationService.getValue<boolean>('terminal.integrated.tabs.allowAgentCliTitle') !== false;
 	}
 
+	/**
+	 * `titleTemplate` 付きのターミナルも対象に含める。
+	 *
+	 * Para Code はコマンドプリセットのターミナル名を `titleTemplate` で渡すため（`name` で渡すと固定
+	 * タイトル扱いになり、OSC タイトルの購読自体が張られない）、ここで弾くとプリセット起動の Codex
+	 * だけ依頼文由来のタイトルが付かなくなる。Codex 自身が OSC に出すのは実測ではスレッド ID だけなので、
+	 * 弾くと素の UUID がタブに出っぱなしになる。
+	 */
 	private get terminalEligible(): boolean {
 		const terminalType = this.instance.shellLaunchConfig.attachPersistentProcess?.type ?? this.instance.shellLaunchConfig.type;
-		return !this.instance.hasRemoteAuthority && terminalType !== 'Task' && !this.instance.shellLaunchConfig.titleTemplate;
+		return !this.instance.hasRemoteAuthority && terminalType !== 'Task';
 	}
 
 	private attachCommandDetection(commandDetection: ICommandDetectionCapability): void {

@@ -86,15 +86,15 @@ suite('ParadisCodexTerminalTitle', () => {
 
 	suite('createCodexTerminalTitle', () => {
 		test('uses the first meaningful line and removes markdown decoration', () => {
-			strictEqual(createCodexTerminalTitle('\n## Fix terminal title\nMore detail'), 'codex | Fix terminal title');
+			strictEqual(createCodexTerminalTitle('\n## Fix terminal title\nMore detail'), 'Fix terminal title');
 		});
 
 		test('truncates long titles', () => {
-			strictEqual(createCodexTerminalTitle('1234567890123456789012345678901234567890'), 'codex | 123456789012345678901234567890123456…');
+			strictEqual(createCodexTerminalTitle('1234567890123456789012345678901234567890'), '123456789012345678901234567890123456…');
 		});
 
 		test('removes terminal controls and bidirectional formatting', () => {
-			strictEqual(createCodexTerminalTitle('Fix\u001b[31m title\u202e'), 'codex | Fix title');
+			strictEqual(createCodexTerminalTitle('Fix\u001b[31m title\u202e'), 'Fix title');
 		});
 	});
 });

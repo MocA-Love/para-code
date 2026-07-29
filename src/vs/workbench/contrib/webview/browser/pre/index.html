@@ -4,8 +4,12 @@
 <head>
 	<meta charset="UTF-8">
 
+	<!-- PARA-PATCH: this hash covers the inline script below, which this fork extends (service worker
+		control recovery). Editing that script without recomputing the hash silently blocks it under
+		CSP, and every webview then stays blank without throwing. Kept honest by
+		src/vs/paradis/contrib/fileViewers/test/node/paradisWebviewServiceWorkerControl.test.ts. -->
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-FFQoOVVa2tOE3uqUvirwaMNT20TZmrHcL2aaOjJ8BUo=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-UZuf9yssMWb0rWWCeJzALKInvKIkpljrhQagSNKKwUo=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"

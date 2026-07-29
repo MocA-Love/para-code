@@ -164,6 +164,8 @@ import { registerParadisCodexTerminalTitle } from '../../../paradis/contrib/code
 import { registerParadisLimitsMonitor } from '../../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
 // PARA-PATCH: GitHub API 利用状況バックエンド（gh api rate_limit + gh 呼び出しの計測。fork独自、src/vs/paradis/contrib/githubMetrics/ 参照）
 import { registerParadisGithubMetrics } from '../../../paradis/contrib/githubMetrics/node/paradisGithubMetricsChannel.js';
+// PARA-PATCH: Copilot 小型モデルでの短文生成バックエンド（ブランチ名など。fork独自、src/vs/paradis/contrib/copilotUtility/ 参照）
+import { registerParadisCopilotUtility } from '../../../paradis/contrib/copilotUtility/node/paradisCopilotUtilityChannel.js';
 import { AgentNetworkFilterService } from '../../../platform/networkFilter/common/networkFilterService.js';
 import { ILocalGitService } from '../../../platform/git/common/localGitService.js';
 import { LocalGitService } from '../../../platform/git/node/localGitService.js';
@@ -550,6 +552,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: GitHub API 利用状況バックエンド（src/vs/paradis/contrib/githubMetrics/ 参照）
 		this._register(registerParadisGithubMetrics(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
+
+		// PARA-PATCH: Copilot 小型モデルでの短文生成バックエンド（src/vs/paradis/contrib/copilotUtility/ 参照）
+		this._register(registerParadisCopilotUtility(this.server, accessor.get(ILogService), accessor.get(IProductService)));
 
 		// Local Git
 		const localGitChannel = ProxyChannel.fromService(accessor.get(ILocalGitService), this._store);
