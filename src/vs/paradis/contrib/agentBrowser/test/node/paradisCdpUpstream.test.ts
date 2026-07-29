@@ -220,6 +220,46 @@ suite('ParadisCdpUpstream', () => {
 		}
 	});
 
+	// 冷スタート: shared process が起き上がった時点で既にファイルが上書きされていた場合、
+	// 実績ポートは存在せず、ファイルには死んだ番号しか無い＝自力では絶対に戻れない。
+	// electron-main は `DevToolsActivePort` を書いた本人なので、上書きより先に読んだ値を持つ。
+	test('reaches the upstream on a cold start where the port file was already overwritten', async () => {
+		const urls: string[] = [];
+		const upstream = new ParadisCdpUpstream('/tmp/profile', new NullLogService(), {
+			openFile: openPortFile(() => '41999\n'),
+			resolveMainPort: async () => 41_001,
+			fetch: async (url: string) => {
+				urls.push(url);
+				if (!url.includes(':41001/')) {
+					throw new Error('ECONNREFUSED');
+				}
+				return jsonResponse({ Browser: 'ok' });
+			},
+		});
+
+		assert.deepStrictEqual(await upstream.fetchJsonWithPort('/json/version'), { value: { Browser: 'ok' }, port: 41_001 });
+		// 死んだファイルのポートには一度も触っていない（main の答えが先に効いている）。
+		assert.deepStrictEqual(urls, ['http://127.0.0.1:41001/json/version']);
+		assert.strictEqual(await upstream.resolvePort(0), 41_001);
+	});
+
+	// main へ聞けない（未接続、古い PC、確定できなかった）ときに、従来のファイル経路が
+	// そのまま残っていること。ここが壊れると main 側の不調がそのまま全滅になる。
+	test('still falls back to the port file when the main process cannot answer', async () => {
+		const upstream = new ParadisCdpUpstream('/tmp/profile', new NullLogService(), {
+			openFile: openPortFile(() => '41001\n'),
+			resolveMainPort: async () => { throw new Error('no channel'); },
+			fetch: async (url: string) => {
+				if (!url.includes(':41001/')) {
+					throw new Error('ECONNREFUSED');
+				}
+				return jsonResponse({ Browser: 'ok' });
+			},
+		});
+
+		assert.deepStrictEqual(await upstream.fetchJsonWithPort('/json/version'), { value: { Browser: 'ok' }, port: 41_001 });
+	});
+
 	test('never asks an injected port-file handle to read more than the strict prefix bound', async () => {
 		let maximumReadLength = 0;
 		const upstream = new ParadisCdpUpstream('/tmp/profile', new NullLogService(), {

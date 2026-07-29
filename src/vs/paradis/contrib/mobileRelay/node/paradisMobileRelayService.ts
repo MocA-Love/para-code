@@ -416,7 +416,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// エージェントセッション対応表の永続化先。shared process再起動（=PC再起動・アップデート）を
 		// またいで、実行中エージェントのモバイル表示を復元するために使う。
 		const agentSessionStore = new ParadisAgentSessionStore(join(this.userDataPath, 'paradis-agent-sessions.json'), this.logService);
-		this.browserMirror = this._register(new ParadisMobileBrowserMirror(new ParadisCdpUpstream(this.userDataPath, this.logService), cdpFrames, sharedPageBindings, this.logService));
+		// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
+		// 上流へ辿り着けるよう、electron-main が確定させたポートを候補に加える。ここを忘れると
+		// 「PCのブラウザ共有は直ったのにスマホのミラーだけ繋がらない」になる。
+		const cdpUpstream = new ParadisCdpUpstream(this.userDataPath, this.logService, {
+			resolveMainPort: async () => await cdpFrames?.resolveUpstreamPort() ?? undefined,
+		});
+		this.browserMirror = this._register(new ParadisMobileBrowserMirror(cdpUpstream, cdpFrames, sharedPageBindings, this.logService));
 		this.agentChat = this._register(new ParadisMobileAgentChat(
 			(mobileId, payload) => {
 				const session = this.sessions.get(mobileId);

@@ -202,6 +202,13 @@ export interface IParadisCdpFrameSubscription {
 	/** targetIdを所有するworkbench window ID。対象が既に閉じられていればnull。 */
 	resolveTargetWindowId(targetId: string): Promise<number | null>;
 	/**
+	 * アプリ本体の remote-debugging ポート。ビュー固有の権威ではなくプロセス全体の事実なので、
+	 * ミラー用のこの面からも読めてよい（同じチャネルが両方を提供している）。
+	 * モバイルのブラウザミラーは WebSocket を直接張るため、ここが無いと冷スタートで
+	 * `DevToolsActivePort` の嘘を掴んだままになる。確定できなければ null。
+	 */
+	resolveUpstreamPort(): Promise<number | null>;
+	/**
 	 * WebRTCミラー用: 次の1回の getDisplayMedia が指定targetIdのWebContentsView単体を
 	 * キャプチャするよう electron-main を arm する（one-shot、TTL付き）。
 	 * モバイルの webrtc-offer 受信時に shared process から呼ぶ。
@@ -271,6 +278,11 @@ export interface IParadisCdpExactViewService {
 	captureExactViewScreenshot(descriptor: unknown, options: unknown): Promise<string | null>;
 	setExactViewBackgroundThrottling(descriptor: unknown, enabled: unknown): Promise<boolean>;
 	dispatchExactViewInput(descriptor: unknown, method: unknown, paramsJson: unknown): Promise<IParadisCdpInputDispatchResult>;
+	/**
+	 * アプリ本体の remote-debugging ポート。electron-main が起動直後に確定させた値で、
+	 * `DevToolsActivePort` が他インスタンスに上書きされていても正しい。確定できなければ null。
+	 */
+	resolveUpstreamPort(): Promise<number | null>;
 }
 
 export const PARADIS_CDP_INPUT_MAX_PARAMS_BYTES = 1024 * 1024;

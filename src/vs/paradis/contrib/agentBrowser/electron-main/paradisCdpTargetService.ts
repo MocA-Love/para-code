@@ -33,6 +33,10 @@ import {
 	paradisParseExactCdpScreenshotOptions,
 	paradisParseCdpInputCommand,
 } from '../common/paradisAgentBrowser.js';
+import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
+
+/** 上流ポートの問い合わせに答えるまでの上限。確定が間に合わなければ「まだ無い」と返す。 */
+const UPSTREAM_PORT_ANSWER_TIMEOUT_MS = 1_500;
 
 /** フレームの最小送信間隔（toJPEG は同期でそれなりに重いため、ペイント毎=最大60fpsを間引く）。 */
 const FRAME_MIN_INTERVAL_MS = 150;
@@ -67,7 +71,30 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 	constructor(
 		private readonly browserViewMainService: IBrowserViewMainService,
 		private readonly createViewLease: () => string = generateUuid,
+		private readonly upstreamPortPin: ParadisCdpUpstreamPortPin = new ParadisCdpUpstreamPortPin(),
 	) { }
+
+	/**
+	 * 上流ポートの確定を始める（待たない）。app.ts が起動直後に1度だけ呼ぶ。
+	 *
+	 * `DevToolsActivePort` を2つ目のプロセスが上書きするより先に読むのが唯一の確実な手なので、
+	 * shared process から聞かれるのを待たずに走らせる。コンストラクタでやらないのは、この
+	 * サービスを組み立てるだけで Electron とファイルシステムに触りに行かせないため。
+	 */
+	pinUpstreamPort(): void {
+		void this.upstreamPortPin.pin().catch(() => undefined);
+	}
+
+	/**
+	 * shared process の CDP ゲートウェイが使う上流ポート。詳細は {@link ParadisCdpUpstreamPortPin}。
+	 *
+	 * 確定を待ち切らずに短く区切るのは、呼び出し側がブラウザ操作の途中にいるため。上流が使えない
+	 * 構成では確定が成功しないので、待たせると操作のたびに固まって見える。取り逃しても確定は裏で
+	 * 続き、次の問い合わせで返せる（そのときまでは従来どおり `DevToolsActivePort` へ落ちる）。
+	 */
+	async resolveUpstreamPort(): Promise<number | null> {
+		return await this.upstreamPortPin.resolveWithin(UPSTREAM_PORT_ANSWER_TIMEOUT_MS) ?? null;
+	}
 
 	/**
 	 * 対象ページの再描画プッシュ購読を開始する（ブラウザミラー用）。
