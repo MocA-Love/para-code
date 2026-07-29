@@ -204,7 +204,7 @@ suite('Paradis CDP gateway ingress authority', () => {
 			await fixture.gateway.handleRequest(fixture.request, fixture.response);
 			assert.deepStrictEqual(fixture.result(), {
 				status: 502,
-				body: { error: 'Para Browser CDP gateway is unavailable.' },
+				body: { error: 'Para Browser CDP gateway cannot reach the browser.' },
 			});
 			assert.strictEqual(JSON.stringify(fixture.result()).includes('secret.example'), false);
 		} finally {
@@ -221,7 +221,7 @@ suite('Paradis CDP gateway ingress authority', () => {
 			await assert.doesNotReject(fixture.gateway.handleRequest(fixture.request, fixture.response));
 			assert.deepStrictEqual(fixture.result(), {
 				status: 502,
-				body: { error: 'Para Browser CDP gateway is unavailable.' },
+				body: { error: 'Para Browser CDP gateway cannot reach the browser.' },
 			});
 		} finally {
 			fixture.gateway.dispose();
@@ -866,9 +866,11 @@ suite('Paradis CDP gateway ingress authority', () => {
 		state._activeHttpRequests = 32;
 		try {
 			await fixture.gateway.handleRequest(fixture.request, fixture.response);
-			assert.deepStrictEqual(fixture.result(), { status: 503, body: { error: 'Para Browser CDP gateway is unavailable.' } });
+			assert.deepStrictEqual(fixture.result(), { status: 503, body: { error: 'Para Browser CDP gateway is busy.' } });
 			assert.strictEqual(fixture.upstreamCalls(), 0);
 			assert.strictEqual(fixture.responseHeaders()['Cache-Control'], 'no-store');
+			// busy は待てば直る類なので、クライアントに再試行の目安を渡す。
+			assert.strictEqual(fixture.responseHeaders()['Retry-After'], '1');
 		} finally {
 			fixture.gateway.dispose();
 		}

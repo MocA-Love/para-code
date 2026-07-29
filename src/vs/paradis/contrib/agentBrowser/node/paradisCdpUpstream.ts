@@ -24,6 +24,30 @@ const DEVTOOLS_PORT_FILE = 'DevToolsActivePort';
 const UPSTREAM_FETCH_TIMEOUT_MS = 5_000;
 const MAX_DEVTOOLS_PORT_FILE_BYTES = 128;
 const MAX_UPSTREAM_JSON_BYTES = 8 * 1024 * 1024;
+/** 起動直後、`DevToolsActivePort` がまだ書かれていない場合に待つ上限。 */
+const PORT_FILE_RETRY_TIMEOUT_MS = 5_000;
+
+/**
+ * `/json/version` の応答が本当にこのアプリの Chromium かを確かめる。
+ *
+ * `DevToolsActivePort` が2つ目のプロセスに上書きされている状況では、そのポートを無関係な
+ * ローカル Chromium が握っていることがある。応答が返ったというだけで固定してしまうと、
+ * 他人のブラウザをエージェントへ繋いだまま貼り付いてしまう。
+ *
+ * 応答の `Browser` は実測で `Chrome/<process.versions.chrome と同じ版>`（Electron 42.6.0 で確認）
+ * なので完全一致で見る。メジャーだけ見ると、同じ Chromium を積んだ別アプリや**もう1つの Para Code
+ * 自身**が素通りしてしまう。バージョン文字列が読み取れない相手（将来の形式変更）は判定を保留して通す。
+ */
+function isOwnChromium(value: unknown, chromeVersion: string | undefined): boolean {
+	if (!chromeVersion || !value || typeof value !== 'object') {
+		return true;
+	}
+	const browser = (value as { Browser?: unknown }).Browser;
+	if (typeof browser !== 'string' || !browser.startsWith('Chrome/')) {
+		return true;
+	}
+	return browser.slice('Chrome/'.length) === chromeVersion;
+}
 
 type ParadisCdpFetchResponse = Pick<Response, 'ok' | 'status'> & Partial<Pick<Response, 'body' | 'arrayBuffer'>>;
 
@@ -31,6 +55,11 @@ export interface IParadisCdpUpstreamOptions {
 	readonly openFile?: typeof fs.open;
 	readonly fetch?: (url: string, init?: RequestInit) => Promise<ParadisCdpFetchResponse>;
 	readonly fetchTimeoutMs?: number;
+	/**
+	 * 相手が自分の Chromium かを見分けるための版。既定は動作中のもの。
+	 * テストは素の Node で走り `process.versions.chrome` を持たないため、明示できるようにしてある。
+	 */
+	readonly chromeVersion?: string;
 }
 
 export interface IParadisCdpUpstreamJsonResult<T> {
@@ -46,14 +75,32 @@ function delay(ms: number): Promise<void> {
 
 /**
  * 上流（Electron本体）のCDPエンドポイント解決器。
- * ポートはアプリ起動中は不変なので、一度読めたらキャッシュする。
+ *
+ * **`DevToolsActivePort` は当てにならない**。Chromium はこのファイルを user-data-dir に書くが、
+ * 2つ目の Para Code プロセス（macOS の `open -n`、Dock からの二重起動、自動アップデート適用時など）が
+ * 起動すると、シングルインスタンスロックに気づいて終了する前に**自分のポートで上書きしてしまう**。
+ * 残るのは誰も listen していないポート番号で、以降このゲートウェイは何度読み直しても死んだポートに
+ * 繋ぎに行き、ブラウザ共有が恒久的に壊れる（2026-07-29 に実際に発生）。
+ *
+ * そのためポートは「ファイルに書いてあるもの」ではなく「実際に応答が返ったもの」を正とする。
+ * 一度でも通ったポートは覚えておき、ファイルが嘘になっても自力で戻れるようにする。
  */
 export class ParadisCdpUpstream {
 
+	/**
+	 * 直近の取得で使えたポート。次の取得はここから試す。
+	 * 常に `_lastKnownGoodPort` と同値か `undefined`（＝直近で失敗した印）。
+	 */
 	private _cachedPort: number | undefined;
+	/**
+	 * 一度でも実際に応答が返ったポート。`DevToolsActivePort` が上書きされて嘘になっても、
+	 * ここに戻ることで自己修復する。アプリが生きている限りポートは変わらないので使い回せる。
+	 */
+	private _lastKnownGoodPort: number | undefined;
 	private readonly openFileImpl: typeof fs.open;
 	private readonly fetchImpl: NonNullable<IParadisCdpUpstreamOptions['fetch']>;
 	private readonly fetchTimeoutMs: number;
+	private readonly chromeVersion: string | undefined;
 
 	constructor(
 		private readonly userDataPath: string,
@@ -63,49 +110,58 @@ export class ParadisCdpUpstream {
 		this.openFileImpl = options.openFile ?? fs.open;
 		this.fetchImpl = options.fetch ?? fetch;
 		this.fetchTimeoutMs = options.fetchTimeoutMs ?? UPSTREAM_FETCH_TIMEOUT_MS;
+		this.chromeVersion = options.chromeVersion ?? process.versions.chrome;
 	}
 
 	/**
-	 * `DevToolsActivePort` ファイルから上流CDPポートを解決する。
+	 * 上流CDPポートを1つ返す。応答を確かめない用途（WebSocket を直接張るなど）向け。
+	 *
+	 * 実際に応答が返った実績のあるポートを最優先する。shared process はアプリと同じ寿命なので、
+	 * このプロセスが生きている間はアプリのポートも変わらない＝実績ポートは必ず今も正しい。
+	 * `DevToolsActivePort` は2つ目のプロセスに上書きされて嘘になりうるので、実績が無いときだけ読む。
 	 * ファイルがまだ書かれていない起動直後に備えて短いリトライを行う。
 	 */
 	async resolvePort(timeoutMs = 5000): Promise<number | undefined> {
-		if (this._cachedPort !== undefined) {
-			return this._cachedPort;
+		const verified = this._cachedPort ?? this._lastKnownGoodPort;
+		if (verified !== undefined) {
+			return verified;
 		}
-		const deadline = Date.now() + timeoutMs;
-		for (; ;) {
-			const port = await this._readPortFile();
-			if (port !== undefined) {
-				this._cachedPort = port;
-				this._infoNonThrowing('[ParadisCdpGateway] Upstream CDP port resolved');
-				return port;
-			}
-			if (Date.now() >= deadline) {
-				this._warnNonThrowing('[ParadisCdpGateway] Upstream CDP endpoint is unavailable');
-				return undefined;
-			}
-			await delay(100);
+		const port = await this._readPortFileWithRetry(timeoutMs);
+		if (port !== undefined) {
+			// 「読めた」だけで、その先に繋がるかはまだ誰も確かめていない。
+			this._infoNonThrowing('[ParadisCdpGateway] Upstream CDP port read from DevToolsActivePort');
+			return port;
 		}
+		this._warnNonThrowing('[ParadisCdpGateway] Upstream CDP endpoint is unavailable');
+		return undefined;
 	}
 
 	/**
 	 * 上流の `/json/*` エンドポイントを取得する。
 	 *
-	 * ポート更新リトライ後に成功したJSONと、その成功attemptが実際に使ったポートを
-	 * 同じ結果として返す。呼び出し側が古いresolvePort結果と新しいJSONを誤って
-	 * 組み合わせないためのauthority境界でもある。
+	 * 成功したJSONと、その成功attemptが実際に使ったポートを同じ結果として返す。呼び出し側が
+	 * 古いresolvePort結果と新しいJSONを誤って組み合わせないためのauthority境界でもある。
+	 *
+	 * 候補は「直近で使えたポート → 実績のあるポート → `DevToolsActivePort`」の順で、**遅延評価**する
+	 * （通常は1つ目で終わるので、ファイルI/Oも追加の接続も発生しない）。ファイルを最後に置くのは、
+	 * 2つ目の Para Code プロセスに上書きされて嘘になりうる唯一の情報源だから。
+	 *
+	 * 死んだポートは通常その場で接続を拒否されるが、**別のプロセスが後からそのポートを掴んで
+	 * 無応答**だと候補ごとに `fetchTimeoutMs` を使い切る。候補は最大2つ（実績と、ファイル）なので
+	 * 最悪待ち時間はその2倍。呼び出し側のサーバーは 30 秒で切るので、その内側に収まる。
 	 */
 	async fetchJsonWithPort<T = unknown>(path: string): Promise<IParadisCdpUpstreamJsonResult<T>> {
 		if (!/^\/json(?:\/|$)[a-z]*$/i.test(path) || path.length > 64) {
 			throw new Error('Invalid upstream CDP JSON path');
 		}
-		for (let attempt = 0; attempt < 2; attempt++) {
+		const tried: number[] = [];
+		let lastError: unknown;
+		const attempt = async (port: number | undefined): Promise<IParadisCdpUpstreamJsonResult<T> | undefined> => {
+			if (port === undefined || tried.includes(port)) {
+				return undefined;
+			}
+			tried.push(port);
 			try {
-				const port = await this.resolvePort();
-				if (!port) {
-					throw new Error('Upstream Chromium CDP port not available');
-				}
 				const res = await this.fetchImpl(`http://127.0.0.1:${port}${path}`, {
 					signal: AbortSignal.timeout(this.fetchTimeoutMs),
 				});
@@ -113,20 +169,83 @@ export class ParadisCdpUpstream {
 					throw new Error(`Upstream CDP returned ${res.status} for ${path}`);
 				}
 				const value = await this._readBoundedJson(res) as T;
-				return { value, port };
-			} catch (error) {
-				this._cachedPort = undefined;
-				if (attempt === 1) {
-					throw new Error('Upstream CDP fetch failed after port refresh', { cause: error });
+				if (path.toLowerCase() === '/json/version') {
+					this._assertOwnChromium(port, value);
+				} else if (port !== this._lastKnownGoodPort) {
+					// まだ身元を確かめていないポート。`/json/list` などの応答からは相手が誰か分からないので、
+					// ここで一度だけ確かめる。確かめずに固定すると、他人のブラウザのターゲット一覧を
+					// クライアントへ返したうえ、そのポートに貼り付いてしまう。
+					this._assertOwnChromium(port, await this._fetchRaw(port, '/json/version'));
 				}
+				this._cachedPort = port;
+				this._lastKnownGoodPort = port;
+				return { value: value as T, port };
+			} catch (error) {
+				lastError = error;
+				if (this._cachedPort === port) {
+					this._cachedPort = undefined;
+				}
+				return undefined;
 			}
+		};
+
+		const verified = await attempt(this._cachedPort) ?? await attempt(this._lastKnownGoodPort);
+		if (verified) {
+			return verified;
 		}
-		throw new Error('Upstream CDP fetch failed after port refresh');
+		// 検証済みのポートが1つも無いときだけファイルを読む。起動直後はまだ書かれていないことが
+		// あるので、その場合に限って短くリトライする。
+		const fromFile = await attempt(tried.length === 0
+			? await this._readPortFileWithRetry(PORT_FILE_RETRY_TIMEOUT_MS)
+			: await this._readPortFile());
+		if (fromFile) {
+			return fromFile;
+		}
+		if (tried.length === 0) {
+			throw new Error('Upstream Chromium CDP port not available');
+		}
+		// 試したポートを添える。これが無いと、ログには「全部だめだった」としか残らず、
+		// 次に同じ障害が起きたときにまた lsof から始めることになる。
+		throw new Error(`Upstream CDP fetch failed on every known port (${tried.join(', ')})`, { cause: lastError });
 	}
 
 	/** 上流の `/json/*` エンドポイントを取得してJSONだけを返す。 */
 	async fetchJson<T = unknown>(path: string): Promise<T> {
 		return (await this.fetchJsonWithPort<T>(path)).value;
+	}
+
+	/** 身元が違えば例外にし、覚えていた実績も取り消す（誤って固定したまま居座らせない）。 */
+	private _assertOwnChromium(port: number, version: unknown): void {
+		if (isOwnChromium(version, this.chromeVersion)) {
+			return;
+		}
+		if (this._lastKnownGoodPort === port) {
+			this._lastKnownGoodPort = undefined;
+		}
+		throw new Error('Upstream CDP endpoint belongs to another browser');
+	}
+
+	/** 身元確認用の素の取得。候補選びには関与しない（再帰させない）。 */
+	private async _fetchRaw(port: number, path: string): Promise<unknown> {
+		const res = await this.fetchImpl(`http://127.0.0.1:${port}${path}`, {
+			signal: AbortSignal.timeout(this.fetchTimeoutMs),
+		});
+		if (!res.ok) {
+			throw new Error(`Upstream CDP returned ${res.status} for ${path}`);
+		}
+		return this._readBoundedJson(res);
+	}
+
+	/** `DevToolsActivePort` を読む。まだ書かれていない起動直後に備えて短くリトライする。 */
+	private async _readPortFileWithRetry(timeoutMs: number): Promise<number | undefined> {
+		const deadline = Date.now() + timeoutMs;
+		for (; ;) {
+			const port = await this._readPortFile();
+			if (port !== undefined || Date.now() >= deadline) {
+				return port;
+			}
+			await delay(100);
+		}
 	}
 
 	private async _readPortFile(): Promise<number | undefined> {

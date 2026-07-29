@@ -29,6 +29,7 @@ import type * as http from 'http';
 import type { Socket } from 'net';
 import type { Duplex } from 'stream';
 import type * as wsTypes from 'ws';
+import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisCdpScreenshotOptions } from '../common/paradisAgentBrowser.js';
@@ -100,7 +101,24 @@ const MAX_ACTIVE_WEBSOCKETS_PER_TOKEN = 8;
 const MAX_CLIENT_CDP_FRAME_BYTES = 1024 * 1024;
 const WEBSOCKET_CLOSE_GRACE_MS = 1_000;
 const INGRESS_UNAVAILABLE_BODY = Object.freeze({ error: 'Para Browser CDP access is unavailable.' });
-const GATEWAY_UNAVAILABLE_BODY = Object.freeze({ error: 'Para Browser CDP gateway is unavailable.' });
+// 「上流に届かない」と「同時実行が上限」は原因も打ち手も別物なので、本文で見分けられるようにする。
+// どちらの本文にも上流のエラー文言は載せない（HTTP 応答に漏らさないため。理由はログにだけ出す）。
+const GATEWAY_UNREACHABLE_BODY = Object.freeze({ error: 'Para Browser CDP gateway cannot reach the browser.' });
+const GATEWAY_BUSY_BODY = Object.freeze({ error: 'Para Browser CDP gateway is busy.' });
+
+/**
+ * 失敗をログ1行にまとめる。
+ *
+ * `toErrorMessage` はメッセージしか返さないが、この経路の本当の理由は `cause` に入っている
+ * （`ParadisCdpUpstream` が「どのポートで何が起きたか」をそこへ畳んで投げる）。しかも undici は
+ * `fetch failed` の下にもう1段 `connect ECONNREFUSED 127.0.0.1:<port>` を隠すので、1段では
+ * 「接続拒否なのか無応答なのか」が分からない。深さ上限つきで辿る。
+ */
+function describeFailure(error: unknown, depth = 3): string {
+	const message = toErrorMessage(error);
+	const cause = error instanceof Error ? error.cause : undefined;
+	return cause === undefined || depth <= 1 ? message : `${message} (cause: ${describeFailure(cause, depth - 1)})`;
+}
 
 interface IParadisCdpIngressAccess {
 	readonly token: string;
@@ -203,7 +221,7 @@ export class ParadisCdpGateway extends Disposable {
 				return;
 			}
 			if (this._activeHttpRequests >= MAX_ACTIVE_HTTP_REQUESTS) {
-				this._sendJson(res, 503, GATEWAY_UNAVAILABLE_BODY);
+				this._sendJson(res, 503, GATEWAY_BUSY_BODY, { 'Retry-After': '1' });
 				return;
 			}
 			this._activeHttpRequests++;
@@ -278,12 +296,12 @@ export class ParadisCdpGateway extends Disposable {
 				return;
 			}
 			this._sendJson(res, 200, out);
-		} catch {
-			this._warnNonThrowing('[ParadisCdpGateway] request failed');
+		} catch (error) {
+			this._warnNonThrowing('[ParadisCdpGateway] request failed', error);
 			if (access && !this._isIngressAccessCurrent(access)) {
 				this._sendIngressUnavailable(res);
 			} else {
-				this._sendJson(res, 502, GATEWAY_UNAVAILABLE_BODY);
+				this._sendJson(res, 502, GATEWAY_UNREACHABLE_BODY);
 			}
 		} finally {
 			if (requestReserved) {
@@ -393,8 +411,8 @@ export class ParadisCdpGateway extends Disposable {
 			}
 			upstreamUrl.host = `127.0.0.1:${port}`;
 			await paradisProxyBrowserUpgrade(req, socket, head, ws, wss, port, upstreamUrl.toString(), context, this.logService);
-		} catch {
-			this._warnNonThrowing('[ParadisCdpGateway] upgrade failed');
+		} catch (error) {
+			this._warnNonThrowing('[ParadisCdpGateway] upgrade failed', error);
 			socket.destroy();
 		} finally {
 			reservation?.releaseIfUnattached();
@@ -851,9 +869,9 @@ export class ParadisCdpGateway extends Disposable {
 		}
 	}
 
-	private _sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+	private _sendJson(res: http.ServerResponse, status: number, body: unknown, extraHeaders?: Record<string, string>): void {
 		if (!res.headersSent) {
-			res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+			res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...extraHeaders });
 		}
 		res.end(JSON.stringify(body));
 	}
@@ -870,9 +888,16 @@ export class ParadisCdpGateway extends Disposable {
 		}
 	}
 
-	private _warnNonThrowing(message: string): void {
+	/**
+	 * 失敗の理由をログにだけ残す。
+	 *
+	 * 理由を捨てると、上流に繋がらないのか、束縛が剥がれたのか、同時実行が上限なのかが
+	 * ログから一切区別できなくなる（実際に 2026-07-29、`DevToolsActivePort` が別プロセスに
+	 * 上書きされた障害の切り分けに lsof とファイルの mtime が必要になった）。
+	 */
+	private _warnNonThrowing(message: string, error?: unknown): void {
 		try {
-			this.logService.warn(message);
+			this.logService.warn(error === undefined ? message : `${message}: ${describeFailure(error)}`);
 		} catch {
 			// Diagnostics must never interrupt transport settlement.
 		}
