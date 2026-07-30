@@ -585,6 +585,29 @@ describe('MobileController', () => {
 		pcMux.send(Channels.Notify, encodeNotifyDismissed('q2'));
 		await flush();
 		expect(latest?.notifications.length).toBe(0);
+
+		// 通知設定のワイヤ形状。旧キーには常に false を入れ、実際の意図は pcFocusQuiet で送る
+		// （旧いPCは旧キーを「配信そのものを止める」と解釈するため、true を送ると通知が全部消える）。
+		// 両側とも手書きJSONで繋がっているので、ここで固定しておかないと片方だけ直す事故が通る。
+		const pcPrefsGot: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Notify, frame => {
+			const text = new TextDecoder().decode(frame.payload);
+			const parsed = JSON.parse(text) as Record<string, unknown>;
+			if (parsed['t'] === 'prefs') { pcPrefsGot.push(parsed); }
+		});
+		controller.sendNotifyPrefs({ agentDone: true, agentQuestion: false, suppressWhenPcFocused: true });
+		await flush();
+		expect(pcPrefsGot).toEqual([
+			{ t: 'prefs', agentDone: true, agentQuestion: false, suppressWhenPcFocused: false, pcFocusQuiet: true },
+		]);
+
+		// quiet（バナーを出さないでほしい）通知も一覧には必ず入り、onNotify も呼ばれる。
+		// 「鳴らすかどうか」はこの先の notificationPolicy が決めるので、ここで落としてはいけない。
+		// 以前はPC側が配信自体を止めていたため、PC作業中の通知は一覧にも残らなかった。
+		pcMux.send(Channels.Notify, encodeNotify({ kind: 'agent-done', id: 'q3', title: 'done', body: '完了', at: 4, quiet: 'muted' }));
+		await flush();
+		expect(latest?.notifications.map(n => n.id)).toEqual(['q3']);
+		expect(notified.map(n => n.id)).toEqual(['q1', 'q2', 'q3']);
 	});
 
 	it('scm/fs request-response resolves and rejects by id', async () => {

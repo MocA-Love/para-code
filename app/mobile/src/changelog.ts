@@ -55,6 +55,33 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '選択肢を選んだあとに自由入力欄を一度触って空にすると、選んだ内容まで取り消されて送信ボタンが押せなくなっていました。',
 				tone: 'green',
 			},
+			{
+				icon: 'notifications-outline',
+				title: '他のアプリを使っている間も通知が届くようになりました',
+				body: 'このアプリを開いたまま別のアプリへ切り替えると、エージェントからの通知が届かないことがありました。',
+				tone: 'green',
+			},
+			{
+				icon: 'moon-outline',
+				title: 'PCの前にいる間はスマホが鳴らなくなりました',
+				body: '席を外している間だけ鳴ります。鳴らさなかった通知も通知一覧には残るので、あとから読み返せます。設定で戻せます。',
+			},
+			{
+				icon: 'chatbubbles-outline',
+				title: '見ているエージェントの画面には、同じ内容のバナーを重ねません',
+			},
+			{
+				icon: 'archive-outline',
+				title: 'オフラインの間に届いた通知が、通知一覧に並ぶようになりました',
+				body: '接続が切れている間に発生した通知は、つなぎ直したときにまとめて一覧へ入ります。',
+				tone: 'green',
+			},
+			{
+				icon: 'trash-outline',
+				title: '通知一覧をまとめて消しても、あとで戻らなくなりました',
+				body: 'クリアしたことがPCにも伝わるようになり、他の端末の一覧からも同時に消えます。',
+				tone: 'green',
+			},
 		],
 	},
 	{

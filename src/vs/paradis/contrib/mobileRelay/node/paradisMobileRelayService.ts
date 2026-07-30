@@ -43,7 +43,8 @@ import {
 	encodeNotify,
 	encodeNotifyDismissed,
 	encodeNotifyDismissedByToken,
-	peekNotifyKind,
+	ParadisNotifyQuiet,
+	peekNotifyMeta,
 	encodeRelayControl,
 	encodePairingUri,
 	fromBase64Url,
@@ -54,6 +55,7 @@ import {
 	toBase64Url,
 	unpackPcData,
 } from '../common/paradisMobileProtocol.js';
+import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
 import {
 	IParadisGitResult,
 	IParadisConfirmedAgentPanes,
@@ -122,12 +124,14 @@ interface PairedMobile {
 	readonly pubKey: string;
 	/**
 	 * モバイルの通知設定（アプリの設定画面から notify チャネルで同期される）。
-	 * agentDone/agentQuestionがfalseの種別はAPNsフォールバックプッシュを送らない
-	 * （オンライン時のフレーム配送は続ける: アプリ内の通知一覧に載せるかはモバイル側が
-	 * 判断する）。未設定は全てtrue扱い。suppressWhenPcFocusedはtrueの間、PCがフォーカス
-	 * されている間の配信自体（オンラインフレーム・APNs両方）を止める（未設定はfalse=抑制なし）。
+	 * どれも「バナーを出さない」だけで、通知一覧へは常に届ける（`paradisNotifyDelivery.ts`）。
+	 *
+	 * `pcFocusQuiet` が「PC操作中は鳴らさない」。旧キー `suppressWhenPcFocused` を使い回さないのは、
+	 * 旧いPara Codeがそのキーを「配信そのものを止める」と解釈するため。ディスクに旧キーで true を
+	 * 残すと、PCを旧版へ巻き戻したときにその解釈が復活し、PCフォーカス中の通知がAPNsも含めて
+	 * 捨てられる。旧キーは**書かず**、旧アプリから受け取ったときの読み取りだけに使う。
 	 */
-	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean; suppressWhenPcFocused?: boolean };
+	notifyPrefs?: { agentDone?: boolean; agentQuestion?: boolean; pcFocusQuiet?: boolean; suppressWhenPcFocused?: boolean };
 }
 
 interface PersistedState {
@@ -164,6 +168,13 @@ export class MobileSession {
 		return this.confirmed;
 	}
 
+	private _lastInboundAt = 0;
+
+	/** 最後にこのモバイルから何か受け取ってからの経過ms。受信実績が無ければ `undefined`。 */
+	msSinceLastInbound(now: number): number | undefined {
+		return this._lastInboundAt === 0 ? undefined : now - this._lastInboundAt;
+	}
+
 	get hasCurrentProtocol(): boolean {
 		return this.negotiatedProtocolVersion === PARADIS_MOBILE_PROTOCOL_VERSION;
 	}
@@ -198,6 +209,11 @@ export class MobileSession {
 	 * （呼び出し側がisOnline遷移を検査できるように）。
 	 */
 	enqueuePayload(payload: Uint8Array): Promise<void> {
+		// 通知の配送経路を決める材料。ソケットの有無ではなく「最後に本当に何か受け取った時刻」で
+		// 生死を判断する（iOSはバックグラウンドでソケットをhalf-openのまま放置するため。
+		// 詳細は paradisNotifyDelivery.ts）。復号前に更新するのは、届いたバイトそのものが
+		// 「アプリのプロセスが動いている」証拠だから。
+		this._lastInboundAt = Date.now();
 		const result = this.rxChain.then(() => this.handlePayload(payload));
 		// handlePayload は内部でcatch済みなのでrejectしないが、念のため鎖が切れないようにする。
 		this.rxChain = result.catch(() => { });
@@ -700,6 +716,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	// モバイルID → 通知鍵（PC長期秘密鍵 × モバイル長期公開鍵から導出、プロセス寿命でキャッシュ）。
 	private readonly notifyKeyCache = new Map<string, Promise<Uint8Array>>();
 
+	/** 届いたか分からない通知の取り置き（次に繋がったら通知一覧へ流し直す）。 */
+	private readonly missedNotify = new ParadisMissedNotifyQueue();
+
 	private notifyKeyFor(mobileId: string, pubKeyB64: string): Promise<Uint8Array> {
 		let cached = this.notifyKeyCache.get(mobileId);
 		if (!cached) {
@@ -716,11 +735,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	/**
 	 * Notify ペイロードを全ペアリング済みモバイルへ配送する。
-	 * - オンライン: 通常のE2Eフレーム（アプリ内でローカル通知として表示される）
-	 * - オフライン（アプリ未起動/バックグラウンドでWS切断中）: 通知鍵で封緘した暗号文を
-	 *   push-notify 制御メッセージでリレーへ渡し、リレーがAPNsへフォールバック配送する。
+	 * - E2Eフレーム: セッションがあれば必ず送る（アプリ内の通知一覧のため）
+	 * - APNsプッシュ: 「鳴らすべき」かつ「アプリが自力でバナーを出せると信用できない」ときに送る。
+	 *   通知鍵で封緘した暗号文を push-notify 制御メッセージでリレーへ渡し、リレーがAPNsへ配送する。
 	 *   リレー/APNsに見えるのは「通知が発生した」ことだけで、本文はiOSのNotification
 	 *   Service Extension が復号する（設計書 §5.2）。
+	 *
+	 * どちらを送るかの判断は `paradisNotifyDelivery.ts` に切り出してある（そちらのコメントに
+	 * 「ソケットが残っていてもアプリは死んでいることがある」という前提の説明がある）。
 	 */
 	private dispatchNotify(bytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease): void {
 		if (expectedOwner !== undefined) {
@@ -732,48 +754,93 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	private dispatchNotifyNow(bytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease): void {
-		// APNs抑制判定用に種別だけ覗く（形式不正なら抑制せず送る側に倒す）
-		const kind = peekNotifyKind(bytes);
-		// PCフォーカス中の抑制は「作業の進捗（完了/質問）を今PCで見ているなら通知不要」という
-		// 意図のため、エラー・切断系（現状は将来拡張用に型があるのみで未実装）には適用しない。
-		const focusSuppressible = kind === 'agent-done' || kind === 'agent-question';
-		const focusSuppressed = focusSuppressible && this.pcFocused;
+		// 配送判断と、既読時のキュー刈り取りに要る項目を1回のパースで取り出す
+		// （形式不正なら種別が undefined になり、鳴らす側へ倒れる）。
+		const meta = peekNotifyMeta(bytes);
+		const now = Date.now();
+		const pcFocused = this.pcFocused;
+		// 台数分の再エンコードを避けるため理由ごとに1回だけ作る。
+		const quietCache = new Map<ParadisNotifyQuiet, Uint8Array>();
+		const quietBytes = (reason: ParadisNotifyQuiet) => {
+			let cached = quietCache.get(reason);
+			if (cached === undefined) {
+				cached = this.quietNotifyBytes(bytes, reason);
+				quietCache.set(reason, cached);
+			}
+			return cached;
+		};
 		for (const mobile of this.state.mobiles) {
-			// PCフォーカス中はそもそも配信しない（suppressWhenPcFocused）。オンライン/オフライン
-			// どちらの経路も対象: 対応済みの通知が後からモバイルの通知一覧に残り続ける問題
-			// （dismissed-token同期は「PC側で確認した」ケースのみをカバーする）を、配信自体を
-			// 止めることで避ける。
-			if (focusSuppressed && mobile.notifyPrefs?.suppressWhenPcFocused === true) {
-				continue;
-			}
 			const session = this.sessions.get(mobile.mobileId);
-			if (session?.hasCurrentProtocol) {
-				session.sendFrame(Channels.Notify, undefined, bytes).catch(err => this.logService.warn('[paradisMobileRelay] notify frame failed', err));
-				continue;
+			const delivery = paradisResolveNotifyDelivery({
+				kind: meta.kind,
+				prefs: mobile.notifyPrefs,
+				pcFocused,
+				sessionReady: session?.hasCurrentProtocol === true,
+				msSinceLastInbound: session?.msSinceLastInbound(now),
+			});
+			// フレームは通知一覧のためのもの。鳴らす必要が無い通知も、あとからスマホで
+			// 「PCの前にいた間に何があったか」を追えるように送る（以前は配信自体を止めていた）。
+			if (delivery.frame && session !== undefined) {
+				const frameBytes = delivery.quiet !== undefined ? quietBytes(delivery.quiet) : bytes;
+				session.sendFrame(Channels.Notify, undefined, frameBytes).catch(err => this.logService.warn('[paradisMobileRelay] notify frame failed', err));
 			}
-			// オフライン時のAPNsフォールバックは、モバイルが同期してきた通知設定を尊重する
-			// （オンライン時のフレームは常に送る: 表示可否はモバイル側が判断する）。
-			const prefs = mobile.notifyPrefs;
-			if (prefs && ((kind === 'agent-done' && prefs.agentDone === false) || (kind === 'agent-question' && prefs.agentQuestion === false))) {
+			// 上のフレームが本当に届いたかは分からない（相手が凍っていてもソケットは生きたままに
+			// 見える。これがそもそもの不具合の原因）。届いたかに関わらず取り置き、次に繋がったとき
+			// 通知一覧へ流し直す。モバイルはIDで重複を弾くので、二重に並ぶことはない。
+			// 流し直す分は必ず `muted`: そのときには鳴らす機会が過ぎている。`pushed` にすると、
+			// プッシュを受け取れない端末が復帰時に大昔の通知で鳴ってしまう。
+			this.missedNotify.add(mobile.mobileId, { id: meta.id, agentToken: meta.agentToken, bytes: quietBytes('muted') });
+			if (!delivery.push) {
 				continue;
 			}
 			this.notifyKeyFor(mobile.mobileId, mobile.pubKey).then(async key => {
 				const sealed = await sealNotify(key, bytes);
+				const encoded = toBase64Url(sealed);
+				// リレーは大きすぎるペイロードを捨てる（APNsの4KB制限のため）。捨てられると
+				// フレーム側は quiet なのでバナーが完全に消える。通知の本文はここへ来る前に
+				// 切り詰めてあるので通常は起きないが、起きたときに無言にはしない。
+				if (encoded.length > PARADIS_PUSH_PAYLOAD_LIMIT_BYTES) {
+					this.logService.warn(`[paradisMobileRelay] push payload too large (${encoded.length}B); the relay will drop it`);
+				}
 				if (expectedOwner !== undefined) {
 					await this.withCurrentRegisteredLease(expectedOwner, async () => {
-						this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: toBase64Url(sealed) });
+						this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: encoded });
 					});
 				} else {
-					this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: toBase64Url(sealed) });
+					this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: encoded });
 				}
 			}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
+		}
+	}
+
+	/**
+	 * 同じ通知に「バナーは出さないでほしい」印を付けた版を作る。
+	 * JSONとして読めないバイト列はそのまま返す（判定不能なものを黙って作り替えない）。
+	 */
+	private quietNotifyBytes(bytes: Uint8Array, reason: ParadisNotifyQuiet): Uint8Array {
+		try {
+			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> | null;
+			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+				return bytes;
+			}
+			return new TextEncoder().encode(JSON.stringify({ ...parsed, quiet: reason }));
+		} catch {
+			return bytes;
+		}
+	}
+
+	/** セッションが確立した直後に取り置き分を流す。IDが同じものはモバイル側が弾く。 */
+	private flushMissedNotify(mobileId: string, session: MobileSession): void {
+		for (const entry of this.missedNotify.take(mobileId)) {
+			session.sendFrame(Channels.Notify, undefined, entry.bytes)
+				.catch(err => this.logService.warn('[paradisMobileRelay] missed notify replay failed', err));
 		}
 	}
 
 	/** モバイルから同期された通知設定（notifyチャネル M→PC）を保存する。 */
 	private handleNotifyPrefs(mobileId: string, payload: Uint8Array): void {
 		try {
-			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: string; agentDone?: boolean; agentQuestion?: boolean; suppressWhenPcFocused?: boolean };
+			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: string; agentDone?: boolean; agentQuestion?: boolean; suppressWhenPcFocused?: boolean; pcFocusQuiet?: boolean };
 			if (msg.t !== 'prefs') {
 				return;
 			}
@@ -784,12 +851,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			const next = {
 				agentDone: msg.agentDone !== false,
 				agentQuestion: msg.agentQuestion !== false,
-				suppressWhenPcFocused: msg.suppressWhenPcFocused === true,
+				// 新しいアプリは `pcFocusQuiet` で送ってくる。旧アプリは旧キーしか送らないので
+				// そちらへフォールバックする（旧キーはここでしか読まず、保存もしない）。
+				pcFocusQuiet: typeof msg.pcFocusQuiet === 'boolean' ? msg.pcFocusQuiet : msg.suppressWhenPcFocused === true,
 			};
 			// モバイルはonline遷移のたびに再送してくるため、値が変わった時だけ書き込む
 			// （バックグラウンド復帰ごとのディスク書き込みチャーンを避ける）。
 			const prev = mobile.notifyPrefs;
-			if (prev && prev.agentDone === next.agentDone && prev.agentQuestion === next.agentQuestion && prev.suppressWhenPcFocused === next.suppressWhenPcFocused) {
+			if (prev && prev.agentDone === next.agentDone && prev.agentQuestion === next.agentQuestion && paradisNotifyPcFocusQuiet(prev) === next.pcFocusQuiet) {
 				return;
 			}
 			mobile.notifyPrefs = next;
@@ -805,6 +874,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * オンラインのセッションにのみ配送する（次回オンライン化時は素直に残っていて構わない）。
 	 */
 	private handleNotifyDismiss(fromMobileId: string, notifyId: string): void {
+		// 取り置きからも外す。残すと、あとで繋がったときに処理済みの通知が未読として蘇る。
+		this.missedNotify.drop({ id: notifyId });
 		const bytes = encodeNotifyDismissed(notifyId);
 		for (const mobile of this.state.mobiles) {
 			if (mobile.mobileId === fromMobileId) {
@@ -824,6 +895,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * オンラインのセッションにのみ配送する（次回オンライン化時は素直に残っていて構わない）。
 	 */
 	private dispatchAgentDismiss(token: string): void {
+		// PCで確認済みにした分は、まだ届けていない取り置きからも外す。
+		this.missedNotify.drop({ agentToken: token });
 		const bytes = encodeNotifyDismissedByToken(token);
 		for (const mobile of this.state.mobiles) {
 			const session = this.sessions.get(mobile.mobileId);
@@ -946,6 +1019,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		for (const m of removed) {
 			this.sessions.delete(m.mobileId);
 			this.webrtcRendererLeases.delete(m.mobileId);
+			this.missedNotify.forget(m.mobileId);
 			this.browserMirror.stopSession(m.mobileId);
 			this.agentChat.dropSubscriber(m.mobileId);
 			this.notifyKeyCache.delete(m.mobileId);
@@ -1764,6 +1838,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						if (session!.hasCurrentProtocol !== wasReady) {
 							this._onDidChangeStatus.fire(this.snapshot());
 							this.updateEagerTailing();
+							if (session!.hasCurrentProtocol) {
+								// 切れている間に発生した通知を一覧へ流し直す（バナーはプッシュ側が担っている）。
+								this.flushMissedNotify(idStr, session!);
+							}
 						}
 						this.enqueueRendererAuthority(() => this.broadcastDesktopState(idStr)).catch(err => this.logService.warn('[paradisMobileRelay] state reply failed', err));
 						return;
@@ -1976,6 +2054,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.sessions.delete(mobileId);
 		this.webrtcRendererLeases.delete(mobileId);
 		this.notifyKeyCache.delete(mobileId);
+		this.missedNotify.forget(mobileId);
 		this.browserMirror.stopSession(mobileId);
 		this.agentChat.dropSubscriber(mobileId);
 		this.updateEagerTailing();

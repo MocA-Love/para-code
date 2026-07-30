@@ -18,7 +18,8 @@ import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
 import { configureNotificationHandler, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
-import { connectionActionForAppState, shouldPresentForegroundNotification, shouldRunForegroundWork } from './appLifecycle.js';
+import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
+import { shouldPresentNotifyBanner } from './notificationPolicy.js';
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -58,13 +59,19 @@ interface AppState extends StoreState {
 	browserSelection: { targetId: string; url: string; desktopEpoch: string } | undefined;
 	setBrowserSelection(selection: { targetId: string; url: string; desktopEpoch: string } | undefined): void;
 	/**
-	 * 通知設定（設定画面）。agentDone/agentQuestionがfalseの種別はOS通知（バナー）を
-	 * 出さない（アプリ内の通知一覧には残る）。suppressWhenPcFocusedはPC側の判断のみに
-	 * 使う（PCがフォーカスされている間はそもそもモバイルへ配信しない）。いずれもPC側に
-	 * 同期され、アプリ未起動時のAPNsリモートプッシュ抑制もPC側のdispatchNotifyが行う。
+	 * 通知設定（設定画面）。ここでオフにした種別と、PC操作中の抑制は「バナーを出さない」
+	 * であって「届かない」ではない（抑制された通知もアプリ内の通知一覧には残る）。
+	 * 3つともPC側へ同期し、鳴らすべきかの判断はPC側の `paradisNotifyDelivery.ts` が持つ
+	 * （アプリ未起動時のプッシュを送るかどうかもそこで決まるため、PCが知っている必要がある）。
 	 */
 	notifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean };
 	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean): void;
+	/**
+	 * いま開いているエージェント画面のターミナルキー。その画面を見ている間は同じエージェントの
+	 * 通知バナーを出さない（画面に出ている内容をバナーで被せないため）。
+	 */
+	viewingTerminalKey: string | undefined;
+	setViewingTerminalKey(terminalKey: string | undefined): void;
 	/** 通知一覧を全消去する（通知一覧画面のクリアボタン）。 */
 	clearNotifications(): void;
 	/** 通知一覧から単一項目を消す（項目タップで遷移した時）。他端末の一覧にも同期される。 */
@@ -192,13 +199,12 @@ let pairing: PairingClient | undefined;
 let initStarted = false;
 /** 通知設定の再送subscribeの多重登録防止（init()失敗リトライ対策）。 */
 let prefsSyncSubscribed = false;
-/** 発生からこれより古い通知はOS通知（バナー）に出さない（アプリ内一覧には残る）。 */
-const NOTIFY_BANNER_MAX_AGE_MS = 60_000;
 
 export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',
 	pcOnline: false,
 	sessionProtocolReady: false,
+	pushRegistered: undefined,
 	workspace: undefined,
 	protocolError: undefined,
 	terminalOperationIssue: undefined,
@@ -214,7 +220,11 @@ export const useAppStore = create<AppState>(set => ({
 	homeShowAllWorkspaces: true,
 	selectedTerminalKey: undefined,
 	browserSelection: undefined,
-	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: false },
+	// suppressWhenPcFocused の既定はオン。PCの前にいる間もスマホが鳴るのが通知過多の
+	// 主因だったため、席を外している間だけ鳴る側を既定にしている（PC側の既定と揃えてある）。
+	// 一度でも設定画面で触ればその値が保存され、以降はこの既定を使わない。
+	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: true },
+	viewingTerminalKey: undefined,
 	pinnedKeys: new Set(),
 	archivedKeys: new Set(),
 	agentDrafts: {},
@@ -243,7 +253,10 @@ export const useAppStore = create<AppState>(set => ({
 						notifyPrefs: {
 							agentDone: parsed.agentDone !== false,
 							agentQuestion: parsed.agentQuestion !== false,
-							suppressWhenPcFocused: parsed.suppressWhenPcFocused === true,
+							// `!== false` にしておく: この設定が追加される前の版で通知トグルを触った人は
+							// このキーが欠けた記録を持っており、`=== true` だと新しい既定（オン）が
+							// その人たちにだけ効かない。明示的にオフにした人だけがオフになる。
+							suppressWhenPcFocused: parsed.suppressWhenPcFocused !== false,
 						},
 					});
 				}
@@ -294,18 +307,16 @@ export const useAppStore = create<AppState>(set => ({
 					set({ ...s });
 				},
 				payload => {
-					// 通知設定でOFFの種別はOS通知を出さない（アプリ内の通知一覧には残る）
-					const prefs = useAppStore.getState().notifyPrefs;
-					if ((payload.kind === 'agent-done' && !prefs.agentDone) || (payload.kind === 'agent-question' && !prefs.agentQuestion)) {
-						return;
-					}
-					// 発生から時間が経った通知はOS通知（バナー）を出さない（アプリ内の通知一覧には残る）。
-					// iOSがバックグラウンドでアプリを凍結するとPC側からはオンラインに見えたまま
-					// notifyフレームがソケットに滞留し、アプリを開いた瞬間にまとめて届くため、
-					// 鮮度チェックなしだと過去の通知がその場で一斉にバナー表示されてしまう。
-					// APNs経路のapns-expiration（TTL）に相当する判定のクライアント版。
-					// PCとモバイルの時計ずれで新鮮な通知を落とさないよう、閾値は緩めに取る。
-					if (!shouldPresentForegroundNotification(RNAppState.currentState, payload.at, Date.now(), NOTIFY_BANNER_MAX_AGE_MS)) {
+					// バナーを出すかの判断は notificationPolicy.ts に集約してある
+					// （届いた通知を一覧へ入れるのは store 側で、そちらは無条件）。
+					const state = useAppStore.getState();
+					if (!shouldPresentNotifyBanner(payload, {
+						appState: RNAppState.currentState,
+						prefs: state.notifyPrefs,
+						viewingTerminalKey: state.viewingTerminalKey,
+						pushRegistered: state.pushRegistered,
+						now: Date.now(),
+					})) {
 						return;
 					}
 					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalKey: payload.terminalKey, agentToken: payload.agentToken });
@@ -350,6 +361,10 @@ export const useAppStore = create<AppState>(set => ({
 					heartbeat = undefined;
 				}
 			};
+			// inactive（通知センターやコントロールセンターを引き下げた、システムのダイアログが
+			// 乗った等）はソケットを維持するので、心拍も止めない。止めるとPC側から「無音が
+			// 続いた＝アプリが凍った」と見えてプッシュが飛び、前面で見ている画面にまでバナーが
+			// 出る（PC側の判断材料は最後に受け取った時刻なので、黙るとそう見える）。
 			RNAppState.addEventListener('change', appState => {
 				const action = connectionActionForAppState(appState);
 				if (action === 'resume') {
@@ -357,11 +372,9 @@ export const useAppStore = create<AppState>(set => ({
 						controller?.resumeFromBackground();
 					}
 					startHeartbeat();
-				} else {
-					// inactiveを含む非表示中は画面用タイマーを止める。接続を切るのは完全な
-					// backgroundだけにし、コントロールセンター等の短い中断では再接続を起こさない。
+				} else if (action === 'suspend') {
 					stopHeartbeat();
-					if (action === 'suspend' && !useAppStore.getState().manualOffline) {
+					if (!useAppStore.getState().manualOffline) {
 						controller?.suspendForBackground();
 					}
 				}
@@ -653,6 +666,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	setBrowserSelection(selection: { targetId: string; url: string; desktopEpoch: string } | undefined) {
 		set({ browserSelection: selection });
+	},
+
+	setViewingTerminalKey(terminalKey: string | undefined) {
+		set({ viewingTerminalKey: terminalKey });
 	},
 
 	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean) {

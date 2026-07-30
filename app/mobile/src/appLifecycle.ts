@@ -19,13 +19,3 @@ export function connectionActionForAppState(state: MobileAppState): RelayLifecyc
 export function shouldRunForegroundWork(state: MobileAppState): boolean {
 	return state === 'active';
 }
-
-/** WebSocketを維持するactive/inactiveだけローカルバナー化し、backgroundはAPNsへ一本化する。 */
-export function shouldPresentForegroundNotification(
-	state: MobileAppState,
-	payloadAt: number,
-	now: number,
-	maxAgeMs: number,
-): boolean {
-	return (state === 'active' || state === 'inactive') && now - payloadAt <= maxAgeMs;
-}

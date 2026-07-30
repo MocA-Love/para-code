@@ -10,6 +10,9 @@
 
 export type NotifyKind = 'agent-question' | 'agent-done' | 'agent-error' | 'disconnected';
 
+/** バナーを出さないでほしい理由（NotifyPayload.quiet）。 */
+export type NotifyQuiet = 'muted' | 'pushed';
+
 export interface NotifyPayload {
 	readonly kind: NotifyKind;
 	/** 一意なID（重複表示の抑制・タップ時のディープリンクに使う）。 */
@@ -28,6 +31,14 @@ export interface NotifyPayload {
 	readonly agentToken?: string;
 	/** PC側で通知が発生した時刻（epoch ms）。 */
 	readonly at: number;
+	/**
+	 * 「通知一覧には入れるが、バナーは出さないでほしい」印。
+	 * 省略時は自分で鳴らす（この印を知らない旧PCからのフレームは従来どおり鳴る）。
+	 * - `muted`: 鳴らす必要が無い（種別オフ、PC操作中）。必ず従う
+	 * - `pushed`: PCがAPNsプッシュを送ったので二重に鳴らさないでほしい。ただしPCはプッシュの
+	 *   成否を知らないので、プッシュを受け取れないと分かっている端末は自分で鳴らしてよい
+	 */
+	readonly quiet?: NotifyQuiet;
 }
 
 export function encodeNotify(payload: NotifyPayload): Uint8Array {
@@ -52,7 +63,8 @@ export function decodeNotify(bytes: Uint8Array): NotifyPayload {
 	const terminalKey = typeof raw['terminalKey'] === 'string' && raw['terminalKey'].length > 0 && raw['terminalKey'].length <= 200 ? raw['terminalKey'] : undefined;
 	const windowId = typeof raw['windowId'] === 'number' && Number.isInteger(raw['windowId']) ? raw['windowId'] : undefined;
 	const agentToken = typeof raw['agentToken'] === 'string' && raw['agentToken'].length <= 200 ? raw['agentToken'] : undefined;
-	return { kind, id, title, body, at, ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}) };
+	const quiet = raw['quiet'] === 'muted' || raw['quiet'] === 'pushed' ? raw['quiet'] : undefined;
+	return { kind, id, title, body, at, ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(quiet !== undefined ? { quiet } : {}) };
 }
 
 function isNotifyKind(value: string): value is NotifyKind {

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Image, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { BlurView } from 'expo-blur';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
@@ -52,12 +52,12 @@ import { AgentStickyScroll } from '../src/agentStickyScroll.js';
 export default function AgentDetailScreen() {
 	const router = useRouter();
 	const { latest: latestEntry } = useLocalSearchParams<{ latest?: string }>();
-	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets } = useAppStore(useShallow(s => ({
+	const { workspace, agentChats, selectedWs, selectedTerminalKey, connection, pcOnline, sessionProtocolReady, attachAgent, detachAgent, refreshAgent, requestAgentModelCatalog, requestAgentCommandCatalog, updateAgentSettings, fsUpload, browserTargets, setViewingTerminalKey } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, agentChats: s.agentChats, selectedWs: s.selectedWs,
 		selectedTerminalKey: s.selectedTerminalKey, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 		attachAgent: s.attachAgent, detachAgent: s.detachAgent, refreshAgent: s.refreshAgent,
 		requestAgentModelCatalog: s.requestAgentModelCatalog, requestAgentCommandCatalog: s.requestAgentCommandCatalog, updateAgentSettings: s.updateAgentSettings, fsUpload: s.fsUpload,
-		browserTargets: s.browserTargets,
+		browserTargets: s.browserTargets, setViewingTerminalKey: s.setViewingTerminalKey,
 	})));
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const insets = useStableInsets();
@@ -256,6 +256,14 @@ export default function AgentDetailScreen() {
 		attachAgent(activeKey);
 		return () => detachAgent(activeKey);
 	}, [activeKey, attachAgent, detachAgent]);
+
+	// この画面を見ている間は、同じエージェントの通知バナーを出さない（目の前に出ている内容を
+	// バナーで被せないため）。マウントではなくフォーカスで判定する: 設定などへ遷移しても
+	// この画面はスタックに残り続けるので、マウントだと「見ていない」を検出できない。
+	useFocusEffect(useCallback(() => {
+		setViewingTerminalKey(activeKey);
+		return () => setViewingTerminalKey(undefined);
+	}, [activeKey, setViewingTerminalKey]));
 
 	// 自動スクロールは「sticky（最下部追従）モード」で制御する。判断そのものは
 	// agentStickyScroll.ts の状態機械が持つ（画面を動かさずに検証できるようにするため）。

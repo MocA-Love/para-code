@@ -224,6 +224,9 @@ export interface PairingPayload {
 
 export type NotifyKind = 'agent-question' | 'agent-done' | 'agent-error' | 'disconnected';
 
+/** バナーを出さないでほしい理由（NotifyPayload.quiet）。 */
+export type ParadisNotifyQuiet = 'muted' | 'pushed';
+
 export interface NotifyPayload {
 	readonly kind: NotifyKind;
 	readonly id: string;
@@ -235,6 +238,15 @@ export interface NotifyPayload {
 	readonly windowId?: number;
 	readonly agentToken?: string;
 	readonly at: number;
+	/**
+	 * 「通知一覧には入れるが、バナーは出さないでほしい」印（`paradisNotifyDelivery.ts`）。
+	 * 省略時はモバイルが自分で鳴らす（この印を知らない旧PCからのフレームは従来どおり鳴る）。
+	 * - `muted`: 鳴らす必要が無い（種別オフ、PC操作中）。モバイルは必ず従う
+	 * - `pushed`: PCがAPNsプッシュを送ったので二重に鳴らさないでほしい。ただしPCはプッシュの
+	 *   成否を知らないので、プッシュを受け取れないと分かっている端末（トークン未登録・通知
+	 *   許可なし）は自分で鳴らしてよい
+	 */
+	readonly quiet?: ParadisNotifyQuiet;
 }
 
 export function encodeNotify(payload: NotifyPayload): Uint8Array {
@@ -242,19 +254,26 @@ export function encodeNotify(payload: NotifyPayload): Uint8Array {
 }
 
 /**
- * Notifyペイロードから種別だけを読む（APNsプッシュ抑制の判定用）。
- * 形式不正なら undefined（呼び出し側は「抑制しない」に倒す）。
+ * 配送の判断と、既読になった通知の取り消しに必要な項目だけをNotifyペイロードから読む。
+ * 形式不正なら全て undefined（呼び出し側は「鳴らす」側に倒す）。
  */
-export function peekNotifyKind(bytes: Uint8Array): NotifyKind | undefined {
+export interface IParadisNotifyMeta {
+	readonly kind: NotifyKind | undefined;
+	readonly id: string | undefined;
+	readonly agentToken: string | undefined;
+}
+
+export function peekNotifyMeta(bytes: Uint8Array): IParadisNotifyMeta {
 	try {
-		const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { kind?: unknown };
+		const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { kind?: unknown; id?: unknown; agentToken?: unknown };
 		const kind = parsed.kind;
-		if (kind === 'agent-question' || kind === 'agent-done' || kind === 'agent-error' || kind === 'disconnected') {
-			return kind;
-		}
-		return undefined;
+		return {
+			kind: kind === 'agent-question' || kind === 'agent-done' || kind === 'agent-error' || kind === 'disconnected' ? kind : undefined,
+			id: typeof parsed.id === 'string' && parsed.id.length > 0 ? parsed.id : undefined,
+			agentToken: typeof parsed.agentToken === 'string' && parsed.agentToken.length > 0 ? parsed.agentToken : undefined,
+		};
 	} catch {
-		return undefined;
+		return { kind: undefined, id: undefined, agentToken: undefined };
 	}
 }
 
