@@ -108,6 +108,11 @@
 	width: 340px;
 	max-width: 100%;
 	user-select: text;
+	/* ホバーへ HTMLElement を渡すと hover-contents に html-hover-contents が付き、 */
+	/* hoverWidget.css の `.hover-contents:not(.html-hover-contents) { padding: 4px 8px }` が */
+	/* 外れて余白がゼロになる。中身が枠に直接触れてしまうので、こちらで余白を持つ。 */
+	/* 値はダッシュボードの `.paradis-ghm-panel.padded` に合わせる。 */
+	padding: 12px 14px;
 }
 
 .paradis-ghm-popover-header {
