@@ -68,7 +68,7 @@ const LOCAL_TOOLS = [
 	},
 	{
 		name: 'preview_file',
-		description: 'Open a file in the Para Code window that owns this terminal pane, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path.',
+		description: 'Open a file in the Para Code space that this terminal pane belongs to, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path. If the user is currently looking at a different space, the file is queued and opens when they switch back, so it never interrupts the space on screen.',
 		inputSchema: {
 			type: 'object',
 			properties: {

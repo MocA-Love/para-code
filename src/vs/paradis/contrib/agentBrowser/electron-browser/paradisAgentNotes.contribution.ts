@@ -42,22 +42,17 @@ import {
 	paradisSpaceNoteSummary,
 } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import {
+	IParadisSpaceEntry,
 	IParadisTerminalScopeService,
 	IParadisWorkspaceSwitchService,
 	IParadisWorktreeService,
-	paradisWorktreeStateKey,
+	paradisListSpaces,
 } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 const UNKNOWN_SPACE_HINT = 'Call list_space_notes to see the available spaces and their keys.';
 const NO_DEFAULT_SPACE_MESSAGE = `Para Code could not tell which space this terminal pane belongs to. ${UNKNOWN_SPACE_HINT}`;
 const NOT_A_TASK_MESSAGE = 'is not a checklist item ("- [ ] ..." / "- [x] ...") in this space note. Call read_space_note to see the current lines.';
 const SAVE_REFUSED_MESSAGE = 'Para Code refused to save the note (it may have hit the per-workspace note limit). The note was left unchanged.';
-
-interface ISpaceEntry {
-	readonly space: string;
-	readonly name: string;
-	readonly kind: 'repository' | 'worktree';
-}
 
 export class ParadisAgentNotesChannel implements IServerChannel {
 
@@ -121,23 +116,8 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 	}
 
 	/** メモを持てるスペース（登録リポジトリと、その実在 worktree）を Workspaces ビューと同じ順で並べる。 */
-	private _spaces(): ISpaceEntry[] {
-		const entries: ISpaceEntry[] = [];
-		for (const repository of this.workspaceSwitchService.repositories) {
-			entries.push({ space: repository.id, name: repository.name, kind: 'repository' });
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (worktree.missing) {
-					continue;
-				}
-				entries.push({
-					space: paradisWorktreeStateKey(worktree.uri),
-					// allow-any-unicode-next-line
-					name: `${repository.name} ✦ ${worktree.name}`,
-					kind: 'worktree',
-				});
-			}
-		}
-		return entries;
+	private _spaces(): IParadisSpaceEntry[] {
+		return paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService);
 	}
 
 	/**
@@ -146,7 +126,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 	 * アクティブスペースで埋めると、切り替え中の write が無関係なスペースのメモを
 	 * 全文上書きしうるため、既定スペース無しとして扱う（モバイルリレーと同じ判断）。
 	 */
-	private _resolveCurrentSpace(token: string | undefined, entries: readonly ISpaceEntry[]): string | undefined {
+	private _resolveCurrentSpace(token: string | undefined, entries: readonly IParadisSpaceEntry[]): string | undefined {
 		const instanceId = token !== undefined ? this.paneTokenService.getInstanceForToken(token) : undefined;
 		const candidate = instanceId === undefined ? undefined : this._resolveInstanceSpace(instanceId);
 		return candidate !== undefined && entries.some(entry => entry.space === candidate) ? candidate : undefined;
@@ -165,7 +145,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 				: undefined;
 	}
 
-	private _toSpace(entry: ISpaceEntry, current: string | undefined): IParadisAgentNoteSpace {
+	private _toSpace(entry: IParadisSpaceEntry, current: string | undefined): IParadisAgentNoteSpace {
 		const summary = this.spaceNotesService.summary(entry.space);
 		return {
 			space: entry.space,
@@ -177,7 +157,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 		};
 	}
 
-	private _toView(entry: ISpaceEntry): IParadisAgentNoteView {
+	private _toView(entry: IParadisSpaceEntry): IParadisAgentNoteView {
 		const text = this.spaceNotesService.read(entry.space);
 		const summary = paradisSpaceNoteSummary(text);
 		return {
@@ -196,7 +176,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 	 * ストレージへの永続化はデバウンス後に行われる）。
 	 * `reportReplaced` は全文置換のときだけ真にする（消えた本文を呼び出し元へ返すため）。
 	 */
-	private _write(entry: ISpaceEntry, text: string, reportReplaced: boolean = false): IParadisAgentNoteResult {
+	private _write(entry: IParadisSpaceEntry, text: string, reportReplaced: boolean = false): IParadisAgentNoteResult {
 		if (text.length > PARADIS_SPACE_NOTE_MAX_LENGTH) {
 			return { ok: false, error: `The note text is too long (limit: ${PARADIS_SPACE_NOTE_MAX_LENGTH} characters, got: ${text.length}).` };
 		}
@@ -210,7 +190,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 		return { ok: true, kind: 'note', note: this._toView(entry), ...replaced };
 	}
 
-	private _addTask(entry: ISpaceEntry, task: string): IParadisAgentNoteResult {
+	private _addTask(entry: IParadisSpaceEntry, task: string): IParadisAgentNoteResult {
 		const appended = paradisAppendSpaceNoteTask(this.spaceNotesService.read(entry.space), task);
 		if (appended === undefined) {
 			return { ok: false, error: 'The checklist item is empty after trimming, so nothing was added.' };
@@ -221,7 +201,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 		return this._write(entry, appended);
 	}
 
-	private _checkTask(entry: ISpaceEntry, line: number | undefined, done: boolean | undefined): IParadisAgentNoteResult {
+	private _checkTask(entry: IParadisSpaceEntry, line: number | undefined, done: boolean | undefined): IParadisAgentNoteResult {
 		const task = this._taskAt(entry, line);
 		if (!task.ok) {
 			return { ok: false, error: task.error };
@@ -234,7 +214,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 		return { ok: true, kind: 'note', note: this._toView(entry) };
 	}
 
-	private _deleteTask(entry: ISpaceEntry, line: number | undefined): IParadisAgentNoteResult {
+	private _deleteTask(entry: IParadisSpaceEntry, line: number | undefined): IParadisAgentNoteResult {
 		const task = this._taskAt(entry, line);
 		if (!task.ok) {
 			return { ok: false, error: task.error };
@@ -244,7 +224,7 @@ export class ParadisAgentNotesChannel implements IServerChannel {
 	}
 
 	/** 対象行がチェックリストであることを確かめる（範囲外・見出し・本文行は明示エラーにする）。 */
-	private _taskAt(entry: ISpaceEntry, line: number | undefined): { readonly ok: true; readonly line: number; readonly done: boolean } | { readonly ok: false; readonly error: string } {
+	private _taskAt(entry: IParadisSpaceEntry, line: number | undefined): { readonly ok: true; readonly line: number; readonly done: boolean } | { readonly ok: false; readonly error: string } {
 		if (line === undefined) {
 			return { ok: false, error: 'The "line" argument is required (use the 0-based line number from read_space_note).' };
 		}
