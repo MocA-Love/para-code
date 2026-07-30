@@ -13,7 +13,7 @@
 // - 設定 `paradis.githubMetrics.*` のスキーマ登録
 // レート枠取得と計測本体は shared process 側(node/paradisGithubMetricsChannel.ts)にある。
 
-import { $ } from '../../../../base/browser/dom.js';
+import { $, getWindow } from '../../../../base/browser/dom.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -53,6 +53,11 @@ const STATUS_POLL_INTERVAL_MS = 2 * 60 * 1000;
 const STATUS_INITIAL_DELAY_MS = 20 * 1000;
 /** ccusage(-9990) の右・通知ベル(-Infinity) の左。 */
 const STATUS_BAR_PRIORITY = -9991;
+
+/** ポップオーバーとウィンドウ右端の間に空ける余白。 */
+const POPOVER_WINDOW_EDGE_MARGIN = 12;
+/** ホバーの枠線（左右 1px ずつ）。ポップオーバーの外形に足すと実際の占有幅になる。 */
+const HOVER_BORDER_WIDTH = 2;
 
 // ---------- editor pane / serializer ----------
 
@@ -247,10 +252,29 @@ class ParadisGithubMetricsStatusBarContribution extends Disposable implements IW
 			},
 		}));
 
+		// 空の span 自体には大きさが無いので、器（ステータスバー項目）に沿わせる。
+		const anchor = this.entryAnchor.parentElement ?? this.entryAnchor;
+
 		const hover = this.hoverService.showInstantHover({
 			content: popover.element,
-			// 空の span 自体には大きさが無いので、器（ステータスバー項目）に沿わせる。
-			target: this.entryAnchor.parentElement ?? this.entryAnchor,
+			target: {
+				targetElements: [anchor],
+				// 項目はステータスバーの右端付近にあるので、既定の「項目の中心へ左右中央揃え」だと必ず
+				// 右へあふれ、hoverWidget 側がウィンドウ右端から 2px の位置へクランプしてしまう。
+				// x を渡すとそのクランプ経路に入らないので、自前で余白を確保した位置を指定する。
+				// 幅はホバーが DOM に入ってからでないと測れないため、測れない間は undefined を返して
+				// 既定の位置決めに委ねる（三角のポインタは項目の中心へ寄せ直される）。
+				get x(): number | undefined {
+					const popoverWidth = popover.element.offsetWidth;
+					if (popoverWidth === 0) {
+						return undefined;
+					}
+					const availableWidth = getWindow(anchor).document.documentElement.clientWidth;
+					// ウィンドウが狭くて収まらないときは左端に寄せる（負の x を返すと hoverWidget 側が
+					// 「左へはみ出した」と見なして項目の位置まで押し戻し、逆に右へあふれてしまう）。
+					return Math.max(0, availableWidth - popoverWidth - HOVER_BORDER_WIDTH - POPOVER_WINDOW_EDGE_MARGIN);
+				},
+			},
 			position: { hoverPosition: HoverPosition.ABOVE },
 			appearance: { showPointer: true, skipFadeInAnimation: true },
 			// sticky なホバーでは hoverService 側の keydown 監視が付かないので、Escape で閉じられるのは
