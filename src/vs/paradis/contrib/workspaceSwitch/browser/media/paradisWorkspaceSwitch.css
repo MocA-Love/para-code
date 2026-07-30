@@ -100,16 +100,21 @@
 	font-weight: 600;
 }
 
-/* エージェント実行状態 (Superset の StatusIndicator / AsciiSpinner 相当) */
-.paradis-workspaces-list .codicon.paradis-status-working {
+/* allow-any-unicode-next-line */
+/* エージェント実行状態 (Superset の StatusIndicator / AsciiSpinner 相当)。
+ * 動作中は回転させず、ゆっくりした明滅にする: 複数スペースで同時にエージェントを走らせる
+ * 使い方では回転が常時視界に入って疲れるため。速い脈動 (1秒) は「人間の対応待ち」だけに残し、
+ * 動作中 (2.4秒) とは速度で区別する。 */
+.paradis-workspaces-list .paradis-status-working {
 	color: #f59e0b;
+	animation: paradis-status-breathe 2.4s ease-in-out infinite;
 }
 
-.paradis-workspaces-list .codicon.paradis-status-review {
+.paradis-workspaces-list .paradis-status-review {
 	color: #22c55e;
 }
 
-.paradis-workspaces-list .codicon.paradis-status-permission {
+.paradis-workspaces-list .paradis-status-permission {
 	color: #ef4444;
 	animation: paradis-status-pulse 1s ease-in-out infinite;
 }
@@ -117,6 +122,111 @@
 @keyframes paradis-status-pulse {
 	0%, 100% { opacity: 1; }
 	50% { opacity: 0.25; }
+}
+
+@keyframes paradis-status-breathe {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
+}
+
+/* allow-any-unicode-next-line */
+/* 動きに敏感な利用者の設定を尊重する (upstream も同名のメディアクエリでアニメーションを止めている) */
+@media (prefers-reduced-motion: reduce) {
+	.paradis-workspaces-list .paradis-status-working,
+	.paradis-workspaces-list .paradis-status-permission {
+		animation: none;
+	}
+}
+
+/* allow-any-unicode-next-line */
+/* 行右端の2段組。上段 = エージェントのドット列 + メモ、下段 = PR チップ + 差分。
+ * 44px の1段に5要素を横並びにすると名前とブランチの幅が食い潰されるため縦に分ける。
+ * 行の自由幅は .paradis-worktree-labels の flex: 1 が吸収するので、この2段組は
+ * 常にラベルの右隣 = 行の右端に落ち着く (自前で margin-left: auto は持たない)。 */
+.paradis-workspaces-list .paradis-worktree-stack {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	justify-content: center;
+	gap: 3px;
+	flex-shrink: 0;
+	line-height: 1;
+}
+
+.paradis-workspaces-list .paradis-worktree-tier {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	/* allow-any-unicode-next-line */
+	/* 片方の段が空でも上下の位置が動かないよう下限を持たせる。中身 (PR チップ等) は
+	 * em ベースでフォントサイズに追従するため、固定値ではなく min-height にする */
+	min-height: 15px;
+}
+
+/* allow-any-unicode-next-line */
+/* スコープ内のエージェント1体につき1つのドット。集約アイコン (行の左) だけでは
+ * 「1体終わっても他が動いている限り完了が見えない」ため、内訳をここで出す。 */
+.paradis-workspaces-list .paradis-worktree-dots {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	flex-shrink: 0;
+}
+
+.paradis-workspaces-list .paradis-worktree-dots.hidden {
+	display: none;
+}
+
+.paradis-workspaces-list .paradis-agent-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background-color: currentColor;
+	flex-shrink: 0;
+}
+
+.paradis-workspaces-list .paradis-agent-dot-more {
+	font-size: 0.75em;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-descriptionForeground);
+	margin-left: 1px;
+}
+
+/* allow-any-unicode-next-line */
+/* 折りたたんだリポジトリ見出しに出す配下の状態要約 (状態ごとの件数)。
+ * 折りたたむと子行ごとドット列が見えなくなるため、見出しだけで中の様子が分かるようにする。 */
+.paradis-workspaces-list .paradis-workspace-summary {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+	margin-left: 4px;
+	font-size: 0.8em;
+	line-height: 1;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-workspaces-list .paradis-workspace-summary.hidden {
+	display: none;
+}
+
+.paradis-workspaces-list .paradis-workspace-summary-group {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+}
+
+/* allow-any-unicode-next-line */
+/* 右寄せ (margin-left: auto) は「行内で最初に現れる右側要素」だけが担う。auto を持つ要素が
+ * 2つあると余白が分配され、要約が行の中央に浮いてしまうため、要約が出ているときは
+ * 「新規worktree作成」ボタン側の auto を解除する (worktree 行の従来の手法と同じ)。 */
+.paradis-workspaces-list .paradis-workspace-summary:not(.hidden) {
+	margin-left: auto;
+}
+
+.paradis-workspaces-list .paradis-workspace-summary:not(.hidden) ~ .paradis-workspace-actions {
+	margin-left: 0;
 }
 
 /* worktree の入れ子行 */
@@ -192,14 +302,12 @@
 /* allow-any-unicode-next-line */
 /* ブランチに紐づく GitHub PR のチップ (Superset の WorkspaceStatusBadge 相当)。
  * 状態色は GitHub 本家に合わせた固定値 (open=緑 / draft=灰 / merged=紫 / closed=赤)。
- * diff バッジより左・行の右端側に置くため margin-left: auto を持ち、後続の diff バッジ側は
- * チップ表示中は auto を解除する (下の隣接ルール参照)。 */
+ * 2段組 (.paradis-worktree-stack) の下段に入るため、このチップ自身は margin を持たない。 */
 .paradis-workspaces-list .paradis-worktree-pr {
 	display: flex;
 	align-items: center;
 	gap: 4px;
 	flex-shrink: 0;
-	margin-left: auto;
 	padding: 2px 6px;
 	border-radius: 4px;
 	font-size: 0.8em;
@@ -239,13 +347,13 @@
 
 /* allow-any-unicode-next-line */
 /* メモ (paradisSpaceNotesPanel) の未完了件数バッジ。未完了が0件の行では非表示にして
- * 行の情報量を増やさない。PR チップと差分バッジの間に置く。 */
+ * 行の情報量を増やさない。エージェントのドット列と同じ上段に置く
+ * (どちらも「そのスペースで自分が抱えているもの」なので段の意味が揃う)。 */
 .paradis-workspaces-list .paradis-worktree-note {
 	display: flex;
 	align-items: center;
 	gap: 3px;
 	flex-shrink: 0;
-	margin-left: auto;
 	font-size: 0.8em;
 	line-height: 1;
 	font-variant-numeric: tabular-nums;
@@ -262,29 +370,14 @@
 }
 
 /* allow-any-unicode-next-line */
-/* 右寄せ (margin-left: auto) は「行内で最初に現れる右側バッジ」だけが担う。
- * PR チップが出ていればメモバッジは通常の gap 間隔で隣に並ぶ。 */
-.paradis-workspaces-list .paradis-worktree-pr:not(.hidden) ~ .paradis-worktree-note {
-	margin-left: 0;
-}
-
-/* 未コミット差分 (+挿入/-削除) バッジ。常に行の右端に固定する */
+/* 未コミット差分 (+挿入/-削除) バッジ。PR チップと同じ2段組の下段に入る。 */
 .paradis-workspaces-list .paradis-worktree-diff {
 	display: flex;
 	align-items: center;
 	gap: 6px;
 	flex-shrink: 0;
-	margin-left: auto;
 	font-size: 0.85em;
 	font-variant-numeric: tabular-nums;
-}
-
-/* allow-any-unicode-next-line */
-/* PR チップ / メモバッジが表示されているときはそちらの margin-left: auto が右寄せを担うため、
- * diff バッジは通常の gap 間隔で隣に並べる */
-.paradis-workspaces-list .paradis-worktree-pr:not(.hidden) ~ .paradis-worktree-diff,
-.paradis-workspaces-list .paradis-worktree-note:not(.hidden) ~ .paradis-worktree-diff {
-	margin-left: 0;
 }
 
 .paradis-workspaces-list .paradis-worktree-diff.hidden {
