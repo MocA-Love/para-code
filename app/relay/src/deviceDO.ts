@@ -444,10 +444,13 @@ export class DeviceDO implements DurableObject {
 			console.warn('[push] payload missing or too large; dropping');
 			return;
 		}
-		// オンライン（m:<mobileId> のソケットが1本以上）なら通常のE2Eフレームが届くので何もしない。
-		if (this.state.getWebSockets(`m:${mobileId}`).length > 0) {
-			return;
-		}
+		// ここでソケットの有無を見てはいけない。iOSはアプリをバックグラウンドへ回しても
+		// ソケットをhalf-openのまま放置する（acceptMobile のコメント参照）ので、
+		// 「ソケットが残っている＝アプリが受け取れる」は成り立たない。以前ここに同じ判定が
+		// あったせいで、PCが「このアプリは応答が無いからプッシュが要る」と判断して送っても
+		// リレーが無言で捨て、通知が誰にも届かないまま消えていた。
+		// 送るかどうかはPCが決める（`paradisNotifyDelivery.ts`。PCは最後にモバイルから
+		// 実際に何か受け取った時刻で判断していて、リレーより確かな材料を持っている）。
 		const row = this.sql.exec('SELECT apnsToken, apnsEnv FROM mobiles WHERE mobileId = ?', mobileId).toArray()[0];
 		if (!row || !row.apnsToken) {
 			return;
