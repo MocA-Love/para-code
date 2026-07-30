@@ -832,6 +832,12 @@ export interface StoreState {
 	terminalOutput: Map<string, string>;
 	/** 受信した通知（新しい順、最大50件）。 */
 	notifications: NotifyPayload[];
+	/**
+	 * この端末がAPNsプッシュを受け取れるか。`undefined` は未判定（まだトークンを問い合わせて
+	 * いない）。PCが「プッシュで鳴らすからフレームでは鳴らすな」と言ってきたとき、
+	 * 受け取れないと分かっている端末だけは自分で鳴らす（notificationPolicy.ts）。
+	 */
+	pushRegistered: boolean | undefined;
 	/** browser ミラーの直近フレーム（未開始は undefined）。 */
 	browserFrame: BrowserFrame | undefined;
 	/** ターミナルID → エージェントチャット状態（agentチャネル）。 */
@@ -853,6 +859,12 @@ const AGENT_STREAM_EMIT_MS = 120;
 const TERM_REPLAY_CACHE_LIMIT = 150_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+/**
+ * 覚えておく既読IDの上限。再接続のたびに全件をPCへ送り直すので、際限なく増えると
+ * 長く使うほど再接続時の送信が膨らむ。一覧の保持数（50）より十分大きく取る。
+ */
+const MAX_PENDING_NOTIFICATION_DISMISSALS = 200;
 
 /** identity を KeyStore から読み込む。無ければ生成して保存する。 */
 export async function loadOrCreateIdentity(keyStore: KeyStore): Promise<{ identity: Identity; created: boolean }> {
@@ -958,6 +970,7 @@ export class MobileController {
 		unknownTerminalOperationCount: 0,
 		terminalOutput: new Map(),
 		notifications: [],
+		pushRegistered: undefined,
 		browserFrame: undefined,
 		agentChats: new Map(),
 	};
@@ -1040,16 +1053,41 @@ export class MobileController {
 		return out;
 	}
 
+	/** この端末がAPNsプッシュを受け取れるかだけを確かめる（リレーへの登録は行わない）。 */
+	private resolvePushAvailability(): void {
+		if (!this.getPushToken) {
+			return;
+		}
+		this.getPushToken()
+			.then(token => this.setPushRegistered(token !== undefined))
+			.catch(() => this.setPushRegistered(false));
+	}
+
 	/** 接続確立時にAPNsトークンをリレーへ登録する（アプリ未起動時のプッシュ配送先）。 */
 	private registerPushToken(): void {
 		if (!this.getPushToken) {
 			return;
 		}
 		this.getPushToken().then(token => {
+			// トークンが取れない端末（シミュレータ、通知許可なし、aps entitlement 無しのビルド）は
+			// プッシュが一切届かない。PCはプッシュの成否を知らないまま「プッシュで鳴らすから
+			// フレームでは鳴らすな（quiet: 'pushed'）」と言ってくるので、それを無視して自分で
+			// 鳴らすかの判断材料としてここで覚えておく。
+			this.setPushRegistered(token !== undefined);
 			if (token !== undefined) {
 				this.client?.sendControl(encodeRelayControl({ type: 'register-push', token, env: this.pushEnv }));
 			}
-		}).catch(() => { /* トークン未取得（シミュレータ・権限拒否等）は黙って無視 */ });
+		}).catch(() => {
+			this.setPushRegistered(false);
+		});
+	}
+
+	private setPushRegistered(registered: boolean): void {
+		if (this.state.pushRegistered === registered) {
+			return;
+		}
+		this.state.pushRegistered = registered;
+		this.emit();
 	}
 
 	connect(creds: PairedCredentials): void {
@@ -1065,6 +1103,9 @@ export class MobileController {
 			this.operationOutboxKey = deriveNotifyKey(this.identity.secretKey, creds.pcPublicKey);
 		}
 		this.lastCredentials = creds;
+		// プッシュを受け取れる端末かは接続完了を待たずに確かめる。'online' まで未判定のままだと、
+		// 繋がった直後に届く1件だけ「PCはプッシュを送ったつもり・端末には届かない」で無音になる。
+		this.resolvePushAvailability();
 		// アプリ未起動時のプッシュ本文を Notification Service Extension が復号できるよう、
 		// 長期鍵ペアから導出した通知鍵を共有Keychainへ保存しておく（設計書 §5.2）。
 		if (this.persistNotifyKey) {
@@ -1586,7 +1627,8 @@ export class MobileController {
 			}
 		}
 		if (this.lastNotifyPrefs !== undefined) {
-			this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...this.lastNotifyPrefs })));
+			// sendNotifyPrefs と同じワイヤ形式を使う（旧キーの扱いが1箇所に収まるように）。
+			this.sendNotifyPrefs(this.lastNotifyPrefs);
 		}
 		for (const id of this.pendingNotificationDismissals) {
 			this.client?.send('notify', encodeNotifyDismiss(id));
@@ -1599,9 +1641,23 @@ export class MobileController {
 	 */
 	sendNotifyPrefs(prefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean }): void {
 		this.lastNotifyPrefs = prefs;
-		if (this.isLiveAvailable()) {
-			this.client?.send('notify', encoder.encode(JSON.stringify({ t: 'prefs', ...prefs })));
+		if (!this.isLiveAvailable()) {
+			return;
 		}
+		// 「PC作業中は鳴らさない」は `pcFocusQuiet` で送り、旧キーには常に false を入れる。
+		//
+		// 旧PC（この設定を「バナーを出さない」ではなく「配信そのものを止める」と解釈する版）に
+		// true を送ると、PCウィンドウにフォーカスがある限り通知がバナーも一覧も含めて完全に
+		// 消える。アプリはApp Storeで自動更新される一方PCは手動更新なので、「新アプリ×旧PC」は
+		// 普通に起こる。旧キーを false に固定しておけば、その組み合わせでは抑制が効かない
+		// だけで済む（鳴りすぎる側＝安全側に倒れる）。
+		this.client?.send('notify', encoder.encode(JSON.stringify({
+			t: 'prefs',
+			agentDone: prefs.agentDone,
+			agentQuestion: prefs.agentQuestion,
+			suppressWhenPcFocused: false,
+			pcFocusQuiet: prefs.suppressWhenPcFocused,
+		})));
 	}
 
 	private sendTerm(terminalKey: string, msg: { t: string; data?: string; dataEncoding?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
@@ -2355,13 +2411,24 @@ export class MobileController {
 		return desktop?.desktopEpoch === target.desktopEpoch && renderer?.ready === true && renderer.rendererGeneration === target.rendererGeneration;
 	}
 
-	/** 通知一覧を全消去する（通知一覧画面のクリアボタン用）。 */
+	/**
+	 * 通知一覧を全消去する（通知一覧画面のクリアボタン用）。
+	 * 1件ずつと同じくPCへも伝える。伝えないと、PC側が取り置いている分が次の再接続で
+	 * 流し直され、消したはずの通知が一覧に戻る（他端末の一覧とも食い違う）。
+	 */
 	clearNotifications(): void {
 		if (this.state.notifications.length === 0) {
 			return;
 		}
+		const cleared = this.state.notifications;
 		this.state.notifications = [];
 		this.emit({ notifications: true });
+		for (const notification of cleared) {
+			this.rememberNotificationDismissal(notification.id);
+			if (this.isLiveAvailable()) {
+				this.client?.send('notify', encodeNotifyDismiss(notification.id));
+			}
+		}
 	}
 
 	/**
@@ -2374,9 +2441,26 @@ export class MobileController {
 		}
 		this.state.notifications = this.state.notifications.filter(n => n.id !== id);
 		this.emit({ notifications: true });
-		this.pendingNotificationDismissals.add(id);
+		this.rememberNotificationDismissal(id);
 		if (this.isLiveAvailable()) {
 			this.client?.send('notify', encodeNotifyDismiss(id));
+		}
+	}
+
+	/**
+	 * 自分が消した通知IDを覚えておく（取り置きの再送で蘇らせないため）。
+	 * PCは送信元へは `dismissed` を返さないのでこの記録は自然には減らない。再接続のたびに
+	 * 全件送り直す作りなので、際限なく増えないよう古い順に落とす。
+	 */
+	private rememberNotificationDismissal(id: string): void {
+		this.pendingNotificationDismissals.delete(id);
+		this.pendingNotificationDismissals.add(id);
+		while (this.pendingNotificationDismissals.size > MAX_PENDING_NOTIFICATION_DISMISSALS) {
+			const oldest = this.pendingNotificationDismissals.values().next();
+			if (oldest.done === true) {
+				break;
+			}
+			this.pendingNotificationDismissals.delete(oldest.value);
 		}
 	}
 
@@ -3303,6 +3387,7 @@ export class MobileController {
 			connection: this.state.connection,
 			pcOnline: this.state.pcOnline,
 			sessionProtocolReady: this.state.sessionProtocolReady,
+			pushRegistered: this.state.pushRegistered,
 			workspace: this.state.workspace,
 			protocolError: this.state.protocolError,
 			terminalOperationIssue: this.state.terminalOperationIssue,

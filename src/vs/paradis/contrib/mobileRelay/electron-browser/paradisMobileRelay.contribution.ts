@@ -29,6 +29,7 @@ import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerm
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWebviewWorkbenchService } from '../../../../workbench/contrib/webviewPanel/browser/webviewWorkbenchService.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
@@ -72,6 +73,14 @@ const MENU_COMMAND = 'paradis.mobile.showMenu';
 const PC_FOCUS_HEARTBEAT_INTERVAL_MS = 25_000;
 
 /**
+ * ウィンドウにフォーカスが当たったまま、OSが報告する無操作時間がこれを超えたら「PCの前にいない」
+ * とみなす。短くしすぎると画面をただ眺めている間にスマホが鳴り、長くしすぎると離席に気づくのが
+ * 遅れる。作業中なら数分に一度は必ず何か触るので、確実に離席と言える長さを取る。
+ * 画面ロックはこの閾値を待たずに即座に離席とする。
+ */
+const PC_AWAY_IDLE_MS = 5 * 60_000;
+
+/**
  * renderer 側のモバイルリレー contribution。
  * - shared process のリレーサービス(IPC)へ接続
  * - ペアリングコマンド + SAS確認ダイアログ
@@ -99,6 +108,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private readonly windowLeasePromise: Promise<IParadisMobileWindowLease>;
 	private readonly rendererReadyPromise: Promise<void>;
 	private previousOnlineMobiles = 0;
+	/** 画面ロック中か（ロック中はアイドル時間の閾値を待たず離席とみなす。PC_AWAY_IDLE_MS参照）。 */
+	private screenLocked = false;
 
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
@@ -127,6 +138,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IParadisTerminalIdentityService terminalIdentityService: IParadisTerminalIdentityService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IHostService private readonly hostService: IHostService,
+		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@ICommandService commandService: ICommandService,
 	) {
 		super();
@@ -155,17 +167,37 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// ウィンドウを閉じるとき、terminal leaseと同時にこのsessionのペイン対応表も破棄する。
 		this._register({ dispose: () => { withWindowLease(lease => this.service.removeTerminalWindow(lease)).catch(() => { }); } });
 
-		// PCフォーカス中はモバイルへの通知配信を抑制する機能（suppressWhenPcFocused）用に、
-		// このウィンドウのフォーカス状態を shared process へ報告する（paradisNotificationTrigger等と
-		// 同じ isVisibleAndFocused 判定: !document.hidden && hostService.hasFocus）。
+		// PC操作中はスマホのバナーを抑制する機能（pcFocusQuiet）用に、このウィンドウの
+		// フォーカス状態を shared process へ報告する（paradisNotificationTrigger等と同じ
+		// isVisibleAndFocused 判定: !document.hidden && hostService.hasFocus）。
 		// イベント駆動の即時報告に加え、定期ハートビートでも再送する
 		// （shared process側はWINDOW_FOCUS_TTL_MSより古い報告を無視する。rendererがクラッシュ等で
 		// disposeを経ずに落ちても、このハートビートが途絶えることで自然に「フォーカス無し」に
 		// 復帰させ、通知が恒久的にサイレント抑制され続けることを防ぐ）。
+		//
+		// フォーカスだけでは足りない: macOSは画面をロックしてもディスプレイをスリープさせても
+		// ウィンドウのフォーカスが外れないため、席を外している間ずっと「PC操作中」に見える。
+		// この抑制は既定オンなので、それは「離席中こそ鳴ってほしい」通知を恒久的に潰すことになる。
+		//
+		// 離席の判定にOSのアイドル時間を使う。renderer内の操作イベントで代用してはいけない:
+		// workbench の `IUserActivityService` は mousedown/keydown/touchstart しか見ず、しかも
+		// `withProgress` が実行中ずっと active ロックを保持するため、長時間走る拡張が1つあるだけで
+		// 「操作中」に張り付く。`getSystemIdleTime()` はOSが持つ本物の無操作時間なので、
+		// バックグラウンド処理では動かず、画面ロックもディスプレイスリープも正しく積算される。
 		const reportPcFocus = () => {
-			const focused = !mainWindow.document.hidden && this.hostService.hasFocus;
-			withCurrentRendererLease(lease => this.service.setPcFocus(lease, focused)).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
+			const visiblyFocused = !mainWindow.document.hidden && this.hostService.hasFocus;
+			if (!visiblyFocused || this.screenLocked) {
+				// ロックは即座に離席とみなす（アイドル時間の閾値を待たない）。
+				withCurrentRendererLease(lease => this.service.setPcFocus(lease, false)).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
+				return;
+			}
+			this.nativeHostService.getSystemIdleTime().then(idleSeconds => {
+				const focused = idleSeconds * 1000 <= PC_AWAY_IDLE_MS;
+				return withCurrentRendererLease(lease => this.service.setPcFocus(lease, focused));
+			}).catch(err => this.logService.warn('[paradisMobileRelay] setPcFocus failed', err));
 		};
+		this._register(this.nativeHostService.onDidLockScreen(() => { this.screenLocked = true; reportPcFocus(); }));
+		this._register(this.nativeHostService.onDidUnlockScreen(() => { this.screenLocked = false; reportPcFocus(); }));
 		this._register(this.hostService.onDidChangeFocus(() => reportPcFocus()));
 		this._register(dom.addDisposableListener(mainWindow.document, 'visibilitychange', () => reportPcFocus()));
 		const focusHeartbeat = this._register(new IntervalTimer());

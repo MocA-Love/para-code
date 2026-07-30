@@ -62,7 +62,7 @@ export default function SettingsScreen() {
 					<View style={styles.row}>
 						<View style={styles.rowBody}>
 							<Text style={styles.rowTitle}>作業完了を通知</Text>
-							<Text style={styles.rowDesc}>エージェントの作業が終わったときに通知します</Text>
+							<Text style={styles.rowDesc}>エージェントの作業が終わったときにバナーを出します</Text>
 						</View>
 						<Switch
 							value={notifyPrefs.agentDone}
@@ -74,7 +74,7 @@ export default function SettingsScreen() {
 					<View style={styles.row}>
 						<View style={styles.rowBody}>
 							<Text style={styles.rowTitle}>質問を通知</Text>
-							<Text style={styles.rowDesc}>エージェントから質問・承認要求があったときに通知します</Text>
+							<Text style={styles.rowDesc}>エージェントから質問・承認要求があったときにバナーを出します</Text>
 						</View>
 						<Switch
 							value={notifyPrefs.agentQuestion}
@@ -85,8 +85,8 @@ export default function SettingsScreen() {
 					<View style={styles.separator} />
 					<View style={styles.row}>
 						<View style={styles.rowBody}>
-							<Text style={styles.rowTitle}>PC作業中は通知しない</Text>
-							<Text style={styles.rowDesc}>PCの画面を見ている間はこのアプリへ通知を送りません</Text>
+							<Text style={styles.rowTitle}>PC作業中は鳴らさない</Text>
+							<Text style={styles.rowDesc}>PCを操作している間はバナーを出しません</Text>
 						</View>
 						<Switch
 							value={notifyPrefs.suppressWhenPcFocused}
@@ -96,7 +96,7 @@ export default function SettingsScreen() {
 					</View>
 				</View>
 				<Text style={styles.note}>
-					OFFにするとバナー通知が止まります（アプリ内の通知一覧には残ります）。「PC作業中は通知しない」がONの間は、PCの画面を見ている間に発生した通知はこのアプリに一切届きません。
+					どれもバナーを止めるだけで、通知そのものは届きます（ホーム右上のベルからあとで読み返せます）。このアプリでそのエージェントの画面を開いている間も、同じ内容のバナーは出しません。
 				</Text>
 
 				<Text style={styles.sectionTitle}>このアプリについて</Text>
