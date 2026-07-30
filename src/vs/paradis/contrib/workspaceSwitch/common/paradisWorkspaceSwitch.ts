@@ -366,6 +366,45 @@ export interface IParadisTerminalScopeService {
 export const IParadisAgentStatusStore = createDecorator<IParadisAgentStatusStore>('paradisAgentStatusStore');
 
 /**
+ * 集計・表示順の優先度 (Superset の STATUS_PRIORITY と同方針: 要対応が最強)。
+ * スコープ集約値の決定と、ビューのドット列の並び順の双方がこの1つの定義を使う。
+ */
+export const PARADIS_AGENT_STATUS_PRIORITY: Record<ParadisAgentStatus, number> = {
+	permission: 4,
+	question: 3,
+	working: 2,
+	review: 1,
+};
+
+/**
+ * スコープ内の内訳から、行の左アイコンが出す代表値 (最も注意が必要な状態) を選ぶ。
+ * 内訳が空なら undefined (＝状態表示なし)。
+ */
+export function paradisAggregateAgentStatus(statuses: readonly ParadisAgentStatus[]): ParadisAgentStatus | undefined {
+	let aggregated: ParadisAgentStatus | undefined;
+	for (const status of statuses) {
+		// 状態は IPC 越しの文字列なので、バージョン差で未知の値が届き得る。優先度が引けない値を
+		// そのまま比べると (undefined との比較が常に false になり) 先頭の未知値が代表値に
+		// 居座って本物の要対応を隠すため、ここで捨てる
+		if (PARADIS_AGENT_STATUS_PRIORITY[status] === undefined) {
+			continue;
+		}
+		if (aggregated === undefined || PARADIS_AGENT_STATUS_PRIORITY[status] > PARADIS_AGENT_STATUS_PRIORITY[aggregated]) {
+			aggregated = status;
+		}
+	}
+	return aggregated;
+}
+
+/**
+ * ドット列の並び順 (要対応 → 動作中 → 完了)。打ち切りが起きたときに
+ * 消えるのが常に優先度の低いものになるよう、表示前に必ずこの順へ整える。
+ */
+export function paradisSortAgentStatuses(statuses: readonly ParadisAgentStatus[]): ParadisAgentStatus[] {
+	return [...statuses].sort((a, b) => PARADIS_AGENT_STATUS_PRIORITY[b] - PARADIS_AGENT_STATUS_PRIORITY[a]);
+}
+
+/**
  * スコープ (状態キー) ごとのエージェント実行状態ストア。
  * 書き込みは electron-browser のポーラー (shared process の /agent-hook 通知を集計) が行い、
  * Workspaces ビュー (browser 層) はここから読むだけ。Web ビルドでは常に空。
@@ -373,7 +412,14 @@ export const IParadisAgentStatusStore = createDecorator<IParadisAgentStatusStore
 export interface IParadisAgentStatusStore {
 	readonly _serviceBrand: undefined;
 	readonly onDidChangeAgentStatuses: Event<void>;
+	/** スコープの代表値 (内訳のうち最も注意が必要なもの)。 */
 	getScopeStatus(stateKey: string): ParadisAgentStatus | undefined;
+	/**
+	 * スコープ内で動いている各エージェントの状態 (集約前)。優先度の降順。
+	 * Workspaces ビューのドット列が「1体終わっても他が動いていると完了が見えない」
+	 * 集約の弱点を埋めるために使う。
+	 */
+	getScopeBreakdown(stateKey: string): readonly ParadisAgentStatus[];
 	/**
 	 * ターミナルインスタンス単体のエージェント実行状態（スコープ集約前のペイン単位の値）。
 	 * モバイルのホーム一覧・Live Activity 用: スコープ集約値を使うと同スコープの
@@ -382,8 +428,8 @@ export interface IParadisAgentStatusStore {
 	getInstanceStatus(instanceId: number): ParadisAgentStatus | undefined;
 	/** そのインスタンスでエージェントCLIが動いた実績（hook発火）があるか。 */
 	isAgentInstance(instanceId: number): boolean;
-	/** ポーラー専用 */
-	setScopeStatuses(statuses: Map<string, ParadisAgentStatus>): void;
+	/** ポーラー専用。代表値は内訳から導出するため、書き込みは内訳のみで行う */
+	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void;
 	/** ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新） */
 	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void;
 }

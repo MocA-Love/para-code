@@ -42,7 +42,7 @@ import { IThemeService } from '../../../../platform/theme/common/themeService.js
 import { IViewPaneOptions, ViewPane } from '../../../../workbench/browser/parts/views/viewPane.js';
 import { IViewDescriptorService } from '../../../../workbench/common/views.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_COLORS, paradisAggregateAgentStatus, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
@@ -139,22 +139,96 @@ function revealLabel(): string {
 			: localize('paradis.workspaceSwitch.revealLinux', "Open Containing Folder");
 }
 
+/** ドット列に並べる上限。これを超えた分は「+n」に畳む (狭いサイドバーで溢れさせない) */
+const MAX_STATUS_DOTS = 5;
+
 /**
  * エージェント実行状態に応じたアイコンを適用する (Superset の WorkspaceIcon 相当)。
- * working = スピナー / permission = 赤の脈動ドット / review = 緑ドット / なし = 通常アイコン
+ * working = 橙のゆっくり明滅 / permission = 赤の脈動ドット / review = 緑ドット / なし = 通常アイコン
+ *
+ * working を回転 (codicon-modifier-spin) ではなくゆっくりした明滅にしているのは、
+ * 複数スペースが同時に動く使い方では回転が常時視界に入り続けて疲れるため。
+ * 速い脈動は「人間の対応待ち」だけに残し、動作中とは速度で区別する。
  */
 function applyStatusIcon(iconElement: HTMLElement, status: ParadisAgentStatus | undefined, fallback: ThemeIcon): void {
-	const icon = status === 'working' ? Codicon.loading
-		: status === 'permission' || status === 'question' || status === 'review' ? Codicon.circleFilled
-			: fallback;
+	const icon = status === undefined ? fallback : Codicon.circleFilled;
 	iconElement.className = `codicon ${ThemeIcon.asClassName(icon).replace('codicon ', '')}`;
-	if (status === 'working') {
-		iconElement.classList.add('codicon-modifier-spin', 'paradis-status-working');
-	} else if (status === 'permission' || status === 'question') {
-		// 質問(AskUserQuestion)も許可要求と同じ「人間の対応が必要」= 赤の脈動表示
-		iconElement.classList.add('paradis-status-permission');
-	} else if (status === 'review') {
-		iconElement.classList.add('paradis-status-review');
+	if (status !== undefined) {
+		iconElement.classList.add(statusColorClass(status));
+	}
+}
+
+/**
+ * 状態 → ドット/アイコンに付ける色クラス。
+ * 質問(AskUserQuestion)も許可要求と同じ「人間の対応が必要」= 赤の脈動表示にする。
+ * default を置かず網羅させることで、状態の種類が増えたときにコンパイラが漏れを教える。
+ */
+function statusColorClass(status: ParadisAgentStatus): string {
+	switch (status) {
+		case 'working': return 'paradis-status-working';
+		case 'review': return 'paradis-status-review';
+		case 'permission':
+		case 'question': return 'paradis-status-permission';
+	}
+}
+
+/** ドット1個を、既にある要素を使い回して更新する (無ければ作る)。 */
+function updateStatusDot(container: HTMLElement, index: number, status: ParadisAgentStatus): void {
+	const existing = container.children.item(index);
+	const dot = DOM.isHTMLElement(existing) ? existing : DOM.append(container, DOM.$('.paradis-agent-dot'));
+	dot.className = `paradis-agent-dot ${statusColorClass(status)}`;
+}
+
+/**
+ * スコープ内の各エージェントの状態を、1体につき1つのドットとして描く。
+ * 集約アイコン (行の左) だけでは「1体終わっても他が動いている限り完了が見えない」ため、
+ * 内訳をここで出す。並びは優先度の降順で、上限を超えた分は「+n」に畳む。
+ *
+ * 要素は作り直さず使い回す: clearNode してから作り直すと、再描画のたびに
+ * 明滅アニメーションが先頭へ巻き戻り、無関係なスペースの状態が変わるだけで
+ * 一覧全体のドットが明るさを飛ばしてしまう (落ち着いた明滅という狙いと逆になる)。
+ */
+function renderStatusDots(container: HTMLElement, statuses: readonly ParadisAgentStatus[]): void {
+	container.classList.toggle('hidden', statuses.length === 0);
+	const shown = Math.min(statuses.length, MAX_STATUS_DOTS);
+	for (let index = 0; index < shown; index++) {
+		updateStatusDot(container, index, statuses[index]);
+	}
+	// 余った分 (ドット / 「+n」ラベル) だけを取り除く
+	while (container.childElementCount > shown) {
+		container.lastElementChild?.remove();
+	}
+	if (statuses.length > shown) {
+		DOM.append(container, DOM.$('span.paradis-agent-dot-more')).textContent = `+${statuses.length - shown}`;
+	}
+}
+
+/** 状態ごとの件数 (優先度の高い順)。0件の種別は含めない。 */
+function statusCounts(statuses: readonly ParadisAgentStatus[]): [ParadisAgentStatus, number][] {
+	const counts = new Map<ParadisAgentStatus, number>();
+	for (const status of paradisSortAgentStatuses(statuses)) {
+		counts.set(status, (counts.get(status) ?? 0) + 1);
+	}
+	return [...counts];
+}
+
+/** ドット列・見出し要約のホバー説明 (「動作中 2 / 完了 1」)。 */
+function agentStatusSummaryTooltip(statuses: readonly ParadisAgentStatus[]): string {
+	const parts = statusCounts(statuses).map(([status, count]) =>
+		localize('paradis.agentStatus.countEntry', "{0} {1}", statusLabel(status), count));
+	return parts.join(localize('paradis.agentStatus.separator', " / "));
+}
+
+function statusLabel(status: ParadisAgentStatus): string {
+	switch (status) {
+		// allow-any-unicode-next-line
+		case 'working': return localize('paradis.agentStatus.working', "動作中");
+		// allow-any-unicode-next-line
+		case 'review': return localize('paradis.agentStatus.review', "完了");
+		// allow-any-unicode-next-line
+		case 'question': return localize('paradis.agentStatus.question', "質問中");
+		// allow-any-unicode-next-line
+		case 'permission': return localize('paradis.agentStatus.permission', "許可待ち");
 	}
 }
 
@@ -162,7 +236,36 @@ interface IRepositoryTemplateData {
 	readonly row: HTMLElement;
 	readonly name: HTMLElement;
 	readonly count: HTMLElement;
+	/**
+	 * 折りたたみ中に配下のエージェント状態を件数で示すバッジ。折りたたむと子行ごと
+	 * 状態が見えなくなるため、見出し行だけで中の様子が分かるようにする。
+	 */
+	readonly summary: HTMLElement;
+	readonly summaryHover: IManagedHover;
 	readonly actionBar: ActionBar;
+	readonly templateDisposables: DisposableStore;
+}
+
+/**
+ * 状態ごとの件数を「● 1 ● 3」の形で描く (優先度の高い順、0件の種別は出さない)。
+ * renderStatusDots と同じ理由で、要素は作り直さず使い回す。
+ */
+function renderStatusCounts(container: HTMLElement, statuses: readonly ParadisAgentStatus[]): void {
+	container.classList.toggle('hidden', statuses.length === 0);
+	const counts = statusCounts(statuses);
+	counts.forEach(([status, count], index) => {
+		const existing = container.children.item(index);
+		const group = DOM.isHTMLElement(existing) ? existing : DOM.append(container, DOM.$('.paradis-workspace-summary-group'));
+		if (group.childElementCount === 0) {
+			DOM.append(group, DOM.$('.paradis-agent-dot'));
+			DOM.append(group, DOM.$('span.paradis-workspace-summary-count'));
+		}
+		group.children[0].className = `paradis-agent-dot ${statusColorClass(status)}`;
+		group.children[1].textContent = String(count);
+	});
+	while (container.childElementCount > counts.length) {
+		container.lastElementChild?.remove();
+	}
 }
 
 interface IWorktreeTemplateData {
@@ -170,6 +273,13 @@ interface IWorktreeTemplateData {
 	readonly icon: HTMLElement;
 	readonly name: HTMLElement;
 	readonly branch: HTMLElement;
+	/**
+	 * 行の右端は上下2段。上段は「自分が抱えているもの」(エージェントの状態・未完了メモ)、
+	 * 下段は「コードとGitHubの状態」(PR・差分)。44pxの1段に5要素を横並びにすると
+	 * 名前とブランチの幅が食い潰されるため、2段へ分けている。
+	 */
+	readonly dots: HTMLElement;
+	readonly dotsHover: IManagedHover;
 	readonly pr: HTMLElement;
 	readonly prIcon: HTMLElement;
 	readonly prNumber: HTMLElement;
@@ -280,21 +390,35 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 
 	constructor(
 		private readonly onCreateWorktree: (repository: IParadisWorkspaceRepository) => void,
+		/** 配下スペースのエージェント状態をまとめたもの (折りたたみ中の要約に使う) */
+		private readonly getRepositoryBreakdown: (repository: IParadisWorkspaceRepository) => readonly ParadisAgentStatus[],
+		private readonly hoverService: IHoverService,
 	) { }
 
 	renderTemplate(container: HTMLElement): IRepositoryTemplateData {
+		const templateDisposables = new DisposableStore();
 		const row = DOM.append(container, DOM.$('.paradis-workspace-row'));
 		const name = DOM.append(row, DOM.$('.paradis-workspace-name'));
 		const count = DOM.append(row, DOM.$('.paradis-workspace-count'));
+		const summary = DOM.append(row, DOM.$('.paradis-workspace-summary'));
+		const summaryHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), summary, ''));
 		const actionsContainer = DOM.append(row, DOM.$('.paradis-workspace-actions'));
 		const actionBar = new ActionBar(actionsContainer);
-		return { row, name, count, actionBar };
+		return { row, name, count, summary, summaryHover, actionBar, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorkspaceRepository, FuzzyScore>, _index: number, templateData: IRepositoryTemplateData): void {
 		const repository = node.element;
 		templateData.name.textContent = repository.name;
 		templateData.count.textContent = String(node.children.length);
+
+		// 展開中は各行がドット列を持っているので、要約は折りたたみ中だけ出す
+		const breakdown = node.collapsed ? this.getRepositoryBreakdown(repository) : [];
+		renderStatusCounts(templateData.summary, breakdown);
+		const summaryTooltip = agentStatusSummaryTooltip(breakdown);
+		templateData.summaryHover.update(summaryTooltip);
+		// ドットは色と明滅だけで状態を表すので、支援技術向けに同じ内容を文字でも持たせる
+		templateData.summary.ariaLabel = summaryTooltip;
 
 		// Superset と同じ固定パレットの色を行左端の色バーに反映する。
 		// 色バーは chevron より左に置くため .monaco-tl-row の ::before で描画し、
@@ -316,6 +440,7 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 
 	disposeTemplate(templateData: IRepositoryTemplateData): void {
 		templateData.actionBar.dispose();
+		templateData.templateDisposables.dispose();
 	}
 }
 
@@ -326,7 +451,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 
 	constructor(
 		private readonly isActive: (worktree: IParadisWorktree) => boolean,
-		private readonly getStatus: (stateKey: string) => ParadisAgentStatus | undefined,
+		private readonly getBreakdown: (stateKey: string) => readonly ParadisAgentStatus[],
 		private readonly getDiffStat: (worktree: IParadisWorktree) => IParadisDiffStat | undefined,
 		private readonly getPrStatus: (worktree: IParadisWorktree) => IParadisPrStatus | undefined,
 		private readonly getNoteSummary: (worktree: IParadisWorktree) => IParadisSpaceNoteSummary,
@@ -349,9 +474,16 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		const labels = DOM.append(row, DOM.$('.paradis-worktree-labels'));
 		const name = DOM.append(labels, DOM.$('.paradis-worktree-name'));
 		const branch = DOM.append(labels, DOM.$('.paradis-worktree-branch'));
+		// 右端の2段。上段 = エージェントのドット列 + メモ、下段 = PR チップ + 差分
+		const stack = DOM.append(row, DOM.$('.paradis-worktree-stack'));
+		const upperTier = DOM.append(stack, DOM.$('.paradis-worktree-tier'));
+		const lowerTier = DOM.append(stack, DOM.$('.paradis-worktree-tier'));
+		// スコープ内のエージェント1体につき1つのドット (集約アイコンでは消えてしまう内訳を出す)
+		const dots = DOM.append(upperTier, DOM.$('.paradis-worktree-dots'));
+		const dotsHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), dots, ''));
 		// ブランチに紐づく GitHub PR のチップ (Superset の WorkspaceStatusBadge 相当)。
 		// クリックは行の切り替えではなく PR ページを開くため、リスト側のハンドラへ届く前に止める
-		const pr = DOM.append(row, DOM.$('.paradis-worktree-pr'));
+		const pr = DOM.append(lowerTier, DOM.$('.paradis-worktree-pr'));
 		const prIcon = DOM.append(pr, DOM.$('.codicon'));
 		const prNumber = DOM.append(pr, DOM.$('span.paradis-worktree-pr-number'));
 		const prContext: { url?: string } = {};
@@ -368,12 +500,12 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		}
 		const prHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pr, ''));
 		// メモの未完了件数。行の情報量を増やしすぎないよう、未完了が1件以上あるときだけ出す
-		const note = DOM.append(row, DOM.$('.paradis-worktree-note'));
+		const note = DOM.append(upperTier, DOM.$('.paradis-worktree-note'));
 		const noteIcon = DOM.append(note, DOM.$('.codicon'));
 		noteIcon.className = `codicon ${ThemeIcon.asClassName(Codicon.checklist).replace('codicon ', '')}`;
 		const noteCount = DOM.append(note, DOM.$('span.paradis-worktree-note-count'));
 		const noteHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), note, ''));
-		const diff = DOM.append(row, DOM.$('.paradis-worktree-diff'));
+		const diff = DOM.append(lowerTier, DOM.$('.paradis-worktree-diff'));
 		const diffAdded = DOM.append(diff, DOM.$('span.paradis-worktree-diff-added'));
 		const diffRemoved = DOM.append(diff, DOM.$('span.paradis-worktree-diff-removed'));
 		// ピンの留め外し。PR チップと同じく、行のクリック (切り替え) へ届く前に止める
@@ -392,7 +524,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			}));
 		}
 		const pinHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pin, ''));
-		return { row, icon, name, branch, pr, prIcon, prNumber, prHover, prContext, note, noteCount, noteHover, diff, diffAdded, diffRemoved, pin, pinIcon, pinHover, pinContext, templateDisposables };
+		return { row, icon, name, branch, dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, note, noteCount, noteHover, diff, diffAdded, diffRemoved, pin, pinIcon, pinHover, pinContext, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
@@ -400,9 +532,18 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		const active = this.isActive(worktree);
 		// 作成直後で setup 等がまだ走っている間は、エージェント状態の有無に関わらず稼働中として見せる
 		const pendingStage = worktree.missing ? undefined : this.getPendingStage(worktree);
-		const status = worktree.missing ? undefined : pendingStage !== undefined ? 'working' : this.getStatus(worktreeStateKeyFor(worktree));
+		// 作成中は実際のエージェント状態がまだ無いので、1体が動いている扱いで見せる
+		const breakdown: readonly ParadisAgentStatus[] = worktree.missing ? []
+			: pendingStage !== undefined ? ['working']
+				: this.getBreakdown(worktreeStateKeyFor(worktree));
+		const status = paradisAggregateAgentStatus(breakdown);
 		const fallback = worktree.missing ? Codicon.warning : active ? Codicon.check : worktree.isMainCheckout ? Codicon.repo : Codicon.gitBranch;
 		applyStatusIcon(templateData.icon, status, fallback);
+		renderStatusDots(templateData.dots, breakdown);
+		const dotsTooltip = agentStatusSummaryTooltip(breakdown);
+		templateData.dotsHover.update(dotsTooltip);
+		// ドットは色と明滅だけで状態を表すので、支援技術向けに同じ内容を文字でも持たせる
+		templateData.dots.ariaLabel = dotsTooltip;
 		templateData.name.textContent = worktree.name;
 		templateData.branch.textContent = worktree.missing
 			? localize('paradis.workspaceSwitch.worktreeMissing', "missing")
@@ -658,13 +799,15 @@ export class ParadisWorkspacesView extends ViewPane {
 				this.updateTree();
 			}
 		}));
-		const getStatus = (stateKey: string) => this.agentStatusStore.getScopeStatus(stateKey);
+		const getBreakdown = (stateKey: string) => this.agentStatusStore.getScopeBreakdown(stateKey);
 		const repositoryRenderer = new RepositoryRenderer(
-			repository => this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', repository.id)
+			repository => this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', repository.id),
+			repository => this.repositoryBreakdown(repository),
+			this.hoverService
 		);
 		const worktreeRenderer = new WorktreeRenderer(
 			worktree => this.workspaceSwitchService.activeStateKey === worktreeStateKeyFor(worktree),
-			getStatus,
+			getBreakdown,
 			worktree => this._diffStats.get(worktree.uri.fsPath),
 			worktree => this._prStatuses.get(worktree.uri.fsPath),
 			worktree => this.spaceNotesService.summary(worktreeStateKeyFor(worktree)),
@@ -959,6 +1102,41 @@ export class ParadisWorkspacesView extends ViewPane {
 		}
 		this.tree.setChildren(null, elements);
 		this._onDidChangeViewWelcomeState.fire();
+	}
+
+	/**
+	 * リポジトリ配下 (main checkout + 各 worktree + 作成中ジョブ) のエージェント状態をまとめる。
+	 * 折りたたみ中の見出し行に出す要約用。
+	 *
+	 * ピン留めの控え行として見えているスペースも数に含める。要約は「このリポジトリ全体で
+	 * 何体動いているか」を示すものなので、控え行のドットと重複して見えるのは意図どおり
+	 * (除外すると、見出しの合計と展開後の内訳が食い違って読み手が混乱する)。
+	 */
+	private repositoryBreakdown(repository: IParadisWorkspaceRepository): readonly ParadisAgentStatus[] {
+		const statuses: ParadisAgentStatus[] = [];
+		// 各行の表示と同じ判定にする (作成中の行は実状態の代わりに「動作中1体」として数える)
+		const collect = (stateKey: string) => {
+			if (this.createProgressStore.jobs.some(job => job.stateKey === stateKey)) {
+				statuses.push('working');
+				return;
+			}
+			statuses.push(...this.agentStatusStore.getScopeBreakdown(stateKey));
+		};
+		collect(repository.id);
+		for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+			if (!worktree.missing) {
+				// 行側と同じキー導出を使う (getWorktrees は main checkout を含まないが、
+				// 将来含むようになったときに要約だけが別のキーを引いてズレないようにする)
+				collect(worktreeStateKeyFor(worktree));
+			}
+		}
+		// まだ実体が無い作成中ジョブ (専用の「作成中」行として出ているもの)
+		for (const job of this.createProgressStore.jobs) {
+			if (job.repositoryId === repository.id && job.stateKey === undefined) {
+				statuses.push('working');
+			}
+		}
+		return paradisSortAgentStatuses(statuses);
 	}
 
 	/**

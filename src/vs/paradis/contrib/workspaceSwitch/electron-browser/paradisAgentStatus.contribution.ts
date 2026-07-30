@@ -29,14 +29,6 @@ import { ParadisAgentTokenScopeMemory, paradisShouldClearAgentStatusAfterPollFai
 import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 
-/** 集計時の優先度 (Superset の STATUS_PRIORITY と同方針: 要対応が最強) */
-const STATUS_PRIORITY: Record<ParadisAgentStatus, number> = {
-	permission: 4,
-	question: 3,
-	working: 2,
-	review: 1,
-};
-
 const POLL_INTERVAL = 2000;
 
 /**
@@ -48,7 +40,9 @@ const POLL_INTERVAL = 2000;
  *   即確認遷移 (acknowledge) して表示しない (Superset の「可視なら Stop→idle、不可視なら
  *   review 維持」と同じ挙動)。非フォーカス時に acknowledge すると ParadisNotificationTrigger
  *   の遷移検知 (音+OS通知+Aivis) を先食いして握り潰してしまうため
- * - スコープ内に複数エージェントが居る場合は優先度 permission > working > review で畳み込む
+ * - スコープ内に複数エージェントが居る場合も畳み込まず、内訳をそのまま書き込む。
+ *   代表値 (行の左アイコン) はストア側が優先度 permission > question > working > review で導く。
+ *   畳み込んだ値だけを持つと「1体終わっても他が動いている限り完了が表示から消える」ため
  */
 class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribution {
 
@@ -169,7 +163,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 			this.logService.trace('[ParadisAgentStatus] poll failed', String(error));
 			this.consecutivePollFailures++;
 			if (paradisShouldClearAgentStatusAfterPollFailures(this.consecutivePollFailures)) {
-				this.statusStore.setScopeStatuses(new Map());
+				this.statusStore.setScopeBreakdowns(new Map());
 				this.statusStore.setInstanceStates(new Map(), new Set());
 			}
 			return; // shared process 未起動 (起動直後の20〜30秒) は静かにスキップ
@@ -181,7 +175,8 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		this.tokenScopeMemory.prune(new Set(statuses.map(status => status.token)));
 
 		const activeStateKey = this.workspaceSwitchService.activeStateKey;
-		const scopeStatuses = new Map<string, ParadisAgentStatus>();
+		// スコープ内で動いている各エージェントの状態を畳まずに集める (ビューのドット列用)
+		const scopeBreakdowns = new Map<string, ParadisAgentStatus[]>();
 		// ペイン単位の状態（スコープ集約前）。モバイルのホーム一覧・Live Activity が
 		// 「そのターミナル自身の状態」を表示するために使う。
 		const instanceStatuses = new Map<number, ParadisAgentStatus>();
@@ -237,13 +232,15 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 				continue;
 			}
 
-			const previous = scopeStatuses.get(stateKey);
-			if (!previous || STATUS_PRIORITY[paneStatus.status] > STATUS_PRIORITY[previous]) {
-				scopeStatuses.set(stateKey, paneStatus.status);
+			const breakdown = scopeBreakdowns.get(stateKey);
+			if (breakdown) {
+				breakdown.push(paneStatus.status);
+			} else {
+				scopeBreakdowns.set(stateKey, [paneStatus.status]);
 			}
 		}
 
-		this.statusStore.setScopeStatuses(scopeStatuses);
+		this.statusStore.setScopeBreakdowns(scopeBreakdowns);
 		this.statusStore.setInstanceStates(instanceStatuses, agentInstanceIds);
 	}
 }
