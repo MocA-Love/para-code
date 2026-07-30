@@ -29,7 +29,7 @@ import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../p
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
-import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -232,7 +232,7 @@ const TOOLS = [
 	},
 	{
 		name: 'preview_file',
-		description: 'Open a file in the Para Code window that owns this terminal pane, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path.',
+		description: 'Open a file in the Para Code space that this terminal pane belongs to, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path. If the user is currently looking at a different space, the file is queued and opens when they switch back, so it never interrupts the space on screen.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -2226,6 +2226,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * `preview_file` ツールの実体。呼び出し元ペインのウィンドウを `_paneShells` で特定し、
 	 * そのウィンドウが登録した {@link PARADIS_AGENT_PREVIEW_CHANNEL} 経由でエディタを開かせる。
 	 * ページ共有（bind）とは独立して、ペイントークンだけで最初から使える。
+	 *
+	 * ウィンドウ内のどのスペースへ開くかは renderer 側の責務（ウィンドウ粒度のルーティングでは
+	 * スペースの取り違えを防げない）。ここではトークンを渡し、renderer が返した構造化された
+	 * 状態（`reason` / `deferred`）だけを定型文へ翻訳する。renderer は内部情報を含み得る
+	 * 文字列を一切返さない（失敗の詳細は renderer 側の log に残る）。
 	 */
 	private async _previewFile(ingressLease: IParadisAgentBrowserIngressLease, path: string | undefined, signal?: AbortSignal): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
@@ -2235,7 +2240,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		const call = await this._callOwningWindow<IParadisPreviewFileResult>(ingressLease, {
 			channelName: PARADIS_AGENT_PREVIEW_CHANNEL,
 			method: 'previewFile',
-			args: [path],
+			// トークンはウィンドウ内で「どのスペースへ開くか」を解くためだけに渡す
+			args: [ingressLease.token, path],
 			failureLabel: 'preview_file',
 			failureMessage: 'Failed to open the file in Para Code.',
 		}, signal);
@@ -2243,9 +2249,50 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._toolError(call.error);
 		}
 		if (!call.value.ok) {
-			return this._toolError('Failed to open the file in Para Code.');
+			return this._toolError(this._previewFailureMessage(call.value.reason));
 		}
-		return this._toolText(`Opened ${path} in the Para Code window that owns this terminal pane.`);
+		if (call.value.deferred) {
+			const space = this._describeSpace(call.value.spaceName);
+			return this._toolText(`The user is looking at a different space right now, so ${path} was not opened yet: Para Code queued it for ${space ?? 'the space this terminal pane belongs to'} and it opens as soon as the user switches back. Nothing was shown on screen, so do not assume the user has seen the file.`);
+		}
+		return this._toolText(`Opened ${path} in the Para Code space that owns this terminal pane.`);
+	}
+
+	/**
+	 * renderer が返した既知の失敗理由を、LLM がそのまま読める英語メッセージへ翻訳する。
+	 * 理由なしだけを先に返して switch を網羅させ、理由が増えたら型で気付けるようにしている
+	 * （`noImplicitReturns` により、case を足し忘れると戻り値の無い経路として弾かれる）。
+	 */
+	private _previewFailureMessage(reason: ParadisPreviewFileFailure | undefined): string {
+		if (reason === undefined) {
+			return 'Failed to open the file in Para Code.';
+		}
+		switch (reason) {
+			case 'switching':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is switching spaces right now, so the file was not opened. Retry in a moment.';
+			case 'paneUnresolved':
+				return 'PARA_BROWSER_RETRYABLE: Para Code is still restoring this terminal pane, so it cannot tell which space to open the file in. Retry in a few seconds.';
+			case 'unreachableSpace':
+				return 'The space this terminal pane belongs to can no longer be opened in Para Code (its repository or worktree is gone from the list), so there is nowhere to show the file. Tell the user the path instead.';
+		}
+	}
+
+	/**
+	 * renderer が返したスペース表示名（ユーザーが付けたリポジトリ名 / worktree 名）を、
+	 * 応答文へ埋められる1行の語句にする。制御文字を落として空白を畳み、長すぎる名前は
+	 * サロゲートペアの途中で割らないよう文字単位で切る。
+	 */
+	private _describeSpace(name: string | undefined): string | undefined {
+		if (name === undefined) {
+			return undefined;
+		}
+		const flattened = name.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim().replace(/\s+/g, ' ');
+		if (flattened.length === 0) {
+			return undefined;
+		}
+		const characters = Array.from(flattened);
+		const clipped = characters.length > 80 ? `${characters.slice(0, 80).join('')}...` : flattened;
+		return `the "${clipped}" space`;
 	}
 
 	/**

@@ -168,14 +168,37 @@ export const PARADIS_CDP_TARGET_CHANNEL = 'paradisCdpTarget';
  */
 export const PARADIS_AGENT_PREVIEW_CHANNEL = 'paradisAgentPreview';
 
+/** `previewFile` が開けなかった既知の理由。shared process 側が定型文へ翻訳する。 */
+export type ParadisPreviewFileFailure =
+	/** スペース切り替えの最中。再試行すれば通る。 */
+	| 'switching'
+	/** 呼び出し元ペインがまだこのウィンドウの台帳に載っていない（リロード直後の復元中など）。再試行すれば通る。 */
+	| 'paneUnresolved'
+	/** 呼び出し元ペインのスペースへユーザーが到達できない（実体を失った worktree など）。再試行しても変わらない。 */
+	| 'unreachableSpace';
+
 /**
  * {@link PARADIS_AGENT_PREVIEW_CHANNEL} の `previewFile` 呼び出し結果。
- * error は LLM がそのまま読む英語メッセージ。
+ *
+ * renderer 内部の例外やパスが LLM へ漏れないよう、**文字列の理由は一切返さない**。
+ * shared process 側が定型文へ翻訳できる構造化された状態だけを返し、失敗の詳細は
+ * renderer 側の log に残す。
  */
-export interface IParadisPreviewFileResult {
-	readonly ok: boolean;
-	readonly error?: string;
-}
+export type IParadisPreviewFileResult =
+	| {
+		readonly ok: true;
+		/**
+		 * 呼び出し元ペインのスペースが画面に出ていなかったため、そのスペースへ戻ったときに
+		 * 開くよう予約したことを表す（この時点では何も開いていない）。
+		 */
+		readonly deferred?: boolean;
+		/** deferred のときの予約先スペースの表示名。ユーザーが付けた名前そのままで、均していない。 */
+		readonly spaceName?: string;
+	}
+	| {
+		readonly ok: false;
+		readonly reason?: ParadisPreviewFileFailure;
+	};
 
 /**
  * electron-main のフレーム購読(beginFrameSubscription)が発火する1フレーム

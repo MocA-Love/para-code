@@ -1041,6 +1041,72 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(response.endCalls, 1);
 	});
 
+	test('tells the caller a preview was queued for a space that is not on screen', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		Reflect.set(fixture.service, 'ipcServer', {
+			connections: [{ ctx: 'window:1' }],
+			getChannel: () => ({ call: async () => ({ ok: true, deferred: true, spaceName: 'Design\nSystem' }) }),
+		});
+		const request = new TestRequest('POST', '/?pane=token');
+		const response = new TestResponse();
+		const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+
+		request.emit('data', Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_file","arguments":{"path":"/tmp/example.txt"}}}'));
+		request.emit('end');
+		await pending;
+
+		assert.strictEqual(response.statusCode, 200);
+		// スペース名は1行へ均してから文言に埋める（renderer 由来の生の改行を応答へ通さない）
+		assert.strictEqual(response.body.includes('the \\"Design System\\" space'), true);
+		assert.strictEqual(response.body.includes('do not assume the user has seen the file'), true);
+	});
+
+	test('asks the caller to retry a preview requested during a space switch', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		Reflect.set(fixture.service, 'ipcServer', {
+			connections: [{ ctx: 'window:1' }],
+			getChannel: () => ({ call: async () => ({ ok: false, reason: 'switching', error: 'renderer-private-marker' }) }),
+		});
+		const request = new TestRequest('POST', '/?pane=token');
+		const response = new TestResponse();
+		const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+
+		request.emit('data', Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_file","arguments":{"path":"/tmp/example.txt"}}}'));
+		request.emit('end');
+		await pending;
+
+		assert.strictEqual(response.body.includes('PARA_BROWSER_RETRYABLE'), true);
+		assert.strictEqual(response.body.includes('renderer-private-marker'), false);
+	});
+
+	test('does not ask the caller to retry a preview for a space that cannot be reached', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		Reflect.set(fixture.service, 'ipcServer', {
+			connections: [{ ctx: 'window:1' }],
+			getChannel: () => ({ call: async () => ({ ok: false, reason: 'unreachableSpace' }) }),
+		});
+		const request = new TestRequest('POST', '/?pane=token');
+		const response = new TestResponse();
+		const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+
+		request.emit('data', Buffer.from('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"preview_file","arguments":{"path":"/tmp/example.txt"}}}'));
+		request.emit('end');
+		await pending;
+
+		// 再試行しても状況は変わらないので、retryable マーカーを付けずにユーザーへ伝えさせる
+		assert.strictEqual(response.body.includes('PARA_BROWSER_RETRYABLE'), false);
+		assert.strictEqual(response.body.includes('Tell the user the path instead'), true);
+	});
+
 	test('service disposal aborts a delayed preview without waiting for IPC or mutating a response', async () => {
 		const fixture = createFixture();
 		const connection = {};

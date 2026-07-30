@@ -126,6 +126,39 @@ export function paradisWorktreeStateKey(uri: URI): string {
 	return `worktree:${uri.toString()}`;
 }
 
+/** 状態キーで指せるスペース1件（登録リポジトリ、またはその実在 worktree）。 */
+export interface IParadisSpaceEntry {
+	readonly space: string;
+	readonly name: string;
+	readonly kind: 'repository' | 'worktree';
+}
+
+/**
+ * 状態キーで指せるスペースを Workspaces ビューと同じ順で並べる。実体の無い worktree
+ * (自動削除OFFで台帳にだけ残っているもの) は切り替え先にならないので載せない。
+ */
+export function paradisListSpaces(
+	repositories: readonly IParadisWorkspaceRepository[],
+	worktreeService: IParadisWorktreeService,
+): IParadisSpaceEntry[] {
+	const entries: IParadisSpaceEntry[] = [];
+	for (const repository of repositories) {
+		entries.push({ space: repository.id, name: repository.name, kind: 'repository' });
+		for (const worktree of worktreeService.getWorktrees(repository.id)) {
+			if (worktree.missing) {
+				continue;
+			}
+			entries.push({
+				space: paradisWorktreeStateKey(worktree.uri),
+				// allow-any-unicode-next-line
+				name: `${repository.name} ✦ ${worktree.name}`,
+				kind: 'worktree',
+			});
+		}
+	}
+	return entries;
+}
+
 // --- ターミナルスコープ / エージェント状態 -------------------------------------------------------
 
 export const IParadisTerminalScopeService = createDecorator<IParadisTerminalScopeService>('paradisTerminalScopeService');
