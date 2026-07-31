@@ -26,7 +26,7 @@ suite('paradisResolveNotifyDelivery', () => {
 	}
 
 	test('前面のアプリにはフレームだけ送り、プッシュは送らない', () => {
-		assert.deepStrictEqual(paradisResolveNotifyDelivery(input()), { frame: true, quiet: false, push: false });
+		assert.deepStrictEqual(paradisResolveNotifyDelivery(input()), { frame: true, quiet: undefined, push: false });
 	});
 
 	// これが今回直した本体。ソケットは残っているのにアプリが凍っている状態
@@ -35,7 +35,7 @@ suite('paradisResolveNotifyDelivery', () => {
 		assert.deepStrictEqual(
 			paradisResolveNotifyDelivery(input({ msSinceLastInbound: PARADIS_NOTIFY_TRUST_WINDOW_MS + 1 })),
 			// フレームも送る（届けばそのまま通知一覧に入る）。プッシュを送るので鳴らすのは1回だけ。
-			{ frame: true, quiet: true, push: true },
+			{ frame: true, quiet: 'pushed', push: true },
 		);
 	});
 
@@ -50,7 +50,7 @@ suite('paradisResolveNotifyDelivery', () => {
 	test('アプリ未起動（セッション無し）はプッシュだけ', () => {
 		assert.deepStrictEqual(
 			paradisResolveNotifyDelivery(input({ sessionReady: false, msSinceLastInbound: undefined })),
-			{ frame: false, quiet: true, push: true },
+			{ frame: false, quiet: 'pushed', push: true },
 		);
 	});
 
@@ -59,7 +59,7 @@ suite('paradisResolveNotifyDelivery', () => {
 	test('種別オフでもフレームは送る（通知一覧には残す）', () => {
 		assert.deepStrictEqual(
 			paradisResolveNotifyDelivery(input({ kind: 'agent-done', prefs: { agentDone: false, agentQuestion: true, pcFocusQuiet: false } })),
-			{ frame: true, quiet: true, push: false },
+			{ frame: true, quiet: 'muted', push: false },
 		);
 	});
 
@@ -78,7 +78,7 @@ suite('paradisResolveNotifyDelivery', () => {
 	test('PC操作中は鳴らさないが、通知一覧には残す', () => {
 		assert.deepStrictEqual(
 			paradisResolveNotifyDelivery(input({ pcFocused: true, prefs: { pcFocusQuiet: true } })),
-			{ frame: true, quiet: true, push: false },
+			{ frame: true, quiet: 'muted', push: false },
 		);
 	});
 
@@ -107,12 +107,12 @@ suite('paradisResolveNotifyDelivery', () => {
 	// 席を外している前提そのものが崩れる知らせなので、PCフォーカスでは抑制しない。
 	test('エラー・切断はPC操作中でも抑制しない', () => {
 		for (const kind of ['agent-error', 'disconnected'] as const) {
-			assert.strictEqual(paradisResolveNotifyDelivery(input({ kind, pcFocused: true, prefs: { pcFocusQuiet: true } })).quiet, false);
+			assert.strictEqual(paradisResolveNotifyDelivery(input({ kind, pcFocused: true, prefs: { pcFocusQuiet: true } })).quiet, undefined);
 		}
 	});
 
 	test('種別が読めなければ鳴らす側に倒す', () => {
-		assert.strictEqual(paradisResolveNotifyDelivery(input({ kind: undefined, pcFocused: true, prefs: { pcFocusQuiet: true } })).quiet, false);
+		assert.strictEqual(paradisResolveNotifyDelivery(input({ kind: undefined, pcFocused: true, prefs: { pcFocusQuiet: true } })).quiet, undefined);
 	});
 });
 

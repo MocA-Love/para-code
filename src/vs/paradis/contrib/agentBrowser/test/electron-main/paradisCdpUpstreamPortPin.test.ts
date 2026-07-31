@@ -120,6 +120,9 @@ suite('ParadisCdpUpstreamPortPin', () => {
 			fetchTargetIds: async () => ['own-window'],
 			ownsTargetId: () => true,
 			timeoutMs: 0,
+			// 検証したいのは「失敗を永久に覚え込まない」こと。待ち時間そのものは次のテストが見るので、
+			// ここでクールダウンを効かせると、実装が正しくても2回目が必ず undefined になってしまう。
+			retryCooldownMs: 0,
 			delay: async () => undefined,
 		});
 
