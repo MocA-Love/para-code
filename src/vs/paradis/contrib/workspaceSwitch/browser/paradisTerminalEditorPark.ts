@@ -8,7 +8,9 @@
 
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
-import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IDeserializedTerminalEditorInput, ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
+import { paradisCurrentRestoreStateKey } from './paradisTerminalEditorRevive.js';
 
 /**
  * エディタエリアのターミナルを Paradis ワークスペース切り替えを跨いで生かすためのパーク台帳 (機能1)。
@@ -34,26 +36,56 @@ import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browse
  * 退役スコープの park インスタンスを特定するにはこの park 時点のタグに頼る。パネル側 _parkedGroups が
  * repositoryId でグループを束ねているのと対称。
  */
-const parkedInstances = new Map<number, { readonly instance: ITerminalInstance; readonly stateKey: string; readonly onDisposedListener: IDisposable }>();
+/**
+ * キーは persistentProcessId ではなく shell integration nonce。
+ *
+ * persistentProcessId は「その pty host 世代の中でしか意味を持たない連番」で、`_lastPtyId` は
+ * pty host が起動し直すたびに 0 から振り直される (ptyService.ts)。一方 working set は
+ * 「そのスコープから離れる時」にしか書き直されないため、訪れていないスペースのスナップショットは
+ * 何世代でも古いままになる。この2つを id で突き合わせると、**別スペースの別ターミナルが
+ * たまたま同じ番号を持っているだけで取り違える**（実機で pty id 37 が2スペースに重複、
+ * 一方は別スペースのエージェント端末だった）。
+ *
+ * nonce は revive を跨いで不変（`_reviveTerminalProcess` が `processLaunchConfig.options` を
+ * そのまま渡し、`_buildProcessDetails` が同じ nonce を返す）ので、世代を跨いでも同一性を保証できる。
+ */
+const parkedInstances = new Map<string, { readonly instance: ITerminalInstance; readonly stateKey: string; readonly onDisposedListener: IDisposable }>();
 
 /**
- * インスタンスを persistentProcessId をキーにパークする。ID未確定のインスタンスは登録しない。
+ * インスタンスを shell integration nonce をキーにパークする。
+ * PTY ID 未確定・非永続・nonce 不正のインスタンスは登録しない。
  * stateKey は park 元スコープ (= 切り替え元の working set を保存したスコープ) の状態キー。
  */
 export function paradisParkTerminalEditorInstance(instance: ITerminalInstance, stateKey: string): boolean {
-	const persistentProcessId = instance.persistentProcessId;
-	if (typeof persistentProcessId !== 'number' || !instance.shouldPersist) {
+	const nonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+	if (typeof instance.persistentProcessId !== 'number' || !instance.shouldPersist || nonce === undefined) {
 		return false;
+	}
+	const existing = parkedInstances.get(nonce);
+	if (existing) {
+		if (existing.instance === instance) {
+			// 同じインスタンスの再 park（stateKey が変わり得る）。下で貼り直すので古い方は畳む。
+			existing.onDisposedListener.dispose();
+			parkedInstances.delete(nonce);
+		} else if (!existing.instance.isDisposed) {
+			// 同じ nonce に別の生存インスタンスが居る = 同一 PTY への二重アタッチが既に起きている。
+			// 黙って上書きすると追い出された側がどの一覧にも属さなくなり、park 台帳からも
+			// unparkEditorTerminals からも retireScope からも回収できない不可視リークになる。
+			// park を断れば、そのインスタンスは呼び出し元の管理下（エディタ入力）に留まる。
+			return false;
+		} else {
+			existing.onDisposedListener.dispose();
+			parkedInstances.delete(nonce);
+		}
 	}
 	// パーク中にプロセスが終了した場合に台帳から漏れないよう掃除する
 	const onDisposedListener = instance.onDisposed(() => {
-		if (parkedInstances.get(persistentProcessId)?.instance === instance) {
-			parkedInstances.delete(persistentProcessId);
+		if (parkedInstances.get(nonce)?.instance === instance) {
+			parkedInstances.delete(nonce);
 		}
 		onDisposedListener.dispose();
 	});
-	parkedInstances.get(persistentProcessId)?.onDisposedListener.dispose();
-	parkedInstances.set(persistentProcessId, { instance, stateKey, onDisposedListener });
+	parkedInstances.set(nonce, { instance, stateKey, onDisposedListener });
 	return true;
 }
 
@@ -69,11 +101,11 @@ export function paradisParkTerminalEditorInstance(instance: ITerminalInstance, s
  */
 export function paradisRetireParkedTerminalEditorInstances(stateKey: string): void {
 	const retiring: ITerminalInstance[] = [];
-	for (const [persistentProcessId, entry] of [...parkedInstances]) {
+	for (const [nonce, entry] of [...parkedInstances]) {
 		if (entry.stateKey !== stateKey) {
 			continue;
 		}
-		parkedInstances.delete(persistentProcessId);
+		parkedInstances.delete(nonce);
 		entry.onDisposedListener.dispose();
 		retiring.push(entry.instance);
 	}
@@ -118,24 +150,42 @@ export function paradisGetParkedTerminalEditorStateKey(instanceId: number): stri
  */
 export function paradisTakeParkedTerminalEditorInstancesForScope(stateKey: string): ITerminalInstance[] {
 	const taken: ITerminalInstance[] = [];
-	for (const [persistentProcessId, entry] of [...parkedInstances]) {
+	for (const [nonce, entry] of [...parkedInstances]) {
 		if (entry.stateKey !== stateKey) {
 			continue;
 		}
-		parkedInstances.delete(persistentProcessId);
+		parkedInstances.delete(nonce);
 		entry.onDisposedListener.dispose();
 		taken.push(entry.instance);
 	}
 	return taken;
 }
 
-/** パーク済みインスタンスを取り出す（一度取り出したら台帳から消え、監視リスナーも解除される）。 */
-export function paradisTakeParkedTerminalEditorInstance(persistentProcessId: number): ITerminalInstance | undefined {
-	const entry = parkedInstances.get(persistentProcessId);
+/**
+ * 直列化されたエディタ入力に対応するパーク済みインスタンスを取り出す
+ * （一度取り出したら台帳から消え、監視リスナーも解除される）。
+ *
+ * 突き合わせは nonce のみで行う。`deserializedInput.id` は保存した世代の pty id で、
+ * 現在の台帳キーとは別の番号空間にあるため、一致しても同一性の証拠にならない。
+ * nonce が無い（型上は必須だが実行時ガードは `'id' in obj && 'pid' in obj` しか見ていない）
+ * 入力は同一性を証明できないので、park を再利用せず通常の attach 経路へ委ねる。
+ */
+export function paradisTakeParkedTerminalEditorInstance(deserializedInput: IDeserializedTerminalEditorInput): ITerminalInstance | undefined {
+	const nonce = paradisTerminalIdentityNonce(deserializedInput.shellIntegrationNonce);
+	if (nonce === undefined) {
+		return undefined;
+	}
+	const entry = parkedInstances.get(nonce);
 	if (!entry) {
 		return undefined;
 	}
-	parkedInstances.delete(persistentProcessId);
+	// nonce は「どの端末か」は証明するが「どのスペースのものか」は証明しない。スペース復元中は
+	// 所有スコープの一致まで要求し、「正しい端末を、間違ったスペースへ出す」を残さない。
+	const expectedStateKey = paradisCurrentRestoreStateKey();
+	if (expectedStateKey !== undefined && entry.stateKey !== expectedStateKey) {
+		return undefined;
+	}
+	parkedInstances.delete(nonce);
 	entry.onDisposedListener.dispose();
 	return entry.instance;
 }

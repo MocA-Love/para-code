@@ -26,6 +26,7 @@ import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
 import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
+import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 
 interface ISerializedRepository {
 	readonly id: string;
@@ -679,7 +680,18 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// まだ開いているため SCM にリポジトリが残留してスコープが漏れる。
 				// 未保存入力はcaptureScopeでretain/detach済みなので、ここでは保存済み入力だけが
 				// upstream Working Setの通常挙動に従って切り替わる。
-				await this.applyWorkingSetFor(stateKey);
+				// working set の deserialize から呼ばれる reviveInput は同期なので、その中から pty host へ
+				// 問い合わせられない。park ループの直後・適用の直前という「park が確定していて、まだ
+				// 誰も revive していない」唯一の窓で孤児 PTY のスナップショットを取り直しておく。
+				// スナップショットはこの適用専用なので、終わったら必ず捨てる。残すとロールバックでの
+				// 再適用や後続の revive が古い情報で attach 先を決めてしまう
+				// (paradisTerminalEditorRevive.ts)。
+				await paradisRefreshTerminalReviveIndex(stateKey);
+				try {
+					await this.applyWorkingSetFor(stateKey);
+				} finally {
+					paradisClearTerminalReviveIndex();
+				}
 
 				await this.trustUris(uri);
 				await this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]);

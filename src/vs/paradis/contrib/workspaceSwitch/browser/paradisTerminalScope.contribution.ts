@@ -23,6 +23,8 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisListParkedTerminalEditorInstances, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
+import { paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
+import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 
 /**
  * ターミナルグループをリポジトリ単位でスコープする (機能1 Phase 2)。
@@ -112,6 +114,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this._register(paradisRegisterTerminalCreationScopeProvider(() => {
 			const scope = this.auxiliaryWindowScopeService.resolveWindow(getActiveWindow().vscodeWindowId);
 			return scope.kind === 'managed' ? scope.stateKey : undefined;
+		}));
+
+		// working set の復元が「正体の確認できない PTY ID へ attach する」のを防ぐための索引。
+		// 供給できるのはこのサービスだけ（backend と live インスタンス台帳の両方を持っている）。
+		this._register(paradisRegisterTerminalReviveIndexSource({
+			listOrphanPtyIdsByNonce: () => this.listOrphanPtyIdsByNonce(),
+			listHeldPtyIds: () => this.listHeldPtyIds(),
 		}));
 
 		const loadedMapping = this.loadMapping();
@@ -391,14 +400,24 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			return;
 		}
 		const workspaceId = this.workspaceContextService.getWorkspace().id;
-		const livePersistentProcessIds = new Set<number>();
-		for (const instance of this.collectLiveInstances().values()) {
-			if (typeof instance.persistentProcessId === 'number') {
-				livePersistentProcessIds.add(instance.persistentProcessId);
-			}
-		}
 		for (const detail of details) {
-			const stateKey = persistentProcessScopes.get(detail.id);
+			// ループは1件ごとに `await instance.processReady` を挟むので、その間にユーザーの
+			// スペース切替が走り、同じ PTY を working set 側の revive が先に掴むことがある。
+			// 起点で1度だけ作ったスナップショットを使い回すと、その窓で二重アタッチを自分で作る。
+			// 毎回引き直し、切替中はそもそも手を出さない（切替側の復元経路に任せる）。
+			if (this.workspaceSwitchService.isSwitching) {
+				return;
+			}
+			const livePersistentProcessIds = this.listHeldPtyIds();
+			// 台帳 (`_restoredPersistentProcessScopes`) のキーは「前セッションの PTY ID」だが
+			// `detail.id` は今セッションの ID。旧表を新 ID で引くと別スコープのタグを拾い、
+			// 誤った stateKey で park されて `…ForScope` / `retireScope` の全経路へ伝播する。
+			// **引く ID を先に選んでから1回だけ引く**こと。ルックアップ結果に `??` を掛けると、
+			// revive 元 ID が分かっているのに引けなかった時に生 ID へ落ちてしまい、
+			// 塞いだはずの「旧表を新 ID で引く」誤りがそのまま復活する
+			// (同じ意図の純粋関数 common/paradisTerminalProcessScope.ts の paradisLookupInstanceScope と同型)。
+			const scopeLookupId = detail.paradisRevivedFromPersistentProcessId ?? detail.id;
+			const stateKey = persistentProcessScopes.get(scopeLookupId);
 			if (!detail.isOrphan
 				|| detail.workspaceId !== workspaceId
 				|| detail.isFeatureTerminal === true
@@ -409,7 +428,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				continue;
 			}
 			try {
-				const instance = this.terminalInstanceService.createInstance({ attachPersistentProcess: { ...detail, findRevivedId: true } }, TerminalLocation.Editor);
+				// `detail.id` は listProcesses 由来＝**今世代の ID**。ここで findRevivedId を立てると
+				// `getRevivedPtyNewId` が旧 ID をキーにした `_revivedPtyIdMap` を引き、旧 ID 空間と
+				// 新 ID 空間の衝突で別の PTY へリダイレクトされ得る（この修正が塞いだ穴と同じもの）。
+				const instance = this.terminalInstanceService.createInstance({ attachPersistentProcess: { ...detail, findRevivedId: false } }, TerminalLocation.Editor);
 				await instance.processReady;
 				if (this._store.isDisposed || !paradisParkTerminalEditorInstance(instance, stateKey)) {
 					// 再接続に失敗した (persistentProcessId が確定しなかった) インスタンスは
@@ -417,7 +439,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 					instance.dispose(TerminalExitReason.Shutdown);
 					continue;
 				}
-				livePersistentProcessIds.add(detail.id);
+				// 次の周回で listHeldPtyIds() を引き直すので、手元の集合へ足す必要は無い
+				// （park 台帳に入った時点で collectLiveInstances から見えるようになる）。
 				// park台帳への登録はterminalServiceのイベントに乗らないため、スコープ確定の
 				// 変更イベントで購読側（モバイルリレー等）へ「新しいliveペインが増えた」ことを伝える。
 				this._instanceScopes.set(instance.instanceId, stateKey);
@@ -426,6 +449,53 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				onUnexpectedError(error);
 			}
 		}
+	}
+
+	/**
+	 * 孤児 PTY を nonce で引けるようにする。`listProcesses()` は最後に `isOrphan` で絞っているので、
+	 * 返ってくるのは「今どの renderer も掴んでいない = 安全に attach してよい」ものだけになる。
+	 */
+	private async listOrphanPtyIdsByNonce(): Promise<ReadonlyMap<string, number>> {
+		const result = new Map<string, number>();
+		try {
+			const backend = await this.terminalInstanceService.getBackend(this.environmentService.remoteAuthority);
+			const details = await backend?.listProcesses();
+			if (details === undefined || this._store.isDisposed) {
+				return result;
+			}
+			const workspaceId = this.workspaceContextService.getWorkspace().id;
+			// 同じ nonce が2件返ることは無い想定だが、万一あれば同一性を証明できないので両方捨てる。
+			const duplicated = new Set<string>();
+			for (const detail of details) {
+				const nonce = paradisTerminalIdentityNonce(detail.shellIntegrationNonce);
+				if (nonce === undefined || detail.workspaceId !== workspaceId) {
+					continue;
+				}
+				if (result.has(nonce)) {
+					duplicated.add(nonce);
+					continue;
+				}
+				result.set(nonce, detail.id);
+			}
+			for (const nonce of duplicated) {
+				result.delete(nonce);
+			}
+		} catch (error) {
+			onUnexpectedError(error);
+		}
+		return result;
+	}
+
+	/** このウィンドウのインスタンスが掴んでいる PTY ID（park 中・background 含む）。 */
+	private listHeldPtyIds(): ReadonlySet<number> {
+		const ids = new Set<number>();
+		for (const instance of this.collectLiveInstances().values()) {
+			const persistentProcessId = this.getPersistentProcessId(instance);
+			if (persistentProcessId !== undefined) {
+				ids.add(persistentProcessId);
+			}
+		}
+		return ids;
 	}
 
 	private refreshAllStableScopes(): readonly ITerminalInstance[] {
@@ -523,9 +593,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	private getPersistentProcessId(instance: ITerminalInstance): number | undefined {
-		return instance.persistentProcessId
+		const persistentProcessId = instance.persistentProcessId
 			?? this._persistentProcessIdByInstance.get(instance.instanceId)
 			?? instance.shellLaunchConfig.attachPersistentProcess?.id;
+		// 正体を証明できない入力は、attach させないために存在しない負の ID へ潰されている
+		// (paradisTerminalEditorRevive.ts)。attach 失敗が確定するまでの窓でこれを拾うと、
+		// 負の ID が scope 台帳に入り persistMapping で永続化されてしまう。
+		return persistentProcessId !== undefined && persistentProcessId >= 0 ? persistentProcessId : undefined;
 	}
 
 	private toScopedInstance(instance: ITerminalInstance): { readonly instanceId: number; readonly persistentProcessId?: number } {
@@ -723,16 +797,27 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// スコープ退役で必ず回収されるようにする（戻さないと PTY がどこからも参照されず漏れる）。
 		// 取り出し後に dispose されたインスタンスは開かず・戻さず捨てる（take で台帳の
 		// onDisposed 掃除が外れているため、戻すと死んだエントリが残り続ける）
+		// park は「同じ nonce の別インスタンスが既に居る」場合に false を返す。戻り値を捨てると
+		// そのインスタンスは park 台帳にも terminalEditorService.instances にも属さなくなり、
+		// 上のコメントが避けようとしている不可視の漏れがこの経路から再発する。断られたら
+		// スコープの正確さより「一覧に出ていること」を優先し、エディタとして開いてしまう。
+		const parkOrReopen = async (instance: ITerminalInstance): Promise<void> => {
+			if (paradisParkTerminalEditorInstance(instance, targetStateKey)) {
+				return;
+			}
+			onUnexpectedError(new Error('Para Code could not park a terminal editor; reopening it so it stays visible'));
+			await this.terminalEditorService.openEditor(instance);
+		};
 		(async () => {
 			for (const instance of instances) {
 				if (instance.isDisposed) {
 					continue;
 				}
-				if (this.workspaceSwitchService.activeStateKey !== targetStateKey) {
-					paradisParkTerminalEditorInstance(instance, targetStateKey);
-					continue;
-				}
 				try {
+					if (this.workspaceSwitchService.activeStateKey !== targetStateKey) {
+						await parkOrReopen(instance);
+						continue;
+					}
 					await this.terminalEditorService.openEditor(instance);
 				} catch (error) {
 					if (!instance.isDisposed) {
