@@ -15,6 +15,7 @@ import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSche
 import { PARADIS_SENTRY_DESKTOP_DSN, PARADIS_SENTRY_ENVIRONMENT, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
+import { registerParadisProcessGoneDiagnostics } from './paradisProcessGoneDiagnostics.js';
 
 let sentry: typeof SentryMain | undefined;
 
@@ -55,6 +56,9 @@ export function initializeParadisSentryMain(commit: string | undefined, onUnavai
 	if (sentry) {
 		return;
 	}
+
+	// Sentry の準備を待たずに登録する。ここで落ちるのは起動直後が多く、待つとその分を取りこぼす。
+	registerParadisProcessGoneDiagnostics();
 
 	// '@sentry/electron/main' MUST be loaded with a dynamic import: the packaged main
 	// bundle keeps npm dependencies external (they live in node_modules.asar), and the
