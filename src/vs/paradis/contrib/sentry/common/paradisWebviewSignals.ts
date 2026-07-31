@@ -23,6 +23,19 @@ export const enum ParadisWebviewSignalCode {
 	ServiceWorkerControlRecovered = 'sw-control-recovered',
 	/** service worker が制限時間内に制御を取れなかった(復帰処理に入る)。 */
 	ServiceWorkerControlTimeout = 'sw-control-timeout',
+	/**
+	 * `navigator.serviceWorker.register()` が期限内に決着しなかった(登録し直しへ進む)。
+	 * 実機では resolve も reject もしないまま止まることがあり、その場合は例外が出ないので
+	 * このシグナルだけが手がかりになる。
+	 */
+	ServiceWorkerRegisterTimeout = 'sw-register-timeout',
+	/** 登録し直しで決着し、service worker を使える状態に戻った。 */
+	ServiceWorkerRegisterRecovered = 'sw-register-recovered',
+	/**
+	 * service worker を諦め、無しで描画を続けた。本文は表示できるが `vscode-resource` 経由の
+	 * リソース(ローカル画像など)は読めない。白紙で固まるよりましという判断。
+	 */
+	ServiceWorkerUnavailable = 'sw-unavailable',
 	/** 内容の受け取りが始まった(webview は生きている)。この後に service worker の制御待ちが入り得る。 */
 	ContentStarted = 'content-started',
 	/** service worker の制御待ちを抜けた(ここから先は描画だけ)。 */
@@ -46,14 +59,23 @@ const emitter = new Emitter<IParadisWebviewSignal>();
 /** webview の健全性シグナル。プロセス寿命と同じなので購読側だけが dispose を持つ。 */
 export const onParadisWebviewSignal: Event<IParadisWebviewSignal> = emitter.event;
 
+/** 診断として送る価値がある異常系。正常系(`content-*`)は量が多いので送らない。 */
+const REPORTED_CODES: ReadonlySet<string> = new Set<string>([
+	ParadisWebviewSignalCode.ServiceWorkerControlRecovered,
+	ParadisWebviewSignalCode.ServiceWorkerControlTimeout,
+	ParadisWebviewSignalCode.ServiceWorkerRegisterTimeout,
+	ParadisWebviewSignalCode.ServiceWorkerRegisterRecovered,
+	ParadisWebviewSignalCode.ServiceWorkerUnavailable,
+]);
+
 /**
  * webview から届いたシグナルを Sentry へ記録しつつ購読側へ配る。
  * 正常系(`content-applied`)は量が多いので送信しない。
  */
 export function notifyParadisWebviewSignal(signal: IParadisWebviewSignal): void {
-	if (signal.code === ParadisWebviewSignalCode.ServiceWorkerControlRecovered || signal.code === ParadisWebviewSignalCode.ServiceWorkerControlTimeout) {
+	if (REPORTED_CODES.has(signal.code)) {
 		// `duration_ms` はサニタイザの allowlist に載っているキー。`attempt` も同様。
-		reportParadisDiagnosticError('patched', 'webview', signal.code, new Error(`Webview service worker did not take control (${signal.code})`), {
+		reportParadisDiagnosticError('patched', 'webview', signal.code, new Error(`Webview service worker problem (${signal.code})`), {
 			duration_ms: signal.detail?.['duration_ms'],
 			attempt: signal.detail?.['attempt'],
 		});

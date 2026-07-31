@@ -48,6 +48,8 @@ import { PARADIS_RESOURCE_MONITOR_CHANNEL } from '../../paradis/contrib/resource
 import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourceMonitor/electron-main/paradisResourceMonitorMainService.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobileRelay/common/paradisMobileWindowLease.js';
 import { ParadisMobileWindowLeaseChannel } from '../../paradis/contrib/mobileRelay/electron-main/paradisMobileWindowLeaseChannel.js';
+// PARA-PATCH: clear stale webview service worker registrations before the first window opens
+import { paradisResetWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerReset.js';
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
 import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
 import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
@@ -777,6 +779,10 @@ export class CodeApplication extends Disposable {
 
 		// Setup vscode-remote-resource protocol handler
 		this.setupManagedRemoteResourceUrlHandler(mainProcessElectronServer);
+
+		// PARA-PATCH: drop the webview service worker registrations left over from previous runs.
+		// Must happen before any window can open a webview of its own — see paradisResetWebviewServiceWorkers.
+		await paradisResetWebviewServiceWorkers(session.defaultSession, this.logService);
 
 		// Signal phase: ready - before opening first window
 		this.lifecycleMainService.phase = LifecycleMainPhase.Ready;
