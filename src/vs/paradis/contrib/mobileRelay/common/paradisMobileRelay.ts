@@ -87,6 +87,25 @@ export interface IParadisMobileDesktopBattery {
 	readonly charging: boolean;
 }
 
+/**
+ * PC本体（マシン全体）のリソース使用量。モバイルのワークスペースドロワーが
+ * バッテリーと並べて常時表示する。Para Code だけの使用量ではないことに注意
+ * （内訳は「システム」画面が別途リクエストで取る）。
+ *
+ * 常時配信なので、値は必ず paradisRoundMobileResources() で丸めてから載せる。
+ * 丸めないと数値が動くたびに desktop state 全体を再送してしまう。
+ */
+export interface IParadisMobileDesktopResources {
+	/** マシン全体のCPU使用率（0〜100）。まだ算出できていない間は未配信。 */
+	readonly cpu?: number;
+	/** 物理メモリの使用中（バイト）。 */
+	readonly memUsed: number;
+	readonly memTotal: number;
+	/** 主ボリューム（ホームのある側）の空き（バイト）。読めなかった場合は未配信。 */
+	readonly diskFree?: number;
+	readonly diskTotal?: number;
+}
+
 /** protocol v2: renderer 内のターミナル。id はこのウィンドウ内でのみ一意。 */
 export interface IParadisMobileWindowTerminalV2 {
 	readonly terminalKey: string;
@@ -143,6 +162,8 @@ export interface IParadisMobileDesktopStateV3 {
 	readonly terminals: readonly IParadisMobileTerminalV3[];
 	/** PC本体のバッテリー（旧PCでは未配信。モバイルはLive Activity等の表示に使う）。 */
 	readonly battery?: IParadisMobileDesktopBattery;
+	/** PC本体（マシン全体）のCPU/メモリ/ディスク（旧PCでは未配信）。 */
+	readonly resources?: IParadisMobileDesktopResources;
 }
 
 /** shared process の接続状態。 */

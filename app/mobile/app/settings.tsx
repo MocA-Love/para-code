@@ -9,6 +9,7 @@ import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { APP_VERSION } from '../src/components/updateSheet.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
+import { formatCpu, usagePercent } from '../src/systemResources.js';
 
 /**
  * 設定画面。ワークスペースドロワーの設定アイコンから開く。
@@ -18,9 +19,13 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
 export default function SettingsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
-	const { notifyPrefs, setNotifyPref } = useAppStore(useShallow(s => ({
-		notifyPrefs: s.notifyPrefs, setNotifyPref: s.setNotifyPref,
+	const { notifyPrefs, setNotifyPref, resources } = useAppStore(useShallow(s => ({
+		notifyPrefs: s.notifyPrefs, setNotifyPref: s.setNotifyPref, resources: s.workspace?.resources,
 	})));
+	// 行を開かずに済むよう、ドロワーと同じ配信値（CPU · RAM）を右端に出す。旧PCでは届かないので出さない。
+	const systemSummary = resources !== undefined
+		? `${formatCpu(resources.cpu)} · ${Math.round(usagePercent(resources.memUsed, resources.memTotal))}%`
+		: undefined;
 
 	const toggle = (key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused') => (value: boolean) => {
 		hapticSelection();
@@ -62,6 +67,16 @@ export default function SettingsScreen() {
 							<Text style={styles.rowTitle}>GitHub API</Text>
 							<Text style={styles.rowDesc}>GitHubのレート枠と、Para Codeが送ったリクエストの内訳を確認します</Text>
 						</View>
+						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+					</Pressable>
+					<View style={styles.separator} />
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/system'); }}>
+						<Ionicons name="hardware-chip-outline" size={18} color={colors.accent} />
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>システム</Text>
+							<Text style={styles.rowDesc}>PCのCPU・メモリ・ディスクの空きと、何が使っているかを確認します</Text>
+						</View>
+						{systemSummary ? <Text style={styles.rowValue}>{systemSummary}</Text> : null}
 						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
 					</Pressable>
 				</View>

@@ -40,6 +40,7 @@ import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundF
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradisGithubMetrics.js';
+import { IParadisResourceMonitorMobileReport } from '../../resourceMonitor/common/paradisResourceMonitor.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
@@ -165,6 +166,8 @@ type FsInbound =
 	| { t: 'limits'; id: string; bypassCache?: boolean }
 	// GitHub API利用状況（PC版のGitHub API Usageダッシュボードと同じデータ）
 	| { t: 'github'; id: string; bypassCache?: boolean }
+	// PC本体のリソース使用量（マシン全体のCPU/メモリ/ディスク＋Para Code内訳）
+	| { t: 'sysres'; id: string; bypassCache?: boolean }
 	// テキスト断片のシンタックスハイライト（エージェントチャットのコードブロック用）。
 	// lang はMarkdownフェンスの言語名（ts / typescript / python 等）。
 	| { t: 'hl'; id: string; text: string; lang?: string };
@@ -286,6 +289,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// 各パスの現在ブランチに紐づく PR 状態。実体は PC 版 Workspaces ビューと同じ
 		// paradis.workspaceSwitch.getPrStatuses コマンド（contribution側で束ねて渡される）
 		private readonly getPrStatuses: (paths: readonly string[]) => Promise<Record<string, IParadisPrStatus> | undefined>,
+		// PC本体のCPU/メモリ/ディスクと Para Code 内訳。実体は resourceMonitor のクライアント
+		// （収集はメインプロセス。モバイルの「システム」画面が開いている間だけ呼ばれる）
+		private readonly fetchResourceReport: (force: boolean) => Promise<IParadisResourceMonitorMobileReport>,
 	) {
 		super();
 		let markInitialAgentPanesReady!: () => void;
@@ -1390,6 +1396,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			return;
 		}
+		// PC本体のリソース使用量(「システム」画面)。usage/limits/github と同じくワークスペース非依存。
+		// ドロワーに常時出る3値は desktop state 経由で別途届くので、こちらは内訳を見るときだけ呼ばれる。
+		if (msg.t === 'sysres') {
+			try {
+				const data = await this.fetchResourceReport(!!msg.bypassCache);
+				reply({ t: 'sysres', data });
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
 		// テキスト断片のハイライト（エージェントチャットのコードブロック用）。ファイルの
 		// highlight と同じく Monaco トークナイザ + 現行テーマのカラーマップで生成する。
 		// 失敗はエラーでなく空応答（モバイル側はプレーン表示にフォールバック）。
@@ -1474,6 +1491,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			} catch {
 				reply({ error: 'file link could not be resolved' });
 			}
+			return;
+		}
+		// ここまでで処理されなかった = このPCが知らないサブタイプ。パス解決へ落とすと
+		// `invalid path: undefined` という無関係なエラーが出るため、scmチャネルと同じ形で
+		// 「対応していない」と返す（新しいモバイルアプリ × 古いPC の組み合わせ用のフェイルセーフ）。
+		if (msg.ws === undefined && msg.path === undefined) {
+			reply({ error: `unsupported request: ${(msg as { t: string }).t}` });
 			return;
 		}
 		const uri = await this.resolveWorkspacePathReal(msg.ws, msg.path);

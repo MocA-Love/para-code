@@ -57,6 +57,7 @@ import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } fro
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
 import { ParadisGithubMetricsClient } from '../../githubMetrics/electron-browser/paradisGithubMetricsClient.js';
+import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-browser/paradisResourceMonitorClient.js';
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
@@ -212,6 +213,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const limitsClient = instantiationService.createInstance(ParadisLimitsMonitorClient);
 		// GitHub API利用状況取得（PC版のGitHub API Usageダッシュボードと同じクライアント）
 		const githubClient = instantiationService.createInstance(ParadisGithubMetricsClient);
+		// PC本体のCPU/メモリ/ディスク取得（PC版タイトルバーのリソースモニタと同じクライアント）
+		const resourceMonitorClient = instantiationService.createInstance(ParadisResourceMonitorClient);
 
 		this.provider = this._register(new ParadisMobileWorkspaceProvider(
 			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
@@ -257,6 +260,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			request => instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, request),
 			// PR 状態はPC版 Workspaces ビューと同じコマンド経由（gh 実行は shared process へ委譲）
 			paths => commandService.executeCommand<Record<string, IParadisPrStatus>>(PARADIS_GET_PR_STATUSES_COMMAND_ID, [...paths]),
+			// モバイルの「システム」画面。PC版タイトルバーのCPU/RAMモニタと同じクライアントを再利用し、
+			// ホストマシン全体の使用量とPara Code内訳をまとめて返す
+			force => resourceMonitorClient.getMobileReport(force),
 		));
 		this.provider.pushState();
 		this._register(this.service.onDidRequestAgentPaneSync(request => {

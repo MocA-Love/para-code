@@ -9,7 +9,7 @@ import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri, deriveNotifyKey } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { toolImageCache } from './agentToolImages.js';
 import { PairingClient } from './pairingClient.js';
@@ -173,6 +173,8 @@ interface AppState extends StoreState {
 	rateLimits(bypassCache?: boolean): Promise<RateLimitsResult>;
 	/** GitHub API利用状況。bypassCache の意味は usageDashboard と同じ。 */
 	githubUsage(bypassCache?: boolean): Promise<GithubUsageResult>;
+	/** PC本体のリソース内訳（「システム」画面）。bypassCache の意味は usageDashboard と同じ。 */
+	systemResources(bypassCache?: boolean): Promise<SystemResourcesResult>;
 	browserTargets(): Promise<BrowserTargetsResult>;
 	browserStart(targetId: string): Promise<void>;
 	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
@@ -814,6 +816,11 @@ export const useAppStore = create<AppState>(set => ({
 	githubUsage(bypassCache?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.githubUsage(bypassCache);
+	},
+
+	systemResources(bypassCache?: boolean) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.systemResources(bypassCache);
 	},
 
 	browserTargets() {

@@ -78,6 +78,8 @@ import { IParadisMobilePaneOwner } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentCommandAuthority, ParadisAgentCommandDeliveryResult } from '../common/paradisAgentCommandLifecycle.js';
 import { ParadisMobileTrafficDiagnostics, startParadisMobileTrafficDiagnostics } from './paradisMobileTrafficDiagnostics.js';
 import { ParadisMobileStateDelivery } from './paradisMobileStateDelivery.js';
+import { paradisRoundMobileResources } from '../common/paradisMobileHostResources.js';
+import { ParadisHostResourceSampler } from '../../resourceMonitor/node/paradisHostResources.js';
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
@@ -128,6 +130,17 @@ const RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS = 5;
 const RELAY_AUTH_PROBE_AFTER_ATTEMPTS = 3;
 /** 認証切れが確定した後の再接続間隔。復帰は再ペアリングでしか起きないので長く取る。 */
 const RELAY_UNAUTHORIZED_RETRY_MS = 5 * 60_000;
+/**
+ * PC本体のCPU/メモリ/ディスクをサンプリングする間隔。CPU使用率はこの区間の平均になる。
+ * 短くしても丸め（5%刻み）で潰れるだけで再送が増えるだけなので、これ以上は詰めない。
+ */
+const HOST_RESOURCE_SAMPLE_INTERVAL_MS = 10_000;
+/**
+ * リソースの変化だけを理由に desktop state を再送する最小間隔。
+ * state はモバイル全台へのブロードキャスト（全ワークスペース・全ターミナルを含むJSON＋封緘）なので、
+ * 10秒ごとに撃つと端末の無線を起こし続ける。ドロワーを開いたときに1分以内の値が出れば足りる。
+ */
+const HOST_RESOURCE_BROADCAST_MIN_INTERVAL_MS = 60_000;
 
 interface PairedMobile {
 	readonly mobileId: string;
@@ -360,6 +373,16 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	readonly onDidRequestAgentPaneSync = this._onDidRequestAgentPaneSync.event;
 	private confirmedAgentPanes: IParadisConfirmedAgentPanes = { revision: 0, tokens: [] };
 
+	// PC本体（マシン全体）のリソースサンプラー。CPUは累積値の差分なので使い回す必要がある。
+	private readonly hostResourceSampler = new ParadisHostResourceSampler();
+	private hostResourceSamplingInFlight = false;
+	/** リソースだけを理由にした直近の再送時刻。最小間隔の判定に使う。 */
+	private lastHostResourceBroadcastAt = 0;
+	/** 最小間隔に阻まれて送れなかった変化があるか（次に間隔が空いたときに送る）。 */
+	private hostResourceBroadcastPending = false;
+	/** サンプリング失敗をwarnで1回だけ残したか（以降はtraceに落とす）。 */
+	private hostResourceSamplingFailureLogged = false;
+
 	private state: PersistedState = { mobiles: [] };
 	private identity: MobileIdentity | undefined;
 	private enabled = false;
@@ -502,6 +525,81 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.webrtcRendererLeases.clear();
 			this.disconnect();
 		}));
+		this.startHostResourceSampling();
+	}
+
+	// --- PC本体のリソース使用量 -------------------------------------------------
+
+	/**
+	 * PC本体（マシン全体）のCPU/メモリ/ディスクを定期サンプリングして desktop state に載せる。
+	 * バッテリーと違い renderer からは取れない（sandbox化されたrendererにはOSのAPIが無い）ため、
+	 * shared process が直接読む。オンラインのモバイルが1台も無い間は何も測らない。
+	 */
+	private startHostResourceSampling(): void {
+		const timer = setInterval(() => {
+			this.reportHostResourceSamplingFailure(this.sampleHostResources());
+		}, HOST_RESOURCE_SAMPLE_INTERVAL_MS);
+		// 未ペアリング・全台オフラインでも10秒ごとに走るタイマーなので、これだけで
+		// shared process を起こし続けないようにする（キャストは dom/node の setInterval 型衝突を
+		// 避けるためで、wslRemoteAgentHostService.ts と同じ手当て）。
+		(timer as unknown as NodeJS.Timeout).unref();
+		this._register(toDisposable(() => clearInterval(timer)));
+	}
+
+	/**
+	 * サンプリングの失敗を握り潰さない。恒常的に失敗するとモバイル側はドロワーの3値が
+	 * 出ないだけになり「対応していないPC」と区別が付かないため、最初の1回はwarnで残す。
+	 */
+	private reportHostResourceSamplingFailure(work: Promise<void>): void {
+		work.catch(error => {
+			if (this.hostResourceSamplingFailureLogged) {
+				this.logService.trace('[paradisMobileRelay] host resource sampling failed', error);
+				return;
+			}
+			this.hostResourceSamplingFailureLogged = true;
+			this.logService.warn('[paradisMobileRelay] host resource sampling failed', error);
+		});
+	}
+
+	private async sampleHostResources(): Promise<void> {
+		if (this.hostResourceSamplingInFlight) {
+			return;
+		}
+		let hasOnlineSession = false;
+		for (const session of this.sessions.values()) {
+			if (session.isOnline) {
+				hasOnlineSession = true;
+				break;
+			}
+		}
+		if (!hasOnlineSession) {
+			return;
+		}
+		this.hostResourceSamplingInFlight = true;
+		try {
+			const host = await this.hostResourceSampler.read();
+			if (this.terminalRegistry.setHostResources(paradisRoundMobileResources(host))) {
+				this.hostResourceBroadcastPending = true;
+			}
+			if (!this.hostResourceBroadcastPending) {
+				return;
+			}
+			// 丸めても実機の値は揺れ続けるので（実測で毎区間が変化）、変化検出だけでは
+			// desktop state 全体（全ワークスペース・全ターミナル）の再送を10秒ごとに撃ち続けてしまう。
+			// リソースだけを理由にした再送はここで間引く。他の理由（ターミナル状態の変化等）で
+			// 送られる state には、そのとき registry が持っている最新値がそのまま乗る。
+			const now = Date.now();
+			if (now - this.lastHostResourceBroadcastAt < HOST_RESOURCE_BROADCAST_MIN_INTERVAL_MS) {
+				return;
+			}
+			this.lastHostResourceBroadcastAt = now;
+			this.hostResourceBroadcastPending = false;
+			// 他のstate配送と同じくrenderer authorityの直列化に載せる（reconcileが
+			// windowの登録・解除の途中に割り込んで中途state を publish するのを防ぐ）。
+			await this.enqueueRendererAuthority(() => this.broadcastDesktopState());
+		} finally {
+			this.hostResourceSamplingInFlight = false;
+		}
 	}
 
 	// --- 永続化 ---------------------------------------------------------------
@@ -1931,6 +2029,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		await session.enqueuePayload(payload);
 		if (session.isOnline !== wasOnline) {
 			this._onDidChangeStatus.fire(this.snapshot());
+			// 繋がった直後にPC本体のリソースを1回測る。次の定期サンプリングを待つと、モバイル側は
+			// 最大10秒のあいだ「未対応PC」と区別が付かない空欄を見ることになる。
+			this.reportHostResourceSamplingFailure(this.sampleHostResources());
 		}
 	}
 

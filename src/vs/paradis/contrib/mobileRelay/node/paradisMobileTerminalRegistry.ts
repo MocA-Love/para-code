@@ -6,7 +6,8 @@
 
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { equals as objectsEqual } from '../../../../base/common/objects.js';
-import { IParadisMobileDesktopBattery, IParadisMobileDesktopStateV3, IParadisMobileTerminalV3, IParadisMobileWindowStateV2, IParadisMobileWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION } from '../common/paradisMobileRelay.js';
+import { IParadisMobileDesktopBattery, IParadisMobileDesktopResources, IParadisMobileDesktopStateV3, IParadisMobileTerminalV3, IParadisMobileWindowStateV2, IParadisMobileWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION } from '../common/paradisMobileRelay.js';
+import { paradisMobileResourcesEqual } from '../common/paradisMobileHostResources.js';
 import { PARADIS_FS_BINARY_UPLOAD_ENCODING } from '../common/paradisMobileFileUpload.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
 
@@ -38,6 +39,9 @@ export class ParadisMobileTerminalRegistry {
 	private readonly owners = new Map<string, IParadisMobileTerminalOwner>();
 	private readonly conflicts = new Set<string>();
 	private manifest: IParadisMobileRendererManifest = { revision: 0, entries: [] };
+	// PC本体（マシン全体）のCPU/メモリ/ディスク。renderer由来ではなく shared process が
+	// 直接サンプリングして setHostResources() で入れる（バッテリーと違い window に依存しない）。
+	private hostResources: IParadisMobileDesktopResources | undefined;
 	private highestValidatedManifestRevision = 0;
 	private fullManifestRevision = 0;
 	private readonly observedManifestEntries = new Map<number, { entry: IParadisMobileRendererManifest['entries'][number]; observedAtManifestRevision: number }>();
@@ -92,6 +96,19 @@ export class ParadisMobileTerminalRegistry {
 			this.revision++;
 		}
 		return this.desktopState();
+	}
+
+	/**
+	 * PC本体のリソース使用量を差し替える。丸め済みの値が実際に変わったときだけ revision を進め、
+	 * true（＝再ブロードキャストが要る）を返す。
+	 */
+	setHostResources(resources: IParadisMobileDesktopResources | undefined): boolean {
+		if (paradisMobileResourcesEqual(this.hostResources, resources)) {
+			return false;
+		}
+		this.hostResources = resources;
+		this.revision++;
+		return true;
 	}
 
 	markWindowReady(windowId: number, windowSession: string, rendererGeneration: number): boolean {
@@ -274,6 +291,7 @@ export class ParadisMobileTerminalRegistry {
 			workspaces,
 			terminals,
 			...(battery !== undefined ? { battery } : {}),
+			...(this.hostResources !== undefined ? { resources: this.hostResources } : {}),
 		};
 	}
 
