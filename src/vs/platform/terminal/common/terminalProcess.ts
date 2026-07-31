@@ -62,6 +62,9 @@ export interface IProcessDetails {
 	// PARA-PATCH: mobile relay recovery — carry the exact pane token across PTY revive and detach
 	/** PARA-CODE: Carries the exact pane token across PTY revive and detach. */
 	paradisPaneToken?: string;
+	// PARA-PATCH: space ownership — `listProcesses` already reports this for orphans (ptyService.ts)
+	/** PARA-CODE: The process ID used by the previous PTY host before full application revival. */
+	paradisRevivedFromPersistentProcessId?: number;
 	tabActions?: ITerminalTabAction[];
 }
 

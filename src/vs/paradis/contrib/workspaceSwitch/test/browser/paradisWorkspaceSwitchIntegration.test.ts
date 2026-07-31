@@ -28,6 +28,7 @@ import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchIn
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisTakeParkedTerminalEditorInstance } from '../../browser/paradisTerminalEditorPark.js';
+import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
 import { IParadisAuxiliaryWindowScopeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../../common/paradisWorkspaceSwitch.js';
 
@@ -42,7 +43,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
 
 		try {
-			const preexisting = paradisTakeParkedTerminalEditorInstance(terminalIds.persistentProcessId);
+			const preexisting = paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(terminalIds.persistentProcessId, terminalIds.shellIntegrationNonce));
 			try {
 				assert.strictEqual(preexisting, undefined);
 			} finally {
@@ -53,7 +54,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			const terminalInput = harness.createEditor('/workspace-a/terminal', false);
 			await harness.parts.activeGroup.openEditor(sourceEditor, { pinned: true });
 			await harness.parts.activeGroup.openEditor(terminalInput, { pinned: true });
-			sourceTerminal = harness.addTerminal(terminalInput, terminalIds.instanceId, terminalIds.persistentProcessId);
+			sourceTerminal = harness.addTerminal(terminalInput, terminalIds.instanceId, terminalIds.persistentProcessId, terminalIds.shellIntegrationNonce);
 
 			await harness.workspaceSwitchService.switchRepository('space-b');
 			didPark = paradisGetParkedTerminalEditorStateKey(sourceTerminal.instanceId) === 'space-a';
@@ -98,7 +99,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				terminalServiceInstanceIds: [],
 			});
 		} finally {
-			const parked = paradisTakeParkedTerminalEditorInstance(terminalIds.persistentProcessId);
+			const parked = paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(terminalIds.persistentProcessId, terminalIds.shellIntegrationNonce));
 			try {
 				if (didPark && sourceTerminal !== undefined) {
 					assert.strictEqual(parked, sourceTerminal);
@@ -200,14 +201,15 @@ interface IWorkspaceSwitchIntegrationHarness {
 	readonly terminalEditorService: Pick<ITerminalEditorService, 'instances'>;
 	readonly detachedTerminalInstanceIds: readonly number[];
 	createEditor(path: string, modified: boolean): TestFileEditorInput;
-	addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number): ITerminalInstance;
+	addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number, shellIntegrationNonce: string): ITerminalInstance;
 }
 
-function createUniqueTerminalIds(): { readonly instanceId: number; readonly persistentProcessId: number } {
+function createUniqueTerminalIds(): { readonly instanceId: number; readonly persistentProcessId: number; readonly shellIntegrationNonce: string } {
 	const randomHex = generateUuid().replaceAll('-', '');
 	return {
 		instanceId: Number.parseInt(randomHex.slice(0, 8), 16),
 		persistentProcessId: Number.parseInt(randomHex.slice(8, 21), 16),
+		shellIntegrationNonce: generateUuid(),
 	};
 }
 
@@ -323,13 +325,15 @@ async function createHarness(
 			inputs.set(editor.resource.toString(), editor);
 			return editor;
 		},
-		addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number): ITerminalInstance {
+		addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number, shellIntegrationNonce: string): ITerminalInstance {
 			const onDisposed = testDisposables.add(new Emitter<ITerminalInstance>());
 			const instance = {
 				instanceId,
 				persistentProcessId,
+				shellIntegrationNonce,
 				resource: input.resource,
 				shouldPersist: true,
+				isDisposed: false,
 				onDisposed: onDisposed.event,
 				dispose: () => onDisposed.fire(instance),
 			} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
