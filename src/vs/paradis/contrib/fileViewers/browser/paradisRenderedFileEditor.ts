@@ -31,7 +31,7 @@ import { CodeEditorWidget } from '../../../../editor/browser/widget/codeEditor/c
 import { IEditorConstructionOptions } from '../../../../editor/browser/config/editorConfiguration.js';
 import { IResolvedTextEditorModel, ITextModelService } from '../../../../editor/common/services/resolverService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -90,6 +90,15 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 	private _currentResource: URI | undefined;
+	/**
+	 * 直近の描画が「ファイルが無い」で失敗したリソース。
+	 *
+	 * プレビューのタブは、開いたファイルが消えても（エージェントが生成途中で消す、ブランチを切り替える等）
+	 * 開いたままになる。ワークスペース全体の watch エラーはそのタブにも届くので、これを持たないと
+	 * 「エラーが来る → 読み直す → 無いので失敗 → Sentry に送る」を延々と繰り返す。ファイル自身の
+	 * 変更通知（作り直された合図）だけは受けたいので、タブを閉じるのではなく再描画の抑止に使う。
+	 */
+	private _missingResource: URI | undefined;
 	private _mode: ParadisFileViewerMode = 'rendered';
 	// watcher・claim・モード切替から始まった描画が逆順で完了しても、最後に開始した結果だけを反映する。
 	private _renderGeneration = 0;
@@ -215,6 +224,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		// ペインは別のファイルを開くときも使い回されるので、前のファイルの失敗回数を持ち越さない。
 		this._recoveryPolicy.reset();
 		this._currentResource = resource;
+		// 別のファイルを開いたので、前のファイルが無かったことは引き継がない。
+		this._missingResource = undefined;
 		// 別ファイルに切り替わったので前のモデル参照を解放する。
 		this._modelRef.clear();
 		this._codeEditor?.setModel(null);
@@ -258,7 +269,14 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		}
 		// OS 側でイベントが欠落した場合は個別 watcher の onDidChange が来ないため、watch エラーを
 		// 復旧用の再読込トリガーとして扱う。短時間のエラー連発は recovery scheduler で1回にまとめる。
-		store.add(this._fileService.onDidWatchError(() => scheduleRerender(watchRecoveryScheduler)));
+		// ただし watch エラーはワークスペースのどこからでも届き、消えたファイルが戻った証拠には
+		// ならない。無いと分かっているファイルまで読み直すと失敗を繰り返すだけなので見送る。
+		store.add(this._fileService.onDidWatchError(() => {
+			if (isEqual(this._missingResource, resource)) {
+				return;
+			}
+			scheduleRerender(watchRecoveryScheduler);
+		}));
 
 		// Rendered の配置と実描画は _applyViewMode がまとめて担う。
 		await this._applyViewMode(viewerInput.viewMode, resource, token);
@@ -272,9 +290,13 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 		try {
 			await this._doRenderResource(resource, token);
 		} catch (err) {
-			// レンダリング経路の失敗(読み込み・変換・setHtml)も白紙表示の原因候補なので
-			// Sentry へ送る(キャンセルは正常系)。呼出元のエラー処理はそのまま生かす。
-			if (!isCancellationError(err)) {
+			// ファイルが消えているのは不具合ではなくユーザー側の状態で、開いたままのタブがある限り
+			// 何度でも再現する。エディタは読み取りエラーを自分で表示するので、診断としては送らない。
+			if (toFileOperationResult(err) === FileOperationResult.FILE_NOT_FOUND) {
+				this._missingResource = resource;
+			} else if (!isCancellationError(err)) {
+				// レンダリング経路の失敗(読み込み・変換・setHtml)も白紙表示の原因候補なので
+				// Sentry へ送る(キャンセルは正常系)。呼出元のエラー処理はそのまま生かす。
 				reportParadisDiagnosticError('owned', 'file-viewers', 'render', err, { safe_viewer: this.getId() });
 			}
 			throw err;
@@ -292,6 +314,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			const content = await this._textFileService.read(resource, { acceptTextOnly: false });
 			text = content.value;
 		}
+		// 読めたので、消えていたファイルが戻った場合はここで抑止を解く。
+		this._missingResource = undefined;
 		if (!this._isRenderCurrent(generation, resource, token)) {
 			return;
 		}
