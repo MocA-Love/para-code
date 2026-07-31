@@ -9,7 +9,7 @@
 		CSP, and every webview then stays blank without throwing. Kept honest by
 		src/vs/paradis/contrib/fileViewers/test/node/paradisWebviewServiceWorkerControl.test.ts. -->
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-XPFkLDYGtICG+h8OtoNmYwJeKo4VO8VbxPvOJcO/YCo=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-fJ35qZ+mZcuAYmSQV0jFPBmfw48yirDBon+AbEzr1fk=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -368,6 +368,16 @@
 		// tears the webview down before it can fall back to rendering on its own.
 		// paradisWebviewServiceWorkerControl.test.ts checks the two against each other.
 		const PARA_SW_SETUP_BUDGET_MS = 20000;
+		// Deciding whether a registration is version-less only reads the local registration ledger, so it
+		// must answer immediately. Not answering is itself the anomaly, so cut it short rather than eating
+		// into the registration budget.
+		const PARA_SW_PROBE_TIMEOUT_MS = 1000;
+		// A registration only counts as broken when it still holds no worker after this gap. The spec
+		// creates the registration record before fetching the script, so a sibling client that is
+		// mid-registration is legitimately version-less for a moment, while the measured broken state
+		// stays that way for tens of seconds. Looking twice tells them apart, and a wider gap covers a
+		// slow worker cold start while still saving most of the registration deadline.
+		const PARA_SW_VERSIONLESS_CONFIRM_MS = 1000;
 		const PARA_TIMEOUT_ERROR_NAME = 'ParaServiceWorkerTimeout';
 
 		/**
@@ -401,6 +411,66 @@
 		}
 
 		/**
+		 * Drops a registration that exists but holds no worker in any slot, before registering again.
+		 *
+		 * PARA-PATCH: measured on a real install — `getRegistrations()` returns one registration whose
+		 * `installing`, `waiting` and `active` are all null, from the first sample (~110ms) onwards. It
+		 * stays that way: no service worker process is ever spawned and `navigator.serviceWorker.ready`
+		 * never settles, so the viewer sits blank until its host watchdog tears it down. Registering on
+		 * top of such a record does not repair it; the fork's existing recovery only starts after
+		 * `register()` burns its full deadline, which wastes seconds of blank pane for a state that is
+		 * detectable immediately. Clearing it first turns that case into a normal first registration.
+		 *
+		 * Never throws: this runs on the critical rendering path, and a failed probe must not be the
+		 * reason a webview stays blank. Failing here just leaves the original behaviour in place.
+		 */
+		async function paraDiscardVersionlessRegistration() {
+			const startedAt = Date.now();
+			try {
+				// Being controlled proves an active worker exists, so nothing here can be broken. Skipping
+				// keeps the healthy majority off this path entirely.
+				if (navigator.serviceWorker.controller) {
+					return;
+				}
+				const probe = () => paraWithTimeout(
+					navigator.serviceWorker.getRegistration(), PARA_SW_PROBE_TIMEOUT_MS, 'getRegistration');
+				// A registration that is installing or waiting is mid-flight and must never be torn down.
+				const isVersionless = (/** @type {ServiceWorkerRegistration | undefined} */ registration) =>
+					!!registration && !registration.installing && !registration.waiting && !registration.active;
+				if (!isVersionless(await probe())) {
+					return;
+				}
+				// Look again before destroying anything. Registration creates the record before the script
+				// is fetched, so a sibling client registering into this shared scope looks identical for a
+				// moment; tearing that down would cost it its worker and cascade across siblings.
+				await new Promise(resolve => setTimeout(resolve, PARA_SW_VERSIONLESS_CONFIRM_MS));
+				const confirmed = await probe();
+				if (!isVersionless(confirmed)) {
+					return;
+				}
+				// Report either way. A confirmed-broken record that could not be cleared is the single most
+				// interesting outcome, so it must not vanish into the catch below. `safe_` opts the key
+				// past the diagnostics allowlist (see isParadisSafeExtraKey); a bare name is dropped
+				// silently, which would take the misfire-vs-real distinction with it.
+				try {
+					const removed = await paraWithTimeout(confirmed.unregister(), PARA_SW_PROBE_TIMEOUT_MS, 'unregister');
+					paraReportSignal('sw-versionless-registration-discarded', {
+						duration_ms: Date.now() - startedAt,
+						safe_removed: removed !== false,
+					});
+				} catch (unregisterError) {
+					paraReportSignal('sw-versionless-registration-discarded', {
+						duration_ms: Date.now() - startedAt,
+						safe_removed: false,
+					});
+					throw unregisterError;
+				}
+			} catch (error) {
+				console.error(`Could not clear a version-less service worker registration: ${error}`);
+			}
+		}
+
+		/**
 		 * Gets the service worker into a usable state, clearing and re-registering once if it stalls.
 		 *
 		 * Returns whether a service worker is usable. The point is that rendering continues even when
@@ -417,6 +487,8 @@
 				navigator.serviceWorker.register(swPath, { type: 'module', updateViaCache: 'none' }),
 				PARA_SW_REGISTER_TIMEOUT_MS, 'Service worker registration');
 
+			await paraDiscardVersionlessRegistration();
+
 			/** @type {ServiceWorkerRegistration} */
 			let registration;
 			try {
@@ -429,10 +501,21 @@
 				}
 				paraReportSignal('sw-register-timeout', { duration_ms: Date.now() - startedAt, attempt: 1 });
 				// A registration that never settled can linger, so clear it before registering again.
+				// PARA-PATCH: these read and delete a local registration record, so they get the short probe
+				// deadline rather than the registration one. With 5s each the cleanup plus both register
+				// attempts summed past PARA_SW_SETUP_BUDGET_MS, so the budget cut the recovery off before
+				// the retry could finish — the one path that is supposed to rescue a stuck registration
+				// could never complete. That is why no `sw-register-recovered` was ever reported.
 				try {
-					const existing = await paraWithTimeout(navigator.serviceWorker.getRegistration(), PARA_SW_REGISTER_TIMEOUT_MS, 'getRegistration');
-					if (existing) {
-						await paraWithTimeout(existing.unregister(), PARA_SW_REGISTER_TIMEOUT_MS, 'unregister');
+					const existing = await paraWithTimeout(navigator.serviceWorker.getRegistration(), PARA_SW_PROBE_TIMEOUT_MS, 'getRegistration');
+					// PARA-PATCH: only clear a record that is not serving anyone. This scope is shared with
+					// sibling webviews (same `IWebview.origin` across windows, and viewType-derived origins
+					// upstream), so a healthy worker here may belong to another client whose registration
+					// simply outran ours. Until the deadlines were shortened this path was cut off by the
+					// setup budget and rarely ran; now that it completes, an unconditional unregister would
+					// start actually destroying those siblings.
+					if (existing && !existing.active && !existing.installing && !existing.waiting) {
+						await paraWithTimeout(existing.unregister(), PARA_SW_PROBE_TIMEOUT_MS, 'unregister');
 					}
 				} catch (cleanupError) {
 					console.error(`Could not clear the stuck service worker registration: ${cleanupError}`);

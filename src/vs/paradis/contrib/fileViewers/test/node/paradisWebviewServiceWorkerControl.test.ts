@@ -89,14 +89,39 @@ function createHarness(source: string, initialController: object | null = null):
  * `createHarness` が制御待ちだけを取り出すのに対し、こちらは「登録が決着しない」ような
  * 手前の止まり方を再現する。
  */
-function createSetupHarness(source: string, behavior: { register: () => Promise<object>; initialController?: object | null }) {
+function createSetupHarness(source: string, behavior: {
+	register: () => Promise<object>;
+	initialController?: object | null;
+	/**
+	 * 登録の前に台帳へ既に居る registration。省略時は「まっさらな origin」＝ 無し。
+	 * 登録が止まったあとの後始末は、その時点で居残っている registration を返す既定の挙動で再現する。
+	 */
+	existingRegistration?: object;
+	/** 登録が決着した時点で controller が付く（実機では worker が claim した瞬間に相当）。 */
+	controllerAfterRegister?: object;
+	/** 登録を試みたあとに台帳へ居残っている registration。既定は「版を持たない残骸」。 */
+	leftoverRegistration?: object;
+}) {
 	const signals: string[] = [];
+	let registerAttempts = 0;
 	const serviceWorker = {
 		controller: behavior.initialController ?? null,
 		addEventListener: () => { },
 		removeEventListener: () => { },
-		register: behavior.register,
-		getRegistration: async () => ({ unregister: async () => true }),
+		register: () => {
+			registerAttempts++;
+			return behavior.register().then(registration => {
+				if (behavior.controllerAfterRegister) {
+					serviceWorker.controller = behavior.controllerAfterRegister;
+				}
+				return registration;
+			});
+		},
+		// 実機と同じ順序にする: 最初の問い合わせでは指定された既存分だけを返し、登録を試みたあとは
+		// 「決着しなかった登録が残っている」状態を返す。
+		getRegistration: async () => registerAttempts === 0
+			? behavior.existingRegistration
+			: (behavior.leftoverRegistration ?? { unregister: async () => true }),
 	};
 	const hostMessaging = { postMessage: (_channel: string, data: { code: string }) => { signals.push(data.code); } };
 	// 立て直しの経緯は console に残す作りなので、テスト出力を汚さないよう捨てる。
@@ -244,6 +269,32 @@ suite('ParadisWebviewServiceWorkerControl', () => {
 	 * 登録が決着しないときでも **必ず有限時間で描画へ進む**（例外を投げず、service worker 無しに倒れる）
 	 * ことがこの fork の要。ここが崩れると webview は何も出さないまま固まる。
 	 */
+	test('the recovery path fits inside the setup budget instead of being cut off by it', function () {
+		const indexHtmlPath = findRepositoryFile('src/vs/workbench/contrib/webview/browser/pre/index.html');
+		if (indexHtmlPath === undefined) {
+			this.skip();
+		}
+		const html = readFileSync(indexHtmlPath!, 'utf8');
+		const read = (name: string): number => {
+			const match = new RegExp(`const ${name} = (\\d+);`).exec(html);
+			assert.ok(match, `${name} is still declared in index.html`);
+			return Number.parseInt(match![1], 10);
+		};
+		const probe = read('PARA_SW_PROBE_TIMEOUT_MS');
+		const register = read('PARA_SW_REGISTER_TIMEOUT_MS');
+		const budget = read('PARA_SW_SETUP_BUDGET_MS');
+
+		// 止まった登録を立て直す最悪経路: 事前の版なし判定 → 登録(期限切れ) → 後始末2回 → 登録し直し。
+		// これが予算を超えていると、唯一の救済経路が必ず途中で打ち切られる（実際に起きていた）。
+		const confirm = read('PARA_SW_VERSIONLESS_CONFIRM_MS');
+		// discard(getRegistration + 確認待ち + getRegistration + unregister) → 登録(期限切れ)
+		//   → 後始末(getRegistration + unregister) → 登録し直し
+		const worstCaseRecovery = (probe + confirm + probe + probe) + register + (probe + probe) + register;
+		assert.ok(
+			worstCaseRecovery <= budget,
+			`the recovery path (${worstCaseRecovery}ms) must fit inside PARA_SW_SETUP_BUDGET_MS (${budget}ms)`);
+	});
+
 	test('a registration that never settles still lets rendering proceed', async function () {
 		const indexHtmlPath = findRepositoryFile('src/vs/workbench/contrib/webview/browser/pre/index.html');
 		if (indexHtmlPath === undefined) {
@@ -258,7 +309,9 @@ suite('ParadisWebviewServiceWorkerControl', () => {
 		const source = html.slice(blockStart, blockEnd)
 			.replace(/const PARA_SW_CONTROL_TIMEOUT_MS = \d+;/, 'const PARA_SW_CONTROL_TIMEOUT_MS = 120;')
 			.replace(/const PARA_SW_CONTROL_POLL_MS = \d+;/, 'const PARA_SW_CONTROL_POLL_MS = 10;')
-			.replace(/const PARA_SW_REGISTER_TIMEOUT_MS = \d+;/, 'const PARA_SW_REGISTER_TIMEOUT_MS = 120;');
+			.replace(/const PARA_SW_REGISTER_TIMEOUT_MS = \d+;/, 'const PARA_SW_REGISTER_TIMEOUT_MS = 120;')
+			.replace(/const PARA_SW_PROBE_TIMEOUT_MS = \d+;/, 'const PARA_SW_PROBE_TIMEOUT_MS = 60;')
+			.replace(/const PARA_SW_VERSIONLESS_CONFIRM_MS = \d+;/, 'const PARA_SW_VERSIONLESS_CONFIRM_MS = 10;');
 
 		const settled = { active: {}, installing: null, waiting: null, update() { return Promise.resolve(this); } };
 
@@ -288,16 +341,63 @@ suite('ParadisWebviewServiceWorkerControl', () => {
 		});
 		const deniedError = await denied.establish('sw.js').then(() => undefined, (error: Error) => error.message);
 
+		// 5. 版を1つも持たない registration が居座っているケース（実機で計測した壊れ方）。
+		//    そのまま登録しても直らず、期限切れを待つ分だけ白紙が延びるので、登録の前に捨てる。
+		let versionlessUnregistered = false;
+		const versionless = createSetupHarness(source, {
+			register: async () => settled,
+			// 壊れた registration が居るときは controller が付いていない。付いていれば active な
+			// worker が居る証拠なので、そもそも捨てる判定に入らない（ショートサーキット）。
+			controllerAfterRegister: { state: 'activated' },
+			existingRegistration: {
+				installing: null, waiting: null, active: null,
+				unregister: async () => { versionlessUnregistered = true; return true; },
+			},
+		});
+		const versionlessResult = await versionless.establish('sw.js');
+
+		// 6. 版を持つ registration は使用中なので、間違っても捨ててはいけない。
+		let healthyExistingUnregistered = false;
+		const keepsHealthy = createSetupHarness(source, {
+			register: async () => settled,
+			controllerAfterRegister: { state: 'activated' },
+			existingRegistration: {
+				installing: null, waiting: null, active: {},
+				unregister: async () => { healthyExistingUnregistered = true; return true; },
+			},
+		});
+		const keepsHealthyResult = await keepsHealthy.establish('sw.js');
+
+		// 7. 登録が詰まったあとの後始末は、台帳に居るのが「使われている registration」なら消してはいけない。
+		//    この scope は兄弟 webview と共有されるので、消すと相手の worker を奪う。
+		//    自分の詰まった登録がこの形になることは無い（register() は installing を立てて解決するため、
+		//    版を持つレコードは必ず他者のもの）。
+		let siblingUnregistered = false;
+		const keepsSibling = createSetupHarness(source, {
+			register: () => new Promise(() => { }),
+			leftoverRegistration: {
+				installing: null, waiting: null, active: {},
+				unregister: async () => { siblingUnregistered = true; return true; },
+			},
+		});
+		const keepsSiblingResult = await keepsSibling.establish('sw.js');
+
 		assert.deepStrictEqual({
 			neverSettles: { usedServiceWorker: neverSettlesResult, signals: neverSettles.signals },
 			recovers: { usedServiceWorker: recoversResult, signals: recovers.signals },
 			healthy: { usedServiceWorker: healthyResult, signals: healthy.signals },
 			denied: { surfacedReason: deniedError?.includes('user denied permission') ?? false, signals: denied.signals },
+			versionless: { usedServiceWorker: versionlessResult, signals: versionless.signals, discarded: versionlessUnregistered },
+			keepsHealthy: { usedServiceWorker: keepsHealthyResult, signals: keepsHealthy.signals, discarded: healthyExistingUnregistered },
+			keepsSibling: { usedServiceWorker: keepsSiblingResult, signals: keepsSibling.signals, unregistered: siblingUnregistered },
 		}, {
 			neverSettles: { usedServiceWorker: false, signals: ['sw-register-timeout', 'sw-unavailable'] },
 			recovers: { usedServiceWorker: true, signals: ['sw-register-timeout', 'sw-register-recovered'] },
 			healthy: { usedServiceWorker: true, signals: [] },
 			denied: { surfacedReason: true, signals: [] },
+			versionless: { usedServiceWorker: true, signals: ['sw-versionless-registration-discarded'], discarded: true },
+			keepsHealthy: { usedServiceWorker: true, signals: [], discarded: false },
+			keepsSibling: { usedServiceWorker: false, signals: ['sw-register-timeout', 'sw-unavailable'], unregistered: false },
 		});
 	});
 });
