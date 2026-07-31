@@ -32,6 +32,15 @@ export const enum ParadisWebviewSignalCode {
 	/** 登録し直しで決着し、service worker を使える状態に戻った。 */
 	ServiceWorkerRegisterRecovered = 'sw-register-recovered',
 	/**
+	 * 版を1つも持たない registration が残っていたので捨てた。
+	 *
+	 * `installing`/`waiting`/`active` がすべて空の registration は、そのままでは二度と
+	 * worker を持たない。実機の計測ではこの状態が10秒以上続き、SW プロセスが一度も起動せず、
+	 * `navigator.serviceWorker.ready` も永久に解決しなかった。放置すると `register()` の
+	 * 期限切れを待つ分だけ白紙の時間が延びるので、登録の前に捨てる。
+	 */
+	ServiceWorkerVersionlessRegistrationDiscarded = 'sw-versionless-registration-discarded',
+	/**
 	 * service worker を諦め、無しで描画を続けた。本文は表示できるが `vscode-resource` 経由の
 	 * リソース(ローカル画像など)は読めない。白紙で固まるよりましという判断。
 	 */
@@ -66,6 +75,7 @@ const REPORTED_CODES: ReadonlySet<string> = new Set<string>([
 	ParadisWebviewSignalCode.ServiceWorkerRegisterTimeout,
 	ParadisWebviewSignalCode.ServiceWorkerRegisterRecovered,
 	ParadisWebviewSignalCode.ServiceWorkerUnavailable,
+	ParadisWebviewSignalCode.ServiceWorkerVersionlessRegistrationDiscarded,
 ]);
 
 /**
@@ -75,9 +85,13 @@ const REPORTED_CODES: ReadonlySet<string> = new Set<string>([
 export function notifyParadisWebviewSignal(signal: IParadisWebviewSignal): void {
 	if (REPORTED_CODES.has(signal.code)) {
 		// `duration_ms` はサニタイザの allowlist に載っているキー。`attempt` も同様。
+		// `safe_removed` は「実際に捨てられたか」。版なし registration の判定が本物だったのか、
+		// 別の client が先に片付けた後だったのかを、あとからログだけで見分けるために要る。
+		// キーは `safe_` 接頭辞でないと isParadisSafeExtraKey の許可リストに落とされる。
 		reportParadisDiagnosticError('patched', 'webview', signal.code, new Error(`Webview service worker problem (${signal.code})`), {
 			duration_ms: signal.detail?.['duration_ms'],
 			attempt: signal.detail?.['attempt'],
+			safe_removed: signal.detail?.['safe_removed'],
 		});
 	}
 	emitter.fire(signal);
