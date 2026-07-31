@@ -136,6 +136,8 @@ function RootLayout() {
 						<Stack.Screen name="ccusage" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* Rate Limit(AIリミット)。設定画面の項目から開く（ccusageと同じ水平push） */}
 						<Stack.Screen name="ratelimit" options={{ headerShown: false, animation: 'slide_from_right' }} />
+						{/* GitHub API利用状況。設定画面の項目から開く（ccusage/ratelimitと同じ水平push） */}
+						<Stack.Screen name="github-usage" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継） */}
 						<Stack.Screen name="browser" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* アーカイブ一覧。ホームヘッダーの箱アイコンから開く */}

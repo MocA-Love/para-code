@@ -28,6 +28,15 @@ const MAX_CALL_EVENTS = 2000;
 const MAX_LAST_ERRORS = 20;
 /** 記録するエラーメッセージの最大長。gh の stderr をそのまま溜め込まないための上限。 */
 const MAX_ERROR_MESSAGE_LENGTH = 500;
+/**
+ * 呼び出し元・スペース別の集計マップが際限なく増えないための上限。gh CLI 経由の呼び出しは callSite が
+ * 固定の小さな集合だが、IPC経由（recordCall、別プロセスからの入力）はカーディナリティを保証できないため
+ * 持たせる。上限に達した後に現れる新規キーはこの集計には現れない（既存キーの集計は影響を受けない）。
+ */
+const MAX_DISTINCT_CALL_SITES = 200;
+const MAX_DISTINCT_SPACES = 500;
+/** callSite として記録する文字列の最大長。 */
+const MAX_CALL_SITE_LENGTH = 200;
 
 /**
  * gh の stderr 由来のメッセージを表示・保持できる長さへ丸める。
@@ -69,17 +78,63 @@ export interface IParadisGithubRateLimitEntry {
 	readonly resetAt: number;
 }
 
+/**
+ * 呼び出し1回が消費するGitHubの資源区分。`gh api rate_limit` が返す資源名（'core'/'graphql'/'search'…）と
+ * 語彙を揃え、`core` はREST全般を指す（gh CLI・sessions側GitHubApiClientの'rest'は記録の境界でcoreへ正規化する）。
+ */
+export type IParadisGithubCallResource = 'core' | 'graphql';
+
 /** Para Code が発行した gh 呼び出し1回分。 */
 export interface IParadisGithubCallEvent {
 	readonly at: number;
 	/** 例: `gh pr view`。引数の値（パス等）は含めない。 */
 	readonly callSite: string;
+	readonly resource: IParadisGithubCallResource;
 	readonly durationMs: number;
 	readonly success: boolean;
 	readonly rateLimited: boolean;
 	readonly errorMessage?: string;
+	/** worktreeに紐付かない呼び出し（Agent Sessionsウィンドウ自身のPR機能等）は未設定。 */
 	readonly worktreePath?: string;
 }
+
+/**
+ * IPC経由で届いた値を安全な {@link IParadisGithubCallEvent} へ検証・変換する。
+ * `recordCall`（別プロセスからの入力）は同一プロセス内の呼び出し（`paradisRecordGithubCall`）と違い
+ * 型を保証できないため、記録の前に必ずここを通す。不正な値は undefined を返し、呼び出し側は記録をスキップする。
+ */
+export function paradisCoerceGithubCallEvent(value: unknown): IParadisGithubCallEvent | undefined {
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const raw = value as Record<string, unknown>;
+
+	const at = typeof raw.at === 'number' && isFinite(raw.at) ? raw.at : undefined;
+	const resource = raw.resource === 'core' || raw.resource === 'graphql' ? raw.resource : undefined;
+	const durationMs = typeof raw.durationMs === 'number' && isFinite(raw.durationMs) ? Math.max(0, raw.durationMs) : undefined;
+	const callSite = typeof raw.callSite === 'string' && raw.callSite.length > 0 ? raw.callSite.slice(0, MAX_CALL_SITE_LENGTH) : undefined;
+	if (at === undefined || resource === undefined || durationMs === undefined || callSite === undefined) {
+		return undefined;
+	}
+
+	return {
+		at,
+		callSite,
+		resource,
+		durationMs,
+		success: raw.success === true,
+		rateLimited: raw.rateLimited === true,
+		errorMessage: typeof raw.errorMessage === 'string' ? raw.errorMessage : undefined,
+		worktreePath: typeof raw.worktreePath === 'string' && raw.worktreePath.length > 0 ? raw.worktreePath : undefined,
+	};
+}
+
+/**
+ * worktreeに紐付かない gh 呼び出し（Agent Sessionsウィンドウ自身のGitHub APIクライアント経由の呼び出しなど）を
+ * 束ねる仮想スペースID。実在のパスと衝突しない値にするため、redact後のパス（`~/...`等）が取り得ない
+ * 制御文字を先頭に置く。表示名への変換はUI層（editor/mobile）の責務とし、ここではローカライズしない。
+ */
+export const PARADIS_GITHUB_UNSCOPED_SPACE = '\u0000agent-sessions';
 
 export interface IParadisGithubCallCounts {
 	readonly calls: number;
@@ -87,18 +142,41 @@ export interface IParadisGithubCallCounts {
 	readonly rateLimited: number;
 	readonly avgDurationMs: number;
 	readonly maxDurationMs: number;
+	/** この集計対象（窓）の中で最後に呼ばれた時刻。窓の中で1件も呼ばれていなければ undefined。 */
+	readonly lastRunAt: number | undefined;
 }
 
 /** 呼び出し元ごとの集計行。 */
 export interface IParadisGithubOperationStat {
 	readonly callSite: string;
+	/** この callSite が消費する資源。呼び出し元は常に単一の資源にひもづくため、資源ごとの絞り込みに使う。 */
+	readonly resource: IParadisGithubCallResource;
 	readonly session: IParadisGithubCallCounts;
 	readonly rolling5m: IParadisGithubCallCounts;
+	readonly rolling1h: IParadisGithubCallCounts;
 	readonly lastRunAt: number | undefined;
 	readonly lastErrorAt: number | undefined;
 	readonly lastErrorMessage: string | undefined;
 	/** セッション中に最も多く呼ばれた作業ツリー（内訳の手がかり）。 */
 	readonly topWorktreePath: string | undefined;
+}
+
+/**
+ * スペース（worktree、または {@link PARADIS_GITHUB_UNSCOPED_SPACE}）ごとの集計行。
+ * 呼び出し元別と直交する切り口で、「どのスペースが枠を食っているか」を第一級で見せる。
+ */
+export interface IParadisGithubSpaceStat {
+	readonly space: string;
+	readonly session: IParadisGithubCallCounts;
+	readonly rolling5m: IParadisGithubCallCounts;
+	readonly rolling1h: IParadisGithubCallCounts;
+	/** このスペースで最も多く呼ばれた callSite（内訳の手がかり）。 */
+	readonly topCallSite: string | undefined;
+	/** セッション呼び出しのうち core（REST）が占める割合（0〜1）。残りが graphql。内訳バーの色分けに使う。 */
+	readonly coreRatio: number;
+	/** 直近5分・直近1時間それぞれの窓内での core 比率。窓を切り替えたときにバーの色分けが数値と食い違わないよう、窓ごとに持つ。 */
+	readonly rolling5mCoreRatio: number;
+	readonly rolling1hCoreRatio: number;
 }
 
 export interface IParadisGithubErrorEntry {
@@ -142,6 +220,7 @@ export interface IParadisGithubMetricsSnapshot {
 	readonly rateLimits: readonly IParadisGithubRateLimitEntry[];
 	readonly consumption: readonly IParadisGithubConsumption[];
 	readonly operations: readonly IParadisGithubOperationStat[];
+	readonly spaces: readonly IParadisGithubSpaceStat[];
 	readonly totals: IParadisGithubTotals;
 	readonly lastErrors: readonly IParadisGithubErrorEntry[];
 }
@@ -240,6 +319,9 @@ export function paradisGithubFormatCountdown(ms: number): string {
 
 // ---------- 呼び出しログ ----------
 
+/** 直近1時間のローリング集計の窓幅。呼び出し元・スペースの「1時間」軸に使う。 */
+const PARADIS_GITHUB_HOUR_WINDOW_MS = 60 * 60 * 1000;
+
 interface IOperationAggregate {
 	calls: number;
 	failures: number;
@@ -249,11 +331,20 @@ interface IOperationAggregate {
 	lastRunAt: number | undefined;
 	lastErrorAt: number | undefined;
 	lastErrorMessage: string | undefined;
+	/** この callSite の資源。呼び出しごとに変わらない前提で、直近のイベントの値を保持する。 */
+	resource: IParadisGithubCallResource | undefined;
 	worktreeCounts: Map<string, number>;
 }
 
-function emptyCounts(): IParadisGithubCallCounts {
-	return { calls: 0, failures: 0, rateLimited: 0, avgDurationMs: 0, maxDurationMs: 0 };
+interface ISpaceAggregate {
+	calls: number;
+	failures: number;
+	rateLimited: number;
+	totalDurationMs: number;
+	maxDurationMs: number;
+	lastRunAt: number | undefined;
+	coreCalls: number;
+	callSiteCounts: Map<string, number>;
 }
 
 function createAggregate(): IOperationAggregate {
@@ -266,22 +357,39 @@ function createAggregate(): IOperationAggregate {
 		lastRunAt: undefined,
 		lastErrorAt: undefined,
 		lastErrorMessage: undefined,
+		resource: undefined,
 		worktreeCounts: new Map<string, number>(),
 	};
 }
 
-function toCounts(aggregate: IOperationAggregate): IParadisGithubCallCounts {
+function createSpaceAggregate(): ISpaceAggregate {
+	return {
+		calls: 0,
+		failures: 0,
+		rateLimited: 0,
+		totalDurationMs: 0,
+		maxDurationMs: 0,
+		lastRunAt: undefined,
+		coreCalls: 0,
+		callSiteCounts: new Map<string, number>(),
+	};
+}
+
+/** 呼び出し件数系の共通フィールドを持つ集計から表示用カウントを作る（callSite別・スペース別の両方で使う）。 */
+function toCounts(aggregate: { calls: number; failures: number; rateLimited: number; totalDurationMs: number; maxDurationMs: number; lastRunAt?: number }): IParadisGithubCallCounts {
 	return {
 		calls: aggregate.calls,
 		failures: aggregate.failures,
 		rateLimited: aggregate.rateLimited,
 		avgDurationMs: aggregate.calls > 0 ? aggregate.totalDurationMs / aggregate.calls : 0,
 		maxDurationMs: aggregate.maxDurationMs,
+		lastRunAt: aggregate.lastRunAt,
 	};
 }
 
 function applyEvent(aggregate: IOperationAggregate, event: IParadisGithubCallEvent): void {
 	aggregate.calls++;
+	aggregate.resource = event.resource;
 	if (!event.success) {
 		aggregate.failures++;
 		aggregate.lastErrorAt = event.at;
@@ -298,14 +406,52 @@ function applyEvent(aggregate: IOperationAggregate, event: IParadisGithubCallEve
 	}
 }
 
+function applySpaceEvent(aggregate: ISpaceAggregate, event: IParadisGithubCallEvent): void {
+	aggregate.calls++;
+	if (event.resource === 'core') {
+		aggregate.coreCalls++;
+	}
+	if (!event.success) {
+		aggregate.failures++;
+	}
+	if (event.rateLimited) {
+		aggregate.rateLimited++;
+	}
+	aggregate.totalDurationMs += event.durationMs;
+	aggregate.maxDurationMs = Math.max(aggregate.maxDurationMs, event.durationMs);
+	aggregate.lastRunAt = aggregate.lastRunAt === undefined ? event.at : Math.max(aggregate.lastRunAt, event.at);
+	aggregate.callSiteCounts.set(event.callSite, (aggregate.callSiteCounts.get(event.callSite) ?? 0) + 1);
+}
+
+/** 件数マップの最頻キー（内訳の「most from」の手がかり）。 */
+function pickTop(counts: Map<string, number>): string | undefined {
+	let top: string | undefined;
+	let topCount = 0;
+	for (const [key, count] of counts) {
+		if (count > topCount) {
+			topCount = count;
+			top = key;
+		}
+	}
+	return top;
+}
+
+/** スペース集計のうち core（REST）が占める割合（0〜1）。呼び出しが無ければ 1（graphqlの消費が無い状態）。 */
+function coreRatioOf(aggregate: ISpaceAggregate): number {
+	return aggregate.calls > 0 ? aggregate.coreCalls / aggregate.calls : 1;
+}
+
 /**
  * Para Code が発行した gh 呼び出しの記録。セッション累計は集計値として、
- * 直近5分は生イベントのリングバッファから都度計算する。
+ * 直近5分・直近1時間は生イベントのリングバッファから都度計算する。
+ * 呼び出し元（callSite）別とスペース（worktree、または {@link PARADIS_GITHUB_UNSCOPED_SPACE}）別の
+ * 両方の切り口を保持する。
  */
 export class ParadisGithubCallLog {
 
 	private readonly events: IParadisGithubCallEvent[] = [];
 	private readonly sessionAggregates = new Map<string, IOperationAggregate>();
+	private readonly sessionSpaceAggregates = new Map<string, ISpaceAggregate>();
 	private readonly lastErrors: IParadisGithubErrorEntry[] = [];
 	private sessionCalls = 0;
 	private sessionFailures = 0;
@@ -322,12 +468,26 @@ export class ParadisGithubCallLog {
 			this.events.splice(0, this.events.length - MAX_CALL_EVENTS);
 		}
 
+		// 上限に達した後の新規キーはこの集計に現れない（totals.sessionCalls等の全体件数には引き続き数える）。
+		// 既存キーの集計は影響を受けない
 		let aggregate = this.sessionAggregates.get(event.callSite);
-		if (!aggregate) {
+		if (!aggregate && this.sessionAggregates.size < MAX_DISTINCT_CALL_SITES) {
 			aggregate = createAggregate();
 			this.sessionAggregates.set(event.callSite, aggregate);
 		}
-		applyEvent(aggregate, event);
+		if (aggregate) {
+			applyEvent(aggregate, event);
+		}
+
+		const spaceId = event.worktreePath ?? PARADIS_GITHUB_UNSCOPED_SPACE;
+		let spaceAggregate = this.sessionSpaceAggregates.get(spaceId);
+		if (!spaceAggregate && this.sessionSpaceAggregates.size < MAX_DISTINCT_SPACES) {
+			spaceAggregate = createSpaceAggregate();
+			this.sessionSpaceAggregates.set(spaceId, spaceAggregate);
+		}
+		if (spaceAggregate) {
+			applySpaceEvent(spaceAggregate, event);
+		}
 
 		this.sessionCalls++;
 		if (!event.success) {
@@ -344,23 +504,58 @@ export class ParadisGithubCallLog {
 		}
 	}
 
-	snapshot(now: number): { operations: IParadisGithubOperationStat[]; totals: IParadisGithubTotals; lastErrors: IParadisGithubErrorEntry[] } {
-		const windowStart = now - PARADIS_GITHUB_ROLLING_WINDOW_MS;
-		const rollingAggregates = new Map<string, IOperationAggregate>();
+	snapshot(now: number): { operations: IParadisGithubOperationStat[]; spaces: IParadisGithubSpaceStat[]; totals: IParadisGithubTotals; lastErrors: IParadisGithubErrorEntry[] } {
+		const window5mStart = now - PARADIS_GITHUB_ROLLING_WINDOW_MS;
+		const window1hStart = now - PARADIS_GITHUB_HOUR_WINDOW_MS;
+
+		const rolling5mByCallSite = new Map<string, IOperationAggregate>();
+		const rolling1hByCallSite = new Map<string, IOperationAggregate>();
+		const rolling5mBySpace = new Map<string, ISpaceAggregate>();
+		const rolling1hBySpace = new Map<string, ISpaceAggregate>();
 		let rolling5mCalls = 0;
 		let rolling5mFailures = 0;
 		let rolling5mRateLimited = 0;
 
+		// 1回のループで1時間窓・5分窓の両方（callSite別・スペース別）を積む。
+		// 5分窓は1時間窓の部分集合なので、1時間に入った時点で両方に足せるかを判定する。
 		for (const event of this.events) {
-			if (event.at < windowStart) {
+			if (event.at < window1hStart) {
 				continue;
 			}
-			let aggregate = rollingAggregates.get(event.callSite);
-			if (!aggregate) {
-				aggregate = createAggregate();
-				rollingAggregates.set(event.callSite, aggregate);
+			const spaceId = event.worktreePath ?? PARADIS_GITHUB_UNSCOPED_SPACE;
+
+			let hourOp = rolling1hByCallSite.get(event.callSite);
+			if (!hourOp) {
+				hourOp = createAggregate();
+				rolling1hByCallSite.set(event.callSite, hourOp);
 			}
-			applyEvent(aggregate, event);
+			applyEvent(hourOp, event);
+
+			let hourSpace = rolling1hBySpace.get(spaceId);
+			if (!hourSpace) {
+				hourSpace = createSpaceAggregate();
+				rolling1hBySpace.set(spaceId, hourSpace);
+			}
+			applySpaceEvent(hourSpace, event);
+
+			if (event.at < window5mStart) {
+				continue;
+			}
+
+			let fiveMinOp = rolling5mByCallSite.get(event.callSite);
+			if (!fiveMinOp) {
+				fiveMinOp = createAggregate();
+				rolling5mByCallSite.set(event.callSite, fiveMinOp);
+			}
+			applyEvent(fiveMinOp, event);
+
+			let fiveMinSpace = rolling5mBySpace.get(spaceId);
+			if (!fiveMinSpace) {
+				fiveMinSpace = createSpaceAggregate();
+				rolling5mBySpace.set(spaceId, fiveMinSpace);
+			}
+			applySpaceEvent(fiveMinSpace, event);
+
 			rolling5mCalls++;
 			if (!event.success) {
 				rolling5mFailures++;
@@ -372,30 +567,42 @@ export class ParadisGithubCallLog {
 
 		const operations: IParadisGithubOperationStat[] = [];
 		for (const [callSite, aggregate] of this.sessionAggregates) {
-			const rolling = rollingAggregates.get(callSite);
-			let topWorktreePath: string | undefined;
-			let topCount = 0;
-			for (const [worktreePath, count] of aggregate.worktreeCounts) {
-				if (count > topCount) {
-					topCount = count;
-					topWorktreePath = worktreePath;
-				}
-			}
 			operations.push({
 				callSite,
+				// 資源は既存イベントから常に決まるはずだが、記録がまだ無い理論上のケースだけ core にフォールバックする
+				resource: aggregate.resource ?? 'core',
 				session: toCounts(aggregate),
-				rolling5m: rolling ? toCounts(rolling) : emptyCounts(),
+				rolling5m: toCounts(rolling5mByCallSite.get(callSite) ?? emptyAggregateFallback),
+				rolling1h: toCounts(rolling1hByCallSite.get(callSite) ?? emptyAggregateFallback),
 				lastRunAt: aggregate.lastRunAt,
 				lastErrorAt: aggregate.lastErrorAt,
 				lastErrorMessage: aggregate.lastErrorMessage,
-				topWorktreePath,
+				topWorktreePath: pickTop(aggregate.worktreeCounts),
 			});
 		}
 		// 直近5分の多い順 → セッション累計の多い順（ダッシュボードの並び順をここで確定させる）
 		operations.sort((a, b) => b.rolling5m.calls - a.rolling5m.calls || b.session.calls - a.session.calls);
 
+		const spaces: IParadisGithubSpaceStat[] = [];
+		for (const [space, aggregate] of this.sessionSpaceAggregates) {
+			const rolling5mAggregate = rolling5mBySpace.get(space) ?? emptySpaceAggregateFallback;
+			const rolling1hAggregate = rolling1hBySpace.get(space) ?? emptySpaceAggregateFallback;
+			spaces.push({
+				space,
+				session: toCounts(aggregate),
+				rolling5m: toCounts(rolling5mAggregate),
+				rolling1h: toCounts(rolling1hAggregate),
+				topCallSite: pickTop(aggregate.callSiteCounts),
+				coreRatio: coreRatioOf(aggregate),
+				rolling5mCoreRatio: coreRatioOf(rolling5mAggregate),
+				rolling1hCoreRatio: coreRatioOf(rolling1hAggregate),
+			});
+		}
+		spaces.sort((a, b) => b.rolling5m.calls - a.rolling5m.calls || b.session.calls - a.session.calls);
+
 		return {
 			operations,
+			spaces,
 			totals: {
 				sessionCalls: this.sessionCalls,
 				sessionFailures: this.sessionFailures,
@@ -407,6 +614,10 @@ export class ParadisGithubCallLog {
 		};
 	}
 }
+
+/** ウィンドウ内に1件もヒットしなかった callSite / スペースに使う、再利用可能な「0件」集計。toCounts() にしか渡さないので読み取り専用に近い扱いでよい。 */
+const emptyAggregateFallback: IOperationAggregate = createAggregate();
+const emptySpaceAggregateFallback: ISpaceAggregate = createSpaceAggregate();
 
 // ---------- レート枠の履歴と消費ペース ----------
 
@@ -570,6 +781,37 @@ export function paradisRecordGithubCall(event: IParadisGithubCallEvent): void {
 		callSink?.record(event);
 	} catch {
 		// 計測の失敗で gh 呼び出し自体を壊さない
+	}
+}
+
+// ---------- リモートプロセスからの記録転送 ----------
+//
+// 上の callSink は同一プロセス内(shared process)専用。Agent Sessionsウィンドウ自身の
+// GitHub APIクライアント（sessions/contrib/github）は別プロセス(renderer)で動くため、
+// モジュール変数を共有できず直接 record() を呼べない。electron-browser 層が
+// paradisSetGithubCallTransport() でIPC転送関数を差し込み、renderer 側は
+// paradisRecordRemoteGithubCall() だけを知っていればよいようにする。
+// web/browser専用ビルド等、転送が未設定の環境では黙って何もしない（no-op）。
+
+let callTransport: ((event: IParadisGithubCallEvent) => void) | undefined;
+
+/**
+ * リモートプロセス（Agent Sessionsウィンドウ等）からの記録の転送先を設定する。
+ * electron-browser 層のcontributionが、shared process への IPC 呼び出しをここに差し込む。
+ */
+export function paradisSetGithubCallTransport(transport: ((event: IParadisGithubCallEvent) => void) | undefined): void {
+	callTransport = transport;
+}
+
+/**
+ * 別プロセス（renderer）で発生した gh 呼び出しを記録する。転送先が未設定なら何もしない
+ * （web ビルド等、電子デスクトップ専用の転送が使えない環境でも安全に呼べる）。
+ */
+export function paradisRecordRemoteGithubCall(event: IParadisGithubCallEvent): void {
+	try {
+		callTransport?.(event);
+	} catch {
+		// 計測の失敗で呼び出し元の処理を壊さない
 	}
 }
 

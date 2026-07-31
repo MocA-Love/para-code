@@ -110,6 +110,8 @@ export class ParadisWorktreeGitService {
 					paradisRecordGithubCall({
 						at: Date.now(),
 						callSite,
+						// gh CLI 経由の呼び出しは常に REST（gh api rate_limit の 'core' 資源）
+						resource: 'core',
 						durationMs: Date.now() - startedAt,
 						// 「PR が無い」は gh が終了コード1で返すだけの正常系なので失敗に数えない
 						success: paradisIsGithubNoPullRequestMessage(message),
@@ -122,6 +124,7 @@ export class ParadisWorktreeGitService {
 					paradisRecordGithubCall({
 						at: Date.now(),
 						callSite,
+						resource: 'core',
 						durationMs: Date.now() - startedAt,
 						success: true,
 						rateLimited: false,

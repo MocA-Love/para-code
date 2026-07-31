@@ -117,6 +117,24 @@ suite('ParadisGithubMetricsService', () => {
 		});
 	});
 
+	test('records calls forwarded from a remote process (e.g. the Agent Sessions window)', async () => {
+		const { service } = createService(() => ({ stdout: RATE_LIMIT_JSON }));
+
+		service.recordCall({ at: 1_000_000, callSite: 'githubPRFetcher.reviewThreads', resource: 'graphql', durationMs: 40, success: true, rateLimited: false });
+		const snapshot = await service.getSnapshot();
+		service.dispose();
+
+		assert.deepStrictEqual({
+			callSites: snapshot.operations.map(operation => operation.callSite),
+			resource: snapshot.operations[0]?.resource,
+			spaceCount: snapshot.spaces.length,
+		}, {
+			callSites: ['githubPRFetcher.reviewThreads'],
+			resource: 'graphql',
+			spaceCount: 1,
+		});
+	});
+
 	test('backs off while gh keeps failing (for example when it is not signed in)', async () => {
 		const authError = new Error('gh: To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN environment variable');
 		const { service, state } = createService(() => ({ error: authError }));

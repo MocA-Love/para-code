@@ -55,6 +55,15 @@ export default function SettingsScreen() {
 						</View>
 						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
 					</Pressable>
+					<View style={styles.separator} />
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/github-usage'); }}>
+						<Ionicons name="logo-github" size={18} color={colors.accent} />
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>GitHub API</Text>
+							<Text style={styles.rowDesc}>GitHubのレート枠と、Para Codeが送ったリクエストの内訳を確認します</Text>
+						</View>
+						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+					</Pressable>
 				</View>
 
 				<Text style={styles.sectionTitle}>通知</Text>

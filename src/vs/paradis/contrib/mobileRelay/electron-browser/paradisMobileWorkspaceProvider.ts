@@ -39,6 +39,7 @@ import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/par
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
+import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
@@ -162,6 +163,8 @@ type FsInbound =
 	| { t: 'usage'; id: string; bypassCache?: boolean }
 	// Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）
 	| { t: 'limits'; id: string; bypassCache?: boolean }
+	// GitHub API利用状況（PC版のGitHub API Usageダッシュボードと同じデータ）
+	| { t: 'github'; id: string; bypassCache?: boolean }
 	// テキスト断片のシンタックスハイライト（エージェントチャットのコードブロック用）。
 	// lang はMarkdownフェンスの言語名（ts / typescript / python 等）。
 	| { t: 'hl'; id: string; text: string; lang?: string };
@@ -272,6 +275,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
 		// AIリミット(Rate Limit)スナップショット。実体は limitsMonitor の shared process バックエンド
 		private readonly fetchLimitsSnapshot: (bypassCache: boolean) => Promise<IParadisLimitsSnapshot>,
+		// GitHub API利用状況。実体は githubMetrics の shared process バックエンド（PC版と同じクライアント）
+		private readonly fetchGithubMetrics: (bypassCache: boolean) => Promise<IParadisGithubMetricsSnapshot>,
 		// worktree（スペース）作成。実体は paradisWorktreeHeadlessCreate.ts（contribution側で
 		// instantiationService.invokeFunction に束ねて渡される。runGit等と同じコールバック方式）
 		private readonly getWorktreeCreateForm: () => Promise<IParadisWorktreeCreateFormData>,
@@ -1370,6 +1375,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			try {
 				const data = await this.fetchLimitsSnapshot(!!msg.bypassCache);
 				reply({ t: 'limits', data });
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
+		// GitHub API利用状況。usage/limits と同じくワークスペース非依存(閲覧専用)。
+		if (msg.t === 'github') {
+			try {
+				const data = await this.fetchGithubMetrics(!!msg.bypassCache);
+				reply({ t: 'github', data });
 			} catch (err) {
 				reply({ error: String(err) });
 			}

@@ -320,11 +320,21 @@
 	grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
+.paradis-ghm-grid.cols2 {
+	grid-template-columns: 1fr 1fr;
+	align-items: start;
+}
+
 .paradis-ghm-card {
 	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
 	border-radius: 6px;
 	padding: 11px 13px;
 	background: var(--vscode-editorWidget-background, transparent);
+	transition: border-color 0.15s;
+}
+
+.paradis-ghm-card.emph {
+	border-color: var(--vscode-charts-blue);
 }
 
 .paradis-ghm-card .k {
@@ -362,6 +372,150 @@
 	text-transform: uppercase;
 	color: var(--vscode-descriptionForeground);
 	margin: 22px 0 8px;
+}
+
+.paradis-ghm-section-title .hint {
+	text-transform: none;
+	font-weight: 400;
+	letter-spacing: 0;
+	margin-left: 4px;
+}
+
+/* ---- 期間・リソースのセグメントコントロール ---- */
+
+.paradis-ghm-segrow {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	flex-wrap: wrap;
+	margin: 2px 0 16px;
+}
+
+.paradis-ghm-seggroup-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-right: 2px;
+}
+
+.paradis-ghm-seg {
+	display: inline-flex;
+	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+	border-radius: 5px;
+	overflow: hidden;
+}
+
+.paradis-ghm-seg button {
+	appearance: none;
+	border: none;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit;
+	font-size: 11.5px;
+	padding: 4px 10px;
+	cursor: pointer;
+	border-right: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
+}
+
+.paradis-ghm-seg button:last-child {
+	border-right: none;
+}
+
+.paradis-ghm-seg button:hover {
+	color: var(--vscode-foreground);
+	background: rgba(128, 128, 128, 0.08);
+}
+
+.paradis-ghm-seg button.checked {
+	background: var(--vscode-charts-blue);
+	color: var(--vscode-editor-background);
+	font-weight: 600;
+}
+
+.paradis-ghm-seg button.checked.gql {
+	background: var(--vscode-charts-purple);
+}
+
+/* ---- 積み上げチャートの凡例 ---- */
+
+.paradis-ghm-legend {
+	display: flex;
+	gap: 14px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	margin-bottom: 8px;
+}
+
+.paradis-ghm-legend span {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.paradis-ghm-legend i {
+	width: 8px;
+	height: 8px;
+	border-radius: 2px;
+	display: inline-block;
+}
+
+/* ---- 内訳の水平バー行（呼び出し元・スペース共通） ---- */
+
+.paradis-ghm-hbar-row {
+	padding: 9px 14px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+}
+
+.paradis-ghm-hbar-row:last-child {
+	border-bottom: none;
+}
+
+.paradis-ghm-hbar-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 10px;
+	margin-bottom: 5px;
+}
+
+.paradis-ghm-hbar-name {
+	font-weight: 500;
+	font-size: 12px;
+}
+
+.paradis-ghm-hbar-sub {
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	margin-left: 6px;
+}
+
+.paradis-ghm-hbar-value {
+	font-family: var(--monaco-monospace-font);
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	flex: none;
+}
+
+.paradis-ghm-hbar-track {
+	height: 6px;
+	border-radius: 3px;
+	background: rgba(128, 128, 128, 0.16);
+	overflow: hidden;
+	display: flex;
+}
+
+.paradis-ghm-hbar-track > span.core {
+	background: var(--vscode-charts-blue);
+	height: 100%;
+}
+
+.paradis-ghm-hbar-track > span.graphql {
+	background: var(--vscode-charts-purple);
+	height: 100%;
+}
+
+.paradis-ghm-hbar-track > span.search {
+	background: var(--vscode-charts-orange, var(--vscode-charts-yellow));
+	height: 100%;
 }
 
 .paradis-ghm-panel {
@@ -416,6 +570,14 @@
 
 .paradis-ghm-chart rect {
 	fill: var(--vscode-charts-blue);
+}
+
+.paradis-ghm-chart rect.graphql {
+	fill: var(--vscode-charts-purple);
+}
+
+.paradis-ghm-chart rect.search {
+	fill: var(--vscode-charts-orange, var(--vscode-charts-yellow));
 }
 
 .paradis-ghm-table {

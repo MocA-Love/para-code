@@ -2207,6 +2207,29 @@ export default defineConfig(
 					]
 				},
 				{
+					// PARA-PATCH: sessions.desktop.contribution.ts が GitHub API Usage ダッシュボードへの計装ブリッジ
+					// (electron-browser専用contribution、src/vs/sessions/contrib/github/electron-browser/~) を
+					// 1行importで登録するための専用ターゲット。汎用の 'src/vs/sessions/~' ルールは browser/electron-browser
+					// 両レイヤーに同じ restrictions を適用するため、そちらに直接足すと browser 層からも
+					// electron-browser専用ファイルを import できてしまう（layer違反）。専用ターゲットで
+					// electron-browser 層だけに絞る。
+					'target': 'src/vs/sessions/electron-browser/sessions.desktop.contribution.ts',
+					'layer': 'electron-browser',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/editor/~',
+						'vs/editor/contrib/*/~',
+						'vs/workbench/~',
+						'vs/workbench/browser/**',
+						'vs/workbench/services/*/~',
+						'vs/sessions/~',
+						'vs/sessions/services/*/~',
+						'vs/sessions/contrib/github/electron-browser/paradisSessionGithubMetricsBridge.contribution.js'
+					]
+				},
+				{
 					'target': 'src/vs/sessions/sessions.web.main.ts',
 					'layer': 'browser',
 					'restrictions': [
@@ -2328,6 +2351,9 @@ export default defineConfig(
 						'vs/sessions/services/*/~',
 						// PARA-PATCH: terminalGrid のセルが agentBrowser のペインインジケータ（DIフリーなヘルパー）を使うための import
 						'vs/paradis/contrib/agentBrowser/~',
+						// PARA-PATCH: sessions/contrib/github が GitHub API 利用状況ダッシュボードへ呼び出しを転送するための共通型/関数import（common層のみ。
+						// 末尾は既にcommonという末端レイヤー名なので'~'にせず'**'で完結させる。'~'にするとlayer別に更にネストして展開されてしまう）
+						'vs/paradis/contrib/githubMetrics/common/**',
 					]
 				},
 				{

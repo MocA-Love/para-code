@@ -11,6 +11,9 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRequestService } from '../../../../platform/request/common/request.js';
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
+// Feeds the GitHub API Usage dashboard (paradis/contrib/githubMetrics) so its "space" breakdown
+// also covers this window's own REST/GraphQL traffic, not just gh-CLI calls from worktrees.
+import { paradisRecordRemoteGithubCall } from '../../../../paradis/contrib/githubMetrics/common/paradisGithubMetrics.js';
 import { GitHubApiClient, GitHubApiError, GitHubApiResource, IGitHubApiRequestOptions, IGitHubApiResponse, IGitHubRateLimitSnapshot } from './githubApiClient.js';
 
 const LOG_PREFIX = '[SessionGithubRequestGate]';
@@ -153,10 +156,12 @@ export class SessionGithubRequestGate extends Disposable {
 				fn().then(
 					value => {
 						this._onRequestSettled(undefined, dispatchedAt, resource);
+						this._recordMetrics(callSite, resource, dispatchedAt, undefined);
 						resolve(value);
 					},
 					err => {
 						this._onRequestSettled(err, dispatchedAt, resource);
+						this._recordMetrics(callSite, resource, dispatchedAt, err);
 						reject(err);
 					}
 				);
@@ -362,6 +367,24 @@ export class SessionGithubRequestGate extends Disposable {
 		}
 
 		this._pumpScheduler.schedule(0);
+	}
+
+	/**
+	 * Forwards this call to the GitHub API Usage dashboard. `resource` uses this gate's own
+	 * 'rest'/'graphql' vocabulary, mapped to 'core'/'graphql' to match `gh api rate_limit`'s
+	 * resource names. There is no worktreePath here — this gate serves the whole window, not a
+	 * single worktree/session — so these calls land in the dashboard's unscoped-space bucket.
+	 */
+	private _recordMetrics(callSite: string, resource: GitHubApiResource, dispatchedAt: number, err: unknown): void {
+		paradisRecordRemoteGithubCall({
+			at: this._now(),
+			callSite,
+			resource: resource === 'graphql' ? 'graphql' : 'core',
+			durationMs: this._now() - dispatchedAt,
+			success: err === undefined,
+			rateLimited: err !== undefined && isRateLimitError(err),
+			errorMessage: err === undefined ? undefined : err instanceof Error ? err.message : String(err),
+		});
 	}
 
 	override dispose(): void {

@@ -82,6 +82,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: 'クリアしたことがPCにも伝わるようになり、他の端末の一覧からも同時に消えます。',
 				tone: 'green',
 			},
+			{
+				icon: 'logo-github',
+				title: '設定からGitHubのレート枠を確認できるようになりました',
+				body: 'Core/GraphQLの残量に加えて、期間別・呼び出し元別・スペース別の内訳も見られます。',
+				tone: 'accent',
+			},
 		],
 	},
 	{
