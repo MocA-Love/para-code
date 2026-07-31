@@ -9,7 +9,7 @@
 		CSP, and every webview then stays blank without throwing. Kept honest by
 		src/vs/paradis/contrib/fileViewers/test/node/paradisWebviewServiceWorkerControl.test.ts. -->
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-UZuf9yssMWb0rWWCeJzALKInvKIkpljrhQagSNKKwUo=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-XPFkLDYGtICG+h8OtoNmYwJeKo4VO8VbxPvOJcO/YCo=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -355,6 +355,139 @@
 			throw new Error(`Service worker did not take control of this webview within ${PARA_SW_CONTROL_TIMEOUT_MS}ms after re-registering (active: ${!!reregistered.active}, installing: ${!!reregistered.installing}, waiting: ${!!reregistered.waiting}).`);
 		}
 
+		// PARA-PATCH: `navigator.serviceWorker.register()` can stay pending forever, never resolving and
+		// never rejecting (observed on a real install). The webview then never gets past
+		// `await workerReady`, so the content is never applied and the pane stays blank without an
+		// exception or a console error. paraWaitForServiceWorkerControl above only runs once register()
+		// has settled, so it cannot reach this failure. Put a deadline on register/update themselves.
+		const PARA_SW_REGISTER_TIMEOUT_MS = 5000;
+		// Summing the individual deadlines makes the worst case hard to reason about, so the whole
+		// setup also gets a budget. Past this point we render WITHOUT a service worker, which is what
+		// bounds how long a viewer can sit blank. The host-side grace period
+		// (PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS) must exceed this budget: if it is shorter, the viewer
+		// tears the webview down before it can fall back to rendering on its own.
+		// paradisWebviewServiceWorkerControl.test.ts checks the two against each other.
+		const PARA_SW_SETUP_BUDGET_MS = 20000;
+		const PARA_TIMEOUT_ERROR_NAME = 'ParaServiceWorkerTimeout';
+
+		/**
+		 * Bounds a promise that may never settle. Timing out rejects, so the caller can take the next step.
+		 *
+		 * @template T
+		 * @param {Promise<T>} promise
+		 * @param {number} timeoutMs
+		 * @param {string} label
+		 * @return {Promise<T>}
+		 */
+		function paraWithTimeout(promise, timeoutMs, label) {
+			return Promise.race([
+				promise,
+				new Promise((_resolve, reject) => setTimeout(() => {
+					const timeout = new Error(`${label} did not settle within ${timeoutMs}ms`);
+					// Marks "never settled" apart from "explicitly refused" for the caller. Retrying a
+					// refusal is pointless, and its reason is worth showing (third-party cookies on web).
+					timeout.name = PARA_TIMEOUT_ERROR_NAME;
+					reject(timeout);
+				}, timeoutMs)),
+			]);
+		}
+
+		/**
+		 * @param {unknown} error
+		 * @return {boolean} whether this is a deadline (false means the registration itself was refused)
+		 */
+		function paraIsTimeout(error) {
+			return error instanceof Error && error.name === PARA_TIMEOUT_ERROR_NAME;
+		}
+
+		/**
+		 * Gets the service worker into a usable state, clearing and re-registering once if it stalls.
+		 *
+		 * Returns whether a service worker is usable. The point is that rendering continues even when
+		 * this is false: body, styles and scripts are handed over the message channel, so they display
+		 * without a service worker and only `vscode-resource` assets (local images) are lost. An
+		 * incomplete render beats a blank pane.
+		 *
+		 * @param {string} swPath
+		 * @return {Promise<boolean>}
+		 */
+		async function paraEstablishServiceWorker(swPath) {
+			const startedAt = Date.now();
+			const register = () => paraWithTimeout(
+				navigator.serviceWorker.register(swPath, { type: 'module', updateViaCache: 'none' }),
+				PARA_SW_REGISTER_TIMEOUT_MS, 'Service worker registration');
+
+			/** @type {ServiceWorkerRegistration} */
+			let registration;
+			try {
+				registration = await register();
+			} catch (error) {
+				// A refusal will not change on a second try, so pass its reason up untouched (on web that
+				// becomes the third-party cookie hint). Only a stall is worth recovering from.
+				if (!paraIsTimeout(error)) {
+					throw error;
+				}
+				paraReportSignal('sw-register-timeout', { duration_ms: Date.now() - startedAt, attempt: 1 });
+				// A registration that never settled can linger, so clear it before registering again.
+				try {
+					const existing = await paraWithTimeout(navigator.serviceWorker.getRegistration(), PARA_SW_REGISTER_TIMEOUT_MS, 'getRegistration');
+					if (existing) {
+						await paraWithTimeout(existing.unregister(), PARA_SW_REGISTER_TIMEOUT_MS, 'unregister');
+					}
+				} catch (cleanupError) {
+					console.error(`Could not clear the stuck service worker registration: ${cleanupError}`);
+				}
+				try {
+					registration = await register();
+					paraReportSignal('sw-register-recovered', { duration_ms: Date.now() - startedAt, attempt: 2 });
+				} catch (retryError) {
+					if (!paraIsTimeout(retryError)) {
+						throw retryError;
+					}
+					console.error(`Continuing without a service worker: ${retryError}`);
+					paraReportSignal('sw-unavailable', { duration_ms: Date.now() - startedAt, attempt: 2 });
+					return false;
+				}
+			}
+
+			if (navigator.serviceWorker.controller) {
+				// A previous SW is already controlling. Force an update
+				// check so we don't serve stale resources after a VS Code
+				// update. register() resolves before the update check
+				// completes, so we must call update() explicitly to wait
+				// for the download + byte-comparison to finish.
+				// PARA-PATCH: update() can stall the same way, so it gets a deadline too. Failing here is
+				// not fatal (the old worker keeps serving), so carry on either way.
+				try {
+					registration = await paraWithTimeout(registration.update(), PARA_SW_REGISTER_TIMEOUT_MS, 'Service worker update');
+				} catch (updateError) {
+					console.error(`Service worker update check did not finish: ${updateError}`);
+				}
+			}
+
+			// If a new worker was found, wait for it to take control via skipWaiting() + clients.claim() in the SW.
+			if (
+				// New worker
+				registration.installing || registration.waiting
+				// First ever load
+				|| !navigator.serviceWorker.controller
+			) {
+				// PARA-PATCH: bounded wait instead of an open-ended `controllerchange` listener.
+				// Under load the event can fire before this listener is attached (or `clients.claim()`
+				// never reaches this client), and the original wait then never settles: `await workerReady`
+				// below blocks forever, so the content is never written and the webview stays blank
+				// without throwing anything. See paraWaitForServiceWorkerControl.
+				try {
+					await paraWaitForServiceWorkerControl(registration, swPath);
+				} catch (controlError) {
+					console.error(`Continuing without a controlling service worker: ${controlError}`);
+					paraReportSignal('sw-unavailable', { duration_ms: Date.now() - startedAt });
+					return false;
+				}
+			}
+			return true;
+		}
+
 		/** @type {Promise<void>} */
 		const workerReady = new Promise((resolve, reject) => {
 			if (disableServiceWorker) {
@@ -362,42 +495,26 @@
 			}
 
 			if (!areServiceWorkersEnabled()) {
+				// This is a structural "service workers are unavailable here", so keep surfacing the
+				// reason. The recovery below is for the case where one should work but never settles.
 				return reject(new Error('Service Workers are not enabled. Webviews will not work. Try disabling private/incognito mode.'));
 			}
 
 			const swPath = encodeURI(`service-worker.js?v=${expectedWorkerVersion}&vscode-resource-base-authority=${searchParams.get('vscode-resource-base-authority')}&remoteAuthority=${searchParams.get('remoteAuthority') ?? ''}&platform=${searchParams.get('platform')}`);
-			navigator.serviceWorker.register(swPath, { type: 'module', updateViaCache: 'none' })
-				.then(async registration => {
-					if (navigator.serviceWorker.controller) {
-						// A previous SW is already controlling. Force an update
-						// check so we don't serve stale resources after a VS Code
-						// update. register() resolves before the update check
-						// completes, so we must call update() explicitly to wait
-						// for the download + byte-comparison to finish.
-						registration = await registration.update();
-					}
-
-					// If a new worker was found, wait for it to take control via skipWaiting() + clients.claim() in the SW.
-					if (
-						// New worker
-						registration.installing || registration.waiting
-						// First ever load
-						|| !navigator.serviceWorker.controller
-					) {
-						// PARA-PATCH: bounded wait instead of an open-ended `controllerchange` listener.
-						// Under load the event can fire before this listener is attached (or `clients.claim()`
-						// never reaches this client), and the original wait then never settles: `await workerReady`
-						// below blocks forever, so the content is never written and the webview stays blank
-						// without throwing anything. See paraWaitForServiceWorkerControl.
-						await paraWaitForServiceWorkerControl(registration, swPath);
-					}
-
-					return resolve();
-				}).catch(error => {
+			// PARA-PATCH: do not reject just because no service worker could be set up. Showing the
+			// content without local images beats a blank pane. The budget around the whole setup covers
+			// stalls that slip past the individual deadlines, and is what guarantees we always render.
+			paraWithTimeout(paraEstablishServiceWorker(swPath), PARA_SW_SETUP_BUDGET_MS, 'Service worker setup')
+				.then(() => resolve(), error => {
+					// A refused registration still surfaces its reason: the cause is in the environment,
+					// so degrading silently would leave the user with no idea how to fix it.
 					if (!onElectron && error instanceof Error && error.message.includes('user denied permission')) {
 						return reject(new Error(`Could not register service worker. Please make sure third party cookies are enabled: ${error}`));
 					}
-					return reject(new Error(`Could not register service worker: ${error}.`));
+					// Anything else must not end in a blank pane -- getting the content up wins.
+					console.error(`Continuing without a service worker: ${error}`);
+					paraReportSignal('sw-unavailable', { duration_ms: PARA_SW_SETUP_BUDGET_MS });
+					resolve();
 				});
 		});
 

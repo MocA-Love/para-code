@@ -84,6 +84,30 @@ function createHarness(source: string, initialController: object | null = null):
 	};
 }
 
+/**
+ * 準備全体（登録 → 更新 → 制御待ち → 立て直し）を偽の navigator で動かすためのハーネス。
+ * `createHarness` が制御待ちだけを取り出すのに対し、こちらは「登録が決着しない」ような
+ * 手前の止まり方を再現する。
+ */
+function createSetupHarness(source: string, behavior: { register: () => Promise<object>; initialController?: object | null }) {
+	const signals: string[] = [];
+	const serviceWorker = {
+		controller: behavior.initialController ?? null,
+		addEventListener: () => { },
+		removeEventListener: () => { },
+		register: behavior.register,
+		getRegistration: async () => ({ unregister: async () => true }),
+	};
+	const hostMessaging = { postMessage: (_channel: string, data: { code: string }) => { signals.push(data.code); } };
+	// 立て直しの経緯は console に残す作りなので、テスト出力を汚さないよう捨てる。
+	const quietConsole = { error: () => { }, debug: () => { }, log: () => { } };
+	const factory = new Function('navigator', 'hostMessaging', 'console', `${source}\nreturn paraEstablishServiceWorker;`);
+	return {
+		establish: factory({ serviceWorker }, hostMessaging, quietConsole) as (swPath: string) => Promise<boolean>,
+		signals,
+	};
+}
+
 suite('ParadisWebviewServiceWorkerControl', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -124,12 +148,20 @@ suite('ParadisWebviewServiceWorkerControl', () => {
 		}
 
 		const html = readFileSync(indexHtmlPath!, 'utf8');
-		const timeoutMs = Number(/const PARA_SW_CONTROL_TIMEOUT_MS = (\d+);/.exec(html)?.[1]);
-		// index.html は「待つ → 登録し直す → もう一度待つ」の2周なので、最悪はこの2倍＋登録のオーバーヘッド。
-		// ここがホスト側の猶予を上回ると、webview が自力で復帰しかけているところを作り直してしまう。
+		const controlTimeoutMs = Number(/const PARA_SW_CONTROL_TIMEOUT_MS = (\d+);/.exec(html)?.[1]);
+		const budgetMs = Number(/const PARA_SW_SETUP_BUDGET_MS = (\d+);/.exec(html)?.[1]);
+		// webview 側は準備全体をこの予算で打ち切り、超えたら service worker 無しで描画へ進む。
+		// つまり「白紙のまま待たされる」上限は予算そのもの。ホスト側の猶予がこれを下回ると、
+		// webview が自力で描画へ倒れる前に作り直してしまい、復帰の芽を潰す。
 		assert.ok(
-			Number.isFinite(timeoutMs) && timeoutMs * 2 <= PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS,
-			`the viewer grace period (${PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS}ms) must cover two service worker waits of ${timeoutMs}ms`,
+			Number.isFinite(budgetMs) && budgetMs <= PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS,
+			`the viewer grace period (${PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS}ms) must cover the webview's service worker setup budget of ${budgetMs}ms`,
+		);
+		// 予算は制御待ち2周（待つ → 登録し直す → もう一度待つ）を収められる必要がある。
+		// 下回ると、復帰処理が最後まで走りきる前に必ず予算切れになる。
+		assert.ok(
+			Number.isFinite(controlTimeoutMs) && controlTimeoutMs * 2 <= budgetMs,
+			`the setup budget (${budgetMs}ms) must cover two service worker control waits of ${controlTimeoutMs}ms`,
 		);
 	});
 
@@ -203,6 +235,69 @@ suite('ParadisWebviewServiceWorkerControl', () => {
 			failureIsReported: true,
 			staleControllerIsNotAccepted: true,
 			replacedController: [],
+		});
+	});
+
+	/**
+	 * `navigator.serviceWorker.register()` が resolve も reject もしないまま止まることが実機である。
+	 * 制御待ちの立て直し（上のテスト）は登録が決着した後にしか動けないので、この止まり方には届かない。
+	 * 登録が決着しないときでも **必ず有限時間で描画へ進む**（例外を投げず、service worker 無しに倒れる）
+	 * ことがこの fork の要。ここが崩れると webview は何も出さないまま固まる。
+	 */
+	test('a registration that never settles still lets rendering proceed', async function () {
+		const indexHtmlPath = findRepositoryFile('src/vs/workbench/contrib/webview/browser/pre/index.html');
+		if (indexHtmlPath === undefined) {
+			this.skip();
+		}
+
+		const html = readFileSync(indexHtmlPath!, 'utf8');
+		const blockStart = html.indexOf('const PARA_SW_CONTROL_TIMEOUT_MS');
+		const blockEnd = html.indexOf('/** @type {Promise<void>} */', blockStart);
+		assert.ok(blockStart >= 0 && blockEnd > blockStart, 'the PARA-PATCH service worker block is still in index.html');
+		// 待ち時間だけ縮める。判断のしかたはそのまま検証する。
+		const source = html.slice(blockStart, blockEnd)
+			.replace(/const PARA_SW_CONTROL_TIMEOUT_MS = \d+;/, 'const PARA_SW_CONTROL_TIMEOUT_MS = 120;')
+			.replace(/const PARA_SW_CONTROL_POLL_MS = \d+;/, 'const PARA_SW_CONTROL_POLL_MS = 10;')
+			.replace(/const PARA_SW_REGISTER_TIMEOUT_MS = \d+;/, 'const PARA_SW_REGISTER_TIMEOUT_MS = 120;');
+
+		const settled = { active: {}, installing: null, waiting: null, update() { return Promise.resolve(this); } };
+
+		// 1. 登録が最後まで決着しない: 立て直しても駄目なら service worker を諦めて描画へ進む。
+		const neverSettles = createSetupHarness(source, { register: () => new Promise(() => { }) });
+		const neverSettlesResult = await neverSettles.establish('sw.js');
+
+		// 2. 一度止まっても、入れ直して決着すれば service worker ありのまま進む。
+		let attempts = 0;
+		const recovers = createSetupHarness(source, {
+			register: () => { attempts++; return attempts === 1 ? new Promise(() => { }) : Promise.resolve(settled); },
+			initialController: { state: 'activated' },
+		});
+		const recoversResult = await recovers.establish('sw.js');
+
+		// 3. 普通に決着する場合は余計な信号を出さない。
+		const healthy = createSetupHarness(source, {
+			register: async () => settled,
+			initialController: { state: 'activated' },
+		});
+		const healthyResult = await healthy.establish('sw.js');
+
+		// 4. はっきり断られた場合は握り潰さない。原因が環境設定にあるので、黙って service worker 無しへ
+		//    倒すと直し方が分からなくなる（Web のサードパーティ Cookie 案内はこの経路に載っている）。
+		const denied = createSetupHarness(source, {
+			register: () => Promise.reject(new Error('user denied permission to use Service Worker')),
+		});
+		const deniedError = await denied.establish('sw.js').then(() => undefined, (error: Error) => error.message);
+
+		assert.deepStrictEqual({
+			neverSettles: { usedServiceWorker: neverSettlesResult, signals: neverSettles.signals },
+			recovers: { usedServiceWorker: recoversResult, signals: recovers.signals },
+			healthy: { usedServiceWorker: healthyResult, signals: healthy.signals },
+			denied: { surfacedReason: deniedError?.includes('user denied permission') ?? false, signals: denied.signals },
+		}, {
+			neverSettles: { usedServiceWorker: false, signals: ['sw-register-timeout', 'sw-unavailable'] },
+			recovers: { usedServiceWorker: true, signals: ['sw-register-timeout', 'sw-register-recovered'] },
+			healthy: { usedServiceWorker: true, signals: [] },
+			denied: { surfacedReason: true, signals: [] },
 		});
 	});
 });

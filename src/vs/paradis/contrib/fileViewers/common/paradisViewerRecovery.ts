@@ -16,14 +16,16 @@ export type ParadisViewerRecoveryAction = 'retry' | 'fallback';
 export const PARADIS_VIEWER_CONTENT_TIMEOUT_MS = 8_000;
 
 /**
- * webview 側が service worker の制御待ちに使い得る最悪の時間（`pre/index.html` の PARA-PATCH ブロック。
- * 制御待ち 2 回分と登録し直しのオーバーヘッド）。
+ * webview 側が service worker の準備に使い得る最悪の時間（`pre/index.html` の PARA-PATCH ブロック）。
+ * 登録・更新・制御待ち・登録し直しをすべて含む予算（`PARA_SW_SETUP_BUDGET_MS`）を上回っている必要がある。
  *
  * ここを短く見積もると、webview が自力で復帰しかけている最中にホスト側が先に見切って作り直してしまい、
- * 復帰の芽を潰したうえにリトライ回数だけ消費する。制御待ちを抜けた合図（content-worker-ready）が
- * 届いた時点でこの猶予は外す。定数の対応は paradisWebviewServiceWorkerControl のテストで突き合わせる。
+ * 復帰の芽を潰したうえにリトライ回数だけ消費する。webview 側は予算を使い切ると service worker 無しで
+ * 描画へ進むので、この猶予まで待てば「白紙のまま」で終わることはない。制御待ちを抜けた合図
+ * （content-worker-ready）が届いた時点でこの猶予は外す。定数の対応は
+ * paradisWebviewServiceWorkerControl のテストで突き合わせる。
  */
-export const PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS = 12_000;
+export const PARADIS_VIEWER_SERVICE_WORKER_GRACE_MS = 22_000;
 
 /** これを超えるごとに待ち時間を延ばす HTML の長さ（バイト数ではなく文字数）。 */
 const PARADIS_VIEWER_LARGE_DOCUMENT_CHARS = 2_000_000;
