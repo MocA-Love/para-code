@@ -14,8 +14,10 @@
 // ProxyChannel.fromService でそのままチャネル化できるよう、公開メソッドはasyncのみ。
 
 import { app } from 'electron';
-import { totalmem } from 'os';
+import { homedir, totalmem } from 'os';
 import {
+	IParadisHostResources,
+	IParadisHostResourcesRequest,
 	IParadisResourceMonitorAppMetrics,
 	IParadisResourceMonitorMainService,
 	IParadisResourceMonitorScopeMetrics,
@@ -25,6 +27,7 @@ import {
 	IParadisResourceMonitorSnapshotRequest,
 	IParadisResourceUsage,
 } from '../common/paradisResourceMonitor.js';
+import { ParadisHostResourceSampler } from '../node/paradisHostResources.js';
 import { captureParadisProcessSnapshot, getParadisSubtreeResources } from './paradisResourceMonitorProcessTree.js';
 
 /** パネル表示中のポーリング間隔(2秒)より短い鮮度でキャッシュを再利用する。 */
@@ -80,6 +83,37 @@ export class ParadisResourceMonitorMainService implements IParadisResourceMonito
 
 	private cachedSnapshot: IParadisResourceMonitorSnapshot | undefined;
 	private inflightCollection: Promise<IParadisResourceMonitorSnapshot> | undefined;
+
+	// ホスト全体の使用量(モバイルの「システム」画面専用)。CPUは累積値の差分なので
+	// サンプラーを1つだけ持ち回る。
+	private readonly hostSampler = new ParadisHostResourceSampler();
+	// 呼び出し元はモバイルの「システム」画面ひとつで diskPaths の顔ぶれは同じなので、
+	// キャッシュキーには含めない（複数の呼び出し元が別々のパスを渡すようになったら要見直し）。
+	private cachedHostResources: IParadisHostResources | undefined;
+	private inflightHostCollection: Promise<IParadisHostResources> | undefined;
+
+	async getHostResources(request: IParadisHostResourcesRequest): Promise<IParadisHostResources> {
+		if (!request.force && this.cachedHostResources && Date.now() - this.cachedHostResources.collectedAt <= SNAPSHOT_MAX_AGE_MS) {
+			return this.cachedHostResources;
+		}
+		// force（モバイルのプルダウン更新）は進行中の収集に相乗りさせない。相乗りさせると
+		// 「引っ張っても更新されない」ことがある（合流先はその要求より前に始まった収集のため）。
+		if (this.inflightHostCollection && !request.force) {
+			return this.inflightHostCollection;
+		}
+		// ホームのボリュームは常に先頭に入れる(モバイル側が「主ボリューム」として最初の1件を大きく出す)。
+		// 同じボリュームを指すパスはサンプラー側でまとめられるので、重複は気にしなくてよい。
+		const collection = this.hostSampler.read([homedir(), ...(request.diskPaths ?? [])])
+			.then(resources => {
+				this.cachedHostResources = resources;
+				return resources;
+			})
+			.finally(() => {
+				this.inflightHostCollection = undefined;
+			});
+		this.inflightHostCollection = collection;
+		return collection;
+	}
 
 	async getSnapshot(request: IParadisResourceMonitorSnapshotRequest): Promise<IParadisResourceMonitorSnapshot> {
 		if (!request.force && this.cachedSnapshot && Date.now() - this.cachedSnapshot.collectedAt <= SNAPSHOT_MAX_AGE_MS) {

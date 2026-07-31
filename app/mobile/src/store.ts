@@ -48,6 +48,11 @@ export interface WorkspaceState {
 	terminals: { terminalKey: string; id: number; windowId: number; rendererGeneration: number; title: string; ws?: string; agent?: boolean; agentToken?: string; agentStatus?: string; cols?: number; rows?: number }[];
 	// PC本体のバッテリー（旧PCでは未配信）。Live Activityのバッテリーピル表示に使う。levelは0〜100。
 	battery?: { level: number; charging: boolean };
+	// PC本体（マシン全体）のCPU/メモリ/ディスク（旧PCでは未配信）。ドロワーのPCカードに出す。
+	// バッテリーと違い引き継がない。バッテリーはrendererのepochが変われば必ず再報告されるが、
+	// こちらはshared process所有でrenderer epochと無関係なため、届かない＝「もうすぐ来る」ではなく
+	// 「このPCはもう配信しない」を意味する。引き継ぐと何時間前の値でも「今のPC」として出てしまう。
+	resources?: DesktopResources;
 }
 
 interface RendererRequestTarget {
@@ -428,6 +433,69 @@ export interface GithubUsageResult {
 	spaces: GithubSpaceStat[];
 	totals: { sessionCalls: number; sessionFailures: number; rolling5mCalls: number; rolling5mFailures: number; rolling5mRateLimited: number };
 	lastErrors: GithubErrorEntry[];
+}
+
+/**
+ * PC本体（マシン全体）のリソース使用量。desktop state に常時乗って届く（旧PCでは未配信）。
+ * ドロワーのPCカードがバッテリーと並べて出す。値はPC側で丸め済み（CPUは5%刻み）。
+ */
+export interface DesktopResources {
+	/** マシン全体のCPU使用率（0〜100）。PC側でまだ算出できていない間は未配信。 */
+	cpu?: number;
+	/** 物理メモリの使用中（バイト）。 */
+	memUsed: number;
+	memTotal: number;
+	/** 主ボリューム（ホームのある側）の空き（バイト）。 */
+	diskFree?: number;
+	diskTotal?: number;
+}
+
+/** 「システム」画面のボリューム1件。 */
+export interface SystemDiskVolume {
+	path: string;
+	label: string;
+	total: number;
+	free: number;
+}
+
+/** Para Code本体・ターミナルのプロセスツリー1件分の使用量。 */
+export interface SystemProcessUsage {
+	cpu: number;
+	/** 常駐メモリ（バイト）。 */
+	memory: number;
+}
+
+export interface SystemSessionMetrics extends SystemProcessUsage {
+	name: string;
+	pid: number;
+}
+
+export interface SystemScopeMetrics extends SystemProcessUsage {
+	stateKey: string;
+	scopeName: string;
+	sessions: SystemSessionMetrics[];
+}
+
+/**
+ * 「システム」画面が取る詳細レポート（PC側 IParadisResourceMonitorMobileReport と一致）。
+ * host はマシン全体、snapshot は Para Code 本体＋ターミナルの内訳。対象が違うので必ず両方を見る。
+ */
+export interface SystemResourcesResult {
+	host: {
+		cpu?: number;
+		cores: number;
+		memory: { total: number; used: number };
+		disks: SystemDiskVolume[];
+		collectedAt: number;
+	};
+	snapshot: {
+		app: SystemProcessUsage & { main: SystemProcessUsage; renderer: SystemProcessUsage; other: SystemProcessUsage };
+		scopes: SystemScopeMetrics[];
+		totalCpu: number;
+		totalMemory: number;
+		hostTotalMemory: number;
+		collectedAt: number;
+	};
 }
 
 /** browser targets 応答。sharedToken はそのページを共有中のターミナルペインのトークン（PC側 agentBrowser のバインディング由来）。 */
@@ -2698,6 +2766,18 @@ export class MobileController {
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty github response');
+				}
+				return response.data;
+			});
+	}
+
+	/** PC本体のリソース内訳（「システム」画面）。ドロワーの3値と違い、開いている間だけ取りに行く。 */
+	systemResources(bypassCache?: boolean): Promise<SystemResourcesResult> {
+		// usage/limits/github と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
+		return this.request<{ data?: SystemResourcesResult }>('fs', { t: 'sysres', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+			.then(response => {
+				if (!response.data) {
+					throw new Error('empty sysres response');
 				}
 				return response.data;
 			});

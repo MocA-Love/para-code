@@ -88,6 +88,18 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: 'Core/GraphQLの残量に加えて、期間別・呼び出し元別・スペース別の内訳も見られます。',
 				tone: 'accent',
 			},
+			{
+				icon: 'hardware-chip-outline',
+				title: 'PCのCPU・メモリ・ディスクの空きが見えるようになりました',
+				body: 'ワークスペースの一覧を開くと、バッテリーの下に今の使用状況が出ます。余裕が無くなってきたときだけ色が付きます。',
+				tone: 'accent',
+			},
+			{
+				icon: 'pie-chart-outline',
+				title: '何がPCのリソースを使っているか調べられるようになりました',
+				body: '使用状況をタップするか設定の「システム」を開くと、Para Code本体・ターミナル・スペース・ディスクごとの内訳が見られます。',
+				tone: 'accent',
+			},
 		],
 	},
 	{

@@ -16,7 +16,8 @@ import { localize } from '../../../../nls.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisResourceMonitorMainService, IParadisResourceMonitorSessionRequest, IParadisResourceMonitorSnapshot, PARADIS_RESOURCE_MONITOR_CHANNEL } from '../common/paradisResourceMonitor.js';
+import { Schemas } from '../../../../base/common/network.js';
+import { IParadisResourceMonitorMainService, IParadisResourceMonitorMobileReport, IParadisResourceMonitorSessionRequest, IParadisResourceMonitorSnapshot, PARADIS_RESOURCE_MONITOR_CHANNEL } from '../common/paradisResourceMonitor.js';
 
 /** スコープに紐付かないターミナル(リスト外フォルダ等)をまとめる仮想スコープキー。 */
 export const PARADIS_RESOURCE_MONITOR_OTHER_TERMINALS_STATE_KEY = '__paradis_other_terminals__';
@@ -42,6 +43,38 @@ export class ParadisResourceMonitorClient {
 
 	getSnapshot(force: boolean): Promise<IParadisResourceMonitorSnapshot> {
 		return this.resourceMonitorService.getSnapshot({ sessions: this.collectSessionRequests(), force });
+	}
+
+	/**
+	 * モバイルの「システム」画面向けに、ホストマシン全体の使用量とPara Code内訳をまとめて取る。
+	 * 「PCが忙しいか」と「Para Codeが重いか」は別の問いなので、必ず両方を同時に返す。
+	 */
+	async getMobileReport(force: boolean): Promise<IParadisResourceMonitorMobileReport> {
+		const [snapshot, host] = await Promise.all([
+			this.getSnapshot(force),
+			this.resourceMonitorService.getHostResources({ diskPaths: this.collectDiskPaths(), force }),
+		]);
+		return { host, snapshot };
+	}
+
+	/**
+	 * 容量を見たいパス。登録済みリポジトリとその作業ツリー(worktree)を渡す。
+	 * ホームのボリュームはメインプロセス側が必ず先頭に足すので、ここでは足さない。
+	 * 同じボリュームを指すパスはメインプロセス側でまとめられる。
+	 */
+	private collectDiskPaths(): string[] {
+		const paths: string[] = [];
+		for (const repository of this.workspaceSwitchService.repositories) {
+			if (repository.uri.scheme === Schemas.file) {
+				paths.push(repository.uri.fsPath);
+			}
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing && worktree.uri.scheme === Schemas.file) {
+					paths.push(worktree.uri.fsPath);
+				}
+			}
+		}
+		return paths;
 	}
 
 	/** スコープ行クリック時の切り替え。リポジトリIDまたは `worktree:` プレフィックス付きキーを解決する。 */

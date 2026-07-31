@@ -7,7 +7,11 @@ import { Link, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { isAgentWaiting } from '../store.js';
+import { isAgentWaiting, type DesktopResources } from '../store.js';
+import {
+	CPU_THRESHOLDS, MEMORY_THRESHOLDS, diskLevel, formatCpu, resourceHeadline, usageLevel, usagePercent, worstLevel,
+	type UsageLevel,
+} from '../systemResources.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
@@ -142,6 +146,59 @@ function onDrawerSettled() {
 	hapticImpact('light');
 }
 
+/** 逼迫の度合いを色へ。平常時は控えめな既定色のままにして、視線を奪わない。 */
+function resourceColor(level: UsageLevel, normal: string): string {
+	return level === 'critical' ? colors.red : level === 'warn' ? colors.yellow : normal;
+}
+
+/**
+ * PCカード内のCPU/メモリ/ディスクの3連ミニゲージ（バッテリーと同じ「PCの体調」の枠）。
+ * 平常時は数字が並ぶだけで、閾値を超えたときだけ色と一言が出る。タップで「システム」画面へ。
+ */
+function PcResourceRow({ resources, onPress }: { resources: DesktopResources; onPress: () => void }) {
+	const memoryPercent = usagePercent(resources.memUsed, resources.memTotal);
+	const { diskTotal, diskFree } = resources;
+	const hasDisk = diskTotal !== undefined && diskFree !== undefined;
+	const diskPercent = hasDisk ? usagePercent(diskTotal - diskFree, diskTotal) : undefined;
+	const cpuLevel = usageLevel(resources.cpu ?? 0, CPU_THRESHOLDS);
+	const memoryLevel = usageLevel(memoryPercent, MEMORY_THRESHOLDS);
+	const volumeLevel: UsageLevel = hasDisk ? diskLevel(diskTotal, diskFree) : 'normal';
+	const worst = worstLevel([cpuLevel, memoryLevel, volumeLevel]);
+	const headline = resourceHeadline({ cpuLevel, memoryLevel, diskLevel: volumeLevel, diskFree: resources.diskFree });
+
+	const items: { label: string; value: string; percent: number; color: string }[] = [
+		{ label: 'CPU', value: formatCpu(resources.cpu), percent: resources.cpu ?? 0, color: resourceColor(cpuLevel, colors.accent) },
+		{ label: 'RAM', value: `${Math.round(memoryPercent)}%`, percent: memoryPercent, color: resourceColor(memoryLevel, colors.textDim) },
+	];
+	if (diskPercent !== undefined) {
+		items.push({ label: 'SSD', value: `${Math.round(diskPercent)}%`, percent: diskPercent, color: resourceColor(volumeLevel, colors.textDim) });
+	}
+
+	return (
+		<>
+			<Pressable
+				style={[styles.resourceRow, worst !== 'normal' && styles.resourceRowAlert]}
+				onPress={onPress}
+				accessibilityLabel="PCのリソースを見る"
+			>
+				{items.map(item => (
+					<View key={item.label} style={styles.resourceItem}>
+						<View style={styles.resourceHead}>
+							<Text style={styles.resourceLabel}>{item.label}</Text>
+							<Text style={[styles.resourceValue, { color: item.color }]}>{item.value}</Text>
+						</View>
+						<View style={styles.resourceTrack}>
+							<View style={[styles.resourceFill, { width: `${Math.max(2, Math.min(100, item.percent))}%`, backgroundColor: item.color }]} />
+						</View>
+					</View>
+				))}
+				<Ionicons name="chevron-forward" size={13} color={worst === 'normal' ? colors.textDim : colors.red} style={styles.resourceChevron} />
+			</Pressable>
+			{headline !== undefined ? <Text style={[styles.resourceHeadline, worst === 'critical' && styles.resourceHeadlineAlert]}>{headline}</Text> : null}
+		</>
+	);
+}
+
 /** ドロワーの中身。ReanimatedDrawerLayoutのrenderNavigationViewから描画される。 */
 function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	const insets = useStableInsets();
@@ -165,6 +222,9 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 	// （オフライン系の長い文言と同居させると行崩れするため）。低残量判定はLive Activityと同ルール。
 	const battery = workspace?.battery;
 	const batteryLow = battery !== undefined && !battery.charging && battery.level < 20;
+	// PC本体（マシン全体）のCPU/メモリ/ディスク（旧PCでは未配信）。バッテリーと同じ「PCの体調」
+	// としてこのカードに並べる。内訳（何が使っているか）は行タップで開く「システム」画面が持つ。
+	const resources = workspace?.resources;
 
 	// ── ワークツリー（スペース）の親子グルーピング ──
 	// parent付きエントリを親リポジトリ行の配下にまとめ、開閉できるようにする。
@@ -372,6 +432,14 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 						<Text style={styles.statLabel}>応答待ち</Text>
 					</View>
 				</View>
+				{/* PC本体のCPU/メモリ/ディスク。接続中でPCが配信している場合だけ出す
+				    （切断中に古い数字を残すと「今のPCの状態」に見えてしまう）。 */}
+				{online && resources !== undefined ? (
+					<PcResourceRow
+						resources={resources}
+						onPress={() => { hapticSelection(); onClose(); router.push('/system'); }}
+					/>
+				) : null}
 			</View>
 
 			<View style={styles.sectionHead}>
@@ -548,6 +616,17 @@ const styles = StyleSheet.create({
 	statValue: { color: colors.accent, fontSize: 15, fontWeight: '700' },
 	statValueAlert: { color: colors.red },
 	statLabel: { color: colors.textDim, fontSize: 9.5, marginTop: 1 },
+	resourceRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, paddingVertical: 9, paddingHorizontal: 10, backgroundColor: colors.surface2, borderRadius: 11, borderWidth: 1, borderColor: colors.border },
+	resourceRowAlert: { borderColor: 'rgba(244,114,114,0.4)', backgroundColor: 'rgba(244,114,114,0.07)' },
+	resourceItem: { flex: 1, gap: 5 },
+	resourceHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 4 },
+	resourceLabel: { color: colors.textDim, fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4 },
+	resourceValue: { fontSize: 11, fontWeight: '800' },
+	resourceTrack: { height: 3, borderRadius: 2, backgroundColor: colors.surface3, overflow: 'hidden' },
+	resourceFill: { height: 3, borderRadius: 2 },
+	resourceChevron: { marginLeft: 2 },
+	resourceHeadline: { color: colors.yellow, fontSize: 10.5, marginTop: 6, paddingHorizontal: 2, lineHeight: 15 },
+	resourceHeadlineAlert: { color: colors.red },
 	sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 16 },
 	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 8 },
 	addSpaceBtn: { width: 24, height: 24, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
