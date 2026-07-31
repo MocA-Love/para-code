@@ -24,9 +24,11 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv, ParadisRawShellEnvResolver } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
+	IParadisGithubCallEvent,
 	IParadisGithubMetricsSnapshot,
 	IParadisGithubRateLimitEntry,
 	paradisClearGithubCallSink,
+	paradisCoerceGithubCallEvent,
 	paradisParseGhRateLimit,
 	paradisSetGithubCallSink,
 	paradisTruncateGithubErrorMessage,
@@ -96,7 +98,7 @@ export class ParadisGithubMetricsService {
 		await this.refreshRateLimits(options.force === true);
 
 		const now = this.now();
-		const { operations, totals, lastErrors } = this.callLog.snapshot(now);
+		const { operations, spaces, totals, lastErrors } = this.callLog.snapshot(now);
 		return {
 			generatedAt: now,
 			sessionStartedAt: this.callLog.sessionStartedAt,
@@ -106,9 +108,19 @@ export class ParadisGithubMetricsService {
 			rateLimits: this.rateLimits,
 			consumption: this.history.consumption(now),
 			operations,
+			spaces,
 			totals,
 			lastErrors,
 		};
+	}
+
+	/**
+	 * 別プロセス（Agent Sessionsウィンドウ等）からIPC経由で転送された gh 呼び出しを記録する。
+	 * 同一プロセス側の paradisRecordGithubCall と違い、こちらは常にこのサービスの callLog へ直接書く
+	 * （転送元は常にこのサービスと同じ shared process インスタンスへ届くため）。
+	 */
+	recordCall(event: IParadisGithubCallEvent): void {
+		this.callLog.record(event);
 	}
 
 	private async refreshRateLimits(force: boolean): Promise<void> {
@@ -204,9 +216,16 @@ export class ParadisGithubMetricsChannel implements IServerChannel<string> {
 
 	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
-		const options = (args[0] ?? {}) as IParadisGithubMetricsRequestOptions;
 		switch (command) {
-			case 'getSnapshot': return this.service.getSnapshot(options) as Promise<T>;
+			case 'getSnapshot': return this.service.getSnapshot((args[0] ?? {}) as IParadisGithubMetricsRequestOptions) as Promise<T>;
+			case 'recordCall': {
+				// 別プロセス(Agent Sessionsウィンドウ)からのIPC入力なので、記録前に必ず検証する
+				const event = paradisCoerceGithubCallEvent(args[0]);
+				if (event) {
+					this.service.recordCall(event);
+				}
+				return Promise.resolve(undefined as T);
+			}
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}

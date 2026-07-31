@@ -356,6 +356,80 @@ export interface RateLimitsResult {
 	fetchedAt: number;
 }
 
+/** GitHub API利用状況の資源区分。PC側 IParadisGithubCallResource と同形。 */
+export type GithubCallResource = 'core' | 'graphql';
+/** worktreeに紐付かない呼び出し（Agent Sessionsウィンドウ自身のGitHub APIクライアント経由）を束ねる仮想スペースID。PC側 PARADIS_GITHUB_UNSCOPED_SPACE と同じ値。 */
+export const GITHUB_UNSCOPED_SPACE = '\u0000agent-sessions';
+/** `gh api rate_limit` の1資源分。PC側 IParadisGithubRateLimitEntry と同形。 */
+export interface GithubRateLimitEntry {
+	resource: string;
+	limit: number;
+	used: number;
+	remaining: number;
+	resetAt: number;
+}
+/** 呼び出し件数の集計。PC側 IParadisGithubCallCounts と同形。 */
+export interface GithubCallCounts {
+	calls: number;
+	failures: number;
+	rateLimited: number;
+	avgDurationMs: number;
+	maxDurationMs: number;
+	lastRunAt?: number;
+}
+/** 呼び出し元ごとの集計行。PC側 IParadisGithubOperationStat と同形。 */
+export interface GithubOperationStat {
+	callSite: string;
+	resource: GithubCallResource;
+	session: GithubCallCounts;
+	rolling5m: GithubCallCounts;
+	rolling1h: GithubCallCounts;
+	lastRunAt?: number;
+	lastErrorAt?: number;
+	lastErrorMessage?: string;
+	topWorktreePath?: string;
+}
+/** スペース（worktree、またはGITHUB_UNSCOPED_SPACE）ごとの集計行。PC側 IParadisGithubSpaceStat と同形。 */
+export interface GithubSpaceStat {
+	space: string;
+	session: GithubCallCounts;
+	rolling5m: GithubCallCounts;
+	rolling1h: GithubCallCounts;
+	topCallSite?: string;
+	coreRatio: number;
+	rolling5mCoreRatio: number;
+	rolling1hCoreRatio: number;
+}
+/** レート枠の消費(アカウント全体)。PC側 IParadisGithubConsumption と同形。 */
+export interface GithubConsumption {
+	resource: string;
+	rolling5m?: number;
+	rolling1h?: number;
+	perMinute?: number;
+	exhaustionEtaMs?: number;
+	series: number[];
+}
+export interface GithubErrorEntry {
+	at: number;
+	callSite: string;
+	message: string;
+	worktreePath?: string;
+}
+/** github 応答（PC版のGitHub API Usageダッシュボードと同じスナップショット）。PC側 IParadisGithubMetricsSnapshot と同形。 */
+export interface GithubUsageResult {
+	generatedAt: number;
+	sessionStartedAt: number;
+	ghAvailable: boolean;
+	rateLimitError?: string;
+	rateLimitFetchedAt?: number;
+	rateLimits: GithubRateLimitEntry[];
+	consumption: GithubConsumption[];
+	operations: GithubOperationStat[];
+	spaces: GithubSpaceStat[];
+	totals: { sessionCalls: number; sessionFailures: number; rolling5mCalls: number; rolling5mFailures: number; rolling5mRateLimited: number };
+	lastErrors: GithubErrorEntry[];
+}
+
 /** browser targets 応答。sharedToken はそのページを共有中のターミナルペインのトークン（PC側 agentBrowser のバインディング由来）。 */
 export interface BrowserTargetsResult {
 	targets: { targetId: string; title: string; url: string; sharedToken?: string }[];
@@ -2612,6 +2686,18 @@ export class MobileController {
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty limits response');
+				}
+				return response.data;
+			});
+	}
+
+	/** GitHub API利用状況（PC版のGitHub API Usageダッシュボードと同じデータ）。 */
+	githubUsage(bypassCache?: boolean): Promise<GithubUsageResult> {
+		// usageDashboard/rateLimits と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
+		return this.request<{ data?: GithubUsageResult }>('fs', { t: 'github', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+			.then(response => {
+				if (!response.data) {
+					throw new Error('empty github response');
 				}
 				return response.data;
 			});

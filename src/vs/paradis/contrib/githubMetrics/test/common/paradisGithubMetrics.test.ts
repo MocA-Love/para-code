@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	paradisCoerceGithubCallEvent,
 	paradisGithubCallSiteFromArgs,
 	paradisGithubFormatCountdown,
 	paradisGithubSeverity,
@@ -19,6 +20,7 @@ import {
 	paradisRedactHomePath,
 	ParadisGithubCallLog,
 	ParadisGithubRateLimitHistory,
+	PARADIS_GITHUB_UNSCOPED_SPACE,
 } from '../../common/paradisGithubMetrics.js';
 
 suite('ParadisGithubMetrics', () => {
@@ -124,12 +126,14 @@ suite('ParadisGithubMetrics', () => {
 	test('aggregates calls per caller for the session and the rolling window', () => {
 		const now = 10_000_000;
 		const log = new ParadisGithubCallLog(now - 3_600_000);
-		// 5分窓の外(10分前)
-		log.record({ at: now - 600_000, callSite: 'gh pr view', durationMs: 100, success: true, rateLimited: false, worktreePath: '/w/old' });
+		// 5分窓の外(10分前)、1時間窓の中
+		log.record({ at: now - 600_000, callSite: 'gh pr view', resource: 'core', durationMs: 100, success: true, rateLimited: false, worktreePath: '/w/old' });
 		// 5分窓の中
-		log.record({ at: now - 60_000, callSite: 'gh pr view', durationMs: 200, success: true, rateLimited: false, worktreePath: '/w/a' });
-		log.record({ at: now - 30_000, callSite: 'gh pr view', durationMs: 400, success: false, rateLimited: true, errorMessage: 'API rate limit exceeded', worktreePath: '/w/a' });
-		log.record({ at: now - 10_000, callSite: 'gh api rate_limit', durationMs: 50, success: true, rateLimited: false });
+		log.record({ at: now - 60_000, callSite: 'gh pr view', resource: 'core', durationMs: 200, success: true, rateLimited: false, worktreePath: '/w/a' });
+		log.record({ at: now - 30_000, callSite: 'gh pr view', resource: 'core', durationMs: 400, success: false, rateLimited: true, errorMessage: 'API rate limit exceeded', worktreePath: '/w/a' });
+		log.record({ at: now - 10_000, callSite: 'gh api rate_limit', resource: 'core', durationMs: 50, success: true, rateLimited: false });
+		// worktree に紐付かない呼び出し（Agent Sessionsウィンドウ相当）。graphql資源。
+		log.record({ at: now - 20_000, callSite: 'githubPRFetcher.reviewThreads', resource: 'graphql', durationMs: 80, success: true, rateLimited: false });
 
 		const snapshot = log.snapshot(now);
 		assert.deepStrictEqual({
@@ -138,26 +142,88 @@ suite('ParadisGithubMetrics', () => {
 			order: snapshot.operations.map(operation => operation.callSite),
 			prView: snapshot.operations.find(operation => operation.callSite === 'gh pr view'),
 			errors: snapshot.lastErrors,
+			spaceOrder: snapshot.spaces.map(space => space.space),
+			worktreeA: snapshot.spaces.find(space => space.space === '/w/a'),
+			unscoped: snapshot.spaces.find(space => space.space === PARADIS_GITHUB_UNSCOPED_SPACE),
 		}, {
 			totals: {
-				sessionCalls: 4,
+				sessionCalls: 5,
 				sessionFailures: 1,
-				rolling5mCalls: 3,
+				rolling5mCalls: 4,
 				rolling5mFailures: 1,
 				rolling5mRateLimited: 1,
 			},
-			order: ['gh pr view', 'gh api rate_limit'],
+			order: ['gh pr view', 'gh api rate_limit', 'githubPRFetcher.reviewThreads'],
 			prView: {
 				callSite: 'gh pr view',
-				session: { calls: 3, failures: 1, rateLimited: 1, avgDurationMs: 700 / 3, maxDurationMs: 400 },
-				rolling5m: { calls: 2, failures: 1, rateLimited: 1, avgDurationMs: 300, maxDurationMs: 400 },
+				resource: 'core',
+				session: { calls: 3, failures: 1, rateLimited: 1, avgDurationMs: 700 / 3, maxDurationMs: 400, lastRunAt: now - 30_000 },
+				rolling5m: { calls: 2, failures: 1, rateLimited: 1, avgDurationMs: 300, maxDurationMs: 400, lastRunAt: now - 30_000 },
+				rolling1h: { calls: 3, failures: 1, rateLimited: 1, avgDurationMs: 700 / 3, maxDurationMs: 400, lastRunAt: now - 30_000 },
 				lastRunAt: now - 30_000,
 				lastErrorAt: now - 30_000,
 				lastErrorMessage: 'API rate limit exceeded',
 				topWorktreePath: '/w/a',
 			},
 			errors: [{ at: now - 30_000, callSite: 'gh pr view', message: 'API rate limit exceeded', worktreePath: '/w/a' }],
+			spaceOrder: ['/w/a', PARADIS_GITHUB_UNSCOPED_SPACE, '/w/old'],
+			worktreeA: {
+				space: '/w/a',
+				session: { calls: 2, failures: 1, rateLimited: 1, avgDurationMs: 300, maxDurationMs: 400, lastRunAt: now - 30_000 },
+				rolling5m: { calls: 2, failures: 1, rateLimited: 1, avgDurationMs: 300, maxDurationMs: 400, lastRunAt: now - 30_000 },
+				rolling1h: { calls: 2, failures: 1, rateLimited: 1, avgDurationMs: 300, maxDurationMs: 400, lastRunAt: now - 30_000 },
+				topCallSite: 'gh pr view',
+				coreRatio: 1,
+				rolling5mCoreRatio: 1,
+				rolling1hCoreRatio: 1,
+			},
+			unscoped: {
+				space: PARADIS_GITHUB_UNSCOPED_SPACE,
+				session: { calls: 2, failures: 0, rateLimited: 0, avgDurationMs: 65, maxDurationMs: 80, lastRunAt: now - 10_000 },
+				rolling5m: { calls: 2, failures: 0, rateLimited: 0, avgDurationMs: 65, maxDurationMs: 80, lastRunAt: now - 10_000 },
+				rolling1h: { calls: 2, failures: 0, rateLimited: 0, avgDurationMs: 65, maxDurationMs: 80, lastRunAt: now - 10_000 },
+				topCallSite: 'gh api rate_limit',
+				coreRatio: 0.5,
+				rolling5mCoreRatio: 0.5,
+				rolling1hCoreRatio: 0.5,
+			},
 		});
+	});
+
+	test('coerces IPC-sourced call events and rejects malformed ones', () => {
+		const valid = paradisCoerceGithubCallEvent({
+			at: 1000, callSite: 'githubPRFetcher.reviewThreads', resource: 'graphql', durationMs: 42, success: true, rateLimited: false,
+		});
+		assert.deepStrictEqual(valid, {
+			at: 1000, callSite: 'githubPRFetcher.reviewThreads', resource: 'graphql', durationMs: 42,
+			success: true, rateLimited: false, errorMessage: undefined, worktreePath: undefined,
+		});
+
+		// 負のdurationMsはクランプされる、不要なフィールドは無視される
+		const clamped = paradisCoerceGithubCallEvent({ at: 1, callSite: 'x', resource: 'core', durationMs: -5, success: true, rateLimited: false, extra: 'ignored' });
+		assert.strictEqual(clamped?.durationMs, 0);
+
+		assert.deepStrictEqual({
+			notAnObject: paradisCoerceGithubCallEvent('nope'),
+			null: paradisCoerceGithubCallEvent(null),
+			missingAt: paradisCoerceGithubCallEvent({ callSite: 'x', resource: 'core', durationMs: 1, success: true, rateLimited: false }),
+			nanAt: paradisCoerceGithubCallEvent({ at: NaN, callSite: 'x', resource: 'core', durationMs: 1, success: true, rateLimited: false }),
+			badResource: paradisCoerceGithubCallEvent({ at: 1, callSite: 'x', resource: 'rest', durationMs: 1, success: true, rateLimited: false }),
+			emptyCallSite: paradisCoerceGithubCallEvent({ at: 1, callSite: '', resource: 'core', durationMs: 1, success: true, rateLimited: false }),
+			missingDuration: paradisCoerceGithubCallEvent({ at: 1, callSite: 'x', resource: 'core', success: true, rateLimited: false }),
+		}, {
+			notAnObject: undefined,
+			null: undefined,
+			missingAt: undefined,
+			nanAt: undefined,
+			badResource: undefined,
+			emptyCallSite: undefined,
+			missingDuration: undefined,
+		});
+
+		// callSiteは長さ上限で切り詰められる
+		const longCallSite = paradisCoerceGithubCallEvent({ at: 1, callSite: 'x'.repeat(500), resource: 'core', durationMs: 1, success: true, rateLimited: false });
+		assert.strictEqual(longCallSite?.callSite.length, 200);
 	});
 
 	test('derives consumption and exhaustion estimates from rate limit samples', () => {
@@ -242,7 +308,7 @@ suite('ParadisGithubMetrics', () => {
 		const log = new ParadisGithubCallLog(now - 3_600_000);
 		// 上限(2000)を超えて記録しても、直近5分の集計は最新のイベントを反映し続ける
 		for (let i = 0; i < 2500; i++) {
-			log.record({ at: now - 2500 + i, callSite: 'gh pr view', durationMs: 10, success: true, rateLimited: false });
+			log.record({ at: now - 2500 + i, callSite: 'gh pr view', resource: 'core', durationMs: 10, success: true, rateLimited: false });
 		}
 
 		const snapshot = log.snapshot(now);
@@ -259,7 +325,7 @@ suite('ParadisGithubMetrics', () => {
 	test('clips long error messages and redacts home directories', () => {
 		const now = 10_000_000;
 		const log = new ParadisGithubCallLog(now);
-		log.record({ at: now, callSite: 'gh pr view', durationMs: 10, success: false, rateLimited: false, errorMessage: 'x'.repeat(900) });
+		log.record({ at: now, callSite: 'gh pr view', resource: 'core', durationMs: 10, success: false, rateLimited: false, errorMessage: 'x'.repeat(900) });
 
 		const [error] = log.snapshot(now).lastErrors;
 		assert.deepStrictEqual({
