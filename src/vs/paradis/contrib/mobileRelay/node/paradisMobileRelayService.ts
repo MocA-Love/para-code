@@ -106,6 +106,18 @@ const RELAY_KEEPALIVE_TIMEOUT_GIVE_UP = 3;
  */
 const RELAY_DISCONNECT_REPORT_DELAY_MS = 60_000;
 /**
+ * 猶予切れの時点から、さらにこの回数だけ連続で再接続に失敗していなければ報告しない。
+ *
+ * 猶予（{@link RELAY_DISCONNECT_REPORT_DELAY_MS}）だけでは Mac のスリープを弾けない。スリープ中は
+ * setTimeout も再接続タイマーも止まるため、復帰した瞬間に「猶予は過ぎている／再接続はまだ0回」と
+ * いう状態でタイマーが発火し、実際には数百ms後に繋がる切断まで報告していた（実測でSentryの
+ * desktop-relay グループの大半がこれ）。経過時間ではなく「起きている間に何回試して駄目だったか」を
+ * 条件にすれば、スリープも一過性の経路断も落ちて、本当に復帰できない障害だけが残る。
+ *
+ * 5回は上限30秒のバックオフで約2.5分。猶予と合わせて「3分以上繋がらない」が報告の条件になる。
+ */
+const RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS = 5;
+/**
  * 1006 での再接続がこの回数続いたら、pcToken がまだ有効かをHTTPで確かめる。
  *
  * WebSocketのハンドシェイクは、リレーが401で拒否した場合も経路が死んだ場合も undici からは
@@ -360,7 +372,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 復帰できなかった場合にだけ送る切断レポート。オフラインが続く間の最初の切断理由を保持する
 	 * （2回目以降で上書きすると、最初に何が起きたのかが失われる）。
 	 */
-	private pendingDisconnectReport: { readonly operation: string; readonly message: string; readonly extras: Record<string, unknown>; readonly at: number } | undefined;
+	private pendingDisconnectReport: { readonly operation: string; readonly message: string; readonly extras: Record<string, unknown>; readonly at: number; readonly attemptAtArm: number } | undefined;
 	private disconnectReportTimer: ReturnType<typeof setTimeout> | undefined;
 	private keepaliveTimer: ReturnType<typeof setInterval> | undefined;
 	private connectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1731,26 +1743,42 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/**
-	 * 切断を「猶予内に復帰しなければ報告する」予約に変える。復帰（onopen）で取り消される。
+	 * 切断を「猶予を過ぎてもなお連続で再接続に失敗し続けたら報告する」予約に変える。
+	 * 復帰（onopen）で取り消される。
 	 */
 	private armDisconnectReport(operation: string, message: string, extras: Record<string, unknown>): void {
 		if (this.pendingDisconnectReport || this.disconnectReportTimer) {
 			// すでにオフラインが続いている。最初の切断理由と、その時刻からの経過を残したいので触らない。
 			return;
 		}
-		this.pendingDisconnectReport = { operation, message, extras, at: Date.now() };
+		this.pendingDisconnectReport = { operation, message, extras, at: Date.now(), attemptAtArm: this.reconnectAttempt };
+		this.scheduleDisconnectReport();
+	}
+
+	/** 猶予を1区切り置いてから、報告するか様子を見るかを判定する。 */
+	private scheduleDisconnectReport(): void {
 		this.disconnectReportTimer = setTimeout(() => {
 			this.disconnectReportTimer = undefined;
 			const pending = this.pendingDisconnectReport;
-			this.pendingDisconnectReport = undefined;
 			if (!pending || !this.enabled) {
+				this.pendingDisconnectReport = undefined;
 				return;
 			}
+			// 予約してから重ねた再接続の失敗回数。時間ではなくこれで判定するので、スリープで
+			// タイマーだけが遅れて発火しても（＝試行が進んでいなくても）報告にはならない。
+			const failedAttempts = this.reconnectAttempt - pending.attemptAtArm;
+			if (failedAttempts < RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS) {
+				// まだ復帰の見込みがある。予約は最初の切断理由ごと持ち越して、次の区切りで測り直す。
+				this.scheduleDisconnectReport();
+				return;
+			}
+			this.pendingDisconnectReport = undefined;
 			reportParadisDiagnosticError('owned', 'desktop-relay', pending.operation, new Error(pending.message), {
 				...pending.extras,
 				// 切断時点ではなく報告時点の値。「何回再試行しても戻れなかったか」が復帰不能の度合いを表す。
 				duration_ms: Date.now() - pending.at,
 				reconnect_count: this.reconnectAttempt,
+				attempt: failedAttempts,
 			});
 		}, RELAY_DISCONNECT_REPORT_DELAY_MS);
 	}
