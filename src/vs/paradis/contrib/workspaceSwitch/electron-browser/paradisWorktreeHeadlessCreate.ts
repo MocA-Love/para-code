@@ -41,6 +41,9 @@ import {
 	PARADIS_WORKTREE_GIT_CHANNEL,
 	paradisBuildAgentCommand,
 	paradisBuildWorktreeNames,
+	paradisParseWorktreeNaming,
+	paradisToBranchName,
+	paradisToWorktreeTitle,
 	paradisDeduplicateBranchName,
 	paradisSanitizeBranchName,
 	paradisShouldCreateDefaultTerminal,
@@ -140,31 +143,38 @@ function computeWorktreeUri(configurationService: IConfigurationService, reposit
 	return joinPath(dirname(repository.uri), `${basename(repository.uri)}-worktrees`, dirName);
 }
 
-const BRANCH_NAME_INSTRUCTION = 'Generate a git branch name for the following development task. Output ONLY the branch name: kebab-case, lowercase ascii letters/digits/hyphens, at most 30 characters, no quotes, no slashes.';
+// 見出しは一覧の表示専用なので日本語にする。ブランチ名は git の ref と worktree のディレクトリ名に
+// なるため ASCII のままにすること（日本語ディレクトリは Windows やツールチェーンで事故る）。
+// 2行を1回の応答で返させて、往復を増やさずに両方を得る。
+const WORKTREE_NAMING_INSTRUCTION = [
+	'Name a development task. Reply with exactly two lines and nothing else:',
+	'Title: a short natural title for the task, in the same language as the task description, at most 20 characters, no quotes, no markdown, no trailing punctuation',
+	'Branch: a git branch name, kebab-case, lowercase ascii letters/digits/hyphens, at most 30 characters, no quotes, no slashes',
+].join('\n');
 
 /** Copilot へ送る依頼文の上限。長い依頼文ほど命名が効かない、という逆転を避けるために切り詰める。 */
 const NAMING_PROMPT_MAX_CHARS = 2_000;
 
-/** LLM の返答やユーザーの入力を、ブランチ名として使える形に整える。使えなければ undefined。 */
-function toBranchName(text: string | undefined): string | undefined {
-	const candidate = text?.trim().split('\n')[0].replace(/^["'`]+|["'`]+$/g, '').toLowerCase();
-	if (!candidate) {
-		return undefined;
-	}
-	// ブランチ名は worktree のディレクトリ名にもなる（paradisBuildWorktreeNames）。git が許す文字でも
-	// Windows のファイル名に使えない文字が混ざると作成そのものが失敗するので、ここで落とす。
-	// LLM 由来なら現れない字だが、依頼文をそのまま名前にするフォールバックでは普通に混ざる。
-	// 空文字ではなく `-` に置換するのは、`a<b` が `ab` と繋がって読めなくなるのを避けるため。
-	const portable = paradisSanitizeBranchName(candidate.replace(/[<>|"]/g, '-'));
-	// 40文字カットで末尾に - や . が残ると git が拒否するため、カット後にもう一度トリムする。
-	// サロゲートペアの途中で切ると壊れた文字が残るので、コードポイント単位で数える。
-	const sliced = portable ? Array.from(portable).slice(0, 40).join('').replace(/[-./]+$/, '') : undefined;
-	// Windows の予約デバイス名はディレクトリ名にできない（拡張子を付けても不可）。
-	return sliced && !WINDOWS_RESERVED_NAME_PATTERN.test(sliced) ? sliced : undefined;
+/** 命名モデルの1回の応答を、表示用の見出しと git ブランチ名へ分解する。 */
+interface IParadisWorktreeNaming {
+	/** 一覧に出す見出し（日本語）。整形できなければ undefined。 */
+	readonly title?: string;
+	/** git ブランチ名。ブランチ名として使えなければ undefined。 */
+	readonly branch?: string;
 }
 
-/** Windows が予約しているデバイス名。大小を問わず、`con.txt` のように拡張子が付いても使えない。 */
-const WINDOWS_RESERVED_NAME_PATTERN = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+/**
+ * 応答を見出しとブランチ名に割り、それぞれの制約で整える。
+ *
+ * ブランチ名が取れなかった応答も見出しだけは返す。ブランチ名は日付フォールバックで必ず作れる一方、
+ * 見出しは他に作りようがないので、片方が駄目でももう片方を捨てない。
+ */
+function toWorktreeNaming(text: string | undefined): IParadisWorktreeNaming | undefined {
+	const parsed = paradisParseWorktreeNaming(text);
+	const title = paradisToWorktreeTitle(parsed.title);
+	const branch = paradisToBranchName(parsed.branch);
+	return title === undefined && branch === undefined ? undefined : { title, branch };
+}
 
 /**
  * GitHub のトークンで Copilot の小型モデルを直接叩いてブランチ名を作る。
@@ -173,12 +183,12 @@ const WINDOWS_RESERVED_NAME_PATTERN = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*
  * いないと黙って0件を返し、GitHub にログイン済みでも命名が効かないことがある。こちらは shared process
  * 側で CAPI を直接叩く（コミットメッセージ生成と同じ経路）ので、拡張の起動状態に左右されない。
  */
-async function generateBranchNameViaCopilotApi(
+async function generateWorktreeNamingViaCopilotApi(
 	authenticationService: IAuthenticationService,
 	sharedProcessService: ISharedProcessService,
 	logService: ILogService,
 	prompt: string,
-): Promise<string | undefined> {
+): Promise<IParadisWorktreeNaming | undefined> {
 	try {
 		const githubToken = await paradisFindGithubAccessToken(authenticationService);
 		if (!githubToken) {
@@ -188,11 +198,11 @@ async function generateBranchNameViaCopilotApi(
 			.call<IParadisCopilotUtilityResult>('complete', [{
 				githubToken,
 				messages: [
-					{ role: 'system', content: BRANCH_NAME_INSTRUCTION },
+					{ role: 'system', content: WORKTREE_NAMING_INSTRUCTION },
 					{ role: 'user', content: `Task: ${prompt.slice(0, NAMING_PROMPT_MAX_CHARS)}` },
 				],
 			} satisfies IParadisCopilotUtilityRequest]);
-		return toBranchName(result?.text);
+		return toWorktreeNaming(result?.text);
 	} catch (error) {
 		logService.info('[ParadisWorktreeHeadlessCreate] Copilot API naming unavailable, falling back', error);
 		return undefined;
@@ -233,8 +243,8 @@ async function paradisFindGithubAccessToken(authenticationService: IAuthenticati
 	return best?.token;
 }
 
-/** Copilot Chat 拡張が登録した小型モデル経由でブランチ名を生成する（Copilot API 経路が使えない場合の二段目）。 */
-async function generateBranchName(languageModelsService: ILanguageModelsService, logService: ILogService, prompt: string, timeoutMs: number): Promise<string | undefined> {
+/** Copilot Chat 拡張が登録した小型モデル経由で命名する（Copilot API 経路が使えない場合の二段目）。 */
+async function generateWorktreeNaming(languageModelsService: ILanguageModelsService, logService: ILogService, prompt: string, timeoutMs: number): Promise<IParadisWorktreeNaming | undefined> {
 	try {
 		const modelIds = await languageModelsService.selectLanguageModels({ vendor: 'copilot', id: 'copilot-utility-small' });
 		if (modelIds.length === 0) {
@@ -247,12 +257,12 @@ async function generateBranchName(languageModelsService: ILanguageModelsService,
 					role: ChatMessageRole.User,
 					content: [{
 						type: 'text',
-						value: `${BRANCH_NAME_INSTRUCTION}\n\nTask: ${prompt.slice(0, NAMING_PROMPT_MAX_CHARS)}`,
+						value: `${WORKTREE_NAMING_INSTRUCTION}\n\nTask: ${prompt.slice(0, NAMING_PROMPT_MAX_CHARS)}`,
 					}],
 				}], {}, cts.token);
 				return getTextResponseFromStream(response);
 			})();
-			return toBranchName(await raceTimeout(request, timeoutMs, () => cts.cancel()));
+			return toWorktreeNaming(await raceTimeout(request, timeoutMs, () => cts.cancel()));
 		} finally {
 			cts.dispose();
 		}
@@ -270,7 +280,7 @@ async function generateBranchName(languageModelsService: ILanguageModelsService,
  */
 function fallbackBranchName(seeds: readonly (string | undefined)[]): string {
 	for (const seed of seeds) {
-		const candidate = toBranchName(seed);
+		const candidate = paradisToBranchName(seed);
 		if (candidate) {
 			return candidate;
 		}
@@ -419,6 +429,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 
 	// 1. ブランチ名の決定（手入力 > Copilot API > Copilot Chat 拡張のモデル > フォールバック）
 	let branch = paradisSanitizeBranchName(request.branch ?? '');
+	let suggestedTitle: string | undefined;
 	if (!branch) {
 		if (prompt.length > 0) {
 			callbacks?.onStage?.('naming');
@@ -426,17 +437,25 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 			// 作りなので、shared process のタイムアウトだけでは止まらない。ここで打ち切らないと、
 			// 命名で待たされて worktree 作成が始まらない。
 			const deadline = Date.now() + NAMING_TOTAL_TIMEOUT_MS;
-			branch = await raceTimeout(
-				generateBranchNameViaCopilotApi(authenticationService, sharedProcessService, logService, prompt),
+			const primary = await raceTimeout(
+				generateWorktreeNamingViaCopilotApi(authenticationService, sharedProcessService, logService, prompt),
 				NAMING_COPILOT_TIMEOUT_MS,
 			);
+			branch = primary?.branch;
+			suggestedTitle = primary?.title;
 			// 1段目が食い潰した分だけ2段目を短くする。残りが無いなら、結果を待てないリクエストを
 			// 投げるだけになるので起動しない。
 			const remaining = deadline - Date.now();
 			if (!branch && remaining >= NAMING_MIN_REMAINING_MS) {
-				branch = await generateBranchName(languageModelsService, logService, prompt, remaining);
+				const secondary = await generateWorktreeNaming(languageModelsService, logService, prompt, remaining);
+				branch = secondary?.branch;
+				suggestedTitle = suggestedTitle ?? secondary?.title;
 			}
 		}
+		// 命名モデルが使えない環境（Copilot 未ログイン等）でも英字のブランチ名を見出しにしない。
+		// 依頼文の先頭は利用者自身の言葉なので、日付だけの名前やブランチ名よりは手がかりになる。
+		// ブランチ名を手入力した場合はここへ来ない（利用者が決めた名前をそのまま見出しに残す）。
+		suggestedTitle = suggestedTitle ?? paradisToWorktreeTitle(prompt);
 		branch = branch ?? fallbackBranchName([request.name, prompt]);
 	}
 	branch = paradisDeduplicateBranchName(branch, branchesInfo.branches);
@@ -444,7 +463,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	// 2. worktree 作成
 	callbacks?.onStage?.('creating');
 	const existingDirNames = worktreeService.getDetectedWorktrees(repository.id).map(worktree => basename(worktree.uri));
-	const { displayName, dirName } = paradisBuildWorktreeNames(request.name ?? '', branch, branchesInfo.branches, existingDirNames);
+	const { displayName, dirName } = paradisBuildWorktreeNames(request.name ?? '', branch, branchesInfo.branches, existingDirNames, suggestedTitle);
 	callbacks?.onNameResolved?.(displayName, branch);
 	const worktreeUri = computeWorktreeUri(configurationService, repository, dirName);
 	// ダイアログ実装と同じく、これから作るターミナルを常にこのworktreeへ明示的に紐付ける

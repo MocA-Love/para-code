@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
-import { paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
+import { paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -31,6 +31,111 @@ suite('paradisWorktreeCreate', () => {
 			paradisBuildWorktreeNames('  ', 'feat/sample-ocr'),
 			{ displayName: 'feat-sample-ocr', dirName: 'feat-sample-ocr' },
 		);
+	});
+
+	test('prefers a generated title over the branch-derived directory name', () => {
+		assert.deepStrictEqual(
+			// allow-any-unicode-next-line
+			paradisBuildWorktreeNames('', 'feat/sample-ocr', [], [], '資料整理のOCR対応'),
+			// allow-any-unicode-next-line
+			{ displayName: '資料整理のOCR対応', dirName: 'feat-sample-ocr' },
+		);
+	});
+
+	test('a hand-typed space name still wins over a generated title', () => {
+		assert.deepStrictEqual(
+			// allow-any-unicode-next-line
+			paradisBuildWorktreeNames('手入力名', 'feat/x', [], [], '生成された見出し'),
+			// allow-any-unicode-next-line
+			{ displayName: '手入力名', dirName: 'feat-x' },
+		);
+	});
+
+	test('falls back to the directory name when the generated title is unusable', () => {
+		assert.deepStrictEqual(
+			paradisBuildWorktreeNames('', 'feat/x', [], [], '   '),
+			{ displayName: 'feat-x', dirName: 'feat-x' },
+		);
+	});
+
+	/**
+	 * 命名モデルは書式を守らない。ここが緩むと見出し行がそのままブランチ名になり、
+	 * **日本語の worktree ディレクトリ**ができてしまう（Windows やツールチェーンで事故る）。
+	 * 応答文字列から最終的なブランチ名までを通しで確かめる。
+	 */
+	test('never derives a branch name from the title line, whatever shape the model replies in', () => {
+		// allow-any-unicode-next-line
+		const replies = [
+			// allow-any-unicode-next-line
+			'Title: 資料整理のOCR\nBranch: feat-sample-ocr',
+			// allow-any-unicode-next-line
+			'**Title:** 資料整理のOCR\n**Branch:** feat-sample-ocr',
+			// allow-any-unicode-next-line
+			'- Title: 資料整理のOCR\n- Branch: feat-sample-ocr',
+			// allow-any-unicode-next-line
+			'1. Title: 資料整理のOCR\n2. Branch: feat-sample-ocr',
+			// allow-any-unicode-next-line
+			'タイトル: 資料整理のOCR\nブランチ: feat-sample-ocr',
+			// allow-any-unicode-next-line
+			'Sure, here you go:\nTitle: 資料整理のOCR\nBranch: feat-sample-ocr',
+			// allow-any-unicode-next-line
+			'```\nTitle: 資料整理のOCR\nBranch: feat-sample-ocr\n```',
+		];
+		assert.deepStrictEqual(
+			replies.map(reply => paradisToBranchName(paradisParseWorktreeNaming(reply).branch)),
+			replies.map(() => 'feat-sample-ocr'),
+		);
+	});
+
+	test('drops a non-ascii branch candidate instead of naming a directory in Japanese', () => {
+		// allow-any-unicode-next-line
+		assert.strictEqual(paradisToBranchName('資料整理のOCR'), undefined);
+		// allow-any-unicode-next-line
+		assert.strictEqual(paradisToBranchName('Title: 資料整理'), undefined);
+		assert.strictEqual(paradisToBranchName('feat-sample-ocr'), 'feat-sample-ocr');
+		// 予約デバイス名とカット後の末尾記号は従来どおり弾く。
+		assert.strictEqual(paradisToBranchName('CON'), undefined);
+	});
+
+	test('an unlabelled reply only yields a branch when a line looks like one', () => {
+		assert.deepStrictEqual(
+			paradisParseWorktreeNaming('feat-sample-ocr'),
+			{ title: undefined, branch: 'feat-sample-ocr' },
+		);
+		assert.deepStrictEqual(
+			// allow-any-unicode-next-line
+			paradisParseWorktreeNaming('資料整理のOCR\nfeat-sample-ocr'),
+			{ title: undefined, branch: 'feat-sample-ocr' },
+		);
+		// allow-any-unicode-next-line
+		assert.deepStrictEqual(paradisParseWorktreeNaming('資料整理のOCR'), { title: undefined, branch: undefined });
+	});
+
+	test('keeps the title when the model omits the branch line', () => {
+		assert.deepStrictEqual(
+			// allow-any-unicode-next-line
+			paradisParseWorktreeNaming('Title: 見出しだけ'),
+			// allow-any-unicode-next-line
+			{ title: '見出しだけ', branch: undefined },
+		);
+	});
+
+	test('trims a generated title to one clean line', () => {
+		// allow-any-unicode-next-line
+		assert.strictEqual(paradisToWorktreeTitle('「資料整理」\n2行目'), '資料整理');
+		// allow-any-unicode-next-line
+		assert.strictEqual(paradisToWorktreeTitle('**資料整理**'), '資料整理');
+		assert.strictEqual(paradisToWorktreeTitle('   '), undefined);
+		assert.strictEqual(paradisToWorktreeTitle(undefined), undefined);
+		// 24 コードポイントを超えたら省略記号を足して切る。
+		assert.strictEqual(paradisToWorktreeTitle('a'.repeat(40)), `${'a'.repeat(24)}\u2026`);
+	});
+
+	test('strips invisible and bidi control characters that would scramble the row', () => {
+		// allow-any-unicode-next-line
+		assert.strictEqual(paradisToWorktreeTitle('役所\u202e調査\u200b'), '役所 調査');
+		// allow-any-unicode-next-line
+		assert.strictEqual(paradisToWorktreeTitle('\u200e\u2066\u2069'), undefined);
 	});
 
 	test('deduplicates directory names that collide after branch sanitization', () => {
