@@ -553,10 +553,144 @@ export function paradisDeduplicateWorktreeDirName(branchName: string, existingBr
 	}
 }
 
-/** worktree 作成時の表示名とディレクトリ名を決める。スペース名は表示専用。 */
-export function paradisBuildWorktreeNames(spaceName: string, branchName: string, existingBranches: readonly string[] = [], existingDirNames: readonly string[] = []): { displayName: string; dirName: string } {
+/** 一覧に出す見出しの上限。長いと行が窮屈になり、ブランチ名や差分の表示を押し出す。 */
+const PARADIS_WORKTREE_TITLE_MAX_CHARS = 24;
+
+/** git のブランチ名として通す文字。ディレクトリ名も兼ねるので ASCII に限る。 */
+const PARADIS_ASCII_BRANCH_PATTERN = /^[a-z0-9][a-z0-9._/-]*$/;
+
+/** Windows が予約しているデバイス名。大小を問わず、`con.txt` のように拡張子が付いても使えない。 */
+const PARADIS_WINDOWS_RESERVED_NAME_PATTERN = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+/**
+ * 見出しから、表示を壊す文字を落とす。
+ *
+ * 入力は命名モデルの応答か利用者の依頼文なので、何が来てもおかしくない。textContent へ入れるので
+ * スクリプトにはならないが、双方向制御文字が残ると**行全体の文字順が反転**し、ゼロ幅文字が残ると
+ * 見えない字で幅だけ食う。Markdown の強調記号はモデルが好んで付けるので、引用符と同じ扱いで剥がす。
+ */
+function stripUnsafeTitleCharacters(text: string): string {
+	let cleaned = '';
+	for (const character of text) {
+		const codePoint = character.codePointAt(0)!;
+		// 制御文字・ゼロ幅・双方向制御（LRM/RLM/LRE..RLO/PDF/isolate 系）を落とす。
+		if (codePoint <= 0x1f || codePoint === 0x7f
+			|| codePoint === 0x200b || codePoint === 0x200c || codePoint === 0x200d
+			|| (codePoint >= 0x200e && codePoint <= 0x200f)
+			|| (codePoint >= 0x202a && codePoint <= 0x202e)
+			|| (codePoint >= 0x2066 && codePoint <= 0x2069)
+			|| codePoint === 0xfeff) {
+			cleaned += ' ';
+			continue;
+		}
+		cleaned += character;
+	}
+	return cleaned;
+}
+
+/**
+ * 自動生成された見出しを、一覧にそのまま出せる1行へ整える。使えなければ undefined。
+ *
+ * ブランチ名と違い、これは表示専用なので日本語をそのまま通す。ディレクトリ名にもブランチ名にも
+ * 使われないため、ファイルシステムや git の制約は関係ない（paradisBuildWorktreeNames 参照）。
+ */
+export function paradisToWorktreeTitle(text: string | undefined): string | undefined {
+	const firstLine = text?.split('\n')[0];
+	if (firstLine === undefined) {
+		return undefined;
+	}
+	// 引用符と Markdown の強調は、モデルが勝手に付けるだけで見出しの一部ではない。
+	// allow-any-unicode-next-line
+	const undecorated = stripUnsafeTitleCharacters(firstLine).replace(/^[\s"'`*_#「『]+|[\s"'`*_」』]+$/g, '');
+	const collapsed = undecorated.replace(/\s+/g, ' ').trim();
+	if (!collapsed) {
+		return undefined;
+	}
+	// 日本語は1文字の情報量が大きいので、コードポイント単位で数える（サロゲートペアも壊さない）。
+	const points = Array.from(collapsed);
+	if (points.length <= PARADIS_WORKTREE_TITLE_MAX_CHARS) {
+		return collapsed;
+	}
+	// 切ったことが分かるように省略記号を足す。CSS 側の省略とは別に、保存される値自体を短くする。
+	return `${points.slice(0, PARADIS_WORKTREE_TITLE_MAX_CHARS).join('').trim()}\u2026`;
+}
+
+/**
+ * 応答をブランチ名として使える形に整える。使えなければ undefined。
+ *
+ * 最後に ASCII を強制するのが要点。`paradisSanitizeBranchName` は git が禁じる記号しか落とさず
+ * 日本語を素通しするため、これが無いと**日本語のブランチ名＝日本語の worktree ディレクトリ**が
+ * できてしまう（Windows やツールチェーンで事故る）。見出し側で日本語を保持できるようになった以上、
+ * ここは落として日付フォールバックに回しても情報は失われない。
+ */
+export function paradisToBranchName(text: string | undefined): string | undefined {
+	const candidate = text?.trim().split('\n')[0].replace(/^["\'`]+|["\'`]+$/g, '').toLowerCase();
+	if (!candidate) {
+		return undefined;
+	}
+	// git が許す文字でも Windows のファイル名に使えない文字が混ざると作成そのものが失敗する。
+	// 空文字ではなく `-` に置換するのは、`a<b` が `ab` と繋がって読めなくなるのを避けるため。
+	const portable = paradisSanitizeBranchName(candidate.replace(/[<>|"]/g, '-'));
+	// 40文字カットで末尾に - や . が残ると git が拒否するため、カット後にもう一度トリムする。
+	const sliced = portable ? Array.from(portable).slice(0, 40).join('').replace(/[-./]+$/, '') : undefined;
+	if (!sliced || PARADIS_WINDOWS_RESERVED_NAME_PATTERN.test(sliced)) {
+		return undefined;
+	}
+	return PARADIS_ASCII_BRANCH_PATTERN.test(sliced) ? sliced : undefined;
+}
+
+/**
+ * 命名モデルの応答から「見出し」と「ブランチ名」を取り出す。
+ *
+ * モデルは書式を守らない。太字(`**Title:**`)・箇条書き(`- Title:`)・番号(`1. Title:`)・
+ * 日本語ラベルは実際に出てくるので、行頭の装飾を許して拾う。
+ *
+ * ラベルが1つも無い場合に「1行目＝ブランチ名」と決め打つのは危険で、指示が見出しを先に出させる以上、
+ * 1行目は見出しであることが多い。ASCII のブランチ名として通る行を探し、無ければブランチ名は諦める
+ * （日付フォールバックが必ず作れる）。ここを緩めると日本語がディレクトリ名になる。
+ */
+export function paradisParseWorktreeNaming(raw: string | undefined): { readonly title?: string; readonly branch?: string } {
+	const text = raw?.trim();
+	if (!text) {
+		return { title: undefined, branch: undefined };
+	}
+	const lines = text.split('\n');
+	let title: string | undefined;
+	let branch: string | undefined;
+	for (const line of lines) {
+		// allow-any-unicode-next-line
+		const matched = /^[\s>*\-#\d.)\]]*\**\s*(title|branch|\u30bf\u30a4\u30c8\u30eb|\u30d6\u30e9\u30f3\u30c1)\s*\**\s*[:\uff1a]\s*(.+?)\s*\**$/i.exec(line);
+		if (!matched) {
+			continue;
+		}
+		const value = matched[2].trim();
+		// allow-any-unicode-next-line
+		if (/^(title|\u30bf\u30a4\u30c8\u30eb)$/i.test(matched[1])) {
+			title ??= value;
+		} else {
+			branch ??= value;
+		}
+	}
+	if (title !== undefined || branch !== undefined) {
+		return { title, branch };
+	}
+	// ラベル皆無: ブランチ名として通る行だけを候補にする。見出しは決められないので付けない。
+	const branchLine = lines
+		.map(line => line.trim().replace(/^["\'`]+|["\'`]+$/g, ''))
+		.find(line => line.length > 0 && PARADIS_ASCII_BRANCH_PATTERN.test(line.toLowerCase()));
+	return { title: undefined, branch: branchLine };
+}
+
+/**
+ * worktree 作成時の表示名とディレクトリ名を決める。スペース名は表示専用。
+ *
+ * 手入力のスペース名が最優先。無ければ自動生成の見出しを使い、それも無ければディレクトリ名
+ * （＝英字のブランチ名）へ落ちる。以前は常にこの最後の段だったため、名前を入れずに作ると
+ * 一覧が英語のブランチ名で埋まっていた。
+ */
+export function paradisBuildWorktreeNames(spaceName: string, branchName: string, existingBranches: readonly string[] = [], existingDirNames: readonly string[] = [], suggestedTitle?: string): { displayName: string; dirName: string } {
 	const dirName = paradisDeduplicateWorktreeDirName(branchName, existingBranches, existingDirNames);
-	const displayName = spaceName.trim() || dirName;
+	const displayName = spaceName.trim() || paradisToWorktreeTitle(suggestedTitle) || dirName;
 	return { displayName, dirName };
 }
 
