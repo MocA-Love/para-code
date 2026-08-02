@@ -170,8 +170,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		this._register({ dispose: () => { withWindowLease(lease => this.service.removeTerminalWindow(lease)).catch(() => { }); } });
 
 		// PC操作中はスマホのバナーを抑制する機能（pcFocusQuiet）用に、このウィンドウの
-		// フォーカス状態を shared process へ報告する（paradisNotificationTrigger等と同じ
-		// isVisibleAndFocused 判定: !document.hidden && hostService.hasFocus）。
+		// フォーカス状態を shared process へ報告する。
+		//
+		// ここは paradisNotificationTrigger の抑制判定（paradisIsWorkbenchWindowFocused）とは
+		// 意味が違うので、意図的に hostService.hasFocus のままにしている。あちらは「その
+		// ターミナルを見ているか」だが、こちらは「PCの前に居るか」。補助ウィンドウ（別窓に
+		// 出したエディタ、エージェント・ライブウィンドウ）で作業している間もPCの前には
+		// 居るので、スマホを鳴らす必要はない。
 		// イベント駆動の即時報告に加え、定期ハートビートでも再送する
 		// （shared process側はWINDOW_FOCUS_TTL_MSより古い報告を無視する。rendererがクラッシュ等で
 		// disposeを経ずに落ちても、このハートビートが途絶えることで自然に「フォーカス無し」に

@@ -20,7 +20,6 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -28,6 +27,7 @@ import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentSta
 import { ParadisAgentTokenScopeMemory, paradisShouldClearAgentStatusAfterPollFailures } from '../../agentBrowser/common/paradisAgentStatusStale.js';
 import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { paradisIsWorkbenchWindowFocused } from '../browser/paradisWindowFocus.js';
 
 const POLL_INTERVAL = 2000;
 
@@ -55,7 +55,6 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IParadisAgentStatusStore private readonly statusStore: IParadisAgentStatusStore,
-		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
@@ -217,7 +216,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 				continue; // どの解決経路でもスコープ不明 (登録外フォルダ等)
 			}
 
-			if (paneStatus.status === 'review' && stateKey === activeStateKey && resolvedViaInstance && !document.hidden && this.hostService.hasFocus) {
+			if (paneStatus.status === 'review' && stateKey === activeStateKey && resolvedViaInstance && paradisIsWorkbenchWindowFocused()) {
 				// 見えているスコープの完了は、ウィンドウが可視かつフォーカス中の場合のみ確認済み扱い
 				// (fire-and-forget)。非フォーカス時は review を維持し、ParadisNotificationTrigger
 				// の完了通知に先食いされないようにする。cwdフォールバックで解決したペインは

@@ -15,8 +15,8 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { GeneralShellType, TerminalSettingId } from '../../../../platform/terminal/common/terminal.js';
 import { TerminalContextKeys, TerminalContextKeyStrings } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
 import { registerSendSequenceKeybinding } from '../../../../workbench/contrib/terminalContrib/sendSequence/browser/terminal.sendSequence.contribution.js';
+import { PARADIS_TERMINAL_SHIFT_ENTER_SETTING } from '../common/paradisTerminalShiftEnter.js';
 
-const PARADIS_TERMINAL_SHIFT_ENTER_SETTING = 'paradis.terminal.shiftEnterNewline';
 
 // Paradis独自設定の集約セクション（windowTransparency の paradisSettings.contribution.ts と同じ id/title に
 // 揃えることで、設定UI上は1つの「Para Code」セクションにマージされる）。

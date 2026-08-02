@@ -6,7 +6,7 @@
 import assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -261,6 +261,7 @@ async function createHarness(
 			mainStateKey = stateKey ?? mainStateKey;
 		},
 		resolveWindow: () => ({ kind: 'managed', stateKey: mainStateKey }),
+		registerScopelessWindow: () => Disposable.None,
 		resolvePart: () => ({ kind: 'managed', stateKey: mainStateKey }),
 		resolveGroup: () => ({ kind: 'managed', stateKey: mainStateKey }),
 		getPinnedParts: () => [],

@@ -30,6 +30,7 @@ import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentSta
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { IParadisAivisPlaceholders, IParadisNotifyAudioRequest, PARADIS_NOTIFICATIONS_CHANNEL, renderParadisAivisTemplate } from '../common/paradisNotifications.js';
+import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
 
 const POLL_INTERVAL = 2000;
 
@@ -176,7 +177,7 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 
 		// 設定「Para Code を見ている間も通知する」が有効なら、フォーカス由来の抑制を行わない
 		const notifyWhileFocused = this.settingsService.getNotifyWhileFocused();
-		const isVisibleAndFocused = !document.hidden && this.hostService.hasFocus;
+		const isVisibleAndFocused = paradisIsWorkbenchWindowFocused();
 		const stateKey = this.terminalScopeService.getStateKeyForInstance(instanceId);
 
 		if (stateKey === undefined) {

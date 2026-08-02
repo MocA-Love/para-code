@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -177,6 +177,16 @@ export interface IParadisAuxiliaryWindowScopeService {
 	readonly initializationBarrier: Promise<void>;
 	setMainScope(stateKey: string | undefined, managed: boolean, switching: boolean): void;
 	resolveWindow(windowId: number): ParadisBindingScope;
+	/**
+	 * エディタ部を持たない fork 所有の補助ウィンドウ (エージェント・ライブウィンドウ) を、
+	 * スコープ解決の上ではメインウィンドウと同一視させる。
+	 *
+	 * この台帳は onDidCreateAuxiliaryEditorPart で作られるため、エディタを持たない
+	 * ウィンドウは載らず resolveWindow が 'pending' を返す。そのウィンドウにフォーカスが
+	 * ある間に新しいターミナルやブラウザビューが作られると、アクティブスペースではなく
+	 * 「所属不明」として扱われてしまうため、明示的に登録して回避する。
+	 */
+	registerScopelessWindow(windowId: number): IDisposable;
 	resolvePart(part: IEditorPart): ParadisBindingScope;
 	resolveGroup(group: IEditorGroup): ParadisBindingScope;
 	getPinnedParts(stateKey?: string): readonly IAuxiliaryEditorPart[];
