@@ -41,6 +41,43 @@ interface IFakeCodexRecord {
 	readonly portFile?: string;
 }
 
+// Records every invocation except the pane app-server the launcher starts itself, and answers
+// `completion bash` with the dispatch table Codex generates — the table the launcher reads to
+// find out which names are subcommands. PARADIS_TEST_COMPLETION_NAMES lists the names it knows.
+const FAKE_CODEX_WITH_COMPLETION = `#!/usr/bin/env node
+const fs = require('fs');
+const net = require('net');
+const args = process.argv.slice(2);
+if (args[0] === 'app-server' && args[1] === '--listen') {
+	const server = net.createServer(socket => socket.end());
+	const close = () => server.close(() => process.exit(0));
+	process.on('SIGTERM', close);
+	process.on('SIGINT', close);
+	server.listen(args[2].slice('unix://'.length));
+} else {
+	fs.appendFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args) + '\\n');
+	if (args[0] === 'completion') {
+		const names = (process.env.PARADIS_TEST_COMPLETION_NAMES || '').split(' ').filter(name => name.length > 0);
+		process.stdout.write(names.map(name => '            codex,' + name + ')\\n                cmd="codex__' + name + '"\\n                ;;\\n').join(''));
+	}
+}
+`;
+
+async function readRecords(recordPath: string): Promise<string[][]> {
+	const contents = await fs.readFile(recordPath, 'utf8');
+	return contents.split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as string[]);
+}
+
+async function readLastRecord(recordPath: string): Promise<string[]> {
+	const records = await readRecords(recordPath);
+	assert.ok(records.length > 0, `the fake Codex was never invoked (${recordPath})`);
+	return records[records.length - 1];
+}
+
+async function countCompletionProbes(recordPath: string): Promise<number> {
+	return (await readRecords(recordPath)).filter(record => record[0] === 'completion').length;
+}
+
 suite('ParadisCodexPaneLauncher', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -238,6 +275,122 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
 		} finally {
 			await fs.rm(testRoot, { recursive: true, force: true });
 		}
+	});
+
+	// Codex rejects `--remote` for anything but the interactive TUI ("only supported for
+	// interactive TUI commands"), so a subcommand the launcher fails to recognize is treated as
+	// a prompt and stops working entirely — `codex plugin` broke in the field exactly this way.
+	// The invocations below are Codex 0.146's full set, aliases and the subcommands hidden from
+	// `codex --help` included.
+	test('delegates every Codex subcommand and keeps only TUI invocations pane-managed', async function () {
+		this.timeout(60_000);
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
+		try {
+			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
+			const fakeBin = join(testRoot, 'bin');
+			const socketPath = join(testRoot, 'pcx', 'pane.sock');
+			const recordPath = join(testRoot, 'record.json');
+			await fs.mkdir(fakeBin, { recursive: true });
+			await fs.writeFile(join(fakeBin, 'codex'), FAKE_CODEX_WITH_COMPLETION, { mode: 0o700 });
+			const env = {
+				...process.env,
+				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
+				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
+				PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
+				PARADIS_TEST_TUI_RECORD: recordPath,
+				PARADIS_TEST_COMPLETION_NAMES: '',
+			};
+			const invocations: readonly (readonly string[])[] = [
+				['exec'], ['e'], ['review'], ['login'], ['logout'], ['mcp'], ['plugin'], ['mcp-server'],
+				['app-server'], ['remote-control'], ['app'], ['completion'], ['update'], ['doctor'],
+				['sandbox'], ['debug'], ['apply'], ['a'], ['archive'], ['delete'], ['unarchive'], ['cloud'],
+				['exec-server'], ['execpolicy'], ['responses-api-proxy'], ['stdio-to-uds'], ['features'],
+				['help'], ['help', 'plugin'], ['--model', 'gpt-5', 'plugin', 'list'], ['-a', 'never', 'plugin'],
+				[], ['explain this repo'], ['resume'], ['fork'], ['--', 'plugin', 'list'],
+			];
+			const paneManaged: string[] = [];
+			for (const args of invocations) {
+				await fs.rm(recordPath, { force: true });
+				await execFileAsync(launcherPath, args, { env, timeout: 15_000 });
+				const recorded = await readLastRecord(recordPath);
+				if (recorded[0] === '--remote') {
+					paneManaged.push(args.join(' '));
+				}
+			}
+
+			assert.deepStrictEqual(paneManaged, ['', 'explain this repo', 'resume', 'fork', '-- plugin list']);
+		} finally {
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
+
+	// The static list cannot stay complete on its own: Codex ships subcommands regularly, and
+	// every one it gains is a command Para Code silently breaks until the list catches up.
+	test('asks Codex to classify a positional argument the static list does not know', async function () {
+		this.timeout(20_000);
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
+		try {
+			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
+			const fakeBin = join(testRoot, 'bin');
+			const socketPath = join(testRoot, 'pcx', 'pane.sock');
+			const recordPath = join(testRoot, 'record.json');
+			await fs.mkdir(fakeBin, { recursive: true });
+			await fs.writeFile(join(fakeBin, 'codex'), FAKE_CODEX_WITH_COMPLETION, { mode: 0o700 });
+			const env = {
+				...process.env,
+				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
+				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
+				PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
+				PARADIS_TEST_TUI_RECORD: recordPath,
+				PARADIS_TEST_COMPLETION_NAMES: 'resume fork brandnew',
+			};
+
+			await execFileAsync(launcherPath, ['brandnew', '--flag'], { env, timeout: 15_000 });
+			const newSubcommand = await readLastRecord(recordPath);
+			const probesAfterFirstRun = await countCompletionProbes(recordPath);
+			await fs.rm(recordPath, { force: true });
+			await execFileAsync(launcherPath, ['brandnew', '--flag'], { env, timeout: 15_000 });
+			const cachedRun = await readLastRecord(recordPath);
+			const probesAfterSecondRun = await countCompletionProbes(recordPath);
+			await fs.rm(recordPath, { force: true });
+			await execFileAsync(launcherPath, ['a prompt Codex does not know'], { env, timeout: 15_000 });
+			const prompt = await readLastRecord(recordPath);
+
+			assert.deepStrictEqual({
+				newSubcommand, probesAfterFirstRun, cachedRun, probesAfterSecondRun,
+				promptStaysPaneManaged: prompt[0] === '--remote',
+				cached: await fs.access(join(testRoot, 'pcx', 'codex-commands.cache')).then(() => true, () => false),
+			}, {
+				newSubcommand: ['brandnew', '--flag'],
+				probesAfterFirstRun: 1,
+				cachedRun: ['brandnew', '--flag'],
+				probesAfterSecondRun: 0,
+				promptStaysPaneManaged: true,
+				cached: true,
+			});
+		} finally {
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
+
+	// The same classification lives in three implementations (this launcher, the Windows one,
+	// and the mobile relay's command parser) because a shell script cannot share code with
+	// TypeScript. Only the POSIX list was left behind when `plugin` and friends were added,
+	// which is what broke `codex plugin`; keep the three from drifting again.
+	test('keeps the delegated-command list identical across all three implementations', async () => {
+		const posix = await fs.readFile(join(process.cwd(), 'resources', 'paradis', 'bin', 'codex'), 'utf8');
+		const windows = await fs.readFile(join(process.cwd(), 'resources', 'paradis', 'bin', 'paradisCodexPaneLauncher.cjs'), 'utf8');
+		const relay = await fs.readFile(join(process.cwd(), 'src', 'vs', 'paradis', 'contrib', 'mobileRelay', 'common', 'paradisAgentCliCommand.ts'), 'utf8');
+
+		const posixNames = /\n\t\t([a-z][a-z0-9|_-]*)\)\n\t\t\tcommand_kind=delegated\n/.exec(posix)?.[1].split('|') ?? [];
+		const windowsNames = [...(/const NON_INTERACTIVE_COMMANDS = new Set\(\[([\s\S]*?)\]\);/.exec(windows)?.[1] ?? '').matchAll(/'([^']+)'/g)].map(match => match[1]);
+		const relayNames = [...(/const codexNonInteractiveCommands = new Set\(\[([^\]]*)\]\);/.exec(relay)?.[1] ?? '').matchAll(/'([^']+)'/g)].map(match => match[1]);
+
+		assert.deepStrictEqual({ windowsNames: [...windowsNames].sort(), relayNames: [...relayNames].sort() }, {
+			windowsNames: [...posixNames].sort(),
+			relayNames: [...posixNames].sort(),
+		});
+		assert.ok(posixNames.includes('plugin'), 'the delegated-command list was not parsed');
 	});
 
 	// A launcher that runs outside a Para Code terminal (a leaked PATH entry, a detached shell)

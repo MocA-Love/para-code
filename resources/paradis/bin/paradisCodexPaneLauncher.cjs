@@ -29,13 +29,26 @@ const OPTIONS_WITH_VALUE = new Set([
 	'-c', '--config', '--enable', '--disable', '--remote-auth-token-env', '-i', '--image', '-m', '--model',
 	'--local-provider', '-p', '--profile', '-s', '--sandbox', '-C', '--cd', '--add-dir', '-a', '--ask-for-approval',
 ]);
+// Codex rejects `--remote` outside the interactive TUI ("only supported for interactive TUI
+// commands"), so it may only be injected when the invocation really opens the TUI: no
+// subcommand at all (a bare prompt), `resume`, or `fork`. Everything else has to be delegated,
+// which means every other subcommand name must be recognized here — a name missing from this
+// set is silently treated as a prompt and breaks that command. This is Codex 0.146's full set
+// (aliases and the internal subcommands `codex --help` hides included) minus the TUI commands,
+// and it is only the fast path: an unrecognized positional argument is resolved by asking Codex
+// itself, so a subcommand added by a future Codex release keeps working.
+const TUI_COMMANDS = new Set(['resume', 'fork']);
 const NON_INTERACTIVE_COMMANDS = new Set([
-	'exec', 'review', 'login', 'logout', 'mcp', 'mcp-server', 'app-server', 'completion', 'cloud', 'debug',
-	'apply', 'sandbox', 'features', 'remote-control',
+	'exec', 'e', 'review', 'login', 'logout', 'mcp', 'plugin', 'mcp-server', 'app-server', 'remote-control',
+	'app', 'completion', 'update', 'doctor', 'sandbox', 'debug', 'apply', 'a', 'archive', 'delete', 'unarchive',
+	'cloud', 'exec-server', 'execpolicy', 'responses-api-proxy', 'stdio-to-uds', 'features', 'help',
 ]);
 
 const SERVER_START_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 2_000;
+const SUBCOMMAND_PROBE_TIMEOUT_MS = 5_000;
+const SUBCOMMAND_CACHE_TTL_MS = 6 * 60 * 60 * 1_000;
+const SUBCOMMAND_CACHE_NAME = 'codex-commands.cache';
 
 function fail(message, code) {
 	process.stderr.write(`Para Code: ${message}${os.EOL}`);
@@ -64,37 +77,126 @@ function samePath(a, b) {
 	return normalize(a) === normalize(b);
 }
 
-/** Mirrors the POSIX launcher's classification of delegated (non pane-managed) commands. */
-function isManagedInvocation(args) {
+/**
+ * Mirrors the POSIX launcher's classification of an invocation.
+ *
+ * `delegated` runs the user's Codex unchanged, `tui` gets the pane app-server, and
+ * `unknown` is a positional argument the static list cannot place — either the prompt or a
+ * subcommand from a newer Codex — which only Codex itself can resolve.
+ */
+function classifyInvocation(args) {
 	let skipNext = false;
-	let firstPositional = true;
+	let firstPositional;
 	for (const argument of args) {
 		if (skipNext) {
 			skipNext = false;
 			continue;
 		}
-		if (argument === '--remote' || argument.startsWith('--remote=')) {
-			return false;
+		if (argument === '--remote' || argument.startsWith('--remote=')
+			|| argument === '--help' || argument === '-h' || argument === '--version' || argument === '-V') {
+			return { kind: 'delegated' };
 		}
 		if (argument === '--') {
+			// Codex treats everything after `--` as the prompt, never as a subcommand.
 			break;
 		}
 		if (OPTIONS_WITH_VALUE.has(argument)) {
 			skipNext = true;
 			continue;
 		}
-		if (argument === '--help' || argument === '-h' || argument === '--version' || argument === '-V') {
-			return false;
-		}
 		if (argument.startsWith('-')) {
 			continue;
 		}
-		if (firstPositional && NON_INTERACTIVE_COMMANDS.has(argument)) {
-			return false;
+		if (firstPositional === undefined) {
+			firstPositional = argument;
 		}
-		firstPositional = false;
 	}
-	return true;
+	if (firstPositional === undefined || TUI_COMMANDS.has(firstPositional)) {
+		return { kind: 'tui' };
+	}
+	if (NON_INTERACTIVE_COMMANDS.has(firstPositional)) {
+		return { kind: 'delegated' };
+	}
+	return { kind: 'unknown', firstPositional };
+}
+
+/** Identity of the resolved Codex, used to invalidate the discovered-subcommand cache. */
+function codexIdentity(real) {
+	try {
+		const stat = fs.statSync(real.prefixArgs.length > 0 ? real.prefixArgs[0] : real.command);
+		return `${stat.size}-${Math.trunc(stat.mtimeMs)}`;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Every name Codex knows as a subcommand, read out of the dispatch table in the shell
+ * completion script it generates for itself. That table is the only complete source: it lists
+ * aliases and the internal subcommands `codex --help` hides.
+ */
+function discoverSubcommands(real, pathEntries) {
+	let completionScript;
+	try {
+		completionScript = childProcess.execFileSync(real.command, [...real.prefixArgs, 'completion', 'bash'], {
+			env: childEnvironment(pathEntries, real.useOwnNode),
+			encoding: 'utf8',
+			timeout: SUBCOMMAND_PROBE_TIMEOUT_MS,
+			maxBuffer: 8 * 1_024 * 1_024,
+			stdio: ['ignore', 'pipe', 'ignore'],
+			windowsHide: true,
+		});
+	} catch {
+		return undefined;
+	}
+	const names = [];
+	// `\r?` because a Codex that writes its completion script with Windows line endings would
+	// otherwise leave every entry unmatched, and an empty result reads as "no subcommands".
+	for (const match of completionScript.matchAll(/^[ \t]*codex,([A-Za-z0-9_-]+)\)\r?$/gm)) {
+		names.push(match[1]);
+	}
+	return names.length > 0 ? names : undefined;
+}
+
+/**
+ * Discovered subcommands for this Codex. Generating them costs about a third of a second, so
+ * the result is cached in the pane runtime directory. The cache is invalidated both by the
+ * Codex executable's identity and by age: the resolved entry is often a shim whose size and
+ * timestamp do not change when the Codex behind it is upgraded.
+ */
+function knownSubcommands(real, pathEntries, runtimeDir) {
+	const cachePath = path.join(runtimeDir, SUBCOMMAND_CACHE_NAME);
+	const identity = codexIdentity(real);
+	if (identity !== undefined) {
+		try {
+			const cached = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+			if (cached !== null && typeof cached === 'object' && cached.identity === identity
+				&& Array.isArray(cached.commands) && cached.commands.length > 0
+				&& Date.now() - fs.statSync(cachePath).mtimeMs < SUBCOMMAND_CACHE_TTL_MS) {
+				return new Set(cached.commands);
+			}
+		} catch {
+			// no usable cache
+		}
+	}
+	const commands = discoverSubcommands(real, pathEntries);
+	if (commands === undefined) {
+		return undefined;
+	}
+	if (identity !== undefined) {
+		const temporaryPath = `${cachePath}.${process.pid}.tmp`;
+		try {
+			fs.writeFileSync(temporaryPath, `${JSON.stringify({ identity, commands })}\n`);
+			fs.renameSync(temporaryPath, cachePath);
+		} catch {
+			try {
+				fs.rmSync(temporaryPath, { force: true });
+			} catch {
+				// best effort
+			}
+		}
+	}
+	return new Set(commands);
 }
 
 function cleanPathEntries() {
@@ -363,7 +465,7 @@ function startPaneServer(real, pathEntries, endpointPath, paneToken) {
 	});
 }
 
-async function runManaged(real, pathEntries, args) {
+async function runManaged(real, pathEntries, args, invocation) {
 	const endpointPath = process.env[ENDPOINT_ENV_VAR] || '';
 	const endpointName = path.basename(endpointPath);
 	if (!path.isAbsolute(endpointPath) || !/^[A-Za-z0-9._-]{1,64}\.endpoint\.json$/.test(endpointName)
@@ -384,6 +486,15 @@ async function runManaged(real, pathEntries, args) {
 		return;
 	}
 	sweepDeadEndpoints(runtimeDir);
+
+	// An unrecognized positional argument is either the prompt or a subcommand from a newer
+	// Codex than the static list knows. Only Codex can tell the two apart. Failing to ask keeps
+	// the prompt reading, which is what the static list alone would have decided.
+	if (invocation.kind === 'unknown'
+		&& knownSubcommands(real, pathEntries, runtimeDir)?.has(invocation.firstPositional) === true) {
+		runDelegated(real, pathEntries, args);
+		return;
+	}
 
 	let port;
 	let ownedServer;
@@ -491,11 +602,12 @@ function main() {
 	if (real === undefined) {
 		fail('Codex executable was not found after the pane launcher.', 127);
 	}
-	if (isManagedInvocation(args)) {
-		runManaged(real, pathEntries, args).catch(error => fail(String(error && error.message ? error.message : error), 1));
-	} else {
+	const invocation = classifyInvocation(args);
+	if (invocation.kind === 'delegated') {
 		runDelegated(real, pathEntries, args);
+		return;
 	}
+	runManaged(real, pathEntries, args, invocation).catch(error => fail(String(error && error.message ? error.message : error), 1));
 }
 
 main();

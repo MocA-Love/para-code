@@ -47,11 +47,49 @@ if (args[0] === 'app-server') {
 }
 `;
 
+// FAKE_CODEX_SOURCEの派生。1回の起動につき1行を追記し、`completion bash` にはCodexが自分用に
+// 生成する補完スクリプトのディスパッチ表を返す（ランチャーが「どの名前がサブコマンドか」を
+// 読み取る唯一の完全な情報源）。PARADIS_TEST_COMPLETION_NAMESが知っている名前を決める。
+const FAKE_CODEX_WITH_COMPLETION = `#!/usr/bin/env node
+const crypto = require('crypto');
+const fs = require('fs');
+const http = require('http');
+const args = process.argv.slice(2);
+if (args[0] === 'app-server' && args[1] === '--listen') {
+	const server = http.createServer((request, response) => { response.statusCode = 401; response.end(); });
+	server.on('upgrade', (request, socket) => {
+		const accept = crypto.createHash('sha1').update(request.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+		socket.write('HTTP/1.1 101 Switching Protocols\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Accept: ' + accept + '\\r\\n\\r\\n');
+	});
+	process.on('SIGTERM', () => process.exit(0));
+	server.listen(0, '127.0.0.1', () => {
+		process.stderr.write('  listening on: ws://127.0.0.1:' + server.address().port + '\\n');
+	});
+} else {
+	fs.appendFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args) + '\\n');
+	if (args[0] === 'completion') {
+		const names = (process.env.PARADIS_TEST_COMPLETION_NAMES || '').split(' ').filter(name => name.length > 0);
+		process.stdout.write(names.map(name => '            codex,' + name + ')\\n                cmd="codex__' + name + '"\\n                ;;\\n').join(''));
+	}
+}
+`;
+
 interface IFakeCodexRecord {
 	readonly args: readonly string[];
 	readonly paneToken?: string;
 	readonly portFile?: string;
 	readonly port?: number;
+}
+
+async function readRecords(recordPath: string): Promise<string[][]> {
+	const contents = await fs.readFile(recordPath, 'utf8');
+	return contents.split('\n').filter(line => line.length > 0).map(line => JSON.parse(line) as string[]);
+}
+
+async function readLastRecord(recordPath: string): Promise<string[]> {
+	const records = await readRecords(recordPath);
+	assert.ok(records.length > 0, `the fake Codex was never invoked (${recordPath})`);
+	return records[records.length - 1];
 }
 
 function processIsAlive(pid: number): boolean {
@@ -179,6 +217,72 @@ suite('ParadisCodexPaneWinLauncher', () => {
 			assert.strictEqual(await fs.access(setup.endpointPath).then(() => true, () => false), false);
 		} finally {
 			staleServer.kill('SIGKILL');
+			await fs.rm(setup.testRoot, { recursive: true, force: true });
+		}
+	});
+
+	// Codexは対話TUI以外で`--remote`を拒否するため、ランチャーが取りこぼしたサブコマンドは
+	// プロンプト扱いになって完全に動かなくなる（実際に`codex plugin`がこの形で壊れた）。
+	// 以下はCodex 0.146の全サブコマンド（エイリアスと`--help`に出ない内部コマンドを含む）。
+	test('delegates every Codex subcommand and keeps only TUI invocations pane-managed', async function () {
+		this.timeout(60_000);
+		const setup = await createSetup();
+		try {
+			await fs.writeFile(setup.fakeCodexPath, FAKE_CODEX_WITH_COMPLETION, { mode: 0o700 });
+			const env = { ...setup.env, PARADIS_TEST_COMPLETION_NAMES: '' };
+			const invocations: readonly (readonly string[])[] = [
+				['exec'], ['e'], ['review'], ['login'], ['logout'], ['mcp'], ['plugin'], ['mcp-server'],
+				['app-server'], ['remote-control'], ['app'], ['completion'], ['update'], ['doctor'],
+				['sandbox'], ['debug'], ['apply'], ['a'], ['archive'], ['delete'], ['unarchive'], ['cloud'],
+				['exec-server'], ['execpolicy'], ['responses-api-proxy'], ['stdio-to-uds'], ['features'],
+				['help'], ['help', 'plugin'], ['--model', 'gpt-5', 'plugin', 'list'], ['-a', 'never', 'plugin'],
+				[], ['explain this repo'], ['resume'], ['fork'], ['--', 'plugin', 'list'],
+			];
+			const paneManaged: string[] = [];
+			for (const args of invocations) {
+				await fs.rm(setup.tuiRecordPath, { force: true });
+				await execFileAsync(process.execPath, [launcherJsPath, ...args], { env, timeout: 15_000 });
+				if ((await readLastRecord(setup.tuiRecordPath))[0] === '--remote') {
+					paneManaged.push(args.join(' '));
+				}
+			}
+
+			assert.deepStrictEqual(paneManaged, ['', 'explain this repo', 'resume', 'fork', '-- plugin list']);
+		} finally {
+			await fs.rm(setup.testRoot, { recursive: true, force: true });
+		}
+	});
+
+	// 静的な一覧だけでは追従しきれない: Codexはサブコマンドを継続的に増やしており、
+	// 増えたぶんは一覧が追いつくまでPara Code側で黙って壊れる。
+	test('asks Codex to classify a positional argument the static list does not know', async function () {
+		this.timeout(20_000);
+		const setup = await createSetup();
+		try {
+			await fs.writeFile(setup.fakeCodexPath, FAKE_CODEX_WITH_COMPLETION, { mode: 0o700 });
+			const env = { ...setup.env, PARADIS_TEST_COMPLETION_NAMES: 'resume fork brandnew' };
+
+			await execFileAsync(process.execPath, [launcherJsPath, 'brandnew', '--flag'], { env, timeout: 15_000 });
+			const firstRun = await readRecords(setup.tuiRecordPath);
+			await fs.rm(setup.tuiRecordPath, { force: true });
+			await execFileAsync(process.execPath, [launcherJsPath, 'brandnew', '--flag'], { env, timeout: 15_000 });
+			const cachedRun = await readRecords(setup.tuiRecordPath);
+			await fs.rm(setup.tuiRecordPath, { force: true });
+			await execFileAsync(process.execPath, [launcherJsPath, 'a prompt Codex does not know'], { env, timeout: 15_000 });
+			const prompt = await readLastRecord(setup.tuiRecordPath);
+
+			assert.deepStrictEqual({
+				firstRun,
+				cachedRun,
+				promptStaysPaneManaged: prompt[0] === '--remote',
+				cached: await fs.access(join(dirname(setup.endpointPath), 'codex-commands.cache')).then(() => true, () => false),
+			}, {
+				firstRun: [['completion', 'bash'], ['brandnew', '--flag']],
+				cachedRun: [['brandnew', '--flag']],
+				promptStaysPaneManaged: true,
+				cached: true,
+			});
+		} finally {
 			await fs.rm(setup.testRoot, { recursive: true, force: true });
 		}
 	});

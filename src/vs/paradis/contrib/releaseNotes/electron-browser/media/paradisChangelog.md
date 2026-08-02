@@ -4,6 +4,12 @@
 
 Para Code が本家 VS Code に加えた変更の一覧です。新しいバージョンが上に来ます。
 
+## 未リリース
+
+### 修正
+
+- ターミナルで `codex plugin` を実行すると「対話セッション以外では使えない指定です」というエラーになり、コマンドが動かなかった問題を直しました。`codex doctor`、`codex update`、`codex app`、`codex archive`、`codex delete`、`codex help` や、`codex e`・`codex a` のような短縮形も同じ理由で使えなくなっていました。あわせて、今後 Codex 側に新しいコマンドが増えたときは Para Code がそれを自分で調べるようにしたので、同じ形で使えなくなることはなくなります
+
 ## paracode-87（2026-08-03）
 
 ### 新機能
