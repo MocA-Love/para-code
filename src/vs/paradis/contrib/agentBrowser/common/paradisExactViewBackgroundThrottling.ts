@@ -5,6 +5,7 @@
 
 import {
 	IParadisExactBrowserViewDescriptor,
+	paradisExactViewKey as exactViewKey,
 	paradisParseExactBrowserViewDescriptor,
 } from './paradisAgentBrowser.js';
 
@@ -233,10 +234,6 @@ const EMPTY_EFFECTS: readonly IParadisExactViewBackgroundThrottlingEffect[] = Ob
 
 function isValidLimit(value: number, safeMaximum: number): boolean {
 	return Number.isSafeInteger(value) && value > 0 && value <= safeMaximum;
-}
-
-function exactViewKey(descriptor: IParadisExactBrowserViewDescriptor): string {
-	return JSON.stringify([descriptor.windowId, descriptor.viewId, descriptor.targetId, descriptor.viewLease]);
 }
 
 function createEffect(

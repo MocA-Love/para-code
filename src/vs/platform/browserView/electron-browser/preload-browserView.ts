@@ -27,6 +27,8 @@ function init() {
 	// PARA-PATCH: track and consume expected automation keystrokes (register/activate/complete/cancel over IPC, invalidate on real user focus) so injected keys are never confused with genuine input (Para Browser MCP automation input isolation)
 	interface IAutomationKeyExpectation {
 		readonly signature: IBrowserViewAutomationKeySignature;
+		/** Main's native first-responder state when this key was registered. See `readNativeFocused`. */
+		nativeFocused: boolean;
 		active: boolean;
 		consumed: boolean;
 		timer: ReturnType<typeof setTimeout> | undefined;
@@ -79,16 +81,30 @@ function init() {
 			return true;
 		}
 	};
+	/**
+	 * Main's native first-responder state, sent alongside every automation key message.
+	 *
+	 * `document.hasFocus()` alone cannot be trusted here: Chromium's DevTools input handler focuses
+	 * the widget on every injected `Input.*` event, so it latches to true as soon as an agent clicks
+	 * once and never clears. Main's native focus is unaffected by injection, so a key is treated as
+	 * competing with the user only when both agree. Anything unparseable resolves to `true`, keeping
+	 * the stricter, pre-existing behaviour.
+	 */
+	const readNativeFocused = (record: Readonly<Record<string, unknown>>): boolean =>
+		typeof record.nativeFocused === 'boolean' ? record.nativeFocused : true;
+	/** True only when the user is plausibly typing into this page right now. */
+	const userIsInteracting = (nativeFocused: boolean): boolean => nativeFocused && documentHasUserFocus();
 	const isTrustedFocusEvent: BrowserViewAutomationTrustedFocusPredicate = value =>
 		typeof value === 'object' && value !== null && !Array.isArray(value)
 		&& (value as Readonly<Record<string, unknown>>).isTrusted === true;
 	const consumeAutomationKey = (event: KeyboardEvent): boolean => {
-		if (documentHasUserFocus()) {
-			return false;
-		}
 		const signature = automationSignatureForEvent(event);
 		for (const [sequence, expectation] of automationKeyExpectations) {
 			if (!expectation.active || expectation.consumed || !sameAutomationSignature(expectation.signature, signature)) {
+				continue;
+			}
+			// Leave the key alone if the user was genuinely interacting when it was registered.
+			if (userIsInteracting(expectation.nativeFocused)) {
 				continue;
 			}
 			expectation.consumed = true;
@@ -105,8 +121,9 @@ function init() {
 			if (typeof record.sequence === 'number' && Number.isSafeInteger(record.sequence) && record.sequence > 0) {
 				sequence = record.sequence;
 				const signature = parseAutomationSignature(record.signature);
-				if (signature && !documentHasUserFocus() && !automationKeyExpectations.has(sequence) && automationKeyExpectations.size < automationKeyLimit) {
-					automationKeyExpectations.set(sequence, { signature, active: false, consumed: false, timer: undefined });
+				const nativeFocused = readNativeFocused(record);
+				if (signature && !userIsInteracting(nativeFocused) && !automationKeyExpectations.has(sequence) && automationKeyExpectations.size < automationKeyLimit) {
+					automationKeyExpectations.set(sequence, { signature, nativeFocused, active: false, consumed: false, timer: undefined });
 					accepted = true;
 				}
 			}
@@ -117,11 +134,15 @@ function init() {
 		let sequence: number | undefined;
 		let accepted = false;
 		if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
-			const candidate = (payload as Readonly<Record<string, unknown>>).sequence;
+			const record = payload as Readonly<Record<string, unknown>>;
+			const candidate = record.sequence;
 			if (typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate > 0) {
 				sequence = candidate;
 				const expectation = automationKeyExpectations.get(sequence);
-				if (expectation && !expectation.active && expectation.timer === undefined && !documentHasUserFocus()) {
+				// Re-read native focus: the user may have clicked into the page since registration.
+				const nativeFocused = readNativeFocused(record);
+				if (expectation && !expectation.active && expectation.timer === undefined && !userIsInteracting(nativeFocused)) {
+					expectation.nativeFocused = nativeFocused;
 					expectation.active = true;
 					accepted = true;
 				}

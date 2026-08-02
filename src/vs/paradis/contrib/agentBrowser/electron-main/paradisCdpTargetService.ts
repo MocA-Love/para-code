@@ -33,6 +33,10 @@ import {
 	paradisParseExactCdpScreenshotOptions,
 	paradisParseCdpInputCommand,
 } from '../common/paradisAgentBrowser.js';
+import {
+	PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_INTERVAL_MS,
+	ParadisExactViewFrameKeepaliveRegistry,
+} from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
 
 /** 上流ポートの問い合わせに答えるまでの上限。確定が間に合わなければ「まだ無い」と返す。 */
@@ -62,6 +66,9 @@ interface IFrameSubState {
 export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 
 	private readonly frameSubs = new Map<string, IFrameSubState>();
+	/** Hidden agent-bound views that need a periodic draw so viz keeps sending them BeginFrames. */
+	private readonly frameKeepalive = new ParadisExactViewFrameKeepaliveRegistry();
+	private frameKeepaliveTimer: ReturnType<typeof setInterval> | undefined;
 	/** Concrete BrowserView object → opaque lease. Weak keys must never be reversed into strong view references. */
 	private readonly viewLeases = new WeakMap<object, string>();
 	private readonly _onDidFrame = new Emitter<IParadisCdpFrameEvent>();
@@ -333,10 +340,59 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		}
 		try {
 			view.webContents.setBackgroundThrottling(enabledValue);
-			return true;
 		} catch {
 			return false;
 		}
+		// Throttling is disabled exactly while an agent holds this view, which is also exactly when
+		// the view needs the periodic nudge. Ride that signal instead of adding a second lifecycle.
+		if (enabledValue) {
+			this.frameKeepalive.remove(descriptor);
+		} else {
+			this.frameKeepalive.add(descriptor);
+		}
+		this.updateFrameKeepaliveTimer();
+		return true;
+	}
+
+	/** Start or stop the keepalive timer so it only runs while at least one view is tracked. */
+	private updateFrameKeepaliveTimer(): void {
+		if (this.frameKeepalive.size === 0) {
+			if (this.frameKeepaliveTimer !== undefined) {
+				clearInterval(this.frameKeepaliveTimer);
+				this.frameKeepaliveTimer = undefined;
+			}
+			return;
+		}
+		if (this.frameKeepaliveTimer !== undefined) {
+			return;
+		}
+		this.frameKeepaliveTimer = setInterval(
+			() => this.runFrameKeepalive(),
+			PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_INTERVAL_MS,
+		);
+	}
+
+	/**
+	 * Give every tracked hidden view one chance to be drawn.
+	 *
+	 * See {@link BrowserView.nudgeHiddenFrame} for why this is needed. Views that have gone away
+	 * drop out of the ledger here, which is also what eventually stops the timer.
+	 */
+	private runFrameKeepalive(): void {
+		for (const descriptor of this.frameKeepalive.snapshot()) {
+			const view = this.resolveExistingExactView(descriptor);
+			if (!view) {
+				this.frameKeepalive.remove(descriptor);
+				continue;
+			}
+			try {
+				view.nudgeHiddenFrame();
+			} catch {
+				// A nudge is best-effort: a view that cannot be drawn right now gets another chance
+				// on the next tick, and one that is gone for good is dropped above.
+			}
+		}
+		this.updateFrameKeepaliveTimer();
 	}
 
 	/** Dispatch one validated input command to the exact BrowserView debugger root without focusing it. */

@@ -605,6 +605,18 @@ export function paradisParseExactBrowserViewId(value: unknown): string | undefin
 	return paradisIsBoundedNonEmptyString(value, PARADIS_EXACT_VIEW_ID_MAX_LENGTH) ? value : undefined;
 }
 
+/**
+ * Identity of one concrete BrowserView, for ledgers that must fold duplicate descriptors.
+ *
+ * Every field participates: the same page shared with several panes yields identical descriptors
+ * and must collapse to one entry, while a recreated view (new lease or target) must never be
+ * mistaken for the old one. Ledgers that track the same views in parallel have to agree on this,
+ * so they share this one definition rather than each rolling their own.
+ */
+export function paradisExactViewKey(descriptor: IParadisExactBrowserViewDescriptor): string {
+	return JSON.stringify([descriptor.windowId, descriptor.viewId, descriptor.targetId, descriptor.viewLease]);
+}
+
 /** Strict, non-throwing and copy-owning parser for exact BrowserView descriptors. */
 export function paradisParseExactBrowserViewDescriptor(value: unknown): IParadisExactBrowserViewDescriptor | undefined {
 	try {

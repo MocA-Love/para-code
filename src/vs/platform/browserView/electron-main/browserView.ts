@@ -641,9 +641,10 @@ export class BrowserView extends Disposable {
 			timer: setTimeout(() => resolveAck(false), BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS),
 		};
 		this._pendingAutomationKeyAcks.set(sequence, pending);
+		const nativeFocused = this.isNativeFocusedForAutomation();
 		try {
 			for (const frame of frames) {
-				frame.postMessage('vscode:browserView:expectAutomationKey', { sequence, signature });
+				frame.postMessage('vscode:browserView:expectAutomationKey', { sequence, signature, nativeFocused });
 			}
 		} catch {
 			resolveAck(false);
@@ -689,9 +690,10 @@ export class BrowserView extends Disposable {
 					timer: setTimeout(() => resolveActivationAck(false), BROWSER_VIEW_AUTOMATION_KEY_ACK_TIMEOUT_MS),
 				};
 				this._pendingAutomationKeyAcks.set(sequence, activationPending);
+				const activationNativeFocused = this.isNativeFocusedForAutomation();
 				try {
 					for (const frame of frames) {
-						frame.postMessage('vscode:browserView:activateAutomationKey', { sequence });
+						frame.postMessage('vscode:browserView:activateAutomationKey', { sequence, nativeFocused: activationNativeFocused });
 					}
 				} catch {
 					resolveActivationAck(false);
@@ -737,6 +739,25 @@ export class BrowserView extends Disposable {
 				this.cancelPreloadAutomationKey(frames, sequence);
 			},
 		});
+	}
+
+	/**
+	 * Whether the user really has this view focused, from the browser process' point of view.
+	 *
+	 * The preload cannot answer this on its own: Chromium's DevTools input handler calls
+	 * `RenderWidgetHost::Focus()` on every injected `Input.*` event, so `document.hasFocus()`
+	 * turns true the first time an agent clicks or types and never turns back off. Judging user
+	 * focus by that value makes every automated keystroke after the first one look like real user
+	 * input and get rejected. The native first responder stayed false throughout injection when
+	 * measured, so it is used as the honest signal. Uncertainty resolves to `true` so a possible
+	 * real user event is never suppressed.
+	 */
+	private isNativeFocusedForAutomation(): boolean {
+		try {
+			return this.webContents.isFocused();
+		} catch {
+			return true;
+		}
 	}
 
 	private nextAutomationKeySequence(): number | undefined {
@@ -801,6 +822,40 @@ export class BrowserView extends Disposable {
 				// Detached and navigating frames discard their isolated preload state themselves.
 			}
 		}
+	}
+
+	// PARA-PATCH: let a hidden agent-bound view be drawn once so viz does not stall its BeginFrames (Para Browser MCP hidden-view frame keepalive)
+	/**
+	 * Draw this view exactly once while it stays hidden, then hide it again.
+	 *
+	 * A hidden view is never drawn by the display compositor, so viz keeps counting undrawn
+	 * CompositorFrames and cuts off BeginFrame delivery once more than three pile up
+	 * (`CompositorFrameSinkSupport::ShouldSendBeginFrame`). The counter only moves in
+	 * `OnSurfaceWillDraw()`, i.e. when the surface is actually drawn, so a view that stays hidden
+	 * never recovers on its own — it sits at roughly 1fps until something draws it. That starves
+	 * `requestAnimationFrame` and `IntersectionObserver`, which is exactly what automation waits on
+	 * before clicking. Normally Chromium would have hidden the renderer too and none of this would
+	 * run, but `setBackgroundThrottling(false)` keeps it producing frames nobody draws.
+	 *
+	 * Briefly showing the view puts its surface back on the draw path and resets the counter. This
+	 * mirrors what the screenshot path already does, and deliberately pokes the underlying
+	 * `WebContentsView` rather than {@link setVisible} so the view's intended visibility and its
+	 * visibility event are left untouched.
+	 *
+	 * @returns whether a nudge was performed.
+	 */
+	nudgeHiddenFrame(): boolean {
+		// `_hasBeenLaidOut` mirrors the guard in setVisible(): a view that was never laid out is not
+		// in the window's content view yet, so showing it would not draw anything anyway.
+		if (this._isDisposed || !this._hasBeenLaidOut || this._view.webContents.isDestroyed() || this._view.getVisible()) {
+			return false;
+		}
+		try {
+			this._view.setVisible(true);
+		} finally {
+			this._view.setVisible(false);
+		}
+		return true;
 	}
 
 	private consumePopupPermission(location: NewPageLocation): boolean {
