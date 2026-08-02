@@ -373,6 +373,49 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(args));
 		}
 	});
 
+	// The pane runtime directory's files are written under a tightened umask, but that umask is
+	// inherited by every command the interactive session goes on to run. Leaving it in place
+	// makes everything the agent creates — its `npm install`, its builds, its generated
+	// directories — unreadable to any other user, and git records no permissions, so nothing
+	// about it surfaces in a diff.
+	test('runs the interactive session under the caller umask, not the pane runtime one', async () => {
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-launcher-'));
+		try {
+			const launcherPath = join(process.cwd(), 'resources', 'paradis', 'bin', 'codex');
+			const fakeBin = join(testRoot, 'bin');
+			const socketPath = join(testRoot, 'pcx', 'pane.sock');
+			const recordPath = join(testRoot, 'umask.txt');
+			await fs.mkdir(fakeBin, { recursive: true });
+			await fs.writeFile(join(fakeBin, 'codex'), `#!/usr/bin/env node
+const fs = require('fs');
+const net = require('net');
+const args = process.argv.slice(2);
+if (args[0] === 'app-server') {
+	const server = net.createServer(socket => socket.end());
+	const close = () => server.close(() => process.exit(0));
+	process.on('SIGTERM', close);
+	process.on('SIGINT', close);
+	server.listen(args[2].slice('unix://'.length));
+} else {
+	fs.writeFileSync(process.env.PARADIS_TEST_UMASK_RECORD, process.umask().toString(8));
+}
+`, { mode: 0o700 });
+			const env = {
+				...process.env,
+				PATH: `${dirname(launcherPath)}:${fakeBin}:${process.env['PATH'] ?? ''}`,
+				PARA_CODE_CODEX_LAUNCHER_DIR: dirname(launcherPath),
+				PARA_CODE_CODEX_APP_SERVER_SOCKET: socketPath,
+				PARADIS_TEST_UMASK_RECORD: recordPath,
+			};
+
+			await execFileAsync('/bin/sh', ['-c', `umask 027; exec '${launcherPath}' 'a prompt'`], { env, timeout: 15_000 });
+
+			assert.strictEqual(await fs.readFile(recordPath, 'utf8'), '27');
+		} finally {
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
+
 	// The same classification lives in three implementations (this launcher, the Windows one,
 	// and the mobile relay's command parser) because a shell script cannot share code with
 	// TypeScript. Only the POSIX list was left behind when `plugin` and friends were added,

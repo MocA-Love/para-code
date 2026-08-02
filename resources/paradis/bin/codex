@@ -299,6 +299,13 @@ while [ ! -S "$socket_path" ]; do
 	sleep 0.1
 done
 
+# The pane's own runtime files are all written by now, so the tightened umask has done its
+# job. Restoring it before the interactive session matters more than it looks: the umask is
+# inherited by every command the session runs, so leaving it at 077 would make the agent's
+# `npm install`, builds and generated directories unreadable to any other user — a Docker
+# mount, a service under a different uid, a local CI runner — and git records no permissions,
+# so nothing about that would show up in a diff.
+umask "$original_umask"
 PATH=$clean_path "$real_codex" --remote "unix://$socket_path" "$@"
 status=$?
 exit "$status"
