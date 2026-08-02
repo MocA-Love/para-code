@@ -287,9 +287,10 @@ suite('ParadisWebviewServiceWorkerControl', () => {
 		// 止まった登録を立て直す最悪経路: 事前の版なし判定 → 登録(期限切れ) → 後始末2回 → 登録し直し。
 		// これが予算を超えていると、唯一の救済経路が必ず途中で打ち切られる（実際に起きていた）。
 		const confirm = read('PARA_SW_VERSIONLESS_CONFIRM_MS');
-		// discard(getRegistration + 確認待ち + getRegistration + unregister) → 登録(期限切れ)
-		//   → 後始末(getRegistration + unregister) → 登録し直し
-		const worstCaseRecovery = (probe + confirm + probe + probe) + register + (probe + probe) + register;
+		// 版なし判定(getRegistration + 確認待ち + getRegistration) → 登録(期限切れ)
+		//   → 後始末の確認(getRegistration) → 登録し直し。どちらの経路も unregister は呼ばない
+		//   （この形の registration では返ってこず、後続の登録を塞ぐため）。
+		const worstCaseRecovery = (probe + confirm + probe) + register + probe + register;
 		assert.ok(
 			worstCaseRecovery <= budget,
 			`the recovery path (${worstCaseRecovery}ms) must fit inside PARA_SW_SETUP_BUDGET_MS (${budget}ms)`);
@@ -342,7 +343,8 @@ suite('ParadisWebviewServiceWorkerControl', () => {
 		const deniedError = await denied.establish('sw.js').then(() => undefined, (error: Error) => error.message);
 
 		// 5. 版を1つも持たない registration が居座っているケース（実機で計測した壊れ方）。
-		//    そのまま登録しても直らず、期限切れを待つ分だけ白紙が延びるので、登録の前に捨てる。
+		//    この形の registration は `unregister()` が返ってこず、消そうとするとジョブキューを塞いで
+		//    後続の登録まで殺す。だから触らずに報告だけして、通常の登録へ進む。
 		let versionlessUnregistered = false;
 		const versionless = createSetupHarness(source, {
 			register: async () => settled,
@@ -391,11 +393,11 @@ suite('ParadisWebviewServiceWorkerControl', () => {
 			keepsHealthy: { usedServiceWorker: keepsHealthyResult, signals: keepsHealthy.signals, discarded: healthyExistingUnregistered },
 			keepsSibling: { usedServiceWorker: keepsSiblingResult, signals: keepsSibling.signals, unregistered: siblingUnregistered },
 		}, {
-			neverSettles: { usedServiceWorker: false, signals: ['sw-register-timeout', 'sw-unavailable'] },
-			recovers: { usedServiceWorker: true, signals: ['sw-register-timeout', 'sw-register-recovered'] },
+			neverSettles: { usedServiceWorker: false, signals: ['sw-register-timeout', 'sw-versionless-registration-after-timeout', 'sw-unavailable'] },
+			recovers: { usedServiceWorker: true, signals: ['sw-register-timeout', 'sw-versionless-registration-after-timeout', 'sw-register-recovered'] },
 			healthy: { usedServiceWorker: true, signals: [] },
 			denied: { surfacedReason: true, signals: [] },
-			versionless: { usedServiceWorker: true, signals: ['sw-versionless-registration-discarded'], discarded: true },
+			versionless: { usedServiceWorker: true, signals: ['sw-versionless-registration-seen'], discarded: false },
 			keepsHealthy: { usedServiceWorker: true, signals: [], discarded: false },
 			keepsSibling: { usedServiceWorker: false, signals: ['sw-register-timeout', 'sw-unavailable'], unregistered: false },
 		});

@@ -32,14 +32,20 @@ export const enum ParadisWebviewSignalCode {
 	/** 登録し直しで決着し、service worker を使える状態に戻った。 */
 	ServiceWorkerRegisterRecovered = 'sw-register-recovered',
 	/**
-	 * 版を1つも持たない registration が残っていたので捨てた。
+	 * 版を1つも持たない registration を見つけた（捨てはしない）。
 	 *
-	 * `installing`/`waiting`/`active` がすべて空の registration は、そのままでは二度と
-	 * worker を持たない。実機の計測ではこの状態が10秒以上続き、SW プロセスが一度も起動せず、
-	 * `navigator.serviceWorker.ready` も永久に解決しなかった。放置すると `register()` の
-	 * 期限切れを待つ分だけ白紙の時間が延びるので、登録の前に捨てる。
+	 * `installing`/`waiting`/`active` がすべて空の registration は、Chromium 側では
+	 * `status=new / runningStatus=starting` のまま起動を終えられない worker に対応する。
+	 * 実機では10秒以上その状態が続き、`navigator.serviceWorker.ready` も永久に解決しない。
+	 * `unregister()` も同じく返ってこないため、消そうとするとジョブキューを塞いで悪化する。
+	 * ここでは記録だけに留め、起動できない理由は main 側の監視で集める。
 	 */
-	ServiceWorkerVersionlessRegistrationDiscarded = 'sw-versionless-registration-discarded',
+	ServiceWorkerVersionlessRegistrationSeen = 'sw-versionless-registration-seen',
+	/**
+	 * 登録が期限切れになった後にも、版を持たない registration が残っていた。
+	 * 上と同じ状態だが観測点が違うので、Sentry で混ざらないようコードを分けている。
+	 */
+	ServiceWorkerVersionlessRegistrationAfterTimeout = 'sw-versionless-registration-after-timeout',
 	/**
 	 * service worker を諦め、無しで描画を続けた。本文は表示できるが `vscode-resource` 経由の
 	 * リソース(ローカル画像など)は読めない。白紙で固まるよりましという判断。
@@ -75,7 +81,8 @@ const REPORTED_CODES: ReadonlySet<string> = new Set<string>([
 	ParadisWebviewSignalCode.ServiceWorkerRegisterTimeout,
 	ParadisWebviewSignalCode.ServiceWorkerRegisterRecovered,
 	ParadisWebviewSignalCode.ServiceWorkerUnavailable,
-	ParadisWebviewSignalCode.ServiceWorkerVersionlessRegistrationDiscarded,
+	ParadisWebviewSignalCode.ServiceWorkerVersionlessRegistrationSeen,
+	ParadisWebviewSignalCode.ServiceWorkerVersionlessRegistrationAfterTimeout,
 ]);
 
 /**
@@ -84,14 +91,12 @@ const REPORTED_CODES: ReadonlySet<string> = new Set<string>([
  */
 export function notifyParadisWebviewSignal(signal: IParadisWebviewSignal): void {
 	if (REPORTED_CODES.has(signal.code)) {
-		// `duration_ms` はサニタイザの allowlist に載っているキー。`attempt` も同様。
-		// `safe_removed` は「実際に捨てられたか」。版なし registration の判定が本物だったのか、
-		// 別の client が先に片付けた後だったのかを、あとからログだけで見分けるために要る。
-		// キーは `safe_` 接頭辞でないと isParadisSafeExtraKey の許可リストに落とされる。
+		// `duration_ms` と `attempt` はサニタイザの allowlist に載っているキー。
+		// これ以外を足すときは `safe_` 接頭辞を付けること（isParadisSafeExtraKey の
+		// 許可リストに無いキーは、送信直前に黙って捨てられる）。
 		reportParadisDiagnosticError('patched', 'webview', signal.code, new Error(`Webview service worker problem (${signal.code})`), {
 			duration_ms: signal.detail?.['duration_ms'],
 			attempt: signal.detail?.['attempt'],
-			safe_removed: signal.detail?.['safe_removed'],
 		});
 	}
 	emitter.fire(signal);
