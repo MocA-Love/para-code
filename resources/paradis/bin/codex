@@ -36,44 +36,64 @@ if [ -z "$real_codex" ] || [ "$real_codex" = "$0" ]; then
 	exit 127
 fi
 
-managed=1
+early_delegate=0
+has_positional=0
+first_positional=
 skip_next=0
-first_positional=1
 for argument in "$@"; do
 	if [ "$skip_next" -eq 1 ]; then
 		skip_next=0
 		continue
 	fi
 	case "$argument" in
-		--remote|--remote=*)
-			managed=0
+		--remote|--remote=*|--help|-h|--version|-V)
+			early_delegate=1
 			break
 			;;
 		--)
+			# Codex treats everything after `--` as the prompt, never as a subcommand.
 			break
 			;;
 		-c|--config|--enable|--disable|--remote-auth-token-env|-i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval)
 			skip_next=1
 			;;
-		--help|-h|--version|-V)
-			managed=0
-			break
-			;;
 		-*)
 			;;
-		exec|review|login|logout|mcp|mcp-server|app-server|completion|cloud|debug|apply|sandbox|features|remote-control)
-			if [ "$first_positional" -eq 1 ]; then
-				managed=0
-				break
-			fi
-			;;
 		*)
-			first_positional=0
+			if [ "$has_positional" -eq 0 ]; then
+				first_positional=$argument
+				has_positional=1
+			fi
 			;;
 	esac
 done
 
-if [ "$managed" -eq 0 ]; then
+# Codex rejects `--remote` outside the interactive TUI ("only supported for interactive
+# TUI commands"), so it may only be injected when this invocation really opens the TUI:
+# no subcommand at all (a bare prompt), `resume`, or `fork`. Everything else has to be
+# delegated, which means every other subcommand name must be recognized here — a name
+# missing from the list below is silently treated as a prompt and breaks that command.
+# The list is Codex 0.146's full set (including aliases and the internal subcommands that
+# `codex --help` hides) minus the two TUI commands, and it is only the fast path: a
+# positional argument that does not match it is resolved by asking Codex itself further
+# down, so a subcommand added by a future Codex release keeps working.
+command_kind=unknown
+if [ "$early_delegate" -eq 1 ]; then
+	command_kind=delegated
+elif [ "$has_positional" -eq 0 ]; then
+	command_kind=tui
+else
+	case "$first_positional" in
+		resume|fork)
+			command_kind=tui
+			;;
+		exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|archive|delete|unarchive|cloud|exec-server|execpolicy|responses-api-proxy|stdio-to-uds|features|help)
+			command_kind=delegated
+			;;
+	esac
+fi
+
+if [ "$command_kind" = delegated ]; then
 	exec env PATH="$clean_path" "$real_codex" "$@"
 fi
 
@@ -86,6 +106,9 @@ owner_path=
 log_path=
 server_pid=
 owns_server=0
+# Only the pane's own runtime files belong to the tightened umask set below; a Codex this
+# launcher hands the session to must create its files exactly as it would outside Para Code.
+original_umask=$(umask)
 
 cleanup() {
 	if [ "$owns_server" -ne 1 ] || [ -z "$server_pid" ]; then
@@ -113,6 +136,7 @@ fallback_direct() {
 	echo "Para Code: $fallback_reason Starting Codex without the pane app-server; MCP servers will not inherit this pane's environment." >&2
 	cleanup
 	trap - EXIT
+	umask "$original_umask"
 	exec env PATH="$clean_path" "$real_codex" "$@"
 }
 
@@ -143,6 +167,75 @@ log_path=$socket_path.log
 umask 077
 mkdir -p "$runtime_dir" || fallback_direct "could not create the Para Code pcx runtime directory." "$@"
 chmod 700 "$runtime_dir" || fallback_direct "could not secure the Para Code pcx runtime directory." "$@"
+
+# Every name Codex knows as a subcommand, read out of the dispatch table in the shell
+# completion script it generates for itself. That table is the only complete source: it
+# lists aliases and the internal subcommands `codex --help` hides.
+#
+# Generating it costs about a third of a second, so the result is cached in the pane
+# runtime directory (mode 700, so no other user can steer this classification). The cache
+# is invalidated both by the Codex executable's identity and by age: `real_codex` is
+# often a wrapper script whose size and timestamp do not change when the Codex behind it
+# is upgraded.
+codex_known_subcommands() {
+	subcommand_cache=$runtime_dir/codex-commands.cache
+	codex_identity=$(ls -lnL -- "$real_codex" 2>/dev/null | awk 'NR == 1 { print $5 "-" $6 "-" $7 "-" $8 }')
+	cached_identity=
+	cached_subcommands=
+	if [ -n "$codex_identity" ] && [ -f "$subcommand_cache" ] && [ -z "$(find "$subcommand_cache" -mmin +360 2>/dev/null)" ]; then
+		{ IFS= read -r cached_identity && IFS= read -r cached_subcommands; } < "$subcommand_cache" 2>/dev/null || cached_subcommands=
+	fi
+	if [ -n "$cached_subcommands" ] && [ "$cached_identity" = "$codex_identity" ]; then
+		printf '%s\n' "$cached_subcommands"
+		return 0
+	fi
+
+	probe_output=$subcommand_cache.$$.probe
+	rm -f "$probe_output"
+	PATH=$clean_path "$real_codex" completion bash </dev/null >"$probe_output" 2>/dev/null &
+	probe_pid=$!
+	probe_attempt=0
+	while kill -0 "$probe_pid" 2>/dev/null; do
+		probe_attempt=$((probe_attempt + 1))
+		if [ "$probe_attempt" -ge 50 ]; then
+			kill "$probe_pid" 2>/dev/null || true
+			break
+		fi
+		sleep 0.1
+	done
+	wait "$probe_pid" 2>/dev/null || true
+	# Surrounding spaces let the caller test membership with a single glob.
+	discovered=" $(sed -n 's/^[[:space:]]*codex,\([A-Za-z0-9_-][A-Za-z0-9_-]*\))$/\1/p' "$probe_output" 2>/dev/null | sort -u | tr '\n' ' ')"
+	rm -f "$probe_output"
+	if [ "$discovered" = ' ' ]; then
+		return 1
+	fi
+
+	if [ -n "$codex_identity" ]; then
+		probe_cache=$subcommand_cache.$$.tmp
+		if printf '%s\n%s\n' "$codex_identity" "$discovered" > "$probe_cache" 2>/dev/null; then
+			mv -f "$probe_cache" "$subcommand_cache" 2>/dev/null || rm -f "$probe_cache"
+		else
+			rm -f "$probe_cache" 2>/dev/null || true
+		fi
+	fi
+	printf '%s\n' "$discovered"
+}
+
+# An unrecognized positional argument is either the prompt or a subcommand from a newer
+# Codex than the static list above knows. Only Codex can tell the two apart. Failing to
+# ask keeps the prompt reading, which is what the static list alone would have decided.
+if [ "$command_kind" = unknown ]; then
+	known_subcommands=$(codex_known_subcommands 2>/dev/null || true)
+	case "$known_subcommands" in
+		*" $first_positional "*)
+			# No EXIT trap is installed yet and no app-server has been started, so the
+			# process can be replaced without releasing anything.
+			umask "$original_umask"
+			exec env PATH="$clean_path" "$real_codex" "$@"
+			;;
+	esac
+fi
 
 if [ -f "$pid_path" ]; then
 	IFS= read -r server_pid < "$pid_path" || server_pid=
