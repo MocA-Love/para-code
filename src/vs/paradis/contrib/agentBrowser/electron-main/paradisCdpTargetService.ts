@@ -366,10 +366,13 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		if (this.frameKeepaliveTimer !== undefined) {
 			return;
 		}
-		this.frameKeepaliveTimer = setInterval(
+		const timer = setInterval(
 			() => this.runFrameKeepalive(),
 			PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_INTERVAL_MS,
 		);
+		// Pure maintenance: never let it be the reason the process stays alive.
+		(timer as unknown as NodeJS.Timeout).unref();
+		this.frameKeepaliveTimer = timer;
 	}
 
 	/**
