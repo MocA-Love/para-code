@@ -9,7 +9,7 @@
 		CSP, and every webview then stays blank without throwing. Kept honest by
 		src/vs/paradis/contrib/fileViewers/test/node/paradisWebviewServiceWorkerControl.test.ts. -->
 	<meta http-equiv="Content-Security-Policy"
-		content="default-src 'none'; script-src 'sha256-fJ35qZ+mZcuAYmSQV0jFPBmfw48yirDBon+AbEzr1fk=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
+		content="default-src 'none'; script-src 'sha256-PcZRztNHZoMwKsTL2YORRqN0U0PIo+Y5xVx52icP+wE=' 'self'; frame-src 'self'; style-src 'unsafe-inline';">
 
 	<!-- Disable pinch zooming -->
 	<meta name="viewport"
@@ -411,62 +411,49 @@
 		}
 
 		/**
-		 * Drops a registration that exists but holds no worker in any slot, before registering again.
+		 * Reports a registration that exists but holds no worker in any slot, before registering again.
 		 *
 		 * PARA-PATCH: measured on a real install — `getRegistrations()` returns one registration whose
-		 * `installing`, `waiting` and `active` are all null, from the first sample (~110ms) onwards. It
-		 * stays that way: no service worker process is ever spawned and `navigator.serviceWorker.ready`
-		 * never settles, so the viewer sits blank until its host watchdog tears it down. Registering on
-		 * top of such a record does not repair it; the fork's existing recovery only starts after
-		 * `register()` burns its full deadline, which wastes seconds of blank pane for a state that is
-		 * detectable immediately. Clearing it first turns that case into a normal first registration.
+		 * `installing`, `waiting` and `active` are all null, from the first sample (~110ms) onwards, and
+		 * it stays that way. Chromium's own view of those origins is a version stuck at
+		 * `status=new / runningStatus=starting`: the worker never finishes starting, so no slot is ever
+		 * filled and `navigator.serviceWorker.ready` never settles.
+		 *
+		 * This only reports. An earlier revision also called `unregister()` here, which made things
+		 * worse: service worker jobs are serialised per scope, and that unregister never settled either
+		 * (measured: `unregister did not settle within 1000ms`), so it parked a stuck job in front of the
+		 * registration that follows it and guaranteed the register could never start. Do not reintroduce
+		 * a mutation on this path until the reason the worker cannot start is understood — the host-side
+		 * watch (paradisWebviewServiceWorkerWatch.ts) is what collects that.
 		 *
 		 * Never throws: this runs on the critical rendering path, and a failed probe must not be the
-		 * reason a webview stays blank. Failing here just leaves the original behaviour in place.
+		 * reason a webview stays blank.
 		 */
-		async function paraDiscardVersionlessRegistration() {
+		async function paraReportVersionlessRegistration() {
 			const startedAt = Date.now();
 			try {
-				// Being controlled proves an active worker exists, so nothing here can be broken. Skipping
-				// keeps the healthy majority off this path entirely.
+				// Being controlled proves an active worker exists, so nothing here can be broken.
 				if (navigator.serviceWorker.controller) {
 					return;
 				}
 				const probe = () => paraWithTimeout(
 					navigator.serviceWorker.getRegistration(), PARA_SW_PROBE_TIMEOUT_MS, 'getRegistration');
-				// A registration that is installing or waiting is mid-flight and must never be torn down.
+				// A registration that is installing or waiting is mid-flight, not broken.
 				const isVersionless = (/** @type {ServiceWorkerRegistration | undefined} */ registration) =>
 					!!registration && !registration.installing && !registration.waiting && !registration.active;
 				if (!isVersionless(await probe())) {
 					return;
 				}
-				// Look again before destroying anything. Registration creates the record before the script
-				// is fetched, so a sibling client registering into this shared scope looks identical for a
-				// moment; tearing that down would cost it its worker and cascade across siblings.
+				// Look again before reporting. Registration creates the record before the script is
+				// fetched, so a sibling client registering into this shared scope looks identical for a
+				// moment, while the measured breakage stays that way for tens of seconds.
 				await new Promise(resolve => setTimeout(resolve, PARA_SW_VERSIONLESS_CONFIRM_MS));
-				const confirmed = await probe();
-				if (!isVersionless(confirmed)) {
+				if (!isVersionless(await probe())) {
 					return;
 				}
-				// Report either way. A confirmed-broken record that could not be cleared is the single most
-				// interesting outcome, so it must not vanish into the catch below. `safe_` opts the key
-				// past the diagnostics allowlist (see isParadisSafeExtraKey); a bare name is dropped
-				// silently, which would take the misfire-vs-real distinction with it.
-				try {
-					const removed = await paraWithTimeout(confirmed.unregister(), PARA_SW_PROBE_TIMEOUT_MS, 'unregister');
-					paraReportSignal('sw-versionless-registration-discarded', {
-						duration_ms: Date.now() - startedAt,
-						safe_removed: removed !== false,
-					});
-				} catch (unregisterError) {
-					paraReportSignal('sw-versionless-registration-discarded', {
-						duration_ms: Date.now() - startedAt,
-						safe_removed: false,
-					});
-					throw unregisterError;
-				}
+				paraReportSignal('sw-versionless-registration-seen', { duration_ms: Date.now() - startedAt });
 			} catch (error) {
-				console.error(`Could not clear a version-less service worker registration: ${error}`);
+				console.error(`Could not check for a version-less service worker registration: ${error}`);
 			}
 		}
 
@@ -487,7 +474,7 @@
 				navigator.serviceWorker.register(swPath, { type: 'module', updateViaCache: 'none' }),
 				PARA_SW_REGISTER_TIMEOUT_MS, 'Service worker registration');
 
-			await paraDiscardVersionlessRegistration();
+			await paraReportVersionlessRegistration();
 
 			/** @type {ServiceWorkerRegistration} */
 			let registration;
@@ -501,24 +488,25 @@
 				}
 				paraReportSignal('sw-register-timeout', { duration_ms: Date.now() - startedAt, attempt: 1 });
 				// A registration that never settled can linger, so clear it before registering again.
-				// PARA-PATCH: these read and delete a local registration record, so they get the short probe
-				// deadline rather than the registration one. With 5s each the cleanup plus both register
-				// attempts summed past PARA_SW_SETUP_BUDGET_MS, so the budget cut the recovery off before
-				// the retry could finish — the one path that is supposed to rescue a stuck registration
-				// could never complete. That is why no `sw-register-recovered` was ever reported.
+				// PARA-PATCH: this reads a local registration record, so it gets the short probe deadline
+				// rather than the registration one — the deadlines here used to sum past
+				// PARA_SW_SETUP_BUDGET_MS and cut the retry off before it could finish.
+				// PARA-PATCH: do not try to clear the lingering record. The only shape this cleanup could
+				// legitimately remove is a version-less one (a record holding a worker belongs to a sibling
+				// client in this shared scope), and `unregister()` on exactly that shape is what was
+				// measured to never settle. Removing it would park a stuck job ahead of the retry below
+				// and guarantee the retry can never start. Report the shape and let the retry run.
 				try {
 					const existing = await paraWithTimeout(navigator.serviceWorker.getRegistration(), PARA_SW_PROBE_TIMEOUT_MS, 'getRegistration');
-					// PARA-PATCH: only clear a record that is not serving anyone. This scope is shared with
-					// sibling webviews (same `IWebview.origin` across windows, and viewType-derived origins
-					// upstream), so a healthy worker here may belong to another client whose registration
-					// simply outran ours. Until the deadlines were shortened this path was cut off by the
-					// setup budget and rarely ran; now that it completes, an unconditional unregister would
-					// start actually destroying those siblings.
 					if (existing && !existing.active && !existing.installing && !existing.waiting) {
-						await paraWithTimeout(existing.unregister(), PARA_SW_PROBE_TIMEOUT_MS, 'unregister');
+						// A distinct code from the pre-registration probe. The diagnostics fingerprint
+						// includes the operation, so reusing one code would make "found before
+						// registering" and "still there after the register timed out" share a rate
+						// limit bucket, and whichever fired first would hide the other.
+						paraReportSignal('sw-versionless-registration-after-timeout', { duration_ms: Date.now() - startedAt });
 					}
 				} catch (cleanupError) {
-					console.error(`Could not clear the stuck service worker registration: ${cleanupError}`);
+					console.error(`Could not inspect the stuck service worker registration: ${cleanupError}`);
 				}
 				try {
 					registration = await register();
