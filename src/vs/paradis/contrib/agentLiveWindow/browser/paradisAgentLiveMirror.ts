@@ -368,9 +368,17 @@ export class ParadisAgentLiveMirror extends Disposable {
 	}
 
 	/**
-	 * タイル幅に収まるよう文字サイズを詰める。元の列数を保ったまま全体を見せるための措置。
+	 * タイル幅に収まるよう文字サイズを詰める。元の端末の桁数はこちらでは決められない
+	 * (下記) ので、桁数はそのままに文字を小さくして全体を見せる。
 	 *
-	 * CSS の `transform: scale()` で縮めてはいけない。xterm のマウス座標計算
+	 * 桁数を揃えたくなるが、`ITerminalInstance.layout()` を外から呼んではいけない。あれは
+	 * 最初の行で `_lastLayoutDimensions` を書き換え、その値を後から `_open()` と
+	 * `onDidRequestRefreshDimensions` が再生する。つまりここでタイルの寸法を渡すと、
+	 * ユーザーがメインウィンドウでその端末を開いた瞬間に、全画面のパネルへタイルサイズの
+	 * 端末が復元される。加えて park 中の端末は DOM から外れているため
+	 * `getComputedStyle` が空を返し、桁数が NaN になる。
+	 *
+	 * CSS の `transform: scale()` で縮めてもいけない。xterm のマウス座標計算
 	 * (Mouse.ts の getCoords) は「transform 後の実測矩形」を「transform 前のセル幅」で
 	 * 割るため、縮小した分だけ列と行がずれる。ドラッグ選択が別のセルを掴むだけでなく、
 	 * TUI がマウストラッキングを有効にしていると、ずれた座標のマウスレポートがそのまま

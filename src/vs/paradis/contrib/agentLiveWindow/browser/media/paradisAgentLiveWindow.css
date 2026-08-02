@@ -222,6 +222,28 @@
 	color: var(--vscode-foreground);
 }
 
+.paradis-agent-live-number {
+	width: 56px;
+	height: 24px;
+	padding: 0 6px;
+	border: 1px solid var(--vscode-input-border, var(--vscode-editorWidget-border));
+	border-radius: 6px;
+	background-color: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font-family: inherit;
+	font-size: 11.5px;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-agent-live-number:focus {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-agent-live-number:disabled {
+	opacity: 0.4;
+}
+
 .paradis-agent-live-icon-button {
 	display: inline-flex;
 	align-items: center;
@@ -350,8 +372,24 @@
 }
 
 .paradis-agent-live-wall {
+	/* タイル1枚の最低の高さ。実際の値は JS が px で流し込む (0 = 何件あっても1画面に収める) */
+	--paradis-agent-live-min-row: 0px;
 	display: grid;
 	gap: 1px;
+}
+
+/* 行はウィンドウを等分して埋める。ただし指定された高さまでは縮めず、
+	そこからは縦スクロールへ移す (潰れたタイルを全部見せても意味がないため)。 */
+.paradis-agent-live-wall.fill {
+	min-height: 100%;
+	grid-auto-rows: minmax(var(--paradis-agent-live-min-row), 1fr);
+}
+
+/* グループ表示のときは行を等分できない。見出しも grid-column: 1/-1 で1行を占めるため、
+	grid-auto-rows で下限を掛けると見出しがタイルと同じ高さに膨らむ。下限はタイル自身に
+	持たせ、見出しは自然な高さのままにする。 */
+.paradis-agent-live-wall:not(.fill) > .paradis-agent-live-tile {
+	min-height: var(--paradis-agent-live-min-row);
 }
 
 .paradis-agent-live-wall.columns-1 { grid-template-columns: 1fr; }
@@ -359,6 +397,7 @@
 .paradis-agent-live-wall.columns-3 { grid-template-columns: repeat(3, 1fr); }
 .paradis-agent-live-wall.columns-4 { grid-template-columns: repeat(4, 1fr); }
 
+/* 見出しも行を1つ消費するため、グループ表示のときは等分 (fill) を掛けない。 */
 .paradis-agent-live-group-head {
 	grid-column: 1 / -1;
 	display: flex;
@@ -382,6 +421,8 @@
 
 .paradis-agent-live-empty {
 	grid-column: 1 / -1;
+	/* 行が伸びても文言のブロックだけは自然な高さに留める。 */
+	align-self: start;
 	padding: 56px 20px;
 	text-align: center;
 	color: var(--vscode-descriptionForeground);
@@ -394,13 +435,10 @@
 	position: relative;
 	display: flex;
 	flex-direction: column;
-	min-height: 210px;
+	/* 高さはグリッドの行が決める。ここで下限を持つと行の等分より優先されてしまう。 */
+	min-height: 0;
 	background-color: var(--vscode-editor-background);
 	overflow: hidden;
-}
-
-.paradis-agent-live-tile.dense {
-	min-height: 148px;
 }
 
 .paradis-agent-live-tile.attention {

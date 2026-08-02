@@ -172,7 +172,7 @@ suite('Paradis - agent live window', () => {
 					sortDesc: false,
 					group: 'status',
 					columns: 4,
-					dense: true,
+					minRowHeight: 150,
 					pinTop: false,
 					manualOrder: ['a'],
 					pinned: ['b'],
@@ -229,6 +229,26 @@ suite('Paradis - agent live window', () => {
 				paradisParseAgentLiveViewState(paradisSerializeAgentLiveViewState(filtered)),
 			],
 			[false, true, true, true, true, false, filtered],
+		);
+	});
+
+	test('keeps the minimum row height through a save and load round trip', () => {
+		const roundTrip = (minRowHeight: number | undefined): number | undefined =>
+			paradisParseAgentLiveViewState(paradisSerializeAgentLiveViewState(state({ minRowHeight }))).minRowHeight;
+
+		assert.deepStrictEqual(
+			[
+				// undefined (=1画面に収める) は JSON から消えてしまうので null で残している。
+				roundTrip(undefined),
+				roundTrip(220),
+				roundTrip(3000),
+				roundTrip(5),
+				// 旧形式 (dense) からの移行と、設定が無いときの既定値。
+				paradisParseAgentLiveViewState(JSON.stringify({ dense: true })).minRowHeight,
+				paradisParseAgentLiveViewState(JSON.stringify({ dense: false })).minRowHeight,
+				paradisParseAgentLiveViewState(JSON.stringify({ minRowHeight: 'nonsense' })).minRowHeight,
+			],
+			[undefined, 220, 2000, 60, 150, 220, 220],
 		);
 	});
 

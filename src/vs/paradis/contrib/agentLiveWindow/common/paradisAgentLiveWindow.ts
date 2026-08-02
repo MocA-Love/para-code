@@ -78,6 +78,7 @@ export interface IParadisAgentLiveWindowService {
 }
 
 export type ParadisAgentLiveSort = 'attention' | 'status' | 'elapsed' | 'updated' | 'space' | 'manual';
+
 export type ParadisAgentLiveGroup = 'none' | 'space' | 'status';
 
 export interface IParadisAgentLiveViewState {
@@ -90,7 +91,14 @@ export interface IParadisAgentLiveViewState {
 	sortDesc: boolean;
 	group: ParadisAgentLiveGroup;
 	columns: number;
-	dense: boolean;
+	/**
+	 * タイル1枚の最低の高さ (px)。行はウィンドウを等分して埋めるが、この高さを下回るところ
+	 * からは縮めずに縦スクロールへ移る。undefined なら下限なし = 何件あっても1画面に収める。
+	 *
+	 * ディスプレイの大きさで「読める高さ」はまるで違うので、既定値ではなく実際の数値を
+	 * 持たせている。
+	 */
+	minRowHeight: number | undefined;
 	pinTop: boolean;
 	/** 手動並び順 (ペイントークン) */
 	manualOrder: string[];
@@ -101,6 +109,16 @@ export interface IParadisAgentLiveViewState {
 export const PARADIS_AGENT_LIVE_MIN_COLUMNS = 1;
 export const PARADIS_AGENT_LIVE_MAX_COLUMNS = 4;
 
+/** タイルの最低高さとして受け付ける範囲 (px)。4K でも足りるよう上限は広めに取る。 */
+export const PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT = 60;
+export const PARADIS_AGENT_LIVE_MAX_ROW_HEIGHT = 2000;
+export const PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT = 220;
+
+/** 入力された最低高さを扱える範囲へ丸める。 */
+export function paradisClampAgentLiveRowHeight(value: number): number {
+	return Math.min(PARADIS_AGENT_LIVE_MAX_ROW_HEIGHT, Math.max(PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT, Math.round(value)));
+}
+
 export function paradisDefaultAgentLiveViewState(): IParadisAgentLiveViewState {
 	return {
 		statuses: [],
@@ -110,7 +128,7 @@ export function paradisDefaultAgentLiveViewState(): IParadisAgentLiveViewState {
 		sortDesc: true,
 		group: 'none',
 		columns: 3,
-		dense: false,
+		minRowHeight: PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT,
 		pinTop: true,
 		manualOrder: [],
 		pinned: [],
@@ -162,7 +180,15 @@ export function paradisParseAgentLiveViewState(raw: string | undefined): IParadi
 	if (typeof parsed.columns === 'number' && Number.isFinite(parsed.columns)) {
 		state.columns = Math.min(PARADIS_AGENT_LIVE_MAX_COLUMNS, Math.max(PARADIS_AGENT_LIVE_MIN_COLUMNS, Math.round(parsed.columns)));
 	}
-	state.dense = parsed.dense === true;
+	if (parsed.minRowHeight === null) {
+		// 明示的に「1画面に収める」を選んだ状態 (JSON に undefined は残らないので null で保存する)。
+		state.minRowHeight = undefined;
+	} else if (typeof parsed.minRowHeight === 'number' && Number.isFinite(parsed.minRowHeight)) {
+		state.minRowHeight = paradisClampAgentLiveRowHeight(parsed.minRowHeight);
+	} else if (parsed.dense === true) {
+		// 旧形式 (dense: boolean) からの移行。
+		state.minRowHeight = 150;
+	}
 	state.pinTop = parsed.pinTop !== false;
 	state.manualOrder = stringArray(parsed.manualOrder) ?? [];
 	state.pinned = stringArray(parsed.pinned) ?? [];
@@ -171,7 +197,8 @@ export function paradisParseAgentLiveViewState(raw: string | undefined): IParadi
 }
 
 export function paradisSerializeAgentLiveViewState(state: IParadisAgentLiveViewState): string {
-	return JSON.stringify(state);
+	// undefined は JSON.stringify で消えてしまい「未設定」と区別できないので null で残す。
+	return JSON.stringify({ ...state, minRowHeight: state.minRowHeight ?? null });
 }
 
 /** 絞り込みが1つでも効いているか (状況バーの表示条件)。 */
