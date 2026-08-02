@@ -50,6 +50,7 @@ import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobil
 import { ParadisMobileWindowLeaseChannel } from '../../paradis/contrib/mobileRelay/electron-main/paradisMobileWindowLeaseChannel.js';
 // PARA-PATCH: clear stale webview service worker registrations before the first window opens
 import { paradisResetWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerReset.js';
+import { paradisWatchWebviewServiceWorkers } from '../../paradis/contrib/fileViewers/electron-main/paradisWebviewServiceWorkerWatch.js';
 import { BrowserViewMainService, IBrowserViewMainService } from '../../platform/browserView/electron-main/browserViewMainService.js';
 import { BrowserViewGroupMainService, IBrowserViewGroupMainService } from '../../platform/browserView/electron-main/browserViewGroupMainService.js';
 import { NativeParsedArgs } from '../../platform/environment/common/argv.js';
@@ -783,6 +784,12 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: drop the webview service worker registrations left over from previous runs.
 		// Must happen before any window can open a webview of its own — see paradisResetWebviewServiceWorkers.
 		await paradisResetWebviewServiceWorkers(session.defaultSession, this.logService);
+
+		// PARA-PATCH: watch webview service workers that never finish starting. Diagnostics only — see
+		// paradisWebviewServiceWorkerWatch.ts for why the page side cannot see this. Must stay after the
+		// ErrorTelemetry registration above: its process-level uncaughtException handler is what keeps a
+		// throw from one of these Electron callbacks out of the user's face.
+		this._register(paradisWatchWebviewServiceWorkers(session.defaultSession, this.logService));
 
 		// Signal phase: ready - before opening first window
 		this.lifecycleMainService.phase = LifecycleMainPhase.Ready;
