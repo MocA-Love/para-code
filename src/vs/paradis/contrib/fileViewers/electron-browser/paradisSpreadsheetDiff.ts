@@ -13,7 +13,10 @@
 
 import { stringHash } from '../../../../base/common/hash.js';
 import { equals as objectsEqual } from '../../../../base/common/objects.js';
+import { localize } from '../../../../nls.js';
 import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
+import { IParadisPageBreakLine, IParadisPageLabelBox, IParadisPageLayout, IParadisPageRectangle, ParadisPageBreakStatus, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
+import { pageLabelText } from './paradisSpreadsheetRender.js';
 
 export type ParadisDiffStatus = 'added' | 'removed' | 'modified';
 
@@ -714,4 +717,292 @@ export function buildShapeDiff(original: readonly IParadisRenderShape[] | undefi
 	}
 
 	return { originalRenders, modifiedRenders, changes };
+}
+
+// ── 改ページ(ページ区切り)の差分 ──
+
+/** Prev/Next のナビ対象になる改ページの変更1件。 */
+export interface IParadisPageBreakChange {
+	readonly status: 'added' | 'removed' | 'moved' | 'repaged';
+	/** 行方向(横線)か列方向(縦線)か。 */
+	readonly axis: 'row' | 'column';
+	/** 変更前・変更後それぞれの改ページ位置(Excel の1始まり)。 */
+	readonly originalIndex?: number;
+	readonly modifiedIndex?: number;
+	/** ナビでスクロールする側と行。 */
+	readonly side: 'original' | 'modified';
+	readonly anchorRow: number;
+	/** 一覧に出す本文と補足。 */
+	readonly title: string;
+	readonly detail: string;
+}
+
+/** 両版の改ページ描画データと、変更一覧。 */
+export interface IParadisPageBreakDiff {
+	readonly originalRowLines: readonly IParadisPageBreakLine[];
+	readonly modifiedRowLines: readonly IParadisPageBreakLine[];
+	readonly originalColLines: readonly IParadisPageBreakLine[];
+	readonly modifiedColLines: readonly IParadisPageBreakLine[];
+	readonly originalLabels: readonly IParadisPageLabelBox[];
+	readonly modifiedLabels: readonly IParadisPageLabelBox[];
+	readonly changes: readonly IParadisPageBreakChange[];
+}
+
+/**
+ * 改ページの位置は Excel の行番号で持つが、行が挿入・削除されると番号だけがずれる。
+ * それを「改ページが動いた」と報告しないよう、改ページ直後の行の中身を手掛かり(キー)にして対応付ける。
+ */
+function anchorKeyAfter(sheet: IParadisSheetData, breakIndex: number): string {
+	const parts: string[] = [];
+	for (const row of sheet.rows) {
+		if (row.excelRow <= breakIndex) {
+			continue;
+		}
+		const text = row.cells.map(c => c.value).filter(v => v).join(' ').trim();
+		if (text) {
+			parts.push(text);
+		}
+		if (parts.length >= 2 || parts.join(' ').length > 120) {
+			break;
+		}
+	}
+	return parts.join(' ').slice(0, 120);
+}
+
+/**
+ * 印刷対象範囲(ページ割りが実際に敷き詰めた範囲)に入っているかの判定。
+ * 使用範囲の外に取り残された古い改ページは Excel でも表示されないので、描画も比較もしない。
+ */
+function printRangeFilter(sheet: IParadisSheetData, axis: 'row' | 'column'): (index: number) => boolean {
+	const bands = axis === 'row' ? sheet.pageLayout?.rowBands : sheet.pageLayout?.colBands;
+	if (!bands || bands.length === 0) {
+		return () => true;
+	}
+	const last = bands[bands.length - 1].to;
+	return (index: number) => index < last;
+}
+
+/** ページの中身を表す手掛かり。横に並ぶページを取り違えないよう、列の開始位置も混ぜる。 */
+function pageKey(sheet: IParadisSheetData, rect: IParadisPageRectangle): string {
+	const anchor = anchorKeyAfter(sheet, rect.fromRow - 1);
+	return anchor ? `c${rect.fromCol}:${anchor}` : '';
+}
+
+/**
+ * 改ページ位置(Excelの1始まり) → その区切りで終わるページの番号。
+ * 自動改ページも数に入るので、手動改ページの本数からは求められない(ページ割りから引く)。
+ */
+function pageNumberEndingAt(layout: IParadisPageLayout | undefined, axis: 'row' | 'column', index: number): number | undefined {
+	if (!layout) {
+		return undefined;
+	}
+	const bands = axis === 'row' ? layout.rowBands : layout.colBands;
+	const bandIndex = bands.findIndex(band => band.to === index);
+	if (bandIndex < 0) {
+		return undefined;
+	}
+	return axis === 'row' ? layout.pageNumbers[bandIndex]?.[0] : layout.pageNumbers[0]?.[bandIndex];
+}
+
+function collectLines(sheet: IParadisSheetData, axis: 'row' | 'column'): { manual: number[]; auto: number[] } {
+	const inRange = printRangeFilter(sheet, axis);
+	const manual = Array.from(new Set(axis === 'row' ? (sheet.rowBreaks ?? []) : (sheet.colBreaks ?? []))).filter(inRange).sort((a, b) => a - b);
+	const layoutAuto = axis === 'row' ? sheet.pageLayout?.autoRowBreaks : sheet.pageLayout?.autoColBreaks;
+	const auto = (layoutAuto ?? []).filter(i => !manual.includes(i)).sort((a, b) => a - b);
+	return { manual, auto };
+}
+
+/**
+ * 改ページの差分。手動改ページを内容キーで突き合わせ、追加・削除・移動を求める。
+ * 自動改ページ(用紙設定から計算した位置)は行の増減で普通に動くので、差分としては報告せず描画だけする。
+ */
+export function buildPageBreakDiff(original: IParadisSheetData | undefined, modified: IParadisSheetData | undefined): IParadisPageBreakDiff {
+	const empty: IParadisPageBreakDiff = {
+		originalRowLines: [], modifiedRowLines: [], originalColLines: [], modifiedColLines: [],
+		originalLabels: [], modifiedLabels: [], changes: [],
+	};
+	if (!original || !modified) {
+		return empty;
+	}
+
+	const changes: IParadisPageBreakChange[] = [];
+	const buildAxis = (axis: 'row' | 'column') => {
+		const o = collectLines(original, axis);
+		const m = collectLines(modified, axis);
+		const oStatus = new Map<number, ParadisPageBreakStatus>();
+		const mStatus = new Map<number, ParadisPageBreakStatus>();
+		const oTitle = new Map<number, string>();
+		const mTitle = new Map<number, string>();
+		const takenM = new Set<number>();
+
+		// 1) 位置が変わっていないものは、それだけで「同じ改ページ」。
+		//    列方向は中身の手掛かりが取れないので、この判定が唯一の突き合わせになる。
+		for (const oi of o.manual) {
+			if (m.manual.includes(oi)) {
+				oStatus.set(oi, 'unchanged');
+				mStatus.set(oi, 'unchanged');
+				takenM.add(oi);
+			}
+		}
+
+		// 2) 改ページの直後に来る中身が同じなら、行番号が変わっていても「同じ改ページ」。
+		const keyOf = axis === 'row'
+			? (sheet: IParadisSheetData, index: number) => anchorKeyAfter(sheet, index)
+			: () => '';
+		const mKeys = new Map<number, string>(m.manual.map(i => [i, keyOf(modified, i)]));
+		for (const oi of o.manual) {
+			if (oStatus.has(oi)) {
+				continue;
+			}
+			const key = keyOf(original, oi);
+			if (!key) {
+				continue;
+			}
+			const hit = m.manual.find(mi => !takenM.has(mi) && mKeys.get(mi) === key);
+			if (hit !== undefined) {
+				takenM.add(hit);
+				oStatus.set(oi, 'unchanged');
+				mStatus.set(hit, 'unchanged');
+			}
+		}
+
+		// 3) 残りは「何ページ目の区切りか」の順で対にして移動とみなす。
+		const restO = o.manual.filter(i => !oStatus.has(i));
+		const restM = m.manual.filter(i => !takenM.has(i));
+		const pairCount = Math.min(restO.length, restM.length);
+		for (let i = 0; i < pairCount; i++) {
+			const oi = restO[i];
+			const mi = restM[i];
+			oStatus.set(oi, 'movedFrom');
+			mStatus.set(mi, 'movedTo');
+			takenM.add(mi);
+			const page = pageNumberEndingAt(modified.pageLayout, axis, mi);
+			const movedDetail = axis === 'row'
+				? localize('paradis.spreadsheet.pageBreak.movedRowDetail', "{0} 行の下 → {1} 行の下", oi, mi)
+				: localize('paradis.spreadsheet.pageBreak.movedColumnDetail', "{0} 列の右 → {1} 列の右", oi, mi);
+			const movedTitle = page !== undefined
+				? localize('paradis.spreadsheet.pageBreak.movedPage', "{0} ページ目の区切りが移動しました", page)
+				: localize('paradis.spreadsheet.pageBreak.moved', "ページの区切りが移動しました");
+			oTitle.set(oi, `${movedTitle}\n${movedDetail}`);
+			mTitle.set(mi, `${movedTitle}\n${movedDetail}`);
+			changes.push({
+				status: 'moved',
+				axis,
+				originalIndex: oi,
+				modifiedIndex: mi,
+				side: 'modified',
+				anchorRow: axis === 'row' ? mi : 1,
+				title: movedTitle,
+				detail: movedDetail,
+			});
+		}
+
+		// 4) 余りは削除・追加。
+		for (const oi of restO.slice(pairCount)) {
+			oStatus.set(oi, 'removed');
+			const title = localize('paradis.spreadsheet.pageBreak.removed', "ページの区切りが削除されました");
+			const detail = axis === 'row'
+				? localize('paradis.spreadsheet.pageBreak.removedRow', "{0} 行の下 — 前後のページがつながります", oi)
+				: localize('paradis.spreadsheet.pageBreak.removedColumn', "{0} 列の右 — 左右のページがつながります", oi);
+			oTitle.set(oi, `${title}\n${detail}`);
+			changes.push({
+				status: 'removed',
+				axis,
+				originalIndex: oi,
+				side: 'original',
+				anchorRow: axis === 'row' ? oi : 1,
+				title,
+				detail,
+			});
+		}
+		for (const mi of restM.slice(pairCount)) {
+			mStatus.set(mi, 'added');
+			const title = localize('paradis.spreadsheet.pageBreak.added', "ページの区切りが追加されました");
+			const detail = axis === 'row'
+				? localize('paradis.spreadsheet.pageBreak.addedRow', "{0} 行の下 — ここから新しいページになります", mi)
+				: localize('paradis.spreadsheet.pageBreak.addedColumn', "{0} 列の右 — ここから新しいページになります", mi);
+			mTitle.set(mi, `${title}\n${detail}`);
+			changes.push({
+				status: 'added',
+				axis,
+				modifiedIndex: mi,
+				side: 'modified',
+				anchorRow: axis === 'row' ? mi : 1,
+				title,
+				detail,
+			});
+		}
+
+		const toLines = (source: { manual: number[]; auto: number[] }, status: Map<number, ParadisPageBreakStatus>, titles: Map<number, string>): IParadisPageBreakLine[] => [
+			...source.manual.map(index => ({
+				index,
+				kind: 'manual' as const,
+				status: status.get(index) ?? 'unchanged',
+				...(titles.has(index) ? { title: titles.get(index) } : {}),
+			})),
+			...source.auto.map(index => ({ index, kind: 'auto' as const })),
+		];
+		return { originalLines: toLines(o, oStatus, oTitle), modifiedLines: toLines(m, mStatus, mTitle) };
+	};
+
+	const rows = buildAxis('row');
+	const cols = buildAxis('column');
+
+	// ページ番号の振り直し(同じ中身が別のページ番号に載るようになった)。
+	const originalPages = original.pageLayout ? pageRectangles(original.pageLayout) : [];
+	const modifiedPages = modified.pageLayout ? pageRectangles(modified.pageLayout) : [];
+	const movedPages = new Set<number>();
+	if (originalPages.length && modifiedPages.length) {
+		const modByKey = new Map<string, number>();
+		for (const rect of modifiedPages) {
+			const key = pageKey(modified, rect);
+			if (key && !modByKey.has(key)) {
+				modByKey.set(key, rect.page);
+			}
+		}
+		const repaged: { from: number; to: number; fromRow: number }[] = [];
+		for (const rect of originalPages) {
+			const key = pageKey(original, rect);
+			const to = key ? modByKey.get(key) : undefined;
+			if (to !== undefined && to !== rect.page) {
+				movedPages.add(to);
+				repaged.push({ from: rect.page, to, fromRow: rect.fromRow });
+			}
+		}
+		const first = repaged[0];
+		if (first) {
+			changes.push({
+				status: 'repaged',
+				axis: 'row',
+				side: 'modified',
+				anchorRow: modifiedPages.find(p => p.page === first.to)?.fromRow ?? 1,
+				title: repaged.length === 1
+					? localize('paradis.spreadsheet.pageBreak.repaged', "同じ内容が {0} ページ目から {1} ページ目に移りました", first.from, first.to)
+					: localize('paradis.spreadsheet.pageBreak.repagedMany', "{0} ページ目から先のページ番号がずれました（{1} ページ分）", first.from, repaged.length),
+				detail: localize('paradis.spreadsheet.pageBreak.repagedDetail', "変更前に {0} 行から始まっていたページが起点です", first.fromRow),
+			});
+		}
+	}
+
+	const labelsFor = (pages: readonly IParadisPageRectangle[], highlight: ReadonlySet<number>): IParadisPageLabelBox[] =>
+		pages.length > 1
+			? pages.map(rect => ({
+				text: pageLabelText(rect.page),
+				fromRow: rect.fromRow,
+				toRow: rect.toRow,
+				fromCol: rect.fromCol,
+				toCol: rect.toCol,
+				...(highlight.has(rect.page) ? { changed: true } : {}),
+			}))
+			: [];
+
+	return {
+		originalRowLines: rows.originalLines,
+		modifiedRowLines: rows.modifiedLines,
+		originalColLines: cols.originalLines,
+		modifiedColLines: cols.modifiedLines,
+		originalLabels: labelsFor(originalPages, new Set()),
+		modifiedLabels: labelsFor(modifiedPages, movedPages),
+		changes,
+	};
 }

@@ -98,7 +98,11 @@
 	font-family: 'Calibri', 'MS PGothic', 'Meiryo', 'Segoe UI', sans-serif;
 	font-size: 11pt;
 	color: #000000;
-	background-color: #ffffff;
+	/* allow-any-unicode-next-line */
+	/* 背景はスクローラ側の白を透かす(ページ番号の透かしをセルの背面に敷くため)。 */
+	background-color: transparent;
+	position: relative;
+	z-index: 1;
 }
 
 /* allow-any-unicode-next-line */
@@ -414,6 +418,19 @@
 	margin-left: 4px;
 }
 
+/* allow-any-unicode-next-line */
+/* ページ番号の透かし(SVG)。セルの内容の背面に敷く。 */
+.paradis-spreadsheet-pagelabels {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
+	overflow: visible;
+	z-index: 0;
+}
+
 /* Manual page break lines (blue) + print area outer border, over the table (SVG). */
 .paradis-spreadsheet-pagebreaks {
 	position: absolute;
@@ -431,10 +448,59 @@
 	stroke-width: 1.5;
 }
 
+/* allow-any-unicode-next-line */
+/* 用紙設定から計算した自動改ページ。Excel の改ページプレビューと同じく破線で描く。 */
+.paradis-pagebreak-auto {
+	stroke-dasharray: 7 4;
+}
+
 .paradis-printarea-border {
 	fill: none;
 	stroke: #1f4e79;
 	stroke-width: 2.5;
+}
+
+/* allow-any-unicode-next-line */
+/* ページ番号の透かし。セルの内容より背面に置く(塗りの無いセルは透ける)。 */
+.paradis-pagebreak-label {
+	fill: #b7bcc4;
+	font-family: 'Segoe UI', 'Meiryo', sans-serif;
+	font-size: 44px;
+	letter-spacing: 4px;
+	text-anchor: middle;
+	dominant-baseline: middle;
+	user-select: none;
+}
+
+.paradis-pagebreak-label-changed {
+	fill: #7fb2e5;
+}
+
+/* allow-any-unicode-next-line */
+/* 差分ビューアでの改ページの状態(図形の差分と同じ配色)。 */
+.paradis-pagebreak-added {
+	stroke: #22c55e;
+	stroke-width: 3;
+	stroke-dasharray: none;
+}
+
+.paradis-pagebreak-removed {
+	stroke: #ef4444;
+	stroke-width: 2.5;
+	stroke-dasharray: 6 3;
+}
+
+.paradis-pagebreak-movedfrom {
+	stroke: #9ca3af;
+	stroke-width: 2;
+	stroke-dasharray: 4 3;
+	opacity: 0.75;
+}
+
+.paradis-pagebreak-movedto {
+	stroke: #3b82f6;
+	stroke-width: 3;
+	stroke-dasharray: none;
 }
 
 /* Protected-sheet lock icon in the tab. */

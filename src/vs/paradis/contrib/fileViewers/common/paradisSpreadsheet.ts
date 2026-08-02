@@ -11,6 +11,8 @@
 // スタイルは CSS プロパティ名(camelCase)→値文字列 のプレーンオブジェクトで、renderer 側で
 // Object.assign(element.style, style) によりそのまま適用できる。
 
+import type { IParadisPageLayout } from './paradisSpreadsheetPageLayout.js';
+
 /** workbench(renderer) ⇔ shared process 間の Excel パース用IPCチャネル名。 */
 export const PARADIS_SPREADSHEET_CHANNEL = 'paradisSpreadsheet';
 
@@ -125,6 +127,8 @@ export interface IParadisSheetData {
 	readonly colBreaks?: readonly number[];
 	/** 印刷範囲(あれば)。 */
 	readonly printArea?: IParadisCellRange;
+	/** 手動改ページ＋用紙設定から求めたページ割り(自動改ページとページ番号)。 */
+	readonly pageLayout?: IParadisPageLayout;
 }
 
 /** パース結果のワークブック全体。 */
