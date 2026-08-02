@@ -7,37 +7,86 @@
 
 /* ---------------------------------------------------------------- タイトルバーのボタン */
 
-.paradis-agent-live-titlebar-widget {
-	display: flex;
+/*
+ * 隣の「エージェントで開く」(openInAgents.css) と作法を揃える: 平常時はアイコンだけ、
+ * ホバー / キーボードフォーカスでラベルが開く。稼働数のバッジだけは閉じているときも
+ * 出す —— ウィンドウを開かずに「何体動いているか」を知れることがこのボタンの主目的なので。
+ */
+.monaco-workbench .paradis-agent-live-titlebar-widget {
+	display: inline-flex;
 	align-items: center;
-	gap: 6px;
 	height: 22px;
-	padding: 0 9px;
-	border-radius: 999px;
-	font-size: 12px;
+	padding: 0 4px;
+	border-radius: 5px;
 	cursor: pointer;
-	white-space: nowrap;
+	color: var(--vscode-titleBar-activeForeground);
 	-webkit-app-region: no-drag;
+	white-space: nowrap;
 }
 
-.paradis-agent-live-titlebar-widget:hover {
+.monaco-workbench .paradis-agent-live-titlebar-widget:hover,
+.monaco-workbench .paradis-agent-live-titlebar-widget:focus-visible {
 	background-color: var(--vscode-toolbar-hoverBackground);
+	outline: none;
 }
 
-.paradis-agent-live-titlebar-icon {
-	width: 14px;
-	height: 14px;
-	flex: 0 0 14px;
+.monaco-workbench .paradis-agent-live-titlebar-widget:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* 大きなパネル + 小さなパネル2枚。監視盤を表す */
+.monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-icon {
+	width: 16px;
+	height: 16px;
+	flex: 0 0 auto;
 	background-color: currentColor;
-	/* 2x2 のタイル。ライブウィンドウのグリッドそのものを表す */
-	-webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1.5 2h5.5v5H1.5zm0 7h5.5v5H1.5zM9 2h5.5v3H9zm0 5h5.5v7H9z'/></svg>");
+	-webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1.5 2h7v12h-7zm8.5 0h4.5v5H10zm0 6.5h4.5V14H10z'/></svg>");
 	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center center;
 	-webkit-mask-size: contain;
 }
 
-.paradis-agent-live-titlebar-badge {
+.monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label {
+	display: inline-block;
+	max-width: 0;
+	opacity: 0;
+	margin-left: 0;
+	color: var(--vscode-foreground);
+	font: inherit;
+	overflow: hidden;
+	white-space: nowrap;
+}
+
+.monaco-enable-motion .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label,
+.monaco-workbench.monaco-enable-motion .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label {
+	transition: max-width 160ms ease, opacity 160ms ease, margin-left 160ms ease;
+	transition-delay: 200ms;
+}
+
+.monaco-reduce-motion .monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label,
+.monaco-workbench.monaco-reduce-motion .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-label {
+	transition-duration: 0ms !important;
+}
+
+.monaco-workbench .paradis-agent-live-titlebar-widget:hover > .paradis-agent-live-titlebar-label,
+.monaco-workbench .paradis-agent-live-titlebar-widget:focus-visible > .paradis-agent-live-titlebar-label {
+	max-width: 200px;
+	opacity: 1;
+	margin-left: 6px;
+}
+
+.monaco-enable-motion .monaco-workbench .paradis-agent-live-titlebar-widget:hover > .paradis-agent-live-titlebar-label,
+.monaco-enable-motion .monaco-workbench .paradis-agent-live-titlebar-widget:focus-visible > .paradis-agent-live-titlebar-label,
+.monaco-workbench.monaco-enable-motion .paradis-agent-live-titlebar-widget:hover > .paradis-agent-live-titlebar-label,
+.monaco-workbench.monaco-enable-motion .paradis-agent-live-titlebar-widget:focus-visible > .paradis-agent-live-titlebar-label {
+	transition-delay: 0ms;
+}
+
+.monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-badge {
 	min-width: 16px;
 	height: 15px;
+	margin-left: 4px;
 	padding: 0 4px;
 	border-radius: 999px;
 	font-size: 10px;
@@ -49,11 +98,11 @@
 	color: var(--vscode-badge-foreground);
 }
 
-.paradis-agent-live-titlebar-badge.hidden {
+.monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-badge.hidden {
 	display: none;
 }
 
-.paradis-agent-live-titlebar-badge.attention {
+.monaco-workbench .paradis-agent-live-titlebar-widget > .paradis-agent-live-titlebar-badge.attention {
 	background-color: var(--vscode-charts-yellow, #cca700);
 	color: var(--vscode-editor-background);
 }
