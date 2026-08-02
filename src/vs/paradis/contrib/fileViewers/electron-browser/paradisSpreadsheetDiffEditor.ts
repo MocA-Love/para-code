@@ -34,11 +34,11 @@ import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
+import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
 import { IParadisRenderShape } from '../common/paradisSpreadsheet.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
-import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisShapeDiff, IParadisShapeRender, buildDiffSheets, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
+import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 
@@ -125,9 +125,13 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _modifiedResource: URI | undefined;
 	private _diffSheets: IParadisDiffSheet[] = [];
 	private _shapeDiffs: IParadisShapeDiff[] = [];
+	private _pageBreakDiffs: IParadisPageBreakDiff[] = [];
+	private _leftPageBreakOverlay: IParadisPageBreakOverlay | undefined;
+	private _rightPageBreakOverlay: IParadisPageBreakOverlay | undefined;
 	private _diffLocations: IDiffLocation[] = [];
 	private _activeSheetIndex = 0;
-	private _currentDiffIdx = 0;
+	// 開いた直後はどの変更にも合っていない(先頭を表示しているだけ)ので -1。Next で先頭、Prev で末尾に入る。
+	private _currentDiffIdx = -1;
 	// watcher 由来の _load が並行実行され応答が逆順到着しても、最新ロードの結果だけを表示するための世代トークン。
 	private _loadGeneration = 0;
 
@@ -180,7 +184,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._originalResource = diffInput.originalResource;
 		this._modifiedResource = diffInput.modifiedResource;
 		this._activeSheetIndex = 0;
-		this._currentDiffIdx = 0;
+		this._currentDiffIdx = -1;
 		this._userAdjusted = false;
 		this._scale = 1;
 
@@ -229,6 +233,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			}
 			this._diffSheets = buildDiffSheets(origWb.sheets, modWb.sheets);
 			this._shapeDiffs = this._diffSheets.map(s => buildShapeDiff(s.originalShapes, s.modifiedShapes));
+			// 改ページは差分シート(行の対応付け済み)ではなく、元のシートの用紙設定から比べる。
+			const origByName = new Map(origWb.sheets.map(s => [s.name, s]));
+			const modByName = new Map(modWb.sheets.map(s => [s.name, s]));
+			this._pageBreakDiffs = this._diffSheets.map(s => buildPageBreakDiff(origByName.get(s.name), modByName.get(s.name)));
 			this._diffLocations = this._diffSheets.flatMap((sheet, sheetIndex) => this._buildSheetLocations(sheet, sheetIndex));
 			if (this._activeSheetIndex >= this._diffSheets.length) {
 				this._activeSheetIndex = 0;
@@ -260,6 +268,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		for (const change of this._shapeDiffs[sheetIndex].changes) {
 			const rowIndex = rowIndexByExcel.get(change.anchorRow) ?? Math.max(0, Math.min(change.anchorRow - 1, maxRows - 1));
 			locs.push({ sheetIndex, rowIndex, shape: { render: change.shape, side: change.side } });
+		}
+		// 改ページの変更も Prev/Next の対象にする(該当行へスクロールすると、色分けした線が見える)。
+		for (const change of this._pageBreakDiffs[sheetIndex]?.changes ?? []) {
+			const rowIndex = rowIndexByExcel.get(change.anchorRow) ?? Math.max(0, Math.min(change.anchorRow - 1, maxRows - 1));
+			locs.push({ sheetIndex, rowIndex });
 		}
 		locs.sort((a, b) => a.rowIndex - b.rowIndex);
 		return locs;
@@ -343,6 +356,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._rightContentHeight = this._rightTable?.offsetHeight ?? 0;
 		this._appendShapeOverlay('original', shapeDiff?.originalRenders, sheet.originalMinCol, this._leftMetrics.rowY);
 		this._appendShapeOverlay('modified', shapeDiff?.modifiedRenders, sheet.modifiedMinCol, this._rightMetrics.rowY);
+		const pageBreaks = this._pageBreakDiffs[this._activeSheetIndex];
+		this._appendPageBreakOverlay('original', pageBreaks, sheet.originalMinCol, this._leftMetrics.rowY);
+		this._appendPageBreakOverlay('modified', pageBreaks, sheet.modifiedMinCol, this._rightMetrics.rowY);
 		this._applyScale();
 		this._repositionHighlight();
 	}
@@ -475,6 +491,32 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			this._leftShapeOverlay = overlay;
 		} else {
 			this._rightShapeOverlay = overlay;
+		}
+	}
+
+	/** 改ページ線とページ番号の透かしを両ペインに重ねる(線はセルの前面、透かしは背面)。既存のオーバーレイは貼り替える。 */
+	private _appendPageBreakOverlay(side: 'original' | 'modified', diff: IParadisPageBreakDiff | undefined, minCol: number | undefined, rowY: Map<number, number>): void {
+		const content = side === 'original' ? this._leftContent : this._rightContent;
+		const prev = side === 'original' ? this._leftPageBreakOverlay : this._rightPageBreakOverlay;
+		prev?.lines?.remove();
+		prev?.labels?.remove();
+		let built: IParadisPageBreakOverlay = {};
+		if (content && diff && minCol !== undefined) {
+			const rowLines = side === 'original' ? diff.originalRowLines : diff.modifiedRowLines;
+			const colLines = side === 'original' ? diff.originalColLines : diff.modifiedColLines;
+			const labels = side === 'original' ? diff.originalLabels : diff.modifiedLabels;
+			built = buildPageBreakOverlay(rowLines, colLines, undefined, labels, rowY, this._columnWidths, minCol, content.ownerDocument);
+			if (built.lines) {
+				content.appendChild(built.lines);
+			}
+			if (built.labels) {
+				content.appendChild(built.labels);
+			}
+		}
+		if (side === 'original') {
+			this._leftPageBreakOverlay = built;
+		} else {
+			this._rightPageBreakOverlay = built;
 		}
 	}
 
@@ -637,8 +679,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				: localize('paradis.spreadsheet.noChangesShort', "No changes");
 		}
 		if (this._navPositionEl) {
+			// まだどの変更にも移動していない間は位置を伏せる(「1 / N」と出しつつ 1 番目を映していない状態を作らない)。
 			this._navPositionEl.textContent = this._diffLocations.length > 0
-				? `${this._currentDiffIdx + 1} / ${this._diffLocations.length}`
+				? `${this._currentDiffIdx < 0 ? '–' : this._currentDiffIdx + 1} / ${this._diffLocations.length}`
 				: '';
 		}
 	}
@@ -647,7 +690,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (this._diffLocations.length === 0) {
 			return;
 		}
-		let idx = this._currentDiffIdx + delta;
+		// 未移動(-1)からは Next で先頭、Prev で末尾へ入る。
+		let idx = this._currentDiffIdx < 0
+			? (delta > 0 ? 0 : this._diffLocations.length - 1)
+			: this._currentDiffIdx + delta;
 		if (idx < 0) {
 			idx = this._diffLocations.length - 1;
 		} else if (idx >= this._diffLocations.length) {
@@ -705,7 +751,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	/** 再フロー後などに、表示中のハイライトだけをパルスなしで測り直して置き直す。 */
 	private _repositionHighlight(): void {
 		const shown = (this._leftHighlight?.style.display === 'block') || (this._rightHighlight?.style.display === 'block');
-		if (shown && this._diffLocations.length > 0) {
+		if (shown && this._currentDiffIdx >= 0 && this._diffLocations.length > 0) {
 			this._highlightLocation(this._diffLocations[this._currentDiffIdx], false);
 		}
 	}
@@ -750,6 +796,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._modifiedResource = undefined;
 		this._diffSheets = [];
 		this._shapeDiffs = [];
+		this._pageBreakDiffs = [];
+		this._leftPageBreakOverlay = undefined;
+		this._rightPageBreakOverlay = undefined;
 		this._diffLocations = [];
 		this._leftScroll = undefined;
 		this._rightScroll = undefined;

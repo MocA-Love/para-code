@@ -25,8 +25,12 @@ import {
 	IParadisSpreadsheetService,
 	IParadisWorkbookData,
 } from '../common/paradisSpreadsheet.js';
+import { IParadisPageLayout, IParadisPageSetup, computePageLayout, parsePageSetup, parsePrintTitleRows } from '../common/paradisSpreadsheetPageLayout.js';
 
 const MAX_ROWS = 2000;
+
+/** CSS px(96dpi) を pt(72dpi) に。ページ割りの計算は pt で行う。 */
+const PX_TO_PT = 72 / 96;
 
 // exceljs の型定義は一部不完全なため、読み取るフィールドだけの局所インターフェースを定義して `any` を避ける。
 interface IExcelColor {
@@ -140,10 +144,13 @@ function borderToCSS(b: IExcelBorderSide | undefined): string | null {
 	return `${base} ${col}`;
 }
 
-function rowHeightToPx(h: number | undefined, defaultRowHeightPt: number | undefined): number {
+function rowHeightToPt(h: number | undefined, defaultRowHeightPt: number | undefined): number {
 	// 行に明示高が無ければシートの既定行高(sheetFormatPr defaultRowHeight、pt)を使う。最後の 15pt は 20px 相当(旧既定)。
-	const pt = h && h > 0 ? h : (defaultRowHeightPt && defaultRowHeightPt > 0 ? defaultRowHeightPt : 15);
-	return Math.round((pt * 96) / 72);
+	return h && h > 0 ? h : (defaultRowHeightPt && defaultRowHeightPt > 0 ? defaultRowHeightPt : 15);
+}
+
+function rowHeightToPx(h: number | undefined, defaultRowHeightPt: number | undefined): number {
+	return Math.round((rowHeightToPt(h, defaultRowHeightPt) * 96) / 72);
 }
 
 // Excel の列幅は「既定フォントの最大数字幅(mdw)を1とする文字数」単位で保存される。
@@ -154,6 +161,15 @@ function charWidthToPx(w: number | undefined, defaultColWidth: number | undefine
 	// これを見ずに固定値へ落とすと、全列が既定幅のシート(方眼紙レイアウトの表紙等)が数倍幅で描かれる。
 	const chars = w && w > 0 ? w : (defaultColWidth && defaultColWidth > 0 ? defaultColWidth : 8.43);
 	return Math.max(4, Math.round(chars * maxDigitWidth) + 5);
+}
+
+// 印刷のページ割り用の列幅(pt)。表示用の charWidthToPx は左右パディング(+5px)を上乗せしているが、
+// Excel の保存値(文字数単位)にはパディングが既に含まれているため、そのまま足すと 51 列で 1 ページ分ほど
+// 余計に幅を見積もってしまう。ページ割りには OOXML の換算式をそのまま使う。
+function charWidthToPrintPt(w: number | undefined, defaultColWidth: number | undefined, maxDigitWidth: number): number {
+	const chars = w && w > 0 ? w : (defaultColWidth && defaultColWidth > 0 ? defaultColWidth : 8.43);
+	const px = Math.trunc(((256 * chars + Math.trunc(128 / maxDigitWidth)) / 256) * maxDigitWidth);
+	return px * PX_TO_PT;
 }
 
 /** 既定フォント(styles.xml の先頭 font)から最大数字幅(px)を推定する。日本語フォントは 8px、それ以外は 7px(いずれも 11pt 時)。 */
@@ -480,6 +496,19 @@ function isNumericCell(cell: ExcelJS.Cell): boolean {
 	return false;
 }
 
+/** 印刷したときに何か出るセルか(値・自分自身に設定された罫線・塗り)。ページ割りの範囲決めに使う。 */
+function hasPrintableContent(cell: ExcelJS.Cell, displayValue: string): boolean {
+	if (displayValue !== '') {
+		return true;
+	}
+	const b = cell.border as { top?: unknown; bottom?: unknown; left?: unknown; right?: unknown; diagonal?: unknown } | undefined;
+	if (b && (b.top || b.bottom || b.left || b.right || b.diagonal)) {
+		return true;
+	}
+	const fill = cell.fill as { type?: string; pattern?: string } | undefined;
+	return fill?.type === 'pattern' && fill.pattern !== undefined && fill.pattern !== 'none';
+}
+
 function getSheetPrintArea(ws: ExcelJS.Worksheet): IParadisCellRange | undefined {
 	const printArea = (ws.pageSetup as { printArea?: string } | undefined)?.printArea;
 	if (!printArea) {
@@ -492,6 +521,8 @@ interface IXlsxExtras {
 	drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] };
 	rowBreaksBySheet: { [sheetIndex: number]: number[] };
 	colBreaksBySheet: { [sheetIndex: number]: number[] };
+	/** 用紙設定(表示順キー)。ページ割りの計算に使う。 */
+	pageSetupBySheet: { [sheetIndex: number]: IParadisPageSetup };
 	/** theme1.xml の clrScheme 色(scheme名→hex)。読めなければ undefined(既定パレットを使う)。 */
 	themeColorsByName?: { [name: string]: string };
 	/** 既定フォントの最大数字幅(px)。列幅の文字数→px 換算に使う。 */
@@ -535,6 +566,7 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
+	const pageSetupBySheet: { [sheetIndex: number]: IParadisPageSetup } = {};
 	let themeColorsByName: { [name: string]: string } | undefined;
 	let maxDigitWidth = 7;
 	try {
@@ -579,9 +611,11 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 		// workbook.xml の <sheet> 並び(表示順)-> ファイル番号 -> 表示インデックス(0始まり)
 		const fileToDisplay = new Map<number, number>();
 		const wb = files['xl/workbook.xml'];
+		let workbookXml = '';
 		if (wb) {
+			workbookXml = await wb.async('text');
 			let display = 0;
-			for (const st of (await wb.async('text')).match(/<sheet [^>]*?\/?>/g) ?? []) {
+			for (const st of (workbookXml.match(/<sheet [^>]*?\/?>/g) ?? [])) {
 				const rid = st.match(/r:id="([^"]+)"/);
 				const fileNum = rid ? ridToFile.get(rid[1]) : undefined;
 				if (fileNum !== undefined) {
@@ -610,6 +644,12 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 			if (cb.length) {
 				colBreaksBySheet[key] = cb;
 			}
+			// 用紙設定。exceljs は fitToPage・pageOrder・用紙コードを落とすので XML から直接読む。
+			const titleRows = workbookXml ? parsePrintTitleRows(workbookXml, key - 1) : undefined;
+			pageSetupBySheet[key] = {
+				...parsePageSetup(sheetXml),
+				...(titleRows ? { repeatRowsFrom: titleRows.from, repeatRowsTo: titleRows.to } : {}),
+			};
 		}
 		for (const name of Object.keys(files)) {
 			const m = name.match(/xl\/worksheets\/_rels\/sheet(\d+)\.xml\.rels$/);
@@ -661,7 +701,7 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
 	}
-	return { drawingsBySheet, rowBreaksBySheet, colBreaksBySheet, themeColorsByName, maxDigitWidth };
+	return { drawingsBySheet, rowBreaksBySheet, colBreaksBySheet, pageSetupBySheet, themeColorsByName, maxDigitWidth };
 }
 
 export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
@@ -698,14 +738,21 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			const sheetProps = worksheet.properties as { defaultColWidth?: number; defaultRowHeight?: number } | undefined;
 			const showGridLines = (worksheet.views?.[0] as { showGridLines?: boolean } | undefined)?.showGridLines ?? true;
 			const columnWidths: number[] = [];
+			const columnPrintWidthsPt: number[] = [];
 			for (let c = dims.minC; c <= dims.maxC; c++) {
 				const col = worksheet.getColumn(c);
 				columnWidths.push(col.hidden ? 0 : charWidthToPx(col.width, sheetProps?.defaultColWidth, extras.maxDigitWidth));
+				columnPrintWidthsPt.push(col.hidden ? 0 : charWidthToPrintPt(col.width, sheetProps?.defaultColWidth, extras.maxDigitWidth));
 			}
 
 			const rows: IParadisRowData[] = [];
 			const maxRow = Math.min(dims.maxR, dims.minR + MAX_ROWS - 1);
 			const truncated = dims.maxR > maxRow;
+
+			// 印刷して何か出る最も右下のセル。使用範囲の末尾は空のことが多く、そこを含めるとページが余分に増える。
+			// resolveEdgeBorders 後のスタイルは隣接セルの罫線を写し取っているので、判定には生のセルを使う。
+			let printMaxRow = dims.minR - 1;
+			let printMaxCol = dims.minC - 1;
 
 			for (let r = dims.minR; r <= maxRow; r++) {
 				const row = worksheet.getRow(r);
@@ -732,6 +779,11 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 					const mergeInfo = mergeEntry && mergeEntry.kind === 'origin' ? mergeEntry : null;
 					const colspan = mergeInfo?.colspan ?? 1;
 					const rowspan = mergeInfo?.rowspan ?? 1;
+
+					if (hasPrintableContent(cell, val)) {
+						printMaxRow = Math.max(printMaxRow, r + rowspan - 1);
+						printMaxCol = Math.max(printMaxCol, c + colspan - 1);
+					}
 
 					// 罫線(共有辺解決)。結合セルは外周を辺全体でスキャンする。
 					Object.assign(style, mergeInfo
@@ -781,6 +833,30 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 			const protectedSheet = (worksheet as { sheetProtection?: { sheet?: boolean } }).sheetProtection?.sheet === true;
 			const printArea = getSheetPrintArea(worksheet);
 
+			// ページ割り(自動改ページとページ番号)。行・列の大きさは pt で渡す。非表示行・非表示列は 0。
+			const pageSetup = extras.pageSetupBySheet[sheetIndex];
+			let pageLayout: IParadisPageLayout | undefined;
+			if (pageSetup) {
+				// 印刷範囲が明示されていればそれを、無ければ「何か出る最も右下のセル」までをページ割りの対象にする。
+				const lastRow = printArea ? Math.min(printArea.maxR, maxRow) : Math.min(printMaxRow, maxRow);
+				const lastCol = printArea ? Math.min(printArea.maxC, dims.maxC) : printMaxCol;
+				const printColCount = Math.max(0, lastCol - dims.minC + 1);
+				const rowHeightsPt: number[] = [];
+				for (let r = dims.minR; r <= lastRow; r++) {
+					const row = worksheet.getRow(r);
+					rowHeightsPt.push(row.hidden ? 0 : rowHeightToPt(row.height, sheetProps?.defaultRowHeight));
+				}
+				pageLayout = computePageLayout({
+					setup: pageSetup,
+					minRow: dims.minR,
+					rowHeights: rowHeightsPt,
+					minCol: dims.minC,
+					colWidths: columnPrintWidthsPt.slice(0, printColCount),
+					manualRowBreaks: extras.rowBreaksBySheet[sheetIndex] ?? [],
+					manualColBreaks: extras.colBreaksBySheet[sheetIndex] ?? [],
+				});
+			}
+
 			sheets.push({
 				name: worksheet.name,
 				rows,
@@ -795,6 +871,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 				...(extras.rowBreaksBySheet[sheetIndex] ? { rowBreaks: extras.rowBreaksBySheet[sheetIndex] } : {}),
 				...(extras.colBreaksBySheet[sheetIndex] ? { colBreaks: extras.colBreaksBySheet[sheetIndex] } : {}),
 				...(printArea ? { printArea } : {}),
+				...(pageLayout ? { pageLayout } : {}),
 			});
 		});
 

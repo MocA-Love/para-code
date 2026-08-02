@@ -9,7 +9,9 @@
 // Excelビューア/差分で共有する DOM 描画ヘルパー(Vanilla DOM。Superset の SpreadsheetViewer.tsx 相当)。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { localize } from '../../../../nls.js';
 import { IParadisCellData, IParadisCellRange, IParadisCellStyle, IParadisDiagonalBorder, IParadisRenderAnchor, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
+import { IParadisPageBreakLine, IParadisPageLabelBox, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import type { IParadisDiffDetail } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 
@@ -379,19 +381,88 @@ export function applyOverflow(items: readonly IParadisOverflowItem[]): void {
 	}
 }
 
-/** 手動改ページ(青実線)+ 印刷範囲の外周(太い青線)の SVG オーバーレイを生成する。 */
+/** ページ番号の透かしの文言。 */
+export function pageLabelText(page: number): string {
+	return localize('paradis.spreadsheet.pageLabel', "{0} ページ", page);
+}
+
+/**
+ * シート1枚ぶんの改ページ線とページ番号の透かしを組み立てる(通常ビューア用)。
+ * 手動改ページはファイルに保存された位置、自動改ページは用紙設定から計算した位置。
+ */
+export function describeSheetPageBreaks(sheet: IParadisSheetData): {
+	readonly rowLines: readonly IParadisPageBreakLine[];
+	readonly colLines: readonly IParadisPageBreakLine[];
+	readonly labels: readonly IParadisPageLabelBox[];
+} {
+	// 使用範囲の外に取り残された改ページは Excel でも表示されないので描かない。
+	// 判定の基準はページ割りが敷き詰めた範囲なので、行数の上限(MAX_ROWS)で打ち切られたシートでは、
+	// 打ち切り位置より後ろの手動改ページも描かれない。
+	const lastRow = sheet.pageLayout?.rowBands.at(-1)?.to;
+	const lastCol = sheet.pageLayout?.colBands.at(-1)?.to;
+	const manualRows = new Set((sheet.rowBreaks ?? []).filter(i => lastRow === undefined || i < lastRow));
+	const manualCols = new Set((sheet.colBreaks ?? []).filter(i => lastCol === undefined || i < lastCol));
+	const rowLines: IParadisPageBreakLine[] = Array.from(manualRows, index => ({ index, kind: 'manual' as const }));
+	const colLines: IParadisPageBreakLine[] = Array.from(manualCols, index => ({ index, kind: 'manual' as const }));
+	const layout = sheet.pageLayout;
+	if (layout) {
+		for (const index of layout.autoRowBreaks) {
+			if (!manualRows.has(index)) {
+				rowLines.push({ index, kind: 'auto' });
+			}
+		}
+		for (const index of layout.autoColBreaks) {
+			if (!manualCols.has(index)) {
+				colLines.push({ index, kind: 'auto' });
+			}
+		}
+	}
+	// 1ページに収まるシートに透かしを出しても意味が無いので、複数ページのときだけ描く。
+	const labels: IParadisPageLabelBox[] = layout && layout.pageCount > 1
+		? pageRectangles(layout).map(rect => ({
+			text: pageLabelText(rect.page),
+			fromRow: rect.fromRow,
+			toRow: rect.toRow,
+			fromCol: rect.fromCol,
+			toCol: rect.toCol,
+		}))
+		: [];
+	return { rowLines, colLines, labels };
+}
+
+/** 改ページ描画の成果物。線はセルより前面、ページ番号の透かしはセルより背面に置く。 */
+export interface IParadisPageBreakOverlay {
+	readonly lines?: SVGElement;
+	readonly labels?: SVGElement;
+}
+
+function pageBreakLineClass(line: IParadisPageBreakLine): string {
+	const base = line.kind === 'auto' ? 'paradis-pagebreak-line paradis-pagebreak-auto' : 'paradis-pagebreak-line';
+	switch (line.status) {
+		case 'added': return `${base} paradis-pagebreak-added`;
+		case 'removed': return `${base} paradis-pagebreak-removed`;
+		case 'movedFrom': return `${base} paradis-pagebreak-movedfrom`;
+		case 'movedTo': return `${base} paradis-pagebreak-movedto`;
+		default: return base;
+	}
+}
+
+/**
+ * 改ページ線・印刷範囲・ページ番号の透かしを1枚の SVG に描く。
+ * 通常ビューアと差分ビューアで共用する(差分側は status 付きの線とページ番号の強調を渡す)。
+ */
 export function buildPageBreakOverlay(
-	rowBreaks: readonly number[] | undefined,
-	colBreaks: readonly number[] | undefined,
+	rowLines: readonly IParadisPageBreakLine[],
+	colLines: readonly IParadisPageBreakLine[],
 	printArea: IParadisCellRange | undefined,
+	pageLabels: readonly IParadisPageLabelBox[],
 	rowYByExcelRow: Map<number, number>,
 	columnWidths: readonly number[],
 	minCol: number,
 	doc: Document,
-): SVGElement | undefined {
-	const hasBreaks = (rowBreaks && rowBreaks.length) || (colBreaks && colBreaks.length) || printArea;
-	if (!hasBreaks) {
-		return undefined;
+): IParadisPageBreakOverlay {
+	if (rowLines.length === 0 && colLines.length === 0 && !printArea && pageLabels.length === 0) {
+		return {};
 	}
 	const cumCol: number[] = [0];
 	for (let i = 0; i < columnWidths.length; i++) {
@@ -403,34 +474,53 @@ export function buildPageBreakOverlay(
 		return PARADIS_ROW_NUM_COL_WIDTH + cumCol[idx];
 	};
 	const rightEdgeX = PARADIS_ROW_NUM_COL_WIDTH + cumCol[cumCol.length - 1];
-	// Excelの1始まり行 -> その行の上端Y。
-	const rowTopY = (excelRow: number): number => rowYByExcelRow.get(excelRow) ?? 0;
 	const bottomEdgeY = Math.max(...Array.from(rowYByExcelRow.values()), 0);
+	// Excelの1始まり行 -> その行の上端Y。
+	const sortedRows = Array.from(rowYByExcelRow.keys()).sort((a, b) => a - b);
+	const rowTopY = (excelRow: number): number => {
+		const hit = rowYByExcelRow.get(excelRow);
+		if (hit !== undefined) {
+			return hit;
+		}
+		// 非表示行など位置を持たない行は、次に来る行の上端へ寄せる(二分探索)。
+		let lo = 0;
+		let hi = sortedRows.length;
+		while (lo < hi) {
+			const mid = (lo + hi) >> 1;
+			if (sortedRows[mid] > excelRow) {
+				hi = mid;
+			} else {
+				lo = mid + 1;
+			}
+		}
+		return lo < sortedRows.length ? (rowYByExcelRow.get(sortedRows[lo]) ?? bottomEdgeY) : bottomEdgeY;
+	};
 
 	const svg = doc.createElementNS(SVG_NS, 'svg') as SVGElement;
 	svg.setAttribute('class', 'paradis-spreadsheet-pagebreaks');
 
-	const addLine = (x1: number, y1: number, x2: number, y2: number, cls: string) => {
+	const addLine = (x1: number, y1: number, x2: number, y2: number, cls: string, title: string | undefined) => {
 		const line = doc.createElementNS(SVG_NS, 'line');
 		line.setAttribute('x1', String(x1));
 		line.setAttribute('y1', String(y1));
 		line.setAttribute('x2', String(x2));
 		line.setAttribute('y2', String(y2));
 		line.setAttribute('class', cls);
+		appendSvgHoverTitle(line, title, 'stroke');
 		svg.appendChild(line);
 	};
 
-	// 手動改ページ(行): id 行の下端 = 次の行の上端 に横線。
-	for (const id of rowBreaks ?? []) {
-		const y = rowTopY(id + 1);
+	// 改ページ(行): index 行の下端 = 次の行の上端 に横線。
+	for (const line of rowLines) {
+		const y = rowTopY(line.index + 1);
 		if (y > 0) {
-			addLine(PARADIS_ROW_NUM_COL_WIDTH, y, rightEdgeX, y, 'paradis-pagebreak-line');
+			addLine(PARADIS_ROW_NUM_COL_WIDTH, y, rightEdgeX, y, pageBreakLineClass(line), line.title);
 		}
 	}
-	// 手動改ページ(列): id 列の右端 = 次の列の左端 に縦線。
-	for (const id of colBreaks ?? []) {
-		const x = colLeftX(id + 1);
-		addLine(x, 0, x, bottomEdgeY, 'paradis-pagebreak-line');
+	// 改ページ(列): index 列の右端 = 次の列の左端 に縦線。
+	for (const line of colLines) {
+		const x = colLeftX(line.index + 1);
+		addLine(x, 0, x, bottomEdgeY, pageBreakLineClass(line), line.title);
 	}
 
 	// 印刷範囲の外周(太い青実線)。
@@ -448,7 +538,32 @@ export function buildPageBreakOverlay(
 		svg.appendChild(rect);
 	}
 
-	return svg;
+	// ページ番号の透かし(Excel の改ページプレビューと同じく、ページの中央に薄く置く)。
+	// セルの内容に隠れる側に置きたいので、線とは別の SVG にして背面へ回す。
+	let labelSvg: SVGElement | undefined;
+	for (const label of pageLabels) {
+		const top = rowTopY(label.fromRow);
+		const bottom = rowTopY(label.toRow + 1) || bottomEdgeY;
+		const left = colLeftX(label.fromCol);
+		const right = colLeftX(label.toCol + 1);
+		const height = bottom - top;
+		// つぶれたページ(1行だけのページなど)に大きな数字を出すと読めないので描かない。
+		if (height < 56 || right - left < 120) {
+			continue;
+		}
+		if (!labelSvg) {
+			labelSvg = doc.createElementNS(SVG_NS, 'svg') as SVGElement;
+			labelSvg.setAttribute('class', 'paradis-spreadsheet-pagelabels');
+		}
+		const text = doc.createElementNS(SVG_NS, 'text');
+		text.setAttribute('x', String((left + right) / 2));
+		text.setAttribute('y', String(top + height / 2));
+		text.setAttribute('class', label.changed ? 'paradis-pagebreak-label paradis-pagebreak-label-changed' : 'paradis-pagebreak-label');
+		text.textContent = label.text;
+		labelSvg.appendChild(text);
+	}
+
+	return { lines: svg.childElementCount > 0 ? svg : undefined, labels: labelSvg };
 }
 
 /** 図形diffのステータス→SVG描画スタイル。 */

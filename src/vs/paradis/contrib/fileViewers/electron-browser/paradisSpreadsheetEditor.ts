@@ -32,7 +32,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisSheetData, IParadisWorkbookData } from '../common/paradisSpreadsheet.js';
 import { PARADIS_SPREADSHEET_EDITOR_ID } from '../browser/paradisFileViewers.js';
-import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay } from './paradisSpreadsheetRender.js';
+import { IParadisOverflowItem, PARADIS_ROW_NUM_COL_WIDTH, applyOverflow, applyShrinkToFit, buildPageBreakOverlay, buildSheetTableDom, buildShapeOverlay, describeSheetPageBreaks } from './paradisSpreadsheetRender.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetInput } from './paradisSpreadsheetInput.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
@@ -73,6 +73,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	private _activeSheet: IParadisSheetData | undefined;
 	private _shapeOverlay: SVGElement | undefined;
 	private _pageBreakOverlay: SVGElement | undefined;
+	private _pageLabelOverlay: SVGElement | undefined;
 	// フォント反映等の再フローで行高が変わると図形/改ページ線の固定Y座標が古くなるため、再測定・再配置トリガを張る。
 	private _replaceToken: object = {};
 
@@ -283,6 +284,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 			this._pageBreakOverlay.remove();
 			this._pageBreakOverlay = undefined;
 		}
+		if (this._pageLabelOverlay) {
+			this._pageLabelOverlay.remove();
+			this._pageLabelOverlay = undefined;
+		}
 		const rowY = new Map<number, number>();
 		for (const { excelRow, tr } of this._dataRowEls) {
 			rowY.set(excelRow, tr.offsetTop);
@@ -298,10 +303,15 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 				this._shapeOverlay = overlay;
 			}
 		}
-		const breaks = buildPageBreakOverlay(sheet.rowBreaks, sheet.colBreaks, sheet.printArea, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
-		if (breaks) {
-			inner.appendChild(breaks);
-			this._pageBreakOverlay = breaks;
+		const { rowLines, colLines, labels } = describeSheetPageBreaks(sheet);
+		const breaks = buildPageBreakOverlay(rowLines, colLines, sheet.printArea, labels, rowY, sheet.columnWidths, sheet.minCol, inner.ownerDocument);
+		if (breaks.lines) {
+			inner.appendChild(breaks.lines);
+			this._pageBreakOverlay = breaks.lines;
+		}
+		if (breaks.labels) {
+			inner.appendChild(breaks.labels);
+			this._pageLabelOverlay = breaks.labels;
 		}
 
 		// 実レイアウトの測定値で固定ヘッダー帯とスクロール footprint(outer)を更新する。
@@ -527,6 +537,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._naturalTableHeight = 0;
 		this._shapeOverlay = undefined;
 		this._pageBreakOverlay = undefined;
+		this._pageLabelOverlay = undefined;
 		this._replaceToken = {};
 		this._currentResource = undefined;
 		this._sheets = [];

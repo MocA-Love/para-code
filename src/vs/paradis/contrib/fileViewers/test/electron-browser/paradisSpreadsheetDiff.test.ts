@@ -10,7 +10,8 @@ import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { buildShapeDiffOverlay } from '../../electron-browser/paradisSpreadsheetRender.js';
-import { buildDiffSheets, buildShapeDiff } from '../../electron-browser/paradisSpreadsheetDiff.js';
+import { buildDiffSheets, buildPageBreakDiff, buildShapeDiff } from '../../electron-browser/paradisSpreadsheetDiff.js';
+import { IParadisPageLayout } from '../../common/paradisSpreadsheetPageLayout.js';
 import { formatDiffDetails } from '../../electron-browser/paradisSpreadsheetDiffPresentation.js';
 
 function cell(value: string, style: IParadisCellData['style'] = {}, extra: Partial<IParadisCellData> = {}): IParadisCellData {
@@ -185,5 +186,105 @@ suite('paradisSpreadsheetDiff', () => {
 		const title = overlay?.querySelector('title');
 		ok(title);
 		strictEqual(title.textContent, 'Object Outline Color: #000000 → #ff0000');
+	});
+	// ── 改ページ(ページ区切り)の差分 ──
+
+	/** 行ごとに 1 セルだけ値を持つシートを作る。改ページの対応付けは「区切りの直後の行の中身」を見る。 */
+	function pageSheet(values: readonly string[], breaks: { rows?: readonly number[]; cols?: readonly number[] } = {}): IParadisSheetData {
+		const lastRow = values.length;
+		const layout: IParadisPageLayout = {
+			rowBands: [{ from: 1, to: lastRow, manual: false, size: 100 }],
+			colBands: [{ from: 1, to: 2, manual: false, size: 100 }],
+			autoRowBreaks: [],
+			autoColBreaks: [],
+			pageNumbers: [[1]],
+			pageCount: 1,
+			effectiveScale: 1,
+			usableWidth: 500,
+			usableHeight: 700,
+		};
+		return {
+			name: 'Sheet1',
+			rows: values.map((value, i) => ({ excelRow: i + 1, height: 20, cells: [cell(value)] })),
+			columnCount: 1,
+			columnWidths: [80],
+			truncated: false,
+			minCol: 1,
+			...(breaks.rows ? { rowBreaks: breaks.rows } : {}),
+			...(breaks.cols ? { colBreaks: breaks.cols } : {}),
+			pageLayout: layout,
+		};
+	}
+
+	test('同じ位置の改ページは、中身の手掛かりが無くても変更として報告しない', () => {
+		// 列方向は区切りの直後の中身を手掛かりにできないので、位置一致だけが頼りになる。
+		const original = pageSheet(['a', 'b', 'c', 'd'], { rows: [2], cols: [1] });
+		const modified = pageSheet(['a', 'b', 'c', 'd'], { rows: [2], cols: [1] });
+		const diff = buildPageBreakDiff(original, modified);
+		deepStrictEqual(
+			{
+				changes: diff.changes.length,
+				rowStatus: diff.modifiedRowLines.map(l => l.status),
+				colStatus: diff.modifiedColLines.map(l => l.status),
+			},
+			{ changes: 0, rowStatus: ['unchanged'], colStatus: ['unchanged'] },
+		);
+	});
+
+	test('行が増えて改ページの行番号がずれても、区切りの直後が同じ内容なら変更としない', () => {
+		const original = pageSheet(['a', 'b', 'c', 'd'], { rows: [2] });
+		const modified = pageSheet(['a', 'x', 'b', 'c', 'd'], { rows: [3] });
+		const diff = buildPageBreakDiff(original, modified);
+		deepStrictEqual(
+			{ changes: diff.changes.length, status: diff.modifiedRowLines.map(l => l.status) },
+			{ changes: 0, status: ['unchanged'] },
+		);
+	});
+
+	test('改ページの追加と削除を見分ける', () => {
+		const original = pageSheet(['a', 'b', 'c', 'd'], { rows: [1] });
+		const modified = pageSheet(['a', 'b', 'c', 'd'], { rows: [1, 3] });
+		const diff = buildPageBreakDiff(original, modified);
+		deepStrictEqual(
+			{
+				statuses: diff.changes.map(c => c.status),
+				indices: diff.changes.map(c => c.modifiedIndex ?? c.originalIndex),
+				lines: diff.modifiedRowLines.map(l => `${l.index}:${l.status}`),
+			},
+			{ statuses: ['added'], indices: [3], lines: ['1:unchanged', '3:added'] },
+		);
+	});
+
+	test('区切りが動いたときは移動として報告し、両側に印を付ける', () => {
+		const original = pageSheet(['a', 'b', 'c', 'd'], { rows: [1] });
+		const modified = pageSheet(['a', 'b', 'c', 'd'], { rows: [3] });
+		const diff = buildPageBreakDiff(original, modified);
+		deepStrictEqual(
+			{
+				statuses: diff.changes.map(c => c.status),
+				from: diff.originalRowLines.map(l => l.status),
+				to: diff.modifiedRowLines.map(l => l.status),
+			},
+			{ statuses: ['moved'], from: ['movedFrom'], to: ['movedTo'] },
+		);
+	});
+
+	test('印刷対象範囲の外に取り残された改ページは扱わない', () => {
+		// ページ割りは 4 行目までしか敷き詰めていないので、10 行目の下の区切りは Excel でも見えない。
+		const original = pageSheet(['a', 'b', 'c', 'd'], { rows: [10] });
+		const modified = pageSheet(['a', 'b', 'c', 'd'], { rows: [10] });
+		const diff = buildPageBreakDiff(original, modified);
+		deepStrictEqual(
+			{ changes: diff.changes.length, lines: diff.modifiedRowLines.length },
+			{ changes: 0, lines: 0 },
+		);
+	});
+
+	test('片側のシートが無いときは何も描かない', () => {
+		const diff = buildPageBreakDiff(pageSheet(['a'], { rows: [1] }), undefined);
+		deepStrictEqual(
+			{ changes: diff.changes.length, lines: diff.originalRowLines.length, labels: diff.originalLabels.length },
+			{ changes: 0, lines: 0, labels: 0 },
+		);
 	});
 });
