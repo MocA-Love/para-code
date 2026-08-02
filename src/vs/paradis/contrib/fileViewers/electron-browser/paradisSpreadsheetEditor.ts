@@ -324,6 +324,9 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 	 * 固定ヘッダー帯(列ラベル/行番号)を実 DOM の測定値から作り直す。
 	 * セル位置は colgroup の幅指定ではなく th/tr の実測(offsetLeft/offsetTop)を使い、
 	 * border-collapse による端数ズレを避ける。倍率・スクロール追従は transform のみで行う。
+	 *
+	 * 測定(read)を全部先に済ませてから DOM を組む(write)。1行ずつ「作る→測る」を交互にすると、
+	 * 要素を足すたびに表全体のレイアウトがやり直され、行数の多いシートでメインスレッドが数十秒止まる。
 	 */
 	private _rebuildStickyStrips(): void {
 		const colInner = this._colStripInner;
@@ -332,30 +335,44 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (!colInner || !rowInner || !thead || !this._tableEl) {
 			return;
 		}
+		const headHeight = thead.offsetHeight;
+		// 列ラベル(A,B,C...)。corner th は含まれない(角は固定の別要素)。
+		const colMetrics = this._headCellEls.map(th => ({
+			left: th.offsetLeft - PARADIS_ROW_NUM_COL_WIDTH,
+			width: th.offsetWidth,
+			label: th.textContent ?? '',
+		}));
+		// 行番号。データ行の実測位置(thead 分を差し引いた自然座標)に合わせる。
+		const rowMetrics = this._dataRowEls.map(({ tr }) => ({ top: tr.offsetTop - headHeight, height: tr.offsetHeight }));
+
+		this._headHeight = headHeight;
 		dom.clearNode(colInner);
 		dom.clearNode(rowInner);
-		this._headHeight = thead.offsetHeight;
 
-		// 列ラベル(A,B,C...)。corner th は含まれない(角は固定の別要素)。
-		for (const th of this._headCellEls) {
-			const cell = dom.append(colInner, $('.paradis-spreadsheet-colhead.paradis-spreadsheet-strip-cell'));
-			cell.style.left = `${th.offsetLeft - PARADIS_ROW_NUM_COL_WIDTH}px`;
+		const doc = colInner.ownerDocument;
+		const colFragment = doc.createDocumentFragment();
+		for (const metric of colMetrics) {
+			const cell = $('.paradis-spreadsheet-colhead.paradis-spreadsheet-strip-cell');
+			cell.style.left = `${metric.left}px`;
 			cell.style.top = '0';
-			cell.style.width = `${th.offsetWidth}px`;
-			cell.style.height = `${this._headHeight}px`;
-			cell.textContent = th.textContent;
+			cell.style.width = `${metric.width}px`;
+			cell.style.height = `${headHeight}px`;
+			cell.textContent = metric.label;
+			colFragment.appendChild(cell);
 		}
+		colInner.appendChild(colFragment);
 
-		// 行番号。データ行の実測位置(thead 分を差し引いた自然座標)に合わせる。
-		for (let i = 0; i < this._dataRowEls.length; i++) {
-			const tr = this._dataRowEls[i].tr;
-			const cell = dom.append(rowInner, $('.paradis-spreadsheet-rowhead.paradis-spreadsheet-strip-cell'));
+		const rowFragment = doc.createDocumentFragment();
+		for (let i = 0; i < rowMetrics.length; i++) {
+			const cell = $('.paradis-spreadsheet-rowhead.paradis-spreadsheet-strip-cell');
 			cell.style.left = '0';
-			cell.style.top = `${tr.offsetTop - this._headHeight}px`;
+			cell.style.top = `${rowMetrics[i].top}px`;
 			cell.style.width = `${PARADIS_ROW_NUM_COL_WIDTH}px`;
-			cell.style.height = `${tr.offsetHeight}px`;
+			cell.style.height = `${rowMetrics[i].height}px`;
 			cell.textContent = String(i + 1);
+			rowFragment.appendChild(cell);
 		}
+		rowInner.appendChild(rowFragment);
 
 		this._setStickyStripsVisible(this._dataRowEls.length > 0);
 	}
