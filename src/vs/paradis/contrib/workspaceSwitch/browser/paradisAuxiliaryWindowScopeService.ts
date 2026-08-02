@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { getActiveWindow } from '../../../../base/browser/dom.js';
-import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IAuxiliaryEditorPart, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
@@ -33,6 +33,8 @@ export class ParadisAuxiliaryWindowScopeService extends Disposable implements IP
 	private readonly ledger: ParadisAuxiliaryWindowScopeLedger;
 	private readonly loadState: ParadisAuxiliaryWindowScopeLedgerLoadState;
 	private readonly liveScopes = new Map<number, ILiveAuxiliaryWindowScope>();
+	/** エディタ部を持たない fork 所有ウィンドウ。メインと同じスコープとして解決する */
+	private readonly scopelessWindows = new Set<number>();
 	private readonly partListeners = this._register(new DisposableMap<number>());
 	/** `null` means the creating auxiliary window itself has unresolved ownership. */
 	private readonly pendingNewParts = new Map<number, string | null | undefined>();
@@ -109,10 +111,15 @@ export class ParadisAuxiliaryWindowScopeService extends Disposable implements IP
 	}
 
 	resolveWindow(windowId: number): ParadisBindingScope {
-		if (windowId === this.editorGroupsService.mainPart.windowId) {
+		if (windowId === this.editorGroupsService.mainPart.windowId || this.scopelessWindows.has(windowId)) {
 			return this.mainScope;
 		}
 		return this.liveScopes.get(windowId)?.scope ?? { kind: 'pending' };
+	}
+
+	registerScopelessWindow(windowId: number): IDisposable {
+		this.scopelessWindows.add(windowId);
+		return toDisposable(() => this.scopelessWindows.delete(windowId));
 	}
 
 	resolvePart(part: IEditorPart): ParadisBindingScope {

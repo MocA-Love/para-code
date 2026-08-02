@@ -1,0 +1,493 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* ---------------------------------------------------------------- タイトルバーのボタン */
+
+.paradis-agent-live-titlebar-widget {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 22px;
+	padding: 0 9px;
+	border-radius: 999px;
+	font-size: 12px;
+	cursor: pointer;
+	white-space: nowrap;
+	-webkit-app-region: no-drag;
+}
+
+.paradis-agent-live-titlebar-widget:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-agent-live-titlebar-icon {
+	width: 14px;
+	height: 14px;
+	flex: 0 0 14px;
+	background-color: currentColor;
+	/* 2x2 のタイル。ライブウィンドウのグリッドそのものを表す */
+	-webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M1.5 2h5.5v5H1.5zm0 7h5.5v5H1.5zM9 2h5.5v3H9zm0 5h5.5v7H9z'/></svg>");
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-size: contain;
+}
+
+.paradis-agent-live-titlebar-badge {
+	min-width: 16px;
+	height: 15px;
+	padding: 0 4px;
+	border-radius: 999px;
+	font-size: 10px;
+	font-weight: 600;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background-color: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.paradis-agent-live-titlebar-badge.hidden {
+	display: none;
+}
+
+.paradis-agent-live-titlebar-badge.attention {
+	background-color: var(--vscode-charts-yellow, #cca700);
+	color: var(--vscode-editor-background);
+}
+
+/* ---------------------------------------------------------------- ウィンドウ本体 */
+
+.paradis-agent-live-window {
+	/* 親コンテナの高さ指定に頼らずウィンドウ全面を占める */
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	background-color: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	font-size: 13px;
+}
+
+.paradis-agent-live-grow {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-agent-live-sep {
+	width: 1px;
+	height: 18px;
+	flex: 0 0 1px;
+	background-color: var(--vscode-editorWidget-border);
+	margin: 0 3px;
+}
+
+.paradis-agent-live-tool-label {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-agent-live-toolbar,
+.paradis-agent-live-toolbar2 {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 10px;
+	flex-wrap: wrap;
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-agent-live-toolbar {
+	background-color: var(--vscode-editorWidget-background);
+}
+
+/* ---- チップ ---- */
+
+.paradis-agent-live-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 24px;
+	padding: 0 10px;
+	border-radius: 999px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit;
+	font-size: 11.5px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.paradis-agent-live-chip:hover {
+	background-color: var(--vscode-list-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-agent-live-chip:focus-visible,
+.paradis-agent-live-icon-button:focus-visible,
+.paradis-agent-live-mini-button:focus-visible,
+.paradis-agent-live-seg button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-agent-live-chip.checked {
+	background-color: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.1));
+	color: var(--vscode-foreground);
+	border-color: var(--vscode-focusBorder);
+}
+
+.paradis-agent-live-chip .count {
+	font-size: 10.5px;
+	opacity: 0.75;
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-agent-live-seg {
+	display: inline-flex;
+	height: 24px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 6px;
+	overflow: hidden;
+}
+
+.paradis-agent-live-seg button {
+	border: 0;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit;
+	font-size: 11.5px;
+	padding: 0 9px;
+	cursor: pointer;
+}
+
+.paradis-agent-live-seg button + button {
+	border-left: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-agent-live-seg button.checked {
+	background-color: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.1));
+	color: var(--vscode-foreground);
+}
+
+.paradis-agent-live-icon-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 24px;
+	border-radius: 6px;
+	border: 1px solid transparent;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.paradis-agent-live-icon-button.codicon,
+.paradis-agent-live-mini-button.codicon,
+.paradis-agent-live-drag-handle.codicon {
+	font-size: 14px;
+}
+
+.paradis-agent-live-icon-button:hover {
+	background-color: var(--vscode-list-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-agent-live-icon-button.checked {
+	background-color: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.1));
+	color: var(--vscode-foreground);
+	border-color: var(--vscode-focusBorder);
+}
+
+/* ---- 状態ドット・バッジ ---- */
+
+.paradis-agent-live-dot {
+	width: 8px;
+	height: 8px;
+	flex: 0 0 8px;
+	border-radius: 50%;
+	display: inline-block;
+	background-color: var(--vscode-descriptionForeground);
+}
+
+.paradis-agent-live-dot.working {
+	background-color: var(--vscode-charts-blue, #3794ff);
+	animation: paradis-agent-live-pulse 1.4s ease-in-out infinite;
+}
+
+.paradis-agent-live-dot.permission {
+	background-color: var(--vscode-charts-yellow, #cca700);
+	animation: paradis-agent-live-blink 1s steps(2, end) infinite;
+}
+
+.paradis-agent-live-dot.question {
+	background-color: var(--vscode-charts-purple, #b180d7);
+	animation: paradis-agent-live-pulse 1.8s ease-in-out infinite;
+}
+
+.paradis-agent-live-dot.review {
+	background-color: var(--vscode-charts-green, #89d185);
+}
+
+@keyframes paradis-agent-live-pulse {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.32; }
+}
+
+@keyframes paradis-agent-live-blink {
+	50% { opacity: 0.15; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.paradis-agent-live-dot {
+		animation: none !important;
+	}
+}
+
+.paradis-agent-live-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 11px;
+	padding: 1px 8px 1px 6px;
+	border-radius: 999px;
+	border: 1px solid var(--vscode-editorWidget-border);
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-agent-live-badge.working { color: var(--vscode-charts-blue, #3794ff); }
+.paradis-agent-live-badge.permission { color: var(--vscode-charts-yellow, #cca700); }
+.paradis-agent-live-badge.question { color: var(--vscode-charts-purple, #b180d7); }
+.paradis-agent-live-badge.review { color: var(--vscode-charts-green, #89d185); }
+
+/* ---- 絞り込み状況バー ---- */
+
+.paradis-agent-live-filterbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 11px;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	background-color: var(--vscode-editorWidget-background);
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-agent-live-filterbar.hidden {
+	display: none;
+}
+
+.paradis-agent-live-link {
+	border: 0;
+	background: transparent;
+	font-family: inherit;
+	font-size: inherit;
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+	text-decoration: underline;
+}
+
+/* ---- グリッド ---- */
+
+.paradis-agent-live-scroll {
+	flex: 1;
+	overflow: auto;
+	background-color: var(--vscode-editorWidget-border);
+}
+
+.paradis-agent-live-wall {
+	display: grid;
+	gap: 1px;
+}
+
+.paradis-agent-live-wall.columns-1 { grid-template-columns: 1fr; }
+.paradis-agent-live-wall.columns-2 { grid-template-columns: repeat(2, 1fr); }
+.paradis-agent-live-wall.columns-3 { grid-template-columns: repeat(3, 1fr); }
+.paradis-agent-live-wall.columns-4 { grid-template-columns: repeat(4, 1fr); }
+
+.paradis-agent-live-group-head {
+	grid-column: 1 / -1;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 11px;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+	background-color: var(--vscode-editorWidget-background);
+	position: sticky;
+	top: 0;
+	z-index: 5;
+}
+
+.paradis-agent-live-swatch {
+	width: 3px;
+	height: 12px;
+	flex: 0 0 3px;
+	border-radius: 2px;
+}
+
+.paradis-agent-live-empty {
+	grid-column: 1 / -1;
+	padding: 56px 20px;
+	text-align: center;
+	color: var(--vscode-descriptionForeground);
+	background-color: var(--vscode-editor-background);
+}
+
+/* ---- タイル ---- */
+
+.paradis-agent-live-tile {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	min-height: 210px;
+	background-color: var(--vscode-editor-background);
+	overflow: hidden;
+}
+
+.paradis-agent-live-tile.dense {
+	min-height: 148px;
+}
+
+.paradis-agent-live-tile.attention {
+	box-shadow: inset 0 0 0 1px var(--vscode-charts-yellow, #cca700);
+}
+
+.paradis-agent-live-tile.dragging {
+	opacity: 0.35;
+}
+
+.paradis-agent-live-tile.drop-target {
+	box-shadow: inset 0 0 0 2px var(--vscode-focusBorder);
+}
+
+.paradis-agent-live-tile:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-agent-live-spacebar {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 2px;
+}
+
+.paradis-agent-live-tile-head {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 5px 9px 5px 11px;
+	border-bottom: 1px solid var(--vscode-editorWidget-border);
+	background-color: var(--vscode-editorWidget-background);
+}
+
+.paradis-agent-live-drag-handle {
+	color: var(--vscode-descriptionForeground);
+	opacity: 0.4;
+	cursor: grab;
+}
+
+.paradis-agent-live-tile:hover .paradis-agent-live-drag-handle {
+	opacity: 1;
+}
+
+.paradis-agent-live-tile-title {
+	font-size: 11.5px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-agent-live-tile-detail {
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* 端末は元の列数のまま描き、収まらない分は文字サイズを詰めて合わせる (JS 側 updateFontSize)。
+	最新行が常に見えるよう下端で揃える。transform: scale() は使わない —— xterm のマウス
+	座標計算が transform を考慮しないため、選択位置とマウスレポートがずれる。 */
+.paradis-agent-live-term {
+	position: relative;
+	flex: 1;
+	overflow: hidden;
+	background-color: var(--vscode-terminal-background, var(--vscode-panel-background));
+}
+
+.paradis-agent-live-term-mount {
+	position: absolute;
+	left: 0;
+	bottom: 0;
+}
+
+.paradis-agent-live-term-missing {
+	padding: 12px;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-agent-live-tile-foot {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 3px 9px 3px 11px;
+	font-size: 10.5px;
+	color: var(--vscode-descriptionForeground);
+	border-top: 1px solid var(--vscode-editorWidget-border);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-agent-live-tile-actions {
+	display: flex;
+	gap: 1px;
+	opacity: 0;
+}
+
+.paradis-agent-live-tile:hover .paradis-agent-live-tile-actions,
+.paradis-agent-live-tile:focus-within .paradis-agent-live-tile-actions {
+	opacity: 1;
+}
+
+.paradis-agent-live-mini-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 20px;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.paradis-agent-live-mini-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-foreground);
+}
+
+.paradis-agent-live-mini-button.checked {
+	color: var(--vscode-focusBorder);
+}
+
+/* ---- ステータスバー ---- */
+
+.paradis-agent-live-statusbar {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 4px 11px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+	background-color: var(--vscode-editorWidget-background);
+	border-top: 1px solid var(--vscode-editorWidget-border);
+}
