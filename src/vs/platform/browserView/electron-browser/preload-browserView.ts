@@ -100,15 +100,22 @@ function init() {
 	const consumeAutomationKey = (event: KeyboardEvent): boolean => {
 		const signature = automationSignatureForEvent(event);
 		for (const [sequence, expectation] of automationKeyExpectations) {
-			if (!expectation.active || expectation.consumed || !sameAutomationSignature(expectation.signature, signature)) {
+			if (!expectation.active || !sameAutomationSignature(expectation.signature, signature)) {
 				continue;
 			}
 			// Leave the key alone if the user was genuinely interacting when it was registered.
 			if (userIsInteracting(expectation.nativeFocused)) {
 				continue;
 			}
-			expectation.consumed = true;
-			ipcRenderer.send('vscode:browserView:automationKeyConsumed', { sequence, signature: expectation.signature });
+			// Keep swallowing matching keys for as long as the expectation is active, even after the
+			// first one. `consumed` only gates the acknowledgement: if a user keystroke with the same
+			// signature lands in the window between activation and dispatch it burns the slot, and
+			// treating the slot as spent would let the injected key through to be forwarded to the
+			// workbench as a shortcut.
+			if (!expectation.consumed) {
+				expectation.consumed = true;
+				ipcRenderer.send('vscode:browserView:automationKeyConsumed', { sequence, signature: expectation.signature });
+			}
 			return true;
 		}
 		return false;
