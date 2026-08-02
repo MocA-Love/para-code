@@ -23,13 +23,17 @@ import { ParadisAgentLiveModel } from './paradisAgentLiveModel.js';
 import {
 	IParadisAgentLiveEntry,
 	IParadisAgentLiveViewState,
+	PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT,
 	PARADIS_AGENT_LIVE_MAX_COLUMNS,
+	PARADIS_AGENT_LIVE_MAX_ROW_HEIGHT,
 	PARADIS_AGENT_LIVE_MIN_COLUMNS,
+	PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT,
 	PARADIS_AGENT_LIVE_STATUS_ORDER,
 	ParadisAgentLiveGroup,
 	ParadisAgentLiveSort,
 	ParadisAgentLiveStatus,
 	paradisApplyAgentLiveManualDrop,
+	paradisClampAgentLiveRowHeight,
 	paradisFilterAgentLiveEntries,
 	paradisFormatAgentLiveDuration,
 	paradisGroupAgentLiveEntries,
@@ -107,7 +111,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	private readonly sortButton: HTMLElement;
 	private readonly groupButtons = new Map<ParadisAgentLiveGroup, HTMLElement>();
 	private readonly columnButtons = new Map<number, HTMLElement>();
-	private readonly densityButtons = new Map<boolean, HTMLElement>();
+	private readonly fitButton: HTMLElement;
+	private readonly rowHeightInput: HTMLInputElement;
 	private readonly attentionChip: HTMLElement;
 	private readonly pinTopButton: HTMLElement;
 
@@ -115,6 +120,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	private draggedToken: string | undefined;
 	/** 現在描画されている順序 (手動並び替えの土台に使う) */
 	private visibleOrder: string[] = [];
+	/** 「収める」を切った直後に戻す高さ。入力欄の表示値でもある */
+	private lastRowHeight = PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT;
 
 	constructor(
 		container: HTMLElement,
@@ -192,17 +199,27 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		}
 
 		append(toolbar2, $('span.paradis-agent-live-sep'));
-		append(toolbar2, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.densityLabel', "高さ");
-		const densitySeg = append(toolbar2, $('.paradis-agent-live-seg'));
-		for (const dense of [false, true]) {
-			const button = append(densitySeg, $('button'));
-			button.textContent = dense ? localize('paradis.agentLive.densityDense', "低く") : localize('paradis.agentLive.densityNormal', "標準");
-			this._register(addDisposableListener(button, EventType.CLICK, () => {
-				this.viewState.dense = dense;
-				this.commit();
-			}));
-			this.densityButtons.set(dense, button);
-		}
+		append(toolbar2, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.rowHeightLabel', "高さ");
+		this.fitButton = append(toolbar2, $('button.paradis-agent-live-chip'));
+		this.fitButton.textContent = localize('paradis.agentLive.fitToWindow', "収める");
+		this.registerHover(this.fitButton, localize('paradis.agentLive.fitToWindowHint', "何件あっても1画面に収める（多いと1枚が小さくなる）"));
+		this._register(addDisposableListener(this.fitButton, EventType.CLICK, () => {
+			this.viewState.minRowHeight = this.viewState.minRowHeight === undefined ? this.lastRowHeight : undefined;
+			this.commit();
+		}));
+
+		// 画面の大きさで「読める高さ」はまるで違うので、px を直接打てるようにする。
+		this.rowHeightInput = append(toolbar2, $('input.paradis-agent-live-number')) as HTMLInputElement;
+		this.rowHeightInput.type = 'number';
+		this.rowHeightInput.min = String(PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT);
+		this.rowHeightInput.max = String(PARADIS_AGENT_LIVE_MAX_ROW_HEIGHT);
+		this.rowHeightInput.step = '10';
+		this.rowHeightInput.setAttribute('aria-label', localize('paradis.agentLive.rowHeightAria', "タイル1枚の最低の高さ（ピクセル）"));
+		this.registerHover(this.rowHeightInput, localize('paradis.agentLive.rowHeightHint', "タイル1枚の最低の高さ。これを下回るところからは縦スクロールになる"));
+		// change は Enter でもフォーカスが外れたときでも発火する。keydown を別に見ると
+		// Enter のときだけ二重に走る。
+		this._register(addDisposableListener(this.rowHeightInput, EventType.CHANGE, () => this.applyRowHeightInput()));
+		append(toolbar2, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.rowHeightUnit', "px");
 
 		append(toolbar2, $('span.paradis-agent-live-grow'));
 		this.pinTopButton = this.createIconButton(toolbar2, 'pin', localize('paradis.agentLive.pinTop', "ピン留めを常に先頭にする"));
@@ -259,7 +276,14 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 		// 手動並び替えの土台は「画面に出ている順」。グループ表示ではグルーピング後の順序になる。
 		this.visibleOrder = groups.flatMap(group => group.entries.map(entry => entry.token));
-		this.wall.className = `paradis-agent-live-wall columns-${this.viewState.columns}`;
+		// グループ見出しもグリッドの行を1つ使うため、見出しが出る間は行の等分 (fill) を掛けない。
+		const classes = ['paradis-agent-live-wall', `columns-${this.viewState.columns}`];
+		// 等分できるのは「見出しの無い並び」かつ「並べるものがある」ときだけ。
+		if (this.viewState.group === 'none' && sorted.length > 0) {
+			classes.push('fill');
+		}
+		this.wall.className = classes.join(' ');
+		this.wall.style.setProperty('--paradis-agent-live-min-row', `${this.viewState.minRowHeight ?? 0}px`);
 
 		// 端末そのものが無くなったタイルだけを破棄する。絞り込みで消えたタイルは DOM から
 		// 外すだけにして、チップを押すたびに端末を作り直さない。
@@ -471,7 +495,6 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		append(tile.badge, $('span')).textContent = STATUS_LABELS[entry.status];
 		tile.spaceBar.style.backgroundColor = entry.spaceColor ?? 'transparent';
 		tile.root.classList.toggle('attention', paradisIsAttentionStatus(entry.status));
-		tile.root.classList.toggle('dense', this.viewState.dense);
 		const pinned = this.viewState.pinned.includes(entry.token);
 		tile.root.classList.toggle('pinned', pinned);
 		tile.pinButton.classList.toggle('checked', pinned);
@@ -539,10 +562,16 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			button.classList.toggle('checked', checked);
 			button.setAttribute('aria-pressed', String(checked));
 		}
-		for (const [dense, button] of this.densityButtons) {
-			const checked = this.viewState.dense === dense;
-			button.classList.toggle('checked', checked);
-			button.setAttribute('aria-pressed', String(checked));
+		const fitting = this.viewState.minRowHeight === undefined;
+		this.fitButton.classList.toggle('checked', fitting);
+		this.fitButton.setAttribute('aria-pressed', String(fitting));
+		this.rowHeightInput.disabled = fitting;
+		if (!fitting) {
+			this.lastRowHeight = this.viewState.minRowHeight!;
+		}
+		// 入力中の値は上書きしない (打っている途中で桁が飛ぶため)。
+		if (this.wall.ownerDocument.activeElement !== this.rowHeightInput) {
+			this.rowHeightInput.value = String(this.lastRowHeight);
 		}
 
 		const spaceNames = this.spaceOptions(entries);
@@ -573,6 +602,21 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 		this.statusBarText.textContent = localize('paradis.agentLive.shownCount', "{0} / {1} 件を表示", shown, entries.length);
 		this.statusBarSort.textContent = SORT_LABELS[this.viewState.sort];
+	}
+
+	private applyRowHeightInput(): void {
+		const parsed = Number.parseInt(this.rowHeightInput.value, 10);
+		if (!Number.isFinite(parsed)) {
+			// 空欄や記号だけの入力は直前の値へ戻す。
+			this.rowHeightInput.value = String(this.lastRowHeight);
+			return;
+		}
+		this.lastRowHeight = paradisClampAgentLiveRowHeight(parsed);
+		// 丸めた結果を必ず書き戻す。Enter 確定では入力欄がフォーカスを持ったままなので、
+		// 描画側の「入力中は上書きしない」ガードに阻まれて表示だけ元の値が残る。
+		this.rowHeightInput.value = String(this.lastRowHeight);
+		this.viewState.minRowHeight = this.lastRowHeight;
+		this.commit();
 	}
 
 	private spaceOptions(entries: readonly IParadisAgentLiveEntry[]): Map<string, string> {
@@ -731,7 +775,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.viewState.sortDesc = true;
 		this.viewState.group = 'none';
 		this.viewState.columns = 3;
-		this.viewState.dense = false;
+		this.viewState.minRowHeight = PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT;
 		this.viewState.pinTop = true;
 		this.viewState.pinned = [];
 		this.viewState.manualOrder = [];

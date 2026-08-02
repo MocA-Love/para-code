@@ -1098,6 +1098,7 @@
 		"--collapse-from-width",
 		"--slide-from-x",
 		"--slide-from-y",
+		"--paradis-agent-live-min-row",
 		"--paradis-pr-color",
 		"--paradis-statusbar-bg",
 		"--paradis-titlebar-bg",
