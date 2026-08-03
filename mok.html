@@ -1,0 +1,1030 @@
+<!DOCTYPE html>
+<!-- allow-any-unicode-next-line -->
+<!-- Para Code: Excel 入力規則 diff のUI検討用モック。製品コードではない。 -->
+<html lang="ja">
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<!-- allow-any-unicode-next-line -->
+	<title>Excel 入力規則 Diff モック</title>
+	<style>
+		:root {
+			color-scheme: dark;
+			--app-bg: #181818;
+			--toolbar: #252526;
+			--panel: #202020;
+			--border: #3c3c3c;
+			--border-soft: #303030;
+			--text: #cccccc;
+			--muted: #969696;
+			--focus: #0078d4;
+			--green: #2ea043;
+			--green-bg: rgba(46, 160, 67, .18);
+			--red: #e5534b;
+			--red-bg: rgba(229, 83, 75, .17);
+			--blue: #3794ff;
+			--blue-bg: rgba(55, 148, 255, .16);
+			--amber: #cca700;
+			--sheet-border: #d6d6d6;
+			--sheet-header: #f3f3f3;
+			--sheet-text: #202020;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		html,
+		body {
+			width: 100%;
+			height: 100%;
+			margin: 0;
+			overflow: hidden;
+		}
+
+		body {
+			background: var(--app-bg);
+			color: var(--text);
+			font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
+		}
+
+		button,
+		select {
+			font: inherit;
+		}
+
+		.app {
+			display: flex;
+			flex-direction: column;
+			height: 100%;
+			min-width: 980px;
+		}
+
+		.titlebar {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			height: 36px;
+			padding: 0 12px;
+			border-bottom: 1px solid var(--border);
+			background: #1f1f1f;
+			font-size: 12px;
+		}
+
+		.file-icon {
+			width: 16px;
+			height: 18px;
+			position: relative;
+			border: 1px solid #6a9955;
+			border-radius: 1px;
+			color: #89d185;
+			font-size: 8px;
+			font-weight: 700;
+			line-height: 16px;
+			text-align: center;
+		}
+
+		.file-icon::after {
+			content: "X";
+		}
+
+		.filename {
+			color: #e7e7e7;
+		}
+
+		.breadcrumb {
+			color: var(--muted);
+		}
+
+		.toolbar {
+			display: flex;
+			align-items: stretch;
+			min-height: 62px;
+			padding: 5px 10px;
+			border-bottom: 1px solid var(--border);
+			background: var(--toolbar);
+		}
+
+		.tool-group {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			padding: 0 10px;
+			border-right: 1px solid #454545;
+		}
+
+		.tool-group:first-child {
+			padding-left: 0;
+		}
+
+		.tool-group.nav {
+			gap: 7px;
+		}
+
+		.tool-spacer {
+			flex: 1;
+		}
+
+		.icon-tool {
+			position: relative;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			gap: 2px;
+			min-width: 56px;
+			height: 51px;
+			padding: 2px 6px;
+			border: 1px solid transparent;
+			border-radius: 3px;
+			background: transparent;
+			color: var(--text);
+			cursor: pointer;
+		}
+
+		.icon-tool:hover {
+			background: #333333;
+		}
+
+		.icon-tool.active {
+			border-color: #565656;
+			background: #3a3a3a;
+			box-shadow: inset 0 -2px 0 var(--focus);
+		}
+
+		.icon-tool:focus-visible,
+		.nav-btn:focus-visible,
+		.change-cell:focus-visible {
+			outline: 2px solid var(--focus);
+			outline-offset: -2px;
+		}
+
+		.icon-tool .label {
+			font-size: 10px;
+			font-weight: 600;
+			white-space: nowrap;
+		}
+
+		.validation-icon {
+			position: relative;
+			width: 31px;
+			height: 27px;
+		}
+
+		.validation-icon .line {
+			position: absolute;
+			left: 1px;
+			width: 17px;
+			height: 1px;
+			background: #bcbcbc;
+		}
+
+		.validation-icon .line.one {
+			top: 4px;
+		}
+
+		.validation-icon .line.two {
+			top: 14px;
+		}
+
+		.validation-icon .check {
+			position: absolute;
+			right: 0;
+			top: -4px;
+			color: #78dba9;
+			font-size: 20px;
+			font-weight: 300;
+			transform: rotate(-7deg);
+		}
+
+		.validation-icon .ban {
+			position: absolute;
+			right: 1px;
+			bottom: -1px;
+			width: 12px;
+			height: 12px;
+			border: 1.5px solid #ef6a67;
+			border-radius: 50%;
+		}
+
+		.validation-icon .ban::after {
+			content: "";
+			position: absolute;
+			left: 1px;
+			top: 4px;
+			width: 8px;
+			height: 1.5px;
+			background: #ef6a67;
+			transform: rotate(42deg);
+			transform-origin: center;
+		}
+
+		.filter-label {
+			display: flex;
+			flex-direction: column;
+			gap: 3px;
+			font-size: 10px;
+			color: var(--muted);
+		}
+
+		select {
+			width: 128px;
+			height: 26px;
+			padding: 2px 24px 2px 8px;
+			border: 1px solid #565656;
+			border-radius: 2px;
+			background: #313131;
+			color: var(--text);
+		}
+
+		.nav-btn {
+			width: 27px;
+			height: 27px;
+			padding: 0;
+			border: 1px solid #525252;
+			border-radius: 3px;
+			background: #333333;
+			color: var(--text);
+			cursor: pointer;
+			font-size: 16px;
+			line-height: 1;
+		}
+
+		.nav-btn:hover {
+			background: #414141;
+		}
+
+		.nav-position {
+			min-width: 56px;
+			color: #bdbdbd;
+			font-variant-numeric: tabular-nums;
+			text-align: center;
+		}
+
+		.summary {
+			display: flex;
+			align-items: center;
+			gap: 14px;
+			padding: 0 8px;
+			font-size: 11px;
+		}
+
+		.legend-item {
+			display: inline-flex;
+			align-items: center;
+			gap: 5px;
+			white-space: nowrap;
+		}
+
+		.legend-dot {
+			width: 8px;
+			height: 8px;
+			border-radius: 50%;
+		}
+
+		.main {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) 328px;
+			min-height: 0;
+			flex: 1;
+		}
+
+		.diff-region {
+			display: grid;
+			grid-template-columns: minmax(420px, 1fr) 1px minmax(420px, 1fr);
+			min-width: 0;
+			min-height: 0;
+		}
+
+		.splitter {
+			background: #565656;
+		}
+
+		.diff-pane {
+			display: flex;
+			flex-direction: column;
+			min-width: 0;
+			min-height: 0;
+			background: #ffffff;
+		}
+
+		.pane-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			height: 30px;
+			padding: 0 10px;
+			border-bottom: 1px solid #d0d0d0;
+			background: #f3f3f3;
+			color: #555555;
+			font-size: 11px;
+			font-weight: 600;
+		}
+
+		.pane-header .rev {
+			font-weight: 400;
+			color: #7a7a7a;
+		}
+
+		.sheet-scroll {
+			position: relative;
+			min-height: 0;
+			flex: 1;
+			overflow: auto;
+			background: #ffffff;
+		}
+
+		table.sheet {
+			width: 100%;
+			min-width: 620px;
+			border-spacing: 0;
+			border-collapse: separate;
+			table-layout: fixed;
+			background: #ffffff;
+			color: var(--sheet-text);
+			font: 12px/1.25 Calibri, "Yu Gothic UI", Meiryo, sans-serif;
+		}
+
+		.sheet col.rownum {
+			width: 39px;
+		}
+
+		.sheet col.col-a {
+			width: 122px;
+		}
+
+		.sheet col.col-b {
+			width: 155px;
+		}
+
+		.sheet col.col-c {
+			width: 140px;
+		}
+
+		.sheet col.col-d {
+			width: 165px;
+		}
+
+		.sheet th,
+		.sheet td {
+			height: 28px;
+			padding: 4px 7px;
+			border-right: 1px solid var(--sheet-border);
+			border-bottom: 1px solid var(--sheet-border);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			vertical-align: middle;
+		}
+
+		.sheet thead th {
+			position: sticky;
+			top: 0;
+			z-index: 4;
+			height: 23px;
+			padding: 2px 4px;
+			background: var(--sheet-header);
+			color: #555555;
+			font: 11px "Segoe UI", sans-serif;
+			font-weight: 400;
+			text-align: center;
+		}
+
+		.sheet .row-head {
+			position: sticky;
+			left: 0;
+			z-index: 3;
+			padding: 0;
+			background: var(--sheet-header);
+			color: #555555;
+			font: 11px "Segoe UI", sans-serif;
+			font-weight: 400;
+			text-align: center;
+		}
+
+		.sheet thead .row-head {
+			z-index: 5;
+		}
+
+		.sheet .section {
+			background: #d9ead3;
+			font-weight: 700;
+			color: #274e13;
+		}
+
+		.sheet .field-name {
+			background: #f7f7f7;
+			font-weight: 600;
+		}
+
+		.sheet .note {
+			color: #767676;
+			font-size: 11px;
+		}
+
+		.change-cell {
+			position: relative;
+			padding-right: 27px !important;
+			cursor: pointer;
+		}
+
+		.validation-visible .change-cell.status-modified {
+			background: var(--blue-bg);
+			box-shadow: inset 0 0 0 2px var(--blue);
+		}
+
+		.validation-visible .change-cell.status-added {
+			background: var(--green-bg);
+			box-shadow: inset 0 0 0 2px var(--green);
+		}
+
+		.validation-visible .change-cell.status-removed {
+			background: var(--red-bg);
+			box-shadow: inset 0 0 0 2px var(--red);
+		}
+
+		.rule-badge {
+			position: absolute;
+			right: 4px;
+			top: 5px;
+			display: none;
+			align-items: center;
+			justify-content: center;
+			width: 18px;
+			height: 18px;
+			border-radius: 3px;
+			color: #ffffff;
+			font: 700 10px "Segoe UI", sans-serif;
+			box-shadow: 0 1px 2px rgba(0, 0, 0, .24);
+		}
+
+		.validation-visible .rule-badge {
+			display: inline-flex;
+		}
+
+		.status-modified .rule-badge {
+			background: var(--blue);
+		}
+
+		.status-added .rule-badge {
+			background: var(--green);
+		}
+
+		.status-removed .rule-badge {
+			background: var(--red);
+		}
+
+		.change-cell.selected {
+			z-index: 2;
+			box-shadow: inset 0 0 0 2px #ffffff, inset 0 0 0 4px #005fb8 !important;
+		}
+
+		.validation-hidden .change-cell {
+			background: inherit;
+			box-shadow: none;
+			cursor: default;
+		}
+
+		.rule-range {
+			position: relative;
+		}
+
+		.validation-visible .rule-range::after {
+			content: "";
+			position: absolute;
+			inset: 3px;
+			border: 1px dashed rgba(0, 95, 184, .65);
+			pointer-events: none;
+		}
+
+		.sheet-tabs {
+			display: flex;
+			align-items: flex-end;
+			height: 31px;
+			padding: 0 7px;
+			border-top: 1px solid #d1d1d1;
+			background: #eeeeee;
+		}
+
+		.sheet-tab {
+			height: 27px;
+			padding: 5px 15px;
+			border-top: 2px solid #217346;
+			background: #ffffff;
+			color: #333333;
+			font-size: 11px;
+		}
+
+		.inspector {
+			display: flex;
+			flex-direction: column;
+			min-width: 0;
+			border-left: 1px solid var(--border);
+			background: var(--panel);
+		}
+
+		.inspector-header {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			height: 46px;
+			padding: 0 14px;
+			border-bottom: 1px solid var(--border);
+			font-size: 13px;
+			font-weight: 600;
+			color: #eeeeee;
+		}
+
+		.mini-rule-icon {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 22px;
+			height: 22px;
+			border-radius: 4px;
+			background: #313131;
+			color: #7bdba9;
+			font-size: 15px;
+		}
+
+		.inspector-content {
+			min-height: 0;
+			padding: 14px;
+			overflow: auto;
+		}
+
+		.change-heading {
+			display: flex;
+			align-items: flex-start;
+			justify-content: space-between;
+			gap: 10px;
+			margin-bottom: 14px;
+		}
+
+		.target-cell {
+			font-size: 16px;
+			font-weight: 600;
+			color: #f0f0f0;
+		}
+
+		.target-range {
+			margin-top: 2px;
+			color: var(--muted);
+			font-size: 11px;
+		}
+
+		.status-chip {
+			padding: 3px 8px;
+			border: 1px solid currentColor;
+			border-radius: 10px;
+			font-size: 10px;
+			white-space: nowrap;
+		}
+
+		.status-chip.modified {
+			color: #75b6ff;
+			background: rgba(55, 148, 255, .12);
+		}
+
+		.status-chip.added {
+			color: #75cf87;
+			background: rgba(46, 160, 67, .12);
+		}
+
+		.status-chip.removed {
+			color: #f08a84;
+			background: rgba(229, 83, 75, .12);
+		}
+
+		.rule-type {
+			display: flex;
+			align-items: center;
+			gap: 7px;
+			margin: 0 0 12px;
+			font-weight: 600;
+			color: #e4e4e4;
+		}
+
+		.rule-type::before {
+			content: "";
+			width: 3px;
+			height: 16px;
+			border-radius: 2px;
+			background: var(--blue);
+		}
+
+		.diff-card {
+			margin-bottom: 12px;
+			border: 1px solid var(--border);
+			border-radius: 4px;
+			overflow: hidden;
+		}
+
+		.diff-card-title {
+			padding: 6px 9px;
+			border-bottom: 1px solid var(--border-soft);
+			background: #292929;
+			color: #a9a9a9;
+			font-size: 10px;
+			font-weight: 600;
+			letter-spacing: .03em;
+			text-transform: uppercase;
+		}
+
+		.value-row {
+			display: grid;
+			grid-template-columns: 64px minmax(0, 1fr);
+			gap: 7px;
+			padding: 8px 9px;
+			border-bottom: 1px solid var(--border-soft);
+		}
+
+		.value-row:last-child {
+			border-bottom: 0;
+		}
+
+		.value-label {
+			color: var(--muted);
+			font-size: 11px;
+		}
+
+		.value {
+			min-width: 0;
+			color: #dedede;
+			word-break: break-word;
+		}
+
+		.value.removed-value {
+			color: #f08a84;
+			text-decoration: line-through;
+			text-decoration-thickness: 1px;
+		}
+
+		.value.added-value {
+			color: #75cf87;
+		}
+
+		.arrow {
+			padding-left: 66px;
+			color: #7f7f7f;
+			font-size: 11px;
+		}
+
+		.change-note {
+			padding: 9px 10px;
+			border-left: 3px solid var(--blue);
+			background: #292929;
+			color: #bdbdbd;
+			font-size: 11px;
+		}
+
+		.empty-inspector {
+			display: none;
+			padding: 22px 14px;
+			color: var(--muted);
+			text-align: center;
+		}
+
+		.inspector.disabled .inspector-content {
+			display: none;
+		}
+
+		.inspector.disabled .empty-inspector {
+			display: block;
+		}
+
+		.footer-note {
+			padding: 8px 12px;
+			border-top: 1px solid var(--border);
+			color: #8f8f8f;
+			font-size: 10px;
+		}
+
+		@media (max-width: 1180px) {
+			.main {
+				grid-template-columns: minmax(0, 1fr) 290px;
+			}
+
+			.summary {
+				display: none;
+			}
+		}
+	</style>
+</head>
+
+<body>
+	<div class="app">
+		<div class="titlebar">
+			<span class="file-icon" aria-hidden="true"></span>
+			<!-- allow-any-unicode-next-line -->
+			<span class="filename">重要事項説明書.xlsx</span>
+			<!-- allow-any-unicode-next-line -->
+			<span class="breadcrumb">— 変更の比較</span>
+		</div>
+
+		<!-- allow-any-unicode-next-line -->
+		<div class="toolbar" role="toolbar" aria-label="Excel差分ツールバー">
+			<div class="tool-group">
+				<!-- allow-any-unicode-next-line -->
+				<button class="icon-tool active" id="validation-toggle" type="button" aria-pressed="true" title="入力規則の変更を表示または非表示にします">
+					<span class="validation-icon" aria-hidden="true">
+						<span class="line one"></span>
+						<span class="line two"></span>
+						<!-- allow-any-unicode-next-line -->
+						<span class="check">✓</span>
+						<span class="ban"></span>
+					</span>
+					<!-- allow-any-unicode-next-line -->
+					<span class="label">入力規則</span>
+				</button>
+			</div>
+
+			<div class="tool-group">
+				<label class="filter-label" for="change-filter">
+					<!-- allow-any-unicode-next-line -->
+					表示する変更
+					<select id="change-filter">
+						<!-- allow-any-unicode-next-line -->
+						<option value="validation" selected>入力規則のみ</option>
+						<!-- allow-any-unicode-next-line -->
+						<option value="all">すべての変更</option>
+					</select>
+				</label>
+			</div>
+
+			<!-- allow-any-unicode-next-line -->
+			<div class="tool-group nav" aria-label="変更箇所の移動">
+				<!-- allow-any-unicode-next-line -->
+				<button class="nav-btn" id="prev-change" type="button" aria-label="前の入力規則変更">‹</button>
+				<span class="nav-position" id="nav-position">1 / 4</span>
+				<!-- allow-any-unicode-next-line -->
+				<button class="nav-btn" id="next-change" type="button" aria-label="次の入力規則変更">›</button>
+			</div>
+
+			<!-- allow-any-unicode-next-line -->
+			<div class="summary" aria-label="入力規則変更の内訳">
+				<!-- allow-any-unicode-next-line -->
+				<span class="legend-item"><span class="legend-dot" style="background:var(--green)"></span>追加 1</span>
+				<!-- allow-any-unicode-next-line -->
+				<span class="legend-item"><span class="legend-dot" style="background:var(--red)"></span>削除 1</span>
+				<!-- allow-any-unicode-next-line -->
+				<span class="legend-item"><span class="legend-dot" style="background:var(--blue)"></span>変更 2</span>
+			</div>
+			<div class="tool-spacer"></div>
+			<div class="tool-group" style="border-right:0;padding-right:0">
+				<span style="color:var(--muted);font-size:11px">100%</span>
+			</div>
+		</div>
+
+		<div class="main">
+			<div class="diff-region validation-visible" id="diff-region">
+				<!-- allow-any-unicode-next-line -->
+				<section class="diff-pane" aria-label="変更前">
+					<div class="pane-header">
+						<!-- allow-any-unicode-next-line -->
+						<span>変更前</span>
+						<span class="rev">HEAD~1</span>
+					</div>
+					<div class="sheet-scroll">
+						<!-- allow-any-unicode-next-line -->
+						<table class="sheet" aria-label="変更前のワークシート">
+							<colgroup>
+								<col class="rownum"><col class="col-a"><col class="col-b"><col class="col-c"><col class="col-d">
+							</colgroup>
+							<thead>
+								<tr><th class="row-head"></th><th>A</th><th>B</th><th>C</th><th>D</th></tr>
+							</thead>
+							<tbody>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">1</th><td class="section" colspan="4">契約情報</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">2</th><td class="field-name">項目</td><td class="field-name">入力内容</td><td class="field-name">確認</td><td class="field-name">備考</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">3</th><td>契約種別</td><td class="change-cell status-modified selected" tabindex="0" data-change="0">売買<span class="rule-badge">✓</span></td><td>確認済</td><td class="note">必須</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">4</th><td>物件種別</td><td>戸建て</td><td>確認済</td><td class="note">マスター参照</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">5</th><td>都道府県</td><td>東京都</td><td>確認済</td><td class="note">任意入力</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">6</th><td>建物用途</td><td>居宅</td><td>未確認</td><td class="note">候補から選択</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">7</th><td>担当者</td><td>佐藤 花子</td><td>確認済</td><td></td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">8</th><td>契約日</td><td class="change-cell status-modified" tabindex="0" data-change="2">2026/08/01<span class="rule-badge">✓</span></td><td>確認済</td><td class="note">日付</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">9</th><td>消費税率</td><td class="change-cell status-removed" tabindex="0" data-change="3">10%<span class="rule-badge">×</span></td><td>確認済</td><td class="note">0〜100%</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">10</th><td>管理番号</td><td>A-1048</td><td>確認済</td><td></td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">11</th><td>自由記入</td><td></td><td></td><td></td></tr>
+							</tbody>
+						</table>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<div class="sheet-tabs"><span class="sheet-tab">重要事項説明</span></div>
+				</section>
+
+				<div class="splitter" aria-hidden="true"></div>
+
+				<!-- allow-any-unicode-next-line -->
+				<section class="diff-pane" aria-label="変更後">
+					<div class="pane-header">
+						<!-- allow-any-unicode-next-line -->
+						<span>変更後</span>
+						<!-- allow-any-unicode-next-line -->
+						<span class="rev">作業ツリー</span>
+					</div>
+					<div class="sheet-scroll">
+						<!-- allow-any-unicode-next-line -->
+						<table class="sheet" aria-label="変更後のワークシート">
+							<colgroup>
+								<col class="rownum"><col class="col-a"><col class="col-b"><col class="col-c"><col class="col-d">
+							</colgroup>
+							<thead>
+								<tr><th class="row-head"></th><th>A</th><th>B</th><th>C</th><th>D</th></tr>
+							</thead>
+							<tbody>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">1</th><td class="section" colspan="4">契約情報</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">2</th><td class="field-name">項目</td><td class="field-name">入力内容</td><td class="field-name">確認</td><td class="field-name">備考</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">3</th><td>契約種別</td><td class="change-cell status-modified selected" tabindex="0" data-change="0">売買<span class="rule-badge">✓</span></td><td>確認済</td><td class="note">必須</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">4</th><td>物件種別</td><td>戸建て</td><td>確認済</td><td class="note">マスター参照</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">5</th><td>都道府県</td><td class="change-cell status-added rule-range" tabindex="0" data-change="1">東京都<span class="rule-badge">＋</span></td><td>確認済</td><td class="note">候補から選択</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">6</th><td>建物用途</td><td>居宅</td><td>未確認</td><td class="note">候補から選択</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">7</th><td>担当者</td><td>佐藤 花子</td><td>確認済</td><td></td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">8</th><td>契約日</td><td class="change-cell status-modified" tabindex="0" data-change="2">2026/08/01<span class="rule-badge">✓</span></td><td>確認済</td><td class="note">日付</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">9</th><td>消費税率</td><td>10%</td><td>確認済</td><td class="note">制限なし</td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">10</th><td>管理番号</td><td>A-1048</td><td>確認済</td><td></td></tr>
+								<!-- allow-any-unicode-next-line -->
+								<tr><th class="row-head">11</th><td>自由記入</td><td></td><td></td><td></td></tr>
+							</tbody>
+						</table>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<div class="sheet-tabs"><span class="sheet-tab">重要事項説明</span></div>
+				</section>
+			</div>
+
+			<!-- allow-any-unicode-next-line -->
+			<aside class="inspector" id="inspector" aria-label="入力規則の変更詳細">
+				<div class="inspector-header">
+					<!-- allow-any-unicode-next-line -->
+					<span class="mini-rule-icon" aria-hidden="true">✓</span>
+					<!-- allow-any-unicode-next-line -->
+					入力規則の変更
+				</div>
+				<div class="inspector-content" id="inspector-content"></div>
+				<!-- allow-any-unicode-next-line -->
+				<div class="empty-inspector">ツールバーの「入力規則」をオンにすると、変更箇所と詳細を表示します。</div>
+				<!-- allow-any-unicode-next-line -->
+				<div class="footer-note">セルを選択すると変更前後の設定を確認できます</div>
+			</aside>
+		</div>
+	</div>
+
+	<script>
+		const changes = [
+			{
+				// allow-any-unicode-next-line
+				cell: 'B3', range: 'B3:B3', status: 'modified', statusLabel: '変更', type: 'リスト',
+				// allow-any-unicode-next-line
+				field: '候補値', before: '売買, 交換', after: '売買, 交換, 贈与',
+				// allow-any-unicode-next-line
+				extraLabel: 'エラーメッセージ', extraBefore: '一覧から選択してください', extraAfter: '契約種別を一覧から選択してください',
+				// allow-any-unicode-next-line
+				note: '候補に「贈与」が追加され、エラーメッセージが変更されています。'
+			},
+			{
+				// allow-any-unicode-next-line
+				cell: 'B5', range: 'B5:B6', status: 'added', statusLabel: '追加', type: 'リスト',
+				// allow-any-unicode-next-line
+				field: '参照元', before: '設定なし', after: '=マスター!$A$2:$A$48',
+				// allow-any-unicode-next-line
+				extraLabel: '空白を無視', extraBefore: '—', extraAfter: 'する',
+				// allow-any-unicode-next-line
+				note: 'B5:B6 に都道府県・用途マスターを参照する入力規則が追加されています。'
+			},
+			{
+				// allow-any-unicode-next-line
+				cell: 'B8', range: 'B8:B8', status: 'modified', statusLabel: '変更', type: '日付',
+				// allow-any-unicode-next-line
+				field: '条件', before: '2026/01/01 以降', after: '2026/04/01〜2027/03/31',
+				// allow-any-unicode-next-line
+				extraLabel: 'エラーの種類', extraBefore: '停止', extraAfter: '警告',
+				// allow-any-unicode-next-line
+				note: '有効期間が年度内に限定され、範囲外入力の扱いが「停止」から「警告」に変わっています。'
+			},
+			{
+				// allow-any-unicode-next-line
+				cell: 'B9', range: 'B9:B9', status: 'removed', statusLabel: '削除', type: '小数',
+				// allow-any-unicode-next-line
+				field: '条件', before: '0 以上 1 以下', after: '設定なし',
+				// allow-any-unicode-next-line
+				extraLabel: '空白を無視', extraBefore: 'しない', extraAfter: '—',
+				// allow-any-unicode-next-line
+				note: '消費税率に設定されていた数値範囲の制限が削除されています。'
+			}
+		];
+
+		const diffRegion = document.getElementById('diff-region');
+		const inspector = document.getElementById('inspector');
+		const inspectorContent = document.getElementById('inspector-content');
+		const validationToggle = document.getElementById('validation-toggle');
+		const navPosition = document.getElementById('nav-position');
+		let currentIndex = 0;
+		let validationVisible = true;
+
+		function escapeHtml(value) {
+			return String(value)
+				.replaceAll('&', '&amp;')
+				.replaceAll('<', '&lt;')
+				.replaceAll('>', '&gt;')
+				.replaceAll('"', '&quot;')
+				.replaceAll("'", '&#039;');
+		}
+
+		function renderInspector() {
+			const change = changes[currentIndex];
+			inspectorContent.innerHTML = `
+				<div class="change-heading">
+					<!-- allow-any-unicode-next-line -->
+					<div><div class="target-cell">${escapeHtml(change.cell)}</div><div class="target-range">対象範囲: ${escapeHtml(change.range)}</div></div>
+					<span class="status-chip ${change.status}">${escapeHtml(change.statusLabel)}</span>
+				</div>
+				<div class="rule-type">${escapeHtml(change.type)}</div>
+				<div class="diff-card">
+					<div class="diff-card-title">${escapeHtml(change.field)}</div>
+					<!-- allow-any-unicode-next-line -->
+					<div class="value-row"><span class="value-label">変更前</span><span class="value removed-value">${escapeHtml(change.before)}</span></div>
+					<!-- allow-any-unicode-next-line -->
+					<div class="arrow">↓</div>
+					<!-- allow-any-unicode-next-line -->
+					<div class="value-row"><span class="value-label">変更後</span><span class="value added-value">${escapeHtml(change.after)}</span></div>
+				</div>
+				<div class="diff-card">
+					<div class="diff-card-title">${escapeHtml(change.extraLabel)}</div>
+					<!-- allow-any-unicode-next-line -->
+					<div class="value-row"><span class="value-label">変更前</span><span class="value">${escapeHtml(change.extraBefore)}</span></div>
+					<!-- allow-any-unicode-next-line -->
+					<div class="value-row"><span class="value-label">変更後</span><span class="value">${escapeHtml(change.extraAfter)}</span></div>
+				</div>
+				<div class="change-note">${escapeHtml(change.note)}</div>`;
+			navPosition.textContent = `${currentIndex + 1} / ${changes.length}`;
+		}
+
+		function selectChange(index) {
+			if (!validationVisible) return;
+			currentIndex = (index + changes.length) % changes.length;
+			document.querySelectorAll('.change-cell').forEach(cell => {
+				cell.classList.toggle('selected', Number(cell.dataset.change) === currentIndex);
+			});
+			const target = document.querySelector(`.change-cell[data-change="${currentIndex}"]`);
+			target?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+			renderInspector();
+		}
+
+		document.querySelectorAll('.change-cell').forEach(cell => {
+			cell.addEventListener('click', () => selectChange(Number(cell.dataset.change)));
+			cell.addEventListener('keydown', event => {
+				if (event.key === 'Enter' || event.key === ' ') {
+					event.preventDefault();
+					selectChange(Number(cell.dataset.change));
+				}
+			});
+		});
+
+		document.getElementById('prev-change').addEventListener('click', () => selectChange(currentIndex - 1));
+		document.getElementById('next-change').addEventListener('click', () => selectChange(currentIndex + 1));
+
+		validationToggle.addEventListener('click', () => {
+			validationVisible = !validationVisible;
+			validationToggle.classList.toggle('active', validationVisible);
+			validationToggle.setAttribute('aria-pressed', String(validationVisible));
+			diffRegion.classList.toggle('validation-visible', validationVisible);
+			diffRegion.classList.toggle('validation-hidden', !validationVisible);
+			inspector.classList.toggle('disabled', !validationVisible);
+			// allow-any-unicode-next-line
+			navPosition.textContent = validationVisible ? `${currentIndex + 1} / ${changes.length}` : '– / –';
+			if (validationVisible) selectChange(currentIndex);
+		});
+
+		document.getElementById('change-filter').addEventListener('change', event => {
+			const inputRulesOnly = event.target.value === 'validation';
+			document.querySelector('.summary').style.opacity = inputRulesOnly ? '1' : '.65';
+		});
+
+		renderInspector();
+	</script>
+</body>
+
+</html>

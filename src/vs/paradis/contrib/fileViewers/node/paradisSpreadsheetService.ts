@@ -17,10 +17,12 @@ import {
 	IParadisCellData,
 	IParadisCellRange,
 	IParadisCellStyle,
+	IParadisDataValidation,
 	IParadisDiagonalBorder,
 	IParadisDrawingData,
 	IParadisRichTextPart,
 	IParadisRowData,
+	canonicalizeDataValidationEntries,
 	IParadisSheetData,
 	IParadisSpreadsheetService,
 	IParadisWorkbookData,
@@ -56,6 +58,88 @@ interface IExcelFont {
 interface IExcelRichTextRun {
 	readonly text?: string;
 	readonly font?: IExcelFont;
+}
+interface IExcelDataValidation {
+	readonly type?: IParadisDataValidation['type'];
+	readonly operator?: IParadisDataValidation['operator'];
+	readonly formulae?: readonly (string | number | boolean | Date)[];
+	readonly allowBlank?: boolean;
+	readonly showInputMessage?: boolean;
+	readonly promptTitle?: string;
+	readonly prompt?: string;
+	readonly showErrorMessage?: boolean;
+	readonly errorStyle?: string;
+	readonly errorTitle?: string;
+	readonly error?: string;
+}
+
+interface IExcelDataValidations {
+	readonly model?: Readonly<Record<string, IExcelDataValidation | undefined>>;
+}
+
+/** exceljs の入力規則を IPC・diff 向けの安定した値へ正規化する。 */
+function normalizeDataValidation(validation: IExcelDataValidation | undefined): IParadisDataValidation | undefined {
+	if (!validation?.type) {
+		return undefined;
+	}
+	const formulae = (validation.formulae ?? []).map(value => value instanceof Date ? value.toISOString() : String(value));
+	return {
+		type: validation.type,
+		...(validation.operator !== undefined ? { operator: validation.operator } : {}),
+		formulae,
+		allowBlank: validation.allowBlank ?? false,
+		showInputMessage: validation.showInputMessage ?? false,
+		...(validation.promptTitle !== undefined ? { promptTitle: validation.promptTitle } : {}),
+		...(validation.prompt !== undefined ? { prompt: validation.prompt } : {}),
+		showErrorMessage: validation.showErrorMessage ?? false,
+		errorStyle: validation.errorStyle ?? 'stop',
+		...(validation.errorTitle !== undefined ? { errorTitle: validation.errorTitle } : {}),
+		...(validation.error !== undefined ? { error: validation.error } : {}),
+	};
+}
+
+interface IWorksheetDataValidations {
+	readonly entries: readonly { readonly range: IParadisCellRange; readonly validation: IParadisDataValidation }[];
+	readonly get: (address: string) => IParadisDataValidation | undefined;
+}
+
+function excelColumnName(column: number): string {
+	let value = column;
+	let result = '';
+	while (value > 0) {
+		value--;
+		result = String.fromCharCode(65 + value % 26) + result;
+		value = Math.floor(value / 26);
+	}
+	return result;
+}
+
+function getWorksheetDataValidations(ws: ExcelJS.Worksheet, ranges: readonly IParadisCellRange[]): IWorksheetDataValidations {
+	const model = (ws as unknown as { readonly dataValidations?: IExcelDataValidations }).dataValidations?.model;
+	const normalizedByRule = new Map<IExcelDataValidation, IParadisDataValidation>();
+	const get = (address: string): IParadisDataValidation | undefined => {
+		const source = model?.[address];
+		if (!source) {
+			return undefined;
+		}
+		let validation = normalizedByRule.get(source);
+		if (!validation) {
+			validation = normalizeDataValidation(source);
+			if (!validation) {
+				return undefined;
+			}
+			normalizedByRule.set(source, validation);
+		}
+		return validation;
+	};
+	const entries: { range: IParadisCellRange; validation: IParadisDataValidation }[] = [];
+	for (const range of ranges) {
+		const validation = get(`${excelColumnName(range.minC)}${range.minR}`);
+		if (validation) {
+			entries.push({ range: { ...range }, validation });
+		}
+	}
+	return { entries: canonicalizeDataValidationEntries(entries), get };
 }
 
 // ── Excel標準テーマ色(Office 2013+ の既定)。theme1.xml が読めない場合のフォールバック ──
@@ -521,6 +605,7 @@ interface IXlsxExtras {
 	drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] };
 	rowBreaksBySheet: { [sheetIndex: number]: number[] };
 	colBreaksBySheet: { [sheetIndex: number]: number[] };
+	dataValidationRangesBySheet: { [sheetIndex: number]: IParadisCellRange[] };
 	/** 用紙設定(表示順キー)。ページ割りの計算に使う。 */
 	pageSetupBySheet: { [sheetIndex: number]: IParadisPageSetup };
 	/** theme1.xml の clrScheme 色(scheme名→hex)。読めなければ undefined(既定パレットを使う)。 */
@@ -557,6 +642,24 @@ function extractBrkIds(sheetXml: string, tag: 'rowBreaks' | 'colBreaks'): number
 	return ids;
 }
 
+function extractDataValidationRanges(sheetXml: string): IParadisCellRange[] {
+	const ranges: IParadisCellRange[] = [];
+	for (const tag of sheetXml.match(/<dataValidation\b[^>]*>/g) ?? []) {
+		const sqref = tag.match(/\bsqref="([^"]+)"/)?.[1];
+		if (!sqref) {
+			continue;
+		}
+		for (const reference of sqref.trim().split(/\s+/)) {
+			const normalized = reference.replace(/\$/g, '').toUpperCase();
+			const range = normalized.includes(':') ? parsePrintArea(normalized) : parsePrintArea(`${normalized}:${normalized}`);
+			if (range) {
+				ranges.push(range);
+			}
+		}
+	}
+	return ranges;
+}
+
 // exceljs 4.4.0 は図形(drawing)・改ページ(rowBreaks/colBreaks)を読めないため、xlsx(ZIP)を jszip で直読みする。
 // 図形/画像の解析には DOMParser が要るが node 層には無いので、drawing XML と埋め込みメディア(rId→dataURI)を
 // renderer へ渡し renderer が DOMParser で図形化する。改ページは brk の id だけ抜き出す。
@@ -566,6 +669,7 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 	const drawingsBySheet: { [sheetIndex: number]: IParadisDrawingData[] } = {};
 	const rowBreaksBySheet: { [sheetIndex: number]: number[] } = {};
 	const colBreaksBySheet: { [sheetIndex: number]: number[] } = {};
+	const dataValidationRangesBySheet: { [sheetIndex: number]: IParadisCellRange[] } = {};
 	const pageSetupBySheet: { [sheetIndex: number]: IParadisPageSetup } = {};
 	let themeColorsByName: { [name: string]: string } | undefined;
 	let maxDigitWidth = 7;
@@ -644,6 +748,10 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 			if (cb.length) {
 				colBreaksBySheet[key] = cb;
 			}
+			const dataValidationRanges = extractDataValidationRanges(sheetXml);
+			if (dataValidationRanges.length > 0) {
+				dataValidationRangesBySheet[key] = dataValidationRanges;
+			}
 			// 用紙設定。exceljs は fitToPage・pageOrder・用紙コードを落とすので XML から直接読む。
 			const titleRows = workbookXml ? parsePrintTitleRows(workbookXml, key - 1) : undefined;
 			pageSetupBySheet[key] = {
@@ -701,7 +809,7 @@ async function extractXlsxExtras(buffer: Buffer): Promise<IXlsxExtras> {
 	} catch {
 		// 図形/改ページ/テーマは任意要素。抽出に失敗しても表・値の表示は継続する。
 	}
-	return { drawingsBySheet, rowBreaksBySheet, colBreaksBySheet, pageSetupBySheet, themeColorsByName, maxDigitWidth };
+	return { drawingsBySheet, rowBreaksBySheet, colBreaksBySheet, dataValidationRangesBySheet, pageSetupBySheet, themeColorsByName, maxDigitWidth };
 }
 
 export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
@@ -733,6 +841,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 		workbook.eachSheet(worksheet => {
 			sheetIndex++;
 			const dims = getSheetDimensions(worksheet);
+			const worksheetDataValidations = getWorksheetDataValidations(worksheet, extras.dataValidationRangesBySheet[sheetIndex] ?? []);
 			const mergeMap = buildMergeMap(worksheet);
 			const colCount = dims.maxC - dims.minC + 1;
 			const sheetProps = worksheet.properties as { defaultColWidth?: number; defaultRowHeight?: number } | undefined;
@@ -810,6 +919,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 					const verticalText = al?.textRotation === 'vertical' || al?.textRotation === 255;
 					const shrinkToFit = al?.shrinkToFit === true;
 					const diagonal = getCellDiagonal(cell);
+					const dataValidation = worksheetDataValidations.get(cell.address.toUpperCase());
 
 					const parsed: IParadisCellData = {
 						value: val,
@@ -820,6 +930,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 						...(shrinkToFit ? { shrinkToFit: true } : {}),
 						...(richText ? { richText } : {}),
 						...(diagonal ? { diagonal } : {}),
+						...(dataValidation ? { dataValidation } : {}),
 					};
 					cells.push(parsed);
 				}
@@ -864,6 +975,7 @@ export class ParadisSpreadsheetService implements IParadisSpreadsheetService {
 				columnWidths,
 				truncated,
 				minCol: dims.minC,
+				...(worksheetDataValidations.entries.length > 0 ? { dataValidations: worksheetDataValidations.entries } : {}),
 				showGridLines,
 				...(view?.zoomScale ? { zoomScale: view.zoomScale } : {}),
 				...(tabColor ? { tabColor } : {}),

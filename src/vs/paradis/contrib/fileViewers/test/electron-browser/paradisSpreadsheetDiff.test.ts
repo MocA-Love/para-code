@@ -10,7 +10,7 @@ import { deepStrictEqual, ok, strictEqual } from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../../common/paradisSpreadsheet.js';
 import { buildShapeDiffOverlay } from '../../electron-browser/paradisSpreadsheetRender.js';
-import { buildDiffSheets, buildPageBreakDiff, buildShapeDiff } from '../../electron-browser/paradisSpreadsheetDiff.js';
+import { buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff } from '../../electron-browser/paradisSpreadsheetDiff.js';
 import { IParadisPageLayout } from '../../common/paradisSpreadsheetPageLayout.js';
 import { formatDiffDetails } from '../../electron-browser/paradisSpreadsheetDiffPresentation.js';
 
@@ -87,6 +87,83 @@ suite('paradisSpreadsheetDiff', () => {
 			['wrapText', 'false', 'true'],
 		]);
 		strictEqual(formatDiffDetails(details ?? []), 'Value: {{name}} → Alice\nMerged Columns: 1 → 2\nWrap Text: false → true');
+	});
+
+	test('marks changed, removed, and added data validation rules', () => {
+		const listRule = { type: 'list' as const, formulae: ['"A,B"'], allowBlank: false };
+		const original = sheet([
+			cell('A', {}, { dataValidation: listRule }),
+			cell('10', {}, { dataValidation: { type: 'whole', formulae: ['0', '100'], operator: 'between' } }),
+			cell('Region'),
+		]);
+		const modified = sheet([
+			cell('A', {}, { dataValidation: { ...listRule, formulae: ['"A,B,C"'] } }),
+			cell('10'),
+			cell('Region', {}, { dataValidation: { type: 'list', formulae: ['=Master!$A$2:$A$48'], allowBlank: true } }),
+		]);
+
+		const [diff] = buildDiffSheets([original], [modified]);
+		deepStrictEqual(
+			diff.modifiedRows[0].cells.map(item => ({
+				status: item.diffStatus,
+				validationDetail: item.diffDetails?.some(detail => detail.kind === 'dataValidation') ?? false,
+			})),
+			[
+				{ status: 'modified', validationDetail: true },
+				{ status: 'modified', validationDetail: true },
+				{ status: 'modified', validationDetail: true },
+			],
+		);
+	});
+
+	test('aligns cells by their absolute columns before comparing data validation', () => {
+		const rule = { type: 'list' as const, formulae: ['"A,B"'] };
+		const original = { ...sheet([cell('left'), cell(''), cell('', {}, { dataValidation: rule })]), minCol: 1 };
+		const modified = { ...sheet([cell('', {}, { dataValidation: rule })]), minCol: 3 };
+
+		const [diff] = buildDiffSheets([original], [modified]);
+
+		strictEqual(diff.originalMinCol, 1);
+		strictEqual(diff.modifiedMinCol, 1);
+		strictEqual(diff.originalRows[0].cells[2].diffDetails, undefined);
+		strictEqual(diff.modifiedRows[0].cells[2].diffDetails, undefined);
+	});
+
+	test('compares sparse data validation outside the rendered cell rectangle', () => {
+		const originalRule = { type: 'list' as const, formulae: ['"A,B"'] };
+		const modifiedRule = { type: 'list' as const, formulae: ['"A,B,C"'] };
+
+		deepStrictEqual(buildDataValidationDiff(
+			[{ range: { minR: 10, maxR: 20, minC: 16_384, maxC: 16_384 }, validation: originalRule }],
+			[
+				{ range: { minR: 10, maxR: 20, minC: 16_384, maxC: 16_384 }, validation: modifiedRule },
+				{ range: { minR: 3, maxR: 3, minC: 3, maxC: 3 }, validation: originalRule },
+			],
+		), [
+			{ address: 'XFD10:XFD20', range: { minR: 10, maxR: 20, minC: 16_384, maxC: 16_384 }, status: 'modified', original: originalRule, modified: modifiedRule },
+			{ address: 'C3', range: { minR: 3, maxR: 3, minC: 3, maxC: 3 }, status: 'added', modified: originalRule },
+		]);
+	});
+
+	test('does not report a change when an equivalent validation range is split', () => {
+		const rule = { type: 'list' as const, formulae: ['"A,B"'], allowBlank: false };
+
+		deepStrictEqual(buildDataValidationDiff(
+			[{ range: { minR: 1, maxR: 10, minC: 1, maxC: 1 }, validation: rule }],
+			[
+				{ range: { minR: 1, maxR: 5, minC: 1, maxC: 1 }, validation: { ...rule } },
+				{ range: { minR: 6, maxR: 10, minC: 1, maxC: 1 }, validation: { ...rule } },
+			],
+		), []);
+
+		deepStrictEqual(buildDataValidationDiff(
+			[{ range: { minR: 1, maxR: 2, minC: 1, maxC: 4 }, validation: rule }],
+			[
+				{ range: { minR: 1, maxR: 1, minC: 1, maxC: 2 }, validation: rule },
+				{ range: { minR: 1, maxR: 1, minC: 3, maxC: 4 }, validation: rule },
+				{ range: { minR: 2, maxR: 2, minC: 1, maxC: 4 }, validation: rule },
+			],
+		), []);
 	});
 
 	test('bounds long cell values before creating hover content', () => {
