@@ -283,6 +283,7 @@ export class ParadisMobileTerminalRegistry {
 		return {
 			protocolVersion: PARADIS_MOBILE_PROTOCOL_VERSION,
 			fsUploadEncoding: PARADIS_FS_BINARY_UPLOAD_ENCODING,
+			voiceWebrtc: 'audio-v1',
 			desktopEpoch: this.desktopEpoch,
 			revision: this.revision,
 			complete: this.isComplete(),

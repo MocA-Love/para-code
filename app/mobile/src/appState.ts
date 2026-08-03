@@ -20,6 +20,8 @@ import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
 import { configureNotificationHandler, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
+import { isVoiceMonitorSupported, startVoiceMonitor, type VoiceMonitorSession } from './voiceMonitor.js';
+import { activateVoiceSession, deactivateVoiceSession, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -38,6 +40,14 @@ interface AppState extends StoreState {
 	paired: boolean;
 	/** ユーザーがホームの切断ボタンで明示的に切断した状態（自動再接続を抑止）。 */
 	manualOffline: boolean;
+	/** ユーザー操作で開始する、PCからの音声通知受信状態。 */
+	voiceNotifications: {
+		desired: boolean;
+		status: 'idle' | 'connecting' | 'live' | 'reconnecting' | 'unsupported' | 'error';
+		error?: string;
+	};
+	startVoiceNotifications(): void;
+	stopVoiceNotifications(): void;
 	/** リレー接続を手動で切断する。 */
 	disconnectRelay(): void;
 	/** 手動切断後に接続し直す（未接続で固まっている場合の再接続にも使える）。 */
@@ -192,6 +202,11 @@ interface AppState extends StoreState {
 	setWebrtcIceHandler(sid: string, handler: (candidate: object) => void): void;
 	/** sid が現在登録中のハンドラと一致する場合のみ解除する（旧世代のcleanupが現行を消さないため）。 */
 	clearWebrtcIceHandler(sid: string): void;
+	voiceWebrtcOffer(windowId: number, sdp: string, sid: string): Promise<{ sdp?: string }>;
+	voiceWebrtcSendIce(candidate: object, sid: string): void;
+	voiceWebrtcStop(sid: string): void;
+	setVoiceWebrtcIceHandler(sid: string, handler: (candidate: object) => void): void;
+	clearVoiceWebrtcIceHandler(sid: string): void;
 	fetchTurnIceServers(): Promise<object[]>;
 }
 
@@ -203,6 +218,168 @@ let pairing: PairingClient | undefined;
 let initStarted = false;
 /** 通知設定の再送subscribeの多重登録防止（init()失敗リトライ対策）。 */
 let prefsSyncSubscribed = false;
+let voiceSession: VoiceMonitorSession | undefined;
+let voiceConnectAbort: AbortController | undefined;
+let voiceRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let voiceGeneration = 0;
+let voiceRemoteStopSubscription: (() => void) | undefined;
+let connectionHeartbeat: ReturnType<typeof setInterval> | undefined;
+
+function stopConnectionHeartbeat(): void {
+	if (connectionHeartbeat !== undefined) {
+		clearInterval(connectionHeartbeat);
+		connectionHeartbeat = undefined;
+	}
+}
+
+function startConnectionHeartbeat(): void {
+	stopConnectionHeartbeat();
+	connectionHeartbeat = setInterval(() => {
+		if (!useAppStore.getState().manualOffline) {
+			controller?.ensureConnected();
+		}
+	}, 25_000);
+}
+
+function voiceRendererWindowId(state: AppState): number | undefined {
+	const workspace = state.workspace;
+	if (!workspace) {
+		return undefined;
+	}
+	const selected = state.selectedWs === undefined ? undefined : workspace.workspaces.find(item => item.id === state.selectedWs);
+	const active = workspace.activeWs === undefined ? undefined : workspace.workspaces.find(item => item.id === workspace.activeWs);
+	const preferredWindowId = selected?.windowId ?? active?.windowId;
+	if (preferredWindowId !== undefined && workspace.renderers.some(renderer => renderer.windowId === preferredWindowId && renderer.ready)) {
+		return preferredWindowId;
+	}
+	return workspace.renderers.find(renderer => renderer.ready)?.windowId;
+}
+
+function clearVoiceRetry(): void {
+	if (voiceRetryTimer !== undefined) {
+		clearTimeout(voiceRetryTimer);
+		voiceRetryTimer = undefined;
+	}
+}
+
+function scheduleVoiceReconnect(generation: number, message?: string): void {
+	if (generation !== voiceGeneration || !useAppStore.getState().voiceNotifications.desired) {
+		return;
+	}
+	clearVoiceRetry();
+	useAppStore.setState({ voiceNotifications: { desired: true, status: 'reconnecting', ...(message ? { error: message } : {}) } });
+	voiceRetryTimer = setTimeout(() => {
+		voiceRetryTimer = undefined;
+		void connectVoiceMonitor(generation);
+	}, 3_000);
+}
+
+async function connectVoiceMonitor(generation: number): Promise<void> {
+	if (generation !== voiceGeneration) {
+		return;
+	}
+	const state = useAppStore.getState();
+	if (!state.voiceNotifications.desired) {
+		return;
+	}
+	if (state.sessionProtocolReady && state.workspace !== undefined && state.workspace.voiceWebrtc !== 'audio-v1') {
+		endVoiceNotifications();
+		useAppStore.setState({ voiceNotifications: { desired: false, status: 'unsupported', error: 'PC版のPara Codeを音声通知対応版へ更新してください' } });
+		return;
+	}
+	const windowId = voiceRendererWindowId(state);
+	if (!state.pcOnline || !state.sessionProtocolReady || windowId === undefined) {
+		scheduleVoiceReconnect(generation, 'PCへの接続を待っています');
+		return;
+	}
+	voiceConnectAbort?.abort();
+	const connectAbort = new AbortController();
+	voiceConnectAbort = connectAbort;
+	try {
+		const nextSession = await startVoiceMonitor(windowId, connectAbort.signal);
+		if (generation !== voiceGeneration || !useAppStore.getState().voiceNotifications.desired) {
+			nextSession.stop();
+			return;
+		}
+		// react-native-webrtc が接続確立時にAudioSessionを調整する場合があるため、
+		// 最後に受信専用playbackカテゴリとロック画面操作を再適用する。
+		try {
+			await activateVoiceSession();
+		} catch (error) {
+			nextSession.stop();
+			throw error;
+		}
+		if (generation !== voiceGeneration || !useAppStore.getState().voiceNotifications.desired) {
+			nextSession.stop();
+			return;
+		}
+		const previousSession = voiceSession;
+		voiceSession = nextSession;
+		previousSession?.stop();
+		nextSession.onClosed(() => {
+			if (voiceSession === nextSession) {
+				voiceSession = undefined;
+				scheduleVoiceReconnect(generation, '音声接続を再確立しています');
+			}
+		});
+		useAppStore.setState({ voiceNotifications: { desired: true, status: 'live' } });
+	} catch (error) {
+		const message = error instanceof Error ? error.message : '音声接続に失敗しました';
+		scheduleVoiceReconnect(generation, message);
+	} finally {
+		if (voiceConnectAbort === connectAbort) {
+			voiceConnectAbort = undefined;
+		}
+	}
+}
+
+async function beginVoiceNotifications(): Promise<void> {
+	if (!isVoiceMonitorSupported()) {
+		useAppStore.setState({ voiceNotifications: { desired: false, status: 'unsupported', error: 'このビルドでは音声通知を利用できません' } });
+		return;
+	}
+	const initialState = useAppStore.getState();
+	if (initialState.sessionProtocolReady && initialState.workspace !== undefined && initialState.workspace.voiceWebrtc !== 'audio-v1') {
+		useAppStore.setState({ voiceNotifications: { desired: false, status: 'unsupported', error: 'PC版のPara Codeを音声通知対応版へ更新してください' } });
+		return;
+	}
+	const generation = ++voiceGeneration;
+	clearVoiceRetry();
+	useAppStore.setState({ voiceNotifications: { desired: true, status: 'connecting' } });
+	try {
+		await activateVoiceSession();
+		if (generation !== voiceGeneration) {
+			return;
+		}
+		voiceRemoteStopSubscription?.();
+		voiceRemoteStopSubscription = onVoiceSessionRemoteStop(() => useAppStore.getState().stopVoiceNotifications());
+		await connectVoiceMonitor(generation);
+	} catch (error) {
+		if (generation !== voiceGeneration) {
+			return;
+		}
+		const message = error instanceof Error ? error.message : '音声通知を開始できませんでした';
+		useAppStore.setState({ voiceNotifications: { desired: false, status: 'error', error: message } });
+		await deactivateVoiceSession();
+	}
+}
+
+function endVoiceNotifications(): void {
+	voiceGeneration++;
+	clearVoiceRetry();
+	voiceConnectAbort?.abort();
+	voiceConnectAbort = undefined;
+	voiceSession?.stop();
+	voiceSession = undefined;
+	voiceRemoteStopSubscription?.();
+	voiceRemoteStopSubscription = undefined;
+	useAppStore.setState({ voiceNotifications: { desired: false, status: 'idle' } });
+	void deactivateVoiceSession();
+	if (connectionActionForAppState(RNAppState.currentState) === 'suspend' && !useAppStore.getState().manualOffline) {
+		stopConnectionHeartbeat();
+		controller?.suspendForBackground();
+	}
+}
 
 export const useAppStore = create<AppState>(set => ({
 	connection: 'offline',
@@ -220,6 +397,7 @@ export const useAppStore = create<AppState>(set => ({
 	ready: false,
 	paired: false,
 	manualOffline: false,
+	voiceNotifications: { desired: false, status: 'idle' },
 	selectedWs: undefined,
 	homeShowAllWorkspaces: true,
 	selectedTerminalKey: undefined,
@@ -232,6 +410,16 @@ export const useAppStore = create<AppState>(set => ({
 	pinnedKeys: new Set(),
 	archivedKeys: new Set(),
 	agentDrafts: {},
+
+	startVoiceNotifications() {
+		if (!useAppStore.getState().voiceNotifications.desired) {
+			void beginVoiceNotifications();
+		}
+	},
+
+	stopVoiceNotifications() {
+		endVoiceNotifications();
+	},
 
 	async init() {
 		// 二重初期化を防ぐ。放置すると旧 MobileController/RelayClient が close されず、
@@ -350,21 +538,6 @@ export const useAppStore = create<AppState>(set => ({
 			// 加えてフォアグラウンド中は定期ハートビート（state要求+生存確認）を回す。
 			// WSにはping/pongが無く「送信して初めて切断に気づく」ため、放置中に接続が
 			// 静かに死ぬと『接続しています…』のまま固まって見える問題への対策。
-			let heartbeat: ReturnType<typeof setInterval> | undefined;
-			const startHeartbeat = () => {
-				stopHeartbeat();
-				heartbeat = setInterval(() => {
-					if (!useAppStore.getState().manualOffline) {
-						controller?.ensureConnected();
-					}
-				}, 25_000);
-			};
-			const stopHeartbeat = () => {
-				if (heartbeat !== undefined) {
-					clearInterval(heartbeat);
-					heartbeat = undefined;
-				}
-			};
 			// inactive（通知センターやコントロールセンターを引き下げた、システムのダイアログが
 			// 乗った等）はソケットを維持するので、心拍も止めない。止めるとPC側から「無音が
 			// 続いた＝アプリが凍った」と見えてプッシュが飛び、前面で見ている画面にまでバナーが
@@ -375,16 +548,21 @@ export const useAppStore = create<AppState>(set => ({
 					if (!useAppStore.getState().manualOffline) {
 						controller?.resumeFromBackground();
 					}
-					startHeartbeat();
+					startConnectionHeartbeat();
 				} else if (action === 'suspend') {
-					stopHeartbeat();
-					if (!useAppStore.getState().manualOffline) {
+					const state = useAppStore.getState();
+					// 音声通知を明示的に開始している間は WebRTC のシグナリングと再接続に
+					// Relay が必要なため、バックグラウンドでもソケットと心拍を維持する。
+					if (!state.voiceNotifications.desired) {
+						stopConnectionHeartbeat();
+					}
+					if (!state.manualOffline && !state.voiceNotifications.desired) {
 						controller?.suspendForBackground();
 					}
 				}
 			});
 			if (shouldRunForegroundWork(RNAppState.currentState)) {
-				startHeartbeat();
+				startConnectionHeartbeat();
 			}
 			set({ ready: true, paired: !!creds });
 			if (creds) {
@@ -392,7 +570,7 @@ export const useAppStore = create<AppState>(set => ({
 				controller.connect(creds);
 				// KeyStore読込中にバックグラウンドへ移った場合、changeイベント時点ではまだ
 				// clientが無い。接続作成直後にも現在状態を確認し、背景用ソケットを残さない。
-				if (connectionActionForAppState(RNAppState.currentState) === 'suspend') {
+				if (connectionActionForAppState(RNAppState.currentState) === 'suspend' && !useAppStore.getState().voiceNotifications.desired) {
 					controller.suspendForBackground();
 				}
 			}
@@ -406,6 +584,7 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	disconnectRelay() {
+		endVoiceNotifications();
 		set({ manualOffline: true });
 		controller?.disconnect();
 	},
@@ -463,6 +642,7 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	async unpair() {
+		endVoiceNotifications();
 		const creds = await loadCredentials(secureKeyStore);
 		try {
 			// 資格情報削除が成功するまではcontroller/journalへ触れず、失敗時に旧pairを完全保持する。
@@ -867,6 +1047,31 @@ export const useAppStore = create<AppState>(set => ({
 	clearWebrtcIceHandler(sid) {
 		if (controller && controller.webrtcIceHandler?.sid === sid) {
 			controller.webrtcIceHandler = undefined;
+		}
+	},
+
+	voiceWebrtcOffer(windowId, sdp, sid) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.voiceWebrtcOffer(windowId, sdp, sid);
+	},
+
+	voiceWebrtcSendIce(candidate, sid) {
+		controller?.voiceWebrtcSendIce(candidate, sid);
+	},
+
+	voiceWebrtcStop(sid) {
+		controller?.voiceWebrtcStop(sid);
+	},
+
+	setVoiceWebrtcIceHandler(sid, handler) {
+		if (controller) {
+			controller.voiceWebrtcIceHandler = { sid, fn: handler };
+		}
+	},
+
+	clearVoiceWebrtcIceHandler(sid) {
+		if (controller && controller.voiceWebrtcIceHandler?.sid === sid) {
+			controller.voiceWebrtcIceHandler = undefined;
 		}
 	},
 

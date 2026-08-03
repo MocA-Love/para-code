@@ -31,6 +31,8 @@ export interface WorkspaceState {
 	protocolVersion: 3;
 	/** 新PCだけが通知する任意能力。旧PCではundefined。 */
 	fsUploadEncoding?: 'fs-binary-v1';
+	/** 音声通知用WebRTCシグナリング。旧PCではundefined。 */
+	voiceWebrtc?: 'audio-v1';
 	desktopEpoch: string;
 	revision: number;
 	complete: boolean;
@@ -72,7 +74,9 @@ export function mergeWorkspaceState(previous: WorkspaceState | undefined, incomi
 	// readyになるまでは旧表示を保持し、以降は「未観測のwindow=pending」として扱う。
 	if (previous.desktopEpoch !== incoming.desktopEpoch) {
 		if (!incoming.renderers.some(renderer => renderer.ready)) {
-			return previous;
+			// 表示データは旧epochを保持してちらつきを防ぐが、能力bitは新PCの値を即採用する。
+			// ここで旧new-PCのbitを残すと、ダウングレード直後の旧PCへ未知のvoice offerを送ってしまう。
+			return { ...previous, voiceWebrtc: incoming.voiceWebrtc };
 		}
 		const readyWindows = new Set(incoming.renderers.filter(renderer => renderer.ready).map(renderer => renderer.windowId));
 		const workspaces = new Map(previous.workspaces.filter(workspace => !readyWindows.has(workspace.windowId)).map(workspace => [workspace.id, workspace]));
@@ -2845,6 +2849,8 @@ export class MobileController {
 	 * 過渡的に共存するため、sidで宛先を識別する。
 	 */
 	webrtcIceHandler: { sid: string; fn: (candidate: object) => void } | undefined;
+	/** 音声通知 WebRTC の ICE 受信先。ブラウザ映像とは独立して同時接続できる。 */
+	voiceWebrtcIceHandler: { sid: string; fn: (candidate: object) => void } | undefined;
 
 	/** WebRTC offer を送り、PC側ストリーマの answer SDP を待つ。 */
 	webrtcOffer(targetId: string, sdp: string, sid: string): Promise<{ sdp?: string }> {
@@ -2862,6 +2868,25 @@ export class MobileController {
 	webrtcStop(sid: string): void {
 		if (this.isLiveAvailable()) {
 			this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'webrtc-stop', sid })));
+		}
+	}
+
+	/** 音声通知用の audio-only offer を指定 renderer へ送り、answer を待つ。 */
+	voiceWebrtcOffer(windowId: number, sdp: string, sid: string): Promise<{ sdp?: string }> {
+		return this.request<{ sdp?: string }>('browser', { t: 'voice-webrtc-offer', windowId, sdp, sid }, 20_000);
+	}
+
+	/** 音声通知ピアの ICE candidate を PC へ送る。 */
+	voiceWebrtcSendIce(candidate: object, sid: string): void {
+		if (this.isLiveAvailable()) {
+			this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'voice-webrtc-ice', candidate, sid })));
+		}
+	}
+
+	/** 音声通知ピアを PC 側でも終了させる。 */
+	voiceWebrtcStop(sid: string): void {
+		if (this.isLiveAvailable()) {
+			this.client?.send('browser', encoder.encode(JSON.stringify({ t: 'voice-webrtc-stop', sid })));
 		}
 	}
 
@@ -2939,6 +2964,11 @@ export class MobileController {
 					// sid未設定（旧PC）は互換のため受理。設定時は現行セッション宛のみ通す
 					const handler = this.webrtcIceHandler;
 					if (handler && (msg.sid === undefined || msg.sid === handler.sid)) {
+						handler.fn(msg.candidate);
+					}
+				} else if (msg.t === 'voice-webrtc-ice' && msg.candidate) {
+					const handler = this.voiceWebrtcIceHandler;
+					if (handler && msg.sid === handler.sid) {
 						handler.fn(msg.candidate);
 					}
 				} else if (msg.id) {

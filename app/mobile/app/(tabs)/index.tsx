@@ -13,6 +13,7 @@ import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
 import { AgentLaunchButton, AgentLaunchToastView } from '../../src/components/agentLaunchButton.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
+import { VoiceNotificationControl } from '../../src/components/voiceNotificationControl.js';
 import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionStack, type AttentionStackItem } from '../../src/components/attentionStack.js';
 import {
@@ -222,6 +223,7 @@ export default function HomeScreen() {
 							</Pressable>
 						) : null}
 						<AgentLaunchButton />
+						<VoiceNotificationControl />
 						<NotificationsButton notifications={notifications} />
 					</View>
 				}

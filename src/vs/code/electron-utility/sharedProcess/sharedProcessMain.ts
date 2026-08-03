@@ -526,11 +526,20 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 		const playwrightChannel = this._register(new PlaywrightChannel(this.server, accessor.get(IMainProcessService), accessor.get(ILogService), agentNetworkFilterService, accessor.get(ITelemetryService)));
 		this.server.registerChannel('playwright', playwrightChannel);
 
-		// PARA-PATCH: ブラウザページ⇔エージェントCLI紐付け（バインディングレジストリ+MCP/CDPゲートウェイサーバーの生成とチャネル登録）
-		const paradisAgentBrowser = this._register(registerParadisAgentBrowser(this.server, playwrightChannel, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
-
 		// PARA-PATCH: 通知サウンド/Aivis読み上げバックエンド（カスタム音源管理・YouTube取込・Aivis Cloud APIクライアント）
-		this._register(registerParadisNotifications(this.server, accessor.get(ILogService)));
+		const paradisNotifications = this._register(registerParadisNotifications(this.server, accessor.get(ILogService)));
+
+		// PARA-PATCH: ブラウザページ⇔エージェントCLI紐付け（バインディングレジストリ+MCP/CDPゲートウェイサーバーの生成とチャネル登録）
+		const paradisAgentBrowser = this._register(registerParadisAgentBrowser(
+			this.server,
+			playwrightChannel,
+			accessor.get(INativeEnvironmentService).userDataPath,
+			accessor.get(IMainProcessService),
+			accessor.get(ILogService),
+			accessor.get(IConfigurationService),
+			this.configuration.args,
+			audio => paradisNotifications.publishMobileVoiceClip(audio),
+		));
 
 		// PARA-PATCH: Excelビューア/差分の xlsx パースバックエンド（exceljs。rendererでは動かないためshared processで実行）
 		this._register(registerParadisSpreadsheet(this.server));

@@ -15,7 +15,7 @@
 			"infoPlist": {
 				"NSCameraUsageDescription": "QRコードでPara Codeとペアリングするためにカメラを使用します。",
 				"ITSAppUsesNonExemptEncryption": false,
-				"UIBackgroundModes": ["remote-notification"],
+				"UIBackgroundModes": ["remote-notification", "audio"],
 				"NSSupportsLiveActivities": true,
 				"NSMicrophoneUsageDescription": "このアプリはマイクを使用しません（画面ミラー受信ライブラリが参照するため記載しています）。"
 			}

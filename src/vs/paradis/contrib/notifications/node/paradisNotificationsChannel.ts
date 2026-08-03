@@ -10,7 +10,6 @@
 // 同じ薄いディスパッチャ方式（switch文でサービスメソッドへ委譲するだけ）。
 
 import { Event } from '../../../../base/common/event.js';
-import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
@@ -23,6 +22,7 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 	listen<T>(_ctx: string, event: string): Event<T> {
 		switch (event) {
 			case 'onAivisPaused': return this.service.onAivisPaused as Event<T>;
+			case 'onDidCreateMobileVoiceClip': return this.service.onDidCreateMobileVoiceClip as Event<T>;
 			default:
 				throw new Error(`Event not found: ${event}`);
 		}
@@ -70,7 +70,7 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 /**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
-export function registerParadisNotifications(server: IPCServer<string>, logService: ILogService): IDisposable {
+export function registerParadisNotifications(server: IPCServer<string>, logService: ILogService): ParadisNotificationsService {
 	const service = new ParadisNotificationsService(logService);
 	server.registerChannel(PARADIS_NOTIFICATIONS_CHANNEL, new ParadisNotificationsChannel(service));
 	return service;

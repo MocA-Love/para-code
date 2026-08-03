@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { copyFile, mkdtemp, readFile, rename, rm, unlink, writeFile } from 'fs/promises';
 import { homedir, tmpdir } from 'os';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { getErrorMessage } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -52,6 +53,7 @@ import {
 	PARADIS_MAX_CLIP_DURATION_SECONDS,
 	PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES,
 	PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES,
+	PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES,
 } from '../common/paradisNotifications.js';
 
 const AIVIS_BASE_URL = 'https://api.aivis-project.com';
@@ -171,6 +173,10 @@ export class ParadisNotificationsService extends Disposable {
 	private readonly _onAivisPaused = this._register(new Emitter<string>());
 	readonly onAivisPaused: Event<string> = this._onAivisPaused.event;
 
+	/** PC再生へ渡すのと同じ合成済みMP3。モバイル用rendererは履歴を持たず、その場でだけ使う。 */
+	private readonly _onDidCreateMobileVoiceClip = this._register(new Emitter<VSBuffer>());
+	readonly onDidCreateMobileVoiceClip: Event<VSBuffer> = this._onDidCreateMobileVoiceClip.event;
+
 	/** notifyAudio の直近要求で鳴らすべき通知音。scheduler.playRingtone() の直前に同期でセットする。 */
 	private _currentRingtone: { readonly id: string; readonly volume: number } | undefined;
 
@@ -227,11 +233,23 @@ export class ParadisNotificationsService extends Disposable {
 			if (text && aivis.apiKey && aivis.modelUuid) {
 				const runner: AivisTaskRunner = {
 					synthesize: () => this._synthesizeAivis({ ...aivis, text }),
-					play: audio => this._playAivisAudio(audio, aivis.volume ?? 100),
+					play: audio => {
+						// モバイルは副経路。購読側の不在・失敗に関係なく従来のPC再生を続ける。
+						this.publishMobileVoiceClip(audio);
+						return this._playAivisAudio(audio, aivis.volume ?? 100);
+					},
 				};
 				this._scheduler.enqueueAivis(runner, request.priority === 'high' ? 'high' : 'normal');
 			}
 		}
+	}
+
+	/** 外部aivis-mcpを含む生成済みMP3を、専有コピーとしてモバイル音声経路へ渡す。 */
+	publishMobileVoiceClip(audio: Uint8Array): void {
+		if (audio.byteLength === 0 || audio.byteLength > PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES) {
+			return;
+		}
+		this._onDidCreateMobileVoiceClip.fire(VSBuffer.wrap(Uint8Array.from(audio)));
 	}
 
 	/** Aivis の一時停止状態を解除する（ユーザーが APIキー等を修正して設定を保存した時に呼ばれる）。 */

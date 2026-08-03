@@ -10,6 +10,7 @@ import { localize, localize2 } from '../../../../nls.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
+import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -51,6 +52,8 @@ import {
 } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
+import { ParadisMobileVoiceStreamer } from './paradisMobileVoiceStreamer.js';
+import { PARADIS_NOTIFICATIONS_CHANNEL } from '../../notifications/common/paradisNotifications.js';
 import { ParadisAgentTerminalHintParser, paradisShouldAcceptAgentTerminalHint } from '../common/paradisAgentTerminalHints.js';
 import { Channels } from '../common/paradisMobileProtocol.js';
 import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } from '../common/paradisAgentCliCommand.js';
@@ -397,6 +400,11 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] webrtc sendFrame failed', err)); },
 			this.logService,
 		));
+		const voiceStreamer = this._register(new ParadisMobileVoiceStreamer(
+			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] voice sendFrame failed', err)); },
+			this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).listen<VSBuffer>('onDidCreateMobileVoiceClip'),
+			this.logService,
+		));
 
 		// shared process が復号したモバイル→PCフレームを provider へ。
 		// browser チャネルは webrtc シグナリングだけが renderer に転送されてくる
@@ -407,7 +415,13 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 				void this.windowLeasePromise.then(lease => {
 					if (ws === paradisMobileWindowRoute(lease.windowId, lease.windowSession, lease.rendererGeneration)) {
 						if (ch === Channels.Browser) {
-							webrtcStreamer.handleInbound({ ch, ws, seq, payload, mobileId });
+							let kind: string | undefined;
+							try { kind = JSON.parse(new TextDecoder().decode(payload.buffer))?.t; } catch { /* ignore */ }
+							if (kind?.startsWith('voice-webrtc-')) {
+								voiceStreamer.handleInbound({ ch, ws, seq, payload, mobileId });
+							} else {
+								webrtcStreamer.handleInbound({ ch, ws, seq, payload, mobileId });
+							}
 						} else {
 							this.provider.handleInbound({ ch, ws, seq, payload, mobileId });
 						}
@@ -431,6 +445,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			if (status.onlineMobiles === 0) {
 				this.provider.detachAll();
 				webrtcStreamer.stopAll();
+				voiceStreamer.stopAll();
 			} else if (this.previousOnlineMobiles === 0) {
 				this.provider.pushState();
 			}

@@ -261,8 +261,9 @@ export function registerParadisAgentBrowser(
 	logService: ILogService,
 	configurationService: IConfigurationService,
 	args: NativeParsedArgs,
+	publishMobileVoiceClip?: (audio: Uint8Array) => void,
 ): ParadisAgentBrowserService {
-	const service = new ParadisAgentBrowserService(userDataPath, playwrightInvoker, server, mainProcessService, logService, configurationService, args);
+	const service = new ParadisAgentBrowserService(userDataPath, playwrightInvoker, server, mainProcessService, logService, configurationService, args, publishMobileVoiceClip);
 	server.registerChannel(PARADIS_AGENT_BROWSER_CHANNEL, new ParadisAgentBrowserChannel(service));
 	service.installRendererConnectionChannels(connection => new ParadisAgentBrowserChannel(service, connection));
 	return service;
