@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { Emitter } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -134,6 +134,11 @@ const RELAY_UNAUTHORIZED_RETRY_MS = 5 * 60_000;
  * PC本体のCPU/メモリ/ディスクをサンプリングする間隔。CPU使用率はこの区間の平均になる。
  * 短くしても丸め（5%刻み）で潰れるだけで再送が増えるだけなので、これ以上は詰めない。
  */
+/**
+ * 音声通知の購読が生きているとみなす上限。モバイルは受信中20秒ごとに同じsidで宣言し直すため、
+ * それが3回続けて途切れたら（アプリ強制終了・停止要求のロスト等）配信対象から外す。
+ */
+const VOICE_SUBSCRIPTION_TTL_MS = 60_000;
 const HOST_RESOURCE_SAMPLE_INTERVAL_MS = 10_000;
 /**
  * リソースの変化だけを理由に desktop state を再送する最小間隔。
@@ -417,7 +422,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly agentCommandAuthority = new ParadisAgentCommandAuthority();
 	private readonly terminalOperationTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly webrtcRendererLeases = new Map<string, { readonly sid: string; readonly owner: IParadisMobileWindowLeaseRef }>();
-	private readonly voiceRendererLeases = new Map<string, { readonly sid: string; readonly owner: IParadisMobileWindowLeaseRef }>();
+	/** 音声通知を受け取ると宣言したモバイル（mobileId → 現行セッションのsidと最終宣言時刻）。 */
+	private readonly voiceSubscribers = new Map<string, { readonly sid: string; at: number }>();
+	/** まだ送り終わっていない音声クリップを持つモバイル（遅延した音声は捨てる）。 */
+	private readonly voiceSending = new Set<string>();
 	private rendererAuthorityChain = Promise.resolve();
 
 	// ペアリング中の状態
@@ -454,8 +462,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		private readonly logService: ILogService,
 		_configurationService?: IConfigurationService,
 		_args?: NativeParsedArgs,
+		// 生成済みAivis音声（MP3）。同一 shared process の通知サービスが発火する。
+		voiceClips?: Event<VSBuffer>,
 	) {
 		super();
+		if (voiceClips !== undefined) {
+			this._register(voiceClips(clip => this.broadcastVoiceClip(clip)));
+		}
 		const trafficDiagnosticsSession = startParadisMobileTrafficDiagnostics(
 			process.env.PARADIS_MOBILE_TRAFFIC_DIAGNOSTICS,
 			line => this.logService.info(`[paradisMobileRelay][traffic] ${line}`),
@@ -1130,7 +1143,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		for (const m of removed) {
 			this.sessions.delete(m.mobileId);
 			this.webrtcRendererLeases.delete(m.mobileId);
-			this.retireVoiceRendererPeer(m.mobileId);
+			this.dropVoiceSubscriber(m.mobileId);
 			this.missedNotify.forget(m.mobileId);
 			this.browserMirror.stopSession(m.mobileId);
 			this.agentChat.dropSubscriber(m.mobileId);
@@ -1392,11 +1405,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		for (const [mobileId, active] of this.webrtcRendererLeases) {
 			if (this.sameLease(active.owner, lease)) {
 				this.webrtcRendererLeases.delete(mobileId);
-			}
-		}
-		for (const [mobileId, active] of this.voiceRendererLeases) {
-			if (this.sameLease(active.owner, lease)) {
-				this.voiceRendererLeases.delete(mobileId);
 			}
 		}
 	}
@@ -1822,9 +1830,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.sessions.clear();
 		this.webrtcRendererLeases.clear();
-		for (const mobileId of [...this.voiceRendererLeases.keys()]) {
-			this.retireVoiceRendererPeer(mobileId);
-		}
+		this.voiceSubscribers.clear();
+		this.voiceSending.clear();
 		if (!this.enabled) {
 			this.setConnectionState('disabled');
 			return;
@@ -1917,9 +1924,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.sessions.clear();
 		this.webrtcRendererLeases.clear();
-		for (const mobileId of [...this.voiceRendererLeases.keys()]) {
-			this.retireVoiceRendererPeer(mobileId);
-		}
+		this.voiceSubscribers.clear();
+		this.voiceSending.clear();
 		if (this.socket) {
 			try { this.socket.close(); } catch { /* ignore */ }
 			this.socket = undefined;
@@ -2014,15 +2020,20 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 						return;
 					}
 					if (frame.ch === Channels.Browser) {
+						// 音声通知の購読制御（t: 'voice-*'）はここで完結する（音声はMP3のまま
+						// このリレーが配るので renderer を経由しない）。
+						const voiceControl = this.peekVoiceControl(frame.payload.buffer);
+						if (voiceControl !== undefined) {
+							this.handleVoiceControl(idStr, voiceControl);
+							return;
+						}
 						// WebRTCシグナリング（t: 'webrtc-*'）は renderer のストリーマが処理する
 						// （WebRTCスタックはrendererにしか無い）。offer は getDisplayMedia が
 						// 対象ビュー単体を返すよう electron-main を先に arm してから転送する。
 						const webrtc = this.peekWebrtcSignal(frame.payload.buffer);
 						if (webrtc !== undefined) {
-							const forward = webrtc.t === 'voice-webrtc-offer' || webrtc.t === 'voice-webrtc-ice' || webrtc.t === 'voice-webrtc-stop'
-								? this.forwardVoiceWebrtcSignal(idStr, frame, webrtc)
-								: this.forwardWebrtcSignal(idStr, frame, webrtc);
-							forward.catch(err => this.logService.warn('[paradisMobileRelay] webrtc routing failed', err));
+							this.forwardWebrtcSignal(idStr, frame, webrtc)
+								.catch(err => this.logService.warn('[paradisMobileRelay] webrtc routing failed', err));
 							return;
 						}
 						const respond = (payload: Uint8Array) => {
@@ -2055,74 +2066,97 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * browser チャネルのペイロードが WebRTC シグナリング（t: 'webrtc-*'）なら
 	 * そのJSONを返す。違えば undefined（既存の browserMirror が処理する）。
 	 */
-	private peekWebrtcSignal(payload: Uint8Array): { t: 'webrtc-offer' | 'webrtc-ice' | 'webrtc-stop' | 'voice-webrtc-offer' | 'voice-webrtc-ice' | 'voice-webrtc-stop'; targetId?: unknown; windowId?: unknown; sid?: unknown; id?: unknown } | undefined {
+	private peekWebrtcSignal(payload: Uint8Array): { t: 'webrtc-offer' | 'webrtc-ice' | 'webrtc-stop'; targetId?: unknown; windowId?: unknown; sid?: unknown; id?: unknown } | undefined {
 		try {
 			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: unknown; targetId?: unknown; windowId?: unknown; sid?: unknown; id?: unknown };
-			if (msg.t === 'webrtc-offer' || msg.t === 'webrtc-ice' || msg.t === 'webrtc-stop'
-				|| msg.t === 'voice-webrtc-offer' || msg.t === 'voice-webrtc-ice' || msg.t === 'voice-webrtc-stop') {
+			if (msg.t === 'webrtc-offer' || msg.t === 'webrtc-ice' || msg.t === 'webrtc-stop') {
 				return { t: msg.t, targetId: msg.targetId, windowId: msg.windowId, sid: msg.sid, id: msg.id };
 			}
 		} catch { /* JSONでないペイロードは既存処理へ */ }
 		return undefined;
 	}
 
-	private async forwardVoiceWebrtcSignal(
-		mobileId: string,
-		frame: IParadisMobileInboundFrame,
-		signal: { t: 'webrtc-offer' | 'webrtc-ice' | 'webrtc-stop' | 'voice-webrtc-offer' | 'voice-webrtc-ice' | 'voice-webrtc-stop'; windowId?: unknown; sid?: unknown; id?: unknown },
-	): Promise<void> {
-		if (typeof signal.sid !== 'string' || signal.sid.length === 0 || signal.sid.length > 200) {
+	/**
+	 * browser チャネルのペイロードが音声通知の購読制御（t: 'voice-start' / 'voice-stop'）なら
+	 * そのJSONを返す。音声はWebRTCではなくこのリレー自身がMP3のまま配るため、
+	 * renderer を経由せず shared process 内で完結させる。
+	 */
+	private peekVoiceControl(payload: Uint8Array): { t: 'voice-start' | 'voice-stop'; sid: string; id?: string } | undefined {
+		try {
+			const msg = JSON.parse(new TextDecoder().decode(payload)) as { t?: unknown; sid?: unknown; id?: unknown };
+			if ((msg.t === 'voice-start' || msg.t === 'voice-stop')
+				&& typeof msg.sid === 'string' && msg.sid.length > 0 && msg.sid.length <= 200) {
+				const id = typeof msg.id === 'string' && msg.id.length > 0 && msg.id.length <= 200 ? msg.id : undefined;
+				return { t: msg.t, sid: msg.sid, ...(id !== undefined ? { id } : {}) };
+			}
+		} catch { /* JSONでないペイロードは既存処理へ */ }
+		return undefined;
+	}
+
+	/** モバイルの「音声通知を開始/停止」を受け、以降のMP3配信対象を更新する。 */
+	private handleVoiceControl(mobileId: string, control: { t: 'voice-start' | 'voice-stop'; sid: string; id?: string }): void {
+		if (control.t === 'voice-start') {
+			this.voiceSubscribers.set(mobileId, { sid: control.sid, at: Date.now() });
+		} else if (this.voiceSubscribers.get(mobileId)?.sid === control.sid) {
+			this.voiceSubscribers.delete(mobileId);
+		}
+		if (control.id === undefined) {
 			return;
 		}
-		const sid = signal.sid;
-		let owner: IParadisMobileWindowLeaseRef | undefined;
-		if (signal.t === 'voice-webrtc-offer') {
-			if (typeof signal.id !== 'string' || signal.id.length === 0 || signal.id.length > 200
-				|| typeof signal.windowId !== 'number' || !Number.isInteger(signal.windowId)) {
-				return;
-			}
-			owner = this.terminalRegistry.leaseOfWindow(signal.windowId);
-			if (owner === undefined || !this.terminalRegistry.isWindowReady(owner.windowId, owner.windowSession, owner.rendererGeneration)) {
-				return;
-			}
-			// 同じmobileIdが別windowへ張り直す場合、旧Mapを上書きする前に旧rendererのpeerを閉じる。
-			this.retireVoiceRendererPeer(mobileId);
-			this.voiceRendererLeases.set(mobileId, { sid, owner });
-		} else {
-			const active = this.voiceRendererLeases.get(mobileId);
-			owner = active?.sid === sid ? active.owner : undefined;
-			if (owner === undefined || !this.sameLease(this.terminalRegistry.leaseOfWindow(owner.windowId), owner)) {
-				this.voiceRendererLeases.delete(mobileId);
-				return;
-			}
-		}
-		const delivered = await this.withCurrentRegisteredLease(owner, async () => {
-			this._onInboundFrame.fire([frame.ch, paradisMobileWindowRoute(owner.windowId, owner.windowSession, owner.rendererGeneration), frame.seq, frame.payload, frame.mobileId]);
-			return true;
-		});
-		if (delivered !== true || signal.t === 'voice-webrtc-stop') {
-			this.voiceRendererLeases.delete(mobileId);
+		const session = this.sessions.get(mobileId);
+		if (session?.hasCurrentProtocol) {
+			const payload = new TextEncoder().encode(JSON.stringify({ id: control.id, ok: true }));
+			session.sendFrame(Channels.Browser, undefined, payload)
+				.catch(err => this.logService.warn('[paradisMobileRelay] voice control reply failed', err));
 		}
 	}
 
 	/**
-	 * Relay切断・presence更新・失効でモバイルセッションを捨てる際、rendererの直接WebRTC peerも
-	 * 明示的に閉じる。別モバイルがオンラインのままでも失効端末へ後続音声を送り続けない。
+	 * Relay切断・presence更新・失効でモバイルセッションを捨てる際、音声の配信対象からも外す。
+	 * 別モバイルがオンラインのままでも、失効した端末へ後続の音声を送り続けない。
 	 */
-	private retireVoiceRendererPeer(mobileId: string): void {
-		const active = this.voiceRendererLeases.get(mobileId);
-		this.voiceRendererLeases.delete(mobileId);
-		if (active === undefined || !this.sameLease(this.terminalRegistry.leaseOfWindow(active.owner.windowId), active.owner)) {
+	private dropVoiceSubscriber(mobileId: string): void {
+		this.voiceSubscribers.delete(mobileId);
+		this.voiceSending.delete(mobileId);
+	}
+
+	/**
+	 * 生成済みMP3を、音声通知を開始しているモバイルへそのまま配る。
+	 * 履歴は持たず、その時点で受信中の端末だけに届ける（未接続中の音声は再送しない）。
+	 *
+	 * モバイルは受信中 VOICE_SUBSCRIPTION_REFRESH ごとに同じsidで宣言し直すので、
+	 * 宣言が途切れた購読は期限切れとして落とす（停止のfire-and-forgetが届かなかった場合の保険）。
+	 */
+	private broadcastVoiceClip(clip: VSBuffer): void {
+		const now = Date.now();
+		for (const [mobileId, active] of this.voiceSubscribers) {
+			if (now - active.at > VOICE_SUBSCRIPTION_TTL_MS) {
+				this.voiceSubscribers.delete(mobileId);
+			}
+		}
+		if (this.voiceSubscribers.size === 0 || clip.byteLength === 0) {
 			return;
 		}
-		const payload = VSBuffer.fromString(JSON.stringify({ t: 'voice-webrtc-stop', sid: active.sid }));
-		this._onInboundFrame.fire([
-			Channels.Browser,
-			paradisMobileWindowRoute(active.owner.windowId, active.owner.windowSession, active.owner.rendererGeneration),
-			0,
-			payload,
-			mobileId,
-		]);
+		// base64はbase/common実装だと8MiBで数百ms（文字列連結）かかり、shared processの
+		// イベントループごと止まる。node レイヤなので Buffer で一度だけ変換する。
+		const data = Buffer.from(clip.buffer.buffer, clip.buffer.byteOffset, clip.buffer.byteLength).toString('base64');
+		for (const [mobileId, active] of this.voiceSubscribers) {
+			const session = this.sessions.get(mobileId);
+			if (!session?.hasCurrentProtocol || !session.isOnline) {
+				continue;
+			}
+			// 前のクリップをまだ吐き終わっていない端末には積み増さない。通知音声は遅れて届いても
+			// 価値が無く、細い上り回線では同一セッションの他フレームまで後ろへ詰まる。
+			if (this.voiceSending.has(mobileId)) {
+				this.logService.warn('[paradisMobileRelay] voice clip dropped while the previous clip is still in flight');
+				continue;
+			}
+			const payload = new TextEncoder().encode(JSON.stringify({ t: 'voice-clip', sid: active.sid, mime: 'audio/mpeg', data }));
+			this.voiceSending.add(mobileId);
+			session.sendFrame(Channels.Browser, undefined, payload)
+				.catch(err => this.logService.warn('[paradisMobileRelay] voice clip send failed', err))
+				.finally(() => this.voiceSending.delete(mobileId));
+		}
 	}
 
 	private async forwardWebrtcSignal(
@@ -2237,7 +2271,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			// 流れてくるモバイルのhelloより必ず先に届く（＝確立直後のセッションを消す心配はない）。
 			this.sessions.delete(msg.mobileId);
 			this.webrtcRendererLeases.delete(msg.mobileId);
-			this.retireVoiceRendererPeer(msg.mobileId);
+			this.dropVoiceSubscriber(msg.mobileId);
 			this.browserMirror.stopSession(msg.mobileId);
 			this.agentChat.dropSubscriber(msg.mobileId);
 			this._onDidChangeStatus.fire(this.snapshot());
@@ -2259,7 +2293,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		await this.save();
 		this.sessions.delete(mobileId);
 		this.webrtcRendererLeases.delete(mobileId);
-		this.retireVoiceRendererPeer(mobileId);
+		this.dropVoiceSubscriber(mobileId);
 		this.notifyKeyCache.delete(mobileId);
 		this.missedNotify.forget(mobileId);
 		this.browserMirror.stopSession(mobileId);

@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { VSBuffer } from '../../../../base/common/buffer.js';
+import { Event } from '../../../../base/common/event.js';
 import { IDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IPCServer, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -26,14 +28,16 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
  * 長期秘密鍵の暗号化のため、main プロセスの 'encryption'(safeStorage) チャネルを注入する。
  * sharedPageBindings は agentBrowser の共有ページバインディング（同一 shared process 内の
  * ParadisAgentBrowserService 実体。targets応答の sharedToken 用）。
+ * voiceClips は同一 shared process の通知サービスが発火する生成済みAivis音声（MP3）で、
+ * 音声通知を開始しているモバイルへそのまま配るために注入する。
  */
-export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings): IDisposable {
+export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<VSBuffer>): IDisposable {
 	const store = new DisposableStore();
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
 	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）
 	const cdpFrames = ProxyChannel.toService<IParadisCdpFrameSubscription>(mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL));
 	const windowLeaseClient = new ParadisMobileWindowLeaseClient(mainProcessService.getChannel(PARADIS_MOBILE_WINDOW_LEASE_CHANNEL));
-	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, sharedPageBindings, windowLeaseClient, logService, configurationService, args));
+	const service = store.add(new ParadisMobileRelayService(userDataPath, encryptionService, cdpFrames, sharedPageBindings, windowLeaseClient, logService, configurationService, args, voiceClips));
 	server.registerChannel(PARADIS_MOBILE_RELAY_CHANNEL, ProxyChannel.fromService(service, store));
 	return store;
 }

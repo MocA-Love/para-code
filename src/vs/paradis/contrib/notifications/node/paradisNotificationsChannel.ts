@@ -22,7 +22,8 @@ export class ParadisNotificationsChannel implements IServerChannel<string> {
 	listen<T>(_ctx: string, event: string): Event<T> {
 		switch (event) {
 			case 'onAivisPaused': return this.service.onAivisPaused as Event<T>;
-			case 'onDidCreateMobileVoiceClip': return this.service.onDidCreateMobileVoiceClip as Event<T>;
+			// 音声クリップは同一 shared process のモバイルリレーが直接購読する。
+			// renderer へ最大8MiBのMP3をIPCで流す口はここでは開けない。
 			default:
 				throw new Error(`Event not found: ${event}`);
 		}

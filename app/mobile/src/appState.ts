@@ -20,8 +20,7 @@ import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
 import { configureNotificationHandler, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
-import { isVoiceMonitorSupported, startVoiceMonitor, type VoiceMonitorSession } from './voiceMonitor.js';
-import { activateVoiceSession, deactivateVoiceSession, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
+import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
 
 /**
  * PC側とモバイル側の Sentry イベントを突き合わせる相関IDを設定する。
@@ -202,11 +201,12 @@ interface AppState extends StoreState {
 	setWebrtcIceHandler(sid: string, handler: (candidate: object) => void): void;
 	/** sid が現在登録中のハンドラと一致する場合のみ解除する（旧世代のcleanupが現行を消さないため）。 */
 	clearWebrtcIceHandler(sid: string): void;
-	voiceWebrtcOffer(windowId: number, sdp: string, sid: string): Promise<{ sdp?: string }>;
-	voiceWebrtcSendIce(candidate: object, sid: string): void;
-	voiceWebrtcStop(sid: string): void;
-	setVoiceWebrtcIceHandler(sid: string, handler: (candidate: object) => void): void;
-	clearVoiceWebrtcIceHandler(sid: string): void;
+	/** 音声通知（PCが作ったMP3のリレー配信）の購読制御。 */
+	voiceSubscribe(sid: string): Promise<{ ok?: boolean }>;
+	voiceUnsubscribe(sid: string): void;
+	setVoiceClipHandler(sid: string, handler: (base64: string) => void): void;
+	/** sid が現在登録中のハンドラと一致する場合のみ解除する。 */
+	clearVoiceClipHandler(sid: string): void;
 	fetchTurnIceServers(): Promise<object[]>;
 }
 
@@ -218,11 +218,22 @@ let pairing: PairingClient | undefined;
 let initStarted = false;
 /** 通知設定の再送subscribeの多重登録防止（init()失敗リトライ対策）。 */
 let prefsSyncSubscribed = false;
-let voiceSession: VoiceMonitorSession | undefined;
-let voiceConnectAbort: AbortController | undefined;
+/** 受信中の音声通知セッションID（PC側の配信対象を識別する）。 */
+let voiceSid: string | undefined;
+/**
+ * ネイティブの音声セッション操作を直列化するチェーン。
+ * Expo の AsyncFunction は呼び出しごとに並行実行されるため、停止直後に再開すると
+ * 後着した deactivate がセッションを畳んでしまう（JSの呼び出し順は保証にならない）。
+ */
+let voiceNativeChain: Promise<void> = Promise.resolve();
+/** 接続復帰で購読を送り直す購読の多重登録防止。 */
+let voiceResubscribeSubscribed = false;
 let voiceRetryTimer: ReturnType<typeof setTimeout> | undefined;
 let voiceGeneration = 0;
 let voiceRemoteStopSubscription: (() => void) | undefined;
+/** 購読の再宣言間隔。PCはリレー切断で購読を忘れるため、受信中は送り直し続ける。 */
+const VOICE_RESUBSCRIBE_MS = 20_000;
+const VOICE_RETRY_MS = 3_000;
 let connectionHeartbeat: ReturnType<typeof setInterval> | undefined;
 
 function stopConnectionHeartbeat(): void {
@@ -241,18 +252,10 @@ function startConnectionHeartbeat(): void {
 	}, 25_000);
 }
 
-function voiceRendererWindowId(state: AppState): number | undefined {
-	const workspace = state.workspace;
-	if (!workspace) {
-		return undefined;
-	}
-	const selected = state.selectedWs === undefined ? undefined : workspace.workspaces.find(item => item.id === state.selectedWs);
-	const active = workspace.activeWs === undefined ? undefined : workspace.workspaces.find(item => item.id === workspace.activeWs);
-	const preferredWindowId = selected?.windowId ?? active?.windowId;
-	if (preferredWindowId !== undefined && workspace.renderers.some(renderer => renderer.windowId === preferredWindowId && renderer.ready)) {
-		return preferredWindowId;
-	}
-	return workspace.renderers.find(renderer => renderer.ready)?.windowId;
+function runVoiceNative(operation: () => Promise<void>): Promise<void> {
+	const next = voiceNativeChain.then(operation, operation);
+	voiceNativeChain = next.catch(() => { /* 後続の操作は前段の失敗に引きずられない */ });
+	return next;
 }
 
 function clearVoiceRetry(): void {
@@ -271,110 +274,102 @@ function scheduleVoiceReconnect(generation: number, message?: string): void {
 	voiceRetryTimer = setTimeout(() => {
 		voiceRetryTimer = undefined;
 		void connectVoiceMonitor(generation);
-	}, 3_000);
+	}, VOICE_RETRY_MS);
 }
 
+/**
+ * PCへ「音声通知を受け取る」と宣言する。成功したら一定間隔で宣言し直し、
+ * リレーが張り直された場合もPC側の配信対象へ戻る。
+ */
 async function connectVoiceMonitor(generation: number): Promise<void> {
 	if (generation !== voiceGeneration) {
 		return;
 	}
 	const state = useAppStore.getState();
-	if (!state.voiceNotifications.desired) {
+	const sid = voiceSid;
+	if (!state.voiceNotifications.desired || sid === undefined) {
 		return;
 	}
-	if (state.sessionProtocolReady && state.workspace !== undefined && state.workspace.voiceWebrtc !== 'audio-v1') {
+	if (state.sessionProtocolReady && state.workspace !== undefined && state.workspace.voiceClips !== 'relay-v1') {
 		endVoiceNotifications();
 		useAppStore.setState({ voiceNotifications: { desired: false, status: 'unsupported', error: 'PC版のPara Codeを音声通知対応版へ更新してください' } });
 		return;
 	}
-	const windowId = voiceRendererWindowId(state);
-	if (!state.pcOnline || !state.sessionProtocolReady || windowId === undefined) {
+	if (!state.pcOnline || !state.sessionProtocolReady) {
 		scheduleVoiceReconnect(generation, 'PCへの接続を待っています');
 		return;
 	}
-	voiceConnectAbort?.abort();
-	const connectAbort = new AbortController();
-	voiceConnectAbort = connectAbort;
 	try {
-		const nextSession = await startVoiceMonitor(windowId, connectAbort.signal);
+		await state.voiceSubscribe(sid);
 		if (generation !== voiceGeneration || !useAppStore.getState().voiceNotifications.desired) {
-			nextSession.stop();
 			return;
 		}
-		// react-native-webrtc が接続確立時にAudioSessionを調整する場合があるため、
-		// 最後に受信専用playbackカテゴリとロック画面操作を再適用する。
-		try {
-			await activateVoiceSession();
-		} catch (error) {
-			nextSession.stop();
-			throw error;
+		if (useAppStore.getState().voiceNotifications.status !== 'live') {
+			useAppStore.setState({ voiceNotifications: { desired: true, status: 'live' } });
 		}
-		if (generation !== voiceGeneration || !useAppStore.getState().voiceNotifications.desired) {
-			nextSession.stop();
-			return;
-		}
-		const previousSession = voiceSession;
-		voiceSession = nextSession;
-		previousSession?.stop();
-		nextSession.onClosed(() => {
-			if (voiceSession === nextSession) {
-				voiceSession = undefined;
-				scheduleVoiceReconnect(generation, '音声接続を再確立しています');
-			}
-		});
-		useAppStore.setState({ voiceNotifications: { desired: true, status: 'live' } });
+		clearVoiceRetry();
+		voiceRetryTimer = setTimeout(() => {
+			voiceRetryTimer = undefined;
+			void connectVoiceMonitor(generation);
+		}, VOICE_RESUBSCRIBE_MS);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : '音声接続に失敗しました';
 		scheduleVoiceReconnect(generation, message);
-	} finally {
-		if (voiceConnectAbort === connectAbort) {
-			voiceConnectAbort = undefined;
-		}
 	}
 }
 
 async function beginVoiceNotifications(): Promise<void> {
-	if (!isVoiceMonitorSupported()) {
+	if (!isVoiceSessionSupported()) {
 		useAppStore.setState({ voiceNotifications: { desired: false, status: 'unsupported', error: 'このビルドでは音声通知を利用できません' } });
 		return;
 	}
 	const initialState = useAppStore.getState();
-	if (initialState.sessionProtocolReady && initialState.workspace !== undefined && initialState.workspace.voiceWebrtc !== 'audio-v1') {
+	if (initialState.sessionProtocolReady && initialState.workspace !== undefined && initialState.workspace.voiceClips !== 'relay-v1') {
 		useAppStore.setState({ voiceNotifications: { desired: false, status: 'unsupported', error: 'PC版のPara Codeを音声通知対応版へ更新してください' } });
 		return;
 	}
 	const generation = ++voiceGeneration;
 	clearVoiceRetry();
+	const sid = `voice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+	voiceSid = sid;
 	useAppStore.setState({ voiceNotifications: { desired: true, status: 'connecting' } });
 	try {
-		await activateVoiceSession();
+		await runVoiceNative(activateVoiceSession);
 		if (generation !== voiceGeneration) {
 			return;
 		}
 		voiceRemoteStopSubscription?.();
 		voiceRemoteStopSubscription = onVoiceSessionRemoteStop(() => useAppStore.getState().stopVoiceNotifications());
+		useAppStore.getState().setVoiceClipHandler(sid, base64 => {
+			void enqueueVoiceClip(base64).catch(() => { /* 再生できないクリップは捨てる */ });
+		});
 		await connectVoiceMonitor(generation);
 	} catch (error) {
 		if (generation !== voiceGeneration) {
 			return;
 		}
 		const message = error instanceof Error ? error.message : '音声通知を開始できませんでした';
+		voiceSid = undefined;
+		useAppStore.getState().clearVoiceClipHandler(sid);
 		useAppStore.setState({ voiceNotifications: { desired: false, status: 'error', error: message } });
-		await deactivateVoiceSession();
+		await runVoiceNative(deactivateVoiceSession).catch(() => { /* 停止の失敗は表示済みのエラーへ足さない */ });
 	}
 }
 
 function endVoiceNotifications(): void {
 	voiceGeneration++;
 	clearVoiceRetry();
-	voiceConnectAbort?.abort();
-	voiceConnectAbort = undefined;
-	voiceSession?.stop();
-	voiceSession = undefined;
+	const sid = voiceSid;
+	voiceSid = undefined;
+	if (sid !== undefined) {
+		const state = useAppStore.getState();
+		state.clearVoiceClipHandler(sid);
+		state.voiceUnsubscribe(sid);
+	}
 	voiceRemoteStopSubscription?.();
 	voiceRemoteStopSubscription = undefined;
 	useAppStore.setState({ voiceNotifications: { desired: false, status: 'idle' } });
-	void deactivateVoiceSession();
+	void runVoiceNative(deactivateVoiceSession).catch(() => { /* 停止できなくても操作は完了扱い */ });
 	if (connectionActionForAppState(RNAppState.currentState) === 'suspend' && !useAppStore.getState().manualOffline) {
 		stopConnectionHeartbeat();
 		controller?.suspendForBackground();
@@ -525,6 +520,20 @@ export const useAppStore = create<AppState>(set => ({
 			// オンラインになるたび通知設定をPCへ同期する（PC側の永続値を最新に保つ。
 			// オフライン中に変更した設定もここで追いつく）。init()が後続処理の失敗で
 			// リトライされた場合に多重登録しないようフラグでガードする。
+			// 音声通知の購読はPC側で揮発する（リレー切断・ソケット張り直しで消える）。
+			// 20秒の定期再宣言だけだと復帰まで無音が続くため、オンラインへ戻った瞬間に送り直す。
+			if (!voiceResubscribeSubscribed) {
+				voiceResubscribeSubscribed = true;
+				useAppStore.subscribe((next, prev) => {
+					const recovered = (next.connection === 'online' && prev.connection !== 'online')
+						|| (next.pcOnline && !prev.pcOnline)
+						|| (next.sessionProtocolReady && !prev.sessionProtocolReady);
+					if (recovered && next.voiceNotifications.desired) {
+						clearVoiceRetry();
+						void connectVoiceMonitor(voiceGeneration);
+					}
+				});
+			}
 			if (!prefsSyncSubscribed) {
 				prefsSyncSubscribed = true;
 				useAppStore.subscribe((s, prev) => {
@@ -551,7 +560,7 @@ export const useAppStore = create<AppState>(set => ({
 					startConnectionHeartbeat();
 				} else if (action === 'suspend') {
 					const state = useAppStore.getState();
-					// 音声通知を明示的に開始している間は WebRTC のシグナリングと再接続に
+					// 音声通知を明示的に開始している間は、PCから届く音声クリップの受信に
 					// Relay が必要なため、バックグラウンドでもソケットと心拍を維持する。
 					if (!state.voiceNotifications.desired) {
 						stopConnectionHeartbeat();
@@ -1050,28 +1059,24 @@ export const useAppStore = create<AppState>(set => ({
 		}
 	},
 
-	voiceWebrtcOffer(windowId, sdp, sid) {
+	voiceSubscribe(sid) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
-		return controller.voiceWebrtcOffer(windowId, sdp, sid);
+		return controller.voiceSubscribe(sid);
 	},
 
-	voiceWebrtcSendIce(candidate, sid) {
-		controller?.voiceWebrtcSendIce(candidate, sid);
+	voiceUnsubscribe(sid) {
+		controller?.voiceUnsubscribe(sid);
 	},
 
-	voiceWebrtcStop(sid) {
-		controller?.voiceWebrtcStop(sid);
-	},
-
-	setVoiceWebrtcIceHandler(sid, handler) {
+	setVoiceClipHandler(sid, handler) {
 		if (controller) {
-			controller.voiceWebrtcIceHandler = { sid, fn: handler };
+			controller.voiceClipHandler = { sid, fn: handler };
 		}
 	},
 
-	clearVoiceWebrtcIceHandler(sid) {
-		if (controller && controller.voiceWebrtcIceHandler?.sid === sid) {
-			controller.voiceWebrtcIceHandler = undefined;
+	clearVoiceClipHandler(sid) {
+		if (controller && controller.voiceClipHandler?.sid === sid) {
+			controller.voiceClipHandler = undefined;
 		}
 	},
 

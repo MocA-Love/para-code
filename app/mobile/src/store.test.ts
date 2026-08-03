@@ -206,7 +206,8 @@ describe('MobileController', () => {
 			protocolVersion: 3, desktopEpoch: 'new-desktop', revision: 1, complete: false,
 			renderers: [], activeWs: undefined, workspaces: [], terminals: [],
 		};
-		expect(mergeWorkspaceState(previous, bootState)).toBe(previous);
+		// 表示データは旧epochのまま保持しつつ、能力bitだけは新PCの値を採用する。
+		expect(mergeWorkspaceState(previous, bootState)).toStrictEqual({ ...previous, voiceClips: undefined });
 
 		// 新epochのwindowがreadyになったら、そのwindowの内容は新stateへ置換し、未観測分は残す。
 		const firstReady: WorkspaceState = {
