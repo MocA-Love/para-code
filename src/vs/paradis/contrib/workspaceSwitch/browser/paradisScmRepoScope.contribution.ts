@@ -63,6 +63,27 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 	private static readonly MAX_CLOSE_ATTEMPTS = 3;
 
 	/**
+	 * 既に `git.close` を投げ終えたリポジトリroot (比較キー)。
+	 *
+	 * upstream の `git.close` は `{ repository: true }` 付きで登録されているため、第一引数から
+	 * リポジトリを解決できないと **確認なしで `model.pickRepository()` にフォールバックする**
+	 * (extensions/git/src/commands.ts の createCommand)。そのときの挙動は git 拡張側で開いている
+	 * リポジトリ数によって変わり、どれも実害がある:
+	 *  - 0件: 「利用可能なリポジトリがありません」を throw → モーダルのエラーダイアログが出る
+	 *  - 1件: **確認なしでその1件を閉じる** (閉じてはいけないリポジトリでも閉じる)
+	 *  - 2件以上: 「Choose a repository」の QuickPick が唐突に出る
+	 *
+	 * 解決に失敗するのは「その root が git 拡張側で既に閉じられている」場合で、close の完了は
+	 * ext host → renderer へ非同期に伝播するため、`scmService.repositories` を見た生存確認
+	 * (下の includes チェック) では防げない。同一 root へ二度目の `git.close` を投げないことで
+	 * フォールバック自体を踏まないようにする。
+	 *
+	 * git 拡張がそのリポジトリを開き直したら (onDidAddRepository) 記録を落として再び閉じられる
+	 * ようにする。フォルダ入れ替え時のクリアは {@link _closeAttempts} と同じ。
+	 */
+	private readonly _closedRoots = new Set<string>();
+
+	/**
 	 * スコープ外リポジトリの close / 現フォルダの openRepository を git 拡張へ依頼する遅延実行。
 	 * 切り替え直後は git 拡張自身がフォルダ変更を処理中のため、少し置いてから・連打は集約して行う。
 	 */
@@ -84,6 +105,12 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		// ISCMViewService は DI 注入時点で構築済み = 自身の onDidAddRepository リスナーの方が先に
 		// 登録されているため、このハンドラ実行時には表示状態の初期化 (選択) が済んでいる
 		this._register(this.scmService.onDidAddRepository(repository => {
+			// 開き直されたリポジトリは再び close の対象に戻す (_closedRoots のコメント参照)
+			const root = repository.provider.rootUri;
+			if (root) {
+				this._closedRoots.delete(this.uriIdentityService.extUri.getComparisonKey(root));
+			}
+
 			if (this.isEnabled() && !this.isInScope(repository)) {
 				this.hide([repository]);
 				this._reconcileScheduler.schedule();
@@ -119,6 +146,7 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		// スコープ外リポジトリの close と現フォルダの開き直しを予約する
 		this._register(this.contextService.onDidChangeWorkspaceFolders(() => {
 			this._closeAttempts.clear();
+			this._closedRoots.clear();
 			this.applyToAll();
 			this._reconcileScheduler.schedule();
 		}));
@@ -127,6 +155,7 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 			if (e.affectsConfiguration(ParadisScmRepoScope.SETTING_ID)) {
 				if (this.isEnabled()) {
 					this._closeAttempts.clear();
+					this._closedRoots.clear();
 					this.applyToAll();
 					this._reconcileScheduler.schedule();
 				} else {
@@ -190,6 +219,13 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 					// いる (スコープ判定と git の root 解決の食い違い) と見なし、以後は close せず
 					// 「開いたまま非表示」に留める (_closeAttempts のコメント参照)
 					const rootKey = this.uriIdentityService.extUri.getComparisonKey(root);
+
+					// 二度目の close は git 拡張側で解決に失敗し、pickRepository フォールバックで
+					// 誤 close やモーダルを起こす (_closedRoots のコメント参照)
+					if (this._closedRoots.has(rootKey)) {
+						continue;
+					}
+
 					const attempts = this._closeAttempts.get(rootKey) ?? 0;
 					if (attempts >= ParadisScmRepoScope.MAX_CLOSE_ATTEMPTS) {
 						if (attempts === ParadisScmRepoScope.MAX_CLOSE_ATTEMPTS) {
@@ -202,6 +238,11 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 					try {
 						this.logService.trace(`[ParadisScmRepoScope] closing out-of-scope repository: ${root.toString()}`);
 						await this.commandService.executeCommand('git.close', root);
+						// 成功した close だけを記録する。防ぎたいフォールバック (pickRepository) は git 拡張側で
+						// catch されモーダルを出したあと resolve するため、ここには reject として来ない。
+						// 逆に reject するのは「git 拡張が未起動・コマンド未登録」といった再試行すべきケースなので、
+						// それを記録してしまうと下の catch のコメントどおりの再試行ができなくなる
+						this._closedRoots.add(rootKey);
 					} catch (error) {
 						// git 拡張未起動・コマンド未登録などは次回の reconcile で再試行される
 						this.logService.trace('[ParadisScmRepoScope] git.close failed', error);
