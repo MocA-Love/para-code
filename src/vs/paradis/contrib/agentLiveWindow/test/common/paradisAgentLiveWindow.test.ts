@@ -172,7 +172,10 @@ suite('Paradis - agent live window', () => {
 					sortDesc: false,
 					group: 'status',
 					columns: 4,
-					minRowHeight: 150,
+					fillRows: true,
+					rowHeight: 150,
+					fontSize: 11,
+					fitFontToTile: false,
 					pinTop: false,
 					manualOrder: ['a'],
 					pinned: ['b'],
@@ -232,23 +235,35 @@ suite('Paradis - agent live window', () => {
 		);
 	});
 
-	test('keeps the minimum row height through a save and load round trip', () => {
-		const roundTrip = (minRowHeight: number | undefined): number | undefined =>
-			paradisParseAgentLiveViewState(paradisSerializeAgentLiveViewState(state({ minRowHeight }))).minRowHeight;
+	test('keeps the tile height and font size through a save and load round trip', () => {
+		const height = (rowHeight: number): number =>
+			paradisParseAgentLiveViewState(paradisSerializeAgentLiveViewState(state({ rowHeight }))).rowHeight;
+		const font = (fontSize: number): number =>
+			paradisParseAgentLiveViewState(paradisSerializeAgentLiveViewState(state({ fontSize }))).fontSize;
+		const parse = (raw: object): IParadisAgentLiveViewState => paradisParseAgentLiveViewState(JSON.stringify(raw));
 
 		assert.deepStrictEqual(
 			[
-				// undefined (=1画面に収める) は JSON から消えてしまうので null で残している。
-				roundTrip(undefined),
-				roundTrip(220),
-				roundTrip(3000),
-				roundTrip(5),
-				// 旧形式 (dense) からの移行と、設定が無いときの既定値。
-				paradisParseAgentLiveViewState(JSON.stringify({ dense: true })).minRowHeight,
-				paradisParseAgentLiveViewState(JSON.stringify({ dense: false })).minRowHeight,
-				paradisParseAgentLiveViewState(JSON.stringify({ minRowHeight: 'nonsense' })).minRowHeight,
+				[height(220), height(3000), height(5)],
+				[font(11), font(0.5), font(99), font(10.3)],
+				// 旧形式からの移行。どちらも実際には等分が優先されていたので「画面を等分」で
+				// 読み戻し、保存されていた数値は「高さを指定」用の初期値として引き継ぐ。
+				[parse({ minRowHeight: 320 }).fillRows, parse({ minRowHeight: 320 }).rowHeight],
+				[parse({ minRowHeight: null }).fillRows, parse({ minRowHeight: null }).rowHeight],
+				[parse({ dense: true }).fillRows, parse({ dense: true }).rowHeight],
+				// 新形式が入っていればそちらが勝つ。
+				[parse({ minRowHeight: 320, fillRows: false, rowHeight: 450 }).fillRows, parse({ minRowHeight: 320, fillRows: false, rowHeight: 450 }).rowHeight],
+				[parse({ fontSize: 'nonsense', fitFontToTile: true }).fontSize, parse({ fontSize: 'nonsense', fitFontToTile: true }).fitFontToTile],
 			],
-			[undefined, 220, 2000, 60, 150, 220, 220],
+			[
+				[220, 2000, 60],
+				[11, 4, 32, 10.5],
+				[true, 320],
+				[true, 280],
+				[true, 150],
+				[false, 450],
+				[11, true],
+			],
 		);
 	});
 

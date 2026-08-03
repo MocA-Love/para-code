@@ -138,17 +138,14 @@
 	color: var(--vscode-descriptionForeground);
 }
 
-.paradis-agent-live-toolbar,
-.paradis-agent-live-toolbar2 {
+/* 常に見せるのは状態の絞り込みだけ。並び替えと表示の設定は歯車のポップオーバーへ畳んでいる。 */
+.paradis-agent-live-toolbar {
 	display: flex;
 	align-items: center;
 	gap: 6px;
 	padding: 6px 10px;
 	flex-wrap: wrap;
 	border-bottom: 1px solid var(--vscode-editorWidget-border);
-}
-
-.paradis-agent-live-toolbar {
 	background-color: var(--vscode-editorWidget-background);
 }
 
@@ -365,31 +362,32 @@
 
 /* ---- グリッド ---- */
 
+/* 枠線色はタイルの隙間 (gap) を描くためのもので、壁だけに持たせる。「高さを指定」で
+	タイルが画面を埋めきらないとき、その下の余白まで枠線色のベタ塗りになるのを避ける。 */
 .paradis-agent-live-scroll {
 	flex: 1;
 	overflow: auto;
-	background-color: var(--vscode-editorWidget-border);
+	background-color: var(--vscode-editor-background);
 }
 
 .paradis-agent-live-wall {
-	/* タイル1枚の最低の高さ。実際の値は JS が px で流し込む (0 = 何件あっても1画面に収める) */
-	--paradis-agent-live-min-row: 0px;
+	background-color: var(--vscode-editorWidget-border);
+	/* タイル1枚の高さ。実際の値は JS が px で流し込む (「高さを指定」のときだけ使う) */
+	--paradis-agent-live-row-height: 280px;
 	display: grid;
 	gap: 1px;
 }
 
-/* 行はウィンドウを等分して埋める。ただし指定された高さまでは縮めず、
-	そこからは縦スクロールへ移す (潰れたタイルを全部見せても意味がないため)。 */
+/* 「画面を等分」。何件あっても1画面に収まる代わりに、増えるほど1枚が小さくなる。 */
 .paradis-agent-live-wall.fill {
 	min-height: 100%;
-	grid-auto-rows: minmax(var(--paradis-agent-live-min-row), 1fr);
+	grid-auto-rows: 1fr;
 }
 
-/* グループ表示のときは行を等分できない。見出しも grid-column: 1/-1 で1行を占めるため、
-	grid-auto-rows で下限を掛けると見出しがタイルと同じ高さに膨らむ。下限はタイル自身に
-	持たせ、見出しは自然な高さのままにする。 */
+/* 「高さを指定」とグループ表示。高さはタイル自身に持たせる —— grid-auto-rows で掛けると、
+	grid-column: 1/-1 で1行を占めるグループ見出しまで同じ高さに膨らむ。 */
 .paradis-agent-live-wall:not(.fill) > .paradis-agent-live-tile {
-	min-height: var(--paradis-agent-live-min-row);
+	height: var(--paradis-agent-live-row-height);
 }
 
 .paradis-agent-live-wall.columns-1 { grid-template-columns: 1fr; }
@@ -466,11 +464,12 @@
 	width: 2px;
 }
 
+/* 見出しは1行だけ。タイトル・ブランチ・経過時間・状態を横に並べ、残りは全部端末へ回す。 */
 .paradis-agent-live-tile-head {
 	display: flex;
 	align-items: center;
 	gap: 7px;
-	padding: 5px 9px 5px 11px;
+	padding: 4px 8px 4px 11px;
 	border-bottom: 1px solid var(--vscode-editorWidget-border);
 	background-color: var(--vscode-editorWidget-background);
 }
@@ -492,12 +491,35 @@
 	text-overflow: ellipsis;
 }
 
-.paradis-agent-live-tile-detail {
+.paradis-agent-live-tile-branch,
+.paradis-agent-live-tile-clock,
+.paradis-agent-live-tile-readonly {
+	flex: 0 0 auto;
 	font-size: 10.5px;
 	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;
+}
+
+/* ブランチ名は worktree 名などで長くなる。縮められるようにしておかないと、見出しが
+	あふれて状態バッジとピン・非表示のボタンが切り落とされる。 */
+.paradis-agent-live-tile-branch {
+	flex: 0 1 auto;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+.paradis-agent-live-tile-clock {
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-agent-live-tile-readonly {
+	color: var(--vscode-charts-yellow, #cca700);
+}
+
+/* 読み取り専用は通常起きない。空のときは間隔まで含めて消す。 */
+.paradis-agent-live-tile-readonly:empty {
+	display: none;
 }
 
 /* 端末は元の列数のまま描き、収まらない分は文字サイズを詰めて合わせる (JS 側 updateFontSize)。
@@ -522,20 +544,10 @@
 	color: var(--vscode-descriptionForeground);
 }
 
-.paradis-agent-live-tile-foot {
-	display: flex;
-	align-items: center;
-	gap: 7px;
-	padding: 3px 9px 3px 11px;
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
-	border-top: 1px solid var(--vscode-editorWidget-border);
-	font-variant-numeric: tabular-nums;
-}
-
 .paradis-agent-live-tile-actions {
 	display: flex;
 	gap: 1px;
+	flex: 0 0 auto;
 	opacity: 0;
 }
 
@@ -566,15 +578,128 @@
 	color: var(--vscode-focusBorder);
 }
 
-/* ---- ステータスバー ---- */
+/* ---- 歯車のポップオーバー ---- */
 
-.paradis-agent-live-statusbar {
+/*
+ * 並び替え・スペース・表示の設定をまとめて出す。コンテキストメニューにしないのは、文字サイズと
+ * タイルの高さを数値で直接打てるようにするため。縦位置は JS が歯車の実位置から流し込む。
+ */
+.paradis-agent-live-pop {
+	position: absolute;
+	right: 8px;
+	z-index: 50;
+	width: 320px;
+	/* 縦位置と max-height は JS が歯車の実位置から流し込む */
+	overflow-y: auto;
+	padding: 8px 12px 12px;
+	background-color: var(--vscode-editorWidget-background);
+	border: 1px solid var(--vscode-editorWidget-border);
+	border-radius: 8px;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+	font-size: 11.5px;
+	outline: none;
+}
+
+.paradis-agent-live-pop-head {
+	margin: 6px 0 4px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-agent-live-pop-sep {
+	height: 1px;
+	margin: 8px 0 2px;
+	background-color: var(--vscode-editorWidget-border);
+}
+
+.paradis-agent-live-pop-row {
 	display: flex;
 	align-items: center;
-	gap: 12px;
-	padding: 4px 11px;
-	font-size: 11px;
+	gap: 6px;
+	padding: 3px 0;
+}
+
+/* チェックボックスの説明を、その上の行のラベル幅に合わせて下げる */
+.paradis-agent-live-pop-row.indent {
+	padding-left: 92px;
+}
+
+.paradis-agent-live-pop-key {
+	flex: 0 0 86px;
+	width: 86px;
 	color: var(--vscode-descriptionForeground);
-	background-color: var(--vscode-editorWidget-background);
-	border-top: 1px solid var(--vscode-editorWidget-border);
+}
+
+.paradis-agent-live-pop-list {
+	display: flex;
+	flex-direction: column;
+}
+
+.paradis-agent-live-pop-list.scrollable {
+	max-height: 132px;
+	overflow-y: auto;
+}
+
+.paradis-agent-live-pop-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	padding: 3px 6px;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--vscode-foreground);
+	font-family: inherit;
+	font-size: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.paradis-agent-live-pop-item:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-agent-live-pop-item:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-agent-live-pop-check {
+	flex: 0 0 14px;
+	font-size: 13px;
+	visibility: hidden;
+	color: var(--vscode-focusBorder);
+}
+
+.paradis-agent-live-pop-item.checked > .paradis-agent-live-pop-check {
+	visibility: visible;
+}
+
+/* チェックボックスは label で包む (id を振ると窓を複数開いたときに衝突する) */
+.paradis-agent-live-pop-toggle {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--vscode-descriptionForeground);
+	cursor: pointer;
+}
+
+.paradis-agent-live-pop-checkbox {
+	flex: 0 0 auto;
+	margin: 0;
+	accent-color: var(--vscode-focusBorder);
+	cursor: pointer;
+}
+
+.paradis-agent-live-pop-hint {
+	padding: 4px 0 2px 92px;
+	font-size: 10.5px;
+	line-height: 1.6;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-agent-live-pop-hint:empty {
+	display: none;
 }

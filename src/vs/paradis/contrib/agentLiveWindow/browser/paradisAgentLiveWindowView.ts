@@ -11,29 +11,22 @@ import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hover
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Emitter } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
-import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ParadisAgentLiveMirror } from './paradisAgentLiveMirror.js';
 import { ParadisAgentLiveModel } from './paradisAgentLiveModel.js';
+import { ParadisAgentLiveSettingsPopover } from './paradisAgentLiveSettingsPopover.js';
 import {
 	IParadisAgentLiveEntry,
 	IParadisAgentLiveViewState,
+	PARADIS_AGENT_LIVE_DEFAULT_FONT_SIZE,
 	PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT,
-	PARADIS_AGENT_LIVE_MAX_COLUMNS,
-	PARADIS_AGENT_LIVE_MAX_ROW_HEIGHT,
-	PARADIS_AGENT_LIVE_MIN_COLUMNS,
-	PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT,
 	PARADIS_AGENT_LIVE_STATUS_ORDER,
-	ParadisAgentLiveGroup,
-	ParadisAgentLiveSort,
 	ParadisAgentLiveStatus,
 	paradisApplyAgentLiveManualDrop,
-	paradisClampAgentLiveRowHeight,
 	paradisFilterAgentLiveEntries,
 	paradisFormatAgentLiveDuration,
 	paradisGroupAgentLiveEntries,
@@ -45,10 +38,11 @@ import {
 interface ITile {
 	readonly root: HTMLElement;
 	readonly title: HTMLElement;
-	readonly detail: HTMLElement;
+	readonly branch: HTMLElement;
+	readonly clock: HTMLElement;
+	readonly readonlyMark: HTMLElement;
 	readonly badge: HTMLElement;
 	readonly spaceBar: HTMLElement;
-	readonly footText: HTMLElement;
 	readonly pinButton: HTMLElement;
 	readonly mirror: ParadisAgentLiveMirror | undefined;
 	entry: IParadisAgentLiveEntry;
@@ -62,26 +56,14 @@ const STATUS_LABELS: Record<ParadisAgentLiveStatus, string> = {
 	idle: localize('paradis.agentLive.status.idle', "待機"),
 };
 
-const SORT_LABELS: Record<ParadisAgentLiveSort, string> = {
-	attention: localize('paradis.agentLive.sort.attention', "要対応 → 経過時間の長い順"),
-	status: localize('paradis.agentLive.sort.status', "状態順"),
-	elapsed: localize('paradis.agentLive.sort.elapsed', "経過時間が長い順"),
-	updated: localize('paradis.agentLive.sort.updated', "最後に動いた順"),
-	space: localize('paradis.agentLive.sort.space', "スペース名順"),
-	manual: localize('paradis.agentLive.sort.manual', "手動（ドラッグで並べ替え）"),
-};
-
-const GROUP_LABELS: Record<ParadisAgentLiveGroup, string> = {
-	none: localize('paradis.agentLive.group.none', "なし"),
-	space: localize('paradis.agentLive.group.space', "スペース"),
-	status: localize('paradis.agentLive.group.status', "状態"),
-};
-
 /** 経過時間表示の更新間隔。秒単位の表示なので1秒で足りる。 */
 const CLOCK_INTERVAL = 1000;
 
 /**
  * ライブウィンドウの中身 (ツールバー + タイルのグリッド)。
+ *
+ * 常に見せるのは「状態の内訳」と「絞り込み中かどうか」だけにして、並び替え・スペース・
+ * 表示の設定はまとめて歯車のポップオーバーへ畳んでいる。タイルの面積を最優先するため。
  *
  * タイルは再描画のたびに作り直さず、ペイントークンをキーに使い回す。タイルを捨てると
  * その端末のミラー (detached xterm) も一緒に捨てることになり、状態が変わるたびに
@@ -102,42 +84,36 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	private readonly statusChipCounts = new Map<ParadisAgentLiveStatus, HTMLElement>();
 	/** グループ見出しと空表示。タイルと違って毎回作り直すので、参照を持って消す */
 	private readonly chromeElements: HTMLElement[] = [];
+	private readonly root: HTMLElement;
 	private readonly wall: HTMLElement;
 	private readonly filterBar: HTMLElement;
 	private readonly filterBarText: HTMLElement;
-	private readonly statusBarText: HTMLElement;
-	private readonly statusBarSort: HTMLElement;
-	private readonly spacesButton: HTMLElement;
-	private readonly sortButton: HTMLElement;
-	private readonly groupButtons = new Map<ParadisAgentLiveGroup, HTMLElement>();
-	private readonly columnButtons = new Map<number, HTMLElement>();
-	private readonly fitButton: HTMLElement;
-	private readonly rowHeightInput: HTMLInputElement;
+	private readonly countText: HTMLElement;
 	private readonly attentionChip: HTMLElement;
-	private readonly pinTopButton: HTMLElement;
+	private readonly settingsButton: HTMLElement;
+
+	/** 開いている間だけ生きる歯車ポップオーバー */
+	private readonly popover = this._register(new MutableDisposable<ParadisAgentLiveSettingsPopover>());
 
 	private intersectionObserver: IntersectionObserver | undefined;
 	private draggedToken: string | undefined;
 	/** 現在描画されている順序 (手動並び替えの土台に使う) */
 	private visibleOrder: string[] = [];
-	/** 「収める」を切った直後に戻す高さ。入力欄の表示値でもある */
-	private lastRowHeight = PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT;
 
 	constructor(
 		container: HTMLElement,
 		private readonly model: ParadisAgentLiveModel,
 		private readonly viewState: IParadisAgentLiveViewState,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IContextMenuService private readonly contextMenuService: IContextMenuService,
 		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
 		const root = append(container, $('.paradis-agent-live-window'));
+		this.root = root;
 
-		// --- 1段目: 状態フィルタ ---------------------------------------------------------
+		// --- ツールバー (1段) -------------------------------------------------------------
 		const toolbar = append(root, $('.paradis-agent-live-toolbar'));
-		append(toolbar, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.filterLabel', "状態");
 		for (const status of PARADIS_AGENT_LIVE_STATUS_ORDER) {
 			const chip = append(toolbar, $(`button.paradis-agent-live-chip.status-${status}`));
 			append(chip, $(`span.paradis-agent-live-dot.${status}`));
@@ -153,83 +129,10 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this._register(addDisposableListener(this.attentionChip, EventType.CLICK, () => this.toggleAttentionOnly()));
 
 		append(toolbar, $('span.paradis-agent-live-grow'));
-		this.spacesButton = append(toolbar, $('button.paradis-agent-live-chip'));
-		this.spacesButton.setAttribute('aria-haspopup', 'true');
-		this._register(addDisposableListener(this.spacesButton, EventType.CLICK, () => this.showSpacesMenu()));
-
-		// --- 2段目: 並び替え・表示 -------------------------------------------------------
-		const toolbar2 = append(root, $('.paradis-agent-live-toolbar2'));
-		append(toolbar2, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.sortLabel', "並び替え");
-		this.sortButton = append(toolbar2, $('button.paradis-agent-live-chip'));
-		this.sortButton.setAttribute('aria-haspopup', 'true');
-		this._register(addDisposableListener(this.sortButton, EventType.CLICK, () => this.showSortMenu()));
-
-		const sortDirButton = this.createIconButton(toolbar2, 'arrow-swap', localize('paradis.agentLive.sortDirection', "昇順・降順を反転"));
-		this._register(addDisposableListener(sortDirButton, EventType.CLICK, () => {
-			this.viewState.sortDesc = !this.viewState.sortDesc;
-			this.commit();
-		}));
-
-		append(toolbar2, $('span.paradis-agent-live-sep'));
-		append(toolbar2, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.groupLabel', "グループ");
-		const groupSeg = append(toolbar2, $('.paradis-agent-live-seg'));
-		for (const group of ['none', 'space', 'status'] as const) {
-			const button = append(groupSeg, $('button'));
-			button.textContent = GROUP_LABELS[group];
-			this._register(addDisposableListener(button, EventType.CLICK, () => {
-				this.viewState.group = group;
-				this.commit();
-			}));
-			this.groupButtons.set(group, button);
-		}
-
-		append(toolbar2, $('span.paradis-agent-live-sep'));
-		append(toolbar2, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.columnsLabel', "列");
-		const colsSeg = append(toolbar2, $('.paradis-agent-live-seg'));
-		for (let columns = PARADIS_AGENT_LIVE_MIN_COLUMNS; columns <= PARADIS_AGENT_LIVE_MAX_COLUMNS; columns++) {
-			const button = append(colsSeg, $('button'));
-			button.textContent = String(columns);
-			const value = columns;
-			this.registerHover(button, localize('paradis.agentLive.columnsHint', "{0} 列で並べる", columns));
-			this._register(addDisposableListener(button, EventType.CLICK, () => {
-				this.viewState.columns = value;
-				this.commit();
-			}));
-			this.columnButtons.set(columns, button);
-		}
-
-		append(toolbar2, $('span.paradis-agent-live-sep'));
-		append(toolbar2, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.rowHeightLabel', "高さ");
-		this.fitButton = append(toolbar2, $('button.paradis-agent-live-chip'));
-		this.fitButton.textContent = localize('paradis.agentLive.fitToWindow', "収める");
-		this.registerHover(this.fitButton, localize('paradis.agentLive.fitToWindowHint', "何件あっても1画面に収める（多いと1枚が小さくなる）"));
-		this._register(addDisposableListener(this.fitButton, EventType.CLICK, () => {
-			this.viewState.minRowHeight = this.viewState.minRowHeight === undefined ? this.lastRowHeight : undefined;
-			this.commit();
-		}));
-
-		// 画面の大きさで「読める高さ」はまるで違うので、px を直接打てるようにする。
-		this.rowHeightInput = append(toolbar2, $('input.paradis-agent-live-number')) as HTMLInputElement;
-		this.rowHeightInput.type = 'number';
-		this.rowHeightInput.min = String(PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT);
-		this.rowHeightInput.max = String(PARADIS_AGENT_LIVE_MAX_ROW_HEIGHT);
-		this.rowHeightInput.step = '10';
-		this.rowHeightInput.setAttribute('aria-label', localize('paradis.agentLive.rowHeightAria', "タイル1枚の最低の高さ（ピクセル）"));
-		this.registerHover(this.rowHeightInput, localize('paradis.agentLive.rowHeightHint', "タイル1枚の最低の高さ。これを下回るところからは縦スクロールになる"));
-		// change は Enter でもフォーカスが外れたときでも発火する。keydown を別に見ると
-		// Enter のときだけ二重に走る。
-		this._register(addDisposableListener(this.rowHeightInput, EventType.CHANGE, () => this.applyRowHeightInput()));
-		append(toolbar2, $('span.paradis-agent-live-tool-label')).textContent = localize('paradis.agentLive.rowHeightUnit', "px");
-
-		append(toolbar2, $('span.paradis-agent-live-grow'));
-		this.pinTopButton = this.createIconButton(toolbar2, 'pin', localize('paradis.agentLive.pinTop', "ピン留めを常に先頭にする"));
-		this._register(addDisposableListener(this.pinTopButton, EventType.CLICK, () => {
-			this.viewState.pinTop = !this.viewState.pinTop;
-			this.commit();
-		}));
-
-		const resetButton = this.createIconButton(toolbar2, 'discard', localize('paradis.agentLive.reset', "絞り込みと並び替えを初期化"));
-		this._register(addDisposableListener(resetButton, EventType.CLICK, () => this.reset()));
+		this.countText = append(toolbar, $('span.paradis-agent-live-tool-label'));
+		this.settingsButton = this.createIconButton(toolbar, 'settings-gear', localize('paradis.agentLive.settings', "表示と並び"));
+		this.settingsButton.setAttribute('aria-haspopup', 'true');
+		this._register(addDisposableListener(this.settingsButton, EventType.CLICK, () => this.toggleSettings()));
 
 		// --- 絞り込み状況 ----------------------------------------------------------------
 		this.filterBar = append(root, $('.paradis-agent-live-filterbar'));
@@ -241,11 +144,6 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		// --- グリッド --------------------------------------------------------------------
 		const scroll = append(root, $('.paradis-agent-live-scroll'));
 		this.wall = append(scroll, $('.paradis-agent-live-wall'));
-
-		// --- ステータスバー --------------------------------------------------------------
-		const statusBar = append(root, $('.paradis-agent-live-statusbar'));
-		this.statusBarText = append(statusBar, $('span.paradis-agent-live-grow'));
-		this.statusBarSort = append(statusBar, $('span'));
 
 		this.observeIntersections(scroll);
 
@@ -261,6 +159,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		for (const tile of this.tiles.values()) {
 			tile.mirror?.layout();
 		}
+		// ツールバーは折り返すので、幅が変わると歯車の位置も動く。開いたままなら追従させる。
+		this.popover.value?.layout();
 	}
 
 	// ------------------------------------------------------------------ 描画
@@ -279,11 +179,11 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		// グループ見出しもグリッドの行を1つ使うため、見出しが出る間は行の等分 (fill) を掛けない。
 		const classes = ['paradis-agent-live-wall', `columns-${this.viewState.columns}`];
 		// 等分できるのは「見出しの無い並び」かつ「並べるものがある」ときだけ。
-		if (this.viewState.group === 'none' && sorted.length > 0) {
+		if (this.viewState.fillRows && this.viewState.group === 'none' && sorted.length > 0) {
 			classes.push('fill');
 		}
 		this.wall.className = classes.join(' ');
-		this.wall.style.setProperty('--paradis-agent-live-min-row', `${this.viewState.minRowHeight ?? 0}px`);
+		this.wall.style.setProperty('--paradis-agent-live-row-height', `${this.viewState.rowHeight}px`);
 
 		// 端末そのものが無くなったタイルだけを破棄する。絞り込みで消えたタイルは DOM から
 		// 外すだけにして、チップを押すたびに端末を作り直さない。
@@ -393,18 +293,16 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		root.tabIndex = 0;
 
 		const spaceBar = append(root, $('.paradis-agent-live-spacebar'));
+
+		// 見出しは1行だけ。タイトル・ブランチ・経過時間・状態を横に並べ、タイルの面積を端末へ回す。
 		const head = append(root, $('.paradis-agent-live-tile-head'));
 		append(head, $('span.paradis-agent-live-drag-handle.codicon.codicon-gripper'));
-		const titleBox = append(head, $('.paradis-agent-live-grow'));
-		const title = append(titleBox, $('.paradis-agent-live-tile-title'));
-		const detail = append(titleBox, $('.paradis-agent-live-tile-detail'));
+		const title = append(head, $('.paradis-agent-live-tile-title.paradis-agent-live-grow'));
+		const branch = append(head, $('span.paradis-agent-live-tile-branch'));
+		const readonlyMark = append(head, $('span.paradis-agent-live-tile-readonly'));
+		const clock = append(head, $('span.paradis-agent-live-tile-clock'));
 		const badge = append(head, $('span.paradis-agent-live-badge'));
-
-		const termContainer = append(root, $('.paradis-agent-live-term'));
-
-		const foot = append(root, $('.paradis-agent-live-tile-foot'));
-		const footText = append(foot, $('span.paradis-agent-live-grow'));
-		const actions = append(foot, $('.paradis-agent-live-tile-actions'));
+		const actions = append(head, $('.paradis-agent-live-tile-actions'));
 
 		const pinButton = this.createMiniButton(actions, 'pin', localize('paradis.agentLive.pin', "先頭に固定"), disposables);
 		disposables.add(addDisposableListener(pinButton, EventType.CLICK, event => {
@@ -420,6 +318,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			}
 			this.commit();
 		}));
+
+		const termContainer = append(root, $('.paradis-agent-live-term'));
 
 		// ドラッグ＆ドロップによる手動並び替え。
 		disposables.add(addDisposableListener(root, EventType.DRAG_START, event => {
@@ -465,7 +365,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.tokensByElement.set(root, entry.token);
 		this.intersectionObserver?.observe(root);
 
-		const tile: ITile = { root, title, detail, badge, spaceBar, footText, pinButton, mirror, entry };
+		const tile: ITile = { root, title, branch, clock, readonlyMark, badge, spaceBar, pinButton, mirror, entry };
 		this.tiles.set(entry.token, tile);
 		this.tileDisposables.set(entry.token, disposables);
 		return tile;
@@ -481,14 +381,20 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 	private createMirror(instance: ITerminalInstance, container: HTMLElement): ParadisAgentLiveMirror {
 		const mirror = this.instantiationService.createInstance(ParadisAgentLiveMirror, instance, container, undefined);
+		mirror.setFontSize(this.mirrorFontSize());
 		mirror.start().catch(onUnexpectedError);
 		return mirror;
+	}
+
+	/** ミラーへ渡す文字サイズ。undefined ならタイル幅に全体を収める従来動作。 */
+	private mirrorFontSize(): number | undefined {
+		return this.viewState.fitFontToTile ? undefined : this.viewState.fontSize;
 	}
 
 	private updateTile(tile: ITile, entry: IParadisAgentLiveEntry, now: number): void {
 		tile.entry = entry;
 		tile.title.textContent = entry.title ? `${entry.spaceName} · ${entry.title}` : entry.spaceName;
-		tile.detail.textContent = entry.detail;
+		tile.branch.textContent = entry.detail;
 		tile.badge.className = `paradis-agent-live-badge ${entry.status}`;
 		clearNode(tile.badge);
 		append(tile.badge, $(`span.paradis-agent-live-dot.${entry.status}`));
@@ -499,6 +405,11 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		tile.root.classList.toggle('pinned', pinned);
 		tile.pinButton.classList.toggle('checked', pinned);
 		tile.pinButton.setAttribute('aria-pressed', String(pinned));
+		// 入力の転送ができないミラーは、打っても無反応に見えるので明示する。
+		tile.readonlyMark.textContent = tile.mirror?.isReadonly
+			? localize('paradis.agentLive.readonlyTile', "表示のみ")
+			: '';
+		tile.mirror?.setFontSize(this.mirrorFontSize());
 		tile.root.setAttribute('aria-label', localize(
 			'paradis.agentLive.tileLabel', "{0}（{1}）", tile.title.textContent ?? entry.spaceName, STATUS_LABELS[entry.status]));
 		this.updateTileClock(tile, now);
@@ -506,15 +417,11 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 	private updateTileClock(tile: ITile, now: number): void {
 		const elapsed = paradisFormatAgentLiveDuration(now - tile.entry.since);
-		const text = paradisIsAttentionStatus(tile.entry.status)
+		tile.clock.textContent = paradisIsAttentionStatus(tile.entry.status)
 			? localize('paradis.agentLive.waiting', "{0} 待機中", elapsed)
 			: tile.entry.status === 'review'
 				? localize('paradis.agentLive.completed', "{0}前に完了", elapsed)
 				: elapsed;
-		// 入力の転送ができないミラーは、打っても無反応に見えるので明示する。
-		tile.footText.textContent = tile.mirror?.isReadonly
-			? localize('paradis.agentLive.readonlyTile', "{0} · 表示のみ（入力できません）", text)
-			: text;
 	}
 
 	private updateClocks(): void {
@@ -549,41 +456,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		}
 		this.attentionChip.classList.toggle('checked', this.viewState.attentionOnly);
 		this.attentionChip.setAttribute('aria-pressed', String(this.viewState.attentionOnly));
-		this.pinTopButton.classList.toggle('checked', this.viewState.pinTop);
-		this.pinTopButton.setAttribute('aria-pressed', String(this.viewState.pinTop));
-
-		for (const [group, button] of this.groupButtons) {
-			const checked = this.viewState.group === group;
-			button.classList.toggle('checked', checked);
-			button.setAttribute('aria-pressed', String(checked));
-		}
-		for (const [columns, button] of this.columnButtons) {
-			const checked = this.viewState.columns === columns;
-			button.classList.toggle('checked', checked);
-			button.setAttribute('aria-pressed', String(checked));
-		}
-		const fitting = this.viewState.minRowHeight === undefined;
-		this.fitButton.classList.toggle('checked', fitting);
-		this.fitButton.setAttribute('aria-pressed', String(fitting));
-		this.rowHeightInput.disabled = fitting;
-		if (!fitting) {
-			this.lastRowHeight = this.viewState.minRowHeight!;
-		}
-		// 入力中の値は上書きしない (打っている途中で桁が飛ぶため)。
-		if (this.wall.ownerDocument.activeElement !== this.rowHeightInput) {
-			this.rowHeightInput.value = String(this.lastRowHeight);
-		}
 
 		const spaceNames = this.spaceOptions(entries);
-		this.spacesButton.textContent = this.viewState.spaces === undefined
-			? localize('paradis.agentLive.allSpaces', "すべてのスペース")
-			: this.viewState.spaces.length === 1
-				? (spaceNames.get(this.viewState.spaces[0]) ?? localize('paradis.agentLive.oneSpace', "スペース 1 件"))
-				: localize('paradis.agentLive.someSpaces', "スペース {0} 件", this.viewState.spaces.length);
-		this.spacesButton.classList.toggle('checked', this.viewState.spaces !== undefined);
-
-		this.sortButton.textContent = SORT_LABELS[this.viewState.sort];
-
 		const parts: string[] = [];
 		if (this.viewState.attentionOnly) {
 			parts.push(localize('paradis.agentLive.filterAttention', "要対応のみ"));
@@ -600,23 +474,10 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.filterBar.classList.toggle('hidden', !paradisHasAgentLiveFilter(this.viewState));
 		this.filterBarText.textContent = parts.join(' / ');
 
-		this.statusBarText.textContent = localize('paradis.agentLive.shownCount', "{0} / {1} 件を表示", shown, entries.length);
-		this.statusBarSort.textContent = SORT_LABELS[this.viewState.sort];
-	}
+		this.countText.textContent = localize('paradis.agentLive.shownCount', "{0} / {1} 件", shown, entries.length);
+		this.settingsButton.classList.toggle('checked', !!this.popover.value);
 
-	private applyRowHeightInput(): void {
-		const parsed = Number.parseInt(this.rowHeightInput.value, 10);
-		if (!Number.isFinite(parsed)) {
-			// 空欄や記号だけの入力は直前の値へ戻す。
-			this.rowHeightInput.value = String(this.lastRowHeight);
-			return;
-		}
-		this.lastRowHeight = paradisClampAgentLiveRowHeight(parsed);
-		// 丸めた結果を必ず書き戻す。Enter 確定では入力欄がフォーカスを持ったままなので、
-		// 描画側の「入力中は上書きしない」ガードに阻まれて表示だけ元の値が残る。
-		this.rowHeightInput.value = String(this.lastRowHeight);
-		this.viewState.minRowHeight = this.lastRowHeight;
-		this.commit();
+		this.popover.value?.update();
 	}
 
 	private spaceOptions(entries: readonly IParadisAgentLiveEntry[]): Map<string, string> {
@@ -717,49 +578,54 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.commit();
 	}
 
-	private showSpacesMenu(): void {
-		const options = this.spaceOptions(this.model.entries);
-		const selected = this.viewState.spaces;
-		const actions: IAction[] = [...options].map(([key, label]) => toAction({
-			id: `paradis.agentLive.space.${key}`,
-			label,
-			checked: selected === undefined || selected.includes(key),
-			run: () => {
-				const current = selected === undefined ? [...options.keys()] : [...selected];
-				const index = current.indexOf(key);
-				if (index >= 0) {
-					current.splice(index, 1);
-				} else {
-					current.push(key);
-				}
-				// 全部外した / 全部入れた場合は「すべて」に戻す (空の一覧を見せない)。
-				this.viewState.spaces = current.length === 0 || current.length === options.size ? undefined : current;
-				this.commit();
+	private toggleSettings(): void {
+		if (this.popover.value) {
+			this.closeSettings(false);
+			return;
+		}
+		this.popover.value = this.instantiationService.createInstance(
+			ParadisAgentLiveSettingsPopover,
+			this.root,
+			this.viewState,
+			{
+				anchor: this.settingsButton,
+				spaces: () => this.spaceOptions(this.model.entries),
+				visibleCells: () => this.visibleCells(),
+				commit: () => this.commit(),
+				close: restoreFocus => this.closeSettings(restoreFocus),
+				reset: () => this.reset(),
 			},
-		}));
-		actions.push(new Separator());
-		actions.push(toAction({
-			id: 'paradis.agentLive.space.all',
-			label: localize('paradis.agentLive.selectAllSpaces', "すべてのスペース"),
-			run: () => {
-				this.viewState.spaces = undefined;
-				this.commit();
-			},
-		}));
-		this.contextMenuService.showContextMenu({ getAnchor: () => this.spacesButton, getActions: () => actions });
+		);
+		this.settingsButton.classList.add('checked');
+		this.settingsButton.setAttribute('aria-expanded', 'true');
 	}
 
-	private showSortMenu(): void {
-		const actions: IAction[] = (Object.keys(SORT_LABELS) as ParadisAgentLiveSort[]).map(sort => toAction({
-			id: `paradis.agentLive.sort.${sort}`,
-			label: SORT_LABELS[sort],
-			checked: this.viewState.sort === sort,
-			run: () => {
-				this.viewState.sort = sort;
-				this.commit();
-			},
-		}));
-		this.contextMenuService.showContextMenu({ getAnchor: () => this.sortButton, getActions: () => actions });
+	private closeSettings(restoreFocus: boolean): void {
+		this.popover.clear();
+		this.settingsButton.classList.remove('checked');
+		this.settingsButton.setAttribute('aria-expanded', 'false');
+		if (restoreFocus) {
+			// Escape で閉じたときだけ戻す。外側をクリックして閉じた場合に奪うと、そのクリックで
+			// 掴んだはずの端末からフォーカスを取り上げてしまう。
+			this.settingsButton.focus();
+		}
+	}
+
+	/**
+	 * 設定のヒントに出す「いま何桁見えているか」。画面に出ているタイルから測る —— 絞り込みで
+	 * 外れたタイルは DOM から抜いてあるだけで台帳には残っており、そこから測ると寸法が 0 になって
+	 * ヒントが丸ごと消える。
+	 */
+	private visibleCells(): { readonly cols: number; readonly rows: number; readonly totalCols: number; readonly totalRows: number } | undefined {
+		for (const tile of this.tiles.values()) {
+			if (tile.root.isConnected) {
+				const cells = tile.mirror?.getVisibleCells();
+				if (cells) {
+					return cells;
+				}
+			}
+		}
+		return undefined;
 	}
 
 	private clearFilters(): void {
@@ -775,7 +641,10 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.viewState.sortDesc = true;
 		this.viewState.group = 'none';
 		this.viewState.columns = 3;
-		this.viewState.minRowHeight = PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT;
+		this.viewState.fillRows = true;
+		this.viewState.rowHeight = PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT;
+		this.viewState.fontSize = PARADIS_AGENT_LIVE_DEFAULT_FONT_SIZE;
+		this.viewState.fitFontToTile = false;
 		this.viewState.pinTop = true;
 		this.viewState.pinned = [];
 		this.viewState.manualOrder = [];
