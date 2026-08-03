@@ -44,6 +44,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-07-30',
 		items: [
 			{
+				icon: 'link-outline',
+				title: 'ペアリング直後や解除時にアプリが閉じなくなりました',
+				body: '初回接続の完了時と、接続済みのPCとのペアリングを解除したときに、アプリが終了することがありました。',
+				tone: 'green',
+			},
+			{
 				icon: 'list-outline',
 				title: '複数の質問への回答が、ずれずに届くようになりました',
 				body: '全部答えて送っても、回答が1問ずつずれて入ったり、途中で止まったままになることがありました。PC側へ送る操作の送り方を直しています。',
