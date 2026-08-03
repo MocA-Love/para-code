@@ -35,10 +35,10 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { PARADIS_SPREADSHEET_DIFF_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisOverflowItem, IParadisPageBreakOverlay, PARADIS_ROW_NUM_COL_WIDTH, appendDiagonalOverlay, applyBaseCellStyle, applyOverflow, buildPageBreakOverlay, buildShapeDiffOverlay, computeOverflowRoom, computeShapeBBox, createOverflowSpan, overflowToward, setCellContent } from './paradisSpreadsheetRender.js';
-import { IParadisRenderShape } from '../common/paradisSpreadsheet.js';
+import { IParadisDataValidation, IParadisRenderShape } from '../common/paradisSpreadsheet.js';
 import { parseSpreadsheetResource } from './paradisSpreadsheetClient.js';
 import { ParadisSpreadsheetDiffInput } from './paradisSpreadsheetInput.js';
-import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
+import { IParadisDiffCell, IParadisDiffDetail, IParadisDiffRow, IParadisDiffSheet, IParadisPageBreakDiff, IParadisShapeDiff, IParadisShapeRender, buildDataValidationDiff, buildDiffSheets, buildPageBreakDiff, buildShapeDiff, getDiffRowIndices } from './paradisSpreadsheetDiff.js';
 import { formatDiffDetails } from './paradisSpreadsheetDiffPresentation.js';
 import { appendIconButton, appendOpenInAppButton } from './paradisSpreadsheetToolbar.js';
 
@@ -54,6 +54,19 @@ interface IDiffLocation {
 	readonly rowIndex: number;
 	/** 図形の変更なら、ハイライト対象の図形と表示側。 */
 	readonly shape?: { readonly render: IParadisRenderShape; readonly side: 'original' | 'modified' };
+	/** 入力規則の変更なら、セル位置と変更前後の規則。 */
+	readonly validation?: IValidationChange;
+}
+
+interface IValidationChange {
+	readonly sheetIndex: number;
+	readonly sheetName: string;
+	readonly rowIndex: number;
+	readonly columnIndex: number;
+	readonly address: string;
+	readonly status: 'added' | 'removed' | 'modified';
+	readonly original?: IParadisDataValidation;
+	readonly modified?: IParadisDataValidation;
 }
 
 /** ペインの自然座標(zoom 適用前)での行位置測定結果。図形/ハイライトの配置に使う。 */
@@ -78,7 +91,10 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _countEl: HTMLElement | undefined;
 	private _navPositionEl: HTMLElement | undefined;
 	private _percentBtn: HTMLButtonElement | undefined;
+	private _validationFilterBtn: HTMLButtonElement | undefined;
 	private _bodyEl: HTMLElement | undefined;
+	private _panesEl: HTMLElement | undefined;
+	private _validationInspector: HTMLElement | undefined;
 	private _tabsEl: HTMLElement | undefined;
 	private _leftScroll: HTMLElement | undefined;
 	private _rightScroll: HTMLElement | undefined;
@@ -129,6 +145,11 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _leftPageBreakOverlay: IParadisPageBreakOverlay | undefined;
 	private _rightPageBreakOverlay: IParadisPageBreakOverlay | undefined;
 	private _diffLocations: IDiffLocation[] = [];
+	private _allDiffLocations: IDiffLocation[] = [];
+	private _validationLocations: IDiffLocation[] = [];
+	private _validationFilter = false;
+	private _selectedValidation: IValidationChange | undefined;
+	private _renderedValidationCells: { readonly cell: HTMLElement; readonly button: HTMLButtonElement; readonly address: string }[] = [];
 	private _activeSheetIndex = 0;
 	// 開いた直後はどの変更にも合っていない(先頭を表示しているだけ)ので -1。Next で先頭、Prev で末尾に入る。
 	private _currentDiffIdx = -1;
@@ -154,6 +175,15 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		const toolbar = dom.append(this._root, $('.paradis-spreadsheet-diff-toolbar'));
 		this._countEl = dom.append(toolbar, $('span.paradis-spreadsheet-diff-count'));
 		const right = dom.append(toolbar, $('.paradis-spreadsheet-diff-toolbar-right'));
+
+		// 入力規則だけに絞り込み、セルマーカーと詳細ペインを表示する。
+		this._validationFilterBtn = dom.append(right, $('button.paradis-spreadsheet-validation-filter')) as HTMLButtonElement;
+		this._validationFilterBtn.title = localize('paradis.spreadsheet.validationFilter', "Show Data Validation Changes");
+		this._validationFilterBtn.setAttribute('aria-pressed', 'false');
+		dom.append(this._validationFilterBtn, $(`span${ThemeIcon.asCSSSelector(Codicon.checklist)}`));
+		const validationFilterLabel = dom.append(this._validationFilterBtn, $('span'));
+		validationFilterLabel.textContent = localize('paradis.spreadsheet.validation', "Input Rules");
+		this._headerDisposables.add(dom.addDisposableListener(this._validationFilterBtn, dom.EventType.CLICK, () => this._setValidationFilter(!this._validationFilter)));
 
 		// ズーム −/%/＋（通常ビューアと同じ。左右ペインに同倍率を適用する）。
 		const zoom = dom.append(right, $('.paradis-spreadsheet-diff-zoom'));
@@ -185,6 +215,12 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._modifiedResource = diffInput.modifiedResource;
 		this._activeSheetIndex = 0;
 		this._currentDiffIdx = -1;
+		this._validationFilter = false;
+		this._selectedValidation = undefined;
+		this._allDiffLocations = [];
+		this._validationLocations = [];
+		this._diffLocations = [];
+		this._updateValidationFilterButton();
 		this._userAdjusted = false;
 		this._scale = 1;
 
@@ -221,6 +257,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			return;
 		}
 		const generation = ++this._loadGeneration;
+		const previousValidation = this._selectedValidation;
 		this._renderMessage(localize('paradis.spreadsheet.loadingDiff', "Loading diff..."));
 		try {
 			const [origWb, modWb] = await Promise.all([
@@ -237,13 +274,40 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 			const origByName = new Map(origWb.sheets.map(s => [s.name, s]));
 			const modByName = new Map(modWb.sheets.map(s => [s.name, s]));
 			this._pageBreakDiffs = this._diffSheets.map(s => buildPageBreakDiff(origByName.get(s.name), modByName.get(s.name)));
-			this._diffLocations = this._diffSheets.flatMap((sheet, sheetIndex) => this._buildSheetLocations(sheet, sheetIndex));
+			this._allDiffLocations = this._diffSheets.flatMap((sheet, sheetIndex) => this._buildSheetLocations(sheet, sheetIndex));
+			this._validationLocations = this._diffSheets.flatMap((sheet, sheetIndex) => this._buildValidationLocations(sheet, sheetIndex));
+			let restoredLocation: IDiffLocation | undefined;
+			if (this._validationFilter && this._validationLocations.length > 0) {
+				this._diffLocations = this._validationLocations;
+				const selectedLocation = this._validationLocations.find(location => {
+					const validation = location.validation;
+					return validation !== undefined
+						&& previousValidation !== undefined
+						&& validation.sheetName === previousValidation.sheetName
+						&& validation.address === previousValidation.address;
+				}) ?? this._validationLocations.find(location => location.sheetIndex === this._activeSheetIndex)
+					?? this._validationLocations[0];
+				this._selectedValidation = selectedLocation.validation;
+				this._currentDiffIdx = this._validationLocations.indexOf(selectedLocation);
+				this._activeSheetIndex = selectedLocation.sheetIndex;
+				restoredLocation = selectedLocation;
+			} else {
+				this._validationFilter = false;
+				this._selectedValidation = undefined;
+				this._diffLocations = this._allDiffLocations;
+				this._currentDiffIdx = -1;
+			}
 			if (this._activeSheetIndex >= this._diffSheets.length) {
 				this._activeSheetIndex = 0;
 			}
+			this._updateValidationFilterButton();
 			this._renderSheet();
 			this._renderTabs();
 			this._updateNav();
+			if (restoredLocation) {
+				this._scrollToRow(restoredLocation.rowIndex);
+				this._navigateRaf.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation(restoredLocation!));
+			}
 		} catch (err) {
 			if (!token.isCancellationRequested) {
 				this._renderMessage(localize('paradis.spreadsheet.errorDiff', "Failed to open spreadsheet diff: {0}", err instanceof Error ? err.message : String(err)));
@@ -278,12 +342,219 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		return locs;
 	}
 
+	/** 入力規則が変わったセルを、セル単位のナビゲーション位置として返す。 */
+	private _buildValidationLocations(sheet: IParadisDiffSheet, sheetIndex: number): IDiffLocation[] {
+		const locations: IDiffLocation[] = [];
+		const minColumn = sheet.modifiedMinCol ?? sheet.originalMinCol ?? 1;
+		const rows = sheet.modifiedRows.length > 0 ? sheet.modifiedRows : sheet.originalRows;
+		const rowPositions = rows.flatMap((row, index) => row.excelRow === undefined ? [] : [{ excelRow: row.excelRow, index }]);
+		const nearestRowIndex = (excelRow: number): number => {
+			if (rowPositions.length === 0) {
+				return 0;
+			}
+			let low = 0;
+			let high = rowPositions.length;
+			while (low < high) {
+				const middle = Math.floor((low + high) / 2);
+				if (rowPositions[middle].excelRow < excelRow) {
+					low = middle + 1;
+				} else {
+					high = middle;
+				}
+			}
+			const after = rowPositions[Math.min(low, rowPositions.length - 1)];
+			const before = rowPositions[Math.max(0, low - 1)];
+			return Math.abs(before.excelRow - excelRow) <= Math.abs(after.excelRow - excelRow) ? before.index : after.index;
+		};
+		for (const change of buildDataValidationDiff(sheet.originalDataValidations, sheet.modifiedDataValidations)) {
+			const rowIndex = nearestRowIndex(change.range.minR);
+			const validation: IValidationChange = {
+				sheetIndex,
+				sheetName: sheet.name,
+				rowIndex,
+				columnIndex: change.range.minC - minColumn,
+				address: change.address,
+				status: change.status,
+				...(change.original ? { original: change.original } : {}),
+				...(change.modified ? { modified: change.modified } : {}),
+			};
+			locations.push({ sheetIndex, rowIndex, validation });
+		}
+		return locations;
+	}
+
+	private _updateValidationFilterButton(): void {
+		if (!this._validationFilterBtn) {
+			return;
+		}
+		this._validationFilterBtn.classList.toggle('active', this._validationFilter);
+		this._validationFilterBtn.setAttribute('aria-pressed', String(this._validationFilter));
+		this._validationFilterBtn.disabled = this._validationLocations.length === 0;
+	}
+
+	private _setValidationFilter(enabled: boolean): void {
+		if (enabled && this._validationLocations.length === 0) {
+			return;
+		}
+		if (enabled) {
+			const first = this._validationLocations[0]?.validation;
+			if (first) {
+				this._selectValidationChange(first);
+			}
+			return;
+		}
+		this._validationFilter = enabled;
+		this._diffLocations = this._allDiffLocations;
+		this._currentDiffIdx = -1;
+		this._selectedValidation = undefined;
+		this._updateValidationFilterButton();
+		this._renderSheet();
+		this._renderTabs();
+		this._updateNav();
+	}
+
+	private _selectValidationChange(change: IValidationChange, focusInspector = false): void {
+		const needsRender = !this._validationFilter || change.sheetIndex !== this._activeSheetIndex;
+		this._validationFilter = true;
+		this._diffLocations = this._validationLocations;
+		this._activeSheetIndex = change.sheetIndex;
+		this._selectedValidation = change;
+		this._currentDiffIdx = this._diffLocations.findIndex(location => location.validation === change);
+		this._updateValidationFilterButton();
+		if (needsRender) {
+			this._renderSheet();
+			this._renderTabs();
+		} else {
+			this._updateValidationSelection();
+			this._renderValidationInspector(change);
+		}
+		this._updateNav();
+		this._scrollToRow(change.rowIndex);
+		this._navigateRaf.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => {
+			this._highlightLocation({ sheetIndex: change.sheetIndex, rowIndex: change.rowIndex, validation: change });
+			if (focusInspector) {
+				this._validationInspector?.focus();
+			}
+		});
+	}
+
+	private _updateValidationSelection(): void {
+		for (const rendered of this._renderedValidationCells) {
+			const selected = rendered.address === this._selectedValidation?.address;
+			rendered.cell.classList.toggle('selected', selected);
+			rendered.button.setAttribute('aria-pressed', String(selected));
+		}
+	}
+
+	private _validationTypeLabel(type: IParadisDataValidation['type'] | undefined): string {
+		switch (type) {
+			case 'any': return localize('paradis.spreadsheet.validation.any', "Any Value");
+			case 'list': return localize('paradis.spreadsheet.validation.list', "List");
+			case 'whole': return localize('paradis.spreadsheet.validation.whole', "Whole Number");
+			case 'decimal': return localize('paradis.spreadsheet.validation.decimal', "Decimal");
+			case 'date': return localize('paradis.spreadsheet.validation.date', "Date");
+			case 'time': return localize('paradis.spreadsheet.validation.time', "Time");
+			case 'textLength': return localize('paradis.spreadsheet.validation.textLength', "Text Length");
+			case 'custom': return localize('paradis.spreadsheet.validation.custom', "Custom Formula");
+			case undefined: return localize('paradis.spreadsheet.validation.unset', "Not Set");
+		}
+	}
+
+	private _validationOperatorLabel(operator: IParadisDataValidation['operator'] | undefined): string {
+		switch (operator) {
+			case 'between': return localize('paradis.spreadsheet.validation.between', "Between");
+			case 'notBetween': return localize('paradis.spreadsheet.validation.notBetween', "Not Between");
+			case 'equal': return localize('paradis.spreadsheet.validation.equal', "Equal To");
+			case 'notEqual': return localize('paradis.spreadsheet.validation.notEqual', "Not Equal To");
+			case 'greaterThan': return localize('paradis.spreadsheet.validation.greaterThan', "Greater Than");
+			case 'lessThan': return localize('paradis.spreadsheet.validation.lessThan', "Less Than");
+			case 'greaterThanOrEqual': return localize('paradis.spreadsheet.validation.greaterThanOrEqual', "Greater Than or Equal To");
+			case 'lessThanOrEqual': return localize('paradis.spreadsheet.validation.lessThanOrEqual', "Less Than or Equal To");
+			case undefined: return localize('paradis.spreadsheet.validation.unset', "Not Set");
+		}
+	}
+
+	private _validationBooleanLabel(value: boolean | undefined): string {
+		return value === undefined
+			? localize('paradis.spreadsheet.validation.unset', "Not Set")
+			: value
+				? localize('paradis.spreadsheet.validation.yes', "Yes")
+				: localize('paradis.spreadsheet.validation.no', "No");
+	}
+
+	private _validationStatusLabel(status: IValidationChange['status']): string {
+		return status === 'added'
+			? localize('paradis.spreadsheet.validationAdded', "Added")
+			: status === 'removed'
+				? localize('paradis.spreadsheet.validationRemoved', "Removed")
+				: localize('paradis.spreadsheet.validationModified', "Modified");
+	}
+
+	private _renderValidationInspector(change: IValidationChange | undefined): void {
+		const inspector = this._validationInspector;
+		if (!inspector) {
+			return;
+		}
+		dom.clearNode(inspector);
+		const header = dom.append(inspector, $('.paradis-spreadsheet-validation-inspector-header'));
+		dom.append(header, $(`span${ThemeIcon.asCSSSelector(Codicon.checklist)}`));
+		const headerLabel = dom.append(header, $('span'));
+		headerLabel.textContent = localize('paradis.spreadsheet.validationChanges', "Input Rule Changes");
+		if (!change) {
+			const empty = dom.append(inspector, $('.paradis-spreadsheet-validation-empty'));
+			empty.textContent = localize('paradis.spreadsheet.validationSelect', "Select a cell to inspect its input rule change.");
+			return;
+		}
+
+		const content = dom.append(inspector, $('.paradis-spreadsheet-validation-inspector-content'));
+		const heading = dom.append(content, $('.paradis-spreadsheet-validation-heading'));
+		const address = dom.append(heading, $('strong'));
+		address.textContent = change.address;
+		const status = dom.append(heading, $(`span.paradis-spreadsheet-validation-status.${change.status}`));
+		status.textContent = this._validationStatusLabel(change.status);
+
+		const original = change.original;
+		const modified = change.modified;
+		const type = dom.append(content, $('.paradis-spreadsheet-validation-type'));
+		type.textContent = this._validationTypeLabel(modified?.type ?? original?.type);
+
+		const appendField = (label: string, before: string, after: string): void => {
+			if (before === after) {
+				return;
+			}
+			const field = dom.append(content, $('.paradis-spreadsheet-validation-field'));
+			const fieldLabel = dom.append(field, $('.paradis-spreadsheet-validation-field-label'));
+			fieldLabel.textContent = label;
+			const beforeEl = dom.append(field, $('.paradis-spreadsheet-validation-value.before'));
+			beforeEl.textContent = before;
+			const arrow = dom.append(field, $('.paradis-spreadsheet-validation-arrow'));
+			arrow.textContent = '↓';
+			const afterEl = dom.append(field, $('.paradis-spreadsheet-validation-value.after'));
+			afterEl.textContent = after;
+		};
+		const unset = localize('paradis.spreadsheet.validation.unset', "Not Set");
+		appendField(localize('paradis.spreadsheet.validation.type', "Rule Type"), this._validationTypeLabel(original?.type), this._validationTypeLabel(modified?.type));
+		appendField(localize('paradis.spreadsheet.validation.operator', "Condition"), this._validationOperatorLabel(original?.operator), this._validationOperatorLabel(modified?.operator));
+		appendField(localize('paradis.spreadsheet.validation.formulae', "Values or Formula"), original ? original.formulae.join(', ') : unset, modified ? modified.formulae.join(', ') : unset);
+		appendField(localize('paradis.spreadsheet.validation.allowBlank', "Allow Blank"), this._validationBooleanLabel(original?.allowBlank), this._validationBooleanLabel(modified?.allowBlank));
+		appendField(localize('paradis.spreadsheet.validation.showInputMessage', "Show Input Message"), this._validationBooleanLabel(original?.showInputMessage), this._validationBooleanLabel(modified?.showInputMessage));
+		appendField(localize('paradis.spreadsheet.validation.inputTitle', "Input Message Title"), original?.promptTitle ?? unset, modified?.promptTitle ?? unset);
+		appendField(localize('paradis.spreadsheet.validation.inputMessage', "Input Message"), original?.prompt ?? unset, modified?.prompt ?? unset);
+		appendField(localize('paradis.spreadsheet.validation.showErrorMessage', "Show Error Alert"), this._validationBooleanLabel(original?.showErrorMessage), this._validationBooleanLabel(modified?.showErrorMessage));
+		appendField(localize('paradis.spreadsheet.validation.errorStyle', "Error Style"), original?.errorStyle ?? unset, modified?.errorStyle ?? unset);
+		appendField(localize('paradis.spreadsheet.validation.errorTitle', "Error Title"), original?.errorTitle ?? unset, modified?.errorTitle ?? unset);
+		appendField(localize('paradis.spreadsheet.validation.errorMessage', "Error Message"), original?.error ?? unset, modified?.error ?? unset);
+	}
+
 	private _renderMessage(message: string): void {
 		if (!this._bodyEl) {
 			return;
 		}
 		this._renderDisposables.clear();
 		dom.clearNode(this._bodyEl);
+		this._renderedValidationCells = [];
+		this._panesEl = undefined;
+		this._validationInspector = undefined;
 		const msg = dom.append(this._bodyEl, $('.paradis-spreadsheet-message'));
 		msg.textContent = message;
 	}
@@ -294,6 +565,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		this._renderDisposables.clear();
 		dom.clearNode(this._bodyEl);
+		this._renderedValidationCells = [];
 
 		const sheet = this._diffSheets[this._activeSheetIndex];
 		if (!sheet) {
@@ -304,8 +576,16 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		// 自然幅で描画し、フィット/ズームは CSS zoom で一括拡縮する。
 		this._columnWidths = sheet.columnWidths;
 		this._naturalTableWidth = PARADIS_ROW_NUM_COL_WIDTH + sheet.columnWidths.reduce((s, w) => s + w, 0);
+		this._bodyEl.classList.toggle('validation-filter', this._validationFilter);
+		this._panesEl = dom.append(this._bodyEl, $('.paradis-spreadsheet-diff-panes'));
+		const validationByCell = new Map<string, IValidationChange>();
+		for (const location of this._validationLocations) {
+			if (location.sheetIndex === this._activeSheetIndex && location.validation) {
+				validationByCell.set(`${location.validation.rowIndex}:${location.validation.columnIndex}`, location.validation);
+			}
+		}
 
-		const left = this._buildDiffPane(sheet.originalRows, localize('paradis.spreadsheet.original', "Original"));
+		const left = this._buildDiffPane(sheet.originalRows, localize('paradis.spreadsheet.original', "Original"), 'original', validationByCell);
 		this._leftScroll = left.pane;
 		this._leftContent = left.content;
 		this._leftSizer = left.sizer;
@@ -313,9 +593,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._leftRowMeta = left.rowMeta;
 		this._leftTable = left.table;
 		this._leftHighlight = left.highlight;
-		dom.append(this._bodyEl, left.pane);
-		dom.append(this._bodyEl, $('.paradis-spreadsheet-diff-separator'));
-		const right = this._buildDiffPane(sheet.modifiedRows, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"));
+		dom.append(this._panesEl, left.pane);
+		dom.append(this._panesEl, $('.paradis-spreadsheet-diff-separator'));
+		const right = this._buildDiffPane(sheet.modifiedRows, localize('paradis.spreadsheet.modified', "Modified (Working Copy)"), 'modified', validationByCell);
 		this._rightScroll = right.pane;
 		this._rightContent = right.content;
 		this._rightSizer = right.sizer;
@@ -323,7 +603,17 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._rightRowMeta = right.rowMeta;
 		this._rightTable = right.table;
 		this._rightHighlight = right.highlight;
-		dom.append(this._bodyEl, right.pane);
+		dom.append(this._panesEl, right.pane);
+		if (this._validationFilter) {
+			this._validationInspector = dom.append(this._bodyEl, $('.paradis-spreadsheet-validation-inspector'));
+			this._validationInspector.tabIndex = -1;
+			this._validationInspector.setAttribute('role', 'region');
+			this._validationInspector.setAttribute('aria-label', localize('paradis.spreadsheet.validationChanges', "Input Rule Changes"));
+			this._validationInspector.setAttribute('aria-live', 'polite');
+			this._renderValidationInspector(this._selectedValidation);
+		} else {
+			this._validationInspector = undefined;
+		}
 
 		this._wireSyncScroll(this._leftScroll, this._rightScroll);
 		this._wireSyncScroll(this._rightScroll, this._leftScroll);
@@ -389,7 +679,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	}
 
 	/** ペインを組み立てる(測定・図形・スケールはまとめて呼び出し側の rAF で行う)。 */
-	private _buildDiffPane(rows: readonly IParadisDiffRow[], label: string): { pane: HTMLElement; sizer: HTMLElement; content: HTMLElement; table: HTMLElement; rows: HTMLElement[]; highlight: HTMLElement; rowMeta: { excelRow: number; tr: HTMLElement }[]; overflowCells: IParadisOverflowItem[] } {
+	private _buildDiffPane(rows: readonly IParadisDiffRow[], label: string, side: 'original' | 'modified', validationByCell: ReadonlyMap<string, IValidationChange>): { pane: HTMLElement; sizer: HTMLElement; content: HTMLElement; table: HTMLElement; rows: HTMLElement[]; highlight: HTMLElement; rowMeta: { excelRow: number; tr: HTMLElement }[]; overflowCells: IParadisOverflowItem[] } {
 		const pane = $('.paradis-spreadsheet-diff-pane');
 		const labelEl = dom.append(pane, $('.paradis-spreadsheet-diff-label'));
 		labelEl.textContent = label;
@@ -431,7 +721,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				if (cell.hidden) {
 					continue;
 				}
-				this._buildDiffCell(tr, cell, row.cells, ci, columnWidths, overflowCells);
+				const validation = validationByCell.get(`${rowIdx}:${ci}`);
+				const visibleValidation = validation && (validation.status === 'modified' || validation.status === 'removed' && side === 'original' || validation.status === 'added' && side === 'modified') ? validation : undefined;
+				this._buildDiffCell(tr, cell, row.cells, ci, columnWidths, overflowCells, visibleValidation);
 			}
 		});
 		this._renderDisposables.add(dom.addDisposableListener(table, dom.EventType.MOUSE_OVER, event => {
@@ -520,7 +812,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 	}
 
-	private _buildDiffCell(tr: HTMLElement, cell: IParadisDiffCell, cells: readonly IParadisDiffCell[], index: number, columnWidths: readonly number[], overflowSink: IParadisOverflowItem[]): void {
+	private _buildDiffCell(tr: HTMLElement, cell: IParadisDiffCell, cells: readonly IParadisDiffCell[], index: number, columnWidths: readonly number[], overflowSink: IParadisOverflowItem[], validationChange: IValidationChange | undefined): void {
 		const td = dom.append(tr, $('td')) as HTMLTableCellElement;
 		if (cell.colSpan && cell.colSpan > 1) {
 			td.colSpan = cell.colSpan;
@@ -535,6 +827,17 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (cell.diffDetails?.length) {
 			td.classList.add('paradis-spreadsheet-diff-details');
 			this._diffDetailsByCell.set(td, cell.diffDetails);
+		}
+		if (validationChange) {
+			td.classList.add('paradis-spreadsheet-validation-change', `validation-${validationChange.status}`);
+			td.dataset.validationAddress = validationChange.address;
+			if (cell.diffDetails?.every(detail => detail.kind === 'dataValidation')) {
+				td.classList.add('validation-only');
+			}
+			if (this._selectedValidation === validationChange) {
+				td.classList.add('selected');
+			}
+			this._renderDisposables.add(dom.addDisposableListener(td, dom.EventType.CLICK, () => this._selectValidationChange(validationChange)));
 		}
 		if (cell.diffSegments && cell.diffSegments.length > 0) {
 			for (const seg of cell.diffSegments) {
@@ -559,6 +862,18 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		if (cell.diagonal) {
 			appendDiagonalOverlay(td, cell.diagonal);
 		}
+		if (validationChange) {
+			const badge = dom.append(td, $(`button.paradis-spreadsheet-validation-badge${ThemeIcon.asCSSSelector(Codicon.checklist)}`)) as HTMLButtonElement;
+			badge.type = 'button';
+			badge.title = localize('paradis.spreadsheet.validationChanged', "Data Validation Changed");
+			badge.setAttribute('aria-label', localize('paradis.spreadsheet.validationCellLabel', "Input rule {0} at {1}", this._validationStatusLabel(validationChange.status), validationChange.address));
+			badge.setAttribute('aria-pressed', String(this._selectedValidation === validationChange));
+			this._renderedValidationCells.push({ cell: td, button: badge, address: validationChange.address });
+			this._renderDisposables.add(dom.addDisposableListener(badge, dom.EventType.CLICK, event => {
+				event.stopPropagation();
+				this._selectValidationChange(validationChange, event.detail === 0);
+			}));
+		}
 	}
 
 	private _zoom(factor: number): void {
@@ -574,7 +889,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 
 	/** 各ペインの表がその半幅に収まる倍率(縮小のみ。1 を超えて拡大はしない)。 */
 	private _computeFitScale(): number {
-		const paneWidth = this._bodyEl ? Math.max(0, Math.floor(this._bodyEl.clientWidth / 2) - 1) : 0;
+		const paneWidth = this._panesEl ? Math.max(0, Math.floor(this._panesEl.clientWidth / 2) - 1) : 0;
 		return paneWidth > 0 && this._naturalTableWidth > paneWidth ? paneWidth / this._naturalTableWidth : 1;
 	}
 
@@ -666,8 +981,19 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 					return;
 				}
 				this._activeSheetIndex = idx;
+				if (this._validationFilter) {
+					const selectedLocation = this._validationLocations.find(location => location.sheetIndex === idx);
+					this._selectedValidation = selectedLocation?.validation;
+					this._currentDiffIdx = selectedLocation ? this._validationLocations.indexOf(selectedLocation) : -1;
+				}
 				this._renderSheet();
 				this._renderTabs();
+				this._updateNav();
+				if (this._selectedValidation) {
+					const selected = this._selectedValidation;
+					this._scrollToRow(selected.rowIndex);
+					this._navigateRaf.value = dom.scheduleAtNextAnimationFrame(dom.getWindow(this._bodyEl ?? this._root!), () => this._highlightLocation({ sheetIndex: selected.sheetIndex, rowIndex: selected.rowIndex, validation: selected }));
+				}
 			}));
 		});
 	}
@@ -675,7 +1001,9 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 	private _updateNav(): void {
 		if (this._countEl) {
 			this._countEl.textContent = this._diffLocations.length > 0
-				? localize('paradis.spreadsheet.nChanges', "{0} changes", this._diffLocations.length)
+				? this._validationFilter
+					? localize('paradis.spreadsheet.nValidationChanges', "{0} input rule changes", this._diffLocations.length)
+					: localize('paradis.spreadsheet.nChanges', "{0} changes", this._diffLocations.length)
 				: localize('paradis.spreadsheet.noChangesShort', "No changes");
 		}
 		if (this._navPositionEl) {
@@ -701,10 +1029,14 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 		this._currentDiffIdx = idx;
 		const location = this._diffLocations[idx];
+		this._selectedValidation = location.validation;
 		if (location.sheetIndex !== this._activeSheetIndex) {
 			this._activeSheetIndex = location.sheetIndex;
 			this._renderSheet();
 			this._renderTabs();
+		} else if (location.validation) {
+			this._updateValidationSelection();
+			this._renderValidationInspector(location.validation);
 		}
 		this._updateNav();
 		this._scrollToRow(location.rowIndex);
@@ -800,6 +1132,14 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		this._leftPageBreakOverlay = undefined;
 		this._rightPageBreakOverlay = undefined;
 		this._diffLocations = [];
+		this._allDiffLocations = [];
+		this._validationLocations = [];
+		this._validationFilter = false;
+		this._selectedValidation = undefined;
+		this._renderedValidationCells = [];
+		this._updateValidationFilterButton();
+		this._panesEl = undefined;
+		this._validationInspector = undefined;
 		this._leftScroll = undefined;
 		this._rightScroll = undefined;
 		this._leftContent = undefined;

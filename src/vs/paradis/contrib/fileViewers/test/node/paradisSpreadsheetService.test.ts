@@ -72,4 +72,39 @@ suite('ParadisSpreadsheetService', () => {
 		strictEqual(sheet.rows[1999].excelRow, 2000);
 		strictEqual(sheet.rows[1999].cells[0].value, 'row-2000');
 	});
+
+	test('keeps data validation on otherwise empty cells as a sparse range', async () => {
+		const service = new ParadisSpreadsheetService();
+		const workbook = await encodeWorkbook(book => {
+			const sheet = book.addWorksheet('Input');
+			sheet.pageSetup.printArea = 'A1:A1';
+			const validation: ExcelJS.DataValidation = {
+				type: 'list',
+				formulae: ['"A,B"'],
+				showInputMessage: true,
+				prompt: 'Select a value',
+			};
+			for (let row = 3; row <= 20; row++) {
+				sheet.getCell(row, 3).dataValidation = validation;
+			}
+		});
+
+		const result = await service.parseWorkbook(workbook);
+		const sheet = result.sheets[0];
+
+		strictEqual(sheet.minCol, 1);
+		strictEqual(sheet.rows.length, 1);
+		deepStrictEqual(sheet.dataValidations, [{
+			range: { minR: 3, maxR: 20, minC: 3, maxC: 3 },
+			validation: {
+				type: 'list',
+				formulae: ['"A,B"'],
+				allowBlank: false,
+				showInputMessage: true,
+				prompt: 'Select a value',
+				showErrorMessage: false,
+				errorStyle: 'stop',
+			},
+		}]);
+	});
 });

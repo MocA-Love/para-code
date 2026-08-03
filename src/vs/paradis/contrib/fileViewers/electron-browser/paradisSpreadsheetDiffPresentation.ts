@@ -36,6 +36,7 @@ function detailLabel(detail: IParadisDiffDetail): string {
 		case 'shrinkToFit': return localize('paradis.spreadsheet.diff.shrinkToFit', "Shrink to Fit");
 		case 'richText': return localize('paradis.spreadsheet.diff.richText', "Rich Text");
 		case 'diagonalBorder': return localize('paradis.spreadsheet.diff.diagonalBorder', "Diagonal Border");
+		case 'dataValidation': return localize('paradis.spreadsheet.diff.dataValidation', "Data Validation");
 		case 'object': return localize('paradis.spreadsheet.diff.object', "Object");
 		case 'objectStart': return localize('paradis.spreadsheet.diff.objectStart', "Object Start (Row:Column:Offsets)");
 		case 'objectEnd': return localize('paradis.spreadsheet.diff.objectEnd', "Object End (Row:Column:Offsets)");

@@ -79,6 +79,180 @@ export interface IParadisCellRange {
 	readonly maxC: number;
 }
 
+/** Excel の入力規則。diff で安定比較できるよう、式・値は文字列へ正規化して保持する。 */
+export interface IParadisDataValidation {
+	readonly type: 'any' | 'list' | 'whole' | 'decimal' | 'date' | 'time' | 'textLength' | 'custom';
+	readonly operator?: 'between' | 'notBetween' | 'equal' | 'notEqual' | 'greaterThan' | 'lessThan' | 'greaterThanOrEqual' | 'lessThanOrEqual';
+	readonly formulae: readonly string[];
+	readonly allowBlank?: boolean;
+	readonly showInputMessage?: boolean;
+	readonly promptTitle?: string;
+	readonly prompt?: string;
+	readonly showErrorMessage?: boolean;
+	readonly errorStyle?: string;
+	readonly errorTitle?: string;
+	readonly error?: string;
+}
+
+/** 入力規則を連続矩形のまま保持する。表示矩形外の規則も展開せずdiff対象にするために使う。 */
+export interface IParadisDataValidationEntry {
+	readonly range: IParadisCellRange;
+	readonly validation: IParadisDataValidation;
+}
+
+function dataValidationKey(validation: IParadisDataValidation): string {
+	return JSON.stringify([
+		validation.type,
+		validation.operator ?? null,
+		validation.formulae,
+		validation.allowBlank ?? false,
+		validation.showInputMessage ?? false,
+		validation.promptTitle ?? null,
+		validation.prompt ?? null,
+		validation.showErrorMessage ?? false,
+		validation.errorStyle ?? 'stop',
+		validation.errorTitle ?? null,
+		validation.error ?? null,
+	]);
+}
+
+/** 同じ意味の隣接・重複範囲を安定した矩形集合へまとめる。 */
+export function canonicalizeDataValidationEntries(entries: readonly IParadisDataValidationEntry[]): readonly IParadisDataValidationEntry[] {
+	type KeyedEntry = { range: IParadisCellRange; validation: IParadisDataValidation; key: string };
+	const source: KeyedEntry[] = entries.map(entry => ({ range: { ...entry.range }, validation: entry.validation, key: dataValidationKey(entry.validation) }));
+	const merge = (items: readonly KeyedEntry[], axis: 'vertical' | 'horizontal'): KeyedEntry[] => {
+		const sorted = [...items].sort((a, b) => {
+			const keyOrder = a.key.localeCompare(b.key);
+			if (keyOrder !== 0) {
+				return keyOrder;
+			}
+			return axis === 'vertical'
+				? a.range.minC - b.range.minC || a.range.maxC - b.range.maxC || a.range.minR - b.range.minR || a.range.maxR - b.range.maxR
+				: a.range.minR - b.range.minR || a.range.maxR - b.range.maxR || a.range.minC - b.range.minC || a.range.maxC - b.range.maxC;
+		});
+		const result: KeyedEntry[] = [];
+		for (const item of sorted) {
+			const previous = result[result.length - 1];
+			const canMerge = previous?.key === item.key && (axis === 'vertical'
+				? previous.range.minC === item.range.minC && previous.range.maxC === item.range.maxC && item.range.minR <= previous.range.maxR + 1
+				: previous.range.minR === item.range.minR && previous.range.maxR === item.range.maxR && item.range.minC <= previous.range.maxC + 1);
+			if (previous && canMerge) {
+				previous.range = axis === 'vertical'
+					? { ...previous.range, minR: Math.min(previous.range.minR, item.range.minR), maxR: Math.max(previous.range.maxR, item.range.maxR) }
+					: { ...previous.range, minC: Math.min(previous.range.minC, item.range.minC), maxC: Math.max(previous.range.maxC, item.range.maxC) };
+			} else {
+				result.push({ ...item, range: { ...item.range } });
+			}
+		}
+		return result;
+	};
+	let canonical = source;
+	// 交互方向の分割でも通常は数回で収束する。反復上限を固定し、多数sqrefでも O(N log N) を保つ。
+	for (let pass = 0; pass < 8; pass++) {
+		const next = merge(merge(canonical, 'vertical'), 'horizontal');
+		if (next.length === canonical.length) {
+			return next.map(({ range, validation }) => ({ range, validation }));
+		}
+		canonical = next;
+	}
+	return canonical.map(({ range, validation }) => ({ range, validation }));
+}
+
+function validationRangesCoverSame(original: readonly IParadisCellRange[], modified: readonly IParadisCellRange[]): boolean {
+	if (original.length === 0 || modified.length === 0) {
+		return original.length === modified.length;
+	}
+	type RangeEvent = { readonly row: number; readonly side: 0 | 1; readonly delta: 1 | -1; readonly minC: number; readonly maxCExclusive: number };
+	const events: RangeEvent[] = [];
+	const columnBoundaries = new Set<number>();
+	const appendEvents = (ranges: readonly IParadisCellRange[], side: 0 | 1): void => {
+		for (const range of ranges) {
+			const maxCExclusive = range.maxC + 1;
+			columnBoundaries.add(range.minC);
+			columnBoundaries.add(maxCExclusive);
+			events.push(
+				{ row: range.minR, side, delta: 1, minC: range.minC, maxCExclusive },
+				{ row: range.maxR + 1, side, delta: -1, minC: range.minC, maxCExclusive },
+			);
+		}
+	};
+	appendEvents(original, 0);
+	appendEvents(modified, 1);
+	const columns = [...columnBoundaries].sort((a, b) => a - b);
+	const columnIndex = new Map(columns.map((column, index) => [column, index]));
+	const segmentCount = columns.length - 1;
+	const size = Math.max(1, segmentCount * 4 + 4);
+	const coverOriginal = new Int32Array(size);
+	const coverModified = new Int32Array(size);
+	const lengthOriginal = new Float64Array(size);
+	const lengthModified = new Float64Array(size);
+	const lengthIntersection = new Float64Array(size);
+	const pull = (node: number, left: number, right: number): void => {
+		const totalLength = columns[right] - columns[left];
+		const childOriginal = right - left === 1 ? 0 : lengthOriginal[node * 2] + lengthOriginal[node * 2 + 1];
+		const childModified = right - left === 1 ? 0 : lengthModified[node * 2] + lengthModified[node * 2 + 1];
+		const childIntersection = right - left === 1 ? 0 : lengthIntersection[node * 2] + lengthIntersection[node * 2 + 1];
+		lengthOriginal[node] = coverOriginal[node] > 0 ? totalLength : childOriginal;
+		lengthModified[node] = coverModified[node] > 0 ? totalLength : childModified;
+		lengthIntersection[node] = coverOriginal[node] > 0
+			? coverModified[node] > 0 ? totalLength : lengthModified[node]
+			: coverModified[node] > 0 ? lengthOriginal[node] : childIntersection;
+	};
+	const update = (node: number, left: number, right: number, start: number, end: number, side: 0 | 1, delta: 1 | -1): void => {
+		if (start <= left && right <= end) {
+			(side === 0 ? coverOriginal : coverModified)[node] += delta;
+			pull(node, left, right);
+			return;
+		}
+		const middle = Math.floor((left + right) / 2);
+		if (start < middle) {
+			update(node * 2, left, middle, start, end, side, delta);
+		}
+		if (end > middle) {
+			update(node * 2 + 1, middle, right, start, end, side, delta);
+		}
+		pull(node, left, right);
+	};
+	events.sort((a, b) => a.row - b.row);
+	let previousRow = events[0].row;
+	let index = 0;
+	while (index < events.length) {
+		const row = events[index].row;
+		const symmetricDifferenceLength = lengthOriginal[1] + lengthModified[1] - 2 * lengthIntersection[1];
+		if (row > previousRow && symmetricDifferenceLength !== 0) {
+			return false;
+		}
+		while (index < events.length && events[index].row === row) {
+			const event = events[index++];
+			update(1, 0, segmentCount, columnIndex.get(event.minC)!, columnIndex.get(event.maxCExclusive)!, event.side, event.delta);
+		}
+		previousRow = row;
+	}
+	return true;
+}
+
+/** 範囲の分割方法に依存せず、各規則が覆う実効領域が同じかを比較する。 */
+export function dataValidationEntriesCoverSame(original: readonly IParadisDataValidationEntry[], modified: readonly IParadisDataValidationEntry[]): boolean {
+	const group = (entries: readonly IParadisDataValidationEntry[]): Map<string, IParadisCellRange[]> => {
+		const result = new Map<string, IParadisCellRange[]>();
+		for (const entry of entries) {
+			const key = dataValidationKey(entry.validation);
+			const ranges = result.get(key) ?? [];
+			ranges.push(entry.range);
+			result.set(key, ranges);
+		}
+		return result;
+	};
+	const originalGroups = group(original);
+	const modifiedGroups = group(modified);
+	for (const key of new Set([...originalGroups.keys(), ...modifiedGroups.keys()])) {
+		if (!validationRangesCoverSame(originalGroups.get(key) ?? [], modifiedGroups.get(key) ?? [])) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /** 1セルの表示データ。 */
 export interface IParadisCellData {
 	readonly value: string;
@@ -92,6 +266,8 @@ export interface IParadisCellData {
 	readonly shrinkToFit?: boolean;
 	readonly richText?: readonly IParadisRichTextPart[];
 	readonly diagonal?: IParadisDiagonalBorder;
+	/** このセルに設定された入力規則。 */
+	readonly dataValidation?: IParadisDataValidation;
 }
 
 /** 1行(Excelの行番号1始まり、表示高さpx、セル配列)。 */
@@ -111,6 +287,8 @@ export interface IParadisSheetData {
 	readonly truncated: boolean;
 	/** データ先頭列(Excelの1始まり)。 */
 	readonly minCol: number;
+	/** 表示範囲外を含む、このシート上の入力規則。 */
+	readonly dataValidations?: readonly IParadisDataValidationEntry[];
 	/** このシートの図形(renderer 側で drawing XML から解析して付与)。 */
 	readonly shapes?: readonly IParadisRenderShape[];
 	/** 画面グリッド線を表示するか(sheetView.showGridLines、既定 true)。 */

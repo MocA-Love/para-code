@@ -14,7 +14,7 @@
 import { stringHash } from '../../../../base/common/hash.js';
 import { equals as objectsEqual } from '../../../../base/common/objects.js';
 import { localize } from '../../../../nls.js';
-import { IParadisCellData, IParadisRenderShape, IParadisSheetData } from '../common/paradisSpreadsheet.js';
+import { IParadisCellData, IParadisDataValidationEntry, IParadisRenderShape, IParadisSheetData, canonicalizeDataValidationEntries, dataValidationEntriesCoverSame } from '../common/paradisSpreadsheet.js';
 import { IParadisPageBreakLine, IParadisPageLabelBox, IParadisPageLayout, IParadisPageRectangle, ParadisPageBreakStatus, pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
 import { pageLabelText } from './paradisSpreadsheetRender.js';
 
@@ -44,6 +44,7 @@ export type ParadisDiffDetailKind =
 	| 'shrinkToFit'
 	| 'richText'
 	| 'diagonalBorder'
+	| 'dataValidation'
 	| 'object'
 	| 'objectStart'
 	| 'objectEnd'
@@ -92,6 +93,8 @@ export interface IParadisDiffSheet {
 	/** 各版シートの図形(斜線コネクタ等)。左=original / 右=modified で個別に描画する。 */
 	readonly originalShapes?: readonly IParadisRenderShape[];
 	readonly modifiedShapes?: readonly IParadisRenderShape[];
+	readonly originalDataValidations?: readonly IParadisDataValidationEntry[];
+	readonly modifiedDataValidations?: readonly IParadisDataValidationEntry[];
 	/** 図形描画時の Excel 行番号→Y座標の基準に使う、各版シートの行メタ(excelRow, height)。 */
 	readonly originalMinCol?: number;
 	readonly modifiedMinCol?: number;
@@ -99,6 +102,61 @@ export interface IParadisDiffSheet {
 	readonly tabColor?: string;
 	/** シート保護が有効か(新版優先、無ければ旧版)。 */
 	readonly protectedSheet?: boolean;
+}
+
+export interface IParadisDataValidationDiff {
+	readonly address: string;
+	readonly range: IParadisDataValidationEntry['range'];
+	readonly status: 'added' | 'removed' | 'modified';
+	readonly original?: IParadisDataValidationEntry['validation'];
+	readonly modified?: IParadisDataValidationEntry['validation'];
+}
+
+function validationRangeKey(range: IParadisDataValidationEntry['range']): string {
+	return `${range.minR}:${range.minC}:${range.maxR}:${range.maxC}`;
+}
+
+function validationColumnName(column: number): string {
+	let value = column;
+	let result = '';
+	while (value > 0) {
+		value--;
+		result = String.fromCharCode(65 + value % 26) + result;
+		value = Math.floor(value / 26);
+	}
+	return result;
+}
+
+function validationRangeAddress(range: IParadisDataValidationEntry['range']): string {
+	const start = `${validationColumnName(range.minC)}${range.minR}`;
+	const end = `${validationColumnName(range.maxC)}${range.maxR}`;
+	return start === end ? start : `${start}:${end}`;
+}
+
+/** 表示矩形から離れたセルも含め、矩形範囲をキーに入力規則を比較する。 */
+export function buildDataValidationDiff(originalEntries: readonly IParadisDataValidationEntry[] = [], modifiedEntries: readonly IParadisDataValidationEntry[] = []): IParadisDataValidationDiff[] {
+	if (dataValidationEntriesCoverSame(originalEntries, modifiedEntries)) {
+		return [];
+	}
+	const originalByRange = new Map(canonicalizeDataValidationEntries(originalEntries).map(entry => [validationRangeKey(entry.range), entry]));
+	const modifiedByRange = new Map(canonicalizeDataValidationEntries(modifiedEntries).map(entry => [validationRangeKey(entry.range), entry]));
+	const changes: IParadisDataValidationDiff[] = [];
+	for (const key of new Set([...originalByRange.keys(), ...modifiedByRange.keys()])) {
+		const originalEntry = originalByRange.get(key);
+		const modifiedEntry = modifiedByRange.get(key);
+		if (objectsEqual(originalEntry?.validation, modifiedEntry?.validation)) {
+			continue;
+		}
+		const range = modifiedEntry?.range ?? originalEntry!.range;
+		changes.push({
+			address: validationRangeAddress(range),
+			range,
+			status: !originalEntry && modifiedEntry ? 'added' : originalEntry && !modifiedEntry ? 'removed' : 'modified',
+			...(originalEntry ? { original: originalEntry.validation } : {}),
+			...(modifiedEntry ? { modified: modifiedEntry.validation } : {}),
+		});
+	}
+	return changes;
 }
 
 // 文字レベル差分が大きすぎる場合の粗いフォールバック閾値(n*m)。
@@ -296,6 +354,7 @@ function buildCellDiffDetails(original: IParadisCellData, modified: IParadisCell
 	pushDetail(details, 'shrinkToFit', !!original.shrinkToFit, !!modified.shrinkToFit);
 	pushStructuredDetail(details, 'richText', original.richText, modified.richText);
 	pushStructuredDetail(details, 'diagonalBorder', original.diagonal, modified.diagonal);
+	pushStructuredDetail(details, 'dataValidation', original.dataValidation, modified.dataValidation);
 	return details;
 }
 
@@ -432,6 +491,7 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				columnWidths: mod.columnWidths,
 				sheetStatus: 'added',
 				modifiedShapes: mod.shapes,
+				modifiedDataValidations: mod.dataValidations,
 				modifiedMinCol: mod.minCol,
 				...(mod.tabColor ? { tabColor: mod.tabColor } : {}),
 				...(mod.protectedSheet ? { protectedSheet: true } : {}),
@@ -447,6 +507,7 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 				columnWidths: orig.columnWidths,
 				sheetStatus: 'removed',
 				originalShapes: orig.shapes,
+				originalDataValidations: orig.dataValidations,
 				originalMinCol: orig.minCol,
 				...(orig.tabColor ? { tabColor: orig.tabColor } : {}),
 				...(orig.protectedSheet ? { protectedSheet: true } : {}),
@@ -458,8 +519,15 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 		}
 
 		const maxRows = Math.max(orig.rows.length, mod.rows.length);
-		const maxCols = Math.max(orig.columnCount, mod.columnCount);
-		const colWidths = mod.columnWidths.length >= orig.columnWidths.length ? mod.columnWidths : orig.columnWidths;
+		const minCol = Math.min(orig.minCol, mod.minCol);
+		const maxCol = Math.max(orig.minCol + orig.columnCount - 1, mod.minCol + mod.columnCount - 1);
+		const maxCols = maxCol - minCol + 1;
+		const colWidths = Array.from({ length: maxCols }, (_, index) => {
+			const absoluteColumn = minCol + index;
+			return mod.columnWidths[absoluteColumn - mod.minCol]
+				?? orig.columnWidths[absoluteColumn - orig.minCol]
+				?? 64;
+		});
 
 		const origRows: IParadisDiffRow[] = [];
 		const modRows: IParadisDiffRow[] = [];
@@ -476,8 +544,9 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 			const modCells: IParadisDiffCell[] = [];
 
 			for (let c = 0; c < maxCols; c++) {
-				const origCell = origRow?.cells[c];
-				const modCell = modRow?.cells[c];
+				const absoluteColumn = minCol + c;
+				const origCell = origRow?.cells[absoluteColumn - orig.minCol];
+				const modCell = modRow?.cells[absoluteColumn - mod.minCol];
 				const emptyCell: IParadisDiffCell = { value: '', style: {} };
 
 				if (!origCell && modCell) {
@@ -522,8 +591,10 @@ export function buildDiffSheets(originalSheets: readonly IParadisSheetData[], mo
 			columnWidths: colWidths,
 			originalShapes: orig.shapes,
 			modifiedShapes: mod.shapes,
-			originalMinCol: orig.minCol,
-			modifiedMinCol: mod.minCol,
+			originalDataValidations: orig.dataValidations,
+			modifiedDataValidations: mod.dataValidations,
+			originalMinCol: minCol,
+			modifiedMinCol: minCol,
 			...((mod.tabColor ?? orig.tabColor) ? { tabColor: mod.tabColor ?? orig.tabColor } : {}),
 			...((mod.protectedSheet || orig.protectedSheet) ? { protectedSheet: true } : {}),
 		});
