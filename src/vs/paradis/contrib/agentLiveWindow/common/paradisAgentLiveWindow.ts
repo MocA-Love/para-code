@@ -92,13 +92,29 @@ export interface IParadisAgentLiveViewState {
 	group: ParadisAgentLiveGroup;
 	columns: number;
 	/**
-	 * タイル1枚の最低の高さ (px)。行はウィンドウを等分して埋めるが、この高さを下回るところ
-	 * からは縮めずに縦スクロールへ移る。undefined なら下限なし = 何件あっても1画面に収める。
-	 *
-	 * ディスプレイの大きさで「読める高さ」はまるで違うので、既定値ではなく実際の数値を
-	 * 持たせている。
+	 * true なら行がウィンドウを等分して埋める (何件あっても1画面に収まる代わりに、増えるほど
+	 * 1枚が小さくなる)。false なら {@link rowHeight} をそのままタイルの高さにし、入りきらない
+	 * 分は縦スクロールへ回す。
 	 */
-	minRowHeight: number | undefined;
+	fillRows: boolean;
+	/**
+	 * タイル1枚の高さ (px)。{@link fillRows} が false のときだけ使う。
+	 *
+	 * かつては「最低の高さ」(等分した結果がこれを下回ったらスクロール) だったが、等分が
+	 * 優先されるせいで、件数が少ないうちは何を入れても見た目が変わらなかった。指定したら
+	 * 必ずその高さになる方に変えている。
+	 */
+	rowHeight: number;
+	/**
+	 * ミラーの文字サイズ (px)。{@link fitFontToTile} が false のときだけ使う。
+	 *
+	 * 元の端末の桁数はタイル幅に対して大きすぎることが多く (4K の本体 → FHD のこのウィンドウ、
+	 * など)、全体を収めようとすると判読できない大きさまで縮む。既定では読める大きさで描き、
+	 * はみ出した右端と上部を切る。
+	 */
+	fontSize: number;
+	/** true なら従来どおりタイル幅に全体を収める (桁数次第で文字がとても小さくなる)。 */
+	fitFontToTile: boolean;
 	pinTop: boolean;
 	/** 手動並び順 (ペイントークン) */
 	manualOrder: string[];
@@ -109,14 +125,29 @@ export interface IParadisAgentLiveViewState {
 export const PARADIS_AGENT_LIVE_MIN_COLUMNS = 1;
 export const PARADIS_AGENT_LIVE_MAX_COLUMNS = 4;
 
-/** タイルの最低高さとして受け付ける範囲 (px)。4K でも足りるよう上限は広めに取る。 */
+/** タイルの高さとして受け付ける範囲 (px)。4K でも足りるよう上限は広めに取る。 */
 export const PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT = 60;
 export const PARADIS_AGENT_LIVE_MAX_ROW_HEIGHT = 2000;
-export const PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT = 220;
+export const PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT = 280;
 
-/** 入力された最低高さを扱える範囲へ丸める。 */
+/**
+ * ミラーの文字サイズとして受け付ける範囲 (px)。下限は「縮めれば全体は入るが読めない」領域まで
+ * 許し (自分で小さくしたい人のため)、上限は本体の設定値を超えて拡大できるところまで取る。
+ * GPU を切った DOM レンダラーで描いているので、拡大してもぼやけない。
+ */
+export const PARADIS_AGENT_LIVE_MIN_FONT_SIZE = 4;
+export const PARADIS_AGENT_LIVE_MAX_FONT_SIZE = 32;
+export const PARADIS_AGENT_LIVE_DEFAULT_FONT_SIZE = 11;
+
+/** 入力された高さを扱える範囲へ丸める。 */
 export function paradisClampAgentLiveRowHeight(value: number): number {
 	return Math.min(PARADIS_AGENT_LIVE_MAX_ROW_HEIGHT, Math.max(PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT, Math.round(value)));
+}
+
+/** 入力された文字サイズを扱える範囲へ丸める (0.5px 刻み)。 */
+export function paradisClampAgentLiveFontSize(value: number): number {
+	const rounded = Math.round(value * 2) / 2;
+	return Math.min(PARADIS_AGENT_LIVE_MAX_FONT_SIZE, Math.max(PARADIS_AGENT_LIVE_MIN_FONT_SIZE, rounded));
 }
 
 export function paradisDefaultAgentLiveViewState(): IParadisAgentLiveViewState {
@@ -128,7 +159,10 @@ export function paradisDefaultAgentLiveViewState(): IParadisAgentLiveViewState {
 		sortDesc: true,
 		group: 'none',
 		columns: 3,
-		minRowHeight: PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT,
+		fillRows: true,
+		rowHeight: PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT,
+		fontSize: PARADIS_AGENT_LIVE_DEFAULT_FONT_SIZE,
+		fitFontToTile: false,
 		pinTop: true,
 		manualOrder: [],
 		pinned: [],
@@ -180,15 +214,27 @@ export function paradisParseAgentLiveViewState(raw: string | undefined): IParadi
 	if (typeof parsed.columns === 'number' && Number.isFinite(parsed.columns)) {
 		state.columns = Math.min(PARADIS_AGENT_LIVE_MAX_COLUMNS, Math.max(PARADIS_AGENT_LIVE_MIN_COLUMNS, Math.round(parsed.columns)));
 	}
-	if (parsed.minRowHeight === null) {
-		// 明示的に「1画面に収める」を選んだ状態 (JSON に undefined は残らないので null で保存する)。
-		state.minRowHeight = undefined;
-	} else if (typeof parsed.minRowHeight === 'number' && Number.isFinite(parsed.minRowHeight)) {
-		state.minRowHeight = paradisClampAgentLiveRowHeight(parsed.minRowHeight);
+	// 旧形式 (minRowHeight = 等分した結果の下限 / dense = boolean) からの移行。旧実装では行の
+	// 等分が優先で、等分した高さが下限を上回っている間はこの数値が効いていなかったため、
+	// 「画面を等分」側へ寄せる。保存されていた数値は「高さを指定」へ切り替えたときの初期値
+	// として引き継ぐ。
+	//
+	// ただし下限を割るほど多くのエージェントを並べていた場合は見え方が変わる (旧: そこから
+	// 縦スクロール / 新: 下限なしでさらに小さくなる)。「高さを指定」を選べば旧来のスクロール
+	// に戻せるので、件数が少ない間は変化しない方を既定にしている。
+	if (typeof parsed.minRowHeight === 'number' && Number.isFinite(parsed.minRowHeight)) {
+		state.rowHeight = paradisClampAgentLiveRowHeight(parsed.minRowHeight);
 	} else if (parsed.dense === true) {
-		// 旧形式 (dense: boolean) からの移行。
-		state.minRowHeight = 150;
+		state.rowHeight = 150;
 	}
+	if (typeof parsed.rowHeight === 'number' && Number.isFinite(parsed.rowHeight)) {
+		state.rowHeight = paradisClampAgentLiveRowHeight(parsed.rowHeight);
+	}
+	state.fillRows = parsed.fillRows !== false;
+	if (typeof parsed.fontSize === 'number' && Number.isFinite(parsed.fontSize)) {
+		state.fontSize = paradisClampAgentLiveFontSize(parsed.fontSize);
+	}
+	state.fitFontToTile = parsed.fitFontToTile === true;
 	state.pinTop = parsed.pinTop !== false;
 	state.manualOrder = stringArray(parsed.manualOrder) ?? [];
 	state.pinned = stringArray(parsed.pinned) ?? [];
@@ -197,8 +243,7 @@ export function paradisParseAgentLiveViewState(raw: string | undefined): IParadi
 }
 
 export function paradisSerializeAgentLiveViewState(state: IParadisAgentLiveViewState): string {
-	// undefined は JSON.stringify で消えてしまい「未設定」と区別できないので null で残す。
-	return JSON.stringify({ ...state, minRowHeight: state.minRowHeight ?? null });
+	return JSON.stringify(state);
 }
 
 /** 絞り込みが1つでも効いているか (状況バーの表示条件)。 */

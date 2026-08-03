@@ -86,6 +86,8 @@ export class ParadisAgentLiveMirror extends Disposable {
 	private raw: RawXtermTerminal | undefined;
 	/** 縮小前の文字サイズ。ウィンドウを広げたときにここまで戻す */
 	private baseFontSize = 0;
+	/** 指定された文字サイズ。undefined ならタイル幅に合わせて自動で縮める */
+	private fixedFontSize: number | undefined;
 	private resizeObserver: ResizeObserver | undefined;
 	/** スナップショットを流し込むまでに届いた出力の待避先 */
 	private pending: string[] = [];
@@ -163,6 +165,9 @@ export class ParadisAgentLiveMirror extends Disposable {
 		});
 
 		this.observeResize();
+		// ResizeObserver の初回通知や resync 頼みにしない。観測できない環境でも、指定された
+		// 文字サイズは最初の描画から効いていてほしい。
+		this.updateFontSize();
 		await this.resync();
 	}
 
@@ -191,6 +196,39 @@ export class ParadisAgentLiveMirror extends Disposable {
 
 	layout(): void {
 		this.updateFontSize();
+	}
+
+	/**
+	 * 文字サイズを指定する。undefined を渡すとタイル幅に全体を収める従来動作へ戻る。
+	 * 指定した場合、タイルからはみ出す右端と上部は CSS 側で切り取られる。
+	 */
+	setFontSize(size: number | undefined): void {
+		if (this.fixedFontSize === size) {
+			return;
+		}
+		this.fixedFontSize = size;
+		this.updateFontSize();
+	}
+
+	/**
+	 * いまタイルに見えているセル数。指定した文字サイズだと元の端末のどこまでが見えるのかを
+	 * 設定画面で示すために使う。まだ描画されていなければ undefined。
+	 */
+	getVisibleCells(): { readonly cols: number; readonly rows: number; readonly totalCols: number; readonly totalRows: number } | undefined {
+		const raw = this.raw;
+		const width = this.mount.offsetWidth;
+		const height = this.mount.offsetHeight;
+		if (!raw || raw.cols <= 0 || raw.rows <= 0 || width <= 0 || height <= 0) {
+			return undefined;
+		}
+		const cellWidth = width / raw.cols;
+		const cellHeight = height / raw.rows;
+		return {
+			cols: Math.max(0, Math.min(raw.cols, Math.floor(this.container.clientWidth / cellWidth))),
+			rows: Math.max(0, Math.min(raw.rows, Math.floor(this.container.clientHeight / cellHeight))),
+			totalCols: raw.cols,
+			totalRows: raw.rows,
+		};
 	}
 
 	/**
@@ -368,8 +406,12 @@ export class ParadisAgentLiveMirror extends Disposable {
 	}
 
 	/**
-	 * タイル幅に収まるよう文字サイズを詰める。元の端末の桁数はこちらでは決められないので、
-	 * 桁数はそのままに文字を小さくして全体を見せる。
+	 * 文字サイズを反映する。{@link setFontSize} で指定があればその大きさで描き、無ければ
+	 * タイル幅に収まるよう詰める (元の端末の桁数はこちらでは決められないので、桁数はそのまま
+	 * に文字を小さくして全体を見せる)。
+	 *
+	 * 自動で詰める側には下限がある。本体が 4K・このウィンドウが FHD といった組み合わせでは
+	 * 必要な縮小率が 1/4 を超え、全体を入れようとすると判読できない大きさになるため。
 	 *
 	 * 桁数を揃えれば見た目は揃うが、外から端末をリサイズするのは見送っている。`layout()` は
 	 * 渡した寸法を記憶して後から再生するため、メインでその端末を開いた瞬間にタイルの大きさで
@@ -386,9 +428,22 @@ export class ParadisAgentLiveMirror extends Disposable {
 	 */
 	private updateFontSize(): void {
 		const raw = this.raw;
+		if (!raw) {
+			return;
+		}
+		const fixed = this.fixedFontSize;
+		if (fixed !== undefined) {
+			// 指定された大きさで描く。タイルに収まるかどうかは見ない —— 収めようとすると
+			// 桁数の多い端末では判読できない大きさになるため、はみ出した分を切る方を選ぶ
+			// (mount は左寄せ・下端揃えなので、最新行と行頭が残る)。
+			if (raw.options.fontSize !== fixed) {
+				raw.options.fontSize = fixed;
+			}
+			return;
+		}
 		const available = this.container.clientWidth;
 		const width = this.mount.offsetWidth;
-		if (!raw || available <= 0 || width <= 0) {
+		if (available <= 0 || width <= 0) {
 			return;
 		}
 		const current = raw.options.fontSize ?? this.baseFontSize;
