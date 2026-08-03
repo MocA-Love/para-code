@@ -8,6 +8,8 @@ import path from 'path';
 import * as os from 'os';
 import * as child_process from 'child_process';
 import { dirs } from './dirs.ts';
+// PARA-PATCH: guard against @parcel/watcher#250, which kills the watcher process on long paths
+import { paradisIsParcelWatcherPatched, paradisPatchAndRebuildParcelWatcher } from './paradisParcelWatcherPatch.ts';
 import { root, stateFile, stateContentsFile, computeState, computeContents, isUpToDate } from './installStateHash.ts';
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -62,7 +64,12 @@ async function npmInstallAsync(dir: string, opts?: child_process.SpawnOptions): 
 
 	const command = process.env['npm_command'] || 'install';
 
+	// PARA-PATCH: lets the @parcel/watcher patch below tell whether the native build ran inside the
+	// container image rather than on this host
+	let installedOnHost = true;
+
 	if (process.env['VSCODE_REMOTE_DEPENDENCIES_CONTAINER_NAME'] && /^(.build\/distro\/npm\/)?remote$/.test(dir)) {
+		installedOnHost = false; // PARA-PATCH
 		const syncOpts: child_process.SpawnSyncOptions = {
 			env: finalOpts.env,
 			cwd: root,
@@ -96,6 +103,14 @@ async function npmInstallAsync(dir: string, opts?: child_process.SpawnOptions): 
 		}
 	}
 	removeParcelWatcherPrebuild(dir);
+	// PARA-PATCH: re-apply the @parcel/watcher guard (#250) right after the prebuilt binaries are
+	// dropped in favour of a source build. `finalOpts.env` has to be passed on: npm prefers env vars
+	// over the project .npmrc, so inheriting process.env would rebuild remote (runtime=node) against
+	// the electron headers inherited from the root. Skipped for the container path, where the native
+	// build belongs inside the image rather than on this host.
+	if (installedOnHost) {
+		paradisPatchAndRebuildParcelWatcher(path.join(root, dir), finalOpts.env, message => log(dir, message));
+	}
 }
 
 function setNpmrcConfig(dir: string, env: NodeJS.ProcessEnv) {
@@ -238,7 +253,12 @@ async function runWithConcurrency(tasks: (() => Promise<void>)[], concurrency: n
 }
 
 async function main() {
-	if (!process.env['VSCODE_FORCE_INSTALL'] && isUpToDate()) {
+	// PARA-PATCH: the up-to-date check only hashes package.json/package-lock.json/.npmrc/.nvmrc, so a
+	// checkout whose dependencies are already current would never pick up the @parcel/watcher guard
+	// (see paradisParcelWatcherPatch.ts). Take the slow path until every package has it.
+	const paradisWatcherPatched = dirs.every(dir => paradisIsParcelWatcherPatched(path.join(root, dir)));
+
+	if (!process.env['VSCODE_FORCE_INSTALL'] && isUpToDate() && paradisWatcherPatched) {
 		log('.', 'All dependencies up to date, skipping postinstall.');
 		child_process.execSync('git config pull.rebase merges');
 		child_process.execSync('git config blame.ignoreRevsFile .git-blame-ignore-revs');
@@ -253,6 +273,10 @@ async function main() {
 	for (const dir of dirs) {
 		if (dir === '') {
 			removeParcelWatcherPrebuild(dir);
+			// PARA-PATCH: same guard as in npmInstallAsync, for the root package whose install ran
+			// outside this script. Inheriting process.env is correct here: it already carries the
+			// root .npmrc that npm loaded when invoking this postinstall.
+			paradisPatchAndRebuildParcelWatcher(path.join(root, dir), undefined, message => log(dir, message));
 			continue; // already executed in root
 		}
 

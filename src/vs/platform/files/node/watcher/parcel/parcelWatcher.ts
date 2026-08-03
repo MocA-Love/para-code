@@ -437,6 +437,21 @@ export class ParcelWatcher extends BaseWatcher implements IRecursiveWatcherWithS
 				this.traceWithCorrelation(`${type === FileChangeType.ADDED ? '[ADDED]' : type === FileChangeType.DELETED ? '[DELETED]' : '[CHANGED]'} ${path}`, watcher.request);
 			}
 
+			// PARA-PATCH: parcel evaluates the exclude globs natively (Glob::isIgnored), but std::regex
+			// recurses on input length and blows the watcher thread's stack on long paths, killing the
+			// whole process (parcel-bundler/watcher#250). We cap the matched length there
+			// (build/npm/paradisParcelWatcherPatch.ts), so long paths that slip through the native
+			// filter have to be dropped here instead. Note this only re-applies `request.excludes`,
+			// not `addPredefinedExcludes()`: the predefined ones are plain paths rather than globs, so
+			// parcel routes them to `ignorePaths` and never runs them through the regex.
+			if (watcher.exclude(path)) {
+				if (this.verboseLogging) {
+					this.traceWithCorrelation(` >> ignored (excluded) ${path}`, watcher.request);
+				}
+
+				continue;
+			}
+
 			// Apply include filter if any
 			if (!watcher.include(path)) {
 				if (this.verboseLogging) {
