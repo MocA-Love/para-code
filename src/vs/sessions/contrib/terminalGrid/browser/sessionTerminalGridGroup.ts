@@ -8,7 +8,7 @@
 
 import { TERMINAL_VIEW_ID } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import { Event, Emitter } from '../../../../base/common/event.js';
-import { IDisposable, Disposable, DisposableStore, dispose, toDisposable } from '../../../../base/common/lifecycle.js';
+import { IDisposable, Disposable, DisposableStore, dispose, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Orientation } from '../../../../base/browser/ui/sash/sash.js';
 import { isHorizontal, IWorkbenchLayoutService, Position } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -21,9 +21,13 @@ import { addDisposableListener, getWindow } from '../../../../base/browser/dom.j
 import { asArray } from '../../../../base/common/arrays.js';
 import { hasKey, isNumber, type SingleOrMany } from '../../../../base/common/types.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
-import { Grid, Direction as GridDirection, Sizing as GridSizing, IView as IGridCellView, IViewSize } from '../../../../base/browser/ui/grid/grid.js';
+import { Direction as GridDirection, GridNode, Sizing as GridSizing, isGridBranchNode, ISerializableView, ISerializedGrid, IViewSize, SerializableGrid } from '../../../../base/browser/ui/grid/grid.js';
 import { containsDragType } from '../../../../platform/dnd/browser/dnd.js';
 import { createParadisPaneIndicator } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneIndicator.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
+import { onUnexpectedError } from '../../../../base/common/errors.js';
+import { ISessionTerminalGridLayoutEntry, ISessionTerminalGridLeafData, ISessionTerminalGridTerminalGeneration, sessionCollectGridLayoutTerminals, sessionReadGridLayoutLeafTerminal, sessionResolveGridLayoutTerminalId } from './sessionTerminalGridLayout.js';
+import { ISessionTerminalGridLayoutService, ISessionTerminalGridLayoutSource } from './sessionTerminalGridLayoutService.js';
 
 const enum Constants {
 	/**
@@ -35,7 +39,12 @@ const enum Constants {
 	 * The number of cells the terminal gets added or removed when asked to increase or decrease
 	 * the view size.
 	 */
-	ResizePartCellCount = 4
+	ResizePartCellCount = 4,
+	/**
+	 * How long to wait for the terminal restore to finish before applying the stored layout anyway.
+	 * Restores take seconds; this only fires when the restore never completes at all.
+	 */
+	GridLayoutRestoreTimeoutMs = 300_000
 }
 
 /**
@@ -125,7 +134,7 @@ function computeGridDropDirection(clientX: number, clientY: number, targetRect: 
  * calls `stopPropagation()` to suppress the upstream handling whenever the drag is a terminal tab
  * (non-terminal drags, e.g. file drops, are left untouched so existing behavior keeps working).
  */
-class SessionTerminalGridCell implements IGridCellView {
+class SessionTerminalGridCell implements ISerializableView {
 	readonly minimumWidth = Constants.CellMinSize;
 	readonly maximumWidth = Number.POSITIVE_INFINITY;
 	readonly minimumHeight = Constants.CellMinSize;
@@ -142,7 +151,8 @@ class SessionTerminalGridCell implements IGridCellView {
 	constructor(
 		readonly instance: ITerminalInstance,
 		private readonly _dropTarget: ISessionTerminalGridDropTarget,
-		private readonly _terminalService: ITerminalService
+		private readonly _terminalService: ITerminalService,
+		private readonly _onDidLayout: () => void
 	) {
 		this.element = document.createElement('div');
 		this.element.className = 'session-terminal-grid-cell';
@@ -261,6 +271,18 @@ class SessionTerminalGridCell implements IGridCellView {
 			return;
 		}
 		this.instance.layout({ width, height });
+		// The `Grid` widget has no event for "a sash was dragged", and cell sizes are the only thing
+		// the persisted layout is about, so this doubles as the change signal for saving it.
+		this._onDidLayout();
+	}
+
+	/**
+	 * {@link ISerializableView} implementation: identifies which terminal this cell holds inside the
+	 * persisted layout. The **current generation** persistent process id is written; matching it back
+	 * onto a revived terminal is `sessionResolveGridLayoutTerminalId`'s job.
+	 */
+	toJSON(): object {
+		return { terminal: this.instance.persistentProcessId ?? 0 } satisfies ISessionTerminalGridLeafData;
 	}
 
 	dispose(): void {
@@ -277,11 +299,15 @@ class SessionTerminalGridCell implements IGridCellView {
  * supports arbitrary 2D layouts instead of a single row/column.
  */
 class SessionTerminalGridContainer extends Disposable {
-	private _grid: Grid<SessionTerminalGridCell> | undefined;
-	private readonly _cells = new Map<ITerminalInstance, SessionTerminalGridCell>();
+	private readonly _gridDisposable = this._register(new MutableDisposable<SerializableGrid<SessionTerminalGridCell>>());
+	private _cells = new Map<ITerminalInstance, SessionTerminalGridCell>();
 
 	private _width: number;
 	private _height: number;
+
+	private readonly _onDidChangeLayout = this._register(new Emitter<void>());
+	/** Fires whenever the arrangement or the size of any cell changed, i.e. when it is worth persisting. */
+	readonly onDidChangeLayout = this._onDidChangeLayout.event;
 
 	constructor(
 		private readonly _container: HTMLElement,
@@ -293,8 +319,26 @@ class SessionTerminalGridContainer extends Disposable {
 		this._height = this._container.offsetHeight;
 	}
 
+	private get _grid(): SerializableGrid<SessionTerminalGridCell> | undefined {
+		return this._gridDisposable.value;
+	}
+
 	private _firstCell(): SessionTerminalGridCell | undefined {
 		return this._cells.values().next().value;
+	}
+
+	private _createCell(instance: ITerminalInstance): SessionTerminalGridCell {
+		return new SessionTerminalGridCell(instance, this._dropTarget, this._terminalService, () => this._onDidChangeLayout.fire());
+	}
+
+	/** Swaps in a freshly built grid, detaching the previous one from the DOM before disposing it. */
+	private _setGrid(grid: SerializableGrid<SessionTerminalGridCell> | undefined): void {
+		this._grid?.element.remove();
+		this._gridDisposable.value = grid;
+		if (grid) {
+			this._container.appendChild(grid.element);
+			grid.layout(this._width, this._height);
+		}
 	}
 
 	/**
@@ -309,14 +353,12 @@ class SessionTerminalGridContainer extends Disposable {
 			return;
 		}
 
-		const cell = new SessionTerminalGridCell(instance, this._dropTarget, this._terminalService);
+		const cell = this._createCell(instance);
 
 		if (!this._grid) {
 			this._cells.set(instance, cell);
-			this._grid = new Grid<SessionTerminalGridCell>(cell);
-			this._register(this._grid);
-			this._container.appendChild(this._grid.element);
-			this._grid.layout(this._width, this._height);
+			this._setGrid(new SerializableGrid<SessionTerminalGridCell>(cell));
+			this._onDidChangeLayout.fire();
 			return;
 		}
 
@@ -330,6 +372,7 @@ class SessionTerminalGridContainer extends Disposable {
 		this._cells.set(instance, cell);
 		this._grid.addView(cell, GridSizing.Distribute, referenceCell, toGridDirection(direction));
 		this._grid.layout(this._width, this._height);
+		this._onDidChangeLayout.fire();
 	}
 
 	removeCell(instance: ITerminalInstance): void {
@@ -346,6 +389,113 @@ class SessionTerminalGridContainer extends Disposable {
 		// `SessionTerminalGridGroup.dispose`), `Grid.removeView` cannot remove the last view so it
 		// must not be called in that case.
 		cell.dispose();
+		this._onDidChangeLayout.fire();
+	}
+
+	/**
+	 * The layout of this grid, or `undefined` while there is nothing worth persisting (a single pane
+	 * carries no arrangement, and a grid that was never laid out has no meaningful sizes).
+	 */
+	serializeLayout(): ISerializedGrid | undefined {
+		if (this._cells.size < 2 || !this._grid || this._width <= 0 || this._height <= 0) {
+			return undefined;
+		}
+		return this._grid.serialize();
+	}
+
+	/**
+	 * Rebuilds the grid from a persisted layout, replacing the arrangement the panes were restored
+	 * with (upstream can only restore them as a single row).
+	 *
+	 * Every leaf of `layout` must resolve through `instanceByTerminalId`; the caller guarantees this
+	 * by pruning the layout down to the terminals that actually came back. Should the widget still
+	 * reject the tree, the previous cells are gone by then, so the panes are rebuilt in their old
+	 * order rather than left detached.
+	 */
+	restoreLayout(layout: ISerializedGrid, instanceByTerminalId: ReadonlyMap<number, ITerminalInstance>): boolean {
+		if (!this._grid) {
+			return false;
+		}
+		const previousCells = this._cells;
+		const previousOrder = [...previousCells.keys()];
+		// Every leaf has to be resolvable before anything is touched: `Grid.deserialize` builds the new
+		// tree as it goes, moving each cell's element into it, so a rejection half way through would
+		// leave the panes scattered between two trees with no way back.
+		const cells = new Map<ITerminalInstance, SessionTerminalGridCell>();
+		for (const terminal of sessionCollectGridLayoutTerminals(layout)) {
+			const instance = instanceByTerminalId.get(terminal);
+			const cell = instance && previousCells.get(instance);
+			if (!cell) {
+				return false;
+			}
+			cells.set(instance, cell);
+		}
+		// Moving a cell's element into the new tree takes it out of the document for a moment, which
+		// drops the focus even though it is the same element.
+		const focusedInstance = previousOrder.find(instance => instance.hasFocus);
+
+		try {
+			// The cells themselves are reused, so the terminals keep their xterm instance and are only
+			// re-parented. `Grid` never disposes its views, which is what makes that safe.
+			const grid = SerializableGrid.deserialize<SessionTerminalGridCell>(layout, {
+				fromJSON: (json: unknown) => {
+					const terminal = sessionReadGridLayoutLeafTerminal(json);
+					const instance = terminal === undefined ? undefined : instanceByTerminalId.get(terminal);
+					const cell = instance && cells.get(instance);
+					if (!cell) {
+						throw new Error('Para Code could not resolve a terminal while restoring a grid layout');
+					}
+					return cell;
+				}
+			});
+			for (const [instance, cell] of previousCells) {
+				if (!cells.has(instance)) {
+					cell.dispose();
+				}
+			}
+			this._cells = cells;
+			this._setGrid(grid);
+			return true;
+		} catch (error) {
+			onUnexpectedError(error);
+			// Unreachable in practice: every leaf was resolved above and the tree itself was validated
+			// when it was read back, so `fromJSON` has nothing left to reject. Should that ever change,
+			// the old grid may already have lost cells to the half-built tree (which is unreferenced
+			// and cannot be disposed from here), so it is rebuilt from scratch rather than kept.
+			for (const cell of previousCells.values()) {
+				cell.dispose();
+			}
+			this._cells = new Map();
+			this._setGrid(undefined);
+			let previous: ITerminalInstance | undefined;
+			for (const instance of previousOrder) {
+				this.addCell(instance, previous, Direction.Right);
+				previous = instance;
+			}
+			return false;
+		} finally {
+			focusedInstance?.focus(true);
+		}
+	}
+
+	/**
+	 * The panes in the order the grid lays them out. `_terminalInstances` is otherwise in the order
+	 * the panes were added, which stops matching what is on screen once a stored layout is applied.
+	 */
+	visualOrder(): ITerminalInstance[] {
+		if (!this._grid) {
+			return [];
+		}
+		const result: ITerminalInstance[] = [];
+		const visit = (node: GridNode<SessionTerminalGridCell>): void => {
+			if (isGridBranchNode(node)) {
+				node.children.forEach(visit);
+				return;
+			}
+			result.push(node.view.instance);
+		};
+		visit(this._grid.getViews());
+		return result;
 	}
 
 	getCellSize(instance: ITerminalInstance): IViewSize | undefined {
@@ -379,6 +529,21 @@ class SessionTerminalGridContainer extends Disposable {
 	}
 }
 
+/** Resolves the ids the persisted layout of `instances` has to be matched against. */
+function collectLayoutInstancesByTerminalId(instances: readonly ITerminalInstance[]): Map<number, ITerminalInstance> | undefined {
+	const result = new Map<number, ITerminalInstance>();
+	for (const instance of instances) {
+		const terminal = sessionResolveGridLayoutTerminalId(instance);
+		// A pane whose process is not resolved yet cannot be placed, and restoring the rest would
+		// silently drop it out of the group's arrangement.
+		if (terminal === undefined || result.has(terminal)) {
+			return undefined;
+		}
+		result.set(terminal, instance);
+	}
+	return result;
+}
+
 /**
  * A drop-in replacement for the upstream `TerminalGroup` (`terminalGroup.ts`) that arranges its
  * terminal instances in a free-form 2D {@link Grid} instead of a single row or column.
@@ -398,9 +563,11 @@ class SessionTerminalGridContainer extends Disposable {
  * can ask it to place a dropped terminal tab in a given direction via {@link moveInstanceInDirection}
  * (see `_registerDragAndDrop` on `SessionTerminalGridCell` for where this is invoked from).
  */
-export class SessionTerminalGridGroup extends Disposable implements ITerminalGroup, ISessionTerminalGridDropTarget {
+export class SessionTerminalGridGroup extends Disposable implements ITerminalGroup, ISessionTerminalGridDropTarget, ISessionTerminalGridLayoutSource {
 	private _terminalInstances: ITerminalInstance[] = [];
 	private _gridContainer: SessionTerminalGridContainer | undefined;
+	private _gridLayoutRestoreScheduled = false;
+	private _gridLayoutRestoreDone = false;
 	private _groupElement: HTMLElement | undefined;
 	private _panelPosition: Position = Position.BOTTOM;
 	private _terminalLocation: ViewContainerLocation = ViewContainerLocation.Panel;
@@ -413,8 +580,6 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 	private _hadFocusOnExit: boolean = false;
 	get hadFocusOnExit(): boolean { return this._hadFocusOnExit; }
 
-	private _initialRelativeSizes: number[] | undefined;
-	private _visible: boolean = false;
 
 	private readonly _onDidDisposeInstance: Emitter<ITerminalInstance> = this._register(new Emitter<ITerminalInstance>());
 	readonly onDidDisposeInstance = this._onDidDisposeInstance.event;
@@ -442,9 +607,11 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@ITerminalGroupService private readonly _terminalGroupService: ITerminalGroupService,
 		@ITerminalService private readonly _terminalService: ITerminalService,
-		@ITerminalEditorService private readonly _terminalEditorService: ITerminalEditorService
+		@ITerminalEditorService private readonly _terminalEditorService: ITerminalEditorService,
+		@ISessionTerminalGridLayoutService private readonly _gridLayoutService: ISessionTerminalGridLayoutService
 	) {
 		super();
+		this._register(this._gridLayoutService.registerSource(this));
 		if (shellLaunchConfigOrInstance) {
 			this.addInstance(shellLaunchConfigOrInstance);
 		}
@@ -719,11 +886,128 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 			this._panelPosition = this._layoutService.getPanelPosition();
 			this._terminalLocation = this._viewDescriptorService.getViewLocationById(TERMINAL_VIEW_ID)!;
 			this._gridContainer = this._instantiationService.createInstance(SessionTerminalGridContainer, this._groupElement, this);
+			this._register(this._gridContainer.onDidChangeLayout(() => this._saveGridLayout()));
 			let previousInstance: ITerminalInstance | undefined;
 			for (const instance of this.terminalInstances) {
 				this._gridContainer.addCell(instance, previousInstance, Direction.Right);
 				previousInstance = instance;
 			}
+		}
+		this._scheduleGridLayoutRestore();
+	}
+
+	/**
+	 * {@link ISessionTerminalGridLayoutSource} implementation: the snapshot the layout service
+	 * persists for this group.
+	 *
+	 * A grid that does not describe every pane of the group is reported as nothing at all: a pane
+	 * whose process id is not resolved yet has no leaf to be matched by, and storing the rest would
+	 * restore an arrangement with a pane missing.
+	 */
+	getGridLayoutEntry(): ISessionTerminalGridLayoutEntry | undefined {
+		// Before the one-shot restore has run, the arrangement on screen is whatever upstream rebuilt
+		// the group as (a single row), which must never replace the stored one.
+		if (!this._gridLayoutRestoreDone) {
+			return undefined;
+		}
+		const layout = this._gridContainer?.serializeLayout();
+		if (!layout) {
+			return undefined;
+		}
+		const terminals = sessionCollectGridLayoutTerminals(layout);
+		if (terminals.length < 2 || terminals.length !== this._terminalInstances.length) {
+			return undefined;
+		}
+		return { terminals, layout };
+	}
+
+	/**
+	 * {@link ISessionTerminalGridLayoutSource} implementation: how this group's terminals map from
+	 * the ids the previous session persisted to the ones they have now. Unlike the layout itself this
+	 * is available even for a group that has no grid yet, which is what keeps the stored entry of a
+	 * space that is never visited from going stale.
+	 */
+	getGridLayoutTerminalGenerations(): readonly ISessionTerminalGridTerminalGeneration[] {
+		const generations: ISessionTerminalGridTerminalGeneration[] = [];
+		for (const instance of this._terminalInstances) {
+			const restored = sessionResolveGridLayoutTerminalId(instance);
+			const current = instance.persistentProcessId;
+			if (restored !== undefined && current !== undefined) {
+				generations.push({ restored, current });
+			}
+		}
+		return generations;
+	}
+
+	/**
+	 * Re-applies the persisted 2D layout once, after the terminal restore has finished.
+	 *
+	 * Upstream restores a tab by splitting each pane off the previous one, which this group can only
+	 * honor as a single row (a flat `relativeSize` list cannot describe a grid). Waiting for
+	 * `whenConnected` means every pane of the group exists by the time the stored tree is applied.
+	 */
+	private _scheduleGridLayoutRestore(): void {
+		if (this._gridLayoutRestoreScheduled) {
+			return;
+		}
+		this._gridLayoutRestoreScheduled = true;
+		const restore = () => {
+			if (this._gridLayoutRestoreDone || this._store.isDisposed) {
+				return;
+			}
+			this._restoreGridLayout();
+			this._gridLayoutRestoreDone = true;
+			// Whatever the restore ended up doing is now worth keeping.
+			this._saveGridLayout();
+		};
+		this._terminalService.whenConnected.then(restore, onUnexpectedError);
+		// `whenConnected` never settles if the restore path throws, which would leave this group (and,
+		// through the gate above, its layout) frozen out of persistence for the rest of the session.
+		// The timeout is far longer than a restore takes, so it only ever fires for that failure.
+		this._register(disposableTimeout(restore, Constants.GridLayoutRestoreTimeoutMs));
+	}
+
+	private _restoreGridLayout(): void {
+		if (!this._gridContainer || this._terminalInstances.length < 2) {
+			return;
+		}
+		const instancesByTerminalId = collectLayoutInstancesByTerminalId(this._terminalInstances);
+		if (!instancesByTerminalId) {
+			return;
+		}
+		const layout = this._gridLayoutService.takeRestoredLayout(new Set(instancesByTerminalId.keys()));
+		if (!layout) {
+			return;
+		}
+		if (this._gridContainer.restoreLayout(layout, instancesByTerminalId)) {
+			this._adoptVisualPaneOrder();
+		}
+	}
+
+	/**
+	 * Re-orders the instance list to match the restored arrangement, keeping the active pane active.
+	 * The list drives pane traversal (`focusPreviousPane`/`focusNextPane`) and the tab label, both of
+	 * which would otherwise follow the order upstream happened to restore the panes in.
+	 */
+	private _adoptVisualPaneOrder(): void {
+		const ordered = this._gridContainer?.visualOrder() ?? [];
+		if (ordered.length !== this._terminalInstances.length || !ordered.every(instance => this._terminalInstances.includes(instance))) {
+			return;
+		}
+		const activeInstance = this.activeInstance;
+		this._terminalInstances = ordered;
+		this._activeInstanceIndex = activeInstance ? ordered.indexOf(activeInstance) : this._activeInstanceIndex;
+		this._onInstancesChanged.fire();
+	}
+
+	/**
+	 * Persisting before the one-shot restore has run would store the single row upstream rebuilt the
+	 * group as — the very arrangement the restore is about to replace — and a crash in that window
+	 * would make the degraded layout permanent.
+	 */
+	private _saveGridLayout(): void {
+		if (this._gridLayoutRestoreDone) {
+			this._gridLayoutService.scheduleSave();
 		}
 	}
 
@@ -757,7 +1041,6 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 	}
 
 	setVisible(visible: boolean): void {
-		this._visible = visible;
 		if (this._groupElement) {
 			this._groupElement.style.display = visible ? '' : 'none';
 		}
@@ -789,13 +1072,7 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 	}
 
 	layout(width: number, height: number): void {
-		if (this._gridContainer) {
-			this._gridContainer.layout(width, height);
-			if (this._initialRelativeSizes && this._visible) {
-				this.resizePanes(this._initialRelativeSizes);
-				this._initialRelativeSizes = undefined;
-			}
-		}
+		this._gridContainer?.layout(width, height);
 	}
 
 	focusPreviousPane(): void {
@@ -884,14 +1161,10 @@ export class SessionTerminalGridGroup extends Disposable implements ITerminalGro
 		this._gridContainer.resizeCell(instance, { width: nextWidth, height: nextHeight });
 	}
 
-	resizePanes(relativeSizes: number[]): void {
-		if (!this._gridContainer || !this._visible) {
-			this._initialRelativeSizes = relativeSizes;
-			return;
-		}
-
-		// NOTE: `relativeSizes` was designed for a 1D `SplitView` and assumes a single ordered
-		// axis; there is no lossless way to map it onto an arbitrary 2D grid layout, so restoring
-		// exact proportions for grid groups is intentionally not supported here.
+	resizePanes(_relativeSizes: number[]): void {
+		// NOTE: `relativeSizes` was designed for a 1D `SplitView` and assumes a single ordered axis;
+		// there is no lossless way to map it onto an arbitrary 2D grid layout. Upstream only calls
+		// this while restoring a tab, and the grid restores its own arrangement (including the
+		// proportions) from the snapshot kept by `sessionTerminalGridLayoutService.ts` instead.
 	}
 }

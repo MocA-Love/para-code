@@ -6,6 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { disposableTimeout } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
@@ -44,11 +45,47 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	private static readonly MAPPING_STORAGE_KEY = 'paradis.workspaceSwitch.terminalRepositories';
 
+	/**
+	 * park の保留を打ち切るまでの上限 (詳細は `_parkDeferralReleased`)。
+	 *
+	 * 「復元が遅いだけ」の間に打ち切ると、まさに保留が防いでいる split の失敗を自分で起こすため、
+	 * 現実の復元時間 (数秒) から大きく離して取る。逆に打ち切りが遅いことの実害は「他スペースの
+	 * ターミナルが一覧に見えたまま」だけで、台帳は正しいまま (解除時に引き直す)。
+	 */
+	private static readonly PARK_DEFERRAL_TIMEOUT_MS = 300_000;
+
 	/** グループ → 所属リポジトリID (park 中も保持)。untagged のグループはスコープ外 (常に表示) */
 	private readonly _groupRepositories = new Map<ITerminalGroup, string>();
 
 	/** リポジトリID → park 中のグループ */
 	private readonly _parkedGroups = new Map<string, ITerminalGroup[]>();
+
+	/**
+	 * 前回セッションのレイアウト復元が終わるまで park を保留しているグループ → 所属リポジトリID。
+	 *
+	 * upstream のレイアウト復元は、1つのタブ (グループ) の2枚目以降のペインを
+	 * `{ parentTerminal: 直前のインスタンス }` として作り、split 先のグループを
+	 * `TerminalGroupService.getGroupForInstance` で引く。これは **`groups` しか見ない**ため、
+	 * 1枚目のペインが現れた瞬間に park (= groups から外す) すると、2枚目の復元が
+	 * `Cannot split a terminal without a group` で落ちる。結果として非アクティブスペースの
+	 * グループはペインが1枚しか復元されず、残りの PTY は孤児のまま取り残され、さらに
+	 * `_recreateTerminalGroups` の Promise が reject して `terminalService.whenConnected` が
+	 * 永久に完了しなくなる (= 下の復元後処理も upstream の backend.setReady も走らない)。
+	 *
+	 * そのため復元中はタグ付けだけ行い、park はここへ溜めて復元完了後にまとめて実行する。
+	 *
+	 * 保留は park の全経路 (applyScope によるユーザーのスペース切り替えを含む) に効くため、解除まで
+	 * の間は切り替えても他スペースのグループがタブ一覧に残る。台帳は正しいまま (解除時に実行時点の
+	 * 所属とアクティブスコープで引き直す) なので、見え方だけが遅れて追いつく。
+	 */
+	private readonly _deferredParkGroups = new Map<ITerminalGroup, string>();
+
+	/**
+	 * park の保留を解除したか。`whenConnected` の完了で立てるが、復元経路が例外で落ちると
+	 * それは二度と来ない (まさに上のコメントが説明している壊れ方)。保留したままだと他スペースの
+	 * ターミナルがアクティブスペースに見え続けるため、上限時間でも必ず解除する。
+	 */
+	private _parkDeferralReleased = false;
 
 	/**
 	 * instanceId → 所属リポジトリID。このセッション中にタグ付けしたグループの
@@ -111,6 +148,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 	) {
 		super();
+		// 復元は数秒で終わる。ここまで待っても完了しないなら復元経路が落ちていると見なし、
+		// 他スペースのターミナルが見え続けないよう park の保留を打ち切る。
+		this._register(disposableTimeout(() => this.releaseParkDeferral(), ParadisTerminalWorkspaceScope.PARK_DEFERRAL_TIMEOUT_MS));
 		this._register(paradisRegisterTerminalCreationScopeProvider(() => {
 			const scope = this.auxiliaryWindowScopeService.resolveWindow(getActiveWindow().vscodeWindowId);
 			return scope.kind === 'managed' ? scope.stateKey : undefined;
@@ -124,7 +164,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}));
 
 		const loadedMapping = this.loadMapping();
-		const initialPartition = paradisPartitionPersistentProcessScopesByKnownScope(loadedMapping, this.knownStateKeys(false));
+		const initialPartition = paradisPartitionPersistentProcessScopesByKnownScope(loadedMapping, this.knownStateKeys());
 		this._persistentProcessScopes = new Map(initialPartition.accepted);
 		this._restoredPersistentProcessScopes = new Map(initialPartition.accepted);
 		this._quarantinedPersistentProcessScopes = initialPartition.quarantined;
@@ -169,6 +209,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			}
 			this._terminalRestoreComplete = true;
 			this.sweepRestoredGroups();
+			// 復元中に保留した park はここで実行する。sweep でタグ付けを直した後に流すこと。
+			this.releaseParkDeferral();
 			// 非アクティブスコープのエディタターミナルは working set (シリアライズ済みエディタ入力)
 			// の中にしか存在せず、リロード後はそのスコープへ切り替えるまで live インスタンスに
 			// ならない。この間、PTY は生きているのに端末はどの一覧にも現れず、モバイルからは
@@ -191,8 +233,18 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				return;
 			}
 			this._worktreeSnapshotReady = true;
-			const resolved = paradisPartitionPersistentProcessScopesByKnownScope(this._quarantinedPersistentProcessScopes, this.knownStateKeys(true));
-			for (const [persistentProcessId, stateKey] of resolved.accepted) {
+			// バリア後は、この時点でまだ登録一覧に現れない stateKey も含めて隔離分を全件採用する。
+			// 未知のまま捨てると、その端末はスコープ無しになり initial cwd も登録ルートに一致しない
+			// ため「起動時のアクティブスペース」へ恒久的に吸収され、別スペース (別ディレクトリ) の
+			// 端末が現スペースに紛れ込む。worktree の列挙が遅れた・一時的に失敗した起動で顕在化し、
+			// 一度吸収されると台帳が上書きされて元に戻らない。通常のスコープ退役 (ユーザーによる
+			// worktree/リポジトリの削除) は onDidRetireScope → retireScope が両台帳から実体ごと消す。
+			//
+			// トレードオフ: アプリ終了中に外部から worktree を消された等でこのキーが二度と現れない
+			// 場合、その端末は park されたままどのスペースからも見えなくなる (PTY は生存し、レイアウト
+			// 永続化で復元され続ける)。「知らない端末が現スペースに混ざる」より「見えない」方を選んだ。
+			// 見えない側は台帳を消せば回復できるが、混ざった側は所属が上書きされて回復手段が無い。
+			for (const [persistentProcessId, stateKey] of this._quarantinedPersistentProcessScopes) {
 				if (!this._persistentProcessScopes.has(persistentProcessId)) {
 					this._persistentProcessScopes.set(persistentProcessId, stateKey);
 				}
@@ -743,6 +795,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	private parkGroup(groupService: TerminalGroupService, group: ITerminalGroup, repositoryId: string): void {
+		// 復元中の park は split を壊す (詳細は _deferredParkGroups のコメント)。保留して復元完了後に行う。
+		if (!this._parkDeferralReleased) {
+			this._deferredParkGroups.set(group, repositoryId);
+			return;
+		}
 		groupService.paradisParkGroup(group);
 		let parked = this._parkedGroups.get(repositoryId);
 		if (!parked) {
@@ -750,6 +807,33 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this._parkedGroups.set(repositoryId, parked);
 		}
 		parked.push(group);
+	}
+
+	/**
+	 * park の保留を解除し、溜まっている分をまとめて実行する。復元の完了 (`whenConnected`) か、
+	 * それが来ない場合の上限時間のどちらか早い方で一度だけ呼ばれる。
+	 * 保留中にタグ付けが変わったり (sweepRestoredGroups)、グループごと破棄されたりするため、
+	 * 溜めた時点の値ではなく実行時点の台帳とアクティブスコープで引き直す。
+	 */
+	private releaseParkDeferral(): void {
+		if (this._parkDeferralReleased || this._store.isDisposed) {
+			return;
+		}
+		this._parkDeferralReleased = true;
+		const deferred = [...this._deferredParkGroups];
+		this._deferredParkGroups.clear();
+		const groupService = this.terminalGroupService;
+		if (!(groupService instanceof TerminalGroupService)) {
+			return;
+		}
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		for (const [group, deferredStateKey] of deferred) {
+			const stateKey = this._groupRepositories.get(group) ?? deferredStateKey;
+			if (!groupService.groups.includes(group) || stateKey === activeStateKey) {
+				continue;
+			}
+			this.parkGroup(groupService, group, stateKey);
+		}
 	}
 
 	private applyScope(targetStateKey: string): void {
@@ -884,6 +968,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	private discardGroup(group: ITerminalGroup): void {
 		this._groupRepositories.delete(group);
+		this._deferredParkGroups.delete(group);
 		for (const [repositoryId, groups] of this._parkedGroups) {
 			const index = groups.indexOf(group);
 			if (index !== -1) {
@@ -948,18 +1033,14 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		return paradisParseTerminalProcessScopeStorage(raw) ?? new Map();
 	}
 
-	private knownStateKeys(includeWorktrees: boolean): Set<string> {
+	/**
+	 * 起動時点で確実に既知と言える stateKey (登録済みリポジトリ)。worktree は初期化バリアが
+	 * 終わるまで列挙されないため、ここには含めず隔離して扱う (バリア完了時に全件採用する)。
+	 */
+	private knownStateKeys(): Set<string> {
 		const result = new Set<string>();
 		for (const repository of this.workspaceSwitchService.repositories) {
 			result.add(repository.id);
-			if (!includeWorktrees) {
-				continue;
-			}
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing) {
-					result.add(paradisWorktreeStateKey(worktree.uri));
-				}
-			}
 		}
 		return result;
 	}

@@ -19,6 +19,34 @@ import type { IAction } from '../../../base/common/actions.js';
 import type { IDisposable } from '../../../base/common/lifecycle.js';
 import type { SingleOrMany } from '../../../base/common/types.js';
 
+// PARA-PATCH: shared "do not attach" id, see paradisTerminalEditorRevive.ts and PtyService#getRevivedPtyNewId
+/**
+ * PARA-CODE: A persistent process id that is guaranteed not to exist.
+ *
+ * Attaching to it fails, which upstream answers by dropping `attachPersistentProcess` and launching a
+ * fresh shell (`terminalProcessManager.ts`). That is the safe answer whenever a terminal's identity
+ * cannot be proven: the alternative is attaching to whichever terminal happens to hold that id now,
+ * which silently steals the process from the window that owns it.
+ */
+export const PARADIS_UNRESOLVABLE_PTY_ID = -1;
+
+// PARA-PATCH: shared nonce validation, used by the pty host and by the workbench-side revive index
+const PARADIS_MAX_TERMINAL_NONCE_LENGTH = 200;
+
+/**
+ * PARA-CODE: The shell integration nonce of a terminal, or `undefined` when it proves nothing.
+ *
+ * The nonce is generated per terminal and carried across revives and reattaches, so it identifies a
+ * terminal independently of its persistent process id (which only means something within the session
+ * that handed it out). A missing, empty or implausibly long value is treated as "unknown" rather than
+ * as a mismatch, so a snapshot written before nonces were recorded still restores the old way.
+ */
+export function paradisTerminalIdentityNonce(value: unknown): string | undefined {
+	return typeof value === 'string' && value.length > 0 && value.length <= PARADIS_MAX_TERMINAL_NONCE_LENGTH
+		? value
+		: undefined;
+}
+
 export const enum TerminalSettingPrefix {
 	AutomationProfile = 'terminal.integrated.automationProfile.',
 	DefaultProfile = 'terminal.integrated.defaultProfile.',
@@ -369,7 +397,8 @@ export interface IPtyService {
 	getDefaultSystemShell(osOverride?: OperatingSystem): Promise<string>;
 	getEnvironment(): Promise<IProcessEnvironment>;
 	getWslPath(original: string, direction: 'unix-to-win' | 'win-to-unix'): Promise<string>;
-	getRevivedPtyNewId(workspaceId: string, id: number): Promise<number | undefined>;
+	// PARA-PATCH: `paradisExpectedNonce` proves the caller means this very terminal, see PtyService
+	getRevivedPtyNewId(workspaceId: string, id: number, paradisExpectedNonce?: string): Promise<number | undefined>;
 	setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void>;
 	getTerminalLayoutInfo(args: IGetTerminalLayoutInfoArgs): Promise<ITerminalsLayoutInfo | undefined>;
 	reduceConnectionGraceTime(): Promise<void>;
@@ -1174,7 +1203,8 @@ export interface ITerminalBackend extends ITerminalBackendPtyServiceContribution
 	readonly onDidRequestDetach: Event<{ requestId: number; workspaceId: string; instanceId: number }>;
 
 	attachToProcess(id: number): Promise<ITerminalChildProcess | undefined>;
-	attachToRevivedProcess(id: number): Promise<ITerminalChildProcess | undefined>;
+	// PARA-PATCH: `paradisExpectedNonce` proves the caller means this very terminal, see PtyService
+	attachToRevivedProcess(id: number, paradisExpectedNonce?: string): Promise<ITerminalChildProcess | undefined>;
 	listProcesses(): Promise<IProcessDetails[]>;
 	getLatency(): Promise<IPtyHostLatencyMeasurement[]>;
 	getDefaultSystemShell(osOverride?: OperatingSystem): Promise<string>;

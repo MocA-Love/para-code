@@ -17,7 +17,7 @@ export function paneTokenFromShellIntegrationNonce(shellIntegrationNonce: string
 }
 
 /** nonceを同一性の基準に使ってよいか検証する。長さ上限はPTY env経由のpane tokenと揃える。 */
-const PARADIS_MAX_TERMINAL_NONCE_LENGTH = 200;
+
 
 /**
  * 同一性の基準として使える shell integration nonce だけを通す。
@@ -26,11 +26,8 @@ const PARADIS_MAX_TERMINAL_NONCE_LENGTH = 200;
  * 唯一の識別子。ただし `DetachedTerminal` は空文字を持つため、素通しすると「空文字キーで
  * 全インスタンスが衝突する」という新しい取り違えを作ってしまう。ここで必ず弾く。
  */
-export function paradisTerminalIdentityNonce(value: unknown): string | undefined {
-	return typeof value === 'string' && value.length > 0 && value.length <= PARADIS_MAX_TERMINAL_NONCE_LENGTH
-		? value
-		: undefined;
-}
+// PARA-PATCH: the pty host validates nonces too, so the single definition lives in the platform layer
+export { paradisTerminalIdentityNonce } from '../../../../platform/terminal/common/terminal.js';
 
 /** revive/detach元PTYが保持する実tokenを優先し、新規PTYだけnonceをtokenとして使う。 */
 export function restoredPaneToken(shellIntegrationNonce: string, revivedPaneToken: string | undefined): string {

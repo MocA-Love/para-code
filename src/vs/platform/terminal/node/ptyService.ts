@@ -12,7 +12,7 @@ import { URI } from '../../../base/common/uri.js';
 import { getSystemShell } from '../../../base/node/shell.js';
 import { ILogService, LogLevel } from '../../log/common/log.js';
 import { RequestStore } from '../common/requestStore.js';
-import { IProcessDataEvent, IProcessReadyEvent, IPtyService, IRawTerminalInstanceLayoutInfo, IReconnectConstants, IShellLaunchConfig, ITerminalInstanceLayoutInfoById, ITerminalLaunchError, ITerminalsLayoutInfo, ITerminalTabLayoutInfoById, TerminalIcon, IProcessProperty, TitleEventSource, ProcessPropertyType, IProcessPropertyMap, IFixedTerminalDimensions, IPersistentTerminalProcessLaunchConfig, ICrossVersionSerializedTerminalState, ISerializedTerminalState, ITerminalProcessOptions, IPtyHostLatencyMeasurement, type IPtyServiceContribution, PosixShellType, ITerminalLaunchResult } from '../common/terminal.js';
+import { IProcessDataEvent, IProcessReadyEvent, IPtyService, IRawTerminalInstanceLayoutInfo, IReconnectConstants, IShellLaunchConfig, ITerminalInstanceLayoutInfoById, ITerminalLaunchError, ITerminalsLayoutInfo, ITerminalTabLayoutInfoById, TerminalIcon, IProcessProperty, TitleEventSource, ProcessPropertyType, IProcessPropertyMap, IFixedTerminalDimensions, IPersistentTerminalProcessLaunchConfig, ICrossVersionSerializedTerminalState, ISerializedTerminalState, ITerminalProcessOptions, IPtyHostLatencyMeasurement, type IPtyServiceContribution, PosixShellType, ITerminalLaunchResult, PARADIS_UNRESOLVABLE_PTY_ID, paradisTerminalIdentityNonce } from '../common/terminal.js';
 import { TerminalDataBufferer } from '../common/terminalDataBuffering.js';
 import { escapeNonWindowsPath } from '../common/terminalEnvironment.js';
 import type { ISerializeOptions, SerializeAddon as XtermSerializeAddon } from '@xterm/addon-serialize';
@@ -102,6 +102,15 @@ export class PtyService extends Disposable implements IPtyService {
 	private readonly _detachInstanceRequestStore: RequestStore<IProcessDetails | undefined, { workspaceId: string; instanceId: number }>;
 	private readonly _revivedPtyIdMap: Map<string, { newId: number; state: ISerializedTerminalState }> = new Map();
 	private readonly _revivedPtyOldIdByNewId: Map<string, number> = new Map();
+	/**
+	 * PARA-PATCH: revived terminals indexed by shell integration nonce, see getRevivedPtyNewId.
+	 *
+	 * `_revivedPtyIdMap` above is keyed by the id of the session that was revived and is consumed as
+	 * the panel layout claims each entry, so it cannot answer for a restored editor tab. A nonce, on
+	 * the other hand, names the terminal itself no matter which generation asks, which makes this
+	 * index safe to keep for as long as the host lives.
+	 */
+	private readonly _paradisRevivedNewIdByNonce = new Map<string, number>();
 
 	// #region Pty service contribution RPC calls
 
@@ -308,6 +317,11 @@ export class PtyService extends Disposable implements IPtyService {
 		const oldId = this._getRevivingProcessId(workspaceId, terminal.id);
 		this._revivedPtyIdMap.set(oldId, { newId, state: terminal });
 		this._revivedPtyOldIdByNewId.set(this._getRevivingProcessId(workspaceId, newId), terminal.id);
+		// PARA-PATCH: also index by nonce so a restored editor tab can find this terminal (getRevivedPtyNewId)
+		const nonce = paradisTerminalIdentityNonce(terminal.processDetails.shellIntegrationNonce);
+		if (nonce !== undefined) {
+			this._paradisRevivedNewIdByNonce.set(nonce, newId);
+		}
 		this._logService.info(`Revived process, old id ${oldId} -> new id ${newId}`);
 	}
 
@@ -570,14 +584,45 @@ export class PtyService extends Disposable implements IPtyService {
 		return undefined;
 	}
 
+	/**
+	 * PARA-PATCH: `paradisExpectedNonce` names the terminal the caller means to reattach to.
+	 *
+	 * A persistent process id only means something within the session that handed it out — this host
+	 * restarts the counter at 0, so reviving old ids 4, 5, 13… hands out new ids 1, 2, 3… and the two
+	 * ranges overlap. A serialized editor input, which is written once and then restored several
+	 * generations later, therefore cannot be resolved by id alone: attaching to whichever terminal
+	 * holds that number now takes the process away from the window that owns it. The nonce is carried
+	 * across revives, so it answers the question the id cannot.
+	 */
 	@traceRpc
-	async getRevivedPtyNewId(workspaceId: string, id: number): Promise<number | undefined> {
+	async getRevivedPtyNewId(workspaceId: string, id: number, paradisExpectedNonce?: string): Promise<number | undefined> {
 		try {
+			const expectedNonce = paradisTerminalIdentityNonce(paradisExpectedNonce);
+			if (expectedNonce !== undefined) {
+				// The terminal was revived in this host, possibly generations ago.
+				const revivedId = this._paradisRevivedNewIdByNonce.get(expectedNonce);
+				if (revivedId !== undefined && this._paradisNonceOf(revivedId) === expectedNonce) {
+					return revivedId;
+				}
+				// No revive in between (a window reload): the id still names the right terminal.
+				if (this._paradisNonceOf(id) === expectedNonce) {
+					return undefined;
+				}
+				// The id names somebody else's terminal. Answering with an id that cannot exist makes
+				// the attach fail, which upstream handles by launching a fresh shell — far better than
+				// stealing a live process. An id with nothing behind it fails either way.
+				return this._ptys.has(id) ? PARADIS_UNRESOLVABLE_PTY_ID : undefined;
+			}
 			return this._revivedPtyIdMap.get(this._getRevivingProcessId(workspaceId, id))?.newId;
 		} catch (e) {
 			this._logService.warn(`Couldn't find terminal ID ${workspaceId}-${id}`, e.message);
 		}
 		return undefined;
+	}
+
+	/** PARA-CODE: The shell integration nonce of a live terminal, if there is one. */
+	private _paradisNonceOf(id: number): string | undefined {
+		return paradisTerminalIdentityNonce(this._ptys.get(id)?.processLaunchOptions.options.shellIntegration.nonce);
 	}
 
 	@traceRpc
