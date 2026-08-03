@@ -117,7 +117,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 	private screenLocked = false;
 
 	constructor(
-		@ISharedProcessService sharedProcessService: ISharedProcessService,
+		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IMainProcessService mainProcessService: IMainProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INotificationService private readonly notificationService: INotificationService,
