@@ -41,17 +41,15 @@ import * as child_process from 'child_process';
  * @param log 進捗の出力先
  */
 export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: NodeJS.ProcessEnv | undefined, log: (message: string) => void): void {
-	const watcherRoot = path.join(packageRoot, 'node_modules', '@parcel', 'watcher');
-	const globPath = path.join(watcherRoot, 'src', 'Glob.cc');
-	if (!fs.existsSync(globPath)) {
-		return;
+	if (paradisIsParcelWatcherPatched(packageRoot)) {
+		return; // 適用済み、または対象外
 	}
 
+	const watcherRoot = path.join(packageRoot, 'node_modules', '@parcel', 'watcher');
+	const globPath = path.join(watcherRoot, 'src', 'Glob.cc');
+
 	const original = fs.readFileSync(globPath, 'utf8');
-	const patched = paradisApplyGlobGuard(original);
-	if (patched === undefined) {
-		return; // 適用済み
-	}
+	const patched = paradisApplyGlobGuard(original) ?? original;
 
 	if (patched === original) {
 		// upstream の実装が変わっている。黙って素通りするとクラッシュだけが再発するので、明示的に失敗させる
@@ -71,10 +69,12 @@ export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: No
 	});
 
 	if (result.error || result.status !== 0) {
-		// 元に戻して次回に再試行させる
+		// 元に戻して次回に再試行させる。ここで postinstall ごと止めはしない: ネイティブビルドの
+		// 失敗は環境要因 (toolchain や C++ 標準の食い違い) で起きることがあり、revert 済みで
+		// node_modules は元の動く状態に戻っているため、開発環境まで巻き添えにする理由が無い。
+		// パッチが当たらないので #250 のクラッシュは残る。目立つよう警告だけ出す。
 		fs.writeFileSync(globPath, original, 'utf8');
-		log(`ERR Failed to rebuild @parcel/watcher after patching; reverted ${globPath}`);
-		process.exit(result.status ?? 1);
+		log(`ERR Failed to rebuild @parcel/watcher after patching; reverted ${globPath}. The watcher remains vulnerable to parcel-bundler/watcher#250.`);
 	}
 }
 
@@ -86,11 +86,18 @@ export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: No
  * 変更は入らない。依存が最新の状態でこのパッチを取り込んだ環境へガードを届けるため、
  * 高速経路に入ってよいかの判断にこれを併用する。
  *
- * @returns パッチ適用済み、または `@parcel/watcher` が無く対象外なら true
+ * 「ソースからビルドされた成果物が実際にある」ことも対象条件に含める。`@parcel/watcher` が
+ * 依存に載っていても、その環境ではビルドされていないことがある (例: remote は macOS では
+ * `std::optional` を巡る C++ 標準の食い違いでビルドが通らず、`build/Release/watcher.node` が
+ * 生成されない)。そこへパッチを当てて再ビルドを試みても失敗するだけで、そもそもその
+ * `watcher.node` は読み込まれない。ビルド済みの場所だけを対象にする。
+ *
+ * @returns パッチ適用済み、または対象外 (`@parcel/watcher` が無い / ビルドされていない) なら true
  */
 export function paradisIsParcelWatcherPatched(packageRoot: string): boolean {
-	const globPath = path.join(packageRoot, 'node_modules', '@parcel', 'watcher', 'src', 'Glob.cc');
-	if (!fs.existsSync(globPath)) {
+	const watcherRoot = path.join(packageRoot, 'node_modules', '@parcel', 'watcher');
+	const globPath = path.join(watcherRoot, 'src', 'Glob.cc');
+	if (!fs.existsSync(globPath) || !fs.existsSync(path.join(watcherRoot, 'build', 'Release', 'watcher.node'))) {
 		return true; // 対象外
 	}
 
