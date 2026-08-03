@@ -41,15 +41,8 @@ import { raceTimeout } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IDeserializedTerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { PARADIS_UNRESOLVABLE_PTY_ID } from '../../../../platform/terminal/common/terminal.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
-
-/**
- * 存在しないことが保証される PTY ID。`findRevivedId: false` と併せて使うと
- * `attachToProcess` が undefined を返し、upstream が `attachPersistentProcess` を捨てて
- * 新しいシェルを起動する既定の失敗経路に乗る（terminalProcessManager.ts）。
- * 空のターミナルが1枚開くだけで、他スコープの生きた PTY を壊さない。
- */
-const PARADIS_UNRESOLVABLE_PTY_ID = -1;
 
 /** 索引取得に許す時間。切替の直列パス上なので、取れなければ諦めて安全側（空）へ倒す。 */
 const PARADIS_REVIVE_INDEX_TIMEOUT_MS = 500;

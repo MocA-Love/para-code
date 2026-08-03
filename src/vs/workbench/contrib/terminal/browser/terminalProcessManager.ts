@@ -336,7 +336,11 @@ export class TerminalProcessManager extends Disposable implements ITerminalProce
 				}
 			} else {
 				if (shellLaunchConfig.attachPersistentProcess) {
-					const result = shellLaunchConfig.attachPersistentProcess.findRevivedId ? await backend.attachToRevivedProcess(shellLaunchConfig.attachPersistentProcess.id) : await backend.attachToProcess(shellLaunchConfig.attachPersistentProcess.id);
+					// PARA-PATCH: hand the recorded nonce over so the pty host can refuse a mismatched terminal
+					const attachTarget = shellLaunchConfig.attachPersistentProcess;
+					const result = attachTarget.findRevivedId
+						? await backend.attachToRevivedProcess(attachTarget.id, attachTarget.shellIntegrationNonce)
+						: await backend.attachToProcess(attachTarget.id);
 					if (result) {
 						newProcess = result;
 					} else {

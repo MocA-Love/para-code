@@ -316,8 +316,9 @@ export class PtyHostService extends Disposable implements IPtyHostService {
 		return this._proxy.getWslPath(original, direction);
 	}
 
-	getRevivedPtyNewId(workspaceId: string, id: number): Promise<number | undefined> {
-		return this._proxy.getRevivedPtyNewId(workspaceId, id);
+	// PARA-PATCH: forward the identity check through to the pty host
+	getRevivedPtyNewId(workspaceId: string, id: number, paradisExpectedNonce?: string): Promise<number | undefined> {
+		return this._proxy.getRevivedPtyNewId(workspaceId, id, paradisExpectedNonce);
 	}
 
 	setTerminalLayoutInfo(args: ISetTerminalLayoutInfoArgs): Promise<void> {

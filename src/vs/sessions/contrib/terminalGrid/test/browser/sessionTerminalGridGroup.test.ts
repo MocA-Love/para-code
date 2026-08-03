@@ -4,17 +4,20 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
-import { type DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
+import { Disposable, type DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import type { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { ISerializedGrid, ISerializedNode, Orientation } from '../../../../../base/browser/ui/grid/grid.js';
+import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { type IShellLaunchConfig, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import type { IPaneCompositePartService } from '../../../../../workbench/services/panecomposite/browser/panecomposite.js';
-import type { IWorkbenchLayoutService } from '../../../../../workbench/services/layout/browser/layoutService.js';
-import type { IViewDescriptorService } from '../../../../../workbench/common/views.js';
-import { Direction, type ITerminalConfigurationService, type ITerminalEditorService, type ITerminalGroup, type ITerminalGroupService, type ITerminalInstance, type ITerminalInstanceService, type ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { type IWorkbenchLayoutService, Position } from '../../../../../workbench/services/layout/browser/layoutService.js';
+import { type IViewDescriptorService, ViewContainerLocation } from '../../../../../workbench/common/views.js';
+import { Direction, type ITerminalConfigurationService, type ITerminalEditorService, type ITerminalGroup, type ITerminalGroupService, type ITerminalInstance, type ITerminalInstanceService, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { SessionTerminalGridGroup } from '../../browser/sessionTerminalGridGroup.js';
+import type { ISessionTerminalGridLayoutService, ISessionTerminalGridLayoutSource } from '../../browser/sessionTerminalGridLayoutService.js';
 
 interface ITestTerminalInstance {
 	readonly instance: ITerminalInstance;
@@ -30,6 +33,7 @@ interface ITestTerminalInstance {
 }
 
 interface ITestTerminalOptions {
+	readonly attachPersistentProcess?: { readonly id: number; readonly paradisRevivedFromPersistentProcessId?: number };
 	readonly hadFocusOnExit?: boolean;
 	readonly persistentProcessId?: number;
 	readonly shouldPersist?: boolean;
@@ -37,13 +41,18 @@ interface ITestTerminalOptions {
 }
 
 interface ITestHarness {
+	readonly layoutSources: ISessionTerminalGridLayoutSource[];
 	readonly createdInstances: ITestTerminalInstance[];
 	readonly detachedInstances: ITerminalInstance[];
 	readonly detachRecords: Array<{ readonly instanceId: number; readonly wasInGridAtDetach: boolean }>;
 	readonly liveInstances: ITerminalInstance[];
 	readonly sourceGroups: Map<ITerminalInstance, ITerminalGroup>;
 	createGroup(initial?: ITerminalInstance): SessionTerminalGridGroup;
+	/** Creates a group that is attached to a real (detached) container, so it builds an actual grid. */
+	createAttachedGroup(initial: ITerminalInstance): SessionTerminalGridGroup;
 	createTerminal(options?: ITestTerminalOptions): ITestTerminalInstance;
+	/** Plays the terminal restore finishing, handing `layout` to whichever group asks for one. */
+	completeRestore(layout?: ISerializedGrid): Promise<void>;
 }
 
 function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarness {
@@ -55,6 +64,7 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 	const testInstances: ITestTerminalInstance[] = [];
 	const sourceGroups = new Map<ITerminalInstance, ITerminalGroup>();
 	const groups: SessionTerminalGridGroup[] = [];
+	const layoutSources: ISessionTerminalGridLayoutSource[] = [];
 
 	const createTerminal = (options: ITestTerminalOptions = {}): ITestTerminalInstance => {
 		const instanceId = nextInstanceId++;
@@ -84,6 +94,9 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 			description: undefined,
 			statusList: { statuses: [] } as Partial<ITerminalInstance['statusList']> as ITerminalInstance['statusList'],
 			persistentProcessId: options.persistentProcessId,
+			shellLaunchConfig: options.attachPersistentProcess
+				? { attachPersistentProcess: options.attachPersistentProcess } as Partial<IShellLaunchConfig> as IShellLaunchConfig
+				: {} as IShellLaunchConfig,
 			shouldPersist: options.shouldPersist ?? false,
 			hadFocusOnExit: options.hadFocusOnExit ?? false,
 			target: options.target ?? TerminalLocation.Panel,
@@ -122,9 +135,18 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 	const terminalGroupService = {
 		getGroupForInstance: (instance: ITerminalInstance) => sourceGroups.get(instance),
 	} as Partial<ITerminalGroupService> as ITerminalGroupService;
+	const connected = new DeferredPromise<void>();
 	const terminalService = {
 		get instances() { return liveInstances; },
+		whenConnected: connected.p,
 	} as Partial<ITerminalService> as ITerminalService;
+	let restoredLayout: ISerializedGrid | undefined;
+	const gridLayoutService: ISessionTerminalGridLayoutService = {
+		_serviceBrand: undefined,
+		registerSource: source => { layoutSources.push(source); return Disposable.None; },
+		scheduleSave: () => { },
+		takeRestoredLayout: () => restoredLayout,
+	};
 	const terminalEditorService = {
 		detachInstance: (instance: ITerminalInstance) => {
 			detachedInstances.push(instance);
@@ -143,31 +165,61 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 		}
 	}));
 
+	// Only needed by a group that is attached to a container, which is what makes it build a real
+	// grid; the container resolves `ITerminalService` through this.
+	const instantiationService = disposables.add(new TestInstantiationService());
+	instantiationService.stub(ITerminalService, terminalService);
+	const layoutService = { getPanelPosition: () => Position.BOTTOM } as Partial<IWorkbenchLayoutService> as IWorkbenchLayoutService;
+	const viewDescriptorService = { getViewLocationById: () => ViewContainerLocation.Panel } as Partial<IViewDescriptorService> as IViewDescriptorService;
+
+	const createGroup = (initial: ITerminalInstance | undefined, container: HTMLElement | undefined): SessionTerminalGridGroup => {
+		const group = disposables.add(new SessionTerminalGridGroup(
+			container,
+			initial,
+			{} as ITerminalConfigurationService,
+			terminalInstanceService,
+			{} as IPaneCompositePartService,
+			layoutService,
+			viewDescriptorService,
+			instantiationService,
+			terminalGroupService,
+			terminalService,
+			terminalEditorService,
+			gridLayoutService,
+		));
+		groups.push(group);
+		return group;
+	};
+
 	return {
+		layoutSources,
 		createdInstances,
 		detachedInstances,
 		detachRecords,
 		liveInstances,
 		sourceGroups,
 		createTerminal,
-		createGroup: initial => {
-			const group = disposables.add(new SessionTerminalGridGroup(
-				undefined,
-				initial,
-				{} as ITerminalConfigurationService,
-				terminalInstanceService,
-				{} as IPaneCompositePartService,
-				{} as IWorkbenchLayoutService,
-				{} as IViewDescriptorService,
-				{} as IInstantiationService,
-				terminalGroupService,
-				terminalService,
-				terminalEditorService,
-			));
-			groups.push(group);
-			return group;
+		completeRestore: async layout => {
+			restoredLayout = layout;
+			connected.complete();
+			// Let the `whenConnected` continuation of every group run.
+			await timeout(0);
 		},
+		createAttachedGroup: initial => createGroup(initial, document.createElement('div')),
+		createGroup: initial => createGroup(initial, undefined),
 	};
+}
+
+function leafOf(terminal: number): ISerializedNode {
+	return { type: 'leaf', data: { terminal }, size: 100 };
+}
+
+function branchOf(...data: ISerializedNode[]): ISerializedNode {
+	return { type: 'branch', data, size: 200 };
+}
+
+function gridOf(root: ISerializedNode): ISerializedGrid {
+	return { root, orientation: Orientation.VERTICAL, width: 800, height: 400 };
 }
 
 suite('SessionTerminalGridGroup', () => {
@@ -468,6 +520,59 @@ suite('SessionTerminalGridGroup', () => {
 					wasInGridAtDetach: false,
 				}],
 			},
+		);
+	});
+
+	test('applies the stored arrangement to the row upstream restored, in visual order', async () => {
+		const harness = createTestHarness(disposables);
+		const restored = [1, 2, 3].map(id => harness.createTerminal({ persistentProcessId: id, attachPersistentProcess: { id } }));
+		// Upstream can only bring a tab back as a single row, whatever it looked like before.
+		const group = harness.createAttachedGroup(restored[0].instance);
+		group.addInstance(restored[1].instance);
+		group.addInstance(restored[2].instance);
+
+		// What was stored: terminal 3 on top, 1 and 2 side by side underneath.
+		await harness.completeRestore(gridOf(branchOf(leafOf(3), branchOf(leafOf(1), leafOf(2)))));
+
+		assert.deepStrictEqual(
+			{
+				order: group.terminalInstances.map(instance => instance.persistentProcessId),
+				activeInstanceId: group.activeInstance?.instanceId,
+			},
+			{
+				order: [3, 1, 2],
+				activeInstanceId: restored[0].instance.instanceId,
+			},
+		);
+	});
+
+	test('leaves the restored row alone when a pane is missing from the stored arrangement', async () => {
+		const harness = createTestHarness(disposables);
+		const restored = [1, 2].map(id => harness.createTerminal({ persistentProcessId: id, attachPersistentProcess: { id } }));
+		const group = harness.createAttachedGroup(restored[0].instance);
+		group.addInstance(restored[1].instance);
+
+		// Terminal 2 is not in the stored tree, so the arrangement does not describe this group. The
+		// real service would never hand this one over; this is the group's own guard against applying
+		// an arrangement that would leave a pane out of the grid.
+		await harness.completeRestore(gridOf(branchOf(leafOf(1), leafOf(9))));
+
+		assert.deepStrictEqual(group.terminalInstances.map(instance => instance.persistentProcessId), [1, 2]);
+	});
+
+	test('reports how its restored terminals map onto this session ids', () => {
+		const harness = createTestHarness(disposables);
+		// Revived after an app restart, reattached after a reload, and created in this session.
+		const revived = harness.createTerminal({ persistentProcessId: 31, attachPersistentProcess: { id: 31, paradisRevivedFromPersistentProcessId: 1 } });
+		const reattached = harness.createTerminal({ persistentProcessId: 7, attachPersistentProcess: { id: 7 } });
+		const fresh = harness.createTerminal({ persistentProcessId: 42 });
+		const group = harness.createGroup(revived.instance);
+		group.addInstance(reattached.instance);
+		group.addInstance(fresh.instance);
+
+		assert.deepStrictEqual(
+			harness.layoutSources.map(source => source.getGridLayoutTerminalGenerations()),
+			[[{ restored: 1, current: 31 }, { restored: 7, current: 7 }]],
 		);
 	});
 });
