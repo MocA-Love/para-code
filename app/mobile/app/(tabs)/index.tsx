@@ -163,6 +163,19 @@ export default function HomeScreen() {
 		};
 	});
 
+	/** アーカイブ直後の「元に戻す」。数秒で自然に消える。 */
+	const [undoArchive, setUndoArchive] = useState<{ key: string; title: string } | undefined>(undefined);
+	const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	useEffect(() => () => { if (undoTimer.current !== undefined) { clearTimeout(undoTimer.current); } }, []);
+	const archive = (terminalKey: string, title: string) => {
+		setArchived(pinKeyForTerminal({ terminalKey }), true);
+		setUndoArchive({ key: pinKeyForTerminal({ terminalKey }), title });
+		if (undoTimer.current !== undefined) {
+			clearTimeout(undoTimer.current);
+		}
+		undoTimer.current = setTimeout(() => { undoTimer.current = undefined; setUndoArchive(undefined); }, 4_000);
+	};
+
 	if (ready && !paired) {
 		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
 	}
@@ -188,19 +201,6 @@ export default function HomeScreen() {
 		: `${effectiveWs.name}${effectiveWs.branch ? ` · ${effectiveWs.branch}` : ''}`;
 	// アーカイブ入口は、しまってあるものが1件でもある時だけ出す（常設だと空のボタンが並ぶ）。
 	const archivedCount = (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))).length;
-
-	/** アーカイブ直後の「元に戻す」。数秒で自然に消える。 */
-	const [undoArchive, setUndoArchive] = useState<{ key: string; title: string } | undefined>(undefined);
-	const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-	useEffect(() => () => { if (undoTimer.current !== undefined) { clearTimeout(undoTimer.current); } }, []);
-	const archive = (terminalKey: string, title: string) => {
-		setArchived(pinKeyForTerminal({ terminalKey }), true);
-		setUndoArchive({ key: pinKeyForTerminal({ terminalKey }), title });
-		if (undoTimer.current !== undefined) {
-			clearTimeout(undoTimer.current);
-		}
-		undoTimer.current = setTimeout(() => { undoTimer.current = undefined; setUndoArchive(undefined); }, 4_000);
-	};
 
 	return (
 		<ConnectionGate><GestureDetector gesture={openDrawerPan}><View style={styles.screen}>
