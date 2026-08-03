@@ -40,6 +40,24 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.2.5',
+		date: '2026-08-04',
+		headline: 'PCのAivis音声を、このiPhoneでも聞けます',
+		items: [
+			{
+				icon: 'volume-high-outline',
+				title: 'PCで流れるAivisの音声を、iPhoneでも聞けるようになりました',
+				body: 'ホーム右上のボタンから開始している間だけ、PCで作られた読み上げ音声がこのiPhoneでも鳴ります。画面を閉じていても、ロック中でも届きます。',
+			},
+			{
+				icon: 'mic-off-outline',
+				title: '音声はスピーカーから鳴り、マイクは使いません',
+				body: '受話口から小さく鳴ったり、マイク使用中の表示が出たりすることがあった問題を直しました。あわせて、開始しても「再接続しています」から進まないことがあったのも直しています。',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.2.4',
 		date: '2026-07-30',
 		items: [

@@ -6,6 +6,7 @@ interface NativeModuleShape {
 	isSupported(): boolean;
 	activate(): Promise<void>;
 	deactivate(): Promise<void>;
+	enqueueClip(base64: string): Promise<void>;
 	addListener(eventName: 'onRemoteStop', listener: () => void): { remove(): void };
 }
 
@@ -26,6 +27,11 @@ export async function activateVoiceSession(): Promise<void> {
 /** 音声通知用のバックグラウンド再生状態を終了する。 */
 export async function deactivateVoiceSession(): Promise<void> {
 	await native?.deactivate();
+}
+
+/** PCから届いたMP3（base64）を再生キューへ積む。到着順に1本ずつ鳴らす。 */
+export async function enqueueVoiceClip(base64: string): Promise<void> {
+	await native?.enqueueClip(base64);
 }
 
 /** ロック画面またはコントロールセンターの停止操作を購読する。 */

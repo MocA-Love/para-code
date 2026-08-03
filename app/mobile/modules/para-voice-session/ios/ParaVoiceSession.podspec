@@ -3,7 +3,7 @@ Pod::Spec.new do |s|
   s.name           = 'ParaVoiceSession'
   s.version        = '1.0.0'
   s.summary        = 'Para Code background voice notification session'
-  s.description    = 'Keeps an explicitly started WebRTC receive-only audio session available in the background.'
+  s.description    = 'Keeps an explicitly started playback-only audio session alive and plays voice clips pushed from the desktop.'
   s.author         = 'Paradis'
   s.homepage       = 'https://paradis.ltd'
   s.platforms      = { :ios => '16.2' }

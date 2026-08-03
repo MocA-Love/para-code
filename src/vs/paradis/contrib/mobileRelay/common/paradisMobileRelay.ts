@@ -153,8 +153,8 @@ export interface IParadisMobileRendererStateV3 {
 export interface IParadisMobileDesktopStateV3 {
 	readonly protocolVersion: 3;
 	readonly fsUploadEncoding: 'fs-binary-v1';
-	/** protocol v3内の追加能力。未指定の旧PCへモバイルが音声offerを送らないための判定用。 */
-	readonly voiceWebrtc: 'audio-v1';
+	/** protocol v3内の追加能力。未指定の旧PCへモバイルが音声通知の購読を送らないための判定用。 */
+	readonly voiceClips: 'relay-v1';
 	readonly desktopEpoch: string;
 	readonly revision: number;
 	readonly complete: boolean;
