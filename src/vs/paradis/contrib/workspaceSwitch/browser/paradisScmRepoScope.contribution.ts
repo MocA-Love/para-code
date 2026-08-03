@@ -28,11 +28,12 @@ import { PARADIS_SCM_SCOPE_SETTING_ID, paradisIsScmRootInScope } from '../common
  * リポジトリはフォルダ入れ替えでは閉じられず (close 対象は「削除されたフォルダのリポジトリ」のみ)、
  * スペースを切り替えるたびに SCM ビューへ蓄積していく。
  *
- * 2段構えで絞る:
- *  1. 即時: workbench 側の ISCMViewService.visibleRepositories で「変更」ビューの表示を絞る
- *     (同期・確実)
- *  2. 「リポジトリ」一覧セクションは {@link ParadisScopedScmViewService} が `repositories` 自体を
- *     絞ることで隠す。つまり **スコープ外リポジトリを閉じる必要はない**。
+ * 絞り込みは2つのクラスで分担する:
+ *  1. **このクラス**: workbench 側の ISCMViewService.visibleRepositories を操作して「変更」ビューの
+ *     表示を絞る (同期・確実)
+ *  2. `ParadisScopedScmViewService`: 「リポジトリ」一覧セクションが直接描画する `repositories`
+ *     自体を絞る
+ * 2 が入ったことで **スコープ外リポジトリを閉じる必要はなくなった**。
  *
  * かつてはここから `git.close` を投げて git 拡張ごと閉じていたが、これは以下の理由で撤去した
  * (2026-08-03)。upstream の `git.close` は `{ repository: true }` 付きで登録されているため、
@@ -64,6 +65,12 @@ import { PARADIS_SCM_SCOPE_SETTING_ID, paradisIsScmRootInScope } from '../common
  *    (repository.ts)。ワークスペースフォルダから外れたものは git 拡張自身が dispose するが、
  *    auto-detection で開かれた親リポジトリと兄弟 worktree は `removed` フォルダに紐づかないため
  *    残る。監視ハンドルが増える方向なので、多スペース運用では実機で確認する価値がある
+ *  - {@link ParadisScopedScmViewService} が絞るのは `ISCMViewService` 経由の参照だけなので、
+ *    `ISCMService` を直接読む画面はスコープ外を見る (履歴/グラフビューの初期リポジトリ選択、
+ *    検索の「変更されたファイルのみ」等)。アクティビティバーのバッジは `visibleRepositories`
+ *    由来なので影響しない
+ * いずれも close していた頃から実際には達成できていなかった (上記のとおり close はほとんど成立
+ * していなかった) ため、新たな劣化ではなく「元から無かったことが確定した」に近い。
  *
  * 現在このクラスが reconcile で行うのは `git.openRepository` による開き直しだけ。これは過去の
  * `git.close` が closedRepositories として永続記憶した「そのスペースへ戻っても自動再オープン
