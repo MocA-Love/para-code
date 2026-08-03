@@ -47,14 +47,16 @@ function paradisDiffRepositories(previous: ReadonlySet<ISCMRepository>, next: Re
  *
  * `paradisScmRepoScope` は `visibleRepositories` を操作してスコープ外リポジトリを隠すが、これは
  * 「変更」ビューにしか効かない。「リポジトリ」一覧セクションは `ISCMViewService.repositories` を
- * そのまま描画するため、スコープ外のリポジトリが残り続ける。同 contribution はそれを `git.close`
- * で閉じて消そうとするが、他の拡張 (GitHub Pull Requests 等) がリポジトリを掴んだままだと即座に
- * 開き直され、close ↔ open のループを避けるための試行上限に達したあとは「開いたまま非表示」に
- * 妥協するしかなく、結果として切り替え前のスペースのリポジトリが一覧に残っていた。
+ * そのまま描画するため、スコープ外のリポジトリが残り続ける。かつては同 contribution がそれを
+ * `git.close` で閉じて消そうとしていたが、他の拡張 (GitHub Pull Requests 等) がリポジトリを掴んだ
+ * ままだと即座に開き直され、close ↔ open のループを避けるための試行上限に達したあとは「開いたまま
+ * 非表示」に妥協するしかなく、結果として切り替え前のスペースのリポジトリが一覧に残っていた。
  *
  * そこで「閉じる」ことに頼らず、ビューへ見せる一覧そのものを絞る。`repositories` を参照するのは
  * リポジトリ一覧・リポジトリピッカー・バッジなど、いずれもスコープ外を出す理由が無い箇所なので、
- * サービス境界で一度だけ絞るのが最も影響範囲が小さい。
+ * サービス境界で一度だけ絞るのが最も影響範囲が小さい。この方式が入ったことで `git.close` は不要に
+ * なり、モーダルや誤 close の原因にもなっていたため 2026-08-03 に撤去した (経緯は
+ * `paradisScmRepoScope.contribution.ts` のクラスコメント)。
  *
  * upstream の {@link SCMViewService} は置き換えずに内包し、絞り込み以外は素通しする。フォルダの
  * 入れ替えでは upstream 側のイベントが発火しない (リポジトリの開閉が起きないため) ので、

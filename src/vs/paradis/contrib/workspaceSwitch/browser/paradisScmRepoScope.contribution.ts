@@ -30,13 +30,49 @@ import { PARADIS_SCM_SCOPE_SETTING_ID, paradisIsScmRootInScope } from '../common
  *
  * 2段構えで絞る:
  *  1. 即時: workbench 側の ISCMViewService.visibleRepositories で「変更」ビューの表示を絞る
- *     (同期・確実。ただし「リポジトリ」一覧セクションは開いている全リポジトリを表示するため残る)
- *  2. 遅延 (reconcile): スコープ外の git リポジトリを `git.close` で git 拡張ごと閉じ、
- *     「リポジトリ」一覧からも消す。Model.close は closedRepositories として永続記憶され
- *     「そのスペースへ戻ったとき自動再オープンされない」罠があるため、切り替えのたびに現在の
- *     ワークスペースフォルダを `git.openRepository` で明示的に開き直して記憶から復帰させる
- *     (openIfClosed=true で closedRepositories からも削除される)。コミットメッセージの下書きは
- *     paradisScmInputScope が onDidAddRepository で復元するため close/reopen を跨いで保持される。
+ *     (同期・確実)
+ *  2. 「リポジトリ」一覧セクションは {@link ParadisScopedScmViewService} が `repositories` 自体を
+ *     絞ることで隠す。つまり **スコープ外リポジトリを閉じる必要はない**。
+ *
+ * かつてはここから `git.close` を投げて git 拡張ごと閉じていたが、これは以下の理由で撤去した
+ * (2026-08-03)。upstream の `git.close` は `{ repository: true }` 付きで登録されているため、
+ * 第一引数からリポジトリを解決できないと **確認なしで `model.pickRepository()` にフォールバック
+ * する** (extensions/git/src/commands.ts の createCommand)。そのときの挙動は git 拡張側で開いて
+ * いるリポジトリ数で変わり、どれも実害があった:
+ *  - 0件: 「利用可能なリポジトリがありません」を throw → モーダルのエラーダイアログ
+ *  - 1件: **確認なしでその1件を閉じる** (閉じてはいけないリポジトリでも閉じる)
+ *  - 2件以上: 「Choose a repository」の QuickPick が唐突に出る
+ * そして解決に失敗する状況は日常的に起きる。フォルダ入れ替え時、git 拡張は外れたフォルダの
+ * リポジトリを `Model.close` ではなく `OpenRepository.dispose()` で直接破棄し (model.ts の
+ * onDidChangeWorkspaceFolders)、その後わざわざ新しいフォルダを開き直す。この「dispose 済みで
+ * まだ開き直せていない」窓の間、git 拡張の openRepositories は 0〜数件まで減る (dispose 対象は
+ * 「外れたフォルダのリポジトリ」かつ「可視エディタで未使用」かつ「残るフォルダの配下でない」もの
+ * だけなので、何件残るかは状況次第。ただし 0件・1件・2件以上のどれになっても上の3分岐のいずれかを
+ * 踏む)。Windows では git のプロセス起動が遅く (実測でコマンド1本あたり数百ms〜1.7秒)、リポジトリを
+ * 1つ開くのに何本も必要なため、この窓は秒単位で開く。一方 renderer 側の scmService.repositories には
+ * dispose の伝播が届くまで古いリポジトリが残るので、「renderer には見えるが ext host にはもう無い」
+ * 相手へ close を投げてしまう。renderer からは ext host の実態を確認する術がなく、遅延を伸ばしても
+ * 塞ぎきれない。
+ *
+ * 撤去で失うものが2つあることは承知の上で選んでいる (どちらも「見えないところに残る」だけで、
+ * ユーザー操作を遮るモーダルや無確認の誤 close より軽いと判断した):
+ *  - `pickRepository` は git 拡張側の openRepositories を列挙するため、`git.commit` / `git.pull` /
+ *    `git.push` / `git.sync` などをコマンドパレットから引数なしで実行すると、一覧では隠れている
+ *    スコープ外リポジトリが選択候補に現れる。`Repository.isHidden` はコンストラクタで固定されるので
+ *    renderer から後付けで隠すことはできない
+ *  - 開いたままの Repository は再帰ファイルウォッチャー・DotGitWatcher・AutoFetcher を保持し続ける
+ *    (repository.ts)。ワークスペースフォルダから外れたものは git 拡張自身が dispose するが、
+ *    auto-detection で開かれた親リポジトリと兄弟 worktree は `removed` フォルダに紐づかないため
+ *    残る。監視ハンドルが増える方向なので、多スペース運用では実機で確認する価値がある
+ *
+ * 現在このクラスが reconcile で行うのは `git.openRepository` による開き直しだけ。これは過去の
+ * `git.close` が closedRepositories として永続記憶した「そのスペースへ戻っても自動再オープン
+ * されない」状態からの復帰用で、`{ repository: false }` 登録なので上記のフォールバックは踏まない。
+ * ただしコマンド側が `model.openRepository(path, true, true)` と固定しており、第3引数の
+ * `openIfParent` が親フォルダガードを丸ごと外す。つまり `git.openRepositoryInParentFolders`
+ * (既定 `prompt`) の確認を飛ばして祖先リポジトリを黙って開く副作用があり、しかも祖先は
+ * {@link paradisIsScmRootInScope} がスコープ内と判定するので一覧にも出る。コマンドがフラグを
+ * 固定している以上、避けるにはこの開き直し自体を捨てるしかない。
  * `paradis.workspaceSwitch.scopeScmRepositories` (既定 true) で無効化できる。
  */
 class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
@@ -49,42 +85,7 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 	private _enforcing = false;
 
 	/**
-	 * リポジトリroot (比較キー) → git.close を実行した回数。
-	 *
-	 * スコープ判定 (isInScope の URI 比較) と git 拡張の root 解決 (realpath ベース) は、
-	 * フォルダパスに symlink 等が含まれると食い違うことがある。その場合、reconcile の
-	 * openRepository (openIfClosed=true, openIfParent=true で各種ガードをバイパスする) が
-	 * 「スコープ外」と判定される親リポジトリを毎回開き直してしまい、close → open → close の
-	 * 無限ループになる (実際に2秒周期のループが発生した)。同一 root への close 試行回数に
-	 * 上限を設け、上限到達後は「開いたまま非表示」で妥協してループを遮断する。
-	 * フォルダ入れ替え (= 本物のスペース切り替え) でリセットして再試行を許す。
-	 */
-	private readonly _closeAttempts = new Map<string, number>();
-	private static readonly MAX_CLOSE_ATTEMPTS = 3;
-
-	/**
-	 * 既に `git.close` を投げ終えたリポジトリroot (比較キー)。
-	 *
-	 * upstream の `git.close` は `{ repository: true }` 付きで登録されているため、第一引数から
-	 * リポジトリを解決できないと **確認なしで `model.pickRepository()` にフォールバックする**
-	 * (extensions/git/src/commands.ts の createCommand)。そのときの挙動は git 拡張側で開いている
-	 * リポジトリ数によって変わり、どれも実害がある:
-	 *  - 0件: 「利用可能なリポジトリがありません」を throw → モーダルのエラーダイアログが出る
-	 *  - 1件: **確認なしでその1件を閉じる** (閉じてはいけないリポジトリでも閉じる)
-	 *  - 2件以上: 「Choose a repository」の QuickPick が唐突に出る
-	 *
-	 * 解決に失敗するのは「その root が git 拡張側で既に閉じられている」場合で、close の完了は
-	 * ext host → renderer へ非同期に伝播するため、`scmService.repositories` を見た生存確認
-	 * (下の includes チェック) では防げない。同一 root へ二度目の `git.close` を投げないことで
-	 * フォールバック自体を踏まないようにする。
-	 *
-	 * git 拡張がそのリポジトリを開き直したら (onDidAddRepository) 記録を落として再び閉じられる
-	 * ようにする。フォルダ入れ替え時のクリアは {@link _closeAttempts} と同じ。
-	 */
-	private readonly _closedRoots = new Set<string>();
-
-	/**
-	 * スコープ外リポジトリの close / 現フォルダの openRepository を git 拡張へ依頼する遅延実行。
+	 * 現フォルダの openRepository を git 拡張へ依頼する遅延実行。
 	 * 切り替え直後は git 拡張自身がフォルダ変更を処理中のため、少し置いてから・連打は集約して行う。
 	 */
 	private readonly _reconcileScheduler = this._register(new RunOnceScheduler(() => { void this.reconcileOpenRepositories(); }, 2000));
@@ -100,20 +101,13 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 	) {
 		super();
 
-		// 新しく登録されたリポジトリがスコープ外なら、そのリポジトリだけ即座に非表示にし、
-		// 併せて close の reconcile を予約する (git 拡張が worktree の親などを後から開いた場合)。
+		// 新しく登録されたリポジトリがスコープ外なら、そのリポジトリだけ即座に非表示にする
+		// (git 拡張が worktree の親などを後から開いた場合)。
 		// ISCMViewService は DI 注入時点で構築済み = 自身の onDidAddRepository リスナーの方が先に
 		// 登録されているため、このハンドラ実行時には表示状態の初期化 (選択) が済んでいる
 		this._register(this.scmService.onDidAddRepository(repository => {
-			// 開き直されたリポジトリは再び close の対象に戻す (_closedRoots のコメント参照)
-			const root = repository.provider.rootUri;
-			if (root) {
-				this._closedRoots.delete(this.uriIdentityService.extUri.getComparisonKey(root));
-			}
-
 			if (this.isEnabled() && !this.isInScope(repository)) {
 				this.hide([repository]);
-				this._reconcileScheduler.schedule();
 			}
 		}));
 
@@ -143,10 +137,8 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		}));
 
 		// フォルダ入れ替え (= スペース/worktree の切り替え) で全リポジトリを絞り直し、
-		// スコープ外リポジトリの close と現フォルダの開き直しを予約する
+		// 現フォルダの開き直しを予約する
 		this._register(this.contextService.onDidChangeWorkspaceFolders(() => {
-			this._closeAttempts.clear();
-			this._closedRoots.clear();
 			this.applyToAll();
 			this._reconcileScheduler.schedule();
 		}));
@@ -154,8 +146,6 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(ParadisScmRepoScope.SETTING_ID)) {
 				if (this.isEnabled()) {
-					this._closeAttempts.clear();
-					this._closedRoots.clear();
 					this.applyToAll();
 					this._reconcileScheduler.schedule();
 				} else {
@@ -184,15 +174,19 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 	private _reconcileAgain = false;
 
 	/**
-	 * スコープ外の git リポジトリを git 拡張ごと閉じ (「リポジトリ」一覧からも消える)、
 	 * 現在のワークスペースフォルダのリポジトリを明示的に開き直す。
-	 * 開き直しは「過去の close で closedRepositories に記憶され自動再オープンが抑止されている」
-	 * 状態からの復帰のため、対象リポジトリが既に開いている場合も含め毎回行う (既に開いていれば
-	 * git 拡張側で即 no-op)。git 拡張が未起動・無効の場合は静かに諦め、次の切り替えで再試行する。
+	 *
+	 * 過去のバージョンがここでスコープ外リポジトリを `git.close` していた名残で、閉じられた記憶
+	 * (closedRepositories) が残っている環境があり、そのままでは「そのスペースへ戻っても自動再
+	 * オープンされない」。対象が既に開いている場合も含め毎回行う (既に開いていれば git 拡張側で
+	 * 即 no-op)。git 拡張が未起動・無効の場合は静かに諦め、次の切り替えで再試行する。
+	 *
+	 * スコープ外リポジトリを閉じる処理はここには無い (クラスのコメント参照)。
 	 */
 	private async reconcileOpenRepositories(): Promise<void> {
-		// await を跨いだ並行実行を防ぐ (並行すると close 済みリポジトリへ再度 git.close を投げ、
-		// git 側の hint 解決失敗 → pickRepository フォールバックで誤 close やモーダルが起きうる)
+		// await を跨いだ並行実行を防ぎ、重複した openRepository を投げないようにする
+		// (git 拡張側の model.openRepository も @sequentialize されているため実害は無いが、
+		// 無駄な git プロセスの起動を避ける)
 		if (this._reconciling) {
 			this._reconcileAgain = true;
 			return;
@@ -205,49 +199,6 @@ class ParadisScmRepoScope extends Disposable implements IWorkbenchContribution {
 			const folders = this.contextService.getWorkspace().folders;
 			if (folders.length === 0) {
 				return;
-			}
-
-			for (const repository of [...this.scmService.repositories]) {
-				const root = repository.provider.rootUri;
-				// close するのは git 拡張のリポジトリのみ (providerId は createSourceControl の第一引数 = 'git')。
-				// 他の SCM プロバイダ (エージェントセッション等) には触れない。
-				// ループ中の await でリポジトリ集合は変わりうるため、実行直前に「まだ開いているか」を
-				// 再確認する (閉じたリポジトリの root を git.close に渡すと hint 解決に失敗し、
-				// pickRepository フォールバックが別リポジトリを閉じたり QuickPick を出したりする)。
-				if (root && repository.provider.providerId === 'git' && !this.isInScope(repository) && [...this.scmService.repositories].includes(repository)) {
-					// ループ遮断: 同一 root を既に規定回数 close していたら、再オープンされ続けて
-					// いる (スコープ判定と git の root 解決の食い違い) と見なし、以後は close せず
-					// 「開いたまま非表示」に留める (_closeAttempts のコメント参照)
-					const rootKey = this.uriIdentityService.extUri.getComparisonKey(root);
-
-					// 二度目の close は git 拡張側で解決に失敗し、pickRepository フォールバックで
-					// 誤 close やモーダルを起こす (_closedRoots のコメント参照)
-					if (this._closedRoots.has(rootKey)) {
-						continue;
-					}
-
-					const attempts = this._closeAttempts.get(rootKey) ?? 0;
-					if (attempts >= ParadisScmRepoScope.MAX_CLOSE_ATTEMPTS) {
-						if (attempts === ParadisScmRepoScope.MAX_CLOSE_ATTEMPTS) {
-							this._closeAttempts.set(rootKey, attempts + 1);
-							this.logService.info(`[ParadisScmRepoScope] repository keeps reopening after ${attempts} closes, giving up closing (kept hidden): ${root.toString()}`);
-						}
-						continue;
-					}
-					this._closeAttempts.set(rootKey, attempts + 1);
-					try {
-						this.logService.trace(`[ParadisScmRepoScope] closing out-of-scope repository: ${root.toString()}`);
-						await this.commandService.executeCommand('git.close', root);
-						// 成功した close だけを記録する。防ぎたいフォールバック (pickRepository) は git 拡張側で
-						// catch されモーダルを出したあと resolve するため、ここには reject として来ない。
-						// 逆に reject するのは「git 拡張が未起動・コマンド未登録」といった再試行すべきケースなので、
-						// それを記録してしまうと下の catch のコメントどおりの再試行ができなくなる
-						this._closedRoots.add(rootKey);
-					} catch (error) {
-						// git 拡張未起動・コマンド未登録などは次回の reconcile で再試行される
-						this.logService.trace('[ParadisScmRepoScope] git.close failed', error);
-					}
-				}
 			}
 
 			for (const folder of folders) {
