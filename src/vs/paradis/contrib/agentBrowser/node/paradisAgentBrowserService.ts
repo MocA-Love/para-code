@@ -36,6 +36,7 @@ import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBinding
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
+import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/paradisNotifications.js';
 import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
@@ -98,6 +99,11 @@ const MAX_HOOK_EVENT_LENGTH = 200;
 const MAX_PENDING_BIND_PREPARATIONS = 256;
 const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 const MAX_ACTIVE_INGRESS_REQUESTS_PER_TOKEN = 8;
+const MAX_ACTIVE_MOBILE_VOICE_REQUESTS = 2;
+const MAX_ACTIVE_MOBILE_VOICE_BYTES = 16 * 1024 * 1024;
+const MOBILE_VOICE_TICKET_TTL_MS = 10 * 60_000;
+const MAX_MOBILE_VOICE_TICKETS = 256;
+const MAX_MOBILE_VOICE_TICKETS_PER_PANE = 8;
 
 interface IParadisPaneStatusEntry {
 	readonly status: ParadisAgentStatus;
@@ -513,6 +519,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _activeRequestControllers = new Set<AbortController>();
 	private readonly _activeIngressRequestsByToken = new Map<string, number>();
 	private _activeIngressRequestCount = 0;
+	private _activeMobileVoiceRequestCount = 0;
+	private _activeMobileVoiceBytes = 0;
+	private readonly _mobileVoiceTickets = new Map<string, { readonly lease: IParadisAgentBrowserIngressLease; readonly expiresAt: number }>();
 
 	constructor(
 		userDataPath: string,
@@ -524,6 +533,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		private readonly logService: ILogService,
 		configurationService?: IConfigurationService,
 		args?: NativeParsedArgs,
+		private readonly publishMobileVoiceClip?: (audio: Uint8Array) => void,
 	) {
 		super();
 		this._portFilePath = join(userDataPath, PARADIS_MCP_PORT_FILE_NAME);
@@ -1674,6 +1684,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		if ((req.method === 'GET' || req.method === 'POST') && (req.url ?? '').startsWith('/agent-hook')) {
 			return this._handleAgentHook(req, res);
 		}
+		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice') {
+			return this._handleMobileVoiceIngress(req, res);
+		}
+		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice-ticket') {
+			return this._handleMobileVoiceTicket(req, res);
+		}
 
 		if (req.method !== 'POST') {
 			res.writeHead(405, { 'Content-Type': 'application/json', 'Allow': 'POST' });
@@ -1774,6 +1790,120 @@ export class ParadisAgentBrowserService extends Disposable {
 			activeRequest?.dispose();
 			ingressReservation.dispose();
 		}
+	}
+
+	/**
+	 * aivis-mcpが生成済みMP3を再利用するためのloopback専用取込口。
+	 * pane ownerが直前に発行した1回限りの短命ticketで認証し、音声は保存せずイベントへ渡す。
+	 */
+	private async _handleMobileVoiceIngress(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		if (this.publishMobileVoiceClip === undefined) {
+			this._sendIngressRejected(res);
+			return;
+		}
+		const requestedTicket = this._extractToken(req);
+		const ticket = requestedTicket === undefined ? undefined : this._mobileVoiceTickets.get(requestedTicket);
+		if (requestedTicket !== undefined) {
+			// 音声ticketは成否を問わず1回だけ。再送には要求元paneが新しいticketを発行する。
+			this._mobileVoiceTickets.delete(requestedTicket);
+		}
+		const ingressLease = ticket?.expiresAt !== undefined && ticket.expiresAt >= Date.now() ? ticket.lease : undefined;
+		if (ingressLease === undefined || !this.isIngressLeaseCurrent(ingressLease)) {
+			this._sendIngressRejected(res);
+			return;
+		}
+		const contentType = String(req.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase();
+		if (contentType !== 'audio/mpeg' && contentType !== 'application/octet-stream') {
+			res.writeHead(415, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+			res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
+			return;
+		}
+		const declaredLength = Number(req.headers['content-length']);
+		if (!Number.isSafeInteger(declaredLength) || declaredLength <= 0 || declaredLength > PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES) {
+			res.writeHead(413, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+			res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
+			return;
+		}
+		const reservation = this._reserveIngressRequest(ingressLease.token);
+		if (reservation === undefined) {
+			this._sendIngressCapacityRejected(res);
+			return;
+		}
+		const voiceReservation = this._reserveMobileVoiceIngress(declaredLength);
+		if (voiceReservation === undefined) {
+			reservation.dispose();
+			this._sendIngressCapacityRejected(res);
+			return;
+		}
+		let activeRequest: ReturnType<ParadisAgentBrowserService['_trackActiveRequest']> | undefined;
+		try {
+			activeRequest = this._trackActiveRequest(req, res);
+			let audio: Buffer;
+			try {
+				audio = await this._readBodyBytes(req, PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES, activeRequest.controller.signal);
+			} catch {
+				if (!activeRequest.controller.signal.aborted) {
+					res.writeHead(413, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+					res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
+				}
+				return;
+			}
+			if (activeRequest.controller.signal.aborted) {
+				return;
+			}
+			if (audio.byteLength !== declaredLength) {
+				res.writeHead(400, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+				res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
+				return;
+			}
+			if (!this.isIngressLeaseCurrent(ingressLease)) {
+				this._sendIngressRejected(res);
+				return;
+			}
+			this.publishMobileVoiceClip(audio);
+			res.writeHead(202, { 'Cache-Control': 'no-store' });
+			res.end();
+		} finally {
+			activeRequest?.dispose();
+			voiceReservation.dispose();
+			reservation.dispose();
+		}
+	}
+
+	/** 通常pane BearerをRedis workerへ渡さずに済む、音声POST 1回だけの短命ticketを発行する。 */
+	private _handleMobileVoiceTicket(req: http.IncomingMessage, res: http.ServerResponse): void {
+		const requestedToken = this._extractToken(req);
+		const ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
+		if (ingressLease === undefined) {
+			this._sendIngressRejected(res);
+			return;
+		}
+		const now = Date.now();
+		for (const [key, value] of this._mobileVoiceTickets) {
+			if (value.expiresAt < now || !this.isIngressLeaseCurrent(value.lease)) {
+				this._mobileVoiceTickets.delete(key);
+			}
+		}
+		let paneTicketCount = 0;
+		for (const value of this._mobileVoiceTickets.values()) {
+			if (value.lease.token === ingressLease.token) {
+				paneTicketCount++;
+			}
+		}
+		if (this._mobileVoiceTickets.size >= MAX_MOBILE_VOICE_TICKETS || paneTicketCount >= MAX_MOBILE_VOICE_TICKETS_PER_PANE) {
+			this._sendIngressCapacityRejected(res);
+			return;
+		}
+		const voiceTicket = `${randomUUID()}-${randomUUID()}`;
+		const expiresAt = now + MOBILE_VOICE_TICKET_TTL_MS;
+		this._mobileVoiceTickets.set(voiceTicket, { lease: ingressLease, expiresAt });
+		const body = JSON.stringify({ ticket: voiceTicket, expiresAt, instanceId: this._mcpInstanceId });
+		res.writeHead(201, {
+			'Content-Type': 'application/json',
+			'Content-Length': Buffer.byteLength(body),
+			'Cache-Control': 'no-store',
+		});
+		res.end(body);
 	}
 
 	private async _handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -2474,8 +2604,33 @@ export class ParadisAgentBrowserService extends Disposable {
 		};
 	}
 
+	private _reserveMobileVoiceIngress(bytes: number): { dispose(): void } | undefined {
+		if (this._serverDisposed
+			|| this._activeMobileVoiceRequestCount >= MAX_ACTIVE_MOBILE_VOICE_REQUESTS
+			|| this._activeMobileVoiceBytes + bytes > MAX_ACTIVE_MOBILE_VOICE_BYTES) {
+			return undefined;
+		}
+		this._activeMobileVoiceRequestCount++;
+		this._activeMobileVoiceBytes += bytes;
+		let released = false;
+		return {
+			dispose: () => {
+				if (released) {
+					return;
+				}
+				released = true;
+				this._activeMobileVoiceRequestCount = Math.max(0, this._activeMobileVoiceRequestCount - 1);
+				this._activeMobileVoiceBytes = Math.max(0, this._activeMobileVoiceBytes - bytes);
+			},
+		};
+	}
+
 	private _readBody(req: http.IncomingMessage, signal?: AbortSignal): Promise<string> {
-		return new Promise<string>((resolve, reject) => {
+		return this._readBodyBytes(req, MAX_BODY_BYTES, signal).then(bytes => bytes.toString('utf8'));
+	}
+
+	private _readBodyBytes(req: http.IncomingMessage, maximumBytes: number, signal?: AbortSignal): Promise<Buffer> {
+		return new Promise<Buffer>((resolve, reject) => {
 			const chunks: Buffer[] = [];
 			let size = 0;
 			let settled = false;
@@ -2502,7 +2657,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
 				size += chunk.byteLength;
-				if (size > MAX_BODY_BYTES) {
+				if (size > maximumBytes) {
 					fail(new Error('Request body too large'));
 					req.destroy();
 					return;
@@ -2515,7 +2670,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				settled = true;
 				cleanup();
-				resolve(Buffer.concat(chunks, size).toString('utf8'));
+				resolve(Buffer.concat(chunks, size));
 			};
 			const onError = (error: Error) => fail(error);
 			const onAborted = () => fail(new Error('Request aborted'));
@@ -2605,6 +2760,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._activeRequestControllers.clear();
 		this._activeIngressRequestsByToken.clear();
 		this._activeIngressRequestCount = 0;
+		this._activeMobileVoiceRequestCount = 0;
+		this._activeMobileVoiceBytes = 0;
+		this._mobileVoiceTickets.clear();
 		this._runNonThrowingCleanup('devtools-generation-coordinator', () => this._devtoolsGenerationCoordinator.dispose());
 		for (const token of new Set([
 			...this._paneShells.keys(),
