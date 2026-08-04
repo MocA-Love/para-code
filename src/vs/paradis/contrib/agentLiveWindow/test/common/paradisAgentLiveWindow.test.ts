@@ -11,6 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	IParadisAgentLiveEntry,
 	IParadisAgentLiveViewState,
+	PARADIS_AGENT_LIVE_MAX_COLUMNS,
 	ParadisAgentLiveStatus,
 	paradisApplyAgentLiveManualDrop,
 	paradisDefaultAgentLiveViewState,
@@ -171,7 +172,8 @@ suite('Paradis - agent live window', () => {
 					sort: 'attention',
 					sortDesc: false,
 					group: 'status',
-					columns: 4,
+					// 上限を超える値は上限へ丸められる。定数を直接見て、上限を変えても追随不要にする
+					columns: PARADIS_AGENT_LIVE_MAX_COLUMNS,
 					fillRows: true,
 					rowHeight: 150,
 					fontSize: 11,

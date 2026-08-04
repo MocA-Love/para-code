@@ -194,6 +194,8 @@
 
 .paradis-agent-live-seg {
 	display: inline-flex;
+	/* ラベルを縮めて折り返させない。入らないときは行 (pop-row) 側が折り返す */
+	flex: 0 0 auto;
 	height: 24px;
 	border: 1px solid var(--vscode-editorWidget-border);
 	border-radius: 6px;
@@ -207,6 +209,7 @@
 	font-family: inherit;
 	font-size: 11.5px;
 	padding: 0 9px;
+	white-space: nowrap;
 	cursor: pointer;
 }
 
@@ -394,6 +397,8 @@
 .paradis-agent-live-wall.columns-2 { grid-template-columns: repeat(2, 1fr); }
 .paradis-agent-live-wall.columns-3 { grid-template-columns: repeat(3, 1fr); }
 .paradis-agent-live-wall.columns-4 { grid-template-columns: repeat(4, 1fr); }
+.paradis-agent-live-wall.columns-5 { grid-template-columns: repeat(5, 1fr); }
+.paradis-agent-live-wall.columns-6 { grid-template-columns: repeat(6, 1fr); }
 
 /* 見出しも行を1つ消費するため、グループ表示のときは等分 (fill) を掛けない。 */
 .paradis-agent-live-group-head {
@@ -452,6 +457,14 @@
 }
 
 .paradis-agent-live-tile:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+/* ホイールの行き先が端末になっているタイル (端末そのものを掴んでいる状態)。壁が動かない理由が
+	分かるよう枠で示す。box-shadow ではなく outline を使うのは、要対応 (attention) の黄色枠や
+	ドロップ先の枠と同じ詳細度で後勝ちになり、それらを消してしまうため。 */
+.paradis-agent-live-tile:has(.paradis-agent-live-term:focus-within) {
 	outline: 1px solid var(--vscode-focusBorder);
 	outline-offset: -1px;
 }
@@ -522,20 +535,37 @@
 	display: none;
 }
 
-/* 端末は元の列数のまま描き、収まらない分は文字サイズを詰めて合わせる (JS 側 updateFontSize)。
-	最新行が常に見えるよう下端で揃える。transform: scale() は使わない —— xterm のマウス
-	座標計算が transform を考慮しないため、選択位置とマウスレポートがずれる。 */
+/*
+ * 端末領域。端末は元の列数のまま描き、収まらない分は文字サイズを詰めて合わせる
+ * (JS 側 updateFontSize)。transform: scale() は使わない —— xterm のマウス座標計算が
+ * transform を考慮しないため、選択位置とマウスレポートがずれる。
+ *
+ * ミラーはそれでもタイルより大きいことが多く、以前ははみ出しを切り捨てていた (下端揃えで
+ * 最新行だけ残す)。切った上と右も読めるように、ここをスクロール可能にしてある。最新行への
+ * 張り付きはミラー側が scrollTop で保つ。
+ *
+ * scrollbar-gutter を常時確保しているのは、クラシックなスクロールバー (Windows/Linux) の
+ * 環境で、出入りのたびに clientWidth が揺れるのを避けるため。macOS のオーバーレイでは
+ * そもそも幅を取らないので影響しない。
+ */
 .paradis-agent-live-term {
 	position: relative;
 	flex: 1;
-	overflow: hidden;
+	overflow: auto;
+	scrollbar-width: thin;
+	scrollbar-gutter: stable;
 	background-color: var(--vscode-terminal-background, var(--vscode-panel-background));
+	/* 端末がタイルより小さいときは下端で揃える (margin-top: auto)。上方向へのはみ出しは
+		スクロールで辿れるので、この揃えでも切れた分に到達できる。 */
+	display: flex;
+	flex-direction: column;
 }
 
 .paradis-agent-live-term-mount {
-	position: absolute;
-	left: 0;
-	bottom: 0;
+	/* 通常フロー。絶対配置のままだと親のスクロール領域が広がらず、切れた分へ辿り着けない */
+	position: relative;
+	width: max-content;
+	margin-top: auto;
 }
 
 .paradis-agent-live-term-missing {
@@ -588,7 +618,10 @@
 	position: absolute;
 	right: 8px;
 	z-index: 50;
-	width: 320px;
+	/* セグメント (「画面を等分」「高さを指定」) と数値入力が1行に収まる幅。
+		320px では収まらず、ボタンの中でラベルが折り返していた。 */
+	width: 360px;
+	max-width: calc(100% - 16px);
 	/* 縦位置と max-height は JS が歯車の実位置から流し込む */
 	overflow-y: auto;
 	padding: 8px 12px 12px;
@@ -613,9 +646,12 @@
 	background-color: var(--vscode-editorWidget-border);
 }
 
+/* ラベルが折り返さない前提の行。狭いウィンドウでポップオーバーが縮んだときは、
+	ボタンの中で折り返すのではなく行そのものを折り返させる。 */
 .paradis-agent-live-pop-row {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 6px;
 	padding: 3px 0;
 }

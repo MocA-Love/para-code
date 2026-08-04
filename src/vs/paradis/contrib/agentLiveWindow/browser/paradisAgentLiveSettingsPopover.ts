@@ -310,7 +310,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		if (cells) {
 			const clipped = cells.cols < cells.totalCols || cells.rows < cells.totalRows;
 			append(this.hint, $('div')).textContent = clipped
-				? localize('paradis.agentLive.hintClipped', "いま {0}桁 × {1}行 見えています（元の端末は {2}桁 × {3}行）。はみ出した右端と上部は切り取られます。",
+				? localize('paradis.agentLive.hintClipped', "いま {0}桁 × {1}行 見えています（元の端末は {2}桁 × {3}行）。はみ出した右端と上部は、タイルのスクロールバーや横スワイプで読めます。",
 					cells.cols, cells.rows, cells.totalCols, cells.totalRows)
 				: localize('paradis.agentLive.hintWhole', "いま端末の全体（{0}桁 × {1}行）が見えています。", cells.totalCols, cells.totalRows);
 		}

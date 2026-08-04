@@ -60,6 +60,31 @@ const STATUS_LABELS: Record<ParadisAgentLiveStatus, string> = {
 const CLOCK_INTERVAL = 1000;
 
 /**
+ * deltaMode が「行」のときの1行ぶん (px)。ピクセル以外を返すのは一部の環境だけ (Electron は
+ * 常にピクセル)。値は Blink の既定ステップ (PixelsPerLineStep) に合わせてある。
+ */
+const WHEEL_LINE_HEIGHT = 40;
+
+/**
+ * ホイールの移動量をピクセルへ直す。壁 (`.paradis-agent-live-scroll`) は素の `overflow: auto`
+ * なので、ブラウザ既定のスクロールと同じ量にしないと、タイルの上と外 (見出しの上など、
+ * 横取りしない場所) とで速さが変わってしまう。正規化して係数を掛ける monaco の
+ * ScrollableElement とは別物である点に注意。
+ */
+function wheelScrollPixels(event: WheelEvent, pageHeight: number): number {
+	// 定数はインスタンス側から読む。ここは補助ウィンドウで動くので、コンストラクタを直に
+	// 参照するとメインウィンドウ側のレルムを見ることになる (値は同じだが、経路を作らない)。
+	switch (event.deltaMode) {
+		case event.DOM_DELTA_LINE:
+			return event.deltaY * WHEEL_LINE_HEIGHT;
+		case event.DOM_DELTA_PAGE:
+			return event.deltaY * pageHeight;
+		default:
+			return event.deltaY;
+	}
+}
+
+/**
  * ライブウィンドウの中身 (ツールバー + タイルのグリッド)。
  *
  * 常に見せるのは「状態の内訳」と「絞り込み中かどうか」だけにして、並び替え・スペース・
@@ -85,6 +110,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	/** グループ見出しと空表示。タイルと違って毎回作り直すので、参照を持って消す */
 	private readonly chromeElements: HTMLElement[] = [];
 	private readonly root: HTMLElement;
+	/** タイルの壁を縦に送るスクロール領域。タイル上のホイールをここへ流し直すために持つ */
+	private readonly scroll: HTMLElement;
 	private readonly wall: HTMLElement;
 	private readonly filterBar: HTMLElement;
 	private readonly filterBarText: HTMLElement;
@@ -143,6 +170,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 		// --- グリッド --------------------------------------------------------------------
 		const scroll = append(root, $('.paradis-agent-live-scroll'));
+		this.scroll = scroll;
 		this.wall = append(scroll, $('.paradis-agent-live-wall'));
 
 		this.observeIntersections(scroll);
@@ -320,6 +348,35 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		}));
 
 		const termContainer = append(root, $('.paradis-agent-live-term'));
+
+		// ホイールの主従。既定では壁 (ウィンドウ全体) を送り、端末そのものをクリックして
+		// 掴んでいるタイルの中だけ端末のスクロールにする。
+		//
+		// 判定はタイル全体ではなく端末領域のフォーカスで行う。タイルは tabIndex を持つので、
+		// 見出しやピン/非表示のボタンを押しただけでもタイル側にはフォーカスが載ってしまい、
+		// 「端末を触っていないのに端末スクロール」になってしまうため。
+		//
+		// capture で受けるのは、xterm 側のリスナへ届く前に決める必要があるため。xterm の
+		// viewport は「自分がスクロールできたときだけ」イベントを止めるので、素通しにすると
+		// タイルの上ではホイールが必ず端末に吸われ、壁が動かせない。さらにスクロールバックを
+		// 持たないバッファ (alt 画面の TUI) では、xterm がホイールを上下キーへ変換して
+		// ユーザー入力として発火するため、ミラーの転送を通って**本物の端末へ矢印キーが入る**。
+		// 触っていないタイルの上を通り過ぎただけでエージェントの選択が動くのは避けたい。
+		disposables.add(addDisposableListener(termContainer, EventType.MOUSE_WHEEL, (event: WheelEvent) => {
+			if (termContainer.matches(':focus-within')) {
+				return;
+			}
+			// 横だけの操作 (トラックパッドの横スワイプ) はタイルへ渡す。切れている右端を見るのに
+			// 使えるうえ、上下キーへの変換は縦の動きにしか起きない。判定は xterm 側の早期 return
+			// (MouseService) と同じ生の値で行う —— 正規化した値で見ると、丸めで 0 になった微小な
+			// 縦成分を「横のみ」と取り違え、xterm 側の累積だけが進んでしまう。
+			if (event.deltaY === 0) {
+				return;
+			}
+			event.preventDefault();
+			event.stopPropagation();
+			this.scroll.scrollTop += wheelScrollPixels(event, this.scroll.clientHeight);
+		}, { capture: true, passive: false }));
 
 		// ドラッグ＆ドロップによる手動並び替え。
 		disposables.add(addDisposableListener(root, EventType.DRAG_START, event => {
