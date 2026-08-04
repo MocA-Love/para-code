@@ -27,6 +27,7 @@ import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState }
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
 import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
+import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 interface ISerializedRepository {
 	readonly id: string;
@@ -607,7 +608,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private switchToTarget(stateKey: string, uri: URI): Promise<void> {
 		this.ensureMultiRootWorkspace();
 
-		return this._switchSequencer.queue(async () => {
+		// 計測は sequencer の待ちを含めない位置から始める。キュー待ちは「切り替えが遅い」ではなく
+		// 「連打された」なので、混ぜると分布が読めなくなる。件数は sample rate で絞られる。
+		return this._switchSequencer.queue(() => runInParadisSpan('workspaceSwitch', 'switch', {
+			safe_terminal_editors: this.terminalEditorService.instances.length,
+			safe_editors: this.editorGroupsService.groups.reduce((total, group) => total + group.count, 0),
+		}, async () => {
 			const previousKey = this.activeStateKey;
 			const folders = this.contextService.getWorkspace().folders;
 			const previousUri = folders.length === 1 ? folders[0].uri : undefined;
@@ -686,20 +692,24 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// スナップショットはこの適用専用なので、終わったら必ず捨てる。残すとロールバックでの
 				// 再適用や後続の revive が古い情報で attach 先を決めてしまう
 				// (paradisTerminalEditorRevive.ts)。
-				await paradisRefreshTerminalReviveIndex(stateKey);
+				await runInParadisSpan('workspaceSwitch', 'reviveIndex', undefined,
+					() => paradisRefreshTerminalReviveIndex(stateKey));
 				try {
-					await this.applyWorkingSetFor(stateKey);
+					await runInParadisSpan('workspaceSwitch', 'applyWorkingSet', undefined,
+						() => this.applyWorkingSetFor(stateKey));
 				} finally {
 					paradisClearTerminalReviveIndex();
 				}
 
 				await this.trustUris(uri);
-				await this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]);
+				await runInParadisSpan('workspaceSwitch', 'updateFolders', undefined,
+					() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
 
 				this.setActiveEntry(stateKey, uri);
 				await this.editorScopeService.commitSwitch(stateKey, uri);
 				this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
-				await this.editorScopeService.restoreScope(stateKey);
+				await runInParadisSpan('workspaceSwitch', 'restoreScope', undefined,
+					() => this.editorScopeService.restoreScope(stateKey));
 				await this.editorScopeService.restoreBackups();
 				this.restorePanelVisibilityFor(stateKey);
 				completed = true;
@@ -750,7 +760,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					this._onDidSwitchScope.fire(restoreKey);
 				}
 			}
-		});
+		}));
 	}
 
 	private setActiveEntry(stateKey: string, uri: URI): void {
