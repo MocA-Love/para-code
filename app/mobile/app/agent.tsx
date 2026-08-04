@@ -20,6 +20,7 @@ import { IOBlock } from '../src/components/agentIoBlock.js';
 import { formatToolName } from '../src/agentToolMeta.js';
 import { findLatestApprovalRequest } from '../src/components/attentionStack.js';
 import { AgentComposer } from '../src/components/agentComposer.js';
+import { AgentInfoSheet } from '../src/components/agentInfoSheet.js';
 import { PendingMessagesChip, PendingMessagesSheet } from '../src/components/pendingMessages.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../src/pendingAgentMessages.js';
 import { wsColor } from '../src/components/wsDrawer.js';
@@ -182,6 +183,10 @@ export default function AgentDetailScreen() {
 		hapticSelection();
 		router.push(agentToken !== undefined ? `/browser?token=${encodeURIComponent(agentToken)}` : '/browser');
 	};
+
+	// ヘッダーのタイトルから開く情報シート（名前の変更・スペースのメモ・ピン/アーカイブ/削除）。
+	// それまで名前はホーム長押し、メモはドロワーからしか触れず、会話を読みながらでは手が届かなかった。
+	const [infoOpen, setInfoOpen] = useState(false);
 	const openAgentActivity = (agentId?: string) => {
 		if (activeKey === undefined) { return; }
 		hapticSelection();
@@ -456,15 +461,29 @@ export default function AgentDetailScreen() {
 							<Ionicons name="chevron-back" size={20} color={colors.text} />
 						</GlassSurface>
 					</Pressable>
-					<View style={styles.headerBody}>
-						<Text style={styles.headerTitle} numberOfLines={1}>{activeTerminal?.title ?? 'エージェント'}</Text>
+					{/* タイトルは情報シート（名前の変更・スペースのメモ・ピン/アーカイブ/削除）の入口。
+					    既にブラーの上に載っているので、glassの上にglassを重ねないようボタン面は描かず、
+					    押せることは末尾のシェブロンで示す */}
+					<Pressable
+						style={styles.headerBody}
+						disabled={activeTerminal === undefined}
+						onPress={() => { hapticSelection(); setInfoOpen(true); }}
+						accessibilityRole="button"
+						// Pressable は子のTextを個別に読み上げなくなるため、見えている情報をラベルに畳む
+						accessibilityLabel={`${activeTerminal?.title ?? 'エージェント'}${agentWs !== undefined ? `、${agentWs.name}${agentWs.branch ? `、${agentWs.branch}` : ''}` : ''}`}
+						accessibilityHint="情報と設定を開きます"
+					>
+						<View style={styles.headerTitleRow}>
+							<Text style={styles.headerTitle} numberOfLines={1}>{activeTerminal?.title ?? 'エージェント'}</Text>
+							{activeTerminal !== undefined ? <Ionicons name="chevron-down" size={12} color={colors.textDim} /> : null}
+						</View>
 						{agentWs !== undefined ? (
 							<Text style={styles.headerSub} numberOfLines={1}>
 								<Text style={{ color: wsColor(agentWs) }}>{agentWs.name}</Text>
 								{agentWs.branch ? ` · ${agentWs.branch}` : ''}
 							</Text>
 						) : null}
-					</View>
+					</Pressable>
 					{/* ブラウザボタン（旧ブラウザタブの後継）。共有中ページがあれば緑ドットで示す */}
 					<Pressable onPress={openBrowser} accessibilityLabel="ブラウザを開く">
 						<GlassSurface style={styles.browserBtn} interactive>
@@ -503,6 +522,21 @@ export default function AgentDetailScreen() {
 			) : null}
 
 			<PendingMessagesSheet visible={pendingSheetOpen} messages={pendingMessages} onClose={() => setPendingSheetOpen(false)} />
+
+			{activeTerminal !== undefined ? (
+				<AgentInfoSheet
+					visible={infoOpen}
+					onClose={() => setInfoOpen(false)}
+					terminalKey={activeTerminal.terminalKey}
+					title={activeTerminal.title}
+					agentStatus={activeTerminal.agentStatus}
+					ws={agentWs !== undefined ? { id: agentWs.id, name: agentWs.name, branch: agentWs.branch, color: wsColor(agentWs) } : undefined}
+					model={chat?.info?.model}
+					effort={chat?.info?.effort}
+					onOpenBrowser={openBrowser}
+					onLeaveScreen={() => router.back()}
+				/>
+			) : null}
 
 			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
 				<AgentComposer
@@ -704,7 +738,9 @@ const styles = StyleSheet.create({
 	browserBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
 	browserBtnBadge: { position: 'absolute', top: -2, right: -2, width: 10, height: 10, borderRadius: 5, backgroundColor: colors.green, borderWidth: 2, borderColor: colors.bg },
 	headerBody: { flex: 1, minWidth: 0 },
-	headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
+	headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+	// flexShrink: シェブロンを押し出さずにタイトル側で省略させる
+	headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700', flexShrink: 1 },
 	headerSub: { color: colors.textDim, fontSize: 11, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	peerMessageCard: { alignSelf: 'stretch', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, gap: 6 },
 	peerMessageHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },

@@ -45,6 +45,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		headline: 'PCのAivis音声を、このiPhoneでも聞けます',
 		items: [
 			{
+				icon: 'information-circle-outline',
+				title: 'エージェントの画面から、名前の変更とメモの書き込みができるようになりました',
+				body: '上部のターミナル名をタップすると、名前の変更・スペースのメモ・ピン留め・アーカイブ・削除がまとまったパネルが開きます。会話を見ながらチェック項目を足せます。',
+				tone: 'purple',
+			},
+			{
 				icon: 'volume-high-outline',
 				title: 'PCで流れるAivisの音声を、iPhoneでも聞けるようになりました',
 				body: 'ホーム右上のボタンから開始している間だけ、PCで作られた読み上げ音声がこのiPhoneでも鳴ります。画面を閉じていても、ロック中でも届きます。',
