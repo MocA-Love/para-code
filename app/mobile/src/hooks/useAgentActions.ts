@@ -213,8 +213,13 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 
 /** 指定ターミナルのエージェントチャットを購読する（アタッチ/デタッチのライフサイクル込み）。 */
 export function useAgentChatSubscription(terminalKey: string | undefined) {
-	const { agentChats, attachAgent, detachAgent } = useAppStore(useShallow(s => ({
-		agentChats: s.agentChats, attachAgent: s.attachAgent, detachAgent: s.detachAgent,
+	// agentChats（Map本体）ではなく対象1件だけを購読する。emit は更新のたびに新しい Map を
+	// 作るため、Mapを購読すると「開いている行が無くても、どこかのエージェントが出力している間ずっと
+	// 呼び出し側が再描画される」（ホーム一覧が他エージェントのストリームで再構築される原因）。
+	const { chat, attachAgent, detachAgent } = useAppStore(useShallow(s => ({
+		chat: terminalKey !== undefined ? s.agentChats.get(terminalKey) : undefined,
+		attachAgent: s.attachAgent,
+		detachAgent: s.detachAgent,
 	})));
 
 	useEffect(() => {
@@ -225,5 +230,5 @@ export function useAgentChatSubscription(terminalKey: string | undefined) {
 		return () => detachAgent(terminalKey);
 	}, [terminalKey, attachAgent, detachAgent]);
 
-	return terminalKey !== undefined ? agentChats.get(terminalKey) : undefined;
+	return chat;
 }

@@ -529,6 +529,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this._register(this.sharedPageBindings.onDidAcknowledgePane(token => this.dispatchAgentDismiss(token)));
 		}
 		this._register(this.windowLeaseClient.onDidChangeManifest(manifest => {
+			this.observeManifest(manifest);
 			this.enqueueRendererAuthority(() => this.broadcastDesktopState(undefined, manifest)).catch(error => this.logService.warn('[paradisMobileRelay] manifest state broadcast failed', error));
 		}));
 		this._register(toDisposable(() => {
@@ -540,6 +541,25 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.disconnect();
 		}));
 		this.startHostResourceSampling();
+		this.startStateBroadcastMetrics();
+	}
+
+	/**
+	 * 計測用: Desktop State の broadcast 回数と、そのうち実際に電波へ出した回数を
+	 * 1分ごとに1行だけ残す（renderer側の state push 計測と対になる）。活動が無い間は出さない。
+	 */
+	private startStateBroadcastMetrics(): void {
+		const handle = setInterval(() => {
+			if (this.broadcastCount === 0) {
+				return;
+			}
+			const calls = this.broadcastCount;
+			const sent = this.broadcastSentCount;
+			this.broadcastCount = 0;
+			this.broadcastSentCount = 0;
+			this.logService.info(`[paradisMobileRelay][metrics] desktop state broadcast: ${calls} calls, ${sent} sent, ${calls - sent} deduped`);
+		}, 60_000);
+		this._register(toDisposable(() => clearInterval(handle)));
 	}
 
 	// --- PC本体のリソース使用量 -------------------------------------------------
@@ -1363,10 +1383,35 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	private desktopStateBroadcastChain = Promise.resolve();
 
+	/**
+	 * main プロセスから push された最新の Renderer lease manifest。
+	 *
+	 * broadcast のたびに `manifest()` をRPCで取りに行くと、state再送を直列化している
+	 * `enqueueRendererAuthority` の中に main プロセス往復が1回ずつ挟まる。エージェントを
+	 * 大量に動かしているとこのチェーンが常時埋まり、モバイル復帰時のstate応答がその分だけ
+	 * 後ろへ押し出される。`onDidChangeManifest` は manifest を変える全経路
+	 * （trackWindow / destroyWindow / addConnection / removeConnection / claim）から
+	 * fire されるので、こちらをキャッシュして使い、RPCは初回イベント到着前だけにする。
+	 */
+	private cachedManifest: IParadisMobileRendererManifest | undefined;
+
+	/** 逆行するmanifest（RPC応答がイベントに追い越された場合）でキャッシュを巻き戻さない。 */
+	private observeManifest(manifest: IParadisMobileRendererManifest): void {
+		if (this.cachedManifest === undefined || manifest.revision >= this.cachedManifest.revision) {
+			this.cachedManifest = manifest;
+		}
+	}
+
+	/** 計測用: broadcast の回数と、そのうち実際に電波へ出した回数。 */
+	private broadcastCount = 0;
+	private broadcastSentCount = 0;
+
 	private broadcastDesktopState(mobileId?: string, suppliedManifest?: IParadisMobileRendererManifest): Promise<void> {
 		const run = this.desktopStateBroadcastChain.then(async () => {
+			this.broadcastCount++;
 			try {
-				const manifest = suppliedManifest ?? await this.windowLeaseClient.manifest();
+				const manifest = suppliedManifest ?? this.cachedManifest ?? await this.windowLeaseClient.manifest();
+				this.observeManifest(manifest);
 				for (const removed of this.terminalRegistry.reconcile(manifest)) {
 					this.cleanupRemovedRenderer(removed);
 				}
@@ -1378,15 +1423,19 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			const bytes = new TextEncoder().encode(JSON.stringify(state));
 			if (mobileId !== undefined) {
 				const session = this.sessions.get(mobileId);
-				if (session?.isOnline) {
-					await session.sendDesktopState(bytes, true);
+				if (session?.isOnline && await session.sendDesktopState(bytes, true)) {
+					this.broadcastSentCount++;
 				}
 				return;
 			}
+			let sent = false;
 			for (const session of this.sessions.values()) {
-				if (session.isOnline) {
-					await session.sendDesktopState(bytes, false);
+				if (session.isOnline && await session.sendDesktopState(bytes, false)) {
+					sent = true;
 				}
+			}
+			if (sent) {
+				this.broadcastSentCount++;
 			}
 		});
 		this.desktopStateBroadcastChain = run.catch(() => { });
