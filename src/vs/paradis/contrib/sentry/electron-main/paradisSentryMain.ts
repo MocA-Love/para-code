@@ -106,6 +106,57 @@ export function initializeParadisSentryMain(commit: string | undefined, onUnavai
 	});
 }
 
+/**
+ * 数値だけのスナップショットを `para.` トランザクションとして送る（定期ヘルスビーコン用）。
+ *
+ * 例外ではないので captureException とは経路を分ける。`tracesSampler` が `para.` 始まりを100%
+ * 拾い、`beforeSendTransaction`（paradisPrepareSentryTransaction）がサニタイズして通す。
+ * measurements は Sentry 側で `avg()` / `p95()` の対象になるため、全ユーザー分の分布が取れる。
+ */
+export function captureParadisMainMeasurementSnapshot(
+	name: string,
+	tags: Record<string, string>,
+	measurements: Record<string, { readonly value: number; readonly unit: 'byte' | 'ratio' | 'hour' | 'none' }>,
+	context: Record<string, unknown>,
+): void {
+	if (!sentry) {
+		return;
+	}
+	const Sentry = sentry;
+	Sentry.withScope(scope => {
+		scope.setTags(tags);
+		scope.setContext('para.health', context);
+		Sentry.startSpan({
+			name,
+			op: 'para.health',
+			attributes: {
+				'para.scope': 'owned',
+				'para.feature': 'healthBeacon',
+				'para.operation': 'snapshot',
+			},
+		}, () => {
+			for (const [key, measurement] of Object.entries(measurements)) {
+				Sentry.setMeasurement(key, measurement.value, measurement.unit);
+			}
+		});
+	});
+}
+
+/**
+ * 送信キューを吐き切るまで待つ。終了時の1本は「そのセッションの最終形」で最も価値が高いのに、
+ * 待たないとプロセス終了に間に合わず落ちる。
+ */
+export async function flushParadisMainSentry(timeoutMs: number): Promise<void> {
+	if (!sentry) {
+		return;
+	}
+	try {
+		await sentry.flush(timeoutMs);
+	} catch {
+		/* 送れなくても終了は止めない */
+	}
+}
+
 export function captureParadisMainException(
 	scope: 'owned' | 'patched',
 	feature: string,

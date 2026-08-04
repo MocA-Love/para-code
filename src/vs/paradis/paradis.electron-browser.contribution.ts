@@ -37,3 +37,4 @@ import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';
 import './contrib/githubMetrics/electron-browser/paradisGithubMetrics.contribution.js';
 import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.js';
 import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contribution.js';
+import './contrib/healthBeacon/electron-browser/paradisHealthBeacon.contribution.js';

@@ -1578,6 +1578,10 @@ export default defineConfig(
 						'undici',
 						'undici-types',
 						'url',
+						// PARA-PATCH: 定期ヘルスビーコンが main プロセスの old_space と detached context 数を
+						// 読むため（src/vs/paradis/contrib/healthBeacon/）。Electron の process.getHeapStatistics()
+						// にはスペース別の内訳が無く、リークの切り分けに必要な粒度が出ない
+						'v8',
 						'module',
 						'util',
 						'vscode-regexpp',
