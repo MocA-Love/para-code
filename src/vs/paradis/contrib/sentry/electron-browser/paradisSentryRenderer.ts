@@ -6,7 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as Sentry from '@sentry/electron/renderer';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanRunner, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
 
 /**
  * Sample rate for spans that trace a routine user action rather than a failure.
@@ -44,6 +44,7 @@ try {
 	configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
 	configureParadisSpanRunner((feature, operation, attributes, callback) =>
 		startParadisRendererSpan(feature, operation, callback, attributes));
+	configureParadisSpanAttributeSetter(attributes => Sentry.getActiveSpan()?.setAttributes(attributes));
 	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
 		captureParadisRendererException(scope, feature, operation, error, safeExtra);
 	});

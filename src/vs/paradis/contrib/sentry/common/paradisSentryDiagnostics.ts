@@ -97,6 +97,21 @@ export function runInParadisSpan<T>(
 	return spanRunner ? spanRunner(feature, operation, attributes, callback) : callback();
 }
 
+let spanAttributeSetter: ((attributes: ParadisSpanAttributes) => void) | undefined;
+
+/** Connects the active-span attribute setter to the process-specific Sentry SDK. */
+export function configureParadisSpanAttributeSetter(value: (attributes: ParadisSpanAttributes) => void): void {
+	spanAttributeSetter = value;
+}
+
+/**
+ * Records measurements on the span currently running, for values only known once the work is done
+ * (how many processes came back, whether a deadline was hit). No-op when no span is active.
+ */
+export function setParadisSpanAttributes(attributes: ParadisSpanAttributes): void {
+	spanAttributeSetter?.(attributes);
+}
+
 export function reportParadisDiagnosticError(
 	scope: Exclude<ParadisSentryScope, 'unknown'>,
 	feature: string,

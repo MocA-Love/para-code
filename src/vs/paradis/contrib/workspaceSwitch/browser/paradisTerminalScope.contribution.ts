@@ -26,6 +26,7 @@ import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisC
 import { paradisGetParkedTerminalEditorStateKey, paradisListParkedTerminalEditorInstances, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
+import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /**
  * ターミナルグループをリポジトリ単位でスコープする (機能1 Phase 2)。
@@ -515,6 +516,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			if (details === undefined || this._store.isDisposed) {
 				return result;
 			}
+			// pty host 側の orphan 判定は「まだ分からない」PTY についてレンダラーへ問い合わせて
+			// 返事を待つ (ptyService の _isOrphaned)。所要時間がこの件数に比例するなら、孤児候補
+			// だけを判定する方向で往復を減らせる。手元の計測では件数が動かず確かめられなかった。
+			setParadisSpanAttributes({ safe_pty_processes: details.length });
 			const workspaceId = this.workspaceContextService.getWorkspace().id;
 			// 同じ nonce が2件返ることは無い想定だが、万一あれば同一性を証明できないので両方捨てる。
 			const duplicated = new Set<string>();
