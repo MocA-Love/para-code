@@ -656,10 +656,15 @@ export class BrowserEditor extends EditorPane {
 	 * Recompute the layout of the browser container and push the resulting
 	 * bounds + emulation to the renderer. Should generally only be called
 	 * via {@link layout} so the container is fully styled first.
+	 *
+	 * PARA-PATCH: report whether bounds actually reached the model, so a renderer can order
+	 * its show *after* the layout. Main keeps the bounds a view was last laid out at, so
+	 * showing before this ran paints the page at its previous pane/space size for a frame
+	 * (measured at 12-54ms and up to 2.5x the correct area when switching spaces).
 	 */
-	layoutBrowserContainer(retries = 2): void {
+	layoutBrowserContainer(retries = 2): boolean {
 		if (!this._model) {
-			return;
+			return false;
 		}
 
 		const overrides: IContainerLayoutOverride[] = [];
@@ -685,7 +690,7 @@ export class BrowserEditor extends EditorPane {
 		if ((wrapperRect.width === 0 || wrapperRect.height === 0) && retries > 0) {
 			// Wrapper not measured yet; retry on the next frame.
 			this.window.requestAnimationFrame(() => this.layoutBrowserContainer(retries - 1));
-			return;
+			return false;
 		}
 
 		// Chain compute callbacks in priority order over the area available
@@ -732,6 +737,8 @@ export class BrowserEditor extends EditorPane {
 		for (const c of this._contributionInstances.values()) {
 			c.afterContainerLayout();
 		}
+
+		return true; // PARA-PATCH: bounds reached the model (see the doc comment above)
 	}
 
 	/**
