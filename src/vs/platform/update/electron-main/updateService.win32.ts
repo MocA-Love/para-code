@@ -262,6 +262,21 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 					return Promise.resolve(null);
 				}
 
+				// PARA-PATCH: the Ready-state re-check cancels the pending installer and reinstalls
+				// whenever the feed answers with a payload at all. If the feed keeps naming the very
+				// version we already have pending (e.g. its `version` field does not carry the commit
+				// the client sent), that repeats every five minutes forever. Stop the cycle here.
+				// Idle, not Ready: the caller already ran cancelPendingUpdate(), so there is no
+				// pending installer left to go back to, and a Ready state without `availableUpdate`
+				// would make "restart to update" do nothing. The next scheduled check re-downloads
+				// from cache and reinstalls once, instead of every five minutes.
+				if (this.state.type === StateType.Overwriting && update.version === this.state.update.version) {
+					this.logService.warn('update#doCheckForUpdates - the update feed keeps offering the version that is already pending, dropping the overwrite cycle');
+					this._overwrite = false;
+					this.setState(State.Idle(updateType, undefined, explicit || undefined));
+					return Promise.resolve(null);
+				}
+
 				if (updateType === UpdateType.Archive) {
 					this.setState(State.AvailableForDownload(update));
 					return Promise.resolve(null);

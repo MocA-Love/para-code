@@ -40,6 +40,14 @@ WizardStyle=modern
 // that VS Code is ready to be shutdown, so we're good to use `force` here.
 CloseApplications=force
 
+// PARA-PATCH: background updates re-extract the same file set into the same versioned
+// resources folder on every run, so Inno's default `append` mode grows unins000.dat
+// without bound (~6 MB per update, >16000 records) until it hits the 4 GiB limit and
+// fails with "Internal error: EndOffset range exceeded", after which every further
+// update rolls back and tears down the file associations. The appended records are
+// identical each time, so keeping only the latest set loses nothing in practice.
+UninstallLogMode=overwrite
+
 #ifdef Sign
 SignTool=esrp
 #endif
@@ -81,6 +89,13 @@ Type: filesandordirs; Name: "{app}\bin"
 Type: files; Name: "{app}\old_*"
 Type: files; Name: "{app}\new_*"
 Type: files; Name: "{app}\updating_version"
+// PARA-PATCH: with UninstallLogMode=overwrite (see [Setup]) the uninstall log only holds
+// the last install's records, and a background update skips the [Icons] entries whenever
+// the shortcut already exists (ShouldUpdateShortcut). Remove the shortcuts explicitly so
+// they cannot outlive an uninstall that followed a background update.
+Type: files; Name: "{group}\{#NameLong}.lnk"
+Type: files; Name: "{autodesktop}\{#NameLong}.lnk"
+Type: files; Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#NameLong}.lnk"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
