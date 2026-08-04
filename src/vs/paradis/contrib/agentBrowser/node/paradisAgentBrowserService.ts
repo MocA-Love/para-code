@@ -16,7 +16,7 @@
 // upstreamの playwrightService.ts（_trackedPages等）は一切改造しない。
 
 import type * as http from 'http';
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute, join } from '../../../../base/common/path.js';
@@ -521,7 +521,14 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _activeIngressRequestCount = 0;
 	private _activeMobileVoiceRequestCount = 0;
 	private _activeMobileVoiceBytes = 0;
-	private readonly _mobileVoiceTickets = new Map<string, { readonly lease: IParadisAgentBrowserIngressLease; readonly expiresAt: number }>();
+	// lease未設定のticketは拡張機能ホスト由来（ペインを持たない）。音声取込だけに使える。
+	private readonly _mobileVoiceTickets = new Map<string, { readonly lease: IParadisAgentBrowserIngressLease | undefined; readonly expiresAt: number }>();
+	/**
+	 * ターミナルのペインを持たない拡張機能ホスト（およびそこから起動されるCodex等）が、
+	 * 音声取込の宛先を認証するためのインスタンススコープのトークン。
+	 * ペインの所有権もバインディング操作も一切与えず、音声ticketの発行にだけ使える。
+	 */
+	private readonly _voiceIngressToken = `${randomUUID()}-${randomUUID()}`;
 
 	constructor(
 		userDataPath: string,
@@ -1804,14 +1811,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		const requestedTicket = this._extractToken(req);
 		const ticket = requestedTicket === undefined ? undefined : this._mobileVoiceTickets.get(requestedTicket);
 		if (requestedTicket !== undefined) {
-			// 音声ticketは成否を問わず1回だけ。再送には要求元paneが新しいticketを発行する。
+			// 音声ticketは成否を問わず1回だけ。再送には要求元が新しいticketを発行する。
 			this._mobileVoiceTickets.delete(requestedTicket);
 		}
-		const ingressLease = ticket?.expiresAt !== undefined && ticket.expiresAt >= Date.now() ? ticket.lease : undefined;
-		if (ingressLease === undefined || !this.isIngressLeaseCurrent(ingressLease)) {
+		if (ticket === undefined || ticket.expiresAt < Date.now() || !this._isMobileVoiceTicketCurrent(ticket)) {
 			this._sendIngressRejected(res);
 			return;
 		}
+		const ingressLease = ticket.lease;
 		const contentType = String(req.headers['content-type'] ?? '').split(';', 1)[0]?.trim().toLowerCase();
 		if (contentType !== 'audio/mpeg' && contentType !== 'application/octet-stream') {
 			res.writeHead(415, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
@@ -1824,7 +1831,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
 			return;
 		}
-		const reservation = this._reserveIngressRequest(ingressLease.token);
+		const reservation = this._reserveIngressRequest(ingressLease?.token ?? this._voiceIngressToken);
 		if (reservation === undefined) {
 			this._sendIngressCapacityRejected(res);
 			return;
@@ -1856,7 +1863,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				res.end(JSON.stringify({ error: 'Audio payload rejected.' }));
 				return;
 			}
-			if (!this.isIngressLeaseCurrent(ingressLease)) {
+			if (!this._isMobileVoiceTicketCurrent(ticket)) {
 				this._sendIngressRejected(res);
 				return;
 			}
@@ -1870,23 +1877,49 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 	}
 
+	/**
+	 * ターミナルのペインを持たない拡張機能ホストへ渡す音声取込トークン。
+	 * 呼べるのは同一プロセスのworkbench（IPCチャネル経由）だけで、値はディスクへ書かない。
+	 */
+	async getVoiceIngressToken(): Promise<string> {
+		return this._voiceIngressToken;
+	}
+
+	private _isVoiceIngressToken(token: string): boolean {
+		return token.length === this._voiceIngressToken.length
+			&& timingSafeEqual(Buffer.from(token, 'utf8'), Buffer.from(this._voiceIngressToken, 'utf8'));
+	}
+
+	/** ticketがまだ有効か。pane由来はleaseの現行性、拡張ホスト由来はサーバー生存だけを見る。 */
+	private _isMobileVoiceTicketCurrent(ticket: { readonly lease: IParadisAgentBrowserIngressLease | undefined }): boolean {
+		return ticket.lease === undefined ? !this._serverDisposed : this.isIngressLeaseCurrent(ticket.lease);
+	}
+
 	/** 通常pane BearerをRedis workerへ渡さずに済む、音声POST 1回だけの短命ticketを発行する。 */
 	private _handleMobileVoiceTicket(req: http.IncomingMessage, res: http.ServerResponse): void {
 		const requestedToken = this._extractToken(req);
-		const ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
-		if (ingressLease === undefined) {
+		// 拡張機能ホスト（ペイン無し）はインスタンススコープの音声トークンで発行できる。
+		const isVoiceToken = requestedToken !== undefined && this._isVoiceIngressToken(requestedToken);
+		const ingressLease = requestedToken === undefined || isVoiceToken ? undefined : this.captureIngressLease(requestedToken);
+		if (ingressLease === undefined && !isVoiceToken) {
+			this._sendIngressRejected(res);
+			return;
+		}
+		if (isVoiceToken && this._serverDisposed) {
 			this._sendIngressRejected(res);
 			return;
 		}
 		const now = Date.now();
 		for (const [key, value] of this._mobileVoiceTickets) {
-			if (value.expiresAt < now || !this.isIngressLeaseCurrent(value.lease)) {
+			if (value.expiresAt < now || !this._isMobileVoiceTicketCurrent(value)) {
 				this._mobileVoiceTickets.delete(key);
 			}
 		}
+		// 拡張ホスト由来のticketも、ペインと同じ上限で数える（トークンはUUID2つ分なのでpaneと衝突しない）。
+		const ownerKey = ingressLease?.token ?? this._voiceIngressToken;
 		let paneTicketCount = 0;
 		for (const value of this._mobileVoiceTickets.values()) {
-			if (value.lease.token === ingressLease.token) {
+			if ((value.lease?.token ?? this._voiceIngressToken) === ownerKey) {
 				paneTicketCount++;
 			}
 		}

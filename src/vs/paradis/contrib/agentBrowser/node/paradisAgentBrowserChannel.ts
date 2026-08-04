@@ -90,6 +90,9 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.acknowledgePaneStatus(this.rendererConnection, requireToken(args[0])) as Promise<T>;
 			}
+			case 'getVoiceIngressToken':
+				requireArgs(arg, 0);
+				return this.service.getVoiceIngressToken() as Promise<T>;
 			case 'getGatewayEndpoint':
 				requireArgs(arg, 0);
 				return this.service.getGatewayEndpoint() as Promise<T>;

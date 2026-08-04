@@ -1832,6 +1832,9 @@ export default defineConfig(
 						'vs/editor/contrib/*/~',
 						'vs/workbench/~',
 						'vs/workbench/services/*/~',
+						// PARA-PATCH: localProcessExtensionHost.ts が拡張機能ホストへ音声取込の宛先を渡すヘルパー
+						// (paradisApplyExtensionHostVoiceEnv) を呼ぶための唯一の逆方向 import
+						'vs/paradis/contrib/agentBrowser/~',
 						{
 							'when': 'test',
 							'pattern': 'vs/workbench/contrib/*/~'

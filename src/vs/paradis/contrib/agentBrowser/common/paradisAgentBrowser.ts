@@ -28,6 +28,13 @@ export const PARADIS_PANE_TOKEN_ENV_VAR = 'PARA_CODE_TERMINAL_PANE_ID';
  */
 export const PARADIS_MCP_PORT_FILE_ENV_VAR = 'PARA_CODE_MCP_PORT_FILE';
 
+/**
+ * 音声取込（`/paradis-mcp/mobile-voice`）専用のインスタンススコープのトークン。
+ * ターミナルのペインを持たない拡張機能ホスト（およびそこから起動されるCodex等）が、
+ * ペイントークンの代わりにこれで音声の宛先を認証する。ペインの所有権は一切与えない。
+ */
+export const PARADIS_VOICE_TOKEN_ENV_VAR = 'PARA_CODE_VOICE_TOKEN';
+
 /** ペイン専用Codex app-serverのUnix socket絶対パス（macOS/Linux）。 */
 export const PARADIS_CODEX_APP_SERVER_SOCKET_ENV_VAR = 'PARA_CODE_CODEX_APP_SERVER_SOCKET';
 

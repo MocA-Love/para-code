@@ -17,6 +17,9 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { IMessagePassingProtocol } from '../../../../base/parts/ipc/common/ipc.js';
 import { BufferedEmitter } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { acquirePort } from '../../../../base/parts/ipc/electron-browser/ipc.mp.js';
+// PARA-PATCH: pass the voice ingress target to agents launched through the extension host
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { paradisApplyExtensionHostVoiceEnv } from '../../../../paradis/contrib/agentBrowser/electron-browser/paradisExtensionHostVoiceEnv.js';
 import * as nls from '../../../../nls.js';
 import { IExtensionHostDebugService } from '../../../../platform/debug/common/extensionHostDebug.js';
 import { extensionHostGraceTimeMs, IExtensionHostProcessOptions, IExtensionHostStarter } from '../../../../platform/extensions/common/extensionHostStarter.js';
@@ -140,6 +143,8 @@ export class NativeLocalProcessExtensionHost extends Disposable implements IExte
 		@IExtensionHostStarter private readonly _extensionHostStarter: IExtensionHostStarter,
 		@IDefaultLogLevelsService private readonly _defaultLogLevelsService: IDefaultLogLevelsService,
 		@IWorkbenchAssignmentService private readonly _workbenchAssignmentService: IWorkbenchAssignmentService,
+		// PARA-PATCH: needed by paradisApplyExtensionHostVoiceEnv
+		@ISharedProcessService private readonly _paradisSharedProcessService: ISharedProcessService,
 	) {
 		super();
 		const devOpts = parseExtensionDevOptions(this._environmentService);
@@ -233,6 +238,11 @@ export class NativeLocalProcessExtensionHost extends Disposable implements IExte
 			VSCODE_ESM_ENTRYPOINT: 'vs/workbench/api/node/extensionHostProcess',
 			VSCODE_HANDLES_UNCAUGHT_ERRORS: true
 		});
+
+		// PARA-PATCH: agents started by extensions (e.g. Codex from the ChatGPT extension) inherit this
+		// environment, and need it to hand generated speech back to Para Code. Logic lives in
+		// paradisExtensionHostVoiceEnv.ts
+		await paradisApplyExtensionHostVoiceEnv(env, this._environmentService.userDataPath, this._paradisSharedProcessService);
 
 		if (this._environmentService.debugExtensionHost.env) {
 			objects.mixin(env, this._environmentService.debugExtensionHost.env);
