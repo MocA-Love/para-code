@@ -11,6 +11,9 @@ Pod::Spec.new do |s|
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
   s.frameworks     = 'AVFoundation', 'MediaPlayer'
+  # ロック画面のアートワーク用。アプリ本体のアイコン(1024px)をそのまま同梱する
+  # （バンドル直下の AppIcon60x60 は120pxしかなく、ロック画面では粗くなるため）。
+  s.resource_bundles = { 'ParaVoiceSessionAssets' => ['../../../assets/icon.png'] }
   s.license        = { :type => 'MIT' }
 
   s.pod_target_xcconfig = {
