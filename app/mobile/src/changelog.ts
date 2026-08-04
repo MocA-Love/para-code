@@ -61,6 +61,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '受話口から小さく鳴ったり、マイク使用中の表示が出たりすることがあった問題を直しました。あわせて、開始しても「再接続しています」から進まないことがあったのも直しています。',
 				tone: 'green',
 			},
+			{
+				icon: 'musical-notes-outline',
+				title: '音声を聞いている間、ロック画面にアプリのアイコンが出るようになりました',
+				body: 'これまでは粗い画像が引き伸ばされて表示されていました。',
+			},
 		],
 	},
 	{

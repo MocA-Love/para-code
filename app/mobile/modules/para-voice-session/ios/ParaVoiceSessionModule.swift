@@ -3,6 +3,7 @@
 import AVFoundation
 import ExpoModulesCore
 import MediaPlayer
+import UIKit
 
 /// 1クリップあたりの上限（PC側の取込上限と同じ）。
 private let maximumClipBytes = 8 * 1024 * 1024
@@ -119,13 +120,37 @@ public class ParaVoiceSessionModule: Module {
 	}
 
 	private func refreshNowPlaying() {
-		MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+		var info: [String: Any] = [
 			MPMediaItemPropertyTitle: "Paracode",
 			MPNowPlayingInfoPropertyIsLiveStream: true,
 			MPNowPlayingInfoPropertyPlaybackRate: 1.0,
 		]
+		if let artwork = ParaVoiceSessionModule.artwork {
+			info[MPMediaItemPropertyArtwork] = artwork
+		}
+		MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 		// これを立てないとロック画面が一時停止中の扱いになり、触ると表示ごと消える。
 		MPNowPlayingInfoCenter.default().playbackState = .playing
+	}
+
+	/**
+	 * ロック画面へ出すアートワーク（アプリのアイコン）。
+	 * 同梱リソースが見つからないビルドでは、バンドル直下のアプリアイコンで代替する。
+	 */
+	private static let artwork: MPMediaItemArtwork? = {
+		guard let image = loadArtworkImage() else {
+			return nil
+		}
+		return MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+	}()
+
+	private static func loadArtworkImage() -> UIImage? {
+		if let url = Bundle(for: ParaVoiceSessionModule.self).url(forResource: "ParaVoiceSessionAssets", withExtension: "bundle"),
+			let bundle = Bundle(url: url),
+			let image = UIImage(named: "icon", in: bundle, compatibleWith: nil) {
+			return image
+		}
+		return UIImage(named: "AppIcon60x60") ?? UIImage(named: "AppIcon")
 	}
 
 	/**
