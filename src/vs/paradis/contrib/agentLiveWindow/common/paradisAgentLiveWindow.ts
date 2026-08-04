@@ -123,7 +123,7 @@ export interface IParadisAgentLiveViewState {
 }
 
 export const PARADIS_AGENT_LIVE_MIN_COLUMNS = 1;
-export const PARADIS_AGENT_LIVE_MAX_COLUMNS = 4;
+export const PARADIS_AGENT_LIVE_MAX_COLUMNS = 6;
 
 /** タイルの高さとして受け付ける範囲 (px)。4K でも足りるよう上限は広めに取る。 */
 export const PARADIS_AGENT_LIVE_MIN_ROW_HEIGHT = 60;

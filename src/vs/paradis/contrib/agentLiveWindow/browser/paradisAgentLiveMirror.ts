@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
-import { $ } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
 import { timeout } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -53,6 +53,8 @@ const FALLBACK_COLS = 80;
 /** これ以上小さくしても読めないので、はみ出させる方を選ぶ */
 const MIN_FONT_SIZE = 5;
 const FALLBACK_ROWS = 24;
+/** 「下端に居る」とみなす許容差 (px)。端数で追従が切れないようにするための遊び。 */
+const BOTTOM_PIN_TOLERANCE = 2;
 
 /**
  * 1つのエージェント端末を、元の端末に触らずに別ウィンドウへ映す読み書き可能なミラー。
@@ -100,6 +102,12 @@ export class ParadisAgentLiveMirror extends Disposable {
 	private forwardUserInput = false;
 	/** ユーザー入力の判別ができなかった場合、逆流を避けるため転送そのものを止める */
 	private inputForwardingDisabled = false;
+	/**
+	 * 端末領域を最新行 (下端) へ寄せ続けるか。ミラーはタイルより大きいことが多く、切れた上部を
+	 * 読むためにタイル側をスクロールできるようにしてある。ユーザーが自分で上へ動かしている間は
+	 * 追従を止め、下端へ戻したら再開する (再同期やリサイズのたびに引き戻さない)。
+	 */
+	private pinnedToBottom = true;
 	private disposed = false;
 
 	constructor(
@@ -114,6 +122,7 @@ export class ParadisAgentLiveMirror extends Disposable {
 		this.resizeObserverCtor = resizeObserverCtor ?? container.ownerDocument.defaultView?.ResizeObserver;
 		this.mount = $('.paradis-agent-live-term-mount');
 		this.container.appendChild(this.mount);
+		this._register(addDisposableListener(this.container, EventType.SCROLL, () => this.updateBottomPin()));
 		this._register({
 			dispose: () => {
 				this.resizeObserver?.disconnect();
@@ -168,6 +177,7 @@ export class ParadisAgentLiveMirror extends Disposable {
 		// ResizeObserver の初回通知や resync 頼みにしない。観測できない環境でも、指定された
 		// 文字サイズは最初の描画から効いていてほしい。
 		this.updateFontSize();
+		this.pinToBottom();
 		await this.resync();
 	}
 
@@ -196,11 +206,13 @@ export class ParadisAgentLiveMirror extends Disposable {
 
 	layout(): void {
 		this.updateFontSize();
+		this.pinToBottom();
 	}
 
 	/**
 	 * 文字サイズを指定する。undefined を渡すとタイル幅に全体を収める従来動作へ戻る。
-	 * 指定した場合、タイルからはみ出す右端と上部は CSS 側で切り取られる。
+	 * 指定した場合、タイルからはみ出す右端と上部はタイルの外に出る (タイル自身がスクロール
+	 * 可能なので、そこまで辿ることはできる)。
 	 */
 	setFontSize(size: number | undefined): void {
 		if (this.fixedFontSize === size) {
@@ -208,6 +220,7 @@ export class ParadisAgentLiveMirror extends Disposable {
 		}
 		this.fixedFontSize = size;
 		this.updateFontSize();
+		this.pinToBottom();
 	}
 
 	/**
@@ -352,6 +365,7 @@ export class ParadisAgentLiveMirror extends Disposable {
 			detached.xterm.write(data);
 		}
 		this.updateFontSize();
+		this.pinToBottom();
 	}
 
 	private onSourceData(data: string): void {
@@ -397,12 +411,40 @@ export class ParadisAgentLiveMirror extends Disposable {
 		return addon.serialize({ scrollback: SNAPSHOT_SCROLLBACK_ROWS });
 	}
 
+	/** いま下端に居るかを記録する ({@link BOTTOM_PIN_TOLERANCE} までのずれは端数として下端扱い)。 */
+	private updateBottomPin(): void {
+		const distance = this.container.scrollHeight - this.container.clientHeight - this.container.scrollTop;
+		this.pinnedToBottom = distance <= BOTTOM_PIN_TOLERANCE;
+	}
+
+	/**
+	 * 最新行が見えるところまで寄せ直す。ミラーの高さが変わる操作 (再同期・リサイズ・文字サイズの
+	 * 変更) のあとに呼ぶ。追従を切っている (上を読んでいる) 間は動かさない。
+	 */
+	private pinToBottom(): void {
+		if (this.pinnedToBottom) {
+			this.container.scrollTop = this.container.scrollHeight;
+		}
+	}
+
 	private observeResize(): void {
 		if (!this.resizeObserverCtor) {
 			return;
 		}
-		this.resizeObserver = new this.resizeObserverCtor(() => this.updateFontSize());
+		// タイル (container) だけでなくミラー本体 (mount) も観測する。文字サイズや行数が変わると
+		// 高さが変わるのは mount 側で、それを見ていないと最新行への寄せ直しが効かない
+		// (初回描画で 0 から一気に伸びる場合も含む)。文字サイズの計算し直しはタイル側の変化に
+		// 限る —— mount の変化で回すと、寸法を変える処理が自分の通知で再入する。
+		// 「mount だけが変わる」ケース (元の端末の桁数変更) の計算し直しは onDimensionsChanged →
+		// resync → syncOnce 末尾の updateFontSize が担っている。resync 経路を変えるときは注意。
+		this.resizeObserver = new this.resizeObserverCtor(entries => {
+			if (entries.some(entry => entry.target === this.container)) {
+				this.updateFontSize();
+			}
+			this.pinToBottom();
+		});
 		this.resizeObserver.observe(this.container);
+		this.resizeObserver.observe(this.mount);
 	}
 
 	/**
@@ -434,8 +476,9 @@ export class ParadisAgentLiveMirror extends Disposable {
 		const fixed = this.fixedFontSize;
 		if (fixed !== undefined) {
 			// 指定された大きさで描く。タイルに収まるかどうかは見ない —— 収めようとすると
-			// 桁数の多い端末では判読できない大きさになるため、はみ出した分を切る方を選ぶ
-			// (mount は左寄せ・下端揃えなので、最新行と行頭が残る)。
+			// 桁数の多い端末では判読できない大きさになるため、はみ出させる方を選ぶ
+			// (mount は左寄せ・下端揃えなので、まず最新行と行頭が見える。はみ出した右端と
+			// 上部はタイルをスクロールすれば読める)。
 			if (raw.options.fontSize !== fixed) {
 				raw.options.fontSize = fixed;
 			}
