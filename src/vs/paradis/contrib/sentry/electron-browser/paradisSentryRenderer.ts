@@ -6,14 +6,32 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as Sentry from '@sentry/electron/renderer';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanRunner, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
+
+/**
+ * Sample rate for spans that trace a routine user action rather than a failure.
+ *
+ * Errors are rare and every one is worth a payload; a space switch happens dozens of times a day
+ * per user, so sending all of them would change the volume by orders of magnitude and there is no
+ * rate limiter on the transaction path (`paradisPrepareSentryTransaction` deliberately skips the
+ * one that guards events). A tenth still yields plenty of samples for a p50/p90.
+ */
+const PARADIS_ROUTINE_TRACE_SAMPLE_RATE = 0.1;
+const PARADIS_ROUTINE_TRACE_PREFIXES = ['para.workspaceSwitch.'];
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
 try {
 	Sentry.init({
 		sendDefaultPii: false,
 		enableLogs: false,
-		tracesSampler: context => context.name.startsWith('para.') ? 1 : 0,
+		tracesSampler: context => {
+			if (!context.name.startsWith('para.')) {
+				return 0;
+			}
+			return PARADIS_ROUTINE_TRACE_PREFIXES.some(prefix => context.name.startsWith(prefix))
+				? PARADIS_ROUTINE_TRACE_SAMPLE_RATE
+				: 1;
+		},
 		beforeBreadcrumb: breadcrumb => paradisPrepareSentryBreadcrumb(breadcrumb),
 		beforeSend: event => paradisPrepareSentryEvent(event, 'renderer'),
 		beforeSendTransaction: event => paradisPrepareSentryTransaction(event, 'renderer'),
@@ -24,6 +42,8 @@ try {
 		'process.type': 'renderer',
 	});
 	configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
+	configureParadisSpanRunner((feature, operation, attributes, callback) =>
+		startParadisRendererSpan(feature, operation, callback, attributes));
 	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
 		captureParadisRendererException(scope, feature, operation, error, safeExtra);
 	});
@@ -71,11 +91,13 @@ export function startParadisRendererSpan<T>(
 	feature: string,
 	operation: string,
 	callback: () => T,
+	attributes?: ParadisSpanAttributes,
 ): T {
 	return Sentry.startSpan({
 		name: `para.${feature}.${operation}`,
 		op: `para.${feature}`,
 		attributes: {
+			...attributes,
 			'para.scope': 'owned',
 			'para.feature': feature,
 			'para.operation': operation,

@@ -57,6 +57,46 @@ export function setParadisDiagnosticCorrelationTag(key: 'para.pairing', value: s
 	tagSetter(key, value);
 }
 
+/**
+ * Attributes attached to a performance span. The `safe_` prefix is required, not decorative: it is
+ * what `isParadisSafeExtraKey` uses to let a value through without editing its allow-list. Keep
+ * these to counts and durations — never a path, workspace/state key, URL or repository name.
+ */
+export type ParadisSpanAttributes = Record<`safe_${string}`, number | string | boolean>;
+
+export type ParadisSpanRunner = <T>(
+	feature: string,
+	operation: string,
+	attributes: ParadisSpanAttributes | undefined,
+	callback: () => T,
+) => T;
+
+let spanRunner: ParadisSpanRunner | undefined;
+
+/**
+ * Connects fork-owned code to the process-specific Sentry SDK for performance spans, mirroring
+ * {@link configureParadisDiagnosticReporter}. Domain modules stay free of Electron/Sentry imports
+ * and keep working in unit tests, where no runner is registered and spans are a pass-through.
+ */
+export function configureParadisSpanRunner(value: ParadisSpanRunner): void {
+	spanRunner = value;
+}
+
+/**
+ * Runs `callback` inside a Sentry span, or plainly if no SDK is wired up. Nested calls become
+ * child spans of the enclosing one, so a phase breakdown falls out of the call structure.
+ *
+ * The callback's result is returned untouched; if it is a promise the span ends when it settles.
+ */
+export function runInParadisSpan<T>(
+	feature: string,
+	operation: string,
+	attributes: ParadisSpanAttributes | undefined,
+	callback: () => T,
+): T {
+	return spanRunner ? spanRunner(feature, operation, attributes, callback) : callback();
+}
+
 export function reportParadisDiagnosticError(
 	scope: Exclude<ParadisSentryScope, 'unknown'>,
 	feature: string,
