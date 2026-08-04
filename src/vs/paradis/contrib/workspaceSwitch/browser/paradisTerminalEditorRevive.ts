@@ -43,6 +43,7 @@ import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js'
 import { IDeserializedTerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { PARADIS_UNRESOLVABLE_PTY_ID } from '../../../../platform/terminal/common/terminal.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
+import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** 索引取得に許す時間。切替の直列パス上なので、取れなければ諦めて安全側（空）へ倒す。 */
 const PARADIS_REVIVE_INDEX_TIMEOUT_MS = 500;
@@ -102,12 +103,21 @@ export async function paradisRefreshTerminalReviveIndex(targetStateKey: string):
 	// ここは切替の本流にいる。索引が取れないことは「復元の質が落ちる」だけで切替の失敗ではないので、
 	// 例外を外へ出してロールバックを誘発させない。
 	try {
-		orphanPtyIdByNonce = await raceTimeout(
+		const resolved = await raceTimeout(
 			source.listOrphanPtyIdsByNonce(),
 			PARADIS_REVIVE_INDEX_TIMEOUT_MS,
-		) ?? new Map();
+		);
+		orphanPtyIdByNonce = resolved ?? new Map();
+		// 索引が空のまま進む回がどれだけあるかは、復元の質に直結する（空だと nonce で引けず
+		// 従来経路に落ちる）。締め切り切れと「孤児が本当にいない」は結果が同じで区別できない
+		// ので、打ち切りかどうかを明示的に残す。
+		setParadisSpanAttributes({
+			safe_timed_out: resolved === undefined,
+			safe_orphans: orphanPtyIdByNonce.size,
+		});
 	} catch (error) {
 		orphanPtyIdByNonce = new Map();
+		setParadisSpanAttributes({ safe_timed_out: false, safe_orphans: 0, safe_failed: true });
 		onUnexpectedError(error);
 	}
 }
