@@ -1839,6 +1839,9 @@ export default defineConfig(
 						// PARA-PATCH: localProcessExtensionHost.ts が拡張機能ホストへ音声取込の宛先を渡すヘルパー
 						// (paradisApplyExtensionHostVoiceEnv) を呼ぶための唯一の逆方向 import
 						'vs/paradis/contrib/agentBrowser/~',
+						// PARA-PATCH: configurationService.ts が「切り替え先フォルダは確認済み」台帳
+						// (paradisIsVerifiedWorkspaceFolder) を読み、重複する stat を省くための逆方向 import
+						'vs/paradis/contrib/workspaceSwitch/~',
 						{
 							'when': 'test',
 							'pattern': 'vs/workbench/contrib/*/~'
