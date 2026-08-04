@@ -51,14 +51,16 @@ function RootLayout() {
 	const init = useAppStore(s => s.init);
 	const setSelectedWs = useAppStore(s => s.setSelectedWs);
 	const setSelectedTerminalKey = useAppStore(s => s.setSelectedTerminalKey);
-	const workspace = useAppStore(s => s.workspace);
 	const [unlocked, setUnlocked] = useState(false);
 	// tryNavigateから常に最新値を読むためのref（tryNavigate自体をunlockedに依存させると
 	// 参照が変わるたびにリスナーeffectを再登録することになり、stale closure対策として
 	// 依存を空にした場合に「登録時点のunlocked」を永久キャプチャしてしまうため）。
 	const unlockedRef = useRef(false);
-	const workspaceRef = useRef(workspace);
-	workspaceRef.current = workspace;
+	// workspace は通知タップの遷移判定にしか使わないため、セレクタで購読せずストアの変化を
+	// 直接受けて ref を更新する。ここで購読すると、PCからのstate再送（エージェント実行中は
+	// 最大10Hz）のたびにナビゲーションツリー全体—Stackと全Screen、OverlayHost、
+	// UpdateSheetHost—が丸ごと再構築される。
+	const workspaceRef = useRef(useAppStore.getState().workspace);
 	const pendingRef = useRef<NotificationDeepLinkData | undefined>(undefined);
 
 	useEffect(() => {
@@ -92,7 +94,21 @@ function RootLayout() {
 	useEffect(() => {
 		unlockedRef.current = unlocked;
 		tryNavigate();
-	}, [unlocked, workspace, tryNavigate]);
+	}, [unlocked, tryNavigate]);
+
+	// 保留中の遷移は「対象のターミナルがstateに現れるまで待つ」ので、workspaceの変化を
+	// 取りこぼすと通知タップが永久に保留になる。再描画を伴わない購読でそれを拾う。
+	useEffect(() => {
+		workspaceRef.current = useAppStore.getState().workspace;
+		tryNavigate();
+		return useAppStore.subscribe(state => {
+			if (state.workspace === workspaceRef.current) {
+				return;
+			}
+			workspaceRef.current = state.workspace;
+			tryNavigate();
+		});
+	}, [tryNavigate]);
 
 	useEffect(() => {
 		const sub = Notifications.addNotificationResponseReceivedListener(response => {

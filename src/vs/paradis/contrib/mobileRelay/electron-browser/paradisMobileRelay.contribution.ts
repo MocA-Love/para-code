@@ -269,7 +269,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// ホストマシン全体の使用量とPara Code内訳をまとめて返す
 			force => resourceMonitorClient.getMobileReport(force),
 		));
-		this.provider.pushState();
+		// 初回同期。この push の完了が terminalStateReady（=markRendererReady の前提）を
+		// 解決するため、無変化打ち切りの対象にしない。
+		this.provider.pushState(true);
 		this._register(this.service.onDidRequestAgentPaneSync(request => {
 			withCurrentRendererLease(async lease => {
 				if (lease.windowId === request.windowId
@@ -431,7 +433,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 				this.provider.detachAll();
 				webrtcStreamer.stopAll();
 			} else if (this.previousOnlineMobiles === 0) {
-				this.provider.pushState();
+				// 繋がったモバイルはまだ何も持っていないので、内容が同一でも必ず送る。
+				this.provider.pushState(true);
 			}
 			this.previousOnlineMobiles = status.onlineMobiles;
 		}));
@@ -544,8 +547,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		try {
 			await this.service.initialize(enabled, relayUrl);
 			this.syncAgentLiveOptions();
-			// オンラインになったら状態を1回 push。
-			this.provider.pushState();
+			// オンラインになったら状態を1回 push（設定変更での再初期化を含むので必ず送る）。
+			this.provider.pushState(true);
 			// 初期化完了時点の状態でステータスバーを描き直す。onDidChangeStatus は状態が
 			// 「変化」したときしか発火しないため、shared process が既に目的の状態だった場合に
 			// 初回描画を取りこぼさないよう、ここでも明示的に反映する（件3: 表示が出ない対策）。
@@ -685,7 +688,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			} else if (event.kind === 'paired') {
 				pairingListener.clear();
 				pairingPanel?.dispose();
-				this.provider.pushState();
+				// ペアリング直後の端末は何も持っていないので必ず送る。
+				this.provider.pushState(true);
 				this.notificationService.info(localize('paradis.mobile.paired', "モバイルデバイス「{0}」を接続しました。", event.deviceName));
 			} else if (event.kind === 'failed') {
 				pairingListener.clear();

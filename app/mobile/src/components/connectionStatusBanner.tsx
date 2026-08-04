@@ -10,19 +10,20 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
 
 export function ConnectionStatusBanner() {
 	const insets = useStableInsets();
-	const { connection, pcOnline, sessionProtocolReady, manualOffline, workspace, issue, unknownCount, connectRelay, discardUnknown } = useAppStore(useShallow(s => ({
+	// workspace 本体ではなく、表示に使う件数だけを購読する（常時マウントされるため、
+	// 本体を購読するとPCからのstate再送のたびにこのバナーが再構築される）。
+	const { connection, pcOnline, sessionProtocolReady, manualOffline, pendingRendererCount, issue, unknownCount, connectRelay, discardUnknown } = useAppStore(useShallow(s => ({
 		connection: s.connection,
 		pcOnline: s.pcOnline,
 		sessionProtocolReady: s.sessionProtocolReady,
 		manualOffline: s.manualOffline,
-		workspace: s.workspace,
+		pendingRendererCount: s.workspace?.renderers.filter(renderer => !renderer.ready).length ?? 0,
 		issue: s.terminalOperationIssue,
 		unknownCount: s.unknownTerminalOperationCount,
 		connectRelay: s.connectRelay,
 		discardUnknown: s.discardUnknownTerminalOperations,
 	})));
 	const live = connection === 'online' && pcOnline && sessionProtocolReady;
-	const pendingRendererCount = workspace?.renderers.filter(renderer => !renderer.ready).length ?? 0;
 	const partialRecovery = live && pendingRendererCount > 0;
 	if (live && !partialRecovery && issue === undefined) {
 		return null;

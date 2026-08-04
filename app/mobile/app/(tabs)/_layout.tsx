@@ -4,7 +4,6 @@ import { useEffect, useRef } from 'react';
 import { usePathname } from 'expo-router';
 import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import { Ionicons } from '@expo/vector-icons';
-import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
 import { WsDrawerLayout } from '../../src/components/wsDrawer.js';
@@ -48,9 +47,10 @@ function useTabSwitchHaptics(): void {
  */
 export default function TabsLayout() {
 	useTabSwitchHaptics();
-	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
-	// 応答待ちエージェント数 → ホーム/ターミナルタブのバッジ
-	const pending = (workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length;
+	// 応答待ちエージェント数 → ホーム/ターミナルタブのバッジ。
+	// workspace 本体ではなく件数（数値）を選ぶ。本体を購読すると、PCからのstate再送のたびに
+	// ドロワーとタブバーごと再構築されてしまう（バッジに要るのはこの数値だけ）。
+	const pending = useAppStore(s => (s.workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length);
 	const badge = pending > 0 ? String(pending) : undefined;
 
 	return (

@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { raceTimeout, RunOnceScheduler, timeout } from '../../../../base/common/async.js';
+import { IntervalTimer, raceTimeout, RunOnceScheduler, timeout } from '../../../../base/common/async.js';
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -192,6 +192,9 @@ const TERM_LOW_WATERMARK_CHARS = 5_000;
 const TERM_RESIZE_SNAPSHOT_DELAY_MS = 200; // リサイズ確定からスナップショット再同期までのデバウンス
 const TERMINAL_CREATE_READY_TIMEOUT_MS = 10_000; // 非表示スペース向け作成時にPTY起動を待つ上限（park に persistentProcessId が要る）
 
+/** VTスナップショットを送る理由（計測でどの経路が転送量を占めるか切り分けるため）。 */
+type TermSnapshotReason = 'attach' | 'flow' | 'resize';
+
 /** epoch対応クライアントがattach中のターミナル1つ分の同期プロトコル状態。 */
 interface TermSyncState {
 	/** モバイルが attach 時に採番した世代番号（送信フレームへ毎回付与する）。 */
@@ -336,6 +339,29 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		void this.pushAgentPanes();
 		this.refreshBranches();
 		void this.trackBattery();
+		this.startStatePushMetrics();
+	}
+
+	/**
+	 * 計測用: state再送の頻度と、そのうち無変化で打ち切った割合を1分ごとに1行だけ残す。
+	 * 「エージェントを大量に動かしているとモバイルの同期が重い」の原因切り分け用で、
+	 * 活動が無い間は何も出さない。
+	 */
+	private startStatePushMetrics(): void {
+		// renderer 層では素の setInterval が禁止されている（多ウィンドウ対応のため）。
+		// この計測タイマーは特定ウィンドウのDOMに紐づかないので IntervalTimer の既定コンテキストでよい。
+		const timer = this._register(new IntervalTimer());
+		timer.cancelAndSet(() => {
+			if (this.pushStateCalls === 0 && this.snapshotMetrics.size === 0) {
+				return;
+			}
+			const { pushStateCalls: calls, pushStateSkipped: skipped } = this;
+			this.pushStateCalls = 0;
+			this.pushStateSkipped = 0;
+			const snapshots = [...this.snapshotMetrics].map(([reason, m]) => `${reason}=${m.count}/max${m.maxChars}/total${m.totalChars}`).join(' ');
+			this.snapshotMetrics.clear();
+			this.logService.info(`[paradisMobileRelay][metrics] state push: ${calls} calls, ${skipped} skipped (no change), ${calls - skipped} forwarded, terminals=${this.allInstances().length}, stateBytes=${this.lastPushedSnapshot?.length ?? 0}${snapshots.length > 0 ? ` | terminal snapshots: ${snapshots}` : ''}`);
+		}, 60_000);
 	}
 
 	/**
@@ -439,6 +465,26 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (!this.pushStateScheduler.isScheduled()) {
 			this.pushStateScheduler.schedule();
 		}
+	}
+
+	/** 直近に shared process へ渡したスナップショットのJSON（無変化再送の打ち切り用）。 */
+	private lastPushedSnapshot: string | undefined;
+	/** 計測用: pushState の呼び出し回数と、そのうち無変化で打ち切った回数。 */
+	private pushStateCalls = 0;
+	private pushStateSkipped = 0;
+	/**
+	 * 計測用: VTスナップショットの送信実績（理由別の件数と最大文字数）。
+	 * 1件ごとに出すとフロー制御の追いつきが連発する状況——まさに測りたい場面——で
+	 * ログが溢れるため、集計して1分ごとの1行に畳み込む。
+	 */
+	private readonly snapshotMetrics = new Map<TermSnapshotReason, { count: number; maxChars: number; totalChars: number }>();
+
+	private recordSnapshotMetric(reason: TermSnapshotReason, chars: number): void {
+		const entry = this.snapshotMetrics.get(reason) ?? { count: 0, maxChars: 0, totalChars: 0 };
+		entry.count++;
+		entry.totalChars += chars;
+		entry.maxChars = Math.max(entry.maxChars, chars);
+		this.snapshotMetrics.set(reason, entry);
 	}
 
 	// リポジトリID → 現在のブランチ名（state スナップショット用の非同期キャッシュ）。
@@ -654,9 +700,29 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this.sendFrame({ ch: Channels.Notify, ws: undefined, seq: 0, payload: VSBuffer.wrap(encodeNotify(payload)) });
 	}
 
-	/** 接続確立直後などに全状態を送る。 */
-	pushState(): void {
-		this.syncTerminalState(this.buildSnapshot());
+	/**
+	 * 接続確立直後などに全状態を送る。現在のスナップショットを shared process へ渡す。
+	 *
+	 * 内容が前回と同一なら打ち切る。この先には IPC・main プロセスへのlease検証RPC・
+	 * manifest取得・Desktop Stateの再構築と深い比較・JSON化が並んでおり、無変化でも
+	 * 全部走ってしまう（重複除去は最終段のバイト比較しかなく、電波に出ないだけで
+	 * 経路の代金は払っている）。タイトル変更やリサイズは中身が変わらないまま
+	 * 連射されるため、ここで止めるのが最も効く。
+	 *
+	 * `force` は「送信内容ではなく、送ること自体に意味がある」呼び出し用。
+	 * モバイルがオンラインへ転じた瞬間や、モバイルからのstate要求への応答では、
+	 * 内容が同一でも lease メタデータの更新と応答そのものが要る。
+	 */
+	pushState(force = false): void {
+		const snapshot = this.buildSnapshot();
+		const json = JSON.stringify(snapshot);
+		this.pushStateCalls++;
+		if (!force && json === this.lastPushedSnapshot) {
+			this.pushStateSkipped++;
+			return;
+		}
+		this.lastPushedSnapshot = json;
+		this.syncTerminalState(snapshot);
 	}
 
 	private buildSnapshot(): StateSnapshot {
@@ -787,7 +853,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	handleInbound(frame: InboundFrame): void {
 		if (frame.ch === Channels.State) {
 			// モバイルからの state 要求（空ペイロード）には現在のスナップショットで応答。
-			this.pushState();
+			// 要求への応答なので、内容が前回と同一でも必ず送る。
+			this.pushState(true);
 			return;
 		}
 		if (frame.ch === Channels.Terminal) {
@@ -1682,7 +1749,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					suspended: false, droppedWhileSuspended: false,
 					pending: [], pendingChars: 0, coalesceTimer: undefined, resizeTimer: undefined,
 				});
-				this.sendTerminalSnapshot(instance, id, mobileId);
+				this.sendTerminalSnapshot(instance, id, mobileId, 'attach');
 				if (this.attachedTerminals.has(id)) {
 					await complete('accepted');
 					return;
@@ -1881,7 +1948,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				sync.droppedWhileSuspended = false;
 				// 破棄していた間の出力はもう送れないので、最新画面のスナップショットで追いつく
 				// （moshの「中間状態スキップ」に相当。スクロールバックの完全性より最新画面を優先）。
-				this.sendTerminalSnapshot(instance, id, mobileId);
+				this.sendTerminalSnapshot(instance, id, mobileId, 'flow');
 			}
 		}
 	}
@@ -1903,7 +1970,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			sync.resizeTimer = setTimeout(() => {
 				sync.resizeTimer = undefined;
 				if (this.terminalSubscribers.get(id)?.has(mobileId)) {
-					this.sendTerminalSnapshot(instance, id, mobileId);
+					this.sendTerminalSnapshot(instance, id, mobileId, 'resize');
 				}
 			}, TERM_RESIZE_SNAPSHOT_DELAY_MS);
 		}
@@ -1915,7 +1982,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * 同期プロトコル有効時は epoch/seq と適用すべき cols/rows・unicode幅版を同梱し、
 	 * モバイルが「reset→resize→write」を原子的に適用できるようにする。
 	 */
-	private sendTerminalSnapshot(instance: ITerminalInstance, id: number, mobileId: string): void {
+	private sendTerminalSnapshot(instance: ITerminalInstance, id: number, mobileId: string, reason: TermSnapshotReason): void {
 		const subscriptionKey = this.termSubscriptionKey(id, mobileId);
 		const expectedSync = this.termSyncStates.get(subscriptionKey);
 		if (expectedSync === undefined) {
@@ -1954,6 +2021,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			const dims = instance.cols > 0 && instance.rows > 0 ? { cols: instance.cols, rows: instance.rows } : {};
 			const unicode = instance.xterm?.raw.unicode.activeVersion;
+			this.recordSnapshotMetric(reason, data.length);
 			this.sendTerm(id, mobileId, { t: 'data', data, snapshot: true, epoch: sync.epoch, seq, ...dims, ...(unicode ? { unicode } : {}) });
 		}).catch(err => this.logService.warn('[paradisMobileRelay] scrollback sync failed', err));
 	}

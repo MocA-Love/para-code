@@ -38,9 +38,11 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const canGoBack = router.canGoBack();
-	const { connection, pcOnline, sessionProtocolReady, workspace, paired, ready, manualOffline, protocolError, connectRelay } = useAppStore(useShallow(s => ({
+	// workspace 本体ではなく「キャッシュがあるか」だけを購読する（判定に使うのは有無のみ）。
+	// 本体を購読すると、PCからのstate再送のたびに全タブの中身が再構築される。
+	const { connection, pcOnline, sessionProtocolReady, hasWorkspace, paired, ready, manualOffline, protocolError, connectRelay } = useAppStore(useShallow(s => ({
 		connection: s.connection, pcOnline: s.pcOnline, paired: s.paired, ready: s.ready,
-		sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
+		sessionProtocolReady: s.sessionProtocolReady, hasWorkspace: s.workspace !== undefined,
 		manualOffline: s.manualOffline, protocolError: s.protocolError, connectRelay: s.connectRelay,
 	})));
 
@@ -56,7 +58,7 @@ export function ConnectionGate({ children }: { children: ReactNode }) {
 		return <View style={styles.gated}><PairingRequiredNotice onStart={() => router.push('/pair')} />{canGoBack ? <GateBackButton top={insets.top + 8} onBack={() => router.back()} /> : null}</View>;
 	}
 
-	if (paired && workspace !== undefined) {
+	if (paired && hasWorkspace) {
 		return <View style={styles.cached}>{children}<ConnectionStatusBanner /></View>;
 	}
 
