@@ -46,6 +46,7 @@ import { paradisResolveMirrorCaptureFrame } from '../../paradis/contrib/browserM
 // PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator
 import { PARADIS_RESOURCE_MONITOR_CHANNEL } from '../../paradis/contrib/resourceMonitor/common/paradisResourceMonitor.js';
 import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourceMonitor/electron-main/paradisResourceMonitorMainService.js';
+import { paradisRegisterHealthBeacon } from '../../paradis/contrib/healthBeacon/electron-main/paradisHealthBeaconMain.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobileRelay/common/paradisMobileWindowLease.js';
 import { ParadisMobileWindowLeaseChannel } from '../../paradis/contrib/mobileRelay/electron-main/paradisMobileWindowLeaseChannel.js';
 // PARA-PATCH: clear stale webview service worker registrations before the first window opens
@@ -1457,6 +1458,9 @@ export class CodeApplication extends Disposable {
 		// PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator (main process only)
 		const paradisResourceMonitorChannel = ProxyChannel.fromService(new ParadisResourceMonitorMainService(), disposables);
 		mainProcessElectronServer.registerChannel(PARADIS_RESOURCE_MONITOR_CHANNEL, paradisResourceMonitorChannel);
+
+		// PARA-PATCH: periodic memory/CPU health beacon to Sentry (see paradis/contrib/healthBeacon)
+		disposables.add(paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), this.lifecycleMainService));
 
 		// allow-any-unicode-next-line
 		// PARA-PATCH: Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。
