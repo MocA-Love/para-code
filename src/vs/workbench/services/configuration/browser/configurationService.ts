@@ -49,6 +49,7 @@ import { mainWindow } from '../../../../base/browser/window.js';
 import { runWhenWindowIdle } from '../../../../base/browser/dom.js';
 import { renderAsPlaintext } from '../../../../base/browser/markdownRenderer.js';
 import { fixSettingLinks } from '../../preferences/common/preferencesModels.js';
+import { paradisIsVerifiedWorkspaceFolder } from '../../../../paradis/contrib/workspaceSwitch/common/paradisWorkspaceFolderVerification.js'; // PARA-PATCH: see doUpdateFolders
 
 function getLocalUserConfigurationScopes(userDataProfile: IUserDataProfile, hasRemote: boolean): ConfigurationScope[] | undefined {
 	const isDefaultProfile = userDataProfile.isDefault || userDataProfile.useDefaultFlags?.settings;
@@ -277,12 +278,20 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 				if (this.contains(currentWorkspaceFolderUris, folderURI)) {
 					continue; // already existing
 				}
-				try {
-					const result = await this.fileService.stat(folderURI);
-					if (!result.isDirectory) {
-						continue;
-					}
-				} catch (e) { /* Ignore */ }
+				// PARA-PATCH: skip the round trip for folders the fork already confirmed are
+				// directories. Space switching calls this on every switch and the single stat
+				// measured a median of 322ms of it, because the renderer's file service reaches
+				// disk through a provider IPC. Only folders that resolved to a directory are
+				// registered, so the "not a directory" and "stat failed" paths still run here
+				// unchanged (see paradisWorkspaceFolderVerification.ts).
+				if (!paradisIsVerifiedWorkspaceFolder(folderURI.toString())) {
+					try {
+						const result = await this.fileService.stat(folderURI);
+						if (!result.isDirectory) {
+							continue;
+						}
+					} catch (e) { /* Ignore */ }
+				}
 				storedFoldersToAdd.push(getStoredWorkspaceFolder(folderURI, false, folderToAdd.name, workspaceConfigFolder, this.uriIdentityService.extUri));
 			}
 

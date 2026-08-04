@@ -28,6 +28,8 @@ import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js
 import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder } from '../common/paradisWorkspaceFolderVerification.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 
 interface ISerializedRepository {
 	readonly id: string;
@@ -186,6 +188,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		@IEditorGroupsService private readonly editorGroupsService: IEditorGroupsService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 		@ITerminalEditorService private readonly terminalEditorService: ITerminalEditorService,
+		@IFileService private readonly fileService: IFileService,
 		@IParadisEditorScopeService private readonly editorScopeService: IParadisEditorScopeService,
 		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@ILogService private readonly logService: ILogService,
@@ -646,6 +649,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			try {
 				this._onWillSwitchScope.fire(previousKey);
 
+				// 切り替え先フォルダの stat を先に投げておく。updateFolders はこの確認を内部で
+				// 待つが、切り替えは park や PTY 問い合わせで数百ms使うので、その裏で済ませれば
+				// 本流の待ち時間から消える (詳細は paradisWorkspaceFolderVerification.ts)。
+				// await しないのが要点なので、ここで例外を外に出さないこと。
+				const folderVerified = this.verifyTargetFolder(uri);
+
 				// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 				if (previousKey !== undefined) {
 					this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
@@ -702,8 +711,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				}
 
 				await this.trustUris(uri);
-				await runInParadisSpan('workspaceSwitch', 'updateFolders', undefined,
-					() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
+				await folderVerified;
+				try {
+					await runInParadisSpan('workspaceSwitch', 'updateFolders', undefined,
+						() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
+				} finally {
+					// ロールバックの updateFolders は別のフォルダへ戻すので、確認結果を残さない。
+					paradisClearVerifiedWorkspaceFolders();
+				}
 
 				this.setActiveEntry(stateKey, uri);
 				await this.editorScopeService.commitSwitch(stateKey, uri);
@@ -761,6 +776,25 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				}
 			}
 		}));
+	}
+
+	/**
+	 * 切り替え先がディレクトリであることを先に確かめ、確認できた場合だけ台帳へ登録する。
+	 *
+	 * 確認できなかった場合 (ファイルを指している / stat が失敗した) は**登録しない**。upstream 側が
+	 * 従来どおり自分で stat し、それぞれの分岐へ進む。つまりこの先行実行は判定を置き換えるのでは
+	 * なく、判定のタイミングを本流の外へ動かすだけ。
+	 */
+	private async verifyTargetFolder(uri: URI): Promise<void> {
+		try {
+			const stat = await runInParadisSpan('workspaceSwitch', 'verifyFolder', undefined,
+				() => this.fileService.stat(uri));
+			if (stat.isDirectory) {
+				paradisMarkVerifiedWorkspaceFolder(uri.toString());
+			}
+		} catch (error) {
+			// 確認できなければ upstream の stat に委ねる。ここで投げると切り替えごと失敗する。
+		}
 	}
 
 	private setActiveEntry(stateKey: string, uri: URI): void {

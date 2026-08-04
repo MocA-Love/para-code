@@ -21,6 +21,7 @@ import { SyncDescriptor } from '../../../../../platform/instantiation/common/des
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService } from '../../../../../workbench/services/layout/browser/layoutService.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { IWorkspaceEditingService } from '../../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ITerminalEditorService, ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -309,6 +310,9 @@ async function createHarness(
 		parts,
 		instantiationService.get(IWorkbenchLayoutService),
 		terminalEditorService as unknown as ITerminalEditorService,
+		// 切り替え先フォルダの事前確認。ディレクトリを返せば upstream 側の stat が省かれる経路に
+		// 入り、返さなければ従来どおり upstream が自分で確かめる。
+		{ stat: async () => ({ isDirectory: true }) } as unknown as IFileService,
 		editorScopeService,
 		auxiliaryWindowScopeService as unknown as IParadisAuxiliaryWindowScopeService,
 		instantiationService.get(ILogService),
