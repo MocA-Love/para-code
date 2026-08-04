@@ -46,6 +46,9 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 	private _model: IBrowserViewModel | undefined;
 	private _editorVisible = false;
 	private _overlayObscured = false;
+	// PARA-PATCH: a show that had to wait for the container to be measured (see _refresh)
+	private _showPendingLayout = false;
+	private _pushingBounds = false;
 
 	private readonly _placeholderScreenshot = $('.browser-placeholder-screenshot');
 	private readonly _overlayPauseEl = $('.browser-overlay-paused');
@@ -148,6 +151,12 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 		// shifted relative to the container even though their own DOM didn't
 		// change. Recompute obscured state so the page can hide accordingly.
 		this._refreshOverlayObscured();
+
+		// PARA-PATCH: bounds are now current, so a show we held back can go ahead.
+		if (this._showPendingLayout && !this._pushingBounds) {
+			this._showPendingLayout = false;
+			this._refresh(true);
+		}
 	}
 
 	override tryFocus(): boolean {
@@ -193,6 +202,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 			void this._model.setVisible(false);
 		}
 		this._model = undefined;
+		this._showPendingLayout = false; // PARA-PATCH: nothing left to show
 		this._screenshotHandle.clear();
 		this._cancelFocusTimeout();
 		this._setBackgroundImage(undefined);
@@ -216,8 +226,11 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 	/**
 	 * Recompute visibility of our content layers and the underlying page based
 	 * on the latest editor/overlay/model state.
+	 *
+	 * @param boundsArePushed the caller already pushed current bounds to main, so the page
+	 * can be shown without laying out again (PARA-PATCH).
 	 */
-	private _refresh(): void {
+	private _refresh(boundsArePushed = false): void {
 		// Placeholder screenshot: shown whenever there's a page to render
 		// (covered by the WCV when it's up, visible during hide/show swaps).
 		const placeholderActive = !!this._model?.url && !this._model?.error;
@@ -235,6 +248,19 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 			return;
 		}
 		if (show) {
+			// PARA-PATCH: push current bounds before showing. Main still holds the bounds this
+			// view was last laid out at — which, when a space switch restores it into a
+			// different pane, is a different (often much larger) rectangle — and it applies
+			// `setVisible` the moment it arrives. Both calls travel the same channel, so
+			// laying out first makes main resize before it draws. Without this the page is
+			// painted at its old size for a frame or two on every restore.
+			if (!boundsArePushed && !this._pushBounds()) {
+				// Container isn't measured yet; the layout retries on the next frame and
+				// afterContainerLayout() picks the show back up once bounds are current.
+				this._showPendingLayout = true;
+				return;
+			}
+			this._showPendingLayout = false;
 			void this._model.setVisible(true);
 			// If the editor container is focused, ensure the WCV gets focus too.
 			const ownerDoc = this._container?.ownerDocument;
@@ -242,6 +268,7 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 				this.tryFocus();
 			}
 		} else {
+			this._showPendingLayout = false;
 			void this._doScreenshot();
 			// Defer the hide one frame so the latest screenshot has a chance to paint first.
 			this.editor.window.requestAnimationFrame(() => {
@@ -250,6 +277,19 @@ class WebContentsViewRendererFeature extends BrowserEditorContribution {
 					void this._model.setVisible(false);
 				}
 			});
+		}
+	}
+
+	/**
+	 * PARA-PATCH: lay the container out and report whether bounds reached main. Guarded so the
+	 * afterContainerLayout() this triggers doesn't re-enter _refresh() mid-show.
+	 */
+	private _pushBounds(): boolean {
+		this._pushingBounds = true;
+		try {
+			return this.editor.layoutBrowserContainer();
+		} finally {
+			this._pushingBounds = false;
 		}
 	}
 
