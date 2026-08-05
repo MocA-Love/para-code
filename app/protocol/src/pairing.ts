@@ -28,9 +28,18 @@ export interface PairingPayload {
 	readonly pairingToken: Uint8Array;
 	/** PCの長期公開鍵（X25519）。 */
 	readonly pcPublicKey: Uint8Array;
+	/**
+	 * PCの表示名（省略可）。モバイルが複数のPCとペアリングしたときに一覧で見分けるために使う。
+	 * 旧PCは送ってこないので、受け取れなかった場合はモバイル側で既定名を付ける。
+	 */
+	readonly pcName?: string;
 }
 
+/** ペアリングURIへ載せるPC名の上限。QRの情報量を増やしすぎないための切り詰め。 */
+export const PAIRING_PC_NAME_MAX_LENGTH = 64;
+
 export function encodePairingUri(payload: PairingPayload): string {
+	const pcName = payload.pcName?.trim().slice(0, PAIRING_PC_NAME_MAX_LENGTH);
 	const json = JSON.stringify({
 		v: payload.version,
 		r: payload.relayUrl,
@@ -38,6 +47,7 @@ export function encodePairingUri(payload: PairingPayload): string {
 		p: payload.pairId,
 		t: toBase64Url(payload.pairingToken),
 		k: toBase64Url(payload.pcPublicKey),
+		...(pcName ? { n: pcName } : {}),
 	});
 	return `${PAIRING_URI_SCHEME}?d=${toBase64Url(new TextEncoder().encode(json))}`;
 }
@@ -64,11 +74,22 @@ export function decodePairingUri(uri: string): PairingPayload {
 	if (typeof relayUrl !== 'string' || typeof deviceId !== 'string' || typeof pairId !== 'string' || typeof token !== 'string' || typeof key !== 'string') {
 		throw new Error('malformed pairing payload');
 	}
+	// deviceId はモバイル側でPCの識別子として保存名（Keychainのアカウント名・ファイル名）に
+	// 使われる。パスや保存名を壊せる文字は最初から受け付けない。
+	if (!/^[A-Za-z0-9._-]{1,128}$/.test(deviceId)) {
+		throw new Error('malformed pairing payload: deviceId');
+	}
 	const pcPublicKey = fromBase64Url(key);
 	if (pcPublicKey.length !== 32) {
 		throw new Error('malformed pairing payload: pcPublicKey');
 	}
-	return { version: 1, relayUrl, deviceId, pairId, pairingToken: fromBase64Url(token), pcPublicKey };
+	// PC名は後から足したフィールドなので、無い・文字列でない場合も失敗させない。
+	const rawName = raw['n'];
+	const pcName = typeof rawName === 'string' ? rawName.trim().slice(0, PAIRING_PC_NAME_MAX_LENGTH) : '';
+	return {
+		version: 1, relayUrl, deviceId, pairId, pairingToken: fromBase64Url(token), pcPublicKey,
+		...(pcName ? { pcName } : {}),
+	};
 }
 
 /**

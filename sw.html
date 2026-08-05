@@ -1,0 +1,2439 @@
+<!DOCTYPE html>
+<!-- allow-any-unicode-next-line -->
+<!-- Para Code Mobile: 複数PCペアリング維持＋切り替えのUI検討用モック。製品コードではない。 -->
+<html lang="ja">
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Para Code Mobile / multi-PC switcher mocks</title>
+	<style>
+		:root {
+			color-scheme: dark;
+			--bg: #050506;
+			--panel: #131316;
+			--surface2: #1c1c20;
+			--surface3: #232328;
+			--drawer: #0e0e11;
+			--border: rgba(255, 255, 255, 0.08);
+			--border-strong: rgba(255, 255, 255, 0.16);
+			--text: #f0f0f2;
+			--dim: #8a8a92;
+			--accent: #09AFD9;
+			--accent-wash: rgba(9, 175, 217, 0.14);
+			--green: #4fd1a5;
+			--yellow: #e0c07d;
+			--orange: #d99a6c;
+			--red: #f47272;
+			--purple: #c193d9;
+			--glass: rgba(28, 28, 32, 0.72);
+			--glass-border: rgba(255, 255, 255, 0.14);
+			--mono: Menlo, ui-monospace, monospace;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		body {
+			margin: 0;
+			background: #0a0a0c;
+			color: var(--text);
+			font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", Meiryo, sans-serif;
+		}
+
+		.top {
+			position: sticky;
+			top: 0;
+			z-index: 50;
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			flex-wrap: wrap;
+			padding: 12px 20px;
+			background: rgba(10, 10, 12, 0.92);
+			backdrop-filter: blur(12px);
+			border-bottom: 1px solid var(--border);
+		}
+
+		.top h1 {
+			margin: 0 12px 0 0;
+			font-size: 14px;
+			font-weight: 800;
+			letter-spacing: -0.2px;
+		}
+
+		.tabs {
+			display: flex;
+			gap: 6px;
+			flex-wrap: wrap;
+		}
+
+		.tab {
+			font: inherit;
+			font-size: 12px;
+			color: var(--dim);
+			background: var(--surface2);
+			border: 1px solid var(--border);
+			border-radius: 9px;
+			padding: 6px 11px;
+			cursor: pointer;
+		}
+
+		.tab[aria-selected="true"] {
+			color: var(--accent);
+			background: var(--accent-wash);
+			border-color: rgba(9, 175, 217, 0.45);
+		}
+
+		main {
+			padding: 24px 20px 80px;
+		}
+
+		section.case {
+			margin-bottom: 46px;
+		}
+
+		section.case[hidden] {
+			display: none;
+		}
+
+		.case h2 {
+			margin: 0 0 6px;
+			font-size: 17px;
+			letter-spacing: -0.2px;
+		}
+
+		.case h2 .kind {
+			font-size: 11px;
+			font-weight: 700;
+			color: var(--accent);
+			background: var(--accent-wash);
+			border-radius: 6px;
+			padding: 3px 8px;
+			margin-right: 8px;
+			vertical-align: 2px;
+		}
+
+		.lede {
+			margin: 0 0 14px;
+			max-width: 760px;
+			color: var(--dim);
+			font-size: 12.5;
+			line-height: 1.7;
+		}
+
+		.pros {
+			display: flex;
+			gap: 10px;
+			flex-wrap: wrap;
+			margin: 0 0 18px;
+			max-width: 860px;
+		}
+
+		.pros div {
+			flex: 1 1 300px;
+			background: var(--panel);
+			border: 1px solid var(--border);
+			border-radius: 10px;
+			padding: 10px 12px;
+			font-size: 12px;
+			line-height: 1.6;
+			color: var(--dim);
+		}
+
+		.pros b {
+			display: block;
+			margin-bottom: 3px;
+			font-size: 11px;
+			letter-spacing: 0.4px;
+		}
+
+		.pros .good b {
+			color: var(--green);
+		}
+
+		.pros .bad b {
+			color: var(--orange);
+		}
+
+		.frames {
+			display: flex;
+			gap: 34px;
+			align-items: flex-start;
+			flex-wrap: wrap;
+		}
+
+		figure {
+			margin: 0;
+		}
+
+		figcaption {
+			margin-top: 10px;
+			max-width: 393px;
+			color: var(--dim);
+			font-size: 11.5px;
+			line-height: 1.6;
+		}
+
+		figcaption b {
+			color: var(--text);
+		}
+
+		/* ---------- device frames ---------- */
+		.phone {
+			position: relative;
+			width: 393px;
+			height: 852px;
+			border-radius: 55px;
+			background: var(--bg);
+			overflow: hidden;
+			border: 1px solid #26262b;
+			box-shadow: 0 30px 70px rgba(0, 0, 0, 0.6);
+		}
+
+		.pad {
+			position: relative;
+			width: 1194px;
+			height: 834px;
+			border-radius: 34px;
+			background: var(--bg);
+			overflow: hidden;
+			border: 1px solid #26262b;
+			box-shadow: 0 30px 70px rgba(0, 0, 0, 0.6);
+			transform-origin: top left;
+		}
+
+		.scale62 {
+			width: 740px;
+			height: 517px;
+		}
+
+		.scale62 .pad {
+			transform: scale(0.62);
+		}
+
+		.statusbar {
+			position: absolute;
+			top: 0;
+			left: 0;
+			right: 0;
+			height: 59px;
+			display: flex;
+			align-items: flex-end;
+			justify-content: space-between;
+			padding: 0 32px 6px;
+			font-size: 14px;
+			font-weight: 700;
+			z-index: 30;
+			pointer-events: none;
+		}
+
+		.statusbar .right {
+			display: flex;
+			align-items: center;
+			gap: 5px;
+			font-size: 11px;
+			color: var(--text);
+		}
+
+		.pad .statusbar {
+			height: 26px;
+			padding: 0 24px 4px;
+			font-size: 12px;
+		}
+
+		/* ---------- drawer ---------- */
+		.drawer {
+			position: absolute;
+			top: 0;
+			left: 0;
+			bottom: 0;
+			width: 322px;
+			background: var(--drawer);
+			border-right: 1px solid var(--border-strong);
+			padding-top: 67px;
+			padding-bottom: 34px;
+			display: flex;
+			flex-direction: column;
+			z-index: 5;
+		}
+
+		.pushed {
+			position: absolute;
+			top: 0;
+			left: 322px;
+			width: 393px;
+			height: 100%;
+			background: var(--bg);
+			border-radius: 55px;
+			overflow: hidden;
+			z-index: 10;
+			box-shadow: -18px 0 40px rgba(0, 0, 0, 0.5);
+		}
+
+		.pc-section {
+			padding: 4px 18px 14px;
+			border-bottom: 1px solid var(--border);
+		}
+
+		.pc-row {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+		}
+
+		.pc-logo {
+			width: 38px;
+			height: 38px;
+			border-radius: 11px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font: 800 15px/1 var(--mono);
+			background: linear-gradient(150deg, rgba(9, 175, 217, 0.35), rgba(9, 175, 217, 0.08));
+			color: var(--accent);
+			border: 1px solid rgba(9, 175, 217, 0.4);
+			flex: 0 0 auto;
+		}
+
+		.pc-logo.purple {
+			background: linear-gradient(150deg, rgba(193, 147, 217, 0.35), rgba(193, 147, 217, 0.08));
+			color: var(--purple);
+			border-color: rgba(193, 147, 217, 0.4);
+		}
+
+		.pc-logo.orange {
+			background: linear-gradient(150deg, rgba(217, 154, 108, 0.3), rgba(217, 154, 108, 0.06));
+			color: var(--orange);
+			border-color: rgba(217, 154, 108, 0.35);
+		}
+
+		.pc-body {
+			flex: 1;
+			min-width: 0;
+		}
+
+		.pc-name {
+			font-size: 14px;
+			font-weight: 700;
+		}
+
+		.pc-state {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			margin-top: 1px;
+			font-size: 11px;
+			color: var(--green);
+		}
+
+		.pc-state.off {
+			color: var(--dim);
+		}
+
+		.sep {
+			color: rgba(255, 255, 255, 0.25);
+			font-size: 11px;
+		}
+
+		.batt {
+			display: flex;
+			align-items: center;
+			gap: 2px;
+		}
+
+		.batt i {
+			display: block;
+			width: 17px;
+			height: 9px;
+			border: 1.2px solid rgba(255, 255, 255, 0.5);
+			border-radius: 2.5px;
+			padding: 1.5px;
+		}
+
+		.batt i span {
+			display: block;
+			height: 100%;
+			border-radius: 1px;
+			background: var(--green);
+		}
+
+		.batt u {
+			width: 2px;
+			height: 3.5px;
+			background: rgba(255, 255, 255, 0.5);
+			border-radius: 0 1px 1px 0;
+			display: block;
+		}
+
+		.batt em {
+			font-style: normal;
+			font-size: 10.5px;
+			font-weight: 700;
+			color: var(--dim);
+			margin-left: 3px;
+		}
+
+		.icon-btn {
+			width: 32px;
+			height: 32px;
+			border-radius: 10px;
+			background: var(--surface2);
+			border: 1px solid var(--border);
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			color: var(--dim);
+			flex: 0 0 auto;
+		}
+
+		.stats {
+			display: flex;
+			gap: 6px;
+			margin-top: 12px;
+		}
+
+		.stat {
+			flex: 1;
+			background: var(--surface2);
+			border-radius: 10px;
+			padding: 7px 0;
+			text-align: center;
+		}
+
+		.stat b {
+			display: block;
+			font-size: 15px;
+			font-weight: 700;
+			color: var(--accent);
+		}
+
+		.stat b.alert {
+			color: var(--red);
+		}
+
+		.stat span {
+			font-size: 9.5px;
+			color: var(--dim);
+		}
+
+		.res {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			margin-top: 8px;
+			padding: 9px 10px;
+			background: var(--surface2);
+			border: 1px solid var(--border);
+			border-radius: 11px;
+		}
+
+		.res .item {
+			flex: 1;
+		}
+
+		.res .head {
+			display: flex;
+			justify-content: space-between;
+			align-items: baseline;
+		}
+
+		.res .head span {
+			font-size: 9.5px;
+			font-weight: 700;
+			letter-spacing: 0.4px;
+			color: var(--dim);
+		}
+
+		.res .head b {
+			font-size: 11px;
+			font-weight: 800;
+		}
+
+		.res .track {
+			height: 3px;
+			border-radius: 2px;
+			background: var(--surface3);
+			margin-top: 5px;
+			overflow: hidden;
+		}
+
+		.res .track i {
+			display: block;
+			height: 3px;
+			border-radius: 2px;
+			background: var(--accent);
+		}
+
+		.sec-head {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 16px 16px 8px 18px;
+		}
+
+		.sec-title {
+			font-size: 10.5px;
+			font-weight: 600;
+			letter-spacing: 0.5px;
+			text-transform: uppercase;
+			color: var(--dim);
+		}
+
+		.add-btn {
+			width: 24px;
+			height: 24px;
+			border-radius: 7px;
+			background: var(--surface2);
+			border: 1px solid var(--border-strong);
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 15px;
+			line-height: 1;
+			color: var(--text);
+		}
+
+		.ws-list {
+			flex: 1;
+			overflow: hidden;
+			padding: 0 10px;
+		}
+
+		.ws-row {
+			position: relative;
+			display: flex;
+			align-items: center;
+			gap: 11px;
+			padding: 11px 10px;
+			border-radius: 12px;
+			margin-bottom: 2px;
+		}
+
+		.ws-row.active {
+			background: var(--accent-wash);
+		}
+
+		.ws-row.active::before {
+			content: "";
+			position: absolute;
+			left: 0;
+			top: 10px;
+			bottom: 10px;
+			width: 3px;
+			border-radius: 2px;
+			background: var(--accent);
+		}
+
+		.av {
+			width: 36px;
+			height: 36px;
+			border-radius: 10px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font: 800 13px/1 var(--mono);
+			flex: 0 0 auto;
+		}
+
+		.ws-body {
+			flex: 1;
+			min-width: 0;
+		}
+
+		.ws-name {
+			font-size: 13.5px;
+			font-weight: 600;
+		}
+
+		.ws-row.active .ws-name {
+			color: var(--accent);
+		}
+
+		.ws-sub {
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			margin-top: 2px;
+			font: 10.5px/1.2 var(--mono);
+			color: var(--dim);
+		}
+
+		.ws-sub svg {
+			color: var(--accent);
+		}
+
+		.badge-alert {
+			background: rgba(244, 114, 114, 0.15);
+			color: var(--red);
+			border-radius: 6px;
+			padding: 2px 7px;
+			font-size: 9.5px;
+			font-weight: 700;
+			white-space: nowrap;
+		}
+
+		.orb {
+			width: 8px;
+			height: 8px;
+			border-radius: 5px;
+			background: var(--green);
+			flex: 0 0 auto;
+		}
+
+		.count {
+			font: 10px/1.4 var(--mono);
+			color: var(--dim);
+			background: var(--surface3);
+			border-radius: 6px;
+			padding: 2px 7px;
+		}
+
+		.wt {
+			margin-left: 27px;
+			padding-left: 14px;
+			padding-top: 9px;
+			padding-bottom: 9px;
+			position: relative;
+		}
+
+		.wt::after {
+			content: "";
+			position: absolute;
+			left: 0;
+			top: 0;
+			bottom: 0;
+			width: 1.5px;
+			border-radius: 1px;
+			background: var(--border-strong);
+		}
+
+		.wt .av {
+			width: 26px;
+			height: 26px;
+			border-radius: 8px;
+			font-size: 11px;
+		}
+
+		.wt .ws-name {
+			font-size: 12.5px;
+		}
+
+		.footer {
+			display: flex;
+			gap: 8px;
+			padding: 12px 18px 0;
+			border-top: 1px solid var(--border);
+		}
+
+		.footer button {
+			flex: 1;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			gap: 6px;
+			font: 600 12px/1 -apple-system, sans-serif;
+			color: var(--dim);
+			background: var(--surface2);
+			border: 1px solid var(--border);
+			border-radius: 10px;
+			padding: 9px 0;
+		}
+
+		/* ---------- home screen (right column) ---------- */
+		.home {
+			padding: 59px 0 0;
+			height: 100%;
+		}
+
+		.home-head {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			padding: 4px 12px 8px 16px;
+		}
+
+		.chip {
+			position: relative;
+			width: 36px;
+			height: 36px;
+			border-radius: 11px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font: 800 14px/1 var(--mono);
+			background: rgba(9, 175, 217, 0.13);
+			border: 1px solid rgba(9, 175, 217, 0.33);
+			color: var(--accent);
+			flex: 0 0 auto;
+		}
+
+		.chip .dot {
+			position: absolute;
+			top: -5px;
+			right: -5px;
+			min-width: 16px;
+			height: 16px;
+			border-radius: 8px;
+			background: var(--red);
+			border: 2px solid var(--bg);
+			color: #fff;
+			font-size: 9px;
+			font-weight: 700;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: 0 3px;
+		}
+
+		.home-title {
+			flex: 1;
+			min-width: 0;
+		}
+
+		.home-title h3 {
+			margin: 0;
+			font-size: 24px;
+			font-weight: 800;
+			letter-spacing: -0.3px;
+			white-space: nowrap;
+		}
+
+		.home-title p {
+			margin: 2px 0 0;
+			font-size: 11.5px;
+			color: var(--dim);
+			white-space: nowrap;
+			overflow: hidden;
+		}
+
+		.agent-card {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			margin: 0 12px 8px;
+			padding: 12px;
+			background: var(--panel);
+			border: 1px solid var(--border);
+			border-radius: 14px;
+		}
+
+		.agent-card .txt {
+			flex: 1;
+			min-width: 0;
+		}
+
+		.agent-card .t {
+			font-size: 13.5px;
+			font-weight: 600;
+		}
+
+		.agent-card .s {
+			display: flex;
+			gap: 6px;
+			align-items: center;
+			margin-top: 2px;
+			font-size: 11px;
+			color: var(--dim);
+		}
+
+		.agent-card .s .ws {
+			font-family: var(--mono);
+			color: var(--accent);
+		}
+
+		.pill {
+			font-size: 10px;
+			font-weight: 700;
+			border-radius: 6px;
+			padding: 2px 7px;
+		}
+
+		.pill.wait {
+			background: rgba(244, 135, 113, 0.15);
+			color: var(--red);
+		}
+
+		.pill.run {
+			background: rgba(78, 201, 176, 0.15);
+			color: var(--green);
+		}
+
+		.pill.idle {
+			background: rgba(139, 139, 139, 0.15);
+			color: var(--dim);
+		}
+
+		.tabbar {
+			position: absolute;
+			left: 12px;
+			right: 12px;
+			bottom: 22px;
+			height: 58px;
+			border-radius: 22px;
+			background: var(--glass);
+			border: 1px solid var(--glass-border);
+			backdrop-filter: blur(20px);
+			display: flex;
+			align-items: center;
+			z-index: 20;
+		}
+
+		.tabbar div {
+			flex: 1;
+			text-align: center;
+			font-size: 9.5px;
+			font-weight: 600;
+			color: var(--dim);
+		}
+
+		.tabbar div.on {
+			color: var(--accent);
+		}
+
+		.tabbar div svg {
+			display: block;
+			margin: 0 auto 3px;
+		}
+
+		/* ---------- sheet / popover ---------- */
+		.scrim {
+			position: absolute;
+			inset: 0;
+			background: rgba(0, 0, 0, 0.45);
+			z-index: 40;
+		}
+
+		.sheet {
+			position: absolute;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			z-index: 41;
+			background: var(--glass);
+			backdrop-filter: blur(24px);
+			border: 1px solid var(--glass-border);
+			border-bottom: none;
+			border-radius: 26px 26px 0 0;
+			padding: 10px 0 40px;
+		}
+
+		.grabber {
+			width: 36px;
+			height: 5px;
+			border-radius: 3px;
+			background: rgba(255, 255, 255, 0.22);
+			margin: 0 auto 10px;
+		}
+
+		.sheet h4 {
+			margin: 0;
+			padding: 0 20px 10px;
+			font-size: 10.5px;
+			letter-spacing: 0.5px;
+			text-transform: uppercase;
+			color: var(--dim);
+			font-weight: 600;
+		}
+
+		.pc-item {
+			display: flex;
+			align-items: center;
+			gap: 12px;
+			margin: 0 10px 2px;
+			padding: 12px;
+			border-radius: 14px;
+		}
+
+		.pc-item.on {
+			background: var(--accent-wash);
+			border: 1px solid rgba(9, 175, 217, 0.32);
+		}
+
+		.pc-item .meta {
+			flex: 1;
+			min-width: 0;
+		}
+
+		.pc-item .nm {
+			font-size: 14px;
+			font-weight: 700;
+		}
+
+		.pc-item.on .nm {
+			color: var(--accent);
+		}
+
+		.pc-item .st {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			margin-top: 3px;
+			font-size: 11px;
+			color: var(--dim);
+		}
+
+		.pc-item .st .live {
+			color: var(--green);
+		}
+
+		.pc-item .st .warn {
+			color: var(--yellow);
+		}
+
+		.check {
+			color: var(--accent);
+			font-size: 16px;
+			font-weight: 800;
+		}
+
+		.add-row {
+			display: flex;
+			align-items: center;
+			gap: 12px;
+			margin: 8px 10px 0;
+			padding: 12px;
+			border-radius: 14px;
+			border: 1px dashed var(--border-strong);
+			color: var(--dim);
+			font-size: 13px;
+		}
+
+		.add-row .av {
+			background: var(--surface2);
+			color: var(--dim);
+			font-size: 18px;
+		}
+
+		.toast {
+			position: absolute;
+			left: 14px;
+			right: 14px;
+			top: 62px;
+			z-index: 45;
+			display: flex;
+			align-items: center;
+			gap: 9px;
+			padding: 10px 13px;
+			border-radius: 15px;
+			background: var(--glass);
+			border: 1px solid var(--glass-border);
+			backdrop-filter: blur(20px);
+			font-size: 12px;
+		}
+
+		.popover {
+			position: absolute;
+			z-index: 41;
+			width: 292px;
+			border-radius: 18px;
+			background: var(--glass);
+			border: 1px solid var(--glass-border);
+			backdrop-filter: blur(24px);
+			padding: 8px 0;
+			box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+		}
+
+		.popover .pc-item {
+			margin: 0 6px 2px;
+			padding: 10px;
+			gap: 10px;
+		}
+
+		.popover .av {
+			width: 32px;
+			height: 32px;
+			border-radius: 9px;
+		}
+
+		.popover .nm {
+			font-size: 13px;
+		}
+
+		.divider {
+			height: 1px;
+			background: var(--border);
+			margin: 6px 12px;
+		}
+
+		/* ---------- rails ---------- */
+		.rail-h {
+			display: flex;
+			gap: 8px;
+			padding: 0 14px 12px;
+			align-items: center;
+			border-bottom: 1px solid var(--border);
+		}
+
+		.rail-chip {
+			position: relative;
+			display: flex;
+			align-items: center;
+			gap: 7px;
+			padding: 6px 11px 6px 6px;
+			border-radius: 13px;
+			background: var(--surface2);
+			border: 1px solid var(--border);
+			font-size: 12px;
+			font-weight: 600;
+			color: var(--dim);
+			white-space: nowrap;
+		}
+
+		.rail-chip.on {
+			background: var(--accent-wash);
+			border-color: rgba(9, 175, 217, 0.45);
+			color: var(--accent);
+		}
+
+		.rail-chip .av {
+			width: 26px;
+			height: 26px;
+			border-radius: 8px;
+			font-size: 11px;
+		}
+
+		.rail-chip .dot {
+			position: absolute;
+			top: -5px;
+			right: -5px;
+			min-width: 16px;
+			height: 16px;
+			border-radius: 8px;
+			background: var(--red);
+			border: 2px solid var(--drawer);
+			color: #fff;
+			font-size: 9px;
+			font-weight: 700;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: 0 3px;
+		}
+
+		.rail-v {
+			position: absolute;
+			top: 0;
+			left: 0;
+			bottom: 0;
+			width: 62px;
+			background: #08080a;
+			border-right: 1px solid var(--border);
+			padding-top: 48px;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: 12px;
+			z-index: 6;
+		}
+
+		.rail-v .slot {
+			position: relative;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: 3px;
+		}
+
+		.rail-v .slot .av {
+			width: 42px;
+			height: 42px;
+			border-radius: 13px;
+			font-size: 15px;
+		}
+
+		.rail-v .slot small {
+			font-size: 8.5px;
+			color: var(--dim);
+			max-width: 54px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.rail-v .slot.on::before {
+			content: "";
+			position: absolute;
+			left: -12px;
+			top: 8px;
+			bottom: 14px;
+			width: 3px;
+			border-radius: 2px;
+			background: var(--accent);
+		}
+
+		.rail-v .slot.on small {
+			color: var(--accent);
+		}
+
+		.rail-v .slot .dot {
+			position: absolute;
+			top: -4px;
+			right: -4px;
+			min-width: 17px;
+			height: 17px;
+			border-radius: 9px;
+			background: var(--red);
+			border: 2px solid #08080a;
+			color: #fff;
+			font-size: 9.5px;
+			font-weight: 800;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+		}
+
+		/* ---------- ipad ---------- */
+		.pad .sidebar {
+			position: absolute;
+			top: 0;
+			bottom: 0;
+			width: 320px;
+			background: var(--drawer);
+			border-right: 1px solid var(--border-strong);
+			padding-top: 34px;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.pad .content {
+			position: absolute;
+			top: 0;
+			bottom: 0;
+			right: 0;
+			background: var(--bg);
+			overflow: hidden;
+		}
+
+		.pad .sidebar-tabs {
+			margin: 10px 10px 16px;
+			height: 56px;
+			border-radius: 20px;
+			background: var(--glass);
+			border: 1px solid var(--glass-border);
+			display: flex;
+			align-items: center;
+		}
+
+		.pad .sidebar-tabs div {
+			flex: 1;
+			text-align: center;
+			font-size: 9.5px;
+			font-weight: 600;
+			color: var(--dim);
+		}
+
+		.pad .sidebar-tabs div.on {
+			color: var(--accent);
+		}
+
+		.pad .sidebar-tabs svg {
+			display: block;
+			margin: 0 auto 3px;
+		}
+
+		.pad-list {
+			padding: 10px 20px 0;
+		}
+
+		.pad-col {
+			max-width: 620px;
+		}
+
+		/* ---------- settings screen ---------- */
+		.set-head {
+			padding: 67px 20px 10px;
+			display: flex;
+			align-items: center;
+			gap: 12px;
+		}
+
+		.set-head h3 {
+			margin: 0;
+			font-size: 24px;
+			font-weight: 800;
+			letter-spacing: -0.3px;
+		}
+
+		.group {
+			margin: 12px 14px 18px;
+			background: var(--panel);
+			border: 1px solid var(--border);
+			border-radius: 16px;
+			overflow: hidden;
+		}
+
+		.group h5 {
+			margin: 0;
+			padding: 12px 14px 6px;
+			font-size: 10.5px;
+			letter-spacing: 0.5px;
+			text-transform: uppercase;
+			color: var(--dim);
+			font-weight: 600;
+		}
+
+		.g-row {
+			display: flex;
+			align-items: center;
+			gap: 12px;
+			padding: 12px 14px;
+			border-top: 1px solid var(--border);
+		}
+
+		.g-row .meta {
+			flex: 1;
+			min-width: 0;
+		}
+
+		.g-row .nm {
+			font-size: 13.5px;
+			font-weight: 600;
+		}
+
+		.g-row .sub {
+			font-size: 11px;
+			color: var(--dim);
+			margin-top: 2px;
+		}
+
+		.switch {
+			width: 44px;
+			height: 26px;
+			border-radius: 14px;
+			background: var(--surface3);
+			position: relative;
+			flex: 0 0 auto;
+		}
+
+		.switch.on {
+			background: var(--accent);
+		}
+
+		.switch i {
+			position: absolute;
+			top: 2.5px;
+			left: 2.5px;
+			width: 21px;
+			height: 21px;
+			border-radius: 11px;
+			background: #fff;
+		}
+
+		.switch.on i {
+			left: 20.5px;
+		}
+
+		.grab-handle {
+			color: var(--dim);
+			opacity: 0.6;
+		}
+
+		.note {
+			margin: 26px 0 0;
+			max-width: 860px;
+			padding: 14px 16px;
+			background: var(--panel);
+			border: 1px solid var(--border);
+			border-left: 3px solid var(--accent);
+			border-radius: 10px;
+			font-size: 12.5px;
+			line-height: 1.75;
+			color: var(--dim);
+		}
+
+		.note b {
+			color: var(--text);
+		}
+
+		.note code {
+			font-family: var(--mono);
+			font-size: 11.5px;
+			color: var(--accent);
+		}
+	</style>
+</head>
+
+<body>
+	<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+		<symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+			<circle cx="12" cy="12" r="3.2" />
+			<path d="M19.4 13.5a7.6 7.6 0 000-3l1.7-1.3-2-3.4-2 .8a7.6 7.6 0 00-2.6-1.5L14.2 3h-4l-.3 2.1a7.6 7.6 0 00-2.6 1.5l-2-.8-2 3.4 1.7 1.3a7.6 7.6 0 000 3l-1.7 1.3 2 3.4 2-.8a7.6 7.6 0 002.6 1.5l.3 2.1h4l.3-2.1a7.6 7.6 0 002.6-1.5l2 .8 2-3.4z" />
+		</symbol>
+		<symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+			<circle cx="6" cy="5" r="2.4" />
+			<circle cx="6" cy="19" r="2.4" />
+			<circle cx="18" cy="8" r="2.4" />
+			<path d="M6 7.4v9.2M8.4 8H14a4 4 0 014 4v0" />
+		</symbol>
+		<symbol id="i-apps" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+			<rect x="3.5" y="3.5" width="7" height="7" rx="2" />
+			<rect x="13.5" y="3.5" width="7" height="7" rx="2" />
+			<rect x="3.5" y="13.5" width="7" height="7" rx="2" />
+			<rect x="13.5" y="13.5" width="7" height="7" rx="2" />
+		</symbol>
+		<symbol id="i-power" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+			<path d="M12 3v9" />
+			<path d="M6.5 6.4a8 8 0 1011 0" />
+		</symbol>
+		<symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+			<path d="M4 6.5h16M9.5 6.5V4.2h5v2.3M6.5 6.5l1 13h9l1-13" />
+		</symbol>
+		<symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+			<path d="M9 5l7 7-7 7" />
+		</symbol>
+		<symbol id="i-swap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+			<path d="M7 4v14M7 18l-3-3M7 18l3-3" />
+			<path d="M17 20V6M17 6l-3 3M17 6l3 3" />
+		</symbol>
+		<symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+			<path d="M4 10.5L12 4l8 6.5V20h-5v-5.5H9V20H4z" />
+		</symbol>
+		<symbol id="i-term" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+			<rect x="3" y="4.5" width="18" height="15" rx="3" />
+			<path d="M7.5 9.5l3 2.5-3 2.5M13 15h4" />
+		</symbol>
+		<symbol id="i-file" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+			<path d="M6 3.5h7l5 5V20a1 1 0 01-1 1H6a1 1 0 01-1-1V4.5a1 1 0 011-1z" />
+			<path d="M13 3.5V9h5" />
+		</symbol>
+		<symbol id="i-scm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+			<circle cx="7" cy="6" r="2.4" />
+			<circle cx="7" cy="18" r="2.4" />
+			<circle cx="17" cy="12" r="2.4" />
+			<path d="M7 8.4v7.2M9.4 6h3.2a2 2 0 012 2v2M9.4 18h3.2a2 2 0 002-2v-2" />
+		</symbol>
+		<symbol id="i-bell" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+			<path d="M6.5 10a5.5 5.5 0 1111 0v4l1.5 2.5H5L6.5 14z" />
+			<path d="M10 19.5a2 2 0 004 0" />
+		</symbol>
+		<symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+			<path d="M12 5v14M5 12h14" />
+		</symbol>
+		<symbol id="i-drag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+			<path d="M5 9h14M5 15h14" />
+		</symbol>
+	</svg>
+
+	<header class="top">
+		<h1>Para Code Mobile / multi-PC switch</h1>
+		<div class="tabs" id="tabs">
+			<button class="tab" data-target="all" aria-selected="true">All</button>
+			<button class="tab" data-target="a" aria-selected="false">iPhone A</button>
+			<button class="tab" data-target="b" aria-selected="false">iPhone B</button>
+			<button class="tab" data-target="c" aria-selected="false">iPhone C</button>
+			<button class="tab" data-target="d" aria-selected="false">iPad D</button>
+			<button class="tab" data-target="e" aria-selected="false">iPad E</button>
+			<button class="tab" data-target="s" aria-selected="false">Settings</button>
+		</div>
+	</header>
+
+	<main>
+		<!-- allow-any-unicode-next-line -->
+		<section class="case" id="case-a">
+			<!-- allow-any-unicode-next-line -->
+			<h2><span class="kind">iPhone 案A</span>ドロワー上部のPCカード → 切り替えシート</h2>
+			<!-- allow-any-unicode-next-line -->
+			<p class="lede">いまの「接続中のPC」カードをそのまま押せる行にする。タップでボトムシートが立ち上がり、ペアリング済みPCが縦に並ぶ。既存レイアウトを一切崩さず、PCが1台のときは今と同じ見た目のまま（シートを開いても1行＋追加のみ）。</p>
+			<div class="pros">
+				<!-- allow-any-unicode-next-line -->
+				<div class="good"><b>効く点</b>「PCの情報が出ている場所＝PCを替える場所」で迷わない。台数が増えても縦に伸びるだけで破綻しない。1台運用の人の画面は今と変わらない。</div>
+				<!-- allow-any-unicode-next-line -->
+				<div class="bad"><b>引っかかる点</b>切り替えに2タップ（ドロワーを開く＋カード）。頻繁に往復する使い方だと案B/Cより遅い。</div>
+			</div>
+			<div class="frames">
+				<figure>
+					<div class="phone">
+						<div class="statusbar">
+							<span>9:41</span>
+							<!-- allow-any-unicode-next-line -->
+							<span class="right">5G ▮</span>
+						</div>
+						<div class="drawer">
+							<div class="pc-section">
+								<div class="pc-row" style="background:rgba(255,255,255,0.04);margin:0 -8px;padding:6px 8px;border-radius:12px;">
+									<div class="pc-logo">M</div>
+									<div class="pc-body">
+										<!-- allow-any-unicode-next-line -->
+										<div class="pc-name">MacBook Pro</div>
+										<div class="pc-state">
+											<!-- allow-any-unicode-next-line -->
+											<span>● 接続中</span>
+											<!-- allow-any-unicode-next-line -->
+											<span class="sep">・</span>
+											<span class="batt"><i><span style="width:78%"></span></i><u></u><em>78%</em></span>
+										</div>
+									</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="badge-alert">他2台 3</div>
+									<svg width="14" height="14" class="grab-handle"><use href="#i-chev" /></svg>
+								</div>
+								<div class="stats">
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b>6</b><span>ワークスペース</span></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b>12</b><span>ターミナル</span></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b class="alert">2</b><span>応答待ち</span></div>
+								</div>
+								<div class="res">
+									<div class="item">
+										<div class="head"><span>CPU</span><b style="color:var(--accent)">34%</b></div>
+										<div class="track"><i style="width:34%"></i></div>
+									</div>
+									<div class="item">
+										<div class="head"><span>RAM</span><b style="color:var(--dim)">61%</b></div>
+										<div class="track"><i style="width:61%;background:var(--dim)"></i></div>
+									</div>
+									<div class="item">
+										<div class="head"><span>SSD</span><b style="color:var(--dim)">72%</b></div>
+										<div class="track"><i style="width:72%;background:var(--dim)"></i></div>
+									</div>
+									<svg width="13" height="13" class="grab-handle"><use href="#i-chev" /></svg>
+								</div>
+							</div>
+							<div class="sec-head">
+								<!-- allow-any-unicode-next-line -->
+								<span class="sec-title">ワークスペース</span>
+								<div class="add-btn">+</div>
+							</div>
+							<div class="ws-list">
+								<div class="ws-row active">
+									<div class="av" style="background:rgba(9,175,217,0.13);color:var(--accent)">P</div>
+									<div class="ws-body">
+										<div class="ws-name">para-code</div>
+										<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>main</div>
+									</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="badge-alert">質問あり</div>
+									<div class="orb"></div>
+								</div>
+								<div class="ws-row wt">
+									<!-- allow-any-unicode-next-line -->
+									<div class="av" style="background:rgba(9,175,217,0.13);color:var(--accent)">✦</div>
+									<div class="ws-body">
+										<div class="ws-name">fix-relay-drop</div>
+										<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>para/fix-relay</div>
+									</div>
+									<div class="orb"></div>
+								</div>
+								<div class="ws-row">
+									<div class="av" style="background:rgba(193,147,217,0.13);color:var(--purple)">P</div>
+									<div class="ws-body">
+										<div class="ws-name">paradis-web</div>
+										<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>develop</div>
+									</div>
+									<div class="count">2</div>
+								</div>
+								<div class="ws-row">
+									<div class="av" style="background:rgba(79,209,165,0.13);color:var(--green)">M</div>
+									<div class="ws-body">
+										<div class="ws-name">mobile-app</div>
+										<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>main</div>
+									</div>
+									<div class="count">0</div>
+								</div>
+							</div>
+							<div class="footer">
+								<!-- allow-any-unicode-next-line -->
+								<button><svg width="13" height="13" style="color:var(--red)"><use href="#i-power" /></svg><span style="color:var(--red)">切断</span></button>
+								<!-- allow-any-unicode-next-line -->
+								<button><svg width="13" height="13"><use href="#i-trash" /></svg>ペアリング解除</button>
+							</div>
+						</div>
+						<div class="pushed">
+							<div class="home">
+								<div class="home-head">
+									<div class="chip">P</div>
+									<div class="home-title">
+										<!-- allow-any-unicode-next-line -->
+										<h3>エージェント</h3>
+										<p>para-code · main</p>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>A-1</b> ドロワー通常時。PCカードが押せる面になり、右端に「他2台」＋他PCの応答待ち件数。裏のPCで質問が出ていることが、ドロワーを開いた瞬間に分かる。</figcaption>
+				</figure>
+
+				<figure>
+					<div class="phone">
+						<div class="statusbar">
+							<span>9:41</span>
+							<!-- allow-any-unicode-next-line -->
+							<span class="right">5G ▮</span>
+						</div>
+						<div class="drawer">
+							<div class="pc-section">
+								<div class="pc-row">
+									<div class="pc-logo">M</div>
+									<div class="pc-body">
+										<!-- allow-any-unicode-next-line -->
+										<div class="pc-name">MacBook Pro</div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="pc-state"><span>● 接続中</span></div>
+									</div>
+									<svg width="14" height="14" class="grab-handle"><use href="#i-chev" /></svg>
+								</div>
+								<div class="stats">
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b>6</b><span>ワークスペース</span></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b>12</b><span>ターミナル</span></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b class="alert">2</b><span>応答待ち</span></div>
+								</div>
+							</div>
+							<div class="sec-head">
+								<!-- allow-any-unicode-next-line -->
+								<span class="sec-title">ワークスペース</span>
+								<div class="add-btn">+</div>
+							</div>
+							<div class="ws-list">
+								<div class="ws-row active">
+									<div class="av" style="background:rgba(9,175,217,0.13);color:var(--accent)">P</div>
+									<div class="ws-body">
+										<div class="ws-name">para-code</div>
+										<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>main</div>
+									</div>
+								</div>
+							</div>
+						</div>
+						<div class="pushed">
+							<div class="home">
+								<div class="home-head">
+									<div class="chip">P</div>
+									<div class="home-title">
+										<!-- allow-any-unicode-next-line -->
+										<h3>エージェント</h3>
+									</div>
+								</div>
+							</div>
+						</div>
+						<div class="scrim"></div>
+						<div class="sheet">
+							<div class="grabber"></div>
+							<!-- allow-any-unicode-next-line -->
+							<h4>ペアリング済みのPC</h4>
+							<div class="pc-item on">
+								<div class="av pc-logo">M</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">MacBook Pro</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="st"><span class="live">● 接続中</span><span class="sep">・</span><span>ワークスペース 6</span><span class="sep">・</span><span>応答待ち 2</span></div>
+								</div>
+								<div class="check">✓</div>
+							</div>
+							<div class="pc-item">
+								<div class="av pc-logo purple">S</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">Mac Studio</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="st"><span class="live">● 待機中</span><span class="sep">・</span><span>ワークスペース 3</span></div>
+								</div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="badge-alert">質問 3</div>
+							</div>
+							<div class="pc-item">
+								<div class="av pc-logo orange">W</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">Windows デスクトップ</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="st"><span>○ オフライン</span><span class="sep">・</span><span>12分前まで接続</span></div>
+								</div>
+							</div>
+							<div class="add-row">
+								<div class="av">+</div>
+								<!-- allow-any-unicode-next-line -->
+								<div>新しいPCとペアリング</div>
+							</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>A-2</b> 切り替えシート。各行は「接続中／待機中／オフライン」と、そのPCで待っている件数を持つ。待機中＝ペアリングは生きていて通知は届くが、画面はまだそのPCを見ていない状態。</figcaption>
+				</figure>
+			</div>
+		</section>
+
+		<!-- allow-any-unicode-next-line -->
+		<section class="case" id="case-b">
+			<!-- allow-any-unicode-next-line -->
+			<h2><span class="kind">iPhone 案B</span>ドロワー最上部の横並びPCレール</h2>
+			<!-- allow-any-unicode-next-line -->
+			<p class="lede">ドロワーの一番上に、ペアリング済みPCのチップを横一列で常設する。1タップで切り替わり、シートもポップオーバーも挟まない。チップの赤バッジがそのまま「裏のPCで待たれている件数」になる。</p>
+			<div class="pros">
+				<!-- allow-any-unicode-next-line -->
+				<div class="good"><b>効く点</b>切り替えが最短（ドロワーを開いて1タップ）。全PCの状態が常に見えるので、切り替えるべきかの判断が要らない。</div>
+				<!-- allow-any-unicode-next-line -->
+				<div class="bad"><b>引っかかる点</b>PCが1台でもレールぶんの高さを取る（1台なら隠す条件分岐が要る）。4台を超えると横スクロールになり、端のPCが隠れる。</div>
+			</div>
+			<div class="frames">
+				<figure>
+					<div class="phone">
+						<div class="statusbar">
+							<span>9:41</span>
+							<!-- allow-any-unicode-next-line -->
+							<span class="right">5G ▮</span>
+						</div>
+						<div class="drawer" style="padding-top:67px">
+							<div class="rail-h">
+								<div class="rail-chip on">
+									<div class="av pc-logo">M</div>
+									<span>MacBook</span>
+								</div>
+								<div class="rail-chip">
+									<div class="av pc-logo purple">S</div>
+									<span>Studio</span>
+									<div class="dot">3</div>
+								</div>
+								<div class="rail-chip" style="opacity:.55">
+									<div class="av pc-logo orange">W</div>
+								</div>
+								<div class="rail-chip" style="padding:6px 10px">
+									<svg width="15" height="15"><use href="#i-plus" /></svg>
+								</div>
+							</div>
+							<div class="pc-section" style="border-top:none">
+								<div class="pc-row" style="margin-top:12px">
+									<div class="pc-logo">M</div>
+									<div class="pc-body">
+										<!-- allow-any-unicode-next-line -->
+										<div class="pc-name">MacBook Pro</div>
+										<div class="pc-state">
+											<!-- allow-any-unicode-next-line -->
+											<span>● 接続中</span>
+											<!-- allow-any-unicode-next-line -->
+											<span class="sep">・</span>
+											<span class="batt"><i><span style="width:78%"></span></i><u></u><em>78%</em></span>
+										</div>
+									</div>
+									<div class="icon-btn"><svg width="17" height="17"><use href="#i-gear" /></svg></div>
+								</div>
+								<div class="stats">
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b>6</b><span>ワークスペース</span></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b>12</b><span>ターミナル</span></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b class="alert">2</b><span>応答待ち</span></div>
+								</div>
+							</div>
+							<div class="sec-head">
+								<!-- allow-any-unicode-next-line -->
+								<span class="sec-title">ワークスペース</span>
+								<div class="add-btn">+</div>
+							</div>
+							<div class="ws-list">
+								<div class="ws-row active">
+									<div class="av" style="background:rgba(9,175,217,0.13);color:var(--accent)">P</div>
+									<div class="ws-body">
+										<div class="ws-name">para-code</div>
+										<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>main</div>
+									</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="badge-alert">質問あり</div>
+								</div>
+								<div class="ws-row wt">
+									<!-- allow-any-unicode-next-line -->
+									<div class="av" style="background:rgba(9,175,217,0.13);color:var(--accent)">✦</div>
+									<div class="ws-body">
+										<div class="ws-name">fix-relay-drop</div>
+										<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>para/fix-relay</div>
+									</div>
+									<div class="orb"></div>
+								</div>
+								<div class="ws-row">
+									<div class="av" style="background:rgba(193,147,217,0.13);color:var(--purple)">P</div>
+									<div class="ws-body">
+										<div class="ws-name">paradis-web</div>
+										<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>develop</div>
+									</div>
+									<div class="count">2</div>
+								</div>
+							</div>
+							<div class="footer">
+								<!-- allow-any-unicode-next-line -->
+								<button><svg width="13" height="13" style="color:var(--red)"><use href="#i-power" /></svg><span style="color:var(--red)">切断</span></button>
+								<!-- allow-any-unicode-next-line -->
+								<button><svg width="13" height="13"><use href="#i-trash" /></svg>ペアリング解除</button>
+							</div>
+						</div>
+						<div class="pushed">
+							<div class="home">
+								<div class="home-head">
+									<div class="chip">P</div>
+									<div class="home-title">
+										<!-- allow-any-unicode-next-line -->
+										<h3>エージェント</h3>
+										<p>para-code · main</p>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>B-1</b> レール常設。オフラインのPC（W）は薄く、名前を畳んでアイコンだけにする。＋チップが新しいPCとのペアリング入口。</figcaption>
+				</figure>
+
+				<figure>
+					<div class="phone">
+						<div class="statusbar">
+							<span>9:41</span>
+							<!-- allow-any-unicode-next-line -->
+							<span class="right">5G ▮</span>
+						</div>
+						<div class="drawer" style="padding-top:67px">
+							<div class="rail-h">
+								<div class="rail-chip">
+									<div class="av pc-logo">M</div>
+									<span>MacBook</span>
+									<div class="dot">2</div>
+								</div>
+								<div class="rail-chip on" style="border-color:rgba(193,147,217,0.5);background:rgba(193,147,217,0.14);color:var(--purple)">
+									<div class="av pc-logo purple">S</div>
+									<span>Studio</span>
+								</div>
+								<div class="rail-chip" style="opacity:.55">
+									<div class="av pc-logo orange">W</div>
+								</div>
+								<div class="rail-chip" style="padding:6px 10px">
+									<svg width="15" height="15"><use href="#i-plus" /></svg>
+								</div>
+							</div>
+							<div class="pc-section" style="border-top:none">
+								<div class="pc-row" style="margin-top:12px">
+									<div class="pc-logo purple">S</div>
+									<div class="pc-body">
+										<!-- allow-any-unicode-next-line -->
+										<div class="pc-name">Mac Studio</div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="pc-state" style="color:var(--yellow)"><span>◐ 接続しています…</span></div>
+									</div>
+								</div>
+								<div class="stats">
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b style="color:var(--dim)">3</b><span>ワークスペース</span></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b style="color:var(--dim)">5</b><span>ターミナル</span></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="stat"><b class="alert">3</b><span>応答待ち</span></div>
+								</div>
+							</div>
+							<div class="sec-head">
+								<!-- allow-any-unicode-next-line -->
+								<span class="sec-title">ワークスペース</span>
+								<div class="add-btn">+</div>
+							</div>
+							<div class="ws-list">
+								<div class="ws-row" style="opacity:.45">
+									<div class="av" style="background:var(--surface3)"></div>
+									<div class="ws-body">
+										<div class="ws-name" style="background:var(--surface3);color:transparent;border-radius:5px;width:120px">.</div>
+										<div class="ws-sub" style="background:var(--surface3);color:transparent;border-radius:5px;width:80px;margin-top:5px">.</div>
+									</div>
+								</div>
+								<div class="ws-row" style="opacity:.3">
+									<div class="av" style="background:var(--surface3)"></div>
+									<div class="ws-body">
+										<div class="ws-name" style="background:var(--surface3);color:transparent;border-radius:5px;width:150px">.</div>
+										<div class="ws-sub" style="background:var(--surface3);color:transparent;border-radius:5px;width:60px;margin-top:5px">.</div>
+									</div>
+								</div>
+							</div>
+						</div>
+						<div class="pushed">
+							<div class="home">
+								<div class="home-head">
+									<div class="chip" style="background:rgba(193,147,217,0.13);border-color:rgba(193,147,217,0.33);color:var(--purple)">R</div>
+									<div class="home-title">
+										<!-- allow-any-unicode-next-line -->
+										<h3>エージェント</h3>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>B-2</b> 切り替え直後。ワークスペース一覧は前のPCのものを残さず、骨組みだけ出して差し替える（別PCの一覧が一瞬でも残ると、行き先を誤タップする）。</figcaption>
+				</figure>
+			</div>
+		</section>
+
+		<!-- allow-any-unicode-next-line -->
+		<section class="case" id="case-c">
+			<!-- allow-any-unicode-next-line -->
+			<h2><span class="kind">iPhone 案C</span>ヘッダーのチップを長押し → ポップオーバー</h2>
+			<!-- allow-any-unicode-next-line -->
+			<p class="lede">ドロワーを開かずに、いまの画面のままPCだけ替える。ヘッダー左のワークスペースチップに小さなPCの印を重ね、長押しでPC一覧のポップオーバーを出す。案A・案Bと排他ではなく、上乗せできる近道。</p>
+			<div class="pros">
+				<!-- allow-any-unicode-next-line -->
+				<div class="good"><b>効く点</b>どのタブからでも最短で替えられる。ドロワーを開く動作が要らない。</div>
+				<!-- allow-any-unicode-next-line -->
+				<div class="bad"><b>引っかかる点</b>長押しは発見されにくい（単独では成立せず、案A/Bのどちらかと併用が前提）。チップにPCとワークスペースの2つの意味が乗る。</div>
+			</div>
+			<div class="frames">
+				<figure>
+					<div class="phone">
+						<div class="statusbar">
+							<span>9:41</span>
+							<!-- allow-any-unicode-next-line -->
+							<span class="right">5G ▮</span>
+						</div>
+						<div class="home">
+							<div class="home-head">
+								<div class="chip">
+									P
+									<div class="dot" style="background:var(--purple);border-color:var(--bg);min-width:17px;height:17px;font-family:Menlo">S</div>
+								</div>
+								<div class="home-title">
+									<!-- allow-any-unicode-next-line -->
+									<h3>エージェント</h3>
+									<!-- allow-any-unicode-next-line -->
+									<p>MacBook Pro · para-code · main</p>
+								</div>
+								<div class="icon-btn"><svg width="17" height="17"><use href="#i-bell" /></svg></div>
+							</div>
+							<div class="agent-card">
+								<div class="orb" style="background:var(--red)"></div>
+								<div class="txt">
+									<!-- allow-any-unicode-next-line -->
+									<div class="t">リレー切断時の再接続を直す</div>
+									<div class="s"><span class="ws">para-code</span><span class="sep">·</span><span>claude</span></div>
+								</div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="pill wait">質問あり</div>
+							</div>
+							<div class="agent-card">
+								<div class="orb"></div>
+								<div class="txt">
+									<!-- allow-any-unicode-next-line -->
+									<div class="t">xlsx ビューアの列幅を調整</div>
+									<div class="s"><span class="ws">paradis-web</span><span class="sep">·</span><span>codex</span></div>
+								</div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="pill run">実行中</div>
+							</div>
+							<div class="agent-card" style="opacity:.75">
+								<div class="orb" style="background:#55555c"></div>
+								<div class="txt">
+									<!-- allow-any-unicode-next-line -->
+									<div class="t">通知まわりの調査メモ</div>
+									<div class="s"><span class="ws">mobile-app</span><span class="sep">·</span><span>claude</span></div>
+								</div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="pill idle">待機</div>
+							</div>
+						</div>
+						<div class="scrim" style="background:rgba(0,0,0,0.3)"></div>
+						<div class="popover" style="left:14px;top:134px">
+							<div class="pc-item on">
+								<div class="av pc-logo">M</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">MacBook Pro</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="st"><span class="live">● 接続中</span><span class="sep">・</span><span>応答待ち 2</span></div>
+								</div>
+								<div class="check">✓</div>
+							</div>
+							<div class="pc-item">
+								<div class="av pc-logo purple">S</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">Mac Studio</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="st"><span class="live">● 待機中</span></div>
+								</div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="badge-alert">質問 3</div>
+							</div>
+							<div class="pc-item" style="opacity:.6">
+								<div class="av pc-logo orange">W</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">Windows デスクトップ</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="st"><span>○ オフライン</span></div>
+								</div>
+							</div>
+							<div class="divider"></div>
+							<div class="pc-item" style="gap:10px">
+								<div class="av" style="background:var(--surface2);color:var(--dim)"><svg width="16" height="16"><use href="#i-plus" /></svg></div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="meta"><div class="nm" style="font-size:13px;font-weight:600;color:var(--dim)">新しいPCとペアリング</div></div>
+							</div>
+						</div>
+						<div class="tabbar">
+							<!-- allow-any-unicode-next-line -->
+							<div class="on"><svg width="20" height="20"><use href="#i-home" /></svg>ホーム</div>
+							<!-- allow-any-unicode-next-line -->
+							<div><svg width="20" height="20"><use href="#i-term" /></svg>ターミナル</div>
+							<!-- allow-any-unicode-next-line -->
+							<div><svg width="20" height="20"><use href="#i-file" /></svg>ファイル</div>
+							<!-- allow-any-unicode-next-line -->
+							<div><svg width="20" height="20"><use href="#i-scm" /></svg>変更</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>C-1</b> チップ右上の小さな丸が「いま繋いでいるPC以外にも動きがある」印。長押しでこのポップオーバー。サブタイトルにPC名を足して、どのPCの一覧を見ているかを常に示す。</figcaption>
+				</figure>
+
+				<figure>
+					<div class="phone">
+						<div class="statusbar">
+							<span>9:41</span>
+							<!-- allow-any-unicode-next-line -->
+							<span class="right">5G ▮</span>
+						</div>
+						<div class="home">
+							<div class="home-head">
+								<div class="chip" style="background:rgba(193,147,217,0.13);border-color:rgba(193,147,217,0.33);color:var(--purple)">R</div>
+								<div class="home-title">
+									<!-- allow-any-unicode-next-line -->
+									<h3>エージェント</h3>
+									<!-- allow-any-unicode-next-line -->
+									<p>Mac Studio · release · main</p>
+								</div>
+								<div class="icon-btn"><svg width="17" height="17"><use href="#i-bell" /></svg></div>
+							</div>
+							<div class="toast" style="position:relative;top:0;left:0;right:0;margin:2px 12px 10px">
+								<div class="av pc-logo purple" style="width:26px;height:26px;border-radius:8px;font-size:11px">S</div>
+								<!-- allow-any-unicode-next-line -->
+								<div style="flex:1"><b>Mac Studio</b> に切り替えました</div>
+								<!-- allow-any-unicode-next-line -->
+								<div style="color:var(--accent);font-weight:700">戻る</div>
+							</div>
+							<div class="agent-card" style="border-color:rgba(244,114,114,0.35);background:rgba(36,20,20,0.55)">
+								<div class="orb" style="background:var(--red)"></div>
+								<div class="txt">
+									<!-- allow-any-unicode-next-line -->
+									<div class="t">ビルド設定の変更を承認しますか</div>
+									<div class="s"><span class="ws">release</span><span class="sep">·</span><span>codex</span></div>
+								</div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="pill wait">質問あり</div>
+							</div>
+							<div class="agent-card">
+								<div class="orb" style="background:var(--red)"></div>
+								<div class="txt">
+									<!-- allow-any-unicode-next-line -->
+									<div class="t">署名エラーの原因を調べる</div>
+									<div class="s"><span class="ws">release</span><span class="sep">·</span><span>claude</span></div>
+								</div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="pill wait">質問あり</div>
+							</div>
+						</div>
+						<div class="tabbar">
+							<!-- allow-any-unicode-next-line -->
+							<div class="on"><svg width="20" height="20"><use href="#i-home" /></svg>ホーム</div>
+							<!-- allow-any-unicode-next-line -->
+							<div><svg width="20" height="20"><use href="#i-term" /></svg>ターミナル</div>
+							<!-- allow-any-unicode-next-line -->
+							<div><svg width="20" height="20"><use href="#i-file" /></svg>ファイル</div>
+							<!-- allow-any-unicode-next-line -->
+							<div><svg width="20" height="20"><use href="#i-scm" /></svg>変更</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>C-2</b> 通知タップで別PCの画面へ飛んだ直後。どのPCへ移ったかを短く出し、「戻る」で直前のPCへ一発で帰れる。切り替えが暗黙に起きる唯一の経路なので、ここだけは必ず告知する。</figcaption>
+				</figure>
+			</div>
+		</section>
+
+		<!-- allow-any-unicode-next-line -->
+		<section class="case" id="case-d">
+			<!-- allow-any-unicode-next-line -->
+			<h2><span class="kind">iPad 案D</span>サイドバーの左に常設のPCレール（3カラム）</h2>
+			<!-- allow-any-unicode-next-line -->
+			<p class="lede">iPadは幅に余裕がある。既存の常設サイドバーの左へ62ptのレールを足し、PCを縦に並べる。ワークスペースの階層（PC → ワークスペース → エージェント）が左から右へそのまま並ぶ。</p>
+			<div class="pros">
+				<!-- allow-any-unicode-next-line -->
+				<div class="good"><b>効く点</b>全PCが常に見えて1タップ。iPadでの「複数マシンを並行で回す」使い方に一番合う。既存の2カラムはそのままで、左に足すだけ。</div>
+				<!-- allow-any-unicode-next-line -->
+				<div class="bad"><b>引っかかる点</b>本文の幅が62pt減る。Split View（狭い幅）ではレールを畳んで案A相当に落とす分岐が要る。</div>
+			</div>
+			<div class="frames">
+				<figure>
+					<div class="scale62">
+						<div class="pad">
+							<div class="statusbar">
+								<span>9:41</span>
+								<!-- allow-any-unicode-next-line -->
+								<span class="right">Wi-Fi ▮</span>
+							</div>
+							<div class="rail-v">
+								<div class="slot on">
+									<div class="av pc-logo">M</div>
+									<small>MacBook</small>
+								</div>
+								<div class="slot">
+									<div class="av pc-logo purple">S</div>
+									<small>Studio</small>
+									<div class="dot">3</div>
+								</div>
+								<div class="slot" style="opacity:.5">
+									<div class="av pc-logo orange">W</div>
+									<small>Windows</small>
+								</div>
+								<div class="slot">
+									<div class="av" style="width:42px;height:42px;border-radius:13px;background:var(--surface2);border:1px dashed var(--border-strong);color:var(--dim)">
+										<svg width="18" height="18"><use href="#i-plus" /></svg>
+									</div>
+								</div>
+							</div>
+							<div class="sidebar" style="left:62px">
+								<div class="pc-section">
+									<div class="pc-row">
+										<div class="pc-logo">M</div>
+										<div class="pc-body">
+											<!-- allow-any-unicode-next-line -->
+											<div class="pc-name">MacBook Pro</div>
+											<div class="pc-state">
+												<!-- allow-any-unicode-next-line -->
+												<span>● 接続中</span>
+												<!-- allow-any-unicode-next-line -->
+												<span class="sep">・</span>
+												<span class="batt"><i><span style="width:78%"></span></i><u></u><em>78%</em></span>
+											</div>
+										</div>
+										<div class="icon-btn"><svg width="17" height="17"><use href="#i-gear" /></svg></div>
+									</div>
+									<div class="stats">
+										<!-- allow-any-unicode-next-line -->
+										<div class="stat"><b>6</b><span>ワークスペース</span></div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="stat"><b>12</b><span>ターミナル</span></div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="stat"><b class="alert">2</b><span>応答待ち</span></div>
+									</div>
+									<div class="res">
+										<div class="item">
+											<div class="head"><span>CPU</span><b style="color:var(--accent)">34%</b></div>
+											<div class="track"><i style="width:34%"></i></div>
+										</div>
+										<div class="item">
+											<div class="head"><span>RAM</span><b style="color:var(--dim)">61%</b></div>
+											<div class="track"><i style="width:61%;background:var(--dim)"></i></div>
+										</div>
+										<div class="item">
+											<div class="head"><span>SSD</span><b style="color:var(--dim)">72%</b></div>
+											<div class="track"><i style="width:72%;background:var(--dim)"></i></div>
+										</div>
+									</div>
+								</div>
+								<div class="sec-head">
+									<!-- allow-any-unicode-next-line -->
+									<span class="sec-title">ワークスペース</span>
+									<div class="add-btn">+</div>
+								</div>
+								<div class="ws-list">
+									<div class="ws-row active">
+										<div class="av" style="background:rgba(9,175,217,0.13);color:var(--accent)">P</div>
+										<div class="ws-body">
+											<div class="ws-name">para-code</div>
+											<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>main</div>
+										</div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="badge-alert">質問あり</div>
+									</div>
+									<div class="ws-row wt">
+										<!-- allow-any-unicode-next-line -->
+										<div class="av" style="background:rgba(9,175,217,0.13);color:var(--accent)">✦</div>
+										<div class="ws-body">
+											<div class="ws-name">fix-relay-drop</div>
+											<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>para/fix-relay</div>
+										</div>
+										<div class="orb"></div>
+									</div>
+									<div class="ws-row">
+										<div class="av" style="background:rgba(193,147,217,0.13);color:var(--purple)">P</div>
+										<div class="ws-body">
+											<div class="ws-name">paradis-web</div>
+											<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>develop</div>
+										</div>
+										<div class="count">2</div>
+									</div>
+									<div class="ws-row">
+										<div class="av" style="background:rgba(79,209,165,0.13);color:var(--green)">M</div>
+										<div class="ws-body">
+											<div class="ws-name">mobile-app</div>
+											<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>main</div>
+										</div>
+										<div class="count">0</div>
+									</div>
+								</div>
+								<div class="sidebar-tabs">
+									<!-- allow-any-unicode-next-line -->
+									<div class="on"><svg width="20" height="20"><use href="#i-home" /></svg>ホーム</div>
+									<!-- allow-any-unicode-next-line -->
+									<div><svg width="20" height="20"><use href="#i-term" /></svg>ターミナル</div>
+									<!-- allow-any-unicode-next-line -->
+									<div><svg width="20" height="20"><use href="#i-file" /></svg>ファイル</div>
+									<!-- allow-any-unicode-next-line -->
+									<div><svg width="20" height="20"><use href="#i-scm" /></svg>変更</div>
+								</div>
+								<div class="footer" style="padding-bottom:14px">
+									<!-- allow-any-unicode-next-line -->
+									<button><svg width="13" height="13" style="color:var(--red)"><use href="#i-power" /></svg><span style="color:var(--red)">切断</span></button>
+									<!-- allow-any-unicode-next-line -->
+									<button><svg width="13" height="13"><use href="#i-trash" /></svg>ペアリング解除</button>
+								</div>
+							</div>
+							<div class="content" style="left:382px">
+								<div class="pad-list">
+									<div class="home-head" style="padding-left:0">
+										<div class="home-title pad-col">
+											<!-- allow-any-unicode-next-line -->
+											<h3>エージェント</h3>
+											<!-- allow-any-unicode-next-line -->
+											<p>MacBook Pro · para-code · main</p>
+										</div>
+									</div>
+									<div class="pad-col">
+										<div class="agent-card" style="margin-left:0;margin-right:0">
+											<div class="orb" style="background:var(--red)"></div>
+											<div class="txt">
+												<!-- allow-any-unicode-next-line -->
+												<div class="t">リレー切断時の再接続を直す</div>
+												<div class="s"><span class="ws">para-code</span><span class="sep">·</span><span>claude</span></div>
+											</div>
+											<!-- allow-any-unicode-next-line -->
+											<div class="pill wait">質問あり</div>
+										</div>
+										<div class="agent-card" style="margin-left:0;margin-right:0">
+											<div class="orb"></div>
+											<div class="txt">
+												<!-- allow-any-unicode-next-line -->
+												<div class="t">xlsx ビューアの列幅を調整</div>
+												<div class="s"><span class="ws">paradis-web</span><span class="sep">·</span><span>codex</span></div>
+											</div>
+											<!-- allow-any-unicode-next-line -->
+											<div class="pill run">実行中</div>
+										</div>
+										<div class="agent-card" style="margin-left:0;margin-right:0;opacity:.75">
+											<div class="orb" style="background:#55555c"></div>
+											<div class="txt">
+												<!-- allow-any-unicode-next-line -->
+												<div class="t">通知まわりの調査メモ</div>
+												<div class="s"><span class="ws">mobile-app</span><span class="sep">·</span><span>claude</span></div>
+											</div>
+											<!-- allow-any-unicode-next-line -->
+											<div class="pill idle">待機</div>
+										</div>
+									</div>
+								</div>
+							</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>D-1</b> 62ptのPCレール＋既存サイドバー320pt＋本文。選択中は左のインジケータで示し、他PCの応答待ちはアイコン右上の赤バッジで出す。</figcaption>
+				</figure>
+			</div>
+		</section>
+
+		<!-- allow-any-unicode-next-line -->
+		<section class="case" id="case-e">
+			<!-- allow-any-unicode-next-line -->
+			<h2><span class="kind">iPad 案E</span>サイドバー上部のPCカード → ポップオーバー</h2>
+			<!-- allow-any-unicode-next-line -->
+			<p class="lede">iPhone案Aと同じ考え方をiPadへ持ってきた形。カードをタップすると、そのカードを起点にポップオーバーが降りる。レールぶんの幅を取らず、iPhoneとiPadで操作が完全に同じになる。</p>
+			<div class="pros">
+				<!-- allow-any-unicode-next-line -->
+				<div class="good"><b>効く点</b>iPhoneと同じ操作・同じ部品。本文の幅が減らない。狭い幅（Split View）でも同じ見せ方のまま通せる。</div>
+				<!-- allow-any-unicode-next-line -->
+				<div class="bad"><b>引っかかる点</b>他PCの状況が開くまで見えない（カード右のバッジで補う必要がある）。iPadの広さを活かしきれない。</div>
+			</div>
+			<div class="frames">
+				<figure>
+					<div class="scale62">
+						<div class="pad">
+							<div class="statusbar">
+								<span>9:41</span>
+								<!-- allow-any-unicode-next-line -->
+								<span class="right">Wi-Fi ▮</span>
+							</div>
+							<div class="sidebar" style="left:0">
+								<div class="pc-section">
+									<div class="pc-row" style="background:rgba(255,255,255,0.05);margin:0 -8px;padding:6px 8px;border-radius:12px;">
+										<div class="pc-logo">M</div>
+										<div class="pc-body">
+											<!-- allow-any-unicode-next-line -->
+											<div class="pc-name">MacBook Pro</div>
+											<!-- allow-any-unicode-next-line -->
+											<div class="pc-state"><span>● 接続中</span></div>
+										</div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="badge-alert">他2台 3</div>
+										<svg width="14" height="14" class="grab-handle"><use href="#i-chev" /></svg>
+									</div>
+									<div class="stats">
+										<!-- allow-any-unicode-next-line -->
+										<div class="stat"><b>6</b><span>ワークスペース</span></div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="stat"><b>12</b><span>ターミナル</span></div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="stat"><b class="alert">2</b><span>応答待ち</span></div>
+									</div>
+								</div>
+								<div class="sec-head">
+									<!-- allow-any-unicode-next-line -->
+									<span class="sec-title">ワークスペース</span>
+									<div class="add-btn">+</div>
+								</div>
+								<div class="ws-list">
+									<div class="ws-row active">
+										<div class="av" style="background:rgba(9,175,217,0.13);color:var(--accent)">P</div>
+										<div class="ws-body">
+											<div class="ws-name">para-code</div>
+											<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>main</div>
+										</div>
+									</div>
+									<div class="ws-row">
+										<div class="av" style="background:rgba(193,147,217,0.13);color:var(--purple)">P</div>
+										<div class="ws-body">
+											<div class="ws-name">paradis-web</div>
+											<div class="ws-sub"><svg width="10" height="10"><use href="#i-branch" /></svg>develop</div>
+										</div>
+										<div class="count">2</div>
+									</div>
+								</div>
+								<div class="sidebar-tabs">
+									<!-- allow-any-unicode-next-line -->
+									<div class="on"><svg width="20" height="20"><use href="#i-home" /></svg>ホーム</div>
+									<!-- allow-any-unicode-next-line -->
+									<div><svg width="20" height="20"><use href="#i-term" /></svg>ターミナル</div>
+									<!-- allow-any-unicode-next-line -->
+									<div><svg width="20" height="20"><use href="#i-file" /></svg>ファイル</div>
+									<!-- allow-any-unicode-next-line -->
+									<div><svg width="20" height="20"><use href="#i-scm" /></svg>変更</div>
+								</div>
+								<div class="footer" style="padding-bottom:14px">
+									<!-- allow-any-unicode-next-line -->
+									<button><svg width="13" height="13" style="color:var(--red)"><use href="#i-power" /></svg><span style="color:var(--red)">切断</span></button>
+									<!-- allow-any-unicode-next-line -->
+									<button><svg width="13" height="13"><use href="#i-trash" /></svg>ペアリング解除</button>
+								</div>
+							</div>
+							<div class="content" style="left:320px">
+								<div class="pad-list">
+									<div class="home-head" style="padding-left:0">
+										<div class="home-title pad-col">
+											<!-- allow-any-unicode-next-line -->
+											<h3>エージェント</h3>
+											<!-- allow-any-unicode-next-line -->
+											<p>MacBook Pro · para-code · main</p>
+										</div>
+									</div>
+									<div class="pad-col">
+										<div class="agent-card" style="margin-left:0;margin-right:0">
+											<div class="orb" style="background:var(--red)"></div>
+											<div class="txt">
+												<!-- allow-any-unicode-next-line -->
+												<div class="t">リレー切断時の再接続を直す</div>
+												<div class="s"><span class="ws">para-code</span><span class="sep">·</span><span>claude</span></div>
+											</div>
+											<!-- allow-any-unicode-next-line -->
+											<div class="pill wait">質問あり</div>
+										</div>
+										<div class="agent-card" style="margin-left:0;margin-right:0">
+											<div class="orb"></div>
+											<div class="txt">
+												<!-- allow-any-unicode-next-line -->
+												<div class="t">xlsx ビューアの列幅を調整</div>
+												<div class="s"><span class="ws">paradis-web</span><span class="sep">·</span><span>codex</span></div>
+											</div>
+											<!-- allow-any-unicode-next-line -->
+											<div class="pill run">実行中</div>
+										</div>
+									</div>
+								</div>
+							</div>
+							<div class="popover" style="left:16px;top:120px;width:288px">
+								<div class="pc-item on">
+									<div class="av pc-logo">M</div>
+									<div class="meta">
+										<!-- allow-any-unicode-next-line -->
+										<div class="nm">MacBook Pro</div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="st"><span class="live">● 接続中</span><span class="sep">・</span><span>応答待ち 2</span></div>
+									</div>
+									<div class="check">✓</div>
+								</div>
+								<div class="pc-item">
+									<div class="av pc-logo purple">S</div>
+									<div class="meta">
+										<!-- allow-any-unicode-next-line -->
+										<div class="nm">Mac Studio</div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="st"><span class="live">● 待機中</span></div>
+									</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="badge-alert">質問 3</div>
+								</div>
+								<div class="pc-item" style="opacity:.6">
+									<div class="av pc-logo orange">W</div>
+									<div class="meta">
+										<!-- allow-any-unicode-next-line -->
+										<div class="nm">Windows デスクトップ</div>
+										<!-- allow-any-unicode-next-line -->
+										<div class="st"><span>○ オフライン</span></div>
+									</div>
+								</div>
+								<div class="divider"></div>
+								<div class="pc-item" style="gap:10px">
+									<div class="av" style="background:var(--surface2);color:var(--dim)"><svg width="16" height="16"><use href="#i-plus" /></svg></div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="meta"><div class="nm" style="font-size:13px;font-weight:600;color:var(--dim)">新しいPCとペアリング</div></div>
+								</div>
+							</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>E-1</b> カード起点のポップオーバー。中身はiPhone案Aのシートと同一の行部品を使い回す。</figcaption>
+				</figure>
+			</div>
+		</section>
+
+		<!-- allow-any-unicode-next-line -->
+		<section class="case" id="case-s">
+			<!-- allow-any-unicode-next-line -->
+			<h2><span class="kind">共通</span>設定 → PCの管理</h2>
+			<!-- allow-any-unicode-next-line -->
+			<p class="lede">どの案を採っても必要になる管理画面。名前の変更（PCから名前が届かない旧バージョン向けにも要る）、並び替え、1台ずつのペアリング解除、そして「裏のPCからの通知をどこまで受けるか」をここに置く。</p>
+			<div class="frames">
+				<figure>
+					<div class="phone">
+						<div class="statusbar">
+							<span>9:41</span>
+							<!-- allow-any-unicode-next-line -->
+							<span class="right">5G ▮</span>
+						</div>
+						<div class="set-head">
+							<!-- allow-any-unicode-next-line -->
+							<h3>設定</h3>
+						</div>
+						<div class="group">
+							<!-- allow-any-unicode-next-line -->
+							<h5>ペアリング済みのPC</h5>
+							<div class="g-row">
+								<div class="av pc-logo">M</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">MacBook Pro</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="sub">接続中 · 使用中</div>
+								</div>
+								<svg width="16" height="16" class="grab-handle"><use href="#i-drag" /></svg>
+							</div>
+							<div class="g-row">
+								<div class="av pc-logo purple">S</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">Mac Studio</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="sub">待機中 · 応答待ち 3件</div>
+								</div>
+								<svg width="16" height="16" class="grab-handle"><use href="#i-drag" /></svg>
+							</div>
+							<div class="g-row">
+								<div class="av pc-logo orange">W</div>
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">Windows デスクトップ</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="sub">オフライン · 12分前まで接続</div>
+								</div>
+								<svg width="16" height="16" class="grab-handle"><use href="#i-drag" /></svg>
+							</div>
+							<div class="g-row" style="color:var(--accent)">
+								<div class="av" style="background:var(--surface2);color:var(--accent)"><svg width="16" height="16"><use href="#i-plus" /></svg></div>
+								<!-- allow-any-unicode-next-line -->
+								<div class="meta"><div class="nm" style="color:var(--accent)">新しいPCとペアリング</div></div>
+							</div>
+						</div>
+						<div class="group">
+							<!-- allow-any-unicode-next-line -->
+							<h5>通知</h5>
+							<div class="g-row">
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">すべてのPCから受け取る</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="sub">オフにすると、いま見ているPCの通知だけが鳴る</div>
+								</div>
+								<div class="switch on"><i></i></div>
+							</div>
+							<div class="g-row">
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">通知をタップしたらそのPCへ切り替える</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="sub">切り替えたことは画面上部で知らせる</div>
+								</div>
+								<div class="switch on"><i></i></div>
+							</div>
+							<div class="g-row">
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">通知に出すPC名</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="sub">2台以上あるときは本文の先頭にPC名を付ける</div>
+								</div>
+								<div class="switch on"><i></i></div>
+							</div>
+						</div>
+						<div class="group">
+							<!-- allow-any-unicode-next-line -->
+							<h5>接続</h5>
+							<div class="g-row">
+								<div class="meta">
+									<!-- allow-any-unicode-next-line -->
+									<div class="nm">裏のPCとの接続を保つ</div>
+									<!-- allow-any-unicode-next-line -->
+									<div class="sub">見ていないPCの状態も更新し続ける（通信量が増える）</div>
+								</div>
+								<div class="switch on"><i></i></div>
+							</div>
+						</div>
+					</div>
+					<!-- allow-any-unicode-next-line -->
+					<figcaption><b>S-1</b> 「裏のPCとの接続を保つ」はモバイル回線を気にする人向けの逃げ道。オフでも通知（プッシュ）は届くので、切り替えたときに繋ぎ直すだけになる。</figcaption>
+				</figure>
+			</div>
+		</section>
+
+		<!-- allow-any-unicode-next-line -->
+		<div class="note">
+			<!-- allow-any-unicode-next-line -->
+			<b>この検討の前提（実装調査より）</b><br>
+			<!-- allow-any-unicode-next-line -->
+			リレーはPC（deviceId）ごとに独立していて、モバイル1台が複数PCへ同時に繋ぐこと自体はリレー・PC側の変更なしで成立する。モバイル側は資格情報を1件だけ持つ作り（<code>para.credentials</code> 1キー、コントローラ1本）なので、そこを配列化するのが主な作業。<br>
+			<!-- allow-any-unicode-next-line -->
+			アプリ未起動時のプッシュ通知だけは追加対応が要る。復号鍵をPCごとに保存し、通知拡張が鍵を順に試す形に変える（PC名を通知本文に出すのも同じ変更の中でできる）。<br>
+			<!-- allow-any-unicode-next-line -->
+			ピン留め・アーカイブ・下書きなど端末ローカルの記録はターミナルIDだけをキーにしているため、PCをまたぐと衝突する。キーにPCの識別子を足す必要がある。
+		</div>
+	</main>
+
+	<script>
+		const tabs = document.getElementById('tabs');
+		const sections = [...document.querySelectorAll('section.case')];
+		tabs.addEventListener('click', event => {
+			const button = event.target.closest('.tab');
+			if (!button) { return; }
+			[...tabs.children].forEach(b => b.setAttribute('aria-selected', String(b === button)));
+			const target = button.dataset.target;
+			sections.forEach(s => { s.hidden = target !== 'all' && s.id !== 'case-' + target; });
+			window.scrollTo({ top: 0 });
+		});
+	</script>
+</body>
+
+</html>

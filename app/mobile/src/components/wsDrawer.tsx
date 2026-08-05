@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Image, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
+import { Alert, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerLockMode, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
 import { Link, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,6 +16,7 @@ import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
@@ -231,24 +232,25 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	const insets = useStableInsets();
 	const router = useRouter();
 	const {
-		workspace, selectedWs, setSelectedWs, homeShowAllWorkspaces, setHomeShowAllWorkspaces, connection, pcOnline, sessionProtocolReady, manualOffline,
-		disconnectRelay, connectRelay, unpair,
+		workspace, selectedWs, setSelectedWs, homeShowAllWorkspaces, setHomeShowAllWorkspaces, connection, pcOnline, sessionProtocolReady,
+		disconnectRelay, connectRelay, removePc, pcs, activePcId,
 	} = useAppStore(useShallow(s => ({
 		workspace: s.workspace, selectedWs: s.selectedWs, setSelectedWs: s.setSelectedWs,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces, setHomeShowAllWorkspaces: s.setHomeShowAllWorkspaces,
-		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, manualOffline: s.manualOffline,
-		disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay, unpair: s.unpair,
+		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
+		disconnectRelay: s.disconnectRelay, connectRelay: s.connectRelay, removePc: s.removePc,
+		pcs: s.pcs, activePcId: s.activePcId,
 	})));
+
+	// PC切り替え（iPhoneはシート、iPadはこの位置にぶら下がるポップオーバー）の表示位置。
+	// undefined の間は閉じている。
+	const [switcherAnchor, setSwitcherAnchor] = useState<{ x: number; y: number } | undefined>(undefined);
 
 	const list: WsEntry[] = workspace?.workspaces ?? [];
 	const terminals = workspace?.terminals ?? [];
 	const effective = selectedWs !== undefined && list.some(w => w.id === selectedWs) ? selectedWs : list[0]?.id;
 	const waitingTotal = terminals.filter(t => isAgentWaiting(t.agentStatus)).length;
 	const online = connection === 'online' && pcOnline && sessionProtocolReady;
-	// PC本体のバッテリー（旧PCでは未配信）。接続中のときだけ「● 接続中」の右に併記する
-	// （オフライン系の長い文言と同居させると行崩れするため）。低残量判定はLive Activityと同ルール。
-	const battery = workspace?.battery;
-	const batteryLow = battery !== undefined && !battery.charging && battery.level < 20;
 	// PC本体（マシン全体）のCPU/メモリ/ディスク（旧PCでは未配信）。バッテリーと同じ「PCの体調」
 	// としてこのカードに並べる。内訳（何が使っているか）は行タップで開く「システム」画面が持つ。
 	const resources = workspace?.resources;
@@ -389,15 +391,20 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	};
 
 	const confirmUnpair = () => {
+		if (activePcId === undefined) {
+			return;
+		}
+		const name = pcs.find(pc => pc.id === activePcId)?.name ?? 'このPC';
 		hapticWarning();
 		Alert.alert(
 			'ペアリング解除',
-			'このPCとのペアリング情報を削除します。再接続にはPC側でQRコードを再発行してのペアリングが必要です。',
+			// 解除は「いま見ているPC」だけ。他のPCとのペアリングはそのまま残る。
+			`${name} とのペアリング情報を削除します。再接続にはPC側でQRコードを再発行してのペアリングが必要です。`,
 			[
 				{ text: 'キャンセル', style: 'cancel' },
 				{
 					text: '解除する', style: 'destructive', onPress: () => {
-						void unpair().catch(error => Alert.alert('ペアリングを解除できませんでした', error instanceof Error ? error.message : String(error)));
+						void removePc(activePcId).catch(error => Alert.alert('ペアリングを解除できませんでした', error instanceof Error ? error.message : String(error)));
 					},
 				},
 			],
@@ -406,45 +413,17 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 
 	return (
 		<View style={[styles.drawer, { paddingTop: insets.top + 8, paddingBottom: insets.bottom + 12 }]}>
-			{/* 接続中PCステータス（旧ホームカードから移設） */}
+			{/* 接続中PCのカード。押すとペアリング済みPCの切り替えを開く */}
 			<View style={styles.pcSection}>
-				<View style={styles.pcRow}>
-					<Image source={require('../../assets/pairing-logo.png')} style={styles.pcIcon} resizeMode="contain" />
-					<View style={styles.pcBody}>
-						<Text style={styles.pcName}>Para Code</Text>
-						<View style={styles.pcStateRow}>
-							<Text style={[styles.pcState, !online && styles.pcStateOff]}>
-								{online ? '● 接続中' : (connection === 'online' || connection === 'handshaking') && !pcOnline ? '○ PCオフライン' : manualOffline ? '○ 切断中' : '接続中…'}
-							</Text>
-							{online && battery !== undefined && (
-								<>
-									<Text style={styles.batterySep}>・</Text>
-									{battery.charging && <Ionicons name="flash" size={9} color={colors.yellow} />}
-									<View style={[styles.batteryBody, batteryLow && styles.batteryBodyLow]}>
-										<View
-											style={[
-												styles.batteryFill,
-												{ width: `${Math.max(8, battery.level)}%` },
-												battery.charging && styles.batteryFillCharging,
-												batteryLow && styles.batteryFillLow,
-											]}
-										/>
-									</View>
-									<View style={[styles.batteryTip, batteryLow && styles.batteryTipLow]} />
-									<Text style={[styles.batteryPct, batteryLow && styles.batteryPctLow]}>{battery.level}%</Text>
-								</>
-							)}
-						</View>
-					</View>
-					<Pressable
-						style={styles.settingsBtn}
-						onPress={() => { hapticSelection(); onClose(); router.push('/settings'); }}
-						accessibilityLabel="設定"
-						hitSlop={6}
-					>
-						<Ionicons name="settings-outline" size={17} color={colors.textDim} />
-					</Pressable>
-				</View>
+				<PcCardHeader
+					onOpen={anchor => setSwitcherAnchor(anchor)}
+					onOpenSettings={() => { onClose(); router.push('/settings'); }}
+				/>
+				<PcSwitcher
+					visible={switcherAnchor !== undefined}
+					anchor={switcherAnchor}
+					onClose={() => setSwitcherAnchor(undefined)}
+				/>
 				<View style={styles.statsRow}>
 					<View style={styles.stat}>
 						<Text style={styles.statValue}>{list.length}</Text>
@@ -628,26 +607,8 @@ const styles = StyleSheet.create({
 		flex: 1, backgroundColor: '#0e0e11',
 		borderRightWidth: 1, borderRightColor: colors.borderStrong,
 	},
+	// PCカード（接続状態・バッテリー・切り替え）は pcSwitcher.tsx が描く。ここは器だけを持つ。
 	pcSection: { paddingHorizontal: 18, paddingTop: 4, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: colors.border },
-	pcRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-	pcIcon: { width: 38, height: 38 },
-	settingsBtn: { width: 32, height: 32, borderRadius: 10, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
-	pcBody: { flex: 1, minWidth: 0 },
-	pcName: { color: colors.text, fontSize: 14, fontWeight: '700' },
-	pcState: { color: colors.green, fontSize: 11 },
-	pcStateOff: { color: colors.textDim },
-	// 「● 接続中」の右に併記するPC本体バッテリー（aaa.html 案1。低残量=赤/充電中=⚡+黄はLive Activityと同ルール）
-	pcStateRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
-	batterySep: { color: 'rgba(255,255,255,0.25)', fontSize: 11 },
-	batteryBody: { width: 17, height: 9, borderRadius: 2.5, borderWidth: 1.2, borderColor: 'rgba(255,255,255,0.5)', padding: 1.5, justifyContent: 'center' },
-	batteryBodyLow: { borderColor: 'rgba(244,114,114,0.7)' },
-	batteryFill: { height: '100%', borderRadius: 1, backgroundColor: colors.green },
-	batteryFillCharging: { backgroundColor: colors.yellow },
-	batteryFillLow: { backgroundColor: colors.red },
-	batteryTip: { width: 2, height: 3.5, borderTopRightRadius: 1, borderBottomRightRadius: 1, backgroundColor: 'rgba(255,255,255,0.5)', marginLeft: -3 },
-	batteryTipLow: { backgroundColor: 'rgba(244,114,114,0.7)' },
-	batteryPct: { color: colors.textDim, fontSize: 10.5, fontWeight: '700' },
-	batteryPctLow: { color: colors.red },
 	statsRow: { flexDirection: 'row', gap: 6, marginTop: 12 },
 	stat: { flex: 1, backgroundColor: colors.surface2, borderRadius: 10, paddingVertical: 7, alignItems: 'center' },
 	statValue: { color: colors.accent, fontSize: 15, fontWeight: '700' },

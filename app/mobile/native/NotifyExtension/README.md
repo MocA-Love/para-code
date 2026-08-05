@@ -29,8 +29,14 @@ APNs リモート通知のカスタムペイロード `e`（base64url の AES-25
 - メインアプリが接続時に `deriveNotifyKey(モバイル長期秘密鍵, PC長期公開鍵)` で導出した
   32バイト鍵の hex を、expo-secure-store で共有 Keychain へ保存する
   （service `paracode.notify`（実際の kSecAttrService は `paracode.notify:no-auth`）、
-  account `notifyKey`、access group `WB4G82C384.ltd.paradis.paracode.mobile.shared`、
+  account `notifyKey.<PCのdeviceId>`、access group `WB4G82C384.ltd.paradis.paracode.mobile.shared`、
   AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY）。実装: `app/mobile/src/platform.ts` の `persistNotifyKey`
+- **鍵はペアリング相手のPCごとに1本**（複数PCとペアリングできるため）。APNsのペイロードには
+  送信元PCが書かれていないので、NSE は access group 内の `notifyKey*` を**全件読んで順に試す**
+  （AES-GCM の認証タグが合うのは1本だけ）。復号できた鍵の account 名から PC の deviceId を取り出し、
+  `userInfo["pcId"]` として通知に載せる。アプリはこれを見て、通知タップ時に該当PCへ切り替える
+- account が `notifyKey`（サフィックス無し）の項目は単一PCしか扱えなかった頃の名残。アプリは
+  複数PC対応版への初回起動で、PCごとの鍵を保存し直したあとにこれを削除する
 - ワイヤ形式は `12Bノンス || AES-256-GCM暗号文(tag込み)` = CryptoKit の
   `AES.GCM.SealedBox(combined:)` がそのまま受ける形式
 - 復号した JSON は `NotifyPayload`（`app/protocol/src/notify.ts`）

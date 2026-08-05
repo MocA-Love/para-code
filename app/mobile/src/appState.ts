@@ -7,18 +7,32 @@
 
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
-import type { Identity, PairingPayload } from '@para/protocol';
-import { decodePairingUri, deriveNotifyKey } from '@para/protocol';
-import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
+import { MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { toolImageCache } from './agentToolImages.js';
 import { PairingClient } from './pairingClient.js';
-import type { PairedCredentials } from './relayClient.js';
+import {
+	applyReportedPcName,
+	loadActivePcId,
+	loadPairedPcs,
+	nextFallbackPcName,
+	parseScopedKeys,
+	sanitizePcName,
+	deleteLegacyCredentials,
+	savePairedPcs,
+	saveActivePcId,
+	scopedKeysFor,
+	withScopedKeys,
+	type PairedPc,
+	type ScopedKeyRecord,
+} from './pcs.js';
+import type { ConnectionState, PairedCredentials } from './relayClient.js';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex } from '@noble/hashes/utils';
 import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
-import { configureNotificationHandler, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore, terminalOperationOutboxStore } from './platform.js';
+import { configureNotificationHandler, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
@@ -30,14 +44,76 @@ import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoice
  * まさに初回ペアリング直後に出るので、そのセッションで欠けていると突き合わせられない）。
  */
 function applyPairingCorrelationTag(deviceId: string | undefined): void {
-	if (deviceId !== undefined) {
-		setMobileDiagnosticCorrelationTag('para.pairing', bytesToHex(sha256(new TextEncoder().encode(deviceId))).slice(0, 8));
-	}
+	// 相手がいなくなったら（最後のPCを解除した）タグも空にする。残すと、解除済みPCの
+	// 識別子由来の値がその後の診断イベントに付き続ける。
+	setMobileDiagnosticCorrelationTag(
+		'para.pairing',
+		deviceId !== undefined ? bytesToHex(sha256(new TextEncoder().encode(deviceId))).slice(0, 8) : '',
+	);
+}
+
+/**
+ * PC切り替えUI（ドロワーのPCカード/シート）が使う、ペアリング済みPC1台ぶんの見え方。
+ * いま見ていないPCも接続を保っている限り件数まで分かるので、切り替える前に
+ * 「どのPCで待たれているか」が見える。
+ */
+export interface PcSummary {
+	readonly id: string;
+	readonly name: string;
+	/**
+	 * 一覧の色分けに使う安定した値（PCの長期公開鍵から作る）。
+	 * 並び順から決めると、台帳の順が入れ替わったときに同じPCの色が変わってしまう。
+	 * 同じ名前を名乗るPCが2台あっても、色が違えば別物だと気づける。
+	 */
+	readonly hue: number;
+	/** そのPCとのリレー接続の状態（いま見ているPC以外も接続を保つ設定なら 'online' になりうる）。 */
+	readonly connection: ConnectionState;
+	/** リレーの向こうでPara Codeが動いているか。 */
+	readonly pcOnline: boolean;
+	readonly workspaces: number;
+	readonly terminals: number;
+	/** 応答待ち（質問・承認）のエージェント数。 */
+	readonly waiting: number;
+	/** 最後にPCがオンラインだと確認できた時刻（一度も繋がっていなければ undefined）。 */
+	readonly lastOnlineAt: number | undefined;
 }
 
 interface AppState extends StoreState {
 	ready: boolean;
 	paired: boolean;
+	/** ペアリング済みPCの一覧（台帳の順）。 */
+	pcs: PcSummary[];
+	/** いま画面が見ているPC。 */
+	activePcId: string | undefined;
+	/**
+	 * 見ていないPCとも接続を保つか。オフにすると、いま見ているPC以外は切断して
+	 * プッシュ通知だけで様子を知る（モバイル回線の通信量を抑えたい人向け。既定はオン）。
+	 */
+	keepBackgroundPcs: boolean;
+	setKeepBackgroundPcs(value: boolean): void;
+	/**
+	 * 見ていないPCからの通知をバナーで出すか（既定はオン）。オフでも通知一覧には残る。
+	 * PC側の通知設定（notifyPrefs）とは別で、こちらは端末内の判断。
+	 */
+	notifyOtherPcs: boolean;
+	setNotifyOtherPcs(value: boolean): void;
+	/** 見ているPCを切り替える。未知のIDは無視する。 */
+	switchPc(id: string): void;
+	/**
+	 * 通知タップのように、ユーザーがPCを選んだわけではない切り替え。
+	 * 切り替わったことを画面上部で知らせ、直前のPCへ戻れるようにする。
+	 */
+	switchPcForNotification(id: string): void;
+	/** PCの表示名を変える（以後PCから届く名前で上書きされない）。 */
+	renamePc(id: string, name: string): Promise<void>;
+	/** そのPCとのペアリングだけを解除する。 */
+	removePc(id: string): Promise<void>;
+	/**
+	 * 通知タップなどで自動的にPCが切り替わったときの告知（画面上部のトースト）。
+	 * `previousPcId` があれば「戻る」で元のPCへ帰れる。
+	 */
+	pcSwitchNotice: { readonly pcId: string; readonly name: string; readonly previousPcId: string | undefined } | undefined;
+	dismissPcSwitchNotice(): void;
 	/** ユーザーがホームの切断ボタンで明示的に切断した状態（自動再接続を抑止）。 */
 	manualOffline: boolean;
 	/** ユーザー操作で開始する、PCからの音声通知受信状態。 */
@@ -94,11 +170,11 @@ interface AppState extends StoreState {
 	dismissNotification(id: string): void;
 	/** 初期化（起動時に1回）。identityをロードし、資格情報があれば接続する。 */
 	init(): Promise<void>;
-	/** QRから読み取ったURIでペアリングする。SAS表示はonSasで受ける。 */
+	/** QRから読み取ったURIでペアリングする。SAS表示はonSasで受ける。成立したPCへ切り替わる。 */
 	pairFromUri(uri: string, deviceName: string, onSas: (code: string) => void): Promise<void>;
 	/** 進行中のペアリングを中断する（ペアリング画面から離脱したとき等）。 */
 	cancelPairing(): void;
-	/** ペアリングを完全に解除する（リレー上の資格情報も失効させ、ローカルの保存分も削除する）。 */
+	/** すべてのPCとのペアリングを解除する（リレー上の資格情報も失効させ、ローカルの保存分も削除する）。 */
 	unpair(): Promise<void>;
 	discardUnknownTerminalOperations(): Promise<boolean>;
 	attachTerminal(terminalKey: string): void;
@@ -218,9 +294,109 @@ interface AppState extends StoreState {
 }
 
 let identity: Identity | undefined;
-let controller: MobileController | undefined;
 /** 進行中のペアリングクライアント（cancelPairing で中断するため保持）。 */
 let pairing: PairingClient | undefined;
+
+/**
+ * ペアリング済みPC1台ぶんの実行時の持ち物。
+ *
+ * `controller` はPCごとに独立していて、いま見ていないPCのぶんも（設定が許す限り）繋いだままにする。
+ * 見ていないPCの `state` はストアへ流さず、ここに退避しておく。切り替えたときに、そのPCの
+ * 現在の状態をそのまま画面へ載せ替えられるようにするため。
+ */
+interface PcRuntime {
+	pc: PairedPc;
+	readonly controller: MobileController;
+	/** そのコントローラが最後に報告した状態（アクティブなら画面と同じ内容）。 */
+	state: StoreState;
+	lastOnlineAt: number | undefined;
+	/**
+	 * 一度でも connect() を呼んだか。コントローラは初回だけ資格情報を渡す必要があり
+	 * （以後は自分で覚えている）、繋ぎ直しは reconnect() で行う。
+	 */
+	started: boolean;
+	/** そのPCで書きかけだったコンポーザーの下書き（切り替えて戻ったときに復元する）。 */
+	drafts: Record<string, string>;
+}
+
+/** deviceId → 実行時。台帳の順序は `pcOrder` が持つ（Mapの挿入順に依存しない）。 */
+const runtimes = new Map<string, PcRuntime>();
+let pcOrder: string[] = [];
+let activePcId: string | undefined;
+/**
+ * いま見ているPCのコントローラ。画面から呼ぶ操作はすべてこれを通す
+ * （切り替えのたびに付け替えるので、各アクションは常にアクティブなPCへ届く）。
+ */
+let controller: MobileController | undefined;
+/** ピン留め・アーカイブのPC別記録（保存形はPC ID → キー配列）。 */
+let pinnedRecord: ScopedKeyRecord = {};
+let archivedRecord: ScopedKeyRecord = {};
+/**
+ * このアプリ起動ぶんのターミナル操作の世代（init で1つ予約する）。
+ * あとから足したPCのコントローラにも同じ値を渡す（操作IDはコントローラごとの
+ * ランダムな接頭辞を持つので、PCをまたいで衝突しない）。
+ */
+let currentOperationRun = 1;
+
+function summarizeRuntime(runtime: PcRuntime): PcSummary {
+	const workspace = runtime.state.workspace;
+	const terminals = workspace?.terminals ?? [];
+	return {
+		id: runtime.pc.id,
+		name: runtime.pc.name,
+		hue: pcHue(runtime.pc),
+		connection: runtime.state.connection,
+		pcOnline: runtime.state.pcOnline,
+		workspaces: workspace?.workspaces.length ?? 0,
+		terminals: terminals.length,
+		waiting: terminals.filter(terminal => isAgentWaiting(terminal.agentStatus)).length,
+		lastOnlineAt: runtime.lastOnlineAt,
+	};
+}
+
+/** PCの長期公開鍵から色を決める（並び順に依存しない、そのPC固有の値）。 */
+function pcHue(pc: PairedPc): number {
+	let hash = 0;
+	for (const byte of pc.creds.pcPublicKey) {
+		hash = (hash * 31 + byte) >>> 0;
+	}
+	return hash;
+}
+
+function sameSummary(a: PcSummary, b: PcSummary): boolean {
+	return a.id === b.id && a.name === b.name && a.hue === b.hue && a.connection === b.connection && a.pcOnline === b.pcOnline
+		&& a.workspaces === b.workspaces && a.terminals === b.terminals && a.waiting === b.waiting
+		&& a.lastOnlineAt === b.lastOnlineAt;
+}
+
+/**
+ * 直前に配ったPC一覧。**中身が変わっていなければ同じ配列を返す**ためのキャッシュ。
+ * PCからの状態は実行中で最大10Hz届き、接続中のPCの台数ぶん重なる。毎回新しい配列を
+ * 配ると、一覧を購読しているUIとLive Activityの同期がその頻度で走ってしまう。
+ */
+let lastSummaries: PcSummary[] = [];
+
+function pcSummaries(): PcSummary[] {
+	const next = pcOrder
+		.map(id => runtimes.get(id))
+		.filter((runtime): runtime is PcRuntime => runtime !== undefined)
+		.map(summarizeRuntime);
+	if (next.length === lastSummaries.length && next.every((summary, index) => sameSummary(summary, lastSummaries[index]!))) {
+		return lastSummaries;
+	}
+	lastSummaries = next;
+	return next;
+}
+
+function pairedPcs(): PairedPc[] {
+	return pcOrder
+		.map(id => runtimes.get(id)?.pc)
+		.filter((pc): pc is PairedPc => pc !== undefined);
+}
+
+function persistPcs(): void {
+	savePairedPcs(secureKeyStore, pairedPcs()).catch(err => console.warn('[appState] failed to save paired PCs', err));
+}
 /** init() の二重実行防止（Fast Refresh 等での再マウント対策）。同期的に立てて async 再入も弾く。 */
 let initStarted = false;
 /** 通知設定の再送subscribeの多重登録防止（init()失敗リトライ対策）。 */
@@ -253,10 +429,267 @@ function stopConnectionHeartbeat(): void {
 function startConnectionHeartbeat(): void {
 	stopConnectionHeartbeat();
 	connectionHeartbeat = setInterval(() => {
-		if (!useAppStore.getState().manualOffline) {
-			controller?.ensureConnected();
+		if (useAppStore.getState().manualOffline) {
+			return;
+		}
+		for (const runtime of connectedRuntimes()) {
+			// いま見ているPCは、繋がっていなければ即座に張り直す（画面が待っているため）。
+			// 見ていないPCは「繋がっているつもりなのに死んでいる」場合の確認だけにとどめ、
+			// 未接続なら再接続クライアント自身のバックオフに任せる。全台を毎回叩き起こすと、
+			// 到達できないPCへ25秒ごとに接続を試み続けることになる。
+			if (runtime.pc.id === activePcId || runtime.state.connection === 'online') {
+				runtime.controller.ensureConnected();
+			}
 		}
 	}, 25_000);
+}
+
+/**
+ * ワークスペースを指定する操作の前に、そのIDがいま見ているPCのものか確かめる。
+ *
+ * ワークスペースIDは `<ウィンドウ番号>:<リポジトリのパス由来のID>` なので、同じリポジトリを
+ * 同じ場所に置いた2台のPCでは**一致しうる**。画面が古いIDを握ったまま切り替えが起きると
+ * （通知タップやペアリング解除による自動切り替えは、ユーザーの操作なしに起こる）、
+ * コミットやファイル書き込みが別のPCへ着弾する。ここで弾いて取り違えを止める。
+ */
+function isActiveWorkspace(ws: string): boolean {
+	const workspace = useAppStore.getState().workspace;
+	// まだ一覧が届いていない間は判断材料が無いので通す（PC側でも存在確認される）。
+	if (workspace === undefined || workspace.workspaces.length === 0) {
+		return true;
+	}
+	return workspace.workspaces.some(entry => entry.id === ws);
+}
+
+/** 上の判定に引っかかったときに返す拒否理由（画面にはそのまま出る）。 */
+function wrongPcWorkspaceError(): Error {
+	return new Error('このワークスペースは、いま接続しているPCのものではありません');
+}
+
+/** いま接続を保つべきPC（アクティブ＋設定が許すなら残り全部）。 */
+function connectedRuntimes(): PcRuntime[] {
+	const keepBackground = useAppStore.getState().keepBackgroundPcs;
+	return [...runtimes.values()].filter(runtime => keepBackground || runtime.pc.id === activePcId);
+}
+
+/**
+ * PCごとのコントローラを作る。作った時点では接続せず、接続方針（applyConnectionPolicy）に任せる。
+ * 通知鍵とアウトボックスはPC単位に分ける（混ざると復号できない通知・取り違えた操作記録になる）。
+ */
+/**
+ * 単一PC時代の通知鍵（サフィックス無し）を片付ける。
+ *
+ * PCごとの鍵を1つでも保存できたあとに呼ぶ。**先に消してはいけない**（PCがオフラインで
+ * 新しい鍵をまだ保存できていない間に消すと、その間のプッシュ本文が読めなくなる）。
+ * 失敗しても次に鍵を保存したときへ持ち越すため、起動ごとに1度だけ試す形にしている。
+ */
+let legacyNotifyKeyRetired = false;
+function retireLegacyNotifyKey(): void {
+	if (legacyNotifyKeyRetired) {
+		return;
+	}
+	legacyNotifyKeyRetired = true;
+	deleteLegacyNotifyKey().catch(err => {
+		legacyNotifyKeyRetired = false;
+		console.warn('[appState] failed to delete legacy notify key', err);
+	});
+}
+
+function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: readonly string[]): PcRuntime {
+	// コールバックは台帳から引き直す。コンストラクタの途中で状態が届いても（将来そうなっても）
+	// まだ作っていない実行時の持ち物を触らずに済み、繋ぎ直しで作り替えたときも新しい方へ届く。
+	const current = (): PcRuntime | undefined => runtimes.get(pc.id) ?? pending;
+	let pending: PcRuntime | undefined;
+	const controller = new MobileController(
+		identity!,
+		rnSocketFactory,
+		state => { const target = current(); if (target !== undefined) { applyControllerState(target, state); } },
+		payload => { const target = current(); if (target !== undefined) { handleNotify(target, payload); } },
+		getApnsDeviceToken,
+		// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
+		__DEV__ ? 'dev' : 'prod',
+		hex => persistNotifyKey(pc.id, hex).then(retireLegacyNotifyKey),
+		operationRun,
+		createTerminalOperationOutboxStore(pc.id),
+		persistedOutbox,
+		pc.creds,
+	);
+	pending = { pc, controller, state: createEmptyStoreState(), lastOnlineAt: undefined, started: false, drafts: {} };
+	return pending;
+}
+
+/**
+ * コントローラからの状態更新をストアへ流す。いま見ているPCのぶんだけが画面の状態になり、
+ * それ以外は一覧の件数（PcSummary）にだけ効く。
+ */
+function applyControllerState(runtime: PcRuntime, next: StoreState): void {
+	const wasOnline = runtime.state.connection === 'online';
+	runtime.state = next;
+	if (next.pcOnline) {
+		runtime.lastOnlineAt = Date.now();
+	}
+	// 見ていないPCにも、繋がった時点で同じ通知設定を持たせる（PC側はこの値でアプリ未起動時の
+	// プッシュを送るか決めるため、届いていないと裏のPCだけ設定を無視して鳴り続ける）。
+	// アクティブなPCぶんは init() の購読が送る。
+	if (runtime.pc.id !== activePcId && !wasOnline && next.connection === 'online') {
+		runtime.controller.sendNotifyPrefs(useAppStore.getState().notifyPrefs);
+	}
+	// PCが名乗った名前を台帳へ取り込む（ユーザーが自分で付けた名前は上書きしない）。
+	adoptReportedPcName(runtime, next.workspace?.pcName);
+	if (runtime.pc.id !== activePcId) {
+		useAppStore.setState({ pcs: pcSummaries() });
+		return;
+	}
+	// 状態が届くたびにアーカイブの印を点検する（回答待ちになったものは一覧へ戻し、
+	// 消えたターミナルの印は捨てる）。archivedAgents.ts 参照。workspace が無い間
+	// （切断時にクリアされる）は点検しない。ターミナルが0件に見えるため、全部の印を
+	// 「消えたターミナル」として捨ててしまう。
+	const archivedKeys = useAppStore.getState().archivedKeys;
+	const nextArchived = next.workspace !== undefined
+		? releaseArchivedOnAttention(archivedKeys, next.workspace.terminals)
+		: archivedKeys;
+	if (nextArchived !== archivedKeys) {
+		const value = nextArchived as Set<string>;
+		useAppStore.setState({ archivedKeys: value });
+		persistArchivedKeys(runtime.pc.id, value);
+	}
+	useAppStore.setState({ ...next, pcs: pcSummaries() });
+}
+
+/** PCから届いた表示名を台帳へ反映する（変化があれば保存し直す）。 */
+function adoptReportedPcName(runtime: PcRuntime, reported: string | undefined): void {
+	const updated = applyReportedPcName([runtime.pc], runtime.pc.id, reported);
+	const next = updated[0];
+	if (next === undefined || next === runtime.pc) {
+		return;
+	}
+	runtime.pc = next;
+	persistPcs();
+	useAppStore.setState({ pcs: pcSummaries() });
+}
+
+function persistPcPreferences(): void {
+	const state = useAppStore.getState();
+	secureKeyStore.setItem('pcPreferences', JSON.stringify({
+		keepBackgroundPcs: state.keepBackgroundPcs,
+		notifyOtherPcs: state.notifyOtherPcs,
+	})).catch(err => console.warn('[appState] failed to save pcPreferences', err));
+}
+
+function persistPinnedKeys(pcId: string, keys: ReadonlySet<string>): void {
+	pinnedRecord = withScopedKeys(pinnedRecord, pcId, keys);
+	secureKeyStore.setItem('pinnedTerminals', JSON.stringify(pinnedRecord)).catch(err => console.warn('[appState] failed to save pinnedTerminals', err));
+}
+
+function persistArchivedKeys(pcId: string, keys: ReadonlySet<string>): void {
+	archivedRecord = withScopedKeys(archivedRecord, pcId, keys);
+	secureKeyStore.setItem('archivedTerminals', JSON.stringify(archivedRecord)).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
+}
+
+/**
+ * 通知の受け取り。どのPCから来たかを添えて、タップされたときにそのPCへ切り替えられるようにする。
+ * バナーを出すかの判断は notificationPolicy.ts に集約してある（届いた通知を一覧へ入れるのは
+ * store 側で、そちらは無条件）。
+ */
+function handleNotify(runtime: PcRuntime, payload: NotifyPayload): void {
+	const state = useAppStore.getState();
+	const isActive = runtime.pc.id === activePcId;
+	if (!isActive && !state.notifyOtherPcs) {
+		return;
+	}
+	if (!shouldPresentNotifyBanner(payload, {
+		appState: RNAppState.currentState,
+		prefs: state.notifyPrefs,
+		// 「その画面を見ているから出さない」は、いま見ているPCの通知にしか当てはまらない。
+		viewingTerminalKey: isActive ? state.viewingTerminalKey : undefined,
+		pushRegistered: runtime.state.pushRegistered,
+		now: Date.now(),
+	})) {
+		return;
+	}
+	// 2台以上と繋いでいるときは、どのPCの話かがバナーだけで分かるようにする。
+	const title = runtimes.size > 1 ? `${runtime.pc.name}: ${payload.title}` : payload.title;
+	void presentLocalNotification(title, payload.body, {
+		ws: payload.ws,
+		terminalKey: payload.terminalKey,
+		agentToken: payload.agentToken,
+		pcId: runtime.pc.id,
+	});
+}
+
+/**
+ * 接続方針を反映する。アクティブなPCは必ず繋ぎ、それ以外は「見ていないPCとの接続を保つ」設定に従う。
+ * 手動切断中（manualOffline）は何も繋がない。
+ */
+function applyConnectionPolicy(): void {
+	const state = useAppStore.getState();
+	// inactive（通知センターを引き下げた等）ではソケットを維持する。ここを
+	// shouldRunForegroundWork で判定すると、その一瞬でも全PCの接続を畳んでしまう。
+	const suspended = connectionActionForAppState(RNAppState.currentState) === 'suspend' && !state.voiceNotifications.desired;
+	for (const runtime of runtimes.values()) {
+		const shouldConnect = !state.manualOffline && (runtime.pc.id === activePcId || state.keepBackgroundPcs);
+		if (!shouldConnect) {
+			runtime.controller.disconnect();
+			continue;
+		}
+		if (runtime.started) {
+			runtime.controller.reconnect();
+		} else {
+			runtime.started = true;
+			runtime.controller.connect(runtime.pc.creds);
+		}
+		if (suspended) {
+			runtime.controller.suspendForBackground();
+		}
+	}
+	useAppStore.setState({ pcs: pcSummaries() });
+}
+
+/**
+ * 見るPCを切り替える。画面の状態はそのPCのコントローラが持っている最新の内容へ載せ替え、
+ * ワークスペース選択や開いていたブラウザなど、PCをまたぐと意味が変わるものは選び直しにする。
+ */
+function activatePc(id: string, notice?: { readonly previousPcId: string | undefined }): void {
+	const runtime = runtimes.get(id);
+	if (runtime === undefined || id === activePcId) {
+		return;
+	}
+	// 音声通知の購読は切り替え前のPCに対して張ったもの。持ち越すと、見ていないPCの
+	// 音声が読み上げられ続けることになるのでここで畳む。
+	endVoiceNotifications();
+	const previous = activePcId !== undefined ? runtimes.get(activePcId) : undefined;
+	if (previous !== undefined) {
+		// 画面側の購読解除（画面を離れるときのcleanup）は「いま見ているPC」へ届いてしまうため、
+		// 切り替え前のPCの購読はここでまとめて畳む。放置すると、そのPCは再接続のたびに
+		// 再attachされ、見ていない間もずっと差分を送り続ける。
+		previous.controller.detachAll();
+		// 書きかけの文章はPCごとに取っておく（切り替えて戻ったときに残っている）。
+		previous.drafts = useAppStore.getState().agentDrafts;
+	}
+	// 切り替え前のPCで見ていた画像（PC画面の一部が写り込む）はメモリに残さない。
+	toolImageCache.clear();
+	activePcId = id;
+	controller = runtime.controller;
+	applyPairingCorrelationTag(runtime.pc.creds.deviceId);
+	void saveActivePcId(secureKeyStore, id).catch(err => console.warn('[appState] failed to save active PC', err));
+	useAppStore.setState({
+		...runtime.state,
+		activePcId: id,
+		pcs: pcSummaries(),
+		selectedWs: undefined,
+		selectedTerminalKey: undefined,
+		browserSelection: undefined,
+		homeShowAllWorkspaces: true,
+		viewingTerminalKey: undefined,
+		pinnedKeys: scopedKeysFor(pinnedRecord, id),
+		archivedKeys: scopedKeysFor(archivedRecord, id),
+		agentDrafts: runtime.drafts,
+		...(notice !== undefined ? { pcSwitchNotice: { pcId: id, name: runtime.pc.name, previousPcId: notice.previousPcId } } : {}),
+	});
+	applyConnectionPolicy();
+	// 切り替え先が既に繋がっていても、手元の表示は古い可能性があるので取り直す
+	// （ensureConnected は接続済みなら state 要求と生存確認を行う）。
+	runtime.controller.ensureConnected();
 }
 
 function runVoiceNative(operation: () => Promise<void>): Promise<void> {
@@ -379,7 +812,12 @@ function endVoiceNotifications(): void {
 	void runVoiceNative(deactivateVoiceSession).catch(() => { /* 停止できなくても操作は完了扱い */ });
 	if (connectionActionForAppState(RNAppState.currentState) === 'suspend' && !useAppStore.getState().manualOffline) {
 		stopConnectionHeartbeat();
-		controller?.suspendForBackground();
+		// 音声のために起きていたのは全PCぶんのソケット。1本だけ畳むと、裏のPCが
+		// バックグラウンドで繋がったまま残り、PCからは「オンライン＝プッシュ不要」に見えて
+		// その間の通知が届かなくなる。
+		for (const runtime of runtimes.values()) {
+			runtime.controller.suspendForBackground();
+		}
 	}
 }
 
@@ -398,6 +836,13 @@ export const useAppStore = create<AppState>(set => ({
 	agentChats: new Map(),
 	ready: false,
 	paired: false,
+	pcs: [],
+	activePcId: undefined,
+	// 見ていないPCとの接続も既定では保つ。切り替えた瞬間に一覧が出ていて、裏で待たれている
+	// 質問にも気づけるのがこの機能の要点なので、既定でそちらへ倒す。
+	keepBackgroundPcs: true,
+	notifyOtherPcs: true,
+	pcSwitchNotice: undefined,
 	manualOffline: false,
 	voiceNotifications: { desired: false, status: 'idle' },
 	selectedWs: undefined,
@@ -436,9 +881,12 @@ export const useAppStore = create<AppState>(set => ({
 			const loaded = await loadOrCreateIdentity(secureKeyStore);
 			identity = loaded.identity;
 			const operationRun = await reserveOperationRun(secureKeyStore);
-			const creds = await loadCredentials(secureKeyStore);
-			applyPairingCorrelationTag(creds?.deviceId);
-			const persistedOperationOutbox = await terminalOperationOutboxStore.loadCandidates();
+			currentOperationRun = operationRun;
+			// ペアリング済みPCの台帳を読む（単一PC時代の資格情報しか無ければ1台目として引き継ぐ）。
+			const { pcs: storedPcs, migratedFromSinglePc } = await loadPairedPcs(secureKeyStore);
+			const storedActiveId = await loadActivePcId(secureKeyStore);
+			const initialActiveId = storedPcs.find(pc => pc.id === storedActiveId)?.id ?? storedPcs[0]?.id;
+			applyPairingCorrelationTag(storedPcs.find(pc => pc.id === initialActiveId)?.creds.deviceId);
 			// 通知設定をロード（保存が無い/壊れている場合は既定値のまま）
 			try {
 				const raw = await secureKeyStore.getItem('notifyPrefs');
@@ -458,27 +906,28 @@ export const useAppStore = create<AppState>(set => ({
 			} catch (err) {
 				console.warn('[appState] failed to load notifyPrefs', err);
 			}
-			// ピン留め状態をロード（保存が無い/壊れている場合は空集合のまま）
+			// 接続方針の設定をロード（保存が無い/壊れている場合は既定のまま）。
 			try {
-				const raw = await secureKeyStore.getItem('pinnedTerminals');
+				const raw = await secureKeyStore.getItem('pcPreferences');
 				if (raw) {
-					const parsed = JSON.parse(raw) as unknown;
-					if (Array.isArray(parsed)) {
-						set({ pinnedKeys: new Set(parsed.filter((k): k is string => typeof k === 'string')) });
-					}
+					const parsed = JSON.parse(raw) as { keepBackgroundPcs?: unknown; notifyOtherPcs?: unknown };
+					set({
+						keepBackgroundPcs: parsed.keepBackgroundPcs !== false,
+						notifyOtherPcs: parsed.notifyOtherPcs !== false,
+					});
 				}
+			} catch (err) {
+				console.warn('[appState] failed to load pcPreferences', err);
+			}
+			// ピン留め・アーカイブはPCごとに分けて保存する。単一PC時代の配列形式は、
+			// そのとき唯一のペアリング相手だったPCのものとして引き継ぐ。
+			try {
+				pinnedRecord = parseScopedKeys(await secureKeyStore.getItem('pinnedTerminals'), initialActiveId);
 			} catch (err) {
 				console.warn('[appState] failed to load pinnedTerminals', err);
 			}
-			// アーカイブ状態をロード（保存が無い/壊れている場合は空集合のまま）
 			try {
-				const raw = await secureKeyStore.getItem('archivedTerminals');
-				if (raw) {
-					const parsed = JSON.parse(raw) as unknown;
-					if (Array.isArray(parsed)) {
-						set({ archivedKeys: new Set(parsed.filter((k): k is string => typeof k === 'string')) });
-					}
-				}
+				archivedRecord = parseScopedKeys(await secureKeyStore.getItem('archivedTerminals'), initialActiveId);
 			} catch (err) {
 				console.warn('[appState] failed to load archivedTerminals', err);
 			}
@@ -491,49 +940,26 @@ export const useAppStore = create<AppState>(set => ({
 			} catch (err) {
 				console.warn('[appState] failed to load homeListPreferences', err);
 			}
-			controller = new MobileController(
-				identity,
-				rnSocketFactory,
-				s => {
-					// 状態が届くたびにアーカイブの印を点検する（回答待ちになったものは
-					// 一覧へ戻し、消えたターミナルの印は捨てる）。archivedAgents.ts 参照。
-					// workspace が無い間（切断時にクリアされる）は点検しない。ターミナルが
-					// 0件に見えるため、全部の印を「消えたターミナル」として捨ててしまう。
-					const archivedKeys = useAppStore.getState().archivedKeys;
-					const nextArchived = s.workspace !== undefined
-						? releaseArchivedOnAttention(archivedKeys, s.workspace.terminals)
-						: archivedKeys;
-					if (nextArchived !== archivedKeys) {
-						const value = nextArchived as Set<string>;
-						set({ archivedKeys: value });
-						secureKeyStore.setItem('archivedTerminals', JSON.stringify([...value])).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
-					}
-					set({ ...s });
-				},
-				payload => {
-					// バナーを出すかの判断は notificationPolicy.ts に集約してある
-					// （届いた通知を一覧へ入れるのは store 側で、そちらは無条件）。
-					const state = useAppStore.getState();
-					if (!shouldPresentNotifyBanner(payload, {
-						appState: RNAppState.currentState,
-						prefs: state.notifyPrefs,
-						viewingTerminalKey: state.viewingTerminalKey,
-						pushRegistered: state.pushRegistered,
-						now: Date.now(),
-					})) {
-						return;
-					}
-					void presentLocalNotification(payload.title, payload.body, { ws: payload.ws, terminalKey: payload.terminalKey, agentToken: payload.agentToken });
-				},
-				getApnsDeviceToken,
-				// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
-				__DEV__ ? 'dev' : 'prod',
-				persistNotifyKey,
-				operationRun,
-				terminalOperationOutboxStore,
-				persistedOperationOutbox,
-				creds,
-			);
+			// 単一PC時代の持ち物をこのPCのものへ引き継ぐ（アウトボックスのファイル名と、
+			// 上で読み込んだピン留め・アーカイブの保存形式）。
+			if (migratedFromSinglePc && initialActiveId !== undefined) {
+				await migrateLegacyTerminalOperationOutbox(initialActiveId);
+				await savePairedPcs(secureKeyStore, storedPcs);
+				await saveActivePcId(secureKeyStore, initialActiveId);
+				// 台帳へ移し終えたら旧キーは残さない。残すと、そのPCとのペアリングを解除しても
+				// mobileToken 一式が端末に居座る（リレー上の失効に失敗していれば有効なまま）。
+				await deleteLegacyCredentials(secureKeyStore).catch(err => console.warn('[appState] failed to delete legacy credentials', err));
+				secureKeyStore.setItem('pinnedTerminals', JSON.stringify(pinnedRecord)).catch(err => console.warn('[appState] failed to save pinnedTerminals', err));
+				secureKeyStore.setItem('archivedTerminals', JSON.stringify(archivedRecord)).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
+			}
+			// PCごとにコントローラを作る。接続は最後の接続方針の反映（applyConnectionPolicy）で行う。
+			for (const pc of storedPcs) {
+				const persistedOutbox = await createTerminalOperationOutboxStore(pc.id).loadCandidates();
+				runtimes.set(pc.id, createRuntime(pc, operationRun, persistedOutbox));
+			}
+			pcOrder = storedPcs.map(pc => pc.id);
+			activePcId = initialActiveId;
+			controller = initialActiveId !== undefined ? runtimes.get(initialActiveId)?.controller : undefined;
 			// オンラインになるたび通知設定をPCへ同期する（PC側の永続値を最新に保つ。
 			// オフライン中に変更した設定もここで追いつく）。init()が後続処理の失敗で
 			// リトライされた場合に多重登録しないようフラグでガードする。
@@ -572,7 +998,10 @@ export const useAppStore = create<AppState>(set => ({
 				const action = connectionActionForAppState(appState);
 				if (action === 'resume') {
 					if (!useAppStore.getState().manualOffline) {
-						controller?.resumeFromBackground();
+						// 見ていないPCも繋いだままにしている場合は、そちらも一緒に起こす。
+						for (const runtime of connectedRuntimes()) {
+							runtime.controller.resumeFromBackground();
+						}
 					}
 					startConnectionHeartbeat();
 				} else if (action === 'suspend') {
@@ -583,22 +1012,28 @@ export const useAppStore = create<AppState>(set => ({
 						stopConnectionHeartbeat();
 					}
 					if (!state.manualOffline && !state.voiceNotifications.desired) {
-						controller?.suspendForBackground();
+						for (const runtime of runtimes.values()) {
+							runtime.controller.suspendForBackground();
+						}
 					}
 				}
 			});
 			if (shouldRunForegroundWork(RNAppState.currentState)) {
 				startConnectionHeartbeat();
 			}
-			set({ ready: true, paired: !!creds });
-			if (creds) {
+			set({
+				ready: true,
+				paired: storedPcs.length > 0,
+				pcs: pcSummaries(),
+				activePcId: initialActiveId,
+				pinnedKeys: scopedKeysFor(pinnedRecord, initialActiveId),
+				archivedKeys: scopedKeysFor(archivedRecord, initialActiveId),
+			});
+			if (storedPcs.length > 0) {
 				ensureNotificationPermission().catch(err => console.warn('[appState] notification permission request failed', err));
-				controller.connect(creds);
-				// KeyStore読込中にバックグラウンドへ移った場合、changeイベント時点ではまだ
-				// clientが無い。接続作成直後にも現在状態を確認し、背景用ソケットを残さない。
-				if (connectionActionForAppState(RNAppState.currentState) === 'suspend' && !useAppStore.getState().voiceNotifications.desired) {
-					controller.suspendForBackground();
-				}
+				// 接続の開始・バックグラウンド中の抑制はまとめてここで判断する（KeyStore読込中に
+				// バックグラウンドへ移った場合も、背景用ソケットを残さない）。
+				applyConnectionPolicy();
 			}
 		} catch (err) {
 			// 一過性の失敗（KeyStore読み取り等）で ready:false に張り付かないよう、
@@ -612,19 +1047,23 @@ export const useAppStore = create<AppState>(set => ({
 	disconnectRelay() {
 		endVoiceNotifications();
 		set({ manualOffline: true });
-		controller?.disconnect();
+		// 手動の切断はこの端末全体の操作として扱う（裏で繋いだままのPCが残ると、
+		// 「切断中」と言いながら通信し続けることになる）。
+		for (const runtime of runtimes.values()) {
+			runtime.controller.disconnect();
+		}
+		set({ pcs: pcSummaries() });
 	},
 
 	connectRelay() {
 		set({ manualOffline: false });
-		controller?.reconnect();
+		applyConnectionPolicy();
 	},
 
 	async pairFromUri(uri: string, deviceName: string, onSas: (code: string) => void) {
 		if (!identity) {
 			throw new Error('not initialized');
 		}
-		const previousCredentials = await loadCredentials(secureKeyStore);
 		const payload: PairingPayload = decodePairingUri(uri);
 		// 直前のペアリングが残っていれば畳んでから開始する。
 		pairing?.cancel();
@@ -632,29 +1071,71 @@ export const useAppStore = create<AppState>(set => ({
 		pairing = client;
 		try {
 			const creds: PairedCredentials = await client.pair(payload, { onSasCode: onSas });
+			// PC側がリレー登録ごと作り直すと deviceId は変わるが、長期鍵（＝SASで確かめた相手の
+			// 正体）は同じままになる。deviceId だけで見ると同じPCが2行に増え、片方は永久に
+			// オフラインのまま通知鍵だけ残る（その鍵は新しい行のものと同じ値なので、解除しても
+			// 通知本文を復号できてしまう）。公開鍵が一致する古い行は先に畳む。
+			const samePublicKey = pairedPcs().find(item => item.id !== creds.deviceId
+				&& item.creds.pcPublicKey.length === creds.pcPublicKey.length
+				&& item.creds.pcPublicKey.every((byte, index) => byte === creds.pcPublicKey[index]));
+			if (samePublicKey !== undefined) {
+				await useAppStore.getState().removePc(samePublicKey.id)
+					.catch(error => console.warn('[appState] failed to retire the previous registration of this PC', error));
+			}
+			const previousPcs = pairedPcs();
+			// 同じPCと繋ぎ直した場合は台帳を増やさず、資格情報だけ差し替える
+			// （リレー側の登録は作り直されているので、古い mobileToken はもう使えない）。
+			const existing = runtimes.get(creds.deviceId);
+			const name = existing?.pc.name
+				?? sanitizePcName(payload.pcName)
+				?? nextFallbackPcName(previousPcs);
+			const pc: PairedPc = {
+				id: creds.deviceId,
+				creds,
+				name,
+				// PCが名乗った名前をそのまま採用した場合は、以後もPC側の変更に追従させる。
+				renamed: existing?.pc.renamed ?? false,
+				addedAt: existing?.pc.addedAt ?? Date.now(),
+			};
+			const nextPcs = existing !== undefined
+				? previousPcs.map(item => (item.id === pc.id ? pc : item))
+				: [...previousPcs, pc];
 			try {
-				// 先に新資格情報をdurable化し、旧pair journalは後続reset成功まで保持する。
-				// この順序ならKeychain書込失敗で旧pending/unknown記録を失わない。
-				await saveCredentials(secureKeyStore, creds);
-				applyPairingCorrelationTag(creds.deviceId);
+				// 先に台帳をdurable化する。ここで失敗したら、繋がったばかりの資格情報を
+				// リレー上からも失効させて元の状態へ戻す。
+				await savePairedPcs(secureKeyStore, nextPcs);
 			} catch (error) {
 				await revokeSelfOnRelay(creds);
 				throw error;
 			}
-			try {
-				await controller?.reset();
-			} catch (error) {
-				// resetは旧pairへ自動復帰する。永続資格情報も旧値へ補償して新pairを失効する。
-				if (previousCredentials !== undefined) {
-					await saveCredentials(secureKeyStore, previousCredentials);
-				} else {
-					await clearCredentials(secureKeyStore);
+			if (existing !== undefined) {
+				// 同じPCの繋ぎ直し。古い接続と、そのPC向けの未確定操作の記録は畳んでから入れ替える。
+				try {
+					await existing.controller.reset();
+				} catch (error) {
+					await savePairedPcs(secureKeyStore, previousPcs).catch(() => { /* 台帳は次回起動でも読み直される */ });
+					await revokeSelfOnRelay(creds);
+					throw error;
 				}
-				await revokeSelfOnRelay(creds);
-				throw error;
+				runtimes.delete(existing.pc.id);
 			}
-			set({ paired: true, browserSelection: undefined });
-			controller?.connect(creds);
+			const persistedOutbox = await createTerminalOperationOutboxStore(pc.id).loadCandidates();
+			runtimes.set(pc.id, createRuntime(pc, currentOperationRun, persistedOutbox));
+			pcOrder = nextPcs.map(item => item.id);
+			// 手動で切断していたなら、ここで解除する。わざわざ繋ぎに来た操作なので、
+			// 「追加できたのに繋がらない」で終わらせない。
+			set({ paired: true, pcs: pcSummaries(), browserSelection: undefined, manualOffline: false });
+			// 繋いだPCをそのまま見せる（追加直後に別のPCの画面が残っていると混乱する）。
+			if (pc.id === activePcId) {
+				// 同じPCの繋ぎ直し。activatePc は「既にアクティブ」として素通りするので、
+				// コントローラの差し替えと、前の接続で溜まっていた表示の破棄をここで行う。
+				const next = runtimes.get(pc.id);
+				controller = next?.controller;
+				set({ ...(next?.state ?? createEmptyStoreState()), pcs: pcSummaries(), selectedTerminalKey: undefined, agentDrafts: {} });
+				applyConnectionPolicy();
+			} else {
+				activatePc(pc.id);
+			}
 		} finally {
 			if (pairing === client) {
 				pairing = undefined;
@@ -668,41 +1149,124 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	async unpair() {
-		endVoiceNotifications();
-		const creds = await loadCredentials(secureKeyStore);
+		// 全解除。1台ずつの解除は removePc が行う。1台で失敗しても残りは解除しきる
+		// （途中で止まると「解除したつもりのPCが残っている」状態になるため）。
+		const results = await Promise.allSettled([...pcOrder].map(id => useAppStore.getState().removePc(id)));
+		const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+		if (failure !== undefined) {
+			throw failure.reason instanceof Error ? failure.reason : new Error(String(failure.reason));
+		}
+	},
+
+	switchPc(id: string) {
+		activatePc(id);
+	},
+
+	switchPcForNotification(id: string) {
+		activatePc(id, { previousPcId: activePcId });
+	},
+
+	async renamePc(id: string, name: string) {
+		const runtime = runtimes.get(id);
+		// 入力された名前も、PCが名乗る名前と同じ規則で整える（長さ・制御文字）。
+		const trimmed = sanitizePcName(name);
+		if (runtime === undefined || trimmed === undefined || trimmed === runtime.pc.name) {
+			return;
+		}
+		// 以後はPCが名乗る名前で上書きしない（手で付けた呼び分けを残す）。
+		runtime.pc = { ...runtime.pc, name: trimmed, renamed: true };
+		set({ pcs: pcSummaries() });
+		await savePairedPcs(secureKeyStore, pairedPcs());
+	},
+
+	async removePc(id: string) {
+		const runtime = runtimes.get(id);
+		if (runtime === undefined) {
+			return;
+		}
+		const creds = runtime.pc.creds;
+		const previousPcs = pairedPcs();
+		const remaining = previousPcs.filter(pc => pc.id !== id);
+		if (id === activePcId) {
+			endVoiceNotifications();
+		}
 		try {
-			// 資格情報削除が成功するまではcontroller/journalへ触れず、失敗時に旧pairを完全保持する。
-			await clearCredentials(secureKeyStore);
-			await deleteNotifyKey();
+			// 台帳の更新が成功するまでコントローラへ触れない（失敗時にそのPCを完全に保持する）。
+			await savePairedPcs(secureKeyStore, remaining);
+			await deleteNotifyKey(id);
 		} catch (error) {
-			if (creds !== undefined) {
-				await saveCredentials(secureKeyStore, creds);
-				applyPairingCorrelationTag(creds.deviceId);
-			}
+			await savePairedPcs(secureKeyStore, previousPcs).catch(() => { /* 次回起動で読み直される */ });
 			throw error;
 		}
 		try {
-			await controller?.reset();
+			await runtime.controller.reset();
 		} catch (error) {
-			// journal clear失敗時はresetが旧接続へ戻す。Keychain側も旧資格情報へ補償する。
-			if (creds !== undefined) {
-				await saveCredentials(secureKeyStore, creds);
-				applyPairingCorrelationTag(creds.deviceId);
-				if (identity !== undefined) {
-					const key = deriveNotifyKey(identity.secretKey, creds.pcPublicKey);
-					await persistNotifyKey([...key].map(byte => byte.toString(16).padStart(2, '0')).join(''));
-				}
+			// journal clear失敗時はresetが旧接続へ戻す。台帳と通知鍵も元へ戻す。
+			await savePairedPcs(secureKeyStore, previousPcs).catch(() => { /* 次回起動で読み直される */ });
+			if (identity !== undefined) {
+				const key = deriveNotifyKey(identity.secretKey, creds.pcPublicKey);
+				await persistNotifyKey(id, [...key].map(byte => byte.toString(16).padStart(2, '0')).join(''));
 			}
 			throw error;
 		}
-		set({ paired: false, manualOffline: false, selectedWs: undefined, homeShowAllWorkspaces: true, selectedTerminalKey: undefined, browserSelection: undefined });
+		runtimes.delete(id);
+		pcOrder = remaining.map(pc => pc.id);
+		if (remaining.length === 0) {
+			applyPairingCorrelationTag(undefined);
+		}
+		// そのPCに紐づくローカルの記録（ピン留め・アーカイブ）も一緒に片付ける。
+		pinnedRecord = withScopedKeys(pinnedRecord, id, new Set());
+		archivedRecord = withScopedKeys(archivedRecord, id, new Set());
+		secureKeyStore.setItem('pinnedTerminals', JSON.stringify(pinnedRecord)).catch(err => console.warn('[appState] failed to save pinnedTerminals', err));
+		secureKeyStore.setItem('archivedTerminals', JSON.stringify(archivedRecord)).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
 		// PC画面の一部が写り込んだ画像をメモリに残さない（取得済みの画像はストア外のキャッシュにある）。
 		toolImageCache.clear();
+		if (id === activePcId) {
+			const next = pcOrder[0];
+			activePcId = undefined;
+			controller = undefined;
+			set({
+				...createEmptyStoreState(),
+				paired: remaining.length > 0,
+				pcs: pcSummaries(),
+				activePcId: undefined,
+				selectedWs: undefined,
+				homeShowAllWorkspaces: true,
+				selectedTerminalKey: undefined,
+				browserSelection: undefined,
+				viewingTerminalKey: undefined,
+				pinnedKeys: new Set(),
+				archivedKeys: new Set(),
+				agentDrafts: {},
+				pcSwitchNotice: undefined,
+			});
+			// 保存の失敗でこの先（残ったPCへの切り替えとリレー失効）を止めない。止めると
+			// 「PCは残っているのにどれも選ばれていない」状態でアプリ再起動まで固まる。
+			saveActivePcId(secureKeyStore, undefined).catch(err => console.warn('[appState] failed to clear the active PC', err));
+			if (next !== undefined) {
+				activatePc(next);
+			}
+		} else {
+			set({ paired: remaining.length > 0, pcs: pcSummaries() });
+		}
 		// ローカル削除完了後にrelay資格情報をbest-effort失効する。失敗しても端末上のtokenは
 		// 既に消えており、PC側からも後で失効できるためローカル解除は巻き戻さない。
-		if (creds) {
-			await revokeSelfOnRelay(creds).catch(error => console.warn('[appState] relay credential revocation failed after local unpair', error));
-		}
+		await revokeSelfOnRelay(creds).catch(error => console.warn('[appState] relay credential revocation failed after local unpair', error));
+	},
+
+	setKeepBackgroundPcs(value: boolean) {
+		set({ keepBackgroundPcs: value });
+		persistPcPreferences();
+		applyConnectionPolicy();
+	},
+
+	setNotifyOtherPcs(value: boolean) {
+		set({ notifyOtherPcs: value });
+		persistPcPreferences();
+	},
+
+	dismissPcSwitchNotice() {
+		set({ pcSwitchNotice: undefined });
 	},
 
 	discardUnknownTerminalOperations() {
@@ -730,6 +1294,9 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	togglePin(key: string) {
+		if (activePcId === undefined) {
+			return;
+		}
 		const current = useAppStore.getState().pinnedKeys;
 		const next = new Set(current);
 		if (next.has(key)) {
@@ -738,10 +1305,13 @@ export const useAppStore = create<AppState>(set => ({
 			next.add(key);
 		}
 		set({ pinnedKeys: next });
-		secureKeyStore.setItem('pinnedTerminals', JSON.stringify([...next])).catch(err => console.warn('[appState] failed to save pinnedTerminals', err));
+		persistPinnedKeys(activePcId, next);
 	},
 
 	setArchived(key: string, archived: boolean) {
+		if (activePcId === undefined) {
+			return;
+		}
 		const current = useAppStore.getState().archivedKeys;
 		if (current.has(key) === archived) {
 			return;
@@ -753,7 +1323,7 @@ export const useAppStore = create<AppState>(set => ({
 			next.delete(key);
 		}
 		set({ archivedKeys: next });
-		secureKeyStore.setItem('archivedTerminals', JSON.stringify([...next])).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
+		persistArchivedKeys(activePcId, next);
 	},
 
 	setAgentDraft(key: string, text: string) {
@@ -835,6 +1405,10 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	createTerminal(ws?: string) {
+		if (ws !== undefined && !isActiveWorkspace(ws)) {
+			console.warn('[appState] ignored createTerminal for a workspace of another PC');
+			return;
+		}
 		controller?.createTerminal(ws);
 	},
 
@@ -892,8 +1466,12 @@ export const useAppStore = create<AppState>(set => ({
 		set({ notifyPrefs: next });
 		secureKeyStore.setItem('notifyPrefs', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save notifyPrefs', err));
 		// PC側にも同期する（アプリ未起動時のAPNsリモートプッシュはPC側で抑制判定するため）。
-		// オフライン中の変更は再接続時のonStateChange('online')フックで再送される。
-		controller?.sendNotifyPrefs(next);
+		// **繋いでいる全PCへ送る**。いま見ているPCだけに送ると、裏のPCは古い設定のまま
+		// プッシュを送り続け、「アプリを閉じているときだけ、切ったはずの通知が鳴る」になる。
+		// オフライン中のPCには再接続時のフックで追いつく。
+		for (const runtime of runtimes.values()) {
+			runtime.controller.sendNotifyPrefs(next);
+		}
 	},
 
 	clearNotifications() {
@@ -906,26 +1484,31 @@ export const useAppStore = create<AppState>(set => ({
 
 	scmStatus(ws: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.scmStatus(ws);
 	},
 
 	scmDiff(ws: string, path?: string, staged?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.scmDiff(ws, path, staged);
 	},
 
 	scmCommit(ws: string, message: string, all: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.scmCommit(ws, message, all);
 	},
 
 	scmLog(ws: string, opts?: { limit?: number; skip?: number }) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.scmLog(ws, opts);
 	},
 
 	scmCommitFiles(ws: string, hash: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.scmCommitFiles(ws, hash);
 	},
 
@@ -941,61 +1524,73 @@ export const useAppStore = create<AppState>(set => ({
 
 	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(opts.ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.launchAgent(opts);
 	},
 
 	noteGet(ws: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.noteGet(ws);
 	},
 
 	noteSet(ws: string, text: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.noteSet(ws, text);
 	},
 
 	fsList(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsList(ws, path);
 	},
 
 	fsResolveLink(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsResolveLink(ws, path);
 	},
 
 	fsRead(ws: string, path: string, highlight?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsRead(ws, path, highlight);
 	},
 
 	fsXlsx(ws: string, path: string, sheet?: number) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsXlsx(ws, path, sheet);
 	},
 
 	fsPdf(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsPdf(ws, path);
 	},
 
 	fsDocx(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsDocx(ws, path);
 	},
 
 	fsMedia(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsMedia(ws, path);
 	},
 
 	fsFind(ws: string, query: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsFind(ws, query);
 	},
 
 	fsGrep(ws: string, query: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.fsGrep(ws, query);
 	},
 
@@ -1011,6 +1606,7 @@ export const useAppStore = create<AppState>(set => ({
 
 	scmXlsxDiff(ws: string, path: string) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.scmXlsxDiff(ws, path);
 	},
 

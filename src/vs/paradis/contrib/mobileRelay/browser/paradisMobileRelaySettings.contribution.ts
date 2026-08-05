@@ -9,7 +9,7 @@
 import { localize } from '../../../../nls.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_DEFAULT_RELAY_URL, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_RELAY_URL_KEY } from '../common/paradisMobileRelay.js';
+import { PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_DEFAULT_RELAY_URL, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_URL_KEY } from '../common/paradisMobileRelay.js';
 
 const paradisConfigurationNodeBase = Object.freeze<IConfigurationNode>({
 	id: 'paradis',
@@ -32,6 +32,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: PARADIS_MOBILE_DEFAULT_RELAY_URL,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.mobile.relayUrl', "Para Code Mobile が使用するリレーサーバーの WebSocket URL です。セルフホストする場合に変更します。通常は変更する必要はありません。")
+		},
+		[PARADIS_MOBILE_PC_NAME_KEY]: {
+			type: 'string',
+			default: '',
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.mobile.pcName', "Para Code Mobile のPC一覧に表示される、このPCの名前です。空のままにするとこのマシンのホスト名を使います。複数のPCとペアリングしているときに見分けやすい名前を付けてください。")
 		},
 		[PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY]: {
 			type: 'boolean',

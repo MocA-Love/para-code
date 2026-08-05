@@ -218,7 +218,15 @@ export interface PairingPayload {
 	readonly pairId: string;
 	readonly pairingToken: Uint8Array;
 	readonly pcPublicKey: Uint8Array;
+	/**
+	 * このPCの表示名（省略可）。モバイルが複数のPCとペアリングしたときに一覧で見分けるために送る。
+	 * 旧アプリはこのフィールドを無視する。
+	 */
+	readonly pcName?: string;
 }
+
+/** ペアリングURIへ載せるPC名の上限。QRの情報量を増やしすぎないための切り詰め。 */
+export const PAIRING_PC_NAME_MAX_LENGTH = 64;
 
 // ---- notify チャネルのペイロード（app/protocol/src/notify.ts と一致） ----
 
@@ -319,6 +327,7 @@ export function decodeNotifyControl(bytes: Uint8Array): NotifyControlMessage | u
 }
 
 export function encodePairingUri(payload: PairingPayload): string {
+	const pcName = payload.pcName?.trim().slice(0, PAIRING_PC_NAME_MAX_LENGTH);
 	const json = JSON.stringify({
 		v: payload.version,
 		r: payload.relayUrl,
@@ -326,6 +335,7 @@ export function encodePairingUri(payload: PairingPayload): string {
 		p: payload.pairId,
 		t: toBase64Url(payload.pairingToken),
 		k: toBase64Url(payload.pcPublicKey),
+		...(pcName ? { n: pcName } : {}),
 	});
 	return `${PAIRING_URI_SCHEME}?d=${toBase64Url(new TextEncoder().encode(json))}`;
 }

@@ -40,6 +40,35 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.4.0',
+		date: '2026-08-06',
+		headline: '複数のPCを行き来できます',
+		items: [
+			{
+				icon: 'desktop-outline',
+				title: '複数のPCとペアリングしたまま、見るPCを切り替えられます',
+				body: '左のパネル上部のPCの欄をタップすると、ペアリング済みのPCが並びます。選ぶだけで切り替わり、これまでのように解除して繋ぎ直す必要はありません。',
+				tone: 'purple',
+			},
+			{
+				icon: 'notifications-outline',
+				title: '見ていないPCで質問が出ていることも分かります',
+				body: 'PCの欄と一覧に、他のPCで待っている件数が出ます。通知も届き、タップすればそのPCへ切り替わって該当の会話が開きます。',
+			},
+			{
+				icon: 'pricetag-outline',
+				title: 'PCに名前が付くようになりました',
+				body: 'PC側で決めた名前（未設定ならそのマシンの名前）が一覧に出ます。設定の一覧から、この端末だけで使う呼び名に変えることもできます。',
+				tone: 'green',
+			},
+			{
+				icon: 'options-outline',
+				title: '設定からPCの追加・名前の変更・解除ができます',
+				body: '見ていないPCとの接続を保つか、他のPCの通知を出すかも選べます。接続を切ると通信量は減りますが、切り替えるまでそのPCの件数は分かりません。',
+			},
+		],
+	},
+	{
 		version: '0.3.0',
 		date: '2026-08-05',
 		headline: 'iPadに対応しました',

@@ -10,17 +10,23 @@ import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
+import { PcSwitchNotice } from '../src/components/pcSwitcher.js';
 import { IpadShell } from '../src/ipad/ipadShell.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 import { notificationNavigationDecision } from '../src/notificationNavigation.js';
 
-/** notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。 */
+/**
+ * notify通知(platform.tsのpresentLocalNotification)が積むペイロード形状。
+ * `pcId` はどのPCから届いた通知かで、アプリ未起動時のプッシュでは通知拡張
+ * (ios/NotifyExtension) が復号できた鍵の名前から補う。
+ */
 interface NotificationDeepLinkData {
 	ws?: string;
 	terminalKey?: string;
 	agentToken?: string;
+	pcId?: string;
 }
 
 /**
@@ -63,6 +69,8 @@ function RootLayout() {
 	// UpdateSheetHost—が丸ごと再構築される。
 	const workspaceRef = useRef(useAppStore.getState().workspace);
 	const pendingRef = useRef<NotificationDeepLinkData | undefined>(undefined);
+	// 保留中の通知のために、どのPCへ自動で切り替えたか（同じ保留で二度は切り替えない）。
+	const switchedForPendingRef = useRef<string | undefined>(undefined);
 
 	useEffect(() => {
 		void init().finally(() => Sentry.appLoaded());
@@ -72,6 +80,32 @@ function RootLayout() {
 	const tryNavigate = useCallback(() => {
 		const target = pendingRef.current;
 		if (!unlockedRef.current || !target) {
+			return;
+		}
+		const store = useAppStore.getState();
+		// 通知タップで起動した場合、ここは台帳の読み込み前に一度走る。PCが1台も見えていない
+		// うちに判断すると、正当な通知まで「知らないPC」として捨ててしまう。
+		if (!store.ready) {
+			return;
+		}
+		if (target.pcId !== undefined && target.pcId !== store.activePcId) {
+			// 台帳に無いPC（ペアリングを解除した後に届いたプッシュ）の通知は捨てる。
+			// いま見ているPCの一覧に対して遷移先を探すと、別のPCの話で画面が動く。
+			if (!store.pcs.some(pc => pc.id === target.pcId)) {
+				pendingRef.current = undefined;
+				return;
+			}
+			// 別のPCから届いた通知なら、まずそのPCへ切り替える。切り替えるとワークスペースが
+			// 差し替わるので、その変化を受けてこの関数がもう一度呼ばれ、続きの遷移が走る。
+			//
+			// 切り替えを試すのは1回だけにする。対象のターミナルが現れるまで保留は残るので、
+			// 毎回撃つと「ユーザーが手で別のPCへ戻す → 通知のPCへ引き戻される」を繰り返し、
+			// 告知の『戻る』が効かなくなる。
+			if (switchedForPendingRef.current === target.pcId) {
+				return;
+			}
+			switchedForPendingRef.current = target.pcId;
+			store.switchPcForNotification(target.pcId);
 			return;
 		}
 		const currentWorkspace = workspaceRef.current;
@@ -99,14 +133,21 @@ function RootLayout() {
 
 	// 保留中の遷移は「対象のターミナルがstateに現れるまで待つ」ので、workspaceの変化を
 	// 取りこぼすと通知タップが永久に保留になる。再描画を伴わない購読でそれを拾う。
+	// 台帳の読み込み完了（ready）とPCの切り替えも契機にする。通知タップで起動したときは
+	// workspaceより先にこれらが決まるため、見ていないと最初の1回を取りこぼす。
 	useEffect(() => {
-		workspaceRef.current = useAppStore.getState().workspace;
+		const initial = useAppStore.getState();
+		workspaceRef.current = initial.workspace;
+		let ready = initial.ready;
+		let activePcId = initial.activePcId;
 		tryNavigate();
 		return useAppStore.subscribe(state => {
-			if (state.workspace === workspaceRef.current) {
+			if (state.workspace === workspaceRef.current && state.ready === ready && state.activePcId === activePcId) {
 				return;
 			}
 			workspaceRef.current = state.workspace;
+			ready = state.ready;
+			activePcId = state.activePcId;
 			tryNavigate();
 		});
 	}, [tryNavigate]);
@@ -114,12 +155,14 @@ function RootLayout() {
 	useEffect(() => {
 		const sub = Notifications.addNotificationResponseReceivedListener(response => {
 			pendingRef.current = response.notification.request.content.data as NotificationDeepLinkData;
+			switchedForPendingRef.current = undefined;
 			tryNavigate();
 		});
 		// コールドスタート（通知タップでアプリが起動された）対応
 		void Notifications.getLastNotificationResponseAsync().then(response => {
 			if (response) {
 				pendingRef.current = response.notification.request.content.data as NotificationDeepLinkData;
+				switchedForPendingRef.current = undefined;
 				tryNavigate();
 			}
 		});
@@ -173,6 +216,8 @@ function RootLayout() {
 					<OverlayHost />
 					{/* 更新後の初回起動でだけ出るお知らせ。ロック中に出ないようAuthGateの内側に置く */}
 					<UpdateSheetHost />
+					{/* 通知タップで別のPCへ切り替わったときの告知（ロック中に出さないよう内側に置く） */}
+					<PcSwitchNotice />
 				</AuthGate>
 			</ThemeProvider>
 		</GestureHandlerRootView>
