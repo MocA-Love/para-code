@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Para Code Mobile — ホームの並び替え・絞り込み</title>
+<style>
+:root{
+	--bg:#050506;--panel:#131316;--surface:#131316;--surface2:#1c1c20;--surface3:#232328;
+	--border:rgba(255,255,255,.08);--strong:rgba(255,255,255,.16);
+	--text:#f0f0f2;--dim:#8a8a92;
+	--accent:#09AFD9;--accent2:#0598BD;--wash:rgba(9,175,217,.14);
+	--green:#4fd1a5;--yellow:#e0c07d;--orange:#d99a6c;--red:#f47272;--purple:#c193d9;--claude:#d97757;
+	--glassBg:rgba(28,28,32,.72);--glassBorder:rgba(255,255,255,.14);--attentionBg:rgba(36,20,20,.92);
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:radial-gradient(circle at 20% 0,#162126 0,transparent 32%),#09090b;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,sans-serif}
+button,select,input{font:inherit}button{cursor:pointer}
+.app{min-height:100vh;display:grid;grid-template-columns:1fr 420px}
+.stage{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:36px;position:sticky;top:0;overflow:auto}
+.studio{border-left:1px solid var(--border);background:rgba(13,13,16,.94);padding:24px 22px 80px;overflow:auto;height:100vh}
+.brand h1{font-size:16px;margin:0 0 4px}
+.brand small{color:var(--dim);font-size:11px;line-height:1.6;display:block}
+.group{border-top:1px solid var(--border);padding:16px 0}
+.group-title{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);font-weight:800;margin-bottom:9px}
+.seg{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
+.seg.three{grid-template-columns:repeat(3,1fr)}
+.seg button{min-height:34px;border:1px solid var(--border);background:var(--surface2);color:var(--dim);border-radius:10px;padding:6px 8px;font-size:11px}
+.seg button.active{border-color:rgba(9,175,217,.55);color:var(--text);background:var(--wash)}
+.prop{width:100%;text-align:left;border:1px solid var(--border);background:var(--surface);border-radius:14px;padding:12px 13px;margin-bottom:8px;color:var(--text)}
+.prop.active{border-color:rgba(9,175,217,.55);background:var(--wash)}
+.prop b{display:block;font-size:12.5px;margin-bottom:3px}
+.prop span{display:block;font-size:10px;color:var(--dim);line-height:1.55}
+.tag{display:inline-block;font-size:8.5px;font-weight:800;border-radius:6px;padding:2px 6px;margin-top:7px;letter-spacing:.03em}
+.t-low{background:rgba(79,209,165,.14);color:var(--green)}
+.t-mid{background:rgba(224,192,125,.14);color:var(--yellow)}
+.t-high{background:rgba(244,114,114,.14);color:var(--red)}
+.desc{font-size:11px;line-height:1.75;color:var(--dim)}
+.desc h3{font-size:11px;color:var(--text);margin:14px 0 5px;font-weight:700}
+.desc h3:first-child{margin-top:0}
+.desc ul{margin:0;padding-left:16px}.desc li{margin:3px 0}
+.note{color:var(--dim);font-size:9.5px;line-height:1.65;margin:8px 0 0}
+.warn{color:var(--yellow)}
+.scale{font:10px Menlo,monospace;color:var(--dim);text-align:center;margin-top:12px}
+
+/* device */
+.wrap{transform-origin:center center}
+.phone-shell{width:390px;height:844px;border-radius:50px;background:#000;padding:9px;box-shadow:0 28px 90px #000,0 0 0 1px #ffffff24;position:relative}
+.pad-shell{width:834px;height:1120px;border-radius:34px;background:#000;padding:12px;box-shadow:0 28px 90px #000,0 0 0 1px #ffffff24;position:relative}
+.island{position:absolute;z-index:20;top:10px;left:50%;transform:translateX(-50%);width:116px;height:31px;border-radius:20px;background:#000}
+.screen{height:100%;border-radius:42px;overflow:hidden;background:var(--bg);position:relative;display:flex;flex-direction:column}
+.pad-shell .screen{border-radius:24px}
+.statusbar{height:50px;flex:none;padding:16px 25px 0;font-size:11px;font-weight:700;display:flex;justify-content:space-between;color:var(--text)}
+.pad-shell .statusbar{height:34px;padding-top:8px}
+
+/* header */
+.hdr{display:flex;align-items:center;gap:10px;padding:0 12px 8px 16px;flex:none}
+.chip{width:36px;height:36px;border-radius:11px;background:rgba(9,175,217,.13);border:1px solid rgba(9,175,217,.33);display:grid;place-items:center;font:800 14px Menlo,monospace;color:var(--accent);flex:none}
+.hdr .tcol{flex:1;min-width:0}
+.hdr h2{font-size:24px;margin:0;font-weight:800;letter-spacing:-.3px}
+.hdr .sub{color:var(--dim);font-size:11.5px;margin-top:2px}
+.round{width:36px;height:36px;border-radius:50%;border:1px solid var(--strong);background:var(--glassBg);color:var(--text);display:grid;place-items:center;flex:none;font-size:15px}
+.round.on{border-color:var(--accent);color:var(--accent);background:var(--wash)}
+.round-badge{position:absolute;top:-3px;right:-3px;min-width:15px;height:15px;border-radius:8px;background:var(--accent);color:#04262d;font:800 9px/15px sans-serif;text-align:center;padding:0 3px}
+
+/* controls */
+.chiprow{display:flex;gap:7px;padding:2px 16px 10px;overflow:auto;flex:none;scrollbar-width:none}
+.chiprow::-webkit-scrollbar{display:none}
+.fchip{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 11px;border-radius:15px;border:1px solid var(--border);background:var(--surface2);color:var(--dim);font-size:11.5px;flex:none;white-space:nowrap}
+.fchip.on{background:var(--wash);border-color:rgba(9,175,217,.5);color:var(--accent);font-weight:700}
+.fchip .n{font:700 10px Menlo,monospace;opacity:.8}
+.fchip .dot{width:7px;height:7px;border-radius:50%}
+.sortbar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:0 16px 8px;flex:none}
+.sortbtn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 11px;border-radius:9px;border:1px solid var(--border);background:var(--surface2);color:var(--text);font-size:11.5px}
+.sortbtn .k{color:var(--dim)}
+.resultline{color:var(--dim);font-size:10.5px}
+
+/* list */
+.body{flex:1;overflow:auto;padding:0 16px 20px;scrollbar-width:none}
+.body::-webkit-scrollbar{display:display}
+.sectitle{color:var(--dim);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;margin:8px 0 8px}
+.attn{background:var(--attentionBg);border:1px solid rgba(244,114,114,.25);border-radius:16px;padding:11px 12px;margin-bottom:6px;display:flex;align-items:center;gap:10px}
+.row{display:flex;align-items:center;gap:10px;padding:11px 10px;border-radius:14px;background:var(--surface);border:1px solid var(--border);margin-bottom:7px}
+.row.pinned{border-color:rgba(9,175,217,.28)}
+.orb{width:9px;height:9px;border-radius:50%;flex:none}
+.o-wait{background:var(--red)}.o-run{background:var(--green)}.o-rev{background:var(--yellow)}.o-idle{background:var(--dim)}
+.rmain{flex:1;min-width:0}
+.rtitle{font-size:13px;font-weight:700;display:flex;align-items:center;gap:5px}
+.rmeta{display:flex;align-items:center;gap:6px;margin-top:3px;color:var(--dim);font-size:10.5px}
+.wsdot{width:7px;height:7px;border-radius:50%;flex:none}
+.branch{font:10px Menlo,monospace;color:var(--dim);opacity:.85}
+.badge{font-size:9.5px;font-weight:800;border-radius:7px;padding:3px 7px;flex:none}
+.b-wait{color:var(--red);background:rgba(244,114,114,.13)}
+.b-run{color:var(--green);background:rgba(79,209,165,.13)}
+.b-rev{color:var(--yellow);background:rgba(224,192,125,.13)}
+.b-idle{color:var(--dim);background:var(--surface3)}
+.pin{color:var(--accent);font-size:11px}
+.grouphead{display:flex;align-items:center;gap:8px;margin:14px 0 8px;color:var(--dim)}
+.grouphead .gt{font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+.grouphead .gn{font:700 10px Menlo,monospace;background:var(--surface3);border-radius:6px;padding:2px 6px}
+.grouphead .line{flex:1;height:1px;background:var(--border)}
+.empty{color:var(--dim);font-size:12px;line-height:1.8;padding:24px 4px}
+
+/* sheet */
+.scrim{position:absolute;inset:0;background:rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .18s;z-index:30}
+.scrim.show{opacity:1;pointer-events:auto}
+.sheet{position:absolute;left:0;right:0;bottom:0;max-height:78%;background:var(--panel);border:1px solid var(--glassBorder);border-bottom:0;border-radius:28px 28px 0 0;z-index:31;transform:translateY(102%);transition:transform .2s ease;display:flex;flex-direction:column}
+.sheet.show{transform:translateY(0)}
+.handle{width:36px;height:5px;border-radius:3px;background:var(--strong);align-self:center;margin:10px 0 6px}
+.sheet h3{font-size:16px;font-weight:700;margin:0;padding:0 20px 12px}
+.sheet .sc{overflow:auto;padding:0 16px 26px}
+.opt{display:flex;align-items:center;gap:11px;width:100%;text-align:left;padding:12px 12px;border-radius:12px;border:1px solid transparent;background:transparent;color:var(--text);margin-bottom:2px}
+.opt.on{background:var(--wash);border-color:rgba(9,175,217,.3)}
+.opt .oi{width:22px;text-align:center;color:var(--dim);font-size:15px}
+.opt.on .oi{color:var(--accent)}
+.opt .ob{flex:1;min-width:0}
+.opt .ob b{display:block;font-size:13px;font-weight:600}
+.opt .ob span{display:block;font-size:10.5px;color:var(--dim);margin-top:2px;line-height:1.5}
+.opt .chk{color:var(--accent);font-size:14px}
+.sheetsec{color:var(--dim);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;padding:14px 12px 6px}
+.swrow{display:flex;align-items:center;gap:11px;padding:11px 12px}
+.swrow .ob{flex:1}
+.sw{width:38px;height:23px;border-radius:12px;background:var(--surface3);position:relative;flex:none}
+.sw.on{background:var(--accent2)}
+.sw::after{content:'';position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;background:#fff;transition:left .15s}
+.sw.on::after{left:17px}
+
+/* iPad 2列 */
+.pad-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+@media(max-width:1180px){.app{grid-template-columns:1fr}.studio{order:-1;height:auto}.stage{position:static;padding:20px 10px}}
+</style>
+</head>
+<body>
+<main class="app">
+	<section class="stage"><div class="wrap" id="wrap"></div></section>
+	<aside class="studio">
+		<div class="brand">
+			<h1>ホームの並び替え・絞り込み</h1>
+			<small>Para Code Mobile のホームタブ。4案を実際に動く形で比較できます（並び替えも絞り込みも本当に効きます）。</small>
+		</div>
+
+		<div class="group">
+			<div class="group-title">案</div>
+			<div id="props"></div>
+		</div>
+
+		<div class="group">
+			<div class="group-title">端末</div>
+			<div class="seg" id="deviceSeg">
+				<button data-device="phone">iPhone</button>
+				<button data-device="pad">iPad（2カラム）</button>
+			</div>
+			<p class="note">iPadでは一覧が2列になります。並び替え・絞り込みはそのまま効きます。</p>
+		</div>
+
+		<div class="group">
+			<div class="group-title">この案について</div>
+			<div class="desc" id="desc"></div>
+		</div>
+
+		<div class="group">
+			<div class="group-title">共通の設計メモ</div>
+			<div class="desc">
+				<h3>使える並び替えキー（実装可能なもの）</h3>
+				<ul>
+					<li><b>ステータス</b> — 応答待ち → 実行中 → レビュー → アイドル（現状の並び）</li>
+					<li><b>スペース</b> — ドロワーのワークスペース一覧と同じ順序</li>
+					<li><b>名前</b> — ターミナル名</li>
+					<li><b>追加順</b> — ターミナルの作成順</li>
+				</ul>
+				<h3 class="warn">「最近動いた順」は今は作れません</h3>
+				<p class="warn">PCから届くターミナル情報に時刻が入っていないためです（`terminalKey / id / title / ws / agentStatus` のみ）。入れるならPC側の配信に1フィールド足す作業が先に必要です。モックでは灰色で置いてあります。</p>
+				<h3>応答待ちスタックとの関係</h3>
+				<p>画面上部の「応答待ち」スタックは今のまま残します。あれは並び替えの対象ではなく「今すぐ答えるもの」の置き場なので、絞り込みでも消しません。並び替え・絞り込みが効くのはその下の一覧です。</p>
+				<h3>設定の持ち方</h3>
+				<p>選んだ並び順・絞り込みは端末に保存して次回も同じ見え方にします（ワークスペースの絞り込みが既にそうなっているのと同じ扱い）。</p>
+			</div>
+		</div>
+		<div class="scale" id="scale"></div>
+	</aside>
+</main>
+
+<script>
+const WS = [
+	{ id:'w1', name:'para-code', branch:'main', color:'#09AFD9' },
+	{ id:'w2', name:'para-code (ipad)', branch:'ipad', color:'#c193d9' },
+	{ id:'w3', name:'infra-scripts', branch:'main', color:'#d99a6c' },
+	{ id:'w4', name:'relay', branch:'deploy', color:'#4fd1a5' },
+];
+const WSI = Object.fromEntries(WS.map((w,i)=>[w.id,i]));
+
+// status: 'question' | 'permission' | 'working' | 'review' | undefined(アイドル)
+const AGENTS = [
+	{ id:1, title:'Explore', ws:'w1', status:'question', pinned:false },
+	{ id:2, title:'reviewer', ws:'w3', status:'permission', pinned:false },
+	{ id:3, title:'general-purpose', ws:'w1', status:'working', pinned:true },
+	{ id:4, title:'UI implementation review', ws:'w2', status:'working', pinned:false },
+	{ id:5, title:'perf check', ws:'w4', status:'working', pinned:false },
+	{ id:6, title:'docs writer', ws:'w4', status:'review', pinned:false },
+	{ id:7, title:'migration', ws:'w3', status:'review', pinned:false },
+	{ id:8, title:'refactor helper', ws:'w1', status:undefined, pinned:false },
+	{ id:9, title:'test-runner', ws:'w2', status:undefined, pinned:false },
+	{ id:10, title:'cleanup', ws:'w1', status:undefined, pinned:false },
+];
+
+const LABEL = s => s==='permission'?'応答待ち':s==='question'?'質問あり':s==='working'?'実行中':s===undefined?'アイドル':'レビュー';
+const BCLS  = s => (s==='permission'||s==='question')?'b-wait':s==='working'?'b-run':s===undefined?'b-idle':'b-rev';
+const OCLS  = s => (s==='permission'||s==='question')?'o-wait':s==='working'?'o-run':s===undefined?'o-idle':'o-rev';
+const SORDER= s => (s==='permission'||s==='question')?0:s==='working'?1:s===undefined?3:2;
+/** 絞り込み用のまとまり。応答待ち(permission/question)は1つに畳む。 */
+const BUCKET = s => (s==='permission'||s==='question')?'waiting':s==='working'?'working':s===undefined?'idle':'review';
+const BUCKETS = [
+	{ key:'waiting', label:'応答待ち', cls:'o-wait' },
+	{ key:'working', label:'実行中',  cls:'o-run'  },
+	{ key:'review',  label:'レビュー', cls:'o-rev'  },
+	{ key:'idle',    label:'アイドル', cls:'o-idle' },
+];
+
+const SORTS = {
+	status:  { label:'ステータス順', icon:'≡', desc:'応答待ち → 実行中 → レビュー → アイドル' },
+	space:   { label:'スペース順',   icon:'◫', desc:'ドロワーのワークスペース一覧と同じ順序' },
+	name:    { label:'名前順',       icon:'A', desc:'ターミナル名の五十音・アルファベット順' },
+	added:   { label:'追加順',       icon:'＋', desc:'ターミナルを作った順（新しいものが下）' },
+	recent:  { label:'最近動いた順', icon:'◷', desc:'PC側の対応が必要（今は選べません）', disabled:true },
+};
+
+const state = {
+	prop: 'B',
+	device: 'phone',
+	sort: 'status',
+	secondary: 'space',      // 案A/B: 第2キー
+	group: 'status',         // 案C: グループ化キー ('none'|'status'|'space')
+	inner: 'space',          // 案C: グループ内の並び
+	filters: new Set(),      // 空 = すべて
+	pinTop: true,
+	sheet: null,             // 'sort' | null
+	preset: 'urgent',        // 案D
+};
+
+const PROPS = {
+	A: { name:'案A · 並び替えシートだけ', sub:'ヘッダーの並び替えボタンからシートを開いて選ぶ。画面は今のまま。', tag:['実装量 小','t-low'] },
+	B: { name:'案B · 絞り込みチップ＋並び替え', sub:'一覧の上に状態チップ（件数つき）を常設し、右に現在の並び順を出す。', tag:['実装量 中','t-mid'] },
+	C: { name:'案C · グループ表示', sub:'ステータスごと／スペースごとに見出しで区切る。区切りの中の並びも選べる。', tag:['実装量 中〜大','t-mid'] },
+	D: { name:'案D · 見え方のプリセット', sub:'「急ぎ優先」「スペースごと」などの組み合わせを選ぶだけ。細かい調整は隠す。', tag:['実装量 中','t-mid'] },
+};
+
+const DESC = {
+	A: `<h3>どんなもの</h3><p>ヘッダーに並び替えボタンを1つ足すだけ。押すとシートが出て「並び順」と「第2キー」を選べます。絞り込みは持ちません。</p>
+		<h3>良い点</h3><ul><li>今の画面の見た目をまったく変えない</li><li>実装が最小。既存の <code>rows.sort()</code> を差し替えるだけで済む</li></ul>
+		<h3>気になる点</h3><ul><li><b>今どの並びなのかが画面から分からない</b>。シートを開かないと確認できない</li><li>絞り込みができないので「実行中だけ見たい」に応えられない</li></ul>
+		<h3>向いている場合</h3><p>まず並び替えだけ早く出したいとき。</p>`,
+	B: `<h3>どんなもの</h3><p>一覧の上に状態チップ（すべて／応答待ち／実行中／レビュー／アイドル、件数つき）を常設。右端に現在の並び順をラベルで出し、押すとシートが開きます。チップは複数選択できます。</p>
+		<h3>良い点</h3><ul><li><b>今の状態が常に見えている</b>。何で絞られ何順なのかが一目で分かる</li><li>絞り込みが1タップ。「実行中だけ」がすぐできる</li><li>iOS標準のメールやリマインダーに近く、説明不要</li></ul>
+		<h3>気になる点</h3><ul><li>縦の情報量が1行ぶん減る</li><li>2段階の並び（ステータス→スペース）はシートを開かないと設定できない</li></ul>
+		<h3>向いている場合</h3><p>「絞り込みたい」という要望に素直に応えたいとき。<b>最初に出すならこれを勧めます。</b></p>`,
+	C: `<h3>どんなもの</h3><p>「ステータスごと」「スペースごと」に見出しで区切って並べます。区切りの中の並び順も別に選べるので、<b>「ステータスごとに並びつつ、その中はスペース順」がそのまま形になります</b>。見出しは折りたためます。</p>
+		<h3>良い点</h3><ul><li>2段階の並びが<b>目で見て分かる</b>。設定を覚えていなくても構造が伝わる</li><li>見出しに件数が出るので全体像がつかめる</li><li>折りたたみで「アイドルは畳んでおく」ができ、実質的な絞り込みになる</li></ul>
+		<h3>気になる点</h3><ul><li>見出しのぶん行数が増える。エージェントが少ないと逆に見づらい</li><li>折りたたみ状態の保存や、スワイプ操作との相性を詰める必要がある</li></ul>
+		<h3>向いている場合</h3><p>エージェントを常時10件以上動かしていて、全体像を把握したいとき。</p>`,
+	D: `<h3>どんなもの</h3><p>並び順・グループ化・絞り込みの組み合わせを「見え方」として3つほど用意し、そこから選ぶだけにします。個別の設定は「カスタム」の中へ隠します。</p>
+		<h3>良い点</h3><ul><li>選択肢の掛け算を見せずに済む。迷わない</li><li>「急ぎ優先」のような言葉で選べるので、何が起きるか想像しやすい</li></ul>
+		<h3>気になる点</h3><ul><li>プリセットが自分の好みと少しずれたとき、結局カスタムを開くことになる</li><li>「ユーザーによって好みが違う」という前提に対しては、選択肢を狭める方向なので相性を確かめたい</li></ul>
+		<h3>向いている場合</h3><p>設定画面を増やしたくないとき。案Bと組み合わせて「チップは常設、並び替えはプリセット」にするのも手です。</p>`,
+};
+
+const PRESETS = {
+	urgent:  { label:'急ぎ優先',     desc:'応答待ちを最上部に。中はスペース順',   sort:'status', secondary:'space', group:'none',   filters:[] },
+	byspace: { label:'スペースごと', desc:'スペースで区切り、中はステータス順',   sort:'space',  secondary:'status', group:'space',  inner:'status', filters:[] },
+	running: { label:'動いているものだけ', desc:'アイドルを隠してステータス順',   sort:'status', secondary:'space', group:'none',   filters:['waiting','working','review'] },
+	simple:  { label:'シンプル',     desc:'区切りなし・名前順',                   sort:'name',   secondary:'name',  group:'none',   filters:[] },
+};
+
+/* ── 並び替えの本体（実装時もこの形をそのまま持ってくる想定） ── */
+function cmpBy(key, a, b){
+	if(key==='status') return SORDER(a.status) - SORDER(b.status);
+	if(key==='space')  return WSI[a.ws] - WSI[b.ws];
+	if(key==='name')   return a.title.localeCompare(b.title, 'ja');
+	if(key==='added')  return a.id - b.id;
+	return 0;
+}
+function sortAgents(list, primary, secondary, pinTop){
+	return [...list].sort((a,b)=>{
+		if(pinTop){ const p = (b.pinned?1:0)-(a.pinned?1:0); if(p) return p; }
+		return cmpBy(primary,a,b) || cmpBy(secondary,a,b) || a.id-b.id;
+	});
+}
+function visibleAgents(){
+	// 応答待ちは上部スタックが持つので一覧からは外す（現行と同じ）
+	let list = AGENTS.filter(a => BUCKET(a.status)!=='waiting');
+	if(state.filters.size) list = list.filter(a => state.filters.has(BUCKET(a.status)));
+	return list;
+}
+function waitingAgents(){ return AGENTS.filter(a => BUCKET(a.status)==='waiting'); }
+
+/* ── 描画 ── */
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+const ws = id => WS.find(w=>w.id===id);
+
+function rowHtml(a){
+	const w = ws(a.ws);
+	return `<div class="row ${a.pinned?'pinned':''}">
+		<span class="orb ${OCLS(a.status)}"></span>
+		<div class="rmain">
+			<div class="rtitle">${esc(a.title)}${a.pinned?'<span class="pin">◆</span>':''}</div>
+			<div class="rmeta"><span class="wsdot" style="background:${w.color}"></span>${esc(w.name)}<span class="branch">${w.branch}</span></div>
+		</div>
+		<span class="badge ${BCLS(a.status)}">${LABEL(a.status)}</span>
+	</div>`;
+}
+function attnHtml(){
+	const list = waitingAgents();
+	if(!list.length) return '';
+	return `<div class="sectitle">応答待ち</div>` + list.map(a=>{
+		const w = ws(a.ws);
+		return `<div class="attn">
+			<span class="orb o-wait"></span>
+			<div class="rmain"><div class="rtitle">${esc(a.title)}</div>
+			<div class="rmeta"><span class="wsdot" style="background:${w.color}"></span>${esc(w.name)}</div></div>
+			<span class="badge b-wait">${LABEL(a.status)}</span>
+		</div>`;
+	}).join('');
+}
+function listHtml(){
+	const list = visibleAgents();
+	if(!list.length) return `<div class="empty">条件に合うエージェントがありません。<br>上のチップで絞り込みを外してください。</div>`;
+	const twoCol = state.device==='pad';
+	const wrapRows = rows => twoCol ? `<div class="pad-grid">${rows}</div>` : rows;
+
+	if(state.prop==='C' && state.group!=='none'){
+		const keyOf = a => state.group==='status' ? BUCKET(a.status) : a.ws;
+		const order = state.group==='status' ? BUCKETS.map(b=>b.key) : WS.map(w=>w.id);
+		const nameOf = k => state.group==='status' ? (BUCKETS.find(b=>b.key===k)||{}).label : ws(k).name;
+		return order.map(k=>{
+			const g = sortAgents(list.filter(a=>keyOf(a)===k), state.inner, 'added', false);
+			if(!g.length) return '';
+			return `<div class="grouphead"><span class="gt">${esc(nameOf(k))}</span><span class="gn">${g.length}</span><span class="line"></span><span>⌄</span></div>`
+				+ wrapRows(g.map(rowHtml).join(''));
+		}).join('');
+	}
+	const sorted = sortAgents(list, state.sort, state.secondary, state.pinTop);
+	return `<div class="sectitle">エージェント — 全ワークスペース</div>` + wrapRows(sorted.map(rowHtml).join(''));
+}
+
+function chipsHtml(){
+	const counts = {}; BUCKETS.forEach(b=>counts[b.key]=0);
+	AGENTS.filter(a=>BUCKET(a.status)!=='waiting').forEach(a=>counts[BUCKET(a.status)]++);
+	const all = state.filters.size===0;
+	// 件数は一覧に出るもの（＝応答待ちを除く）で数える。上部スタックが持つぶんを混ぜると
+	// 「すべて10件」なのに結果が8件、というズレになる。
+	const total = Object.values(counts).reduce((n,v)=>n+v,0);
+	return `<div class="chiprow">
+		<button class="fchip ${all?'on':''}" data-filter="__all">すべて<span class="n">${total}</span></button>
+		${BUCKETS.filter(b=>b.key!=='waiting').map(b=>`
+			<button class="fchip ${state.filters.has(b.key)?'on':''}" data-filter="${b.key}">
+				<span class="dot ${b.cls}" style="background:currentColor;opacity:.9"></span>${b.label}<span class="n">${counts[b.key]}</span>
+			</button>`).join('')}
+	</div>`;
+}
+function sortBarHtml(){
+	const s = SORTS[state.sort];
+	const sec = SORTS[state.secondary];
+	const label = state.prop==='C' && state.group!=='none'
+		? `${state.group==='status'?'ステータス':'スペース'}で区切り · ${SORTS[state.inner].label}`
+		: `${s.label}${state.secondary!==state.sort?` · ${sec.label}`:''}`;
+	return `<div class="sortbar">
+		<span class="resultline">${visibleAgents().length}件${state.filters.size?'（絞り込み中）':''}</span>
+		<button class="sortbtn" data-open="sort"><span class="k">並び</span> ${esc(label)} ⌄</button>
+	</div>`;
+}
+
+function sheetHtml(){
+	if(state.sheet!=='sort') return '';
+	const opt = (on,icon,title,sub,attr) => `<button class="opt ${on?'on':''}" ${attr}><span class="oi">${icon}</span><span class="ob"><b>${title}</b><span>${sub}</span></span>${on?'<span class="chk">✓</span>':''}</button>`;
+
+	if(state.prop==='D'){
+		return `<div class="scrim show" data-close></div><div class="sheet show">
+			<div class="handle"></div><h3>見え方</h3><div class="sc">
+			${Object.entries(PRESETS).map(([k,p])=>opt(state.preset===k,'◍',p.label,p.desc,`data-preset="${k}"`)).join('')}
+			<div class="sheetsec">詳しく決める</div>
+			${opt(false,'⚙','カスタム…','並び順・区切り・絞り込みを自分で組み合わせる','data-noop')}
+		</div></div>`;
+	}
+	if(state.prop==='C'){
+		return `<div class="scrim show" data-close></div><div class="sheet show">
+			<div class="handle"></div><h3>並び替えと区切り</h3><div class="sc">
+			<div class="sheetsec">区切り方</div>
+			${opt(state.group==='none','—','区切らない','1つの一覧として並べる','data-group="none"')}
+			${opt(state.group==='status','≡','ステータスで区切る','応答待ち／実行中／レビュー／アイドル','data-group="status"')}
+			${opt(state.group==='space','◫','スペースで区切る','ワークスペースごとに見出しを出す','data-group="space"')}
+			<div class="sheetsec">区切りの中の並び</div>
+			${['status','space','name','added'].map(k=>opt(state.inner===k,SORTS[k].icon,SORTS[k].label,SORTS[k].desc,`data-inner="${k}"`)).join('')}
+		</div></div>`;
+	}
+	return `<div class="scrim show" data-close></div><div class="sheet show">
+		<div class="handle"></div><h3>並び替え</h3><div class="sc">
+		<div class="sheetsec">並び順</div>
+		${Object.entries(SORTS).map(([k,v])=>v.disabled
+			? `<button class="opt" style="opacity:.4" data-noop><span class="oi">${v.icon}</span><span class="ob"><b>${v.label}</b><span>${v.desc}</span></span></button>`
+			: opt(state.sort===k,v.icon,v.label,v.desc,`data-sort="${k}"`)).join('')}
+		<div class="sheetsec">同じときの並び（第2キー）</div>
+		${['space','status','name','added'].filter(k=>k!==state.sort).map(k=>opt(state.secondary===k,SORTS[k].icon,SORTS[k].label,SORTS[k].desc,`data-secondary="${k}"`)).join('')}
+		<div class="sheetsec">その他</div>
+		<div class="swrow"><span class="oi" style="width:22px;text-align:center;color:var(--dim)">◆</span><span class="ob"><b>ピン留めを最上部に固定</b><span>並び順に関係なく先頭へ出す</span></span><span class="sw ${state.pinTop?'on':''}" data-pintop></span></div>
+	</div></div>`;
+}
+
+function screenHtml(){
+	const showChips = state.prop==='B' || state.prop==='D';
+	const showSortBar = state.prop!=='A';
+	const sortIconOn = state.prop==='A';
+	return `
+		<div class="statusbar"><span>9:41</span><span>● 5G ▰</span></div>
+		<div class="hdr">
+			<div class="chip">P</div>
+			<div class="tcol"><h2>ホーム</h2><div class="sub">Para Code Mobile</div></div>
+			${state.prop==='A' ? `<button class="round ${sortIconOn?'':''}" data-open="sort" style="position:relative">⇅</button>` : ''}
+			<button class="round" style="position:relative">◔${state.filters.size?'<span class="round-badge">'+state.filters.size+'</span>':''}</button>
+			<button class="round">＋</button>
+		</div>
+		${showChips ? chipsHtml() : ''}
+		${showSortBar ? sortBarHtml() : ''}
+		<div class="body">${attnHtml()}${listHtml()}</div>
+		${sheetHtml()}
+	`;
+}
+
+function render(){
+	document.getElementById('props').innerHTML = Object.entries(PROPS).map(([k,p])=>
+		`<button class="prop ${state.prop===k?'active':''}" data-prop="${k}"><b>${p.name}</b><span>${p.sub}</span><span class="tag ${p.tag[1]}">${p.tag[0]}</span></button>`).join('');
+	document.getElementById('desc').innerHTML = DESC[state.prop];
+	document.querySelectorAll('#deviceSeg button').forEach(b=>b.classList.toggle('active', b.dataset.device===state.device));
+
+	const shell = state.device==='pad' ? 'pad-shell' : 'phone-shell';
+	document.getElementById('wrap').innerHTML =
+		`<div class="${shell}">${state.device==='phone'?'<div class="island"></div>':''}<div class="screen">${screenHtml()}</div></div>`;
+	bind(); fit();
+}
+
+function bind(){
+	document.querySelectorAll('[data-prop]').forEach(el=>el.onclick=()=>{
+		state.prop=el.dataset.prop; state.sheet=null;
+		if(state.prop==='C'){ state.group='status'; state.inner='space'; }
+		if(state.prop==='D'){ applyPreset(state.preset); }
+		render();
+	});
+	document.querySelectorAll('#deviceSeg button').forEach(el=>el.onclick=()=>{state.device=el.dataset.device;render();});
+	document.querySelectorAll('[data-open]').forEach(el=>el.onclick=()=>{state.sheet=el.dataset.open;render();});
+	document.querySelectorAll('[data-close]').forEach(el=>el.onclick=()=>{state.sheet=null;render();});
+	document.querySelectorAll('[data-sort]').forEach(el=>el.onclick=()=>{
+		state.sort=el.dataset.sort;
+		if(state.secondary===state.sort) state.secondary = state.sort==='space'?'status':'space';
+		render();
+	});
+	document.querySelectorAll('[data-secondary]').forEach(el=>el.onclick=()=>{state.secondary=el.dataset.secondary;render();});
+	document.querySelectorAll('[data-group]').forEach(el=>el.onclick=()=>{state.group=el.dataset.group;render();});
+	document.querySelectorAll('[data-inner]').forEach(el=>el.onclick=()=>{state.inner=el.dataset.inner;render();});
+	document.querySelectorAll('[data-pintop]').forEach(el=>el.onclick=()=>{state.pinTop=!state.pinTop;render();});
+	document.querySelectorAll('[data-preset]').forEach(el=>el.onclick=()=>{applyPreset(el.dataset.preset);state.sheet=null;render();});
+	document.querySelectorAll('[data-filter]').forEach(el=>el.onclick=()=>{
+		const k=el.dataset.filter;
+		if(k==='__all'){ state.filters.clear(); }
+		else { state.filters.has(k)?state.filters.delete(k):state.filters.add(k); }
+		render();
+	});
+}
+function applyPreset(k){
+	const p = PRESETS[k]; if(!p) return;
+	state.preset=k; state.sort=p.sort; state.secondary=p.secondary;
+	state.group=p.group||'none'; state.inner=p.inner||p.secondary;
+	state.filters = new Set(p.filters);
+}
+
+function fit(){
+	const stage=document.querySelector('.stage'), wrap=document.getElementById('wrap');
+	const shell=wrap.firstElementChild; if(!shell) return;
+	const scale=Math.min((stage.clientWidth-40)/shell.offsetWidth,(stage.clientHeight-40)/shell.offsetHeight,1);
+	wrap.style.transform=`scale(${scale})`;
+	document.getElementById('scale').textContent=`${shell.offsetWidth}×${shell.offsetHeight}pt · 表示倍率 ${(scale*100).toFixed(0)}%`;
+}
+window.addEventListener('resize',fit);
+render();
+</script>
+</body>
+</html>
