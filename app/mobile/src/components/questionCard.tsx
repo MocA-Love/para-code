@@ -8,6 +8,7 @@ import type { QuestionGroupAnswer } from '../hooks/useAgentActions.js';
 import type { AgentChatMessage, AgentMessageSendResult } from '../store.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
+import { setMobileSpanAttributes, startMobileSpan } from '../sentry.js';
 
 /**
  * 質問カード（Claude Code の AskUserQuestion 等）。
@@ -53,17 +54,22 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 	};
 	// 失敗理由は必ず画面へ出す。boolean だけを見ていた頃は、接続断・対象変更・PC側の
 	// stale-interaction のどれで落ちても「押したのに何も起きない」としか見えなかった。
-	const submit = (action: () => Promise<AgentMessageSendResult>) => {
+	const submit = (kind: 'option' | 'multi' | 'text', action: () => Promise<AgentMessageSendResult>) => {
 		setSubmitted(true);
 		setError(undefined);
 		const retry = setTimeout(() => setSubmitted(false), 15_000);
-		void action().then(result => {
+		void startMobileSpan('agentQuestion', 'submit-single', () => action().then(result => {
+			setMobileSpanAttributes({ safe_status: result.status });
 			if (result.status !== 'rejected') {
 				return; // accepted / consumed（TUIへ貼り付け済み）は失敗ではない
 			}
 			clearTimeout(retry);
 			setSubmitted(false);
 			setError(result.message ?? '回答を送信できませんでした');
+		}), {
+			safe_answer_kind: kind,
+			safe_option_count: options.length,
+			safe_multi_select: multiSelect,
 		});
 	};
 	return (
@@ -89,7 +95,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 						} else {
 							setSelected(i);
 							if (interactionId !== undefined) {
-								submit(() => onAnswer(interactionId, question, i));
+								submit('option', () => onAnswer(interactionId, question, i));
 							}
 						}
 					}}
@@ -104,7 +110,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 					disabled={toggled.size === 0 || interactionId === undefined}
 					accessibilityRole="button"
 					accessibilityState={{ disabled: toggled.size === 0 || interactionId === undefined }}
-					onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onMulti(interactionId, question, [...toggled].sort((a, b) => a - b))); } }}
+					onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit('multi', () => onMulti(interactionId, question, [...toggled].sort((a, b) => a - b))); } }}
 				>
 					<Text style={styles.confirmBtnText}>決定（{toggled.size}件）</Text>
 				</Pressable>
@@ -126,7 +132,7 @@ export function QuestionCard({ message, answered, onAnswer, onMulti, onFreeText 
 						disabled={freeText.trim().length === 0 || interactionId === undefined}
 						accessibilityRole="button"
 						accessibilityState={{ disabled: freeText.trim().length === 0 || interactionId === undefined }}
-						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit(() => onFreeText(interactionId, question, freeText.trim())); } }}
+						onPress={() => { if (interactionId !== undefined) { hapticImpact('medium'); submit('text', () => onFreeText(interactionId, question, freeText.trim())); } }}
 						accessibilityLabel="自由入力で回答"
 					>
 						<Ionicons name="arrow-up" size={16} color="#fff" />
@@ -282,15 +288,28 @@ export function QuestionGroupCard({ messages, answered, onSubmit }: {
 						setSubmitted(true);
 						setError(undefined);
 						const retry = setTimeout(() => setSubmitted(false), 15_000);
-						void onSubmit(interactionId, questions, answers.filter((a): a is QuestionGroupAnswer => a !== undefined))
-							.then(result => {
-								if (result.status !== 'rejected') {
-									return; // accepted / consumed は失敗ではない
-								}
-								clearTimeout(retry);
-								setSubmitted(false);
-								setError(result.message ?? '回答を送信できませんでした');
-							});
+						const picked = answers.filter((a): a is QuestionGroupAnswer => a !== undefined);
+						// 複数ステップ・自由入力つきの回答がPCで正しく再生されているかは、送った側の
+						// 形と結果を並べないと分からない。件数と種別だけを残す（本文は載せない）。
+						void startMobileSpan('agentQuestion', 'submit-group', () =>
+							onSubmit(interactionId, questions, picked)
+								.then(result => {
+									// 拒否の理由コードはPC側の span に出るので、ここでは結果だけ。
+									// message は画面へ出す文言なので載せない。
+									setMobileSpanAttributes({ safe_status: result.status });
+									if (result.status !== 'rejected') {
+										return; // accepted / consumed は失敗ではない
+									}
+									clearTimeout(retry);
+									setSubmitted(false);
+									setError(result.message ?? '回答を送信できませんでした');
+								}), {
+							safe_question_count: messages.length,
+							safe_answer_count: picked.length,
+							safe_option_counts: questions.map(q => q.optionCount).join(','),
+							safe_multi_select_count: questions.filter(q => q.multiSelect).length,
+							safe_free_text_count: picked.filter(a => a.kind === 'text').length,
+						});
 					}}
 				>
 					<Text style={styles.confirmBtnText}>回答を送信（{answeredCount}/{messages.length}）</Text>

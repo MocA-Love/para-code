@@ -8,6 +8,8 @@
 import * as Sentry from '@sentry/electron/renderer';
 import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
 
+import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
+
 /**
  * Sample rate for spans that trace a routine user action rather than a failure.
  *
@@ -15,10 +17,12 @@ import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter
  * per user, so sending all of them would change the volume by orders of magnitude and there is no
  * rate limiter on the transaction path (`paradisPrepareSentryTransaction` deliberately skips the
  * one that guards events). A tenth still yields plenty of samples for a p50/p90.
+ *
+ * Only list actions that are that frequent here. Answering a question happens a few times a day at
+ * most, so those spans stay at full rate — sampling them would leave too little to diagnose.
  */
 const PARADIS_ROUTINE_TRACE_SAMPLE_RATE = 0.1;
 const PARADIS_ROUTINE_TRACE_PREFIXES = ['para.workspaceSwitch.'];
-import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
 try {
 	Sentry.init({

@@ -45,6 +45,7 @@ import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
+import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
 export type ParadisAgentKind = 'claude' | 'codex';
@@ -304,6 +305,10 @@ const APPEND_READ_CHUNK_BYTES = 1024 * 1024;
 const MAX_TRANSCRIPT_LINE_BYTES = 4 * 1024 * 1024;
 /** 保持するメッセージ数の上限 (超過分は古いものから捨てる)。 */
 const MESSAGE_RING_LIMIT = 400;
+/** 質問グループごとの通知回数を覚えておく上限（計測用。超過分は古いものから捨てる）。 */
+const QUESTION_NOTIFY_COUNT_LIMIT = 200;
+/** 回答のキー列を流し終えたかを見る待ち時間の上限（計測用）。 */
+const QUESTION_SETTLE_MAX_WAIT_MS = 30_000;
 /** attach応答スナップショットで送る最大件数。 */
 const SNAPSHOT_SEND_LIMIT = 200;
 /** 本文テキストの上限 (モバイル表示用。超過は末尾に…を付けて切る)。 */
@@ -640,6 +645,13 @@ interface IParseSignals {
 	pendingCodexImageCallId?: string;
 	model?: string;
 	effort?: string;
+	/**
+	 * transcript の行が書かれた CLI のバージョン（Claude Code は各行に `version` を持つ）。
+	 *
+	 * 回答をTUIへ流すキー列は特定バージョンの実挙動に合わせてあるため（paradisAgentQuestionKeys の
+	 * 冒頭を参照）、壊れたときに「どの版から変わったか」を切り分けられるようにこれだけ拾う。
+	 */
+	cliVersion?: string;
 }
 
 function newParseSignals(): IParseSignals {
@@ -1293,6 +1305,11 @@ function pushClaudeUserText(out: IRawMessage[], rawText: string, ts: number | un
 function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSignals, includeSidechain = false): IRawMessage[] {
 	if ((!includeSidechain && obj['isSidechain'] === true) || obj['isMeta'] === true) {
 		return []; // サブエージェント内・メタ行はメインの会話に出さない
+	}
+	// 表示対象かどうかに関わらず拾う（どの行にも入っており、最後に見た値が今動いている版）。
+	const version = str(obj['version']);
+	if (version !== undefined) {
+		signals.cliVersion = version;
 	}
 	const type = str(obj['type']);
 	if (type !== 'user' && type !== 'assistant') {
@@ -2135,6 +2152,8 @@ class TranscriptTailer {
 	/** セッションメタ情報（transcriptから学習した最新値）。 */
 	model: string | undefined;
 	effort: string | undefined;
+	/** transcript の行が書かれた CLI のバージョン。計測にのみ使う（モバイルへは送らない）。 */
+	cliVersion: string | undefined;
 	/** 初回読み込みが完了したら resolve (attach応答はこれを待つ)。 */
 	readonly ready: Promise<void>;
 
@@ -2284,6 +2303,8 @@ class TranscriptTailer {
 				this.clearRetainedPayloads();
 				this.model = undefined;
 				this.effort = undefined;
+				// cliVersion は据え置く。次の行で必ず上書きされるうえ、消すとその間の計測から
+				// 版が欠ける（モバイルへ出す情報ではないので古い値が残っても表示に影響しない）。
 				await handle.close().catch(() => { /* ignore */ });
 				await this.initialLoad();
 				// initialLoad が読み直した後の状態で購読者・状態レジストリを同期し直す
@@ -2765,6 +2786,10 @@ class TranscriptTailer {
 			this.effort = signals.effort;
 			infoChanged = true;
 		}
+		// 計測専用。モバイルへは送らないので infoChanged には含めない。
+		if (signals.cliVersion !== undefined) {
+			this.cliVersion = signals.cliVersion;
+		}
 		if (activityChanged) {
 			this.delegate.onActivity();
 		}
@@ -2904,6 +2929,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly pendingActions = new Map<string, { readonly mobileId: string; readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly completedActions = new Map<string, { readonly token: string; readonly epoch: string; readonly terminalId: number; readonly windowId: number; readonly windowSession: string; readonly interaction?: IParadisAgentInteraction; readonly interactionKey?: string; readonly requirePrompt?: boolean; readonly timer: ReturnType<typeof setTimeout> }>();
 	private readonly interactionClaims = new Map<string, string>();
+	/** 計測専用: `token\0questionGroup` → その質問グループで通知を送った回数。 */
+	private readonly questionNotifyCounts = new Map<string, number>();
+	/** 計測専用: キー注入後に質問が消えたかを確かめる遅延チェック。 */
+	private readonly questionSettleTimers = new Set<ReturnType<typeof setTimeout>>();
 	private readonly activityDetailRequests = new Map<string, string>();
 	/** 送信中の 'tool-image': `mobileId\0requestId` → token。1件あたり数MBのため同時数を抑える。 */
 	private readonly toolImageRequests = new Map<string, string>();
@@ -2972,6 +3001,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.toolImageRequests.clear();
 			for (const timer of this.persistedActivityTimers.values()) { clearTimeout(timer); }
 			this.persistedActivityTimers.clear();
+			for (const timer of this.questionSettleTimers) { clearTimeout(timer); }
+			this.questionSettleTimers.clear();
+			this.questionNotifyCounts.clear();
 		}));
 	}
 
@@ -3714,6 +3746,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return answer.optionCount === optionCount;
 		});
 		if (!answersMatch) {
+			this.recordQuestionAnswerShape(token, msg, questions, 0, 'rejected-mismatch');
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '質問の選択肢が更新されました' }, token ?? msg.token);
 			return;
 		}
@@ -3721,7 +3754,79 @@ export class ParadisMobileAgentChat extends Disposable {
 			questions.map(question => ({ optionCount: question.options?.length ?? 0, multiSelect: question.multiSelect === true })),
 			msg.answers,
 		);
+		this.recordQuestionAnswerShape(token, msg, questions, parts.length, 'dispatched');
 		this.dispatchInteractionAction(mobileId, msg, { kind: 'question', id: msg.interactionId }, parts);
+		this.scheduleQuestionSettleCheck(token, msg.interactionId, questions.length, parts.length);
+	}
+
+	/**
+	 * モバイルから届いた回答の「形」を記録する。
+	 *
+	 * TUI へ流すキー列は Claude Code 2.1.220 の実挙動に合わせて組んであり（paradisAgentQuestionKeys）、
+	 * 質問の数・選択肢の数・複数選択・自由入力の有無で段取りが変わる。どの組み合わせで壊れるかは
+	 * 手元では再現しきれないので、実際に使われた組み合わせと結果を残す。
+	 *
+	 * 質問文・選択肢のラベル・自由入力の本文は載せない（件数と種別だけ）。
+	 */
+	private recordQuestionAnswerShape(
+		token: string | undefined,
+		msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>,
+		questions: readonly IParadisAgentChatMessage[],
+		keyPartCount: number,
+		outcome: 'dispatched' | 'rejected-mismatch',
+	): void {
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const agent = tailer?.agent;
+		const cliVersion = tailer?.cliVersion;
+		runInParadisSpan('agentQuestion', 'answer', {
+			safe_outcome: outcome,
+			safe_question_count: questions.length,
+			safe_answer_count: msg.answers.length,
+			// 例 "4,3,2"。Other 行までの下矢印の数がこれで決まるので、ずれると別の行を叩く。
+			safe_option_counts: questions.map(question => question.options?.length ?? 0).join(','),
+			safe_multi_select_count: questions.filter(question => question.multiSelect === true).length,
+			// 自由入力は「番号 → 本文 → Enter」の順が要る唯一の経路で、いちばん壊れやすい。
+			safe_free_text_count: msg.answers.filter(answer => answer.kind === 'text').length,
+			safe_key_parts: keyPartCount,
+			...(agent !== undefined ? { safe_agent: agent } : {}),
+			// キー列は特定バージョンのTUI挙動に合わせてある。壊れた版を切り分けるための決め手。
+			...(cliVersion !== undefined ? { safe_cli_version: cliVersion } : {}),
+		}, () => { });
+	}
+
+	/**
+	 * キーを流し終えた頃に、その質問が本当に消えたかを確かめて記録する。
+	 *
+	 * 「モバイルでは送れたのに TUI が動いていない」を捉えるための唯一の指標。送信そのものは
+	 * 成功扱いになるので、これが false のときだけ段取りの前提が崩れている。
+	 */
+	private scheduleQuestionSettleCheck(token: string | undefined, interactionId: string, questionCount: number, keyPartCount: number): void {
+		if (token === undefined) {
+			return;
+		}
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined) {
+			return;
+		}
+		const epoch = tailer.epoch;
+		// キーは delayMs=300 の間隔で1つずつ流れる。全部届いてから見ないと「まだ残っている」と
+		// 誤って読むため、列の長さぶん待ってから確かめる。
+		const waitMs = Math.min(QUESTION_SETTLE_MAX_WAIT_MS, keyPartCount * 300 + 3_000);
+		const timer = setTimeout(() => {
+			this.questionSettleTimers.delete(timer);
+			const current = this.tailers.get(token);
+			if (current === undefined || current.epoch !== epoch) {
+				return; // セッションが変わった。回答の成否とは無関係なので測らない。
+			}
+			runInParadisSpan('agentQuestion', 'answer-settled', {
+				safe_resolved: !current.hasPendingInteraction({ kind: 'question', id: interactionId }),
+				safe_question_count: questionCount,
+				safe_key_parts: keyPartCount,
+				safe_agent: current.agent,
+				...(current.cliVersion !== undefined ? { safe_cli_version: current.cliVersion } : {}),
+			}, () => { });
+		}, waitMs);
+		this.questionSettleTimers.add(timer);
 	}
 
 	private handleApprovalAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerApproval' }>): void {
@@ -5259,6 +5364,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					for (const message of messages) {
 						if (message.kind === 'question') {
+							this.recordQuestionNotifyShape(token, message);
 							this.notifyQuestionForCurrentOwner(token, tailer, terminalId, message);
 						}
 					}
@@ -5344,6 +5450,43 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (!this.subscribers.has(token)) {
 			this.disposeTailer(token);
 		}
+	}
+
+	/**
+	 * 質問1件ごとに通知が出ている実態を記録する。
+	 *
+	 * 現状は `kind === 'question'` のメッセージが現れるたびに送っているので、複数問の
+	 * AskUserQuestion では問の数だけ、質問が別経路で登録し直されればそのたびに通知が出る。
+	 * 同じ呼び出しをまとめる `questionGroup` は既にメッセージへ付いているのに通知側が見ていない。
+	 * まとめ方を決める前に、実際に何回・どの経路で出ているかを実データで押さえる。
+	 *
+	 * 送るのは件数と経路だけ。質問文・選択肢は載せない。
+	 */
+	private recordQuestionNotifyShape(token: string, message: IParadisAgentChatMessage): void {
+		const group = message.questionGroup ?? message.toolUseId;
+		if (group === undefined) {
+			return;
+		}
+		const key = `${token}\0${group}`;
+		const seq = (this.questionNotifyCounts.get(key) ?? 0) + 1;
+		this.questionNotifyCounts.set(key, seq);
+		if (this.questionNotifyCounts.size > QUESTION_NOTIFY_COUNT_LIMIT) {
+			// 古い順に捨てる。まとめ判定はグループ単位なので取りこぼしても次の質問から数え直せる。
+			const oldest = this.questionNotifyCounts.keys().next();
+			if (!oldest.done) {
+				this.questionNotifyCounts.delete(oldest.value);
+			}
+		}
+		runInParadisSpan('agentQuestion', 'notify', {
+			// 2以上なら同じ質問グループで通知が重なっている。
+			safe_group_seq: seq,
+			safe_index: message.questionIndex ?? -1,
+			safe_total: message.questionCount ?? -1,
+			// live = hook 由来（TUIに出た時点）、transcript = 書き出された記録由来。
+			safe_source: message.toolUseId?.startsWith('live:') === true ? 'live' : 'transcript',
+			safe_multi_select: message.multiSelect === true,
+			safe_option_count: message.options?.length ?? 0,
+		}, () => { });
 	}
 
 	private notifyQuestionForCurrentOwner(token: string, tailer: TranscriptTailer, terminalId: number, message: IParadisAgentChatMessage): void {
