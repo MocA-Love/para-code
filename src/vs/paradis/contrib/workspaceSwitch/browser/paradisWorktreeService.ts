@@ -13,6 +13,9 @@ import { basename, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { paradisResolveExternalPath, paradisWorktreePathFromGitdir } from '../../../common/paradisPathUri.js';
+import { paradisIsOrphanTerminalRevivalComplete } from './paradisTerminalEditorPark.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_PINNED_WORKTREES_STORAGE_KEY, paradisParsePinnedWorktreeKeys, paradisRemoveStaleIds, paradisSerializePinnedWorktreeKeys } from '../common/paradisWorkspaceTreeState.js';
@@ -77,11 +80,15 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 	private readonly _refreshScheduler = this._register(new RunOnceScheduler(() => this.refresh(), 500));
 
+	/** 初回 refresh を終えたか。起動直後は端末の復元前なので missing の自動退役を見送る。 */
+	private _initialRefreshDone = false;
+
 	constructor(
 		@IFileService private readonly fileService: IFileService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 
@@ -253,9 +260,28 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		}
 	}
 
+	/**
+	 * 初期化バリアとスケジューラの両方がこれを await する。ここで例外を漏らすと
+	 * `initializationBarrier` が reject し、購読側の成功ハンドラが丸ごと飛ぶ
+	 * (端末スコープの隔離マッピングが採用されないまま残り、その端末はスコープ無しになる)。
+	 * 購読側は失敗をログに出すだけで回復しないので、ここで必ず正常終了させる。
+	 */
 	private async refresh(): Promise<void> {
+		try {
+			await this.doRefresh();
+		} catch (error) {
+			this.logService.error('[ParadisWorktreeService] refresh failed', error);
+		}
+	}
+
+	private async doRefresh(): Promise<void> {
 		const autoImport = this.configurationService.getValue<boolean>('paradis.workspaceSwitch.autoImportWorktrees') !== false;
 		const autoRemove = this.configurationService.getValue<boolean>('paradis.workspaceSwitch.autoRemoveMissingWorktrees') !== false;
+		// 起動直後は端末の復元がまだ走っておらず、park 台帳も working set も空なので
+		// 「退避データ無し」と誤判定する。ここで自動退役させると、直後に復元される端末が
+		// 到達不能な stateKey に取り残される。復元が一巡するまで missing の退役は見送り、
+		// 見送った分は次の refresh で判定する
+		const canAutoRetire = this._initialRefreshDone && paradisIsOrphanTerminalRevivalComplete();
 
 		const repositories = this.workspaceSwitchService.repositories;
 		const result = new Map<string, IParadisWorktree[]>();
@@ -293,7 +319,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 				if (!scannedPaths.has(known.path)) {
 					const missingStateKey = paradisWorktreeStateKey(URI.parse(known.path));
 					const hasRetirementData = autoRemove ? await this.workspaceSwitchService.hasScopeRetirementData(missingStateKey) : false;
-					if (paradisShouldAutoRetireMissingWorktree(autoRemove, hasRetirementData, this.workspaceSwitchService.activeStateKey === missingStateKey)) {
+					if (canAutoRetire && paradisShouldAutoRetireMissingWorktree(autoRemove, hasRetirementData, this.workspaceSwitchService.activeStateKey === missingStateKey)) {
 						const removed = await paradisDiscardScopeBeforeRemovingKnownWorktree(
 							() => this.workspaceSwitchService.discardScopeState(missingStateKey),
 							() => { this._known = this._known.filter(candidate => candidate !== known); }
@@ -326,7 +352,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		const orphanedKnown = this._known.filter(known => !repositoryIds.has(known.repositoryId));
 		for (const known of orphanedKnown) {
 			const stateKey = paradisWorktreeStateKey(URI.parse(known.path));
-			if (await this.workspaceSwitchService.hasScopeRetirementData(stateKey)) {
+			if (!canAutoRetire || await this.workspaceSwitchService.hasScopeRetirementData(stateKey)) {
 				continue;
 			}
 			if (await paradisDiscardScopeBeforeRemovingKnownWorktree(
@@ -349,6 +375,9 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		this._branches = branches;
 		this.pruneStalePinned();
 		this.acknowledgeAbsentCommittedRetirements();
+		// 冒頭ではなくここで立てる。初回が await 中に2本目が走っても、初回の完了までは
+		// 「起動直後」として扱いたいため
+		this._initialRefreshDone = true;
 		this._onDidChangeWorktrees.fire();
 	}
 
@@ -385,13 +414,23 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 					continue;
 				}
 				try {
-					// gitdir の中身は "<worktree>/.git"。upstream (getWorktreesFS) と同じく
-					// /.git 以降を除去して作業ツリーパスを復元する
-					const gitdirContent = (await this.fileService.readFile(joinPath(child.resource, 'gitdir'))).value.toString().trim();
-					const worktreePath = gitdirContent.replace(/\/\.git.*$/, '');
-					const uri = URI.file(worktreePath);
+					// gitdir の中身は "<worktree>/.git"。末尾の /.git を落として作業ツリーパスを復元し、
+					// リポジトリと同じ名前空間 (WSL を UNC で開いている場合やリモート) へ写す。
+					// git 2.48 以降の worktree.useRelativePaths では相対パスが書かれ、その基準は
+					// gitdir ファイルのあるディレクトリなので、リポジトリではなく child.resource を渡す
+					const gitdirContent = (await this.fileService.readFile(joinPath(child.resource, 'gitdir'))).value.toString();
+					const worktreePath = paradisWorktreePathFromGitdir(gitdirContent);
+					const uri = worktreePath ? paradisResolveExternalPath(child.resource, worktreePath) : undefined;
+					if (!uri) {
+						// 破損した gitdir はそのまま埋めるとログ1行が肥大するので切り詰める
+						this.logService.warn(`[ParadisWorktreeService] Could not resolve a worktree path against ${child.resource.toString()}: ${gitdirContent.trim().slice(0, 200)}`);
+						continue;
+					}
 					if (!(await this.fileService.exists(uri))) {
-						continue; // prune 可能な残骸
+						// prune 可能な残骸。git worktree prune 前は毎 refresh で通る正常な状態なので
+						// warn では騒がしすぎる。名前空間の取り違えを追うときだけ見られればよい
+						this.logService.trace(`[ParadisWorktreeService] Resolved worktree does not exist: ${uri.toString()}`);
+						continue;
 					}
 
 					let branch: string | undefined;

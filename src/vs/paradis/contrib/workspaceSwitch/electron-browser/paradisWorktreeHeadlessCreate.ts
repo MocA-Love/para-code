@@ -18,6 +18,7 @@ import { CancellationTokenSource } from '../../../../base/common/cancellation.js
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -138,7 +139,11 @@ export function paradisConfiguredAgents(configurationService: IConfigurationServ
 function computeWorktreeUri(configurationService: IConfigurationService, repository: IParadisWorkspaceRepository, dirName: string): URI {
 	const configuredRoot = (configurationService.getValue<string>('paradis.workspaceSwitch.worktreeRoot') ?? '').trim();
 	if (configuredRoot.length > 0) {
-		return joinPath(URI.file(configuredRoot), basename(repository.uri), dirName);
+		// 設定値はリポジトリと同じ名前空間で解決する (ダイアログ側の _computeWorktreeUri と同じ理由)
+		const root = paradisResolveExternalPath(dirname(repository.uri), configuredRoot);
+		if (root) {
+			return joinPath(root, basename(repository.uri), dirName);
+		}
 	}
 	return joinPath(dirname(repository.uri), `${basename(repository.uri)}-worktrees`, dirName);
 }

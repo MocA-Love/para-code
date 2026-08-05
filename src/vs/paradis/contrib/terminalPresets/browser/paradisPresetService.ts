@@ -20,6 +20,7 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { basename, joinPath } from '../../../../base/common/resources.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
+import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -465,7 +466,10 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	private _resolveCwd(preset: IParadisResolvedPreset, cwdSpec: string | undefined, baseOverride?: URI): URI | undefined {
 		const cwd = cwdSpec?.trim();
 		if (cwd && isAbsolute(cwd)) {
-			return URI.file(cwd);
+			// 絶対指定でも、基準となるフォルダと同じ名前空間で解決する (リモートや UNC の
+			// ワークスペースでローカルの file: を強制すると開けない cwd になる)
+			const base = baseOverride ?? this.contextService.getWorkspace().folders[0]?.uri;
+			return (base && paradisResolveExternalPath(base, cwd)) ?? URI.file(cwd);
 		}
 		// 明示された基準 (worktree 作成直後など、フォルダ反映を待てない場面) を最優先する
 		if (baseOverride) {

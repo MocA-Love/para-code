@@ -28,6 +28,7 @@ import { IWorkingCopyEditorService } from '../../../../workbench/services/workin
 import { IWorkingCopyService } from '../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { IParadisEditorScopeService, ParadisWorkingCopyOwnerLedger, ParadisWorkingCopyOwnerLedgerLoadState } from '../common/paradisEditorScope.js';
 import { IParadisAuxiliaryWindowScopeService, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../common/paradisWorkspaceSwitch.js';
+import { paradisHasParkedTerminals } from './paradisTerminalEditorPark.js';
 
 interface IParadisLiveEditorPlacement {
 	readonly editor: EditorInput;
@@ -443,6 +444,11 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 
 	async hasRetirementData(stateKey: string): Promise<boolean> {
 		if (this.liveWorkingSets.has(stateKey)) {
+			return true;
+		}
+		// パーク中のターミナルは working set にも可視配置にも現れない。ここで拾わないと、
+		// 「端末だけ置いてあるスペース」が退避データ無しと判定され、退役処理で PTY ごと破棄される
+		if (paradisHasParkedTerminals(stateKey)) {
 			return true;
 		}
 		if (this.collectVisibleLiveEditorState(false, stateKey).placements.length > 0) {
