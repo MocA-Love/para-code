@@ -106,6 +106,11 @@ export class ParadisAgentPreviewChannel extends Disposable implements IServerCha
 	}
 
 	private async _previewFile(token: string | undefined, path: string): Promise<IParadisPreviewFileResult> {
+		// ここは意図的に paradisResolveExternalPath を使わない（他の URI.file 呼び出しとは事情が違う）。
+		// エージェントが送ってくるパスの基準はペインが属するスペースだが、それを基準に写すと
+		// 取り違えたときに「別のファイルを黙って開く」ことになる。解決できないまま stat に失敗すれば
+		// エージェントには失敗が返り、静かな誤動作にはならない。直すならスペース配下であることの
+		// 確認とセットにすること。
 		const resource = URI.file(path);
 		try {
 			const stat = await this.fileService.stat(resource);

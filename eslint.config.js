@@ -1919,6 +1919,8 @@ export default defineConfig(
 						'vs/workbench/contrib/terminalContrib/*/~',
 						// PARA-PATCH: paradis contrib 内の layer 間 import（electron-browser→browser/common 等）を許可
 						'vs/paradis/contrib/*/~',
+						// PARA-PATCH: 複数のcontribが共有するfork独自の純粋ユーティリティ（src/vs/paradis/common/）
+						'vs/paradis/~',
 						// PARA-PATCH: paradisTerminalTransparency.ts が xterm のテーマ型とWebGLアドオン型を type import するための許可
 						{
 							'when': 'hasBrowser',
@@ -1941,6 +1943,17 @@ export default defineConfig(
 							'when': 'hasNode',
 							'pattern': '@sentry/electron/utility'
 						},
+					]
+				},
+				{
+					// PARA-PATCH: 複数のparadis contribが共有する純粋ユーティリティ（src/vs/paradis/common/**）のlayer定義。
+					// 特定のcontribに属さないので contrib の外に置き、依存は base/platform に限定する。
+					'target': 'src/vs/paradis/~',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/paradis/~'
 					]
 				},
 				{

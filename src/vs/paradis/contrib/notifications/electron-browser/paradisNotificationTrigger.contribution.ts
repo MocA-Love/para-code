@@ -17,6 +17,7 @@ import { disposableTimeout, IntervalTimer } from '../../../../base/common/async.
 import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -313,9 +314,12 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 				if (!gitdir) {
 					return undefined;
 				}
-				const gitdirUri = gitdir.startsWith('/') || /^[A-Za-z]:[\\/]/.test(gitdir)
-					? URI.file(gitdir)
-					: joinPath(root, gitdir);
+				// 絶対パスは作業ツリーと同じ名前空間へ写す (WSL を UNC で開いている場合やリモートでは
+				// git が書いた生のパスをそのまま URI.file に渡すと別の場所を指してしまう)
+				const gitdirUri = paradisResolveExternalPath(root, gitdir);
+				if (!gitdirUri) {
+					return undefined;
+				}
 				headUri = joinPath(gitdirUri, 'HEAD');
 			}
 			const head = (await this.fileService.readFile(headUri)).value.toString().trim();

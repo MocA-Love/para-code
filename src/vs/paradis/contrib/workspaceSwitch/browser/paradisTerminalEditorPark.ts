@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IDeserializedTerminalEditorInput, ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
@@ -112,6 +112,70 @@ export function paradisRetireParkedTerminalEditorInstances(stateKey: string): vo
 	for (const instance of retiring) {
 		instance.dispose(TerminalExitReason.User);
 	}
+}
+
+/**
+ * 起動時の孤児ターミナル復活が完了したか。
+ *
+ * 完了前は台帳が空でも「このスコープに端末は無い」と断定できない。pty host に生きている
+ * PTY が台帳へ戻ってくるのはこのフラグが立った後なので、それまでに「退避データ無し」と
+ * 判定してスコープを捨てると、直後に復活した端末が到達不能な stateKey に取り残される。
+ *
+ * 立てられるのは復活処理を**一巡し切った**場合だけ。途中で中断したときに立ててはいけない。
+ * 台帳が空なのは「端末が無い」からではなく「増やすはずだった処理を止めた」からで、
+ * 前者と後者を取り違えると生きた PTY を退役の巻き添えにする。
+ *
+ * バックエンドに繋がらない等でフラグが立たないままになると、missing の自動退役はその
+ * セッション中ずっと見送られる。復活してくる端末も無い状況なので、失うのは表示だけ。
+ */
+let orphanRevivalComplete = false;
+
+export function paradisIsOrphanTerminalRevivalComplete(): boolean {
+	return orphanRevivalComplete;
+}
+
+/** 孤児ターミナルの復活が一巡したことを記録する。復活対象が無かった場合も呼ぶこと。 */
+export function paradisMarkOrphanTerminalRevivalComplete(): void {
+	orphanRevivalComplete = true;
+}
+
+/**
+ * 指定スコープにパーク中のエディタターミナルがあるか（台帳は変更しない）。
+ * パーク中の端末は working set にも可視エディタ配置にも現れないので、
+ * 「このスコープを捨ててよいか」を判断する側はここも見ないと PTY を巻き添えにする。
+ */
+export function paradisHasParkedTerminalEditorInstances(stateKey: string): boolean {
+	for (const entry of parkedInstances.values()) {
+		if (entry.stateKey === stateKey) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * パネル側の park 台帳（グループ単位）を引くための問い合わせ口。実体はターミナルスコープの
+ * contribution が持っていて DI では循環するため、ここへ関数を預けてもらう形にしている。
+ * 写しではなく実体を都度引くので、台帳の更新漏れで食い違うことがない。
+ */
+let parkedGroupProbe: ((stateKey: string) => boolean) | undefined;
+
+export function paradisRegisterParkedTerminalGroupProbe(probe: (stateKey: string) => boolean): IDisposable {
+	parkedGroupProbe = probe;
+	return toDisposable(() => {
+		if (parkedGroupProbe === probe) {
+			parkedGroupProbe = undefined;
+		}
+	});
+}
+
+/**
+ * 指定スコープにパーク中のターミナルがあるか（エディタ側・パネル側の両方）。
+ * スコープを捨てる前の判定はこちらを使うこと。エディタ側だけ見ると、
+ * 端末グリッド（パネル側）しか置いていないスペースを巻き添えにする。
+ */
+export function paradisHasParkedTerminals(stateKey: string): boolean {
+	return paradisHasParkedTerminalEditorInstances(stateKey) || (parkedGroupProbe?.(stateKey) ?? false);
 }
 
 /**

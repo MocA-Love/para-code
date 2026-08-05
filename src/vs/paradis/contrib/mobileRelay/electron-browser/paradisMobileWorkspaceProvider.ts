@@ -10,6 +10,7 @@ import { IntervalTimer, raceTimeout, RunOnceScheduler, timeout } from '../../../
 import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
+import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -1533,8 +1534,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const posixAbsolute = rawPath.startsWith('/');
 				let relativePath: string | undefined;
 				if (windowsAbsolute || posixAbsolute) {
-					const absoluteUri = URI.file(rawPath);
-					if (extUriBiasedIgnorePathCase.isEqualOrParent(absoluteUri, root)) {
+					// ワークスペースと同じ名前空間へ写してから比較する。URI.file だと UNC で開いた
+					// ワークスペースに対して常に不一致になり、相対候補へ落ちてしまう
+					const absoluteUri = paradisResolveExternalPath(root, rawPath);
+					if (absoluteUri && extUriBiasedIgnorePathCase.isEqualOrParent(absoluteUri, root)) {
 						relativePath = extUriBiasedIgnorePathCase.relativePath(root, absoluteUri);
 					}
 					// `/src/file.ts` はワークスペースルート基準で生成されることもある。

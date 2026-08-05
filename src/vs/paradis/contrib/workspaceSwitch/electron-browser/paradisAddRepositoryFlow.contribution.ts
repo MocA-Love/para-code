@@ -14,8 +14,9 @@
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
-import { joinPath } from '../../../../base/common/resources.js';
+import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -222,11 +223,15 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 	private async resolveCloneParentDir(configurationService: IConfigurationService, pathService: IPathService, fileDialogService: IFileDialogService): Promise<URI | undefined> {
 		const raw = this.cloneParentDirDisplay(configurationService);
 		if (raw) {
+			const userHome = await pathService.userHome();
 			if (raw === '~' || raw.startsWith('~/')) {
-				const userHome = await pathService.userHome();
 				return raw === '~' ? userHome : joinPath(userHome, raw.substring(2));
 			}
-			return URI.file(raw);
+			// `~` 展開と同じ名前空間で解決する (リモートウィンドウでローカルの file: を
+			// 強制すると、クローン先だけが別マシンを指してしまう)。
+			// 解決できない設定値でも従来どおり file: として扱う。ここで undefined を返すと
+			// 呼び出し側の「ダイアログでキャンセルされた」経路に合流し、無言で何も起きなくなる
+			return paradisResolveExternalPath(userHome, raw) ?? URI.file(raw);
 		}
 		const picked = await fileDialogService.showOpenDialog({
 			// allow-any-unicode-next-line
@@ -259,8 +264,10 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		}
 		const target = joinPath(parentDir, name);
 
-		// 同じパスが登録済みならクローンせず、そのリポジトリへ切り替える (Superset と同じ挙動)
-		const existing = switchService.repositories.find(repository => repository.uri.fsPath === target.fsPath);
+		// 同じパスが登録済みならクローンせず、そのリポジトリへ切り替える (Superset と同じ挙動)。
+		// fsPath 比較だと scheme/authority を無視するため、リモートとローカルで同じパスのものを
+		// 取り違える (クローン先がリモートになり得るようになったので実際に起こる)
+		const existing = switchService.repositories.find(repository => extUriBiasedIgnorePathCase.isEqual(repository.uri, target));
 		if (existing) {
 			// allow-any-unicode-next-line
 			notificationService.info(localize('paradis.repositoryClone.alreadyRegistered', "{0} は登録済みです。そのリポジトリへ切り替えます。", existing.name));

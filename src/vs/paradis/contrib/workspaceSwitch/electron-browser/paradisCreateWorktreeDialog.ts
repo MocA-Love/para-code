@@ -18,6 +18,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -609,7 +610,14 @@ class ParadisCreateWorktreeDialog extends Disposable {
 	private _computeWorktreeUri(repository: IParadisWorkspaceRepository, dirName: string): URI {
 		const configuredRoot = (this.configurationService.getValue<string>('paradis.workspaceSwitch.worktreeRoot') ?? '').trim();
 		if (configuredRoot.length > 0) {
-			return joinPath(URI.file(configuredRoot), basename(repository.uri), dirName);
+			// 設定値はリポジトリと同じ名前空間で解決する (リモートや UNC のリポジトリに対して
+			// ローカルの file: を強制すると、作れないパスや別マシンの場所を指してしまう)。
+			// 相対指定の基準は下の既定と揃えてリポジトリの親にする (作業ツリーの中に worktree を
+			// 作ってしまわないように)
+			const root = paradisResolveExternalPath(dirname(repository.uri), configuredRoot);
+			if (root) {
+				return joinPath(root, basename(repository.uri), dirName);
+			}
 		}
 		return joinPath(dirname(repository.uri), `${basename(repository.uri)}-worktrees`, dirName);
 	}

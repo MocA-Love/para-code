@@ -23,7 +23,7 @@ import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreati
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
-import { paradisGetParkedTerminalEditorStateKey, paradisListParkedTerminalEditorInstances, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { paradisRegisterTerminalReviveIndexSource } from './paradisTerminalEditorRevive.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { setParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -58,8 +58,16 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	/** グループ → 所属リポジトリID (park 中も保持)。untagged のグループはスコープ外 (常に表示) */
 	private readonly _groupRepositories = new Map<ITerminalGroup, string>();
 
-	/** リポジトリID → park 中のグループ */
+	/**
+	 * スコープの stateKey → park 中のグループ。リポジトリ本体は stateKey が repositoryId と
+	 * 一致するので取り違えても表に出なかったが、worktree では別物になる。退役してよいかの
+	 * 判定 (paradisRegisterParkedTerminalGroupProbe) がこのキーを stateKey として引くため、
+	 * 入れる側も必ず stateKey を渡すこと。
+	 */
 	private readonly _parkedGroups = new Map<string, ITerminalGroup[]>();
+
+	/** 孤児復活のやり直しが走っている最中か（切り替えのたびに多重起動しないため）。 */
+	private _orphanRevivalRetrying = false;
 
 	/**
 	 * 前回セッションのレイアウト復元が終わるまで park を保留しているグループ → 所属リポジトリID。
@@ -191,7 +199,16 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			this.parkExplicitlyScopedEditorIfInactive(instance);
 			this.persistMapping();
 		}));
-		this._register(this.workspaceSwitchService.onDidSwitchScope(stateKey => this.applyScope(stateKey)));
+		// スコープを捨ててよいかの判定は park 中の端末を見る必要があるが、DI では循環するので
+		// パネル側の台帳を引く口だけ渡しておく
+		this._register(paradisRegisterParkedTerminalGroupProbe(stateKey => this._parkedGroups.has(stateKey)));
+
+		this._register(this.workspaceSwitchService.onDidSwitchScope(stateKey => {
+			this.applyScope(stateKey);
+			// 起動時の孤児復活は切り替えが始まると途中で降りる。降りた分は誰も拾わないので、
+			// 切り替えが終わったここでやり直す。完走済みなら何もしない
+			void this.retryOrphanRevivalIfInterrupted();
+		}));
 		this._register(this.terminalGroupService.onDidDisposeGroup(group => this.discardGroup(group)));
 
 		// リポジトリ/worktree がリストから恒久的に消えたら、そのスコープの park 中グループは
@@ -221,7 +238,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// 消され得るため、ここで同期的に確定した写しを渡す。worktree スコープ分は
 			// バリア完了まで quarantine 側に居るので、両方を合わせて引けるようにする。
 			const scopeSnapshot = new Map([...this._quarantinedPersistentProcessScopes, ...this._restoredPersistentProcessScopes]);
-			await this.reviveOrphanedScopedEditorTerminals(scopeSnapshot);
+			// 一巡し切ったときだけ記録する。中断した場合は「台帳が空 = 端末が無い」とは言えず、
+			// worktree 側の missing 自動退役がそれを根拠にすると生きた PTY を巻き添えにする
+			if (await this.reviveOrphanedScopedEditorTerminals(scopeSnapshot)) {
+				paradisMarkOrphanTerminalRevivalComplete();
+			}
 			if (this._store.isDisposed) {
 				return;
 			}
@@ -440,26 +461,62 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * ここで park 台帳へ戻しておけば、切り替え時は reviveInput の台帳ルックアップがそのまま
 	 * 再利用し、モバイルからもスペースを問わず一覧・操作できる。
 	 */
-	private async reviveOrphanedScopedEditorTerminals(persistentProcessScopes: ReadonlyMap<number, string>): Promise<void> {
+	/**
+	 * 中断された孤児復活をやり直す。切り替えの最中に呼ばれても意味が無いので、
+	 * 次の切り替え完了時に改めて試す（多重実行は _orphanRevivalRetrying で防ぐ）。
+	 */
+	private async retryOrphanRevivalIfInterrupted(): Promise<void> {
+		if (paradisIsOrphanTerminalRevivalComplete() || this._orphanRevivalRetrying || this._store.isDisposed) {
+			return;
+		}
+		if (this.workspaceSwitchService.isSwitching) {
+			return;
+		}
+		this._orphanRevivalRetrying = true;
+		try {
+			const scopeSnapshot = new Map([...this._quarantinedPersistentProcessScopes, ...this._restoredPersistentProcessScopes]);
+			if (await this.reviveOrphanedScopedEditorTerminals(scopeSnapshot)) {
+				paradisMarkOrphanTerminalRevivalComplete();
+			}
+		} catch (error) {
+			onUnexpectedError(error);
+		} finally {
+			this._orphanRevivalRetrying = false;
+		}
+	}
+
+	/**
+	 * @returns 孤児を一巡し切ったか。中断した場合は台帳が不完全なので、これを
+	 * 「このスコープに端末は無い」の根拠に使ってはいけない。
+	 */
+	private async reviveOrphanedScopedEditorTerminals(persistentProcessScopes: ReadonlyMap<number, string>): Promise<boolean> {
 		let details;
 		try {
 			const backend = await this.terminalInstanceService.getBackend(this.environmentService.remoteAuthority);
 			details = await backend?.listProcesses();
 		} catch (error) {
 			onUnexpectedError(error);
-			return;
+			return false;
 		}
-		if (details === undefined || this._store.isDisposed) {
-			return;
+		if (details === undefined) {
+			// バックエンドが無い = 復活してくる端末そのものが存在しない
+			return true;
+		}
+		if (this._store.isDisposed) {
+			return false;
 		}
 		const workspaceId = this.workspaceContextService.getWorkspace().id;
+		// 1件でも取りこぼしたら完走扱いにしない。フラグが保証したいのは「台帳がもう増えない」
+		// ではなく「台帳が空ならそのスコープに端末は無い」の方で、復活に失敗した PTY は
+		// pty host に生きたまま台帳へ入らないため、両者がずれる
+		let complete = true;
 		for (const detail of details) {
 			// ループは1件ごとに `await instance.processReady` を挟むので、その間にユーザーの
 			// スペース切替が走り、同じ PTY を working set 側の revive が先に掴むことがある。
 			// 起点で1度だけ作ったスナップショットを使い回すと、その窓で二重アタッチを自分で作る。
 			// 毎回引き直し、切替中はそもそも手を出さない（切替側の復元経路に任せる）。
 			if (this.workspaceSwitchService.isSwitching) {
-				return;
+				return false;
 			}
 			const livePersistentProcessIds = this.listHeldPtyIds();
 			// 台帳 (`_restoredPersistentProcessScopes`) のキーは「前セッションの PTY ID」だが
@@ -490,6 +547,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 					// 再接続に失敗した (persistentProcessId が確定しなかった) インスタンスは
 					// どの一覧にも属さないため、放置すると不可視のままリークする。
 					instance.dispose(TerminalExitReason.Shutdown);
+					complete = false;
 					continue;
 				}
 				// 次の周回で listHeldPtyIds() を引き直すので、手元の集合へ足す必要は無い
@@ -500,8 +558,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				this._stableScopeTracker.observe(instance.instanceId, { kind: 'managed', stateKey });
 			} catch (error) {
 				onUnexpectedError(error);
+				complete = false;
 			}
 		}
+		return complete;
 	}
 
 	/**
@@ -799,17 +859,18 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 	}
 
-	private parkGroup(groupService: TerminalGroupService, group: ITerminalGroup, repositoryId: string): void {
+	/** @param stateKey park 先スコープの stateKey (リポジトリ本体では repositoryId と同値)。 */
+	private parkGroup(groupService: TerminalGroupService, group: ITerminalGroup, stateKey: string): void {
 		// 復元中の park は split を壊す (詳細は _deferredParkGroups のコメント)。保留して復元完了後に行う。
 		if (!this._parkDeferralReleased) {
-			this._deferredParkGroups.set(group, repositoryId);
+			this._deferredParkGroups.set(group, stateKey);
 			return;
 		}
 		groupService.paradisParkGroup(group);
-		let parked = this._parkedGroups.get(repositoryId);
+		let parked = this._parkedGroups.get(stateKey);
 		if (!parked) {
 			parked = [];
-			this._parkedGroups.set(repositoryId, parked);
+			this._parkedGroups.set(stateKey, parked);
 		}
 		parked.push(group);
 	}
@@ -974,12 +1035,13 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	private discardGroup(group: ITerminalGroup): void {
 		this._groupRepositories.delete(group);
 		this._deferredParkGroups.delete(group);
-		for (const [repositoryId, groups] of this._parkedGroups) {
+		for (const [stateKey, groups] of this._parkedGroups) {
 			const index = groups.indexOf(group);
 			if (index !== -1) {
 				groups.splice(index, 1);
 				if (groups.length === 0) {
-					this._parkedGroups.delete(repositoryId);
+					// 空配列でキーを残すと「park 中の端末がある」と誤判定される (probe は has() で引く)
+					this._parkedGroups.delete(stateKey);
 				}
 			}
 		}
