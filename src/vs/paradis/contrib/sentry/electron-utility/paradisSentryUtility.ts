@@ -6,7 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type * as SentryUtility from '@sentry/electron/utility';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
 let sentry: typeof SentryUtility | undefined;
@@ -37,6 +37,9 @@ import('@sentry/electron/utility').then(Sentry => {
 	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
 		captureParadisUtilityException(scope, feature, operation, error, safeExtra);
 	});
+	configureParadisSpanRunner((feature, operation, attributes, callback) =>
+		startParadisUtilitySpan(feature, operation, callback, attributes));
+	configureParadisSpanAttributeSetter(attributes => Sentry.getActiveSpan()?.setAttributes(attributes));
 	sentry = Sentry;
 }).catch(error => {
 	console.error('[Para Code] Failed to initialize shared-process Sentry.', error);
@@ -71,6 +74,7 @@ export function startParadisUtilitySpan<T>(
 	feature: string,
 	operation: string,
 	callback: () => T,
+	attributes?: ParadisSpanAttributes,
 ): T {
 	if (!sentry) {
 		return callback();
@@ -79,6 +83,7 @@ export function startParadisUtilitySpan<T>(
 		name: `para.${feature}.${operation}`,
 		op: `para.${feature}`,
 		attributes: {
+			...attributes,
 			'para.scope': 'owned',
 			'para.feature': feature,
 			'para.operation': operation,

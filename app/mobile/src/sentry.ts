@@ -115,20 +115,37 @@ export function captureMobileException(
 	}) ?? '';
 }
 
+/**
+ * 計測値に付ける属性。`safe_` を必須にしているのは飾りではなく、PC 側の allow-list
+ * （isParadisSafeExtraKey）と同じ約束で「内容が読めるものを載せない」を型で縛るため。
+ * 件数・種別・成否だけを入れること（質問文・選択肢・自由入力の本文は載せない）。
+ */
+export type MobileSpanAttributes = Record<`safe_${string}`, number | string | boolean>;
+
 export function startMobileSpan<T>(
 	feature: string,
 	operation: string,
 	callback: () => T,
+	attributes?: MobileSpanAttributes,
 ): T {
 	return Sentry.startSpan({
 		name: `para.${feature}.${operation}`,
 		op: `para.${feature}`,
 		attributes: {
+			...attributes,
 			'para.scope': 'owned',
 			'para.feature': feature,
 			'para.operation': operation,
 		},
 	}, callback);
+}
+
+/**
+ * 実行中の span へ、終わってみないと分からない値（送信結果など）を後から付ける。
+ * span が無いときは何もしない。
+ */
+export function setMobileSpanAttributes(attributes: MobileSpanAttributes): void {
+	Sentry.getActiveSpan()?.setAttributes(attributes);
 }
 
 function consumeMobileErrorQuota(event: Event): boolean {
