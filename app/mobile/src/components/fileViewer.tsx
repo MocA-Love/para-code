@@ -19,6 +19,7 @@ import { hapticImpact, hapticSelection } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
+import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 
 interface FileViewerProps {
 	path: string;
@@ -394,6 +395,11 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 }
 
 export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, onClose }: FileViewerProps) {
+	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
+	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
+	// 変わったときに「fullScreenなのに上余白14pt」＝ヘッダーがステータスバーに潜る。
+	const [presentedAsSheet] = useState(useIsRegularWidth());
+	const headerTop = presentedAsSheet ? 14 : 58;
 	const name = path.split('/').pop() ?? path;
 	const kind = /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : /\.pdf$/i.test(name) ? 'pdf' : /\.docx$/i.test(name) ? 'docx' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other';
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
@@ -441,10 +447,12 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 
 	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine);
 
+	// iPad幅では pageSheet にして、常設サイドバーを覆い隠さないようにする
+	// （fullScreenだとファイルを1つ開くたびに2カラムが消える）。
 	return (
-		<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+		<Modal visible animationType="slide" presentationStyle={presentedAsSheet ? 'pageSheet' : 'fullScreen'} onRequestClose={onClose}>
 			<View style={styles.screen}>
-				<View style={styles.header}>
+				<View style={[styles.header, { paddingTop: headerTop }]}>
 					{backLabel !== undefined ? (
 						<Pressable style={styles.backButton} onPress={() => { hapticImpact('light'); onClose(); }} hitSlop={8} accessibilityLabel={`${backLabel}に戻る`}>
 							<Ionicons name="chevron-back" size={21} color={colors.accent2} />
@@ -507,7 +515,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 58, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
+	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
 	backButton: { flexDirection: 'row', alignItems: 'center', marginLeft: -7, marginRight: 2 },
 	backText: { color: colors.accent2, fontSize: 14 },
 	title: { flex: 1, color: colors.text, fontSize: 13 },

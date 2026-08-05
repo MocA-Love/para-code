@@ -9,6 +9,7 @@ import { useAppStore } from '../src/appState.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { GITHUB_UNSCOPED_SPACE } from '../src/store.js';
@@ -87,6 +88,8 @@ export default function GithubUsageScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	const { githubUsage, connection } = useAppStore(useShallow(s => ({ githubUsage: s.githubUsage, connection: s.connection })));
 
 	const [data, setData] = useState<GithubUsageResult | undefined>();
@@ -142,7 +145,7 @@ export default function GithubUsageScreen() {
 				</View>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={{ paddingBottom: tabBarSpacer }}
+					contentContainerStyle={[{ paddingBottom: tabBarSpacer }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}

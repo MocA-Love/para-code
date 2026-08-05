@@ -10,6 +10,7 @@ import { ConnectionGate } from '../src/components/connectionGate.js';
 import { ProviderLogo } from '../src/components/providerLogo.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors } from '../src/theme.js';
 import { useNow } from '../src/time.js';
 import { hapticImpact } from '../src/haptics.js';
@@ -101,6 +102,8 @@ export default function RateLimitScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	// リセット残り時間の表示を画面を開いたままでも追従させる
 	const now = useNow();
 	const { rateLimits, connection } = useAppStore(useShallow(s => ({ rateLimits: s.rateLimits, connection: s.connection })));
@@ -216,7 +219,7 @@ export default function RateLimitScreen() {
 				</View>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={{ paddingBottom: tabBarSpacer }}
+					contentContainerStyle={[{ paddingBottom: tabBarSpacer }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}

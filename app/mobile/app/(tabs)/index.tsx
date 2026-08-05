@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { useIsFocused, useRouter } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 // 一覧のScrollViewはRNGH版を使う。RN版は子孫へのタッチ配送を遅らせるため、行に付けた
@@ -26,10 +26,27 @@ import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/com
 import { SwipeRow } from '../../src/components/swipeRow.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
+import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
+import { listColumnsFor } from '../../src/ipad/ipadLayout.js';
+
+/**
+ * エージェント行の並べ方。1列のときは行をそのまま返し（iPhoneと同じツリー）、
+ * iPadの広い幅で2列に入るときだけ折り返しのグリッドで包む。
+ */
+function renderAgentRows(nodes: readonly ReactElement[], columns: 1 | 2) {
+	if (columns === 1) {
+		return nodes;
+	}
+	return (
+		<View style={styles.grid}>
+			{nodes.map(node => <View key={node.key} style={styles.gridCell}>{node}</View>)}
+		</View>
+	);
+}
 
 /**
  * ホーム画面（mock.html 案A準拠のリデザイン）。旧デザインの「接続中のPC」カードと
@@ -67,12 +84,20 @@ export default function HomeScreen() {
 	// （setFullWidthSwipe）は使わない。あちらのジェスチャは**向きを問わず最初の1pxで発動する**
 	// 作りのため、一覧の行に付けた左スワイプが毎回そこで潰されてしまう。ここで向きを限った
 	// 自前のジェスチャに置き換え、左方向はそのまま行へ渡す。
+	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ており開く先が無い。
+	// 有効なままだと右スワイプを何もしないジェスチャが飲み込んでしまうため、そこでは止める。
+	const regular = useIsRegularWidth();
+	// 一覧を何列で並べるか。ウィンドウ幅ではなく実際の一覧の幅で決める
+	// （左のサイドバーぶん狭いので、ウィンドウ幅で決めると2列に入らない幅でも2列にしてしまう）。
+	const [listWidth, setListWidth] = useState(0);
+	const columns = regular ? listColumnsFor(listWidth) : 1;
 	const drawer = useWsDrawer();
 	const openDrawerPan = useMemo(() => Gesture.Pan()
 		.runOnJS(true)
+		.enabled(!regular)
 		.activeOffsetX(24)
 		.failOffsetY([-16, 16])
-		.onStart(() => drawer.open()), [drawer]);
+		.onStart(() => drawer.open()), [drawer, regular]);
 	// 絞り込み中は選択中ワークスペース（selectedWs）＋その配下のworktreeだけを対象にする。
 	// selectedWsは他タブや通知タップ・エージェント遷移でも更新される全画面共有の値なので、
 	// それらの操作でワークスペースが切り替わった後にホームへ戻ると、絞り込み先も追従する
@@ -228,7 +253,13 @@ export default function HomeScreen() {
 					</View>
 				}
 			/>
-			<ScrollView style={styles.scroll} contentContainerStyle={[styles.content, { paddingBottom: tabBarSpacer }]}>
+			<ScrollView
+				style={styles.scroll}
+				contentContainerStyle={[styles.content, { paddingBottom: tabBarSpacer }]}
+				// 幅の測定はiPad幅のときだけ。iPhoneでは列数が常に1なので測る必要が無く、
+				// onLayoutを付けるとマウント時に無駄な再描画が1回増える。
+				onLayout={regular ? e => setListWidth(e.nativeEvent.layout.width) : undefined}
+			>
 				<AttentionStack
 					items={stackItems}
 					total={waitingTerminals.length}
@@ -257,7 +288,7 @@ export default function HomeScreen() {
 						{homeShowAllWorkspaces || effectiveWs === undefined ? 'エージェント — 全ワークスペース' : `エージェント — ${effectiveWs.name}`}
 					</Text>
 				) : null}
-				{rows.map(t => {
+				{renderAgentRows(rows.map(t => {
 					const ws = resolveWs(t);
 					const color = ws ? wsColor(ws) : colors.accent;
 					const pinned = pinnedKeys.has(pinKeyForTerminal(t));
@@ -316,7 +347,7 @@ export default function HomeScreen() {
 							{row}
 						</SwipeRow>
 					);
-				})}
+				}), columns)}
 				{rows.length === 0 && waitingTerminals.length === 0 ? (
 					<Text style={styles.dimSmall}>
 						{homeShowAllWorkspaces || effectiveWs === undefined
@@ -388,4 +419,8 @@ const styles = StyleSheet.create({
 	undoText: { color: colors.text, fontSize: 12, flex: 1 },
 	undoAction: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginTop: 6, marginBottom: 8, letterSpacing: 0.5 },
+	// iPadの広い幅でエージェント行を2列に並べるときだけ使う折り返しグリッド。
+	// 各セルの左右に隙間を作るため、グリッド側を負のマージンで相殺する。
+	grid: { flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -5 },
+	gridCell: { width: '50%', paddingHorizontal: 5 },
 });

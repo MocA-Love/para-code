@@ -14,6 +14,7 @@ import { GlassSurface } from '../src/components/glassSurface.js';
 import { ProviderLogo } from '../src/components/providerLogo.js';
 import { useEffectiveWs, wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors, mono } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
@@ -43,6 +44,8 @@ export default function AgentLaunchScreen() {
 		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,
 	})));
 	const effectiveWs = useEffectiveWs();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	const live = connection === 'online' && pcOnline && sessionProtocolReady && workspace?.renderers.some(renderer => renderer.ready) === true;
 
 	const [form, setForm] = useState<WorktreeFormResult | undefined>(undefined);
@@ -235,7 +238,7 @@ export default function AgentLaunchScreen() {
 			</View>
 
 			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-				<ScrollView ref={scrollRef} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 30 }]} keyboardShouldPersistTaps="handled">
+				<ScrollView ref={scrollRef} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 30 }, column]} keyboardShouldPersistTaps="handled">
 					{formError ? <Text style={styles.error}>{formError}</Text> : null}
 					{!form && !formError ? <ActivityIndicator style={styles.spinner} /> : null}
 					{form && agent !== undefined ? (

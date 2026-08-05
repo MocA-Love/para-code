@@ -9,6 +9,7 @@ import { useAppStore } from '../src/appState.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors } from '../src/theme.js';
 import { formatRelativeTime, useNow } from '../src/time.js';
 import { hapticImpact } from '../src/haptics.js';
@@ -80,6 +81,8 @@ export default function CcusageScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	// 相対時刻表示（セッションの最終アクティビティ）を画面を開いたままでも追従させる
 	const now = useNow();
 	const { usageDashboard, connection } = useAppStore(useShallow(s => ({ usageDashboard: s.usageDashboard, connection: s.connection })));
@@ -140,7 +143,7 @@ export default function CcusageScreen() {
 				</View>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={{ paddingBottom: tabBarSpacer }}
+					contentContainerStyle={[{ paddingBottom: tabBarSpacer }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}

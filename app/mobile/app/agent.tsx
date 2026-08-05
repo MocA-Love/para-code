@@ -26,8 +26,10 @@ import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../src/pendingAgen
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useAgentActions } from '../src/hooks/useAgentActions.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
+import { useIsRegularWidth } from '../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
+import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
@@ -63,6 +65,9 @@ export default function AgentDetailScreen() {
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
+	// iPadの広い幅では会話の列幅を制限して中央へ寄せる。1行が長すぎると次の行頭へ
+	// 目線を戻す距離が伸びて読みづらいため（ヘッダーとブラーは全幅のまま）。
+	const regular = useIsRegularWidth();
 	// ヘッダーはブラーのオーバーレイとしてチャットの上に重ねる（純正メール風。
 	// コンテンツがヘッダーの下を通ってボケて見える）。実高さは onLayout で測る。
 	const [headerHeight, setHeaderHeight] = useState(insets.top + 52);
@@ -425,7 +430,7 @@ export default function AgentDetailScreen() {
 								: item.type === 'questionGroup' ? <QuestionGroupCard messages={item.msgs} answered={item.answered} onSubmit={actions.answerQuestionGroup} />
 									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} terminalKey={activeKey} />
 									: <AgentTimeline msgs={item.msgs} terminalKey={activeKey} />}
-						contentContainerStyle={[styles.listContent, { paddingTop: headerHeight + (hasActivityHistory ? 52 : 6) }]}
+						contentContainerStyle={[styles.listContent, regular && styles.readingColumn, { paddingTop: headerHeight + (hasActivityHistory ? 52 : 6) }]}
 						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
 						onContentSizeChange={onContentSizeChange}
 						onScroll={onListScroll}
@@ -440,13 +445,15 @@ export default function AgentDetailScreen() {
 				{/* sticky解除中（遡り読み中）の「最新へジャンプ」ボタン（Liquid Glass）。
 				    新着が届いたら件数バッジを添える。タップで最下部へ戻り追従を再開する */}
 				{!sticky && chat !== undefined && !chat.none ? (
-					<View style={styles.jumpWrap} pointerEvents="box-none">
-						<Pressable onPress={jumpToLatest} accessibilityLabel="最新のメッセージへ移動">
-							<GlassSurface style={[styles.jumpBtn, !liquidGlass && styles.jumpFallbackBorder]} interactive>
-								<Ionicons name="chevron-down" size={16} color={colors.text} />
-								{newCount > 0 ? <Text style={styles.jumpText}>{newCount > 99 ? '99+' : String(newCount)}</Text> : null}
-							</GlassSurface>
-						</Pressable>
+					<View style={[styles.jumpWrap, regular && styles.overlayCenter]} pointerEvents="box-none">
+						<View style={regular ? styles.overlayColumnRight : undefined}>
+							<Pressable onPress={jumpToLatest} accessibilityLabel="最新のメッセージへ移動">
+								<GlassSurface style={[styles.jumpBtn, !liquidGlass && styles.jumpFallbackBorder]} interactive>
+									<Ionicons name="chevron-down" size={16} color={colors.text} />
+									{newCount > 0 ? <Text style={styles.jumpText}>{newCount > 99 ? '99+' : String(newCount)}</Text> : null}
+								</GlassSurface>
+							</Pressable>
+						</View>
 					</View>
 				) : null}
 			</View>
@@ -493,10 +500,16 @@ export default function AgentDetailScreen() {
 					</Pressable>
 				</View>
 			</View>
-			{hasActivityHistory && chat?.activity !== undefined ? <View style={[styles.activityStripOverlay, { top: headerHeight + 4 }]}><AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} /></View> : null}
+			{hasActivityHistory && chat?.activity !== undefined ? (
+				<View style={[styles.activityStripOverlay, regular && styles.overlayCenter, { top: headerHeight + 4 }]}>
+					{regular
+						? <View style={styles.overlayColumn}><AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} /></View>
+						: <AgentActivityStrip activity={chat.activity} onOpen={openAgentActivity} />}
+				</View>
+			) : null}
 
 			{approval !== undefined && activeKey !== undefined ? (
-				<View style={styles.approvalBarWrap}>
+				<View style={[styles.approvalBarWrap, regular && styles.readingColumn, regular && styles.approvalBarWrapRegular]}>
 					<ApprovalCard
 						key={approval.id}
 						interactionId={approval.id}
@@ -507,7 +520,7 @@ export default function AgentDetailScreen() {
 					/>
 				</View>
 			) : approvalUnavailable && activeKey !== undefined ? (
-				<View style={styles.approvalBarWrap}>
+				<View style={[styles.approvalBarWrap, regular && styles.readingColumn, regular && styles.approvalBarWrapRegular]}>
 					<View style={styles.approvalSyncing}>
 						<Text style={styles.approvalSyncingText}>PCで内容を確認してください</Text>
 						<Text style={styles.approvalSyncingHint}>許可の内容を取得できていないため、ここからは回答できません</Text>
@@ -516,7 +529,7 @@ export default function AgentDetailScreen() {
 			) : null}
 
 			{pendingMessages.length > 0 && !workingVisible ? (
-				<View style={styles.pendingRow}>
+				<View style={[styles.pendingRow, regular && styles.readingColumn]}>
 					<PendingMessagesChip count={pendingMessages.length} onPress={() => setPendingSheetOpen(true)} />
 				</View>
 			) : null}
@@ -538,7 +551,7 @@ export default function AgentDetailScreen() {
 				/>
 			) : null}
 
-			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
+			<View style={[styles.inputBar, regular && styles.readingColumn, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 12 }]}>
 				<AgentComposer
 					draftKey={draftKey}
 					activeTerminalKey={activeKey}
@@ -752,6 +765,18 @@ const styles = StyleSheet.create({
 	listShown: { opacity: 1 },
 	listHidden: { opacity: 0 },
 	listContent: { paddingHorizontal: 14, paddingVertical: 10, gap: 9 },
+	// iPad幅で本文とコンポーザーを中央寄せの読みやすい列幅に収める。
+	// `width: '100%'` が無いと、maxWidthだけでは中身の実幅まで縮んでしまう。
+	readingColumn: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' },
+	// 承認バーは通常 marginHorizontal で左右を空けているが、readingColumn の
+	// `width: '100%'` と併用すると親より左右marginぶん widerになってはみ出す。
+	// iPad幅では外側のmarginを内側のpaddingへ付け替えて幅の辻褄を合わせる。
+	approvalBarWrapRegular: { marginHorizontal: 0, paddingHorizontal: 12 },
+	// 絶対配置の要素（実行中ストリップ・最新へジャンプ）を読み幅の列に合わせて中央寄せする。
+	// 絶対配置は alignSelf が効かないので、左右いっぱいに広げてから中身を中央に寄せる。
+	overlayCenter: { left: 0, right: 0, alignItems: 'center' },
+	overlayColumn: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, paddingHorizontal: 12 },
+	overlayColumnRight: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignItems: 'flex-end', paddingRight: 14 },
 	placeholder: { color: colors.textDim, fontSize: 13, lineHeight: 20, padding: 16 },
 	noneBox: { alignItems: 'flex-start' },
 	retryBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, marginLeft: 16, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7 },

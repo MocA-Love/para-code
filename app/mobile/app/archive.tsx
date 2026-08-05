@@ -12,6 +12,7 @@ import { AgentRowContent, agentRowStyles, type AgentRowData } from '../src/compo
 import { SwipeRow } from '../src/components/swipeRow.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
@@ -28,6 +29,8 @@ import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 export default function ArchiveScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	const { workspace, archivedKeys, pinnedKeys, setArchived, setSelectedWs, setSelectedTerminalKey } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, archivedKeys: s.archivedKeys, pinnedKeys: s.pinnedKeys, setArchived: s.setArchived,
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
@@ -62,7 +65,7 @@ export default function ArchiveScreen() {
 					<Ionicons name="close" size={16} color={colors.textDim} />
 				</Pressable>
 			</View>
-			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 24 }]}>
+			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 24 }, column]}>
 				{rows.length === 0 ? (
 					<Text style={styles.empty}>アーカイブしたエージェントはありません{'\n'}ホームの一覧を左へスワイプするとここに入ります</Text>
 				) : (

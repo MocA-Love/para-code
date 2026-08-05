@@ -2,7 +2,7 @@
 
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Image, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
-import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
+import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerLockMode, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
 import { Link, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -12,6 +12,7 @@ import {
 	CPU_THRESHOLDS, MEMORY_THRESHOLDS, diskLevel, formatCpu, resourceHeadline, usageLevel, usagePercent, worstLevel,
 	type UsageLevel,
 } from '../systemResources.js';
+import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
@@ -105,14 +106,28 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 	const ref = useRef<DrawerLayoutMethods>(null);
 	const { width } = useWindowDimensions();
 	const [fullWidthSwipe, setFullWidthSwipe] = useState(false);
+	// iPadの広い幅では同じ中身が常設サイドバー（ipadShell.tsx）として画面左に出ている。
+	// スライド式ドロワーはそこでは二重表示になるため、開けないよう錠を掛ける。
+	const regular = useIsRegularWidth();
+	// `regular` を ref で読むのは、api の参照を安定させたまま最新値を見るため
+	// （api が毎回変わると renderDrawer ごと作り直しになる）。
+	const regularRef = useRef(regular);
+	regularRef.current = regular;
 	const api = useMemo<WsDrawerApi>(() => ({
 		// 触覚フィードバックは開き切った/閉じ切った瞬間（onDrawerOpen/onDrawerClose）に鳴らす。
 		// ここで鳴らすとスワイプで開いたときだけ無音になり、かつ「開き始め」に鳴って早すぎる。
-		open: () => ref.current?.openDrawer(),
+		//
+		// iPad幅では開かせない。`drawerLockMode` はスワイプしか止めず、命令的な
+		// `openDrawer()` は素通ししてしまう（RNGHの実装が lock mode を見ていない）ため、
+		// ここで塞ぐ。塞がないと、中身が null の見えないパネルが開いて操作を飲み込む。
+		open: () => { if (!regularRef.current) { ref.current?.openDrawer(); } },
 		close: () => ref.current?.closeDrawer(),
 		setFullWidthSwipe,
 	}), []);
-	const renderDrawer = useCallback(() => <WsDrawerContent onClose={api.close} />, [api]);
+	// iPad幅では中身を描かない（＝常設サイドバーと二重にしない）。ただしドロワー自体は
+	// 描画し続ける。ここで早期returnして`children`のツリー上の位置を変えると、幅がしきい値を
+	// またぐたびにタブ配下が丸ごと作り直され、ターミナルのWebViewや入力途中の文字が消える。
+	const renderDrawer = useCallback(() => (regular ? null : <WsDrawerContent onClose={api.close} />), [api, regular]);
 
 	return (
 		<WsDrawerContext.Provider value={api}>
@@ -130,7 +145,9 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 				// 通常は左端エッジのみでスワイプ開始を受け付ける（ターミナル/ブラウザWebViewの
 				// 横操作との競合を最小化。認識はネイティブなので閾値未満のタップは阻害しない）。
 				// ホームタブのフォーカス中のみ画面全域の右スワイプで開ける（X方式）。
-				edgeWidth={fullWidthSwipe ? width : 24}
+				// iPad幅ではエッジ幅を0にし、錠も掛けて一切開かないようにする。
+				edgeWidth={regular ? 0 : fullWidthSwipe ? width : 24}
+				drawerLockMode={regular ? DrawerLockMode.LOCKED_CLOSED : DrawerLockMode.UNLOCKED}
 				renderNavigationView={renderDrawer}
 				onDrawerOpen={onDrawerSettled}
 				onDrawerClose={onDrawerSettled}
@@ -199,8 +216,18 @@ function PcResourceRow({ resources, onPress }: { resources: DesktopResources; on
 	);
 }
 
-/** ドロワーの中身。ReanimatedDrawerLayoutのrenderNavigationViewから描画される。 */
-function WsDrawerContent({ onClose }: { onClose: () => void }) {
+/**
+ * ドロワーの中身。ReanimatedDrawerLayoutのrenderNavigationViewから描画される。
+ *
+ * iPadの広い幅では同じ中身を常設サイドバーとしても使う（`ipadSidebar.tsx`）。そちらは
+ * 閉じる操作を持たないため `onClose` にno-opを渡し、下部タブの代わりになるセグメントを
+ * `navigation` として差し込む。中身を作り分けないのは、PCステータス・ワークスペース一覧・
+ * メモ・接続管理といった実装をiPhone版と1つに保つため。
+ *
+ * `navigation` を接続管理（切断・ペアリング解除）より**上**へ置くのは、主要な移動手段が
+ * 破壊的な操作の下に来ないようにするため。
+ */
+export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; navigation?: ReactNode }) {
 	const insets = useStableInsets();
 	const router = useRouter();
 	const {
@@ -492,6 +519,8 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 				) : null}
 			</ScrollView>
 
+			{navigation}
+
 			{/* 接続管理（旧ホームカードのボタン群から移設） */}
 			<View style={styles.footer}>
 				{connection === 'online' ? (
@@ -523,6 +552,10 @@ function WsDrawerContent({ onClose }: { onClose: () => void }) {
 export function WsHeader({ title, subtitle, right, allWorkspaces }: { title: string; subtitle?: string; right?: ReactNode; allWorkspaces?: boolean }) {
 	const insets = useStableInsets();
 	const drawer = useWsDrawer();
+	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ている。チップは開く先が
+	// すでに見えている押しても何も起きないボタンになるため、まるごと省く
+	// （選択中の色・他ワークスペースの応答待ちもサイドバー側が行のハイライトとバッジで示す）。
+	const regular = useIsRegularWidth();
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
 	const current = useEffectiveWs();
 
@@ -536,24 +569,26 @@ export function WsHeader({ title, subtitle, right, allWorkspaces }: { title: str
 	const defaultSubtitle = current ? `${current.name}${current.branch ? ` · ${current.branch}` : ''}` : undefined;
 
 	return (
-		<View style={[styles.headerWrap, { paddingTop: insets.top + 4 }]}>
-			<Pressable onPress={drawer.open} accessibilityLabel="ワークスペースを切り替え">
-				{/* iOS 26+はワークスペース色をtintしたLiquid Glass、それ未満は従来の色付きチップ */}
-				<GlassSurface
-					style={[styles.chip, !liquidGlass && { backgroundColor: chipColor + '22', borderColor: chipColor + '55', borderWidth: 1 }]}
-					interactive
-					tintColor={liquidGlass ? chipColor + '33' : undefined}
-				>
-					{allWorkspaces ? (
-						<Ionicons name="apps-outline" size={16} color={chipColor} />
-					) : (
-						<Text style={[styles.chipText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>
-					)}
-				</GlassSurface>
-				{otherWaiting > 0 ? (
-					<View style={styles.chipBadge}><Text style={styles.chipBadgeText}>{otherWaiting}</Text></View>
-				) : null}
-			</Pressable>
+		<View style={[styles.headerWrap, regular && styles.headerWrapRegular, { paddingTop: insets.top + 4 }]}>
+			{regular ? null : (
+				<Pressable onPress={drawer.open} accessibilityLabel="ワークスペースを切り替え">
+					{/* iOS 26+はワークスペース色をtintしたLiquid Glass、それ未満は従来の色付きチップ */}
+					<GlassSurface
+						style={[styles.chip, !liquidGlass && { backgroundColor: chipColor + '22', borderColor: chipColor + '55', borderWidth: 1 }]}
+						interactive
+						tintColor={liquidGlass ? chipColor + '33' : undefined}
+					>
+						{allWorkspaces ? (
+							<Ionicons name="apps-outline" size={16} color={chipColor} />
+						) : (
+							<Text style={[styles.chipText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>
+						)}
+					</GlassSurface>
+					{otherWaiting > 0 ? (
+						<View style={styles.chipBadge}><Text style={styles.chipBadgeText}>{otherWaiting}</Text></View>
+					) : null}
+				</Pressable>
+			)}
 			<View style={styles.textCol}>
 				<Text style={styles.title}>{title}</Text>
 				{(subtitle ?? defaultSubtitle) ? <Text style={styles.subtitle} numberOfLines={1}>{subtitle ?? defaultSubtitle}</Text> : null}
@@ -566,6 +601,8 @@ export function WsHeader({ title, subtitle, right, allWorkspaces }: { title: str
 const styles = StyleSheet.create({
 	// ヘッダー（旧screenTitle.tsxのスタイルを踏襲。左paddingはチップがあるため少し狭める）
 	headerWrap: { paddingLeft: 16, paddingRight: 12, paddingBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
+	// チップを省くiPad幅では、その分だけタイトルが左端へ寄りすぎないよう左paddingを足す
+	headerWrapRegular: { paddingLeft: 20 },
 	chip: { width: 36, height: 36, borderRadius: 11, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
 	chipText: { fontSize: 14, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	chipBadge: {

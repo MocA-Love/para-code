@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
 import { useShallow } from 'zustand/react/shallow';
@@ -18,6 +19,7 @@ import { buildMarkdownHtml } from './fileViewer.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
+import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 
 interface DiffViewProps {
 	ws: string;
@@ -88,6 +90,11 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 }
 
 export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
+	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
+	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
+	// 変わったときに「fullScreenなのに上余白14pt」＝ヘッダーがステータスバーに潜る。
+	const [presentedAsSheet] = useState(useIsRegularWidth());
+	const headerTop = presentedAsSheet ? 14 : 58;
 	const { scmDiff, scmXlsxDiff, fsRead, fsXlsx, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
 		scmDiff: s.scmDiff, scmXlsxDiff: s.scmXlsxDiff, fsRead: s.fsRead, fsXlsx: s.fsXlsx,
 		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
@@ -178,10 +185,12 @@ export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
 	const showWebView = mode === 'render' ? renderHtml : kind === 'spreadsheet' ? diffHtml : undefined;
 	const loading = mode === 'render' ? renderHtml === undefined : kind === 'spreadsheet' ? diffHtml === undefined : diffText === undefined;
 
+	// iPad幅では pageSheet にして、常設サイドバーを覆い隠さないようにする
+	// （fullScreenだとファイルを1つ開くたびに2カラムが消える）。
 	return (
-		<Modal visible animationType="slide" presentationStyle="fullScreen" onRequestClose={onClose}>
+		<Modal visible animationType="slide" presentationStyle={presentedAsSheet ? 'pageSheet' : 'fullScreen'} onRequestClose={onClose}>
 			<View style={styles.screen}>
-				<View style={styles.header}>
+				<View style={[styles.header, { paddingTop: headerTop }]}>
 					<Ionicons name="git-compare-outline" size={16} color={colors.textDim} />
 					<Text style={styles.title} numberOfLines={1}>{path}</Text>
 					{mode === 'diff' && kind !== 'spreadsheet' && diffText !== undefined ? (
@@ -252,7 +261,7 @@ const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace';
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: '#0d1117' },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingTop: 58, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
+	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingBottom: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border, backgroundColor: colors.surface },
 	title: { flex: 1, color: colors.text, fontSize: 13, fontFamily: MONO },
 	statAdd: { color: '#3fb950', fontSize: 12, fontFamily: MONO, fontWeight: '700' },
 	statDel: { color: '#f85149', fontSize: 12, fontFamily: MONO, fontWeight: '700' },

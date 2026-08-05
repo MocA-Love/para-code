@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { APP_VERSION } from '../src/components/updateSheet.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
@@ -19,6 +20,8 @@ import { formatCpu, usagePercent } from '../src/systemResources.js';
 export default function SettingsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	const { notifyPrefs, setNotifyPref, resources } = useAppStore(useShallow(s => ({
 		notifyPrefs: s.notifyPrefs, setNotifyPref: s.setNotifyPref, resources: s.workspace?.resources,
 	})));
@@ -40,7 +43,7 @@ export default function SettingsScreen() {
 					<Ionicons name="close" size={16} color={colors.textDim} />
 				</Pressable>
 			</View>
-			<ScrollView style={styles.scroll} contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}>
+			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingBottom: insets.bottom + 24 }, column]}>
 				<Text style={styles.sectionTitle}>使用量</Text>
 				<View style={styles.card}>
 					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/ccusage'); }}>

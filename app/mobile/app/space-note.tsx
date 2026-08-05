@@ -10,6 +10,7 @@ import { GlassSurface, liquidGlass } from '../src/components/glassSurface.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { appendSpaceNoteEntry, applySpaceNotePrefix, continueSpaceNoteChecklist, parseSpaceNote, SPACE_NOTE_MAX_LENGTH, spaceNoteSummary, toggleSpaceNoteTask, trimSpaceNoteTrailingEmptyTask, type SpaceNotePrefix } from '../src/spaceNote.js';
 import { colors, mono } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
@@ -41,6 +42,8 @@ export default function SpaceNoteScreen() {
 	// キーボードが出ている間は KeyboardAvoidingView が下端を押し上げるため、
 	// SafeArea ぶんの余白を足すと二重になる（入力欄がキーボードから浮く）。
 	const keyboardVisible = useKeyboardVisible();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	const { ws } = useLocalSearchParams<{ ws?: string }>();
 	// 描画に使う値だけを取り出す。ここで `workspace` をそのまま受け取ると、
 	// エージェントの進捗など無関係な同期のたびに画面全体が再レンダされる。
@@ -343,7 +346,7 @@ export default function SpaceNoteScreen() {
 						accessibilityLabel="メモの本文"
 					/>
 				) : (
-					<ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={[styles.bodyContent, { paddingBottom: adding ? 16 : insets.bottom + 32 }]} keyboardShouldPersistTaps="handled">
+					<ScrollView ref={scrollRef} style={styles.flex} contentContainerStyle={[styles.bodyContent, { paddingBottom: adding ? 16 : insets.bottom + 32 }, column]} keyboardShouldPersistTaps="handled">
 						{lines.length === 0 && !adding ? (
 							<Text style={styles.placeholder}>このスペースのメモはまだありません。下の「項目を追加」からすぐ書き始められます。</Text>
 						) : lines.map(line => {

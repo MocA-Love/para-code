@@ -1,0 +1,1479 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Para Code — iPad Layout Proposals</title>
+<style>
+:root{
+	--bg:#050506;--panel:#131316;--surface:#131316;--surface2:#1c1c20;--surface3:#232328;
+	--border:rgba(255,255,255,.08);--strong:rgba(255,255,255,.16);
+	--text:#f0f0f2;--dim:#8a8a92;
+	--accent:#09AFD9;--accent2:#0598BD;--wash:rgba(9,175,217,.14);
+	--green:#4fd1a5;--yellow:#e0c07d;--orange:#d99a6c;--red:#f47272;--purple:#c193d9;--claude:#d97757;
+	--glass:rgba(28,28,32,.72);--glassBorder:rgba(255,255,255,.14);--attentionBg:rgba(36,20,20,.92);
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:radial-gradient(circle at 20% 0,#162126 0,transparent 32%),#09090b;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Inter,sans-serif}
+button,select,input{font:inherit}
+button{cursor:pointer}
+.app{min-height:100vh;display:grid;grid-template-columns:1fr 400px}
+.stage{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:36px;position:sticky;top:0;overflow:auto}
+.studio{border-left:1px solid var(--border);background:rgba(13,13,16,.92);padding:24px 22px 60px;overflow:auto;height:100vh}
+.brand{margin-bottom:18px}
+.brand h1{font-size:16px;margin:0 0 4px}
+.brand small{color:var(--dim);font-size:11px;line-height:1.6;display:block}
+.group{border-top:1px solid var(--border);padding:16px 0}
+.group-title{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);font-weight:800;margin-bottom:9px}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.seg.two{grid-template-columns:repeat(2,1fr)}
+.seg button{min-height:34px;border:1px solid var(--border);background:var(--surface2);color:var(--dim);border-radius:10px;padding:6px 7px;font-size:11px}
+.seg button.active{border-color:rgba(9,175,217,.55);color:var(--text);background:var(--wash)}
+.proposal-card{width:100%;text-align:left;border:1px solid var(--border);background:var(--surface);border-radius:14px;padding:12px 13px;margin-bottom:8px}
+.proposal-card.active{border-color:rgba(9,175,217,.55);background:var(--wash)}
+.proposal-card b{display:block;font-size:12.5px;margin-bottom:3px}
+.proposal-card span{display:block;font-size:10px;color:var(--dim);line-height:1.5}
+.badge-mini{display:inline-block;font-size:8px;font-weight:800;border-radius:6px;padding:2px 6px;margin-top:6px;letter-spacing:.03em}
+.reuse-high{background:rgba(79,209,165,.14);color:var(--green)}
+.reuse-mid{background:rgba(224,192,125,.14);color:var(--yellow)}
+.reuse-low{background:rgba(244,114,114,.14);color:var(--red)}
+.desc-block{font-size:11px;line-height:1.7;color:var(--dim)}
+.desc-block h3{font-size:11px;color:var(--text);margin:14px 0 5px;font-weight:700}
+.desc-block h3:first-child{margin-top:0}
+.desc-block ul{margin:0;padding-left:16px}
+.desc-block li{margin:3px 0}
+.note{color:var(--dim);font-size:9.5px;line-height:1.6;margin:8px 0 0}
+.scale-tag{font:10px Menlo,monospace;color:var(--dim);text-align:center;margin-top:14px}
+
+/* ---- iPad frame ---- */
+.tablet-wrap{transform-origin:center center}
+.tablet-shell{width:1194px;height:834px;border-radius:44px;background:#000;padding:16px;box-shadow:0 40px 120px rgba(0,0,0,.7),0 0 0 1px #ffffff1a;position:relative}
+.tablet-cam{position:absolute;top:8px;left:50%;transform:translateX(-50%);width:8px;height:8px;border-radius:50%;background:#111;box-shadow:inset 0 0 0 1px #333;z-index:5}
+.tablet-screen{width:100%;height:100%;border-radius:30px;overflow:hidden;background:var(--bg);position:relative;display:flex}
+
+/* ---- shared header bits ---- */
+.round{width:34px;height:34px;border-radius:50%;border:1px solid var(--strong);background:var(--glass);color:var(--text);display:grid;place-items:center;flex:none}
+.ws-avatar{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:11px;font-weight:800;flex:none;color:#04262d}
+.pill{font-size:9.5px;background:var(--surface2);padding:4px 8px;border-radius:8px;color:var(--dim)}
+.badge{font-size:8.5px;font-weight:800;border-radius:8px;padding:3px 7px}
+.running{color:var(--accent);background:rgba(9,175,217,.12)}
+.idle,.unknown,.interrupted{color:var(--yellow);background:rgba(224,192,125,.12)}
+.completed{color:var(--green);background:rgba(79,209,165,.12)}
+.failed{color:var(--red);background:rgba(244,114,114,.12)}
+.question-badge{color:var(--red);background:rgba(244,114,114,.14)}
+.section-title{font-size:9.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);font-weight:800;margin:14px 14px 8px}
+
+/* ===================== 案A: 3カラム split view ===================== */
+.a-root{display:flex;width:100%;height:100%}
+.a-rail{width:78px;flex:none;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;align-items:center;padding:18px 0;gap:6px}
+.a-rail-btn{width:56px;height:52px;border-radius:14px;border:0;background:transparent;color:var(--dim);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;font-size:9px}
+.a-rail-btn .glyph{font-size:19px}
+.a-rail-btn.active{background:var(--wash);color:var(--accent)}
+.a-rail-spacer{flex:1}
+.a-rail-ws{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;font-size:12px;font-weight:800;margin:4px 0;border:2px solid transparent}
+.a-rail-ws.active{border-color:var(--accent)}
+.a-rail-gear{width:34px;height:34px;border-radius:50%;background:var(--surface2);display:grid;place-items:center;color:var(--dim);margin-top:8px;border:1px solid var(--border)}
+.a-list{width:340px;flex:none;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.a-list-header{padding:18px 16px 12px;border-bottom:1px solid var(--border)}
+.a-list-header h2{font-size:19px;margin:0 0 3px;font-weight:800}
+.a-list-header .sub{font-size:10.5px;color:var(--dim)}
+.a-search{margin:12px 16px 0;height:34px;border-radius:10px;background:var(--surface2);border:1px solid var(--border);display:flex;align-items:center;padding:0 10px;gap:6px;color:var(--dim);font-size:11px}
+.a-list-body{flex:1;overflow:auto;padding:8px 10px 20px}
+.a-row{display:flex;align-items:center;gap:10px;padding:10px 10px;margin:3px 0;border-radius:12px;border:1px solid transparent;width:100%;text-align:left;background:transparent;color:var(--text)}
+.a-row.selected{background:var(--wash);border-color:rgba(9,175,217,.35)}
+.a-row.attention{background:var(--attentionBg);border-color:rgba(244,114,114,.25)}
+.avatar{width:32px;height:32px;border-radius:10px;display:grid;place-items:center;font-size:10px;font-weight:900;background:var(--wash);color:var(--accent);flex:none}
+.avatar.claude{background:rgba(217,119,87,.15);color:var(--claude)}
+.row-main{flex:1;min-width:0}
+.row-main b{font-size:11.5px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+.row-main span{font:9px Menlo,monospace;color:var(--dim);display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.a-detail{flex:1;display:flex;flex-direction:column;min-width:0}
+.a-detail-header{height:64px;flex:none;display:flex;align-items:center;gap:11px;padding:0 18px;border-bottom:1px solid var(--border);background:rgba(5,5,6,.7)}
+.a-detail-header .header-copy{flex:1;min-width:0}
+.a-detail-header strong{font-size:14.5px;display:block}
+.a-detail-header .sub{font:9.5px Menlo,monospace;color:var(--dim);margin-top:2px}
+.a-detail-body{flex:1;overflow:auto;padding:18px 22px 30px;max-width:760px;width:100%;margin:0 auto}
+.a-detail-composer{flex:none;padding:12px 22px 20px;border-top:1px solid var(--border);background:rgba(5,5,6,.5)}
+.composer-box{max-width:760px;margin:0 auto;height:48px;border-radius:16px;border:1px solid var(--strong);background:rgba(28,28,32,.9);display:flex;align-items:center;padding:0 8px 0 12px;gap:8px;color:var(--dim);font-size:12px}
+.send{margin-left:auto;width:32px;height:32px;border-radius:50%;background:var(--accent2);display:grid;place-items:center;color:white;flex:none}
+.bubble{max-width:72%;border-radius:15px;padding:10px 12px;margin:8px 0;font-size:12px;line-height:1.55;background:var(--surface);border:1px solid var(--border)}
+.bubble.user{margin-left:auto;background:var(--wash);border-color:rgba(9,175,217,.18)}
+.activity-line{display:flex;align-items:center;gap:6px;color:var(--dim);font-size:10px;padding:7px 2px}
+.activity-strip{margin:0 0 12px;border:1px solid rgba(193,147,217,.27);background:rgba(193,147,217,.09);border-radius:14px;padding:10px 12px;display:flex;gap:8px;align-items:center;color:var(--text)}
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px rgba(79,209,165,.12);flex:none}
+.strip-copy{flex:1;min-width:0}
+.strip-title{font-size:10.5px;font-weight:700}
+.strip-sub{font-size:9px;color:var(--dim);margin-top:2px}
+.question{border:1px solid var(--accent);background:rgba(9,175,217,.1);border-radius:16px;padding:13px;margin:10px 0}
+.card-head{font-size:10.5px;font-weight:700;display:flex;gap:6px;align-items:center}
+.chip{font-size:8.5px;background:var(--surface2);padding:3px 7px;border-radius:6px}
+.question-text{font-size:11.5px;font-weight:650;margin:10px 0}
+.option{border:1px solid var(--border);background:var(--surface2);border-radius:11px;padding:9px 10px;margin:6px 0;font-size:10.5px;color:var(--text)}
+.option.selected{border-color:var(--accent);background:var(--wash)}
+
+/* ===================== 案B: レール + フローティングパネル ===================== */
+.b-root{display:flex;width:100%;height:100%;position:relative}
+.b-rail{width:280px;flex:none;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;transition:width .18s}
+.b-rail.collapsed{width:72px}
+.b-rail-top{display:flex;align-items:center;gap:10px;padding:16px 14px;border-bottom:1px solid var(--border)}
+.b-rail-top b{font-size:13px;flex:1;white-space:nowrap;overflow:hidden}
+.b-rail.collapsed .b-rail-top b,.b-rail.collapsed .ws-row-name{display:none}
+.b-collapse-btn{width:28px;height:28px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--dim);flex:none}
+.pc-status{display:flex;align-items:center;gap:7px;padding:10px 14px;font-size:10px;color:var(--dim)}
+.pc-dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none}
+.b-rail-list{flex:1;overflow:auto;padding:6px 8px}
+.ws-row{display:flex;align-items:center;gap:10px;padding:9px 8px;border-radius:11px;margin:2px 0;width:100%;background:transparent;border:1px solid transparent;color:var(--text)}
+.ws-row.active{background:var(--wash);border-color:rgba(9,175,217,.3)}
+.ws-row-name{flex:1;min-width:0;text-align:left;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ws-dot{width:10px;height:10px;border-radius:50%;flex:none}
+.ws-settings-row{color:var(--dim)}
+.ws-settings-row .si{width:14px;text-align:center;font-size:12px;flex:none}
+.b-glass-wrap{flex:none;padding:10px}
+.b-glass-tabbar{display:flex;justify-content:space-around;padding:8px 4px;border-radius:20px;background:var(--glassBg);border:1px solid var(--glassBorder);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px)}
+.b-glass-tab{display:flex;flex-direction:column;align-items:center;gap:4px;background:transparent;border:0;color:var(--dim);font-size:9px;flex:1;padding:6px 2px;border-radius:13px}
+.b-glass-tab.active{color:var(--accent)}
+.b-glass-tab .glyph{font-size:19px}
+.b-rail.collapsed .b-glass-tab .lbl{display:none}
+.b-rail.collapsed .b-glass-tabbar{flex-direction:column;gap:4px;border-radius:16px}
+.b-main{flex:1;display:flex;flex-direction:column;min-width:0;position:relative}
+.b-main-header{height:60px;flex:none;display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--border)}
+.b-main-header strong{font-size:15px}
+.b-main-header .sub{font:9.5px Menlo,monospace;color:var(--dim)}
+.b-main-header .spacer{flex:1}
+.panel-toggle{display:flex;align-items:center;gap:5px;height:32px;border-radius:9px;border:1px solid var(--border);background:var(--surface2);color:var(--dim);padding:0 12px;font-size:10.5px}
+.panel-toggle.on{color:var(--accent);border-color:rgba(9,175,217,.5);background:var(--wash)}
+.b-agent-strip{display:flex;gap:8px;padding:12px 20px 0;overflow:auto}
+.b-agent-chip{display:flex;align-items:center;gap:7px;height:38px;border-radius:19px;padding:0 12px 0 6px;border:1px solid var(--border);background:var(--surface);flex:none;color:var(--text);font-size:11px}
+.b-agent-chip.active{border-color:var(--accent);background:var(--wash)}
+.b-agent-chip .mini-avatar{width:26px;height:26px;border-radius:8px}
+.b-main-body{flex:1;overflow:auto;padding:16px 20px 24px;max-width:820px}
+.b-floating{position:absolute;top:0;right:0;bottom:0;width:46%;background:var(--panel);border-left:1px solid var(--strong);box-shadow:-24px 0 60px rgba(0,0,0,.5);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .22s ease;z-index:6}
+.b-floating.open{transform:translateX(0)}
+.b-scrim{position:absolute;inset:0;background:rgba(0,0,0,.32);opacity:0;pointer-events:none;transition:opacity .22s;z-index:5}
+.b-scrim.show{opacity:1}
+.b-grip{position:absolute;left:-13px;top:50%;transform:translateY(-50%);width:26px;height:52px;border-radius:8px;background:var(--surface3);border:1px solid var(--strong);display:grid;place-items:center;color:var(--dim);font-size:11px}
+.b-floating-header{height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border)}
+.b-floating-header b{flex:1;font-size:12.5px}
+.b-floating-body{flex:1;overflow:auto;background:var(--bg)}
+.browser-toolbar{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--surface)}
+.browser-toolbar .url{flex:1;height:28px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);display:flex;align-items:center;padding:0 10px;font-size:10px;color:var(--dim)}
+.browser-canvas{flex:1;background:linear-gradient(160deg,#101418,#0a0c0e);display:flex;align-items:center;justify-content:center;color:var(--dim);font-size:11px;min-height:300px}
+.term-canvas{flex:1;background:#0a0a0b;padding:14px;font:11.5px/1.7 Menlo,monospace;color:#c9d1d9;overflow:auto}
+.term-canvas .green{color:var(--green)}.term-canvas .dim{color:var(--dim)}.term-canvas .accent{color:#7ee0f5}
+
+/* ===================== 案C: 適応シングルカラム ===================== */
+.c-root{width:100%;height:100%;display:flex;flex-direction:column}
+.c-header{height:56px;flex:none;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--border);background:rgba(5,5,6,.88)}
+.c-header strong{font-size:15px;flex:1}
+.c-body{flex:1;overflow:auto;padding:16px 16px 90px}
+.c-home-grid{display:grid;grid-template-columns:repeat(var(--cols,2),1fr);gap:10px}
+.c-card{border:1px solid var(--border);background:var(--surface);border-radius:14px;padding:12px;color:var(--text)}
+.c-card.attention{background:var(--attentionBg);border-color:rgba(244,114,114,.25)}
+.c-chat-col{max-width:680px;margin:0 auto;display:flex;gap:16px}
+.c-chat-main{flex:1;min-width:0}
+.c-context-rail{width:230px;flex:none;display:none}
+.c-context-rail.show{display:block}
+.c-context-card{border:1px solid var(--border);background:var(--surface);border-radius:12px;padding:11px;margin-bottom:10px}
+.c-context-card .k{font-size:8.5px;text-transform:uppercase;color:var(--dim);font-weight:800;letter-spacing:.06em}
+.c-context-card .v{font-size:10.5px;margin-top:5px;line-height:1.5}
+.c-tabbar{height:74px;flex:none;display:flex;align-items:center;justify-content:space-around;border-top:1px solid var(--border);background:rgba(9,9,11,.92);padding-bottom:14px}
+.c-tab{display:flex;flex-direction:column;align-items:center;gap:4px;background:transparent;border:0;color:var(--dim);font-size:9.5px;width:76px}
+.c-tab.active{color:var(--accent)}
+.c-tab .glyph{font-size:20px}
+.c-width-frame{transition:width .25s ease}
+.file-tree-row{display:flex;align-items:center;gap:8px;padding:8px 6px;border-radius:8px;font-size:11px}
+.file-tree-row.selected{background:var(--wash)}
+.file-status{width:15px;text-align:center;font-size:9px;font-weight:900;border-radius:4px;flex:none}
+.file-status.M{color:var(--yellow)}
+.file-status.U{color:var(--green)}
+.diff-line{font:10.5px/1.7 Menlo,monospace;white-space:pre;padding:0 10px}
+.diff-add{background:rgba(79,209,165,.12);color:#bdf0da}
+.diff-del{background:rgba(244,114,114,.12);color:#f6c6c6}
+.diff-ctx{color:var(--dim)}
+.commit-row{display:flex;align-items:baseline;gap:8px;padding:9px 6px;border-bottom:1px solid var(--border);font-size:11px}
+.commit-hash{font:9.5px Menlo,monospace;color:var(--purple);flex:none}
+.commit-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+@media(max-width:1100px){.app{grid-template-columns:1fr}.studio{order:-1;height:auto}.stage{position:static;padding:22px 10px}}
+
+/* ===================== secondary screens: full-screen form-sheet overlay ===================== */
+.sheet-scrim{position:absolute;inset:0;background:rgba(0,0,0,.5);z-index:20;opacity:0;pointer-events:none;transition:opacity .18s}
+.sheet-scrim.show{opacity:1;pointer-events:auto}
+.form-sheet{position:absolute;top:5%;left:50%;transform:translateX(-50%) translateY(10px);width:660px;max-width:88%;height:90%;background:var(--panel);border:1px solid var(--strong);border-radius:22px;box-shadow:0 30px 80px rgba(0,0,0,.6);display:flex;flex-direction:column;overflow:hidden;opacity:0;pointer-events:none;transition:opacity .18s,transform .18s;z-index:21}
+.form-sheet.show{opacity:1;pointer-events:auto;transform:translateX(-50%) translateY(0)}
+.form-sheet-header{flex:none;display:flex;align-items:center;gap:10px;padding:18px 20px;border-bottom:1px solid var(--border)}
+.form-sheet-header h2{font-size:19px;margin:0;flex:1;font-weight:800}
+.form-sheet-header .sub{font-size:10.5px;color:var(--dim);margin-top:3px}
+.form-sheet-body{flex:1;overflow:auto;padding:16px 20px 26px}
+.settings-card{border:1px solid var(--border);background:var(--surface);border-radius:14px;overflow:hidden;margin-bottom:16px}
+.settings-row{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border);background:transparent;border-left:0;border-right:0;border-top:0;color:var(--text)}
+.settings-row:last-child{border-bottom:0}
+.settings-row .si{width:22px;text-align:center;color:var(--accent);font-size:15px;flex:none}
+.settings-row .sbody{flex:1;min-width:0}
+.settings-row .sbody b{display:block;font-size:12.5px;font-weight:600}
+.settings-row .sbody span{display:block;font-size:10.5px;color:var(--dim);margin-top:2px;line-height:1.5}
+.settings-row .sval{font-size:10.5px;color:var(--dim);font-weight:600;flex:none;margin-right:2px}
+.settings-row .schev{color:var(--dim);flex:none}
+.switch{width:38px;height:23px;border-radius:12px;background:var(--surface3);position:relative;flex:none}
+.switch.on{background:var(--accent2)}
+.switch::after{content:'';position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;background:#fff;transition:left .15s}
+.switch.on::after{left:17px}
+
+/* kpi/metric cards */
+.kpi-row{display:flex;gap:10px;margin-bottom:14px}
+.kpi-card{flex:1;border:1px solid var(--border);background:var(--surface);border-radius:14px;padding:12px 14px}
+.kpi-card .kl{font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);font-weight:800}
+.kpi-card .kv{font-size:22px;font-weight:800;margin-top:4px}
+.kpi-card .kv.warn{color:var(--red)}
+.kpi-card .ks{font-size:9.5px;color:var(--dim);margin-top:3px}
+.gauge-mini{height:4px;border-radius:2px;background:var(--surface3);margin-top:8px;overflow:hidden}
+.gauge-mini > i{display:block;height:100%;background:var(--accent)}
+.bar-row{display:flex;align-items:center;gap:8px;margin:7px 0}
+.bar-row .bl{width:64px;flex:none;font-size:9.5px;color:var(--dim)}
+.bar-track{flex:1;height:8px;border-radius:4px;background:var(--surface3);overflow:hidden}
+.bar-track > i{display:block;height:100%;border-radius:4px}
+.bar-row .bv{width:44px;flex:none;text-align:right;font-size:10px;font-weight:700}
+.pill-toggle{display:inline-flex;border-radius:999px;background:var(--surface2);padding:2px;gap:2px}
+.pill-toggle button{border:0;background:transparent;color:var(--dim);font-size:10px;padding:6px 12px;border-radius:999px}
+.pill-toggle button.active{background:var(--accent2);color:#fff}
+.chip-toggle{display:inline-flex;gap:6px}
+.chip-toggle button{border:1px solid var(--border);background:var(--surface2);color:var(--dim);font-size:10px;padding:6px 11px;border-radius:8px}
+.chip-toggle button.active{background:var(--wash);border-color:var(--accent);color:var(--accent)}
+
+/* rings (system screen) */
+.ring-row{display:flex;gap:10px;margin-bottom:16px}
+.ring-card{flex:1;border:1px solid var(--border);background:var(--surface);border-radius:14px;padding:14px;display:flex;flex-direction:column;align-items:center;gap:8px}
+.ring-card b{font-size:11px}
+.ring-card .rs{font-size:9px;color:var(--dim);text-align:center}
+
+/* generic list rows reused across screens */
+.plain-row{display:flex;align-items:center;gap:10px;padding:9px 4px;border-bottom:1px solid var(--border)}
+.plain-row:last-child{border-bottom:0}
+.plain-row .pmain{flex:1;min-width:0}
+.plain-row .pmain b{font-size:11.5px;display:block}
+.plain-row .pmain span{font-size:9.5px;color:var(--dim);display:block;margin-top:2px}
+.plain-row .pval{font-size:10.5px;color:var(--dim);flex:none;text-align:right}
+
+/* notifications */
+.notif-row{display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:12px;margin-bottom:4px}
+.notif-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.notif-row .nbody{flex:1;min-width:0}
+.notif-row .nbody b{font-size:12px;display:block}
+.notif-row .nbody span{font-size:10.5px;color:var(--dim);display:block;margin-top:2px}
+.notif-time{font-size:9.5px;color:var(--dim);flex:none}
+
+/* changelog */
+.rel-block{margin-bottom:22px}
+.rel-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.ver-chip{font-size:10px;font-weight:700;border-radius:999px;padding:3px 10px;background:var(--wash);color:var(--accent);border:1px solid rgba(9,175,217,.26)}
+.ver-chip.old{background:var(--surface2);color:var(--dim);border-color:var(--border)}
+.rel-headline{font-size:14px;font-weight:700;margin:0 0 8px}
+.cl-item{display:flex;gap:10px;padding:9px 0}
+.cl-icon{width:30px;height:30px;border-radius:9px;flex:none;display:grid;place-items:center;font-size:14px}
+.cl-item b{font-size:12.5px;font-weight:700;display:block}
+.cl-item span{font-size:10.5px;color:var(--dim);display:block;margin-top:2px;line-height:1.5}
+
+/* form (agent-launch) */
+.field-label{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);font-weight:800;margin:14px 0 7px}
+.agent-pick-row{display:flex;gap:8px}
+.agent-pick{flex:1;border:1.5px solid var(--border);background:var(--surface);border-radius:12px;padding:10px;text-align:center}
+.agent-pick.selected{border-color:var(--accent);background:var(--wash)}
+.textish{border:1px solid var(--border);background:var(--surface2);border-radius:10px;padding:10px 12px;font-size:11px;color:var(--dim);min-height:36px}
+.cta-btn{width:100%;border:0;border-radius:13px;padding:13px;font-weight:800;font-size:12.5px;color:#04262d;background:var(--accent2)}
+
+/* pairing */
+.sas-code{font:44px/1 Menlo,monospace;letter-spacing:10px;color:var(--accent);text-align:center;margin:18px 0}
+
+/* popovers/sheets over agent screen */
+.popover-anchor{position:absolute;z-index:30;background:var(--panel);border:1px solid var(--strong);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,.55);min-width:230px;overflow:hidden}
+.popover-anchor .p-title{font-size:8.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);font-weight:800;padding:10px 12px 4px}
+.popover-item{display:flex;align-items:center;gap:9px;padding:10px 12px;font-size:11.5px}
+.popover-item + .popover-item{border-top:1px solid var(--border)}
+.popover-item.danger{color:var(--red)}
+.trigger-btn{border:1px solid var(--border);background:var(--surface2);color:var(--dim);border-radius:9px;padding:5px 10px;font-size:9.5px}
+.trigger-btn.active{border-color:var(--accent);color:var(--accent);background:var(--wash)}
+.pin-badge{position:absolute;top:9px;right:12px;background:var(--red);color:#fff;font-size:8px;font-weight:800;border-radius:8px;min-width:15px;height:15px;display:grid;place-items:center;padding:0 3px}
+.message{border:1px solid var(--border);background:var(--surface);padding:10px 12px;border-radius:12px;margin:8px 0}
+.message.tool{background:var(--surface2)}
+.message .role{font-size:8px;color:var(--dim);font-weight:800;text-transform:uppercase}
+.message p{font-size:11px;line-height:1.6;margin:5px 0 0}
+</style>
+</head>
+<body>
+<main class="app">
+	<section class="stage">
+		<div class="tablet-wrap" id="tabletWrap">
+			<div class="tablet-shell" id="tabletShell">
+				<div class="tablet-cam"></div>
+				<div class="tablet-screen" id="tabletScreen"></div>
+			</div>
+		</div>
+	</section>
+	<aside class="studio">
+		<div class="brand">
+			<h1>Para Code — iPad レイアウト案</h1>
+			<small>モバイル版（app/mobile）の実装済みデザイントークン・コンポーネントを流用した忠実モック。3つの設計方針を切り替えて比較できます。</small>
+		</div>
+
+		<div class="group">
+			<div class="group-title">案（Proposal）</div>
+			<button class="proposal-card" data-proposal="A" id="cardA">
+				<b>案A · 3カラム split view</b>
+				<span>Apple Mail / Notes 型。レール（アイコン）＋一覧＋詳細を常時3分割表示。ボトムタブ廃止。</span>
+				<span class="badge-mini reuse-mid">コード再利用: 中</span>
+			</button>
+			<button class="proposal-card" data-proposal="B" id="cardB">
+				<b>案B · レール＋フローティングパネル</b>
+				<span>折りたたみ式サイドバー＋メイン全幅表示。ブラウザ/ターミナルを右からスライドで重ねて併用。</span>
+				<span class="badge-mini reuse-mid">コード再利用: 中〜低</span>
+			</button>
+			<button class="proposal-card" data-proposal="C" id="cardC">
+				<b>案C · 適応シングルカラム拡張</b>
+				<span>ボトムタブ構成を維持したまま、幅に応じて2列グリッド化・中央寄せ・コンテキストレールに拡張。</span>
+				<span class="badge-mini reuse-high">コード再利用: 高</span>
+			</button>
+		</div>
+
+		<div class="group">
+			<div class="group-title">画面（Screen）</div>
+			<div class="seg" id="screenSeg"></div>
+		</div>
+
+		<div class="group" id="widthGroup" style="display:none">
+			<div class="group-title">幅プレビュー（Split View / Slide Over 耐性の確認）</div>
+			<div class="seg" id="widthSeg">
+				<button data-width="full">フル幅<br><span style="opacity:.6">1194pt</span></button>
+				<button data-width="split">Split 1:1<br><span style="opacity:.6">597pt</span></button>
+				<button data-width="slideover">Slide Over<br><span style="opacity:.6">420pt</span></button>
+			</div>
+			<p class="note">案Cは幅が縮むと iPhone 版とほぼ同じ1カラム構成に自然収束します（同一コンポーネントの再利用のため）。</p>
+		</div>
+
+		<div class="group">
+			<div class="group-title">その他の画面（設定・ダッシュボード類）</div>
+			<div class="seg" id="overlaySeg" style="grid-template-columns:repeat(3,1fr)"></div>
+			<p class="note">実機と同じく、案A/B/Cのどれでもこれらはフォームシート（中央寄せの浮きカード）として同じ見た目で開きます。Split ViewやiPad Mailの「設定」がどの一覧構成でも同じシートで開くのと同じ考え方です。</p>
+		</div>
+
+		<div class="group">
+			<div class="group-title">Agent画面内のポップオーバー／シート</div>
+			<div class="seg" id="popoverSeg" style="grid-template-columns:repeat(2,1fr)"></div>
+			<p class="note">会話画面のヘッダー・チップ・長押しから実際に開く細部のUI。「画面」をAgentにした状態で確認してください。</p>
+		</div>
+
+		<div class="group" id="descGroup">
+			<div class="group-title">この案について</div>
+			<div class="desc-block" id="descBody"></div>
+		</div>
+
+		<div class="scale-tag" id="scaleTag"></div>
+	</aside>
+</main>
+
+<script>
+const colors = { claude:'#d97757', codex:'#09AFD9' };
+const wsColors = ['#09AFD9','#c193d9','#d99a6c','#4fd1a5'];
+
+const state = { proposal:'A', screen:'agent', widthPreset:'full', railCollapsed:false, floatingPanel:'none', selectedWs:0, selectedAgent:1, selectedFile:0, expandedCommit:null, overlay:null, popover:null, filesMode:'changed', activityDrill:false, activitySelected:0 };
+
+const descriptions = {
+	A: `
+		<h3>コンセプト</h3>
+		<p>左端に最小限のアイコンレール（Agent / Terminal / Files / Git + ワークスペース切替）、中央に一覧（エージェント一覧・ファイルツリー・変更一覧など）、右に詳細（チャット・ファイルプレビュー・diff）を常時3分割で表示する、Apple純正 Mail / Notes / Messages と同じ NavigationSplitView 型。</p>
+		<h3>良い点</h3>
+		<ul>
+			<li>一覧から詳細への遷移（プッシュ画面）が消え、選んだ瞬間に右側が切り替わるので体感速度が速い</li>
+			<li>既存のグローバル状態（selectedWs / selectedTerminalKey を先にセットしてからpushする規約）が、そのまま「選択列カラムのハイライト」に転用できる</li>
+			<li>画面が広いiPadの利点を最も強く活かせる</li>
+		</ul>
+		<h3>留意点</h3>
+		<ul>
+			<li>bottom tab bar を前提にした既存4画面（Home/Terminal/SCM/Files）を「一覧＋詳細」の型にほぼ全て作り直す必要がある</li>
+			<li>Split View / Slide Over で幅が狭くなった場合、3カラムをどう畳むか（2カラム→1カラムへの収縮ロジック）を別途設計する必要がある</li>
+		</ul>
+	`,
+	B: `
+		<h3>コンセプト</h3>
+		<p>左に折りたたみ可能なワークスペースサイドバー（既存 wsDrawer.tsx の常設版）、メインは選択中コンテンツを全幅表示。ブラウザ／ターミナルは右端から引き出すフローティングパネル（ドラッグ幅変更可）として、チャットを見ながら同時に使える。</p>
+		<h3>サイドバー下部（2026-08-05更新）</h3>
+		<p>サイドバー本体はモバイル版の wsDrawer と同じ見た目（PCステータス・ワークスペース一覧・＋新規スペース・設定）のまま、最下部だけをモバイル版のボトムタブ（Home / Terminal / Git / Files）と同じ4項目のLiquid Glassセグメントに置き換えた。<b>Agent tree &amp; Tasks（旧Activityアイコン）はここには置かない</b>——モバイル版で実際にそうであるように、会話画面内の「実行中」ストリップをタップしたときだけ遷移する動線に統一した（チャット中の紫色バーをクリックしてみてください）。個別のエージェント会話（旧Agentアイコン）も同様に、Homeの一覧からしか入れない設計にし、サイドバーの4項目＝モバイルの4タブという対応を厳密にした。</p>
+		<h3>良い点</h3>
+		<ul>
+			<li>「エージェントと会話しながらブラウザ共有ビューを覗く」「チャットしながらターミナルlog を横目で見る」など、iPadならではのマルチタスクをアプリ内で再現できる</li>
+			<li>既存の wsDrawer.tsx をほぼそのまま常設化するだけでサイドバーが作れる（左ドロワーの開閉ロジックを「常時開いた状態」に変えるだけ）</li>
+			<li>下部セグメントがモバイル版のタブ構成と1対1対応するため、ユーザーがモバイルとiPadを行き来しても迷わない</li>
+		</ul>
+		<h3>留意点</h3>
+		<ul>
+			<li>フローティングパネルは新規UIコンポーネント（ドラッグ可能な分割線、開閉アニメーション）が必要で、3案の中で最も新規実装コストが高い</li>
+			<li>Split View など横幅が制限される状況ではフローティングパネルとメインが重なりすぎるため、幅に応じてパネルをモーダル的挙動に切り替える設計が必要</li>
+		</ul>
+	`,
+	C: `
+		<h3>コンセプト</h3>
+		<p>ボトムタブ構成（Home/Terminal/SCM/Files）はiPhone版と共通のまま維持。広い幅では ①一覧画面を2列グリッド化 ②チャット画面を中央寄せの読みやすい列幅に制限し、余白に「実行中ツール」「関連ファイル」を表示するコンテキストレールを追加 ③Files/SCMはマスター・ディテールの横2分割に自動移行、という形で「同じ画面コンポーネントの内部レイアウトだけ」を幅で分岐させる。</p>
+		<h3>良い点</h3>
+		<ul>
+			<li><b>ロジックの二重管理を最も避けられる</b>。画面遷移構造・状態管理・ほぼ全てのコンポーネントをiPhone版と共有し、<code>useWindowDimensions</code> による分岐を各画面に数箇所追加するだけで完結する</li>
+			<li>Split View やSlide Overで半分・1/3幅になっても、既存のiPhone版レイアウトへ自然に収束するため、iPadの画面分割機能との相性が良い</li>
+			<li>実装・保守コストが最小</li>
+		</ul>
+		<h3>留意点</h3>
+		<ul>
+			<li>3案の中では「iPadの広い画面を最大限使い切る」体験としては最も控えめ（3カラムのような一覧+詳細同時表示はできない）</li>
+		</ul>
+	`,
+};
+
+const screensByProposal = {
+	A: [['agent','Agent'],['activity','Activity'],['terminal','Terminal'],['files','Files'],['scm','Git'],['browser','Browser']],
+	B: [['home','Home'],['agent','Agent'],['activity','Activity'],['terminal','Terminal'],['files','Files'],['scm','Git'],['browser','Browser']],
+	C: [['home','Home'],['agent','Agent'],['activity','Activity'],['terminal','Terminal'],['files','Files'],['scm','Git'],['browser','Browser']],
+};
+
+const glyph = { agent:'✦', home:'⌂', terminal:'⌨', files:'▥', scm:'⎇', browser:'◎', settings:'⚙', git:'⎇', activity:'◈' };
+
+const overlayList = [
+	['settings','設定'], ['notifications','通知'], ['changelog','更新履歴'], ['archive','アーカイブ'],
+	['ccusage','Ccusage'], ['ratelimit','Rate Limit'], ['githubUsage','GitHub API'], ['system','システム'],
+	['spaceNote','スペースのメモ'], ['agentLaunch','新しいエージェント'], ['pairing','ペアリング'],
+];
+const popoverList = [
+	['agentInfo','エージェント情報'], ['agentStatus','ステータス確認'], ['slashCommand','スラッシュコマンド'],
+	['pendingMessages','送信予定'], ['voiceControl','音声通知'], ['terminalActions','ターミナル操作'], ['worktreeCreate','新規スペース作成'],
+];
+
+/* ===================== 追加データ: 設定・ダッシュボード類 ===================== */
+const settingsSpec = [
+	{ title:'使用量', items:[
+		{ icon:'$', label:'Ccusage', sub:'コーディングエージェントのトークン使用量・コストを確認します', overlay:'ccusage' },
+		{ icon:'◔', label:'Rate Limit', sub:'Claude Code / Codex のレート制限と残量をアカウントごとに確認します', overlay:'ratelimit' },
+		{ icon:'⎇', label:'GitHub API', sub:'GitHubのレート枠と、Para Codeが送ったリクエストの内訳を確認します', overlay:'githubUsage' },
+		{ icon:'▥', label:'システム', sub:'PCのCPU・メモリ・ディスクの空きと、何が使っているかを確認します', value:'12% · 48%', overlay:'system' },
+	]},
+	{ title:'通知', toggles:[
+		{ label:'作業完了を通知', sub:'エージェントの作業が終わったときにバナーを出します', on:true },
+		{ label:'質問を通知', sub:'エージェントから質問・承認要求があったときにバナーを出します', on:true },
+		{ label:'PC作業中は鳴らさない', sub:'PCを操作している間はバナーを出しません', on:false },
+	]},
+	{ title:'このアプリについて', items:[
+		{ icon:'✦', label:'更新履歴', sub:'アプリの各バージョンで何が変わったかを確認します', value:'0.2.5', overlay:'changelog' },
+	]},
+];
+
+const notificationsList = [
+	{ kind:'agent-question', title:'Explore が質問しています', body:'iPad向けレイアウト案の対象範囲を教えてください', time:'2分前' },
+	{ kind:'agent-done', title:'general-purpose が完了しました', body:'Web Search表示の状態を確認する', time:'18分前' },
+	{ kind:'agent-done', title:'reviewer が完了しました', body:'PRレビューを終えました。3件のコメントがあります', time:'42分前' },
+	{ kind:'disconnected', title:'PCとの接続が切れました', body:'再接続すると続きを確認できます', time:'1時間前' },
+];
+const notifKindColor = { 'agent-question':'var(--red)', 'agent-done':'var(--green)', 'agent-error':'var(--red)', 'disconnected':'var(--yellow)' };
+
+const changelogReleases = [
+	{ version:'0.2.5', current:true, date:'2026年8月4日', headline:'PCのAivis音声を、このiPhoneでも聞けます', items:[
+		{ icon:'ℹ', tone:'purple', title:'エージェントの画面から、名前の変更とメモの書き込みができるようになりました' },
+	]},
+	{ version:'0.2.4', date:'2026年7月', items:[
+		{ icon:'⎇', tone:'accent', title:'設定からGitHubのレート枠を確認できるようになりました', body:'Core/GraphQLの残量に加えて、期間別・呼び出し元別・スペース別の内訳も見られます。' },
+	]},
+	{ version:'0.2.0', date:'2026年7月', headline:'エージェントの作業が読めるように', items:[
+		{ icon:'⚒', tone:'yellow', title:'ツールごとに見やすい形で表示' },
+	]},
+	{ version:'0.1.9', date:'2026年6月', items:[] },
+];
+const toneColor = { purple:'var(--purple)', accent:'var(--accent)', yellow:'var(--yellow)', green:'var(--green)' };
+
+const archiveRows = [
+	{ title:'reviewer', ws:'para-code', branch:'main', color:wsColors[0] },
+	{ title:'general-purpose（旧セッション）', ws:'para-code (worktree: ipad)', branch:'ipad', color:wsColors[1] },
+];
+
+const ccusageDaily = [ ['08-05',3.42],['08-04',2.18],['08-03',4.90],['08-02',1.05],['08-01',3.60],['07-31',2.77],['07-30',0.92] ];
+const ccusageModels = [ ['claude-sonnet-5', 12.40, 'var(--claude)'], ['gpt-5.6-sol', 8.15, 'var(--accent)'], ['gemini-2.5-pro', 1.20, 'var(--purple)'] ];
+const ccusageSessions = [ ['para-code', 'Sonnet 4.5, GPT-5.6', '128K tok', '2分前', '$1.84'], ['infra-scripts', 'Sonnet 4.5', '44K tok', '3時間前', '$0.52'] ];
+
+const ratelimitAccounts = {
+	claude: [ { email:'zaklsdff67812hjkxcvz@paradis.ltd', windows:[['5時間',62],['7日',38]] } ],
+	codex: [ { email:'codex-home-1', windows:[['5時間',18],['7日',9]] } ],
+};
+
+const githubUsage = { core:{ remaining:4820, limit:5000, reset:'45分後リセット' }, graphql:{ remaining:3100, limit:5000, reset:'2時間30分後リセット' },
+	breakdown:[ ['ipad-worktree', 62, 38], ['main', 30, 70], ['infra-scripts', 80, 20] ] };
+
+const systemRings = [ ['CPU','42%','Para Code','var(--accent)'], ['RAM','58%','9.4 GB / 16.0 GB','var(--yellow)'], ['SSD','71%','空き 128 GB','var(--green)'] ];
+const systemProcesses = [ ['Para Code (main)', 'para-code', 18, 620], ['claude (Explore)', 'para-code', 34, 210], ['codex (review)', 'para-code (worktree: ipad)', 9, 140] ];
+
+const spaceNoteLines = [
+	{ type:'heading', text:'iPad対応 TODO' },
+	{ type:'task', done:true, text:'既存モバイル画面の全量調査' },
+	{ type:'task', done:true, text:'3案のモックをipad.htmlに作成' },
+	{ type:'task', done:false, text:'コード設計方針をレビューしてもらう' },
+	{ type:'task', done:false, text:'app.jsonのsupportsTabletを検討' },
+	{ type:'blank' },
+	{ type:'text', text:'案Cを土台にして、Home/Agentだけ案Aの分割にするハイブリッドが有力' },
+];
+
+const agentLaunchForm = { agents:['claude','codex'], permission:['確認しながら','自動で進める'], models:['既定','Sonnet 4.5','Opus 5'] };
+const pairingSAS = '482 917';
+
+/* 会話画面ポップオーバー/シート用コンテンツ */
+const slashCommands = [
+	{ icon:'✦', kind:'skill', insert:'/code-review', hint:'[scope]', desc:'未コミット変更のセキュリティ/品質レビュー', source:'組み込み' },
+	{ icon:'📄', kind:'prompt', insert:'/plan', hint:'', desc:'要件整理とリスク評価、段階的な実装計画', source:'組み込み' },
+	{ icon:'⌘', kind:'other', insert:'/model', hint:'<name>', desc:'このセッションのモデルを切り替える', source:'組み込み' },
+];
+const pendingMessagesData = [ 'ついでにTerminalタブも同じ方針で見てほしい', 'スクリーンショットが撮れたら送って' ];
+const plainTreeEntries = [
+	{ name:'components', dir:true },
+	{ name:'hooks', dir:true },
+	{ name:'theme.ts', dir:false, size:'0.9 KB' },
+	{ name:'store.ts', dir:false, size:'96.4 KB' },
+	{ name:'appState.ts', dir:false, size:'28.1 KB' },
+];
+
+
+const attentionAgent = { id:'a0', name:'Explore', provider:'claude', sub:'para-code · main · claude', status:'question', detail:'iPad向けレイアウト案の対象範囲を教えてください', ws:0 };
+const agentList = [
+	{ id:'a1', name:'Explore', provider:'claude', sub:'para-code · main · claude', status:'running', detail:'モバイルAgent UIの既存実装を調査する', time:'1分24秒', ws:0 },
+	{ id:'a2', name:'general-purpose', provider:'claude', sub:'para-code · main · claude', status:'idle', detail:'Web Search表示の状態を確認する', time:'48秒', ws:0 },
+	{ id:'a3', name:'UI implementation review', provider:'codex', sub:'para-code (worktree: ipad) · ipad · codex', status:'completed', detail:'Review the mobile activity implementation', time:'2分17秒', ws:1 },
+	{ id:'a4', name:'reviewer', provider:'claude', sub:'infra-scripts · main · claude', status:'idle', detail:'PRレビュー担当', time:'2分03秒', ws:2 },
+];
+function allAgents(){ return [attentionAgent, ...agentList]; }
+const workspaces = [
+	{ name:'para-code', color:wsColors[0], pending:1 },
+	{ name:'para-code (worktree: ipad)', color:wsColors[1], pending:0 },
+	{ name:'infra-scripts', color:wsColors[2], pending:0 },
+];
+const changedFiles = [
+	{ status:'M', path:'app/mobile/modules/para-voice-session/ios/ParaVoiceSession.podspec' },
+	{ status:'M', path:'app/mobile/modules/para-voice-session/ios/ParaVoiceSessionModule.swift' },
+	{ status:'M', path:'src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md' },
+	{ status:'M', path:'src/vs/workbench/contrib/browserView/electron-browser/browserEditor.ts' },
+	{ status:'M', path:'src/vs/workbench/contrib/browserView/electron-browser/features/webContentsViewRendererFeature.ts' },
+	{ status:'U', path:'docs/superpowers/plans/2026-08-04-mobile-voice-notifications.md' },
+];
+const recentCommits = [
+	{ hash:'088aea5', msg:'para: send a periodic memory health beacon to Sentry' },
+	{ hash:'eb51903', msg:'para: hand the agent wall the wheel and let each tile scroll' },
+	{ hash:'efaffcb', msg:'para: stop paying for unchanged mobile state on both ends' },
+	{ hash:'d324af5', msg:'para: open agent settings and space notes from the agent header' },
+	{ hash:'36e800a', msg:'para: let extension-hosted agents reach the voice ingress' },
+];
+const terminalTabs = ['main', 'build', 'codex'];
+const subAgentTasks = [
+	{ label:'モバイルUIを調査', detail:'現行画面の構造と状態を確認', assignee:'Explore', status:'running' },
+	{ label:'デザイントークンを確認', detail:'theme.tsの色/角丸/タイポを抽出', assignee:'general-purpose', status:'completed' },
+];
+
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'); }
+const statusLabels = { running:'実行中', idle:'待機中', completed:'完了', failed:'失敗', interrupted:'中断', unknown:'不明', question:'質問あり' };
+function badge(status){
+	const cls = status === 'question' ? 'question-badge' : status;
+	return `<span class="badge ${cls}">${statusLabels[status]}</span>`;
+}
+function statusBadgeButton(status){
+	const cls = status === 'question' ? 'question-badge' : status;
+	return `<span class="badge ${cls}" data-popover="agentStatus" style="cursor:pointer">${statusLabels[status]}</span>`;
+}
+function wsTag(wsIndex){
+	const w = workspaces[wsIndex];
+	return `<span style="display:inline-flex;align-items:center;gap:4px"><span style="width:6px;height:6px;border-radius:50%;background:${w.color};flex:none"></span>${esc(w.name)}</span>`;
+}
+function homeBodyHtml(cols){
+	return `
+		<div class="section-title" style="margin:0 0 8px">応答待ち</div>
+		<button class="c-card attention" data-agent="0" data-screen="agent" style="width:100%;text-align:left;margin-bottom:16px">
+			<div style="display:flex;gap:10px;align-items:center">
+				<div class="avatar claude">A</div>
+				<div class="row-main"><b>${esc(attentionAgent.name)}</b><span>${esc(attentionAgent.detail)}</span></div>
+				${statusBadgeButton('question')}
+			</div>
+		</button>
+		<div class="section-title" style="margin:0 0 8px">エージェント</div>
+		<div class="c-home-grid" style="--cols:${cols}">
+			${agentList.map((a,i) => `
+				<button class="c-card" data-agent="${i+1}" data-screen="agent" style="text-align:left;width:100%">
+					<div style="display:flex;gap:10px;align-items:center">
+						<div class="avatar ${a.provider}">${avatarLetter(a)}</div>
+						<div class="row-main"><b>${esc(a.name)}</b><span>${a.provider} · ${wsTag(a.ws)} · ${a.time}</span></div>
+						${badge(a.status)}
+					</div>
+					<div style="font-size:10.5px;color:var(--dim);margin-top:8px">${esc(a.detail)}</div>
+				</button>
+			`).join('')}
+		</div>
+	`;
+}
+function agentRowsHtml(){
+	return `
+		<button class="a-row attention ${state.selectedAgent===0?'selected':''}" data-agent="0" style="width:100%">
+			<div class="avatar claude">A</div>
+			<div class="row-main"><b>${esc(attentionAgent.name)}</b><span>${esc(attentionAgent.detail)}</span></div>
+			${statusBadgeButton('question')}
+		</button>
+		${agentList.map((a,i) => `
+			<button class="a-row ${(i+1)===state.selectedAgent?'selected':''}" data-agent="${i+1}" style="width:100%">
+				<div class="avatar ${a.provider}">${avatarLetter(a)}</div>
+				<div class="row-main"><b>${esc(a.name)}</b><span>${a.provider} · ${wsTag(a.ws)} · ${a.time}</span></div>
+				${badge(a.status)}
+			</button>
+		`).join('')}
+	`;
+}
+function avatarLetter(a){ return a.provider === 'claude' ? 'A' : 'C'; }
+
+function chatBody(){
+	return `
+		<button class="activity-strip" data-screen="activity" style="width:100%;text-align:left;cursor:pointer"><span class="pulse"></span><span class="strip-copy"><span class="strip-title">2件のSubAgent / Taskが実行中</span><span class="strip-sub">Explore · general-purpose</span></span><span>›</span></button>
+		<div class="bubble user">現在のモバイルUIを確認して</div>
+		<div class="activity-line">› 思考 · ツール3件 (Read, Search) · 18秒</div>
+		<div class="bubble">現行のAgent画面とSubAgent表示を確認しています。expo-router のファイルベース構成で、Home/Terminal/SCM/Files の4タブと、エージェント詳細はプッシュ画面として独立しています。</div>
+		<div class="question">
+			<div class="card-head">? <span class="chip">UI確認</span></div>
+			<div class="question-text">iPad版のレイアウト案として、どの方向性を優先しますか？</div>
+			<div class="option selected">1. 画面を最大限に活かす3カラム構成</div>
+			<div class="option">2. 既存コードの再利用を最優先した拡張</div>
+		</div>
+	`;
+}
+
+function terminalBody(){
+	return `
+		<div class="term-canvas">
+<span class="dim">para-code on </span><span class="accent">main</span> <span class="dim">via 22.9.0</span>
+<span class="green">❯</span> npm run typecheck-client
+<span class="dim">> tsc -p ./src/tsconfig.json --noEmit</span>
+
+<span class="dim">Checking 4,812 files...</span>
+<span class="green">✓ No errors found (12.4s)</span>
+
+<span class="green">❯</span> git status --short
+ M app/mobile/modules/para-voice-session/ios/ParaVoiceSession.podspec
+ M app/mobile/modules/para-voice-session/ios/ParaVoiceSessionModule.swift
+ M src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md
+?? docs/superpowers/plans/2026-08-04-mobile-voice-notifications.md
+
+<span class="green">❯</span> <span class="dim">|</span><span style="animation:none">█</span>
+		</div>
+	`;
+}
+
+function fileTreeList(selected){
+	return changedFiles.map((f,i) => `
+		<button class="a-row file-tree-row ${i===selected?'selected':''}" data-file="${i}" style="width:100%">
+			<span class="file-status ${f.status}">${f.status}</span>
+			<div class="row-main"><span style="color:var(--text);font-size:11px">${esc(f.path)}</span></div>
+		</button>
+	`).join('');
+}
+
+function diffPreview(path){
+	return `
+		<div style="padding:4px 0 14px;font-size:12px;color:var(--dim);font:11px Menlo,monospace">${esc(path)}</div>
+		<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)">
+			<div class="diff-line diff-ctx">@@ -18,6 +18,7 @@ export const colors = {</div>
+			<div class="diff-line diff-ctx">  claude: '#d97757',</div>
+			<div class="diff-line diff-add">+ ipadRail: 'rgba(9,175,217,0.08)',</div>
+			<div class="diff-line diff-ctx">  glassBg: 'rgba(28,28,32,0.6)',</div>
+			<div class="diff-line diff-del">- glassBorder: 'rgba(255,255,255,0.14)',</div>
+			<div class="diff-line diff-add">+ glassBorder: 'rgba(255,255,255,0.14)', // iPad rail hairline にも流用</div>
+			<div class="diff-line diff-ctx">  attentionBg: 'rgba(36,20,20,0.92)',</div>
+		</div>
+	`;
+}
+
+function scmBody(){
+	return `
+		<div style="padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--surface);margin-bottom:14px">
+			<textarea readonly style="width:100%;height:56px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:11.5px;padding:9px;resize:none">iPad版レイアウト検討: theme.ts を分割しspacing/typographyトークンを追加</textarea>
+			<div style="display:flex;justify-content:flex-end;margin-top:8px">
+				<button style="background:var(--accent2);color:#fff;border:0;border-radius:9px;padding:8px 16px;font-size:11px;font-weight:700">6件をコミット</button>
+			</div>
+		</div>
+		<div class="section-title" style="margin-left:0">最近のコミット</div>
+		<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">
+			${recentCommits.map(c => `<div class="commit-row"><span class="commit-hash">${c.hash}</span><span class="commit-msg">${esc(c.msg)}</span></div>`).join('')}
+		</div>
+	`;
+}
+
+/* ===================== 案A ===================== */
+function renderA(){
+	const sections = [['agent','✦','Agent'],['activity','◈','Activity'],['terminal','⌨','Terminal'],['files','▥','Files'],['scm','⎇','Git'],['browser','◎','Browser']];
+	const rail = `
+		<div class="a-rail">
+			${sections.map(([key,g,label]) => `<button class="a-rail-btn ${state.screen===key?'active':''}" data-screen="${key}"><span class="glyph">${g}</span>${label}</button>`).join('')}
+			<div class="a-rail-spacer"></div>
+			${workspaces.map((w,i) => `<div class="a-rail-ws ${i===state.selectedWs?'active':''}" style="background:${w.color}22;color:${w.color}" data-ws="${i}">${w.name[0].toUpperCase()}</div>`).join('')}
+			<div class="a-rail-ws" data-popover="worktreeCreate" style="border:1.5px dashed var(--strong);background:transparent;color:var(--dim);cursor:pointer">+</div>
+			<div class="a-rail-gear" data-overlay="settings" style="cursor:pointer">⚙</div>
+		</div>
+	`;
+
+	let listHtml = '', detailHeader = '', detailBody = '', showComposer = false;
+
+	if(state.screen === 'agent'){
+		listHtml = `
+			<div class="a-list-header"><h2>Agent</h2><div class="sub">${workspaces[state.selectedWs].name}</div></div>
+			<div class="a-search">⌕ 検索</div>
+			<div class="a-list-body">${agentRowsHtml()}</div>
+		`;
+		const a = allAgents()[state.selectedAgent];
+		detailHeader = `<div class="round" data-screen="browser" style="cursor:pointer">${glyph.browser}</div><div class="round" data-popover="voiceControl" style="cursor:pointer">◉</div><div class="header-copy" data-popover="agentInfo" style="cursor:pointer"><strong>${esc(a.name)}</strong><div class="sub">${esc(a.sub)}</div></div><span class="pill">Sonnet 4.5 · high</span>`;
+		detailBody = chatBody();
+		showComposer = true;
+	} else if(state.screen === 'activity'){
+		listHtml = `
+			<div class="a-list-header"><h2>Activity</h2><div class="sub">${workspaces[state.selectedWs].name} · SubAgent &amp; Tasks</div></div>
+			<div class="a-list-body">
+				<div style="display:flex;gap:6px;padding:2px 4px 10px">
+					<div class="kpi-card" style="padding:8px"><div class="kl">実行中</div><div class="kv" style="font-size:16px">2</div></div>
+					<div class="kpi-card" style="padding:8px"><div class="kl">履歴</div><div class="kv" style="font-size:16px">5</div></div>
+					<div class="kpi-card" style="padding:8px"><div class="kl">Tasks</div><div class="kv" style="font-size:16px">${subAgentTasks.length}</div></div>
+				</div>
+				${agentRowsHtml()}
+				<div class="section-title" style="margin:10px 4px 6px">Tasks</div>
+				${subAgentTasks.map(t => `<div class="plain-row" style="padding:8px 4px"><span style="color:${statusColorVar(t.status)}">${t.status==='completed'?'●':'○'}</span><div class="pmain"><b>${esc(t.label)}</b><span>担当: ${t.assignee}</span></div>${badge(t.status)}</div>`).join('')}
+			</div>
+		`;
+		const da = allAgents()[state.selectedAgent];
+		detailHeader = `<div class="header-copy"><strong>${esc(da.name)}</strong><div class="sub">SubAgent detail · ${da.provider}</div></div>`;
+		detailBody = activityDetailBody(da);
+	} else if(state.screen === 'browser'){
+		listHtml = `
+			<div class="a-list-header"><h2>Browser</h2><div class="sub">${workspaces[state.selectedWs].name}</div></div>
+			<div class="a-list-body">
+				<button class="a-row selected" style="width:100%"><div class="avatar" style="background:var(--surface2);color:var(--green)">●</div><div class="row-main"><b>claude</b><span>GitHub - foo/bar</span></div></button>
+				<button class="a-row" style="width:100%"><div class="avatar" style="background:var(--surface2);color:var(--dim)">${glyph.browser}</div><div class="row-main"><b>codex</b><span>(無題)</span></div></button>
+			</div>
+		`;
+		detailHeader = `<div class="header-copy"><strong>ブラウザ</strong><div class="sub">claude から</div></div>`;
+		detailBody = `
+			<div class="browser-toolbar" style="border-radius:10px;margin-bottom:12px"><span>‹</span><span>›</span><span>↻</span><div class="url" style="flex:1">github.com/para-code/para-code/pull/482</div></div>
+			<div class="browser-canvas" style="border-radius:14px;min-height:420px">共有ブラウザのライブミラー（WebRTC screencast、ピンチズーム対応）</div>
+			<div style="display:flex;gap:8px;margin-top:10px">${['‹','›','↻','︿','﹀'].map(s=>`<button class="round" style="flex:1;border-radius:10px;width:auto;height:40px">${s}</button>`).join('')}</div>
+		`;
+	} else if(state.screen === 'terminal'){
+		listHtml = `
+			<div class="a-list-header"><h2>Terminal</h2><div class="sub">${workspaces[state.selectedWs].name}</div></div>
+			<div class="a-list-body">
+				${terminalTabs.map((t,i) => `
+					<div class="a-row ${i===0?'selected':''}" data-popover="terminalActions" style="width:100%;cursor:pointer">
+						<div class="avatar" style="background:var(--surface2);color:var(--dim)">${glyph.terminal}</div>
+						<div class="row-main"><b>${t}</b><span>zsh · ${i===0?'アクティブ':'バックグラウンド'}</span></div>
+					</div>
+				`).join('')}
+			</div>
+		`;
+		detailHeader = `<div class="round">${glyph.terminal}</div><div class="header-copy"><strong>main</strong><div class="sub">${workspaces[state.selectedWs].name} · zsh</div></div>`;
+		detailBody = terminalBody();
+	} else if(state.screen === 'files'){
+		const modeToggle = `<div class="pill-toggle" style="margin:0 16px 10px"><button class="${state.filesMode==='changed'?'active':''}" data-files-mode="changed">変更</button><button class="${state.filesMode==='tree'?'active':''}" data-files-mode="tree">ツリー</button></div>`;
+		if(state.filesMode === 'changed'){
+			listHtml = `
+				<div class="a-list-header"><h2>Files</h2><div class="sub">${workspaces[state.selectedWs].name} · 変更6件</div></div>
+				${modeToggle}
+				<div class="a-search">⌕ 全文検索</div>
+				<div class="a-list-body">${fileTreeList(state.selectedFile)}</div>
+			`;
+			const f = changedFiles[state.selectedFile];
+			detailHeader = `<div class="header-copy"><strong>${f.path.split('/').pop()}</strong><div class="sub">${esc(f.path)}</div></div>`;
+			detailBody = diffPreview(f.path);
+		} else {
+			listHtml = `
+				<div class="a-list-header"><h2>Files</h2><div class="sub">${workspaces[state.selectedWs].name}</div></div>
+				${modeToggle}
+				<div class="a-search">⌕ ファイル名で検索（全階層）…</div>
+				<div class="a-list-body">
+					<div style="font-size:11px;color:var(--dim);padding:4px 4px 10px">para-code › app › mobile › src</div>
+					<div class="plain-row" style="padding:9px 4px"><span style="color:var(--accent)">▸</span><div class="pmain"><b>..</b></div></div>
+					${plainTreeEntries.map(e => `<div class="plain-row" style="padding:9px 4px"><span style="color:${e.dir?'var(--accent)':'var(--dim)'}">${e.dir?'▸':'▤'}</span><div class="pmain"><b>${e.name}</b></div>${e.size?`<div class="pval">${e.size}</div>`:''}</div>`).join('')}
+				</div>
+			`;
+			detailHeader = `<div class="header-copy"><strong>theme.ts</strong><div class="sub">app/mobile/src/theme.ts</div></div>`;
+			detailBody = `<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#0a0a0b"><div class="diff-line diff-ctx">export const colors = {</div><div class="diff-line diff-ctx">  bg: '#050506',</div><div class="diff-line diff-ctx">  accent: '#09AFD9',</div><div class="diff-line diff-ctx">  claude: '#d97757',</div><div class="diff-line diff-ctx">  ...</div><div class="diff-line diff-ctx">} as const;</div></div>`;
+		}
+	} else if(state.screen === 'scm'){
+		listHtml = `
+			<div class="a-list-header"><h2>Git</h2><div class="sub">${workspaces[state.selectedWs].name} · main</div></div>
+			<div class="a-list-body">
+				<div class="section-title" style="margin:0 4px 8px">変更 (6)</div>
+				${fileTreeList(-1)}
+			</div>
+		`;
+		detailHeader = `<div class="header-copy"><strong>コミット & 履歴</strong><div class="sub">${workspaces[state.selectedWs].name} · main</div></div>`;
+		detailBody = scmBody();
+	}
+
+	return `
+		<div class="a-root">
+			${rail}
+			<div class="a-list">${listHtml}</div>
+			<div class="a-detail">
+				<div class="a-detail-header">${detailHeader}</div>
+				<div class="a-detail-body">${detailBody}</div>
+				${showComposer ? `<div class="a-detail-composer"><div class="composer-box"><span>＋</span><span style="flex:1;color:var(--dim)">メッセージを入力…</span><button class="send">↑</button></div></div>` : ''}
+			</div>
+		</div>
+	`;
+}
+
+/* ===================== 案B ===================== */
+function renderB(){
+	const bottomTabs = [['home','⌂','Home'],['terminal','⌨','Terminal'],['scm','⎇','Git'],['files','▥','Files']];
+	const rail = `
+		<div class="b-rail ${state.railCollapsed?'collapsed':''}">
+			<div class="b-rail-top">
+				<div class="ws-avatar" style="background:${workspaces[state.selectedWs].color}">${workspaces[state.selectedWs].name[0].toUpperCase()}</div>
+				<b>Para Code</b>
+				<button class="b-collapse-btn" id="collapseBtn">${state.railCollapsed?'›':'‹'}</button>
+			</div>
+			<div class="pc-status"><span class="pc-dot"></span>${state.railCollapsed?'':'MacBook Pro · オンライン'}</div>
+			<div class="b-rail-list">
+				${workspaces.map((w,i) => `
+					<button class="ws-row ${i===state.selectedWs?'active':''}" data-ws="${i}">
+						<span class="ws-dot" style="background:${w.color}"></span>
+						<span class="ws-row-name">${esc(w.name)}</span>
+						${w.pending ? '<span class="badge question-badge">1</span>' : ''}
+					</button>
+				`).join('')}
+				<button class="ws-row" data-popover="worktreeCreate" style="border:1px dashed var(--border)"><span class="ws-dot" style="background:transparent;border:1px dashed var(--dim)"></span><span class="ws-row-name" style="color:var(--dim)">＋ 新規スペース</span></button>
+				<button class="ws-row ws-settings-row" data-overlay="settings"><span class="si">⚙</span><span class="ws-row-name">設定</span></button>
+			</div>
+			<div class="b-glass-wrap">
+				<div class="b-glass-tabbar">
+					${bottomTabs.map(([key,g,label]) => `<button class="b-glass-tab ${state.screen===key?'active':''}" data-screen="${key}"><span class="glyph">${g}</span><span class="lbl">${label}</span></button>`).join('')}
+				</div>
+			</div>
+		</div>
+	`;
+
+	let mainHeader = '', mainBody = '', showAgentStrip = false, panelKind = null;
+
+	if(state.screen === 'home'){
+		mainHeader = `<strong>Para Code</strong><span class="sub" style="margin-left:8px">すべてのスペース</span>`;
+		mainBody = homeBodyHtml(2);
+	} else if(state.screen === 'agent'){
+		showAgentStrip = true; panelKind = 'browser';
+		const a = allAgents()[state.selectedAgent];
+		mainHeader = `<button class="round" data-popover="voiceControl" style="width:32px;height:32px">◉</button><button class="header-copy" data-popover="agentInfo" style="background:transparent;border:0;text-align:left;padding:0;cursor:pointer;color:inherit"><strong>${esc(a.name)}</strong><span class="sub" style="margin-left:8px">${esc(a.sub)}</span></button><div class="spacer"></div><button class="panel-toggle ${state.floatingPanel==='browser'?'on':''}" data-panel="browser">${glyph.browser} ブラウザ</button><button class="panel-toggle ${state.floatingPanel==='terminal'?'on':''}" data-panel="terminal">${glyph.terminal} ターミナル</button>`;
+		mainBody = chatBody();
+	} else if(state.screen === 'activity'){
+		mainHeader = `<strong>${state.activityDrill ? esc((allAgents()[state.activitySelected]||agentList[0]).name) : 'Agent tree & Tasks'}</strong><span class="sub" style="margin-left:8px">${workspaces[state.selectedWs].name} · main</span>${state.activityDrill?`<button class="panel-toggle" data-activity-back style="margin-left:12px">‹ 一覧へ戻る</button>`:''}`;
+		mainBody = state.activityDrill ? activityDetailBody(allAgents()[state.activitySelected]||agentList[0]) : activityListBody();
+	} else if(state.screen === 'browser'){
+		mainHeader = `<strong>ブラウザ</strong><span class="sub" style="margin-left:8px">claude から</span>`;
+		mainBody = browserFullBody();
+	} else if(state.screen === 'terminal'){
+		panelKind = 'browser';
+		mainHeader = `<strong>Terminal · main</strong><span class="sub" style="margin-left:8px">zsh</span><div class="spacer"></div><button class="panel-toggle ${state.floatingPanel==='browser'?'on':''}" data-panel="browser">${glyph.browser} ブラウザ</button>`;
+		mainBody = terminalBody();
+	} else if(state.screen === 'files'){
+		const modeToggle = `<div class="pill-toggle"><button class="${state.filesMode==='changed'?'active':''}" data-files-mode="changed">変更</button><button class="${state.filesMode==='tree'?'active':''}" data-files-mode="tree">ツリー</button></div>`;
+		mainHeader = `<strong>Files</strong><span class="sub" style="margin-left:8px">${workspaces[state.selectedWs].name}</span><div class="spacer"></div>${modeToggle}`;
+		mainBody = state.filesMode==='changed'
+			? `<div style="display:flex;gap:18px"><div style="width:300px;flex:none">${fileTreeList(state.selectedFile)}</div><div style="flex:1">${diffPreview(changedFiles[state.selectedFile].path)}</div></div>`
+			: `<div style="display:flex;gap:18px"><div style="width:260px;flex:none"><div style="font-size:11px;color:var(--dim);padding:0 4px 8px">para-code › app › mobile › src</div>${plainTreeEntries.map(e => `<div class="plain-row" style="padding:9px 4px"><span style="color:${e.dir?'var(--accent)':'var(--dim)'}">${e.dir?'▸':'▤'}</span><div class="pmain"><b>${e.name}</b></div>${e.size?`<div class="pval">${e.size}</div>`:''}</div>`).join('')}</div><div style="flex:1"><div style="font-size:12px;color:var(--dim);margin-bottom:8px">app/mobile/src/theme.ts</div><div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#0a0a0b"><div class="diff-line diff-ctx">export const colors = {</div><div class="diff-line diff-ctx">  bg: '#050506',</div><div class="diff-line diff-ctx">  accent: '#09AFD9',</div><div class="diff-line diff-ctx">  claude: '#d97757',</div><div class="diff-line diff-ctx">  ...</div><div class="diff-line diff-ctx">} as const;</div></div></div></div>`;
+	} else if(state.screen === 'scm'){
+		mainHeader = `<strong>Git · main</strong>`;
+		mainBody = scmBody();
+	}
+
+	const agentStrip = showAgentStrip ? `
+		<div class="b-agent-strip">
+			${allAgents().map((a,i) => `<button class="b-agent-chip ${i===state.selectedAgent?'active':''}" data-agent="${i}"><div class="avatar mini-avatar ${a.provider}">${avatarLetter(a)}</div>${esc(a.name)}</button>`).join('')}
+		</div>
+	` : '';
+
+	const panelOpen = state.floatingPanel !== 'none';
+	const floatingContent = state.floatingPanel === 'browser' ? `
+		<div class="browser-toolbar"><span>‹</span><span>›</span><div class="url">para-browser · localhost:5173/preview</div><span>↻</span></div>
+		<div class="browser-canvas">共有ブラウザのライブミラー（WebRTC screencast）</div>
+	` : `
+		<div class="term-canvas">${terminalBody().replace('<div class="term-canvas">','').replace(/<\/div>\s*$/,'')}</div>
+	`;
+
+	return `
+		<div class="b-root">
+			${rail}
+			<div class="b-main">
+				<div class="b-main-header">${mainHeader}</div>
+				${agentStrip}
+				<div class="b-main-body">${mainBody}</div>
+			</div>
+			<div class="b-scrim ${panelOpen?'show':''}"></div>
+			<div class="b-floating ${panelOpen?'open':''}">
+				<div class="b-grip">⋮</div>
+				<div class="b-floating-header"><b>${state.floatingPanel==='browser'?'ブラウザ共有':'ターミナル'}</b><button class="round" id="closePanel" style="width:26px;height:26px">✕</button></div>
+				<div class="b-floating-body">${floatingContent}</div>
+			</div>
+		</div>
+	`;
+}
+
+/* ===================== 案C ===================== */
+function plainTreeRows(){
+	return `<div class="plain-row"><span style="color:var(--accent)">▸</span><div class="pmain"><b>..</b></div></div>` +
+		plainTreeEntries.map(e => `<div class="plain-row"><span style="color:${e.dir?'var(--accent)':'var(--dim)'}">${e.dir?'▸':'▤'}</span><div class="pmain"><b>${e.name}</b></div>${e.size?`<div class="pval">${e.size}</div>`:''}</div>`).join('');
+}
+function themePreviewBlock(){
+	return `<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#0a0a0b"><div class="diff-line diff-ctx">export const colors = {</div><div class="diff-line diff-ctx">  bg: '#050506',</div><div class="diff-line diff-ctx">  accent: '#09AFD9',</div><div class="diff-line diff-ctx">  claude: '#d97757',</div><div class="diff-line diff-ctx">  ...</div><div class="diff-line diff-ctx">} as const;</div></div>`;
+}
+function renderC(){
+	const w = { full:1194, split:597, slideover:420 }[state.widthPreset];
+	const wide = w >= 900;
+	document.documentElement.style.setProperty('--c-cols', wide ? 2 : 1);
+
+	const headerTitle = state.screen==='home' ? 'Para Code'
+		: state.screen==='agent' ? allAgents()[state.selectedAgent].name
+		: state.screen==='activity' ? (state.activityDrill ? (allAgents()[state.activitySelected]||agentList[0]).name : 'Agent tree & Tasks')
+		: state.screen==='browser' ? 'ブラウザ'
+		: state.screen==='terminal' ? 'Terminal'
+		: state.screen==='files' ? 'Files' : 'Git';
+	const showBack = state.screen==='activity' || state.screen==='browser';
+	const leftControl = showBack ? `<button class="round" data-screen="agent">‹</button>` : `<button class="round" data-overlay="settings">${workspaces[state.selectedWs].name[0].toUpperCase()}</button>`;
+	const rightControl = state.screen==='agent' ? `<button class="round" data-popover="voiceControl">◉</button>` : `<button class="round" data-overlay="notifications">◔</button>`;
+	const header = `${leftControl}<strong ${state.screen==='agent'?'data-popover="agentInfo" style="cursor:pointer"':''}>${esc(headerTitle)}</strong>${rightControl}`;
+
+	let body = '';
+	if(state.screen === 'home'){
+		body = homeBodyHtml(wide ? 2 : 1);
+	} else if(state.screen === 'agent'){
+		body = `
+			<div class="c-chat-col">
+				<div class="c-chat-main">${chatBody()}</div>
+				<div class="c-context-rail ${wide?'show':''}">
+					<div class="c-context-card"><div class="k">実行中ツール</div><div class="v">Read · app/mobile/src/theme.ts</div></div>
+					<div class="c-context-card"><div class="k">関連ファイル</div><div class="v">theme.ts<br>agent-ui-catalog.html</div></div>
+					<div class="c-context-card"><div class="k">セッション</div><div class="v">para-code · main<br>Sonnet 4.5 · high</div></div>
+				</div>
+			</div>
+		`;
+	} else if(state.screen === 'activity'){
+		body = state.activityDrill ? activityDetailBody(allAgents()[state.activitySelected]||agentList[0]) : activityListBody();
+	} else if(state.screen === 'browser'){
+		body = browserFullBody();
+	} else if(state.screen === 'terminal'){
+		body = terminalBody();
+	} else if(state.screen === 'files'){
+		const modeToggle = `<div class="pill-toggle" style="margin-bottom:12px"><button class="${state.filesMode==='changed'?'active':''}" data-files-mode="changed">変更</button><button class="${state.filesMode==='tree'?'active':''}" data-files-mode="tree">ツリー</button></div>`;
+		const changed = wide
+			? `<div style="display:flex;gap:16px"><div style="width:280px;flex:none">${fileTreeList(state.selectedFile)}</div><div style="flex:1">${diffPreview(changedFiles[state.selectedFile].path)}</div></div>`
+			: fileTreeList(state.selectedFile);
+		const tree = wide
+			? `<div style="display:flex;gap:16px"><div style="width:260px;flex:none">${plainTreeRows()}</div><div style="flex:1">${themePreviewBlock()}</div></div>`
+			: plainTreeRows();
+		body = modeToggle + (state.filesMode==='changed' ? changed : tree);
+	} else if(state.screen === 'scm'){
+		body = wide
+			? `<div style="display:flex;gap:16px"><div style="width:280px;flex:none">${fileTreeList(-1)}</div><div style="flex:1">${scmBody()}</div></div>`
+			: scmBody();
+	}
+
+	const tabs = [['home','⌂','Home'],['terminal','⌨','Terminal'],['scm','⎇','Git'],['files','▥','Files']];
+
+	return `
+		<div class="c-root">
+			<div class="c-header">${header}</div>
+			<div class="c-body">${body}</div>
+			<div class="c-tabbar">
+				${tabs.map(([key,g,label]) => `<button class="c-tab ${state.screen===key?'active':''}" data-screen="${key}"><span class="glyph">${g}</span>${label}</button>`).join('')}
+			</div>
+		</div>
+	`;
+}
+
+/* ===================== 設定・ダッシュボード類（フォームシート） ===================== */
+function settingsBody(){
+	return settingsSpec.map((sec,si) => `
+		<div class="field-label" style="margin-top:${si===0?'0':'18px'}">${sec.title}</div>
+		<div class="settings-card">
+			${(sec.items||[]).map(it => `
+				<button class="settings-row" style="width:100%;text-align:left" data-settings-nav="${it.overlay||''}">
+					<span class="si">${it.icon}</span>
+					<span class="sbody"><b>${esc(it.label)}</b><span>${esc(it.sub)}</span></span>
+					${it.value?`<span class="sval">${esc(it.value)}</span>`:''}
+					<span class="schev">›</span>
+				</button>
+			`).join('')}
+			${(sec.toggles||[]).map(t => `
+				<div class="settings-row">
+					<span class="sbody"><b>${esc(t.label)}</b><span>${esc(t.sub)}</span></span>
+					<span class="switch ${t.on?'on':''}"></span>
+				</div>
+			`).join('')}
+		</div>
+	`).join('');
+}
+function notificationsBody(){
+	return notificationsList.map(n => `
+		<div class="notif-row" style="background:var(--surface);border:1px solid var(--border)">
+			<span class="notif-dot" style="background:${notifKindColor[n.kind]}"></span>
+			<div class="nbody"><b>${esc(n.title)}</b><span>${esc(n.body)}</span></div>
+			<span class="notif-time">${n.time}</span>
+		</div>
+	`).join('');
+}
+function changelogBody(){
+	return changelogReleases.map(r => `
+		<div class="rel-block">
+			<div class="rel-top"><span class="ver-chip ${r.current?'':'old'}">${r.version}</span><span style="font-size:10px;color:var(--dim)">${r.date}</span></div>
+			${r.headline?`<div class="rel-headline">${esc(r.headline)}</div>`:''}
+			${r.items.length ? r.items.map(it => `
+				<div class="cl-item">
+					<div class="cl-icon" style="background:${toneColor[it.tone]}22;color:${toneColor[it.tone]}">${it.icon}</div>
+					<div><b>${esc(it.title)}</b>${it.body?`<span>${esc(it.body)}</span>`:''}</div>
+				</div>
+			`).join('') : `<p class="note" style="font-style:italic">内部の整備のみの更新です。</p>`}
+		</div>
+	`).join('');
+}
+function archiveBody(){
+	if(!archiveRows.length) return `<div style="text-align:center;color:var(--dim);padding:60px 0;font-size:12px;line-height:1.8">アーカイブしたエージェントはありません<br>ホームの一覧を左へスワイプするとここに入ります</div>`;
+	return `<p class="note" style="margin:0 0 12px">PCではそのまま動いています。質問や応答待ちになったものは自動でホームへ戻ります。</p>` +
+		archiveRows.map(r => `
+			<div class="plain-row" style="opacity:.72">
+				<span class="ws-dot" style="background:${r.color}"></span>
+				<div class="pmain"><b>${esc(r.title)}</b><span>${esc(r.ws)} · ${esc(r.branch)}</span></div>
+			</div>
+		`).join('');
+}
+function ccusageBody(){
+	const maxDaily = Math.max(...ccusageDaily.map(d=>d[1]));
+	const maxModel = Math.max(...ccusageModels.map(m=>m[1]));
+	return `
+		<div class="kpi-row">
+			<div class="kpi-card"><div class="kl">今日のコスト</div><div class="kv">$3.42</div></div>
+			<div class="kpi-card"><div class="kl">アクティブブロック</div><div class="kv">$1.10</div><div class="ks">$0.42/時</div></div>
+		</div>
+		<div class="field-label" style="margin-top:0">直近7日</div>
+		${ccusageDaily.map(([d,v]) => `<div class="bar-row"><span class="bl">${d}</span><div class="bar-track"><i style="width:${Math.max(2,v/maxDaily*100)}%;background:var(--accent)"></i></div><span class="bv">$${v.toFixed(2)}</span></div>`).join('')}
+		<div class="field-label">モデル別（直近30日）</div>
+		${ccusageModels.map(([m,v,c]) => `<div class="bar-row"><span class="bl" style="width:120px">${m}</span><div class="bar-track"><i style="width:${Math.max(2,v/maxModel*100)}%;background:${c}"></i></div><span class="bv">$${v.toFixed(2)}</span></div>`).join('')}
+		<div class="field-label">直近セッション</div>
+		<div class="settings-card">
+			${ccusageSessions.map(([proj,models,tok,time,cost]) => `<div class="plain-row"><div class="pmain"><b>${proj}</b><span>${models} · ${tok} · ${time}</span></div><div class="pval">${cost}</div></div>`).join('')}
+		</div>
+	`;
+}
+function severityColor(pct){ return pct>=85?'var(--red)':pct>=60?'var(--yellow)':'var(--green)'; }
+function ratelimitBody(){
+	const worst = Math.max(...[...ratelimitAccounts.claude,...ratelimitAccounts.codex].flatMap(a=>a.windows.map(w=>w[1])));
+	const meter = a => a.windows.map(([w,p]) => `<div class="bar-row"><span class="bl">${w}</span><div class="bar-track"><i style="width:${p}%;background:${severityColor(p)}"></i></div><span class="bv">${p}%</span></div>`).join('');
+	return `
+		<div class="kpi-row">
+			<div class="kpi-card"><div class="kl">最大使用率</div><div class="kv ${worst>=85?'warn':''}">${worst}%</div></div>
+			<div class="kpi-card"><div class="kl">次のリセット</div><div class="kv" style="font-size:16px">2h 27m</div></div>
+		</div>
+		<div class="field-label" style="margin-top:0">Claude · ${ratelimitAccounts.claude.length}アカウント</div>
+		<div class="settings-card" style="padding:12px 14px">${ratelimitAccounts.claude.map(a => `<div style="margin-bottom:8px"><b style="font-size:11px">${a.email}</b>${meter(a)}</div>`).join('')}</div>
+		<div class="field-label">Codex · ${ratelimitAccounts.codex.length}アカウント</div>
+		<div class="settings-card" style="padding:12px 14px">${ratelimitAccounts.codex.map(a => `<div><b style="font-size:11px">${a.email}</b>${meter(a)}</div>`).join('')}</div>
+		<p class="note">アカウントの追加・再ログインはPC側のリミットモニター（タイトルバー）から行えます。</p>
+	`;
+}
+function githubUsageBody(){
+	const c = githubUsage.core, g = githubUsage.graphql;
+	return `
+		<div class="kpi-row">
+			<div class="kpi-card"><div class="kl">Core 残量</div><div class="kv">${c.remaining}/${c.limit}</div><div class="gauge-mini"><i style="width:${c.remaining/c.limit*100}%;background:var(--accent)"></i></div><div class="ks">${c.reset}</div></div>
+			<div class="kpi-card"><div class="kl">GraphQL 残量</div><div class="kv" style="color:var(--yellow)">${g.remaining}/${g.limit}</div><div class="gauge-mini"><i style="width:${g.remaining/g.limit*100}%;background:var(--yellow)"></i></div><div class="ks">${g.reset}</div></div>
+		</div>
+		<div style="display:flex;gap:14px;align-items:center;margin:10px 0 14px">
+			<div class="pill-toggle"><button class="active">5分</button><button>1時間</button><button>セッション</button></div>
+			<div class="chip-toggle"><button class="active">呼び出し元</button><button>スペース</button></div>
+		</div>
+		<div class="settings-card" style="padding:10px 14px">
+			${githubUsage.breakdown.map(([name,core,gql]) => `
+				<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+					<div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:5px"><b>${name}</b><span>${core+gql}</span></div>
+					<div style="display:flex;height:8px;border-radius:4px;overflow:hidden"><div style="width:${core}%;background:var(--accent)"></div><div style="width:${gql}%;background:var(--yellow)"></div></div>
+				</div>
+			`).join('')}
+		</div>
+		<p class="note">棒の色は資源の内訳（青=Core/REST、黄=GraphQL）。</p>
+	`;
+}
+function ringSvg(percent, color){
+	const r=32, c=2*Math.PI*r, off = c*(1-percent/100);
+	return `<svg width="78" height="78" viewBox="0 0 78 78"><circle cx="39" cy="39" r="${r}" stroke="var(--surface3)" stroke-width="7" fill="none"/><circle cx="39" cy="39" r="${r}" stroke="${color}" stroke-width="7" fill="none" stroke-linecap="round" stroke-dasharray="${c}" stroke-dashoffset="${off}" transform="rotate(-90 39 39)"/></svg>`;
+}
+function systemBody(){
+	return `
+		<div class="ring-row">
+			${systemRings.map(([label,pct,sub,color]) => `
+				<div class="ring-card">
+					<div style="position:relative">${ringSvg(parseInt(pct),color)}<div style="position:absolute;inset:0;display:grid;place-items:center;font-size:14px;font-weight:800;color:${color}">${pct}</div></div>
+					<b>${label}</b><div class="rs">${sub}</div>
+				</div>
+			`).join('')}
+		</div>
+		<div class="chip-toggle" style="margin-bottom:10px"><button class="active">プロセス</button><button>スペース</button><button>ボリューム</button></div>
+		<div class="settings-card" style="padding:10px 14px">
+			${systemProcesses.map(([name,ws,cpu,mem]) => `
+				<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+					<div style="display:flex;justify-content:space-between;font-size:11px"><b>${name}</b><span>${cpu}% · ${mem}MB</span></div>
+					<div style="font-size:9.5px;color:var(--dim);margin:2px 0 5px">${ws}</div>
+					<div class="bar-track" style="margin-bottom:3px"><i style="width:${cpu}%;background:var(--accent)"></i></div>
+					<div class="bar-track"><i style="width:${Math.min(100,mem/1000*100)}%;background:var(--yellow)"></i></div>
+				</div>
+			`).join('')}
+		</div>
+		<p class="note">上の3つはPC全体の使用量です。内訳に出るのは Para Code 本体と、Para Code が開いているターミナルのぶんだけです。</p>
+	`;
+}
+function spaceNoteBody(){
+	return spaceNoteLines.map(l => {
+		if(l.type==='blank') return `<div style="height:10px"></div>`;
+		if(l.type==='heading') return `<div style="font-size:14.5px;font-weight:700;margin:12px 0 4px">${esc(l.text)}</div>`;
+		if(l.type==='text') return `<div style="font-size:13.5px;color:var(--dim);margin:4px 0">${esc(l.text)}</div>`;
+		return `<div style="display:flex;gap:9px;align-items:center;padding:5px 0">
+			<span style="width:20px;height:20px;border-radius:6px;flex:none;display:grid;place-items:center;background:${l.done?'var(--accent)':'rgba(255,255,255,.08)'};border:1px solid ${l.done?'var(--accent)':'var(--strong)'}">${l.done?'<span style="color:#04252c;font-size:12px;font-weight:900">✓</span>':''}</span>
+			<span style="font-size:13px;${l.done?'color:var(--dim);text-decoration:line-through':''}">${esc(l.text)}</span>
+		</div>`;
+	}).join('');
+}
+function agentLaunchBody(){
+	return `
+		<div class="field-label" style="margin-top:0">エージェント</div>
+		<div class="agent-pick-row">
+			${agentLaunchForm.agents.map((a,i) => `<div class="agent-pick ${i===0?'selected':''}"><b style="display:block;font-size:12px">${a==='claude'?'Claude Code':'Codex'}</b></div>`).join('')}
+		</div>
+		<div class="field-label">スペース</div>
+		<div style="display:flex;gap:8px;overflow:auto">
+			${workspaces.map((w,i)=>`<div class="ws-row ${i===0?'active':''}" style="width:auto;white-space:nowrap;flex:none"><span class="ws-dot" style="background:${w.color}"></span><span class="ws-row-name" style="padding-right:4px">${esc(w.name)}</span></div>`).join('')}
+		</div>
+		<div class="field-label">権限</div>
+		<div class="pill-toggle">${agentLaunchForm.permission.map((p,i)=>`<button class="${i===0?'active':''}">${p}</button>`).join('')}</div>
+		<div class="field-label">最初の指示（任意）</div>
+		<div class="textish" style="min-height:70px">iPad版レイアウト実装の第一歩として、theme.tsにspacingトークンを追加して</div>
+		<div class="field-label">コマンドプレビュー</div>
+		<div class="textish" style="font:10.5px Menlo,monospace;color:var(--dim)">$ claude --model sonnet-4.5 -C para-code "iPad版レイアウト実装の第一歩として..."</div>
+		<button class="cta-btn" style="margin-top:18px">起動する</button>
+	`;
+}
+function pairingBody(){
+	return `
+		<div style="text-align:center;padding:20px 10px">
+			<div style="width:72px;height:72px;border-radius:18px;background:var(--wash);margin:0 auto 14px;display:grid;place-items:center;font-size:28px;color:var(--accent)">◒</div>
+			<div style="font-size:18px;font-weight:700;margin-bottom:8px">Para Code と接続</div>
+			<div style="font-size:11.5px;color:var(--dim);margin-bottom:6px">PC 側に表示されている 6 桁と一致することを確認してください。</div>
+			<div class="sas-code">${pairingSAS}</div>
+			<div style="font-size:10.5px;color:var(--dim);line-height:1.7">PC で「接続を承認」を押すと接続が完了します。<br>接続はエンドツーエンドで暗号化されます</div>
+		</div>
+	`;
+}
+function overlayMeta(key){
+	const map = {
+		settings:{ title:'設定', body:settingsBody() },
+		notifications:{ title:'通知', sub:notificationsList.length+'件', body:notificationsBody(), clearBtn:true },
+		changelog:{ title:'更新履歴', sub:'現在のバージョン 0.2.5', body:changelogBody() },
+		archive:{ title:'アーカイブ', body:archiveBody() },
+		ccusage:{ title:'Ccusage', body:ccusageBody() },
+		ratelimit:{ title:'Rate Limit', body:ratelimitBody() },
+		githubUsage:{ title:'GitHub API', body:githubUsageBody() },
+		system:{ title:'システム', sub:'たった今更新 · 10コア', body:systemBody() },
+		spaceNote:{ title:'メモ', sub:workspaces[state.selectedWs].name, body:spaceNoteBody() },
+		agentLaunch:{ title:'新しいエージェント', body:agentLaunchBody() },
+		pairing:{ title:'ペアリング', body:pairingBody() },
+	};
+	return map[key];
+}
+function renderOverlayMarkup(){
+	const active = !!state.overlay, meta = active ? overlayMeta(state.overlay) : null;
+	return `
+		<div class="sheet-scrim ${active?'show':''}" data-close-overlay></div>
+		<div class="form-sheet ${active?'show':''}">
+			${meta ? `
+				<div class="form-sheet-header">
+					<div style="flex:1"><h2>${meta.title}</h2>${meta.sub?`<div class="sub">${meta.sub}</div>`:''}</div>
+					${meta.clearBtn?'<button class="trigger-btn" style="margin-right:8px">クリア</button>':''}
+					<button class="round" data-close-overlay style="width:32px;height:32px">✕</button>
+				</div>
+				<div class="form-sheet-body">${meta.body}</div>
+			` : ''}
+		</div>
+	`;
+}
+
+/* ===================== 会話画面のポップオーバー／シート ===================== */
+function statusLabelJa(s){ return {running:'実行中',idle:'待機中',completed:'完了',failed:'失敗',interrupted:'中断',unknown:'状態不明',question:'質問あり'}[s] || s; }
+function statusColorVar(s){ return s==='failed'?'var(--red)':(s==='running')?'var(--accent)':(s==='idle'||s==='unknown'||s==='interrupted')?'var(--yellow)':(s==='question')?'var(--red)':'var(--green)'; }
+function agentInfoBody(){
+	const a = allAgents()[state.selectedAgent];
+	return `
+		<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+			<b style="font-size:15px">${esc(a.name)}</b>
+			<button class="round" style="width:30px;height:30px">✎</button>
+		</div>
+		<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+			${badge(a.status)}<span class="chip">${esc(workspaces[a.ws].name)}</span><span class="chip">main</span><span class="chip">Sonnet 4.5 · high</span>
+		</div>
+		<div class="settings-card" style="padding:12px 14px;margin-bottom:14px">
+			<div style="display:flex;justify-content:space-between;font-size:11px;font-weight:700;margin-bottom:8px">スペースのメモ<span class="chip">2/4</span></div>
+			<div style="font-size:11px;color:var(--dim);line-height:1.9">✓ 既存モバイル画面の全量調査<br>✓ 3案のモックをipad.htmlに作成<br>○ コード設計方針をレビューしてもらう</div>
+		</div>
+		<div style="display:flex;gap:8px;margin-bottom:10px">
+			${['◐ ピン留め','⌨ ターミナル','◎ ブラウザ','▤ アーカイブ'].map(l=>`<button class="trigger-btn" style="flex:1;padding:10px 4px">${l}</button>`).join('')}
+		</div>
+		<button class="trigger-btn" style="width:100%;color:var(--red);border-color:rgba(244,114,114,.3)">このターミナルを削除</button>
+	`;
+}
+function agentStatusBody(){
+	return `
+		<button class="popover-item" style="width:100%;background:transparent;border:0;color:var(--text);text-align:left"><span style="width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block"></span>&nbsp;確認済みにする<span style="float:right;color:var(--accent)">✓</span></button>
+		<div class="popover-item" style="opacity:.6"><span style="width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block"></span>&nbsp;質問あり（現在）</div>
+	`;
+}
+function slashCommandBody(){
+	return slashCommands.map(c => `
+		<div class="popover-item">
+			<span style="width:16px;text-align:center">${c.icon}</span>
+			<div style="flex:1;min-width:0">
+				<div><b style="font:11px Menlo,monospace;font-weight:700">${c.insert}</b> <span style="font:10px Menlo,monospace;color:var(--dim)">${c.hint}</span></div>
+				<div style="font-size:10px;color:var(--dim);margin-top:2px">${c.desc}</div>
+			</div>
+			<span style="font-size:8.5px;color:var(--dim)">${c.source}</span>
+		</div>
+	`).join('');
+}
+function pendingMessagesBody(){
+	return `<p class="note" style="margin:0 0 10px">エージェントが手を空けたら、この順で読まれます。送信済みのため、ここから取り消すことはできません。</p>` +
+		pendingMessagesData.map((m,i) => `<div class="plain-row" style="background:var(--surface2);border-radius:10px;padding:9px 10px;border:1px solid var(--border);margin-bottom:6px"><span style="width:18px;height:18px;border-radius:50%;background:var(--surface3);display:grid;place-items:center;font-size:9px;flex:none">${i+1}</span><div class="pmain">${esc(m)}</div></div>`).join('');
+}
+function voiceControlBody(){
+	return `
+		<div style="text-align:center;padding:8px 0 16px">
+			<div style="width:68px;height:68px;border-radius:50%;background:var(--wash);border:1px solid rgba(9,175,217,.5);margin:0 auto 10px;display:grid;place-items:center;font-size:24px;color:var(--accent)">◉</div>
+			<b style="font-size:13px;display:block">停止中</b>
+			<span style="font-size:10.5px;color:var(--dim)">開始すると、PCのAivis音声をこのiPadでも再生します</span>
+		</div>
+		<div class="settings-card" style="padding:0">
+			<div class="settings-row"><span class="si">▤</span><span class="sbody"><b>接続中のPC</b></span><span class="sval">オンライン</span></div>
+			<div class="settings-row"><span class="si">◫</span><span class="sbody"><b>対象</b></span><span class="sval">すべてのスペース</span></div>
+			<div class="settings-row"><span class="si">◔</span><span class="sbody"><b>再生について</b></span><span class="sval">ロック画面から停止可</span></div>
+		</div>
+		<button class="cta-btn" style="margin-top:14px">音声通知を開始</button>
+		<p class="note" style="text-align:center">開始しない限り、iPadでは音声を再生しません。</p>
+	`;
+}
+function terminalActionsBody(){
+	return `
+		${['✎ 名前を変更','◐ ピン留め'].map(l=>`<button class="popover-item" style="width:100%;background:transparent;border:0;color:var(--text);text-align:left">${l}</button>`).join('')}
+		<button class="popover-item danger" style="width:100%;background:transparent;border:0;text-align:left">▤ 削除</button>
+	`;
+}
+function worktreeCreateBody(){
+	return `
+		<div class="field-label" style="margin-top:0">基本情報</div>
+		<div style="display:flex;gap:8px"><div class="textish" style="flex:1">スペース名（任意）</div><div class="textish" style="flex:1">ブランチ名（任意）</div></div>
+		<div class="textish" style="margin-top:8px;min-height:50px">何をしますか？（任意 — エージェントへの指示。ブランチ名の自動生成にも使われます）</div>
+		<div class="field-label">エージェント</div>
+		<div style="display:flex;gap:8px"><span class="chip">実行しない</span><span class="chip" style="background:var(--wash);color:var(--accent)">Claude Code</span><span class="chip">Codex</span></div>
+		<div class="field-label">リポジトリ / ベースブランチ</div>
+		<div style="display:flex;gap:8px;flex-wrap:wrap"><span class="chip" style="background:var(--wash);color:var(--accent)">para-code</span><span class="chip">main</span><span class="chip">develop</span></div>
+		<button class="cta-btn" style="margin-top:16px">作成</button>
+	`;
+}
+function popoverMeta(key){
+	const map = {
+		agentInfo:{ title:'エージェント情報', narrow:false, body:agentInfoBody() },
+		agentStatus:{ title:'このエージェントの状態', narrow:true, body:agentStatusBody() },
+		slashCommand:{ title:'スラッシュコマンド', narrow:false, body:slashCommandBody() },
+		pendingMessages:{ title:'送信予定 '+pendingMessagesData.length+'件', narrow:true, body:pendingMessagesBody() },
+		voiceControl:{ title:'音声通知', narrow:true, body:voiceControlBody() },
+		terminalActions:{ title:'ターミナル操作', narrow:true, body:terminalActionsBody() },
+		worktreeCreate:{ title:'新しいスペース（worktree）を作成', narrow:false, body:worktreeCreateBody() },
+	};
+	return map[key];
+}
+function renderPopoverMarkup(){
+	const active = !!state.popover, meta = active ? popoverMeta(state.popover) : null;
+	const narrowStyle = meta && meta.narrow ? 'width:380px;height:auto;max-height:78%;top:11%' : '';
+	return `
+		<div class="sheet-scrim ${active?'show':''}" data-close-popover></div>
+		<div class="form-sheet ${active?'show':''}" style="${narrowStyle}">
+			${meta ? `
+				<div class="form-sheet-header"><div style="flex:1"><h2 style="font-size:15px">${meta.title}</h2></div><button class="round" data-close-popover style="width:30px;height:30px">✕</button></div>
+				<div class="form-sheet-body">${meta.body}</div>
+			` : ''}
+		</div>
+	`;
+}
+
+/* ===================== Activity（SubAgent一覧・詳細）／Browser（全画面）／Files（ツリー・素表示） ===================== */
+function activityListBody(){
+	const all = allAgents();
+	const active = all.filter(a => ['running','idle','question'].includes(a.status));
+	return `
+		<div class="kpi-row">
+			<div class="kpi-card"><div class="kl">実行中</div><div class="kv">${active.length}</div></div>
+			<div class="kpi-card"><div class="kl">履歴</div><div class="kv">${all.length}</div></div>
+			<div class="kpi-card"><div class="kl">Tasks</div><div class="kv">${subAgentTasks.length}</div></div>
+		</div>
+		<div class="field-label" style="margin-top:0">Agent tree</div>
+		<div class="settings-card">
+			${all.map((a,i) => `
+				<button class="a-row" data-activity-agent="${i}" style="width:100%;border-radius:0;border-bottom:1px solid var(--border)">
+					<div class="avatar ${a.provider}">${avatarLetter(a)}</div>
+					<div class="row-main"><b>${esc(a.name)}</b><span>${a.provider} · ${a.time||'—'}</span></div>
+					${badge(a.status)}
+				</button>
+			`).join('')}
+		</div>
+		<div class="field-label">Tasks</div>
+		<div class="settings-card">
+			${subAgentTasks.map(t => `
+				<div class="plain-row">
+					<span style="color:${statusColorVar(t.status)}">${t.status==='completed'?'●':'○'}</span>
+					<div class="pmain"><b>${esc(t.label)}</b><span>${esc(t.detail)} · 担当: ${t.assignee}</span></div>
+					${badge(t.status)}
+				</div>
+			`).join('')}
+		</div>
+	`;
+}
+function activityDetailBody(a){
+	return `
+		<div class="kpi-row">
+			<div class="kpi-card"><div class="kl">ステータス</div><div class="kv" style="font-size:14px;color:${statusColorVar(a.status)}">${statusLabelJa(a.status)}</div></div>
+			<div class="kpi-card"><div class="kl">直接の子</div><div class="kv">0</div></div>
+			<div class="kpi-card"><div class="kl">配下全体</div><div class="kv">0</div></div>
+			<div class="kpi-card"><div class="kl">完了</div><div class="kv">${a.status==='completed'?1:0}</div></div>
+		</div>
+		<div class="field-label" style="margin-top:0">Prompt / Description</div>
+		<div class="settings-card" style="padding:12px 14px">
+			<div style="font-size:12px;line-height:1.6">${esc(a.detail||a.name)}</div>
+			<div style="font:9px Menlo,monospace;color:var(--purple);margin-top:8px">${a.id}</div>
+		</div>
+		<div class="field-label">会話・ツール履歴</div>
+		<div class="message"><div class="role">User</div><p>既存のモバイル実装を詳しく調査してください。</p></div>
+		<div class="message"><div class="role">SubAgent</div><p>関連コンポーネントと状態管理を確認します。</p></div>
+		<div class="message tool"><div class="role">Tool</div><p>rg -n "AgentActivity" app/mobile</p></div>
+		<div class="message"><div class="role">SubAgent</div><p>親画面、一覧画面、詳細画面の階層は明確に分離されています。</p></div>
+	`;
+}
+function browserFullBody(){
+	return `
+		<div style="display:flex;gap:8px;overflow:auto;padding-bottom:10px;align-items:center">
+			<div class="b-agent-chip active" style="border-radius:12px"><span style="color:var(--green)">●</span>claude · GitHub - foo/bar</div>
+			<div class="b-agent-chip" style="border-radius:12px">codex · (無題)</div>
+			<button class="round" style="width:32px;height:32px;flex:none">↻</button>
+		</div>
+		<div class="browser-toolbar" style="border-radius:10px;margin:10px 0">
+			<span>‹</span><span>›</span><span>↻</span>
+			<div class="url" style="flex:1">github.com/para-code/para-code/pull/482</div>
+		</div>
+		<div class="browser-canvas" style="border-radius:14px;min-height:400px">共有ブラウザのライブミラー（WebRTC screencast、ピンチズーム対応）</div>
+		<div style="display:flex;gap:8px;margin-top:10px">
+			${['‹','›','↻','︿','﹀'].map(s=>`<button class="round" style="flex:1;border-radius:10px;width:auto;height:40px">${s}</button>`).join('')}
+		</div>
+	`;
+}
+function filesTreeBody(){
+	return `
+		<div class="a-search" style="margin:0 0 10px">⌕ ファイル名で検索（全階層）…</div>
+		<div style="font-size:11px;color:var(--dim);margin-bottom:10px">para-code › app › mobile › src</div>
+		<div class="settings-card">
+			<div class="plain-row"><span style="color:var(--accent)">▸</span><div class="pmain"><b>..</b></div></div>
+			${plainTreeEntries.map(e => `<div class="plain-row"><span style="color:${e.dir?'var(--accent)':'var(--dim)'}">${e.dir?'▸':'▤'}</span><div class="pmain"><b>${e.name}</b></div>${e.size?`<div class="pval">${e.size}</div>`:''}</div>`).join('')}
+		</div>
+		<div class="field-label">プレビュー: theme.ts</div>
+		<div style="border:1px solid var(--border);border-radius:12px;overflow:hidden;background:#0a0a0b">
+			<div class="diff-line diff-ctx">export const colors = {</div>
+			<div class="diff-line diff-ctx">  bg: '#050506',</div>
+			<div class="diff-line diff-ctx">  accent: '#09AFD9',</div>
+			<div class="diff-line diff-ctx">  claude: '#d97757',</div>
+			<div class="diff-line diff-ctx">  ...</div>
+			<div class="diff-line diff-ctx">} as const;</div>
+		</div>
+	`;
+}
+
+function render(){
+	document.querySelectorAll('.proposal-card').forEach(el => el.classList.toggle('active', el.dataset.proposal === state.proposal));
+	document.getElementById('descBody').innerHTML = descriptions[state.proposal];
+	document.getElementById('widthGroup').style.display = state.proposal === 'C' ? 'block' : 'none';
+
+	const screens = screensByProposal[state.proposal];
+	if(!screens.some(([key]) => key === state.screen)) state.screen = screens[0][0];
+	document.getElementById('screenSeg').innerHTML = screens.map(([key,label]) => `<button data-screen="${key}" class="${state.screen===key?'active':''}">${label}</button>`).join('');
+
+	document.querySelectorAll('#widthSeg button').forEach(el => el.classList.toggle('active', el.dataset.width === state.widthPreset));
+
+	document.getElementById('overlaySeg').innerHTML = overlayList.map(([k,l]) => `<button data-overlay="${k}" class="${state.overlay===k?'active':''}">${l}</button>`).join('');
+	document.getElementById('popoverSeg').innerHTML = popoverList.map(([k,l]) => `<button data-popover="${k}" class="${state.popover===k?'active':''}">${l}</button>`).join('');
+
+	const screenEl = document.getElementById('tabletScreen');
+	const base = state.proposal === 'A' ? renderA() : state.proposal === 'B' ? renderB() : renderC();
+	screenEl.innerHTML = base + renderOverlayMarkup() + renderPopoverMarkup();
+
+	const shell = document.getElementById('tabletShell');
+	const targetW = state.proposal === 'C' ? { full:1194, split:597, slideover:420 }[state.widthPreset] : 1194;
+	shell.style.width = targetW + 32 + 'px';
+
+	bind();
+	fitScale();
+}
+
+function bind(){
+	document.querySelectorAll('[data-screen]').forEach(el => el.onclick = () => {
+		if(el.dataset.agent !== undefined) state.selectedAgent = Number(el.dataset.agent);
+		state.screen = el.dataset.screen;
+		state.activityDrill = false;
+		state.overlay = null; state.popover = null;
+		render();
+	});
+	document.querySelectorAll('[data-agent]:not([data-screen])').forEach(el => el.onclick = () => {
+		state.selectedAgent = Number(el.dataset.agent);
+		render();
+	});
+	document.querySelectorAll('[data-file]').forEach(el => el.onclick = () => { state.selectedFile = Number(el.dataset.file); render(); });
+	document.querySelectorAll('[data-ws]').forEach(el => el.onclick = () => { state.selectedWs = Number(el.dataset.ws); render(); });
+	document.querySelectorAll('[data-files-mode]').forEach(el => el.onclick = () => { state.filesMode = el.dataset.filesMode; render(); });
+	document.querySelectorAll('[data-overlay]').forEach(el => el.onclick = e => { e.stopPropagation(); const k = el.dataset.overlay; state.overlay = state.overlay===k ? null : k; state.popover = null; render(); });
+	document.querySelectorAll('[data-close-overlay]').forEach(el => el.onclick = () => { state.overlay = null; render(); });
+	document.querySelectorAll('[data-popover]').forEach(el => el.onclick = e => { e.stopPropagation(); const k = el.dataset.popover; state.popover = state.popover===k ? null : k; state.overlay = null; render(); });
+	document.querySelectorAll('[data-close-popover]').forEach(el => el.onclick = () => { state.popover = null; render(); });
+	document.querySelectorAll('[data-settings-nav]').forEach(el => el.onclick = () => { const k = el.dataset.settingsNav; if(k){ state.overlay = k; render(); } });
+	document.querySelectorAll('[data-activity-agent]').forEach(el => el.onclick = () => { state.activitySelected = Number(el.dataset.activityAgent); state.activityDrill = true; render(); });
+	document.querySelectorAll('[data-activity-back]').forEach(el => el.onclick = () => { state.activityDrill = false; render(); });
+	const collapseBtn = document.getElementById('collapseBtn');
+	if(collapseBtn) collapseBtn.onclick = () => { state.railCollapsed = !state.railCollapsed; render(); };
+	document.querySelectorAll('[data-panel]').forEach(el => el.onclick = () => { const kind = el.dataset.panel; state.floatingPanel = state.floatingPanel === kind ? 'none' : kind; render(); });
+	const closePanel = document.getElementById('closePanel');
+	if(closePanel) closePanel.onclick = () => { state.floatingPanel = 'none'; render(); };
+}
+
+document.querySelectorAll('.proposal-card').forEach(el => el.onclick = () => {
+	state.proposal = el.dataset.proposal;
+	state.floatingPanel = 'none';
+	state.overlay = null; state.popover = null; state.activityDrill = false;
+	render();
+});
+document.getElementById('widthSeg').addEventListener('click', e => {
+	const btn = e.target.closest('button');
+	if(!btn) return;
+	state.widthPreset = btn.dataset.width;
+	render();
+});
+
+function fitScale(){
+	const stage = document.querySelector('.stage');
+	const shell = document.getElementById('tabletShell');
+	const wrap = document.getElementById('tabletWrap');
+	const availW = stage.clientWidth - 32;
+	const availH = stage.clientHeight - 32;
+	const shellW = shell.offsetWidth || 1226;
+	const shellH = 866;
+	const scale = Math.min(availW / shellW, availH / shellH, 1);
+	wrap.style.transform = `scale(${scale})`;
+	document.getElementById('scaleTag').textContent = `${Math.round(shellW-32)}×834pt · 表示倍率 ${(scale*100).toFixed(0)}%`;
+}
+window.addEventListener('resize', fitScale);
+
+render();
+</script>
+</body>
+</html>

@@ -12,6 +12,7 @@ import { TermView } from '../../src/components/termView.js';
 import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
 import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
+import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { colors } from '../../src/theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.js';
@@ -37,6 +38,8 @@ export default function TerminalScreen() {
 	const [submitting, setSubmitting] = useState(false);
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
+	// iPad幅ではタブバーがサイドバー側にあり、入力欄の下に避けるものが無い。
+	const regular = useIsRegularWidth();
 	const isFocused = useIsFocused();
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
@@ -137,7 +140,7 @@ export default function TerminalScreen() {
 					<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
 				)}
 			</View>
-			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + 30 }]}>
+			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + (regular ? 12 : 30) }]}>
 				<GlassComposer
 					value={input}
 					onChangeText={setInput}

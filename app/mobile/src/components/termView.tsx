@@ -119,7 +119,11 @@ function buildHtml(): string {
 			var fontSizeByHeight = Math.floor(100 * availHeight / (lineHeightAt100 * rows));
 			fontSize = Math.min(fontSizeByWidth, fontSizeByHeight);
 		}
-		term.options.fontSize = Math.max(4, Math.min(16, fontSize));
+		// 上限は画面の広さで変える。iPhone幅（<700px）はこれまで通り16ptで頭打ちにし、
+		// iPadの広い幅では上限に張り付いて右側に黒帯が残らないところまで許す
+		// （PC側のcols/rowsは変えられないので、埋められるのは文字を大きくする方向だけ）。
+		var maxFontSize = availWidth >= 700 ? 26 : 16;
+		term.options.fontSize = Math.max(4, Math.min(maxFontSize, fontSize));
 	}
 	window.__para = {
 		resize: function (cols, rows) {

@@ -139,11 +139,15 @@ function deviceName(): string {
 	return 'モバイルデバイス';
 }
 
+/** ペアリング画面の本文の最大幅（pt）。iPadで1行が伸びきらないようにするためだけの値。 */
+const PAIR_MAX_WIDTH = 420;
+
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: '#000' },
 	center: { flex: 1, backgroundColor: '#0d1117', alignItems: 'center', justifyContent: 'center', padding: 32, gap: 16 },
 	title: { color: '#fff', fontSize: 22, fontWeight: '700' },
-	dim: { color: '#8b8b8b', fontSize: 13, textAlign: 'center', lineHeight: 20 },
+	// maxWidth はiPad用。iPhoneは画面幅からpaddingを引いても366pt以下なので当たらない。
+	dim: { color: '#8b8b8b', fontSize: 13, textAlign: 'center', lineHeight: 20, maxWidth: PAIR_MAX_WIDTH },
 	sas: { color: '#09AFD9', fontSize: 44, fontWeight: '700', letterSpacing: 10, fontVariant: ['tabular-nums'] },
 	appIcon: { width: 72, height: 72 },
 	overlay: { position: 'absolute', bottom: 60, left: 20, right: 20, alignItems: 'center', gap: 8 },
@@ -151,7 +155,7 @@ const styles = StyleSheet.create({
 	error: { color: '#f48771', fontSize: 12, textAlign: 'center' },
 	primaryBtn: { backgroundColor: '#0598BD', borderRadius: 10, paddingVertical: 12, paddingHorizontal: 24 },
 	primaryBtnText: { color: '#fff', fontWeight: '600', fontSize: 15 },
-	input: { width: '100%', minHeight: 90, backgroundColor: '#252526', borderRadius: 10, borderWidth: 1, borderColor: '#3c3c3c', color: '#cccccc', fontSize: 13, padding: 12, textAlignVertical: 'top' },
+	input: { width: '100%', maxWidth: PAIR_MAX_WIDTH, minHeight: 90, backgroundColor: '#252526', borderRadius: 10, borderWidth: 1, borderColor: '#3c3c3c', color: '#cccccc', fontSize: 13, padding: 12, textAlignVertical: 'top' },
 	linkText: { color: '#09AFD9', fontSize: 13, marginTop: 4 },
 	linkTextLight: { color: '#fff', fontSize: 13, textDecorationLine: 'underline' },
 });

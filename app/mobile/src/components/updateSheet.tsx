@@ -1,16 +1,20 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useState } from 'react';
-import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import { useAppStore } from '../appState.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { pendingReleases, type MobileChangelogItem, type MobileRelease } from '../changelog.js';
 import { secureKeyStore } from '../platform.js';
+import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
+
+/** iPadの広い幅でお知らせシートを中央寄せするときの最大幅（pt）。 */
+const SHEET_MAX_WIDTH = 640;
 
 /**
  * アップデートのお知らせ（案A: Liquid Glass のボトムシート）。
@@ -72,13 +76,17 @@ export function UpdateSheetHost() {
 /** シート本体。履歴画面からのプレビューにも使えるよう、表示するリリースを受け取る。 */
 export function UpdateSheet({ releases, onDismiss }: { releases: readonly MobileRelease[]; onDismiss: () => void }) {
 	const insets = useStableInsets();
+	// iPadの広い幅では画面いっぱいに広げず、中央へ寄せた読みやすい幅に収める。
+	const regular = useIsRegularWidth();
+	const { width: windowWidth } = useWindowDimensions();
+	const sideInset = regular ? Math.max(0, Math.round((windowWidth - SHEET_MAX_WIDTH) / 2)) : 0;
 	const single = releases.length === 1 ? releases[0] : undefined;
 	const total = releases.reduce((count, release) => count + release.items.length, 0);
 	const oldest = releases[releases.length - 1];
 	return (
 		<Modal visible transparent animationType="slide" onRequestClose={onDismiss} statusBarTranslucent>
 			<Pressable style={styles.scrim} onPress={onDismiss} accessibilityLabel="閉じる" />
-			<View style={styles.sheetWrap}>
+			<View style={[styles.sheetWrap, sideInset > 0 && { left: sideInset, right: sideInset }]}>
 				{/* Liquid Glass は面そのもの。上に載せる操作要素（CTA）は Apple HIG に従い
 				    glass を重ねず不透明にする */}
 				<GlassSurface style={styles.glass} />

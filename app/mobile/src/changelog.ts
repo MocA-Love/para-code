@@ -40,6 +40,35 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.3.0',
+		date: '2026-08-05',
+		headline: 'iPadに対応しました',
+		items: [
+			{
+				icon: 'tablet-landscape-outline',
+				title: 'iPadでは、スペースの一覧を出したままエージェントと話せます',
+				body: '画面の左にスペース一覧がいつも表示され、右側で会話・ターミナル・ファイルを見られます。横向きでも使えるようになりました。',
+				tone: 'purple',
+			},
+			{
+				icon: 'apps-outline',
+				title: 'iPadでは、切り替えのボタンが左下にまとまりました',
+				body: 'ホーム・ターミナル・ソース管理・ファイルの4つで、iPhoneの下部にあるものと同じです。画面を分けて使っていて幅が狭いときは、これまで通り下部に戻ります。',
+			},
+			{
+				icon: 'text-outline',
+				title: 'iPadでは、画面が広くても文章が読みやすい幅に収まります',
+				body: '1行が長くなりすぎないよう本文の幅を抑えて中央に寄せ、下から出るパネルも広がりすぎないようにしました。ターミナルの文字は逆に、広い画面いっぱいまで大きくなります。',
+				tone: 'green',
+			},
+			{
+				icon: 'documents-outline',
+				title: 'iPadでは、ファイルや差分を開いてもスペース一覧が残ります',
+				body: '全画面ではなくシートとして開くので、開いたまま隣の一覧を見比べられます。',
+			},
+		],
+	},
+	{
 		version: '0.2.5',
 		date: '2026-08-04',
 		headline: 'PCのAivis音声を、このiPhoneでも聞けます',
