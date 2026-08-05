@@ -1100,6 +1100,8 @@
 		"--slide-from-y",
 		"--paradis-agent-live-row-height",
 		"--paradis-pr-color",
+		"--paradis-status-breathe",
+		"--paradis-status-pulse",
 		"--paradis-statusbar-bg",
 		"--paradis-titlebar-bg",
 		"--paradis-transparency-opacity",

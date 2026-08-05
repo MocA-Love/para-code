@@ -102,12 +102,42 @@
 
 /* allow-any-unicode-next-line */
 /* エージェント実行状態 (Superset の StatusIndicator / AsciiSpinner 相当)。
- * 動作中は回転させず、ゆっくりした明滅にする: 複数スペースで同時にエージェントを走らせる
- * 使い方では回転が常時視界に入って疲れるため。速い脈動 (1秒) は「人間の対応待ち」だけに残し、
- * 動作中 (2.4秒) とは速度で区別する。 */
+ * 動作中は回転させず、ゆっくりした明滅 (2.4秒) にする: 複数スペースで同時にエージェントを
+ * 走らせる使い方では回転が常時視界に入って疲れるため。速い脈動 (1秒) は「人間の対応待ち」
+ * だけに残し、動作中とは速度で区別する。
+ *
+ * 明滅の「時計」はドット個々ではなくリストのルート1つが持ち、明るさをカスタムプロパティで
+ * 配る。CSS アニメーションは要素にアニメーションが付いた瞬間を起点に走るため、ドット側に
+ * animation を書くと、ドットが生えた時刻・状態が変わった時刻・行がスクロールで DOM を
+ * 出入りした時刻の差がそのまま位相差になり、同じ「動作中」でも濃い橙と薄い黄に割れて見える。
+ * 源を1つに集約すれば、ドットは現在の明るさを読むだけなので位相は原理的に一致する
+ * (リストごと非表示になって時計が止まっても、再開時に全ドットが同じ位相から始まる)。
+ *
+ * 時計は明滅するドットが実際にいるときだけ回す。カスタムプロパティのアニメーションは
+ * 合成に回せず、値が変わるたびに継承先 (= リスト配下すべて) のスタイル再計算を伴うため、
+ * エージェントが1体もいない間まで回し続けるとアイドル時のコストがゼロでなくなる。
+ * 時計の入り切りで全ドットが同時に止まり同時に再開するので、位相の一致は損なわれない。 */
+@property --paradis-status-breathe {
+	syntax: '<number>';
+	inherits: true;
+	initial-value: 1;
+}
+
+@property --paradis-status-pulse {
+	syntax: '<number>';
+	inherits: true;
+	initial-value: 1;
+}
+
+.paradis-workspaces-list:has(.paradis-status-working, .paradis-status-permission) {
+	animation:
+		paradis-status-breathe-clock 2.4s ease-in-out infinite,
+		paradis-status-pulse-clock 1s ease-in-out infinite;
+}
+
 .paradis-workspaces-list .paradis-status-working {
 	color: #f59e0b;
-	animation: paradis-status-breathe 2.4s ease-in-out infinite;
+	opacity: var(--paradis-status-breathe);
 }
 
 .paradis-workspaces-list .paradis-status-review {
@@ -116,24 +146,25 @@
 
 .paradis-workspaces-list .paradis-status-permission {
 	color: #ef4444;
-	animation: paradis-status-pulse 1s ease-in-out infinite;
+	opacity: var(--paradis-status-pulse);
 }
 
-@keyframes paradis-status-pulse {
-	0%, 100% { opacity: 1; }
-	50% { opacity: 0.25; }
+@keyframes paradis-status-pulse-clock {
+	0%, 100% { --paradis-status-pulse: 1; }
+	50% { --paradis-status-pulse: 0.25; }
 }
 
-@keyframes paradis-status-breathe {
-	0%, 100% { opacity: 1; }
-	50% { opacity: 0.45; }
+@keyframes paradis-status-breathe-clock {
+	0%, 100% { --paradis-status-breathe: 1; }
+	50% { --paradis-status-breathe: 0.45; }
 }
 
 /* allow-any-unicode-next-line */
-/* 動きに敏感な利用者の設定を尊重する (upstream も同名のメディアクエリでアニメーションを止めている) */
+/* 動きに敏感な利用者の設定を尊重する (upstream も同名のメディアクエリでアニメーションを止めている)。
+ * 時計を止めるとカスタムプロパティは initial-value (= 1) に戻るため、ドット側は不透明のまま残る。
+ * セレクタは時計側と揃える (詳細度が下がると打ち消せない)。 */
 @media (prefers-reduced-motion: reduce) {
-	.paradis-workspaces-list .paradis-status-working,
-	.paradis-workspaces-list .paradis-status-permission {
+	.paradis-workspaces-list:has(.paradis-status-working, .paradis-status-permission) {
 		animation: none;
 	}
 }
