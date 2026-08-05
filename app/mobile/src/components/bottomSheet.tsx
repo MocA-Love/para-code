@@ -6,7 +6,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
+import { keyboardCoverage } from '../keyboardCoverage.js';
+import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+
+/** iPadの広い幅でシートを中央寄せするときの最大幅（pt）。 */
+const SHEET_MAX_WIDTH = 640;
 
 /**
  * ボトムシート共通コンポーネント。Modalの標準アニメーション（animationType="slide"）は
@@ -16,8 +21,9 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
  * キーボード対応: シートは画面下端に固定されているため、シート内のKeyboardAvoidingViewでは
  * シート自体が持ち上がらず、下部の入力欄がキーボードに完全に隠れる。iOSではキーボードの
  * 実フレーム（keyboardWillChangeFrame）を監視してシートの bottom をその高さぶん持ち上げ、
- * 併せて maxHeight を残りの表示領域に収まるよう縮める（useKeyboardVisible と同じ理由で
- * 80px以下の小フレームはハードウェアキーボードのアクセサリバーとして無視する）。
+ * 併せて maxHeight を残りの表示領域に収まるよう縮める。どれだけ覆っているかの判定は
+ * `keyboardCoverage`（小さなアクセサリバーやiPadのフローティングキーボードを除外する）
+ * に任せ、useKeyboardVisible と同じ規則で揃える。
  * AndroidはwindowSoftInputMode=adjustResizeがModalごと縮めるため何もしない。
  */
 
@@ -43,8 +49,9 @@ function useKeyboardInset(): number {
 			});
 		};
 		const change = Keyboard.addListener('keyboardWillChangeFrame', event => {
-			const covered = Math.max(0, windowHeight - event.endCoordinates.screenY);
-			applyInset(covered > 80 ? covered : 0, event);
+			// iPadのフローティングキーボードは下端を覆わない。素朴に screenY から
+			// 引くと数百pt持ち上げてしまい、シートが画面外へ消える。
+			applyInset(keyboardCoverage(event.endCoordinates, windowHeight), event);
 		});
 		const hide = Keyboard.addListener('keyboardWillHide', event => applyInset(0, event));
 		return () => {
@@ -71,7 +78,11 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 	const [mounted, setMounted] = useState(visible);
 	const insets = useStableInsets();
 	const keyboardInset = useKeyboardInset();
-	const windowHeight = useWindowDimensions().height;
+	const { height: windowHeight, width: windowWidth } = useWindowDimensions();
+	// iPadの広い幅では画面いっぱいのシートにせず、中央へ寄せた読みやすい幅に収める
+	// （純正のフォームシートと同じ考え方。左右いっぱいだと1行が長く、操作も端まで散らばる）。
+	const regular = useIsRegularWidth();
+	const sideInset = regular ? Math.max(0, Math.round((windowWidth - SHEET_MAX_WIDTH) / 2)) : 0;
 
 	useEffect(() => {
 		if (visible) {
@@ -97,6 +108,7 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 				style={[
 					styles.sheet,
 					glass && styles.glassSheet,
+					sideInset > 0 && { left: sideInset, right: sideInset },
 					fullHeight && { maxHeight: undefined, top: insets.top },
 					// キーボード表示中はその高さぶん持ち上げ、残りの表示領域に収める
 					// （fullHeightはtop固定なのでbottomの持ち上げだけで自然に縮む）

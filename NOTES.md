@@ -126,6 +126,7 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-screen-corner-radius@^1.1.0` を依存に追加 | ワークスペースドロワーを開いたときにコンテンツへ付ける角丸を、端末のディスプレイ角丸（iPhone 16 Pro=62pt、14 Pro〜16=55pt等）に一致させるため。iOSではプライベートAPI（`UIScreen._displayCornerRadius`）ではなく`uname()`のモデル識別子＋ルックアップテーブルで解決するためApp Store審査を通せる（同種の`react-native-screen-corner-radius`はプライベートAPIを難読化して使うため不採用）。JS側は`src/screenCornerRadius.ts`が`requireOptionalNativeModule`で引き、未リンク時はiOS 55pt/Android 0へフォールバックする |
 
 | `app/mobile/app.json` | `expo.version` をリリースごとに上げる（`0.1.0` → `0.2.0` → `0.2.1` …） | アプリ内「アップデートのお知らせ」の導入にあわせた最初のバージョン。`src/changelog.ts` の `MOBILE_CHANGELOG` 先頭と一致していないとお知らせが出ない／古い内容が出るため、以後この2つは必ず同時に上げる（`src/changelog.test.ts` が一致を検査する） |
+| `app/mobile/app.json` | `ios.supportsTablet` を `false` → `true`。あわせて `ios.infoPlist` に `UISupportedInterfaceOrientations`（iPhone: portraitのみ＝従来と同値）と `UISupportedInterfaceOrientations~ipad`（iPad: 4方向すべて）を明示追加 | iPad版対応。トップレベルの `expo.orientation` は `portrait` のまま残す（Androidの `screenOrientation` を従来どおり縦固定に保つため）。`@expo/config-plugins` の `withOrientation` は `createInfoPlistPluginWithPropertyGuard` 実装で、`ios.infoPlist.UISupportedInterfaceOrientations` が明示されている場合は上書きをスキップするため、この2キーがそのまま採用される。iPadだけ回転を許可し、幅が狭いSplit View/Slide Overでは `src/sizeClass.ts` の判定でiPhoneと同じ1カラムへ落ちる |
 
 | `app/mobile/package.json` / `app/pnpm-lock.yaml` | `expo-clipboard@~57.0.1` を依存に追加 | エージェント詳細画面のタイムライン（`src/components/agentIoBlock.tsx`）で、ツールの入力・出力をコピーするボタンを出すため。RN本体の `Clipboard` は非推奨で、Expo SDK 57 の標準モジュールを使う。ネイティブモジュールのため追加後は iOS/Android の再ビルドが必要 |
 
@@ -320,6 +321,51 @@ macOS/Linuxの「ペインごとのCodex app-server」（`resources/paradis/bin/
 - **黒窓の罠（2026-07-22実機で発覚）**: app-serverを`detached`/`windowsHide`でコンソール無し起動すると、app-serverがspawnする各MCPサーバー（コンソールアプリ）が自前のコンソールを確保して黒いウィンドウが乱立する。app-serverはターミナルのコンソールを共有して起動すること（タブを閉じたときの自動道連れという利点もある。TUIがraw modeの間はCtrl+CがコンソールイベントにならないためCtrl+C巻き添えは実用上問題にならない）
 - **後始末**: TUI終了時にランチャーが所有するapp-serverをkill（Windowsは`taskkill /T /F`）。Windows Terminalのタブ閉じはNodeがSIGHUP（CTRL_CLOSE_EVENT）として受けるためそこでも掃除する。それでも残った孤児は「pidが死んでいるendpointファイルの起動時sweep」と「同一ペインの次回起動時のowner死亡検出→採用(adopt)→終了時掃除」で回収する
 - **梱包**: `build/gulpfile.vscode.ts` で win32 のみ `.cmd`/`.ps1`/`.js` の3点を、非win32はshランチャーのみを同梱（PARA-PATCH済）
+
+## モバイルアプリのiPad対応（2026-08-05）
+
+`app/mobile` はiPhone専用（portrait固定・`supportsTablet: false`）だったが、iPadを2カラムで使えるようにした。設計の要点:
+
+- **判定は幅だけ**: `src/sizeClass.ts` の `sizeClassFor(width, tablet)` が `compact` / `regular` を返す。しきい値700pt。iPadの全画面（短辺744pt〜）は必ず`regular`、Split Viewで狭くなると`compact`＝iPhoneと同じ1カラムへ自然に落ちる。純関数なので実機なしでテストできる（`src/sizeClass.test.ts`）
+- **ナビゲーションツリーには手を入れていない**: `src/ipad/ipadShell.tsx` が `app/_layout.tsx` の `<Stack>` 全体を包み、左にサイドバー・右にスタックを並べるだけ。ディープリンク・通知タップ・戻る操作といった既存の動線がそのまま生きる
+- **サイドバーの中身はiPhone版のドロワーそのもの**: `WsDrawerContent`（`src/components/wsDrawer.tsx`）を再利用し、`navigation` スロットに下部タブ相当のLiquid Glassセグメント（`src/ipad/ipadSidebar.tsx`）を差すだけ。ワークスペース一覧・メモ・PCステータスの実装を二重に持たない
+- **タブは幅で実装を切り替える**: `regular` では `expo-router/js-tabs` の `Tabs` をタブバー非表示で使い、`compact` では従来どおり `NativeTabs`（iOS 26のLiquid Glassタブバー）。iPadOSではNativeTabsのタブバーの見せ方をOSが決めてしまい、こちらのサイドバーと二重になるため
+
+**ハマったところ（同種の実装で必ず踏むので記録）**:
+
+- **条件分岐でツリーの形を変えると、配下が丸ごと再マウントされる**。`IpadShell` / `WsDrawerLayout` の両方で当初やってしまった。`children`（＝ナビゲーションスタック全体）の階層が変わるとReactが別要素とみなし、ターミナルのWebView・ブラウザのミラー接続・遷移履歴・入力途中の文字が全部消える。**幅0での出し分け**（IpadShell）や **`drawerLockMode` での無効化**（WsDrawerLayout）にして、ツリーの形は常に同じに保つこと。発火するのは幅変化だけでなく、`ready` / `paired` の変化でも通る
+- **スタック画面から `router.navigate('/terminal')` を呼ぶと `(tabs)` がもう1枚積まれる**。React NavigationのStackRouterは`pop`指定の無いNAVIGATEで既存routeを探しに行かない。`router.canDismiss()` が真なら `router.dismissTo()` を使う（`src/ipad/ipadSidebar.tsx` の `selectTab`）。**この不具合はiPhone版の `agentInfoSheet.tsx` にも同じ形で残っている**
+- **「選択中のタブなら何もしない」は書いてはいけない**。エージェント詳細やブラウザを開いている間もホームタブを選択状態で見せているため、素朴に早期returnすると押しても戻れない死んだボタンになる
+- **iPadのフローティングキーボードは画面下端に接していない**。`window.height - keyboard.screenY` をそのまま被覆量に使うとボトムシートが画面外へ飛ぶ。`src/keyboardCoverage.ts` に判定を切り出した。**ここで「幅が画面いっぱいでないものを除外する」判定を足してはいけない**——日本語の片手用キーボード（幅は狭いが下端に接していて実際に覆う）を取りこぼし、入力欄がキーボードに隠れる。接地しているかだけで判定する。あわせて、iOSの「クロスフェードトランジションを優先」が有効だと位置が実座標ではなく `screenY: 0` で報告される既知の挙動も特別扱いしている（RN本体の `KeyboardAvoidingView` も同じ分岐を持つ）
+- **UIKitは提示後の `modalPresentationStyle` 変更を無視する**。ファイル/差分ビューアの `pageSheet` / `fullScreen` は開いた瞬間の値で凍結し、ヘッダーの上余白も同じ値から決めること。片方だけ幅に追従させると、開いたまま幅が変わったときにヘッダーがステータスバーへ潜る
+- **`DrawerLockMode.LOCKED_CLOSED` はスワイプしか止めない**。RNGHの `openDrawer()` は lock mode を見ずにアニメーションを走らせるので、`useWsDrawer().open()` 側でも幅を見て塞ぐ必要がある（塞がないと中身が null の見えないパネルが開く）
+- **`presentationStyle="fullScreen"` のModalはサイドバーごと画面を奪う**。ファイル/差分ビューアは`regular`では`pageSheet`にする
+- `@expo/config-plugins` の `withOrientation` は `ios.infoPlist.UISupportedInterfaceOrientations` を明示すると上書きをスキップする。これを使ってiPhoneはportrait固定のまま、iPadだけ4方向を許可している（`app.json`。上の「コメントを書けないファイルへの変更一覧」も参照）
+
+### `expo prebuild` は使えない（2026-08-05、iPad対応時に実地で判明）
+
+**`app/mobile` では `npx expo prebuild` を実行してはいけない。** iPad対応で `app.json` に `ios.supportsTablet: true` を入れた際、それを反映しようと `--clean` **無し**で実行したところ、次が起きた:
+
+- `- Clearing ios` → `✔ Cleared ios code` と表示され、**`--clean` を付けていないのに `ios/` が丸ごと作り直された**（SDK 57の挙動）
+- Xcodeプロジェクト名が `ParaCodeMobile` → `ParaCode` に変わった（`expo.name` から導出されるため）
+- **手動で追加した `NotifyExtension`（APNs用NSE）と `ParaCodeWidgets`（Live Activity）のターゲットが消えた**。これらはconfig pluginではなくXcode上で足したもので、prebuildは再現しない
+
+`app/mobile/ios/` は `app/.gitignore` で無視されているため**gitで戻せない**。復旧は事前に取っておいたコピーからのrsyncで行った。
+
+したがって**ネイティブ設定の変更は `ios/` へ直接当てる**。`app.json` の `ios.*` は「そういう意図である」ことを示すドキュメントとしてのみ機能し、成果物には自動で反映されない。実行するなら必ず `ios/`（Pods除く。1MB弱）を先に退避すること。
+
+iPad対応で実際に手で当てた設定:
+
+| 対象 | 変更 |
+|---|---|
+| `ios/ParaCodeMobile.xcodeproj/project.pbxproj` | `TARGETED_DEVICE_FAMILY = 1;` → `= "1,2";` を**6箇所**（本体・ParaCodeWidgets・NotifyExtension × Debug/Release）。拡張だけ1のままだと本体がiPad対応でも埋め込み検証で落ちる |
+| `ios/ParaCodeMobile/Info.plist` | `UISupportedInterfaceOrientations~ipad` に4方向を追加（iPhone用の `UISupportedInterfaceOrientations` はportrait 2種のまま） |
+
+**バージョンは全ターゲットで一致必須**（ずれるとApp Store Connectの検証で弾かれる）。今回0.3.0へ上げた際、本体だけ直すと NotifyExtension が 0.1.0 のまま残っていた。揃える箇所は `project.pbxproj` の `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` 各6箇所と、`ParaCodeMobile/Info.plist` ・ `NotifyExtension/Info.plist` の `CFBundleShortVersionString` / `CFBundleVersion`（`ParaCodeWidgets/Info.plist` は `$(MARKETING_VERSION)` 参照なので自動追従）。
+
+**既知の制限（許容して出す）**: 幅700ptをまたぐリサイズ（Split Viewへの出入り）では、`(tabs)/_layout.tsx` が `NativeTabs` と `Tabs` のコンポーネント型そのものを入れ替えるため、タブ配下4画面が作り直される（ターミナルのWebViewの表示内容が消えて再同期がかかる）。選択中のタブとルート側スタック（`/agent`・`/browser` 等）は保たれる。iPhoneのiOS 26ネイティブタブバーを捨てないかぎり避けられないトレードオフなので、リサイズという明示操作に限って許容している。
+
+**未対応（v2以降）**: ブラウザ/ターミナルを会話の横に並べるフローティングパネル（`app/mobile/mock/ipad.html` の案Bにあるドラッグ幅変更パネル）、Filesタブの2ペイン化、サイドバーの折りたたみ。現状は右カラム全体を覆うpush遷移。
 
 ## ビルド環境（macOS / Apple Silicon）
 

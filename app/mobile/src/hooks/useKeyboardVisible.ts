@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Dimensions, Keyboard, KeyboardEvent, Platform } from 'react-native';
 import { useIsFocused } from 'expo-router';
+import { keyboardCoverage } from '../keyboardCoverage.js';
 
 /**
  * キーボードが「実際に画面下部を覆っているか」を返すフック。キーボード表示中は
@@ -33,10 +34,9 @@ export function useKeyboardVisible(): boolean {
 			// frame変化を伴わない非表示経路（バックグラウンド遷移等）で true に張り付かないよう
 			// willHide でも明示的に false へ倒す（二重化）。
 			const change = Keyboard.addListener('keyboardWillChangeFrame', (e: KeyboardEvent) => {
-				const screenH = Dimensions.get('window').height;
-				const covered = screenH - e.endCoordinates.screenY;
-				// 80px以下（アクセサリバーのみ・画面外）は「覆っていない」扱い
-				setVisible(covered > 80);
+				// アクセサリバーのみ・画面外に加え、iPadのフローティングキーボード
+				// （下端に接していない）も「覆っていない」扱いにする。
+				setVisible(keyboardCoverage(e.endCoordinates, Dimensions.get('window').height) > 0);
 			});
 			const hide = Keyboard.addListener('keyboardWillHide', () => setVisible(false));
 			return () => {

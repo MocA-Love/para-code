@@ -7,6 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { NotifyKind, NotifyPayload } from '@para/protocol';
 import { useAppStore } from '../src/appState.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors } from '../src/theme.js';
 import { formatRelativeTime, useNow } from '../src/time.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
@@ -30,6 +31,8 @@ function dotColor(kind: NotifyKind): string {
 export default function NotificationsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	// 相対時刻表示を画面を開いたままでも追従させる
 	const now = useNow();
 	const { workspace, notifications, setSelectedWs, setSelectedTerminalKey, clearNotifications, dismissNotification } = useAppStore(useShallow(s => ({
@@ -68,7 +71,7 @@ export default function NotificationsScreen() {
 					<Ionicons name="close" size={16} color={colors.textDim} />
 				</Pressable>
 			</View>
-			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 24 }]}>
+			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 24 }, column]}>
 				{notifications.length === 0 ? (
 					<Text style={styles.empty}>通知はありません</Text>
 				) : notifications.map(n => {

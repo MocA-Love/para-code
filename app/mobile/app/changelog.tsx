@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { MOBILE_CHANGELOG } from '../src/changelog.js';
 import { APP_VERSION, ChangelogRow, formatDate } from '../src/components/updateSheet.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact } from '../src/haptics.js';
 
@@ -16,6 +17,8 @@ import { hapticImpact } from '../src/haptics.js';
 export default function ChangelogScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	return (
 		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
 			<View style={styles.header}>
@@ -27,7 +30,7 @@ export default function ChangelogScreen() {
 					<Text style={styles.subtitle}>現在のバージョン {APP_VERSION}</Text>
 				</View>
 			</View>
-			<ScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 32 }]}>
+			<ScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 32 }, column]}>
 				{MOBILE_CHANGELOG.map(release => (
 					<View key={release.version} style={styles.release}>
 						<View style={styles.releaseHead}>

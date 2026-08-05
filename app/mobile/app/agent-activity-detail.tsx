@@ -11,6 +11,7 @@ import { MarkdownText } from '../src/components/markdownText.js';
 import { AgentTimeline } from '../src/components/agentTimeline.js';
 import { detailToChatMessages } from '../src/agentToolMeta.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { useNow } from '../src/time.js';
 import { colors } from '../src/theme.js';
 import { hapticSelection } from '../src/haptics.js';
@@ -54,6 +55,8 @@ function ActivityMessage({ message, parentLabel }: { message: AgentActivityDetai
 export default function AgentActivityDetailScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	const now = useNow();
 	const { terminalKey, agentId, epoch } = useLocalSearchParams<{ terminalKey?: string; agentId?: string; epoch?: string }>();
 	const workspace = useAppStore(state => state.workspace);
@@ -107,7 +110,7 @@ export default function AgentActivityDetailScreen() {
 		<FlatList
 			data={conversation}
 			keyExtractor={item => item.kind === 'message' ? `message:${item.index}` : item.kind === 'activity' ? item.key : `child:${item.value.id}`}
-			contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }]}
+			contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 28 }, column]}
 			ListHeaderComponent={agent !== undefined ? <View>
 				<View style={styles.summaryCard}>
 					<View style={styles.metric}><Text style={styles.metricValue}>{statusLabel(agent.status)}</Text><Text style={styles.metricLabel}>{elapsed < 60 ? `${elapsed}秒` : `${Math.floor(elapsed / 60)}分${elapsed % 60}秒`}</Text></View>

@@ -10,6 +10,7 @@ import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
+import { IpadShell } from '../src/ipad/ipadShell.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
@@ -133,6 +134,9 @@ function RootLayout() {
 		<GestureHandlerRootView style={styles.root}>
 			<ThemeProvider value={appTheme}>
 				<AuthGate onUnlock={handleUnlock}>
+					{/* iPadの広い幅では左にワークスペースサイドバーを常設し、このスタック全体を
+					    右カラムへ収める。iPhone・狭い幅では素通しで従来どおり全幅に描画される */}
+					<IpadShell>
 					<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
 						<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
 						<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
@@ -163,6 +167,7 @@ function RootLayout() {
 						{/* 更新履歴。設定画面の項目とお知らせシートから開く */}
 						<Stack.Screen name="changelog" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>
+					</IpadShell>
 					{/* glass対応メニュー/ダイアログの描画先（overlayHost.tsx参照）。
 					    再ロック時にロック画面より上へ残らないよう、AuthGateの内側に置く */}
 					<OverlayHost />

@@ -9,6 +9,7 @@ import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { DiffView } from '../../src/components/diffView.js';
 import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
@@ -45,6 +46,8 @@ export default function ScmScreen() {
 	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
 
 	const tabBarSpacer = useTabBarSpacer();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	// 相対時刻表示（最近のコミットの「〇分前」）を画面を開いたままでも追従させる
 	const now = useNow();
 	const [status, setStatus] = useState<ScmStatusResult | undefined>();
@@ -249,6 +252,7 @@ export default function ScmScreen() {
 			<WsHeader title="ソース管理" />
 			<ScrollView
 				style={styles.list}
+				contentContainerStyle={column}
 				refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void refresh(); }} tintColor={colors.textDim} />}
 			>
 				{/* リポジトリ名とブランチ名は長いと1行内で潰し合うため2行に分ける */}

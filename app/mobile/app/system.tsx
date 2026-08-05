@@ -11,6 +11,7 @@ import { ConnectionGate } from '../src/components/connectionGate.js';
 import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import type { SystemResourcesResult } from '../src/store.js';
@@ -87,6 +88,8 @@ export default function SystemScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
+	const column = useContentColumnStyle();
 	const { systemResources, connection } = useAppStore(useShallow(s => ({ systemResources: s.systemResources, connection: s.connection })));
 
 	const [data, setData] = useState<SystemResourcesResult | undefined>();
@@ -174,7 +177,7 @@ export default function SystemScreen() {
 				</View>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={{ paddingBottom: tabBarSpacer }}
+					contentContainerStyle={[{ paddingBottom: tabBarSpacer }, column]}
 					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
