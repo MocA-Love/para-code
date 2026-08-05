@@ -11,6 +11,7 @@ import type { Identity, PairingPayload } from '@para/protocol';
 import { decodePairingUri, deriveNotifyKey } from '@para/protocol';
 import { MobileController, clearCredentials, loadCredentials, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, saveCredentials, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
+import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { toolImageCache } from './agentToolImages.js';
 import { PairingClient } from './pairingClient.js';
 import type { PairedCredentials } from './relayClient.js';
@@ -61,6 +62,12 @@ interface AppState extends StoreState {
 	 */
 	homeShowAllWorkspaces: boolean;
 	setHomeShowAllWorkspaces(value: boolean): void;
+	/**
+	 * ホーム一覧の並び替え・絞り込みの設定。見たい順序は人によって違うので選べるようにし、
+	 * 端末へ保存して次回起動時も同じ見え方にする（判定は homeSort.ts）。
+	 */
+	homePreferences: HomeListPreferences;
+	setHomePreferences(next: HomeListPreferences): void;
 	/** ターミナル画面で選択中の論理キー（ws切替時はリセット）。 */
 	selectedTerminalKey: string | undefined;
 	setSelectedTerminalKey(terminalKey: string | undefined): void;
@@ -395,6 +402,7 @@ export const useAppStore = create<AppState>(set => ({
 	voiceNotifications: { desired: false, status: 'idle' },
 	selectedWs: undefined,
 	homeShowAllWorkspaces: true,
+	homePreferences: DEFAULT_HOME_PREFERENCES,
 	selectedTerminalKey: undefined,
 	browserSelection: undefined,
 	// suppressWhenPcFocused の既定はオン。PCの前にいる間もスマホが鳴るのが通知過多の
@@ -473,6 +481,15 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load archivedTerminals', err);
+			}
+			// ホーム一覧の並び替え・絞り込み設定をロード（保存が無い/壊れている場合は既定のまま）
+			try {
+				const raw = await secureKeyStore.getItem('homeListPreferences');
+				if (raw) {
+					set({ homePreferences: parseHomePreferences(JSON.parse(raw) as unknown) });
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load homeListPreferences', err);
 			}
 			controller = new MobileController(
 				identity,
@@ -851,6 +868,11 @@ export const useAppStore = create<AppState>(set => ({
 
 	setHomeShowAllWorkspaces(value: boolean) {
 		set({ homeShowAllWorkspaces: value });
+	},
+
+	setHomePreferences(next: HomeListPreferences) {
+		set({ homePreferences: next });
+		secureKeyStore.setItem('homeListPreferences', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save homeListPreferences', err));
 	},
 
 	setSelectedTerminalKey(terminalKey: string | undefined) {

@@ -31,6 +31,8 @@ import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { colors } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
+import { arrangeHomeRows } from '../../src/homeSort.js';
+import { HomeListControls } from '../../src/components/homeListControls.js';
 import { listColumnsFor } from '../../src/ipad/ipadLayout.js';
 
 /**
@@ -61,9 +63,10 @@ function renderAgentRows(nodes: readonly ReactElement[], columns: 1 | 2) {
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus, archivedKeys, setArchived } = useAppStore(useShallow(s => ({
+	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, homePreferences, setHomePreferences, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus, archivedKeys, setArchived } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
+		homePreferences: s.homePreferences, setHomePreferences: s.setHomePreferences,
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		pinnedKeys: s.pinnedKeys, renameTerminal: s.renameTerminal, togglePin: s.togglePin, closeTerminal: s.closeTerminal,
 		ackAgentStatus: s.ackAgentStatus, archivedKeys: s.archivedKeys, setArchived: s.setArchived,
@@ -75,6 +78,9 @@ export default function HomeScreen() {
 	const [menu, setMenu] = useState<{ target: TerminalActionsMenuTarget; anchor: { x: number; y: number }; rect?: AgentRowRect; rowData?: AgentRowData } | undefined>(undefined);
 	// 各行の実ビューへの参照。長押し時に measureInWindow でウィンドウ座標を取得するために持つ。
 	const rowRefs = useRef(new Map<string, View>());
+	// 並び替えシートの開閉。コンポーネント側に持たせると、一覧が0件になった瞬間に
+	// アンマウントされてシートが勝手に閉じるため画面側で持つ。
+	const [sortSheetOpen, setSortSheetOpen] = useState(false);
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
 	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 	// ヘッダー＋ボタンで開く「新しいエージェントを起動」シートの表示状態。
@@ -212,15 +218,20 @@ export default function HomeScreen() {
 		setSelectedTerminalKey(terminalKey);
 		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
 	};
-	// エージェント一覧（実行中 → その他 → アイドルの順）。絞り込み中は選択中
-	// ワークスペース分だけに絞る。エージェントCLIが動いた実績のあるターミナルだけを載せる
-	// （プレーンなターミナルを開いただけでホームに行が増えないように）。
+	// エージェント一覧。絞り込み中は選択中ワークスペース分だけに絞る。エージェントCLIが
+	// 動いた実績のあるターミナルだけを載せる（プレーンなターミナルを開いただけで
+	// ホームに行が増えないように）。
 	// 応答待ちは上部のスタックが受け持つので、ここには載せない（同じ行を上下に二度出さない）。
-	const rows = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)) && !isAgentWaiting(t.agentStatus))
-		.sort((a, b) => {
-			const pinDiff = (pinnedKeys.has(pinKeyForTerminal(b)) ? 1 : 0) - (pinnedKeys.has(pinKeyForTerminal(a)) ? 1 : 0);
-			return pinDiff !== 0 ? pinDiff : statusOrder(a.agentStatus) - statusOrder(b.agentStatus);
-		});
+	const listable = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)) && !isAgentWaiting(t.agentStatus));
+	// 並び順・絞り込みはユーザーが選べる（判定は homeSort.ts、設定は端末に保存される）。
+	// スペース順の基準はドロワーのワークスペース一覧と同じ並びにする。所属の解決は
+	// resolveWs を通す（ws未タグをPC側アクティブスペース所属として扱う共通の規則。
+	// ここを飛ばすと、行に出ているスペース名と並び順がずれる）。
+	const spaceIndex = new Map((workspace?.workspaces ?? []).map((w, index) => [w.id, index]));
+	const rows = arrangeHomeRows(listable, homePreferences, {
+		spaceIndexOf: t => { const ws = resolveWs(t); return ws !== undefined ? spaceIndex.get(ws.id) : undefined; },
+		isPinned: t => pinnedKeys.has(pinKeyForTerminal(t)),
+	});
 	const headerSubtitle = homeShowAllWorkspaces || effectiveWs === undefined
 		? 'Para Code Mobile'
 		: `${effectiveWs.name}${effectiveWs.branch ? ` · ${effectiveWs.branch}` : ''}`;
@@ -282,11 +293,25 @@ export default function HomeScreen() {
 					}}
 				/>
 
-				{/* 応答待ちしか居ないときは、上のスタックが全部を映しているので見出しごと省く。 */}
-				{rows.length > 0 || waitingTerminals.length === 0 ? (
+				{/* 応答待ちしか居ないときは、上のスタックが全部を映しているので見出しごと省く。
+				    絞り込みで0件になった場合は、戻す手段（チップ）が要るので見出しは出したままにする。 */}
+				{listable.length > 0 || waitingTerminals.length === 0 ? (
 					<Text style={styles.sectionTitle}>
 						{homeShowAllWorkspaces || effectiveWs === undefined ? 'エージェント — 全ワークスペース' : `エージェント — ${effectiveWs.name}`}
 					</Text>
+				) : null}
+				{/* 並び替えと絞り込み。並べるものが1件も無いうちは出さない（操作しても何も起きない）。
+				    シートを開いている間は残す——最後の1件が応答待ちへ変わって0件になった瞬間に
+				    消えると、操作中のシートがひとりでに閉じるため。 */}
+				{listable.length > 0 || sortSheetOpen ? (
+					<HomeListControls
+						preferences={homePreferences}
+						onChange={setHomePreferences}
+						rows={listable}
+						visibleCount={rows.length}
+						sheetOpen={sortSheetOpen}
+						onSheetOpenChange={setSortSheetOpen}
+					/>
 				) : null}
 				{renderAgentRows(rows.map(t => {
 					const ws = resolveWs(t);
@@ -348,7 +373,10 @@ export default function HomeScreen() {
 						</SwipeRow>
 					);
 				}), columns)}
-				{rows.length === 0 && waitingTerminals.length === 0 ? (
+				{rows.length === 0 && listable.length > 0 ? (
+					<Text style={styles.dimSmall}>絞り込みに合うエージェントがありません。上のチップで絞り込みを外してください。</Text>
+				) : null}
+				{listable.length === 0 && waitingTerminals.length === 0 ? (
 					<Text style={styles.dimSmall}>
 						{homeShowAllWorkspaces || effectiveWs === undefined
 							? 'エージェントはまだありません。ターミナルタブでターミナルを作成し、claude / codex を起動すると表示されます。'
@@ -396,10 +424,6 @@ export default function HomeScreen() {
 			<AgentLaunchToastView />
 		</View></GestureDetector></ConnectionGate>
 	);
-}
-
-function statusOrder(status: string | undefined): number {
-	return status === 'permission' || status === 'question' ? 0 : status === 'working' ? 1 : status === undefined ? 3 : 2;
 }
 
 const styles = StyleSheet.create({

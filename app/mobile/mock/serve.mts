@@ -11,6 +11,7 @@ const pages = new Map([
 	['/agent-ui-catalog.html', 'agent-ui-catalog.html'],
 	['/slash-command-catalog.html', 'slash-command-catalog.html'],
 	['/ipad.html', 'ipad.html'],
+	['/fil.html', 'fil.html'],
 ]);
 const portFlag = process.argv.indexOf('--port');
 const requestedPort = portFlag >= 0 ? Number(process.argv[portFlag + 1]) : 4179;
