@@ -125,9 +125,17 @@ export class PairingClient {
 					return;
 				}
 				if (msg.type === 'paired') {
+					// リレーが名乗る deviceId は信用しない。QRで受け取った（＝SASで正当性を
+					// 確かめた相手の）ものと一致していなければ弾く。この値はモバイル側で
+					// PCの識別子として台帳・鍵の保存名・ファイル名に使うため、すり替えられると
+					// 別のPCの記録を乗っ取れてしまう。
+					if (typeof msg.deviceId !== 'string' || msg.deviceId !== payload.deviceId) {
+						fail(new Error('pairing device mismatch'));
+						return;
+					}
 					succeed({
 						relayUrl: payload.relayUrl,
-						deviceId: msg.deviceId,
+						deviceId: payload.deviceId,
 						mobileId: msg.mobileId,
 						mobileToken: msg.mobileToken,
 						pcPublicKey: payload.pcPublicKey,

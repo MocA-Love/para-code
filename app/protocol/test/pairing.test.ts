@@ -26,6 +26,24 @@ describe('pairing payload', () => {
 		expect(Array.from(decoded.pcPublicKey)).toEqual(Array.from(pc.publicKey));
 	});
 
+	test('carries the PC name when the PC sends one, and stays readable when it does not', () => {
+		const pc = generateIdentity();
+		const base = {
+			version: 1 as const,
+			relayUrl: 'wss://relay.paradis.ltd',
+			deviceId: 'dev_abc123',
+			pairId: 'pair_xyz',
+			pairingToken: randomToken(16),
+			pcPublicKey: pc.publicKey,
+		};
+		// 名前を送ってくるPC（複数台とペアリングしたときの見分けに使う）。
+		expect(decodePairingUri(encodePairingUri({ ...base, pcName: '  MacBook Pro  ' })).pcName).toBe('MacBook Pro');
+		// 名前を送らない旧PCのURIも読めること（フィールドごと無いだけ）。
+		expect(decodePairingUri(encodePairingUri(base)).pcName).toBeUndefined();
+		// 長すぎる名前はQRを膨らませないよう切り詰める。
+		expect(decodePairingUri(encodePairingUri({ ...base, pcName: 'x'.repeat(200) })).pcName?.length).toBe(64);
+	});
+
 	test('rejects non-pairing URIs', () => {
 		expect(() => decodePairingUri('https://example.com')).toThrow();
 		expect(() => decodePairingUri('paracode-mobile://pair?d=!!!')).toThrow();

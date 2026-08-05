@@ -42,6 +42,8 @@ export class ParadisMobileTerminalRegistry {
 	// PC本体（マシン全体）のCPU/メモリ/ディスク。renderer由来ではなく shared process が
 	// 直接サンプリングして setHostResources() で入れる（バッテリーと違い window に依存しない）。
 	private hostResources: IParadisMobileDesktopResources | undefined;
+	// モバイルのPC一覧に出す表示名。renderer が設定値（無ければホスト名）を解決して入れる。
+	private pcName: string | undefined;
 	private highestValidatedManifestRevision = 0;
 	private fullManifestRevision = 0;
 	private readonly observedManifestEntries = new Map<number, { entry: IParadisMobileRendererManifest['entries'][number]; observedAtManifestRevision: number }>();
@@ -107,6 +109,20 @@ export class ParadisMobileTerminalRegistry {
 			return false;
 		}
 		this.hostResources = resources;
+		this.revision++;
+		return true;
+	}
+
+	/**
+	 * このPCの表示名を差し替える。実際に変わったときだけ revision を進め、
+	 * true（＝再ブロードキャストが要る）を返す。
+	 */
+	setPcName(pcName: string | undefined): boolean {
+		const next = pcName?.trim() ? pcName.trim() : undefined;
+		if (this.pcName === next) {
+			return false;
+		}
+		this.pcName = next;
 		this.revision++;
 		return true;
 	}
@@ -293,6 +309,7 @@ export class ParadisMobileTerminalRegistry {
 			terminals,
 			...(battery !== undefined ? { battery } : {}),
 			...(this.hostResources !== undefined ? { resources: this.hostResources } : {}),
+			...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
 		};
 	}
 

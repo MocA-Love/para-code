@@ -46,6 +46,7 @@ import {
 	PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY,
 	PARADIS_MOBILE_ENABLED_KEY,
 	PARADIS_MOBILE_RELAY_CHANNEL,
+	PARADIS_MOBILE_PC_NAME_KEY,
 	PARADIS_MOBILE_RELAY_URL_KEY,
 	paradisMobileWindowRoute,
 } from '../common/paradisMobileRelay.js';
@@ -446,8 +447,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const enabled = this.isEnabled();
 		const relayUrl = this.configurationService.getValue<string>(PARADIS_MOBILE_RELAY_URL_KEY);
 		this.initialize(enabled, relayUrl);
+		this.syncPcName();
 
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PARADIS_MOBILE_PC_NAME_KEY)) {
+				this.syncPcName();
+			}
 			if (e.affectsConfiguration(PARADIS_MOBILE_ENABLED_KEY)) {
 				const enabled = this.isEnabled();
 				this.service.setEnabled(enabled).catch(err => this.logService.warn('[paradisMobileRelay] setEnabled failed', err));
@@ -470,6 +475,16 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 	private isEnabled(): boolean {
 		return this.configurationService.getValue<boolean>(PARADIS_MOBILE_ENABLED_KEY) === true;
+	}
+
+	/**
+	 * モバイルのPC一覧に出す表示名を shared process へ渡す。空欄のときのホスト名への
+	 * フォールバックは shared process 側が行う（renderer からはホスト名を読めない）。
+	 */
+	private syncPcName(): void {
+		const configured = this.configurationService.getValue<string>(PARADIS_MOBILE_PC_NAME_KEY);
+		this.service.setPcName(typeof configured === 'string' ? configured : undefined)
+			.catch(err => this.logService.warn('[paradisMobileRelay] setPcName failed', err));
 	}
 
 	private syncAgentLiveOptions(): void {

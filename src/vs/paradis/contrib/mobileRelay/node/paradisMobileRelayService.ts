@@ -16,6 +16,7 @@ import { IEncryptionService } from '../../../../platform/encryption/common/encry
 import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createHash } from 'crypto';
+import { hostname } from 'os';
 import { reportParadisDiagnosticError, setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	MobileIdentity,
@@ -70,6 +71,7 @@ import {
 	ParadisMobileInboundFrameWire,
 	ParadisMobilePairingEvent,
 	ParadisMobileTerminalOperationStatus,
+	paradisFormatPcName,
 	paradisMobileWindowRoute,
 } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowLeaseRef, ParadisMobileOperationLedger } from './paradisMobileOperationLedger.js';
@@ -441,6 +443,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	private readonly statePath: string;
 	private relayUrlOverride: string | undefined;
+	/** モバイルのPC一覧に出す表示名（renderer が設定値かホスト名を解決して渡す）。 */
+	private pcName: string | undefined;
 
 	// para-browser の CDP screencast ミラー（設計書 M3、browser チャネル）
 	private readonly browserMirror: ParadisMobileBrowserMirror;
@@ -799,6 +803,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async initialize(enabled: boolean, relayUrl: string | undefined): Promise<void> {
 		this.relayUrlOverride = relayUrl;
+		// renderer が設定値を持ってくる前でも名前が空にならないよう、ホスト名を既定として入れておく
+		// （まだ誰も繋がっていないので、ここではブロードキャストしない）。
+		if (this.pcName === undefined) {
+			this.pcName = paradisFormatPcName(undefined, hostname());
+			this.terminalRegistry.setPcName(this.pcName);
+		}
 		await this.load();
 		this.updateDiagnosticCorrelation();
 		this.enabled = enabled;
@@ -1135,6 +1145,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			pairId: body.pairId,
 			pairingToken,
 			pcPublicKey: identity.publicKey,
+			// 初回ペアリングの時点で名前が分かると、モバイルは接続前のPC一覧にも正しい名前を出せる。
+			...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
 		});
 		return { deviceId: this.state.device.deviceId, pairingUri, expiresAt: body.expiresAt };
 	}
@@ -1299,6 +1311,22 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async setAgentLiveOptions(options: { readonly codexDaemonStreaming: boolean }): Promise<void> {
 		this.agentChat.setCodexDaemonEnabled(options.codexDaemonStreaming === true);
+	}
+
+	/**
+	 * モバイルのPC一覧に出す、このPCの表示名を設定する。renderer は設定値をそのまま渡し、
+	 * 空のときのホスト名へのフォールバックはここで行う（renderer からは `os` を読めないため）。
+	 * 変わったときだけ desktop state を送り直す（名前は滅多に変わらないので間引きは要らない）。
+	 */
+	async setPcName(pcName: string | undefined): Promise<void> {
+		const next = paradisFormatPcName(pcName, hostname());
+		if (this.pcName === next) {
+			return;
+		}
+		this.pcName = next;
+		if (this.terminalRegistry.setPcName(next)) {
+			await this.enqueueRendererAuthority(() => this.broadcastDesktopState());
+		}
 	}
 
 	async notifyAgentTerminalHint(lease: IParadisMobileWindowLease, terminalId: number, hint: { readonly elapsedSeconds?: number; readonly tokenCount?: number }): Promise<void> {

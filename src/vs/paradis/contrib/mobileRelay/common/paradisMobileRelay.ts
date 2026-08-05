@@ -29,6 +29,25 @@ export const PARADIS_MOBILE_ENABLED_KEY = 'paradis.mobile.enabled';
 export const PARADIS_MOBILE_RELAY_URL_KEY = 'paradis.mobile.relayUrl';
 /** 稼働中Codex pane app-serverからトークン単位の進捗通知を購読する（設定キー名は互換維持）。 */
 export const PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY = 'paradis.mobile.agent.codexDaemonStreaming';
+/** モバイルアプリのPC一覧に出すこのPCの表示名。空ならホスト名を使う。 */
+export const PARADIS_MOBILE_PC_NAME_KEY = 'paradis.mobile.pcName';
+
+/** モバイルへ送るPC表示名の上限（ペアリングURIのQR情報量を増やしすぎないため）。 */
+export const PARADIS_MOBILE_PC_NAME_MAX_LENGTH = 64;
+
+/**
+ * モバイルのPC一覧に出す表示名を決める。設定値が空ならホスト名を使い、`.local` のような
+ * mDNSサフィックスは落とす（「MacBook-Pro.local」ではなく「MacBook-Pro」と出したい）。
+ * どちらも空なら undefined を返し、モバイル側の既定名に任せる。
+ */
+export function paradisFormatPcName(configured: string | undefined, hostname: string | undefined): string | undefined {
+	const explicit = configured?.trim();
+	if (explicit) {
+		return explicit.slice(0, PARADIS_MOBILE_PC_NAME_MAX_LENGTH);
+	}
+	const host = hostname?.trim().replace(/\.(local|lan|home|localdomain)\.?$/i, '');
+	return host ? host.slice(0, PARADIS_MOBILE_PC_NAME_MAX_LENGTH) : undefined;
+}
 
 // 2026-07-05 デプロイ済み（本番Cloudflareアカウント、app/relay/wrangler.jsonc参照）。
 export const PARADIS_MOBILE_DEFAULT_RELAY_URL = 'wss://para-mobile-relay.cloudflare8234.workers.dev';
@@ -166,6 +185,11 @@ export interface IParadisMobileDesktopStateV3 {
 	readonly battery?: IParadisMobileDesktopBattery;
 	/** PC本体（マシン全体）のCPU/メモリ/ディスク（旧PCでは未配信）。 */
 	readonly resources?: IParadisMobileDesktopResources;
+	/**
+	 * このPCの表示名（旧PCでは未配信）。モバイルが複数PCとペアリングしているときに
+	 * 一覧で見分けるために使う。設定 `paradis.mobile.pcName` が空ならホスト名。
+	 */
+	readonly pcName?: string;
 }
 
 /** shared process の接続状態。 */
@@ -252,6 +276,12 @@ export interface IParadisMobileRelayService {
 
 	// 有効/無効
 	setEnabled(enabled: boolean): Promise<void>;
+
+	/**
+	 * モバイルのPC一覧に出す、このPCの表示名を設定する。renderer が設定値（空ならホスト名）を
+	 * 解決して渡す。desktop state とペアリングURIの両方に載る。
+	 */
+	setPcName(pcName: string | undefined): Promise<void>;
 
 	// ペアリング
 	readonly onPairingEvent: Event<ParadisMobilePairingEvent>;

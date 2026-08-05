@@ -55,6 +55,9 @@ export interface WorkspaceState {
 	// こちらはshared process所有でrenderer epochと無関係なため、届かない＝「もうすぐ来る」ではなく
 	// 「このPCはもう配信しない」を意味する。引き継ぐと何時間前の値でも「今のPC」として出てしまう。
 	resources?: DesktopResources;
+	// このPCの表示名（旧PCでは未配信）。複数のPCとペアリングしているときの見分けに使う。
+	// PC側の設定が空ならホスト名が入る。ユーザーがアプリ側で名前を付け直していれば、そちらが優先。
+	pcName?: string;
 }
 
 interface RendererRequestTarget {
@@ -990,6 +993,28 @@ export interface StoreState {
 	agentChats: Map<string, AgentChatState>;
 }
 
+/**
+ * 表示状態の初期値。コントローラの初期化・`reset()`・PC切り替え（appState）の3箇所が
+ * 同じ形を必要とするので、ここを唯一の定義にする（別々に書くとフィールド追加時に
+ * どれかが取り残される）。
+ */
+export function createEmptyStoreState(): StoreState {
+	return {
+		connection: 'offline',
+		pcOnline: false,
+		sessionProtocolReady: false,
+		workspace: undefined,
+		protocolError: undefined,
+		terminalOperationIssue: undefined,
+		unknownTerminalOperationCount: 0,
+		terminalOutput: new Map(),
+		notifications: [],
+		pushRegistered: undefined,
+		browserFrame: undefined,
+		agentChats: new Map(),
+	};
+}
+
 const IDENTITY_KEY = 'para.identity';
 const CREDS_KEY = 'para.credentials';
 const OPERATION_RUN_KEY = 'para.operationRun';
@@ -1106,20 +1131,7 @@ export function terminalOperationPairingScope(creds: PairedCredentials): string 
 export class MobileController {
 	private client: RelayClient | undefined;
 	private lastCredentials: PairedCredentials | undefined;
-	readonly state: StoreState = {
-		connection: 'offline',
-		pcOnline: false,
-		sessionProtocolReady: false,
-		workspace: undefined,
-		protocolError: undefined,
-		terminalOperationIssue: undefined,
-		unknownTerminalOperationCount: 0,
-		terminalOutput: new Map(),
-		notifications: [],
-		pushRegistered: undefined,
-		browserFrame: undefined,
-		agentChats: new Map(),
-	};
+	readonly state: StoreState = createEmptyStoreState();
 
 	/**
 	 * agentチャットの購読中ターミナルID → 購読者数（参照カウント）。
@@ -1339,6 +1351,12 @@ export class MobileController {
 		}
 		const previousCredentials = this.lastCredentials;
 		this.resetting = true;
+		// 生存確認のインターバルも止める。resetしたコントローラはそのまま捨てられるので、
+		// 残すとタイマーごとコントローラ一式がGCされずに残り続ける。
+		if (this.livenessTimer !== undefined) {
+			clearInterval(this.livenessTimer);
+			this.livenessTimer = undefined;
+		}
 		this.client?.close();
 		this.client = undefined;
 		this.cancelPendingAgentActions();
@@ -2211,6 +2229,26 @@ export class MobileController {
 		}
 	}
 
+	/**
+	 * このPCに対する購読（エージェントチャット・ターミナル）をすべて畳む。
+	 * 見るPCを切り替えるときに呼ぶ。画面側の購読解除は「いま見ているPC」へ届いてしまうため、
+	 * 切り替え前のPCはここでまとめて解放しないと、再接続のたびに再attachされ続ける。
+	 */
+	detachAll(): void {
+		for (const terminalKey of [...this.attachedAgents.keys()]) {
+			const terminal = this.terminalForKey(terminalKey);
+			if (terminal !== undefined && this.isLiveAvailable() && this.rendererTargetFor(terminalKey) !== undefined) {
+				this.client?.send('agent', encoder.encode(JSON.stringify({ t: 'detach', id: terminal.id, token: this.agentToken(terminalKey) })));
+			}
+		}
+		this.attachedAgents.clear();
+		this.attachedAgentTargets.clear();
+		this.pendingAgentLiveResyncs.clear();
+		for (const terminalKey of [...this.termStreams.keys()]) {
+			void this.sendTerm(terminalKey, { t: 'detach' });
+		}
+	}
+
 	/** チャット表示の再読み込み（セッションが見つからなかった後の再試行にも使う）。 */
 	refreshAgent(terminalKey: string): void {
 		if (!this.isLiveAvailable()) {
@@ -3012,6 +3050,11 @@ export class MobileController {
 					return;
 				}
 				this.state.protocolError = undefined;
+				// PC名は後から足したフィールド。文字列でない値が来ても表示側で落ちないよう、
+				// ここで型を確かめて捨てる（PCは信用しない相手として扱う）。
+				if (incoming.pcName !== undefined && typeof incoming.pcName !== 'string') {
+					delete (incoming as { pcName?: unknown }).pcName;
+				}
 				this.liveFsUploadEncoding = incoming.fsUploadEncoding === FS_BINARY_UPLOAD_ENCODING ? FS_BINARY_UPLOAD_ENCODING : undefined;
 				// 有効なv3 Stateそのものがpresenceより強い生存証拠。同一revisionでも
 				// 新しい暗号sessionのgate確立と再attach処理には必ず使う。
