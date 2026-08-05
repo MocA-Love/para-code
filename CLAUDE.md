@@ -85,6 +85,19 @@ PC版・モバイルアプリ版のそれぞれに、ユーザーが読む更新
 - **アプリを配信する前に `app/mobile/app.json` の `version` を上げ、`MOBILE_CHANGELOG` の先頭に同じバージョンの節を作る**。この2つがずれるとお知らせが出ない・古い内容が出るため、`src/changelog.test.ts` が一致を検査して落とす（`cd app/mobile && npx vitest run`）
 - 表示ルール（新規インストールでは出さない／同じ版では二度と出さない／飛ばした版はまとめて1回）は `pendingReleases()` が持つ。**この判定を画面側に散らさない**
 
+## モバイルアプリはiPhoneとiPadの両方に出している（2026-08-05整備、厳守）
+
+`app/mobile/` はiPhone専用ではない。**UIを触るときは必ずiPadの広い幅（2カラム）も考えること。**
+
+- 幅の判定は `app/mobile/src/sizeClass.ts` の `sizeClassFor(width, tablet)` に一本化してある。**画面ごとに独自のしきい値や `Platform.isPad` を書かない**。UIからは `useIsRegularWidth()`（`src/hooks/useSizeClass.ts`）を使う
+- iPadでは左に常設サイドバー（`src/ipad/ipadShell.tsx`）が出て、本文は右カラムに収まる。**画面の実装は「与えられた幅に収まる」ことだけを考える**。ウィンドウ幅（`useWindowDimensions().width`）を本文幅と思って計算しない
+- 新しく画面を足したら、本文のスクロール領域に `useContentColumnStyle()`（`src/ipad/useContentColumn.ts`）を当てる。iPhoneでは `undefined` を返すので無害。当てないと広い画面で1行が1000ptに伸びる
+- `maxWidth: '86%'` のような**割合指定は広い画面で効かなくなる**（iPhoneの311ptが iPadでは650pt超になる）。絶対値で書く
+- **条件分岐でReactツリーの形を変えない。** 幅で早期returnして階層を出し入れすると、配下が丸ごと再マウントされてターミナルのWebViewや入力途中の文字が消える。出し分けは幅0やスタイルで表現する
+- 変更したら**iPad（横向き含む）とiPhoneの両方のシミュレータで確認する**。片方だけ見て済ませない
+
+**`npx expo prebuild` は実行してはいけない**（`--clean` 無しでも `ios/` を作り直し、手動追加の `NotifyExtension` と `ParaCodeWidgets` が消える）。ネイティブ設定は `ios/` へ直接当てる。詳細と実際に踏んだ落とし穴は `NOTES.md` の「モバイルアプリのiPad対応」を読むこと。
+
 ## 実装前に必ず確認すること
 
 - 実装する機能が「新規ファイル＋集約ファイルへの1行import」だけで完結できないか、まず検討する（機能1のワークスペース管理、機能3のブラウザビューは実例としてこのパターンで完結している）
