@@ -4,8 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { DeferredPromise } from '../../../../../base/common/async.js';
-import { Emitter } from '../../../../../base/common/event.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/common/errors.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
@@ -24,14 +25,17 @@ import { IWorkbenchLayoutService } from '../../../../../workbench/services/layou
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { IWorkingCopyBackupRestoreRouter, WorkingCopyBackupRestoreRouter } from '../../../../../workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.js';
 import { IWorkspaceEditingService } from '../../../../../workbench/services/workspaces/common/workspaceEditing.js';
-import { ITerminalEditorService, ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
+import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalInstanceService, ITerminalService, TerminalConnectionState } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { TerminalGroupService } from '../../../../../workbench/contrib/terminal/browser/terminalGroupService.js';
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
-import { paradisGetParkedTerminalEditorStateKey, paradisTakeParkedTerminalEditorInstance } from '../../browser/paradisTerminalEditorPark.js';
+import { paradisGetParkedTerminalEditorStateKey, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
+import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScope.contribution.js';
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
-import { IParadisAuxiliaryWindowScopeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../../common/paradisWorkspaceSwitch.js';
 
 suite('ParadisWorkspaceSwitchService integration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -193,6 +197,170 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			testDisposables.dispose();
 		}
 	});
+
+	test('waits for completion participants before releasing the next space switch', async () => {
+		const testDisposables = new DisposableStore();
+		const participantStarted = new DeferredPromise<void>();
+		const releaseParticipant = new DeferredPromise<void>();
+		const secondUpdateStarted = new DeferredPromise<void>();
+		const completionEvents: string[] = [];
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b', 'space-c'],
+				testDisposables,
+				async (phase, _uri, updateIndex) => {
+					if (phase === 'start' && updateIndex === 1) {
+						secondUpdateStarted.complete();
+					}
+				}
+			);
+			testDisposables.add(harness.workspaceSwitchService.onDidSwitchScope(stateKey => completionEvents.push(stateKey)));
+			testDisposables.add(harness.workspaceSwitchService.registerSwitchCompletionParticipant(async stateKey => {
+				if (stateKey === 'space-b') {
+					participantStarted.complete();
+					await releaseParticipant.p;
+				}
+			}));
+
+			const firstSwitch = harness.workspaceSwitchService.switchRepository('space-b');
+			const competingSwitch = harness.workspaceSwitchService.switchRepository('space-c');
+			let switchResults: PromiseSettledResult<void>[];
+			try {
+				await Promise.race([
+					participantStarted.p,
+					firstSwitch.then(() => {
+						throw new Error('The first switch completed before its completion participant started');
+					}),
+				]);
+
+				assert.deepStrictEqual({
+					activeStateKey: harness.workspaceSwitchService.activeStateKey,
+					completionEvents,
+					secondUpdateStarted: secondUpdateStarted.isSettled,
+				}, {
+					activeStateKey: 'space-b',
+					completionEvents: [],
+					secondUpdateStarted: false,
+				});
+			} finally {
+				releaseParticipant.complete();
+				switchResults = await Promise.allSettled([firstSwitch, competingSwitch]);
+			}
+
+			assert.deepStrictEqual({
+				switchResults: switchResults.map(result => result.status),
+				completionEvents,
+				secondUpdateStarted: secondUpdateStarted.isSettled,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+			}, {
+				switchResults: ['fulfilled', 'fulfilled'],
+				completionEvents: ['space-b', 'space-c'],
+				secondUpdateStarted: true,
+				activeStateKey: 'space-c',
+			});
+		} finally {
+			releaseParticipant.complete();
+			testDisposables.dispose();
+		}
+	});
+
+	test('keeps the sequencer held while the terminal scope opens a parked editor', async () => {
+		const testDisposables = new DisposableStore();
+		const openStarted = new DeferredPromise<void>();
+		const releaseOpen = new DeferredPromise<void>();
+		const secondUpdateStarted = new DeferredPromise<void>();
+		const completionEvents: string[] = [];
+		const fake = createFakeTerminalInstance(createUniqueTerminalIds());
+		try {
+			const harness = await createHarness(
+				['space-a', 'space-b', 'space-c'],
+				testDisposables,
+				async (phase, _uri, updateIndex) => {
+					if (phase === 'start' && updateIndex === 1) {
+						secondUpdateStarted.complete();
+					}
+				}
+			);
+			harness.installTerminalScope(async instance => {
+				assert.strictEqual(instance, fake.instance);
+				assert.strictEqual(harness.workspaceSwitchService.activeStateKey, 'space-b');
+				openStarted.complete();
+				await releaseOpen.p;
+			});
+			testDisposables.add(harness.workspaceSwitchService.onDidSwitchScope(stateKey => completionEvents.push(stateKey)));
+			assert.strictEqual(paradisParkTerminalEditorInstance(fake.instance, 'space-b'), true);
+
+			const firstSwitch = harness.workspaceSwitchService.switchRepository('space-b');
+			const competingSwitch = harness.workspaceSwitchService.switchRepository('space-c');
+			let switchResults: PromiseSettledResult<void>[];
+			try {
+				await Promise.race([
+					openStarted.p,
+					firstSwitch.then(() => {
+						throw new Error('The first switch completed before its parked terminal editor began opening');
+					}),
+				]);
+				// openEditor が detached execution に戻っている場合、open開始の直後にparticipantと
+				// 先行switchが完了する。次のmacrotaskまで進めて、その誤った完了を観測可能にする。
+				await timeout(0);
+
+				assert.deepStrictEqual({
+					completionEvents,
+					secondUpdateStarted: secondUpdateStarted.isSettled,
+					activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				}, {
+					completionEvents: [],
+					secondUpdateStarted: false,
+					activeStateKey: 'space-b',
+				});
+			} finally {
+				releaseOpen.complete();
+				switchResults = await Promise.allSettled([firstSwitch, competingSwitch]);
+			}
+
+			assert.deepStrictEqual({
+				switchResults: switchResults.map(result => result.status),
+				completionEvents,
+				secondUpdateStarted: secondUpdateStarted.isSettled,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+			}, {
+				switchResults: ['fulfilled', 'fulfilled'],
+				completionEvents: ['space-b', 'space-c'],
+				secondUpdateStarted: true,
+				activeStateKey: 'space-c',
+			});
+		} finally {
+			releaseOpen.complete();
+			for (const parked of paradisTakeParkedTerminalEditorInstancesForScope('space-b')) {
+				parked.dispose();
+			}
+			fake.instance.dispose();
+			testDisposables.dispose();
+		}
+	});
+
+	test('reparks a live terminal editor under the same scope when opening fails', async () => {
+		const testDisposables = new DisposableStore();
+		const fake = createFakeTerminalInstance(createUniqueTerminalIds());
+		const originalUnexpectedErrorHandler = errorHandler.getUnexpectedErrorHandler();
+		setUnexpectedErrorHandler(() => undefined);
+		testDisposables.add({ dispose: () => setUnexpectedErrorHandler(originalUnexpectedErrorHandler) });
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			harness.installTerminalScope(async () => { throw new Error('open failed'); });
+			assert.strictEqual(paradisParkTerminalEditorInstance(fake.instance, 'space-b'), true);
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+
+			assert.deepStrictEqual(paradisTakeParkedTerminalEditorInstancesForScope('space-b'), [fake.instance]);
+		} finally {
+			for (const parked of paradisTakeParkedTerminalEditorInstancesForScope('space-b')) {
+				parked.dispose();
+			}
+			fake.instance.dispose();
+			testDisposables.dispose();
+		}
+	});
 });
 
 interface IWorkspaceSwitchIntegrationHarness {
@@ -201,8 +369,30 @@ interface IWorkspaceSwitchIntegrationHarness {
 	readonly parts: IEditorGroupsService;
 	readonly terminalEditorService: Pick<ITerminalEditorService, 'instances'>;
 	readonly detachedTerminalInstanceIds: readonly number[];
+	installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>): ParadisTerminalWorkspaceScope;
 	createEditor(path: string, modified: boolean): TestFileEditorInput;
 	addTerminal(input: TestFileEditorInput, instanceId: number, persistentProcessId: number, shellIntegrationNonce: string): ITerminalInstance;
+}
+
+function createFakeTerminalInstance(ids: ReturnType<typeof createUniqueTerminalIds>): { readonly instance: ITerminalInstance } {
+	const onDisposed = new Emitter<ITerminalInstance>();
+	let isDisposed = false;
+	const instance = {
+		instanceId: ids.instanceId,
+		persistentProcessId: ids.persistentProcessId,
+		shellIntegrationNonce: ids.shellIntegrationNonce,
+		shouldPersist: true,
+		get isDisposed() { return isDisposed; },
+		onDisposed: onDisposed.event,
+		dispose: () => {
+			if (!isDisposed) {
+				isDisposed = true;
+				onDisposed.fire(instance);
+				onDisposed.dispose();
+			}
+		},
+	} satisfies Partial<ITerminalInstance> as unknown as ITerminalInstance;
+	return { instance };
 }
 
 function createUniqueTerminalIds(): { readonly instanceId: number; readonly persistentProcessId: number; readonly shellIntegrationNonce: string } {
@@ -290,8 +480,10 @@ async function createHarness(
 	const terminals: ITerminalInstance[] = [];
 	const detachedTerminalInstanceIds: number[] = [];
 	const inputs = new Map<string, TestFileEditorInput>();
+	let onOpenTerminalEditor: (instance: ITerminalInstance) => Promise<void> = async () => { };
 	const terminalEditorService = {
 		get instances() { return terminals; },
+		openEditor: (instance: ITerminalInstance) => onOpenTerminalEditor(instance),
 		getInputFromResource: (resource: URI) => inputs.get(resource.toString()) as unknown as ReturnType<ITerminalEditorService['getInputFromResource']>,
 		detachInstance: (instance: ITerminalInstance) => {
 			detachedTerminalInstanceIds.push(instance.instanceId);
@@ -300,7 +492,7 @@ async function createHarness(
 				terminals.splice(index, 1);
 			}
 		},
-	} satisfies Pick<ITerminalEditorService, 'instances' | 'getInputFromResource' | 'detachInstance'>;
+	} satisfies Pick<ITerminalEditorService, 'instances' | 'openEditor' | 'getInputFromResource' | 'detachInstance'>;
 
 	const workspaceSwitchService = testDisposables.add(new ParadisWorkspaceSwitchService(
 		storageService,
@@ -324,6 +516,43 @@ async function createHarness(
 		parts,
 		terminalEditorService,
 		detachedTerminalInstanceIds,
+		installTerminalScope(onOpenEditor: (instance: ITerminalInstance) => Promise<void>): ParadisTerminalWorkspaceScope {
+			onOpenTerminalEditor = onOpenEditor;
+			const terminalGroupService = Object.create(TerminalGroupService.prototype) as TerminalGroupService;
+			Object.defineProperties(terminalGroupService, {
+				groups: { get: () => [] },
+				paradisParkedGroups: { get: () => [] },
+				onDidChangeGroups: { value: Event.None },
+				onDidDisposeGroup: { value: Event.None },
+			});
+			const terminalService = {
+				instances: [],
+				whenConnected: new Promise<void>(() => { }),
+				connectionState: TerminalConnectionState.Connecting,
+				onDidChangeInstances: Event.None,
+				onDidChangeConnectionState: Event.None,
+				onAnyInstanceProcessIdReady: Event.None,
+			} satisfies Partial<ITerminalService> as unknown as ITerminalService;
+			const worktreeService = {
+				initializationBarrier: new Promise<void>(() => { }),
+				onDidChangeWorktrees: Event.None,
+			} satisfies Partial<IParadisWorktreeService> as unknown as IParadisWorktreeService;
+			const scope = new ParadisTerminalWorkspaceScope(
+				terminalGroupService as unknown as ITerminalGroupService,
+				terminalService,
+				terminalEditorService as unknown as ITerminalEditorService,
+				workspaceSwitchService,
+				auxiliaryWindowScopeService as unknown as IParadisAuxiliaryWindowScopeService,
+				worktreeService,
+				storageService,
+				{ getBackend: async () => undefined } as ITerminalInstanceService,
+				{} as IWorkbenchEnvironmentService,
+				contextService,
+				parts,
+			);
+			testDisposables.add(scope);
+			return scope;
+		},
 		createEditor(path: string, modified: boolean): TestFileEditorInput {
 			const editor = testDisposables.add(new TestFileEditorInput(URI.file(path), editorTypeId));
 			editor.modified = modified;

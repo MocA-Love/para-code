@@ -8,7 +8,7 @@
 
 import { Sequencer } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -160,6 +160,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	private readonly _onDidSwitchScope = this._register(new Emitter<string>());
 	readonly onDidSwitchScope = this._onDidSwitchScope.event;
+	private readonly _switchCompletionParticipants = new Set<(stateKey: string) => void | Promise<void>>();
 
 	private readonly _repositories: IParadisWorkspaceRepository[];
 	private readonly retirementJournal: ParadisScopeRetirementJournal;
@@ -231,6 +232,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 	get pendingCommittedRetirementStateKeys(): readonly string[] {
 		return this.retirementJournal.pendingStateKeys;
+	}
+
+	registerSwitchCompletionParticipant(participant: (stateKey: string) => void | Promise<void>): IDisposable {
+		this._switchCompletionParticipants.add(participant);
+		return toDisposable(() => this._switchCompletionParticipants.delete(participant));
 	}
 
 	/** 直近の切り替えで記録したアクティブエントリ (folders が一致する間だけ有効) */
@@ -637,7 +643,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					phaseMs[name] = Date.now() - startedAt;
 				}
 			};
-			// 同期の重い区間（park ループ、退避、復元イベントの配布）にも使う。切り替えの体感は
+			// 同期の重い区間（park ループ、退避、パネル復元）にも使う。切り替えの体感は
 			// await の有無で決まらないので、非同期の区間だけ測っても遅さの説明にならない。
 			const timeSyncPhase = <T>(name: string, run: () => T): T => {
 				const startedAt = Date.now();
@@ -660,6 +666,9 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					async () => {
 						await this.editorScopeService.correctActiveScope(previousKey, stateKey, uri);
 						this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
+						if (previousKey !== stateKey) {
+							await this.runSwitchCompletionParticipants(stateKey);
+						}
 					},
 				);
 				return;
@@ -810,14 +819,16 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// onDidSwitchScope を受け皿として復元されるため、失敗時に発火しないと迷子のまま残る
 				const restoreKey = completed ? stateKey : switchError !== undefined ? previousKey : undefined;
 				if (restoreKey !== undefined) {
-					// 購読側（park 済みターミナルの復帰・SCM下書きの復元）が同期で走る。切り替えの
-					// 体感に直結するのにこれまで一切測れていなかった区間。
-					timeSyncPhase('notify_scope_switched', () => this._onDidSwitchScope.fire(restoreKey));
+					// 制御フローを担う非同期 participant を先に完走させてから、完了通知を配る。
+					// この await 中も Sequencer のスロットは保持されるので、次の切り替えは始まらない。
+					await timePhase('notify_scope_switched', async () => {
+						await this.runSwitchCompletionParticipants(restoreKey);
+						this._onDidSwitchScope.fire(restoreKey);
+					});
 				}
 
-				// 計測は**復元まで済ませた後**。park 済みターミナルとSCM下書きの復元はここで同期的に
-				// 走る重い仕事で、体感の切り替え時間に含まれる。fire の手前で測ると、いちばん疑わしい
-				// 区間が誰からも見えない数字になる。
+				// 計測は**復元まで済ませた後**。completion participant と完了通知の処理も
+				// ユーザーが感じる切り替え時間に含める。
 				this.recordSwitchPhases({
 					startedAt: switchStartedAt,
 					phaseMs,
@@ -828,6 +839,16 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				});
 			}
 		}));
+	}
+
+	private async runSwitchCompletionParticipants(stateKey: string): Promise<void> {
+		for (const participant of [...this._switchCompletionParticipants]) {
+			try {
+				await participant(stateKey);
+			} catch (error) {
+				this.logService.error('[ParadisWorkspaceSwitch] Switch completion participant failed', error);
+			}
+		}
 	}
 
 	/**
