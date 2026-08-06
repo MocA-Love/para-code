@@ -471,6 +471,13 @@ export interface IParadisWorkspaceSwitchService {
 	readonly onWillSwitchScope: Event<string | undefined>;
 	/** 切り替え完了時。ペイロードは切り替え先の状態キー */
 	readonly onDidSwitchScope: Event<string>;
+	/**
+	 * 切り替え先の状態が確定した後、完了通知と次の切り替えを許可する前に待機する処理を登録する。
+	 * 状態復元など、完了通知を制御フローに使わず切り替えシーケンサーへ参加させるためのAPI。
+	 * participant は有限時間で完了し、このサービスの切り替えAPIを内部から await してはならない。
+	 * 現在のシーケンサースロットを保持したまま次の切り替えを待つと相互待機になるため。
+	 */
+	registerSwitchCompletionParticipant(participant: (stateKey: string) => void | Promise<void>): IDisposable;
 
 	readonly repositories: readonly IParadisWorkspaceRepository[];
 

@@ -203,10 +203,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// パネル側の台帳を引く口だけ渡しておく
 		this._register(paradisRegisterParkedTerminalGroupProbe(stateKey => this._parkedGroups.has(stateKey)));
 
-		this._register(this.workspaceSwitchService.onDidSwitchScope(stateKey => {
-			this.applyScope(stateKey);
+		this._register(this.workspaceSwitchService.registerSwitchCompletionParticipant(async stateKey => {
+			await this.applyScope(stateKey);
 			// 起動時の孤児復活は切り替えが始まると途中で降りる。降りた分は誰も拾わないので、
-			// 切り替えが終わったここでやり直す。完走済みなら何もしない
+			// 切り替えが終わったここでやり直す。完走済みなら何もしない。この再探索は従来どおり
+			// バックグラウンドで行い、PTY バックエンドの応答を次のスペース切り替えの待機条件にしない
 			void this.retryOrphanRevivalIfInterrupted();
 		}));
 		this._register(this.terminalGroupService.onDidDisposeGroup(group => this.discardGroup(group)));
@@ -902,7 +903,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 	}
 
-	private applyScope(targetStateKey: string): void {
+	private async applyScope(targetStateKey: string): Promise<void> {
 		const groupService = this.terminalGroupService;
 		if (!(groupService instanceof TerminalGroupService)) {
 			return;
@@ -930,19 +931,21 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		// インスタンスが台帳に残り PTY だけが不可視のまま生き続ける（タブは復元されない）。
 		// 切り替え完了時点で台帳に残っている切り替え先スコープの分を明示的に開き直す。
 		// 正常に revive された分は台帳から取り出し済みのため二重復元にはならない
-		this.unparkEditorTerminals(targetStateKey);
+		await this.unparkEditorTerminals(targetStateKey);
 
 		this.persistMapping();
 		this.refreshAllStableScopes();
 	}
 
 	/** 切り替え先スコープの park 台帳に残留したエディタターミナルをエディタとして開き直す */
-	private unparkEditorTerminals(targetStateKey: string): void {
+	private async unparkEditorTerminals(targetStateKey: string): Promise<void> {
 		const instances = paradisTakeParkedTerminalEditorInstancesForScope(targetStateKey);
 		if (instances.length === 0) {
 			return;
 		}
-		// openEditor は非同期で、この間にユーザーがさらに別スコープへ切り替えている可能性がある。
+		// この処理は workspace switch の completion participant として await されるため、通常の
+		// スペース切り替えは openEditor の完了まで次へ進まない。activeStateKey の確認は、終了処理や
+		// 同一URI補正など切り替えシーケンサー外から状態が変わる場合にも誤表示しないための防御。
 		// 取り出したまま開けない・開き損ねたインスタンスは台帳へ戻し、次の切り替えか
 		// スコープ退役で必ず回収されるようにする（戻さないと PTY がどこからも参照されず漏れる）。
 		// 取り出し後に dispose されたインスタンスは開かず・戻さず捨てる（take で台帳の
@@ -958,25 +961,23 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			onUnexpectedError(new Error('Para Code could not park a terminal editor; reopening it so it stays visible'));
 			await this.terminalEditorService.openEditor(instance);
 		};
-		(async () => {
-			for (const instance of instances) {
-				if (instance.isDisposed) {
+		for (const instance of instances) {
+			if (instance.isDisposed) {
+				continue;
+			}
+			try {
+				if (this.workspaceSwitchService.activeStateKey !== targetStateKey) {
+					await parkOrReopen(instance);
 					continue;
 				}
-				try {
-					if (this.workspaceSwitchService.activeStateKey !== targetStateKey) {
-						await parkOrReopen(instance);
-						continue;
-					}
-					await this.terminalEditorService.openEditor(instance);
-				} catch (error) {
-					if (!instance.isDisposed) {
-						paradisParkTerminalEditorInstance(instance, targetStateKey);
-					}
-					onUnexpectedError(error);
+				await this.terminalEditorService.openEditor(instance);
+			} catch (error) {
+				if (!instance.isDisposed) {
+					paradisParkTerminalEditorInstance(instance, targetStateKey);
 				}
+				onUnexpectedError(error);
 			}
-		})();
+		}
 	}
 
 	/**
