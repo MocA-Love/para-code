@@ -171,6 +171,9 @@ function createFixture(): {
 		_activeRequestControllers: new Set<AbortController>(),
 		_activeIngressRequestsByToken: new Map<string, number>(),
 		_activeIngressRequestCount: 0,
+		_activeMobileVoiceRequestCount: 0,
+		_activeMobileVoiceBytes: 0,
+		_mobileVoiceTickets: new Map<string, unknown>(),
 		_store: {
 			isDisposed: false,
 			dispose() { this.isDisposed = true; },

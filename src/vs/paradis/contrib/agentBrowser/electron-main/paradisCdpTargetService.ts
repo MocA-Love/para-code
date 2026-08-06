@@ -370,9 +370,10 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 			() => this.runFrameKeepalive(),
 			PARADIS_EXACT_VIEW_FRAME_KEEPALIVE_INTERVAL_MS,
 		);
-		// Pure maintenance: never let it be the reason the process stays alive.
-		(timer as unknown as NodeJS.Timeout).unref();
 		this.frameKeepaliveTimer = timer;
+		// Pure maintenance: never let it be the reason the process stays alive.
+		// Electron main returns a Node timer, while the renderer-based unit harness returns a number.
+		(timer as unknown as { unref?(): void }).unref?.();
 	}
 
 	/**
