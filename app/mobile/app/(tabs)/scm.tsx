@@ -56,7 +56,7 @@ export default function ScmScreen() {
 	const [loadingMore, setLoadingMore] = useState(false);
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
-	const [diffTarget, setDiffTarget] = useState<{ path: string; staged: boolean } | undefined>();
+	const [diffTarget, setDiffTarget] = useState<{ path: string; staged: boolean; letter: string } | undefined>();
 	const [message, setMessage] = useState('');
 	// コミット行タップで展開する「そのコミットの変更ファイル一覧」。hash単位でキャッシュする
 	const [expandedHash, setExpandedHash] = useState<string | undefined>();
@@ -299,7 +299,7 @@ export default function ScmScreen() {
 					const letter = (f.x !== ' ' && f.x !== '?' ? f.x : f.y) || '?';
 					return (
 						<View key={`${f.x}${f.y}${f.path}`} style={styles.fileRowWrap}>
-							<Pressable disabled={!live} style={[styles.fileRow, !live && styles.commitBtnDisabled]} onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ' }); }}>
+							<Pressable disabled={!live} style={[styles.fileRow, !live && styles.commitBtnDisabled]} onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ', letter }); }}>
 								<Ionicons name="document-text-outline" size={14} color={colors.textDim} />
 								<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
 								<Text style={[styles.fileLetter, letter === 'M' ? styles.mod : letter === 'A' || letter === '?' ? styles.add : letter === 'D' ? styles.del : undefined]}>{letter === '?' ? 'A' : letter}</Text>
@@ -358,7 +358,7 @@ export default function ScmScreen() {
 				<View style={{ height: tabBarSpacer }} />
 			</ScrollView>
 			{diffTarget !== undefined && wsId ? (
-				<DiffView ws={wsId} path={diffTarget.path} staged={diffTarget.staged} onClose={() => setDiffTarget(undefined)} />
+				<DiffView ws={wsId} path={diffTarget.path} staged={diffTarget.staged} statusLetter={diffTarget.letter} onClose={() => setDiffTarget(undefined)} />
 			) : null}
 		</KeyboardAvoidingView>
 		</ConnectionGate>

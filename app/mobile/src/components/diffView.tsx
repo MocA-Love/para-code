@@ -25,6 +25,11 @@ interface DiffViewProps {
 	ws: string;
 	path: string;
 	staged: boolean;
+	/**
+	 * gitの状態文字（'M' | 'A' | 'D' | '?' 等）。
+	 * 削除されたファイルは作業ツリーに中身が無く、レンダーのしようがないので既定をDiffにする。
+	 */
+	statusLetter?: string;
 	onClose: () => void;
 }
 
@@ -89,7 +94,7 @@ export function parseUnifiedDiff(diff: string): DiffRow[] {
 	return rows;
 }
 
-export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
+export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewProps) {
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
 	// 変わったときに「fullScreenなのに上余白14pt」＝ヘッダーがステータスバーに潜る。
@@ -110,7 +115,11 @@ export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
 		: /\.(?:html?|xhtml)$/i.test(name) ? 'html'
 			: /\.(?:xlsx|xlsm)$/i.test(name) ? 'spreadsheet' : 'other';
 
-	const [mode, setMode] = useState<ViewMode>('diff');
+	// 文書として読めるものは、開いた瞬間から読める形で出す（ファイルビューアも同じ既定）。
+	// 表計算はPC側が作る「セルの色分け差分」の方が情報量が多いのでDiffのまま。
+	// 削除されたファイルは作業ツリーに中身が無いのでレンダーできない。
+	const canRenderByDefault = (kind === 'markdown' || kind === 'html') && statusLetter !== 'D';
+	const [mode, setMode] = useState<ViewMode>(canRenderByDefault ? 'render' : 'diff');
 	const [diffText, setDiffText] = useState<string | undefined>();
 	const [diffHtml, setDiffHtml] = useState<string | undefined>();
 	const [renderHtml, setRenderHtml] = useState<string | undefined>();
@@ -193,19 +202,22 @@ export function DiffView({ ws, path, staged, onClose }: DiffViewProps) {
 				<View style={[styles.header, { paddingTop: headerTop }]}>
 					<Ionicons name="git-compare-outline" size={16} color={colors.textDim} />
 					<Text style={styles.title} numberOfLines={1}>{path}</Text>
-					{mode === 'diff' && kind !== 'spreadsheet' && diffText !== undefined ? (
+					{/* レンダーを既定にすると「どれだけ変わったか」の手がかりが消えるので、
+					    増減行数はモードによらず出す（差分そのものはDiffに切り替えれば見られる）。 */}
+					{kind !== 'spreadsheet' && diffText !== undefined ? (
 						<>
 							<Text style={styles.statAdd}>+{stats.add}</Text>
 							<Text style={styles.statDel}>-{stats.del}</Text>
 						</>
 					) : null}
 					{kind !== 'other' ? (
+						// 並びはファイルビューアと揃える（左がレンダー）。
 						<View style={styles.segment}>
-							<Pressable style={[styles.segmentBtn, mode === 'diff' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('diff'); }}>
-								<Text style={[styles.segmentText, mode === 'diff' && styles.segmentTextActive]}>Diff</Text>
-							</Pressable>
 							<Pressable style={[styles.segmentBtn, mode === 'render' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('render'); }}>
 								<Text style={[styles.segmentText, mode === 'render' && styles.segmentTextActive]}>レンダー</Text>
+							</Pressable>
+							<Pressable style={[styles.segmentBtn, mode === 'diff' && styles.segmentBtnActive]} onPress={() => { hapticSelection(); setMode('diff'); }}>
+								<Text style={[styles.segmentText, mode === 'diff' && styles.segmentTextActive]}>Diff</Text>
 							</Pressable>
 						</View>
 					) : null}

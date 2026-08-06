@@ -148,6 +148,18 @@ export function buildScopeRows(report: SystemResourcesResult): ResourceRow[] {
 }
 
 /**
+ * 内訳を1つの指標で降順に並べ替える。
+ *
+ * 以前は1行にCPUとメモリの2本のバーを重ねて出していたが、どちらがどちらか色でしか
+ * 区別できず（凡例はリストの最下部に1度だけ）、順序もメモリ基準の1通りしか無かった。
+ * 「CPUを食っているのは何か」と「メモリを食っているのは何か」は別々に見たい問いなので、
+ * 指標ごとに並べ替えた独立のリストへ分ける。
+ */
+export function sortRowsBy(rows: readonly ResourceRow[], metric: 'cpu' | 'memory'): ResourceRow[] {
+	return [...rows].sort((a, b) => b[metric] - a[metric]);
+}
+
+/**
  * 「PCが忙しい」と言えるかどうかの一言。ドロワーのPCカードで、色が付いたときだけ出す。
  * 3値だけから決めるので、原因（どのプロセスか）には触れない。
  */

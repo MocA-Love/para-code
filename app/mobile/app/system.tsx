@@ -17,7 +17,7 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import type { SystemResourcesResult } from '../src/store.js';
 import {
 	CPU_THRESHOLDS, MEMORY_THRESHOLDS, buildProcessRows, buildScopeRows, diskLevel, formatBytes, formatCpu,
-	usageLevel, usagePercent, type ResourceRow, type UsageLevel,
+	sortRowsBy, usageLevel, usagePercent, type ResourceRow, type UsageLevel,
 } from '../src/systemResources.js';
 import { formatRelativeTime, useNow } from '../src/time.js';
 
@@ -158,10 +158,41 @@ export default function SystemScreen() {
 		if (!data) { return []; }
 		return axis === 'process' ? buildProcessRows(data) : axis === 'scope' ? buildScopeRows(data) : [];
 	}, [data, axis]);
+	// CPUとメモリは別々のリストにして、それぞれの指標で並べ替える（1行に2本のバーを重ねない）。
+	const cpuRows = useMemo(() => sortRowsBy(rows, 'cpu'), [rows]);
+	const memoryRows = useMemo(() => sortRowsBy(rows, 'memory'), [rows]);
 	const maxCpu = useMemo(() => Math.max(1, ...rows.map(row => row.cpu)), [rows]);
 	const maxMemory = useMemo(() => Math.max(1, ...rows.map(row => row.memory)), [rows]);
 	// 「〇秒前に更新」を経時で進めるため、取得時刻ではなく現在時刻を使う
 	const now = useNow(10_000);
+
+	/**
+	 * 1つの指標ぶんの内訳。バーは1本だけで、見出しと各行の数値がその指標を名指しする
+	 * （色に意味を持たせないので凡例が要らない）。
+	 */
+	const renderMetricSection = (title: string, sorted: ResourceRow[], metric: 'cpu' | 'memory', max: number) => (
+		<>
+			<Text style={styles.sectionTitle}>{title}</Text>
+			<View style={styles.card}>
+				{sorted.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
+				{sorted.length > MAX_ROWS ? (
+					<Text style={styles.dim}>使用量の多い{MAX_ROWS}件を表示しています（全{sorted.length}件）</Text>
+				) : null}
+				{sorted.slice(0, MAX_ROWS).map((row, i) => (
+					<View key={row.key} style={[styles.barRow, i > 0 && styles.barSeparator]}>
+						<View style={styles.barHead}>
+							<Text style={styles.barName} numberOfLines={1}>{row.name}</Text>
+							<Text style={styles.barValue}>{metric === 'cpu' ? formatCpu(row.cpu) : formatBytes(row.memory)}</Text>
+						</View>
+						<Text style={styles.barSub} numberOfLines={1}>{row.sub}</Text>
+						<View style={styles.barTrack}>
+							<View style={[styles.barFill, { width: `${Math.max(1, (row[metric] / max) * 100)}%`, backgroundColor: metric === 'cpu' ? colors.accent : colors.purple }]} />
+						</View>
+					</View>
+				))}
+			</View>
+		</>
+	);
 
 	return (
 		<ConnectionGate>
@@ -240,35 +271,11 @@ export default function SystemScreen() {
 									})}
 								</View>
 							) : (
-								<View style={styles.card}>
-									{rows.length === 0 ? <Text style={styles.dim}>データがありません</Text> : null}
-									{rows.length > MAX_ROWS ? (
-										<Text style={styles.dim}>使用量の多い{MAX_ROWS}件を表示しています（全{rows.length}件）</Text>
-									) : null}
-									{rows.slice(0, MAX_ROWS).map((row, i) => (
-										<View key={row.key} style={[styles.barRow, i > 0 && styles.barSeparator]}>
-											<View style={styles.barHead}>
-												<Text style={styles.barName} numberOfLines={1}>{row.name}</Text>
-												<Text style={styles.barValue}>{formatCpu(row.cpu)} · {formatBytes(row.memory)}</Text>
-											</View>
-											<Text style={styles.barSub} numberOfLines={1}>{row.sub}</Text>
-											<View style={styles.barTrack}>
-												<View style={[styles.barFill, { width: `${Math.max(1, (row.cpu / maxCpu) * 100)}%`, backgroundColor: colors.accent }]} />
-											</View>
-											<View style={styles.barTrack}>
-												<View style={[styles.barFill, { width: `${Math.max(1, (row.memory / maxMemory) * 100)}%`, backgroundColor: colors.yellow }]} />
-											</View>
-										</View>
-									))}
-								</View>
+								<>
+									{renderMetricSection('CPU 使用率順', cpuRows, 'cpu', maxCpu)}
+									{renderMetricSection('メモリ使用量順', memoryRows, 'memory', maxMemory)}
+								</>
 							)}
-
-							{axis !== 'volume' ? (
-								<View style={styles.legend}>
-									<View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: colors.accent }]} /><Text style={styles.legendText}>CPU</Text></View>
-									<View style={styles.legendItem}><View style={[styles.legendSwatch, { backgroundColor: colors.yellow }]} /><Text style={styles.legendText}>メモリ</Text></View>
-								</View>
-							) : null}
 
 							<Text style={styles.note}>
 								上の3つはPC全体の使用量です。内訳に出るのは Para Code 本体と、Para Code が開いているターミナルのぶんだけなので、
@@ -302,7 +309,8 @@ const styles = StyleSheet.create({
 	ringValueText: { fontSize: 17, fontWeight: '800', letterSpacing: -0.4 },
 	ringName: { color: colors.text, fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
 	ringSub: { color: colors.textDim, fontSize: 9.5, textAlign: 'center', lineHeight: 13 },
-	chipRow: { flexDirection: 'row', gap: 8, marginTop: 2, marginBottom: 2 },
+	// 下の余白が2ptしかないと、チップ（押せるもの）と直下のカードが触れて見える。
+	chipRow: { flexDirection: 'row', gap: 8, marginTop: 2, marginBottom: 12 },
 	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
 	chipActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
@@ -315,9 +323,5 @@ const styles = StyleSheet.create({
 	barValue: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
 	barTrack: { height: 6, borderRadius: 3, backgroundColor: colors.surface3, overflow: 'hidden', flexDirection: 'row' },
 	barFill: { height: 6 },
-	legend: { flexDirection: 'row', gap: 14, marginTop: 8, paddingHorizontal: 4 },
-	legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-	legendSwatch: { width: 9, height: 9, borderRadius: 3 },
-	legendText: { color: colors.textDim, fontSize: 10.5 },
 	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 12, paddingHorizontal: 4 },
 });

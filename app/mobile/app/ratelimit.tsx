@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -66,34 +66,6 @@ function accountWindows(account: RateLimitAccount): { label: string; window: Rat
 	return rows;
 }
 
-/** 全アカウントの最悪使用率（KPI用）。 */
-function worstUsage(data: RateLimitsResult): { percent: number; account: RateLimitAccount; label: string } | undefined {
-	let worst: { percent: number; account: RateLimitAccount; label: string } | undefined;
-	for (const account of [...data.claude.accounts, ...data.codex.accounts]) {
-		for (const row of accountWindows(account)) {
-			if (!worst || row.window.usedPercent > worst.percent) {
-				worst = { percent: row.window.usedPercent, account, label: row.label };
-			}
-		}
-	}
-	return worst;
-}
-
-/** 使用中(>0%)ウィンドウのうち最も近いリセット（KPI用）。 */
-function nextReset(data: RateLimitsResult, now: number): { resetsAt: number; account: RateLimitAccount; label: string } | undefined {
-	let next: { resetsAt: number; account: RateLimitAccount; label: string } | undefined;
-	for (const account of [...data.claude.accounts, ...data.codex.accounts]) {
-		for (const row of accountWindows(account)) {
-			const resetsAt = row.window.resetsAt;
-			if (resetsAt === undefined || resetsAt <= now || row.window.usedPercent <= 0) { continue; }
-			if (!next || resetsAt < next.resetsAt) {
-				next = { resetsAt, account, label: row.label };
-			}
-		}
-	}
-	return next;
-}
-
 function accountName(account: RateLimitAccount): string {
 	return account.email ?? account.homeLabel ?? account.id;
 }
@@ -137,9 +109,6 @@ export default function RateLimitScreen() {
 			setPullRefreshing(false);
 		}
 	}, [refresh]);
-
-	const worst = useMemo(() => data ? worstUsage(data) : undefined, [data]);
-	const upcoming = useMemo(() => data ? nextReset(data, now) : undefined, [data, now]);
 
 	// 枠ごとに使用率とリセットを並べる。以前は5時間枠・7日枠・モデル別枠を混ぜて
 	// 「最も近い1つ」だけを枠名なしでアカウント行に出していたため、表示された残り時間が
@@ -188,9 +157,9 @@ export default function RateLimitScreen() {
 		);
 	};
 
-	const renderProvider = (provider: 'claude' | 'codex', title: string, snapshot: RateLimitProviderSnapshot) => (
+	const renderProvider = (provider: 'claude' | 'codex', title: string, snapshot: RateLimitProviderSnapshot, first = false) => (
 		<>
-			<View style={styles.sectionTitleRow}>
+			<View style={[styles.sectionTitleRow, first && styles.sectionTitleRowFirst]}>
 				<ProviderLogo provider={provider} size={15} />
 				<Text style={styles.sectionTitle}>{title} · {snapshot.accounts.length} アカウント</Text>
 			</View>
@@ -213,6 +182,16 @@ export default function RateLimitScreen() {
 			<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
 				<View style={styles.header}>
 					<Text style={styles.title}>Rate Limit</Text>
+					<Pressable
+						style={styles.closeBtn}
+						onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+						disabled={pullRefreshing || loading}
+						accessibilityLabel="最新に更新"
+					>
+						{pullRefreshing || loading
+							? <ActivityIndicator size="small" color={colors.textDim} />
+							: <Ionicons name="refresh" size={16} color={colors.textDim} />}
+					</Pressable>
 					<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
 						<Ionicons name="close" size={16} color={colors.textDim} />
 					</Pressable>
@@ -227,22 +206,7 @@ export default function RateLimitScreen() {
 
 					{data ? (
 						<>
-							<View style={styles.kpiRow}>
-								<View style={styles.kpiCard}>
-									<Text style={styles.kpiLabel}>最大使用率</Text>
-									<Text style={[styles.kpiValue, worst && worst.percent >= SEVERITY_HIGH_PERCENT ? styles.kpiValueWarn : undefined]}>
-										{worst ? `${Math.round(worst.percent)}%` : '—'}
-									</Text>
-									{worst ? <Text style={styles.kpiSub} numberOfLines={1}>{accountName(worst.account)} · {worst.label}枠</Text> : null}
-								</View>
-								<View style={styles.kpiCard}>
-									<Text style={styles.kpiLabel}>次のリセット</Text>
-									<Text style={styles.kpiValue}>{upcoming ? formatCountdown(upcoming.resetsAt, now) ?? '—' : '—'}</Text>
-									{upcoming ? <Text style={styles.kpiSub} numberOfLines={1}>{accountName(upcoming.account)} · {upcoming.label}枠</Text> : null}
-								</View>
-							</View>
-
-							{renderProvider('claude', 'Claude', data.claude)}
+							{renderProvider('claude', 'Claude', data.claude, true)}
 							{renderProvider('codex', 'Codex', data.codex)}
 
 							<Text style={styles.note}>
@@ -258,19 +222,15 @@ export default function RateLimitScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 10 },
+	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
 	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
 	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
 	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
-	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 4 },
-	kpiLabel: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
-	kpiValue: { color: colors.text, fontSize: 22, fontWeight: '800' },
-	kpiValueWarn: { color: colors.red },
-	kpiSub: { color: colors.textDim, fontSize: 11 },
+	// 先頭のセクション見出しは上の余白を詰める（集約KPIカードを外したぶん、頭が空きすぎる）。
 	sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 18, marginBottom: 8 },
+	sectionTitleRowFirst: { marginTop: 6 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
 	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 2 },
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 10, lineHeight: 18 },

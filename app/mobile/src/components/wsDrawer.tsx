@@ -3,7 +3,7 @@
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerLockMode, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
-import { Link, useRouter } from 'expo-router';
+import { Link, usePathname, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -14,6 +14,7 @@ import {
 } from '../systemResources.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+import { shouldReturnHomeOnSpaceChange } from '../ipad/ipadTabs.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
 import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
@@ -231,6 +232,7 @@ function PcResourceRow({ resources, onPress }: { resources: DesktopResources; on
 export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; navigation?: ReactNode }) {
 	const insets = useStableInsets();
 	const router = useRouter();
+	const pathname = usePathname();
 	const {
 		workspace, selectedWs, setSelectedWs, homeShowAllWorkspaces, setHomeShowAllWorkspaces, connection, pcOnline, sessionProtocolReady,
 		disconnectRelay, connectRelay, removePc, pcs, activePcId,
@@ -299,10 +301,34 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 		});
 	};
 
+	/**
+	 * スペースを変えたらホームへ戻す。
+	 *
+	 * ターミナル・ソース管理・ファイルの各タブは、いま選んでいるスペースの中身を映している。
+	 * 切り替えたのにそこへ留まると、前のスペースの文脈で開いていたファイルや差分だけが残り、
+	 * どちらの話を見ているのか分からなくなる。設定やダッシュボード類は対象外
+	 * （判定は `shouldReturnHomeOnSpaceChange`）。
+	 *
+	 * スタック画面（エージェント詳細など）を開いている間に `navigate` すると、React Navigationは
+	 * 既存の `(tabs)` へ戻さずもう1枚積んでしまうため、畳める場合は `dismissTo` を使う
+	 * （iPadサイドバーのタブ切り替えと同じ作法）。
+	 */
+	const returnHome = () => {
+		if (!shouldReturnHomeOnSpaceChange(pathname)) {
+			return;
+		}
+		if (router.canDismiss()) {
+			router.dismissTo('/');
+			return;
+		}
+		router.navigate('/');
+	};
+
 	const select = (id: string) => {
 		hapticSelection();
 		setSelectedWs(id);
 		setHomeShowAllWorkspaces(false);
+		returnHome();
 		onClose();
 	};
 
@@ -310,6 +336,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 	const selectAll = () => {
 		hapticSelection();
 		setHomeShowAllWorkspaces(true);
+		returnHome();
 		onClose();
 	};
 

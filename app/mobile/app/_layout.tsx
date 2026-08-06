@@ -105,7 +105,7 @@ function RootLayout() {
 				return;
 			}
 			switchedForPendingRef.current = target.pcId;
-			store.switchPcForNotification(target.pcId);
+			store.switchPcWithReturn(target.pcId);
 			return;
 		}
 		const currentWorkspace = workspaceRef.current;
@@ -195,6 +195,8 @@ function RootLayout() {
 						<Stack.Screen name="agent-launch" options={{ headerShown: false }} />
 						{/* 設定。ワークスペースドロワーの設定アイコンから開く */}
 						<Stack.Screen name="settings" options={{ headerShown: false, presentation: 'modal' }} />
+						{/* PCごとの詳細（使用量への入口＋名前変更・ペアリング解除）。設定のPC一覧から開く */}
+						<Stack.Screen name="pc-detail" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* Ccusage ダッシュボード。設定画面の項目から開く（設定のmodalと区別するため水平pushにする） */}
 						<Stack.Screen name="ccusage" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* Rate Limit(AIリミット)。設定画面の項目から開く（ccusageと同じ水平push） */}

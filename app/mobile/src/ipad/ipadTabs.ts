@@ -52,3 +52,22 @@ export function activeSidebarTab(pathname: string): SidebarTab['name'] | undefin
 	}
 	return undefined;
 }
+
+/**
+ * スペースを切り替えた（または「すべて表示」を押した）ときに、ホームへ戻すべきか。
+ *
+ * ターミナル・ソース管理・ファイルの各タブは、いま選んでいるスペースの中身を映している。
+ * スペースを変えたのにそこへ留まると、開いていたファイルや差分だけが前のスペースの文脈で
+ * 残り、どちらの話を見ているのか分からなくなる。エージェント詳細のようなホーム配下の
+ * スタック画面も同じ（そのエージェントは前のスペースのもの）。
+ *
+ * ただし設定やダッシュボード類（`/settings` `/ccusage` など）はスペースに属さないので閉じない。
+ * スペースを選んだだけで開いていた設定が消えるのは、行き過ぎたお節介になる。
+ */
+export function shouldReturnHomeOnSpaceChange(pathname: string): boolean {
+	const path = pathname.replace(/[?#].*$/, '');
+	if (path === '/' || path === '/index') {
+		return false;
+	}
+	return activeSidebarTab(path) !== undefined;
+}

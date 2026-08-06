@@ -48,33 +48,46 @@ function resourceLabel(resource: string): string {
 	}
 }
 
-interface CallerRow { key: string; name: string; sub: string; resource: 'core' | 'graphql'; value: number }
-interface SpaceRow { key: string; name: string; sub: string; coreRatio: number; value: number }
+// counts をそのまま持たせて、失敗・レート制限・所要時間まで行に出せるようにする
+// （PCからは元々届いていたが、これまでは calls しか使っていなかった）。
+interface CallerRow { key: string; name: string; sub: string; resource: 'core' | 'graphql'; value: number; counts: GithubCallCounts }
+interface SpaceRow { key: string; name: string; sub: string; coreRatio: number; value: number; counts: GithubCallCounts }
 
 function callerRows(operations: GithubOperationStat[], windowKey: WindowKey): CallerRow[] {
 	return operations
-		.map(operation => ({
-			key: operation.callSite,
-			name: operation.callSite,
-			sub: operation.topWorktreePath ? `most: ${spaceLabel(operation.topWorktreePath)}` : resourceLabel(operation.resource),
-			resource: operation.resource,
-			value: countsForWindow(operation, windowKey).calls,
-		}))
+		.map(operation => {
+			const counts = countsForWindow(operation, windowKey);
+			return {
+				key: operation.callSite,
+				name: operation.callSite,
+				sub: operation.topWorktreePath ? `most: ${spaceLabel(operation.topWorktreePath)}` : resourceLabel(operation.resource),
+				resource: operation.resource,
+				value: counts.calls,
+				counts,
+			};
+		})
 		.sort((a, b) => b.value - a.value);
 }
 
 function spaceRows(spaces: GithubSpaceStat[], windowKey: WindowKey): SpaceRow[] {
 	return spaces
-		.map(space => ({
-			key: space.space,
-			name: spaceLabel(space.space),
-			sub: space.topCallSite ? `most: ${space.topCallSite}` : '—',
-			// 数値とバーの色分けが選択中の窓で食い違わないよう、coreRatioも窓に対応するものを使う
-			coreRatio: windowKey === '5m' ? space.rolling5mCoreRatio : windowKey === '1h' ? space.rolling1hCoreRatio : space.coreRatio,
-			value: countsForWindow(space, windowKey).calls,
-		}))
+		.map(space => {
+			const counts = countsForWindow(space, windowKey);
+			return {
+				key: space.space,
+				name: spaceLabel(space.space),
+				sub: space.topCallSite ? `most: ${space.topCallSite}` : '—',
+				// 数値とバーの色分けが選択中の窓で食い違わないよう、coreRatioも窓に対応するものを使う
+				coreRatio: windowKey === '5m' ? space.rolling5mCoreRatio : windowKey === '1h' ? space.rolling1hCoreRatio : space.coreRatio,
+				value: counts.calls,
+				counts,
+			};
+		})
 		.sort((a, b) => b.value - a.value);
 }
+
+/** 所要時間が長いと言える境目（ms）。超えたら黄色にして目に留める。 */
+const SLOW_CALL_MS = 1_500;
 
 function formatCountdown(resetAt: number, now: number): string {
 	const ms = resetAt - now;
@@ -139,6 +152,16 @@ export default function GithubUsageScreen() {
 			<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
 				<View style={styles.header}>
 					<Text style={styles.title}>GitHub API</Text>
+					<Pressable
+						style={styles.closeBtn}
+						onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+						disabled={pullRefreshing || loading}
+						accessibilityLabel="最新に更新"
+					>
+						{pullRefreshing || loading
+							? <ActivityIndicator size="small" color={colors.textDim} />
+							: <Ionicons name="refresh" size={16} color={colors.textDim} />}
+					</Pressable>
 					<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
 						<Ionicons name="close" size={16} color={colors.textDim} />
 					</Pressable>
@@ -212,6 +235,8 @@ export default function GithubUsageScreen() {
 										? (row as CallerRow).resource === 'core' ? 100 : 0
 										: Math.round((row as SpaceRow).coreRatio * 100);
 									const widthPercent = Math.max(2, (row.value / maxValue) * 100);
+									const { failures, rateLimited, avgDurationMs, maxDurationMs } = row.counts;
+									const failurePercent = row.value > 0 ? Math.round((failures / row.value) * 100) : 0;
 									return (
 										<View key={row.key} style={[styles.barRow, i > 0 && styles.barSeparator]}>
 											<View style={styles.barHead}>
@@ -223,6 +248,21 @@ export default function GithubUsageScreen() {
 												<View style={[styles.barFill, { width: `${widthPercent * corePercent / 100}%`, backgroundColor: colors.accent }]} />
 												<View style={[styles.barFill, { width: `${widthPercent * (100 - corePercent) / 100}%`, backgroundColor: colors.yellow }]} />
 											</View>
+											{/* 問題があるときだけ赤・黄が増える。平常時は所要時間だけの静かな行にする。 */}
+											{row.value > 0 ? (
+												<View style={styles.statRow}>
+													{failures > 0 ? (
+														<Text style={[styles.stat, styles.statBad]}>失敗 {failures.toLocaleString()}（{failurePercent}%）</Text>
+													) : null}
+													{rateLimited > 0 ? (
+														<Text style={[styles.stat, styles.statWarn]}>レート制限 {rateLimited.toLocaleString()}</Text>
+													) : null}
+													<Text style={styles.stat}>平均 {Math.round(avgDurationMs).toLocaleString()}ms</Text>
+													<Text style={[styles.stat, maxDurationMs >= SLOW_CALL_MS && styles.statWarn]}>
+														最大 {Math.round(maxDurationMs).toLocaleString()}ms
+													</Text>
+												</View>
+											) : null}
 										</View>
 									);
 								})}
@@ -241,7 +281,7 @@ export default function GithubUsageScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 10 },
+	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
 	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
 	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
@@ -258,12 +298,13 @@ const styles = StyleSheet.create({
 	kpiSub: { color: colors.textDim, fontSize: 10 },
 	kpiGauge: { height: 4, borderRadius: 2, backgroundColor: colors.surface3, marginTop: 8, overflow: 'hidden' },
 	kpiGaugeFill: { height: 4, borderRadius: 2 },
-	pillRow: { flexDirection: 'row', gap: 8, marginTop: 2, marginBottom: 2 },
+	// 下の余白が2ptしかないと、押せるピル／チップと直下のカードが触れて見える。
+	pillRow: { flexDirection: 'row', gap: 8, marginTop: 2, marginBottom: 12 },
 	pill: { paddingVertical: 7, paddingHorizontal: 13, borderRadius: 999, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
 	pillActive: { backgroundColor: colors.accent, borderColor: colors.accent },
 	pillText: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },
-	chipRow: { flexDirection: 'row', gap: 8, marginTop: 2, marginBottom: 2 },
+	chipRow: { flexDirection: 'row', gap: 8, marginTop: 2, marginBottom: 12 },
 	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
 	chipActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
@@ -276,5 +317,10 @@ const styles = StyleSheet.create({
 	barValue: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
 	barTrack: { height: 8, borderRadius: 4, backgroundColor: colors.surface3, overflow: 'hidden', flexDirection: 'row' },
 	barFill: { height: 8 },
+	// 失敗・レート制限・所要時間。行が長くなりすぎないよう折り返す。
+	statRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
+	stat: { color: colors.textDim, fontSize: 9.5, fontWeight: '700', backgroundColor: colors.surface3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden' },
+	statWarn: { color: colors.yellow, backgroundColor: 'rgba(224,192,125,0.14)' },
+	statBad: { color: colors.red, backgroundColor: 'rgba(244,114,114,0.14)' },
 	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 10, paddingHorizontal: 4 },
 });
