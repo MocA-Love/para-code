@@ -31,6 +31,8 @@ import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IPar
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
 import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { getWslExePath } from '../../../../platform/agentHost/node/wslRemoteAgentHostHelpers.js';
+import { ParadisCommandArgument, paradisBuildWslInvocationArgs, paradisMergeWslEnvNames, paradisParseWslLoginPath, paradisParseWslUncPath, paradisPlanWslCommand, paradisWslLoginPathProbeArgs, paradisWslPathArg } from '../../../common/paradisWslPath.js';
 
 /**
  * setup/teardown スクリプトの最長実行時間。スクリプトはユーザー任意のシェルコマンドのため、
@@ -49,6 +51,41 @@ const PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
  */
 const PARADIS_CLONE_IDLE_TIMEOUT_MS = 5 * 60_000;
 
+/**
+ * gh が見つからないと判断してから、次に試すまでの待ち時間。恒久的に諦めないのは、
+ * ユーザーが gh を入れた直後にアプリ全体の再起動を強いないため（shared process は
+ * アプリ寿命なので、ウィンドウの再読み込みでは状態が消えない）。
+ */
+const PARADIS_GH_UNAVAILABLE_RETRY_MS = 10 * 60_000;
+
+/**
+ * git 実行の上限時間。WSL へ振り分けるようになって初めて必要になった。停止中のディストロへ
+ * 最初の1本を打つと VM の起動を待つことになり、`/etc/wsl.conf` の boot.command 次第では
+ * そのまま返ってこない。呼び出し側（Workspaces ビュー）は単一の in-flight ガードで守られて
+ * いるため、1本詰まると diff も PR もアプリを再起動するまで止まる。
+ */
+const PARADIS_WSL_COMMAND_TIMEOUT_MS = 30_000;
+
+/**
+ * シェルが「そんなコマンドは無い」で終わるときの終了コード。WSL へ振り分けた実行では
+ * 実行ファイル不在が spawn の ENOENT ではなくこの終了コードとして現れる（起動しているのは
+ * 必ず存在する wsl.exe のため）。
+ */
+const PARADIS_SHELL_COMMAND_NOT_FOUND_EXIT_CODE = 127;
+
+/**
+ * 子プロセスの失敗を読める1行にする。
+ *
+ * wsl.exe 自身が出すメッセージ（ディストロが無い等）は UTF-16LE のことがあり、utf8 として
+ * 読むとヌル混じりになる。ここで落とさないと、そのままエラーダイアログへ出てしまう。
+ * `WSL_UTF8=1` で解決しないのは、それが子プロセスの出力まで再エンコードしてしまい、
+ * gh が返す JSON を壊し得るため（同じ判断が wslRemoteAgentHostService.ts にもある）。
+ */
+function paradisReadableChildError(stderr: string | undefined, error: Error, viaWsl: boolean): string {
+	const cleaned = viaWsl ? stderr?.replace(/\0/g, '') : stderr;
+	return cleaned?.trim() || error.message;
+}
+
 export class ParadisWorktreeGitService {
 
 	private readonly cachedShellEnv: ParadisCachedShellEnv;
@@ -59,6 +96,8 @@ export class ParadisWorktreeGitService {
 		args?: NativeParsedArgs,
 		private readonly execFile: typeof cp.execFile = cp.execFile,
 		shellEnvResolver?: ParadisRawShellEnvResolver,
+		/** WSL への振り分けを行うか。既定はホスト OS 判定で、テストからのみ差し替える。 */
+		private readonly isWindowsHost: boolean = isWindows,
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -69,13 +108,78 @@ export class ParadisWorktreeGitService {
 		);
 	}
 
-	private async exec(args: string[], cwd?: string): Promise<string> {
+	/** ディストロごとの、ログインシェルが組み立てた PATH（1プロセスにつき1回だけ取得する）。 */
+	private readonly wslLoginPaths = new Map<string, Promise<string | undefined>>();
+
+	/**
+	 * ログインシェルの PATH を取り出す。`~/.local/bin`・mise・Linuxbrew などプロファイルで
+	 * PATH に足す場所へ git / gh を入れている構成では、これが無いと「ターミナルでは動くのに
+	 * 見つからない」になる。取得できなくても致命的ではない（既定の PATH で続行する）。
+	 */
+	private probeWslLoginPath(distro: string): Promise<string | undefined> {
+		const cached = this.wslLoginPaths.get(distro);
+		if (cached !== undefined) {
+			return cached;
+		}
+		const probe = new Promise<string | undefined>(resolve => {
+			this.execFile(getWslExePath(), paradisWslLoginPathProbeArgs(distro), { encoding: 'utf8', timeout: PARADIS_WSL_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true }, (err, stdout) => {
+				const value = err ? undefined : paradisParseWslLoginPath(stdout);
+				if (value === undefined) {
+					this.logService.trace(`[ParadisWorktreeGit] could not read the login PATH of WSL distro ${distro}; falling back to the default one`);
+				}
+				resolve(value);
+			});
+		});
+		this.wslLoginPaths.set(distro, probe);
+		return probe;
+	}
+
+	/**
+	 * 対象パスが WSL 名前空間（`\\wsl.localhost\<distro>\...`）なら、実行をディストロの中へ移す。
+	 * リポジトリの実体が WSL 側にある場合、Windows 側に git / gh が入っている保証は無く、仮に
+	 * 入っていても 9p 越しの実行になり所有者チェック（safe.directory）にも掛かりやすい。
+	 *
+	 * `envNamesForWsl` に挙げた変数だけが `WSLENV` 経由でディストロの中へ渡る。
+	 */
+	private async resolveInvocation(command: string, args: readonly ParadisCommandArgument[], cwd: string | undefined, envNamesForWsl: readonly string[], env: NodeJS.ProcessEnv):
+		Promise<{ readonly file: string; readonly args: string[]; readonly cwd: string | undefined; readonly env: NodeJS.ProcessEnv; readonly viaWsl: boolean }> {
+		const plan = paradisPlanWslCommand(args, cwd);
+		if (plan.kind === 'conflict') {
+			throw new Error(`Cannot run ${command} across the Windows and WSL namespaces: ${plan.detail}`);
+		}
+		if (plan.kind === 'local' || !this.isWindowsHost) {
+			return { file: command, args: plan.kind === 'local' ? [...plan.args] : args.map(arg => typeof arg === 'string' ? arg : arg.paradisPath), cwd, env, viaWsl: false };
+		}
+		return {
+			file: getWslExePath(),
+			args: paradisBuildWslInvocationArgs(plan, command, await this.probeWslLoginPath(plan.distro)),
+			// ディストロの中での作業ディレクトリは挟んだ `sh -c` の cd で入る。wsl.exe 自身の
+			// cwd は触らない（UNC を cwd にすると Windows 側で扱えないプロセスがある）。
+			cwd: undefined,
+			env: { ...env, WSLENV: paradisMergeWslEnvNames(env['WSLENV'], envNamesForWsl) },
+			viaWsl: true,
+		};
+	}
+
+	/** 実行名前空間の識別子。ローカルは空文字、WSL はディストロごとに分ける。 */
+	private executionNamespaceKey(path: string): string {
+		const location = this.isWindowsHost ? paradisParseWslUncPath(path) : undefined;
+		return location === undefined ? '' : `wsl:${location.distro.toLowerCase()}`;
+	}
+
+	private async exec(args: ParadisCommandArgument[], cwd?: string): Promise<string> {
 		const env = await this.cachedShellEnv.getEnv();
+		const invocation = await this.resolveInvocation('git', args, cwd, ['GIT_TERMINAL_PROMPT'], { ...env, GIT_TERMINAL_PROMPT: '0' });
+		const label = invocation.viaWsl ? `git (in WSL) ${invocation.args.join(' ')}` : `git ${invocation.args.join(' ')}`;
 		return new Promise<string>((resolve, reject) => {
-			this.execFile('git', args, { cwd, encoding: 'utf8', env: { ...env, GIT_TERMINAL_PROMPT: '0' } }, (err, stdout, stderr) => {
+			// タイムアウトは WSL 対応で必須になった。停止中のディストロへ最初の1本を打つと VM の
+			// 起動を待たされ、`/etc/wsl.conf` の boot.command 次第では返ってこない。呼び出し側は
+			// 単一の in-flight ガードで守られているので、1本詰まると以降のポーリングが全部止まる。
+			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: PARADIS_WSL_COMMAND_TIMEOUT_MS, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env }, (err, stdout, stderr) => {
 				if (err) {
-					this.logService.warn(`[ParadisWorktreeGit] git ${args.join(' ')} failed: ${stderr || err.message}`);
-					reject(new Error(stderr?.trim() || err.message));
+					const detail = paradisReadableChildError(stderr, err, invocation.viaWsl);
+					this.logService.warn(`[ParadisWorktreeGit] ${label} failed: ${detail}`);
+					reject(new Error(detail));
 				} else {
 					resolve(stdout);
 				}
@@ -84,10 +188,27 @@ export class ParadisWorktreeGitService {
 	}
 
 	/**
-	 * gh (GitHub CLI) が見つからなかった (ENOENT) 場合に true。以降の PR 状態取得を
-	 * プロセス生存中は打ち切る (未インストール環境でポーリングのたびに spawn を繰り返さない)。
+	 * gh (GitHub CLI) が見つからなかった実行名前空間と、そう判断した時刻。以降の PR 状態取得を
+	 * しばらく打ち切る (未インストール環境でポーリングのたびに spawn を繰り返さない)。
+	 *
+	 * 名前空間ごとに分けるのは、片方の失敗でもう片方まで止めないため。WSL のディストロが
+	 * 停止していれば当然そのディストロ側は失敗するが、Windows 側のリポジトリには関係がない。
 	 */
-	private ghUnavailable = false;
+	private readonly ghUnavailableSince = new Map<string, number>();
+
+	/** その名前空間の gh を今は呼ばない、と決めている最中か（待ち時間を過ぎていれば解除する）。 */
+	private isGhUnavailable(path: string): boolean {
+		const key = this.executionNamespaceKey(path);
+		const since = this.ghUnavailableSince.get(key);
+		if (since === undefined) {
+			return false;
+		}
+		if (Date.now() - since < PARADIS_GH_UNAVAILABLE_RETRY_MS) {
+			return true;
+		}
+		this.ghUnavailableSince.delete(key);
+		return false;
+	}
 
 	private async execGh(args: string[], cwd: string): Promise<string> {
 		const env = await this.cachedShellEnv.getEnv();
@@ -98,15 +219,31 @@ export class ParadisWorktreeGitService {
 		const callSite = paradisGithubCallSiteFromArgs(args);
 		// 記録はダッシュボードに出るうえデバッグバンドルとして共有されるためユーザー名を残さない
 		const worktreePath = paradisRedactHomePath(cwd, homedir());
+		const invocation = await this.resolveInvocation('gh', args, cwd, ['GH_PROMPT_DISABLED', 'GH_NO_UPDATE_NOTIFIER'], { ...env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' });
 		return new Promise<string>((resolve, reject) => {
 			// gh はネットワーク I/O のためタイムアウト必須。無いとプロキシ環境等でハングしたとき
 			// 呼び出し側 (Workspaces ビュー) の in-flight ガードが永久に解除されなくなる
-			this.execFile('gh', args, { cwd, encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', env: { ...env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' } }, (err, stdout, stderr) => {
+			this.execFile(invocation.file, invocation.args, { cwd: invocation.cwd, encoding: 'utf8', timeout: 15_000, killSignal: 'SIGKILL', windowsHide: true, env: invocation.env }, (err, stdout, stderr) => {
 				if (err) {
-					if ((err as { code?: unknown }).code === 'ENOENT') {
-						this.ghUnavailable = true;
+					// 「gh が入っていない」の現れ方は実行経路で違う。ローカルは spawn の ENOENT、
+					// WSL へ振り分けた場合は（起動するのが必ず存在する wsl.exe なので）挟んだ
+					// シェルの終了コード 127 になる。ENOENT だけを見ていると、本来の目的である
+					// WSL 構成でスロットルが一度も効かない。
+					// なお ENOENT は「実行ファイルが無い」と「cwd へ届かない」を区別できないため、
+					// ローカル側は cwd が実在するときだけ不在と判断する（判定は非同期で行い、
+					// 同期 I/O で shared process を止めない。反映は次のポーリングで間に合う）。
+					const exitCode = (err as { code?: unknown }).code;
+					if (invocation.viaWsl) {
+						if (exitCode === PARADIS_SHELL_COMMAND_NOT_FOUND_EXIT_CODE) {
+							this.ghUnavailableSince.set(this.executionNamespaceKey(cwd), Date.now());
+						}
+					} else if (exitCode === 'ENOENT') {
+						void fs.stat(cwd).then(
+							() => this.ghUnavailableSince.set(this.executionNamespaceKey(cwd), Date.now()),
+							() => { /* cwd へ届かないだけかもしれないので、gh 不在とは判断しない */ },
+						);
 					}
-					const message = stderr?.trim() || err.message;
+					const message = paradisReadableChildError(stderr, err, invocation.viaWsl);
 					paradisRecordGithubCall({
 						at: Date.now(),
 						callSite,
@@ -143,12 +280,12 @@ export class ParadisWorktreeGitService {
 	 */
 	async getPrStatus(worktreePath: string): Promise<IParadisPrStatus | undefined> {
 		// IPC 境界の防御: 呼び出し元のバグ (undefined の文字列化等) を早期に無害化する
-		if (typeof worktreePath !== 'string' || worktreePath.length === 0 || this.ghUnavailable) {
+		if (typeof worktreePath !== 'string' || worktreePath.length === 0 || this.isGhUnavailable(worktreePath)) {
 			return undefined;
 		}
 		let branch: string;
 		try {
-			branch = (await this.exec(['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+			branch = (await this.exec(['-C', paradisWslPathArg(worktreePath), 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
 		} catch {
 			return undefined;
 		}
@@ -169,11 +306,11 @@ export class ParadisWorktreeGitService {
 
 	/** ローカルブランチ一覧（コミット日時の新しい順）と現在の HEAD ブランチを返す。 */
 	async listBranches(repoPath: string): Promise<IParadisGitBranches> {
-		const raw = await this.exec(['-C', repoPath, 'for-each-ref', '--sort=-committerdate', '--format=%(refname:short)', 'refs/heads/']);
+		const raw = await this.exec(['-C', paradisWslPathArg(repoPath), 'for-each-ref', '--sort=-committerdate', '--format=%(refname:short)', 'refs/heads/']);
 		const branches = raw.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 		let head: string | undefined;
 		try {
-			const headRaw = (await this.exec(['-C', repoPath, 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
+			const headRaw = (await this.exec(['-C', paradisWslPathArg(repoPath), 'rev-parse', '--abbrev-ref', 'HEAD'])).trim();
 			head = headRaw && headRaw !== 'HEAD' ? headRaw : undefined;
 		} catch {
 			head = undefined;
@@ -193,7 +330,7 @@ export class ParadisWorktreeGitService {
 			return { insertions: 0, deletions: 0 };
 		}
 		try {
-			const raw = await this.exec(['-C', worktreePath, 'diff', 'HEAD', '--numstat']);
+			const raw = await this.exec(['-C', paradisWslPathArg(worktreePath), 'diff', 'HEAD', '--numstat']);
 			let insertions = 0;
 			let deletions = 0;
 			for (const line of raw.split('\n')) {
@@ -223,11 +360,11 @@ export class ParadisWorktreeGitService {
 		}
 		// stale なメタデータで add が失敗しないよう、先に prune しておく（Superset と同じ流儀）
 		try {
-			await this.exec(['-C', request.repoPath, 'worktree', 'prune']);
+			await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'prune']);
 		} catch {
 			// prune の失敗は致命的ではない
 		}
-		await this.exec(['-C', request.repoPath, 'worktree', 'add', '--no-track', '-b', request.newBranch, request.worktreePath, request.baseRef]);
+		await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'add', '--no-track', '-b', request.newBranch, paradisWslPathArg(request.worktreePath), request.baseRef]);
 	}
 
 	/**
@@ -246,7 +383,7 @@ export class ParadisWorktreeGitService {
 			throw new Error(`Invalid argument: ${String(request.worktreePath)}`);
 		}
 		try {
-			await this.exec(['-C', request.repoPath, 'worktree', 'prune']);
+			await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'prune']);
 		} catch {
 			// prune の失敗は致命的ではない
 		}
@@ -258,7 +395,7 @@ export class ParadisWorktreeGitService {
 		if (request.unlock === true) {
 			const lock = await this.readWorktreeLock(request);
 			try {
-				await this.exec(['-C', request.repoPath, 'worktree', 'unlock', request.worktreePath]);
+				await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'unlock', paradisWslPathArg(request.worktreePath)]);
 				// 掛け直すかどうかは **unlock が成功したこと** から決める。`git worktree unlock` は
 				// ロックされていない相手には必ず失敗するので、成功＝確かにロックされていた。
 				// 直前の読み取り結果を根拠にすると、`git worktree list` の spawn が一過性の理由で
@@ -269,20 +406,20 @@ export class ParadisWorktreeGitService {
 				// ロックされていなかった場合も失敗するので、ここでは中断しない（remove 側で判断する）
 			}
 		}
-		const args = ['-C', request.repoPath, 'worktree', 'remove'];
+		const args: ParadisCommandArgument[] = ['-C', paradisWslPathArg(request.repoPath), 'worktree', 'remove'];
 		if (request.force) {
 			args.push('--force');
 		}
-		args.push(request.worktreePath);
+		args.push(paradisWslPathArg(request.worktreePath));
 		try {
 			await this.exec(args);
 		} catch (error) {
 			if (restoreLock !== undefined) {
-				const relock = ['-C', request.repoPath, 'worktree', 'lock'];
+				const relock: ParadisCommandArgument[] = ['-C', paradisWslPathArg(request.repoPath), 'worktree', 'lock'];
 				if (restoreLock.reason) {
 					relock.push('--reason', restoreLock.reason);
 				}
-				relock.push(request.worktreePath);
+				relock.push(paradisWslPathArg(request.worktreePath));
 				try {
 					await this.exec(relock);
 				} catch {
@@ -306,9 +443,25 @@ export class ParadisWorktreeGitService {
 		}
 		let output: string;
 		try {
-			output = await this.exec(['-C', request.repoPath, 'worktree', 'list', '--porcelain', '-z']);
+			output = await this.exec(['-C', paradisWslPathArg(request.repoPath), 'worktree', 'list', '--porcelain', '-z']);
 		} catch {
 			return notLocked;
+		}
+		// WSL の中で実行した場合、git が返すのはディストロから見た絶対パスなので、Windows 側で
+		// realpath をかけても噛み合わない（かけると UNC のまま返ってきて必ず不一致になる）。
+		// 要求パスを同じ名前空間へ写して、解決なしで突き合わせる。ディストロ内の symlink は
+		// 解決できないままだが、今のように必ず見逃すよりはよい。
+		//
+		// どちらで実行されたかを決めるのは `-C` に渡した repoPath なので、比較方法の分岐も
+		// そちらを基準にする。worktreePath 側で判定すると、両者が別の名前空間だったときに
+		// 「実行は一方、比較は他方の規則」になり、必ず不一致＝ロックの見逃しになる。
+		const wslRepo = this.isWindowsHost ? paradisParseWslUncPath(request.repoPath) : undefined;
+		if (wslRepo !== undefined) {
+			const wslWorktree = paradisParseWslUncPath(request.worktreePath);
+			if (wslWorktree === undefined || wslWorktree.distro.toLowerCase() !== wslRepo.distro.toLowerCase()) {
+				return notLocked; // 別の名前空間の作業ツリーは、この一覧には出てこない
+			}
+			return paradisFindWorktreeLock(paradisParseWorktreeListPorcelain(output), wslWorktree.linuxPath, { ignoreCase: false, backslashIsSeparator: false });
 		}
 		// git は実体解決済みのパスを返す（macOS の /tmp → /private/tmp 等）ので、
 		// 素の文字列比較では取り違える。両側を解決してから突き合わせる。
