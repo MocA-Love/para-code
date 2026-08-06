@@ -222,3 +222,28 @@ export function paradisMergeWslEnvNames(existing: string | undefined, names: rea
 	}
 	return entries.join(':');
 }
+
+/**
+ * 作業ディレクトリを同じとみなす鍵。Windows のパスは大文字小文字が揺れ、UNC のホスト名にも
+ * 綴りの違い（`wsl$` / `wsl.localhost`）がある。素の文字列で数えると、同じ場所を指す2枚の
+ * ターミナルが別々に数えられ、取り違え防止の判定がすり抜けてしまう。
+ */
+export function paradisCwdGroupKey(cwd: string): string {
+	const trimmed = cwd.replace(/[\\/]+$/, '') || cwd;
+	// Windows の規則（区切りの統一・大小無視）を当てるのは、Windows のパスだと分かるものだけ。
+	// POSIX の `//data/x` はれっきとした別パスなので巻き込まない。
+	// バックスラッシュ2つで始まるものは Windows の UNC で確定。スラッシュ2つは POSIX の
+	// 実在パスでもあり得るので、WSL のホスト名が続くときだけ Windows として扱う。
+	const isWindowsPath = /^[A-Za-z]:([\\/]|$)/.test(trimmed)
+		|| /^\\\\[^\\/]/.test(trimmed)
+		|| /^\/\/(?:wsl\.localhost|wsl\$)\//i.test(trimmed);
+	if (!isWindowsPath) {
+		return trimmed;
+	}
+	return trimmed
+		.replace(/\//g, '\\')
+		// `\\wsl$\` と `\\wsl.localhost\` は同じ場所を指す2つの綴り。片方へ寄せないと、
+		// 同じフォルダの2枚のターミナルが別々に数えられ、取り違え防止がすり抜ける。
+		.replace(/^\\\\wsl\$\\/i, '\\\\wsl.localhost\\')
+		.toLowerCase();
+}

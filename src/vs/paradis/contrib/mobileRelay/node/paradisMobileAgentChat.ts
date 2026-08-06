@@ -36,7 +36,9 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity } from '../../agentBrowser/node/paradisAgentHookBus.js';
-import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { paradisIsWslAgentHomePath } from '../../../common/paradisWslAgentHome.js';
+import { paradisCwdGroupKey } from '../../../common/paradisWslPath.js';
 import { IParadisCodexApprovalInteraction, IParadisCodexDaemonEvent, IParadisCodexModelOption, IParadisCodexThreadMessage, IParadisCodexThreadSettings, IParadisCodexThreadTarget, PARADIS_CODEX_DAEMON_DISCONNECTED, ParadisCodexControlError, ParadisCodexLiveClient, truncateCodexLiveText } from './paradisCodexLiveClient.js';
 import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from './paradisAgentCommandCatalog.js';
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
@@ -425,6 +427,11 @@ function newEpoch(): string {
 	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** {@link paradisLocalAgentPath} の、値が無いこともある版。 */
+function paradisLocalAgentPathOrUndefined(homes: IParadisAgentHomes, recordedPath: string | undefined): string | undefined {
+	return recordedPath === undefined ? undefined : paradisLocalAgentPath(homes, recordedPath);
+}
+
 function agentKindForPath(transcriptPath: string): ParadisAgentKind {
 	// CODEX_HOME を移動していると ".codex" がパスに現れないため、rolloutのファイル名規約と
 	// 解決済みhome配下かでも判定する (Claude の transcript は <uuid>.jsonl でrollout-接頭辞を持たない)。
@@ -445,9 +452,17 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 	if (!isAbsolute(transcriptPath) || !transcriptPath.endsWith('.jsonl')) {
 		return false;
 	}
+	const resolved = resolve(transcriptPath);
+	if (paradisIsWslAgentHomePath(resolved)) {
+		// WSL の中の symlink は Windows 側の realpath では解決されない（UNC がそのまま返る）ので、
+		// 解決結果を根拠にできない。字面の検証だけで許す。ディストロ内の symlink で許可 root の
+		// 外へ抜けられる余地は残るが、そこへファイルを置ける相手は既にそのユーザーのホームへ
+		// 書ける立場にあり、中身をコピーすれば同じ結果を得られる。
+		return true;
+	}
 	const roots = [paradisClaudeConfigDir(), paradisCodexHome()];
 	const within = (candidate: string) => roots.some(root => candidate === root || candidate.startsWith(root + sep));
-	if (!within(resolve(transcriptPath))) {
+	if (!within(resolved)) {
 		return false;
 	}
 	try {
@@ -560,15 +575,15 @@ interface ICodexPersistedSubagentFile {
 	readonly mtime: number;
 }
 
-async function discoverCodexPersistedSubagentFiles(rootThreadId: string): Promise<readonly ICodexPersistedSubagentFile[]> {
+async function discoverCodexPersistedSubagentFiles(rootThreadId: string, homes: IParadisAgentHomes): Promise<readonly ICodexPersistedSubagentFile[]> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(rootThreadId)) { return []; }
 	let database: DatabaseSync | undefined;
 	try {
-		const names = await fs.readdir(paradisCodexHome());
+		const names = await fs.readdir(homes.codex);
 		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
 		if (stateDb === undefined) { return []; }
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
-		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
 		const rows = database.prepare(`
 			SELECT id, rollout_path, source, COALESCE(updated_at_ms, updated_at * 1000) AS mtime
 			FROM threads
@@ -579,7 +594,8 @@ async function discoverCodexPersistedSubagentFiles(rootThreadId: string): Promis
 		const candidates = rows.map(value => {
 			const row = rec(value);
 			const id = str(row?.['id']);
-			const path = str(row?.['rollout_path']);
+			// state DB に書かれているのは Codex から見たパス。WSL なら Linux 側の表記なので戻す。
+			const path = paradisLocalAgentPathOrUndefined(homes, str(row?.['rollout_path']));
 			const source = str(row?.['source']);
 			const mtime = num(row?.['mtime']);
 			const relationship = source !== undefined ? paradisParseCodexThreadSource(source) : undefined;
@@ -924,6 +940,29 @@ export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSe
 		return undefined;
 	}
 }
+
+
+
+/**
+ * 常駐スキャンの間隔。1周で、未確定のターミナルごとに Claude の projects ディレクトリを
+ * readdir + stat する。WSL 越しだとそれなりの費用になるので、詰めすぎない。
+ */
+const PARADIS_SESSION_SCAN_INTERVAL_MS = 30_000;
+
+/** 1周が返ってこなくなったとみなして排他を解除するまでの時間。 */
+const PARADIS_SESSION_SCAN_STUCK_MS = 5 * 60_000;
+
+/** Codex の sessions/ 総なめを、同じホームに対して再び許すまでの間隔。 */
+const PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * 常駐スキャンが「そのターミナルで今動いている」とみなす transcript の更新の新しさ。
+ *
+ * 窓を広げるほど同じフォルダの過去のセッションまで候補に入り、候補がちょうど1件のときしか
+ * 採らない仕組みの都合で「どれか決められない」に倒れて何も拾えなくなる。逆に狭すぎると、
+ * 質問を出したまま待っているセッションを取りこぼす。
+ */
+const PARADIS_SESSION_SCAN_RECENT_MS = 5 * 60_000;
 
 /** state DBのsourceはSubAgentだけJSONで親thread情報を持つ。root探索では混在させない。 */
 export function paradisIsCodexRootThreadSource(source: string): boolean {
@@ -1830,17 +1869,19 @@ function parseCodexLine(obj: Record<string, unknown>, signals: IParseSignals): I
 
 // ---- hook未発火時のセッション探索フォールバック ------------------------------------------------
 
-async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | undefined): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] | undefined> {
+async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | undefined, homes: IParadisAgentHomes = paradisResolveAgentHomes(cwd)): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] | undefined> {
 	let database: DatabaseSync | undefined;
 	try {
-		const realCwd = await fs.realpath(cwd).catch(() => cwd);
-		const names = await fs.readdir(paradisCodexHome());
+		// realpath は同じ名前空間の中でしか意味を持たない。WSL の作業ディレクトリを Windows 側で
+		// 解決しても UNC のまま返ってくるだけなので、突合にはディストロ内の表記だけを使う。
+		const realCwd = homes.wsl !== undefined ? homes.matchCwd : await fs.realpath(cwd).catch(() => cwd);
+		const names = await fs.readdir(homes.codex);
 		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
 		if (stateDb === undefined) {
 			return undefined;
 		}
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
-		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
 		const rows = database.prepare(`
 			SELECT id, rollout_path, source, COALESCE(updated_at_ms, updated_at * 1000) AS mtime,
 				COALESCE(created_at_ms, created_at * 1000) AS created_at
@@ -1848,11 +1889,14 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 			WHERE (cwd = ? OR cwd = ?) AND archived = 0
 				AND (? IS NULL OR COALESCE(updated_at_ms, updated_at * 1000) >= ?)
 			ORDER BY mtime DESC
-		`).all(cwd, realCwd, minMtime ?? null, minMtime ?? null) as unknown[];
+		`).all(homes.matchCwd, realCwd, minMtime ?? null, minMtime ?? null) as unknown[];
 		const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] = [];
 		for (const value of rows) {
 			const row = rec(value);
-			const transcriptPath = str(row?.['rollout_path']);
+			const recordedPath = str(row?.['rollout_path']);
+			// state DB に書かれているのは Codex から見たパス。WSL なら Linux 側の表記なので、
+			// この Windows プロセスから開ける UNC へ戻さないと後続の検証も読み取りも通らない。
+			const transcriptPath = recordedPath !== undefined ? paradisLocalAgentPath(homes, recordedPath) : undefined;
 			const sessionId = str(row?.['id']);
 			const mtime = num(row?.['mtime']);
 			const createdAt = num(row?.['created_at']);
@@ -1875,17 +1919,17 @@ async function discoverCodexSessionsFromStateDb(cwd: string, minMtime: number | 
 }
 
 /** 現行Codex state DBからthread IDに一致するrolloutを取得する。 */
-async function discoverCodexTranscriptByThreadId(threadId: string): Promise<string | undefined> {
+async function discoverCodexTranscriptByThreadId(threadId: string, homes: IParadisAgentHomes): Promise<string | undefined> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {
-		const names = await fs.readdir(paradisCodexHome());
+		const names = await fs.readdir(homes.codex);
 		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
 		if (stateDb === undefined) { return undefined; }
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
-		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
 		const row = rec(database.prepare('SELECT rollout_path FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
-		const transcriptPath = str(row?.['rollout_path']);
+		const transcriptPath = paradisLocalAgentPathOrUndefined(homes, str(row?.['rollout_path']));
 		return transcriptPath !== undefined && isAbsolute(transcriptPath) && transcriptPath.endsWith('.jsonl') ? transcriptPath : undefined;
 	} catch {
 		return undefined;
@@ -1895,20 +1939,21 @@ async function discoverCodexTranscriptByThreadId(threadId: string): Promise<stri
 }
 
 /** CLIのresume/fork対象として、root threadだけをIDで厳密に取得する。 */
-async function discoverCodexRootTranscriptByThreadId(threadId: string): Promise<string | undefined> {
+async function discoverCodexRootTranscriptByThreadId(threadId: string, homes: IParadisAgentHomes): Promise<string | undefined> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {
-		const names = await fs.readdir(paradisCodexHome());
+		const names = await fs.readdir(homes.codex);
 		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
 		if (stateDb === undefined) { return undefined; }
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
-		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
 		const row = rec(database.prepare('SELECT rollout_path, source FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
-		const transcriptPath = str(row?.['rollout_path']);
+		const transcriptPath = paradisLocalAgentPathOrUndefined(homes, str(row?.['rollout_path']));
 		const source = str(row?.['source']);
+		// state DB に書かれているのは Codex から見たパス。WSL なら Linux 側の表記なので戻す。
 		return transcriptPath !== undefined && isAbsolute(transcriptPath) && transcriptPath.endsWith('.jsonl')
-			&& source !== undefined && paradisIsCodexRootThreadSource(source) ? transcriptPath : undefined;
+			&& source !== undefined && paradisIsCodexRootThreadSource(source) ? paradisLocalAgentPath(homes, transcriptPath) : undefined;
 	} catch {
 		return undefined;
 	} finally {
@@ -1916,15 +1961,15 @@ async function discoverCodexRootTranscriptByThreadId(threadId: string): Promise<
 	}
 }
 
-async function discoverCodexThreadSourceById(threadId: string): Promise<IParadisCodexThreadSource | undefined> {
+async function discoverCodexThreadSourceById(threadId: string, homes: IParadisAgentHomes): Promise<IParadisCodexThreadSource | undefined> {
 	if (!/^[A-Za-z0-9._:-]{1,500}$/.test(threadId)) { return undefined; }
 	let database: DatabaseSync | undefined;
 	try {
-		const names = await fs.readdir(paradisCodexHome());
+		const names = await fs.readdir(homes.codex);
 		const stateDb = names.filter(name => /^state_\d+\.sqlite$/.test(name)).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
 		if (stateDb === undefined) { return undefined; }
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
-		database = new DatabaseSyncCtor(join(paradisCodexHome(), stateDb), { readOnly: true });
+		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
 		const row = rec(database.prepare('SELECT source FROM threads WHERE id = ? AND archived = 0 LIMIT 1').get(threadId));
 		const source = str(row?.['source']);
 		return source !== undefined ? paradisParseCodexThreadSource(source) : undefined;
@@ -1962,20 +2007,31 @@ async function readCodexRolloutSessionMeta(rolloutPath: string): Promise<IParadi
  * - Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl の直近ファイルのうち
  *           先頭行 session_meta の cwd が一致する最新のもの
  */
-async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set(), mode?: ParadisCliDiscoveryMode): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined> {
+async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMtime?: number, excludedPaths: ReadonlySet<string> = new Set(), mode?: ParadisCliDiscoveryMode, allowCodexDirectoryWalk: boolean = true, onCodexDirectoryWalk?: () => void): Promise<{ agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined> {
 	const candidates: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number }[] = [];
+	// エージェントCLIが実際に読み書きしているホームと、その CLI から見た作業ディレクトリ。
+	// ペインが WSL の中を指していれば、ここでディストロ側へ切り替わる。
+	const homes = paradisResolveAgentHomes(cwd);
 
 	// Claude: cwd → プロジェクトディレクトリのスラッグ（英数字以外を '-' に置換）。
 	// Claude Code はcwdをrealpath解決してからスラッグ化するため、symlink経由のターミナルでも
 	// 一致するよう解決後のパスを使う（解決失敗時は文字面のまま）。
 	if (agent === 'claude') {
 		try {
-			let resolvedCwd = cwd;
-			try {
-				resolvedCwd = await fs.realpath(cwd);
-			} catch { /* 消えたディレクトリ等は文字面で試す */ }
+			// スラッグは Claude Code が cwd から機械的に作る。したがって、こちらも
+			// **その CLI から見た作業ディレクトリ**から作らないと一致しない。WSL の中で動く
+			// claude が作るのは `-home-u-projects-repo` で、UNC から作った
+			// `--wsl-localhost-<distro>-home-u-projects-repo` とは構造的に別物になる。
+			// なおディストロの中の symlink は解決しない（Windows 側の realpath は UNC を
+			// そのまま返すため）。リポジトリへの道中に symlink がある構成では当たらない。
+			let resolvedCwd = homes.matchCwd;
+			if (homes.wsl === undefined) {
+				try {
+					resolvedCwd = await fs.realpath(cwd);
+				} catch { /* 消えたディレクトリ等は文字面で試す */ }
+			}
 			const slug = resolvedCwd.replace(/[^a-zA-Z0-9]/g, '-');
-			const dir = join(paradisClaudeConfigDir(), 'projects', slug);
+			const dir = join(homes.claude, 'projects', slug);
 			const names = await fs.readdir(dir);
 			for (const name of names) {
 				if (!name.endsWith('.jsonl')) {
@@ -1992,13 +2048,16 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 	// Codex: sessions配下を走査し、コマンド開始後に更新されたrolloutを新しい順に見て
 	// session_meta.cwdを突合する。作成日が古いresumeセッションもmtime更新で候補になる。
 	if (agent === 'codex') {
-		const indexed = await discoverCodexSessionsFromStateDb(cwd, minMtime);
+		const indexed = await discoverCodexSessionsFromStateDb(cwd, minMtime, homes);
 		if (indexed !== undefined) {
 			candidates.push(...indexed);
 		}
-		if (indexed === undefined) {
+		// state DB が読めないときだけ sessions/ を総なめする。定期スキャンからは使わない
+		// （数分おきに数百ファイルを stat することになり、WSL 越しでは特に重い）。
+		if (indexed === undefined && allowCodexDirectoryWalk) {
+			onCodexDirectoryWalk?.();
 			try {
-				const sessionsRoot = join(paradisCodexHome(), 'sessions');
+				const sessionsRoot = join(homes.codex, 'sessions');
 				const rollouts: { path: string; mtime: number }[] = [];
 				const collect = async (dir: string, depth: number): Promise<void> => {
 					let entries: Dirent[];
@@ -2026,7 +2085,7 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 				for (const rollout of rollouts) {
 					try {
 						const meta = await readCodexRolloutSessionMeta(rollout.path);
-						if (meta?.cwd === cwd && meta.subagent !== true) {
+						if (meta?.cwd === homes.matchCwd && meta.subagent !== true) {
 							const sessionId = meta.sessionId;
 							candidates.push({
 								agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime,
@@ -3011,6 +3070,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			void this.sweepAgentActivity();
 		}, 60_000);
 		this._register(toDisposable(() => clearInterval(activitySweepTimer)));
+		const sessionScanTimer = setInterval(() => {
+			void this.scanPanesForUnclaimedSessions();
+		}, PARADIS_SESSION_SCAN_INTERVAL_MS);
+		this._register(toDisposable(() => clearInterval(sessionScanTimer)));
 		this._register(toDisposable(() => {
 			this.attachDisposed = true;
 			this.attachGenerations.clear();
@@ -3297,6 +3360,15 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.activeTurnTokens.delete(token);
 			}
 		}
+		// 常駐スキャンは世代の記録だけを残すことがある（セッションもタイマーも持たないので、
+		// 他の掃除ループのどれにも掛からない）。CLIを一度も起動しない普通のターミナルのぶんが
+		// 際限なく積もらないよう、生きているtokenだけに揃える。
+		for (const token of [...this.cliDiscoveryGenerations.keys()]) {
+			if (!liveTokens.has(token)) {
+				this.cliDiscoveryGenerations.delete(token);
+				this.cliReconciliationWatermarks.delete(token);
+			}
+		}
 		for (const token of liveTokens) {
 			if (!this.paneSessions.has(token) && this.retiredSessions.has(token)) {
 				this.reviveRetiredSession(token);
@@ -3383,12 +3455,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		(async () => {
 			try {
 				const session = entry.session;
+				// 退避の取り消しは、どちらも「消してよいと確かめられたとき」だけにする。
+				// 判定できなかっただけで捨てると、次のペイン同期で復活を試す機会ごと失う。
+				// WSL のホームは PC 起動直後やディストロ停止中に一時的に届かなくなるので、
+				// 「届かない」を「消えた」と読むと、会話が丸ごと恒久的に失われる。
 				if (!(await isAllowedTranscriptPath(session.transcriptPath))) {
-					this.retiredSessions.delete(token);
 					return;
 				}
-				const stat = await fs.stat(session.transcriptPath).catch(() => undefined);
-				if (stat === undefined || !stat.isFile()) {
+				const stat = await fs.stat(session.transcriptPath).catch((error: NodeJS.ErrnoException) => error);
+				if (stat instanceof Error) {
+					if (stat.code === 'ENOENT' || stat.code === 'ENOTDIR') {
+						this.retiredSessions.delete(token); // 本当に無い
+					}
+					return;
+				}
+				if (!stat.isFile()) {
 					this.retiredSessions.delete(token);
 					return;
 				}
@@ -3657,7 +3738,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.activityDetailRequests.set(requestKey, token);
 		try {
 			const messages = session.agent === 'codex'
-				? await this.readCodexSubagentMessages(msg.activityId, session.sessionId)
+				? await this.readCodexSubagentMessages(token, msg.activityId, session.sessionId)
 				: await this.readClaudeSubagentMessages(session.transcriptPath, msg.activityId, this.claudeSubagentTranscriptPaths.get(`${token}\0${msg.activityId}`));
 			if (this.paneSessions.get(token) === session && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)
 				&& this.activityTrackers.get(token)?.snapshot()?.agents.some(agent => agent.id === msg.activityId && agent.role === 'subagent')) {
@@ -3680,11 +3761,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		return message;
 	}
 
-	private async readCodexSubagentMessages(activityId: string, ownerThreadId: string | undefined): Promise<readonly IParadisAgentActivityDetailMessage[]> {
+	private async readCodexSubagentMessages(token: string, activityId: string, ownerThreadId: string | undefined): Promise<readonly IParadisAgentActivityDetailMessage[]> {
 		try {
 			return (await this.codexLiveClient.readThreadMessages(activityId, ownerThreadId)).map(ParadisMobileAgentChat.codexDetailMessage);
 		} catch {
-			const transcriptPath = await discoverCodexTranscriptByThreadId(activityId);
+			const transcriptPath = await discoverCodexTranscriptByThreadId(activityId, this.agentHomesForToken(token));
 			if (transcriptPath === undefined || !(await isAllowedTranscriptPath(transcriptPath))) { throw new Error('Codex SubAgent transcript not found'); }
 			const stat = await fs.stat(transcriptPath);
 			const start = Math.max(0, stat.size - INITIAL_READ_TAIL_BYTES);
@@ -4945,7 +5026,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				});
 			}
 		} else if (session.sessionId !== undefined) {
-			const files = await discoverCodexPersistedSubagentFiles(session.sessionId);
+			const files = await discoverCodexPersistedSubagentFiles(session.sessionId, this.agentHomesForToken(token));
 			for (const file of files) {
 				const parsed = paradisParseCodexPersistedActivity(file.id, file.source, await readPersistedTranscriptLines(file.path), file.mtime, now);
 				if (parsed === undefined) { continue; }
@@ -4974,7 +5055,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private async enrichCodexActivityRelationship(token: string, activityId: string, at: number): Promise<void> {
-		const source = await discoverCodexThreadSourceById(activityId);
+		const source = await discoverCodexThreadSourceById(activityId, this.agentHomesForToken(token));
 		if (source === undefined || !this.isLiveToken(token)) { return; }
 		const rootThreadId = this.paneSessions.get(token)?.sessionId;
 		const parentId = source.parentThreadId === rootThreadId ? undefined : source.parentThreadId;
@@ -5077,8 +5158,107 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	/**
+	 * そのターミナルで動くエージェントCLIのホーム。作業ディレクトリが分からないうちは
+	 * 従来どおりこのプロセスのホームを指す。
+	 */
+	private agentHomesForToken(token: string): IParadisAgentHomes {
+		return paradisResolveAgentHomes(this.tokenToCwd.get(token) ?? '');
+	}
+
+	private sessionScanStartedAt: number | undefined;
+	/** 作業ディレクトリごとの、Codex の sessions/ を最後に総なめした時刻。 */
+	private readonly lastCodexDirectoryWalkAt = new Map<string, number>();
+
+	/**
+	 * コマンド検知に頼らず、作業ディレクトリだけを頼りにセッションを見つける。
+	 *
+	 * 実行コマンドからの検知は、ターミナルで走っているのが literal な `claude` / `codex` の
+	 * ときにしか成立しない。ssh やエイリアス越しに起動している場合、Para Code を起動する前から
+	 * 動いている場合、ラッパを噛ませている場合は、そこに一切引っかからない。ここでは直近に
+	 * 書き込みのあった transcript だけを候補にして突き合わせる。
+	 */
+	private async scanPanesForUnclaimedSessions(): Promise<void> {
+		// 9p/UNC が固まって読み取りが返らないと、排他フラグを戻す機会そのものが来ない。
+		// この機能が効くのはまさにその環境なので、時間で強制解除する。
+		if (this.sessionScanStartedAt !== undefined && Date.now() - this.sessionScanStartedAt < PARADIS_SESSION_SCAN_STUCK_MS) {
+			return;
+		}
+		if (this.attachDisposed) {
+			return;
+		}
+		// 同じ作業ディレクトリに未確定のターミナルが2つ以上あるときは、どちらのセッションなのかを
+		// 作業ディレクトリだけでは原理的に決められない。取り違えたまま永続化されるくらいなら、
+		// 何もしないほうがよい（そのぶん、同じ場所で2枚目を開いている間は検知されない）。
+		const tokensByCwd = new Map<string, { readonly token: string; readonly cwd: string }[]>();
+		for (const [token, cwd] of this.tokenToCwd) {
+			if (!this.isLiveToken(token) || this.paneSessions.has(token)) {
+				continue;
+			}
+			const key = paradisCwdGroupKey(cwd);
+			const panes = tokensByCwd.get(key);
+			if (panes !== undefined) { panes.push({ token, cwd }); } else { tokensByCwd.set(key, [{ token, cwd }]); }
+		}
+		const targets = [...tokensByCwd.values()].filter(panes => panes.length === 1).map(panes => panes[0]);
+		if (targets.length === 0) {
+			return;
+		}
+		const scanStartedAt = Date.now();
+		this.sessionScanStartedAt = scanStartedAt;
+		try {
+			for (const { token, cwd } of targets) {
+				if (this.attachDisposed) {
+					return;
+				}
+				// 退避中のペインが持っている transcript には手を出さない。先に掴んでしまうと、本来の
+				// 持ち主が復活するときに claim を取り戻せず、会話を恒久的に失う。1周は UNC 越しで
+				// 秒単位かかるので、ループの中で取り直す（開始時の1枚では取りこぼす）。
+				const minMtime = Date.now() - PARADIS_SESSION_SCAN_RECENT_MS;
+				// 世代は据え置く（進行中のCLI探索を無効化しないため）。未登録のまま 0 を渡すと
+				// discoverAndNotify の世代ガードで即 return されるので、無ければ 0 を登録しておく。
+				let generation = this.cliDiscoveryGenerations.get(token);
+				if (generation === undefined) {
+					generation = 0;
+					this.cliDiscoveryGenerations.set(token, generation);
+				}
+				for (const agent of ['claude', 'codex'] as const) {
+					if (this.attachDisposed || this.paneSessions.has(token) || !this.isLiveToken(token)) {
+						break;
+					}
+					// 退避中のペインが持っている transcript には手を出さない。先に掴んでしまうと、本来の
+					// 持ち主が復活するときに claim を取り戻せず、会話を恒久的に失う。1回の探索が
+					// 秒単位かかるので、その都度取り直す（周回の頭で1枚取るだけでは取りこぼす）。
+					const retained = new Set([...this.retiredSessions.values()].map(entry => entry.session.transcriptPath));
+					// mode は 'resume' 固定。'new' / 'fork' は生成時刻での相関を要求するので、
+					// Para Code を起動する前から動いているセッションが必ず落ちる。
+					await this.discoverAndNotify(token, agent, 'resume', cwd, minMtime, generation, undefined, retained, agent === 'codex' && this.mayWalkCodexSessions(cwd), () => this.lastCodexDirectoryWalkAt.set(paradisCwdGroupKey(cwd), Date.now()))
+						.catch(err => this.logService.trace(`[paradisAgentChat] standing session scan failed: ${err instanceof Error ? err.message : String(err)}`));
+				}
+			}
+		} finally {
+			// 強制解除で始まった次の周回の印を消さない（消すと30秒ごとに周回が積み上がる）。
+			if (this.sessionScanStartedAt === scanStartedAt) {
+				this.sessionScanStartedAt = undefined;
+			}
+		}
+	}
+
+	/**
+	 * Codex の `sessions/` 総なめを許すか。state DB が読めない環境（WSL のホームを 9p 越しに
+	 * 開くと SQLite が開けないことがある）では、これが唯一の発見手段になる。ただし数百ファイルの
+	 * stat になるので間隔を空ける。
+	 *
+	 * 予算は作業ディレクトリごとに持つ。ホームごとにすると、同じディストロの2枚目以降が
+	 * 先頭のペインに予算を食われ続け、永久に総なめされない（走査順は毎回同じなので偶然に
+	 * 救われることもない）。消費は**実際に総なめしたとき**だけ記録する。
+	 */
+	private mayWalkCodexSessions(cwd: string): boolean {
+		const last = this.lastCodexDirectoryWalkAt.get(paradisCwdGroupKey(cwd));
+		return last === undefined || Date.now() - last >= PARADIS_CODEX_DIRECTORY_WALK_INTERVAL_MS;
+	}
+
 	/** cwdからセッションを探し、見つかれば登録して購読者へスナップショットを送り直す。 */
-	private async discoverAndNotify(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string, minMtime: number | undefined, generation: number, requestedSessionId?: string): Promise<void> {
+	private async discoverAndNotify(token: string, agent: ParadisAgentKind, mode: ParadisCliDiscoveryMode, cwd: string, minMtime: number | undefined, generation: number, requestedSessionId?: string, additionalExcludedPaths?: ReadonlySet<string>, allowCodexDirectoryWalk: boolean = true, onCodexDirectoryWalk?: () => void): Promise<void> {
 		const previous = this.paneSessions.get(token);
 		if (requestedSessionId !== undefined && previous?.sessionId === requestedSessionId) {
 			return;
@@ -5089,10 +5269,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (previous !== undefined) {
 			claimedByOthers.add(previous.transcriptPath);
 		}
+		for (const path of additionalExcludedPaths ?? []) {
+			claimedByOthers.add(path);
+		}
 		let exactSession = false;
 		let discovered: { agent: ParadisAgentKind; transcriptPath: string; mtime: number; sessionId?: string; createdAt?: number } | undefined;
 		if (agent === 'codex' && requestedSessionId !== undefined && /^[A-Za-z0-9._:-]{1,500}$/.test(requestedSessionId)) {
-			const transcriptPath = await discoverCodexRootTranscriptByThreadId(requestedSessionId);
+			const transcriptPath = await discoverCodexRootTranscriptByThreadId(requestedSessionId, paradisResolveAgentHomes(cwd));
 			if (transcriptPath !== undefined && !claimedByOthers.has(transcriptPath)) {
 				const stat = await fs.stat(transcriptPath).catch(() => undefined);
 				if (stat !== undefined) {
@@ -5101,8 +5284,8 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 			}
 		}
-		discovered ??= await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers, mode);
-		if (discovered === undefined
+		discovered ??= await discoverSessionByCwd(cwd, agent, minMtime, claimedByOthers, mode, allowCodexDirectoryWalk, onCodexDirectoryWalk);
+		if (discovered === undefined || this.attachDisposed
 			|| this.cliDiscoveryGenerations.get(token) !== generation
 			|| !this.isLiveToken(token) || this.tokenToCwd.get(token) !== cwd
 			|| this.transcriptClaimedByOther(discovered.transcriptPath, token)
@@ -5121,7 +5304,8 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (stat.birthtimeMs < minMtime) { return; }
 			} catch { return; }
 		}
-		if (this.cliDiscoveryGenerations.get(token) !== generation
+		if (this.attachDisposed
+			|| this.cliDiscoveryGenerations.get(token) !== generation
 			|| !this.isLiveToken(token) || this.tokenToCwd.get(token) !== cwd
 			|| this.transcriptClaimedByOther(discovered.transcriptPath, token)
 			|| this.paneSessions.get(token) !== previous) {
