@@ -505,6 +505,38 @@ export interface SystemResourcesResult {
 	};
 }
 
+/**
+ * スペース（リポジトリ/worktree）のディスク使用量。PC側 IParadisSpaceDiskResult と同形。
+ *
+ * `sysres` と違い6秒ごとには取らない。計測は1周で数十秒かかるので、PC側が1時間ごとに
+ * 裏で測っておき、ここでは温まった結果を受け取るだけになる（手動更新は bypassCache）。
+ */
+export interface SpaceDiskWorktree {
+	stateKey: string;
+	name: string;
+	bytes: number;
+	/** 親フォルダの外に置かれている worktree。 */
+	outside: boolean;
+	error?: string;
+	/** 上限に達して数え切れなかった（値は「少なくともこれだけ」）。 */
+	truncated?: boolean;
+}
+export interface SpaceDiskEntry {
+	stateKey: string;
+	name: string;
+	/** worktree を除いた本体のバイト数（親の中にある worktree はここから引かれている）。 */
+	ownBytes: number;
+	worktrees: SpaceDiskWorktree[];
+	error?: string;
+	truncated?: boolean;
+}
+export interface SpaceDiskResult {
+	spaces: SpaceDiskEntry[];
+	/** 計測が終わった時刻（epoch ms）。「〇分前に計測」の表示に使う。 */
+	measuredAt: number;
+	durationMs: number;
+}
+
 /** browser targets 応答。sharedToken はそのページを共有中のターミナルペインのトークン（PC側 agentBrowser のバインディング由来）。 */
 export interface BrowserTargetsResult {
 	targets: { targetId: string; title: string; url: string; sharedToken?: string }[];
@@ -2820,6 +2852,22 @@ export class MobileController {
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty sysres response');
+				}
+				return response.data;
+			});
+	}
+
+	/**
+	 * スペースごとのディスク使用量。
+	 *
+	 * 通常はPC側が1時間ごとに測っておいた結果が即座に返る。`bypassCache` で測り直すと
+	 * スペースの数と大きさ次第で数十秒〜数分かかるため、他の要求より待ち時間を長く取る。
+	 */
+	spaceDisk(bypassCache?: boolean): Promise<SpaceDiskResult> {
+		return this.request<{ data?: SpaceDiskResult }>('fs', { t: 'spacedisk', ...(bypassCache ? { bypassCache: true } : {}) }, 300_000)
+			.then(response => {
+				if (!response.data) {
+					throw new Error('empty spacedisk response');
 				}
 				return response.data;
 			});

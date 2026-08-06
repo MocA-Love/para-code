@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
 	CPU_THRESHOLDS, DISK_CRITICAL_FREE_BYTES, buildProcessRows, buildScopeRows, diskLevel, formatBytes,
-	formatCpu, resourceHeadline, sortRowsBy, usageLevel, usagePercent, worstLevel,
+	buildSpaceDiskRows, formatCpu, resourceHeadline, sortRowsBy, usageLevel, usagePercent, worstLevel,
 } from './systemResources.js';
 import type { SystemResourcesResult } from './store.js';
 
@@ -153,5 +153,44 @@ describe('resourceHeadline', () => {
 			'メモリが逼迫しています',
 			'ディスクの空きが残り 8.0 GB',
 		]);
+	});
+});
+
+describe('buildSpaceDiskRows', () => {
+	/** 実測(AZ-2)を模した形。本体は worktree を引いた後の値がPC側から届く。 */
+	const result = {
+		measuredAt: 1, durationMs: 1,
+		spaces: [
+			{
+				stateKey: 'az2', name: 'AZ-2', ownBytes: 7 * GB,
+				worktrees: [
+					{ stateKey: 'w:a', name: 'small', bytes: 1 * GB, outside: false },
+					{ stateKey: 'w:b', name: 'big', bytes: 3 * GB, outside: false },
+				],
+			},
+			{ stateKey: 'para', name: 'Paracode', ownBytes: 12 * GB, worktrees: [] },
+			{ stateKey: 'tiny', name: 'aivis', ownBytes: 0.5 * GB, worktrees: [] },
+		],
+	};
+
+	test('合計はworktreeを足した値で、大きい順に並ぶ', () => {
+		expect(buildSpaceDiskRows(result).map(r => [r.name, r.totalBytes / GB, r.ownBytes / GB]))
+			.toStrictEqual([
+				['AZ-2', 11, 7],
+				['Paracode', 12, 12],
+				['aivis', 0.5, 0.5],
+			].sort((a, b) => (b[1] as number) - (a[1] as number)));
+	});
+
+	test('worktreeは大きい順に並ぶ（本体からは引かない）', () => {
+		const az2 = buildSpaceDiskRows(result).find(r => r.name === 'AZ-2')!;
+		expect(az2.worktrees.map(w => [w.name, w.bytes / GB])).toStrictEqual([['big', 3], ['small', 1]]);
+		// PC側で引き算済みなので、ここで再度引いていないこと
+		expect(az2.ownBytes / GB).toBe(7);
+	});
+
+	test('worktreeを持たないスペースは合計と本体が一致する', () => {
+		const para = buildSpaceDiskRows(result).find(r => r.name === 'Paracode')!;
+		expect([para.totalBytes, para.worktrees.length]).toStrictEqual([para.ownBytes, 0]);
 	});
 });

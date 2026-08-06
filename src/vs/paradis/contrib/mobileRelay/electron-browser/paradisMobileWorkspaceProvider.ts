@@ -42,6 +42,7 @@ import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/par
 import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { IParadisResourceMonitorMobileReport } from '../../resourceMonitor/common/paradisResourceMonitor.js';
+import { IParadisSpaceDiskResult } from '../../spaceDisk/common/paradisSpaceDisk.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
@@ -169,6 +170,7 @@ type FsInbound =
 	| { t: 'github'; id: string; bypassCache?: boolean }
 	// PC本体のリソース使用量（マシン全体のCPU/メモリ/ディスク＋Para Code内訳）
 	| { t: 'sysres'; id: string; bypassCache?: boolean }
+	| { t: 'spacedisk'; id: string; bypassCache?: boolean }
 	// テキスト断片のシンタックスハイライト（エージェントチャットのコードブロック用）。
 	// lang はMarkdownフェンスの言語名（ts / typescript / python 等）。
 	| { t: 'hl'; id: string; text: string; lang?: string };
@@ -296,6 +298,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// PC本体のCPU/メモリ/ディスクと Para Code 内訳。実体は resourceMonitor のクライアント
 		// （収集はメインプロセス。モバイルの「システム」画面が開いている間だけ呼ばれる）
 		private readonly fetchResourceReport: (force: boolean) => Promise<IParadisResourceMonitorMobileReport>,
+		// スペース(リポジトリ/worktree)ごとのディスク使用量。実体は spaceDisk のクライアント
+		// （計測は shared process。1周に数十秒かかるので裏で温めた結果が即座に返る）
+		private readonly fetchSpaceDisk: (bypassCache: boolean) => Promise<IParadisSpaceDiskResult>,
 	) {
 		super();
 		let markInitialAgentPanesReady!: () => void;
@@ -1475,6 +1480,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			return;
 		}
+		// スペースごとのディスク使用量（「システム」画面のボリューム内訳）。
+		// sysres の6秒ポーリングとは別系統。あちらへ混ぜると、数十秒かかる計測の完了待ちで
+		// CPU/メモリの表示まで固まる。
+		if (msg.t === 'spacedisk') {
+			try {
+				const data = await this.fetchSpaceDisk(!!msg.bypassCache);
+				reply({ t: 'spacedisk', data });
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
 		// テキスト断片のハイライト（エージェントチャットのコードブロック用）。ファイルの
 		// highlight と同じく Monaco トークナイザ + 現行テーマのカラーマップで生成する。
 		// 失敗はエラーでなく空応答（モバイル側はプレーン表示にフォールバック）。
@@ -1566,7 +1583,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// ここまでで処理されなかった = このPCが知らないサブタイプ。パス解決へ落とすと
 		// `invalid path: undefined` という無関係なエラーが出るため、scmチャネルと同じ形で
 		// 「対応していない」と返す（新しいモバイルアプリ × 古いPC の組み合わせ用のフェイルセーフ）。
-		if (msg.ws === undefined && msg.path === undefined) {
+		// 判定に `ws` を混ぜてはいけない。モバイル側は fs チャネルの全リクエストへ
+		// `ws` を必ず注入するため、`ws === undefined` は成立せずガードが死ぬ。
+		// ここへ落ちてくる正規のサブタイプは必ず `path` を持つので、path だけで判る。
+		if (msg.path === undefined) {
 			reply({ error: `unsupported request: ${(msg as { t: string }).t}` });
 			return;
 		}

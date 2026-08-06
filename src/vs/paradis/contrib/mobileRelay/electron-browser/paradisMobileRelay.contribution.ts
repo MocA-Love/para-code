@@ -59,6 +59,7 @@ import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcus
 import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
 import { ParadisGithubMetricsClient } from '../../githubMetrics/electron-browser/paradisGithubMetricsClient.js';
 import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-browser/paradisResourceMonitorClient.js';
+import { ParadisSpaceDiskClient } from '../../spaceDisk/electron-browser/paradisSpaceDiskClient.js';
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
@@ -221,6 +222,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		const githubClient = instantiationService.createInstance(ParadisGithubMetricsClient);
 		// PC本体のCPU/メモリ/ディスク取得（PC版タイトルバーのリソースモニタと同じクライアント）
 		const resourceMonitorClient = instantiationService.createInstance(ParadisResourceMonitorClient);
+		const spaceDiskClient = instantiationService.createInstance(ParadisSpaceDiskClient);
 
 		this.provider = this._register(new ParadisMobileWorkspaceProvider(
 			frame => { withCurrentRendererLease(lease => this.service.sendFrame(lease, frame.ch, frame.ws, frame.mobileId, frame.payload)).catch(err => this.logService.warn('[paradisMobileRelay] sendFrame failed', err)); },
@@ -269,6 +271,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// モバイルの「システム」画面。PC版タイトルバーのCPU/RAMモニタと同じクライアントを再利用し、
 			// ホストマシン全体の使用量とPara Code内訳をまとめて返す
 			force => resourceMonitorClient.getMobileReport(force),
+			// スペースごとのディスク使用量。計測は shared process で1時間ごとに走っているので、
+			// ここは基本的に温まったキャッシュを返すだけになる
+			bypassCache => spaceDiskClient.measure(bypassCache),
 		));
 		// 初回同期。この push の完了が terminalStateReady（=markRendererReady の前提）を
 		// 解決するため、無変化打ち切りの対象にしない。
