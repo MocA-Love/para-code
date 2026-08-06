@@ -78,12 +78,34 @@ struct ParaCodeLiveActivity: Widget {
 	}
 }
 
-/// 低残量判定（非充電 かつ 20%未満）。
+/// 残量の段階。色は残量だけを表し、充電しているかどうかは⚡の有無だけが表す。
+/// 判定はJS側の `src/batteryLevel.ts` と同じにしておくこと（ドロワーとロック画面で色が食い違わないため）。
+private enum BatteryLevelClass {
+	case ok, warn, low
+
+	var fillColor: Color {
+		switch self {
+		case .low: return Color.red
+		case .warn: return Color.yellow
+		case .ok: return Color.green
+		}
+	}
+}
+
+/// 10%以下は充電中でも赤（危険域を隠さない）。緑になる境目は充電中だけ高くする。
+private func batteryLevelClass(level: Int, charging: Bool) -> BatteryLevelClass {
+	if level <= 10 {
+		return .low
+	}
+	return level > (charging ? 80 : 20) ? .ok : .warn
+}
+
+/// 低残量判定（10%以下。充電中かどうかによらない）。
 private func isBatteryLow(_ battery: ParaCodeActivityAttributes.Battery?) -> Bool {
 	guard let battery else {
 		return false
 	}
-	return !battery.charging && battery.level < 20
+	return batteryLevelClass(level: battery.level, charging: battery.charging) == .low
 }
 
 /// 展開面に出す応答待ち行（agents は応答待ち優先で最大2件届く）。
@@ -185,20 +207,21 @@ private struct StatusRingRow: View {
 }
 
 /// バッテリーピル（B-2）: 電池グリフ + 残量%。充電中は⚡を先頭に付け、低残量は赤字。
+/// ⚡はグレー固定にしてある（色は残量だけを表すという切り分けを崩さないため）。
 private struct BatteryPill: View {
 	let battery: ParaCodeActivityAttributes.Battery
 	var body: some View {
-		let low = isBatteryLow(battery)
+		let level = batteryLevelClass(level: battery.level, charging: battery.charging)
 		HStack(spacing: 4) {
 			if battery.charging {
 				Image(systemName: "bolt.fill")
 					.font(.system(size: 9))
-					.foregroundStyle(.yellow)
+					.foregroundStyle(.secondary)
 			}
-			BatteryGlyph(level: battery.level, low: low, charging: battery.charging)
+			BatteryGlyph(level: battery.level, levelClass: level)
 			Text("\(battery.level)%")
 				.font(.caption2.bold())
-				.foregroundStyle(low ? Color.red : .white)
+				.foregroundStyle(level == .low ? Color.red : .white)
 		}
 	}
 }
@@ -206,11 +229,11 @@ private struct BatteryPill: View {
 /// 電池アイコン（外枠 + 残量バー + 端子）。SF Symbolsの電池は段階が粗いため自前で描く。
 private struct BatteryGlyph: View {
 	let level: Int
-	let low: Bool
-	let charging: Bool
+	let levelClass: BatteryLevelClass
 	var body: some View {
+		let low = levelClass == .low
 		let outline = low ? Color.red.opacity(0.7) : Color.white.opacity(0.55)
-		let fill = low ? Color.red : (charging ? Color.yellow : Color.green)
+		let fill = levelClass.fillColor
 		HStack(spacing: 1) {
 			ZStack(alignment: .leading) {
 				RoundedRectangle(cornerRadius: 2.5)

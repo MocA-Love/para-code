@@ -6,6 +6,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type PcSummary } from '../appState.js';
+import { BatteryGauge } from './batteryGauge.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface, liquidGlass } from './glassSurface.js';
@@ -299,7 +300,6 @@ export function PcCardHeader({ onOpen, onOpenSettings }: {
 	})));
 	const active = pcs.find(pc => pc.id === activePcId);
 	const online = connection === 'online' && pcOnline && sessionProtocolReady;
-	const batteryLow = battery !== undefined && !battery.charging && battery.level < 20;
 	// 他のPCで待たれている件数（切り替える動機になるので、カードの時点で見せる）。
 	const otherWaiting = pcs.filter(pc => pc.id !== activePcId).reduce((total, pc) => total + pc.waiting, 0);
 	const others = pcs.length - 1;
@@ -327,26 +327,14 @@ export function PcCardHeader({ onOpen, onOpenSettings }: {
 						{online && battery !== undefined && (
 							<>
 								<Text style={styles.sep}>・</Text>
-								{battery.charging && <Ionicons name="flash" size={9} color={colors.yellow} />}
-								<View style={[styles.batteryBody, batteryLow && styles.batteryBodyLow]}>
-									<View
-										style={[
-											styles.batteryFill,
-											{ width: `${Math.max(8, battery.level)}%` },
-											battery.charging && styles.batteryFillCharging,
-											batteryLow && styles.batteryFillLow,
-										]}
-									/>
-								</View>
-								<View style={[styles.batteryTip, batteryLow && styles.batteryTipLow]} />
-								<Text style={[styles.batteryPct, batteryLow && styles.batteryPctLow]}>{battery.level}%</Text>
+								<BatteryGauge level={battery.level} charging={battery.charging} />
 							</>
 						)}
 					</View>
 				</View>
 				{others > 0 ? (
 					<View style={[styles.othersBadge, otherWaiting > 0 && styles.othersBadgeAlert]}>
-						<Text style={[styles.othersBadgeText, otherWaiting > 0 && styles.othersBadgeTextAlert]}>
+						<Text style={[styles.othersBadgeText, otherWaiting > 0 && styles.othersBadgeTextAlert]} numberOfLines={1}>
 							{otherWaiting > 0 ? `他${others}台 ${otherWaiting}` : `他${others}台`}
 						</Text>
 					</View>
@@ -408,8 +396,11 @@ const styles = StyleSheet.create({
 	noticeAction: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
 
 	// PCカード（ドロワー／サイドバー上部）
-	cardRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-	cardMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6, paddingHorizontal: 8, marginHorizontal: -8, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.04)' },
+	// marginは左だけに効かせる。両側に -8 を掛けると cardRow の gap をちょうど相殺してしまい、
+	// 歯車ボタンとの間に余白が残らない。複数PC時は chevron の手前に「他N台」バッジ（縮まない）
+	// が増えるため、その状態で chevron が歯車へ食い込んで重なって見えていた。
+	cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+	cardMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6, paddingHorizontal: 8, marginLeft: -8, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.04)' },
 	logo: { width: 38, height: 38 },
 	cardBody: { flex: 1, minWidth: 0 },
 	cardName: { color: colors.text, fontSize: 14, fontWeight: '700' },
@@ -422,14 +413,4 @@ const styles = StyleSheet.create({
 	othersBadgeTextAlert: { color: colors.red },
 	settingsBtn: { width: 32, height: 32, borderRadius: 10, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
 
-	// バッテリー（従来のPCカードと同じ見た目）
-	batteryBody: { width: 17, height: 9, borderRadius: 2.5, borderWidth: 1.2, borderColor: 'rgba(255,255,255,0.5)', padding: 1.5, justifyContent: 'center' },
-	batteryBodyLow: { borderColor: 'rgba(244,114,114,0.7)' },
-	batteryFill: { height: '100%', borderRadius: 1, backgroundColor: colors.green },
-	batteryFillCharging: { backgroundColor: colors.yellow },
-	batteryFillLow: { backgroundColor: colors.red },
-	batteryTip: { width: 2, height: 3.5, borderTopRightRadius: 1, borderBottomRightRadius: 1, backgroundColor: 'rgba(255,255,255,0.5)', marginLeft: -3 },
-	batteryTipLow: { backgroundColor: 'rgba(244,114,114,0.7)' },
-	batteryPct: { color: colors.textDim, fontSize: 10.5, fontWeight: '700' },
-	batteryPctLow: { color: colors.red },
 });

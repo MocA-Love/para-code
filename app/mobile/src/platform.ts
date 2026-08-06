@@ -268,16 +268,22 @@ function notifyKeyAccount(pcId: string): string {
  * 通知鍵（32バイトのhex）を、Notification Service Extension から読める共有Keychainへ保存する。
  * NSE はロック中にも起動するため AFTER_FIRST_UNLOCK を使う（初回ロック解除後は常に読める）。
  * シミュレータ等で accessGroup が使えない場合は失敗するが、プッシュ自体が使えない環境なので無視してよい。
+ *
+ * **保存できたかどうかを返す**。呼び出し側は、単一PC時代の鍵を消してよいかの判断にこれを使う
+ * （失敗を握り潰して true 相当に扱うと、新しい鍵が入っていないのに古い鍵を消してしまい、
+ * どの鍵でも復号できない＝プッシュ本文が固定文のままになる状態を作る）。
  */
-export async function persistNotifyKey(pcId: string, hex: string): Promise<void> {
+export async function persistNotifyKey(pcId: string, hex: string): Promise<boolean> {
 	try {
 		await SecureStore.setItemAsync(notifyKeyAccount(pcId), hex, {
 			keychainService: 'paracode.notify',
 			accessGroup: NOTIFY_KEYCHAIN_ACCESS_GROUP,
 			keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY,
 		});
+		return true;
 	} catch (err) {
 		console.warn('[platform] failed to persist notify key for NSE', err);
+		return false;
 	}
 }
 

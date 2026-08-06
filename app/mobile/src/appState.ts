@@ -76,6 +76,11 @@ export interface PcSummary {
 	readonly waiting: number;
 	/** 最後にPCがオンラインだと確認できた時刻（一度も繋がっていなければ undefined）。 */
 	readonly lastOnlineAt: number | undefined;
+	/**
+	 * そのPCのバッテリー（ノートPCのみ。デスクトップや未対応の版では undefined）。
+	 * 一覧の行に出すため、いま見ているPCだけでなく全PCぶんをここに載せる。
+	 */
+	readonly battery: { readonly level: number; readonly charging: boolean } | undefined;
 }
 
 interface AppState extends StoreState {
@@ -100,10 +105,13 @@ interface AppState extends StoreState {
 	/** 見ているPCを切り替える。未知のIDは無視する。 */
 	switchPc(id: string): void;
 	/**
-	 * 通知タップのように、ユーザーがPCを選んだわけではない切り替え。
+	 * 「PCを選ぶ」以外の目的のついでに起きる切り替え（通知タップ、他PCの使用量を開く等）。
 	 * 切り替わったことを画面上部で知らせ、直前のPCへ戻れるようにする。
+	 *
+	 * 切り替えは見た目以上に大きい操作で、開いていたスペース・ターミナルの選択が外れる。
+	 * ユーザーが自分で選んだのでなければ、戻る手段を必ず添える。
 	 */
-	switchPcForNotification(id: string): void;
+	switchPcWithReturn(id: string): void;
 	/** PCの表示名を変える（以後PCから届く名前で上書きされない）。 */
 	renamePc(id: string, name: string): Promise<void>;
 	/** そのPCとのペアリングだけを解除する。 */
@@ -351,6 +359,7 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		terminals: terminals.length,
 		waiting: terminals.filter(terminal => isAgentWaiting(terminal.agentStatus)).length,
 		lastOnlineAt: runtime.lastOnlineAt,
+		battery: workspace?.battery,
 	};
 }
 
@@ -366,7 +375,10 @@ function pcHue(pc: PairedPc): number {
 function sameSummary(a: PcSummary, b: PcSummary): boolean {
 	return a.id === b.id && a.name === b.name && a.hue === b.hue && a.connection === b.connection && a.pcOnline === b.pcOnline
 		&& a.workspaces === b.workspaces && a.terminals === b.terminals && a.waiting === b.waiting
-		&& a.lastOnlineAt === b.lastOnlineAt;
+		&& a.lastOnlineAt === b.lastOnlineAt
+		// battery はオブジェクトなので中身で比べる（参照比較だと毎回「変わった」ことになり、
+		// 一覧を購読しているUIとLive Activityの同期が状態更新のたびに走ってしまう）。
+		&& a.battery?.level === b.battery?.level && a.battery?.charging === b.battery?.charging;
 }
 
 /**
@@ -495,7 +507,40 @@ function retireLegacyNotifyKey(): void {
 	});
 }
 
+/**
+ * そのPCの通知鍵を、NSEと共有しているKeychainへ保存する。
+ *
+ * 通知鍵は「自分の長期秘密鍵 × 相手の長期公開鍵」だけで決まり、接続の有無や回数で変わらない
+ * （`deriveNotifyKey` はセッション鍵と違い ephemeral を混ぜない）。つまり**ペアリング済みで
+ * ありさえすれば、そのPCへ繋いでいなくても同じ鍵を計算して保存できる**。
+ *
+ * 以前は接続時（`MobileController.connect`）にしか保存しておらず、「見ていないPCとの接続を保つ」
+ * がオフだと非アクティブPCの鍵が入らないままだった。その状態だとNSEがプッシュ本文を復号できず、
+ * 本文が固定文（「新しい通知があります」）のままになるうえ、遷移先（PC・ワークスペース・
+ * ターミナル）も復元できないため通知をタップしてもホームのままになる。接続方針と切り離して
+ * 「ペアリング済みの全PCぶん」を確保する。
+ */
+function persistNotifyKeyFor(pc: PairedPc): void {
+	if (identity === undefined) {
+		return;
+	}
+	try {
+		const key = deriveNotifyKey(identity.secretKey, pc.creds.pcPublicKey);
+		void persistNotifyKey(pc.id, bytesToHex(key))
+			// 保存できたときだけ単一PC時代の鍵を片付ける（失敗したまま消すと、どの鍵でも
+			// 復号できない状態を作ってしまう）。
+			.then(saved => { if (saved) { retireLegacyNotifyKey(); } })
+			.catch(err => console.warn('[appState] failed to persist notify key', err));
+	} catch (err) {
+		// 導出に失敗してもアプリは動く（そのPCのプッシュ本文が固定文になるだけ）。
+		console.warn('[appState] failed to derive notify key', err);
+	}
+}
+
 function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: readonly string[]): PcRuntime {
+	// 接続するかどうかに関わらず、このPCの通知鍵はここで確保しておく。
+	// （init: 保存済み全PC、pairFromUri: 追加した直後のPC、の両方がこの関数を通る）
+	persistNotifyKeyFor(pc);
 	// コールバックは台帳から引き直す。コンストラクタの途中で状態が届いても（将来そうなっても）
 	// まだ作っていない実行時の持ち物を触らずに済み、繋ぎ直しで作り替えたときも新しい方へ届く。
 	const current = (): PcRuntime | undefined => runtimes.get(pc.id) ?? pending;
@@ -508,7 +553,9 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
 		getApnsDeviceToken,
 		// 開発ビルド(expo run:ios)は aps-environment=development なので sandbox APNs 宛に登録する
 		__DEV__ ? 'dev' : 'prod',
-		hex => persistNotifyKey(pc.id, hex).then(retireLegacyNotifyKey),
+		// 接続時にも保存し直す（起動時の保存が失敗していた場合の取り戻し口）。
+		// ここでも、保存できたときだけ単一PC時代の鍵を片付ける。
+		hex => persistNotifyKey(pc.id, hex).then(saved => { if (saved) { retireLegacyNotifyKey(); } }),
 		operationRun,
 		createTerminalOperationOutboxStore(pc.id),
 		persistedOutbox,
@@ -1151,10 +1198,21 @@ export const useAppStore = create<AppState>(set => ({
 	async unpair() {
 		// 全解除。1台ずつの解除は removePc が行う。1台で失敗しても残りは解除しきる
 		// （途中で止まると「解除したつもりのPCが残っている」状態になるため）。
-		const results = await Promise.allSettled([...pcOrder].map(id => useAppStore.getState().removePc(id)));
-		const failure = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+		//
+		// **必ず1台ずつ順に行う**。removePc は「残るPCの一覧」を最初の await より前に読んでから
+		// 保存するので、並行に走らせると互いの結果を上書きし合い（後勝ち）、解除したはずのPCが
+		// 台帳に残る。残ったPCは次の起動で復活し、通知鍵まで作り直されてしまう
+		// （解除したPCの通知本文が読める状態に戻る）。
+		let failure: unknown;
+		for (const id of [...pcOrder]) {
+			try {
+				await useAppStore.getState().removePc(id);
+			} catch (error) {
+				failure ??= error;
+			}
+		}
 		if (failure !== undefined) {
-			throw failure.reason instanceof Error ? failure.reason : new Error(String(failure.reason));
+			throw failure instanceof Error ? failure : new Error(String(failure));
 		}
 	},
 
@@ -1162,7 +1220,7 @@ export const useAppStore = create<AppState>(set => ({
 		activatePc(id);
 	},
 
-	switchPcForNotification(id: string) {
+	switchPcWithReturn(id: string) {
 		activatePc(id, { previousPcId: activePcId });
 	},
 
@@ -1205,7 +1263,7 @@ export const useAppStore = create<AppState>(set => ({
 			await savePairedPcs(secureKeyStore, previousPcs).catch(() => { /* 次回起動で読み直される */ });
 			if (identity !== undefined) {
 				const key = deriveNotifyKey(identity.secretKey, creds.pcPublicKey);
-				await persistNotifyKey(id, [...key].map(byte => byte.toString(16).padStart(2, '0')).join(''));
+				await persistNotifyKey(id, bytesToHex(key));
 			}
 			throw error;
 		}

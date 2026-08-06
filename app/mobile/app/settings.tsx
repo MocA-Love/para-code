@@ -1,27 +1,19 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore, type PcSummary } from '../src/appState.js';
+import { useAppStore } from '../src/appState.js';
+import { BatteryGauge } from '../src/components/batteryGauge.js';
 import { PcAvatar } from '../src/components/pcSwitcher.js';
+import { pcStatusText, shouldShowBattery } from '../src/pcStatus.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { APP_VERSION } from '../src/components/updateSheet.js';
 import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { formatCpu, usagePercent } from '../src/systemResources.js';
-
-/** PC一覧の1行に出す状態の説明。 */
-function pcStatusText(pc: PcSummary, active: boolean): string {
-	const state = pc.connection === 'online' && pc.pcOnline
-		? (active ? '接続中' : '待機中')
-		: pc.connection === 'online' || pc.connection === 'handshaking' ? 'PCオフライン'
-			: pc.connection === 'connecting' ? '接続しています…' : 'オフライン';
-	const detail = active ? '使用中' : pc.waiting > 0 ? `応答待ち ${pc.waiting}件` : undefined;
-	return detail !== undefined ? `${state} · ${detail}` : state;
-}
 
 /**
  * 設定画面。ワークスペースドロワーの設定アイコンから開く。
@@ -34,14 +26,15 @@ export default function SettingsScreen() {
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const {
-		notifyPrefs, setNotifyPref, resources, pcs, activePcId, switchPc, renamePc, removePc,
+		notifyPrefs, setNotifyPref, resources, pcs, activePcId,
 		keepBackgroundPcs, setKeepBackgroundPcs, notifyOtherPcs, setNotifyOtherPcs,
 	} = useAppStore(useShallow(s => ({
 		notifyPrefs: s.notifyPrefs, setNotifyPref: s.setNotifyPref, resources: s.workspace?.resources,
-		pcs: s.pcs, activePcId: s.activePcId, switchPc: s.switchPc, renamePc: s.renamePc, removePc: s.removePc,
+		pcs: s.pcs, activePcId: s.activePcId,
 		keepBackgroundPcs: s.keepBackgroundPcs, setKeepBackgroundPcs: s.setKeepBackgroundPcs,
 		notifyOtherPcs: s.notifyOtherPcs, setNotifyOtherPcs: s.setNotifyOtherPcs,
 	})));
+	const activePc = pcs.find(pc => pc.id === activePcId);
 	// 行を開かずに済むよう、ドロワーと同じ配信値（CPU · RAM）を右端に出す。旧PCでは届かないので出さない。
 	const systemSummary = resources !== undefined
 		? `${formatCpu(resources.cpu)} · ${Math.round(usagePercent(resources.memUsed, resources.memTotal))}%`
@@ -50,49 +43,6 @@ export default function SettingsScreen() {
 	const toggle = (key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused') => (value: boolean) => {
 		hapticSelection();
 		setNotifyPref(key, value);
-	};
-
-	/**
-	 * PCの名前を変える。PCから名前が届く場合でも、ここで付けた名前が優先される
-	 * （手元で見分けるための呼び名なので、PC側の設定に上書きさせない）。
-	 *
-	 * `Alert.prompt` はiOS専用。このアプリの配信先はiOS（iPhone/iPad）なので今はこれで足りる。
-	 * Androidへ広げるときは入力欄付きのシートに置き換えること（Androidでは何も起きない）。
-	 */
-	const promptRename = (id: string, current: string) => {
-		hapticSelection();
-		Alert.prompt(
-			'PCの名前',
-			'一覧に表示する名前を入力します',
-			[
-				{ text: 'キャンセル', style: 'cancel' },
-				{
-					text: '変更', onPress: (value?: string) => {
-						if (value !== undefined && value.trim().length > 0) {
-							void renamePc(id, value).catch(error => Alert.alert('名前を変更できませんでした', error instanceof Error ? error.message : String(error)));
-						}
-					},
-				},
-			],
-			'plain-text',
-			current,
-		);
-	};
-
-	const confirmRemove = (id: string, name: string) => {
-		hapticImpact('medium');
-		Alert.alert(
-			'ペアリング解除',
-			`${name} とのペアリング情報を削除します。再接続にはPC側でQRコードを再発行してのペアリングが必要です。`,
-			[
-				{ text: 'キャンセル', style: 'cancel' },
-				{
-					text: '解除する', style: 'destructive', onPress: () => {
-						void removePc(id).catch(error => Alert.alert('ペアリングを解除できませんでした', error instanceof Error ? error.message : String(error)));
-					},
-				},
-			],
-		);
 	};
 
 	return (
@@ -104,7 +54,11 @@ export default function SettingsScreen() {
 				</Pressable>
 			</View>
 			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingBottom: insets.bottom + 24 }, column]}>
-				<Text style={styles.sectionTitle}>使用量</Text>
+				{/* どのPCの数字なのかを見出しで名指しする（複数PCだと「使用量」だけでは分からない）。
+				    他のPCの数字は「ペアリング済みのPC」の行から開く。 */}
+				<Text style={styles.sectionTitle}>
+					使用量{activePc !== undefined && pcs.length > 1 ? `（${activePc.name}）` : ''}
+				</Text>
 				<View style={styles.card}>
 					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/ccusage'); }}>
 						<Ionicons name="stats-chart-outline" size={18} color={colors.accent} />
@@ -146,36 +100,33 @@ export default function SettingsScreen() {
 
 				<Text style={styles.sectionTitle}>ペアリング済みのPC</Text>
 				<View style={styles.card}>
+					{/* 行はアバター・名前・状態だけにして、開くことに専念させる。
+						    名前の変更とペアリング解除は開いた先（pc-detail）に集めてある
+						    （並べたアイコンに「開く」つもりの指が当たって消えてしまうのを防ぐ）。 */}
 					{pcs.map((pc, index) => (
 						<View key={pc.id}>
 							{index > 0 ? <View style={styles.separator} /> : null}
 							<Pressable
 								style={styles.row}
-								onPress={() => { hapticSelection(); if (pc.id !== activePcId) { switchPc(pc.id); } }}
-								onLongPress={() => promptRename(pc.id, pc.name)}
-								accessibilityLabel={`${pc.name}（長押しで名前を変更）`}
+								onPress={() => { hapticSelection(); router.push({ pathname: '/pc-detail', params: { id: pc.id } }); }}
+								accessibilityLabel={`${pc.name} の詳細`}
 							>
 								<PcAvatar name={pc.name} hue={pc.hue} size={34} />
 								<View style={styles.rowBody}>
 									<Text style={styles.rowTitle} numberOfLines={1}>{pc.name}</Text>
-									<Text style={styles.rowDesc} numberOfLines={1}>{pcStatusText(pc, pc.id === activePcId)}</Text>
+									{/* 状態の右にバッテリーを添える（ノートPCのみ・接続中のときだけ）。
+									    切れている相手の残量は「最後に見えた値」でしかないので出さない。 */}
+									<View style={styles.statusRow}>
+										<Text style={[styles.rowDesc, styles.statusText]} numberOfLines={1}>{pcStatusText(pc, pc.id === activePcId)}</Text>
+										{shouldShowBattery(pc) && pc.battery !== undefined ? (
+											<>
+												<Text style={styles.statusSep}>・</Text>
+												<BatteryGauge level={pc.battery.level} charging={pc.battery.charging} />
+											</>
+										) : null}
+									</View>
 								</View>
-								<Pressable
-									style={styles.iconBtn}
-									hitSlop={8}
-									onPress={() => promptRename(pc.id, pc.name)}
-									accessibilityLabel="名前を変更"
-								>
-									<Ionicons name="pencil-outline" size={15} color={colors.textDim} />
-								</Pressable>
-								<Pressable
-									style={styles.iconBtn}
-									hitSlop={8}
-									onPress={() => confirmRemove(pc.id, pc.name)}
-									accessibilityLabel="ペアリングを解除"
-								>
-									<Ionicons name="trash-outline" size={15} color={colors.red} />
-								</Pressable>
+								<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
 							</Pressable>
 						</View>
 					))}
@@ -283,11 +234,15 @@ const styles = StyleSheet.create({
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8, marginBottom: 8 },
 	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
 	cardSpaced: { marginTop: 8 },
-	iconBtn: { width: 30, height: 30, borderRadius: 9, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
 	rowBody: { flex: 1, minWidth: 0 },
 	rowTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
 	rowDesc: { color: colors.textDim, fontSize: 11.5, marginTop: 2, lineHeight: 15 },
+	// 状態＋バッテリーを1行に並べる。名前が長いPCでも状態が押し出されないよう縮める側は文字にする。
+	statusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+	// 行の marginTop は statusRow 側で持つ。バッテリーは縮まないので、詰まるときは文字を縮める。
+	statusText: { marginTop: 0, flexShrink: 1 },
+	statusSep: { color: colors.textDim, fontSize: 11.5, opacity: 0.6 },
 	separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
 	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 10, paddingHorizontal: 4 },
 });

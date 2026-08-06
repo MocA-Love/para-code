@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
 	CPU_THRESHOLDS, DISK_CRITICAL_FREE_BYTES, buildProcessRows, buildScopeRows, diskLevel, formatBytes,
-	formatCpu, resourceHeadline, usageLevel, usagePercent, worstLevel,
+	formatCpu, resourceHeadline, sortRowsBy, usageLevel, usagePercent, worstLevel,
 } from './systemResources.js';
 import type { SystemResourcesResult } from './store.js';
 
@@ -115,6 +115,26 @@ describe('buildProcessRows / buildScopeRows', () => {
 
 	test('ターミナルが1つも無くても本体の行は出る', () => {
 		expect(buildProcessRows(report({ scopes: [] })).map(row => row.key)).toStrictEqual(['__paracode__']);
+	});
+});
+
+describe('sortRowsBy', () => {
+	test('CPU順とメモリ順で並びが変わる（同じ行を別々の軸で見せるため）', () => {
+		const rows = buildProcessRows(report());
+		expect([
+			sortRowsBy(rows, 'cpu').map(row => [row.name, row.cpu]),
+			sortRowsBy(rows, 'memory').map(row => [row.name, row.memory / GB]),
+		]).toStrictEqual([
+			[['claude', 18], ['Para Code', 12], ['tsc', 2], ['codex', 1]],
+			[['Para Code', 3], ['claude', 2], ['tsc', 2], ['codex', 1]],
+		]);
+	});
+
+	test('元の配列を壊さない（2つのリストが同じ配列を共有するため）', () => {
+		const rows = buildProcessRows(report());
+		const before = rows.map(row => row.key);
+		sortRowsBy(rows, 'cpu');
+		expect(rows.map(row => row.key)).toStrictEqual(before);
 	});
 });
 
