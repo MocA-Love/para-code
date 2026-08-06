@@ -236,7 +236,7 @@ const styles = StyleSheet.create({
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 10, lineHeight: 18 },
 	acct: { paddingVertical: 10 },
 	acctSeparator: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
-	acctTop: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6, minWidth: 0 },
+	acctTop: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6, minWidth: 0 },
 	acctMail: { color: colors.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
 	badge: { fontSize: 10, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 9, overflow: 'hidden', backgroundColor: colors.surface3, color: colors.textDim },
 	badgeActive: { backgroundColor: colors.accentWash, color: colors.accent },

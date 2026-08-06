@@ -69,5 +69,11 @@ export function shouldReturnHomeOnSpaceChange(pathname: string): boolean {
 	if (path === '/' || path === '/index') {
 		return false;
 	}
+	// タブには属さないが、開いているスペースの持ち物を映している画面。
+	// `/space-note` は開いてもドロワー／サイドバーを閉じないので、ここから
+	// スペースを選び直せてしまう。畳まないと前のスペースのメモが残る。
+	if (path === '/space-note') {
+		return true;
+	}
 	return activeSidebarTab(path) !== undefined;
 }

@@ -310,7 +310,7 @@ const styles = StyleSheet.create({
 	ringName: { color: colors.text, fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
 	ringSub: { color: colors.textDim, fontSize: 9.5, textAlign: 'center', lineHeight: 13 },
 	// 下の余白が2ptしかないと、チップ（押せるもの）と直下のカードが触れて見える。
-	chipRow: { flexDirection: 'row', gap: 8, marginTop: 2, marginBottom: 12 },
+	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
 	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
 	chipActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },

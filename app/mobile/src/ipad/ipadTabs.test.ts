@@ -18,7 +18,7 @@ describe('activeSidebarTab', () => {
 	});
 
 	test('タブに属さない設定・ダッシュボード類はどのタブも選ばない', () => {
-		const standalone = ['/settings', '/ccusage', '/ratelimit', '/github-usage', '/system', '/changelog', '/space-note', '/pair'];
+		const standalone = ['/settings', '/ccusage', '/ratelimit', '/github-usage', '/system', '/changelog', '/space-note', '/pair', '/pc-detail'];
 		expect(standalone.map(activeSidebarTab)).toEqual(standalone.map(() => undefined));
 	});
 
@@ -43,12 +43,16 @@ describe('shouldReturnHomeOnSpaceChange', () => {
 		expect(descendants.map(shouldReturnHomeOnSpaceChange)).toEqual(descendants.map(() => true));
 	});
 
+	test('スペースのメモからも戻す（開いてもドロワーが閉じないので選び直せてしまう）', () => {
+		expect(shouldReturnHomeOnSpaceChange('/space-note')).toBe(true);
+	});
+
 	test('すでにホームなら何もしない', () => {
 		expect(['/', '/index'].map(shouldReturnHomeOnSpaceChange)).toEqual([false, false]);
 	});
 
 	test('スペースに属さない設定・ダッシュボード類は閉じない', () => {
-		const standalone = ['/settings', '/ccusage', '/ratelimit', '/github-usage', '/system', '/changelog'];
+		const standalone = ['/settings', '/ccusage', '/ratelimit', '/github-usage', '/system', '/changelog', '/pc-detail'];
 		expect(standalone.map(shouldReturnHomeOnSpaceChange)).toEqual(standalone.map(() => false));
 	});
 });
