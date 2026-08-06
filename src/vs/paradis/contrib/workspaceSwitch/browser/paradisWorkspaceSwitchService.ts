@@ -613,10 +613,40 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 		// 計測は sequencer の待ちを含めない位置から始める。キュー待ちは「切り替えが遅い」ではなく
 		// 「連打された」なので、混ぜると分布が読めなくなる。件数は sample rate で絞られる。
+		// 負荷の指標は**フェーズ内訳と同じイベントに載せる**（`recordSwitchPhases`）。別々の
+		// トランザクションに分けると共通のIDが無く、「端末が多いときにどのフェーズが伸びるか」
+		// という肝心の相関が取れない。
+		const terminalEditors = this.terminalEditorService.instances.length;
+		const editors = this.editorGroupsService.groups.reduce((total, group) => total + group.count, 0);
 		return this._switchSequencer.queue(() => runInParadisSpan('workspaceSwitch', 'switch', {
-			safe_terminal_editors: this.terminalEditorService.instances.length,
-			safe_editors: this.editorGroupsService.groups.reduce((total, group) => total + group.count, 0),
+			safe_terminal_editors: terminalEditors,
+			safe_editors: editors,
 		}, async () => {
+			// フェーズの所要時間は**子spanではなく自前の計測**で取る。renderer の Sentry SDK には
+			// AsyncContextStrategy が無く、`await` を跨ぐと active span を見失うため、await の後に
+			// 作った子spanは親に繋がらず独立したトランザクションになり、それぞれが別々に
+			// サンプリング抽選を受ける（本番で1件も届いていなかった一因）。数値を自分で持てば
+			// 実行文脈にも await の位置にも一切依存しない。
+			const switchStartedAt = Date.now();
+			const phaseMs: Record<string, number> = {};
+			const timePhase = async <T>(name: string, run: () => Promise<T>): Promise<T> => {
+				const startedAt = Date.now();
+				try {
+					return await run();
+				} finally {
+					phaseMs[name] = Date.now() - startedAt;
+				}
+			};
+			// 同期の重い区間（park ループ、退避、復元イベントの配布）にも使う。切り替えの体感は
+			// await の有無で決まらないので、非同期の区間だけ測っても遅さの説明にならない。
+			const timeSyncPhase = <T>(name: string, run: () => T): T => {
+				const startedAt = Date.now();
+				try {
+					return run();
+				} finally {
+					phaseMs[name] = Date.now() - startedAt;
+				}
+			};
 			const previousKey = this.activeStateKey;
 			const folders = this.contextService.getWorkspace().folders;
 			const previousUri = folders.length === 1 ? folders[0].uri : undefined;
@@ -657,9 +687,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 				// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 				if (previousKey !== undefined) {
-					this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
-					sourceCaptured = true;
-					this.savePanelVisibilityFor(previousKey);
+					timeSyncPhase('capture_scope', () => {
+						this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
+						// **`sourceCaptured` はここで立てる。** 退避が済んだ時点でロールバックの
+						// 対象になる。パネル表示の保存まで含めた後ろへ動かすと、そちらが投げたときに
+						// 退避済みのエディタ状態を復元しないまま戻ってしまう。
+						sourceCaptured = true;
+						this.savePanelVisibilityFor(previousKey);
+					});
 
 					// エディタターミナルは working set の保存後・適用前にインスタンスを input から
 					// 切り離して生かしたままパークする。切り離さないと applyWorkingSet のエディタ close で
@@ -672,21 +707,25 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// 一覧に残り続け (terminalEditorService.ts の PARA-PATCH)、restoreScope の再アタッチで
 					// そのまま復帰する。ここで detachInstance すると retain 中の入力を dispose してしまい
 					// 復元経路が壊れる上、park 台帳と一覧の二重管理になる。
-					for (const instance of [...this.terminalEditorService.instances]) {
-						const input = this.terminalEditorService.getInputFromResource(instance.resource);
-						if (this.editorGroupsService.isEditorInputRetained?.(input)) {
-							continue;
+					// **端末数に比例する区間**。`safe_terminal_editors` を一緒に送っているのは、
+					// ここの伸びと突き合わせるため。
+					timeSyncPhase('park_terminals', () => {
+						for (const instance of [...this.terminalEditorService.instances]) {
+							const input = this.terminalEditorService.getInputFromResource(instance.resource);
+							if (this.editorGroupsService.isEditorInputRetained?.(input)) {
+								continue;
+							}
+							// input.group はキャッシュで detach 後に古い値が残り得るため、実際に入力を
+							// 含むグループを検索して補助ウィンドウ所属を判定する
+							const containingGroup = this.editorGroupsService.groups.find(group => group.contains(input));
+							if (containingGroup && this.editorGroupsService.getPart(containingGroup) !== this.editorGroupsService.mainPart) {
+								continue;
+							}
+							if (paradisParkTerminalEditorInstance(instance, previousKey)) {
+								this.terminalEditorService.detachInstance(instance);
+							}
 						}
-						// input.group はキャッシュで detach 後に古い値が残り得るため、実際に入力を
-						// 含むグループを検索して補助ウィンドウ所属を判定する
-						const containingGroup = this.editorGroupsService.groups.find(group => group.contains(input));
-						if (containingGroup && this.editorGroupsService.getPart(containingGroup) !== this.editorGroupsService.mainPart) {
-							continue;
-						}
-						if (paradisParkTerminalEditorInstance(instance, previousKey)) {
-							this.terminalEditorService.detachInstance(instance);
-						}
-					}
+					});
 				}
 
 				// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
@@ -701,19 +740,19 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// スナップショットはこの適用専用なので、終わったら必ず捨てる。残すとロールバックでの
 				// 再適用や後続の revive が古い情報で attach 先を決めてしまう
 				// (paradisTerminalEditorRevive.ts)。
-				await runInParadisSpan('workspaceSwitch', 'reviveIndex', undefined,
-					() => paradisRefreshTerminalReviveIndex(stateKey));
+				await timePhase('revive_index', () => paradisRefreshTerminalReviveIndex(stateKey));
 				try {
-					await runInParadisSpan('workspaceSwitch', 'applyWorkingSet', undefined,
-						() => this.applyWorkingSetFor(stateKey));
+					await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
 				} finally {
 					paradisClearTerminalReviveIndex();
 				}
 
-				await this.trustUris(uri);
-				await folderVerified;
+				await timePhase('trust_uris', () => this.trustUris(uri));
+				// 先行実行が終わっていなければここで待つ。切り替えの体感に効くのは
+				// stat 自体の時間ではなく「本流が待たされた時間」なので、そちらを測る。
+				await timePhase('verify_folder_wait', () => folderVerified);
 				try {
-					await runInParadisSpan('workspaceSwitch', 'updateFolders', undefined,
+					await timePhase('update_folders',
 						() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
 				} finally {
 					// ロールバックの updateFolders は別のフォルダへ戻すので、確認結果を残さない。
@@ -721,12 +760,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				}
 
 				this.setActiveEntry(stateKey, uri);
-				await this.editorScopeService.commitSwitch(stateKey, uri);
+				await timePhase('commit_switch', () => this.editorScopeService.commitSwitch(stateKey, uri));
 				this.auxiliaryWindowScopeService.setMainScope(stateKey, true, false);
-				await runInParadisSpan('workspaceSwitch', 'restoreScope', undefined,
-					() => this.editorScopeService.restoreScope(stateKey));
-				await this.editorScopeService.restoreBackups();
-				this.restorePanelVisibilityFor(stateKey);
+				await timePhase('restore_scope', () => this.editorScopeService.restoreScope(stateKey));
+				await timePhase('restore_backups', () => this.editorScopeService.restoreBackups());
+				timeSyncPhase('restore_panels', () => this.restorePanelVisibilityFor(stateKey));
 				completed = true;
 			} catch (error) {
 				switchError = error;
@@ -772,10 +810,65 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// onDidSwitchScope を受け皿として復元されるため、失敗時に発火しないと迷子のまま残る
 				const restoreKey = completed ? stateKey : switchError !== undefined ? previousKey : undefined;
 				if (restoreKey !== undefined) {
-					this._onDidSwitchScope.fire(restoreKey);
+					// 購読側（park 済みターミナルの復帰・SCM下書きの復元）が同期で走る。切り替えの
+					// 体感に直結するのにこれまで一切測れていなかった区間。
+					timeSyncPhase('notify_scope_switched', () => this._onDidSwitchScope.fire(restoreKey));
 				}
+
+				// 計測は**復元まで済ませた後**。park 済みターミナルとSCM下書きの復元はここで同期的に
+				// 走る重い仕事で、体感の切り替え時間に含まれる。fire の手前で測ると、いちばん疑わしい
+				// 区間が誰からも見えない数字になる。
+				this.recordSwitchPhases({
+					startedAt: switchStartedAt,
+					phaseMs,
+					completed,
+					failed: switchError !== undefined,
+					terminalEditors,
+					editors,
+				});
 			}
 		}));
+	}
+
+	/**
+	 * 切り替え1回ぶんのフェーズ内訳を Sentry へ1本で送る。
+	 *
+	 * 子spanに分けないのは、renderer の Sentry SDK に AsyncContextStrategy が無く、`await` を
+	 * 跨ぐと active span を見失うため。親に繋がらない子spanは独立したトランザクションになり、
+	 * それぞれ別々にサンプリング抽選を受ける（本番で1件も届かなかった一因）。数値を自分で
+	 * 持ち回れば実行文脈にも await の位置にも依存しない。
+	 *
+	 * 到達しなかったフェーズはキーごと落とす。`-1` のようなセンチネルを送ると `avg()` が黙って歪む。
+	 *
+	 * **ここで投げないこと。** 呼び出し元は切り替えの `finally` で、park 済みターミナルや
+	 * SCM 下書きの復元と同じ経路にいる。計測の失敗で復元を巻き込むのは割に合わない。
+	 */
+	private recordSwitchPhases(sample: {
+		readonly startedAt: number;
+		readonly phaseMs: Record<string, number>;
+		readonly completed: boolean;
+		readonly failed: boolean;
+		readonly terminalEditors: number;
+		readonly editors: number;
+	}): void {
+		try {
+			const durations: Record<string, number> = {};
+			for (const [phase, ms] of Object.entries(sample.phaseMs)) {
+				durations[`safe_${phase}_ms`] = ms;
+			}
+			runInParadisSpan('workspaceSwitch', 'phases', {
+				safe_total_ms: Date.now() - sample.startedAt,
+				...durations,
+				safe_completed: sample.completed,
+				// 失敗した切り替えは分布を歪めるので、集計時に分けられるようにしておく。
+				safe_failed: sample.failed,
+				// 負荷の指標。フェーズの伸びと突き合わせるために同じイベントへ載せる。
+				safe_terminal_editors: sample.terminalEditors,
+				safe_editors: sample.editors,
+			}, () => { });
+		} catch (error) {
+			this.logService.error('[ParadisWorkspaceSwitch] Failed to record switch phases', error);
+		}
 	}
 
 	/**
@@ -787,8 +880,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 */
 	private async verifyTargetFolder(uri: URI): Promise<void> {
 		try {
-			const stat = await runInParadisSpan('workspaceSwitch', 'verifyFolder', undefined,
-				() => this.fileService.stat(uri));
+			const stat = await this.fileService.stat(uri);
 			if (stat.isDirectory) {
 				paradisMarkVerifiedWorkspaceFolder(uri.toString());
 			}

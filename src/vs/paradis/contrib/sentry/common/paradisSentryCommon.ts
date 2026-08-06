@@ -110,6 +110,21 @@ const safeContextKeys = new Set(['app', 'device', 'electron', 'gpu', 'os', 'runt
 const unsafeObjectKeys = /(?:authorization|cookie|credential|cwd|dsn|environment|env|header|password|passwd|path|prompt|secret|session|terminal|token)/i;
 
 /**
+ * Context payload keys that survive sanitization.
+ *
+ * `extra` は allow-list（{@link isParadisSafeExtraKey}）だが、context はSDKや他所が入れる
+ * 未知のキーも通す必要があるので否定リストで濾している。**この非対称が実害を出していた**:
+ * span attribute の実際の置き場は `contexts.trace.data` なので、自前の計装が付けた
+ * `safe_terminal_editors` は `terminal` に一致して黙って捨てられていた（`safe_path_*` /
+ * `safe_session_*` / `safe_env_*` なども同様）。`safe_` は「呼び出し側がユーザー内容を
+ * 含まないと明示した」印なので、extra と同じくここでも尊重する。値は呼び出し側の宣言に
+ * 関係なく {@link paradisSanitizeSentryText} を通るので、誤って載せた文字列も素通りはしない。
+ */
+function isParadisSafeContextKey(key: string): boolean {
+	return key.startsWith('safe_') || !unsafeObjectKeys.test(key);
+}
+
+/**
  * Limits one normalized error to three events per process and ten-minute window.
  */
 export class ParadisSentryRateLimiter {
@@ -366,7 +381,7 @@ export function paradisSanitizeSentryEvent<T extends IParadisSentryEvent>(event:
 		// 値は既存の contexts と同じく unsafeObjectKeys の否定リストで濾す。
 		contexts: event.contexts ? Object.fromEntries(Object.entries(event.contexts)
 			.filter(([key]) => safeContextKeys.has(key) || key.startsWith('para.'))
-			.map(([key, value]) => [key, value ? paradisSanitizeRecord(value, nestedKey => !unsafeObjectKeys.test(nestedKey)) : value])) : event.contexts,
+			.map(([key, value]) => [key, value ? paradisSanitizeRecord(value, isParadisSafeContextKey) : value])) : event.contexts,
 		breadcrumbs: event.breadcrumbs?.filter(breadcrumb => breadcrumb.category?.startsWith('para.')).map(breadcrumb => ({
 			...breadcrumb,
 			message: breadcrumb.message ? paradisSanitizeSentryText(breadcrumb.message) : breadcrumb.message,

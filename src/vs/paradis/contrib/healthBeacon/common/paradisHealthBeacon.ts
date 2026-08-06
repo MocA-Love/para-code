@@ -232,60 +232,38 @@ export function paradisBuildHealthMeasurements(snapshot: IParadisHealthSnapshot)
 		snapshot.processes.filter(process => process.role === role);
 
 	const renderers = byKind('renderer');
-	const utilities = byKind('utility');
 	const oldSpaceSize = finite(snapshot.mainV8.oldSpaceSize);
 
 	const byteValue = (value: number): IParadisHealthMeasurement => ({ value: finite(value), unit: 'byte' });
 	const countValue = (value: number): IParadisHealthMeasurement => ({ value: finite(value), unit: 'none' });
 
+	// **1トランザクションあたり10個まで**。ここを増やすと、超えた分は取り込み時に
+	// アルファベット順で黙って捨てられる。実際、以前は40個近く送っていて
+	// `app.*`〜`host.*` の10個だけが残り、**このビーコンの主目的である
+	// `main.v8.old_space_used` が本番で一度も届いていなかった**。
+	// 全ユーザー横断で平均・p95を取りたいものだけをここに置き、
+	// 1イベントを開いて読めば足りるものは context 側（{@link paradisBuildHealthContext}）へ回す。
 	const measurements: Record<string, IParadisHealthMeasurement> = {
-		// main プロセス。今回のリークはこの3本(特に old_space_used)で捉えられる。
+		// main プロセス。未特定のリークの主軸。
 		'main.v8.old_space_used': byteValue(snapshot.mainV8.oldSpaceUsed),
-		'main.v8.old_space_size': byteValue(oldSpaceSize),
 		'main.v8.old_space_live_ratio': {
 			value: oldSpaceSize > 0 ? Math.min(1, finite(snapshot.mainV8.oldSpaceUsed) / oldSpaceSize) : 0,
 			unit: 'ratio',
 		},
-		'main.v8.heap_used': byteValue(snapshot.mainV8.heapUsed),
-		'main.v8.heap_total': byteValue(snapshot.mainV8.heapTotal),
-		'main.v8.heap_limit': byteValue(snapshot.mainV8.heapLimit),
-		'main.v8.large_object_used': byteValue(snapshot.mainV8.largeObjectUsed),
-		'main.v8.external': byteValue(snapshot.mainV8.external),
-		'main.v8.malloced': byteValue(snapshot.mainV8.malloced),
-		'main.v8.native_contexts': countValue(snapshot.mainV8.nativeContexts),
-		'main.v8.detached_contexts': countValue(snapshot.mainV8.detachedContexts),
 		'main.rss': byteValue(snapshot.mainRss),
-		'main.array_buffers': byteValue(snapshot.mainArrayBuffers),
 
-		// プロセス種別ごとの working set。どのプロセスがネックかの切り分け。
-		'app.memory_total': byteValue(sum(snapshot.processes.map(process => process.memory))),
-		'app.cpu_total': countValue(sum(snapshot.processes.map(process => process.cpu))),
-		'app.process_count': countValue(snapshot.processes.length),
-		'renderer.memory_total': byteValue(sum(renderers.map(process => process.memory))),
-		'renderer.memory_max': byteValue(max(renderers.map(process => process.memory))),
-		'renderer.count': countValue(renderers.length),
-		'gpu.memory': byteValue(sum(byKind('gpu').map(process => process.memory))),
-		'utility.memory_total': byteValue(sum(utilities.map(process => process.memory))),
-		'utility.count': countValue(utilities.length),
+		// 4GB上限に当たって落ちている当事者。役割の解決を直すまで常に0だった。
 		'extension_host.memory': byteValue(sum(byRole('extension_host').map(process => process.memory))),
-		'shared_process.memory': byteValue(sum(byRole('shared_process').map(process => process.memory))),
-		'pty_host.memory': byteValue(sum(byRole('pty_host').map(process => process.memory))),
-		'file_watcher.memory': byteValue(sum(byRole('file_watcher').map(process => process.memory))),
 
-		// ウィンドウ側の自己申告。renderer の JS ヒープと構成の重さ。
-		'window.count': countValue(snapshot.windowCount),
-		'window.reported': countValue(snapshot.windows.length),
-		'window.js_heap_total': byteValue(sum(snapshot.windows.map(window => window.jsHeapUsed))),
-		'window.js_heap_max': byteValue(max(snapshot.windows.map(window => window.jsHeapUsed))),
-		'window.private_memory_total': byteValue(sum(snapshot.windows.map(window => window.privateMemory))),
-		'window.dom_elements_max': countValue(max(snapshot.windows.map(window => window.domElements))),
-		'terminal.count': countValue(sum(snapshot.windows.map(window => window.terminals))),
-		'editor.count': countValue(sum(snapshot.windows.map(window => window.editors))),
-		'browser_view.count': countValue(snapshot.browserViewCount),
+		// プロセス種別の粗い内訳。どこがネックかの一次切り分け。
+		'app.memory_total': byteValue(sum(snapshot.processes.map(process => process.memory))),
+		'renderer.memory_total': byteValue(sum(renderers.map(process => process.memory))),
+		'gpu.memory': byteValue(sum(byKind('gpu').map(process => process.memory))),
+		'app.process_count': countValue(snapshot.processes.length),
 
 		// 正規化用。端末差を無視して平均すると解釈を誤る。
-		'host.memory_total': byteValue(snapshot.hostMemoryTotal),
 		'host.memory_free': byteValue(snapshot.hostMemoryFree),
+		// 「長時間で悪化するのか」を見る主軸。これが落ちると時系列が読めない。
 		'uptime': { value: finite(snapshot.uptimeMs / 3_600_000), unit: 'hour' },
 	};
 
@@ -293,10 +271,39 @@ export function paradisBuildHealthMeasurements(snapshot: IParadisHealthSnapshot)
 }
 
 /**
+ * 1トランザクションに載せられる custom measurement の上限。
+ *
+ * 超えた分は**エラーにならず、アルファベット順で先頭から10個だけ残して捨てられる**ので、
+ * 気付ける仕組みが要る。テストがこの数を固定する。
+ */
+export const PARADIS_HEALTH_MEASUREMENT_LIMIT = 10;
+
+/**
  * 1イベントを個別に開いたときに読む用の内訳。
  * `para.` で始まる context はサニタイザが残す(paradisSentryCommon.ts)。
  */
 export function paradisBuildHealthContext(snapshot: IParadisHealthSnapshot): Record<string, unknown> {
+	const byRole = (role: string): number =>
+		sum(snapshot.processes.filter(process => process.role === role).map(process => process.memory));
+	const byKind = (kind: IParadisHealthProcessSample['kind']): readonly IParadisHealthProcessSample[] =>
+		snapshot.processes.filter(process => process.kind === kind);
+	const renderers = byKind('renderer');
+	const utilities = byKind('utility');
+
+	// 重い順の上位5件を**平たいキーへ展開する**。オブジェクトの配列のままにすると、Sentry の
+	// context 正規化がネストした要素を `"[Object]"` に潰してしまい、内訳がまったく読めない
+	// （実際そうなっていた）。
+	const heaviest = [...snapshot.processes]
+		.sort((left, right) => right.memory - left.memory)
+		.slice(0, 5);
+	const topProcesses: Record<string, unknown> = {};
+	heaviest.forEach((process, index) => {
+		const rank = index + 1;
+		topProcesses[`safe_top${rank}_role`] = process.kind === 'utility' ? process.role : process.kind;
+		topProcesses[`safe_top${rank}_memory`] = process.memory;
+		topProcesses[`safe_top${rank}_cpu`] = Math.round(process.cpu);
+	});
+
 	return {
 		reason: snapshot.reason,
 		uptime_hours: Math.round(snapshot.uptimeMs / 360_000) / 10,
@@ -304,10 +311,33 @@ export function paradisBuildHealthContext(snapshot: IParadisHealthSnapshot): Rec
 		window_count: snapshot.windowCount,
 		reported_window_count: snapshot.windows.length,
 		browser_view_count: snapshot.browserViewCount,
-		// 上位10件だけ。役割と数値しか含まないので識別にはつながらない。
-		top_processes: [...snapshot.processes]
-			.sort((left, right) => right.memory - left.memory)
-			.slice(0, 10)
-			.map(process => ({ kind: process.kind, role: process.role, memory: process.memory, cpu: Math.round(process.cpu) })),
+		...topProcesses,
+		// measurement の10個枠に入らなかった内訳。横断集計はできないが、1イベントを開けば読める。
+		// `safe_` を付けるのは、サニタイザが context を否定リストで濾していて
+		// `terminal` や `session` を含む素のキーが黙って捨てられるため（`safe_` は明示的な通行証）。
+		safe_main_v8_old_space_size: snapshot.mainV8.oldSpaceSize,
+		safe_main_v8_heap_used: snapshot.mainV8.heapUsed,
+		safe_main_v8_heap_limit: snapshot.mainV8.heapLimit,
+		safe_main_v8_large_object_used: snapshot.mainV8.largeObjectUsed,
+		safe_main_v8_external: snapshot.mainV8.external,
+		safe_main_v8_malloced: snapshot.mainV8.malloced,
+		safe_main_v8_native_contexts: snapshot.mainV8.nativeContexts,
+		safe_main_v8_detached_contexts: snapshot.mainV8.detachedContexts,
+		safe_main_array_buffers: snapshot.mainArrayBuffers,
+		safe_app_cpu_total: Math.round(sum(snapshot.processes.map(process => process.cpu))),
+		safe_renderer_memory_max: max(renderers.map(process => process.memory)),
+		safe_renderer_count: renderers.length,
+		safe_utility_memory_total: sum(utilities.map(process => process.memory)),
+		safe_utility_count: utilities.length,
+		safe_shared_process_memory: byRole('shared_process'),
+		safe_pty_host_memory: byRole('pty_host'),
+		safe_file_watcher_memory: byRole('file_watcher'),
+		safe_window_js_heap_total: sum(snapshot.windows.map(window => window.jsHeapUsed)),
+		safe_window_js_heap_max: max(snapshot.windows.map(window => window.jsHeapUsed)),
+		safe_window_private_memory_total: sum(snapshot.windows.map(window => window.privateMemory)),
+		safe_window_dom_elements_max: max(snapshot.windows.map(window => window.domElements)),
+		safe_terminal_count: sum(snapshot.windows.map(window => window.terminals)),
+		safe_editor_count: sum(snapshot.windows.map(window => window.editors)),
+		safe_host_memory_total: snapshot.hostMemoryTotal,
 	};
 }

@@ -11,7 +11,7 @@ import { decodeBase64, encodeBase64, VSBuffer } from '../../../../base/common/bu
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
-import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { reportParadisDiagnosticError, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
@@ -184,6 +184,49 @@ const UPLOAD_BASE64_LIMIT = Math.ceil(UPLOAD_LIMIT * 4 / 3) + 4; // 同、base64
 const UPLOAD_DECODED_LIMIT = Math.floor(UPLOAD_BASE64_LIMIT * 3 / 4); // unpadded Base64を含む従来許容範囲のraw上限
 const HIGHLIGHT_SOURCE_LIMIT = 128 * 1024; // ハイライト対象の上限（HTML化で数倍に膨らむため読み取り上限より絞る）
 const TERM_SCROLLBACK_LIMIT = 16 * 1024; // attach時に送る直近バッファ上限（文字。serialize不可時のフォールバック用）
+/**
+ * 質問の選択肢が画面に出るのを待つ上限。ここを過ぎたら待たずに流す（送信を止める門ではない）。
+ *
+ * 実測（Claude Code 2.1.223）では、質問が描かれてから打鍵が効くまでに待ちが要る。待たずに
+ * 送った1打鍵は入力欄へ吸われて消え、3秒待った同じ打鍵は通った。上限はその実測より少し広く取る。
+ */
+const INTERACTION_READY_TIMEOUT_MS = 5_000;
+/** 選択肢が見えてから打鍵するまでの一拍（描画とフォーカス移動の隙間ぶん）。 */
+const INTERACTION_READY_SETTLE_MS = 400;
+/** 画面を見に行く間隔。 */
+const INTERACTION_READY_POLL_MS = 150;
+
+/**
+ * ターミナルの**見えている範囲**だけを文字列にする。
+ *
+ * `getContentsAsText()` を引数無しで呼ぶと**スクロールバック全体**（既定1000行、設定次第でもっと）
+ * を走査する。目印の照合にそれを使うと、**過去に同じ質問が出ていれば履歴に必ず当たる**ので
+ * 「もう描かれている」と誤判定し、待ちの意味が消える。同じ質問へ答え直すケース（まさに直したい
+ * 場面）ほど確実に踏むので、可視領域に限ること。走査量が数十行で収まる利点もある。
+ */
+function paradisVisibleTerminalText(instance: ITerminalInstance): string {
+	const raw = instance.xterm?.raw;
+	if (raw === undefined) {
+		return '';
+	}
+	const buffer = raw.buffer.active;
+	const lines: string[] = [];
+	for (let y = buffer.baseY; y < buffer.baseY + raw.rows; y++) {
+		lines.push(buffer.getLine(y)?.translateToString(true) ?? '');
+	}
+	return lines.join('\n');
+}
+
+/**
+ * 画面に目印が出ているかを、**空白と改行を無視して**照合する。
+ *
+ * ターミナルは幅で折り返し、折り返しの境目には改行が入る。Para Code は2Dグリッドで
+ * 狭いペインが常態なので、素朴な部分一致だと日本語ラベルなどは折り返しでほぼ必ず外れる。
+ * 目印側も同じ規則で作る（{@link paradisQuestionReadyMarker}）。
+ */
+export function paradisScreenShowsMarker(screen: string, marker: string): boolean {
+	return screen.replace(/\s+/g, '').includes(marker);
+}
 const TERM_SNAPSHOT_SCROLLBACK_ROWS = 1000; // attach時のVTスナップショットで通常バッファから含めるスクロールバック行数（代替バッファ=TUIは常に全体）
 // --- ターミナル同期プロトコル（epoch対応クライアント向け）の定数 ---
 const TERM_COALESCE_MS = 16; // onData のまとめ送り間隔（1フレーム=1暗号化+relay往復のため細切れ送信を避ける）
@@ -884,7 +927,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (mobileId === undefined) {
 			return;
 		}
-		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown };
+		let msg: { t?: unknown; id?: unknown; token?: unknown; requestId?: unknown; epoch?: unknown; text?: unknown; setting?: unknown; value?: unknown; parts?: unknown; delayMs?: unknown; windowId?: unknown; readyMarker?: unknown };
 		let interactionAccepted = false;
 		try {
 			msg = JSON.parse(payload.toString());
@@ -899,6 +942,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const interaction = msg.t === 'action/interaction' && Array.isArray(msg.parts) && msg.parts.length > 0 && msg.parts.length <= 500
 			&& msg.parts.every(part => typeof part === 'string' && part.length <= 10_000)
 			&& typeof msg.delayMs === 'number' && Number.isInteger(msg.delayMs) && msg.delayMs >= 0 && msg.delayMs <= 1_000
+			&& (msg.readyMarker === undefined || (typeof msg.readyMarker === 'string' && msg.readyMarker.length > 0 && msg.readyMarker.length <= 64))
 			&& typeof msg.windowId === 'number' && Number.isInteger(msg.windowId);
 		if ((!sendMessage && !interaction && !claudeSetting) || typeof msg.id !== 'number' || typeof msg.token !== 'string'
 			|| typeof msg.requestId !== 'string' || typeof msg.epoch !== 'string') {
@@ -942,23 +986,33 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}
 			} else {
 				const parts = msg.parts as string[];
+				// **最初の1打鍵を待たずに流さないこと。** TUI が選択肢リストへキーボードフォーカスを
+				// 移す前に届いたキーは、リストではなく入力欄へ吸われて消える（Claude Code 2.1.223 で
+				// 実測。3秒待てば通り、待たずに送ると入力欄に文字が残るだけで質問は動かない）。
+				// キー列が1つだけの回答（単問・単一選択、承認の「はい」の先頭キー）は、これを落とすと
+				// 拾い直す機会が無く、モバイル側には送信成功に見えたまま何も起きない。
+				await this.waitForInteractionTarget(instance, msg.readyMarker as string | undefined, parts.length);
 				for (let index = 0; index < parts.length; index++) {
 					if (index > 0) {
 						await new Promise<void>(resolve => setTimeout(resolve, msg.delayMs as number));
-						const currentInstance = this.findAuthoritativePaneInstance(msg.id, msg.token);
-						if (currentInstance !== instance) {
-							this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '操作対象のターミナルが変わりました');
-							return;
-						}
-						const continuation = await this.continueAgentInteraction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number);
-						if (continuation === 'completed') {
-							this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'interaction-completed', '回答対象は別の操作で完了しました');
-							return;
-						}
-						if (continuation === 'stale') {
-							this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-interaction', '回答対象の質問または承認要求が変わりました');
-							return;
-						}
+					}
+					// **待ちを挟んだ後は必ず作り直しと差し替えを確かめる。** 先頭の打鍵にも待ちが
+					// 入るようになったぶん、「待っている間にPCで答えられた／別の質問に変わった」
+					// 窓が広がった。ここを飛ばすと、消えた質問の跡地へ数字を打ち込むことになり、
+					// 続く Enter でそれがエージェントへのメッセージとして送信される。
+					const currentInstance = this.findAuthoritativePaneInstance(msg.id, msg.token);
+					if (currentInstance !== instance) {
+						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '操作対象のターミナルが変わりました');
+						return;
+					}
+					const continuation = await this.continueAgentInteraction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId as number);
+					if (continuation === 'completed') {
+						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'interaction-completed', '回答対象は別の操作で完了しました');
+						return;
+					}
+					if (continuation === 'stale') {
+						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-interaction', '回答対象の質問または承認要求が変わりました');
+						return;
 					}
 					await instance.sendText(parts[index], false);
 				}
@@ -972,6 +1026,62 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				await this.finalizeAgentInteraction(mobileId, msg.requestId, msg.token, interactionAccepted ? 'accepted' : 'failed').catch(err => this.logService.warn('[paradisMobileRelay] finalize agent interaction failed', err));
 			}
 		}
+	}
+
+	/**
+	 * 打鍵を流し始めてよい状態になるまで待つ。
+	 *
+	 * TUI は「質問を描く」のと「選択肢リストがキーボードフォーカスを取る」のが同時ではない。
+	 * その隙間に届いたキーは**入力欄へ吸われて消える**（Claude Code 2.1.223 で実測。待たずに
+	 * 送ると入力欄に文字が残るだけで質問は動かず、3秒待てば同じキーがそのまま通った）。
+	 * 単問・単一選択のキー列は数字1つだけなので、これを落とすと後続で拾い直す機会が無い。
+	 *
+	 * 目印は質問自身の選択肢ラベル（{@link paradisQuestionReadyMarker}）。TUI のフッタ文言に
+	 * 頼ると、表示が変わったときに黙って壊れる。
+	 *
+	 * 目印が無い場合と、待っても現れない場合は**そのまま流す**。ここは取りこぼしを減らすための
+	 * ものであって、送信を止める門ではない（画面の読み取りに失敗して回答できなくなる方が悪い）。
+	 */
+	private async waitForInteractionTarget(instance: ITerminalInstance, readyMarker: string | undefined, partCount: number): Promise<void> {
+		const startedAt = Date.now();
+		const settle = () => new Promise<void>(resolve => setTimeout(resolve, INTERACTION_READY_SETTLE_MS));
+		// この待ちが効いているかは本番でしか分からない。目印を見つけられたのか、時間切れだったのか、
+		// そもそも目印が無かったのかを残さないと、「まだ落ちる」ときに次の一手を決められない。
+		//
+		// **これは renderer 発なので、届く保証がまだない**（このプロジェクトでは renderer 由来の
+		// transaction が一度も観測できていない。原因は未特定）。レース説そのものの判定は
+		// PC側（shared process）の `agentQuestion.answer-settled` に載せた `safe_ms_since_question`
+		// で行う。こちらは届けば「目印の待ちが効いたか」という一段細かい話が読める、という位置づけ。
+		const record = (outcome: 'marker-seen' | 'timed-out' | 'no-marker') => {
+			runInParadisSpan('agentQuestion', 'inject-wait', {
+				safe_outcome: outcome,
+				safe_wait_ms: Date.now() - startedAt,
+				// 1つだけの回答（単問・単一選択、承認）は取りこぼすと拾い直せない。
+				safe_key_parts: partCount,
+			}, () => { });
+		};
+		if (readyMarker === undefined) {
+			// 目印を作れない回答（承認など）は、少なくとも先頭を0msで叩かない。
+			// 承認の「はい」は `1` に続けて Enter を送るので、先頭が入力欄へ吸われると
+			// **Enterがその `1` をエージェントへのメッセージとして送信してしまう**。
+			await settle();
+			record('no-marker');
+			return;
+		}
+		const deadline = startedAt + INTERACTION_READY_TIMEOUT_MS;
+		while (Date.now() < deadline) {
+			if (paradisScreenShowsMarker(paradisVisibleTerminalText(instance), readyMarker)) {
+				// 描かれてからフォーカスが移るまでのわずかな隙間を越えるための一拍。
+				await settle();
+				record('marker-seen');
+				return;
+			}
+			await new Promise<void>(resolve => setTimeout(resolve, INTERACTION_READY_POLL_MS));
+		}
+		// 目印が見つからないまま時間切れ。ここは取りこぼしを減らすためのものであって
+		// 送信を止める門ではないので、そのまま流す（画面の読み取りに失敗して回答できなくなる方が悪い）。
+		await settle();
+		record('timed-out');
 	}
 
 	private sendAgentActionResult(mobileId: string, id: number, token: string, requestId: string, status: 'accepted' | 'rejected', code?: string, message?: string, consumed?: boolean): void {

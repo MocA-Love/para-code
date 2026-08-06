@@ -133,6 +133,24 @@ const RELAY_AUTH_PROBE_AFTER_ATTEMPTS = 3;
 /** 認証切れが確定した後の再接続間隔。復帰は再ペアリングでしか起きないので長く取る。 */
 const RELAY_UNAUTHORIZED_RETRY_MS = 5 * 60_000;
 /**
+ * 「このセッションはもう無い」とモバイルへ伝えるために送るバイト数。
+ *
+ * 中身に意味は無く、**確実に復号に失敗すること**だけが要件。封緘フレームは
+ * 12Bカウンタnonce + 8Bフレームヘッダ + 16B GCMタグ で最低36Bあるので、それより短ければ
+ * モバイルの `Cipher.open` が nonce を読む前に「message too short」で必ず落ちる
+ * （鍵やカウンタの状態に依存しないので、どんな食い違い方をしていても同じ結果になる）。
+ * 32Bはモバイル→PCの hello と同じ長さなので**避ける**（逆流時に自己回復の分岐と紛れる）。
+ */
+const PARADIS_MOBILE_RESYNC_MARKER_BYTES = 8;
+/**
+ * 確立済みのセッションを「食い違った」と見なすまでの連続復号失敗回数。
+ *
+ * 1回で畳まないのは、別ソケットをまたいだ順序逆転で遅れて届く迷子フレームがあるため
+ * （`Cipher.open` は失敗時にカウンタを進めないので、1個では desync しない）。
+ * 立ったばかりの健全なセッションを蹴らないための猶予。
+ */
+const PARADIS_MOBILE_RESYNC_AFTER_FAILURES = 3;
+/**
  * PC本体のCPU/メモリ/ディスクをサンプリングする間隔。CPU使用率はこの区間の平均になる。
  * 短くしても丸め（5%刻み）で潰れるだけで再送が増えるだけなので、これ以上は詰めない。
  */
@@ -190,7 +208,7 @@ export class MobileSession {
 		private readonly mobileIdBytes: Uint8Array,
 		private readonly mobilePubKey: Uint8Array,
 		private readonly pcIdentity: MobileIdentity,
-		private readonly sendToRelay: (payload: Uint8Array) => void,
+		private readonly sendToRelay: (payload: Uint8Array) => boolean,
 		private readonly onFrame: (frame: IParadisMobileInboundFrame) => void,
 		private readonly onTraffic: ((sample: IParadisMobileFrameTrafficSample) => void) | undefined,
 		private readonly logService: ILogService,
@@ -254,20 +272,32 @@ export class MobileSession {
 
 	/** モバイルからのバイナリ（この mobileId 宛の payload）を処理する。 */
 	private async handlePayload(payload: Uint8Array): Promise<void> {
+		// この payload の失敗が「暗号層のもの」かどうか。**セッションを畳んでよいのは暗号層の
+		// 失敗だけ**で、フレームを配ったあとのハンドラ例外（アプリ層のバグ）で畳むと、
+		// 1フレーム捨てれば済んだものがモバイルの再接続に化ける。FrameMux は復号失敗を
+		// onError で握り潰すので、ここに落ちる例外はハンドラ由来と復号由来が混ざる。
+		let cryptoFailure = false;
 		try {
 			if (!this.channel) {
+				cryptoFailure = true;
 				// 最初のバイナリは hello（ephemeral公開鍵32B）。responderハンドシェイクを実行。
 				// response（=respEph+封緘ack）はそのまま relay 経由でモバイルへ返す
 				// （sendToRelay が packPcData で mobileId を付ける）。
 				const responder = await respondHandshake(this.pcIdentity, this.mobilePubKey, payload);
+				cryptoFailure = false;
 				this.channel = responder.channel;
 				this.pendingVerify = responder.verifyConfirm;
+				// 新しいセッションが立ったので、再ハンドシェイク要求の1回きり制限も解く
+				// （このセッションが将来また食い違ったら、もう一度だけ知らせられるように）。
+				this.resyncRequested = false;
 				this.sendToRelay(responder.response);
 				return;
 			}
 			if (!this.confirmed) {
 				// 次は confirm。検証してFrameMuxを確立。
+				cryptoFailure = true;
 				await this.pendingVerify!(payload);
+				cryptoFailure = false;
 				this.confirmed = true;
 				this.mux = new FrameMux(this.channel, {
 					sendSealed: (sealed: Uint8Array) => this.sendToRelay(sealed),
@@ -292,8 +322,11 @@ export class MobileSession {
 			if (this.lastMuxError !== undefined) {
 				const muxError = this.lastMuxError;
 				this.lastMuxError = undefined;
+				cryptoFailure = true;
 				throw muxError;
 			}
+			// ここまで来たら復号できている。単発の迷子フレームで畳まないための連続カウンタを戻す。
+			this.consecutiveCryptoFailures = 0;
 		} catch (err) {
 			// 自己回復: ハンドシェイク確立中/確立後に処理できない32Bのペイロードが届いた場合、
 			// それはモバイルが再接続して送り直した新しい hello（ephemeral公開鍵32B）である
@@ -303,22 +336,20 @@ export class MobileSession {
 			// モバイルが二度と接続できなくなるため、セッションを破棄してhelloとして処理し直す。
 			if (payload.length === 32 && this.channel !== undefined) {
 				this.logService.info(`[paradisMobileRelay] session ${this.mobileId}: undecryptable 32B payload; treating as new hello (session reset)`);
-				this.channel = undefined;
-				this.mux = undefined;
-				this.confirmed = false;
-				this.negotiatedProtocolVersion = undefined;
-				this.pendingVerify = undefined;
-				this.stateDelivery.reset();
+				this.resetSessionState();
 				await this.handlePayload(payload);
 				return;
 			}
 			// セッションリセット（上の32B分岐）は正常な自己回復なのでイベント化しない。
 			// ここに来るのは復号にも hello 解釈にも失敗した本物の異常（鍵の固着、フレーム破損、
 			// 受信ハンドラ自体の例外）で、それらを検知する唯一の窓口になる。鍵やペイロードは載せない。
+			const resync = this.resyncIfSessionDiverged(cryptoFailure);
 			reportParadisDiagnosticError('owned', 'mobile-e2e', 'frame-open-failed', err, {
 				phase: this.confirmed ? 'online' : 'handshaking',
 				transport: 'websocket',
 				safe_payload_bytes: payload.length,
+				// 畳んだのか、様子見なのか、送れなかったのか。復帰しないケースの切り分けが変わる。
+				safe_resync: resync,
 			});
 			this.logService.warn(`[paradisMobileRelay] session ${this.mobileId} error`, err);
 		}
@@ -327,6 +358,76 @@ export class MobileSession {
 	private pendingVerify: ((confirm: Uint8Array) => Promise<void>) | undefined;
 	/** FrameMux が握り潰した直近の復号失敗（handlePayload が拾い直して共通処理へ載せる）。 */
 	private lastMuxError: unknown;
+	/** このセッションで既に再ハンドシェイク要求を送ったか。送り直しは再確立まで1回きり。 */
+	private resyncRequested = false;
+	/** 復号に失敗し続けている回数。1回でも復号できたら戻す。 */
+	private consecutiveCryptoFailures = 0;
+
+	/**
+	 * 食い違ったセッションだけを畳んで、モバイルへ「やり直せ」と伝える。
+	 *
+	 * 既存の32B自己回復は「PCが古いセッションに固着、モバイルが新しい hello を送る」方向しか
+	 * 救えない。本番で起きているのは**逆向き**で、PCが新しく、モバイルが確立済みのつもりで
+	 * sealed frame を送ってくる。PCから知らせる経路が無いため、モバイルは自力で気付くまで
+	 * 詰まる（主経路は45〜65秒の死活監視で戻るが、rxだけ固着してtxが無事な派生形では
+	 * 受信が続くので**永久に発火しない**）。
+	 *
+	 * 専用の制御メッセージを足さないのは、**旧バージョンのアプリでもそのまま治る**ようにするため。
+	 * 確立済みのモバイルは受け取ったバイナリを必ず復号しようとし、失敗すれば `onFatal` から
+	 * ソケットを閉じて張り直す。だから「復号できないバイト列」を1回送るだけで再ハンドシェイクが起きる。
+	 *
+	 * **畳んでよい条件を絞ること。** ここは復号失敗だけでなくフレーム配布後のハンドラ例外も
+	 * 通る（`FrameMux` は復号失敗を onError で握り潰すので、`receive()` の reject は
+	 * アプリ層の例外）。アプリ層のバグで畳むと、1フレーム捨てれば済んだものが再接続に化け、
+	 * しかもモバイルが再接続後に同じフレームを送り直すとループになる。
+	 * 単発の遅着フレームでも畳まない: 別ソケットをまたいだ順序逆転で、立ったばかりの健全な
+	 * セッションを蹴ってしまう（`Cipher.open` は失敗時にカウンタを進めないので、1個の迷子では
+	 * desync しない）。
+	 *
+	 * 制約:
+	 * - **長さは32Bにしない**。32Bはモバイル→PCの hello と同じ形で、逆流したときに自己回復の
+	 *   分岐と衝突する
+	 * - **セッションにつき1回だけ**。毎フレーム返すと再接続ループになる
+	 * - モバイルがまだハンドシェイク中なら、向こうは established 前のバイナリを読み飛ばすので
+	 *   単に無視される（無害）
+	 */
+	private resyncIfSessionDiverged(cryptoFailure: boolean): 'sent' | 'already-sent' | 'not-connected' | 'watching' | 'not-crypto' {
+		if (!cryptoFailure) {
+			// アプリ層の例外。セッションは健全なので触らない。
+			return 'not-crypto';
+		}
+		this.consecutiveCryptoFailures++;
+		// セッションが無いのに封緘フレームが来た＝本番で観測した形。これは1回で確定できる。
+		// それ以外（確立済みなのに復号できない）は、迷子1個と本物の固着を区別するために続きを見る。
+		const diverged = this.channel === undefined || this.consecutiveCryptoFailures >= PARADIS_MOBILE_RESYNC_AFTER_FAILURES;
+		if (!diverged) {
+			return 'watching';
+		}
+		if (this.resyncRequested) {
+			return 'already-sent';
+		}
+		const marker = new Uint8Array(PARADIS_MOBILE_RESYNC_MARKER_BYTES);
+		if (!this.sendToRelay(marker)) {
+			// リレーへのソケットが落ちている。届いていないのにラッチを立てると、
+			// このセッションは二度とやり直しを促せなくなる。
+			return 'not-connected';
+		}
+		this.resyncRequested = true;
+		// 送ったあとに畳む。次に届く hello を素直に受けられる状態へ戻す。
+		this.resetSessionState();
+		return 'sent';
+	}
+
+	/** ハンドシェイク前の状態へ戻す。次の hello から作り直せるようにするためだけのもの。 */
+	private resetSessionState(): void {
+		this.consecutiveCryptoFailures = 0;
+		this.channel = undefined;
+		this.mux = undefined;
+		this.confirmed = false;
+		this.negotiatedProtocolVersion = undefined;
+		this.pendingVerify = undefined;
+		this.stateDelivery.reset();
+	}
 
 	private emit(frame: { ch: ChannelId; ws?: string; seq: number; payload: Uint8Array }): void {
 		// 送信元モバイルのIDを付けて renderer へ渡す（要求元にのみ返すべき応答の宛先解決に使う）。
@@ -2314,13 +2415,22 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return undefined;
 	}
 
-	private sendBinaryToMobile(mobileId: Uint8Array, sealed: Uint8Array): void {
+	/**
+	 * モバイル宛のバイナリをリレーへ流す。**送れたかどうかを返す。**
+	 *
+	 * リレーへのソケットが無い/開いていないときは黙って捨てる（従来どおり。切断中の送信は
+	 * 再接続後に意味を失うので握り潰してよい）。ただし「送った」ことを前提に状態を進める
+	 * 呼び出し側があるので、捨てたことは伝える。
+	 */
+	private sendBinaryToMobile(mobileId: Uint8Array, sealed: Uint8Array): boolean {
 		if (this.socket && this.socket.readyState === 1) {
 			const framed = packPcData(mobileId, sealed);
 			// WebSocket.send の型は ArrayBuffer を要求するため、生成済みバッファをそのまま渡す
 			// （packPcData は offset 0 の専有バッファを返す）。
 			this.socket.send(framed.buffer.slice(framed.byteOffset, framed.byteOffset + framed.byteLength) as ArrayBuffer);
+			return true;
 		}
+		return false;
 	}
 
 	private async onControl(text: string): Promise<void> {

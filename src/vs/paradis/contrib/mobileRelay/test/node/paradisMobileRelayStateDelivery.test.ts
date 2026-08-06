@@ -98,7 +98,7 @@ suite('ParadisMobileRelay State delivery', () => {
 			new Uint8Array(16),
 			mobileIdentity.publicKey,
 			pcIdentity,
-			() => { },
+			() => true,
 			() => { },
 			undefined,
 			new NullLogService(),
@@ -122,6 +122,48 @@ suite('ParadisMobileRelay State delivery', () => {
 		assert.deepStrictEqual(delivered, [[1, 2, 3], [1, 2, 3]]);
 	});
 
+	test('確立済みのモバイルが古いセッションで送ってきたら、やり直しを促して自分の状態も畳む', async () => {
+		// 32B分岐は「PCが古い・モバイルが新しい」方向しか救えない。本番で起きているのは逆で、
+		// PC側にセッションが無いのにモバイルは確立済みのつもりで sealed frame を送ってくる。
+		// PCから知らせる手段が無いとモバイルは黙って詰まる（受信は続くので死活監視も効かない）。
+		const pcIdentity = await generateMobileIdentity();
+		const mobileIdentity = await generateMobileIdentity();
+		const sent: Uint8Array[] = [];
+		const session = new MobileSession(
+			'mobile',
+			new Uint8Array(16),
+			mobileIdentity.publicKey,
+			pcIdentity,
+			payload => { sent.push(payload); return true; },
+			() => { },
+			undefined,
+			new NullLogService(),
+		);
+		const access = session as unknown as { channel: SecureChannel | undefined; confirmed: boolean };
+		// hello(32B) ではない長さ = 封緘フレーム。未確立のPCはこれを hello と誤解して落ちる。
+		const sealedFrame = new Uint8Array(57);
+
+		await session.enqueuePayload(sealedFrame);
+		await session.enqueuePayload(sealedFrame);
+
+		assert.deepStrictEqual({
+			// 送るのは1回だけ。毎フレーム返すと再接続ループになる。
+			markers: sent.length,
+			// 32Bにすると、逆流したときにPC側の32B自己回復と紛れる。
+			isNot32Bytes: sent[0]?.length !== 32,
+			// 封緘フレームの最小長(12+8+16=36)未満なら、鍵の状態に関係なく必ず復号に失敗する。
+			failsToDecrypt: (sent[0]?.length ?? 0) < 36,
+			channelCleared: access.channel === undefined,
+			confirmedCleared: access.confirmed,
+		}, {
+			markers: 1,
+			isNot32Bytes: true,
+			failsToDecrypt: true,
+			channelCleared: true,
+			confirmedCleared: false,
+		});
+	});
+
 	test('切断レポートにはクリア前のモバイルセッション数を記録する', () => {
 		const reports: { readonly extras: Record<string, unknown> }[] = [];
 		const stopped: string[] = [];
@@ -130,6 +172,10 @@ suite('ParadisMobileRelay State delivery', () => {
 		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
 			sessions,
 			webrtcRendererLeases: new Map(),
+			// handleDisconnected が畳む対象はここに揃えておくこと。足りないと
+			// 「clear が undefined」で落ちるだけで、何が欠けたのかは分からない。
+			voiceSubscribers: new Map(),
+			voiceSending: new Set(),
 			enabled: true,
 			connectionState: 'online',
 			reconnectAttempt: 0,

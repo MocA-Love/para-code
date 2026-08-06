@@ -248,4 +248,39 @@ suite('ParadisSentryCommon', () => {
 
 		assert.deepStrictEqual(sanitized.extra, { close_code: 1006, safe_close_reason: 'superseded' });
 	});
+
+	test('keeps safe_ span attributes that collide with the unsafe-key list', () => {
+		// span attribute の置き場は `contexts.trace.data`。ここが否定リストだけで濾されていた頃は
+		// `safe_terminal_editors` が `terminal` に一致して黙って捨てられ、スペース切り替えの
+		// 計装が本番で一度も値を出せていなかった。名前だけで落とさないことを固定する。
+		const sanitized = paradisSanitizeSentryEvent({
+			contexts: {
+				trace: {
+					data: {
+						safe_terminal_editors: 3,
+						safe_path_count: 2,
+						safe_session_count: 1,
+						cwd: '/Users/example/secret-project',
+						terminal: 'zsh -lc secret',
+					},
+				},
+			},
+		});
+
+		assert.deepStrictEqual(sanitized.contexts?.trace?.data, {
+			safe_terminal_editors: 3,
+			safe_path_count: 2,
+			safe_session_count: 1,
+		});
+	});
+
+	test('still scrubs values of safe_ context keys that carry text', () => {
+		// `safe_` は「呼び出し側がユーザー内容を含まないと宣言した」印でしかないので、
+		// 宣言を信じて値を素通りさせない。
+		const sanitized = paradisSanitizeSentryEvent({
+			contexts: { 'para.relay': { safe_detail: 'failed for /Users/alice/private.txt' } },
+		});
+
+		assert.strictEqual(sanitized.contexts?.['para.relay']?.safe_detail, 'failed for ~/private.txt');
+	});
 });

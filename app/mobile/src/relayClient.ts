@@ -59,7 +59,7 @@ export interface RelayClientCallbacks {
 	readonly onError?: (error: unknown) => void;
 }
 
-interface Timers {
+export interface Timers {
 	setTimeout(handler: () => void, ms: number): unknown;
 	clearTimeout(handle: unknown): void;
 }
@@ -87,6 +87,14 @@ export class RelayClient {
 	private mux: FrameMux | null = null;
 	private state: ConnectionState = 'offline';
 	private closedByUser = false;
+	/**
+	 * PCが戻ってきたので自分から張り直した切断か。異常系ではないので記録しない。
+	 *
+	 * RN の WebSocket はローカル発の close code を 0 に潰すため、`onclose` の code では
+	 * 「自分で閉じた」と「切られた」を区別できない。案F でこの張り直しの頻度が上がったので、
+	 * 抑止しないと `unexpected-close-0` が Sentry のノイズになる。
+	 */
+	private closedForPcRestart = false;
 	private suspended = false;
 	/** 破棄済みソケットにキューされていたコールバックを無効化する世代番号。 */
 	private socketGeneration = 0;
@@ -95,13 +103,12 @@ export class RelayClient {
 	private connectTimeoutHandle: unknown = null;
 	/** 最後に何かを受信した時刻（onlineのまま死んだソケットの検出用）。 */
 	private lastReceivedAt = 0;
-	/** 直近のPC presence。offline→online遷移（=PC再起動）の検出に使う。 */
-	private lastPcOnline: boolean | undefined;
 	/**
 	 * いま張っているソケットについてリレーが伝えてきたPCの在否。ソケットごとに引き直す。
 	 *
-	 * `lastPcOnline` を流用してはいけない。あちらは接続をまたいで持ち越すので、リレーそのものへ
-	 * 到達できていない場合でも前回の`true`が残り、「PCは居るのに繋がらない」と誤判定する。
+	 * **接続をまたいで持ち越す値をここへ流用してはいけない。** 到達できていない場合でも前回の
+	 * `true` が残り「PCは居るのに繋がらない」と誤判定するし、再接続直後に届く最初の presence を
+	 * offline→online の復帰と読み違えて、開いたばかりのソケットを無駄に閉じることになる。
 	 * `undefined` は「リレーから presence が届いていない」＝リレーまで届いていない可能性を指す。
 	 */
 	private pcOnlineForCurrentSocket: boolean | undefined;
@@ -305,6 +312,7 @@ export class RelayClient {
 		// ローカルの close code を onclose へ往復させず 0 に潰すため、下の `socket.close(4001)` は
 		// `unexpected-close-0` として届く（PC側が「operation名で区別する」としているのと同じ事情）。
 		let closedByConnectTimeout = false;
+		this.closedForPcRestart = false;
 		// 一定時間内にE2E確立まで到達しなければ強制的に閉じる（onclose経由で再接続）。
 		this.clearConnectTimeout();
 		this.connectTimeoutHandle = this.timers.setTimeout(() => {
@@ -402,7 +410,7 @@ export class RelayClient {
 				// これまで一切記録が残らず、同じ事象がPC側の close code だけで語られる非対称に
 				// なっていた。onerror 済みのときと、自分がタイムアウトで閉じたとき（直前に
 				// connect-timeout を出す判断を済ませている）は二重計上しない。
-				if (!sawSocketError && !closedByConnectTimeout && !this.closedByUser && !this.suspended) {
+				if (!sawSocketError && !closedByConnectTimeout && !this.closedForPcRestart && !this.closedByUser && !this.suspended) {
 					const code = event?.code ?? 0;
 					reportMobileDiagnosticError('relay', `unexpected-close-${code}`, new Error(`Relay connection closed (code ${code})`), {
 						phase: this.state,
@@ -420,8 +428,12 @@ export class RelayClient {
 		try {
 			const msg = decodeRelayControl(text);
 			if (msg.type === 'presence' && msg.peer === 'pc') {
-				const wasOnline = this.lastPcOnline;
-				this.lastPcOnline = msg.online;
+				// 「このソケットが開いている間にPCが居なくなって戻ってきた」かどうかで判断する。
+				// `lastPcOnline` は接続をまたいで持ち越すので、ここには使えない（再接続の直後に
+				// 届く最初の presence を offline→online と読み違え、開いたばかりのソケットを
+				// 無駄に閉じてしまう）。`undefined` ＝ このソケットで最初の presence なので、
+				// 持ち越された状態は無く、張り直す理由も無い。
+				const wasOnlineOnThisSocket = this.pcOnlineForCurrentSocket;
 				// リレーはモバイルのソケットを受理した直後に必ず現在のPC在否を送る（deviceDOのacceptMobile）。
 				// つまりE2Eハンドシェイクが始まる前にこの値は埋まる。
 				this.pcOnlineForCurrentSocket = msg.online;
@@ -431,8 +443,17 @@ export class RelayClient {
 				// 旧セッション鍵のmuxで送受信を続けると、新PCは最初のsealed frameをhandshake helloと
 				// 誤解してセッションを拒否し、以後この接続では何も受信できなくなる。ソケットを
 				// 閉じて即再接続し、新しいhelloからhandshakeをやり直す。
-				if (msg.online && wasOnline === false && this.mux !== null) {
+				//
+				// **ハンドシェイク途中（mux が未確立）でも張り直すこと。** 以前はここに
+				// `this.mux !== null` の条件があり、「muxが無いなら壊れようがない」と考えていたが、
+				// PCは「捨てたセッションの応答」を送れてしまうので前提が成り立たない。実際に本番で
+				// 起きていたのは次の並び: ①helloを送る ②PCがresponseを送出（まだ在空中）
+				// ③PCのリレーソケットが1006で落ちてPC側セッションが消える ④このpresenceフラップが届くが
+				// mux===null なので何もしない ⑤②のresponseが届きハンドシェイクは成功したように見える
+				// ⑥直後の requestState が、セッションを失ったPCから hello と誤解されて全滅。
+				if (msg.online && wasOnlineOnThisSocket === false) {
 					this.reconnectAttempt = 0;
+					this.closedForPcRestart = true;
 					try {
 						this.socket?.close(4002, 'pc restarted');
 					} catch { /* onclose経由の再接続に任せる */ }
