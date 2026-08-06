@@ -37,9 +37,8 @@ export default function PcDetailScreen() {
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const { id } = useLocalSearchParams<{ id?: string }>();
-	const { pcs, activePcId, switchPc, switchPcWithReturn, renamePc, removePc } = useAppStore(useShallow(s => ({
-		pcs: s.pcs, activePcId: s.activePcId, switchPc: s.switchPc, switchPcWithReturn: s.switchPcWithReturn,
-		renamePc: s.renamePc, removePc: s.removePc,
+	const { pcs, activePcId, switchPc, renamePc, removePc } = useAppStore(useShallow(s => ({
+		pcs: s.pcs, activePcId: s.activePcId, switchPc: s.switchPc, renamePc: s.renamePc, removePc: s.removePc,
 	})));
 
 	const pc = pcs.find(item => item.id === id);
@@ -69,13 +68,15 @@ export default function PcDetailScreen() {
 	 * 使用量を開く。対象が「いま見ているPC」でなければ、先に切り替えてから開く
 	 * （使用量の画面はいま見ているPCのものを出すので、切り替えないと別のPCの数字が出る）。
 	 *
-	 * 切り替えると開いていたスペース・ターミナルの選択が外れるため、
-	 * 「戻る」を添える版を使う（画面上部に告知が出て、元のPCへ戻せる）。
+	 * `switchPcWithReturn`（画面上部に「戻る」付きの告知を出す版）は**ここでは使えない**。
+	 * この画面は設定シートの上に載っており、告知の描画先（OverlayHost）はシートの背面にある。
+	 * 出しても隠れたまま数秒で消えるので、あるはずの戻り道を約束することになってしまう。
+	 * 代わりに、切り替わること自体を下の注記で先に伝えている。
 	 */
 	const openUsage = (route: string) => {
 		hapticSelection();
 		if (!isActive) {
-			switchPcWithReturn(pc.id);
+			switchPc(pc.id);
 		}
 		router.push(route as '/ccusage');
 	};
@@ -176,8 +177,8 @@ export default function PcDetailScreen() {
 				</View>
 				{!isActive ? (
 					<Text style={styles.note}>
-						使用量を開くと、このPCに切り替わります（数字は必ず開いたPCのものになります）。
-						元のPCへは、切り替えたときに出る案内の「戻る」で戻せます。
+						使用量を開くと、見ているPCがこのPCに切り替わります（数字は必ず開いたPCのものになります）。
+						設定を閉じたあとのホームや他のタブも、このPCの内容になります。
 					</Text>
 				) : null}
 
