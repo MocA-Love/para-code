@@ -40,6 +40,18 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.5.1',
+		date: '2026-08-06',
+		items: [
+			{
+				icon: 'link-outline',
+				title: 'つながっているのに操作が何も効かなくなる問題を直しました',
+				body: 'PCとつなぎ直している最中に接続が切れると、アプリ側だけが「つながった」と思い込み、送った操作がPCに届かないまま画面は生きているように見えていました。つなぎ直しをやり直すようにしています。',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.5.0',
 		date: '2026-08-06',
 		headline: '通知の中身が戻り、画面ごとの見方が増えました',

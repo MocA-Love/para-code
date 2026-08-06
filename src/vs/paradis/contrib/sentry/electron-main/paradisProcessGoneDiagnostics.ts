@@ -43,7 +43,10 @@ export function registerParadisProcessGoneDiagnostics(): void {
 		}
 		// `type` は 'GPU' や 'Utility' までしか分からないので、名前も併せて送らないと
 		// どの機能（拡張ホスト・ptyHost・ファイル監視…）が落ちたのかが特定できない。
-		const label = details.serviceName ?? details.name ?? details.type;
+		// **`name` を先に見ること**。`serviceName` は mojo のサービス名なので node 系 utility が
+		// 全部 `node.mojom.NodeService` になり、fileWatcher・extensionHost・shared-process の
+		// クラッシュが Sentry 上で1つの issue に混ざって読めなくなる（実際そうなっていた）。
+		const label = details.name ?? details.serviceName ?? details.type;
 		reportParadisDiagnosticError(
 			'owned',
 			'process-lifecycle',

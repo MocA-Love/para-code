@@ -85,6 +85,16 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	private readonly _recoveryPolicy = new ParadisViewerRecoveryPolicy();
 	private _watchdogGeneration = -1;
 	private _watchdogTimeoutMs = PARADIS_VIEWER_CONTENT_TIMEOUT_MS;
+	/**
+	 * いまの描画で `setHtml` を呼んだ時刻と、そこから最後に届いたシグナル。
+	 *
+	 * 白紙の報告にこの2つが無いと、**「webview がそもそも起動していない」（content-started すら
+	 * 来ない）のか「起動はしたが描画が止まった」（started/worker-ready の後で時間切れ）のかを
+	 * Sentry から区別できない**。実際この区別が付かないまま、白紙34/35件がどちらなのか分からず
+	 * 調査が止まった。待ち時間はシグナルのたびに張り直されるので、タイマーの値では代用できない。
+	 */
+	private _renderStartedAt = 0;
+	private _lastContentSignal: string = 'none';
 	private _codeEditor: ICodeEditor | undefined;
 	private readonly _modelRef = this._register(new MutableDisposable<IReference<IResolvedTextEditorModel>>());
 
@@ -340,6 +350,8 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 	private _startContentWatchdog(generation: number, timeoutMs: number): void {
 		this._watchdogGeneration = generation;
 		this._watchdogTimeoutMs = timeoutMs;
+		this._renderStartedAt = Date.now();
+		this._lastContentSignal = 'none';
 		// ここでは service worker の猶予を足さない。制御待ちは webview が内容を受け取ってから
 		// 始まるので、その合図（content-started）が来た時点で足す。webview がそもそも動いていない
 		// ケースまで長く待つと、読める状態に戻すのがいたずらに遅くなる。
@@ -374,6 +386,14 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			safe_viewer: this.getId(),
 			safe_reason: reason,
 			safe_action: action,
+			// `setHtml` からの実経過。`safe_last_signal` と併せて読むと、webview が起動して
+			// いないのか（`none`）、起動後に描画が止まったのか（`content-started` 以降）が分かる。
+			//
+			// **`content-timeout` のときだけ載せる。** `fatal-error` は描画が成功して何時間も
+			// 経った後にも来るので、そこで経過を出すと「最後の setHtml からの数時間」という
+			// 誤読しか生まない（成功時にウォッチドッグは止まるが起点は残るため）。
+			duration_ms: reason === 'content-timeout' && this._renderStartedAt !== 0 ? Date.now() - this._renderStartedAt : undefined,
+			safe_last_signal: this._lastContentSignal,
 		});
 
 		// 壊れた webview は作り直す。Raw へ倒す場合も、掴めなくなったコンテンツプロセスを
@@ -479,6 +499,10 @@ export abstract class ParadisRenderedFileEditor extends EditorPane {
 			if (signal.origin !== webview.origin || this._watchdogGeneration !== this._renderGeneration) {
 				return;
 			}
+			// **どのシグナルも記録する**。`sw-control-timeout` / `sw-register-timeout` のような
+			// service worker 系こそが「起動後に描画が止まった」原因の本命なので、content 系だけを
+			// 覚えていると、いちばん区別したかった状態が `content-started` に埋もれて落ちる。
+			this._lastContentSignal = signal.code;
 			switch (signal.code) {
 				case ParadisWebviewSignalCode.ContentApplied:
 					this._onContentApplied();

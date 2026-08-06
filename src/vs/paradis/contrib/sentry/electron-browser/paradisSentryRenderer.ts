@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
@@ -16,12 +17,17 @@ import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepa
  * Errors are rare and every one is worth a payload; a space switch happens dozens of times a day
  * per user, so sending all of them would change the volume by orders of magnitude and there is no
  * rate limiter on the transaction path (`paradisPrepareSentryTransaction` deliberately skips the
- * one that guards events). A tenth still yields plenty of samples for a p50/p90.
+ * one that guards events).
+ *
+ * **一時的に全件にしてある（2026-08-06）。** 0.1 で回した期間の実績は `para.workspaceSwitch.*` が
+ * **本番で1件も届かない**というもので、しかもこのプロジェクトには renderer 由来の transaction が
+ * 一度も存在しない。「そもそも経路が生きているのか」と「抽選で落ちているだけか」を区別できないと
+ * 何も調整できないので、まず母数を作る。**分布が取れたら 0.1 へ戻すこと。**
  *
  * Only list actions that are that frequent here. Answering a question happens a few times a day at
  * most, so those spans stay at full rate — sampling them would leave too little to diagnose.
  */
-const PARADIS_ROUTINE_TRACE_SAMPLE_RATE = 0.1;
+const PARADIS_ROUTINE_TRACE_SAMPLE_RATE = 1;
 const PARADIS_ROUTINE_TRACE_PREFIXES = ['para.workspaceSwitch.'];
 
 try {

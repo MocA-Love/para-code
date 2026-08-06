@@ -180,7 +180,11 @@ export class ParadisHealthBeacon extends Disposable {
 			const kind = toProcessKind(metric.type);
 			return {
 				kind,
-				role: kind === 'utility' ? paradisNormalizeHealthRole(metric.serviceName ?? metric.name) : kind,
+				// `name` が先。**逆にすると全ての node 系 utility が `node.mojom.NodeService` に潰れ、
+				// `extension_host` も `file_watcher` も常に 0 として記録される**（`serviceName` は
+				// mojo のサービス名なので、どの機能の utility かを区別しない）。`name` は Utility
+				// にしか無いので、無い場合だけ `serviceName` へ落とす。
+				role: kind === 'utility' ? paradisNormalizeHealthRole(metric.name ?? metric.serviceName) : kind,
 				// Electron の workingSetSize はKB単位。
 				memory: (metric.memory?.workingSetSize ?? 0) * 1024,
 				cpu: metric.cpu?.percentCPUUsage ?? 0,

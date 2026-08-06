@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexThreadTargetsForPaneSessions, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { paradisCodexApprovalResultForTest, paradisParseCodexApprovalRequestForTest } from '../../node/paradisCodexLiveClient.js';
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
@@ -851,6 +851,35 @@ suite('ParadisMobileAgentChat', () => {
 				stop: paradisIsLateHookAfterTurnEnd('Stop', 1_000_500, 1_000_000),
 				sessionEnd: paradisIsLateHookAfterTurnEnd('SessionEnd', 1_000_500, 1_000_000),
 			}, { userPromptSubmit: false, stop: false, sessionEnd: false });
+		});
+
+		suite('質問が描かれたことを画面で確かめるための目印', () => {
+			test('先頭の選択肢ラベルから、折り返しに巻き込まれない一片を取る', () => {
+				// 目印にフッタの英語表記を使うと、TUI の文言が変わったときに黙って壊れる。
+				// 質問自身のラベルなら、その質問が出ていることを直接示せる。
+				assert.deepStrictEqual({
+					plain: paradisQuestionReadyMarker({ options: [{ label: 'Alpha', description: '' }] }),
+					// 空白は落として詰める。空白の手前で切ると `"✓ Yes"` のような
+					// 1文字トークンで目印が作れなくなり、残すと折り返しの改行で照合が外れる。
+					spaced: paradisQuestionReadyMarker({ options: [{ label: 'Use the cached build', description: '' }] }),
+					symbolPrefixed: paradisQuestionReadyMarker({ options: [{ label: '✓ Yes', description: '' }] }),
+					japanese: paradisQuestionReadyMarker({ options: [{ label: 'キャッシュを使う', description: '' }] }),
+					long: paradisQuestionReadyMarker({ options: [{ label: 'ABCDEFGHIJKLMNOPQRST', description: '' }] }),
+					// 目印を作れないものは undefined。呼び出し側は待たずに従来どおり流す。
+					tooShort: paradisQuestionReadyMarker({ options: [{ label: 'A', description: '' }] }),
+					noOptions: paradisQuestionReadyMarker({ options: [] }),
+					missing: paradisQuestionReadyMarker(undefined),
+				}, {
+					plain: 'Alpha',
+					spaced: 'Usethecached',
+					symbolPrefixed: '✓Yes',
+					japanese: 'キャッシュを使う',
+					long: 'ABCDEFGHIJKL',
+					tooShort: undefined,
+					noOptions: undefined,
+					missing: undefined,
+				});
+			});
 		});
 	});
 });

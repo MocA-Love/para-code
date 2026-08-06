@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
@@ -15,6 +16,7 @@ import {
 	paradisBuildHealthMeasurements,
 	paradisBuildHealthTags,
 	paradisNormalizeHealthRole,
+	PARADIS_HEALTH_MEASUREMENT_LIMIT,
 } from '../../common/paradisHealthBeacon.js';
 
 function snapshot(overrides: Partial<IParadisHealthSnapshot> = {}): IParadisHealthSnapshot {
@@ -109,39 +111,27 @@ suite('ParadisHealthBeacon', () => {
 
 	test('measurements aggregate per process kind, per utility role and across windows', () => {
 		const measurements = paradisBuildHealthMeasurements(snapshot());
-		assert.deepStrictEqual({
-			oldSpaceUsed: measurements['main.v8.old_space_used'],
-			liveRatio: measurements['main.v8.old_space_live_ratio'],
-			detached: measurements['main.v8.detached_contexts'],
-			appTotal: measurements['app.memory_total'],
-			rendererTotal: measurements['renderer.memory_total'],
-			rendererMax: measurements['renderer.memory_max'],
-			rendererCount: measurements['renderer.count'],
-			gpu: measurements['gpu.memory'],
-			extensionHost: measurements['extension_host.memory'],
-			sharedProcess: measurements['shared_process.memory'],
-			jsHeapTotal: measurements['window.js_heap_total'],
-			jsHeapMax: measurements['window.js_heap_max'],
-			domMax: measurements['window.dom_elements_max'],
-			terminals: measurements['terminal.count'],
-			uptime: measurements['uptime'],
-		}, {
-			oldSpaceUsed: { value: 1_500, unit: 'byte' },
-			liveRatio: { value: 0.75, unit: 'ratio' },
-			detached: { value: 3, unit: 'none' },
-			appTotal: { value: 16_128, unit: 'byte' },
-			rendererTotal: { value: 5_120, unit: 'byte' },
-			rendererMax: { value: 4_096, unit: 'byte' },
-			rendererCount: { value: 2, unit: 'none' },
-			gpu: { value: 8_192, unit: 'byte' },
-			extensionHost: { value: 512, unit: 'byte' },
-			sharedProcess: { value: 0, unit: 'byte' },
-			jsHeapTotal: { value: 400, unit: 'byte' },
-			jsHeapMax: { value: 300, unit: 'byte' },
-			domMax: { value: 5_000, unit: 'none' },
-			terminals: { value: 35, unit: 'none' },
-			uptime: { value: 5, unit: 'hour' },
+		assert.deepStrictEqual(measurements, {
+			'main.v8.old_space_used': { value: 1_500, unit: 'byte' },
+			'main.v8.old_space_live_ratio': { value: 0.75, unit: 'ratio' },
+			'main.rss': { value: 2_800_000_000, unit: 'byte' },
+			'extension_host.memory': { value: 512, unit: 'byte' },
+			'app.memory_total': { value: 16_128, unit: 'byte' },
+			'renderer.memory_total': { value: 5_120, unit: 'byte' },
+			'gpu.memory': { value: 8_192, unit: 'byte' },
+			'app.process_count': { value: 6, unit: 'none' },
+			'host.memory_free': { value: 1_000, unit: 'byte' },
+			'uptime': { value: 5, unit: 'hour' },
 		});
+	});
+
+	test('stays within the ten custom measurements Sentry keeps per transaction', () => {
+		// 超えた分はエラーにならず、アルファベット順で先頭10個以外が黙って捨てられる。
+		// 以前それで `main.v8.old_space_used` が本番に一度も届いていなかったので、数を固定する。
+		assert.ok(
+			Object.keys(paradisBuildHealthMeasurements(snapshot())).length <= PARADIS_HEALTH_MEASUREMENT_LIMIT,
+			'measurements must stay within the ingestion limit or the extras are dropped silently',
+		);
 	});
 
 	test('keeps ratios finite when the heap statistics are unavailable', () => {
@@ -152,34 +142,57 @@ suite('ParadisHealthBeacon', () => {
 		}));
 		assert.deepStrictEqual({
 			liveRatio: measurements['main.v8.old_space_live_ratio'],
-			rendererMax: measurements['renderer.memory_max'],
-			jsHeapMax: measurements['window.js_heap_max'],
-			terminals: measurements['terminal.count'],
+			rendererTotal: measurements['renderer.memory_total'],
+			extensionHost: measurements['extension_host.memory'],
 		}, {
 			liveRatio: { value: 0, unit: 'ratio' },
-			rendererMax: { value: 0, unit: 'byte' },
-			jsHeapMax: { value: 0, unit: 'byte' },
-			terminals: { value: 0, unit: 'none' },
+			rendererTotal: { value: 0, unit: 'byte' },
+			extensionHost: { value: 0, unit: 'byte' },
 		});
 	});
 
-	test('context lists the heaviest processes only, capped at ten entries', () => {
+	test('context carries the breakdown that did not fit into measurements', () => {
+		const context = paradisBuildHealthContext(snapshot());
+		assert.deepStrictEqual({
+			uptimeHours: context['uptime_hours'],
+			processCount: context['process_count'],
+			browserViewCount: context['browser_view_count'],
+			detached: context['safe_main_v8_detached_contexts'],
+			rendererCount: context['safe_renderer_count'],
+			sharedProcess: context['safe_shared_process_memory'],
+			jsHeapTotal: context['safe_window_js_heap_total'],
+			domMax: context['safe_window_dom_elements_max'],
+			terminals: context['safe_terminal_count'],
+		}, {
+			uptimeHours: 5,
+			processCount: 6,
+			browserViewCount: 8,
+			detached: 3,
+			rendererCount: 2,
+			sharedProcess: 0,
+			jsHeapTotal: 400,
+			domMax: 5_000,
+			terminals: 35,
+		});
+	});
+
+	test('flattens the heaviest processes instead of nesting them', () => {
+		// ネストしたオブジェクトの配列は Sentry の context 正規化で `"[Object]"` に潰れて
+		// 内訳が読めなくなる。平たいキーで送ること。
 		const processes = Array.from({ length: 14 }, (_, index) => ({
 			kind: 'utility' as const, role: 'other', memory: index * 100, cpu: 1.4,
 		}));
 		const context = paradisBuildHealthContext(snapshot({ processes }));
 		assert.deepStrictEqual({
-			uptimeHours: context['uptime_hours'],
-			processCount: context['process_count'],
-			browserViewCount: context['browser_view_count'],
-			top: context['top_processes'],
+			first: [context['safe_top1_role'], context['safe_top1_memory'], context['safe_top1_cpu']],
+			fifth: [context['safe_top5_role'], context['safe_top5_memory'], context['safe_top5_cpu']],
+			sixth: context['safe_top6_role'],
+			nested: context['top_processes'],
 		}, {
-			uptimeHours: 5,
-			processCount: 14,
-			browserViewCount: 8,
-			top: Array.from({ length: 10 }, (_, index) => ({
-				kind: 'utility', role: 'other', memory: (13 - index) * 100, cpu: 1,
-			})),
+			first: ['other', 1_300, 1],
+			fifth: ['other', 900, 1],
+			sixth: undefined,
+			nested: undefined,
 		});
 	});
 });

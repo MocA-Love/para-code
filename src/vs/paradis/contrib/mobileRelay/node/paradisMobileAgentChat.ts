@@ -305,8 +305,24 @@ const APPEND_READ_CHUNK_BYTES = 1024 * 1024;
 const MAX_TRANSCRIPT_LINE_BYTES = 4 * 1024 * 1024;
 /** 保持するメッセージ数の上限 (超過分は古いものから捨てる)。 */
 const MESSAGE_RING_LIMIT = 400;
-/** 質問グループごとの通知回数を覚えておく上限（計測用。超過分は古いものから捨てる）。 */
-const QUESTION_NOTIFY_COUNT_LIMIT = 200;
+/**
+ * 通知回数のカウンタを覚えておく上限（計測用。超過分は最後に触ったものから遠い順に捨てる）。
+ *
+ * 1回の通知で「グループ単位」と「内容単位」の2エントリを使うので、質問の実効履歴はこの半分。
+ * 追い出しで消えるとカウントが1に戻り、**まさに検出したい重複が上限付近で見えなくなる**ため、
+ * 素朴な挿入順ではなく最終利用順で捨てる（{@link bumpQuestionNotifyCount}）。
+ */
+const QUESTION_NOTIFY_COUNT_LIMIT = 400;
+/** 目印にするラベル片の長さ。検証側の上限（`paradisMobileWorkspaceProvider`）はこれより緩い。 */
+const PARADIS_QUESTION_READY_MARKER_LENGTH = 12;
+
+/**
+ * 質問の通知がどこまで進んだか。`dispatched` 以外は「出そうとしてやめた」。
+ *
+ * 「通知が届かない」の切り分けは、この内訳が無いと始まらない（浮上した回数だけを数えていても、
+ * 出さなかったのか出したのに届かなかったのかが永久に分からない）。
+ */
+type ParadisQuestionNotifyOutcome = 'dispatched' | 'no-terminal' | 'no-owner' | 'unauthorized' | 'owner-changed' | 'authorize-failed';
 /** 回答のキー列を流し終えたかを見る待ち時間の上限（計測用）。 */
 const QUESTION_SETTLE_MAX_WAIT_MS = 30_000;
 /** attach応答スナップショットで送る最大件数。 */
@@ -1155,6 +1171,29 @@ function parseAskUserQuestions(input: unknown, toolUseId: string | undefined, ts
 		questionCount: out.length,
 		...(toolUseId !== undefined ? { questionGroup: toolUseId } : {}),
 	}));
+}
+
+/**
+ * 「TUI が選択肢リストを出し終えたか」を画面文字列で判定するための目印を作る。
+ *
+ * 打鍵を流し始めてよいのは、リストがキーボードフォーカスを取った後。**それより前に送ると
+ * 入力欄へ吸われて消える**（Claude Code 2.1.223 で実測。単問・単一選択はキーが1つしか無いので、
+ * 取りこぼすと二度と拾えない）。フッタの英語表記（`Esc to cancel` 等）に頼ると TUI の文言変更で
+ * 黙って壊れるため、**その質問自身の先頭の選択肢ラベル**を目印にする。
+ *
+ * ターミナルは折り返すので、長いラベルは画面上で途切れる。先頭の短い一片だけを使う。
+ * 目印を作れない場合（ラベルが無い・記号だけ等）は `undefined` を返し、待たずに従来どおり流す。
+ */
+export function paradisQuestionReadyMarker(question: Pick<IRawMessage, 'options'> | undefined): string | undefined {
+	const label = question?.options?.[0]?.label;
+	if (typeof label !== 'string') {
+		return undefined;
+	}
+	// **空白を取り除いてから切る**。空白の手前で切ると `"✓ Yes"` のような1文字トークンで
+	// 目印を作れなくなり、逆に空白を残すと折り返しの改行で照合が外れる。
+	// 照合側も同じ規則で空白を落とす（paradisScreenShowsMarker）。
+	const marker = label.replace(/\s+/g, '').slice(0, PARADIS_QUESTION_READY_MARKER_LENGTH);
+	return marker.length >= 2 ? marker : undefined;
 }
 
 /**
@@ -2931,6 +2970,15 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly interactionClaims = new Map<string, string>();
 	/** 計測専用: `token\0questionGroup` → その質問グループで通知を送った回数。 */
 	private readonly questionNotifyCounts = new Map<string, number>();
+	/**
+	 * 計測専用: `token\0interactionId` → その質問が最初に浮上した時刻。
+	 *
+	 * **レース説と「操作が遅れて届いた」を切り分ける唯一の材料。** TUI は質問を描いてから
+	 * 選択肢リストがフォーカスを取るまでに隙間があり、そこへ打鍵が届くと入力欄へ吸われて消える。
+	 * ただしユーザーが通知を見てタップするのは普通は数十秒〜数分後で、原理的にその窓の外になる。
+	 * どちらが本番の不成立を説明するのかは、この経過時間を回答の結果と突き合わせないと決まらない。
+	 */
+	private readonly questionFirstSeenAt = new Map<string, number>();
 	/** 計測専用: キー注入後に質問が消えたかを確かめる遅延チェック。 */
 	private readonly questionSettleTimers = new Set<ReturnType<typeof setTimeout>>();
 	private readonly activityDetailRequests = new Map<string, string>();
@@ -3755,14 +3803,21 @@ export class ParadisMobileAgentChat extends Disposable {
 			msg.answers,
 		);
 		this.recordQuestionAnswerShape(token, msg, questions, parts.length, 'dispatched');
-		this.dispatchInteractionAction(mobileId, msg, { kind: 'question', id: msg.interactionId }, parts);
+		// TUI が選択肢リストへキーボードフォーカスを移すより前に打鍵を流すと、その1打鍵は
+		// リストではなく**入力欄へ吸われて消える**（Claude Code 2.1.223 で実測）。単問・単一選択は
+		// キー列が「数字1つ」だけなので、それを取りこぼすと後続で拾い直す機会が無く、
+		// モバイル側には送信成功に見えたまま TUI は何も起きない。先頭の選択肢ラベルが画面に
+		// 出るのを待ってから流すための目印を渡す。
+		this.dispatchInteractionAction(mobileId, msg, { kind: 'question', id: msg.interactionId }, parts,
+			paradisQuestionReadyMarker(questions[0]));
 		this.scheduleQuestionSettleCheck(token, msg.interactionId, questions.length, parts.length);
 	}
 
 	/**
 	 * モバイルから届いた回答の「形」を記録する。
 	 *
-	 * TUI へ流すキー列は Claude Code 2.1.220 の実挙動に合わせて組んであり（paradisAgentQuestionKeys）、
+	 * TUI へ流すキー列は Claude Code の実挙動に合わせて組んであり（paradisAgentQuestionKeys。
+	 * 2.1.220 で実測し、2.1.223 で規則が変わっていないことを確認済み）、
 	 * 質問の数・選択肢の数・複数選択・自由入力の有無で段取りが変わる。どの組み合わせで壊れるかは
 	 * 手元では再現しきれないので、実際に使われた組み合わせと結果を残す。
 	 *
@@ -3778,8 +3833,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const agent = tailer?.agent;
 		const cliVersion = tailer?.cliVersion;
+		// 質問が浮上してから回答が届くまで。TUI のフォーカス移動レース（描画直後の数百ms）で
+		// 説明できるのか、それとも別の理由なのかは、この値と `answer-settled` の結果を
+		// 突き合わせて初めて決まる。
+		const msSinceQuestion = this.msSinceQuestionFirstSeen(token, msg.interactionId);
 		runInParadisSpan('agentQuestion', 'answer', {
 			safe_outcome: outcome,
+			...(msSinceQuestion !== undefined ? { safe_ms_since_question: msSinceQuestion } : {}),
 			safe_question_count: questions.length,
 			safe_answer_count: msg.answers.length,
 			// 例 "4,3,2"。Other 行までの下矢印の数がこれで決まるので、ずれると別の行を叩く。
@@ -3809,6 +3869,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		const epoch = tailer.epoch;
+		// 送った時点での経過を先に取る（待ち時間ぶん後ろにずれないように）。`safe_resolved` を
+		// これで分ければ、「早く答えたものだけ落ちている＝レース」なのかが一目で分かる。
+		const msSinceQuestion = this.msSinceQuestionFirstSeen(token, interactionId);
 		// キーは delayMs=300 の間隔で1つずつ流れる。全部届いてから見ないと「まだ残っている」と
 		// 誤って読むため、列の長さぶん待ってから確かめる。
 		const waitMs = Math.min(QUESTION_SETTLE_MAX_WAIT_MS, keyPartCount * 300 + 3_000);
@@ -3820,6 +3883,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			runInParadisSpan('agentQuestion', 'answer-settled', {
 				safe_resolved: !current.hasPendingInteraction({ kind: 'question', id: interactionId }),
+				...(msSinceQuestion !== undefined ? { safe_ms_since_question: msSinceQuestion } : {}),
 				safe_question_count: questionCount,
 				safe_key_parts: keyPartCount,
 				safe_agent: current.agent,
@@ -3920,6 +3984,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		msg: Extract<AgentInbound, { t: 'action/answerQuestion' | 'action/answerApproval' }>,
 		interaction: IParadisAgentInteraction,
 		parts: readonly string[],
+		readyMarker?: string,
 	): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
@@ -3952,6 +4017,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, interaction, interactionKey, timer });
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
 			t: 'action/interaction', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch, interaction, parts, delayMs: 300, windowId: owner.windowId,
+			...(readyMarker !== undefined ? { readyMarker } : {}),
 		})));
 	}
 
@@ -5361,13 +5427,17 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 				// 質問の出現は購読の有無に関わらず通知へ流す（アプリを開いていないモバイルへの
 				// プッシュ供給源。onDelta はライブ追記でのみ呼ばれるため過去分の再通知はない）。
-				if (terminalId !== undefined) {
-					for (const message of messages) {
-						if (message.kind === 'question') {
-							this.recordQuestionNotifyShape(token, message);
-							this.notifyQuestionForCurrentOwner(token, tailer, terminalId, message);
-						}
+				for (const message of messages) {
+					if (message.kind !== 'question') {
+						continue;
 					}
+					if (terminalId === undefined) {
+						// ペインが引けないと通知そのものが始まらない。ここを黙って飛ばすと
+						// 「出さなかった」記録が1件も残らず、届かない理由の内訳から欠ける。
+						this.recordQuestionNotifyShape(token, message, 'no-terminal');
+						continue;
+					}
+					this.notifyQuestionForCurrentOwner(token, tailer, terminalId, message);
 				}
 				if (messages.some(message => message.tool === 'Agent' || message.tool === 'Task' || message.text.startsWith('バックグラウンドタスク'))) {
 					this.schedulePersistedAgentActivityReconcile(token);
@@ -5453,55 +5523,111 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
-	 * 質問1件ごとに通知が出ている実態を記録する。
+	 * 質問1件ごとに、通知が「どこまで進んだか」を記録する。
 	 *
-	 * 現状は `kind === 'question'` のメッセージが現れるたびに送っているので、複数問の
-	 * AskUserQuestion では問の数だけ、質問が別経路で登録し直されればそのたびに通知が出る。
-	 * 同じ呼び出しをまとめる `questionGroup` は既にメッセージへ付いているのに通知側が見ていない。
-	 * まとめ方を決める前に、実際に何回・どの経路で出ているかを実データで押さえる。
+	 * **`outcome` を必ず渡すこと。** 以前はこの記録を {@link notifyQuestionForCurrentOwner} の
+	 * 直前で無条件に呼んでいたが、その先には owner 不在・authorize 失敗・owner 交代という
+	 * 打ち切り経路があるため、**測れていたのは「質問メッセージが浮上した回数」だけ**だった。
 	 *
-	 * 送るのは件数と経路だけ。質問文・選択肢は載せない。
+	 * `dispatched` が意味するのは「配送層へ渡した」ところまで。その先の抑制ポリシー
+	 * （PCにフォーカスがある間は鳴らさない）・リレー・APNs のペイロード上限は**まだ測れていない**
+	 * ので、「通知が端末に出た」と読まないこと。
+	 *
+	 * 重なりの数え方も2種類ある。どちらか片方では実態が見えない:
+	 * - `safe_group_seq` … 同じ `questionGroup` の中で何本目か。複数問の AskUserQuestion で
+	 *   問の数だけ通知が出ていることを示す
+	 * - `safe_content_seq` … **同じ内容の質問が何回通知されたか**。live(hook由来) と
+	 *   transcript(記録由来) は `questionGroup` の名前空間が別（`liveg:` と実 toolUseId）なので、
+	 *   グループ単位では二重通知が別物として数えられ、カウントが1に戻ってしまう。
+	 *   内容キーで数えて初めて「同じ質問が40〜60秒あけて2回出ている」が見える
+	 *
+	 * 送るのは件数と経路と結果だけ。**内容キーはカウンタの引き当てにしか使わず、
+	 * 質問文・選択肢は載せない。**
 	 */
-	private recordQuestionNotifyShape(token: string, message: IParadisAgentChatMessage): void {
+	private recordQuestionNotifyShape(token: string, message: IParadisAgentChatMessage, outcome: ParadisQuestionNotifyOutcome): void {
 		const group = message.questionGroup ?? message.toolUseId;
 		if (group === undefined) {
 			return;
 		}
-		const key = `${token}\0${group}`;
-		const seq = (this.questionNotifyCounts.get(key) ?? 0) + 1;
-		this.questionNotifyCounts.set(key, seq);
-		if (this.questionNotifyCounts.size > QUESTION_NOTIFY_COUNT_LIMIT) {
-			// 古い順に捨てる。まとめ判定はグループ単位なので取りこぼしても次の質問から数え直せる。
-			const oldest = this.questionNotifyCounts.keys().next();
-			if (!oldest.done) {
-				this.questionNotifyCounts.delete(oldest.value);
-			}
+		// 同じ質問が live と transcript の両経路で浮上するので、**最初の1回だけ**を起点にする。
+		// `group` は回答時の `interactionId` と同じ値（parseAskUserQuestions が付ける）。
+		const seenKey = `${token}\0${group}`;
+		if (!this.questionFirstSeenAt.has(seenKey)) {
+			this.questionFirstSeenAt.set(seenKey, Date.now());
+			this.evictOldest(this.questionFirstSeenAt, QUESTION_NOTIFY_COUNT_LIMIT);
 		}
+		const groupSeq = this.bumpQuestionNotifyCount(`g\0${token}\0${group}`);
+		const contentSeq = this.bumpQuestionNotifyCount(`c\0${token}\0${liveQuestionContentKey(message)}`);
 		runInParadisSpan('agentQuestion', 'notify', {
 			// 2以上なら同じ質問グループで通知が重なっている。
-			safe_group_seq: seq,
+			safe_group_seq: groupSeq,
+			// 2以上なら同じ内容の質問が経路をまたいで重複通知されている。
+			safe_content_seq: contentSeq,
 			safe_index: message.questionIndex ?? -1,
 			safe_total: message.questionCount ?? -1,
 			// live = hook 由来（TUIに出た時点）、transcript = 書き出された記録由来。
 			safe_source: message.toolUseId?.startsWith('live:') === true ? 'live' : 'transcript',
 			safe_multi_select: message.multiSelect === true,
 			safe_option_count: message.options?.length ?? 0,
+			// dispatched 以外は「通知を出そうとしてやめた」。届かない理由の内訳になる。
+			safe_outcome: outcome,
 		}, () => { });
+	}
+
+	/** 通知回数のカウンタを1つ進める。上限を超えたら「最後に触ってから最も経った」ものを捨てる。 */
+	private bumpQuestionNotifyCount(key: string): number {
+		const seq = (this.questionNotifyCounts.get(key) ?? 0) + 1;
+		// `Map.set` は既存キーの挿入順を変えない。消し直してから入れることで、反復順が
+		// 最終利用順になる（そうしないと、よく使われているキーほど先に追い出される）。
+		this.questionNotifyCounts.delete(key);
+		this.questionNotifyCounts.set(key, seq);
+		this.evictOldest(this.questionNotifyCounts, QUESTION_NOTIFY_COUNT_LIMIT);
+		return seq;
+	}
+
+	/** 計測用の台帳が無限に伸びないよう、上限を超えたぶんを古い順に捨てる。 */
+	private evictOldest(ledger: Map<string, number>, limit: number): void {
+		while (ledger.size > limit) {
+			const stalest = ledger.keys().next();
+			if (stalest.done) {
+				return;
+			}
+			ledger.delete(stalest.value);
+		}
+	}
+
+	/** 質問が最初に浮上してからの経過ms。起点を覚えていなければ `undefined`。 */
+	private msSinceQuestionFirstSeen(token: string | undefined, interactionId: string): number | undefined {
+		if (token === undefined) {
+			return undefined;
+		}
+		const seenAt = this.questionFirstSeenAt.get(`${token}\0${interactionId}`);
+		return seenAt === undefined ? undefined : Date.now() - seenAt;
 	}
 
 	private notifyQuestionForCurrentOwner(token: string, tailer: TranscriptTailer, terminalId: number, message: IParadisAgentChatMessage): void {
 		const owner = this.ownerForPane(terminalId, token);
 		if (owner === undefined) {
+			this.recordQuestionNotifyShape(token, message, 'no-owner');
 			return;
 		}
 		void this.authorizeOwner(owner).then(authorized => {
+			if (!authorized) {
+				this.recordQuestionNotifyShape(token, message, 'unauthorized');
+				return;
+			}
 			const current = this.ownerForPane(terminalId, token);
-			if (!authorized || current === undefined || !this.samePaneOwner(current, owner) || this.tailers.get(token) !== tailer) {
+			if (current === undefined || !this.samePaneOwner(current, owner) || this.tailers.get(token) !== tailer) {
+				this.recordQuestionNotifyShape(token, message, 'owner-changed');
 				return;
 			}
 			const ws = this.tokenToWorkspace.get(token);
 			this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(message.header !== undefined ? { header: message.header } : {}), ...(ws !== undefined ? { ws } : {}), agentToken: token, owner });
-		}, error => this.logService.warn('[paradisAgentChat] question owner validation failed', error));
+			this.recordQuestionNotifyShape(token, message, 'dispatched');
+		}, error => {
+			this.recordQuestionNotifyShape(token, message, 'authorize-failed');
+			this.logService.warn('[paradisAgentChat] question owner validation failed', error);
+		});
 	}
 
 	private terminalIdForToken(token: string): number | undefined {
