@@ -158,6 +158,8 @@ import { registerParadisWorktreeGit } from '../../../paradis/contrib/workspaceSw
 import { registerParadisMobileRelay } from '../../../paradis/contrib/mobileRelay/node/paradisMobileRelayChannel.js';
 // PARA-PATCH: ccusage CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/ccusage/ 参照）
 import { registerParadisCcusage } from '../../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
+// PARA-PATCH: スペース(リポジトリ/worktree)の容量計測（fork独自、src/vs/paradis/contrib/spaceDisk/ 参照）
+import { registerParadisSpaceDisk } from '../../../paradis/contrib/spaceDisk/node/paradisSpaceDiskChannel.js';
 // PARA-PATCH: Codex terminal title metadata reader（fork独自、read-only SQLite）
 import { registerParadisCodexTerminalTitle } from '../../../paradis/contrib/codexTerminalTitle/node/paradisCodexTerminalTitleChannel.js';
 // PARA-PATCH: AIリミットモニターバックエンド（cswap/wham usage取得。fork独自、src/vs/paradis/contrib/limitsMonitor/ 参照）
@@ -552,6 +554,9 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: ccusage CLI 実行バックエンド（src/vs/paradis/contrib/ccusage/ 参照）
 		this._register(registerParadisCcusage(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
+
+		// PARA-PATCH: スペースの容量計測（数十秒かかるのでmainではなくここに置く。src/vs/paradis/contrib/spaceDisk/ 参照）
+		this._register(registerParadisSpaceDisk(this.server, accessor.get(ILogService)));
 
 		// PARA-PATCH: Codex terminal title metadata reader（Codex App Serverは起動しない）
 		this._register(registerParadisCodexTerminalTitle(this.server, accessor.get(ILogService)));

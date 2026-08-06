@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -275,6 +275,11 @@ interface AppState extends StoreState {
 	githubUsage(bypassCache?: boolean): Promise<GithubUsageResult>;
 	/** PC本体のリソース内訳（「システム」画面）。bypassCache の意味は usageDashboard と同じ。 */
 	systemResources(bypassCache?: boolean): Promise<SystemResourcesResult>;
+	/**
+	 * スペースごとのディスク使用量（「システム」画面のボリューム内訳）。
+	 * PC側が1時間ごとに測っておくので通常は即座に返る。bypassCache は測り直しで数十秒〜数分かかる。
+	 */
+	spaceDisk(bypassCache?: boolean): Promise<SpaceDiskResult>;
 	browserTargets(): Promise<BrowserTargetsResult>;
 	browserStart(targetId: string): Promise<void>;
 	/** keepFrame=true で最後のフレームを残したまま停止する（タブblur時の一時停止用）。 */
@@ -1686,6 +1691,11 @@ export const useAppStore = create<AppState>(set => ({
 	systemResources(bypassCache?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.systemResources(bypassCache);
+	},
+
+	spaceDisk(bypassCache?: boolean) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.spaceDisk(bypassCache);
 	},
 
 	browserTargets() {

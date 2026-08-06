@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { SystemResourcesResult, SystemScopeMetrics } from './store.js';
+import type { SpaceDiskResult, SystemResourcesResult, SystemScopeMetrics } from './store.js';
 
 /**
  * 「システム」画面とワークスペースドロワーのPCカードが共有する、表示用の計算。
@@ -157,6 +157,44 @@ export function buildScopeRows(report: SystemResourcesResult): ResourceRow[] {
  */
 export function sortRowsBy(rows: readonly ResourceRow[], metric: 'cpu' | 'memory'): ResourceRow[] {
 	return [...rows].sort((a, b) => b[metric] - a[metric]);
+}
+
+/** 「システム」画面のボリューム内訳に出すスペース1行。 */
+export interface SpaceDiskRow {
+	key: string;
+	name: string;
+	/** worktree を含めた合計。 */
+	totalBytes: number;
+	/** worktree を除いた本体。 */
+	ownBytes: number;
+	worktrees: { key: string; name: string; bytes: number; outside: boolean; error?: string; truncated?: boolean }[];
+	error?: string;
+	/** 上限に達して数え切れなかった（値は「少なくともこれだけ」）。 */
+	truncated?: boolean;
+}
+
+/**
+ * スペースのディスク使用量を、大きい順に並べた表示用の行にする。
+ *
+ * PC側は「本体（worktreeを除いた分）」と「worktreeそれぞれ」を分けて返す。合計は
+ * ここで足す。**PC側で引き算済みなので、ここで再度引いてはいけない**（本体が小さく出る）。
+ */
+export function buildSpaceDiskRows(result: SpaceDiskResult): SpaceDiskRow[] {
+	return result.spaces
+		.map(space => ({
+			key: space.stateKey,
+			name: space.name,
+			ownBytes: space.ownBytes,
+			totalBytes: space.ownBytes + space.worktrees.reduce((sum, w) => sum + w.bytes, 0),
+			worktrees: [...space.worktrees]
+				.sort((a, b) => b.bytes - a.bytes)
+				// error / truncated を落とすと、測れなかった worktree が「0 B」として並び、
+				// 本当に空なのか失敗したのか区別できなくなる。
+				.map(w => ({ key: w.stateKey, name: w.name, bytes: w.bytes, outside: w.outside, error: w.error, truncated: w.truncated })),
+			error: space.error,
+			truncated: space.truncated,
+		}))
+		.sort((a, b) => b.totalBytes - a.totalBytes);
 }
 
 /**
