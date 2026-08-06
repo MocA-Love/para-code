@@ -578,21 +578,27 @@ export class ParadisCcusageEditor extends EditorPane {
 		const meterWrap = dom.append(card, $('div'));
 		const start = new Date(block.startTime);
 		const end = new Date(block.endTime);
-		dom.append(meterWrap, $('.paradis-ccusage-stat-label')).textContent =
-			localize('paradis.ccusage.block.title', "Current 5-hour block (Claude Code · {0} – {1})", formatClock(start), formatClock(end));
+		const now = Date.now();
+		// 枠が終わっているかどうかは、取得時のスナップショットではなく現在時刻から判断する。
+		// 集計結果はキャッシュに載る（＝取得から時間が経ちうる）ので、`remainingMinutes` を
+		// そのまま出すと、終わった枠を「進行中・残りN分」として見せてしまう。
+		const ended = now >= block.endTime;
+		dom.append(meterWrap, $('.paradis-ccusage-stat-label')).textContent = ended
+			? localize('paradis.ccusage.block.titleEnded', "Last 5-hour block (Claude Code · {0} – {1})", formatClock(start), formatClock(end))
+			: localize('paradis.ccusage.block.title', "Current 5-hour block (Claude Code · {0} – {1})", formatClock(start), formatClock(end));
 		const track = dom.append(meterWrap, $('.paradis-ccusage-meter-track'));
 		track.style.background = `color-mix(in srgb, ${accent} 22%, transparent)`;
 		const fill = dom.append(track, $('.paradis-ccusage-meter-fill'));
-		const now = Date.now();
 		const ratio = Math.max(0, Math.min(1, (now - block.startTime) / Math.max(1, block.endTime - block.startTime)));
 		fill.style.width = `${(ratio * 100).toFixed(1)}%`;
 		fill.style.background = accent;
 		const scale = dom.append(meterWrap, $('.paradis-ccusage-meter-scale'));
 		dom.append(scale, $('span')).textContent = formatClock(start);
-		const remaining = block.remainingMinutes !== undefined
-			? localize('paradis.ccusage.block.remaining', "{0} remaining", formatDuration(block.remainingMinutes))
-			: '';
-		dom.append(scale, $('span')).textContent = remaining;
+		// 残り時間も現在時刻から出し直す（バーの進みとラベルが食い違わないようにする）。
+		const remainingMinutes = Math.max(0, Math.ceil((block.endTime - now) / 60_000));
+		dom.append(scale, $('span')).textContent = ended
+			? localize('paradis.ccusage.block.ended', "ended")
+			: localize('paradis.ccusage.block.remaining', "{0} remaining", formatDuration(remainingMinutes));
 		dom.append(scale, $('span')).textContent = formatClock(end);
 
 		appendBlockStat(card, localize('paradis.ccusage.block.cost', "Block cost"), formatUsd(block.costUSD));

@@ -43,15 +43,57 @@ const EXEC_TIMEOUT_MS = 60_000;
 const NPX_PINNED_VERSION = 'ccusage@20.0.14';
 /** JSON 出力の最大サイズ(セッションが多いと数MBになる)。 */
 const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
+/** バックグラウンドで取り直す周期。 */
+const WARM_INTERVAL_MS = 30 * 60 * 1000;
+/**
+ * 直前に取り直したばかりのエントリを、周回が来たからといってもう一度走らせないための猶予。
+ * 手動更新の直後などが該当する。
+ *
+ * `WARM_INTERVAL_MS + この猶予 <= CACHE_TTL_MS` を保つこと。ここが破れると、
+ * 「周回を1つ飛ばした直後にTTLが切れる」窓ができ、キャッシュを切らさないという前提が崩れる。
+ */
+const WARM_SKIP_IF_FRESHER_THAN_MS = 3 * 60 * 1000;
 /**
  * 結果キャッシュのTTL。ccusage は毎回 JSONL 全走査で数秒かかるため、
  * ダッシュボードとステータスバーで走査結果を共有する。手動更新は bypassCache で貫通できる。
+ *
+ * バックグラウンドの取り直し周期より長くしてある。短いと周期の合間にキャッシュが切れ、
+ * そこへ来た要求が結局走査の完了を待つことになる(その待ち時間を無くすための仕組みなので、
+ * TTLが周期を跨げないと意味が無い)。
  */
-const CACHE_TTL_MS = 5 * 60 * 1000;
-/** アクティブブロック(残り時間・消費速度)は鮮度が重要なので短いTTLにする。 */
-const BLOCK_CACHE_TTL_MS = 60 * 1000;
+const CACHE_TTL_MS = WARM_INTERVAL_MS + WARM_SKIP_IF_FRESHER_THAN_MS + 5 * 60 * 1000;
+/**
+ * アクティブブロックも同じTTLで扱う。ここだけ短くしても、4レポートは並列に取るので
+ * 「一番遅い1本」が待ち時間になり、結局待たされる(＝速くするには全部キャッシュに載せる必要がある)。
+ *
+ * 代わりに、時間に依存する値(残り時間・枠が終わったかどうか)は**表示側で現在時刻から出し直す**。
+ * スナップショットに入っている `remainingMinutes` をそのまま出すと、取得から時間が経つほど
+ * 現在時刻と食い違い、終わった枠を「進行中」として見せてしまう。
+ */
+const BLOCK_CACHE_TTL_MS = CACHE_TTL_MS;
 /** --offline フォールバックで得た結果(価格が古い可能性)は短命キャッシュに留める。 */
 const FALLBACK_CACHE_TTL_MS = 60 * 1000;
+/**
+ * 最後に要求されてからこの時間を過ぎたエントリは温めるのをやめる。
+ *
+ * ステータスバーの表示を有効にしていると、そのポーラーが daily を定期的に要求し続けるため
+ * daily はこの時間に到達しない(＝Para Code が起動している間は温め続ける)。これは意図どおりで、
+ * ここが効くのは「ダッシュボードだけ開いて、以後触らなかった」場合のセッション別・
+ * プロジェクト別など、要求が止まったレポートに対して。
+ */
+const WARM_IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+/** 連続で失敗し続ける対象を諦める回数(ccusage が入っていない環境で永久に走らせない)。 */
+const WARM_MAX_CONSECUTIVE_FAILURES = 3;
+
+/** バックグラウンド更新の対象。要求のたびに登録・更新する。 */
+interface IWarmTarget {
+	readonly reportArgs: string[];
+	readonly options: IParadisCcusageExecOptions;
+	ttl: number;
+	lastRequestedAt: number;
+	/** 連続失敗回数。上限に達した対象は温めをやめる(次に要求されたら0に戻る)。 */
+	failures: number;
+}
 
 interface IResolvedExecutable {
 	readonly command: string;
@@ -76,6 +118,12 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private readonly cache = new Map<string, { at: number; ttl: number; value: unknown }>();
 	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
 	private readonly inflight = new Map<string, Promise<unknown>>();
+	/** バックグラウンドで温め続ける対象(キーは cache と同じ)。 */
+	private readonly warmTargets = new Map<string, IWarmTarget>();
+	/** 温め直しのタイマー。最初の要求が来て初めて回り始める。 */
+	private warmTimer: ReturnType<typeof setInterval> | undefined;
+	/** dispose 後にタイマーが再起動しないようにする。 */
+	private disposed = false;
 	/**
 	 * ログインシェル由来の解決済み環境(PATH 等)。shared process は Dock/Spotlight 起動の
 	 * electron-main から process.env を継承するだけなので、GUI 起動では ~/.zshrc 等で
@@ -124,7 +172,101 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		return result.projects ?? {};
 	}
 
+	/**
+	 * 呼び出し側からの要求。ここを通ったものだけを「温め続ける対象」として覚える
+	 * (バックグラウンドの取り直しはこの経路を通さないので、自分で自分を延命しない)。
+	 */
 	private async execJson<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<T> {
+		this.rememberWarmTarget(reportArgs, options, ttl);
+		return this.execJsonInternal<T>(reportArgs, options, ttl);
+	}
+
+	private rememberWarmTarget(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number): void {
+		if (this.disposed) {
+			return;
+		}
+		const key = this.cacheKeyFor(reportArgs, options);
+		const existing = this.warmTargets.get(key);
+		if (existing) {
+			existing.lastRequestedAt = Date.now();
+			existing.ttl = ttl;
+			// 実際に要求が来たなら、諦めていた対象も温め直す価値がある。
+			existing.failures = 0;
+		} else {
+			// 同じレポートの古い対象は捨てる。`since` は日付から作られるので、日付が変わると
+			// キーが変わり、前日ぶんは誰も要求しないまま残る。放っておくと丸一日、空振りの
+			// 全走査を回し続けることになる(1レポートあたり毎日24回)。
+			const report = reportArgs.join(' ');
+			for (const [otherKey, other] of this.warmTargets) {
+				if (otherKey !== key && other.reportArgs.join(' ') === report) {
+					this.warmTargets.delete(otherKey);
+				}
+			}
+			// bypassCache は要求ごとの都合なので覚えない(温め直しは常に実行する)。
+			const { bypassCache: _ignored, ...rest } = options;
+			this.warmTargets.set(key, { reportArgs, options: rest, ttl, lastRequestedAt: Date.now(), failures: 0 });
+		}
+		if (this.warmTimer === undefined) {
+			const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
+			// shared process の終了を、この定期処理だけのために引き止めない。
+			(timer as { unref?: () => void }).unref?.();
+			this.warmTimer = timer;
+		}
+	}
+
+	/**
+	 * 一度使われたレポートを定期的に取り直し、キャッシュが切れた状態を作らない。
+	 * ccusage は JSONL 全走査で数秒かかるため、これが無いと「TTLが切れた後に最初に開いた人」が
+	 * 毎回その数秒を負担することになる(PC版のダッシュボード・ステータスバーとモバイルが
+	 * 同じキャッシュを共有している)。
+	 *
+	 * 直列に回すのは、4レポートを同時に起動して一時的にCPUを占めるのを避けるため
+	 * (誰も待っていない裏の処理なので、速く終わらせる必要が無い)。
+	 */
+	private async runWarmPass(): Promise<void> {
+		for (const [key, target] of [...this.warmTargets]) {
+			// dispose 後は残りを回さない(1本60秒待つので、畳んだ後も子プロセスが続きうる)。
+			if (this.disposed) {
+				return;
+			}
+			// 経過時間はループの都度見る(1本に数十秒かかるので、入口の1回では古くなる)。
+			const now = Date.now();
+			if (now - target.lastRequestedAt >= WARM_IDLE_TIMEOUT_MS || target.failures >= WARM_MAX_CONSECUTIVE_FAILURES) {
+				this.warmTargets.delete(key);
+				continue;
+			}
+			// 直前に手動更新された等で十分新しいものは飛ばす(同じ走査を続けて2回しない)。
+			const cached = this.cache.get(key);
+			if (cached && now - cached.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
+				continue;
+			}
+			if (this.inflight.has(key)) {
+				continue;
+			}
+			try {
+				// 鮮度判定はここで済ませているので、キャッシュを見に行かせず必ず実行させる。
+				await this.execJsonInternal(target.reportArgs, { ...target.options, bypassCache: true }, target.ttl);
+				target.failures = 0;
+			} catch (error) {
+				// 失敗してもキャッシュは壊さない(古い値が残るだけ)。
+				// ccusage が入っていない環境では毎回タイムアウトまで待つことになるので、
+				// 続けて失敗する対象は諦める(次に画面から要求されたら再開する)。
+				target.failures++;
+				this.logService.trace(`[ParadisCcusage] background refresh failed for 'ccusage ${target.reportArgs.join(' ')}': ${error}`);
+			}
+		}
+		if (this.warmTargets.size === 0 && this.warmTimer !== undefined) {
+			clearInterval(this.warmTimer);
+			this.warmTimer = undefined;
+		}
+	}
+
+	/** キャッシュキー。since/until/timezone を含む実行引数と実行ファイルパスで決まる。 */
+	private cacheKeyFor(reportArgs: string[], options: IParadisCcusageExecOptions): string {
+		return JSON.stringify([this.buildArgs(reportArgs, options), options.executablePath ?? '']);
+	}
+
+	private buildArgs(reportArgs: string[], options: IParadisCcusageExecOptions): string[] {
 		const args = [...reportArgs, '--json'];
 		if (options.since && /^\d{8}$/.test(options.since)) {
 			args.push('--since', options.since);
@@ -135,7 +277,20 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		if (options.timezone && /^[A-Za-z0-9_+\-/]+$/.test(options.timezone)) {
 			args.push('--timezone', options.timezone);
 		}
+		return args;
+	}
 
+	dispose(): void {
+		this.disposed = true;
+		if (this.warmTimer !== undefined) {
+			clearInterval(this.warmTimer);
+			this.warmTimer = undefined;
+		}
+		this.warmTargets.clear();
+	}
+
+	private async execJsonInternal<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<T> {
+		const args = this.buildArgs(reportArgs, options);
 		const cacheKey = JSON.stringify([args, options.executablePath ?? '']);
 		if (!options.bypassCache) {
 			const cached = this.cache.get(cacheKey);
@@ -343,5 +498,6 @@ export class ParadisCcusageChannel implements IServerChannel<string> {
 export function registerParadisCcusage(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
 	const service = new ParadisCcusageService(logService, configurationService, args);
 	server.registerChannel(PARADIS_CCUSAGE_CHANNEL, new ParadisCcusageChannel(service));
-	return { dispose: () => { } };
+	// バックグラウンド更新のタイマーを止める(unref 済みだが、明示的に畳んでおく)。
+	return { dispose: () => service.dispose() };
 }
