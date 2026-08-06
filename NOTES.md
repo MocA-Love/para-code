@@ -322,6 +322,41 @@ macOS/Linuxの「ペインごとのCodex app-server」（`resources/paradis/bin/
 - **後始末**: TUI終了時にランチャーが所有するapp-serverをkill（Windowsは`taskkill /T /F`）。Windows Terminalのタブ閉じはNodeがSIGHUP（CTRL_CLOSE_EVENT）として受けるためそこでも掃除する。それでも残った孤児は「pidが死んでいるendpointファイルの起動時sweep」と「同一ペインの次回起動時のowner死亡検出→採用(adopt)→終了時掃除」で回収する
 - **梱包**: `build/gulpfile.vscode.ts` で win32 のみ `.cmd`/`.ps1`/`.js` の3点を、非win32はshランチャーのみを同梱（PARA-PATCH済）
 
+## モバイルアプリの配信手順（2026-08-06整備、アーカイブ前に必ず読む）
+
+`app/mobile/ios/` は `app/.gitignore` で**まるごと無視されている**（Expo prebuild の成果物という扱いのため）。したがって **`app.json` の `version` を上げても、実際にアーカイブされるバイナリのバージョンは変わらない**。`npx expo prebuild` は禁止（手動追加の `NotifyExtension` と `ParaCodeWidgets` が消える）なので、`ios/` 側は手で合わせる。
+
+アーカイブ前に上げる箇所（この5つが揃っていないと、拡張と本体の版が食い違って App Store Connect に弾かれる）:
+
+1. `app/mobile/app.json` の `expo.version`
+2. `app/mobile/src/changelog.ts` の `MOBILE_CHANGELOG` 先頭に同じ版の節を作る（`src/changelog.test.ts` が1と2の一致を検査する）
+3. `app/mobile/ios/ParaCodeMobile.xcodeproj/project.pbxproj` の `MARKETING_VERSION`（6箇所）と `CURRENT_PROJECT_VERSION`（6箇所）
+4. `app/mobile/ios/ParaCodeMobile/Info.plist` の `CFBundleShortVersionString` と `CFBundleVersion`（**値がハードコードされている**）
+5. `app/mobile/ios/NotifyExtension/Info.plist` の同2つ（同じくハードコード）
+
+`ios/ParaCodeWidgets/Info.plist` だけは `$(MARKETING_VERSION)` / `$(CURRENT_PROJECT_VERSION)` を参照しているので3を直せば追従する。**4と5だけ取り残しやすい**（2026-08-06 の 0.5.0 で実際に踏みかけた）。
+
+アーカイブと検証:
+
+```sh
+cd app/mobile/ios
+xcodebuild archive -workspace ParaCodeMobile.xcworkspace -scheme ParaCodeMobile \
+  -configuration Release -destination 'generic/platform=iOS' \
+  -archivePath /tmp/paracode-archive/ParaCodeMobile.xcarchive -allowProvisioningUpdates
+```
+
+生成後、本体と2つの拡張の版が揃っているか必ず確認する（揃っていないまま提出すると弾かれる）:
+
+```sh
+A=/tmp/paracode-archive/ParaCodeMobile.xcarchive/Products/Applications/ParaCodeMobile.app
+/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" -c "Print :CFBundleVersion" "$A/Info.plist"
+for p in "$A/PlugIns"/*.appex; do
+  /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" -c "Print :CFBundleVersion" "$p/Info.plist"
+done
+```
+
+提出は Xcode の Organizer（Window → Organizer → Archives）から行う。
+
 ## モバイルアプリのiPad対応（2026-08-05）
 
 `app/mobile` はiPhone専用（portrait固定・`supportsTablet: false`）だったが、iPadを2カラムで使えるようにした。設計の要点:
