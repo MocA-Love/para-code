@@ -276,6 +276,16 @@
 
 /* ---- 状態ドット・バッジ ---- */
 
+/* allow-any-unicode-next-line */
+/* 色と明滅の速さは**メインウィンドウのワークスペース一覧と同じ語彙**に揃える
+ * (paradisWorkspaceSwitch.css の .paradis-status-* が唯一の基準。値を変えるときは両方直す)。
+ * 許可待ちと質問中はどちらも「人間の対応待ち」なので、一覧と同じく同じ赤にまとめる
+ * —— 状態の区別はドットの隣のバッジ文言が担う。
+ *
+ * 一覧側が使っている「時計を1つ回し、継承するカスタムプロパティで明るさを配る」方式は
+ * ここでは採らない。一覧は軽量なリストだが、このウィンドウのルート配下には GPU を切った
+ * DOM レンダラーの xterm が丸ごと入っており、継承プロパティを毎フレーム動かすと
+ * 「全タイル × 全行 × 全 span」がスタイル再計算の対象に入る。位相が揃わない代償の方が安い。 */
 .paradis-agent-live-dot {
 	width: 8px;
 	height: 8px;
@@ -286,31 +296,28 @@
 }
 
 .paradis-agent-live-dot.working {
-	background-color: var(--vscode-charts-blue, #3794ff);
-	animation: paradis-agent-live-pulse 1.4s ease-in-out infinite;
+	background-color: #f59e0b;
+	animation: paradis-agent-live-breathe 2.4s ease-in-out infinite;
 }
 
-.paradis-agent-live-dot.permission {
-	background-color: var(--vscode-charts-yellow, #cca700);
-	animation: paradis-agent-live-blink 1s steps(2, end) infinite;
-}
-
+.paradis-agent-live-dot.permission,
 .paradis-agent-live-dot.question {
-	background-color: var(--vscode-charts-purple, #b180d7);
-	animation: paradis-agent-live-pulse 1.8s ease-in-out infinite;
+	background-color: #ef4444;
+	animation: paradis-agent-live-pulse 1s ease-in-out infinite;
 }
 
 .paradis-agent-live-dot.review {
-	background-color: var(--vscode-charts-green, #89d185);
+	background-color: #22c55e;
 }
 
 @keyframes paradis-agent-live-pulse {
 	0%, 100% { opacity: 1; }
-	50% { opacity: 0.32; }
+	50% { opacity: 0.25; }
 }
 
-@keyframes paradis-agent-live-blink {
-	50% { opacity: 0.15; }
+@keyframes paradis-agent-live-breathe {
+	0%, 100% { opacity: 1; }
+	50% { opacity: 0.45; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -331,10 +338,10 @@
 	white-space: nowrap;
 }
 
-.paradis-agent-live-badge.working { color: var(--vscode-charts-blue, #3794ff); }
-.paradis-agent-live-badge.permission { color: var(--vscode-charts-yellow, #cca700); }
-.paradis-agent-live-badge.question { color: var(--vscode-charts-purple, #b180d7); }
-.paradis-agent-live-badge.review { color: var(--vscode-charts-green, #89d185); }
+.paradis-agent-live-badge.working { color: #f59e0b; }
+.paradis-agent-live-badge.permission,
+.paradis-agent-live-badge.question { color: #ef4444; }
+.paradis-agent-live-badge.review { color: #22c55e; }
 
 /* ---- 絞り込み状況バー ---- */
 
@@ -498,13 +505,50 @@
 }
 
 .paradis-agent-live-tile-title {
+	display: flex;
+	align-items: baseline;
+	min-width: 0;
 	font-size: 11.5px;
 	white-space: nowrap;
+	overflow: hidden;
+}
+
+/* allow-any-unicode-next-line */
+/* 見出しの主役は worktree 名。リポジトリ名は同じリポジトリの worktree 全てで同じ文字列に
+ * なるため所属を示すだけの添え物で、端末タイトル (エージェント名・セッションID) も同様。
+ * 主役だけを地の色で出し、残りは一段落とす。 */
+.paradis-agent-live-tile-space,
+.paradis-agent-live-tile-slash,
+.paradis-agent-live-tile-term {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* allow-any-unicode-next-line */
+/* 縮むときは添え物から削る。見出し全体に ellipsis を掛けると、リポジトリ名が長いだけで
+ * 主役の worktree 名が真っ先に切り落とされる (読みたい方から消える)。 */
+.paradis-agent-live-tile-space,
+.paradis-agent-live-tile-term {
+	flex: 0 4 auto;
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
 
-.paradis-agent-live-tile-branch,
+.paradis-agent-live-tile-slash {
+	flex: 0 0 auto;
+	margin: 0 4px;
+	opacity: 0.6;
+}
+
+.paradis-agent-live-tile-worktree {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--vscode-foreground);
+	font-weight: 600;
+}
+
 .paradis-agent-live-tile-clock,
 .paradis-agent-live-tile-readonly {
 	flex: 0 0 auto;
@@ -513,13 +557,38 @@
 	white-space: nowrap;
 }
 
-/* ブランチ名は worktree 名などで長くなる。縮められるようにしておかないと、見出しが
-	あふれて状態バッジとピン・非表示のボタンが切り落とされる。 */
-.paradis-agent-live-tile-branch {
-	flex: 0 1 auto;
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
+/* allow-any-unicode-next-line */
+/* 共有ブラウザへ戻るボタン。共有中の端末にだけ出す。 */
+.paradis-agent-live-browser-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border: none;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--vscode-charts-blue, #3794ff);
+	cursor: pointer;
+}
+
+.paradis-agent-live-browser-button.codicon {
+	font-size: 13px;
+}
+
+.paradis-agent-live-browser-button:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-agent-live-browser-button:focus-visible {
+	outline: 1px solid var(--vscode-focusBorder);
+	outline-offset: -1px;
+}
+
+.paradis-agent-live-browser-button.hidden {
+	display: none;
 }
 
 .paradis-agent-live-tile-clock {

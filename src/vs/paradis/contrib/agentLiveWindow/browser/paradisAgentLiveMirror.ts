@@ -85,6 +85,7 @@ export class ParadisAgentLiveMirror extends Disposable {
 
 	private readonly resizeObserverCtor: typeof ResizeObserver | undefined;
 	private detached: IDetachedTerminalInstance | undefined;
+	private processInfo: DetachedProcessInfo | undefined;
 	private raw: RawXtermTerminal | undefined;
 	/** 縮小前の文字サイズ。ウィンドウを広げたときにここまで戻す */
 	private baseFontSize = 0;
@@ -108,6 +109,8 @@ export class ParadisAgentLiveMirror extends Disposable {
 	 * 追従を止め、下端へ戻したら再開する (再同期やリサイズのたびに引き戻さない)。
 	 */
 	private pinnedToBottom = true;
+	/** start() 実行中。await を跨いだ再入で端末が二重に生まれるのを防ぐ */
+	private starting = false;
 	private disposed = false;
 
 	constructor(
@@ -133,11 +136,35 @@ export class ParadisAgentLiveMirror extends Disposable {
 	}
 
 	async start(): Promise<void> {
-		if (this.disposed || this.detached) {
+		// detached が入るのは端末を作り終えた後なので、それだけを見張っていると並行して
+		// 呼ばれた2回目が素通りし、端末と processInfo が二重に生まれて片方が孤児になる。
+		if (this.disposed || this.detached || this.starting) {
 			return;
 		}
+		this.starting = true;
+		try {
+			await this.startOnce();
+		} finally {
+			this.starting = false;
+		}
+	}
 
-		const processInfo = this._register(new DetachedProcessInfo({ initialCwd: '' }));
+	private async startOnce(): Promise<void> {
+
+		// 元の端末の素性を引き継ぐ。ここが空だとリンク検出が相対パスを解決できず
+		// (terminalLinkResolver は cwd が無いと諦める)、`src/foo.ts` のような出力が
+		// Ctrl+Click で開けない。cwd はシェル統合が検出した現在値を優先する。
+		//
+		// capabilities は渡さない。DetachedTerminal は受け取った store を自分で dispose するため、
+		// 元の端末のものを渡すとミラーを閉じた時点で本物の端末の機能が落ちる。cwd の追従は
+		// 下の syncProcessInfo() で代替する。backend (WSL パス変換) も同様に公開されていない。
+		const processInfo = this._register(new DetachedProcessInfo({
+			initialCwd: this.instance.cwd || this.instance.initialCwd || '',
+			os: this.instance.os,
+			userHome: this.instance.userHome,
+			remoteAuthority: this.instance.remoteAuthority,
+		}));
+		this.processInfo = processInfo;
 		const detached = await this.terminalService.createDetachedTerminal({
 			cols: this.instance.cols > 0 ? this.instance.cols : FALLBACK_COLS,
 			rows: this.instance.rows > 0 ? this.instance.rows : FALLBACK_ROWS,
@@ -197,6 +224,32 @@ export class ParadisAgentLiveMirror extends Disposable {
 			return;
 		}
 		this.resync().catch(onUnexpectedError);
+	}
+
+	/**
+	 * そのホイールを xterm へ渡してよいか。渡してよいのは次の2通りだけ。
+	 *
+	 * 1. TUI がマウス報告を有効にしている (xterm はホイールをマウスレポートとして送る)。これは
+	 *    本物の端末へ届いてほしい入力で、TUI 自身がその中身をスクロールする。
+	 * 2. スクロールバックがあり、その向きへまだ送れる。
+	 *
+	 * どちらでもないのに渡すと、xterm はホイールを上下キーへ変換してユーザー入力として発火し
+	 * (MouseService._handlePassiveWheel)、ミラーの転送を通って**本物の端末へ矢印キーが入る**。
+	 * 呼び出し側はこれが false の間、ホイールをタイルやウィンドウのスクロールへ回す。
+	 */
+	shouldForwardWheel(deltaY: number): boolean {
+		const raw = this.raw;
+		if (!raw) {
+			return false;
+		}
+		if (raw.modes.mouseTrackingMode !== 'none') {
+			return true;
+		}
+		const buffer = raw.buffer.active;
+		if (buffer.type === 'alternate') {
+			return false;
+		}
+		return deltaY < 0 ? buffer.viewportY > 0 : buffer.viewportY < buffer.baseY;
 	}
 
 	/** 入力の転送ができない状態か (タイル側で読み取り専用と表示するため)。 */
@@ -364,8 +417,28 @@ export class ParadisAgentLiveMirror extends Disposable {
 		for (const data of pending) {
 			detached.xterm.write(data);
 		}
+		this.syncProcessInfo();
 		this.updateFontSize();
 		this.pinToBottom();
+	}
+
+	/**
+	 * 元の端末の cwd 等を写し直す。ファイルパスの解決 (terminalLinkResolver) はこのオブジェクトを
+	 * 毎回読むので、更新すれば以降のリンクは新しい cwd で解決される。`cd` のたびに呼ぶ経路は
+	 * 持たないが、再同期 (可視状態の変化・桁数の変更) のたびに追いつく。
+	 *
+	 * ただしワークスペース内検索へ落ちるリンク (TerminalSearchLinkOpener) だけは、リンク管理側が
+	 * 生成時の cwd を値で captureするため start() 時点の値に固定される。
+	 */
+	private syncProcessInfo(): void {
+		const processInfo = this.processInfo;
+		if (!processInfo) {
+			return;
+		}
+		processInfo.initialCwd = this.instance.cwd || this.instance.initialCwd || '';
+		processInfo.os = this.instance.os;
+		processInfo.userHome = this.instance.userHome;
+		processInfo.remoteAuthority = this.instance.remoteAuthority;
 	}
 
 	private onSourceData(data: string): void {

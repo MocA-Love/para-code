@@ -19,6 +19,12 @@ import { DisposableStore, IDisposable, MutableDisposable } from '../../../../bas
 /** インジケータの表示状態。 */
 export type ParadisPaneIndicatorState = 'bound' | 'unbound';
 
+/** 共有中ページの概要。ライブウィンドウのチップ表示に使う。 */
+export interface IParadisPaneIndicatorBoundPage {
+	readonly title: string;
+	readonly url: string;
+}
+
 /**
  * インジケータへ状態を供給し、クリック時にバインディングダイアログを開くホスト。
  * electron-browser 側の contribution が実装・登録する。
@@ -28,6 +34,10 @@ export interface IParadisPaneIndicatorHost {
 	getPaneIndicatorTooltip(instanceId: number): string;
 	readonly onDidChangeState: Event<void>;
 	openBindingDialog(instanceId: number): void;
+	/** そのペインが共有中のページ。未共有なら undefined。 */
+	getBoundPage(instanceId: number): IParadisPaneIndicatorBoundPage | undefined;
+	/** メインウィンドウをそのページのスペースへ切り替え、ブラウザを前面に出す。 */
+	revealBoundPage(instanceId: number): void;
 }
 
 let currentHost: IParadisPaneIndicatorHost | undefined;
@@ -38,6 +48,18 @@ export function setParadisPaneIndicatorHost(host: IParadisPaneIndicatorHost | un
 	currentHost = host;
 	onDidChangeHost.fire();
 }
+
+/**
+ * 現在のホスト。グリッドセル以外の利用者（エージェントライブウィンドウ）が、共有状態の
+ * 参照とスペース復帰のためにこのレジストリを経由する。バインディングモデル本体は
+ * electron-browser レイヤーにあり browser レイヤーからは直接触れないため、ここが唯一の口になる。
+ */
+export function getParadisPaneIndicatorHost(): IParadisPaneIndicatorHost | undefined {
+	return currentHost;
+}
+
+/** ホストの差し替え（登録・解除）通知。 */
+export const onDidChangeParadisPaneIndicatorHost: Event<void> = onDidChangeHost.event;
 
 /**
  * 指定ターミナルインスタンス用のインジケータDOMを作る。呼び出し側（グリッドセル）は
