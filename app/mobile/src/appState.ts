@@ -234,6 +234,8 @@ interface AppState extends StoreState {
 	subscribeTerminal(terminalKey: string, listener: (ev: TermStreamEvent) => void): () => void;
 	sendInput(terminalKey: string, data: string): Promise<boolean>;
 	sendLiveInput(terminalKey: string, data: string): boolean;
+	/** TUI上のスワイプによるスクロール（送れなくても再試行しない）。 */
+	scrollTerminal(terminalKey: string, dir: 'up' | 'down', lines: number): void;
 	/** 矢印キーをセマンティック名で送る（PC側が端末モードに合わせてエンコードする）。 */
 	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left'): void;
 	/** テキスト入力を送る（PC側でbracketed paste対応。execute=trueで実行）。 */
@@ -1454,6 +1456,10 @@ export const useAppStore = create<AppState>(set => ({
 
 	sendLiveInput(terminalKey: string, data: string) {
 		return controller?.sendLiveInput(terminalKey, data) ?? false;
+	},
+
+	scrollTerminal(terminalKey: string, dir: 'up' | 'down', lines: number) {
+		controller?.scrollTerminal(terminalKey, dir, lines);
 	},
 
 	sendArrowKey(terminalKey: string, key: 'up' | 'down' | 'right' | 'left') {
