@@ -51,6 +51,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'keyboard-outline',
+				title: 'キーボードを開いてもターミナルの表示が崩れなくなりました',
+				body: '文字を打つ間もターミナルは同じ大きさのまま下に残り、閉じると元の位置に戻ります。これまではキーボードの開閉のたびに画面を作り直していたため、表示が乱れて戻らないことがありました。',
+				tone: 'green',
+			},
+			{
 				icon: 'phone-portrait-outline',
 				title: 'PCのターミナルをこの画面の幅に合わせられるようになりました',
 				body: '同じ設定画面から入れられます（まだベータのため、はじめはオフです）。入れると、見ている間だけPC側の幅がこの画面に合わせて細くなり、Claude や Codex の画面も折り返しが直ります。見るのをやめると元に戻ります。',

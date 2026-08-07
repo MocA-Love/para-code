@@ -1061,6 +1061,9 @@ const AGENT_STREAM_EMIT_MS = 120;
 // タブ再訪時に即時再描画するためのリプレイキャッシュ上限（snapshot+後続dataの合計文字数）。
 // 超過したら丸ごと捨てる（途中で切るとエスケープシーケンスが壊れるため、部分保持はしない）。
 const TERM_REPLAY_CACHE_LIMIT = 150_000;
+// 画面幅の申告を更新する間隔（ms）。PC側は最後の更新から60秒で申告を捨てるので、
+// 2回落としても切れない余裕を取ってある（PC側 TERM_VIEWPORT_LEASE_MS と対）。
+const TERM_VIEWPORT_RENEW_MS = 20_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -1357,6 +1360,10 @@ export class MobileController {
 				this.ensureConnected();
 			}
 		}, MobileController.LIVENESS_CHECK_INTERVAL_MS);
+		// 切断前に幅を申告していたなら、更新も一緒に再開する。再attachが値を載せ直すので
+		// 送信自体は繋がった時点で足りているが、更新を止めたままだと60秒後にPC側が
+		// リース満了と判断して寸法を戻してしまう（見ているのに元の幅へ戻る）。
+		this.startTerminalViewportRenew();
 	}
 
 	disconnect(): void {
@@ -1364,6 +1371,12 @@ export class MobileController {
 			clearInterval(this.livenessTimer);
 			this.livenessTimer = undefined;
 		}
+		// 画面幅の申告の更新は止める（切れている相手へ送っても意味が無く、PC側は更新が
+		// 途絶えた時点でリース満了として自分で寸法を戻す）。ただし**申告した値は捨てない**。
+		// 捨てると、再接続してもこの値を送り直す契機がどこにも無く（申告を作るのは
+		// ターミナル画面のeffectだけで、その依存は接続状態を見ていない）、回転か設定変更まで
+		// 幅合わせが効かなくなる。値を残しておけば再attachが自動で載せ直す。
+		this.stopTerminalViewportRenew();
 		this.client?.close();
 		this.client = undefined;
 		this.cancelPendingAgentActions();
@@ -1390,6 +1403,8 @@ export class MobileController {
 			clearInterval(this.livenessTimer);
 			this.livenessTimer = undefined;
 		}
+		this.stopTerminalViewportRenew();
+		this.terminalViewport = undefined;
 		this.client?.close();
 		this.client = undefined;
 		this.cancelPendingAgentActions();
@@ -1532,10 +1547,37 @@ export class MobileController {
 			return;
 		}
 		this.terminalViewport = viewport;
+		this.sendTerminalViewport();
+		// 申告はPC側でリース制（一定時間更新が無ければ捨てられる）。見ている間は更新し続ける。
+		// これがあるおかげで、アプリのタスクキル・クラッシュ・圏外でPCへ「やめる」を
+		// 送れなかった場合でも、PC側のターミナルが細いまま取り残されない。
+		this.startTerminalViewportRenew();
+	}
+
+	/** 申告があるときだけ更新タイマーを回す（多重起動しない）。 */
+	private startTerminalViewportRenew(): void {
+		if (this.terminalViewport === undefined) {
+			this.stopTerminalViewportRenew();
+			return;
+		}
+		if (this.terminalViewportRenewTimer === undefined) {
+			this.terminalViewportRenewTimer = setInterval(() => this.sendTerminalViewport(), TERM_VIEWPORT_RENEW_MS);
+		}
+	}
+
+	/** いまの申告を、購読中の全ターミナルへ送る（更新も同じ経路を通す）。 */
+	private sendTerminalViewport(): void {
 		for (const [terminalKey, stream] of this.termStreams) {
 			if (stream.listeners.size > 0) {
 				void this.sendTerm(terminalKey, { t: 'viewport', ...this.terminalViewportFields() });
 			}
+		}
+	}
+
+	private stopTerminalViewportRenew(): void {
+		if (this.terminalViewportRenewTimer !== undefined) {
+			clearInterval(this.terminalViewportRenewTimer);
+			this.terminalViewportRenewTimer = undefined;
 		}
 	}
 
@@ -1547,6 +1589,7 @@ export class MobileController {
 	}
 
 	private terminalViewport: TerminalViewport | undefined;
+	private terminalViewportRenewTimer: ReturnType<typeof setInterval> | undefined;
 
 	/**
 	 * ターミナルの同期ストリームを購読する。購読時点のリプレイキャッシュ
