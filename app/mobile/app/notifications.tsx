@@ -11,6 +11,7 @@ import { GlassSurface } from '../src/components/glassSurface.js';
 import { HeaderEdgeFade } from '../src/components/headerEdgeFade.js';
 import { HeaderActionButton, HeaderActionPill } from '../src/components/screenHeader.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useToastInset } from '../src/paraToast.js';
 import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../src/theme.js';
@@ -36,6 +37,8 @@ function dotColor(kind: NotifyKind): string {
 export default function NotificationsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
+	const toastInset = useToastInset();
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
@@ -105,7 +108,7 @@ export default function NotificationsScreen() {
 			    指が右上へ伸びる流れの途中に置くと、閉じるつもりで消してしまう。
 			    ここに「すべて既読」は置かない。この一覧に既読という状態は無く、押せば消えるので
 			    「すべて消す」と同じものが2つ並ぶだけになる。 */}
-			<View style={[styles.headerWrap, { paddingTop: insets.top }]} pointerEvents="box-none" onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}>
+			<View style={[styles.headerWrap, { paddingTop: insets.top + toastInset }]} pointerEvents="box-none" onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}>
 				<HeaderEdgeFade id="paraNotificationsFade" />
 				<View style={styles.headerRow} pointerEvents="box-none">
 					<GlassSurface style={styles.island}>

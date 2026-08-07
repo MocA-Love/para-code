@@ -10,7 +10,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
-import { AgentLaunchToastView } from '../../src/components/agentLaunchButton.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { VoiceNotificationControl } from '../../src/components/voiceNotificationControl.js';
@@ -34,7 +33,7 @@ import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
 import { arrangeHomeRows } from '../../src/homeSort.js';
 import { HomeFilterChips, HomeSortSheet } from '../../src/components/homeListControls.js';
-import { HomePlusMenu, PlusMenuScrim, plusMenuCoversPill, type HomePlusMenuAction } from '../../src/components/homePlusMenu.js';
+import { HomePlusMenuButton, type HomePlusMenuAction } from '../../src/components/homePlusMenu.js';
 import { WorktreeCreateSheet } from '../../src/components/worktreeCreateSheet.js';
 import { listColumnsFor } from '../../src/ipad/ipadLayout.js';
 
@@ -86,7 +85,6 @@ export default function HomeScreen() {
 	// アンマウントされてシートが勝手に閉じるため画面側で持つ。
 	const [sortSheetOpen, setSortSheetOpen] = useState(false);
 	// ヘッダーの＋から生えるメニューと、そこから開くワークツリー作成シート。
-	const [plusMenuOpen, setPlusMenuOpen] = useState(false);
 	const [worktreeSheetOpen, setWorktreeSheetOpen] = useState(false);
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
 	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
@@ -442,8 +440,6 @@ export default function HomeScreen() {
 				onClose={() => setStatusPopover(undefined)}
 				onAck={terminalKey => ackAgentStatus(terminalKey)}
 			/>
-			<AgentLaunchToastView />
-			<PlusMenuScrim visible={plusMenuOpen} onClose={() => setPlusMenuOpen(false)} />
 			<WorktreeCreateSheet visible={worktreeSheetOpen} onClose={() => setWorktreeSheetOpen(false)} />
 			<HomeSortSheet
 				visible={sortSheetOpen}
@@ -471,16 +467,7 @@ export default function HomeScreen() {
 					// 生えるので、右端でないと開く場所と押した場所がずれる。
 					// アイコンの大きさと色は揃える。1つだけ着色すると、1枚のピルの中でそこだけ
 					// 別の部品のように浮く。
-					<HomePlusMenu
-						visible={plusMenuOpen}
-						onClose={() => setPlusMenuOpen(false)}
-						ackCount={reviewable.length}
-					hasSpace={effectiveWs !== undefined}
-						onSelect={onPlusMenuSelect}
-					>
-					{/* 真モーフのときはガラスをメニュー側のSwiftUI層が描くので、ピルは配置だけ（plain）。
-					    ＋は×へ変えない——開くとメニューがピルごと覆うので、×を見せる機会が無い。 */}
-					<HeaderActionPill plain={plusMenuCoversPill}>
+					<HeaderActionPill>
 						{archivedCount > 0 ? (
 							<HeaderActionButton
 								icon="file-tray-full-outline"
@@ -490,18 +477,14 @@ export default function HomeScreen() {
 						) : null}
 						<VoiceNotificationControl />
 						<NotificationsButton notifications={notifications} />
-						<HeaderActionButton
-							// フォールバック環境ではメニューが開いてもピルが覆われず押せるままなので、
-							// ×に変えてトグルにする。真モーフ側は開くとピルごと覆われるため常に＋でよい
-							// （トグルにしても、開いている間は触れないので副作用は無い）。
-							icon={plusMenuCoversPill ? 'add' : (plusMenuOpen ? 'close' : 'add')}
-							label="作成と表示のメニュー"
-							size={21}
-							expanded={plusMenuOpen}
-							onPress={() => { hapticImpact('light'); setPlusMenuOpen(open => !open); }}
+						{/* ＋はネイティブのボタン。メニューの提示ごとOSに任せてあるので、
+						    開閉のstateはこちらで持たない（homePlusMenu.tsx 参照）。 */}
+						<HomePlusMenuButton
+							ackCount={reviewable.length}
+							hasSpace={effectiveWs !== undefined}
+							onSelect={onPlusMenuSelect}
 						/>
 					</HeaderActionPill>
-					</HomePlusMenu>
 				}
 			/>
 		</View></GestureDetector></ConnectionGate>

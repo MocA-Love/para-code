@@ -8,6 +8,7 @@ import { useAppStore } from '../src/appState.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
 import { GlassSurface } from '../src/components/glassSurface.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useToastInset } from '../src/paraToast.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors } from '../src/theme.js';
 import { hapticSelection } from '../src/haptics.js';
@@ -41,6 +42,8 @@ function duration(startedAt: number, updatedAt: number): string {
 export default function AgentActivityScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
+	const toastInset = useToastInset();
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const now = useNow();
@@ -74,7 +77,7 @@ export default function AgentActivityScreen() {
 	return (
 		<ConnectionGate>
 			<View style={styles.screen}>
-				<View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+				<View style={[styles.header, { paddingTop: insets.top + 4 + toastInset }]}>
 					<Pressable hitSlop={8} onPress={() => { hapticSelection(); router.back(); }} accessibilityRole="button" accessibilityLabel="親エージェントへ戻る">
 						<GlassSurface style={styles.backBtn} interactive><Ionicons name="chevron-back" size={20} color={colors.text} /></GlassSurface>
 					</Pressable>
