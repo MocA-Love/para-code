@@ -8,7 +8,7 @@ import { useAppStore } from '../appState.js';
 import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
 import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../store.js';
 
@@ -34,7 +34,20 @@ function currentRendererTarget(wsId: string | undefined): string | undefined {
  *  - ファイル名: 全階層の相対パスに対する部分一致（.gitignore尊重、ランク順）
  *  - テキスト: 全文検索（スマートケース・リテラル一致、行プレビュー付き）
  */
-export function FilesPanel() {
+export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchClose }: {
+	/**
+	 * 上に浮かぶヘッダーの高さ。この画面は ScrollView を持たず（検索欄・モード・パンくずが
+	 * リストの外にある）、`paddingTop` を渡す先が無いため、器の上端をここで空ける。
+	 */
+	contentInsetTop?: number;
+	/**
+	 * 検索欄を出すか。常設にすると上端が1段まるごと埋まるので、既定では畳んでおき、
+	 * ヘッダーの虫めがねから開く。
+	 */
+	searchOpen?: boolean;
+	/** 検索欄を閉じたときに呼ぶ（開閉の状態は画面側が持つ）。 */
+	onSearchClose?: () => void;
+}) {
 	const ws = useEffectiveWs();
 	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace })));
 	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws?.id);
@@ -47,6 +60,7 @@ export function FilesPanel() {
 	const tabBarSpacer = useTabBarSpacer();
 	const [path, setPath] = useState('');
 	const pathRef = useRef('');
+	const scrollRef = useRef<ScrollView>(null);
 	const [listing, setListing] = useState<FsListResult | undefined>();
 	const [filter, setFilter] = useState('');
 	const [searchMode, setSearchMode] = useState<'name' | 'text'>('name');
@@ -297,49 +311,74 @@ export function FilesPanel() {
 		}
 	};
 
+	// 検索欄は本文の先頭にあるので、下まで読んでから開くと欄が画面の外に居る。
+	// 開いた瞬間に先頭へ戻して、出てきたキーボードと欄が同じ画面に収まるようにする。
+	useEffect(() => {
+		if (searchOpen) {
+			scrollRef.current?.scrollTo({ y: 0, animated: true });
+		}
+	}, [searchOpen]);
+
 	const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
 	const entries = listing?.entries ?? [];
 	const crumbs = [ws?.name ?? '', ...path.split('/').filter(Boolean)];
-	const searchActive = filter.trim().length > 0;
+	// 欄を畳んだら検索状態も畳む。文字を残したまま閉じられると、パンくずが消えたまま
+	// 検索結果だけが出続け、何で絞られているかを見る手段も消す手段も無くなる。
+	const searchActive = searchOpen && filter.trim().length > 0;
 
 	return (
 		<View style={styles.screen}>
-			<View style={styles.searchBox}>
-				<Ionicons name="search-outline" size={14} color={colors.textDim} />
-				<TextInput
-					style={styles.searchInput}
-					value={filter}
-					onChangeText={setFilter}
-					editable={live}
-					placeholder={searchMode === 'name' ? 'ファイル名で検索（全階層）…' : 'テキストで検索（全文）…'}
-					placeholderTextColor={colors.textDim}
-					autoCapitalize="none"
-					autoCorrect={false}
-					onFocus={() => hapticSelection()}
-				/>
-				{searching ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
-				<Pressable
-					disabled={!live}
-					style={[styles.modeChip, searchMode === 'name' && styles.modeChipActive]}
-					onPress={() => { hapticSelection(); setSearchMode('name'); }}
-				>
-					<Text style={[styles.modeText, searchMode === 'name' && styles.modeTextActive]}>名前</Text>
-				</Pressable>
-				<Pressable
-					disabled={!live}
-					style={[styles.modeChip, searchMode === 'text' && styles.modeChipActive]}
-					onPress={() => { hapticSelection(); setSearchMode('text'); }}
-				>
-					<Text style={[styles.modeText, searchMode === 'text' && styles.modeTextActive]}>内容</Text>
-				</Pressable>
-			</View>
-			{!searchActive ? <Text style={styles.breadcrumb} numberOfLines={1}>{crumbs.join(' › ')}</Text> : null}
 			<ScrollView
+				ref={scrollRef}
 				style={styles.list}
-				contentContainerStyle={{ paddingBottom: tabBarSpacer }}
+				// ヘッダーは浮いているので、本文の余白はスクロールの中身側に入れる。
+				// 外側の paddingTop にすると本文が下へ押し出されるだけで、島の下を通らない。
+				contentContainerStyle={{ paddingTop: contentInsetTop, paddingBottom: tabBarSpacer }}
 				keyboardShouldPersistTaps="handled"
-				refreshControl={!searchActive ? <RefreshControl refreshing={loading} onRefresh={() => { void load(path); }} tintColor={colors.textDim} /> : undefined}
+				refreshControl={!searchActive ? <RefreshControl refreshing={loading} onRefresh={() => { void load(path); }} tintColor={colors.textDim} progressViewOffset={contentInsetTop} /> : undefined}
 			>
+				{searchOpen ? (
+					<View style={styles.searchBox}>
+						<Ionicons name="search-outline" size={14} color={colors.textDim} />
+						<TextInput
+							style={styles.searchInput}
+							value={filter}
+							onChangeText={setFilter}
+							editable={live}
+							autoFocus
+							placeholder={searchMode === 'name' ? 'ファイル名で検索（全階層）…' : 'テキストで検索（全文）…'}
+							placeholderTextColor={colors.textDim}
+							autoCapitalize="none"
+							autoCorrect={false}
+							onFocus={() => hapticSelection()}
+						/>
+						{searching ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
+						<Pressable
+							disabled={!live}
+							style={[styles.modeChip, searchMode === 'name' && styles.modeChipActive]}
+							onPress={() => { hapticSelection(); setSearchMode('name'); }}
+						>
+							<Text style={[styles.modeText, searchMode === 'name' && styles.modeTextActive]}>名前</Text>
+						</Pressable>
+						<Pressable
+							disabled={!live}
+							style={[styles.modeChip, searchMode === 'text' && styles.modeChipActive]}
+							onPress={() => { hapticSelection(); setSearchMode('text'); }}
+						>
+							<Text style={[styles.modeText, searchMode === 'text' && styles.modeTextActive]}>内容</Text>
+						</Pressable>
+						<Pressable
+							style={styles.searchClose}
+							onPress={() => { hapticSelection(); setFilter(''); onSearchClose?.(); }}
+							hitSlop={8}
+							accessibilityRole="button"
+							accessibilityLabel="検索を閉じる"
+						>
+							<Ionicons name="close" size={15} color={colors.textDim} />
+						</Pressable>
+					</View>
+				) : null}
+				{!searchActive ? <Text style={styles.breadcrumb} numberOfLines={1}>{crumbs.join(' › ')}</Text> : null}
 				{error && !searchActive ? <Text style={styles.error}>{error}</Text> : null}
 				{searchActive ? (
 					<>
@@ -432,16 +471,17 @@ function formatSize(bytes: number): string {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, marginHorizontal: 16, paddingHorizontal: 12 },
+	searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, marginBottom: 4 },
 	searchInput: { flex: 1, color: colors.text, fontSize: 13, paddingVertical: 9 },
-	breadcrumb: { color: colors.textDim, fontSize: 12, paddingHorizontal: 16, paddingVertical: 8 },
+	searchClose: { padding: 2 },
+	breadcrumb: { color: colors.textDim, fontSize: 12, paddingVertical: 8 },
 	list: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 16 },
 	error: { color: colors.red, fontSize: 12, marginVertical: 8 },
-	row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#21262d' },
+	row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	rowName: { flex: 1, color: colors.text, fontSize: 14 },
 	size: { color: colors.textDim, fontSize: 11 },
-	modeChip: { borderRadius: 8, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 8, paddingVertical: 4 },
+	modeChip: { borderRadius: radius.pill, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 9, paddingVertical: 4 },
 	modeChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
 	modeText: { color: colors.textDim, fontSize: 11 },
 	modeTextActive: { color: colors.text, fontWeight: '600' },

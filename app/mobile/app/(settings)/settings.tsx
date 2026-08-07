@@ -1,19 +1,21 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../src/appState.js';
-import { BatteryGauge } from '../src/components/batteryGauge.js';
-import { PcAvatar } from '../src/components/pcSwitcher.js';
-import { pcStatusText, shouldShowBattery } from '../src/pcStatus.js';
-import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { APP_VERSION } from '../src/components/updateSheet.js';
-import { colors } from '../src/theme.js';
-import { hapticImpact, hapticSelection } from '../src/haptics.js';
-import { formatCpu, usagePercent } from '../src/systemResources.js';
+import { useAppStore } from '../../src/appState.js';
+import { BatteryGauge } from '../../src/components/batteryGauge.js';
+import { PcAvatar } from '../../src/components/pcSwitcher.js';
+import { ScreenHeader } from '../../src/components/screenHeader.js';
+import { pcStatusText, shouldShowBattery } from '../../src/pcStatus.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
+import { APP_VERSION } from '../../src/components/updateSheet.js';
+import { colors, radius, squircle } from '../../src/theme.js';
+import { hapticSelection } from '../../src/haptics.js';
+import { formatCpu, usagePercent } from '../../src/systemResources.js';
 
 /**
  * 設定画面。ワークスペースドロワーの設定アイコンから開く。
@@ -23,6 +25,8 @@ import { formatCpu, usagePercent } from '../src/systemResources.js';
 export default function SettingsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
+	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const {
@@ -47,14 +51,10 @@ export default function SettingsScreen() {
 	};
 
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-			<View style={styles.header}>
-				<Text style={styles.title}>設定</Text>
-				<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
-					<Ionicons name="close" size={16} color={colors.textDim} />
-				</Pressable>
-			</View>
-			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingBottom: insets.bottom + 24 }, column]}>
+		<View style={styles.screen}>
+			{/* ここが設定の最上段なので、戻る先はこのモーダルの中に無い */}
+			<ScreenHeader title="設定" showBack={false} onHeightChange={setHeaderHeight} />
+			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
 				{/* どのPCの数字なのかを見出しで名指しする（複数PCだと「使用量」だけでは分からない）。
 				    他のPCの数字は「ペアリング済みのPC」の行から開く。 */}
 				<Text style={styles.sectionTitle}>
@@ -240,13 +240,10 @@ export default function SettingsScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 10 },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
 	rowValue: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
-	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8, marginBottom: 8 },
-	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
 	cardSpaced: { marginTop: 8 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
 	rowBody: { flex: 1, minWidth: 0 },

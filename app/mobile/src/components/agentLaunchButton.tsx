@@ -1,34 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Link } from 'expo-router';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAgentLaunchToast } from '../agentLaunch.js';
 import { GlassSurface } from './glassSurface.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { colors } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
-
-/**
- * ホームヘッダーの＋ボタン（通知ベルと同じ40×40のLiquid Glass丸ボタン）と、
- * 起動の進行を示すトースト。
- *
- * ＋は通知ベルと同じく Link.AppleZoom で起動フォーム（app/agent-launch.tsx）へ遷移する。
- * iOS 18+ではボタン自体が画面へモーフするネイティブのズーム遷移になる（それ未満は通常遷移）。
- */
-export function AgentLaunchButton() {
-	return (
-		<Link href="/agent-launch" asChild>
-			<Link.AppleZoom>
-				<Pressable style={styles.addBtn} onPress={() => hapticImpact('light')} accessibilityRole="button" accessibilityLabel="新しいエージェントを起動">
-					{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される） */}
-					<GlassSurface style={styles.addBtnGlass} interactive />
-					<Ionicons name="add" size={22} color={colors.accent} />
-				</Pressable>
-			</Link.AppleZoom>
-		</Link>
-	);
-}
 
 /**
  * 起動トースト（タブバーの上のLiquid Glass）。起動フォームを閉じた後の進行表示なので、
@@ -55,11 +32,6 @@ export function AgentLaunchToastView() {
 }
 
 const styles = StyleSheet.create({
-	addBtn: {
-		width: 40, height: 40, borderRadius: 20,
-		alignItems: 'center', justifyContent: 'center',
-	},
-	addBtnGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 20, overflow: 'hidden' },
 	toast: {
 		position: 'absolute', left: 16, right: 16,
 		flexDirection: 'row', alignItems: 'center', gap: 10,

@@ -7,10 +7,12 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { DiffView } from '../../src/components/diffView.js';
-import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
+import { GestureDetector } from 'react-native-gesture-handler';
+import { WsHeader, useOpenDrawerPan, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { colors } from '../../src/theme.js';
+import { HeaderActionButton, HeaderActionPill } from '../../src/components/screenHeader.js';
+import { colors, radius, squircle } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import type { ScmLogResult, ScmStatusResult } from '../../src/store.js';
@@ -50,6 +52,8 @@ export default function ScmScreen() {
 	const column = useContentColumnStyle();
 	// 相対時刻表示（最近のコミットの「〇分前」）を画面を開いたままでも追従させる
 	const now = useNow();
+	const [headerHeight, setHeaderHeight] = useState(0);
+	const openDrawerPan = useOpenDrawerPan();
 	const [status, setStatus] = useState<ScmStatusResult | undefined>();
 	const [log, setLog] = useState<ScmLogResult | undefined>();
 	const [logError, setLogError] = useState<string | undefined>();
@@ -248,45 +252,44 @@ export default function ScmScreen() {
 
 	return (
 		<ConnectionGate>
+		<GestureDetector gesture={openDrawerPan}>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90}>
-			<WsHeader title="ソース管理" />
 			<ScrollView
 				style={styles.list}
-				contentContainerStyle={column}
-				refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void refresh(); }} tintColor={colors.textDim} />}
+				contentContainerStyle={[{ paddingTop: headerHeight }, column]}
+				refreshControl={<RefreshControl refreshing={loading} onRefresh={() => { void refresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 			>
-				{/* リポジトリ名とブランチ名は長いと1行内で潰し合うため2行に分ける */}
+				{/* コミットは「このリポジトリに対して行うこと」なので、リポジトリの札の中に
+				    入力欄とボタンまで収める。外に並べると、どのリポジトリへコミットするのかが
+				    ワークツリーを複数開いているときに読み取りづらい。 */}
 				<View style={styles.repoCard}>
 					<View style={styles.repoRow}>
-						<Ionicons name="cube-outline" size={15} color={colors.textDim} />
+						<Ionicons name="git-branch-outline" size={14} color={colors.accent} />
 						<Text style={styles.repoName} numberOfLines={1}>{ws?.name ?? '—'}</Text>
-					</View>
-					<View style={styles.repoRow}>
-						<Ionicons name="git-branch-outline" size={13} color={colors.accent} />
 						<Text style={styles.repoBranch} numberOfLines={1}>{status?.branch ?? ws?.branch ?? '…'}</Text>
+						<Text style={styles.repoCount}>{status?.files.length ?? 0} 変更</Text>
 					</View>
+					<TextInput
+						style={styles.commitInput}
+						value={message}
+						onChangeText={setMessage}
+						placeholder="コミットメッセージ"
+						placeholderTextColor={colors.textDim}
+						autoCapitalize="none"
+						onFocus={() => hapticSelection()}
+						editable={!committing}
+						multiline
+					/>
+					<Pressable
+						style={[styles.commitBtn, (!live || !wsId || !message.trim() || committing) && styles.commitBtnDisabled]}
+						onPress={() => { hapticImpact('medium'); void commit(); }}
+						disabled={!live || !wsId || !message.trim() || committing}
+					>
+						<Text style={styles.commitBtnText}>{committing ? 'コミット中…' : 'コミット'}</Text>
+					</Pressable>
+					{commitResult ? <Text style={styles.commitResult}>{commitResult}</Text> : null}
+					{error ? <Text style={styles.error}>{error}</Text> : null}
 				</View>
-
-				<TextInput
-					style={styles.commitInput}
-					value={message}
-					onChangeText={setMessage}
-					placeholder="コミットメッセージ"
-					placeholderTextColor={colors.textDim}
-					autoCapitalize="none"
-					onFocus={() => hapticSelection()}
-					editable={!committing}
-					multiline
-				/>
-				<Pressable
-					style={[styles.commitBtn, (!live || !wsId || !message.trim() || committing) && styles.commitBtnDisabled]}
-					onPress={() => { hapticImpact('medium'); void commit(); }}
-					disabled={!live || !wsId || !message.trim() || committing}
-				>
-					<Text style={styles.commitBtnText}>{committing ? 'コミット中…' : 'コミット'}</Text>
-				</Pressable>
-				{commitResult ? <Text style={styles.commitResult}>{commitResult}</Text> : null}
-				{error ? <Text style={styles.error}>{error}</Text> : null}
 
 				<View style={styles.sectionRow}>
 					<Text style={styles.sectionTitle}>変更</Text>
@@ -294,15 +297,18 @@ export default function ScmScreen() {
 				</View>
 				{loading && !status ? <ActivityIndicator style={styles.spinner} /> : null}
 				{status && status.files.length === 0 ? <Text style={styles.dim}>変更はありません</Text> : null}
+				{(status?.files ?? []).length > 0 ? <View style={styles.card}>
 				{(status?.files ?? []).map(f => {
 					const staged = f.x !== ' ' && f.x !== '?';
 					const letter = (f.x !== ' ' && f.x !== '?' ? f.x : f.y) || '?';
 					return (
 						<View key={`${f.x}${f.y}${f.path}`} style={styles.fileRowWrap}>
 							<Pressable disabled={!live} style={[styles.fileRow, !live && styles.commitBtnDisabled]} onPress={() => { hapticSelection(); setDiffTarget({ path: f.path, staged: staged && f.y === ' ', letter }); }}>
-								<Ionicons name="document-text-outline" size={14} color={colors.textDim} />
-								<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
+								{/* 状態の1文字を先頭に置く。行の意味（追加なのか削除なのか）が
+								    パスを読む前に分かり、縦に並んだとき色の列としても読める。 */}
 								<Text style={[styles.fileLetter, letter === 'M' ? styles.mod : letter === 'A' || letter === '?' ? styles.add : letter === 'D' ? styles.del : undefined]}>{letter === '?' ? 'A' : letter}</Text>
+								<Text style={styles.filePath} numberOfLines={1}>{f.path}</Text>
+								<Ionicons name="chevron-forward" size={14} color={colors.textDim} />
 							</Pressable>
 							{log?.webUrl ? (
 								<Pressable style={styles.fileExtBtn} onPress={() => { hapticImpact('light'); openFileExternally(f.path); }} hitSlop={8} accessibilityLabel="外部で開く">
@@ -312,19 +318,21 @@ export default function ScmScreen() {
 						</View>
 					);
 				})}
+				</View> : null}
 
 				{log !== undefined || logError !== undefined ? (
 					<Text style={[styles.sectionTitle, { marginTop: 18 }]}>最近のコミット</Text>
 				) : null}
 				{logError ? <Text style={styles.error}>{logError}</Text> : null}
 				{log && log.commits.length === 0 ? <Text style={styles.dim}>コミットはありません</Text> : null}
+				{(log?.commits ?? []).length > 0 ? <View style={styles.card}>
 				{(log?.commits ?? []).map(c => {
 					const expanded = expandedHash === c.hash;
 					const detail = commitFiles[c.hash];
 					return (
 						<View key={c.hash}>
 							<Pressable style={styles.commitRow} onPress={() => { hapticSelection(); toggleCommit(c.hash); }}>
-								<Ionicons name={expanded ? 'chevron-down' : 'chevron-forward'} size={11} color={colors.textDim} />
+								<Ionicons name={expanded ? 'chevron-down' : 'git-commit-outline'} size={14} color={colors.textDim} />
 								<Text style={styles.commitSubject} numberOfLines={1}>{c.subject}</Text>
 								{/* atが無いのは旧バージョンのPC（whenはPC側整形の英語文字列） */}
 								<Text style={styles.commitWhen}>{c.at !== undefined ? formatRelativeTime(c.at, now) : c.when}</Text>
@@ -350,6 +358,7 @@ export default function ScmScreen() {
 						</View>
 					);
 				})}
+				</View> : null}
 				{log?.hasMore ? (
 					<Pressable style={[styles.loadMoreBtn, (!live || loading || loadingMore) && styles.commitBtnDisabled]} onPress={() => { hapticImpact('light'); void loadMore(); }} disabled={!live || loading || loadingMore}>
 						<Text style={styles.loadMoreText}>{loadingMore ? '読み込み中…' : 'さらに読み込む'}</Text>
@@ -360,7 +369,21 @@ export default function ScmScreen() {
 			{diffTarget !== undefined && wsId ? (
 				<DiffView ws={wsId} path={diffTarget.path} staged={diffTarget.staged} statusLetter={diffTarget.letter} onClose={() => setDiffTarget(undefined)} />
 			) : null}
+			<WsHeader
+				onHeightChange={setHeaderHeight}
+				right={
+					<HeaderActionPill>
+						<HeaderActionButton
+							icon="refresh-outline"
+							label="変更を再取得"
+							color={loading ? colors.textDim : colors.text}
+							onPress={() => { hapticImpact('light'); void refresh(); }}
+						/>
+					</HeaderActionPill>
+				}
+			/>
 		</KeyboardAvoidingView>
+		</GestureDetector>
 		</ConnectionGate>
 	);
 }
@@ -368,12 +391,15 @@ export default function ScmScreen() {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	list: { flex: 1, paddingHorizontal: 16 },
-	repoCard: { gap: 6, backgroundColor: colors.surface, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 10 },
+	// 行をまとめる札。角丸は card、中に入る入力欄やボタンは control（同心円則で1段内側）。
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, marginBottom: 8 },
+	repoCard: { gap: 8, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 12, marginBottom: 10 },
 	repoRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 	repoName: { color: colors.text, fontSize: 14, fontWeight: '600', flexShrink: 1 },
 	repoBranch: { color: colors.accent, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', flexShrink: 1 },
-	commitInput: { backgroundColor: colors.panel, borderRadius: 10, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10, minHeight: 56, textAlignVertical: 'top', marginBottom: 8 },
-	commitBtn: { backgroundColor: colors.accent2, borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+	repoCount: { color: colors.textDim, fontSize: 11, marginLeft: 'auto' },
+	commitInput: { backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, color: colors.text, fontSize: 13, paddingHorizontal: 12, paddingVertical: 10, minHeight: 56, textAlignVertical: 'top' },
+	commitBtn: { backgroundColor: colors.accent2, borderRadius: radius.control, ...squircle, paddingVertical: 12, alignItems: 'center' },
 	commitBtnDisabled: { opacity: 0.45 },
 	commitBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
 	commitResult: { color: colors.green, fontSize: 11, marginTop: 8, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
@@ -383,7 +409,7 @@ const styles = StyleSheet.create({
 	sectionCount: { color: colors.textDim, fontSize: 12 },
 	spinner: { marginTop: 16 },
 	dim: { color: colors.textDim, fontSize: 12, marginTop: 8 },
-	fileRowWrap: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#21262d' },
+	fileRowWrap: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
 	fileRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10 },
 	fileExtBtn: { paddingHorizontal: 10, paddingVertical: 10 },
 	filePath: { flex: 1, color: colors.text, fontSize: 13 },
@@ -395,7 +421,7 @@ const styles = StyleSheet.create({
 	commitDetail: { paddingLeft: 20, paddingBottom: 6, gap: 3 },
 	commitFileRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 	commitFilePath: { flex: 1, color: colors.textDim, fontSize: 12 },
-	loadMoreBtn: { alignItems: 'center', paddingVertical: 10, marginTop: 4, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+	loadMoreBtn: { alignItems: 'center', paddingVertical: 10, marginTop: 4, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
 	loadMoreText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
 	commitSubject: { flex: 1, color: colors.text, fontSize: 13 },
 	commitWhen: { color: colors.textDim, fontSize: 11 },

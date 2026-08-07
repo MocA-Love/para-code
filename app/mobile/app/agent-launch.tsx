@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
-import { useRouter, usePreventZoomTransitionDismissal } from 'expo-router';
+import { useLocalSearchParams, useRouter, usePreventZoomTransitionDismissal } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
@@ -11,15 +11,13 @@ import type { WorktreeFormResult } from '../src/store.js';
 import { allowedEfforts, buildLaunchCommandPreview } from '../src/components/agentLaunchCommand.js';
 import { EffortSlider } from '../src/components/effortSlider.js';
 import { GlassSurface } from '../src/components/glassSurface.js';
+import { ScreenHeader } from '../src/components/screenHeader.js';
 import { ProviderLogo } from '../src/components/providerLogo.js';
 import { useEffectiveWs, wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors, mono } from '../src/theme.js';
+import { colors, mono, radius, squircle } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
-
-/** 画面上端の余白（ヘッダーはこの下に置く）。ディスミス可能な範囲の計算にも使う。 */
-const SCREEN_TOP_GAP = 8;
 
 /**
  * 「新しいエージェントを起動」画面。ホームヘッダーの＋から Link.AppleZoom で開く独立ルート
@@ -38,6 +36,9 @@ const SCREEN_TOP_GAP = 8;
  */
 export default function AgentLaunchScreen() {
 	const router = useRouter();
+	// ホームの＋メニューから「Claude を起動 / Codex を起動」で入ってきたときは、
+	// そのエージェントを選んだ状態でフォームを開く（押した意思をここで捨てない）。
+	const { agent: requestedAgentId } = useLocalSearchParams<{ agent?: string }>();
 	const insets = useStableInsets();
 	const { workspace, worktreeForm, connection, pcOnline, sessionProtocolReady } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, worktreeForm: s.worktreeForm,
@@ -74,7 +75,7 @@ export default function AgentLaunchScreen() {
 	// 触れた直後に開始を判定するため、素早く動かすと間に合わない。画面を出した時点で決まる
 	// 静的な範囲にすれば、その競走自体が無くなる。
 	usePreventZoomTransitionDismissal(headerHeight > 0
-		? { unstable_dismissalBoundsRect: { maxY: insets.top + SCREEN_TOP_GAP + headerHeight } }
+		? { unstable_dismissalBoundsRect: { maxY: headerHeight } }
 		: undefined);
 
 	// 既定リポジトリ算出用のworkspaceスナップショット。stateのpushで頻繁に更新されるため、
@@ -101,7 +102,8 @@ export default function AgentLaunchScreen() {
 			// Gemini CLI はモバイルの起動フォームでは提供しない（Claude/Codex＋カスタム定義のみ）
 			result = { ...result, agents: result.agents.filter(candidate => candidate.id !== 'gemini') };
 			setForm(result);
-			const firstAgent = result.agents[0];
+			const requested = requestedAgentId !== undefined ? result.agents.find(candidate => candidate.id === requestedAgentId) : undefined;
+			const firstAgent = requested ?? result.agents[0];
 			setAgentId(firstAgent?.id);
 			setPermissionId(firstAgent?.permissions?.[0]?.id);
 			// 新規スペースの既定リポジトリ: PC側アクティブワークスペースの親リポジトリ
@@ -115,7 +117,7 @@ export default function AgentLaunchScreen() {
 			}
 		});
 		return () => { cancelled = true; };
-	}, [live, form, worktreeForm]);
+	}, [live, form, worktreeForm, requestedAgentId]);
 
 	const agent = form?.agents.find(candidate => candidate.id === agentId);
 	const agentAccent = agentId === 'claude' ? colors.claude : colors.accent;
@@ -219,26 +221,9 @@ export default function AgentLaunchScreen() {
 	};
 
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + SCREEN_TOP_GAP }]}>
-			<View style={styles.header} onLayout={event => setHeaderHeight(event.nativeEvent.layout.height)}>
-				<Pressable
-					style={styles.iconBtn}
-					onPress={() => { hapticImpact('light'); router.back(); }}
-					hitSlop={6}
-					accessibilityRole="button"
-					accessibilityLabel="閉じる"
-				>
-					{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される） */}
-					<GlassSurface style={styles.iconGlass} interactive />
-					<Ionicons name="chevron-back" size={18} color={colors.text} />
-				</Pressable>
-				<Text style={styles.title}>新しいエージェント</Text>
-				{/* 左のボタンと釣り合いを取るための空き（タイトルを中央に置くため） */}
-				<View style={styles.iconBtn} />
-			</View>
-
+		<View style={styles.screen}>
 			<KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-				<ScrollView ref={scrollRef} contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 30 }, column]} keyboardShouldPersistTaps="handled">
+				<ScrollView ref={scrollRef} contentContainerStyle={[styles.content, { paddingTop: headerHeight, paddingBottom: insets.bottom + 30 }, column]} keyboardShouldPersistTaps="handled">
 					{formError ? <Text style={styles.error}>{formError}</Text> : null}
 					{!form && !formError ? <ActivityIndicator style={styles.spinner} /> : null}
 					{form && agent !== undefined ? (
@@ -447,6 +432,7 @@ export default function AgentLaunchScreen() {
 					) : null}
 				</ScrollView>
 			</KeyboardAvoidingView>
+			<ScreenHeader title="新しいエージェント" onHeightChange={setHeaderHeight} />
 		</View>
 	);
 }
@@ -454,10 +440,6 @@ export default function AgentLaunchScreen() {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	flex: { flex: 1 },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingBottom: 10 },
-	title: { flex: 1, color: colors.text, fontSize: 20, fontWeight: '800', letterSpacing: -0.3, textAlign: 'center' },
-	iconBtn: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
-	iconGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: 18, overflow: 'hidden' },
 	content: { paddingHorizontal: 18 },
 	spinner: { marginVertical: 24 },
 	error: { color: colors.red, fontSize: 12, marginTop: 8, lineHeight: 17 },
@@ -468,7 +450,7 @@ const styles = StyleSheet.create({
 	agentCard: {
 		flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8,
 		backgroundColor: colors.surface2, borderWidth: 1.5, borderColor: colors.border,
-		borderRadius: 13, paddingVertical: 9, paddingHorizontal: 10,
+		borderRadius: radius.card, ...squircle, paddingVertical: 9, paddingHorizontal: 10,
 	},
 	agentCardName: { flex: 1, color: colors.textDim, fontSize: 12.5, fontWeight: '700' },
 	agentCardNameActive: { color: colors.text },
@@ -478,10 +460,10 @@ const styles = StyleSheet.create({
 	spaceChip: {
 		flexDirection: 'row', alignItems: 'center', gap: 8,
 		backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.borderStrong,
-		borderRadius: 13, paddingVertical: 6, paddingHorizontal: 10, paddingLeft: 6, maxWidth: 190,
+		borderRadius: radius.pill, ...squircle, paddingVertical: 6, paddingHorizontal: 10, paddingLeft: 6, maxWidth: 190,
 	},
 	newSpaceChip: { borderStyle: 'dashed', backgroundColor: 'transparent' },
-	spaceAvatar: { width: 24, height: 24, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+	spaceAvatar: { width: 24, height: 24, borderRadius: 8, ...squircle, alignItems: 'center', justifyContent: 'center' },
 	newSpaceAvatar: { borderWidth: 1.2, borderColor: colors.textDim, borderStyle: 'dashed' },
 	spaceAvatarText: { fontSize: 11, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
 	spaceMeta: { flexShrink: 1 },
@@ -490,18 +472,18 @@ const styles = StyleSheet.create({
 	spaceBranch: { color: colors.textDim, fontSize: 10, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default, flexShrink: 1 },
 	// 新規スペースのインラインパネル
 	newSpacePanel: {
-		marginTop: 10, padding: 10, borderRadius: 12, gap: 8,
+		marginTop: 10, padding: 10, borderRadius: radius.card, ...squircle, gap: 8,
 		backgroundColor: 'rgba(0,0,0,0.28)', borderWidth: 1, borderColor: colors.border,
 	},
 	fieldRow: { flexDirection: 'row', gap: 8 },
 	fieldHalf: { flex: 1 },
 	input: {
-		backgroundColor: 'rgba(0,0,0,0.35)', borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 10,
+		backgroundColor: 'rgba(0,0,0,0.35)', borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.control, ...squircle,
 		paddingHorizontal: 12, paddingVertical: 10, color: colors.text, fontSize: 13,
 	},
 	promptInput: { minHeight: 64, textAlignVertical: 'top' },
 	pillRow: { flexDirection: 'row', gap: 7, paddingBottom: 2 },
-	pill: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 8, paddingHorizontal: 11, paddingVertical: 6 },
+	pill: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: radius.pill, ...squircle, paddingHorizontal: 11, paddingVertical: 6 },
 	pillActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	pillText: { color: colors.text, fontSize: 12 },
 	pillTextActive: { color: colors.accent, fontWeight: '700' },
@@ -512,8 +494,8 @@ const styles = StyleSheet.create({
 		backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 5, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden',
 	},
 	// 権限セグメント
-	segRow: { flexDirection: 'row', gap: 3, backgroundColor: colors.surface3, borderRadius: 12, padding: 3, borderWidth: 1, borderColor: colors.border },
-	segBtn: { flex: 1, borderRadius: 9, paddingVertical: 9, paddingHorizontal: 4, alignItems: 'center' },
+	segRow: { flexDirection: 'row', gap: 3, backgroundColor: colors.surface3, borderRadius: radius.card, ...squircle, padding: 3, borderWidth: 1, borderColor: colors.border },
+	segBtn: { flex: 1, borderRadius: radius.control, ...squircle, paddingVertical: 9, paddingHorizontal: 4, alignItems: 'center' },
 	segBtnActive: { backgroundColor: colors.surface2 },
 	segBtnDanger: { backgroundColor: 'rgba(244,114,114,.16)' },
 	segText: { color: colors.textDim, fontSize: 12, fontWeight: '700' },
@@ -524,7 +506,7 @@ const styles = StyleSheet.create({
 	modelRow: {
 		flexDirection: 'row', alignItems: 'center', gap: 10,
 		backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border,
-		borderRadius: 13, paddingVertical: 11, paddingHorizontal: 13, marginBottom: 7,
+		borderRadius: radius.card, ...squircle, paddingVertical: 11, paddingHorizontal: 13, marginBottom: 7,
 	},
 	modelLabel: { flex: 1, color: colors.textDim, fontSize: 13.5, fontWeight: '700' },
 	modelLabelActive: { color: colors.text },
@@ -533,7 +515,7 @@ const styles = StyleSheet.create({
 		marginTop: 12, color: colors.textDim, fontSize: 10, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default,
 		backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, overflow: 'hidden',
 	},
-	launchBtn: { marginTop: 10, borderRadius: 13, paddingVertical: 13, alignItems: 'center' },
+	launchBtn: { marginTop: 10, borderRadius: radius.card, ...squircle, paddingVertical: 13, alignItems: 'center' },
 	launchBtnDisabled: { opacity: 0.5 },
 	launchBtnText: { color: '#fff', fontSize: 14, fontWeight: '800' },
 });

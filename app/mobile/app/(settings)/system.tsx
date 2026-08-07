@@ -2,24 +2,24 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useIsFocused, useRouter } from 'expo-router';
+import { useIsFocused } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../src/appState.js';
-import { ConnectionGate } from '../src/components/connectionGate.js';
-import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
-import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
-import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors } from '../src/theme.js';
-import { hapticImpact, hapticSelection } from '../src/haptics.js';
-import type { SpaceDiskResult, SystemResourcesResult } from '../src/store.js';
+import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { ScreenHeader } from '../../src/components/screenHeader.js';
+import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
+import { colors, radius, squircle } from '../../src/theme.js';
+import { hapticSelection } from '../../src/haptics.js';
+import type { SpaceDiskResult, SystemResourcesResult } from '../../src/store.js';
 import {
 	CPU_THRESHOLDS, MEMORY_THRESHOLDS, buildProcessRows, buildScopeRows, diskLevel, formatBytes, formatCpu,
 	buildSpaceDiskRows, sortRowsBy, usageLevel, usagePercent, type ResourceRow, type UsageLevel,
-} from '../src/systemResources.js';
-import { formatRelativeTime, useNow } from '../src/time.js';
+} from '../../src/systemResources.js';
+import { formatRelativeTime, useNow } from '../../src/time.js';
 
 /**
  * 「システム」画面。設定 →「システム」またはワークスペースドロワーのPCカードから開く。
@@ -85,9 +85,9 @@ function RingCard({ name, percent, value, sub, color }: {
 }
 
 export default function SystemScreen() {
-	const router = useRouter();
-	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
+	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const { systemResources, spaceDiskUsage, connection } = useAppStore(useShallow(s => ({ systemResources: s.systemResources, spaceDiskUsage: s.spaceDisk, connection: s.connection })));
@@ -384,20 +384,16 @@ export default function SystemScreen() {
 
 	return (
 		<ConnectionGate>
-			<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-				<View style={styles.header}>
-					<View style={styles.headerBody}>
-						<Text style={styles.title}>システム</Text>
-						{data ? <Text style={styles.subtitle}>{formatRelativeTime(data.host.collectedAt, now)}に更新 · {data.host.cores}コア</Text> : null}
-					</View>
-					<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
-						<Ionicons name="close" size={16} color={colors.textDim} />
-					</Pressable>
-				</View>
+			<View style={styles.screen}>
+				<ScreenHeader
+					title="システム"
+					subtitle={data ? `${formatRelativeTime(data.host.collectedAt, now)}に更新 · ${data.host.cores}コア` : undefined}
+					onHeightChange={setHeaderHeight}
+				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingBottom: tabBarSpacer }, column]}
-					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
@@ -482,19 +478,14 @@ export default function SystemScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 20, paddingBottom: 10 },
-	headerBody: { flex: 1, minWidth: 0 },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3 },
-	subtitle: { color: colors.textDim, fontSize: 11, marginTop: 2 },
-	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
 	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
-	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	rings: { flexDirection: 'row', gap: 10, marginTop: 4 },
-	ringCard: { flex: 1, backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingVertical: 14, paddingHorizontal: 6, alignItems: 'center', gap: 7 },
+	ringCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingVertical: 14, paddingHorizontal: 6, alignItems: 'center', gap: 7 },
 	ring: { width: 78, height: 78, alignItems: 'center', justifyContent: 'center' },
 	ringValue: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
 	ringValueText: { fontSize: 17, fontWeight: '800', letterSpacing: -0.4 },
@@ -507,7 +498,7 @@ const styles = StyleSheet.create({
 	spaceHeadTitle: { flex: 1, marginTop: 0, marginBottom: 0 },
 	spaceAgo: { color: colors.textDim, fontSize: 10.5 },
 	// alignSelf を指定しないと、親の baseline 揃えでスピナー⇔アイコンの切替時に上下へ跳ねる。
-	spaceRefresh: { width: 26, height: 26, borderRadius: 8, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
+	spaceRefresh: { width: 26, height: 26, borderRadius: 8, ...squircle, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
 	spaceChevronSpacer: { width: 12 },
 	worktreeList: { marginTop: 6, marginLeft: 12, paddingLeft: 10, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
 	worktreeRow: { flexDirection: 'row', alignItems: 'baseline', gap: 8, paddingVertical: 4 },
@@ -517,7 +508,7 @@ const styles = StyleSheet.create({
 	legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 	legendSwatch: { width: 9, height: 9, borderRadius: 3 },
 	legendText: { color: colors.textDim, fontSize: 10.5 },
-	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
+	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
 	chipActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
 	chipTextActive: { color: colors.accent },

@@ -2,19 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../src/appState.js';
-import { ConnectionGate } from '../src/components/connectionGate.js';
-import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
-import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors } from '../src/theme.js';
-import { hapticImpact, hapticSelection } from '../src/haptics.js';
-import { GITHUB_UNSCOPED_SPACE } from '../src/store.js';
-import type { GithubCallCounts, GithubOperationStat, GithubSpaceStat, GithubUsageResult } from '../src/store.js';
-import { useNow } from '../src/time.js';
+import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
+import { colors, radius, squircle } from '../../src/theme.js';
+import { hapticImpact, hapticSelection } from '../../src/haptics.js';
+import { GITHUB_UNSCOPED_SPACE } from '../../src/store.js';
+import type { GithubCallCounts, GithubOperationStat, GithubSpaceStat, GithubUsageResult } from '../../src/store.js';
+import { useNow } from '../../src/time.js';
 
 /**
  * GitHub API利用状況画面。設定 →「GitHub API」から開く。
@@ -98,9 +96,9 @@ function formatCountdown(resetAt: number, now: number): string {
 }
 
 export default function GithubUsageScreen() {
-	const router = useRouter();
-	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
+	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const { githubUsage, connection } = useAppStore(useShallow(s => ({ githubUsage: s.githubUsage, connection: s.connection })));
@@ -149,27 +147,23 @@ export default function GithubUsageScreen() {
 
 	return (
 		<ConnectionGate>
-			<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-				<View style={styles.header}>
-					<Text style={styles.title}>GitHub API</Text>
-					<Pressable
-						style={styles.closeBtn}
-						onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
-						disabled={pullRefreshing || loading}
-						accessibilityLabel="最新に更新"
-					>
-						{pullRefreshing || loading
-							? <ActivityIndicator size="small" color={colors.textDim} />
-							: <Ionicons name="refresh" size={16} color={colors.textDim} />}
-					</Pressable>
-					<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
-						<Ionicons name="close" size={16} color={colors.textDim} />
-					</Pressable>
-				</View>
+			<View style={styles.screen}>
+				<ScreenHeader
+					title="GitHub API"
+					actions={
+						<HeaderCircleButton
+							icon="refresh-outline"
+							label="再取得"
+							onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+							disabled={pullRefreshing || loading}
+						/>
+					}
+					onHeightChange={setHeaderHeight}
+				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingBottom: tabBarSpacer }, column]}
-					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
@@ -281,18 +275,15 @@ export default function GithubUsageScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
-	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
 	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
 	warn: { color: colors.yellow, fontSize: 11.5, marginTop: 8, marginBottom: 4 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
-	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 13, gap: 3 },
+	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 13, gap: 3 },
 	kpiLabel: { color: colors.textDim, fontSize: 10.5, fontWeight: '600' },
 	kpiValue: { color: colors.text, fontSize: 19, fontWeight: '800' },
 	kpiSub: { color: colors.textDim, fontSize: 10 },
@@ -300,12 +291,12 @@ const styles = StyleSheet.create({
 	kpiGaugeFill: { height: 4, borderRadius: 2 },
 	// 下の余白が2ptしかないと、押せるピル／チップと直下のカードが触れて見える。
 	pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	pill: { paddingVertical: 7, paddingHorizontal: 13, borderRadius: 999, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+	pill: { paddingVertical: 7, paddingHorizontal: 13, borderRadius: radius.pill, ...squircle, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
 	pillActive: { backgroundColor: colors.accent, borderColor: colors.accent },
 	pillText: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },
 	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
+	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
 	chipActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
 	chipTextActive: { color: colors.accent },

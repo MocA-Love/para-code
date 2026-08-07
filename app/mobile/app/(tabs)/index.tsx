@@ -1,20 +1,20 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { useIsFocused, useRouter } from 'expo-router';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 // 一覧のScrollViewはRNGH版を使う。RN版は子孫へのタッチ配送を遅らせるため、行に付けた
 // スワイプが指の動き出しを取りこぼして反応しない（祖先側のドロワーだけが効く状態になる）。
-import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
+import { GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
-import { AgentLaunchButton, AgentLaunchToastView } from '../../src/components/agentLaunchButton.js';
+import { AgentLaunchToastView } from '../../src/components/agentLaunchButton.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { VoiceNotificationControl } from '../../src/components/voiceNotificationControl.js';
-import { WsHeader, useEffectiveWs, useWsDrawer, wsColor } from '../../src/components/wsDrawer.js';
+import { WsHeader, useEffectiveWs, useOpenDrawerPan, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionStack, type AttentionStackItem } from '../../src/components/attentionStack.js';
 import {
 	ATTENTION_VISIBLE_LIMIT, CLOSED_ATTENTION, reconcileAttention, sortWaiting, toggleAttention, visibleWaiting,
@@ -23,16 +23,19 @@ import {
 import { TerminalActionsMenu, type TerminalActionsMenuTarget } from '../../src/components/terminalActionsMenu.js';
 import { AgentBadge, AgentRowContent, agentRowStyles, type AgentRowData, type AgentRowRect } from '../../src/components/agentRow.js';
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
-import { SwipeRow } from '../../src/components/swipeRow.js';
+import { SwipeRow, swipeActionColors } from '../../src/components/swipeRow.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
+import { HeaderActionButton, HeaderActionPill } from '../../src/components/screenHeader.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
-import { colors } from '../../src/theme.js';
+import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
 import { arrangeHomeRows } from '../../src/homeSort.js';
-import { HomeListControls } from '../../src/components/homeListControls.js';
+import { HomeFilterChips, HomeSortSheet } from '../../src/components/homeListControls.js';
+import { HomePlusMenu, PlusMenuScrim, type HomePlusMenuAction } from '../../src/components/homePlusMenu.js';
+import { WorktreeCreateSheet } from '../../src/components/worktreeCreateSheet.js';
 import { listColumnsFor } from '../../src/ipad/ipadLayout.js';
 
 /**
@@ -63,8 +66,9 @@ function renderAgentRows(nodes: readonly ReactElement[], columns: 1 | 2) {
  */
 export default function HomeScreen() {
 	const router = useRouter();
-	const { workspace, paired, ready, notifications, homeShowAllWorkspaces, homePreferences, setHomePreferences, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus, archivedKeys, setArchived } = useAppStore(useShallow(s => ({
+	const { workspace, paired, ready, notifications, createTerminal, homeShowAllWorkspaces, homePreferences, setHomePreferences, setSelectedWs, setSelectedTerminalKey, pinnedKeys, renameTerminal, togglePin, closeTerminal, ackAgentStatus, archivedKeys, setArchived } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, paired: s.paired, ready: s.ready, notifications: s.notifications,
+		createTerminal: s.createTerminal,
 		homeShowAllWorkspaces: s.homeShowAllWorkspaces,
 		homePreferences: s.homePreferences, setHomePreferences: s.setHomePreferences,
 		setSelectedWs: s.setSelectedWs, setSelectedTerminalKey: s.setSelectedTerminalKey,
@@ -81,29 +85,22 @@ export default function HomeScreen() {
 	// 並び替えシートの開閉。コンポーネント側に持たせると、一覧が0件になった瞬間に
 	// アンマウントされてシートが勝手に閉じるため画面側で持つ。
 	const [sortSheetOpen, setSortSheetOpen] = useState(false);
+	// ヘッダーの＋から生えるメニューと、そこから開くワークツリー作成シート。
+	const [plusMenuOpen, setPlusMenuOpen] = useState(false);
+	const [worktreeSheetOpen, setWorktreeSheetOpen] = useState(false);
 	// ステータスバッジタップで開くポップオーバー（「確認済みにする」）の表示状態。
 	const [statusPopover, setStatusPopover] = useState<{ target: AgentStatusPopoverTarget; anchor: { x: number; y: number } } | undefined>(undefined);
 	// ヘッダー＋ボタンで開く「新しいエージェントを起動」シートの表示状態。
 
 	const tabBarSpacer = useTabBarSpacer();
-	// 画面のどこからでも右スワイプでドロワーを開ける（X方式）。ドロワー側の全画面モード
-	// （setFullWidthSwipe）は使わない。あちらのジェスチャは**向きを問わず最初の1pxで発動する**
-	// 作りのため、一覧の行に付けた左スワイプが毎回そこで潰されてしまう。ここで向きを限った
-	// 自前のジェスチャに置き換え、左方向はそのまま行へ渡す。
-	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ており開く先が無い。
-	// 有効なままだと右スワイプを何もしないジェスチャが飲み込んでしまうため、そこでは止める。
 	const regular = useIsRegularWidth();
 	// 一覧を何列で並べるか。ウィンドウ幅ではなく実際の一覧の幅で決める
 	// （左のサイドバーぶん狭いので、ウィンドウ幅で決めると2列に入らない幅でも2列にしてしまう）。
 	const [listWidth, setListWidth] = useState(0);
+	const [headerHeight, setHeaderHeight] = useState(0);
 	const columns = regular ? listColumnsFor(listWidth) : 1;
-	const drawer = useWsDrawer();
-	const openDrawerPan = useMemo(() => Gesture.Pan()
-		.runOnJS(true)
-		.enabled(!regular)
-		.activeOffsetX(24)
-		.failOffsetY([-16, 16])
-		.onStart(() => drawer.open()), [drawer, regular]);
+	// 同じジェスチャをソース管理・ファイルタブでも使う（wsDrawer.tsx の useOpenDrawerPan）。
+	const openDrawerPan = useOpenDrawerPan();
 	// 絞り込み中は選択中ワークスペース（selectedWs）＋その配下のworktreeだけを対象にする。
 	// selectedWsは他タブや通知タップ・エージェント遷移でも更新される全画面共有の値なので、
 	// それらの操作でワークスペースが切り替わった後にホームへ戻ると、絞り込み先も追従する
@@ -207,6 +204,45 @@ export default function HomeScreen() {
 		undoTimer.current = setTimeout(() => { undoTimer.current = undefined; setUndoArchive(undefined); }, 4_000);
 	};
 
+	/** ヘッダーの＋メニューで選んだ項目の行き先。 */
+	const onPlusMenuSelect = (action: HomePlusMenuAction) => {
+		switch (action) {
+			case 'launch-claude':
+				router.push({ pathname: '/agent-launch', params: { agent: 'claude' } });
+				return;
+			case 'launch-codex':
+				router.push({ pathname: '/agent-launch', params: { agent: 'codex' } });
+				return;
+			case 'new-terminal':
+				createTerminal(effectiveWs?.id);
+				return;
+			case 'new-worktree':
+				setWorktreeSheetOpen(true);
+				return;
+			case 'space-note':
+				if (effectiveWs !== undefined) {
+					router.push({ pathname: '/space-note', params: { ws: effectiveWs.id } });
+				}
+				return;
+			case 'sort':
+				setSortSheetOpen(true);
+				return;
+			case 'ack-all':
+				for (const t of reviewable) {
+					ackAgentStatus(t.terminalKey);
+				}
+				return;
+		}
+	};
+
+	/** 削除は取り返しがつかないので、スワイプから直に消さず一度だけ聞く。 */
+	const confirmDelete = (terminalKey: string, title: string) => {
+		Alert.alert('エージェントを削除', `「${title}」を削除します。PCのターミナルごと閉じられます。`, [
+			{ text: 'キャンセル', style: 'cancel' },
+			{ text: '削除', style: 'destructive', onPress: () => closeTerminal(terminalKey) },
+		]);
+	};
+
 	if (ready && !paired) {
 		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
 	}
@@ -232,41 +268,17 @@ export default function HomeScreen() {
 		spaceIndexOf: t => { const ws = resolveWs(t); return ws !== undefined ? spaceIndex.get(ws.id) : undefined; },
 		isPinned: t => pinnedKeys.has(pinKeyForTerminal(t)),
 	});
-	const headerSubtitle = homeShowAllWorkspaces || effectiveWs === undefined
-		? 'Para Code Mobile'
-		: `${effectiveWs.name}${effectiveWs.branch ? ` · ${effectiveWs.branch}` : ''}`;
 	// アーカイブ入口は、しまってあるものが1件でもある時だけ出す（常設だと空のボタンが並ぶ）。
 	const archivedCount = (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))).length;
+	// 「すべて確認済みにする」の対象。既読の概念があるのはレビュー待ちだけで、実行中や
+	// アイドルには確認するものが無い。応答待ちは回答して解消するものなので含めない。
+	const reviewable = listable.filter(t => t.agentStatus === 'review');
 
 	return (
 		<ConnectionGate><GestureDetector gesture={openDrawerPan}><View style={styles.screen}>
-			<WsHeader
-				title="ホーム"
-				subtitle={headerSubtitle}
-				allWorkspaces={homeShowAllWorkspaces}
-				right={
-					<View style={styles.headerActions}>
-						{archivedCount > 0 ? (
-							<Pressable
-								style={styles.archiveBtn}
-								onPress={() => { hapticImpact('light'); router.push('/archive'); }}
-								accessibilityRole="button"
-								accessibilityLabel={`アーカイブ ${archivedCount}件を見る`}
-							>
-								{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される） */}
-								<GlassSurface style={styles.archiveBtnGlass} interactive />
-								<Ionicons name="file-tray-full-outline" size={18} color={colors.text} />
-							</Pressable>
-						) : null}
-						<AgentLaunchButton />
-						<VoiceNotificationControl />
-						<NotificationsButton notifications={notifications} />
-					</View>
-				}
-			/>
 			<ScrollView
 				style={styles.scroll}
-				contentContainerStyle={[styles.content, { paddingBottom: tabBarSpacer }]}
+				contentContainerStyle={[styles.content, { paddingTop: headerHeight, paddingBottom: tabBarSpacer }]}
 				// 幅の測定はiPad幅のときだけ。iPhoneでは列数が常に1なので測る必要が無く、
 				// onLayoutを付けるとマウント時に無駄な再描画が1回増える。
 				onLayout={regular ? e => setListWidth(e.nativeEvent.layout.width) : undefined}
@@ -293,26 +305,10 @@ export default function HomeScreen() {
 					}}
 				/>
 
-				{/* 応答待ちしか居ないときは、上のスタックが全部を映しているので見出しごと省く。
-				    絞り込みで0件になった場合は、戻す手段（チップ）が要るので見出しは出したままにする。 */}
-				{listable.length > 0 || waitingTerminals.length === 0 ? (
-					<Text style={styles.sectionTitle}>
-						{homeShowAllWorkspaces || effectiveWs === undefined ? 'エージェント — 全ワークスペース' : `エージェント — ${effectiveWs.name}`}
-					</Text>
-				) : null}
-				{/* 並び替えと絞り込み。並べるものが1件も無いうちは出さない（操作しても何も起きない）。
-				    シートを開いている間は残す——最後の1件が応答待ちへ変わって0件になった瞬間に
-				    消えると、操作中のシートがひとりでに閉じるため。 */}
-				{listable.length > 0 || sortSheetOpen ? (
-					<HomeListControls
-						preferences={homePreferences}
-						onChange={setHomePreferences}
-						rows={listable}
-						visibleCount={rows.length}
-						sheetOpen={sortSheetOpen}
-						onSheetOpenChange={setSortSheetOpen}
-					/>
-				) : null}
+				{/* 「エージェント — <スペース名>」の見出しは置かない。いま何を見ているかは
+				    ヘッダーの島（スペース名）と絞り込みチップが既に示しており、同じことを
+				    3段目でもう一度言うと本文の始まりがそのぶん下がるだけになる。
+				    絞り込みチップも本文ではなくヘッダーの帯（WsHeader の below）にある。 */}
 				{renderAgentRows(rows.map(t => {
 					const ws = resolveWs(t);
 					const color = ws ? wsColor(ws) : colors.accent;
@@ -358,16 +354,41 @@ export default function HomeScreen() {
 							<AgentRowContent data={rowData} badge={badge} />
 						</Pressable>
 					);
-					// 左スワイプでアーカイブ。応答待ちの行はここには来ない（上部のスタックが持つ）ので、
+					// 左スワイプで片付ける。応答待ちの行はここには来ない（上部のスタックが持つ）ので、
 					// 片付けても自動で戻ってくる行にスワイプを出してしまう心配はない。
+					//
+					// 引き切って実行されるのは**アーカイブだけ**。削除は開いてカードを押さないと
+					// 実行できない。勢いよく払っただけでエージェントが消えるのは取り返しがつかない。
 					return (
 						<SwipeRow
 							key={t.terminalKey}
 							direction="left"
-							label="アーカイブ"
-							icon="file-tray-full-outline"
-							color={colors.surface3}
-							onTrigger={() => archive(t.terminalKey, t.title)}
+							actions={[
+								// 「確認済み」はレビュー待ちにしか意味が無い。実行中やアイドルの行に
+								// 出しても、押して何も変わらないカードが増えるだけになる。
+								...(t.agentStatus === 'review' ? [{
+									key: 'ack',
+									label: '確認済み',
+									icon: 'eye-outline' as const,
+									color: swipeActionColors.neutral,
+									onPress: () => ackAgentStatus(t.terminalKey),
+								}] : []),
+								{
+									key: 'archive',
+									label: 'アーカイブ',
+									icon: 'file-tray-full-outline' as const,
+									color: swipeActionColors.strong,
+									fullSwipe: true,
+									onPress: () => archive(t.terminalKey, t.title),
+								},
+								{
+									key: 'delete',
+									label: '削除',
+									icon: 'trash-outline' as const,
+									color: swipeActionColors.destructive,
+									onPress: () => confirmDelete(t.terminalKey, t.title),
+								},
+							]}
 						>
 							{row}
 						</SwipeRow>
@@ -422,6 +443,62 @@ export default function HomeScreen() {
 				onAck={terminalKey => ackAgentStatus(terminalKey)}
 			/>
 			<AgentLaunchToastView />
+			<PlusMenuScrim visible={plusMenuOpen} onClose={() => setPlusMenuOpen(false)} />
+			<WorktreeCreateSheet visible={worktreeSheetOpen} onClose={() => setWorktreeSheetOpen(false)} />
+			<HomeSortSheet
+				visible={sortSheetOpen}
+				preferences={homePreferences}
+				onChange={setHomePreferences}
+				onClose={() => setSortSheetOpen(false)}
+			/>
+			<WsHeader
+				allWorkspaces={homeShowAllWorkspaces}
+				// 一覧は広い画面で2列に広がるので、ヘッダーも同じく画面幅いっぱいに合わせる。
+				wide
+				onHeightChange={setHeaderHeight}
+				// 絞り込みチップは本文ではなくヘッダーと同じ浮かぶ層に置く。本文に混ぜると
+				// スクロールで流れて消え、「何で絞られているか」が分からなくなる。
+				below={listable.length > 0 ? (
+					<HomeFilterChips preferences={homePreferences} onChange={setHomePreferences} rows={listable} />
+				) : undefined}
+				right={
+					// アクションは**1枚のガラスのピル**にまとめる（LINEのヘッダー右と同じ形）。
+					// ガラス面を1つにするので、中のボタンは Apple HIG どおり glass を重ねず、
+					// 押下は白のハイライトで返す。丸ボタンを並べて GlassContainer で融合させる
+					// 案も試したが、実機では溶け合わずバラバラの丸のままだった（そもそも
+					// 参照にしている見た目が「1枚のピル」で、融合を使う形ではない）。
+					// 並びは「たまに使う → よく使う」で、＋を右端に置く。メニューはその＋から
+					// 生えるので、右端でないと開く場所と押した場所がずれる。
+					// アイコンの大きさと色は揃える。1つだけ着色すると、1枚のピルの中でそこだけ
+					// 別の部品のように浮く。
+					<HomePlusMenu
+						visible={plusMenuOpen}
+						onClose={() => setPlusMenuOpen(false)}
+						ackCount={reviewable.length}
+					hasSpace={effectiveWs !== undefined}
+						onSelect={onPlusMenuSelect}
+					>
+					<HeaderActionPill>
+						{archivedCount > 0 ? (
+							<HeaderActionButton
+								icon="file-tray-full-outline"
+								label={`アーカイブ ${archivedCount}件を見る`}
+								onPress={() => { hapticImpact('light'); router.push('/archive'); }}
+							/>
+						) : null}
+						<VoiceNotificationControl />
+						<NotificationsButton notifications={notifications} />
+						<HeaderActionButton
+							icon={plusMenuOpen ? 'close' : 'add'}
+							label="作成と表示のメニュー"
+							size={21}
+							expanded={plusMenuOpen}
+							onPress={() => { hapticImpact('light'); setPlusMenuOpen(true); }}
+						/>
+					</HeaderActionPill>
+					</HomePlusMenu>
+				}
+			/>
 		</View></GestureDetector></ConnectionGate>
 	);
 }
@@ -429,17 +506,15 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	scroll: { flex: 1 },
-	content: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 32 },
+	// 上下の余白は使う側がヘッダー高さ・タブバー高さから決めるので、ここでは持たない。
+	content: { paddingHorizontal: 16 },
 	dimSmall: { color: colors.textDim, fontSize: 12, marginTop: 4, lineHeight: 18 },
-	headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-	archiveBtn: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-	archiveBtnGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 20, overflow: 'hidden' },
 	// アーカイブ直後の「元に戻す」（タブバーの上のLiquid Glass）
 	undoWrap: {
 		position: 'absolute', left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10,
-		borderRadius: 16, paddingVertical: 11, paddingHorizontal: 14,
+		borderRadius: 16, ...squircle, paddingVertical: 11, paddingHorizontal: 14,
 	},
-	undoGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 16, overflow: 'hidden' },
+	undoGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: 16, ...squircle },
 	undoText: { color: colors.text, fontSize: 12, flex: 1 },
 	undoAction: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginTop: 6, marginBottom: 8, letterSpacing: 0.5 },

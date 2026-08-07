@@ -5,7 +5,7 @@ import { BackHandler, Dimensions, KeyboardAvoidingView, Platform, Pressable, Sty
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { AgentRowClone, type AgentRowData, type AgentRowRect } from './agentRow.js';
 import { colors } from '../theme.js';
@@ -112,7 +112,7 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 			{rowData && rect ? <AgentRowClone data={rowData} rect={rect} /> : null}
 			{mode === 'menu' ? (
 				<PopIn style={[styles.menuPos, { top: menuTop, left: menuLeft }]}>
-					<GlassSurface style={[styles.menu, !liquidGlass && styles.menuFallbackBorder]}>
+					<GlassSurface style={styles.menu}>
 						<Pressable
 							style={styles.menuItem}
 							onPress={() => { hapticSelection(); setMode('rename'); setTimeout(() => inputRef.current?.focus(), 60); }}
@@ -141,7 +141,7 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 			) : mode === 'rename' ? (
 				<KeyboardAvoidingView style={styles.alertWrap} behavior={Platform.OS === 'ios' ? 'padding' : undefined} pointerEvents="box-none">
 					<PopIn>
-						<GlassSurface style={[styles.alert, !liquidGlass && styles.alertFallbackBorder]}>
+						<GlassSurface style={styles.alert}>
 							<Text style={styles.alertTitle}>ターミナル名を変更</Text>
 							<Text style={styles.alertSub}>PCのターミナルタブ名にも反映されます</Text>
 							<TextInput
@@ -169,7 +169,7 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 			) : (
 				<View style={styles.alertWrap} pointerEvents="box-none">
 					<PopIn>
-						<GlassSurface style={[styles.alert, !liquidGlass && styles.alertFallbackBorder]}>
+						<GlassSurface style={styles.alert}>
 							<View style={styles.alertIconWrap}>
 								<View style={styles.alertIcon}>
 									<Ionicons name="trash-outline" size={20} color={colors.red} />
@@ -218,14 +218,12 @@ const styles = StyleSheet.create({
 	menuPos: { position: 'absolute', width: MENU_WIDTH },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く（glassComposerと同じ流儀）
 	menu: { borderRadius: 14, overflow: 'hidden' },
-	menuFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	menuItem: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 12, paddingHorizontal: 15 },
 	menuItemLabel: { color: colors.text, fontSize: 15 },
 	menuItemLabelDestructive: { color: colors.red },
 	menuDivider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.glassBorder },
 	alertWrap: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
 	alert: { width: 270, borderRadius: 16, overflow: 'hidden' },
-	alertFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	alertIconWrap: { alignItems: 'center', paddingTop: 16 },
 	alertIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(244,114,114,0.14)', alignItems: 'center', justifyContent: 'center' },
 	alertTitle: { color: colors.text, fontSize: 15, fontWeight: '700', textAlign: 'center', paddingTop: 18, paddingHorizontal: 16 },
