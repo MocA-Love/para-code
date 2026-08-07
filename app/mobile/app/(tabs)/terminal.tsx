@@ -196,8 +196,9 @@ export default function TerminalScreen() {
 							rows={activeTerminal?.rows}
 							subscribe={subscribeActive}
 							onNeedResync={resyncActive}
-							fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
+								fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
 							onGridChange={setGrid}
+							onInput={send}
 						/>
 					) : (
 						<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
