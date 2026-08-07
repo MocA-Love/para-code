@@ -51,6 +51,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'swap-vertical-outline',
+				title: 'ターミナルを指でなぞって前の表示に戻せるようになりました',
+				body: 'Claude や Codex が画面いっぱいに出ているときも、上下になぞればさかのぼれます。これまではPCのマウスでしかできませんでした。',
+				tone: 'green',
+			},
+			{
 				icon: 'keyboard-outline',
 				title: 'キーボードを開いてもターミナルの表示が崩れなくなりました',
 				body: '文字を打つ間もターミナルは同じ大きさのまま下に残り、閉じると元の位置に戻ります。これまではキーボードの開閉のたびに画面を作り直していたため、表示が乱れて戻らないことがありました。',
