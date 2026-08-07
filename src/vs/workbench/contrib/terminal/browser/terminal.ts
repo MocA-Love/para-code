@@ -14,7 +14,7 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IKeyMods } from '../../../../platform/quickinput/common/quickInput.js';
 import { IMarkProperties, ITerminalCapabilityImplMap, ITerminalCapabilityStore, ITerminalCommand, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IMergedEnvironmentVariableCollection } from '../../../../platform/terminal/common/environmentVariable.js';
-import { IExtensionTerminalProfile, IReconnectionProperties, IShellIntegration, IShellLaunchConfig, ITerminalBackend, ITerminalDimensions, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalExitReason, TerminalIcon, TerminalLocation, TerminalShellType, TerminalType, TitleEventSource, WaitOnExitValue, type IDecorationAddon, type ShellIntegrationInjectionFailureReason } from '../../../../platform/terminal/common/terminal.js';
+import { IExtensionTerminalProfile, IReconnectionProperties, IShellIntegration, IShellLaunchConfig, ITerminalBackend, ITerminalDimensionsOverride, ITerminalLaunchError, ITerminalProfile, ITerminalTabLayoutInfoById, TerminalExitReason, TerminalIcon, TerminalLocation, TerminalShellType, TerminalType, TitleEventSource, WaitOnExitValue, type IDecorationAddon, type ShellIntegrationInjectionFailureReason } from '../../../../platform/terminal/common/terminal.js';
 import { IColorTheme } from '../../../../platform/theme/common/themeService.js';
 import { IWorkspaceFolder } from '../../../../platform/workspace/common/workspace.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
@@ -1308,7 +1308,10 @@ export interface ITerminalInstance extends IBaseTerminalInstance {
 	 * Sets the terminal instance's dimensions to the values provided via the onDidOverrideDimensions event,
 	 * which allows overriding the regular dimensions (fit to the size of the panel).
 	 */
-	setOverrideDimensions(dimensions: ITerminalDimensions): void;
+	// PARA-PATCH: widen this to what the implementation in terminalInstance.ts already accepts
+	// (`ITerminalDimensionsOverride | undefined` plus `immediate`). The mobile relay needs
+	// `forceExactSize` to pin a terminal to the phone's grid, and `undefined` to release it.
+	setOverrideDimensions(dimensions: ITerminalDimensionsOverride | undefined, immediate?: boolean): void;
 
 	/**
 	 * Sets the terminal instance's dimensions to the values provided via quick input.

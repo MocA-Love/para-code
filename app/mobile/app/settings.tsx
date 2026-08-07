@@ -27,12 +27,13 @@ export default function SettingsScreen() {
 	const column = useContentColumnStyle();
 	const {
 		notifyPrefs, setNotifyPref, resources, pcs, activePcId,
-		keepBackgroundPcs, setKeepBackgroundPcs, notifyOtherPcs, setNotifyOtherPcs,
+		keepBackgroundPcs, setKeepBackgroundPcs, notifyOtherPcs, setNotifyOtherPcs, terminalPrefs,
 	} = useAppStore(useShallow(s => ({
 		notifyPrefs: s.notifyPrefs, setNotifyPref: s.setNotifyPref, resources: s.workspace?.resources,
 		pcs: s.pcs, activePcId: s.activePcId,
 		keepBackgroundPcs: s.keepBackgroundPcs, setKeepBackgroundPcs: s.setKeepBackgroundPcs,
 		notifyOtherPcs: s.notifyOtherPcs, setNotifyOtherPcs: s.setNotifyOtherPcs,
+		terminalPrefs: s.terminalPrefs,
 	})));
 	const activePc = pcs.find(pc => pc.id === activePcId);
 	// 行を開かずに済むよう、ドロワーと同じ配信値（CPU · RAM）を右端に出す。旧PCでは届かないので出さない。
@@ -94,6 +95,19 @@ export default function SettingsScreen() {
 							<Text style={styles.rowDesc}>PCのCPU・メモリ・ディスクの空きと、何が使っているかを確認します</Text>
 						</View>
 						{systemSummary ? <Text style={styles.rowValue}>{systemSummary}</Text> : null}
+						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+					</Pressable>
+				</View>
+
+				<Text style={styles.sectionTitle}>表示</Text>
+				<View style={styles.card}>
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/terminal-settings'); }}>
+						<Ionicons name="terminal-outline" size={18} color={colors.accent} />
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>ターミナル</Text>
+							<Text style={styles.rowDesc}>文字サイズと、PC側の端末幅をこの画面に合わせるかを設定します</Text>
+						</View>
+						<Text style={styles.rowValue}>{terminalPrefs.fontSize}pt</Text>
 						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
 					</Pressable>
 				</View>

@@ -211,6 +211,7 @@ function RootLayout() {
 						<Stack.Screen name="archive" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* 更新履歴。設定画面の項目とお知らせシートから開く */}
 						<Stack.Screen name="changelog" options={{ headerShown: false, animation: 'slide_from_right' }} />
+						<Stack.Screen name="terminal-settings" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>
 					</IpadShell>
 					{/* glass対応メニュー/ダイアログの描画先（overlayHost.tsx参照）。

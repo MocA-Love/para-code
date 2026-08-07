@@ -35,6 +35,7 @@ import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
 import { configureNotificationHandler, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
+import { DEFAULT_TERMINAL_PREFS, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
 
 /**
@@ -166,6 +167,18 @@ interface AppState extends StoreState {
 	 */
 	notifyPrefs: { agentDone: boolean; agentQuestion: boolean; suppressWhenPcFocused: boolean };
 	setNotifyPref(key: 'agentDone' | 'agentQuestion' | 'suppressWhenPcFocused', enabled: boolean): void;
+	/**
+	 * ターミナル表示の設定（設定 →「ターミナル」）。この端末の中だけの設定で、PCへは
+	 * 送らない（PCが持つと複数台のスマホで奪い合いになる）。`matchPcWidth` を入れた
+	 * ときだけ、いま見ているターミナルの寸法申告がPCへ届く。
+	 */
+	terminalPrefs: TerminalPrefs;
+	setTerminalPref<K extends keyof TerminalPrefs>(key: K, value: TerminalPrefs[K]): void;
+	/**
+	 * ターミナル画面が実測した「読める寸法」をPCへ申告する（PTYをこの寸法へ寄せてもらう）。
+	 * `undefined` で申告を取り下げる（画面を離れた・設定オフ）。
+	 */
+	setTerminalViewport(viewport: TerminalViewport | undefined): void;
 	/**
 	 * いま開いているエージェント画面のターミナルキー。その画面を見ている間は同じエージェントの
 	 * 通知バナーを出さない（画面に出ている内容をバナーで被せないため）。
@@ -906,6 +919,7 @@ export const useAppStore = create<AppState>(set => ({
 	// 主因だったため、席を外している間だけ鳴る側を既定にしている（PC側の既定と揃えてある）。
 	// 一度でも設定画面で触ればその値が保存され、以降はこの既定を使わない。
 	notifyPrefs: { agentDone: true, agentQuestion: true, suppressWhenPcFocused: true },
+	terminalPrefs: DEFAULT_TERMINAL_PREFS,
 	viewingTerminalKey: undefined,
 	pinnedKeys: new Set(),
 	archivedKeys: new Set(),
@@ -957,6 +971,15 @@ export const useAppStore = create<AppState>(set => ({
 				}
 			} catch (err) {
 				console.warn('[appState] failed to load notifyPrefs', err);
+			}
+			// ターミナル表示の設定をロード（保存が無い/壊れている場合は既定のまま）。
+			try {
+				const raw = await secureKeyStore.getItem('terminalPrefs');
+				if (raw) {
+					set({ terminalPrefs: normalizeTerminalPrefs(JSON.parse(raw)) });
+				}
+			} catch (err) {
+				console.warn('[appState] failed to load terminalPrefs', err);
 			}
 			// 接続方針の設定をロード（保存が無い/壊れている場合は既定のまま）。
 			try {
@@ -1535,6 +1558,33 @@ export const useAppStore = create<AppState>(set => ({
 		for (const runtime of runtimes.values()) {
 			runtime.controller.sendNotifyPrefs(next);
 		}
+	},
+
+	setTerminalPref(key, value) {
+		const next = { ...useAppStore.getState().terminalPrefs, [key]: value };
+		set({ terminalPrefs: next });
+		secureKeyStore.setItem('terminalPrefs', JSON.stringify(next)).catch(err => console.warn('[appState] failed to save terminalPrefs', err));
+		// 幅合わせを切ったら、その場でPCへ「申告を取り下げる」を送る（PCの寸法が戻る）。
+		// ターミナル画面を開いていなくても効かせたいので、画面側の副作用に頼らずここでも撃つ。
+		// 入れ直したときは、ターミナル画面が実測した寸法で改めて申告される。
+		if (key === 'matchPcWidth' && value === false) {
+			useAppStore.getState().setTerminalViewport(undefined);
+		}
+	},
+
+	setTerminalViewport(viewport: TerminalViewport | undefined) {
+		// 申告は「いま見ているPC」だけに送る（裏のPCのターミナルを勝手に細くしない）。
+		// 取り下げは**繋いでいる全PCへ送る**。PCを切り替えてからターミナル画面を離れると、
+		// アクティブPCだけに送る作りでは切り替え前のPCに取り下げが届かず、そのPCの
+		// ターミナルが細いまま取り残される（しかも controller が値を保持しているため、
+		// 再接続時のattachで細い寸法を申告し直してしまう）。
+		if (viewport === undefined) {
+			for (const runtime of runtimes.values()) {
+				runtime.controller.setTerminalViewport(undefined);
+			}
+			return;
+		}
+		controller?.setTerminalViewport(viewport);
 	},
 
 	clearNotifications() {

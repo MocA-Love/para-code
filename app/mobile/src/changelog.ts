@@ -40,6 +40,24 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.6.0',
+		date: '2026-08-07',
+		headline: 'ターミナルの文字が読める大きさになりました',
+		items: [
+			{
+				icon: 'terminal-outline',
+				title: 'ターミナルの文字サイズを選べるようになりました',
+				body: '設定 →「ターミナル」で決められます。これまではPCの画面幅をそのまま持ってきていたため、文字が読めないほど小さくなることがありました。',
+				tone: 'green',
+			},
+			{
+				icon: 'phone-portrait-outline',
+				title: 'PCのターミナルをこの画面の幅に合わせられるようになりました',
+				body: '同じ設定画面から入れられます（まだベータのため、はじめはオフです）。入れると、見ている間だけPC側の幅がこの画面に合わせて細くなり、Claude や Codex の画面も折り返しが直ります。見るのをやめると元に戻ります。',
+			},
+		],
+	},
+	{
 		version: '0.5.1',
 		date: '2026-08-06',
 		items: [

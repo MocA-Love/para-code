@@ -49,6 +49,7 @@ import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } 
 import { type ParadisBinaryFsResponseType, paradisEncodeNegotiatedBinaryFsResponse } from '../common/paradisMobileFileResponse.js';
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
 import { PARADIS_TERMINAL_BINARY_DATA_ENCODING, paradisEncodeNegotiatedBinaryTerminalData } from '../common/paradisMobileTerminalData.js';
+import { IParadisMobileTerminalViewport, paradisIsValidTerminalViewportMessage, paradisReadTerminalViewport, paradisResolveTerminalViewport } from '../common/paradisMobileTerminalViewport.js';
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
@@ -97,8 +98,13 @@ type TermInboundBase = { protocolVersion: 3; desktopEpoch: string; operationId: 
 type TermInbound = TermInboundBase & (
 	// epoch はモバイルが attach ごとに採番する世代番号。指定があると同期プロトコル
 	// （seq 付与・ACKフロー制御・リサイズ時スナップショット再同期）が有効になる。
-	| { t: 'attach'; terminalKey: string; epoch: number; dataEncoding?: string }
+	// viewCols/viewRows はモバイル画面が読める寸法。指定があると PTY 自体をその寸法へ
+	// 寄せる（setOverrideDimensions）。省略時は従来どおり PC 側の寸法のまま。
+	| { t: 'attach'; terminalKey: string; epoch: number; dataEncoding?: string; viewCols?: number; viewRows?: number }
 	| { t: 'detach'; terminalKey: string }
+	// attach 済みのまま画面寸法だけ変わったとき（回転・キーボード開閉・設定変更）。
+	// 両方省略すると寸法の寄せをやめて PC 側の寸法へ戻す。
+	| { t: 'viewport'; terminalKey: string; viewCols?: number; viewRows?: number }
 	// 受信済み最終 seq の確認応答（epoch 対応クライアントのみ）。フロー制御の材料。
 	| { t: 'ack'; terminalKey: string; epoch: number; seq: number }
 	// input は3形態:
@@ -289,6 +295,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
 	// mobileId + ターミナルID → 独立したepoch/seq/ACK状態。
 	private readonly termSyncStates = new Map<string, TermSyncState>();
+	// mobileId + ターミナルID → そのモバイルが読める画面寸法（申告があったものだけ）。
+	private readonly termViewports = new Map<string, IParadisMobileTerminalViewport>();
+	// 寸法の上書きを「自分が」掛けているターミナルID。拡張機能が握っている override を
+	// 解除時に巻き込まないよう、自分で掛けた分だけを覚えておく。
+	private readonly termOverriddenInstanceIds = new Set<number>();
 	// モバイル発の /model・/effort 切替でClaude TUIが出す確認ダイアログを自動確定するガード。
 	private readonly modelSwitchGuard = this._register(new ParadisAgentModelSwitchGuard(this.logService));
 	// PC本体のバッテリー状態（Battery Status API）。未対応環境ではundefinedのまま＝state未配信。
@@ -887,6 +898,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		this.termSyncStates.clear();
 		this.attachedTerminals.clearAndDisposeAll();
 		this.terminalSubscribers.clear();
+		// detach が届かないまま切れた場合でも、ここでPTY寸法をPC側へ戻す。
+		this.clearAllTerminalViewports();
 	}
 
 	override dispose(): void {
@@ -895,6 +908,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.clearTermSync(key);
 		}
 		this.termSyncStates.clear();
+		this.clearAllTerminalViewports();
 		super.dispose();
 	}
 
@@ -1845,7 +1859,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			return;
 		}
+		// 寸法の申告が不正でも attach 自体は通す（寸法合わせが効かないだけで済ませる）。
+		// ここで attach ごと失敗させると、モバイル・PCの上下限がずれた将来の版で
+		// 「ターミナルが一切見えない」という壊れ方をする。単独の viewport だけは弾く。
 		if (typeof msg.terminalKey !== 'string'
+			|| (msg.t === 'viewport' && !paradisIsValidTerminalViewportMessage(msg))
 			|| (msg.t === 'attach' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch)))
 			|| (msg.t === 'ack' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch) || typeof msg.seq !== 'number' || !Number.isInteger(msg.seq)))
 			|| (msg.t === 'input'
@@ -1882,6 +1900,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					suspended: false, droppedWhileSuspended: false,
 					pending: [], pendingChars: 0, coalesceTimer: undefined, resizeTimer: undefined,
 				});
+				// 画面寸法の申告はスナップショットより先に反映する。ここで PTY を細くしておくと、
+				// 直後のスナップショットが既に新しい寸法で撮られ、モバイルが一度も
+				// 「PC幅のまま潰れた画面」を描かずに済む。
+				this.setTerminalViewport(instance, id, mobileId,
+					paradisIsValidTerminalViewportMessage(msg) ? paradisReadTerminalViewport(msg) : undefined);
 				this.sendTerminalSnapshot(instance, id, mobileId, 'attach');
 				if (this.attachedTerminals.has(id)) {
 					await complete('accepted');
@@ -1896,12 +1919,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						const epoch = this.termSyncStates.get(key)?.epoch;
 						this.clearTermSync(key);
 						this.termSyncStates.delete(key);
+						this.termViewports.delete(key);
 						this.sendTerm(id, subscriber, { t: 'exit', ...(epoch !== undefined ? { epoch } : {}) });
 					}
 					this.attachedTerminals.deleteAndDispose(id);
 					this.terminalSubscribers.delete(id);
+					// 終了しても instance が生き続ける経路がある（waitOnExit 付きの端末、
+					// タスクの再実行など）。台帳から消すだけだと、その端末は細い override を
+					// 抱えたまま二度と解除されないため、必ず解除してから消す。
+					this.clearTerminalViewport(instance, id);
 				}));
 				this.attachedTerminals.set(id, store);
+			} else if (msg.t === 'viewport') {
+				// attach したまま画面寸法だけ変わった（回転・キーボード開閉・設定変更）。
+				this.setTerminalViewport(instance, id, mobileId, paradisReadTerminalViewport(msg));
 			} else if (msg.t === 'detach') {
 				this.clearTermSync(subscriptionKey);
 				this.termSyncStates.delete(subscriptionKey);
@@ -1911,6 +1942,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					this.attachedTerminals.deleteAndDispose(id);
 					this.terminalSubscribers.delete(id);
 				}
+				// 見るのをやめたら PC 側の寸法へ戻す（残る購読者が居ればその寸法で決め直す）。
+				this.setTerminalViewport(instance, id, mobileId, undefined);
 			} else if (msg.t === 'ack') {
 				this.handleTerminalAck(instance, id, mobileId, msg);
 			} else if (msg.t === 'input') {
@@ -1982,6 +2015,97 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// /model・/effort 切替の注入時は確認ダイアログ自動確定ウォッチを張る。
 			this.modelSwitchGuard.maybeArm(instance, msg.data);
 			await instance.sendText(msg.data, false);
+		}
+	}
+
+	/**
+	 * あるモバイルの画面寸法の申告を差し替え、その端末のPTY寸法を決め直す。
+	 *
+	 * PTYの寸法は1組しか持てないので、同じ端末を複数のモバイルが見ているときは最小へ倒す
+	 * （`paradisResolveTerminalViewport`）。申告が1つも無くなったら PC 側の寸法へ戻す。
+	 *
+	 * 寸法を渡す手段に `setFixedDimensions()` ではなく `setOverrideDimensions()` を使うのは、
+	 * 前者が QuickInput で対話的に値を聞く実装で外から値を渡せないため。後者は
+	 * `ITerminalInstance` の公開APIで、`forceExactSize` を立てると `cols`/`rows` の getter が
+	 * レイアウト幅を無視して指定値を返し、そこから `_resize()` → PTY の TIOCSWINSZ まで流れる。
+	 * パネル／エディタ領域のどちらに居ても同じ経路なので、置き場所による分岐は要らない。
+	 */
+	private setTerminalViewport(instance: ITerminalInstance, id: number, mobileId: string, viewport: IParadisMobileTerminalViewport | undefined): void {
+		const subscriptionKey = this.termSubscriptionKey(id, mobileId);
+		// 購読していないモバイルの申告は保持しない（誰にも読まれないまま台帳に残るのを防ぐ）。
+		if (viewport === undefined || this.terminalSubscribers.get(id)?.has(mobileId) !== true) {
+			this.termViewports.delete(subscriptionKey);
+		} else {
+			this.termViewports.set(subscriptionKey, viewport);
+		}
+		this.applyTerminalViewport(instance, id);
+	}
+
+	/** いま購読中のモバイル全員の申告からPTY寸法を決め、instanceへ反映する。 */
+	private applyTerminalViewport(instance: ITerminalInstance, id: number): void {
+		const subscribers = this.terminalSubscribers.get(id) ?? [];
+		const resolved = paradisResolveTerminalViewport(
+			[...subscribers].map(subscriber => this.termViewports.get(this.termSubscriptionKey(id, subscriber))),
+		);
+		if (resolved === undefined) {
+			this.clearTerminalViewport(instance, id);
+			return;
+		}
+		// 拡張機能のPseudoterminalは自分で寸法を配信する（ProcessPropertyType.OverrideDimensions が
+		// 同じ口を使う）。奪うと拡張側の表示が壊れるため触らない。
+		if (instance.shellLaunchConfig.customPtyImplementation !== undefined) {
+			return;
+		}
+		// PC側でその端末に「固定寸法」（Set Fixed Dimensions）を設定してある場合、cols/rows の
+		// getter が _fixedCols/_fixedRows を先に返すため、この申告は無言で無視される。
+		// PC側の明示設定を尊重する側なので、これは意図した挙動。
+		this.termOverriddenInstanceIds.add(id);
+		// rows に 0 を渡すと `ITerminalInstance` の rows getter が override を無視して
+		// レイアウト由来の行数へフォールバックする（terminalInstance.ts の `_dimensionsOverride.rows`
+		// 判定が falsy を通す）。「桁だけ合わせる」設定はこの性質を使い、PC側のターミナルが
+		// 表示領域より縦に長くなって下が切れるのを避ける。
+		instance.setOverrideDimensions({ cols: resolved.cols, rows: resolved.rows ?? 0, forceExactSize: true }, true);
+	}
+
+	/** 自分が掛けた寸法の上書きだけを解除する（拡張機能が握っている override は触らない）。 */
+	private clearTerminalViewport(instance: ITerminalInstance, id: number): void {
+		if (this.termOverriddenInstanceIds.delete(id)) {
+			this.restoreInstanceDimensions(instance);
+		}
+	}
+
+	/**
+	 * 端末をPC側のレイアウト由来の寸法へ戻す。
+	 *
+	 * 2段階で解除する。`setOverrideDimensions(undefined)` は「forceExactSize の override が
+	 * 掛かっていて、かつ実寸を一度も持っていない端末（`_cols`/`_rows` が 0）」のとき、直前の
+	 * override の値を実寸として焼き付ける（terminalInstance.ts の分岐）。そのまま解除すると、
+	 * 一度も表示されていない端末にスマホの桁数と `rows: 0` が焼き付き、自己修復しない。
+	 * forceExactSize を外した無害な override を一度挟むと、この分岐を踏まずに済む。
+	 */
+	private restoreInstanceDimensions(instance: ITerminalInstance): void {
+		instance.setOverrideDimensions({ cols: instance.maxCols, rows: instance.maxRows }, false);
+		instance.setOverrideDimensions(undefined, true);
+	}
+
+	/**
+	 * 全ターミナルの寸法上書きを解除する。切断・dispose の経路から必ず通す。
+	 * detach が届かないまま切れた場合（アプリの強制終了・圏外・バックグラウンド落ち）に
+	 * PC のターミナルが細いまま取り残されるのを防ぐ、最後の砦。
+	 */
+	clearAllTerminalViewports(): void {
+		this.termViewports.clear();
+		if (this.termOverriddenInstanceIds.size === 0) {
+			return;
+		}
+		const overridden = [...this.termOverriddenInstanceIds];
+		this.termOverriddenInstanceIds.clear();
+		const byId = new Map(this.allInstances().map(instance => [instance.instanceId, instance]));
+		for (const id of overridden) {
+			const instance = byId.get(id);
+			if (instance !== undefined) {
+				this.restoreInstanceDimensions(instance);
+			}
 		}
 	}
 

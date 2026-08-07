@@ -438,6 +438,12 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			if (status.onlineMobiles === 0) {
 				this.provider.detachAll();
 				webrtcStreamer.stopAll();
+			} else if (status.onlineMobiles < this.previousOnlineMobiles) {
+				// 何台か減った。どのモバイルが落ちたかはここまで届かない（件数しか来ない）ため、
+				// 落ちた端末の「画面幅に合わせる」申告だけを外すことができない。放置すると
+				// 死んだ端末の細い寸法がPTYを縛り続けるので、いったん全部PC側の寸法へ戻す。
+				// まだ見ているモバイルは、次に寸法を申告し直した時点で再び効く（安全側に倒す）。
+				this.provider.clearAllTerminalViewports();
 			} else if (this.previousOnlineMobiles === 0) {
 				// 繋がったモバイルはまだ何も持っていないので、内容が同一でも必ず送る。
 				this.provider.pushState(true);
