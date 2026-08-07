@@ -9,6 +9,7 @@ import { ConnectionGate } from '../src/components/connectionGate.js';
 import { BrowserPanel } from '../src/components/browserPanel.js';
 import { GlassSurface } from '../src/components/glassSurface.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useToastInset } from '../src/paraToast.js';
 import { colors } from '../src/theme.js';
 import { hapticSelection } from '../src/haptics.js';
 
@@ -24,6 +25,8 @@ export default function BrowserScreen() {
 	const router = useRouter();
 	const isFocused = useIsFocused();
 	const insets = useStableInsets();
+	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
+	const toastInset = useToastInset();
 	const { token } = useLocalSearchParams<{ token?: string }>();
 	const preferredToken = typeof token === 'string' && token.length > 0 ? token : undefined;
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
@@ -34,7 +37,7 @@ export default function BrowserScreen() {
 	return (
 		<ConnectionGate>
 		<View style={styles.screen}>
-			<View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+			<View style={[styles.header, { paddingTop: insets.top + 4 + toastInset }]}>
 				<Pressable onPress={() => { hapticSelection(); router.back(); }} accessibilityLabel="戻る">
 					<GlassSurface style={styles.backBtn} interactive>
 						<Ionicons name="chevron-back" size={20} color={colors.text} />

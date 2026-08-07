@@ -10,7 +10,7 @@ import { useAppStore } from '../src/appState.js';
 import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
-import { PcSwitchNotice } from '../src/components/pcSwitcher.js';
+import { ParaToastHost } from '../src/components/paraToast.js';
 import { IpadShell } from '../src/ipad/ipadShell.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
@@ -216,8 +216,10 @@ function RootLayout() {
 					<OverlayHost />
 					{/* 更新後の初回起動でだけ出るお知らせ。ロック中に出ないようAuthGateの内側に置く */}
 					<UpdateSheetHost />
-					{/* 通知タップで別のPCへ切り替わったときの告知（ロック中に出さないよう内側に置く） */}
-					<PcSwitchNotice />
+					{/* 一時的なお知らせ（再接続中・PC切替・起動完了）を出す唯一の場所。
+					    3つが別々の部品だったのをここへ集約した（src/paraToast.ts 参照）。
+					    ロック中に出さないようAuthGateの内側に置く */}
+					<ParaToastHost />
 				</AuthGate>
 			</ThemeProvider>
 		</GestureHandlerRootView>

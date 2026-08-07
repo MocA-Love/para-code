@@ -28,6 +28,7 @@ import { useAgentActions } from '../src/hooks/useAgentActions.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useIsRegularWidth } from '../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useToastInset } from '../src/paraToast.js';
 import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
 import { colors, radius, squircle } from '../src/theme.js';
@@ -64,6 +65,8 @@ export default function AgentDetailScreen() {
 	})));
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const insets = useStableInsets();
+	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
+	const toastInset = useToastInset();
 	const keyboardVisible = useKeyboardVisible();
 	// iPadの広い幅では会話の列幅を制限して中央へ寄せる。1行が長すぎると次の行頭へ
 	// 目線を戻す距離が伸びて読みづらいため（ヘッダーとブラーは全幅のまま）。
@@ -464,7 +467,7 @@ export default function AgentDetailScreen() {
 			    `GlassGroup` で束ねてあるので、寄ったときはガラス同士が融合する。 */}
 			<View style={styles.headerOverlay} pointerEvents="box-none" onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}>
 				<HeaderEdgeFade id="paraAgentHeaderFade" />
-				<GlassGroup style={[styles.header, { paddingTop: insets.top }]} spacing={12}>
+				<GlassGroup style={[styles.header, { paddingTop: insets.top + toastInset }]} spacing={12}>
 					<GlassSurface style={styles.circleBtn} interactive>
 						<Pressable style={styles.circleHit} onPress={() => { hapticSelection(); router.back(); }} accessibilityRole="button" accessibilityLabel="戻る">
 							<Ionicons name="chevron-back" size={20} color={colors.text} />

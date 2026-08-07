@@ -10,13 +10,14 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { isAgentWaiting, type DesktopResources } from '../store.js';
 import {
-	CPU_THRESHOLDS, MEMORY_THRESHOLDS, diskLevel, formatCpu, usageLevel, usagePercent, worstLevel,
+	CPU_THRESHOLDS, MEMORY_THRESHOLDS, diskLevel, formatCpu, usageLevel, usagePercent,
 	type UsageLevel,
 } from '../systemResources.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { shouldReturnHomeOnSpaceChange } from '../ipad/ipadTabs.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
+import { useToastInset } from '../paraToast.js';
 import { GlassSurface } from './glassSurface.js';
 import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
@@ -186,7 +187,6 @@ function PcResourceRow({ resources, onPress }: { resources: DesktopResources; on
 	const cpuLevel = usageLevel(resources.cpu ?? 0, CPU_THRESHOLDS);
 	const memoryLevel = usageLevel(memoryPercent, MEMORY_THRESHOLDS);
 	const volumeLevel: UsageLevel = hasDisk ? diskLevel(diskTotal, diskFree) : 'normal';
-	const worst = worstLevel([cpuLevel, memoryLevel, volumeLevel]);
 
 	const items: { label: string; value: string; percent: number; color: string }[] = [
 		{ label: 'CPU', value: formatCpu(resources.cpu), percent: resources.cpu ?? 0, color: resourceColor(cpuLevel, colors.accent) },
@@ -198,9 +198,13 @@ function PcResourceRow({ resources, onPress }: { resources: DesktopResources; on
 
 	return (
 		<>
-			{/* 警告時はtintColorで赤みを乗せる（枠色の出し分けはGlassSurfaceが持たないため、
-			    色被せだけで逼迫を示す）。 */}
-			<GlassSurface style={styles.resourceRow} interactive tintColor={worst !== 'normal' ? colors.red : undefined} tintOpacity={0.14}>
+			{/* 逼迫は**数値とバーの色だけ**で示し、面には色を乗せない。
+			    暗いガラスに薄い赤（tintOpacity 0.14）を混ぜると、赤にも灰色にもならない
+			    中間の濁り（茶色い板）になって、警告として読めなくなる。色の面積が小さいほど
+			    彩度はそのまま出るので、98%の赤字のほうが面を染めるより強く目に入る。
+			    tintColor はApple的には「押せて、いま重要」を示す前面性の記号で、
+			    読む情報である数値の行に当てるものではない。 */}
+			<GlassSurface style={styles.resourceRow} interactive>
 				<Pressable
 					style={styles.resourceHit}
 					onPress={onPress}
@@ -217,11 +221,14 @@ function PcResourceRow({ resources, onPress }: { resources: DesktopResources; on
 							</View>
 						</View>
 					))}
-					<Ionicons name="chevron-forward" size={13} color={worst === 'normal' ? colors.textDim : colors.red} style={styles.resourceChevron} />
+					{/* 山形も赤にしない。数値・バーに続く3つ目の赤になると、
+					    「この行そのものがエラー」と読まれる。実際には RAM が98%という
+					    事実の表示であって、行が壊れているわけではない。 */}
+					<Ionicons name="chevron-forward" size={13} color={colors.textDim} style={styles.resourceChevron} />
 				</Pressable>
 			</GlassSurface>
-			{/* 見出し文（「メモリが逼迫しています」等）は出さない。逼迫は行の赤い色被せと
-			    数値の色が既に伝えており、文まで足すと1行ぶん場所を取るだけになる。 */}
+			{/* 見出し文（「メモリが逼迫しています」等）は出さない。逼迫は数値とバーの色が
+			    既に伝えており、文まで足すと1行ぶん場所を取るだけになる。 */}
 		</>
 	);
 }
@@ -479,19 +486,25 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 					anchor={switcherAnchor}
 					onClose={() => setSwitcherAnchor(undefined)}
 				/>
+				{/* 統計の3枚は**ガラスにしない**。数を読むだけで押せない面であり、
+				    ここは背後に透けるものが無い（ドロワーの不透明な地の上）ので、
+				    ガラスを敷いても屈折する対象が無く素材のベース明度だけが残る
+				    ＝同じ明度の灰色の板が3つ並ぶ。ガラスはこのドロワーでは
+				    「押せるもの」（PCカード・歯車・CPU行・スペース作成・フッター）の
+				    目印として使い、読むだけの面は不透明にして引かせる。 */}
 				<View style={styles.statsRow}>
-					<GlassSurface style={styles.stat}>
+					<View style={styles.stat}>
 						<Text style={styles.statValue}>{list.length}</Text>
 						<Text style={styles.statLabel}>ワークスペース</Text>
-					</GlassSurface>
-					<GlassSurface style={styles.stat}>
+					</View>
+					<View style={styles.stat}>
 						<Text style={styles.statValue}>{terminals.length}</Text>
 						<Text style={styles.statLabel}>ターミナル</Text>
-					</GlassSurface>
-					<GlassSurface style={styles.stat}>
+					</View>
+					<View style={styles.stat}>
 						<Text style={[styles.statValue, waitingTotal > 0 && styles.statValueAlert]}>{waitingTotal}</Text>
 						<Text style={styles.statLabel}>応答待ち</Text>
-					</GlassSurface>
+					</View>
 				</View>
 				{/* PC本体のCPU/メモリ/ディスク。接続中でPCが配信している場合だけ出す
 				    （切断中に古い数字を残すと「今のPCの状態」に見えてしまう）。 */}
@@ -643,6 +656,7 @@ export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, 
 	onHeightChange?: (height: number) => void;
 }) {
 	const insets = useStableInsets();
+	const toastInset = useToastInset();
 	const drawer = useWsDrawer();
 	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ている。島は「開く」ボタンとしては
 	// 不要になるが、いま見ているスペースの色・名前・応答待ちバッジを一目で確認できる価値は
@@ -666,7 +680,10 @@ export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, 
 
 	return (
 		<View
-			style={[styles.headerWrap, { paddingTop: insets.top }]}
+			// 一時的なお知らせ（上端のカプセル）が出ている間は、そのぶん島ごと下げる。
+			// 上端はナビの場所なので覆わない。`onLayout` の実測にもこの余白が含まれるため、
+			// 本文の `paddingTop` も自動で追従する。
+			style={[styles.headerWrap, { paddingTop: insets.top + toastInset }]}
 			pointerEvents="box-none"
 			onLayout={onHeightChange !== undefined ? event => onHeightChange(event.nativeEvent.layout.height) : undefined}
 		>
@@ -757,7 +774,11 @@ const styles = StyleSheet.create({
 	// PCカード（接続状態・バッテリー・切り替え）は pcSwitcher.tsx が描く。ここは器だけを持つ。
 	pcSection: { paddingHorizontal: 18, paddingTop: 4, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: colors.border },
 	statsRow: { flexDirection: 'row', gap: 6, marginTop: 12 },
-	stat: { flex: 1, borderRadius: radius.control, ...squircle, paddingVertical: 7, alignItems: 'center' },
+	// ガラスをやめたぶん、面は自分で持つ（surface2＋ヘアライン）。
+	stat: {
+		flex: 1, borderRadius: radius.control, ...squircle, paddingVertical: 7, alignItems: 'center',
+		backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border,
+	},
 	statValue: { color: colors.accent, fontSize: 15, fontWeight: '700' },
 	statValueAlert: { color: colors.red },
 	statLabel: { color: colors.textDim, fontSize: 9.5, marginTop: 1 },

@@ -7,12 +7,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore, type PcSummary } from '../appState.js';
 import { BatteryGauge } from './batteryGauge.js';
+import { BottomSheet } from './bottomSheet.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { colors, squircle } from '../theme.js';
-import { hapticImpact, hapticSelection } from '../haptics.js';
+import { hapticSelection } from '../haptics.js';
 
 /**
  * ペアリング済みPCの切り替え。
@@ -189,11 +190,24 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [visible]);
 
+	// 狭い幅は共通の {@link BottomSheet} に載せる（器・出方・グラバーのドラッグを1箇所に集約する）。
+	// `visible` はそのまま渡す——ここで早期returnすると閉じるアニメーションが再生されないまま
+	// 木から外れてしまう。
+	if (!(regular && anchor !== undefined)) {
+		return (
+			<BottomSheet visible={visible} onClose={onClose} title="ペアリング済みのPC" glass>
+				<ScrollView style={styles.sheetScroll} contentContainerStyle={{ paddingBottom: insets.bottom + 16 }} bounces={false}>
+					<PcList onClose={onClose} />
+				</ScrollView>
+			</BottomSheet>
+		);
+	}
+
 	if (!visible) {
 		return null;
 	}
 
-	if (regular && anchor !== undefined) {
+	{
 		const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 		const left = Math.min(Math.max(anchor.x, 12), Math.max(12, screenWidth - POPOVER_WIDTH - 12));
 		const top = Math.min(anchor.y, Math.max(80, screenHeight - 320));
@@ -211,74 +225,6 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 			</OverlayPortal>
 		);
 	}
-
-	return (
-		<OverlayPortal>
-			<Pressable style={[StyleSheet.absoluteFill, styles.scrim]} onPress={onClose} accessibilityLabel="閉じる" />
-			<PopIn style={styles.sheetPos}>
-				<GlassSurface style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
-					<View style={styles.grabber} />
-					<Text style={styles.head}>ペアリング済みのPC</Text>
-					<ScrollView style={styles.sheetScroll} bounces={false}>
-						<PcList onClose={onClose} />
-					</ScrollView>
-				</GlassSurface>
-			</PopIn>
-		</OverlayPortal>
-	);
-}
-
-/**
- * 通知タップなどで自動的にPCが切り替わったときに、画面上部へ出す告知。
- * 切り替わったこと自体を隠さないための最小限の表示で、「戻る」で直前のPCへ帰れる。
- */
-export function PcSwitchNotice() {
-	const insets = useStableInsets();
-	const { notice, pcs, switchPc, dismiss } = useAppStore(useShallow(s => ({
-		notice: s.pcSwitchNotice, pcs: s.pcs, switchPc: s.switchPc, dismiss: s.dismissPcSwitchNotice,
-	})));
-
-	// 出しっぱなしにしない。数秒で自然に消す（操作を邪魔しないため）。
-	useEffect(() => {
-		if (notice === undefined) {
-			return;
-		}
-		const timer = setTimeout(() => dismiss(), 6_000);
-		return () => clearTimeout(timer);
-	}, [notice, dismiss]);
-
-	if (notice === undefined) {
-		return null;
-	}
-	const hue = pcs.find(pc => pc.id === notice.pcId)?.hue ?? 0;
-	const previous = notice.previousPcId !== undefined ? pcs.find(pc => pc.id === notice.previousPcId) : undefined;
-
-	return (
-		<OverlayPortal>
-			<PopIn style={[styles.noticePos, { top: insets.top + 6 }]}>
-				<GlassSurface style={styles.notice}>
-					<PcAvatar name={notice.name} hue={hue} size={26} />
-					<Text style={styles.noticeText} numberOfLines={1}>
-						<Text style={styles.noticeName}>{notice.name}</Text>
-						{' に切り替えました'}
-					</Text>
-					{previous !== undefined ? (
-						<Pressable
-							hitSlop={8}
-							onPress={() => { hapticImpact('light'); switchPc(previous.id); dismiss(); }}
-							accessibilityLabel={`${previous.name}へ戻る`}
-						>
-							<Text style={styles.noticeAction}>戻る</Text>
-						</Pressable>
-					) : (
-						<Pressable hitSlop={8} onPress={dismiss} accessibilityLabel="閉じる">
-							<Ionicons name="close" size={15} color={colors.textDim} />
-						</Pressable>
-					)}
-				</GlassSurface>
-			</PopIn>
-		</OverlayPortal>
-	);
 }
 
 /**
@@ -384,18 +330,9 @@ const styles = StyleSheet.create({
 	popoverScroll: { maxHeight: 360 },
 
 	// ボトムシート（iPhone）
-	scrim: { backgroundColor: 'rgba(0,0,0,0.45)' },
-	sheetPos: { position: 'absolute', left: 0, right: 0, bottom: 0 },
-	sheet: { borderTopLeftRadius: 26, borderTopRightRadius: 26, overflow: 'hidden', paddingTop: 10 },
+	// 器・暗幕・グラバーは BottomSheet が持つので、ここでは中身の高さだけを決める。
 	sheetScroll: { maxHeight: 420 },
-	grabber: { width: 36, height: 5, borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.22)', alignSelf: 'center', marginBottom: 4 },
 
-	// 切り替えの告知
-	noticePos: { position: 'absolute', left: 14, right: 14 },
-	notice: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 15, overflow: 'hidden' },
-	noticeText: { flex: 1, color: colors.text, fontSize: 12.5 },
-	noticeName: { fontWeight: '700' },
-	noticeAction: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
 
 	// PCカード（ドロワー／サイドバー上部）
 	// marginは左だけに効かせる。両側に -8 を掛けると cardRow の gap をちょうど相殺してしまい、

@@ -40,6 +40,47 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.7.0',
+		date: '2026-08-08',
+		headline: '触ったところが iOS らしく動くようになりました',
+		items: [
+			{
+				icon: 'add-circle-outline',
+				title: '＋のメニューが iOS 標準のメニューになりました',
+				body: 'ボタンがそのままメニューへ変わる動きが出ます。エージェントの起動は「エージェントを起動」の中にまとまりました。',
+				tone: 'green',
+			},
+			{
+				icon: 'chevron-down-circle-outline',
+				title: 'シートを下へ引いて閉じられるようになりました',
+				body: '並び替え・音声通知・送信予定・モデル・エージェント情報・スペース作成・PC切り替えが対象です。上のつまみを掴んで下へ払うと閉じます。これまではつまみが飾りで、掴んでも何も起きませんでした。',
+				tone: 'green',
+			},
+			{
+				icon: 'phone-portrait-outline',
+				title: 'シートが画面の端から浮いた形になりました',
+				body: '四隅が丸くなり、隙間から後ろの一覧が覗きます。出てくる速さも内容の高さに合わせました。',
+			},
+			{
+				icon: 'notifications-outline',
+				title: 'お知らせが画面上部の1か所にまとまりました',
+				body: '「再接続中」「PCを切り替えました」「起動しました」がこれまで3か所に別々の見た目で出ていたのを、上端の同じ形に揃えました。上へ払えば待たずに消せます。',
+				tone: 'green',
+			},
+			{
+				icon: 'document-text-outline',
+				title: 'メモがどのスペースのものか分かり、その場で切り替えられます',
+				body: '「すべてのスペース」を見ているときに開くと、これまではどれが開いたのか分かりませんでした。見出しのスペース名を押すと切り替えられます。',
+				tone: 'green',
+			},
+			{
+				icon: 'color-palette-outline',
+				title: '暗い画面での色と質感を整えました',
+				body: 'スペース一覧の上に並ぶ数字のカードが白っぽい板に見えていたのと、CPU/メモリの行が逼迫したときに茶色く濁っていたのを直しました。並び替えの選択肢も読みやすくしました。',
+			},
+		],
+	},
+	{
 		version: '0.6.0',
 		date: '2026-08-07',
 		headline: 'ターミナルの文字が読める大きさになりました',

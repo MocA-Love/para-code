@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type NativeSyntheticEvent, type TextInputSelectionChangeEventData } from 'react-native';
+import { ActivityIndicator, BackHandler, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type NativeSyntheticEvent, type TextInputSelectionChangeEventData } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -10,9 +10,10 @@ import { GlassSurface } from '../src/components/glassSurface.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useToastInset } from '../src/paraToast.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { appendSpaceNoteEntry, applySpaceNotePrefix, continueSpaceNoteChecklist, parseSpaceNote, SPACE_NOTE_MAX_LENGTH, spaceNoteSummary, toggleSpaceNoteTask, trimSpaceNoteTrailingEmptyTask, type SpaceNotePrefix } from '../src/spaceNote.js';
-import { colors, mono } from '../src/theme.js';
+import { colors, mono, squircle } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 
 /**
@@ -39,12 +40,30 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
 export default function SpaceNoteScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
+	const toastInset = useToastInset();
 	// キーボードが出ている間は KeyboardAvoidingView が下端を押し上げるため、
 	// SafeArea ぶんの余白を足すと二重になる（入力欄がキーボードから浮く）。
 	const keyboardVisible = useKeyboardVisible();
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
-	const { ws } = useLocalSearchParams<{ ws?: string }>();
+	const { ws: wsParam } = useLocalSearchParams<{ ws?: string }>();
+	// 開いた先で別のスペースへ切り替えられるようにするため、いま見ているスペースは
+	// ルートパラメータではなくこの state が持つ。
+	//
+	// **切り替えた先は覚えない。** 次にメモを開いたときは、そのときのスコープ（＝呼び出し側が
+	// 渡す `ws`）に従う。前回どこを見たかを引き継ぐと「なぜこのスペースが開くのか」を
+	// 説明できなくなるため。
+	const [ws, setWs] = useState(wsParam);
+	// 呼び出し側が別のスペースを指して開き直したときは追従する（同じ画面が再利用されるため）。
+	useEffect(() => { setWs(wsParam); }, [wsParam]);
+	// 開いた先で切り替えるためのスペース選択メニューの開閉。
+	const [pickerOpen, setPickerOpen] = useState(false);
+	// スペース見出しの行の下端（親の padding box 基準）。メニューをここから出す。
+	// 手計算の積み上げだと行の高さや Dynamic Type を取りこぼして、狭い端末では
+	// 押した見出しをメニューが覆ってしまう。
+	const [pickerTop, setPickerTop] = useState(0);
+
 	// 描画に使う値だけを取り出す。ここで `workspace` をそのまま受け取ると、
 	// エージェントの進捗など無関係な同期のたびに画面全体が再レンダされる。
 	const { name, branch, color, noteGet, noteSet } = useAppStore(useShallow(s => {
@@ -58,6 +77,9 @@ export default function SpaceNoteScreen() {
 			noteSet: s.noteSet,
 		};
 	}));
+	// 切り替え先の候補。件数だけ購読しても中身が要るので配列を取るが、
+	// `useShallow` で参照が変わらない限り再レンダしない。
+	const spaces = useAppStore(useShallow(s => s.workspace?.workspaces ?? []));
 
 	const [text, setText] = useState('');
 	const [editing, setEditing] = useState(false);
@@ -65,6 +87,10 @@ export default function SpaceNoteScreen() {
 	const [loading, setLoading] = useState(true);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | undefined>(undefined);
+	// 切り替え先の選択肢を出すか。曖昧さが無いのに出すと邪魔になるので2つ以上あるときだけ。
+	// **編集・追加の最中は切り替えさせない。** 書きかけを抱えたままスペースを変えると
+	// 「どちらのスペースへ保存するのか」が決められない。先に確定させる。
+	const canPickSpace = spaces.length > 1 && !editing && !adding;
 	/** 応答が返る前に画面を離れた場合に、古い応答を捨てるための世代。 */
 	const requestGeneration = useRef(0);
 	/** 保存の送信順。連打時に先行応答が新しいローカル状態を巻き戻さないよう、最後の送信だけ反映する。 */
@@ -88,6 +114,18 @@ export default function SpaceNoteScreen() {
 	const addRef = useRef<TextInput>(null);
 	/** 追加行の入力内容（uncontrolledなのでReactのstateには置かない）。 */
 	const addDraft = useRef('');
+
+	// Android物理戻るボタンでメニューだけ閉じる（画面ごと戻ってしまわないように）。
+	useEffect(() => {
+		if (!pickerOpen) {
+			return;
+		}
+		const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+			setPickerOpen(false);
+			return true;
+		});
+		return () => sub.remove();
+	}, [pickerOpen]);
 
 	useEffect(() => {
 		if (ws === undefined) {
@@ -118,6 +156,10 @@ export default function SpaceNoteScreen() {
 	// 画面が消えた後の送信になるため、store から直接呼ぶ（この時点でこの画面の state は触らない）。
 	useEffect(() => () => {
 		const draftText = pendingDraft.current;
+		// **下書きは持ち越さない。** ここは離脱だけでなく `ws` の切り替えでも走る。
+		// 消しておかないと、切り替え前のスペースの本文が「保存」や次の離脱で
+		// 切り替え先へ書き込まれてしまう（内容が丸ごと入れ替わる）。
+		pendingDraft.current = undefined;
 		if (draftText === undefined || ws === undefined) {
 			return;
 		}
@@ -290,7 +332,7 @@ export default function SpaceNoteScreen() {
 	}, [commitAdding, stopAdding]);
 
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
+		<View style={[styles.screen, { paddingTop: insets.top + 8 + toastInset }]}>
 			<View style={styles.header}>
 				{editing ? (
 					<GlassButton label="キャンセル" onPress={cancelEditing} disabled={busy} />
@@ -305,7 +347,23 @@ export default function SpaceNoteScreen() {
 				)}
 			</View>
 
-			<View style={styles.spaceRow}>
+			{/* スペースの見出し。候補が2つ以上あるときは**そのまま押して切り替えられる**。
+			    「すべてのスペース」を見ている状態から＋→メモを押すと、呼び出し側は
+			    その時点のスコープ（選択中／一覧の先頭）を渡すしかないため、
+			    ユーザーには「どこのメモが開いたのか」が分からない。開いた先で直せるようにして、
+			    1タップで開く速さを保ったまま曖昧さだけを消す。 */}
+			<Pressable
+				onLayout={event => {
+					const { y, height } = event.nativeEvent.layout;
+					setPickerTop(Math.round(y + height) + 4);
+				}}
+				style={({ pressed }) => [styles.spaceRow, canPickSpace && pressed && styles.spaceRowPressed]}
+				onPress={canPickSpace ? () => { hapticSelection(); setPickerOpen(true); } : undefined}
+				disabled={!canPickSpace}
+				accessibilityRole={canPickSpace ? 'button' : undefined}
+				accessibilityLabel={canPickSpace ? `スペース ${name || 'スペース'}。押すと切り替え` : undefined}
+				accessibilityState={canPickSpace ? { expanded: pickerOpen } : undefined}
+			>
 				<View style={[styles.avatar, { backgroundColor: color + '22' }]}>
 					<Text style={[styles.avatarText, { color }]}>✦</Text>
 				</View>
@@ -313,13 +371,14 @@ export default function SpaceNoteScreen() {
 					<Text style={styles.spaceName} numberOfLines={1}>{name || 'スペース'}</Text>
 					{branch ? <Text style={styles.spaceBranch} numberOfLines={1}>{branch}</Text> : null}
 				</View>
+				{canPickSpace ? <Ionicons name="chevron-down" size={14} color={colors.textDim} /> : null}
 				{summary.open + summary.done > 0 ? (
 					<View style={styles.summaryChip}>
 						<Ionicons name="checkbox-outline" size={12} color={summary.open > 0 ? colors.accent : colors.textDim} />
 						<Text style={[styles.summaryText, summary.open > 0 && styles.summaryTextOpen]}>{summary.open}/{summary.open + summary.done}</Text>
 					</View>
 				) : null}
-			</View>
+			</Pressable>
 
 			{error ? <Text style={styles.error}>{error}</Text> : null}
 
@@ -415,6 +474,61 @@ export default function SpaceNoteScreen() {
 					/>
 				) : null}
 			</KeyboardAvoidingView>
+
+			{/* スペース選択メニュー。見出しの真下から出す（押した場所と開く場所を繋げる）。
+			    この画面自身の中に絶対配置で置くので、OverlayHost の重ね順に依存しない。 */}
+			{pickerOpen ? (
+				<>
+					<Pressable
+						// 絶対配置の子は親の padding box 基準なので、上の余白ぶんを負で打ち消して
+						// ステータスバーの領域まで覆う。
+						style={[styles.pickerScrim, { top: -(insets.top + 8 + toastInset) }]}
+						onPress={() => setPickerOpen(false)}
+						accessibilityRole="button"
+						accessibilityLabel="スペースの選択を閉じる"
+					/>
+					<View style={[styles.pickerMenu, { top: pickerTop }]}>
+						<GlassSurface style={styles.pickerGlass} />
+						<Text style={styles.pickerHead}>メモを開くスペース</Text>
+						<ScrollView style={styles.pickerScroll} bounces={false}>
+							{spaces.map(space => {
+								const spaceName = space.name.replace(/^✦ /, '');
+								const spaceColor = wsColor(space);
+								const open = space.note?.open ?? 0;
+								const active = space.id === ws;
+								return (
+									<Pressable
+										key={space.id}
+										style={({ pressed }) => [styles.pickerRow, active && styles.pickerRowActive, pressed && styles.pickerRowPressed]}
+										onPress={() => {
+											hapticSelection();
+											setPickerOpen(false);
+											// 同じスペースなら何もしない（読み込みを空振りさせない）。
+											if (!active) {
+												setWs(space.id);
+											}
+										}}
+										accessibilityRole="button"
+										accessibilityState={{ selected: active }}
+										accessibilityLabel={open > 0 ? `${spaceName}（未完了 ${open}件）` : spaceName}
+									>
+										<View style={[styles.pickerAvatar, { backgroundColor: spaceColor + '22' }]}>
+											<Text style={[styles.avatarText, { color: spaceColor, fontSize: 11 }]}>✦</Text>
+										</View>
+										<View style={styles.spaceBody}>
+											<Text style={[styles.pickerName, active && { color: colors.accent }]} numberOfLines={1}>{spaceName}</Text>
+											{space.branch ? <Text style={styles.spaceBranch} numberOfLines={1}>{space.branch}</Text> : null}
+										</View>
+										{/* どのスペースにメモが溜まっているかを、選ぶ前に分かるようにする。 */}
+										{open > 0 ? <Text style={styles.pickerCount}>未完了 {open}</Text> : null}
+										{active ? <Ionicons name="checkmark" size={16} color={colors.accent} /> : null}
+									</Pressable>
+								);
+							})}
+						</ScrollView>
+					</View>
+				</>
+			) : null}
 		</View>
 	);
 }
@@ -498,11 +612,25 @@ const styles = StyleSheet.create({
 	btnTextStrong: { fontWeight: '800' },
 	btnDisabled: { opacity: 0.45 },
 	spaceRow: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 18, paddingBottom: 12 },
+	spaceRowPressed: { opacity: 0.6 },
 	avatar: { width: 32, height: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
 	avatarText: { fontSize: 13, fontWeight: '800', fontFamily: mono.default },
 	spaceBody: { flex: 1, minWidth: 0 },
 	spaceName: { color: colors.text, fontSize: 14.5, fontWeight: '700' },
 	spaceBranch: { color: colors.textDim, fontSize: 11, fontFamily: mono.default, marginTop: 2 },
+
+	// スペース選択メニュー
+	pickerScrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)', zIndex: 20 },
+	pickerMenu: { position: 'absolute', left: 14, right: 14, zIndex: 21, borderRadius: 22, ...squircle, overflow: 'hidden', paddingBottom: 6 },
+	pickerGlass: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
+	pickerHead: { color: colors.textDim, fontSize: 11.5, fontWeight: '700', paddingHorizontal: 16, paddingTop: 13, paddingBottom: 7 },
+	pickerScroll: { maxHeight: 340 },
+	pickerRow: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingHorizontal: 14, paddingVertical: 9 },
+	pickerRowActive: { backgroundColor: colors.accentWash },
+	pickerRowPressed: { backgroundColor: 'rgba(255,255,255,0.08)' },
+	pickerAvatar: { width: 26, height: 26, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+	pickerName: { color: colors.text, fontSize: 13.5, fontWeight: '700' },
+	pickerCount: { color: colors.yellow, fontSize: 10.5, fontWeight: '700' },
 	summaryChip: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: colors.surface3, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 3 },
 	summaryText: { color: colors.textDim, fontSize: 11, fontFamily: mono.default },
 	summaryTextOpen: { color: colors.accent },

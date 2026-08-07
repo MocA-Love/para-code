@@ -13,6 +13,7 @@ import { HeaderCircleButton } from '../src/components/screenHeader.js';
 import { SwipeRow } from '../src/components/swipeRow.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useToastInset } from '../src/paraToast.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors, squircle } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
@@ -30,6 +31,8 @@ import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 export default function ArchiveScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
+	const toastInset = useToastInset();
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const { workspace, archivedKeys, pinnedKeys, setArchived, setSelectedWs, setSelectedTerminalKey } = useAppStore(useShallow(s => ({
@@ -50,7 +53,7 @@ export default function ArchiveScreen() {
 	};
 
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
+		<View style={[styles.screen, { paddingTop: insets.top + 8 + toastInset }]}>
 			<View style={styles.header}>
 				<Text style={styles.title}>アーカイブ</Text>
 				{rows.length > 0 ? (

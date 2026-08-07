@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassGroup, GlassSurface } from './glassSurface.js';
 import { HeaderEdgeFade } from './headerEdgeFade.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
+import { useToastInset } from '../paraToast.js';
 import { CONTENT_MAX_WIDTH } from '../ipad/ipadLayout.js';
 import { colors, radius, squircle } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
@@ -42,11 +43,13 @@ export function ScreenHeader({ title, subtitle, showBack = true, showClose = tru
 	onHeightChange?: (height: number) => void;
 }) {
 	const insets = useStableInsets();
+	// 一時的なお知らせ（上端のカプセル）のぶん下げる。WsHeader と同じ扱い。
+	const toastInset = useToastInset();
 	const router = useRouter();
 
 	return (
 		<View
-			style={[styles.wrap, { paddingTop: insets.top }]}
+			style={[styles.wrap, { paddingTop: insets.top + toastInset }]}
 			pointerEvents="box-none"
 			onLayout={onHeightChange !== undefined ? event => onHeightChange(event.nativeEvent.layout.height) : undefined}
 		>
@@ -128,17 +131,7 @@ export function HeaderCircleButton({ icon, label, color, onPress, disabled }: {
  * 中のボタンにはガラスを重ねない（Apple HIG）。押下は白のハイライトで返す。
  * `overflow` は書かない——ベルのバッジが円周で欠ける。
  */
-export function HeaderActionPill({ children, plain = false }: {
-	children: ReactNode;
-	/**
-	 * ガラスを描かず、配置だけのピルにする。ホームの＋メニュー（真モーフ）のように
-	 * **ガラスを別の層が描いている**場合に使う。ここでも描くと二重のガラスになる。
-	 */
-	plain?: boolean;
-}) {
-	if (plain) {
-		return <View style={styles.pill}>{children}</View>;
-	}
+export function HeaderActionPill({ children }: { children: ReactNode }) {
 	return <GlassSurface style={styles.pill}>{children}</GlassSurface>;
 }
 

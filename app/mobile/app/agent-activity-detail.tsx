@@ -11,6 +11,7 @@ import { MarkdownText } from '../src/components/markdownText.js';
 import { AgentTimeline } from '../src/components/agentTimeline.js';
 import { detailToChatMessages } from '../src/agentToolMeta.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useToastInset } from '../src/paraToast.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { useNow } from '../src/time.js';
 import { colors } from '../src/theme.js';
@@ -55,6 +56,8 @@ function ActivityMessage({ message, parentLabel }: { message: AgentActivityDetai
 export default function AgentActivityDetailScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
+	const toastInset = useToastInset();
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const now = useNow();
@@ -99,7 +102,7 @@ export default function AgentActivityDetailScreen() {
 	};
 
 	return <ConnectionGate><View style={styles.screen}>
-		<View style={[styles.header, { paddingTop: insets.top + 4 }]}>
+		<View style={[styles.header, { paddingTop: insets.top + 4 + toastInset }]}>
 			<Pressable hitSlop={8} accessibilityRole="button" accessibilityLabel="SubAgent一覧へ戻る" onPress={() => { hapticSelection(); router.back(); }}><GlassSurface style={styles.backBtn} interactive><Ionicons name="chevron-back" size={20} color={colors.text} /></GlassSurface></Pressable>
 			<View style={styles.headerBody}>
 				<View style={styles.breadcrumbs}><Text style={styles.crumb} numberOfLines={1}>{terminal?.title ?? 'Agent'}</Text>{ancestors.map(value => <Pressable key={value.id} accessibilityRole="button" accessibilityLabel={`${value.label}へ戻る`} onPress={() => navigateAgent(value)}><Text style={styles.crumb} numberOfLines={1}> › {value.label}</Text></Pressable>)}</View>

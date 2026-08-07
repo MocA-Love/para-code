@@ -1,9 +1,9 @@
 # PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 Pod::Spec.new do |s|
-  s.name           = 'ParaGlassMorph'
+  s.name           = 'ParaPlusMenu'
   s.version        = '1.0.0'
-  s.summary        = 'Liquid Glass morph shape for the home plus menu'
-  s.description    = 'Renders a Liquid Glass shape that morphs between the header pill and the plus menu panel using SwiftUI glassEffectID.'
+  s.summary        = 'Native UIMenu button for the home plus menu'
+  s.description    = 'A UIButton that presents a standard UIMenu so iOS 26 draws the button-to-menu Liquid Glass morph itself.'
   s.author         = 'Paradis'
   s.homepage       = 'https://paradis.ltd'
   s.license        = { :type => 'MIT' }

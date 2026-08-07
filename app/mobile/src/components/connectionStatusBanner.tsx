@@ -4,58 +4,55 @@ import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
+import { useToastInset } from '../paraToast.js';
 import { colors } from '../theme.js';
-import { hapticImpact } from '../haptics.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 
+/**
+ * 「結果が分からない操作の記録がある」ことを伝えるバナー。
+ *
+ * **接続の状態（再接続中・オフライン）はここでは出さない。**それは一時的なお知らせなので、
+ * 上端のカプセル（{@link ParaToastHost}）へ集約した。ここに残しているのは
+ * <b>ユーザーの操作を待つもの</b>だけ——「確認して破棄」を押さないと先に進まないので、
+ * トーストにして時間やスワイプで消えると、消えた瞬間に操作の機会ごと失われる。
+ * だから居座るバナーのまま置いておく。
+ *
+ * 位置はトーストのぶんだけ下げる（{@link useToastInset}）。両方出たときに重ならない。
+ */
 export function ConnectionStatusBanner() {
 	const insets = useStableInsets();
-	// workspace 本体ではなく、表示に使う件数だけを購読する（常時マウントされるため、
-	// 本体を購読するとPCからのstate再送のたびにこのバナーが再構築される）。
-	const { connection, pcOnline, sessionProtocolReady, manualOffline, pendingRendererCount, issue, unknownCount, connectRelay, discardUnknown } = useAppStore(useShallow(s => ({
-		connection: s.connection,
-		pcOnline: s.pcOnline,
-		sessionProtocolReady: s.sessionProtocolReady,
-		manualOffline: s.manualOffline,
-		pendingRendererCount: s.workspace?.renderers.filter(renderer => !renderer.ready).length ?? 0,
+	const toastInset = useToastInset();
+	// workspace 本体ではなく、表示に使う値だけを購読する（常時マウントされるため、
+	// 本体を購読するとこのバナーが再構築される）。
+	const { issue, unknownCount, discardUnknown } = useAppStore(useShallow(s => ({
 		issue: s.terminalOperationIssue,
 		unknownCount: s.unknownTerminalOperationCount,
-		connectRelay: s.connectRelay,
 		discardUnknown: s.discardUnknownTerminalOperations,
 	})));
-	const live = connection === 'online' && pcOnline && sessionProtocolReady;
-	const partialRecovery = live && pendingRendererCount > 0;
-	if (live && !partialRecovery && issue === undefined) {
+
+	if (issue === undefined) {
 		return null;
 	}
-	const message = partialRecovery
-		? `${pendingRendererCount}個のPC画面を再接続中 — 復旧済みの画面は操作できます`
-		: manualOffline
-		? '切断中 — 最後の画面を表示しています'
-		: !pcOnline && (connection === 'online' || connection === 'handshaking')
-			? 'PCオフライン — 最後の画面を表示しています'
-			: '再接続中 — 最後の画面を表示しています';
-	return <View style={[styles.stack, { top: insets.top + 52 }]} pointerEvents="box-none">
-		{!live || partialRecovery ? <View style={styles.connection} accessibilityLiveRegion="polite">
-			<Ionicons name={partialRecovery ? 'sync-outline' : 'cloud-offline-outline'} size={15} color={colors.orange} />
-			<Text style={styles.text} numberOfLines={2}>{message}</Text>
-			{!live ? <Pressable accessibilityRole="button" style={styles.action} onPress={() => { hapticImpact('light'); connectRelay(); }}><Text style={styles.actionText}>再接続</Text></Pressable> : null}
-		</View> : null}
-		{issue !== undefined ? <View style={styles.unknown} accessibilityLiveRegion="polite">
-			<Ionicons name="warning-outline" size={15} color={colors.orange} />
-			<Text style={styles.text}>{issue}</Text>
-			{unknownCount > 0 ? <Pressable accessibilityRole="button" style={styles.action} onPress={() => Alert.alert(
-				'結果不明の操作記録を破棄',
-				'PC側の状態を確認しましたか？ 記録を破棄してもPC上の操作は取り消されず、自動再実行もされません。',
-				[{ text: 'キャンセル', style: 'cancel' }, { text: '記録を破棄', style: 'destructive', onPress: () => { void discardUnknown(); } }],
-			)}><Text style={styles.actionText}>確認して破棄</Text></Pressable> : null}
-		</View> : null}
-	</View>;
+
+	return (
+		<View style={[styles.stack, { top: insets.top + 52 + toastInset }]} pointerEvents="box-none">
+			<View style={styles.unknown} accessibilityLiveRegion="polite">
+				<Ionicons name="warning-outline" size={15} color={colors.orange} />
+				<Text style={styles.text}>{issue}</Text>
+				{unknownCount > 0 ? (
+					<Pressable accessibilityRole="button" style={styles.action} onPress={() => Alert.alert(
+						'結果不明の操作記録を破棄',
+						'PC側の状態を確認しましたか？ 記録を破棄してもPC上の操作は取り消されず、自動再実行もされません。',
+						[{ text: 'キャンセル', style: 'cancel' }, { text: '記録を破棄', style: 'destructive', onPress: () => { void discardUnknown(); } }],
+					)}><Text style={styles.actionText}>確認して破棄</Text></Pressable>
+				) : null}
+			</View>
+		</View>
+	);
 }
 
 const styles = StyleSheet.create({
 	stack: { position: 'absolute', left: 12, right: 12, gap: 6, zIndex: 100 },
-	connection: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(245,158,11,.35)', backgroundColor: 'rgba(24,24,27,.94)', paddingHorizontal: 10, paddingVertical: 8 },
 	unknown: { flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(245,158,11,.35)', backgroundColor: 'rgba(24,24,27,.96)', paddingHorizontal: 10, paddingVertical: 8 },
 	text: { flex: 1, color: colors.text, fontSize: 11, lineHeight: 15 },
 	action: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 7, backgroundColor: colors.surface },
