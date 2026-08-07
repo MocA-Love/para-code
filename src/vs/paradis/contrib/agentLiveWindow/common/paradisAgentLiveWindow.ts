@@ -19,6 +19,17 @@ export type ParadisAgentLiveStatus = ParadisAgentStatus | 'idle';
 /** チップの並び順であり、状態グループの表示順であり、「状態順」ソートの優先度でもある。 */
 export const PARADIS_AGENT_LIVE_STATUS_ORDER: readonly ParadisAgentLiveStatus[] = ['permission', 'question', 'working', 'review', 'idle'];
 
+/**
+ * スペースを一意に指す表示名。
+ *
+ * リポジトリ名だけでは同じリポジトリの worktree を見分けられない (どれも同じ文字列になり、
+ * グループ見出しも絞り込みの選択肢も同名で並ぶ)。実際に区別しているのは worktree 側なので、
+ * 「リポジトリ名 / worktree 名」の形に統一する。
+ */
+export function paradisAgentLiveSpaceLabel(spaceName: string, detail: string): string {
+	return detail ? `${spaceName} / ${detail}` : spaceName;
+}
+
 /** 手が止まっていてユーザーの操作を待っている状態。「要対応のみ」フィルタの定義。 */
 export function paradisIsAttentionStatus(status: ParadisAgentLiveStatus): boolean {
 	return status === 'permission' || status === 'question';
@@ -37,7 +48,10 @@ export interface IParadisAgentLiveEntry {
 	readonly spaceName: string;
 	/** スペース色 (hex)。未設定のリポジトリでは undefined */
 	readonly spaceColor: string | undefined;
-	/** ブランチ名など、スペース名の下に出す補足 */
+	/**
+	 * worktree 名 (worktree では branch、リポジトリ本体では現在のブランチ)。
+	 * 同じリポジトリの worktree はスペース名が全て同じになるため、実際に見分ける鍵はこちら。
+	 */
 	readonly detail: string;
 	/** ターミナルタイトル */
 	readonly title: string;
@@ -350,7 +364,7 @@ export function paradisGroupAgentLiveEntries(
 		let group = groups.get(key);
 		if (!group) {
 			group = state.group === 'space'
-				? { label: entry.spaceName, color: entry.spaceColor, status: undefined, entries: [] }
+				? { label: paradisAgentLiveSpaceLabel(entry.spaceName, entry.detail), color: entry.spaceColor, status: undefined, entries: [] }
 				: { label: statusLabel(entry.status), color: undefined, status: entry.status, entries: [] };
 			groups.set(key, group);
 		}

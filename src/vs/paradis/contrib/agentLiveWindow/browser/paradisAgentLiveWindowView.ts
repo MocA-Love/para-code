@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { $, addDisposableListener, append, clearNode, EventType, getWindow, isHTMLElement } from '../../../../base/browser/dom.js';
+import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
@@ -16,6 +17,7 @@ import { localize } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { getParadisPaneIndicatorHost, onDidChangeParadisPaneIndicatorHost } from '../../agentBrowser/browser/paradisPaneIndicator.js';
 import { ParadisAgentLiveMirror } from './paradisAgentLiveMirror.js';
 import { ParadisAgentLiveModel } from './paradisAgentLiveModel.js';
 import { ParadisAgentLiveSettingsPopover } from './paradisAgentLiveSettingsPopover.js';
@@ -26,6 +28,7 @@ import {
 	PARADIS_AGENT_LIVE_DEFAULT_ROW_HEIGHT,
 	PARADIS_AGENT_LIVE_STATUS_ORDER,
 	ParadisAgentLiveStatus,
+	paradisAgentLiveSpaceLabel,
 	paradisApplyAgentLiveManualDrop,
 	paradisFilterAgentLiveEntries,
 	paradisFormatAgentLiveDuration,
@@ -38,12 +41,16 @@ import {
 interface ITile {
 	readonly root: HTMLElement;
 	readonly title: HTMLElement;
-	readonly branch: HTMLElement;
+	/** 切り詰められた見出しの全文。名前が変わるたび差し替える */
+	readonly titleHover: IManagedHover;
 	readonly clock: HTMLElement;
 	readonly readonlyMark: HTMLElement;
 	readonly badge: HTMLElement;
 	readonly spaceBar: HTMLElement;
 	readonly pinButton: HTMLElement;
+	readonly browserButton: HTMLElement;
+	/** 共有ページのツールチップ。共有先が変わるたび差し替える */
+	readonly browserHover: IManagedHover;
 	readonly mirror: ParadisAgentLiveMirror | undefined;
 	entry: IParadisAgentLiveEntry;
 }
@@ -84,6 +91,29 @@ function wheelScrollPixels(event: WheelEvent, pageHeight: number): number {
 	}
 }
 
+/** 見出しを1本の文字列にしたもの (ツールチップと読み上げ用)。 */
+function tileTitleText(entry: IParadisAgentLiveEntry): string {
+	const parts = [paradisAgentLiveSpaceLabel(entry.spaceName, entry.detail)];
+	if (entry.title) {
+		parts.push(entry.title);
+	}
+	return parts.join(' · ');
+}
+
+/** 「端に着いている」とみなす許容差 (px)。 */
+const SCROLL_EDGE_TOLERANCE = 1;
+
+/** その要素がその向きへまだスクロールできるか (端に着いていたら false)。 */
+function canScrollElement(element: HTMLElement, deltaY: number): boolean {
+	const max = element.scrollHeight - element.clientHeight;
+	if (max <= 0) {
+		return false;
+	}
+	// 端の判定には遊びを持たせる。scrollTop は HiDPI や慣性スクロールで小数になり、
+	// 厳密比較だと端に着いた後も1イベントぶん余計に吸われる。
+	return deltaY < 0 ? element.scrollTop > SCROLL_EDGE_TOLERANCE : element.scrollTop < max - SCROLL_EDGE_TOLERANCE;
+}
+
 /**
  * ライブウィンドウの中身 (ツールバー + タイルのグリッド)。
  *
@@ -121,6 +151,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 	/** 開いている間だけ生きる歯車ポップオーバー */
 	private readonly popover = this._register(new MutableDisposable<ParadisAgentLiveSettingsPopover>());
+	/** ペインインジケータホストの購読。ホストが差し替わるたび張り直す */
+	private readonly indicatorHostListener = this._register(new MutableDisposable());
 
 	private intersectionObserver: IntersectionObserver | undefined;
 	private draggedToken: string | undefined;
@@ -176,6 +208,10 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.observeIntersections(scroll);
 
 		this._register(this.model.onDidChangeEntries(() => this.render()));
+		// 共有ブラウザのボタンはバインディングの増減で変わる。ホスト自体が後から登録される
+		// (デスクトップ workbench の contribution が復元後に登録する) ので、その差し替えも追う。
+		this._register(onDidChangeParadisPaneIndicatorHost(() => this.bindIndicatorHost()));
+		this.bindIndicatorHost();
 		const clock = this._register(new IntervalTimer());
 		clock.cancelAndSet(() => this.updateClocks(), CLOCK_INTERVAL, getWindow(container));
 
@@ -322,11 +358,18 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 		const spaceBar = append(root, $('.paradis-agent-live-spacebar'));
 
-		// 見出しは1行だけ。タイトル・ブランチ・経過時間・状態を横に並べ、タイルの面積を端末へ回す。
+		// 見出しは1行だけ。名前・経過時間・状態を横に並べ、タイルの面積を端末へ回す。
 		const head = append(root, $('.paradis-agent-live-tile-head'));
 		append(head, $('span.paradis-agent-live-drag-handle.codicon.codicon-gripper'));
 		const title = append(head, $('.paradis-agent-live-tile-title.paradis-agent-live-grow'));
-		const branch = append(head, $('span.paradis-agent-live-tile-branch'));
+		// 見出しは幅次第で切り詰められる。全文を読む手段を残す。
+		const titleHover = disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), title, ''));
+		const browserButton = append(head, $('button.paradis-agent-live-browser-button.codicon.codicon-plug'));
+		const browserHover = disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), browserButton, ''));
+		disposables.add(addDisposableListener(browserButton, EventType.CLICK, event => {
+			event.stopPropagation();
+			getParadisPaneIndicatorHost()?.revealBoundPage(entry.instanceId);
+		}));
 		const readonlyMark = append(head, $('span.paradis-agent-live-tile-readonly'));
 		const clock = append(head, $('span.paradis-agent-live-tile-clock'));
 		const badge = append(head, $('span.paradis-agent-live-badge'));
@@ -363,15 +406,30 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		// ユーザー入力として発火するため、ミラーの転送を通って**本物の端末へ矢印キーが入る**。
 		// 触っていないタイルの上を通り過ぎただけでエージェントの選択が動くのは避けたい。
 		disposables.add(addDisposableListener(termContainer, EventType.MOUSE_WHEEL, (event: WheelEvent) => {
-			if (termContainer.matches(':focus-within')) {
-				return;
-			}
 			// 横だけの操作 (トラックパッドの横スワイプ) はタイルへ渡す。切れている右端を見るのに
 			// 使えるうえ、上下キーへの変換は縦の動きにしか起きない。判定は xterm 側の早期 return
 			// (MouseService) と同じ生の値で行う —— 正規化した値で見ると、丸めで 0 になった微小な
 			// 縦成分を「横のみ」と取り違え、xterm 側の累積だけが進んでしまう。
 			if (event.deltaY === 0) {
 				return;
+			}
+			if (termContainer.matches(':focus-within')) {
+				// 掴んでいるタイルでは、まず端末自身へ送る (マウス報告中の TUI か、送れる
+				// スクロールバックがある場合)。
+				const mirror = this.tiles.get(entry.token)?.mirror;
+				if (mirror?.shouldForwardWheel(event.deltaY)) {
+					return;
+				}
+				// 端末が受け取れない場合 (マウス報告なしの alt 画面、または端まで来たとき) に
+				// そのまま渡すと、xterm がホイールを矢印キーへ変換して**本物の端末へ**入力して
+				// しまう。掴んだ途端に何も動かせなくなるのも避けたいので、切れている上部を
+				// 見るためのタイル自身のスクロールへ落とす。
+				if (canScrollElement(termContainer, event.deltaY)) {
+					event.preventDefault();
+					event.stopPropagation();
+					termContainer.scrollTop += wheelScrollPixels(event, termContainer.clientHeight);
+					return;
+				}
 			}
 			event.preventDefault();
 			event.stopPropagation();
@@ -422,7 +480,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.tokensByElement.set(root, entry.token);
 		this.intersectionObserver?.observe(root);
 
-		const tile: ITile = { root, title, branch, clock, readonlyMark, badge, spaceBar, pinButton, mirror, entry };
+		const tile: ITile = { root, title, titleHover, clock, readonlyMark, badge, spaceBar, pinButton, browserButton, browserHover, mirror, entry };
 		this.tiles.set(entry.token, tile);
 		this.tileDisposables.set(entry.token, disposables);
 		return tile;
@@ -450,8 +508,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 
 	private updateTile(tile: ITile, entry: IParadisAgentLiveEntry, now: number): void {
 		tile.entry = entry;
-		tile.title.textContent = entry.title ? `${entry.spaceName} · ${entry.title}` : entry.spaceName;
-		tile.branch.textContent = entry.detail;
+		this.updateTileTitle(tile, entry);
+		this.updateTileBrowser(tile, entry);
 		tile.badge.className = `paradis-agent-live-badge ${entry.status}`;
 		clearNode(tile.badge);
 		append(tile.badge, $(`span.paradis-agent-live-dot.${entry.status}`));
@@ -468,8 +526,62 @@ export class ParadisAgentLiveWindowView extends Disposable {
 			: '';
 		tile.mirror?.setFontSize(this.mirrorFontSize());
 		tile.root.setAttribute('aria-label', localize(
-			'paradis.agentLive.tileLabel', "{0}（{1}）", tile.title.textContent ?? entry.spaceName, STATUS_LABELS[entry.status]));
+			'paradis.agentLive.tileLabel', "{0}（{1}）", tileTitleText(entry), STATUS_LABELS[entry.status]));
 		this.updateTileClock(tile, now);
+	}
+
+	/**
+	 * 見出しの名前を組み立てる。
+	 *
+	 * 主役は worktree 名。リポジトリ名は同じリポジトリの worktree 全てで同じ文字列になるため、
+	 * それだけでは「どのエージェントか」が判別できない。所属を示すために前に薄く添え、
+	 * 端末タイトル (エージェント名やセッションID) は最後に薄く回す。
+	 *
+	 * スペース部分の区切りは {@link paradisAgentLiveSpaceLabel} と同じ '/' に揃える
+	 * (あちらはグループ見出しと絞り込みの選択肢を作る。書式を変えるときは両方直す)。
+	 */
+	private updateTileTitle(tile: ITile, entry: IParadisAgentLiveEntry): void {
+		clearNode(tile.title);
+		append(tile.title, $('span.paradis-agent-live-tile-space')).textContent = entry.spaceName;
+		if (entry.detail) {
+			append(tile.title, $('span.paradis-agent-live-tile-slash')).textContent = '/';
+			append(tile.title, $('span.paradis-agent-live-tile-worktree')).textContent = entry.detail;
+		}
+		if (entry.title) {
+			append(tile.title, $('span.paradis-agent-live-tile-slash')).textContent = '·';
+			append(tile.title, $('span.paradis-agent-live-tile-term')).textContent = entry.title;
+		}
+		tile.titleHover.update(tileTitleText(entry));
+	}
+
+	/**
+	 * 共有ブラウザのボタン。para browser MCP で共有中の端末にだけ出し、押すとメインウィンドウが
+	 * そのページのスペースへ切り替わる。バインディングモデルは electron-browser レイヤーに
+	 * あるため、ペインインジケータのホスト経由で参照する (Web ビルドではホストが未登録＝非表示)。
+	 */
+	private updateTileBrowser(tile: ITile, entry: IParadisAgentLiveEntry): void {
+		const page = getParadisPaneIndicatorHost()?.getBoundPage(entry.instanceId);
+		tile.browserButton.classList.toggle('hidden', !page);
+		if (!page) {
+			// 共有が解除された後もツールチップに前のページ名が残らないようにする。
+			tile.browserHover.update('');
+			return;
+		}
+		const label = localize('paradis.agentLive.revealBrowser', "「{0}」を共有中 — このスペースへ切り替えてブラウザを開く", page.title || page.url);
+		tile.browserButton.setAttribute('aria-label', label);
+		tile.browserHover.update(label);
+	}
+
+	private bindIndicatorHost(): void {
+		this.indicatorHostListener.value = getParadisPaneIndicatorHost()?.onDidChangeState(() => this.updateBrowserButtons());
+		this.updateBrowserButtons();
+	}
+
+	/** 共有状態だけが変わったとき。名前や状態は動かさずボタンの出し入れだけを行う。 */
+	private updateBrowserButtons(): void {
+		for (const tile of this.tiles.values()) {
+			this.updateTileBrowser(tile, tile.entry);
+		}
 	}
 
 	private updateTileClock(tile: ITile, now: number): void {
@@ -542,7 +654,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		for (const entry of entries) {
 			const key = entry.stateKey ?? '';
 			if (!names.has(key)) {
-				names.set(key, entry.detail ? `${entry.spaceName} (${entry.detail})` : entry.spaceName);
+				names.set(key, paradisAgentLiveSpaceLabel(entry.spaceName, entry.detail));
 			}
 		}
 		return names;

@@ -15,6 +15,7 @@
 // ISharedProcessService（electron-browser専用）に依存するため、
 // paradis.electron-browser.contribution.ts 経由でデスクトップworkbenchにのみ登録される。
 
+import { mainWindow } from '../../../../base/browser/window.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -28,11 +29,13 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
-import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
+import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { setParadisPaneIndicatorHost } from '../browser/paradisPaneIndicator.js';
-import { paradisFormatCdpGatewayUrl } from '../common/paradisAgentBrowser.js';
+import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisPaneBinding, paradisFormatCdpGatewayUrl } from '../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { ParadisBindingDialog } from './paradisBindingDialog.js';
@@ -339,6 +342,10 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IBrowserViewWorkbenchService private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
+		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@IHostService private readonly hostService: IHostService,
+		@INotificationService private readonly notificationService: INotificationService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 	) {
 		super();
@@ -358,12 +365,10 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 		// 経由でのみ状態を知る。デスクトップ以外ではホスト未登録のままインジケータ非表示）。
 		setParadisPaneIndicatorHost({
 			getPaneIndicatorState: instanceId => {
-				const token = this.paneTokenService.getTokenForInstance(instanceId);
-				return token && this.bindingModel.getBindingForToken(token) ? 'bound' : 'unbound';
+				return this._getBinding(instanceId) ? 'bound' : 'unbound';
 			},
 			getPaneIndicatorTooltip: instanceId => {
-				const token = this.paneTokenService.getTokenForInstance(instanceId);
-				const binding = token ? this.bindingModel.getBindingForToken(token) : undefined;
+				const binding = this._getBinding(instanceId);
 				return binding
 					// allow-any-unicode-next-line
 					? localize('paradis.paneIndicator.bound', "このペインは「{0}」を共有中 — クリックで管理", binding.pageInfo.title || binding.pageInfo.url)
@@ -374,8 +379,50 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 			openBindingDialog: instanceId => {
 				void this.instantiationService.invokeFunction(accessor => openBindingDialog(accessor, instanceId));
 			},
+			getBoundPage: instanceId => {
+				const binding = this._getBinding(instanceId);
+				return binding ? { title: binding.pageInfo.title, url: binding.pageInfo.url } : undefined;
+			},
+			revealBoundPage: instanceId => {
+				const binding = this._getBinding(instanceId);
+				if (binding) {
+					this._revealBinding(binding).catch(error => {
+						this.notificationService.error(localize('paradis.revealBinding.failed', "Could not open the shared browser page: {0}", toErrorMessage(error)));
+					});
+				}
+			},
 		});
 		this._register({ dispose: () => setParadisPaneIndicatorHost(undefined) });
+	}
+
+	private _getBinding(instanceId: number): IParadisPaneBinding | undefined {
+		const token = this.paneTokenService.getTokenForInstance(instanceId);
+		return token ? this.bindingModel.getBindingForToken(token) : undefined;
+	}
+
+	/**
+	 * 共有中のブラウザを見に行く。ページはスペースごとのエディタとして存在するため、
+	 * 先にメインウィンドウをそのスペースへ切り替えないとエディタが復元されていない。
+	 *
+	 * ウィンドウを前面へ出すのはタブを開いた後。先に focus すると、フォーカス移動でアクティブ
+	 * グループが変わる余地が残り、直後の openEditor が意図しないグループへ載りうる。
+	 * 前面へ出す処理自体は省けない —— 切り替えだけだと、別ウィンドウ（エージェント一覧）を
+	 * 見たまま裏で切り替わり、押しても何も起きていないように見えるため。
+	 */
+	private async _revealBinding(binding: IParadisPaneBinding): Promise<void> {
+		if (binding.scope.kind === 'managed' && this.workspaceSwitchService.activeStateKey !== binding.scope.stateKey) {
+			await this.workspaceSwitchService.switchToStateKey(binding.scope.stateKey);
+		}
+		const input = this.browserViewWorkbenchService.getKnownBrowserViews().get(binding.pageId);
+		if (input) {
+			await this.editorService.openEditor(input);
+		} else {
+			// 共有の登録は残っているのにページが見つからない (スペースの復元に失敗した、
+			// あるいは共有相手のタブが閉じられた後)。切り替えは済んでいるので黙って戻すと
+			// 「押しても何も起きない」ように見える。
+			this.notificationService.warn(localize('paradis.revealBinding.pageMissing', "The shared browser page is no longer open."));
+		}
+		await this.hostService.focus(mainWindow);
 	}
 
 	private _updateStatusbar(): void {
