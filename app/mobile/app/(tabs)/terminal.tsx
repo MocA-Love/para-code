@@ -39,6 +39,9 @@ export default function TerminalScreen() {
 		terminalPrefs: s.terminalPrefs, setTerminalViewport: s.setTerminalViewport, activePcId: s.activePcId,
 	})));
 	const [headerHeight, setHeaderHeight] = useState(0);
+	// ターミナルの箱の高さ。キーボードを閉じているときの枠の高さを測って固定し、
+	// キーボードが出ている間はこの値を保つ（縮めるとPTYのリサイズを誘発するため）。
+	const [outputHeight, setOutputHeight] = useState(0);
 	const [input, setInput] = useState('');
 	const [submitting, setSubmitting] = useState(false);
 	const insets = useStableInsets();
@@ -161,25 +164,45 @@ export default function TerminalScreen() {
 				})}
 				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
 			</ScrollView>
-			<View style={styles.output}>
-				{activeKey !== undefined ? (
-					// fontSize は「このタブを見ている間だけ」渡す。渡さない間 TermView は実測を
-					// 報告しないので grid が undefined になり、PCへの申告も自動で取り下がる。
-					// キーボード開閉や回転はタブを離れた後にも起きるため、「離れたら1回取り下げる」
-					// 副作用では足りず、申告の入力そのものを止める必要がある。
-					<TermView
-						key={activeKey}
-						output={output}
-						cols={activeTerminal?.cols}
-						rows={activeTerminal?.rows}
-						subscribe={subscribeActive}
-						onNeedResync={resyncActive}
-						fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
-						onGridChange={setGrid}
-					/>
-				) : (
-					<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
-				)}
+			{/* キーボードを開いても**ターミナルの高さは変えない**。縮めると行数が変わり、
+			    PTYのリサイズ → SIGWINCH → TUIの全画面再描画が開閉のたびに2往復する。
+			    枠だけを縮めて中身を下端で揃え、はみ出した上側を切って「上へずれた」ように
+			    見せる（下端のプロンプトは常に見えるので実用上これで足りる）。
+
+			    高さは「キーボードが閉じているとき」の枠の高さを採る。広がる向きの変化は
+			    常に採るのは、初回マウント時に既にキーボードが出ていた場合（他画面から戻る等）に
+			    0 のまま固定されるのを避けるため。回転や Split View の幅変更でも測り直されるが、
+			    それはキーボードを閉じている間に限る（出したまま回すと、閉じるまで旧い高さのまま
+			    上へはみ出す。閉じれば直る）。 */}
+			<View
+				style={styles.outputSlot}
+				onLayout={event => {
+					const next = event.nativeEvent.layout.height;
+					if (!keyboardVisible || next > outputHeight) {
+						setOutputHeight(next);
+					}
+				}}
+			>
+				<View style={[styles.output, outputHeight > 0 ? { height: outputHeight } : { flex: 1 }]}>
+					{activeKey !== undefined ? (
+						// fontSize は「このタブを見ている間だけ」渡す。渡さない間 TermView は実測を
+						// 報告しないので grid が undefined になり、PCへの申告も自動で取り下がる。
+						// キーボード開閉や回転はタブを離れた後にも起きるため、「離れたら1回取り下げる」
+						// 副作用では足りず、申告の入力そのものを止める必要がある。
+						<TermView
+							key={activeKey}
+							output={output}
+							cols={activeTerminal?.cols}
+							rows={activeTerminal?.rows}
+							subscribe={subscribeActive}
+							onNeedResync={resyncActive}
+							fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
+							onGridChange={setGrid}
+						/>
+					) : (
+						<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
+					)}
+				</View>
 			</View>
 			<View style={[styles.inputBar, { paddingBottom: keyboardVisible ? 8 : insets.bottom + (regular ? 12 : 30) }]}>
 				<GlassComposer
@@ -240,7 +263,10 @@ const styles = StyleSheet.create({
 	dim: { color: colors.textDim, fontSize: 12 },
 	operationWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(245,158,11,.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,.35)' },
 	operationWarningText: { flex: 1, color: colors.text, fontSize: 11, lineHeight: 16 },
-	output: { flex: 1, backgroundColor: '#1e1e1e', marginHorizontal: 12, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	// キーボードで縮む「枠」。中の箱は高さを保ったまま下端で揃え、はみ出す上側をここで切る。
+	// 箱と同じ角丸を持たせるのは、切っている間も上側の角が直角にならないようにするため。
+	outputSlot: { flex: 1, marginHorizontal: 12, borderRadius: radius.control, ...squircle, overflow: 'hidden', justifyContent: 'flex-end' },
+	output: { backgroundColor: '#1e1e1e', borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	placeholder: { color: colors.textDim, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, padding: 10 },
 	keyRowScroll: { flex: 1, minWidth: 0 },
 	keyRow: { flexDirection: 'row', gap: 6, alignItems: 'center', paddingRight: 8 },

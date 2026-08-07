@@ -728,6 +728,11 @@ function activatePc(id: string, notice?: { readonly previousPcId: string | undef
 		// 切り替え前のPCの購読はここでまとめて畳む。放置すると、そのPCは再接続のたびに
 		// 再attachされ、見ていない間もずっと差分を送り続ける。
 		previous.controller.detachAll();
+		// 画面幅の申告も切り替え前のPCへ明示的に取り下げる。申告は「いま見ているPC」にしか
+		// 送らないので、切り替えただけでは前のPCに取り下げが届かない。接続を保つ設定
+		// （keepBackgroundPcs）だと disconnect も通らないため、そのPCのターミナルが細いまま
+		// 残り、更新タイマーだけが回り続ける。
+		previous.controller.setTerminalViewport(undefined);
 		// 書きかけの文章はPCごとに取っておく（切り替えて戻ったときに残っている）。
 		previous.drafts = useAppStore.getState().agentDrafts;
 	}

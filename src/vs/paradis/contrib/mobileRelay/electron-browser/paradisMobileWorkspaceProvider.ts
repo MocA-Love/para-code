@@ -243,6 +243,15 @@ const TERM_HIGH_WATERMARK_CHARS = 100_000;
 const TERM_LOW_WATERMARK_CHARS = 5_000;
 const TERM_RESIZE_SNAPSHOT_DELAY_MS = 200; // リサイズ確定からスナップショット再同期までのデバウンス
 const TERMINAL_CREATE_READY_TIMEOUT_MS = 10_000; // 非表示スペース向け作成時にPTY起動を待つ上限（park に persistentProcessId が要る）
+// モバイル画面幅に合わせた寸法申告のリース。
+//
+// PTYを細くしたまま戻せなくなる事故を根本から防ぐための仕組み。「モバイルがオフラインに
+// なった」通知に頼ると、アプリのタスクキルや圏外でソケットが half-open のまま残った場合に
+// 復帰できない（リレーはモバイルソケットの生死を監視していない。キープアライブpingを
+// 送っているのはPCだけで、DOはエッジ自動応答で寝たままハイバネートする）。
+// そこでモバイルには申告を定期更新させ、更新が途絶えたらPC側の判断で寸法を戻す。
+const TERM_VIEWPORT_LEASE_MS = 60_000;       // この時間更新が無ければ申告を捨てる
+const TERM_VIEWPORT_SWEEP_MS = 15_000;       // 満了チェックの周期
 
 /** VTスナップショットを送る理由（計測でどの経路が転送量を占めるか切り分けるため）。 */
 type TermSnapshotReason = 'attach' | 'flow' | 'resize';
@@ -295,8 +304,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private readonly serializeAddons = new WeakMap<object, { serialize(options?: { scrollback?: number }): string }>();
 	// mobileId + ターミナルID → 独立したepoch/seq/ACK状態。
 	private readonly termSyncStates = new Map<string, TermSyncState>();
-	// mobileId + ターミナルID → そのモバイルが読める画面寸法（申告があったものだけ）。
-	private readonly termViewports = new Map<string, IParadisMobileTerminalViewport>();
+	// mobileId + ターミナルID → そのモバイルが読める画面寸法（申告があったものだけ）と、
+	// 最後に申告を受け取った時刻。申告はリース制で、更新が途絶えたら期限切れで捨てる。
+	// instanceId を値に持たせているのは、期限切れの掃除でキー文字列を再パースしないため
+	// （パースに失敗すると台帳からは消えるのに override は解除されず、この機能が防ごうと
+	// している「細いまま戻らない」がそのまま残る）。
+	private readonly termViewports = new Map<string, { instanceId: number; viewport: IParadisMobileTerminalViewport; renewedAt: number }>();
+	// ターミナルID → 最後に適用した寸法。リースの更新（同じ値の再申告）で毎回
+	// setOverrideDimensions を叩かないためのガード。同値でも PTY への IPC は走るため、
+	// 20秒ごとの更新が端末数ぶん積み上がる（ConPTY は同値リサイズでも再レイアウトする）。
+	private readonly termAppliedDimensions = new Map<number, { cols: number; rows: number }>();
+	// リース満了を掃く周期タイマー（申告が1つも無い間は動かさない）。
+	private readonly viewportLeaseSweeper = this._register(new IntervalTimer());
+	private viewportLeaseSweeperRunning = false;
 	// 寸法の上書きを「自分が」掛けているターミナルID。拡張機能が握っている override を
 	// 解除時に巻き込まないよう、自分で掛けた分だけを覚えておく。
 	private readonly termOverriddenInstanceIds = new Set<number>();
@@ -1928,6 +1948,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					// タスクの再実行など）。台帳から消すだけだと、その端末は細い override を
 					// 抱えたまま二度と解除されないため、必ず解除してから消す。
 					this.clearTerminalViewport(instance, id);
+					this.updateViewportLeaseSweeper();
 				}));
 				this.attachedTerminals.set(id, store);
 			} else if (msg.t === 'viewport') {
@@ -2036,8 +2057,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (viewport === undefined || this.terminalSubscribers.get(id)?.has(mobileId) !== true) {
 			this.termViewports.delete(subscriptionKey);
 		} else {
-			this.termViewports.set(subscriptionKey, viewport);
+			// 同じ値の再申告（リースの更新）でも時刻だけは必ず進める。
+			this.termViewports.set(subscriptionKey, { instanceId: id, viewport, renewedAt: Date.now() });
 		}
+		this.updateViewportLeaseSweeper();
 		this.applyTerminalViewport(instance, id);
 	}
 
@@ -2045,7 +2068,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private applyTerminalViewport(instance: ITerminalInstance, id: number): void {
 		const subscribers = this.terminalSubscribers.get(id) ?? [];
 		const resolved = paradisResolveTerminalViewport(
-			[...subscribers].map(subscriber => this.termViewports.get(this.termSubscriptionKey(id, subscriber))),
+			[...subscribers].map(subscriber => this.termViewports.get(this.termSubscriptionKey(id, subscriber))?.viewport),
 		);
 		if (resolved === undefined) {
 			this.clearTerminalViewport(instance, id);
@@ -2059,12 +2082,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// PC側でその端末に「固定寸法」（Set Fixed Dimensions）を設定してある場合、cols/rows の
 		// getter が _fixedCols/_fixedRows を先に返すため、この申告は無言で無視される。
 		// PC側の明示設定を尊重する側なので、これは意図した挙動。
-		this.termOverriddenInstanceIds.add(id);
 		// rows に 0 を渡すと `ITerminalInstance` の rows getter が override を無視して
 		// レイアウト由来の行数へフォールバックする（terminalInstance.ts の `_dimensionsOverride.rows`
 		// 判定が falsy を通す）。「桁だけ合わせる」設定はこの性質を使い、PC側のターミナルが
 		// 表示領域より縦に長くなって下が切れるのを避ける。
-		instance.setOverrideDimensions({ cols: resolved.cols, rows: resolved.rows ?? 0, forceExactSize: true }, true);
+		const dimensions = { cols: resolved.cols, rows: resolved.rows ?? 0 };
+		this.termOverriddenInstanceIds.add(id);
+		// リースの更新は同じ寸法で届く。値が変わっていなければ触らない（同値でも
+		// setOverrideDimensions は PTY への IPC まで走るため、20秒ごとに端末数ぶん積み上がる）。
+		const applied = this.termAppliedDimensions.get(id);
+		if (applied?.cols === dimensions.cols && applied.rows === dimensions.rows) {
+			return;
+		}
+		this.termAppliedDimensions.set(id, dimensions);
+		instance.setOverrideDimensions({ ...dimensions, forceExactSize: true }, true);
 	}
 
 	/** 自分が掛けた寸法の上書きだけを解除する（拡張機能が握っている override は触らない）。 */
@@ -2072,6 +2103,63 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (this.termOverriddenInstanceIds.delete(id)) {
 			this.restoreInstanceDimensions(instance);
 		}
+	}
+
+	/**
+	 * 申告のリースを掃く周期タイマーを、申告の有無に合わせて開始／停止する。
+	 * 申告が1つも無い間はタイマーを回さない（常時起動のプロセスなので、無駄な起床を作らない）。
+	 */
+	private updateViewportLeaseSweeper(): void {
+		// dispose 済みに cancelAndSet すると BugIndicatingError を投げる（IntervalTimer の仕様）。
+		// dispose 後に in-flight のterminalメッセージが着地する経路があるため、ここで止める。
+		if (this._store.isDisposed) {
+			return;
+		}
+		const shouldRun = this.termViewports.size > 0;
+		if (shouldRun === this.viewportLeaseSweeperRunning) {
+			return;
+		}
+		this.viewportLeaseSweeperRunning = shouldRun;
+		if (shouldRun) {
+			this.viewportLeaseSweeper.cancelAndSet(() => this.sweepExpiredViewports(), TERM_VIEWPORT_SWEEP_MS);
+		} else {
+			this.viewportLeaseSweeper.cancel();
+		}
+	}
+
+	/**
+	 * 更新が途絶えた申告を捨て、その端末の寸法を決め直す。
+	 *
+	 * これが「PCのターミナルが細いまま戻らない」に対する最後の砦。モバイルの
+	 * オフライン検知は half-open ソケットで働かないことがあるため、そちらには依存しない。
+	 */
+	private sweepExpiredViewports(): void {
+		const deadline = Date.now() - TERM_VIEWPORT_LEASE_MS;
+		const staleInstanceIds = new Set<number>();
+		for (const [key, entry] of [...this.termViewports]) {
+			if (entry.renewedAt > deadline) {
+				continue;
+			}
+			this.termViewports.delete(key);
+			staleInstanceIds.add(entry.instanceId);
+		}
+		if (staleInstanceIds.size === 0) {
+			this.updateViewportLeaseSweeper();
+			return;
+		}
+		this.logService.info(`[paradisMobileRelay] terminal viewport lease expired for ${staleInstanceIds.size} terminal(s); restoring PC dimensions`);
+		const byId = new Map(this.allInstances().map(instance => [instance.instanceId, instance]));
+		for (const instanceId of staleInstanceIds) {
+			const instance = byId.get(instanceId);
+			if (instance !== undefined) {
+				this.applyTerminalViewport(instance, instanceId);
+			} else {
+				// 端末自体が消えている。台帳だけ落として override の追跡も終わらせる。
+				this.termOverriddenInstanceIds.delete(instanceId);
+				this.termAppliedDimensions.delete(instanceId);
+			}
+		}
+		this.updateViewportLeaseSweeper();
 	}
 
 	/**
@@ -2084,6 +2172,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 * forceExactSize を外した無害な override を一度挟むと、この分岐を踏まずに済む。
 	 */
 	private restoreInstanceDimensions(instance: ITerminalInstance): void {
+		// 適用済みの記録も必ず落とす。残すと、次に同じ寸法を申告されたときに
+		// 「変わっていない」と判定して二度と適用しなくなる。
+		this.termAppliedDimensions.delete(instance.instanceId);
 		instance.setOverrideDimensions({ cols: instance.maxCols, rows: instance.maxRows }, false);
 		instance.setOverrideDimensions(undefined, true);
 	}
@@ -2095,6 +2186,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	 */
 	clearAllTerminalViewports(): void {
 		this.termViewports.clear();
+		this.updateViewportLeaseSweeper();
 		if (this.termOverriddenInstanceIds.size === 0) {
 			return;
 		}
@@ -2126,6 +2218,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private termSubscriptionKey(id: number, mobileId: string): string {
 		return `${mobileId}\0${id}`;
 	}
+
 
 	private clearTermSync(key: string): void {
 		const sync = this.termSyncStates.get(key);
