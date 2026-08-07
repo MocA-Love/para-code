@@ -196,30 +196,3 @@ export function buildSpaceDiskRows(result: SpaceDiskResult): SpaceDiskRow[] {
 		}))
 		.sort((a, b) => b.totalBytes - a.totalBytes);
 }
-
-/**
- * 「PCが忙しい」と言えるかどうかの一言。ドロワーのPCカードで、色が付いたときだけ出す。
- * 3値だけから決めるので、原因（どのプロセスか）には触れない。
- */
-export function resourceHeadline(input: {
-	cpuLevel: UsageLevel;
-	memoryLevel: UsageLevel;
-	diskLevel: UsageLevel;
-	diskFree?: number;
-}): string | undefined {
-	if (input.diskLevel === 'critical') {
-		return input.diskFree !== undefined
-			? `ディスクの空きが残り ${formatBytes(input.diskFree)}`
-			: 'ディスクの空きが少なくなっています';
-	}
-	if (input.memoryLevel === 'critical') {
-		return 'メモリが逼迫しています';
-	}
-	if (input.cpuLevel === 'critical') {
-		return 'CPUがほぼ使い切られています';
-	}
-	if (input.memoryLevel === 'warn' || input.cpuLevel === 'warn' || input.diskLevel === 'warn') {
-		return 'PCの負荷が高めです';
-	}
-	return undefined;
-}

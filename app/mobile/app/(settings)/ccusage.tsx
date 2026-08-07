@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
+import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
@@ -230,17 +231,22 @@ export default function CcusageScreen() {
 								<>
 									<Text style={styles.sectionTitle}>エージェント</Text>
 									<View style={styles.pillRow}>
-										{(['all', ...availableAgents] as AgentFilter[]).map(key => (
-											<Pressable
-												key={key}
-												style={[styles.pill, agentFilter === key && styles.pillActive]}
-												onPress={() => { hapticSelection(); setAgentFilter(key); }}
-											>
-												<Text style={[styles.pillText, agentFilter === key && styles.pillTextActive]}>
-													{key === 'all' ? 'すべて' : AGENT_LABEL[key]}
-												</Text>
-											</Pressable>
-										))}
+										{(['all', ...availableAgents] as AgentFilter[]).map(key => {
+											const active = agentFilter === key;
+											const label = key === 'all' ? 'すべて' : AGENT_LABEL[key];
+											return (
+												<SelectablePill
+													key={key}
+													active={active}
+													onPress={() => { hapticSelection(); setAgentFilter(key); }}
+													style={styles.pill}
+													hitStyle={styles.pillHit}
+													accessibilityLabel={label}
+												>
+													<Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
+												</SelectablePill>
+											);
+										})}
 									</View>
 								</>
 							) : null}
@@ -281,15 +287,21 @@ export default function CcusageScreen() {
 
 							<Text style={styles.sectionTitle}>集計期間</Text>
 							<View style={styles.pillRow}>
-								{PERIOD_OPTIONS.map(days => (
-									<Pressable
-										key={days}
-										style={[styles.pill, periodDays === days && styles.pillActive]}
-										onPress={() => { hapticSelection(); setPeriodDays(days); }}
-									>
-										<Text style={[styles.pillText, periodDays === days && styles.pillTextActive]}>{days}日</Text>
-									</Pressable>
-								))}
+								{PERIOD_OPTIONS.map(days => {
+									const active = periodDays === days;
+									return (
+										<SelectablePill
+											key={days}
+											active={active}
+											onPress={() => { hapticSelection(); setPeriodDays(days); }}
+											style={styles.pill}
+											hitStyle={styles.pillHit}
+											accessibilityLabel={`${days}日`}
+										>
+											<Text style={[styles.pillText, active && styles.pillTextActive]}>{days}日</Text>
+										</SelectablePill>
+									);
+								})}
 							</View>
 
 							<Text style={styles.sectionTitle}>モデル別（直近{periodDays}日）</Text>
@@ -363,8 +375,8 @@ const styles = StyleSheet.create({
 	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	// 押せるピルと直下のカードが触れて見えないよう、下に余白を残す。
 	pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	pill: { paddingVertical: 7, paddingHorizontal: 13, borderRadius: radius.pill, ...squircle, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-	pillActive: { backgroundColor: colors.accent, borderColor: colors.accent },
+	pill: { borderRadius: radius.pill, ...squircle },
+	pillHit: { paddingVertical: 7, paddingHorizontal: 13 },
 	pillText: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },
 	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 },

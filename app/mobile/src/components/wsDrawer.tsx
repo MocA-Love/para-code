@@ -10,7 +10,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { isAgentWaiting, type DesktopResources } from '../store.js';
 import {
-	CPU_THRESHOLDS, MEMORY_THRESHOLDS, diskLevel, formatCpu, resourceHeadline, usageLevel, usagePercent, worstLevel,
+	CPU_THRESHOLDS, MEMORY_THRESHOLDS, diskLevel, formatCpu, usageLevel, usagePercent, worstLevel,
 	type UsageLevel,
 } from '../systemResources.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
@@ -22,6 +22,7 @@ import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
 import { CONTENT_MAX_WIDTH } from '../ipad/ipadLayout.js';
 import { HeaderEdgeFade } from './headerEdgeFade.js';
+import { HEADER_PILL_HEIGHT } from './screenHeader.js';
 import { colors, radius, squircle, withAlpha } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
@@ -186,7 +187,6 @@ function PcResourceRow({ resources, onPress }: { resources: DesktopResources; on
 	const memoryLevel = usageLevel(memoryPercent, MEMORY_THRESHOLDS);
 	const volumeLevel: UsageLevel = hasDisk ? diskLevel(diskTotal, diskFree) : 'normal';
 	const worst = worstLevel([cpuLevel, memoryLevel, volumeLevel]);
-	const headline = resourceHeadline({ cpuLevel, memoryLevel, diskLevel: volumeLevel, diskFree: resources.diskFree });
 
 	const items: { label: string; value: string; percent: number; color: string }[] = [
 		{ label: 'CPU', value: formatCpu(resources.cpu), percent: resources.cpu ?? 0, color: resourceColor(cpuLevel, colors.accent) },
@@ -198,25 +198,30 @@ function PcResourceRow({ resources, onPress }: { resources: DesktopResources; on
 
 	return (
 		<>
-			<Pressable
-				style={[styles.resourceRow, worst !== 'normal' && styles.resourceRowAlert]}
-				onPress={onPress}
-				accessibilityLabel="PCのリソースを見る"
-			>
-				{items.map(item => (
-					<View key={item.label} style={styles.resourceItem}>
-						<View style={styles.resourceHead}>
-							<Text style={styles.resourceLabel}>{item.label}</Text>
-							<Text style={[styles.resourceValue, { color: item.color }]}>{item.value}</Text>
+			{/* 警告時はtintColorで赤みを乗せる（枠色の出し分けはGlassSurfaceが持たないため、
+			    色被せだけで逼迫を示す）。 */}
+			<GlassSurface style={styles.resourceRow} interactive tintColor={worst !== 'normal' ? colors.red : undefined} tintOpacity={0.14}>
+				<Pressable
+					style={styles.resourceHit}
+					onPress={onPress}
+					accessibilityLabel="PCのリソースを見る"
+				>
+					{items.map(item => (
+						<View key={item.label} style={styles.resourceItem}>
+							<View style={styles.resourceHead}>
+								<Text style={styles.resourceLabel}>{item.label}</Text>
+								<Text style={[styles.resourceValue, { color: item.color }]}>{item.value}</Text>
+							</View>
+							<View style={styles.resourceTrack}>
+								<View style={[styles.resourceFill, { width: `${Math.max(2, Math.min(100, item.percent))}%`, backgroundColor: item.color }]} />
+							</View>
 						</View>
-						<View style={styles.resourceTrack}>
-							<View style={[styles.resourceFill, { width: `${Math.max(2, Math.min(100, item.percent))}%`, backgroundColor: item.color }]} />
-						</View>
-					</View>
-				))}
-				<Ionicons name="chevron-forward" size={13} color={worst === 'normal' ? colors.textDim : colors.red} style={styles.resourceChevron} />
-			</Pressable>
-			{headline !== undefined ? <Text style={[styles.resourceHeadline, worst === 'critical' && styles.resourceHeadlineAlert]}>{headline}</Text> : null}
+					))}
+					<Ionicons name="chevron-forward" size={13} color={worst === 'normal' ? colors.textDim : colors.red} style={styles.resourceChevron} />
+				</Pressable>
+			</GlassSurface>
+			{/* 見出し文（「メモリが逼迫しています」等）は出さない。逼迫は行の赤い色被せと
+			    数値の色が既に伝えており、文まで足すと1行ぶん場所を取るだけになる。 */}
 		</>
 	);
 }
@@ -362,11 +367,18 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 		// グループ表示ではPCが旧アプリ互換のために付ける「✦ 」接頭辞を取り除く
 		const name = opts.child ? ws.name.replace(/^✦ /, '') : ws.name;
 		const grouped = (opts.childCount ?? 0) > 0;
-		return (
-			<Pressable key={ws.id} style={[styles.row, opts.child && styles.wtRow, opts.kept && styles.wtRowKept, active && styles.rowActive]} onPress={() => select(ws.id)}>
-				{active && !opts.child ? <View style={styles.rowIndicator} /> : null}
+		// 選択中は行の地色をワークスペース色でうっすら染める。ここは**要素の型をswitchしない**
+		// （active ? <GlassSurface> : <Pressable> のように型そのものを切り替えると、選択が
+		// 移るたびに対象行がReactツリー上でunmount→mountされる。CLAUDE.md「条件分岐でReact
+		// ツリーの形を変えない」に抵触するため、常に同じPressableのままstyleだけを変える）。
+		// ワークスペースは多いとScrollView内に数十行並ぶため、選択行だけでも毎回ネイティブの
+		// GlassSurfaceへ差し替えることはしない（UIVisualEffectView量産を避ける）。
+		const activeTint = withAlpha(color, 0.16) ?? colors.accentWash;
+		const content = (
+			<>
+				{active && !opts.child ? <View style={[styles.rowIndicator, { backgroundColor: color }]} /> : null}
 				{opts.child ? <View style={[styles.wtGuide, (active || opts.kept) && styles.wtGuideActive]} /> : null}
-				<View style={[styles.avatar, opts.child && styles.wtAvatar, { backgroundColor: color + '22' }]}>
+				<View style={[styles.avatar, opts.child && styles.wtAvatar, { backgroundColor: withAlpha(color, 0.13) ?? colors.surface2 }]}>
 					<Text style={[styles.avatarText, opts.child && styles.wtAvatarText, { color }]}>{opts.child ? '✦' : name.charAt(0).toUpperCase()}</Text>
 				</View>
 				<View style={styles.rowBody}>
@@ -420,6 +432,15 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 						</Pressable>
 					</>
 				) : null}
+			</>
+		);
+		return (
+			<Pressable
+				key={ws.id}
+				style={[styles.row, opts.child && styles.wtRow, opts.kept && styles.wtRowKept, active && { backgroundColor: activeTint }]}
+				onPress={() => select(ws.id)}
+			>
+				{content}
 			</Pressable>
 		);
 	};
@@ -459,18 +480,18 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 					onClose={() => setSwitcherAnchor(undefined)}
 				/>
 				<View style={styles.statsRow}>
-					<View style={styles.stat}>
+					<GlassSurface style={styles.stat}>
 						<Text style={styles.statValue}>{list.length}</Text>
 						<Text style={styles.statLabel}>ワークスペース</Text>
-					</View>
-					<View style={styles.stat}>
+					</GlassSurface>
+					<GlassSurface style={styles.stat}>
 						<Text style={styles.statValue}>{terminals.length}</Text>
 						<Text style={styles.statLabel}>ターミナル</Text>
-					</View>
-					<View style={styles.stat}>
+					</GlassSurface>
+					<GlassSurface style={styles.stat}>
 						<Text style={[styles.statValue, waitingTotal > 0 && styles.statValueAlert]}>{waitingTotal}</Text>
 						<Text style={styles.statLabel}>応答待ち</Text>
-					</View>
+					</GlassSurface>
 				</View>
 				{/* PC本体のCPU/メモリ/ディスク。接続中でPCが配信している場合だけ出す
 				    （切断中に古い数字を残すと「今のPCの状態」に見えてしまう）。 */}
@@ -484,16 +505,21 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 
 			<View style={styles.sectionHead}>
 				<Text style={styles.sectionTitle}>ワークスペース</Text>
-				{/* PC版の「スペース名右の＋」に対応する、新しいスペース（worktree）作成の入口 */}
-				<Pressable
-					disabled={!online}
-					style={[styles.addSpaceBtn, !online && styles.actionDisabled]}
-					hitSlop={8}
-					onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
-					accessibilityLabel="新しいスペースを作成"
-				>
-					<Ionicons name="add" size={16} color={colors.text} />
-				</Pressable>
+				{/* PC版の「スペース名右の＋」に対応する、新しいスペース（worktree）作成の入口。
+				    箱自体を当たり判定ぶんの大きさにする（GlassViewはhitTestを上書きしないため、
+				    内側Pressableのhitslopは箱の外側では効かない）。無効時はガラスにopacityを
+				    当てず、アイコンの色だけ落とす（素材にopacityを当てると効果ごと薄まって見える）。 */}
+				<GlassSurface style={styles.addSpaceBtn} interactive={online}>
+					<Pressable
+						disabled={!online}
+						style={styles.addSpaceHit}
+						onPress={() => { hapticSelection(); setCreateSheetOpen(true); }}
+						accessibilityLabel="新しいスペースを作成"
+						accessibilityState={{ disabled: !online }}
+					>
+						<Ionicons name="add" size={16} color={online ? colors.text : colors.textDim} />
+					</Pressable>
+				</GlassSurface>
 			</View>
 			<ScrollView style={styles.list} contentContainerStyle={styles.listContent}>
 				<Pressable style={[styles.row, styles.allRow, homeShowAllWorkspaces && styles.rowActive]} onPress={selectAll}>
@@ -537,20 +563,26 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 			{/* 接続管理（旧ホームカードのボタン群から移設） */}
 			<View style={styles.footer}>
 				{connection === 'online' ? (
-					<Pressable style={styles.footerBtn} onPress={() => { hapticImpact('light'); disconnectRelay(); }} accessibilityLabel="切断">
-						<Ionicons name="power-outline" size={13} color={colors.red} />
-						<Text style={[styles.footerBtnText, { color: colors.red }]}>切断</Text>
-					</Pressable>
+					<GlassSurface style={styles.footerBtn} interactive>
+						<Pressable style={styles.footerBtnHit} onPress={() => { hapticImpact('light'); disconnectRelay(); }} accessibilityLabel="切断">
+							<Ionicons name="power-outline" size={13} color={colors.red} />
+							<Text style={[styles.footerBtnText, { color: colors.red }]}>切断</Text>
+						</Pressable>
+					</GlassSurface>
 				) : (
-					<Pressable style={styles.footerBtn} onPress={() => { hapticImpact('light'); connectRelay(); }} accessibilityLabel="接続">
-						<Ionicons name="power-outline" size={13} color={colors.green} />
-						<Text style={[styles.footerBtnText, { color: colors.green }]}>接続</Text>
-					</Pressable>
+					<GlassSurface style={styles.footerBtn} interactive>
+						<Pressable style={styles.footerBtnHit} onPress={() => { hapticImpact('light'); connectRelay(); }} accessibilityLabel="接続">
+							<Ionicons name="power-outline" size={13} color={colors.green} />
+							<Text style={[styles.footerBtnText, { color: colors.green }]}>接続</Text>
+						</Pressable>
+					</GlassSurface>
 				)}
-				<Pressable style={styles.footerBtn} onPress={confirmUnpair} accessibilityLabel="ペアリング解除">
-					<Ionicons name="trash-outline" size={13} color={colors.textDim} />
-					<Text style={styles.footerBtnText}>ペアリング解除</Text>
-				</Pressable>
+				<GlassSurface style={styles.footerBtn} interactive>
+					<Pressable style={styles.footerBtnHit} onPress={confirmUnpair} accessibilityLabel="ペアリング解除">
+						<Ionicons name="trash-outline" size={13} color={colors.textDim} />
+						<Text style={styles.footerBtnText}>ペアリング解除</Text>
+					</Pressable>
+				</GlassSurface>
 			</View>
 			<WorktreeCreateSheet visible={createSheetOpen} onClose={() => setCreateSheetOpen(false)} />
 		</View>
@@ -612,9 +644,9 @@ export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, 
 }) {
 	const insets = useStableInsets();
 	const drawer = useWsDrawer();
-	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ている。島は開く先が
-	// すでに見えている押しても何も起きないボタンになるため、まるごと省く
-	// （選択中の色・他ワークスペースの応答待ちもサイドバー側が行のハイライトとバッジで示す）。
+	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ている。島は「開く」ボタンとしては
+	// 不要になるが、いま見ているスペースの色・名前・応答待ちバッジを一目で確認できる価値は
+	// 残るため、消さずに表示だけ続ける（タップの無効化は下のPressableで行う）。
 	const regular = useIsRegularWidth();
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
 	const current = useEffectiveWs();
@@ -626,6 +658,9 @@ export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, 
 		isAgentWaiting(t.agentStatus) && (t.ws ?? workspace?.activeWs) !== current?.id).length;
 
 	const chipColor = allWorkspaces ? colors.textDim : (current ? wsColor(current) : colors.accent);
+	// ガラスへの色被せはスペースの固有色があるときだけ。「すべてのスペース」の
+	// textDim（グレー）を被せると島だけ白っぽく浮き、右のピル（素のガラス）と揃わない。
+	const islandTint = allWorkspaces ? undefined : chipColor;
 	const name = allWorkspaces ? 'すべてのスペース' : (current?.name ?? '—');
 	const sub = subtitle ?? (allWorkspaces ? undefined : current?.branch);
 
@@ -642,22 +677,32 @@ export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, 
 			{/* iPadでは本文が読み幅の列に収まるので、島の左右もその列に合わせる。
 			    絶対配置は alignSelf が効かないため、左右いっぱいに広げてから中身を中央へ寄せる。 */}
 			<View style={[styles.headerRow, regular && !wide && styles.headerRowRegular]} pointerEvents="box-none">
-			{regular ? null : (
-				<GlassSurface style={styles.island} interactive tintColor={chipColor}>
-					<Pressable style={styles.islandHit} onPress={drawer.open} accessibilityRole="button" accessibilityLabel={otherWaiting > 0 ? `スペース ${name}。他のスペースに応答待ちがあります。切り替える` : `スペース ${name}。切り替える`}>
-						<View style={[styles.islandAvatar, { backgroundColor: withAlpha(chipColor, 0.28) ?? colors.surface2 }]}>
-							{allWorkspaces
-								? <Ionicons name="apps-outline" size={15} color={chipColor} />
-								: <Text style={[styles.islandAvatarText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>}
-						</View>
-						<View style={styles.islandText}>
-							<Text style={styles.islandName} numberOfLines={1}>{name}</Text>
-							{sub ? <Text style={styles.islandSub} numberOfLines={1}>{sub}</Text> : null}
-						</View>
-					</Pressable>
-					{otherWaiting > 0 ? <View style={styles.chipBadge} /> : null}
-				</GlassSurface>
-			)}
+			{/* iPadでは常設サイドバーに同じ一覧がすでに出ているため、島を押してもドロワーは開かない
+			    （WsDrawerLayout.open()自体がregular幅ではno-op）。ツリーの形は変えず、Pressableは
+			    常設のまま disabled とアクセシビリティ表現だけをiPadで切り替える。
+			    左端は headerRowRegular が本文の列幅に揃える。 */}
+			<GlassSurface style={styles.island} interactive={!regular} tintColor={islandTint}>
+				<Pressable
+					style={styles.islandHit}
+					onPress={drawer.open}
+					disabled={regular}
+					accessibilityRole={regular ? undefined : 'button'}
+					accessibilityLabel={regular
+						? (sub ? `スペース ${name}、${sub}` : `スペース ${name}`)
+						: (otherWaiting > 0 ? `スペース ${name}。他のスペースに応答待ちがあります。切り替える` : `スペース ${name}。切り替える`)}
+				>
+					<View style={[styles.islandAvatar, { backgroundColor: withAlpha(chipColor, 0.28) ?? colors.surface2 }]}>
+						{allWorkspaces
+							? <Ionicons name="apps-outline" size={15} color={chipColor} />
+							: <Text style={[styles.islandAvatarText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>}
+					</View>
+					<View style={styles.islandText}>
+						<Text style={styles.islandName} numberOfLines={1}>{name}</Text>
+						{sub ? <Text style={styles.islandSub} numberOfLines={1}>{sub}</Text> : null}
+					</View>
+				</Pressable>
+				{otherWaiting > 0 ? <View style={styles.chipBadge} /> : null}
+			</GlassSurface>
 			<View style={styles.headerSpacer} pointerEvents="none" />
 			{right}
 			</View>
@@ -671,7 +716,6 @@ export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, 
 const styles = StyleSheet.create({
 	// 本文の上に浮かべる。本文側は onHeightChange で受けた高さを paddingTop に使う。
 	headerWrap: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, paddingBottom: 12 },
-	// 島(44)と右のボタン群(40)は上端で揃える。中央揃えにすると右側が2pt下がって見える。
 	// 島の行を下の帯より上のレイヤーに置く。右のボタンから生えるメニューはこの行の中にいるので、
 	// 順番のままだと後から描かれる帯（絞り込みチップ）がメニューの上に乗ってしまう。
 	headerRow: { zIndex: 2, flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingLeft: 16, paddingRight: 12 },
@@ -681,9 +725,10 @@ const styles = StyleSheet.create({
 	// 島の下に続く帯（絞り込みチップ等）。島との間は10pt。
 	headerBelow: { zIndex: 1, marginTop: 10, paddingHorizontal: 16 },
 	headerSpacer: { flex: 1, minWidth: 0 },
-	island: { height: 44, borderRadius: radius.pill, ...squircle, maxWidth: 224 },
-	islandHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, paddingLeft: 6, paddingRight: 15 },
-	islandAvatar: { width: 32, height: 32, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
+	// 高さは右のボタンのピルと同じにする。左右でガラスの縦幅が違うと1本の帯に見えない。
+	island: { height: HEADER_PILL_HEIGHT, borderRadius: radius.pill, ...squircle, maxWidth: 224 },
+	islandHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, paddingLeft: 5, paddingRight: 15 },
+	islandAvatar: { width: 30, height: 30, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 	islandAvatarText: { fontSize: 13, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	islandText: { flexShrink: 1, minWidth: 0 },
 	islandName: { color: colors.text, fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
@@ -712,12 +757,12 @@ const styles = StyleSheet.create({
 	// PCカード（接続状態・バッテリー・切り替え）は pcSwitcher.tsx が描く。ここは器だけを持つ。
 	pcSection: { paddingHorizontal: 18, paddingTop: 4, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: colors.border },
 	statsRow: { flexDirection: 'row', gap: 6, marginTop: 12 },
-	stat: { flex: 1, backgroundColor: colors.surface2, borderRadius: radius.control, ...squircle, paddingVertical: 7, alignItems: 'center' },
+	stat: { flex: 1, borderRadius: radius.control, ...squircle, paddingVertical: 7, alignItems: 'center' },
 	statValue: { color: colors.accent, fontSize: 15, fontWeight: '700' },
 	statValueAlert: { color: colors.red },
 	statLabel: { color: colors.textDim, fontSize: 9.5, marginTop: 1 },
-	resourceRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, paddingVertical: 9, paddingHorizontal: 10, backgroundColor: colors.surface2, borderRadius: 11, borderWidth: 1, borderColor: colors.border },
-	resourceRowAlert: { borderColor: 'rgba(244,114,114,0.4)', backgroundColor: 'rgba(244,114,114,0.07)' },
+	resourceRow: { marginTop: 8, borderRadius: 11, ...squircle },
+	resourceHit: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, paddingHorizontal: 10 },
 	resourceItem: { flex: 1, gap: 5 },
 	resourceHead: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 4 },
 	resourceLabel: { color: colors.textDim, fontSize: 9.5, fontWeight: '700', letterSpacing: 0.4 },
@@ -725,12 +770,10 @@ const styles = StyleSheet.create({
 	resourceTrack: { height: 3, borderRadius: 2, backgroundColor: colors.surface3, overflow: 'hidden' },
 	resourceFill: { height: 3, borderRadius: 2 },
 	resourceChevron: { marginLeft: 2 },
-	resourceHeadline: { color: colors.yellow, fontSize: 10.5, marginTop: 6, paddingHorizontal: 2, lineHeight: 15 },
-	resourceHeadlineAlert: { color: colors.red },
 	sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 16 },
 	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 8 },
-	addSpaceBtn: { width: 24, height: 24, borderRadius: 7, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
-	actionDisabled: { opacity: 0.45 },
+	addSpaceBtn: { width: 36, height: 36, borderRadius: 12, ...squircle, marginTop: 2 },
+	addSpaceHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 	list: { flex: 1 },
 	listContent: { paddingHorizontal: 10, paddingBottom: 8 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, ...squircle, marginBottom: 2 },
@@ -768,9 +811,7 @@ const styles = StyleSheet.create({
 	twistBtn: { width: 30, height: 30, borderRadius: 8, ...squircle, alignItems: 'center', justifyContent: 'center', marginVertical: -6, marginRight: -4 },
 	dim: { color: colors.textDim, fontSize: 12, paddingHorizontal: 8, lineHeight: 18 },
 	footer: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
-	footerBtn: {
-		flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-		backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, borderRadius: radius.control, ...squircle, paddingVertical: 9,
-	},
+	footerBtn: { flex: 1, borderRadius: radius.control, ...squircle },
+	footerBtnHit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 9 },
 	footerBtnText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
 });

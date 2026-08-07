@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { BatteryGauge } from '../../src/components/batteryGauge.js';
+import { GlassSurface } from '../../src/components/glassSurface.js';
 import { PcAvatar } from '../../src/components/pcSwitcher.js';
 import { ScreenHeader } from '../../src/components/screenHeader.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
@@ -147,10 +148,12 @@ export default function PcDetailScreen() {
 				</View>
 
 				{!isActive ? (
-					<Pressable style={styles.switchBtn} onPress={() => { hapticSelection(); switchPc(pc.id); }}>
-						<Ionicons name="swap-horizontal-outline" size={16} color={colors.accent} />
-						<Text style={styles.switchText}>このPCに切り替えて操作する</Text>
-					</Pressable>
+					<GlassSurface style={styles.switchBtn} interactive tintColor={colors.accent}>
+						<Pressable style={styles.switchBtnHit} onPress={() => { hapticSelection(); switchPc(pc.id); }}>
+							<Ionicons name="swap-horizontal-outline" size={16} color={colors.accent} />
+							<Text style={styles.switchText}>このPCに切り替えて操作する</Text>
+						</Pressable>
+					</GlassSurface>
 				) : null}
 
 				<Text style={styles.sectionTitle}>使用量</Text>
@@ -209,10 +212,8 @@ const styles = StyleSheet.create({
 	identity: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, marginTop: 4 },
 	identityBody: { flex: 1, minWidth: 0 },
 	identityName: { color: colors.text, fontSize: 15, fontWeight: '700' },
-	switchBtn: {
-		flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 10,
-		paddingVertical: 11, borderRadius: 12, ...squircle, backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.accent,
-	},
+	switchBtn: { marginTop: 10, borderRadius: 12, ...squircle },
+	switchBtnHit: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, paddingVertical: 11 },
 	switchText: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
 	rowBody: { flex: 1, minWidth: 0 },

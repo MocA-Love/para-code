@@ -384,28 +384,33 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchCl
 					<>
 						{findResult !== undefined ? (
 							<>
-								{findResult.files.map(p => (
-									<Pressable key={p} style={styles.row} onPress={() => { hapticSelection(); void openViewer(p); }}>
-										<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
-										<View style={styles.resultCol}>
-											<Text style={styles.rowName} numberOfLines={1}>{p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p}</Text>
-											{p.includes('/') ? <Text style={styles.resultPath} numberOfLines={1}>{p.slice(0, p.lastIndexOf('/'))}</Text> : null}
-										</View>
-									</Pressable>
-								))}
+								{/* 行はカードに収める（SCMと同じ作法）。素の下線リストだと4タブでここだけ言語が違って見える。 */}
+								{findResult.files.length > 0 ? <View style={styles.card}>
+									{findResult.files.map((p, i) => (
+										<Pressable key={p} style={[styles.row, i === findResult.files.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(p); }}>
+											<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
+											<View style={styles.resultCol}>
+												<Text style={styles.rowName} numberOfLines={1}>{p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p}</Text>
+												{p.includes('/') ? <Text style={styles.resultPath} numberOfLines={1}>{p.slice(0, p.lastIndexOf('/'))}</Text> : null}
+											</View>
+										</Pressable>
+									))}
+								</View> : null}
 								{findResult.files.length === 0 && !searching ? <Text style={styles.dimNote}>一致するファイルがありません</Text> : null}
 								{findResult.truncated ? <Text style={styles.dimNote}>（結果が多いため一部のみ表示しています）</Text> : null}
 							</>
 						) : grepResult !== undefined ? (
 							<>
-								{grepResult.matches.map((m, i) => (
-									<Pressable key={`${m.path}:${m.line}:${i}`} style={styles.row} onPress={() => { hapticSelection(); void openViewer(m.path, m.line); }}>
-										<View style={styles.resultCol}>
-											<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
-											<Text style={styles.resultPreview} numberOfLines={2}>{m.text}</Text>
-										</View>
-									</Pressable>
-								))}
+								{grepResult.matches.length > 0 ? <View style={styles.card}>
+									{grepResult.matches.map((m, i) => (
+										<Pressable key={`${m.path}:${m.line}:${i}`} style={[styles.row, i === grepResult.matches.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(m.path, m.line); }}>
+											<View style={styles.resultCol}>
+												<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
+												<Text style={styles.resultPreview} numberOfLines={2}>{m.text}</Text>
+											</View>
+										</Pressable>
+									))}
+								</View> : null}
 								{grepResult.matches.length === 0 && !searching ? <Text style={styles.dimNote}>一致する箇所がありません</Text> : null}
 								{grepResult.truncated ? <Text style={styles.dimNote}>（結果が多いため一部のみ表示しています）</Text> : null}
 							</>
@@ -416,27 +421,31 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchCl
 				) : (
 					<>
 						{loading && !listing ? <ActivityIndicator style={styles.spinner} /> : null}
-						{path !== '' ? (
-							<Pressable disabled={!live} style={styles.row} onPress={() => { hapticSelection(); void load(parent, true); }}>
-								<Ionicons name="folder-outline" size={16} color={colors.textDim} />
-								<Text style={styles.rowName}>..</Text>
-							</Pressable>
-						) : null}
-						{entries.map(entry => {
-							const childPath = path === '' ? entry.name : `${path}/${entry.name}`;
-							return (
-								<Pressable
-									key={entry.name}
-									disabled={!live}
-									style={styles.row}
-									onPress={() => { hapticSelection(); entry.dir ? void load(childPath, true) : void openViewer(childPath); }}
-								>
-									<Ionicons name={entry.dir ? 'folder-outline' : 'document-text-outline'} size={16} color={entry.dir ? colors.accent : colors.textDim} />
-									<Text style={styles.rowName} numberOfLines={1}>{entry.name}</Text>
-									{!entry.dir && entry.size !== undefined ? <Text style={styles.size}>{formatSize(entry.size)}</Text> : null}
+						{/* 行はカードに収める（SCMと同じ作法）。「..」も同じカードの先頭行として扱う。
+						    出す行が1つも無いとき（ルートで空・読み込み中）は枠だけの空箱を出さない。 */}
+						{(path !== '' || entries.length > 0) ? <View style={styles.card}>
+							{path !== '' ? (
+								<Pressable disabled={!live} style={[styles.row, entries.length === 0 && styles.rowLast]} onPress={() => { hapticSelection(); void load(parent, true); }}>
+									<Ionicons name="folder-outline" size={16} color={colors.textDim} />
+									<Text style={styles.rowName}>..</Text>
 								</Pressable>
-							);
-						})}
+							) : null}
+							{entries.map((entry, i) => {
+								const childPath = path === '' ? entry.name : `${path}/${entry.name}`;
+								return (
+									<Pressable
+										key={entry.name}
+										disabled={!live}
+										style={[styles.row, i === entries.length - 1 && styles.rowLast]}
+										onPress={() => { hapticSelection(); entry.dir ? void load(childPath, true) : void openViewer(childPath); }}
+									>
+										<Ionicons name={entry.dir ? 'folder-outline' : 'document-text-outline'} size={16} color={entry.dir ? colors.accent : colors.textDim} />
+										<Text style={styles.rowName} numberOfLines={1}>{entry.name}</Text>
+										{!entry.dir && entry.size !== undefined ? <Text style={styles.size}>{formatSize(entry.size)}</Text> : null}
+									</Pressable>
+								);
+							})}
+						</View> : null}
 					</>
 				)}
 			</ScrollView>
@@ -478,7 +487,11 @@ const styles = StyleSheet.create({
 	list: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 16 },
 	error: { color: colors.red, fontSize: 12, marginVertical: 8 },
+	// 行を収める札。SCMのカードと同じ面（surface + 枠線 + 角丸14）。
+	card: { backgroundColor: colors.surface, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.card, ...squircle, paddingHorizontal: 14, marginBottom: 8 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+	// カードの最終行。締めの下線はカードの縁が担うので消す。
+	rowLast: { borderBottomWidth: 0 },
 	rowName: { flex: 1, color: colors.text, fontSize: 14 },
 	size: { color: colors.textDim, fontSize: 11 },
 	modeChip: { borderRadius: radius.pill, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 9, paddingVertical: 4 },

@@ -154,7 +154,7 @@ export function WorktreeCreateSheet({ visible, onClose }: {
 	};
 
 	return (
-		<BottomSheet visible={visible} onClose={close} title="新しいスペース（worktree）を作成">
+		<BottomSheet visible={visible} onClose={close} title="新しいスペース（worktree）を作成" glass>
 			<KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 				<ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 					{formError ? <Text style={styles.error}>{formError}</Text> : null}

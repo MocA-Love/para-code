@@ -1,11 +1,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
+import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
@@ -203,23 +204,42 @@ export default function GithubUsageScreen() {
 
 							<Text style={styles.sectionTitle}>期間</Text>
 							<View style={styles.pillRow}>
-								{(['5m', '1h', 'session'] as WindowKey[]).map(key => (
-									<Pressable key={key} style={[styles.pill, windowKey === key && styles.pillActive]} onPress={() => { hapticSelection(); setWindowKey(key); }}>
-										<Text style={[styles.pillText, windowKey === key && styles.pillTextActive]}>
-											{key === '5m' ? '5分' : key === '1h' ? '1時間' : 'セッション'}
-										</Text>
-									</Pressable>
-								))}
+								{(['5m', '1h', 'session'] as WindowKey[]).map(key => {
+									const active = windowKey === key;
+									const label = key === '5m' ? '5分' : key === '1h' ? '1時間' : 'セッション';
+									return (
+										<SelectablePill
+											key={key}
+											active={active}
+											onPress={() => { hapticSelection(); setWindowKey(key); }}
+											style={styles.pill}
+											hitStyle={styles.pillHit}
+											accessibilityLabel={label}
+										>
+											<Text style={[styles.pillText, active && styles.pillTextActive]}>{label}</Text>
+										</SelectablePill>
+									);
+								})}
 							</View>
 
 							<Text style={styles.sectionTitle}>内訳</Text>
 							<View style={styles.chipRow}>
-								<Pressable style={[styles.chip, groupKey === 'caller' && styles.chipActive]} onPress={() => { hapticSelection(); setGroupKey('caller'); }}>
-									<Text style={[styles.chipText, groupKey === 'caller' && styles.chipTextActive]}>呼び出し元</Text>
-								</Pressable>
-								<Pressable style={[styles.chip, groupKey === 'space' && styles.chipActive]} onPress={() => { hapticSelection(); setGroupKey('space'); }}>
-									<Text style={[styles.chipText, groupKey === 'space' && styles.chipTextActive]}>スペース</Text>
-								</Pressable>
+								{([['caller', '呼び出し元'], ['space', 'スペース']] as [GroupKey, string][]).map(([key, label]) => {
+									const active = groupKey === key;
+									return (
+										<SelectablePill
+											key={key}
+											active={active}
+											onPress={() => { hapticSelection(); setGroupKey(key); }}
+											style={styles.chip}
+											hitStyle={styles.chipHit}
+											activeColor={colors.accentWash}
+											accessibilityLabel={label}
+										>
+											<Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+										</SelectablePill>
+									);
+								})}
 							</View>
 
 							<View style={styles.card}>
@@ -291,13 +311,13 @@ const styles = StyleSheet.create({
 	kpiGaugeFill: { height: 4, borderRadius: 2 },
 	// 下の余白が2ptしかないと、押せるピル／チップと直下のカードが触れて見える。
 	pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	pill: { paddingVertical: 7, paddingHorizontal: 13, borderRadius: radius.pill, ...squircle, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
-	pillActive: { backgroundColor: colors.accent, borderColor: colors.accent },
+	pill: { borderRadius: radius.pill, ...squircle },
+	pillHit: { paddingVertical: 7, paddingHorizontal: 13 },
 	pillText: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },
 	chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
-	chipActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
+	chip: { borderRadius: 8, ...squircle },
+	chipHit: { paddingVertical: 6, paddingHorizontal: 12 },
 	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
 	chipTextActive: { color: colors.accent },
 	barRow: { paddingVertical: 9, gap: 4 },

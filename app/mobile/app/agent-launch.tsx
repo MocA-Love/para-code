@@ -513,7 +513,7 @@ const styles = StyleSheet.create({
 	// フッター
 	cmdPreview: {
 		marginTop: 12, color: colors.textDim, fontSize: 10, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default,
-		backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, overflow: 'hidden',
+		backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: radius.control, ...squircle, paddingHorizontal: 10, paddingVertical: 7, overflow: 'hidden',
 	},
 	launchBtn: { marginTop: 10, borderRadius: radius.card, ...squircle, paddingVertical: 13, alignItems: 'center' },
 	launchBtnDisabled: { opacity: 0.5 },

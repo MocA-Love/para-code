@@ -128,7 +128,17 @@ export function HeaderCircleButton({ icon, label, color, onPress, disabled }: {
  * 中のボタンにはガラスを重ねない（Apple HIG）。押下は白のハイライトで返す。
  * `overflow` は書かない——ベルのバッジが円周で欠ける。
  */
-export function HeaderActionPill({ children }: { children: ReactNode }) {
+export function HeaderActionPill({ children, plain = false }: {
+	children: ReactNode;
+	/**
+	 * ガラスを描かず、配置だけのピルにする。ホームの＋メニュー（真モーフ）のように
+	 * **ガラスを別の層が描いている**場合に使う。ここでも描くと二重のガラスになる。
+	 */
+	plain?: boolean;
+}) {
+	if (plain) {
+		return <View style={styles.pill}>{children}</View>;
+	}
 	return <GlassSurface style={styles.pill}>{children}</GlassSurface>;
 }
 
@@ -164,8 +174,14 @@ export function HeaderActionButton({ icon, label, color, size = 17, badge, expan
 	);
 }
 
+/**
+ * {@link HeaderActionPill} の高さ。＋メニューの真モーフは閉状態のガラスをこの高さの
+ * カプセルとして描くので、こことずれるとモーフの起点が実ピルと合わなくなる。
+ */
+export const HEADER_PILL_HEIGHT = 40;
+
 const styles = StyleSheet.create({
-	pill: { height: 40, borderRadius: radius.pill, ...squircle, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 3, gap: 2 },
+	pill: { height: HEADER_PILL_HEIGHT, borderRadius: radius.pill, ...squircle, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 3, gap: 2 },
 	pillButton: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 	pillButtonPressed: { backgroundColor: 'rgba(255,255,255,0.16)' },
 	wrap: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, paddingBottom: 15 },

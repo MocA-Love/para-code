@@ -3,9 +3,10 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import Animated, { Extrapolation, interpolate, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
+import type { SharedValue } from 'react-native-reanimated';
 import { Ionicons } from '@expo/vector-icons';
-import { CARD_GAP, CARD_WIDTH, swipeGeometry } from './swipeRowGeometry.js';
+import { CARD_GAP, CARD_WIDTH, cardEdgeIndex, swipeGeometry } from './swipeRowGeometry.js';
 import { radius, squircle } from '../theme.js';
 import { spring } from '../motion.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
@@ -25,8 +26,10 @@ import { hapticImpact, hapticSelection } from '../haptics.js';
  * `fullSwipe` を付けたものが横に伸びてそのまま実行される。**取り返しのつかない操作
  * （削除）には `fullSwipe` を付けない**。勢いよく払っただけで消えてしまうため。
  *
- * 面の見せ方は透明度ではなく**幾何**で行う。開いた幅ぶんだけ切り抜いた窓から覗かせるので、
- * 半透明の板が薄く重なる中間状態が生まれず、指の位置と面の縁がぴったり付いてくる。
+ * カードは行の端に近いものから1枚ずつ、小さく淡い状態（scale 0.55, opacity 0）から実寸
+ * （scale 1, opacity 1）へポップして生える。引いた距離が`cardStep`ぶんの区間を通過する間だけ
+ * 対応するカードを動かす（LINEのスワイプアクションと同じ見え方）。窓でクリップすると全カードが
+ * 同じ場所で急に切り替わって見えるため、ここは幾何ではなく透明度・拡大率で見せる。
  */
 
 export interface SwipeAction {
@@ -57,7 +60,7 @@ export function SwipeRow({ direction, actions, children }: {
 }) {
 	const dx = useSharedValue(0);
 	const toLeft = direction === 'left';
-	const { openDistance, fullSwipeAt, limit } = swipeGeometry(actions.length);
+	const { openDistance, fullSwipeAt, limit, cardStep } = swipeGeometry(actions.length);
 	const fullSwipeAction = actions.find(action => action.fullSwipe === true);
 	// 開いている間は逆向きにも掴む。そうしないと閉じる手段が「カードを押す＝何か実行する」
 	// しか無くなる（行本体を押すとエージェント詳細へ行ってしまう）。
@@ -143,9 +146,12 @@ export function SwipeRow({ direction, actions, children }: {
 		}), [dx, startX, passedFull, toLeft, opened, limit, fullSwipeAt, fullSwipeAction, openDistance, settle]);
 
 	const rowStyle = useAnimatedStyle(() => ({ transform: [{ translateX: dx.value }] }));
-	// 引いた幅ぶんだけ窓を開ける。カードは定位置に置いたまま、窓の縁が指に付いてくる。
-	const clipStyle = useAnimatedStyle(() => ({ width: Math.abs(dx.value) }));
-	const fullStyle = useAnimatedStyle(() => ({ opacity: Math.abs(dx.value) >= fullSwipeAt ? 1 : 0 }));
+	// 引き切ったときに窓いっぱいへ広がる面。ここだけは従来どおり幅そのものを引いた距離に
+	// 合わせて伸ばす（カードのポップとは別の見せ方）。
+	const fullStyle = useAnimatedStyle(() => {
+		const travelled = Math.abs(dx.value);
+		return { width: travelled, opacity: travelled >= fullSwipeAt ? 1 : 0 };
+	});
 
 	// 出すものが無いなら掴まない。掴むと、動かないのに他の行を閉じてしまう。
 	if (actions.length === 0) {
@@ -154,31 +160,37 @@ export function SwipeRow({ direction, actions, children }: {
 
 	return (
 		<View style={styles.wrap}>
-			<Animated.View style={[styles.clip, toLeft ? styles.clipRight : styles.clipLeft, clipStyle]}>
-				<View style={[styles.cards, toLeft ? styles.cardsRight : styles.cardsLeft]}>
-					{actions.map(action => (
-						<Pressable
-							key={action.key}
-							style={({ pressed }) => [styles.card, { backgroundColor: action.color }, pressed && styles.cardPressed]}
-							onPress={() => runAction(action)}
-							accessibilityRole="button"
-							accessibilityLabel={action.label}
-						>
-							<Ionicons name={action.icon} size={17} color="#fff" />
-							<Text style={styles.cardText}>{action.label}</Text>
-						</Pressable>
-					))}
-				</View>
-				{fullSwipeAction !== undefined ? (
-					<Animated.View
-						style={[styles.full, toLeft ? styles.fullRight : styles.fullLeft, { backgroundColor: fullSwipeAction.color }, fullStyle]}
-						pointerEvents="none"
-					>
-						<Ionicons name={fullSwipeAction.icon} size={17} color="#fff" />
-						<Text style={styles.cardText}>{fullSwipeAction.label}</Text>
-					</Animated.View>
-				) : null}
-			</Animated.View>
+			{/* opacity 0のカードも指を拾ってしまうので、閉じている間は触れさせない。
+			    ツリーの形は変えず、pointerEventsの値だけを開閉に合わせて切り替える。
+			    VoiceOverにも同じ理屈が要る——pointerEventsは読み上げ対象からは外さないので、
+			    閉じている間は明示的にアクセシビリティツリーからも隠す。 */}
+			<View
+				style={[styles.cards, toLeft ? styles.cardsRight : styles.cardsLeft]}
+				pointerEvents={opened ? 'auto' : 'none'}
+				accessibilityElementsHidden={!opened}
+				importantForAccessibility={opened ? 'auto' : 'no-hide-descendants'}
+			>
+				{actions.map((action, i) => (
+					<SwipeCard
+						key={action.key}
+						action={action}
+						// 端に近いカードほど先に生える。並び順の反転はテスト済みの純関数に任せる。
+						edgeIndex={cardEdgeIndex(direction, i, actions.length)}
+						step={cardStep}
+						dx={dx}
+						onPress={() => runAction(action)}
+					/>
+				))}
+			</View>
+			{fullSwipeAction !== undefined ? (
+				<Animated.View
+					style={[styles.full, toLeft ? styles.fullRight : styles.fullLeft, { backgroundColor: fullSwipeAction.color }, fullStyle]}
+					pointerEvents="none"
+				>
+					<Ionicons name={fullSwipeAction.icon} size={17} color="#fff" />
+					<Text style={styles.cardText}>{fullSwipeAction.label}</Text>
+				</Animated.View>
+			) : null}
 			<GestureDetector gesture={pan}>
 				<Animated.View style={rowStyle}>{children}</Animated.View>
 			</GestureDetector>
@@ -186,26 +198,64 @@ export function SwipeRow({ direction, actions, children }: {
 	);
 }
 
+/**
+ * アクションカード1枚。端からの並び順`edgeIndex`と引いた距離`dx`から、自分に割り当てられた
+ * 区間`[edgeIndex*step, (edgeIndex+1)*step]`の中でのみ`opacity`/`scale`を動かす。
+ * worklet内で完結させ、`runOnJS`は呼び出し元のPanと同じ理由で使わない。
+ */
+function SwipeCard({ action, edgeIndex, step, dx, onPress }: {
+	action: SwipeAction;
+	edgeIndex: number;
+	step: number;
+	dx: SharedValue<number>;
+	onPress: () => void;
+}) {
+	const style = useAnimatedStyle(() => {
+		const progress = interpolate(
+			Math.abs(dx.value),
+			[edgeIndex * step, (edgeIndex + 1) * step],
+			[0, 1],
+			Extrapolation.CLAMP,
+		);
+		return { opacity: progress, transform: [{ scale: interpolate(progress, [0, 1], [0.55, 1]) }] };
+	});
+	return (
+		<Animated.View style={style}>
+			<Pressable
+				style={({ pressed }) => [styles.card, { backgroundColor: action.color }, pressed && styles.cardPressed]}
+				onPress={onPress}
+				accessibilityRole="button"
+				accessibilityLabel={action.label}
+			>
+				<Ionicons name={action.icon} size={17} color="#fff" />
+				<Text style={styles.cardText}>{action.label}</Text>
+			</Pressable>
+		</Animated.View>
+	);
+}
+
 const styles = StyleSheet.create({
 	wrap: { position: 'relative' },
 	// 行（agentRowStyles.container）の下マージン8ぶんを避け、行と同じ高さに揃える。
-	clip: { position: 'absolute', top: 0, bottom: 8, overflow: 'hidden' },
-	clipRight: { right: 0 },
-	clipLeft: { left: 0 },
-	// カードは窓の中で定位置に固定する。窓ごと動かすと、指の速さでカードが流れて読めない。
-	cards: { position: 'absolute', top: 0, bottom: 0, flexDirection: 'row', gap: CARD_GAP },
+	// カードはここに定位置で置く。窓クリップは廃止したので、この位置がそのままカードの実位置になる。
+	cards: { position: 'absolute', top: 0, bottom: 8, flexDirection: 'row', gap: CARD_GAP },
 	cardsRight: { right: 0 },
 	cardsLeft: { left: 0 },
 	card: {
+		// ポップ用のラッパー（Animated.View）の中に入ったので、高さはflexで親いっぱいまで
+		// 伸ばす。書かないと中身の高さ（アイコン+ラベル）まで縮んで行より小さい札になる。
+		flex: 1,
 		width: CARD_WIDTH, alignItems: 'center', justifyContent: 'center', gap: 5,
 		borderRadius: radius.card, ...squircle,
 	},
 	cardPressed: { opacity: 0.72 },
 	cardText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-	// 引き切ったときに窓いっぱいへ広がる面。中身は行に近い側へ寄せる（指の先に付いてくる）。
-	full: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: radius.card, ...squircle },
-	fullRight: { justifyContent: 'flex-end', paddingRight: 26 },
-	fullLeft: { justifyContent: 'flex-start', paddingLeft: 26 },
+	// 引き切ったときに窓いっぱいへ広がる面。幅はfullStyleで引いた距離に合わせて伸ばすので、
+	// ここでは行に近い側（right/left）へ寄せる位置決めだけを持つ。中身はその面のさらに
+	// 行に近い側へ寄せる（指の先に付いてくる）。
+	full: { position: 'absolute', top: 0, bottom: 8, flexDirection: 'row', alignItems: 'center', gap: 9, borderRadius: radius.card, ...squircle },
+	fullRight: { right: 0, justifyContent: 'flex-end', paddingRight: 26 },
+	fullLeft: { left: 0, justifyContent: 'flex-start', paddingLeft: 26 },
 });
 
 /** スワイプのアクション面の色。危険なものだけ赤で、他は地の濃さで段階を付ける。 */
