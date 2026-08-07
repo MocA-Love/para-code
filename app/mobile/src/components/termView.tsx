@@ -54,18 +54,23 @@ interface TermViewProps {
 	/** 固定モードで実測したグリッド（追従モードでは `undefined`）。 */
 	onGridChange?: (grid: TerminalGrid | undefined) => void;
 	/**
-	 * TUI（代替スクリーン）上のスワイプから組み立てた入力シーケンス。
-	 * スクロールのためだけに使う（この端末は表示専用で、通常の入力は入力バーから送る）。
+	 * TUI（代替スクリーン）上のスワイプ。「どちらへ何行」だけを渡し、実際にどの
+	 * シーケンスを送るかはPC側が決める（この端末のモードはPCのミラーでしかないため）。
 	 */
-	onInput?: (data: string) => void;
+	onScroll?: (dir: 'up' | 'down', lines: number) => void;
 }
 
 /** WebView から来るメッセージ（旧形式の 'ready' / 'desync' も引き続き受ける）。 */
 type TermViewMessage =
 	| { t: 'metrics'; width: number; height: number; charWidth100: number; lineHeight100: number }
-	| { t: 'input'; data: string };
+	| { t: 'scroll'; dir: 'up' | 'down'; lines: number };
 
 const TERM_BG = '#1e1e1e';
+/**
+ * 1回のスワイプで送るスクロール行数の上限。速くなぞったときにPCへ大量のキーを
+ * 撃ち込まないための歯止め（PC側の TERM_SCROLL_MAX_LINES と対）。
+ */
+const MAX_SCROLL_LINES_PER_GESTURE = 40;
 
 function buildHtml(): string {
 	return `<!DOCTYPE html><html><head>
@@ -250,61 +255,31 @@ function buildHtml(): string {
 	// 送ろうとする（MouseService の _handleTouchScrollAsKeys）。ところがこの端末は
 	// disableStdin: true で作っているため、その送出は CoreService.triggerDataEvent の
 	// 入口で捨てられ、何も起きない。表示専用という設計は変えたくないので、代替バッファの
-	// ときだけ自前でスワイプを拾い、PCへ送る文字列を組み立てて上へ渡す。
+	// ときだけ自前でスワイプを拾い、「どちらへ何行」だけを上へ渡す。
+	//
+	// **どのシーケンスを送るかはここでは決めない**。この xterm が持つモードは PC の
+	// ミラーでしかなく、再同期の谷間では古い値になりうるうえ、マウスレポートの
+	// エンコーディングは公開APIから読めない。判断は本物の端末を持つPC側に任せる。
 	//
 	// 通常バッファには手を出さない。そちらは xterm が自分のビューポートをスクロールでき、
 	// PCへ送る必要もない。
 	var touchLastY = 0;
 	var touchAccum = 0;
 	var touchTracking = false;
+	var touchSentLines = 0;
 	function cellHeightPx() {
 		var rows = term.rows > 0 ? term.rows : 1;
 		var screen = document.querySelector('.xterm-screen');
 		return screen ? screen.getBoundingClientRect().height / rows : 0;
 	}
-	/** いま自前で扱うべきか（代替バッファ、またはアプリがマウスを取っているとき）。 */
+	/** いま自前で扱うべきか（代替バッファ＝スクロールバックが無い画面のときだけ）。 */
 	function shouldHandleTouchScroll() {
-		try {
-			if (term.modes.mouseTrackingMode !== 'none') {
-				return true;
-			}
-		} catch (e) { /* 古いバンドル: モードが読めなければ代替バッファ判定だけで決める */ }
-		try {
-			return term.buffer.active.type === 'alternate';
-		} catch (e) {
-			return false;
-		}
-	}
-	/** 指の位置からセル座標（1始まり）を求める。SGRマウスイベントの送信に使う。 */
-	function cellAt(clientX, clientY) {
-		var screen = document.querySelector('.xterm-screen');
-		if (!screen) {
-			return { col: 1, row: 1 };
-		}
-		var rect = screen.getBoundingClientRect();
-		var cw = rect.width / (term.cols > 0 ? term.cols : 1);
-		var ch = rect.height / (term.rows > 0 ? term.rows : 1);
-		var col = cw > 0 ? Math.floor((clientX - rect.left) / cw) + 1 : 1;
-		var row = ch > 0 ? Math.floor((clientY - rect.top) / ch) + 1 : 1;
-		return {
-			col: Math.max(1, Math.min(term.cols || 1, col)),
-			row: Math.max(1, Math.min(term.rows || 1, row)),
-		};
-	}
-	/**
-	 * スクロール1行ぶんのシーケンスを組み立てる。xterm 自身の判断と同じ順序で、
-	 * アプリがマウスを取っていればSGRホイール、そうでなければ矢印キーにする
-	 * （矢印はアプリケーションカーソルキーモードに合わせて CSI / SS3 を出し分ける）。
-	 */
-	function scrollSequence(up, cell) {
-		if (term.modes.mouseTrackingMode !== 'none') {
-			return '\\u001b[<' + (up ? 64 : 65) + ';' + cell.col + ';' + cell.row + 'M';
-		}
-		return '\\u001b' + (term.modes.applicationCursorKeys ? 'O' : '[') + (up ? 'A' : 'B');
+		return term.buffer.active.type === 'alternate';
 	}
 	document.addEventListener('touchstart', function (ev) {
-		touchTracking = ev.touches.length === 1 && shouldHandleTouchScroll();
+		touchTracking = ev.touches.length === 1;
 		touchAccum = 0;
+		touchSentLines = 0;
 		if (touchTracking) {
 			touchLastY = ev.touches[0].clientY;
 		}
@@ -314,10 +289,15 @@ function buildHtml(): string {
 			return;
 		}
 		var y = ev.touches[0].clientY;
-		var cell = cellAt(ev.touches[0].clientX, y);
-		// 指を下げる = 前の行を見に行く = 上スクロール（ネイティブの慣性方向に合わせる）。
-		touchAccum += y - touchLastY;
+		var dy = y - touchLastY;
 		touchLastY = y;
+		// 指を離すまでの間にTUIが終了して通常バッファへ戻ることがある。毎回見る。
+		if (!shouldHandleTouchScroll()) {
+			touchAccum = 0;
+			return;
+		}
+		// 指を下げる = 前の行を見に行く = 上スクロール（ネイティブの慣性方向に合わせる）。
+		touchAccum += dy;
 		var cellH = cellHeightPx();
 		if (cellH <= 0) {
 			return;
@@ -327,15 +307,21 @@ function buildHtml(): string {
 			return;
 		}
 		touchAccum -= lines * cellH;
-		// 1回のフレームで送りすぎない（速いスワイプで大量のキーを撃ち込まない）。
-		var count = Math.min(Math.abs(lines), 12);
-		var sequence = '';
-		for (var i = 0; i < count; i++) {
-			sequence += scrollSequence(lines > 0, cell);
+		// 1ジェスチャで送る総量を抑える（速いスワイプでPCへ大量のキーを撃ち込まない）。
+		var remaining = ${MAX_SCROLL_LINES_PER_GESTURE} - touchSentLines;
+		var count = Math.min(Math.abs(lines), remaining);
+		if (count <= 0) {
+			return;
 		}
-		window.ReactNativeWebView.postMessage(JSON.stringify({ t: 'input', data: sequence }));
+		touchSentLines += count;
+		window.ReactNativeWebView.postMessage(JSON.stringify({
+			t: 'scroll', dir: lines > 0 ? 'up' : 'down', lines: count,
+		}));
 	}, { passive: true });
-	document.addEventListener('touchend', function () { touchTracking = false; }, { passive: true });
+	function endTouch() { touchTracking = false; }
+	document.addEventListener('touchend', endTouch, { passive: true });
+	// 着信バナーやシステムジェスチャに奪われると touchend が来ない。
+	document.addEventListener('touchcancel', endTouch, { passive: true });
 
 	// キーボード開閉・回転などでWebViewの高さが変わったら、フォントを合わせ直した上で
 	// 最下部（プロンプト行）が見える位置までスクロールする。固定モードでは新しい表示領域を
@@ -352,7 +338,7 @@ function buildHtml(): string {
 </script></body></html>`;
 }
 
-export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize, onGridChange, onInput }: TermViewProps) {
+export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize, onGridChange, onScroll }: TermViewProps) {
 	const webRef = useRef<WebView>(null);
 	const [ready, setReady] = useState(false);
 	const writtenRef = useRef('');
@@ -368,8 +354,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 	onNeedResyncRef.current = onNeedResync;
 	const onGridChangeRef = useRef(onGridChange);
 	onGridChangeRef.current = onGridChange;
-	const onInputRef = useRef(onInput);
-	onInputRef.current = onInput;
+	const onScrollRef = useRef(onScroll);
+	onScrollRef.current = onScroll;
 	// WebView が最後に報告した表示領域とフォント実寸（回転・キーボード開閉のたびに更新される）。
 	const metricsRef = useRef<{ width: number; height: number; charWidth100: number; lineHeight100: number } | undefined>(undefined);
 	// 固定モードで最後に適用したグリッド（同じ値の再適用・再申告を避ける）。
@@ -511,8 +497,8 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 					if (msg.t === 'metrics') {
 						metricsRef.current = msg;
 						applyPinnedGrid();
-					} else if (msg.t === 'input' && typeof msg.data === 'string' && msg.data.length > 0) {
-						onInputRef.current?.(msg.data);
+					} else if (msg.t === 'scroll' && (msg.dir === 'up' || msg.dir === 'down') && msg.lines > 0) {
+						onScrollRef.current?.(msg.dir, msg.lines);
 					}
 					return;
 				}

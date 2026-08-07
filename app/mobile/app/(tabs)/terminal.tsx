@@ -31,12 +31,13 @@ import { terminalViewportForPrefs, type TerminalGrid } from '../../src/terminalV
  */
 export default function TerminalScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, terminalOutput, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal, terminalPrefs, setTerminalViewport, activePcId } = useAppStore(useShallow(s => ({
+	const { workspace, terminalOutput, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal, terminalPrefs, setTerminalViewport, activePcId, scrollTerminal } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, terminalOutput: s.terminalOutput,
 		selectedTerminalKey: s.selectedTerminalKey, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, subscribeTerminal: s.subscribeTerminal, sendInput: s.sendInput,
 		sendArrowKey: s.sendArrowKey, sendTextInput: s.sendTextInput, createTerminal: s.createTerminal,
 		terminalPrefs: s.terminalPrefs, setTerminalViewport: s.setTerminalViewport, activePcId: s.activePcId,
+		scrollTerminal: s.scrollTerminal,
 	})));
 	const [headerHeight, setHeaderHeight] = useState(0);
 	// ターミナルの箱の高さ。キーボードを閉じているときの枠の高さを測って固定し、
@@ -101,6 +102,12 @@ export default function TerminalScreen() {
 	const send = (data: string) => {
 		if (activeKey !== undefined) {
 			void sendInput(activeKey, data);
+		}
+	};
+	// TUI上のスワイプ。送れなくても再試行しない（指を動かし直せば済む）。
+	const scroll = (dir: 'up' | 'down', lines: number) => {
+		if (activeKey !== undefined) {
+			scrollTerminal(activeKey, dir, lines);
 		}
 	};
 	const sendArrow = (key: 'up' | 'down' | 'right' | 'left') => {
@@ -196,9 +203,9 @@ export default function TerminalScreen() {
 							rows={activeTerminal?.rows}
 							subscribe={subscribeActive}
 							onNeedResync={resyncActive}
-								fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
+									fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
 							onGridChange={setGrid}
-							onInput={send}
+							onScroll={scroll}
 						/>
 					) : (
 						<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>

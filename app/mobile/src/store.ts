@@ -1625,6 +1625,18 @@ export class MobileController {
 		return this.sendTerm(terminalKey, { t: 'input', data });
 	}
 
+	/**
+	 * TUI（代替スクリーン）上のスワイプによるスクロール要求。
+	 *
+	 * durable な操作にはしない。スクロールは「失っても構わないが、遅れて届いてはいけない」
+	 * 入力で、アウトボックスへ積むと (1) 上限256に達して本来の入力まで止まる
+	 * (2) 再接続時に過去の矢印キーがまとめて再送され、当時とは別の状態のTUIへ流れ込む、
+	 * という壊れ方をする。届かなければ指を動かし直せば済む。
+	 */
+	scrollTerminal(terminalKey: string, dir: 'up' | 'down', lines: number): void {
+		void this.sendTerm(terminalKey, { t: 'scroll', dir, lines }, false);
+	}
+
 	sendLiveInput(terminalKey: string, data: string): boolean {
 		const rendererTarget = this.rendererTargetFor(terminalKey);
 		// legacy TUI fallbackのキー列は遅延配送しない。durable outbox処理が先行中なら
@@ -1933,7 +1945,7 @@ export class MobileController {
 		})));
 	}
 
-	private sendTerm(terminalKey: string, msg: { t: string; data?: string; dataEncoding?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string; viewCols?: number; viewRows?: number }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
+	private sendTerm(terminalKey: string, msg: { t: string; data?: string; dataEncoding?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string; viewCols?: number; viewRows?: number; dir?: 'up' | 'down'; lines?: number }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
 		const workspace = this.state.workspace;
 		if (workspace === undefined || !workspace.terminals.some(terminal => terminal.terminalKey === terminalKey)) {
 			return Promise.resolve(false);

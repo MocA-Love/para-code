@@ -114,6 +114,12 @@ type TermInbound = TermInboundBase & (
 	//   複数行貼り付けがTUIで1行目から実行されてしまう問題を防ぐ。execute=true で実行（Enter）
 	// - data: Esc/Tab/^C 等の生のエスケープシーケンス
 	| { t: 'input'; terminalKey: string; data?: string; key?: TermSemanticKey; text?: string; execute?: boolean }
+	// モバイルでターミナルを指でなぞったときのスクロール要求。
+	// 「どのシーケンスを送るか」はPC側で決める。モバイルの xterm は PC のモードを
+	// スナップショット越しにミラーしているだけで、再同期の谷間では古い値を持ちうるし、
+	// マウスレポートのエンコーディング（SGR かどうか）は公開APIから読めない。
+	// 意図（どちらへ何行）だけを受け取り、本物の端末を持っているPC側で組み立てる。
+	| { t: 'scroll'; terminalKey: string; dir: 'up' | 'down'; lines: number }
 	| { t: 'create'; windowId: number; ws: string }
 	// モバイルからのターミナル名変更。PC側の実インスタンスへ反映し、stateの再送で
 	// 他モバイル端末（およびPC自身のタブ表示）にも波及させる。
@@ -252,6 +258,8 @@ const TERMINAL_CREATE_READY_TIMEOUT_MS = 10_000; // 非表示スペース向け�
 // そこでモバイルには申告を定期更新させ、更新が途絶えたらPC側の判断で寸法を戻す。
 const TERM_VIEWPORT_LEASE_MS = 60_000;       // この時間更新が無ければ申告を捨てる
 const TERM_VIEWPORT_SWEEP_MS = 15_000;       // 満了チェックの周期
+// スワイプ1回で送れるスクロール行数の上限。速くなぞったときに大量のキーを撃ち込まない。
+const TERM_SCROLL_MAX_LINES = 40;
 
 /** VTスナップショットを送る理由（計測でどの経路が転送量を占めるか切り分けるため）。 */
 type TermSnapshotReason = 'attach' | 'flow' | 'resize';
@@ -1883,6 +1891,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// ここで attach ごと失敗させると、モバイル・PCの上下限がずれた将来の版で
 		// 「ターミナルが一切見えない」という壊れ方をする。単独の viewport だけは弾く。
 		if (typeof msg.terminalKey !== 'string'
+			|| (msg.t === 'scroll' && !(['up', 'down'].includes(msg.dir)
+				&& typeof msg.lines === 'number' && Number.isSafeInteger(msg.lines)
+				&& msg.lines > 0 && msg.lines <= TERM_SCROLL_MAX_LINES))
 			|| (msg.t === 'viewport' && !paradisIsValidTerminalViewportMessage(msg))
 			|| (msg.t === 'attach' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch)))
 			|| (msg.t === 'ack' && (typeof msg.epoch !== 'number' || !Number.isInteger(msg.epoch) || typeof msg.seq !== 'number' || !Number.isInteger(msg.seq)))
@@ -1969,6 +1980,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				this.handleTerminalAck(instance, id, mobileId, msg);
 			} else if (msg.t === 'input') {
 				await this.handleTerminalInput(instance, msg);
+			} else if (msg.t === 'scroll') {
+				await this.handleTerminalScroll(instance, msg);
 			} else if (msg.t === 'rename') {
 				if (typeof msg.title !== 'string') {
 					await complete('failed');
@@ -2199,6 +2212,24 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				this.restoreInstanceDimensions(instance);
 			}
 		}
+	}
+
+	/**
+	 * モバイルのスワイプによるスクロール。
+	 *
+	 * 代替スクリーン（TUI）にはスクロールバックが無いので、端末を巻き戻すのではなく
+	 * アプリへ「上/下」を伝える必要がある。本家のマウスホイールも代替バッファでは
+	 * 同じことをしている（xterm の MouseService が矢印キーへ変換する）ので、それに倣う。
+	 *
+	 * マウスレポート（SGRホイール）は送らない。エンコーディング（DECSET 1006 の有無）が
+	 * 公開APIから読めず、取り違えると壊れた列をアプリへ渡すことになるため。矢印なら
+	 * どのモードでも意味が壊れない。
+	 */
+	private async handleTerminalScroll(instance: ITerminalInstance, msg: { dir: 'up' | 'down'; lines: number }): Promise<void> {
+		const finalChar = msg.dir === 'up' ? 'A' : 'B';
+		const applicationMode = instance.xterm?.raw.modes.applicationCursorKeysMode === true;
+		const sequence = applicationMode ? `\x1bO${finalChar}` : `\x1b[${finalChar}`;
+		await instance.sendText(sequence.repeat(Math.min(msg.lines, TERM_SCROLL_MAX_LINES)), false);
 	}
 
 	/** まとめ送りタイマーと保留バッファのみ破棄する（snapshot送信時用。resizeTimerは別ライフサイクル）。 */
