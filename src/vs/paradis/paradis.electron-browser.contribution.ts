@@ -38,3 +38,4 @@ import './contrib/githubMetrics/electron-browser/paradisGithubMetrics.contributi
 import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.js';
 import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contribution.js';
 import './contrib/healthBeacon/electron-browser/paradisHealthBeacon.contribution.js';
+import './contrib/heapSnapshot/electron-browser/paradisHeapSnapshot.contribution.js';
