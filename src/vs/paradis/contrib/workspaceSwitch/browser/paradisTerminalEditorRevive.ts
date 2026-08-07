@@ -90,8 +90,30 @@ export function paradisRegisterTerminalReviveIndexSource(value: IParadisTerminal
  * （`reviveInput` は同期なので、そこから非同期に取りにいけない）。
  * 失敗しても投げない: 索引が空なら「正体が確認できない」と同じ扱いになり、安全側に倒れる。
  */
-export async function paradisRefreshTerminalReviveIndex(targetStateKey: string): Promise<void> {
+export async function paradisRefreshTerminalReviveIndex(
+	targetStateKey: string,
+	options?: { readonly skipLookup?: boolean },
+): Promise<void> {
 	restoreStateKey = targetStateKey;
+	// 復元先にターミナルエディタが1つも無いと分かっている場合、索引は誰も引かない。本番では
+	// 最も遅い60件のうち58件で孤児が0、半分が締め切り（500ms）に張り付いており、**切替の
+	// 直列パスで pty host の応答を待って空の索引を受け取るだけ**の回が大半を占めていた。
+	//
+	// **これを「誤っても安全」と読まないこと。** 索引が空のとき
+	// `paradisResolveRevivedTerminalEditorInput` が返す先は2つあり、`heldPtyIds` に無い id は
+	// `findRevivedId: true`＝upstream の `_revivedPtyIdMap` 経路へ落ちる。それはこのファイル
+	// 冒頭が「多世代前のスナップショットは補正されない」「二重 attach で先客が静かに追い出される」
+	// と書いている、まさにその窓であり、索引はその窓を塞ぐための緩和策そのもの。つまり
+	// **skip の判定に要求される正しさの水準は高い**。呼び出し側は数えられない場合を必ず
+	// 「不明＝引く」に倒し、数え方も過大計上側へ倒してある。
+	//
+	// `safe_orphans` を送らないのは意図的。ここで 0 を送ると「問い合わせた結果、孤児が0だった」
+	// 回と混ざり、この変更を正当化した観測そのものが読めなくなる。
+	if (options?.skipLookup) {
+		orphanPtyIdByNonce = new Map();
+		setParadisSpanAttributes({ safe_timed_out: false, safe_index_skipped: true });
+		return;
+	}
 	if (source === undefined) {
 		return;
 	}
@@ -111,9 +133,12 @@ export async function paradisRefreshTerminalReviveIndex(targetStateKey: string):
 		// 索引が空のまま進む回がどれだけあるかは、復元の質に直結する（空だと nonce で引けず
 		// 従来経路に落ちる）。締め切り切れと「孤児が本当にいない」は結果が同じで区別できない
 		// ので、打ち切りかどうかを明示的に残す。
+		// `safe_index_skipped: false` を明示的に送る。省くと Sentry 側で「属性なし」が
+		// 「skip していない」と「この計装より前のビルド」の両方を意味してしまう。
 		setParadisSpanAttributes({
 			safe_timed_out: resolved === undefined,
 			safe_orphans: orphanPtyIdByNonce.size,
+			safe_index_skipped: false,
 		});
 	} catch (error) {
 		orphanPtyIdByNonce = new Map();
