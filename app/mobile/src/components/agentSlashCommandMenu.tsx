@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { AgentCommandCatalogState, AgentCommandOption } from '../store.js';
 import { colors } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
-import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { GlassSurface } from './glassSurface.js';
 
 /** スラッシュ候補と取得状態を既存のLiquid Glass面へ表示する。 */
 export function AgentSlashCommandMenu({ catalog, commands, agent, onSelect, onRetry }: {
@@ -17,7 +17,7 @@ export function AgentSlashCommandMenu({ catalog, commands, agent, onSelect, onRe
 }) {
 	const accent = agent === 'claude' ? colors.claude : colors.accent;
 	return (
-		<GlassSurface style={[styles.surface, !liquidGlass && styles.fallbackBorder]}>
+		<GlassSurface style={styles.surface}>
 			{catalog === undefined || catalog.status === 'loading' ? (
 				<View style={styles.messageRow}>
 					<ActivityIndicator size="small" color={accent} />
@@ -73,7 +73,6 @@ const styles = StyleSheet.create({
 	// flexShrink: キーボードが高い端末でヘッダー（＋Subagentストリップ）と重なる場合は
 	// maxHeightより優先して縮む（親チェーンのminHeight/flexShrink制約による。内容はScrollViewで送る）
 	surface: { maxHeight: 292, flexShrink: 1, borderRadius: 20, overflow: 'hidden', marginBottom: 8 },
-	fallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	// flexShrink: surfaceの圧縮にビューポートを追随させ、クリップされた行へもスクロールで到達できるようにする
 	list: { maxHeight: 292, flexShrink: 1 },
 	row: { minHeight: 54, paddingHorizontal: 14, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },

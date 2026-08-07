@@ -2,6 +2,7 @@
 
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
+import { Gesture, type PanGesture } from 'react-native-gesture-handler';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerLockMode, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
 import { Link, usePathname, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,10 +17,12 @@ import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { shouldReturnHomeOnSpaceChange } from '../ipad/ipadTabs.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
-import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { GlassSurface } from './glassSurface.js';
 import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
-import { colors } from '../theme.js';
+import { CONTENT_MAX_WIDTH } from '../ipad/ipadLayout.js';
+import { HeaderEdgeFade } from './headerEdgeFade.js';
+import { colors, radius, squircle, withAlpha } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
 /**
@@ -388,7 +391,11 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 				<Link href={{ pathname: '/space-note', params: { ws: ws.id } }} asChild>
 					<Link.AppleZoom>
 						<Pressable
-							style={[styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive]}
+							// Slot（Link.AppleZoom）の子に配列スタイルを渡すと開発ビルドで例外になる。
+							// expo-router 側がスタイルを合成する都合で、ここでは畳んでから渡す
+							// （このチェックは NODE_ENV !== 'production' でのみ走るため、
+							//   リリースビルドでは今まで気づけなかった）。
+							style={StyleSheet.flatten([styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive])}
 							hitSlop={6}
 							onPress={() => hapticSelection()}
 							accessibilityLabel={(ws.note?.open ?? 0) > 0 ? `メモ（未完了 ${ws.note?.open} 件）` : 'メモ'}
@@ -551,75 +558,143 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 }
 
 /**
- * タブ画面のヘッダー（旧screenTitle.tsxのレイアウトを踏襲）。
- * 左端のワークスペースチップのタップでドロワーを開く（エッジスワイプは
- * WsDrawerLayoutがネイティブで処理するため、ここにジェスチャは持たない）。
+ * 画面のどこからでも右へスワイプしてドロワーを開くジェスチャ。タブ画面のルートに巻く。
+ *
+ * RNGH自身の全幅スワイプ（`edgeWidth={width}` / {@link WsDrawerApi.setFullWidthSwipe}）は使わない。
+ * あちらは**向きを問わず指が動いた最初の1pxで発動する**ため、縦スクロールも行の横スワイプも
+ * まとめて潰れる。ここでは右へ24pt動いたときだけ発動し、縦へ16pt動いたら諦める。
+ *
+ * 横スクロールを持つ画面（ターミナルのタブチップ列）やWebViewを敷く画面には巻かないこと。
+ * 指の動きの向きが同じで、どちらが取るかが状況で変わる。
  */
-export function WsHeader({ title, subtitle, right, allWorkspaces }: { title: string; subtitle?: string; right?: ReactNode; allWorkspaces?: boolean }) {
+export function useOpenDrawerPan(): PanGesture {
+	const drawer = useWsDrawer();
+	const regular = useIsRegularWidth();
+	return useMemo(() => Gesture.Pan()
+		.runOnJS(true)
+		.enabled(!regular)
+		.activeOffsetX(24)
+		.failOffsetY([-16, 16])
+		.onStart(() => drawer.open()), [drawer, regular]);
+}
+
+/**
+ * タブ画面のヘッダー。**本文の上に浮かぶガラスの島**として絶対配置し、本文はこの下を流れる。
+ *
+ * 島に出すのは「いまどのスペースのどのブランチを見ているか」だけで、画面名（ホーム・
+ * ターミナル…）は出さない。同じ名前が下のタブバーにあり二重になるうえ、リポジトリの
+ * 誤認はエージェントが走っている状態では実害があるので、常時見せる価値はこちらが高い。
+ *
+ * 押すとドロワーが開くが、シェブロンは付けない（押せることは `isInteractive` の光で返す）。
+ * ホーム以外の3タブではこれがドロワーへの唯一の可視の入口になる（スワイプは
+ * `useOpenDrawerPan` が全タブで受ける）。
+ *
+ * **本文には必ず `onHeightChange` で受けた高さを `paddingTop` として渡すこと**。
+ * 高さは subtitle の有無と Dynamic Type で変わるため定数では足りない。
+ */
+export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, onHeightChange }: {
+	/** 島のサブ行を差し替える（既定はブランチ名）。 */
+	subtitle?: string;
+	right?: ReactNode;
+	/**
+	 * 島の下に続けて浮かせる帯（ホームの絞り込みチップ、ターミナルのタブチップ）。
+	 * ここに置いたものは本文と一緒にスクロールせず、`onHeightChange` の実測にも含まれる。
+	 */
+	below?: ReactNode;
+	allWorkspaces?: boolean;
+	/**
+	 * 本文が読み幅の列に収まらず画面いっぱいを使う画面（ホームの2列など）で true。
+	 * ヘッダーだけ列幅に切ると、広いiPadで右上のボタンが本文の右端より100pt以上内側に出る。
+	 */
+	wide?: boolean;
+	/** 実測した占有高さ。本文の `paddingTop` に使う。 */
+	onHeightChange?: (height: number) => void;
+}) {
 	const insets = useStableInsets();
 	const drawer = useWsDrawer();
-	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ている。チップは開く先が
+	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ている。島は開く先が
 	// すでに見えている押しても何も起きないボタンになるため、まるごと省く
 	// （選択中の色・他ワークスペースの応答待ちもサイドバー側が行のハイライトとバッジで示す）。
 	const regular = useIsRegularWidth();
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
 	const current = useEffectiveWs();
 
-	// 他ワークスペースの応答待ち件数（チップ上の赤バッジ = ドロワーを開く動機づけ）。
+	// 他ワークスペースの応答待ち件数（島の上の赤バッジ = ドロワーを開く動機づけ）。
 	// ws未タグのターミナルは他画面と同様にPC側アクティブワークスペース所属として数える。
 	// allWorkspaces中はすでに全件が見えているため「他」の概念が無く、バッジは出さない。
 	const otherWaiting = allWorkspaces ? 0 : (workspace?.terminals ?? []).filter(t =>
 		isAgentWaiting(t.agentStatus) && (t.ws ?? workspace?.activeWs) !== current?.id).length;
 
 	const chipColor = allWorkspaces ? colors.textDim : (current ? wsColor(current) : colors.accent);
-	const defaultSubtitle = current ? `${current.name}${current.branch ? ` · ${current.branch}` : ''}` : undefined;
+	const name = allWorkspaces ? 'すべてのスペース' : (current?.name ?? '—');
+	const sub = subtitle ?? (allWorkspaces ? undefined : current?.branch);
 
 	return (
-		<View style={[styles.headerWrap, regular && styles.headerWrapRegular, { paddingTop: insets.top + 4 }]}>
+		<View
+			style={[styles.headerWrap, { paddingTop: insets.top }]}
+			pointerEvents="box-none"
+			onLayout={onHeightChange !== undefined ? event => onHeightChange(event.nativeEvent.layout.height) : undefined}
+		>
+			{/* 本文がガラスの縁でぶつ切りに見えないよう、島の背後だけ地色へ落とす。
+			    react-native-svg で描く（scrollEdgeEffects の ScrollViewMarker は experimental で、
+			    直下 subtree の ScrollView にしか効かない）。 */}
+			<HeaderEdgeFade />
+			{/* iPadでは本文が読み幅の列に収まるので、島の左右もその列に合わせる。
+			    絶対配置は alignSelf が効かないため、左右いっぱいに広げてから中身を中央へ寄せる。 */}
+			<View style={[styles.headerRow, regular && !wide && styles.headerRowRegular]} pointerEvents="box-none">
 			{regular ? null : (
-				<Pressable onPress={drawer.open} accessibilityLabel="ワークスペースを切り替え">
-					{/* iOS 26+はワークスペース色をtintしたLiquid Glass、それ未満は従来の色付きチップ */}
-					<GlassSurface
-						style={[styles.chip, !liquidGlass && { backgroundColor: chipColor + '22', borderColor: chipColor + '55', borderWidth: 1 }]}
-						interactive
-						tintColor={liquidGlass ? chipColor + '33' : undefined}
-					>
-						{allWorkspaces ? (
-							<Ionicons name="apps-outline" size={16} color={chipColor} />
-						) : (
-							<Text style={[styles.chipText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>
-						)}
-					</GlassSurface>
-					{otherWaiting > 0 ? (
-						<View style={styles.chipBadge}><Text style={styles.chipBadgeText}>{otherWaiting}</Text></View>
-					) : null}
-				</Pressable>
+				<GlassSurface style={styles.island} interactive tintColor={chipColor}>
+					<Pressable style={styles.islandHit} onPress={drawer.open} accessibilityRole="button" accessibilityLabel={otherWaiting > 0 ? `スペース ${name}。他のスペースに応答待ちがあります。切り替える` : `スペース ${name}。切り替える`}>
+						<View style={[styles.islandAvatar, { backgroundColor: withAlpha(chipColor, 0.28) ?? colors.surface2 }]}>
+							{allWorkspaces
+								? <Ionicons name="apps-outline" size={15} color={chipColor} />
+								: <Text style={[styles.islandAvatarText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>}
+						</View>
+						<View style={styles.islandText}>
+							<Text style={styles.islandName} numberOfLines={1}>{name}</Text>
+							{sub ? <Text style={styles.islandSub} numberOfLines={1}>{sub}</Text> : null}
+						</View>
+					</Pressable>
+					{otherWaiting > 0 ? <View style={styles.chipBadge} /> : null}
+				</GlassSurface>
 			)}
-			<View style={styles.textCol}>
-				<Text style={styles.title}>{title}</Text>
-				{(subtitle ?? defaultSubtitle) ? <Text style={styles.subtitle} numberOfLines={1}>{subtitle ?? defaultSubtitle}</Text> : null}
-			</View>
+			<View style={styles.headerSpacer} pointerEvents="none" />
 			{right}
+			</View>
+			{below === undefined ? null : (
+				<View style={[styles.headerBelow, regular && !wide && styles.headerRowRegular]} pointerEvents="box-none">{below}</View>
+			)}
 		</View>
 	);
 }
 
 const styles = StyleSheet.create({
-	// ヘッダー（旧screenTitle.tsxのスタイルを踏襲。左paddingはチップがあるため少し狭める）
-	headerWrap: { paddingLeft: 16, paddingRight: 12, paddingBottom: 8, flexDirection: 'row', alignItems: 'center', gap: 10 },
-	// チップを省くiPad幅では、その分だけタイトルが左端へ寄りすぎないよう左paddingを足す
-	headerWrapRegular: { paddingLeft: 20 },
-	chip: { width: 36, height: 36, borderRadius: 11, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
-	chipText: { fontSize: 14, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	// 本文の上に浮かべる。本文側は onHeightChange で受けた高さを paddingTop に使う。
+	headerWrap: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, paddingBottom: 12 },
+	// 島(44)と右のボタン群(40)は上端で揃える。中央揃えにすると右側が2pt下がって見える。
+	// 島の行を下の帯より上のレイヤーに置く。右のボタンから生えるメニューはこの行の中にいるので、
+	// 順番のままだと後から描かれる帯（絞り込みチップ）がメニューの上に乗ってしまう。
+	headerRow: { zIndex: 2, flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingLeft: 16, paddingRight: 12 },
+	// iPad: 本文（useContentColumnStyle）と左端を揃える。絶対配置は alignSelf が効かないので、
+	// 行を中央寄せの列幅に制限して合わせる。
+	headerRowRegular: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center', paddingLeft: 16 },
+	// 島の下に続く帯（絞り込みチップ等）。島との間は10pt。
+	headerBelow: { zIndex: 1, marginTop: 10, paddingHorizontal: 16 },
+	headerSpacer: { flex: 1, minWidth: 0 },
+	island: { height: 44, borderRadius: radius.pill, ...squircle, maxWidth: 224 },
+	islandHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, paddingLeft: 6, paddingRight: 15 },
+	islandAvatar: { width: 32, height: 32, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
+	islandAvatarText: { fontSize: 13, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	islandText: { flexShrink: 1, minWidth: 0 },
+	islandName: { color: colors.text, fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
+	islandSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
+	// 他スペースに応答待ちが居ることの合図。件数は出さない（チップ列とタブバーのバッジと
+	// 母数が違う数字を並べると、どれが本当か分からなくなる）。ここは「ドロワーを開く動機」
+	// だけを持てばよいので点で足りる。
 	chipBadge: {
-		position: 'absolute', top: -5, right: -5, minWidth: 16, height: 16, borderRadius: 8,
-		backgroundColor: colors.red, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4,
-		borderWidth: 2, borderColor: colors.bg,
+		position: 'absolute', top: -3, left: -3, width: 10, height: 10, borderRadius: radius.pill,
+		backgroundColor: colors.red, borderWidth: 2, borderColor: colors.bg,
 	},
-	chipBadgeText: { color: '#fff', fontSize: 9, fontWeight: '700' },
-	textCol: { flex: 1, minWidth: 0 },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3 },
-	subtitle: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
 
 	// ドロワーを開いたときに右へどくコンテンツ。角丸は端末のディスプレイ角丸に合わせ、
 	// borderCurve: 'continuous' でiOSの連続曲線（cornerCurve = .continuous）にする
@@ -637,7 +712,7 @@ const styles = StyleSheet.create({
 	// PCカード（接続状態・バッテリー・切り替え）は pcSwitcher.tsx が描く。ここは器だけを持つ。
 	pcSection: { paddingHorizontal: 18, paddingTop: 4, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: colors.border },
 	statsRow: { flexDirection: 'row', gap: 6, marginTop: 12 },
-	stat: { flex: 1, backgroundColor: colors.surface2, borderRadius: 10, paddingVertical: 7, alignItems: 'center' },
+	stat: { flex: 1, backgroundColor: colors.surface2, borderRadius: radius.control, ...squircle, paddingVertical: 7, alignItems: 'center' },
 	statValue: { color: colors.accent, fontSize: 15, fontWeight: '700' },
 	statValueAlert: { color: colors.red },
 	statLabel: { color: colors.textDim, fontSize: 9.5, marginTop: 1 },
@@ -654,18 +729,18 @@ const styles = StyleSheet.create({
 	resourceHeadlineAlert: { color: colors.red },
 	sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 16 },
 	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 8 },
-	addSpaceBtn: { width: 24, height: 24, borderRadius: 7, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
+	addSpaceBtn: { width: 24, height: 24, borderRadius: 7, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.borderStrong, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
 	actionDisabled: { opacity: 0.45 },
 	list: { flex: 1 },
 	listContent: { paddingHorizontal: 10, paddingBottom: 8 },
-	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, marginBottom: 2 },
+	row: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 11, paddingHorizontal: 10, borderRadius: 12, ...squircle, marginBottom: 2 },
 	rowActive: { backgroundColor: colors.accentWash },
 	rowIndicator: { position: 'absolute', left: 0, top: 10, bottom: 10, width: 3, borderRadius: 2, backgroundColor: colors.accent },
 	// 「すべて表示」行: 通常のワークスペース行とアイコン以外は共通のスタイルを流用する
 	allRow: { marginBottom: 8 },
 	allIcon: { backgroundColor: colors.surface2 },
 	allSub: { color: colors.textDim, fontSize: 10.5, marginTop: 2 },
-	avatar: { width: 36, height: 36, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+	avatar: { width: 36, height: 36, borderRadius: 10, ...squircle, alignItems: 'center', justifyContent: 'center' },
 	avatarText: { fontSize: 13, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	rowBody: { flex: 1, minWidth: 0 },
 	rowName: { color: colors.text, fontSize: 13.5, fontWeight: '600' },
@@ -685,17 +760,17 @@ const styles = StyleSheet.create({
 	wtRowKept: { backgroundColor: 'rgba(9,175,217,0.05)' },
 	wtGuide: { position: 'absolute', left: 0, top: 0, bottom: 0, width: 1.5, borderRadius: 1, backgroundColor: colors.borderStrong },
 	wtGuideActive: { backgroundColor: colors.accent },
-	wtAvatar: { width: 26, height: 26, borderRadius: 8 },
+	wtAvatar: { width: 26, height: 26, borderRadius: 8, ...squircle },
 	wtAvatarText: { fontSize: 11 },
 	wtName: { fontSize: 12.5 },
 	// グループ親行: ワークツリー数バッジ＋開閉シェブロン（行本体タップ=選択と分離した独立ヒット領域）
 	wtCount: { color: colors.textDim, fontSize: 10, backgroundColor: colors.surface3, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2, overflow: 'hidden', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	twistBtn: { width: 30, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginVertical: -6, marginRight: -4 },
+	twistBtn: { width: 30, height: 30, borderRadius: 8, ...squircle, alignItems: 'center', justifyContent: 'center', marginVertical: -6, marginRight: -4 },
 	dim: { color: colors.textDim, fontSize: 12, paddingHorizontal: 8, lineHeight: 18 },
 	footer: { flexDirection: 'row', gap: 8, paddingHorizontal: 18, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border },
 	footerBtn: {
 		flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-		backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingVertical: 9,
+		backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, borderRadius: radius.control, ...squircle, paddingVertical: 9,
 	},
 	footerBtnText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
 });

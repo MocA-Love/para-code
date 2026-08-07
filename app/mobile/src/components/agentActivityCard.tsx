@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import type { AgentActivityState, AgentActivityStatus } from '../store.js';
 import { isRunningAgentActivity, summarizeAgentActivity } from '../agentActivityTree.js';
 import { GlassSurface } from './glassSurface.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle } from '../theme.js';
 
 function statusLabel(status: AgentActivityStatus): string {
 	switch (status) {
@@ -85,5 +85,5 @@ const styles = StyleSheet.create({
 	tasks: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, marginTop: 8, paddingTop: 8, gap: 5 }, taskTitle: { color: colors.textDim, fontSize: 9 }, taskRow: { flexDirection: 'row', alignItems: 'center', gap: 6 }, taskText: { color: colors.text, fontSize: 9, flex: 1 },
 	compaction: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 9, paddingVertical: 7, borderRadius: 9, backgroundColor: 'rgba(193,147,217,0.10)', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(193,147,217,0.20)' }, compactionText: { color: colors.purple, fontSize: 9 },
 	summary: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 4, paddingVertical: 4, borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border }, summaryText: { color: colors.textDim, fontSize: 10, flex: 1 },
-	strip: { height: 42, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, borderRadius: 13, overflow: 'hidden', borderWidth: StyleSheet.hairlineWidth, borderColor: colors.glassBorder }, stripTitle: { color: colors.text, fontSize: 10.5, fontWeight: '700' }, stripAvatars: { flexDirection: 'row', paddingRight: 4 }, stripAvatar: { width: 20, height: 20, borderRadius: 7, backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.bg, alignItems: 'center', justifyContent: 'center', marginRight: -5 }, stripAvatarText: { color: colors.accent, fontSize: 7.5, fontWeight: '800' }, stripCount: { flex: 1, color: colors.textDim, fontSize: 9 },
+	strip: { height: 42, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, borderRadius: radius.card, ...squircle }, stripTitle: { color: colors.text, fontSize: 10.5, fontWeight: '700' }, stripAvatars: { flexDirection: 'row', paddingRight: 4 }, stripAvatar: { width: 20, height: 20, borderRadius: 7, backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.bg, alignItems: 'center', justifyContent: 'center', marginRight: -5 }, stripAvatarText: { color: colors.accent, fontSize: 7.5, fontWeight: '800' }, stripCount: { flex: 1, color: colors.textDim, fontSize: 9 },
 });

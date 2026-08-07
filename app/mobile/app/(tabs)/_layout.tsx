@@ -58,7 +58,7 @@ function useTabSwitchHaptics(enabled: boolean): void {
 export default function TabsLayout() {
 	const regular = useIsRegularWidth();
 	useTabSwitchHaptics(!regular);
-	// 応答待ちエージェント数 → ホーム/ターミナルタブのバッジ。
+	// 応答待ちエージェント数 → ホームタブのバッジ。
 	// workspace 本体ではなく件数（数値）を選ぶ。本体を購読すると、PCからのstate再送のたびに
 	// ドロワーとタブバーごと再構築されてしまう（バッジに要るのはこの数値だけ）。
 	const pending = useAppStore(s => (s.workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length);
@@ -91,7 +91,13 @@ export default function TabsLayout() {
 			</Tabs>
 		) : (
 			<NativeTabs
+				// iOS 18以下向けのフォールバック。iOS 26以降のタブバーには効かない（OSがLiquid Glassで
+				// 描くため）ので、これを変えても実機の見た目は変わらない点に注意。
 				blurEffect="systemUltraThinMaterialDark"
+				// 下へスクロールしている間はタブバーを縮めて内容に場所を譲る（iOS 26+）。
+				// 縮んでいる間はバッジも隠れるが、応答待ちの気づきはホーム上部のAttentionStackが持つ。
+				// ターミナル画面では効かない見込み（縦スクロールがWebView内で完結し、下端に入力バーがある）。
+				minimizeBehavior="onScrollDown"
 				tintColor={colors.accent}
 				iconColor={{ default: colors.textDim, selected: colors.accent }}
 				labelStyle={{ default: { color: colors.textDim }, selected: { color: colors.text } }}
@@ -102,10 +108,11 @@ export default function TabsLayout() {
 					<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="home-outline" />} />
 					{badge ? <NativeTabs.Trigger.Badge>{badge}</NativeTabs.Trigger.Badge> : null}
 				</NativeTabs.Trigger>
+				{/* バッジはホームに1つだけ出す。同じ件数を隣り合う2タブへ同時に出すと、
+				    合計が倍あるように読めてしまう（応答待ちの一覧はホームが持っている）。 */}
 				<NativeTabs.Trigger name="terminal" contentStyle={{ backgroundColor: colors.bg }}>
 					<NativeTabs.Trigger.Label>ターミナル</NativeTabs.Trigger.Label>
 					<NativeTabs.Trigger.Icon src={<NativeTabs.Trigger.VectorIcon family={Ionicons} name="terminal-outline" />} />
-					{badge ? <NativeTabs.Trigger.Badge>{badge}</NativeTabs.Trigger.Badge> : null}
 				</NativeTabs.Trigger>
 				<NativeTabs.Trigger name="scm" contentStyle={{ backgroundColor: colors.bg }}>
 					<NativeTabs.Trigger.Label>ソース管理</NativeTabs.Trigger.Label>

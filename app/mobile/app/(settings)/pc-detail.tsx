@@ -1,17 +1,19 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../src/appState.js';
-import { BatteryGauge } from '../src/components/batteryGauge.js';
-import { PcAvatar } from '../src/components/pcSwitcher.js';
-import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { pcStatusText, shouldShowBattery } from '../src/pcStatus.js';
-import { colors } from '../src/theme.js';
-import { hapticImpact, hapticSelection } from '../src/haptics.js';
+import { useAppStore } from '../../src/appState.js';
+import { BatteryGauge } from '../../src/components/batteryGauge.js';
+import { PcAvatar } from '../../src/components/pcSwitcher.js';
+import { ScreenHeader } from '../../src/components/screenHeader.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
+import { pcStatusText, shouldShowBattery } from '../../src/pcStatus.js';
+import { colors, radius, squircle } from '../../src/theme.js';
+import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 
 /**
  * PCごとの詳細画面。設定 →「ペアリング済みのPC」の行から開く。
@@ -34,6 +36,8 @@ const USAGE_LINKS = [
 export default function PcDetailScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
+	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
+	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const { id } = useLocalSearchParams<{ id?: string }>();
@@ -50,14 +54,9 @@ export default function PcDetailScreen() {
 	// 一覧へ戻しているので、その場合はここへ来ない。
 	if (pc === undefined) {
 		return (
-			<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-				<View style={styles.header}>
-					<Pressable style={styles.backBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="戻る">
-						<Ionicons name="chevron-back" size={20} color={colors.accent} />
-					</Pressable>
-					<Text style={styles.title} numberOfLines={1}>PC</Text>
-				</View>
-				<ScrollView style={styles.scroll} contentContainerStyle={column}>
+			<View style={styles.screen}>
+				<ScreenHeader title="PC" onHeightChange={setHeaderHeight} />
+				<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingTop: headerHeight }, column]}>
 					<Text style={styles.missing}>このPCは一覧にありません（ペアリングを解除した可能性があります）。</Text>
 				</ScrollView>
 			</View>
@@ -128,14 +127,9 @@ export default function PcDetailScreen() {
 	};
 
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-			<View style={styles.header}>
-				<Pressable style={styles.backBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="戻る">
-					<Ionicons name="chevron-back" size={20} color={colors.accent} />
-				</Pressable>
-				<Text style={styles.title} numberOfLines={1}>{pc.name}</Text>
-			</View>
-			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingBottom: insets.bottom + 24 }, column]}>
+		<View style={styles.screen}>
+			<ScreenHeader title={pc.name} onHeightChange={setHeaderHeight} />
+			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
 				<View style={[styles.card, styles.identity]}>
 					<PcAvatar name={pc.name} hue={pc.hue} size={44} />
 					<View style={styles.identityBody}>
@@ -208,19 +202,16 @@ export default function PcDetailScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingBottom: 10 },
-	backBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	missing: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, paddingHorizontal: 20 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
-	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
 	identity: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 14, marginTop: 4 },
 	identityBody: { flex: 1, minWidth: 0 },
 	identityName: { color: colors.text, fontSize: 15, fontWeight: '700' },
 	switchBtn: {
 		flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 10,
-		paddingVertical: 11, borderRadius: 12, backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.accent,
+		paddingVertical: 11, borderRadius: 12, ...squircle, backgroundColor: colors.accentWash, borderWidth: 1, borderColor: colors.accent,
 	},
 	switchText: { color: colors.accent, fontSize: 12.5, fontWeight: '700' },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },

@@ -9,7 +9,7 @@ import { useAppStore, type PcSummary } from '../appState.js';
 import { BatteryGauge } from './batteryGauge.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
@@ -201,7 +201,7 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 			<OverlayPortal>
 				<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="閉じる" />
 				<PopIn style={[styles.popoverPos, { top, left }]}>
-					<GlassSurface style={[styles.popover, !liquidGlass && styles.popoverFallbackBorder]}>
+					<GlassSurface style={styles.popover}>
 						<Text style={styles.head}>ペアリング済みのPC</Text>
 						<ScrollView style={styles.popoverScroll} bounces={false}>
 							<PcList onClose={onClose} />
@@ -216,7 +216,7 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 		<OverlayPortal>
 			<Pressable style={[StyleSheet.absoluteFill, styles.scrim]} onPress={onClose} accessibilityLabel="閉じる" />
 			<PopIn style={styles.sheetPos}>
-				<GlassSurface style={[styles.sheet, !liquidGlass && styles.popoverFallbackBorder, { paddingBottom: insets.bottom + 16 }]}>
+				<GlassSurface style={[styles.sheet, { paddingBottom: insets.bottom + 16 }]}>
 					<View style={styles.grabber} />
 					<Text style={styles.head}>ペアリング済みのPC</Text>
 					<ScrollView style={styles.sheetScroll} bounces={false}>
@@ -256,7 +256,7 @@ export function PcSwitchNotice() {
 	return (
 		<OverlayPortal>
 			<PopIn style={[styles.noticePos, { top: insets.top + 6 }]}>
-				<GlassSurface style={[styles.notice, !liquidGlass && styles.popoverFallbackBorder]}>
+				<GlassSurface style={styles.notice}>
 					<PcAvatar name={notice.name} hue={hue} size={26} />
 					<Text style={styles.noticeText} numberOfLines={1}>
 						<Text style={styles.noticeName}>{notice.name}</Text>
@@ -378,7 +378,6 @@ const styles = StyleSheet.create({
 	// ポップオーバー（iPad）
 	popoverPos: { position: 'absolute', width: POPOVER_WIDTH },
 	popover: { borderRadius: 18, overflow: 'hidden', paddingBottom: 8 },
-	popoverFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	popoverScroll: { maxHeight: 360 },
 
 	// ボトムシート（iPhone）

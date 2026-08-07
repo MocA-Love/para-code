@@ -7,7 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { BottomSheet } from './bottomSheet.js';
 import { GlassSurface } from './glassSurface.js';
-import { colors } from '../theme.js';
+import { colors, radius } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 
 const STATUS_LABELS = {
@@ -42,14 +42,16 @@ export function VoiceNotificationControl() {
 
 	return (
 		<>
+			{/* ヘッダー右のガラスのピルの中に入るので、ここでガラスを重ねない（Apple HIG）。
+			    受信中はアクセント色の淡い地でそれと分かるようにする。 */}
 			<Pressable
-				style={styles.headerButton}
+				style={({ pressed }) => [styles.headerButton, active && styles.headerButtonActive, pressed && styles.headerButtonPressed]}
+				hitSlop={{ top: 5, bottom: 5, left: 4, right: 4 }}
 				onPress={() => { hapticImpact('light'); setVisible(true); }}
 				accessibilityRole="button"
 				accessibilityLabel={active ? '音声通知を受信中' : '音声通知を開始'}
 			>
-				<GlassSurface style={styles.headerGlass} interactive tintColor={active ? colors.accent + '2b' : undefined} />
-				<Ionicons name={active ? 'volume-high' : 'volume-high-outline'} size={18} color={active ? colors.accent : colors.text} />
+				<Ionicons name={active ? 'volume-high' : 'volume-high-outline'} size={17} color={active ? colors.accent : colors.text} />
 				{active ? <View style={styles.liveBadge} /> : null}
 			</Pressable>
 
@@ -118,8 +120,9 @@ export function VoiceNotificationControl() {
 }
 
 const styles = StyleSheet.create({
-	headerButton: { width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
-	headerGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: 20, overflow: 'hidden' },
+	headerButton: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
+	headerButtonActive: { backgroundColor: colors.accentWash },
+	headerButtonPressed: { backgroundColor: 'rgba(255,255,255,0.16)' },
 	liveBadge: { position: 'absolute', top: 0, right: 0, width: 9, height: 9, borderRadius: 5, backgroundColor: colors.green, borderWidth: 2, borderColor: colors.bg },
 	content: { paddingHorizontal: 20, paddingBottom: 28, gap: 16 },
 	hero: { alignItems: 'center', paddingTop: 8, paddingBottom: 4 },

@@ -1,20 +1,18 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { ActivityIndicator, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../src/appState.js';
-import { ConnectionGate } from '../src/components/connectionGate.js';
-import { ProviderLogo } from '../src/components/providerLogo.js';
-import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
-import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors } from '../src/theme.js';
-import { useNow } from '../src/time.js';
-import { hapticImpact } from '../src/haptics.js';
-import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitWindow, RateLimitsResult } from '../src/store.js';
+import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { ProviderLogo } from '../../src/components/providerLogo.js';
+import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
+import { colors, radius, squircle } from '../../src/theme.js';
+import { useNow } from '../../src/time.js';
+import { hapticImpact } from '../../src/haptics.js';
+import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitWindow, RateLimitsResult } from '../../src/store.js';
 
 /**
  * Rate Limit(AIリミット)画面。設定 → Rate Limit から開く。
@@ -71,9 +69,9 @@ function accountName(account: RateLimitAccount): string {
 }
 
 export default function RateLimitScreen() {
-	const router = useRouter();
-	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
+	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	// リセット残り時間の表示を画面を開いたままでも追従させる
@@ -179,27 +177,23 @@ export default function RateLimitScreen() {
 
 	return (
 		<ConnectionGate>
-			<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-				<View style={styles.header}>
-					<Text style={styles.title}>Rate Limit</Text>
-					<Pressable
-						style={styles.closeBtn}
-						onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
-						disabled={pullRefreshing || loading}
-						accessibilityLabel="最新に更新"
-					>
-						{pullRefreshing || loading
-							? <ActivityIndicator size="small" color={colors.textDim} />
-							: <Ionicons name="refresh" size={16} color={colors.textDim} />}
-					</Pressable>
-					<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
-						<Ionicons name="close" size={16} color={colors.textDim} />
-					</Pressable>
-				</View>
+			<View style={styles.screen}>
+				<ScreenHeader
+					title="Rate Limit"
+					actions={
+						<HeaderCircleButton
+							icon="refresh-outline"
+							label="再取得"
+							onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+							disabled={pullRefreshing || loading}
+						/>
+					}
+					onHeightChange={setHeaderHeight}
+				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingBottom: tabBarSpacer }, column]}
-					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
@@ -222,9 +216,6 @@ export default function RateLimitScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
-	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
 	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
@@ -232,13 +223,13 @@ const styles = StyleSheet.create({
 	sectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 18, marginBottom: 8 },
 	sectionTitleRowFirst: { marginTop: 6 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
-	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 2 },
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 2 },
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 10, lineHeight: 18 },
 	acct: { paddingVertical: 10 },
 	acctSeparator: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 	acctTop: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 6, minWidth: 0 },
 	acctMail: { color: colors.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
-	badge: { fontSize: 10, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 9, overflow: 'hidden', backgroundColor: colors.surface3, color: colors.textDim },
+	badge: { fontSize: 10, paddingHorizontal: 7, paddingVertical: 2, borderRadius: 9, ...squircle, overflow: 'hidden', backgroundColor: colors.surface3, color: colors.textDim },
 	badgeActive: { backgroundColor: colors.accentWash, color: colors.accent },
 	badgeErr: { backgroundColor: 'rgba(244,114,114,0.16)', color: colors.red },
 	meterRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },

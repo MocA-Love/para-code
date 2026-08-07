@@ -2,18 +2,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../src/appState.js';
-import { ConnectionGate } from '../src/components/connectionGate.js';
-import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useTabBarSpacer } from '../src/hooks/useTabBarSpacer.js';
-import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors } from '../src/theme.js';
-import { formatRelativeTime, useNow } from '../src/time.js';
-import { hapticImpact, hapticSelection } from '../src/haptics.js';
-import type { UsageAgent, UsageDashboardResult } from '../src/store.js';
+import { useAppStore } from '../../src/appState.js';
+import { ConnectionGate } from '../../src/components/connectionGate.js';
+import { HeaderCircleButton, ScreenHeader } from '../../src/components/screenHeader.js';
+import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
+import { colors, radius, squircle } from '../../src/theme.js';
+import { formatRelativeTime, useNow } from '../../src/time.js';
+import { hapticImpact, hapticSelection } from '../../src/haptics.js';
+import type { UsageAgent, UsageDashboardResult } from '../../src/store.js';
 
 /** モデル・プロジェクト別バーの表示上限件数。 */
 const TOP_MODELS = 6;
@@ -124,9 +122,9 @@ function recentDailyCosts(data: UsageDashboardResult, windowDays: number, agent:
 }
 
 export default function CcusageScreen() {
-	const router = useRouter();
-	const insets = useStableInsets();
 	const tabBarSpacer = useTabBarSpacer();
+	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
+	const [headerHeight, setHeaderHeight] = useState(0);
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	// 相対時刻表示（セッションの最終アクティビティ）を画面を開いたままでも追従させる
@@ -197,32 +195,26 @@ export default function CcusageScreen() {
 
 	return (
 		<ConnectionGate>
-			<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-				<View style={styles.header}>
-					<View style={styles.headerBody}>
-						<Text style={styles.title}>Ccusage</Text>
-						{/* PC側は30分ごとに裏で集計し直す。いつの数字を見ているかが分からないと
-						    「更新すべきか」を判断できないので、取得時刻を必ず添える。 */}
-						{data ? <Text style={styles.subtitle}>{relativeTime(data.fetchedAt, now)}に取得</Text> : null}
-					</View>
-					<Pressable
-						style={styles.headerBtn}
-						onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
-						disabled={pullRefreshing || loading}
-						accessibilityLabel="最新に更新"
-					>
-						{pullRefreshing || loading
-							? <ActivityIndicator size="small" color={colors.textDim} />
-							: <Ionicons name="refresh" size={16} color={colors.textDim} />}
-					</Pressable>
-					<Pressable style={styles.headerBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="閉じる">
-						<Ionicons name="close" size={16} color={colors.textDim} />
-					</Pressable>
-				</View>
+			<View style={styles.screen}>
+				<ScreenHeader
+					title="Ccusage"
+					// PC側は30分ごとに裏で集計し直す。いつの数字を見ているかが分からないと
+					// 「更新すべきか」を判断できないので、取得時刻を必ず添える。
+					subtitle={data ? `${relativeTime(data.fetchedAt, now)}に取得` : undefined}
+					actions={
+						<HeaderCircleButton
+							icon="refresh-outline"
+							label="再取得"
+							onPress={() => { hapticImpact('light'); void onPullRefresh(); }}
+							disabled={pullRefreshing || loading}
+						/>
+					}
+					onHeightChange={setHeaderHeight}
+				/>
 				<ScrollView
 					style={styles.scroll}
-					contentContainerStyle={[{ paddingBottom: tabBarSpacer }, column]}
-					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} />}
+					contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: tabBarSpacer }, column]}
+					refreshControl={<RefreshControl refreshing={pullRefreshing} onRefresh={() => { void onPullRefresh(); }} tintColor={colors.textDim} progressViewOffset={headerHeight} />}
 				>
 					{loading && !data ? <ActivityIndicator style={styles.spinner} color={colors.accent} /> : null}
 					{error ? <Text style={styles.error}>{error}</Text> : null}
@@ -362,27 +354,22 @@ export default function CcusageScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
-	headerBody: { flex: 1, minWidth: 0 },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3 },
-	subtitle: { color: colors.textDim, fontSize: 11, marginTop: 2 },
-	headerBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 24 },
 	error: { color: colors.red, fontSize: 12.5, marginTop: 8, marginBottom: 4 },
 	warn: { color: colors.yellow, fontSize: 11.5, marginTop: 8, marginBottom: 4 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 18, marginBottom: 8 },
 	dim: { color: colors.textDim, fontSize: 12.5, paddingVertical: 8 },
-	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14, paddingVertical: 4 },
 	// 押せるピルと直下のカードが触れて見えないよう、下に余白を残す。
 	pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2, marginBottom: 12 },
-	pill: { paddingVertical: 7, paddingHorizontal: 13, borderRadius: 999, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
+	pill: { paddingVertical: 7, paddingHorizontal: 13, borderRadius: radius.pill, ...squircle, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border },
 	pillActive: { backgroundColor: colors.accent, borderColor: colors.accent },
 	pillText: { color: colors.textDim, fontSize: 11.5, fontWeight: '600' },
 	pillTextActive: { color: colors.bg },
 	note: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 8, paddingHorizontal: 4 },
 	kpiRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
-	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 4 },
+	kpiCard: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 14, gap: 4 },
 	kpiLabel: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
 	kpiValue: { color: colors.text, fontSize: 22, fontWeight: '800' },
 	kpiSub: { color: colors.textDim, fontSize: 11 },

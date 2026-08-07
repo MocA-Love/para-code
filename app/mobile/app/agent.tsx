@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, FlatList, Image, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { BlurView } from 'expo-blur';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -10,7 +9,7 @@ import { useAppStore } from '../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal, type AgentChatMessage, type AgentLiveState } from '../src/store.js';
 import { ConnectionGate } from '../src/components/connectionGate.js';
 import { MarkdownText } from '../src/components/markdownText.js';
-import { GlassSurface, liquidGlass } from '../src/components/glassSurface.js';
+import { GlassGroup, GlassSurface } from '../src/components/glassSurface.js';
 import { QuestionCard, QuestionGroupCard } from '../src/components/questionCard.js';
 import { ApprovalCard } from '../src/components/approvalCard.js';
 import { AgentActivityCard, AgentActivityStrip } from '../src/components/agentActivityCard.js';
@@ -23,6 +22,7 @@ import { AgentComposer } from '../src/components/agentComposer.js';
 import { AgentInfoSheet } from '../src/components/agentInfoSheet.js';
 import { PendingMessagesChip, PendingMessagesSheet } from '../src/components/pendingMessages.js';
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../src/pendingAgentMessages.js';
+import { HeaderEdgeFade } from '../src/components/headerEdgeFade.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useAgentActions } from '../src/hooks/useAgentActions.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
@@ -30,7 +30,7 @@ import { useIsRegularWidth } from '../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
-import { colors } from '../src/theme.js';
+import { colors, radius, squircle } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { isRunningAgentActivity } from '../src/agentActivityTree.js';
 import { resolveExplicitTerminalSelection, shouldHandleLatestEntry } from '../src/agentNavigation.js';
@@ -68,9 +68,9 @@ export default function AgentDetailScreen() {
 	// iPadの広い幅では会話の列幅を制限して中央へ寄せる。1行が長すぎると次の行頭へ
 	// 目線を戻す距離が伸びて読みづらいため（ヘッダーとブラーは全幅のまま）。
 	const regular = useIsRegularWidth();
-	// ヘッダーはブラーのオーバーレイとしてチャットの上に重ねる（純正メール風。
-	// コンテンツがヘッダーの下を通ってボケて見える）。実高さは onLayout で測る。
-	const [headerHeight, setHeaderHeight] = useState(insets.top + 52);
+	// ヘッダーは3つのガラスの島としてチャットの上に浮かせる。会話はその隙間を
+	// 流れて上端へ抜けていく。実高さは onLayout で測る（活動ストリップの位置にも使う）。
+	const [headerHeight, setHeaderHeight] = useState(insets.top + 56);
 
 	// 表示対象: selectedTerminalKey（ホーム/通知が遷移前に設定する）。無ければ選択中ws
 	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
@@ -448,7 +448,7 @@ export default function AgentDetailScreen() {
 					<View style={[styles.jumpWrap, regular && styles.overlayCenter]} pointerEvents="box-none">
 						<View style={regular ? styles.overlayColumnRight : undefined}>
 							<Pressable onPress={jumpToLatest} accessibilityLabel="最新のメッセージへ移動">
-								<GlassSurface style={[styles.jumpBtn, !liquidGlass && styles.jumpFallbackBorder]} interactive>
+								<GlassSurface style={styles.jumpBtn} interactive>
 									<Ionicons name="chevron-down" size={16} color={colors.text} />
 									{newCount > 0 ? <Text style={styles.jumpText}>{newCount > 99 ? '99+' : String(newCount)}</Text> : null}
 								</GlassSurface>
@@ -458,47 +458,50 @@ export default function AgentDetailScreen() {
 				) : null}
 			</View>
 
-			{/* 独自ヘッダー: チャットの上に重ねるブラーバー（純正メール風にコンテンツが
-			    下を通ってボケる）＋戻る（Liquid Glass）＋ターミナルタイトル＋ワークスペース */}
-			<View style={styles.headerOverlay} onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}>
-				<BlurView tint="dark" intensity={50} style={StyleSheet.absoluteFill} />
-				<View style={[styles.header, { paddingTop: insets.top + 4 }]}>
-					<Pressable onPress={() => { hapticSelection(); router.back(); }} accessibilityLabel="戻る">
-						<GlassSurface style={styles.backBtn} interactive>
+			{/* 独自ヘッダー: チャットの上に浮かべる**3つの島**（戻る／タイトル／ブラウザ）。
+			    全幅のブラー板は敷かない。板があると画面の上端に横一本の縁ができて、そこで
+			    会話が切れて見える。島だけにして、背後は地色へのグラデーションで落とす。
+			    `GlassGroup` で束ねてあるので、寄ったときはガラス同士が融合する。 */}
+			<View style={styles.headerOverlay} pointerEvents="box-none" onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}>
+				<HeaderEdgeFade id="paraAgentHeaderFade" />
+				<GlassGroup style={[styles.header, { paddingTop: insets.top }]} spacing={12}>
+					<GlassSurface style={styles.circleBtn} interactive>
+						<Pressable style={styles.circleHit} onPress={() => { hapticSelection(); router.back(); }} accessibilityRole="button" accessibilityLabel="戻る">
 							<Ionicons name="chevron-back" size={20} color={colors.text} />
-						</GlassSurface>
-					</Pressable>
-					{/* タイトルは情報シート（名前の変更・スペースのメモ・ピン/アーカイブ/削除）の入口。
-					    既にブラーの上に載っているので、glassの上にglassを重ねないようボタン面は描かず、
-					    押せることは末尾のシェブロンで示す */}
-					<Pressable
-						style={styles.headerBody}
-						disabled={activeTerminal === undefined}
-						onPress={() => { hapticSelection(); setInfoOpen(true); }}
-						accessibilityRole="button"
-						// Pressable は子のTextを個別に読み上げなくなるため、見えている情報をラベルに畳む
-						accessibilityLabel={`${activeTerminal?.title ?? 'エージェント'}${agentWs !== undefined ? `、${agentWs.name}${agentWs.branch ? `、${agentWs.branch}` : ''}` : ''}`}
-						accessibilityHint="情報と設定を開きます"
-					>
-						<View style={styles.headerTitleRow}>
-							<Text style={styles.headerTitle} numberOfLines={1}>{activeTerminal?.title ?? 'エージェント'}</Text>
+						</Pressable>
+					</GlassSurface>
+					{/* タイトルの島は情報シート（名前の変更・スペースのメモ・ピン/アーカイブ/削除）の
+					    入口。ここは押せることが本質的に必要なのでシェブロンを残す。 */}
+					<GlassSurface style={styles.titleIsland} interactive>
+						<Pressable
+							style={styles.headerBody}
+							disabled={activeTerminal === undefined}
+							onPress={() => { hapticSelection(); setInfoOpen(true); }}
+							accessibilityRole="button"
+							// Pressable は子のTextを個別に読み上げなくなるため、見えている情報をラベルに畳む
+							accessibilityLabel={`${activeTerminal?.title ?? 'エージェント'}${agentWs !== undefined ? `、${agentWs.name}${agentWs.branch ? `、${agentWs.branch}` : ''}` : ''}`}
+							accessibilityHint="情報と設定を開きます"
+						>
+							<View style={styles.headerTextCol}>
+								<Text style={styles.headerTitle} numberOfLines={1}>{activeTerminal?.title ?? 'エージェント'}</Text>
+								{agentWs !== undefined ? (
+									<Text style={styles.headerSub} numberOfLines={1}>
+										<Text style={{ color: wsColor(agentWs) }}>{agentWs.name}</Text>
+										{agentWs.branch ? ` · ${agentWs.branch}` : ''}
+									</Text>
+								) : null}
+							</View>
 							{activeTerminal !== undefined ? <Ionicons name="chevron-down" size={12} color={colors.textDim} /> : null}
-						</View>
-						{agentWs !== undefined ? (
-							<Text style={styles.headerSub} numberOfLines={1}>
-								<Text style={{ color: wsColor(agentWs) }}>{agentWs.name}</Text>
-								{agentWs.branch ? ` · ${agentWs.branch}` : ''}
-							</Text>
-						) : null}
-					</Pressable>
+						</Pressable>
+					</GlassSurface>
 					{/* ブラウザボタン（旧ブラウザタブの後継）。共有中ページがあれば緑ドットで示す */}
-					<Pressable onPress={openBrowser} accessibilityLabel="ブラウザを開く">
-						<GlassSurface style={styles.browserBtn} interactive>
+					<GlassSurface style={styles.circleBtn} interactive>
+						<Pressable style={styles.circleHit} onPress={openBrowser} accessibilityRole="button" accessibilityLabel="ブラウザを開く">
 							<Ionicons name="globe-outline" size={18} color={colors.text} />
-						</GlassSurface>
+						</Pressable>
 						{hasSharedPage ? <View style={styles.browserBtnBadge} /> : null}
-					</Pressable>
-				</View>
+					</GlassSurface>
+				</GlassGroup>
 			</View>
 			{hasActivityHistory && chat?.activity !== undefined ? (
 				<View style={[styles.activityStripOverlay, regular && styles.overlayCenter, { top: headerHeight + 4 }]}>
@@ -744,17 +747,20 @@ function WorkingIndicator({ live, pendingCount = 0, onOpenPending }: {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	headerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, overflow: 'hidden' },
+	headerOverlay: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10 },
 	activityStripOverlay: { position: 'absolute', left: 12, right: 12, zIndex: 9 },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 12, paddingBottom: 8 },
-	backBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
-	browserBtn: { width: 36, height: 36, borderRadius: 18, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
-	browserBtnBadge: { position: 'absolute', top: -2, right: -2, width: 10, height: 10, borderRadius: 5, backgroundColor: colors.green, borderWidth: 2, borderColor: colors.bg },
-	headerBody: { flex: 1, minWidth: 0 },
-	headerTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+	header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingLeft: 16, paddingRight: 12, paddingBottom: 12 },
+	// 3つの島。丸ボタンは44（HIGの最小タップ領域）、タイトルの島も同じ高さに揃える。
+	// overflow は書かない（ブラウザの共有中ドットが円周で欠ける）。
+	circleBtn: { width: 44, height: 44, borderRadius: radius.pill, ...squircle },
+	circleHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+	titleIsland: { flex: 1, minWidth: 0, height: 44, borderRadius: radius.pill, ...squircle },
+	browserBtnBadge: { position: 'absolute', top: 0, right: 0, width: 10, height: 10, borderRadius: 5, backgroundColor: colors.green, borderWidth: 2, borderColor: colors.bg },
+	headerBody: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 14 },
+	headerTextCol: { flex: 1, minWidth: 0 },
 	// flexShrink: シェブロンを押し出さずにタイトル側で省略させる
-	headerTitle: { color: colors.text, fontSize: 17, fontWeight: '700', flexShrink: 1 },
-	headerSub: { color: colors.textDim, fontSize: 11, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	headerTitle: { color: colors.text, fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
+	headerSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	peerMessageCard: { alignSelf: 'stretch', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, gap: 6 },
 	peerMessageHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 	peerMessageLabel: { color: colors.accent2, fontSize: 11, fontWeight: '700' },
@@ -807,7 +813,6 @@ const styles = StyleSheet.create({
 	jumpWrap: { position: 'absolute', bottom: 12, right: 14 },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く（他のglassボタンと同じ流儀）
 	jumpBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3, minWidth: 40, height: 40, borderRadius: 20, paddingHorizontal: 12, overflow: 'hidden' },
-	jumpFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	jumpText: { color: colors.text, fontSize: 12, fontWeight: '600' },
 	inputBar: { paddingHorizontal: 12, paddingTop: 10, flexShrink: 1 },
 	// 実行中インジケータが出ていないときの送信予定チップ（右寄せで入力欄の上）

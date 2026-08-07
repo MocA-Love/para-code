@@ -2,19 +2,19 @@
 
 import { useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
-import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
-import { useAppStore } from '../src/appState.js';
-import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
+import { useAppStore } from '../../src/appState.js';
+import { ScreenHeader } from '../../src/components/screenHeader.js';
+import { useStableInsets } from '../../src/hooks/useStableInsets.js';
+import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import {
 	TERMINAL_FONT_SIZE_MAX,
 	TERMINAL_FONT_SIZE_MIN,
 	terminalGridFor,
-} from '../src/terminalViewport.js';
-import { colors, mono } from '../src/theme.js';
-import { hapticImpact, hapticSelection } from '../src/haptics.js';
+} from '../../src/terminalViewport.js';
+import { colors, mono, radius, squircle } from '../../src/theme.js';
+import { hapticSelection } from '../../src/haptics.js';
 
 /**
  * 設定 →「ターミナル」。文字サイズと、PC側のターミナルをこの画面の幅に合わせるかを決める。
@@ -37,8 +37,9 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
 const MENLO_APPROX = { charWidth100: 60.205, lineHeight100: 120 };
 
 export default function TerminalSettingsScreen() {
-	const router = useRouter();
 	const insets = useStableInsets();
+	// ヘッダーは本文の上に浮いているので、その実測高さぶんだけ本文の頭を空ける
+	const [headerHeight, setHeaderHeight] = useState(0);
 	const column = useContentColumnStyle();
 	const { terminalPrefs, setTerminalPref } = useAppStore(useShallow(s => ({
 		terminalPrefs: s.terminalPrefs, setTerminalPref: s.setTerminalPref,
@@ -63,14 +64,9 @@ export default function TerminalSettingsScreen() {
 	};
 
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
-			<View style={styles.header}>
-				<Pressable style={styles.closeBtn} onPress={() => { hapticImpact('light'); router.back(); }} accessibilityLabel="戻る">
-					<Ionicons name="chevron-back" size={16} color={colors.textDim} />
-				</Pressable>
-				<Text style={styles.title}>ターミナル</Text>
-			</View>
-			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingBottom: insets.bottom + 24 }, column]}>
+		<View style={styles.screen}>
+			<ScreenHeader title="ターミナル" onHeightChange={setHeaderHeight} />
+			<ScrollView style={styles.scroll} contentContainerStyle={[{ paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
 				<Text style={styles.sectionTitle}>表示</Text>
 				<View style={styles.card}>
 					<View style={styles.row}>
@@ -157,12 +153,9 @@ export default function TerminalSettingsScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 20, paddingBottom: 10 },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
-	closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
 	scroll: { flex: 1, paddingHorizontal: 16 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 8, marginBottom: 8 },
-	card: { backgroundColor: colors.surface, borderRadius: 14, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
+	card: { backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 14 },
 	row: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12 },
 	rowBody: { flex: 1, minWidth: 0 },
 	rowTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
@@ -171,12 +164,12 @@ const styles = StyleSheet.create({
 	beta: { color: colors.textDim, fontSize: 10.5, fontWeight: '600' },
 	disabled: { opacity: 0.4 },
 	separator: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
-	stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface2, borderRadius: 9, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	stepper: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface2, borderRadius: 9, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	stepBtn: { width: 34, height: 32, alignItems: 'center', justifyContent: 'center' },
 	stepBtnPressed: { backgroundColor: colors.accentWash },
 	stepValue: { color: colors.text, fontFamily: mono.ios, fontSize: 13, minWidth: 46, textAlign: 'center' },
 	// 実際のターミナルと同じ背景で出す（選んだサイズが実物でどう見えるかを確かめるため）。
-	preview: { backgroundColor: '#1e1e1e', borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: 8, marginBottom: 10, overflow: 'hidden' },
+	preview: { backgroundColor: '#1e1e1e', borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 8, marginBottom: 10, overflow: 'hidden' },
 	previewLine: { color: '#d4d4d4', fontFamily: mono.ios, lineHeight: undefined },
 	previewDim: { color: '#d7ba7d' },
 	cardBottomPad: { height: 12 },

@@ -3,7 +3,7 @@
 import { useEffect } from 'react';
 import { BackHandler, Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { colors } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
@@ -64,7 +64,7 @@ export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 		<OverlayPortal>
 			<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="閉じる" />
 			<PopIn style={[styles.pos, { top, left }]}>
-				<GlassSurface style={[styles.popover, !liquidGlass && styles.popoverFallbackBorder]}>
+				<GlassSurface style={styles.popover}>
 					<Text style={styles.head}>このエージェントの状態</Text>
 					<Pressable
 						style={styles.item}
@@ -89,7 +89,6 @@ const styles = StyleSheet.create({
 	pos: { position: 'absolute', width: POPOVER_WIDTH },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
 	popover: { borderRadius: 12, overflow: 'hidden' },
-	popoverFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	head: { color: colors.textDim, fontSize: 10, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingTop: 9, paddingHorizontal: 13, paddingBottom: 5 },
 	item: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 10, paddingHorizontal: 13 },
 	itemLabel: { color: colors.text, fontSize: 13.5, flex: 1 },

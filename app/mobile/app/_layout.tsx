@@ -180,6 +180,16 @@ function RootLayout() {
 					{/* iPadの広い幅では左にワークスペースサイドバーを常設し、このスタック全体を
 					    右カラムへ収める。iPhone・狭い幅では素通しで従来どおり全幅に描画される */}
 					<IpadShell>
+					{/* 設定まわり（設定・使用量各種・PC詳細・更新履歴・ターミナル設定）は
+					    `app/(settings)/` のネストしたスタックにまとめてある。ここではその入口を
+					    モーダルとして1つ出すだけで、中の移動は向こうのスタックが水平pushで行う。
+
+					    **子画面をここへ直接並べて `presentation: 'card'` を付けてはいけない。**
+					    react-native-screens の `RNSScreenStack.mm` の `updateContainer` は、
+					    `Push` の画面を手前にモーダルがあっても必ずベースのナビゲーション
+					    コントローラへ積む。設定モーダルの裏に隠れて何も起きなくなる。
+					    expo-router が「モーダル以降は全部モーダル扱い」に伝播させているのも、
+					    モーダルの上に積むための意図的な仕様であって回避対象ではない。 */}
 					<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
 						<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
 						<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
@@ -193,25 +203,12 @@ function RootLayout() {
 						<Stack.Screen name="space-note" options={{ headerShown: false }} />
 						{/* エージェント起動フォーム。ホームヘッダーの＋から同じくズーム遷移で開く */}
 						<Stack.Screen name="agent-launch" options={{ headerShown: false }} />
-						{/* 設定。ワークスペースドロワーの設定アイコンから開く */}
-						<Stack.Screen name="settings" options={{ headerShown: false, presentation: 'modal' }} />
-						{/* PCごとの詳細（使用量への入口＋名前変更・ペアリング解除）。設定のPC一覧から開く */}
-						<Stack.Screen name="pc-detail" options={{ headerShown: false, animation: 'slide_from_right' }} />
-						{/* Ccusage ダッシュボード。設定画面の項目から開く（設定のmodalと区別するため水平pushにする） */}
-						<Stack.Screen name="ccusage" options={{ headerShown: false, animation: 'slide_from_right' }} />
-						{/* Rate Limit(AIリミット)。設定画面の項目から開く（ccusageと同じ水平push） */}
-						<Stack.Screen name="ratelimit" options={{ headerShown: false, animation: 'slide_from_right' }} />
-						{/* GitHub API利用状況。設定画面の項目から開く（ccusage/ratelimitと同じ水平push） */}
-						<Stack.Screen name="github-usage" options={{ headerShown: false, animation: 'slide_from_right' }} />
-						{/* PC本体のリソース。設定画面とワークスペースドロワーのPCカードから開く */}
-						<Stack.Screen name="system" options={{ headerShown: false, animation: 'slide_from_right' }} />
+						{/* 設定まわり一式（ネストStack）。ワークスペースドロワーの設定アイコンから開く */}
+						<Stack.Screen name="(settings)" options={{ headerShown: false, presentation: 'modal' }} />
 						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継） */}
 						<Stack.Screen name="browser" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* アーカイブ一覧。ホームヘッダーの箱アイコンから開く */}
 						<Stack.Screen name="archive" options={{ headerShown: false, animation: 'slide_from_right' }} />
-						{/* 更新履歴。設定画面の項目とお知らせシートから開く */}
-						<Stack.Screen name="changelog" options={{ headerShown: false, animation: 'slide_from_right' }} />
-						<Stack.Screen name="terminal-settings" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>
 					</IpadShell>
 					{/* glass対応メニュー/ダイアログの描画先（overlayHost.tsx参照）。

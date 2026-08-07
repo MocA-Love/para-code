@@ -10,7 +10,12 @@ export interface SidebarTab {
 	href: '/' | '/terminal' | '/scm' | '/files';
 	icon: keyof typeof Ionicons.glyphMap;
 	iconActive: keyof typeof Ionicons.glyphMap;
-	/** 応答待ち件数のバッジを出すか（iPhone版のNativeTabsと同じ2つに合わせる）。 */
+	/**
+	 * 応答待ち件数のバッジを出すか（iPhone版のNativeTabsと合わせてホームだけ）。
+	 *
+	 * 同じ件数を隣り合う2タブへ同時に出すと合計が倍あるように読めるため、
+	 * 出すのはホームの1箇所に絞る。
+	 */
 	badge?: boolean;
 }
 
@@ -20,7 +25,7 @@ export interface SidebarTab {
  */
 export const SIDEBAR_TABS: readonly SidebarTab[] = [
 	{ name: 'index', label: 'ホーム', href: '/', icon: 'home-outline', iconActive: 'home', badge: true },
-	{ name: 'terminal', label: 'ターミナル', href: '/terminal', icon: 'terminal-outline', iconActive: 'terminal', badge: true },
+	{ name: 'terminal', label: 'ターミナル', href: '/terminal', icon: 'terminal-outline', iconActive: 'terminal' },
 	{ name: 'scm', label: 'ソース管理', href: '/scm', icon: 'git-branch-outline', iconActive: 'git-branch' },
 	{ name: 'files', label: 'ファイル', href: '/files', icon: 'folder-outline', iconActive: 'folder' },
 ];

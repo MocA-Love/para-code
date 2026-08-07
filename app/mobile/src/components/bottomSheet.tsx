@@ -117,7 +117,7 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 					{ transform: [{ translateY }] },
 				]}
 			>
-				{glass ? <GlassSurface style={styles.glassBackdrop} /> : null}
+				{glass ? <GlassSurface style={styles.glassBackdrop} fallbackBorder={false} /> : null}
 				<View style={styles.handle} />
 				<View style={styles.head}>
 					{onConfirm ? (

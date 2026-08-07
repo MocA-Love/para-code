@@ -3,7 +3,7 @@
 import { forwardRef, memo, ReactNode, type Ref } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { GlassSurface, liquidGlass } from './glassSurface.js';
+import { GlassSurface } from './glassSurface.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 import { glassComposerTextInputBehavior } from './glassComposerBehavior.js';
@@ -36,7 +36,7 @@ export function GlassComposer({ value, defaultValue, inputKey, inputRef, onChang
 	const inputBehavior = glassComposerTextInputBehavior();
 	return (
 		// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
-		<GlassSurface style={[styles.wrap, !liquidGlass && styles.wrapFallbackBorder]}>
+		<GlassSurface style={styles.wrap}>
 			<ComposerTextInput key={inputKey} ref={inputRef} value={value} defaultValue={defaultValue} onChangeText={onChangeText} placeholder={placeholder} monospace={monospace} multiline={inputBehavior.multiline} blurOnSubmit={inputBehavior.blurOnSubmit} />
 			<View style={styles.tools}>
 				<View style={styles.toolsLeft}>{tools}</View>
@@ -88,7 +88,6 @@ const styles = StyleSheet.create({
 		borderRadius: 26,
 		overflow: 'hidden', paddingTop: 12, paddingBottom: 10, paddingHorizontal: 14,
 	},
-	wrapFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	input: { color: colors.text, fontSize: 15, paddingHorizontal: 4, paddingBottom: 12, maxHeight: 120 },
 	inputMono: { fontFamily: 'Menlo', fontSize: 13 },
 	tools: { flexDirection: 'row', alignItems: 'center', gap: 8 },

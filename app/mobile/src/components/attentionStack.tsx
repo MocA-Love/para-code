@@ -6,7 +6,7 @@ import type { AgentChatMessage, AgentChatState } from '../store.js';
 import type { AgentActions } from '../hooks/useAgentActions.js';
 import { QuestionCard } from './questionCard.js';
 import { ApprovalCard } from './approvalCard.js';
-import { colors } from '../theme.js';
+import { colors, squircle } from '../theme.js';
 
 /** チャット履歴から最新の未回答質問(question)を探す（agent.tsxの回答済み判定と同じロジック）。 */
 function findPendingQuestion(chat: AgentChatState | undefined): AgentChatMessage | undefined {
@@ -161,10 +161,15 @@ export function AttentionStack({ items, total, openKey, onToggle, onLongPress, h
 	}
 	return (
 		<View style={styles.stack}>
-			<View style={styles.header} accessibilityRole="header" accessibilityLabel={`応答待ち ${total}件`}>
-				<Text style={styles.headerTitle}>応答待ち</Text>
-				<Text style={styles.headerCount}>{total}</Text>
-			</View>
+			{/* 1件のときは見出しを出さない。赤い枠のカードが1枚あるだけで何を待っているかは
+			    分かるので、そのぶん本文がヘッダーの直下から始まるほうがよい。複数あるときだけ
+			    「ここからここまでが応答待ち」の塊として見出しを付ける。 */}
+			{total > 1 ? (
+				<View style={styles.header} accessibilityRole="header" accessibilityLabel={`応答待ち ${total}件`}>
+					<Text style={styles.headerTitle}>応答待ち</Text>
+					<Text style={styles.headerCount}>{total}</Text>
+				</View>
+			) : null}
 			{items.map(item => {
 				const open = item.terminalKey === openKey;
 				return (
@@ -222,7 +227,7 @@ const styles = StyleSheet.create({
 	header: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8, marginHorizontal: 2 },
 	headerTitle: { color: colors.textDim, fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
 	headerCount: { color: colors.red, backgroundColor: 'rgba(244,114,114,0.14)', borderRadius: 999, paddingHorizontal: 7, paddingVertical: 1, fontSize: 10, fontWeight: '700', overflow: 'hidden' },
-	item: { backgroundColor: colors.attentionBg, borderWidth: 1, borderColor: 'rgba(244,114,114,0.32)', borderRadius: 16, marginBottom: 8, overflow: 'hidden' },
+	item: { backgroundColor: colors.attentionBg, borderWidth: 1, borderColor: 'rgba(244,114,114,0.32)', borderRadius: 16, ...squircle, marginBottom: 8, overflow: 'hidden' },
 	itemOpen: { borderColor: 'rgba(244,114,114,0.5)' },
 	head: { flexDirection: 'row', alignItems: 'center', gap: 11, paddingVertical: 12, paddingHorizontal: 14 },
 	pin: { marginRight: -2 },

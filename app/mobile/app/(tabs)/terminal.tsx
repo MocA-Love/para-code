@@ -14,7 +14,9 @@ import { GlassComposer } from '../../src/components/glassComposer.js';
 import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
-import { colors } from '../../src/theme.js';
+import { GlassSurface } from '../../src/components/glassSurface.js';
+import { HeaderActionButton, HeaderActionPill } from '../../src/components/screenHeader.js';
+import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.js';
 import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
 import { terminalViewportForPrefs, type TerminalGrid } from '../../src/terminalViewport.js';
@@ -36,6 +38,7 @@ export default function TerminalScreen() {
 		sendArrowKey: s.sendArrowKey, sendTextInput: s.sendTextInput, createTerminal: s.createTerminal,
 		terminalPrefs: s.terminalPrefs, setTerminalViewport: s.setTerminalViewport, activePcId: s.activePcId,
 	})));
+	const [headerHeight, setHeaderHeight] = useState(0);
 	const [input, setInput] = useState('');
 	const [submitting, setSubmitting] = useState(false);
 	const insets = useStableInsets();
@@ -130,22 +133,32 @@ export default function TerminalScreen() {
 		    下パディングが張り付き、復帰時にUIが上へ潰れる（非フォーカスで無効化→復帰時に
 		    クリーンな状態から再計算させる） */}
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90} enabled={isFocused}>
-			<WsHeader title="ターミナル" />
-			<ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabBar} contentContainerStyle={styles.tabContent}>
+			{/* ヘッダーは浮かぶ島。タブチップ列がその下に潜らないよう、実測した高さぶん上を空ける。
+			    この画面だけドロワーの全域スワイプを巻かないのは、チップ列が横スクロールで
+			    指の動きの向きが同じになり、どちらが取るか状況で変わるため（左端24ptのエッジ
+			    スワイプは WsDrawerLayout 側で従来どおり効く）。 */}
+			<ScrollView
+				horizontal
+				showsHorizontalScrollIndicator={false}
+				style={styles.tabBar}
+				contentContainerStyle={[styles.tabContent, { paddingTop: headerHeight }]}
+			>
 				{terminals.map((t, i) => {
 					const active = t.terminalKey === activeKey;
-					return (
-						<Pressable key={t.terminalKey} style={({ pressed }) => [styles.tabChip, active && styles.tabChipActive, pressed && styles.keyPressed]} onPress={() => { hapticSelection(); setSelectedTerminalKey(t.terminalKey); }}>
+					const body = (
+						<Pressable style={styles.tabHit} onPress={() => { hapticSelection(); setSelectedTerminalKey(t.terminalKey); }} accessibilityRole="button" accessibilityState={{ selected: active }}>
 							{isAgentWaiting(t.agentStatus)
 								? <View style={styles.dotRed} />
 								: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
 							<Text style={[styles.tabText, active && styles.tabTextActive]} numberOfLines={1}>{i + 1}: {t.title}</Text>
 						</Pressable>
 					);
+					// 選んでいるものだけ不透明なアクセントの地にする（ホームの絞り込みチップと同じ作法）。
+					// ガラスのままだと、並んだときにどれが選ばれているかが背景次第で読めなくなる。
+					return active
+						? <View key={t.terminalKey} style={[styles.tabChip, styles.tabChipActive]}>{body}</View>
+						: <GlassSurface key={t.terminalKey} style={styles.tabChip} interactive>{body}</GlassSurface>;
 				})}
-				<Pressable style={({ pressed }) => [styles.tabChip, pressed && styles.keyPressed]} onPress={() => { hapticSelection(); createTerminal(ws?.id); }} accessibilityLabel="新しいターミナル">
-					<Ionicons name="add" size={16} color={colors.textDim} />
-				</Pressable>
 				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
 			</ScrollView>
 			<View style={styles.output}>
@@ -191,6 +204,19 @@ export default function TerminalScreen() {
 					}
 				/>
 			</View>
+			<WsHeader
+				onHeightChange={setHeaderHeight}
+				right={
+					<HeaderActionPill>
+						<HeaderActionButton
+							icon="add"
+							label="新しいターミナル"
+							size={21}
+							onPress={() => { hapticSelection(); createTerminal(ws?.id); }}
+						/>
+					</HeaderActionPill>
+				}
+			/>
 		</KeyboardAvoidingView>
 		</ConnectionGate>
 	);
@@ -199,21 +225,26 @@ export default function TerminalScreen() {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	tabBar: { flexGrow: 0, flexShrink: 0 },
-	tabContent: { paddingHorizontal: 16, paddingBottom: 8, gap: 8, alignItems: 'center' },
-	tabChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: colors.panel, borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6, maxWidth: 200 },
-	tabChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
-	tabText: { color: colors.textDim, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	tabTextActive: { color: colors.text },
+	// ここの余白を変えると、出力領域の高さ＝PCへ申告するPTYの行数まで変わる。
+	// 今回のガラス化でヘッダーが8pt高く、チップ行が4pt低くなり、差し引き**4ptほど狭い**。
+	// 行送りより小さいので通常は行数が変わらないが、「変わらない」と決め打たないこと
+	// （実測値は TermView が測り直してPCへ申告し直す）。
+	tabContent: { paddingHorizontal: 16, paddingBottom: 4, gap: 7, alignItems: 'center' },
+	tabChip: { height: 32, borderRadius: radius.pill, ...squircle, maxWidth: 200 },
+	tabChipActive: { backgroundColor: 'rgba(9,175,217,0.30)', borderWidth: 1, borderColor: 'rgba(9,175,217,0.5)' },
+	tabHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
+	tabText: { color: colors.text, fontSize: 11.5, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+	tabTextActive: { color: '#bfeeff', fontWeight: '700' },
 	dotRed: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
 	dotGreen: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
 	dim: { color: colors.textDim, fontSize: 12 },
 	operationWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(245,158,11,.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,.35)' },
 	operationWarningText: { flex: 1, color: colors.text, fontSize: 11, lineHeight: 16 },
-	output: { flex: 1, backgroundColor: '#1e1e1e', marginHorizontal: 12, borderRadius: 10, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	output: { flex: 1, backgroundColor: '#1e1e1e', marginHorizontal: 12, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
 	placeholder: { color: colors.textDim, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, padding: 10 },
 	keyRowScroll: { flex: 1, minWidth: 0 },
 	keyRow: { flexDirection: 'row', gap: 6, alignItems: 'center', paddingRight: 8 },
-	key: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, borderRadius: 999, paddingHorizontal: 13, paddingVertical: 8 },
+	key: { backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, borderRadius: radius.pill, ...squircle, paddingHorizontal: 13, paddingVertical: 7 },
 	keyPressed: { backgroundColor: colors.accentWash, borderColor: colors.accent },
 	keyText: { color: colors.text, fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	keyDanger: { color: colors.red },

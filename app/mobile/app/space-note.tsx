@@ -6,7 +6,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
-import { GlassSurface, liquidGlass } from '../src/components/glassSurface.js';
+import { GlassSurface } from '../src/components/glassSurface.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
@@ -431,7 +431,7 @@ function SpaceNoteToolbar({ actions, bottomInset }: {
 	return (
 		<View style={[styles.toolbar, { marginBottom: bottomInset }]}>
 			{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される） */}
-			<GlassSurface style={[styles.toolbarGlass, !liquidGlass && styles.toolbarGlassFallbackBorder]} />
+			<GlassSurface style={styles.toolbarGlass} />
 			{actions.map(action => (
 				<Pressable
 					key={action.key}
@@ -474,8 +474,10 @@ function GlassButton({ label, icon, onPress, disabled, tint, strong, accessibili
 			accessibilityRole="button"
 			accessibilityLabel={accessibilityLabel ?? label}
 		>
-			{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される） */}
-			<GlassSurface style={icon !== undefined ? styles.iconGlass : styles.pillGlass} interactive tintColor={tint} />
+			{/* 角丸はガラス面自体に渡す（ネイティブglassが正しい丸形状で描画される）。
+			    tintOpacity=1: ここは薄い色被せではなく、主要アクションをアクセント色で
+			    はっきり染めるための指定なので、渡した色をそのまま使う。 */}
+			<GlassSurface style={icon !== undefined ? styles.iconGlass : styles.pillGlass} interactive tintColor={tint} tintOpacity={1} />
 			{icon !== undefined
 				? <Ionicons name={icon} size={18} color={colors.text} />
 				: <Text style={[styles.btnText, strong === true && styles.btnTextStrong]}>{label}</Text>}
@@ -527,7 +529,6 @@ const styles = StyleSheet.create({
 	toolbar: { flexDirection: 'row', alignItems: 'center', gap: 6, marginHorizontal: 14, paddingHorizontal: 6, paddingVertical: 6, borderRadius: 20 },
 	toolbarGlass: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, borderRadius: 20, overflow: 'hidden' },
 	// ネイティブglassは素材自体が縁の光を持つため、フォールバック時のみ枠線を描く
-	toolbarGlassFallbackBorder: { borderWidth: 1, borderColor: colors.glassBorder },
 	toolbarBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, height: 34, borderRadius: 14, paddingHorizontal: 4 },
 	toolbarBtnPressed: { backgroundColor: 'rgba(255,255,255,0.10)' },
 	toolbarLabel: { color: colors.text, fontSize: 12, fontWeight: '600' },

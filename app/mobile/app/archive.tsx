@@ -82,10 +82,14 @@ export default function ArchiveScreen() {
 						<SwipeRow
 							key={t.terminalKey}
 							direction="right"
-							label="ホームに戻す"
-							icon="arrow-undo-outline"
-							color={colors.accent2}
-							onTrigger={() => setArchived(pinKeyForTerminal(t), false)}
+							actions={[{
+								key: 'restore',
+								label: '戻す',
+								icon: 'arrow-undo-outline',
+								color: colors.accent2,
+								fullSwipe: true,
+								onPress: () => setArchived(pinKeyForTerminal(t), false),
+							}]}
 						>
 							<Pressable
 								style={[agentRowStyles.container, styles.rowDim]}

@@ -5,9 +5,9 @@ import { usePathname, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../appState.js';
 import { isAgentWaiting } from '../store.js';
-import { GlassSurface, liquidGlass } from '../components/glassSurface.js';
+import { GlassSurface } from '../components/glassSurface.js';
 import { WsDrawerContent } from '../components/wsDrawer.js';
-import { colors } from '../theme.js';
+import { colors, radius, squircle } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import { activeSidebarTab, SIDEBAR_TABS, type SidebarTab } from './ipadTabs.js';
 
@@ -104,11 +104,10 @@ const styles = StyleSheet.create({
 	wrap: { paddingHorizontal: 10, paddingTop: 10 },
 	// Apple HIGに従いglassの上にglassを重ねない。個々のタブは背景を持たず、
 	// 選択状態はアイコンとラベルの色だけで示す。
+	// 枠線は GlassSurface が非対応環境でだけ描く（fallbackBorder）。ここでは形だけ決める。
 	bar: {
-		flexDirection: 'row', borderRadius: 20, overflow: 'hidden',
+		flexDirection: 'row', borderRadius: radius.panel, ...squircle,
 		paddingVertical: 8, paddingHorizontal: 4,
-		// ネイティブglassが無い環境では面の輪郭が消えるため、そのときだけ枠線を描く。
-		...(liquidGlass ? null : { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.glassBorder }),
 	},
 	tab: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 4 },
 	label: { color: colors.textDim, fontSize: 9.5, fontWeight: '600' },

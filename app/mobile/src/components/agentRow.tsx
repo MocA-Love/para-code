@@ -4,7 +4,7 @@ import { ReactNode, useEffect } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
-import { colors } from '../theme.js';
+import { colors, radius, squircle } from '../theme.js';
 
 /**
  * ホーム一覧のエージェント行の見た目を、リスト本体と長押し時の「リフト（浮き上がり）
@@ -104,7 +104,7 @@ export function AgentRowClone({ data, rect }: { data: AgentRowData; rect: AgentR
 export const agentRowStyles = StyleSheet.create({
 	container: {
 		flexDirection: 'row', alignItems: 'center', gap: 11,
-		backgroundColor: colors.surface, borderRadius: 14, paddingVertical: 12, paddingHorizontal: 14,
+		backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, paddingVertical: 12, paddingHorizontal: 14,
 		borderWidth: 1, borderColor: colors.border, marginBottom: 8,
 	},
 });
@@ -121,7 +121,7 @@ const styles = StyleSheet.create({
 	agentSub: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
 	agentWs: { fontSize: 11, fontFamily: 'Menlo', flexShrink: 1 },
 	agentBranch: { color: colors.textDim, fontSize: 11, flexShrink: 1 },
-	badge: { fontSize: 10, fontWeight: '700', borderRadius: 6, paddingHorizontal: 7, paddingVertical: 2, overflow: 'hidden' },
+	badge: { fontSize: 10, fontWeight: '700', borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },
 	badgeWaiting: { backgroundColor: 'rgba(244,135,113,0.15)', color: colors.red },
 	badgeRunning: { backgroundColor: 'rgba(78,201,176,0.15)', color: colors.green },
 	badgeReview: { backgroundColor: 'rgba(220,220,170,0.15)', color: colors.yellow },
