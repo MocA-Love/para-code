@@ -11,7 +11,7 @@ import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
-import { colors } from '../theme.js';
+import { colors, squircle } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
 /**
@@ -316,7 +316,7 @@ export function PcCardHeader({ onOpen, onOpenSettings }: {
 				accessibilityLabel="PCを切り替え"
 			>
 				{active !== undefined
-					? <PcAvatar name={active.name} hue={active.hue} size={38} />
+					? <PcAvatar name={active.name} hue={active.hue} size={30} />
 					: <Image source={require('../../assets/pairing-logo.png')} style={styles.logo} resizeMode="contain" />}
 				<View style={styles.cardBody}>
 					<Text style={styles.cardName} numberOfLines={1}>{active?.name ?? 'Para Code'}</Text>
@@ -341,14 +341,17 @@ export function PcCardHeader({ onOpen, onOpenSettings }: {
 				) : null}
 				<Ionicons name="chevron-forward" size={14} color={colors.textDim} />
 			</Pressable>
-			<Pressable
-				style={styles.settingsBtn}
-				onPress={() => { hapticSelection(); onOpenSettings(); }}
-				accessibilityLabel="設定"
-				hitSlop={6}
-			>
-				<Ionicons name="settings-outline" size={17} color={colors.textDim} />
-			</Pressable>
+			{/* 箱自体を当たり判定ぶんの大きさにする（GlassViewはhitTestを上書きしないため、
+			    内側Pressableのhitslopは箱の外側では効かない）。 */}
+			<GlassSurface style={styles.settingsBtn} interactive>
+				<Pressable
+					style={styles.settingsBtnHit}
+					onPress={() => { hapticSelection(); onOpenSettings(); }}
+					accessibilityLabel="設定"
+				>
+					<Ionicons name="settings-outline" size={17} color={colors.textDim} />
+				</Pressable>
+			</GlassSurface>
 		</View>
 	);
 }
@@ -399,8 +402,9 @@ const styles = StyleSheet.create({
 	// 歯車ボタンとの間に余白が残らない。複数PC時は chevron の手前に「他N台」バッジ（縮まない）
 	// が増えるため、その状態で chevron が歯車へ食い込んで重なって見えていた。
 	cardRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-	cardMain: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6, paddingHorizontal: 8, marginLeft: -8, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.04)' },
-	logo: { width: 38, height: 38 },
+	// 高さは右の歯車ボタン（40）に合わせる。左右で違うと1本の帯に見えない。
+	cardMain: { flex: 1, height: 40, flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 8, marginLeft: -8, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.04)' },
+	logo: { width: 30, height: 30 },
 	cardBody: { flex: 1, minWidth: 0 },
 	cardName: { color: colors.text, fontSize: 14, fontWeight: '700' },
 	cardStateRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 1 },
@@ -410,6 +414,7 @@ const styles = StyleSheet.create({
 	othersBadgeAlert: { backgroundColor: 'rgba(244,114,114,0.15)' },
 	othersBadgeText: { color: colors.textDim, fontSize: 9.5, fontWeight: '700' },
 	othersBadgeTextAlert: { color: colors.red },
-	settingsBtn: { width: 32, height: 32, borderRadius: 10, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+	settingsBtn: { width: 40, height: 40, borderRadius: 13, ...squircle },
+	settingsBtnHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
 });

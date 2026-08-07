@@ -111,7 +111,8 @@ export default function NotificationsScreen() {
 					<GlassSurface style={styles.island}>
 						<View style={styles.islandBody}>
 							<Text style={styles.islandTitle}>通知</Text>
-							<Text style={styles.islandSub}>{notifications.length}件</Text>
+							{/* この一覧に残っている＝まだ読んでいない、なので件数は「未読」として出す。 */}
+							<Text style={styles.islandSub}>未読 {notifications.length}</Text>
 						</View>
 					</GlassSurface>
 					<View style={styles.headerSpacer} pointerEvents="none" />

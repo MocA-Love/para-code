@@ -34,7 +34,7 @@ import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
 import { arrangeHomeRows } from '../../src/homeSort.js';
 import { HomeFilterChips, HomeSortSheet } from '../../src/components/homeListControls.js';
-import { HomePlusMenu, PlusMenuScrim, type HomePlusMenuAction } from '../../src/components/homePlusMenu.js';
+import { HomePlusMenu, PlusMenuScrim, plusMenuCoversPill, type HomePlusMenuAction } from '../../src/components/homePlusMenu.js';
 import { WorktreeCreateSheet } from '../../src/components/worktreeCreateSheet.js';
 import { listColumnsFor } from '../../src/ipad/ipadLayout.js';
 
@@ -364,15 +364,15 @@ export default function HomeScreen() {
 							key={t.terminalKey}
 							direction="left"
 							actions={[
-								// 「確認済み」はレビュー待ちにしか意味が無い。実行中やアイドルの行に
-								// 出しても、押して何も変わらないカードが増えるだけになる。
-								...(t.agentStatus === 'review' ? [{
+								// 「確認済み」は全行に出す（決定D）。行によって枚数が変わると、
+								// スワイプのたびに開く深さが違って手が覚えられない。
+								{
 									key: 'ack',
 									label: '確認済み',
 									icon: 'eye-outline' as const,
 									color: swipeActionColors.neutral,
 									onPress: () => ackAgentStatus(t.terminalKey),
-								}] : []),
+								},
 								{
 									key: 'archive',
 									label: 'アーカイブ',
@@ -478,7 +478,9 @@ export default function HomeScreen() {
 					hasSpace={effectiveWs !== undefined}
 						onSelect={onPlusMenuSelect}
 					>
-					<HeaderActionPill>
+					{/* 真モーフのときはガラスをメニュー側のSwiftUI層が描くので、ピルは配置だけ（plain）。
+					    ＋は×へ変えない——開くとメニューがピルごと覆うので、×を見せる機会が無い。 */}
+					<HeaderActionPill plain={plusMenuCoversPill}>
 						{archivedCount > 0 ? (
 							<HeaderActionButton
 								icon="file-tray-full-outline"
@@ -489,11 +491,14 @@ export default function HomeScreen() {
 						<VoiceNotificationControl />
 						<NotificationsButton notifications={notifications} />
 						<HeaderActionButton
-							icon={plusMenuOpen ? 'close' : 'add'}
+							// フォールバック環境ではメニューが開いてもピルが覆われず押せるままなので、
+							// ×に変えてトグルにする。真モーフ側は開くとピルごと覆われるため常に＋でよい
+							// （トグルにしても、開いている間は触れないので副作用は無い）。
+							icon={plusMenuCoversPill ? 'add' : (plusMenuOpen ? 'close' : 'add')}
 							label="作成と表示のメニュー"
 							size={21}
 							expanded={plusMenuOpen}
-							onPress={() => { hapticImpact('light'); setPlusMenuOpen(true); }}
+							onPress={() => { hapticImpact('light'); setPlusMenuOpen(open => !open); }}
 						/>
 					</HeaderActionPill>
 					</HomePlusMenu>

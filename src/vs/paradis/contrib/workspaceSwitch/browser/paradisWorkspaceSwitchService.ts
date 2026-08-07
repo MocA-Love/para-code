@@ -42,13 +42,6 @@ interface ISerializedWorkingSetEntry {
 	/** 状態キー (リポジトリID or worktree キー)。歴史的経緯でフィールド名は repositoryId */
 	readonly repositoryId: string;
 	readonly workingSet: IEditorWorkingSet;
-	/**
-	 * この working set を保存した時点で開いていたターミナルエディタの数。
-	 *
-	 * 復元時に孤児 PTY の索引を引く必要があるかの判定にだけ使う。**古いデータには無い**ので、
-	 * 欠けている場合は「いるかもしれない」として索引を引く側（従来どおり）に倒すこと。
-	 */
-	readonly terminalEditors?: number;
 }
 
 interface ISerializedActiveEntry {
@@ -179,11 +172,6 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * ('editor.workingSets')。ここではリポジトリとの対応だけを自前キーで永続化する。
 	 */
 	private readonly _workingSets = new Map<string, IEditorWorkingSet>();
-	/**
-	 * working set を保存した時点のターミナルエディタ数。キーが無い＝不明で、索引を引く側に倒す。
-	 * `_workingSets` と生死を揃えるため、保存・削除は必ず同じ場所で行うこと。
-	 */
-	private readonly _workingSetTerminals = new Map<string, number>();
 
 	/** 切り替え処理の直列化 (連打時に退避と復元が交錯して状態が壊れるのを防ぐ) */
 	private readonly _switchSequencer = new Sequencer();
@@ -761,20 +749,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// スナップショットはこの適用専用なので、終わったら必ず捨てる。残すとロールバックでの
 				// 再適用や後続の revive が古い情報で attach 先を決めてしまう
 				// (paradisTerminalEditorRevive.ts)。
-				// 復元先にターミナルエディタが載っていないと分かっているなら、pty host への
-				// 問い合わせ自体を飛ばす。判定は2段階で、混ぜないこと:
-				//
-				// - working set が無い（初訪問・破棄済み）→ `applyWorkingSetFor` は
-				//   `applyWorkingSet('empty')` に落ちて `reviveInput` を一度も呼ばない。
-				//   復元される端末入力が存在しないので 0 でよい。
-				// - working set はあるが数が `undefined`（この計装より前に保存されたデータ、
-				//   または保存時に数えられなかった回）→ **「無い」ではなく「不明」**。
-				//   ここを 0 と扱うと、端末を含む working set を索引なしで復元してしまう。
-				const restoreTerminals = this._workingSets.has(stateKey)
-					? this._workingSetTerminals.get(stateKey)
-					: 0;
-				await timePhase('revive_index',
-					() => paradisRefreshTerminalReviveIndex(stateKey, { skipLookup: restoreTerminals === 0 }));
+				await timePhase('revive_index', () => paradisRefreshTerminalReviveIndex(stateKey));
 				try {
 					await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
 				} finally {
@@ -785,31 +760,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// 先行実行が終わっていなければここで待つ。切り替えの体感に効くのは
 				// stat 自体の時間ではなく「本流が待たされた時間」なので、そちらを測る。
 				await timePhase('verify_folder_wait', () => folderVerified);
-				// `update_folders` は本番の p95 で 1086ms、最遅群では 1〜2秒を占める最大の区間だが、
-				// 中身は upstream の `workspaceEditingService` なので、そのままでは「何に使われた
-				// 時間か」が分からない。upstream に手を入れずに切り分けるため、
-				// `onDidChangeWorkspaceFolders` の発火時刻で2つに割る。
-				//
-				// **前半＝「こちらの呼び方の問題」と読まないこと。** 発火の直前で
-				// `handleWillChangeWorkspaceFolders` が await されている（configurationService.ts）ので、
-				// willChange 参加者（エディタ状態の移行やバックアップ等）の時間は**前半に入る**。
-				// この2分割で分かるのは「発火より前か後か」だけ。前半が重いと出たら、次は
-				// 「設定の書き込み」と「willChange 参加者」をさらに分ける必要がある。
-				const updateFoldersStartedAt = Date.now();
-				let foldersChangedAt: number | undefined;
-				const foldersChangedListener = this.contextService.onDidChangeWorkspaceFolders(() => {
-					foldersChangedAt ??= Date.now();
-				});
 				try {
 					await timePhase('update_folders',
 						() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
 				} finally {
-					foldersChangedListener.dispose();
-					// 発火を観測できなかった回はキーごと落とす。0 を入れると「速かった」と
-					// 区別がつかなくなり、集計が黙って歪む。
-					if (foldersChangedAt !== undefined) {
-						phaseMs['update_folders_to_event'] = foldersChangedAt - updateFoldersStartedAt;
-					}
 					// ロールバックの updateFolders は別のフォルダへ戻すので、確認結果を残さない。
 					paradisClearVerifiedWorkspaceFolders();
 				}
@@ -981,31 +935,11 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private saveWorkingSetFor(stateKey: string, excludedEditors: readonly EditorInput[] = []): void {
 		const previousWorkingSet = this._workingSets.get(stateKey);
 		if (this.editorGroupsService.mainPart.groups.some(group => !group.isEmpty)) {
-			// 数えるのは working set を保存する**前**。`getInputFromResource` は未登録の resource で
-			// 投げる API なので、保存の後に数えると「新しいハンドルと古い数」が組になって残る。
-			// その組で復元すると、端末を含む working set を索引なしで復元する経路が開く。
-			// 数えられなかった場合は台帳から消して「不明」にし、索引を引く側へ倒す。
-			//
-			// 除外された入力 (retain 中＝子プロセス実行中の端末) は working set に載らないので、
-			// 復元時に索引を引く相手にもならない。数えるのは実際に載るものだけ。
-			let terminalCount: number | undefined;
-			try {
-				terminalCount = this.terminalEditorService.instances
-					.filter(instance => !excludedEditors.includes(this.terminalEditorService.getInputFromResource(instance.resource)))
-					.length;
-			} catch (error) {
-				this.logService.warn('[ParadisWorkspaceSwitch] Failed to count terminal editors for the working set', error);
-			}
 			const workingSet = this.editorGroupsService.saveWorkingSet(`paradis-workspace:${stateKey}`, {
 				excludeEditors: excludedEditors,
 				includeAuxiliaryWindows: false
 			});
 			this._workingSets.set(stateKey, workingSet);
-			if (terminalCount === undefined) {
-				this._workingSetTerminals.delete(stateKey);
-			} else {
-				this._workingSetTerminals.set(stateKey, terminalCount);
-			}
 			if (previousWorkingSet) {
 				// 新しいスナップショットが確定してから古いものを捨てる。保存失敗時も、
 				// 直前に成功した Working Set を失わないため。
@@ -1014,7 +948,6 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		} else if (previousWorkingSet) {
 			this.editorGroupsService.deleteWorkingSet(previousWorkingSet);
 			this._workingSets.delete(stateKey);
-			this._workingSetTerminals.delete(stateKey);
 		}
 		this.saveWorkingSets();
 	}
@@ -1054,7 +987,6 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 		this.editorGroupsService.deleteWorkingSet(existing);
 		this._workingSets.delete(repositoryId);
-		this._workingSetTerminals.delete(repositoryId);
 		this.saveWorkingSets();
 	}
 
@@ -1123,9 +1055,6 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			const serialized: ISerializedWorkingSetEntry[] = JSON.parse(raw);
 			for (const entry of serialized) {
 				this._workingSets.set(entry.repositoryId, entry.workingSet);
-				if (entry.terminalEditors !== undefined) {
-					this._workingSetTerminals.set(entry.repositoryId, entry.terminalEditors);
-				}
 			}
 		} catch {
 			// 壊れたデータは無視 (次の切り替えで作り直される)
@@ -1135,7 +1064,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private saveWorkingSets(): void {
 		const serialized: ISerializedWorkingSetEntry[] = [];
 		for (const [repositoryId, workingSet] of this._workingSets) {
-			serialized.push({ repositoryId, workingSet, terminalEditors: this._workingSetTerminals.get(repositoryId) });
+			serialized.push({ repositoryId, workingSet });
 		}
 		this.storageService.store(ParadisWorkspaceSwitchService.WORKING_SETS_STORAGE_KEY, JSON.stringify(serialized), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}

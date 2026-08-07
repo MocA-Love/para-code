@@ -9,6 +9,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { ScreenHeader } from '../../src/components/screenHeader.js';
+import { SelectablePill } from '../../src/components/selectablePill.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
@@ -426,11 +427,22 @@ export default function SystemScreen() {
 
 							<Text style={styles.sectionTitle}>内訳</Text>
 							<View style={styles.chipRow}>
-								{([['process', 'プロセス'], ['scope', 'スペース'], ['volume', 'ボリューム']] as [AxisKey, string][]).map(([key, label]) => (
-									<Pressable key={key} style={[styles.chip, axis === key && styles.chipActive]} onPress={() => { hapticSelection(); setAxis(key); }}>
-										<Text style={[styles.chipText, axis === key && styles.chipTextActive]}>{label}</Text>
-									</Pressable>
-								))}
+								{([['process', 'プロセス'], ['scope', 'スペース'], ['volume', 'ボリューム']] as [AxisKey, string][]).map(([key, label]) => {
+									const active = axis === key;
+									return (
+										<SelectablePill
+											key={key}
+											active={active}
+											onPress={() => { hapticSelection(); setAxis(key); }}
+											style={styles.chip}
+											hitStyle={styles.chipHit}
+											activeColor={colors.accentWash}
+											accessibilityLabel={label}
+										>
+											<Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+										</SelectablePill>
+									);
+								})}
 							</View>
 
 							{axis === 'volume' ? (
@@ -508,8 +520,8 @@ const styles = StyleSheet.create({
 	legendItem: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 	legendSwatch: { width: 9, height: 9, borderRadius: 3 },
 	legendText: { color: colors.textDim, fontSize: 10.5 },
-	chip: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, ...squircle, backgroundColor: colors.surface2, borderWidth: 1, borderColor: colors.border },
-	chipActive: { backgroundColor: colors.accentWash, borderColor: colors.accent },
+	chip: { borderRadius: 8, ...squircle },
+	chipHit: { paddingVertical: 6, paddingHorizontal: 12 },
 	chipText: { color: colors.textDim, fontSize: 11, fontWeight: '600' },
 	chipTextActive: { color: colors.accent },
 	barRow: { paddingVertical: 9, gap: 4 },

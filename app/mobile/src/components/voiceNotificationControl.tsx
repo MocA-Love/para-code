@@ -6,7 +6,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { BottomSheet } from './bottomSheet.js';
-import { GlassSurface } from './glassSurface.js';
 import { colors, radius } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 

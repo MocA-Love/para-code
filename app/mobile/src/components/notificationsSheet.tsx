@@ -44,5 +44,10 @@ const styles = StyleSheet.create({
 	bellBtnPressed: { backgroundColor: 'rgba(255,255,255,0.16)' },
 	// 件数は出さない。同じ数はタブバーのバッジが持っており、ガラスのピルの中に小さな数字を
 	// もう1つ置いても読めないうえ、母数の違う数字が並んで見える。
-	bellBadge: { position: 'absolute', top: 5, right: 5, width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
+	// 縁はベルのアイコンから点を切り離すためのもの。無いと線と点が繋がって欠けて見える。
+	// 縁の色はガラスのピルの見かけの地色に合わせる（surfaceが最も近い）。
+	bellBadge: {
+		position: 'absolute', top: 5, right: 5, width: 7, height: 7, borderRadius: 4,
+		backgroundColor: colors.red, borderWidth: 1.5, borderColor: colors.surface,
+	},
 });

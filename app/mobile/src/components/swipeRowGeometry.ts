@@ -23,6 +23,18 @@ export interface SwipeGeometry {
 	fullSwipeAt: number;
 	/** これ以上は引けない上限。必ず `fullSwipeAt` より深い。 */
 	limit: number;
+	/** カード1枚のポップ演出（淡く小さい→実寸）に割り当てる区間の幅。`openDistance`をカード枚数で割ったもの。 */
+	cardStep: number;
+}
+
+/**
+ * カードの「端からの並び順」。ポップ演出は端に近いカードから始まるが、DOM上の並びは
+ * 左→右で固定なので、スワイプの向きによって反転が要る。'left'（右側から出る）は
+ * DOM上最後のカードが端＝0番、'right'はDOM上先頭が端＝0番。
+ * ±1を目視で検出できない系統のロジックなので、ここに置いてテストで固定する。
+ */
+export function cardEdgeIndex(direction: 'left' | 'right', index: number, count: number): number {
+	return direction === 'left' ? count - 1 - index : index;
 }
 
 export function swipeGeometry(actionCount: number): SwipeGeometry {
@@ -32,5 +44,8 @@ export function swipeGeometry(actionCount: number): SwipeGeometry {
 	// 頭打ちにすると枚数が増えたときに開く位置を追い越し、開いた時点で実行扱いになる。
 	// 値は整数ptに丸める。判定はこの3つの大小関係だけに乗っているので、端数を残さない。
 	const fullSwipeAt = Math.round(openDistance + CARD_WIDTH * 0.6);
-	return { openDistance, fullSwipeAt, limit: Math.round(fullSwipeAt + CARD_WIDTH * 0.5) };
+	// openDistanceを直接割ることで、CARD_GAPとROW_GAPの値が今後ずれても
+	// 「最後の1枚がopenDistanceに達したときちょうど実寸になる」整合性が自動的に保たれる。
+	const cardStep = cards === 0 ? 0 : openDistance / cards;
+	return { openDistance, fullSwipeAt, limit: Math.round(fullSwipeAt + CARD_WIDTH * 0.5), cardStep };
 }

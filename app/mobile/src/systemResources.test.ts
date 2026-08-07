@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest';
 import {
 	CPU_THRESHOLDS, DISK_CRITICAL_FREE_BYTES, buildProcessRows, buildScopeRows, diskLevel, formatBytes,
-	buildSpaceDiskRows, formatCpu, resourceHeadline, sortRowsBy, usageLevel, usagePercent, worstLevel,
+	buildSpaceDiskRows, formatCpu, sortRowsBy, usageLevel, usagePercent, worstLevel,
 } from './systemResources.js';
 import type { SystemResourcesResult } from './store.js';
 
@@ -135,24 +135,6 @@ describe('sortRowsBy', () => {
 		const before = rows.map(row => row.key);
 		sortRowsBy(rows, 'cpu');
 		expect(rows.map(row => row.key)).toStrictEqual(before);
-	});
-});
-
-describe('resourceHeadline', () => {
-	test('厳しい順に1つだけ出し、平常時は何も出さない', () => {
-		expect([
-			resourceHeadline({ cpuLevel: 'normal', memoryLevel: 'normal', diskLevel: 'normal' }),
-			resourceHeadline({ cpuLevel: 'normal', memoryLevel: 'warn', diskLevel: 'normal' }),
-			resourceHeadline({ cpuLevel: 'critical', memoryLevel: 'normal', diskLevel: 'normal' }),
-			resourceHeadline({ cpuLevel: 'critical', memoryLevel: 'critical', diskLevel: 'normal' }),
-			resourceHeadline({ cpuLevel: 'normal', memoryLevel: 'normal', diskLevel: 'critical', diskFree: 8 * GB }),
-		]).toStrictEqual([
-			undefined,
-			'PCの負荷が高めです',
-			'CPUがほぼ使い切られています',
-			'メモリが逼迫しています',
-			'ディスクの空きが残り 8.0 GB',
-		]);
 	});
 });
 
