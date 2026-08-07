@@ -17,6 +17,7 @@ import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { colors } from '../../src/theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.js';
 import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
+import { terminalViewportForPrefs, type TerminalGrid } from '../../src/terminalViewport.js';
 
 /**
  * ターミナル画面（モックアップ準拠）。選択中ワークスペースのターミナルタブを
@@ -28,11 +29,12 @@ import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
  */
 export default function TerminalScreen() {
 	const ws = useEffectiveWs();
-	const { workspace, terminalOutput, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal } = useAppStore(useShallow(s => ({
+	const { workspace, terminalOutput, selectedTerminalKey, setSelectedTerminalKey, attachTerminal, detachTerminal, subscribeTerminal, sendInput, sendArrowKey, sendTextInput, createTerminal, terminalPrefs, setTerminalViewport, activePcId } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, terminalOutput: s.terminalOutput,
 		selectedTerminalKey: s.selectedTerminalKey, setSelectedTerminalKey: s.setSelectedTerminalKey,
 		attachTerminal: s.attachTerminal, detachTerminal: s.detachTerminal, subscribeTerminal: s.subscribeTerminal, sendInput: s.sendInput,
 		sendArrowKey: s.sendArrowKey, sendTextInput: s.sendTextInput, createTerminal: s.createTerminal,
+		terminalPrefs: s.terminalPrefs, setTerminalViewport: s.setTerminalViewport, activePcId: s.activePcId,
 	})));
 	const [input, setInput] = useState('');
 	const [submitting, setSubmitting] = useState(false);
@@ -76,6 +78,19 @@ export default function TerminalScreen() {
 		}
 		return () => attachTerminal(activeKey);
 	}, [activeKey, attachTerminal]);
+
+	// TermViewが実測したグリッド。設定と掛け合わせてPCへの申告を組み立てる。
+	// 「行数も合わせる」を切り替えた直後にも反映されるよう、申告の組み立てはこの画面が持ち、
+	// TermView は実測値を報告するだけにしてある（TermView 側に持たせると、設定変更では
+	// 実測値が変わらないため再申告の契機が無くなる）。
+	const [grid, setGrid] = useState<TerminalGrid | undefined>(undefined);
+	// activePcId を依存に入れるのは、PCを切り替えたときに新しいPCへ申告し直すため
+	// （申告はアクティブPCの接続にしか送らないので、切り替えただけでは新しいPCが何も知らない）。
+	useEffect(() => {
+		setTerminalViewport(terminalViewportForPrefs(grid, terminalPrefs));
+	}, [grid, terminalPrefs, activePcId, setTerminalViewport]);
+	// 画面を完全に離れるときは必ず取り下げる（PCのターミナルを細いまま残さない）。
+	useEffect(() => () => setTerminalViewport(undefined), [setTerminalViewport]);
 
 	const send = (data: string) => {
 		if (activeKey !== undefined) {
@@ -135,7 +150,20 @@ export default function TerminalScreen() {
 			</ScrollView>
 			<View style={styles.output}>
 				{activeKey !== undefined ? (
-					<TermView key={activeKey} output={output} cols={activeTerminal?.cols} rows={activeTerminal?.rows} subscribe={subscribeActive} onNeedResync={resyncActive} />
+					// fontSize は「このタブを見ている間だけ」渡す。渡さない間 TermView は実測を
+					// 報告しないので grid が undefined になり、PCへの申告も自動で取り下がる。
+					// キーボード開閉や回転はタブを離れた後にも起きるため、「離れたら1回取り下げる」
+					// 副作用では足りず、申告の入力そのものを止める必要がある。
+					<TermView
+						key={activeKey}
+						output={output}
+						cols={activeTerminal?.cols}
+						rows={activeTerminal?.rows}
+						subscribe={subscribeActive}
+						onNeedResync={resyncActive}
+						fontSize={isFocused && terminalPrefs.matchPcWidth ? terminalPrefs.fontSize : undefined}
+						onGridChange={setGrid}
+					/>
 				) : (
 					<Text style={styles.placeholder}>(ターミナルなし — 右上の + で作成できます)</Text>
 				)}

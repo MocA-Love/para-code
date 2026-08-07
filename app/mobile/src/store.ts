@@ -11,6 +11,7 @@
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeNotify, decodeNotifyControl, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, generateIdentity, isBinaryBrowserJpegFrame, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
+import { terminalViewportEquals, type TerminalViewport } from './terminalViewport.js';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -1505,7 +1506,12 @@ export class MobileController {
 		stream.unackedChars = 0;
 		// 旧画面は新snapshot到着まで保持する。reload中に空画面へ退行させない。
 		stream.rendererTarget = this.rendererTargetFor(terminalKey);
-		void this.sendTerm(terminalKey, { t: 'attach', epoch: stream.epoch, dataEncoding: TERMINAL_BINARY_DATA_ENCODING });
+		void this.sendTerm(terminalKey, {
+			t: 'attach', epoch: stream.epoch, dataEncoding: TERMINAL_BINARY_DATA_ENCODING,
+			// 再attach（再接続・seq欠落からの復旧）でも申告し直す。attachは複数箇所から
+			// 呼ばれるため、寸法は呼び出し側ではなくここ1箇所で載せる。
+			...this.terminalViewportFields(),
+		});
 	}
 
 	detachTerminal(terminalKey: string): void {
@@ -1513,6 +1519,34 @@ export class MobileController {
 		// epoch はattach時に必ず更新されるため、detach後に届く残りフレームは無害。
 		void this.sendTerm(terminalKey, { t: 'detach' });
 	}
+
+	/**
+	 * モバイル画面が読める寸法をPCへ申告する（PTY自体をこの寸法へ寄せてもらう）。
+	 * `undefined` を渡すと申告を取り下げ、PC側の寸法へ戻る（設定OFF・ターミナル画面を離れた等）。
+	 *
+	 * 申告は「いま購読中の全ターミナル」に効かせる。画面寸法はアプリ全体で1つなので、
+	 * 端末ごとに別々の値を持たせる意味がない。
+	 */
+	setTerminalViewport(viewport: TerminalViewport | undefined): void {
+		if (terminalViewportEquals(this.terminalViewport, viewport)) {
+			return;
+		}
+		this.terminalViewport = viewport;
+		for (const [terminalKey, stream] of this.termStreams) {
+			if (stream.listeners.size > 0) {
+				void this.sendTerm(terminalKey, { t: 'viewport', ...this.terminalViewportFields() });
+			}
+		}
+	}
+
+	/** attach / viewport に載せる寸法フィールド（申告なしのときは何も載せない）。 */
+	private terminalViewportFields(): { viewCols?: number; viewRows?: number } {
+		return this.terminalViewport === undefined
+			? {}
+			: { viewCols: this.terminalViewport.cols, viewRows: this.terminalViewport.rows };
+	}
+
+	private terminalViewport: TerminalViewport | undefined;
 
 	/**
 	 * ターミナルの同期ストリームを購読する。購読時点のリプレイキャッシュ
@@ -1856,7 +1890,7 @@ export class MobileController {
 		})));
 	}
 
-	private sendTerm(terminalKey: string, msg: { t: string; data?: string; dataEncoding?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
+	private sendTerm(terminalKey: string, msg: { t: string; data?: string; dataEncoding?: string; key?: string; text?: string; execute?: boolean; epoch?: number; seq?: number; title?: string; viewCols?: number; viewRows?: number }, durableMutation = true, expectedRendererTarget?: string, expectedAgentInputContext?: string): Promise<boolean> {
 		const workspace = this.state.workspace;
 		if (workspace === undefined || !workspace.terminals.some(terminal => terminal.terminalKey === terminalKey)) {
 			return Promise.resolve(false);
