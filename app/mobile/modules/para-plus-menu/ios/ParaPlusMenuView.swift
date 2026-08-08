@@ -41,6 +41,11 @@ struct ParaPlusMenuItem: Record {
 	 * `UIMenu(options: .displayInline)` の節に分けることで描かれる。
 	 */
 	@Field var startsSection: Bool = false
+	/**
+	 * いま選ばれている項目（`UIAction.state = .on`）。チェックの位置・記号との並び順は
+	 * **OSが決める**ので、こちらは状態を渡すだけにする。
+	 */
+	@Field var selected: Bool = false
 	/** 入れ子のメニュー（「エージェントを起動」→ Claude / Codex / ターミナル）。 */
 	@Field var children: [ParaPlusMenuChild] = []
 }
@@ -50,6 +55,7 @@ struct ParaPlusMenuChild: Record {
 	@Field var id: String = ""
 	@Field var title: String = ""
 	@Field var systemImage: String = ""
+	@Field var selected: Bool = false
 }
 
 final class ParaPlusMenuView: ExpoView {
@@ -61,21 +67,37 @@ final class ParaPlusMenuView: ExpoView {
 		super.init(appContext: appContext)
 
 		button.showsMenuAsPrimaryAction = true
-		// ＋の見た目はOSのボタンに任せる。ヘッダーの他のアイコンと大きさを揃える。
-		let symbol = UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .regular))
-		button.setImage(symbol, for: .normal)
 		button.tintColor = .label
 		button.accessibilityLabel = "作成と表示のメニュー"
+		setSymbol("plus")
 		addSubview(button)
 	}
 
 	override func layoutSubviews() {
 		super.layoutSubviews()
 		button.frame = bounds
+		// **ボタンを必ず最前面に置く。** RNの子はあとから subview として積まれるので、
+		// そのままだとボタンより前に来てタップを飲む。ヒットテストは前面から走るので、
+		// 前に出しておけば「島のどこを押してもメニューが開く」になる（子は背景が透明な
+		// ボタンの下に見えたまま）。
+		bringSubviewToFront(button)
 	}
 
 	func setAccessibilityTitle(_ label: String) {
 		button.accessibilityLabel = label.isEmpty ? "作成と表示のメニュー" : label
+	}
+
+	/**
+	 * ボタンに出す SF Symbol。**空文字なら何も描かない**——ターミナル名の島のように、
+	 * 見た目をRN側の子（文字とシェブロン）に任せる場合に使う。
+	 */
+	func setSymbol(_ name: String) {
+		guard !name.isEmpty else {
+			button.setImage(nil, for: .normal)
+			return
+		}
+		let configuration = UIImage.SymbolConfiguration(pointSize: 19, weight: .regular)
+		button.setImage(UIImage(systemName: name, withConfiguration: configuration), for: .normal)
 	}
 
 	func setItems(_ next: [ParaPlusMenuItem]) {
@@ -110,15 +132,19 @@ final class ParaPlusMenuView: ExpoView {
 		if !item.children.isEmpty {
 			// 入れ子。開く動きもOSが描く。
 			let children = item.children.map { child in
-				UIAction(title: child.title, image: image(named: child.systemImage)) { [weak self] _ in
+				let action = UIAction(title: child.title, image: image(named: child.systemImage)) { [weak self] _ in
 					self?.onSelect(["id": child.id])
 				}
+				action.state = child.selected ? .on : .off
+				return action
 			}
 			return UIMenu(title: item.title, image: image(named: item.systemImage), children: children)
 		}
-		return UIAction(title: item.title, image: image(named: item.systemImage)) { [weak self] _ in
+		let action = UIAction(title: item.title, image: image(named: item.systemImage)) { [weak self] _ in
 			self?.onSelect(["id": item.id])
 		}
+		action.state = item.selected ? .on : .off
+		return action
 	}
 
 	private func image(named name: String) -> UIImage? {

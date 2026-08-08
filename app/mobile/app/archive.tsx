@@ -1,5 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { useMemo } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 // ホーム一覧と同じ理由でRNGH版のScrollViewを使う（swipeRow.tsx 参照）。
 import { ScrollView } from 'react-native-gesture-handler';
@@ -8,14 +9,12 @@ import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
 import { pinKeyForTerminal } from '../src/store.js';
 import { AgentRowContent, agentRowStyles, type AgentRowData } from '../src/components/agentRow.js';
-import { GlassSurface } from '../src/components/glassSurface.js';
-import { HeaderCircleButton } from '../src/components/screenHeader.js';
 import { SwipeRow } from '../src/components/swipeRow.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useToastInset } from '../src/paraToast.js';
+import { useParaHeader, useParaHeaderHeight, type ParaHeaderSpec } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
-import { colors, squircle } from '../src/theme.js';
+import { colors } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
 import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 
@@ -31,8 +30,6 @@ import { createAgentLatestEntryToken } from '../src/agentNavigation.js';
 export default function ArchiveScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
-	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
-	const toastInset = useToastInset();
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	const { workspace, archivedKeys, pinnedKeys, setArchived, setSelectedWs, setSelectedTerminalKey } = useAppStore(useShallow(s => ({
@@ -52,24 +49,24 @@ export default function ArchiveScreen() {
 		router.dismissTo('/agent');
 	};
 
+	// ヘッダーは常設のヘッダー層が描く。ホームの［島］［4連ピル］から push すると、
+	// 島が「アーカイブ」の島へ、4連ピルが［すべて戻す］［✕］の2枚へ**分裂**する。
+	const headerSpec = useMemo<ParaHeaderSpec>(() => ({
+		left: { kind: 'island', label: 'アーカイブ', avatarIcon: 'file-tray-full-outline', color: colors.accent, name: 'アーカイブ', maxWidth: 160 },
+		...(rows.length > 0 ? {
+			rightA: {
+				kind: 'text' as const, label: 'すべて戻す',
+				onPress: () => { hapticImpact('light'); for (const t of rows) { setArchived(pinKeyForTerminal(t), false); } },
+			},
+		} : {}),
+		rightB: { key: 'close', icon: 'close', label: '閉じる', onPress: () => { hapticImpact('light'); router.back(); } },
+	}), [rows, setArchived, router]);
+	useParaHeader(headerSpec);
+	const headerHeight = useParaHeaderHeight();
+
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + 8 + toastInset }]}>
-			<View style={styles.header}>
-				<Text style={styles.title}>アーカイブ</Text>
-				{rows.length > 0 ? (
-					<GlassSurface style={styles.restoreAllBtn} interactive>
-						<Pressable
-							style={styles.restoreAllHit}
-							onPress={() => { hapticImpact('light'); for (const t of rows) { setArchived(pinKeyForTerminal(t), false); } }}
-							accessibilityLabel="すべてホームに戻す"
-						>
-							<Text style={styles.restoreAllText}>すべて戻す</Text>
-						</Pressable>
-					</GlassSurface>
-				) : null}
-				<HeaderCircleButton icon="close" label="閉じる" onPress={() => { hapticImpact('light'); router.back(); }} />
-			</View>
-			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingBottom: insets.bottom + 24 }, column]}>
+		<View style={styles.screen}>
+			<ScrollView style={styles.list} contentContainerStyle={[styles.listContent, { paddingTop: headerHeight, paddingBottom: insets.bottom + 24 }, column]}>
 				{rows.length === 0 ? (
 					<Text style={styles.empty}>アーカイブしたエージェントはありません{'\n'}ホームの一覧を左へスワイプするとここに入ります</Text>
 				) : (
@@ -112,12 +109,6 @@ export default function ArchiveScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	header: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 20, paddingBottom: 10 },
-	title: { color: colors.text, fontSize: 24, fontWeight: '800', letterSpacing: -0.3, flex: 1 },
-	// 隣の閉じるボタン（HeaderCircleButton, 44pt丸）と高さを揃える。
-	restoreAllBtn: { height: 44, borderRadius: 22, ...squircle },
-	restoreAllHit: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16 },
-	restoreAllText: { color: colors.textDim, fontSize: 12, fontWeight: '600' },
 	list: { flex: 1, paddingHorizontal: 14 },
 	listContent: { paddingBottom: 32 },
 	empty: { color: colors.textDim, fontSize: 13, lineHeight: 21, textAlign: 'center', paddingVertical: 32 },

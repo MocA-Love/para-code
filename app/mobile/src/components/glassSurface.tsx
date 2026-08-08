@@ -69,7 +69,7 @@ function FallbackMaterial({ style, tint, border }: { style: StyleProp<ViewStyle>
 	);
 }
 
-export function GlassSurface({ style, children, interactive = false, tintColor, tintOpacity = 0.2, fallbackBorder = true, appearance, pointerEvents }: {
+export function GlassSurface({ style, children, interactive = false, tintColor, tintOpacity = 0.2, fallbackBorder = true, appearance, material = 'regular', pointerEvents }: {
 	/**
 	 * 角丸・サイズ等。ネイティブglass時もそのまま適用される。
 	 *
@@ -100,13 +100,21 @@ export function GlassSurface({ style, children, interactive = false, tintColor, 
 	 * 隣のガラスと融合しながら生えてくる**——ボタンからメニューが伸びてくる表現はこれで作る。
 	 */
 	appearance?: { visible: boolean; duration: number };
+	/**
+	 * 素材の種類。既定は `regular`。
+	 *
+	 * **すでにガラスの上に載る面では `clear` を使う。** `regular` を重ねると2枚ぶん明るく
+	 * なって濁り、層が増えたようにしか見えない（HIGが「ガラスの上にガラスを重ねない」と
+	 * 言っているのはこの状態のこと）。`clear` なら新しい板ではなく「レンズ」として読める。
+	 */
+	material?: GlassStyle;
 	pointerEvents?: ViewProps['pointerEvents'];
 }) {
 	const tint = tintColor !== undefined ? withAlpha(tintColor, tintOpacity) : undefined;
 	if (liquidGlass) {
 		const effect: GlassStyle | GlassEffectStyleConfig = appearance === undefined
-			? 'regular'
-			: { style: appearance.visible ? 'regular' : 'none', animate: true, animationDuration: appearance.duration };
+			? material
+			: { style: appearance.visible ? material : 'none', animate: true, animationDuration: appearance.duration };
 		return (
 			<GlassView style={style} glassEffectStyle={effect} isInteractive={interactive} tintColor={tint} pointerEvents={pointerEvents}>
 				{children}

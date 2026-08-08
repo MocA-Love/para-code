@@ -15,6 +15,7 @@ import { ScreenHeader } from '../src/components/screenHeader.js';
 import { ProviderLogo } from '../src/components/providerLogo.js';
 import { useEffectiveWs, wsColor } from '../src/components/wsDrawer.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
+import { useParaHeader, PARA_HEADER_HIDDEN } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors, mono, radius, squircle } from '../src/theme.js';
 import { hapticImpact, hapticSelection } from '../src/haptics.js';
@@ -40,6 +41,9 @@ export default function AgentLaunchScreen() {
 	// そのエージェントを選んだ状態でフォームを開く（押した意思をここで捨てない）。
 	const { agent: requestedAgentId } = useLocalSearchParams<{ agent?: string }>();
 	const insets = useStableInsets();
+	// この画面は `ScreenHeader` を自分で描く（押し込みで開くので層が上に残ってしまう）。
+	// 設定はモーダルなので伏せる必要がないが、ここは push なので明示的に伏せる。
+	useParaHeader(PARA_HEADER_HIDDEN);
 	const { workspace, worktreeForm, connection, pcOnline, sessionProtocolReady } = useAppStore(useShallow(s => ({
 		workspace: s.workspace, worktreeForm: s.worktreeForm,
 		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady,

@@ -1,15 +1,16 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useRef, useState } from 'react';
-import { BackHandler, Dimensions, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { BackHandler, Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { AgentRowClone, type AgentRowData, type AgentRowRect } from './agentRow.js';
+import { promptTerminalName } from '../promptTerminalName.js';
 import { colors } from '../theme.js';
-import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
+import { hapticImpact, hapticWarning } from '../haptics.js';
 
 export interface TerminalActionsMenuTarget {
 	terminalKey: string;
@@ -50,16 +51,10 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 	onTogglePin: (terminalKey: string) => void;
 	onDelete: (terminalKey: string) => void;
 }) {
-	const [mode, setMode] = useState<'menu' | 'rename' | 'confirm-delete'>('menu');
-	// リネーム入力の下書き。OverlayHost経由の再描画1拍遅れでcontrolled inputの
-	// カーソルが乱れないよう、TextInputはuncontrolled（defaultValue）にしてrefで持つ。
-	const draftRef = useRef('');
-	const inputRef = useRef<TextInput>(null);
-
+	const [mode, setMode] = useState<'menu' | 'confirm-delete'>('menu');
 	useEffect(() => {
 		if (target) {
 			setMode('menu');
-			draftRef.current = target.title;
 		}
 	}, [target]);
 
@@ -87,14 +82,6 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 		return null;
 	}
 
-	const submitRename = () => {
-		const title = draftRef.current.trim();
-		if (title.length > 0 && title !== target.title) {
-		onRename(target.terminalKey, title);
-		}
-		close();
-	};
-
 	const commitDelete = () => {
 		onDelete(target.terminalKey);
 		close();
@@ -115,7 +102,13 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 					<GlassSurface style={styles.menu}>
 						<Pressable
 							style={styles.menuItem}
-							onPress={() => { hapticSelection(); setMode('rename'); setTimeout(() => inputRef.current?.focus(), 60); }}
+							// 先に閉じてからOSのアラートを出す。`target` は閉じると消えるので、
+							// 必要な値（キーと現在の名前）をここで捕まえてから渡す。
+							onPress={() => {
+								const { terminalKey, title } = target;
+								close();
+								promptTerminalName(title, next => onRename(terminalKey, next));
+							}}
 						>
 							<Text style={styles.menuItemLabel}>名前を変更</Text>
 							<Ionicons name="pencil" size={16} color={colors.textDim} />
@@ -138,34 +131,6 @@ export function TerminalActionsMenu({ target, anchor, rect, rowData, onClose, on
 						</Pressable>
 					</GlassSurface>
 				</PopIn>
-			) : mode === 'rename' ? (
-				<KeyboardAvoidingView style={styles.alertWrap} behavior={Platform.OS === 'ios' ? 'padding' : undefined} pointerEvents="box-none">
-					<PopIn>
-						<GlassSurface style={styles.alert}>
-							<Text style={styles.alertTitle}>ターミナル名を変更</Text>
-							<Text style={styles.alertSub}>PCのターミナルタブ名にも反映されます</Text>
-							<TextInput
-								ref={inputRef}
-								style={styles.alertInput}
-								defaultValue={target.title}
-								onChangeText={text => { draftRef.current = text; }}
-								selectTextOnFocus
-								autoFocus
-								returnKeyType="done"
-								onSubmitEditing={submitRename}
-							/>
-							<View style={styles.alertBtns}>
-								<Pressable style={styles.alertBtn} onPress={close}>
-									<Text style={styles.alertBtnText}>キャンセル</Text>
-								</Pressable>
-								<View style={styles.alertBtnDivider} />
-								<Pressable style={styles.alertBtn} onPress={submitRename}>
-									<Text style={[styles.alertBtnText, styles.alertBtnPrimary]}>保存</Text>
-								</Pressable>
-							</View>
-						</GlassSurface>
-					</PopIn>
-				</KeyboardAvoidingView>
 			) : (
 				<View style={styles.alertWrap} pointerEvents="box-none">
 					<PopIn>
@@ -228,14 +193,9 @@ const styles = StyleSheet.create({
 	alertIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(244,114,114,0.14)', alignItems: 'center', justifyContent: 'center' },
 	alertTitle: { color: colors.text, fontSize: 15, fontWeight: '700', textAlign: 'center', paddingTop: 18, paddingHorizontal: 16 },
 	alertSub: { color: colors.textDim, fontSize: 12, textAlign: 'center', paddingTop: 4, paddingHorizontal: 16, paddingBottom: 12, lineHeight: 17 },
-	alertInput: {
-		marginHorizontal: 14, marginBottom: 14, backgroundColor: 'rgba(0,0,0,0.35)', borderWidth: 1, borderColor: colors.borderStrong,
-		borderRadius: 9, paddingHorizontal: 11, paddingVertical: 9, color: colors.text, fontSize: 14,
-	},
 	alertBtns: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(255,255,255,0.14)' },
 	alertBtn: { flex: 1, alignItems: 'center', paddingVertical: 13 },
 	alertBtnDivider: { width: StyleSheet.hairlineWidth, backgroundColor: 'rgba(255,255,255,0.14)' },
 	alertBtnText: { color: colors.text, fontSize: 16 },
-	alertBtnPrimary: { color: colors.accent, fontWeight: '700' },
 	alertBtnDanger: { color: colors.red, fontWeight: '700' },
 });

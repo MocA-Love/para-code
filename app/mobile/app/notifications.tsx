@@ -1,18 +1,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
+import { useMemo } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import type { NotifyKind, NotifyPayload } from '@para/protocol';
 import { useAppStore } from '../src/appState.js';
-import { GlassSurface } from '../src/components/glassSurface.js';
-import { HeaderEdgeFade } from '../src/components/headerEdgeFade.js';
-import { HeaderActionButton, HeaderActionPill } from '../src/components/screenHeader.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useToastInset } from '../src/paraToast.js';
-import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
+import { useParaHeader, useParaHeaderHeight, type ParaHeaderSpec } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../src/theme.js';
 import { formatRelativeTime, useNow } from '../src/time.js';
@@ -37,9 +33,7 @@ function dotColor(kind: NotifyKind): string {
 export default function NotificationsScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
-	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
-	const toastInset = useToastInset();
-	const [headerHeight, setHeaderHeight] = useState(0);
+	const headerHeight = useParaHeaderHeight();
 	// iPadの広い幅では本文を読みやすい列幅に収める（iPhoneでは無変化）
 	const column = useContentColumnStyle();
 	// 相対時刻表示を画面を開いたままでも追従させる
@@ -76,6 +70,31 @@ export default function NotificationsScreen() {
 		]);
 	};
 
+	// ヘッダーは常設のヘッダー層が描く。**この画面はズーム遷移（Link.AppleZoom）で開く**ので
+	// `instant` にしてモーフさせない——画面全体が拡大しているのに中のヘッダーだけ別の速度で
+	// 動くと二重に見える。連続性はズームに任せる。
+	// 破壊的な「すべて消す」は閉じるから遠い左側（ピルの中）に置く。指が右上へ伸びる流れの
+	// 途中に置くと、閉じるつもりで消してしまう。ここに「すべて既読」は置かない（この一覧に
+	// 既読という状態は無く、押せば消えるので「すべて消す」と同じものが2つ並ぶだけになる）。
+	const headerSpec = useMemo<ParaHeaderSpec>(() => ({
+		instant: true,
+		left: {
+			kind: 'island', label: `通知、未読 ${notifications.length}`,
+			avatarIcon: 'notifications-outline', color: colors.accent,
+			name: '通知', sub: `未読 ${notifications.length}`, maxWidth: 170,
+		},
+		rightA: {
+			kind: 'icons',
+			items: [
+				...(notifications.length > 0
+					? [{ key: 'clear', icon: 'trash-outline' as const, label: '通知をすべて消す', color: colors.red, onPress: confirmClear }]
+					: []),
+				{ key: 'close', icon: 'close' as const, label: '閉じる', size: 18, onPress: () => { hapticSelection(); router.back(); } },
+			],
+		},
+	}), [notifications.length, confirmClear, router]);
+	useParaHeader(headerSpec);
+
 	return (
 		<View style={styles.screen}>
 			<ScrollView
@@ -104,42 +123,12 @@ export default function NotificationsScreen() {
 					);
 				})}
 			</ScrollView>
-			{/* ヘッダーは島＋ガラスのボタン群。破壊的な「すべて消す」は閉じるから遠い左側に置く。
-			    指が右上へ伸びる流れの途中に置くと、閉じるつもりで消してしまう。
-			    ここに「すべて既読」は置かない。この一覧に既読という状態は無く、押せば消えるので
-			    「すべて消す」と同じものが2つ並ぶだけになる。 */}
-			<View style={[styles.headerWrap, { paddingTop: insets.top + toastInset }]} pointerEvents="box-none" onLayout={e => setHeaderHeight(e.nativeEvent.layout.height)}>
-				<HeaderEdgeFade id="paraNotificationsFade" />
-				<View style={styles.headerRow} pointerEvents="box-none">
-					<GlassSurface style={styles.island}>
-						<View style={styles.islandBody}>
-							<Text style={styles.islandTitle}>通知</Text>
-							{/* この一覧に残っている＝まだ読んでいない、なので件数は「未読」として出す。 */}
-							<Text style={styles.islandSub}>未読 {notifications.length}</Text>
-						</View>
-					</GlassSurface>
-					<View style={styles.headerSpacer} pointerEvents="none" />
-					<HeaderActionPill>
-						{notifications.length > 0 ? (
-							<HeaderActionButton icon="trash-outline" label="通知をすべて消す" color={colors.red} onPress={confirmClear} />
-						) : null}
-						<HeaderActionButton icon="close" label="閉じる" size={18} onPress={() => { hapticSelection(); router.back(); }} />
-					</HeaderActionPill>
-				</View>
-			</View>
 		</View>
 	);
 }
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	headerWrap: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, paddingBottom: 12 },
-	headerRow: { flexDirection: 'row', alignItems: 'flex-start', paddingLeft: 16, paddingRight: 12, width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' },
-	headerSpacer: { flex: 1, minWidth: 0 },
-	island: { height: 44, borderRadius: radius.pill, ...squircle },
-	islandBody: { flex: 1, justifyContent: 'center', paddingHorizontal: 16 },
-	islandTitle: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2 },
-	islandSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
 	list: { flex: 1, paddingHorizontal: 14 },
 	listContent: { paddingBottom: 32 },
 	empty: { color: colors.textDim, fontSize: 13, textAlign: 'center', paddingVertical: 32 },

@@ -224,7 +224,7 @@ export function BottomSheet({ visible, onClose, onConfirm, title, children, full
 		<>
 			<Text style={styles.title}>{title}</Text>
 			<Pressable style={styles.close} onPress={() => { hapticImpact('light'); onClose(); }} accessibilityLabel="閉じる">
-				<Ionicons name="close" size={14} color={colors.textDim} />
+				<Ionicons name="close" size={16} color={colors.textDim} />
 			</Pressable>
 		</>
 	);
@@ -311,7 +311,10 @@ const styles = StyleSheet.create({
 	// 見出しの下に重ねる帯。本文はこの下を流れる（`top` は実測値を当てる）。
 	topFade: { position: 'absolute', left: 0, right: 0, height: 20, zIndex: 1 },
 	title: { color: colors.text, fontSize: 16, fontWeight: '700' },
-	close: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
-	headerBtn: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center' },
-	confirmBtn: { backgroundColor: colors.accent },
+	// **真円にしない。** 他の画面の丸は44ptのガラス（screenHeader.tsx）で、ここだけ30ptの
+	// 塗りの真円だと寸法も素材も違う三番目の言語になる。シート内の操作要素（アクションの
+	// r14・ダイアログボタンのr12）と同じ角丸長方形の言語に寄せる。
+	close: { width: 34, height: 34, borderRadius: 11, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+	headerBtn: { width: 34, height: 34, borderRadius: 11, ...squircle, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
+	confirmBtn: { backgroundColor: colors.accent, borderColor: colors.accent },
 });

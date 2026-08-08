@@ -7,7 +7,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassGroup, GlassSurface } from './glassSurface.js';
 import { HeaderEdgeFade } from './headerEdgeFade.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { useToastInset } from '../paraToast.js';
 import { CONTENT_MAX_WIDTH } from '../ipad/ipadLayout.js';
 import { colors, radius, squircle } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
@@ -43,13 +42,11 @@ export function ScreenHeader({ title, subtitle, showBack = true, showClose = tru
 	onHeightChange?: (height: number) => void;
 }) {
 	const insets = useStableInsets();
-	// 一時的なお知らせ（上端のカプセル）のぶん下げる。WsHeader と同じ扱い。
-	const toastInset = useToastInset();
 	const router = useRouter();
 
 	return (
 		<View
-			style={[styles.wrap, { paddingTop: insets.top + toastInset }]}
+			style={[styles.wrap, { paddingTop: insets.top }]}
 			pointerEvents="box-none"
 			onLayout={onHeightChange !== undefined ? event => onHeightChange(event.nativeEvent.layout.height) : undefined}
 		>
@@ -125,58 +122,7 @@ export function HeaderCircleButton({ icon, label, color, onPress, disabled }: {
 	);
 }
 
-/**
- * ヘッダー右端に置くボタンのまとまり（1枚のガラスのピル）。
- *
- * 中のボタンにはガラスを重ねない（Apple HIG）。押下は白のハイライトで返す。
- * `overflow` は書かない——ベルのバッジが円周で欠ける。
- */
-export function HeaderActionPill({ children }: { children: ReactNode }) {
-	return <GlassSurface style={styles.pill}>{children}</GlassSurface>;
-}
-
-/**
- * {@link HeaderActionPill} の中に入る丸ボタン。
- *
- * 見た目は34ptだが、`hitSlop` で実際の当たり判定を44pt相当まで広げてある。並んでいる
- * ボタンが「音声を開始する」「起動メニューを開く」と粒の違う操作なので、押し間違いが
- * そのまま別の画面へ飛ぶ形になる。
- */
-export function HeaderActionButton({ icon, label, color, size = 17, badge, expanded, onPress }: {
-	icon: keyof typeof Ionicons.glyphMap;
-	label: string;
-	color?: string;
-	size?: number;
-	/** アイコンの右上に載せる印（通知の赤い点など）。 */
-	badge?: ReactNode;
-	expanded?: boolean;
-	onPress: () => void;
-}) {
-	return (
-		<Pressable
-			style={({ pressed }) => [styles.pillButton, pressed && styles.pillButtonPressed]}
-			hitSlop={{ top: 5, bottom: 5, left: 4, right: 4 }}
-			onPress={onPress}
-			accessibilityRole="button"
-			accessibilityLabel={label}
-			accessibilityState={expanded === undefined ? undefined : { expanded }}
-		>
-			<Ionicons name={icon} size={size} color={color ?? colors.text} />
-			{badge}
-		</Pressable>
-	);
-}
-
-/**
- * {@link HeaderActionPill} の高さ。＋メニューの真モーフは閉状態のガラスをこの高さの
- * カプセルとして描くので、こことずれるとモーフの起点が実ピルと合わなくなる。
- */
-export const HEADER_PILL_HEIGHT = 40;
-
 const styles = StyleSheet.create({
-	pill: { height: HEADER_PILL_HEIGHT, borderRadius: radius.pill, ...squircle, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 3, gap: 2 },
-	pillButton: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
-	pillButtonPressed: { backgroundColor: 'rgba(255,255,255,0.16)' },
 	wrap: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, paddingBottom: 15 },
 	column: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' },
 	row: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12 },

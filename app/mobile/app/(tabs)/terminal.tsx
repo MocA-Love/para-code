@@ -1,21 +1,21 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useIsFocused } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { TermView } from '../../src/components/termView.js';
-import { WsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
+import { useWsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
+import { TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
 import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
-import { HeaderActionButton, HeaderActionPill } from '../../src/components/screenHeader.js';
+import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../../src/haptics.js';
 import { resolveExplicitTerminalSelection } from '../../src/agentNavigation.js';
@@ -39,7 +39,7 @@ export default function TerminalScreen() {
 		terminalPrefs: s.terminalPrefs, setTerminalViewport: s.setTerminalViewport, activePcId: s.activePcId,
 		scrollTerminal: s.scrollTerminal,
 	})));
-	const [headerHeight, setHeaderHeight] = useState(0);
+	const headerHeight = useParaHeaderHeight();
 	// ターミナルの箱の高さ。キーボードを閉じているときの枠の高さを測って固定し、
 	// キーボードが出ている間はこの値を保つ（縮めるとPTYのリサイズを誘発するため）。
 	const [outputHeight, setOutputHeight] = useState(0);
@@ -53,8 +53,11 @@ export default function TerminalScreen() {
 
 	// ws 未タグのターミナルはPC側でアクティブなワークスペース所属として扱う
 	// （全ワークスペースに重複表示しない）。
-	const terminals = (workspace?.terminals ?? []).filter(t =>
-		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs));
+	// **memo する。** ヘッダーの仕様（中央の島）へ流れるので、毎レンダー新しい配列だと
+	// ターミナル出力のチャンクごとにヘッダー層へ書き込みが走る。
+	const terminals = useMemo(() => (workspace?.terminals ?? []).filter(t =>
+		!ws || t.ws === ws.id || (!t.ws && ws.id === workspace?.activeWs)),
+		[workspace?.terminals, workspace?.activeWs, ws]);
 	const activeTerminal = resolveExplicitTerminalSelection(terminals, selectedTerminalKey, () => true);
 	const activeKey = activeTerminal?.terminalKey;
 	const activeKeyRef = useRef(activeKey);
@@ -99,6 +102,63 @@ export default function TerminalScreen() {
 	// 画面を完全に離れるときは必ず取り下げる（PCのターミナルを細いまま残さない）。
 	useEffect(() => () => setTerminalViewport(undefined), [setTerminalViewport]);
 
+	const createHere = useCallback(() => { hapticSelection(); createTerminal(ws?.id); }, [createTerminal, ws]);
+	const actions = useMemo<ParaHeaderIcon[]>(() => [{
+		key: 'new-terminal',
+		icon: 'add',
+		label: '新しいターミナル',
+		size: 21,
+		onPress: createHere,
+	}], [createHere]);
+
+	// ターミナルの切り替えは**ヘッダーの中央の島から出る標準のメニュー**（terminalPicker.tsx）。
+	// エージェント詳細と同じ「3つの島」の形に揃うぶん、横スクロールのチップ列を畳んでいる。
+	// ネイティブの標準メニューを持たないビルドでは、従来どおり帯にチップ列を出す。
+	const pickerEntries = useMemo(() => terminals.map((t, i) => ({
+		terminalKey: t.terminalKey,
+		title: t.title,
+		index: i + 1,
+		waiting: isAgentWaiting(t.agentStatus),
+		working: t.agentStatus === 'working',
+	})), [terminals]);
+	// 他のターミナルに応答待ちがあることの合図。畳んだぶん、ここで気づけるようにする
+	// （チップ列は各行の赤ドットを常に見せていた）。
+	const otherWaiting = pickerEntries.some(entry => entry.waiting && entry.terminalKey !== activeKey);
+	const mid = useMemo(() => (terminalPickerIsNative ? {
+		label: 'ターミナルを切り替える',
+		badge: otherWaiting,
+		node: (
+			<TerminalPicker
+				entries={pickerEntries}
+				activeKey={activeKey}
+				onSelect={setSelectedTerminalKey}
+				onCreate={createHere}
+			/>
+		),
+	} : undefined), [pickerEntries, activeKey, setSelectedTerminalKey, createHere, otherWaiting]);
+
+	// フォールバックのタブ列。ネイティブの標準メニューが無いビルド（Android・このモジュールを
+	// 含まない旧バイナリ）でだけ帯に出す。
+	const chipBand = terminalPickerIsNative || terminals.length === 0 ? undefined : (
+		<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabContent}>
+			{terminals.map((t, i) => {
+				const active = t.terminalKey === activeKey;
+				const body = (
+					<Pressable style={styles.tabHit} onPress={() => { hapticSelection(); setSelectedTerminalKey(t.terminalKey); }} accessibilityRole="button" accessibilityState={{ selected: active }}>
+						{isAgentWaiting(t.agentStatus)
+							? <View style={styles.dotRed} />
+							: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
+						<Text style={[styles.tabText, active && styles.tabTextActive]} numberOfLines={1}>{i + 1}: {t.title}</Text>
+					</Pressable>
+				);
+				// 選んでいるものだけ不透明なアクセントの地にする（ホームの絞り込みチップと同じ作法）。
+				return active
+					? <View key={t.terminalKey} style={[styles.tabChip, styles.tabChipActive]}>{body}</View>
+					: <GlassSurface key={t.terminalKey} style={styles.tabChip} interactive>{body}</GlassSurface>;
+			})}
+		</ScrollView>
+	);
+
 	const send = (data: string) => {
 		if (activeKey !== undefined) {
 			void sendInput(activeKey, data);
@@ -137,6 +197,8 @@ export default function TerminalScreen() {
 		setSubmitting(false);
 	};
 
+	useWsHeader({ actions, mid, below: chipBand });
+
 	return (
 		<ConnectionGate>
 		{/* enabled={isFocused}: NativeTabsの画面凍結中に keyboardWillHide を取り逃すと
@@ -147,30 +209,6 @@ export default function TerminalScreen() {
 			    この画面だけドロワーの全域スワイプを巻かないのは、チップ列が横スクロールで
 			    指の動きの向きが同じになり、どちらが取るか状況で変わるため（左端24ptのエッジ
 			    スワイプは WsDrawerLayout 側で従来どおり効く）。 */}
-			<ScrollView
-				horizontal
-				showsHorizontalScrollIndicator={false}
-				style={styles.tabBar}
-				contentContainerStyle={[styles.tabContent, { paddingTop: headerHeight }]}
-			>
-				{terminals.map((t, i) => {
-					const active = t.terminalKey === activeKey;
-					const body = (
-						<Pressable style={styles.tabHit} onPress={() => { hapticSelection(); setSelectedTerminalKey(t.terminalKey); }} accessibilityRole="button" accessibilityState={{ selected: active }}>
-							{isAgentWaiting(t.agentStatus)
-								? <View style={styles.dotRed} />
-								: t.agentStatus === 'working' ? <View style={styles.dotGreen} /> : null}
-							<Text style={[styles.tabText, active && styles.tabTextActive]} numberOfLines={1}>{i + 1}: {t.title}</Text>
-						</Pressable>
-					);
-					// 選んでいるものだけ不透明なアクセントの地にする（ホームの絞り込みチップと同じ作法）。
-					// ガラスのままだと、並んだときにどれが選ばれているかが背景次第で読めなくなる。
-					return active
-						? <View key={t.terminalKey} style={[styles.tabChip, styles.tabChipActive]}>{body}</View>
-						: <GlassSurface key={t.terminalKey} style={styles.tabChip} interactive>{body}</GlassSurface>;
-				})}
-				{terminals.length === 0 ? <Text style={styles.dim}>このワークスペースにターミナルはありません</Text> : null}
-			</ScrollView>
 			{/* キーボードを開いても**ターミナルの高さは変えない**。縮めると行数が変わり、
 			    PTYのリサイズ → SIGWINCH → TUIの全画面再描画が開閉のたびに2往復する。
 			    枠だけを縮めて中身を下端で揃え、はみ出した上側を切って「上へずれた」ように
@@ -182,8 +220,19 @@ export default function TerminalScreen() {
 			    それはキーボードを閉じている間に限る（出したまま回すと、閉じるまで旧い高さのまま
 			    上へはみ出す。閉じれば直る）。 */}
 			<View
-				style={styles.outputSlot}
+				// ヘッダーは浮いているので、その高さぶん上を空ける（ここを変えると箱の高さ＝
+				// PCへ申告するPTYの行数まで変わる点に注意）。
+				style={[styles.outputSlot, { marginTop: headerHeight }]}
 				onLayout={event => {
+					// **このタブを見ている間だけ採る。** 高さの基準（ヘッダー）はアプリ全体で
+					// 共有しているので、裏に回っている間に別画面のヘッダー高さでこの箱が動く。
+					// 裏の値を拾うと、戻ったときに上端がはみ出したまま固まる。
+					// ただし**一度も測れていないときは採る**——タブは非フォーカスで先に
+					// マウントされることがあり、遷移元とヘッダー高さが同じだと再レイアウトが
+					// 起きないので、0 のまま固まって初回のキーボードで縮んだ高さを拾ってしまう。
+					if (!isFocused && outputHeight > 0) {
+						return;
+					}
 					const next = event.nativeEvent.layout.height;
 					if (!keyboardVisible || next > outputHeight) {
 						setOutputHeight(next);
@@ -235,19 +284,6 @@ export default function TerminalScreen() {
 					}
 				/>
 			</View>
-			<WsHeader
-				onHeightChange={setHeaderHeight}
-				right={
-					<HeaderActionPill>
-						<HeaderActionButton
-							icon="add"
-							label="新しいターミナル"
-							size={21}
-							onPress={() => { hapticSelection(); createTerminal(ws?.id); }}
-						/>
-					</HeaderActionPill>
-				}
-			/>
 		</KeyboardAvoidingView>
 		</ConnectionGate>
 	);
@@ -255,12 +291,12 @@ export default function TerminalScreen() {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	tabBar: { flexGrow: 0, flexShrink: 0 },
 	// ここの余白を変えると、出力領域の高さ＝PCへ申告するPTYの行数まで変わる。
 	// 今回のガラス化でヘッダーが8pt高く、チップ行が4pt低くなり、差し引き**4ptほど狭い**。
 	// 行送りより小さいので通常は行数が変わらないが、「変わらない」と決め打たないこと
 	// （実測値は TermView が測り直してPCへ申告し直す）。
-	tabContent: { paddingHorizontal: 16, paddingBottom: 4, gap: 7, alignItems: 'center' },
+	// 帯（ヘッダー層）が左右の余白を持つので、ここは持たない。
+	tabContent: { gap: 7, alignItems: 'center' },
 	tabChip: { height: 32, borderRadius: radius.pill, ...squircle, maxWidth: 200 },
 	tabChipActive: { backgroundColor: 'rgba(9,175,217,0.30)', borderWidth: 1, borderColor: 'rgba(9,175,217,0.5)' },
 	tabHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 13 },
@@ -268,13 +304,14 @@ const styles = StyleSheet.create({
 	tabTextActive: { color: '#bfeeff', fontWeight: '700' },
 	dotRed: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.red },
 	dotGreen: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.green },
-	dim: { color: colors.textDim, fontSize: 12 },
 	operationWarning: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: 12, marginBottom: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, backgroundColor: 'rgba(245,158,11,.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,.35)' },
 	operationWarningText: { flex: 1, color: colors.text, fontSize: 11, lineHeight: 16 },
 	// キーボードで縮む「枠」。中の箱は高さを保ったまま下端で揃え、はみ出す上側をここで切る。
-	// 箱と同じ角丸を持たせるのは、切っている間も上側の角が直角にならないようにするため。
-	outputSlot: { flex: 1, marginHorizontal: 12, borderRadius: radius.control, ...squircle, overflow: 'hidden', justifyContent: 'flex-end' },
-	output: { backgroundColor: '#1e1e1e', borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+	// **左右の余白と枠は持たない。** エージェント詳細の会話が地色に直接流れているのと同じ
+	// 言語に揃える（枠があると同じアプリの同じ役割の画面に見えない）。
+	// 注意: この余白を変えると箱の高さが変わり、PCへ申告するPTYの行数まで変わる。
+	outputSlot: { flex: 1, overflow: 'hidden', justifyContent: 'flex-end' },
+	output: { backgroundColor: '#1e1e1e', overflow: 'hidden' },
 	placeholder: { color: colors.textDim, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', fontSize: 11, padding: 10 },
 	keyRowScroll: { flex: 1, minWidth: 0 },
 	keyRow: { flexDirection: 'row', gap: 6, alignItems: 'center', paddingRight: 8 },

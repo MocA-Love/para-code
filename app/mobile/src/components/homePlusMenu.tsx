@@ -6,8 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { GlassSurface } from './glassSurface.js';
 import { OverlayPortal, PopIn } from './overlayHost.js';
 import { ParaPlusMenuButton, type ParaPlusMenuItem } from '../../modules/para-plus-menu/index.js';
-import { HEADER_PILL_HEIGHT } from './screenHeader.js';
-import { useToastInset } from '../paraToast.js';
+import { PARA_HEADER_PILL_BUTTON, PARA_HEADER_SLOT_HEIGHT } from '../paraHeader.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { colors, radius, squircle } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
@@ -108,7 +107,6 @@ export function HomePlusMenuButton({ onSelect, ackCount, hasSpace }: HomePlusMen
 function FallbackPlusMenu({ onSelect, ackCount, hasSpace }: HomePlusMenuProps) {
 	const [open, setOpen] = useState(false);
 	const insets = useStableInsets();
-	const toastInset = useToastInset();
 
 	// Android物理戻るボタンで閉じる。RNのModalではない自作Portalに載せているので、
 	// ここで拾わないとメニューが開いたままタブ画面から抜ける
@@ -152,7 +150,7 @@ function FallbackPlusMenu({ onSelect, ackCount, hasSpace }: HomePlusMenuProps) {
 					/>
 					{/* 位置はセーフエリアとお知らせの押し下げから決める（固定値だと
 					    Androidのステータスバーやトースト表示中にヘッダーへ食い込む）。 */}
-					<PopIn style={[styles.fallbackPanelPos, { top: insets.top + toastInset + HEADER_PILL_HEIGHT + 10 }]}>
+					<PopIn style={[styles.fallbackPanelPos, { top: insets.top + PARA_HEADER_SLOT_HEIGHT + 10 }]}>
 						<GlassSurface style={styles.fallbackPanel}>
 							<View style={styles.plate} pointerEvents="none" />
 							<View style={styles.fallbackBody}>
@@ -193,7 +191,7 @@ const PANEL_WIDTH = 262;
 
 const styles = StyleSheet.create({
 	// ネイティブのボタン。ピルの中の他のボタンと同じ当たり判定にする。
-	nativeButton: { width: 34, height: HEADER_PILL_HEIGHT - 6, borderRadius: radius.pill },
+	nativeButton: { width: PARA_HEADER_PILL_BUTTON, height: PARA_HEADER_PILL_BUTTON, borderRadius: radius.pill },
 	fallbackButton: { width: 34, height: 34, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 
 	scrim: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.45)' },
