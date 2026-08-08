@@ -126,6 +126,33 @@ export function captureParadisMainMeasurementSnapshot(
 	Sentry.withScope(scope => {
 		scope.setTags(tags);
 		scope.setContext('para.health', context);
+		// measurement は**1トランザクション10個まで**で、超えた分は取り込み時に黙って捨てられる。
+		// context へ回した分は1イベントを開けば読めるが、`avg()` や「ブラウザ枚数とヒープの関係」の
+		// ような**横断集計ができない**（context は Discover の集計対象外）。
+		// span attribute は `contexts.trace.data` に載り、spans データセットで
+		// `tags[<key>,number]` として集計できる（切替計装で到達実績あり）ので、数値はこちらへも出す。
+		// 狙いは「10個枠に入れなかったものを集計可能な場所へ逃がす」こと。ただし context には
+		// measurement と同じ量（`process_count` / `uptime_hours`）も入っているので、
+		// **一部は意図的に重複する**。丸めが違うだけの同じ指標が2つの名前で並ぶ点に注意。
+		const overflowAttributes = new Map<`safe_${string}`, number>();
+		for (const [key, value] of Object.entries(context)) {
+			if (typeof value !== 'number' || !Number.isFinite(value)) {
+				continue;
+			}
+			// 順位つきの内訳は集計に載せない。1位が main の回と renderer の回が混ざるので
+			// `avg(safe_top1_memory)` は別プロセスの平均になり、意味のある数字にならない。
+			// 対になる役割名は文字列でここを通らないため、後から解釈することもできない。
+			if (/^safe_top\d+_/.test(key)) {
+				continue;
+			}
+			const attributeKey: `safe_${string}` = key.startsWith('safe_') ? key as `safe_${string}` : `safe_${key}`;
+			// `foo` と `safe_foo` が同居すると導出後に衝突する。今の context に衝突は無いが、
+			// 将来キーが増えたときに黙って1本消えるほうが厄介なので、先勝ちで固定する。
+			if (overflowAttributes.has(attributeKey)) {
+				continue;
+			}
+			overflowAttributes.set(attributeKey, value);
+		}
 		Sentry.startSpan({
 			name,
 			op: 'para.health',
@@ -133,6 +160,7 @@ export function captureParadisMainMeasurementSnapshot(
 				'para.scope': 'owned',
 				'para.feature': 'healthBeacon',
 				'para.operation': 'snapshot',
+				...Object.fromEntries(overflowAttributes),
 			},
 		}, () => {
 			for (const [key, measurement] of Object.entries(measurements)) {

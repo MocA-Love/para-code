@@ -17,7 +17,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createHash } from 'crypto';
 import { hostname } from 'os';
-import { reportParadisDiagnosticError, setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { reportParadisDiagnosticError, runInParadisSpan, setParadisDiagnosticCorrelationTag } from '../../sentry/common/paradisSentryDiagnostics.js';
 import {
 	MobileIdentity,
 	SecureChannel,
@@ -513,6 +513,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** pcToken が失効していると確認できた状態。再ペアリングするまで復帰しない。 */
 	private unauthorized = false;
 	private authProbeInFlight = false;
+	/** 直近のプローブ結果。同じ結論を送り続けてレートリミッタを食い潰さないための番人。 */
+	private lastAuthProbeOutcome: 'ok' | 'unauthorized' | 'rejected' | 'unreachable' | undefined;
 	/** 直前のpingにpongが返っていない。次のtickでも返っていなければ経路が死んだとみなす。 */
 	private awaitingPong = false;
 	/**
@@ -888,9 +890,16 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			} else if (res.ok) {
 				this.setUnauthorized(false);
 			}
+			// **この結果が Sentry に無いせいで切り分けが止まっていた。** 1006 は経路断でも
+			// 401 拒否でも同じ形で届くので、close code だけでは永久に決着しない。プローブは
+			// その区別のために存在するのに、判定をローカル状態へ書くだけで外へ出していなかった。
+			// 到達できて 200 なら経路もトークンも生きている＝WS 側だけが落ちている、と確定できる。
+			this.reportAuthProbe(res.ok ? 'ok' : res.status === 401 ? 'unauthorized' : 'rejected', res.status);
 		} catch (err) {
 			// ネットワーク自体が死んでいる＝認証の問題ではないので何も確定させない。
 			this.logService.trace('[paradisMobileRelay] auth probe failed', String(err));
+			// ただし「到達すらできない」ことは経路側の証拠なので、それは残す。
+			this.reportAuthProbe('unreachable', undefined);
 		} finally {
 			this.authProbeInFlight = false;
 		}
@@ -1959,6 +1968,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			}
 			this.clearConnectTimer();
 			this.reconnectAttempt = 0;
+			// 復帰したので、次に断が起きたら改めて結論を残す。捨てないと「機体あたり1件」で
+			// 打ち止めになり、インシデントが何回起きたのかが数えられなくなる。
+			this.lastAuthProbeOutcome = undefined;
 			this.setUnauthorized(false);
 			// 復帰できたので、直前の切断は報告しない（詳細は RELAY_DISCONNECT_REPORT_DELAY_MS 参照）。
 			this.clearDisconnectReport();
@@ -2138,6 +2150,32 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 切断を「猶予を過ぎてもなお連続で再接続に失敗し続けたら報告する」予約に変える。
 	 * 復帰（onopen）で取り消される。
 	 */
+	/**
+	 * 認証プローブの結果を残す。
+	 *
+	 * **例外ではなく span で送る。** `ok`（＝経路もトークンも生きていて WS だけが落ちている）は
+	 * 知りたい結論のひとつであって障害ではないので、error として issue 化すると
+	 * 「正常でした」がエラー件数に混ざる。span なら4つの結末を属性で並べて数えられるし、
+	 * 例外側のレートリミッタ（fingerprint あたり10分3件）とも無関係になる。
+	 *
+	 * 結論が変わったときだけ送る。再接続は数分で何十回も回るので、毎回送ると
+	 * 「その断続の原因は経路か認証か」という1つの答えが件数に埋もれる。
+	 * 断が復帰したら {@link lastAuthProbeOutcome} は onopen で捨てるので、
+	 * **次のインシデントでは改めて1件残る**（機体あたり1件で打ち止めにはならない）。
+	 */
+	private reportAuthProbe(outcome: 'ok' | 'unauthorized' | 'rejected' | 'unreachable', status: number | undefined): void {
+		if (this.lastAuthProbeOutcome === outcome) {
+			return;
+		}
+		this.lastAuthProbeOutcome = outcome;
+		runInParadisSpan('desktop-relay', 'auth-probe', {
+			safe_outcome: outcome,
+			safe_reconnect_count: this.reconnectAttempt,
+			safe_http_status: status ?? -1,
+			safe_relay_kind: this.relayUrlOverride === undefined ? 'default' : 'custom',
+		}, () => { });
+	}
+
 	private armDisconnectReport(operation: string, message: string, extras: Record<string, unknown>): void {
 		if (this.pendingDisconnectReport || this.disconnectReportTimer) {
 			// すでにオフラインが続いている。最初の切断理由と、その時刻からの経過を残したいので触らない。

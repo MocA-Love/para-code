@@ -77,26 +77,75 @@ export function paradisStripCodexLogAnsi(value: string): string {
 }
 
 /**
+ * 分類が「今回の起動の話」なのかを判断するための材料。
+ *
+ * ログは**新しく app-server を起動するときは truncate される**（`resources/paradis/bin/codex` が
+ * `: > "$log_path"`、ランチャーが `flags: 'w'`）。積み上がるのは既存サーバを再利用した分岐だけ。
+ * したがって「一致箇所が末尾から遠い」の意味は `serverAlive` で変わる:
+ *  - `serverAlive: false`（サーバは死んでいる）… そのログはその世代のもの。距離が遠くても
+ *    起動時の失敗を指している可能性が高い
+ *  - `serverAlive: true`（再利用中）… 何時間も前の行を拾っている疑いが濃い。`auth` と
+ *    報告していても、実際は「起動が遅いだけ」かもしれない
+ *
+ * ローカルの実ログ16本では致命パターンに1件も当たらなかった（＝健全なログへの誤爆は無い）が、
+ * 別の機体で古い行に当たっている可能性はそれでは否定できないので、本番で測る。
+ */
+export interface IParadisCodexPaneFailureEvidence {
+	/** 一致した種別。致命パターンに当たらなかった場合は undefined。 */
+	readonly kind: ParadisCodexPaneFailureKind | undefined;
+	/** 一致箇所がログ末尾から何文字手前か。小さいほど「今まさに起きた」に近い。 */
+	readonly distanceFromEnd: number | undefined;
+	/**
+	 * 判定に使った文字数（ANSI除去後）。**{@link distanceFromEnd} と同じ座標系の分母**。
+	 * 生バイト数で割ると、除去したエスケープのぶんだけ比率が狂う。
+	 * 読み取り上限に張り付いていれば「タイルが満杯＝古い行がありうる」とも読める。
+	 */
+	readonly textLength: number;
+	/** ログはあるが空白しかない。 */
+	readonly blank: boolean;
+}
+
+/**
+ * 分類とあわせて、その根拠がどこにあったかを返す。
+ *
+ * {@link paradisClassifyCodexPaneFailure} は**この関数の上に組み立てる**こと。
+ * 同じ配列を2回舐める書き方にすると「判定順序を揃える」が規約頼みになり、
+ * 将来どちらかだけ直されたときに Sentry 上で種別と距離が食い違う。
+ */
+export function paradisInspectCodexPaneFailure(input: IParadisCodexPaneFailureInput): IParadisCodexPaneFailureEvidence {
+	const text = input.log === undefined ? undefined : paradisStripCodexLogAnsi(input.log);
+	if (text === undefined) {
+		return { kind: undefined, distanceFromEnd: undefined, textLength: 0, blank: false };
+	}
+	const blank = text.trim().length === 0;
+	if (!blank) {
+		for (const candidate of fatalPatterns) {
+			const match = candidate.pattern.exec(text);
+			if (match) {
+				return { kind: candidate.kind, distanceFromEnd: text.length - match.index, textLength: text.length, blank };
+			}
+		}
+	}
+	return { kind: undefined, distanceFromEnd: undefined, textLength: text.length, blank };
+}
+
+/**
  * 分類だけを返す。**ログ本文は決して返さない**: Sentryへ送る値は
  * `paradisSanitizeSentryText` を通るとはいえ、Codexのログに何が出るかはこちら側で
  * 制御できない（プロジェクトパス、プロンプト断片、リポジトリ名が混ざりうる）。
  * 許可リスト方式の分類IDだけを外へ出し、未知のものは 'unclassified' として件数だけ数える。
  */
 export function paradisClassifyCodexPaneFailure(input: IParadisCodexPaneFailureInput): ParadisCodexPaneFailureKind {
-	const text = input.log === undefined ? undefined : paradisStripCodexLogAnsi(input.log);
-	if (text !== undefined && text.trim().length > 0) {
-		for (const candidate of fatalPatterns) {
-			if (candidate.pattern.test(text)) {
-				return candidate.kind;
-			}
-		}
+	const evidence = paradisInspectCodexPaneFailure(input);
+	if (evidence.kind !== undefined) {
+		return evidence.kind;
 	}
 	// 致命的な兆候が無いのにソケットが現れない場合、プロセスが生きていれば単に遅いだけ。
 	if (input.serverAlive) {
 		return 'server-alive';
 	}
-	if (text === undefined) {
+	if (input.log === undefined) {
 		return 'no-log';
 	}
-	return text.trim().length === 0 ? 'log-empty' : 'unclassified';
+	return evidence.blank ? 'log-empty' : 'unclassified';
 }

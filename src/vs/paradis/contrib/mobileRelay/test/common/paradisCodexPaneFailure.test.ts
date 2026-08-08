@@ -11,6 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	ParadisCodexPaneFailureKind,
 	paradisClassifyCodexPaneFailure,
+	paradisInspectCodexPaneFailure,
 } from '../../common/paradisCodexPaneFailure.js';
 
 function classify(log: string | undefined, serverAlive = false): ParadisCodexPaneFailureKind {
@@ -72,5 +73,55 @@ suite('ParadisCodexPaneFailure', () => {
 			classify('   \n  '),
 			classify(undefined, true),
 		], ['no-log', 'log-empty', 'log-empty', 'server-alive']);
+	});
+
+	// 本番の `auth` 58件が「今回の起動の話」なのかを決める材料。ログには前のセッションの行が
+	// 残るので、末尾から遠い位置での一致は「古い行を拾っただけ」の疑いが濃い。
+	test('reports how far from the end of the log the verdict came from', () => {
+		const stale = ['unauthorized: please re-login', benignNoise, benignNoise].join('\n');
+		const fresh = [benignNoise, 'unauthorized: please re-login'].join('\n');
+
+		const staleEvidence = paradisInspectCodexPaneFailure({ log: stale, serverAlive: false });
+		const freshEvidence = paradisInspectCodexPaneFailure({ log: fresh, serverAlive: false });
+
+		assert.deepStrictEqual({
+			staleKind: staleEvidence.kind,
+			freshKind: freshEvidence.kind,
+			// 古い行のほうが末尾から遠い、が成り立てば本番データで両者を分けられる。
+			staleIsFartherFromEnd: staleEvidence.distanceFromEnd! > freshEvidence.distanceFromEnd!,
+			// 一致が無ければ距離も無い（0 を送ると「末尾で一致」と読めてしまう）。
+			benignDistance: paradisInspectCodexPaneFailure({ log: benignNoise, serverAlive: false }).distanceFromEnd,
+		}, { staleKind: 'auth', freshKind: 'auth', staleIsFartherFromEnd: true, benignDistance: undefined });
+	});
+
+	// 分類と根拠は同じ判定順序でなければならない。ずれると Sentry 上で kind と距離が食い違う。
+	// **両方を実際に呼んで突き合わせる**こと。片方の出力を定数と比べるだけでは、
+	// もう片方が将来変わっても緑のままで、守りたい不変条件を守れない。
+	test('keeps the verdict and its evidence in agreement', () => {
+		const logs = [undefined, '', '  \n ', benignNoise, 'ENOSPC: no space left on device', 'unauthorized'];
+		assert.deepStrictEqual(logs.map(log => {
+			const evidence = paradisInspectCodexPaneFailure({ log, serverAlive: false });
+			return {
+				// 根拠が種別を出したなら、分類も必ず同じ種別になる。
+				agrees: evidence.kind === undefined || evidence.kind === classify(log),
+				kind: evidence.kind,
+			};
+		}), [
+			{ agrees: true, kind: undefined },
+			{ agrees: true, kind: undefined },
+			{ agrees: true, kind: undefined },
+			{ agrees: true, kind: undefined },
+			{ agrees: true, kind: 'disk-full' },
+			{ agrees: true, kind: 'auth' },
+		]);
+	});
+
+	// 空白しかないログは「空」として扱われ、致命パターンの探索に入らない。
+	test('treats a blank log as blank regardless of whitespace', () => {
+		assert.deepStrictEqual([
+			paradisInspectCodexPaneFailure({ log: '   \n\t ', serverAlive: false }).blank,
+			paradisInspectCodexPaneFailure({ log: benignNoise, serverAlive: false }).blank,
+			paradisInspectCodexPaneFailure({ log: undefined, serverAlive: false }).blank,
+		], [true, false, false]);
 	});
 });
