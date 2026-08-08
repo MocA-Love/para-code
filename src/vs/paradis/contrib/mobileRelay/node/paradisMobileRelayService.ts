@@ -57,6 +57,7 @@ import {
 	unpackPcData,
 } from '../common/paradisMobileProtocol.js';
 import { PARADIS_PUSH_PAYLOAD_LIMIT_BYTES, ParadisMissedNotifyQueue, paradisNotifyPcFocusQuiet, paradisResolveNotifyDelivery } from '../common/paradisNotifyDelivery.js';
+import { paradisAgentLabel, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import {
 	IParadisGitResult,
 	IParadisConfirmedAgentPanes,
@@ -945,19 +946,24 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/** transcript に現れた質問を Notify として全モバイルへ届ける（オフラインへはAPNsプッシュ）。 */
-	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex'; text: string; header?: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }): void {
+	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex'; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }): void {
 		// 通知はプレビュー用途なので本文を短く切る。長文のまま封緘するとAPNsの4KB制限
 		// （リレー側の3800B上限チェック）を超え、アプリ未起動時のプッシュだけがサイレントに
 		// 落ちる（全文はチャット画面が別経路で同期する）。700字 = 日本語でもUTF-8で約2.1KB、
 		// JSON+GCMタグ+base64url(×1.33)を足しても3800Bに収まる。
 		// allow-any-unicode-next-line
 		const body = info.text.length > 700 ? `${info.text.slice(0, 700)}…` : info.text;
-		const terminal = this.terminalRegistry.desktopState().terminals.find(candidate => candidate.agentToken === info.agentToken);
+		const desktopState = this.terminalRegistry.desktopState();
+		const terminal = desktopState.terminals.find(candidate => candidate.agentToken === info.agentToken);
+		// ターミナルの ws は shared process が窓IDを冠したキーなので、workspaces 側も同じキーで引ける。
+		const workspace = terminal?.ws !== undefined ? desktopState.workspaces.find(candidate => candidate.id === terminal.ws) : undefined;
 		const payload: NotifyPayload = {
 			kind: 'agent-question',
 			id: `q${generateUuid()}`,
-			// allow-any-unicode-next-line
-			title: info.header !== undefined && info.header.length > 0 ? `質問: ${info.header}` : 'エージェントからの質問',
+			// タイトルはワークツリー名だけに使い、質問の見出し（header）は本文に譲る。
+			// 本文には質問文そのものが入っているので、見出しを足しても同じことを二度言うだけになる。
+			title: paradisNotifyTitle(workspace?.name, terminal?.title),
+			subtitle: paradisAgentLabel(info.agent),
 			body,
 			terminalId: info.terminalId,
 			...(terminal !== undefined ? { terminalKey: terminal.terminalKey, windowId: terminal.windowId } : {}),
@@ -1008,7 +1014,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.dispatchNotifyNow(bytes);
 	}
 
-	private dispatchNotifyNow(bytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease): void {
+	private dispatchNotifyNow(inputBytes: Uint8Array, expectedOwner?: IParadisMobileWindowLease): void {
+		// どのPCから来たかを、フレーム・プッシュ・取り置きの全部に同じ形で乗せる。
+		// 通知を作る場所は shared process と renderer の2つあるが、出口はここだけなので刻むのもここ。
+		const bytes = this.stampNotifyOrigin(inputBytes);
 		// 配送判断と、既読時のキュー刈り取りに要る項目を1回のパースで取り出す
 		// （形式不正なら種別が undefined になり、鳴らす側へ倒れる）。
 		const meta = peekNotifyMeta(bytes);
@@ -1049,13 +1058,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				continue;
 			}
 			this.notifyKeyFor(mobile.mobileId, mobile.pubKey).then(async key => {
-				const sealed = await sealNotify(key, bytes);
-				const encoded = toBase64Url(sealed);
-				// リレーは大きすぎるペイロードを捨てる（APNsの4KB制限のため）。捨てられると
-				// フレーム側は quiet なのでバナーが完全に消える。通知の本文はここへ来る前に
-				// 切り詰めてあるので通常は起きないが、起きたときに無言にはしない。
-				if (encoded.length > PARADIS_PUSH_PAYLOAD_LIMIT_BYTES) {
-					this.logService.warn(`[paradisMobileRelay] push payload too large (${encoded.length}B); the relay will drop it`);
+				const encoded = await this.sealNotifyForPush(key, bytes);
+				if (encoded === undefined) {
+					return;
 				}
 				if (expectedOwner !== undefined) {
 					await this.withCurrentRegisteredLease(expectedOwner, async () => {
@@ -1065,6 +1070,100 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 					this.sendControl({ type: 'push-notify', mobileId: mobile.mobileId, payload: encoded });
 				}
 			}).catch(err => this.logService.warn('[paradisMobileRelay] push-notify seal failed', err));
+		}
+	}
+
+	/**
+	 * プッシュ用に通知を封緘する。リレーの上限に収まらなければ本文を削って詰め直す。
+	 *
+	 * リレーは大きすぎるペイロードを黙って捨てる（APNsの4KB制限のため）。捨てられると、
+	 * フレーム側は既に「PCがプッシュを送ったから鳴らさないで」と伝えたあとなので、
+	 * その通知だけバナーが**完全に消える**。以前はここで警告を出すだけで送っていた。
+	 *
+	 * 本文は発生元で700字に切ってあるが、そこへ送信元の名乗り・長いワークスペースキー・
+	 * エージェントトークンが積み上がると上限に届きうる。鳴らないより短い方がましなので、
+	 * 収まるまで本文を削る。削り切っても収まらない（本文以外で埋まっている）ときだけ諦める。
+	 */
+	private async sealNotifyForPush(key: Uint8Array, bytes: Uint8Array): Promise<string | undefined> {
+		let payload = bytes;
+		// 削るたびに縮むので2回もあれば収まる。それでも駄目なら本文以外で埋まっているので打ち切る。
+		for (let attempt = 0; attempt < 4; attempt++) {
+			const encoded = toBase64Url(await sealNotify(key, payload));
+			if (encoded.length <= PARADIS_PUSH_PAYLOAD_LIMIT_BYTES) {
+				if (attempt > 0) {
+					this.logService.warn(`[paradisMobileRelay] push payload trimmed to fit ${PARADIS_PUSH_PAYLOAD_LIMIT_BYTES}B`);
+				}
+				return encoded;
+			}
+			// base64url は3バイトを4文字にするので、削るべき文字数の3/4が生バイトでの不足分。
+			// 端数と封緘の増分を吸収するために少し多めに削る。
+			const overflow = encoded.length - PARADIS_PUSH_PAYLOAD_LIMIT_BYTES;
+			const trimmed = this.trimNotifyBody(payload, Math.ceil(overflow * 0.75) + 16);
+			if (trimmed === undefined) {
+				this.logService.warn(`[paradisMobileRelay] push payload too large (${encoded.length}B) and cannot be trimmed; dropping the push`);
+				return undefined;
+			}
+			payload = trimmed;
+		}
+		this.logService.warn('[paradisMobileRelay] push payload stayed over the limit after trimming; dropping the push');
+		return undefined;
+	}
+
+	/**
+	 * 通知の本文を指定バイト数ぶん削った版を作る。これ以上削れない（本文が空、または
+	 * JSONとして読めない）ときは undefined を返し、呼び出し側に打ち切らせる。
+	 */
+	private trimNotifyBody(bytes: Uint8Array, shortfall: number): Uint8Array | undefined {
+		try {
+			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> | null;
+			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+				return undefined;
+			}
+			const body = parsed['body'];
+			if (typeof body !== 'string' || body.length === 0) {
+				return undefined;
+			}
+			const encoder = new TextEncoder();
+			// 日本語は1文字3バイトになりうるので、文字数ではなくバイト数で測って削る。
+			const originalBytes = encoder.encode(body).length;
+			let next = body;
+			while (next.length > 0 && originalBytes - encoder.encode(next).length < shortfall) {
+				next = next.slice(0, -1);
+			}
+			// allow-any-unicode-next-line
+			const replacement = next.length > 0 ? `${next}…` : '';
+			return new TextEncoder().encode(JSON.stringify({ ...parsed, body: replacement }));
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * 送信元PC（deviceId と表示名）を通知へ刻む。
+	 *
+	 * 受け取る側はこれを2つに使う。ひとつはPCの切り替え（通知をタップしたとき、そのPCへ移る）。
+	 * もうひとつは表示で、2台以上とペアリングしているときだけエージェント名の後ろへPC名を継ぎ足す。
+	 * 封緘の中に入るのでリレーには見えず、差し替えもできない。
+	 *
+	 * JSONとして読めないバイト列はそのまま返す（判定不能なものを黙って作り替えない）。
+	 */
+	private stampNotifyOrigin(bytes: Uint8Array): Uint8Array {
+		const pcId = this.state.device?.deviceId;
+		if (pcId === undefined && this.pcName === undefined) {
+			return bytes;
+		}
+		try {
+			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> | null;
+			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+				return bytes;
+			}
+			return new TextEncoder().encode(JSON.stringify({
+				...parsed,
+				...(pcId !== undefined ? { pcId } : {}),
+				...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
+			}));
+		} catch {
+			return bytes;
 		}
 	}
 

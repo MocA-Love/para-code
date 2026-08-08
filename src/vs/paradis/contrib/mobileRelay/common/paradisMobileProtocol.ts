@@ -238,13 +238,29 @@ export type ParadisNotifyQuiet = 'muted' | 'pushed';
 export interface NotifyPayload {
 	readonly kind: NotifyKind;
 	readonly id: string;
+	/**
+	 * 通知タイトル。ワークツリー（スペース）の名前を入れる。
+	 * iOSが太字で出すのはここだけなので、「どこで待たれているか」以外を混ぜない。
+	 */
 	readonly title: string;
+	/**
+	 * タイトルの下に細く出す一行。エージェント種別（例: "Claude"）を入れる。
+	 * 種別が分からない経路（状態遷移から出る通知）ではターミナル名が入る。
+	 * **PC名はここに含めない**（`pcName` を参照）。
+	 */
+	readonly subtitle?: string;
 	readonly body: string;
 	readonly ws?: string;
 	readonly terminalId?: number;
 	readonly terminalKey?: string;
 	readonly windowId?: number;
 	readonly agentToken?: string;
+	/**
+	 * 送信元PCの識別子（リレー上の deviceId）と表示名。`dispatchNotifyNow` が全ての通知へ
+	 * 一括で刻む。封緘の中に入るのでリレーからは見えず、差し替えもできない。
+	 */
+	readonly pcId?: string;
+	readonly pcName?: string;
 	readonly at: number;
 	/**
 	 * 「通知一覧には入れるが、バナーは出さないでほしい」印（`paradisNotifyDelivery.ts`）。

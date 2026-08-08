@@ -35,6 +35,7 @@ import { setMobileDiagnosticCorrelationTag } from './mobileDiagnostics.js';
 import { configureNotificationHandler, createTerminalOperationOutboxStore, deleteLegacyNotifyKey, deleteNotifyKey, ensureNotificationPermission, getApnsDeviceToken, migrateLegacyTerminalOperationOutbox, persistNotifyKey, presentLocalNotification, rnSocketFactory, secureKeyStore } from './platform.js';
 import { connectionActionForAppState, shouldRunForegroundWork } from './appLifecycle.js';
 import { shouldPresentNotifyBanner } from './notificationPolicy.js';
+import { notifySubtitle } from './notifyPresentation.js';
 import { DEFAULT_TERMINAL_PREFS, normalizeTerminalPrefs, type TerminalPrefs, type TerminalViewport } from './terminalViewport.js';
 import { activateVoiceSession, deactivateVoiceSession, enqueueVoiceClip, isVoiceSessionSupported, onVoiceSessionRemoteStop } from '../modules/para-voice-session/index.js';
 
@@ -674,9 +675,10 @@ function handleNotify(runtime: PcRuntime, payload: NotifyPayload): void {
 	})) {
 		return;
 	}
-	// 2台以上と繋いでいるときは、どのPCの話かがバナーだけで分かるようにする。
-	const title = runtimes.size > 1 ? `${runtime.pc.name}: ${payload.title}` : payload.title;
-	void presentLocalNotification(title, payload.body, {
+	// タイトルはPCが決めたワークツリー名のまま出す。2台以上と繋いでいるときに「どのPCの話か」を
+	// 足すのは電話側の仕事で、細い行の末尾へ回す（notifyPresentation.ts）。台帳の名前を渡すのは、
+	// ユーザーが付け替えた名前をPCが知らないため。
+	void presentLocalNotification(payload.title, notifySubtitle(payload.subtitle, runtime.pc.name, runtimes.size > 1), payload.body, {
 		ws: payload.ws,
 		terminalKey: payload.terminalKey,
 		agentToken: payload.agentToken,
