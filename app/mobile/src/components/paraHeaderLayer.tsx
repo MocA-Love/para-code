@@ -152,7 +152,7 @@ export function ParaHeaderLayer() {
 			</View>
 			{title === undefined || mid !== undefined ? null : (
 				<Pressable
-					style={styles.titleLayer}
+					style={[styles.titleLayer, { top: insets.top }]}
 					onPress={title.onPress}
 					disabled={title.onPress === undefined}
 					pointerEvents={title.onPress === undefined ? 'none' : 'auto'}
@@ -219,9 +219,10 @@ const styles = StyleSheet.create({
 	textPillLabel: { color: colors.text, fontSize: 12.5, fontWeight: '600' },
 
 	// 左右のボタン（44 + 余白）を避けた帯の中で中央寄せする。
-	// 絶対配置は親の**パディングボックス**基準なので、`top: 0` で島の行と同じ高さに並ぶ
-	// （`wrap` の paddingTop がセーフエリアぶんを既に持っている）。
-	titleLayer: { position: 'absolute', top: 0, left: 72, right: 72, height: SLOT_HEIGHT, alignItems: 'center', justifyContent: 'center' },
+	// **`top` はセーフエリアぶんを自分で足す。** ここの絶対配置は親（`wrap`）の
+	// **ボーダーボックス**基準で、`wrap` の `paddingTop` は効かない（実機で確認: `top: 0` に
+	// すると島の行ではなくステータスバーの位置に出て、時刻や電池と重なった）。
+	titleLayer: { position: 'absolute', left: 72, right: 72, height: SLOT_HEIGHT, alignItems: 'center', justifyContent: 'center' },
 	titleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
 	title: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2, flexShrink: 1 },
 	titleSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1, fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
