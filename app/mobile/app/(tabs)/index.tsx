@@ -1,19 +1,18 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { type ReactElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useIsFocused, useRouter } from 'expo-router';
 import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 // 一覧のScrollViewはRNGH版を使う。RN版は子孫へのタッチ配送を遅らせるため、行に付けた
 // スワイプが指の動き出しを取りこぼして反応しない（祖先側のドロワーだけが効く状態になる）。
 import { GestureDetector, ScrollView } from 'react-native-gesture-handler';
-import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting, pinKeyForTerminal } from '../../src/store.js';
 import { ConnectionGate, PairingRequiredNotice } from '../../src/components/connectionGate.js';
 import { NotificationsButton } from '../../src/components/notificationsSheet.js';
 import { VoiceNotificationControl } from '../../src/components/voiceNotificationControl.js';
-import { WsHeader, useEffectiveWs, useOpenDrawerPan, wsColor } from '../../src/components/wsDrawer.js';
+import { useWsHeader, useEffectiveWs, useOpenDrawerPan, wsColor } from '../../src/components/wsDrawer.js';
 import { AttentionStack, type AttentionStackItem } from '../../src/components/attentionStack.js';
 import {
 	ATTENTION_VISIBLE_LIMIT, CLOSED_ATTENTION, reconcileAttention, sortWaiting, toggleAttention, visibleWaiting,
@@ -24,11 +23,11 @@ import { AgentBadge, AgentRowContent, agentRowStyles, type AgentRowData, type Ag
 import { AgentStatusPopover, type AgentStatusPopoverTarget } from '../../src/components/agentStatusPopover.js';
 import { SwipeRow, swipeActionColors } from '../../src/components/swipeRow.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
-import { HeaderActionButton, HeaderActionPill } from '../../src/components/screenHeader.js';
+import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { useAgentActions, useAgentChatSubscription } from '../../src/hooks/useAgentActions.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
-import { colors, radius, squircle } from '../../src/theme.js';
+import { colors, squircle } from '../../src/theme.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 import { createAgentLatestEntryToken } from '../../src/agentNavigation.js';
 import { arrangeHomeRows } from '../../src/homeSort.js';
@@ -95,7 +94,7 @@ export default function HomeScreen() {
 	// 一覧を何列で並べるか。ウィンドウ幅ではなく実際の一覧の幅で決める
 	// （左のサイドバーぶん狭いので、ウィンドウ幅で決めると2列に入らない幅でも2列にしてしまう）。
 	const [listWidth, setListWidth] = useState(0);
-	const [headerHeight, setHeaderHeight] = useState(0);
+	const headerHeight = useParaHeaderHeight();
 	const columns = regular ? listColumnsFor(listWidth) : 1;
 	// 同じジェスチャをソース管理・ファイルタブでも使う（wsDrawer.tsx の useOpenDrawerPan）。
 	const openDrawerPan = useOpenDrawerPan();
@@ -103,9 +102,15 @@ export default function HomeScreen() {
 	// selectedWsは他タブや通知タップ・エージェント遷移でも更新される全画面共有の値なので、
 	// それらの操作でワークスペースが切り替わった後にホームへ戻ると、絞り込み先も追従する
 	// （ヘッダーのチップ色・ドロワーのアクティブ行と一貫させるための意図的な挙動）。
-	const scopeIds = !homeShowAllWorkspaces && effectiveWs !== undefined
-		? new Set([effectiveWs.id, ...(workspace?.workspaces ?? []).filter(w => w.parent === effectiveWs.id).map(w => w.id)])
+	// **参照を安定させる。** ここが毎レンダー新しい `Set` だと、これを依存に持つ `listable` の
+	// memo が毎回外れ、その下流（＋メニュー・絞り込みチップ・ヘッダーの仕様）まで全部作り直しに
+	// なる。先に文字列のキーを作り、それが変わったときだけ `Set` を組む。
+	const scopeKey = !homeShowAllWorkspaces && effectiveWs !== undefined
+		? [effectiveWs.id, ...(workspace?.workspaces ?? []).filter(w => w.parent === effectiveWs.id).map(w => w.id)].join('\n')
 		: undefined;
+	const scopeIds = useMemo(
+		() => (scopeKey === undefined ? undefined : new Set(scopeKey.split('\n'))),
+		[scopeKey]);
 	const wsById = new Map((workspace?.workspaces ?? []).map(w => [w.id, w]));
 	/** ws未タグのターミナルはPC側アクティブワークスペース所属として扱う（ホーム全体で共通のフォールバック順）。 */
 	const resolveWs = (t: { ws?: string }) =>
@@ -202,8 +207,51 @@ export default function HomeScreen() {
 		undoTimer.current = setTimeout(() => { undoTimer.current = undefined; setUndoArchive(undefined); }, 4_000);
 	};
 
-	/** ヘッダーの＋メニューで選んだ項目の行き先。 */
-	const onPlusMenuSelect = (action: HomePlusMenuAction) => {
+	/** 削除は取り返しがつかないので、スワイプから直に消さず一度だけ聞く。 */
+	const confirmDelete = (terminalKey: string, title: string) => {
+		Alert.alert('エージェントを削除', `「${title}」を削除します。PCのターミナルごと閉じられます。`, [
+			{ text: 'キャンセル', style: 'cancel' },
+			{ text: '削除', style: 'destructive', onPress: () => closeTerminal(terminalKey) },
+		]);
+	};
+
+	// ══ ここから下はフック（`useMemo`/`useCallback`/`useWsHeader`）を含む ══
+	// **早期returnより前に置くこと。** 下に置くと `ready && !paired` が切り替わった瞬間に
+	// フックの本数が変わり、React が「Rendered fewer/more hooks than expected」で落ちる
+	// （新規インストール直後の起動・ペアリング完了・最後のPCのペアリング解除で必ず踏む）。
+	// エージェント一覧。絞り込み中は選択中ワークスペース分だけに絞る。エージェントCLIが
+	// 動いた実績のあるターミナルだけを載せる（プレーンなターミナルを開いただけで
+	// ホームに行が増えないように）。
+	// 応答待ちは上部のスタックが受け持つので、ここには載せない（同じ行を上下に二度出さない）。
+	// **memo する。** この配列はヘッダーの仕様（絞り込みチップの帯・＋メニューの対象件数）へ
+	// 流れるので、毎レンダー新しいと下流の `useCallback`/`useMemo` が全部無効になり、
+	// PCからのstate再送（最大10Hz）ごとにヘッダー層へ書き込みが走る。
+	const listable = useMemo(
+		() => (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)) && !isAgentWaiting(t.agentStatus)),
+		// `inScope` は毎レンダー新しい関数だが、中身は scopeKey（絞り込み先）と workspace で
+		// 決まるので、依存はそれで足りる。
+		//
+		// なお `workspace.terminals` / `workspace.workspaces` は PCからのstate再送ごとに
+		// **必ず新しい参照**になる（`store.ts` の `mergeWorkspaceState` が毎回組み立て直す）ので、
+		// エージェントが走っている間の再送（最大10Hz）ではここは通り抜ける。それは正しい
+		// ——一覧の中身が変わればヘッダーの件数も変わる。ここで止めたいのは「中身が変わって
+		// いないのに作り直す」ぶん（キーボード開閉・フォーカス変化・幅の計測など）だけ。
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[workspace?.terminals, workspace?.workspaces, workspace?.activeWs, scopeKey, archivedKeys]);
+	// 「すべて確認済みにする」の対象。既読の概念があるのはレビュー待ちだけで、実行中や
+	// アイドルには確認するものが無い。応答待ちは回答して解消するものなので含めない。
+	const reviewable = useMemo(() => listable.filter(t => t.agentStatus === 'review'), [listable]);
+
+	// アーカイブ入口は、しまってあるものが1件でもある時だけ出す（常設だと空のボタンが並ぶ）。
+	const archivedCount = (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))).length;
+
+	/**
+	 * ヘッダーの＋メニューで選んだ項目の行き先。
+	 *
+	 * **参照を安定させる。** ヘッダーは常設の層へ仕様として登録するので、毎レンダー新しい
+	 * 関数を渡すとPCからのstate再送（最大10Hz）のたびに層へ書き込みが走る。
+	 */
+	const onPlusMenuSelect = useCallback((action: HomePlusMenuAction) => {
 		switch (action) {
 			case 'launch-claude':
 				router.push({ pathname: '/agent-launch', params: { agent: 'claude' } });
@@ -231,15 +279,43 @@ export default function HomeScreen() {
 				}
 				return;
 		}
-	};
+	}, [router, createTerminal, effectiveWs, reviewable, ackAgentStatus]);
 
-	/** 削除は取り返しがつかないので、スワイプから直に消さず一度だけ聞く。 */
-	const confirmDelete = (terminalKey: string, title: string) => {
-		Alert.alert('エージェントを削除', `「${title}」を削除します。PCのターミナルごと閉じられます。`, [
-			{ text: 'キャンセル', style: 'cancel' },
-			{ text: '削除', style: 'destructive', onPress: () => closeTerminal(terminalKey) },
-		]);
-	};
+	// 右のピルの中身。**器（1枚のガラスのピル）はヘッダー層が持つ**ので、ここは中身だけを渡す。
+	// 並びは「たまに使う → よく使う」で、＋を右端に置く。メニューはその＋から生えるので、
+	// 右端でないと開く場所と押した場所がずれる。状態を持つボタン（音声・通知・＋）は
+	// データにできないので `node` で差し込む。
+	const actions = useMemo<ParaHeaderIcon[]>(() => [
+		...(archivedCount > 0 ? [{
+			key: 'archive',
+			icon: 'file-tray-full-outline' as const,
+			label: `アーカイブ ${archivedCount}件を見る`,
+			onPress: () => { hapticImpact('light'); router.push('/archive'); },
+		}] : []),
+		{ key: 'voice', label: '音声通知', node: <VoiceNotificationControl /> },
+		{ key: 'notifications', label: '通知', node: <NotificationsButton notifications={notifications} /> },
+		// ＋はネイティブのボタン。メニューの提示ごとOSに任せてあるので、開閉のstateは
+		// こちらで持たない（homePlusMenu.tsx 参照）。
+		{
+			key: 'plus', label: '作成と表示のメニュー',
+			node: <HomePlusMenuButton ackCount={reviewable.length} hasSpace={effectiveWs !== undefined} onSelect={onPlusMenuSelect} />,
+		},
+	], [archivedCount, router, notifications, reviewable.length, effectiveWs, onPlusMenuSelect]);
+
+	// 絞り込みチップの帯。要素も memo で安定させる（同じ理由）。
+	const filterBand = useMemo(() => (listable.length > 0
+		? <HomeFilterChips preferences={homePreferences} onChange={setHomePreferences} rows={listable} />
+		: undefined), [listable, homePreferences, setHomePreferences]);
+
+	useWsHeader({
+		allWorkspaces: homeShowAllWorkspaces,
+		// 一覧は広い画面で2列に広がるので、ヘッダーも同じく画面幅いっぱいに合わせる。
+		wide: true,
+		// 絞り込みチップは本文ではなくヘッダーと同じ浮かぶ層（帯）に置く。本文に混ぜると
+		// スクロールで流れて消え、「何で絞られているか」が分からなくなる。
+		below: filterBand,
+		actions,
+	});
 
 	if (ready && !paired) {
 		return <PairingRequiredNotice onStart={() => router.push('/pair')} />;
@@ -252,11 +328,8 @@ export default function HomeScreen() {
 		setSelectedTerminalKey(terminalKey);
 		router.push({ pathname: '/agent', params: { latest: createAgentLatestEntryToken() } });
 	};
-	// エージェント一覧。絞り込み中は選択中ワークスペース分だけに絞る。エージェントCLIが
-	// 動いた実績のあるターミナルだけを載せる（プレーンなターミナルを開いただけで
-	// ホームに行が増えないように）。
-	// 応答待ちは上部のスタックが受け持つので、ここには載せない（同じ行を上下に二度出さない）。
-	const listable = (workspace?.terminals ?? []).filter(t => t.agent === true && inScope(t) && !archivedKeys.has(pinKeyForTerminal(t)) && !isAgentWaiting(t.agentStatus));
+
+
 	// 並び順・絞り込みはユーザーが選べる（判定は homeSort.ts、設定は端末に保存される）。
 	// スペース順の基準はドロワーのワークスペース一覧と同じ並びにする。所属の解決は
 	// resolveWs を通す（ws未タグをPC側アクティブスペース所属として扱う共通の規則。
@@ -266,11 +339,7 @@ export default function HomeScreen() {
 		spaceIndexOf: t => { const ws = resolveWs(t); return ws !== undefined ? spaceIndex.get(ws.id) : undefined; },
 		isPinned: t => pinnedKeys.has(pinKeyForTerminal(t)),
 	});
-	// アーカイブ入口は、しまってあるものが1件でもある時だけ出す（常設だと空のボタンが並ぶ）。
-	const archivedCount = (workspace?.terminals ?? []).filter(t => t.agent === true && archivedKeys.has(pinKeyForTerminal(t))).length;
-	// 「すべて確認済みにする」の対象。既読の概念があるのはレビュー待ちだけで、実行中や
-	// アイドルには確認するものが無い。応答待ちは回答して解消するものなので含めない。
-	const reviewable = listable.filter(t => t.agentStatus === 'review');
+
 
 	return (
 		<ConnectionGate><GestureDetector gesture={openDrawerPan}><View style={styles.screen}>
@@ -446,46 +515,6 @@ export default function HomeScreen() {
 				preferences={homePreferences}
 				onChange={setHomePreferences}
 				onClose={() => setSortSheetOpen(false)}
-			/>
-			<WsHeader
-				allWorkspaces={homeShowAllWorkspaces}
-				// 一覧は広い画面で2列に広がるので、ヘッダーも同じく画面幅いっぱいに合わせる。
-				wide
-				onHeightChange={setHeaderHeight}
-				// 絞り込みチップは本文ではなくヘッダーと同じ浮かぶ層に置く。本文に混ぜると
-				// スクロールで流れて消え、「何で絞られているか」が分からなくなる。
-				below={listable.length > 0 ? (
-					<HomeFilterChips preferences={homePreferences} onChange={setHomePreferences} rows={listable} />
-				) : undefined}
-				right={
-					// アクションは**1枚のガラスのピル**にまとめる（LINEのヘッダー右と同じ形）。
-					// ガラス面を1つにするので、中のボタンは Apple HIG どおり glass を重ねず、
-					// 押下は白のハイライトで返す。丸ボタンを並べて GlassContainer で融合させる
-					// 案も試したが、実機では溶け合わずバラバラの丸のままだった（そもそも
-					// 参照にしている見た目が「1枚のピル」で、融合を使う形ではない）。
-					// 並びは「たまに使う → よく使う」で、＋を右端に置く。メニューはその＋から
-					// 生えるので、右端でないと開く場所と押した場所がずれる。
-					// アイコンの大きさと色は揃える。1つだけ着色すると、1枚のピルの中でそこだけ
-					// 別の部品のように浮く。
-					<HeaderActionPill>
-						{archivedCount > 0 ? (
-							<HeaderActionButton
-								icon="file-tray-full-outline"
-								label={`アーカイブ ${archivedCount}件を見る`}
-								onPress={() => { hapticImpact('light'); router.push('/archive'); }}
-							/>
-						) : null}
-						<VoiceNotificationControl />
-						<NotificationsButton notifications={notifications} />
-						{/* ＋はネイティブのボタン。メニューの提示ごとOSに任せてあるので、
-						    開閉のstateはこちらで持たない（homePlusMenu.tsx 参照）。 */}
-						<HomePlusMenuButton
-							ackCount={reviewable.length}
-							hasSpace={effectiveWs !== undefined}
-							onSelect={onPlusMenuSelect}
-						/>
-					</HeaderActionPill>
-				}
 			/>
 		</View></GestureDetector></ConnectionGate>
 	);

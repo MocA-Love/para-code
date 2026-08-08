@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, KeyboardAvoidingView, Linking, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -8,10 +8,10 @@ import { useAppStore } from '../../src/appState.js';
 import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { DiffView } from '../../src/components/diffView.js';
 import { GestureDetector } from 'react-native-gesture-handler';
-import { WsHeader, useOpenDrawerPan, useEffectiveWs } from '../../src/components/wsDrawer.js';
+import { useWsHeader, useOpenDrawerPan, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
-import { HeaderActionButton, HeaderActionPill } from '../../src/components/screenHeader.js';
+import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
@@ -52,7 +52,7 @@ export default function ScmScreen() {
 	const column = useContentColumnStyle();
 	// 相対時刻表示（最近のコミットの「〇分前」）を画面を開いたままでも追従させる
 	const now = useNow();
-	const [headerHeight, setHeaderHeight] = useState(0);
+	const headerHeight = useParaHeaderHeight();
 	const openDrawerPan = useOpenDrawerPan();
 	const [status, setStatus] = useState<ScmStatusResult | undefined>();
 	const [log, setLog] = useState<ScmLogResult | undefined>();
@@ -250,6 +250,16 @@ export default function ScmScreen() {
 		}
 	};
 
+	const actions = useMemo<ParaHeaderIcon[]>(() => [{
+		key: 'refresh',
+		icon: 'refresh-outline',
+		label: '変更を再取得',
+		color: loading ? colors.textDim : colors.text,
+		onPress: () => { hapticImpact('light'); void refresh(); },
+	}], [loading, refresh]);
+
+	useWsHeader({ actions });
+
 	return (
 		<ConnectionGate>
 		<GestureDetector gesture={openDrawerPan}>
@@ -320,8 +330,13 @@ export default function ScmScreen() {
 				})}
 				</View> : null}
 
+				{/* 見出しは必ず `sectionRow` に入れる。素の `<Text>` を置くと下の余白を誰も
+				    持たず（札は marginBottom しか持たない）、見出しの文字と札の上端が接する。 */}
 				{log !== undefined || logError !== undefined ? (
-					<Text style={[styles.sectionTitle, { marginTop: 18 }]}>最近のコミット</Text>
+					<View style={styles.sectionRow}>
+						<Text style={styles.sectionTitle}>最近のコミット</Text>
+						<Text style={styles.sectionCount}>{log?.commits.length ?? 0}</Text>
+					</View>
 				) : null}
 				{logError ? <Text style={styles.error}>{logError}</Text> : null}
 				{log && log.commits.length === 0 ? <Text style={styles.dim}>コミットはありません</Text> : null}
@@ -369,19 +384,6 @@ export default function ScmScreen() {
 			{diffTarget !== undefined && wsId ? (
 				<DiffView ws={wsId} path={diffTarget.path} staged={diffTarget.staged} statusLetter={diffTarget.letter} onClose={() => setDiffTarget(undefined)} />
 			) : null}
-			<WsHeader
-				onHeightChange={setHeaderHeight}
-				right={
-					<HeaderActionPill>
-						<HeaderActionButton
-							icon="refresh-outline"
-							label="変更を再取得"
-							color={loading ? colors.textDim : colors.text}
-							onPress={() => { hapticImpact('light'); void refresh(); }}
-						/>
-					</HeaderActionPill>
-				}
-			/>
 		</KeyboardAvoidingView>
 		</GestureDetector>
 		</ConnectionGate>
@@ -404,7 +406,8 @@ const styles = StyleSheet.create({
 	commitBtnText: { color: '#fff', fontWeight: '600', fontSize: 14 },
 	commitResult: { color: colors.green, fontSize: 11, marginTop: 8, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	error: { color: colors.red, fontSize: 12, marginTop: 8 },
-	sectionRow: { flexDirection: 'row', alignItems: 'center', marginTop: 18, marginBottom: 6 },
+	// 見出しの上下の余白はここ1箇所に持たせる（画面ごとに数字を発明しない）。
+	sectionRow: { flexDirection: 'row', alignItems: 'center', marginTop: 18, marginBottom: 8 },
 	sectionTitle: { color: colors.textDim, fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, flex: 1 },
 	sectionCount: { color: colors.textDim, fontSize: 12 },
 	spinner: { marginTop: 16 },

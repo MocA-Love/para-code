@@ -10,8 +10,11 @@ import { pinKeyForTerminal } from '../store.js';
 import { BottomSheet } from './bottomSheet.js';
 import { AgentBadge } from './agentRow.js';
 import { appendSpaceNoteEntry, parseSpaceNote, spaceNoteSummary, SPACE_NOTE_MAX_LENGTH, toggleSpaceNoteTask } from '../spaceNote.js';
+import { promptTerminalName } from '../promptTerminalName.js';
+import { CHIP_HEIGHT } from './agentRow.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { colors, mono } from '../theme.js';
+import { GlassSurface } from './glassSurface.js';
+import { colors, mono, squircle } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
 /**
@@ -19,19 +22,19 @@ import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
  * それまで名前の変更はホーム一覧の長押し、メモはドロワーのスペース行からしか到達できず、
  * 会話を読みながらでは手が届かなかった。この1枚に集約する:
  *
- *  - ターミナル名の変更（PCのタブ名にも反映される。ホーム長押しと同じ renameTerminal）
+ *  - ターミナル名の変更（名前の行をタップ → OSのアラート。{@link promptTerminalName}）
  *  - スペースのメモ（チェックのトグル・項目の追加まで。全文の編集は /space-note へ渡す）
  *  - ピン留め / ターミナル（生画面）/ ブラウザ / アーカイブ / 削除
  *
  * Liquid Glass について: 面は {@link BottomSheet} の `glass` に任せる（iOS 26+ は
  * expo-glass-effect の本物のLiquid Glass、それ未満・Androidは BlurView フォールバック）。
- * Apple HIG の「glassの上にglassを重ねない」に従い、**シート内部の操作要素には
- * GlassSurface を使わない**（不透明な surface2/surface3 で描く）。呼び出し側のヘッダー
- * タイトルも既にブラーの上に載っているため、glassボタンにはしていない。
+ * 下部の4つのアクションはガラスにするが、**素材は `clear`** にする（シートが `regular` の
+ * ガラスなので、その上に `regular` を重ねると2枚ぶん明るくなって濁る。HIGの「ガラスの上に
+ * ガラスを重ねない」が防ぎたいのはこの状態で、`clear` なら層が増えて見えない）。
  *
- * 日本語IME: 名前変更・項目追加の入力欄はどちらも uncontrolled（`value` を渡さない）。
- * PCからの同期pushで再レンダしても未確定文字列へ書き戻さないため、変換途中で確定される
- * 事故が起きない（space-note.tsx / glassComposer.tsx と同じ流儀）。
+ * 日本語IME: 項目追加の入力欄は uncontrolled（`value` を渡さない）。PCからの同期pushで
+ * 再レンダしても未確定文字列へ書き戻さないため、変換途中で確定される事故が起きない
+ * （space-note.tsx / glassComposer.tsx と同じ流儀）。
  */
 
 /** メモのプレビューに出す最大行数（超えたぶんは「ほかN行」にまとめる）。 */
@@ -39,9 +42,6 @@ const NOTE_PREVIEW_LINES = 5;
 
 /** シートの閉じアニメーション（bottomSheet.tsx）が終わるまでの待ち時間。 */
 const SHEET_CLOSE_MS = 200;
-
-/** ターミナル名の入力上限。PC側のタブ名へそのまま流れるため、常識的な長さで止める。 */
-const TERMINAL_NAME_MAX_LENGTH = 120;
 
 export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStatus, ws, model, effort, onOpenBrowser, onLeaveScreen }: {
 	visible: boolean;
@@ -68,16 +68,13 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 	const pinned = pinnedKeys.has(pinKey);
 	const archived = archivedKeys.has(pinKey);
 
-	// 'main' 以外は同じシートの中身を差し替える（Modalの上にModalを重ねないため）。
-	const [mode, setMode] = useState<'main' | 'rename' | 'confirm-delete'>('main');
-	const nameDraft = useRef(title);
+	// 削除の確認だけは同じシートの中身を差し替える（Modalの上にModalを重ねないため）。
+	// 名前の変更はOSのアラート（`promptTerminalName`）へ移したので、ここにモードは持たない。
+	const [mode, setMode] = useState<'main' | 'confirm-delete'>('main');
 	useEffect(() => {
 		if (visible) {
 			setMode('main');
-			nameDraft.current = title;
 		}
-		// title の変化で編集モードを畳まない（PC側からの改名で入力中の下書きが消えないように）
-		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [visible]);
 
 	const wsId = ws?.id;
@@ -237,16 +234,6 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 		commitAdd(true);
 	};
 
-	// 改名の下書きは、メモと違って ✕・暗幕で閉じると破棄する（アラートの作法に合わせた明示保存のみ）。
-	const submitRename = () => {
-		const next = nameDraft.current.trim();
-		if (next.length > 0 && next !== title) {
-			hapticImpact('light');
-			renameTerminal(terminalKey, next);
-		}
-		setMode('main');
-	};
-
 	/**
 	 * シートを閉じ切ってから遷移する。Modalの暗幕は閉じアニメーションのあいだ画面全体を
 	 * 覆ったままなので、同じtickで遷移すると遷移先の最初のタップが暗幕に吸われる。
@@ -278,7 +265,7 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 	const hiddenLineCount = lines.length - shownLines.length;
 	const hiddenNote = hiddenLineCount > 0 ? <Text style={styles.noteMore}>ほか {hiddenLineCount} 行</Text> : null;
 
-	const sheetTitle = mode === 'rename' ? 'ターミナル名を変更' : mode === 'confirm-delete' ? 'ターミナルを削除' : 'エージェント';
+	const sheetTitle = mode === 'confirm-delete' ? 'ターミナルを削除' : 'エージェント';
 
 	return (
 		<BottomSheet visible={visible} onClose={onClose} title={sheetTitle} glass>
@@ -286,32 +273,7 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 				contentContainerStyle={[styles.bodyContent, { paddingBottom: insets.bottom + 20 }]}
 				keyboardShouldPersistTaps="handled"
 			>
-				{mode === 'rename' ? (
-					<>
-						<Text style={styles.fieldLabel}>ターミナル名</Text>
-						<TextInput
-							style={styles.nameInput}
-							// value は渡さない（IMEの未確定文字列へ書き戻さないため）
-							defaultValue={title}
-							onChangeText={text => { nameDraft.current = text; }}
-							selectTextOnFocus
-							autoFocus
-							returnKeyType="done"
-							maxLength={TERMINAL_NAME_MAX_LENGTH}
-							onSubmitEditing={submitRename}
-							accessibilityLabel="ターミナル名"
-						/>
-						<Text style={styles.fieldHint}>PCのターミナルタブ名にも反映されます</Text>
-						<View style={styles.dialogBtns}>
-							<Pressable style={styles.dialogBtn} onPress={() => { hapticImpact('light'); setMode('main'); }} accessibilityRole="button">
-								<Text style={styles.dialogBtnText}>キャンセル</Text>
-							</Pressable>
-							<Pressable style={[styles.dialogBtn, styles.dialogBtnPrimary]} onPress={submitRename} accessibilityRole="button">
-								<Text style={[styles.dialogBtnText, styles.dialogBtnTextPrimary]}>保存</Text>
-							</Pressable>
-						</View>
-					</>
-				) : mode === 'confirm-delete' ? (
+				{mode === 'confirm-delete' ? (
 					<>
 						<View style={styles.dangerIconWrap}>
 							<View style={styles.dangerIcon}><Ionicons name="trash-outline" size={20} color={colors.red} /></View>
@@ -336,17 +298,19 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 					</>
 				) : (
 					<>
-						<View style={styles.nameRow}>
+						{/* 名前の行そのものがボタン。以前は右端に32ptの塗りの真円（鉛筆）を置いていたが、
+						    見出しの行の✕（30ptの真円）と縦に2つ並び、他の画面には無い寸法の丸が重なって
+						    見えていた。器を持たせず、押したらOSのアラートが出る形にする。 */}
+						<Pressable
+							style={styles.nameRow}
+							onPress={() => promptTerminalName(title, next => { hapticImpact('light'); renameTerminal(terminalKey, next); })}
+							accessibilityRole="button"
+							accessibilityLabel={`ターミナル名 ${title}`}
+							accessibilityHint="名前を変更します"
+						>
 							<Text style={styles.name} numberOfLines={2}>{title}</Text>
-							<Pressable
-								style={styles.iconBtn}
-								onPress={() => { hapticSelection(); nameDraft.current = title; setMode('rename'); }}
-								accessibilityRole="button"
-								accessibilityLabel="ターミナル名を変更"
-							>
-								<Ionicons name="pencil" size={15} color={colors.text} />
-							</Pressable>
-						</View>
+							<Ionicons name="pencil" size={13} color={colors.textDim} />
+						</Pressable>
 
 						<View style={styles.chips}>
 							<AgentBadge status={agentStatus} />
@@ -508,6 +472,16 @@ export function AgentInfoSheet({ visible, onClose, terminalKey, title, agentStat
 	);
 }
 
+/**
+ * シート下部の4つのアクション。**ガラスは `clear` で重ねる。**
+ *
+ * シート自身がすでに `regular` のガラスなので、その上にもう1枚 `regular` を置くと2枚ぶん
+ * 明るくなって濁る。`clear` にすると「新しい板」ではなく「レンズ」として読めるため、
+ * HIGの「ガラスの上にガラスを重ねない」の意図（層が増えて見えないこと）を保てる。
+ *
+ * ガラスは**外側**に置き、`Pressable` を中身にする（`Pressable > GlassSurface` の順にすると
+ * 器の直下の兄弟でなくなり、`GlassContainer` の融合が切れる）。
+ */
 function ActionButton({ icon, label, active = false, onPress }: {
 	icon: keyof typeof Ionicons.glyphMap;
 	label: string;
@@ -515,23 +489,25 @@ function ActionButton({ icon, label, active = false, onPress }: {
 	onPress: () => void;
 }) {
 	return (
-		<Pressable style={[styles.action, active && styles.actionActive]} onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
-			<Ionicons name={icon} size={17} color={active ? colors.accent : colors.text} />
-			<Text style={[styles.actionLabel, active && styles.actionLabelActive]} numberOfLines={1}>{label}</Text>
-		</Pressable>
+		<GlassSurface style={styles.action} material="clear" interactive tintColor={active ? colors.accent : undefined} tintOpacity={0.22}>
+			<Pressable style={styles.actionHit} onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
+				<Ionicons name={icon} size={17} color={active ? colors.accent : colors.text} />
+				<Text style={[styles.actionLabel, active && styles.actionLabelActive]} numberOfLines={1}>{label}</Text>
+			</Pressable>
+		</GlassSurface>
 	);
 }
 
 const styles = StyleSheet.create({
 	bodyContent: { paddingHorizontal: 20, paddingTop: 2 },
 
-	nameRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+	nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 2 },
 	name: { flex: 1, color: colors.text, fontSize: 19, fontWeight: '700', letterSpacing: -0.2 },
-	// glassの上にglassを重ねないため、シート内のボタンは不透明な面で描く（HIG準拠）
-	iconBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.surface3, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center' },
 
 	chips: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 10 },
-	chip: { flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: '100%', borderRadius: 999, paddingHorizontal: 9, paddingVertical: 4, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, overflow: 'hidden' },
+	// 高さは `CHIP_HEIGHT` に揃える。以前は `<Text>` のバッジ（約16pt）と `<View>` のチップ
+	// （約21.5pt）が隣同士に並び、5.5ptの段差が見えていた。
+	chip: { flexDirection: 'row', alignItems: 'center', gap: 5, height: CHIP_HEIGHT, maxWidth: '100%', borderRadius: 999, paddingHorizontal: 9, backgroundColor: colors.surface2, borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, overflow: 'hidden' },
 	chipSwatch: { width: 7, height: 7, borderRadius: 2 },
 	chipText: { color: '#b6b6be', fontSize: 10.5 },
 	chipMono: { fontFamily: Platform.OS === 'ios' ? mono.ios : mono.default },
@@ -564,26 +540,21 @@ const styles = StyleSheet.create({
 	addLabel: { color: colors.textDim, fontSize: 12.5 },
 
 	actions: { flexDirection: 'row', gap: 8, marginTop: 14 },
-	action: { flex: 1, alignItems: 'center', gap: 5, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface2, paddingVertical: 11, paddingHorizontal: 4 },
-	actionActive: { borderColor: 'rgba(9,175,217,0.45)', backgroundColor: colors.accentWash },
-	actionLabel: { color: '#b8b8c0', fontSize: 10 },
+	action: { flex: 1, borderRadius: 14, ...squircle },
+	actionHit: { flex: 1, alignItems: 'center', gap: 5, paddingVertical: 11, paddingHorizontal: 4 },
+	actionLabel: { color: '#d0d0d8', fontSize: 10 },
 	actionLabelActive: { color: colors.accent },
 
 	deleteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 12, borderRadius: 14, borderWidth: 1, borderColor: 'rgba(244,114,114,0.28)', paddingVertical: 11 },
 	deleteText: { color: colors.red, fontSize: 12.5, fontWeight: '600' },
 
-	fieldLabel: { color: colors.textDim, fontSize: 10, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 7 },
-	nameInput: { backgroundColor: 'rgba(0,0,0,0.35)', borderWidth: 1, borderColor: colors.borderStrong, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, color: colors.text, fontSize: 14 },
-	fieldHint: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 8 },
 	dangerIconWrap: { alignItems: 'center', paddingTop: 2 },
 	dangerIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(244,114,114,0.14)', alignItems: 'center', justifyContent: 'center' },
 	confirmTitle: { color: colors.text, fontSize: 15, fontWeight: '700', textAlign: 'center', marginTop: 12 },
 	confirmBody: { color: colors.textDim, fontSize: 12, lineHeight: 18, textAlign: 'center', marginTop: 6 },
 	dialogBtns: { flexDirection: 'row', gap: 8, marginTop: 16 },
 	dialogBtn: { flex: 1, alignItems: 'center', borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface2, paddingVertical: 12 },
-	dialogBtnPrimary: { borderColor: 'rgba(9,175,217,0.45)', backgroundColor: colors.accentWash },
 	dialogBtnDanger: { borderColor: 'rgba(244,114,114,0.35)', backgroundColor: 'rgba(244,114,114,0.12)' },
 	dialogBtnText: { color: colors.text, fontSize: 14 },
-	dialogBtnTextPrimary: { color: colors.accent, fontWeight: '700' },
 	dialogBtnTextDanger: { color: colors.red, fontWeight: '700' },
 });

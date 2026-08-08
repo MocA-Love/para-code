@@ -11,6 +11,8 @@ import { AuthGate } from '../src/components/authGate.js';
 import { OverlayHost } from '../src/components/overlayHost.js';
 import { UpdateSheetHost } from '../src/components/updateSheet.js';
 import { ParaToastHost } from '../src/components/paraToast.js';
+import { ParaHeaderLayer } from '../src/components/paraHeaderLayer.js';
+import { WsDrawerLayout } from '../src/components/wsDrawer.js';
 import { IpadShell } from '../src/ipad/ipadShell.js';
 import { startLiveActivitySync } from '../src/liveActivitySync.js';
 import { colors } from '../src/theme.js';
@@ -180,6 +182,12 @@ function RootLayout() {
 					{/* iPadの広い幅では左にワークスペースサイドバーを常設し、このスタック全体を
 					    右カラムへ収める。iPhone・狭い幅では素通しで従来どおり全幅に描画される */}
 					<IpadShell>
+					{/* ワークスペースドロワーはここで1回だけ包む。**`Stack` と常設のヘッダー層を
+					    まとめて**包むのが要点——開いたときにどくのは「画面の中身」だけでなく
+					    ヘッダーも含めた全部でないと、浮いているヘッダーがドロワーの上に残る
+					    （X等と同じで、スライドするのは画面まるごと）。
+					    タブ以外の画面では錠が掛かる（左端スワイプは「戻る」に使う）。 */}
+					<WsDrawerLayout>
 					{/* 設定まわり（設定・使用量各種・PC詳細・更新履歴・ターミナル設定）は
 					    `app/(settings)/` のネストしたスタックにまとめてある。ここではその入口を
 					    モーダルとして1つ出すだけで、中の移動は向こうのスタックが水平pushで行う。
@@ -210,15 +218,23 @@ function RootLayout() {
 						{/* アーカイブ一覧。ホームヘッダーの箱アイコンから開く */}
 						<Stack.Screen name="archive" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>
+					{/* **全画面で共有する唯一のヘッダー。** 各画面は `useParaHeader()` で仕様を
+					    書き込むだけで、Viewはここのものが使い回される——だから遷移でガラスの器が
+					    生き残り、枠の変化が融合になる（src/paraHeader.ts 参照）。
+					    `Stack` の後ろに置くことで前面に出る。ネイティブのモーダル（設定・
+					    ペアリング）はこの層より前面に presented されるので覆われない。 */}
+					<ParaHeaderLayer />
+					</WsDrawerLayout>
 					</IpadShell>
 					{/* glass対応メニュー/ダイアログの描画先（overlayHost.tsx参照）。
 					    再ロック時にロック画面より上へ残らないよう、AuthGateの内側に置く */}
 					<OverlayHost />
 					{/* 更新後の初回起動でだけ出るお知らせ。ロック中に出ないようAuthGateの内側に置く */}
 					<UpdateSheetHost />
-					{/* 一時的なお知らせ（再接続中・PC切替・起動完了）を出す唯一の場所。
-					    3つが別々の部品だったのをここへ集約した（src/paraToast.ts 参照）。
-					    ロック中に出さないようAuthGateの内側に置く */}
+					{/* 一時的なお知らせ（PC切替・起動完了）を出す唯一の場所。**ドロワーの外**に置く
+					    ——通知バナーは画面の状態と関係なく最前面に浮くものなので、ドロワーと一緒に
+					    どく必要がない。継続する状態（再接続中・オフライン）はここではなく島の中で
+					    示す（src/offlineNotice.ts）。ロック中に出さないようAuthGateの内側に置く */}
 					<ParaToastHost />
 				</AuthGate>
 			</ThemeProvider>

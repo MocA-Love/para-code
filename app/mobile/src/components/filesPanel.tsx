@@ -1,16 +1,34 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
 import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
+import { matchRanges, useFilesSearch } from '../filesSearch.js';
 import { colors, radius, squircle } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../store.js';
+
+/**
+ * ファイル操作が通るか（PCと繋がっていて、そのスペースを持つウィンドウのrendererが起きている）。
+ *
+ * **検索欄（ヘッダーの帯）と一覧で同じ判定を使うために公開している。** 粗い判定
+ * （接続だけ見る）を欄側に置くと、rendererの準備待ちのあいだだけ欄が編集できてしまい、
+ * 「古い結果に新しい条件が付いている」状態が作れる。
+ */
+export function useFilesLive(): boolean {
+	const { connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
+		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
+	})));
+	const ws = useEffectiveWs();
+	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws?.id);
+	const renderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
+	return connection === 'online' && pcOnline && sessionProtocolReady && renderer?.ready === true;
+}
 
 function currentRendererTarget(wsId: string | undefined): string | undefined {
 	const state = useAppStore.getState();
@@ -34,36 +52,37 @@ function currentRendererTarget(wsId: string | undefined): string | undefined {
  *  - ファイル名: 全階層の相対パスに対する部分一致（.gitignore尊重、ランク順）
  *  - テキスト: 全文検索（スマートケース・リテラル一致、行プレビュー付き）
  */
-export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchClose }: {
+export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 	/**
-	 * 上に浮かぶヘッダーの高さ。この画面は ScrollView を持たず（検索欄・モード・パンくずが
-	 * リストの外にある）、`paddingTop` を渡す先が無いため、器の上端をここで空ける。
+	 * 上に浮かぶヘッダー（開いているときは検索欄の帯も含む）の高さ。この画面は
+	 * ScrollView の中身側でこのぶん上を空ける。
 	 */
 	contentInsetTop?: number;
 	/**
-	 * 検索欄を出すか。常設にすると上端が1段まるごと埋まるので、既定では畳んでおき、
-	 * ヘッダーの虫めがねから開く。
+	 * 検索欄が開いているか。**欄そのものはヘッダーの帯にある**（{@link FilesSearchField}）。
+	 * ここでは「結果を出すかツリーを出すか」の判断にだけ使う。
 	 */
 	searchOpen?: boolean;
-	/** 検索欄を閉じたときに呼ぶ（開閉の状態は画面側が持つ）。 */
-	onSearchClose?: () => void;
 }) {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep, connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace })));
+	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep, workspace } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep, workspace: s.workspace })));
 	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws?.id);
 	const selectedRenderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
 	const rendererTarget = selectedRenderer?.ready === true && workspace !== undefined
 		? `${workspace.desktopEpoch}:${selectedRenderer.windowId}:${selectedRenderer.rendererGeneration}`
 		: undefined;
-	const live = connection === 'online' && pcOnline && sessionProtocolReady && rendererTarget !== undefined;
+	// **判定は `useFilesLive()` に寄せる。** 検索欄（ヘッダーの帯）と同じ規則を2箇所に
+	// 書いておくと、どちらか片方に条件が増えたときに静かにずれる（欄だけ編集できてしまう等）。
+	// `rendererTarget` は「どのrendererへ出した要求か」の照合に使うので、こちらは残す。
+	const live = useFilesLive();
 
 	const tabBarSpacer = useTabBarSpacer();
 	const [path, setPath] = useState('');
 	const pathRef = useRef('');
 	const scrollRef = useRef<ScrollView>(null);
 	const [listing, setListing] = useState<FsListResult | undefined>();
-	const [filter, setFilter] = useState('');
-	const [searchMode, setSearchMode] = useState<'name' | 'text'>('name');
+	// 検索条件は欄（ヘッダーの帯）と共有するのでストアが持つ。
+	const { filter, searchMode } = useFilesSearch(useShallow(s => ({ filter: s.query, searchMode: s.mode })));
 	const [findResult, setFindResult] = useState<FsFindResult | undefined>();
 	const [grepResult, setGrepResult] = useState<FsGrepResult | undefined>();
 	const [searching, setSearching] = useState(false);
@@ -108,7 +127,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchCl
 			pathRef.current = p;
 			setPath(p);
 			if (clearSearch) {
-				setFilter('');
+				useFilesSearch.getState().clear();
 				setFindResult(undefined);
 				setGrepResult(undefined);
 			}
@@ -133,7 +152,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchCl
 			sheetGenRef.current++;
 			pathRef.current = '';
 			setPath('');
-			setFilter('');
+			useFilesSearch.getState().clear();
 			setListing(undefined);
 			setViewerPath(undefined);
 			viewerPathRef.current = undefined;
@@ -335,49 +354,21 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchCl
 				// 外側の paddingTop にすると本文が下へ押し出されるだけで、島の下を通らない。
 				contentContainerStyle={{ paddingTop: contentInsetTop, paddingBottom: tabBarSpacer }}
 				keyboardShouldPersistTaps="handled"
-				refreshControl={!searchActive ? <RefreshControl refreshing={loading} onRefresh={() => { void load(path); }} tintColor={colors.textDim} progressViewOffset={contentInsetTop} /> : undefined}
+				// **RefreshControl は出し入れしない。** RNのScrollViewはiOSでこれを子として差し込む
+				// ので、ある／無しで子の並びが [refresh, content] → content に変わり、Reactが並びの
+				// 1番目を突き合わせて**中身のツリーを丸ごと作り直す**。検索欄のTextInputがそこで
+				// 外れてキーボードが閉じ、`autoFocus` が張り直してまた出る（＝「1文字打つとキーボードが
+				// 一度消えて出直す」の正体。1文字目で searchActive が false→true になる瞬間だけ
+				// 起きるのも一致していた）。常に置いて、検索中は引っぱっても何もしないだけにする。
+				refreshControl={
+					<RefreshControl
+						refreshing={loading && !searchActive}
+						onRefresh={() => { if (!searchActive) { void load(path); } }}
+						tintColor={colors.textDim}
+						progressViewOffset={contentInsetTop}
+					/>
+				}
 			>
-				{searchOpen ? (
-					<View style={styles.searchBox}>
-						<Ionicons name="search-outline" size={14} color={colors.textDim} />
-						<TextInput
-							style={styles.searchInput}
-							value={filter}
-							onChangeText={setFilter}
-							editable={live}
-							autoFocus
-							placeholder={searchMode === 'name' ? 'ファイル名で検索（全階層）…' : 'テキストで検索（全文）…'}
-							placeholderTextColor={colors.textDim}
-							autoCapitalize="none"
-							autoCorrect={false}
-							onFocus={() => hapticSelection()}
-						/>
-						{searching ? <ActivityIndicator size="small" color={colors.textDim} /> : null}
-						<Pressable
-							disabled={!live}
-							style={[styles.modeChip, searchMode === 'name' && styles.modeChipActive]}
-							onPress={() => { hapticSelection(); setSearchMode('name'); }}
-						>
-							<Text style={[styles.modeText, searchMode === 'name' && styles.modeTextActive]}>名前</Text>
-						</Pressable>
-						<Pressable
-							disabled={!live}
-							style={[styles.modeChip, searchMode === 'text' && styles.modeChipActive]}
-							onPress={() => { hapticSelection(); setSearchMode('text'); }}
-						>
-							<Text style={[styles.modeText, searchMode === 'text' && styles.modeTextActive]}>内容</Text>
-						</Pressable>
-						<Pressable
-							style={styles.searchClose}
-							onPress={() => { hapticSelection(); setFilter(''); onSearchClose?.(); }}
-							hitSlop={8}
-							accessibilityRole="button"
-							accessibilityLabel="検索を閉じる"
-						>
-							<Ionicons name="close" size={15} color={colors.textDim} />
-						</Pressable>
-					</View>
-				) : null}
 				{!searchActive ? <Text style={styles.breadcrumb} numberOfLines={1}>{crumbs.join(' › ')}</Text> : null}
 				{error && !searchActive ? <Text style={styles.error}>{error}</Text> : null}
 				{searchActive ? (
@@ -390,8 +381,8 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchCl
 										<Pressable key={p} style={[styles.row, i === findResult.files.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(p); }}>
 											<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
 											<View style={styles.resultCol}>
-												<Text style={styles.rowName} numberOfLines={1}>{p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p}</Text>
-												{p.includes('/') ? <Text style={styles.resultPath} numberOfLines={1}>{p.slice(0, p.lastIndexOf('/'))}</Text> : null}
+												<Highlighted text={p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p} query={filter} smartCase={false} lines={1} style={styles.rowName} />
+												{p.includes('/') ? <Highlighted text={p.slice(0, p.lastIndexOf('/'))} query={filter} smartCase={false} lines={1} style={styles.resultPath} /> : null}
 											</View>
 										</Pressable>
 									))}
@@ -406,7 +397,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchCl
 										<Pressable key={`${m.path}:${m.line}:${i}`} style={[styles.row, i === grepResult.matches.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(m.path, m.line); }}>
 											<View style={styles.resultCol}>
 												<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
-												<Text style={styles.resultPreview} numberOfLines={2}>{m.text}</Text>
+												<Highlighted text={m.text} query={filter} smartCase lines={2} style={styles.resultPreview} />
 											</View>
 										</Pressable>
 									))}
@@ -468,6 +459,132 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false, onSearchCl
 	);
 }
 
+/**
+ * 一致した箇所を primary の色＋太字で示す。
+ *
+ * 色を増やさないため、地は敷かない（モノスペースの行に地色が入ると行がうるさくなる）。
+ * 分割の規則は `matchRanges`（PC側 ripgrep と同じスマートケース・リテラル一致）。
+ */
+function Highlighted({ text, query, smartCase, lines, style }: {
+	text: string;
+	query: string;
+	/** 全文検索のときだけ true（PC側の規則に合わせる。`matchRanges` の説明を参照）。 */
+	smartCase: boolean;
+	lines: number;
+	style: StyleProp<TextStyle>;
+}) {
+	const ranges = matchRanges(text, query, smartCase);
+	if (ranges.length === 0) {
+		return <Text style={style} numberOfLines={lines}>{text}</Text>;
+	}
+	const parts: ReactNode[] = [];
+	let at = 0;
+	for (const [index, range] of ranges.entries()) {
+		if (range.start > at) {
+			parts.push(text.slice(at, range.start));
+		}
+		parts.push(<Text key={index} style={styles.hit}>{text.slice(range.start, range.end)}</Text>);
+		at = range.end;
+	}
+	if (at < text.length) {
+		parts.push(text.slice(at));
+	}
+	return <Text style={style} numberOfLines={lines}>{parts}</Text>;
+}
+
+/**
+ * 検索欄。**ヘッダーの帯**（常設のヘッダー層）に置く（`app/(tabs)/files.tsx`）。
+ *
+ * 以前は本文の先頭に `searchOpen ? <View> : null` で出していたので、ぱっと現れるうえ、
+ * 下まで読むと欄が画面の外に居た。帯に移すと島の下から滑り出し、スクロールしても消えない。
+ *
+ * 入力は uncontrolled（`value` を渡さない）。ストアへは `onChangeText` で流すだけにして、
+ * 再レンダーで未確定のIME文字列へ書き戻さない（space-note.tsx / glassComposer.tsx と同じ流儀）。
+ */
+export function FilesSearchField({ onClose, live }: {
+	onClose: () => void;
+	/** PCと繋がっているか。切断中は編集させない（古い結果に新しい条件が付いて見えるため）。 */
+	live: boolean;
+}) {
+	// **`query` は購読しない。** ここは uncontrolled（`defaultValue`）で、購読すると打鍵ごとに
+	// `defaultValue` が変わって実質 controlled になり、IMEの未確定文字列へ書き戻す経路が開く。
+	const { mode, focusRequested, clearedAt, setQuery, setMode, consumeFocus } = useFilesSearch(useShallow(s => ({
+		mode: s.mode, focusRequested: s.focusRequested, clearedAt: s.clearedAt,
+		setQuery: s.setQuery, setMode: s.setMode, consumeFocus: s.consumeFocus,
+	})));
+	const inputRef = useRef<TextInput>(null);
+	// 初期値はマウント時に1回だけ読む（タブを行き来して作り直されたときに前の入力が戻る）。
+	const initialQuery = useRef(useFilesSearch.getState().query).current;
+
+	// **`autoFocus` は使わない。** 帯はタブを移るだけでもアンマウントされるので、
+	// `autoFocus` だと戻ってきた瞬間に勝手にキーボードが立ち上がる。
+	// 「ユーザーが開いた」ときだけ当てる（要求は一度で消費する）。
+	useEffect(() => {
+		if (!focusRequested) {
+			return;
+		}
+		// **消費するのはタイマーの中で。** 先頭で `consumeFocus()` を呼ぶと `focusRequested` が
+		// false になり、それを購読しているこの欄が再レンダー → 依存が変わって**この effect の
+		// cleanup が 40ms を待たずにタイマーを消す**（＝フォーカスが一度も当たらない）。
+		// 発火後の cleanup は既に走ったタイマーへの `clearTimeout` なので無害。
+		const timer = setTimeout(() => {
+			inputRef.current?.focus();
+			consumeFocus();
+		}, 40);
+		return () => clearTimeout(timer);
+	}, [focusRequested, consumeFocus]);
+
+	// 外から条件を捨てられたとき（ワークスペース切り替え等）は、表示中の文字も消す。
+	// uncontrolled なので、ストアを空にしただけでは欄に残る。
+	const firstClear = useRef(clearedAt);
+	useEffect(() => {
+		if (clearedAt !== firstClear.current) {
+			inputRef.current?.clear();
+		}
+	}, [clearedAt]);
+
+	return (
+		<View style={styles.searchBox}>
+			<Ionicons name="search-outline" size={14} color={colors.textDim} />
+			<TextInput
+				ref={inputRef}
+				style={styles.searchInput}
+				defaultValue={initialQuery}
+				onChangeText={setQuery}
+				editable={live}
+				placeholder={mode === 'name' ? 'ファイル名で検索（全階層）…' : 'テキストで検索（全文）…'}
+				placeholderTextColor={colors.textDim}
+				autoCapitalize="none"
+				autoCorrect={false}
+				returnKeyType="search"
+				accessibilityLabel="検索条件"
+			/>
+			{(['name', 'text'] as const).map(candidate => (
+				<Pressable
+					key={candidate}
+					disabled={!live}
+					style={[styles.modeChip, mode === candidate && styles.modeChipActive]}
+					onPress={() => { hapticSelection(); setMode(candidate); }}
+					accessibilityRole="button"
+					accessibilityState={{ selected: mode === candidate }}
+					accessibilityLabel={candidate === 'name' ? 'ファイル名で検索' : '内容で検索'}
+				>
+					<Text style={[styles.modeText, mode === candidate && styles.modeTextActive]}>{candidate === 'name' ? '名前' : '内容'}</Text>
+				</Pressable>
+			))}
+			<Pressable
+				style={styles.searchClose}
+				onPress={() => { hapticSelection(); onClose(); }}
+				hitSlop={8}
+				accessibilityRole="button"
+				accessibilityLabel="検索を閉じる"
+			>
+				<Ionicons name="close" size={15} color={colors.textDim} />
+			</Pressable>
+		</View>
+	);
+}
+
 function formatSize(bytes: number): string {
 	if (bytes < 1024) {
 		return `${bytes} B`;
@@ -480,7 +597,7 @@ function formatSize(bytes: number): string {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12, marginBottom: 4 },
+	searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12 },
 	searchInput: { flex: 1, color: colors.text, fontSize: 13, paddingVertical: 9 },
 	searchClose: { padding: 2 },
 	breadcrumb: { color: colors.textDim, fontSize: 12, paddingVertical: 8 },
@@ -502,4 +619,6 @@ const styles = StyleSheet.create({
 	resultPath: { color: colors.textDim, fontSize: 11 },
 	resultPreview: { color: colors.text, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
 	dimNote: { color: colors.textDim, fontSize: 12, paddingVertical: 12, textAlign: 'center' },
+	// 一致箇所。色だけで示し、地は敷かない（モノスペースの行を壊さない）。
+	hit: { color: colors.accent, fontWeight: '700' },
 });

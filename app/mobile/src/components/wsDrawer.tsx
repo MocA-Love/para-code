@@ -3,8 +3,8 @@
 import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
 import { Gesture, type PanGesture } from 'react-native-gesture-handler';
-import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerLockMode, DrawerPosition, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
-import { Link, usePathname, useRouter } from 'expo-router';
+import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerLockMode, DrawerPosition, DrawerState, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
+import { useSegments, usePathname, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -17,13 +17,12 @@ import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { shouldReturnHomeOnSpaceChange } from '../ipad/ipadTabs.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
-import { useToastInset } from '../paraToast.js';
+import { useOfflineNotice } from '../offlineNotice.js';
+import { useParaHeader, PARA_HEADER_HIDDEN, type ParaHeaderIcon, type ParaHeaderSpec } from '../paraHeader.js';
 import { GlassSurface } from './glassSurface.js';
 import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
+import { useConnectionGateBlocked } from './connectionGate.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
-import { CONTENT_MAX_WIDTH } from '../ipad/ipadLayout.js';
-import { HeaderEdgeFade } from './headerEdgeFade.js';
-import { HEADER_PILL_HEIGHT } from './screenHeader.js';
 import { colors, radius, squircle, withAlpha } from '../theme.js';
 import { hapticImpact, hapticSelection, hapticWarning } from '../haptics.js';
 
@@ -116,10 +115,16 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 	// iPadの広い幅では同じ中身が常設サイドバー（ipadShell.tsx）として画面左に出ている。
 	// スライド式ドロワーはそこでは二重表示になるため、開けないよう錠を掛ける。
 	const regular = useIsRegularWidth();
-	// `regular` を ref で読むのは、api の参照を安定させたまま最新値を見るため
+	// **タブ以外の画面では開かせない。** ここは `Stack` ごと包んでいるので、錠を掛けないと
+	// エージェント詳細などで左端スワイプがドロワーに取られ、標準の「戻る」が効かなくなる。
+	// `useSegments()` の先頭がルートの区画。`/` は `['(tabs)', 'index']` になる。
+	const rootSegment = useSegments()[0] as string | undefined;
+	const onTabs = rootSegment === undefined || rootSegment === '(tabs)';
+	const locked = regular || !onTabs;
+	// `locked` を ref で読むのは、api の参照を安定させたまま最新値を見るため
 	// （api が毎回変わると renderDrawer ごと作り直しになる）。
-	const regularRef = useRef(regular);
-	regularRef.current = regular;
+	const lockedRef = useRef(locked);
+	lockedRef.current = locked;
 	const api = useMemo<WsDrawerApi>(() => ({
 		// 触覚フィードバックは開き切った/閉じ切った瞬間（onDrawerOpen/onDrawerClose）に鳴らす。
 		// ここで鳴らすとスワイプで開いたときだけ無音になり、かつ「開き始め」に鳴って早すぎる。
@@ -127,14 +132,38 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 		// iPad幅では開かせない。`drawerLockMode` はスワイプしか止めず、命令的な
 		// `openDrawer()` は素通ししてしまう（RNGHの実装が lock mode を見ていない）ため、
 		// ここで塞ぐ。塞がないと、中身が null の見えないパネルが開いて操作を飲み込む。
-		open: () => { if (!regularRef.current) { ref.current?.openDrawer(); } },
+		open: () => { if (!lockedRef.current) { ref.current?.openDrawer(); } },
 		close: () => ref.current?.closeDrawer(),
 		setFullWidthSwipe,
 	}), []);
 	// iPad幅では中身を描かない（＝常設サイドバーと二重にしない）。ただしドロワー自体は
 	// 描画し続ける。ここで早期returnして`children`のツリー上の位置を変えると、幅がしきい値を
 	// またぐたびにタブ配下が丸ごと作り直され、ターミナルのWebViewや入力途中の文字が消える。
+	// **中身を描くかは `regular` だけで決める。** `locked` で null にすると、閉じる
+	// アニメーションの途中（onClose→push の順で遷移する経路）や、開いたままタブ外へ
+	// push したときに、左に見えているドロワーが空の板になる。
 	const renderDrawer = useCallback(() => (regular ? null : <WsDrawerContent onClose={api.close} />), [api, regular]);
+
+	// タブ外へ移ったら必ず閉じる。ここは `Stack` ごと包んでいるので、開いたまま push すると
+	// **遷移先までドロワーぶん右にずれて描かれる**（コンテンツコンテナの中にいるため）。
+	// 錠（`drawerLockMode`）はスワイプしか止めないので、閉じるのは自分でやる必要がある。
+	//
+	// **開いているときだけ閉じる。** RNGHの `closeDrawer()` には「既に閉じている」の判定が
+	// 無く、無条件にばねを走らせて `onDrawerClose` まで呼ぶ。閉じたまま呼ぶと、タブ外へ出る
+	// 操作の**すべてに余分な触覚が1発付く**（エージェントを開く・通知・設定…）。
+	//
+	// 「開き切った」ではなく「**開こうとしている**」で立てる。`onDrawerOpen` はばねが完走
+	// （約200ms）してから呼ばれるので、その途中に遷移が入ると（通知の自動遷移など）
+	// 閉じ損ねて、遷移先がドロワーぶん右にずれたまま出る。
+	const openRef = useRef(false);
+	const onDrawerStateChanged = useCallback((_state: DrawerState, willShow: boolean) => {
+		openRef.current = willShow;
+	}, []);
+	useEffect(() => {
+		if (locked && openRef.current) {
+			ref.current?.closeDrawer();
+		}
+	}, [locked]);
 
 	return (
 		<WsDrawerContext.Provider value={api}>
@@ -153,9 +182,10 @@ export function WsDrawerLayout({ children }: { children: ReactNode }) {
 				// 横操作との競合を最小化。認識はネイティブなので閾値未満のタップは阻害しない）。
 				// ホームタブのフォーカス中のみ画面全域の右スワイプで開ける（X方式）。
 				// iPad幅ではエッジ幅を0にし、錠も掛けて一切開かないようにする。
-				edgeWidth={regular ? 0 : fullWidthSwipe ? width : 24}
-				drawerLockMode={regular ? DrawerLockMode.LOCKED_CLOSED : DrawerLockMode.UNLOCKED}
+				edgeWidth={locked ? 0 : fullWidthSwipe ? width : 24}
+				drawerLockMode={locked ? DrawerLockMode.LOCKED_CLOSED : DrawerLockMode.UNLOCKED}
 				renderNavigationView={renderDrawer}
+				onDrawerStateChanged={onDrawerStateChanged}
 				onDrawerOpen={onDrawerSettled}
 				onDrawerClose={onDrawerSettled}
 			>
@@ -404,26 +434,24 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 					<View style={styles.alertBadge}><Text style={styles.alertBadgeText}>{waiting > 1 ? `質問あり ${waiting}` : '質問あり'}</Text></View>
 				) : null}
 				{/* メモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）。未完了があれば件数を出す。
-				    ヘッダーの通知ベルと同じく Link.AppleZoom で開き、押したボタンから画面がせり出す
-				    ネイティブのズーム遷移にする（iOS 18未満は通常のpush遷移）。
-				    ドロワーはここで閉じない: ズームの起点になるこのボタンが消えると遷移が成立しないため */}
-				<Link href={{ pathname: '/space-note', params: { ws: ws.id } }} asChild>
-					<Link.AppleZoom>
-						<Pressable
-							// Slot（Link.AppleZoom）の子に配列スタイルを渡すと開発ビルドで例外になる。
-							// expo-router 側がスタイルを合成する都合で、ここでは畳んでから渡す
-							// （このチェックは NODE_ENV !== 'production' でのみ走るため、
-							//   リリースビルドでは今まで気づけなかった）。
-							style={StyleSheet.flatten([styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive])}
-							hitSlop={6}
-							onPress={() => hapticSelection()}
-							accessibilityLabel={(ws.note?.open ?? 0) > 0 ? `メモ（未完了 ${ws.note?.open} 件）` : 'メモ'}
-						>
-							<Ionicons name="checkbox-outline" size={12} color={(ws.note?.open ?? 0) > 0 ? colors.accent : colors.textDim} />
-							{(ws.note?.open ?? 0) > 0 ? <Text style={styles.noteBtnText}>{ws.note?.open}</Text> : null}
-						</Pressable>
-					</Link.AppleZoom>
-				</Link>
+				    **押したら必ずドロワーを閉じてから開く。** 以前は Link.AppleZoom のズーム遷移を
+				    成立させるため閉じずに push していたが、ヘッダー層の導入でドロワーが `Stack` ごと
+				    包む形になったため、開いたまま push すると遷移先がドロワーぶん右へずれて描かれる。
+				    ここはズームより「ずれない」を採る。 */}
+				<Pressable
+					style={[styles.noteBtn, (ws.note?.open ?? 0) > 0 && styles.noteBtnActive]}
+					hitSlop={6}
+					onPress={() => {
+						hapticSelection();
+						onClose();
+						router.push({ pathname: '/space-note', params: { ws: ws.id } });
+					}}
+					accessibilityRole="button"
+					accessibilityLabel={(ws.note?.open ?? 0) > 0 ? `メモ（未完了 ${ws.note?.open} 件）` : 'メモ'}
+				>
+					<Ionicons name="checkbox-outline" size={12} color={(ws.note?.open ?? 0) > 0 ? colors.accent : colors.textDim} />
+					{(ws.note?.open ?? 0) > 0 ? <Text style={styles.noteBtnText}>{ws.note?.open}</Text> : null}
+				</Pressable>
 				{running > 0 ? <View style={styles.runOrb} /> : null}
 				{!grouped && wsTerminals.length === 0 ? <Text style={styles.countText}>0</Text> : null}
 				{grouped ? (
@@ -530,7 +558,7 @@ export function WsDrawerContent({ onClose, navigation }: { onClose: () => void; 
 						accessibilityLabel="新しいスペースを作成"
 						accessibilityState={{ disabled: !online }}
 					>
-						<Ionicons name="add" size={16} color={online ? colors.text : colors.textDim} />
+						<Ionicons name="add" size={15} color={online ? colors.text : colors.textDim} />
 					</Pressable>
 				</GlassSurface>
 			</View>
@@ -624,7 +652,12 @@ export function useOpenDrawerPan(): PanGesture {
 }
 
 /**
- * タブ画面のヘッダー。**本文の上に浮かぶガラスの島**として絶対配置し、本文はこの下を流れる。
+ * タブ画面のヘッダー。**中身は描かず、常設のヘッダー層へ仕様を登録するだけ**（`src/paraHeader.ts`）。
+ *
+ * **コンポーネントではなくフックにしてある。** 以前 `<WsHeader />` として `ConnectionGate` の
+ * 子に置いていたら、ゲートが閉じた瞬間（未接続のPCへ切り替えた・プロトコルエラー）に登録者ごと
+ * アンマウントされ、**切り替える前のスペースの島が「接続しています…」の上に残り続けた**。
+ * フックなら画面本体で走るので、ゲートの内外に関係なく必ず登録される。
  *
  * 島に出すのは「いまどのスペースのどのブランチを見ているか」だけで、画面名（ホーム・
  * ターミナル…）は出さない。同じ名前が下のタブバーにあり二重になるうえ、リポジトリの
@@ -634,16 +667,20 @@ export function useOpenDrawerPan(): PanGesture {
  * ホーム以外の3タブではこれがドロワーへの唯一の可視の入口になる（スワイプは
  * `useOpenDrawerPan` が全タブで受ける）。
  *
- * **本文には必ず `onHeightChange` で受けた高さを `paddingTop` として渡すこと**。
- * 高さは subtitle の有無と Dynamic Type で変わるため定数では足りない。
+ * **本文の `paddingTop` は `useParaHeaderHeight()` から取ること**。高さは subtitle の有無・
+ * 帯の有無・Dynamic Type で変わるため定数では足りない。
  */
-export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, onHeightChange }: {
-	/** 島のサブ行を差し替える（既定はブランチ名）。 */
+export function useWsHeader({ subtitle, actions, mid, below, allWorkspaces, wide = false }: {
+	/** 島のサブ行を差し替える（既定はブランチ名。切断中は自動でその状態に差し替わる）。 */
 	subtitle?: string;
-	right?: ReactNode;
+	/** 右のピルに並べるボタン（1〜4個）。器（ガラスのピル）は層が持つ。 */
+	actions?: readonly ParaHeaderIcon[];
+	/** スペースの島と右のピルの間に伸びる島（ターミナルタブの「ターミナル名 ▾」）。 */
+	mid?: ParaHeaderSpec['mid'];
 	/**
-	 * 島の下に続けて浮かせる帯（ホームの絞り込みチップ、ターミナルのタブチップ）。
-	 * ここに置いたものは本文と一緒にスクロールせず、`onHeightChange` の実測にも含まれる。
+	 * 島の下に続けて浮かせる帯（ホームの絞り込みチップ、ターミナルのタブチップ、
+	 * ファイルの検索欄）。ここに置いたものは本文と一緒にスクロールせず、
+	 * `useParaHeaderHeight()` の実測にも含まれる。
 	 */
 	below?: ReactNode;
 	allWorkspaces?: boolean;
@@ -652,111 +689,68 @@ export function WsHeader({ subtitle, right, below, allWorkspaces, wide = false, 
 	 * ヘッダーだけ列幅に切ると、広いiPadで右上のボタンが本文の右端より100pt以上内側に出る。
 	 */
 	wide?: boolean;
-	/** 実測した占有高さ。本文の `paddingTop` に使う。 */
-	onHeightChange?: (height: number) => void;
 }) {
-	const insets = useStableInsets();
-	const toastInset = useToastInset();
 	const drawer = useWsDrawer();
 	// iPadの広い幅ではワークスペース一覧が常設サイドバーに出ている。島は「開く」ボタンとしては
 	// 不要になるが、いま見ているスペースの色・名前・応答待ちバッジを一目で確認できる価値は
-	// 残るため、消さずに表示だけ続ける（タップの無効化は下のPressableで行う）。
+	// 残るため、消さずに表示だけ続ける（押せなくするのは下の disabled）。
 	const regular = useIsRegularWidth();
+	// **画面が中身を出していない間は層も伏せる。** 未ペアリングのときは
+	// `PairingRequiredNotice` しか出ていないので、そこにヘッダーを重ねると名前「—」・
+	// サブ行「再接続中 — 最後の画面」という**一度も繋いだことがない端末への嘘**が出るうえ、
+	// 島（空のドロワー）・ベル・＋がどれも空振りで押せてしまう。
+	// 判断は `useConnectionGateBlocked()` に任せる（条件を書き写すとずれる）。
+	const gated = useConnectionGateBlocked();
 	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
 	const current = useEffectiveWs();
 
-	// 他ワークスペースの応答待ち件数（島の上の赤バッジ = ドロワーを開く動機づけ）。
+	// 他ワークスペースの応答待ち件数（島の左上の赤い点 = ドロワーを開く動機づけ）。
 	// ws未タグのターミナルは他画面と同様にPC側アクティブワークスペース所属として数える。
-	// allWorkspaces中はすでに全件が見えているため「他」の概念が無く、バッジは出さない。
+	// allWorkspaces中はすでに全件が見えているため「他」の概念が無く、点は出さない。
 	const otherWaiting = allWorkspaces ? 0 : (workspace?.terminals ?? []).filter(t =>
 		isAgentWaiting(t.agentStatus) && (t.ws ?? workspace?.activeWs) !== current?.id).length;
 
-	const chipColor = allWorkspaces ? colors.textDim : (current ? wsColor(current) : colors.accent);
-	// ガラスへの色被せはスペースの固有色があるときだけ。「すべてのスペース」の
-	// textDim（グレー）を被せると島だけ白っぽく浮き、右のピル（素のガラス）と揃わない。
-	const islandTint = allWorkspaces ? undefined : chipColor;
+	// 繋がっていないあいだは、島のサブ行をその状態に差し替える。**別の部品は出さない**
+	// （上端のカプセルで出すとナビの場所を直るまで覆い、いまどのリポジトリを見ているかが
+	// 見えなくなる。オフライン中はまさに誤認が実害になるときなので、覆うのは筋が悪い）。
+	const offline = useOfflineNotice();
+	const chipColor = offline !== undefined ? offline.color
+		: allWorkspaces ? colors.textDim : (current ? wsColor(current) : colors.accent);
 	const name = allWorkspaces ? 'すべてのスペース' : (current?.name ?? '—');
-	const sub = subtitle ?? (allWorkspaces ? undefined : current?.branch);
+	const sub = offline?.text ?? subtitle ?? (allWorkspaces ? undefined : current?.branch);
+	const drawerOpen = drawer.open;
 
-	return (
-		<View
-			// 一時的なお知らせ（上端のカプセル）が出ている間は、そのぶん島ごと下げる。
-			// 上端はナビの場所なので覆わない。`onLayout` の実測にもこの余白が含まれるため、
-			// 本文の `paddingTop` も自動で追従する。
-			style={[styles.headerWrap, { paddingTop: insets.top + toastInset }]}
-			pointerEvents="box-none"
-			onLayout={onHeightChange !== undefined ? event => onHeightChange(event.nativeEvent.layout.height) : undefined}
-		>
-			{/* 本文がガラスの縁でぶつ切りに見えないよう、島の背後だけ地色へ落とす。
-			    react-native-svg で描く（scrollEdgeEffects の ScrollViewMarker は experimental で、
-			    直下 subtree の ScrollView にしか効かない）。 */}
-			<HeaderEdgeFade />
-			{/* iPadでは本文が読み幅の列に収まるので、島の左右もその列に合わせる。
-			    絶対配置は alignSelf が効かないため、左右いっぱいに広げてから中身を中央へ寄せる。 */}
-			<View style={[styles.headerRow, regular && !wide && styles.headerRowRegular]} pointerEvents="box-none">
-			{/* iPadでは常設サイドバーに同じ一覧がすでに出ているため、島を押してもドロワーは開かない
-			    （WsDrawerLayout.open()自体がregular幅ではno-op）。ツリーの形は変えず、Pressableは
-			    常設のまま disabled とアクセシビリティ表現だけをiPadで切り替える。
-			    左端は headerRowRegular が本文の列幅に揃える。 */}
-			<GlassSurface style={styles.island} interactive={!regular} tintColor={islandTint}>
-				<Pressable
-					style={styles.islandHit}
-					onPress={drawer.open}
-					disabled={regular}
-					accessibilityRole={regular ? undefined : 'button'}
-					accessibilityLabel={regular
-						? (sub ? `スペース ${name}、${sub}` : `スペース ${name}`)
-						: (otherWaiting > 0 ? `スペース ${name}。他のスペースに応答待ちがあります。切り替える` : `スペース ${name}。切り替える`)}
-				>
-					<View style={[styles.islandAvatar, { backgroundColor: withAlpha(chipColor, 0.28) ?? colors.surface2 }]}>
-						{allWorkspaces
-							? <Ionicons name="apps-outline" size={15} color={chipColor} />
-							: <Text style={[styles.islandAvatarText, { color: chipColor }]}>{current ? current.name.charAt(0).toUpperCase() : '—'}</Text>}
-					</View>
-					<View style={styles.islandText}>
-						<Text style={styles.islandName} numberOfLines={1}>{name}</Text>
-						{sub ? <Text style={styles.islandSub} numberOfLines={1}>{sub}</Text> : null}
-					</View>
-				</Pressable>
-				{otherWaiting > 0 ? <View style={styles.chipBadge} /> : null}
-			</GlassSurface>
-			<View style={styles.headerSpacer} pointerEvents="none" />
-			{right}
-			</View>
-			{below === undefined ? null : (
-				<View style={[styles.headerBelow, regular && !wide && styles.headerRowRegular]} pointerEvents="box-none">{below}</View>
-			)}
-		</View>
-	);
+	const spec = useMemo<ParaHeaderSpec>(() => ({
+		left: {
+			kind: 'island',
+			// iPadでは常設サイドバーに同じ一覧がすでに出ているため、押しても開かない
+			// （WsDrawerLayout.open()自体がregular幅ではno-op）。
+			onPress: regular ? undefined : drawerOpen,
+			disabled: regular,
+			label: regular
+				? (sub ? `スペース ${name}、${sub}` : `スペース ${name}`)
+				: offline !== undefined ? `スペース ${name}。${offline.text}。切り替える`
+					: (otherWaiting > 0 ? `スペース ${name}。他のスペースに応答待ちがあります。切り替える` : `スペース ${name}。切り替える`),
+			...(allWorkspaces ? { avatarIcon: 'apps-outline' as const } : { avatarText: current ? current.name.charAt(0).toUpperCase() : '—' }),
+			color: chipColor,
+			// ガラスへの色被せはスペースの固有色があるときだけ。「すべてのスペース」の
+			// textDim（グレー）や切断中の橙を被せると島だけ浮き、右のピルと揃わない。
+			tint: offline !== undefined || allWorkspaces ? undefined : chipColor,
+			name,
+			sub,
+			subColor: offline?.color,
+			badge: otherWaiting > 0,
+		},
+		mid,
+		...(actions !== undefined && actions.length > 0 ? { rightA: { kind: 'icons' as const, items: actions } } : {}),
+		band: below,
+		wide,
+	}), [regular, drawerOpen, sub, name, offline, otherWaiting, allWorkspaces, current, chipColor, actions, mid, below, wide]);
+	// フックは**無条件に呼ぶ**（分岐で本数が変わると React が落ちる）。伏せるのは中身だけ。
+	useParaHeader(gated ? PARA_HEADER_HIDDEN : spec);
 }
 
 const styles = StyleSheet.create({
-	// 本文の上に浮かべる。本文側は onHeightChange で受けた高さを paddingTop に使う。
-	headerWrap: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, paddingBottom: 12 },
-	// 島の行を下の帯より上のレイヤーに置く。右のボタンから生えるメニューはこの行の中にいるので、
-	// 順番のままだと後から描かれる帯（絞り込みチップ）がメニューの上に乗ってしまう。
-	headerRow: { zIndex: 2, flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingLeft: 16, paddingRight: 12 },
-	// iPad: 本文（useContentColumnStyle）と左端を揃える。絶対配置は alignSelf が効かないので、
-	// 行を中央寄せの列幅に制限して合わせる。
-	headerRowRegular: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center', paddingLeft: 16 },
-	// 島の下に続く帯（絞り込みチップ等）。島との間は10pt。
-	headerBelow: { zIndex: 1, marginTop: 10, paddingHorizontal: 16 },
-	headerSpacer: { flex: 1, minWidth: 0 },
-	// 高さは右のボタンのピルと同じにする。左右でガラスの縦幅が違うと1本の帯に見えない。
-	island: { height: HEADER_PILL_HEIGHT, borderRadius: radius.pill, ...squircle, maxWidth: 224 },
-	islandHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, paddingLeft: 5, paddingRight: 15 },
-	islandAvatar: { width: 30, height: 30, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
-	islandAvatarText: { fontSize: 13, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
-	islandText: { flexShrink: 1, minWidth: 0 },
-	islandName: { color: colors.text, fontSize: 15, fontWeight: '700', letterSpacing: -0.2 },
-	islandSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
-	// 他スペースに応答待ちが居ることの合図。件数は出さない（チップ列とタブバーのバッジと
-	// 母数が違う数字を並べると、どれが本当か分からなくなる）。ここは「ドロワーを開く動機」
-	// だけを持てばよいので点で足りる。
-	chipBadge: {
-		position: 'absolute', top: -3, left: -3, width: 10, height: 10, borderRadius: radius.pill,
-		backgroundColor: colors.red, borderWidth: 2, borderColor: colors.bg,
-	},
 
 	// ドロワーを開いたときに右へどくコンテンツ。角丸は端末のディスプレイ角丸に合わせ、
 	// borderCurve: 'continuous' でiOSの連続曲線（cornerCurve = .continuous）にする
@@ -791,9 +785,17 @@ const styles = StyleSheet.create({
 	resourceTrack: { height: 3, borderRadius: 2, backgroundColor: colors.surface3, overflow: 'hidden' },
 	resourceFill: { height: 3, borderRadius: 2 },
 	resourceChevron: { marginLeft: 2 },
-	sectionHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingRight: 16 },
-	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 8 },
-	addSpaceBtn: { width: 36, height: 36, borderRadius: 12, ...squircle, marginTop: 2 },
+	// **余白は行が持つ。** 以前は見出しの文字が `paddingTop/Bottom` で余白を抱えていたため、
+	// 行の高さが「文字（36.5pt） vs ＋（36+marginTop:2＝38pt）」の背比べで決まり、背の高い
+	// ＋の下端が行の下端＝一覧の1行目の上端とぴったり同じになっていた（選択中の「すべて表示」
+	// は面が出るので、札に貼り付いて見えた）。行に paddingBottom を持たせて縁を切る。
+	sectionHead: {
+		flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+		paddingLeft: 18, paddingRight: 16, paddingTop: 16, paddingBottom: 10,
+	},
+	sectionTitle: { color: colors.textDim, fontSize: 10.5, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.5 },
+	// 10.5ptの小さな見出しに36ptのボタンは大きすぎる。30ptへ落として行の主役を見出しに戻す。
+	addSpaceBtn: { width: 30, height: 30, borderRadius: 10, ...squircle },
 	addSpaceHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 	list: { flex: 1 },
 	listContent: { paddingHorizontal: 10, paddingBottom: 8 },

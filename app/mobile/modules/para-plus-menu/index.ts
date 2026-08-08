@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 import { Platform, type StyleProp, type ViewStyle } from 'react-native';
 import { requireNativeView, requireOptionalNativeModule } from 'expo';
 
@@ -13,16 +13,27 @@ export interface ParaPlusMenuItem {
 	systemImage?: string;
 	/** この項目の**前**に区切り線を入れる。 */
 	startsSection?: boolean;
+	/** いま選ばれている項目（✓が付く。位置と記号との並び順はOSが決める）。 */
+	selected?: boolean;
 	/** 入れ子の項目（1段だけ）。 */
-	children?: { id: string; title: string; systemImage?: string }[];
+	children?: { id: string; title: string; systemImage?: string; selected?: boolean }[];
 }
 
 export interface ParaPlusMenuProps {
 	items: ParaPlusMenuItem[];
 	/** ボタンの読み上げラベル。 */
 	accessibilityTitle?: string;
+	/**
+	 * ボタンに出す SF Symbol（既定は `plus`）。
+	 *
+	 * **空文字にすると何も描かない。** そのときは子（RNのView）が見た目を担当する
+	 * ——ターミナル名の島のように、文字とシェブロンをRNで描いて島ぜんぶを
+	 * メニューボタンにしたい場合に使う。タップは常にネイティブのボタンが受ける。
+	 */
+	symbol?: string;
 	onSelect?: (event: { nativeEvent: { id: string } }) => void;
 	style?: StyleProp<ViewStyle>;
+	children?: ReactNode;
 }
 
 /**

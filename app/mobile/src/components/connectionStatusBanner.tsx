@@ -4,7 +4,6 @@ import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { useToastInset } from '../paraToast.js';
 import { colors } from '../theme.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 
@@ -17,11 +16,11 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
  * トーストにして時間やスワイプで消えると、消えた瞬間に操作の機会ごと失われる。
  * だから居座るバナーのまま置いておく。
  *
- * 位置はトーストのぶんだけ下げる（{@link useToastInset}）。両方出たときに重ならない。
+ * 位置はヘッダーの行のすぐ下（`insets.top + 52`）。上端のカプセルは重なって出るので、
+ * 一過性のお知らせが出ているあいだだけ数pt重なるが、どちらも短命なので割り切る。
  */
 export function ConnectionStatusBanner() {
 	const insets = useStableInsets();
-	const toastInset = useToastInset();
 	// workspace 本体ではなく、表示に使う値だけを購読する（常時マウントされるため、
 	// 本体を購読するとこのバナーが再構築される）。
 	const { issue, unknownCount, discardUnknown } = useAppStore(useShallow(s => ({
@@ -35,7 +34,7 @@ export function ConnectionStatusBanner() {
 	}
 
 	return (
-		<View style={[styles.stack, { top: insets.top + 52 + toastInset }]} pointerEvents="box-none">
+		<View style={[styles.stack, { top: insets.top + 52 }]} pointerEvents="box-none">
 			<View style={styles.unknown} accessibilityLiveRegion="polite">
 				<Ionicons name="warning-outline" size={15} color={colors.orange} />
 				<Text style={styles.text}>{issue}</Text>

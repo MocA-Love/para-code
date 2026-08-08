@@ -7,7 +7,6 @@ import { NativeTabs } from 'expo-router/unstable-native-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useAppStore } from '../../src/appState.js';
 import { isAgentWaiting } from '../../src/store.js';
-import { WsDrawerLayout } from '../../src/components/wsDrawer.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { colors } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
@@ -64,11 +63,10 @@ export default function TabsLayout() {
 	const pending = useAppStore(s => (s.workspace?.terminals ?? []).filter(t => isAgentWaiting(t.agentStatus)).length);
 	const badge = pending > 0 ? String(pending) : undefined;
 
+	// ワークスペースドロワーは **ルートの `_layout.tsx`** で `Stack` ごと包んである
+	// （常設のヘッダー層も一緒にどく必要があるため）。ここでは包まない。
 	return (
-		// ワークスペースドロワーはタブバーごと覆う全画面オーバーレイ（X等と同じ）。
-		// ここで1回だけ包み、各画面はuseWsDrawer()経由で開く。
-		// iPad幅では常設サイドバーがあるため、この中では素通しになる（wsDrawer.tsx参照）。
-		<WsDrawerLayout>
+		<>
 		{regular ? (
 			// 注意: `Tabs` は `app/(tabs)/` 配下の**全ファイル**を自動でタブとして登録する
 			// （`NativeTabs` は下で明示したものだけを使う）。このディレクトリにファイルを足すときは、
@@ -124,6 +122,6 @@ export default function TabsLayout() {
 				</NativeTabs.Trigger>
 			</NativeTabs>
 		)}
-		</WsDrawerLayout>
+		</>
 	);
 }

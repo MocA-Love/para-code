@@ -34,6 +34,32 @@ export function PairingRequiredNotice({ onStart }: { onStart: () => void }) {
 	);
 }
 
+/**
+ * ゲートが本文を塞いでいるか（＝この画面は自分の中身を描いていないか）。
+ *
+ * **常設のヘッダー層はこれを見て伏せる。** 層は画面の外に居るのでゲートに巻き込まれず、
+ * 塞がれている画面の上にもヘッダーを描いてしまう。条件をヘッダー側に書き写すと必ずずれる
+ * （実際に「接続完了から最初のstate到着までの数百msだけ島が消える」「ゲートの『戻る』と
+ * 層の丸が二重に出る」の2つを作った）ので、**判断はここ1箇所に置く**。
+ *
+ * 下の `ConnectionGate` の分岐と1対1で対応させること。本文を返す分岐（キャッシュあり・
+ * 完全にオンライン）だけが false になる。
+ */
+export function useConnectionGateBlocked(): boolean {
+	const { connection, pcOnline, sessionProtocolReady, hasWorkspace, paired, ready, protocolError } = useAppStore(useShallow(s => ({
+		connection: s.connection, pcOnline: s.pcOnline, paired: s.paired, ready: s.ready,
+		sessionProtocolReady: s.sessionProtocolReady, hasWorkspace: s.workspace !== undefined,
+		protocolError: s.protocolError,
+	})));
+	if (protocolError !== undefined || (ready && !paired)) {
+		return true;
+	}
+	if (paired && hasWorkspace) {
+		return false;
+	}
+	return !(connection === 'online' && pcOnline && sessionProtocolReady);
+}
+
 export function ConnectionGate({ children }: { children: ReactNode }) {
 	const router = useRouter();
 	const insets = useStableInsets();

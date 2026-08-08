@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Easing, LayoutAnimation, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Animated, Easing, PanResponder, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -14,9 +14,15 @@ import { hapticImpact } from '../haptics.js';
 /**
  * 一時的なお知らせを出す唯一の場所。ルートに1つだけ置く（`app/_layout.tsx`）。
  *
- * **上端に、内容ぶんの幅のガラスのカプセル**。出ている間はヘッダーごと本文が下がるので、
- * 島や右のボタンを覆わない（押し下げ量は `useToastInset()` を各ヘッダーが読む）。
- * 上へスワイプすればタイマーを待たずに消せる——iOSの通知バナーと同じ所作なので説明が要らない。
+ * **上端に浮かぶガラスのカプセル。ヘッダーは動かさず、その上に重ねる。**
+ * 以前はカプセルの高さぶんヘッダーを押し下げていたが、押し下げは島だけでなくその下の帯・
+ * 本文の上端まで連鎖して動かすうえ、押し下げの `LayoutAnimation` とカプセルのばねが別々に
+ * 走るので境目が一瞬重なっていた。重ねればレイアウトは一切動かない——iOSの通知バナーと
+ * 同じ読み方なので説明も要らない。
+ *
+ * 重なるあいだ島は隠れるが、ここに出すのは**数秒で沈む一過性のお知らせだけ**なので許容する。
+ * 直るまで残る状態（再接続中・オフライン）はこの器では出さず、島の中で示す
+ * （`src/offlineNotice.ts`）。
  *
  * 実装で気をつけていること:
  *  - **`opacity` で出し入れしない。** ガラスは不透明度を0にすると効果ごと死ぬので、
@@ -32,6 +38,9 @@ import { hapticImpact } from '../haptics.js';
 /** カプセルの最大幅（pt）。iPhone SE の 320pt でも左右に余白が残る。 */
 const TOAST_MAX_WIDTH = 300;
 
+/** セーフエリア上端からの浮かせ量（pt）。 */
+const TOAST_TOP_GAP = 6;
+
 /** 出入りにかける時間（ミリ秒）。 */
 const IN_MS = 420;
 const OUT_MS = 240;
@@ -44,66 +53,6 @@ const TONE_COLOR: Record<ParaToastItem['tone'], string> = {
 	done: colors.green,
 	warn: colors.orange,
 };
-
-/**
- * 接続の状態から**継続系**のお知らせを導く。タイマーは持たない（直るまで残る）。
- *
- * `key` は状態が変わると変わる。いちど払われた後でも、状態が変われば別のお知らせとして
- * 出し直される（オフラインのまま気づかずに操作するのを防ぐのが目的）。
- */
-function useStickyToast(): ParaToastItem | undefined {
-	const { connection, pcOnline, sessionProtocolReady, manualOffline, pendingRendererCount, connectRelay } = useAppStore(useShallow(s => ({
-		connection: s.connection,
-		pcOnline: s.pcOnline,
-		sessionProtocolReady: s.sessionProtocolReady,
-		manualOffline: s.manualOffline,
-		pendingRendererCount: s.workspace?.renderers.filter(renderer => !renderer.ready).length ?? 0,
-		connectRelay: s.connectRelay,
-	})));
-
-	const live = connection === 'online' && pcOnline && sessionProtocolReady;
-	const partialRecovery = live && pendingRendererCount > 0;
-
-	return useMemo(() => {
-		if (live && !partialRecovery) {
-			return undefined;
-		}
-		if (partialRecovery) {
-			return {
-				key: `recovering:${pendingRendererCount}`,
-				text: `${pendingRendererCount}個のPC画面を再接続中`,
-				sub: '復旧済みの画面は操作できます',
-				icon: 'sync-outline',
-				tone: 'warn' as const,
-			};
-		}
-		if (manualOffline) {
-			return {
-				key: 'manual-offline',
-				text: '切断中 — 最後の画面を表示しています',
-				icon: 'cloud-offline-outline',
-				tone: 'warn' as const,
-				action: { label: '接続', onPress: connectRelay },
-			};
-		}
-		if (!pcOnline && (connection === 'online' || connection === 'handshaking')) {
-			return {
-				key: 'pc-offline',
-				text: 'PCオフライン — 最後の画面を表示しています',
-				icon: 'cloud-offline-outline',
-				tone: 'warn' as const,
-				action: { label: '再接続', onPress: connectRelay },
-			};
-		}
-		return {
-			key: 'reconnecting',
-			text: '再接続中 — 最後の画面を表示しています',
-			icon: 'sync-outline',
-			tone: 'warn' as const,
-			action: { label: '再接続', onPress: connectRelay },
-		};
-	}, [live, partialRecovery, pendingRendererCount, manualOffline, pcOnline, connection, connectRelay]);
-}
 
 /**
  * 「別のPCへ切り替わりました」をトーストへ流す。
@@ -138,31 +87,18 @@ function usePcSwitchToast(): void {
 
 export function ParaToastHost() {
 	const insets = useStableInsets();
-	const { transient, dismissedStickyKey, hideTransient, dismissSticky, resetSticky, setHeight } = useParaToast(useShallow(s => ({
-		transient: s.transient,
-		dismissedStickyKey: s.dismissedStickyKey,
-		hideTransient: s.hideTransient,
-		dismissSticky: s.dismissSticky,
-		resetSticky: s.resetSticky,
-		setHeight: s.setHeight,
-	})));
-	const sticky = useStickyToast();
+	const { current, hide } = useParaToast(useShallow(s => ({ current: s.current, hide: s.hide })));
 	usePcSwitchToast();
-
-	// 一過性が出ている間はそちらを見せる（新しい出来事のほうが関心が高い）。
-	// 沈んだら継続系が戻ってくる。
-	const stickyVisible = sticky !== undefined && sticky.key !== dismissedStickyKey;
-	const toast = transient ?? (stickyVisible ? sticky : undefined);
 
 	const anim = useRef(new Animated.Value(0)).current;
 	const [shown, setShown] = useState<ParaToastItem | undefined>(undefined);
 	// 出入りの最中も中身を描き続けるため、消えるまでは直前の内容を保持する。
-	const visible = toast !== undefined;
-	const content = toast ?? shown;
+	const visible = current !== undefined;
+	const content = current ?? shown;
 
 	useEffect(() => {
-		if (toast !== undefined) {
-			setShown(toast);
+		if (current !== undefined) {
+			setShown(current);
 			Animated.timing(anim, { toValue: 1, duration: IN_MS, easing: Easing.out(Easing.back(1.4)), useNativeDriver: true }).start();
 			return undefined;
 		}
@@ -171,45 +107,17 @@ export function ParaToastHost() {
 		// 木から外れた後に走った場合に落ちる経路を踏むので `setTimeout` にする。
 		const timer = setTimeout(() => setShown(undefined), OUT_MS + 40);
 		return () => clearTimeout(timer);
-	}, [toast, anim]);
-
-	// C1: 継続系の条件が消えた（＝復帰した）瞬間に、払った記録を白紙へ戻す。
-	// key は固定文字列なので、これをやらないと「復帰 → また切れる」で同じ key に
-	// 戻ってきたときに払い済みと判定され、二度と出なくなる。
-	useEffect(() => {
-		if (sticky === undefined && dismissedStickyKey !== undefined) {
-			resetSticky();
-		}
-	}, [sticky, dismissedStickyKey, resetSticky]);
-
-	// 出ていないときはヘッダーを押し下げない。
-	useEffect(() => {
-		if (!visible) {
-			LayoutAnimation.configureNext({ duration: OUT_MS, update: { type: 'easeInEaseOut' } });
-			setHeight(0);
-		}
-	}, [visible, setHeight]);
-
-	// 払う操作は「いま画面に出ている1件」ではなく**その場のカプセルごと**を対象にする。
-	// 一過性だけ消すと、裏に控えていた継続系がその場で昇格して指を離した位置から
-	// 生えてくるので、払えたのか払えなかったのかが読めない（H2）。
-	const dismiss = useMemo(() => () => {
-		hapticImpact('light');
-		if (transient !== undefined) {
-			hideTransient();
-		}
-		if (sticky !== undefined) {
-			dismissSticky(sticky.key);
-		}
-	}, [transient, sticky, hideTransient, dismissSticky]);
+	}, [current, anim]);
 
 	// 画面外へ送る距離＝カプセルの実測高さ。**ref ではなく state で持つ。**
 	// ref のままだと測っても再レンダが起きず、`translateY` の outputRange が既定値で
 	// 固まったまま＝背の高いカプセルが画面外から始まらない（頭が出たまま現れる）。
 	const [travel, setTravel] = useState(64);
 
-	// ホストが外れる（再ロック等）ときは押し下げ量を残さない。
-	useEffect(() => () => { useParaToast.getState().setHeight(0); }, []);
+	const dismiss = useMemo(() => () => {
+		hapticImpact('light');
+		hide();
+	}, [hide]);
 
 	// 上へ引くと付いてきて、離した位置か速度で消える。下は引っぱれない（行き止まり）。
 	const pan = useMemo(() => PanResponder.create({
@@ -238,62 +146,56 @@ export function ParaToastHost() {
 
 	const translateY = anim.interpolate({
 		inputRange: [0, 1],
-		outputRange: [-(travel + insets.top), 0],
+		outputRange: [-(travel + insets.top + TOAST_TOP_GAP), 0],
 		extrapolate: 'clamp',
 	});
 	const tone = TONE_COLOR[content.tone];
 
 	return (
-		<View style={[styles.host, { top: insets.top }]} pointerEvents="box-none">
+		<View style={[styles.host, { top: insets.top + TOAST_TOP_GAP }]} pointerEvents={visible ? 'box-none' : 'none'}>
 			<Animated.View
 				style={[styles.slider, { transform: [{ translateY }] }]}
 				{...pan.panHandlers}
+				// 高さは文字数・補足行・操作ボタンの有無で変わるので固定値にしない。
 				onLayout={event => {
-					// カプセル全体の高さをヘッダーの押し下げへ渡す。文字数・補足行・操作ボタンの
-					// 有無で変わるので固定値にしない。
 					const height = Math.round(event.nativeEvent.layout.height);
-					if (height <= 0) {
-						return;
-					}
-					// **`setHeight` は無条件に呼ぶ。** 隠れるときに store の height は 0 へ落ちるが
-					// `travel` は前回の値を保持しているので、「同じ高さなら早期return」にすると
-					// 2回目以降は store が 0 のままになり、ヘッダーが下がらずカプセルが島へ重なる（C2）。
-					// 同値の書き込みはストア側で弾いてある。
-					LayoutAnimation.configureNext({ duration: IN_MS, update: { type: 'easeInEaseOut' } });
-					setHeight(height);
-					if (height !== travel) {
+					if (height > 0 && height !== travel) {
 						setTravel(height);
 					}
 				}}
 			>
-				<GlassSurface style={styles.capsule}>
-					<View style={styles.body}>
-						{content.spinner === true
-							? <ActivityIndicator size="small" color={tone} />
-							: <Ionicons name={content.icon} size={16} color={tone} />}
-						<View style={styles.textCol}>
-							<Text style={styles.text} numberOfLines={2} accessibilityLiveRegion="polite">{content.text}</Text>
-							{content.sub !== undefined && content.sub.length > 0
-								? <Text style={styles.sub} numberOfLines={1}>{content.sub}</Text>
-								: null}
+				{/* 影はガラスの外側に落とす層に持たせる。重ねる方式では影だけが
+				    「これは上に浮いている別の層」を伝える手掛かりになる。 */}
+				<View style={styles.shadow}>
+					<GlassSurface style={styles.capsule}>
+						<View style={styles.body}>
+							{content.spinner === true
+								? <ActivityIndicator size="small" color={tone} />
+								: <Ionicons name={content.icon} size={16} color={tone} />}
+							<View style={styles.textCol}>
+								<Text style={styles.text} numberOfLines={2} accessibilityLiveRegion="polite">{content.text}</Text>
+								{content.sub !== undefined && content.sub.length > 0
+									? <Text style={styles.sub} numberOfLines={1}>{content.sub}</Text>
+									: null}
+							</View>
+							{content.action !== undefined ? (
+								<Pressable
+									hitSlop={8}
+									onPress={() => {
+										hapticImpact('light');
+										content.action?.onPress();
+										// 操作したらそのお知らせの役目は終わり。
+										hide();
+									}}
+									accessibilityRole="button"
+									accessibilityLabel={content.action.label}
+								>
+									<Text style={styles.action}>{content.action.label}</Text>
+								</Pressable>
+							) : null}
 						</View>
-						{content.action !== undefined ? (
-							<Pressable
-								hitSlop={8}
-								onPress={() => {
-									hapticImpact('light');
-									content.action?.onPress();
-									// 操作したらそのお知らせの役目は終わり。
-									dismiss();
-								}}
-								accessibilityRole="button"
-								accessibilityLabel={content.action.label}
-							>
-								<Text style={styles.action}>{content.action.label}</Text>
-							</Pressable>
-						) : null}
-					</View>
-				</GlassSurface>
+					</GlassSurface>
+				</View>
 			</Animated.View>
 		</View>
 	);
@@ -305,6 +207,8 @@ const styles = StyleSheet.create({
 	// 幅は**絶対値**で決める。割合にすると iPad の広い幅で940pt級のカプセルになる
 	// （CLAUDE.md のiPad規約）。iPhoneの狭い幅でも画面内に収まる値。
 	slider: { maxWidth: TOAST_MAX_WIDTH },
+	// 影は `overflow: 'hidden'` と同じ層に置くと切り抜かれて消えるので、ガラスの外側に置く。
+	shadow: { borderRadius: radius.pill, ...squircle, shadowColor: '#000', shadowOpacity: 0.45, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 12 },
 	// 補足行が付くと2行になるので、角丸はピル（高さの半分）に任せる。
 	capsule: { borderRadius: radius.pill, ...squircle },
 	body: { flexDirection: 'row', alignItems: 'center', gap: 9, paddingHorizontal: 16, paddingVertical: 11 },

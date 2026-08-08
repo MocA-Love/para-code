@@ -44,15 +44,38 @@ function orbStyle(status: string | undefined) {
 			: status === undefined ? styles.orbIdle : styles.orbReview;
 }
 
+/**
+ * 1行の小さな札（バッジ・チップ）の高さ。**アプリ全体でこの値に揃える。**
+ *
+ * ここを共有していなかったので、エージェント情報シートでは `<Text>` のバッジ（約16pt）と
+ * `<View>` のチップ（約21.5pt）が隣同士に並び、5.5ptの段差が見えていた。`<Text>` の高さは
+ * 行の高さで決まるため、padding を合わせるだけでは揃わない——高さそのものを決める。
+ */
+export const CHIP_HEIGHT = 22;
+
 function badgeStyle(status: string | undefined) {
 	return status === 'permission' || status === 'question' ? styles.badgeWaiting
 		: status === 'working' ? styles.badgeRunning
 			: status === undefined ? styles.badgeIdle : styles.badgeReview;
 }
 
-/** ステータスバッジ（非インタラクティブ）。レビュー行のタップ操作はリスト側でこれをPressableで包む。 */
+function badgeTextStyle(status: string | undefined) {
+	return status === 'permission' || status === 'question' ? styles.badgeTextWaiting
+		: status === 'working' ? styles.badgeTextRunning
+			: status === undefined ? styles.badgeTextIdle : styles.badgeTextReview;
+}
+
+/**
+ * ステータスバッジ（非インタラクティブ）。レビュー行のタップ操作はリスト側でこれをPressableで包む。
+ *
+ * 面は `<View>`、文字は `<Text>` に分ける（`<Text>` 1枚では高さを固定できない）。
+ */
 export function AgentBadge({ status }: { status: string | undefined }) {
-	return <Text style={[styles.badge, badgeStyle(status)]}>{agentLabel(status)}</Text>;
+	return (
+		<View style={[styles.badge, badgeStyle(status)]}>
+			<Text style={[styles.badgeText, badgeTextStyle(status)]}>{agentLabel(status)}</Text>
+		</View>
+	);
 }
 
 /**
@@ -121,11 +144,16 @@ const styles = StyleSheet.create({
 	agentSub: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
 	agentWs: { fontSize: 11, fontFamily: 'Menlo', flexShrink: 1 },
 	agentBranch: { color: colors.textDim, fontSize: 11, flexShrink: 1 },
-	badge: { fontSize: 10, fontWeight: '700', borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 2, overflow: 'hidden' },
-	badgeWaiting: { backgroundColor: 'rgba(244,135,113,0.15)', color: colors.red },
-	badgeRunning: { backgroundColor: 'rgba(78,201,176,0.15)', color: colors.green },
-	badgeReview: { backgroundColor: 'rgba(220,220,170,0.15)', color: colors.yellow },
-	badgeIdle: { backgroundColor: 'rgba(139,139,139,0.15)', color: colors.textDim },
+	badge: { height: CHIP_HEIGHT, borderRadius: radius.pill, paddingHorizontal: 8, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+	badgeWaiting: { backgroundColor: 'rgba(244,135,113,0.15)' },
+	badgeRunning: { backgroundColor: 'rgba(78,201,176,0.15)' },
+	badgeReview: { backgroundColor: 'rgba(220,220,170,0.15)' },
+	badgeIdle: { backgroundColor: 'rgba(139,139,139,0.15)' },
+	badgeText: { fontSize: 10, fontWeight: '700' },
+	badgeTextWaiting: { color: colors.red },
+	badgeTextRunning: { color: colors.green },
+	badgeTextReview: { color: colors.yellow },
+	badgeTextIdle: { color: colors.textDim },
 	// クローンは前面へ持ち上げるため、面と枠をわずかに強調し、強い影で浮遊感を出す。
 	// marginBottom はレイアウト用なのでクローンでは打ち消す（絶対配置のため不要）。
 	clonePos: { position: 'absolute' },

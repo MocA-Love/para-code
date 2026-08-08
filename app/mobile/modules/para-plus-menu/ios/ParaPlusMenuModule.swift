@@ -15,6 +15,9 @@ public class ParaPlusMenuModule: Module {
 			Prop("accessibilityTitle") { (view: ParaPlusMenuView, label: String) in
 				view.setAccessibilityTitle(label)
 			}
+			Prop("symbol") { (view: ParaPlusMenuView, name: String) in
+				view.setSymbol(name)
+			}
 		}
 	}
 }

@@ -10,7 +10,7 @@ import { GlassSurface } from '../src/components/glassSurface.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
-import { useToastInset } from '../src/paraToast.js';
+import { useParaHeader, PARA_HEADER_HIDDEN } from '../src/paraHeader.js';
 import { useContentColumnStyle } from '../src/ipad/useContentColumn.js';
 import { appendSpaceNoteEntry, applySpaceNotePrefix, continueSpaceNoteChecklist, parseSpaceNote, SPACE_NOTE_MAX_LENGTH, spaceNoteSummary, toggleSpaceNoteTask, trimSpaceNoteTrailingEmptyTask, type SpaceNotePrefix } from '../src/spaceNote.js';
 import { colors, mono, squircle } from '../src/theme.js';
@@ -40,8 +40,9 @@ import { hapticImpact, hapticSelection } from '../src/haptics.js';
 export default function SpaceNoteScreen() {
 	const router = useRouter();
 	const insets = useStableInsets();
-	// 上端のお知らせ（カプセル）のぶんヘッダーを下げる。共通ヘッダーと同じ扱い。
-	const toastInset = useToastInset();
+	// この画面は独自のヘッダー（パンくず・スペース選択など層の型に収まらないもの）を
+	// 自分で描くので、常設のヘッダー層は伏せる。伏せないと前の画面のヘッダーが上に残る。
+	useParaHeader(PARA_HEADER_HIDDEN);
 	// キーボードが出ている間は KeyboardAvoidingView が下端を押し上げるため、
 	// SafeArea ぶんの余白を足すと二重になる（入力欄がキーボードから浮く）。
 	const keyboardVisible = useKeyboardVisible();
@@ -332,7 +333,7 @@ export default function SpaceNoteScreen() {
 	}, [commitAdding, stopAdding]);
 
 	return (
-		<View style={[styles.screen, { paddingTop: insets.top + 8 + toastInset }]}>
+		<View style={[styles.screen, { paddingTop: insets.top + 8 }]}>
 			<View style={styles.header}>
 				{editing ? (
 					<GlassButton label="キャンセル" onPress={cancelEditing} disabled={busy} />
@@ -482,7 +483,7 @@ export default function SpaceNoteScreen() {
 					<Pressable
 						// 絶対配置の子は親の padding box 基準なので、上の余白ぶんを負で打ち消して
 						// ステータスバーの領域まで覆う。
-						style={[styles.pickerScrim, { top: -(insets.top + 8 + toastInset) }]}
+						style={[styles.pickerScrim, { top: -(insets.top + 8) }]}
 						onPress={() => setPickerOpen(false)}
 						accessibilityRole="button"
 						accessibilityLabel="スペースの選択を閉じる"
