@@ -2,7 +2,6 @@
 
 import type { ReactNode } from 'react';
 import { useEffect } from 'react';
-import { LayoutAnimation } from 'react-native';
 import { useIsFocused } from 'expo-router';
 import type { Ionicons } from '@expo/vector-icons';
 import { create } from 'zustand';
@@ -28,11 +27,14 @@ import { create } from 'zustand';
  * ```
  *
  * 気をつけること:
- *  - **ガラスの枠を動かすのは `LayoutAnimation` だけ。** Reanimated や
- *    `Animated.createAnimatedComponent(GlassView)` で大きさ・位置を動かすとアプリごと落ちる
- *    （既知・実機で確認済み。`glassSurface.tsx` の注意書き参照）
- *  - **戻るスワイプの進捗には連動しない。** ネイティブStackは遷移の進捗をJSへ渡さないので、
- *    モーフは固定のばねで走る。指でゆっくり戻すとヘッダーだけ先に終わる
+ *  - **形が変わったときの動きは層が自分で持つ**（`src/components/paraHeaderMorph.ts`）。
+ *    `LayoutAnimation` は使えない——予約が「次の1描画」に無条件で消費されるため、ヘッダーの
+ *    変化が1描画遅れるこの構造では必ず手前の描画に食われる（実機で確認済み）
+ *  - **ガラスそのものを Reanimated や `Animated.createAnimatedComponent(GlassView)` で
+ *    動かしてはいけない**（大きさ・位置を動かすとアプリごと落ちる。glassSurface.tsx 参照）。
+ *    動かすのはガラスを包んだ普通のViewの `maxWidth` まで
+ *  - **戻るスワイプの進捗には連動しない。** LINEも連動していない（録画をコマ送りして確認:
+ *    本文が滑り終わってから約250msで形が変わる）ので、これは真似として正しい
  *  - **ズーム遷移（`Link.AppleZoom`）の画面は `instant: true` にする。** 画面全体が拡大して
  *    いるのに中のヘッダーだけ別の速度で動くと二重に見える。連続性はズームに任せる
  *  - **モーダル（設定・ペアリング）は `hidden: true`。** 層はモーダルの下に居るので出しても
@@ -140,35 +142,14 @@ interface ParaHeaderStore {
 	setHeight(height: number): void;
 }
 
-/** 融合の速さ。ばねにするのは、UIKitのナビゲーションバーの変形と同じ手触りにするため。 */
-const MORPH = {
-	duration: 420,
-	update: { type: LayoutAnimation.Types.spring, springDamping: 0.86 },
-	create: { type: LayoutAnimation.Types.easeOut, property: LayoutAnimation.Properties.opacity, duration: 260 },
-	delete: { type: LayoutAnimation.Types.easeIn, property: LayoutAnimation.Properties.opacity, duration: 160 },
-} as const;
-
-/**
- * ヘッダーの形が変わる**直前**にアニメーションを予約する。
- *
- * **必ず「状態を変える処理と同じ関数の中で、その直前に」呼ぶこと。**
- * `LayoutAnimation` の予約は中身に関係なく**次に画面へ適用される1回の描画**に消費される
- * （`LayoutAnimationKeyFrameManager.cpp` の `pullTransaction` が無条件に取っていく）。
- * したがって「状態を変える → その後の effect で予約」の順にすると、予約は状態変更の描画に
- * 食われて、ヘッダーが変わる描画には掛からない。押した瞬間に呼ぶのが唯一効く形。
- */
-export function morphParaHeaderNext(): void {
-	LayoutAnimation.configureNext(MORPH);
-}
-
 export const useParaHeaderStore = create<ParaHeaderStore>()((set, get) => ({
 	spec: undefined,
 	height: 0,
 	set(next) {
-		// **ここで `LayoutAnimation` を予約してはいけない。** 呼び出し元は画面の effect なので、
-		// 予約は必ず「状態が変わった描画」に食われ、ヘッダーが変わる描画には掛からない
-		// （実機で確認: 何もアニメーションしなかった）。予約は状態を変える側が
-		// {@link morphParaHeaderNext} で行う。
+		// **アニメーションはここでは扱わない。** 形が変わったときの動きは層が自分で持つ
+		// （`src/components/paraHeaderMorph.ts`）。`LayoutAnimation` を予約する形は、
+		// 呼び出し元が画面の effect である以上、必ず「状態が変わった描画」に食われて
+		// 効かない（実機で確認済み）。
 		set({ spec: next });
 	},
 	setHeight(height) {

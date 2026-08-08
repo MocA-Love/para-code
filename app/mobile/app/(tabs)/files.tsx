@@ -7,7 +7,7 @@ import { ConnectionGate } from '../../src/components/connectionGate.js';
 import { useWsHeader, useOpenDrawerPan } from '../../src/components/wsDrawer.js';
 import { FilesPanel } from '../../src/components/filesPanel.js';
 import { useFilesSearch } from '../../src/filesSearch.js';
-import { morphParaHeaderNext, useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
+import { useParaHeaderHeight, type ParaHeaderIcon } from '../../src/paraHeader.js';
 import { colors } from '../../src/theme.js';
 import { hapticImpact } from '../../src/haptics.js';
 
@@ -33,11 +33,9 @@ export default function FilesScreen() {
 		icon: 'search-outline',
 		label: 'ファイルを検索',
 		color: searchOpen ? colors.accent : colors.text,
-		// **予約と状態変更を同じ関数の中で連続して行う。** `LayoutAnimation` の予約は中身に
-		// 関係なく次の1描画に消費されるので、状態変更が別の描画へずれると効かない。
+		// 開閉の動き（帯が滑り出す）はヘッダー層が自分で付ける（paraHeaderMorph.ts）。
 		onPress: () => {
 			hapticImpact('light');
-			morphParaHeaderNext();
 			useFilesSearch.getState().toggle();
 		},
 	}], [searchOpen]);
