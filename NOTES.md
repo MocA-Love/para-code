@@ -202,6 +202,15 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
   - 未claimのエントリは保存時に今世代IDへ**再キー**する（`sessionRekeyGridLayoutEntries`）。しないと、一度も訪問しないスペースのエントリは2世代前のIDのまま取り残されて二度と一致しない。再キーはstorageへ書く値だけに適用し、claim用のin-memory台帳は前世代IDのまま置く（順序に依存しないため）
   - 保存は毎回storageを読み直してマージする（同一ワークスペースを複数ウィンドウで開いたときのlost update回避）。自分のものと他ウィンドウのものは端末IDで判別し、**前世代・今世代の両方のIDを「自分のもの」として扱う**（でないと自分の古い版が他人のものとして温存される）。逆に、**live端末で説明のつかないエントリは書き戻さない**（起動時スナップショットは他ウィンドウの最新版より古い可能性があるため）
   - 既知の限界: 全ペインを閉じたグループのエントリは、説明のつく端末がいなくなるため再キーされず旧世代のIDのままstorageに残る（エントリ上限32件から押し出されるまで）。claimには「ID集合の完全一致」が要るので、古いエントリは無視されるだけで誤マッチはしない
+- **WORKSPACEスコープのstorageは全スペースで共有される（2026-08-09整理）**: workspace idがconfigPath依存で固定なので、`state.vscdb`は1つしかない。`paradis.workspaceSwitch.*`（workingSets/terminalRepositories/browserScopes/scmInputs/spaceNotes）は最初から自前でスペースIDをキーに混ぜて分けてきたが、**upstream由来でWORKSPACEスコープを「1つの作業単位」と仮定しているものは混ざったまま**。実機の`state.vscdb`で確認した混在の例: `history.entries`（エディタ履歴、下記で対処済み）、`workbench.tasks.recentlyUsedTasks2`、`memento/workbench.view.search`、および**拡張機能の`workspaceState`**（`vscode.git`/`mhutchie.git-graph`/`GitHub.copilot-chat`等。`extensionStorage.ts`がWORKSPACEスコープへ直接書く）
+  - `IStorageService.switch()`（`storage.ts`）でstorage自体を差し替える手はあり、renderer側の`RemoteStorageService.switchToWorkspace()`は実装済み（旧DBをclose→新DBをinit→`switchData`で全キーの変更イベント発火）。だが**upstreamの大半のコンポーネントは起動時に一度読んでメモリに持ち、変更イベントを購読していない**（`HistoryService.ensureHistoryLoaded`が典型）。差し替えても古い値が生き残り、次の保存で新スペースのDBを汚染する。upstreamがこのAPIを使う唯一の場面はuntitled workspaceの保存で、`preserveData`により中身が同一だから顕在化しないだけ。全コンポーネントを追随させるにはウィンドウリロードが必要で、それは機能1の存在意義そのものを否定する
+  - したがって方針は「storageごと切り替える」ではなく、**スペース依存の状態を1つずつ、save→clear→loadのフックを書けるものから載せ替える**。拡張機能の`workspaceState`は値を持つのがext host側の拡張コードで、切り替え時に読み直させる手段がない（ext host再起動が必要）ため**現構造では対象外**
+- **エディタ履歴のスペース分離（2026-08-09実装、`paradisHistoryScope.ts` + `historyService.ts`のPARA-PATCH）**: Ctrl+Pの「最近開いたもの」に別スペースのファイルが出る報告が発端。実機で`history.entries`178件に7リポジトリ分が混在していることを確認した。保存キーを`history.entries.<フォルダURIのhash>`に分け、`onDidChangeWorkspaceFolders`で「読み込み元のキーへ書き戻す→破棄→次の参照で新スペース分をロード」する。上限200件もスペースごとに独立する。実装で踏んだ/避けた落とし穴:
+  - **書き戻し先は「今のキー」ではなく「読み込んだキー」**。メモリ上の履歴がどのスペースのものかを`paradisLoadedHistoryKey`で持つ。今のキーへ書くと切り替え先の履歴を切り替え元の内容で潰す
+  - **未ロード状態で書かない**。`ensureHistoryLoaded`は`editorGroupService.isReady`がfalseのとき`history = []`を置いて`whenReady`後に`loadHistory()`する。この窓で`saveState`が走ると空配列でそのスペースの永続履歴を全消去する。`paradisLoadedHistoryKey === undefined`をガードにして塞いだ
+  - **リセットの判定は「foldersが入れ替わったか」ではなく「保存先キーが変わったか」**。フォルダ0個からの遷移やマルチルートとの間の遷移でも取りこぼさないため
+  - **LRU（上限24スペース）は「これから読むスペース」も必ず先頭へ寄せてから間引く**。保存したときだけ追跡すると、久しぶりに戻るスペースほど捨てられる側に溜まり、戻った瞬間に履歴を失う
+  - 既知の制限: (1) 切り替え先スペースがフォルダ外のファイル（ユーザー設定等）を開いていた場合、切り替え元の履歴に残る（除去判定はフォルダ配下かどうかしか見られない。取り切るには切り替えの開始そのものを知る必要がある）。(2) 補助ウィンドウにピン留めしたエディタは`editorService.getEditors`が全パートを列挙するため新スペースの履歴に入り得る。(3) スペースを分ける前の`history.entries`は各スペースが自分の分を引き継げるよう残す（孤児として31KB程度）。(4) Ctrl+Shift+Tのreopenスタックとナビゲーションスタックはスペースを跨いだまま（どちらも非永続でセッション内のみ）
 - 既知の制限: ブラウザページはウィンドウリロードを跨ぐと再ロードされる（WebContentsViewがウィンドウに紐づくため。URLはworking set経由で復元）。ブラウザのCookieパーティションは全リポジトリ共有
 
 ## リリース手順（runbook、2026-07-03確立・v1.128.0-paracode-2で全自動を実証済み）

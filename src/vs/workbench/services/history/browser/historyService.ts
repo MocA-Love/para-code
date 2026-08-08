@@ -2,6 +2,7 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH comments)
 
 import { localize } from '../../../../nls.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -11,7 +12,9 @@ import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IEditorService } from '../../editor/common/editorService.js';
 import { GoFilter, GoScope, IHistoryService } from '../common/history.js';
 import { FileChangesEvent, IFileService, FileChangeType, FILES_EXCLUDE_CONFIG, FileOperationEvent, FileOperation } from '../../../../platform/files/common/files.js';
-import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
+import { IWorkspaceContextService, IWorkspaceFoldersChangeEvent } from '../../../../platform/workspace/common/workspace.js';
+// PARA-PATCH: エディタ履歴をスペース (folders) ごとに分けるための判定。ロジック本体は fork 所有
+import { paradisHistorySpacesKey, paradisHistoryStorageKey, paradisHistorySwitchPlan, paradisMigratedHistoryEntries, paradisTrackHistorySpaces } from '../../../../paradis/contrib/workspaceSwitch/common/paradisHistoryScope.js';
 import { Disposable, DisposableStore, IDisposable, DisposableMap } from '../../../../base/common/lifecycle.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -129,6 +132,9 @@ export class HistoryService extends Disposable implements IHistoryService {
 
 		// Storage
 		this._register(this.storageService.onWillSaveState(() => this.saveState()));
+
+		// PARA-PATCH: スペース切り替え (folders の入れ替え) で履歴の保存先を切り替える
+		this._register(this.contextService.onDidChangeWorkspaceFolders(e => this.paradisSwitchHistoryScope(e)));
 
 		// Configuration
 		this.registerEditorNavigationScopeChangeListener();
@@ -855,6 +861,19 @@ export class HistoryService extends Disposable implements IHistoryService {
 	private static readonly MAX_HISTORY_ITEMS = 200;
 	private static readonly HISTORY_STORAGE_KEY = 'history.entries';
 
+	// PARA-PATCH: 履歴の保存先をスペース (= 現在の workspace folders) ごとに分ける。Para Code は
+	// 単一の .code-workspace の folders を入れ替えてスペースを切り替えるため、upstream のままだと
+	// 全スペースが同じ履歴を共有してしまう (Quick Open に別スペースのファイルが出る / 上限 200 件を
+	// 食い合う)。導出は paradisHistoryScope.ts 参照。
+	private get paradisHistoryStorageKey(): string {
+		return paradisHistoryStorageKey(HistoryService.HISTORY_STORAGE_KEY, this.contextService.getWorkspace().folders);
+	}
+
+	// PARA-PATCH: メモリ上の履歴がどのスペースのものかを持つ。書き戻し先は「読み込んだキー」であって
+	// 「今のキー」ではない (切り替え後に今のキーへ書くと、切り替え先の履歴を切り替え元の内容で潰す)。
+	// 未ロードのうちは undefined で、この間は保存しない (ロード前の空配列で永続履歴を消さないため)。
+	private paradisLoadedHistoryKey: string | undefined = undefined;
+
 	private history: Array<EditorInput | IResourceEditorInput> | undefined = undefined;
 
 	private readonly editorHistoryListeners = this._register(new DisposableMap<EditorInput, DisposableStore>());
@@ -1074,6 +1093,9 @@ export class HistoryService extends Disposable implements IHistoryService {
 		// the right order here.
 		this.history = [];
 
+		// PARA-PATCH: これ以降の保存先を「今読み込むスペース」に固定する
+		this.paradisLoadedHistoryKey = this.paradisHistoryStorageKey;
+
 		// All stored editors from previous session
 		const storedEditorHistory = this.loadHistoryFromStorage();
 
@@ -1129,7 +1151,15 @@ export class HistoryService extends Disposable implements IHistoryService {
 	private loadHistoryFromStorage(): Array<IResourceEditorInput> {
 		const entries: IResourceEditorInput[] = [];
 
-		const entriesRaw = this.storageService.get(HistoryService.HISTORY_STORAGE_KEY, StorageScope.WORKSPACE);
+		// PARA-PATCH: スペース別のキーから読む。まだそのスペースで保存したことがなければ、スペースを
+		// 分ける前の履歴 (全スペース混在) を一度だけ引き継ぐ。取り込むのはそのスペースに属する分だけ
+		const storageKey = this.paradisHistoryStorageKey;
+		let entriesRaw = this.storageService.get(storageKey, StorageScope.WORKSPACE);
+		const paradisMigrating = entriesRaw === undefined && storageKey !== HistoryService.HISTORY_STORAGE_KEY;
+		if (paradisMigrating) {
+			entriesRaw = this.storageService.get(HistoryService.HISTORY_STORAGE_KEY, StorageScope.WORKSPACE);
+		}
+
 		if (entriesRaw) {
 			try {
 				const entriesParsed: ISerializedEditorHistoryEntry[] = JSON.parse(entriesRaw);
@@ -1154,11 +1184,18 @@ export class HistoryService extends Disposable implements IHistoryService {
 			}
 		}
 
+		// PARA-PATCH: 引き継ぎ元は全スペース混在なので、このスペースの分だけ残す
+		if (paradisMigrating) {
+			return paradisMigratedHistoryEntries(entries, this.contextService.getWorkspace().folders);
+		}
+
 		return entries;
 	}
 
 	private saveState(): void {
-		if (!this.history) {
+		// PARA-PATCH: 書き戻し先は読み込んだスペース。未ロードなら書かない (空配列で永続履歴を潰さない)
+		const paradisStorageKey = this.paradisLoadedHistoryKey;
+		if (!this.history || paradisStorageKey === undefined) {
 			return; // nothing to save because history was not used
 		}
 
@@ -1176,7 +1213,68 @@ export class HistoryService extends Disposable implements IHistoryService {
 			});
 		}
 
-		this.storageService.store(HistoryService.HISTORY_STORAGE_KEY, JSON.stringify(entries), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		// PARA-PATCH: 書き込み先はスペース別のキー
+		this.storageService.store(paradisStorageKey, JSON.stringify(entries), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+		this.paradisTrackHistorySpace(paradisStorageKey); // PARA-PATCH
+	}
+
+	// PARA-PATCH: スペース別キーが際限なく増えないよう、使っていないスペースの履歴を落とす
+	private paradisTrackHistorySpace(storageKey: string): void {
+		if (storageKey === HistoryService.HISTORY_STORAGE_KEY) {
+			return; // スペース運用外 (フォルダ無し / マルチルート) は upstream と同じキーなので追跡しない
+		}
+
+		const spacesKey = paradisHistorySpacesKey(HistoryService.HISTORY_STORAGE_KEY);
+
+		let known: string[] = [];
+		try {
+			const parsed = JSON.parse(this.storageService.get(spacesKey, StorageScope.WORKSPACE, '[]'));
+			if (Array.isArray(parsed)) {
+				known = parsed.filter(entry => typeof entry === 'string');
+			}
+		} catch (error) {
+			onUnexpectedError(error); // 壊れていても履歴の保存自体は続ける
+		}
+
+		const { keys, evicted } = paradisTrackHistorySpaces(known, storageKey);
+		for (const evictedKey of evicted) {
+			this.storageService.remove(evictedKey, StorageScope.WORKSPACE);
+		}
+
+		this.storageService.store(spacesKey, JSON.stringify(keys), StorageScope.WORKSPACE, StorageTarget.MACHINE);
+	}
+
+	// PARA-PATCH: スペースの切り替えで履歴の保存先が変わる。読み込み済みの分を読み込み元のキーへ
+	// 書き戻してから破棄し、次に履歴が参照されたときへ新スペース分の読み込みを委ねる。
+	// 判定を「folders が入れ替わったか」ではなく「保存先キーが変わったか」で行うのは、フォルダ 0 個
+	// からの遷移やマルチルートとの間の遷移でも取りこぼさないため (paradisHistoryScope.ts 参照)
+	private paradisSwitchHistoryScope(event: IWorkspaceFoldersChangeEvent): void {
+		const nextKey = this.paradisHistoryStorageKey;
+		if (this.paradisLoadedHistoryKey === undefined || this.paradisLoadedHistoryKey === nextKey) {
+			return; // まだ読み込んでいない、または保存先が変わっていない
+		}
+
+		// エディタの入れ替えは folders の更新より先に走るため、この時点の履歴には切り替え先の
+		// エディタが紛れ込んでいる。切り替え元へ書き戻す前に外す
+		const plan = paradisHistorySwitchPlan(event, this.contextService.getWorkspace().folders);
+		if (plan && this.history) {
+			for (const entry of [...this.history]) {
+				const resource = entry.resource;
+				if (resource && plan.isForeign(resource)) {
+					this.removeFromHistory(entry);
+				}
+			}
+		}
+
+		this.saveState();
+
+		// これから読むスペースを「最近使った」側へ寄せてから破棄する。保存したときだけ追跡すると、
+		// 久しぶりに戻るスペースほど捨てられる側に溜まり、戻った瞬間に履歴を失う
+		this.paradisTrackHistorySpace(nextKey);
+
+		this.paradisLoadedHistoryKey = undefined;
+		this.history = undefined;
+		this.editorHistoryListeners.clearAndDisposeAll();
 	}
 
 	//#endregion
