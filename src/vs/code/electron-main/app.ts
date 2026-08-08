@@ -49,6 +49,8 @@ import { ParadisResourceMonitorMainService } from '../../paradis/contrib/resourc
 import { paradisRegisterHealthBeacon } from '../../paradis/contrib/healthBeacon/electron-main/paradisHealthBeaconMain.js';
 // PARA-PATCH: on-demand main process heap snapshot for leak diagnosis
 import { paradisRegisterHeapSnapshot } from '../../paradis/contrib/heapSnapshot/electron-main/paradisHeapSnapshotMain.js';
+// PARA-PATCH: LocalPty channel that does not eagerly buffer the per-process pty events
+import { paradisCreateLocalPtyChannel } from '../../paradis/contrib/ptyChannel/electron-main/paradisLocalPtyChannel.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../paradis/contrib/mobileRelay/common/paradisMobileWindowLease.js';
 import { ParadisMobileWindowLeaseChannel } from '../../paradis/contrib/mobileRelay/electron-main/paradisMobileWindowLeaseChannel.js';
 // PARA-PATCH: clear stale webview service worker registrations before the first window opens
@@ -1520,7 +1522,8 @@ export class CodeApplication extends Disposable {
 		sharedProcessClient.then(client => client.registerChannel('profileStorageListener', profileStorageListener));
 
 		// Terminal
-		const ptyHostChannel = ProxyChannel.fromService(accessor.get(ILocalPtyService), disposables);
+		// PARA-PATCH: keep main from buffering terminal output nobody reads (see paradis/contrib/ptyChannel)
+		const ptyHostChannel = paradisCreateLocalPtyChannel(accessor.get(ILocalPtyService), disposables, this.logService);
 		mainProcessElectronServer.registerChannel(TerminalIpcChannels.LocalPty, ptyHostChannel);
 
 		// External Terminal
