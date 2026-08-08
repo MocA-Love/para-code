@@ -3054,7 +3054,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		private readonly send: (mobileId: string, payload: Uint8Array) => void,
 		private readonly requestAction: (mobileId: string, windowId: number, windowSession: string, rendererGeneration: number, payload: Uint8Array) => void,
 		/** 質問(AskUserQuestion等)がtranscriptに現れた（回答待ちが始まった）。通知の発火元。 */
-		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; header?: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }) => void,
+		private readonly onQuestion: (info: { terminalId: number; agent: ParadisAgentKind; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner }) => void,
 		private readonly logService: ILogService,
 		private readonly codexSocketPathResolver?: (token: string) => string | undefined,
 		private readonly authorizeOwner: (owner: IParadisMobilePaneOwner) => Promise<boolean> = async () => true,
@@ -5806,7 +5806,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 			const ws = this.tokenToWorkspace.get(token);
-			this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(message.header !== undefined ? { header: message.header } : {}), ...(ws !== undefined ? { ws } : {}), agentToken: token, owner });
+			this.onQuestion({ terminalId, agent: tailer.agent, text: message.text, ...(ws !== undefined ? { ws } : {}), agentToken: token, owner });
 			this.recordQuestionNotifyShape(token, message, 'dispatched');
 		}, error => {
 			this.recordQuestionNotifyShape(token, message, 'authorize-failed');

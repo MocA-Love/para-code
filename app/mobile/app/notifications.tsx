@@ -114,7 +114,10 @@ export default function NotificationsScreen() {
 						>
 							<View style={[styles.dot, { backgroundColor: dotColor(n.kind) }]} />
 							<View style={styles.body}>
-								<Text style={styles.rowTitle} numberOfLines={1}>{n.title}</Text>
+								<View style={styles.titleRow}>
+									<Text style={styles.rowTitle} numberOfLines={1}>{n.title}</Text>
+									{n.subtitle !== undefined ? <Text style={styles.rowSubtitle} numberOfLines={1}>{n.subtitle}</Text> : null}
+								</View>
 								<Text style={styles.rowBody} numberOfLines={2}>{n.body}</Text>
 							</View>
 							<Text style={styles.time}>{formatRelativeTime(n.at, now)}</Text>
@@ -142,7 +145,13 @@ const styles = StyleSheet.create({
 	rowPressed: { backgroundColor: colors.surface2 },
 	dot: { width: 8, height: 8, borderRadius: 4, flexShrink: 0 },
 	body: { flex: 1, minWidth: 0 },
-	rowTitle: { color: colors.text, fontSize: 13, fontWeight: '600' },
+	// ワークツリー名（太字）とエージェント名を同じ行に置く。入りきらないときは
+	// エージェント名から先に削る（どこで待たれているかの方が要る）。
+	titleRow: { flexDirection: 'row', alignItems: 'baseline', gap: 6, minWidth: 0 },
+	// 縮む割合を副題側へ大きく寄せる。両方を同じにすると、flexboxは長い方（＝ワークツリー名）から
+	// 削るため、見せたい名前の方が先に消える。
+	rowTitle: { color: colors.text, fontSize: 13, fontWeight: '600', flexShrink: 1 },
+	rowSubtitle: { color: colors.textDim, fontSize: 11, flexShrink: 8 },
 	rowBody: { color: colors.textDim, fontSize: 11.5, marginTop: 1, lineHeight: 15 },
 	time: { color: colors.textDim, fontSize: 10.5, flexShrink: 0 },
 });

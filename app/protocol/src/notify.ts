@@ -17,8 +17,19 @@ export interface NotifyPayload {
 	readonly kind: NotifyKind;
 	/** 一意なID（重複表示の抑制・タップ時のディープリンクに使う）。 */
 	readonly id: string;
-	/** 通知タイトル（例: "Claude Code — para-code"）。 */
+	/**
+	 * 通知タイトル。ワークツリー（スペース）の名前を入れる。
+	 * iOSが太字で出すのはここだけなので、「どこで待たれているか」以外を混ぜない。
+	 */
 	readonly title: string;
+	/**
+	 * タイトルの下に細く出す一行。エージェント種別（例: "Claude"）を入れる。
+	 * 種別が分からない経路（PCの状態遷移から出る通知）ではターミナル名が入る。
+	 *
+	 * **PC名はここに含めない**。何台のPCとペアリングしているかは受け取る側しか知らないため、
+	 * 2台以上のときだけ `pcName` を継ぎ足すのは受信側（NSE・アプリ）の役目になる。
+	 */
+	readonly subtitle?: string;
 	/** 本文（例: 質問文の要約）。 */
 	readonly body: string;
 	/** 関連ワークスペースの状態キー（あればディープリンク先）。 */
@@ -29,6 +40,15 @@ export interface NotifyPayload {
 	readonly terminalKey?: string;
 	readonly windowId?: number;
 	readonly agentToken?: string;
+	/**
+	 * 送信元PCの識別子（リレー上の deviceId ＝ モバイル台帳の `PairedPc.id`）と表示名。
+	 * PCが封緘の中で名乗るので、リレーからは見えず差し替えもできない。
+	 *
+	 * 通知拡張（NSE）は本来「復号できた鍵がどのPCのものか」で送信元を決めるが、そちらは
+	 * Keychainの項目名を読める場合にしか使えない。読めなかったときの拠り所としてここを使う。
+	 */
+	readonly pcId?: string;
+	readonly pcName?: string;
 	/** PC側で通知が発生した時刻（epoch ms）。 */
 	readonly at: number;
 	/**
@@ -58,13 +78,16 @@ export function decodeNotify(bytes: Uint8Array): NotifyPayload {
 	if (typeof kind !== 'string' || !isNotifyKind(kind) || typeof id !== 'string' || typeof title !== 'string' || typeof body !== 'string' || typeof at !== 'number') {
 		throw new Error('malformed notify payload fields');
 	}
+	const subtitle = typeof raw['subtitle'] === 'string' && raw['subtitle'].length > 0 && raw['subtitle'].length <= 100 ? raw['subtitle'] : undefined;
+	const pcId = typeof raw['pcId'] === 'string' && raw['pcId'].length > 0 && raw['pcId'].length <= 200 ? raw['pcId'] : undefined;
+	const pcName = typeof raw['pcName'] === 'string' && raw['pcName'].length > 0 && raw['pcName'].length <= 100 ? raw['pcName'] : undefined;
 	const ws = typeof raw['ws'] === 'string' ? raw['ws'] : undefined;
 	const terminalId = typeof raw['terminalId'] === 'number' ? raw['terminalId'] : undefined;
 	const terminalKey = typeof raw['terminalKey'] === 'string' && raw['terminalKey'].length > 0 && raw['terminalKey'].length <= 200 ? raw['terminalKey'] : undefined;
 	const windowId = typeof raw['windowId'] === 'number' && Number.isInteger(raw['windowId']) ? raw['windowId'] : undefined;
 	const agentToken = typeof raw['agentToken'] === 'string' && raw['agentToken'].length <= 200 ? raw['agentToken'] : undefined;
 	const quiet = raw['quiet'] === 'muted' || raw['quiet'] === 'pushed' ? raw['quiet'] : undefined;
-	return { kind, id, title, body, at, ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(quiet !== undefined ? { quiet } : {}) };
+	return { kind, id, title, body, at, ...(subtitle !== undefined ? { subtitle } : {}), ...(ws !== undefined ? { ws } : {}), ...(terminalId !== undefined ? { terminalId } : {}), ...(terminalKey !== undefined ? { terminalKey } : {}), ...(windowId !== undefined ? { windowId } : {}), ...(agentToken !== undefined ? { agentToken } : {}), ...(pcId !== undefined ? { pcId } : {}), ...(pcName !== undefined ? { pcName } : {}), ...(quiet !== undefined ? { quiet } : {}) };
 }
 
 function isNotifyKind(value: string): value is NotifyKind {

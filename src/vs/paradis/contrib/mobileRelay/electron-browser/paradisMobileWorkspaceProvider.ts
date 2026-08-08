@@ -37,6 +37,7 @@ import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspa
 import { IParadisPrStatus } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { renderSpreadsheetDiffMobileHtml, renderSpreadsheetMobileSheet } from './paradisMobileSpreadsheetHtml.js';
 import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/paradisMobileProtocol.js';
+import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
 import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
@@ -765,10 +766,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	}
 
 	private emitNotify(kind: NotifyKind, terminalId: number, ws: string, terminalTitle: string): void {
-		const wsName = this.wsDisplayName(ws);
-		const title = kind === 'agent-question'
-			? `${terminalTitle} — ${wsName}`
-			: `${terminalTitle} — ${wsName}`;
+		// タイトルはワークツリー名だけに使い、細い行にはターミナル名を回す。
+		// ここからはエージェント種別（Claude/Codex）を引けないため、shared process 側の
+		// 質問通知（notifyAgentQuestion）が入れる呼び名の代わりにターミナル名を使う。
+		// ワークツリー名が引けずタイトルがターミナル名へ落ちたときは、同じ名前が2行並ぶので出さない。
+		const title = paradisNotifyTitle(this.wsNotifyName(ws), terminalTitle);
+		const subtitle = paradisNotifySubtitleCandidate(terminalTitle, title);
 		const body = kind === 'agent-question'
 			? 'エージェントが確認を求めています'
 			: 'エージェントが作業を完了しました';
@@ -778,6 +781,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const terminalKey = this.terminalIdentityService.getTerminalKey(terminalId);
 		const payload: NotifyPayload = {
 			kind, id: `n${generateUuid()}`, title, body,
+			...(subtitle !== undefined ? { subtitle } : {}),
 			ws: `${this.windowId}:${ws}`,
 			terminalId,
 			...(terminalKey !== undefined ? { terminalKey } : {}),
@@ -1156,8 +1160,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return undefined;
 	}
 
-	/** ワークスペースID → 表示名（通知タイトル用）。 */
-	private wsDisplayName(ws: string): string {
+	/**
+	 * ワークスペースID → 通知タイトルに出す名前。
+	 *
+	 * worktree はリポジトリ名を冠さず worktree 名だけを返す。タイトルはロック画面で
+	 * 太字1行しか与えられず、頭にリポジトリ名を置くと肝心の worktree 名が先に切れるため
+	 * （どのリポジトリかは本文と遷移先で分かる）。
+	 */
+	private wsNotifyName(ws: string): string | undefined {
 		const repo = this.workspaceSwitchService.repositories.find(r => r.id === ws);
 		if (repo) {
 			return repo.name;
@@ -1165,11 +1175,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		for (const r of this.workspaceSwitchService.repositories) {
 			for (const worktree of this.worktreeService.getWorktrees(r.id)) {
 				if (paradisWorktreeStateKey(worktree.uri) === ws) {
-					return `${r.name} ✦ ${worktree.name}`;
+					return worktree.name;
 				}
 			}
 		}
-		return ws;
+		// 状態キー（`worktree:file:///…`）をそのまま見出しにはしない。呼び出し側が
+		// ターミナル名へ落とすので、名前が引けなかったことをそのまま伝える。
+		return undefined;
 	}
 
 	// --- scm チャネル -----------------------------------------------------------

@@ -390,9 +390,9 @@ export async function getApnsDeviceToken(): Promise<string | undefined> {
  * オフライン時の APNs リモート通知は、リレー→APNs→Notification Service Extension で別途配送する
  * （設計書 §5.2。NSE はネイティブ実装。ios/ の NotifyExtension ターゲット参照）。
  */
-export async function presentLocalNotification(title: string, body: string, data: Record<string, unknown>): Promise<void> {
+export async function presentLocalNotification(title: string, subtitle: string | undefined, body: string, data: Record<string, unknown>): Promise<void> {
 	await Notifications.scheduleNotificationAsync({
-		content: { title, body, data },
+		content: { title, ...(subtitle !== undefined ? { subtitle } : {}), body, data },
 		trigger: null, // 即時
 	});
 }
