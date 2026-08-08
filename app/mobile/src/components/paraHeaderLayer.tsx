@@ -1,14 +1,17 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { usePathname } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { GlassGroup, GlassSurface } from './glassSurface.js';
 import { HeaderEdgeFade } from './headerEdgeFade.js';
-import { useParaHeaderStore, PARA_HEADER_PILL_BUTTON as PILL_BUTTON, PARA_HEADER_SLOT_HEIGHT as SLOT_HEIGHT, type ParaHeaderIcon} from '../paraHeader.js';
+import { FilesSearchField } from './filesSearchField.js';
+import { morphParaHeaderNext, useParaHeaderStore, PARA_HEADER_PILL_BUTTON as PILL_BUTTON, PARA_HEADER_SLOT_HEIGHT as SLOT_HEIGHT, type ParaHeaderIcon } from '../paraHeader.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { CONTENT_MAX_WIDTH } from '../ipad/ipadLayout.js';
+import { useFilesSearch } from '../filesSearch.js';
 import { colors, mono, radius, squircle, withAlpha } from '../theme.js';
 
 /**
@@ -48,6 +51,14 @@ export function ParaHeaderLayer() {
 	const insets = useStableInsets();
 	const regular = useIsRegularWidth();
 	const { spec, setHeight } = useParaHeaderStore(useShallow(s => ({ spec: s.spec, setHeight: s.setHeight })));
+	// **ファイルの検索欄はここが直接描く。** 画面が仕様として渡すと、開閉のたびに
+	// 「画面が変わる描画」と「ヘッダーが変わる描画」の2回に分かれ、`LayoutAnimation` の予約が
+	// 前者に食われて滑り出さない（予約は中身に関係なく次の1描画に消費される）。ここで
+	// ストアを直接読めば、タップで起きる描画1回にヘッダーの変化まで収まる。
+	// 経路で絞るのは、検索を開いたまま別のタブへ移ったときに帯を残さないため。
+	const searchVisible = useFilesSearch(state => state.visible);
+	const pathname = usePathname();
+	const filesSearchVisible = searchVisible && pathname === '/files';
 
 	// **モーダル（設定・ペアリング）のために伏せる必要はない。** ネイティブのモーダルは
 	// この層より前面に presented されるので、出したままでも見えない。ルート区画で伏せると
@@ -168,8 +179,12 @@ export function ParaHeaderLayer() {
 						: null}
 				</Pressable>
 			)}
-			{band === undefined ? null : (
-				<View style={[styles.band, column && styles.rowColumn]} pointerEvents="box-none">{band}</View>
+			{band === undefined && !filesSearchVisible ? null : (
+				<View style={[styles.band, column && styles.rowColumn]} pointerEvents="box-none">
+					{filesSearchVisible
+						? <FilesSearchField onClose={() => { morphParaHeaderNext(); useFilesSearch.getState().close(); }} />
+						: band}
+				</View>
 			)}
 		</View>
 	);
