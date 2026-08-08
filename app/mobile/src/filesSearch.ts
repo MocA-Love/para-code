@@ -14,12 +14,19 @@ import { create } from 'zustand';
  * その画面が自分の仕様を層へ登録するため）。だから欄の後始末を欄のアンマウントに紐づけては
  * いけない——タブを行き来しただけで入力が消える。条件を捨てるのは {@link FilesSearchStore.close}
  * だけが行い、フォーカスも {@link FilesSearchStore.open} が要求したときだけ当てる。
+ *
+ * **開いているかどうかもここが持つ**（画面のローカルstateにしない）。ヘッダーの帯は常設の
+ * ヘッダー層が描くので、開閉を画面のstateに置くと「画面が変わる描画」と「ヘッダーが変わる
+ * 描画」が2回に分かれ、`LayoutAnimation` の予約が前者に食われてアニメーションが消える
+ * （予約は中身に関係なく次の1描画に消費される）。ここへ置けば画面と層が同じ描画で変わる。
  */
 
 /** 何を探すか。`name` は相対パスの部分一致、`text` は全文（PC側 ripgrep）。 */
 export type FilesSearchMode = 'name' | 'text';
 
 interface FilesSearchStore {
+	/** 検索欄（ヘッダーの帯）が出ているか。 */
+	readonly visible: boolean;
 	readonly query: string;
 	readonly mode: FilesSearchMode;
 	/** 欄へフォーカスを当てる要求。欄が1回だけ消費する。 */
@@ -35,12 +42,15 @@ interface FilesSearchStore {
 	open(): void;
 	/** ユーザーが検索を閉じた（✕・虫めがねの再タップ）。条件を捨てる。 */
 	close(): void;
+	/** 虫めがねのタップ。**必ずアニメーションの予約と同じ関数の中で呼ぶこと。** */
+	toggle(): void;
 	/** 文脈が変わったので条件だけ捨てる（ワークスペース切り替え・ディレクトリ移動）。 */
 	clear(): void;
 	consumeFocus(): void;
 }
 
 export const useFilesSearch = create<FilesSearchStore>()((set, get) => ({
+	visible: false,
 	query: '',
 	mode: 'name',
 	focusRequested: false,
@@ -52,11 +62,18 @@ export const useFilesSearch = create<FilesSearchStore>()((set, get) => ({
 		set(state => (state.mode === mode ? state : { mode }));
 	},
 	open() {
-		set(state => ({ query: '', focusRequested: true, clearedAt: state.clearedAt + 1 }));
+		set(state => ({ visible: true, query: '', focusRequested: true, clearedAt: state.clearedAt + 1 }));
 	},
 	close() {
 		get().clear();
-		set({ focusRequested: false });
+		set({ visible: false, focusRequested: false });
+	},
+	toggle() {
+		if (get().visible) {
+			get().close();
+			return;
+		}
+		get().open();
 	},
 	clear() {
 		set(state => (state.query === '' ? state : { query: '', clearedAt: state.clearedAt + 1 }));

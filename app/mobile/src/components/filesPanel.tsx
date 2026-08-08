@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View, type StyleProp, type TextStyle } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -9,26 +9,10 @@ import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
 import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { matchRanges, useFilesSearch } from '../filesSearch.js';
+import { useFilesLive } from '../filesLive.js';
 import { colors, radius, squircle } from '../theme.js';
 import { hapticSelection } from '../haptics.js';
 import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult } from '../store.js';
-
-/**
- * ファイル操作が通るか（PCと繋がっていて、そのスペースを持つウィンドウのrendererが起きている）。
- *
- * **検索欄（ヘッダーの帯）と一覧で同じ判定を使うために公開している。** 粗い判定
- * （接続だけ見る）を欄側に置くと、rendererの準備待ちのあいだだけ欄が編集できてしまい、
- * 「古い結果に新しい条件が付いている」状態が作れる。
- */
-export function useFilesLive(): boolean {
-	const { connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
-		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
-	})));
-	const ws = useEffectiveWs();
-	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws?.id);
-	const renderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
-	return connection === 'online' && pcOnline && sessionProtocolReady && renderer?.ready === true;
-}
 
 function currentRendererTarget(wsId: string | undefined): string | undefined {
 	const state = useAppStore.getState();
@@ -492,99 +476,6 @@ function Highlighted({ text, query, smartCase, lines, style }: {
 	return <Text style={style} numberOfLines={lines}>{parts}</Text>;
 }
 
-/**
- * 検索欄。**ヘッダーの帯**（常設のヘッダー層）に置く（`app/(tabs)/files.tsx`）。
- *
- * 以前は本文の先頭に `searchOpen ? <View> : null` で出していたので、ぱっと現れるうえ、
- * 下まで読むと欄が画面の外に居た。帯に移すと島の下から滑り出し、スクロールしても消えない。
- *
- * 入力は uncontrolled（`value` を渡さない）。ストアへは `onChangeText` で流すだけにして、
- * 再レンダーで未確定のIME文字列へ書き戻さない（space-note.tsx / glassComposer.tsx と同じ流儀）。
- */
-export function FilesSearchField({ onClose, live }: {
-	onClose: () => void;
-	/** PCと繋がっているか。切断中は編集させない（古い結果に新しい条件が付いて見えるため）。 */
-	live: boolean;
-}) {
-	// **`query` は購読しない。** ここは uncontrolled（`defaultValue`）で、購読すると打鍵ごとに
-	// `defaultValue` が変わって実質 controlled になり、IMEの未確定文字列へ書き戻す経路が開く。
-	const { mode, focusRequested, clearedAt, setQuery, setMode, consumeFocus } = useFilesSearch(useShallow(s => ({
-		mode: s.mode, focusRequested: s.focusRequested, clearedAt: s.clearedAt,
-		setQuery: s.setQuery, setMode: s.setMode, consumeFocus: s.consumeFocus,
-	})));
-	const inputRef = useRef<TextInput>(null);
-	// 初期値はマウント時に1回だけ読む（タブを行き来して作り直されたときに前の入力が戻る）。
-	const initialQuery = useRef(useFilesSearch.getState().query).current;
-
-	// **`autoFocus` は使わない。** 帯はタブを移るだけでもアンマウントされるので、
-	// `autoFocus` だと戻ってきた瞬間に勝手にキーボードが立ち上がる。
-	// 「ユーザーが開いた」ときだけ当てる（要求は一度で消費する）。
-	useEffect(() => {
-		if (!focusRequested) {
-			return;
-		}
-		// **消費するのはタイマーの中で。** 先頭で `consumeFocus()` を呼ぶと `focusRequested` が
-		// false になり、それを購読しているこの欄が再レンダー → 依存が変わって**この effect の
-		// cleanup が 40ms を待たずにタイマーを消す**（＝フォーカスが一度も当たらない）。
-		// 発火後の cleanup は既に走ったタイマーへの `clearTimeout` なので無害。
-		const timer = setTimeout(() => {
-			inputRef.current?.focus();
-			consumeFocus();
-		}, 40);
-		return () => clearTimeout(timer);
-	}, [focusRequested, consumeFocus]);
-
-	// 外から条件を捨てられたとき（ワークスペース切り替え等）は、表示中の文字も消す。
-	// uncontrolled なので、ストアを空にしただけでは欄に残る。
-	const firstClear = useRef(clearedAt);
-	useEffect(() => {
-		if (clearedAt !== firstClear.current) {
-			inputRef.current?.clear();
-		}
-	}, [clearedAt]);
-
-	return (
-		<View style={styles.searchBox}>
-			<Ionicons name="search-outline" size={14} color={colors.textDim} />
-			<TextInput
-				ref={inputRef}
-				style={styles.searchInput}
-				defaultValue={initialQuery}
-				onChangeText={setQuery}
-				editable={live}
-				placeholder={mode === 'name' ? 'ファイル名で検索（全階層）…' : 'テキストで検索（全文）…'}
-				placeholderTextColor={colors.textDim}
-				autoCapitalize="none"
-				autoCorrect={false}
-				returnKeyType="search"
-				accessibilityLabel="検索条件"
-			/>
-			{(['name', 'text'] as const).map(candidate => (
-				<Pressable
-					key={candidate}
-					disabled={!live}
-					style={[styles.modeChip, mode === candidate && styles.modeChipActive]}
-					onPress={() => { hapticSelection(); setMode(candidate); }}
-					accessibilityRole="button"
-					accessibilityState={{ selected: mode === candidate }}
-					accessibilityLabel={candidate === 'name' ? 'ファイル名で検索' : '内容で検索'}
-				>
-					<Text style={[styles.modeText, mode === candidate && styles.modeTextActive]}>{candidate === 'name' ? '名前' : '内容'}</Text>
-				</Pressable>
-			))}
-			<Pressable
-				style={styles.searchClose}
-				onPress={() => { hapticSelection(); onClose(); }}
-				hitSlop={8}
-				accessibilityRole="button"
-				accessibilityLabel="検索を閉じる"
-			>
-				<Ionicons name="close" size={15} color={colors.textDim} />
-			</Pressable>
-		</View>
-	);
-}
-
 function formatSize(bytes: number): string {
 	if (bytes < 1024) {
 		return `${bytes} B`;
@@ -597,9 +488,6 @@ function formatSize(bytes: number): string {
 
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
-	searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: colors.panel, borderRadius: radius.control, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 12 },
-	searchInput: { flex: 1, color: colors.text, fontSize: 13, paddingVertical: 9 },
-	searchClose: { padding: 2 },
 	breadcrumb: { color: colors.textDim, fontSize: 12, paddingVertical: 8 },
 	list: { flex: 1, paddingHorizontal: 16 },
 	spinner: { marginTop: 16 },
@@ -611,10 +499,6 @@ const styles = StyleSheet.create({
 	rowLast: { borderBottomWidth: 0 },
 	rowName: { flex: 1, color: colors.text, fontSize: 14 },
 	size: { color: colors.textDim, fontSize: 11 },
-	modeChip: { borderRadius: radius.pill, ...squircle, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 9, paddingVertical: 4 },
-	modeChipActive: { borderColor: colors.accent2, backgroundColor: 'rgba(9,175,217,.16)' },
-	modeText: { color: colors.textDim, fontSize: 11 },
-	modeTextActive: { color: colors.text, fontWeight: '600' },
 	resultCol: { flex: 1, gap: 2 },
 	resultPath: { color: colors.textDim, fontSize: 11 },
 	resultPreview: { color: colors.text, fontSize: 12, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },

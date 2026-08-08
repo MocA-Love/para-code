@@ -140,27 +140,6 @@ interface ParaHeaderStore {
 	setHeight(height: number): void;
 }
 
-/**
- * 枠が変わったかどうかの見分け。**中身の文字ではなく形だけ**を見る。
- *
- * 画面が仕様を毎レンダー作り直しても（memo忘れ）ここが同じなら融合アニメは走らないので、
- * 「名前が1文字変わっただけでヘッダーが跳ねる」ことがない。
- */
-function shapeOf(spec: ParaHeaderSpec): string {
-	const right = spec.rightA === undefined ? '-'
-		: spec.rightA.kind === 'text' ? `t:${spec.rightA.label.length}`
-			: `i:${spec.rightA.items.length}`;
-	return [
-		spec.hidden === true ? 'h' : '',
-		spec.left?.kind ?? '-',
-		spec.mid === undefined ? '-' : 'M',
-		spec.title === undefined ? '-' : 'T',
-		right,
-		spec.rightB === undefined ? '-' : 'B',
-		spec.band === undefined ? '-' : 'D',
-	].join('/');
-}
-
 /** 融合の速さ。ばねにするのは、UIKitのナビゲーションバーの変形と同じ手触りにするため。 */
 const MORPH = {
 	duration: 420,
@@ -169,20 +148,27 @@ const MORPH = {
 	delete: { type: LayoutAnimation.Types.easeIn, property: LayoutAnimation.Properties.opacity, duration: 160 },
 } as const;
 
+/**
+ * ヘッダーの形が変わる**直前**にアニメーションを予約する。
+ *
+ * **必ず「状態を変える処理と同じ関数の中で、その直前に」呼ぶこと。**
+ * `LayoutAnimation` の予約は中身に関係なく**次に画面へ適用される1回の描画**に消費される
+ * （`LayoutAnimationKeyFrameManager.cpp` の `pullTransaction` が無条件に取っていく）。
+ * したがって「状態を変える → その後の effect で予約」の順にすると、予約は状態変更の描画に
+ * 食われて、ヘッダーが変わる描画には掛からない。押した瞬間に呼ぶのが唯一効く形。
+ */
+export function morphParaHeaderNext(): void {
+	LayoutAnimation.configureNext(MORPH);
+}
+
 export const useParaHeaderStore = create<ParaHeaderStore>()((set, get) => ({
 	spec: undefined,
 	height: 0,
 	set(next) {
-		const previous = get().spec;
-		// **`LayoutAnimation` はここで予約する。** 次のコミットが対象なので、
-		// レンダー後の effect で呼んでも間に合わない（1フレーム遅れて跳ねる）。
-		const morph = previous !== undefined
-			&& previous.instant !== true && next.instant !== true
-			&& previous.hidden !== true && next.hidden !== true
-			&& shapeOf(previous) !== shapeOf(next);
-		if (morph) {
-			LayoutAnimation.configureNext(MORPH);
-		}
+		// **ここで `LayoutAnimation` を予約してはいけない。** 呼び出し元は画面の effect なので、
+		// 予約は必ず「状態が変わった描画」に食われ、ヘッダーが変わる描画には掛からない
+		// （実機で確認: 何もアニメーションしなかった）。予約は状態を変える側が
+		// {@link morphParaHeaderNext} で行う。
 		set({ spec: next });
 	},
 	setHeight(height) {

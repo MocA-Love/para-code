@@ -42,7 +42,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
 		version: '0.8.0',
 		date: '2026-08-09',
-		headline: 'ヘッダーが画面をまたいで動くようになりました',
+		headline: '上のバーが画面をまたいで1つになりました',
 		items: [
 			{
 				icon: 'notifications-outline',
@@ -57,12 +57,6 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
-				icon: 'swap-horizontal-outline',
-				title: '画面を移るとき、上のボタンが形を変えながら移り変わります',
-				body: '一覧からエージェントを開くと、スペースの島が戻るボタンへ縮み、右のボタン群が1つにまとまります。アーカイブでは逆に2つへ分かれます。これまでは画面ごとに別のヘッダーが入れ替わるだけでした。',
-				tone: 'green',
-			},
-			{
 				icon: 'terminal-outline',
 				title: 'ターミナルの切り替えが上の名前から選べるようになりました',
 				body: '横に並んでいたタブの列をやめ、ターミナル名を押すとiOS標準のメニューが出ます。画面が縦に2〜3行ぶん広くなり、他のターミナルに応答待ちがあるときは名前の右上に赤い点が出ます。',
@@ -71,7 +65,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'search-outline',
 				title: 'ファイル検索が使いやすくなりました',
-				body: '検索欄が上に固定されてスクロールしても消えなくなり、1文字打つとキーボードが一度閉じてしまう問題も直りました。一致した箇所は水色で示します。',
+				body: '虫めがねを押すと上から滑り出し、スクロールしても消えなくなりました。1文字打つとキーボードが一度閉じてしまう問題も直り、一致した箇所は水色で示します。',
 				tone: 'green',
 			},
 			{
