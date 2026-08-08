@@ -8,7 +8,7 @@
 
 import { Sequencer } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
-import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -787,28 +787,48 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				await timePhase('verify_folder_wait', () => folderVerified);
 				// `update_folders` は本番の p95 で 1086ms、最遅群では 1〜2秒を占める最大の区間だが、
 				// 中身は upstream の `workspaceEditingService` なので、そのままでは「何に使われた
-				// 時間か」が分からない。upstream に手を入れずに切り分けるため、
-				// `onDidChangeWorkspaceFolders` の発火時刻で2つに割る。
+				// 時間か」が分からない。upstream に手を入れずに切り分けるため、**upstream が公開して
+				// いる2つのイベントの発火時刻**で3つに割る（`IWorkspaceContextService` の
+				// `onWillChangeWorkspaceFolders` / `onDidChangeWorkspaceFolders`）。
 				//
-				// **前半＝「こちらの呼び方の問題」と読まないこと。** 発火の直前で
-				// `handleWillChangeWorkspaceFolders` が await されている（configurationService.ts）ので、
-				// willChange 参加者（エディタ状態の移行やバックアップ等）の時間は**前半に入る**。
-				// この2分割で分かるのは「発火より前か後か」だけ。前半が重いと出たら、次は
-				// 「設定の書き込み」と「willChange 参加者」をさらに分ける必要がある。
+				//   呼び出し → willChange   … 設定ファイルの書き換えに加えて、**`toValidWorkspaceFolders`
+				//                             の全フォルダ直列 stat** と各フォルダの設定読み込み
+				//   willChange → didChange  … willChange 参加者に加えて、`onDidChangeConfiguration` の
+				//                             ワークベンチ全体への同期配信
+				//   didChange → 解決        … 残り
+				//
+				// 本番の実測では前半（呼び出し→didChange）が全体の 99% を占めていた。
+				// **前半が重い＝「書き込みが遅い」と読まないこと。** `doUpdateFolders` 側の stat は
+				// 既に PARA-PATCH で飛ばしているが、`toValidWorkspaceFolders` の stat は素通しで
+				// 残っており（単発の実測中央値 322ms）、そちらが第一候補になる。
 				const updateFoldersStartedAt = Date.now();
+				let foldersWillChangeAt: number | undefined;
 				let foldersChangedAt: number | undefined;
-				const foldersChangedListener = this.contextService.onDidChangeWorkspaceFolders(() => {
+				const foldersEventListeners = new DisposableStore();
+				foldersEventListeners.add(this.contextService.onWillChangeWorkspaceFolders(() => {
+					foldersWillChangeAt ??= Date.now();
+				}));
+				foldersEventListeners.add(this.contextService.onDidChangeWorkspaceFolders(() => {
 					foldersChangedAt ??= Date.now();
-				});
+				}));
 				try {
 					await timePhase('update_folders',
 						() => this.workspaceEditingService.updateFolders(0, folders.length, [{ uri }]));
 				} finally {
-					foldersChangedListener.dispose();
-					// 発火を観測できなかった回はキーごと落とす。0 を入れると「速かった」と
+					foldersEventListeners.dispose();
+					// 観測できなかった区間はキーごと落とす。0 を入れると「速かった」と
 					// 区別がつかなくなり、集計が黙って歪む。
+					// **すべて「区間の長さ」で揃える。** 累積と差分を混ぜると、Discover で
+					// 積み上げたときに前半が二重に数えられる。既存の `update_folders_to_event` だけは
+					// 開始からの累積のまま残す（前リリースのデータと比較できなくなるため）。
+					if (foldersWillChangeAt !== undefined) {
+						phaseMs['update_folders_write'] = foldersWillChangeAt - updateFoldersStartedAt;
+					}
 					if (foldersChangedAt !== undefined) {
 						phaseMs['update_folders_to_event'] = foldersChangedAt - updateFoldersStartedAt;
+						if (foldersWillChangeAt !== undefined) {
+							phaseMs['update_folders_participants'] = foldersChangedAt - foldersWillChangeAt;
+						}
 					}
 					// ロールバックの updateFolders は別のフォルダへ戻すので、確認結果を残さない。
 					paradisClearVerifiedWorkspaceFolders();

@@ -17,6 +17,7 @@ import {
 	PARADIS_CODEX_PANE_LOG_TAIL_BYTES,
 	ParadisCodexPaneFailureKind,
 	paradisClassifyCodexPaneFailure,
+	paradisInspectCodexPaneFailure,
 } from '../common/paradisCodexPaneFailure.js';
 
 const RETRY_INTERVAL_MS = 10_000;
@@ -1203,10 +1204,17 @@ class ParadisCodexServerConnection extends Disposable {
 	private async reportEndpointNotReady(phase: string, duration: number): Promise<void> {
 		let kind: ParadisCodexPaneFailureKind = 'unclassified';
 		let logTailBytes = 0;
+		let serverAlive: boolean | undefined;
+		let matchDistance: number | undefined;
+		let textLength: number | undefined;
 		try {
 			const input = await readCodexPaneFailureInput(this.socketPath, this.endpointTarget !== undefined);
 			kind = paradisClassifyCodexPaneFailure(input);
 			logTailBytes = input.log?.length ?? 0;
+			serverAlive = input.serverAlive;
+			const evidence = paradisInspectCodexPaneFailure(input);
+			matchDistance = evidence.distanceFromEnd;
+			textLength = evidence.textLength;
 		} catch (error) {
 			this.logService.trace('[paradisCodexLive] could not inspect the pane app-server log', String(error));
 		}
@@ -1216,6 +1224,17 @@ class ParadisCodexServerConnection extends Disposable {
 			phase,
 			transport: this.endpointTarget !== undefined ? 'websocket' : 'unix-socket',
 			safe_log_tail_bytes: logTailBytes,
+			// `kind` だけでは「今回の起動で起きたこと」なのかが分からない。既存サーバを再利用した
+			// 場合はログが積み上がるので、何時間も前の `unauthorized` に当たっていれば追う先が変わる。
+			// 末尾からの距離が小さいほど「今まさに起きた」に近い。
+			safe_match_distance: matchDistance,
+			// 距離と**同じ座標系**の分母。`safe_log_tail_bytes` は ANSI 除去前の長さなので、
+			// そちらで割ると除去したエスケープのぶんだけ比率が狂う。
+			safe_log_text_length: textLength,
+			// `server-alive` は kind に畳まれてしまい、`auth` と分類された回にプロセスが
+			// 生きているのかが読めなかった。生きているなら「起動が遅い」または「古い行を拾った」、
+			// 死んでいるなら「起動失敗」。距離の読み方がこの値で変わる。
+			safe_server_alive: serverAlive,
 		});
 	}
 
