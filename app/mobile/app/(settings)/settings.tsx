@@ -110,6 +110,15 @@ export default function SettingsScreen() {
 						<Text style={styles.rowValue}>{terminalPrefs.fontSize}pt</Text>
 						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
 					</Pressable>
+					<View style={styles.separator} />
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/presets'); }}>
+						<Ionicons name="flash-outline" size={18} color={colors.accent} />
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>コマンドプリセット</Text>
+							<Text style={styles.rowDesc}>ターミナル画面の一覧に出すプリセットを選びます</Text>
+						</View>
+						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+					</Pressable>
 				</View>
 
 				<Text style={styles.sectionTitle}>ペアリング済みのPC</Text>

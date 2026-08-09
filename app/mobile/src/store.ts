@@ -12,6 +12,7 @@ import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UP
 import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
 import { terminalViewportEquals, type TerminalViewport } from './terminalViewport.js';
+import { isValidPresetDef } from './presets.js';
 import { RelayClient, encodeRelayControl, type ConnectionState, type PairedCredentials, type SocketFactory } from './relayClient.js';
 
 /** ワークスペースの現在ブランチに紐づくGitHub PRの状態（PC版WorkspacesビューのPRチップと同じ供給源）。 */
@@ -124,6 +125,48 @@ export function mergeWorkspaceState(previous: WorkspaceState | undefined, incomi
 export interface SpaceNoteResult {
 	ws: string;
 	text: string;
+}
+/** コマンドプリセットの1タスク（＝PC側で1つ作られるターミナル）。 */
+export interface PresetTask {
+	name?: string;
+	commands: string[];
+}
+/**
+ * PC が持つコマンドプリセット1件。中身の編集はPC側でしかできないので、ここは表示と実行に
+ * 必要なものだけを持つ。`key` は出所と名前から作られる安定キーで、実行時の指定にも使う。
+ */
+export interface PresetDef {
+	key: string;
+	name: string;
+	/** user = PCの設定 / workspace = リポジトリの .paracode.json。 */
+	source: 'user' | 'workspace';
+	/** tabs / split はターミナルが複数できる。current はPCのアクティブ端末向けの指定。 */
+	layout: 'tabs' | 'split' | 'current';
+	/**
+	 * PCが出した承認署名（コマンド本文と作業ディレクトリから作られる）。この端末は中身から
+	 * 署名を作らない——ここに届く tasks は表示のために切り詰められており、切り詰めた形から
+	 * 作った署名では「出ていない部分の書き換え」を見抜けないため。実行時にそのまま返し、
+	 * PCが実行の直前に作り直して突き合わせる。
+	 */
+	signature: string;
+	description?: string;
+	/** PC側の codicon 名（スマホは対応するIoniconsへ寄せる）。 */
+	icon?: string;
+	/** 上限で切り詰めた表示であること（実行される内容はこれより多い）。 */
+	truncated?: boolean;
+	tasks: PresetTask[];
+}
+/** scm presets 応答。truncated は件数の上限で一覧を切り詰めたこと。 */
+export interface PresetListResult {
+	ws: string;
+	presets: PresetDef[];
+	truncated?: boolean;
+}
+/** scm runPreset 応答（実行したプリセットの内容と、その実行で増えたターミナル）。 */
+export interface PresetRunResult extends PresetDef {
+	ws: string;
+	/** 実行で新しくできたターミナル。PC側が拾えなかった場合は空になりうる。 */
+	created?: string[];
 }
 /** scm status 応答。 */
 export interface ScmStatusResult {
@@ -2813,6 +2856,26 @@ export class MobileController {
 	 */
 	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }): Promise<void> {
 		return this.request<void>('scm', { t: 'launchAgent', ...opts }, 60_000);
+	}
+
+	/**
+	 * そのスペースで使えるコマンドプリセット一覧（PC版のターミナルタブバー右のボタンと同じ定義）。
+	 * PC側はキャッシュを使わず定義を読み直すので、PCで編集した直後でも取り直せば追いつく。
+	 */
+	async presetList(ws: string): Promise<PresetListResult> {
+		const result = await this.request<PresetListResult>('scm', { t: 'presets', ws });
+		// 形の違う1件で一覧全体が落ちないよう、表示と実行に必要な形のものだけ通す。
+		const presets = Array.isArray(result?.presets) ? result.presets.filter(isValidPresetDef) : [];
+		return { ...result, presets };
+	}
+
+	/**
+	 * コマンドプリセットを実行する。PC側は必ず新しいターミナルを作る（プリセットが
+	 * layout: current でも、手元から見えていない作業中の端末へは送らない）。
+	 * タイムアウトが長めなのは、タスクの数だけターミナルの起動を待つため。
+	 */
+	presetRun(ws: string, key: string, signature: string): Promise<PresetRunResult> {
+		return this.request<PresetRunResult>('scm', { t: 'runPreset', ws, key, signature }, 60_000);
 	}
 
 	/** スペースのメモ本文（PC版 Workspaces ビュー下部のメモ欄と同じ内容）。 */
