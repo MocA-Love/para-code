@@ -34,7 +34,7 @@ import { arrangeHomeRows } from '../../src/homeSort.js';
 import { HomeFilterChips, HomeSortSheet } from '../../src/components/homeListControls.js';
 import { HomePlusMenuButton, type HomePlusMenuAction } from '../../src/components/homePlusMenu.js';
 import { WorktreeCreateSheet } from '../../src/components/worktreeCreateSheet.js';
-import { listColumnsFor } from '../../src/ipad/ipadLayout.js';
+import { listColumnsFor, CONTENT_MAX_WIDTH } from '../../src/ipad/ipadLayout.js';
 
 /**
  * エージェント行の並べ方。1列のときは行をそのまま返し（iPhoneと同じツリー）、
@@ -302,18 +302,22 @@ export default function HomeScreen() {
 		},
 	], [archivedCount, router, notifications, reviewable.length, effectiveWs, onPlusMenuSelect]);
 
-	// 絞り込みチップの帯。要素も memo で安定させる（同じ理由）。
+	// 絞り込みチップ。要素も memo で安定させる（同じ理由）。
+	//
+	// **ヘッダーではなく本文側の「上に張り付いた帯」として置く。** 以前はヘッダー層の一部
+	// （帯）として描いていたが、ヘッダーをOS標準のナビゲーションバーへ移す方針になったため
+	// ——ネイティブのバーにチップの列は入らない。見た目は変えず、絶対配置でバーのすぐ下に
+	// 固定し、一覧はその下を流れる（スクロールで消えると「何で絞られているか」が分からなくなる）。
 	const filterBand = useMemo(() => (listable.length > 0
 		? <HomeFilterChips preferences={homePreferences} onChange={setHomePreferences} rows={listable} />
 		: undefined), [listable, homePreferences, setHomePreferences]);
+	// 張り付いた帯の実測高さ。一覧の頭をこのぶん空ける。
+	const [bandHeight, setBandHeight] = useState(0);
 
 	useWsHeader({
 		allWorkspaces: homeShowAllWorkspaces,
 		// 一覧は広い画面で2列に広がるので、ヘッダーも同じく画面幅いっぱいに合わせる。
 		wide: true,
-		// 絞り込みチップは本文ではなくヘッダーと同じ浮かぶ層（帯）に置く。本文に混ぜると
-		// スクロールで流れて消え、「何で絞られているか」が分からなくなる。
-		below: filterBand,
 		actions,
 	});
 
@@ -345,7 +349,7 @@ export default function HomeScreen() {
 		<ConnectionGate><GestureDetector gesture={openDrawerPan}><View style={styles.screen}>
 			<ScrollView
 				style={styles.scroll}
-				contentContainerStyle={[styles.content, { paddingTop: headerHeight, paddingBottom: tabBarSpacer }]}
+				contentContainerStyle={[styles.content, { paddingTop: headerHeight + bandHeight, paddingBottom: tabBarSpacer }]}
 				// 幅の測定はiPad幅のときだけ。iPhoneでは列数が常に1なので測る必要が無く、
 				// onLayoutを付けるとマウント時に無駄な再描画が1回増える。
 				onLayout={regular ? e => setListWidth(e.nativeEvent.layout.width) : undefined}
@@ -475,6 +479,17 @@ export default function HomeScreen() {
 					<Text style={styles.dimSmall}>ワークスペース情報を取得中… PCの Para Code でリポジトリを登録すると表示されます。</Text>
 				) : null}
 			</ScrollView>
+			{/* 上に張り付いた絞り込みチップ。ScrollViewより後に置いて前面に出す。
+			    高さは実測して一覧の頭を空ける（チップの数で折り返して高さが変わるため）。 */}
+			{filterBand === undefined ? null : (
+				<View
+					style={[styles.pinnedBand, { top: headerHeight }, regular && styles.pinnedBandWide]}
+					pointerEvents="box-none"
+					onLayout={event => setBandHeight(Math.round(event.nativeEvent.layout.height))}
+				>
+					{filterBand}
+				</View>
+			)}
 			{undoArchive !== undefined ? (
 				<View style={[styles.undoWrap, { bottom: tabBarSpacer + 10 }]} pointerEvents="box-none">
 					<GlassSurface style={styles.undoGlass} />
@@ -525,6 +540,11 @@ const styles = StyleSheet.create({
 	scroll: { flex: 1 },
 	// 上下の余白は使う側がヘッダー高さ・タブバー高さから決めるので、ここでは持たない。
 	content: { paddingHorizontal: 16 },
+	// 上に張り付いた絞り込みチップ。ヘッダーのすぐ下に据えて、一覧はこの下を流れる。
+	// 左右の余白と下の余白は、以前ヘッダー層の帯が持っていた値をそのまま引き継いでいる。
+	pinnedBand: { position: 'absolute', left: 0, right: 0, paddingHorizontal: 16, paddingBottom: 12 },
+	// iPad: 本文カラムと左端を揃える（一覧が2列に広がっても帯だけ画面幅にならないように）。
+	pinnedBandWide: { width: '100%', maxWidth: CONTENT_MAX_WIDTH, alignSelf: 'center' },
 	dimSmall: { color: colors.textDim, fontSize: 12, marginTop: 4, lineHeight: 18 },
 	// アーカイブ直後の「元に戻す」（タブバーの上のLiquid Glass）
 	undoWrap: {
