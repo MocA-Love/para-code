@@ -390,6 +390,7 @@ export interface IParadisResumeAgentInWorkspaceRequest {
 	readonly stateKey: string;
 	readonly agent: ParadisResumeAgent;
 	readonly sessionId: string;
+	readonly dangerouslyBypassPermissions?: boolean;
 }
 
 /** 検証済みのセッションIDで、指定スペースのエディタターミナルへresumeコマンドを送る。 */
@@ -427,8 +428,8 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 	await instance.processReady;
 	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。
 	const command = request.agent === 'claude'
-		? `claude --resume ${request.sessionId}`
-		: `codex resume ${request.sessionId}`;
+		? `claude ${request.dangerouslyBypassPermissions ? '--dangerously-skip-permissions ' : ''}--resume ${request.sessionId}`
+		: `codex ${request.dangerouslyBypassPermissions ? '--dangerously-bypass-approvals-and-sandbox ' : ''}resume ${request.sessionId}`;
 	await instance.sendText(command, true);
 }
 

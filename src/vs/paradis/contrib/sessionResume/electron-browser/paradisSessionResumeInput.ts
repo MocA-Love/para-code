@@ -31,7 +31,7 @@ export class ParadisSessionResumeInput extends EditorInput {
 	override get typeId(): string { return ParadisSessionResumeInput.ID; }
 	override get editorId(): string { return PARADIS_SESSION_RESUME_EDITOR_ID; }
 	override get capabilities(): EditorInputCapabilities { return EditorInputCapabilities.Readonly | EditorInputCapabilities.Singleton; }
-	override getName(): string { return localize('paradis.sessionResume.inputName', "Agent Sessions"); }
+	override getName(): string { return localize('paradis.sessionResume.inputName', "セッション履歴"); }
 	override getIcon(): ThemeIcon { return Codicon.history; }
 
 	override matches(other: EditorInput | IUntypedEditorInput): boolean {

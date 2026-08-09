@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
-import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSession, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
+import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSearchResult, IParadisResumeSession, PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
 
 export class ParadisSessionResumeClient {
 	constructor(@ISharedProcessService private readonly sharedProcessService: ISharedProcessService) { }
@@ -13,11 +13,11 @@ export class ParadisSessionResumeClient {
 		return this.sharedProcessService.getChannel(PARADIS_SESSION_RESUME_CHANNEL).call('list', [request]);
 	}
 
-	preview(catalogId: string): Promise<IParadisResumePreview> {
-		return this.sharedProcessService.getChannel(PARADIS_SESSION_RESUME_CHANNEL).call('preview', [catalogId]);
+	preview(catalogId: string, query?: string): Promise<IParadisResumePreview> {
+		return this.sharedProcessService.getChannel(PARADIS_SESSION_RESUME_CHANNEL).call('preview', [catalogId, query]);
 	}
 
-	search(query: string, catalogIds: readonly string[]): Promise<readonly string[]> {
+	search(query: string, catalogIds: readonly string[]): Promise<readonly IParadisResumeSearchResult[]> {
 		return this.sharedProcessService.getChannel(PARADIS_SESSION_RESUME_CHANNEL).call('search', [query, catalogIds]);
 	}
 }
