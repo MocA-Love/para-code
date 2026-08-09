@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -221,6 +221,20 @@ interface AppState extends StoreState {
 	archivedKeys: Set<string>;
 	setArchived(key: string, archived: boolean): void;
 	/**
+	 * コマンドプリセットのうち、この端末では一覧に出さないもの（キーは PresetDef.key）。
+	 * ピン留めと同じくこの端末ローカルのみで、PCへは同期しない（複数のスマホや iPad で
+	 * 取り合いになるため。プリセットの定義そのものはPC側でしか編集できない）。
+	 */
+	presetHiddenKeys: Set<string>;
+	setPresetHidden(key: string, hidden: boolean): void;
+	/**
+	 * 実行してよいと一度言ったプリセットの鍵（presetApprovalKey ＝ key とPCが出した署名）。
+	 * PC側の autoRun と同じ流儀で、初回だけ内容を見せて確認し、コマンドや作業ディレクトリが
+	 * 書き換わったらもう一度確認する。**コマンド本文はここに残さない**（署名だけで足りる）。
+	 */
+	presetApprovedSignatures: Set<string>;
+	approvePreset(signature: string): void;
+	/**
 	 * コンポーザーの下書き（キーは pinKeyForTerminal 等のエージェント/ターミナル単位の一意ID）。
 	 * 画面遷移で入力中テキストが消えないようメモリ上に退避する。キーごとに分離されるため
 	 * 別のエージェントの入力欄には表示されない。端末ローカルのみでPC・他端末へは同期せず、
@@ -266,6 +280,14 @@ interface AppState extends StoreState {
 	createWorktree(opts: { repo: string; name?: string; branch?: string; base?: string; prompt?: string; agent?: string; model?: string; effort?: string; permission?: string; runSetup?: boolean }): Promise<WorktreeCreateResult>;
 	/** 既存ワークスペースで新しいターミナルを作ってエージェントCLIを起動する（ホームの＋ボタン）。 */
 	launchAgent(opts: { ws: string; agent: string; prompt?: string; model?: string; effort?: string; permission?: string }): Promise<void>;
+	/** そのスペースで使えるコマンドプリセット一覧（PC版のピン留めボタンと同じ定義）。 */
+	presetList(ws: string): Promise<PresetListResult>;
+	/**
+	 * コマンドプリセットを実行する（PC側は必ず新しいターミナルを作る）。
+	 * signature は一覧で受け取った承認署名。PCが実行の直前に作り直して突き合わせるので、
+	 * 手元で確認したあとに定義が書き換わっていれば実行されない。
+	 */
+	presetRun(ws: string, key: string, signature: string): Promise<PresetRunResult>;
 	/** スペースのメモ本文（PC版 Workspaces ビュー下部のメモ欄と同じ内容）。 */
 	noteGet(ws: string): Promise<SpaceNoteResult>;
 	/** スペースのメモ本文を更新する。 */
@@ -360,6 +382,12 @@ let controller: MobileController | undefined;
 /** ピン留め・アーカイブのPC別記録（保存形はPC ID → キー配列）。 */
 let pinnedRecord: ScopedKeyRecord = {};
 let archivedRecord: ScopedKeyRecord = {};
+/**
+ * コマンドプリセットの「一覧に出さないもの」と「実行を承認済みのもの」のPC別記録。
+ * プリセットの定義はPCごとに違うので、ピン留めと同じくPC IDで分ける。
+ */
+let presetHiddenRecord: ScopedKeyRecord = {};
+let presetApprovedRecord: ScopedKeyRecord = {};
 /**
  * このアプリ起動ぶんのターミナル操作の世代（init で1つ予約する）。
  * あとから足したPCのコントローラにも同じ値を渡す（操作IDはコントローラごとの
@@ -654,6 +682,16 @@ function persistArchivedKeys(pcId: string, keys: ReadonlySet<string>): void {
 	secureKeyStore.setItem('archivedTerminals', JSON.stringify(archivedRecord)).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
 }
 
+function persistPresetHiddenKeys(pcId: string, keys: ReadonlySet<string>): void {
+	presetHiddenRecord = withScopedKeys(presetHiddenRecord, pcId, keys);
+	secureKeyStore.setItem('presetHidden', JSON.stringify(presetHiddenRecord)).catch(err => console.warn('[appState] failed to save presetHidden', err));
+}
+
+function persistPresetApprovals(pcId: string, keys: ReadonlySet<string>): void {
+	presetApprovedRecord = withScopedKeys(presetApprovedRecord, pcId, keys);
+	secureKeyStore.setItem('presetApproved', JSON.stringify(presetApprovedRecord)).catch(err => console.warn('[appState] failed to save presetApproved', err));
+}
+
 /**
  * 通知の受け取り。どのPCから来たかを添えて、タップされたときにそのPCへ切り替えられるようにする。
  * バナーを出すかの判断は notificationPolicy.ts に集約してある（届いた通知を一覧へ入れるのは
@@ -757,6 +795,8 @@ function activatePc(id: string, notice?: { readonly previousPcId: string | undef
 		viewingTerminalKey: undefined,
 		pinnedKeys: scopedKeysFor(pinnedRecord, id),
 		archivedKeys: scopedKeysFor(archivedRecord, id),
+		presetHiddenKeys: scopedKeysFor(presetHiddenRecord, id),
+		presetApprovedSignatures: scopedKeysFor(presetApprovedRecord, id),
 		agentDrafts: runtime.drafts,
 		...(notice !== undefined ? { pcSwitchNotice: { pcId: id, name: runtime.pc.name, previousPcId: notice.previousPcId } } : {}),
 	});
@@ -932,6 +972,8 @@ export const useAppStore = create<AppState>(set => ({
 	viewingTerminalKey: undefined,
 	pinnedKeys: new Set(),
 	archivedKeys: new Set(),
+	presetHiddenKeys: new Set(),
+	presetApprovedSignatures: new Set(),
 	agentDrafts: {},
 
 	startVoiceNotifications() {
@@ -1014,6 +1056,17 @@ export const useAppStore = create<AppState>(set => ({
 				archivedRecord = parseScopedKeys(await secureKeyStore.getItem('archivedTerminals'), initialActiveId);
 			} catch (err) {
 				console.warn('[appState] failed to load archivedTerminals', err);
+			}
+			// コマンドプリセットの表示・承認の記録もPCごとに分けて保存する（単一PC時代は無い機能）。
+			try {
+				presetHiddenRecord = parseScopedKeys(await secureKeyStore.getItem('presetHidden'), initialActiveId);
+			} catch (err) {
+				console.warn('[appState] failed to load presetHidden', err);
+			}
+			try {
+				presetApprovedRecord = parseScopedKeys(await secureKeyStore.getItem('presetApproved'), initialActiveId);
+			} catch (err) {
+				console.warn('[appState] failed to load presetApproved', err);
 			}
 			// ホーム一覧の並び替え・絞り込み設定をロード（保存が無い/壊れている場合は既定のまま）
 			try {
@@ -1112,6 +1165,8 @@ export const useAppStore = create<AppState>(set => ({
 				activePcId: initialActiveId,
 				pinnedKeys: scopedKeysFor(pinnedRecord, initialActiveId),
 				archivedKeys: scopedKeysFor(archivedRecord, initialActiveId),
+				presetHiddenKeys: scopedKeysFor(presetHiddenRecord, initialActiveId),
+				presetApprovedSignatures: scopedKeysFor(presetApprovedRecord, initialActiveId),
 			});
 			if (storedPcs.length > 0) {
 				ensureNotificationPermission().catch(err => console.warn('[appState] notification permission request failed', err));
@@ -1309,11 +1364,17 @@ export const useAppStore = create<AppState>(set => ({
 		if (remaining.length === 0) {
 			applyPairingCorrelationTag(undefined);
 		}
-		// そのPCに紐づくローカルの記録（ピン留め・アーカイブ）も一緒に片付ける。
+		// そのPCに紐づくローカルの記録（ピン留め・アーカイブ・コマンドプリセットの表示と承認）も
+		// 一緒に片付ける。プリセットの承認記録を残すと、同じPCと繋ぎ直したときに「一度確認した」
+		// 状態が復活し、本来もう一度出すべき実行前の確認を飛ばしてしまう。
 		pinnedRecord = withScopedKeys(pinnedRecord, id, new Set());
 		archivedRecord = withScopedKeys(archivedRecord, id, new Set());
+		presetHiddenRecord = withScopedKeys(presetHiddenRecord, id, new Set());
+		presetApprovedRecord = withScopedKeys(presetApprovedRecord, id, new Set());
 		secureKeyStore.setItem('pinnedTerminals', JSON.stringify(pinnedRecord)).catch(err => console.warn('[appState] failed to save pinnedTerminals', err));
 		secureKeyStore.setItem('archivedTerminals', JSON.stringify(archivedRecord)).catch(err => console.warn('[appState] failed to save archivedTerminals', err));
+		secureKeyStore.setItem('presetHidden', JSON.stringify(presetHiddenRecord)).catch(err => console.warn('[appState] failed to save presetHidden', err));
+		secureKeyStore.setItem('presetApproved', JSON.stringify(presetApprovedRecord)).catch(err => console.warn('[appState] failed to save presetApproved', err));
 		// PC画面の一部が写り込んだ画像をメモリに残さない（取得済みの画像はストア外のキャッシュにある）。
 		toolImageCache.clear();
 		if (id === activePcId) {
@@ -1332,6 +1393,8 @@ export const useAppStore = create<AppState>(set => ({
 				viewingTerminalKey: undefined,
 				pinnedKeys: new Set(),
 				archivedKeys: new Set(),
+				presetHiddenKeys: new Set(),
+				presetApprovedSignatures: new Set(),
 				agentDrafts: {},
 				pcSwitchNotice: undefined,
 			});
@@ -1419,6 +1482,38 @@ export const useAppStore = create<AppState>(set => ({
 		}
 		set({ archivedKeys: next });
 		persistArchivedKeys(activePcId, next);
+	},
+
+	setPresetHidden(key: string, hidden: boolean) {
+		if (activePcId === undefined) {
+			return;
+		}
+		const current = useAppStore.getState().presetHiddenKeys;
+		if (current.has(key) === hidden) {
+			return;
+		}
+		const next = new Set(current);
+		if (hidden) {
+			next.add(key);
+		} else {
+			next.delete(key);
+		}
+		set({ presetHiddenKeys: next });
+		persistPresetHiddenKeys(activePcId, next);
+	},
+
+	approvePreset(signature: string) {
+		if (activePcId === undefined) {
+			return;
+		}
+		const current = useAppStore.getState().presetApprovedSignatures;
+		if (current.has(signature)) {
+			return;
+		}
+		const next = new Set(current);
+		next.add(signature);
+		set({ presetApprovedSignatures: next });
+		persistPresetApprovals(activePcId, next);
 	},
 
 	setAgentDraft(key: string, text: string) {
@@ -1652,6 +1747,18 @@ export const useAppStore = create<AppState>(set => ({
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		if (!isActiveWorkspace(opts.ws)) { return Promise.reject(wrongPcWorkspaceError()); }
 		return controller.launchAgent(opts);
+	},
+
+	presetList(ws: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
+		return controller.presetList(ws);
+	},
+
+	presetRun(ws: string, key: string, signature: string) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
+		return controller.presetRun(ws, key, signature);
 	},
 
 	noteGet(ws: string) {

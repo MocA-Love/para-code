@@ -126,6 +126,13 @@ export interface IParadisRunPresetOptions {
 	readonly env?: ITerminalEnvironment;
 	/** 最初のターミナルまたはコマンドを開始した時点で呼び出す。 */
 	readonly onDidStart?: () => void;
+	/**
+	 * このプリセットがターミナルを作るたびに、その instanceId を渡す。
+	 * 呼び出し側が「実行の前後でインスタンス一覧の差分を取る」方法に頼らないために要る——
+	 * 1タスクごとにプロセスの起動を待つので実行は実時間で数秒かかり、その間にPCの操作や
+	 * 別の要求が作った無関係なターミナルまで拾ってしまう。
+	 */
+	readonly onDidCreateTerminal?: (instanceId: number) => void;
 }
 
 export const IParadisPresetService = createDecorator<IParadisPresetService>('paradisPresetService');

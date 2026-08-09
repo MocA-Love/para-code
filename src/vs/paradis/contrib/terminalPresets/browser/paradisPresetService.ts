@@ -161,7 +161,11 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 	async getPresetsForFolder(folderUri: URI): Promise<readonly IParadisResolvedPreset[]> {
 		const result: IParadisResolvedPreset[] = [];
-		if (this._workspacePresetsAllowed) {
+		// ここは「いま開いていないフォルダ」も指定されうる（モバイルからの一覧要求は、PC で
+		// 開いていないスペースを指す）。その場合に現在のワークスペースの信頼で可否を決めると、
+		// 手元が信頼済みというだけで、開いてもいないリポジトリの .paracode.json が読まれる。
+		// 対象フォルダ自身の信頼で判断する。
+		if ((await this.workspaceTrustService.getUriTrustInfo(folderUri)).trusted) {
 			result.push(...await this._loadWorkspacePresetFile(joinPath(folderUri, PARADIS_WORKSPACE_PRESET_FILE)));
 		}
 		result.push(...this._readUserPresets().filter(preset => {
@@ -352,6 +356,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			let instance = options?.forceNewTerminal ? undefined : this.terminalService.activeInstance;
 			if (!instance) {
 				instance = await this._createTerminalInActiveGroup(cwd, preset.name, options?.env);
+				options?.onDidCreateTerminal?.(instance.instanceId);
 				if (options?.stateKey) {
 					// 生成〜表示の間にユーザーが別スコープへ切り替えても、既定の（生成時点で
 					// アクティブなスコープへの）暗黙タグ付けを明示的に上書きし、正しいスコープに紐付ける。
@@ -393,6 +398,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				cwd,
 				location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
 			});
+			options?.onDidCreateTerminal?.(instance.instanceId);
 			void this._rememberPresetTitle(instance, name);
 			this._warnIfEnvDropped(instance, options?.env);
 			if (options?.stateKey) {

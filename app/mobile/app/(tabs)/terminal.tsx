@@ -11,6 +11,7 @@ import { TermView } from '../../src/components/termView.js';
 import { useWsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
 import { TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
+import { PresetSheet } from '../../src/components/presetSheet.js';
 import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
@@ -103,7 +104,17 @@ export default function TerminalScreen() {
 	useEffect(() => () => setTerminalViewport(undefined), [setTerminalViewport]);
 
 	const createHere = useCallback(() => { hapticSelection(); createTerminal(ws?.id); }, [createTerminal, ws]);
+	// コマンドプリセット（PC版のターミナルタブバー右のボタンと同じもの）の一覧。
+	// 常用の1件を1タップで、という形にはしていない——プリセットは手元を離れたPCへ
+	// コマンドを流す操作なので、何が走るかを見てから押せる場所に置く。
+	const [presetsOpen, setPresetsOpen] = useState(false);
 	const actions = useMemo<ParaHeaderIcon[]>(() => [{
+		key: 'presets',
+		icon: 'flash-outline',
+		label: 'コマンドプリセット',
+		size: 19,
+		onPress: () => { hapticSelection(); setPresetsOpen(true); },
+	}, {
 		key: 'new-terminal',
 		icon: 'add',
 		label: '新しいターミナル',
@@ -284,6 +295,7 @@ export default function TerminalScreen() {
 					}
 				/>
 			</View>
+			<PresetSheet visible={presetsOpen} ws={ws?.id} wsLabel={ws?.name ?? 'このスペース'} onClose={() => setPresetsOpen(false)} />
 		</KeyboardAvoidingView>
 		</ConnectionGate>
 	);

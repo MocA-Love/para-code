@@ -60,6 +60,7 @@ import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser
 import { ParadisGithubMetricsClient } from '../../githubMetrics/electron-browser/paradisGithubMetricsClient.js';
 import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-browser/paradisResourceMonitorClient.js';
 import { ParadisSpaceDiskClient } from '../../spaceDisk/electron-browser/paradisSpaceDiskClient.js';
+import { IParadisPresetService } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { paradisCreateWorktreeHeadless, paradisGetWorktreeCreateForm, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_GET_PR_STATUSES_COMMAND_ID } from '../../workspaceSwitch/electron-browser/paradisCreateWorktree.contribution.js';
@@ -144,6 +145,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IHostService private readonly hostService: IHostService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@ICommandService commandService: ICommandService,
+		@IParadisPresetService presetService: IParadisPresetService,
 	) {
 		super();
 
@@ -274,6 +276,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// スペースごとのディスク使用量。計測は shared process で1時間ごとに走っているので、
 			// ここは基本的に温まったキャッシュを返すだけになる
 			bypassCache => spaceDiskClient.measure(bypassCache),
+			// コマンドプリセット。PC版のピン留めボタンと同じサービスをそのまま使う
+			// （定義の解決も実行経路も1つに保ち、PCとスマホで挙動が割れないようにする）
+			presetService,
 		));
 		// 初回同期。この push の完了が terminalStateReady（=markRendererReady の前提）を
 		// 解決するため、無変化打ち切りの対象にしない。

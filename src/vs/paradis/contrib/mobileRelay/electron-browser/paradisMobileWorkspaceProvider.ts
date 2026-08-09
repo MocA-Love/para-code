@@ -44,6 +44,8 @@ import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimits
 import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { IParadisResourceMonitorMobileReport } from '../../resourceMonitor/common/paradisResourceMonitor.js';
 import { IParadisSpaceDiskResult } from '../../spaceDisk/common/paradisSpaceDisk.js';
+import { hash } from '../../../../base/common/hash.js';
+import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, paradisPresetApprovalSignature } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
@@ -162,7 +164,81 @@ type ScmInbound =
 	// スペースのメモ（PC版 Workspaces ビュー下部のメモ欄と同じ本文）の取得・更新。
 	// git 実行を伴わないが、ws 単位のリクエストという点で他の scm メッセージと同じ扱いにする。
 	| { t: 'noteGet'; id: string; ws: string }
-	| { t: 'noteSet'; id: string; ws: string; text: string };
+	| { t: 'noteSet'; id: string; ws: string; text: string }
+	// コマンドプリセット（PC版のターミナルタブバー右のボタンと同じもの）の一覧と実行。
+	// launchAgent と同じく「そのスペースで新しいターミナルを作る」操作なので ws 単位。
+	| { t: 'presets'; id: string; ws: string }
+	// signature は一覧で受け取った承認署名。実行の直前に PC 側で計算し直して突き合わせる
+	// （詳細は paradisPresetMobileSignature）。
+	| { t: 'runPreset'; id: string; ws: string; key: string; signature: string };
+
+/** モバイルへ渡すコマンドの最大長。プレビューではなく実行される本文をそのまま見せるための上限。 */
+const PRESET_COMMAND_MAX_LENGTH = 500;
+/** モバイルへ渡すタスク（＝ターミナル）とコマンドの最大数。異常に大きい定義で state を膨らませない。 */
+const PRESET_MAX_TASKS = 12;
+const PRESET_MAX_COMMANDS_PER_TASK = 20;
+/** モバイルへ渡すプリセットの最大件数。1リクエストの応答サイズを定義の書き方に委ねない。 */
+const PRESET_MAX_ENTRIES = 60;
+
+/**
+ * 承認の突き合わせに使う署名。
+ *
+ * **モバイルが組み立てた署名を信じない。** モバイルへ渡す tasks は表示のために切り詰めてあり
+ * （上の3つの上限）、切り詰めた形から署名を作ると「シートに出ない13番目のタスク」や
+ * 「500文字目より後ろのコマンド」を書き足しても署名が変わらず、一度承認したプリセットが
+ * その中身のまま黙って実行される。cwd も同じ理由で表示に含めていない。
+ *
+ * そこで PC 側が完全な定義から署名を作り、モバイルはそれを預かって実行時に返すだけにする。
+ * 実体は PC 版の autoRun 承認と同じ paradisPresetApprovalSignature（cwd も含む）。
+ */
+function paradisPresetMobileSignature(preset: IParadisResolvedPreset): string {
+	return String(hash(paradisPresetApprovalSignature(preset)));
+}
+
+/**
+ * モバイルへ渡すプリセット1件の形（app/mobile/src/store.ts の PresetDef と対）。
+ * 定義を明示するのは、この形がそのままスマホの表示と承認の材料になるため。
+ */
+interface IParadisMobilePreset {
+	readonly key: string;
+	readonly name: string;
+	readonly source: 'user' | 'workspace';
+	readonly layout: string;
+	readonly signature: string;
+	readonly description?: string;
+	readonly icon?: string;
+	/** 上限で切り詰めた表示であること（実行される内容はこれより多い）。 */
+	readonly truncated?: boolean;
+	readonly tasks: readonly { readonly name?: string; readonly commands: readonly string[] }[];
+}
+
+/**
+ * プリセット定義を、モバイルが一覧・確認ダイアログに出せる形へ落とす。
+ * 実行に必要なのは key と signature だけだが、押す前に「どの端末で何が走るか」を
+ * 見せるため、タスクの分かれ方とコマンド本文も一緒に渡す。
+ * 上限で切り詰めた場合は truncated を立て、モバイル側が「全部は出せていない」と言えるようにする。
+ */
+function paradisDescribePresetForMobile(preset: IParadisResolvedPreset): IParadisMobilePreset {
+	const { tasks, layout } = paradisGetPresetTasks(preset);
+	const shown = tasks.slice(0, PRESET_MAX_TASKS).map(task => ({
+		...(task.name ? { name: task.name } : {}),
+		commands: task.commands.slice(0, PRESET_MAX_COMMANDS_PER_TASK).map(command => command.slice(0, PRESET_COMMAND_MAX_LENGTH)),
+	}));
+	const truncated = tasks.length > PRESET_MAX_TASKS
+		|| tasks.some(task => task.commands.length > PRESET_MAX_COMMANDS_PER_TASK
+			|| task.commands.some(command => command.length > PRESET_COMMAND_MAX_LENGTH));
+	return {
+		key: preset.key,
+		name: preset.name,
+		source: preset.source,
+		layout,
+		signature: paradisPresetMobileSignature(preset),
+		...(preset.description ? { description: preset.description } : {}),
+		...(preset.icon ? { icon: preset.icon } : {}),
+		...(truncated ? { truncated: true } : {}),
+		tasks: shown,
+	};
+}
 
 /** fs チャネルのサブプロトコル（JSON、リクエスト/レスポンス）。 */
 type FsInbound =
@@ -384,6 +460,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		// スペース(リポジトリ/worktree)ごとのディスク使用量。実体は spaceDisk のクライアント
 		// （計測は shared process。1周に数十秒かかるので裏で温めた結果が即座に返る）
 		private readonly fetchSpaceDisk: (bypassCache: boolean) => Promise<IParadisSpaceDiskResult>,
+		// コマンドプリセット（PC版と同一の定義・同一の実行経路）。モバイルの一覧と実行はここを通す
+		private readonly presetService: IParadisPresetService,
 	) {
 		super();
 		let markInitialAgentPanesReady!: () => void;
@@ -1285,6 +1363,79 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				this.pushState();
 				reply({ t: 'launchAgent' });
 			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
+		// コマンドプリセットの一覧と実行。git 実行を伴わないため repoPath 解決より先に処理する
+		if (msg.t === 'presets' || msg.t === 'runPreset') {
+			// IPC 境界の防御。隣の noteGet / launchAgent と同じ厳しさで受ける
+			// （型が違うと resolveWsRoot の中で例外になり、応答を返さないまま終わってしまう）。
+			if (typeof msg.ws !== 'string' || msg.ws.length === 0) {
+				reply({ error: 'ws is required' });
+				return;
+			}
+			if (msg.t === 'runPreset' && (typeof msg.key !== 'string' || msg.key.length === 0 || typeof msg.signature !== 'string')) {
+				reply({ error: 'key and signature are required' });
+				return;
+			}
+			try {
+				const root = this.resolveWsRoot(msg.ws);
+				if (root === undefined) {
+					reply({ error: `unknown workspace: ${msg.ws}` });
+					return;
+				}
+				// キャッシュではなく毎回読み直す（getPresetsForFolder）。モバイルが見ているスペースは
+				// PC 側でアクティブとは限らず、キャッシュはアクティブなフォルダの解決結果を指すため。
+				const presets = await this.presetService.getPresetsForFolder(root);
+				if (msg.t === 'presets') {
+					reply({
+						t: 'presets', ws: msg.ws,
+						presets: presets.slice(0, PRESET_MAX_ENTRIES).map(paradisDescribePresetForMobile),
+						...(presets.length > PRESET_MAX_ENTRIES ? { truncated: true } : {}),
+					});
+					return;
+				}
+				const preset = presets.find(candidate => candidate.key === msg.key);
+				if (preset === undefined) {
+					// 一覧を撮ってから実行するまでの間に PC 側で消された・改名された場合。
+					// モバイルは一覧を取り直せば追従できるので、その旨だけ返す。
+					reply({ error: `unknown preset: ${msg.key}` });
+					return;
+				}
+				// **実行の直前に、いまディスクにある定義から署名を作り直して突き合わせる。**
+				// 一覧を見せてから押されるまでの間に .paracode.json が書き換わっていれば、
+				// 手元で確認した内容とは別物なので走らせない（PC 版の autoRun と同じ考え方）。
+				// モバイル側の承認記録もこの署名なので、承認を経ていない実行もここで落ちる。
+				if (paradisPresetMobileSignature(preset) !== msg.signature) {
+					reply({ error: 'preset changed', code: 'signature-mismatch' });
+					return;
+				}
+				// 実行で増えたターミナルを拾ってモバイルへ返す（実行後にそこへ切り替えるため）。
+				// **前後の差分では見ない。** 1タスクごとにプロセスの起動を待つので実行は実時間で
+				// 数秒かかり、その間にPCの操作や別のモバイル要求が作ったターミナルまで混ざる。
+				// 作った本人（runPreset）に教えてもらう。
+				const createdIds: number[] = [];
+				await this.presetService.runPreset(preset, {
+					cwd: root,
+					stateKey: msg.ws,
+					// モバイルからは必ず新しいターミナルで実行する。layout: current のプリセットは
+					// 「PC 側でアクティブなターミナル」へ送る挙動だが、そのターミナルはモバイルからは
+					// 見えていないので、手元で見えていない作業中の端末を汚す事故になる。
+					forceNewTerminal: true,
+					onDidCreateTerminal: instanceId => createdIds.push(instanceId),
+				});
+				const created = createdIds
+					.map(instanceId => this.terminalIdentityService.getTerminalKey(instanceId))
+					.filter((key): key is string => key !== undefined);
+				this.pushState();
+				// 手元を離れた PC で任意のコマンドが走る操作なので、成功も記録に残す
+				// （失敗だけを残すと、あとから「誰がいつ何を流したか」がターミナルの
+				// スクロールバックにしか無い状態になる）。コマンド本文はログに書かない。
+				this.logService.info(`[paradisMobileRelay] ran preset ${preset.key} in ${msg.ws} (${created.length} terminals)`);
+				reply({ t: 'runPreset', ws: msg.ws, created, ...paradisDescribePresetForMobile(preset) });
+			} catch (err) {
+				this.logService.warn('[paradisMobileRelay] preset request failed', err);
 				reply({ error: String(err) });
 			}
 			return;
