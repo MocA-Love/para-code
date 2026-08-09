@@ -12,7 +12,7 @@
  * それ以外はプレーンテキストとして安全に表示する（未対応記法で壊れない）。
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ActivityIndicator, Alert, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -534,20 +534,26 @@ function InlineBlock({ text, onOpenLocal, openingKey }: { text: string; onOpenLo
 }
 
 export function MarkdownText({ text }: { text: string }) {
-	const { workspace, selectedWs, selectedTerminalKey, fsResolveLink } = useAppStore(useShallow(s => ({
-		workspace: s.workspace,
-		selectedWs: s.selectedWs,
-		selectedTerminalKey: s.selectedTerminalKey,
-		fsResolveLink: s.fsResolveLink,
-	})));
-	const selectedTerminal = workspace?.terminals.find(terminal => terminal.terminalKey === selectedTerminalKey);
-	const terminalWs = selectedTerminal !== undefined ? (selectedTerminal.ws ?? workspace?.activeWs) : undefined;
-	const ws = terminalWs ?? selectedWs ?? workspace?.activeWs ?? workspace?.workspaces[0]?.id;
+	// **`s.workspace` 本体を購読してはいけない。** ここが必要としているのは「ファイルリンクを
+	// 解決する相手のワークスペースID」という文字列1つだけなのに、本体を購読していたため、
+	// PCからの再送（最大10Hz）のたびに**画面に出ている全メッセージがMarkdownを再パース**して
+	// いた（`mergeWorkspaceState` が毎回新しいオブジェクトを作るので `useShallow` は効かない）。
+	// IDの算出を購読の中でやって文字列に落とせば、中身が変わらない再送では止まる。
+	const { ws, fsResolveLink } = useAppStore(useShallow(s => {
+		const selectedTerminal = s.workspace?.terminals.find(terminal => terminal.terminalKey === s.selectedTerminalKey);
+		const terminalWs = selectedTerminal !== undefined ? (selectedTerminal.ws ?? s.workspace?.activeWs) : undefined;
+		return {
+			ws: terminalWs ?? s.selectedWs ?? s.workspace?.activeWs ?? s.workspace?.workspaces[0]?.id,
+			fsResolveLink: s.fsResolveLink,
+		};
+	}));
 	const [openingKey, setOpeningKey] = useState<string | undefined>();
 	const [viewer, setViewer] = useState<{ ws: string; path: string; line?: number } | undefined>();
 	const openGeneration = useRef(0);
 	useEffect(() => () => { openGeneration.current++; }, []);
-	const blocks = parseBlocks(text);
+	// 本文が変わらない再レンダー（リンクを押したときのローカルstate更新など）で
+	// パースし直さない。`parseBlocks` は `text` だけの純粋関数。
+	const blocks = useMemo(() => parseBlocks(text), [text]);
 	const openLocal = (target: LocalFileTarget) => {
 		if (ws === undefined) {
 			Alert.alert('ファイルを開けません', '対応するワークスペースが見つかりません。');

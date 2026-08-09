@@ -64,11 +64,24 @@ export function wsColor(ws: { id: string; color?: string }): string {
 	return WS_PALETTE[hash % WS_PALETTE.length] ?? colors.accent;
 }
 
-/** 現在有効な選択ワークスペースを返すフック（未選択時は先頭）。旧wsBar.tsxから移設。 */
+/**
+ * 現在有効な選択ワークスペースを返すフック（未選択時は先頭）。旧wsBar.tsxから移設。
+ *
+ * **`s.workspace` 本体を購読してはいけない。** PCからの再送のたびに `mergeWorkspaceState`
+ * が新しいオブジェクトを組み立てる（`store.ts`）ので、`useShallow` を書いても購読者は
+ * 毎回再レンダーする。このフックは**4タブすべてが呼ぶ**ため、ここが10Hzで再レンダーすると
+ * アプリ全体が10Hzで再レンダーすることになる（裏に回っているタブも含めて——zustandの購読は
+ * フォーカスを見ない）。必要な値だけを**文字列に落として**返し、中身が変わらない再送では
+ * `useShallow` が同値と判定して止まるようにする。
+ */
 export function useEffectiveWs(): { id: string; name: string; branch?: string; color?: string } | undefined {
-	const { workspace, selectedWs } = useAppStore(useShallow(s => ({ workspace: s.workspace, selectedWs: s.selectedWs })));
-	const list = workspace?.workspaces ?? [];
-	return list.find(w => w.id === selectedWs) ?? list[0];
+	return useAppStore(useShallow(s => {
+		const list = s.workspace?.workspaces ?? [];
+		const found = list.find(w => w.id === s.selectedWs) ?? list[0];
+		return found === undefined
+			? undefined
+			: { id: found.id, name: found.name, branch: found.branch, color: found.color };
+	}));
 }
 
 interface WsDrawerApi {
@@ -701,14 +714,24 @@ export function useWsHeader({ subtitle, actions, mid, below, allWorkspaces, wide
 	// 島（空のドロワー）・ベル・＋がどれも空振りで押せてしまう。
 	// 判断は `useConnectionGateBlocked()` に任せる（条件を書き写すとずれる）。
 	const gated = useConnectionGateBlocked();
-	const { workspace } = useAppStore(useShallow(s => ({ workspace: s.workspace })));
 	const current = useEffectiveWs();
 
 	// 他ワークスペースの応答待ち件数（島の左上の赤い点 = ドロワーを開く動機づけ）。
 	// ws未タグのターミナルは他画面と同様にPC側アクティブワークスペース所属として数える。
 	// allWorkspaces中はすでに全件が見えているため「他」の概念が無く、点は出さない。
-	const otherWaiting = allWorkspaces ? 0 : (workspace?.terminals ?? []).filter(t =>
-		isAgentWaiting(t.agentStatus) && (t.ws ?? workspace?.activeWs) !== current?.id).length;
+	//
+	// **数え上げは購読の中でやる。** ここも4タブ全部が通る道なので、`s.workspace` 本体を
+	// 購読すると再送のたびに全画面のヘッダー仕様が組み直される（`useEffectiveWs` の説明参照）。
+	// 返すのは件数の数値だけなので、件数が変わらない再送では再レンダーが起きない。
+	const currentId = current?.id;
+	const otherWaiting = useAppStore(s => {
+		if (allWorkspaces) {
+			return 0;
+		}
+		const ws = s.workspace;
+		return (ws?.terminals ?? []).filter(t =>
+			isAgentWaiting(t.agentStatus) && (t.ws ?? ws?.activeWs) !== currentId).length;
+	});
 
 	// 繋がっていないあいだは、島のサブ行をその状態に差し替える。**別の部品は出さない**
 	// （上端のカプセルで出すとナビの場所を直るまで覆い、いまどのリポジトリを見ているかが

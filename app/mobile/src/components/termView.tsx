@@ -338,6 +338,25 @@ function buildHtml(): string {
 </script></body></html>`;
 }
 
+/**
+ * WebViewへ渡す `source`。**モジュールに1つだけ作って使い回す。**
+ *
+ * 中身は xterm.js のバンドルを丸ごと埋めた約41万文字で、**`source` のオブジェクトが
+ * 変わるたびにHermesの文字列がC++のstd::stringへ丸ごと複製される**（react-native-webview
+ * は毎レンダー `source` を組み直し、Fabricのstring propとして渡す）。以前はこれを
+ * コンポーネントの中で `useMemo(() => buildHtml(), [])` していたため、端末ごとに1回では
+ * なく**この画面が再レンダーするたび**に41万文字の変換がJSスレッドで走っていた。
+ * PCからの再送は最大10Hzなので秒間4〜8MBに達し、画面遷移が数百ms止まる主因だった。
+ *
+ * `buildHtml()` は引数を1つも取らない純粋関数なので、ここで1回だけ作って参照を固定する。
+ * 最初にターミナルを描くときまで作らないのは、起動時の負荷に足さないため。
+ */
+let termSource: { readonly html: string } | undefined;
+function termHtmlSource(): { readonly html: string } {
+	termSource ??= { html: buildHtml() };
+	return termSource;
+}
+
 export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize, onGridChange, onScroll }: TermViewProps) {
 	const webRef = useRef<WebView>(null);
 	const [ready, setReady] = useState(false);
@@ -360,7 +379,6 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 	const metricsRef = useRef<{ width: number; height: number; charWidth100: number; lineHeight100: number } | undefined>(undefined);
 	// 固定モードで最後に適用したグリッド（同じ値の再適用・再申告を避ける）。
 	const gridRef = useRef<TerminalGrid | undefined>(undefined);
-	const html = useMemo(() => buildHtml(), []);
 
 	const inject = (script: string) => {
 		webRef.current?.injectJavaScript(`${script}; true;`);
@@ -394,6 +412,11 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 		inject(`window.__para.pin(${fontSize}, ${grid.cols}, ${grid.rows})`);
 		onGridChangeRef.current?.(grid);
 	}, [fontSize]);
+	// WebView要素は端末ごとに1回だけ作るので（下の `webView`）、そこから呼ぶものはrefで受ける。
+	// 直に閉じ込めると `fontSize` が変わるたびに要素が作り直され、41万文字の再変換を招く
+	// ——しかも `fontSize` はタブの出入りで出し入れされるので、いちばん混んでいる瞬間に当たる。
+	const applyPinnedGridRef = useRef(applyPinnedGrid);
+	applyPinnedGridRef.current = applyPinnedGrid;
 
 	// 設定（文字サイズ・モード）が変わったら、いまの実測値で決め直す。
 	useEffect(() => {
@@ -467,11 +490,15 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 		writtenRef.current = output;
 	}, [ready, output]);
 
-	return (
+	// **WebView要素は端末ごとに1回だけ作る。** `source` に41万文字が載っているため、要素を
+	// 作り直すとそのぶんの文字列変換がJSスレッドで走る（`termHtmlSource` の説明を読むこと）。
+	// 中で使うものは全てref経由か安定した参照なので、依存は空でよい。`applyStreamEvent` も
+	// refしか触らないので初回の参照を捕まえたままで正しい（購読側の :438 と同じ理由）。
+	const webView = useMemo(() => (
 		<WebView
 			ref={webRef}
 			style={styles.web}
-			source={{ html }}
+			source={termHtmlSource()}
 			originWhitelist={['*']}
 			javaScriptEnabled
 			scrollEnabled
@@ -496,7 +523,7 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 					}
 					if (msg.t === 'metrics') {
 						metricsRef.current = msg;
-						applyPinnedGrid();
+						applyPinnedGridRef.current();
 					} else if (msg.t === 'scroll' && (msg.dir === 'up' || msg.dir === 'down') && msg.lines > 0) {
 						onScrollRef.current?.(msg.dir, msg.lines);
 					}
@@ -529,7 +556,9 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 				}
 			}}
 		/>
-	);
+	), []);
+
+	return webView;
 }
 
 const styles = StyleSheet.create({
