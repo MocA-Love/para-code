@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Easing, useAnimatedStyle, useSharedValue, withTiming, type SharedValue } from 'react-native-reanimated';
 import { PARA_HEADER_PILL_BUTTON, PARA_HEADER_SLOT_HEIGHT, type ParaHeaderSpec } from '../paraHeader.js';
+import { PARA_HEADER_NO_CAP, paraHeaderBoundsFor } from '../paraHeaderBounds.js';
 
 /**
  * ヘッダーの形が変わるときの動き（モーフ）。**Reanimatedの共有値1本で回す。**
@@ -98,9 +99,6 @@ function capOf(spec: ParaHeaderSpec, slot: ParaHeaderSlot): number {
 	return spec.rightB === undefined ? 0 : PARA_HEADER_SLOT_HEIGHT;
 }
 
-/** 器の幅の制約。動いている間だけ当て、着地したら外す。 */
-export type ParaHeaderBounds = { minWidth: number; maxWidth: number | undefined };
-
 /**
  * 中身に当てる不透明度のスタイル。**ガラスの器には絶対に当てないこと**
  * （0にすると効果ごと死ぬ）。当てる先は必ず器の中身。
@@ -141,9 +139,11 @@ export function useParaHeaderMorph(spec: ParaHeaderSpec, pathname: string): Para
 	const fromLeft = useSharedValue(0);
 	const fromRightA = useSharedValue(0);
 	const fromRightB = useSharedValue(0);
-	const capLeft = useSharedValue(0);
-	const capRightA = useSharedValue(0);
-	const capRightB = useSharedValue(0);
+	// **初期値は「制約なし」。0にしてはいけない**——0は「このスロットは無くなる」の意味なので、
+	// 静止時に器の幅が0になってヘッダーがまるごと消える（2026-08-09に実際にやった）。
+	const capLeft = useSharedValue(PARA_HEADER_NO_CAP);
+	const capRightA = useSharedValue(PARA_HEADER_NO_CAP);
+	const capRightB = useSharedValue(PARA_HEADER_NO_CAP);
 	const from: Record<ParaHeaderSlot, SharedValue<number>> = { left: fromLeft, rightA: fromRightA, rightB: fromRightB };
 	const cap: Record<ParaHeaderSlot, SharedValue<number>> = { left: capLeft, rightA: capRightA, rightB: capRightB };
 
@@ -177,6 +177,11 @@ export function useParaHeaderMorph(spec: ParaHeaderSpec, pathname: string): Para
 			if (dropTimer.current !== undefined) {
 				clearTimeout(dropTimer.current);
 				dropTimer.current = undefined;
+			}
+			// **制約を必ず外す。** 前のモーフで「無くなる」判定（上限0）のまま止まったスロットが
+			// あると、動かさずに戻ってきたときに幅0のまま出てこない。
+			for (const slot of SLOTS) {
+				cap[slot].value = PARA_HEADER_NO_CAP;
 			}
 			progress.value = 1;
 			setPair({ current: spec, previous: undefined });
@@ -213,9 +218,10 @@ export function useParaHeaderMorph(spec: ParaHeaderSpec, pathname: string): Para
 
 	// 器の幅。**着地したら制約を外す**ので、上限の見積もりが最終的な幅を縛ることはない。
 	// 進捗0では下限＝上限＝旧の幅なので、動きが始まらなければ器は旧の幅のまま残る。
-	const boundsLeft = useAnimatedStyle(() => paraHeaderBounds(progress.value, fromLeft.value, capLeft.value));
-	const boundsRightA = useAnimatedStyle(() => paraHeaderBounds(progress.value, fromRightA.value, capRightA.value));
-	const boundsRightB = useAnimatedStyle(() => paraHeaderBounds(progress.value, fromRightB.value, capRightB.value));
+	// 式そのものは `paraHeaderBounds.ts`（テストあり）。
+	const boundsLeft = useAnimatedStyle(() => paraHeaderBoundsFor(progress.value, fromLeft.value, capLeft.value));
+	const boundsRightA = useAnimatedStyle(() => paraHeaderBoundsFor(progress.value, fromRightA.value, capRightA.value));
+	const boundsRightB = useAnimatedStyle(() => paraHeaderBoundsFor(progress.value, fromRightB.value, capRightB.value));
 	// 中身のクロスフェード。**谷を作らない**（一度透明にすると「消えた」に見える）。
 	const fading = useAnimatedStyle(() => ({ opacity: 1 - progress.value }));
 	const entering = useAnimatedStyle(() => ({ opacity: progress.value }));
@@ -232,28 +238,5 @@ export function useParaHeaderMorph(spec: ParaHeaderSpec, pathname: string): Para
 				measured[slot] = width;
 			}
 		},
-	};
-}
-
-/**
- * 進捗から器の幅の制約を作る。**worklet として呼ばれる。**
- *
- * `p = 0` で下限＝上限＝旧の幅（＝旧の見た目に固定）、`p = 1` で制約なし（＝中身なりの幅）。
- * 途中は下限が旧の幅から0へ、上限が旧の幅から見積もりへ動くので、実際の幅は
- * 「中身の自然な幅を上下から挟んだ値」になり、縮むときも太るときも同じ式で足りる。
- */
-function paraHeaderBounds(p: number, fromWidth: number, capWidth: number): ParaHeaderBounds {
-	'worklet';
-	// 無くなるスロット（新しい仕様に存在しない）は0へ縮めて**そのまま0で留める**。
-	// ここで制約を外すと、着地した瞬間に器が中身なりの幅へ跳ね返って一瞬出てしまう。
-	if (capWidth <= 0) {
-		return { minWidth: 0, maxWidth: Math.max(0, fromWidth * (1 - p)) };
-	}
-	if (p >= 1) {
-		return { minWidth: 0, maxWidth: undefined };
-	}
-	return {
-		minWidth: fromWidth * (1 - p),
-		maxWidth: fromWidth + (capWidth - fromWidth) * p,
 	};
 }
