@@ -1,49 +1,56 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing } from 'react-native';
+import { Easing, useAnimatedStyle, useSharedValue, withTiming, type SharedValue } from 'react-native-reanimated';
 import { PARA_HEADER_PILL_BUTTON, PARA_HEADER_SLOT_HEIGHT, type ParaHeaderSpec } from '../paraHeader.js';
 
 /**
- * ヘッダーの形が変わるときの動き（モーフ）を、**層が自分で動かす**ための状態機械。
+ * ヘッダーの形が変わるときの動き（モーフ）。**Reanimatedの共有値1本で回す。**
  *
- * `LayoutAnimation` は使わない。あれの予約は「次に画面へ適用される1回の描画」に**中身に
- * 関係なく無条件で消費される**（RN 0.86 `LayoutAnimationKeyFrameManager.cpp` の
- * `pullTransaction`）。ヘッダーの変化は必ず「画面／経路が変わった描画」の**次**に来るので、
- * 予約は毎回その手前の描画に食われて何も動かなかった（実機で確認済み）。ここは自分で
- * 補間するので、描画の順番に一切依存しない——押して変わる場合も、画面遷移も、端スワイプで
- * 戻る場合も同じように動く。
+ * ## なにを真似ているか（LINEの実機録画を60fpsでコマ送りして実測した値）
+ *  - 形の変化は**角丸長方形→円へ単調に幅が縮むだけ**。凹み（くびれ）は一切無い
+ *  - **中身はガウスぼかしされる**。半径はモーフ中央で最大、両端でゼロ。器の輪郭は常に鮮明
+ *  - ぼけている最中、**旧と新の中身が同時に見える**。中身は一度も完全な透明にならない
+ *  - 所要は往き約215ms／戻り約333ms
+ *  - **遷移進捗には連動しない。**着地してから走る離散アニメーション
+ *  - **タブ切り替えでは動かない**（OSのタブ切替は瞬時なので、ヘッダーだけ旅をさせると遅く見える）
  *
- * 動きの形はLINEの録画（20fpsでコマ送り）に合わせている:
- *  - 戻りは**指に追従しない**。本文が滑り終わってから、丸が幅を変えながらぼけて島になる
- *  - 所要はおよそ250ms
- *  - 形が変わる瞬間、中身はぼけていて読めない
- * つまり「中身を薄くしながら細くする → 中身を差し替える → 太らせながら濃くする」の2段で足りる。
- * ぼかしはRNでは安く出せないので、不透明度＋わずかな縮小で代わりにする。
+ * ぼかしはRNに手段が無い（iOSは `CALayer.filters` が非対応で、生きた中身をぼかす公開APIは
+ * SwiftUIの `.blur` だけ）。ここでは**旧と新を重ねたクロスフェード**で代用する。
+ * 谷を作って一度透明にしてはいけない——それが「ヘッダーが空になる」正体だった。
  *
- * **幅は `maxWidth` を動かす。** `width` を動かすには「島の自然な幅」を知る必要があり、
- * 中身（スペース名の長さ）で変わるので測ってからでないと動かせない。`maxWidth` なら
- *  - 縮めるとき: いまの実測幅 → 44 まで絞る（中身は切り取られて細くなって見える）
- *  - 太らせるとき: 44 → 大きめの上限（自然な幅で自然に止まる）
- * となり、測るのは「いま出ている幅」だけで済む。終わりも自然な幅で止まるので、制約を
- * 外すときに跳ねない。
+ * ## 前の実装がなぜ壊れていたか（同じ失敗を繰り返さないため）
+ * 1. `Animated` を `useNativeDriver: false` で使っていた。New Architecture では
+ *    `requestAnimationFrame` は `setTimeout(0)` 相当のJSタスクにすぎず、`TimingAnimation` は
+ *    `Date.now()` の壁時計で判定するため、**JSが詰まると中間値を1つも配らず終値へ飛ぶ**
+ * 2. 「薄くする→**完了コールバックで差し替える**→濃くする」の2段だった。見えない時間が
+ *    `OUT + JSが詰まっている時間 + IN` になり、遷移のたびに0.7〜0.9秒ヘッダーが空になった。
+ *    しかもこの構造は reanimated#9776（完了コールバックからの `scheduleOnRN` で use-after-free）
+ *    の踏み場そのものだった
  *
- * **ガラスそのものには不透明度を当てない。** 0にすると効果ごと死ぬ（glassSurface.tsx）。
- * 薄くするのは器の**中身**だけ。器の大きさは包みの `maxWidth` で変える。
+ * ## だから守っていること
+ *  - **時計は共有値1本だけ。** 幅も不透明度もそこから導く（位相がずれない）
+ *  - **アニメーション中にReactの更新を挟まない。** 旧と新は最初の1コミットで両方載せる
+ *  - **完了時にworkletからJSを呼ばない。** 旧の取り外しは素のタイマーでやる
+ *  - **止まったときに残るのは「古いヘッダーそのまま」。** 進捗0で器は旧の幅に固定され、旧の
+ *    中身が不透明度1で出ている。JSが何秒詰まっても、消えるのではなく**変わらない**だけ
+ *  - **ガラスに不透明度を当てない**（0にすると効果ごと死ぬ）。薄くするのは器の中身だけ
+ *  - **`borderRadius` は動かさない。** 高さが一定なのでカプセルの半径は定数で足りる
+ *    （毎フレーム変えると `UICornerRadius` を作り直す重い経路に入る）
  */
 
-/** 中身を薄くして細くするまで（ミリ秒）。 */
-const OUT_MS = 130;
-/** 差し替えてから太らせて濃くするまで（ミリ秒）。 */
-const IN_MS = 240;
+/** 往きの所要（ms）。実測値。 */
+const FORWARD_MS = 215;
+/** 戻りの所要（ms）。往きより長い（実測）。 */
+const BACK_MS = 333;
 
-/** 帯（絞り込みチップ・検索欄）の高さの上限。自然な高さで止まるよう余裕を持たせる。 */
-const BAND_MAX = 160;
+/** 幅を動かすスロット。帯（チップ・検索欄）は含めない——理由は {@link useParaHeaderMorph}。 */
+export type ParaHeaderSlot = 'left' | 'rightA' | 'rightB';
 
-/** どのスロットを動かすか。 */
-export type ParaHeaderSlot = 'left' | 'rightA' | 'rightB' | 'band';
+const SLOTS: readonly ParaHeaderSlot[] = ['left', 'rightA', 'rightB'];
 
-const SLOTS: readonly ParaHeaderSlot[] = ['left', 'rightA', 'rightB', 'band'];
+/** 下部タブの根。ここからここへの移動ではモーフしない。 */
+const TAB_ROOTS: ReadonlySet<string> = new Set(['/', '/terminal', '/scm', '/files']);
 
 /**
  * 形が変わったかの見分け。**中身の文字ではなく形だけ**を見る。
@@ -53,7 +60,7 @@ const SLOTS: readonly ParaHeaderSlot[] = ['left', 'rightA', 'rightB', 'band'];
  */
 export function paraHeaderShapeOf(spec: ParaHeaderSpec): string {
 	const right = spec.rightA === undefined ? '-'
-		: spec.rightA.kind === 'text' ? `t:${spec.rightA.label.length}`
+		: spec.rightA.kind === 'text' ? 't'
 			: `i:${spec.rightA.items.length}`;
 	return [
 		spec.hidden === true ? 'h' : '',
@@ -67,10 +74,11 @@ export function paraHeaderShapeOf(spec: ParaHeaderSpec): string {
 }
 
 /**
- * 新しい形でそのスロットが取りうる上限。**自然な幅より大きめでよい**（`maxWidth` なので
- * 上限が自然な幅を超えていれば制約にならず、自然な幅で止まる）。
+ * 太らせる側の到達点（上限の見積もり）。**多めでよい。**
  *
- * 逆に**小さすぎると切り取られたまま止まる**ので、見積もりは必ず多めにする。
+ * 前の実装ではここを小さく見積もると器が切り取られたまま固まったが、いまは**着地したら
+ * 制約そのものを外す**ので（`bounds` の `p >= 1` の枝）、見積もりが外れても一時的に
+ * 太り方が速い／遅いだけで、最終的な幅は必ず中身なりになる。
  */
 function capOf(spec: ParaHeaderSpec, slot: ParaHeaderSlot): number {
 	if (slot === 'left') {
@@ -83,159 +91,169 @@ function capOf(spec: ParaHeaderSpec, slot: ParaHeaderSlot): number {
 		if (spec.rightA === undefined) {
 			return 0;
 		}
-		if (spec.rightA.kind === 'text') {
-			// 文字のピル。1文字あたり14ptで見積もり、左右の余白を足す（多めでよい）。
-			return Math.min(200, 34 + spec.rightA.label.length * 14);
-		}
-		// アイコンのピル。中の丸ボタン＋隙間＋左右の余白（`styles.pill` と同じ寸法）。
-		return 10 + spec.rightA.items.length * (PARA_HEADER_PILL_BUTTON + 2);
+		// 文字のピルは中身の長さで決まるので、静的な上限（styles.textPill）をそのまま使う。
+		// アイコンのピルは中身が決まっているので実寸で出せる（styles.pill と同じ寸法）。
+		return spec.rightA.kind === 'text' ? 200 : 10 + spec.rightA.items.length * (PARA_HEADER_PILL_BUTTON + 2);
 	}
-	if (slot === 'rightB') {
-		return spec.rightB === undefined ? 0 : PARA_HEADER_SLOT_HEIGHT;
-	}
-	return spec.band === undefined ? 0 : BAND_MAX;
+	return spec.rightB === undefined ? 0 : PARA_HEADER_SLOT_HEIGHT;
 }
 
+/** 器の幅の制約。動いている間だけ当て、着地したら外す。 */
+export type ParaHeaderBounds = { minWidth: number; maxWidth: number | undefined };
+
+/**
+ * 中身に当てる不透明度のスタイル。**ガラスの器には絶対に当てないこと**
+ * （0にすると効果ごと死ぬ）。当てる先は必ず器の中身。
+ */
+export type ParaHeaderFade = ReturnType<typeof useAnimatedStyle>;
+
 export interface ParaHeaderMorph {
-	/** いま描くべき仕様（差し替えは中身が薄くなってから行う）。 */
-	readonly rendered: ParaHeaderSpec;
-	/** 器の**中身**に当てる不透明度。器（ガラス）自体には当てないこと。 */
-	readonly contentOpacity: Animated.Value;
-	/** 動いている間だけ当てる上限。`undefined` のときは静的なスタイルのままにする。 */
-	readonly limits: Readonly<Record<ParaHeaderSlot, Animated.Value>> | undefined;
-	/** スロットの実測値を受け取る（縮める起点に使う）。 */
-	measure(slot: ParaHeaderSlot, size: number): void;
+	/** いま出すべき仕様（常に最新）。 */
+	readonly current: ParaHeaderSpec;
+	/** 消えていく仕様。モーフしていない間は `undefined`。 */
+	readonly previous: ParaHeaderSpec | undefined;
+	/** スロットごとの器の幅の制約（包みのスタイルに当てる。ガラス自身には当てない）。 */
+	readonly bounds: Readonly<Record<ParaHeaderSlot, ParaHeaderFade>>;
+	/** 消えていく中身に当てる不透明度。 */
+	readonly fading: ParaHeaderFade;
+	/** 出てくる中身に当てる不透明度。 */
+	readonly entering: ParaHeaderFade;
+	/** 包みの実測幅を控える（縮める起点になる）。 */
+	measure(slot: ParaHeaderSlot, width: number): void;
 }
 
 /**
  * 仕様の変化を見張って、形が変わったときだけモーフを走らせる。
  *
- * `instant` な仕様（ズーム遷移の画面）と、伏せた状態からの復帰では動かさない
- * ——前者は画面全体が拡大しているので二重に見え、後者は実測値が古いままで起点にならない。
+ * `pathname` は「タブ切り替えかどうか」の判定にだけ使う。タブの根から根への移動では
+ * OSが本文を瞬時に差し替えるので、ヘッダーだけ250msかけて動かすと**本文が既に新しいのに
+ * ヘッダーだけ古い形で移動中**になり、遅く見える（LINEもタブ切替では動かさない）。
+ *
+ * **帯（絞り込みチップ・ファイル検索欄）はモーフの対象にしない。** 高さを毎フレーム変えると
+ * (1) ヘッダーの高さが動くので本文の上余白が追従できず1行目が帯の裏に潜り、(2) 帯の中身は
+ * ガラスのチップなので、動く親でクリップすると素材が壊れる。帯は即時に出し入れする。
  */
-export function useParaHeaderMorph(spec: ParaHeaderSpec): ParaHeaderMorph {
-	const [rendered, setRendered] = useState(spec);
-	const [animating, setAnimating] = useState(false);
-	const contentOpacity = useRef(new Animated.Value(1)).current;
-	const limits = useRef<Record<ParaHeaderSlot, Animated.Value>>({
-		left: new Animated.Value(0), rightA: new Animated.Value(0),
-		rightB: new Animated.Value(0), band: new Animated.Value(0),
-	}).current;
-	/** 実測した「いま出ている大きさ」。縮める起点に使う。 */
-	const measured = useRef<Record<ParaHeaderSlot, number>>({ left: 0, rightA: 0, rightB: 0, band: 0 }).current;
-	/** 走っている動きの世代。速く行き来したときに古い完了コールバックが割り込まないように。 */
-	const generation = useRef(0);
-	/**
-	 * **いま向かっている先**。動いている最中も画面は仕様を出し続ける（エージェント画面は
-	 * PCからの再送で最大10Hz）ので、比較する相手を「まだ差し替えていない古い仕様」に
-	 * すると、形が違う判定が毎回成立して**動きが100msごとに振り出しへ戻り、永遠に終わらない**
-	 * （＝器が細いまま固まり、中身が出てこない）。比較は必ずこの「行き先」と行う。
-	 */
+export function useParaHeaderMorph(spec: ParaHeaderSpec, pathname: string): ParaHeaderMorph {
+	const [pair, setPair] = useState<{ current: ParaHeaderSpec; previous: ParaHeaderSpec | undefined }>(
+		{ current: spec, previous: undefined });
+	/** 0 = 旧の形・旧の中身、1 = 新の形・新の中身。静止時は必ず1。 */
+	const progress = useSharedValue(1);
+	const fromLeft = useSharedValue(0);
+	const fromRightA = useSharedValue(0);
+	const fromRightB = useSharedValue(0);
+	const capLeft = useSharedValue(0);
+	const capRightA = useSharedValue(0);
+	const capRightB = useSharedValue(0);
+	const from: Record<ParaHeaderSlot, SharedValue<number>> = { left: fromLeft, rightA: fromRightA, rightB: fromRightB };
+	const cap: Record<ParaHeaderSlot, SharedValue<number>> = { left: capLeft, rightA: capRightA, rightB: capRightB };
+
+	/** 直前に実測した包みの幅。**動いている間は更新しない**（動いている幅を拾わない）。 */
+	const measured = useRef<Record<ParaHeaderSlot, number>>({ left: 0, rightA: 0, rightB: 0 }).current;
+	/** いま向かっている先。動いている最中も画面は仕様を出し続けるので、比較相手はこちら。 */
 	const targetRef = useRef(spec);
-	const animatingRef = useRef(false);
-	/**
-	 * 番犬。**動きが終わらなかったときに必ず元へ戻す。**
-	 *
-	 * 制約（`maxWidth`）を当てたまま固まると、器が細いままで中身が出てこない——これは
-	 * 「ヘッダーが壊れて見える」いちばん痛い壊れ方なので、どんな理由で完了コールバックが
-	 * 来なくても時間で必ず解除する。
-	 */
-	const watchdog = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-	const settle = useRef(() => {
-		if (watchdog.current !== undefined) {
-			clearTimeout(watchdog.current);
-			watchdog.current = undefined;
-		}
-		animatingRef.current = false;
-		contentOpacity.stopAnimation();
-		contentOpacity.setValue(1);
-		setAnimating(false);
-	}).current;
+	const pathRef = useRef(pathname);
+	/** 旧の取り外しを予約するタイマー。**worklet の完了コールバックからJSを呼ばないため。** */
+	const dropTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
 	useEffect(() => {
-		const target = targetRef.current;
-		if (target === spec) {
+		const previous = targetRef.current;
+		const previousPath = pathRef.current;
+		if (previous === spec) {
 			return;
 		}
-		const changed = paraHeaderShapeOf(target) !== paraHeaderShapeOf(spec);
 		targetRef.current = spec;
-		// 形が同じなら中身だけ差し替える（名前が変わった等）。伏せた状態を挟む往復と
-		// ズーム遷移の画面も動かさない。
-		//
-		// **走りかけの動きは必ず畳む。** 世代を進めるだけだと、途中で伏せられた場合に
-		// `animating` が立ったまま・中身が薄いままで固まる（＝ヘッダーが細く透明なまま残る）。
-		if (!changed || target.hidden === true || spec.hidden === true
-			|| target.instant === true || spec.instant === true) {
-			// 形が同じで動いている最中なら、行き先を更新しただけで足りる
-			// （着地のときに最新の中身へ差し替わる）。ここで差し替えると器が縮んだまま
-			// 中身だけ新しくなって見える。
-			if (!animatingRef.current || changed) {
-				generation.current++;
-				settle();
-				setRendered(spec);
+		pathRef.current = pathname;
+
+		const shapeChanged = paraHeaderShapeOf(previous) !== paraHeaderShapeOf(spec);
+		// タブの根から根への移動、伏せた状態を挟む往復、ズーム遷移の画面は動かさない。
+		// 起点の幅が分からないときも動かさない（0に固定すると器が消えてしまう）。
+		const betweenTabs = TAB_ROOTS.has(previousPath) && TAB_ROOTS.has(pathname);
+		const measurable = SLOTS.every(slot => capOf(previous, slot) === 0 || measured[slot] > 0);
+		const animate = shapeChanged && !betweenTabs && measurable
+			&& previous.hidden !== true && spec.hidden !== true
+			&& previous.instant !== true && spec.instant !== true;
+
+		if (!animate) {
+			if (dropTimer.current !== undefined) {
+				clearTimeout(dropTimer.current);
+				dropTimer.current = undefined;
 			}
+			progress.value = 1;
+			setPair({ current: spec, previous: undefined });
 			return;
 		}
 
-		const token = ++generation.current;
-		const caps = { left: capOf(spec, 'left'), rightA: capOf(spec, 'rightA'), rightB: capOf(spec, 'rightB'), band: capOf(spec, 'band') };
 		for (const slot of SLOTS) {
-			// 起点は実測値。測れていないスロット（まだ出ていなかった）は新しい上限から始める。
-			limits[slot].setValue(measured[slot] > 0 ? measured[slot] : caps[slot]);
+			from[slot].value = measured[slot];
+			cap[slot].value = capOf(spec, slot);
 		}
-		animatingRef.current = true;
-		setAnimating(true);
-		if (watchdog.current !== undefined) {
-			clearTimeout(watchdog.current);
+		// 戻り（詳細→一覧＝左が丸から島へ戻る）だけ長い。実測の非対称に合わせる。
+		const duration = previous.left?.kind === 'back' && spec.left?.kind !== 'back' ? BACK_MS : FORWARD_MS;
+		setPair({ current: spec, previous });
+		progress.value = 0;
+		progress.value = withTiming(1, { duration, easing: Easing.out(Easing.cubic) });
+
+		// 旧を木から外すのは**素のタイマー**で。worklet の完了コールバックから
+		// `scheduleOnRN` するとアンマウント直後の use-after-free（reanimated#9776）を踏む。
+		// 遅れて発火しても、旧は不透明度0で当たり判定も無いので害が無い。
+		if (dropTimer.current !== undefined) {
+			clearTimeout(dropTimer.current);
 		}
-		watchdog.current = setTimeout(() => { watchdog.current = undefined; setRendered(targetRef.current); settle(); }, (OUT_MS + IN_MS) * 3);
+		dropTimer.current = setTimeout(() => {
+			dropTimer.current = undefined;
+			setPair(state => (state.previous === undefined ? state : { current: state.current, previous: undefined }));
+		}, duration + 80);
+	}, [spec, pathname, progress, from, cap, measured]);
 
-		// ① 中身を薄くしながら、**新旧の細い方まで**絞る（島 → 丸なら44まで細くなる）。
-		Animated.parallel([
-			Animated.timing(contentOpacity, { toValue: 0, duration: OUT_MS, easing: Easing.in(Easing.quad), useNativeDriver: false }),
-			...SLOTS.map(slot => Animated.timing(limits[slot], {
-				toValue: Math.min(measured[slot] > 0 ? measured[slot] : caps[slot], caps[slot]),
-				duration: OUT_MS, easing: Easing.in(Easing.quad), useNativeDriver: false,
-			})),
-		]).start(({ finished }) => {
-			if (!finished || generation.current !== token) {
-				return;
-			}
-			// ② 見えていないあいだに中身を差し替える。**行き先の最新**を使う
-			// （動いているあいだに中身だけ変わっていることがある）。
-			setRendered(targetRef.current);
-			// ③ 新しい上限まで太らせながら濃くする（自然な幅で止まる）。
-			Animated.parallel([
-				Animated.timing(contentOpacity, { toValue: 1, duration: IN_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
-				...SLOTS.map(slot => Animated.timing(limits[slot], {
-					toValue: caps[slot], duration: IN_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false,
-				})),
-			]).start(({ finished: done }) => {
-				if (done && generation.current === token) {
-					// 制約を外す。上限は自然な幅を超えているので、外しても見た目は変わらない。
-					settle();
-				}
-			});
-		});
-	}, [spec, contentOpacity, limits, measured, settle, watchdog]);
-
-	// 木から外れるときに走りかけの動きを止める（完了コールバックで state を触らせない）。
 	useEffect(() => () => {
-		generation.current++;
-		animatingRef.current = false;
-		if (watchdog.current !== undefined) {
-			clearTimeout(watchdog.current);
+		if (dropTimer.current !== undefined) {
+			clearTimeout(dropTimer.current);
 		}
-	}, [watchdog]);
+	}, []);
+
+	// 器の幅。**着地したら制約を外す**ので、上限の見積もりが最終的な幅を縛ることはない。
+	// 進捗0では下限＝上限＝旧の幅なので、動きが始まらなければ器は旧の幅のまま残る。
+	const boundsLeft = useAnimatedStyle(() => paraHeaderBounds(progress.value, fromLeft.value, capLeft.value));
+	const boundsRightA = useAnimatedStyle(() => paraHeaderBounds(progress.value, fromRightA.value, capRightA.value));
+	const boundsRightB = useAnimatedStyle(() => paraHeaderBounds(progress.value, fromRightB.value, capRightB.value));
+	// 中身のクロスフェード。**谷を作らない**（一度透明にすると「消えた」に見える）。
+	const fading = useAnimatedStyle(() => ({ opacity: 1 - progress.value }));
+	const entering = useAnimatedStyle(() => ({ opacity: progress.value }));
 
 	return {
-		rendered,
-		contentOpacity,
-		limits: animating ? limits : undefined,
-		measure(slot, size) {
-			if (size > 0) {
-				measured[slot] = size;
+		current: pair.current,
+		previous: pair.previous,
+		bounds: { left: boundsLeft, rightA: boundsRightA, rightB: boundsRightB },
+		fading,
+		entering,
+		measure(slot, width) {
+			// 動いている間の幅を起点として控えてはいけない（次のモーフが途中の幅から始まる）。
+			if (width > 0 && progress.value >= 1) {
+				measured[slot] = width;
 			}
 		},
+	};
+}
+
+/**
+ * 進捗から器の幅の制約を作る。**worklet として呼ばれる。**
+ *
+ * `p = 0` で下限＝上限＝旧の幅（＝旧の見た目に固定）、`p = 1` で制約なし（＝中身なりの幅）。
+ * 途中は下限が旧の幅から0へ、上限が旧の幅から見積もりへ動くので、実際の幅は
+ * 「中身の自然な幅を上下から挟んだ値」になり、縮むときも太るときも同じ式で足りる。
+ */
+function paraHeaderBounds(p: number, fromWidth: number, capWidth: number): ParaHeaderBounds {
+	'worklet';
+	// 無くなるスロット（新しい仕様に存在しない）は0へ縮めて**そのまま0で留める**。
+	// ここで制約を外すと、着地した瞬間に器が中身なりの幅へ跳ね返って一瞬出てしまう。
+	if (capWidth <= 0) {
+		return { minWidth: 0, maxWidth: Math.max(0, fromWidth * (1 - p)) };
+	}
+	if (p >= 1) {
+		return { minWidth: 0, maxWidth: undefined };
+	}
+	return {
+		minWidth: fromWidth * (1 - p),
+		maxWidth: fromWidth + (capWidth - fromWidth) * p,
 	};
 }
