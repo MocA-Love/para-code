@@ -128,7 +128,7 @@ export function ParaHeaderLayer() {
 					>
 						{left.kind === 'back' ? (
 							<GlassSurface style={styles.circle} interactive>
-								<Animated.View style={[styles.fill, { opacity: contentOpacity }]}>
+								<Animated.View style={[styles.overlay, { opacity: contentOpacity }]}>
 									<Pressable
 										style={styles.circleHit}
 										onPress={left.onPress}
@@ -146,27 +146,25 @@ export function ParaHeaderLayer() {
 								interactive={left.disabled !== true}
 								tintColor={left.tint}
 							>
-								<Animated.View style={[styles.fill, { opacity: contentOpacity }]}>
-									<Pressable
-										style={styles.islandHit}
-										onPress={left.onPress}
-										disabled={left.disabled === true || left.onPress === undefined}
-										accessibilityRole={left.onPress === undefined ? undefined : 'button'}
-										accessibilityLabel={left.label}
-									>
-										<View style={[styles.islandAvatar, { backgroundColor: withAlpha(left.color ?? colors.accent, 0.28) ?? colors.surface2 }]}>
-											{left.avatarIcon !== undefined
-												? <Ionicons name={left.avatarIcon} size={15} color={left.color ?? colors.accent} />
-												: <Text style={[styles.islandAvatarText, { color: left.color ?? colors.accent }]}>{left.avatarText ?? '—'}</Text>}
-										</View>
-										<View style={styles.islandText}>
-											<Text style={styles.islandName} numberOfLines={1}>{left.name ?? ''}</Text>
-											{left.sub !== undefined && left.sub.length > 0
-												? <Text style={[styles.islandSub, left.subColor !== undefined && { color: left.subColor }]} numberOfLines={1}>{left.sub}</Text>
-												: null}
-										</View>
-									</Pressable>
-								</Animated.View>
+								<Pressable
+									style={styles.islandHit}
+									onPress={left.onPress}
+									disabled={left.disabled === true || left.onPress === undefined}
+									accessibilityRole={left.onPress === undefined ? undefined : 'button'}
+									accessibilityLabel={left.label}
+								>
+									<Animated.View style={[styles.islandAvatar, { backgroundColor: withAlpha(left.color ?? colors.accent, 0.28) ?? colors.surface2, opacity: contentOpacity }]}>
+										{left.avatarIcon !== undefined
+											? <Ionicons name={left.avatarIcon} size={15} color={left.color ?? colors.accent} />
+											: <Text style={[styles.islandAvatarText, { color: left.color ?? colors.accent }]}>{left.avatarText ?? '—'}</Text>}
+									</Animated.View>
+									<Animated.View style={[styles.islandText, { opacity: contentOpacity }]}>
+										<Text style={styles.islandName} numberOfLines={1}>{left.name ?? ''}</Text>
+										{left.sub !== undefined && left.sub.length > 0
+											? <Text style={[styles.islandSub, left.subColor !== undefined && { color: left.subColor }]} numberOfLines={1}>{left.sub}</Text>
+											: null}
+									</Animated.View>
+								</Pressable>
 								{left.badge === true ? <View style={styles.islandBadge} /> : null}
 							</GlassSurface>
 						)}
@@ -180,7 +178,7 @@ export function ParaHeaderLayer() {
 					<View style={styles.spacer} pointerEvents="none" />
 				) : (
 					<GlassSurface style={styles.midIsland} interactive>
-						<Animated.View style={[styles.fill, { opacity: contentOpacity }]}>{mid.node}</Animated.View>
+						<Animated.View style={[styles.overlay, { opacity: contentOpacity }]}>{mid.node}</Animated.View>
 						{mid.badge === true ? <View style={styles.islandBadge} /> : null}
 					</GlassSurface>
 				)}
@@ -192,17 +190,17 @@ export function ParaHeaderLayer() {
 						>
 							{rightA.kind === 'text' ? (
 								<GlassSurface style={styles.textPill} interactive>
-									<Animated.View style={[styles.fill, { opacity: contentOpacity }]}>
-										<Pressable style={styles.textPillHit} onPress={rightA.onPress} accessibilityRole="button" accessibilityLabel={rightA.label}>
-											<Text style={[styles.textPillLabel, rightA.color !== undefined && { color: rightA.color }]} numberOfLines={1}>{rightA.label}</Text>
-										</Pressable>
-									</Animated.View>
+									<Pressable style={styles.textPillHit} onPress={rightA.onPress} accessibilityRole="button" accessibilityLabel={rightA.label}>
+										<Animated.Text style={[styles.textPillLabel, rightA.color !== undefined && { color: rightA.color }, { opacity: contentOpacity }]} numberOfLines={1}>{rightA.label}</Animated.Text>
+									</Pressable>
 								</GlassSurface>
 							) : (
 								<GlassSurface style={styles.pill}>
-									<Animated.View style={[styles.pillRow, { opacity: contentOpacity }]}>
-										{rightA.items.map(item => <IconButton key={item.key} item={item} />)}
-									</Animated.View>
+									{rightA.items.map(item => (
+										<Animated.View key={item.key} style={{ opacity: contentOpacity }}>
+											<IconButton item={item} />
+										</Animated.View>
+									))}
 								</GlassSurface>
 							)}
 						</Animated.View>
@@ -213,7 +211,7 @@ export function ParaHeaderLayer() {
 							onLayout={event => measure('rightB', Math.round(event.nativeEvent.layout.width))}
 						>
 							<GlassSurface style={styles.circle} interactive>
-								<Animated.View style={[styles.fill, { opacity: contentOpacity }]}>
+								<Animated.View style={[styles.overlay, { opacity: contentOpacity }]}>
 									<Pressable
 										style={styles.circleHit}
 										onPress={rightB.onPress}
@@ -254,7 +252,6 @@ export function ParaHeaderLayer() {
 						styles.band,
 						column && styles.rowColumn,
 						limits === undefined ? undefined : { maxHeight: limits.band, overflow: 'hidden' },
-						{ opacity: contentOpacity },
 					]}
 					pointerEvents="box-none"
 					onLayout={event => measure('band', Math.round(event.nativeEvent.layout.height))}
@@ -281,8 +278,10 @@ const styles = StyleSheet.create({
 	// 幅を動かすための包み。中のガラスは幅を持たず、この箱の幅に合わせて縮む
 	// （`maxWidth` は子の使える幅も縛るので、器そのものが細くなる）。
 	slot: { flexShrink: 0 },
-	// 器の**中身**。ここに不透明度を当てる（ガラス自体に当てると効果が死ぬ）。
-	fill: { flex: 1 },
+	// 大きさが決まっている器（丸・中央の島）の中身を重ねる層。**絶対配置にするのは、
+	// 器の幅を中身から決めている場所（島・ピル）で階層を増やすと、幅の計算が壊れて
+	// 中身が出なくなるため**。幅が中身で決まる器では、既存の要素へ直接不透明度を当てる。
+	overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'stretch' },
 
 	circle: { width: SLOT_HEIGHT, height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle },
 	circleHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
@@ -304,8 +303,7 @@ const styles = StyleSheet.create({
 	},
 
 	// 中のボタンにはガラスを重ねない（Apple HIG）。押下は白のハイライトで返す。
-	pill: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle },
-	pillRow: { flex: 1, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, gap: 2 },
+	pill: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, gap: 2 },
 	pillButton: { width: PILL_BUTTON, height: PILL_BUTTON, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 	pillButtonPressed: { backgroundColor: 'rgba(255,255,255,0.16)' },
 	iconBadge: { position: 'absolute', top: 3, right: 3, width: 9, height: 9, borderRadius: radius.pill, borderWidth: 2, borderColor: colors.bg },

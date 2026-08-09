@@ -125,27 +125,55 @@ export function useParaHeaderMorph(spec: ParaHeaderSpec): ParaHeaderMorph {
 	const measured = useRef<Record<ParaHeaderSlot, number>>({ left: 0, rightA: 0, rightB: 0, band: 0 }).current;
 	/** 走っている動きの世代。速く行き来したときに古い完了コールバックが割り込まないように。 */
 	const generation = useRef(0);
-	const renderedRef = useRef(rendered);
-	renderedRef.current = rendered;
+	/**
+	 * **いま向かっている先**。動いている最中も画面は仕様を出し続ける（エージェント画面は
+	 * PCからの再送で最大10Hz）ので、比較する相手を「まだ差し替えていない古い仕様」に
+	 * すると、形が違う判定が毎回成立して**動きが100msごとに振り出しへ戻り、永遠に終わらない**
+	 * （＝器が細いまま固まり、中身が出てこない）。比較は必ずこの「行き先」と行う。
+	 */
+	const targetRef = useRef(spec);
+	const animatingRef = useRef(false);
+	/**
+	 * 番犬。**動きが終わらなかったときに必ず元へ戻す。**
+	 *
+	 * 制約（`maxWidth`）を当てたまま固まると、器が細いままで中身が出てこない——これは
+	 * 「ヘッダーが壊れて見える」いちばん痛い壊れ方なので、どんな理由で完了コールバックが
+	 * 来なくても時間で必ず解除する。
+	 */
+	const watchdog = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const settle = useRef(() => {
+		if (watchdog.current !== undefined) {
+			clearTimeout(watchdog.current);
+			watchdog.current = undefined;
+		}
+		animatingRef.current = false;
+		contentOpacity.stopAnimation();
+		contentOpacity.setValue(1);
+		setAnimating(false);
+	}).current;
 
 	useEffect(() => {
-		const previous = renderedRef.current;
-		if (previous === spec) {
+		const target = targetRef.current;
+		if (target === spec) {
 			return;
 		}
-		const changed = paraHeaderShapeOf(previous) !== paraHeaderShapeOf(spec);
+		const changed = paraHeaderShapeOf(target) !== paraHeaderShapeOf(spec);
+		targetRef.current = spec;
 		// 形が同じなら中身だけ差し替える（名前が変わった等）。伏せた状態を挟む往復と
 		// ズーム遷移の画面も動かさない。
 		//
 		// **走りかけの動きは必ず畳む。** 世代を進めるだけだと、途中で伏せられた場合に
 		// `animating` が立ったまま・中身が薄いままで固まる（＝ヘッダーが細く透明なまま残る）。
-		if (!changed || previous.hidden === true || spec.hidden === true
-			|| previous.instant === true || spec.instant === true) {
-			generation.current++;
-			contentOpacity.stopAnimation();
-			contentOpacity.setValue(1);
-			setAnimating(false);
-			setRendered(spec);
+		if (!changed || target.hidden === true || spec.hidden === true
+			|| target.instant === true || spec.instant === true) {
+			// 形が同じで動いている最中なら、行き先を更新しただけで足りる
+			// （着地のときに最新の中身へ差し替わる）。ここで差し替えると器が縮んだまま
+			// 中身だけ新しくなって見える。
+			if (!animatingRef.current || changed) {
+				generation.current++;
+				settle();
+				setRendered(spec);
+			}
 			return;
 		}
 
@@ -155,7 +183,12 @@ export function useParaHeaderMorph(spec: ParaHeaderSpec): ParaHeaderMorph {
 			// 起点は実測値。測れていないスロット（まだ出ていなかった）は新しい上限から始める。
 			limits[slot].setValue(measured[slot] > 0 ? measured[slot] : caps[slot]);
 		}
+		animatingRef.current = true;
 		setAnimating(true);
+		if (watchdog.current !== undefined) {
+			clearTimeout(watchdog.current);
+		}
+		watchdog.current = setTimeout(() => { watchdog.current = undefined; setRendered(targetRef.current); settle(); }, (OUT_MS + IN_MS) * 3);
 
 		// ① 中身を薄くしながら、**新旧の細い方まで**絞る（島 → 丸なら44まで細くなる）。
 		Animated.parallel([
@@ -168,8 +201,9 @@ export function useParaHeaderMorph(spec: ParaHeaderSpec): ParaHeaderMorph {
 			if (!finished || generation.current !== token) {
 				return;
 			}
-			// ② 見えていないあいだに中身を差し替える。
-			setRendered(spec);
+			// ② 見えていないあいだに中身を差し替える。**行き先の最新**を使う
+			// （動いているあいだに中身だけ変わっていることがある）。
+			setRendered(targetRef.current);
 			// ③ 新しい上限まで太らせながら濃くする（自然な幅で止まる）。
 			Animated.parallel([
 				Animated.timing(contentOpacity, { toValue: 1, duration: IN_MS, easing: Easing.out(Easing.cubic), useNativeDriver: false }),
@@ -179,14 +213,20 @@ export function useParaHeaderMorph(spec: ParaHeaderSpec): ParaHeaderMorph {
 			]).start(({ finished: done }) => {
 				if (done && generation.current === token) {
 					// 制約を外す。上限は自然な幅を超えているので、外しても見た目は変わらない。
-					setAnimating(false);
+					settle();
 				}
 			});
 		});
-	}, [spec, contentOpacity, limits, measured]);
+	}, [spec, contentOpacity, limits, measured, settle, watchdog]);
 
 	// 木から外れるときに走りかけの動きを止める（完了コールバックで state を触らせない）。
-	useEffect(() => () => { generation.current++; }, []);
+	useEffect(() => () => {
+		generation.current++;
+		animatingRef.current = false;
+		if (watchdog.current !== undefined) {
+			clearTimeout(watchdog.current);
+		}
+	}, [watchdog]);
 
 	return {
 		rendered,
