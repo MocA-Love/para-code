@@ -19,6 +19,7 @@ import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
+import { paradisResolveWslAgentHome } from '../../../common/paradisWslAgentHome.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -51,6 +52,7 @@ import {
 } from '../common/paradisWorktreeCreate.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
 
 /**
  * 命名にかけてよい合計時間。ここを過ぎたらフォールバック名で worktree 作成へ進む。
@@ -380,6 +382,53 @@ export async function paradisLaunchAgentInWorkspace(accessor: ServicesAccessor, 
 		effortId: request.effortId,
 		permissionId: request.permissionId,
 	});
+	await instance.sendText(command, true);
+}
+
+export interface IParadisResumeAgentInWorkspaceRequest {
+	readonly rootUri: URI;
+	readonly stateKey: string;
+	readonly agent: ParadisResumeAgent;
+	readonly sessionId: string;
+}
+
+/** 検証済みのセッションIDで、指定スペースのエディタターミナルへresumeコマンドを送る。 */
+export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, request: IParadisResumeAgentInWorkspaceRequest): Promise<void> {
+	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(request.sessionId)) {
+		throw new Error('Invalid agent session id.');
+	}
+	const terminalService = accessor.get(ITerminalService);
+	const terminalEditorService = accessor.get(ITerminalEditorService);
+	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
+	const switchService = accessor.get(IParadisWorkspaceSwitchService);
+	const wsl = paradisResolveWslAgentHome(request.rootUri.fsPath);
+	const instance = await terminalService.createTerminal(wsl === undefined
+		? { cwd: request.rootUri, location: TerminalLocation.Editor }
+		: {
+			config: {
+				name: request.agent === 'claude' ? 'Claude Code' : 'Codex',
+				executable: 'wsl.exe',
+				// cwdとdistroはargv/位置引数で渡す。シェル文字列へ埋め込まない。
+				args: ['-d', wsl.distro, '-e', 'sh', '-c', 'cd -- "$0" && exec "${SHELL:-/bin/bash}" -l', wsl.linuxCwd],
+			},
+			location: TerminalLocation.Editor,
+		});
+	if (request.stateKey !== switchService.activeStateKey) {
+		await instance.processReady;
+		await terminalEditorService.openEditor(instance);
+		terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
+	} else {
+		if (wsl !== undefined) {
+			await instance.processReady;
+			terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
+		}
+		terminalService.setActiveInstance(instance);
+	}
+	await instance.processReady;
+	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。
+	const command = request.agent === 'claude'
+		? `claude --resume ${request.sessionId}`
+		: `codex resume ${request.sessionId}`;
 	await instance.sendText(command, true);
 }
 
