@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisParseWorkspaceLifecycleConfig, paradisUpdateWorkspaceLifecycleConfig } from '../../common/paradisWorkspaceLifecycle.js';
+import { paradisParseWorkspaceLifecycleConfig, paradisResolveLifecycleTimeoutMinutes, paradisUpdateWorkspaceLifecycleConfig, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES, PARADIS_LIFECYCLE_TIMEOUT_MINUTES_MAX, PARADIS_LIFECYCLE_TIMEOUT_MINUTES_MIN } from '../../common/paradisWorkspaceLifecycle.js';
 
 suite('Paradis workspace lifecycle configuration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -18,6 +18,34 @@ suite('Paradis workspace lifecycle configuration', () => {
 			"setupScript": " bun install ",
 			"teardownScript": false
 		}`), { setupScript: 'bun install' });
+	});
+
+	test('reads per-repository timeouts and clamps them into range', () => {
+		assert.deepStrictEqual(paradisParseWorkspaceLifecycleConfig(`{
+			"teardownScript": "docker compose down --rmi all --volumes",
+			"teardownTimeoutMinutes": 30,
+			"setupTimeoutMinutes": 9999
+		}`), {
+			teardownScript: 'docker compose down --rmi all --volumes',
+			setupTimeoutMinutes: PARADIS_LIFECYCLE_TIMEOUT_MINUTES_MAX,
+			teardownTimeoutMinutes: 30
+		});
+	});
+
+	test('falls back to the default timeout for missing or invalid values', () => {
+		assert.deepStrictEqual([
+			paradisResolveLifecycleTimeoutMinutes(undefined),
+			paradisResolveLifecycleTimeoutMinutes('30'),
+			paradisResolveLifecycleTimeoutMinutes(Number.NaN),
+			paradisResolveLifecycleTimeoutMinutes(0),
+			paradisResolveLifecycleTimeoutMinutes(30)
+		], [
+			PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES,
+			PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES,
+			PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES,
+			PARADIS_LIFECYCLE_TIMEOUT_MINUTES_MIN,
+			30
+		]);
 	});
 
 	test('throws for malformed JSONC', () => {

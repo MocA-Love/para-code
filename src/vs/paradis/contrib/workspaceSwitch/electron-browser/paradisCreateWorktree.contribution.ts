@@ -173,6 +173,21 @@ registerAction2(ParadisCreateWorktreeAction);
  * teardown スクリプト起因の失敗を、削除フロー内の他の想定外エラーと区別するためのマーカー。
  * これで包まれていないエラーに「セットアップ解除スクリプトが失敗した」と誤って案内しないために使う。
  */
+/**
+ * スクリプトの失敗をダイアログに載せられる長さにする。
+ * 失敗の理由には子プロセスの stderr がそのまま入っており、上限は 16MB ある。
+ * 全部を載せるとダイアログがボタンごと画面外へ流れ、選べなくなる。
+ */
+const TEARDOWN_FAILURE_DETAIL_MAX_LENGTH = 2000;
+
+function paradisSummarizeScriptFailure(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.length > TEARDOWN_FAILURE_DETAIL_MAX_LENGTH
+		// allow-any-unicode-next-line
+		? `${message.slice(0, TEARDOWN_FAILURE_DETAIL_MAX_LENGTH)}…（以降は省略。全文は出力ログを参照）`
+		: message;
+}
+
 class ParadisTeardownFailedError extends Error {
 	constructor(readonly reason: unknown) {
 		super(reason instanceof Error ? reason.message : String(reason));
@@ -193,17 +208,35 @@ class ParadisSwitchToParentFailedError extends Error {
 
 /** worktree 削除前後の一連のアクション（順序・失敗時の打ち切りをテストしやすいよう分離）。 */
 export interface IParadisRemoveWorktreeActions {
-	/** リポジトリ定義の teardownScript を実行する。失敗したら後続（切り替え・削除）を一切実行しない。 */
+	/** リポジトリ定義の teardownScript を実行する。 */
 	runTeardown(): Promise<void>;
+	/**
+	 * teardown が失敗（タイムアウト含む）したときに、それでも削除を続けるかを尋ねる。
+	 * true を返したときだけ後続（切り替え・削除）へ進む。省略時は従来どおり打ち切る。
+	 */
+	confirmTeardownFailure?(error: unknown): Promise<boolean>;
 	/** 削除対象が現在アクティブなら親リポジトリへ切り替える。失敗したら削除を実行しない。 */
 	switchToParent(): Promise<void>;
 	/** git worktree remove（force 再試行込み）を実行する。 */
 	remove(): Promise<void>;
 }
 
-/** teardown → 親への切り替え → 削除、の順で実行する。 */
+/**
+ * teardown → 親への切り替え → 削除、の順で実行する。
+ *
+ * teardown の失敗で削除まで止めるのは、後片付けを飛ばしたことに気づかないまま作業ツリーが
+ * 消えるのを防ぐため。ただしそれを唯一の答えにすると、失敗し続けるスクリプト（時間のかかる
+ * `docker compose down --rmi all --volumes` がタイムアウトする等）が書かれている限り
+ * **その worktree を二度と消せなくなる**。続行するかどうかはユーザーに決めさせる。
+ */
 export async function paradisRemoveWorktreeSequence(actions: IParadisRemoveWorktreeActions): Promise<void> {
-	await actions.runTeardown();
+	try {
+		await actions.runTeardown();
+	} catch (error) {
+		if (!actions.confirmTeardownFailure || !await actions.confirmTeardownFailure(error)) {
+			throw error;
+		}
+	}
 	await actions.switchToParent();
 	await actions.remove();
 }
@@ -257,15 +290,31 @@ class ParadisRemoveWorktreeAction extends Action2 {
 		}
 
 		let scopeRetired = false;
+		// 後片付けが実際に走ったか。削除を中止した場合の案内で「後片付けだけ済んでいる」かどうかを
+		// 正しく伝えるために持つ（失敗を承知で飛ばしたときに「実行済みです」と言わないため）。
+		let teardownRan = false;
 		try {
 			await paradisRemoveWorktreeSequence({
 				runTeardown: async () => {
-					// リポジトリ定義の teardownScript。失敗したら切り替え・削除を一切行わない
+					// リポジトリ定義の teardownScript。失敗したら続行するかを尋ねる（confirmTeardownFailure）
 					try {
-						await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri);
+						teardownRan = await instantiationService.invokeFunction(paradisRunWorkspaceLifecycleScript, 'teardown', repository, uri);
 					} catch (error) {
 						throw new ParadisTeardownFailedError(error);
 					}
+				},
+				confirmTeardownFailure: async error => {
+					logService.error('[ParadisRemoveWorktree] teardown failed', error instanceof ParadisTeardownFailedError ? error.reason : error);
+					const { confirmed } = await dialogService.confirm({
+						type: 'warning',
+						// allow-any-unicode-next-line
+						message: localize('paradis.workspaceSwitch.removeWorktreeTeardownFailedConfirm', "セットアップ解除スクリプトが失敗しました。それでもワークツリーを削除しますか？"),
+						// allow-any-unicode-next-line
+						detail: localize('paradis.workspaceSwitch.removeWorktreeTeardownFailedDetail', "{0}\n\n削除を続けると、このスクリプトが行うはずだった後片付け（コンテナ・ボリューム・生成物の削除など）は行われません。中止した場合、ワークツリーは残ります。", paradisSummarizeScriptFailure(error)),
+						// allow-any-unicode-next-line
+						primaryButton: localize('paradis.workspaceSwitch.removeWorktreeTeardownFailedAction', "それでも削除")
+					});
+					return confirmed;
 				},
 				switchToParent: async () => {
 					// 削除対象が現在アクティブなワークスペースの場合、先に親リポジトリへ切り替えてから削除する
@@ -358,19 +407,19 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			});
 		} catch (error) {
 			if (error instanceof ParadisTeardownFailedError) {
-				logService.error('[ParadisRemoveWorktree] teardown failed', error.reason);
-				await dialogService.error(
-					// allow-any-unicode-next-line
-					localize('paradis.workspaceSwitch.removeWorktreeTeardownFailed', "セットアップ解除スクリプトが失敗したため、削除を中止しました。"),
-					error.message
-				);
+				// 失敗の内容と「それでも削除するか」は confirmTeardownFailure で既に見せている
+				// （ログもそこで残している）。ここまで来たのはユーザーが中止を選んだときだけなので、
+				// 同じことをもう一度ダイアログで言わない。
 				return;
 			}
 			if (error instanceof ParadisSwitchToParentFailedError) {
 				logService.error('[ParadisRemoveWorktree] switch to parent repository before removal failed', error.reason);
 				await dialogService.error(
-					// allow-any-unicode-next-line
-					localize('paradis.workspaceSwitch.removeWorktreeSwitchFailed', "親リポジトリへの切り替えに失敗したため、削除を中止しました。ワークツリーは削除されていません（設定されているセットアップ解除スクリプトは実行済みです）。"),
+					teardownRan
+						// allow-any-unicode-next-line
+						? localize('paradis.workspaceSwitch.removeWorktreeSwitchFailed', "親リポジトリへの切り替えに失敗したため、削除を中止しました。ワークツリーは削除されていません（設定されているセットアップ解除スクリプトは実行済みです）。")
+						// allow-any-unicode-next-line
+						: localize('paradis.workspaceSwitch.removeWorktreeSwitchFailedNoTeardown', "親リポジトリへの切り替えに失敗したため、削除を中止しました。ワークツリーは削除されていません。"),
 					error.message
 				);
 				return;

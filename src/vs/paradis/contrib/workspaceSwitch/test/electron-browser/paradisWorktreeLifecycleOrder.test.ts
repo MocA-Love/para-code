@@ -57,6 +57,28 @@ suite('worktree lifecycle order', () => {
 		assert.deepStrictEqual(events, ['teardown']);
 	});
 
+	test('teardown failure still removes when the user confirms', async () => {
+		const events: string[] = [];
+		await paradisRemoveWorktreeSequence({
+			runTeardown: async () => { events.push('teardown'); throw new Error('failed'); },
+			confirmTeardownFailure: async error => { events.push(`confirm:${(error as Error).message}`); return true; },
+			switchToParent: async () => { events.push('switch'); },
+			remove: async () => { events.push('remove'); }
+		});
+		assert.deepStrictEqual(events, ['teardown', 'confirm:failed', 'switch', 'remove']);
+	});
+
+	test('teardown failure aborts when the user declines', async () => {
+		const events: string[] = [];
+		await assert.rejects(paradisRemoveWorktreeSequence({
+			runTeardown: async () => { events.push('teardown'); throw new Error('failed'); },
+			confirmTeardownFailure: async () => { events.push('confirm'); return false; },
+			switchToParent: async () => { events.push('switch'); },
+			remove: async () => { events.push('remove'); }
+		}), /failed/);
+		assert.deepStrictEqual(events, ['teardown', 'confirm']);
+	});
+
 	test('switch-to-parent failure prevents removal', async () => {
 		const events: string[] = [];
 		await assert.rejects(paradisRemoveWorktreeSequence({

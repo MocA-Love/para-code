@@ -108,6 +108,11 @@ export interface IParadisRunLifecycleScriptRequest {
 	readonly worktreePath: string;
 	/** シェル経由で実行するスクリプト本文。 */
 	readonly script: string;
+	/**
+	 * 最長実行時間（分）。リポジトリの .paracode.json が指定していれば渡す。未指定・範囲外は
+	 * 実行側が既定値へ丸める（paradisResolveLifecycleTimeoutMinutes）。
+	 */
+	readonly timeoutMinutes?: number;
 }
 
 /** git worktree remove の要求。パスはすべてネイティブファイルシステムパス。 */
