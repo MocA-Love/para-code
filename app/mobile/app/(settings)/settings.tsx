@@ -119,6 +119,16 @@ export default function SettingsScreen() {
 						</View>
 						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
 					</Pressable>
+					<View style={styles.separator} />
+					{/* 見た目を決めるための実験台。決まったら本番へ移してこの行は消す。 */}
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/morph-lab'); }}>
+						<Ionicons name="color-wand-outline" size={18} color={colors.accent} />
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>ヘッダーの動きを試す</Text>
+							<Text style={styles.rowDesc}>画面を移るときの上のバーの動きを、案ごとに見比べます</Text>
+						</View>
+						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+					</Pressable>
 				</View>
 
 				<Text style={styles.sectionTitle}>ペアリング済みのPC</Text>
