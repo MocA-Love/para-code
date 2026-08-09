@@ -32,7 +32,8 @@ import { colors, mono, radius, squircle, withAlpha } from '../theme.js';
  * 中身（アイコン・ネイティブボタン）は差し替わってよい。
  *
  * **ガラスに不透明度を当ててはいけない**（0にすると効果ごと死ぬ）。薄くするのは器の
- * **中身**だけ。器の大きさは包み（`styles.slot`）の幅で変え、器は `flexGrow` でそれに従う。
+ * **中身**だけ。器の大きさは包み（`styles.slot`）の幅で変え、器は縦方向の包みの中で
+ * `stretch` されることでそれに従う（`flexGrow` を使ってはいけない理由は `styles.slot` に書いた）。
  *
  * モーフ中は**旧の中身と新の中身が同時に載る**。旧は必ず `styles.overlay`（絶対配置）で
  * 重ねること——器の幅は中身から決まるので、旧を流れに入れると幅が両者の広い方になり、
@@ -249,19 +250,16 @@ export function ParaHeaderLayer() {
 					</GlassSurface>
 				)}
 				<View style={styles.rightGroup} pointerEvents="box-none">
-					{/* 無くなるスロットも**消えていく間は描き続ける**（器を0へ縮めながら中身を薄くする）。
-					    ここで即座に外すと、ターミナルの＋ボタンのように「消える側」が瞬間的に
-					    消滅して、モーフしているのは残る側だけになる。 */}
-					{rightA === undefined && previous?.rightA === undefined ? null : (
+					{/* **無くなるスロットは即座に外す。** 縮めながら消したいところだが、丸は
+					    `minWidth` で44ptを下回れないので、包みを0へ絞ると器が包みから
+					    はみ出して見える。器を0まで潰せる形にするまでは即座に外す。 */}
+					{rightA === undefined ? null : (
 						<Reanimated.View
 							style={[styles.slot, morph.bounds.rightA]}
 							onLayout={event => morph.measure('rightA', Math.round(event.nativeEvent.layout.width))}
 						>
-							<GlassSurface
-								style={(rightA ?? previous?.rightA)?.kind === 'text' ? styles.textPill : styles.pill}
-								interactive={(rightA ?? previous?.rightA)?.kind === 'text'}
-							>
-								{rightA === undefined ? null : <RightAContent rightA={rightA} fade={morph.entering} />}
+							<GlassSurface style={rightA.kind === 'text' ? styles.textPill : styles.pill} interactive={rightA.kind === 'text'}>
+								<RightAContent rightA={rightA} fade={morph.entering} />
 								{previous?.rightA === undefined ? null : (
 									<Reanimated.View style={[styles.overlay, styles.overlayRow, morph.fading]} pointerEvents="none">
 										<RightAContent rightA={previous.rightA} fade={undefined} />
@@ -270,13 +268,13 @@ export function ParaHeaderLayer() {
 							</GlassSurface>
 						</Reanimated.View>
 					)}
-					{rightB === undefined && previous?.rightB === undefined ? null : (
+					{rightB === undefined ? null : (
 						<Reanimated.View
 							style={[styles.slot, morph.bounds.rightB]}
 							onLayout={event => morph.measure('rightB', Math.round(event.nativeEvent.layout.width))}
 						>
-							<GlassSurface style={styles.circle} interactive={rightB !== undefined}>
-								{rightB === undefined ? null : <RightBContent rightB={rightB} fade={morph.entering} />}
+							<GlassSurface style={styles.circle} interactive>
+								<RightBContent rightB={rightB} fade={morph.entering} />
 								{previous?.rightB === undefined ? null : (
 									<Reanimated.View style={[styles.overlay, morph.fading]} pointerEvents="none">
 										<RightBContent rightB={previous.rightB} fade={undefined} />
@@ -331,10 +329,15 @@ const styles = StyleSheet.create({
 	spacer: { flex: 1, minWidth: 0 },
 	rightGroup: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 
-	// 幅を動かすための包み。**行方向にして中のガラスに `flexGrow` を持たせる**ので、
-	// この箱の幅（モーフ中は共有値が決める）にガラスがそのまま追従する。静止時は箱に
-	// 制約が無いので、幅は中のガラスの中身なりに決まる。
-	slot: { flexShrink: 0, flexDirection: 'row' },
+	// 幅を動かすための包み。**縦方向のままにしておくこと。** 縦方向なら中のガラスは
+	// `alignItems: 'stretch'`（既定）でこの箱の幅いっぱいに伸びる一方、箱の幅は中身なりに
+	// 決まる。モーフ中はこの箱に下限・上限が当たるので、ガラスがそれに従って縮む／伸びる。
+	//
+	// **器に `flexGrow` を持たせてはいけない。** 一度やって幅が壊れた（2026-08-09）:
+	// 内容で幅が決まるコンテナの中に `flexGrow` の子が居ると、その子は「余白が無限にある
+	// かのように」伸ばされてから `maxWidth` で止まるため、**箱の幅が maxWidth に張り付く**。
+	// 島が224ptに膨らんで右のピルが画面外へ溢れた。
+	slot: { flexShrink: 0 },
 	// 大きさが決まっている器（丸・中央の島）の中身を重ねる層。**絶対配置にするのは、
 	// 器の幅を中身から決めている場所（島・ピル）で階層を増やすと、幅の計算が壊れて
 	// 中身が出なくなるため**。幅が中身で決まる器では、既存の要素へ直接不透明度を当てる。
@@ -343,13 +346,16 @@ const styles = StyleSheet.create({
 	// アイコンのピルの中身を重ねるときだけ、器と同じ並べ方にする。
 	overlayRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, gap: 2 },
 
-	// 器はどれも `flexGrow: 1` で包みの幅に追従し、`overflow: 'hidden'` で中身を切り取る
-	// （切り取り＝細くなって見える）。**`borderRadius` は動かさない**——高さが一定なので
+	// 器はどれも包みの幅に伸び（縦方向の包み＋`stretch`）、`overflow: 'hidden'` で中身を
+	// 切り取る（切り取り＝細くなって見える）。**`borderRadius` は動かさない**——高さが一定なので
 	// カプセルの半径は定数で足りる。毎フレーム変えると `UICornerRadius` を作り直す重い経路に入る。
-	circle: { width: SLOT_HEIGHT, height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, flexGrow: 1, overflow: 'hidden' },
+	//
+	// 丸は `width` ではなく `minWidth` にしてある。`width` を固定すると包みが太くても44ptの
+	// ままで、島→丸に縮む動きが「いきなり44ptになる」に見えてしまう。
+	circle: { minWidth: SLOT_HEIGHT, height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, overflow: 'hidden' },
 	circleHit: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-	island: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, maxWidth: 224, flexGrow: 1, overflow: 'hidden' },
+	island: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, maxWidth: 224, overflow: 'hidden' },
 	islandHit: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 9, paddingLeft: 7, paddingRight: 15 },
 	// 縮むときに潰れず切り取られるように。潰れると丸が楕円になって器と形が合わない。
 	islandAvatar: { width: 30, height: 30, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
@@ -367,14 +373,14 @@ const styles = StyleSheet.create({
 	},
 
 	// 中のボタンにはガラスを重ねない（Apple HIG）。押下は白のハイライトで返す。
-	pill: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, gap: 2, flexGrow: 1, overflow: 'hidden' },
+	pill: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, gap: 2, overflow: 'hidden' },
 	pillButton: { width: PILL_BUTTON, height: PILL_BUTTON, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center', flexShrink: 0 },
 	pillButtonPressed: { backgroundColor: 'rgba(255,255,255,0.16)' },
 	iconBadge: { position: 'absolute', top: 3, right: 3, width: 9, height: 9, borderRadius: radius.pill, borderWidth: 2, borderColor: colors.bg },
 	iconBadgeRed: { backgroundColor: colors.red },
 	iconBadgeGreen: { backgroundColor: colors.green },
 
-	textPill: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, maxWidth: 200, flexGrow: 1, overflow: 'hidden' },
+	textPill: { height: SLOT_HEIGHT, borderRadius: radius.pill, ...squircle, maxWidth: 200, overflow: 'hidden' },
 	textPillHit: { flex: 1, justifyContent: 'center', paddingHorizontal: 14 },
 	textPillLabel: { color: colors.text, fontSize: 12.5, fontWeight: '600' },
 
