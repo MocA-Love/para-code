@@ -29,7 +29,7 @@ import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradi
 import { paradisGithubCallSiteFromArgs, paradisIsGithubNoPullRequestMessage, paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisRedactHomePath } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRunLifecycleScriptRequest, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine } from '../common/paradisRepositoryClone.js';
-import { PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES } from '../common/paradisWorkspaceLifecycle.js';
+import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { getWslExePath } from '../../../../platform/agentHost/node/wslRemoteAgentHostHelpers.js';
 import { ParadisCommandArgument, paradisBuildWslInvocationArgs, paradisMergeWslEnvNames, paradisParseWslLoginPath, paradisParseWslUncPath, paradisPlanWslCommand, paradisWslLoginPathProbeArgs, paradisWslPathArg } from '../../../common/paradisWslPath.js';
@@ -38,8 +38,15 @@ import { ParadisCommandArgument, paradisBuildWslInvocationArgs, paradisMergeWslE
  * setup/teardown スクリプトの最長実行時間。スクリプトはユーザー任意のシェルコマンドのため、
  * 終了しないコマンド（対話待ち・フォアグラウンドの dev サーバー等の書き間違い）が混ざると
  * 呼び出し元の worktree 作成/削除フローが永久に完了しなくなる。上限で強制打ち切りする。
+ *
+ * 既定値と範囲は paradisResolveLifecycleTimeoutMinutes が持つ。リポジトリの .paracode.json が
+ * setupTimeoutMinutes / teardownTimeoutMinutes を指定していればそちらを使う（イメージや
+ * ボリュームまで落とす `docker compose down --rmi all --volumes` のように、既定では
+ * 足りない後片付けがあるため）。
  */
-const PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS = PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES * 60_000;
+function paradisLifecycleScriptTimeoutMs(request: IParadisRunLifecycleScriptRequest): number {
+	return paradisResolveLifecycleTimeoutMinutes(request.timeoutMinutes) * 60_000;
+}
 
 /** setup/teardown スクリプトの stdout/stderr 上限。超過時は打ち切ってエラーにする。 */
 const PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
@@ -507,13 +514,14 @@ export class ParadisWorktreeGitService {
 		// プラットフォームごとにシェルと引数形式を対で選ぶ
 		const shell = isWindows ? (env.ComSpec || 'cmd.exe') : (env.SHELL || '/bin/sh');
 		const args = isWindows ? ['/d', '/s', '/c', request.script] : ['-lc', request.script];
+		const timeoutMs = paradisLifecycleScriptTimeoutMs(request);
 		// `detached` は execFile の型定義には無いが、ランタイムでは spawn へそのまま透過される。
 		// POSIX ではスクリプトを独立したプロセスグループにし、タイムアウト時に
 		// バックグラウンド化した孫プロセス（`some-daemon &` 等）ごと殺せるようにする
 		const options: cp.ExecFileOptionsWithStringEncoding & { detached: boolean } = {
 			cwd: request.worktreePath,
 			encoding: 'utf8',
-			timeout: PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MS,
+			timeout: timeoutMs,
 			killSignal: 'SIGKILL',
 			// bun install 等は 1MiB (Node 既定) を超える出力を吐き得る。上限は明示しつつ余裕を持たせる
 			maxBuffer: PARADIS_LIFECYCLE_SCRIPT_MAX_BUFFER_BYTES,
@@ -541,7 +549,7 @@ export class ParadisWorktreeGitService {
 						try { process.kill(-childRef.pid, 'SIGKILL'); } catch { /* グループが既に存在しない */ }
 					}
 					// allow-any-unicode-next-line
-					reject(new Error(localize('paradis.workspaceLifecycle.scriptTimedOut', "{0} スクリプトが {1} 分以内に終了しなかったため、強制終了しました。", label, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES)));
+					reject(new Error(localize('paradis.workspaceLifecycle.scriptTimedOut', "{0} スクリプトが {1} 分以内に終了しなかったため、強制終了しました。", label, timeoutMs / 60_000)));
 					return;
 				}
 				const exitCode = (error as { code?: number }).code;

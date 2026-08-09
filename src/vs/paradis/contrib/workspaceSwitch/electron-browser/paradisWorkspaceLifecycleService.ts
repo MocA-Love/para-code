@@ -65,7 +65,11 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 		throw new Error(localize('paradis.workspaceLifecycle.trustRequired', "リポジトリ定義の setup/teardown スクリプトを実行するには、ワークスペースの信頼（Workspace Trust）が必要です。"));
 	}
 
-	const approvalKey = `${repository.uri.fsPath}:${kind}:${hash(script)}`;
+	const timeoutMinutes = kind === 'setup' ? config.setupTimeoutMinutes : config.teardownTimeoutMinutes;
+	// 承認はスクリプト本文だけでなく打ち切り時間も含めて取る。時間はリポジトリ側から
+	// 書き換えられる値で、承認済みのスクリプトのまま上限だけ最大まで伸ばされると、
+	// 作成・削除のフローをそのぶん止められる（内容は変わらないので再承認も挟まらない）。
+	const approvalKey = `${repository.uri.fsPath}:${kind}:${hash(script)}${timeoutMinutes !== undefined ? `:${timeoutMinutes}` : ''}`;
 	let approved: string[];
 	try {
 		approved = JSON.parse(storageService.get(LIFECYCLE_APPROVED_STORAGE_KEY, StorageScope.APPLICATION, '[]'));
@@ -79,7 +83,10 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 				? localize('paradis.workspaceLifecycle.approveSetup', "リポジトリ「{0}」の setup スクリプトを自動実行しますか？", repository.name)
 				// allow-any-unicode-next-line
 				: localize('paradis.workspaceLifecycle.approveTeardown', "リポジトリ「{0}」の teardown スクリプトを自動実行しますか？", repository.name),
-			detail: script,
+			detail: timeoutMinutes !== undefined
+				// allow-any-unicode-next-line
+				? localize('paradis.workspaceLifecycle.approveDetailWithTimeout', "{0}\n\n（このスクリプトは最長 {1} 分で打ち切られます）", script, timeoutMinutes)
+				: script,
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradis.workspaceLifecycle.approveRun', "実行")
 		});
@@ -91,7 +98,8 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 	}
 
 	await sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL).call('runLifecycleScript', [{
-		kind, repoPath: repository.uri.fsPath, worktreePath: worktreeUri.fsPath, script
+		kind, repoPath: repository.uri.fsPath, worktreePath: worktreeUri.fsPath, script,
+		...(timeoutMinutes !== undefined ? { timeoutMinutes } : {})
 	}]);
 	return true;
 }
