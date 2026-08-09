@@ -43,6 +43,7 @@ export interface IParadisResumeMessage {
 	readonly role: 'user' | 'assistant';
 	readonly text: string;
 	readonly timestamp?: number;
+	readonly rawSearchMatch?: boolean;
 }
 
 export interface IParadisResumePreview {
@@ -50,10 +51,17 @@ export interface IParadisResumePreview {
 	readonly truncated: boolean;
 }
 
+export interface IParadisResumeSearchResult {
+	readonly catalogId: string;
+	readonly matchCount: number;
+	readonly snippet: string;
+	readonly source: 'metadata' | 'conversation';
+}
+
 export interface IParadisSessionResumeService {
 	list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]>;
-	preview(catalogId: string): Promise<IParadisResumePreview>;
-	search(query: string, catalogIds: readonly string[]): Promise<readonly string[]>;
+	preview(catalogId: string, query?: string): Promise<IParadisResumePreview>;
+	search(query: string, catalogIds: readonly string[]): Promise<readonly IParadisResumeSearchResult[]>;
 }
 
 /** 先頭の `-` を拒否し、CLIオプションとして解釈されない単一引数だけを許す。 */

@@ -27,7 +27,7 @@ Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane
 	EditorPaneDescriptor.create(
 		ParadisSessionResumeEditor,
 		PARADIS_SESSION_RESUME_EDITOR_ID,
-		localize('paradis.sessionResume.editorName', "Agent Sessions"),
+		localize('paradis.sessionResume.editorName', "セッション履歴"),
 	),
 	[new SyncDescriptor(ParadisSessionResumeInput)],
 );
@@ -41,7 +41,7 @@ registerAction2(class ShowParadisSessionResumeAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_SHOW_SESSION_RESUME_COMMAND_ID,
-			title: localize2('paradis.sessionResume.show', "Browse Agent Sessions"),
+			title: localize2('paradis.sessionResume.show', "エージェントのセッション履歴を開く"),
 			category: Categories.View,
 			f1: true,
 		});
@@ -56,7 +56,7 @@ registerAction2(class ShowParadisSessionResumeAction extends Action2 {
 MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
 	command: {
 		id: PARADIS_SHOW_SESSION_RESUME_COMMAND_ID,
-		title: localize2('paradis.sessionResume.viewTitle', "Browse Agent Sessions"),
+		title: localize2('paradis.sessionResume.viewTitle', "セッション履歴を開く"),
 		icon: Codicon.history,
 	},
 	when: ContextKeyExpr.equals('view', PARADIS_WORKSPACES_VIEW_ID),

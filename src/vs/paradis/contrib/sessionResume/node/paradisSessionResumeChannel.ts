@@ -22,6 +22,7 @@ import {
 	IParadisResumeListRequest,
 	IParadisResumeMessage,
 	IParadisResumePreview,
+	IParadisResumeSearchResult,
 	IParadisResumeSession,
 	IParadisResumeSpace,
 	PARADIS_RESUME_SESSION_ID_PATTERN,
@@ -61,6 +62,34 @@ function number(value: unknown): number | undefined {
 
 function clipped(value: string, limit = MAX_MESSAGE_CHARS): string {
 	return value.length > limit ? `${value.slice(0, limit)}…` : value;
+}
+
+function countSearchTermOccurrences(value: string, terms: readonly string[]): number {
+	const haystack = value.toLocaleLowerCase();
+	let count = 0;
+	for (const term of terms) {
+		let offset = 0;
+		while ((offset = haystack.indexOf(term, offset)) !== -1) {
+			count++;
+			offset += term.length;
+		}
+	}
+	return count;
+}
+
+function createSearchSnippet(value: string, terms: readonly string[]): string {
+	const normalized = value.replace(/\s+/g, ' ').trim();
+	const lower = normalized.toLocaleLowerCase();
+	const firstMatch = terms.reduce((nearest, term) => {
+		const index = lower.indexOf(term);
+		return index === -1 ? nearest : Math.min(nearest, index);
+	}, Number.POSITIVE_INFINITY);
+	if (!Number.isFinite(firstMatch)) {
+		return clipped(normalized, 240);
+	}
+	const start = Math.max(0, firstMatch - 70);
+	const end = Math.min(normalized.length, firstMatch + 170);
+	return `${start > 0 ? '…' : ''}${normalized.slice(start, end)}${end < normalized.length ? '…' : ''}`;
 }
 
 function parseTimestamp(value: unknown): number | undefined {
@@ -270,7 +299,7 @@ export class ParadisSessionResumeService {
 		return visible;
 	}
 
-	async preview(catalogId: string): Promise<IParadisResumePreview> {
+	async preview(catalogId: string, rawQuery?: string): Promise<IParadisResumePreview> {
 		const entry = this.catalog.get(catalogId);
 		if (!entry || !pathInside(entry.allowedRoot, entry.transcriptPath)) {
 			throw new Error('Session is no longer available.');
@@ -291,22 +320,43 @@ export class ParadisSessionResumeService {
 				messages.push(message);
 			}
 		}
-		const visible = messages.slice(-MAX_PREVIEW_MESSAGES);
+		const terms = rawQuery?.trim().toLocaleLowerCase().slice(0, 200).split(/\s+/).filter(Boolean) ?? [];
+		let visible: readonly IParadisResumeMessage[];
+		if (terms.length === 0) {
+			visible = messages.slice(-MAX_PREVIEW_MESSAGES);
+		} else {
+			const visibleIndices = new Set<number>();
+			const matchingIndices = new Set<number>();
+			for (let index = 0; index < messages.length; index++) {
+				const text = messages[index].text.toLocaleLowerCase();
+				if (terms.some(term => text.includes(term))) {
+					matchingIndices.add(index);
+					visibleIndices.add(Math.max(0, index - 1));
+					visibleIndices.add(index);
+					visibleIndices.add(Math.min(messages.length - 1, index + 1));
+				}
+			}
+			visible = visibleIndices.size > 0
+				? [...visibleIndices].sort((a, b) => a - b).slice(0, MAX_PREVIEW_MESSAGES).map(index => ({ ...messages[index], rawSearchMatch: matchingIndices.has(index) }))
+				: messages.slice(-MAX_PREVIEW_MESSAGES);
+		}
 		return { messages: visible, truncated: data.truncated || messages.length > visible.length };
 	}
 
-	async search(clientId: string, rawQuery: string, requestedCatalogIds: readonly string[]): Promise<readonly string[]> {
+	async search(clientId: string, rawQuery: string, requestedCatalogIds: readonly string[]): Promise<readonly IParadisResumeSearchResult[]> {
 		const revision = (this.searchRevisions.get(clientId) ?? 0) + 1;
 		this.searchRevisions.set(clientId, revision);
 		const terms = rawQuery.trim().toLocaleLowerCase().slice(0, 200).split(/\s+/).filter(Boolean);
 		if (terms.length === 0) {
-			const result = requestedCatalogIds.slice(0, MAX_SESSIONS).filter(catalogId => this.catalog.has(catalogId));
+			const result = requestedCatalogIds.slice(0, MAX_SESSIONS).filter(catalogId => this.catalog.has(catalogId)).map(catalogId => ({
+				catalogId, matchCount: 0, snippet: '', source: 'metadata' as const,
+			}));
 			if (this.searchRevisions.get(clientId) === revision) {
 				this.searchRevisions.delete(clientId);
 			}
 			return result;
 		}
-		const matches: string[] = [];
+		const matches: IParadisResumeSearchResult[] = [];
 		// 全文走査は検索時だけ。4並列に制限して、WSLや大きな履歴でもI/Oを暴走させない。
 		const entries = [...new Set(requestedCatalogIds)].slice(0, MAX_SESSIONS)
 			.map(catalogId => [catalogId, this.catalog.get(catalogId)] as const)
@@ -316,16 +366,25 @@ export class ParadisSessionResumeService {
 			while (cursor < entries.length && this.searchRevisions.get(clientId) === revision) {
 				const [catalogId, entry] = entries[cursor++];
 				entry.touchedAt = Date.now();
-				let haystack = `${entry.session.title}\n${entry.session.preview}\n${entry.session.cwd}\n${entry.session.id}\n${entry.session.spaceName}`.toLocaleLowerCase();
-				if (!terms.every(term => haystack.includes(term))) {
+				const metadata = `${entry.session.title}\n${entry.session.preview}\n${entry.session.cwd}\n${entry.session.id}\n${entry.session.spaceName}`;
+				let searchable = metadata;
+				let source: IParadisResumeSearchResult['source'] = 'metadata';
+				if (!terms.every(term => searchable.toLocaleLowerCase().includes(term))) {
 					try {
-						haystack += `\n${await this.getSearchText(entry)}`;
+						searchable += `\n${await this.getSearchText(entry)}`;
+						source = 'conversation';
 					} catch {
 						entry.searchText = '';
 					}
 				}
-				if (terms.every(term => haystack.includes(term))) {
-					matches.push(catalogId);
+				if (terms.every(term => searchable.toLocaleLowerCase().includes(term))) {
+					const snippetSource = source === 'conversation' ? searchable.slice(metadata.length + 1) : metadata;
+					matches.push({
+						catalogId,
+						matchCount: countSearchTermOccurrences(searchable, terms),
+						snippet: createSearchSnippet(snippetSource, terms),
+						source,
+					});
 				}
 			}
 		};
@@ -360,7 +419,7 @@ export class ParadisSessionResumeService {
 			const searchable = fullText.length <= MAX_SEARCH_TEXT_CHARS
 				? fullText
 				: `${fullText.slice(0, 16 * 1024)}\n${fullText.slice(-(MAX_SEARCH_TEXT_CHARS - 16 * 1024))}`;
-			entry.searchText = searchable.toLocaleLowerCase();
+			entry.searchText = searchable;
 			return entry.searchText;
 		})().finally(() => entry.searchTextPromise = undefined);
 		return entry.searchTextPromise;
@@ -634,7 +693,7 @@ export class ParadisSessionResumeChannel implements IServerChannel<string> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest) as Promise<T>;
-			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
+			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'search': return this.service.search(ctx, typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
 			default: throw new Error(`Method not found: ${command}`);
 		}

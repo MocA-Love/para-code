@@ -8,7 +8,7 @@
 	background: var(--vscode-editor-background); color: var(--vscode-editor-foreground);
 }
 .paradis-session-resume .paradis-session-resume-toolbar {
-	display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 0 14px;
+	display: flex; align-items: center; gap: 8px; min-height: 52px; padding: 10px 14px;
 	border-bottom: 1px solid var(--vscode-panel-border); background: var(--vscode-sideBar-background);
 }
 .paradis-session-resume .paradis-session-resume-search {
@@ -44,10 +44,13 @@
 .paradis-session-resume .row-title { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
 .paradis-session-resume .row-time { flex: none; font-size: 11px; color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .row-preview { margin: 6px 0 7px 25px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--vscode-descriptionForeground); }
+.paradis-session-resume .row-match-info { display: flex; align-items: center; gap: 8px; margin: -1px 0 7px 25px; font-size: 10px; color: var(--vscode-descriptionForeground); }
+.paradis-session-resume .row-match-info .match-source { color: var(--vscode-charts-yellow); }
+.paradis-session-resume .row-match-info .match-count { padding: 1px 6px; border-radius: 9px; background: color-mix(in srgb, var(--vscode-charts-yellow) 13%, transparent); }
 .paradis-session-resume .row-meta { display: flex; gap: 10px; margin-left: 25px; overflow: hidden; font-size: 11px; color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .row-meta span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .paradis-session-resume .row-meta .archived { color: var(--vscode-charts-yellow); }
-.paradis-session-resume .agent-badge { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; font-size: 10px; font-weight: 800; }
+.paradis-session-resume .agent-badge { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 5px; font-size: 13px; }
 .paradis-session-resume .agent-badge.claude { background: color-mix(in srgb, #d97757 24%, transparent); color: #e38b70; }
 .paradis-session-resume .agent-badge.codex { background: color-mix(in srgb, #3b82f6 24%, transparent); color: #6aa7ff; }
 .paradis-session-resume .paradis-session-resume-detail-header { padding: 20px 22px 15px; border-bottom: 1px solid var(--vscode-panel-border); }
@@ -55,16 +58,44 @@
 .paradis-session-resume .detail-heading h2 { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 17px; }
 .paradis-session-resume .detail-meta { display: flex; gap: 8px 14px; flex-wrap: wrap; margin-top: 10px; color: var(--vscode-descriptionForeground); font-size: 11px; }
 .paradis-session-resume .detail-meta .monospace { font-family: var(--monaco-monospace-font); }
+.paradis-session-resume .detail-search-navigator { display: flex; align-items: center; gap: 4px; margin-top: 11px; }
+.paradis-session-resume .detail-search-navigator .match-position { margin-right: 3px; color: var(--vscode-descriptionForeground); font-size: 11px; }
+.paradis-session-resume .detail-search-navigator button { width: 24px; height: 22px; padding: 0; border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); border-radius: 4px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); }
+.paradis-session-resume .detail-search-navigator button:disabled { opacity: .5; }
 .paradis-session-resume .paradis-session-resume-transcript { flex: 1; overflow: auto; padding: 18px 24px 88px; }
 .paradis-session-resume .message { max-width: 820px; margin: 0 auto 16px; }
 .paradis-session-resume .message-role { margin-bottom: 5px; font-size: 11px; font-weight: 700; color: var(--vscode-descriptionForeground); }
-.paradis-session-resume .message-text { padding: 11px 13px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; background: var(--vscode-editorWidget-background); }
+.paradis-session-resume .message-text { padding: 11px 13px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; overflow-wrap: anywhere; line-height: 1.55; background: var(--vscode-editorWidget-background); }
 .paradis-session-resume .message.user .message-text { background: var(--vscode-input-background); }
+.paradis-session-resume .message-text .rendered-markdown > :first-child { margin-top: 0; }
+.paradis-session-resume .message-text .rendered-markdown > :last-child { margin-bottom: 0; }
+.paradis-session-resume .message-text .rendered-markdown p { margin: 0 0 10px; }
+.paradis-session-resume .message-text .rendered-markdown h1,
+.paradis-session-resume .message-text .rendered-markdown h2,
+.paradis-session-resume .message-text .rendered-markdown h3 { margin: 18px 0 9px; line-height: 1.35; }
+.paradis-session-resume .message-text .rendered-markdown h1 { font-size: 1.45em; }
+.paradis-session-resume .message-text .rendered-markdown h2 { padding-bottom: 5px; border-bottom: 1px solid var(--vscode-panel-border); font-size: 1.25em; }
+.paradis-session-resume .message-text .rendered-markdown h3 { font-size: 1.1em; }
+.paradis-session-resume .message-text .rendered-markdown ul,
+.paradis-session-resume .message-text .rendered-markdown ol { margin: 8px 0; padding-left: 24px; }
+.paradis-session-resume .message-text .rendered-markdown blockquote { margin: 10px 0; padding: 6px 11px; border-left: 3px solid var(--vscode-textBlockQuote-border); background: var(--vscode-textBlockQuote-background); }
+.paradis-session-resume .message-text .rendered-markdown table { max-width: 100%; border-collapse: collapse; }
+.paradis-session-resume .message-text .rendered-markdown th,
+.paradis-session-resume .message-text .rendered-markdown td { padding: 5px 8px; border: 1px solid var(--vscode-panel-border); }
+.paradis-session-resume .message-text .rendered-markdown :not(pre) > code { padding: 1px 4px; border-radius: 4px; background: var(--vscode-textCodeBlock-background); font-family: var(--monaco-monospace-font); }
+.paradis-session-resume .message-text .rendered-markdown .code { margin: 10px 0; overflow: auto; border: 1px solid var(--vscode-panel-border); border-radius: 6px; background: var(--vscode-textCodeBlock-background); }
+.paradis-session-resume .message-text .rendered-markdown .monaco-tokenized-source { display: block; padding: 10px 12px; white-space: pre; }
+.paradis-session-resume .paradis-session-resume-mermaid { min-height: 42px; max-height: 80vh; margin: 10px 0; overflow: hidden; border: 1px solid var(--vscode-panel-border); border-radius: 6px; }
+.paradis-session-resume .message-source-match { margin-top: 6px; font-size: 10px; color: var(--vscode-descriptionForeground); }
+.paradis-session-resume .message-source-match.hidden { display: none; }
+.paradis-session-resume .message-source-match mark { display: inline-block; padding: 2px 6px; }
+.paradis-session-resume mark.search-match { padding: 0 1px; border-radius: 2px; color: inherit; background: color-mix(in srgb, var(--vscode-charts-yellow) 38%, transparent); }
+.paradis-session-resume mark.search-match.current { outline: 1px solid var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 55%, transparent); }
 .paradis-session-resume .preview-note { max-width: 820px; margin: 0 auto 15px; color: var(--vscode-descriptionForeground); font-size: 11px; }
 .paradis-session-resume .paradis-session-resume-actions { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--vscode-panel-border); background: color-mix(in srgb, var(--vscode-editor-background) 94%, transparent); }
 .paradis-session-resume .paradis-session-resume-actions button { padding: 0 13px; }
-.paradis-session-resume .paradis-session-resume-actions .primary { border-color: var(--vscode-button-background); background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
-.paradis-session-resume .paradis-session-resume-actions .primary:hover { background: var(--vscode-button-hoverBackground); }
+.paradis-session-resume .paradis-session-resume-actions .resume-split-button { height: 30px; }
+.paradis-session-resume .paradis-session-resume-actions .resume-split-button .monaco-button { min-width: 0; }
 .paradis-session-resume .paradis-session-resume-state { min-height: 180px; height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--vscode-descriptionForeground); }
 @media (max-width: 850px) {
 	.paradis-session-resume .paradis-session-resume-content { grid-template-columns: minmax(280px, 43%) minmax(320px, 1fr); }
