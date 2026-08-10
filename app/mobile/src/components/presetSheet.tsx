@@ -105,6 +105,14 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 			// 途中で止まったまま固まる。一覧へ戻る道は下の「戻る」が持つ。
 			<BottomSheet visible={visible} onClose={() => { setConfirming(undefined); onClose(); }} title={confirming.name} glass>
 				<ScrollView contentContainerStyle={[styles.body, { paddingBottom: insets.bottom + 20 }]}>
+					{confirming.qualifier ? (
+						// 同名のプリセットが並んでいる場合、名前だけでは「どちらを押したか」が
+						// 確認の面でも分からない。一覧と同じ区別語をここにも出す。
+						<View style={styles.confirmQualifierLine}>
+							<Text style={styles.confirmName} numberOfLines={1}>{confirming.name}</Text>
+							<Text style={styles.tag}>{confirming.qualifier}</Text>
+						</View>
+					) : null}
 					<Text style={styles.confirmLead}>
 						{wsLabel} で{presetTerminalCount(confirming) > 1 ? `${presetTerminalCount(confirming)}つのターミナルを作成して` : '新しいターミナルを作成して'}実行します。
 					</Text>
@@ -189,6 +197,7 @@ function PresetRow({ preset, first, onPress }: { preset: PresetDef; first: boole
 			<View style={styles.rowBody}>
 				<View style={styles.rowTitleLine}>
 					<Text style={styles.rowTitle} numberOfLines={1}>{preset.name}</Text>
+					{preset.qualifier ? <Text style={[styles.tag, styles.tagQualifier]} numberOfLines={1}>{preset.qualifier}</Text> : null}
 					<Text style={styles.tag}>{preset.source === 'workspace' ? 'リポジトリ' : 'ユーザー'}</Text>
 					{count > 1 ? <Text style={[styles.tag, styles.tagCount]}>{count} 端末</Text> : null}
 				</View>
@@ -231,8 +240,14 @@ const styles = StyleSheet.create({
 		borderRadius: 5, backgroundColor: 'rgba(255,255,255,0.09)', overflow: 'hidden',
 	},
 	tagCount: { color: colors.green, backgroundColor: 'rgba(79,209,165,0.15)' },
+	// 区別語は名前の補足。保存元タグと同じ強さで並べると名前より目立つので、枠だけにする
+	// 枠は colors.border より濃くする。同名を見分ける唯一の手掛かりが、ガラス面の上で
+	// 一番読めない要素になってしまう
+	tagQualifier: { backgroundColor: 'transparent', borderWidth: StyleSheet.hairlineWidth, borderColor: 'rgba(255,255,255,0.24)', flexShrink: 1 },
 	rowCommand: { color: colors.textDim, fontSize: 10.5, marginTop: 2, fontFamily: mono.ios },
 
+	confirmQualifierLine: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingTop: 4 },
+	confirmName: { color: colors.text, fontSize: 14, fontWeight: '700', flexShrink: 1 },
 	confirmLead: { color: colors.text, fontSize: 13, lineHeight: 19, paddingHorizontal: 12, paddingTop: 4, paddingBottom: 12 },
 	// 実行される本文をそのまま出す。要約すると「押す前に分かる」が成り立たない。
 	taskCard: {

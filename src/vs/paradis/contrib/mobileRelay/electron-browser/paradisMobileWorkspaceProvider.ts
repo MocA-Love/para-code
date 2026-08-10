@@ -45,7 +45,7 @@ import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradi
 import { IParadisResourceMonitorMobileReport } from '../../resourceMonitor/common/paradisResourceMonitor.js';
 import { IParadisSpaceDiskResult } from '../../spaceDisk/common/paradisSpaceDisk.js';
 import { hash } from '../../../../base/common/hash.js';
-import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, paradisPresetApprovalSignature } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, paradisPresetApprovalSignature, paradisPresetQualifiers } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
@@ -207,6 +207,12 @@ interface IParadisMobilePreset {
 	readonly signature: string;
 	readonly description?: string;
 	readonly icon?: string;
+	/**
+	 * 同じ名前のプリセットが並ぶときに、その1件を他と分けている語（対象リポジトリなど）。
+	 * **PC側で一覧全体を見て決める。** スマホには一覧の一部しか届かない（上限で切り詰める）ので、
+	 * 手元で名前を数えると「同名なのに区別語が出ない」ことが起きる。
+	 */
+	readonly qualifier?: string;
 	/** 上限で切り詰めた表示であること（実行される内容はこれより多い）。 */
 	readonly truncated?: boolean;
 	readonly tasks: readonly { readonly name?: string; readonly commands: readonly string[] }[];
@@ -218,7 +224,7 @@ interface IParadisMobilePreset {
  * 見せるため、タスクの分かれ方とコマンド本文も一緒に渡す。
  * 上限で切り詰めた場合は truncated を立て、モバイル側が「全部は出せていない」と言えるようにする。
  */
-function paradisDescribePresetForMobile(preset: IParadisResolvedPreset): IParadisMobilePreset {
+function paradisDescribePresetForMobile(preset: IParadisResolvedPreset, qualifiers?: ReadonlyMap<string, string>): IParadisMobilePreset {
 	const { tasks, layout } = paradisGetPresetTasks(preset);
 	const shown = tasks.slice(0, PRESET_MAX_TASKS).map(task => ({
 		...(task.name ? { name: task.name } : {}),
@@ -235,6 +241,7 @@ function paradisDescribePresetForMobile(preset: IParadisResolvedPreset): IParadi
 		signature: paradisPresetMobileSignature(preset),
 		...(preset.description ? { description: preset.description } : {}),
 		...(preset.icon ? { icon: preset.icon } : {}),
+		...(qualifiers?.get(preset.key) ? { qualifier: qualifiers.get(preset.key) } : {}),
 		...(truncated ? { truncated: true } : {}),
 		tasks: shown,
 	};
@@ -1388,10 +1395,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// キャッシュではなく毎回読み直す（getPresetsForFolder）。モバイルが見ているスペースは
 				// PC 側でアクティブとは限らず、キャッシュはアクティブなフォルダの解決結果を指すため。
 				const presets = await this.presetService.getPresetsForFolder(root);
+				// 区別語は切り詰める前の一覧全体で決める（PC版の一覧・ボタンと同じ見え方にする）
+				const qualifiers = paradisPresetQualifiers(presets);
 				if (msg.t === 'presets') {
 					reply({
 						t: 'presets', ws: msg.ws,
-						presets: presets.slice(0, PRESET_MAX_ENTRIES).map(paradisDescribePresetForMobile),
+						presets: presets.slice(0, PRESET_MAX_ENTRIES).map(preset => paradisDescribePresetForMobile(preset, qualifiers)),
 						...(presets.length > PRESET_MAX_ENTRIES ? { truncated: true } : {}),
 					});
 					return;
@@ -1433,7 +1442,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// （失敗だけを残すと、あとから「誰がいつ何を流したか」がターミナルの
 				// スクロールバックにしか無い状態になる）。コマンド本文はログに書かない。
 				this.logService.info(`[paradisMobileRelay] ran preset ${preset.key} in ${msg.ws} (${created.length} terminals)`);
-				reply({ t: 'runPreset', ws: msg.ws, created, ...paradisDescribePresetForMobile(preset) });
+				reply({ t: 'runPreset', ws: msg.ws, created, ...paradisDescribePresetForMobile(preset, qualifiers) });
 			} catch (err) {
 				this.logService.warn('[paradisMobileRelay] preset request failed', err);
 				reply({ error: String(err) });

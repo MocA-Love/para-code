@@ -16,12 +16,25 @@ import { ILogService, NullLogService } from '../../../../../platform/log/common/
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { GeneralShellType, ITerminalEnvironment, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
 import { paradisRunAutoRunPresets } from '../../browser/paradisTerminalPresets.contribution.js';
-import { IParadisPresetService, IParadisResolvedPreset, IParadisRunPresetOptions, paradisJoinPresetCommands, PARADIS_PROJECT_ROOT_ENV_VAR } from '../../common/paradisTerminalPresets.js';
+import {
+	IParadisPresetDefinition,
+	IParadisPresetService,
+	IParadisResolvedPreset,
+	IParadisRunPresetOptions,
+	paradisFindPresetNameConflict,
+	paradisJoinPresetCommands,
+	paradisPresetKey,
+	paradisPresetQualifiers,
+	paradisResolvePresetIndex,
+	paradisUsablePresetId,
+	ParadisPresetNameConflict,
+	PARADIS_PROJECT_ROOT_ENV_VAR,
+} from '../../common/paradisTerminalPresets.js';
 
 const TEST_FOLDER = URI.file('/repo-worktrees/feature');
 
 function createPreset(name: string): IParadisResolvedPreset {
-	return { key: name, name, commands: [`run-${name}`], source: 'user', autoRun: true };
+	return { key: `user:${name}`, name, commands: [`run-${name}`], source: 'user', sourceIndex: 0, autoRun: true };
 }
 
 suite('paradisRunAutoRunPresets', () => {
@@ -103,6 +116,121 @@ suite('paradisRunAutoRunPresets', () => {
 		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, '/repo');
 
 		assert.deepStrictEqual(envs, Array(3).fill({ [PARADIS_PROJECT_ROOT_ENV_VAR]: '/repo' }));
+	});
+});
+
+suite('presets with the same name', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	function resolved(definition: IParadisPresetDefinition, index: number, sourceUri?: URI): IParadisResolvedPreset {
+		const source = sourceUri ? 'workspace' as const : 'user' as const;
+		return { ...definition, source, sourceUri, sourceIndex: index, key: paradisPresetKey(source, sourceUri, definition, index) };
+	}
+
+	test('identifies a preset by its id, or by its position when the file carries no id', () => {
+		const file = URI.file('/repo/.paracode.json');
+		assert.deepStrictEqual([
+			paradisPresetKey('user', undefined, { id: 'a1b2c3d4', name: 'dev', commands: ['bun dev'] }, 3),
+			// 手書きのユーザー設定と .paracode.json は id を持たないので位置で識別する
+			paradisPresetKey('user', undefined, { name: 'dev', commands: ['bun dev'] }, 3),
+			paradisPresetKey('workspace', file, { name: 'dev', commands: ['bun dev'] }, 1),
+			// 同名でも位置が違えば別のキーになる（名前は識別子ではない）
+			paradisPresetKey('user', undefined, { name: 'dev', commands: ['bun dev'] }, 4),
+		], ['user:a1b2c3d4', 'user:#3', 'workspace:file:///repo/.paracode.json:#1', 'user:#4']);
+	});
+
+	test('hands out a qualifier only where the same name appears more than once', () => {
+		const presets = [
+			resolved({ name: 'dev', commands: ['bun dev'], appliesTo: ['/Users/example/para-code'] }, 0),
+			resolved({ name: 'dev', commands: ['pnpm dev'], appliesTo: ['relay'] }, 1),
+			// 対象リポジトリを持たない同名は作業ディレクトリで分ける
+			resolved({ name: 'test', commands: ['vitest'], cwd: './app/mobile' }, 2),
+			resolved({ name: 'test', commands: ['vitest'] }, 3),
+			// 単独の名前には区別語を出さない（区別が要らない場面で表示を増やさない）
+			resolved({ name: 'build', commands: ['bun run build'], cwd: './app/web' }, 4),
+		];
+		assert.deepStrictEqual([...paradisPresetQualifiers(presets)], [
+			['user:#0', 'para-code'],
+			['user:#1', 'relay'],
+			['user:#2', './app/mobile'],
+		]);
+	});
+
+	test('classifies a name collision by whether the two can be told apart in the list', () => {
+		const existing = [
+			resolved({ name: 'dev', description: 'front', commands: ['bun dev'], appliesTo: ['para-code'] }, 0),
+		];
+		assert.deepStrictEqual([
+			paradisFindPresetNameConflict({ name: 'test', commands: ['vitest'] }, existing).kind,
+			// 同名でも対象リポジトリが違えば見分けが付く（並べて登録してよい）
+			paradisFindPresetNameConflict({ name: 'dev', commands: ['pnpm dev'], appliesTo: ['relay'] }, existing).kind,
+			// 説明が違えば見分けが付く
+			paradisFindPresetNameConflict({ name: 'dev', description: 'api', commands: ['go run .'], appliesTo: ['para-code'] }, existing).kind,
+			// 名前・対象リポジトリ・説明が全部同じだと一覧で区別できない
+			paradisFindPresetNameConflict({ name: 'dev', description: 'front', commands: ['go run .'], appliesTo: ['para-code'] }, existing).kind,
+		], [
+			ParadisPresetNameConflict.None,
+			ParadisPresetNameConflict.Distinguishable,
+			ParadisPresetNameConflict.Distinguishable,
+			ParadisPresetNameConflict.Indistinguishable,
+		]);
+	});
+
+	test('points at the preset it actually collided with, not at the first one sharing the name', () => {
+		const existing = [
+			resolved({ name: 'dev', commands: ['bun dev'], appliesTo: ['para-code'] }, 0),
+			resolved({ name: 'dev', commands: ['pnpm dev'], appliesTo: ['relay'] }, 1),
+			resolved({ name: 'dev', commands: ['go run .'] }, 2),
+		];
+		// 対象リポジトリ指定なしの3件目と区別が付かない。ここで先頭を置き換えると
+		// 無関係な para-code 向けのプリセットが消える
+		const conflict = paradisFindPresetNameConflict({ name: 'dev', commands: ['cargo run'] }, existing);
+		assert.deepStrictEqual(
+			{ kind: conflict.kind, sameName: conflict.sameName.length, replaces: conflict.indistinguishableFrom?.key },
+			{ kind: ParadisPresetNameConflict.Indistinguishable, sameName: 3, replaces: 'user:#2' },
+		);
+	});
+
+	test('refuses to resolve a position whose occupant is no longer that preset', () => {
+		const dev = resolved({ name: 'dev', commands: ['bun dev'], cwd: './app/web' }, 1);
+		const twin = { name: 'dev', commands: ['bun dev'], cwd: './app/mobile' };
+		assert.deepStrictEqual([
+			// 位置も中身も一致
+			paradisResolvePresetIndex([{ name: 'other', commands: ['x'] }, { name: 'dev', commands: ['bun dev'], cwd: './app/web' }], dev),
+			// 前の1件が外部で消えて位置がずれた。名前もコマンドも同じ「双子」が来ているが、
+			// 作業ディレクトリが違うので当人ではない（ここで通すと無関係な1件を潰す）
+			paradisResolvePresetIndex([{ name: 'other', commands: ['x'] }, twin], dev),
+			// id を持つ定義は位置がずれても追える
+			paradisResolvePresetIndex(
+				[twin, { name: 'renamed', commands: ['bun dev'], id: 'abc123' }],
+				{ ...dev, id: 'abc123' },
+			),
+			// 壊れたエントリがその位置に来ている
+			paradisResolvePresetIndex([{ name: 'other', commands: ['x'] }, { name: '' }], dev),
+		], [1, -1, 1, -1]);
+	});
+
+	test('still finds a repository preset whose file carries an appliesTo that the loader drops', () => {
+		const file = URI.file('/repo/.paracode.json');
+		// .paracode.json に手書きされた appliesTo は読み込み時に捨てられる（そのリポジトリ自体が
+		// 対象なので意味を持たない）。突き合わせでそれを見ると、編集も削除もできなくなる
+		const raw = { name: 'dev', commands: ['bun dev'], appliesTo: ['other-repo'] };
+		const loaded: IParadisResolvedPreset = {
+			...raw, appliesTo: undefined, source: 'workspace', sourceUri: file, sourceIndex: 0,
+			key: paradisPresetKey('workspace', file, raw, 0),
+		};
+		assert.strictEqual(paradisResolvePresetIndex([raw], loaded), 0);
+	});
+
+	test('drops ids that cannot identify anything, so a copy-pasted entry cannot hijack its twin', () => {
+		const taken = new Set<string>();
+		assert.deepStrictEqual([
+			paradisUsablePresetId({ name: 'a', commands: ['x'], id: 'abc123' }, taken),
+			// settings.json でエントリごとコピーされた場合。2件目は位置で識別させる
+			paradisUsablePresetId({ name: 'b', commands: ['x'], id: 'abc123' }, taken),
+			paradisUsablePresetId({ name: 'c', commands: ['x'] }, taken),
+			paradisUsablePresetId({ name: 'd', commands: ['x'], id: 5 as unknown as string }, taken),
+		], ['abc123', undefined, undefined, undefined]);
 	});
 });
 

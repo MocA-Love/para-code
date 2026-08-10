@@ -39,13 +39,22 @@ import {
 	IParadisPresetService,
 	IParadisResolvedPreset,
 	IParadisRunPresetOptions,
+	IParadisSavePresetOptions,
 	isValidPresetDefinition,
 	paradisGetPresetTasks,
+	paradisPresetKey,
+	paradisResolvePresetIndex,
+	paradisUsablePresetId,
 	PARADIS_PRESETS_SETTING,
 	PARADIS_WORKSPACE_PRESET_FILE,
 	ParadisPresetSource,
 	paradisJoinPresetCommands,
 } from '../common/paradisTerminalPresets.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { localize } from '../../../../nls.js';
+
+// allow-any-unicode-next-line
+const STR_PRESET_GONE = localize('paradis.presets.gone', "このプリセットは見つかりませんでした。設定が別の場所で変更された可能性があります。一覧を開き直してください。");
 
 /**
  * プリセット名をターミナルの初期タイトルとしてどう渡すかを決める。
@@ -143,11 +152,23 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		if (!Array.isArray(raw)) {
 			return [];
 		}
-		return raw.filter(isValidPresetDefinition).map(definition => ({
-			...definition,
-			source: 'user' as const,
-			key: `user:${definition.name}`,
-		}));
+		// 位置は「不正エントリを取り除く前」の配列で数える。保存・削除はこの位置で書き戻すため、
+		// 読み飛ばした1件のぶんだけずれると無関係なプリセットを書き換えてしまう。
+		const takenIds = new Set<string>();
+		return raw
+			.map((definition, index) => ({ definition, index }))
+			.filter((entry): entry is { definition: IParadisPresetDefinition; index: number } => isValidPresetDefinition(entry.definition))
+			.map(({ definition, index }) => {
+				// 設定は手で編集できる。エントリごとコピーされて id が重複していたら、その id は
+				// 識別子として使えない（2件目を触ったつもりで1件目が書き換わる）ので位置に落とす。
+				const entry: IParadisPresetDefinition = { ...definition, id: paradisUsablePresetId(definition, takenIds) };
+				return {
+					...entry,
+					source: 'user' as const,
+					sourceIndex: index,
+					key: paradisPresetKey('user', undefined, entry, index),
+				};
+			});
 	}
 
 	private _matchesCurrentWorkspace(preset: IParadisPresetDefinition): boolean {
@@ -213,13 +234,21 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			if (!parsed || !Array.isArray(parsed.presets)) {
 				return [];
 			}
-			return parsed.presets.filter(isValidPresetDefinition).map(definition => ({
-				...definition,
-				appliesTo: undefined,
-				source: 'workspace' as const,
-				sourceUri: presetFile,
-				key: `workspace:${presetFile.toString()}:${definition.name}`,
-			}));
+			const takenIds = new Set<string>();
+			return parsed.presets
+				.map((definition, index) => ({ definition, index }))
+				.filter((entry): entry is { definition: IParadisPresetDefinition; index: number } => isValidPresetDefinition(entry.definition))
+				.map(({ definition, index }) => {
+					const entry: IParadisPresetDefinition = { ...definition, id: paradisUsablePresetId(definition, takenIds) };
+					return {
+						...entry,
+						appliesTo: undefined,
+						source: 'workspace' as const,
+						sourceUri: presetFile,
+						sourceIndex: index,
+						key: paradisPresetKey('workspace', presetFile, entry, index),
+					};
+				});
 		} catch (error) {
 			// ファイルが無いのは正常。壊れた JSON は警告だけ出して無視する
 			if ((error as { fileOperationResult?: unknown })?.fileOperationResult === undefined) {
@@ -231,26 +260,61 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 	// --- 保存 ------------------------------------------------------------------------------------
 
-	async savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, replaceName?: string): Promise<void> {
+	/**
+	 * 対象の位置を解決する。見失っていたら**黙って別の解釈に倒さず**例外にする。
+	 * 追加に倒すと「編集したつもりが複製になる」、無視すると「削除を押したのに何も起きない」
+	 * ——どちらもユーザーからは操作が効かなかったようにしか見えない。
+	 */
+	private _requirePresetIndex(list: readonly unknown[], preset: IParadisResolvedPreset): number {
+		const index = paradisResolvePresetIndex(list, preset);
+		if (index < 0) {
+			throw new Error(STR_PRESET_GONE);
+		}
+		return index;
+	}
+
+	/** ユーザー設定に書き込む id を決める。既存の id を引き継ぎ、無ければ他と衝突しない値を採番する。 */
+	private _assignUserPresetId(definition: IParadisPresetDefinition, list: readonly unknown[], replaceIndex: number): string {
+		const existing = replaceIndex >= 0 ? list[replaceIndex] : undefined;
+		const inherited = definition.id ?? (isValidPresetDefinition(existing) ? existing.id : undefined);
+		const taken = new Set(list
+			.filter((entry, index) => index !== replaceIndex)
+			.filter(isValidPresetDefinition)
+			.map(entry => entry.id));
+		// 引き継げるのは、他のエントリが使っていない id だけ。設定を手でコピーして重複した id は
+		// 読み込み側が毎回捨てているので、書き込む機会に採番し直して直す。
+		if (inherited && !taken.has(inherited)) {
+			return inherited;
+		}
+		let id = generateUuid().slice(0, 8);
+		while (taken.has(id)) {
+			id = generateUuid().slice(0, 8);
+		}
+		return id;
+	}
+
+	async savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, options?: IParadisSavePresetOptions): Promise<void> {
+		const replace = options?.replace?.source === target ? options.replace : undefined;
 		if (target === 'user') {
 			const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
 			const list: unknown[] = Array.isArray(raw) ? [...raw] : [];
-			const nameToReplace = replaceName ?? definition.name;
-			const index = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameToReplace);
+			const index = replace ? this._requirePresetIndex(list, replace) : -1;
+			// ユーザー設定は自分だけのファイルなので id を書き込む。名前を変えても同じ
+			// プリセットとして追跡でき、同名が並んでも取り違えない。
+			const entry: IParadisPresetDefinition = { ...definition, id: this._assignUserPresetId(definition, list, index) };
 			if (index >= 0) {
-				list[index] = definition;
+				list[index] = entry;
 			} else {
-				list.push(definition);
+				list.push(entry);
 			}
 			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
 		} else {
-			const folder = this.contextService.getWorkspace().folders[0];
-			if (!folder) {
-				throw new Error('No workspace folder is open.');
-			}
-			// リポジトリレベルには appliesTo は不要（そのリポジトリ自体が対象）
-			const { appliesTo: _appliesTo, ...cleaned } = definition;
-			const presetFile = joinPath(folder.uri, PARADIS_WORKSPACE_PRESET_FILE);
+			// 編集なら定義元のファイルへ書き戻す（複数フォルダを開いていても取り違えない）
+			const presetFile = replace?.sourceUri ?? this._defaultWorkspacePresetFile();
+			// リポジトリレベルには appliesTo は不要（そのリポジトリ自体が対象）。
+			// id も書かない——git で共有されるファイルに識別子を足すと、実装都合の差分が
+			// チーム全員のレビューに出てしまう。位置で識別する。
+			const { appliesTo: _appliesTo, id: _id, ...cleaned } = definition;
 			let parsed: { presets?: unknown[];[key: string]: unknown } = {};
 			try {
 				const content = await this.fileService.readFile(presetFile);
@@ -259,8 +323,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				// ファイルが無ければ新規作成
 			}
 			const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
-			const nameToReplace = replaceName ?? cleaned.name;
-			const index = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameToReplace);
+			const index = replace ? this._requirePresetIndex(list, replace) : -1;
 			if (index >= 0) {
 				list[index] = cleaned;
 			} else {
@@ -269,6 +332,14 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			parsed.presets = list;
 			await this.fileService.writeFile(presetFile, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
 		}
+	}
+
+	private _defaultWorkspacePresetFile(): URI {
+		const folder = this.contextService.getWorkspace().folders[0];
+		if (!folder) {
+			throw new Error('No workspace folder is open.');
+		}
+		return joinPath(folder.uri, PARADIS_WORKSPACE_PRESET_FILE);
 	}
 
 	async movePreset(preset: IParadisResolvedPreset, direction: -1 | 1): Promise<void> {
@@ -290,21 +361,26 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			return;
 		}
 		if (preset.source === 'user') {
-			await this._swapUserPresets(preset.name, neighbor.name);
+			await this._swapUserPresets(preset, neighbor);
 		} else {
 			// 同一 .paracode.json 内でのみ入れ替える
 			if (!preset.sourceUri || !neighbor.sourceUri || preset.sourceUri.toString() !== neighbor.sourceUri.toString()) {
 				return;
 			}
-			await this._swapWorkspacePresets(preset.sourceUri, preset.name, neighbor.name);
+			await this._swapWorkspacePresets(preset.sourceUri, preset, neighbor);
 		}
 	}
 
-	private async _swapUserPresets(nameA: string, nameB: string): Promise<void> {
+	/**
+	 * 並び替えだけは対象を見失っても黙って何もしない（保存・削除と違って例外にしない）。
+	 * ↑↓ は連打される操作で、ダイアログを出すと押した回数だけ積み上がる。次の再読み込みで
+	 * 一覧が正しい順序に更新されるので、取り返しの付かない結果にもならない。
+	 */
+	private async _swapUserPresets(presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void> {
 		const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
 		const list: unknown[] = Array.isArray(raw) ? [...raw] : [];
-		const indexA = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameA);
-		const indexB = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameB);
+		const indexA = paradisResolvePresetIndex(list, presetA);
+		const indexB = paradisResolvePresetIndex(list, presetB);
 		if (indexA < 0 || indexB < 0) {
 			return;
 		}
@@ -312,12 +388,12 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
 	}
 
-	private async _swapWorkspacePresets(presetFile: URI, nameA: string, nameB: string): Promise<void> {
+	private async _swapWorkspacePresets(presetFile: URI, presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void> {
 		const content = await this.fileService.readFile(presetFile);
 		const parsed = parseJsonc<{ presets?: unknown[];[key: string]: unknown }>(content.value.toString()) ?? {};
 		const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
-		const indexA = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameA);
-		const indexB = list.findIndex(entry => isValidPresetDefinition(entry) && entry.name === nameB);
+		const indexA = paradisResolvePresetIndex(list, presetA);
+		const indexB = paradisResolvePresetIndex(list, presetB);
 		if (indexA < 0 || indexB < 0) {
 			return;
 		}
@@ -326,17 +402,22 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		await this.fileService.writeFile(presetFile, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
 	}
 
+	/**
+	 * プリセットを1件だけ削除する。**名前で消さない**——同じ名前のプリセットが並んでいると
+	 * 巻き添えで全部消える（この機能が名前を識別子として扱っていた頃の実害）。
+	 */
 	async deletePreset(preset: IParadisResolvedPreset): Promise<void> {
 		if (preset.source === 'user') {
 			const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
-			const list: unknown[] = Array.isArray(raw) ? raw.filter(entry => !(isValidPresetDefinition(entry) && entry.name === preset.name)) : [];
+			const list: unknown[] = Array.isArray(raw) ? [...raw] : [];
+			list.splice(this._requirePresetIndex(list, preset), 1);
 			await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
 		} else if (preset.sourceUri) {
 			const content = await this.fileService.readFile(preset.sourceUri);
 			const parsed = parseJsonc<{ presets?: unknown[];[key: string]: unknown }>(content.value.toString()) ?? {};
-			parsed.presets = Array.isArray(parsed.presets)
-				? parsed.presets.filter(entry => !(isValidPresetDefinition(entry) && entry.name === preset.name))
-				: [];
+			const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
+			list.splice(this._requirePresetIndex(list, preset), 1);
+			parsed.presets = list;
 			await this.fileService.writeFile(preset.sourceUri, VSBuffer.fromString(JSON.stringify(parsed, null, '\t') + '\n'));
 		}
 	}
