@@ -21,6 +21,7 @@ import { GitHubService, IGitHubService } from './githubService.js';
 import { IPullRequestIconCache, PullRequestIconCache } from './pullRequestIconCache.js';
 
 import './pullRequestActions.js';
+import './issueActions.js';
 
 // PARA-PATCH: tiered PR polling + one-shot settings migration (GitHub rate-limit work)
 import { SessionGithubBackgroundRefreshScheduler } from './sessionGithubBackgroundPolling.js';

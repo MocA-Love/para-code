@@ -13,6 +13,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 // PARA-PATCH: add combinedDisposable for the initialization barrier's combined listener/lifetime disposable (Para Browser MCP recovery hardening)
 import { combinedDisposable, Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { process } from '../../../../base/parts/sandbox/electron-browser/globals.js';
 import { ACTIVE_GROUP, AUX_WINDOW_GROUP, IEditorService, PreferredGroup, SIDE_GROUP, USE_MODAL_EDITOR_SETTING, UseModalEditorMode } from '../../../services/editor/common/editorService.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -25,17 +26,20 @@ import { ChatContextKeys } from '../../chat/common/actions/chatContextKeys.js';
 import { IsSessionsWindowContext } from '../../../common/contextkeys.js';
 import { ChatConfiguration } from '../../chat/common/constants.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
-import { focusBorder } from '../../../../platform/theme/common/colors/baseColors.js';
-import { buttonForeground, buttonBackground } from '../../../../platform/theme/common/colors/inputColors.js';
+import { contrastBorder, descriptionForeground, focusBorder } from '../../../../platform/theme/common/colors/baseColors.js';
+import { buttonForeground, buttonBackground, inputPlaceholderForeground } from '../../../../platform/theme/common/colors/inputColors.js';
+import { editorWidgetBackground, editorWidgetBorder, editorWidgetForeground, toolbarHoverBackground, widgetShadow } from '../../../../platform/theme/common/colors/editorColors.js';
 import { DEFAULT_FONT_FAMILY } from '../../../../base/browser/fonts.js';
 import { findGroup } from '../../../services/editor/common/editorGroupFinder.js';
 import { ChatEditorInput } from '../../chat/browser/widgetHosts/editor/chatEditorInput.js';
 import { IChatWidgetService } from '../../chat/browser/chat.js';
+import { IAccessibilityService } from '../../../../platform/accessibility/common/accessibility.js';
 import { URI } from '../../../../base/common/uri.js';
 import { isEqual } from '../../../../base/common/resources.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { getCopilotRootPaths } from '../../../../platform/agentHost/common/copilotHome.js';
 import { localChatSessionType } from '../../chat/common/chatSessionsService.js';
-import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
+import { INativeWorkbenchEnvironmentService } from '../../../services/environment/electron-browser/environmentService.js';
 import { ITunnelProxyInfo } from '../../../../platform/tunnel/common/tunnelProxy.js';
 
 // PARA-PATCH: introduce paradisCreateBrowserViewInitialization and its options/result types - a non-rejecting barrier that subscribes before snapshotting existing views, with bounded backoff/timeout retries, to close the snapshot/listen gap on recovery (Para Browser MCP recovery hardening)
@@ -348,9 +352,10 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 		@IWorkspaceTrustEnablementService private readonly workspaceTrustEnablementService: IWorkspaceTrustEnablementService,
 		@ILogService private readonly logService: ILogService,
 		@IContextKeyService private readonly contextKeyService: IContextKeyService,
-		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@INativeWorkbenchEnvironmentService private readonly environmentService: INativeWorkbenchEnvironmentService,
 		@IThemeService private readonly themeService: IThemeService,
 		@IChatWidgetService private readonly chatWidgetService: IChatWidgetService,
+		@IAccessibilityService private readonly accessibilityService: IAccessibilityService,
 	) {
 		super();
 		const channel = mainProcessService.getChannel(ipcBrowserViewChannelName);
@@ -363,6 +368,7 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 		const chatEnabledKeys = new Set(ChatContextKeys.enabled.keys());
 		this._register(this.keybindingService.onDidUpdateKeybindings(() => this._updateWindowConfiguration()));
 		this._register(this.themeService.onDidColorThemeChange(() => this._updateWindowConfiguration()));
+		this._register(this.accessibilityService.onDidChangeReducedMotion(() => this._updateWindowConfiguration()));
 		this._register(this.workspaceTrustManagementService.onDidChangeTrustedFolders(() => this._updateWindowConfiguration()));
 		this._register(this.workspaceTrustManagementService.onDidChangeTrust(() => this._updateWindowConfiguration()));
 		this._register(this.workspaceContextService.onDidChangeWorkspaceFolders(() => this._updateWindowConfiguration()));
@@ -744,12 +750,22 @@ export class BrowserViewWorkbenchService extends Disposable implements IBrowserV
 			focusBorder: theme.getColor(focusBorder)?.toString(),
 			buttonBackground: theme.getColor(buttonBackground)?.toString(),
 			buttonForeground: theme.getColor(buttonForeground)?.toString(),
+			widgetBackground: theme.getColor(editorWidgetBackground)?.toString(),
+			widgetForeground: theme.getColor(editorWidgetForeground)?.toString(),
+			widgetBorder: theme.getColor(editorWidgetBorder)?.toString(),
+			widgetShadow: theme.getColor(widgetShadow)?.toString(),
+			contrastBorder: theme.getColor(contrastBorder)?.toString(),
+			descriptionForeground: theme.getColor(descriptionForeground)?.toString(),
+			inputPlaceholderForeground: theme.getColor(inputPlaceholderForeground)?.toString(),
+			toolbarHoverBackground: theme.getColor(toolbarHoverBackground)?.toString(),
 			font: DEFAULT_FONT_FAMILY,
+			reducedMotion: this.accessibilityService.isMotionReduced(),
 		};
 	}
 
 	private _getTrustedFileRoots(): string[] {
-		const roots = new Set<string>();
+		// Trust Copilot roots so agents can create HTML files and open them in the browser.
+		const roots = new Set(getCopilotRootPaths(this.environmentService.userHome.fsPath, process.env));
 		if (this.workspaceTrustManagementService.isWorkspaceTrusted()) {
 			for (const folder of this.workspaceContextService.getWorkspace().folders) {
 				if (folder.uri.scheme === Schemas.file) {

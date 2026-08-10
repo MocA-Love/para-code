@@ -25,9 +25,11 @@ export const all = Object.freeze<string[]>([
 	'!cli/**/*',
 	'!out*/**',
 	'!extensions/**/out*/**',
+	'!extensions/**/*-out/**',
 	'!test/**/out/**',
 	'!**/node_modules/**',
 	'!**/*.js.map',
+	'!**/*.tsbuildinfo',
 ]);
 
 export const unicodeFilter = Object.freeze<string[]>([
@@ -43,7 +45,7 @@ export const unicodeFilter = Object.freeze<string[]>([
 	'!LICENSES.chromium.html',
 	'!**/LICENSE',
 
-	'!**/*.{dll,exe,png,bmp,jpg,scpt,cur,ttf,woff,eot,template,ico,icns,opus,wasm}',
+	'!**/*.{dll,exe,png,bmp,jpg,gif,scpt,cur,ttf,woff,eot,template,ico,icns,opus,wasm}',
 	'!**/test/**',
 	'!**/*.test.ts',
 	'!**/*.{d.ts,json,md}',
@@ -156,7 +158,7 @@ export const indentationFilter = Object.freeze<string[]>([
 	'!src/vs/*/**/*.d.ts',
 	'!src/typings/**/*.d.ts',
 	'!extensions/**/*.d.ts',
-	'!**/*.{svg,exe,png,bmp,jpg,scpt,bat,cmd,cur,ttf,woff,eot,md,ps1,psm1,template,yaml,yml,d.ts.recipe,ico,icns,plist,opus,admx,adml,wasm}',
+	'!**/*.{svg,exe,png,bmp,jpg,gif,scpt,bat,cmd,cur,ttf,woff,eot,md,ps1,psm1,template,yaml,yml,d.ts.recipe,ico,icns,plist,opus,admx,adml,wasm}',
 	'!build/{lib,download,linux,darwin}/**/*.js',
 	'!build/**/*.sh',
 	'!build/azure-pipelines/**/*.js',
@@ -193,6 +195,7 @@ export const copyrightFilter = Object.freeze<string[]>([
 	'!**/*.bat',
 	'!**/*.cmd',
 	'!**/*.ico',
+	'!**/*.gif',
 	'!**/*.opus',
 	'!**/*.mp3',
 	'!**/*.icns',

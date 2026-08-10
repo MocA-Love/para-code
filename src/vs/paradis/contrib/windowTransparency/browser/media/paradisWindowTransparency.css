@@ -192,7 +192,7 @@
 	(floatingPanels.css: `.monaco-workbench.floating-panels > .monaco-grid-view`), which sits over
 	the translucent workbench root and hides the desktop entirely. Re-apply the same translucent
 	mix on that backdrop, and on the floating cards' own backgrounds (which floatingPanels.css
-	sets with !important; card tokens mirror that file: sidebar = agentsPanel, auxiliarybar =
+	sets with !important; card tokens mirror that file: sidebar = surface, auxiliarybar =
 	sideBar, panel = panel). The extra `.floating-panels` class keeps these selectors one class
 	more specific than upstream's, so they win regardless of stylesheet order. Title/status/
 	activity bars are made fully transparent by floating mode ("blend into the shell") and show
@@ -202,7 +202,7 @@
 }
 
 .monaco-workbench.paradis-transparent.floating-panels .part.sidebar {
-	background-color: color-mix(in srgb, var(--vscode-agentsPanel-background, var(--vscode-sideBar-background, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent) !important;
+	background-color: color-mix(in srgb, var(--vscode-surface-background, var(--vscode-sideBar-background, var(--vscode-editor-background))) var(--paradis-transparency-opacity, 90%), transparent) !important;
 }
 
 .monaco-workbench.paradis-transparent.floating-panels .part.auxiliarybar {
