@@ -481,6 +481,7 @@ export class MainThreadTerminalService extends Disposable implements MainThreadT
  */
 class TerminalDataEventTracker extends Disposable {
 	private readonly _bufferer: TerminalDataBufferer;
+	private readonly _instanceListeners = this._register(new DisposableMap<number>());
 
 	constructor(
 		private readonly _callback: (id: number, data: string) => void,
@@ -494,12 +495,15 @@ class TerminalDataEventTracker extends Disposable {
 			this._registerInstance(instance);
 		}
 		this._register(this._terminalService.onDidCreateInstance(instance => this._registerInstance(instance)));
-		this._register(this._terminalService.onDidDisposeInstance(instance => this._bufferer.stopBuffering(instance.instanceId)));
+		this._register(this._terminalService.onDidDisposeInstance(instance => {
+			this._bufferer.stopBuffering(instance.instanceId);
+			this._instanceListeners.deleteAndDispose(instance.instanceId);
+		}));
 	}
 
 	private _registerInstance(instance: ITerminalInstance): void {
 		// Buffer data events to reduce the amount of messages going to the extension host
-		this._register(this._bufferer.startBuffering(instance.instanceId, instance.onData));
+		this._instanceListeners.set(instance.instanceId, this._bufferer.startBuffering(instance.instanceId, instance.onData));
 	}
 }
 

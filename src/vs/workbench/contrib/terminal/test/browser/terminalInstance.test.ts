@@ -7,7 +7,7 @@ import { deepStrictEqual, strictEqual } from 'assert';
 import { Event } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../../base/common/network.js';
-import { isWindows, type IProcessEnvironment } from '../../../../../base/common/platform.js';
+import { isWindows, OperatingSystem, type IProcessEnvironment } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -475,7 +475,7 @@ suite('Workbench - TerminalInstance', () => {
 		let capabilities: TerminalCapabilityStore;
 
 		// PARA-PATCH: automatic Codex titles — include transientTitle in the picked instance shape
-		function createInstance(partial?: Partial<ITerminalInstance>): Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'userHome' | 'cwd' | 'initialCwd' | 'processName' | 'sequence' | 'workspaceFolder' | 'staticTitle' | 'transientTitle' | 'capabilities' | 'title' | 'description'> {
+		function createInstance(partial?: Partial<ITerminalInstance>): Pick<ITerminalInstance, 'shellLaunchConfig' | 'shellType' | 'userHome' | 'cwd' | 'initialCwd' | 'processName' | 'sequence' | 'workspaceFolder' | 'staticTitle' | 'transientTitle' | 'capabilities' | 'title' | 'description' | 'os'> {
 			const capabilities = store.add(new TerminalCapabilityStore());
 			if (!isWindows) {
 				capabilities.add(TerminalCapability.NaiveCwdDetection, null!);
@@ -494,7 +494,8 @@ suite('Workbench - TerminalInstance', () => {
 				capabilities,
 				title: '',
 				description: '',
-				userHome: undefined,
+				userHome: '/home/user',
+				os: OperatingSystem.Linux,
 				...partial
 			};
 		}
@@ -524,11 +525,29 @@ suite('Workbench - TerminalInstance', () => {
 			strictEqual(terminalLabelComputer.title, '');
 			strictEqual(terminalLabelComputer.description, '');
 		});
-		test('should resolve cwd', () => {
+		test('should resolve cwd when outside of userHome', () => {
 			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${cwd}', description: '${cwd}' } } } });
 			terminalLabelComputer.refreshLabel(createInstance({ capabilities, cwd: ROOT_1 }));
 			strictEqual(terminalLabelComputer.title, ROOT_1);
 			strictEqual(terminalLabelComputer.description, ROOT_1);
+		});
+		test('should resolve cwd when under userHome', () => {
+			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${cwd}', description: '${cwd}' } } } });
+			terminalLabelComputer.refreshLabel(createInstance({ capabilities, cwd: '/home/user/foo/bar' }));
+			strictEqual(terminalLabelComputer.title, '~/foo/bar');
+			strictEqual(terminalLabelComputer.description, '~/foo/bar');
+		});
+		test('should resolve cwd when exactly at userHome', () => {
+			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${cwd}', description: '${cwd}' } } } });
+			terminalLabelComputer.refreshLabel(createInstance({ capabilities, cwd: '/home/user' }));
+			strictEqual(terminalLabelComputer.title, '~');
+			strictEqual(terminalLabelComputer.description, '~');
+		});
+		test('should not shorten cwd on Windows', () => {
+			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${cwd}', description: '${cwd}' } } } });
+			terminalLabelComputer.refreshLabel(createInstance({ capabilities, cwd: 'C:\\Users\\user', userHome: 'C:\\Users\\user', os: OperatingSystem.Windows }));
+			strictEqual(terminalLabelComputer.title, 'C:\\Users\\user');
+			strictEqual(terminalLabelComputer.description, 'C:\\Users\\user');
 		});
 		test('should resolve workspaceFolder', () => {
 			const terminalLabelComputer = createLabelComputer({ terminal: { integrated: { tabs: { separator: ' - ', title: '${workspaceFolder}', description: '${workspaceFolder}' } } } });
