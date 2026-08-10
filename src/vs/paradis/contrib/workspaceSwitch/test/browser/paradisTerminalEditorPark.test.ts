@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TerminalExitReason } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
-import { paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope, paradisRetireParkedTerminalEditorInstances } from '../../browser/paradisTerminalEditorPark.js';
+import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope, paradisRetireParkedTerminalEditorInstances } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex, paradisRegisterTerminalReviveIndexSource } from '../../browser/paradisTerminalEditorRevive.js';
 
 interface IFakeTerminalInstance {
@@ -168,5 +168,39 @@ suite('paradisTerminalEditorPark', () => {
 		fake.instance.dispose(TerminalExitReason.Process);
 
 		assert.deepStrictEqual(paradisTakeParkedTerminalEditorInstancesForScope('worktree:dying'), []);
+	});
+
+	// 孤児索引を引くかどうかの判定材料。**件数ではなく名指しの包含**でなければならない。
+	// 台帳の母集団は working set に閉じていない（付け替え park・起動時の孤児復活 park）ので、
+	// 「1つ死んで1つ余計に載っている」だけで件数は釣り合ってしまう。
+	test('containment holds only while every named nonce is still parked under that scope', () => {
+		const first = createFakeInstance(9, 109, 'nonce-in-set-1');
+		const second = createFakeInstance(10, 110, 'nonce-in-set-2');
+		paradisParkTerminalEditorInstance(first.instance, 'worktree:counted');
+		paradisParkTerminalEditorInstance(second.instance, 'worktree:counted');
+		const expected = new Set(['nonce-in-set-1', 'nonce-in-set-2']);
+
+		const whenAllParked = paradisAreAllParkedForScope(expected, 'worktree:counted');
+		const whenScopeDiffers = paradisAreAllParkedForScope(expected, 'worktree:elsewhere');
+
+		// **これが件数比較では守れなかったケース**: 1つ死んで、無関係な端末が同じスコープへ
+		// 載る。件数は2のままだが、死んだ側は台帳から引けないので索引が要る。
+		second.instance.dispose(TerminalExitReason.Process);
+		const unrelated = createFakeInstance(11, 111, 'nonce-not-in-set');
+		paradisParkTerminalEditorInstance(unrelated.instance, 'worktree:counted');
+
+		assert.deepStrictEqual({
+			whenAllParked,
+			whenScopeDiffers,
+			afterOneDiedAndAnotherJoined: paradisAreAllParkedForScope(expected, 'worktree:counted'),
+			emptySetIsVacuouslyCovered: paradisAreAllParkedForScope(new Set(), 'worktree:counted'),
+		}, {
+			whenAllParked: true,
+			whenScopeDiffers: false,
+			afterOneDiedAndAnotherJoined: false,
+			emptySetIsVacuouslyCovered: true,
+		});
+
+		paradisRetireParkedTerminalEditorInstances('worktree:counted');
 	});
 });
