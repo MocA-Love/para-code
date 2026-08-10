@@ -198,11 +198,30 @@ function RootLayout() {
 					    コントローラへ積む。設定モーダルの裏に隠れて何も起きなくなる。
 					    expo-router が「モーダル以降は全部モーダル扱い」に伝播させているのも、
 					    モーダルの上に積むための意図的な仕様であって回避対象ではない。 */}
-					<Stack screenOptions={{ headerStyle: { backgroundColor: colors.panel }, headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
-						<Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-						<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal' }} />
-						{/* エージェント詳細。ホームの一覧・通知タップから開く（旧エージェントタブの後継） */}
-						<Stack.Screen name="agent" options={{ headerShown: false }} />
+					{/* ヘッダーの地色は画面ごとに決める。**既定に任せてはいけない**——iOSの標準の
+					    ダークグレー（#1c1c1e相当）になり、本文の #050506 との境目が帯として見える
+					    （実機で確認済み）。バー項目のガラスはバーの地色とは別なので、地色を
+					    本文と揃えてもモーフも器も失われない。 */}
+					<Stack screenOptions={{ headerTintColor: colors.text, contentStyle: { backgroundColor: colors.bg } }}>
+						{/* タブのバーは**フォーカスされているタブが書き込む**（`useWsHeader`）。
+						    ここでは伏せておき、画面が中身を登録したときに出す——順番が逆だと、
+						    まだ中身の無いバーが1フレーム見える。 */}
+						<Stack.Screen name="(tabs)" options={{ headerShown: false, headerStyle: { backgroundColor: colors.bg }, headerShadowVisible: false }} />
+						<Stack.Screen name="pair" options={{ title: 'Para Code と接続', presentation: 'modal', headerStyle: { backgroundColor: colors.panel } }} />
+						{/* エージェント詳細。ホームの一覧・通知タップから開く（旧エージェントタブの後継）。
+						    **バーはOS標準に任せる**（画面が `useNativeScreenHeader` で登録する）。
+						    **ここを `headerShown: false` にしてはいけない。** 中身を入れるのは画面側なので
+						    「まだ中身の無いバーが1フレーム見える」のを避けたくなるが、伏せるとホームの島が
+						    丸い戻るボタンへ変わる動きが**出る回と出ない回に分かれる**。
+						    `react-native-screens` の `RNSScreenStackHeaderConfig.mm` は、バーを出すときに
+						    `animated && ... && !wasHidden` でしか `animateAlongsideTransition` に乗せない
+						    ——直前にバーが隠れていた遷移は「共有されたバーが無い」と見なし、アニメーション
+						    ブロックを一切走らせない。ここで伏せると push の瞬間に一度バーが隠れるので、
+						    画面側が `headerShown: true` を書くのが遷移の開始に間に合わなかった回だけ
+						    モーフが死ぬ、というレースになる。
+						    バーは最初から出しておき、中身だけを画面が差し替える。地色は本文と同じなので、
+						    中身が入るまでの1フレームは「何も無い上端」に見えるだけで目立たない。 */}
+						<Stack.Screen name="agent" options={{ headerShown: true, title: '', headerStyle: { backgroundColor: colors.bg }, headerShadowVisible: false }} />
 						<Stack.Screen name="agent-activity" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						<Stack.Screen name="agent-activity-detail" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* 通知一覧。ベルからのズーム遷移（Link.AppleZoom）で開くため独自ヘッダーを使う */}
@@ -213,8 +232,14 @@ function RootLayout() {
 						<Stack.Screen name="agent-launch" options={{ headerShown: false }} />
 						{/* 設定まわり一式（ネストStack）。ワークスペースドロワーの設定アイコンから開く */}
 						<Stack.Screen name="(settings)" options={{ headerShown: false, presentation: 'modal' }} />
-						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継） */}
-						<Stack.Screen name="browser" options={{ headerShown: false, animation: 'slide_from_right' }} />
+						{/* ブラウザ（para-browserミラー）。エージェント詳細ヘッダーのボタンから開く（旧ブラウザタブの後継）。
+						    バーはOS標準に任せる（画面が `NativeScreenHeader` で中身を登録する）。
+						    **`animation` は既定のままにする。** `slide_from_right` は
+						    `RNSScreenStackAnimator` の自前アニメーションで、UIKit標準の push ではないため
+						    ナビゲーションバーの項目が連動しない（＝バー項目の変化がモーフしない）。
+						    見た目はどちらも右からのスライドなので、標準に任せて連動を取る。
+						    `headerShown: false` にしないのは agent と同じ理由（上の説明を読むこと）。 */}
+						<Stack.Screen name="browser" options={{ headerShown: true, title: '', headerStyle: { backgroundColor: colors.bg }, headerShadowVisible: false }} />
 						{/* アーカイブ一覧。ホームヘッダーの箱アイコンから開く */}
 						<Stack.Screen name="archive" options={{ headerShown: false, animation: 'slide_from_right' }} />
 					</Stack>

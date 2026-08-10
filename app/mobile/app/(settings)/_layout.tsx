@@ -21,10 +21,18 @@ import { colors } from '../../src/theme.js';
  */
 export default function SettingsStackLayout() {
 	return (
+		// **`headerShown: false` と `animation` は指定しない。**
+		// バーはOS標準に任せ、中身は各画面が `ScreenHeader` で宣言する。ここで伏せると
+		// push の瞬間に一度バーが隠れ、`react-native-screens` が
+		// `animated && ... && !wasHidden` でしかアニメーションブロックに乗せないため、
+		// 「設定の島が子画面の丸い戻るボタンへ変わる」動きが出る回と出ない回に分かれる
+		// （詳しい根拠は `app/_layout.tsx` の agent の説明を読むこと）。
+		// `slide_from_right` も外す——あれは `RNSScreenStackAnimator` の自前アニメーションで
+		// UIKit標準の push ではないため、ナビゲーションバーの項目が連動しない。
+		// 見た目はどちらも右からのスライドなので、標準に任せて連動を取る。
 		<Stack
 			screenOptions={{
-				headerShown: false,
-				animation: 'slide_from_right',
+				headerShown: true,
 				contentStyle: { backgroundColor: colors.bg },
 			}}
 		/>

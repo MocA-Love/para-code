@@ -28,7 +28,8 @@ import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useIsRegularWidth } from '../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useOfflineNotice } from '../src/offlineNotice.js';
-import { useParaHeader, useParaHeaderHeight, PARA_HEADER_HIDDEN, type ParaHeaderSpec } from '../src/paraHeader.js';
+import { useParaHeader, useParaHeaderHeight, PARA_HEADER_HIDDEN, type ParaHeaderIcon } from '../src/paraHeader.js';
+import { NativeScreenHeader } from '../src/components/nativeHeaderItems.js';
 import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
 import { colors } from '../src/theme.js';
@@ -74,8 +75,11 @@ export default function AgentDetailScreen() {
 	const regular = useIsRegularWidth();
 	// ヘッダーは常設のヘッダー層が描く（`src/paraHeader.ts`）。ここは高さだけ読み、
 	// 会話の上端の余白と活動ストリップの位置に使う。測る前は概算で置く。
-	const measuredHeaderHeight = useParaHeaderHeight();
-	const headerHeight = measuredHeaderHeight > 0 ? measuredHeaderHeight : insets.top + 56;
+	// **本文の上余白は0。** ヘッダーはOS標準のバーになり、本文はその下から始まる。
+	// 以前は自前ヘッダー層の実測高さを使い、取れないときは `insets.top + 56` に落として
+	// いたが、バーへ移した後もそのフォールバックが生きていて、SubAgentsの帯が約115pt
+	// 余分に下がって会話の中に浮いていた（実機で確認済み）。
+	const headerHeight = 0;
 
 	// 表示対象: selectedTerminalKey（ホーム/通知が遷移前に設定する）。無ければ選択中ws
 	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
@@ -211,31 +215,22 @@ export default function AgentDetailScreen() {
 	const headerSub = offline?.text
 		?? (agentWs !== undefined ? `${agentWs.name}${agentWs.branch ? ` · ${agentWs.branch}` : ''}` : undefined);
 	const headerSubColor = offline?.color ?? (agentWs !== undefined ? wsColor(agentWs) : undefined);
-	const headerSpec = useMemo<ParaHeaderSpec>(() => ({
-		left: { kind: 'back', label: '戻る', onPress: () => { hapticSelection(); router.back(); } },
-		title: {
-			text: headerTitle,
-			sub: headerSub,
-			subColor: headerSubColor,
-			chevron: activeTerminal !== undefined,
-			onPress: activeTerminal === undefined ? undefined : () => { hapticSelection(); setInfoOpen(true); },
-			label: `${headerTitle}${headerSub !== undefined ? `、${headerSub}` : ''}`,
-		},
-		rightA: {
-			kind: 'icons',
-			items: [{
-				key: 'browser',
-				icon: 'globe-outline',
-				label: 'ブラウザを開く',
-				onPress: openBrowser,
-				// 共有中のページがあれば緑の点で示す。
-				...(hasSharedPage ? { badge: 'green' as const } : {}),
-			}],
-		},
-	}), [router, headerTitle, headerSub, headerSubColor, activeTerminal, openBrowser, hasSharedPage]);
-	// ゲートが塞いでいる間は伏せる（層は画面の外に居るのでゲートに巻き込まれず、
-	// ゲート自身の「戻る」と層の丸が同じ位置に二重に出る）。
-	useParaHeader(gated ? PARA_HEADER_HIDDEN : headerSpec);
+	// **戻るボタンは渡さない。** ホームの島がこの丸へ形ごと変わる動きは、UIKitが
+	// 「バー項目の集合が変わった」と見なして自分で描くもので、自前の丸を置くとその
+	// 対応付けから外れる（`nativeHeaderItems.tsx` の説明を読むこと）。
+	const headerActions = useMemo<ParaHeaderIcon[]>(() => [{
+		key: 'browser',
+		icon: 'globe-outline',
+		label: 'ブラウザを開く',
+		onPress: openBrowser,
+		// 共有中のページがあれば緑の点で示す。
+		...(hasSharedPage ? { badge: 'green' as const } : {}),
+	}], [openBrowser, hasSharedPage]);
+	const openInfo = useCallback(() => { hapticSelection(); setInfoOpen(true); }, []);
+	// 自前のヘッダー層は使わない。伏せておかないと、この画面でも層が描かれて二重になる。
+	// バーの宣言は下の JSX（`NativeScreenHeader`）で行う——`setOptions` を effect でやると
+	// 遷移に間に合わずモーフが出ないことがある。
+	useParaHeader(PARA_HEADER_HIDDEN);
 
 	// CLI版のUXに合わせ、本文(text)以外の連続する thinking / tool_use / tool_result を
 	// 1つの「アクティビティ」行へ集約する（デフォルト折りたたみ、タップで展開）。
@@ -425,6 +420,19 @@ export default function AgentDetailScreen() {
 	};
 
 	return (
+		<>
+		{/* **ゲートの外に置く。** 中に入れるとゲートが閉じた瞬間にこれ自体が外れ、
+		    前の画面のバーが残る。伏せたいときは `hidden` を渡す。 */}
+		<NativeScreenHeader
+			title={headerTitle}
+			sub={headerSub}
+			subColor={headerSubColor}
+			chevron={activeTerminal !== undefined}
+			label={`${headerTitle}${headerSub !== undefined ? `、${headerSub}` : ''}`}
+			onTitlePress={activeTerminal === undefined ? undefined : openInfo}
+			actions={headerActions}
+			hidden={gated}
+		/>
 		<ConnectionGate>
 		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
 			{/* minHeight: スラッシュメニュー等でinputBarが伸びても、チャット領域が
@@ -468,7 +476,8 @@ export default function AgentDetailScreen() {
 									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} terminalKey={activeKey} />
 									: <AgentTimeline msgs={item.msgs} terminalKey={activeKey} />}
 						contentContainerStyle={[styles.listContent, regular && styles.readingColumn, { paddingTop: headerHeight + (hasActivityHistory ? 52 : 6) }]}
-						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
+						// バーの下から本文が始まるので、スクロールバーの上端をずらす必要は無い。
+						scrollIndicatorInsets={{ top: 0 }}
 						onContentSizeChange={onContentSizeChange}
 						onScroll={onListScroll}
 						onScrollBeginDrag={onScrollBeginDrag}
@@ -568,6 +577,7 @@ export default function AgentDetailScreen() {
 			</View>
 		</KeyboardAvoidingView>
 		</ConnectionGate>
+		</>
 	);
 }
 

@@ -108,19 +108,6 @@ export default function TerminalScreen() {
 	// 常用の1件を1タップで、という形にはしていない——プリセットは手元を離れたPCへ
 	// コマンドを流す操作なので、何が走るかを見てから押せる場所に置く。
 	const [presetsOpen, setPresetsOpen] = useState(false);
-	const actions = useMemo<ParaHeaderIcon[]>(() => [{
-		key: 'presets',
-		icon: 'flash-outline',
-		label: 'コマンドプリセット',
-		size: 19,
-		onPress: () => { hapticSelection(); setPresetsOpen(true); },
-	}, {
-		key: 'new-terminal',
-		icon: 'add',
-		label: '新しいターミナル',
-		size: 21,
-		onPress: createHere,
-	}], [createHere]);
 
 	// ターミナルの切り替えは**ヘッダーの中央の島から出る標準のメニュー**（terminalPicker.tsx）。
 	// エージェント詳細と同じ「3つの島」の形に揃うぶん、横スクロールのチップ列を畳んでいる。
@@ -135,18 +122,41 @@ export default function TerminalScreen() {
 	// 他のターミナルに応答待ちがあることの合図。畳んだぶん、ここで気づけるようにする
 	// （チップ列は各行の赤ドットを常に見せていた）。
 	const otherWaiting = pickerEntries.some(entry => entry.waiting && entry.terminalKey !== activeKey);
-	const mid = useMemo(() => (terminalPickerIsNative ? {
-		label: 'ターミナルを切り替える',
-		badge: otherWaiting,
-		node: (
-			<TerminalPicker
-				entries={pickerEntries}
-				activeKey={activeKey}
-				onSelect={setSelectedTerminalKey}
-				onCreate={createHere}
-			/>
-		),
-	} : undefined), [pickerEntries, activeKey, setSelectedTerminalKey, createHere, otherWaiting]);
+	// 右のボタン群。**ターミナルの切り替えもここに並べる。**
+	//
+	// 以前はバーの中央に置いていたが、中央（`titleView`）に使える幅は
+	// `画面幅 − 2 × max(左, 右)` しかない——左の島が172ptあると中央は26ptしか残らず、
+	// 端末名が1文字まで削られた（実機で確認済み）。右のバー項目なら幅の制限が無く、
+	// OSがガラスの器を付けて左の島と揃うし、メニューも右下から自然に開く。
+	const actions = useMemo<ParaHeaderIcon[]>(() => [
+		...(terminalPickerIsNative ? [{
+			key: 'picker',
+			label: 'ターミナルを切り替える',
+			badge: otherWaiting ? ('red' as const) : undefined,
+			node: (
+				<TerminalPicker
+					entries={pickerEntries}
+					activeKey={activeKey}
+					onSelect={setSelectedTerminalKey}
+					onCreate={createHere}
+				/>
+			),
+		}] : []),
+		{
+			key: 'presets',
+			icon: 'flash-outline',
+			label: 'コマンドプリセット',
+			size: 19,
+			onPress: () => { hapticSelection(); setPresetsOpen(true); },
+		},
+		{
+			key: 'new-terminal',
+			icon: 'add',
+			label: '新しいターミナル',
+			size: 21,
+			onPress: createHere,
+		},
+	], [createHere, pickerEntries, activeKey, setSelectedTerminalKey, otherWaiting]);
 
 	// フォールバックのタブ列。ネイティブの標準メニューが無いビルド（Android・このモジュールを
 	// 含まない旧バイナリ）でだけ帯に出す。
@@ -208,7 +218,7 @@ export default function TerminalScreen() {
 		setSubmitting(false);
 	};
 
-	useWsHeader({ actions, mid, below: chipBand });
+	useWsHeader({ actions, below: chipBand });
 
 	return (
 		<ConnectionGate>

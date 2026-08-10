@@ -51,6 +51,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'albums-outline',
+				title: '設定やブラウザでも、上のバーが形を変えて入れ替わるようになりました',
+				body: '設定を開いて中を潜っていくときも、エージェントからブラウザへ移るときも、左の島が丸い戻るボタンへ変わりながらつながります。これまでは画面ごとに移り方が違い、変化が出ない回もありました。',
+				tone: 'green',
+			},
+			{
 				icon: 'speedometer-outline',
 				title: 'ターミナルを開いているときの動作が軽くなりました',
 				body: 'エージェントが動いている間、裏側で無駄な作り直しを繰り返していました。画面の切り替えやスクロールが詰まりにくくなっています。',

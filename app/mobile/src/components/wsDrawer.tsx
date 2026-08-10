@@ -4,7 +4,7 @@ import { ReactNode, createContext, useCallback, useContext, useEffect, useMemo, 
 import { Alert, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, Text, UIManager, View, useWindowDimensions } from 'react-native';
 import { Gesture, type PanGesture } from 'react-native-gesture-handler';
 import ReanimatedDrawerLayout, { DrawerLayoutMethods, DrawerLockMode, DrawerPosition, DrawerState, DrawerType } from 'react-native-gesture-handler/ReanimatedDrawerLayout';
-import { useSegments, usePathname, useRouter } from 'expo-router';
+import { useSegments, usePathname, useRouter, useNavigation, useIsFocused } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
@@ -18,8 +18,9 @@ import { useStableInsets } from '../hooks/useStableInsets.js';
 import { shouldReturnHomeOnSpaceChange } from '../ipad/ipadTabs.js';
 import { screenCornerRadius } from '../screenCornerRadius.js';
 import { useOfflineNotice } from '../offlineNotice.js';
-import { useParaHeader, PARA_HEADER_HIDDEN, type ParaHeaderIcon, type ParaHeaderSpec } from '../paraHeader.js';
+import { useParaHeader, useParaHeaderStore, PARA_HEADER_HIDDEN, type ParaHeaderIcon, type ParaHeaderSpec } from '../paraHeader.js';
 import { GlassSurface } from './glassSurface.js';
+import { WsHeaderActions, WsHeaderIsland } from './nativeHeaderItems.js';
 import { PcCardHeader, PcSwitcher } from './pcSwitcher.js';
 import { useConnectionGateBlocked } from './connectionGate.js';
 import { WorktreeCreateSheet } from './worktreeCreateSheet.js';
@@ -769,9 +770,88 @@ export function useWsHeader({ subtitle, actions, mid, below, allWorkspaces, wide
 		band: below,
 		wide,
 	}), [regular, drawerOpen, sub, name, offline, otherWaiting, allWorkspaces, current, chipColor, actions, mid, below, wide]);
-	// フックは**無条件に呼ぶ**（分岐で本数が変わると React が落ちる）。伏せるのは中身だけ。
-	useParaHeader(gated ? PARA_HEADER_HIDDEN : spec);
+
+	// **自前のヘッダー層は伏せる。** 下でOS標準のバーへ登録するので、両方描くと二重になる。
+	// フックは無条件に呼ぶ（分岐で本数が変わると React が落ちる）。
+	useParaHeader(PARA_HEADER_HIDDEN);
+	useNativeWsHeader(spec, gated);
 }
+
+/**
+ * 仕様をOS標準のナビゲーションバーへ登録する。
+ *
+ * **書き込む先は「親」のスタック画面。** 4つのタブは root の Stack から見ると `(tabs)` という
+ * 1つの画面なので、バーは4タブで共有されている。だからフォーカスされているタブだけが
+ * 書き込む——4画面は常にマウントされているので、無条件に書くと奪い合いになる。
+ *
+ * **形が変わる動きはOSが描く**ので、ここは中身を渡すだけでよい。詳しい経緯は
+ * `nativeHeaderItems.tsx` の説明を読むこと。
+ */
+function useNativeWsHeader(spec: ParaHeaderSpec, gated: boolean) {
+	const navigation = useNavigation();
+	const focused = useIsFocused();
+	const { left, mid, rightA } = spec;
+
+	// `setOptions` へ渡す描画関数は**参照を安定させる**。毎レンダー新しい関数を渡すと
+	// バーが作り直され、モーフの対象としての同一性まで毎回切れる。
+	const headerLeft = useCallback(() => (left === undefined ? null : (
+		<WsHeaderIsland
+			name={left.name ?? '—'}
+			sub={left.sub}
+			subColor={left.subColor}
+			color={left.color ?? colors.accent}
+			avatarText={left.avatarText}
+			avatarIcon={left.avatarIcon}
+			badge={left.badge === true}
+			label={left.label}
+			onPress={left.onPress}
+			disabled={left.disabled === true}
+		/>
+	)), [left]);
+
+	const headerRight = useCallback(() => (rightA === undefined || rightA.kind !== 'icons' || rightA.items.length === 0
+		? null
+		: <WsHeaderActions items={rightA.items} />), [rightA]);
+
+	// **中央のビューには大きさを明示する。** バーの中央（`titleView`）には flex の親が無いので、
+	// `flex: 1` を前提に書かれた中身（ターミナルの切り替えピッカー）は 0×0 に潰れて見えなくなる
+	// ——自前ヘッダー層では層側の `midIsland` がその親を務めていた（実機で確認済み）。
+	// 幅は上限だけ与える。バーは左の島と右のボタンの残りを中央へ配るので、欲張ると弾かれる。
+	const headerTitle = useCallback(() => (mid === undefined ? null : (
+		<View style={headerStyles.titleHost}>{mid.node}</View>
+	)), [mid]);
+
+	useEffect(() => {
+		if (!focused) {
+			return;
+		}
+		// **本文の上余白は要らなくなる。** OS標準のバーは本文をその下から始めるので、
+		// 自前ヘッダーの高さぶん空けると二重に空く。画面側は引き続き
+		// `useParaHeaderHeight()` を読むので、ここで0を配る。
+		useParaHeaderStore.getState().setHeight(0);
+		// 親（root の Stack にある `(tabs)`）へ書く。タブのナビゲータ自身にはバーが無い。
+		//
+		// **すべてのキーを必ず書くこと。** `setOptions` は指定しなかったキーを**前の値のまま
+		// 残す**（マージ）。中央の島を持たないタブが `headerTitle` を省略すると、ターミナル
+		// タブが書いた「ターミナルなし」がホーム・ソース管理・ファイルにも出たままになる
+		// （実機で確認済み）。4タブは root から見ると1つの画面を共有しているので、
+		// 前のタブが書いた設定は自動では消えない。
+		navigation.getParent()?.setOptions({
+			headerShown: !gated,
+			// 中央は「ターミナル名 ▾」を持つ画面だけ。持たない画面で空文字にしておくのは、
+			// 既定だとルート名（index / terminal …）が出てしまうため。
+			title: '',
+			headerLeft,
+			headerRight,
+			headerTitle: mid === undefined ? undefined : headerTitle,
+		});
+	}, [focused, gated, navigation, headerLeft, headerRight, headerTitle, mid]);
+}
+
+/** ネイティブバーへ載せる中央のビューの器。大きさを明示するためだけに存在する。 */
+const headerStyles = StyleSheet.create({
+	titleHost: { height: 36, minWidth: 72, maxWidth: 160, flexDirection: 'row', alignItems: 'center' },
+});
 
 const styles = StyleSheet.create({
 
