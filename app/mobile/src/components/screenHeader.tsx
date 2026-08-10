@@ -134,8 +134,11 @@ export function HeaderCircleButton({ icon, label, color, onPress, disabled }: {
 }
 
 const styles = StyleSheet.create({
-	// 高さは決めない（バーが決める）。左右の余白も付けない——バー項目の位置はOSが決める。
-	island: { justifyContent: 'center', paddingRight: 6, maxWidth: 220 },
+	// 高さは決めない（バーが決める）。ただし**横幅は最小値を持たせる**——「設定」のような
+	// 短い文字だけだと中身が正方形に近くなり、OSが付ける器が横長のカプセルではなく**丸**に
+	// なって、丸ボタンに文字を押し込んだように見える（実機で確認済み）。ホームの島が
+	// カプセルに見えるのはアバターの26ptぶん横に長いからで、こちらにはそれが無い。
+	island: { justifyContent: 'center', paddingHorizontal: 8, minWidth: 88, maxWidth: 220 },
 	titleHost: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
 	rightGroup: { flexDirection: 'row', alignItems: 'center', gap: 2 },
 	circleHit: { width: 32, height: 32, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
