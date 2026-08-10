@@ -62,6 +62,18 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 - 1.129監査で「将来の整理候補」とした`PARA-CODE:`のフィールドコメント誤用は**未修正のまま残っている**（`src/vs/platform/terminal/common/terminal.ts` 5箇所 / `src/vs/workbench/contrib/terminal/browser/terminal.ts` 3箇所 / `src/vs/workbench/contrib/terminal/browser/agentHostTerminalService.ts` 1箇所）。これらのファイルはファイル単位では`PARA-PATCH`も持つため監査は通る。実害は小さい
 - `npm run valid-layers-check` の`layersChecker.ts`が既定の4GBヒープでOOMする。**これは1.130マージ起因ではなく`main`でも同様に再現する既存の問題**で、`NODE_OPTIONS=--max-old-space-size=8192`を付ければ通過する（fork のソース増加が原因。upstream自身も1.130で`tsec-compile-check`に同じ`--max-old-space-size=8192`を追加している）。恒久対応するなら`package.json`の`valid-layers-check`にPARA-PATCHで同オプションを足すのが自然
 
+## upstream取り込み前監査の記録（2026-08-11、1.132取り込み準備）
+
+ベースタグ`1.130.0`との全差分（upstream由来ファイルへのfork変更188ファイル、fork新規1513ファイル）を監査した。結果:
+
+- **PARA-PATCHマーカーの欠落は1件**: `src/vs/platform/update/test/electron-main/abstractUpdateService.test.ts`（自己ホスト更新フィードのCloudflare Accessヘッダを検証するfork独自テスト108行）。由来コミットは`587361a6e62 test: cover Para Code fork features`で、**`para:`プレフィックスも欠けていた**（この1件のみ。他のコメント不能28ファイルは全て下記台帳に記載済みで1.130監査から増減なし）。対処: マーカー6箇所を後付け（コメント行のみ、挙動変更なし、typecheck-client通過）
+- **`PARA-CODE:`マーカーの欠落を新たに検出**。fork新規ファイルのうち、**upstream由来ディレクトリに置かれた6ファイル**（`src/vs/platform/browserView/common/browserViewAutomationInput.ts`とそのtest 3件 / `src/vs/workbench/services/workingCopy/common/workingCopyBackupRestoreRouter.ts`とそのtest 1件）にマーカーが無かった。ここはupstreamが将来同名ファイルを追加するとadd/add衝突になり、かつファイル単体では fork所有と判別できないため後付けした
+- **未対処として残したPARA-CODE欠落**（実害が小さいため）: `src/vs/paradis/`・`src/vs/sessions/contrib/`配下のtestファイル約60件、`app/mobile/`のtest 4件、`cloudflare/update-server/`のtest 2件。いずれもディレクトリ構成でfork所有と判別でき、upstreamとのパス衝突リスクも無い。vendor同梱物（chrome-devtools-mcp / react-devtools のbuild成果物、docx-preview等のminified）は規約上マーカー対象外
+- **リポジトリルートに用途不明のfork新規HTMLが2件コミットされている**（`mok.html` / `sw.html`）。デバッグ時の一時ファイルが残ったものと思われる。削除するかは未判断
+- 1.129監査で挙げた`PARA-CODE:`のフィールドコメント誤用（terminal系3ファイル）は引き続き未修正
+- 事前調査の結果: fork変更188ファイルのうちupstream(1.130→1.132)も触ったものは**62ファイル / 3386行**。add/add衝突・modify/delete衝突はいずれもゼロ。upstream churnの上位は`preload-browserView.ts`(1126行)・`package-lock.json`(1039行)・`browserViewInspector.ts`(145行)・`browserViewFrameInspector.ts`(109行)で、**browserView/CDP領域が最大の危険地帯**
+- ビルド前提の変更: Electron `42.6.0` → `42.7.1`（`.npmrc`の`target`/`ms_build_id`も追従）。`.nvmrc`は変更なし。`valid-layers-check`スクリプトがupstream側で`layersTypeCheck.ts`方式に置き換わった
+
 ## pushトラブルの記録（2026-07-01）
 
 フル履歴（2,222,499オブジェクト、1.30 GiB）のまま`git push`すると、TCP接続が`CLOSED`または`CLOSE_WAIT`になって進捗ゼロのままハングする現象が複数回発生（`http.version HTTP/1.1`固定、`http.postBuffer`拡大、`http.lowSpeedLimit`設定を試しても解消せず）。原因はネットワーク経路側の問題と推測されるが特定はできていない。

@@ -3,6 +3,9 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-PATCH: adds fork-only coverage for the Cloudflare Access headers the self-hosted update
+// feed requires; the extra imports below exist for those tests only. See CLAUDE.md.
+
 import assert from 'assert';
 import * as sinon from 'sinon';
 import { DeferredPromise, timeout } from '../../../../base/common/async.js';
@@ -99,6 +102,7 @@ suite('AbstractUpdateService', () => {
 		isBuilt?: boolean;
 		disableUpdates?: boolean;
 		updateUrl?: string;
+		// PARA-PATCH: injection hooks for the fork's update access header tests.
 		requestService?: IRequestService;
 		productService?: Partial<IProductService>;
 	}): TestUpdateService {
@@ -117,6 +121,7 @@ suite('AbstractUpdateService', () => {
 			disableUpdates: options?.disableUpdates ?? false
 		} as unknown as IEnvironmentMainService;
 
+		// PARA-PATCH: let the fork's update access header tests supply their own request service.
 		const requestService = options?.requestService ?? {
 			request: () => Promise.reject(new Error('not expected'))
 		} as unknown as IRequestService;
@@ -127,6 +132,7 @@ suite('AbstractUpdateService', () => {
 			quality: 'stable',
 			version: '1.0.0',
 			target: 'user',
+			// PARA-PATCH: let the fork's update access header tests override product fields.
 			...options?.productService
 		} as unknown as IProductService;
 
@@ -154,6 +160,7 @@ suite('AbstractUpdateService', () => {
 		return store.add(service);
 	}
 
+	// PARA-PATCH: helpers used only by the fork's update access header tests below.
 	function createRequestService(handler: (options: IRequestOptions) => Promise<IRequestContext>): IRequestService {
 		return { request: handler } as unknown as IRequestService;
 	}
@@ -183,6 +190,7 @@ suite('AbstractUpdateService', () => {
 		sinon.restore();
 	});
 
+	// PARA-PATCH: fork-only tests for the self-hosted update feed's Cloudflare Access headers.
 	test('getUpdateAccessHeaders returns both Cloudflare Access headers when both credentials are present', () => {
 		const headers = getUpdateAccessHeaders({
 			updateAccessClientId: 'client-id',
