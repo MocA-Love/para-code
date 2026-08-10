@@ -154,6 +154,33 @@ export function paradisHasParkedTerminalEditorInstances(stateKey: string): boole
 }
 
 /**
+ * 指定した nonce が**すべて**そのスコープ向けにパークされたまま生きているか。
+ *
+ * 復元前に「孤児 PTY の索引を引く必要があるか」を判断するために使う。`reviveInput` は
+ * **台帳を先に引き、当たれば索引を一切参照しない**（`terminalEditorService.ts` の PARA-PATCH）。
+ * つまり復元対象の端末がすべてこの台帳に載っているなら、索引は誰も読まない。
+ *
+ * **件数の比較で代用してはいけない。** 台帳の母集団はそのスコープの working set に閉じておらず、
+ * `assignInstanceScope` による付け替え park、起動時の孤児復活 park、切り替え失敗時の再 park で
+ * **working set に無い端末が同じスコープへ載る**。一方 park 中に PTY が死ねばエントリだけ消える。
+ * したがって「1つ死んで1つ余計に載っている」だけで件数は釣り合い、死んだ側の入力は台帳で
+ * 引けないまま索引なしで ② の経路（upstream の `_revivedPtyIdMap`）へ落ちる。それは
+ * このファイル冒頭が「取り違えより明確に悪い」と書いた多世代 misattach の窓そのもの。
+ * だから**名指しで包含を確かめる**。
+ */
+export function paradisAreAllParkedForScope(nonces: ReadonlySet<string>, stateKey: string): boolean {
+	for (const nonce of nonces) {
+		const entry = parkedInstances.get(nonce);
+		// `isDisposed` も見る。`onDisposed` 掃除は監視リスナーの張り替えを跨ぐ経路
+		// （ドレイン → 再 park）があるため、閾値として使う以上は明示的に弾く。
+		if (!entry || entry.stateKey !== stateKey || entry.instance.isDisposed) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/**
  * パネル側の park 台帳（グループ単位）を引くための問い合わせ口。実体はターミナルスコープの
  * contribution が持っていて DI では循環するため、ここへ関数を預けてもらう形にしている。
  * 写しではなく実体を都度引くので、台帳の更新漏れで食い違うことがない。

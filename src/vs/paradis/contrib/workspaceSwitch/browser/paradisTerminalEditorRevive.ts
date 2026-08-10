@@ -92,7 +92,14 @@ export function paradisRegisterTerminalReviveIndexSource(value: IParadisTerminal
  */
 export async function paradisRefreshTerminalReviveIndex(
 	targetStateKey: string,
-	options?: { readonly skipLookup?: boolean },
+	options?: {
+		readonly skipLookup?: boolean;
+		readonly skipReason?: 'no-terminals' | 'covered-by-park';
+		/** 前回この手でパークした端末の数。判定の裏取り用。 */
+		readonly parkedCount?: number;
+		/** working set 保存時の端末数。`parked > expected` が常態なら件数比較は危険だった証拠。 */
+		readonly expectedCount?: number;
+	},
 ): Promise<void> {
 	restoreStateKey = targetStateKey;
 	// 復元先にターミナルエディタが1つも無いと分かっている場合、索引は誰も引かない。本番では
@@ -111,7 +118,15 @@ export async function paradisRefreshTerminalReviveIndex(
 	// 回と混ざり、この変更を正当化した観測そのものが読めなくなる。
 	if (options?.skipLookup) {
 		orphanPtyIdByNonce = new Map();
-		setParadisSpanAttributes({ safe_timed_out: false, safe_index_skipped: true });
+		// 理由まで残す。`covered-by-park` が想定どおり多数を占めるか、`no-terminals` しか
+		// 効いていないかで、次に詰める場所が変わる。
+		setParadisSpanAttributes({
+			safe_timed_out: false,
+			safe_index_skipped: true,
+			safe_index_skip_reason: options.skipReason ?? 'unspecified',
+			safe_index_parked: options.parkedCount ?? -1,
+			safe_index_expected: options.expectedCount ?? -1,
+		});
 		return;
 	}
 	if (source === undefined) {

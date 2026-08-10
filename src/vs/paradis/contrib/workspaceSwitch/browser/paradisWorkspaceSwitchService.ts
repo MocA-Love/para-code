@@ -25,7 +25,8 @@ import { IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IPara
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
-import { paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
+import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRetireParkedTerminalEditorInstances } from './paradisTerminalEditorPark.js';
+import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder } from '../common/paradisWorkspaceFolderVerification.js';
@@ -184,6 +185,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * `_workingSets` と生死を揃えるため、保存・削除は必ず同じ場所で行うこと。
 	 */
 	private readonly _workingSetTerminals = new Map<string, number>();
+	/**
+	 * 直前にこの手でパークした端末の nonce（スコープごと）。**永続化しない**。
+	 * 復元時に「その顔ぶれがそのまま台帳に残っているか」を名指しで確かめるために使う。
+	 * 再起動後は空＝孤児索引を必ず引く側へ倒れる（世代跨ぎの復元は索引が唯一の防波堤）。
+	 */
+	private readonly _workingSetTerminalNonces = new Map<string, ReadonlySet<string>>();
 
 	/** 切り替え処理の直列化 (連打時に退避と復元が交錯して状態が壊れるのを防ぐ) */
 	private readonly _switchSequencer = new Sequencer();
@@ -730,6 +737,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					// 復元経路が壊れる上、park 台帳と一覧の二重管理になる。
 					// **端末数に比例する区間**。`safe_terminal_editors` を一緒に送っているのは、
 					// ここの伸びと突き合わせるため。
+					const parkedNonces = new Set<string>();
 					timeSyncPhase('park_terminals', () => {
 						for (const instance of [...this.terminalEditorService.instances]) {
 							const input = this.terminalEditorService.getInputFromResource(instance.resource);
@@ -743,10 +751,22 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 								continue;
 							}
 							if (paradisParkTerminalEditorInstance(instance, previousKey)) {
+								// 実際に park できた nonce だけを控える。復元時に「この顔ぶれが
+								// そのまま台帳に残っているか」を名指しで確かめるための唯一の材料。
+								// park に失敗した入力（PTY ID 未確定・nonce 不正）は載らないので、
+								// 集合が working set の端末数に届かず、判定は「引く側」へ倒れる。
+								const parkedNonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+								if (parkedNonce !== undefined) {
+									parkedNonces.add(parkedNonce);
+								}
 								this.terminalEditorService.detachInstance(instance);
 							}
 						}
 					});
+					// **永続化しない。** 再起動を跨ぐと台帳の中身は起動時の孤児復活で作られた別物に
+					// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
+					// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
+					this._workingSetTerminalNonces.set(previousKey, parkedNonces);
 				}
 
 				// エディタの入れ替えは updateFolders より先に行う。Git 拡張はフォルダ削除時、
@@ -761,6 +781,30 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// スナップショットはこの適用専用なので、終わったら必ず捨てる。残すとロールバックでの
 				// 再適用や後続の revive が古い情報で attach 先を決めてしまう
 				// (paradisTerminalEditorRevive.ts)。
+				// 復元先の端末が**すべてこのウィンドウの park 台帳に載っている**なら、索引は誰も
+				// 読まない。`reviveInput` は台帳を先に引き、当たれば
+				// `paradisResolveRevivedTerminalEditorInput` まで到達しないため
+				// （`terminalEditorService.ts` の PARA-PATCH）。
+				//
+				// 本番データがこの形をはっきり示していた: 締め切り(500ms)に到達した33件は**全件が
+				// 孤児0件**で、待った末に得るものが何も無かった。一方で孤児が取れた12件のうち11件は
+				// 応答が300ms超で、**締め切りを縮めると「索引が役に立つ回」だけを落とす**。
+				// だから待ち時間は縮めず、「そもそも要らない回」を外す。
+				//
+				// **件数の比較で代用しないこと。** 台帳の母集団はそのスコープの working set に
+				// 閉じていない（`assignInstanceScope` の付け替え park、起動時の孤児復活 park、
+				// 切り替え失敗時の再 park で、working set に無い端末が同じスコープへ載る）。
+				// 一方 park 中に PTY が死ねばエントリだけ消えるので、「1つ死んで1つ余計に載っている」
+				// だけで件数は釣り合い、死んだ側は索引なしで危険な経路へ落ちる。
+				//
+				// **アプリ再起動後は台帳が空になる、とも思わないこと。** 起動時の
+				// `reviveOrphanedScopedEditorTerminals` が孤児 PTY を台帳へ入れるうえ、
+				// 端末数は working set と一緒に永続化されているので、件数比較だと
+				// **索引が唯一の防波堤である世代跨ぎの復元でこそ skip が成立してしまう**。
+				//
+				// だから「前回この手で park した nonce の顔ぶれ」を控えておき、それが
+				// そのまま台帳に残っているかを名指しで確かめる。この集合は永続化していないので、
+				// 再起動後は必ず undefined ＝ 引く側へ倒れる。
 				// 復元先にターミナルエディタが載っていないと分かっているなら、pty host への
 				// 問い合わせ自体を飛ばす。判定は2段階で、混ぜないこと:
 				//
@@ -773,8 +817,28 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				const restoreTerminals = this._workingSets.has(stateKey)
 					? this._workingSetTerminals.get(stateKey)
 					: 0;
-				await timePhase('revive_index',
-					() => paradisRefreshTerminalReviveIndex(stateKey, { skipLookup: restoreTerminals === 0 }));
+				await timePhase('revive_index', () => {
+					// 判定は**使う直前で**取る。カウントを先に取って await を挟むと、その間に
+					// pty exit が届いて台帳が縮んでも「引かない」が確定済みになってしまう。
+					const expectedNonces = this._workingSetTerminalNonces.get(stateKey);
+					const coveredByPark = restoreTerminals !== undefined
+						&& expectedNonces !== undefined
+						// park に失敗した入力があると集合が端末数に届かない＝賄えていない。
+						&& expectedNonces.size >= restoreTerminals
+						&& paradisAreAllParkedForScope(expectedNonces, stateKey);
+					// 0件回は `no-terminals` を優先する。0 は `coveredByPark` も自明に満たすので、
+					// 先に判定しないと新条件の効果が「もともと端末が無い回」に薄められて読めなくなる。
+					const skipReason = restoreTerminals === 0 ? 'no-terminals'
+						: coveredByPark ? 'covered-by-park' : undefined;
+					return paradisRefreshTerminalReviveIndex(stateKey, {
+						skipLookup: skipReason !== undefined,
+						skipReason,
+						// 判定の裏取り用。`parked > expected` が常態なら、working set に無い端末が
+						// 同じスコープへ載っている＝件数比較が危険だった実態が本番で確認できる。
+						parkedCount: expectedNonces?.size,
+						expectedCount: restoreTerminals,
+					});
+				});
 				try {
 					await timePhase('apply_working_set', () => this.applyWorkingSetFor(stateKey));
 				} finally {
@@ -1035,6 +1099,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			this.editorGroupsService.deleteWorkingSet(previousWorkingSet);
 			this._workingSets.delete(stateKey);
 			this._workingSetTerminals.delete(stateKey);
+			this._workingSetTerminalNonces.delete(stateKey);
 		}
 		this.saveWorkingSets();
 	}
@@ -1075,6 +1140,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		this.editorGroupsService.deleteWorkingSet(existing);
 		this._workingSets.delete(repositoryId);
 		this._workingSetTerminals.delete(repositoryId);
+		this._workingSetTerminalNonces.delete(repositoryId);
 		this.saveWorkingSets();
 	}
 
