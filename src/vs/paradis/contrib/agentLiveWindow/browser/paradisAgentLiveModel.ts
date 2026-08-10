@@ -154,7 +154,12 @@ export class ParadisAgentLiveModel extends Disposable {
 		for (const { instance, token } of livePanes) {
 			const status = this.agentStatusStore.getInstanceStatus(instance.instanceId);
 			// エージェントCLIが動いた実績のある端末だけを載せる (ただのシェルを混ぜない)。
-			if (status === undefined && !this.agentStatusStore.isAgentInstance(instance.instanceId)) {
+			// hook が届かない環境 (WSL のディストロの中で動いているエージェント) では実績が付かない
+			// ので、記録ファイルの探索でセッションが確定しているペインも根拠として認める。
+			// その場合そのペインの状態は分からないため、下の `?? 'idle'` で待機として並ぶ。
+			if (status === undefined
+				&& !this.agentStatusStore.isAgentInstance(instance.instanceId)
+				&& !this.agentStatusStore.hasDiscoveredAgentSession(token)) {
 				continue;
 			}
 			const resolved: ParadisAgentLiveStatus = status ?? 'idle';

@@ -2127,6 +2127,11 @@ interface ITailerDelegate {
 	onTurnEnded(reason: 'completed' | 'failed' | 'interrupted'): void;
 	/** rolloutに永続化されたCodex活動を順序どおりtrackerへ収束させる。 */
 	onCodexActivityTimeline(events: readonly ICodexTranscriptActivityEvent[]): void;
+	/**
+	 * transcript にこの起動後の追記を観測した。
+	 * 「そのペインでエージェントが今も動いている」証拠として使う（内容は問わない）。
+	 */
+	onAppended(): void;
 }
 
 /**
@@ -2360,6 +2365,9 @@ class TranscriptTailer {
 				text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
 			}
 			this.offset = start + bytesRead;
+			// ここまで来て初めて「現在の末尾」を掴めた。open に失敗した回はここを通らず
+			// offset が 0 のままなので、次の読みは追記ではなく全文の読み直しになる。
+			this.sawInitialEof = true;
 			this.consumeText(text, false);
 			if (!this.watcher) {
 				this.startWatching();
@@ -2368,6 +2376,9 @@ class TranscriptTailer {
 			await handle.close();
 		}
 	}
+
+	/** {@link initialLoad} で現在の末尾を掴めたか。掴む前の読みは追記ではない。 */
+	private sawInitialEof = false;
 
 	private async readAppended(): Promise<void> {
 		let handle: fs.FileHandle;
@@ -2426,6 +2437,13 @@ class TranscriptTailer {
 			if (!this.watcher) {
 				this.startWatching();
 			}
+			// 初回の末尾を掴めていない状態での読みは「追記」ではない（全文の読み直し）。
+			// ここで証拠にしてしまうと、前回から引き継いだセッションが1バイトも書かれて
+			// いないのに「動いている」と誤判定される。
+			if (this.sawInitialEof) {
+				this.delegate.onAppended();
+			}
+			this.sawInitialEof = true;
 		} finally {
 			await handle.close().catch(() => { /* ignore */ });
 		}
@@ -2910,6 +2928,11 @@ interface IPaneSessionInfo {
 	readonly agent: ParadisAgentKind;
 	readonly transcriptPath: string;
 	readonly sessionId: string | undefined;
+	/**
+	 * 前回の起動から永続化で引き継いだセッションか。この起動中に見つけた／hookで確定した
+	 * ものと区別するために持つ。引き継ぎ分は、動いている証拠が付くまで外へ出さない。
+	 */
+	readonly restoredFromDisk?: boolean;
 }
 
 /** pane session集合を、Mobileのsocket別Codex購読ターゲットへ正規化する。 */
@@ -2943,12 +2966,24 @@ interface IAgentSubscriber {
 }
 
 /** セッション確定済みかつ現在rendererから生存同期されているペインだけを公開する。 */
+/**
+ * 「そのターミナルでエージェントが動いている」として外へ出すペインを決める。
+ *
+ * セッションを覚えていることと、いま動いていることは別。前回の起動で使ったセッションは
+ * ディスクから復元されるので、覚えているだけを根拠にすると、**昨日終了したエージェントが
+ * 翌日の一覧に並ぶ**。かといって「最近書き込みがあったか」で判断してもいけない。質問を
+ * 出したまま30分待っているエージェントを落としてしまい、それを拾うことこそが主目的だから。
+ *
+ * そこで、この起動中に一度でも掴んだ「そのペインで動いている証拠」をラッチとして持ち、
+ * 前回の起動から引き継いだだけのセッションは、証拠が付くまで出さない。
+ */
 export function paradisConfirmedAgentPaneTokens(
 	confirmedTokens: Iterable<string>,
 	liveTokens: Iterable<string>,
+	restoredWithoutEvidence: ReadonlySet<string> = new Set(),
 ): readonly string[] {
 	const live = new Set(liveTokens);
-	return [...confirmedTokens].filter(token => live.has(token)).sort();
+	return [...confirmedTokens].filter(token => live.has(token) && !restoredWithoutEvidence.has(token)).sort();
 }
 
 /**
@@ -2958,9 +2993,10 @@ export function paradisConfirmedAgentPaneTokens(
  */
 export class ParadisMobileAgentChat extends Disposable {
 
-	private readonly _onDidChangeConfirmedAgentPanes = this._register(new Emitter<readonly string[]>());
+	private readonly _onDidChangeConfirmedAgentPanes = this._register(new Emitter<{ readonly tokens: readonly string[]; readonly tokensOutsideHookReach: readonly string[] }>());
 	readonly onDidChangeConfirmedAgentPanes = this._onDidChangeConfirmedAgentPanes.event;
 	private lastConfirmedAgentPaneTokens: readonly string[] = [];
+	private lastAgentPaneTokensOutsideHookReach: readonly string[] = [];
 
 	/** ペイントークン → 既知のセッション情報 (hookバスから学習、購読の有無に関わらず保持)。 */
 	private readonly paneSessions = new Map<string, IPaneSessionInfo>();
@@ -3394,7 +3430,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					continue;
 				}
 				this.retiredSessions.set(entry.token, {
-					session: { token: entry.token, agent: entry.agent, transcriptPath: entry.transcriptPath, sessionId: entry.sessionId },
+					session: { token: entry.token, agent: entry.agent, transcriptPath: entry.transcriptPath, sessionId: entry.sessionId, restoredFromDisk: true },
 					retiredAt: entry.savedAt,
 				});
 			}
@@ -3510,6 +3546,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (!this.isLiveToken(token)) {
 			return;
 		}
+		// このターミナルでエージェントCLIが起動したのを実際に見た。前回から引き継いだ
+		// セッションであっても、これで「今このペインで動いている」と言い切れる。
+		this.rememberAgentEvidence(token);
 		const baseCwd = cwd ?? this.tokenToCwd.get(token);
 		const effectiveCwd = commandCwd !== undefined && baseCwd !== undefined ? resolve(baseCwd, commandCwd) : baseCwd;
 		if (effectiveCwd === undefined) {
@@ -5111,6 +5150,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
+		// hook はペインの環境変数を継承したプロセスからしか届かない。届いた時点で
+		// 「今このペインでエージェントが動いている」証拠になる（transcript の有無は問わない）。
+		if (this.isLiveToken(event.token)) {
+			this.rememberAgentEvidence(event.token);
+		}
 		if (event.transcriptPath === undefined || event.transcriptPath.length === 0) {
 			// agent種別を確定できないため、transcript_path無しのhookだけではcwd探索しない。
 			// CLI検知経路がagent種別付きで鮮度検証済み探索を行う。
@@ -5635,6 +5679,10 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) } });
 				}
 			},
+			// この起動後に transcript が伸びた＝そのペインでエージェントが今も動いている。
+			// hook が届かない構成（WSL のディストロの中）と、質問を出したまま止まっていた
+			// セッションを、鮮度の推測を持ち込まずに引き継ぎ扱いから解くための唯一の経路。
+			onAppended: () => this.rememberAgentEvidence(token),
 			// バックグラウンドタスク・質問回答待ちの変化を状態レジストリへ反映する
 			// （ParadisAgentBrowserService がペイン実行状態 working/question の判定に使う）。
 			onActivity: pushActivity,
@@ -5843,18 +5891,62 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private confirmedAgentPaneTokens(): readonly string[] {
-		return paradisConfirmedAgentPaneTokens(this.paneSessions.keys(), this.allLiveTokens());
+		const restoredWithoutEvidence = new Set<string>();
+		for (const [token, session] of this.paneSessions) {
+			if (session.restoredFromDisk === true) {
+				restoredWithoutEvidence.add(token);
+			}
+		}
+		return paradisConfirmedAgentPaneTokens(this.paneSessions.keys(), this.allLiveTokens(), restoredWithoutEvidence);
+	}
+
+	/**
+	 * 「そのペインでエージェントが動いている」と分かったので、引き継ぎ扱いを解く。
+	 *
+	 * 別の集合で覚えるのではなくセッション自身を書き換えるのは、ウィンドウのリロードや
+	 * ウィンドウ間の移動で token が一瞬 live でなくなる隙間が必ずあるため。並行に持つと
+	 * その隙間で証拠だけが消え、セッションは引き継ぎ扱いのまま復活して二度と出なくなる。
+	 */
+	private rememberAgentEvidence(token: string): void {
+		const session = this.paneSessions.get(token);
+		if (session !== undefined && session.restoredFromDisk === true) {
+			this.paneSessions.set(token, { ...session, restoredFromDisk: false });
+			this.emitConfirmedAgentPanesIfChanged();
+		}
+		const retired = this.retiredSessions.get(token);
+		if (retired !== undefined && retired.session.restoredFromDisk === true) {
+			this.retiredSessions.set(token, { ...retired, session: { ...retired.session, restoredFromDisk: false } });
+		}
+	}
+
+	/**
+	 * 確定しているペインのうち、hook が原理的に届かない場所で動いているぶん。
+	 *
+	 * いまのところ「WSL のディストロの中」がそれにあたる。ここでは作業フォルダの一致だけを
+	 * 根拠にセッションを結び付けているので、hook で正確に分かる環境にまでこの弱い根拠を
+	 * 広げると、外部のターミナルで動かしているエージェントを取り違えて並べてしまう。
+	 */
+	private agentPaneTokensOutsideHookReach(confirmed: readonly string[]): readonly string[] {
+		return confirmed.filter(token => {
+			const cwd = this.tokenToCwd.get(token);
+			return cwd !== undefined && paradisResolveAgentHomes(cwd).wsl !== undefined;
+		});
 	}
 
 	private emitConfirmedAgentPanesIfChanged(): void {
 		const next = this.confirmedAgentPaneTokens();
+		const nextOutsideHookReach = this.agentPaneTokensOutsideHookReach(next);
 		if (next.length === this.lastConfirmedAgentPaneTokens.length
-			&& next.every((token, index) => token === this.lastConfirmedAgentPaneTokens[index])) {
+			&& next.every((token, index) => token === this.lastConfirmedAgentPaneTokens[index])
+			&& nextOutsideHookReach.length === this.lastAgentPaneTokensOutsideHookReach.length
+			&& nextOutsideHookReach.every((token, index) => token === this.lastAgentPaneTokensOutsideHookReach[index])) {
 			return;
 		}
 		this.lastConfirmedAgentPaneTokens = next;
-		this._onDidChangeConfirmedAgentPanes.fire(next);
+		this.lastAgentPaneTokensOutsideHookReach = nextOutsideHookReach;
+		this._onDidChangeConfirmedAgentPanes.fire({ tokens: next, tokensOutsideHookReach: nextOutsideHookReach });
 	}
+
 
 	private addSubscriber(token: string, mobileId: string, owner: IParadisMobilePaneOwner, liveEncoding: string | undefined): void {
 		let subscribers = this.subscribers.get(token);

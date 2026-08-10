@@ -480,7 +480,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	readonly onDidChangeConfirmedAgentPanes = this._onDidChangeConfirmedAgentPanes.event;
 	private readonly _onDidRequestAgentPaneSync = this._register(new Emitter<IParadisMobileWindowLease>());
 	readonly onDidRequestAgentPaneSync = this._onDidRequestAgentPaneSync.event;
-	private confirmedAgentPanes: IParadisConfirmedAgentPanes = { revision: 0, tokens: [] };
+	private confirmedAgentPanes: IParadisConfirmedAgentPanes = { revision: 0, tokens: [], tokensOutsideHookReach: [] };
 
 	// PC本体（マシン全体）のリソースサンプラー。CPUは累積値の差分なので使い回す必要がある。
 	private readonly hostResourceSampler = new ParadisHostResourceSampler();
@@ -627,8 +627,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			agentSessionStore,
 		));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
-		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(tokens => {
-			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens };
+		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
+			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens, tokensOutsideHookReach };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);
 		}));
 		// PC側でペインを確認済みにした（フォーカス中の自動既読 or ターミナルを開いての手動既読）

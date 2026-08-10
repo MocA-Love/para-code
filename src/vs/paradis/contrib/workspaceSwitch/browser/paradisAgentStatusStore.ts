@@ -33,6 +33,12 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 	private _statuses = new Map<string, ParadisAgentStatus>();
 	private _instanceStatuses = new Map<number, ParadisAgentStatus>();
 	private _agentInstanceIds = new Set<number>();
+	/**
+	 * hook 以外の根拠（記録ファイルの探索）でセッションが確定しているペイン。
+	 * インスタンスIDではなくペイントークンで持つのは、ターミナルを開き直しても同じ
+	 * ペインだと分かる識別子がこちらだけだからで、書き込み側の変換も要らなくなる。
+	 */
+	private _discoveredAgentPaneTokens = new Set<string>();
 
 	getScopeStatus(stateKey: string): ParadisAgentStatus | undefined {
 		return this._statuses.get(stateKey);
@@ -48,6 +54,18 @@ export class ParadisAgentStatusStore extends Disposable implements IParadisAgent
 
 	isAgentInstance(instanceId: number): boolean {
 		return this._agentInstanceIds.has(instanceId);
+	}
+
+	hasDiscoveredAgentSession(paneToken: string): boolean {
+		return this._discoveredAgentPaneTokens.has(paneToken);
+	}
+
+	setDiscoveredAgentPaneTokens(paneTokens: ReadonlySet<string>): void {
+		if (this._discoveredAgentPaneTokens.size === paneTokens.size && [...paneTokens].every(token => this._discoveredAgentPaneTokens.has(token))) {
+			return;
+		}
+		this._discoveredAgentPaneTokens = new Set(paneTokens);
+		this._onDidChangeAgentStatuses.fire();
 	}
 
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void {

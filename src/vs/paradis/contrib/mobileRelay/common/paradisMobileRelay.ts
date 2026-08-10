@@ -77,6 +77,15 @@ export function paradisResolveMobileTerminalStateKey(
 export interface IParadisConfirmedAgentPanes {
 	readonly revision: number;
 	readonly tokens: readonly string[];
+	/**
+	 * そのうち、hook が原理的に届かない場所で動いているぶん（いまは WSL のディストロの中）。
+	 *
+	 * PC 側の「動いているエージェント」一覧は本来 hook 由来の状態だけを根拠にしており、
+	 * それで足りている環境にわざわざ弱い根拠（作業フォルダの一致だけで結び付けた推定）を
+	 * 持ち込むと、外部のターミナルで動かしているエージェントを取り違えて並べてしまう。
+	 * hook が届かない場所に限って、この弱い根拠を許すために切り出す。
+	 */
+	readonly tokensOutsideHookReach: readonly string[];
 }
 
 /** protocol v2: renderer が shared process へ同期するワークスペース。 */

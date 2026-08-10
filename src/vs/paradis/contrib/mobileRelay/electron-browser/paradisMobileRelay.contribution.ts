@@ -40,16 +40,7 @@ import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdent
 import { encodeQrCode, qrToSvg } from '../common/paradisQrCode.js';
 import { IParadisSpaceNotesService } from '../../workspaceSwitch/common/paradisSpaceNotes.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import {
-	IParadisMobileRelayService,
-	IParadisMobileStatus,
-	PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY,
-	PARADIS_MOBILE_ENABLED_KEY,
-	PARADIS_MOBILE_RELAY_CHANNEL,
-	PARADIS_MOBILE_PC_NAME_KEY,
-	PARADIS_MOBILE_RELAY_URL_KEY,
-	paradisMobileWindowRoute,
-} from '../common/paradisMobileRelay.js';
+import { IParadisConfirmedAgentPanes, IParadisMobileRelayService, IParadisMobileStatus, PARADIS_MOBILE_CODEX_DAEMON_STREAMING_KEY, PARADIS_MOBILE_ENABLED_KEY, PARADIS_MOBILE_PC_NAME_KEY, PARADIS_MOBILE_RELAY_CHANNEL, PARADIS_MOBILE_RELAY_URL_KEY, paradisMobileWindowRoute } from '../common/paradisMobileRelay.js';
 import { ParadisMobileWorkspaceProvider } from './paradisMobileWorkspaceProvider.js';
 import { ParadisMobileWebrtcStreamer } from './paradisMobileWebrtcStreamer.js';
 import { ParadisAgentTerminalHintParser, paradisShouldAcceptAgentTerminalHint } from '../common/paradisAgentTerminalHints.js';
@@ -131,7 +122,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@IParadisTerminalScopeService terminalScopeService: IParadisTerminalScopeService,
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
 		@IParadisSpaceNotesService spaceNotesService: IParadisSpaceNotesService,
-		@IParadisAgentStatusStore agentStatusStore: IParadisAgentStatusStore,
+		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
 		@IWebviewWorkbenchService private readonly webviewWorkbenchService: IWebviewWorkbenchService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IFileService fileService: IFileService,
@@ -302,15 +293,39 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// shell integration後の鮮度検証済みtranscript探索で実在セッションを確定できる。
 		// その確定結果をホーム一覧のagentフラグへ反映する。
 		let confirmedAgentPanesRevision = -1;
-		const applyConfirmedAgentPanes = (state: { readonly revision: number; readonly tokens: readonly string[] }) => {
+		// スマホのホームと、PC側の「動いているエージェント」一覧へ、同じ根拠を配る。
+		// 一覧は本来 hook 由来の状態だけを見ているが、WSL のディストロの中で動いている
+		// エージェントからは hook が届かない。そのままだと「スマホには出ているのに
+		// PC の一覧は空」という食い違いになる（ssh の先で動いているぶんは、記録が
+		// 相手のディスクにあるので、そもそもこの経路に乗らない）。
+		const confirmedTokens = new Set<string>();
+		const publishDiscoveredAgentPanes = () => this.agentStatusStore.setDiscoveredAgentPaneTokens(confirmedTokens);
+		const applyConfirmedAgentPanes = (state: IParadisConfirmedAgentPanes) => {
+			// リビジョンは shared process の寿命ローカルで 0 から採番される。あちらが落ちて
+			// 上がり直すと巻き戻るので、単調増加だけを見ていると以後の更新を全部捨ててしまい、
+			// ウィンドウを再読み込みするまで表示が凍る。巻き戻りは再起動とみなして追従する。
+			if (state.revision < confirmedAgentPanesRevision) {
+				confirmedAgentPanesRevision = -1;
+			}
 			if (state.revision > confirmedAgentPanesRevision) {
 				confirmedAgentPanesRevision = state.revision;
 				this.provider.setConfirmedAgentPaneTokens(state.tokens);
+				// 一覧へ足すのは hook が届かない場所のぶんだけ。hook が正常に働く環境では
+				// 従来どおり hook 由来の状態だけを根拠にする（弱い根拠を持ち込むと、外部の
+				// ターミナルで動かしているエージェントを取り違えて並べてしまう）。
+				confirmedTokens.clear();
+				for (const token of state.tokensOutsideHookReach) {
+					confirmedTokens.add(token);
+				}
+				publishDiscoveredAgentPanes();
 			}
 		};
 		this._register(this.service.onDidChangeConfirmedAgentPanes(applyConfirmedAgentPanes));
 		this.service.getConfirmedAgentPanes()
-			.then(applyConfirmedAgentPanes)
+			// 在庫スナップショットなので購読イベントより古いことがある。巻き戻りを再起動と
+			// みなす判定と噛み合うと、古い集合で上書きしてしまうため、まだ何も受けていない
+			// ときだけ適用する。
+			.then(state => { if (confirmedAgentPanesRevision === -1) { applyConfirmedAgentPanes(state); } })
 			.catch(err => this.logService.warn('[paradisMobileRelay] confirmed agent terminals initial sync failed', err));
 
 		// エージェントCLI (`claude` / `codex`) コマンドの実行開始を shell integration で検知し、
@@ -474,6 +489,9 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 				this.service.setEnabled(enabled).catch(err => this.logService.warn('[paradisMobileRelay] setEnabled failed', err));
 				if (!enabled) {
 					this.provider.detachAll();
+					// ペイン同期を止めるので shared process からの更新はもう来ない。ここで
+					// 自分で掃除しないと、無効にした直後の一覧に項目が残り続ける。
+					this.agentStatusStore.setDiscoveredAgentPaneTokens(new Set());
 				}
 				this.syncAgentLiveOptions();
 				this.updateTerminalHintTracking();
