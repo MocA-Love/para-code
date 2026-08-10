@@ -692,9 +692,15 @@ export function useWsHeader({ subtitle, actions, mid, below, allWorkspaces, wide
 	/** スペースの島と右のピルの間に伸びる島（ターミナルタブの「ターミナル名 ▾」）。 */
 	mid?: ParaHeaderSpec['mid'];
 	/**
-	 * 島の下に続けて浮かせる帯（ホームの絞り込みチップ、ターミナルのタブチップ、
-	 * ファイルの検索欄）。ここに置いたものは本文と一緒にスクロールせず、
-	 * `useParaHeaderHeight()` の実測にも含まれる。
+	 * **もう描かれない。** ヘッダーをOS標準のナビゲーションバーへ移したので、帯（絞り込み
+	 * チップ・検索欄・タブチップ）を載せる場所が無くなった——ネイティブのバーに入るのは
+	 * バー項目だけで、その下に続く帯は置けない。
+	 *
+	 * 帯が要る画面は、**本文の上に絶対配置で張り付ける**こと（`app/(tabs)/index.tsx` の
+	 * 絞り込みチップ、`app/(tabs)/files.tsx` の検索欄が実例。高さを `onLayout` で測って
+	 * 一覧の頭を空ける）。ここへ渡しても黙って消えるので、新しい帯をここへ足さない。
+	 * 残してあるのはAndroid・旧バイナリ用のフォールバック（ターミナルのタブチップ）が
+	 * まだこの引数を通しているためで、その経路もいまは何も描かない。
 	 */
 	below?: ReactNode;
 	allWorkspaces?: boolean;
@@ -843,10 +849,21 @@ function useNativeWsHeader(spec: ParaHeaderSpec, gated: boolean) {
 			title: '',
 			headerLeft,
 			headerRight,
-			headerTitle: mid === undefined ? undefined : headerTitle,
+			// **`undefined` を渡してはいけない。** それは「このキーは指定しない」と同じ扱いで、
+			// 直前のタブが書いた中央のビューがそのまま残る。残るとその幅（ターミナル名の島は
+			// 最大160pt）を中央が占有し続け、左の島と右のボタンを合わせた幅が画面に収まらなく
+			// なって、**右のボタンがまとめて「…」へ折りたたまれる**（ホーム→ターミナル→ホームで
+			// 再現。実機で確認済み）。中央を空にしたいときは「何も描かない関数」を渡す。
+			headerTitle: mid === undefined ? EMPTY_HEADER_TITLE : headerTitle,
 		});
 	}, [focused, gated, navigation, headerLeft, headerRight, headerTitle, mid]);
 }
+
+/**
+ * 中央に何も置かないタブのための `headerTitle`。**モジュールスコープに置いて参照を固定する**
+ * （毎レンダー新しい関数だとバーが作り直される）。`undefined` では前のタブの中央が残る。
+ */
+const EMPTY_HEADER_TITLE = () => null;
 
 /** ネイティブバーへ載せる中央のビューの器。大きさを明示するためだけに存在する。 */
 const headerStyles = StyleSheet.create({

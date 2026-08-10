@@ -21,35 +21,49 @@ import { keyboardCoverage } from '../keyboardCoverage.js';
  * 再び true になる）。
  */
 export function useKeyboardVisible(): boolean {
-	const [visible, setVisible] = useState(false);
+	return useKeyboardCoverage() > 0;
+}
+
+/**
+ * キーボードが画面下端を覆っている**高さ**（pt）。覆っていなければ0。
+ *
+ * **`KeyboardAvoidingView` の代わりに使う。** あれは自分のフレームの画面上の絶対位置から
+ * 「下端が何pt食われるか」を割り出すので、OS標準のナビゲーションバーの下に置かれると
+ * バーの高さぶんずれ、`keyboardVerticalOffset` でその高さを渡さないと足りない量しか
+ * 空けない（エージェント詳細で入力欄がキーボードに隠れた）。バーの高さを取る
+ * `useHeaderHeight` は expo-router からは使えないので、こちらで「下端から何pt隠れるか」を
+ * 直接測り、下余白として渡す。この値は画面上のどこに置かれていても変わらない。
+ */
+export function useKeyboardCoverage(): number {
+	const [coverage, setCoverage] = useState(0);
 	const isFocused = useIsFocused();
 	useEffect(() => {
 		if (!isFocused) {
-			setVisible(false);
+			setCoverage(0);
 		}
 	}, [isFocused]);
 	useEffect(() => {
 		if (Platform.OS === 'ios') {
 			// iOSは表示/非表示/フレーム変化のすべてで発火する changeFrame を使う。
-			// frame変化を伴わない非表示経路（バックグラウンド遷移等）で true に張り付かないよう
-			// willHide でも明示的に false へ倒す（二重化）。
+			// frame変化を伴わない非表示経路（バックグラウンド遷移等）で張り付かないよう
+			// willHide でも明示的に0へ倒す（二重化）。
 			const change = Keyboard.addListener('keyboardWillChangeFrame', (e: KeyboardEvent) => {
 				// アクセサリバーのみ・画面外に加え、iPadのフローティングキーボード
 				// （下端に接していない）も「覆っていない」扱いにする。
-				setVisible(keyboardCoverage(e.endCoordinates, Dimensions.get('window').height) > 0);
+				setCoverage(keyboardCoverage(e.endCoordinates, Dimensions.get('window').height));
 			});
-			const hide = Keyboard.addListener('keyboardWillHide', () => setVisible(false));
+			const hide = Keyboard.addListener('keyboardWillHide', () => setCoverage(0));
 			return () => {
 				change.remove();
 				hide.remove();
 			};
 		}
-		const show = Keyboard.addListener('keyboardDidShow', () => setVisible(true));
-		const hide = Keyboard.addListener('keyboardDidHide', () => setVisible(false));
+		const show = Keyboard.addListener('keyboardDidShow', (e: KeyboardEvent) => setCoverage(e.endCoordinates.height));
+		const hide = Keyboard.addListener('keyboardDidHide', () => setCoverage(0));
 		return () => {
 			show.remove();
 			hide.remove();
 		};
 	}, []);
-	return visible;
+	return coverage;
 }

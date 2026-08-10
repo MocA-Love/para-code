@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, FlatList, Image, KeyboardAvoidingView, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, FlatList, Image, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
@@ -24,7 +24,7 @@ import { PendingMessagesChip, PendingMessagesSheet } from '../src/components/pen
 import { NO_PENDING_MESSAGES, usePendingAgentMessages } from '../src/pendingAgentMessages.js';
 import { wsColor } from '../src/components/wsDrawer.js';
 import { useAgentActions } from '../src/hooks/useAgentActions.js';
-import { useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
+import { useKeyboardCoverage, useKeyboardVisible } from '../src/hooks/useKeyboardVisible.js';
 import { useIsRegularWidth } from '../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useOfflineNotice } from '../src/offlineNotice.js';
@@ -70,6 +70,8 @@ export default function AgentDetailScreen() {
 	const offline = useOfflineNotice();
 	const gated = useConnectionGateBlocked();
 	const keyboardVisible = useKeyboardVisible();
+	// 下端がキーボードに食われる高さ。`KeyboardAvoidingView` の代わりに自分で下余白へ入れる。
+	const keyboardCover = useKeyboardCoverage();
 	// iPadの広い幅では会話の列幅を制限して中央へ寄せる。1行が長すぎると次の行頭へ
 	// 目線を戻す距離が伸びて読みづらいため（ヘッダーとブラーは全幅のまま）。
 	const regular = useIsRegularWidth();
@@ -434,7 +436,13 @@ export default function AgentDetailScreen() {
 			hidden={gated}
 		/>
 		<ConnectionGate>
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+		{/* **`KeyboardAvoidingView` は使わない。** あれは自分のフレームの画面上の絶対位置から
+		    下端の食われ方を割り出すので、OS標準のバーの下に置かれるとバーの高さぶんずれ、
+		    足りない量しか空けずに入力欄がキーボードへ潜る（実機で確認済み）。正しく直すには
+		    バーの高さを `keyboardVerticalOffset` へ渡す必要があるが、その高さを取る
+		    `useHeaderHeight` は expo-router からは使えない。「下端から何pt隠れるか」を
+		    直接測って下余白にする（`useKeyboardCoverage`）。 */}
+		<View style={[styles.screen, { paddingBottom: keyboardCover }]}>
 			{/* minHeight: スラッシュメニュー等でinputBarが伸びても、チャット領域が
 			    ヘッダー（＋Subagentストリップ表示中はその帯）より上まで潰れないようにする下限。
 			    これによりinputBar側（flexShrink: 1）が縮み、メニューはヘッダー/ストリップの下に収まる */}
@@ -575,7 +583,7 @@ export default function AgentDetailScreen() {
 					updateAgentSettings={updateAgentSettings}
 				/>
 			</View>
-		</KeyboardAvoidingView>
+		</View>
 		</ConnectionGate>
 		</>
 	);
