@@ -91,6 +91,17 @@
 	color: var(--vscode-badge-foreground);
 }
 
+/* 同名のプリセットを見分けるための区別語（対象リポジトリ・作業ディレクトリ等）。保存元バッジより弱く、名前の補足として読ませる。 */
+.paradis-preset-editor-dialog .ppe-badge.qualifier {
+	background: transparent;
+	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
+	color: var(--vscode-descriptionForeground);
+	max-width: 180px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .paradis-preset-editor-dialog .ppe-badge.workspace {
 	background: var(--vscode-statusBarItem-remoteBackground, var(--vscode-badge-background));
 	color: var(--vscode-statusBarItem-remoteForeground, var(--vscode-badge-foreground));
@@ -142,6 +153,25 @@
 
 .paradis-preset-editor-dialog .ppe-input:focus {
 	border-color: var(--vscode-focusBorder);
+}
+
+/* 同名のプリセットがある状態。エラーではない（そのまま保存してよい）ので警告色にとどめる。 */
+.paradis-preset-editor-dialog .ppe-input.warn {
+	border-color: var(--vscode-editorWarning-foreground, var(--vscode-inputValidation-warningBorder));
+}
+
+.paradis-preset-editor-dialog .ppe-hint {
+	font-size: 11px;
+	line-height: 1.5;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-preset-editor-dialog .ppe-hint-warn {
+	color: var(--vscode-editorWarning-foreground, var(--vscode-descriptionForeground));
+}
+
+.paradis-preset-editor-dialog .ppe-hint:empty {
+	display: none;
 }
 
 .paradis-preset-editor-dialog .ppe-commands,

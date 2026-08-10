@@ -21,21 +21,36 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
-import { basename } from '../../../../base/common/resources.js';
+import { basename, joinPath } from '../../../../base/common/resources.js';
 import {
 	IParadisPresetDefinition,
 	IParadisPresetService,
 	IParadisPresetTask,
 	IParadisResolvedPreset,
+	paradisFindPresetNameConflict,
 	paradisGetPresetTasks,
 	paradisPresetCommandSignature,
+	paradisPresetQualifier,
+	paradisPresetQualifiers,
 	ParadisPresetLayout,
+	ParadisPresetNameConflict,
 	ParadisPresetSource,
 	PARADIS_PROJECT_ROOT_ENV_VAR,
 	PARADIS_WORKSPACE_PRESET_FILE,
 } from '../common/paradisTerminalPresets.js';
 
 const $ = dom.$;
+
+/**
+ * 保存ボタンを押した後の行き先。
+ *   - save: 保存する（replace があればその1件を置き換える。無ければ新しい1件として追加）
+ *   - blocked: 保存できない理由をフォームに出す（見分けが付かなくなる編集）
+ *   - cancel: 何もしない
+ */
+type ISaveDecision =
+	| { readonly kind: 'save'; readonly replace?: IParadisResolvedPreset }
+	| { readonly kind: 'blocked'; readonly message: string }
+	| { readonly kind: 'cancel' };
 
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.presetEditor.title', "コマンドプリセット");
@@ -105,6 +120,30 @@ const STR_NAME_REQUIRED = localize('paradis.presetEditor.nameRequired', "名前�
 const STR_COMMANDS_REQUIRED = localize('paradis.presetEditor.commandsRequired', "コマンドを1つ以上入力してください。");
 // allow-any-unicode-next-line
 const strDeleteConfirm = (name: string) => localize('paradis.presetEditor.deleteConfirm', "プリセット「{0}」を削除しますか？", name);
+// allow-any-unicode-next-line
+const strDeleteConfirmOthers = (count: number) => localize('paradis.presetEditor.deleteConfirmOthers', "同じ名前のプリセットが他に{0}件ありますが、そちらは残ります。", count);
+// allow-any-unicode-next-line
+const strSameNameHintNew = (count: number) => localize('paradis.presetEditor.sameNameHintNew', "同じ名前のプリセットが{0}件あります。このまま保存すると並んで登録されます（置き換えるかどうかは保存時に選べます）。", count);
+// allow-any-unicode-next-line
+const strSameNameHintEdit = (count: number) => localize('paradis.presetEditor.sameNameHintEdit', "同じ名前のプリセットが他に{0}件あります。一覧やボタンでは、対象リポジトリなどの違いで見分けます。", count);
+// allow-any-unicode-next-line
+const strConflictMessage = (name: string) => localize('paradis.presetEditor.conflictMessage', "「{0}」という名前のプリセットが既にあります。", name);
+// allow-any-unicode-next-line
+const STR_CONFLICT_ADD = localize('paradis.presetEditor.conflictAdd', "別のプリセットとして追加");
+// allow-any-unicode-next-line
+const STR_CONFLICT_REPLACE = localize('paradis.presetEditor.conflictReplace', "置き換える");
+// allow-any-unicode-next-line
+const STR_CONFLICT_CANCEL = localize('paradis.presetEditor.conflictCancel', "キャンセル");
+// allow-any-unicode-next-line
+const STR_INDISTINGUISHABLE_MESSAGE = localize('paradis.presetEditor.indistinguishableMessage', "同じ内容のプリセットが既にあります。");
+// allow-any-unicode-next-line
+const STR_INDISTINGUISHABLE_DETAIL = localize('paradis.presetEditor.indistinguishableDetail', "名前・対象リポジトリ・説明がすべて同じため、並べても一覧やボタンで見分けられません。並べて登録したい場合は、キャンセルして名前を変えるか説明を付けてください。");
+// allow-any-unicode-next-line
+const strExistingDetail = (commands: string, qualifier: string) => localize('paradis.presetEditor.conflictExisting', "既存: {0}{1}", commands, qualifier ? localize('paradis.presetEditor.conflictQualifier', "（{0}）", qualifier) : '');
+// allow-any-unicode-next-line
+const strExistingCount = (count: number) => localize('paradis.presetEditor.conflictExistingCount', "同じ名前のプリセットが既に{0}件あります。置き換えたい場合は、一覧から対象を選んで編集または削除してください。", count);
+// allow-any-unicode-next-line
+const STR_DELETE_FAILED = localize('paradis.presetEditor.deleteFailed', "削除できませんでした");
 // allow-any-unicode-next-line
 const STR_SOURCE_USER = localize('paradis.presetEditor.sourceUser', "ユーザー");
 // allow-any-unicode-next-line
@@ -207,6 +246,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		// 直前／直後のプリセットのグループキーが一致するかで移動可否を判定できる。
 		const groupKey = (preset: IParadisResolvedPreset): string =>
 			preset.source === 'workspace' ? `workspace:${preset.sourceUri?.toString() ?? ''}` : 'user';
+		// 同じ名前が並んでいるときだけ、それぞれを分けている値（対象リポジトリ・作業ディレクトリ等）を
+		// 名前の右に出す。単独の名前には何も足さない。
+		const qualifiers = paradisPresetQualifiers(presets);
 		presets.forEach((preset, index) => {
 			const row = dom.append(list, $('.ppe-row'));
 			const iconEl = dom.append(row, $('span.ppe-row-icon'));
@@ -217,6 +259,10 @@ class ParadisPresetEditorDialog extends Disposable {
 			const badge = dom.append(nameLine, $('span.ppe-badge'));
 			badge.textContent = preset.source === 'workspace' ? STR_SOURCE_WORKSPACE : STR_SOURCE_USER;
 			badge.classList.toggle('workspace', preset.source === 'workspace');
+			const qualifier = qualifiers.get(preset.key);
+			if (qualifier) {
+				dom.append(nameLine, $('span.ppe-badge.qualifier')).textContent = qualifier;
+			}
 			dom.append(main, $('.ppe-row-detail')).textContent = preset.description || paradisPresetCommandSignature(preset, ' && ');
 
 			const actions = dom.append(row, $('.ppe-row-actions'));
@@ -245,9 +291,25 @@ class ParadisPresetEditorDialog extends Disposable {
 			const deleteBtn = dom.append(actions, $('button.ppe-btn.ppe-btn-danger')) as HTMLButtonElement;
 			deleteBtn.textContent = STR_DELETE;
 			this._viewStore.add(dom.addDisposableListener(deleteBtn, 'click', async () => {
-				const result = await this.dialogService.confirm({ message: strDeleteConfirm(preset.name), primaryButton: STR_DELETE });
-				if (result.confirmed) {
+				// 同名が並んでいると「どれを消すのか」が名前だけでは分からないので、
+				// 消える1件の中身と、残る同名の件数まで書いてから確認する。
+				const sameName = presets.filter(candidate => candidate !== preset && candidate.name.trim() === preset.name.trim()).length;
+				const detail = [
+					qualifier ? `${qualifier}` : undefined,
+					paradisPresetCommandSignature(preset, ' && '),
+					sameName > 0 ? `\n${strDeleteConfirmOthers(sameName)}` : undefined,
+				].filter((line): line is string => !!line).join('\n');
+				const result = await this.dialogService.confirm({ message: strDeleteConfirm(preset.name), detail, primaryButton: STR_DELETE });
+				if (!result.confirmed) {
+					return;
+				}
+				try {
 					await this.presetService.deletePreset(preset);
+				} catch (error) {
+					// 対象を見失った場合（設定が別の場所で変わった等）。黙って何も起きないと
+					// 「削除ボタンが効かない」ようにしか見えないので、理由を出して一覧を作り直す。
+					await this.dialogService.error(STR_DELETE_FAILED, error instanceof Error ? error.message : String(error));
+					this._renderList();
 				}
 			}));
 		});
@@ -278,9 +340,26 @@ class ParadisPresetEditorDialog extends Disposable {
 			return wrap;
 		};
 
-		const nameInput = dom.append(field(STR_NAME), $('input.ppe-input')) as HTMLInputElement;
+		const nameField = field(STR_NAME);
+		const nameInput = dom.append(nameField, $('input.ppe-input')) as HTMLInputElement;
 		nameInput.type = 'text';
 		nameInput.value = editing?.name ?? '';
+		// 押す前に気づけるようにする。保存時の確認（下の _resolveNameConflict）は最後の砦で、
+		// ここで分かれば「名前を変える」「そのまま2件にする」をその場で決められる。
+		const nameHint = dom.append(nameField, $('.ppe-hint.ppe-hint-warn'));
+		// 数える相手は「これから書き込む先」に居るものだけ。ユーザー設定とリポジトリで
+		// 同じ名前を使うのは衝突ではないので、そこまで数えると出さなくてよい注意が出る。
+		let hintTarget: ParadisPresetSource = editing?.source ?? 'user';
+		const updateNameHint = () => {
+			const name = nameInput.value.trim();
+			const sameName = name
+				? this._presetsInSaveTarget(hintTarget, editing).filter(candidate => candidate.key !== editing?.key && candidate.name.trim() === name).length
+				: 0;
+			nameHint.textContent = sameName === 0 ? '' : (editing ? strSameNameHintEdit(sameName) : strSameNameHintNew(sameName));
+			nameInput.classList.toggle('warn', sameName > 0);
+		};
+		updateNameHint();
+		this._viewStore.add(dom.addDisposableListener(nameInput, 'input', updateNameHint));
 
 		const descriptionInput = dom.append(field(STR_DESCRIPTION), $('input.ppe-input')) as HTMLInputElement;
 		descriptionInput.type = 'text';
@@ -487,6 +566,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		appliesToInput.value = editing?.appliesTo?.join('\n') ?? '';
 		const updateAppliesToVisibility = () => {
 			appliesToField.style.display = userRadio.checked ? '' : 'none';
+			// 保存先が変われば「同じ名前が何件あるか」も変わる
+			hintTarget = workspaceRadio.checked ? 'workspace' : 'user';
+			updateNameHint();
 		};
 		updateAppliesToVisibility();
 		for (const radio of [userRadio, workspaceRadio]) {
@@ -533,12 +615,92 @@ class ParadisPresetEditorDialog extends Disposable {
 				appliesTo: userRadio.checked && appliesTo.length > 0 ? appliesTo : undefined,
 			};
 			const target: ParadisPresetSource = workspaceRadio.checked ? 'workspace' : 'user';
+			const decision = await this._resolveNameConflict(definition, target, editing);
+			if (decision.kind === 'cancel') {
+				return;
+			}
+			if (decision.kind === 'blocked') {
+				errorEl.textContent = decision.message;
+				return;
+			}
 			try {
-				await this.presetService.savePreset(definition, target, editing?.name);
+				await this.presetService.savePreset(definition, target, { replace: decision.replace });
 				this._renderList();
 			} catch (error) {
 				errorEl.textContent = error instanceof Error ? error.message : String(error);
 			}
 		}));
+	}
+
+	/**
+	 * その保存先に実際に書き込まれる既存プリセット。**書き込み先のファイル単位で絞る。**
+	 * 複数のリポジトリを開いていると `presets` には別リポジトリの .paracode.json 由来も混ざり、
+	 * それを衝突相手として置き換えると、触るつもりのないリポジトリのファイルが書き換わる。
+	 */
+	private _presetsInSaveTarget(target: ParadisPresetSource, editing: IParadisResolvedPreset | undefined): IParadisResolvedPreset[] {
+		const folder = this.contextService.getWorkspace().folders[0];
+		const targetFile = target === 'workspace'
+			? (editing?.sourceUri ?? (folder ? joinPath(folder.uri, PARADIS_WORKSPACE_PRESET_FILE) : undefined))
+			: undefined;
+		return this.presetService.presets.filter(candidate => candidate.source === target
+			&& (target === 'user' || candidate.sourceUri?.toString() === targetFile?.toString()));
+	}
+
+	/**
+	 * 保存しようとしている定義が既存と名前で衝突したときの行き先を決める。
+	 *
+	 * 同名そのものは許す（対象リポジトリごとに「起動」を持つ、といった使い方は自然なため）。
+	 * 止めるのは「並べても見分けが付かない」場合だけ。
+	 *
+	 * **置き換え先は必ず「衝突した相手」か「編集中の当人」に限る。** 同名の先頭を機械的に
+	 * 置き換えると、3件目と衝突したのに1件目を潰す、といった取り違えが起きる。
+	 * 編集では他を消す道を一切出さない（当人を書き換える操作であって、削除ではない）。
+	 */
+	private async _resolveNameConflict(
+		definition: IParadisPresetDefinition,
+		target: ParadisPresetSource,
+		editing: IParadisResolvedPreset | undefined,
+	): Promise<ISaveDecision> {
+		const others = this._presetsInSaveTarget(target, editing).filter(candidate => candidate.key !== editing?.key);
+		const conflict = paradisFindPresetNameConflict(definition, others);
+		if (conflict.kind === ParadisPresetNameConflict.None) {
+			return { kind: 'save', replace: editing };
+		}
+		if (editing) {
+			// 編集で「まったく見分けが付かない」状態になるのは、この1件を直したいのか相手を
+			// 消したいのかが読めない。ここで止めて、名前か説明を変えてもらう。
+			return conflict.kind === ParadisPresetNameConflict.Indistinguishable
+				? { kind: 'blocked', message: STR_INDISTINGUISHABLE_DETAIL }
+				: { kind: 'save', replace: editing };
+		}
+		if (conflict.kind === ParadisPresetNameConflict.Indistinguishable) {
+			// 見分けが付かないのは名前・区別語・説明であって、コマンドは違うのが普通。
+			// 何が消えるのかを出さずに「置き換える」を押させない。
+			const replaced = conflict.indistinguishableFrom;
+			const result = await this.dialogService.confirm({
+				message: STR_INDISTINGUISHABLE_MESSAGE,
+				detail: [
+					replaced ? strExistingDetail(paradisPresetCommandSignature(replaced, ' && '), '') : undefined,
+					STR_INDISTINGUISHABLE_DETAIL,
+				].filter((line): line is string => !!line).join('\n\n'),
+				primaryButton: STR_CONFLICT_REPLACE,
+			});
+			return result.confirmed ? { kind: 'save', replace: replaced } : { kind: 'cancel' };
+		}
+		// 見分けが付く同名。既存が1件だけなら「どれを置き換えるか」が一意に決まるので置き換えも選べる。
+		// 複数あるときは選ばせる画面が要るため、この場では追加に絞る（消したいなら一覧から削除できる）。
+		const existing = conflict.sameName.length === 1 ? conflict.sameName[0] : undefined;
+		const { result } = await this.dialogService.prompt<ISaveDecision>({
+			message: strConflictMessage(definition.name.trim()),
+			detail: existing
+				? strExistingDetail(paradisPresetCommandSignature(existing, ' && '), paradisPresetQualifier(existing) ?? '')
+				: strExistingCount(conflict.sameName.length),
+			buttons: [
+				{ label: STR_CONFLICT_ADD, run: (): ISaveDecision => ({ kind: 'save' }) },
+				...(existing ? [{ label: STR_CONFLICT_REPLACE, run: (): ISaveDecision => ({ kind: 'save', replace: existing }) }] : []),
+			],
+			cancelButton: { label: STR_CONFLICT_CANCEL, run: (): ISaveDecision => ({ kind: 'cancel' }) },
+		});
+		return result ?? { kind: 'cancel' };
 	}
 }

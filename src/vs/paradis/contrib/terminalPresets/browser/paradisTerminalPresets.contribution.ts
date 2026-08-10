@@ -43,6 +43,7 @@ import {
 	IParadisResolvedPreset,
 	paradisPresetApprovalSignature,
 	paradisPresetCommandSignature,
+	paradisPresetQualifiers,
 	PARADIS_PRESET_LAUNCH_MODES,
 	PARADIS_PRESET_LAYOUTS,
 	PARADIS_PRESETS_SETTING,
@@ -72,7 +73,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				type: 'object',
 				required: ['name'],
 				properties: {
-					name: { type: 'string', description: localize('paradis.terminal.presets.name', "プリセット名。") },
+					id: { type: 'string', description: localize('paradis.terminal.presets.id', "識別子。GUI で保存すると自動で入ります（手で書く必要はありません）。名前は識別子ではないため、同じ名前のプリセットを複数登録できます。") },
+					name: { type: 'string', description: localize('paradis.terminal.presets.name', "プリセット名。同じ名前を複数のプリセットに付けられます。") },
 					description: { type: 'string', description: localize('paradis.terminal.presets.description', "説明（ツールチップに表示）。") },
 					commands: {
 						type: 'array',
@@ -138,6 +140,26 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 
 /** タブバー右側のドロップダウン（全プリセットの一覧）のメニュー。 */
 const ParadisPresetsSubmenu = new MenuId('paradisPresetsSubmenu');
+
+/** ツールチップに載せるコマンド要約の上限。ボタンの説明であって本文の表示ではない。 */
+const TOOLTIP_COMMAND_MAX_LENGTH = 120;
+
+// allow-any-unicode-next-line
+const strPresetGroupTitle = (name: string, count: number) => localize('paradis.presetButtons.groupTitle', "{0}（{1}件）", name, count);
+
+/**
+ * ボタン1つで何が起きるかをホバーで補う。アイコンだけのピン留めボタンは、これが
+ * 「押す前に中身を知る」唯一の手段になる（同名グループでは区別語も併記する）。
+ */
+function paradisPresetTooltip(preset: IParadisResolvedPreset, qualifier: string | undefined): string {
+	const commands = paradisPresetCommandSignature(preset, ' && ');
+	return [
+		// allow-any-unicode-next-line
+		qualifier ? localize('paradis.presetButtons.tooltipName', "{0}（{1}）", preset.name, qualifier) : preset.name,
+		preset.description,
+		commands.length > TOOLTIP_COMMAND_MAX_LENGTH ? `${commands.slice(0, TOOLTIP_COMMAND_MAX_LENGTH)}…` : commands,
+	].filter((part): part is string => !!part).join(' — ');
+}
 
 /**
  * pinnedLabel 用のツールバー項目。標準の {@link MenuEntryActionViewItem} は「アイコンか名前の
@@ -209,37 +231,97 @@ class ParadisPresetButtonsContribution extends Disposable implements IWorkbenchC
 
 	private _update(): void {
 		this._registrations.clear();
+		const presets = this.presetService.presets;
+		const qualifiers = paradisPresetQualifiers(presets);
 		let order = 20; // New Terminal(0) や Open Browser(-10) より右
-		for (const preset of this.presetService.presets) {
-			const commandId = `paradis.preset.run.${preset.key}`;
-			this._registrations.add(CommandsRegistry.registerCommand(commandId, accessor =>
-				accessor.get(IParadisPresetService).runPreset(preset)));
-			const icon = preset.icon ? ThemeIcon.fromId(preset.icon) : Codicon.play;
-			const tooltip = preset.description ? `${preset.name} — ${preset.description}` : preset.name;
-
-			// ドロップダウンには全プリセットを列挙（リポジトリ由来 → ユーザー由来の順）
-			this._registrations.add(MenuRegistry.appendMenuItem(ParadisPresetsSubmenu, {
-				command: { id: commandId, title: preset.name, tooltip },
-				group: preset.source === 'workspace' ? '1_workspace' : '2_user',
-			}));
-
-			// ピン留めプリセットはタブバーに直接ボタンを出す（pinnedLabel でアイコンに加えて名前も表示）
+		// 同じ名前のピン留めプリセットは、タブバーには1つのボタンにまとめて出す。
+		// 同名のボタンが2つ並ぶと、押すまで違いが分からないまま実際にコマンドが走ってしまう。
+		const pinnedByName = new Map<string, IParadisResolvedPreset[]>();
+		for (const preset of presets) {
 			if (preset.pinned === false) {
 				continue;
 			}
+			const name = preset.name.trim();
+			const group = pinnedByName.get(name);
+			if (group) {
+				group.push(preset);
+			} else {
+				pinnedByName.set(name, [preset]);
+			}
+		}
+
+		for (const preset of presets) {
+			const commandId = `paradis.preset.run.${preset.key}`;
+			this._registrations.add(CommandsRegistry.registerCommand(commandId, accessor =>
+				accessor.get(IParadisPresetService).runPreset(preset)));
+			const qualifier = qualifiers.get(preset.key);
+			const title = qualifier ? `${preset.name} (${qualifier})` : preset.name;
+
+			// ドロップダウンには全プリセットを列挙（リポジトリ由来 → ユーザー由来の順）
+			this._registrations.add(MenuRegistry.appendMenuItem(ParadisPresetsSubmenu, {
+				command: { id: commandId, title, tooltip: paradisPresetTooltip(preset, qualifier) },
+				group: preset.source === 'workspace' ? '1_workspace' : '2_user',
+			}));
+		}
+
+		for (const [name, group] of pinnedByName) {
+			if (group.length === 1) {
+				const preset = group[0];
+				const qualifier = qualifiers.get(preset.key);
+				this._registerPinnedButton(`paradis.preset.run.${preset.key}`, {
+					title: qualifier ? `${preset.name} (${qualifier})` : preset.name,
+					tooltip: paradisPresetTooltip(preset, qualifier),
+					icon: preset.icon ? ThemeIcon.fromId(preset.icon) : Codicon.play,
+					order,
+					withLabel: preset.pinnedLabel === true,
+				});
+				order++;
+				continue;
+			}
+			// 同名グループ: 1つのボタン＋サブメニュー。MenuId は名前ごとに使い回す
+			// （同じ識別子で作り直すと MenuId のコンストラクタが投げる）。識別子には名前を
+			// そのまま入れる——ハッシュにすると、衝突した2つの名前のメニューが混ざる。
+			const submenu = MenuId.for(`paradisPresetGroup.${encodeURIComponent(name)}`);
+			for (const preset of group) {
+				const qualifier = qualifiers.get(preset.key);
+				this._registrations.add(MenuRegistry.appendMenuItem(submenu, {
+					command: {
+						id: `paradis.preset.run.${preset.key}`,
+						title: qualifier ? `${preset.name} — ${qualifier}` : paradisPresetCommandSignature(preset, ' && '),
+						tooltip: paradisPresetTooltip(preset, qualifier),
+					},
+					group: preset.source === 'workspace' ? '1_workspace' : '2_user',
+				}));
+			}
+			const icon = group[0].icon ? ThemeIcon.fromId(group[0].icon) : Codicon.play;
 			for (const menuId of [MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
 				this._registrations.add(MenuRegistry.appendMenuItem(menuId, {
-					command: { id: commandId, title: preset.name, tooltip, icon },
+					submenu,
+					// サブメニュー項目にツールチップは載せられないので、押す前に分かる情報は
+					// タイトルに入れる（中身は開いたメニューの各項目が区別語付きで持つ）。
+					title: strPresetGroupTitle(name, group.length),
+					icon,
 					group: 'navigation',
-					order: order,
+					order,
 					when: IsSessionsWindowContext.toNegated()
 				}));
-				if (preset.pinnedLabel === true) {
-					this._registrations.add(this.actionViewItemService.register(menuId, commandId, (action, options, instantiationService) =>
-						action instanceof MenuItemAction ? instantiationService.createInstance(ParadisPresetIconLabelViewItem, action, options) : undefined));
-				}
 			}
 			order++;
+		}
+	}
+
+	private _registerPinnedButton(commandId: string, options: { title: string; tooltip: string; icon: ThemeIcon; order: number; withLabel: boolean }): void {
+		for (const menuId of [MenuId.EditorTitle, MenuId.CompactWindowEditorTitle]) {
+			this._registrations.add(MenuRegistry.appendMenuItem(menuId, {
+				command: { id: commandId, title: options.title, tooltip: options.tooltip, icon: options.icon },
+				group: 'navigation',
+				order: options.order,
+				when: IsSessionsWindowContext.toNegated()
+			}));
+			if (options.withLabel) {
+				this._registrations.add(this.actionViewItemService.register(menuId, commandId, (action, viewItemOptions, instantiationService) =>
+					action instanceof MenuItemAction ? instantiationService.createInstance(ParadisPresetIconLabelViewItem, action, viewItemOptions) : undefined));
+			}
 		}
 	}
 }
@@ -274,10 +356,14 @@ registerAction2(class extends Action2 {
 				localize('paradis.terminal.noPresetsDetail', "「Para Code: コマンドプリセットを管理」から作成できます。"));
 			return;
 		}
+		// 同名が並ぶときは区別語を description に載せる（VS Code の一覧の作法どおり、
+		// label は名前のまま、補足は description、実行内容は detail）。
+		const qualifiers = paradisPresetQualifiers(presets);
 		const picks: IPresetQuickPickItem[] = presets.map(preset => ({
 			preset,
 			label: preset.name,
-			description: preset.source === 'workspace' ? PARADIS_WORKSPACE_PRESET_FILE : undefined,
+			description: [qualifiers.get(preset.key), preset.source === 'workspace' ? PARADIS_WORKSPACE_PRESET_FILE : undefined]
+				.filter((part): part is string => !!part).join(' · ') || undefined,
 			detail: paradisPresetCommandSignature(preset, ' && '),
 		}));
 		const pick = await quickInputService.pick(picks, {

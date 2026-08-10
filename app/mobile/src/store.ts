@@ -152,6 +152,12 @@ export interface PresetDef {
 	description?: string;
 	/** PC側の codicon 名（スマホは対応するIoniconsへ寄せる）。 */
 	icon?: string;
+	/**
+	 * 同じ名前のプリセットが並ぶときに、その1件を他と分けている語（対象リポジトリなど）。
+	 * PCが一覧全体を見て決めるので、ここでは受け取って出すだけ（手元で名前を数えない——
+	 * 一覧は件数の上限で切り詰められて届くため、数えると同名を見落とす）。
+	 */
+	qualifier?: string;
 	/** 上限で切り詰めた表示であること（実行される内容はこれより多い）。 */
 	truncated?: boolean;
 	tasks: PresetTask[];

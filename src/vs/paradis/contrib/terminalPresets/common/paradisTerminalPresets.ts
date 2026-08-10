@@ -60,7 +60,16 @@ export interface IParadisPresetTask {
 
 /** プリセット定義（settings.json / .paracode.json に書かれる形そのまま）。 */
 export interface IParadisPresetDefinition {
-	/** 表示名（ボタンのツールチップ・一覧に使う）。 */
+	/**
+	 * このプリセットの識別子。**名前は識別子ではない**（同じ名前のプリセットを複数登録できる）。
+	 *
+	 * ユーザー設定（settings.json）へ保存するときは自動で採番して書き込む。改名しても同じ
+	 * プリセットとして追跡でき、同名が並んでも削除・並び替えが取り違えない。
+	 * リポジトリの .paracode.json には**書き足さない**（git で共有されるファイルの差分を
+	 * 増やさないため）。id を持たない定義は「定義元ファイル内の位置」で識別する。
+	 */
+	readonly id?: string;
+	/** 表示名（ボタンのツールチップ・一覧に使う）。同名の重複を許す。 */
 	readonly name: string;
 	readonly description?: string;
 	/** 旧形式: 実行するコマンド（上から順）。tasks があればそちらが優先。 */
@@ -97,7 +106,12 @@ export interface IParadisResolvedPreset extends IParadisPresetDefinition {
 	readonly source: ParadisPresetSource;
 	/** workspace ソースの場合、定義元の .paracode.json の URI。 */
 	readonly sourceUri?: URI;
-	/** メニュー登録などに使う安定キー。 */
+	/**
+	 * 定義元（設定配列 / .paracode.json の presets 配列）における位置。
+	 * 保存・削除・並び替えはこの位置を使う。**名前で探さない**（同名が並びうるため）。
+	 */
+	readonly sourceIndex: number;
+	/** メニュー登録などに使う安定キー。id があれば id 由来、無ければ位置由来。 */
 	readonly key: string;
 }
 
@@ -135,6 +149,15 @@ export interface IParadisRunPresetOptions {
 	readonly onDidCreateTerminal?: (instanceId: number) => void;
 }
 
+/** 保存時の指定。 */
+export interface IParadisSavePresetOptions {
+	/**
+	 * 置き換える既存プリセット。編集（同じ1件を書き換える）と、同名衝突で「置き換える」を
+	 * 選んだ場合にだけ渡す。未指定なら新しい1件として追加する。
+	 */
+	readonly replace?: IParadisResolvedPreset;
+}
+
 export const IParadisPresetService = createDecorator<IParadisPresetService>('paradisPresetService');
 
 export interface IParadisPresetService {
@@ -159,8 +182,12 @@ export interface IParadisPresetService {
 	 */
 	runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void>;
 
-	/** プリセットを保存する（新規または name 一致の既存を置換）。 */
-	savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, replaceName?: string): Promise<void>;
+	/**
+	 * プリセットを保存する。
+	 * `options.replace` を渡したときだけ既存の1件を置き換え、渡さなければ常に新しい1件として
+	 * 追加する（同じ名前の既存プリセットがあっても上書きしない）。
+	 */
+	savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, options?: IParadisSavePresetOptions): Promise<void>;
 
 	/**
 	 * プリセットを同一スコープ内で1つ前(-1)／後ろ(+1)へ移動する（表示順＝配列順を入れ替える）。
@@ -170,6 +197,198 @@ export interface IParadisPresetService {
 
 	/** プリセットを定義元から削除する。 */
 	deletePreset(preset: IParadisResolvedPreset): Promise<void>;
+}
+
+// --- 識別 ----------------------------------------------------------------------------------------
+
+/**
+ * プリセットの安定キー。id を持つ定義（ユーザー設定で保存したもの）は id 由来、持たない定義
+ * （手書き、および .paracode.json）は定義元での位置由来にする。
+ *
+ * 位置由来のキーは並び替え・削除でずれる。ずれると、このキーを覚えている側の記録が別の
+ * プリセットを指す。モバイルの実行承認は「もう一度内容を確認する」という安全側に倒れるが、
+ * **モバイルで非表示にしたものの一覧（app/mobile/src/presets.ts の visiblePresets）は安全側に
+ * 倒れない**——隠していないものが消え、隠したものが出る。それでもこの形にしているのは、
+ * git で共有される .paracode.json へ実装都合の識別子を書き足すコストの方が高いため。
+ * ユーザー設定（id を持てる）側では起きない。
+ *
+ * `definition.id` は {@link paradisUsablePresetId} で正規化済みであること（文字列でない id や
+ * 重複した id をそのまま渡すと、別のプリセットと同じキーになる）。
+ */
+export function paradisPresetKey(source: ParadisPresetSource, sourceUri: URI | undefined, definition: IParadisPresetDefinition, index: number): string {
+	const suffix = typeof definition.id === 'string' && definition.id.length > 0 ? definition.id : `#${index}`;
+	return source === 'workspace' ? `workspace:${sourceUri?.toString() ?? ''}:${suffix}` : `user:${suffix}`;
+}
+
+/**
+ * 読み込んだ定義の id を、識別子として使ってよいものだけに正規化する。
+ *
+ * 設定ファイルは手で編集できるので、id が文字列でないことも、エントリごとコピーされて
+ * **同じ id が2つある**こともある。重複した id をそのまま使うと、2件目を編集・削除した
+ * つもりで1件目が書き換わる（id を主キーにした以上、ここが最悪の事故になる）。
+ * 使えない id は捨てて位置で識別させる。
+ *
+ * @param taken 既に使われた id。この関数が呼ばれるたびに書き足す。
+ */
+export function paradisUsablePresetId(definition: IParadisPresetDefinition, taken: Set<string>): string | undefined {
+	const id = definition.id;
+	if (typeof id !== 'string' || id.length === 0 || taken.has(id)) {
+		return undefined;
+	}
+	taken.add(id);
+	return id;
+}
+
+/**
+ * 定義の中身から作る指紋。「その位置に居るのが本当に当人か」を確かめるために使う。
+ *
+ * 名前とコマンドだけでは足りない——同名・同コマンドで作業ディレクトリや対象リポジトリだけが
+ * 違う2件は、この機能では**正規に並べて登録できる**。片方が外部で消えたときに、残った双子を
+ * 当人と誤認して上書き・削除してしまう。ユーザーが編集できる項目はすべて突き合わせる。
+ */
+export function paradisPresetFingerprint(definition: IParadisPresetDefinition, options?: { readonly ignoreAppliesTo?: boolean }): string {
+	const { tasks, layout } = paradisGetPresetTasks(definition);
+	return JSON.stringify([
+		definition.name.trim(),
+		(definition.description ?? '').trim(),
+		(definition.cwd ?? '').trim(),
+		definition.icon ?? '',
+		// リポジトリレベルでは appliesTo は読み込み時に捨てられる（そのリポジトリ自体が対象）。
+		// 解決済みの側には残っていないので、突き合わせからも外す。
+		options?.ignoreAppliesTo ? [] : definition.appliesTo?.map(entry => entry.trim()) ?? [],
+		definition.pinned !== false,
+		definition.pinnedLabel === true,
+		definition.autoRun === true,
+		layout,
+		tasks.map(task => [task.name ?? '', task.cwd ?? '', task.commands]),
+	]);
+}
+
+/**
+ * 書き戻す直前のリストから、対象プリセットの位置を解決する。見つからなければ -1。
+ *
+ * 一覧を開いてから保存するまでの間に、設定ファイルを手で編集したり別ウィンドウで並び替えたり
+ * された可能性があるので、覚えていた位置をそのまま信じない。id があれば id で、無ければ
+ * 「その位置の中身が指紋まで一致するか」で確かめる。
+ */
+export function paradisResolvePresetIndex(list: readonly unknown[], preset: IParadisResolvedPreset): number {
+	if (preset.id) {
+		const byId = list.findIndex(entry => isValidPresetDefinition(entry) && entry.id === preset.id);
+		if (byId >= 0) {
+			return byId;
+		}
+	}
+	const candidate = list[preset.sourceIndex];
+	const options = { ignoreAppliesTo: preset.source === 'workspace' };
+	return isValidPresetDefinition(candidate) && paradisPresetFingerprint(candidate, options) === paradisPresetFingerprint(preset, options)
+		? preset.sourceIndex
+		: -1;
+}
+
+/** パス文字列（絶対パスでもフォルダ名でも）の最後のセグメント。区別語を短く保つために使う。 */
+function lastSegment(value: string): string {
+	const segments = value.replace(/[\\/]+$/, '').split(/[\\/]/);
+	return segments[segments.length - 1] || value;
+}
+
+/**
+ * 同名のプリセットを見分けるための短い語。**そのプリセットを他と分けている値**を使う。
+ * 名前が唯一なら表示に使わない（{@link paradisPresetQualifiers} が同名のときだけ配る）。
+ *
+ * 候補の順序は「ユーザーが区別のために書いたと解釈できる度合い」で決めている。
+ */
+export function paradisPresetQualifier(preset: IParadisResolvedPreset): string | undefined {
+	const appliesTo = preset.appliesTo?.map(entry => entry.trim()).filter(entry => entry.length > 0) ?? [];
+	if (appliesTo.length > 0) {
+		return appliesTo.map(lastSegment).join(', ');
+	}
+	const cwd = preset.cwd?.trim();
+	if (cwd) {
+		return cwd;
+	}
+	const taskCwds = [...new Set(paradisGetPresetTasks(preset).tasks.map(task => task.cwd?.trim()).filter((cwd): cwd is string => !!cwd))];
+	if (taskCwds.length === 1) {
+		return taskCwds[0];
+	}
+	if (preset.source === 'workspace' && preset.sourceUri) {
+		// .paracode.json の1つ上＝そのリポジトリのフォルダ名。複数リポジトリを開いているときに
+		// 「どのリポジトリのプリセットか」が唯一の違いになるケースを拾う。
+		const segments = preset.sourceUri.path.split('/').filter(segment => segment.length > 0);
+		return segments.length >= 2 ? segments[segments.length - 2] : undefined;
+	}
+	return undefined;
+}
+
+/**
+ * 一覧のうち同じ名前が2件以上あるものにだけ区別語を割り当てた表（キー → 区別語）。
+ * 単独の名前には何も割り当てない——区別が要らない場面で表示を増やさないため。
+ */
+export function paradisPresetQualifiers(presets: readonly IParadisResolvedPreset[]): Map<string, string> {
+	const counts = new Map<string, number>();
+	for (const preset of presets) {
+		const name = preset.name.trim();
+		counts.set(name, (counts.get(name) ?? 0) + 1);
+	}
+	const result = new Map<string, string>();
+	for (const preset of presets) {
+		if ((counts.get(preset.name.trim()) ?? 0) < 2) {
+			continue;
+		}
+		const qualifier = paradisPresetQualifier(preset);
+		if (qualifier) {
+			result.set(preset.key, qualifier);
+		}
+	}
+	return result;
+}
+
+/** 保存しようとしている定義と、同じ保存先にある既存プリセットとの名前の衝突具合。 */
+export const enum ParadisPresetNameConflict {
+	/** 同じ名前は無い。そのまま保存してよい。 */
+	None = 'none',
+	/** 同じ名前はあるが、一覧やボタンで見分けが付く（区別語か説明が違う）。 */
+	Distinguishable = 'distinguishable',
+	/** 同じ名前で、区別語も説明も同じ。並べても見分けが付かない。 */
+	Indistinguishable = 'indistinguishable',
+}
+
+/** 名前の衝突の内訳。どれと衝突したかまで返す（置き換え先を取り違えないため）。 */
+export interface IParadisPresetNameConflict {
+	readonly kind: ParadisPresetNameConflict;
+	/** 同じ名前の既存プリセット。 */
+	readonly sameName: readonly IParadisResolvedPreset[];
+	/**
+	 * 見分けが付かない相手（kind が Indistinguishable のときだけ）。
+	 * 置き換えるならこれを指す。**同名の先頭ではない**——同名が3件あって2件目とだけ
+	 * 区別が付かない場合、先頭を置き換えると無関係な1件を潰すことになる。
+	 */
+	readonly indistinguishableFrom?: IParadisResolvedPreset;
+}
+
+/**
+ * 保存しようとしている定義が、既存プリセットと名前で衝突するかを分類する。
+ *
+ * @param others **同じ書き込み先**にある既存プリセット（ユーザー設定なら user 全件、
+ *   リポジトリなら書き込む .paracode.json 由来のものだけ）。編集中の当人は呼び出し側で除く。
+ *   書き込み先で絞るのは呼び出し側の責任で、ここは絞られている前提で区別語を比べる
+ *   （区別語の候補にはリポジトリ名が含まれ、それは同じファイル内では全員等しい）。
+ */
+export function paradisFindPresetNameConflict(definition: IParadisPresetDefinition, others: readonly IParadisResolvedPreset[]): IParadisPresetNameConflict {
+	const name = definition.name.trim();
+	const sameName = others.filter(other => other.name.trim() === name);
+	if (sameName.length === 0) {
+		return { kind: ParadisPresetNameConflict.None, sameName };
+	}
+	// 保存前の定義には source が無いので、定義だけで決まる部分（appliesTo / cwd）で比べる。
+	const qualifierOf = (candidate: IParadisPresetDefinition): string | undefined =>
+		paradisPresetQualifier({ ...candidate, source: 'user', sourceIndex: 0, key: '' });
+	const qualifier = qualifierOf(definition);
+	const description = (definition.description ?? '').trim();
+	const indistinguishableFrom = sameName.find(other =>
+		qualifierOf(other) === qualifier && (other.description ?? '').trim() === description);
+	return indistinguishableFrom
+		? { kind: ParadisPresetNameConflict.Indistinguishable, sameName, indistinguishableFrom }
+		: { kind: ParadisPresetNameConflict.Distinguishable, sameName };
 }
 
 /** PowerShell 5.1を含む実行シェルに合わせ、失敗時に後続を実行しないコマンド列へ変換する。 */
