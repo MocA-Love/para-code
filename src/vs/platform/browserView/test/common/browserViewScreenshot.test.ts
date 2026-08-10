@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
 import { BROWSER_VIEW_SCREENSHOT_MAX_ENCODED_BYTES, BROWSER_VIEW_SCREENSHOT_MAX_QUEUE_DEPTH, BrowserViewScreenshotCoordinator, browserViewAssertScreenshotPixelBudget, browserViewBitmapHasVisibleAlpha, browserViewCalculateBoundedCaptureScale, browserViewEffectiveCaptureBeyondDevicePixelRatio, browserViewScreenshotCoalesceKey, browserViewScreenshotRoute, browserViewThrowIfScreenshotAborted, browserViewValidateAndEncodeScreenshot, captureBrowserViewScreenshotWithPolicy, captureBrowserViewWithRestore, captureBrowserViewWithRetry, prepareBrowserViewScreenshotCapture } from '../../common/browserViewScreenshot.js';

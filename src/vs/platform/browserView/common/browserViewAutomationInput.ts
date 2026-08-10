@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import { IDisposable } from '../../../base/common/lifecycle.js';
 
 export const BROWSER_VIEW_AUTOMATION_KEY_EXPECTATION_LIMIT = 32;
