@@ -29,7 +29,7 @@ import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradis
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { paradisClearTerminalReviveIndex, paradisRefreshTerminalReviveIndex } from './paradisTerminalEditorRevive.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder } from '../common/paradisWorkspaceFolderVerification.js';
+import { paradisClearVerifiedWorkspaceFolders, paradisMarkVerifiedWorkspaceFolder, paradisTakeVerifiedWorkspaceFolderHits } from '../common/paradisWorkspaceFolderVerification.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 
 interface ISerializedRepository {
@@ -704,6 +704,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			let completed = false;
 			let sourceCaptured = false;
 			let switchError: unknown;
+			// 所要時間は**この切り替えのローカル**へ受ける（インスタンスに置くと、先行 stat が
+			// 解決する前に失敗した回で前回の値を今回の値として送ってしまう）。計測は finally から
+			// 読むので、宣言は try の外に置くこと。
+			let folderStatMs: number | undefined;
 			try {
 				this._onWillSwitchScope.fire(previousKey);
 
@@ -711,7 +715,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// 待つが、切り替えは park や PTY 問い合わせで数百ms使うので、その裏で済ませれば
 				// 本流の待ち時間から消える (詳細は paradisWorkspaceFolderVerification.ts)。
 				// await しないのが要点なので、ここで例外を外に出さないこと。
-				const folderVerified = this.verifyTargetFolder(uri);
+				const folderVerified = this.verifyTargetFolder(uri).then(ms => { folderStatMs = ms; });
 
 				// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 				if (previousKey !== undefined) {
@@ -957,6 +961,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					});
 				}
 
+				// 台帳の保険。破棄は `update_folders` の finally にあるが、そこへ到達する前に
+				// 例外が出ると**セッション中ずっと残り**、切り替えと無関係な後続の判定が古い
+				// 確認結果で stat を飛ばす。消費者が「フォルダを除外する側」にも増えた以上、
+				// 残す危険のほうが大きい。`Set.clear()` なので二重呼び出しは無害。
+				paradisClearVerifiedWorkspaceFolders();
+
 				// 計測は**復元まで済ませた後**。completion participant と完了通知の処理も
 				// ユーザーが感じる切り替え時間に含める。
 				this.recordSwitchPhases({
@@ -966,6 +976,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 					failed: switchError !== undefined,
 					terminalEditors,
 					editors,
+					folderStatMs,
+					folderStatSkipped: paradisTakeVerifiedWorkspaceFolderHits(),
 				});
 			}
 		}));
@@ -1001,6 +1013,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		readonly failed: boolean;
 		readonly terminalEditors: number;
 		readonly editors: number;
+		readonly folderStatMs: number | undefined;
+		readonly folderStatSkipped: number;
 	}): void {
 		try {
 			const durations: Record<string, number> = {};
@@ -1016,6 +1030,14 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				// 負荷の指標。フェーズの伸びと突き合わせるために同じイベントへ載せる。
 				safe_terminal_editors: sample.terminalEditors,
 				safe_editors: sample.editors,
+				// フォルダ1つの stat の実測。upstream の重複 stat を飛ばしたぶん、
+				// `update_folders_write` からこの値と同じだけ消えているはず。
+				// **センチネルを送らない**（この関数の doc のとおり、`-1` は avg() を黙って歪める）。
+				...(sample.folderStatMs !== undefined ? { safe_folder_stat_ms: sample.folderStatMs } : {}),
+				// **これが 0 なら最適化は空振りしている。** 台帳のキーは URI の生文字列で、
+				// upstream 側が見る URI は再構成された別インスタンスなので、一致しなければ
+				// 安全側に無言で倒れる。時間の差だけ見ていても空振りに気付けない。
+				safe_folder_stat_skipped: sample.folderStatSkipped,
 			}, () => { });
 		} catch (error) {
 			this.logService.error('[ParadisWorkspaceSwitch] Failed to record switch phases', error);
@@ -1029,7 +1051,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	 * 従来どおり自分で stat し、それぞれの分岐へ進む。つまりこの先行実行は判定を置き換えるのでは
 	 * なく、判定のタイミングを本流の外へ動かすだけ。
 	 */
-	private async verifyTargetFolder(uri: URI): Promise<void> {
+	private async verifyTargetFolder(uri: URI): Promise<number> {
+		const startedAt = Date.now();
 		try {
 			const stat = await this.fileService.stat(uri);
 			if (stat.isDirectory) {
@@ -1038,6 +1061,12 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		} catch (error) {
 			// 確認できなければ upstream の stat に委ねる。ここで投げると切り替えごと失敗する。
 		}
+		// **これは切り替えを遅くしない**（本流の外で先行実行しており、待ち時間は
+		// `verify_folder_wait` として別に測っている。実測 p50 は 0ms）。
+		// ここで測るのは「フォルダ1つの stat が今この環境で何ms かかるか」そのもの。
+		// **切り替えごとのローカルへ持たせること。** インスタンスに置くと、先行 stat の解決前に
+		// 失敗した切り替えで前回の値（＝別スペース・別ボリュームの数字）を今回の値として送る。
+		return Date.now() - startedAt;
 	}
 
 	private setActiveEntry(stateKey: string, uri: URI): void {

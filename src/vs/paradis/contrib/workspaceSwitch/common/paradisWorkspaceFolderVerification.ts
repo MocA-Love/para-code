@@ -24,19 +24,57 @@
  *
  * 台帳は使い終わったら必ず捨てる（`paradisClearVerifiedWorkspaceFolders`）。残すと、切り替えと
  * 無関係な後続のフォルダ追加が古い確認結果で `stat` を飛ばしてしまう。
+ *
+ * **消費者は2箇所ある。同じ述語だが、飛ばした判定の役割が違う**:
+ *
+ * | 使用時点の実体 | `doUpdateFolders`（追加側） | `toValidWorkspaceFolders`（除外側） |
+ * |---|---|---|
+ * | ディレクトリのまま | 追加する（差なし） | 含める（差なし） |
+ * | stat 失敗 | 追加する（差なし） | 含める（**warn ログが出ないだけ**） |
+ * | ファイルに化けた | 追加しない → **追加する** | 除外する → **含める** |
+ *
+ * 最終行だけが本当の差で、成立するのは「切り替えの実行中にディレクトリがファイルへ
+ * 置き換わった」場合に限られる。フォルダが削除されていた場合は先行 stat も失敗して
+ * 台帳に載らないので、upstream の判定がそのまま走る。
+ *
+ * **upstream 取り込み時の確認義務**: (1) `toValidWorkspaceFolders` の try ブロックに
+ * 新しい検証が増えていないか（増えていれば確認済みフォルダだけそれを丸ごと飛ばす）、
+ * (2) `toValidWorkspaceFolders` / `validateWorkspaceFoldersAndReload` の呼び出し元が
+ * 増えていないか（増えると台帳が「フォルダ除去の抑止装置」に化ける）。
  */
 const verifiedFolders = new Set<string>();
+
+/**
+ * 台帳が実際に stat を飛ばした回数。
+ *
+ * **これが無いと「効いているのか」が誰にも分からない。** キーは URI の生文字列だが、
+ * `toValidWorkspaceFolders` が見る URI は `.code-workspace` へ書き出して再構成された
+ * 別インスタンスなので、文字列が一致しない可能性がある。外れても stat が走るだけで
+ * **安全側に無言で倒れる**＝最適化が丸ごと空振りしていても気付けない。だから数える。
+ */
+let verifiedHits = 0;
 
 /** ディレクトリだと確認できた URI を登録する。確認できなかったものは登録しないこと。 */
 export function paradisMarkVerifiedWorkspaceFolder(uri: string): void {
 	verifiedFolders.add(uri);
 }
 
-/** 適用が終わったら必ず呼ぶ。 */
+/** 適用が終わったら必ず呼ぶ。`Set.clear()` なので二重に呼んでも無害。 */
 export function paradisClearVerifiedWorkspaceFolders(): void {
 	verifiedFolders.clear();
 }
 
 export function paradisIsVerifiedWorkspaceFolder(uri: string): boolean {
-	return verifiedFolders.has(uri);
+	const hit = verifiedFolders.has(uri);
+	if (hit) {
+		verifiedHits++;
+	}
+	return hit;
+}
+
+/** 直前の切り替えで stat を飛ばせた回数を読み出して 0 に戻す。計測専用。 */
+export function paradisTakeVerifiedWorkspaceFolderHits(): number {
+	const hits = verifiedHits;
+	verifiedHits = 0;
+	return hits;
 }

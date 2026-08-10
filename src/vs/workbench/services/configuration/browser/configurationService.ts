@@ -996,6 +996,12 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 	private async toValidWorkspaceFolders(workspaceFolders: WorkspaceFolder[]): Promise<WorkspaceFolder[]> {
 		const validWorkspaceFolders: WorkspaceFolder[] = [];
 		for (const workspaceFolder of workspaceFolders) {
+			// PARA-PATCH: same guard as doUpdateFolders above; see paradisWorkspaceFolderVerification.ts
+			// for why, for the branch table, and for what to re-check when merging upstream.
+			if (paradisIsVerifiedWorkspaceFolder(workspaceFolder.uri.toString())) {
+				validWorkspaceFolders.push(workspaceFolder);
+				continue;
+			}
 			try {
 				const result = await this.fileService.stat(workspaceFolder.uri);
 				if (!result.isDirectory) {
