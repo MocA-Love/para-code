@@ -37,6 +37,18 @@ suite('ParadisMobileAgentChat', () => {
 		);
 	});
 
+	test('holds back sessions carried over from the previous run until something proves they are alive', () => {
+		// 覚えていることと動いていることは別。前回の起動で使ったセッションはディスクから
+		// 戻ってくるので、覚えているだけを根拠にすると昨日終了したエージェントが並ぶ。
+		// 一方で「最近書き込みがあったか」で判定してもいけない（質問待ちで放置されたものが
+		// 落ちる）ので、証拠が付いたかどうかだけで決める。
+		const live = ['restored-idle', 'restored-proven', 'found-this-run'];
+		assert.deepStrictEqual(
+			paradisConfirmedAgentPaneTokens(live, live, new Set(['restored-idle'])),
+			['found-this-run', 'restored-proven'],
+		);
+	});
+
 	test('uses globally unique pane tokens instead of window-local terminal IDs', () => {
 		assert.deepStrictEqual(
 			paradisConfirmedAgentPaneTokens(['window-2-pane-1'], ['window-1-pane-1', 'window-2-pane-1']),

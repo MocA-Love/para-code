@@ -101,4 +101,22 @@ suite('ParadisAgentStatusStore', () => {
 		}, { seven: 'review', nine: undefined, sevenIsAgent: true, nineIsAgent: true, otherIsAgent: false });
 	});
 
+	test('remembers panes whose session was found without a hook, and says when that set changed', () => {
+		// hook が届かない場所（WSL のディストロの中）で動いているエージェントを一覧へ載せる根拠。
+		// 変わったときだけ通知しないと、一覧が数十秒おきに作り直されてしまう。
+		const { store, fired } = createStore();
+		store.setDiscoveredAgentPaneTokens(new Set(['pane-a', 'pane-b']));
+		const afterFirst = fired();
+		store.setDiscoveredAgentPaneTokens(new Set(['pane-b', 'pane-a']));
+		const afterSame = fired();
+		store.setDiscoveredAgentPaneTokens(new Set(['pane-b']));
+
+		assert.deepStrictEqual({
+			a: store.hasDiscoveredAgentSession('pane-a'),
+			b: store.hasDiscoveredAgentSession('pane-b'),
+			unknown: store.hasDiscoveredAgentSession('pane-c'),
+			afterFirst, afterSame, afterRemoval: fired(),
+		}, { a: false, b: true, unknown: false, afterFirst: 1, afterSame: 1, afterRemoval: 2 });
+	});
+
 });

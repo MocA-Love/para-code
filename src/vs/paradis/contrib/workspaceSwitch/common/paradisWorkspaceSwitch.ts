@@ -438,10 +438,20 @@ export interface IParadisAgentStatusStore {
 	getInstanceStatus(instanceId: number): ParadisAgentStatus | undefined;
 	/** そのインスタンスでエージェントCLIが動いた実績（hook発火）があるか。 */
 	isAgentInstance(instanceId: number): boolean;
+	/**
+	 * そのペインでエージェントのセッションが確認できているか（hook 以外の根拠を含む）。
+	 *
+	 * hook は WSL のディストロの中で動くエージェントからは届かない。その場合でも
+	 * 記録ファイルの探索でセッションは確定できるので、「動いている一覧」に載せる根拠として
+	 * 使う。状態（実行中/完了）までは分からないので、載せるかどうかの判断にだけ使うこと。
+	 */
+	hasDiscoveredAgentSession(paneToken: string): boolean;
 	/** ポーラー専用。代表値は内訳から導出するため、書き込みは内訳のみで行う */
 	setScopeBreakdowns(breakdowns: ReadonlyMap<string, readonly ParadisAgentStatus[]>): void;
 	/** ポーラー専用（ペイン単位の状態とエージェント実績インスタンスの一括更新） */
 	setInstanceStates(statuses: Map<number, ParadisAgentStatus>, agentInstanceIds: Set<number>): void;
+	/** モバイルリレー専用（hook 以外の根拠でセッションが確定しているペインの一括更新）。 */
+	setDiscoveredAgentPaneTokens(paneTokens: ReadonlySet<string>): void;
 }
 
 /**
