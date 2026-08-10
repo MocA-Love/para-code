@@ -102,12 +102,17 @@ export function TerminalPicker({ entries, activeKey, onSelect, onCreate }: {
 }
 
 const styles = StyleSheet.create({
-	hit: { flex: 1 },
+	// **`flex` に頼らず自分の大きさを持つこと。** 以前はヘッダー層の「左右の間に伸びる島」の
+	// 中に居たので親が幅と高さをくれたが、いまはOS標準のバーの項目として置かれる。
+	// バー項目の親は中身なりの大きさなので、`flex: 1` だと 0×0 に潰れて見えなくなる
+	// （実機で確認済み: 中央に置いたときは名前が1文字まで削られた）。
+	hit: { height: 32 },
 	// ネイティブのボタンは最前面に居るので、こちらは見た目だけ（タッチは通さない）。
-	body: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 14 },
+	body: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, height: 32 },
 	dot: { width: 7, height: 7, borderRadius: 4 },
 	dotWaiting: { backgroundColor: colors.red },
 	dotWorking: { backgroundColor: colors.green },
 	index: { color: colors.textDim, fontSize: 11, fontFamily: mono.ios },
-	name: { flex: 1, minWidth: 0, color: colors.text, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
+	// 上限で止める。長い端末名でバーの右側が押し出されると、左の島が削られる。
+	name: { flexShrink: 1, minWidth: 0, maxWidth: 104, color: colors.text, fontSize: 14, fontWeight: '700', letterSpacing: -0.2 },
 });
