@@ -33,6 +33,7 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisPickAndAddLocalRepositories } from '../browser/paradisWorkspaceSwitch.contribution.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID, PARADIS_CLONE_PARENT_DIR_SETTING, paradisParseGitUrl } from '../common/paradisRepositoryClone.js';
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
@@ -86,6 +87,7 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		const notificationService = accessor.get(INotificationService);
 		const progressService = accessor.get(IProgressService);
 		const sharedProcessService = accessor.get(ISharedProcessService);
+		const remoteAgentService = accessor.get(IRemoteAgentService);
 		const switchService = accessor.get(IParadisWorkspaceSwitchService);
 		const contextService = accessor.get(IWorkspaceContextService);
 
@@ -126,9 +128,16 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 				value = result.value;
 				continue;
 			}
+			// SSH 接続中だけ「接続先 / このPC」を聞く。キャンセルされたらピッカーへ戻す
+			const cloneToRemote = await this.pickCloneLocation(quickInputService, remoteAgentService.getConnection()?.remoteAuthority);
+			if (cloneToRemote === undefined) {
+				value = result.url;
+				continue;
+			}
 			await this.cloneAndAdd(result.url, result.name, {
 				configurationService, pathService, fileDialogService, fileService,
-				notificationService, progressService, sharedProcessService, switchService, contextService
+				notificationService, progressService, sharedProcessService, remoteAgentService,
+				switchService, contextService, cloneToRemote
 			});
 			return;
 		}
@@ -219,11 +228,17 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		return trimmed.length > 0 ? trimmed : undefined;
 	}
 
-	/** クローン先の親ディレクトリを解決する。設定が空ならフォルダ選択ダイアログで確認する。 */
-	private async resolveCloneParentDir(configurationService: IConfigurationService, pathService: IPathService, fileDialogService: IFileDialogService): Promise<URI | undefined> {
+	/**
+	 * クローン先の親ディレクトリを解決する。設定が空ならフォルダ選択ダイアログで確認する。
+	 *
+	 * `cloneToRemote` は「接続先へクローンする」が選ばれたかどうか。`~` の展開先が変わる:
+	 * 接続先なら接続先のホーム、手元なら手元のホームを基準にする。git を実際に動かす側と
+	 * ここが食い違うと、存在しないパスを掘ろうとして ENOENT になる。
+	 */
+	private async resolveCloneParentDir(configurationService: IConfigurationService, pathService: IPathService, fileDialogService: IFileDialogService, cloneToRemote: boolean): Promise<URI | undefined> {
 		const raw = this.cloneParentDirDisplay(configurationService);
 		if (raw) {
-			const userHome = await pathService.userHome();
+			const userHome = cloneToRemote ? await pathService.userHome() : pathService.userHome({ preferLocal: true });
 			if (raw === '~' || raw.startsWith('~/')) {
 				return raw === '~' ? userHome : joinPath(userHome, raw.substring(2));
 			}
@@ -245,6 +260,31 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		return picked?.[0];
 	}
 
+	/**
+	 * クローン先を「接続先」と「手元」から選ばせる。SSH 接続していないときは聞かずに手元。
+	 *
+	 * 接続先を選ぶと git は接続先で動く（REH に生やした同名チャネル経由）。手元を選ぶと
+	 * 従来どおり shared process で動く。
+	 */
+	private async pickCloneLocation(quickInputService: IQuickInputService, remoteAuthority: string | undefined): Promise<boolean | undefined> {
+		if (!remoteAuthority) {
+			return false;
+		}
+		const remoteLabel = remoteAuthority.replace(/^ssh-remote\+/, '');
+		type LocationItem = IQuickPickItem & { readonly toRemote: boolean };
+		const picked = await quickInputService.pick<LocationItem>([
+			// allow-any-unicode-next-line
+			{ label: localize('paradis.repositoryClone.toRemote', "接続先"), description: remoteLabel, toRemote: true },
+			// allow-any-unicode-next-line
+			{ label: localize('paradis.repositoryClone.toLocal', "このPC"), toRemote: false }
+		], {
+			// allow-any-unicode-next-line
+			title: localize('paradis.repositoryClone.locationTitle', "どこにクローンしますか"),
+			ignoreFocusLost: true
+		});
+		return picked?.toRemote;
+	}
+
 	private async cloneAndAdd(url: string, name: string, services: {
 		configurationService: IConfigurationService;
 		pathService: IPathService;
@@ -253,12 +293,14 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		notificationService: INotificationService;
 		progressService: IProgressService;
 		sharedProcessService: ISharedProcessService;
+		remoteAgentService: IRemoteAgentService;
 		switchService: IParadisWorkspaceSwitchService;
 		contextService: IWorkspaceContextService;
+		cloneToRemote: boolean;
 	}): Promise<void> {
-		const { configurationService, pathService, fileDialogService, fileService, notificationService, progressService, sharedProcessService, switchService, contextService } = services;
+		const { configurationService, pathService, fileDialogService, fileService, notificationService, progressService, sharedProcessService, remoteAgentService, switchService, contextService, cloneToRemote } = services;
 
-		const parentDir = await this.resolveCloneParentDir(configurationService, pathService, fileDialogService);
+		const parentDir = await this.resolveCloneParentDir(configurationService, pathService, fileDialogService, cloneToRemote);
 		if (!parentDir) {
 			return;
 		}
@@ -281,7 +323,16 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		}
 
 		const cloneId = generateUuid();
-		const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
+		// 接続先を選んだときは REH 側の同名チャネルへ。手元なら従来どおり shared process。
+		const remoteConnection = cloneToRemote ? remoteAgentService.getConnection() : undefined;
+		if (cloneToRemote && !remoteConnection) {
+			// allow-any-unicode-next-line
+			notificationService.error(localize('paradis.repositoryClone.noRemoteConnection', "接続先との接続が切れているため、接続先へクローンできません。"));
+			return;
+		}
+		const channel = remoteConnection
+			? remoteConnection.getChannel(PARADIS_WORKTREE_GIT_CHANNEL)
+			: sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
 		try {
 			await progressService.withProgress({
 				location: ProgressLocation.Notification,

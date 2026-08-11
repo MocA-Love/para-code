@@ -2041,6 +2041,9 @@ export default defineConfig(
 						'vs/workbench/api/~',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
+						// PARA-PATCH: serverServices.ts が SSH 接続先で git を動かすチャネル
+						// (registerParadisWorktreeGitForServer) を登録するための逆方向 import
+						'vs/paradis/contrib/workspaceSwitch/~',
 						'vs/server/~'
 					]
 				},
