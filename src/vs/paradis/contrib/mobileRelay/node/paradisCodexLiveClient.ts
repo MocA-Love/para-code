@@ -421,12 +421,30 @@ function processIsAlive(pid: number): boolean {
 	}
 }
 
+/**
+ * ソケットの持ち主が生きているか。`unknown` は「pid記録がまだ読めない」で、死亡ではない。
+ *
+ * **`unknown` を `dead` に畳んではいけない。** POSIXランチャー(`resources/paradis/bin/codex`)は
+ * app-serverをspawnしてから pid を書き、その後でソケットの出現を待つ。ソケットを作るのは
+ * app-server自身なので、「ソケットは在るが pid 記録はまだ」という一瞬が原理的に起こりうる。
+ * ここを死亡と読むと、正常な起動を取りこぼして接続できなくなる。
+ */
+type ParadisCodexServerLiveness = 'alive' | 'dead' | 'unknown';
+
+async function readCodexPaneServerLiveness(socketPath: string, isEndpointTarget: boolean): Promise<ParadisCodexServerLiveness> {
+	const pid = await readCodexPaneServerPid(socketPath, isEndpointTarget);
+	if (pid === undefined) {
+		return 'unknown';
+	}
+	return processIsAlive(pid) ? 'alive' : 'dead';
+}
+
 async function readCodexPaneFailureInput(socketPath: string, isEndpointTarget: boolean): Promise<IParadisCodexPaneFailureInput> {
-	const [log, pid] = await Promise.all([
+	const [log, liveness] = await Promise.all([
 		readCodexPaneLogTail(`${socketPath}.log`),
-		readCodexPaneServerPid(socketPath, isEndpointTarget),
+		readCodexPaneServerLiveness(socketPath, isEndpointTarget),
 	]);
-	return { log, serverAlive: pid !== undefined && processIsAlive(pid) };
+	return { log, serverAlive: liveness === 'alive' };
 }
 
 /** Windows: `pcx/<paneToken>.endpoint.json` 形式のtargetからペイントークン（=Bearer認証トークン）を復元する。 */
@@ -724,6 +742,25 @@ class ParadisCodexServerConnection extends Disposable {
 			this.scheduleRetry();
 			return;
 		}
+		// ソケットは在るのに持ち主が死んでいる＝前回のセッションが後片付けできずに残した死骸。
+		// ランチャーは自分の EXIT trap でしか `.sock` を消さないので、Para Codeが強制終了されると
+		// ファイルだけが残る（実機で確認: 存在した5本のうち3本が死骸で、3本とも同じ時刻に一斉死）。
+		// ペイントークンはターミナル復元時に引き継がれるため、再起動後も同じ死骸を掴み続け、
+		// 「ECONNREFUSED → close → 再試行」を延々と回していた。
+		//
+		// ここで消しに行かないのは意図的。次にそのペインでランチャーが走れば `rm -f` してから
+		// 立て直す（`resources/paradis/bin/codex`）ので、こちらが消すと起動途中のランチャーと
+		// 競合するだけで得がない。
+		const liveness = await this.readServerLiveness();
+		if (!this.enabled || this.socket !== undefined) {
+			this.scheduleRetry();
+			return;
+		}
+		if (liveness === 'dead') {
+			this.reportSlowConnectIfNeeded('stale-endpoint', 'stale-socket');
+			this.scheduleRetry();
+			return;
+		}
 		let endpointPort: number | undefined;
 		if (this.endpointTarget !== undefined) {
 			endpointPort = await readCodexEndpointPort(this.socketPath);
@@ -775,8 +812,12 @@ class ParadisCodexServerConnection extends Disposable {
 							...closeExtras,
 						});
 					} else if (this.enabled && socketErrorMessage && !this.connectFailedReported) {
-						// 接続確立前に落ちたケース。socket自体はapp-serverのソケットが存在してから
-						// 作っているので、ここでの失敗は「口はあるのに繋がらない」という別の異常。
+						// 接続確立前に落ちたケース。socketは「ファイルが在り、かつ持ち主のpidが
+						// 死んでいない」ことを確かめてから作っているので、大半の死骸
+						// （ECONNREFUSED）はここへ来ない。ただし2経路だけ残る:
+						// `.pid` を書かない旧版ランチャーの残骸（liveness='unknown'）と、
+						// pid再利用による偽alive。ランチャーは `ps` でコマンド一致まで見ており
+						// （`resources/paradis/bin/codex`）、こちらの判定はそれより弱い。
 						// 失敗が続くと10秒ごとの再試行のたびに報告してしまうので、初回だけ送り、
 						// initializeが通ったら（＝状況が変わったら）また送れるようにする。
 						this.connectFailedReported = true;
@@ -1176,7 +1217,15 @@ class ParadisCodexServerConnection extends Disposable {
 		return pathExists(path);
 	}
 
-	private reportSlowConnectIfNeeded(phase: string): void {
+	private async readServerLiveness(): Promise<ParadisCodexServerLiveness> {
+		return readCodexPaneServerLiveness(this.socketPath, this.endpointTarget !== undefined);
+	}
+
+	/**
+	 * `kind` を渡せるのは、接続前の生存判定でしか分からない種別（`stale-socket`）のため。
+	 * 渡した場合はログからの分類を採らない（死骸のログは前世代の内容なので誤分類になる）。
+	 */
+	private reportSlowConnectIfNeeded(phase: string, kind?: ParadisCodexPaneFailureKind): void {
 		if (this.connectStartedAt === undefined || this.slowConnectReported) {
 			return;
 		}
@@ -1186,7 +1235,7 @@ class ParadisCodexServerConnection extends Disposable {
 		}
 		this.slowConnectReported = true;
 		// ファイル読みを待たずに報告済みフラグを立てているので、多重報告にはならない。
-		void this.reportEndpointNotReady(phase, duration);
+		void this.reportEndpointNotReady(phase, duration, kind);
 	}
 
 	/**
@@ -1201,15 +1250,21 @@ class ParadisCodexServerConnection extends Disposable {
 	 * 埋もれて、レアで重大な'state-runtime'が握り潰される。desktop-relayの
 	 * `unexpected-close-<code>`と同じ理由・同じ形。
 	 */
-	private async reportEndpointNotReady(phase: string, duration: number): Promise<void> {
-		let kind: ParadisCodexPaneFailureKind = 'unclassified';
+	private async reportEndpointNotReady(phase: string, duration: number, kindOverride?: ParadisCodexPaneFailureKind): Promise<void> {
+		let kind: ParadisCodexPaneFailureKind = kindOverride ?? 'unclassified';
 		let logTailBytes = 0;
 		let serverAlive: boolean | undefined;
 		let matchDistance: number | undefined;
 		let textLength: number | undefined;
+		// 上書き時もログ由来の分類は捨てずにextraへ残す。死骸の世代のログには「なぜ死んだか」が
+		// 書かれていることがあり、operationを占有させないだけで情報としては使える。
+		let logKind: ParadisCodexPaneFailureKind | undefined;
 		try {
 			const input = await readCodexPaneFailureInput(this.socketPath, this.endpointTarget !== undefined);
-			kind = paradisClassifyCodexPaneFailure(input);
+			logKind = paradisClassifyCodexPaneFailure(input);
+			if (kindOverride === undefined) {
+				kind = logKind;
+			}
 			logTailBytes = input.log?.length ?? 0;
 			serverAlive = input.serverAlive;
 			const evidence = paradisInspectCodexPaneFailure(input);
@@ -1235,6 +1290,9 @@ class ParadisCodexServerConnection extends Disposable {
 			// 生きているのかが読めなかった。生きているなら「起動が遅い」または「古い行を拾った」、
 			// 死んでいるなら「起動失敗」。距離の読み方がこの値で変わる。
 			safe_server_alive: serverAlive,
+			// `kind` を上書きした回だけ、ログ由来の分類がここに残る（上書きしていない回は
+			// `kind` と同値なので送らない）。死骸が「なぜ死んだか」を追う手がかりになる。
+			safe_log_kind: logKind !== undefined && logKind !== kind ? logKind : undefined,
 		});
 	}
 
