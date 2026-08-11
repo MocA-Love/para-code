@@ -99,6 +99,18 @@ async function createFakeAppServer(testRoot: string, name: string, loadedThreads
 	};
 }
 
+/**
+ * 確実に存在しないpidを得る。定数を書くと、その番号が実在した環境で「生きている」と読まれて
+ * テストが静かに無意味になるため、自分で起動して終了を見届けた子のpidを使う。
+ */
+async function exitedProcessId(): Promise<number> {
+	const { spawn } = await import('child_process');
+	const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
+	await new Promise<void>(resolve => child.once('exit', () => resolve()));
+	assert.ok(child.pid !== undefined);
+	return child.pid;
+}
+
 async function waitFor(predicate: () => boolean): Promise<void> {
 	const deadline = Date.now() + 3_000;
 	while (!predicate() && Date.now() < deadline) {
@@ -159,6 +171,61 @@ suite('ParadisCodexLiveClient', function () {
 			assert.deepStrictEqual(paneServer.resumedThreads, ['thread-9']);
 			assert.deepStrictEqual(paneServer.rejectedUpgrades, []);
 			assert.strictEqual((await client.listModels('thread-9'))[0].model, 'winpane-model');
+		} finally {
+			client.dispose();
+			await fs.rm(testRoot, { recursive: true, force: true });
+		}
+	});
+
+	/**
+	 * Para Code が強制終了されるとランチャーの後片付け（EXIT trap）が走らず、`.sock` と `.pid`
+	 * だけが残る。ペイントークンはターミナル復元時に引き継がれるので、再起動後のクライアントは
+	 * その死骸を掴み続けて ECONNREFUSED を繰り返していた。
+	 *
+	 * 偽app-serverは**両方とも待ち受けたまま**にしてある。判定材料は `.pid` の生死だけなので、
+	 * 死骸側が ready になったらガードが効いていないと分かる。
+	 */
+	test('skips a socket whose recorded owner is dead, but still connects when the pid is unknown or alive', async () => {
+		const testRoot = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-live-'));
+		await using stale = await createFakeAppServer(testRoot, 'stale', ['thread-dead']);
+		await using live = await createFakeAppServer(testRoot, 'live', ['thread-live']);
+		await using unknown = await createFakeAppServer(testRoot, 'unknown', ['thread-unknown']);
+		// Windows方式は pid の読み出し元が別ファイル・別フォーマット（endpoint.json 内）なので、
+		// 死骸の判定も別経路になる。ここを踏まないと `isEndpointTarget` 側は素通りする。
+		await using staleWin = await createFakeAppServer(testRoot, 'stalewin', ['thread-dead-win'], 'pane-token-dead');
+		const client = new ParadisCodexLiveClient(() => { }, new NullLogService());
+		try {
+			const deadPid = await exitedProcessId();
+			await fs.writeFile(`${stale.socketPath}.pid`, `${deadPid}\n`);
+			await fs.writeFile(`${live.socketPath}.pid`, `${process.pid}\n`);
+			const winRecord: unknown = JSON.parse(await fs.readFile(staleWin.socketPath, 'utf8'));
+			await fs.writeFile(staleWin.socketPath, JSON.stringify({ ...winRecord as object, pid: deadPid }));
+			// `unknown` には `.pid` を書かない。ランチャーは app-server を spawn してから pid を
+			// 書き、ソケットを作るのは app-server 自身なので「ソケットは在るが pid はまだ」の
+			// 一瞬が起こりうる。ここを死亡扱いにすると正常な起動を取りこぼす。
+			client.setThreads([
+				{ threadId: 'thread-dead', socketPath: stale.socketPath },
+				{ threadId: 'thread-dead-win', socketPath: staleWin.socketPath },
+				{ threadId: 'thread-live', socketPath: live.socketPath },
+				{ threadId: 'thread-unknown', socketPath: unknown.socketPath },
+			]);
+			client.setEnabled(true);
+			await waitFor(() => client.isThreadReady('thread-live') && client.isThreadReady('thread-unknown'));
+			// 生きている側が揃った時点で死骸を見ると、「まだ繋がっていないだけ」でも通ってしまう。
+			// 偽app-serverは待ち受けたままなので、猶予を与えても繋がらないことが判定になる。
+			await new Promise(resolve => setTimeout(resolve, 100));
+
+			assert.deepStrictEqual({
+				stale: { ready: client.isThreadReady('thread-dead'), resumed: stale.resumedThreads },
+				staleWin: { ready: client.isThreadReady('thread-dead-win'), resumed: staleWin.resumedThreads },
+				live: { ready: client.isThreadReady('thread-live'), resumed: live.resumedThreads },
+				unknown: { ready: client.isThreadReady('thread-unknown'), resumed: unknown.resumedThreads },
+			}, {
+				stale: { ready: false, resumed: [] },
+				staleWin: { ready: false, resumed: [] },
+				live: { ready: true, resumed: ['thread-live'] },
+				unknown: { ready: true, resumed: ['thread-unknown'] },
+			});
 		} finally {
 			client.dispose();
 			await fs.rm(testRoot, { recursive: true, force: true });
