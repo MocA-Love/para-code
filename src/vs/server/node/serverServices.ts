@@ -103,6 +103,8 @@ import { IMcpGalleryManifestService } from '../../platform/mcp/common/mcpGallery
 import { McpGalleryManifestIPCService } from '../../platform/mcp/common/mcpGalleryManifestServiceIpc.js';
 import { SANDBOX_HELPER_CHANNEL_NAME, SandboxHelperChannel } from '../../platform/sandbox/common/sandboxHelperIpc.js';
 import { SandboxHelperService } from '../../platform/sandbox/node/sandboxHelper.js';
+// PARA-PATCH: channel that runs git on this machine for a connected client (registered below)
+import { registerParadisWorktreeGitForServer } from '../../paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -325,6 +327,11 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		socketServer.registerChannel('telemetry', telemetryChannel);
 
 		socketServer.registerChannel(SANDBOX_HELPER_CHANNEL_NAME, new SandboxHelperChannel(new SandboxHelperService()));
+
+		// PARA-PATCH: expose the same git channel the shared process has, so a connected
+		// client can clone onto this machine. The shared process copy always runs git
+		// locally, so handing it a path on this side fails with ENOENT.
+		disposables.add(registerParadisWorktreeGitForServer(socketServer, logService));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 

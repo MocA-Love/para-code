@@ -709,18 +709,21 @@ export class ParadisWorktreeGitService {
 	}
 }
 
-export class ParadisWorktreeGitChannel implements IServerChannel<string> {
+// TContext をジェネリックにしてあるのは、shared process（IPCServer<string>）だけでなく
+// リモートサーバー（REH の SocketServer<RemoteAgentConnectionContext>）にも同じチャネルを
+// 登録するため。SSH 接続中に「接続先へクローンする」を選べるようにするのに必要。
+export class ParadisWorktreeGitChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisWorktreeGitService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		if (event === 'onCloneProgress') {
 			return this.service.onCloneProgress as Event<T>;
 		}
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'cloneRepository': return this.service.cloneRepository(args[0] as IParadisCloneRepositoryRequest) as Promise<T>;
@@ -744,5 +747,21 @@ export class ParadisWorktreeGitChannel implements IServerChannel<string> {
 export function registerParadisWorktreeGit(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
 	const service = new ParadisWorktreeGitService(logService, configurationService, args);
 	server.registerChannel(PARADIS_WORKTREE_GIT_CHANNEL, new ParadisWorktreeGitChannel(service));
+	return { dispose: () => { } };
+}
+
+/**
+ * serverServices.ts（REH）の PARA-PATCH 点から1行で呼べるファクトリ。
+ *
+ * SSH 接続中に「接続先へクローンする」を選んだとき、git を動かすのは接続先でなければ
+ * ならない。shared process 版は常に手元で動くため、同じチャネルを接続先にも生やす。
+ *
+ * configurationService / args を渡さないのは、どちらもログインシェルの環境変数を解決する
+ * ためのオプションで（未指定でも既定の解決にフォールバックする）、サーバー側には対応する
+ * 実体が無いため。WSL 振り分けもホスト OS 判定で無効になる（サーバーは Linux）。
+ */
+export function registerParadisWorktreeGitForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	const service = new ParadisWorktreeGitService(logService);
+	server.registerChannel(PARADIS_WORKTREE_GIT_CHANNEL, new ParadisWorktreeGitChannel<TContext>(service));
 	return { dispose: () => { } };
 }
