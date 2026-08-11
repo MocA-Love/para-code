@@ -225,6 +225,13 @@ function RootLayout() {
 						<Stack.Screen name="agent-activity" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						<Stack.Screen name="agent-activity-detail" options={{ headerShown: false, animation: 'slide_from_right' }} />
 						{/* 通知一覧。ベルからのズーム遷移（Link.AppleZoom）で開くため独自ヘッダーを使う */}
+						{/* 通知一覧。ベルからのズーム遷移（Link.AppleZoom）で開く。
+						    **バーはOS標準に任せず、独自ヘッダー（常設のヘッダー層）を使う。**
+						    一度ネイティブバーへ移したが、(1) ズーム中に島が左端へ寄ってホームの島と
+						    二重に見え、(2) 右上の×が出なくなった（原因未特定）。ズーム遷移は画面
+						    全体を拡大するので、その中のバー項目をOSに任せると位置も生死も制御でき
+						    ない——`src/paraHeader.ts` に「ズーム遷移の画面はヘッダーのアニメーションを
+						    切る（`instant: true`）」と書いてあるのは、まさにこれを避けるためだった。 */}
 						<Stack.Screen name="notifications" options={{ headerShown: false }} />
 						{/* スペースのメモ。ドロワーのメモボタンから同じくズーム遷移で開く */}
 						<Stack.Screen name="space-note" options={{ headerShown: false }} />

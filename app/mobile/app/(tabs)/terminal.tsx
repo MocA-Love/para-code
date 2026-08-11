@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useIsFocused } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../../src/appState.js';
@@ -12,7 +12,7 @@ import { useWsHeader, useEffectiveWs } from '../../src/components/wsDrawer.js';
 import { GlassComposer } from '../../src/components/glassComposer.js';
 import { TerminalPicker, terminalPickerIsNative } from '../../src/components/terminalPicker.js';
 import { PresetSheet } from '../../src/components/presetSheet.js';
-import { useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
+import { useKeyboardCoverage, useKeyboardVisible } from '../../src/hooks/useKeyboardVisible.js';
 import { useIsRegularWidth } from '../../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../../src/hooks/useStableInsets.js';
 import { GlassSurface } from '../../src/components/glassSurface.js';
@@ -48,6 +48,8 @@ export default function TerminalScreen() {
 	const [submitting, setSubmitting] = useState(false);
 	const insets = useStableInsets();
 	const keyboardVisible = useKeyboardVisible();
+	// 下端がキーボードに食われる高さ。枠をこのぶん縮める（ターミナルの中身の高さは変えない）。
+	const keyboardCover = useKeyboardCoverage();
 	// iPad幅ではタブバーがサイドバー側にあり、入力欄の下に避けるものが無い。
 	const regular = useIsRegularWidth();
 	const isFocused = useIsFocused();
@@ -222,10 +224,15 @@ export default function TerminalScreen() {
 
 	return (
 		<ConnectionGate>
-		{/* enabled={isFocused}: NativeTabsの画面凍結中に keyboardWillHide を取り逃すと
-		    下パディングが張り付き、復帰時にUIが上へ潰れる（非フォーカスで無効化→復帰時に
-		    クリーンな状態から再計算させる） */}
-		<KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={90} enabled={isFocused}>
+		{/* **`KeyboardAvoidingView` は使わない。** あれは自分のフレームの画面上の絶対位置から
+		    下端の食われ方を割り出すので、OS標準のバーの下に置かれるとずれる。ここは以前
+		    `keyboardVerticalOffset={90}` で辻褄を合わせていたが、その90ptは自前ヘッダー層が
+		    浮いていた頃の値で、バーへ移した後は**引きすぎ**になっていた（入力欄とキーの列が
+		    30pt強キーボードに潜った。実機で確認済み）。「下端から何pt隠れるか」を直接測って
+		    下余白にする（`useKeyboardCoverage`。画面上のどこに置かれても変わらない値）。
+		    非フォーカス中に0へ倒す面倒（NativeTabsの画面凍結中に keyboardWillHide を取り逃すと
+		    下パディングが張り付く）は、あのフック自身が `useIsFocused` で見ている。 */}
+		<View style={[styles.screen, { paddingBottom: keyboardCover }]}>
 			{/* ヘッダーは浮かぶ島。タブチップ列がその下に潜らないよう、実測した高さぶん上を空ける。
 			    この画面だけドロワーの全域スワイプを巻かないのは、チップ列が横スクロールで
 			    指の動きの向きが同じになり、どちらが取るか状況で変わるため（左端24ptのエッジ
@@ -306,7 +313,7 @@ export default function TerminalScreen() {
 				/>
 			</View>
 			<PresetSheet visible={presetsOpen} ws={ws?.id} wsLabel={ws?.name ?? 'このスペース'} onClose={() => setPresetsOpen(false)} />
-		</KeyboardAvoidingView>
+		</View>
 		</ConnectionGate>
 	);
 }
