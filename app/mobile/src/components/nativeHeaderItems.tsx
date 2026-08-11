@@ -146,7 +146,7 @@ export function NativeHeaderTitle({ text, sub, subColor, chevron, label, onPress
  * UIKitが「バー項目の集合が変わった」と見なして自分で描くものなので、自前の丸を置くと
  * その対応付けから外れる。文字のラベルは出さない（`minimal`）。
  */
-export function NativeScreenHeader({ title, sub, subColor, chevron = false, label, onTitlePress, actions, hidden = false }: {
+export function NativeScreenHeader({ title, sub, subColor, chevron = false, label, onTitlePress, actions, hidden = false, translucent = false }: {
 	readonly title: string;
 	readonly sub?: string;
 	readonly subColor?: string;
@@ -156,6 +156,19 @@ export function NativeScreenHeader({ title, sub, subColor, chevron = false, labe
 	readonly actions?: readonly ParaHeaderIcon[];
 	/** 接続ゲートが本文を塞いでいる間は伏せる（ゲート自身の戻ると二重に出るため）。 */
 	readonly hidden?: boolean;
+	/**
+	 * バーを本文の上に浮かせ、下を流れる中身がブラー越しに透けるようにする。
+	 *
+	 * **モーフとは両立する**（あれはバー項目の遷移で、背景が透けるかどうかとは別物）。
+	 * 既定を不透明にしているのは、何も指定しないとブラーの地色がiOS標準のダークグレー
+	 * （#1c1c1e相当）になり、本文の #050506 との境目が帯として見えるため。ここでは地色に
+	 * alpha を入れて自分で決める——`blurEffect` は「背景の alpha が 1 未満のときに効く」ので、
+	 * 不透明のまま種類だけ指定しても何も起きない（ライブラリの型注釈にそう書いてある）。
+	 *
+	 * **渡す画面は本文の上余白を自分で持つこと。** 不透明のときはOSがバーの下から本文を
+	 * 始めてくれるが、浮かせると本文はバーの背後（画面の最上端）から始まる。
+	 */
+	readonly translucent?: boolean;
 }) {
 	// 本文の上余白は要らない（OSがバーの下から本文を始める）。画面側は引き続き
 	// `useParaHeaderHeight()` を読むので0を配る。
@@ -190,12 +203,37 @@ export function NativeScreenHeader({ title, sub, subColor, chevron = false, labe
 		// 戻るボタンはシェブロンだけにする。文字が付くと幅を食い、中央に使える幅が減る。
 		headerBackButtonDisplayMode: 'minimal' as const,
 		headerBackTitle: '',
-		headerStyle: { backgroundColor: colors.bg },
 		headerShadowVisible: false,
-	}), [hidden, headerTitle, headerRight]);
+		// **半透明のときは地色を必ず `transparent` で上書きする。**
+		// ブラーは `headerTransparent` と `headerBlurEffect` の組み合わせでOSが描くので、
+		// 地色が塗られているとその上から潰れる（`rgba(5,5,6,0.55)` を敷いたら本文と同じ色が
+		// 重なるだけで透けなかった）。そして**省略しても駄目**——`setOptions` はキーごとの
+		// マージなので、親（`app/_layout.tsx`）が静的に置いた `headerStyle` の不透明な地色が
+		// そのまま生き残る。実機で「透けない」が2度続いた原因はこれ（`blurEffect` は
+		// 「背景の alpha が 1 未満のときに効く」ので、alpha 0 で明示するのが正しい）。
+		...(translucent
+			? {
+				headerTransparent: true,
+				// **ブラーは載せない。** 自前ヘッダー層がやっていたのはブラーではなく、
+				// 背後を地色のグラデーションで落とすことだった（`headerEdgeFade.tsx`。上端で
+				// 地色の94%、下端で完全に透明）。だから行が「奥へ入っていく」ように見えていた。
+				// `blurEffect` を載せるとバーの地が本文より明るくなり、下端に境目が帯として出る。
+				// バーは素通しにして、**渡す画面が本文側に `HeaderEdgeFade` を敷く**。
+				headerStyle: { backgroundColor: 'transparent' },
+			}
+			: { headerStyle: { backgroundColor: colors.bg } }),
+	}), [hidden, headerTitle, headerRight, translucent]);
 
 	return <Stack.Screen options={options} />;
 }
+
+/**
+ * 半透明にしたバーの高さ（セーフエリアを除いた分）。**渡す画面が本文の上余白に使う。**
+ *
+ * `useHeaderHeight` が expo-router から使えないので実測値を置く。タイトル＋サブタイトルの
+ * 2行構成のバーを実機のフレームから測った値（サブタイトルが無い画面では少し余分に空く）。
+ */
+export const NATIVE_BAR_HEIGHT = 59;
 
 /** アバターの地色。色の指定は `#rrggbb` 前提（テーマの色はすべてこの形）。 */
 function withAlpha(color: string): string {
@@ -216,10 +254,15 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.red, borderWidth: 2, borderColor: colors.bg,
 	},
 
-	title: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
-	titleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
-	titleText: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2, flexShrink: 1 },
-	titleSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
+	// **幅の上限を自分で持つ。** UIKitはカスタムのタイトルビューに幅を要求しないので、
+	// 上限が無いと中身の長さのまま伸び、左の戻るボタンと右のボタンへ食い込む（長いタイトルと
+	// 長いブランチ名で、サブ行が省略記号すら出さずにボタンの下へ消えていた。実機で確認済み）。
+	// 中央に使える幅は「画面幅 − 2×max(左, 右)」。左は丸の戻るボタン、右はボタン1個なので、
+	// 両側60ptを avoid した残りに収める。
+	title: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4, maxWidth: 240 },
+	titleRow: { flexDirection: 'row', alignItems: 'center', gap: 5, maxWidth: '100%' },
+	titleText: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2, flexShrink: 1, minWidth: 0 },
+	titleSub: { color: colors.textDim, fontSize: 10.5, marginTop: 1, maxWidth: '100%' },
 
 	actions: { flexDirection: 'row', alignItems: 'center', gap: 2 },
 	actionHit: { width: 32, height: 32, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },

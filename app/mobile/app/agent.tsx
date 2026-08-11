@@ -29,7 +29,7 @@ import { useIsRegularWidth } from '../src/hooks/useSizeClass.js';
 import { useStableInsets } from '../src/hooks/useStableInsets.js';
 import { useOfflineNotice } from '../src/offlineNotice.js';
 import { useParaHeader, useParaHeaderHeight, PARA_HEADER_HIDDEN, type ParaHeaderIcon } from '../src/paraHeader.js';
-import { NativeScreenHeader } from '../src/components/nativeHeaderItems.js';
+import { NativeScreenHeader, NATIVE_BAR_HEIGHT } from '../src/components/nativeHeaderItems.js';
 import { useAppIsActive } from '../src/hooks/useAppIsActive.js';
 import { CONTENT_MAX_WIDTH } from '../src/ipad/ipadLayout.js';
 import { colors } from '../src/theme.js';
@@ -75,13 +75,12 @@ export default function AgentDetailScreen() {
 	// iPadの広い幅では会話の列幅を制限して中央へ寄せる。1行が長すぎると次の行頭へ
 	// 目線を戻す距離が伸びて読みづらいため（ヘッダーとブラーは全幅のまま）。
 	const regular = useIsRegularWidth();
-	// ヘッダーは常設のヘッダー層が描く（`src/paraHeader.ts`）。ここは高さだけ読み、
-	// 会話の上端の余白と活動ストリップの位置に使う。測る前は概算で置く。
-	// **本文の上余白は0。** ヘッダーはOS標準のバーになり、本文はその下から始まる。
-	// 以前は自前ヘッダー層の実測高さを使い、取れないときは `insets.top + 56` に落として
-	// いたが、バーへ移した後もそのフォールバックが生きていて、SubAgentsの帯が約115pt
-	// 余分に下がって会話の中に浮いていた（実機で確認済み）。
-	const headerHeight = 0;
+	// バーの高さ。会話の上端の余白、SubAgentsの帯の位置、背後に敷くガラスの器に使う。
+	//
+	// **この画面のバーは素通し**（`translucent`）で、会話がその背後を流れる。浮かせたぶん本文は
+	// バーの背後＝画面の最上端から始まるので、ここで自分で空ける（不透明のままならOSがバーの
+	// 下から本文を始めるので0でよい。他の画面はそうしている）。
+	const headerHeight = insets.top + NATIVE_BAR_HEIGHT;
 
 	// 表示対象: selectedTerminalKey（ホーム/通知が遷移前に設定する）。無ければ選択中ws
 	// のターミナルへフォールバック（旧タブと同じ規則: 未タグはactiveWs所属扱い）。
@@ -434,6 +433,7 @@ export default function AgentDetailScreen() {
 			onTitlePress={activeTerminal === undefined ? undefined : openInfo}
 			actions={headerActions}
 			hidden={gated}
+			translucent
 		/>
 		<ConnectionGate>
 		{/* **`KeyboardAvoidingView` は使わない。** あれは自分のフレームの画面上の絶対位置から
@@ -484,8 +484,15 @@ export default function AgentDetailScreen() {
 									: item.type === 'web' ? <WebSearchActivity msgs={item.msgs} terminalKey={activeKey} />
 									: <AgentTimeline msgs={item.msgs} terminalKey={activeKey} />}
 						contentContainerStyle={[styles.listContent, regular && styles.readingColumn, { paddingTop: headerHeight + (hasActivityHistory ? 52 : 6) }]}
-						// バーの下から本文が始まるので、スクロールバーの上端をずらす必要は無い。
-						scrollIndicatorInsets={{ top: 0 }}
+						// **iOSの自動調整を切る。** 既定（`automatic`）だとナビバーのぶんの
+						// `contentInset` をOSが勝手に足すので、`headerTransparent` で枠をバーの
+						// 背後まで伸ばしても**中身だけがバーの下へ押し出される**。その結果、
+						// スクロールしても会話がバーの裏を通らず、半透明にした意味が無くなる
+						// （バーの地だけが見えて黒いまま。実機で確認済み）。上の余白は
+						// `paddingTop` で自分で持っているので、OSの調整は要らない。
+						contentInsetAdjustmentBehavior="never"
+						// 本文はバーの背後から始まるので、スクロールバーの上端はバーの下へずらす。
+						scrollIndicatorInsets={{ top: headerHeight - insets.top }}
 						onContentSizeChange={onContentSizeChange}
 						onScroll={onListScroll}
 						onScrollBeginDrag={onScrollBeginDrag}
@@ -510,6 +517,18 @@ export default function AgentDetailScreen() {
 						</View>
 					</View>
 				) : null}
+			</View>
+
+			{/* **バーの背後にガラスの板を敷く。** SubAgentsの帯と同じ `GlassSurface`
+			    （iOS 26 の Liquid Glass）なので、質感も透け方もあの帯と揃う。
+
+			    バー自身は素通し（`translucent`）にしてある。バーの `headerBlurEffect` は旧来の
+			    `UIBlurEffect` で帯のガラスとは別物——薄いものは透けすぎ、濃いものはバーの地が
+			    本文より明るくなって下端に境目が出た。地色のグラデーション
+			    （`headerEdgeFade.tsx`。自前ヘッダー層がやっていたこと）も、タイトルの高さで
+			    透けきってしまい文字の裏に会話が読めた。**帯と同じものを敷くのが答え。** */}
+			<View style={[styles.headerGlass, { height: headerHeight }]} pointerEvents="none">
+				<GlassSurface style={StyleSheet.absoluteFill} pointerEvents="none" />
 			</View>
 
 			{hasActivityHistory && chat?.activity !== undefined ? (
@@ -758,6 +777,10 @@ function WorkingIndicator({ live, pendingCount = 0, onOpenPending }: {
 const styles = StyleSheet.create({
 	screen: { flex: 1, backgroundColor: colors.bg },
 	activityStripOverlay: { position: 'absolute', left: 12, right: 12, zIndex: 9 },
+	// バーの背後に敷くガラスの器。高さはバーの高さぶん（画面が渡す）。会話より前・活動
+	// ストリップより後ろに置く（`zIndex` は帯の9より小さく保つ）。角は丸めない——全幅の
+	// 板なので、丸めると上端の隅に本文が覗く。
+	headerGlass: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 8, overflow: 'hidden' },
 	peerMessageCard: { alignSelf: 'stretch', backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: 14, padding: 12, gap: 6 },
 	peerMessageHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
 	peerMessageLabel: { color: colors.accent2, fontSize: 11, fontWeight: '700' },

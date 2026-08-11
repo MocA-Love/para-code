@@ -140,7 +140,10 @@ const styles = StyleSheet.create({
 	// カプセルに見えるのはアバターの26ptぶん横に長いからで、こちらにはそれが無い。
 	island: { justifyContent: 'center', paddingHorizontal: 8, minWidth: 88, maxWidth: 220 },
 	titleHost: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
-	rightGroup: { flexDirection: 'row', alignItems: 'center', gap: 2 },
+	// **高さを明示する。** バー項目のカスタムビューは中身なりの大きさになるので、丸ボタンが
+	// 1つだけのときに寸法が確定せず、項目ごとOSに落とされることがあった（通知一覧で通知が
+	// 0件になると、右上の×が消えた。実機で確認済み）。
+	rightGroup: { flexDirection: 'row', alignItems: 'center', gap: 2, height: 36 },
 	circleHit: { width: 32, height: 32, borderRadius: radius.pill, alignItems: 'center', justifyContent: 'center' },
 	title: { color: colors.text, fontSize: 16, fontWeight: '700', letterSpacing: -0.2 },
 	subtitle: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
