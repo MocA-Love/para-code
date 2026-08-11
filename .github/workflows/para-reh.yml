@@ -1,0 +1,141 @@
+# PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+#
+# リモート開発（SSH接続先で動く「サーバー」= REH / Remote Extension Host）のビルド。
+#
+# クライアント本体をビルドする para-release.yml とは別ワークフローにしてある。
+# REH は node-pty / sqlite3 / kerberos などのネイティブ依存を含むため、macOS や Windows の
+# ランナーからは linux 向けにクロスビルドできない。必ず ubuntu ランナーで作る。
+#
+# 成果物は固定タグ `reh` の GitHub Release に、ファイル名へ commit を埋めて置く。
+# クライアントは product.json の serverDownloadUrlTemplate（${commit} を含む）から
+# 自分と同じ commit のサーバーだけを取りに来るので、クライアントとサーバーの版ずれが
+# 原理的に起きない。R2 側の配信URLは secret 管理なので、公開リポジトリに書かずに済む
+# GitHub Release を配信先にしている（このリポジトリは public なので認証なしで取得できる）。
+name: Para Code REH (remote server)
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'ビルドしたサーバーを reh リリースへ公開する（オフだと artifact のみ）'
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-reh-linux-x64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release upload（固定タグ reh への添付）
+    env:
+      VSCODE_ARCH: x64
+      NPM_ARCH: x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # para-release.yml と同じ理由: LFS オブジェクトは Copilot のシミュレーションテスト用
+          # キャッシュで、パッケージには含まれない。
+          lfs: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Setup system dependencies
+        run: |
+          set -e
+          ./build/azure-pipelines/linux/apt-retry.sh sudo apt-get update
+          ./build/azure-pipelines/linux/apt-retry.sh sudo apt-get install -y pkg-config libkrb5-dev libxkbfile-dev libssl-dev
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download built-in extensions
+        run: node build/lib/builtInExtensions.ts
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # クライアント側と同じ esbuild 経路で組み立てる。
+      #
+      # 一括タスクの `vscode-reh-linux-x64-min` は使えない。gulpfile.vscode.ts は
+      # buildConfig.ts の useEsbuildTranspile を見て esbuild 経路に分岐するが、
+      # gulpfile.reh.ts にはその分岐が無く、旧来の TypeScript+mangler 経路へ固定されている
+      # （upstream が REH 側をまだ移行していない）。旧経路は実測で三つとも踏む:
+      #   1. mangler の「Protected fields have been made PUBLIC」
+      #   2. mangler 後処理での Segmentation fault（compile 自体は 0 errors で完了した直後）
+      #   3. fork 所有コードの循環依存検出
+      # いずれも Remote-SSH とは無関係な、旧経路にだけ存在する問題。
+      # そのため一括タスクの中身を esbuild 版に置き換えて手で並べている。
+      # upstream が gulpfile.reh.ts を esbuild へ移行したら、この段は
+      # `npm run gulp vscode-reh-linux-x64-min` 一行に戻せる。
+      - name: Build server (esbuild path)
+        run: |
+          set -e
+          npm run gulp copy-codicons
+          rm -rf .build/extensions
+          npm run gulp compile-non-native-extensions-build
+          npm run gulp compile-copilot-extension-build
+          npm run gulp compile-extension-media-build
+          node build/next/index.ts bundle --out out-vscode-reh-min --target server --minify --mangle-privates --nls
+          npm run gulp vscode-reh-linux-x64-min-ci
+
+      # open-remote-ssh の server-setup.sh は tarball を `tar -xf --strip-components 1` で
+      # 展開し、`$SERVER_DATA_DIR/bin/$COMMIT/bin/$serverApplicationName` が存在することを
+      # 確認する。gulp の出力ディレクトリ vscode-reh-linux-x64 をそのまま固めれば
+      # strip-components 1 でちょうどその形になる。
+      - name: Create tarball
+        id: pack
+        run: |
+          set -e
+          COMMIT="$(git rev-parse HEAD)"
+          SERVER_NAME="$(node -p "require('./product.json').serverApplicationName")"
+          BUILD_ROOT="$(dirname "$GITHUB_WORKSPACE")"
+          SRC_DIR="$BUILD_ROOT/vscode-reh-linux-x64"
+
+          # 展開後に起動される実行ファイルが本当に入っているかをここで落とす。
+          # 欠けたまま配ると、接続時にリモート側で初めて分かることになる。
+          test -f "$SRC_DIR/bin/$SERVER_NAME" || { echo "Error: bin/$SERVER_NAME が見つかりません"; ls -la "$SRC_DIR" "$SRC_DIR/bin" || true; exit 1; }
+
+          TARBALL="para-code-server-linux-x64-$COMMIT.tar.gz"
+          tar -czf "$TARBALL" -C "$BUILD_ROOT" vscode-reh-linux-x64
+          sha256sum "$TARBALL" | cut -d' ' -f1 > "$TARBALL.sha256"
+
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          ls -la "$TARBALL"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: reh-linux-x64
+          path: |
+            ${{ steps.pack.outputs.tarball }}
+            ${{ steps.pack.outputs.tarball }}.sha256
+          retention-days: 7
+
+      # 固定タグ `reh` のリリースへ添付する。タグは初回だけ作られ、以降は同じリリースに
+      # commit 別のファイルが積まれる。古い commit のサーバーは、その版のクライアントを
+      # 使っている人がいる限り消さないこと。
+      - name: Publish to reh release
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          if ! gh release view reh >/dev/null 2>&1; then
+            gh release create reh \
+              --title "Remote server (REH) builds" \
+              --notes "SSH 接続先で動く Para Code サーバー本体。ファイル名の commit がクライアント側の commit と一致するものが自動で取得される。手動で入れる必要はない。" \
+              --latest=false
+          fi
+          gh release upload reh \
+            "${{ steps.pack.outputs.tarball }}" \
+            "${{ steps.pack.outputs.tarball }}.sha256" \
+            --clobber

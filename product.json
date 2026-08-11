@@ -13,6 +13,7 @@
 	"serverLicensePrompt": "",
 	"serverApplicationName": "para-code-server",
 	"serverDataFolderName": ".para-code-server",
+	"serverDownloadUrlTemplate": "https://github.com/MocA-Love/para-code/releases/download/reh/para-code-server-${os}-${arch}-${commit}.tar.gz",
 	"tunnelApplicationName": "para-code-tunnel",
 	"win32DirName": "Para Code",
 	"win32NameVersion": "Para Code",
@@ -95,8 +96,50 @@
 				},
 				"publisherDisplayName": "Microsoft"
 			}
+		},
+		{
+			"name": "jeanp413.open-remote-ssh",
+			"version": "0.3.1",
+			"sha256": "c6f16b225ab86925f2bd9e8cc5ba31e614978ccfa120f1509bdf6e99e5bef13f",
+			"repo": "https://github.com/jeanp413/open-remote-ssh",
+			"metadata": {
+				"id": "9fc16cea-08e2-4ae5-bf75-224004d722ff",
+				"publisherId": {
+					"publisherId": "82e59b79-acc5-4a5b-81cb-9303cbdc05cb",
+					"publisherName": "jeanp413",
+					"displayName": "jeanp413",
+					"flags": "verified"
+				},
+				"publisherDisplayName": "jeanp413"
+			}
 		}
 	],
+	"extensionEnabledApiProposals": {
+		"jeanp413.open-remote-ssh": [
+			"resolvers",
+			"tunnels",
+			"terminalDataWriteEvent",
+			"contribRemoteHelp",
+			"contribViewsRemote"
+		]
+	},
+	"remoteExtensionTips": {
+		"ssh-remote": {
+			"friendlyName": "SSH",
+			"extensionId": "jeanp413.open-remote-ssh",
+			"supportedPlatforms": [
+				"Windows",
+				"Linux",
+				"Mac"
+			],
+			"startEntry": {
+				"helpLink": "https://github.com/jeanp413/open-remote-ssh#readme",
+				"startConnectLabel": "Connect to Host...",
+				"startCommand": "openremotessh.openEmptyWindow",
+				"priority": 2
+			}
+		}
+	},
 	"defaultChatAgent": {
 		"extensionId": "GitHub.copilot",
 		"chatExtensionId": "GitHub.copilot-chat",
