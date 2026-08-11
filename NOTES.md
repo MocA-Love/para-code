@@ -153,6 +153,8 @@ Para Code: VS Codeフォークの独自エディタ。`microsoft/vscode`を`upst
 
 | `app/mobile/native/ParaCodeWidgets/paracode-logo.png` | 新規追加（fork所有バイナリ）。`app/mobile/assets/pairing-logo.png` を `sips -Z 128` で縮小したコピー（gitignoreされた `ios/ParaCodeWidgets/` にも同一物を配置し、Widgetターゲットの Resources に pbxproj 手動登録済み） | Live Activity / Dynamic Island のロゴをホームタブのPCカードと同じPara Codeロゴにするため（`ParaCodeWidgetsBundle.swift` の LogoBadge が `UIImage(named:)` で読む。復元手順は同ディレクトリ README 参照）。PNGのためマーカーを埋め込めない |
 
+| `product.json` | Remote-SSH（リモート開発）対応で4点追加。(1) `serverDownloadUrlTemplate` を新設し、固定タグ `reh` のGitHub Releaseから `para-code-server-${os}-${arch}-${commit}.tar.gz` を取得させる。(2) `builtInExtensions` に `jeanp413.open-remote-ssh@0.3.1` を追加（sha256はOpen VSX実測値 `c6f16b22…`、metadataのUUIDは `open-vsx.org/vscode/gallery` の extensionquery から取得）。(3) `extensionEnabledApiProposals` を新設し同拡張へ `resolvers`/`tunnels`/`terminalDataWriteEvent`/`contribRemoteHelp`/`contribViewsRemote` を許可。(4) `remoteExtensionTips` を新設し `ssh-remote` エントリを登録 | MS純正の `ms-vscode-remote.remote-ssh` はライセンス上forkで使えず、リモートへ入れるVS Code Serverも `update.code.visualstudio.com/commit:<commit>` にforkのcommitが存在しないため取得不能。OSS版の open-remote-ssh + 自前REH配布で代替する。**(3)は必須**: proposed APIを許可しないと接続そのものが始まらない（`extensionsProposedApi.ts` のコメント通り、product.json側の指定が拡張のpackage.json宣言を上書きするため、拡張が宣言している2つも含めて列挙する必要がある）。`serverApplicationName`/`serverDataFolderName` は拡張の `getVSCodeServerConfig()` が product.json を直接読むので追加設定は不要。URLに `${commit}` を使うのはクライアントとサーバーの版ずれを原理的に防ぐため（`remote.SSH.serverVersion` の既定 `match` ではGitHub APIを叩かないので任意ホストで動く）。ビルドは `.github/workflows/para-reh.yml` |
+
 `git log --grep '^para:'`（コミットメッセージからの追跡）と合わせた二重の安全網として運用する。新しくJSON/バイナリファイルに変更を加えた場合は、必ずこの表に1行追記すること（`CLAUDE.md`の「既存ファイルへの変更が避けられない場合」ルール参照）。
 
 ## CDPゲートウェイとリモートデバッグ（agentBrowser、2026-07-02追加）
