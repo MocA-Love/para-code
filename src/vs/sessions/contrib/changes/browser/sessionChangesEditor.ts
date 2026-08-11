@@ -457,14 +457,18 @@ class ChangesetReviewActionViewItem extends CheckboxActionViewItem {
 		container.classList.add('changeset-review-action');
 	}
 
-	override updateChecked(): void {
+	// PARA-PATCH: repeat the `protected` of the base CheckboxActionViewItem. Omitting it
+	// promotes the member to public, which fails the mangler check in the server (REH)
+	// build ("Protected fields have been made PUBLIC"). Runtime behaviour is unchanged.
+	protected override updateChecked(): void {
 		super.updateChecked();
 
 		this.updateAriaLabel();
 		this.updateTooltip();
 	}
 
-	override getTooltip(): string {
+	// PARA-PATCH: same as above (BaseActionViewItem.getTooltip is protected)
+	protected override getTooltip(): string {
 		return this.action.checked
 			? localize('changeset.viewed.tooltip', "Mark as Not Viewed")
 			: localize('changeset.notViewed.tooltip', "Mark as Viewed");
