@@ -414,18 +414,15 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 			},
 			location: TerminalLocation.Editor,
 		});
-	if (request.stateKey !== switchService.activeStateKey) {
-		await instance.processReady;
-		await terminalEditorService.openEditor(instance);
-		terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
-	} else {
-		if (wsl !== undefined) {
-			await instance.processReady;
-			terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
-		}
+	// createTerminal は Editor Terminal の openEditor 完了を待たない。スペース切り替え直後に
+	// setActiveInstance だけ行うと、切り替え先のエディタタブとして表示されないことがあるため、
+	// PTY とエディタの準備を明示的に待ってから対象スコープへ割り当てる。
+	await instance.processReady;
+	await terminalEditorService.openEditor(instance);
+	terminalScopeService.assignInstanceScope(instance.instanceId, request.stateKey);
+	if (request.stateKey === switchService.activeStateKey) {
 		terminalService.setActiveInstance(instance);
 	}
-	await instance.processReady;
 	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。
 	const command = request.agent === 'claude'
 		? `claude ${request.dangerouslyBypassPermissions ? '--dangerously-skip-permissions ' : ''}--resume ${request.sessionId}`
