@@ -8,8 +8,6 @@
 
 import './media/paradisSessionResume.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { ButtonWithDropdown } from '../../../../base/browser/ui/button/button.js';
-import { toAction } from '../../../../base/common/actions.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -17,21 +15,17 @@ import { fromNow } from '../../../../base/common/date.js';
 import { MarkdownString } from '../../../../base/common/htmlContent.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename } from '../../../../base/common/resources.js';
-import Severity from '../../../../base/common/severity.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { EditorMarkdownCodeBlockRenderer } from '../../../../editor/browser/widget/markdownRenderer/browser/editorMarkdownCodeBlockRenderer.js';
 import { localize } from '../../../../nls.js';
-import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMarkdownRendererService } from '../../../../platform/markdown/browser/markdownRenderer.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
-import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
@@ -100,8 +94,6 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		@INotificationService private readonly notificationService: INotificationService,
 		@IMarkdownRendererService private readonly markdownRendererService: IMarkdownRendererService,
 		@IChatOutputRendererService private readonly chatOutputRendererService: IChatOutputRendererService,
-		@IContextMenuService private readonly contextMenuService: IContextMenuService,
-		@IDialogService private readonly dialogService: IDialogService,
 	) {
 		super(PARADIS_SESSION_RESUME_EDITOR_ID, group, telemetryService, themeService, storageService);
 		this.client = instantiationService.createInstance(ParadisSessionResumeClient);
@@ -589,22 +581,25 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		const primaryLabel = session.currentSpace
 			? localize('paradis.sessionResume.resumeTerminal', "ターミナルで再開")
 			: localize('paradis.sessionResume.switchAndResume', "{0}へ移動して再開", session.spaceName);
-		const dangerousAction = toAction({
-			id: 'paradis.sessionResume.resumeDangerously',
-			label: localize('paradis.sessionResume.resumeDangerously', "権限確認を省略して再開"),
-			run: () => this.confirmDangerousResume(session, !session.currentSpace),
-		});
-		const primary = this.renderDisposables.add(new ButtonWithDropdown(actions, {
-			contextMenuProvider: this.contextMenuService,
-			actions: [dangerousAction],
-			addPrimaryActionToDropdown: true,
-			title: primaryLabel,
-			...defaultButtonStyles,
-		}));
-		primary.element.classList.add('resume-split-button');
-		primary.label = primaryLabel;
-		primary.enabled = !this.resumingCatalogIds.has(session.catalogId);
-		this.renderDisposables.add(primary.onDidClick(() => this.resume(session, !session.currentSpace)));
+		const dangerousFlag = session.agent === 'claude'
+			? '--dangerously-skip-permissions'
+			: '--dangerously-bypass-approvals-and-sandbox';
+		const dangerous = dom.append(actions, $('button.danger')) as HTMLButtonElement;
+		dangerous.disabled = this.resumingCatalogIds.has(session.catalogId);
+		dangerous.textContent = session.currentSpace
+			? localize('paradis.sessionResume.resumeDangerously', "権限確認なしで再開")
+			: localize('paradis.sessionResume.switchAndResumeDangerously', "権限確認なしで移動・再開");
+		dangerous.title = localize(
+			'paradis.sessionResume.resumeDangerouslyTitle',
+			"{0}を付け、承認とサンドボックスを省略して再開します",
+			dangerousFlag,
+		);
+		this.renderDisposables.add(dom.addDisposableListener(dangerous, dom.EventType.CLICK, () => this.resume(session, !session.currentSpace, true)));
+
+		const primary = dom.append(actions, $('button.primary')) as HTMLButtonElement;
+		primary.disabled = this.resumingCatalogIds.has(session.catalogId);
+		primary.textContent = primaryLabel;
+		this.renderDisposables.add(dom.addDisposableListener(primary, dom.EventType.CLICK, () => this.resume(session, !session.currentSpace)));
 	}
 
 	private async renderCodeBlock(session: IParadisResumeSession, language: string | undefined, value: string, renderSequence: number, token: CancellationToken): Promise<HTMLElement> {
@@ -685,26 +680,6 @@ export class ParadisSessionResumeEditor extends EditorPane {
 				this.previewLoading = false;
 				this.render();
 			}
-		}
-	}
-
-	private async confirmDangerousResume(session: IParadisResumeSession, switchFirst: boolean): Promise<void> {
-		const flag = session.agent === 'claude'
-			? '--dangerously-skip-permissions'
-			: '--dangerously-bypass-approvals-and-sandbox';
-		const result = await this.dialogService.confirm({
-			type: Severity.Warning,
-			message: localize('paradis.sessionResume.dangerousConfirmMessage', "権限確認を省略してセッションを再開しますか？"),
-			detail: localize(
-				'paradis.sessionResume.dangerousConfirmDetail',
-				"{0}を付けて再開します。承認とサンドボックスによる保護が無効になります。この設定は今回の再開にだけ適用されます。",
-				flag,
-			),
-			primaryButton: localize('paradis.sessionResume.dangerousConfirmButton', "権限確認を省略して再開"),
-			cancelButton: localize('paradis.sessionResume.cancel', "キャンセル"),
-		});
-		if (result.confirmed) {
-			await this.resume(session, switchFirst, true);
 		}
 	}
 
