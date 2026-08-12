@@ -135,7 +135,7 @@
 			"startEntry": {
 				"helpLink": "https://github.com/jeanp413/open-remote-ssh#readme",
 				"startConnectLabel": "Connect to Host...",
-				"startCommand": "openremotessh.openEmptyWindowInCurrentWindow",
+				"startCommand": "openremotessh.openEmptyWindow",
 				"priority": 2
 			}
 		}
