@@ -16,6 +16,18 @@ import { IAuxiliaryEditorPart, IEditorGroup, IEditorPart } from '../../../../wor
 export const IParadisWorkspaceSwitchService = createDecorator<IParadisWorkspaceSwitchService>('paradisWorkspaceSwitchService');
 
 export const PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY = 'paradis.workspaceSwitch.repositories';
+
+/**
+ * 接続先をまたいで共有するスペース一覧（APPLICATION スコープ）。
+ *
+ * ワークスペース単位の一覧（{@link PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY}）とは別に持つ。
+ * SSH で繋いだ先のスペースを手元の一覧にも並べ、ウィンドウを2枚開かずに行き来するため。
+ * 接続先ごとに枠を分けて入れる（1つの配列にすると、片方で消したスペースをもう片方が書き戻す）。
+ */
+export const PARADIS_WORKSPACE_SHARED_REPOSITORIES_STORAGE_KEY = 'paradis.workspaceSwitch.sharedRepositories';
+
+/** 繋ぎ直した先で開くスペース。移動元が置き、移動先が起動時に一度だけ拾って消す。 */
+export const PARADIS_WORKSPACE_PENDING_SWITCH_STORAGE_KEY = 'paradis.workspaceSwitch.pendingCrossHostSwitch';
 export const PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY = 'paradis.workspaceSwitch.activeEntry';
 
 /**
