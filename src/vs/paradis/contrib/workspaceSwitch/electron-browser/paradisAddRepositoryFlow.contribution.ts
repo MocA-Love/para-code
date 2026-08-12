@@ -14,6 +14,7 @@
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
@@ -59,11 +60,13 @@ type ParadisAddRepositoryFlowItemKind = 'clone' | 'local' | 'changeDestination';
 
 interface IParadisAddRepositoryFlowItem extends IQuickPickItem {
 	readonly kind: ParadisAddRepositoryFlowItemKind;
+	/** 'local' のとき、どちらのマシンのフォルダを選ばせるか。未指定はウィンドウの既定。 */
+	readonly scheme?: string;
 }
 
 type ParadisAddRepositoryFlowResult =
 	| { readonly kind: 'clone'; readonly url: string; readonly name: string }
-	| { readonly kind: 'local' }
+	| { readonly kind: 'local'; readonly scheme?: string }
 	| { readonly kind: 'changeDestination'; readonly value: string };
 
 class ParadisAddRepositoryFlowAction extends Action2 {
@@ -103,7 +106,8 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		}
 
 		for (; ;) {
-			const result = await this.showPicker(quickInputService, configurationService, value);
+			const remoteLabel = remoteAgentService.getConnection()?.remoteAuthority.replace(/^ssh-remote\+/, '');
+			const result = await this.showPicker(quickInputService, configurationService, value, remoteLabel);
 			if (!result) {
 				return;
 			}
@@ -143,7 +147,7 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 		}
 	}
 
-	private showPicker(quickInputService: IQuickInputService, configurationService: IConfigurationService, initialValue: string): Promise<ParadisAddRepositoryFlowResult | undefined> {
+	private showPicker(quickInputService: IQuickInputService, configurationService: IConfigurationService, initialValue: string, remoteLabel: string | undefined): Promise<ParadisAddRepositoryFlowResult | undefined> {
 		const disposables = new DisposableStore();
 		return new Promise<ParadisAddRepositoryFlowResult | undefined>(resolve => {
 			const quickPick = disposables.add(quickInputService.createQuickPick<IParadisAddRepositoryFlowItem>({ useSeparators: true }));
@@ -169,12 +173,31 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 					// allow-any-unicode-next-line
 					items.push({ type: 'separator', label: localize('paradis.repositoryClone.otherSeparator', "その他") });
 				}
-				items.push({
-					kind: 'local',
-					// allow-any-unicode-next-line
-					label: `$(folder) ${localize('paradis.repositoryClone.localItem', "ローカルフォルダを追加...")}`,
-					alwaysShow: true
-				});
+				if (remoteLabel === undefined) {
+					items.push({
+						kind: 'local',
+						// allow-any-unicode-next-line
+						label: `$(folder) ${localize('paradis.repositoryClone.localItem', "ローカルフォルダを追加...")}`,
+						alwaysShow: true
+					});
+				} else {
+					// 接続中はダイアログが既定で接続先を開く。「ローカル」の一語では
+					// どちらのマシンを指すのか分からないので、行き先を名前で書き分ける
+					items.push({
+						kind: 'local',
+						scheme: Schemas.vscodeRemote,
+						// allow-any-unicode-next-line
+						label: `$(remote) ${localize('paradis.repositoryClone.remoteFolderItem', "{0} のフォルダを追加...", remoteLabel)}`,
+						alwaysShow: true
+					});
+					items.push({
+						kind: 'local',
+						scheme: Schemas.file,
+						// allow-any-unicode-next-line
+						label: `$(device-desktop) ${localize('paradis.repositoryClone.thisMachineFolderItem', "このPCのフォルダを追加...")}`,
+						alwaysShow: true
+					});
+				}
 				items.push({
 					kind: 'changeDestination',
 					// allow-any-unicode-next-line
@@ -205,7 +228,7 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 					}
 					resolve({ kind: 'clone', url, name: parsed.name });
 				} else if (item.kind === 'local') {
-					resolve({ kind: 'local' });
+					resolve({ kind: 'local', scheme: item.scheme });
 				} else {
 					resolve({ kind: 'changeDestination', value: quickPick.value });
 				}
