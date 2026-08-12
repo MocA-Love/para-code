@@ -13,6 +13,7 @@ import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import type { IHostService } from '../../../../../workbench/services/host/browser/host.js';
+import type { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
@@ -545,6 +546,7 @@ async function createHarness(
 		// 「どこにも繋がっていない」ウィンドウとして振る舞わせる
 		{ remoteAuthority: undefined } as unknown as IWorkbenchEnvironmentService,
 		{ openWindow: async () => { } } as unknown as IHostService,
+		{ userHome: () => URI.file('/Users/test') } as unknown as IPathService,
 	));
 
 	return {

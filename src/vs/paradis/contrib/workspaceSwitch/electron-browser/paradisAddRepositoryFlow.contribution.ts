@@ -112,7 +112,9 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 				return;
 			}
 			if (result.kind === 'local') {
-				await paradisPickAndAddLocalRepositories(switchService, fileDialogService, contextService);
+				// 選んだ項目のマシン（接続先 / このPC）でフォルダを選ばせる。渡さないと
+				// 接続中は常に接続先が開き、「このPCの…」を選んでも相手側が出てしまう
+				await paradisPickAndAddLocalRepositories(switchService, fileDialogService, contextService, result.scheme);
 				return;
 			}
 			if (result.kind === 'changeDestination') {
