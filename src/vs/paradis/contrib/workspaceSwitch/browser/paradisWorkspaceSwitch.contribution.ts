@@ -266,7 +266,7 @@ class ParadisInitializeWorkspaceAction extends Action2 {
  * フォルダ選択ダイアログで既存のローカルフォルダを一覧へ登録する (従来の Add Repository の本体)。
  * electron-browser 側の統合フロー (URLクローン) の「Add Local Folder」項目からも呼ばれる。
  */
-export async function paradisPickAndAddLocalRepositories(service: IParadisWorkspaceSwitchService, fileDialogService: IFileDialogService, contextService: IWorkspaceContextService): Promise<void> {
+export async function paradisPickAndAddLocalRepositories(service: IParadisWorkspaceSwitchService, fileDialogService: IFileDialogService, contextService: IWorkspaceContextService, scheme?: string): Promise<void> {
 	const uris = await fileDialogService.showOpenDialog({
 		// allow-any-unicode-next-line
 		title: localize('paradis.workspaceSwitch.addRepositoryDialog', "リポジトリを追加"),
@@ -274,7 +274,10 @@ export async function paradisPickAndAddLocalRepositories(service: IParadisWorksp
 		openLabel: localize('paradis.workspaceSwitch.addRepositoryLabel', "追加"),
 		canSelectFiles: false,
 		canSelectFolders: true,
-		canSelectMany: true
+		canSelectMany: true,
+		// 接続中はダイアログが既定で接続先を見る。どちらを開くかを呼び出し側が決められるようにして、
+		// 「このPCのフォルダ」と「接続先のフォルダ」を別々の項目として出せるようにする
+		...(scheme !== undefined ? { availableFileSystems: [scheme] } : {})
 	});
 	if (!uris || uris.length === 0) {
 		return;
