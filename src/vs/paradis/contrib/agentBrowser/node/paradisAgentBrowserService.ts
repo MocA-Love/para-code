@@ -41,6 +41,7 @@ import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, fireParadisAg
 import { ParadisAgentHookOwnership } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler } from './paradisAgentHooksSetup.js';
+import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
 import { ParadisCdpGateway } from './paradisCdpGateway.js';
@@ -513,6 +514,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _rendererManifestRevision = -1;
 	private _httpServer: http.Server | undefined;
 	private _port: number | undefined;
+	/** SSH 接続先から手元のゲートウェイへ戻る経路（接続先ごとに1本）。コンストラクタで作る。 */
+	private readonly _remoteTunnels: ParadisRemoteAgentTunnels;
 	private _portFileReconciler: ParadisMcpPortFileReconciler | undefined;
 	private readonly _serverStartPromise: Promise<void>;
 	private _serverDisposed = false;
@@ -566,6 +569,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			logService,
 		));
 		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService));
+		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService));
 		this._devtoolsGenerationCoordinator = new ParadisDevtoolsGenerationCoordinator(token => this._devtoolsProxy.forget(token));
 		// Renderer IPC切断はreloadでも発生するため、退役根拠にはしない。実windowの生存権威は
 		// Electron Mainのmanifestであり、reload gap中はpending entryが残り、destroy時だけ消える。
@@ -1547,6 +1551,33 @@ export class ParadisAgentBrowserService extends Disposable {
 			throw new Error('Para Browser gateway is not available.');
 		}
 		return { port };
+	}
+
+	/**
+	 * SSH 接続先から、このゲートウェイへ戻ってこられるようにする。
+	 *
+	 * エージェントの hook も para-browser MCP も 127.0.0.1 の同じ番号を叩く作りなので、
+	 * 接続先でも同じ番号が手元へ向くようにするだけで両方が繋がる。失敗しても投げない:
+	 * 張れない状態は「接続先の hook が届かない」だけで、手元の動きには何も影響しない。
+	 */
+	async ensureRemoteAgentTunnel(remoteAuthority: string): Promise<boolean> {
+		if (typeof remoteAuthority !== 'string' || remoteAuthority.length === 0) {
+			return false;
+		}
+		try {
+			const { port } = await this.getGatewayEndpoint();
+			return this._remoteTunnels.ensure(remoteAuthority, port);
+		} catch (error) {
+			this.logService.trace('[ParadisAgentBrowser] could not set up the return tunnel', error);
+			return false;
+		}
+	}
+
+	/** 接続が切れたら畳む。張っていなければ何もしない。 */
+	async closeRemoteAgentTunnel(remoteAuthority: string): Promise<void> {
+		if (typeof remoteAuthority === 'string' && remoteAuthority.length > 0) {
+			this._remoteTunnels.close(remoteAuthority);
+		}
 	}
 
 	private async _startServer(): Promise<void> {

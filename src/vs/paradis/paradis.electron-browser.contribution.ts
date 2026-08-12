@@ -41,3 +41,4 @@ import './contrib/agentLiveWindow/electron-browser/paradisAgentLiveWindow.contri
 import './contrib/healthBeacon/electron-browser/paradisHealthBeacon.contribution.js';
 import './contrib/heapSnapshot/electron-browser/paradisHeapSnapshot.contribution.js';
 import './contrib/workspaceSwitch/electron-browser/paradisRemoteDefaultWorkspace.contribution.js';
+import './contrib/agentBrowser/electron-browser/paradisRemoteAgentTunnel.contribution.js';
