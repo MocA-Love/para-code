@@ -12,7 +12,8 @@ import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../..
 import { Schemas } from '../../../../base/common/network.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
-import { basename, dirname, extUriBiasedIgnorePathCase, isEqual } from '../../../../base/common/resources.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { basename, dirname, extUriBiasedIgnorePathCase, isEqual, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -224,6 +225,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		// 接続先をまたいでスペースを行き来するために使う（どこに繋がっているか／繋ぎ直し）
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IHostService private readonly hostService: IHostService,
+		@IPathService private readonly pathService: IPathService,
 	) {
 		super();
 
@@ -1325,13 +1327,21 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	private async switchAcrossHosts(stateKey: string, uri: URI): Promise<void> {
 		const host = uri.scheme === Schemas.vscodeRemote ? uri.authority : '';
 		const recorded = this.loadSharedRepositories()[host]?.workspaceFile;
-		if (recorded === undefined) {
-			// その接続先のウィンドウを一度も開いていない。開き先が分からないので、
-			// 一覧から消えたように見せるより、何もせず今のスペースに留まる
-			this.logService.warn(`[ParadisWorkspaceSwitch] no recorded workspace for ${host || 'this machine'}; skipping the cross-host switch`);
+		let workspaceFile: URI;
+		if (recorded !== undefined) {
+			workspaceFile = URI.parse(recorded);
+		} else if (host === '') {
+			// 手元へ戻る場合は記録が無くても行き先が分かる。ここは接続に関係なく
+			// 決まる場所で、electron-main 側の既定ワークスペースと同じ（homedir()/.para-code）。
+			// 記録は「手元のウィンドウを開いたことがある」ときにしか作られないので、
+			// 接続先から始めた場合はこの経路に落ちる。
+			workspaceFile = joinPath(this.pathService.userHome({ preferLocal: true }), '.para-code', 'para.code-workspace');
+		} else {
+			// その接続先のウィンドウを一度も開いていない。ホームの位置が分からないので
+			// 組み立てようがなく、一覧から消えたように見せるより今のスペースに留まる
+			this.logService.warn(`[ParadisWorkspaceSwitch] no recorded workspace for ${host}; skipping the cross-host switch`);
 			return;
 		}
-		const workspaceFile = URI.parse(recorded);
 		// ここで存在確認はできない。今のウィンドウには行き先のファイルシステムが無く
 		// （接続を持つウィンドウにしか vscode-remote は生えない）、確かめようとすると
 		// ENOPRO で落ちる。開く先が消えていた場合は、繋ぎ直した先が空のワークスペースとして
