@@ -1332,10 +1332,10 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			return;
 		}
 		const workspaceFile = URI.parse(recorded);
-		if (!(await this.fileService.exists(workspaceFile))) {
-			this.logService.warn(`[ParadisWorkspaceSwitch] ${workspaceFile.toString()} is gone; skipping the cross-host switch`);
-			return;
-		}
+		// ここで存在確認はできない。今のウィンドウには行き先のファイルシステムが無く
+		// （接続を持つウィンドウにしか vscode-remote は生えない）、確かめようとすると
+		// ENOPRO で落ちる。開く先が消えていた場合は、繋ぎ直した先が空のワークスペースとして
+		// 受け止める（そこでは自分のファイルシステムが見えているので、通常の経路で扱える）。
 
 		// 開いた先で選び直さずに済むよう、行き先を置いてから繋ぎ直す
 		this.storageService.store(
