@@ -27,7 +27,9 @@ import { TerminalContextKeys } from '../../../terminal/common/terminalContextKey
 import { KeyCode, KeyMod } from '../../../../../base/common/keyCodes.js';
 import { KeybindingWeight } from '../../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { terminalStrings } from '../../../terminal/common/terminalStrings.js';
-import { isString } from '../../../../../base/common/types.js';
+import { hasKey, isString } from '../../../../../base/common/types.js';
+// PARA-PATCH: needed to write a pasted image onto the connected host
+import { IFileService } from '../../../../../platform/files/common/files.js';
 // PARA-PATCH: 画像のみクリップボードのペーストをTUIへ中継するヘルパー（src/vs/paradis/contrib/terminalImagePaste/）
 import { paradisTryTerminalImagePaste } from '../../../../../paradis/contrib/terminalImagePaste/browser/paradisTerminalImagePaste.js';
 
@@ -56,6 +58,8 @@ export class TerminalClipboardContribution extends Disposable implements ITermin
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@INotificationService private readonly _notificationService: INotificationService,
 		@ITerminalConfigurationService private readonly _terminalConfigurationService: ITerminalConfigurationService,
+		// PARA-PATCH: writes a clipboard image onto the connected host (see paradisTerminalImagePaste)
+		@IFileService private readonly _fileService: IFileService,
 	) {
 		super();
 	}
@@ -94,11 +98,27 @@ export class TerminalClipboardContribution extends Disposable implements ITermin
 			}
 		}
 
-		// PARA-PATCH: テキストもファイルパスも無い（スクリーンショット等の画像のみ）場合、Ctrl+V(0x16)をPTYへ送り
-		// TUI（Claude Code/Codex等）の画像添付を起動する。テキスト時は既存経路に一切触れない
-		if (!text && this._xterm && await paradisTryTerminalImagePaste(this._clipboardService, this._xterm)) {
-			this._ctx.instance.focus();
-			return;
+		// PARA-PATCH: テキストもファイルパスも無い（スクリーンショット等の画像のみ）場合の中継。
+		// ローカルは Ctrl+V(0x16) を PTY へ送って TUI（Claude Code/Codex等）の画像添付を起動する。
+		// SSH 接続中は接続先へ画像を書き出し、そのパスを通常のテキストとして貼る（TUI はこちらの
+		// クリップボードを読めないため）。テキスト時は既存経路に一切触れない
+		if (!text && this._xterm) {
+			// detached なインスタンス（エディタ外のプレビュー等）は接続先も cwd も持たないので、
+			// その場合はローカル扱い（0x16 の経路）になる
+			const instance = this._ctx.instance;
+			const attached = hasKey(instance, { remoteAuthority: true }) ? instance : undefined;
+			const pasted = await paradisTryTerminalImagePaste(this._clipboardService, this._xterm, {
+				fileService: this._fileService,
+				remoteAuthority: attached?.remoteAuthority,
+				cwd: attached?.cwd
+			});
+			if (pasted === true) {
+				this._ctx.instance.focus();
+				return;
+			}
+			if (isString(pasted)) {
+				text = pasted;
+			}
 		}
 
 		await this._paste(text);
