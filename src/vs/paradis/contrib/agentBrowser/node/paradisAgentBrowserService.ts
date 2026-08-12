@@ -1636,7 +1636,14 @@ export class ParadisAgentBrowserService extends Disposable {
 			server.listen(port, '127.0.0.1');
 		});
 
+		// 既定ポートに粘る。SSH 接続先には「この番号へ返せ」と書いて渡してあり、番号が変わると
+		// 書いた先が古くなって通知が届かなくなる。塞いでいるのはたいてい終了しきる前の前回の
+		// 自分なので、少し待てば空く（実測: ウィンドウの再読み込みで shared process が入れ替わる際に起きる）。
 		let listening = await listen(PARADIS_MCP_DEFAULT_PORT);
+		for (let attempt = 0; !listening && attempt < 5 && !this._store.isDisposed; attempt++) {
+			await new Promise(resolve => setTimeout(resolve, 400));
+			listening = await listen(PARADIS_MCP_DEFAULT_PORT);
+		}
 		if (!listening && !this._store.isDisposed) {
 			this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] Default port ${PARADIS_MCP_DEFAULT_PORT} is in use. Falling back to a dynamic port; clients resolve the live port over IPC or from the port file.`));
 			listening = await listen(0);

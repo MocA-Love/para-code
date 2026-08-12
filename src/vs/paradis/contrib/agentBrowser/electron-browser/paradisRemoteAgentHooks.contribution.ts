@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { disposableWindowInterval } from '../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../base/browser/window.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
@@ -38,6 +40,9 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 	static readonly ID = 'paradis.remoteAgentHooks';
 
+	/** 接続先へ書き込んだゲートウェイの番号。変わったら書き直す目印。 */
+	private installedPort: number | undefined;
+
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
@@ -67,10 +72,33 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 				await new Promise(resolve => setTimeout(resolve, delaysMs[attempt]));
 			}
 			if (await this.install()) {
+				this.watchForPortChanges();
 				return;
 			}
 		}
 		this.logService.warn('[paradis] gave up installing the agent hooks on the host');
+	}
+
+	/**
+	 * 手元のゲートウェイの番号が変わっていないか、たまに確かめて書き直す。
+	 *
+	 * 接続先へは「この番号へ返せ」と書き込んで渡している。ウィンドウの再読み込みなどで
+	 * shared process が入れ替わると番号が変わることがあり、そのままだと接続先が古い番号を
+	 * 叩き続けて、実行状態も para-browser も静かに切れる。番号が変わったときだけ書き直す。
+	 */
+	private watchForPortChanges(): void {
+		this._register(disposableWindowInterval(mainWindow, async () => {
+			try {
+				const endpoint = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+					.call<{ port: number }>('getGatewayEndpoint');
+				if (endpoint.port !== this.installedPort) {
+					this.logService.info(`[paradis] gateway port changed (${this.installedPort} -> ${endpoint.port}); updating the host`);
+					await this.install();
+				}
+			} catch {
+				// 取れないときは次の周期で試す
+			}
+		}, 30_000));
 	}
 
 	/** @returns 置けたら true。まだ整っていないだけなら false（呼び出し側が試し直す） */
@@ -98,7 +126,8 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			await this.mergeClaudeHooks(home, scriptFile.path);
 			await this.mergeCodexHooks(home, scriptFile.path);
 			await this.mergeClaudeMcp(home, endpoint.port);
-			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority}`);
+			this.installedPort = endpoint.port;
+			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${endpoint.port})`);
 			return true;
 		} catch (error) {
 			// 置けなくても接続そのものは使える。実行状態が出ないだけ
