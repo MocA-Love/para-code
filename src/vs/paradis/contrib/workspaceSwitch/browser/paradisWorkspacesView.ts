@@ -23,6 +23,7 @@ import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -235,6 +236,9 @@ function statusLabel(status: ParadisAgentStatus): string {
 interface IRepositoryTemplateData {
 	readonly row: HTMLElement;
 	readonly name: HTMLElement;
+	/** SSH で繋いだ先のスペースであることを示すアイコン。手元のスペースでは隠す。 */
+	readonly remote: HTMLElement;
+	readonly remoteHover: IManagedHover;
 	readonly count: HTMLElement;
 	/**
 	 * 折りたたみ中に配下のエージェント状態を件数で示すバッジ。折りたたむと子行ごと
@@ -399,18 +403,30 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 		const templateDisposables = new DisposableStore();
 		const row = DOM.append(container, DOM.$('.paradis-workspace-row'));
 		const name = DOM.append(row, DOM.$('.paradis-workspace-name'));
+		// 接続先のスペースだけに付く印。名前のすぐ後ろに置いて、どのマシンのものか一目で分かるようにする
+		const remote = DOM.append(row, DOM.$('.paradis-workspace-remote.codicon.codicon-remote'));
+		const remoteHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), remote, ''));
 		const count = DOM.append(row, DOM.$('.paradis-workspace-count'));
 		const summary = DOM.append(row, DOM.$('.paradis-workspace-summary'));
 		const summaryHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), summary, ''));
 		const actionsContainer = DOM.append(row, DOM.$('.paradis-workspace-actions'));
 		const actionBar = new ActionBar(actionsContainer);
-		return { row, name, count, summary, summaryHover, actionBar, templateDisposables };
+		return { row, name, remote, remoteHover, count, summary, summaryHover, actionBar, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorkspaceRepository, FuzzyScore>, _index: number, templateData: IRepositoryTemplateData): void {
 		const repository = node.element;
 		templateData.name.textContent = repository.name;
 		templateData.count.textContent = String(node.children.length);
+
+		// 接続先のスペースかどうか。手元のものには何も足さない（大半はこちらなので、
+		// 印を付けるのは「いつもと違う方」だけにする）
+		const remoteHost = repository.uri.scheme === Schemas.vscodeRemote ? repository.uri.authority.replace(/^ssh-remote\+/, '') : undefined;
+		templateData.remote.classList.toggle('hidden', remoteHost === undefined);
+		templateData.remoteHover.update(remoteHost === undefined
+			? ''
+			// allow-any-unicode-next-line
+			: localize('paradis.workspaces.onRemoteHost', "{0} 上のスペース", remoteHost));
 
 		// 展開中は各行がドット列を持っているので、要約は折りたたみ中だけ出す
 		const breakdown = node.collapsed ? this.getRepositoryBreakdown(repository) : [];

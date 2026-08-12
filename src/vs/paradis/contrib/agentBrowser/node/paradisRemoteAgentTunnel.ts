@@ -25,6 +25,7 @@
 //  - 同じ authority へ二重に張らない。切断時と shared process 終了時に必ず畳む
 
 import { ChildProcess, spawn } from 'child_process';
+import { existsSync } from 'fs';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
@@ -74,7 +75,13 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 
 	constructor(
 		private readonly logService: ILogService,
-		private readonly spawnSsh: (args: string[]) => ChildProcess = args => spawn('ssh', args, { stdio: ['ignore', 'ignore', 'pipe'] }),
+		// shared process の PATH は端末のそれとは限らないので、素の `ssh` が引けないときのために
+		// 標準の場所も見る（macOS / Linux とも /usr/bin/ssh）。
+		private readonly spawnSsh: (args: string[]) => ChildProcess = args => spawn(
+			existsSync('/usr/bin/ssh') ? '/usr/bin/ssh' : 'ssh',
+			args,
+			{ stdio: ['ignore', 'ignore', 'pipe'] }
+		),
 	) {
 		super();
 		this._register(toDisposable(() => {
@@ -145,11 +152,18 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		}
 		entry.child = child;
 
-		// ssh の stderr は失敗理由（ポート衝突・鍵無し）が出る唯一の場所なので拾っておく
+		// spawn は起動できなくても例外を投げず、この event でだけ知らせてくる。購読しないと
+		// 「ssh が PATH に無い」が黙って捨てられ、張れていないのに何も分からなくなる。
+		child.on('error', error => {
+			this.logService.warn(`[paradis] the return tunnel to ${entry.host} could not start (is ssh on PATH?)`, error);
+		});
+
+		// ssh の stderr は失敗理由（ポート衝突・鍵無し）が出る唯一の場所なので拾っておく。
+		// 経路が張れないと実行状態が出ないだけで原因が見えないため、warn で残す。
 		child.stderr?.on('data', (chunk: Buffer) => {
 			const text = chunk.toString().trim();
 			if (text.length > 0) {
-				this.logService.trace(`[paradis] return tunnel (${entry.host}): ${text}`);
+				this.logService.warn(`[paradis] return tunnel (${entry.host}): ${text}`);
 			}
 		});
 
@@ -169,6 +183,32 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 					this.start(remoteAuthority, entry, port);
 				}
 			}, RETRY_DELAY_MS);
+		});
+	}
+
+	/**
+	 * 接続先に置いたファイルへ実行権を与える。IFileService には権限を触る口が無いため、
+	 * ここだけ ssh を短く1回叩く。パスは argv へ直接渡す（シェルを経由しない）。
+	 */
+	async chmodExecutable(remoteAuthority: string, path: string): Promise<boolean> {
+		const host = paradisSshHostFromAuthority(remoteAuthority);
+		if (host === undefined || !path.startsWith('/')) {
+			return false;
+		}
+		return new Promise<boolean>(resolve => {
+			let child: ChildProcess;
+			try {
+				child = this.spawnSsh(['-o', 'BatchMode=yes', host, 'chmod', '+x', path]);
+			} catch (error) {
+				this.logService.warn(`[paradis] could not chmod ${path} on ${host}`, error);
+				resolve(false);
+				return;
+			}
+			child.on('error', error => {
+				this.logService.warn(`[paradis] could not chmod ${path} on ${host}`, error);
+				resolve(false);
+			});
+			child.on('exit', code => resolve(code === 0));
 		});
 	}
 

@@ -33,7 +33,16 @@ import { paradisClaudeConfigDir, paradisCodexHome } from './paradisAgentHome.js'
  *   パース失敗時は黙って捨てる (誤った完了通知より安全)
  * - curl の失敗が hook 全体を fail させないよう `|| true` で必ず正常終了する
  */
-export function paradisGetNotifyScriptContent(): string {
+export function paradisGetNotifyScriptContent(fixedPortFilePath?: string): string {
+	// SSH で繋いだ先に置く版は、ポートファイルの場所を焼き込む。env（PARA_CODE_MCP_PORT_FILE）は
+	// 手元のパスのまま接続先へ渡ってしまい、そこには存在しないので必ず素通りしてしまうため。
+	// 焼き込む値は我々が組み立てた絶対パスで、ユーザー入力は混ざらない。
+	const portFileRef = fixedPortFilePath !== undefined
+		? `"${fixedPortFilePath}"`
+		: `"$${PARADIS_MCP_PORT_FILE_ENV_VAR}"`;
+	const guard = fixedPortFilePath !== undefined
+		? `if [ -z "\${${PARADIS_PANE_TOKEN_ENV_VAR}:-}" ] || [ ! -f ${portFileRef} ]; then`
+		: `if [ -z "\${${PARADIS_PANE_TOKEN_ENV_VAR}:-}" ] || [ -z "\${${PARADIS_MCP_PORT_FILE_ENV_VAR}:-}" ] || [ ! -f ${portFileRef} ]; then`;
 	return [
 		'#!/bin/sh',
 		'# Para Code agent notification hook schema v3',
@@ -48,12 +57,12 @@ export function paradisGetNotifyScriptContent(): string {
 		'  fi',
 		'}',
 		'',
-		`if [ -z "\${${PARADIS_PANE_TOKEN_ENV_VAR}:-}" ] || [ -z "\${${PARADIS_MCP_PORT_FILE_ENV_VAR}:-}" ] || [ ! -f "$${PARADIS_MCP_PORT_FILE_ENV_VAR}" ]; then`,
+		guard,
 		'  drain_stdin "${1:-}"',
 		'  exit 0',
 		'fi',
 		'',
-		`PORT=$(sed -nE 's/.*"port"[[:space:]]*:[[:space:]]*([0-9]+).*/\\1/p' "$${PARADIS_MCP_PORT_FILE_ENV_VAR}" 2>/dev/null | head -n 1)`,
+		`PORT=$(sed -nE 's/.*"port"[[:space:]]*:[[:space:]]*([0-9]+).*/\\1/p' ${portFileRef} 2>/dev/null | head -n 1)`,
 		'if [ -z "$PORT" ]; then',
 		'  drain_stdin "${1:-}"',
 		'  exit 0',
