@@ -21,6 +21,7 @@ import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextke
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -460,7 +461,13 @@ class ParadisGetDiffStatsAction extends Action2 {
 			return {};
 		}
 		const sharedProcessService = accessor.get(ISharedProcessService);
-		const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
+		// 接続中のウィンドウでは、その接続先の作業ツリーを見ている。git は shared process では
+		// なく接続先で回さないと「そんなディレクトリは無い」で毎回失敗する（同名のチャネルを
+		// REH 側にも生やしてある。paradisWorktreeGitChannel の registerParadisWorktreeGitForServer）
+		const remoteConnection = accessor.get(IRemoteAgentService).getConnection();
+		const channel = remoteConnection
+			? remoteConnection.getChannel(PARADIS_WORKTREE_GIT_CHANNEL)
+			: sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
 		const result: Record<string, IParadisDiffStat> = {};
 		await Promise.all(paths.map(async path => {
 			try {
@@ -495,7 +502,11 @@ class ParadisGetPrStatusesAction extends Action2 {
 			return {};
 		}
 		const sharedProcessService = accessor.get(ISharedProcessService);
-		const channel = sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
+		// git と同じ理由で、接続中は接続先の gh を使う（手元で回すとパスが無くて必ず失敗する）
+		const remoteConnection = accessor.get(IRemoteAgentService).getConnection();
+		const channel = remoteConnection
+			? remoteConnection.getChannel(PARADIS_WORKTREE_GIT_CHANNEL)
+			: sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
 		const result: Record<string, IParadisPrStatus> = {};
 		await Promise.all(paths.map(async path => {
 			try {
