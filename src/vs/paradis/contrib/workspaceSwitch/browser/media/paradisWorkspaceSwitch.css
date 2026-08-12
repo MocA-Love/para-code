@@ -334,6 +334,25 @@
 /* ブランチに紐づく GitHub PR のチップ (Superset の WorkspaceStatusBadge 相当)。
  * 状態色は GitHub 本家に合わせた固定値 (open=緑 / draft=灰 / merged=紫 / closed=赤)。
  * 2段組 (.paradis-worktree-stack) の下段に入るため、このチップ自身は margin を持たない。 */
+/* allow-any-unicode-next-line */
+/* SSH で繋いだ先のスペースに付く印。名前の直後に小さく置くだけで、幅も行の高さも動かさない
+ * （PRチップと場所を奪い合わせない）。手元のスペースには何も足さない。 */
+.paradis-workspaces-list .paradis-workspace-remote {
+	flex-shrink: 0;
+	margin-left: 2px;
+	opacity: 0.85;
+	color: var(--vscode-textLink-foreground, #09afd9);
+}
+
+.monaco-workbench .paradis-workspaces-list .paradis-workspace-remote.codicon {
+	font-size: 12px;
+	color: var(--vscode-textLink-foreground, #09afd9);
+}
+
+.paradis-workspaces-list .paradis-workspace-remote.hidden {
+	display: none;
+}
+
 .paradis-workspaces-list .paradis-worktree-pr {
 	display: flex;
 	align-items: center;

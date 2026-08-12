@@ -65,6 +65,29 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.ok(paradisManagedAgentHookCommand().includes(`notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION}.sh`));
 	});
 
+	test('bakes the port file location in for the SSH host, where the env var points at this machine', () => {
+		const remote = paradisGetNotifyScriptContent('/home/yuasa/.para-code/paradis-browser-mcp.json');
+		const local = paradisGetNotifyScriptContent();
+
+		assert.deepStrictEqual(
+			{
+				// 接続先版はその場所を直接見る。env を経由しない（手元のパスが渡ってくるため）
+				remoteReadsBakedPath: remote.includes('"/home/yuasa/.para-code/paradis-browser-mcp.json"'),
+				remoteIgnoresEnvVar: !remote.includes('PARA_CODE_MCP_PORT_FILE'),
+				// ペイントークンの判定は接続先でも要る（Para Code の外では素通りさせる）
+				remoteStillChecksPaneToken: remote.includes('PARA_CODE_TERMINAL_PANE_ID'),
+				// 手元版は今までどおり env を見る
+				localReadsEnvVar: local.includes('"$PARA_CODE_MCP_PORT_FILE"')
+			},
+			{
+				remoteReadsBakedPath: true,
+				remoteIgnoresEnvVar: true,
+				remoteStillChecksPaneToken: true,
+				localReadsEnvVar: true
+			}
+		);
+	});
+
 	test('migrates older-schema managed hooks to the current schema without removing user hooks', () => {
 		const schema1Command = '[ -x "$HOME/.para-code/hooks/notify-v1.sh" ] && "$HOME/.para-code/hooks/notify-v1.sh" || true';
 		const userHook = { type: 'command', command: '/tmp/user-hook.sh' };

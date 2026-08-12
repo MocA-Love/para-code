@@ -104,6 +104,14 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				const args = requireArgs(arg, 1);
 				return this.service.closeRemoteAgentTunnel(String(args[0])) as Promise<T>;
 			}
+			case 'getNotifyScriptContent': {
+				const args = requireArgs(arg, 1);
+				return this.service.getNotifyScriptContent(String(args[0])) as Promise<T>;
+			}
+			case 'markRemoteHookExecutable': {
+				const args = requireArgs(arg, 2);
+				return this.service.markRemoteHookExecutable(String(args[0]), String(args[1])) as Promise<T>;
+			}
 			case 'setupMcp': {
 				const args = requireArgs(arg, 1);
 				return this.service.setupMcp(requireMcpSetupRequest(args[0])) as Promise<T>;

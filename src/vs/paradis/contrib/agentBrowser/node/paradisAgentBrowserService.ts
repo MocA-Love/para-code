@@ -40,7 +40,7 @@ import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/
 import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
-import { ParadisAgentHooksReconciler } from './paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent } from './paradisAgentHooksSetup.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
@@ -1578,6 +1578,22 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (typeof remoteAuthority === 'string' && remoteAuthority.length > 0) {
 			this._remoteTunnels.close(remoteAuthority);
 		}
+	}
+
+	/**
+	 * 接続先へ置く notify スクリプトの本文。手元に置くものと同じで、生成はここに一本化してある
+	 * （renderer 側で作り直すと、手元と接続先で中身がずれる）。
+	 */
+	async getNotifyScriptContent(fixedPortFilePath?: string): Promise<string> {
+		return paradisGetNotifyScriptContent(typeof fixedPortFilePath === 'string' && fixedPortFilePath.startsWith('/') ? fixedPortFilePath : undefined);
+	}
+
+	/**
+	 * 接続先に置いたスクリプトへ実行権を与える。IFileService には権限を触る口が無いので、
+	 * 既に張ってある戻り経路と同じ ssh で chmod する。
+	 */
+	async markRemoteHookExecutable(remoteAuthority: string, path: string): Promise<boolean> {
+		return this._remoteTunnels.chmodExecutable(remoteAuthority, path);
 	}
 
 	private async _startServer(): Promise<void> {
