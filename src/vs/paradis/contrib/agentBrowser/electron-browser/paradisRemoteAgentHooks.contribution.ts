@@ -48,11 +48,33 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		super();
 
 		if (this.environmentService.remoteAuthority !== undefined) {
-			void this.install();
+			void this.installWithRetry();
 		}
 	}
 
-	private async install(): Promise<void> {
+	/**
+	 * 接続先のファイルシステムは、ウィンドウが起きた直後にはまだ使えないことがある
+	 * （実測では最初の書き込みが `Canceled` で落ちる）。落ちたまま諦めると hook が一切
+	 * 置かれず、実行状態もチャットミラーも動かないので、間隔を空けて数回試す。
+	 */
+	private async installWithRetry(): Promise<void> {
+		const delaysMs = [0, 2000, 5000, 15000];
+		for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+			if (this._store.isDisposed) {
+				return;
+			}
+			if (delaysMs[attempt] > 0) {
+				await new Promise(resolve => setTimeout(resolve, delaysMs[attempt]));
+			}
+			if (await this.install()) {
+				return;
+			}
+		}
+		this.logService.warn('[paradis] gave up installing the agent hooks on the host');
+	}
+
+	/** @returns 置けたら true。まだ整っていないだけなら false（呼び出し側が試し直す） */
+	private async install(): Promise<boolean> {
 		try {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
 			// 接続中の userHome は接続先のホーム。ここから下は全て接続先のパスになる
@@ -75,10 +97,13 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 			await this.mergeClaudeHooks(home, scriptFile.path);
 			await this.mergeCodexHooks(home, scriptFile.path);
-			this.logService.trace(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority}`);
+			await this.mergeClaudeMcp(home, endpoint.port);
+			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority}`);
+			return true;
 		} catch (error) {
 			// 置けなくても接続そのものは使える。実行状態が出ないだけ
-			this.logService.warn('[paradis] could not install the agent hooks on the host', error);
+			this.logService.warn('[paradis] could not install the agent hooks on the host (will retry)', error);
+			return false;
 		}
 	}
 
@@ -99,6 +124,30 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 				hooks[event.eventName] = list;
 			}
 			return { ...settings, hooks };
+		});
+	}
+
+	/**
+	 * 接続先の Claude Code へ para-browser MCP を登録する。
+	 *
+	 * MCP サーバーの実体は手元の shared process にあり、素の HTTP で話せる。接続先からは
+	 * 戻り経路（paradisRemoteAgentTunnel）で同じ番号に届くので、そこを URL に書けばよい。
+	 * シムを接続先へ置く必要はない（あれは stdio を HTTP へ橋渡しするだけのもの）。
+	 *
+	 * トークンはペインごとに違うため、値を焼き込まず `${PARA_CODE_TERMINAL_PANE_ID}` の
+	 * まま書く。エージェントはターミナルの env を継いで起動するので、そこで解決される。
+	 */
+	private async mergeClaudeMcp(home: URI, port: number): Promise<void> {
+		const file = joinPath(home, '.claude.json');
+		await this.mergeJson(file, current => {
+			const config = current as { mcpServers?: Record<string, unknown> };
+			const servers = config.mcpServers ?? {};
+			servers['para-browser'] = {
+				type: 'http',
+				url: `http://127.0.0.1:${port}/`,
+				headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }
+			};
+			return { ...config, mcpServers: servers };
 		});
 	}
 

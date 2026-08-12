@@ -74,10 +74,9 @@ class ParadisRemoteAgentTunnel extends Disposable implements IWorkbenchContribut
 		try {
 			const opened = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 				.call<boolean>('ensureRemoteAgentTunnel', [remoteAuthority]);
-			if (!opened) {
-				// SSH 以外の接続先や、ゲートウェイ未起動。実行状態が出ないだけで害はない
-				this.logService.trace(`[paradis] no return tunnel for ${remoteAuthority}`);
-			}
+			// 張れたかどうかは info で残す。ここが黙っていると、実行状態が出ない理由を
+			// 「経路が無い」と「経路はあるが何も来ない」に切り分けられない
+			this.logService.info(`[paradis] return tunnel for ${remoteAuthority}: ${opened ? 'opened' : 'not available'}`);
 		} catch (error) {
 			this.logService.warn('[paradis] could not request the agent return tunnel', error);
 		}
