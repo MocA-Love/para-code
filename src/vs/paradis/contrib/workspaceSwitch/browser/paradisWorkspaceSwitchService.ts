@@ -254,6 +254,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 		this.auxiliaryWindowScopeService.setMainScope(this.activeStateKey, this.isManagedWorkspaceWindow, false);
 
+		// 自分の枠を共有領域へ出しておく。保存はスペースを足し引きしたときにしか走らないので、
+		// 開いただけで何も触らなかったウィンドウは相手側から「存在しない」ままになり、
+		// 行き来しようとしても一覧に出てこない。
+		if (this.isManagedWorkspaceWindow) {
+			this.saveRepositories();
+		}
+
 		// 別の接続先から「このスペースを開いて」と言われて繋ぎ直した直後なら、それへ移る
 		this.consumePendingCrossHostSwitch();
 	}
