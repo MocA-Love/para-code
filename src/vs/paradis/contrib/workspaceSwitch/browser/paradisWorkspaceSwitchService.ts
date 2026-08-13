@@ -11,9 +11,7 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
-import { IHostService } from '../../../../workbench/services/host/browser/host.js';
-import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
-import { basename, dirname, extUriBiasedIgnorePathCase, isEqual, joinPath } from '../../../../base/common/resources.js';
+import { basename, dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -25,7 +23,7 @@ import { IEditorGroupsService, IEditorWorkingSet } from '../../../../workbench/s
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IWorkspaceEditingService } from '../../../../workbench/services/workspaces/common/workspaceEditing.js';
 import { ITerminalEditorService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_PENDING_SWITCH_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, PARADIS_WORKSPACE_SHARED_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, isParadisManagedWorkspaceWindow, markParadisManagedWorkspaceWindow, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisEditorScopeService } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
@@ -41,12 +39,6 @@ interface ISerializedRepository {
 	readonly name: string;
 	readonly uri: string;
 	readonly color?: string;
-}
-
-/** 共有領域に置く、接続先1つ分のスペース。workspaceFile はそこへ移るときの開き先。 */
-interface ISerializedHostSpaces {
-	readonly workspaceFile?: string;
-	readonly repositories: ISerializedRepository[];
 }
 
 interface ISerializedWorkingSetEntry {
@@ -222,10 +214,8 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		@IParadisEditorScopeService private readonly editorScopeService: IParadisEditorScopeService,
 		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@ILogService private readonly logService: ILogService,
-		// 接続先をまたいでスペースを行き来するために使う（どこに繋がっているか／繋ぎ直し）
+		// スペース一覧を「今つながっている先のもの」だけに絞るために使う
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
-		@IHostService private readonly hostService: IHostService,
-		@IPathService private readonly pathService: IPathService,
 	) {
 		super();
 
@@ -260,9 +250,6 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		if (this.isManagedWorkspaceWindow) {
 			this.saveRepositories();
 		}
-
-		// 別の接続先から「このスペースを開いて」と言われて繋ぎ直した直後なら、それへ移る
-		this.consumePendingCrossHostSwitch();
 	}
 
 	get repositories(): readonly IParadisWorkspaceRepository[] {
@@ -658,13 +645,6 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	private switchToTarget(stateKey: string, uri: URI): Promise<void> {
-		// 別の接続先のスペースなら、同じウィンドウを繋ぎ直してそちらで開く。
-		// 1ウィンドウは1つの接続先しか見られない（リモートのファイルは接続を持つウィンドウにしか
-		// 現れない）ので、folders の入れ替えでは行けない。
-		if (!this.belongsToThisHost(uri)) {
-			return this.switchAcrossHosts(stateKey, uri);
-		}
-
 		this.ensureMultiRootWorkspace();
 
 		// 計測は sequencer の待ちを含めない位置から始める。キュー待ちは「切り替えが遅い」ではなく
@@ -1257,66 +1237,28 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		}
 	}
 
-	/** 接続先ごとのスペース一覧（共有領域）。壊れていれば空として扱う。 */
-	private loadSharedRepositories(): Record<string, ISerializedHostSpaces> {
-		const raw = this.storageService.get(PARADIS_WORKSPACE_SHARED_REPOSITORIES_STORAGE_KEY, StorageScope.APPLICATION);
-		if (!raw) {
-			return {};
-		}
-		try {
-			const parsed: unknown = JSON.parse(raw);
-			return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-				? parsed as Record<string, ISerializedHostSpaces>
-				: {};
-		} catch {
-			return {};
-		}
-	}
-
+	/**
+	 * このウィンドウのスペース一覧。
+	 *
+	 * 1ウィンドウは1つの接続先しか見られない（リモートのファイルは、その接続を持つウィンドウに
+	 * しか現れない）。手元のスペースと接続先のスペースを同じ一覧に並べると、開けないものが
+	 * 混ざるうえ、ウィンドウを開き直すたびに見え方が変わる。**繋がっている先のものだけ**を出す。
+	 */
 	private loadRepositories(): IParadisWorkspaceRepository[] {
-		// このワークスペースの一覧。従来どおりで、ここが常に正。
-		const own = this.parseRepositories(this.storageService.get(PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, StorageScope.WORKSPACE));
-
-		// 別の接続先で登録されたスペースも一覧に載せる。SSH で繋いだ先のスペースが
-		// 手元の一覧に並ぶので、ウィンドウを2枚開かずに行き来できる。
-		// APPLICATION スコープは接続中も手元の storage に入るため、どちらのウィンドウからも同じものが読める。
-		const shared = this.loadSharedRepositories();
-		const fromOtherHosts: IParadisWorkspaceRepository[] = [];
-		for (const [host, entry] of Object.entries(shared)) {
-			if (host === this.hostKey || !Array.isArray(entry?.repositories)) {
-				continue;
-			}
-			fromOtherHosts.push(...this.parseRepositories(JSON.stringify(entry.repositories)));
-		}
-
-		// 同じ場所を指すものは own を優先する（名前や色の変更は own に入っている）
-		const merged = [...own];
-		for (const candidate of fromOtherHosts) {
-			if (!merged.some(existing => extUriBiasedIgnorePathCase.isEqual(existing.uri, candidate.uri))) {
-				merged.push(candidate);
-			}
-		}
-		return merged;
+		return this.parseRepositories(this.storageService.get(PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, StorageScope.WORKSPACE))
+			.filter(repository => this.belongsToThisHost(repository.uri));
 	}
 
 	private saveRepositories(): void {
-		// このワークスペース自身の一覧。他の接続先から来た分は混ぜない
-		// （混ぜると、相手側で消したスペースをこちらが書き戻してしまう）。
-		const ownEntries = this._repositories.filter(repository => this.belongsToThisHost(repository.uri));
-		const serialized: ISerializedRepository[] = ownEntries.map(repository => ({
-			id: repository.id,
-			name: repository.name,
-			uri: repository.uri.toString(),
-			color: repository.color
-		}));
+		const serialized: ISerializedRepository[] = this._repositories
+			.filter(repository => this.belongsToThisHost(repository.uri))
+			.map(repository => ({
+				id: repository.id,
+				name: repository.name,
+				uri: repository.uri.toString(),
+				color: repository.color
+			}));
 		this.storageService.store(PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, JSON.stringify(serialized), StorageScope.WORKSPACE, StorageTarget.MACHINE);
-
-		// 共有領域には自分の接続先の枠だけを書き換える。他の枠には触らない。
-		// ワークスペースファイルの場所も一緒に残す: 別のウィンドウがこの接続先へ移るとき、
-		// 相手のホームディレクトリを推測せずに開き先を決められる。
-		const shared = this.loadSharedRepositories();
-		shared[this.hostKey] = { workspaceFile: this.contextService.getWorkspace().configuration?.toString(), repositories: serialized };
-		this.storageService.store(PARADIS_WORKSPACE_SHARED_REPOSITORIES_STORAGE_KEY, JSON.stringify(shared), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
 	/** その場所が、このウィンドウの繋がっている先のものか。 */
@@ -1325,68 +1267,6 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 		return host === this.hostKey;
 	}
 
-	/**
-	 * 別の接続先のスペースへ移る。ウィンドウを増やさず、今のウィンドウを繋ぎ直す。
-	 *
-	 * 開いた先で目的のスペースを選び直さずに済むよう、行き先を共有領域へ置いてから開く。
-	 * 受け取り側は起動時に {@link consumePendingCrossHostSwitch} で拾う。
-	 */
-	private async switchAcrossHosts(stateKey: string, uri: URI): Promise<void> {
-		const host = uri.scheme === Schemas.vscodeRemote ? uri.authority : '';
-		const recorded = this.loadSharedRepositories()[host]?.workspaceFile;
-		let workspaceFile: URI;
-		if (recorded !== undefined) {
-			workspaceFile = URI.parse(recorded);
-		} else if (host === '') {
-			// 手元へ戻る場合は記録が無くても行き先が分かる。ここは接続に関係なく
-			// 決まる場所で、electron-main 側の既定ワークスペースと同じ（homedir()/.para-code）。
-			// 記録は「手元のウィンドウを開いたことがある」ときにしか作られないので、
-			// 接続先から始めた場合はこの経路に落ちる。
-			workspaceFile = joinPath(this.pathService.userHome({ preferLocal: true }), '.para-code', 'para.code-workspace');
-		} else {
-			// その接続先のウィンドウを一度も開いていない。ホームの位置が分からないので
-			// 組み立てようがなく、一覧から消えたように見せるより今のスペースに留まる
-			this.logService.warn(`[ParadisWorkspaceSwitch] no recorded workspace for ${host}; skipping the cross-host switch`);
-			return;
-		}
-		// ここで存在確認はできない。今のウィンドウには行き先のファイルシステムが無く
-		// （接続を持つウィンドウにしか vscode-remote は生えない）、確かめようとすると
-		// ENOPRO で落ちる。開く先が消えていた場合は、繋ぎ直した先が空のワークスペースとして
-		// 受け止める（そこでは自分のファイルシステムが見えているので、通常の経路で扱える）。
-
-		// 開いた先で選び直さずに済むよう、行き先を置いてから繋ぎ直す
-		this.storageService.store(
-			PARADIS_WORKSPACE_PENDING_SWITCH_STORAGE_KEY,
-			JSON.stringify({ host, stateKey }),
-			StorageScope.APPLICATION,
-			StorageTarget.MACHINE
-		);
-		await this.hostService.openWindow([{ workspaceUri: workspaceFile }], { forceReuseWindow: true });
-	}
-
-	/**
-	 * 別の接続先から指示された行き先があれば、それへ移る。無ければ何もしない。
-	 * 起動直後に一度だけ呼ぶ。
-	 */
-	private consumePendingCrossHostSwitch(): void {
-		const raw = this.storageService.get(PARADIS_WORKSPACE_PENDING_SWITCH_STORAGE_KEY, StorageScope.APPLICATION);
-		if (!raw) {
-			return;
-		}
-		this.storageService.remove(PARADIS_WORKSPACE_PENDING_SWITCH_STORAGE_KEY, StorageScope.APPLICATION);
-		try {
-			const pending: { host?: string; stateKey?: string } = JSON.parse(raw);
-			if (typeof pending.stateKey !== 'string' || pending.host !== this.hostKey) {
-				return;
-			}
-			// 起動直後は folders の復元が終わっていないので、待ってから移る
-			void this.switchToStateKey(pending.stateKey).catch(error => {
-				this.logService.warn('[ParadisWorkspaceSwitch] could not resume the requested space after reconnecting', error);
-			});
-		} catch {
-			// 壊れた指示は捨てる
-		}
-	}
 
 	private loadWorkingSets(): void {
 		const raw = this.storageService.get(ParadisWorkspaceSwitchService.WORKING_SETS_STORAGE_KEY, StorageScope.WORKSPACE);

@@ -44,6 +44,5 @@ import './contrib/workspaceSwitch/electron-browser/paradisRemoteDefaultWorkspace
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentTunnel.contribution.js';
 import './contrib/agentBrowser/electron-browser/paradisRemoteAgentHooks.contribution.js';
 import { registerParadisRemoteTranscriptMirrorContribution } from './contrib/mobileRelay/electron-browser/paradisRemoteTranscriptMirror.contribution.js';
-import './contrib/remoteSsh/electron-browser/paradisRemoteSshMenu.contribution.js';
 
 registerParadisRemoteTranscriptMirrorContribution();
