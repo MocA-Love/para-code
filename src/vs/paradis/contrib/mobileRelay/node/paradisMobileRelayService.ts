@@ -32,6 +32,7 @@ import { FrameMux, IParadisMobileFrameTrafficSample } from '../common/paradisMob
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
+import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { IParadisFileSearchResult, IParadisTextSearchResult, paradisSearchFiles, paradisSearchText } from './paradisMobileSearch.js';
 import { ParadisMobileBrowserMirror } from './paradisMobileBrowserMirror.js';
@@ -557,6 +558,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	// ファイルI/O・hookバス購読とも shared process 側の仕事なのでここで直接処理する
 	// （browser チャネルと同じ方針。renderer は経由しない）。
 	private readonly agentChat: ParadisMobileAgentChat;
+	private readonly remoteTranscriptMirror: ParadisRemoteTranscriptMirrorStore;
 	private readonly trafficDiagnostics: ParadisMobileTrafficDiagnostics | undefined;
 
 	constructor(
@@ -596,6 +598,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			resolveMainPort: async () => await cdpFrames?.resolveUpstreamPort() ?? undefined,
 		});
 		this.browserMirror = this._register(new ParadisMobileBrowserMirror(cdpUpstream, cdpFrames, sharedPageBindings, this.logService));
+		// SSH 接続先の transcript は shared process からは開けない。接続中のウィンドウに写して
+		// もらい、tailer にはその写しを読ませる。
+		this.remoteTranscriptMirror = this._register(new ParadisRemoteTranscriptMirrorStore(this.userDataPath, this.logService));
 		this.agentChat = this._register(new ParadisMobileAgentChat(
 			(mobileId, payload) => {
 				const session = this.sessions.get(mobileId);
@@ -625,6 +630,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				rendererGeneration: owner.rendererGeneration,
 			}),
 			agentSessionStore,
+			this.remoteTranscriptMirror,
 		));
 		this._register(toDisposable(() => { void agentSessionStore.flush(); }));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
@@ -1392,6 +1398,31 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			void this.revokeOnRelay(m.mobileId);
 		}
 		this._onDidChangeStatus.fire(this.snapshot());
+	}
+
+	// --- SSH 接続先 transcript の写し -----------------------------------------------------------
+	//
+	// 接続先を見られるのは、そこへ繋いでいるウィンドウだけ。読む作業はウィンドウに任せ、
+	// ここは「どれを写すか」「どこまで写したか」だけを持つ。
+
+	async listRemoteTranscriptMirrors(ownerId: string): Promise<readonly string[]> {
+		return this.remoteTranscriptMirror.list(ownerId);
+	}
+
+	async beginRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number> {
+		return this.remoteTranscriptMirror.begin(ownerId, remotePath);
+	}
+
+	async appendRemoteTranscriptMirror(ownerId: string, remotePath: string, data: VSBuffer): Promise<number> {
+		return this.remoteTranscriptMirror.append(ownerId, remotePath, data.buffer);
+	}
+
+	async resetRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number> {
+		return this.remoteTranscriptMirror.reset(ownerId, remotePath);
+	}
+
+	async releaseRemoteTranscriptMirrors(ownerId: string): Promise<void> {
+		this.remoteTranscriptMirror.release(ownerId);
 	}
 
 	/**

@@ -44,6 +44,7 @@ import { paradisBuildAgentCommandCatalog, type IParadisAgentCommandOption } from
 import { IParadisAgentActivityState, ParadisAgentActivityTracker } from './paradisAgentActivity.js';
 import { IParadisMobilePaneOwner, ParadisMobilePaneOwnership, ParadisMobilePaneRegistry, paradisMergeLivePaneMetadata } from './paradisMobilePaneRegistry.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
+import { ParadisRemoteTranscriptMirrorStore, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudePersistedActivity, paradisParseCodexPersistedActivity } from './paradisPersistedAgentActivity.js';
 import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
 import { paradisAgentQuestionKeySequence } from '../common/paradisAgentQuestionKeys.js';
@@ -460,7 +461,9 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 		// 書ける立場にあり、中身をコピーすれば同じ結果を得られる。
 		return true;
 	}
-	const roots = [paradisClaudeConfigDir(), paradisCodexHome()];
+	// 接続先の transcript は写しを読む。写しは私たちしか書かない場所にあるので、許可rootに加える
+	// （hookを騙って任意ファイルを読ませる筋道は増えない）。
+	const roots = [paradisClaudeConfigDir(), paradisCodexHome(), ...paradisRemoteTranscriptMirrorRoots()];
 	const within = (candidate: string) => roots.some(root => candidate === root || candidate.startsWith(root + sep));
 	if (!within(resolved)) {
 		return false;
@@ -3096,6 +3099,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		private readonly authorizeOwner: (owner: IParadisMobilePaneOwner) => Promise<boolean> = async () => true,
 		private readonly requestPaneSync: (owner: IParadisMobilePaneOwner) => void = () => { },
 		private readonly sessionStore?: ParadisAgentSessionStore,
+		/** SSH 接続先の transcript を手元へ写す台帳。無ければ接続先の会話は読まないだけ。 */
+		private readonly remoteTranscriptMirror?: ParadisRemoteTranscriptMirrorStore,
 	) {
 		super();
 		this.codexLiveClient = this._register(new ParadisCodexLiveClient(event => this.onCodexDaemonEvent(event), this.logService));
@@ -3104,6 +3109,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		this._register(onParadisAgentNestedHookEvent(event => this.onNestedHookEvent(event)));
 		const activitySweepTimer = setInterval(() => {
 			void this.sweepAgentActivity();
+			// ペインが消えた接続先 transcript は追いかけない（消えても次のhookでまた載る）。
+			this.remoteTranscriptMirror?.retainLiveTokens(token => this.isLiveToken(token));
 		}, 60_000);
 		this._register(toDisposable(() => clearInterval(activitySweepTimer)));
 		const sessionScanTimer = setInterval(() => {
@@ -5160,7 +5167,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			// CLI検知経路がagent種別付きで鮮度検証済み探索を行う。
 			return;
 		}
-		this.enqueueHookEvent(event, event.transcriptPath, false);
+		// SSH 接続先の hook が名乗るのは接続先のパスで、ここからは開けない。写し先のパスへ
+		// 読み替えて、以降はローカルの transcript と全く同じ経路に乗せる。写しがまだ無くても
+		// tailer はファイルの出現を待てるので、ここで足踏みする必要はない。
+		const transcriptPath = this.remoteTranscriptMirror?.localPathForHookPath(event.transcriptPath, event.token) ?? event.transcriptPath;
+		this.enqueueHookEvent(event, transcriptPath, false);
 	}
 
 	/**
