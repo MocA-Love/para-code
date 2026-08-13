@@ -9,7 +9,7 @@ import assert from 'assert';
 import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { ParadisRemoteAgentHooksController, paradisMergeRemoteAgentHooksJson, paradisMergeRemoteClaudeMcpJson } from '../../electron-browser/paradisRemoteAgentHooks.contribution.js';
+import { ParadisRemoteAgentHooksController, paradisMergeRemoteClaudeMcpJson } from '../../electron-browser/paradisRemoteAgentHooks.contribution.js';
 
 interface IDeferred {
 	readonly promise: Promise<void>;
@@ -203,48 +203,6 @@ suite('ParadisRemoteAgentHooksController', () => {
 suite('Paradis remote agent JSON merge', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('preserves Claude settings and existing hooks without duplicating the managed hook', () => {
-		const existing = JSON.stringify({
-			theme: 'dark',
-			hooks: {
-				Stop: [{ hooks: [{ type: 'command', command: 'keep-existing' }] }],
-			},
-		});
-
-		const first = paradisMergeRemoteAgentHooksJson(existing, [{ eventName: 'Stop' }], '/remote/notify.sh');
-		const second = paradisMergeRemoteAgentHooksJson(first, [{ eventName: 'Stop' }], '/remote/notify.sh');
-
-		assert.deepStrictEqual(JSON.parse(first!), {
-			theme: 'dark',
-			hooks: {
-				Stop: [
-					{ hooks: [{ type: 'command', command: 'keep-existing' }] },
-					{ hooks: [{ type: 'command', command: '[ -x "/remote/notify.sh" ] && "/remote/notify.sh" || true' }] },
-				],
-			},
-		});
-		assert.strictEqual(second, first);
-	});
-
-	test('preserves Codex settings and hooks outside the managed event', () => {
-		const existing = JSON.stringify({
-			approvalMode: 'ask',
-			hooks: {
-				CustomEvent: [{ hooks: [{ type: 'command', command: 'keep-custom' }] }],
-			},
-		});
-
-		const merged = paradisMergeRemoteAgentHooksJson(existing, [{ eventName: 'SessionStart' }], '/remote/notify.sh');
-
-		assert.deepStrictEqual(JSON.parse(merged!), {
-			approvalMode: 'ask',
-			hooks: {
-				CustomEvent: [{ hooks: [{ type: 'command', command: 'keep-custom' }] }],
-				SessionStart: [{ hooks: [{ type: 'command', command: '[ -x "/remote/notify.sh" ] && "/remote/notify.sh" || true' }] }],
-			},
-		});
-	});
-
 	test('preserves Claude MCP settings and is idempotent', () => {
 		const existing = JSON.stringify({
 			model: 'keep-model',
@@ -270,13 +228,13 @@ suite('Paradis remote agent JSON merge', () => {
 
 	test('leaves corrupt JSON untouched by declining to produce replacement content', () => {
 		assert.deepStrictEqual({
-			claude: paradisMergeRemoteAgentHooksJson('{ corrupt', [{ eventName: 'Stop' }], '/remote/notify.sh'),
-			codex: paradisMergeRemoteAgentHooksJson('["not", "an", "object"]', [{ eventName: 'Stop' }], '/remote/notify.sh'),
-			mcp: paradisMergeRemoteClaudeMcpJson('null', 4100),
+			corrupt: paradisMergeRemoteClaudeMcpJson('{ corrupt', 4100),
+			notAnObject: paradisMergeRemoteClaudeMcpJson('["not", "an", "object"]', 4100),
+			nullRoot: paradisMergeRemoteClaudeMcpJson('null', 4100),
 		}, {
-			claude: undefined,
-			codex: undefined,
-			mcp: undefined,
+			corrupt: undefined,
+			notAnObject: undefined,
+			nullRoot: undefined,
 		});
 	});
 });

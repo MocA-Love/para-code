@@ -30,7 +30,7 @@ import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../.
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
 import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
-import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES } from '../common/paradisAgentHooks.js';
+import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
 import { paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
@@ -40,7 +40,7 @@ import { PARADIS_MAX_MOBILE_VOICE_SIZE_BYTES } from '../../notifications/common/
 import { clearParadisAgentPaneActivity, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { ParadisAgentHookOwnership } from './paradisAgentHookOwnership.js';
 import { paradisCodexHome } from './paradisAgentHome.js';
-import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent } from './paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from './paradisAgentHooksSetup.js';
 import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
 import { IParadisMcpPortFileRecord, PARADIS_MCP_HEALTH_PATH, PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, ParadisMcpPortFileReconciler, writeParadisMcpPortFileAtomic } from './paradisBrowserMcpShimCore.js';
@@ -1597,6 +1597,33 @@ export class ParadisAgentBrowserService extends Disposable {
 	 */
 	async markRemoteHookExecutable(remoteAuthority: string, path: string): Promise<boolean> {
 		return this._remoteTunnels.chmodExecutable(remoteAuthority, path);
+	}
+
+	/**
+	 * 接続先の settings.json / hooks.json に、手元と同じ規則で hook を差し込んだ中身を返す。
+	 *
+	 * 読み書きは接続先を見られるウィンドウがやるが、**何を入れるかの判断はここに一本化する**。
+	 * renderer 側で組み立て直すと、手元と接続先で入るものがずれる（実際、接続先だけ古い一覧の
+	 * まま取り残され、同じ hook が2つ登録される状態になっていた）。
+	 *
+	 * @returns 書き戻すべき中身。読めない・壊れている場合は undefined（呼び出し側は触らない）
+	 */
+	async buildRemoteAgentHooksJson(remoteAuthority: string, cli: string, existingRaw: string | undefined): Promise<string | undefined> {
+		if (cli === 'codex') {
+			return paradisMergeAgentHooksJson(existingRaw, PARADIS_CODEX_HOOK_EVENTS);
+		}
+		if (cli !== 'claude') {
+			return undefined;
+		}
+		// 版に依らない一式に、その版が受け付けると分かっているものだけを足す。古い版は知らない
+		// キーごと設定を拒むことがあるので、確認できないときは足さない。
+		const version = await this._remoteTunnels.claudeVersion(remoteAuthority);
+		const events = [
+			...PARADIS_CLAUDE_HOOK_EVENTS,
+			...(version !== undefined && paradisSupportsClaudeActivityHooks(version) ? PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS : []),
+			...(version !== undefined && paradisSupportsClaudeMessageDisplay(version) ? [PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT] : []),
+		];
+		return paradisMergeAgentHooksJson(existingRaw, events);
 	}
 
 	private async _startServer(): Promise<void> {

@@ -20,7 +20,8 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
-import { IParadisManagedHookEvent, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { PARADIS_NOTIFY_HOOK_RELATIVE_PATH } from '../common/paradisAgentHooks.js';
+import { paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 
 function parseRemoteAgentJson(existingRaw: string | undefined): Record<string, unknown> | undefined {
 	if (existingRaw === undefined) {
@@ -38,28 +39,6 @@ function parseRemoteAgentJson(existingRaw: string | undefined): Record<string, u
 
 function stringifyRemoteAgentJson(value: object): string {
 	return JSON.stringify(value, undefined, 2) + '\n';
-}
-
-/** 既存設定を保ったまま接続先用hookを冪等にマージする。 */
-export function paradisMergeRemoteAgentHooksJson(existingRaw: string | undefined, events: readonly IParadisManagedHookEvent[], scriptPath: string): string | undefined {
-	const settings = parseRemoteAgentJson(existingRaw);
-	if (settings === undefined) {
-		return undefined;
-	}
-	const existingHooks = settings.hooks;
-	const hooks: Record<string, unknown> = existingHooks !== null && typeof existingHooks === 'object' && !Array.isArray(existingHooks)
-		? { ...existingHooks as Record<string, unknown> }
-		: {};
-	const command = `[ -x "${scriptPath}" ] && "${scriptPath}" || true`;
-	for (const event of events) {
-		const existingList = hooks[event.eventName];
-		const list: unknown[] = Array.isArray(existingList) ? [...existingList] : [];
-		if (!list.some(entry => JSON.stringify(entry).includes(scriptPath))) {
-			list.push(paradisManagedHookDefinition(event, command));
-		}
-		hooks[event.eventName] = list;
-	}
-	return stringifyRemoteAgentJson({ ...settings, hooks });
 }
 
 /** 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。 */
@@ -211,9 +190,10 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			// 手元と同じ番号を書いておく。トンネルが張られている限りそのまま手元へ届く
 			await this.fileService.writeFile(portFile, VSBuffer.fromString(JSON.stringify({ protocolVersion: 1, port: endpoint.port })));
 
-			await this.mergeClaudeHooks(home, scriptFile.path);
-			await this.mergeCodexHooks(home, scriptFile.path);
+			await this.mergeAgentHooks(joinPath(home, '.claude', 'settings.json'), 'claude');
+			await this.mergeAgentHooks(joinPath(home, '.codex', 'hooks.json'), 'codex');
 			await this.mergeClaudeMcp(home, endpoint.port);
+			await this.mergeCodexMcp(home, endpoint.port);
 			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${endpoint.port})`);
 			return endpoint.port;
 		} catch (error) {
@@ -223,10 +203,19 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		}
 	}
 
-	/** Claude Code の settings.json へ hook を足す。既存の内容は保つ。 */
-	private async mergeClaudeHooks(home: URI, scriptPath: string): Promise<void> {
-		const file = joinPath(home, '.claude', 'settings.json');
-		await this.mergeJson(file, current => paradisMergeRemoteAgentHooksJson(current, PARADIS_CLAUDE_HOOK_EVENTS, scriptPath));
+	/**
+	 * 接続先の settings.json / hooks.json へ hook を差し込む。
+	 *
+	 * 何を入れるかは shared process（手元と同じ判断をする側）に決めてもらい、ここは読み書きだけを
+	 * 担う。renderer で組み立て直すと入るものがずれる: 実際、手元は `$HOME/...` 形で書くのに
+	 * こちらは絶対パス形で書いていたため、同じ hook が2つ登録されて通知が毎回2回飛んでいた。
+	 */
+	private async mergeAgentHooks(file: URI, cli: 'claude' | 'codex'): Promise<void> {
+		const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
+		await this.mergeJson(file, current => channel.call<string | undefined>(
+			'buildRemoteAgentHooksJson',
+			[this.environmentService.remoteAuthority, cli, current]
+		));
 	}
 
 	/**
@@ -244,17 +233,26 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		await this.mergeJson(file, current => paradisMergeRemoteClaudeMcpJson(current, port));
 	}
 
-	/** Codex の hooks.json へ hook を足す。 */
-	private async mergeCodexHooks(home: URI, scriptPath: string): Promise<void> {
-		const file = joinPath(home, '.codex', 'hooks.json');
-		await this.mergeJson(file, current => paradisMergeRemoteAgentHooksJson(current, PARADIS_CODEX_HOOK_EVENTS, scriptPath));
+	/**
+	 * 接続先の Codex へ para-browser MCP を登録する。
+	 *
+	 * Claude と同じく HTTP で繋ぐ。接続先の設定に手元のシムのパスが書かれていることがあり
+	 * （設定を移した副産物）、そのままでは存在しないファイルを起動しようとして失敗するので、
+	 * 既にある para-browser の節ごと置き換える。
+	 *
+	 * トークンはペインごとに違うので値を焼き込まず、環境変数の名前だけを渡す
+	 * （Codex が起動時にその変数を読んで Bearer に載せる）。
+	 */
+	private async mergeCodexMcp(home: URI, port: number): Promise<void> {
+		const file = joinPath(home, '.codex', 'config.toml');
+		await this.mergeJson(file, current => paradisUpsertCodexMcpToml(current ?? '', port));
 	}
 
 	/**
 	 * JSON ファイルを読んで書き戻す。読めない・壊れている場合は**何もしない**
 	 * （ユーザーの設定を壊すくらいなら、実行状態が出ない方がまし）。
 	 */
-	private async mergeJson(file: URI, update: (current: string | undefined) => string | undefined): Promise<void> {
+	private async mergeJson(file: URI, update: (current: string | undefined) => string | undefined | Promise<string | undefined>): Promise<void> {
 		let current: string | undefined;
 		if (await this.fileService.exists(file)) {
 			try {
@@ -264,8 +262,8 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 				return;
 			}
 		}
-		const updated = update(current);
-		if (updated !== undefined) {
+		const updated = await update(current);
+		if (updated !== undefined && updated !== current) {
 			await this.fileService.writeFile(file, VSBuffer.fromString(updated));
 		}
 	}

@@ -6,6 +6,8 @@
 
 // PARA-CODE: MCPセットアップの自動設定と手動スニペットで共有する、注入耐性のあるpure encoder。
 
+import { PARADIS_PANE_TOKEN_ENV_VAR } from './paradisAgentBrowser.js';
+
 export type ParadisMcpTomlSectionInspection = 'present' | 'absent' | 'ambiguous';
 
 /** TOML basic string。制御文字をrawで残さず、非scalarなlone surrogateは拒否する。 */
@@ -280,4 +282,42 @@ export function inspectParadisMcpTomlSection(source: string): ParadisMcpTomlSect
 		}
 	}
 	return multiline === undefined ? 'absent' : 'ambiguous';
+}
+
+/**
+ * 接続先の Codex へ para-browser を HTTP の MCP サーバーとして登録した config.toml を返す。
+ *
+ * 既に `[mcp_servers.para-browser]` があれば節ごと差し替える。設定を別のマシンから移すと、
+ * 手元のシムの絶対パスを指した節がそのまま残り、接続先には無いファイルを起動しようとして
+ * 静かに失敗する。中身を見て直すより、私たちの節は毎回書き直す方が確実。
+ *
+ * トークンはペインごとに違うので値は焼き込まず、環境変数の名前だけを渡す
+ * （`bearer_token_env_var`。Codex が起動時にその変数を読んで Bearer に載せる）。
+ *
+ * @returns 書き戻すべき中身。変更が要らなければ元のまま返す。
+ */
+const PARADIS_MCP_TOML_SERVER_NAME = 'para-browser';
+
+export function paradisUpsertCodexMcpToml(source: string, port: number): string {
+	const section = [
+		`[mcp_servers.${PARADIS_MCP_TOML_SERVER_NAME}]`,
+		`url = ${encodeParadisTomlBasicString(`http://127.0.0.1:${port}/`)}`,
+		`bearer_token_env_var = ${encodeParadisTomlBasicString(PARADIS_PANE_TOKEN_ENV_VAR)}`,
+	].join('\n');
+
+	const lines = source.split('\n');
+	const header = /^\s*\[mcp_servers\.(?:para-browser|"para-browser"|'para-browser')\]\s*$/;
+	const start = lines.findIndex(line => header.test(line));
+	if (start < 0) {
+		const prefix = source.length === 0 ? '' : source.endsWith('\n\n') ? source : source.endsWith('\n') ? `${source}\n` : `${source}\n\n`;
+		return `${prefix}${section}\n`;
+	}
+	// 次のテーブルが始まる手前までが、この節の中身
+	let end = start + 1;
+	while (end < lines.length && !/^\s*\[/.test(lines[end])) {
+		end++;
+	}
+	// 節の直前にあった空行は残す（区切りが潰れると読みにくい）
+	const replaced = [...lines.slice(0, start), ...section.split('\n'), ...lines.slice(end)];
+	return replaced.join('\n');
 }
