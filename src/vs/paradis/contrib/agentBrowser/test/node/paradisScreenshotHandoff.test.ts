@@ -1,0 +1,96 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese test comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+import assert from 'assert';
+import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from '../../node/paradisScreenshotHandoff.js';
+
+function toolResult(...lines: string[]): unknown {
+	return { content: [{ type: 'text', text: lines.join('\n') }] };
+}
+
+suite('ParadisScreenshotHandoff', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('picks up the file the screenshot tool wrote, whichever way it was saved', () => {
+		assert.deepStrictEqual(
+			paradisScreenshotPathsFromToolResult(toolResult(
+				'Took a screenshot of the current page\'s viewport.',
+				// `filePath` 指定のときも、2MB超で一時ファイルへ逃げたときも、同じ1行を書く
+				'Saved screenshot to /tmp/e2e-2178/before.png.',
+			)),
+			['/tmp/e2e-2178/before.png'],
+		);
+		assert.deepStrictEqual(
+			paradisScreenshotPathsFromToolResult(toolResult('Saved screenshot to /var/folders/x/screenshot.v2.jpeg.')),
+			['/var/folders/x/screenshot.v2.jpeg'],
+		);
+		// 画像が応答に直接載った場合（保存していない）は何も拾わない
+		assert.deepStrictEqual(paradisScreenshotPathsFromToolResult(toolResult('Took a screenshot of the full current page.')), []);
+		assert.deepStrictEqual(paradisScreenshotPathsFromToolResult({ content: [{ type: 'image', data: 'AAA' }] }), []);
+		assert.deepStrictEqual(paradisScreenshotPathsFromToolResult(undefined), []);
+	});
+
+	test('adds the download line only when something was saved', () => {
+		const saved = toolResult('Saved screenshot to /tmp/a.png.');
+		const hinted = paradisAppendScreenshotFetchHint(saved, ['http://127.0.0.1:47286/paradis-mcp/screenshot/abc']) as { content: { type: string; text: string }[] };
+		assert.strictEqual(hinted.content.length, 2);
+		assert.ok(hinted.content[1].text.includes('curl -fsS -H "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID" http://127.0.0.1:47286/paradis-mcp/screenshot/abc'));
+		// 元の本文は触らない
+		assert.strictEqual(hinted.content[0].text, 'Saved screenshot to /tmp/a.png.');
+
+		const inline = toolResult('Took a screenshot.');
+		assert.strictEqual(paradisAppendScreenshotFetchHint(inline, []), inline);
+	});
+
+	test('hands a saved screenshot back only to the pane that took it', () => {
+		let next = 0;
+		const handoff = new ParadisScreenshotHandoff(() => `id-${++next}`);
+		const id = handoff.register('pane-a', '/tmp/a.png');
+
+		assert.strictEqual(handoff.resolve('pane-a', id), '/tmp/a.png');
+		// ペイントークンは端末の子プロセスなら誰でも名乗れるので、撮った本人だけに渡す
+		assert.strictEqual(handoff.resolve('pane-b', id), undefined);
+		assert.strictEqual(handoff.resolve('pane-a', 'id-999'), undefined);
+	});
+
+	test('keeps only the most recent handoffs', () => {
+		let next = 0;
+		const handoff = new ParadisScreenshotHandoff(() => `id-${++next}`);
+		const first = handoff.register('pane-a', '/tmp/0.png');
+		for (let i = 1; i <= 40; i++) {
+			handoff.register('pane-a', `/tmp/${i}.png`);
+		}
+		assert.deepStrictEqual(
+			[handoff.size, handoff.resolve('pane-a', first), handoff.resolve('pane-a', 'id-41')],
+			[32, undefined, '/tmp/40.png'],
+		);
+	});
+
+	test('accepts only the exact fetch shape', () => {
+		assert.deepStrictEqual([
+			paradisScreenshotIdFromUrl(`${PARADIS_SCREENSHOT_FETCH_PATH}/abc-123`),
+			paradisScreenshotIdFromUrl(`${PARADIS_SCREENSHOT_FETCH_PATH}/abc-123?pane=x`),
+			// パスは要求側に決めさせない
+			paradisScreenshotIdFromUrl(`${PARADIS_SCREENSHOT_FETCH_PATH}/../../etc/passwd`),
+			paradisScreenshotIdFromUrl(`${PARADIS_SCREENSHOT_FETCH_PATH}/a/b`),
+			paradisScreenshotIdFromUrl(`${PARADIS_SCREENSHOT_FETCH_PATH}/`),
+			paradisScreenshotIdFromUrl(`${PARADIS_SCREENSHOT_FETCH_PATH}x/abc`),
+			paradisScreenshotIdFromUrl(undefined),
+		], ['abc-123', 'abc-123', undefined, undefined, undefined, undefined, undefined]);
+	});
+
+	test('labels the download with the format that was captured', () => {
+		assert.deepStrictEqual([
+			paradisScreenshotContentType('/tmp/a.png'),
+			paradisScreenshotContentType('/tmp/a.JPEG'),
+			paradisScreenshotContentType('/tmp/a.webp'),
+			paradisScreenshotContentType('/tmp/a'),
+		], ['image/png', 'image/jpeg', 'image/webp', 'application/octet-stream']);
+	});
+});

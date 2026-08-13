@@ -48,6 +48,7 @@ import { ParadisCdpGateway } from './paradisCdpGateway.js';
 import { IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
+import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 
 /**
  * PlaywrightChannel（vs/platform/browserView/node/playwrightChannel.ts）の `call` と構造的に一致する
@@ -503,6 +504,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _cdpGateway: ParadisCdpGateway;
 	/** vendored chrome-devtools-mcp をペイン毎の子プロセスとして管理するプロキシ。 */
 	private readonly _devtoolsProxy: ParadisDevtoolsMcpProxy;
+	/** ファイルに落としたスクリーンショットを、別の機械から取りに来るための台帳。 */
+	private readonly _screenshotHandoff = new ParadisScreenshotHandoff(() => randomUUID());
 	private readonly _devtoolsGenerationCoordinator: ParadisDevtoolsGenerationCoordinator;
 	private readonly _mcpSetupController: ParadisMcpSetupController;
 	/** 現renderer IPC connection。ctxだけではreload前後を区別できないためobject identityをauthorityにする。 */
@@ -1745,6 +1748,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		if ((req.method === 'GET' || req.method === 'POST') && (req.url ?? '').startsWith('/agent-hook')) {
 			return this._handleAgentHook(req, res);
 		}
+		// 保存済みスクリーンショットの取り出し。SSH 接続先のエージェントが、手元に落ちた画像を
+		// 自分の機械へ持ってくるための口（戻り経路をそのまま使う）。
+		if (req.method === 'GET' && (req.url ?? '').startsWith(`${PARADIS_SCREENSHOT_FETCH_PATH}/`)) {
+			return this._handleScreenshotFetch(req, res);
+		}
 		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice') {
 			return this._handleMobileVoiceIngress(req, res);
 		}
@@ -2421,11 +2429,56 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError('PARA_BROWSER_RETRYABLE: binding changed while the tool was running');
 				}
 				if (result !== undefined) {
-					return result;
+					// ファイルへ落ちたスクリーンショットは、呼び出し元が別の機械に居ると見えない。
+					// 取りに来るための口を添える。
+					return name === 'take_screenshot' ? this._offerScreenshotHandoff(token, result) : result;
 				}
 			}
 			throw new JsonRpcMethodError(-32602, `Unknown tool: ${name}`);
 		});
+	}
+
+	/**
+	 * take_screenshot がファイルへ保存したとき、そのファイルを取りに来る口を応答へ添える。
+	 *
+	 * SSH で繋いだ先で動くエージェントが `filePath` を渡すと、画像は**手元**に落ちて接続先からは
+	 * 見えない。既に張ってある戻り経路で同じ番号へ届くので、curl 1回で取り出せる。
+	 */
+	private _offerScreenshotHandoff(token: string, result: unknown): unknown {
+		if (this._port === undefined) {
+			return result;
+		}
+		const urls = paradisScreenshotPathsFromToolResult(result)
+			.map(path => `http://127.0.0.1:${this._port}${PARADIS_SCREENSHOT_FETCH_PATH}/${this._screenshotHandoff.register(token, path)}`);
+		return paradisAppendScreenshotFetchHint(result, urls);
+	}
+
+	/**
+	 * 保存済みスクリーンショットの取り出し (GET /paradis-mcp/screenshot/<id>)。
+	 *
+	 * 渡すのは私たちが登録したパスだけで、要求側はパスを指定できない。撮ったペインと同じ
+	 * トークンでなければ渡さない。
+	 */
+	private async _handleScreenshotFetch(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		const token = this._extractToken(req);
+		const id = paradisScreenshotIdFromUrl(req.url);
+		if (token === undefined || id === undefined || this.captureIngressLease(token) === undefined) {
+			this._sendIngressRejected(res);
+			return;
+		}
+		const path = this._screenshotHandoff.resolve(token, id);
+		const body = path === undefined ? undefined : await paradisReadScreenshotFile(path);
+		if (path === undefined || body === undefined) {
+			res.writeHead(404, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ error: 'No screenshot is available for that id.' }));
+			return;
+		}
+		res.writeHead(200, {
+			'Content-Type': paradisScreenshotContentType(path),
+			'Content-Length': body.byteLength,
+			'Cache-Control': 'no-store',
+		});
+		res.end(body);
 	}
 
 	/**
