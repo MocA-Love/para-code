@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
@@ -35,6 +36,42 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	}
 });
 
+/** SSH 接続先の戻りトンネルを shared process に開閉させる。 */
+export class ParadisRemoteAgentTunnelController extends Disposable {
+
+	constructor(
+		remoteAuthority: string | undefined,
+		enabled: boolean,
+		private readonly channel: IChannel,
+		private readonly logService: Pick<ILogService, 'info' | 'warn'>,
+	) {
+		super();
+		if (!enabled || remoteAuthority === undefined || !remoteAuthority.startsWith('ssh-remote+')) {
+			return;
+		}
+		const ensure = this.ensure(remoteAuthority);
+		this._register(this.toDisposeTunnel(remoteAuthority, ensure));
+	}
+
+	private async ensure(remoteAuthority: string): Promise<void> {
+		try {
+			const opened = await this.channel.call<boolean>('ensureRemoteAgentTunnel', [remoteAuthority]);
+			this.logService.info(`[paradis] return tunnel for ${remoteAuthority}: ${opened ? 'opened' : 'not available'}`);
+		} catch (error) {
+			this.logService.warn('[paradis] could not request the agent return tunnel', error);
+		}
+	}
+
+	private toDisposeTunnel(remoteAuthority: string, ensure: Promise<void>) {
+		return {
+			dispose: () => {
+				void ensure.then(() => this.channel.call('closeRemoteAgentTunnel', [remoteAuthority]))
+					.catch(() => { /* 終了時なので届かなくてよい */ });
+			}
+		};
+	}
+}
+
 /**
  * SSH 接続中のウィンドウで、接続先から手元のゲートウェイへ戻る経路を用意する。
  *
@@ -61,35 +98,12 @@ class ParadisRemoteAgentTunnel extends Disposable implements IWorkbenchContribut
 		if (remoteAuthority === undefined) {
 			return;
 		}
-		void this.ensure(remoteAuthority);
-		// ウィンドウを閉じる／接続先を変える時に畳む。畳み損ねても ssh は親の終了で落ちるが、
-		// 同じ番号を掴んだままだと次の接続で ExitOnForwardFailure に当たるので明示的に閉じる。
-		this._register(this.toDisposeTunnel(remoteAuthority));
-	}
-
-	private async ensure(remoteAuthority: string): Promise<void> {
-		if (!this.configurationService.getValue<boolean>(PARADIS_REMOTE_AGENT_TUNNEL_SETTING)) {
-			return;
-		}
-		try {
-			const opened = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
-				.call<boolean>('ensureRemoteAgentTunnel', [remoteAuthority]);
-			// 張れたかどうかは info で残す。ここが黙っていると、実行状態が出ない理由を
-			// 「経路が無い」と「経路はあるが何も来ない」に切り分けられない
-			this.logService.info(`[paradis] return tunnel for ${remoteAuthority}: ${opened ? 'opened' : 'not available'}`);
-		} catch (error) {
-			this.logService.warn('[paradis] could not request the agent return tunnel', error);
-		}
-	}
-
-	private toDisposeTunnel(remoteAuthority: string) {
-		return {
-			dispose: () => {
-				void this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
-					.call('closeRemoteAgentTunnel', [remoteAuthority])
-					.catch(() => { /* 終了時なので届かなくてよい */ });
-			}
-		};
+		this._register(new ParadisRemoteAgentTunnelController(
+			remoteAuthority,
+			this.configurationService.getValue<boolean>(PARADIS_REMOTE_AGENT_TUNNEL_SETTING),
+			this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL),
+			this.logService,
+		));
 	}
 }
 

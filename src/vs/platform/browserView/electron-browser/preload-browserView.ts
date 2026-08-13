@@ -23,107 +23,95 @@ let localizedStrings: IBrowserViewPreloadLocalizedStrings = {
 	removeElementComment: 'Remove element comment',
 };
 
-/**
- * Preload script for pages loaded in Integrated Browser
- *
- * It runs in an isolated context that Electron calls an "isolated world".
- * Specifically the isolated world with worldId 999, which shows in DevTools as "Electron Isolated Context".
- * Despite being isolated, it still runs on the same page as the JS from the actual loaded website
- * which runs on the so-called "main world" (worldId 0. In DevTools as "top").
- *
- * Learn more: see Electron docs for Security, contextBridge, and Context Isolation.
- */
-function init() {
-	const { contextBridge, ipcRenderer } = require('electron');
+// PARA-PATCH: BEGIN extracted, testable preload automation-key IPC state machine (Para Browser MCP automation input isolation)
+interface IAutomationKeyIpcRenderer {
+	on(channel: string, listener: (_event: unknown, payload: unknown) => void): void;
+	send(channel: string, payload: unknown): void;
+}
 
-	// PARA-PATCH: track and consume expected automation keystrokes (register/activate/complete/cancel over IPC, invalidate on real user focus) so injected keys are never confused with genuine input (Para Browser MCP automation input isolation)
-	interface IAutomationKeyExpectation {
-		readonly signature: IBrowserViewAutomationKeySignature;
-		/** Main's native first-responder state when this key was registered. See `readNativeFocused`. */
-		nativeFocused: boolean;
-		active: boolean;
-		consumed: boolean;
-		timer: ReturnType<typeof setTimeout> | undefined;
-	}
-	const automationKeyExpectations = new Map<number, IAutomationKeyExpectation>();
-	const automationKeyLimit = 32;
-	const automationKeyTtlMs = 250;
-	const parseAutomationSignature = (value: unknown): IBrowserViewAutomationKeySignature | undefined => {
-		if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-			return undefined;
-		}
-		const record = value as Readonly<Record<string, unknown>>;
-		if (!['keyDown', 'keyUp', 'char'].includes(record.type as string)
-			|| typeof record.key !== 'string' || record.key.length > 128
-			|| typeof record.code !== 'string' || record.code.length > 128
-			|| typeof record.location !== 'number' || !Number.isInteger(record.location) || record.location < 0 || record.location > 3
-			|| typeof record.modifiers !== 'number' || !Number.isInteger(record.modifiers) || record.modifiers < 0 || record.modifiers > 15
-			|| typeof record.repeat !== 'boolean') {
-			return undefined;
-		}
-		return {
-			type: record.type as IBrowserViewAutomationKeySignature['type'],
-			key: record.key,
-			code: record.code,
-			location: record.location,
-			modifiers: record.modifiers,
-			repeat: record.repeat,
-		};
-	};
-	const automationSignatureForEvent = (event: KeyboardEvent): IBrowserViewAutomationKeySignature => ({
-		type: 'keyDown',
-		key: event.key,
-		code: event.code,
-		location: event.location,
-		modifiers: (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0),
-		repeat: event.repeat,
-	});
-	const sameAutomationSignature = (left: IBrowserViewAutomationKeySignature, right: IBrowserViewAutomationKeySignature): boolean =>
-		left.type === right.type
+interface IAutomationKeyFocusTarget {
+	addEventListener(type: 'focus', listener: (event: unknown) => void): void;
+}
+
+interface IAutomationKeyDocument {
+	hasFocus(): boolean;
+}
+
+interface IAutomationKeyExpectation {
+	readonly signature: IBrowserViewAutomationKeySignature;
+	nativeFocused: boolean;
+	active: boolean;
+	consumed: boolean;
+	timer: ReturnType<typeof setTimeout> | undefined;
+}
+
+/** The testable subset of preload automation-key behavior used by the keydown listener. */
+export interface IBrowserViewAutomationKeyPreload {
+	consumeAutomationKey(signature: IBrowserViewAutomationKeySignature): boolean;
+}
+
+function sameAutomationSignature(left: IBrowserViewAutomationKeySignature, right: IBrowserViewAutomationKeySignature): boolean {
+	return left.type === right.type
 		&& left.key === right.key
 		&& left.code === right.code
 		&& left.location === right.location
 		&& left.modifiers === right.modifiers
 		&& left.repeat === right.repeat;
+}
+
+function parseAutomationSignature(value: unknown): IBrowserViewAutomationKeySignature | undefined {
+	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+		return undefined;
+	}
+	const record = value as Readonly<Record<string, unknown>>;
+	if (!['keyDown', 'keyUp', 'char'].includes(record.type as string)
+		|| typeof record.key !== 'string' || record.key.length > 128
+		|| typeof record.code !== 'string' || record.code.length > 128
+		|| typeof record.location !== 'number' || !Number.isInteger(record.location) || record.location < 0 || record.location > 3
+		|| typeof record.modifiers !== 'number' || !Number.isInteger(record.modifiers) || record.modifiers < 0 || record.modifiers > 15
+		|| typeof record.repeat !== 'boolean') {
+		return undefined;
+	}
+	return {
+		type: record.type as IBrowserViewAutomationKeySignature['type'],
+		key: record.key,
+		code: record.code,
+		location: record.location,
+		modifiers: record.modifiers,
+		repeat: record.repeat,
+	};
+}
+
+/** Creates the preload-local expectation state and IPC handlers for automation keys. */
+export function createBrowserViewAutomationKeyPreload(ipcRenderer: IAutomationKeyIpcRenderer, focusTarget: IAutomationKeyFocusTarget, documentTarget: IAutomationKeyDocument): IBrowserViewAutomationKeyPreload {
+	const automationKeyExpectations = new Map<number, IAutomationKeyExpectation>();
+	const automationKeyLimit = 32;
+	const automationKeyTtlMs = 250;
 	const documentHasUserFocus = (): boolean => {
 		try {
-			return document.hasFocus();
+			return documentTarget.hasFocus();
 		} catch {
-			// Focus uncertainty must never suppress a possible real user event.
 			return true;
 		}
 	};
-	/**
-	 * Main's native first-responder state, sent alongside every automation key message.
-	 *
-	 * `document.hasFocus()` alone cannot be trusted here: Chromium's DevTools input handler focuses
-	 * the widget on every injected `Input.*` event, so it latches to true as soon as an agent clicks
-	 * once and never clears. Main's native focus is unaffected by injection, so a key is treated as
-	 * competing with the user only when both agree. Anything unparseable resolves to `true`, keeping
-	 * the stricter, pre-existing behaviour.
-	 */
 	const readNativeFocused = (record: Readonly<Record<string, unknown>>): boolean =>
 		typeof record.nativeFocused === 'boolean' ? record.nativeFocused : true;
-	/** True only when the user is plausibly typing into this page right now. */
 	const userIsInteracting = (nativeFocused: boolean): boolean => nativeFocused && documentHasUserFocus();
 	const isTrustedFocusEvent: BrowserViewAutomationTrustedFocusPredicate = value =>
 		typeof value === 'object' && value !== null && !Array.isArray(value)
 		&& (value as Readonly<Record<string, unknown>>).isTrusted === true;
-	const consumeAutomationKey = (event: KeyboardEvent): boolean => {
-		const signature = automationSignatureForEvent(event);
+	const cancel = (sequence: number): void => {
+		const expectation = automationKeyExpectations.get(sequence);
+		if (expectation?.timer !== undefined) {
+			clearTimeout(expectation.timer);
+		}
+		automationKeyExpectations.delete(sequence);
+	};
+	const consumeAutomationKey = (signature: IBrowserViewAutomationKeySignature): boolean => {
 		for (const [sequence, expectation] of automationKeyExpectations) {
-			if (!expectation.active || !sameAutomationSignature(expectation.signature, signature)) {
+			if (!expectation.active || !sameAutomationSignature(expectation.signature, signature) || userIsInteracting(expectation.nativeFocused)) {
 				continue;
 			}
-			// Leave the key alone if the user was genuinely interacting when it was registered.
-			if (userIsInteracting(expectation.nativeFocused)) {
-				continue;
-			}
-			// Keep swallowing matching keys for as long as the expectation is active, even after the
-			// first one. `consumed` only gates the acknowledgement: if a user keystroke with the same
-			// signature lands in the window between activation and dispatch it burns the slot, and
-			// treating the slot as spent would let the injected key through to be forwarded to the
-			// workbench as a shortcut.
 			if (!expectation.consumed) {
 				expectation.consumed = true;
 				ipcRenderer.send('vscode:browserView:automationKeyConsumed', { sequence, signature: expectation.signature });
@@ -132,7 +120,7 @@ function init() {
 		}
 		return false;
 	};
-	ipcRenderer.on('vscode:browserView:expectAutomationKey', (_event: unknown, payload: unknown) => {
+	ipcRenderer.on('vscode:browserView:expectAutomationKey', (_event, payload) => {
 		let sequence: number | undefined;
 		let accepted = false;
 		if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
@@ -149,7 +137,7 @@ function init() {
 		}
 		ipcRenderer.send('vscode:browserView:automationKeyExpected', { sequence: sequence ?? 0, accepted });
 	});
-	ipcRenderer.on('vscode:browserView:activateAutomationKey', (_event: unknown, payload: unknown) => {
+	ipcRenderer.on('vscode:browserView:activateAutomationKey', (_event, payload) => {
 		let sequence: number | undefined;
 		let accepted = false;
 		if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
@@ -158,7 +146,6 @@ function init() {
 			if (typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate > 0) {
 				sequence = candidate;
 				const expectation = automationKeyExpectations.get(sequence);
-				// Re-read native focus: the user may have clicked into the page since registration.
 				const nativeFocused = readNativeFocused(record);
 				if (expectation && !expectation.active && expectation.timer === undefined && !userIsInteracting(nativeFocused)) {
 					expectation.nativeFocused = nativeFocused;
@@ -169,7 +156,7 @@ function init() {
 		}
 		ipcRenderer.send('vscode:browserView:automationKeyActivated', { sequence: sequence ?? 0, accepted });
 	});
-	ipcRenderer.on('vscode:browserView:completeAutomationKey', (_event: unknown, payload: unknown) => {
+	ipcRenderer.on('vscode:browserView:completeAutomationKey', (_event, payload) => {
 		if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
 			return;
 		}
@@ -187,30 +174,47 @@ function init() {
 			}
 		}, automationKeyTtlMs);
 	});
-	ipcRenderer.on('vscode:browserView:cancelAutomationKey', (_event: unknown, payload: unknown) => {
+	ipcRenderer.on('vscode:browserView:cancelAutomationKey', (_event, payload) => {
 		if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
 			return;
 		}
 		const sequence = (payload as Readonly<Record<string, unknown>>).sequence;
-		if (typeof sequence !== 'number' || !Number.isSafeInteger(sequence)) {
-			return;
+		if (typeof sequence === 'number' && Number.isSafeInteger(sequence)) {
+			cancel(sequence);
 		}
-		const expectation = automationKeyExpectations.get(sequence);
-		if (expectation?.timer !== undefined) {
-			clearTimeout(expectation.timer);
-		}
-		automationKeyExpectations.delete(sequence);
 	});
-	window.addEventListener('focus', event => {
+	focusTarget.addEventListener('focus', event => {
 		if (!isTrustedFocusEvent(event)) {
 			return;
 		}
-		for (const [sequence, expectation] of automationKeyExpectations) {
-			if (expectation.timer !== undefined) {
-				clearTimeout(expectation.timer);
-			}
-			automationKeyExpectations.delete(sequence);
+		for (const sequence of [...automationKeyExpectations.keys()]) {
+			cancel(sequence);
 		}
+	});
+	return { consumeAutomationKey };
+}
+// PARA-PATCH: END extracted, testable preload automation-key IPC state machine (Para Browser MCP automation input isolation)
+
+/**
+ * Preload script for pages loaded in Integrated Browser
+ *
+ * It runs in an isolated context that Electron calls an "isolated world".
+ * Specifically the isolated world with worldId 999, which shows in DevTools as "Electron Isolated Context".
+ * Despite being isolated, it still runs on the same page as the JS from the actual loaded website
+ * which runs on the so-called "main world" (worldId 0. In DevTools as "top").
+ *
+ * Learn more: see Electron docs for Security, contextBridge, and Context Isolation.
+ */
+function init() {
+	const { contextBridge, ipcRenderer } = require('electron');
+	const automationKeyPreload = createBrowserViewAutomationKeyPreload(ipcRenderer, window, document);
+	const automationSignatureForEvent = (event: KeyboardEvent): IBrowserViewAutomationKeySignature => ({
+		type: 'keyDown',
+		key: event.key,
+		code: event.code,
+		location: event.location,
+		modifiers: (event.altKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.metaKey ? 4 : 0) | (event.shiftKey ? 8 : 0),
+		repeat: event.repeat,
 	});
 	// #######################################################################
 	// ###                                                                 ###
@@ -241,7 +245,7 @@ function init() {
 			return;
 		}
 		// PARA-PATCH: swallow keydowns that match an active automation expectation so injected keys are not forwarded as user shortcuts (Para Browser MCP automation input isolation)
-		if (consumeAutomationKey(event)) {
+		if (automationKeyPreload.consumeAutomationKey(automationSignatureForEvent(event))) {
 			return;
 		}
 
@@ -2249,4 +2253,7 @@ class AreaPicker {
 	}
 }
 
-init();
+// PARA-PATCH: only initialize the preload in Electron so Node tests can import its extracted automation-key state machine safely (Para Browser MCP automation input isolation)
+if ((globalThis as { process?: { versions?: { electron?: string } } }).process?.versions?.electron) {
+	init();
+}

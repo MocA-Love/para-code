@@ -40,6 +40,29 @@ import { PARADIS_PDF_EDITOR_ID } from '../browser/paradisFileViewers.js';
 
 /** vendored pdf.js 成果物の配置ディレクトリ（AppResourcePath）。 */
 const PDFJS_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/pdfjs' as const;
+const PDF_HEADER_BYTES = 5;
+
+/** PDFの先頭シグネチャを検証する。 */
+export function isParadisPdfHeader(bytes: Uint8Array): boolean {
+	return bytes.length === PDF_HEADER_BYTES && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46 && bytes[4] === 0x2d;
+}
+
+export async function readParadisPdfHeader(fileService: IFileService, resource: URI): Promise<boolean | undefined> {
+	try {
+		return isParadisPdfHeader((await fileService.readFile(resource, { length: PDF_HEADER_BYTES })).value.buffer);
+	} catch {
+		return undefined;
+	}
+}
+
+export type ParadisPdfRenderDecision = 'rejected' | 'viewer' | 'stale';
+
+export function getParadisPdfRenderDecision(isValid: boolean | undefined, resource: URI, currentResource: URI | undefined, generation: number, currentGeneration: number): ParadisPdfRenderDecision {
+	if (generation !== currentGeneration || !isEqual(currentResource, resource)) {
+		return 'stale';
+	}
+	return isValid === false ? 'rejected' : 'viewer';
+}
 
 export class ParadisPdfFileEditor extends EditorPane {
 
@@ -53,6 +76,7 @@ export class ParadisPdfFileEditor extends EditorPane {
 	private _webviewClaimed = false;
 	private _editorVisible = false;
 	private _currentResource: URI | undefined;
+	private _renderGeneration = 0;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 
 	constructor(
@@ -100,6 +124,9 @@ export class ParadisPdfFileEditor extends EditorPane {
 			// watcher が作れなくても表示は継続できる。
 		}
 
+		if (this._webviewClaimed) {
+			this._renderResource(resource);
+		}
 		this._updateWebviewPlacement();
 	}
 
@@ -132,13 +159,32 @@ export class ParadisPdfFileEditor extends EditorPane {
 		return [dirname(resource), FileAccess.asFileUri(PDFJS_MEDIA_ROOT)];
 	}
 
-	private _renderResource(resource: URI): void {
+	protected _renderResource(resource: URI): void {
+		const generation = ++this._renderGeneration;
+		void this._renderResourceAfterPreflight(resource, generation);
+	}
+
+	private async _renderResourceAfterPreflight(resource: URI, generation: number): Promise<void> {
 		const webview = this._ensureWebview(resource);
 		webview.contentOptions = {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
 		};
-		webview.setHtml(this._buildHtml(resource));
+		const isValid = await readParadisPdfHeader(this._fileService, resource);
+		switch (getParadisPdfRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration)) {
+			case 'rejected':
+				webview.setHtml(this._buildRejectedFileHtml());
+				return;
+			case 'viewer':
+				webview.setHtml(this._buildHtml(resource));
+				return;
+			case 'stale':
+				return;
+		}
+	}
+
+	private _buildRejectedFileHtml(): string {
+		return '<!DOCTYPE html><html><body>PDF を表示できませんでした: ファイルが空または破損しています</body></html>';
 	}
 
 	private _buildHtml(resource: URI): string {

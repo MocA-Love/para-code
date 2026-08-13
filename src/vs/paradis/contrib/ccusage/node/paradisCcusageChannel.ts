@@ -118,6 +118,8 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private readonly cache = new Map<string, { at: number; ttl: number; value: unknown }>();
 	/** 実行中リクエストの共有(同一キーの同時要求を1本にまとめる)。 */
 	private readonly inflight = new Map<string, Promise<unknown>>();
+	/** dispose 時に停止する実行中の子プロセス。 */
+	private readonly activeChildren = new Set<cp.ChildProcess>();
 	/** バックグラウンドで温め続ける対象(キーは cache と同じ)。 */
 	private readonly warmTargets = new Map<string, IWarmTarget>();
 	/** 温め直しのタイマー。最初の要求が来て初めて回り始める。 */
@@ -134,14 +136,16 @@ export class ParadisCcusageService implements IParadisCcusageService {
 
 	constructor(
 		private readonly logService: ILogService,
-		configurationService: IConfigurationService,
-		args: NativeParsedArgs,
+		configurationService?: IConfigurationService,
+		args?: NativeParsedArgs,
+		private readonly execFile: typeof cp.execFile = cp.execFile,
+		private readonly now: () => number = Date.now,
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
 			'ParadisCcusage',
 			createParadisShellEnvResolver(logService, configurationService, args),
-			Date.now,
+			this.now,
 			reportParadisShellEnvDiagnosticError,
 		);
 	}
@@ -188,7 +192,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		const key = this.cacheKeyFor(reportArgs, options);
 		const existing = this.warmTargets.get(key);
 		if (existing) {
-			existing.lastRequestedAt = Date.now();
+			existing.lastRequestedAt = this.now();
 			existing.ttl = ttl;
 			// 実際に要求が来たなら、諦めていた対象も温め直す価値がある。
 			existing.failures = 0;
@@ -204,7 +208,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			}
 			// bypassCache は要求ごとの都合なので覚えない(温め直しは常に実行する)。
 			const { bypassCache: _ignored, ...rest } = options;
-			this.warmTargets.set(key, { reportArgs, options: rest, ttl, lastRequestedAt: Date.now(), failures: 0 });
+			this.warmTargets.set(key, { reportArgs, options: rest, ttl, lastRequestedAt: this.now(), failures: 0 });
 		}
 		if (this.warmTimer === undefined) {
 			const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
@@ -230,7 +234,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				return;
 			}
 			// 経過時間はループの都度見る(1本に数十秒かかるので、入口の1回では古くなる)。
-			const now = Date.now();
+			const now = this.now();
 			if (now - target.lastRequestedAt >= WARM_IDLE_TIMEOUT_MS || target.failures >= WARM_MAX_CONSECUTIVE_FAILURES) {
 				this.warmTargets.delete(key);
 				continue;
@@ -253,6 +257,9 @@ export class ParadisCcusageService implements IParadisCcusageService {
 				// 続けて失敗する対象は諦める(次に画面から要求されたら再開する)。
 				target.failures++;
 				this.logService.trace(`[ParadisCcusage] background refresh failed for 'ccusage ${target.reportArgs.join(' ')}': ${error}`);
+				if (target.failures >= WARM_MAX_CONSECUTIVE_FAILURES) {
+					this.warmTargets.delete(key);
+				}
 			}
 		}
 		if (this.warmTargets.size === 0 && this.warmTimer !== undefined) {
@@ -287,6 +294,14 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			this.warmTimer = undefined;
 		}
 		this.warmTargets.clear();
+		for (const child of this.activeChildren) {
+			try {
+				child.kill();
+			} catch (error) {
+				this.logService.trace(`[ParadisCcusage] failed to stop child process during dispose: ${error}`);
+			}
+		}
+		this.activeChildren.clear();
 	}
 
 	private async execJsonInternal<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<T> {
@@ -294,7 +309,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		const cacheKey = JSON.stringify([args, options.executablePath ?? '']);
 		if (!options.bypassCache) {
 			const cached = this.cache.get(cacheKey);
-			if (cached && Date.now() - cached.at < cached.ttl) {
+			if (cached && this.now() - cached.at < cached.ttl) {
 				return cached.value as T;
 			}
 		}
@@ -306,8 +321,10 @@ export class ParadisCcusageService implements IParadisCcusageService {
 
 		const promise = this.doExecJson<T>(reportArgs, args, options)
 			.then(({ value, usedOfflineFallback }) => {
-				this.pruneCache();
-				this.cache.set(cacheKey, { at: Date.now(), ttl: usedOfflineFallback ? FALLBACK_CACHE_TTL_MS : ttl, value });
+				if (!this.disposed) {
+					this.pruneCache();
+					this.cache.set(cacheKey, { at: this.now(), ttl: usedOfflineFallback ? FALLBACK_CACHE_TTL_MS : ttl, value });
+				}
 				return value;
 			})
 			.finally(() => {
@@ -321,7 +338,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 
 	/** 期限切れエントリの掃除(since が日付で変わるため古いキーが溜まり続けるのを防ぐ)。 */
 	private pruneCache(): void {
-		const now = Date.now();
+		const now = this.now();
 		for (const [key, entry] of this.cache) {
 			if (now - entry.at >= entry.ttl) {
 				this.cache.delete(key);
@@ -365,13 +382,18 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		const fullArgs = [...executable.prefixArgs, ...args];
 		const env = await this.getExecEnv();
 		return new Promise<string>((resolve, reject) => {
-			cp.execFile(executable.command, fullArgs, {
+			const execution: { child?: cp.ChildProcess; completed: boolean } = { completed: false };
+			execution.child = this.execFile(executable.command, fullArgs, {
 				encoding: 'utf8',
 				timeout: EXEC_TIMEOUT_MS,
 				maxBuffer: EXEC_MAX_BUFFER,
 				windowsHide: true,
 				env: { ...env, NO_COLOR: '1', LOG_LEVEL: '0' }
 			}, (err, stdout, stderr) => {
+				execution.completed = true;
+				if (execution.child) {
+					this.activeChildren.delete(execution.child);
+				}
 				if (err) {
 					this.logService.warn(`[ParadisCcusage] ${executable.command} ${fullArgs.join(' ')} failed: ${stderr || err.message}`);
 					// 実行自体に失敗した場合は次回に別の候補を試せるようキャッシュを破棄する
@@ -384,6 +406,9 @@ export class ParadisCcusageService implements IParadisCcusageService {
 					resolve(stdout);
 				}
 			});
+			if (!execution.completed && execution.child) {
+				this.activeChildren.add(execution.child);
+			}
 		});
 	}
 
@@ -459,7 +484,17 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private async canExecute(command: string): Promise<boolean> {
 		const env = await this.getExecEnv();
 		return new Promise<boolean>(resolve => {
-			cp.execFile(command, ['--version'], { timeout: 10_000, windowsHide: true, env }, err => resolve(!err));
+			const execution: { child?: cp.ChildProcess; completed: boolean } = { completed: false };
+			execution.child = this.execFile(command, ['--version'], { timeout: 10_000, windowsHide: true, env }, err => {
+				execution.completed = true;
+				if (execution.child) {
+					this.activeChildren.delete(execution.child);
+				}
+				resolve(!err);
+			});
+			if (!execution.completed && execution.child) {
+				this.activeChildren.add(execution.child);
+			}
 		});
 	}
 

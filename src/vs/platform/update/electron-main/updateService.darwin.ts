@@ -16,6 +16,9 @@ import { IProductService } from '../../product/common/productService.js';
 import { asJson, IRequestService } from '../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+// PARA-PATCH: begin keep the desktop update feed platform aligned with Para Code release CI.
+import { getParadisDesktopUpdatePlatform } from '../common/paradisUpdatePlatform.js';
+// PARA-PATCH: end
 import { AvailableForDownload, IUpdate, State, StateType, UpdateType } from '../common/update.js';
 import { IMeteredConnectionService } from '../../meteredConnection/common/meteredConnection.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js'; // PARA-PATCH: +getUpdateAccessHeaders (Cloudflare Access service token headers, see CLAUDE.md)
@@ -94,7 +97,9 @@ export class DarwinUpdateService extends AbstractUpdateService implements IRelau
 	}
 
 	protected buildUpdateFeedUrl(quality: string, commit: string, options?: IUpdateURLOptions): string | undefined {
-		const assetID = this.productService.darwinUniversalAssetId ?? (process.arch === 'x64' ? 'darwin' : 'darwin-arm64');
+		// PARA-PATCH: begin derive the published Para Code update feed platform through the shared contract.
+		const assetID = getParadisDesktopUpdatePlatform('darwin', process.arch, { darwinUniversalAssetId: this.productService.darwinUniversalAssetId });
+		// PARA-PATCH: end
 		const url = createUpdateURL(this.productService.updateUrl!, assetID, quality, commit, options);
 		// PARA-PATCH: merge Cloudflare Access service token headers (see CLAUDE.md).
 		const headers = { ...getUpdateRequestHeaders(this.productService.version), ...getUpdateAccessHeaders(this.productService) };

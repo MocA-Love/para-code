@@ -9,8 +9,6 @@
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { language } from '../../../../base/common/platform.js';
-import { joinPath } from '../../../../base/common/resources.js';
-import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { EXTENSION_INSTALL_SKIP_PUBLISHER_TRUST_CONTEXT, IExtensionGalleryService, InstallExtensionInfo } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { areSameExtensions } from '../../../../platform/extensionManagement/common/extensionManagementUtil.js';
@@ -24,6 +22,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { IWorkbenchExtensionManagementService } from '../../../../workbench/services/extensionManagement/common/extensionManagement.js';
 import { ILocaleService } from '../../../../workbench/services/localization/common/locale.js';
+import { BUNDLED_VSIX_FILES, ParadisBundledVsixInstaller } from '../common/paradisBundledVsixInstaller.js';
 
 /**
  * Para Code が全ユーザーへデフォルト導入する拡張機能のID一覧（ギャラリー = Open VSX）。
@@ -77,33 +76,7 @@ const DEFAULT_EXTENSION_IDS: readonly string[] = [
 	'MS-CEINTL.vscode-language-pack-ja'
 ];
 
-/**
- * Open VSX 未公開のためリポジトリに .vsix を同梱してインストールする拡張のファイル名一覧。
- * ビルド時に build/gulpfile.vscode.ts の packageTask が resources/paradis/extensions/*.vsix を
- * 成果物へコピーする。開発時は appRoot（= リポジトリルート）直下の同パスから解決される。
- */
-const BUNDLED_VSIX_FILES: readonly string[] = [
-	'mosapride.zenkaku-0.0.3.vsix',
-	'AntiAntiSepticeye.vscode-color-picker-0.0.4.vsix',
-	'netcorext.uuid-generator-0.0.5.vsix',
-	'ms-vsliveshare.vsliveshare-1.1.122.vsix',
-	'jeff-hykin.polacode-2019-0.6.2.vsix',
-	'yudai1204.polacode-button-0.0.1.vsix',
-	'VisualStudioExptTeam.vscodeintellicode-1.3.2.vsix',
-	'VisualStudioExptTeam.intellicode-api-usage-examples-0.2.9.vsix',
-	'evondev.indent-rainbow-palettes-0.0.20.vsix',
-	// Para Codeパッチ版 (upstream v2.4.5ベース、composeプロジェクトで現在のワークスペース外の
-	// コンテナ/イメージ/ボリューム/ネットワークをContainers系ビューから隠す)。installGivenVersion:true
-	// でpinnedになるため、ギャラリーの新版に自動更新で置き換えられることはない (ユーザーが拡張ビューで
-	// 手動更新した場合のみ失われる)。既にギャラリー版がインストール済みでもVSIXインストールが既存版を
-	// 置き換える。ビルド手順はNOTES.md参照
-	'ms-azuretools.vscode-containers-2.4.107.vsix'
-];
-
-const BUNDLED_VSIX_DIR = 'resources/paradis/extensions';
-
 const INSTALLED_IDS_STORAGE_KEY = 'paradis.defaultExtensions.installedIds';
-const INSTALLED_VSIX_STORAGE_KEY = 'paradis.defaultExtensions.installedVsix';
 const JA_LANGUAGE_ID = 'ja';
 
 /**
@@ -114,6 +87,7 @@ const JA_LANGUAGE_ID = 'ja';
 class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisDefaultExtensions';
+	private readonly bundledVsixInstaller: ParadisBundledVsixInstaller;
 
 	constructor(
 		@IWorkbenchExtensionManagementService private readonly extensionManagementService: IWorkbenchExtensionManagementService,
@@ -128,6 +102,15 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 		@IProgressService private readonly progressService: IProgressService,
 	) {
 		super();
+		this.bundledVsixInstaller = new ParadisBundledVsixInstaller({
+			files: BUNDLED_VSIX_FILES,
+			appRoot: this.environmentService.appRoot,
+			storageService: this.storageService,
+			exists: location => this.fileService.exists(location),
+			install: location => this.extensionManagementService.install(location, { installGivenVersion: true }).then(() => undefined),
+			warn: (message, error) => this.logService.warn(message, error),
+			info: message => this.logService.info(message),
+		});
 
 		this.run();
 	}
@@ -173,13 +156,7 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 		if (DEFAULT_EXTENSION_IDS.some(id => !doneGallery.has(id.toLowerCase()))) {
 			return true;
 		}
-		let doneVsix: Set<string>;
-		try {
-			doneVsix = new Set<string>(JSON.parse(this.storageService.get(INSTALLED_VSIX_STORAGE_KEY, StorageScope.APPLICATION, '[]')));
-		} catch {
-			doneVsix = new Set<string>();
-		}
-		return BUNDLED_VSIX_FILES.some(file => !doneVsix.has(file));
+		return this.bundledVsixInstaller.hasPendingInstalls();
 	}
 
 	private readDoneIds(): Set<string> {
@@ -266,35 +243,7 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 	}
 
 	private async installBundledVsixExtensions(): Promise<void> {
-		const doneRaw = this.storageService.get(INSTALLED_VSIX_STORAGE_KEY, StorageScope.APPLICATION, '[]');
-		let done: Set<string>;
-		try {
-			done = new Set<string>(JSON.parse(doneRaw));
-		} catch {
-			done = new Set<string>();
-		}
-
-		const remaining = BUNDLED_VSIX_FILES.filter(file => !done.has(file));
-		if (remaining.length === 0) {
-			return;
-		}
-
-		for (const file of remaining) {
-			const location = joinPath(URI.file(this.environmentService.appRoot), ...BUNDLED_VSIX_DIR.split('/'), file);
-			try {
-				if (!(await this.fileService.exists(location))) {
-					this.logService.warn(`[ParadisDefaultExtensions] bundled vsix not found: ${location.fsPath}`);
-					continue;
-				}
-				await this.extensionManagementService.install(location, { installGivenVersion: true });
-				done.add(file);
-				this.logService.info(`[ParadisDefaultExtensions] installed bundled vsix: ${file}`);
-			} catch (error) {
-				this.logService.warn(`[ParadisDefaultExtensions] failed to install bundled vsix ${file}`, error);
-			}
-		}
-
-		this.storageService.store(INSTALLED_VSIX_STORAGE_KEY, JSON.stringify([...done]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		await this.bundledVsixInstaller.install();
 	}
 
 	private async promptRestartForJapaneseLocale(): Promise<void> {

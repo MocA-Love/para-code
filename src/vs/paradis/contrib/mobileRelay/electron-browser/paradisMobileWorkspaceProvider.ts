@@ -12,7 +12,7 @@ import { Disposable, DisposableMap, DisposableStore, MutableDisposable, toDispos
 import { URI } from '../../../../base/common/uri.js';
 import { paradisResolveExternalPath } from '../../../common/paradisPathUri.js';
 import { reportParadisDiagnosticError, runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { extUriBiasedIgnorePathCase, joinPath } from '../../../../base/common/resources.js';
+import { extUriBiasedIgnorePathCase } from '../../../../base/common/resources.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { TokenizationRegistry } from '../../../../editor/common/languages.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
@@ -56,6 +56,7 @@ import { IParadisMobileTerminalViewport, paradisIsValidTerminalViewportMessage, 
 import { paradisEncodeJsonResponsePayload } from '../common/paradisMobileGzipJson.js';
 import { paradisContentHashResponse } from '../common/paradisMobileContentHash.js';
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
+import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import type { IParadisAgentLaunchInWorkspaceRequest, IParadisHeadlessWorktreeRequest, IParadisHeadlessWorktreeResult, IParadisWorktreeCreateFormData } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 
 const encoder = new TextEncoder();
@@ -1568,61 +1569,17 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	// --- fs チャネル ------------------------------------------------------------
 
-	/** ワークスペースルート配下に正規化したURIを返す（../ 等の脱出は拒否）。 */
-	private resolveWorkspacePath(ws: string, relPath: string): URI | undefined {
-		const root = this.resolveWsRoot(ws);
-		if (!root) {
-			return undefined;
-		}
-		// モバイル側は常に'/'区切りの相対パスを送る想定。Windows上ではjoinPath内部で
-		// path.win32.joinが使われ'\'もセパレータとして解釈・畳み込まれるため、
-		// '/'区切りのセグメント検査だけでは`..\..\secrets`のような脱出を検出できない。
-		// '\'を含む入力はこの経路では常に不正とみなして拒否する。
-		if (relPath.includes('\\')) {
-			return undefined;
-		}
-		const segments = relPath.split('/').filter(s => s.length > 0);
-		if (segments.some(s => s === '..' || s === '.')) {
-			return undefined;
-		}
-		return segments.length === 0 ? root : joinPath(root, ...segments);
-	}
-
 	/**
-	 * resolveWorkspacePathに加え、シンボリックリンク経由でのワークスペース外脱出も検査する
+	 * 相対パスに加え、シンボリックリンク経由でのワークスペース外脱出も検査する
 	 * （設計書 §8）。'list'の子要素フィルタだけでは対象自体やパス途中のシンボリックリンクを
 	 * 防げないため、実パスを解決してリポジトリルート配下に収まっているかを確認する。
 	 */
 	private async resolveWorkspacePathReal(ws: string, relPath: string): Promise<URI | undefined> {
-		const uri = this.resolveWorkspacePath(ws, relPath);
-		if (!uri) {
-			return undefined;
-		}
 		const root = this.resolveWsRoot(ws);
 		if (!root) {
 			return undefined;
 		}
-		const [real, realRoot] = await Promise.all([
-			this.fileService.realpath(uri),
-			this.fileService.realpath(root),
-		]);
-		if (!real || !realRoot) {
-			return undefined;
-		}
-		// fileService.realpath は fs.realpath の戻り値文字列をそのまま URI.path に入れて返すため、
-		// Windows ではネイティブパス（`C:\Users\...`、バックスラッシュ区切り・先頭スラッシュ無し）が
-		// 入り、URI 形式の root.path（`/c:/Users/...`）と文字列比較しても絶対に一致しない。
-		// URI.file で正規化し直してから、大文字小文字差（ドライブレター等）も吸収する
-		// extUriBiasedIgnorePathCase で包含判定する。
-		const normalizeRealUri = (candidate: URI): URI => candidate.scheme === 'file' && (candidate.path.includes('\\') || !candidate.path.startsWith('/'))
-			? URI.file(candidate.path)
-			: candidate;
-		const realUri = normalizeRealUri(real);
-		const realRootUri = normalizeRealUri(realRoot);
-		if (!extUriBiasedIgnorePathCase.isEqualOrParent(realUri, realRootUri)) {
-			return undefined;
-		}
-		return uri;
+		return paradisResolveMobileWorkspacePath(this.fileService, root, relPath);
 	}
 
 	private async readWorkspaceFile(ws: string, relPath: string): Promise<string | undefined> {
@@ -1751,11 +1708,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				const content = typeof msg.data === 'string' ? decodeBase64(msg.data) : VSBuffer.wrap(msg.data);
-				const dot = msg.name.lastIndexOf('.');
-				const ext = dot >= 0 ? msg.name.slice(dot + 1).replace(/[^a-zA-Z0-9]/g, '').slice(0, 8) : '';
-				const dir = joinPath(this.environmentService.userRoamingDataHome, 'paraMobileUploads');
 				// 同ミリ秒の連続アップロードで上書きしないよう乱数サフィックスを付ける
-				const target = joinPath(dir, `attachment-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext ? `.${ext}` : ''}`);
+				const target = paradisCreateMobileUploadTarget(this.environmentService.userRoamingDataHome, msg.name);
 				await this.fileService.writeFile(target, content);
 				reply({ t: 'upload', path: target.fsPath });
 			} catch (err) {

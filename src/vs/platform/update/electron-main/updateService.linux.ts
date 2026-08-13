@@ -14,6 +14,9 @@ import { IProductService } from '../../product/common/productService.js';
 import { asJson, IRequestService } from '../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+// PARA-PATCH: begin keep the desktop update feed platform aligned with Para Code release CI.
+import { getParadisDesktopUpdatePlatform } from '../common/paradisUpdatePlatform.js';
+// PARA-PATCH: end
 import { AvailableForDownload, IUpdate, State, StateType, UpdateType } from '../common/update.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, IUpdateURLOptions } from './abstractUpdateService.js'; // PARA-PATCH: +getUpdateAccessHeaders/getUpdateRequestHeaders (Cloudflare Access service token headers, see CLAUDE.md)
 
@@ -35,7 +38,10 @@ export class LinuxUpdateService extends AbstractUpdateService {
 	}
 
 	protected buildUpdateFeedUrl(quality: string, commit: string, options?: IUpdateURLOptions): string {
-		return createUpdateURL(this.productService.updateUrl!, `linux-${process.arch}`, quality, commit, options);
+		// PARA-PATCH: begin derive the published Para Code update feed platform through the shared contract.
+		const platform = getParadisDesktopUpdatePlatform('linux', process.arch);
+		// PARA-PATCH: end
+		return createUpdateURL(this.productService.updateUrl!, platform, quality, commit, options);
 	}
 
 	protected doCheckForUpdates(explicit: boolean, _pendingCommit?: string): void {

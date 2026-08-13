@@ -6,7 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { getRtcView, startWebrtcMirror, WebrtcMirrorSession } from '../webrtcMirror.js';
+import { getRtcView, startWebrtcMirror, WebrtcMirrorCoordinator } from '../webrtcMirror.js';
 import { colors } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
 
@@ -74,52 +74,32 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 
 	// WebRTCミラー（低遅延経路）。確立できたら RTCView 表示、失敗・切断時は
 	// 既存のJPEGフレーム表示へ自動フォールバックする（JPEGは並行して流れ続けている）。
-	const webrtcSessionRef = useRef<WebrtcMirrorSession | undefined>(undefined);
-	// 確立中(await中)に stop/切替/非active化が起きた場合に、解決後のセッションを
-	// 復活させないための世代トークン。stopWebrtc / tryWebrtc のたびに進める。
-	const webrtcGenRef = useRef(0);
 	const [webrtcUrl, setWebrtcUrl] = useState<string | undefined>();
 	// RTCView が実際に描画している映像の実寸法（onDimensionsChange で更新）。
 	// タップ/スワイプの座標計算はこれを最優先で使う。PC側リサイズの途中でも
 	// 「描画されている映像そのもの」の寸法なので、表示と計算が絶対にずれない。
 	const webrtcDimsRef = useRef<{ w: number; h: number } | undefined>(undefined);
+	const webrtcCoordinatorRef = useRef<WebrtcMirrorCoordinator | undefined>(undefined);
+	if (webrtcCoordinatorRef.current === undefined) {
+		webrtcCoordinatorRef.current = new WebrtcMirrorCoordinator(
+			startWebrtcMirror,
+			session => {
+				webrtcDimsRef.current = undefined;
+				setWebrtcUrl(session?.streamUrl);
+			},
+			error => console.warn('[browser] webrtc unavailable, falling back to JPEG mirror:', error instanceof Error ? error.message : error),
+		);
+	}
 	const stopWebrtc = useCallback(() => {
-		webrtcGenRef.current++;
-		webrtcSessionRef.current?.stop();
-		webrtcSessionRef.current = undefined;
 		webrtcDimsRef.current = undefined;
-		setWebrtcUrl(undefined);
+		webrtcCoordinatorRef.current?.stop();
 	}, []);
-	const tryWebrtc = useCallback(async (targetId: string) => {
+	const tryWebrtc = useCallback((targetId: string) => {
 		if (RTCViewComponent === undefined) {
 			return; // このビルドにはネイティブモジュールが無い
 		}
-		webrtcSessionRef.current?.stop();
-		webrtcSessionRef.current = undefined;
 		webrtcDimsRef.current = undefined; // 旧セッションの映像寸法をJPEGの座標計算に残さない
-		const gen = ++webrtcGenRef.current;
-		try {
-			const session = await startWebrtcMirror(targetId);
-			if (gen !== webrtcGenRef.current) {
-				session.stop(); // 確立中に stop/切替された（古い世代）→ 即破棄
-				return;
-			}
-			webrtcSessionRef.current = session;
-			session.onClosed(() => {
-				if (webrtcSessionRef.current === session) {
-					webrtcSessionRef.current = undefined;
-					webrtcDimsRef.current = undefined;
-					setWebrtcUrl(undefined);
-				}
-			});
-			webrtcDimsRef.current = undefined; // 初回 onDimensionsChange まではJPEGフレーム寸法で代用
-			setWebrtcUrl(session.streamUrl);
-		} catch (e) {
-			console.warn('[browser] webrtc unavailable, falling back to JPEG mirror:', e instanceof Error ? e.message : e);
-			if (gen === webrtcGenRef.current) {
-				setWebrtcUrl(undefined);
-			}
-		}
+		webrtcCoordinatorRef.current?.start(targetId);
 	}, []);
 
 	const loadTargets = useCallback(async () => {
@@ -177,13 +157,11 @@ export function BrowserPanel({ active, preferredToken }: { active: boolean; pref
 	// browserStop は ref 経由で参照する（再接続時にミラーが止まる不具合の防止）。
 	const browserStopRef = useRef(browserStop);
 	browserStopRef.current = browserStop;
-	const stopWebrtcRef = useRef(stopWebrtc);
-	stopWebrtcRef.current = stopWebrtc;
 	useEffect(() => {
 		return () => {
 			browserStartGenRef.current++;
 			targetLoadGenRef.current++;
-			stopWebrtcRef.current();
+			webrtcCoordinatorRef.current?.dispose();
 			void browserStopRef.current();
 		};
 	}, []);

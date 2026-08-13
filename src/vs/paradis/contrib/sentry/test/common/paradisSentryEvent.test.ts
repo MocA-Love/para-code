@@ -88,6 +88,15 @@ suite('ParadisSentryEvent', () => {
 		assert.strictEqual(paradisPrepareSentryEvent({ ...canceled, tags: { ...canceled.tags, 'para.prepared': '1' } }, 'main'), null);
 	});
 
+	test('drops automatically captured CancellationError events', () => {
+		assert.strictEqual(paradisPrepareSentryEvent({
+			tags: { 'para.scope': 'owned', 'para.operation': 'automatic-cancellation-error' },
+			exception: {
+				values: [{ type: 'CancellationError', value: 'Canceled', mechanism: { type: 'auto.node.onunhandledrejection', handled: false } }],
+			},
+		}, 'utility'), null);
+	});
+
 	// 実地では30件中3件の cancellation が、無関係な withScope から漏れた 'owned' / 'file-viewers'
 	// を身にまとって届いていた。scope タグで判定していると、この3件だけ落とせない。
 	test('drops an automatic cancellation even when scope tags leaked onto it', () => {
@@ -109,5 +118,19 @@ suite('ParadisSentryEvent', () => {
 			},
 		}, 'main');
 		assert.strictEqual(reported?.tags?.['para.scope'], 'owned');
+	});
+
+	test('drops a foreign native crash before preparing it for Sentry', () => {
+		assert.strictEqual(paradisPrepareSentryEvent({
+			platform: 'native',
+			tags: { 'para.operation': 'foreign-native-crash' },
+			exception: {
+				values: [{
+					stacktrace: {
+						frames: [{ package: '/opt/homebrew/Cellar/ffmpeg/7.1/bin/ffplay' }],
+					},
+				}],
+			},
+		}, 'main'), null);
 	});
 });

@@ -39,6 +39,29 @@ import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 
 /** vendored docx-preview / jszip 成果物の配置ディレクトリ（AppResourcePath）。 */
 const DOCX_MEDIA_ROOT = 'vs/paradis/contrib/fileViewers/electron-browser/media/docxpreview' as const;
+const DOCX_HEADER_BYTES = 4;
+
+/** DOCX(Zip)の先頭ローカルファイルヘッダを検証する。 */
+export function isParadisDocxHeader(bytes: Uint8Array): boolean {
+	return bytes.length === DOCX_HEADER_BYTES && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04;
+}
+
+export async function readParadisDocxHeader(fileService: IFileService, resource: URI): Promise<boolean | undefined> {
+	try {
+		return isParadisDocxHeader((await fileService.readFile(resource, { length: DOCX_HEADER_BYTES })).value.buffer);
+	} catch {
+		return undefined;
+	}
+}
+
+export type ParadisDocxRenderDecision = 'rejected' | 'viewer' | 'stale';
+
+export function getParadisDocxRenderDecision(isValid: boolean | undefined, resource: URI, currentResource: URI | undefined, generation: number, currentGeneration: number): ParadisDocxRenderDecision {
+	if (generation !== currentGeneration || !isEqual(currentResource, resource)) {
+		return 'stale';
+	}
+	return isValid === false ? 'rejected' : 'viewer';
+}
 
 export class ParadisDocxFileEditor extends EditorPane {
 
@@ -52,6 +75,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _webviewClaimed = false;
 	private _editorVisible = false;
 	private _currentResource: URI | undefined;
+	private _renderGeneration = 0;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 
 	constructor(
@@ -99,6 +123,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 			// watcher が作れなくても表示は継続できる。
 		}
 
+		if (this._webviewClaimed) {
+			this._renderResource(resource);
+		}
 		this._updateWebviewPlacement();
 	}
 
@@ -131,13 +158,32 @@ export class ParadisDocxFileEditor extends EditorPane {
 		return [dirname(resource), FileAccess.asFileUri(DOCX_MEDIA_ROOT)];
 	}
 
-	private _renderResource(resource: URI): void {
+	protected _renderResource(resource: URI): void {
+		const generation = ++this._renderGeneration;
+		void this._renderResourceAfterPreflight(resource, generation);
+	}
+
+	private async _renderResourceAfterPreflight(resource: URI, generation: number): Promise<void> {
 		const webview = this._ensureWebview(resource);
 		webview.contentOptions = {
 			allowScripts: true,
 			localResourceRoots: this._localResourceRoots(resource)
 		};
-		webview.setHtml(this._buildHtml(resource));
+		const isValid = await readParadisDocxHeader(this._fileService, resource);
+		switch (getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration)) {
+			case 'rejected':
+				webview.setHtml(this._buildRejectedFileHtml());
+				return;
+			case 'viewer':
+				webview.setHtml(this._buildHtml(resource));
+				return;
+			case 'stale':
+				return;
+		}
+	}
+
+	private _buildRejectedFileHtml(): string {
+		return '<!DOCTYPE html><html><body>Word 文書を表示できませんでした: ファイルが空または破損しています</body></html>';
 	}
 
 	private _buildHtml(resource: URI): string {

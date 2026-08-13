@@ -123,7 +123,39 @@ export interface IParadisBookmarksService {
 }
 
 const BOOKMARKS_STORAGE_KEY = 'paradis.browser.bookmarks';
+const BOOKMARKS_STORAGE_RECOVERY_BACKUP_KEY = 'paradis.browser.bookmarks.recoveryBackup';
 const FAVICONS_STORAGE_KEY = 'paradis.browser.bookmarks.favicons';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null;
+}
+
+function recoverParadisBookmarkNodes(value: unknown): ParadisBookmarkNode[] {
+	const legacyRoot = isRecord(value) ? value.root : undefined;
+	const persistedNodes = Array.isArray(value)
+		? value
+		: isRecord(legacyRoot) && Array.isArray(legacyRoot.children)
+			? legacyRoot.children
+			: [];
+	const seenIds = new Set<string>();
+	const removeDuplicates = (nodes: readonly ParadisBookmarkNode[]): ParadisBookmarkNode[] => {
+		const result: ParadisBookmarkNode[] = [];
+		for (const node of nodes) {
+			let id = node.id;
+			while (seenIds.has(id)) {
+				id = generateUuid();
+			}
+			seenIds.add(id);
+			if (isParadisBookmark(node)) {
+				result.push(id === node.id ? node : { ...node, id });
+				continue;
+			}
+			result.push({ ...node, id, children: removeDuplicates(node.children) });
+		}
+		return result;
+	};
+	return removeDuplicates(sanitizeParadisNodes(persistedNodes));
+}
 
 export class ParadisBookmarksService extends Disposable implements IParadisBookmarksService {
 
@@ -390,15 +422,24 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 
 	private _loadNodes(): void {
 		const raw = this._storageService.get(BOOKMARKS_STORAGE_KEY, StorageScope.APPLICATION);
-		if (!raw) {
-			this._nodes = [];
-			return;
-		}
+		let nodes: ParadisBookmarkNode[];
 		try {
-			const parsed: unknown = JSON.parse(raw);
-			this._nodes = sanitizeParadisNodes(parsed);
+			nodes = raw ? recoverParadisBookmarkNodes(JSON.parse(raw)) : [];
 		} catch {
-			this._nodes = [];
+			nodes = [];
+			if (raw) {
+				this._storageService.store(BOOKMARKS_STORAGE_RECOVERY_BACKUP_KEY, raw, StorageScope.APPLICATION, StorageTarget.USER);
+			}
+		}
+		this._nodes = nodes;
+		const recovered = JSON.stringify(nodes);
+		if (raw !== recovered) {
+			this._storing = true;
+			try {
+				this._storageService.store(BOOKMARKS_STORAGE_KEY, recovered, StorageScope.APPLICATION, StorageTarget.USER);
+			} finally {
+				this._storing = false;
+			}
 		}
 	}
 

@@ -363,6 +363,218 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			testDisposables.dispose();
 		}
 	});
+
+	test('restores source editor and terminal ownership when the target disappears during folder mutation', async () => {
+		const testDisposables = new DisposableStore();
+		const terminalIds = createUniqueTerminalIds();
+		const terminalOpenStarted = new DeferredPromise<void>();
+		const releaseTerminalOpen = new DeferredPromise<void>();
+		const switchEvents: string[] = [];
+		let sourceTerminal: ITerminalInstance | undefined;
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(
+				['space-a', 'space-b'],
+				testDisposables,
+				async (phase, uri) => {
+					if (phase === 'end' && uri.path === '/workspace-b') {
+						throw new Error('target deleted');
+					}
+				}
+			);
+			testDisposables.add(harness.workspaceSwitchService.onDidSwitchScope(stateKey => switchEvents.push(stateKey)));
+			harness.installTerminalScope(async instance => {
+				assert.strictEqual(instance, sourceTerminal);
+				terminalOpenStarted.complete();
+				await releaseTerminalOpen.p;
+			});
+			const sourceEditor = harness.createEditor('/workspace-a/rollback.txt', true);
+			const terminalInput = harness.createEditor('/workspace-a/rollback-terminal', false);
+			await harness.parts.activeGroup.openEditor(sourceEditor, { pinned: true });
+			await harness.parts.activeGroup.openEditor(terminalInput, { pinned: true });
+			sourceTerminal = harness.addTerminal(terminalInput, terminalIds.instanceId, terminalIds.persistentProcessId, terminalIds.shellIntegrationNonce);
+
+			const switchPromise = harness.workspaceSwitchService.switchRepository('space-b');
+			const switchSettled = switchPromise.then(() => true, () => true);
+			await Promise.race([
+				terminalOpenStarted.p,
+				switchSettled.then(() => { throw new Error('The failed switch settled before its rollback completion participant finished'); }),
+			]);
+			await timeout(0);
+			assert.deepStrictEqual({
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				isSwitching: harness.workspaceSwitchService.isSwitching,
+				switchEvents,
+				sourceTerminalOwner: paradisGetParkedTerminalEditorStateKey(sourceTerminal.instanceId),
+			}, {
+				activeStateKey: 'space-a',
+				isSwitching: false,
+				switchEvents: [],
+				sourceTerminalOwner: undefined,
+			});
+
+			releaseTerminalOpen.complete();
+			const result = await Promise.allSettled([switchPromise]);
+
+			assert.deepStrictEqual({
+				switchStatus: result[0].status,
+				switchError: result[0].status === 'rejected' ? result[0].reason.message : undefined,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				isSwitching: harness.workspaceSwitchService.isSwitching,
+				switchEvents,
+				sourceEditorVisible: harness.parts.activeGroup.contains(sourceEditor),
+				sourceEditorOwned: harness.editorScopeService.hasLiveState('space-a'),
+				sourceTerminalOwner: paradisGetParkedTerminalEditorStateKey(sourceTerminal.instanceId),
+				detachedTerminalInstanceIds: harness.detachedTerminalInstanceIds,
+				terminalServiceInstanceIds: harness.terminalEditorService.instances.map(instance => instance.instanceId),
+			}, {
+				switchStatus: 'rejected',
+				switchError: 'target deleted',
+				activeStateKey: 'space-a',
+				isSwitching: false,
+				switchEvents: ['space-a'],
+				sourceEditorVisible: true,
+				sourceEditorOwned: false,
+				sourceTerminalOwner: undefined,
+				detachedTerminalInstanceIds: [terminalIds.instanceId],
+				terminalServiceInstanceIds: [],
+			});
+		} finally {
+			releaseTerminalOpen.complete();
+			const parked = paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(terminalIds.persistentProcessId, terminalIds.shellIntegrationNonce));
+			parked?.dispose();
+			if (sourceTerminal !== undefined && parked !== sourceTerminal) {
+				sourceTerminal.dispose();
+			}
+			try {
+				await harness?.parts.activeGroup.closeAllEditors();
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	test('cancels earlier prepared retirements and keeps the repository when a descendant vetoes removal', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const timeline: string[] = [];
+			harness.editorScopeService.prepareScopeRetirement = async stateKey => {
+				timeline.push(`prepare:${stateKey}`);
+				return stateKey !== 'worktree:veto';
+			};
+			harness.editorScopeService.cancelScopeRetirement = async stateKey => { timeline.push(`cancel:${stateKey}`); };
+
+			await harness.workspaceSwitchService.removeRepository('space-a', ['worktree:veto']);
+
+			assert.deepStrictEqual({
+				timeline,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				repositoryIds: harness.workspaceSwitchService.repositories.map(repository => repository.id),
+			}, {
+				timeline: ['prepare:space-a', 'prepare:worktree:veto', 'cancel:space-a'],
+				activeStateKey: 'space-a',
+				repositoryIds: ['space-a', 'space-b'],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	test('cancels earlier prepared retirements and keeps the repository when descendant preparation throws', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const timeline: string[] = [];
+			harness.editorScopeService.prepareScopeRetirement = async stateKey => {
+				timeline.push(`prepare:${stateKey}`);
+				if (stateKey === 'worktree:error') {
+					throw new Error('prepare failed');
+				}
+				return true;
+			};
+			harness.editorScopeService.cancelScopeRetirement = async stateKey => { timeline.push(`cancel:${stateKey}`); };
+
+			await harness.workspaceSwitchService.removeRepository('space-a', ['worktree:error']);
+
+			assert.deepStrictEqual({
+				timeline,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				repositoryIds: harness.workspaceSwitchService.repositories.map(repository => repository.id),
+			}, {
+				timeline: ['prepare:space-a', 'prepare:worktree:error', 'cancel:space-a'],
+				activeStateKey: 'space-a',
+				repositoryIds: ['space-a', 'space-b'],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	test('switches back before cancellation and keeps the repository when discard fails after fallback', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const timeline: string[] = [];
+			testDisposables.add(harness.workspaceSwitchService.onDidSwitchScope(stateKey => timeline.push(`switch:${stateKey}`)));
+			harness.editorScopeService.prepareScopeRetirement = async stateKey => {
+				timeline.push(`prepare:${stateKey}`);
+				return true;
+			};
+			harness.editorScopeService.retireScopes = async stateKeys => {
+				timeline.push(`retire:${stateKeys.join(',')}`);
+				return false;
+			};
+			harness.editorScopeService.cancelScopeRetirement = async stateKey => { timeline.push(`cancel:${stateKey}`); };
+
+			await harness.workspaceSwitchService.removeRepository('space-a');
+
+			assert.deepStrictEqual({
+				timeline,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				repositoryIds: harness.workspaceSwitchService.repositories.map(repository => repository.id),
+			}, {
+				timeline: [
+					'prepare:space-a',
+					'switch:space-b',
+					'prepare:space-a',
+					'retire:space-a',
+					'switch:space-a',
+					'cancel:space-a',
+				],
+				activeStateKey: 'space-a',
+				repositoryIds: ['space-a', 'space-b'],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	test('does not invoke a completion participant after its registration is disposed', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const completionEvents: string[] = [];
+			const registration = harness.workspaceSwitchService.registerSwitchCompletionParticipant(stateKey => { completionEvents.push(stateKey); });
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			registration.dispose();
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			assert.deepStrictEqual({
+				completionEvents,
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				isSwitching: harness.workspaceSwitchService.isSwitching,
+			}, {
+				completionEvents: ['space-b'],
+				activeStateKey: 'space-a',
+				isSwitching: false,
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
 	test('lists spaces from another host so one window can reach both', async () => {
 		const testDisposables = new DisposableStore();
 		try {
