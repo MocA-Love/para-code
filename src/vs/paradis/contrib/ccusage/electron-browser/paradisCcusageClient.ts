@@ -12,6 +12,7 @@
 
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
@@ -108,10 +109,17 @@ export class ParadisCcusageClient {
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) { }
 
 	private get channel() {
-		return this.sharedProcessService.getChannel(PARADIS_CCUSAGE_CHANNEL);
+		// SSH で繋いでいる間、エージェントは接続先で動くので、使った量も接続先のホームに
+		// 記録される。手元で数えるとその分がまるごと抜けるため、繋いでいる先へ聞く
+		// （同じチャネルを REH 側にも生やしてある）。
+		const remoteConnection = this.remoteAgentService.getConnection();
+		return remoteConnection
+			? remoteConnection.getChannel(PARADIS_CCUSAGE_CHANNEL)
+			: this.sharedProcessService.getChannel(PARADIS_CCUSAGE_CHANNEL);
 	}
 
 	private execOptions(sinceDays: number | undefined, bypassCache?: boolean): IParadisCcusageExecOptions {

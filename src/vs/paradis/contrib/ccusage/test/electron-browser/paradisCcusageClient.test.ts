@@ -7,6 +7,7 @@ import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
+import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
@@ -138,6 +139,8 @@ suite('ParadisCcusageClient', () => {
 		const client = new ParadisCcusageClient(
 			{ getChannel: () => channel } as unknown as ISharedProcessService,
 			{ getValue: () => '' } as unknown as IConfigurationService,
+			// 繋いでいないウィンドウとして振る舞わせる（接続中は接続先のチャネルへ聞く）
+			{ getConnection: () => null } as unknown as IRemoteAgentService,
 		);
 
 		const dashboard = await client.fetchDashboard();

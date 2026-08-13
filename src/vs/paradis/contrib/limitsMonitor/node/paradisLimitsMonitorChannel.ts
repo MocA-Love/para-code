@@ -195,8 +195,10 @@ export class ParadisLimitsMonitorService {
 
 	constructor(
 		private readonly logService: ILogService,
-		configurationService: IConfigurationService,
-		args: NativeParsedArgs,
+		// 接続先（REH）にはこのアプリの設定も起動引数も無い。どちらもシェル環境の解決にしか
+		// 使わないので、無ければ既定の解決に任せる。
+		configurationService?: IConfigurationService,
+		args?: NativeParsedArgs,
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -1134,15 +1136,16 @@ class ParadisCodexRpcSession extends Disposable {
 	}
 }
 
-export class ParadisLimitsMonitorChannel implements IServerChannel<string> {
+// 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
+export class ParadisLimitsMonitorChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisLimitsMonitorService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'getSnapshot': return this.service.getSnapshot((args[0] ?? {}) as IParadisLimitsFetchOptions) as Promise<T>;
@@ -1162,9 +1165,19 @@ export class ParadisLimitsMonitorChannel implements IServerChannel<string> {
 	}
 }
 
+/**
+ * REH (接続先) 側の登録。利用上限は接続先の認証情報から読むので、繋いでいる間は接続先に聞く。
+ * 設定と起動引数は渡さない（どちらも省略可で、シェル環境の解決だけに使う）。
+ */
+export function registerParadisLimitsMonitorForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	const service = new ParadisLimitsMonitorService(logService);
+	server.registerChannel(PARADIS_LIMITS_MONITOR_CHANNEL, new ParadisLimitsMonitorChannel<TContext>(service));
+	return { dispose: () => service.dispose() };
+}
+
 /** sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。 */
 export function registerParadisLimitsMonitor(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
 	const service = new ParadisLimitsMonitorService(logService, configurationService, args);
-	server.registerChannel(PARADIS_LIMITS_MONITOR_CHANNEL, new ParadisLimitsMonitorChannel(service));
+	server.registerChannel(PARADIS_LIMITS_MONITOR_CHANNEL, new ParadisLimitsMonitorChannel<string>(service));
 	return { dispose: () => service.dispose() };
 }

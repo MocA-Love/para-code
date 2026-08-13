@@ -14,6 +14,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	IParadisLimitsCodexRemovalTarget,
 	IParadisLimitsFetchOptions,
@@ -34,10 +35,16 @@ export class ParadisLimitsMonitorClient {
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IFileService private readonly fileService: IFileService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) { }
 
 	private get channel() {
-		return this.sharedProcessService.getChannel(PARADIS_LIMITS_MONITOR_CHANNEL);
+		// 上限は、そのエージェントが使っている認証情報の側で数えられている。SSH で繋いでいる
+		// 間はエージェントが接続先で動くので、接続先へ聞く（同じチャネルを REH 側にも生やしてある）。
+		const remoteConnection = this.remoteAgentService.getConnection();
+		return remoteConnection
+			? remoteConnection.getChannel(PARADIS_LIMITS_MONITOR_CHANNEL)
+			: this.sharedProcessService.getChannel(PARADIS_LIMITS_MONITOR_CHANNEL);
 	}
 
 	private fetchOptions(bypassCache: boolean): IParadisLimitsFetchOptions {
