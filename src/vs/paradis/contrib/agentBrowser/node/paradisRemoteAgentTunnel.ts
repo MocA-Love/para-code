@@ -52,6 +52,9 @@ export function paradisSshHostFromAuthority(remoteAuthority: string | undefined)
 
 /** 落ちたときの再試行間隔。張り直しで ssh を叩き続けないよう、控えめに戻す。 */
 const RETRY_DELAY_MS = 5000;
+
+/** 接続先の Claude Code の版を聞き直す間隔。頻繁に変わるものではないので長めに持つ。 */
+const CLAUDE_VERSION_TTL_MS = 30 * 60_000;
 const MAX_RETRIES = 3;
 
 interface ITunnelEntry {
@@ -72,15 +75,19 @@ interface ITunnelEntry {
 export class ParadisRemoteAgentTunnels extends Disposable {
 
 	private readonly tunnels = new Map<string, ITunnelEntry>();
+	/** 接続先ごとの Claude Code の版。ssh を毎回叩かないための控え。 */
+	private readonly claudeVersions = new Map<string, { readonly version: string | undefined; readonly at: number }>();
 
 	constructor(
 		private readonly logService: ILogService,
 		// shared process の PATH は端末のそれとは限らないので、素の `ssh` が引けないときのために
 		// 標準の場所も見る（macOS / Linux とも /usr/bin/ssh）。
-		private readonly spawnSsh: (args: string[]) => ChildProcess = args => spawn(
+		// 出力が要る用途（版の問い合わせ）だけ stdout を受ける。トンネル側は読み手が居ないので、
+		// 繋いだままにするとパイプが詰まって固まりうる。
+		private readonly spawnSsh: (args: string[], captureOutput?: boolean) => ChildProcess = (args, captureOutput) => spawn(
 			existsSync('/usr/bin/ssh') ? '/usr/bin/ssh' : 'ssh',
 			args,
-			{ stdio: ['ignore', 'ignore', 'pipe'] }
+			{ stdio: ['ignore', captureOutput === true ? 'pipe' : 'ignore', 'pipe'] }
 		),
 	) {
 		super();
@@ -210,6 +217,46 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			});
 			child.on('exit', code => resolve(code === 0));
 		});
+	}
+
+	/**
+	 * 接続先の Claude Code の版を尋ねる（`claude --version` の生の出力）。
+	 *
+	 * hook の一部は新しい版にしか無く、古い版は知らないキーごと設定を拒むことがある。手元では
+	 * 同じことを `claude --version` で確かめてから入れているので、接続先でも同じ判断ができるように
+	 * する。ログインシェル越しに実行するのは、`claude` が rc でしか PATH に入らない構成が多いため。
+	 *
+	 * 分からなければ undefined。その場合は「確認できた分だけ入れる」側に倒す。
+	 */
+	async claudeVersion(remoteAuthority: string): Promise<string | undefined> {
+		const host = paradisSshHostFromAuthority(remoteAuthority);
+		if (host === undefined) {
+			return undefined;
+		}
+		const cached = this.claudeVersions.get(remoteAuthority);
+		if (cached !== undefined && Date.now() - cached.at < CLAUDE_VERSION_TTL_MS) {
+			return cached.version;
+		}
+		const version = await new Promise<string | undefined>(resolve => {
+			let child: ChildProcess;
+			try {
+				// 引数は固定。ホスト名は authority の検証を通ったものだけが来る
+				child = this.spawnSsh(['-o', 'BatchMode=yes', host, 'bash', '-lc', 'claude --version'], true);
+			} catch (error) {
+				this.logService.warn(`[paradis] could not ask ${host} which Claude Code it has`, error);
+				resolve(undefined);
+				return;
+			}
+			let output = '';
+			child.on('error', () => resolve(undefined));
+			child.stdout?.on('data', (chunk: Buffer) => {
+				// 版の1行だけが要る。想定外に流れ続けても持ち続けない
+				output = (output + chunk.toString()).slice(0, 1000);
+			});
+			child.on('exit', code => resolve(code === 0 && output.trim().length > 0 ? output.trim() : undefined));
+		});
+		this.claudeVersions.set(remoteAuthority, { version, at: Date.now() });
+		return version;
 	}
 
 	/** テスト用。張られている接続先の一覧。 */

@@ -7,6 +7,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	encodeParadisPosixShellArgument,
+	paradisUpsertCodexMcpToml,
 	encodeParadisPowerShellArgument,
 	encodeParadisTomlBasicString,
 	inspectParadisMcpTomlSection,
@@ -72,5 +73,54 @@ suite('Para Browser MCP setup encoding', () => {
 		]) {
 			assert.strictEqual(inspectParadisMcpTomlSection(source), 'ambiguous');
 		}
+	});
+	test('registers para-browser for Codex over HTTP, replacing whatever was there', () => {
+		// 設定を別のマシンから移すと、手元のシムの絶対パスを指した節がそのまま残る。
+		// 接続先にそのファイルは無いので、中身を見て直すのではなく節ごと書き替える
+		const existing = [
+			'model = "gpt-5"',
+			'',
+			'[mcp_servers.para-browser]',
+			'command = "node"',
+			'args = [ "/Applications/Para Code.app/Contents/Resources/app/out/shim.js" ]',
+			'env_vars = [ "PARA_CODE_TERMINAL_PANE_ID" ]',
+			'',
+			'[mcp_servers.other]',
+			'command = "keep"',
+			'',
+		].join('\n');
+
+		const updated = paradisUpsertCodexMcpToml(existing, 47286);
+
+		assert.strictEqual(updated, [
+			'model = "gpt-5"',
+			'',
+			'[mcp_servers.para-browser]',
+			'url = "http://127.0.0.1:47286/"',
+			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+			'',
+			'[mcp_servers.other]',
+			'command = "keep"',
+			'',
+		].join('\n'));
+		// 2回当てても増えない
+		assert.strictEqual(paradisUpsertCodexMcpToml(updated, 47286), updated);
+	});
+
+	test('appends the Codex section when there is none, keeping a blank line before it', () => {
+		assert.strictEqual(paradisUpsertCodexMcpToml('', 4100), [
+			'[mcp_servers.para-browser]',
+			'url = "http://127.0.0.1:4100/"',
+			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+			'',
+		].join('\n'));
+		assert.strictEqual(paradisUpsertCodexMcpToml('model = "gpt-5"\n', 4100), [
+			'model = "gpt-5"',
+			'',
+			'[mcp_servers.para-browser]',
+			'url = "http://127.0.0.1:4100/"',
+			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+			'',
+		].join('\n'));
 	});
 });
