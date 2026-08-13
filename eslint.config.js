@@ -2049,6 +2049,9 @@ export default defineConfig(
 						// 登録するための逆方向 import
 						'vs/paradis/contrib/ccusage/~',
 						'vs/paradis/contrib/limitsMonitor/~',
+						// PARA-PATCH: serverServices.ts が接続先のマシン全体の使用量を答えるチャネル
+						// (registerParadisHostResourcesForServer) を登録するための逆方向 import
+						'vs/paradis/contrib/resourceMonitor/~',
 						'vs/server/~'
 					]
 				},

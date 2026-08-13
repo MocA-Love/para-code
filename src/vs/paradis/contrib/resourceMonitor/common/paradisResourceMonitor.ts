@@ -14,6 +14,12 @@
  */
 export const PARADIS_RESOURCE_MONITOR_CHANNEL = 'paradisResourceMonitor';
 
+/**
+ * 接続先（REH）が答える、マシン全体の使用量のチャネル。SSH で繋いでいる間は忙しいのが
+ * 接続先のマシンなので、繋いでいるウィンドウはこちらへ聞く。
+ */
+export const PARADIS_HOST_RESOURCES_CHANNEL = 'paradisHostResources';
+
 export interface IParadisResourceUsage {
 	/** CPU使用率(%)。マルチコアでは100を超え得る。 */
 	readonly cpu: number;
