@@ -2044,6 +2044,11 @@ export default defineConfig(
 						// PARA-PATCH: serverServices.ts が SSH 接続先で git を動かすチャネル
 						// (registerParadisWorktreeGitForServer) を登録するための逆方向 import
 						'vs/paradis/contrib/workspaceSwitch/~',
+						// PARA-PATCH: serverServices.ts が使用量・利用上限を接続先で数えるチャネル
+						// (registerParadisCcusageForServer / registerParadisLimitsMonitorForServer) を
+						// 登録するための逆方向 import
+						'vs/paradis/contrib/ccusage/~',
+						'vs/paradis/contrib/limitsMonitor/~',
 						'vs/server/~'
 					]
 				},

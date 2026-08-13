@@ -105,6 +105,9 @@ import { SANDBOX_HELPER_CHANNEL_NAME, SandboxHelperChannel } from '../../platfor
 import { SandboxHelperService } from '../../platform/sandbox/node/sandboxHelper.js';
 // PARA-PATCH: channel that runs git on this machine for a connected client (registered below)
 import { registerParadisWorktreeGitForServer } from '../../paradis/contrib/workspaceSwitch/node/paradisWorktreeGitChannel.js';
+// PARA-PATCH: usage and limits are recorded on this machine, so a connected client asks here
+import { registerParadisCcusageForServer } from '../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
+import { registerParadisLimitsMonitorForServer } from '../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -332,6 +335,11 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// client can clone onto this machine. The shared process copy always runs git
 		// locally, so handing it a path on this side fails with ENOENT.
 		disposables.add(registerParadisWorktreeGitForServer(socketServer, logService));
+
+		// PARA-PATCH: the agents run here while a client is connected, so what they used is
+		// recorded in this machine's home. Counting it on the client side misses all of it.
+		disposables.add(registerParadisCcusageForServer(socketServer, logService));
+		disposables.add(registerParadisLimitsMonitorForServer(socketServer, logService));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 

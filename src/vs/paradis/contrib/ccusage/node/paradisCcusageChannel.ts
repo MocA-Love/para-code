@@ -505,15 +505,16 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	}
 }
 
-export class ParadisCcusageChannel implements IServerChannel<string> {
+// 接続先（REH）へも同じチャネルを生やすため context は型引数にしておく（中身では使わない）。
+export class ParadisCcusageChannel<TContext = string> implements IServerChannel<TContext> {
 
 	constructor(private readonly service: ParadisCcusageService) { }
 
-	listen<T>(_ctx: string, event: string): Event<T> {
+	listen<T>(_ctx: TContext, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		const options = (args[0] ?? {}) as IParadisCcusageExecOptions;
 		switch (command) {
@@ -528,11 +529,25 @@ export class ParadisCcusageChannel implements IServerChannel<string> {
 }
 
 /**
+ * REH (接続先) 側の登録。SSH で繋いでいる間、使った量は接続先の `~/.claude` に記録されるので、
+ * 手元で数えるとその分がまるごと抜ける。同じチャネルを接続先にも生やし、繋いでいるウィンドウは
+ * そちらへ聞く。
+ *
+ * 設定と起動引数は渡さない（どちらも省略可で、シェル環境の解決だけに使う）。接続先には
+ * このアプリの設定も引数も無いため、既定の解決に任せる。
+ */
+export function registerParadisCcusageForServer<TContext>(server: IPCServer<TContext>, logService: ILogService): IDisposable {
+	const service = new ParadisCcusageService(logService);
+	server.registerChannel(PARADIS_CCUSAGE_CHANNEL, new ParadisCcusageChannel<TContext>(service));
+	return { dispose: () => service.dispose() };
+}
+
+/**
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
 export function registerParadisCcusage(server: IPCServer<string>, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): IDisposable {
 	const service = new ParadisCcusageService(logService, configurationService, args);
-	server.registerChannel(PARADIS_CCUSAGE_CHANNEL, new ParadisCcusageChannel(service));
+	server.registerChannel(PARADIS_CCUSAGE_CHANNEL, new ParadisCcusageChannel<string>(service));
 	// バックグラウンド更新のタイマーを止める(unref 済みだが、明示的に畳んでおく)。
 	return { dispose: () => service.dispose() };
 }
