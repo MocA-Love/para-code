@@ -17,7 +17,8 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { Schemas } from '../../../../base/common/network.js';
-import { IParadisResourceMonitorMainService, IParadisResourceMonitorMobileReport, IParadisResourceMonitorSessionRequest, IParadisResourceMonitorSnapshot, PARADIS_RESOURCE_MONITOR_CHANNEL } from '../common/paradisResourceMonitor.js';
+import { IParadisHostResources, IParadisResourceMonitorMainService, IParadisResourceMonitorMobileReport, IParadisResourceMonitorSessionRequest, IParadisResourceMonitorSnapshot, PARADIS_HOST_RESOURCES_CHANNEL, PARADIS_RESOURCE_MONITOR_CHANNEL } from '../common/paradisResourceMonitor.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 
 /** スコープに紐付かないターミナル(リスト外フォルダ等)をまとめる仮想スコープキー。 */
 export const PARADIS_RESOURCE_MONITOR_OTHER_TERMINALS_STATE_KEY = '__paradis_other_terminals__';
@@ -37,8 +38,25 @@ export class ParadisResourceMonitorClient {
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IMainProcessService mainProcessService: IMainProcessService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		this.resourceMonitorService = ProxyChannel.toService<IParadisResourceMonitorMainService>(mainProcessService.getChannel(PARADIS_RESOURCE_MONITOR_CHANNEL));
+	}
+
+	/**
+	 * マシン全体の使用量を答える側。
+	 *
+	 * SSH で繋いでいる間、ターミナルもエージェントも接続先で動くので、「マシンが忙しいか」は
+	 * 接続先の話になる。手元の数字を出しても、詰まっているのが向こうなら何も分からない。
+	 * Para Code 自身の内訳（getSnapshot）は手元のままでよい。動いているのは手元だから。
+	 */
+	private async readHostResources(request: { readonly diskPaths: string[]; readonly force: boolean }): Promise<IParadisHostResources> {
+		const remoteConnection = this.remoteAgentService.getConnection();
+		if (remoteConnection === null) {
+			return this.resourceMonitorService.getHostResources(request);
+		}
+		// 接続先のディスクを見たいので、手元のパスは渡さない（あちらには存在しない）
+		return remoteConnection.getChannel(PARADIS_HOST_RESOURCES_CHANNEL).call<IParadisHostResources>('getHostResources', { force: request.force });
 	}
 
 	getSnapshot(force: boolean): Promise<IParadisResourceMonitorSnapshot> {
@@ -52,7 +70,7 @@ export class ParadisResourceMonitorClient {
 	async getMobileReport(force: boolean): Promise<IParadisResourceMonitorMobileReport> {
 		const [snapshot, host] = await Promise.all([
 			this.getSnapshot(force),
-			this.resourceMonitorService.getHostResources({ diskPaths: this.collectDiskPaths(), force }),
+			this.readHostResources({ diskPaths: this.collectDiskPaths(), force }),
 		]);
 		return { host, snapshot };
 	}

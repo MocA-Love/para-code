@@ -108,6 +108,8 @@ import { registerParadisWorktreeGitForServer } from '../../paradis/contrib/works
 // PARA-PATCH: usage and limits are recorded on this machine, so a connected client asks here
 import { registerParadisCcusageForServer } from '../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
 import { registerParadisLimitsMonitorForServer } from '../../paradis/contrib/limitsMonitor/node/paradisLimitsMonitorChannel.js';
+// PARA-PATCH: this machine's own load, for a connected client to show instead of its own
+import { registerParadisHostResourcesForServer } from '../../paradis/contrib/resourceMonitor/node/paradisHostResourcesChannel.js';
 
 const eventPrefix = 'monacoworkbench';
 
@@ -340,6 +342,9 @@ export async function setupServerServices(connectionToken: ServerConnectionToken
 		// recorded in this machine's home. Counting it on the client side misses all of it.
 		disposables.add(registerParadisCcusageForServer(socketServer, logService));
 		disposables.add(registerParadisLimitsMonitorForServer(socketServer, logService));
+		// PARA-PATCH: while a client is connected, the terminals and agents run here, so
+		// "how busy is the machine" means this machine, not the one showing the window.
+		disposables.add(registerParadisHostResourcesForServer(socketServer, logService));
 
 		socketServer.registerChannel(REMOTE_TERMINAL_CHANNEL_NAME, new RemoteTerminalChannel(environmentService, logService, ptyHostService, productService, extensionManagementService, configurationService));
 
