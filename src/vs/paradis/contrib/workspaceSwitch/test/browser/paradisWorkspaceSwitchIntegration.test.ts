@@ -12,8 +12,6 @@ import { URI } from '../../../../../base/common/uri.js';
 import { generateUuid } from '../../../../../base/common/uuid.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
-import type { IHostService } from '../../../../../workbench/services/host/browser/host.js';
-import type { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, toWorkspaceFolder } from '../../../../../platform/workspace/common/workspace.js';
@@ -37,7 +35,7 @@ import { paradisGetParkedTerminalEditorStateKey, paradisParkTerminalEditorInstan
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { ParadisTerminalWorkspaceScope } from '../../browser/paradisTerminalScope.contribution.js';
 import { ParadisWorkspaceSwitchService } from '../../browser/paradisWorkspaceSwitchService.js';
-import { IParadisAuxiliaryWindowScopeService, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, PARADIS_WORKSPACE_SHARED_REPOSITORIES_STORAGE_KEY } from '../../common/paradisWorkspaceSwitch.js';
+import { IParadisAuxiliaryWindowScopeService, IParadisWorktreeService, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../../common/paradisWorkspaceSwitch.js';
 
 suite('ParadisWorkspaceSwitchService integration', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -575,22 +573,18 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
-	test('lists spaces from another host so one window can reach both', async () => {
+	test('keeps spaces from another host out of this list', async () => {
 		const testDisposables = new DisposableStore();
 		try {
-			const harness = await createHarness(['space-a'], testDisposables, undefined, {
-				'ssh-remote+paradis-pc': {
-					workspaceFile: 'vscode-remote://ssh-remote%2Bparadis-pc/home/yuasa/.para-code/para.code-workspace',
-					repositories: [{ id: 'space-x', name: 'x', uri: 'vscode-remote://ssh-remote%2Bparadis-pc/home/yuasa/develop/x' }]
-				}
-			});
+			// 1ウィンドウは1つの接続先しか見られない。開けないスペースを並べると、開き直すたびに
+			// 見え方が変わって混乱するだけなので、繋がっている先のものだけを出す
+			const harness = await createHarness(['space-a'], testDisposables, undefined, [
+				{ id: 'space-x', name: 'x', uri: 'vscode-remote://ssh-remote%2Bparadis-pc/home/user/develop/x' }
+			]);
 
 			assert.deepStrictEqual(
 				harness.workspaceSwitchService.repositories.map(repository => ({ id: repository.id, scheme: repository.uri.scheme })),
-				[
-					{ id: 'space-a', scheme: 'file' },
-					{ id: 'space-x', scheme: 'vscode-remote' }
-				]
+				[{ id: 'space-a', scheme: 'file' }]
 			);
 		} finally {
 			testDisposables.dispose();
@@ -644,8 +638,8 @@ async function createHarness(
 	stateKeys: readonly string[],
 	testDisposables: DisposableStore,
 	onFolderUpdate: (phase: 'start' | 'end', uri: URI, updateIndex: number) => Promise<void> = async () => { },
-	/** 別の接続先で登録済みのスペース（共有領域へ先に置いておく）。 */
-	sharedSpaces?: Record<string, { workspaceFile?: string; repositories: { id: string; name: string; uri: string }[] }>,
+	/** 保存済み一覧に混ざっている、別の接続先のスペース。 */
+	foreignRepositories: readonly { id: string; name: string; uri: string }[] = [],
 ): Promise<IWorkspaceSwitchIntegrationHarness> {
 	const repositories = stateKeys.map(stateKey => ({
 		id: stateKey,
@@ -663,23 +657,14 @@ async function createHarness(
 	const storageService = instantiationService.get(IStorageService);
 	storageService.store(
 		PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY,
-		JSON.stringify(repositories.map(repository => ({
+		JSON.stringify([...repositories.map(repository => ({
 			id: repository.id,
 			name: repository.name,
 			uri: repository.uri.toString()
-		}))),
+		})), ...foreignRepositories]),
 		StorageScope.WORKSPACE,
 		StorageTarget.MACHINE
 	);
-	if (sharedSpaces !== undefined) {
-		storageService.store(
-			PARADIS_WORKSPACE_SHARED_REPOSITORIES_STORAGE_KEY,
-			JSON.stringify(sharedSpaces),
-			StorageScope.APPLICATION,
-			StorageTarget.MACHINE
-		);
-	}
-
 	const editorTypeId = `paradisWorkspaceSwitchIntegration.${stateKeys.join('.')}`;
 	testDisposables.add(registerTestEditor(
 		`${editorTypeId}.editor`,
@@ -754,11 +739,8 @@ async function createHarness(
 		editorScopeService,
 		auxiliaryWindowScopeService as unknown as IParadisAuxiliaryWindowScopeService,
 		instantiationService.get(ILogService),
-		// 接続先をまたぐ切り替え用。このテストは手元のスペースだけを扱うので、
-		// 「どこにも繋がっていない」ウィンドウとして振る舞わせる
+		// 一覧を絞る基準になる。ここは「どこにも繋がっていない」ウィンドウとして振る舞わせる
 		{ remoteAuthority: undefined } as unknown as IWorkbenchEnvironmentService,
-		{ openWindow: async () => { } } as unknown as IHostService,
-		{ userHome: () => URI.file('/Users/test') } as unknown as IPathService,
 	));
 
 	return {

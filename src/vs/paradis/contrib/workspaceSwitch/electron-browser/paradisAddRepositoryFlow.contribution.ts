@@ -183,20 +183,15 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 						alwaysShow: true
 					});
 				} else {
-					// 接続中はダイアログが既定で接続先を開く。「ローカル」の一語では
-					// どちらのマシンを指すのか分からないので、行き先を名前で書き分ける
+					// 接続中に足せるのは接続先のフォルダだけ。このウィンドウのスペース一覧は
+					// 繋がっている先のものしか載せないので、このPCのフォルダを足しても出てこない
+					// （手元のスペースは手元のウィンドウで足す）。「ローカル」の一語では
+					// どちらのマシンを指すのか分からないので、行き先を名前で書く
 					items.push({
 						kind: 'local',
 						scheme: Schemas.vscodeRemote,
 						// allow-any-unicode-next-line
 						label: `$(remote) ${localize('paradis.repositoryClone.remoteFolderItem', "{0} のフォルダを追加...", remoteLabel)}`,
-						alwaysShow: true
-					});
-					items.push({
-						kind: 'local',
-						scheme: Schemas.file,
-						// allow-any-unicode-next-line
-						label: `$(device-desktop) ${localize('paradis.repositoryClone.thisMachineFolderItem', "このPCのフォルダを追加...")}`,
 						alwaysShow: true
 					});
 				}
