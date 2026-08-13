@@ -307,8 +307,12 @@ export class DeviceDO implements DurableObject {
 		// ソケットをhalf-openのまま放置した場合、これが残っていると再接続時に
 		// 「offline通知が飛ばない→PC側が古いE2Eセッションを保持し続ける→新しい
 		// ハンドシェイクを復号失敗で無視し続ける」恒久ループになる（acceptPcと同様の措置）。
-		for (const ws of this.state.getWebSockets(`m:${mobileIdStr}`)) {
+		const superseded = this.state.getWebSockets(`m:${mobileIdStr}`);
+		for (const ws of superseded) {
 			try { ws.close(1000, 'superseded'); } catch { /* ignore */ }
+		}
+		if (superseded.length > 0) {
+			this.sendToPc({ type: 'presence', peer: 'mobile', mobileId: mobileIdStr, online: false });
 		}
 		return this.upgrade(ws => this.state.acceptWebSocket(ws, [`m:${mobileIdStr}`]), () => {
 			// PCにモバイルのpresenceを通知

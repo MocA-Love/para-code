@@ -18,6 +18,39 @@ import {
 	browserViewAutomationKeySignatureFromPreload,
 } from '../../common/browserViewAutomationInput.js';
 
+type TestAutomationListener = (_event: unknown, payload: unknown) => void;
+
+class TestAutomationIpcRenderer {
+	readonly sent: [string, unknown][] = [];
+	private readonly listeners = new Map<string, TestAutomationListener>();
+
+	on(channel: string, listener: TestAutomationListener): void {
+		this.listeners.set(channel, listener);
+	}
+
+	send(channel: string, payload: unknown): void {
+		this.sent.push([channel, payload]);
+	}
+
+	emit(channel: string, payload: unknown): void {
+		this.listeners.get(channel)?.({}, payload);
+	}
+}
+
+class TestFocusTarget {
+	private listener: ((event: unknown) => void) | undefined;
+
+	addEventListener(type: string, listener: (event: unknown) => void): void {
+		if (type === 'focus') {
+			this.listener = listener;
+		}
+	}
+
+	emit(event: unknown): void {
+		this.listener?.(event);
+	}
+}
+
 suite('BrowserView automation input', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -62,6 +95,63 @@ suite('BrowserView automation input', () => {
 		assert.strictEqual(browserViewAutomationIsTrustedFocusEvent({ isTrusted: false }), false);
 		assert.strictEqual(browserViewAutomationIsTrustedFocusEvent({}), false);
 		assert.strictEqual(browserViewAutomationIsTrustedFocusEvent(null), false);
+	});
+
+	test('preload consumes and acknowledges only the first active exact key until completion expires', async function () {
+		if (process.versions.electron) {
+			this.skip();
+		}
+		const { createBrowserViewAutomationKeyPreload } = await import('../../electron-browser/preload-browserView.js');
+		const clock = sinon.useFakeTimers();
+		const ipcRenderer = new TestAutomationIpcRenderer();
+		const focusTarget = new TestFocusTarget();
+		let documentFocused = true;
+		const preload = createBrowserViewAutomationKeyPreload(ipcRenderer, focusTarget, { hasFocus: () => documentFocused });
+		const signature = { type: 'keyDown' as const, key: 'Escape', code: 'Escape', location: 0, modifiers: 0, repeat: false };
+
+		ipcRenderer.emit('vscode:browserView:expectAutomationKey', { sequence: 1, signature, nativeFocused: false });
+		assert.deepStrictEqual(ipcRenderer.sent, [['vscode:browserView:automationKeyExpected', { sequence: 1, accepted: true }]]);
+
+		documentFocused = false;
+		ipcRenderer.emit('vscode:browserView:activateAutomationKey', { sequence: 1, nativeFocused: true });
+		assert.deepStrictEqual(ipcRenderer.sent.at(-1), ['vscode:browserView:automationKeyActivated', { sequence: 1, accepted: true }]);
+		const otherSignature = { ...signature, key: 'F1', code: 'F1' };
+		ipcRenderer.emit('vscode:browserView:expectAutomationKey', { sequence: 2, signature: otherSignature, nativeFocused: false });
+		assert.strictEqual(preload.consumeAutomationKey(otherSignature), false);
+		assert.strictEqual(preload.consumeAutomationKey({ ...signature, key: 'F2', code: 'F2' }), false);
+		assert.strictEqual(preload.consumeAutomationKey(signature), true);
+		assert.strictEqual(preload.consumeAutomationKey(signature), true);
+		assert.deepStrictEqual(ipcRenderer.sent.filter(([channel]) => channel === 'vscode:browserView:automationKeyConsumed'), [
+			['vscode:browserView:automationKeyConsumed', { sequence: 1, signature }],
+		]);
+
+		ipcRenderer.emit('vscode:browserView:completeAutomationKey', { sequence: 1 });
+		clock.tick(BROWSER_VIEW_AUTOMATION_KEY_EXPECTATION_TTL_MS - 1);
+		assert.strictEqual(preload.consumeAutomationKey(signature), true);
+		clock.tick(1);
+		assert.strictEqual(preload.consumeAutomationKey(signature), false);
+	});
+
+	test('preload protects real-user focus only when native and document focus agree', async function () {
+		if (process.versions.electron) {
+			this.skip();
+		}
+		const { createBrowserViewAutomationKeyPreload } = await import('../../electron-browser/preload-browserView.js');
+		const ipcRenderer = new TestAutomationIpcRenderer();
+		const focusTarget = new TestFocusTarget();
+		const documentFocused = true;
+		const preload = createBrowserViewAutomationKeyPreload(ipcRenderer, focusTarget, { hasFocus: () => documentFocused });
+		const signature = { type: 'keyDown' as const, key: 'Escape', code: 'Escape', location: 0, modifiers: 0, repeat: false };
+
+		ipcRenderer.emit('vscode:browserView:expectAutomationKey', { sequence: 1, signature, nativeFocused: true });
+		assert.deepStrictEqual(ipcRenderer.sent.at(-1), ['vscode:browserView:automationKeyExpected', { sequence: 1, accepted: false }]);
+		ipcRenderer.emit('vscode:browserView:expectAutomationKey', { sequence: 2, signature, nativeFocused: false });
+		ipcRenderer.emit('vscode:browserView:activateAutomationKey', { sequence: 2, nativeFocused: false });
+		assert.strictEqual(preload.consumeAutomationKey(signature), true);
+		focusTarget.emit({ isTrusted: false });
+		assert.strictEqual(preload.consumeAutomationKey(signature), true);
+		focusTarget.emit({ isTrusted: true });
+		assert.strictEqual(preload.consumeAutomationKey(signature), false);
 	});
 
 	test('suppresses only the first matching committed event in each route', () => {

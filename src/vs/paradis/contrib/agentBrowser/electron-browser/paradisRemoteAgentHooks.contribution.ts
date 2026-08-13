@@ -9,9 +9,10 @@
 import { disposableWindowInterval } from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -19,7 +20,135 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
-import { PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+import { IParadisManagedHookEvent, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
+
+function parseRemoteAgentJson(existingRaw: string | undefined): Record<string, unknown> | undefined {
+	if (existingRaw === undefined) {
+		return {};
+	}
+	try {
+		const parsed: unknown = JSON.parse(existingRaw);
+		return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+			? parsed as Record<string, unknown>
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function stringifyRemoteAgentJson(value: object): string {
+	return JSON.stringify(value, undefined, 2) + '\n';
+}
+
+/** 既存設定を保ったまま接続先用hookを冪等にマージする。 */
+export function paradisMergeRemoteAgentHooksJson(existingRaw: string | undefined, events: readonly IParadisManagedHookEvent[], scriptPath: string): string | undefined {
+	const settings = parseRemoteAgentJson(existingRaw);
+	if (settings === undefined) {
+		return undefined;
+	}
+	const existingHooks = settings.hooks;
+	const hooks: Record<string, unknown> = existingHooks !== null && typeof existingHooks === 'object' && !Array.isArray(existingHooks)
+		? { ...existingHooks as Record<string, unknown> }
+		: {};
+	const command = `[ -x "${scriptPath}" ] && "${scriptPath}" || true`;
+	for (const event of events) {
+		const existingList = hooks[event.eventName];
+		const list: unknown[] = Array.isArray(existingList) ? [...existingList] : [];
+		if (!list.some(entry => JSON.stringify(entry).includes(scriptPath))) {
+			list.push(paradisManagedHookDefinition(event, command));
+		}
+		hooks[event.eventName] = list;
+	}
+	return stringifyRemoteAgentJson({ ...settings, hooks });
+}
+
+/** 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。 */
+export function paradisMergeRemoteClaudeMcpJson(existingRaw: string | undefined, port: number): string | undefined {
+	const config = parseRemoteAgentJson(existingRaw);
+	if (config === undefined) {
+		return undefined;
+	}
+	const existingServers = config.mcpServers;
+	const servers: Record<string, unknown> = existingServers !== null && typeof existingServers === 'object' && !Array.isArray(existingServers)
+		? { ...existingServers as Record<string, unknown> }
+		: {};
+	servers['para-browser'] = {
+		type: 'http',
+		url: `http://127.0.0.1:${port}/`,
+		headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }
+	};
+	return stringifyRemoteAgentJson({ ...config, mcpServers: servers });
+}
+
+/** 接続先への hook 導入を再試行し、ゲートウェイ番号の変化に追従する。 */
+export class ParadisRemoteAgentHooksController extends Disposable {
+
+	/** 接続先へ書き込んだゲートウェイの番号。変わったら書き直す目印。 */
+	private installedPort: number | undefined;
+	private isPolling = false;
+
+	constructor(
+		private readonly install: () => Promise<number | undefined>,
+		private readonly readEndpoint: () => Promise<{ readonly port: number }>,
+		private readonly delay: (delayMs: number) => Promise<void>,
+		private readonly interval: (callback: () => Promise<void>, intervalMs: number) => IDisposable,
+		private readonly logService: Pick<ILogService, 'info' | 'warn'>,
+	) {
+		super();
+		void this.installWithRetry();
+	}
+
+	/** 接続先が使えるまで既定の4段階で hook 導入を再試行する。 */
+	private async installWithRetry(): Promise<void> {
+		const delaysMs = [0, 2000, 5000, 15000];
+		for (let attempt = 0; attempt < delaysMs.length; attempt++) {
+			if (this._store.isDisposed) {
+				return;
+			}
+			if (delaysMs[attempt] > 0) {
+				await this.delay(delaysMs[attempt]);
+			}
+			if (this._store.isDisposed) {
+				return;
+			}
+			const installedPort = await this.install();
+			if (installedPort !== undefined) {
+				if (this._store.isDisposed) {
+					return;
+				}
+				this.installedPort = installedPort;
+				this.watchForPortChanges();
+				return;
+			}
+		}
+		this.logService.warn('[paradis] gave up installing the agent hooks on the host');
+	}
+
+	/** ゲートウェイ番号が変わったときだけ接続先へ hook 一式を再導入する。 */
+	private watchForPortChanges(): void {
+		this._register(this.interval(async () => {
+			if (this._store.isDisposed || this.isPolling) {
+				return;
+			}
+			this.isPolling = true;
+			try {
+				const endpoint = await this.readEndpoint();
+				if (this._store.isDisposed || endpoint.port === this.installedPort) {
+					return;
+				}
+				this.logService.info(`[paradis] gateway port changed (${this.installedPort} -> ${endpoint.port}); updating the host`);
+				const installedPort = await this.install();
+				if (!this._store.isDisposed && installedPort !== undefined) {
+					this.installedPort = installedPort;
+				}
+			} catch {
+				// 取れないときは次の周期で試す
+			} finally {
+				this.isPolling = false;
+			}
+		}, 30_000));
+	}
+}
 
 /**
  * SSH で繋いだ先にも、エージェントの通知 hook 一式を置く。
@@ -40,9 +169,6 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 	static readonly ID = 'paradis.remoteAgentHooks';
 
-	/** 接続先へ書き込んだゲートウェイの番号。変わったら書き直す目印。 */
-	private installedPort: number | undefined;
-
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IFileService private readonly fileService: IFileService,
@@ -53,58 +179,20 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		super();
 
 		if (this.environmentService.remoteAuthority !== undefined) {
-			void this.installWithRetry();
-		}
-	}
-
-	/**
-	 * 接続先のファイルシステムは、ウィンドウが起きた直後にはまだ使えないことがある
-	 * （実測では最初の書き込みが `Canceled` で落ちる）。落ちたまま諦めると hook が一切
-	 * 置かれず、実行状態もチャットミラーも動かないので、間隔を空けて数回試す。
-	 */
-	private async installWithRetry(): Promise<void> {
-		const delaysMs = [0, 2000, 5000, 15000];
-		for (let attempt = 0; attempt < delaysMs.length; attempt++) {
-			if (this._store.isDisposed) {
-				return;
-			}
-			if (delaysMs[attempt] > 0) {
-				await new Promise(resolve => setTimeout(resolve, delaysMs[attempt]));
-			}
-			if (await this.install()) {
-				this.watchForPortChanges();
-				return;
-			}
-		}
-		this.logService.warn('[paradis] gave up installing the agent hooks on the host');
-	}
-
-	/**
-	 * 手元のゲートウェイの番号が変わっていないか、たまに確かめて書き直す。
-	 *
-	 * 接続先へは「この番号へ返せ」と書き込んで渡している。ウィンドウの再読み込みなどで
-	 * shared process が入れ替わると番号が変わることがあり、そのままだと接続先が古い番号を
-	 * 叩き続けて、実行状態も para-browser も静かに切れる。番号が変わったときだけ書き直す。
-	 */
-	private watchForPortChanges(): void {
-		this._register(disposableWindowInterval(mainWindow, async () => {
-			try {
-				const endpoint = await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
-					.call<{ port: number }>('getGatewayEndpoint');
-				if (endpoint.port !== this.installedPort) {
-					this.logService.info(`[paradis] gateway port changed (${this.installedPort} -> ${endpoint.port}); updating the host`);
-					await this.install();
-				}
-			} catch {
-				// 取れないときは次の周期で試す
-			}
-		}, 30_000));
-	}
-
-	/** @returns 置けたら true。まだ整っていないだけなら false（呼び出し側が試し直す） */
-	private async install(): Promise<boolean> {
-		try {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
+			this._register(new ParadisRemoteAgentHooksController(
+				() => this.install(channel),
+				() => channel.call<{ port: number }>('getGatewayEndpoint'),
+				delayMs => new Promise(resolve => setTimeout(resolve, delayMs)),
+				(callback, intervalMs) => disposableWindowInterval(mainWindow, callback, intervalMs),
+				this.logService,
+			));
+		}
+	}
+
+	/** @returns 置けたゲートウェイ番号。まだ整っていないだけなら undefined（呼び出し側が試し直す） */
+	private async install(channel: IChannel): Promise<number | undefined> {
+		try {
 			// 接続中の userHome は接続先のホーム。ここから下は全て接続先のパスになる
 			const home = await this.pathService.userHome();
 			// スクリプトはこの場所を見て通知先の番号を読む。env は手元のパスのまま届いてしまうので、
@@ -126,34 +214,19 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			await this.mergeClaudeHooks(home, scriptFile.path);
 			await this.mergeCodexHooks(home, scriptFile.path);
 			await this.mergeClaudeMcp(home, endpoint.port);
-			this.installedPort = endpoint.port;
 			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${endpoint.port})`);
-			return true;
+			return endpoint.port;
 		} catch (error) {
 			// 置けなくても接続そのものは使える。実行状態が出ないだけ
 			this.logService.warn('[paradis] could not install the agent hooks on the host (will retry)', error);
-			return false;
+			return undefined;
 		}
 	}
 
 	/** Claude Code の settings.json へ hook を足す。既存の内容は保つ。 */
 	private async mergeClaudeHooks(home: URI, scriptPath: string): Promise<void> {
 		const file = joinPath(home, '.claude', 'settings.json');
-		const command = `[ -x "${scriptPath}" ] && "${scriptPath}" || true`;
-		await this.mergeJson(file, current => {
-			const settings = current as { hooks?: Record<string, unknown[]> };
-			const hooks = settings.hooks ?? {};
-			for (const event of PARADIS_CLAUDE_HOOK_EVENTS) {
-				const definition = paradisManagedHookDefinition(event, command);
-				const list = Array.isArray(hooks[event.eventName]) ? hooks[event.eventName] : [];
-				// 同じスクリプトを指す定義が既にあるなら足さない（起動のたびに増やさない）
-				if (!list.some(entry => JSON.stringify(entry).includes(scriptPath))) {
-					list.push(definition);
-				}
-				hooks[event.eventName] = list;
-			}
-			return { ...settings, hooks };
-		});
+		await this.mergeJson(file, current => paradisMergeRemoteAgentHooksJson(current, PARADIS_CLAUDE_HOOK_EVENTS, scriptPath));
 	}
 
 	/**
@@ -168,56 +241,33 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	 */
 	private async mergeClaudeMcp(home: URI, port: number): Promise<void> {
 		const file = joinPath(home, '.claude.json');
-		await this.mergeJson(file, current => {
-			const config = current as { mcpServers?: Record<string, unknown> };
-			const servers = config.mcpServers ?? {};
-			servers['para-browser'] = {
-				type: 'http',
-				url: `http://127.0.0.1:${port}/`,
-				headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }
-			};
-			return { ...config, mcpServers: servers };
-		});
+		await this.mergeJson(file, current => paradisMergeRemoteClaudeMcpJson(current, port));
 	}
 
 	/** Codex の hooks.json へ hook を足す。 */
 	private async mergeCodexHooks(home: URI, scriptPath: string): Promise<void> {
 		const file = joinPath(home, '.codex', 'hooks.json');
-		const command = `[ -x "${scriptPath}" ] && "${scriptPath}" || true`;
-		await this.mergeJson(file, current => {
-			const settings = current as { hooks?: Record<string, unknown[]> };
-			const hooks = settings.hooks ?? {};
-			for (const event of PARADIS_CODEX_HOOK_EVENTS) {
-				const definition = paradisManagedHookDefinition(event, command);
-				const list = Array.isArray(hooks[event.eventName]) ? hooks[event.eventName] : [];
-				if (!list.some(entry => JSON.stringify(entry).includes(scriptPath))) {
-					list.push(definition);
-				}
-				hooks[event.eventName] = list;
-			}
-			return { ...settings, hooks };
-		});
+		await this.mergeJson(file, current => paradisMergeRemoteAgentHooksJson(current, PARADIS_CODEX_HOOK_EVENTS, scriptPath));
 	}
 
 	/**
 	 * JSON ファイルを読んで書き戻す。読めない・壊れている場合は**何もしない**
 	 * （ユーザーの設定を壊すくらいなら、実行状態が出ない方がまし）。
 	 */
-	private async mergeJson(file: URI, update: (current: object) => object): Promise<void> {
-		let current: object = {};
+	private async mergeJson(file: URI, update: (current: string | undefined) => string | undefined): Promise<void> {
+		let current: string | undefined;
 		if (await this.fileService.exists(file)) {
 			try {
 				const content = await this.fileService.readFile(file);
-				const parsed: unknown = JSON.parse(content.value.toString());
-				if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-					return;
-				}
-				current = parsed;
+				current = content.value.toString();
 			} catch {
 				return;
 			}
 		}
-		await this.fileService.writeFile(file, VSBuffer.fromString(JSON.stringify(update(current), undefined, 2) + '\n'));
+		const updated = update(current);
+		if (updated !== undefined) {
+			await this.fileService.writeFile(file, VSBuffer.fromString(updated));
+		}
 	}
 }
 

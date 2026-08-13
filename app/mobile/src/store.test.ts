@@ -1003,6 +1003,30 @@ describe('MobileController', () => {
 		await flush();
 		expect(latest?.browserFrame).toEqual({ data: 'AAAA', w: 10, h: 20 });
 	});
+
+	it('routes browser ICE only to the matching WebRTC SID across the encrypted channel', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const enc = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		pcMux.send(Channels.State, enc(desktopState([])));
+		await flush();
+		const received: object[] = [];
+		controller.webrtcIceHandler = { sid: 'current-sid', fn: candidate => received.push(candidate) };
+
+		pcMux.send(Channels.Browser, enc({ t: 'webrtc-ice', sid: 'stale-sid', candidate: { candidate: 'old' } }));
+		pcMux.send(Channels.Browser, enc({ t: 'webrtc-ice', sid: 'current-sid', candidate: { candidate: 'new' } }));
+		await flush();
+
+		expect(received).toEqual([{ candidate: 'new' }]);
+	});
 });
 
 describe('MobileController agent live append protocol', () => {

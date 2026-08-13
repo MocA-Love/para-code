@@ -85,6 +85,9 @@ import { ParadisMobileStateDelivery } from './paradisMobileStateDelivery.js';
 import { paradisRoundMobileResources } from '../common/paradisMobileHostResources.js';
 import { ParadisHostResourceSampler } from '../../resourceMonitor/node/paradisHostResources.js';
 import { paradisDecodeBinaryFsUpload } from '../common/paradisMobileFileUpload.js';
+import { ParadisRelayDisconnectReporter } from '../common/paradisRelayDisconnectReport.js';
+import { ParadisVoiceSubscriptions } from '../common/paradisVoiceSubscriptions.js';
+import { paradisDeliverVoiceClip } from './paradisVoiceClipDelivery.js';
 
 // Node（shared process）で使うファイルシステム / crypto。
 import { promises as fs } from 'fs';
@@ -156,11 +159,6 @@ const PARADIS_MOBILE_RESYNC_AFTER_FAILURES = 3;
  * PC本体のCPU/メモリ/ディスクをサンプリングする間隔。CPU使用率はこの区間の平均になる。
  * 短くしても丸め（5%刻み）で潰れるだけで再送が増えるだけなので、これ以上は詰めない。
  */
-/**
- * 音声通知の購読が生きているとみなす上限。モバイルは受信中20秒ごとに同じsidで宣言し直すため、
- * それが3回続けて途切れたら（アプリ強制終了・停止要求のロスト等）配信対象から外す。
- */
-const VOICE_SUBSCRIPTION_TTL_MS = 60_000;
 const HOST_RESOURCE_SAMPLE_INTERVAL_MS = 10_000;
 /**
  * リソースの変化だけを理由に desktop state を再送する最小間隔。
@@ -501,12 +499,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private socket: WebSocket | undefined;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 	private reconnectAttempt = 0;
-	/**
-	 * 復帰できなかった場合にだけ送る切断レポート。オフラインが続く間の最初の切断理由を保持する
-	 * （2回目以降で上書きすると、最初に何が起きたのかが失われる）。
-	 */
-	private pendingDisconnectReport: { readonly operation: string; readonly message: string; readonly extras: Record<string, unknown>; readonly at: number; readonly attemptAtArm: number } | undefined;
-	private disconnectReportTimer: ReturnType<typeof setTimeout> | undefined;
+	private readonly disconnectReporter: ParadisRelayDisconnectReporter;
 	private keepaliveTimer: ReturnType<typeof setInterval> | undefined;
 	private connectTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 連続でpongが返らなかった回数。リレー側の保活対応をいつ学習し直すかの判断に使う。 */
@@ -529,10 +522,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly agentCommandAuthority = new ParadisAgentCommandAuthority();
 	private readonly terminalOperationTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly webrtcRendererLeases = new Map<string, { readonly sid: string; readonly owner: IParadisMobileWindowLeaseRef }>();
-	/** 音声通知を受け取ると宣言したモバイル（mobileId → 現行セッションのsidと最終宣言時刻）。 */
-	private readonly voiceSubscribers = new Map<string, { readonly sid: string; at: number }>();
-	/** まだ送り終わっていない音声クリップを持つモバイル（遅延した音声は捨てる）。 */
-	private readonly voiceSending = new Set<string>();
+	private readonly voiceSubscriptions = new ParadisVoiceSubscriptions();
 	private rendererAuthorityChain = Promise.resolve();
 
 	// ペアリング中の状態
@@ -576,6 +566,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		voiceClips?: Event<VSBuffer>,
 	) {
 		super();
+		this.disconnectReporter = this._register(new ParadisRelayDisconnectReporter({
+			reportDelayMs: RELAY_DISCONNECT_REPORT_DELAY_MS,
+			reportAfterAttempts: RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS,
+			getReconnectAttempt: () => this.reconnectAttempt,
+			report: report => reportParadisDiagnosticError('owned', 'desktop-relay', report.operation, new Error(report.message), {
+				...report.extras,
+			}),
+		}));
 		if (voiceClips !== undefined) {
 			this._register(voiceClips(clip => this.broadcastVoiceClip(clip)));
 		}
@@ -929,6 +927,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		await this.load();
 		this.updateDiagnosticCorrelation();
 		this.enabled = enabled;
+		this.disconnectReporter.setEnabled(enabled);
 		if (enabled && this.state.device) {
 			this.connect();
 		} else {
@@ -2004,7 +2003,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.lastAuthProbeOutcome = undefined;
 			this.setUnauthorized(false);
 			// 復帰できたので、直前の切断は報告しない（詳細は RELAY_DISCONNECT_REPORT_DELAY_MS 参照）。
-			this.clearDisconnectReport();
+			this.disconnectReporter.recovered();
 			this.setConnectionState('online');
 			this.startKeepalive(socket);
 		};
@@ -2150,13 +2149,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.sessions.clear();
 		this.webrtcRendererLeases.clear();
-		this.voiceSubscribers.clear();
-		this.voiceSending.clear();
+		this.voiceSubscriptions.clear();
 		if (!this.enabled) {
 			this.setConnectionState('disabled');
 			return;
 		}
-		this.armDisconnectReport(operation, message, {
+		this.disconnectReporter.arm(operation, message, {
 			phase: this.connectionState,
 			reconnect_count: this.reconnectAttempt,
 			transport: 'websocket',
@@ -2177,10 +2175,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.scheduleReconnect();
 	}
 
-	/**
-	 * 切断を「猶予を過ぎてもなお連続で再接続に失敗し続けたら報告する」予約に変える。
-	 * 復帰（onopen）で取り消される。
-	 */
 	/**
 	 * 認証プローブの結果を残す。
 	 *
@@ -2207,52 +2201,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}, () => { });
 	}
 
-	private armDisconnectReport(operation: string, message: string, extras: Record<string, unknown>): void {
-		if (this.pendingDisconnectReport || this.disconnectReportTimer) {
-			// すでにオフラインが続いている。最初の切断理由と、その時刻からの経過を残したいので触らない。
-			return;
-		}
-		this.pendingDisconnectReport = { operation, message, extras, at: Date.now(), attemptAtArm: this.reconnectAttempt };
-		this.scheduleDisconnectReport();
-	}
-
-	/** 猶予を1区切り置いてから、報告するか様子を見るかを判定する。 */
-	private scheduleDisconnectReport(): void {
-		this.disconnectReportTimer = setTimeout(() => {
-			this.disconnectReportTimer = undefined;
-			const pending = this.pendingDisconnectReport;
-			if (!pending || !this.enabled) {
-				this.pendingDisconnectReport = undefined;
-				return;
-			}
-			// 予約してから重ねた再接続の失敗回数。時間ではなくこれで判定するので、スリープで
-			// タイマーだけが遅れて発火しても（＝試行が進んでいなくても）報告にはならない。
-			const failedAttempts = this.reconnectAttempt - pending.attemptAtArm;
-			if (failedAttempts < RELAY_DISCONNECT_REPORT_AFTER_ATTEMPTS) {
-				// まだ復帰の見込みがある。予約は最初の切断理由ごと持ち越して、次の区切りで測り直す。
-				this.scheduleDisconnectReport();
-				return;
-			}
-			this.pendingDisconnectReport = undefined;
-			reportParadisDiagnosticError('owned', 'desktop-relay', pending.operation, new Error(pending.message), {
-				...pending.extras,
-				// 切断時点ではなく報告時点の値。「何回再試行しても戻れなかったか」が復帰不能の度合いを表す。
-				duration_ms: Date.now() - pending.at,
-				reconnect_count: this.reconnectAttempt,
-				attempt: failedAttempts,
-			});
-		}, RELAY_DISCONNECT_REPORT_DELAY_MS);
-	}
-
-	/** 復帰したので予約済みの切断レポートを取り消す。 */
-	private clearDisconnectReport(): void {
-		if (this.disconnectReportTimer) {
-			clearTimeout(this.disconnectReportTimer);
-			this.disconnectReportTimer = undefined;
-		}
-		this.pendingDisconnectReport = undefined;
-	}
-
 	private disconnect(): void {
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
@@ -2262,7 +2210,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.clearConnectTimer();
 		// 意図した切断なので、予約済みの切断レポートは破棄する（機能を無効化しただけで
 		// 「復帰できなかった」と報告してしまわないように）。
-		this.clearDisconnectReport();
+		this.disconnectReporter.setEnabled(false);
 		// onclose と同様、セッション破棄前に per-mobile リソースを解放する。
 		for (const id of this.sessions.keys()) {
 			this.browserMirror.stopSession(id);
@@ -2270,8 +2218,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.sessions.clear();
 		this.webrtcRendererLeases.clear();
-		this.voiceSubscribers.clear();
-		this.voiceSending.clear();
+		this.voiceSubscriptions.clear();
 		if (this.socket) {
 			try { this.socket.close(); } catch { /* ignore */ }
 			this.socket = undefined;
@@ -2442,9 +2389,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	/** モバイルの「音声通知を開始/停止」を受け、以降のMP3配信対象を更新する。 */
 	private handleVoiceControl(mobileId: string, control: { t: 'voice-start' | 'voice-stop'; sid: string; id?: string }): void {
 		if (control.t === 'voice-start') {
-			this.voiceSubscribers.set(mobileId, { sid: control.sid, at: Date.now() });
-		} else if (this.voiceSubscribers.get(mobileId)?.sid === control.sid) {
-			this.voiceSubscribers.delete(mobileId);
+			this.voiceSubscriptions.start(mobileId, control.sid, Date.now());
+		} else {
+			this.voiceSubscriptions.stop(mobileId, control.sid);
 		}
 		if (control.id === undefined) {
 			return;
@@ -2462,8 +2409,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 別モバイルがオンラインのままでも、失効した端末へ後続の音声を送り続けない。
 	 */
 	private dropVoiceSubscriber(mobileId: string): void {
-		this.voiceSubscribers.delete(mobileId);
-		this.voiceSending.delete(mobileId);
+		this.voiceSubscriptions.drop(mobileId);
 	}
 
 	/**
@@ -2474,35 +2420,16 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 宣言が途切れた購読は期限切れとして落とす（停止のfire-and-forgetが届かなかった場合の保険）。
 	 */
 	private broadcastVoiceClip(clip: VSBuffer): void {
-		const now = Date.now();
-		for (const [mobileId, active] of this.voiceSubscribers) {
-			if (now - active.at > VOICE_SUBSCRIPTION_TTL_MS) {
-				this.voiceSubscribers.delete(mobileId);
-			}
-		}
-		if (this.voiceSubscribers.size === 0 || clip.byteLength === 0) {
-			return;
-		}
-		// base64はbase/common実装だと8MiBで数百ms（文字列連結）かかり、shared processの
-		// イベントループごと止まる。node レイヤなので Buffer で一度だけ変換する。
-		const data = Buffer.from(clip.buffer.buffer, clip.buffer.byteOffset, clip.buffer.byteLength).toString('base64');
-		for (const [mobileId, active] of this.voiceSubscribers) {
-			const session = this.sessions.get(mobileId);
-			if (!session?.hasCurrentProtocol || !session.isOnline) {
-				continue;
-			}
-			// 前のクリップをまだ吐き終わっていない端末には積み増さない。通知音声は遅れて届いても
-			// 価値が無く、細い上り回線では同一セッションの他フレームまで後ろへ詰まる。
-			if (this.voiceSending.has(mobileId)) {
-				this.logService.warn('[paradisMobileRelay] voice clip dropped while the previous clip is still in flight');
-				continue;
-			}
-			const payload = new TextEncoder().encode(JSON.stringify({ t: 'voice-clip', sid: active.sid, mime: 'audio/mpeg', data }));
-			this.voiceSending.add(mobileId);
-			session.sendFrame(Channels.Browser, undefined, payload)
-				.catch(err => this.logService.warn('[paradisMobileRelay] voice clip send failed', err))
-				.finally(() => this.voiceSending.delete(mobileId));
-		}
+		void paradisDeliverVoiceClip(this.voiceSubscriptions, clip.buffer, Date.now(), {
+			getSession: mobileId => this.sessions.get(mobileId),
+			warn: (message, error) => {
+				if (error === undefined) {
+					this.logService.warn(message);
+				} else {
+					this.logService.warn(message, error);
+				}
+			},
+		});
 	}
 
 	private async forwardWebrtcSignal(

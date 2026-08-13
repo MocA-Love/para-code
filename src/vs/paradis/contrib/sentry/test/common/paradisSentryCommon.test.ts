@@ -85,6 +85,38 @@ suite('ParadisSentryCommon', () => {
 		assert.ok(!String(event.threads?.values[0].stacktrace?.frames?.[0].filename).includes('alice'));
 	});
 
+	test('keeps only safe extra fields from an event containing private process details', () => {
+		const sanitized = paradisSanitizeSentryEvent({
+			message: 'utility process 4312 failed at /Users/alice/private/main.ts while calling https://api.example.test/v1/run?token=secret#fragment',
+			request: { url: 'https://api.example.test/v1/run?token=secret', headers: { authorization: 'Bearer secret-token' } },
+			server_name: 'alices-macbook-pro.local',
+			extra: {
+				process_type: 'utility',
+				duration_ms: 42,
+				safe_count: 3,
+				path: '/Users/alice/private/main.ts',
+				query: 'token=secret',
+				token: 'secret-token',
+				OPENAI_API_KEY: 'sk-sensitive',
+				process_pid: 4312,
+				process_command_line: '/usr/local/bin/node --token=secret',
+				environment: { HOME: '/Users/alice', OPENAI_API_KEY: 'sk-sensitive' },
+			},
+		});
+
+		assert.deepStrictEqual({
+			message: sanitized.message,
+			request: sanitized.request,
+			serverName: sanitized.server_name,
+			extra: sanitized.extra,
+		}, {
+			message: 'utility process 4312 failed at ~/private/main.ts while calling https://api.example.test/v1/run',
+			request: undefined,
+			serverName: undefined,
+			extra: { process_type: 'utility', duration_ms: 42, safe_count: 3 },
+		});
+	});
+
 	test('limits one fingerprint to three events per ten-minute window and reports suppression', () => {
 		let now = 1_000;
 		const limiter = new ParadisSentryRateLimiter(() => now);

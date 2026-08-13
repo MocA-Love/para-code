@@ -7,7 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { createHash } from 'crypto';
-import { promises as fs, type Dirent } from 'fs';
+import { constants as fsConstants, promises as fs, type Dirent, type Stats } from 'fs';
+import type { FileHandle } from 'fs/promises';
 import { createRequire } from 'module';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
@@ -206,10 +207,40 @@ function parseLine(line: string, agent: 'claude' | 'codex'): IParadisResumeMessa
 	return { role, text: clipped(text), timestamp: parseTimestamp(item['timestamp']) };
 }
 
-async function readBoundedFile(filePath: string): Promise<{ text: string; truncated: boolean }> {
-	const handle = await fs.open(filePath, 'r');
+interface IFileIdentity {
+	readonly dev: number;
+	readonly ino: number;
+}
+
+interface IVerifiedFile {
+	readonly handle: FileHandle;
+	readonly stat: Stats;
+}
+
+async function openVerifiedFile(filePath: string, allowedRoot: string, expected?: IFileIdentity, beforeOpen?: (filePath: string) => Promise<void>): Promise<IVerifiedFile> {
+	const [realRoot, initialRealFile] = await Promise.all([fs.realpath(allowedRoot), fs.realpath(filePath)]);
+	if (!pathInside(realRoot, initialRealFile)) {
+		throw new Error('Session transcript is outside the allowed history directory.');
+	}
+	await beforeOpen?.(filePath);
+	const flags = fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
+	const handle = await fs.open(filePath, flags);
 	try {
-		const stat = await handle.stat();
+		const [opened, realFile, current] = await Promise.all([handle.stat(), fs.realpath(filePath), fs.stat(filePath)]);
+		if (!opened.isFile() || (expected !== undefined && (opened.dev !== expected.dev || opened.ino !== expected.ino))
+			|| opened.dev !== current.dev || opened.ino !== current.ino || !pathInside(realRoot, realFile)) {
+			throw new Error('Session transcript changed while opening.');
+		}
+		return { handle, stat: opened };
+	} catch (error) {
+		await handle.close().catch(() => undefined);
+		throw error;
+	}
+}
+
+async function readBoundedFile(filePath: string, allowedRoot: string, beforeOpen?: (filePath: string) => Promise<void>): Promise<{ text: string; truncated: boolean }> {
+	const { handle, stat } = await openVerifiedFile(filePath, allowedRoot, undefined, beforeOpen);
+	try {
 		if (stat.size <= MAX_PREVIEW_BYTES) {
 			const buffer = Buffer.alloc(stat.size);
 			const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
@@ -233,11 +264,9 @@ async function readBoundedFile(filePath: string): Promise<{ text: string; trunca
 		await handle.close();
 	}
 }
-
-async function readFileHead(filePath: string, limit: number): Promise<string> {
-	const handle = await fs.open(filePath, 'r');
+async function readFileHead(filePath: string, allowedRoot: string, expected: IFileIdentity, limit: number, beforeOpen?: (filePath: string) => Promise<void>): Promise<string> {
+	const { handle, stat } = await openVerifiedFile(filePath, allowedRoot, expected, beforeOpen);
 	try {
-		const stat = await handle.stat();
 		const buffer = Buffer.alloc(Math.min(stat.size, limit));
 		const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
 		return buffer.subarray(0, bytesRead).toString('utf8');
@@ -260,8 +289,26 @@ function pathInside(root: string, candidate: string): boolean {
 export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
 	private readonly searchRevisions = new Map<string, number>();
+	private searchRevision = 0;
+	private readonly resolveAgentHomes: typeof paradisResolveAgentHomes;
+	private readonly readBoundedFile: typeof readBoundedFile;
+	private readonly beforeSummaryRead: ((filePath: string) => Promise<void>) | undefined;
+	private readonly beforeTranscriptRead: ((filePath: string) => Promise<void>) | undefined;
 
-	constructor(@ILogService private readonly logService: ILogService) { }
+	constructor(
+		dependencies: {
+			readonly resolveAgentHomes?: typeof paradisResolveAgentHomes;
+			readonly readBoundedFile?: typeof readBoundedFile;
+			readonly beforeSummaryRead?: (filePath: string) => Promise<void>;
+			readonly beforeTranscriptRead?: (filePath: string) => Promise<void>;
+		} | undefined,
+		@ILogService private readonly logService: ILogService,
+	) {
+		this.resolveAgentHomes = dependencies?.resolveAgentHomes ?? paradisResolveAgentHomes;
+		this.readBoundedFile = dependencies?.readBoundedFile ?? readBoundedFile;
+		this.beforeSummaryRead = dependencies?.beforeSummaryRead;
+		this.beforeTranscriptRead = dependencies?.beforeTranscriptRead;
+	}
 
 	async list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
 		const seenStateKeys = new Set<string>();
@@ -284,7 +331,7 @@ export class ParadisSessionResumeService {
 		const sessions: IParadisResumeSession[] = [];
 		const homesSeen = new Set<string>();
 		for (const space of spaces) {
-			const homes = paradisResolveAgentHomes(space.cwd);
+			const homes = this.resolveAgentHomes(space.cwd);
 			await this.collectClaude(space, homes.claude, homes.matchCwd, sessions);
 			if (!homesSeen.has(homes.codex)) {
 				homesSeen.add(homes.codex);
@@ -305,14 +352,7 @@ export class ParadisSessionResumeService {
 			throw new Error('Session is no longer available.');
 		}
 		entry.touchedAt = Date.now();
-		const [realRoot, realFile] = await Promise.all([
-			fs.realpath(entry.allowedRoot),
-			fs.realpath(entry.transcriptPath),
-		]);
-		if (!pathInside(realRoot, realFile)) {
-			throw new Error('Session transcript is outside the allowed history directory.');
-		}
-		const data = await readBoundedFile(realFile);
+		const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
 		const messages: IParadisResumeMessage[] = [];
 		for (const line of data.text.split('\n')) {
 			const message = parseLine(line, entry.session.agent);
@@ -344,7 +384,7 @@ export class ParadisSessionResumeService {
 	}
 
 	async search(clientId: string, rawQuery: string, requestedCatalogIds: readonly string[]): Promise<readonly IParadisResumeSearchResult[]> {
-		const revision = (this.searchRevisions.get(clientId) ?? 0) + 1;
+		const revision = ++this.searchRevision;
 		this.searchRevisions.set(clientId, revision);
 		const terms = rawQuery.trim().toLocaleLowerCase().slice(0, 200).split(/\s+/).filter(Boolean);
 		if (terms.length === 0) {
@@ -389,10 +429,11 @@ export class ParadisSessionResumeService {
 			}
 		};
 		await Promise.all(Array.from({ length: Math.min(4, entries.length) }, () => worker()));
-		if (this.searchRevisions.get(clientId) === revision) {
+		const isLatestRevision = this.searchRevisions.get(clientId) === revision;
+		if (isLatestRevision) {
 			this.searchRevisions.delete(clientId);
 		}
-		return matches;
+		return isLatestRevision ? matches : [];
 	}
 
 	private getSearchText(entry: ICatalogEntry): Promise<string> {
@@ -403,11 +444,7 @@ export class ParadisSessionResumeService {
 			return entry.searchTextPromise;
 		}
 		entry.searchTextPromise = (async () => {
-			const [realRoot, realFile] = await Promise.all([fs.realpath(entry.allowedRoot), fs.realpath(entry.transcriptPath)]);
-			if (!pathInside(realRoot, realFile)) {
-				throw new Error('Session transcript is outside the allowed history directory.');
-			}
-			const data = await readBoundedFile(realFile);
+			const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
 			const parts: string[] = [];
 			for (const line of data.text.split('\n')) {
 				const message = parseLine(line, entry.session.agent);
@@ -465,7 +502,7 @@ export class ParadisSessionResumeService {
 			return;
 		}
 		const transcriptNames = names.filter(name => name.endsWith('.jsonl'));
-		const discovered: { id: string; transcriptPath: string; updatedAt: number }[] = [];
+		const discovered: { id: string; transcriptPath: string; updatedAt: number; identity: IFileIdentity }[] = [];
 		let statCursor = 0;
 		const statWorker = async (): Promise<void> => {
 			while (statCursor < transcriptNames.length) {
@@ -478,7 +515,7 @@ export class ParadisSessionResumeService {
 				try {
 					const stat = await fs.lstat(transcriptPath);
 					if (stat.isFile()) {
-						discovered.push({ id, transcriptPath, updatedAt: stat.mtimeMs });
+						discovered.push({ id, transcriptPath, updatedAt: stat.mtimeMs, identity: { dev: stat.dev, ino: stat.ino } });
 					}
 				} catch { /* ファイルが走査中に消えた場合は無視する */ }
 			}
@@ -492,7 +529,7 @@ export class ParadisSessionResumeService {
 			while (cursor < candidates.length) {
 				const candidate = candidates[cursor++];
 				try {
-					const data = await readFileHead(candidate.transcriptPath, SUMMARY_HEAD_BYTES);
+					const data = await readFileHead(candidate.transcriptPath, claudeHome, candidate.identity, SUMMARY_HEAD_BYTES, this.beforeSummaryRead);
 					let title: string | undefined;
 					let firstPrompt: string | undefined;
 					let createdAt: number | undefined;
@@ -524,7 +561,7 @@ export class ParadisSessionResumeService {
 	private async createSpaceAliases(spaces: readonly IParadisResumeSpace[]): Promise<readonly { root: string; space: IParadisResumeSpace }[]> {
 		const aliases: { root: string; space: IParadisResumeSpace }[] = [];
 		for (const space of spaces) {
-			const homes = paradisResolveAgentHomes(space.cwd);
+			const homes = this.resolveAgentHomes(space.cwd);
 			const realCwd = await fs.realpath(space.cwd).catch(() => space.cwd);
 			for (const root of new Set([space.cwd, homes.matchCwd, realCwd])) {
 				aliases.push({ root: normalizePath(root), space });
@@ -585,7 +622,7 @@ export class ParadisSessionResumeService {
 				if (!id || !cwd || !rollout || !space || !isCodexRootSource(string(row?.['source']))) {
 					continue;
 				}
-				const homes = paradisResolveAgentHomes(space.cwd);
+				const homes = this.resolveAgentHomes(space.cwd);
 				const transcriptPath = paradisLocalAgentPath(homes, rollout);
 				const title = string(row?.['name']) ?? string(row?.['title']) ?? string(row?.['first_user_message']) ?? string(row?.['preview']) ?? id;
 				const preview = string(row?.['preview']) ?? string(row?.['first_user_message']) ?? title;
@@ -600,7 +637,7 @@ export class ParadisSessionResumeService {
 					break;
 				}
 			}
-			return accepted > 0;
+			return true;
 		} catch (error) {
 			this.logService.debug('[ParadisSessionResume] unable to read Codex session index', error);
 			return false;
@@ -637,7 +674,7 @@ export class ParadisSessionResumeService {
 			}
 		};
 		await collect(sessionsRoot, 0);
-		const candidates: { path: string; updatedAt: number }[] = [];
+		const candidates: { path: string; updatedAt: number; identity: IFileIdentity }[] = [];
 		let statCursor = 0;
 		const statWorker = async (): Promise<void> => {
 			while (statCursor < paths.length) {
@@ -645,7 +682,7 @@ export class ParadisSessionResumeService {
 				try {
 					const stat = await fs.lstat(path);
 					if (stat.isFile()) {
-						candidates.push({ path, updatedAt: stat.mtimeMs });
+						candidates.push({ path, updatedAt: stat.mtimeMs, identity: { dev: stat.dev, ino: stat.ino } });
 					}
 				} catch { /* 走査中に消えたrolloutは無視する */ }
 			}
@@ -659,7 +696,7 @@ export class ParadisSessionResumeService {
 			while (readCursor < candidates.length) {
 				const candidate = candidates[readCursor++];
 				try {
-					const data = await readFileHead(candidate.path, SUMMARY_HEAD_BYTES);
+					const data = await readFileHead(candidate.path, codexHome, candidate.identity, SUMMARY_HEAD_BYTES, this.beforeSummaryRead);
 					const lines = data.split('\n');
 					const meta = parseCodexSessionMeta(lines[0] ?? '');
 					const space = meta ? this.matchSpace(spaceAliases, meta.cwd) : undefined;
@@ -701,7 +738,7 @@ export class ParadisSessionResumeChannel implements IServerChannel<string> {
 }
 
 export function registerParadisSessionResume(server: IPCServer<string>, logService: ILogService): IDisposable {
-	const service = new ParadisSessionResumeService(logService);
+	const service = new ParadisSessionResumeService(undefined, logService);
 	server.registerChannel(PARADIS_SESSION_RESUME_CHANNEL, new ParadisSessionResumeChannel(service));
 	return { dispose() { } };
 }

@@ -41,7 +41,7 @@ const UNAVAILABLE = -1;
 /**
  * 接続先の transcript を手元へ写し続ける contribution。接続していないウィンドウでは何もしない。
  */
-class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbenchContribution {
+export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'paradis.remoteTranscriptMirror';
 
@@ -132,7 +132,13 @@ class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbenchCont
 			return;
 		}
 		const offset = await this.service.beginRemoteTranscriptMirror(this.ownerId, remotePath);
-		if (offset === UNAVAILABLE || this._store.isDisposed) {
+		if (offset === UNAVAILABLE) {
+			return;
+		}
+		if (this._store.isDisposed) {
+			// dispose 中に begin が完了すると、先に送った release より後で担当を取り直してしまう。
+			// 取得後にもう一度解放して、黙った owner を timeout まで残さない。
+			await this.service.releaseRemoteTranscriptMirrors(this.ownerId).catch(() => undefined);
 			return;
 		}
 		this.offsets.set(remotePath, offset);
@@ -207,4 +213,15 @@ class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbenchCont
 	}
 }
 
-registerWorkbenchContribution2(ParadisRemoteTranscriptMirror.ID, ParadisRemoteTranscriptMirror, WorkbenchPhase.AfterRestored);
+type ParadisRemoteTranscriptMirrorRegistrar = (
+	id: string,
+	ctor: typeof ParadisRemoteTranscriptMirror,
+	phase: WorkbenchPhase,
+) => void;
+
+/** デスクトップ集約 entrypoint とテストが共有する registration 契約。 */
+export function registerParadisRemoteTranscriptMirrorContribution(
+	register: ParadisRemoteTranscriptMirrorRegistrar = registerWorkbenchContribution2,
+): void {
+	register(ParadisRemoteTranscriptMirror.ID, ParadisRemoteTranscriptMirror, WorkbenchPhase.AfterRestored);
+}

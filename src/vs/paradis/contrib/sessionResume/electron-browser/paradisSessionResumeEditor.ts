@@ -37,6 +37,7 @@ import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-br
 import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, IParadisResumeSpace, ParadisResumeAgent } from '../common/paradisSessionResume.js';
 import { ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
 import { PARADIS_SESSION_RESUME_EDITOR_ID } from './paradisSessionResumeInput.js';
+import { IParadisSessionResumeEditorOptions, paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from './paradisSessionResumeOrchestration.js';
 
 const $ = dom.$;
 type AgentFilter = 'all' | ParadisResumeAgent;
@@ -576,7 +577,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 			const background = dom.append(actions, $('button.secondary')) as HTMLButtonElement;
 			background.disabled = this.resumingCatalogIds.has(session.catalogId);
 			background.textContent = localize('paradis.sessionResume.backgroundResume', "バックグラウンドで再開");
-			this.renderDisposables.add(dom.addDisposableListener(background, dom.EventType.CLICK, () => this.resume(session, false)));
+			this.renderDisposables.add(dom.addDisposableListener(background, dom.EventType.CLICK, () => this.resume(session, paradisSessionResumeEditorActionOptions('background'))));
 		}
 		const primaryLabel = session.currentSpace
 			? localize('paradis.sessionResume.resumeTerminal', "ターミナルで再開")
@@ -594,12 +595,12 @@ export class ParadisSessionResumeEditor extends EditorPane {
 			"{0}を付け、承認とサンドボックスを省略して再開します",
 			dangerousFlag,
 		);
-		this.renderDisposables.add(dom.addDisposableListener(dangerous, dom.EventType.CLICK, () => this.resume(session, !session.currentSpace, true)));
+		this.renderDisposables.add(dom.addDisposableListener(dangerous, dom.EventType.CLICK, () => this.resume(session, paradisSessionResumeEditorActionOptions('dangerous'))));
 
 		const primary = dom.append(actions, $('button.primary')) as HTMLButtonElement;
 		primary.disabled = this.resumingCatalogIds.has(session.catalogId);
 		primary.textContent = primaryLabel;
-		this.renderDisposables.add(dom.addDisposableListener(primary, dom.EventType.CLICK, () => this.resume(session, !session.currentSpace)));
+		this.renderDisposables.add(dom.addDisposableListener(primary, dom.EventType.CLICK, () => this.resume(session, paradisSessionResumeEditorActionOptions('primary'))));
 	}
 
 	private async renderCodeBlock(session: IParadisResumeSession, language: string | undefined, value: string, renderSequence: number, token: CancellationToken): Promise<HTMLElement> {
@@ -683,7 +684,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		}
 	}
 
-	private async resume(session: IParadisResumeSession, switchFirst: boolean, dangerouslyBypassPermissions = false): Promise<void> {
+	private async resume(session: IParadisResumeSession, options: IParadisSessionResumeEditorOptions): Promise<void> {
 		if (this.resumingCatalogIds.has(session.catalogId)) {
 			return;
 		}
@@ -695,12 +696,15 @@ export class ParadisSessionResumeEditor extends EditorPane {
 		this.resumingCatalogIds.add(session.catalogId);
 		this.render();
 		try {
-			if (switchFirst) {
-				await this.workspaceSwitchService.switchToStateKey(space.stateKey);
-			}
-			await this.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, {
-				rootUri: space.uri, stateKey: space.stateKey, agent: session.agent, sessionId: session.id,
-				dangerouslyBypassPermissions,
+			await paradisResumeSessionFromEditor({
+				rootUri: space.uri,
+				stateKey: space.stateKey,
+				agent: session.agent,
+				sessionId: session.id,
+				currentSpace: session.currentSpace,
+			}, options, {
+				switchToStateKey: stateKey => this.workspaceSwitchService.switchToStateKey(stateKey),
+				resumeAgent: request => this.instantiationService.invokeFunction(paradisResumeAgentInWorkspace, request),
 			});
 		} catch (error) {
 			this.notificationService.error(error);

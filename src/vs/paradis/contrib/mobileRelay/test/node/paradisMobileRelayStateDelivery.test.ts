@@ -168,14 +168,14 @@ suite('ParadisMobileRelay State delivery', () => {
 		const reports: { readonly extras: Record<string, unknown> }[] = [];
 		const stopped: string[] = [];
 		const dropped: string[] = [];
+		let voiceSubscriptionsCleared = false;
 		const sessions = new Map<string, object>([['mobile-1', {}], ['mobile-2', {}]]);
 		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
 			sessions,
 			webrtcRendererLeases: new Map(),
 			// handleDisconnected が畳む対象はここに揃えておくこと。足りないと
 			// 「clear が undefined」で落ちるだけで、何が欠けたのかは分からない。
-			voiceSubscribers: new Map(),
-			voiceSending: new Set(),
+			voiceSubscriptions: { clear: () => { voiceSubscriptionsCleared = true; } },
 			enabled: true,
 			connectionState: 'online',
 			reconnectAttempt: 0,
@@ -184,7 +184,7 @@ suite('ParadisMobileRelay State delivery', () => {
 			consecutiveKeepaliveTimeouts: 0,
 			browserMirror: { stopSession: (id: string) => stopped.push(id) },
 			agentChat: { dropSubscriber: (id: string) => dropped.push(id) },
-			armDisconnectReport: (_operation: string, _message: string, extras: Record<string, unknown>) => reports.push({ extras }),
+			disconnectReporter: { arm: (_operation: string, _message: string, extras: Record<string, unknown>) => reports.push({ extras }) },
 			setConnectionState: () => { },
 			scheduleReconnect: () => { },
 		}) as unknown as {
@@ -196,11 +196,13 @@ suite('ParadisMobileRelay State delivery', () => {
 		assert.deepStrictEqual({
 			safeMobileSessions: reports[0]?.extras['safe_mobile_sessions'],
 			remainingSessions: sessions.size,
+			voiceSubscriptionsCleared,
 			stopped,
 			dropped,
 		}, {
 			safeMobileSessions: 2,
 			remainingSessions: 0,
+			voiceSubscriptionsCleared: true,
 			stopped: ['mobile-1', 'mobile-2'],
 			dropped: ['mobile-1', 'mobile-2'],
 		});

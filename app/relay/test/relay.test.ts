@@ -12,10 +12,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 class BufferedSocket {
 	readonly ws: WebSocket;
 	private readonly queue: (string | ArrayBuffer)[] = [];
+	private readonly closedPromise: Promise<CloseEvent>;
 	private waiter: ((v: string | ArrayBuffer) => void) | null = null;
 
 	constructor(ws: WebSocket) {
 		this.ws = ws;
+		this.closedPromise = new Promise(resolve => ws.addEventListener('close', resolve, { once: true }));
 		ws.addEventListener('message', event => {
 			const data = event.data as string | ArrayBuffer;
 			if (this.waiter) {
@@ -25,6 +27,16 @@ class BufferedSocket {
 			} else {
 				this.queue.push(data);
 			}
+		});
+	}
+
+	closed(timeoutMs = 2000): Promise<CloseEvent> {
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error('ws close timeout')), timeoutMs);
+			void this.closedPromise.then(event => {
+				clearTimeout(timer);
+				resolve(event);
+			});
 		});
 	}
 
@@ -214,6 +226,32 @@ describe('relay pairing + routing', () => {
 		await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
 		expect(decodeRelayControl(await mobileWs.next() as string)).toEqual({ type: 'presence', peer: 'pc', online: false });
 		expect(decodeRelayControl(await mobileWs.next() as string)).toEqual({ type: 'presence', peer: 'pc', online: true });
+		await pcWs.closed();
+		await expect(mobileWs.next(100)).rejects.toThrow('ws message timeout');
+	});
+
+	it('flaps mobile presence when a mobile socket is superseded', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		pairWs.send(encodeRelayControl({ type: 'pairing-msg', data: 'aGVsbG8' }));
+		await pcWs.next(); // pairing-msg
+		pcWs.send(encodeRelayControl({ type: 'pairing-approve', pairId: pair.pairId, name: 'iPhone' }));
+		const paired = decodeRelayControl(await pairWs.next() as string);
+		if (paired.type !== 'paired') { throw new Error('unreachable'); }
+		await pcWs.next(); // paired(pc向け)
+
+		const firstMobileWs = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=${paired.mobileToken}`);
+		expect(decodeRelayControl(await pcWs.next() as string)).toEqual({ type: 'presence', peer: 'mobile', mobileId: paired.mobileId, online: true });
+		await firstMobileWs.next(); // presence(pc online)
+
+		const secondMobileWs = await openWs(`https://relay/device/${deviceId}/ws?role=mobile&mobileId=${paired.mobileId}&token=${paired.mobileToken}`);
+		expect(decodeRelayControl(await pcWs.next() as string)).toEqual({ type: 'presence', peer: 'mobile', mobileId: paired.mobileId, online: false });
+		expect(decodeRelayControl(await pcWs.next() as string)).toEqual({ type: 'presence', peer: 'mobile', mobileId: paired.mobileId, online: true });
+		await secondMobileWs.next(); // presence(pc online)
+		await firstMobileWs.closed();
+		await expect(pcWs.next(100)).rejects.toThrow('ws message timeout');
 	});
 
 	it('rejects mobile connection with a bad token', async () => {
@@ -222,6 +260,18 @@ describe('relay pairing + routing', () => {
 			headers: { Upgrade: 'websocket' },
 		});
 		expect(res.status).toBe(401);
+	});
+
+	it('rejects pairing connection with a bad token without consuming the valid token', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+
+		const rejected = await SELF.fetch(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=wrong`, {
+			headers: { Upgrade: 'websocket' },
+		});
+		expect(rejected.status).toBe(401);
+
+		await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
 	});
 
 	it('rejects pc connection with a bad token', async () => {

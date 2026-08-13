@@ -12,16 +12,18 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ISerializedGrid, ISerializedNode, Orientation } from '../../../../../base/browser/ui/grid/grid.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { type IShellLaunchConfig, TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
+import type { ITerminalFont } from '../../../../../workbench/contrib/terminal/common/terminal.js';
 import type { IPaneCompositePartService } from '../../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { type IWorkbenchLayoutService, Position } from '../../../../../workbench/services/layout/browser/layoutService.js';
 import { type IViewDescriptorService, ViewContainerLocation } from '../../../../../workbench/common/views.js';
-import { Direction, type ITerminalConfigurationService, type ITerminalEditorService, type ITerminalGroup, type ITerminalGroupService, type ITerminalInstance, type ITerminalInstanceService, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { Direction, type ITerminalConfigurationService, type ITerminalEditorService, type ITerminalGroup, type ITerminalGroupService, type ITerminalInstance, type ITerminalInstanceService, ITerminalService, TerminalDataTransfers } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { SessionTerminalGridGroup } from '../../browser/sessionTerminalGridGroup.js';
 import type { ISessionTerminalGridLayoutService, ISessionTerminalGridLayoutSource } from '../../browser/sessionTerminalGridLayoutService.js';
 
 interface ITestTerminalInstance {
 	readonly instance: ITerminalInstance;
 	readonly focusCalls: Array<boolean | undefined>;
+	readonly layouts: Array<{ readonly width: number; readonly height: number }>;
 	readonly listenerCounts: {
 		readonly capabilities: number;
 		readonly disposed: number;
@@ -50,6 +52,7 @@ interface ITestHarness {
 	createGroup(initial?: ITerminalInstance): SessionTerminalGridGroup;
 	/** Creates a group that is attached to a real (detached) container, so it builds an actual grid. */
 	createAttachedGroup(initial: ITerminalInstance): SessionTerminalGridGroup;
+	getCellElement(group: SessionTerminalGridGroup): HTMLElement;
 	createTerminal(options?: ITestTerminalOptions): ITestTerminalInstance;
 	/** Plays the terminal restore finishing, handing `layout` to whichever group asks for one. */
 	completeRestore(layout?: ISerializedGrid): Promise<void>;
@@ -64,6 +67,7 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 	const testInstances: ITestTerminalInstance[] = [];
 	const sourceGroups = new Map<ITerminalInstance, ITerminalGroup>();
 	const groups: SessionTerminalGridGroup[] = [];
+	const groupContainers = new Map<SessionTerminalGridGroup, HTMLElement>();
 	const layoutSources: ISessionTerminalGridLayoutSource[] = [];
 
 	const createTerminal = (options: ITestTerminalOptions = {}): ITestTerminalInstance => {
@@ -86,6 +90,7 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 			onWillRemoveListener: () => listenerCounts.capabilities--,
 		}));
 		const focusCalls: Array<boolean | undefined> = [];
+		const layouts: Array<{ readonly width: number; readonly height: number }> = [];
 
 		const instance = {
 			instanceId,
@@ -108,16 +113,23 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 			focus: (force?: boolean) => focusCalls.push(force),
 			attachToElement: () => { },
 			detachFromElement: () => { },
-			layout: () => { },
+			layout: (dimensions: { width: number; height: number }) => layouts.push(dimensions),
 			setVisible: () => { },
 		} as Partial<ITerminalInstance> as ITerminalInstance;
 
 		const testInstance: ITestTerminalInstance = {
 			instance,
 			focusCalls,
+			layouts,
 			listenerCounts,
 			fireCapabilities: () => onDidChangeCapabilities.fire(),
-			fireDisposed: () => onDisposed.fire(instance),
+			fireDisposed: () => {
+				onDisposed.fire(instance);
+				const liveIndex = liveInstances.indexOf(instance);
+				if (liveIndex !== -1) {
+					liveInstances.splice(liveIndex, 1);
+				}
+			},
 			fireFocus: () => onDidFocus.fire(instance),
 		};
 		liveInstances.push(instance);
@@ -133,11 +145,12 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 		},
 	} as Partial<ITerminalInstanceService> as ITerminalInstanceService;
 	const terminalGroupService = {
-		getGroupForInstance: (instance: ITerminalInstance) => sourceGroups.get(instance),
+		getGroupForInstance: (instance: ITerminalInstance) => sourceGroups.get(instance) ?? groups.find(group => group.terminalInstances.includes(instance)),
 	} as Partial<ITerminalGroupService> as ITerminalGroupService;
 	const connected = new DeferredPromise<void>();
 	const terminalService = {
 		get instances() { return liveInstances; },
+		getInstanceFromResource: (resource: URI | undefined) => liveInstances.find(instance => instance.resource.path === resource?.path),
 		whenConnected: connected.p,
 	} as Partial<ITerminalService> as ITerminalService;
 	let restoredLayout: ISerializedGrid | undefined;
@@ -169,6 +182,9 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 	// grid; the container resolves `ITerminalService` through this.
 	const instantiationService = disposables.add(new TestInstantiationService());
 	instantiationService.stub(ITerminalService, terminalService);
+	const terminalConfigurationService = {
+		getFont: (): ITerminalFont => ({ fontFamily: 'monospace', fontSize: 14, letterSpacing: 0, lineHeight: 1, charWidth: 8, charHeight: 16 }),
+	} satisfies Pick<ITerminalConfigurationService, 'getFont'>;
 	const layoutService = { getPanelPosition: () => Position.BOTTOM } as Partial<IWorkbenchLayoutService> as IWorkbenchLayoutService;
 	const viewDescriptorService = { getViewLocationById: () => ViewContainerLocation.Panel } as Partial<IViewDescriptorService> as IViewDescriptorService;
 
@@ -176,7 +192,7 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 		const group = disposables.add(new SessionTerminalGridGroup(
 			container,
 			initial,
-			{} as ITerminalConfigurationService,
+			terminalConfigurationService as unknown as ITerminalConfigurationService,
 			terminalInstanceService,
 			{} as IPaneCompositePartService,
 			layoutService,
@@ -188,6 +204,9 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 			gridLayoutService,
 		));
 		groups.push(group);
+		if (container) {
+			groupContainers.set(group, container);
+		}
 		return group;
 	};
 
@@ -207,6 +226,11 @@ function createTestHarness(disposables: Pick<DisposableStore, 'add'>): ITestHarn
 		},
 		createAttachedGroup: initial => createGroup(initial, document.createElement('div')),
 		createGroup: initial => createGroup(initial, undefined),
+		getCellElement: group => {
+			const cell = groupContainers.get(group)?.querySelector<HTMLElement>('.session-terminal-grid-cell');
+			assert.ok(cell, 'Expected the attached group to contain a terminal grid cell');
+			return cell;
+		},
 	};
 }
 
@@ -220,6 +244,22 @@ function branchOf(...data: ISerializedNode[]): ISerializedNode {
 
 function gridOf(root: ISerializedNode): ISerializedGrid {
 	return { root, orientation: Orientation.VERTICAL, width: 800, height: 400 };
+}
+
+function dispatchTerminalDrop(target: HTMLElement, source: ITerminalInstance, clientX: number, clientY: number): void {
+	const dataTransfer = new DataTransfer();
+	dataTransfer.setData(TerminalDataTransfers.Terminals, JSON.stringify([source.resource.toString()]));
+	target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, clientX, clientY, dataTransfer }));
+}
+
+function setCellBounds(cell: HTMLElement): void {
+	Object.defineProperty(cell, 'getBoundingClientRect', {
+		value: () => new DOMRect(0, 0, 600, 300),
+	});
+}
+
+function lastLayout(terminal: ITestTerminalInstance): { readonly width: number; readonly height: number } | undefined {
+	return terminal.layouts.at(-1);
 }
 
 suite('SessionTerminalGridGroup', () => {
@@ -521,6 +561,150 @@ suite('SessionTerminalGridGroup', () => {
 				}],
 			},
 		);
+	});
+
+	for (const { name, point, terminalOrder, cellSize } of [
+		{ name: 'up', point: [300, 10], terminalOrder: [2, 1], cellSize: { width: 800, height: 200 } },
+		{ name: 'down', point: [300, 290], terminalOrder: [1, 2], cellSize: { width: 800, height: 200 } },
+		{ name: 'left', point: [10, 150], terminalOrder: [2, 1], cellSize: { width: 400, height: 400 } },
+		{ name: 'right', point: [590, 150], terminalOrder: [1, 2], cellSize: { width: 400, height: 400 } },
+	]) {
+		test(`drops a terminal ${name} of its target with the requested order, cell dimensions, and relative sizes`, async () => {
+			const harness = createTestHarness(disposables);
+			const reference = harness.createTerminal({ persistentProcessId: 1, shouldPersist: true });
+			const source = harness.createTerminal({ persistentProcessId: 2, shouldPersist: true });
+			const group = harness.createAttachedGroup(reference.instance);
+			group.layout(800, 400);
+			await harness.completeRestore();
+			const cell = harness.getCellElement(group);
+			setCellBounds(cell);
+
+			dispatchTerminalDrop(cell, source.instance, point[0], point[1]);
+
+			assert.deepStrictEqual(
+				{
+					terminalOrder: harness.layoutSources[0].getGridLayoutEntry()?.terminals,
+					cellSizes: [lastLayout(reference), lastLayout(source)],
+					relativeSizes: group.getLayoutInfo(true).terminals.map(terminal => terminal.relativeSize),
+				},
+				{
+					terminalOrder,
+					cellSizes: [cellSize, cellSize],
+					relativeSizes: [0.5, 0.5],
+				},
+			);
+		});
+	}
+
+	test('keeps horizontal and vertical splits in visual order with equal relative sizes', async () => {
+		const results: Array<{ readonly direction: Direction; readonly visualOrder: readonly number[]; readonly relativeSizes: readonly number[] }> = [];
+		for (const { direction } of [
+			{ direction: Direction.Right, visualOrder: [1, 2] },
+			{ direction: Direction.Down, visualOrder: [1, 2] },
+		]) {
+			const harness = createTestHarness(disposables);
+			const first = harness.createTerminal({ persistentProcessId: 1, shouldPersist: true });
+			const group = harness.createAttachedGroup(first.instance);
+			group.layout(800, 400);
+			group.splitInDirection(first.instance, direction);
+			const created = harness.createdInstances[0].instance;
+			Object.assign(created, { persistentProcessId: 2, shouldPersist: true });
+			await harness.completeRestore();
+
+			results.push({
+				direction,
+				visualOrder: harness.layoutSources[0].getGridLayoutEntry()?.terminals ?? [],
+				relativeSizes: group.getLayoutInfo(true).terminals.map(terminal => terminal.relativeSize),
+			});
+		}
+
+		assert.deepStrictEqual(results, [
+			{ direction: Direction.Right, visualOrder: [1, 2], relativeSizes: [0.5, 0.5] },
+			{ direction: Direction.Down, visualOrder: [1, 2], relativeSizes: [0.5, 0.5] },
+		]);
+	});
+
+	test('does not drop a terminal in the centre or on and outside exclusive target bounds', async () => {
+		const harness = createTestHarness(disposables);
+		const reference = harness.createTerminal();
+		const source = harness.createTerminal();
+		const group = harness.createAttachedGroup(reference.instance);
+		await harness.completeRestore();
+		const cell = harness.getCellElement(group);
+		setCellBounds(cell);
+
+		dispatchTerminalDrop(cell, source.instance, 300, 150);
+		for (const [x, y] of [[-1, 150], [300, -1], [600, 150], [300, 300]]) {
+			dispatchTerminalDrop(cell, source.instance, x, y);
+		}
+
+		assert.deepStrictEqual(group.terminalInstances.map(instance => instance.instanceId), [reference.instance.instanceId]);
+	});
+
+	test('does not drop a disposed terminal instance', async () => {
+		const harness = createTestHarness(disposables);
+		const reference = harness.createTerminal();
+		const source = harness.createTerminal();
+		const group = harness.createAttachedGroup(reference.instance);
+		await harness.completeRestore();
+		const cell = harness.getCellElement(group);
+		setCellBounds(cell);
+		source.fireDisposed();
+
+		dispatchTerminalDrop(cell, source.instance, 590, 150);
+
+		assert.deepStrictEqual(group.terminalInstances.map(instance => instance.instanceId), [reference.instance.instanceId]);
+	});
+
+	test('does not duplicate a terminal when it is dropped onto the same target twice', async () => {
+		const harness = createTestHarness(disposables);
+		const reference = harness.createTerminal();
+		const source = harness.createTerminal();
+		const sourceGroup = harness.createGroup(source.instance);
+		const group = harness.createAttachedGroup(reference.instance);
+		await harness.completeRestore();
+		const cell = harness.getCellElement(group);
+		setCellBounds(cell);
+
+		dispatchTerminalDrop(cell, source.instance, 590, 150);
+		dispatchTerminalDrop(cell, source.instance, 590, 150);
+
+		assert.deepStrictEqual(
+			{
+				sourceGroupInstanceIds: sourceGroup.terminalInstances.map(instance => instance.instanceId),
+				targetGroupInstanceIds: group.terminalInstances.map(instance => instance.instanceId),
+			},
+			{
+				sourceGroupInstanceIds: [],
+				targetGroupInstanceIds: [reference.instance.instanceId, source.instance.instanceId],
+			},
+		);
+	});
+
+	test('resizes the active grid cell while keeping the neighbouring cell in the layout', async () => {
+		const harness = createTestHarness(disposables);
+		const reference = harness.createTerminal({ persistentProcessId: 1, shouldPersist: true });
+		const source = harness.createTerminal({ persistentProcessId: 2, shouldPersist: true });
+		const group = harness.createAttachedGroup(reference.instance);
+		group.layout(800, 400);
+		group.moveInstanceInDirection(source.instance, reference.instance, Direction.Right);
+		await harness.completeRestore();
+
+		group.resizePane(Direction.Right);
+
+		assert.deepStrictEqual(group.getLayoutInfo(true).terminals.map(terminal => ({ terminal: terminal.terminal, relativeSize: terminal.relativeSize })), [
+			{ terminal: 1, relativeSize: 0.46 },
+			{ terminal: 2, relativeSize: 0.54 },
+		]);
+	});
+
+	test('removes the last attached grid cell without leaving a terminal instance behind', () => {
+		const harness = createTestHarness(disposables);
+		const terminal = harness.createTerminal();
+		const group = harness.createAttachedGroup(terminal.instance);
+
+		assert.doesNotThrow(() => group.removeInstance(terminal.instance));
+		assert.deepStrictEqual(group.terminalInstances, []);
 	});
 
 	test('applies the stored arrangement to the row upstream restored, in visual order', async () => {

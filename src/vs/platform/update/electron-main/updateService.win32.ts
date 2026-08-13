@@ -33,6 +33,10 @@ import { IProductService } from '../../product/common/productService.js';
 import { asJson, IRequestService } from '../../request/common/request.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
+// PARA-PATCH: begin keep the desktop update feed platform aligned with Para Code release CI.
+import { getParadisDesktopUpdatePlatform } from '../common/paradisUpdatePlatform.js';
+// PARA-PATCH: end
+import { getParadisOverwriteLoopGuard } from '../common/paradisWin32UpdateGuard.js'; // PARA-PATCH: apply the fork's overwrite-loop reset and Idle transition together.
 import { AvailableForDownload, DisablementReason, IUpdate, State, StateType, UpdateType } from '../common/update.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js'; // PARA-PATCH: +getUpdateAccessHeaders (Cloudflare Access service token headers, see CLAUDE.md)
 import { getWin32UpdateType } from './win32UpdateType.js';
@@ -208,14 +212,9 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 	}
 
 	protected buildUpdateFeedUrl(quality: string, commit: string, options?: IUpdateURLOptions): string | undefined {
-		let platform = `win32-${process.arch}`;
-
-		if (getUpdateType() === UpdateType.Archive) {
-			platform += '-archive';
-		} else if (this.productService.target === 'user') {
-			platform += '-user';
-		}
-
+		// PARA-PATCH: begin derive the published Para Code update feed platform through the shared contract.
+		const platform = getParadisDesktopUpdatePlatform('win32', process.arch, { isArchive: getUpdateType() === UpdateType.Archive, target: this.productService.target });
+		// PARA-PATCH: end
 		return createUpdateURL(this.productService.updateUrl!, platform, quality, commit, options);
 	}
 
@@ -269,10 +268,12 @@ export class Win32UpdateService extends AbstractUpdateService implements IRelaun
 				// pending installer left to go back to, and a Ready state without `availableUpdate`
 				// would make "restart to update" do nothing. The next scheduled check re-downloads
 				// from cache and reinstalls once, instead of every five minutes.
-				if (this.state.type === StateType.Overwriting && update.version === this.state.update.version) {
+				const pendingVersion = this.state.type === StateType.Overwriting ? this.state.update.version : undefined;
+				const overwriteLoopGuard = getParadisOverwriteLoopGuard(this.state.type, pendingVersion, update.version, updateType, explicit);
+				if (overwriteLoopGuard?.shouldReturn) {
 					this.logService.warn('update#doCheckForUpdates - the update feed keeps offering the version that is already pending, dropping the overwrite cycle');
-					this._overwrite = false;
-					this.setState(State.Idle(updateType, undefined, explicit || undefined));
+					this._overwrite = overwriteLoopGuard.overwrite;
+					this.setState(overwriteLoopGuard.state);
 					return Promise.resolve(null);
 				}
 

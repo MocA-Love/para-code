@@ -3,7 +3,7 @@
 /**
  * APNsプッシュ経路のテスト:
  *  - register-push の保存とトークンバリデーション
- *  - push-notify のオフライン判定分岐（オンラインなら送らない）
+ *  - push-notify の登録token送信（ソケットのonline状態によらず送る）
  *  - APNs fetch のモックによるヘッダ/ボディ形状の検証と JWTキャッシュ再利用
  *  - 410 Unregistered でのトークン削除
  *
@@ -165,7 +165,7 @@ describe('relay APNs push', () => {
 		expect(body.aps['mutable-content']).toBe(1);
 	});
 
-	it('does not send when the mobile is online', async () => {
+	it('sends once to the registered token when the mobile is online', async () => {
 		const { deviceId, pcWs, mobileId, mobileToken } = await pairMobile();
 		const mobileWs = await connectMobile(deviceId, mobileId, mobileToken, pcWs);
 		mobileWs.send(encodeRelayControl({ type: 'register-push', token: VALID_APNS_TOKEN }));
@@ -174,8 +174,13 @@ describe('relay APNs push', () => {
 
 		const fetchMock = stubFetch(200);
 		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
-		await new Promise(r => setTimeout(r, 150));
-		expect(fetchMock).not.toHaveBeenCalled();
+		await waitFor(() => fetchMock.mock.calls.length >= 1);
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const [urlArg, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+		expect(urlArg).toBe(`https://api.push.apple.com/3/device/${VALID_APNS_TOKEN}`);
+		const body = JSON.parse(init.body as string) as { e: string };
+		expect(body.e).toBe('AAAA');
 	});
 
 	it('rejects an invalid apns token (no push is sent)', async () => {

@@ -82,7 +82,7 @@ suite('ParadisWorkspaceSwitchService', () => {
 
 	test('switches back before restoring a cancelled active-scope retirement', async () => {
 		const calls: string[] = [];
-		await paradisCancelRetirementAfterScopeRollback(
+		const cancelled = await paradisCancelRetirementAfterScopeRollback(
 			'space-a',
 			'space-b',
 			async stateKey => { calls.push(`switch:${stateKey}`); },
@@ -90,12 +90,31 @@ suite('ParadisWorkspaceSwitchService', () => {
 			() => { calls.push('error'); }
 		);
 
-		assert.deepStrictEqual(calls, ['switch:space-a', 'cancel']);
+		assert.deepStrictEqual({ cancelled, calls }, {
+			cancelled: true,
+			calls: ['switch:space-a', 'cancel'],
+		});
+	});
+
+	test('cancels a prepared retirement in place when fallback switching has not started', async () => {
+		const calls: string[] = [];
+		const cancelled = await paradisCancelRetirementAfterScopeRollback(
+			'space-a',
+			'space-a',
+			async stateKey => { calls.push(`switch:${stateKey}`); },
+			async () => { calls.push('cancel'); },
+			() => { calls.push('error'); }
+		);
+
+		assert.deepStrictEqual({ cancelled, calls }, {
+			cancelled: true,
+			calls: ['cancel'],
+		});
 	});
 
 	test('keeps frozen retirement data when switching back fails', async () => {
 		const calls: string[] = [];
-		await paradisCancelRetirementAfterScopeRollback(
+		const cancelled = await paradisCancelRetirementAfterScopeRollback(
 			'space-a',
 			'space-b',
 			async () => { calls.push('switch'); throw new Error('switch failed'); },
@@ -103,7 +122,10 @@ suite('ParadisWorkspaceSwitchService', () => {
 			error => { calls.push((error as Error).message); }
 		);
 
-		assert.deepStrictEqual(calls, ['switch', 'switch failed']);
+		assert.deepStrictEqual({ cancelled, calls }, {
+			cancelled: false,
+			calls: ['switch', 'switch failed'],
+		});
 	});
 
 	test('never auto-retires the active missing worktree', () => {

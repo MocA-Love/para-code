@@ -41,24 +41,22 @@ import * as child_process from 'child_process';
  * @param log 進捗の出力先
  */
 export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: NodeJS.ProcessEnv | undefined, log: (message: string) => void): void {
-	if (paradisIsParcelWatcherPatched(packageRoot)) {
+	let patch: ParcelWatcherPatch | undefined;
+	try {
+		patch = paradisPatchParcelWatcher(packageRoot);
+	} catch (error) {
+		// upstream の実装が変わっている。黙って素通りするとクラッシュだけが再発するので、明示的に失敗させる
+		const reason = error instanceof Error ? error.message : String(error);
+		log(`ERR Could not patch ${reason}. See https://github.com/parcel-bundler/watcher/issues/250`);
+		process.exit(1);
+		return;
+	}
+
+	if (!patch) {
 		return; // 適用済み、または対象外
 	}
 
-	const watcherRoot = path.join(packageRoot, 'node_modules', '@parcel', 'watcher');
-	const globPath = path.join(watcherRoot, 'src', 'Glob.cc');
-
-	const original = fs.readFileSync(globPath, 'utf8');
-	const patched = paradisApplyGlobGuard(original) ?? original;
-
-	if (patched === original) {
-		// upstream の実装が変わっている。黙って素通りするとクラッシュだけが再発するので、明示的に失敗させる
-		log(`ERR Could not patch ${globPath}: expected code not found. See https://github.com/parcel-bundler/watcher/issues/250`);
-		process.exit(1);
-	}
-
 	log('Patching @parcel/watcher for parcel-bundler/watcher#250 and rebuilding...');
-	fs.writeFileSync(globPath, patched, 'utf8');
 
 	const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 	const result = child_process.spawnSync(npm, ['rebuild', '@parcel/watcher'], {
@@ -73,9 +71,42 @@ export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: No
 		// 失敗は環境要因 (toolchain や C++ 標準の食い違い) で起きることがあり、revert 済みで
 		// node_modules は元の動く状態に戻っているため、開発環境まで巻き添えにする理由が無い。
 		// パッチが当たらないので #250 のクラッシュは残る。目立つよう警告だけ出す。
-		fs.writeFileSync(globPath, original, 'utf8');
-		log(`ERR Failed to rebuild @parcel/watcher after patching; reverted ${globPath}. The watcher remains vulnerable to parcel-bundler/watcher#250.`);
+		fs.writeFileSync(patch.globPath, patch.original, 'utf8');
+		log(`ERR Failed to rebuild @parcel/watcher after patching; reverted ${patch.globPath}. The watcher remains vulnerable to parcel-bundler/watcher#250.`);
 	}
+}
+
+/**
+ * `@parcel/watcher` のソースへ長い相対パスのガードを適用する。
+ *
+ * 書き込み前に適用箇所の検証を完了するため、未対応のソースではファイルを変更せずに例外を送出する。
+ *
+ * @returns 適用済みまたは対象外なら `undefined`、成功なら復元に必要な元の内容
+ */
+export function paradisPatchParcelWatcher(packageRoot: string): ParcelWatcherPatch | undefined {
+	if (paradisIsParcelWatcherPatched(packageRoot)) {
+		return undefined;
+	}
+
+	const watcherRoot = path.join(packageRoot, 'node_modules', '@parcel', 'watcher');
+	const globPath = path.join(watcherRoot, 'src', 'Glob.cc');
+	const original = fs.readFileSync(globPath, 'utf8');
+	const patched = paradisApplyGlobGuard(original);
+
+	if (patched === undefined) {
+		return undefined;
+	}
+	if (patched === original) {
+		throw new Error(`${globPath}: expected code not found`);
+	}
+
+	fs.writeFileSync(globPath, patched, 'utf8');
+	return { globPath, original };
+}
+
+interface ParcelWatcherPatch {
+	globPath: string;
+	original: string;
 }
 
 /**
@@ -100,8 +131,20 @@ export function paradisIsParcelWatcherPatched(packageRoot: string): boolean {
 	if (!fs.existsSync(globPath) || !fs.existsSync(path.join(watcherRoot, 'build', 'Release', 'watcher.node'))) {
 		return true; // 対象外
 	}
+	if (!paradisIsSupportedParcelWatcherVersion(path.join(watcherRoot, 'package.json'))) {
+		return true; // PARA-PATCH: issue #250 の未修正版だけを対象にする
+	}
 
 	return fs.readFileSync(globPath, 'utf8').includes(PATCH_MARKER);
+}
+
+function paradisIsSupportedParcelWatcherVersion(packageJsonPath: string): boolean {
+	try {
+		const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as { version?: string };
+		return packageJson.version === SUPPORTED_PARCEL_WATCHER_VERSION;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -119,6 +162,9 @@ export function paradisApplyGlobGuard(contents: string): string | undefined {
 
 /** パッチ済み判定に使う目印。{@link REPLACEMENT} に必ず含める。 */
 const PATCH_MARKER = 'PARADIS_MAX_GLOB_MATCH_LENGTH';
+
+/** `Glob::isIgnored` の長い相対パスでクラッシュすることを確認済みの最終版。 */
+const SUPPORTED_PARCEL_WATCHER_VERSION = '2.5.6';
 
 /**
  * 閾値 (バイト数)。issue #250 の報告では約300バイトで落ち、約200バイトまでは安全とされる実測に基づく

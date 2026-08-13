@@ -29,7 +29,7 @@
 
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { type ParadisDiagnosticReporter, reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** この時間 `starting` のままなら、起動が終わらないと見なす。 */
 const PARADIS_SW_STUCK_THRESHOLD_MS = 20_000;
@@ -57,6 +57,27 @@ const PARADIS_SW_LEVEL_NAMES = ['verbose', 'info', 'warning', 'error'];
  */
 const PARADIS_SW_INTERESTING_SOURCES = new Set(['network', 'javascript', 'security', 'worker', 'other']);
 
+/** 時刻の取得と監視間隔の所有権を、main プロセスとテストで同じ形に揃える。 */
+export interface IParadisWebviewServiceWorkerWatchClock {
+	now(): number;
+	setInterval(callback: () => void, delay: number): IDisposable;
+}
+
+/** 監視対象と診断出力を、起動時の既定値を保ったまま差し替えるための依存性。 */
+export interface IParadisWebviewServiceWorkerWatchDependencies {
+	readonly eventSource?: Electron.ServiceWorkers;
+	readonly reporter?: ParadisDiagnosticReporter;
+	readonly clock?: IParadisWebviewServiceWorkerWatchClock;
+}
+
+const defaultWatchClock: IParadisWebviewServiceWorkerWatchClock = {
+	now: () => Date.now(),
+	setInterval: (callback, delay) => {
+		const handle = setInterval(callback, delay);
+		return toDisposable(() => clearInterval(handle));
+	},
+};
+
 function isWebviewScope(value: string | undefined): boolean {
 	return typeof value === 'string' && value.startsWith('vscode-webview://');
 }
@@ -78,12 +99,16 @@ function originOf(value: string | undefined): string {
  *
  * 監視するだけで何も変更しない。失敗しても起動を止めない（診断のために本体を壊さない）。
  */
-export function paradisWatchWebviewServiceWorkers(targetSession: Electron.Session, logService: ILogService): IDisposable {
+export function paradisWatchWebviewServiceWorkers(targetSession: Electron.Session, logService: ILogService, dependencies: IParadisWebviewServiceWorkerWatchDependencies = {}): IDisposable {
 	const store = new DisposableStore();
 	try {
-		const serviceWorkers = targetSession.serviceWorkers;
+		const serviceWorkers = dependencies.eventSource ?? targetSession.serviceWorkers;
+		const reporter = dependencies.reporter ?? reportParadisDiagnosticError;
+		const clock = dependencies.clock ?? defaultWatchClock;
 		/** versionId → `starting` になった時刻。`running` 以降へ進んだら外す。 */
 		const startingSince = new Map<number, number>();
+		/** 一度でも scope を解決できた worker。消えたら registration 削除と見なせる。 */
+		const resolvedStartingScopes = new Map<number, string>();
 		/** 一度でも `running` に到達した版。健全に立ち上がった証拠なので候補から外す。 */
 		const everRan = new Set<number>();
 		/** 報告済みの versionId。同じ worker を何度も送らない。 */
@@ -99,6 +124,66 @@ export function paradisWatchWebviewServiceWorkers(targetSession: Electron.Sessio
 			}
 		};
 
+		let poll: IDisposable | undefined;
+		const stopPolling = () => {
+			poll?.dispose();
+			poll = undefined;
+		};
+		const removeStartingWorker = (versionId: number) => {
+			startingSince.delete(versionId);
+			resolvedStartingScopes.delete(versionId);
+			if (startingSince.size === 0) {
+				stopPolling();
+			}
+		};
+		const pollStartingWorkers = () => {
+			try {
+				const now = clock.now();
+				for (const [versionId, since] of [...startingSince]) {
+					if (stuckReports >= PARADIS_SW_MAX_STUCK_REPORTS) {
+						stopPolling();
+						return;
+					}
+					const scope = scopeOf(versionId);
+					if (scope === undefined && resolvedStartingScopes.has(versionId)) {
+						// 既に scope を取れていた worker が消えたなら registration は破棄済み。
+						removeStartingWorker(versionId);
+						continue;
+					}
+					if (scope !== undefined) {
+						resolvedStartingScopes.set(versionId, scope);
+						if (!isWebviewScope(scope)) {
+							removeStartingWorker(versionId);
+							continue;
+						}
+					}
+					if (everRan.has(versionId) || reportedVersions.has(versionId) || now - since < PARADIS_SW_STUCK_THRESHOLD_MS) {
+						continue;
+					}
+					reportedVersions.add(versionId);
+					stuckReports++;
+					reporter('patched', 'webview', 'sw-startup-stuck', new Error(
+						'Webview service worker stayed in starting without ever running'), {
+						duration_ms: now - since,
+						safe_origin: originOf(scope),
+						safe_starting_workers: startingSince.size,
+						safe_ever_ran: everRan.size,
+					});
+				}
+				if (stuckReports >= PARADIS_SW_MAX_STUCK_REPORTS) {
+					// これ以上は送らないので、5秒ごとに main を起こし続ける意味が無い。
+					stopPolling();
+				}
+			} catch (error) {
+				logService.trace(`[ParadisWebviewServiceWorkerWatch] poll failed: ${error}`);
+			}
+		};
+		const startPolling = () => {
+			if (poll === undefined && stuckReports < PARADIS_SW_MAX_STUCK_REPORTS) {
+				poll = clock.setInterval(pollStartingWorkers, PARADIS_SW_POLL_INTERVAL_MS);
+			}
+		};
+
 		const onRunningStatusChanged = (details: { versionId: number; runningStatus: string }) => {
 			try {
 				const { versionId, runningStatus } = details ?? {};
@@ -106,13 +191,24 @@ export function paradisWatchWebviewServiceWorkers(targetSession: Electron.Sessio
 					return;
 				}
 				if (runningStatus === 'starting') {
+					if (everRan.has(versionId) || startingSince.has(versionId) || startingSince.size >= PARADIS_SW_MAX_STUCK_REPORTS) {
+						return;
+					}
+					const scope = scopeOf(versionId);
+					if (scope !== undefined && !isWebviewScope(scope)) {
+						return;
+					}
+					if (scope !== undefined) {
+						resolvedStartingScopes.set(versionId, scope);
+					}
 					if (!startingSince.has(versionId)) {
-						startingSince.set(versionId, Date.now());
+						startingSince.set(versionId, clock.now());
+						startPolling();
 					}
 					return;
 				}
 				// running / stopping / stopped はいずれも「起動待ちで固まってはいない」。
-				startingSince.delete(versionId);
+				removeStartingWorker(versionId);
 				if (runningStatus === 'running') {
 					everRan.add(versionId);
 				}
@@ -138,7 +234,7 @@ export function paradisWatchWebviewServiceWorkers(targetSession: Electron.Sessio
 					return;
 				}
 				// 指紋は operation まで含むので、source ごとに分けてレート制限の枠を独立させる。
-				reportParadisDiagnosticError('patched', 'webview', `sw-worker-console-${details.source}`, new Error(
+				reporter('patched', 'webview', `sw-worker-console-${details.source}`, new Error(
 					`Webview service worker logged: ${String(details.message).slice(0, 500)}`), {
 					safe_level: PARADIS_SW_LEVEL_NAMES[details.level] ?? String(details.level),
 					safe_source: String(details.source ?? 'unknown'),
@@ -170,42 +266,6 @@ export function paradisWatchWebviewServiceWorkers(targetSession: Electron.Sessio
 			}
 		}));
 
-		let poll: ReturnType<typeof setInterval> | undefined;
-		const stopPolling = () => {
-			if (poll !== undefined) {
-				clearInterval(poll);
-				poll = undefined;
-			}
-		};
-		poll = setInterval(() => {
-			try {
-				const now = Date.now();
-				for (const [versionId, since] of [...startingSince]) {
-					if (everRan.has(versionId) || reportedVersions.has(versionId) || now - since < PARADIS_SW_STUCK_THRESHOLD_MS) {
-						continue;
-					}
-					const scope = scopeOf(versionId);
-					if (scope !== undefined && !isWebviewScope(scope)) {
-						continue;
-					}
-					reportedVersions.add(versionId);
-					stuckReports++;
-					reportParadisDiagnosticError('patched', 'webview', 'sw-startup-stuck', new Error(
-						'Webview service worker stayed in starting without ever running'), {
-						duration_ms: now - since,
-						safe_origin: originOf(scope),
-						safe_starting_workers: startingSince.size,
-						safe_ever_ran: everRan.size,
-					});
-				}
-				if (stuckReports >= PARADIS_SW_MAX_STUCK_REPORTS) {
-					// これ以上は送らないので、5秒ごとに main を起こし続ける意味が無い。
-					stopPolling();
-				}
-			} catch (error) {
-				logService.trace(`[ParadisWebviewServiceWorkerWatch] poll failed: ${error}`);
-			}
-		}, PARADIS_SW_POLL_INTERVAL_MS);
 		store.add(toDisposable(stopPolling));
 	} catch (error) {
 		logService.warn(`[ParadisWebviewServiceWorkerWatch] could not start watching webview service workers: ${error}`);

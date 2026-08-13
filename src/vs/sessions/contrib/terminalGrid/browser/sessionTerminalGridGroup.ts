@@ -101,6 +101,9 @@ function computeGridDropDirection(clientX: number, clientY: number, targetRect: 
 
 	const x = clientX - targetRect.left;
 	const y = clientY - targetRect.top;
+	if (x < 0 || x >= width || y < 0 || y >= height) {
+		return undefined;
+	}
 
 	const inMiddleThirdX = x > width / 3 && x < (width * 2) / 3;
 	const inMiddleThirdY = y > height / 3 && y < (height * 2) / 3;
