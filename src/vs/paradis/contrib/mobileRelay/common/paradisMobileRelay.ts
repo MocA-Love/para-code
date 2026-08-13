@@ -327,6 +327,27 @@ export interface IParadisMobileRelayService {
 	 */
 	runGit(repoPath: string, args: readonly string[]): Promise<IParadisGitResult>;
 
+	// --- SSH 接続先 transcript の写し -----------------------------------------------------------
+	//
+	// エージェントの会話本文は transcript を tail して読むが、shared process からは接続先の
+	// ディスクに手が届かない。接続中のウィンドウが読んで手元へ写し、tailer にはその写しを
+	// 読ませる。ここはその受け渡し。
+
+	/** 写すべき接続先 transcript の一覧（空いているもの＋自分が担当しているもの）。 */
+	listRemoteTranscriptMirrors(ownerId: string): Promise<readonly string[]>;
+	/** 担当を取り、接続先の次に読む位置を得る。取れなければ -1。 */
+	beginRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number>;
+	/**
+	 * 接続先から読んだ続きを写しへ足し、次に読む位置を得る。担当を失ったときは -1。
+	 * data はIPCの引数シリアライザがバイナリのまま運べるようトップレベル引数で渡す
+	 * （オブジェクトへネストするとJSON化されて中身が壊れる）。
+	 */
+	appendRemoteTranscriptMirror(ownerId: string, remotePath: string, data: VSBuffer): Promise<number>;
+	/** 接続先のファイルが縮んだ（別セッションに置き換わった）とき、写しを捨てて 0 から取り直す。 */
+	resetRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number>;
+	/** ウィンドウが閉じる・接続先が変わるときに担当を空ける。 */
+	releaseRemoteTranscriptMirrors(ownerId: string): Promise<void>;
+
 	/**
 	 * agentチャネル用: 「ターミナルinstanceId ⇔ ペイントークン」対応表の同期（ウィンドウ単位の全置換。
 	 * shared process は全ウィンドウ共有のため、windowId で自ウィンドウの分だけを置き換える）。
