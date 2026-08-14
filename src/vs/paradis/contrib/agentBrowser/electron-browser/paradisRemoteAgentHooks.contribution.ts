@@ -12,6 +12,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -20,6 +21,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_NOTIFY_HOOK_RELATIVE_PATH } from '../common/paradisAgentHooks.js';
 import { paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 
@@ -154,11 +156,24 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		@IPathService private readonly pathService: IPathService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 	) {
 		super();
 
-		if (this.environmentService.remoteAuthority !== undefined) {
+		// SSH の接続先だけを対象にする。他の種類の接続先（WSL・コンテナ）は ssh を通らないので、
+		// 置いたものへ実行権も付けられず、ソケットも引けない
+		if (this.environmentService.remoteAuthority?.startsWith('ssh-remote+') === true) {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
+			// ペインが増減するたび、接続先の Codex ソケットの引き込みを合わせ直す
+			this._register(this.paneTokenService.onDidChange(() => {
+				void this.pathService.userHome().then(home => this.syncCodexSockets(home, channel), () => undefined);
+			}));
+			this._register({
+				dispose: () => {
+					channel.call('releaseRemoteCodexSockets', [this.environmentService.remoteAuthority])
+						.catch(() => undefined);
+				}
+			});
 			this._register(new ParadisRemoteAgentHooksController(
 				() => this.install(channel),
 				() => channel.call<{ port: number }>('getGatewayEndpoint'),
@@ -190,10 +205,13 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			// 手元と同じ番号を書いておく。トンネルが張られている限りそのまま手元へ届く
 			await this.fileService.writeFile(portFile, VSBuffer.fromString(JSON.stringify({ protocolVersion: 1, port: endpoint.port })));
 
+			await this.installCodexLauncher(home, channel);
+
 			await this.mergeAgentHooks(joinPath(home, '.claude', 'settings.json'), 'claude');
 			await this.mergeAgentHooks(joinPath(home, '.codex', 'hooks.json'), 'codex');
 			await this.mergeClaudeMcp(home, endpoint.port);
 			await this.mergeCodexMcp(home, endpoint.port);
+			this.syncCodexSockets(home, channel);
 			this.logService.info(`[paradis] installed the agent hooks on ${this.environmentService.remoteAuthority} (port ${endpoint.port})`);
 			return endpoint.port;
 		} catch (error) {
@@ -201,6 +219,54 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			this.logService.warn('[paradis] could not install the agent hooks on the host (will retry)', error);
 			return undefined;
 		}
+	}
+
+	/**
+	 * Codex のペイン専用ランチャーを接続先へ置く。
+	 *
+	 * Codex の承認カードやモデル一覧は、TUI の画面ではなく app-server との構造化されたやり取りで
+	 * 取っている。それを立てるのがこのランチャーで、PATH の先頭に置かれて `codex` の代わりに
+	 * 呼ばれる。手元のものは Para Code の中にあり接続先からは見えないので、同じものを置く。
+	 *
+	 * 中身は素の sh スクリプトで、何か揃わなければ本物の codex をそのまま実行する作りになって
+	 * いる。置くこと自体が Codex を壊す方向には働かない。
+	 */
+	private async installCodexLauncher(home: URI, channel: IChannel): Promise<void> {
+		const appRoot = (this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string }).appRoot;
+		if (typeof appRoot !== 'string' || appRoot.length === 0) {
+			return;
+		}
+		// 手元のファイルを読む。接続中のウィンドウでも `file:` はこの機械を指す
+		const source = URI.file(`${appRoot}/resources/paradis/bin/codex`);
+		const content = await this.fileService.readFile(source).catch(() => undefined);
+		if (content === undefined) {
+			this.logService.warn('[paradis] could not read the Codex launcher to copy to the host');
+			return;
+		}
+		const target = joinPath(home, '.para-code', 'bin', 'codex');
+		const existing = await this.fileService.readFile(target).catch(() => undefined);
+		if (existing !== undefined && existing.value.toString() === content.value.toString()) {
+			return; // 既に同じもの。30秒ごとの見直しで毎回コピーし直さない
+		}
+		// 走っている Codex のシェルは、このファイルを開いたまま最後まで読み進める。上書きすると
+		// 途中から別の中身を読んで死ぬので、別名で書いてから置き換える（開いている側は古い実体を
+		// 見続ける）
+		const staging = joinPath(home, '.para-code', 'bin', `codex.${generateUuid()}`);
+		await this.fileService.writeFile(staging, content.value);
+		await channel.call('markRemoteHookExecutable', [this.environmentService.remoteAuthority, staging.path]);
+		await this.fileService.move(staging, target, true);
+	}
+
+	/**
+	 * 接続先の Codex ペインのソケットを、手元の同じ場所へ引いてくるよう頼む。
+	 *
+	 * ペインは開いたり閉じたりするので、その都度いまある一覧を渡して同期させる。手元のソケットの
+	 * 場所は shared process が決める（ウィンドウの言い値でソケットを作らせない）。
+	 */
+	private syncCodexSockets(home: URI, channel: IChannel): void {
+		const tokens = this.paneTokenService.listPaneTokens().map(pane => pane.token);
+		channel.call('syncRemoteCodexSockets', [this.environmentService.remoteAuthority, joinPath(home, '.para-code').path, tokens])
+			.catch(error => this.logService.trace('[paradis] could not sync the Codex sockets with the host', error));
 	}
 
 	/**

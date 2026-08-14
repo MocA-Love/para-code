@@ -25,7 +25,9 @@
 //  - 同じ authority へ二重に張らない。切断時と shared process 終了時に必ず畳む
 
 import { ChildProcess, spawn } from 'child_process';
-import { existsSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, unlinkSync } from 'fs';
+import { dirname, join } from '../../../../base/common/path.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 
@@ -50,6 +52,9 @@ export function paradisSshHostFromAuthority(remoteAuthority: string | undefined)
 	return host;
 }
 
+/** 1ウィンドウが同時に引ける Codex ソケットの上限。 */
+const MAX_SOCKET_FORWARDS_PER_WINDOW = 8;
+
 /** 落ちたときの再試行間隔。張り直しで ssh を叩き続けないよう、控えめに戻す。 */
 const RETRY_DELAY_MS = 5000;
 
@@ -59,6 +64,12 @@ const MAX_RETRIES = 3;
 
 interface ITunnelEntry {
 	readonly host: string;
+	/**
+	 * この接続へ転送の足し引きを頼むための制御ソケット。置き場が無い・長すぎる場合は undefined で、
+	 * そのときは Codex ソケットの引き込みだけを諦める（**戻り経路は張る**。hook が届かなくなる
+	 * ほうがずっと痛い）。
+	 */
+	readonly controlPath: string | undefined;
 	child: ChildProcess | undefined;
 	retries: number;
 	retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -77,6 +88,10 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	private readonly tunnels = new Map<string, ITunnelEntry>();
 	/** 接続先ごとの Claude Code の版。ssh を毎回叩かないための控え。 */
 	private readonly claudeVersions = new Map<string, { readonly version: string | undefined; readonly at: number }>();
+	/** ウィンドウ → そのウィンドウが欲しがっている転送（手元のパス → 接続先のパス）。 */
+	private readonly socketForwardOwners = new Map<string, Map<string, string>>();
+	/** 実際に張れている転送（手元のパス → 接続先のパス）。取り下げに同じ指定が要る。 */
+	private readonly openedSocketForwards = new Map<string, string>();
 
 	constructor(
 		private readonly logService: ILogService,
@@ -89,11 +104,16 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			args,
 			{ stdio: ['ignore', captureOutput === true ? 'pipe' : 'ignore', 'pipe'] }
 		),
+		/** 制御ソケットを置く場所。無ければ Codex ソケットの引き込みだけを諦める。 */
+		private readonly runtimeDirectory: string | undefined = undefined,
 	) {
 		super();
 		this._register(toDisposable(() => {
 			for (const authority of [...this.tunnels.keys()]) {
 				this.close(authority);
+			}
+			for (const owner of [...this.socketForwardOwners.keys()]) {
+				this.releaseSocketForwards(owner);
 			}
 		}));
 	}
@@ -115,7 +135,7 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		if (existing !== undefined && !existing.disposed) {
 			return true;
 		}
-		const entry: ITunnelEntry = { host, child: undefined, retries: 0, retryTimer: undefined, disposed: false };
+		const entry: ITunnelEntry = { host, controlPath: this.controlPathFor(remoteAuthority), child: undefined, retries: 0, retryTimer: undefined, disposed: false };
 		this.tunnels.set(remoteAuthority, entry);
 		this.start(remoteAuthority, entry, port);
 		return true;
@@ -141,6 +161,9 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		const args = [
 			'-N',
 			'-R', `${port}:127.0.0.1:${port}`,
+			// Codex ペインのソケットを後から足し引きするための制御口。接続そのものは1本のまま
+			// にしたいので、ペインごとに ssh を起こさずここへ相乗りさせる
+			...(entry.controlPath !== undefined ? ['-M', '-S', entry.controlPath, '-o', 'ControlPersist=no'] : []),
 			// パスフレーズや初見ホストの確認で固まらせない。鍵は ssh-agent 側で解決される
 			'-o', 'BatchMode=yes',
 			// ポートを取れなかったら黙って繋がったままにせず終了させる
@@ -220,6 +243,145 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	}
 
 	/**
+	 * 接続先で Codex が作るソケットを、手元の同じ名前のソケットとして見えるようにする。
+	 *
+	 * Codex の承認カードやモデル一覧は、TUI の画面ではなく app-server との構造化されたやり取りで
+	 * 取っている。その相手は接続先に居るのに、話しかける shared process は手元に居る。手元に
+	 * ソケットを作り、そこへの接続を接続先のソケットへ流す。手元の側から見ると、繋いでいない
+	 * ときと同じ場所に同じソケットがあることになるので、読む側は何も変えなくてよい。
+	 *
+	 * **既に張ってある戻り経路に相乗りする**（`ControlMaster`）。ペインごとに ssh を起こすと、
+	 * ターミナルを何枚も開いたウィンドウを復元しただけで同時接続が10本を超え、sshd の
+	 * `MaxStartups` に触って何本かが黙って落ちる。接続は接続先1つにつき1本のままにする。
+	 * 戻り経路が無い（設定で切られている・まだ張れていない）ときは何もしない。
+	 *
+	 * @param owner どのウィンドウの要求か。ウィンドウは同じ接続先へ何枚でも開けるので、
+	 * 自分の要求だけを差し替える（他のウィンドウのぶんまで畳むと、相手のペインが黙って死ぬ）。
+	 */
+	syncSocketForwards(owner: string, remoteAuthority: string, wanted: ReadonlyMap<string, string>): void {
+		const entry = this.tunnels.get(remoteAuthority);
+		if (entry === undefined || entry.disposed || entry.controlPath === undefined) {
+			return;
+		}
+		if (wanted.size > MAX_SOCKET_FORWARDS_PER_WINDOW) {
+			this.logService.warn(`[paradis] too many Codex panes to forward (${wanted.size}); keeping the first ${MAX_SOCKET_FORWARDS_PER_WINDOW}`);
+			wanted = new Map([...wanted].slice(0, MAX_SOCKET_FORWARDS_PER_WINDOW));
+		}
+		const previous = this.socketForwardOwners.get(owner) ?? new Map<string, string>();
+		this.socketForwardOwners.set(owner, new Map(wanted));
+		for (const [localPath] of previous) {
+			if (!wanted.has(localPath)) {
+				this.dropSocketForward(entry, localPath);
+			}
+		}
+		for (const [localPath, remotePath] of wanted) {
+			if (previous.get(localPath) !== remotePath) {
+				this.openSocketForward(entry, localPath, remotePath);
+			}
+		}
+	}
+
+	/** そのウィンドウぶんの要求を取り下げる（閉じた・接続が切れた）。 */
+	releaseSocketForwards(owner: string): void {
+		const previous = this.socketForwardOwners.get(owner);
+		if (previous === undefined) {
+			return;
+		}
+		this.socketForwardOwners.delete(owner);
+		for (const [localPath] of previous) {
+			for (const entry of this.tunnels.values()) {
+				this.dropSocketForward(entry, localPath);
+			}
+		}
+	}
+
+	/** 他のウィンドウがまだ欲しがっているか。 */
+	private isSocketForwardWanted(localPath: string): boolean {
+		for (const wanted of this.socketForwardOwners.values()) {
+			if (wanted.has(localPath)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private openSocketForward(entry: ITunnelEntry, localPath: string, remotePath: string): void {
+		// ssh は既にあるファイルへは listen しない。前回の残骸を先に片付ける
+		try {
+			mkdirSync(dirname(localPath), { recursive: true, mode: 0o700 });
+			unlinkSync(localPath);
+		} catch {
+			// 無ければそれでよい
+		}
+		this.controlCommand(entry, ['forward', '-L', `${localPath}:${remotePath}`], `forward the Codex socket`);
+	}
+
+	private dropSocketForward(entry: ITunnelEntry, localPath: string): void {
+		if (this.isSocketForwardWanted(localPath)) {
+			return;
+		}
+		const remotePath = this.openedSocketForwards.get(localPath);
+		if (remotePath !== undefined) {
+			this.controlCommand(entry, ['cancel', '-L', `${localPath}:${remotePath}`], 'stop forwarding the Codex socket');
+			this.openedSocketForwards.delete(localPath);
+		}
+		try {
+			unlinkSync(localPath);
+		} catch {
+			// 既に無ければそれでよい
+		}
+	}
+
+	/** 戻り経路の接続へ、転送の足し引きを頼む（`ssh -O ...`）。 */
+	private controlCommand(entry: ITunnelEntry, command: readonly string[], what: string): void {
+		if (entry.controlPath === undefined) {
+			return;
+		}
+		let child: ChildProcess;
+		try {
+			child = this.spawnSsh(['-S', entry.controlPath, '-O', ...command, entry.host]);
+		} catch (error) {
+			this.logService.warn(`[paradis] could not ${what} on ${entry.host}`, error);
+			return;
+		}
+		child.on('error', error => this.logService.warn(`[paradis] could not ${what} on ${entry.host}`, error));
+		child.stderr?.on('data', (chunk: Buffer) => {
+			const text = chunk.toString().trim();
+			if (text.length > 0) {
+				this.logService.warn(`[paradis] ${what} (${entry.host}): ${text}`);
+			}
+		});
+		child.on('exit', code => {
+			if (code === 0 && command[0] === 'forward') {
+				this.openedSocketForwards.set(command[2].slice(0, command[2].indexOf(':')), command[2].slice(command[2].indexOf(':') + 1));
+			}
+		});
+	}
+
+	/**
+	 * 制御ソケットの置き場。unix socket のパス長上限（約100バイト）に収まる必要があるため、
+	 * 接続先の名前をそのまま使わず短いハッシュにする。
+	 */
+	private controlPathFor(remoteAuthority: string): string | undefined {
+		if (this.runtimeDirectory === undefined) {
+			return undefined;
+		}
+		const digest = createHash('sha256').update(remoteAuthority).digest('hex').slice(0, 12);
+		const controlPath = join(this.runtimeDirectory, `ctl-${digest}.sock`);
+		if (new TextEncoder().encode(controlPath).length > 100) {
+			this.logService.warn('[paradis] the control socket path is too long; forwarding the Codex socket is unavailable');
+			return undefined;
+		}
+		try {
+			mkdirSync(this.runtimeDirectory, { recursive: true, mode: 0o700 });
+			unlinkSync(controlPath);
+		} catch {
+			// 無ければそれでよい
+		}
+		return controlPath;
+	}
+
+	/**
 	 * 接続先の Claude Code の版を尋ねる（`claude --version` の生の出力）。
 	 *
 	 * hook の一部は新しい版にしか無く、古い版は知らないキーごと設定を拒むことがある。手元では
@@ -265,6 +427,6 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 	}
 }
 
-export function createParadisRemoteAgentTunnels(logService: ILogService): ParadisRemoteAgentTunnels & IDisposable {
-	return new ParadisRemoteAgentTunnels(logService);
+export function createParadisRemoteAgentTunnels(logService: ILogService, runtimeDirectory?: string): ParadisRemoteAgentTunnels & IDisposable {
+	return new ParadisRemoteAgentTunnels(logService, undefined, runtimeDirectory);
 }

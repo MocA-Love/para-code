@@ -4,6 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { join } from '../../../../../base/common/path.js';
 import type { ChildProcess } from 'child_process';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ILogService } from '../../../../../platform/log/common/log.js';
@@ -119,5 +122,90 @@ suite('ParadisRemoteAgentTunnel', () => {
 			{ killed: 1, authorities: [] }
 		);
 		tunnels.dispose();
+	});
+
+	/** `-O` の要求だけ「成功して終了」を返す偽 ssh（戻り経路の常駐プロセスは生かしたまま）。 */
+	function fakeSshWithControl() {
+		const calls: string[][] = [];
+		const spawn = (args: string[]) => {
+			calls.push(args);
+			const handlers = new Map<string, (code: number) => void>();
+			const child = {
+				stderr: { on: () => { } },
+				on: (event: string, handler: (code: number) => void) => { handlers.set(event, handler); },
+				kill: () => { }
+			} as unknown as ChildProcess;
+			if (args.includes('-O')) {
+				queueMicrotask(() => handlers.get('exit')?.(0));
+			}
+			return child;
+		};
+		return { calls, spawn };
+	}
+
+	test('rides the tunnel already open instead of dialling once per pane', async () => {
+		const ssh = fakeSshWithControl();
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
+		try {
+			tunnels.ensure('ssh-remote+paradis-pc', 47286);
+			tunnels.syncSocketForwards('window:1', 'ssh-remote+paradis-pc', new Map([[join(dir, 'a.sock'), '/home/u/.para-code/pcx/a.sock']]));
+			await new Promise<void>(resolve => queueMicrotask(resolve));
+
+			const connections = ssh.calls.filter(args => !args.includes('-O'));
+			assert.deepStrictEqual({
+				// ペインが増えても新しい接続は起こさない。増えるのは制御要求だけ
+				connections: connections.length,
+				master: connections[0].includes('-M'),
+				forwarded: ssh.calls.filter(args => args.includes('-O')).map(args => args.slice(args.indexOf('-O'))),
+			}, {
+				connections: 1,
+				master: true,
+				forwarded: [['-O', 'forward', '-L', `${join(dir, 'a.sock')}:/home/u/.para-code/pcx/a.sock`, 'paradis-pc']],
+			});
+		} finally {
+			tunnels.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('leaves another window\'s forwards alone when one window drops its own', async () => {
+		const ssh = fakeSshWithControl();
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
+		try {
+			const a = join(dir, 'a.sock');
+			const b = join(dir, 'b.sock');
+			tunnels.ensure('ssh-remote+paradis-pc', 47286);
+			tunnels.syncSocketForwards('window:1', 'ssh-remote+paradis-pc', new Map([[a, '/home/u/.para-code/pcx/a.sock']]));
+			tunnels.syncSocketForwards('window:2', 'ssh-remote+paradis-pc', new Map([[b, '/home/u/.para-code/pcx/b.sock']]));
+			await new Promise<void>(resolve => queueMicrotask(resolve));
+
+			// 2枚目のウィンドウがペインを閉じても、1枚目の転送は生きていなければならない
+			tunnels.syncSocketForwards('window:2', 'ssh-remote+paradis-pc', new Map());
+			await new Promise<void>(resolve => queueMicrotask(resolve));
+
+			assert.deepStrictEqual(
+				ssh.calls.filter(args => args.includes('cancel')).map(args => args[args.indexOf('-L') + 1]),
+				[`${b}:/home/u/.para-code/pcx/b.sock`],
+			);
+		} finally {
+			tunnels.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('does not forward anything when no tunnel is open', async () => {
+		const ssh = fakeSshWithControl();
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-codex-sock-'));
+		const tunnels = new ParadisRemoteAgentTunnels(nullLog, ssh.spawn, dir);
+		try {
+			// 戻り経路が設定で切られている／まだ張れていない状態。勝手に ssh を起こさない
+			tunnels.syncSocketForwards('window:1', 'ssh-remote+paradis-pc', new Map([[join(dir, 'a.sock'), '/home/u/.para-code/pcx/a.sock']]));
+			assert.deepStrictEqual(ssh.calls, []);
+		} finally {
+			tunnels.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 });
