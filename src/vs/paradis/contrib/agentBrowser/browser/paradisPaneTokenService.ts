@@ -22,7 +22,8 @@ import { IShellLaunchConfig } from '../../../../platform/terminal/common/termina
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paneTokenFromShellIntegrationNonce, restoredPaneToken } from '../../mobileRelay/common/paradisTerminalPersistence.js';
-import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
+import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IParadisCodexPaneRuntime, paradisCodexPaneEndpointFilePath, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, paradisCreateTerminalPaneEnvironment, PARADIS_MCP_PORT_FILE_NAME } from '../common/paradisAgentBrowser.js';
 import { paradisListCurrentPaneTokens } from './paradisLivePaneInstances.js';
 
 export const IParadisPaneTokenService = createDecorator<IParadisPaneTokenService>('paradisPaneTokenService');
@@ -65,11 +66,30 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 	private readonly _instanceIdByToken = new Map<string, number>();
 	private readonly _instanceListeners = this._register(new DisposableMap<number, IDisposable>());
 
+	/**
+	 * 接続先のホームディレクトリ。SSH で繋いでいるときだけ入る。
+	 *
+	 * ペインへ渡すパスは接続先のものでなければならない（ターミナルが動くのは接続先）。env の
+	 * 組み立ては PTY 起動の直前に同期で走るので、解決を待てない。接続してすぐ一度だけ取り、
+	 * ここへ控えておく。間に合わなかったターミナルは、これまでどおり手元のパスのまま動く
+	 * （Codex のペイン専用サーバーだけが立たない）。
+	 */
+	private remoteHome: string | undefined;
+
 	constructor(
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
+		@IPathService pathService: IPathService,
 	) {
 		super();
+
+		if (this.environmentService.remoteAuthority !== undefined) {
+			pathService.userHome().then(home => {
+				this.remoteHome = home.path;
+			}, () => {
+				// 取れなければ手元のパスのまま。接続先で Codex のペイン専用サーバーが立たないだけ
+			});
+		}
 
 		// terminalInstanceService.createInstance() 内の PARA-PATCH 行（_onDidCreateInstance.fire より前）で
 		// 本サービスが初回インスタンス化されるため、この購読は最初の fire にも間に合う。
@@ -110,6 +130,9 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 	}
 
 	private _getCodexRuntime(token: string): IParadisCodexPaneRuntime | undefined {
+		if (this.environmentService.remoteAuthority !== undefined) {
+			return this._getRemoteCodexRuntime(token);
+		}
 		const desktopEnvironment = this.environmentService as IWorkbenchEnvironmentService & {
 			readonly appRoot?: string;
 			readonly userDataPath?: string;
@@ -137,7 +160,57 @@ class ParadisPaneTokenService extends Disposable implements IParadisPaneTokenSer
 		return { launcherDirectory, socketPath, pathDelimiter: ':' };
 	}
 
+	/**
+	 * 接続先で動くターミナルへ渡す Codex の居場所。
+	 *
+	 * ランチャーとソケットは接続先に無いと意味がない（手元のパスを渡すと、存在しない場所を
+	 * PATH の先頭に置き、作られもしないソケットを指すことになる）。置く側は
+	 * paradisRemoteAgentHooks.contribution.ts、手元から届くようにするのはソケットの転送。
+	 *
+	 * 接続先は SSH なので常に POSIX として扱う（Windows のendpoint方式は使わない）。
+	 */
+	private _getRemoteCodexRuntime(token: string): IParadisCodexPaneRuntime | undefined {
+		// 手元が Windows のときは入れない。読み手（shared process）は Windows では socket ではなく
+		// endpoint ファイルを見るので、socket を渡しても原理的に繋がらないうえ、接続先の
+		// ランチャーは `/…/x.sock` の形しか受け付けず毎回警告を出す
+		if (isWindows) {
+			return undefined;
+		}
+		const paraCodeDirectory = this._getRemoteParaCodeDirectory();
+		if (paraCodeDirectory === undefined) {
+			return undefined;
+		}
+		const socketPath = paradisRemoteCodexPaneSocketPath(paraCodeDirectory, token);
+		if (socketPath === undefined) {
+			return undefined;
+		}
+		return { launcherDirectory: `${paraCodeDirectory}/bin`, socketPath, pathDelimiter: ':' };
+	}
+
+	/**
+	 * 接続先の `~/.para-code`。ホームがまだ取れていなければ undefined。
+	 *
+	 * SSH の接続先に限る。ランチャーを置くのも実行権を付けるのも SSH 前提の経路なので、
+	 * 他の種類の接続先（WSL・コンテナ）では置かれないものを指してしまう。
+	 * デスクトップに限るのも同じ理由で、web workbench には置く側の contribution が無い。
+	 */
+	private _getRemoteParaCodeDirectory(): string | undefined {
+		const userDataPath = (this.environmentService as IWorkbenchEnvironmentService & { readonly userDataPath?: string }).userDataPath;
+		if (typeof userDataPath !== 'string' || userDataPath.length === 0
+			|| this.environmentService.remoteAuthority?.startsWith('ssh-remote+') !== true
+			|| this.remoteHome === undefined || this.remoteHome.length === 0) {
+			return undefined;
+		}
+		return `${this.remoteHome.replace(/\/+$/, '')}/.para-code`;
+	}
+
 	private _getPortFilePath(): string | undefined {
+		// 接続先で動くエージェントが読むのは接続先のポートファイル。同じ内容のものを
+		// paradisRemoteAgentHooks.contribution.ts が置いている
+		const remoteParaCodeDirectory = this._getRemoteParaCodeDirectory();
+		if (remoteParaCodeDirectory !== undefined) {
+			return `${remoteParaCodeDirectory}/${PARADIS_MCP_PORT_FILE_NAME}`;
+		}
 		// INativeWorkbenchEnvironmentService（electron-browser）を型importするとlayer違反になるため、
 		// デスクトップでのみ存在する userDataPath をプロパティ有無で判定する。
 		const userDataPath = (this.environmentService as IWorkbenchEnvironmentService & { readonly userDataPath?: string }).userDataPath;

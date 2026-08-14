@@ -29,7 +29,7 @@ import { BROWSER_VIEW_SCREENSHOT_ENCODED_SIZE_ERROR_PREFIX } from '../../../../p
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisDiagnosticError, reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisAgentNoteResult, PARADIS_AGENT_NOTES_CHANNEL, PARADIS_AGENT_NOTES_METHOD, PARADIS_AGENT_NOTE_TOOL_OPERATIONS, paradisParseAgentNoteToolArgs } from '../common/paradisAgentNotes.js';
-import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
+import { IParadisAbortBindResult, IParadisAgentPaneStatus, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, paradisCodexPaneSocketPath, paradisRemoteCodexPaneSocketPath, ParadisAgentStatus, paradisNormalizeAgentHookEvent, paradisParseCdpInputDispatchResult, paradisParseExactBrowserViewDescriptor } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS } from '../common/paradisAgentHooks.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -537,7 +537,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _voiceIngressToken = `${randomUUID()}-${randomUUID()}`;
 
 	constructor(
-		userDataPath: string,
+		private readonly _userDataPath: string,
 		// ウィンドウ毎のPlaywrightServiceへの橋渡し。read_page廃止（chrome-devtools側の
 		// take_snapshot に一本化）以降は未使用だが、sharedProcessMain側の配線を安定させるため維持。
 		_playwrightInvoker: IParadisPlaywrightInvoker,
@@ -549,7 +549,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		private readonly publishMobileVoiceClip?: (audio: Uint8Array) => void,
 	) {
 		super();
-		this._portFilePath = join(userDataPath, PARADIS_MCP_PORT_FILE_NAME);
+		this._portFilePath = join(this._userDataPath, PARADIS_MCP_PORT_FILE_NAME);
 		this._cdpGateway = this._register(new ParadisCdpGateway(
 			{
 				captureIngressLease: token => this.captureIngressLease(token),
@@ -565,14 +565,15 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
 			// 上流へ辿り着けるよう、electron-main が確定させたポートを候補に加える。
-			new ParadisCdpUpstream(userDataPath, logService, {
+			new ParadisCdpUpstream(this._userDataPath, logService, {
 				resolveMainPort: async () => await mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL)
 					.call<number | null>('resolveUpstreamPort') ?? undefined,
 			}),
 			logService,
 		));
 		this._devtoolsProxy = this._register(new ParadisDevtoolsMcpProxy(RESERVED_TOOL_NAMES, logService));
-		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService));
+		// 制御ソケット（Codex ソケットの引き込みに使う）は、ペイン用ソケットと同じ場所へ置く
+		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, join(this._userDataPath, 'pcx')));
 		this._devtoolsGenerationCoordinator = new ParadisDevtoolsGenerationCoordinator(token => this._devtoolsProxy.forget(token));
 		// Renderer IPC切断はreloadでも発生するため、退役根拠にはしない。実windowの生存権威は
 		// Electron Mainのmanifestであり、reload gap中はpending entryが残り、destroy時だけ消える。
@@ -1624,6 +1625,31 @@ export class ParadisAgentBrowserService extends Disposable {
 			...(version !== undefined && paradisSupportsClaudeMessageDisplay(version) ? [PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT] : []),
 		];
 		return paradisMergeAgentHooksJson(existingRaw, events);
+	}
+
+	/**
+	 * 接続先で動く Codex ペインのソケットを、手元の同じ場所へ引いてくる。
+	 *
+	 * 呼び出し側（接続中のウィンドウ）が今あるペインの一覧を渡し、ここが差分を取る。手元の
+	 * ソケットの場所は**こちらで決める**（繋いでいないときと同じ規則）。渡されたパスをそのまま
+	 * listen に使うと、ウィンドウ側の言い値で任意の場所にソケットを作れてしまう。
+	 */
+	async syncRemoteCodexSockets(windowCtx: string, remoteAuthority: string, remoteParaCodeDirectory: string, tokens: readonly string[]): Promise<void> {
+		const wanted = new Map<string, string>();
+		for (const token of tokens) {
+			const localPath = paradisCodexPaneSocketPath(this._userDataPath, token);
+			const remotePath = paradisRemoteCodexPaneSocketPath(remoteParaCodeDirectory, token);
+			// `-L` の値は `<手元>:<接続先>` を1語で渡すため、コロンが混ざると別の意味に読まれる
+			if (localPath !== undefined && remotePath !== undefined && !localPath.includes(':')) {
+				wanted.set(localPath, remotePath);
+			}
+		}
+		this._remoteTunnels.syncSocketForwards(windowCtx, remoteAuthority, wanted);
+	}
+
+	/** 接続が切れた・ウィンドウが閉じたときに、その接続先ぶんの転送を畳む。 */
+	async releaseRemoteCodexSockets(windowCtx: string): Promise<void> {
+		this._remoteTunnels.releaseSocketForwards(windowCtx);
 	}
 
 	private async _startServer(): Promise<void> {

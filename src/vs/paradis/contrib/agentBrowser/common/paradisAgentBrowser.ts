@@ -93,6 +93,23 @@ export function paradisCodexPaneSocketPath(userDataPath: string, token: string):
 }
 
 /**
+ * SSH で繋いだ先のペイン固有socketパス。
+ *
+ * {@link paradisCodexPaneSocketPath} と分けてあるのは区切り文字のため。あちらは動作中のOSで
+ * 区切りを選ぶので、Windows から Linux へ繋ぐと `\` 混じりのパスが出来てしまい、接続先の
+ * ランチャーにも `ssh -L` にも通らない。接続先は常に POSIX として組み立てる。
+ */
+export function paradisRemoteCodexPaneSocketPath(remoteParaCodeDirectory: string, token: string): string | undefined {
+	if (!/^\/[A-Za-z0-9._\-/]{1,200}$/.test(remoteParaCodeDirectory)
+		|| remoteParaCodeDirectory.includes('..')
+		|| !/^[A-Za-z0-9._-]{1,64}$/.test(token)) {
+		return undefined;
+	}
+	const socketPath = `${remoteParaCodeDirectory.replace(/\/+$/, '')}/pcx/${token}.sock`;
+	return new TextEncoder().encode(socketPath).length <= 100 ? socketPath : undefined;
+}
+
+/**
  * Windows用: userDataDir配下のペイン固有endpoint記述ファイル（`pcx/<token>.endpoint.json`）の
  * パスを作る。unix socketと違いsun_path長の制約はないが、トークンの文字集合は同じ制約で
  * 検証する（パストラバーサル防止）。
