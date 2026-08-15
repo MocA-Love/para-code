@@ -6,7 +6,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { DeferredPromise } from '../../../../../base/common/async.js';
+import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IParadisAgentStatusSnapshot } from '../../common/paradisAgentBrowser.js';
@@ -22,6 +24,18 @@ suite('ParadisAgentStatusSnapshotService', () => {
 
 		assert.strictEqual(calls, 0);
 		assert.deepStrictEqual(scheduler.scheduledDelays, [0]);
+
+		await scheduler.advanceBy(60_000);
+
+		assert.strictEqual(calls, 31);
+		assert.strictEqual(scheduler.nextDelay, 2_000);
+	});
+
+	test('continues initial plus 30 periodic transports during 60 seconds while the workbench is hidden', async () => {
+		forceDocumentHidden(store, true);
+		const scheduler = new TestScheduler();
+		let calls = 0;
+		store.add(createService(scheduler, async () => snapshot(`hidden-token-${++calls}`)));
 
 		await scheduler.advanceBy(60_000);
 
@@ -242,6 +256,19 @@ function snapshot(token: string): IParadisAgentStatusSnapshot {
 async function flushAsync(): Promise<void> {
 	await Promise.resolve();
 	await Promise.resolve();
+}
+
+function forceDocumentHidden(store: { add<T extends { dispose(): void }>(disposable: T): T }, hidden: boolean): void {
+	const document = mainWindow.document;
+	const descriptor = Object.getOwnPropertyDescriptor(document, 'hidden');
+	Object.defineProperty(document, 'hidden', { configurable: true, value: hidden });
+	store.add(toDisposable(() => {
+		if (descriptor) {
+			Object.defineProperty(document, 'hidden', descriptor);
+		} else {
+			delete (document as { hidden?: boolean }).hidden;
+		}
+	}));
 }
 
 class TestScheduler implements IParadisAgentStatusSnapshotScheduler {
