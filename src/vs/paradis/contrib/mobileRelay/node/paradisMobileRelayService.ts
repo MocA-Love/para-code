@@ -677,6 +677,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.resetStateBroadcastMetrics();
 			return;
 		}
+		this.resetStateBroadcastMetrics();
 		this.stateBroadcastMetricsTimer.cancelAndSet(() => {
 			if (this.stateBroadcastMetricsEnabled && generation === this.stateBroadcastMetricsGeneration) {
 				this.reportStateBroadcastMetrics();

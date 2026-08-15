@@ -7,6 +7,7 @@
 import * as assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { ParadisMobileRelayRendererLifecycle } from '../../electron-browser/paradisMobileRelayRendererLifecycle.js';
 import { ParadisMobileWorkspaceProvider, paradisResolveLocalAgentPaneCwd, paradisScreenShowsMarker } from '../../electron-browser/paradisMobileWorkspaceProvider.js';
 
 class StatePushMetricsTimer {
@@ -39,6 +40,18 @@ class StatePushMetricsTimer {
 
 interface IStatePushMetricsProviderFixture {
 	setStatePushMetricsEnabled(enabled: boolean): void;
+}
+
+class RecordingStatePushMetricsProvider {
+	readonly enabledCalls: boolean[] = [];
+
+	constructor(private readonly events?: string[]) {
+	}
+
+	setStatePushMetricsEnabled(enabled: boolean): void {
+		this.events?.push(`metrics:${enabled}`);
+		this.enabledCalls.push(enabled);
+	}
 }
 
 function createStatePushMetricsProviderFixture(): { provider: IStatePushMetricsProviderFixture; timer: StatePushMetricsTimer; logs: string[]; state: { pushStateCalls: number; pushStateSkipped: number; snapshotMetrics: Map<string, { count: number; maxChars: number; totalChars: number }> } } {
@@ -110,6 +123,48 @@ suite('ParadisMobileWorkspaceProvider', () => {
 	});
 
 	suite('state push metrics', () => {
+		test('constructs the provider before synchronizing initially disabled renderer metrics', () => {
+			const events: string[] = [];
+			const focusHeartbeat = {
+				setEnabled: (enabled: boolean) => events.push(`focus:${enabled}`),
+				setEnabledAndSynchronize: (enabled: boolean) => events.push(`focus-shared:${enabled}`),
+			};
+			const lifecycle = new ParadisMobileRelayRendererLifecycle(
+				focusHeartbeat,
+				() => {
+					events.push('provider');
+					return new RecordingStatePushMetricsProvider(events);
+				},
+				false,
+			);
+
+			assert.deepStrictEqual({ events, metricsEnabledCalls: lifecycle.provider.enabledCalls }, {
+				events: ['provider', 'focus:false', 'metrics:false'],
+				metricsEnabledCalls: [false],
+			});
+		});
+
+		test('synchronizes initially enabled and changed settings with the provider metrics delegate', () => {
+			const events: string[] = [];
+			const focusHeartbeat = {
+				setEnabled: (enabled: boolean) => events.push(`focus:${enabled}`),
+				setEnabledAndSynchronize: (enabled: boolean) => events.push(`focus-shared:${enabled}`),
+			};
+			const lifecycle = new ParadisMobileRelayRendererLifecycle(
+				focusHeartbeat,
+				() => new RecordingStatePushMetricsProvider(),
+				true,
+			);
+
+			lifecycle.setEnabled(false);
+			lifecycle.setEnabled(true);
+
+			assert.deepStrictEqual({ events, metricsEnabledCalls: lifecycle.provider.enabledCalls }, {
+				events: ['focus:true', 'focus-shared:false', 'focus-shared:true'],
+				metricsEnabledCalls: [true, false, true],
+			});
+		});
+
 		test('does not start its reporting timer when mobile relay is initially disabled', () => {
 			const { provider, timer, logs } = createStatePushMetricsProviderFixture();
 
@@ -137,11 +192,11 @@ suite('ParadisMobileWorkspaceProvider', () => {
 
 		test('logs accumulated state push activity when its timer fires', () => {
 			const { provider, timer, logs, state } = createStatePushMetricsProviderFixture();
+			provider.setStatePushMetricsEnabled(true);
 			state.pushStateCalls = 3;
 			state.pushStateSkipped = 1;
 			state.snapshotMetrics.set('attach', { count: 2, maxChars: 80, totalChars: 120 });
 
-			provider.setStatePushMetricsEnabled(true);
 			timer.fire();
 
 			assert.deepStrictEqual(logs, ['[paradisMobileRelay][metrics] state push: 3 calls, 1 skipped (no change), 2 forwarded, terminals=0, stateBytes=0 | terminal snapshots: attach=2/max80/total120']);
@@ -149,11 +204,11 @@ suite('ParadisMobileWorkspaceProvider', () => {
 
 		test('resets reported counters so an idle next timer callback produces no log', () => {
 			const { provider, timer, logs, state } = createStatePushMetricsProviderFixture();
+			provider.setStatePushMetricsEnabled(true);
 			state.pushStateCalls = 1;
 			state.pushStateSkipped = 1;
 			state.snapshotMetrics.set('flow', { count: 1, maxChars: 20, totalChars: 20 });
 
-			provider.setStatePushMetricsEnabled(true);
 			timer.fire();
 			timer.fire();
 
@@ -204,18 +259,36 @@ suite('ParadisMobileWorkspaceProvider', () => {
 
 		test('starts a fresh timer and fresh metrics after relay is enabled again', () => {
 			const { provider, timer, logs, state } = createStatePushMetricsProviderFixture();
-			state.pushStateCalls = 5;
 
 			provider.setStatePushMetricsEnabled(true);
+			state.pushStateCalls = 5;
 			provider.setStatePushMetricsEnabled(false);
 			state.pushStateCalls = 2;
 			provider.setStatePushMetricsEnabled(true);
+			state.pushStateCalls = 2;
 			timer.fire();
 
 			assert.deepStrictEqual({ active: timer.active, intervals: timer.intervals, logs }, {
 				active: true,
 				intervals: [60_000, 60_000],
 				logs: ['[paradisMobileRelay][metrics] state push: 2 calls, 0 skipped (no change), 2 forwarded, terminals=0, stateBytes=0'],
+			});
+		});
+
+		test('discards state push activity recorded while relay is disabled before scheduling enabled metrics', () => {
+			const { provider, timer, logs, state } = createStatePushMetricsProviderFixture();
+			state.pushStateCalls = 3;
+			state.pushStateSkipped = 1;
+			state.snapshotMetrics.set('disabled', { count: 1, maxChars: 40, totalChars: 40 });
+
+			provider.setStatePushMetricsEnabled(true);
+			timer.fire();
+
+			assert.deepStrictEqual({ logs, pushStateCalls: state.pushStateCalls, pushStateSkipped: state.pushStateSkipped, snapshotMetrics: state.snapshotMetrics.size }, {
+				logs: [],
+				pushStateCalls: 0,
+				pushStateSkipped: 0,
+				snapshotMetrics: 0,
 			});
 		});
 	});
