@@ -141,7 +141,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 			options: {
 				purpose: WebviewContentPurpose.CustomEditor,
 				enableFindWidget: false,
-				tryRestoreScrollPosition: true
+				tryRestoreScrollPosition: true,
+				// 非表示になるたびに service worker 登録からやり直すと、白紙で止まる窓が毎回でき直す
+				// （paradisRenderedFileEditor.ts と同じ「間欠的に白紙になる」フィールド報告の主因）。
+				// 生かしたまま隠すことでその窓を無くす。
+				retainContextWhenHidden: true
 			},
 			contentOptions: {
 				allowScripts: true,
