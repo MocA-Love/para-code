@@ -210,7 +210,6 @@ suite('ParadisCcusageService', () => {
 		await assert.rejects(() => Promise.resolve().then(() => localChannel.call('', 'setWarmLease', validPayload)));
 		await assertWarmLeaseRejected(localChannel, { ownerId: '', active: true, targets: [dailyWarmTarget] });
 		await assertWarmLeaseRejected(localChannel, { ownerId: 'bad owner', active: true, targets: [dailyWarmTarget] });
-		await assertWarmLeaseRejected(localChannel, { ownerId: `owner-${'x'.repeat(128)}`, active: true, targets: [dailyWarmTarget] });
 		await assertWarmLeaseRejected(localChannel, { ownerId: 'owner', active: true, targets: [] });
 		await assertWarmLeaseRejected(localChannel, { ownerId: 'owner', active: false, targets: [dailyWarmTarget] });
 		await assertWarmLeaseRejected(localChannel, { ownerId: 'owner', active: true, targets: [{ kind: 'unknown', options: {} }] });
@@ -226,6 +225,40 @@ suite('ParadisCcusageService', () => {
 		await assertWarmLeaseRejected(localChannel, { ownerId: 'owner', active: true, targets: [dailyWarmTarget] }, 'unexpected');
 
 		assert.strictEqual(clock.countTimers(), 2);
+		service.dispose();
+	});
+
+	test('accepts the full opaque owner ID regex boundary and rejects 161 characters', async () => {
+		const { service } = createService(() => ({ stdout: dailyOutput('owner-id') }));
+		const channel = new ParadisCcusageChannel(service);
+
+		for (const prefix of ['.', '_', ':', '-']) {
+			await channel.call('', 'setWarmLease', [{ ownerId: `${prefix}${'x'.repeat(159)}`, active: true, targets: [dailyWarmTarget] }]);
+		}
+		await assertWarmLeaseRejected(channel, { ownerId: `.${'x'.repeat(160)}`, active: true, targets: [dailyWarmTarget] });
+
+		service.dispose();
+	});
+
+	test('rejects outer IPC argument arrays with extra own properties', async () => {
+		const { service } = createService(() => ({ stdout: dailyOutput('outer-array') }));
+		const channel = new ParadisCcusageChannel(service);
+		const payload = { ownerId: 'owner', active: true, targets: [dailyWarmTarget] };
+		const argumentsWithExtraField = Object.assign([payload], { extra: true });
+
+		await assert.rejects(() => Promise.resolve().then(() => channel.call('', 'setWarmLease', argumentsWithExtraField)));
+
+		service.dispose();
+	});
+
+	test('rejects Array subclasses as outer IPC arguments', async () => {
+		const { service } = createService(() => ({ stdout: dailyOutput('outer-array') }));
+		const channel = new ParadisCcusageChannel(service);
+		const payload = { ownerId: 'owner', active: true, targets: [dailyWarmTarget] };
+		class WarmLeaseArguments extends Array<unknown> { }
+
+		await assert.rejects(() => Promise.resolve().then(() => channel.call('', 'setWarmLease', new WarmLeaseArguments(payload))));
+
 		service.dispose();
 	});
 
