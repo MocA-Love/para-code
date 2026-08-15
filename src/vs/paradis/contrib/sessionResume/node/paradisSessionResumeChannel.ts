@@ -12,6 +12,7 @@ import type { FileHandle } from 'fs/promises';
 import { createRequire } from 'module';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
+import { Limiter } from '../../../../base/common/async.js';
 import { basename, isAbsolute, join, resolve } from '../../../../base/common/path.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
@@ -41,6 +42,7 @@ const SUMMARY_HEAD_BYTES = 512 * 1024;
 const MAX_SEARCH_TEXT_CHARS = 64 * 1024;
 const MAX_CATALOG_ENTRIES = 2400;
 const DEFAULT_SEARCH_TEXT_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_CONCURRENT_SEARCH_TEXT_READS = 4;
 
 interface ICatalogEntry {
 	readonly session: IParadisResumeSession;
@@ -66,12 +68,11 @@ function clipped(value: string, limit = MAX_MESSAGE_CHARS): string {
 	return value.length > limit ? `${value.slice(0, limit)}…` : value;
 }
 
-function countSearchTermOccurrences(value: string, terms: readonly string[]): number {
-	const haystack = value.toLocaleLowerCase();
+function countSearchTermOccurrences(lowercaseValue: string, terms: readonly string[]): number {
 	let count = 0;
 	for (const term of terms) {
 		let offset = 0;
-		while ((offset = haystack.indexOf(term, offset)) !== -1) {
+		while ((offset = lowercaseValue.indexOf(term, offset)) !== -1) {
 			count++;
 			offset += term.length;
 		}
@@ -290,6 +291,7 @@ function pathInside(root: string, candidate: string): boolean {
 export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
 	private readonly searchTextCache: ParadisSessionSearchTextCache;
+	private readonly searchTextReadLimiter = new Limiter<string>(MAX_CONCURRENT_SEARCH_TEXT_READS);
 	private readonly activeListRequests = new Map<string, Promise<readonly IParadisResumeSession[]>>();
 	private readonly searchRevisions = new Map<string, number>();
 	private searchRevision = 0;
@@ -440,7 +442,7 @@ export class ParadisSessionResumeService {
 			return result;
 		}
 		const matches: IParadisResumeSearchResult[] = [];
-		// 全文走査は検索時だけ。4並列に制限して、WSLや大きな履歴でもI/Oを暴走させない。
+		// 全文走査は検索時だけ。各検索の並列数を抑えつつ、service全体でもreadを制限する。
 		const entries = [...new Set(requestedCatalogIds)].slice(0, MAX_SESSIONS)
 			.map(catalogId => [catalogId, this.catalog.get(catalogId)] as const)
 			.filter((entry): entry is readonly [string, ICatalogEntry] => entry[1] !== undefined);
@@ -451,18 +453,21 @@ export class ParadisSessionResumeService {
 				entry.touchedAt = Date.now();
 				const metadata = `${entry.session.title}\n${entry.session.preview}\n${entry.session.cwd}\n${entry.session.id}\n${entry.session.spaceName}`;
 				let searchable = metadata;
+				let searchableLower = metadata.toLocaleLowerCase();
 				let source: IParadisResumeSearchResult['source'] = 'metadata';
-				if (!terms.every(term => searchable.toLocaleLowerCase().includes(term))) {
+				if (!terms.every(term => searchableLower.includes(term))) {
 					try {
-						searchable += `\n${await this.getSearchText(entry)}`;
+						const searchText = await this.getSearchText(entry);
+						searchable += `\n${searchText}`;
+						searchableLower += `\n${searchText.toLocaleLowerCase()}`;
 						source = 'conversation';
 					} catch { /* 一時的なread失敗は次の検索で再試行する */ }
 				}
-				if (terms.every(term => searchable.toLocaleLowerCase().includes(term))) {
+				if (terms.every(term => searchableLower.includes(term))) {
 					const snippetSource = source === 'conversation' ? searchable.slice(metadata.length + 1) : metadata;
 					matches.push({
 						catalogId,
-						matchCount: countSearchTermOccurrences(searchable, terms),
+						matchCount: countSearchTermOccurrences(searchableLower, terms),
 						snippet: createSearchSnippet(snippetSource, terms),
 						source,
 					});
@@ -487,7 +492,11 @@ export class ParadisSessionResumeService {
 		if (entry.searchTextPromise !== undefined) {
 			return entry.searchTextPromise;
 		}
-		const searchTextPromise = (async () => {
+		const searchTextPromise = this.searchTextReadLimiter.queue(async () => {
+			const cachedAfterWait = this.searchTextCache.get(catalogId, revision);
+			if (cachedAfterWait !== undefined) {
+				return cachedAfterWait;
+			}
 			const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
 			const parts: string[] = [];
 			for (const line of data.text.split('\n')) {
@@ -501,7 +510,7 @@ export class ParadisSessionResumeService {
 				? fullText
 				: `${fullText.slice(0, 16 * 1024)}\n${fullText.slice(-(MAX_SEARCH_TEXT_CHARS - 16 * 1024))}`;
 			return searchable;
-		})();
+		});
 		entry.searchTextPromise = searchTextPromise;
 		void searchTextPromise.then(searchable => {
 			const current = this.catalog.get(catalogId);

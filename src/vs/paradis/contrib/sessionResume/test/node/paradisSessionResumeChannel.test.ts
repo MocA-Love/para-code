@@ -526,6 +526,101 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('limits cold transcript searches across clients while only superseding the older client search', async () => {
+		const transcriptPaths = Array.from({ length: 8 }, (_, index) => join(claudeProject, `limited-search-${index}.jsonl`));
+		await Promise.all(transcriptPaths.map((transcriptPath, index) => writeLines(transcriptPath, [
+			claudeMessage('user', `Limited search ${index}`),
+			claudeMessage('assistant', `shared-cold-token-${index}`),
+		])));
+		const fourReadsStarted = new DeferredPromise<void>();
+		const releaseReads = new DeferredPromise<void>();
+		let activeReads = 0;
+		let maxActiveReads = 0;
+		const service = createService(async filePath => {
+			activeReads++;
+			maxActiveReads = Math.max(maxActiveReads, activeReads);
+			if (activeReads >= 4) {
+				fourReadsStarted.complete();
+			}
+			try {
+				await releaseReads.p;
+				return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+			} finally {
+				activeReads--;
+			}
+		});
+		const sessions = await listSessions(service);
+		const firstClientCatalogIds = sessions.filter(session => /^limited-search-[0-3]$/.test(session.id)).map(session => session.catalogId);
+		const secondClientCatalogIds = sessions.filter(session => /^limited-search-[4-7]$/.test(session.id)).map(session => session.catalogId);
+		assert.strictEqual(firstClientCatalogIds.length, 4);
+		assert.strictEqual(secondClientCatalogIds.length, 4);
+
+		const olderFirstClientSearch = service.search('first-client', 'shared-cold-token', firstClientCatalogIds);
+		const secondClientSearch = service.search('second-client', 'shared-cold-token', secondClientCatalogIds);
+		await fourReadsStarted.p;
+		const newestFirstClientSearch = service.search('first-client', '', firstClientCatalogIds);
+		releaseReads.complete();
+		const [olderFirstClientResult, newestFirstClientResult, secondClientResult] = await Promise.all([
+			olderFirstClientSearch,
+			newestFirstClientSearch,
+			secondClientSearch,
+		]);
+
+		assert.deepStrictEqual({
+			maxActiveReads,
+			olderFirstClientResult,
+			newestFirstClientResult: newestFirstClientResult.map(result => result.catalogId),
+			secondClientResult: secondClientResult.map(result => ({ catalogId: result.catalogId, source: result.source })).sort((a, b) => a.catalogId.localeCompare(b.catalogId)),
+		}, {
+			maxActiveReads: 4,
+			olderFirstClientResult: [],
+			newestFirstClientResult: firstClientCatalogIds,
+			secondClientResult: secondClientCatalogIds.map(catalogId => ({ catalogId, source: 'conversation' })).sort((a, b) => a.catalogId.localeCompare(b.catalogId)),
+		});
+	});
+
+	test('preserves search source snippet and match count for metadata and conversation terms', async () => {
+		const transcriptPath = join(claudeProject, 'search-golden.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Metadata phrase'),
+			claudeMessage('assistant', 'Conversation-only phrase'),
+		]);
+		const service = createService();
+		const [session] = await listSessions(service);
+
+		const metadata = await service.search('golden-metadata', 'metadata phrase', [session.catalogId]);
+		const conversation = await service.search('golden-conversation', 'conversation-only', [session.catalogId]);
+		const mixed = await service.search('golden-mixed', 'metadata conversation-only', [session.catalogId]);
+		const duplicate = await service.search('golden-duplicate', 'conversation-only conversation-only', [session.catalogId]);
+
+		assert.deepStrictEqual({ metadata, conversation, mixed, duplicate }, {
+			metadata: [{
+				catalogId: session.catalogId,
+				matchCount: 4,
+				snippet: `${session.title} ${session.preview} ${session.cwd} ${session.id} ${session.spaceName}`,
+				source: 'metadata',
+			}],
+			conversation: [{
+				catalogId: session.catalogId,
+				matchCount: 1,
+				snippet: 'Metadata phrase Conversation-only phrase',
+				source: 'conversation',
+			}],
+			mixed: [{
+				catalogId: session.catalogId,
+				matchCount: 4,
+				snippet: 'Metadata phrase Conversation-only phrase',
+				source: 'conversation',
+			}],
+			duplicate: [{
+				catalogId: session.catalogId,
+				matchCount: 2,
+				snippet: 'Metadata phrase Conversation-only phrase',
+				source: 'conversation',
+			}],
+		});
+	});
+
 	test('search publishes only the newest revision when an older search finishes later', async () => {
 		const oldPath = join(claudeProject, 'old-search-session.jsonl');
 		const intermediatePath = join(claudeProject, 'intermediate-search-session.jsonl');
