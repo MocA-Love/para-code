@@ -39,8 +39,9 @@ import { EncryptionMainService } from '../../platform/encryption/electron-main/e
 import { ipcBrowserViewChannelName } from '../../platform/browserView/common/browserView.js';
 import { ipcBrowserViewGroupChannelName } from '../../platform/browserView/common/browserViewGroup.js';
 // PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway
-import { PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
+import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_CDP_TARGET_CHANNEL } from '../../paradis/contrib/agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpTargetService } from '../../paradis/contrib/agentBrowser/electron-main/paradisCdpTargetService.js';
+import { ParadisCursorOverlayController } from '../../paradis/contrib/agentBrowser/electron-main/paradisCursorOverlayController.js';
 // PARA-PATCH: browser mirror WebRTC spike — capture a single WebContentsView instead of the whole screen when armed
 import { paradisResolveMirrorCaptureFrame } from '../../paradis/contrib/browserMirror/electron-main/paradisBrowserMirrorCapture.js';
 // PARA-PATCH: CPU/RAM resource monitor snapshot channel for the titlebar indicator
@@ -1453,7 +1454,13 @@ export class CodeApplication extends Disposable {
 		sharedProcessClient.then(client => client.registerChannel(ipcBrowserViewGroupChannelName, browserViewGroupChannel));
 
 		// PARA-PATCH: viewId -> DevTools targetId resolver channel for the agentBrowser CDP gateway (shared process only)
-		const paradisCdpTargetService = new ParadisCdpTargetService(accessor.get(IBrowserViewMainService));
+		const paradisCdpTargetService = new ParadisCdpTargetService(
+			accessor.get(IBrowserViewMainService),
+			undefined,
+			undefined,
+			// PARA-PATCH: agent cursor overlay, gated by the Para Code setting (default on, matching the registry default)
+			new ParadisCursorOverlayController(() => this.configurationService.getValue<boolean>(PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING) !== false),
+		);
 		// PARA-PATCH: pin the real remote-debugging port now, before a second instance can overwrite
 		// DevToolsActivePort — this process is the one that wrote it (see paradisCdpUpstreamPortPin.ts).
 		paradisCdpTargetService.pinUpstreamPort();

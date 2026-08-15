@@ -49,6 +49,16 @@ export const PARADIS_CODEX_APP_SERVER_ENDPOINT_ENV_VAR = 'PARA_CODE_CODEX_APP_SE
 /** 再帰せず実Codexを解決するため、ランチャー自身がPATHから除外するディレクトリ。 */
 export const PARADIS_CODEX_LAUNCHER_DIR_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_DIR';
 
+/**
+ * click/hover/drag等のエージェント操作時に、ページ上へ合成マウスカーソルのオーバーレイ演出を
+ * 表示するかどうかの設定キー（'paradis' セクション配下）。既定はON。
+ *
+ * OFFにするとカーソルだけでなく撮影フラッシュも出なくなる（どちらも「エージェントが操作している」
+ * ことを見せるための演出なので、まとめて1つのスイッチで切る）。カーソルの片付けだけは
+ * OFFでも実行する（ONだった頃に置かれたカーソルが残らないようにするため）。
+ */
+export const PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING = 'paradis.agentBrowser.showCursorOverlay';
+
 /** Windowsランチャー(.cmd/.ps1)がJS本体の実行に使うNode互換実行体（Para Code自身のexe）。 */
 export const PARADIS_CODEX_LAUNCHER_NODE_ENV_VAR = 'PARA_CODE_CODEX_LAUNCHER_NODE';
 
