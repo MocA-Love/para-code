@@ -52,6 +52,10 @@ interface ICatalogEntry {
 	touchedAt: number;
 }
 
+interface INormalizedParadisResumeListRequest extends IParadisResumeListRequest {
+	readonly includeArchived: boolean;
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
@@ -334,7 +338,7 @@ export class ParadisSessionResumeService {
 		return listRequest;
 	}
 
-	private normalizeListRequest(request: IParadisResumeListRequest): IParadisResumeListRequest {
+	private normalizeListRequest(request: IParadisResumeListRequest): INormalizedParadisResumeListRequest {
 		const seenStateKeys = new Set<string>();
 		const seenCwds = new Set<string>();
 		const spaces = Array.isArray(request?.spaces) ? request.spaces.filter(space => {
@@ -360,7 +364,7 @@ export class ParadisSessionResumeService {
 		return { spaces, includeArchived: request.includeArchived === true };
 	}
 
-	private createListRequestKey(request: IParadisResumeListRequest): string {
+	private createListRequestKey(request: INormalizedParadisResumeListRequest): string {
 		return JSON.stringify({
 			includeArchived: request.includeArchived,
 			spaces: request.spaces.map(space => ({
@@ -372,7 +376,7 @@ export class ParadisSessionResumeService {
 		});
 	}
 
-	private async collectList(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
+	private async collectList(request: INormalizedParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
 		const sessions: IParadisResumeSession[] = [];
 		const homesSeen = new Set<string>();
 		for (const space of request.spaces) {

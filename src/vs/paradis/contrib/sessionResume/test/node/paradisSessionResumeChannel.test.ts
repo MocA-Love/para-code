@@ -18,6 +18,7 @@ import { IParadisResumeListRequest, IParadisResumeSpace } from '../../common/par
 import { ParadisSessionResumeService } from '../../node/paradisSessionResumeChannel.js';
 
 const nodeRequire = createRequire(import.meta.url);
+type IParadisSessionResumeServiceDependencies = NonNullable<ConstructorParameters<typeof ParadisSessionResumeService>[0]>;
 
 suite('ParadisSessionResume', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -55,7 +56,7 @@ suite('ParadisSessionResume', () => {
 		beforeTranscriptRead?: (filePath: string) => Promise<void>,
 		searchCacheMaxBytes?: number,
 	): ParadisSessionResumeService {
-		const dependencies = {
+		const dependencies: IParadisSessionResumeServiceDependencies = {
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, matchCwd: cwd }),
 			readBoundedFile,
 			beforeSummaryRead,
@@ -384,7 +385,9 @@ suite('ParadisSessionResume', () => {
 		const transcriptPath = join(claudeProject, 'rescan-after-settle.jsonl');
 		await writeLines(transcriptPath, [claudeMessage('user', 'Rescan after settle')]);
 		let summaryReadCount = 0;
-		const service = createService(undefined, async () => summaryReadCount++);
+		const service = createService(undefined, async () => {
+			summaryReadCount++;
+		});
 
 		await service.list(createListRequest());
 		await service.list(createListRequest());
@@ -405,7 +408,9 @@ suite('ParadisSessionResume', () => {
 				}
 				return { claude: claudeHome, codex: codexHome, matchCwd: cwd };
 			},
-			beforeSummaryRead: async () => summaryReadCount++,
+			beforeSummaryRead: async () => {
+				summaryReadCount++;
+			},
 		}, new NullLogService());
 
 		const [first, second] = await Promise.allSettled([service.list(createListRequest()), service.list(createListRequest())]);

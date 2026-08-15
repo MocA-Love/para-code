@@ -14,6 +14,7 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IMarkdownRendererService } from '../../../../../platform/markdown/browser/markdownRenderer.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
 import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
@@ -403,6 +404,15 @@ function createRefreshFixture(client: TestResumeClient): IRefreshFixture {
 	const worktreeEmitter = new Emitter<void>();
 	const storageService = new TestStorageService();
 	const notifications = new TestNotifications();
+	const markdownRendererService: IMarkdownRendererService = {
+		_serviceBrand: undefined,
+		render(markdown) {
+			const element = document.createElement('span');
+			element.textContent = markdown.value;
+			return { element, dispose() { } };
+		},
+		setDefaultCodeBlockRenderer() { },
+	};
 	const editor = new ParadisSessionResumeEditor(
 		new TestEditorGroupView(1),
 		NullTelemetryService,
@@ -421,13 +431,7 @@ function createRefreshFixture(client: TestResumeClient): IRefreshFixture {
 			getWorktrees: () => [],
 		} as unknown as IParadisWorktreeService,
 		notifications as unknown as INotificationService,
-		{
-			render(markdown: { value: string }) {
-				const element = document.createElement('span');
-				element.textContent = markdown.value;
-				return { element, dispose() { } };
-			},
-		},
+		markdownRendererService,
 		Object.create(null),
 	);
 	const input = new TestSessionResumeInput();
@@ -481,11 +485,13 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 class TestSessionResumeInput extends EditorInput {
+	readonly resource = undefined;
+
 	override get typeId(): string {
 		return 'test.paradisSessionResume';
 	}
 
-	override resolve(): null {
+	override async resolve(): Promise<null> {
 		return null;
 	}
 }
