@@ -6,11 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
-import { sep } from '../../../../base/common/path.js';
 import { isWindows } from '../../../../base/common/platform.js';
-import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
@@ -23,13 +20,12 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ITerminalInstance, ITerminalInstanceService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisAgentPaneStatus, PARADIS_AGENT_BROWSER_CHANNEL, ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { ParadisAgentTokenScopeMemory, paradisShouldClearAgentStatusAfterPollFailures } from '../../agentBrowser/common/paradisAgentStatusStale.js';
+import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../../agentBrowser/common/paradisAgentHooks.js';
-import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
+import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import { paradisIsWorkbenchWindowFocused } from '../browser/paradisWindowFocus.js';
-
-const POLL_INTERVAL = 2000;
+import { ParadisAgentStatusSnapshotConsumer } from './paradisAgentStatusSnapshotConsumer.js';
 
 /**
  * shared process の /agent-hook 通知 (ペイントークン単位の実行状態) をポーリングし、
@@ -59,14 +55,9 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalInstanceService terminalInstanceService: ITerminalInstanceService,
 		@ILifecycleService lifecycleService: ILifecycleService,
+		@IParadisAgentStatusSnapshotService snapshotService: IParadisAgentStatusSnapshotService,
 	) {
 		super();
-
-		const timer = this._register(new IntervalTimer());
-		timer.cancelAndSet(() => this.poll(), POLL_INTERVAL);
-
-		// 切り替え直後は即ポーリング (アクティブスコープの review を素早く確認遷移させる)
-		this._register(this.workspaceSwitchService.onDidSwitchScope(() => this.poll()));
 
 		// シェルプロセスの終了 (instance.onExit) を shared process へ通知する。エージェントCLIは
 		// クラッシュ・端末の強制クローズでは Stop/SessionEnd hook を発火できず、実行状態と
@@ -79,14 +70,26 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 		this._register(terminalInstanceService.onDidCreateInstance(instance => this.watchInstanceExit(instance)));
 		this._register(lifecycleService.onWillShutdown(event => this.preserveTerminalsForReload = event.reason === ShutdownReason.RELOAD));
 
-		this.poll();
+		this.statusSnapshotConsumer = this._register(new ParadisAgentStatusSnapshotConsumer({
+			snapshotService,
+			paneTokenService: this.paneTokenService,
+			terminalScopeService: this.terminalScopeService,
+			workspaceSwitchService: this.workspaceSwitchService,
+			worktreeService: this.worktreeService,
+			statusStore: this.statusStore,
+			acknowledgePaneStatus: token => {
+				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
+					.call('acknowledgePaneStatus', [token])
+					.then(undefined, () => { /* ignore */ });
+			},
+			logPollFailure: error => this.logService.trace('[ParadisAgentStatus] poll failed', String(error)),
+			isWindowFocused: paradisIsWorkbenchWindowFocused,
+		}));
 	}
 
 	private readonly exitListeners = this._register(new DisposableMap<number, IDisposable>());
+	private readonly statusSnapshotConsumer: ParadisAgentStatusSnapshotConsumer;
 	private preserveTerminalsForReload = false;
-	private consecutivePollFailures = 0;
-	private pollGeneration = 0;
-	private readonly tokenScopeMemory = new ParadisAgentTokenScopeMemory();
 
 	private watchInstanceExit(instance: ITerminalInstance): void {
 		if (this.exitListeners.has(instance.instanceId)) {
@@ -102,7 +105,7 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 			notified = true;
 			this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
 				.call('notifyTerminalExit', [token])
-				.then(() => this.poll(), () => { /* shared process 未起動時は次のポーリングで整合する */ });
+				.then(() => this.statusSnapshotConsumer.requestRefresh(), () => { /* shared process 未起動時は次のポーリングで整合する */ });
 			this.exitListeners.deleteAndDispose(instance.instanceId);
 		};
 		// token serviceとpollerのcreate listener順に依存しないよう、未解決なら割当変更時に補完する。
@@ -114,133 +117,6 @@ class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribut
 			}
 		}));
 		this.exitListeners.set(instance.instanceId, listeners);
-	}
-
-	/**
-	 * hookが報告したcwdからスコープ (stateKey) を引くフォールバック。登録リポジトリと
-	 * その worktree のルートに対する最長一致で決める。トークンがこのウィンドウのどの
-	 * インスタンスにも解決できないケース (ウィンドウリロード後、park中のエディタターミナルが
-	 * まだ実体化していない等) でも、エージェントの実行状態を正しいスコープへ表示するために使う。
-	 */
-	private resolveStateKeyByCwd(cwd: string | undefined): string | undefined {
-		if (cwd === undefined || cwd.length === 0) {
-			return undefined;
-		}
-		let best: { root: string; stateKey: string } | undefined;
-		const consider = (uri: URI, stateKey: string) => {
-			if (uri.scheme !== 'file') {
-				return;
-			}
-			const root = uri.fsPath;
-			if ((cwd === root || cwd.startsWith(root.endsWith(sep) ? root : root + sep)) && (best === undefined || root.length > best.root.length)) {
-				best = { root, stateKey };
-			}
-		};
-		for (const repository of this.workspaceSwitchService.repositories) {
-			consider(repository.uri, repository.id);
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				consider(worktree.uri, paradisWorktreeStateKey(worktree.uri));
-			}
-		}
-		return best?.stateKey;
-	}
-
-	private async poll(): Promise<void> {
-		const pollGeneration = ++this.pollGeneration;
-		let statuses: IParadisAgentPaneStatus[];
-		let agentTokens: string[];
-		try {
-			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
-			[statuses, agentTokens] = await Promise.all([
-				channel.call<IParadisAgentPaneStatus[]>('listPaneStatuses'),
-				channel.call<string[]>('listAgentHookTokens'),
-			]);
-		} catch (error) {
-			if (pollGeneration !== this.pollGeneration) {
-				return;
-			}
-			this.logService.trace('[ParadisAgentStatus] poll failed', String(error));
-			this.consecutivePollFailures++;
-			if (paradisShouldClearAgentStatusAfterPollFailures(this.consecutivePollFailures)) {
-				this.statusStore.setScopeBreakdowns(new Map());
-				this.statusStore.setInstanceStates(new Map(), new Set());
-			}
-			return; // shared process 未起動 (起動直後の20〜30秒) は静かにスキップ
-		}
-		if (pollGeneration !== this.pollGeneration) {
-			return;
-		}
-		this.consecutivePollFailures = 0;
-		this.tokenScopeMemory.prune(new Set(statuses.map(status => status.token)));
-
-		const activeStateKey = this.workspaceSwitchService.activeStateKey;
-		// スコープ内で動いている各エージェントの状態を畳まずに集める (ビューのドット列用)
-		const scopeBreakdowns = new Map<string, ParadisAgentStatus[]>();
-		// ペイン単位の状態（スコープ集約前）。モバイルのホーム一覧・Live Activity が
-		// 「そのターミナル自身の状態」を表示するために使う。
-		const instanceStatuses = new Map<number, ParadisAgentStatus>();
-		// hook発火実績のあるペイン = エージェントCLIが動いた（動いている）ターミナル。
-		const agentInstanceIds = new Set<number>();
-		for (const token of agentTokens) {
-			const instanceId = this.paneTokenService.getInstanceForToken(token);
-			if (instanceId !== undefined) {
-				agentInstanceIds.add(instanceId);
-			}
-		}
-
-		for (const paneStatus of statuses) {
-			// 第一解決: トークン → このウィンドウのターミナルインスタンス → 所属スコープ
-			const instanceId = this.paneTokenService.getInstanceForToken(paneStatus.token);
-			const resolvedViaInstance = instanceId !== undefined;
-			if (instanceId !== undefined) {
-				instanceStatuses.set(instanceId, paneStatus.status);
-			}
-			let stateKey: string | undefined;
-			let allowRememberedScope = instanceId === undefined;
-			if (instanceId !== undefined) {
-				const scope = this.terminalScopeService.resolveScope(instanceId);
-				if (scope.kind === 'managed') {
-					stateKey = scope.stateKey;
-				} else if (scope.kind === 'pending') {
-					allowRememberedScope = true;
-				}
-			}
-			// 第二解決: hookが報告したcwd → リポジトリ/worktreeルートの最長一致。
-			// インスタンス未解決 (リロード後の未復元park等) でも「そのリポジトリでエージェントが
-			// 動いている」事実は変わらないため、スコープ表示としてはこれで正しい。
-			if (stateKey === undefined) {
-				stateKey = this.resolveStateKeyByCwd(paneStatus.cwd);
-			}
-			stateKey = this.tokenScopeMemory.resolve(paneStatus.token, stateKey, allowRememberedScope);
-			if (stateKey === undefined) {
-				continue; // どの解決経路でもスコープ不明 (登録外フォルダ等)
-			}
-
-			if (paneStatus.status === 'review' && stateKey === activeStateKey && resolvedViaInstance && paradisIsWorkbenchWindowFocused()) {
-				// 見えているスコープの完了は、ウィンドウが可視かつフォーカス中の場合のみ確認済み扱い
-				// (fire-and-forget)。非フォーカス時は review を維持し、ParadisNotificationTrigger
-				// の完了通知に先食いされないようにする。cwdフォールバックで解決したペインは
-				// 「このウィンドウで見えている」保証が無いため確認遷移させない (別ウィンドウの
-				// ペインを勝手に既読へ落とさない)。
-				this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL)
-					.call('acknowledgePaneStatus', [paneStatus.token])
-					.then(undefined, () => { /* ignore */ });
-				if (instanceId !== undefined) {
-					instanceStatuses.delete(instanceId); // 確認遷移させたペインはペイン単位表示でも即 idle 扱い
-				}
-				continue;
-			}
-
-			const breakdown = scopeBreakdowns.get(stateKey);
-			if (breakdown) {
-				breakdown.push(paneStatus.status);
-			} else {
-				scopeBreakdowns.set(stateKey, [paneStatus.status]);
-			}
-		}
-
-		this.statusStore.setScopeBreakdowns(scopeBreakdowns);
-		this.statusStore.setInstanceStates(instanceStatuses, agentInstanceIds);
 	}
 }
 
