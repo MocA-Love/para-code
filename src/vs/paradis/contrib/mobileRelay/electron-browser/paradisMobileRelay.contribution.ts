@@ -260,6 +260,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			// （定義の解決も実行経路も1つに保ち、PCとスマホで挙動が割れないようにする）
 			presetService,
 		)));
+		this.provider.setStatePushMetricsEnabled(this.isEnabled());
 		// 初回同期。この push の完了が terminalStateReady（=markRendererReady の前提）を
 		// 解決するため、無変化打ち切りの対象にしない。
 		this.provider.pushState(true);
@@ -474,6 +475,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			if (e.affectsConfiguration(PARADIS_MOBILE_ENABLED_KEY)) {
 				const enabled = this.isEnabled();
 				focusHeartbeat.setEnabledAndSynchronize(enabled);
+				this.provider.setStatePushMetricsEnabled(enabled);
 				if (!enabled) {
 					this.provider.detachAll();
 					// ペイン同期を止めるので shared process からの更新はもう来ない。ここで
