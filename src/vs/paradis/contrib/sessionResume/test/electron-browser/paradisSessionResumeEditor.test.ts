@@ -26,7 +26,7 @@ import { EditorInput } from '../../../../../workbench/common/editor/editorInput.
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { ParadisSessionResumeEditor } from '../../electron-browser/paradisSessionResumeEditor.js';
-import { IParadisResumeListRequest, IParadisResumeSession } from '../../common/paradisSessionResume.js';
+import { IParadisResumeListRequest, IParadisResumePreview, IParadisResumeSession } from '../../common/paradisSessionResume.js';
 import { paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from '../../electron-browser/paradisSessionResumeOrchestration.js';
 
 suite('ParadisSessionResumeEditor', () => {
@@ -237,6 +237,33 @@ suite('ParadisSessionResumeEditor', () => {
 		}
 	});
 
+	test('reloads the selected preview after a hidden invalidation becomes visible', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('one', 'First session')];
+		let previewCount = 0;
+		client.previewResult = async () => ({
+			messages: [{ role: 'assistant', text: ++previewCount === 1 ? 'Initial preview' : 'Refreshed preview' }],
+			truncated: false,
+		});
+		const fixture = createRefreshFixture(client);
+		try {
+			await fixture.load();
+			await flushMicrotasks();
+			assert.strictEqual(fixture.root.textContent?.includes('Initial preview'), true);
+
+			fixture.editor.setVisible(false);
+			fixture.scopeEmitter.fire();
+			fixture.editor.setVisible(true);
+			await timeout(1);
+			await flushMicrotasks();
+
+			assert.strictEqual(previewCount, 2);
+			assert.strictEqual(fixture.root.textContent?.includes('Refreshed preview'), true);
+		} finally {
+			fixture.dispose();
+		}
+	});
+
 	test('ignores late list, search, and preview results after disposal', async () => {
 		const session = testSession('one', 'First session');
 		const client = new TestResumeClient();
@@ -344,7 +371,7 @@ suite('ParadisSessionResumeEditor', () => {
 class TestResumeClient {
 	readonly listRequests: IParadisResumeListRequest[] = [];
 	listResult: () => Promise<readonly IParadisResumeSession[]> = async () => [];
-	previewResult: () => Promise<{ messages: readonly []; truncated: boolean }> = async () => ({ messages: [], truncated: false });
+	previewResult: () => Promise<IParadisResumePreview> = async () => ({ messages: [], truncated: false });
 	searchResult: () => Promise<readonly []> = async () => [];
 
 	async list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
@@ -352,7 +379,7 @@ class TestResumeClient {
 		return this.listResult();
 	}
 
-	async preview(): Promise<{ messages: readonly []; truncated: boolean }> {
+	async preview(): Promise<IParadisResumePreview> {
 		return this.previewResult();
 	}
 
@@ -394,7 +421,13 @@ function createRefreshFixture(client: TestResumeClient): IRefreshFixture {
 			getWorktrees: () => [],
 		} as unknown as IParadisWorktreeService,
 		notifications as unknown as INotificationService,
-		Object.create(null),
+		{
+			render(markdown: { value: string }) {
+				const element = document.createElement('span');
+				element.textContent = markdown.value;
+				return { element, dispose() { } };
+			},
+		},
 		Object.create(null),
 	);
 	const input = new TestSessionResumeInput();
