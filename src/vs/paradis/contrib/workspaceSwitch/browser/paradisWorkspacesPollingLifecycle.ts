@@ -69,7 +69,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 		this._register(signals.onDidChangeWorktrees(() => this.requestRefresh()));
 	}
 
-	/** renderBody 完了時の可視状態で、初回ポーリングを一度だけ開始する。 */
+	/** controller 構築時の実可視状態で、初回ポーリングを一度だけ開始する。 */
 	start(visible: boolean): void {
 		if (this.started) {
 			return;
@@ -99,6 +99,16 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 	/** PR コマンド完了後、可視状態に応じて次回実行を決める。 */
 	completePrStatusRefresh(): void {
 		this.complete(this.prStatus, PR_STATUS_POLL_INTERVAL_MS);
+	}
+
+	override dispose(): void {
+		this.started = false;
+		this.visible = false;
+		this.diffStats.inFlight = false;
+		this.diffStats.pendingImmediate = false;
+		this.prStatus.inFlight = false;
+		this.prStatus.pendingImmediate = false;
+		super.dispose();
 	}
 
 	private setVisible(visible: boolean): void {
