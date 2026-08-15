@@ -24,6 +24,8 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 	private dirty = false;
 	private running = false;
 	private pendingImmediate = false;
+	private pendingImmediateResolvers: Array<() => void> = [];
+	private activeImmediateResolvers: Array<() => void> = [];
 	private started = false;
 	private automaticScheduled = false;
 	private disposed = false;
@@ -71,20 +73,23 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 		}
 	}
 
-	requestImmediate(): void {
+	requestImmediate(): Promise<void> {
+		const completion = new Promise<void>(resolve => this.pendingImmediateResolvers.push(resolve));
 		if (this.disposed) {
-			return;
+			this.resolvePendingImmediateRequests();
+			return completion;
 		}
 		this.cancelAutomaticRefresh();
 		if (!this.started) {
 			this.dirty = true;
-			return;
+			return completion;
 		}
 		if (this.running) {
 			this.pendingImmediate = true;
-			return;
+			return completion;
 		}
 		this.startRefresh();
+		return completion;
 	}
 
 	private runAutomaticRefresh(): void {
@@ -101,6 +106,8 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 		}
 		this.dirty = false;
 		this.running = true;
+		this.activeImmediateResolvers = this.pendingImmediateResolvers;
+		this.pendingImmediateResolvers = [];
 		const generation = this.generation;
 		void this.completeRefresh(generation);
 	}
@@ -112,9 +119,12 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 			// The editor callback surfaces list failures and retains its existing sessions.
 		}
 		if (this.disposed || generation !== this.generation) {
+			this.resolveActiveImmediateRequests();
+			this.resolvePendingImmediateRequests();
 			return;
 		}
 		this.running = false;
+		this.resolveActiveImmediateRequests();
 		if (!this.visible) {
 			this.dirty ||= this.pendingImmediate;
 			this.pendingImmediate = false;
@@ -146,6 +156,20 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 		this.scheduler.cancel();
 	}
 
+	private resolveActiveImmediateRequests(): void {
+		for (const resolve of this.activeImmediateResolvers) {
+			resolve();
+		}
+		this.activeImmediateResolvers = [];
+	}
+
+	private resolvePendingImmediateRequests(): void {
+		for (const resolve of this.pendingImmediateResolvers) {
+			resolve();
+		}
+		this.pendingImmediateResolvers = [];
+	}
+
 	override dispose(): void {
 		if (this.disposed) {
 			return;
@@ -153,6 +177,8 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 		this.disposed = true;
 		this.generation++;
 		this.cancelAutomaticRefresh();
+		this.resolveActiveImmediateRequests();
+		this.resolvePendingImmediateRequests();
 		super.dispose();
 	}
 }
