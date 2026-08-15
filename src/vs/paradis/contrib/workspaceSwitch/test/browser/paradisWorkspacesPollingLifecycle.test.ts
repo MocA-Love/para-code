@@ -9,7 +9,7 @@ import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore, IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisWorkspacesPollingScheduler, ParadisWorkspacesPollingLifecycle } from '../../browser/paradisWorkspacesPollingLifecycle.js';
+import { IParadisWorkspacesPollingScheduler, ParadisWorkspacesPollingController, ParadisWorkspacesPollingLifecycle } from '../../browser/paradisWorkspacesPollingLifecycle.js';
 
 suite('ParadisWorkspacesPollingLifecycle', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -31,7 +31,7 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		const harness = store.add(new PollingHarness());
 		harness.lifecycle.start(true);
 
-		harness.visibility.fire(false);
+		harness.fireVisibility(false, false);
 		harness.clock.advance(360_000);
 
 		assert.deepStrictEqual(harness.counts(), {
@@ -56,12 +56,27 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		});
 	});
 
+	test('ignores a true visibility payload while the actual view body remains hidden', () => {
+		const harness = store.add(new PollingHarness());
+		harness.lifecycle.start(false);
+
+		// ViewPane.setExpanded(true) emits true even when its parent pane is hidden.
+		harness.fireVisibility(true, false);
+		harness.clock.advance(360_000);
+
+		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [], pr: [] });
+		assert.deepStrictEqual(harness.counts(), {
+			callbacks: { diff: 0, pr: 0 },
+			commands: { diff: 0, pr: 0 },
+		});
+	});
+
 	test('show requests one immediate refresh per kind and repeated visibility is idempotent', () => {
 		const harness = store.add(new PollingHarness());
 		harness.lifecycle.start(false);
 
-		harness.visibility.fire(true);
-		harness.visibility.fire(true);
+		harness.fireVisibility(true, true);
+		harness.fireVisibility(true, true);
 
 		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0], pr: [0] });
 		harness.clock.advance(0);
@@ -100,7 +115,7 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		harness.clock.advance(0);
 		assert.deepStrictEqual(harness.counts().commands, { diff: 1, pr: 1 });
 
-		harness.visibility.fire(false);
+		harness.fireVisibility(false, false);
 		harness.completeInFlight();
 		harness.clock.advance(360_000);
 
@@ -116,9 +131,9 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 		harness.lifecycle.start(true);
 		harness.clock.advance(0);
 
-		harness.visibility.fire(false);
-		harness.visibility.fire(true);
-		harness.visibility.fire(true);
+		harness.fireVisibility(false, false);
+		harness.fireVisibility(true, true);
+		harness.fireVisibility(true, true);
 		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0], pr: [0] });
 
 		harness.completeInFlight();
@@ -128,7 +143,164 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 	});
 });
 
+suite('ParadisWorkspacesPollingController production wiring', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('start reads the actual initial body visibility', async () => {
+		const hidden = store.add(new PollingControllerHarness(false));
+		const visible = store.add(new PollingControllerHarness(true));
+
+		hidden.controller.start();
+		visible.controller.start();
+		visible.clock.advance(0);
+		await settlePolling();
+
+		assert.deepStrictEqual({
+			hiddenSchedules: hidden.scheduledDelays(),
+			visibleSchedules: visible.scheduledDelays(),
+			visibleRefreshes: visible.refreshCounts,
+		}, {
+			hiddenSchedules: { diff: [], pr: [] },
+			visibleSchedules: { diff: [0, 10_000], pr: [0, 300_000] },
+			visibleRefreshes: { diff: 1, pr: 1 },
+		});
+	});
+
+	test('repository and worktree events request refreshes through production wiring', async () => {
+		const harness = store.add(new PollingControllerHarness(true));
+		harness.controller.start();
+		harness.clock.advance(0);
+		await settlePolling();
+
+		harness.repositories.fire();
+		harness.clock.advance(0);
+		await settlePolling();
+		harness.worktrees.fire();
+		harness.clock.advance(0);
+		await settlePolling();
+
+		assert.deepStrictEqual(harness.refreshCounts, { diff: 3, pr: 3 });
+	});
+
+	test('visible empty-path refreshes resume after 10 seconds and 5 minutes', async () => {
+		const harness = store.add(new PollingControllerHarness(true));
+		harness.controller.start();
+		harness.clock.advance(0);
+		await settlePolling();
+
+		harness.clock.advance(10_000);
+		await settlePolling();
+		await advancePolling(harness.clock, 29, 10_000);
+
+		assert.deepStrictEqual(harness.refreshCounts, { diff: 31, pr: 2 });
+	});
+
+	test('command rejection still resumes visible polling', async () => {
+		const harness = store.add(new PollingControllerHarness(true));
+		harness.behaviors.diff = 'reject';
+		harness.behaviors.pr = 'reject';
+		harness.controller.start();
+		harness.clock.advance(0);
+		await settlePolling();
+
+		harness.behaviors.diff = 'resolve';
+		harness.behaviors.pr = 'resolve';
+		await advancePolling(harness.clock, 30, 10_000);
+
+		assert.deepStrictEqual(harness.refreshCounts, { diff: 31, pr: 2 });
+	});
+
+	test('in-flight hide suppresses completion rescheduling', async () => {
+		const harness = store.add(new PollingControllerHarness(true));
+		harness.behaviors.diff = 'pending';
+		harness.behaviors.pr = 'pending';
+		harness.controller.start();
+		harness.clock.advance(0);
+		await settlePolling();
+
+		harness.fireVisibility(false, false);
+		harness.resolvePending();
+		await settlePolling();
+		harness.clock.advance(360_000);
+
+		assert.deepStrictEqual({
+			schedules: harness.scheduledDelays(),
+			refreshes: harness.refreshCounts,
+		}, {
+			schedules: { diff: [0], pr: [0] },
+			refreshes: { diff: 1, pr: 1 },
+		});
+	});
+});
+
 type PollKind = 'diff' | 'pr';
+type RefreshBehavior = 'resolve' | 'reject' | 'pending';
+
+async function settlePolling(): Promise<void> {
+	await Promise.resolve();
+	await Promise.resolve();
+}
+
+async function advancePolling(clock: FakeClock, times: number, duration: number): Promise<void> {
+	for (let index = 0; index < times; index++) {
+		clock.advance(duration);
+		await settlePolling();
+	}
+}
+
+class PollingControllerHarness implements IDisposable {
+	private readonly disposables = new DisposableStore();
+	readonly visibility = this.disposables.add(new Emitter<boolean>());
+	readonly repositories = this.disposables.add(new Emitter<void>());
+	readonly worktrees = this.disposables.add(new Emitter<void>());
+	readonly clock = new FakeClock();
+	readonly refreshCounts: Record<PollKind, number> = { diff: 0, pr: 0 };
+	readonly behaviors: Record<PollKind, RefreshBehavior> = { diff: 'resolve', pr: 'resolve' };
+	readonly controller: ParadisWorkspacesPollingController;
+
+	private readonly pendingResolvers: Partial<Record<PollKind, () => void>> = {};
+
+	constructor(private actualBodyVisible: boolean) {
+		this.controller = this.disposables.add(new ParadisWorkspacesPollingController(
+			{
+				isBodyVisible: () => this.actualBodyVisible,
+				onDidChangeVisibility: this.visibility.event,
+				onDidChangeRepositories: this.repositories.event,
+				onDidChangeWorktrees: this.worktrees.event,
+			},
+			() => this.refresh('diff'),
+			() => this.refresh('pr'),
+			(runner, defaultDelay) => this.clock.createScheduler(runner, defaultDelay),
+		));
+	}
+
+	fireVisibility(payload: boolean, actualBodyVisible: boolean): void {
+		this.actualBodyVisible = actualBodyVisible;
+		this.visibility.fire(payload);
+	}
+
+	resolvePending(): void {
+		this.pendingResolvers.diff?.();
+		this.pendingResolvers.pr?.();
+	}
+
+	scheduledDelays(): Record<PollKind, readonly number[]> {
+		return this.clock.scheduledDelays();
+	}
+
+	dispose(): void {
+		this.disposables.dispose();
+	}
+
+	private refresh(kind: PollKind): Promise<void> {
+		this.refreshCounts[kind]++;
+		switch (this.behaviors[kind]) {
+			case 'reject': return Promise.reject(new Error(`${kind} command failed`));
+			case 'pending': return new Promise(resolve => this.pendingResolvers[kind] = resolve);
+			case 'resolve': return Promise.resolve();
+		}
+	}
+}
 
 class PollingHarness implements IDisposable {
 	private readonly disposables = new DisposableStore();
@@ -139,10 +311,12 @@ class PollingHarness implements IDisposable {
 	readonly lifecycle: ParadisWorkspacesPollingLifecycle;
 
 	private readonly commandCounts: Record<PollKind, number> = { diff: 0, pr: 0 };
+	private actualBodyVisible = false;
 
 	constructor(private readonly completeAutomatically = true) {
 		this.lifecycle = this.disposables.add(new ParadisWorkspacesPollingLifecycle(
 			{
+				isBodyVisible: () => this.actualBodyVisible,
 				onDidChangeVisibility: this.visibility.event,
 				onDidChangeRepositories: this.repositories.event,
 				onDidChangeWorktrees: this.worktrees.event,
@@ -151,6 +325,11 @@ class PollingHarness implements IDisposable {
 			() => this.refreshPr(),
 			(runner, defaultDelay) => this.clock.createScheduler(runner, defaultDelay),
 		));
+	}
+
+	fireVisibility(payload: boolean, actualBodyVisible: boolean): void {
+		this.actualBodyVisible = actualBodyVisible;
+		this.visibility.fire(payload);
 	}
 
 	counts(): { callbacks: Record<PollKind, number>; commands: Record<PollKind, number> } {
