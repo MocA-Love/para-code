@@ -14,7 +14,7 @@
 // ccusage CLI 実行本体は shared process 側(node/paradisCcusageChannel.ts)にある。
 
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -100,11 +100,12 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 
 // ---------- status bar item ----------
 
-class ParadisCcusageStatusBarContribution extends Disposable implements IWorkbenchContribution {
+export class ParadisCcusageStatusBarContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'paradis.contrib.ccusageStatusBar';
 
 	private readonly entry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	private readonly warmLease = this._register(new MutableDisposable<IDisposable>());
 	private readonly pollTimer = this._register(new IntervalTimer());
 	private readonly initialFetch = this._register(new RunOnceScheduler(() => this.update(), STATUS_INITIAL_DELAY_MS));
 	private readonly client: ParadisCcusageClient;
@@ -132,11 +133,13 @@ class ParadisCcusageStatusBarContribution extends Disposable implements IWorkben
 
 	private applyEnabled(): void {
 		if (!this.enabled) {
+			this.warmLease.clear();
 			this.pollTimer.cancel();
 			this.initialFetch.cancel();
 			this.entry.clear();
 			return;
 		}
+		this.warmLease.value ??= this.client.createStatusWarmLease();
 		this.showEntry(undefined);
 		// 起動直後は避けて初回取得し、以降は定期更新する
 		this.initialFetch.schedule();
