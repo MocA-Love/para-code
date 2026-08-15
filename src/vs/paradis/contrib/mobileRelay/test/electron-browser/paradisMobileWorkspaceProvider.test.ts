@@ -52,6 +52,7 @@ function createStatePushMetricsProviderFixture(): { provider: IStatePushMetricsP
 	const provider = Object.assign(Object.create(ParadisMobileWorkspaceProvider.prototype) as object, {
 		statePushMetricsTimer: timer,
 		statePushMetricsEnabled: false,
+		statePushMetricsGeneration: 0,
 		...initialState,
 		lastPushedSnapshot: undefined,
 		allInstances: () => [],
@@ -175,6 +176,28 @@ suite('ParadisMobileWorkspaceProvider', () => {
 			assert.deepStrictEqual({ active: timer.active, logs, pushStateCalls: state.pushStateCalls }, {
 				active: false,
 				logs: [],
+				pushStateCalls: 0,
+			});
+		});
+
+		test('ignores a queued callback from before an off-on cycle until the new timer fires', () => {
+			const { provider, timer, logs, state } = createStatePushMetricsProviderFixture();
+
+			provider.setStatePushMetricsEnabled(true);
+			provider.setStatePushMetricsEnabled(false);
+			provider.setStatePushMetricsEnabled(true);
+			state.pushStateCalls = 2;
+			timer.fireQueued(0);
+
+			assert.deepStrictEqual({ logs, pushStateCalls: state.pushStateCalls }, {
+				logs: [],
+				pushStateCalls: 2,
+			});
+
+			timer.fire();
+
+			assert.deepStrictEqual({ logs, pushStateCalls: state.pushStateCalls }, {
+				logs: ['[paradisMobileRelay][metrics] state push: 2 calls, 0 skipped (no change), 2 forwarded, terminals=0, stateBytes=0'],
 				pushStateCalls: 0,
 			});
 		});
