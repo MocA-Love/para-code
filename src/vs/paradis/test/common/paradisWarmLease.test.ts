@@ -201,13 +201,13 @@ suite('ParadisWarmLeaseTracker', () => {
 			target => target.key,
 			(left, right) => left.value === right.value,
 			target => target.cost,
-			target => {
-				clonedKeys.push(target.key);
-				return { ...target };
-			},
 			() => publicClock.now,
 			runner => { publicScheduler.setRunner(runner); return publicScheduler; },
 			{
+				cloneTarget: target => {
+					clonedKeys.push(target.key);
+					return { ...target };
+				},
 				maxOwners: 4,
 				maxTargetsPerOwner: 4,
 				maxDistinctKeys: 4,
@@ -233,8 +233,24 @@ suite('ParadisWarmLeaseTracker', () => {
 		assert.deepStrictEqual([active(timerTracker), timerScheduler.activeTimerCount], [[], 0]);
 	});
 
-	test('owns frozen target clones so source and returned target mutations cannot change active value or cost admission', () => {
-		const tracker = store.add(createTracker(new TestClock(), new TestScheduler(), { maxTotalCost: 1 }));
+	test('uses the six-argument constructor and limits cloneTarget to own target aliases', () => {
+		const clock = new TestClock();
+		const scheduler = new TestScheduler();
+		const tracker = store.add(new ParadisWarmLeaseTracker(
+			target => target.key,
+			(left, right) => left.value === right.value,
+			target => target.cost,
+			() => clock.now,
+			runner => { scheduler.setRunner(runner); return scheduler; },
+			{
+				maxOwners: 4,
+				maxTargetsPerOwner: 4,
+				maxDistinctKeys: 4,
+				maxTotalMemberships: 8,
+				maxTotalCost: 1,
+				cloneTarget: target => ({ ...target }),
+			},
+		));
 		let changes = 0;
 		store.add(tracker.onDidChange(() => changes++));
 		const source = target('a', 'kept', 1);
@@ -522,15 +538,15 @@ suite('ParadisWarmLeaseController', () => {
 	});
 });
 
-function createTracker(clock: TestClock, scheduler: TestScheduler, overrides: Partial<IParadisWarmLeaseLimits> = {}): ParadisWarmLeaseTracker<Target> {
+function createTracker(clock: TestClock, scheduler: TestScheduler, overrides: Partial<IParadisWarmLeaseLimits<Target>> = {}): ParadisWarmLeaseTracker<Target> {
 	return new ParadisWarmLeaseTracker(
 		target => target.key,
 		(left, right) => left.value === right.value,
 		target => target.cost,
-		target => ({ ...target }),
 		() => clock.now,
 		runner => { scheduler.setRunner(runner); return scheduler; },
 		{
+			cloneTarget: target => ({ ...target }),
 			maxOwners: 4,
 			maxTargetsPerOwner: 4,
 			maxDistinctKeys: 4,

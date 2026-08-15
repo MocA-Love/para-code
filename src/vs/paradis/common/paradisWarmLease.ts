@@ -22,7 +22,8 @@ export interface IParadisWarmLeaseTargetSnapshot<TTarget> {
 	readonly generation: number;
 }
 
-export interface IParadisWarmLeaseLimits {
+export interface IParadisWarmLeaseLimits<TTarget> {
+	readonly cloneTarget: (target: TTarget) => TTarget;
 	readonly maxOwners: number;
 	readonly maxTargetsPerOwner: number;
 	readonly maxDistinctKeys: number;
@@ -58,10 +59,9 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 		private readonly keyOf: (target: TTarget) => string,
 		private readonly equals: (left: TTarget, right: TTarget) => boolean,
 		private readonly costOf: (target: TTarget) => number,
-		private readonly clone: (target: TTarget) => TTarget,
 		private readonly now: () => number,
 		schedulerFactory: SchedulerFactory,
-		private readonly limits: IParadisWarmLeaseLimits,
+		private readonly limits: IParadisWarmLeaseLimits<TTarget>,
 	) {
 		this.scheduler = schedulerFactory(() => {
 			if (this.disposed) {
@@ -216,7 +216,7 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 	}
 
 	private cloneAndFreeze(target: TTarget): TTarget {
-		const clone = this.clone(target);
+		const clone = this.limits.cloneTarget(target);
 		if (clone !== null && (typeof clone === 'object' || typeof clone === 'function')) {
 			return Object.freeze(clone);
 		}
