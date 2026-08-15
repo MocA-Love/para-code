@@ -15,25 +15,27 @@ import { IParadisWebviewSignal, notifyParadisWebviewSignal, onParadisWebviewSign
 suite('ParadisWebviewSignals', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function capture(signals: IParadisWebviewSignal[], reports: Array<[string, string, Record<string, unknown> | undefined]>, disposables: Pick<DisposableStore, 'add'>): void {
+	function capture(signals: IParadisWebviewSignal[], reports: Array<[string, string, Record<string, unknown> | undefined, string | undefined]>, disposables: Pick<DisposableStore, 'add'>): void {
 		disposables.add(onParadisWebviewSignal(signal => signals.push(signal)));
-		configureParadisDiagnosticReporter((_scope, feature, operation, _error, safeExtra) => reports.push([feature, operation, safeExtra]));
+		configureParadisDiagnosticReporter((_scope, feature, operation, _error, safeExtra, severity) => reports.push([feature, operation, safeExtra, severity]));
 		disposables.add({ dispose: () => configureParadisDiagnosticReporter(() => { }) });
 	}
 
 	test('service worker trouble is forwarded and reported, the normal render steps are only forwarded', () => {
 		const signals: IParadisWebviewSignal[] = [];
-		const reports: Array<[string, string, Record<string, unknown> | undefined]> = [];
+		const reports: Array<[string, string, Record<string, unknown> | undefined, string | undefined]> = [];
 		capture(signals, reports, store);
 
 		// ParadisWebviewSignalCode の全種類を流す。新しい種類を足したらここにも足すこと
-		// （どれを Sentry に送るかの判断が漏れると、頻発するシグナルで診断が埋まる）。
+		// （どれを Sentry に送るか、どの severity で送るかの判断が漏れると、頻発するシグナルで
+		// 診断が埋まったり、実害のある失敗が復帰済みの経過と同列に見えたりする）。
 		notifyParadisWebviewSignal({ origin: 'origin-a', code: 'sw-control-timeout', detail: { duration_ms: 5000 } });
 		notifyParadisWebviewSignal({ origin: 'origin-a', code: 'sw-control-recovered', detail: { duration_ms: 5200, attempt: 1 } });
 		notifyParadisWebviewSignal({ origin: 'origin-a', code: 'sw-register-timeout', detail: { duration_ms: 5000, attempt: 1 } });
 		notifyParadisWebviewSignal({ origin: 'origin-a', code: 'sw-register-recovered', detail: { duration_ms: 7000, attempt: 2 } });
 		notifyParadisWebviewSignal({ origin: 'origin-a', code: 'sw-unavailable', detail: { duration_ms: 20000 } });
 		notifyParadisWebviewSignal({ origin: 'origin-a', code: 'sw-versionless-registration-seen', detail: { duration_ms: 320 } });
+		notifyParadisWebviewSignal({ origin: 'origin-a', code: 'sw-versionless-registration-after-timeout', detail: { duration_ms: 12000 } });
 		notifyParadisWebviewSignal({ origin: 'origin-b', code: 'content-started' });
 		notifyParadisWebviewSignal({ origin: 'origin-b', code: 'content-worker-ready' });
 		notifyParadisWebviewSignal({ origin: 'origin-b', code: 'content-applied' });
@@ -49,17 +51,19 @@ suite('ParadisWebviewSignals', () => {
 				['origin-a', 'sw-register-recovered'],
 				['origin-a', 'sw-unavailable'],
 				['origin-a', 'sw-versionless-registration-seen'],
+				['origin-a', 'sw-versionless-registration-after-timeout'],
 				['origin-b', 'content-started'],
 				['origin-b', 'content-worker-ready'],
 				['origin-b', 'content-applied'],
 			],
 			reports: [
-				['webview', 'sw-control-timeout', { duration_ms: 5000, attempt: undefined }],
-				['webview', 'sw-control-recovered', { duration_ms: 5200, attempt: 1 }],
-				['webview', 'sw-register-timeout', { duration_ms: 5000, attempt: 1 }],
-				['webview', 'sw-register-recovered', { duration_ms: 7000, attempt: 2 }],
-				['webview', 'sw-unavailable', { duration_ms: 20000, attempt: undefined }],
-				['webview', 'sw-versionless-registration-seen', { duration_ms: 320, attempt: undefined }],
+				['webview', 'sw-control-timeout', { duration_ms: 5000, attempt: undefined }, 'warning'],
+				['webview', 'sw-control-recovered', { duration_ms: 5200, attempt: 1 }, 'warning'],
+				['webview', 'sw-register-timeout', { duration_ms: 5000, attempt: 1 }, 'warning'],
+				['webview', 'sw-register-recovered', { duration_ms: 7000, attempt: 2 }, 'warning'],
+				['webview', 'sw-unavailable', { duration_ms: 20000, attempt: undefined }, 'error'],
+				['webview', 'sw-versionless-registration-seen', { duration_ms: 320, attempt: undefined }, 'warning'],
+				['webview', 'sw-versionless-registration-after-timeout', { duration_ms: 12000, attempt: undefined }, 'error'],
 			],
 		});
 	});

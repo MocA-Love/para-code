@@ -15,7 +15,7 @@
 // `IWebview` インターフェースを拡張せずモジュールスコープのイベントで受け渡す。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { reportParadisDiagnosticError } from './paradisSentryDiagnostics.js';
+import { ParadisDiagnosticSeverity, reportParadisDiagnosticError } from './paradisSentryDiagnostics.js';
 
 /** webview から届くシグナルの種類。 */
 export const enum ParadisWebviewSignalCode {
@@ -74,15 +74,24 @@ const emitter = new Emitter<IParadisWebviewSignal>();
 /** webview の健全性シグナル。プロセス寿命と同じなので購読側だけが dispose を持つ。 */
 export const onParadisWebviewSignal: Event<IParadisWebviewSignal> = emitter.event;
 
-/** 診断として送る価値がある異常系。正常系(`content-*`)は量が多いので送らない。 */
-const REPORTED_CODES: ReadonlySet<string> = new Set<string>([
-	ParadisWebviewSignalCode.ServiceWorkerControlRecovered,
-	ParadisWebviewSignalCode.ServiceWorkerControlTimeout,
-	ParadisWebviewSignalCode.ServiceWorkerRegisterTimeout,
-	ParadisWebviewSignalCode.ServiceWorkerRegisterRecovered,
-	ParadisWebviewSignalCode.ServiceWorkerUnavailable,
-	ParadisWebviewSignalCode.ServiceWorkerVersionlessRegistrationSeen,
-	ParadisWebviewSignalCode.ServiceWorkerVersionlessRegistrationAfterTimeout,
+/**
+ * 診断として送る価値がある異常系。正常系(`content-*`)は量が多いので送らない。
+ *
+ * 値は severity。「復帰した(＝白紙は回避できた)」まで残り全部と同じ error で送ると、実害のある
+ * 失敗(`sw-unavailable` — service worker 無しで劣化描画に入った、`...-after-timeout` — 期限切れ後も
+ * 版無し registration が残った)が、様子見中や成功で終わった経過の中に埋もれる。
+ */
+const REPORTED_CODES: ReadonlyMap<string, ParadisDiagnosticSeverity> = new Map([
+	// 制御/登録を一度失ったが、登録し直しで白紙を回避できた。実害は無かった。
+	[ParadisWebviewSignalCode.ServiceWorkerControlRecovered, 'warning'],
+	[ParadisWebviewSignalCode.ServiceWorkerRegisterRecovered, 'warning'],
+	// まだ結果が出ていない。この後に登録し直し/復帰処理へ進む途中経過。
+	[ParadisWebviewSignalCode.ServiceWorkerControlTimeout, 'warning'],
+	[ParadisWebviewSignalCode.ServiceWorkerRegisterTimeout, 'warning'],
+	[ParadisWebviewSignalCode.ServiceWorkerVersionlessRegistrationSeen, 'warning'],
+	// 最終的に劣化描画または未解決のまま残った。ユーザー体験に実害がある。
+	[ParadisWebviewSignalCode.ServiceWorkerUnavailable, 'error'],
+	[ParadisWebviewSignalCode.ServiceWorkerVersionlessRegistrationAfterTimeout, 'error'],
 ]);
 
 /**
@@ -90,14 +99,15 @@ const REPORTED_CODES: ReadonlySet<string> = new Set<string>([
  * 正常系(`content-applied`)は量が多いので送信しない。
  */
 export function notifyParadisWebviewSignal(signal: IParadisWebviewSignal): void {
-	if (REPORTED_CODES.has(signal.code)) {
+	const severity = REPORTED_CODES.get(signal.code);
+	if (severity !== undefined) {
 		// `duration_ms` と `attempt` はサニタイザの allowlist に載っているキー。
 		// これ以外を足すときは `safe_` 接頭辞を付けること（isParadisSafeExtraKey の
 		// 許可リストに無いキーは、送信直前に黙って捨てられる）。
 		reportParadisDiagnosticError('patched', 'webview', signal.code, new Error(`Webview service worker problem (${signal.code})`), {
 			duration_ms: signal.detail?.['duration_ms'],
 			attempt: signal.detail?.['attempt'],
-		});
+		}, severity);
 	}
 	emitter.fire(signal);
 }

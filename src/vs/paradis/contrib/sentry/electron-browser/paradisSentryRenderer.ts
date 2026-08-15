@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as Sentry from '@sentry/electron/renderer';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
 
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
@@ -55,8 +55,8 @@ try {
 	configureParadisSpanRunner((feature, operation, attributes, callback) =>
 		startParadisRendererSpan(feature, operation, callback, attributes));
 	configureParadisSpanAttributeSetter(attributes => Sentry.getActiveSpan()?.setAttributes(attributes));
-	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
-		captureParadisRendererException(scope, feature, operation, error, safeExtra);
+	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
+		captureParadisRendererException(scope, feature, operation, error, safeExtra, severity);
 	});
 } catch (error) {
 	console.error('[Para Code] Failed to initialize renderer Sentry.', error);
@@ -83,6 +83,7 @@ export function captureParadisRendererException(
 	operation: string,
 	error: unknown,
 	safeExtra?: Record<string, unknown>,
+	severity?: ParadisDiagnosticSeverity,
 ): string {
 	return Sentry.withScope(sentryScope => {
 		sentryScope.setTags({
@@ -92,6 +93,9 @@ export function captureParadisRendererException(
 		});
 		if (safeExtra) {
 			sentryScope.setExtras(safeExtra);
+		}
+		if (severity) {
+			sentryScope.setLevel(severity);
 		}
 		Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
 		return Sentry.captureException(error);

@@ -13,7 +13,7 @@ import { app, protocol } from 'electron';
 import type * as SentryMain from '@sentry/electron/main';
 import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
 import { PARADIS_SENTRY_DESKTOP_DSN, PARADIS_SENTRY_ENVIRONMENT, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 import { registerParadisProcessGoneDiagnostics } from './paradisProcessGoneDiagnostics.js';
 
@@ -96,8 +96,8 @@ export function initializeParadisSentryMain(commit: string | undefined, onUnavai
 			'os.name': process.platform,
 		});
 		configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
-		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
-			captureParadisMainException(scope, feature, operation, error, safeExtra);
+		configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
+			captureParadisMainException(scope, feature, operation, error, safeExtra, severity);
 		});
 		sentry = Sentry;
 	}).catch(error => {
@@ -191,6 +191,7 @@ export function captureParadisMainException(
 	operation: string,
 	error: unknown,
 	safeExtra?: Record<string, unknown>,
+	severity?: ParadisDiagnosticSeverity,
 ): string {
 	if (!sentry) {
 		return '';
@@ -204,6 +205,9 @@ export function captureParadisMainException(
 		});
 		if (safeExtra) {
 			sentryScope.setExtras(safeExtra);
+		}
+		if (severity) {
+			sentryScope.setLevel(severity);
 		}
 		Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
 		return Sentry.captureException(error);

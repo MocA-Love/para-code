@@ -6,7 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type * as SentryUtility from '@sentry/electron/utility';
-import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisSpanAttributeSetter, configureParadisSpanRunner, ParadisDiagnosticSeverity, ParadisSpanAttributes } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 
 let sentry: typeof SentryUtility | undefined;
@@ -34,8 +34,8 @@ import('@sentry/electron/utility').then(Sentry => {
 		'os.name': process.platform,
 	});
 	configureParadisDiagnosticTagSetter((key, value) => Sentry.setTag(key, value));
-	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra) => {
-		captureParadisUtilityException(scope, feature, operation, error, safeExtra);
+	configureParadisDiagnosticReporter((scope, feature, operation, error, safeExtra, severity) => {
+		captureParadisUtilityException(scope, feature, operation, error, safeExtra, severity);
 	});
 	configureParadisSpanRunner((feature, operation, attributes, callback) =>
 		startParadisUtilitySpan(feature, operation, callback, attributes));
@@ -51,6 +51,7 @@ export function captureParadisUtilityException(
 	operation: string,
 	error: unknown,
 	safeExtra?: Record<string, unknown>,
+	severity?: ParadisDiagnosticSeverity,
 ): string {
 	if (!sentry) {
 		return '';
@@ -64,6 +65,9 @@ export function captureParadisUtilityException(
 		});
 		if (safeExtra) {
 			sentryScope.setExtras(safeExtra);
+		}
+		if (severity) {
+			sentryScope.setLevel(severity);
 		}
 		Sentry.addBreadcrumb({ category: `para.${feature}`, message: operation, data: safeExtra });
 		return Sentry.captureException(error);
