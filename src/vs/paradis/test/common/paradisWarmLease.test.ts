@@ -10,9 +10,9 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/comm
 import { IParadisWarmLeaseLimits, IParadisWarmLeaseScheduler, ParadisWarmLeaseController, ParadisWarmLeaseTracker, PARADIS_WARM_LEASE_DURATION_MS, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS } from '../../common/paradisWarmLease.js';
 
 interface Target {
-	readonly key: string;
-	readonly value: string;
-	readonly cost: number;
+	key: string;
+	value: string;
+	cost: number;
 }
 
 suite('ParadisWarmLeaseTracker', () => {
@@ -192,6 +192,70 @@ suite('ParadisWarmLeaseTracker', () => {
 		assert.strictEqual(tracker.isCurrent(snapshot.key, snapshot.generation), false);
 		assert.strictEqual(scheduler.runCount, 0);
 	});
+
+	test('does not resume after an expiry listener disposes the tracker during public or queued timer purges', () => {
+		const publicClock = new TestClock();
+		const publicScheduler = new TestScheduler();
+		const clonedKeys: string[] = [];
+		const publicTracker = store.add(new ParadisWarmLeaseTracker(
+			target => target.key,
+			(left, right) => left.value === right.value,
+			target => target.cost,
+			target => {
+				clonedKeys.push(target.key);
+				return { ...target };
+			},
+			() => publicClock.now,
+			runner => { publicScheduler.setRunner(runner); return publicScheduler; },
+			{
+				maxOwners: 4,
+				maxTargetsPerOwner: 4,
+				maxDistinctKeys: 4,
+				maxTotalMemberships: 8,
+				maxTotalCost: 8,
+			},
+		));
+		publicTracker.setLease('owner-a', [target('a', 'expired')]);
+		store.add(publicTracker.onDidChange(() => publicTracker.dispose()));
+		publicClock.now = PARADIS_WARM_LEASE_DURATION_MS;
+
+		assert.doesNotThrow(() => publicTracker.setLease('owner-b', [target('b', 'must-not-register')]));
+		assert.deepStrictEqual([clonedKeys, active(publicTracker), publicScheduler.activeTimerCount], [['a'], [], 0]);
+
+		const timerClock = new TestClock();
+		const timerScheduler = new TestScheduler();
+		const timerTracker = store.add(createTracker(timerClock, timerScheduler));
+		timerTracker.setLease('owner-a', [target('a', 'expired')]);
+		store.add(timerTracker.onDidChange(() => timerTracker.dispose()));
+		timerClock.now = PARADIS_WARM_LEASE_DURATION_MS;
+
+		assert.doesNotThrow(() => timerScheduler.runCallback());
+		assert.deepStrictEqual([active(timerTracker), timerScheduler.activeTimerCount], [[], 0]);
+	});
+
+	test('owns frozen target clones so source and returned target mutations cannot change active value or cost admission', () => {
+		const tracker = store.add(createTracker(new TestClock(), new TestScheduler(), { maxTotalCost: 1 }));
+		let changes = 0;
+		store.add(tracker.onDidChange(() => changes++));
+		const source = target('a', 'kept', 1);
+
+		tracker.setLease('owner-a', [source]);
+		const first = tracker.activeTargets()[0];
+		source.key = 'source-mutated';
+		source.value = 'source-mutated';
+		source.cost = 0;
+		mutateTarget(first.target, 'returned-mutated', 0);
+		tracker.setLease('owner-b', [target('b', 'over-cap', 1)]);
+		const retained = tracker.activeTargets()[0];
+
+		assert.deepStrictEqual([
+			active(tracker),
+			retained.target.key,
+			retained.target.cost,
+			retained.generation,
+			changes,
+		], [[['a', 'kept']], 'a', 1, first.generation, 1]);
+	});
 });
 
 suite('ParadisWarmLeaseController', () => {
@@ -252,7 +316,7 @@ suite('ParadisWarmLeaseController', () => {
 		));
 		try {
 			rejectedAcquire.setEnabled(true);
-			await flushMicrotasks();
+			await waitForMacrotask();
 			rejectedAcquire.dispose();
 
 			const scheduler = new TestScheduler();
@@ -264,13 +328,107 @@ suite('ParadisWarmLeaseController', () => {
 				ownerIds('owner-a'),
 			));
 			rejectedRenewAndRelease.setEnabled(true);
-			await flushMicrotasks();
+			await waitForMacrotask();
 			scheduler.run();
-			await flushMicrotasks();
+			await waitForMacrotask();
 			rejectedRenewAndRelease.setEnabled(false);
-			await flushMicrotasks();
+			await waitForMacrotask();
 
 			assert.deepStrictEqual([scheduler.delays, rejectionReasons], [[PARADIS_WARM_LEASE_RENEW_INTERVAL_MS, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS], []]);
+		} finally {
+			globalThis.removeEventListener('unhandledrejection', onUnhandledRejection);
+		}
+	});
+
+	test('contains rejected acquire, renew, and release callbacks across a macrotask before later reconciliation', async () => {
+		const rejectionReasons: unknown[] = [];
+		const onUnhandledRejection = (event: PromiseRejectionEvent) => {
+			rejectionReasons.push(event.reason);
+			event.preventDefault();
+		};
+		globalThis.addEventListener('unhandledrejection', onUnhandledRejection);
+		try {
+			const acquireScheduler = new TestScheduler();
+			const acquireOperations: string[] = [];
+			let acquireAttempts = 0;
+			const acquireController = store.add(new ParadisWarmLeaseController(
+				async ownerId => {
+					acquireOperations.push(`acquire:${ownerId}`);
+					if (acquireAttempts++ === 0) {
+						throw new Error('acquire failed');
+					}
+				},
+				async ownerId => { acquireOperations.push(`renew:${ownerId}`); },
+				async ownerId => { acquireOperations.push(`release:${ownerId}`); },
+				runner => { acquireScheduler.setRunner(runner); return acquireScheduler; },
+				ownerIds('acquire-first', 'acquire-second'),
+			));
+			acquireController.setEnabled(true);
+			await waitForMacrotask();
+			acquireController.setEnabled(true);
+			await waitForMacrotask();
+
+			const renewScheduler = new TestScheduler();
+			const renewOperations: string[] = [];
+			let renewAttempts = 0;
+			const renewController = store.add(new ParadisWarmLeaseController(
+				async ownerId => { renewOperations.push(`acquire:${ownerId}`); },
+				async ownerId => {
+					renewOperations.push(`renew:${ownerId}`);
+					if (renewAttempts++ === 0) {
+						throw new Error('renew failed');
+					}
+				},
+				async ownerId => { renewOperations.push(`release:${ownerId}`); },
+				runner => { renewScheduler.setRunner(runner); return renewScheduler; },
+				ownerIds('renew-owner'),
+			));
+			renewController.setEnabled(true);
+			await flushMicrotasks();
+			renewScheduler.run();
+			await waitForMacrotask();
+			renewScheduler.run();
+			await waitForMacrotask();
+
+			const releaseScheduler = new TestScheduler();
+			const releaseOperations: string[] = [];
+			let releaseAttempts = 0;
+			const releaseController = store.add(new ParadisWarmLeaseController(
+				async ownerId => { releaseOperations.push(`acquire:${ownerId}`); },
+				async ownerId => { releaseOperations.push(`renew:${ownerId}`); },
+				async ownerId => {
+					releaseOperations.push(`release:${ownerId}`);
+					if (releaseAttempts++ === 0) {
+						throw new Error('release failed');
+					}
+				},
+				runner => { releaseScheduler.setRunner(runner); return releaseScheduler; },
+				ownerIds('release-first', 'release-second'),
+			));
+			releaseController.setEnabled(true);
+			await flushMicrotasks();
+			releaseController.setEnabled(false);
+			await waitForMacrotask();
+			releaseController.setEnabled(true);
+			await waitForMacrotask();
+
+			assert.deepStrictEqual([
+				acquireOperations,
+				renewOperations,
+				releaseOperations,
+				rejectionReasons,
+			], [[
+				'acquire:acquire-first',
+				'acquire:acquire-second',
+			], [
+				'acquire:renew-owner',
+				'renew:renew-owner',
+				'renew:renew-owner',
+			], [
+				'acquire:release-first',
+				'release:release-first',
+				'acquire:release-second',
+			], []]);
 		} finally {
 			globalThis.removeEventListener('unhandledrejection', onUnhandledRejection);
 		}
@@ -369,6 +527,7 @@ function createTracker(clock: TestClock, scheduler: TestScheduler, overrides: Pa
 		target => target.key,
 		(left, right) => left.value === right.value,
 		target => target.cost,
+		target => ({ ...target }),
 		() => clock.now,
 		runner => { scheduler.setRunner(runner); return scheduler; },
 		{
@@ -401,6 +560,19 @@ async function flushMicrotasks(): Promise<void> {
 	}
 }
 
+function waitForMacrotask(): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+function mutateTarget(target: Target, value: string, cost: number): void {
+	try {
+		target.value = value;
+		target.cost = cost;
+	} catch {
+		// The tracker freezes returned clones; the observable assertions are above.
+	}
+}
+
 class TestClock {
 	now = 0;
 }
@@ -410,6 +582,7 @@ class TestScheduler implements IParadisWarmLeaseScheduler {
 	runCount = 0;
 	private runner: () => void = () => { };
 	private pending = false;
+	private disposed = false;
 
 	setRunner(runner: () => void): void {
 		this.runner = runner;
@@ -420,16 +593,19 @@ class TestScheduler implements IParadisWarmLeaseScheduler {
 	}
 
 	schedule(delay: number): void {
+		this.throwIfDisposed();
 		this.delays.push(delay);
 		this.pending = true;
 	}
 
 	cancel(): void {
+		this.throwIfDisposed();
 		this.pending = false;
 	}
 
 	dispose(): void {
 		this.pending = false;
+		this.disposed = true;
 	}
 
 	run(): void {
@@ -439,6 +615,17 @@ class TestScheduler implements IParadisWarmLeaseScheduler {
 		this.pending = false;
 		this.runCount++;
 		this.runner();
+	}
+
+	runCallback(): void {
+		this.runCount++;
+		this.runner();
+	}
+
+	private throwIfDisposed(): void {
+		if (this.disposed) {
+			throw new Error('scheduler operation after disposal');
+		}
 	}
 }
 
