@@ -18,6 +18,12 @@ export interface IParadisSentryFrame {
 
 export interface IParadisSentryEvent {
 	platform?: string;
+	/**
+	 * Sentry groups by this when present, instead of its own stacktrace-based default grouping.
+	 * {@link paradisSentryFingerprint} computes a value shaped for this field — see
+	 * `paradisPrepareSentryEvent`, the only place that actually assigns it.
+	 */
+	fingerprint?: string[];
 	message?: string;
 	logentry?: {
 		message?: string;
@@ -170,7 +176,14 @@ export function paradisSanitizeSentryText(value: string): string {
 }
 
 /**
- * Produces the stable key used only for client-side duplicate suppression.
+ * Produces the stable key used both for client-side duplicate suppression and, via
+ * `paradisPrepareSentryEvent`, as the Sentry issue-grouping fingerprint itself.
+ *
+ * Sentry's own default grouping only looks at the exception type and stacktrace. Two of our
+ * `reportParadisDiagnosticError` call sites throw `new Error(...)` from the same line for
+ * semantically different failures (e.g. every child-process-gone reason, or every webview
+ * service-worker signal) — the default grouping folds all of them into one issue. Scope/feature/
+ * operation catch what the stacktrace alone cannot distinguish.
  */
 export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	const exception = event.exception?.values?.[0];

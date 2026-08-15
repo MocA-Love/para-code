@@ -84,6 +84,10 @@ export function paradisPrepareSentryEvent<T extends IParadisSentryEvent>(
 	}
 
 	return Object.assign(sanitized, {
+		// Without this, Sentry falls back to its own stacktrace-based grouping, which merges every
+		// call site that throws `new Error(...)` from the same line regardless of `para.operation`
+		// — see the comment on `paradisSentryFingerprint`.
+		fingerprint: [fingerprint],
 		extra: decision.suppressed > 0
 			? { ...sanitized.extra, suppressed_count: decision.suppressed }
 			: sanitized.extra,
