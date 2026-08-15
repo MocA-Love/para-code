@@ -31,7 +31,6 @@ export interface IParadisMobilePcFocusHeartbeatOptions {
 /** contributionへPCフォーカスheartbeatを結合するためのPara固有依存関係。 */
 export interface IParadisMobilePcFocusHeartbeatCoordinatorOptions<TLease> {
 	readonly heartbeatIntervalMs: number;
-	readonly isEnabled: () => boolean;
 	readonly isVisiblyFocused: () => boolean;
 	readonly getSystemIdleTime: () => Promise<number>;
 	readonly resolveCurrentRendererLease: () => Promise<TLease>;
@@ -42,7 +41,7 @@ export interface IParadisMobilePcFocusHeartbeatCoordinatorOptions<TLease> {
 	readonly onDidUnlockScreen: Event<void>;
 	readonly onDidChangeFocus: Event<void>;
 	readonly onDidChangeVisibility: Event<void>;
-	readonly onError?: (error: Error) => void;
+	readonly onError?: (operation: 'setPcFocus' | 'setEnabled', error: Error) => void;
 }
 
 /**
@@ -67,9 +66,10 @@ export class ParadisMobilePcFocusHeartbeat implements IDisposable {
 			return;
 		}
 		this.enabled = enabled;
-		this.generation++;
+		const generation = ++this.generation;
 		if (!enabled) {
 			this.timer.cancel();
+			this.publish(false, generation, false);
 			return;
 		}
 		this.timer.cancelAndSet(() => this.reportNow(), this.options.heartbeatIntervalMs);
@@ -81,7 +81,9 @@ export class ParadisMobilePcFocusHeartbeat implements IDisposable {
 			return;
 		}
 		this.screenLocked = screenLocked;
-		this.generation++;
+		if (this.enabled) {
+			this.generation++;
+		}
 	}
 
 	reportNow(): void {
@@ -90,14 +92,14 @@ export class ParadisMobilePcFocusHeartbeat implements IDisposable {
 		}
 		const generation = ++this.generation;
 		if (this.screenLocked || !this.options.isVisiblyFocused()) {
-			this.publish(false, generation);
+			this.publish(false, generation, true);
 			return;
 		}
 		void this.options.getSystemIdleTime().then(idleSeconds => {
-			if (!this.isCurrent(generation)) {
+			if (!this.isCurrent(generation, true)) {
 				return;
 			}
-			this.publish(idleSeconds * 1000 <= PC_AWAY_IDLE_MS, generation);
+			this.publish(idleSeconds * 1000 <= PC_AWAY_IDLE_MS, generation, true);
 		}, error => this.reportError(error));
 	}
 
@@ -110,15 +112,15 @@ export class ParadisMobilePcFocusHeartbeat implements IDisposable {
 		this.timer.dispose();
 	}
 
-	private publish(focused: boolean, generation: number): void {
-		if (!this.isCurrent(generation)) {
+	private publish(focused: boolean, generation: number, enabled: boolean): void {
+		if (!this.isCurrent(generation, enabled)) {
 			return;
 		}
-		void this.options.publish(focused, () => this.isCurrent(generation)).catch(error => this.reportError(error));
+		void this.options.publish(focused, () => this.isCurrent(generation, enabled)).catch(error => this.reportError(error));
 	}
 
-	private isCurrent(generation: number): boolean {
-		return !this.disposed && this.enabled && generation === this.generation;
+	private isCurrent(generation: number, enabled: boolean): boolean {
+		return !this.disposed && this.enabled === enabled && generation === this.generation;
 	}
 
 	private reportError(error: Error): void {
@@ -151,18 +153,12 @@ export class ParadisMobilePcFocusHeartbeatCoordinator<TLease> implements IDispos
 					await options.setPcFocus(lease, focused);
 				}
 			},
-			onError: error => this.reportError(error),
+			onError: error => this.reportError('setPcFocus', error),
 		}, timer);
 		this.listeners.add(options.onDidLockScreen(() => { this.heartbeat.setScreenLocked(true); this.heartbeat.reportNow(); }));
 		this.listeners.add(options.onDidUnlockScreen(() => { this.heartbeat.setScreenLocked(false); this.heartbeat.reportNow(); }));
 		this.listeners.add(options.onDidChangeFocus(() => this.heartbeat.reportNow()));
 		this.listeners.add(options.onDidChangeVisibility(() => this.heartbeat.reportNow()));
-	}
-
-	createProvider<T>(factory: () => T): T {
-		const provider = factory();
-		this.setEnabled(this.options.isEnabled());
-		return provider;
 	}
 
 	setEnabled(enabled: boolean): void {
@@ -171,7 +167,7 @@ export class ParadisMobilePcFocusHeartbeatCoordinator<TLease> implements IDispos
 
 	setEnabledAndSynchronize(enabled: boolean): void {
 		this.heartbeat.setEnabled(enabled);
-		void this.options.setSharedProcessEnabled(enabled).catch(error => this.reportError(error));
+		void this.options.setSharedProcessEnabled(enabled).catch(error => this.reportError('setEnabled', error));
 	}
 
 	reportNow(): void {
@@ -187,11 +183,11 @@ export class ParadisMobilePcFocusHeartbeatCoordinator<TLease> implements IDispos
 		this.listeners.dispose();
 		void this.options.resolveWindowLease().then(
 			lease => this.options.setPcFocus(lease, false),
-			error => this.reportError(error),
-		).catch(error => this.reportError(error));
+			error => this.reportError('setPcFocus', error),
+		).catch(error => this.reportError('setPcFocus', error));
 	}
 
-	private reportError(error: Error): void {
-		this.options.onError?.(error);
+	private reportError(operation: 'setPcFocus' | 'setEnabled', error: Error): void {
+		this.options.onError?.(operation, error);
 	}
 }

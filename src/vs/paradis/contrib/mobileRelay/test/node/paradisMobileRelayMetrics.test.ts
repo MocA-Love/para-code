@@ -154,10 +154,10 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 
 	test('logs accumulated broadcast activity and resets its counters', async () => {
 		const { service, timer, logs, state } = createStateBroadcastMetricsFixture();
+		await service.setEnabled(true);
 		state.broadcastCount = 3;
 		state.broadcastSentCount = 1;
 
-		await service.setEnabled(true);
 		timer.fire();
 		timer.fire();
 
@@ -212,18 +212,34 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 
 	test('starts fresh metrics after relay is enabled again', async () => {
 		const { service, timer, logs, state } = createStateBroadcastMetricsFixture();
-		state.broadcastCount = 5;
 
 		await service.setEnabled(true);
+		state.broadcastCount = 5;
 		await service.setEnabled(false);
 		state.broadcastCount = 2;
 		await service.setEnabled(true);
+		state.broadcastCount = 2;
 		timer.fire();
 
 		assert.deepStrictEqual({ active: timer.active, intervals: timer.intervals, logs }, {
 			active: true,
 			intervals: [60_000, 60_000],
 			logs: ['[paradisMobileRelay][metrics] desktop state broadcast: 2 calls, 0 sent, 2 deduped'],
+		});
+	});
+
+	test('discards broadcast activity recorded while relay is disabled before scheduling enabled metrics', async () => {
+		const { service, timer, logs, state } = createStateBroadcastMetricsFixture();
+		state.broadcastCount = 3;
+		state.broadcastSentCount = 1;
+
+		await service.setEnabled(true);
+		timer.fire();
+
+		assert.deepStrictEqual({ logs, broadcastCount: state.broadcastCount, broadcastSentCount: state.broadcastSentCount }, {
+			logs: [],
+			broadcastCount: 0,
+			broadcastSentCount: 0,
 		});
 	});
 

@@ -90,9 +90,101 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 
 		assert.deepStrictEqual({ active: timer.active, reports, idleRequests: idleTime.requests.length }, {
 			active: false,
-			reports: [true],
+			reports: [true, false],
 			idleRequests: 1,
 		});
+		heartbeat.dispose();
+	});
+
+	test('invalidates the final unfocused report when relay is reenabled before its lease resolves', async () => {
+		const timer = new FakeIntervalTimer();
+		const idleTime = new DeferredIdleTime();
+		const finalLease = new DeferredPromise<void>();
+		const reports: boolean[] = [];
+		let finalLeaseWaits = 0;
+		const heartbeat = new ParadisMobilePcFocusHeartbeat({
+			heartbeatIntervalMs: 25_000,
+			isVisiblyFocused: () => true,
+			getSystemIdleTime: idleTime.getSystemIdleTime,
+			publish: async (focused, stillCurrent) => {
+				finalLeaseWaits++;
+				await finalLease.p;
+				if (stillCurrent()) {
+					reports.push(focused);
+				}
+			},
+		}, timer);
+
+		heartbeat.setEnabled(true);
+		heartbeat.setEnabled(false);
+		assert.strictEqual(finalLeaseWaits, 1);
+
+		heartbeat.setEnabled(true);
+		finalLease.complete(undefined);
+		await flushMicrotasks();
+
+		assert.deepStrictEqual({ reports, idleRequests: idleTime.requests.length }, {
+			reports: [],
+			idleRequests: 2,
+		});
+		heartbeat.dispose();
+	});
+
+	test('invalidates the final unfocused report when disposed before its lease resolves', async () => {
+		const timer = new FakeIntervalTimer();
+		const idleTime = new DeferredIdleTime();
+		const finalLease = new DeferredPromise<void>();
+		const reports: boolean[] = [];
+		let finalLeaseWaits = 0;
+		const heartbeat = new ParadisMobilePcFocusHeartbeat({
+			heartbeatIntervalMs: 25_000,
+			isVisiblyFocused: () => true,
+			getSystemIdleTime: idleTime.getSystemIdleTime,
+			publish: async (focused, stillCurrent) => {
+				finalLeaseWaits++;
+				await finalLease.p;
+				if (stillCurrent()) {
+					reports.push(focused);
+				}
+			},
+		}, timer);
+
+		heartbeat.setEnabled(true);
+		heartbeat.setEnabled(false);
+		assert.strictEqual(finalLeaseWaits, 1);
+
+		heartbeat.dispose();
+		finalLease.complete(undefined);
+		await flushMicrotasks();
+
+		assert.deepStrictEqual({ reports, disposed: timer.disposed }, { reports: [], disposed: true });
+	});
+
+	test('keeps the final unfocused report current through screen state updates while disabled', async () => {
+		const timer = new FakeIntervalTimer();
+		const idleTime = new DeferredIdleTime();
+		const finalLease = new DeferredPromise<void>();
+		const reports: boolean[] = [];
+		const heartbeat = new ParadisMobilePcFocusHeartbeat({
+			heartbeatIntervalMs: 25_000,
+			isVisiblyFocused: () => true,
+			getSystemIdleTime: idleTime.getSystemIdleTime,
+			publish: async (focused, stillCurrent) => {
+				await finalLease.p;
+				if (stillCurrent()) {
+					reports.push(focused);
+				}
+			},
+		}, timer);
+
+		heartbeat.setEnabled(true);
+		heartbeat.setEnabled(false);
+		heartbeat.setScreenLocked(true);
+		heartbeat.reportNow();
+		finalLease.complete(undefined);
+		await flushMicrotasks();
+
+		assert.deepStrictEqual(reports, [false]);
 		heartbeat.dispose();
 	});
 
@@ -192,7 +284,7 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 		heartbeat.dispose();
 	});
 
-	test('lets a publish delegate reject a report made stale while waiting for its renderer lease', async () => {
+	test('drops a stale focused report but publishes the final unfocused state while waiting for its renderer lease', async () => {
 		const timer = new FakeIntervalTimer();
 		const idleTime = new DeferredIdleTime();
 		const lease = new DeferredPromise<void>();
@@ -220,7 +312,7 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 		lease.complete(undefined);
 		await flushMicrotasks();
 
-		assert.deepStrictEqual(reports, []);
+		assert.deepStrictEqual(reports, [false]);
 		heartbeat.dispose();
 	});
 
@@ -265,9 +357,10 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 	test('does not publish a pending unfocused report after disabled relay is reenabled', async () => {
 		const timer = new FakeIntervalTimer();
 		const oldLease = new DeferredPromise<void>();
-		const newLease = new DeferredPromise<void>();
+		const disabledLease = new DeferredPromise<void>();
+		const reenabledLease = new DeferredPromise<void>();
 		const reports: boolean[] = [];
-		const leases = [oldLease, newLease];
+		const leases = [oldLease, disabledLease, reenabledLease];
 		const heartbeat = new ParadisMobilePcFocusHeartbeat({
 			heartbeatIntervalMs: 25_000,
 			isVisiblyFocused: () => false,
@@ -289,7 +382,9 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 		heartbeat.setEnabled(true);
 		oldLease.complete(undefined);
 		await flushMicrotasks();
-		newLease.complete(undefined);
+		disabledLease.complete(undefined);
+		await flushMicrotasks();
+		reenabledLease.complete(undefined);
 		await flushMicrotasks();
 
 		assert.deepStrictEqual(reports, [false]);
@@ -319,7 +414,7 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 		});
 	});
 
-	test('binds PC focus events, enables after provider construction, and synchronizes configuration after the controller', async () => {
+	test('binds PC focus events and synchronizes configuration after the controller', async () => {
 		const locked = new Emitter<void>();
 		const unlocked = new Emitter<void>();
 		const focused = new Emitter<void>();
@@ -334,7 +429,6 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 		const reports: boolean[] = [];
 		const coordinator = new ParadisMobilePcFocusHeartbeatCoordinator({
 			heartbeatIntervalMs: 25_000,
-			isEnabled: () => true,
 			isVisiblyFocused: () => visiblyFocused,
 			getSystemIdleTime: async () => { idleQueries++; return 0; },
 			resolveCurrentRendererLease: async () => 'current',
@@ -347,7 +441,7 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 			onDidChangeVisibility: visibilityChanged.event,
 		}, timer);
 
-		const provider = coordinator.createProvider(() => { events.push('provider'); return { ready: true }; });
+		coordinator.setEnabled(true);
 		await flushMicrotasks();
 		locked.fire();
 		await flushMicrotasks();
@@ -361,11 +455,10 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 		coordinator.setEnabledAndSynchronize(false);
 		await flushMicrotasks();
 
-		assert.deepStrictEqual({ provider, events, idleQueries, reports, heartbeatActive: timer.active }, {
-			provider: { ready: true },
-			events: ['provider', 'controller-start', 'controller-stop', 'shared'],
+		assert.deepStrictEqual({ events, idleQueries, reports, heartbeatActive: timer.active }, {
+			events: ['controller-start', 'controller-stop', 'shared'],
 			idleQueries: 2,
-			reports: [true, false, true, false, false],
+			reports: [true, false, true, false, false, false],
 			heartbeatActive: false,
 		});
 		coordinator.dispose();
@@ -385,7 +478,6 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 		const never = new Emitter<void>();
 		const coordinator = new ParadisMobilePcFocusHeartbeatCoordinator({
 			heartbeatIntervalMs: 25_000,
-			isEnabled: () => true,
 			isVisiblyFocused: () => true,
 			getSystemIdleTime: idleTime.getSystemIdleTime,
 			resolveCurrentRendererLease: () => {
@@ -404,7 +496,7 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 			onDidChangeVisibility: never.event,
 		}, timer);
 
-		coordinator.createProvider(() => undefined);
+		coordinator.setEnabled(true);
 		idleTime.requests[0].complete(0);
 		await flushMicrotasks();
 		coordinator.reportNow();
@@ -430,7 +522,6 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 		const never = new Emitter<void>();
 		const coordinator = new ParadisMobilePcFocusHeartbeatCoordinator({
 			heartbeatIntervalMs: 25_000,
-			isEnabled: () => true,
 			isVisiblyFocused: () => true,
 			getSystemIdleTime: idleTime.getSystemIdleTime,
 			resolveCurrentRendererLease: () => currentLease.p,
@@ -446,7 +537,7 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 			onDidChangeVisibility: never.event,
 		}, timer);
 
-		coordinator.createProvider(() => undefined);
+		coordinator.setEnabled(true);
 		idleTime.requests[0].complete(0);
 		await flushMicrotasks();
 		coordinator.dispose();
@@ -459,6 +550,40 @@ suite('ParadisMobilePcFocusHeartbeat', () => {
 			events: ['final-lease-after-dispose:true'],
 			reports: [{ lease: 'final', active: false }],
 		});
+		never.dispose();
+	});
+
+	test('routes focus publication and shared enabled failures to their own operations', async () => {
+		const timer = new FakeIntervalTimer();
+		const focusFailure = new Error('focus publication rejected');
+		const enabledFailure = new Error('shared enabled rejected');
+		const errors: Array<{ operation: string; error: Error }> = [];
+		const never = new Emitter<void>();
+		const coordinator = new ParadisMobilePcFocusHeartbeatCoordinator({
+			heartbeatIntervalMs: 25_000,
+			isVisiblyFocused: () => false,
+			getSystemIdleTime: async () => 0,
+			resolveCurrentRendererLease: async () => 'current',
+			resolveWindowLease: async () => 'window',
+			setPcFocus: async () => { throw focusFailure; },
+			setSharedProcessEnabled: async () => { throw enabledFailure; },
+			onDidLockScreen: never.event,
+			onDidUnlockScreen: never.event,
+			onDidChangeFocus: never.event,
+			onDidChangeVisibility: never.event,
+			onError: (operation, error) => errors.push({ operation, error }),
+		}, timer);
+
+		coordinator.setEnabled(true);
+		await flushMicrotasks();
+		coordinator.setEnabledAndSynchronize(true);
+		await flushMicrotasks();
+
+		assert.deepStrictEqual(errors, [
+			{ operation: 'setPcFocus', error: focusFailure },
+			{ operation: 'setEnabled', error: enabledFailure },
+		]);
+		coordinator.dispose();
 		never.dispose();
 	});
 });

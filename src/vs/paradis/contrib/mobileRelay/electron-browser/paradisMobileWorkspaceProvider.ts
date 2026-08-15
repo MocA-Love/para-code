@@ -539,6 +539,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			this.resetStatePushMetrics();
 			return;
 		}
+		this.resetStatePushMetrics();
 		this.statePushMetricsTimer.cancelAndSet(() => {
 			if (this.statePushMetricsEnabled && generation === this.statePushMetricsGeneration) {
 				this.reportStatePushMetrics();
