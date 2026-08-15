@@ -24,7 +24,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IParadisResourceMonitorSnapshot } from '../common/paradisResourceMonitor.js';
+import { IParadisResourceMonitorSnapshot, ParadisResourceMonitorFreshness } from '../common/paradisResourceMonitor.js';
 import { paradisFormatCpu, paradisFormatMemory, paradisGetTrackedHostMemorySeverity } from '../common/paradisResourceMonitorFormat.js';
 import { ParadisResourceMonitorClient } from './paradisResourceMonitorClient.js';
 import { IParadisResourceMonitorPanelOptions, ParadisResourceMonitorPanel } from './paradisResourceMonitorPanel.js';
@@ -38,12 +38,38 @@ const PANEL_OPEN_POLL_INTERVAL_MS = 2000;
 /** パネル非表示中(トリガーのみ)のポーリング間隔。 */
 const IDLE_POLL_INTERVAL_MS = 5000;
 
+export interface IParadisResourceMonitorPollTimer extends IDisposable {
+	cancel(): void;
+	cancelAndSet(runner: () => void, interval: number): void;
+}
+
+export interface IParadisResourceMonitorWidgetDependencies {
+	readonly document: EventTarget & { readonly hidden: boolean };
+	readonly pollTimer: IParadisResourceMonitorPollTimer;
+}
+
+interface IParadisResourceMonitorPollingPolicy {
+	readonly interval: number | undefined;
+	readonly freshness: ParadisResourceMonitorFreshness;
+}
+
+/** ウィジェットの可視状態とパネル状態から、timerとIPCの鮮度クラスを一貫して決める。 */
+export function paradisResourceMonitorPollingPolicy(enabled: boolean, panelOpen: boolean, hidden: boolean): IParadisResourceMonitorPollingPolicy {
+	if (!enabled) {
+		return { interval: undefined, freshness: 'idle' };
+	}
+	if (panelOpen) {
+		return { interval: PANEL_OPEN_POLL_INTERVAL_MS, freshness: 'active' };
+	}
+	return { interval: hidden ? undefined : IDLE_POLL_INTERVAL_MS, freshness: 'idle' };
+}
+
 /** titlebarPart.ts の PARA-PATCH 点から呼ばれるファクトリ。 */
 export function createParadisResourceMonitorWidget(instantiationService: IInstantiationService, container: HTMLElement): IDisposable {
 	return instantiationService.createInstance(ParadisResourceMonitorWidget, container);
 }
 
-class ParadisResourceMonitorWidget extends Disposable {
+export class ParadisResourceMonitorWidget extends Disposable {
 
 	private readonly button: HTMLElement;
 	private readonly iconWrap: HTMLElement;
@@ -52,17 +78,21 @@ class ParadisResourceMonitorWidget extends Disposable {
 
 	private readonly client: ParadisResourceMonitorClient;
 	private readonly panel = this._register(new MutableDisposable<ParadisResourceMonitorPanel>());
-	private readonly pollTimer = this._register(new IntervalTimer());
+	private readonly document: EventTarget & { readonly hidden: boolean };
+	private readonly pollTimer: IParadisResourceMonitorPollTimer;
 
 	private latestSnapshot: IParadisResourceMonitorSnapshot | undefined;
 	private isFetching = false;
 
 	constructor(
 		container: HTMLElement,
+		dependencies: IParadisResourceMonitorWidgetDependencies = { document: dom.getDocument(container), pollTimer: new IntervalTimer() },
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
+		this.document = dependencies.document;
+		this.pollTimer = this._register(dependencies.pollTimer);
 
 		this.client = this.instantiationService.createInstance(ParadisResourceMonitorClient);
 
@@ -80,12 +110,11 @@ class ParadisResourceMonitorWidget extends Disposable {
 
 		this._register(dom.addDisposableListener(this.button, 'click', () => this.togglePanel()));
 
-		// アイドルポーリング(パネル非表示時)はウィンドウ不可視中スキップするため、可視へ復帰
-		// した直後は最大 IDLE_POLL_INTERVAL_MS 古い値が見え得る。これを縮めるための補助として、
-		// 可視化イベント時に(有効かつパネル非表示なら)即時1回だけ更新する。ポーリングの継続は
-		// あくまで pollTimer 側が毎tickの hidden 判定で担保しており、この購読には依存しない。
-		this._register(dom.addDisposableListener(dom.getDocument(this.button), 'visibilitychange', () => {
-			if (!dom.getDocument(this.button).hidden && !this.panel.value && this.configurationService.getValue<boolean>(CONFIG_KEY_ENABLED)) {
+		// パネル非表示の不可視中はアイドルtimer自体を止める。可視化時は5秒timerを再アームし、
+		// 古い表示を残さないよう即時取得する。パネル表示中は不可視でも2秒timerを維持する。
+		this._register(dom.addDisposableListener(this.document, 'visibilitychange', () => {
+			this.reschedulePolling();
+			if (!this.document.hidden && !this.panel.value && this.configurationService.getValue<boolean>(CONFIG_KEY_ENABLED)) {
 				void this.poll(false);
 			}
 		}));
@@ -125,8 +154,12 @@ class ParadisResourceMonitorWidget extends Disposable {
 			this.pollTimer.cancel();
 			return;
 		}
-		const interval = this.panel.value ? PANEL_OPEN_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS;
-		this.pollTimer.cancelAndSet(() => this.poll(false), interval);
+		const policy = paradisResourceMonitorPollingPolicy(true, !!this.panel.value, this.document.hidden);
+		if (policy.interval === undefined) {
+			this.pollTimer.cancel();
+			return;
+		}
+		this.pollTimer.cancelAndSet(() => this.poll(false), policy.interval);
 	}
 
 	private togglePanel(): void {
@@ -157,10 +190,10 @@ class ParadisResourceMonitorWidget extends Disposable {
 		// アイドルポーリング(パネル非表示)のみ、ウィジェットが属するウィンドウが不可視
 		// (最小化・完全背面などで document.hidden)の間は getSnapshot を呼ばず、electron-main
 		// 側の ps サブプロセスを起こさない。手動更新(force)とパネル表示中(2秒ポーリング)は
-		// 常に取得する。復帰時は次tick(最大 IDLE_POLL_INTERVAL_MS)で hidden が false に戻って
-		// 自動再開するため、可視化イベントの取りこぼしで固まることはない。マルチウィンドウ対応の
-		// ため mainWindow 固定ではなくウィジェットが属するウィンドウの document を見る。
-		if (!force && !this.panel.value && dom.getDocument(this.button).hidden) {
+		// 常に取得する。復帰時はvisibilitychangeでtimerを再アームして即時取得する。マルチ
+		// ウィンドウ対応のため mainWindow 固定ではなくウィジェットが属するウィンドウのdocumentを
+		// 見る。
+		if (!force && !this.panel.value && this.document.hidden) {
 			return;
 		}
 		if (this.isFetching) {
@@ -169,7 +202,8 @@ class ParadisResourceMonitorWidget extends Disposable {
 		this.isFetching = true;
 		this.panel.value?.setFetching(true);
 		try {
-			const snapshot = await this.client.getSnapshot(force);
+			const freshness = paradisResourceMonitorPollingPolicy(true, !!this.panel.value, this.document.hidden).freshness;
+			const snapshot = await this.client.getSnapshot(force, freshness);
 			this.latestSnapshot = snapshot;
 			this.updateTriggerText(snapshot);
 			this.panel.value?.updateSnapshot(snapshot);
