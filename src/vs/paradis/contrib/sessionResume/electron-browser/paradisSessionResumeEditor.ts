@@ -229,7 +229,7 @@ export class ParadisSessionResumeEditor extends EditorPane {
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
 		if (!this.loading && this.sessions.length === 0) {
-			this.refreshController.requestImmediate();
+			await this.refreshController.requestImmediate();
 		}
 	}
 
