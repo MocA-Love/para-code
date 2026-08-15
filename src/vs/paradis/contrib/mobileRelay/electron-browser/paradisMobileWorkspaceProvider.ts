@@ -40,6 +40,8 @@ import { Channels, encodeNotify, NotifyKind, NotifyPayload } from '../common/par
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, PARADIS_MOBILE_PROTOCOL_VERSION, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
+// PARA-PATCH: RTK節約データのモバイル配信
+import { IParadisRtkDashboardData } from '../../rtk/electron-browser/paradisRtkClient.js';
 import { IParadisLimitsSnapshot } from '../../limitsMonitor/common/paradisLimitsMonitor.js';
 import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { IParadisResourceMonitorMobileReport } from '../../resourceMonitor/common/paradisResourceMonitor.js';
@@ -261,6 +263,8 @@ type FsInbound =
 	| { t: 'grep'; id: string; ws: string; query: string }
 	| { t: 'upload'; id: string; name: string; data: string | Uint8Array; base64Length?: number }
 	| { t: 'usage'; id: string; bypassCache?: boolean }
+	// PARA-PATCH: RTK節約データのモバイル配信（PC版のRTKダッシュボードと同じデータ）
+	| { t: 'rtk'; id: string; bypassCache?: boolean }
 	// Rate Limit(AIリミット)スナップショット（PC版タイトルバーのリミットモニターと同じデータ）
 	| { t: 'limits'; id: string; bypassCache?: boolean }
 	// GitHub API利用状況（PC版のGitHub API Usageダッシュボードと同じデータ）
@@ -449,6 +453,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		private readonly searchFiles: (rootPath: string, query: string, maxResults: number) => Promise<{ files: string[]; truncated: boolean }>,
 		private readonly searchText: (rootPath: string, query: string, maxResults: number) => Promise<{ matches: { path: string; line: number; text: string }[]; truncated: boolean }>,
 		private readonly fetchUsageDashboard: (bypassCache: boolean) => Promise<IParadisCcusageDashboardData>,
+		// PARA-PATCH: RTK節約データのモバイル配信。実体は rtk の shared process バックエンド
+		private readonly fetchRtkSavings: (bypassCache: boolean) => Promise<IParadisRtkDashboardData>,
 		// AIリミット(Rate Limit)スナップショット。実体は limitsMonitor の shared process バックエンド
 		private readonly fetchLimitsSnapshot: (bypassCache: boolean) => Promise<IParadisLimitsSnapshot>,
 		// GitHub API利用状況。実体は githubMetrics の shared process バックエンド（PC版と同じクライアント）
@@ -1722,6 +1728,16 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			try {
 				const data = await this.fetchUsageDashboard(!!msg.bypassCache);
 				reply({ t: 'usage', data });
+			} catch (err) {
+				reply({ error: String(err) });
+			}
+			return;
+		}
+		// PARA-PATCH: RTK節約データのモバイル配信。usage と同じくワークスペース非依存。
+		if (msg.t === 'rtk') {
+			try {
+				const data = await this.fetchRtkSavings(!!msg.bypassCache);
+				reply({ t: 'rtk', data });
 			} catch (err) {
 				reply({ error: String(err) });
 			}

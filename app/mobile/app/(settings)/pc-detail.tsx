@@ -29,6 +29,7 @@ import { hapticImpact, hapticSelection } from '../../src/haptics.js';
 
 const USAGE_LINKS = [
 	{ route: '/ccusage', icon: 'stats-chart-outline', title: 'Ccusage', desc: 'コーディングエージェントのトークン使用量・コストを確認します' },
+	{ route: '/rtk', icon: 'flash-outline', title: 'RTK節約状況', desc: 'RTKがコマンド出力から削ったトークン量を確認します' },
 	{ route: '/ratelimit', icon: 'speedometer-outline', title: 'Rate Limit', desc: 'Claude Code / Codex のレート制限と残量をアカウントごとに確認します' },
 	{ route: '/github-usage', icon: 'logo-github', title: 'GitHub API', desc: 'GitHubのレート枠と、Para Codeが送ったリクエストの内訳を確認します' },
 	{ route: '/system', icon: 'hardware-chip-outline', title: 'システム', desc: 'PCのCPU・メモリ・ディスクの空きと、何が使っているかを確認します' },

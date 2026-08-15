@@ -47,6 +47,8 @@ import { ParadisAgentTerminalHintParser, paradisShouldAcceptAgentTerminalHint } 
 import { Channels } from '../common/paradisMobileProtocol.js';
 import { paradisInteractiveAgentCommand, paradisResolveRunningAgentCommand } from '../common/paradisAgentCliCommand.js';
 import { ParadisCcusageClient } from '../../ccusage/electron-browser/paradisCcusageClient.js';
+// PARA-PATCH: RTK節約データのモバイル配信
+import { ParadisRtkClient } from '../../rtk/electron-browser/paradisRtkClient.js';
 import { ParadisLimitsMonitorClient } from '../../limitsMonitor/electron-browser/paradisLimitsMonitorClient.js';
 import { ParadisGithubMetricsClient } from '../../githubMetrics/electron-browser/paradisGithubMetricsClient.js';
 import { ParadisResourceMonitorClient } from '../../resourceMonitor/electron-browser/paradisResourceMonitorClient.js';
@@ -209,6 +211,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 		// ccusage ダッシュボードデータ取得（PC版と同じ shared process 経由のクライアントを再利用する）
 		const ccusageClient = instantiationService.createInstance(ParadisCcusageClient);
+		// PARA-PATCH: RTK節約データのモバイル配信（PC版のRTKダッシュボードと同じクライアントを再利用する）
+		const rtkClient = instantiationService.createInstance(ParadisRtkClient);
 		// AIリミット(Rate Limit)スナップショット取得（PC版タイトルバーのリミットモニターと同じクライアント）
 		const limitsClient = instantiationService.createInstance(ParadisLimitsMonitorClient);
 		// GitHub API利用状況取得（PC版のGitHub API Usageダッシュボードと同じクライアント）
@@ -252,6 +256,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 			(rootPath, query, maxResults) => this.service.searchFiles(rootPath, query, maxResults),
 			(rootPath, query, maxResults) => this.service.searchText(rootPath, query, maxResults),
 			bypassCache => ccusageClient.fetchDashboard(bypassCache),
+			bypassCache => rtkClient.fetchDashboard(bypassCache),
 			bypassCache => limitsClient.getSnapshot(bypassCache),
 			bypassCache => githubClient.getSnapshot(bypassCache),
 			// worktree（スペース）作成。実体はヘッドレス版のPC作成ダイアログ相当処理

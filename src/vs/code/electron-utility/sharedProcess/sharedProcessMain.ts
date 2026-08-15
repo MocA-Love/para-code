@@ -149,6 +149,8 @@ import { PlaywrightChannel } from '../../../platform/browserView/node/playwright
 import { registerParadisAgentBrowser } from '../../../paradis/contrib/agentBrowser/node/paradisAgentBrowserChannel.js';
 // PARA-PATCH: 通知サウンド/Aivis読み上げ用バックエンド（fork独自、src/vs/paradis/contrib/notifications/ 参照）
 import { registerParadisNotifications } from '../../../paradis/contrib/notifications/node/paradisNotificationsChannel.js';
+// PARA-PATCH: おやすみモードを aivis-mcp 側のミュートへ伝える aivis CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/notifications/ 参照）
+import { registerParadisAivisMuteBridge } from '../../../paradis/contrib/notifications/node/paradisAivisMuteBridgeChannel.js';
 // PARA-PATCH: Excelビューア/差分用の xlsx パースバックエンド（fork独自、src/vs/paradis/contrib/fileViewers/ 参照）
 import { registerParadisSpreadsheet } from '../../../paradis/contrib/fileViewers/node/paradisSpreadsheetChannel.js';
 // PARA-PATCH: worktree作成用の git 実行バックエンド（fork独自、src/vs/paradis/contrib/workspaceSwitch/ 参照）
@@ -158,6 +160,8 @@ import { registerParadisWorktreeGit } from '../../../paradis/contrib/workspaceSw
 import { registerParadisMobileRelay } from '../../../paradis/contrib/mobileRelay/node/paradisMobileRelayChannel.js';
 // PARA-PATCH: ccusage CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/ccusage/ 参照）
 import { registerParadisCcusage } from '../../../paradis/contrib/ccusage/node/paradisCcusageChannel.js';
+// PARA-PATCH: rtk CLI 実行バックエンド（fork独自、src/vs/paradis/contrib/rtk/ 参照）
+import { registerParadisRtk } from '../../../paradis/contrib/rtk/node/paradisRtkChannel.js';
 // PARA-PATCH: Claude Code / Codex のローカルセッション履歴ブラウザ（fork独自、read-only）
 import { registerParadisSessionResume } from '../../../paradis/contrib/sessionResume/node/paradisSessionResumeChannel.js';
 // PARA-PATCH: スペース(リポジトリ/worktree)の容量計測（fork独自、src/vs/paradis/contrib/spaceDisk/ 参照）
@@ -556,6 +560,10 @@ class SharedProcessMain extends Disposable implements IClientConnectionFilter {
 
 		// PARA-PATCH: ccusage CLI 実行バックエンド（src/vs/paradis/contrib/ccusage/ 参照）
 		this._register(registerParadisCcusage(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
+		// PARA-PATCH: rtk CLI 実行バックエンド（src/vs/paradis/contrib/rtk/ 参照）
+		this._register(registerParadisRtk(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
+		// PARA-PATCH: おやすみモード ⇔ aivis-mcp のミュート同期（src/vs/paradis/contrib/notifications/ 参照）
+		this._register(registerParadisAivisMuteBridge(this.server, accessor.get(ILogService), accessor.get(IConfigurationService), this.configuration.args));
 		this._register(registerParadisSessionResume(this.server, accessor.get(ILogService)));
 
 		// PARA-PATCH: スペースの容量計測（数十秒かかるのでmainではなくここに置く。src/vs/paradis/contrib/spaceDisk/ 参照）

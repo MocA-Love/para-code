@@ -46,6 +46,12 @@ const DEFAULT_AIVIS_SETTINGS: IParadisAivisSettings = Object.freeze({
 	speakingRate: 1.0,
 });
 
+/** おやすみモードの状態。`until` は解除予定時刻（epoch ms、undefined は「自分でオフにするまで」）。 */
+export interface IParadisDoNotDisturbState {
+	readonly enabled: boolean;
+	readonly until: number | undefined;
+}
+
 export const IParadisNotificationsSettingsService = createDecorator<IParadisNotificationsSettingsService>('paradisNotificationsSettingsService');
 
 /**
@@ -55,7 +61,7 @@ export const IParadisNotificationsSettingsService = createDecorator<IParadisNoti
  * そのため「通知サウンド関連」と「Aivis関連」を分けて通知し、各セクションが自分のスコープの
  * 変更だけを購読できるようにする。
  */
-export type ParadisNotificationsChangeScope = 'notifications' | 'aivis';
+export type ParadisNotificationsChangeScope = 'notifications' | 'aivis' | 'dnd';
 
 /**
  * 通知サウンド + Aivis読み上げ設定の読み書きサービス。トリガー・再生ロジック（electron-browser）と
@@ -94,6 +100,14 @@ export interface IParadisNotificationsSettingsService {
 	getNotifyWhileFocused(): boolean;
 	setNotifyWhileFocused(enabled: boolean): void;
 
+	/**
+	 * おやすみモードの状態。音・OS通知・Aivis読み上げを一括で抑制する。
+	 * `until` を過ぎている場合はこの getter 自身が保存済みの状態を破棄して解除後の値を返すため、
+	 * 失効を監視する専用のタイマーは不要（読み取り時に失効させる）。
+	 */
+	getDoNotDisturb(): IParadisDoNotDisturbState;
+	setDoNotDisturb(enabled: boolean, until: number | undefined): void;
+
 	getAivisSettings(): IParadisAivisSettings;
 	setAivisSettings(patch: Partial<IParadisAivisSettings>): void;
 
@@ -110,6 +124,8 @@ const KEY_OS_ENABLED = 'paradis.notifications.osNotificationsEnabled';
 const KEY_OS_PERMISSION = 'paradis.notifications.osNotifyOnPermission';
 const KEY_OS_REVIEW = 'paradis.notifications.osNotifyOnReview';
 const KEY_NOTIFY_FOCUSED = 'paradis.notifications.notifyWhileFocused';
+const KEY_DO_NOT_DISTURB = 'paradis.notifications.doNotDisturb';
+const KEY_DO_NOT_DISTURB_UNTIL = 'paradis.notifications.doNotDisturbUntil';
 const KEY_AIVIS = 'paradis.notifications.aivis';
 const KEY_AIVIS_CUSTOM_PRESETS = 'paradis.notifications.aivisCustomModelPresets';
 
@@ -187,6 +203,37 @@ class ParadisNotificationsSettingsService extends Disposable implements IParadis
 	setNotifyWhileFocused(enabled: boolean): void {
 		this.storageService.store(KEY_NOTIFY_FOCUSED, enabled, StorageScope.APPLICATION, StorageTarget.MACHINE);
 		this._onDidChange.fire('notifications');
+	}
+
+	getDoNotDisturb(): IParadisDoNotDisturbState {
+		if (!this.storageService.getBoolean(KEY_DO_NOT_DISTURB, StorageScope.APPLICATION, false)) {
+			return { enabled: false, until: undefined };
+		}
+		const until = this.storageService.getNumber(KEY_DO_NOT_DISTURB_UNTIL, StorageScope.APPLICATION);
+		if (until !== undefined && until <= Date.now()) {
+			// 期限切れ。次回以降の読み取りで再判定しなくて済むよう、ここで保存済みの状態を捨てる。
+			// onDidChange は発火しない（getter からの再入で購読側の再描画が走るのを避けるため）。
+			// UI 側はステータスバーの分刻みの更新で追従する。
+			this.storageService.remove(KEY_DO_NOT_DISTURB, StorageScope.APPLICATION);
+			this.storageService.remove(KEY_DO_NOT_DISTURB_UNTIL, StorageScope.APPLICATION);
+			return { enabled: false, until: undefined };
+		}
+		return { enabled: true, until };
+	}
+
+	setDoNotDisturb(enabled: boolean, until: number | undefined): void {
+		if (!enabled) {
+			this.storageService.remove(KEY_DO_NOT_DISTURB, StorageScope.APPLICATION);
+			this.storageService.remove(KEY_DO_NOT_DISTURB_UNTIL, StorageScope.APPLICATION);
+		} else {
+			this.storageService.store(KEY_DO_NOT_DISTURB, true, StorageScope.APPLICATION, StorageTarget.MACHINE);
+			if (until === undefined) {
+				this.storageService.remove(KEY_DO_NOT_DISTURB_UNTIL, StorageScope.APPLICATION);
+			} else {
+				this.storageService.store(KEY_DO_NOT_DISTURB_UNTIL, until, StorageScope.APPLICATION, StorageTarget.MACHINE);
+			}
+		}
+		this._onDidChange.fire('dnd');
 	}
 
 	getAivisSettings(): IParadisAivisSettings {

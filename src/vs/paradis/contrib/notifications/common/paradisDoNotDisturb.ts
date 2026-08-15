@@ -1,0 +1,92 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// おやすみモード（通知の一括ミュート）の持続時間の選択肢と、残り時間の表示整形。
+// ステータスバーのクイックトグルと通知設定ダイアログのセクションが同じ選択肢を出すため、
+// どちらのレイヤーからも参照できる common に置く。
+
+import { localize } from '../../../../nls.js';
+
+/** ステータスバーのクリック先。Quick Pick で持続時間を選ぶ。 */
+export const PARADIS_DO_NOT_DISTURB_SELECT_COMMAND = 'paradis.notifications.selectDoNotDisturb';
+
+/** 「朝まで」の朝の定義（ローカル時刻）。 */
+const MORNING_HOUR = 7;
+
+export interface IParadisDoNotDisturbDuration {
+	readonly id: string;
+	readonly label: string;
+	/** 解除予定時刻（epoch ms）。undefined は「自分でオフにするまで」。 */
+	readonly resolveUntil: (now: number) => number | undefined;
+}
+
+/**
+ * `now` から見て次に訪れる朝 MORNING_HOUR 時の epoch ms。
+ * 深夜（0時〜7時）にオンにした場合はその日の朝、それ以外は翌日の朝になる。
+ */
+export function paradisNextMorning(now: number): number {
+	const target = new Date(now);
+	target.setHours(MORNING_HOUR, 0, 0, 0);
+	if (target.getTime() <= now) {
+		target.setDate(target.getDate() + 1);
+	}
+	return target.getTime();
+}
+
+export const PARADIS_DO_NOT_DISTURB_DURATIONS: readonly IParadisDoNotDisturbDuration[] = [
+	{
+		id: 'minutes30',
+		// allow-any-unicode-next-line
+		label: localize('paradis.dnd.duration.minutes30', "30分"),
+		resolveUntil: now => now + 30 * 60 * 1000,
+	},
+	{
+		id: 'hours1',
+		// allow-any-unicode-next-line
+		label: localize('paradis.dnd.duration.hours1', "1時間"),
+		resolveUntil: now => now + 60 * 60 * 1000,
+	},
+	{
+		id: 'morning',
+		// allow-any-unicode-next-line
+		label: localize('paradis.dnd.duration.morning', "朝まで（7:00）"),
+		resolveUntil: now => paradisNextMorning(now),
+	},
+	{
+		id: 'manual',
+		// allow-any-unicode-next-line
+		label: localize('paradis.dnd.duration.manual', "自分でオフにするまで"),
+		resolveUntil: () => undefined,
+	},
+];
+
+/**
+ * 残り時間を「2時間5分」「30分」のように整形する。1分未満は「まもなく」。
+ * `until` が undefined（自分でオフにするまで）の場合は undefined を返す。
+ */
+export function paradisFormatDoNotDisturbRemaining(until: number | undefined, now: number): string | undefined {
+	if (until === undefined) {
+		return undefined;
+	}
+	const minutes = Math.ceil((until - now) / 60000);
+	if (minutes <= 0) {
+		// allow-any-unicode-next-line
+		return localize('paradis.dnd.remaining.soon', "まもなく");
+	}
+	if (minutes < 60) {
+		// allow-any-unicode-next-line
+		return localize('paradis.dnd.remaining.minutes', "{0}分", minutes);
+	}
+	const hours = Math.floor(minutes / 60);
+	const rest = minutes % 60;
+	return rest === 0
+		// allow-any-unicode-next-line
+		? localize('paradis.dnd.remaining.hours', "{0}時間", hours)
+		// allow-any-unicode-next-line
+		: localize('paradis.dnd.remaining.hoursMinutes', "{0}時間{1}分", hours, rest);
+}
