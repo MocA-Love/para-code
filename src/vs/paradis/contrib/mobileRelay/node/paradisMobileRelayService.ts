@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
@@ -495,6 +496,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private identity: MobileIdentity | undefined;
 	private enabled = false;
 	private connectionState: ParadisMobileConnectionState = 'disabled';
+	// Mobile relay が有効な間だけ動かし、shared process の不要な定期起床を避ける。
+	private readonly stateBroadcastMetricsTimer = this._register(new IntervalTimer());
+	private stateBroadcastMetricsEnabled = false;
+	private stateBroadcastMetricsGeneration = 0;
 
 	private socket: WebSocket | undefined;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -653,25 +658,46 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			this.disconnect();
 		}));
 		this.startHostResourceSampling();
-		this.startStateBroadcastMetrics();
 	}
 
 	/**
-	 * 計測用: Desktop State の broadcast 回数と、そのうち実際に電波へ出した回数を
-	 * 1分ごとに1行だけ残す（renderer側の state push 計測と対になる）。活動が無い間は出さない。
+	 * Mobile relayが有効な間だけdesktop state broadcast計測タイマーを動かす。
+	 *
+	 * 無効化時は、停止済みタイマーのキュー済みcallbackが実行されても古い集計を報告しないよう、
+	 * 集計も同時に捨てる。
 	 */
-	private startStateBroadcastMetrics(): void {
-		const handle = setInterval(() => {
-			if (this.broadcastCount === 0) {
-				return;
+	private setStateBroadcastMetricsEnabled(enabled: boolean): void {
+		if (this.stateBroadcastMetricsEnabled === enabled) {
+			return;
+		}
+		this.stateBroadcastMetricsEnabled = enabled;
+		const generation = ++this.stateBroadcastMetricsGeneration;
+		if (!enabled) {
+			this.stateBroadcastMetricsTimer.cancel();
+			this.resetStateBroadcastMetrics();
+			return;
+		}
+		this.stateBroadcastMetricsTimer.cancelAndSet(() => {
+			if (this.stateBroadcastMetricsEnabled && generation === this.stateBroadcastMetricsGeneration) {
+				this.reportStateBroadcastMetrics();
 			}
-			const calls = this.broadcastCount;
-			const sent = this.broadcastSentCount;
-			this.broadcastCount = 0;
-			this.broadcastSentCount = 0;
-			this.logService.info(`[paradisMobileRelay][metrics] desktop state broadcast: ${calls} calls, ${sent} sent, ${calls - sent} deduped`);
 		}, 60_000);
-		this._register(toDisposable(() => clearInterval(handle)));
+	}
+
+	/** 計測用: Desktop State の broadcast 回数と、そのうち実際に電波へ出した回数を1分ごとに残す。 */
+	private reportStateBroadcastMetrics(): void {
+		if (this.broadcastCount === 0) {
+			return;
+		}
+		const calls = this.broadcastCount;
+		const sent = this.broadcastSentCount;
+		this.resetStateBroadcastMetrics();
+		this.logService.info(`[paradisMobileRelay][metrics] desktop state broadcast: ${calls} calls, ${sent} sent, ${calls - sent} deduped`);
+	}
+
+	private resetStateBroadcastMetrics(): void {
+		this.broadcastCount = 0;
+		this.broadcastSentCount = 0;
 	}
 
 	// --- PC本体のリソース使用量 -------------------------------------------------
@@ -927,6 +953,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		await this.load();
 		this.updateDiagnosticCorrelation();
 		this.enabled = enabled;
+		this.setStateBroadcastMetricsEnabled(enabled);
 		this.disconnectReporter.setEnabled(enabled);
 		if (enabled && this.state.device) {
 			this.connect();
@@ -941,6 +968,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			return;
 		}
 		this.enabled = enabled;
+		this.setStateBroadcastMetricsEnabled(enabled);
 		if (enabled) {
 			if (this.state.device) {
 				this.connect();
