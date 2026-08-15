@@ -53,13 +53,16 @@ suite('ParadisSessionResume', () => {
 		readBoundedFile?: (filePath: string) => Promise<{ text: string; truncated: boolean }>,
 		beforeSummaryRead?: (filePath: string) => Promise<void>,
 		beforeTranscriptRead?: (filePath: string) => Promise<void>,
+		searchCacheMaxBytes?: number,
 	): ParadisSessionResumeService {
-		return new ParadisSessionResumeService({
+		const dependencies = {
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, matchCwd: cwd }),
 			readBoundedFile,
 			beforeSummaryRead,
 			beforeTranscriptRead,
-		}, new NullLogService());
+			searchCacheMaxBytes,
+		};
+		return new ParadisSessionResumeService(dependencies, new NullLogService());
 	}
 
 	function createListRequest(space: Partial<IParadisResumeSpace> = {}, includeArchived = false): IParadisResumeListRequest {
@@ -584,6 +587,117 @@ suite('ParadisSessionResume', () => {
 			intermediate: [{ catalogId: intermediateCatalogId, source: 'conversation' }],
 			newest: [{ catalogId: newCatalogId, source: 'conversation' }],
 			stale: [],
+		});
+	});
+
+	test('evicts only the least recently used search text and keeps preview available', async () => {
+		const firstPath = join(claudeProject, 'search-cache-first.jsonl');
+		const secondPath = join(claudeProject, 'search-cache-second.jsonl');
+		const thirdPath = join(claudeProject, 'search-cache-third.jsonl');
+		await Promise.all([
+			writeLines(firstPath, [claudeMessage('user', 'First prompt'), claudeMessage('assistant', 'conversation-a')]),
+			writeLines(secondPath, [claudeMessage('user', 'Second prompt'), claudeMessage('assistant', 'conversation-b')]),
+			writeLines(thirdPath, [claudeMessage('user', 'Third prompt'), claudeMessage('assistant', 'conversation-c')]),
+		]);
+		const transcriptReads = new Map<string, number>();
+		const service = createService(undefined, undefined, async filePath => {
+			transcriptReads.set(filePath, (transcriptReads.get(filePath) ?? 0) + 1);
+		}, 120);
+		const sessions = await listSessions(service);
+		const first = sessions.find(session => session.id === 'search-cache-first');
+		const second = sessions.find(session => session.id === 'search-cache-second');
+		const third = sessions.find(session => session.id === 'search-cache-third');
+		assert.ok(first);
+		assert.ok(second);
+		assert.ok(third);
+
+		await service.search('cache-a', 'conversation-a', [first.catalogId]);
+		await service.search('cache-b', 'conversation-b', [second.catalogId]);
+		await service.search('cache-a-hit', 'conversation-a', [first.catalogId]);
+		await service.search('cache-c', 'conversation-c', [third.catalogId]);
+		const preview = await service.preview(second.catalogId);
+		await service.search('cache-b-reread', 'conversation-b', [second.catalogId]);
+
+		assert.deepStrictEqual({
+			first: transcriptReads.get(firstPath),
+			second: transcriptReads.get(secondPath),
+			third: transcriptReads.get(thirdPath),
+			preview: preview.messages.map(message => message.text),
+		}, {
+			first: 1,
+			second: 3,
+			third: 1,
+			preview: ['Second prompt', 'conversation-b'],
+		});
+	});
+
+	test('retries a transient transcript read failure on the next search', async () => {
+		const transcriptPath = join(claudeProject, 'search-retry.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Retry prompt'),
+			claudeMessage('assistant', 'retry-token appears only in the conversation'),
+		]);
+		let reads = 0;
+		const service = createService(async filePath => {
+			reads++;
+			if (reads === 1) {
+				throw new Error('temporary read failure');
+			}
+			return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+		});
+		const [session] = await listSessions(service);
+
+		const failed = await service.search('retry-client', 'retry-token', [session.catalogId]);
+		const retried = await service.search('retry-client', 'retry-token', [session.catalogId]);
+
+		assert.deepStrictEqual({ failed, retried: retried.map(result => ({ catalogId: result.catalogId, source: result.source })), reads }, {
+			failed: [],
+			retried: [{ catalogId: session.catalogId, source: 'conversation' }],
+			reads: 2,
+		});
+	});
+
+	test('does not publish an old revision search read after the catalog entry is refreshed', async () => {
+		const transcriptPath = join(claudeProject, 'search-revision-race.jsonl');
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Revision prompt'),
+			claudeMessage('assistant', 'old-revision-token'),
+		]);
+		const readStarted = new DeferredPromise<void>();
+		const releaseRead = new DeferredPromise<void>();
+		let blocked = true;
+		let reads = 0;
+		const service = createService(undefined, undefined, async () => {
+			reads++;
+			if (blocked) {
+				readStarted.complete();
+				await releaseRead.p;
+			}
+		});
+		const [oldSession] = await listSessions(service);
+		const oldSearch = service.search('old-revision', 'old-revision-token', [oldSession.catalogId]);
+		await readStarted.p;
+		await writeLines(transcriptPath, [
+			claudeMessage('user', 'Revision prompt'),
+			claudeMessage('assistant', 'new-revision-token'),
+		]);
+		const nextTimestamp = new Date(oldSession.updatedAt + 2_000);
+		await fs.utimes(transcriptPath, nextTimestamp, nextTimestamp);
+		const [newSession] = await listSessions(service);
+		assert.strictEqual(newSession.catalogId, oldSession.catalogId);
+		assert.notStrictEqual(newSession.updatedAt, oldSession.updatedAt);
+
+		releaseRead.complete();
+		await oldSearch;
+		blocked = false;
+		const refreshed = await service.search('new-revision', 'new-revision-token', [newSession.catalogId]);
+
+		assert.deepStrictEqual({
+			refreshed: refreshed.map(result => ({ catalogId: result.catalogId, source: result.source })),
+			reads,
+		}, {
+			refreshed: [{ catalogId: newSession.catalogId, source: 'conversation' }],
+			reads: 2,
 		});
 	});
 
