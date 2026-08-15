@@ -19,6 +19,7 @@ import { isWindows } from '../../../../base/common/platform.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
+import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
 import {
 	IParadisResumeListRequest,
 	IParadisResumeMessage,
@@ -39,12 +40,12 @@ const MAX_CLAUDE_SESSIONS_PER_SPACE = 200;
 const SUMMARY_HEAD_BYTES = 512 * 1024;
 const MAX_SEARCH_TEXT_CHARS = 64 * 1024;
 const MAX_CATALOG_ENTRIES = 2400;
+const DEFAULT_SEARCH_TEXT_CACHE_BYTES = 64 * 1024 * 1024;
 
 interface ICatalogEntry {
 	readonly session: IParadisResumeSession;
 	readonly transcriptPath: string;
 	readonly allowedRoot: string;
-	searchText?: string;
 	searchTextPromise?: Promise<string>;
 	touchedAt: number;
 }
@@ -288,6 +289,7 @@ function pathInside(root: string, candidate: string): boolean {
 
 export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
+	private readonly searchTextCache: ParadisSessionSearchTextCache;
 	private readonly activeListRequests = new Map<string, Promise<readonly IParadisResumeSession[]>>();
 	private readonly searchRevisions = new Map<string, number>();
 	private searchRevision = 0;
@@ -302,6 +304,7 @@ export class ParadisSessionResumeService {
 			readonly readBoundedFile?: typeof readBoundedFile;
 			readonly beforeSummaryRead?: (filePath: string) => Promise<void>;
 			readonly beforeTranscriptRead?: (filePath: string) => Promise<void>;
+			readonly searchCacheMaxBytes?: number;
 		} | undefined,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -309,6 +312,7 @@ export class ParadisSessionResumeService {
 		this.readBoundedFile = dependencies?.readBoundedFile ?? readBoundedFile;
 		this.beforeSummaryRead = dependencies?.beforeSummaryRead;
 		this.beforeTranscriptRead = dependencies?.beforeTranscriptRead;
+		this.searchTextCache = new ParadisSessionSearchTextCache(dependencies?.searchCacheMaxBytes ?? DEFAULT_SEARCH_TEXT_CACHE_BYTES);
 	}
 
 	async list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
@@ -452,9 +456,7 @@ export class ParadisSessionResumeService {
 					try {
 						searchable += `\n${await this.getSearchText(entry)}`;
 						source = 'conversation';
-					} catch {
-						entry.searchText = '';
-					}
+					} catch { /* 一時的なread失敗は次の検索で再試行する */ }
 				}
 				if (terms.every(term => searchable.toLocaleLowerCase().includes(term))) {
 					const snippetSource = source === 'conversation' ? searchable.slice(metadata.length + 1) : metadata;
@@ -476,13 +478,16 @@ export class ParadisSessionResumeService {
 	}
 
 	private getSearchText(entry: ICatalogEntry): Promise<string> {
-		if (entry.searchText !== undefined) {
-			return Promise.resolve(entry.searchText);
+		const catalogId = entry.session.catalogId;
+		const revision = entry.session.updatedAt;
+		const cached = this.searchTextCache.get(catalogId, revision);
+		if (cached !== undefined) {
+			return Promise.resolve(cached);
 		}
 		if (entry.searchTextPromise !== undefined) {
 			return entry.searchTextPromise;
 		}
-		entry.searchTextPromise = (async () => {
+		const searchTextPromise = (async () => {
 			const data = await this.readBoundedFile(entry.transcriptPath, entry.allowedRoot, this.beforeTranscriptRead);
 			const parts: string[] = [];
 			for (const line of data.text.split('\n')) {
@@ -495,10 +500,24 @@ export class ParadisSessionResumeService {
 			const searchable = fullText.length <= MAX_SEARCH_TEXT_CHARS
 				? fullText
 				: `${fullText.slice(0, 16 * 1024)}\n${fullText.slice(-(MAX_SEARCH_TEXT_CHARS - 16 * 1024))}`;
-			entry.searchText = searchable;
-			return entry.searchText;
-		})().finally(() => entry.searchTextPromise = undefined);
-		return entry.searchTextPromise;
+			return searchable;
+		})();
+		entry.searchTextPromise = searchTextPromise;
+		void searchTextPromise.then(searchable => {
+			const current = this.catalog.get(catalogId);
+			if (current?.session.updatedAt === revision) {
+				this.searchTextCache.set(catalogId, revision, searchable);
+			}
+		}, () => undefined).finally(() => {
+			if (entry.searchTextPromise === searchTextPromise) {
+				entry.searchTextPromise = undefined;
+			}
+			const current = this.catalog.get(catalogId);
+			if (current?.session.updatedAt === revision && current.searchTextPromise === searchTextPromise) {
+				current.searchTextPromise = undefined;
+			}
+		});
+		return searchTextPromise;
 	}
 
 	private addSession(session: Omit<IParadisResumeSession, 'catalogId'>, transcriptPath: string, allowedRoot: string, target: IParadisResumeSession[]): void {
@@ -508,8 +527,11 @@ export class ParadisSessionResumeService {
 		const catalogId = `session-${createHash('sha256').update(`${session.agent}\0${normalizePath(transcriptPath)}`).digest('hex').slice(0, 32)}`;
 		const complete: IParadisResumeSession = { ...session, catalogId };
 		const previous = this.catalog.get(catalogId);
-		const searchText = previous?.session.updatedAt === complete.updatedAt ? previous.searchText : undefined;
-		this.catalog.set(catalogId, { session: complete, transcriptPath, allowedRoot, searchText, touchedAt: Date.now() });
+		if (previous?.session.updatedAt !== complete.updatedAt) {
+			this.searchTextCache.delete(catalogId);
+		}
+		const searchTextPromise = previous?.session.updatedAt === complete.updatedAt ? previous.searchTextPromise : undefined;
+		this.catalog.set(catalogId, { session: complete, transcriptPath, allowedRoot, searchTextPromise, touchedAt: Date.now() });
 		target.push(complete);
 	}
 
@@ -523,6 +545,7 @@ export class ParadisSessionResumeService {
 			.slice(0, this.catalog.size - MAX_CATALOG_ENTRIES);
 		for (const [catalogId] of oldest) {
 			this.catalog.delete(catalogId);
+			this.searchTextCache.delete(catalogId);
 		}
 	}
 
