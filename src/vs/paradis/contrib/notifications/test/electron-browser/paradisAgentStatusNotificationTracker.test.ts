@@ -83,7 +83,7 @@ suite('ParadisAgentStatusNotificationTracker', () => {
 		assert.strictEqual(fixture.scheduler.activeCount, 0);
 	});
 
-	test('production consumer subscribes to the shared producer, ignores errors, and stops on dispose', () => {
+	test('keeps review history across an undefined poll error and stops after disposal', () => {
 		const producer = new TestSnapshotService();
 		const fixture = createFixture();
 		const errors: unknown[] = [];
@@ -92,10 +92,26 @@ suite('ParadisAgentStatusNotificationTracker', () => {
 		producer.publish({ sequence: 1, snapshot: snapshot([status('pane-a', 'review')]) });
 		// Promise rejection reasons may legally be undefined; the outcome property is the discriminator.
 		producer.publish({ sequence: 2, error: undefined });
+		producer.publish({ sequence: 3, snapshot: snapshot([status('pane-a', 'review')]) });
 		consumer.dispose();
-		producer.publish({ sequence: 3, snapshot: snapshot([status('pane-b', 'review')]) });
+		producer.publish({ sequence: 4, snapshot: snapshot([status('pane-b', 'review')]) });
 
 		assert.deepStrictEqual(fixture.notifications, [{ token: 'pane-a', status: 'review' }]);
+		assert.strictEqual(errors.length, 1);
+	});
+
+	test('a poll error does not cancel a pending permission confirmation', () => {
+		const producer = new TestSnapshotService();
+		const fixture = createFixture();
+		const errors: unknown[] = [];
+		store.add(new ParadisAgentStatusNotificationConsumer(producer, fixture.tracker, error => errors.push(error)));
+
+		producer.publish({ sequence: 1, snapshot: snapshot([status('pane-a', 'permission')]) });
+		fixture.scheduler.advanceBy(4_999);
+		producer.publish({ sequence: 2, error: undefined });
+		fixture.scheduler.advanceBy(1);
+
+		assert.deepStrictEqual(fixture.notifications, [{ token: 'pane-a', status: 'permission' }]);
 		assert.strictEqual(errors.length, 1);
 	});
 

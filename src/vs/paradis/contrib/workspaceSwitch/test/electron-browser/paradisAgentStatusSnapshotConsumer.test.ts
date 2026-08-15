@@ -141,6 +141,7 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 
 		fixture.producer.publish(success(1, [pane('late', 'working')], ['late']));
 		fixture.scopeSwitch.fire('space-a');
+		fixture.consumer.requestRefresh();
 
 		assert.deepStrictEqual(entries(fixture.statusStore.scopeBreakdowns), []);
 		assert.strictEqual(fixture.producer.refreshRequests, 0);

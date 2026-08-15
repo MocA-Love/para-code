@@ -40,7 +40,7 @@ import { ParadisAgentStatusSnapshotConsumer } from './paradisAgentStatusSnapshot
  *   代表値 (行の左アイコン) はストア側が優先度 permission > question > working > review で導く。
  *   畳み込んだ値だけを持つと「1体終わっても他が動いている限り完了が表示から消える」ため
  */
-class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribution {
+export class ParadisAgentStatusPoller extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisAgentStatusPoller';
 
