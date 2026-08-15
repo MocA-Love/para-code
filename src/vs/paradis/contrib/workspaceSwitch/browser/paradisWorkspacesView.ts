@@ -47,7 +47,7 @@ import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspac
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisSpaceNotesPanel } from './paradisSpaceNotesPanel.js';
-import { ParadisWorkspacesPollingLifecycle } from './paradisWorkspacesPollingLifecycle.js';
+import { ParadisWorkspacesPollingController } from './paradisWorkspacesPollingLifecycle.js';
 import { paradisReorderByDrop, paradisSwapAdjacent } from '../common/paradisWorkspaceTreeState.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisWorktreeCreateJobSnapshot, IParadisWorktreeCreateProgressStore, ParadisPrState } from '../common/paradisWorktreeCreate.js';
 
@@ -739,7 +739,7 @@ export class ParadisWorkspacesView extends ViewPane {
 	private readonly _diffStats = new Map<string, IParadisDiffStat>();
 	/** worktree の uri.fsPath → 現在ブランチに紐づく PR 状態。ポーリングでのみ更新する (refreshPrStatuses 参照) */
 	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
-	private readonly _pollingLifecycle: ParadisWorkspacesPollingLifecycle;
+	private readonly _pollingController: ParadisWorkspacesPollingController;
 	private readonly _collapsedRepositoryState: ParadisCollapsedRepositoryStateController;
 	/** 折りたたみ操作の最中にツリーを組み直さないための遅延実行 (onDidChangeCollapseState 参照) */
 	private readonly _updateTreeScheduler: RunOnceScheduler;
@@ -775,14 +775,15 @@ export class ParadisWorkspacesView extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
-		this._pollingLifecycle = this._register(new ParadisWorkspacesPollingLifecycle(
+		this._pollingController = this._register(new ParadisWorkspacesPollingController(
 			{
+				isBodyVisible: () => this.isBodyVisible(),
 				onDidChangeVisibility: this.onDidChangeBodyVisibility,
 				onDidChangeRepositories: this.workspaceSwitchService.onDidChangeRepositories,
 				onDidChangeWorktrees: this.worktreeService.onDidChangeWorktrees,
 			},
-			() => { void this.refreshDiffStats(); },
-			() => { void this.refreshPrStatuses(); },
+			() => this.refreshDiffStats(),
+			() => this.refreshPrStatuses(),
 		));
 		this._collapsedRepositoryState = this._register(new ParadisCollapsedRepositoryStateController(this.storageService, this.logService));
 		this._updateTreeScheduler = this._register(new RunOnceScheduler(() => this.updateTree(), 0));
@@ -905,7 +906,7 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		this.updateTree();
 		this.updateNotesPanelSpace();
-		this._pollingLifecycle.start(this.isBodyVisible());
+		this._pollingController.start();
 	}
 
 	/** メモ欄の対象を、いま開いているスペースに追従させる。 */
@@ -963,69 +964,51 @@ export class ParadisWorkspacesView extends ViewPane {
 
 	/** diff 統計 (+N/-N) をポーリングで取得する。非表示中の実行・再スケジュールは lifecycle が抑止する。 */
 	private async refreshDiffStats(): Promise<void> {
-		if (!this._pollingLifecycle.beginDiffStatsRefresh()) {
+		const paths = new Set<string>();
+		for (const repository of this.workspaceSwitchService.repositories) {
+			paths.add(repository.uri.fsPath);
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing) {
+					paths.add(worktree.uri.fsPath);
+				}
+			}
+		}
+
+		if (paths.size === 0) {
 			return;
 		}
-		try {
-			const paths = new Set<string>();
-			for (const repository of this.workspaceSwitchService.repositories) {
-				paths.add(repository.uri.fsPath);
-				for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-					if (!worktree.missing) {
-						paths.add(worktree.uri.fsPath);
-					}
-				}
+		const result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, [...paths]);
+		if (result) {
+			this._diffStats.clear();
+			for (const [path, stat] of Object.entries(result)) {
+				this._diffStats.set(path, stat);
 			}
-
-			if (paths.size === 0) {
-				return;
-			}
-			const result = await this.commandService.executeCommand<Record<string, IParadisDiffStat>>(GET_DIFF_STATS_COMMAND_ID, [...paths]);
-			if (result) {
-				this._diffStats.clear();
-				for (const [path, stat] of Object.entries(result)) {
-					this._diffStats.set(path, stat);
-				}
-				this.updateTree();
-			}
-		} catch {
-			// web ビルド等でコマンド未登録の場合は無視 (diff バッジを出さないだけで安全に成立する)
-		} finally {
-			this._pollingLifecycle.completeDiffStatsRefresh();
+			this.updateTree();
 		}
 	}
 
 	/** 各 worktree の現在ブランチに紐づく PR 状態をポーリングで取得する。仕組みは refreshDiffStats と同じ。 */
 	private async refreshPrStatuses(): Promise<void> {
-		if (!this._pollingLifecycle.beginPrStatusRefresh()) {
+		const paths = new Set<string>();
+		for (const repository of this.workspaceSwitchService.repositories) {
+			paths.add(repository.uri.fsPath);
+			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+				if (!worktree.missing) {
+					paths.add(worktree.uri.fsPath);
+				}
+			}
+		}
+
+		if (paths.size === 0) {
 			return;
 		}
-		try {
-			const paths = new Set<string>();
-			for (const repository of this.workspaceSwitchService.repositories) {
-				paths.add(repository.uri.fsPath);
-				for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-					if (!worktree.missing) {
-						paths.add(worktree.uri.fsPath);
-					}
-				}
+		const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, [...paths]);
+		if (result) {
+			this._prStatuses.clear();
+			for (const [path, status] of Object.entries(result)) {
+				this._prStatuses.set(path, status);
 			}
-
-			if (paths.size === 0) {
-				return;
-			}
-			const result = await this.commandService.executeCommand<Record<string, IParadisPrStatus>>(GET_PR_STATUSES_COMMAND_ID, [...paths]);
-			if (result) {
-				this._prStatuses.clear();
-				for (const [path, status] of Object.entries(result)) {
-					this._prStatuses.set(path, status);
-				}
-				this.updateTree();
-			}
-		} catch {
-			// web ビルド等でコマンド未登録の場合は無視 (PR チップを出さないだけで安全に成立する)
-		} finally {
-			this._pollingLifecycle.completePrStatusRefresh();
+			this.updateTree();
 		}
 	}
 

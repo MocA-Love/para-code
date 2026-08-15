@@ -22,6 +22,7 @@ export interface IParadisWorkspacesPollingScheduler extends IDisposable {
 
 /** Workspaces view と、その配下のリポジトリ・worktree が発するポーリング用イベント。 */
 export interface IParadisWorkspacesPollingSignals {
+	readonly isBodyVisible: () => boolean;
 	readonly onDidChangeVisibility: Event<boolean>;
 	readonly onDidChangeRepositories: Event<void>;
 	readonly onDidChangeWorktrees: Event<void>;
@@ -63,7 +64,7 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 			pendingImmediate: false,
 		};
 
-		this._register(signals.onDidChangeVisibility(visible => this.setVisible(visible)));
+		this._register(signals.onDidChangeVisibility(() => this.setVisible(signals.isBodyVisible())));
 		this._register(signals.onDidChangeRepositories(() => this.requestRefresh()));
 		this._register(signals.onDidChangeWorktrees(() => this.requestRefresh()));
 	}
@@ -165,5 +166,59 @@ export class ParadisWorkspacesPollingLifecycle extends Disposable {
 	private cancelPending(state: IParadisWorkspacesPollState): void {
 		state.scheduler.cancel();
 		state.pendingImmediate = false;
+	}
+}
+
+/**
+ * Workspaces view の実イベントと非同期 refresh を lifecycle へ結線する production controller。
+ * 可視性はイベント引数ではなく、その時点の isBodyVisible() から必ず読み直す。
+ */
+export class ParadisWorkspacesPollingController extends Disposable {
+	private readonly lifecycle: ParadisWorkspacesPollingLifecycle;
+
+	constructor(
+		private readonly signals: IParadisWorkspacesPollingSignals,
+		private readonly refreshDiffStats: () => Promise<void>,
+		private readonly refreshPrStatus: () => Promise<void>,
+		schedulerFactory?: SchedulerFactory,
+	) {
+		super();
+		this.lifecycle = this._register(new ParadisWorkspacesPollingLifecycle(
+			signals,
+			() => { void this.runDiffStatsRefresh(); },
+			() => { void this.runPrStatusRefresh(); },
+			schedulerFactory,
+		));
+	}
+
+	/** renderBody 完了時点の実可視状態でポーリングを開始する。 */
+	start(): void {
+		this.lifecycle.start(this.signals.isBodyVisible());
+	}
+
+	private async runDiffStatsRefresh(): Promise<void> {
+		if (!this.lifecycle.beginDiffStatsRefresh()) {
+			return;
+		}
+		try {
+			await this.refreshDiffStats();
+		} catch {
+			// web ビルド等でコマンド未登録の場合は、diff バッジを出さず次回ポーリングへ進む
+		} finally {
+			this.lifecycle.completeDiffStatsRefresh();
+		}
+	}
+
+	private async runPrStatusRefresh(): Promise<void> {
+		if (!this.lifecycle.beginPrStatusRefresh()) {
+			return;
+		}
+		try {
+			await this.refreshPrStatus();
+		} catch {
+			// web ビルド等でコマンド未登録の場合は、PR チップを出さず次回ポーリングへ進む
+		} finally {
+			this.lifecycle.completePrStatusRefresh();
+		}
 	}
 }
