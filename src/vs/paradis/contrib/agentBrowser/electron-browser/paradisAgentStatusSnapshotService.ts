@@ -90,7 +90,12 @@ export class ParadisAgentStatusSnapshotService extends Disposable implements IPa
 		const subscription = this._onDidOutcome.event(deliver);
 		const latest = this._latest;
 		if (latest) {
-			deliver(latest);
+			try {
+				deliver(latest);
+			} catch (error) {
+				subscription.dispose();
+				throw error;
+			}
 		}
 		return subscription;
 	}
@@ -119,7 +124,7 @@ export class ParadisAgentStatusSnapshotService extends Disposable implements IPa
 				this._publish(Object.freeze({
 					sequence: ++this._sequence,
 					snapshot: Object.freeze({
-						paneStatuses: Object.freeze([...snapshot.paneStatuses]),
+						paneStatuses: Object.freeze(snapshot.paneStatuses.map(status => Object.freeze({ ...status }))),
 						agentHookTokens: Object.freeze([...snapshot.agentHookTokens]),
 					}),
 				}));

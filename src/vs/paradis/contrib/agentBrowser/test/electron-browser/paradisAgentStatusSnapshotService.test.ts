@@ -32,9 +32,10 @@ suite('ParadisAgentStatusSnapshotService', () => {
 	test('shares one immutable snapshot and one transport call between consumers', async () => {
 		const scheduler = new TestScheduler();
 		let calls = 0;
+		const source = snapshot('token-a');
 		const service = store.add(createService(scheduler, async () => {
 			calls++;
-			return snapshot('token-a');
+			return source;
 		}));
 		const first: IParadisAgentStatusSnapshotOutcome[] = [];
 		const second: IParadisAgentStatusSnapshotOutcome[] = [];
@@ -51,6 +52,8 @@ suite('ParadisAgentStatusSnapshotService', () => {
 		assert.strictEqual(Object.isFrozen(first[0].snapshot), true);
 		assert.strictEqual(Object.isFrozen(first[0].snapshot?.paneStatuses), true);
 		assert.strictEqual(Object.isFrozen(first[0].snapshot?.agentHookTokens), true);
+		assert.notStrictEqual(first[0].snapshot?.paneStatuses[0], source.paneStatuses[0]);
+		assert.strictEqual(Object.isFrozen(first[0].snapshot?.paneStatuses[0]), true);
 	});
 
 	test('replays the latest outcome once and delivers later outcomes in increasing sequence order', async () => {
@@ -68,6 +71,25 @@ suite('ParadisAgentStatusSnapshotService', () => {
 
 		assert.deepStrictEqual(received.map(outcome => outcome.sequence), [1, 2]);
 		assert.deepStrictEqual(received.map(outcome => outcome.snapshot?.agentHookTokens[0]), ['token-1', 'token-2']);
+	});
+
+	test('disposes a live subscription when replaying the latest outcome throws', async () => {
+		const scheduler = new TestScheduler();
+		let calls = 0;
+		const service = store.add(createService(scheduler, async () => snapshot(`token-${++calls}`)));
+		await scheduler.advanceBy(0);
+		let listenerCalls = 0;
+
+		assert.throws(() => service.subscribe(() => {
+			listenerCalls++;
+			throw new Error('consumer failed during replay');
+		}), /consumer failed during replay/);
+		assert.strictEqual(listenerCalls, 1);
+
+		service.requestRefresh();
+		await scheduler.advanceBy(0);
+
+		assert.strictEqual(listenerCalls, 1);
 	});
 
 	test('keeps at most one transport in flight and coalesces refresh requests into one fresh generation', async () => {
