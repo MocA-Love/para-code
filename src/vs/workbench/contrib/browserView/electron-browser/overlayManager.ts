@@ -32,6 +32,16 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'paradis-binding-dialog-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: same for the fork's bookmark edit/folder dialogs (vs/paradis/contrib/browserBookmarks).
 	{ className: 'paradis-bookmark-dialog-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's custom terminal preset command editor dialog (paradisPresetEditorDialog.ts).
+	{ className: 'paradis-preset-editor-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's workspace switch / worktree creation dialog.
+	{ className: 'paradis-create-worktree-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's notification settings dialog and its nested Aivis dictionary / YouTube
+	// import dialogs.
+	{ className: 'paradis-notif-settings-backdrop', type: BrowserOverlayType.Dialog },
+	{ className: 'paradis-notif-nested-backdrop', type: BrowserOverlayType.Dialog },
+	// PARA-PATCH: the fork's usage limit code registration dialog.
+	{ className: 'paradis-limits-setup-overlay', type: BrowserOverlayType.Dialog },
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),
