@@ -9,7 +9,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { generateMobileIdentity, SecureChannel } from '../../common/paradisMobileCrypto.js';
 import { FrameMux } from '../../common/paradisMobileMux.js';
-import { IParadisMobileRendererManifest } from '../../common/paradisMobileWindowLease.js';
+import { IParadisMobileRendererManifest, IParadisMobileWindowLease } from '../../common/paradisMobileWindowLease.js';
 import { MobileSession, ParadisMobileRelayService } from '../../node/paradisMobileRelayService.js';
 import { ParadisMobileStateDelivery } from '../../node/paradisMobileStateDelivery.js';
 import { ParadisMobileTerminalRegistry } from '../../node/paradisMobileTerminalRegistry.js';
@@ -44,6 +44,65 @@ suite('ParadisMobileRelay State delivery', () => {
 		assert.strictEqual(delivered.length, 3);
 		assert.deepStrictEqual(delivered[0], delivered[1]);
 		assert.deepStrictEqual(delivered[1], delivered[2]);
+	});
+
+	test('online sessionがない全体broadcastはreconcile後にdesktopStateを構築しない', async () => {
+		const manifest: IParadisMobileRendererManifest = { revision: 1, entries: [] };
+		const removedLease: IParadisMobileWindowLease = { windowId: 42, windowSession: 'removed-session', rendererGeneration: 7 };
+		const cleaned: IParadisMobileWindowLease[] = [];
+		let reconciled = 0;
+		let stateBuilt = 0;
+		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
+			desktopStateBroadcastChain: Promise.resolve(),
+			terminalRegistry: {
+				reconcile: (supplied: IParadisMobileRendererManifest) => {
+					assert.strictEqual(supplied, manifest);
+					reconciled++;
+					return [removedLease];
+				},
+				desktopState: () => {
+					stateBuilt++;
+					return {};
+				},
+			},
+			cleanupRemovedRenderer: (lease: IParadisMobileWindowLease) => cleaned.push(lease),
+			sessions: new Map(),
+			logService: new NullLogService(),
+		}) as unknown as { broadcastDesktopState(mobileId?: string, suppliedManifest?: IParadisMobileRendererManifest): Promise<void> };
+
+		await service.broadcastDesktopState(undefined, manifest);
+
+		assert.strictEqual(reconciled, 1);
+		assert.strictEqual(cleaned.length, 1);
+		assert.strictEqual(cleaned[0], removedLease);
+		assert.strictEqual(stateBuilt, 0);
+	});
+
+	test('offline sessionへの宛先指定broadcastはreconcile後にdesktopStateを構築しない', async () => {
+		const manifest: IParadisMobileRendererManifest = { revision: 1, entries: [] };
+		let reconciled = 0;
+		let stateBuilt = 0;
+		const service = Object.assign(Object.create(ParadisMobileRelayService.prototype) as object, {
+			desktopStateBroadcastChain: Promise.resolve(),
+			terminalRegistry: {
+				reconcile: (supplied: IParadisMobileRendererManifest) => {
+					assert.strictEqual(supplied, manifest);
+					reconciled++;
+					return [];
+				},
+				desktopState: () => {
+					stateBuilt++;
+					return {};
+				},
+			},
+			sessions: new Map([['offline', { isOnline: false }]]),
+			logService: new NullLogService(),
+		}) as unknown as { broadcastDesktopState(mobileId?: string, suppliedManifest?: IParadisMobileRendererManifest): Promise<void> };
+
+		await service.broadcastDesktopState('offline', manifest);
+
+		assert.strictEqual(reconciled, 1);
+		assert.strictEqual(stateBuilt, 0);
 	});
 
 	test('同じWindow State同期は自発送信せず内容変更だけを送る', async () => {
