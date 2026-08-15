@@ -7,7 +7,6 @@
 
 import { Emitter, Event } from '../../base/common/event.js';
 import { IDisposable } from '../../base/common/lifecycle.js';
-import { hasKey } from '../../base/common/types.js';
 
 export const PARADIS_WARM_LEASE_DURATION_MS = 900_000;
 export const PARADIS_WARM_LEASE_RENEW_INTERVAL_MS = 300_000;
@@ -17,7 +16,15 @@ export interface IParadisWarmLeaseScheduler extends IDisposable {
 	cancel(): void;
 }
 
-export interface IParadisWarmLeaseTargetSnapshot<TTarget> {
+export type ParadisWarmLeaseTargetValue = undefined
+	| null
+	| boolean
+	| number
+	| string
+	| readonly ParadisWarmLeaseTargetValue[]
+	| { readonly [key: string]: ParadisWarmLeaseTargetValue };
+
+export interface IParadisWarmLeaseTargetSnapshot<TTarget extends ParadisWarmLeaseTargetValue> {
 	readonly key: string;
 	readonly target: TTarget;
 	readonly generation: number;
@@ -31,7 +38,7 @@ export interface IParadisWarmLeaseLimits {
 	readonly maxTotalCost: number;
 }
 
-interface IParadisWarmLeaseOwner<TTarget> {
+interface IParadisWarmLeaseOwner<TTarget extends ParadisWarmLeaseTargetValue> {
 	readonly expiresAt: number;
 	readonly renewSequence: number;
 	readonly targets: ReadonlyMap<string, TTarget>;
@@ -42,21 +49,21 @@ type SchedulerFactory = (runner: () => void) => IParadisWarmLeaseScheduler;
 
 const cloneRejected = Symbol('cloneRejected');
 
-function cloneAndFreezeJsonLike<TTarget>(target: TTarget): TTarget | typeof cloneRejected {
+function cloneAndFreezeTarget<TTarget extends ParadisWarmLeaseTargetValue>(target: TTarget): TTarget | typeof cloneRejected {
 	try {
-		const clone = cloneJsonLike(target, new Set<object>());
+		const clone = cloneTargetValue(target, new Set<object>());
 		return clone === cloneRejected ? cloneRejected : clone as TTarget;
 	} catch {
 		return cloneRejected;
 	}
 }
 
-function cloneJsonLike(value: unknown, ancestors: Set<object>): unknown | typeof cloneRejected {
-	if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+function cloneTargetValue(value: unknown, ancestors: Set<object>): unknown | typeof cloneRejected {
+	if (value === undefined || value === null || typeof value === 'string' || typeof value === 'boolean') {
 		return value;
 	}
 	if (typeof value === 'number') {
-		return Number.isFinite(value) ? value : cloneRejected;
+		return value;
 	}
 	if (typeof value !== 'object') {
 		return cloneRejected;
@@ -67,13 +74,13 @@ function cloneJsonLike(value: unknown, ancestors: Set<object>): unknown | typeof
 
 	ancestors.add(value);
 	const clone = Array.isArray(value)
-		? cloneJsonArray(value, ancestors)
-		: cloneJsonObject(value, ancestors);
+		? cloneTargetArray(value, ancestors)
+		: cloneTargetObject(value, ancestors);
 	ancestors.delete(value);
 	return clone === cloneRejected ? cloneRejected : Object.freeze(clone);
 }
 
-function cloneJsonArray(value: readonly unknown[], ancestors: Set<object>): unknown | typeof cloneRejected {
+function cloneTargetArray(value: readonly unknown[], ancestors: Set<object>): unknown | typeof cloneRejected {
 	for (const key of Reflect.ownKeys(value)) {
 		if (typeof key !== 'string') {
 			return cloneRejected;
@@ -86,7 +93,7 @@ function cloneJsonArray(value: readonly unknown[], ancestors: Set<object>): unkn
 			return cloneRejected;
 		}
 		const descriptor = Object.getOwnPropertyDescriptor(value, key);
-		if (!descriptor || !descriptor.enumerable || !hasKey(descriptor, { value: true })) {
+		if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
 			return cloneRejected;
 		}
 	}
@@ -94,10 +101,10 @@ function cloneJsonArray(value: readonly unknown[], ancestors: Set<object>): unkn
 	const clone: unknown[] = [];
 	for (let index = 0; index < value.length; index++) {
 		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
-		if (!descriptor || !descriptor.enumerable || !hasKey(descriptor, { value: true })) {
+		if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
 			return cloneRejected;
 		}
-		const item = cloneJsonLike(descriptor.value, ancestors);
+		const item = cloneTargetValue(descriptor.value, ancestors);
 		if (item === cloneRejected) {
 			return cloneRejected;
 		}
@@ -106,7 +113,7 @@ function cloneJsonArray(value: readonly unknown[], ancestors: Set<object>): unkn
 	return clone;
 }
 
-function cloneJsonObject(value: object, ancestors: Set<object>): unknown | typeof cloneRejected {
+function cloneTargetObject(value: object, ancestors: Set<object>): unknown | typeof cloneRejected {
 	const prototype = Object.getPrototypeOf(value);
 	if (prototype !== Object.prototype && prototype !== null) {
 		return cloneRejected;
@@ -118,10 +125,10 @@ function cloneJsonObject(value: object, ancestors: Set<object>): unknown | typeo
 			return cloneRejected;
 		}
 		const descriptor = Object.getOwnPropertyDescriptor(value, key);
-		if (!descriptor || !descriptor.enumerable || !hasKey(descriptor, { value: true })) {
+		if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
 			return cloneRejected;
 		}
-		const property = cloneJsonLike(descriptor.value, ancestors);
+		const property = cloneTargetValue(descriptor.value, ancestors);
 		if (property === cloneRejected) {
 			return cloneRejected;
 		}
@@ -133,7 +140,7 @@ function cloneJsonObject(value: object, ancestors: Set<object>): unknown | typeo
 /**
  * 複数の owner が保持する warm 対象を合成し、最新の renewal を有効値として公開する。
  */
-export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
+export class ParadisWarmLeaseTracker<TTarget extends ParadisWarmLeaseTargetValue> implements IDisposable {
 	private readonly owners = new Map<string, IParadisWarmLeaseOwner<TTarget>>();
 	private readonly ownersByTarget = new Map<string, Map<string, TTarget>>();
 	private readonly snapshots = new Map<string, IParadisWarmLeaseTargetSnapshot<TTarget>>();
@@ -180,7 +187,7 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 
 		const ownerTargets = new Map<string, TTarget>();
 		for (const target of targets) {
-			const clonedTarget = cloneAndFreezeJsonLike(target);
+			const clonedTarget = cloneAndFreezeTarget(target);
 			if (clonedTarget === cloneRejected) {
 				return;
 			}

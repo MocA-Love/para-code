@@ -7,28 +7,50 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { IParadisWarmLeaseLimits, IParadisWarmLeaseScheduler, ParadisWarmLeaseController, ParadisWarmLeaseTracker, PARADIS_WARM_LEASE_DURATION_MS, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS } from '../../common/paradisWarmLease.js';
+import { IParadisWarmLeaseLimits, IParadisWarmLeaseScheduler, ParadisWarmLeaseController, ParadisWarmLeaseTracker, PARADIS_WARM_LEASE_DURATION_MS, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS, type ParadisWarmLeaseTargetValue } from '../../common/paradisWarmLease.js';
 
-interface Target {
-	key: string;
-	value: string;
-	cost: number;
-}
+type Target = {
+	readonly key: string;
+	readonly value: string;
+	readonly cost: number;
+};
 
-interface NestedTarget {
-	key: string;
-	value: {
-		label: string;
-		details: {
-			state: string;
+type NestedTarget = {
+	readonly key: string;
+	readonly value: {
+		readonly label: string;
+		readonly details: {
+			readonly state: string;
 		};
 	};
-	tags: string[];
-	cost: number;
+	readonly tags: readonly string[];
+	readonly optional?: string;
+	readonly cost: number;
+};
+
+type NumericTarget = {
+	readonly key: string;
+	readonly values: readonly number[];
+	readonly cost: number;
+};
+
+class CustomPrototypeTarget {
+	readonly key = 'custom';
+	readonly value = { label: 'custom', details: { state: 'custom' } };
+	readonly tags: readonly string[] = [];
+	readonly cost = 1;
 }
 
 suite('ParadisWarmLeaseTracker', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('exports the recursive target contract and excludes custom prototype tracker types', () => {
+		const supportedTarget: ParadisWarmLeaseTargetValue = nestedTarget('supported', 'label', 'state', ['tag'], 1);
+		// @ts-expect-error Custom prototype targets are outside the static tracker contract.
+		const unsupportedTracker: ParadisWarmLeaseTracker<CustomPrototypeTarget> | undefined = undefined;
+
+		assert.deepStrictEqual([supportedTarget, unsupportedTracker], [nestedTarget('supported', 'label', 'state', ['tag'], 1), undefined]);
+	});
 
 	test('renews one owner without adding membership and extends its expiry by 900,000ms', () => {
 		const clock = new TestClock();
@@ -209,7 +231,7 @@ suite('ParadisWarmLeaseTracker', () => {
 		const publicClock = new TestClock();
 		const publicScheduler = new TestScheduler();
 		const observedKeys: string[] = [];
-		const publicTracker = store.add(new ParadisWarmLeaseTracker(
+		const publicTracker = store.add(new ParadisWarmLeaseTracker<Target>(
 			target => {
 				observedKeys.push(target.key);
 				return target.key;
@@ -247,7 +269,7 @@ suite('ParadisWarmLeaseTracker', () => {
 	test('uses the six-argument constructor to own target aliases', () => {
 		const clock = new TestClock();
 		const scheduler = new TestScheduler();
-		const tracker = store.add(new ParadisWarmLeaseTracker(
+		const tracker = store.add(new ParadisWarmLeaseTracker<Target>(
 			target => target.key,
 			(left, right) => left.value === right.value,
 			target => target.cost,
@@ -267,10 +289,8 @@ suite('ParadisWarmLeaseTracker', () => {
 
 		tracker.setLease('owner-a', [source]);
 		const first = tracker.activeTargets()[0];
-		source.key = 'source-mutated';
-		source.value = 'source-mutated';
-		source.cost = 0;
-		mutateTarget(first.target, 'returned-mutated', 0);
+		mutateTarget(source, 'source-mutated', 'source-mutated', 0);
+		mutateTarget(first.target, 'returned-mutated', 'returned-mutated', 0);
 		tracker.setLease('owner-b', [target('b', 'over-cap', 1)]);
 		const retained = tracker.activeTargets()[0];
 
@@ -283,7 +303,7 @@ suite('ParadisWarmLeaseTracker', () => {
 		], [[['a', 'kept']], 'a', 1, first.generation, 1]);
 	});
 
-	test('owns nested plain targets with only the five documented limit fields', () => {
+	test('owns optional undefined and nested readonly target aliases with only the five documented limit fields', () => {
 		const clock = new TestClock();
 		const scheduler = new TestScheduler();
 		const tracker = store.add(new ParadisWarmLeaseTracker<NestedTarget>(
@@ -306,6 +326,7 @@ suite('ParadisWarmLeaseTracker', () => {
 
 		tracker.setLease('owner-a', [source]);
 		const first = tracker.activeTargets()[0];
+		assert.ok(first, 'a target with an optional undefined property must be admitted');
 		mutateNestedTarget(source, 'source', 'source', 'source-tag', 0);
 		mutateNestedTarget(first.target, 'returned', 'returned', 'returned-tag', 0);
 		tracker.setLease('owner-b', [nestedTarget('b', 'blocked', 'blocked', ['two'], 1)]);
@@ -316,10 +337,38 @@ suite('ParadisWarmLeaseTracker', () => {
 			retained.target.value.label,
 			retained.target.value.details.state,
 			retained.target.tags,
+			Object.prototype.hasOwnProperty.call(retained.target, 'optional'),
+			retained.target.optional,
 			retained.target.cost,
 			retained.generation,
 			changes,
-		], ['a', 'kept', 'kept', ['one'], 1, first.generation, 1]);
+		], ['a', 'kept', 'kept', ['one'], true, undefined, 1, first.generation, 1]);
+	});
+
+	test('admits NaN and infinities in target data while its accounted cost remains finite', () => {
+		const clock = new TestClock();
+		const scheduler = new TestScheduler();
+		const tracker = store.add(new ParadisWarmLeaseTracker<NumericTarget>(
+			target => target.key,
+			(left, right) => left.values.every((value, index) => Object.is(value, right.values[index])),
+			target => target.cost,
+			() => clock.now,
+			runner => { scheduler.setRunner(runner); return scheduler; },
+			{
+				maxOwners: 1,
+				maxTargetsPerOwner: 1,
+				maxDistinctTargets: 1,
+				maxTotalMemberships: 1,
+				maxTotalCost: 1,
+			},
+		));
+		const source = { key: 'numbers', values: [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY], cost: 1 } as const;
+
+		tracker.setLease('owner-a', [source]);
+		const snapshot = tracker.activeTargets()[0];
+
+		assert.ok(snapshot, 'all number values in target data must be admitted');
+		assert.deepStrictEqual([snapshot.target.values, snapshot.target.cost], [[Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY], 1]);
 	});
 
 	test('rejects cyclic targets without changing state', () => {
@@ -342,6 +391,17 @@ suite('ParadisWarmLeaseTracker', () => {
 		const withCallback = { ...nestedTarget('a', 'callback', 'callback', [], 1), callback: () => { } };
 
 		assert.doesNotThrow(() => tracker.setLease('owner-a', [withCallback]));
+		assert.deepStrictEqual([tracker.activeTargets(), changes, scheduler.activeTimerCount], [[], 0, 0]);
+	});
+
+	test('defensively rejects a custom prototype target cast across the static contract', () => {
+		const scheduler = new TestScheduler();
+		const tracker = store.add(createNestedTracker(new TestClock(), scheduler));
+		let changes = 0;
+		store.add(tracker.onDidChange(() => changes++));
+		const unsupportedTarget = new CustomPrototypeTarget() as NestedTarget;
+
+		assert.doesNotThrow(() => tracker.setLease('owner-a', [unsupportedTarget]));
 		assert.deepStrictEqual([tracker.activeTargets(), changes, scheduler.activeTimerCount], [[], 0, 0]);
 	});
 });
@@ -524,7 +584,7 @@ suite('ParadisWarmLeaseController', () => {
 
 	test('waits for a slow acquire before sending its trailing release on disable and dispose', async () => {
 		const scheduler = new TestScheduler();
-		const acquireGate = new Deferred<void>();
+		const acquireGate = new Deferred();
 		const operations: string[] = [];
 		const backendOwners = new Set<string>();
 		const controller = store.add(new ParadisWarmLeaseController(
@@ -548,7 +608,7 @@ suite('ParadisWarmLeaseController', () => {
 
 	test('serializes false to true changes during a slow acquire as release old then acquire new', async () => {
 		const scheduler = new TestScheduler();
-		const acquireGate = new Deferred<void>();
+		const acquireGate = new Deferred();
 		const operations: string[] = [];
 		const backendOwners = new Set<string>();
 		const controller = store.add(new ParadisWarmLeaseController(
@@ -580,7 +640,7 @@ suite('ParadisWarmLeaseController', () => {
 
 	test('coalesces repeated desired-state changes while a renew is in flight', async () => {
 		const scheduler = new TestScheduler();
-		const renewGate = new Deferred<void>();
+		const renewGate = new Deferred();
 		const operations: string[] = [];
 		const backendOwners = new Set<string>();
 		const controller = store.add(new ParadisWarmLeaseController(
@@ -650,7 +710,7 @@ function target(key: string, value: string, cost = 1): Target {
 }
 
 function nestedTarget(key: string, label: string, state: string, tags: string[], cost: number): NestedTarget {
-	return { key, value: { label, details: { state } }, tags, cost };
+	return { key, value: { label, details: { state } }, tags, optional: undefined, cost };
 }
 
 function active(tracker: ParadisWarmLeaseTracker<Target>): Array<[string, string]> {
@@ -672,36 +732,17 @@ function waitForMacrotask(): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, 0));
 }
 
-function mutateTarget(target: Target, value: string, cost: number): void {
-	try {
-		target.value = value;
-		target.cost = cost;
-	} catch {
-		// The tracker freezes returned clones; the observable assertions are above.
-	}
+function mutateTarget(target: Target, key: string, value: string, cost: number): void {
+	Reflect.set(target, 'key', key);
+	Reflect.set(target, 'value', value);
+	Reflect.set(target, 'cost', cost);
 }
 
 function mutateNestedTarget(target: NestedTarget, label: string, state: string, tag: string, cost: number): void {
-	try {
-		target.value.label = label;
-	} catch {
-		// The tracker freezes nested returned clones.
-	}
-	try {
-		target.value.details.state = state;
-	} catch {
-		// The tracker freezes nested returned clones.
-	}
-	try {
-		target.tags.push(tag);
-	} catch {
-		// The tracker freezes nested returned clones.
-	}
-	try {
-		target.cost = cost;
-	} catch {
-		// The tracker freezes nested returned clones.
-	}
+	Reflect.set(target.value, 'label', label);
+	Reflect.set(target.value.details, 'state', state);
+	Reflect.set(target.tags, String(target.tags.length), tag);
+	Reflect.set(target, 'cost', cost);
 }
 
 class TestClock {
@@ -760,15 +801,15 @@ class TestScheduler implements IParadisWarmLeaseScheduler {
 	}
 }
 
-class Deferred<T> {
-	readonly promise: Promise<T>;
-	private resolvePromise!: (value: T | PromiseLike<T>) => void;
+class Deferred {
+	readonly promise: Promise<void>;
+	private resolvePromise!: () => void;
 
 	constructor() {
-		this.promise = new Promise<T>(resolve => this.resolvePromise = resolve);
+		this.promise = new Promise<void>(resolve => this.resolvePromise = resolve);
 	}
 
-	resolve(value: T extends void ? undefined : T = undefined as T extends void ? undefined : T): void {
-		this.resolvePromise(value);
+	resolve(): void {
+		this.resolvePromise();
 	}
 }
