@@ -79,7 +79,36 @@ type WarmLeaseTarget = Readonly<{
 	readonly path: string;
 	readonly worktrees: readonly WarmLeaseWorktree[];
 }>;
-type WarmLeaseSnapshot = readonly WarmLeaseTarget[];
+type WarmLeaseSnapshot = Readonly<{
+	readonly ownerId: string;
+	readonly targets: readonly WarmLeaseTarget[];
+}>;
+
+class IntervalWarmScheduler implements IParadisWarmLeaseScheduler {
+	private timer: ReturnType<typeof setInterval> | undefined;
+
+	constructor(private readonly runner: () => void) { }
+
+	schedule(delay: number): void {
+		if (this.timer !== undefined) {
+			return;
+		}
+		const timer = setInterval(this.runner, delay);
+		(timer as { unref?: () => void }).unref?.();
+		this.timer = timer;
+	}
+
+	cancel(): void {
+		if (this.timer !== undefined) {
+			clearInterval(this.timer);
+			this.timer = undefined;
+		}
+	}
+
+	dispose(): void {
+		this.cancel();
+	}
+}
 
 interface IWarmLeaseOwner {
 	readonly expiresAt: number;
@@ -105,31 +134,33 @@ interface ICacheEntry {
  * 計測対象の顔ぶれを表す文字列。リポジトリの追加・削除、worktree の増減で変わる。
  *
  * これが無いと「リポジトリを足したのに一覧に出ない」「消したのに残る」が最大でTTLぶん続く。
- * 順序は呼ぶ側の都合で変わりうるので、並べ替えてから繋ぐ。
+ * 順序は呼ぶ側の都合で変わりうるので、構造を正規化してから JSON 化する。
+ * 区切り文字による連結では、値自身に同じ文字が含まれたときに異なる構造が衝突する。
  */
 function signatureOf(targets: readonly IParadisSpaceDiskTarget[]): string {
-	return targets
-		.map(target => [
-			target.stateKey,
-			// 表示名も署名に含める。含めないと、リポジトリや worktree をリネームしても
-			// キャッシュがそのまま使われ、一覧に古い名前が最大でTTLぶん残る。
-			target.name,
-			target.path,
-			...target.worktrees.map(w => [w.stateKey, w.name, w.path].join('\t')).sort(),
-		].join('|'))
-		.sort()
-		.join('\n');
+	const normalizedTargets = targets.map(target => ({
+		stateKey: target.stateKey,
+		// 表示名も署名に含める。含めないと、リポジトリや worktree をリネームしても
+		// キャッシュがそのまま使われ、一覧に古い名前が最大でTTLぶん残る。
+		name: target.name,
+		path: target.path,
+		worktrees: target.worktrees
+			.map(worktree => [worktree.stateKey, worktree.name, worktree.path] as const)
+			.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
+	}));
+	normalizedTargets.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+	return JSON.stringify(normalizedTargets);
 }
 
-function snapshotCost(targets: readonly IParadisSpaceDiskTarget[]): number {
-	return Buffer.byteLength(JSON.stringify(targets), 'utf8');
+function payloadCost(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget[]): number {
+	return Buffer.byteLength(JSON.stringify({ ownerId, active, targets }), 'utf8');
 }
 
-function warmLeaseMetrics(targets: readonly IParadisSpaceDiskTarget[]): IWarmLeaseMetrics {
+function warmLeaseMetrics(ownerId: string, targets: readonly IParadisSpaceDiskTarget[]): IWarmLeaseMetrics {
 	return {
 		targetCount: targets.length,
 		worktreeCount: targets.reduce((total, target) => total + target.worktrees.length, 0),
-		cost: snapshotCost(targets),
+		cost: payloadCost(ownerId, true, targets),
 	};
 }
 
@@ -143,9 +174,10 @@ export class ParadisSpaceDiskService implements IDisposable {
 	private readonly warmLeaseTracker: ParadisWarmLeaseTracker<WarmLeaseSnapshot>;
 	private readonly warmLeaseOwners = new Map<string, IWarmLeaseOwner>();
 	private readonly warmLeaseListener: IDisposable;
+	private readonly warmPeriodicScheduler: IParadisWarmLeaseScheduler;
 	private failures = 0;
 	private failureGeneration: number | undefined;
-	private warmTimer: ReturnType<typeof setInterval> | undefined;
+	private warmScheduled = false;
 	private disposed = false;
 	/** 走行中の計測へ渡す中断フラグ。dispose で立てて、フォルダを歩き切る前に止める。 */
 	private readonly cancellation = { isCancellationRequested: false };
@@ -155,11 +187,12 @@ export class ParadisSpaceDiskService implements IDisposable {
 		private readonly now: () => number = Date.now,
 		warmLeaseSchedulerFactory: WarmLeaseSchedulerFactory = runner => new RunOnceScheduler(runner, 0),
 		private readonly directoryMeasure: DirectoryMeasure = measureDirectorySize,
+		warmPeriodicSchedulerFactory: WarmLeaseSchedulerFactory = runner => new IntervalWarmScheduler(runner),
 	) {
 		this.warmLeaseTracker = new ParadisWarmLeaseTracker(
 			() => WARM_TARGET_KEY,
-			(left, right) => signatureOf(left) === signatureOf(right),
-			targets => snapshotCost(targets),
+			(left, right) => signatureOf(left.targets) === signatureOf(right.targets),
+			snapshot => payloadCost(snapshot.ownerId, true, snapshot.targets),
 			this.now,
 			warmLeaseSchedulerFactory,
 			{
@@ -170,6 +203,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 				maxTotalCost: WARM_LEASE_MAX_TOTAL_SNAPSHOT_BYTES,
 			},
 		);
+		this.warmPeriodicScheduler = warmPeriodicSchedulerFactory(() => { void this.runWarmPass(); });
 		this.warmLeaseListener = this.warmLeaseTracker.onDidChange(() => this.syncWarmTimer());
 	}
 
@@ -186,11 +220,11 @@ export class ParadisSpaceDiskService implements IDisposable {
 			return;
 		}
 
-		const metrics = warmLeaseMetrics(targets);
+		const metrics = warmLeaseMetrics(ownerId, targets);
 		if (!this.isWithinWarmLeaseLimits(ownerId, metrics)) {
 			throw new Error('Warm lease limit exceeded');
 		}
-		this.warmLeaseTracker.setLease(ownerId, [targets]);
+		this.warmLeaseTracker.setLease(ownerId, [{ ownerId, targets }]);
 		this.warmLeaseOwners.set(ownerId, {
 			expiresAt: this.now() + PARADIS_WARM_LEASE_DURATION_MS,
 			...metrics,
@@ -340,7 +374,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 			this.syncWarmTimer();
 			return;
 		}
-		const { generation, key, target: targets } = snapshot;
+		const { generation, key, target: { targets } } = snapshot;
 		if (this.failureGeneration !== generation) {
 			this.failureGeneration = generation;
 			this.failures = 0;
@@ -387,18 +421,16 @@ export class ParadisSpaceDiskService implements IDisposable {
 			this.stopWarmLoop();
 			return;
 		}
-		if (this.warmTimer === undefined) {
-			const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
-			// この定期処理だけのために shared process の終了を引き止めない。
-			(timer as { unref?: () => void }).unref?.();
-			this.warmTimer = timer;
+		if (!this.warmScheduled) {
+			this.warmPeriodicScheduler.schedule(WARM_INTERVAL_MS);
+			this.warmScheduled = true;
 		}
 	}
 
 	private stopWarmLoop(): void {
-		if (this.warmTimer !== undefined) {
-			clearInterval(this.warmTimer);
-			this.warmTimer = undefined;
+		if (this.warmScheduled) {
+			this.warmPeriodicScheduler.cancel();
+			this.warmScheduled = false;
 		}
 	}
 
@@ -438,6 +470,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		this.disposed = true;
 		this.cancellation.isCancellationRequested = true;
 		this.stopWarmLoop();
+		this.warmPeriodicScheduler.dispose();
 		this.warmLeaseListener.dispose();
 		this.warmLeaseTracker.dispose();
 		this.warmLeaseOwners.clear();
@@ -499,7 +532,7 @@ function parseWarmLeasePayload(arg: unknown): ParadisSpaceDiskWarmLeasePayload {
 		}
 		targets.push(target);
 	}
-	if (snapshotCost(targets) > WARM_LEASE_MAX_SNAPSHOT_BYTES) {
+	if (payloadCost(payload.ownerId, payload.active, targets) > WARM_LEASE_MAX_SNAPSHOT_BYTES) {
 		throw new Error('Warm lease snapshot too large');
 	}
 	return { ownerId: payload.ownerId, active: payload.active, targets };

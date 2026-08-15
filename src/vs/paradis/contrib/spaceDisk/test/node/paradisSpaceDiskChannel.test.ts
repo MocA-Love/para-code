@@ -64,6 +64,7 @@ function target(id: string, worktreeCount = 0): IParadisSpaceDiskTarget {
 function createService(
 	behaviour: (invocation: number, root: string, options: IDirectorySizeOptions) => IDirectorySizeResult | Promise<IDirectorySizeResult> = invocation => ({ bytes: invocation, files: 1, truncated: false }),
 	warmLeaseSchedulerFactory?: (runner: () => void) => IParadisWarmLeaseScheduler,
+	warmPeriodicSchedulerFactory?: (runner: () => void) => IParadisWarmLeaseScheduler,
 ) {
 	const clock = sinon.useFakeTimers({ now: INITIAL_TIME });
 	const invocations: IDirectoryMeasureInvocation[] = [];
@@ -77,6 +78,7 @@ function createService(
 		() => clock.now,
 		warmLeaseSchedulerFactory,
 		measureDirectory,
+		warmPeriodicSchedulerFactory,
 	);
 	return { channel: new ParadisSpaceDiskChannel(service), clock, invocations, service };
 }
@@ -111,6 +113,32 @@ function targetsWithWorktrees(targetCount: number, worktreesPerTarget: number, s
 			path: `/worktrees/${targetIndex}-${worktreeIndex}/${fill}`,
 		})),
 	}));
+}
+
+function targetsAtSerializedSize(desiredBytes: number): IParadisSpaceDiskTarget[] {
+	const targets = targetsWithWorktrees(1, 200, 3000).map(value => ({
+		...value,
+		worktrees: value.worktrees.map(worktree => ({ ...worktree })),
+	}));
+	let remaining = desiredBytes - Buffer.byteLength(JSON.stringify(targets), 'utf8');
+	for (const worktree of targets[0]!.worktrees) {
+		for (const key of ['stateKey', 'name', 'path'] as const) {
+			const addition = Math.min(remaining, 4096 - worktree[key].length);
+			worktree[key] += 'y'.repeat(addition);
+			remaining -= addition;
+			if (remaining === 0) {
+				return targets;
+			}
+		}
+	}
+	throw new Error(`could not construct ${desiredBytes}-byte target fixture`);
+}
+
+function payloadJustBelowFullCap(ownerId: string) {
+	const baseTargets = targetsWithWorktrees(1, 200, 3000);
+	const wrapperBytes = Buffer.byteLength(JSON.stringify({ ownerId, active: true, targets: baseTargets }), 'utf8')
+		- Buffer.byteLength(JSON.stringify(baseTargets), 'utf8');
+	return { ownerId, active: true as const, targets: targetsAtSerializedSize(MAX_SNAPSHOT_BYTES - wrapperBytes - 1) };
 }
 
 suite('ParadisSpaceDiskService', () => {
@@ -274,6 +302,60 @@ suite('ParadisSpaceDiskService', () => {
 		service.dispose();
 	});
 
+	test('treats delimiter-bearing target fields as distinct latest-renewed snapshots', async () => {
+		const { channel, clock, invocations, service } = createService();
+		const ownerA = {
+			ownerId: 'owner-a',
+			active: true as const,
+			targets: [{ stateKey: 'a', name: 'b', path: '/c|/d', worktrees: [] }],
+		};
+		const ownerB = {
+			ownerId: 'owner-b',
+			active: true as const,
+			targets: [{ stateKey: 'a', name: 'b|/c', path: '/d', worktrees: [] }],
+		};
+
+		await channel.call('', 'setWarmLease', [ownerA]);
+		await channel.call('', 'setWarmLease', [ownerB]);
+		await renewUntilNextWarmPass(clock, channel, [ownerA, ownerB]);
+
+		assert.deepStrictEqual(invocations.map(invocation => invocation.root), ['/d']);
+		service.dispose();
+	});
+
+	test('drives the one-hour warm cadence through the injected periodic scheduler', async () => {
+		let runner: (() => void) | undefined;
+		const scheduled: number[] = [];
+		const periodicScheduler: IParadisWarmLeaseScheduler = {
+			schedule: delay => scheduled.push(delay),
+			cancel: sinon.spy(),
+			dispose: sinon.spy(),
+		};
+		const { channel, invocations, service } = createService(undefined, undefined, callback => {
+			runner = callback;
+			return periodicScheduler;
+		});
+		const payload = { ownerId: 'periodic-owner', active: true as const, targets: [target('periodic')] };
+
+		await channel.call('', 'setWarmLease', [payload]);
+		await channel.call('', 'setWarmLease', [payload]);
+		runner!();
+		await flushMicrotasks();
+		await channel.call('', 'setWarmLease', [{ ownerId: payload.ownerId, active: false, targets: [] }]);
+
+		assert.deepStrictEqual({
+			scheduled,
+			roots: invocations.map(invocation => invocation.root),
+			cancelCalls: (periodicScheduler.cancel as sinon.SinonSpy).callCount,
+		}, {
+			scheduled: [WARM_INTERVAL_MS],
+			roots: ['/repositories/periodic'],
+			cancelCalls: 1,
+		});
+		service.dispose();
+		assert.strictEqual((periodicScheduler.dispose as sinon.SinonSpy).callCount, 1);
+	});
+
 	test('does not publish a released warm generation after the same owner reacquires', async () => {
 		const pendingWarm = deferred<IDirectorySizeResult>();
 		const { channel, clock, invocations, service } = createService(invocation => invocation === 1
@@ -292,6 +374,31 @@ suite('ParadisSpaceDiskService', () => {
 
 		await channel.call('', 'setWarmLease', [{ ownerId: payload.ownerId, active: false, targets: [] }]);
 		await channel.call('', 'setWarmLease', [payload]);
+		pendingWarm.resolve({ bytes: 100, files: 1, truncated: false });
+		await flushMicrotasks();
+		const foreground = await service.measure(payload.targets);
+
+		assert.deepStrictEqual({ calls: invocations.length, bytes: foreground.spaces[0]?.ownBytes }, { calls: 2, bytes: 200 });
+		service.dispose();
+	});
+
+	test('does not publish an in-flight warm result after the final owner releases', async () => {
+		const pendingWarm = deferred<IDirectorySizeResult>();
+		const { channel, clock, invocations, service } = createService(invocation => invocation === 1
+			? pendingWarm.promise
+			: { bytes: 200, files: 1, truncated: false });
+		const payload = { ownerId: 'desktop-owner', active: true as const, targets: [target('release-only')] };
+
+		await channel.call('', 'setWarmLease', [payload]);
+		for (let elapsed = WARM_LEASE_RENEW_INTERVAL_MS; elapsed < WARM_INTERVAL_MS; elapsed += WARM_LEASE_RENEW_INTERVAL_MS) {
+			clock.tick(WARM_LEASE_RENEW_INTERVAL_MS);
+			await channel.call('', 'setWarmLease', [payload]);
+		}
+		clock.tick(WARM_LEASE_RENEW_INTERVAL_MS);
+		await flushMicrotasks();
+		assert.strictEqual(invocations.length, 1);
+
+		await channel.call('', 'setWarmLease', [{ ownerId: payload.ownerId, active: false, targets: [] }]);
 		pendingWarm.resolve({ bytes: 100, files: 1, truncated: false });
 		await flushMicrotasks();
 		const foreground = await service.measure(payload.targets);
@@ -383,6 +490,21 @@ suite('ParadisSpaceDiskChannel', () => {
 		service.dispose();
 	});
 
+	test('counts the complete owner payload toward the two MiB cap', async () => {
+		const { channel, service } = createService();
+		const payload = {
+			ownerId: 'full-payload-owner',
+			active: true as const,
+			targets: targetsAtSerializedSize(MAX_SNAPSHOT_BYTES - 1),
+		};
+		assert.ok(Buffer.byteLength(JSON.stringify(payload.targets), 'utf8') <= MAX_SNAPSHOT_BYTES);
+		assert.ok(Buffer.byteLength(JSON.stringify(payload), 'utf8') > MAX_SNAPSHOT_BYTES);
+
+		await assertWarmLeaseRejected(channel, payload);
+
+		service.dispose();
+	});
+
 	test('rejects the 129th active owner', async () => {
 		const { channel, service } = createService();
 
@@ -427,6 +549,25 @@ suite('ParadisSpaceDiskChannel', () => {
 			await channel.call('', 'setWarmLease', [{ ownerId: `size-owner-${index}`, active: true, targets: largeTargets }]);
 		}
 		await assertWarmLeaseRejected(channel, { ownerId: 'size-overflow', active: true, targets: overflowTargets });
+
+		service.dispose();
+	});
+
+	test('counts complete owner payloads toward the eight MiB aggregate cap', async () => {
+		const { channel, service } = createService();
+		const payloads = Array.from({ length: 4 }, (_, index) => payloadJustBelowFullCap(`size-owner-${index}`));
+		const overflowPayload = { ownerId: 'size-overflow', active: true as const, targets: [] };
+		const targetsOnlyCost = payloads.reduce((total, payload) => total + Buffer.byteLength(JSON.stringify(payload.targets), 'utf8'), 0)
+			+ Buffer.byteLength(JSON.stringify(overflowPayload.targets), 'utf8');
+		const fullPayloadCost = payloads.reduce((total, payload) => total + Buffer.byteLength(JSON.stringify(payload), 'utf8'), 0)
+			+ Buffer.byteLength(JSON.stringify(overflowPayload), 'utf8');
+		assert.ok(targetsOnlyCost <= MAX_TOTAL_SNAPSHOT_BYTES);
+		assert.ok(fullPayloadCost > MAX_TOTAL_SNAPSHOT_BYTES);
+
+		for (const payload of payloads) {
+			await channel.call('', 'setWarmLease', [payload]);
+		}
+		await assertWarmLeaseRejected(channel, overflowPayload);
 
 		service.dispose();
 	});
