@@ -10,9 +10,11 @@ import assert from 'assert';
 import { promises as fs } from 'fs';
 import { createRequire } from 'module';
 import { tmpdir } from 'os';
+import { DeferredPromise } from '../../../../../base/common/async.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { IParadisResumeListRequest, IParadisResumeSpace } from '../../common/paradisSessionResume.js';
 import { ParadisSessionResumeService } from '../../node/paradisSessionResumeChannel.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -60,11 +62,15 @@ suite('ParadisSessionResume', () => {
 		}, new NullLogService());
 	}
 
-	function listSessions(service: ParadisSessionResumeService, includeArchived = false) {
-		return service.list({
-			spaces: [{ stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true }],
+	function createListRequest(space: Partial<IParadisResumeSpace> = {}, includeArchived = false): IParadisResumeListRequest {
+		return {
+			spaces: [{ stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true, ...space }],
 			includeArchived,
-		});
+		};
+	}
+
+	function listSessions(service: ParadisSessionResumeService, includeArchived = false) {
+		return service.list(createListRequest({}, includeArchived));
 	}
 
 	function claudeMessage(role: 'user' | 'assistant', text: string, timestamp = '2026-08-13T01:00:00.000Z'): string {
@@ -243,6 +249,129 @@ suite('ParadisSessionResume', () => {
 		assert.deepStrictEqual(sessions.map(session => ({ id: session.id, agent: session.agent, title: session.title })), [
 			{ id: 'corrupt-database-fallback', agent: 'codex', title: 'Fallback from corrupt database' },
 		]);
+	});
+
+	test('shares one active scan for identical normalized list requests', async () => {
+		const transcriptPath = join(claudeProject, 'shared-active-scan.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Shared active scan')]);
+		const firstSummaryRead = new DeferredPromise<void>();
+		const summaryGate = new DeferredPromise<void>();
+		let summaryReadCount = 0;
+		const service = createService(undefined, async () => {
+			summaryReadCount++;
+			firstSummaryRead.complete();
+			await summaryGate.p;
+		});
+
+		const first = service.list(createListRequest());
+		await firstSummaryRead.p;
+		const second = service.list(createListRequest());
+		summaryGate.complete();
+		const [firstResult, secondResult] = await Promise.all([first, second]);
+
+		assert.strictEqual(summaryReadCount, 1);
+		assert.strictEqual(firstResult, secondResult);
+	});
+
+	test('normalizes cwd before sharing an active scan', async () => {
+		const transcriptPath = join(claudeProject, 'normalized-cwd-active-scan.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Normalized cwd active scan')]);
+		const firstSummaryRead = new DeferredPromise<void>();
+		const summaryGate = new DeferredPromise<void>();
+		let summaryReadCount = 0;
+		const service = createService(undefined, async () => {
+			summaryReadCount++;
+			firstSummaryRead.complete();
+			await summaryGate.p;
+		});
+
+		const first = service.list(createListRequest());
+		await firstSummaryRead.p;
+		const second = service.list(createListRequest({ cwd: join(workspace, '..', 'workspace') }));
+		summaryGate.complete();
+		await Promise.all([first, second]);
+
+		assert.strictEqual(summaryReadCount, 1);
+	});
+
+	test('does not share active scans for distinct observable list requests', async () => {
+		const primaryTranscriptPath = join(claudeProject, 'distinct-active-scan-primary.jsonl');
+		const secondaryWorkspace = join(root, 'secondary-workspace');
+		await fs.mkdir(secondaryWorkspace, { recursive: true });
+		const secondaryRealWorkspace = await fs.realpath(secondaryWorkspace);
+		const secondaryProject = join(claudeHome, 'projects', secondaryRealWorkspace.replace(/[^a-zA-Z0-9]/g, '-'));
+		const secondaryTranscriptPath = join(secondaryProject, 'distinct-active-scan-secondary.jsonl');
+		await Promise.all([
+			writeLines(primaryTranscriptPath, [claudeMessage('user', 'Primary distinct active scan')]),
+			fs.mkdir(secondaryProject, { recursive: true }).then(() => writeLines(secondaryTranscriptPath, [claudeMessage('user', 'Secondary distinct active scan')])),
+		]);
+
+		const primarySpace: IParadisResumeSpace = { stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true };
+		const secondarySpace: IParadisResumeSpace = { stateKey: 'secondary-state', name: 'Secondary Workspace', cwd: secondaryWorkspace, current: false };
+		const cases: readonly { readonly name: string; readonly first: IParadisResumeListRequest; readonly second: IParadisResumeListRequest; readonly expectedSummaryReads: number }[] = [
+			{ name: 'state key', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, stateKey: 'other-state' }], includeArchived: false }, expectedSummaryReads: 2 },
+			{ name: 'name', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, name: 'Other Workspace' }], includeArchived: false }, expectedSummaryReads: 2 },
+			{ name: 'cwd', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [secondarySpace], includeArchived: false }, expectedSummaryReads: 2 },
+			{ name: 'current', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [{ ...primarySpace, current: false }], includeArchived: false }, expectedSummaryReads: 2 },
+			{ name: 'includeArchived', first: { spaces: [primarySpace], includeArchived: false }, second: { spaces: [primarySpace], includeArchived: true }, expectedSummaryReads: 2 },
+			{ name: 'space order', first: { spaces: [primarySpace, secondarySpace], includeArchived: false }, second: { spaces: [secondarySpace, primarySpace], includeArchived: false }, expectedSummaryReads: 4 },
+		];
+
+		for (const testCase of cases) {
+			const firstSummaryRead = new DeferredPromise<void>();
+			const summaryGate = new DeferredPromise<void>();
+			let summaryReadCount = 0;
+			const service = createService(undefined, async () => {
+				summaryReadCount++;
+				firstSummaryRead.complete();
+				await summaryGate.p;
+			});
+
+			const first = service.list(testCase.first);
+			await firstSummaryRead.p;
+			const second = service.list(testCase.second);
+			summaryGate.complete();
+			await Promise.all([first, second]);
+
+			assert.strictEqual(summaryReadCount, testCase.expectedSummaryReads, testCase.name);
+		}
+	});
+
+	test('rescans after an active list request settles', async () => {
+		const transcriptPath = join(claudeProject, 'rescan-after-settle.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Rescan after settle')]);
+		let summaryReadCount = 0;
+		const service = createService(undefined, async () => summaryReadCount++);
+
+		await service.list(createListRequest());
+		await service.list(createListRequest());
+
+		assert.strictEqual(summaryReadCount, 2);
+	});
+
+	test('cleans a rejected active list request so a later request retries', async () => {
+		const transcriptPath = join(claudeProject, 'retry-after-rejection.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Retry after rejection')]);
+		let resolveHomesCount = 0;
+		let summaryReadCount = 0;
+		const service = new ParadisSessionResumeService({
+			resolveAgentHomes: cwd => {
+				resolveHomesCount++;
+				if (resolveHomesCount === 1) {
+					throw new Error('agent homes unavailable');
+				}
+				return { claude: claudeHome, codex: codexHome, matchCwd: cwd };
+			},
+			beforeSummaryRead: async () => summaryReadCount++,
+		}, new NullLogService());
+
+		const [first, second] = await Promise.allSettled([service.list(createListRequest()), service.list(createListRequest())]);
+		const retried = await service.list(createListRequest());
+
+		assert.strictEqual(first.status, 'rejected');
+		assert.strictEqual(second.status, 'rejected');
+		assert.strictEqual(summaryReadCount, 1);
+		assert.deepStrictEqual(retried.map(session => session.id), ['retry-after-rejection']);
 	});
 
 	test('list does not read a Claude summary swapped to an outside symlink after lstat', async () => {
