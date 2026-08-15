@@ -25,3 +25,25 @@
 
 - CRITICAL/HIGH/MEDIUM/LOW: 指摘なし。
 - 対象外のtimer、connection、protocolは変更していない。
+
+## Fix Round 1
+
+### 追加した検証
+
+- enabled中の25秒heartbeat、`setEnabled`/`setScreenLocked`の同値guard、unfocused時のidle query省略をcontrollerテストで検証した。
+- 新しいreportによる旧renderer lease失効、OFF中のpending falseがOFF→ON後に送信されないことをcontrollerテストで検証した。
+- production contributionが使用する`ParadisMobilePcFocusHeartbeatCoordinator`を追加し、renderer lease後・IPC直前の再検証、lock/unlock/focus/visibilityイベント、provider構築後の初期設定、controller→shared processの設定同期順、controller失効→最終falseのdispose順を実行時に検証した。
+
+### TDD / 変異検出記録
+
+1. RED: coordinator exportを要求する追加テストを先に追加し、現行productionで`does not provide an export named 'ParadisMobilePcFocusHeartbeatCoordinator'`（exit 1）を確認した。
+2. GREEN: Para固有coordinatorを実装し、production contributionを結合した。focused suiteは13 passingとなった。
+3. 世代のcharacterization: `isCurrent`からgeneration比較を一時削除し、focused suiteがexit 1・4 failing（lock、lease新旧、OFF→ON、実delegate）となることを確認して復元した。
+4. 同値guardのcharacterization: `setEnabled`/`setScreenLocked`の同値guardを一時削除し、focused suiteがexit 1・1 failing（restart/invalidate防止）となることを確認して復元した。
+5. 設定順序のcharacterization: coordinator内でshared process呼び出しをcontrollerより先に一時反転し、focused suiteがexit 1・1 failing（controller-stop→shared順序）となることを確認して復元した。
+
+### Fix Round 1 最終検証
+
+- `rtk npm run transpile-client` — exit 0
+- `rtk ./scripts/test.sh --run vs/paradis/contrib/mobileRelay/test/electron-browser/paradisMobilePcFocusHeartbeat.test.js` — TTYでexit 0、13 passing
+- `rtk git diff --check` — 出力なし
