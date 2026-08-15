@@ -7,15 +7,22 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { CancellationError } from '../../../../../base/common/errors.js';
-import { DeferredPromise } from '../../../../../base/common/async.js';
+import { Emitter } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
+import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
+import { NullTelemetryService } from '../../../../../platform/telemetry/common/telemetryUtils.js';
+import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { TestEditorGroupView } from '../../../../../workbench/test/browser/workbenchTestServices.js';
+import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
+import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { ParadisSessionResumeEditor } from '../../electron-browser/paradisSessionResumeEditor.js';
 import { paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from '../../electron-browser/paradisSessionResumeOrchestration.js';
 
 suite('ParadisSessionResumeEditor', () => {
@@ -27,6 +34,70 @@ suite('ParadisSessionResumeEditor', () => {
 		agent: 'claude' as const,
 		sessionId: 'session-123',
 	};
+
+	test('does not list for each hidden workspace event and refreshes once after becoming visible', async () => {
+		for (const eventName of ['scope', 'repository', 'worktree'] as const) {
+			const scopeEmitter = new Emitter<void>();
+			const repositoryEmitter = new Emitter<void>();
+			const worktreeEmitter = new Emitter<void>();
+			let listCount = 0;
+			const client = {
+				list: async () => {
+					listCount++;
+					return [];
+				},
+				preview: async () => ({ messages: [], truncated: false }),
+				search: async () => [],
+			};
+			const instantiationService = {
+				createInstance: () => client,
+			} as unknown as IInstantiationService;
+			const workspaceSwitchService = {
+				activeStateKey: undefined,
+				repositories: [],
+				onDidSwitchScope: scopeEmitter.event,
+				onDidChangeRepositories: repositoryEmitter.event,
+			} as unknown as IParadisWorkspaceSwitchService;
+			const worktreeService = {
+				initializationBarrier: Promise.resolve(),
+				onDidChangeWorktrees: worktreeEmitter.event,
+				getWorktrees: () => [],
+			} as unknown as IParadisWorktreeService;
+			const storageService = new TestStorageService();
+			const editor = new ParadisSessionResumeEditor(
+				new TestEditorGroupView(1),
+				NullTelemetryService,
+				new TestThemeService(),
+				storageService,
+				instantiationService,
+				workspaceSwitchService,
+				worktreeService,
+				new TestNotificationService(),
+				Object.create(null),
+				Object.create(null),
+			);
+			try {
+				editor.create(document.createElement('div'));
+				editor.setVisible(false);
+				if (eventName === 'scope') {
+					scopeEmitter.fire();
+				} else if (eventName === 'repository') {
+					repositoryEmitter.fire();
+				} else {
+					worktreeEmitter.fire();
+				}
+				await Promise.resolve();
+				assert.strictEqual(listCount, 0, eventName);
+
+				editor.setVisible(true);
+				await timeout(1);
+				assert.strictEqual(listCount, 1, eventName);
+			} finally {
+				editor.dispose();
+				storageService.dispose();
+			}
+		}
+	});
 
 	test('maps each editor button to its resume mode and permission behavior', () => {
 		assert.deepStrictEqual([
