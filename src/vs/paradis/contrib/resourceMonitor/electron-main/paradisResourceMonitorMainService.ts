@@ -51,6 +51,12 @@ export interface IParadisResourceMonitorMainServiceDependencies {
 	readonly schedule: (callback: () => void, delayMs: number) => { dispose(): void };
 }
 
+interface IParadisResourceMonitorRawGeneration {
+	readonly sample: IParadisResourceMonitorRawSample;
+	/** Cache鮮度の基準。収集時間の分だけ次のscanが遅れないよう、完了時刻と分ける。 */
+	readonly startedAt: number;
+}
+
 function normalizeFiniteNumber(value: unknown): number {
 	return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
 }
@@ -118,10 +124,10 @@ const defaultDependencies: IParadisResourceMonitorMainServiceDependencies = {
  */
 export class ParadisResourceMonitorMainService implements IParadisResourceMonitorMainService {
 
-	private cachedRawSample: IParadisResourceMonitorRawSample | undefined;
-	private inflightCollection: Promise<IParadisResourceMonitorRawSample> | undefined;
+	private cachedRawGeneration: IParadisResourceMonitorRawGeneration | undefined;
+	private inflightCollection: Promise<IParadisResourceMonitorRawGeneration> | undefined;
 	private rawSampleExpiry: { dispose(): void } | undefined;
-	private rawSampleGeneration = 0;
+	private rawSampleCacheRevision = 0;
 
 	// ホスト全体の使用量(モバイルの「システム」画面専用)。CPUは累積値の差分なので
 	// サンプラーを1つだけ持ち回る。
@@ -158,26 +164,31 @@ export class ParadisResourceMonitorMainService implements IParadisResourceMonito
 
 	async getSnapshot(request: IParadisResourceMonitorSnapshotRequest): Promise<IParadisResourceMonitorSnapshot> {
 		const maxAgeMs = request.freshness === 'idle' ? IDLE_SNAPSHOT_MAX_AGE_MS : ACTIVE_SNAPSHOT_MAX_AGE_MS;
-		if (!request.force && this.cachedRawSample && this.dependencies.now() - this.cachedRawSample.collectedAt <= maxAgeMs) {
-			return this.projectSnapshot(this.cachedRawSample, request.sessions);
+		const cachedGeneration = this.cachedRawGeneration;
+		const cachedAgeMs = cachedGeneration ? this.dependencies.now() - cachedGeneration.startedAt : undefined;
+		const isCachedGenerationFresh = cachedAgeMs !== undefined && (request.freshness === 'idle' ? cachedAgeMs < maxAgeMs : cachedAgeMs <= maxAgeMs);
+		if (!request.force && cachedGeneration && isCachedGenerationFresh) {
+			return this.projectSnapshot(cachedGeneration.sample, request.sessions);
 		}
 
 		if (this.inflightCollection) {
-			return this.projectSnapshot(await this.inflightCollection, request.sessions);
+			return this.projectSnapshot((await this.inflightCollection).sample, request.sessions);
 		}
 
+		const startedAt = this.dependencies.now();
 		const collection = this.dependencies.collectRawSample()
-			.catch(() => this.cachedRawSample ?? this.createEmptyRawSample())
-			.then(rawSample => {
-				this.cacheRawSample(rawSample);
-				return rawSample;
+			.then(sample => ({ sample, startedAt }))
+			.catch(() => this.cachedRawGeneration ?? { sample: this.createEmptyRawSample(), startedAt })
+			.then(generation => {
+				this.cacheRawGeneration(generation);
+				return generation;
 			})
 			.finally(() => {
 				this.inflightCollection = undefined;
 			});
 		this.inflightCollection = collection;
 
-		return this.projectSnapshot(await collection, request.sessions);
+		return this.projectSnapshot((await collection).sample, request.sessions);
 	}
 
 	private projectSnapshot(rawSample: IParadisResourceMonitorRawSample, sessions: readonly IParadisResourceMonitorSessionRequest[]): IParadisResourceMonitorSnapshot {
@@ -230,22 +241,22 @@ export class ParadisResourceMonitorMainService implements IParadisResourceMonito
 		};
 	}
 
-	private cacheRawSample(rawSample: IParadisResourceMonitorRawSample): void {
+	private cacheRawGeneration(generation: IParadisResourceMonitorRawGeneration): void {
 		this.rawSampleExpiry?.dispose();
 		this.rawSampleExpiry = undefined;
 
-		const remainingMs = rawSample.collectedAt + IDLE_SNAPSHOT_MAX_AGE_MS - this.dependencies.now();
+		const remainingMs = generation.startedAt + IDLE_SNAPSHOT_MAX_AGE_MS - this.dependencies.now();
 		if (remainingMs <= 0) {
-			this.cachedRawSample = undefined;
-			this.rawSampleGeneration++;
+			this.cachedRawGeneration = undefined;
+			this.rawSampleCacheRevision++;
 			return;
 		}
 
-		this.cachedRawSample = rawSample;
-		const generation = ++this.rawSampleGeneration;
+		this.cachedRawGeneration = generation;
+		const cacheRevision = ++this.rawSampleCacheRevision;
 		this.rawSampleExpiry = this.dependencies.schedule(() => {
-			if (this.rawSampleGeneration === generation) {
-				this.cachedRawSample = undefined;
+			if (this.rawSampleCacheRevision === cacheRevision) {
+				this.cachedRawGeneration = undefined;
 				this.rawSampleExpiry = undefined;
 			}
 		}, remainingMs);
