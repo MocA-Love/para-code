@@ -97,12 +97,30 @@ function provisionalJobName(job: IQueueJob): string | undefined {
 	return paradisSanitizeBranchName(job.request.branch ?? '');
 }
 
+export class ParadisRepositoryTaskSequencer {
+
+	private readonly repositoryChains = new Map<string, Promise<void>>();
+
+	queue(repositoryId: string, task: () => Promise<void>): Promise<void> {
+		const previous = this.repositoryChains.get(repositoryId) ?? Promise.resolve();
+		const chained = previous.then(() => task(), () => task());
+		this.repositoryChains.set(repositoryId, chained);
+		const cleanup = () => {
+			if (this.repositoryChains.get(repositoryId) === chained) {
+				this.repositoryChains.delete(repositoryId);
+			}
+		};
+		void chained.then(cleanup, cleanup);
+		return chained;
+	}
+}
+
 export class ParadisWorktreeCreateQueueService extends Disposable implements IParadisWorktreeCreateQueueService {
 
 	declare readonly _serviceBrand: undefined;
 
 	private readonly _jobs: IQueueJob[] = [];
-	private readonly _repositoryChains = new Map<string, Promise<void>>();
+	private readonly _repositoryTaskSequencer = new ParadisRepositoryTaskSequencer();
 	private _nextJobId = 1;
 	/** 現在のバッチ（アクティブジョブが0になるまで）の総数と完了数。ステータスバー表示用。 */
 	private _batchTotal = 0;
@@ -143,9 +161,7 @@ export class ParadisWorktreeCreateQueueService extends Disposable implements IPa
 		this._publish();
 
 		// 同一リポジトリ内は直列（git のロック競合とブランチ名衝突を避ける）、リポジトリ間は並列
-		const previous = this._repositoryChains.get(request.repositoryId) ?? Promise.resolve();
-		const chained = previous.then(() => this._runJob(job));
-		this._repositoryChains.set(request.repositoryId, chained);
+		void this._repositoryTaskSequencer.queue(request.repositoryId, () => this._runJob(job));
 	}
 
 	private async _runJob(job: IQueueJob): Promise<void> {
