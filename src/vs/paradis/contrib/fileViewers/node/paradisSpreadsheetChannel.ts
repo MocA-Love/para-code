@@ -12,12 +12,16 @@
 import { Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
-import { ParadisSpreadsheetService } from './paradisSpreadsheetService.js';
+import { PARADIS_SPREADSHEET_CHANNEL, type IParadisSpreadsheetService } from '../common/paradisSpreadsheet.js';
 
 export class ParadisSpreadsheetChannel implements IServerChannel<string> {
 
-	constructor(private readonly service: ParadisSpreadsheetService) { }
+	private servicePromise: Promise<IParadisSpreadsheetService> | undefined;
+
+	constructor(private readonly serviceFactory: () => Promise<IParadisSpreadsheetService> = async () => {
+		const { ParadisSpreadsheetService } = await import('./paradisSpreadsheetService.js');
+		return new ParadisSpreadsheetService();
+	}) { }
 
 	listen<T>(_ctx: string, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -26,10 +30,20 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string> {
 	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			case 'parseWorkbook': return this.service.parseWorkbook(String(args[0])) as Promise<T>;
+			case 'parseWorkbook': return this.getService().then(service => service.parseWorkbook(String(args[0]))) as Promise<T>;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
+	}
+
+	private getService(): Promise<IParadisSpreadsheetService> {
+		const servicePromise = this.servicePromise ??= this.serviceFactory();
+		return servicePromise.catch(error => {
+			if (this.servicePromise === servicePromise) {
+				this.servicePromise = undefined;
+			}
+			throw error;
+		});
 	}
 }
 
@@ -37,6 +51,6 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string> {
  * sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。
  */
 export function registerParadisSpreadsheet(server: IPCServer<string>): IDisposable {
-	server.registerChannel(PARADIS_SPREADSHEET_CHANNEL, new ParadisSpreadsheetChannel(new ParadisSpreadsheetService()));
+	server.registerChannel(PARADIS_SPREADSHEET_CHANNEL, new ParadisSpreadsheetChannel());
 	return Disposable.None;
 }
