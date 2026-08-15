@@ -64,6 +64,8 @@ class TestCcusageConfigurationService {
 class TestCcusageChannel {
 	readonly calls: IChannelCall[] = [];
 	readonly activeLeases = new Map<string, readonly ParadisCcusageWarmTarget[]>();
+	private readonly pendingWarmLeases: { readonly payload: ParadisCcusageWarmLeasePayload; readonly resolve: () => void }[] = [];
+	private holdWarmLeases = false;
 	leaseFailure: Error | undefined;
 	dailyFailure: Error | undefined;
 
@@ -74,11 +76,16 @@ class TestCcusageChannel {
 				return Promise.reject(this.leaseFailure);
 			}
 			const payload = (args as readonly [ParadisCcusageWarmLeasePayload])[0];
-			if (payload.active) {
-				this.activeLeases.set(payload.ownerId, payload.targets);
-			} else {
-				this.activeLeases.delete(payload.ownerId);
+			if (this.holdWarmLeases) {
+				return new Promise<T>(resolve => this.pendingWarmLeases.push({
+					payload,
+					resolve: () => {
+						this.applyWarmLease(payload);
+						resolve(undefined as T);
+					},
+				}));
 			}
+			this.applyWarmLease(payload);
 			return Promise.resolve(undefined as T);
 		}
 		if (command === 'fetchDaily') {
@@ -105,6 +112,30 @@ class TestCcusageChannel {
 
 	callsFor(command: string): readonly IChannelCall[] {
 		return this.calls.filter(call => call.command === command);
+	}
+
+	holdNextWarmLeases(): void {
+		this.holdWarmLeases = true;
+	}
+
+	get pendingWarmLeaseCount(): number {
+		return this.pendingWarmLeases.length;
+	}
+
+	resolveNextWarmLease(): void {
+		const pending = this.pendingWarmLeases.shift();
+		if (!pending) {
+			throw new Error('No pending warm lease IPC call');
+		}
+		pending.resolve();
+	}
+
+	private applyWarmLease(payload: ParadisCcusageWarmLeasePayload): void {
+		if (payload.active) {
+			this.activeLeases.set(payload.ownerId, payload.targets);
+		} else {
+			this.activeLeases.delete(payload.ownerId);
+		}
 	}
 }
 
@@ -180,6 +211,10 @@ function targetOptions(targets: readonly ParadisCcusageWarmTarget[]): readonly P
 	return targets.map(target => target.options);
 }
 
+function warmLeasePayloads(channel: TestCcusageChannel): readonly ParadisCcusageWarmLeasePayload[] {
+	return channel.callsFor('setWarmLease').map(call => (call.args as readonly [ParadisCcusageWarmLeasePayload])[0]);
+}
+
 suite('ParadisCcusage warm lease lifecycle', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -252,6 +287,121 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 1);
 		editor.dispose();
+		await settle();
+		assert.strictEqual(harness.channel.activeLeases.size, 0);
+	});
+
+	test('releases a late dashboard acquire after the editor is hidden', async () => {
+		const harness = createHarness();
+		disposables.add(harness.instantiationService);
+		disposables.add(toDisposable(() => harness.configuration.dispose()));
+		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
+		const input = disposables.add(ParadisCcusageInput.instance);
+		const parent = document.createElement('div');
+		disposables.add(toDisposable(() => parent.remove()));
+		editor.create(parent);
+		editor.setVisible(true);
+		harness.channel.holdNextWarmLeases();
+		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		await settle();
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+
+		editor.setVisible(false);
+		harness.channel.resolveNextWarmLease();
+		await settle();
+		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.active), [true, false]);
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+		harness.channel.resolveNextWarmLease();
+		await settle();
+		assert.strictEqual(harness.channel.activeLeases.size, 0);
+	});
+
+	test('releases a late dashboard acquire after the editor input is cleared', async () => {
+		const harness = createHarness();
+		disposables.add(harness.instantiationService);
+		disposables.add(toDisposable(() => harness.configuration.dispose()));
+		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
+		const input = disposables.add(ParadisCcusageInput.instance);
+		const parent = document.createElement('div');
+		disposables.add(toDisposable(() => parent.remove()));
+		editor.create(parent);
+		editor.setVisible(true);
+		harness.channel.holdNextWarmLeases();
+		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		await settle();
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+
+		editor.clearInput();
+		harness.channel.resolveNextWarmLease();
+		await settle();
+		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.active), [true, false]);
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+		harness.channel.resolveNextWarmLease();
+		await settle();
+		assert.strictEqual(harness.channel.activeLeases.size, 0);
+	});
+
+	test('releases a late dashboard acquire after the editor is disposed', async () => {
+		const harness = createHarness();
+		disposables.add(harness.instantiationService);
+		disposables.add(toDisposable(() => harness.configuration.dispose()));
+		const editor = disposables.add(createEditor(harness, disposables.add(new TestStorageService())));
+		const input = disposables.add(ParadisCcusageInput.instance);
+		const parent = document.createElement('div');
+		disposables.add(toDisposable(() => parent.remove()));
+		editor.create(parent);
+		editor.setVisible(true);
+		harness.channel.holdNextWarmLeases();
+		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		await settle();
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+
+		editor.dispose();
+		harness.channel.resolveNextWarmLease();
+		await settle();
+		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.active), [true, false]);
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+		harness.channel.resolveNextWarmLease();
+		await settle();
+		assert.strictEqual(harness.channel.activeLeases.size, 0);
+	});
+
+	test('uses the latest status targets after configuration changes during a pending heartbeat', async () => {
+		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 12, 0, 0) });
+		const harness = createHarness({ [STATUS_BAR_ENABLED_SETTING]: true });
+		disposables.add(harness.instantiationService);
+		disposables.add(toDisposable(() => harness.configuration.dispose()));
+		const status = disposables.add(createStatusContribution(harness));
+		await settle();
+		harness.channel.holdNextWarmLeases();
+
+		await clock.tickAsync(5 * 60 * 1000);
+		await settle();
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+		harness.configuration.setValue(PARADIS_CCUSAGE_SETTING_EXECUTABLE_PATH, ' /custom/ccusage ');
+		await settle();
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.targets), [
+			[{ kind: 'daily', options: { since: '20260519' } }],
+			[{ kind: 'daily', options: { since: '20260519' } }],
+		]);
+
+		harness.channel.resolveNextWarmLease();
+		await settle();
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+		assert.deepStrictEqual(warmLeasePayloads(harness.channel).map(payload => payload.targets), [
+			[{ kind: 'daily', options: { since: '20260519' } }],
+			[{ kind: 'daily', options: { since: '20260519' } }],
+			[{ kind: 'daily', options: { executablePath: '/custom/ccusage', since: '20260519' } }],
+		]);
+		harness.channel.resolveNextWarmLease();
+		await settle();
+		assert.deepStrictEqual(singleActiveLease(harness.channel), [{ kind: 'daily', options: { executablePath: '/custom/ccusage', since: '20260519' } }]);
+
+		status.dispose();
+		await settle();
+		assert.strictEqual(harness.channel.pendingWarmLeaseCount, 1);
+		harness.channel.resolveNextWarmLease();
 		await settle();
 		assert.strictEqual(harness.channel.activeLeases.size, 0);
 	});
