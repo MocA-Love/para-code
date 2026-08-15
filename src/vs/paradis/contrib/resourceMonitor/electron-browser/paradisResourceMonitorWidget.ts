@@ -66,7 +66,7 @@ export function paradisResourceMonitorPollingPolicy(enabled: boolean, panelOpen:
 
 /** titlebarPart.ts の PARA-PATCH 点から呼ばれるファクトリ。 */
 export function createParadisResourceMonitorWidget(instantiationService: IInstantiationService, container: HTMLElement): IDisposable {
-	return instantiationService.createInstance(ParadisResourceMonitorWidget, container);
+	return instantiationService.createInstance(ParadisResourceMonitorWidget, container, undefined);
 }
 
 export class ParadisResourceMonitorWidget extends Disposable {
@@ -83,6 +83,8 @@ export class ParadisResourceMonitorWidget extends Disposable {
 
 	private latestSnapshot: IParadisResourceMonitorSnapshot | undefined;
 	private isFetching = false;
+	private idleRefreshPending = false;
+	private isDisposed = false;
 
 	constructor(
 		container: HTMLElement,
@@ -115,7 +117,7 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		this._register(dom.addDisposableListener(this.document, 'visibilitychange', () => {
 			this.reschedulePolling();
 			if (!this.document.hidden && !this.panel.value && this.configurationService.getValue<boolean>(CONFIG_KEY_ENABLED)) {
-				void this.poll(false);
+				void this.poll(false, true);
 			}
 		}));
 
@@ -128,6 +130,8 @@ export class ParadisResourceMonitorWidget extends Disposable {
 	}
 
 	override dispose(): void {
+		this.isDisposed = true;
+		this.idleRefreshPending = false;
 		this.button.remove();
 		super.dispose();
 	}
@@ -186,7 +190,7 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		this.reschedulePolling();
 	}
 
-	private async poll(force: boolean): Promise<void> {
+	private async poll(force: boolean, retryWhenBusy = false): Promise<void> {
 		// アイドルポーリング(パネル非表示)のみ、ウィジェットが属するウィンドウが不可視
 		// (最小化・完全背面などで document.hidden)の間は getSnapshot を呼ばず、electron-main
 		// 側の ps サブプロセスを起こさない。手動更新(force)とパネル表示中(2秒ポーリング)は
@@ -197,6 +201,9 @@ export class ParadisResourceMonitorWidget extends Disposable {
 			return;
 		}
 		if (this.isFetching) {
+			if (retryWhenBusy) {
+				this.idleRefreshPending = true;
+			}
 			return;
 		}
 		this.isFetching = true;
@@ -212,6 +219,12 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		} finally {
 			this.isFetching = false;
 			this.panel.value?.setFetching(false);
+			if (this.idleRefreshPending) {
+				this.idleRefreshPending = false;
+				if (!this.isDisposed && !this.document.hidden && !this.panel.value && this.configurationService.getValue<boolean>(CONFIG_KEY_ENABLED)) {
+					void this.poll(false);
+				}
+			}
 		}
 	}
 
