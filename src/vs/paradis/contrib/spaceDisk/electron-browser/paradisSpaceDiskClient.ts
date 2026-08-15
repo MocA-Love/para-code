@@ -9,9 +9,13 @@
 // スペース(リポジトリ/worktree)の容量を shared process へ問い合わせる renderer 側の窓口。
 // 「どのスペースがあるか」を知っているのは renderer だけなので、パスの解決はここで行う。
 
-import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { IChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { ParadisWarmLeaseController, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS } from '../../../common/paradisWarmLease.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisSpaceDiskResult,
@@ -19,18 +23,29 @@ import {
 	IParadisSpaceDiskTarget,
 	IParadisSpaceDiskWorktree,
 	PARADIS_SPACE_DISK_CHANNEL,
+	ParadisSpaceDiskWarmLeasePayload,
 } from '../common/paradisSpaceDisk.js';
+
+interface IWarmLeaseGeneration {
+	generation: number;
+	active: boolean;
+	pendingBarrierCount: number;
+}
 
 export class ParadisSpaceDiskClient {
 
 	private readonly service: IParadisSpaceDiskService;
+	private readonly channel: IChannel;
+	private readonly warmLeaseGenerations = new Map<string, IWarmLeaseGeneration>();
+	private nextWarmLeaseGeneration = 0;
 
 	constructor(
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 	) {
-		this.service = ProxyChannel.toService<IParadisSpaceDiskService>(sharedProcessService.getChannel(PARADIS_SPACE_DISK_CHANNEL));
+		this.channel = sharedProcessService.getChannel(PARADIS_SPACE_DISK_CHANNEL);
+		this.service = ProxyChannel.toService<IParadisSpaceDiskService>(this.channel);
 	}
 
 	/**
@@ -42,6 +57,76 @@ export class ParadisSpaceDiskClient {
 		// 二重計上した過大な値になる上に18倍遅くなり、その誤った結果がTTLぶん居座る。
 		await this.worktreeService.initializationBarrier.catch(() => { /* 一覧が取れなくても本体は測る */ });
 		return this.service.measure(this.collectTargets(), bypassCache);
+	}
+
+	/** mobile provider などが owner-scoped lease を1回更新する。 */
+	async setWarmLease(ownerId: string, active: boolean): Promise<void> {
+		const state = this.updateWarmLeaseGeneration(ownerId, active);
+		const generation = state.generation;
+		if (!active) {
+			try {
+				await this.sendWarmLease({ ownerId, active: false, targets: [] });
+			} finally {
+				this.cleanupWarmLeaseGeneration(ownerId, state);
+			}
+			return;
+		}
+
+		state.pendingBarrierCount++;
+		try {
+			await this.worktreeService.initializationBarrier.catch(() => { /* 一覧が取れなくても本体は温める */ });
+		} finally {
+			state.pendingBarrierCount--;
+		}
+		if (this.warmLeaseGenerations.get(ownerId) !== state || state.generation !== generation || !state.active) {
+			this.cleanupWarmLeaseGeneration(ownerId, state);
+			return;
+		}
+		await this.sendWarmLease({ ownerId, active: true, targets: this.collectTargets() });
+	}
+
+	/** desktop consumer が生存する間、5分ごとに current target snapshot を renew する。 */
+	createWarmLease(): IDisposable {
+		const ownerId = `space-disk:${generateUuid()}`;
+		const controller = new ParadisWarmLeaseController(
+			() => this.setWarmLease(ownerId, true),
+			() => this.setWarmLease(ownerId, true),
+			() => this.setWarmLease(ownerId, false),
+			runner => new RunOnceScheduler(runner, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS),
+			() => ownerId,
+		);
+		controller.setEnabled(true);
+		let disposed = false;
+		return toDisposable(() => {
+			if (disposed) {
+				return;
+			}
+			disposed = true;
+			// barrier 待機中の acquire を無効化してから controller の補償 release へ渡す。
+			this.updateWarmLeaseGeneration(ownerId, false);
+			controller.dispose();
+		});
+	}
+
+	private sendWarmLease(payload: ParadisSpaceDiskWarmLeasePayload): Promise<void> {
+		return this.channel.call<void>('setWarmLease', [payload]);
+	}
+
+	private updateWarmLeaseGeneration(ownerId: string, active: boolean): IWarmLeaseGeneration {
+		let state = this.warmLeaseGenerations.get(ownerId);
+		if (!state) {
+			state = { generation: 0, active, pendingBarrierCount: 0 };
+			this.warmLeaseGenerations.set(ownerId, state);
+		}
+		state.generation = ++this.nextWarmLeaseGeneration;
+		state.active = active;
+		return state;
+	}
+
+	private cleanupWarmLeaseGeneration(ownerId: string, state: IWarmLeaseGeneration): void {
+		if (this.warmLeaseGenerations.get(ownerId) === state && !state.active && state.pendingBarrierCount === 0) {
+			this.warmLeaseGenerations.delete(ownerId);
+		}
 	}
 
 	/**

@@ -17,20 +17,28 @@
 // そこへ数十秒の処理を混ぜると毎回前の処理待ちで詰まる。別系統にしたうえで、
 // 1時間ごとに測っておいて「開いたときにはもう出ている」状態にする(ccusage と同じ考え方)。
 
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import * as path from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
+	IParadisWarmLeaseScheduler,
+	ParadisWarmLeaseTracker,
+	PARADIS_WARM_LEASE_DURATION_MS,
+} from '../../../common/paradisWarmLease.js';
+import {
 	IParadisSpaceDiskEntry,
 	IParadisSpaceDiskResult,
 	IParadisSpaceDiskTarget,
+	IParadisSpaceDiskWorktree,
 	IParadisSpaceDiskWorktreeEntry,
 	isPathInside,
 	PARADIS_SPACE_DISK_CHANNEL,
+	ParadisSpaceDiskWarmLeasePayload,
 } from '../common/paradisSpaceDisk.js';
-import { measureDirectorySize } from './paradisDirectorySize.js';
+import { IDirectorySizeOptions, IDirectorySizeResult, measureDirectorySize } from './paradisDirectorySize.js';
 
 /** 裏で測り直す周期。 */
 const WARM_INTERVAL_MS = 60 * 60 * 1000;
@@ -44,13 +52,47 @@ const WARM_SKIP_IF_FRESHER_THAN_MS = 5 * 60 * 1000;
  * 「開いたら数十秒待たされる」状態が生まれる(それを無くすための仕組みなので本末転倒)。
  */
 const CACHE_TTL_MS = WARM_INTERVAL_MS + WARM_SKIP_IF_FRESHER_THAN_MS + 10 * 60 * 1000;
-/**
- * 最後に要求されてからこの時間を過ぎたら裏の計測をやめる。
- * 一度システム画面を開いただけの人のマシンで、以後ずっとディスクを舐め続けない。
- */
-const WARM_IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 /** 続けて失敗する対象を諦める回数。 */
 const MAX_CONSECUTIVE_FAILURES = 3;
+const WARM_LEASE_MAX_OWNERS = 128;
+const WARM_LEASE_MAX_TARGETS_PER_OWNER = 200;
+const WARM_LEASE_MAX_WORKTREES_PER_TARGET = 200;
+const WARM_LEASE_MAX_WORKTREES_PER_OWNER = 2_000;
+const WARM_LEASE_MAX_STRING_LENGTH = 4_096;
+const WARM_LEASE_MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024;
+const WARM_LEASE_MAX_TOTAL_TARGETS = 800;
+const WARM_LEASE_MAX_TOTAL_WORKTREES = 8_000;
+const WARM_LEASE_MAX_TOTAL_SNAPSHOT_BYTES = 8 * 1024 * 1024;
+const WARM_LEASE_OWNER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,160}$/;
+const WARM_TARGET_KEY = 'space-disk';
+
+type DirectoryMeasure = (root: string, options?: IDirectorySizeOptions) => Promise<IDirectorySizeResult>;
+type WarmLeaseSchedulerFactory = (runner: () => void) => IParadisWarmLeaseScheduler;
+type WarmLeaseWorktree = Readonly<{
+	readonly stateKey: string;
+	readonly name: string;
+	readonly path: string;
+}>;
+type WarmLeaseTarget = Readonly<{
+	readonly stateKey: string;
+	readonly name: string;
+	readonly path: string;
+	readonly worktrees: readonly WarmLeaseWorktree[];
+}>;
+type WarmLeaseSnapshot = readonly WarmLeaseTarget[];
+
+interface IWarmLeaseOwner {
+	readonly expiresAt: number;
+	readonly targetCount: number;
+	readonly worktreeCount: number;
+	readonly cost: number;
+}
+
+interface IWarmLeaseMetrics {
+	readonly targetCount: number;
+	readonly worktreeCount: number;
+	readonly cost: number;
+}
 
 interface ICacheEntry {
 	readonly result: IParadisSpaceDiskResult;
@@ -79,6 +121,18 @@ function signatureOf(targets: readonly IParadisSpaceDiskTarget[]): string {
 		.join('\n');
 }
 
+function snapshotCost(targets: readonly IParadisSpaceDiskTarget[]): number {
+	return Buffer.byteLength(JSON.stringify(targets), 'utf8');
+}
+
+function warmLeaseMetrics(targets: readonly IParadisSpaceDiskTarget[]): IWarmLeaseMetrics {
+	return {
+		targetCount: targets.length,
+		worktreeCount: targets.reduce((total, target) => total + target.worktrees.length, 0),
+		cost: snapshotCost(targets),
+	};
+}
+
 export class ParadisSpaceDiskService implements IDisposable {
 
 	/** 直近の計測結果。対象の顔ぶれが変わってもキーは1つ(画面は常に全スペースを見る)。 */
@@ -86,33 +140,75 @@ export class ParadisSpaceDiskService implements IDisposable {
 	/** 実行中の計測(同じ顔ぶれの同時要求を1本にまとめる)。 */
 	private inflight: Promise<IParadisSpaceDiskResult> | undefined;
 	private inflightSignature: string | undefined;
-	/** 裏で測り直すための、最後に要求された対象。 */
-	private warmTargets: readonly IParadisSpaceDiskTarget[] = [];
-	private warmSignature = '';
-	private lastRequestedAt = 0;
+	private readonly warmLeaseTracker: ParadisWarmLeaseTracker<WarmLeaseSnapshot>;
+	private readonly warmLeaseOwners = new Map<string, IWarmLeaseOwner>();
+	private readonly warmLeaseListener: IDisposable;
 	private failures = 0;
+	private failureGeneration: number | undefined;
 	private warmTimer: ReturnType<typeof setInterval> | undefined;
 	private disposed = false;
 	/** 走行中の計測へ渡す中断フラグ。dispose で立てて、フォルダを歩き切る前に止める。 */
 	private readonly cancellation = { isCancellationRequested: false };
 
-	constructor(private readonly logService: ILogService) { }
+	constructor(
+		private readonly logService: ILogService,
+		private readonly now: () => number = Date.now,
+		warmLeaseSchedulerFactory: WarmLeaseSchedulerFactory = runner => new RunOnceScheduler(runner, 0),
+		private readonly directoryMeasure: DirectoryMeasure = measureDirectorySize,
+	) {
+		this.warmLeaseTracker = new ParadisWarmLeaseTracker(
+			() => WARM_TARGET_KEY,
+			(left, right) => signatureOf(left) === signatureOf(right),
+			targets => snapshotCost(targets),
+			this.now,
+			warmLeaseSchedulerFactory,
+			{
+				maxOwners: WARM_LEASE_MAX_OWNERS,
+				maxTargetsPerOwner: 1,
+				maxDistinctTargets: 1,
+				maxTotalMemberships: WARM_LEASE_MAX_OWNERS,
+				maxTotalCost: WARM_LEASE_MAX_TOTAL_SNAPSHOT_BYTES,
+			},
+		);
+		this.warmLeaseListener = this.warmLeaseTracker.onDidChange(() => this.syncWarmTimer());
+	}
+
+	setWarmLease(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget[]): void {
+		if (this.disposed) {
+			return;
+		}
+		// expiry callback が遅れていても、renew/release の入口で tracker と集約台帳を同期する。
+		this.warmLeaseTracker.activeTargets();
+		this.purgeExpiredWarmLeaseOwners();
+		if (!active) {
+			this.warmLeaseOwners.delete(ownerId);
+			this.warmLeaseTracker.release(ownerId);
+			return;
+		}
+
+		const metrics = warmLeaseMetrics(targets);
+		if (!this.isWithinWarmLeaseLimits(ownerId, metrics)) {
+			throw new Error('Warm lease limit exceeded');
+		}
+		this.warmLeaseTracker.setLease(ownerId, [targets]);
+		this.warmLeaseOwners.set(ownerId, {
+			expiresAt: this.now() + PARADIS_WARM_LEASE_DURATION_MS,
+			...metrics,
+		});
+	}
 
 	async measure(targets: readonly IParadisSpaceDiskTarget[], bypassCache = false): Promise<IParadisSpaceDiskResult> {
 		const signature = signatureOf(targets);
-		this.warmTargets = targets;
-		this.warmSignature = signature;
-		this.lastRequestedAt = Date.now();
 		// 諦めた対象を再開してよいのは、ユーザーが明示的に測り直したときだけ。
 		// 画面を開くたびにリセットすると、失敗し続ける環境で永久にリトライすることになる。
 		if (bypassCache) {
 			this.failures = 0;
+			this.syncWarmTimer();
 		}
-		this.ensureWarmLoop();
 
 		if (!bypassCache) {
 			const cached = this.cache;
-			if (cached && cached.signature === signature && Date.now() - cached.at < CACHE_TTL_MS) {
+			if (cached && cached.signature === signature && this.now() - cached.at < CACHE_TTL_MS) {
 				return cached.result;
 			}
 		}
@@ -131,7 +227,11 @@ export class ParadisSpaceDiskService implements IDisposable {
 	 *   上書きしてしまう(値が巻き戻り、次の要求がまた数十秒の走行を起こす)
 	 * キャッシュを書くのは「自分がまだ最新の走行である」場合だけに限定する。
 	 */
-	private run(targets: readonly IParadisSpaceDiskTarget[], signature: string): Promise<IParadisSpaceDiskResult> {
+	private run(
+		targets: readonly IParadisSpaceDiskTarget[],
+		signature: string,
+		shouldCache: () => boolean = () => true,
+	): Promise<IParadisSpaceDiskResult> {
 		const inflight = this.inflight;
 		if (inflight && this.inflightSignature === signature) {
 			return inflight;
@@ -141,8 +241,8 @@ export class ParadisSpaceDiskService implements IDisposable {
 		const promise: Promise<IParadisSpaceDiskResult> = previous
 			.then(() => this.doMeasure(targets))
 			.then(result => {
-				if (this.inflight === promise) {
-					this.cache = { result, at: Date.now(), signature };
+				if (!this.disposed && this.inflight === promise && shouldCache()) {
+					this.cache = { result, at: this.now(), signature };
 					this.failures = 0;
 				}
 				return result;
@@ -159,7 +259,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 	}
 
 	private async doMeasure(targets: readonly IParadisSpaceDiskTarget[]): Promise<IParadisSpaceDiskResult> {
-		const started = Date.now();
+		const started = this.now();
 		const spaces: IParadisSpaceDiskEntry[] = [];
 
 		// スペースは順に処理する。1スペースの中は measureDirectorySize が並列に歩くので、
@@ -179,7 +279,8 @@ export class ParadisSpaceDiskService implements IDisposable {
 		if (spaces.length > 0 && spaces.every(space => space.error !== undefined)) {
 			throw new Error(`could not measure any of ${spaces.length} spaces: ${spaces[0].error}`);
 		}
-		return { spaces, measuredAt: Date.now(), durationMs: Date.now() - started };
+		const measuredAt = this.now();
+		return { spaces, measuredAt, durationMs: measuredAt - started };
 	}
 
 	private async measureOne(target: IParadisSpaceDiskTarget): Promise<IParadisSpaceDiskEntry> {
@@ -199,7 +300,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 				inner.push(worktreePath);
 			}
 			try {
-				const measured = await measureDirectorySize(worktreePath, { token: this.cancellation });
+				const measured = await this.directoryMeasure(worktreePath, { token: this.cancellation });
 				worktrees.push({
 					stateKey: worktree.stateKey, name: worktree.name, bytes: measured.bytes, outside,
 					...(measured.truncated ? { truncated: true } : {}),
@@ -215,7 +316,7 @@ export class ParadisSpaceDiskService implements IDisposable {
 		try {
 			// 除外は正しさだけでなく速度にも効く。実測では worktree を含めて歩くと
 			// 164万ファイル/140秒、除いて 22.8万ファイル/7.8秒だった。
-			const measured = await measureDirectorySize(targetPath, { exclude: inner, token: this.cancellation });
+			const measured = await this.directoryMeasure(targetPath, { exclude: inner, token: this.cancellation });
 			return {
 				stateKey: target.stateKey, name: target.name, ownBytes: measured.bytes, worktrees,
 				...(measured.truncated ? { truncated: true } : {}),
@@ -228,38 +329,69 @@ export class ParadisSpaceDiskService implements IDisposable {
 		}
 	}
 
-	private ensureWarmLoop(): void {
-		if (this.disposed || this.warmTimer !== undefined) {
-			return;
-		}
-		const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
-		// この定期処理だけのために shared process の終了を引き止めない。
-		(timer as { unref?: () => void }).unref?.();
-		this.warmTimer = timer;
-	}
-
 	private async runWarmPass(): Promise<void> {
 		if (this.disposed) {
 			return;
 		}
-		const now = Date.now();
-		if (now - this.lastRequestedAt >= WARM_IDLE_TIMEOUT_MS || this.failures >= MAX_CONSECUTIVE_FAILURES) {
-			this.stopWarmLoop();
+		// activeTargets() は期限切れ owner を同期 purge する。expiry scheduler が遅れていても、
+		// 期限後の snapshot でディスク走査を始めてはいけない。
+		const snapshot = this.warmLeaseTracker.activeTargets()[0];
+		if (!snapshot) {
+			this.syncWarmTimer();
 			return;
 		}
-		if (this.warmTargets.length === 0 || this.inflight !== undefined) {
+		const { generation, key, target: targets } = snapshot;
+		if (this.failureGeneration !== generation) {
+			this.failureGeneration = generation;
+			this.failures = 0;
+		}
+		if (this.failures >= MAX_CONSECUTIVE_FAILURES || targets.length === 0 || this.inflight !== undefined) {
+			this.syncWarmTimer();
 			return;
 		}
 		// 手動更新の直後などで十分新しいなら、この周回は何もしない。
-		if (this.cache && now - this.cache.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
+		if (this.cache && this.now() - this.cache.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
 			return;
 		}
 		try {
-			await this.run(this.warmTargets, this.warmSignature);
+			await this.run(targets, signatureOf(targets), () => this.warmLeaseTracker.isCurrent(key, generation));
+			if (this.warmLeaseTracker.isCurrent(key, generation)) {
+				this.failures = 0;
+			}
 		} catch (error) {
 			// 失敗してもキャッシュは壊さない(古い値が残るだけ)。続けて失敗したら諦める。
-			this.failures++;
+			if (this.warmLeaseTracker.isCurrent(key, generation)) {
+				this.failures++;
+			}
 			this.logService.trace(`[ParadisSpaceDisk] background measure failed: ${error}`);
+		}
+		this.syncWarmTimer();
+	}
+
+	private syncWarmTimer(): void {
+		if (this.disposed) {
+			return;
+		}
+		const snapshot = this.warmLeaseTracker.activeTargets()[0];
+		if (!snapshot) {
+			this.failureGeneration = undefined;
+			this.failures = 0;
+			this.stopWarmLoop();
+			return;
+		}
+		if (this.failureGeneration !== snapshot.generation) {
+			this.failureGeneration = snapshot.generation;
+			this.failures = 0;
+		}
+		if (this.failures >= MAX_CONSECUTIVE_FAILURES) {
+			this.stopWarmLoop();
+			return;
+		}
+		if (this.warmTimer === undefined) {
+			const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
+			// この定期処理だけのために shared process の終了を引き止めない。
+			(timer as { unref?: () => void }).unref?.();
+			this.warmTimer = timer;
 		}
 	}
 
@@ -270,10 +402,45 @@ export class ParadisSpaceDiskService implements IDisposable {
 		}
 	}
 
+	private purgeExpiredWarmLeaseOwners(): void {
+		const now = this.now();
+		for (const [ownerId, owner] of this.warmLeaseOwners) {
+			if (owner.expiresAt <= now) {
+				this.warmLeaseOwners.delete(ownerId);
+			}
+		}
+	}
+
+	private isWithinWarmLeaseLimits(ownerId: string, metrics: IWarmLeaseMetrics): boolean {
+		if (!this.warmLeaseOwners.has(ownerId) && this.warmLeaseOwners.size >= WARM_LEASE_MAX_OWNERS) {
+			return false;
+		}
+		let targetCount = metrics.targetCount;
+		let worktreeCount = metrics.worktreeCount;
+		let cost = metrics.cost;
+		for (const [activeOwnerId, owner] of this.warmLeaseOwners) {
+			if (activeOwnerId === ownerId) {
+				continue;
+			}
+			targetCount += owner.targetCount;
+			worktreeCount += owner.worktreeCount;
+			cost += owner.cost;
+		}
+		return targetCount <= WARM_LEASE_MAX_TOTAL_TARGETS
+			&& worktreeCount <= WARM_LEASE_MAX_TOTAL_WORKTREES
+			&& cost <= WARM_LEASE_MAX_TOTAL_SNAPSHOT_BYTES;
+	}
+
 	dispose(): void {
+		if (this.disposed) {
+			return;
+		}
 		this.disposed = true;
 		this.cancellation.isCancellationRequested = true;
 		this.stopWarmLoop();
+		this.warmLeaseListener.dispose();
+		this.warmLeaseTracker.dispose();
+		this.warmLeaseOwners.clear();
 	}
 }
 
@@ -286,6 +453,11 @@ export class ParadisSpaceDiskChannel implements IServerChannel<string> {
 	}
 
 	call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+		if (command === 'setWarmLease') {
+			const payload = parseWarmLeasePayload(arg);
+			this.service.setWarmLease(payload.ownerId, payload.active, payload.targets);
+			return Promise.resolve(undefined as T);
+		}
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'measure': {
@@ -297,6 +469,102 @@ export class ParadisSpaceDiskChannel implements IServerChannel<string> {
 				throw new Error(`Method not found: ${command}`);
 		}
 	}
+}
+
+function parseWarmLeasePayload(arg: unknown): ParadisSpaceDiskWarmLeasePayload {
+	if (!isExactPlainArray(arg) || arg.length !== 1 || !isExactPlainRecord(arg[0], ['ownerId', 'active', 'targets'])) {
+		throw new Error('Invalid setWarmLease arguments');
+	}
+	const payload = arg[0];
+	if (typeof payload.ownerId !== 'string'
+		|| !WARM_LEASE_OWNER_ID_PATTERN.test(payload.ownerId)
+		|| typeof payload.active !== 'boolean'
+		|| !isExactPlainArray(payload.targets)) {
+		throw new Error('Invalid warm lease payload');
+	}
+	if (!payload.active && payload.targets.length !== 0) {
+		throw new Error('Invalid warm lease release targets');
+	}
+	if (payload.targets.length > WARM_LEASE_MAX_TARGETS_PER_OWNER) {
+		throw new Error('Invalid warm lease target count');
+	}
+
+	let worktreeCount = 0;
+	const targets: IParadisSpaceDiskTarget[] = [];
+	for (const value of payload.targets) {
+		const target = parseWarmTarget(value);
+		worktreeCount += target.worktrees.length;
+		if (worktreeCount > WARM_LEASE_MAX_WORKTREES_PER_OWNER) {
+			throw new Error('Invalid warm lease total worktree count');
+		}
+		targets.push(target);
+	}
+	if (snapshotCost(targets) > WARM_LEASE_MAX_SNAPSHOT_BYTES) {
+		throw new Error('Warm lease snapshot too large');
+	}
+	return { ownerId: payload.ownerId, active: payload.active, targets };
+}
+
+function parseWarmTarget(value: unknown): IParadisSpaceDiskTarget {
+	if (!isExactPlainRecord(value, ['stateKey', 'name', 'path', 'worktrees'])
+		|| !isBoundedString(value.stateKey)
+		|| !isBoundedString(value.name)
+		|| !isBoundedString(value.path)
+		|| !isExactPlainArray(value.worktrees)
+		|| value.worktrees.length > WARM_LEASE_MAX_WORKTREES_PER_TARGET) {
+		throw new Error('Invalid warm lease target');
+	}
+	const worktrees: IParadisSpaceDiskWorktree[] = value.worktrees.map(parseWarmWorktree);
+	return { stateKey: value.stateKey, name: value.name, path: value.path, worktrees };
+}
+
+function parseWarmWorktree(value: unknown): IParadisSpaceDiskWorktree {
+	if (!isExactPlainRecord(value, ['stateKey', 'name', 'path'])
+		|| !isBoundedString(value.stateKey)
+		|| !isBoundedString(value.name)
+		|| !isBoundedString(value.path)) {
+		throw new Error('Invalid warm lease worktree');
+	}
+	return { stateKey: value.stateKey, name: value.name, path: value.path };
+}
+
+function isBoundedString(value: unknown): value is string {
+	return typeof value === 'string' && value.length > 0 && value.length <= WARM_LEASE_MAX_STRING_LENGTH;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
+}
+
+function isExactPlainArray(value: unknown): value is unknown[] {
+	if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1) {
+		return false;
+	}
+	for (let index = 0; index < value.length; index++) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+		if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function isExactPlainRecord(value: unknown, expectedKeys: readonly string[]): value is Record<string, unknown> {
+	if (!isPlainRecord(value)) {
+		return false;
+	}
+	const keys = Reflect.ownKeys(value);
+	if (keys.length !== expectedKeys.length || keys.some(key => typeof key !== 'string' || !expectedKeys.includes(key))) {
+		return false;
+	}
+	return expectedKeys.every(key => {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		return descriptor?.enumerable === true && Object.prototype.hasOwnProperty.call(descriptor, 'value');
+	});
 }
 
 /** sharedProcessMain.ts の PARA-PATCH 点から1行で呼べるファクトリ。 */

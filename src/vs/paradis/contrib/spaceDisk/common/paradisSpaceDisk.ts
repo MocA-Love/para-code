@@ -11,6 +11,13 @@
 
 export const PARADIS_SPACE_DISK_CHANNEL = 'paradisSpaceDisk';
 
+/** IPC の setWarmLease command が受け取る owner-scoped snapshot。 */
+export type ParadisSpaceDiskWarmLeasePayload = Readonly<{
+	readonly ownerId: string;
+	readonly active: boolean;
+	readonly targets: readonly IParadisSpaceDiskTarget[];
+}>;
+
 /** 計測してほしいスペース1件。パスは呼ぶ側(renderer)が解決して渡す。 */
 export interface IParadisSpaceDiskTarget {
 	/** スペースの識別子(リポジトリのid、またはworktreeのstateKey)。 */
@@ -69,6 +76,8 @@ export interface IParadisSpaceDiskResult {
 
 export interface IParadisSpaceDiskService {
 	readonly _serviceBrand: undefined;
+	/** owner の warm snapshot を更新する。`active: false` は owner を release する。 */
+	setWarmLease(ownerId: string, active: boolean, targets: readonly IParadisSpaceDiskTarget[]): void;
 	/**
 	 * スペースの容量を返す。既定ではキャッシュ済みの値を即座に返し、
 	 * `bypassCache` のときだけ測り直す(1周に数十秒かかる)。
