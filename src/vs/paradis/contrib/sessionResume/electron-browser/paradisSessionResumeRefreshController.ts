@@ -24,8 +24,9 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 	private dirty = false;
 	private running = false;
 	private pendingImmediate = false;
-	private pendingImmediateResolvers: Array<() => void> = [];
-	private activeImmediateResolvers: Array<() => void> = [];
+	private pendingImmediateCompletion: Promise<void> | undefined;
+	private pendingImmediateResolver: (() => void) | undefined;
+	private activeImmediateResolver: (() => void) | undefined;
 	private started = false;
 	private automaticScheduled = false;
 	private disposed = false;
@@ -74,7 +75,7 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 	}
 
 	requestImmediate(): Promise<void> {
-		const completion = new Promise<void>(resolve => this.pendingImmediateResolvers.push(resolve));
+		const completion = this.getPendingImmediateCompletion();
 		if (this.disposed) {
 			this.resolvePendingImmediateRequests();
 			return completion;
@@ -106,8 +107,9 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 		}
 		this.dirty = false;
 		this.running = true;
-		this.activeImmediateResolvers = this.pendingImmediateResolvers;
-		this.pendingImmediateResolvers = [];
+		this.activeImmediateResolver = this.pendingImmediateResolver;
+		this.pendingImmediateCompletion = undefined;
+		this.pendingImmediateResolver = undefined;
 		const generation = this.generation;
 		void this.completeRefresh(generation);
 	}
@@ -157,17 +159,21 @@ export class ParadisSessionResumeRefreshController extends Disposable {
 	}
 
 	private resolveActiveImmediateRequests(): void {
-		for (const resolve of this.activeImmediateResolvers) {
-			resolve();
-		}
-		this.activeImmediateResolvers = [];
+		this.activeImmediateResolver?.();
+		this.activeImmediateResolver = undefined;
 	}
 
 	private resolvePendingImmediateRequests(): void {
-		for (const resolve of this.pendingImmediateResolvers) {
-			resolve();
+		this.pendingImmediateResolver?.();
+		this.pendingImmediateCompletion = undefined;
+		this.pendingImmediateResolver = undefined;
+	}
+
+	private getPendingImmediateCompletion(): Promise<void> {
+		if (!this.pendingImmediateCompletion) {
+			this.pendingImmediateCompletion = new Promise<void>(resolve => this.pendingImmediateResolver = resolve);
 		}
-		this.pendingImmediateResolvers = [];
+		return this.pendingImmediateCompletion;
 	}
 
 	override dispose(): void {
