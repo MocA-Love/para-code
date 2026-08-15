@@ -301,6 +301,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			env: {
 				...process.env,
 				ELECTRON_RUN_AS_NODE: '1',
+				CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: '1',
 				// 保険: wsEndpointクエリが使えない経路に万一落ちても、macOS/Linuxではピアプロセスの
 				// env読み取り（ゲートウェイの解決経路2）でペインへ紐付けられるようにしておく
 				[PARADIS_PANE_TOKEN_ENV_VAR]: token,
