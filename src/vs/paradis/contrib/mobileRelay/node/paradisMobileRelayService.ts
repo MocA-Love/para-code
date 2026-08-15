@@ -1686,11 +1686,23 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 				this.logService.warn('[paradisMobileRelay] failed to read Renderer lease manifest', error);
 				return;
 			}
+			const targetedSession = mobileId !== undefined ? this.sessions.get(mobileId) : undefined;
+			let hasOnlineSession = false;
+			if (mobileId === undefined) {
+				for (const session of this.sessions.values()) {
+					if (session.isOnline) {
+						hasOnlineSession = true;
+						break;
+					}
+				}
+			}
+			if (mobileId !== undefined ? !targetedSession?.isOnline : !hasOnlineSession) {
+				return;
+			}
 			const state = this.terminalRegistry.desktopState();
 			const bytes = new TextEncoder().encode(JSON.stringify(state));
 			if (mobileId !== undefined) {
-				const session = this.sessions.get(mobileId);
-				if (session?.isOnline && await session.sendDesktopState(bytes, true)) {
+				if (targetedSession?.isOnline && await targetedSession.sendDesktopState(bytes, true)) {
 					this.broadcastSentCount++;
 				}
 				return;
