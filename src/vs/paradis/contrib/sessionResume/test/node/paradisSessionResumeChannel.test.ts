@@ -579,6 +579,187 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('starts queued transcript reads after a saturated cold read rejects', async () => {
+		const transcriptPaths = Array.from({ length: 5 }, (_, index) => join(claudeProject, `rejected-limiter-${index}.jsonl`));
+		await Promise.all(transcriptPaths.map((transcriptPath, index) => writeLines(transcriptPath, [
+			claudeMessage('user', `Rejected limiter ${index}`),
+			claudeMessage('assistant', 'rejected-limiter-token'),
+		])));
+		const fourReadsStarted = new DeferredPromise<void>();
+		const fifthReadStarted = new DeferredPromise<void>();
+		const releaseFailingRead = new DeferredPromise<void>();
+		const releaseOtherReads = new DeferredPromise<void>();
+		const startedPaths: string[] = [];
+		const blockingRead = { paths: new Set<string>(), failingPath: undefined as string | undefined };
+		let failureReleased = false;
+		let activeReads = 0;
+		let maxActiveReads = 0;
+		const service = createService(async filePath => {
+			if (!blockingRead.paths.has(filePath)) {
+				assert.strictEqual(failureReleased, true);
+				fifthReadStarted.complete();
+				return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+			}
+			activeReads++;
+			maxActiveReads = Math.max(maxActiveReads, activeReads);
+			startedPaths.push(filePath);
+			if (startedPaths.length === 4) {
+				fourReadsStarted.complete();
+			}
+			try {
+				if (filePath === blockingRead.failingPath) {
+					await releaseFailingRead.p;
+					failureReleased = true;
+					throw new Error('expected cold read failure');
+				}
+				await releaseOtherReads.p;
+				return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+			} finally {
+				activeReads--;
+			}
+		});
+		const sessions = await listSessions(service);
+		const catalogIds = sessions.map(session => session.catalogId);
+		blockingRead.paths = new Set(sessions.slice(0, 4).map(session => join(claudeProject, `${session.id}.jsonl`)));
+		blockingRead.failingPath = join(claudeProject, `${sessions[0].id}.jsonl`);
+		assert.ok(blockingRead.failingPath);
+
+		const search = service.search('rejected-limiter-client', 'rejected-limiter-token', catalogIds);
+		await fourReadsStarted.p;
+		releaseFailingRead.complete();
+		try {
+			const fifthStartedBeforeOtherReads = await Promise.race([
+				fifthReadStarted.p.then(() => true),
+				new Promise<boolean>(resolve => setTimeout(() => resolve(false), 100)),
+			]);
+			assert.strictEqual(fifthStartedBeforeOtherReads, true);
+		} finally {
+			releaseOtherReads.complete();
+		}
+		const results = await search;
+
+		assert.deepStrictEqual({
+			maxActiveReads,
+			startedReads: startedPaths.length + 1,
+			resultCount: results.length,
+			resultSources: results.map(result => result.source),
+		}, {
+			maxActiveReads: 4,
+			startedReads: 5,
+			resultCount: 4,
+			resultSources: ['conversation', 'conversation', 'conversation', 'conversation'],
+		});
+	});
+
+	test('keeps metadata cache hit preview and list work outside saturated cold reads', async () => {
+		const warmPath = join(claudeProject, 'limiter-warm.jsonl');
+		const metadataPath = join(claudeProject, 'limiter-metadata.jsonl');
+		const coldPaths = Array.from({ length: 4 }, (_, index) => join(claudeProject, `limiter-cold-${index}.jsonl`));
+		await Promise.all([
+			writeLines(warmPath, [claudeMessage('user', 'Warm title'), claudeMessage('assistant', 'warm-cache-token')]),
+			writeLines(metadataPath, [claudeMessage('user', 'Metadata-only title'), claudeMessage('assistant', 'metadata body')]),
+			...coldPaths.map((transcriptPath, index) => writeLines(transcriptPath, [
+				claudeMessage('user', `Cold title ${index}`),
+				claudeMessage('assistant', 'saturated-cold-token'),
+			])),
+		]);
+		const fourColdReadsStarted = new DeferredPromise<void>();
+		const releaseColdReads = new DeferredPromise<void>();
+		let coldReadStarts = 0;
+		const service = createService(async filePath => {
+			if (coldPaths.includes(filePath)) {
+				coldReadStarts++;
+				if (coldReadStarts === 4) {
+					fourColdReadsStarted.complete();
+				}
+				await releaseColdReads.p;
+			}
+			return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+		});
+		const sessions = await listSessions(service);
+		const warm = sessions.find(session => session.id === 'limiter-warm');
+		const metadata = sessions.find(session => session.id === 'limiter-metadata');
+		const coldCatalogIds = sessions.filter(session => /^limiter-cold-\d$/.test(session.id)).map(session => session.catalogId);
+		assert.ok(warm);
+		assert.ok(metadata);
+		assert.strictEqual(coldCatalogIds.length, 4);
+		await service.search('warm-cache-prime', 'warm-cache-token', [warm.catalogId]);
+
+		const coldSearch = service.search('saturated-cold', 'saturated-cold-token', coldCatalogIds);
+		await fourColdReadsStarted.p;
+		try {
+			const completedBeforeRelease = await Promise.race([
+				Promise.all([
+					service.search('metadata-fast-path', 'metadata-only title', [metadata.catalogId]),
+					service.search('warm-cache-hit', 'warm-cache-token', [warm.catalogId]),
+					service.preview(warm.catalogId),
+					listSessions(service),
+				]).then(() => true),
+				new Promise<boolean>(resolve => setTimeout(() => resolve(false), 100)),
+			]);
+			assert.deepStrictEqual({ completedBeforeRelease, coldReadStarts }, { completedBeforeRelease: true, coldReadStarts: 4 });
+		} finally {
+			releaseColdReads.complete();
+		}
+		const coldResults = await coldSearch;
+		assert.strictEqual(coldResults.length, 4);
+	});
+
+	test('uses text populated while waiting for a search permit without another physical read', async () => {
+		const coldPaths = Array.from({ length: 4 }, (_, index) => join(claudeProject, `recheck-cold-${index}.jsonl`));
+		const targetPath = join(claudeProject, 'recheck-target.jsonl');
+		await Promise.all([
+			...coldPaths.map((transcriptPath, index) => writeLines(transcriptPath, [
+				claudeMessage('user', `Recheck cold ${index}`),
+				claudeMessage('assistant', 'recheck-cold-token'),
+			])),
+			writeLines(targetPath, [claudeMessage('user', 'Recheck target'), claudeMessage('assistant', 'physical-read-token')]),
+		]);
+		const fourColdReadsStarted = new DeferredPromise<void>();
+		const releaseColdReads = new DeferredPromise<void>();
+		let coldReadStarts = 0;
+		let targetReadStarts = 0;
+		const service = createService(async filePath => {
+			if (coldPaths.includes(filePath)) {
+				coldReadStarts++;
+				if (coldReadStarts === 4) {
+					fourColdReadsStarted.complete();
+				}
+				await releaseColdReads.p;
+			}
+			if (filePath === targetPath) {
+				targetReadStarts++;
+			}
+			return { text: await fs.readFile(filePath, 'utf8'), truncated: false };
+		});
+		const sessions = await listSessions(service);
+		const coldCatalogIds = sessions.filter(session => /^recheck-cold-\d$/.test(session.id)).map(session => session.catalogId);
+		const target = sessions.find(session => session.id === 'recheck-target');
+		assert.strictEqual(coldCatalogIds.length, 4);
+		assert.ok(target);
+
+		const coldSearch = service.search('recheck-cold-client', 'recheck-cold-token', coldCatalogIds);
+		await fourColdReadsStarted.p;
+		const targetSearch = service.search('recheck-target-client', 'recheck-cache-token', [target.catalogId]);
+		const internals = service as unknown as {
+			readonly searchTextCache: { set(catalogId: string, revision: number, text: string): void };
+		};
+		// The public service shares same-entry reads; populate the cache as the valid prior owner seam while this entry waits.
+		internals.searchTextCache.set(target.catalogId, target.updatedAt, 'recheck-cache-token');
+		releaseColdReads.complete();
+		const [coldResults, targetResults] = await Promise.all([coldSearch, targetSearch]);
+
+		assert.deepStrictEqual({
+			coldResults: coldResults.length,
+			targetReadStarts,
+			targetResults: targetResults.map(result => ({ catalogId: result.catalogId, source: result.source })),
+		}, {
+			coldResults: 4,
+			targetReadStarts: 0,
+			targetResults: [{ catalogId: target.catalogId, source: 'conversation' }],
+		});
+	});
+
 	test('preserves search source snippet and match count for metadata and conversation terms', async () => {
 		const transcriptPath = join(claudeProject, 'search-golden.jsonl');
 		await writeLines(transcriptPath, [
