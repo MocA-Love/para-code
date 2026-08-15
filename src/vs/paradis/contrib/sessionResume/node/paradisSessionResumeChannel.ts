@@ -345,7 +345,12 @@ export class ParadisSessionResumeService {
 			seenStateKeys.add(space.stateKey);
 			seenCwds.add(cwdKey);
 			return true;
-		}).slice(0, 200) : [];
+		}).slice(0, 200).map(space => ({
+			stateKey: space.stateKey,
+			name: space.name,
+			cwd: space.cwd,
+			current: space.current,
+		})) : [];
 		return { spaces, includeArchived: request.includeArchived === true };
 	}
 
@@ -355,7 +360,7 @@ export class ParadisSessionResumeService {
 			spaces: request.spaces.map(space => ({
 				stateKey: space.stateKey,
 				name: space.name,
-				cwd: normalizePath(space.cwd),
+				cwd: space.cwd,
 				current: space.current,
 			})),
 		});

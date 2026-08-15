@@ -273,25 +273,65 @@ suite('ParadisSessionResume', () => {
 		assert.strictEqual(firstResult, secondResult);
 	});
 
-	test('normalizes cwd before sharing an active scan', async () => {
-		const transcriptPath = join(claudeProject, 'normalized-cwd-active-scan.jsonl');
-		await writeLines(transcriptPath, [claudeMessage('user', 'Normalized cwd active scan')]);
+	test('keeps raw cwd results independent when equivalent cwd requests overlap in either order', async () => {
+		const transcriptPath = join(claudeProject, 'raw-cwd-active-scan.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Raw cwd active scan')]);
+		const alternateCwd = `${workspace}/../workspace`;
+		for (const [firstCwd, secondCwd] of [[workspace, alternateCwd], [alternateCwd, workspace]]) {
+			const firstSummaryRead = new DeferredPromise<void>();
+			const summaryGate = new DeferredPromise<void>();
+			let summaryReadCount = 0;
+			const service = createService(undefined, async () => {
+				summaryReadCount++;
+				firstSummaryRead.complete();
+				await summaryGate.p;
+			});
+
+			const first = service.list(createListRequest({ cwd: firstCwd }));
+			await firstSummaryRead.p;
+			const second = service.list(createListRequest({ cwd: secondCwd }));
+			summaryGate.complete();
+			const [[firstSession], [secondSession]] = await Promise.all([first, second]);
+
+			assert.strictEqual(summaryReadCount, 2);
+			assert.strictEqual(firstSession?.cwd, firstCwd);
+			assert.strictEqual(secondSession?.cwd, secondCwd);
+		}
+	});
+
+	test('snapshots valid list spaces before caller mutation', async () => {
+		const transcriptPath = join(claudeProject, 'snapshot-list-space.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Snapshot list space')]);
 		const firstSummaryRead = new DeferredPromise<void>();
 		const summaryGate = new DeferredPromise<void>();
-		let summaryReadCount = 0;
 		const service = createService(undefined, async () => {
-			summaryReadCount++;
 			firstSummaryRead.complete();
 			await summaryGate.p;
 		});
+		const request = {
+			spaces: [{ stateKey: 'workspace-state', name: 'Fixture Workspace', cwd: workspace, current: true }],
+			includeArchived: false,
+		};
 
-		const first = service.list(createListRequest());
+		const list = service.list(request);
+		request.spaces[0].stateKey = 'mutated-state';
+		request.spaces[0].name = 'Mutated Workspace';
+		request.spaces[0].current = false;
 		await firstSummaryRead.p;
-		const second = service.list(createListRequest({ cwd: join(workspace, '..', 'workspace') }));
 		summaryGate.complete();
-		await Promise.all([first, second]);
+		const [session] = await list;
 
-		assert.strictEqual(summaryReadCount, 1);
+		assert.deepStrictEqual({
+			stateKey: session?.spaceStateKey,
+			name: session?.spaceName,
+			cwd: session?.cwd,
+			current: session?.currentSpace,
+		}, {
+			stateKey: 'workspace-state',
+			name: 'Fixture Workspace',
+			cwd: workspace,
+			current: true,
+		});
 	});
 
 	test('does not share active scans for distinct observable list requests', async () => {
