@@ -32,3 +32,4 @@ import './contrib/mobileRelay/browser/paradisMobileRelaySettings.contribution.js
 import './contrib/terminalShiftEnter/browser/paradisTerminalShiftEnter.contribution.js';
 import './contrib/codexTerminalTitle/browser/paradisCodexTerminalTitleSettings.contribution.js';
 import './contrib/browserDownloads/browser/paradisBrowserDownloadsSettings.contribution.js';
+import './contrib/terminalDiagnostics/browser/paradisTerminalCountDiagnostics.contribution.js';
