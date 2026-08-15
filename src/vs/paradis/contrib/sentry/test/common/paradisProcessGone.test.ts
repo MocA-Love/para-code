@@ -57,7 +57,7 @@ suite('ParadisProcessGone', () => {
 			errorMessage: diagnostic.error.message,
 			safeExtra: diagnostic.safeExtra,
 		}, {
-			operation: 'child-process-gone-crashed',
+			operation: 'child-process-gone-crashed-file-watcher',
 			errorMessage: 'Child process gone: Utility/fileWatcher (crashed)',
 			safeExtra: {
 				process_type: 'Utility',
@@ -89,6 +89,19 @@ suite('ParadisProcessGone', () => {
 		}, 250);
 
 		assert.strictEqual(diagnostic?.error.message, 'Child process gone: GPU/GPU (abnormal-exit)');
+	});
+
+	test('child process diagnostic operation distinguishes process kinds and ignores instance indices', () => {
+		const gpuKilled = createParadisChildProcessGoneDiagnostic({ type: 'GPU', reason: 'killed', exitCode: 9 }, 250);
+		const networkKilled = createParadisChildProcessGoneDiagnostic({ type: 'Utility', name: 'Network Service', reason: 'killed', exitCode: 9 }, 250);
+		const watcherFirst = createParadisChildProcessGoneDiagnostic({ type: 'Utility', name: 'fileWatcher-1', reason: 'crashed', exitCode: 9 }, 250);
+		const watcherThird = createParadisChildProcessGoneDiagnostic({ type: 'Utility', name: 'fileWatcher-3', reason: 'crashed', exitCode: 9 }, 250);
+
+		// Same reason, different process kinds: distinct operations, so they no longer share a Sentry issue.
+		assert.notStrictEqual(gpuKilled?.operation, networkKilled?.operation);
+		// Same process kind, different instance index: same operation, so repeats still group together.
+		assert.strictEqual(watcherFirst?.operation, watcherThird?.operation);
+		assert.strictEqual(watcherFirst?.operation, 'child-process-gone-crashed-file-watcher');
 	});
 
 	test('does not create diagnostics for clean child or renderer exits', () => {
@@ -145,7 +158,7 @@ suite('ParadisProcessGone', () => {
 			[
 				'owned',
 				'process-lifecycle',
-				'child-process-gone-crashed',
+				'child-process-gone-crashed-extension-host',
 				'Child process gone: Utility/extensionHost (crashed)',
 				{
 					process_type: 'Utility',

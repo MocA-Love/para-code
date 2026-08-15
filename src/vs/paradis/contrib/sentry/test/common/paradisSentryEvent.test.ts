@@ -8,7 +8,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import type { IParadisSentryEvent } from '../../common/paradisSentryCommon.js';
+import { paradisSentryFingerprint, type IParadisSentryEvent } from '../../common/paradisSentryCommon.js';
 import { paradisPrepareSentryEvent } from '../../common/paradisSentryEvent.js';
 
 suite('ParadisSentryEvent', () => {
@@ -69,6 +69,19 @@ suite('ParadisSentryEvent', () => {
 			user: prepared?.user,
 			request: prepared?.request,
 		}, { serverName: undefined, user: undefined, request: undefined });
+	});
+
+	// fingerprint を実際にセットしないと、Sentry 側は自前のスタックトレースだけを見た
+	// デフォルトグルーピングに戻ってしまい、para.operation で分けたつもりの issue が
+	// 同じ行から throw した別の失敗と一緒くたに束ねられる。
+	test('assigns a Sentry fingerprint derived from scope/feature/operation, not just the stacktrace', () => {
+		const preparedA = paradisPrepareSentryEvent(ownedEvent('fingerprint-check-a', { 'para.feature': 'process-lifecycle' }), 'main');
+		const preparedB = paradisPrepareSentryEvent(ownedEvent('fingerprint-check-b', { 'para.feature': 'process-lifecycle' }), 'main');
+
+		// Both events throw from the exact same stack frame (ownedEvent's fixed frame), so a Sentry
+		// default grouping (which only looks at exception type + stacktrace) would merge them.
+		assert.deepStrictEqual(preparedA?.fingerprint, [paradisSentryFingerprint(preparedA!)]);
+		assert.notDeepStrictEqual(preparedA?.fingerprint, preparedB?.fingerprint);
 	});
 
 	test('drops events that are not attributable to fork-owned code', () => {
