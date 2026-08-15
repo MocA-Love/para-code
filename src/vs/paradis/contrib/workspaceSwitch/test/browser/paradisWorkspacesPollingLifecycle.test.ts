@@ -238,6 +238,29 @@ suite('ParadisWorkspacesPollingController production wiring', () => {
 			refreshes: { diff: 1, pr: 1 },
 		});
 	});
+
+	test('dispose during in-flight refresh prevents completion rescheduling', async () => {
+		const harness = store.add(new PollingControllerHarness(true));
+		harness.behaviors.diff = 'pending';
+		harness.behaviors.pr = 'pending';
+		harness.clock.advance(0);
+		await settlePolling();
+
+		harness.dispose();
+		harness.resolvePending();
+		await settlePolling();
+		harness.clock.advance(360_000);
+
+		assert.deepStrictEqual({
+			schedules: harness.scheduledDelays(),
+			callbacks: harness.callbackCounts(),
+			refreshes: harness.refreshCounts,
+		}, {
+			schedules: { diff: [0], pr: [0] },
+			callbacks: { diff: 1, pr: 1 },
+			refreshes: { diff: 1, pr: 1 },
+		});
+	});
 });
 
 type PollKind = 'diff' | 'pr';
@@ -293,6 +316,10 @@ class PollingControllerHarness implements IDisposable {
 
 	scheduledDelays(): Record<PollKind, readonly number[]> {
 		return this.clock.scheduledDelays();
+	}
+
+	callbackCounts(): Record<PollKind, number> {
+		return this.clock.callbackCounts();
 	}
 
 	dispose(): void {
