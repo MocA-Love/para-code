@@ -533,13 +533,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			return;
 		}
 		this.statePushMetricsEnabled = enabled;
+		const generation = ++this.statePushMetricsGeneration;
 		if (!enabled) {
 			this.statePushMetricsTimer.cancel();
 			this.resetStatePushMetrics();
 			return;
 		}
 		this.statePushMetricsTimer.cancelAndSet(() => {
-			if (this.statePushMetricsEnabled) {
+			if (this.statePushMetricsEnabled && generation === this.statePushMetricsGeneration) {
 				this.reportStatePushMetrics();
 			}
 		}, 60_000);
@@ -672,6 +673,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	// state push計測は有効時だけ動かし、無効なworkbenchではrendererの定期起床を作らない。
 	private readonly statePushMetricsTimer = this._register(new IntervalTimer());
 	private statePushMetricsEnabled = false;
+	private statePushMetricsGeneration = 0;
 	/**
 	 * 計測用: VTスナップショットの送信実績（理由別の件数と最大文字数）。
 	 * 1件ごとに出すとフロー制御の追いつきが連発する状況——まさに測りたい場面——で
