@@ -13,6 +13,7 @@
 
 import * as electron from 'electron';
 import type { NativeImage, WebContents } from 'electron';
+import { timeout } from '../../../../base/common/async.js';
 import { encodeBase64 } from '../../../../base/common/buffer.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -38,6 +39,7 @@ import {
 	ParadisExactViewFrameKeepaliveRegistry,
 } from '../common/paradisExactViewFrameKeepalive.js';
 import { ParadisCdpUpstreamPortPin } from './paradisCdpUpstreamPortPin.js';
+import { ParadisCursorOverlayController } from './paradisCursorOverlayController.js';
 
 /** 上流ポートの問い合わせに答えるまでの上限。確定が間に合わなければ「まだ無い」と返す。 */
 const UPSTREAM_PORT_ANSWER_TIMEOUT_MS = 1_500;
@@ -79,6 +81,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		private readonly browserViewMainService: IBrowserViewMainService,
 		private readonly createViewLease: () => string = generateUuid,
 		private readonly upstreamPortPin: ParadisCdpUpstreamPortPin = new ParadisCdpUpstreamPortPin(),
+		/** エージェント操作を見せる合成カーソル演出。既定は「常に有効」（app.tsが設定を渡す）。 */
+		private readonly cursorOverlay: ParadisCursorOverlayController = new ParadisCursorOverlayController(),
 	) { }
 
 	/**
@@ -317,14 +321,24 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		if (!view) {
 			return null;
 		}
+		// カーソル演出は撮影結果に写さない（既定）。撮影経路は非表示ビューも一時的に可視化して
+		// 撮るため、可視かどうかに関わらず先に隠しておく必要がある。撮り終えたら元に戻し、
+		// 「撮った」ことが分かるフラッシュを出す（フラッシュは撮影後なので画像には入らない）。
+		await this.cursorOverlay.hideForCapture(view);
+		let captured = false;
 		try {
 			const buffer = await view.captureScreenshot(options);
-			return this.resolveExistingExactView(descriptor) === view ? encodeBase64(buffer) : null;
+			captured = this.resolveExistingExactView(descriptor) === view;
+			return captured ? encodeBase64(buffer) : null;
 		} catch (error) {
 			if (this.resolveExistingExactView(descriptor) !== view) {
 				return null;
 			}
 			throw error;
+		} finally {
+			// 復帰は必ず行い、フラッシュは本当に撮れたときだけ。所有権を失ったページや
+			// 失敗した撮影で光らせると、ユーザーが今使っているページが理由もなく光る。
+			this.cursorOverlay.afterCapture(view, captured);
 		}
 	}
 
@@ -347,6 +361,8 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		// the view needs the periodic nudge. Ride that signal instead of adding a second lifecycle.
 		if (enabledValue) {
 			this.frameKeepalive.remove(descriptor);
+			// 同じ信号がエージェントの手離れも意味するので、置きっぱなしのカーソルもここで片付ける。
+			this.cursorOverlay.removeOverlay(view);
 		} else {
 			this.frameKeepalive.add(descriptor);
 		}
@@ -416,10 +432,24 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService {
 		}
 		try {
 			if (view.webContents.isFocused()) {
+				// ユーザーが自分で操作し始めた合図。エージェントのカーソルを残すと、実カーソルの
+				// 横で固まったまま「止まっている」ように見えるので、ここで片付ける。
+				this.cursorOverlay.removeOverlay(view);
 				return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: the bound BrowserView is focused by the user' };
 			}
 		} catch {
 			return { status: 'retryable', message: 'PARA_BROWSER_RETRYABLE: exact BrowserView focus state is unavailable' };
+		}
+
+		// エージェントが操作していることを見せる合成カーソル。実際の配送より先にカーソルを
+		// 目標座標へ滑らせ、着いてから配送することで、ホバーやクリックが「カーソルが着いた瞬間」に
+		// 効いているように見せる。待ち時間は上限つきで、演出が失敗しても0になるだけ。
+		// この後の commit 手順は毎回 authority と focus を取り直すので、ここで待つのは安全。
+		if (command.method === 'Input.dispatchMouseEvent') {
+			const cursorWaitMs = await this.cursorOverlay.onMouseEvent(view, command.params);
+			if (cursorWaitMs > 0) {
+				await timeout(cursorWaitMs);
+			}
 		}
 
 		const keySignature = command.method === 'Input.dispatchKeyEvent'
