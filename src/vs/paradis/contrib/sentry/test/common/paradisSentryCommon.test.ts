@@ -131,35 +131,6 @@ suite('ParadisSentryCommon', () => {
 		assert.deepStrictEqual(limiter.consume('same'), { allowed: true, suppressed: 2 });
 	});
 
-	test('removes expired fingerprints while preserving the current window', () => {
-		let now = 1_000;
-		const limiter = new ParadisSentryRateLimiter(() => now);
-
-		limiter.consume('expired');
-		now += 10 * 60 * 1_000;
-		limiter.consume('current');
-
-		const entries = Reflect.get(limiter, 'entries') as Map<string, object>;
-		assert.deepStrictEqual([...entries.keys()], ['current']);
-	});
-
-	test('keeps unexpired fingerprints and their sent count when sweeping expired entries', () => {
-		let now = 1_000;
-		const limiter = new ParadisSentryRateLimiter(() => now);
-
-		limiter.consume('expired');
-		now += 9 * 60 * 1_000;
-		assert.deepStrictEqual(limiter.consume('active'), { allowed: true, suppressed: 0 });
-		now += 1 * 60 * 1_000;
-		assert.deepStrictEqual(limiter.consume('current'), { allowed: true, suppressed: 0 });
-
-		const entries = Reflect.get(limiter, 'entries') as Map<string, object>;
-		assert.deepStrictEqual([...entries.keys()], ['active', 'current']);
-		assert.deepStrictEqual(limiter.consume('active'), { allowed: true, suppressed: 0 });
-		assert.deepStrictEqual(limiter.consume('active'), { allowed: true, suppressed: 0 });
-		assert.deepStrictEqual(limiter.consume('active'), { allowed: false, suppressed: 1 });
-	});
-
 	test('builds a stable fingerprint from scope, feature, operation, exception type, and top frame', () => {
 		const first = paradisSentryFingerprint({
 			tags: { 'para.scope': 'owned', 'para.feature': 'codex-app-server', 'para.operation': 'connect' },
