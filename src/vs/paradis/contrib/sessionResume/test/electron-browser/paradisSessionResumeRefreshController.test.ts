@@ -149,6 +149,49 @@ suite('ParadisSessionResumeRefreshController', () => {
 		assert.strictEqual(scheduler.cancelCount, 1);
 		assert.deepStrictEqual(scheduler.delays, [750]);
 	});
+
+	test('shares one pending completion until the trailing immediate refresh settles', async () => {
+		const scheduler = new TestScheduler();
+		const first = new DeferredPromise<void>();
+		const second = new DeferredPromise<void>();
+		let runCount = 0;
+		const controller = store.add(createController(scheduler, async () => {
+			runCount++;
+			await (runCount === 1 ? first.p : second.p);
+		}));
+
+		controller.start();
+		controller.requestImmediate();
+		const pendingOne = controller.requestImmediate();
+		const pendingTwo = controller.requestImmediate();
+		assert.strictEqual(pendingOne, pendingTwo);
+
+		first.complete();
+		await flushMicrotasks();
+		assert.strictEqual(runCount, 2);
+		let settled = false;
+		void pendingOne.then(() => { settled = true; });
+		await flushMicrotasks();
+		assert.strictEqual(settled, false);
+
+		second.complete();
+		await pendingOne;
+		assert.strictEqual(settled, true);
+	});
+
+	test('settles the shared pending completion when disposed', async () => {
+		const scheduler = new TestScheduler();
+		const running = new DeferredPromise<void>();
+		const controller = createController(scheduler, async () => running.p);
+
+		controller.start();
+		controller.requestImmediate();
+		const pendingOne = controller.requestImmediate();
+		const pendingTwo = controller.requestImmediate();
+		assert.strictEqual(pendingOne, pendingTwo);
+		controller.dispose();
+		await pendingOne;
+	});
 });
 
 function createController(scheduler: TestScheduler, run: () => Promise<void>): ParadisSessionResumeRefreshController {
