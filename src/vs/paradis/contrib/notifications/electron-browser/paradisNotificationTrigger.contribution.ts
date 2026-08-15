@@ -205,6 +205,11 @@ class ParadisNotificationTrigger extends Disposable implements IWorkbenchContrib
 
 	/** 音 + OS通知 + Aivis を発火する (stateKey === undefined はスコープ外フォールバック)。 */
 	private async _notify(stateKey: string | undefined, status: NotifyStatus, placeholders: IParadisAivisPlaceholders): Promise<void> {
+		// おやすみモード中は音・OS通知・Aivis発話を一括抑制する。
+		if (this.settingsService.getDoNotDisturb().enabled) {
+			return;
+		}
+
 		// question は「人間の対応が必要」= permission と同じ扱い ({{event}} だけ区別)。
 		const needsAction = status === 'permission' || status === 'question';
 

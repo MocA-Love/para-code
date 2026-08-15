@@ -30,6 +30,7 @@ import { clearAivisApiCaches } from './paradisAivisApiCache.js';
 import { ParadisAivisDictionarySection } from './paradisAivisDictionarySection.js';
 import { ParadisAivisUsageSection } from './paradisAivisUsageSection.js';
 import { ParadisAivisVoiceSection } from './paradisAivisVoiceSection.js';
+import { ParadisDoNotDisturbSection } from './paradisDoNotDisturbSection.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { ParadisNotificationSoundPlayer } from './paradisNotificationSoundPlayer.js';
 import { openParadisYouTubeImportDialog } from './paradisYouTubeImportDialog.js';
@@ -179,6 +180,9 @@ export class ParadisNotificationSettingsDialog extends Disposable {
 
 	private _render(): void {
 		dom.clearNode(this._body);
+
+		const dndSection = dom.append(this._body, $('.pns-section'));
+		this._register(this.instantiationService.createInstance(ParadisDoNotDisturbSection, dndSection));
 
 		const notifSection = dom.append(this._body, $('.pns-section'));
 		this._notifSectionEl = notifSection;

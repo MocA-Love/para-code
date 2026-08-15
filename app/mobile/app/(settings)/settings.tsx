@@ -70,6 +70,15 @@ export default function SettingsScreen() {
 						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
 					</Pressable>
 					<View style={styles.separator} />
+					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/rtk'); }}>
+						<Ionicons name="flash-outline" size={18} color={colors.accent} />
+						<View style={styles.rowBody}>
+							<Text style={styles.rowTitle}>RTK節約状況</Text>
+							<Text style={styles.rowDesc}>RTKがコマンド出力から削ったトークン量を確認します</Text>
+						</View>
+						<Ionicons name="chevron-forward" size={16} color={colors.textDim} />
+					</Pressable>
+					<View style={styles.separator} />
 					<Pressable style={styles.row} onPress={() => { hapticSelection(); router.push('/ratelimit'); }}>
 						<Ionicons name="speedometer-outline" size={18} color={colors.accent} />
 						<View style={styles.rowBody}>

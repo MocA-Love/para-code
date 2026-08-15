@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -308,6 +308,8 @@ interface AppState extends StoreState {
 	scmXlsxDiff(ws: string, path: string): Promise<ScmXlsxDiffResult>;
 	/** ccusage 使用量ダッシュボード。bypassCache=true で shared process 側の TTL キャッシュを無視して再取得する。 */
 	usageDashboard(bypassCache?: boolean): Promise<UsageDashboardResult>;
+	/** RTK(Rust Token Killer)の節約状況。bypassCache の意味は usageDashboard と同じ。 */
+	rtkSavings(bypassCache?: boolean): Promise<RtkSavingsResult>;
 	/** Rate Limit(AIリミット)スナップショット。bypassCache の意味は usageDashboard と同じ。 */
 	rateLimits(bypassCache?: boolean): Promise<RateLimitsResult>;
 	/** GitHub API利用状況。bypassCache の意味は usageDashboard と同じ。 */
@@ -1771,6 +1773,11 @@ export const useAppStore = create<AppState>(set => ({
 	usageDashboard(bypassCache?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		return controller.usageDashboard(bypassCache);
+	},
+
+	rtkSavings(bypassCache?: boolean) {
+		if (!controller) { return Promise.reject(new Error('not initialized')); }
+		return controller.rtkSavings(bypassCache);
 	},
 
 	rateLimits(bypassCache?: boolean) {

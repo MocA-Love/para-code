@@ -383,6 +383,47 @@ export interface UsageDashboardResult {
 	fetchedAt: number;
 }
 
+/** RTK: 1日分の節約量。PC側 IParadisRtkDayData と同形（出力トークン・所要時間はモバイルでは使わない）。 */
+export interface RtkDayData {
+	/** YYYY-MM-DD。 */
+	date: string;
+	commands: number;
+	inputTokens: number;
+	savedTokens: number;
+}
+/** RTK: 全期間の合計。PC側 IParadisRtkTotals と同形。 */
+export interface RtkTotals {
+	commands: number;
+	inputTokens: number;
+	savedTokens: number;
+}
+/** RTK: コマンド別内訳の1行。PC側 IParadisRtkCommandRow と同形。 */
+export interface RtkCommandRow {
+	/** 表示幅で切り詰められて末尾が "..." になっていることがある（PC側がそのまま渡す）。 */
+	command: string;
+	count: number;
+	savedTokens: number;
+	avgSavingsPct: number;
+}
+/** RTK: 直近に実行されたコマンドの1行。PC側 IParadisRtkHistoryEntry と同形。 */
+export interface RtkHistoryEntry {
+	/** rtk の表示そのまま（例: "08-15 09:10"）。年を持たないため Date へは変換しない。 */
+	timestampLabel: string;
+	command: string;
+	/** 節約率(%)。符号は持たず大きさだけ。 */
+	savingsPct: number;
+	tokens: number;
+}
+/** rtk 応答（PC側で正規化済みの節約データ一式）。PC側 IParadisRtkDashboardData と同形。 */
+export interface RtkSavingsResult {
+	days: RtkDayData[];
+	totals: RtkTotals;
+	commands: RtkCommandRow[];
+	history: RtkHistoryEntry[];
+	failedReports: string[];
+	fetchedAt: number;
+}
+
 /** Rate Limit(AIリミット)の1ウィンドウ(5時間/7日/モデル別)。PC側 IParadisLimitsWindow と同形。 */
 export interface RateLimitWindow {
 	usedPercent: number;
@@ -2974,6 +3015,18 @@ export class MobileController {
 			.then(response => {
 				if (!response.data) {
 					throw new Error('empty usage response');
+				}
+				return response.data;
+			});
+	}
+
+	/** RTK(Rust Token Killer)の節約状況（PC版のRTKダッシュボードと同じ集計データ）。 */
+	rtkSavings(bypassCache?: boolean): Promise<RtkSavingsResult> {
+		// usageDashboard と同じく、PC側は結果を data フィールドにネストして返すためここで剥がす
+		return this.request<{ data?: RtkSavingsResult }>('fs', { t: 'rtk', ...(bypassCache ? { bypassCache: true } : {}) }, 60_000)
+			.then(response => {
+				if (!response.data) {
+					throw new Error('empty rtk response');
 				}
 				return response.data;
 			});

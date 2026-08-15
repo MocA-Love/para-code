@@ -24,6 +24,8 @@ import './contrib/workspaceSwitch/electron-browser/paradisAddRepositoryFlow.cont
 import './contrib/browserButton/electron-browser/paradisOpenBrowserButton.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationTrigger.contribution.js';
 import './contrib/notifications/electron-browser/paradisNotificationSettingsDialog.contribution.js';
+import './contrib/notifications/electron-browser/paradisDoNotDisturbStatusBar.contribution.js';
+import './contrib/notifications/electron-browser/paradisAivisMuteSync.contribution.js';
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisHtmlViewer.contribution.js';
 import './contrib/fileViewers/electron-browser/paradisSpreadsheetViewer.contribution.js';
@@ -35,6 +37,7 @@ import './contrib/keepAwake/electron-browser/paradisKeepAwake.contribution.js';
 import './contrib/mobileRelay/electron-browser/paradisMobileRelay.contribution.js';
 import './contrib/browserMirror/electron-browser/paradisBrowserMirrorSpike.contribution.js';
 import './contrib/ccusage/electron-browser/paradisCcusage.contribution.js';
+import './contrib/rtk/electron-browser/paradisRtk.contribution.js';
 import './contrib/sessionResume/electron-browser/paradisSessionResume.contribution.js';
 import './contrib/githubMetrics/electron-browser/paradisGithubMetrics.contribution.js';
 import './contrib/codexTerminalTitle/electron-browser/paradisCodexTerminalTitle.contribution.js';
