@@ -58,6 +58,7 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 		private readonly keyOf: (target: TTarget) => string,
 		private readonly equals: (left: TTarget, right: TTarget) => boolean,
 		private readonly costOf: (target: TTarget) => number,
+		private readonly clone: (target: TTarget) => TTarget,
 		private readonly now: () => number,
 		schedulerFactory: SchedulerFactory,
 		private readonly limits: IParadisWarmLeaseLimits,
@@ -67,6 +68,9 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 				return;
 			}
 			this.purgeExpiredLeases(false);
+			if (this.disposed) {
+				return;
+			}
 			this.syncExpiryScheduler();
 		});
 	}
@@ -76,6 +80,9 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 			return;
 		}
 		this.purgeExpiredLeases();
+		if (this.disposed) {
+			return;
+		}
 		if (targets.length === 0) {
 			this.removeOwner(ownerId);
 			return;
@@ -83,7 +90,8 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 
 		const ownerTargets = new Map<string, TTarget>();
 		for (const target of targets) {
-			ownerTargets.set(this.keyOf(target), target);
+			const clonedTarget = this.cloneAndFreeze(target);
+			ownerTargets.set(this.keyOf(clonedTarget), clonedTarget);
 		}
 		const cost = this.costOfTargets(ownerTargets.values());
 		if (cost === undefined || !this.isWithinLimits(ownerId, ownerTargets, cost)) {
@@ -123,6 +131,9 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 			return;
 		}
 		this.purgeExpiredLeases();
+		if (this.disposed) {
+			return;
+		}
 		this.removeOwner(ownerId);
 	}
 
@@ -131,6 +142,9 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 			return Object.freeze([]);
 		}
 		this.purgeExpiredLeases();
+		if (this.disposed) {
+			return Object.freeze([]);
+		}
 		return Object.freeze([...this.snapshots.values()].map(snapshot => Object.freeze({ ...snapshot })));
 	}
 
@@ -139,6 +153,9 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 			return false;
 		}
 		this.purgeExpiredLeases();
+		if (this.disposed) {
+			return false;
+		}
 		return this.snapshots.get(targetKey)?.generation === generation;
 	}
 
@@ -196,6 +213,14 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 			totalCost += cost;
 		}
 		return totalCost;
+	}
+
+	private cloneAndFreeze(target: TTarget): TTarget {
+		const clone = this.clone(target);
+		if (clone !== null && (typeof clone === 'object' || typeof clone === 'function')) {
+			return Object.freeze(clone);
+		}
+		return clone;
 	}
 
 	private purgeExpiredLeases(syncScheduler = true): boolean {
@@ -289,6 +314,9 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 	}
 
 	private syncExpiryScheduler(): void {
+		if (this.disposed) {
+			return;
+		}
 		this.scheduler.cancel();
 		let earliestExpiry = Number.POSITIVE_INFINITY;
 		for (const owner of this.owners.values()) {
