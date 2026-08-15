@@ -520,29 +520,45 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		void this.pushAgentPanes();
 		this.refreshBranches();
 		void this.trackBattery();
-		this.startStatePushMetrics();
 	}
 
 	/**
-	 * 計測用: state再送の頻度と、そのうち無変化で打ち切った割合を1分ごとに1行だけ残す。
-	 * 「エージェントを大量に動かしているとモバイルの同期が重い」の原因切り分け用で、
-	 * 活動が無い間は何も出さない。
+	 * Mobile relayが有効な間だけstate push計測タイマーを動かす。
+	 *
+	 * 無効化時は、停止済みタイマーのキュー済みcallbackが実行されても古い集計を報告しないよう、
+	 * 集計も同時に捨てる。
 	 */
-	private startStatePushMetrics(): void {
-		// renderer 層では素の setInterval が禁止されている（多ウィンドウ対応のため）。
-		// この計測タイマーは特定ウィンドウのDOMに紐づかないので IntervalTimer の既定コンテキストでよい。
-		const timer = this._register(new IntervalTimer());
-		timer.cancelAndSet(() => {
-			if (this.pushStateCalls === 0 && this.snapshotMetrics.size === 0) {
-				return;
+	setStatePushMetricsEnabled(enabled: boolean): void {
+		if (this.statePushMetricsEnabled === enabled) {
+			return;
+		}
+		this.statePushMetricsEnabled = enabled;
+		if (!enabled) {
+			this.statePushMetricsTimer.cancel();
+			this.resetStatePushMetrics();
+			return;
+		}
+		this.statePushMetricsTimer.cancelAndSet(() => {
+			if (this.statePushMetricsEnabled) {
+				this.reportStatePushMetrics();
 			}
-			const { pushStateCalls: calls, pushStateSkipped: skipped } = this;
-			this.pushStateCalls = 0;
-			this.pushStateSkipped = 0;
-			const snapshots = [...this.snapshotMetrics].map(([reason, m]) => `${reason}=${m.count}/max${m.maxChars}/total${m.totalChars}`).join(' ');
-			this.snapshotMetrics.clear();
-			this.logService.info(`[paradisMobileRelay][metrics] state push: ${calls} calls, ${skipped} skipped (no change), ${calls - skipped} forwarded, terminals=${this.allInstances().length}, stateBytes=${this.lastPushedSnapshot?.length ?? 0}${snapshots.length > 0 ? ` | terminal snapshots: ${snapshots}` : ''}`);
 		}, 60_000);
+	}
+
+	private reportStatePushMetrics(): void {
+		if (this.pushStateCalls === 0 && this.snapshotMetrics.size === 0) {
+			return;
+		}
+		const { pushStateCalls: calls, pushStateSkipped: skipped } = this;
+		const snapshots = [...this.snapshotMetrics].map(([reason, m]) => `${reason}=${m.count}/max${m.maxChars}/total${m.totalChars}`).join(' ');
+		this.resetStatePushMetrics();
+		this.logService.info(`[paradisMobileRelay][metrics] state push: ${calls} calls, ${skipped} skipped (no change), ${calls - skipped} forwarded, terminals=${this.allInstances().length}, stateBytes=${this.lastPushedSnapshot?.length ?? 0}${snapshots.length > 0 ? ` | terminal snapshots: ${snapshots}` : ''}`);
+	}
+
+	private resetStatePushMetrics(): void {
+		this.pushStateCalls = 0;
+		this.pushStateSkipped = 0;
+		this.snapshotMetrics.clear();
 	}
 
 	/**
@@ -653,6 +669,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	/** 計測用: pushState の呼び出し回数と、そのうち無変化で打ち切った回数。 */
 	private pushStateCalls = 0;
 	private pushStateSkipped = 0;
+	// state push計測は有効時だけ動かし、無効なworkbenchではrendererの定期起床を作らない。
+	private readonly statePushMetricsTimer = this._register(new IntervalTimer());
+	private statePushMetricsEnabled = false;
 	/**
 	 * 計測用: VTスナップショットの送信実績（理由別の件数と最大文字数）。
 	 * 1件ごとに出すとフロー制御の追いつきが連発する状況——まさに測りたい場面——で
