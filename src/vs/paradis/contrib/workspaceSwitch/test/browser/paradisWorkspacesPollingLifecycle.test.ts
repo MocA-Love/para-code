@@ -146,14 +146,9 @@ suite('ParadisWorkspacesPollingLifecycle', () => {
 suite('ParadisWorkspacesPollingController production wiring', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('start reads the actual initial body visibility', async () => {
+	test('construction reads actual initial visibility without refreshing synchronously', async () => {
 		const hidden = store.add(new PollingControllerHarness(false));
 		const visible = store.add(new PollingControllerHarness(true));
-
-		hidden.controller.start();
-		visible.controller.start();
-		visible.clock.advance(0);
-		await settlePolling();
 
 		assert.deepStrictEqual({
 			hiddenSchedules: hidden.scheduledDelays(),
@@ -161,14 +156,29 @@ suite('ParadisWorkspacesPollingController production wiring', () => {
 			visibleRefreshes: visible.refreshCounts,
 		}, {
 			hiddenSchedules: { diff: [], pr: [] },
-			visibleSchedules: { diff: [0, 10_000], pr: [0, 300_000] },
-			visibleRefreshes: { diff: 1, pr: 1 },
+			visibleSchedules: { diff: [0], pr: [0] },
+			visibleRefreshes: { diff: 0, pr: 0 },
 		});
+
+		visible.clock.advance(0);
+		await settlePolling();
+
+		assert.deepStrictEqual(visible.refreshCounts, { diff: 1, pr: 1 });
+	});
+
+	test('hidden construction starts immediately on a later actual visible event', async () => {
+		const harness = store.add(new PollingControllerHarness(false));
+
+		harness.fireVisibility(true, true);
+		assert.deepStrictEqual(harness.scheduledDelays(), { diff: [0], pr: [0] });
+		harness.clock.advance(0);
+		await settlePolling();
+
+		assert.deepStrictEqual(harness.refreshCounts, { diff: 1, pr: 1 });
 	});
 
 	test('repository and worktree events request refreshes through production wiring', async () => {
 		const harness = store.add(new PollingControllerHarness(true));
-		harness.controller.start();
 		harness.clock.advance(0);
 		await settlePolling();
 
@@ -184,7 +194,6 @@ suite('ParadisWorkspacesPollingController production wiring', () => {
 
 	test('visible empty-path refreshes resume after 10 seconds and 5 minutes', async () => {
 		const harness = store.add(new PollingControllerHarness(true));
-		harness.controller.start();
 		harness.clock.advance(0);
 		await settlePolling();
 
@@ -199,7 +208,6 @@ suite('ParadisWorkspacesPollingController production wiring', () => {
 		const harness = store.add(new PollingControllerHarness(true));
 		harness.behaviors.diff = 'reject';
 		harness.behaviors.pr = 'reject';
-		harness.controller.start();
 		harness.clock.advance(0);
 		await settlePolling();
 
@@ -214,7 +222,6 @@ suite('ParadisWorkspacesPollingController production wiring', () => {
 		const harness = store.add(new PollingControllerHarness(true));
 		harness.behaviors.diff = 'pending';
 		harness.behaviors.pr = 'pending';
-		harness.controller.start();
 		harness.clock.advance(0);
 		await settlePolling();
 

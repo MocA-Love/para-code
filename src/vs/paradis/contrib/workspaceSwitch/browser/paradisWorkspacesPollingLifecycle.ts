@@ -177,7 +177,7 @@ export class ParadisWorkspacesPollingController extends Disposable {
 	private readonly lifecycle: ParadisWorkspacesPollingLifecycle;
 
 	constructor(
-		private readonly signals: IParadisWorkspacesPollingSignals,
+		signals: IParadisWorkspacesPollingSignals,
 		private readonly refreshDiffStats: () => Promise<void>,
 		private readonly refreshPrStatus: () => Promise<void>,
 		schedulerFactory?: SchedulerFactory,
@@ -189,11 +189,7 @@ export class ParadisWorkspacesPollingController extends Disposable {
 			() => { void this.runPrStatusRefresh(); },
 			schedulerFactory,
 		));
-	}
-
-	/** renderBody 完了時点の実可視状態でポーリングを開始する。 */
-	start(): void {
-		this.lifecycle.start(this.signals.isBodyVisible());
+		this.lifecycle.start(signals.isBodyVisible());
 	}
 
 	private async runDiffStatsRefresh(): Promise<void> {

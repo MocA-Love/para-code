@@ -739,7 +739,6 @@ export class ParadisWorkspacesView extends ViewPane {
 	private readonly _diffStats = new Map<string, IParadisDiffStat>();
 	/** worktree の uri.fsPath → 現在ブランチに紐づく PR 状態。ポーリングでのみ更新する (refreshPrStatuses 参照) */
 	private readonly _prStatuses = new Map<string, IParadisPrStatus>();
-	private readonly _pollingController: ParadisWorkspacesPollingController;
 	private readonly _collapsedRepositoryState: ParadisCollapsedRepositoryStateController;
 	/** 折りたたみ操作の最中にツリーを組み直さないための遅延実行 (onDidChangeCollapseState 参照) */
 	private readonly _updateTreeScheduler: RunOnceScheduler;
@@ -775,7 +774,7 @@ export class ParadisWorkspacesView extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
-		this._pollingController = this._register(new ParadisWorkspacesPollingController(
+		this._register(new ParadisWorkspacesPollingController(
 			{
 				isBodyVisible: () => this.isBodyVisible(),
 				onDidChangeVisibility: this.onDidChangeBodyVisibility,
@@ -906,7 +905,6 @@ export class ParadisWorkspacesView extends ViewPane {
 
 		this.updateTree();
 		this.updateNotesPanelSpace();
-		this._pollingController.start();
 	}
 
 	/** メモ欄の対象を、いま開いているスペースに追従させる。 */
