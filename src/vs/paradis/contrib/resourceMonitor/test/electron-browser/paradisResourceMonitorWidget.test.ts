@@ -301,6 +301,35 @@ suite('ParadisResourceMonitorWidget', () => {
 		}
 	});
 
+	test('discards a pending visible-recovery refresh across disable and re-enable', async () => {
+		const harness = createWidgetHarness();
+		try {
+			await flushMicrotasks();
+			const deferredSnapshot = harness.deferNextSnapshot();
+			harness.timer.fire();
+			await flushMicrotasks();
+			assert.deepStrictEqual(harness.requests, [
+				{ force: false, freshness: 'idle' },
+				{ force: false, freshness: 'idle' },
+			]);
+
+			harness.document.setHidden(true);
+			harness.document.setHidden(false);
+			harness.configuration.setEnabled(false);
+			harness.configuration.setEnabled(true);
+			assert.strictEqual(harness.timer.interval, 5_000);
+
+			deferredSnapshot.resolve();
+			await flushMicrotasks();
+			assert.deepStrictEqual(harness.requests, [
+				{ force: false, freshness: 'idle' },
+				{ force: false, freshness: 'idle' },
+			]);
+		} finally {
+			harness.widget.dispose();
+		}
+	});
+
 	test('drops a deferred visible-recovery retry when lifecycle state no longer permits idle polling', async () => {
 		const suppressions: readonly { readonly apply: (harness: ITestWidgetHarness) => void }[] = [
 			{ apply: harness => harness.configuration.setEnabled(false) },
