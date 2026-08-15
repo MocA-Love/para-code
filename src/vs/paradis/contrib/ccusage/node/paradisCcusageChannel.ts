@@ -83,8 +83,8 @@ const WARM_MAX_CONSECUTIVE_FAILURES = 3;
 const WARM_LEASE_MAX_OWNERS = 128;
 const WARM_LEASE_MAX_MEMBERSHIPS = 512;
 const WARM_LEASE_MAX_TARGETS_PER_OWNER = 4;
-const WARM_LEASE_MAX_OWNER_ID_LENGTH = 128;
 const WARM_LEASE_MAX_EXECUTABLE_PATH_LENGTH = 4096;
+const WARM_LEASE_OWNER_ID_PATTERN = /^[A-Za-z0-9._:-]{1,160}$/;
 
 interface IWarmFailure {
 	readonly generation: number;
@@ -624,13 +624,12 @@ export class ParadisCcusageChannel<TContext = string> implements IServerChannel<
 }
 
 function parseWarmLeasePayload(arg: unknown): ParadisCcusageWarmLeasePayload {
-	if (!Array.isArray(arg) || arg.length !== 1 || !isExactPlainRecord(arg[0], ['ownerId', 'active', 'targets'])) {
+	if (!isExactPlainArray(arg) || arg.length !== 1 || !isExactPlainRecord(arg[0], ['ownerId', 'active', 'targets'])) {
 		throw new Error('Invalid setWarmLease arguments');
 	}
 	const payload = arg[0];
 	if (typeof payload.ownerId !== 'string'
-		|| payload.ownerId.length > WARM_LEASE_MAX_OWNER_ID_LENGTH
-		|| !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(payload.ownerId)
+		|| !WARM_LEASE_OWNER_ID_PATTERN.test(payload.ownerId)
 		|| typeof payload.active !== 'boolean'
 		|| !Array.isArray(payload.targets)) {
 		throw new Error('Invalid warm lease payload');
