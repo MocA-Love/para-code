@@ -155,11 +155,16 @@ export class ParadisResourceMonitorWidget extends Disposable {
 		// enabled=false の間は再アームしない。closePanel() 経由でここが呼ばれても、
 		// 無効化直後の pollTimer.cancel() を打ち消してポーリングが恒久継続するのを防ぐ。
 		if (!this.configurationService.getValue<boolean>(CONFIG_KEY_ENABLED)) {
+			this.idleRefreshPending = false;
 			this.pollTimer.cancel();
 			return;
 		}
 		const policy = paradisResourceMonitorPollingPolicy(true, !!this.panel.value, this.document.hidden);
+		if (policy.freshness !== 'idle') {
+			this.idleRefreshPending = false;
+		}
 		if (policy.interval === undefined) {
+			this.idleRefreshPending = false;
 			this.pollTimer.cancel();
 			return;
 		}
