@@ -835,6 +835,12 @@ export interface IParadisAgentPaneStatus {
 	readonly cwd?: string;
 }
 
+/** 1回のowner解決とstale sweepから作る、renderer-local status producer向けsnapshot。 */
+export interface IParadisAgentStatusSnapshot {
+	readonly paneStatuses: readonly IParadisAgentPaneStatus[];
+	readonly agentHookTokens: readonly string[];
+}
+
 /**
  * 各エージェントCLIのhookイベント名を状態へ正規化する。Superset の
  * main/lib/notifications/map-event-type.ts の正規化テーブル移植 + Claude Code の
