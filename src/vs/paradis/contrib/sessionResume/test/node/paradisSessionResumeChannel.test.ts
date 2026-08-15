@@ -701,6 +701,59 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('does not publish a removed entry read into a replacement with the same revision', async () => {
+		const transcriptPath = join(claudeProject, 'search-catalog-replacement-race.jsonl');
+		await writeLines(transcriptPath, [claudeMessage('user', 'Catalog replacement prompt')]);
+		const staleText = [
+			claudeMessage('user', 'Catalog replacement prompt'),
+			claudeMessage('assistant', 'stale-catalog-token'),
+		].join('\n');
+		const freshText = [
+			claudeMessage('user', 'Catalog replacement prompt'),
+			claudeMessage('assistant', 'fresh-catalog-token'),
+		].join('\n');
+		const readStarted = new DeferredPromise<void>();
+		const releaseRead = new DeferredPromise<void>();
+		let transcriptReads = 0;
+		const service = createService(async () => {
+			transcriptReads++;
+			if (transcriptReads === 1) {
+				readStarted.complete();
+				await releaseRead.p;
+				return { text: staleText, truncated: false };
+			}
+			return { text: freshText, truncated: false };
+		});
+		const [oldSession] = await listSessions(service);
+		const oldSearch = service.search('old-catalog-entry', 'stale-catalog-token', [oldSession.catalogId]);
+		await readStarted.p;
+
+		const internals = service as unknown as {
+			readonly catalog: Map<string, { readonly touchedAt: number }>;
+			trimCatalog(protectedCatalogIds: ReadonlySet<string>): void;
+		};
+		for (let index = 0; index < 2400; index++) {
+			internals.catalog.set(`replacement-filler-${index}`, { touchedAt: Number.MAX_SAFE_INTEGER });
+		}
+		internals.trimCatalog(new Set());
+		assert.strictEqual(internals.catalog.has(oldSession.catalogId), false);
+		const [replacement] = await listSessions(service);
+		assert.strictEqual(replacement.catalogId, oldSession.catalogId);
+		assert.strictEqual(replacement.updatedAt, oldSession.updatedAt);
+
+		releaseRead.complete();
+		await oldSearch;
+		const fresh = await service.search('replacement-catalog-entry', 'fresh-catalog-token', [replacement.catalogId]);
+
+		assert.deepStrictEqual({
+			fresh: fresh.map(result => ({ catalogId: result.catalogId, source: result.source })),
+			transcriptReads,
+		}, {
+			fresh: [{ catalogId: replacement.catalogId, source: 'conversation' }],
+			transcriptReads: 2,
+		});
+	});
+
 	test('search does not index an outside symlink swapped in after its boundary check', async () => {
 		const transcriptPath = join(claudeProject, 'search-race-session.jsonl');
 		const outsidePath = join(root, 'outside-search-race.jsonl');

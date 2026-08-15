@@ -505,7 +505,7 @@ export class ParadisSessionResumeService {
 		entry.searchTextPromise = searchTextPromise;
 		void searchTextPromise.then(searchable => {
 			const current = this.catalog.get(catalogId);
-			if (current?.session.updatedAt === revision) {
+			if (current?.session.updatedAt === revision && current.searchTextPromise === searchTextPromise) {
 				this.searchTextCache.set(catalogId, revision, searchable);
 			}
 		}, () => undefined).finally(() => {
