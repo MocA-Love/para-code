@@ -86,6 +86,51 @@ suite('ParadisMobileRelayService state broadcast metrics', () => {
 		});
 	});
 
+	test('does not schedule metrics before initialize and starts them before connecting when initialized enabled', async () => {
+		const relayServicePrototype = ParadisMobileRelayService.prototype as unknown as { startHostResourceSampling(): void };
+		const startHostResourceSampling = relayServicePrototype.startHostResourceSampling;
+		const intervalTimerPrototype = IntervalTimer.prototype as unknown as { cancelAndSet(runner: () => void, interval: number): void };
+		const cancelAndSet = intervalTimerPrototype.cancelAndSet;
+		const events: string[] = [];
+		const intervals: number[] = [];
+		let service: ParadisMobileRelayService | undefined;
+		relayServicePrototype.startHostResourceSampling = () => undefined;
+		intervalTimerPrototype.cancelAndSet = (_runner, interval) => {
+			events.push('metrics');
+			intervals.push(interval);
+		};
+		try {
+			service = new ParadisMobileRelayService(
+				'/tmp/paradis-mobile-relay-metrics-test',
+				undefined as never,
+				undefined,
+				undefined,
+				{ onDidChangeManifest: Event.None } as never,
+				new NullLogService(),
+			);
+
+			assert.deepStrictEqual({ events, intervals }, { events: [], intervals: [] });
+
+			const fixture = service as unknown as {
+				load(): Promise<void>;
+				state: { mobiles: unknown[]; device?: { deviceId: string; pcToken: string } };
+				connect(): void;
+			};
+			fixture.load = async () => {
+				fixture.state = { mobiles: [], device: { deviceId: 'device', pcToken: 'token' } };
+			};
+			fixture.connect = () => events.push('connect');
+
+			await service.initialize(true, undefined);
+
+			assert.deepStrictEqual({ events, intervals }, { events: ['metrics', 'connect'], intervals: [60_000] });
+		} finally {
+			service?.dispose();
+			intervalTimerPrototype.cancelAndSet = cancelAndSet;
+			relayServicePrototype.startHostResourceSampling = startHostResourceSampling;
+		}
+	});
+
 	test('starts its reporting timer only once for repeated enabled settings', async () => {
 		const { service, timer } = createStateBroadcastMetricsFixture();
 
