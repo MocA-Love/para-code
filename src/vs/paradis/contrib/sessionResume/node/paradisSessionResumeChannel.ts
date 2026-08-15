@@ -288,6 +288,7 @@ function pathInside(root: string, candidate: string): boolean {
 
 export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
+	private readonly activeListRequests = new Map<string, Promise<readonly IParadisResumeSession[]>>();
 	private readonly searchRevisions = new Map<string, number>();
 	private searchRevision = 0;
 	private readonly resolveAgentHomes: typeof paradisResolveAgentHomes;
@@ -311,6 +312,23 @@ export class ParadisSessionResumeService {
 	}
 
 	async list(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
+		const normalizedRequest = this.normalizeListRequest(request);
+		const requestKey = this.createListRequestKey(normalizedRequest);
+		const activeRequest = this.activeListRequests.get(requestKey);
+		if (activeRequest) {
+			return activeRequest;
+		}
+
+		const listRequest = this.collectList(normalizedRequest).finally(() => {
+			if (this.activeListRequests.get(requestKey) === listRequest) {
+				this.activeListRequests.delete(requestKey);
+			}
+		});
+		this.activeListRequests.set(requestKey, listRequest);
+		return listRequest;
+	}
+
+	private normalizeListRequest(request: IParadisResumeListRequest): IParadisResumeListRequest {
 		const seenStateKeys = new Set<string>();
 		const seenCwds = new Set<string>();
 		const spaces = Array.isArray(request?.spaces) ? request.spaces.filter(space => {
@@ -328,16 +346,32 @@ export class ParadisSessionResumeService {
 			seenCwds.add(cwdKey);
 			return true;
 		}).slice(0, 200) : [];
+		return { spaces, includeArchived: request.includeArchived === true };
+	}
+
+	private createListRequestKey(request: IParadisResumeListRequest): string {
+		return JSON.stringify({
+			includeArchived: request.includeArchived,
+			spaces: request.spaces.map(space => ({
+				stateKey: space.stateKey,
+				name: space.name,
+				cwd: normalizePath(space.cwd),
+				current: space.current,
+			})),
+		});
+	}
+
+	private async collectList(request: IParadisResumeListRequest): Promise<readonly IParadisResumeSession[]> {
 		const sessions: IParadisResumeSession[] = [];
 		const homesSeen = new Set<string>();
-		for (const space of spaces) {
+		for (const space of request.spaces) {
 			const homes = this.resolveAgentHomes(space.cwd);
 			await this.collectClaude(space, homes.claude, homes.matchCwd, sessions);
 			if (!homesSeen.has(homes.codex)) {
 				homesSeen.add(homes.codex);
-				const indexed = await this.collectCodex(spaces, homes.codex, sessions, request.includeArchived === true);
+				const indexed = await this.collectCodex(request.spaces, homes.codex, sessions, request.includeArchived);
 				if (!indexed) {
-					await this.collectCodexRollouts(spaces, homes.codex, sessions);
+					await this.collectCodexRollouts(request.spaces, homes.codex, sessions);
 				}
 			}
 		}
