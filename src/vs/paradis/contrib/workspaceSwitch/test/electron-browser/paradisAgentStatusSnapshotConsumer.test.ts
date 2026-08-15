@@ -11,7 +11,7 @@ import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
-import { IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentPaneStatus, ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotOutcome, IParadisAgentStatusSnapshotService } from '../../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { ParadisAgentStatusSnapshotConsumer } from '../../electron-browser/paradisAgentStatusSnapshotConsumer.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
@@ -51,6 +51,18 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		]);
 		assert.deepStrictEqual(entries(fixture.statusStore.instanceStatuses), [[2, 'review']]);
 		assert.deepStrictEqual([...fixture.statusStore.agentInstanceIds], [1, 2]);
+	});
+
+	test('keeps an active local review visible without acknowledging it while the workbench is unfocused', () => {
+		const fixture = createFixture(() => false);
+		fixture.instanceByToken.set('local-review', 1);
+		fixture.scopeByInstance.set(1, { kind: 'managed', stateKey: 'space-a' });
+
+		fixture.producer.publish(success(1, [pane('local-review', 'review')], ['local-review']));
+
+		assert.deepStrictEqual(fixture.acknowledged, []);
+		assert.deepStrictEqual(entries(fixture.statusStore.scopeBreakdowns), [['space-a', ['review']]]);
+		assert.deepStrictEqual(entries(fixture.statusStore.instanceStatuses), [[1, 'review']]);
 	});
 
 	test('uses longest cwd worktree match and remembers it while a token is temporarily detached', () => {
@@ -147,7 +159,7 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 		assert.strictEqual(fixture.producer.refreshRequests, 0);
 	});
 
-	function createFixture() {
+	function createFixture(isWindowFocused: () => boolean = () => true) {
 		const producer = new TestSnapshotService();
 		const scopeSwitch = store.add(new Emitter<string>());
 		const instanceByToken = new Map<string, number>();
@@ -179,12 +191,12 @@ suite('ParadisAgentStatusSnapshotConsumer', () => {
 			} as IParadisTerminalScopeService,
 			workspaceSwitchService,
 			worktreeService: {
-				getWorktrees: repositoryId => repositoryId === 'space-a' ? worktrees : [],
+				getWorktrees: (repositoryId: string) => repositoryId === 'space-a' ? worktrees : [],
 			} as unknown as IParadisWorktreeService,
 			statusStore,
 			acknowledgePaneStatus: token => acknowledged.push(token),
 			logPollFailure: error => pollErrors.push(error),
-			isWindowFocused: () => true,
+			isWindowFocused,
 		}));
 
 		return {

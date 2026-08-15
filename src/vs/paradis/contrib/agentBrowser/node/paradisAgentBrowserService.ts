@@ -475,7 +475,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _seenTokens = new Set<string>();
 	/**
 	 * エージェントCLIのhook通知 (GET /agent-hook) で更新される、ペインごとの実行状態。
-	 * workbench が listPaneStatuses でポーリングし、Workspaces ビューのスピナー表示に使う。
+	 * renderer-local producerがlistAgentStatusSnapshotでatomic取得し、Workspaces表示と通知へ配る。
 	 */
 	private readonly _paneStatuses = new Map<string, IParadisPaneStatusEntry>();
 	/** transcript/app-server由来の承認待ちを一度観測したtoken。解除時だけpermissionをworkingへ戻す。 */
