@@ -14,6 +14,7 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import * as path from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
@@ -23,6 +24,7 @@ import { NativeParsedArgs } from '../../../../platform/environment/common/argv.j
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisWarmLeaseScheduler, ParadisWarmLeaseTracker, PARADIS_WARM_LEASE_DURATION_MS } from '../../../common/paradisWarmLease.js';
 import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
@@ -30,7 +32,10 @@ import {
 	IParadisCcusageService,
 	IParadisCcusageSessionRow,
 	PARADIS_CCUSAGE_CHANNEL,
-	ParadisCcusageProjects
+	ParadisCcusageProjects,
+	ParadisCcusageWarmLeasePayload,
+	ParadisCcusageWarmTarget,
+	ParadisCcusageWarmTargetKind,
 } from '../common/paradisCcusage.js';
 
 /** ccusage 実行のタイムアウト。JSONL 全走査+価格取得があるため長め。 */
@@ -73,27 +78,32 @@ const CACHE_TTL_MS = WARM_INTERVAL_MS + WARM_SKIP_IF_FRESHER_THAN_MS + 5 * 60 * 
 const BLOCK_CACHE_TTL_MS = CACHE_TTL_MS;
 /** --offline フォールバックで得た結果(価格が古い可能性)は短命キャッシュに留める。 */
 const FALLBACK_CACHE_TTL_MS = 60 * 1000;
-/**
- * 最後に要求されてからこの時間を過ぎたエントリは温めるのをやめる。
- *
- * ステータスバーの表示を有効にしていると、そのポーラーが daily を定期的に要求し続けるため
- * daily はこの時間に到達しない(＝Para Code が起動している間は温め続ける)。これは意図どおりで、
- * ここが効くのは「ダッシュボードだけ開いて、以後触らなかった」場合のセッション別・
- * プロジェクト別など、要求が止まったレポートに対して。
- */
-const WARM_IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
 /** 連続で失敗し続ける対象を諦める回数(ccusage が入っていない環境で永久に走らせない)。 */
 const WARM_MAX_CONSECUTIVE_FAILURES = 3;
+const WARM_LEASE_MAX_OWNERS = 128;
+const WARM_LEASE_MAX_MEMBERSHIPS = 512;
+const WARM_LEASE_MAX_TARGETS_PER_OWNER = 4;
+const WARM_LEASE_MAX_OWNER_ID_LENGTH = 128;
+const WARM_LEASE_MAX_EXECUTABLE_PATH_LENGTH = 4096;
 
-/** バックグラウンド更新の対象。要求のたびに登録・更新する。 */
-interface IWarmTarget {
-	readonly reportArgs: string[];
-	readonly options: IParadisCcusageExecOptions;
-	ttl: number;
-	lastRequestedAt: number;
-	/** 連続失敗回数。上限に達した対象は温めをやめる(次に要求されたら0に戻る)。 */
-	failures: number;
+interface IWarmFailure {
+	readonly generation: number;
+	readonly count: number;
 }
+
+interface IWarmLeaseOwner {
+	readonly expiresAt: number;
+	readonly targetKeys: readonly string[];
+}
+
+type WarmLeaseSchedulerFactory = (runner: () => void) => IParadisWarmLeaseScheduler;
+
+const warmReportArgs: Readonly<Record<ParadisCcusageWarmTargetKind, readonly string[]>> = {
+	daily: ['daily'],
+	blocks: ['blocks', '--active'],
+	session: ['claude', 'session', '--order', 'desc'],
+	projects: ['claude', 'daily', '--instances'],
+};
 
 interface IResolvedExecutable {
 	readonly command: string;
@@ -120,9 +130,11 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	private readonly inflight = new Map<string, Promise<unknown>>();
 	/** dispose 時に停止する実行中の子プロセス。 */
 	private readonly activeChildren = new Set<cp.ChildProcess>();
-	/** バックグラウンドで温め続ける対象(キーは cache と同じ)。 */
-	private readonly warmTargets = new Map<string, IWarmTarget>();
-	/** 温め直しのタイマー。最初の要求が来て初めて回り始める。 */
+	private readonly warmLeaseTracker: ParadisWarmLeaseTracker<ParadisCcusageWarmTarget>;
+	private readonly warmLeaseOwners = new Map<string, IWarmLeaseOwner>();
+	private readonly warmFailures = new Map<string, IWarmFailure>();
+	private readonly warmLeaseListener: IDisposable;
+	/** active lease がある間だけ温め直すタイマー。 */
 	private warmTimer: ReturnType<typeof setInterval> | undefined;
 	/** dispose 後にタイマーが再起動しないようにする。 */
 	private disposed = false;
@@ -140,6 +152,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		args?: NativeParsedArgs,
 		private readonly execFile: typeof cp.execFile = cp.execFile,
 		private readonly now: () => number = Date.now,
+		warmLeaseSchedulerFactory: WarmLeaseSchedulerFactory = runner => new RunOnceScheduler(runner, 0),
 	) {
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
@@ -148,6 +161,21 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			this.now,
 			reportParadisShellEnvDiagnosticError,
 		);
+		this.warmLeaseTracker = new ParadisWarmLeaseTracker(
+			target => this.warmTargetKey(target),
+			(left, right) => this.warmTargetKey(left) === this.warmTargetKey(right),
+			() => 1,
+			this.now,
+			warmLeaseSchedulerFactory,
+			{
+				maxOwners: WARM_LEASE_MAX_OWNERS,
+				maxTargetsPerOwner: WARM_LEASE_MAX_TARGETS_PER_OWNER,
+				maxDistinctTargets: WARM_LEASE_MAX_MEMBERSHIPS,
+				maxTotalMemberships: WARM_LEASE_MAX_MEMBERSHIPS,
+				maxTotalCost: WARM_LEASE_MAX_MEMBERSHIPS,
+			},
+		);
+		this.warmLeaseListener = this.warmLeaseTracker.onDidChange(() => this.syncWarmTimer());
 	}
 
 	/** exec に渡す環境変数(process.env にログインシェル解決分をマージしたもの)。 */
@@ -176,46 +204,30 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		return result.projects ?? {};
 	}
 
-	/**
-	 * 呼び出し側からの要求。ここを通ったものだけを「温め続ける対象」として覚える
-	 * (バックグラウンドの取り直しはこの経路を通さないので、自分で自分を延命しない)。
-	 */
-	private async execJson<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<T> {
-		this.rememberWarmTarget(reportArgs, options, ttl);
-		return this.execJsonInternal<T>(reportArgs, options, ttl);
-	}
-
-	private rememberWarmTarget(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number): void {
+	setWarmLease(ownerId: string, targets: readonly ParadisCcusageWarmTarget[]): void {
 		if (this.disposed) {
 			return;
 		}
-		const key = this.cacheKeyFor(reportArgs, options);
-		const existing = this.warmTargets.get(key);
-		if (existing) {
-			existing.lastRequestedAt = this.now();
-			existing.ttl = ttl;
-			// 実際に要求が来たなら、諦めていた対象も温め直す価値がある。
-			existing.failures = 0;
-		} else {
-			// 同じレポートの古い対象は捨てる。`since` は日付から作られるので、日付が変わると
-			// キーが変わり、前日ぶんは誰も要求しないまま残る。放っておくと丸一日、空振りの
-			// 全走査を回し続けることになる(1レポートあたり毎日24回)。
-			const report = reportArgs.join(' ');
-			for (const [otherKey, other] of this.warmTargets) {
-				if (otherKey !== key && other.reportArgs.join(' ') === report) {
-					this.warmTargets.delete(otherKey);
-				}
-			}
-			// bypassCache は要求ごとの都合なので覚えない(温め直しは常に実行する)。
-			const { bypassCache: _ignored, ...rest } = options;
-			this.warmTargets.set(key, { reportArgs, options: rest, ttl, lastRequestedAt: this.now(), failures: 0 });
+		this.warmLeaseTracker.activeTargets();
+		this.purgeExpiredWarmLeaseOwners();
+		if (targets.length === 0) {
+			this.warmLeaseOwners.delete(ownerId);
+			this.warmLeaseTracker.release(ownerId);
+			return;
 		}
-		if (this.warmTimer === undefined) {
-			const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
-			// shared process の終了を、この定期処理だけのために引き止めない。
-			(timer as { unref?: () => void }).unref?.();
-			this.warmTimer = timer;
+		if (!this.isWithinWarmLeaseLimits(ownerId, targets)) {
+			throw new Error('Warm lease limit exceeded');
 		}
+		this.warmLeaseTracker.setLease(ownerId, targets);
+		this.warmLeaseOwners.set(ownerId, {
+			expiresAt: this.now() + PARADIS_WARM_LEASE_DURATION_MS,
+			targetKeys: targets.map(target => this.warmTargetKey(target)),
+		});
+	}
+
+	/** foreground の要求。warm ownership は setWarmLease だけが変更する。 */
+	private async execJson<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<T> {
+		return this.execJsonInternal<T>(reportArgs, options, ttl);
 	}
 
 	/**
@@ -228,17 +240,22 @@ export class ParadisCcusageService implements IParadisCcusageService {
 	 * (誰も待っていない裏の処理なので、速く終わらせる必要が無い)。
 	 */
 	private async runWarmPass(): Promise<void> {
-		for (const [key, target] of [...this.warmTargets]) {
+		const snapshots = this.warmLeaseTracker.activeTargets();
+		for (const snapshot of snapshots) {
 			// dispose 後は残りを回さない(1本60秒待つので、畳んだ後も子プロセスが続きうる)。
 			if (this.disposed) {
 				return;
 			}
-			// 経過時間はループの都度見る(1本に数十秒かかるので、入口の1回では古くなる)。
-			const now = this.now();
-			if (now - target.lastRequestedAt >= WARM_IDLE_TIMEOUT_MS || target.failures >= WARM_MAX_CONSECUTIVE_FAILURES) {
-				this.warmTargets.delete(key);
+			const { generation, key, target } = snapshot;
+			if (!this.warmLeaseTracker.isCurrent(key, generation)) {
 				continue;
 			}
+			const failure = this.warmFailures.get(key);
+			if (failure?.generation === generation && failure.count >= WARM_MAX_CONSECUTIVE_FAILURES) {
+				continue;
+			}
+			// 経過時間はループの都度見る(1本に数十秒かかるので、入口の1回では古くなる)。
+			const now = this.now();
 			// 直前に手動更新された等で十分新しいものは飛ばす(同じ走査を続けて2回しない)。
 			const cached = this.cache.get(key);
 			if (cached && now - cached.at < WARM_SKIP_IF_FRESHER_THAN_MS) {
@@ -249,23 +266,88 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			}
 			try {
 				// 鮮度判定はここで済ませているので、キャッシュを見に行かせず必ず実行させる。
-				await this.execJsonInternal(target.reportArgs, { ...target.options, bypassCache: true }, target.ttl);
-				target.failures = 0;
+				const reportArgs = [...warmReportArgs[target.kind]];
+				const ttl = target.kind === 'blocks' ? BLOCK_CACHE_TTL_MS : CACHE_TTL_MS;
+				await this.execJsonInternal(reportArgs, { ...target.options, bypassCache: true }, ttl, () => this.warmLeaseTracker.isCurrent(key, generation));
+				if (this.warmLeaseTracker.isCurrent(key, generation)) {
+					this.warmFailures.delete(key);
+				}
 			} catch (error) {
 				// 失敗してもキャッシュは壊さない(古い値が残るだけ)。
 				// ccusage が入っていない環境では毎回タイムアウトまで待つことになるので、
-				// 続けて失敗する対象は諦める(次に画面から要求されたら再開する)。
-				target.failures++;
-				this.logService.trace(`[ParadisCcusage] background refresh failed for 'ccusage ${target.reportArgs.join(' ')}': ${error}`);
-				if (target.failures >= WARM_MAX_CONSECUTIVE_FAILURES) {
-					this.warmTargets.delete(key);
+				// 続けて失敗する対象は、target generation が変わるまで温めない。
+				if (this.warmLeaseTracker.isCurrent(key, generation)) {
+					const count = failure?.generation === generation ? failure.count + 1 : 1;
+					this.warmFailures.set(key, { generation, count });
 				}
+				this.logService.trace(`[ParadisCcusage] background refresh failed for 'ccusage ${warmReportArgs[target.kind].join(' ')}': ${error}`);
 			}
 		}
-		if (this.warmTargets.size === 0 && this.warmTimer !== undefined) {
+		this.syncWarmTimer();
+	}
+
+	private syncWarmTimer(): void {
+		if (this.disposed) {
+			return;
+		}
+		const activeTargets = this.warmLeaseTracker.activeTargets();
+		const activeKeys = new Set(activeTargets.map(snapshot => snapshot.key));
+		for (const key of this.warmFailures.keys()) {
+			if (!activeKeys.has(key)) {
+				this.warmFailures.delete(key);
+			}
+		}
+		const hasWarmableTarget = activeTargets.some(snapshot => {
+			const failure = this.warmFailures.get(snapshot.key);
+			return failure?.generation !== snapshot.generation || failure.count < WARM_MAX_CONSECUTIVE_FAILURES;
+		});
+		if (hasWarmableTarget && this.warmTimer === undefined) {
+			const timer = setInterval(() => { void this.runWarmPass(); }, WARM_INTERVAL_MS);
+			(timer as { unref?: () => void }).unref?.();
+			this.warmTimer = timer;
+		} else if (!hasWarmableTarget && this.warmTimer !== undefined) {
 			clearInterval(this.warmTimer);
 			this.warmTimer = undefined;
 		}
+	}
+
+	private warmTargetKey(target: ParadisCcusageWarmTarget): string {
+		return this.cacheKeyFor([...warmReportArgs[target.kind]], target.options);
+	}
+
+	private purgeExpiredWarmLeaseOwners(): void {
+		const now = this.now();
+		for (const [ownerId, owner] of this.warmLeaseOwners) {
+			if (owner.expiresAt <= now) {
+				this.warmLeaseOwners.delete(ownerId);
+			}
+		}
+	}
+
+	private isWithinWarmLeaseLimits(ownerId: string, targets: readonly ParadisCcusageWarmTarget[]): boolean {
+		if (targets.length > WARM_LEASE_MAX_TARGETS_PER_OWNER) {
+			return false;
+		}
+		const targetKeys = targets.map(target => this.warmTargetKey(target));
+		if (new Set(targetKeys).size !== targetKeys.length) {
+			return false;
+		}
+		if (!this.warmLeaseOwners.has(ownerId) && this.warmLeaseOwners.size >= WARM_LEASE_MAX_OWNERS) {
+			return false;
+		}
+
+		let memberships = targetKeys.length;
+		const distinctKeys = new Set(targetKeys);
+		for (const [activeOwnerId, owner] of this.warmLeaseOwners) {
+			if (activeOwnerId === ownerId) {
+				continue;
+			}
+			memberships += owner.targetKeys.length;
+			for (const key of owner.targetKeys) {
+				distinctKeys.add(key);
+			}
+		}
+		return memberships <= WARM_LEASE_MAX_MEMBERSHIPS && distinctKeys.size <= WARM_LEASE_MAX_MEMBERSHIPS;
 	}
 
 	/** キャッシュキー。since/until/timezone を含む実行引数と実行ファイルパスで決まる。 */
@@ -293,7 +375,10 @@ export class ParadisCcusageService implements IParadisCcusageService {
 			clearInterval(this.warmTimer);
 			this.warmTimer = undefined;
 		}
-		this.warmTargets.clear();
+		this.warmLeaseListener.dispose();
+		this.warmLeaseTracker.dispose();
+		this.warmLeaseOwners.clear();
+		this.warmFailures.clear();
 		for (const child of this.activeChildren) {
 			try {
 				child.kill();
@@ -304,7 +389,12 @@ export class ParadisCcusageService implements IParadisCcusageService {
 		this.activeChildren.clear();
 	}
 
-	private async execJsonInternal<T>(reportArgs: string[], options: IParadisCcusageExecOptions, ttl: number = CACHE_TTL_MS): Promise<T> {
+	private async execJsonInternal<T>(
+		reportArgs: string[],
+		options: IParadisCcusageExecOptions,
+		ttl: number = CACHE_TTL_MS,
+		shouldCache: () => boolean = () => true,
+	): Promise<T> {
 		const args = this.buildArgs(reportArgs, options);
 		const cacheKey = JSON.stringify([args, options.executablePath ?? '']);
 		if (!options.bypassCache) {
@@ -321,7 +411,7 @@ export class ParadisCcusageService implements IParadisCcusageService {
 
 		const promise = this.doExecJson<T>(reportArgs, args, options)
 			.then(({ value, usedOfflineFallback }) => {
-				if (!this.disposed) {
+				if (!this.disposed && shouldCache()) {
 					this.pruneCache();
 					this.cache.set(cacheKey, { at: this.now(), ttl: usedOfflineFallback ? FALLBACK_CACHE_TTL_MS : ttl, value });
 				}
@@ -515,6 +605,11 @@ export class ParadisCcusageChannel<TContext = string> implements IServerChannel<
 	}
 
 	call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
+		if (command === 'setWarmLease') {
+			const payload = parseWarmLeasePayload(arg);
+			this.service.setWarmLease(payload.ownerId, payload.active ? payload.targets : []);
+			return Promise.resolve(undefined as T);
+		}
 		const args = Array.isArray(arg) ? arg : [];
 		const options = (args[0] ?? {}) as IParadisCcusageExecOptions;
 		switch (command) {
@@ -526,6 +621,111 @@ export class ParadisCcusageChannel<TContext = string> implements IServerChannel<
 				throw new Error(`Method not found: ${command}`);
 		}
 	}
+}
+
+function parseWarmLeasePayload(arg: unknown): ParadisCcusageWarmLeasePayload {
+	if (!Array.isArray(arg) || arg.length !== 1 || !isExactPlainRecord(arg[0], ['ownerId', 'active', 'targets'])) {
+		throw new Error('Invalid setWarmLease arguments');
+	}
+	const payload = arg[0];
+	if (typeof payload.ownerId !== 'string'
+		|| payload.ownerId.length > WARM_LEASE_MAX_OWNER_ID_LENGTH
+		|| !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(payload.ownerId)
+		|| typeof payload.active !== 'boolean'
+		|| !Array.isArray(payload.targets)) {
+		throw new Error('Invalid warm lease payload');
+	}
+	if ((!payload.active && payload.targets.length !== 0)
+		|| (payload.active && (payload.targets.length === 0 || payload.targets.length > WARM_LEASE_MAX_TARGETS_PER_OWNER))) {
+		throw new Error('Invalid warm lease target count');
+	}
+	if (!isExactPlainArray(payload.targets)) {
+		throw new Error('Invalid warm lease targets array');
+	}
+
+	const targets: ParadisCcusageWarmTarget[] = [];
+	const kinds = new Set<ParadisCcusageWarmTargetKind>();
+	for (const value of payload.targets) {
+		const target = parseWarmTarget(value);
+		if (kinds.has(target.kind)) {
+			throw new Error('Duplicate warm lease target');
+		}
+		kinds.add(target.kind);
+		targets.push(target);
+	}
+	return { ownerId: payload.ownerId, active: payload.active, targets };
+}
+
+function parseWarmTarget(value: unknown): ParadisCcusageWarmTarget {
+	if (!isExactPlainRecord(value, ['kind', 'options'])
+		|| (value.kind !== 'daily' && value.kind !== 'blocks' && value.kind !== 'session' && value.kind !== 'projects')
+		|| !isPlainRecord(value.options)) {
+		throw new Error('Invalid warm lease target');
+	}
+	const kind = value.kind;
+	const optionKeys = kind === 'blocks'
+		? (Object.prototype.hasOwnProperty.call(value.options, 'executablePath') ? ['executablePath'] : [])
+		: (Object.prototype.hasOwnProperty.call(value.options, 'executablePath') ? ['executablePath', 'since'] : ['since']);
+	if (!isExactPlainRecord(value.options, optionKeys)) {
+		throw new Error('Invalid warm lease target options');
+	}
+	const executablePath = value.options.executablePath;
+	if (executablePath !== undefined && (typeof executablePath !== 'string'
+		|| executablePath.length === 0
+		|| executablePath.length > WARM_LEASE_MAX_EXECUTABLE_PATH_LENGTH
+		|| executablePath.trim() !== executablePath)) {
+		throw new Error('Invalid warm lease executable path');
+	}
+	const since = value.options.since;
+	if (kind === 'blocks') {
+		if (since !== undefined) {
+			throw new Error('Invalid blocks warm lease target');
+		}
+	} else if (typeof since !== 'string' || !/^\d{8}$/.test(since)) {
+		throw new Error('Invalid warm lease since date');
+	}
+	return {
+		kind,
+		options: {
+			...(executablePath === undefined ? {} : { executablePath }),
+			...(since === undefined ? {} : { since }),
+		},
+	};
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return false;
+	}
+	const prototype = Object.getPrototypeOf(value);
+	return prototype === Object.prototype || prototype === null;
+}
+
+function isExactPlainArray(value: unknown): value is unknown[] {
+	if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1) {
+		return false;
+	}
+	for (let index = 0; index < value.length; index++) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+		if (!descriptor || !descriptor.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+function isExactPlainRecord(value: unknown, expectedKeys: readonly string[]): value is Record<string, unknown> {
+	if (!isPlainRecord(value)) {
+		return false;
+	}
+	const keys = Reflect.ownKeys(value);
+	if (keys.length !== expectedKeys.length || keys.some(key => typeof key !== 'string' || !expectedKeys.includes(key))) {
+		return false;
+	}
+	return expectedKeys.every(key => {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		return descriptor?.enumerable === true && Object.prototype.hasOwnProperty.call(descriptor, 'value');
+	});
 }
 
 /**

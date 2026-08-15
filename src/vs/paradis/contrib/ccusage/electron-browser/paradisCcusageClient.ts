@@ -10,9 +10,14 @@
 // 正規化済みデータ(IParadisCcusageDashboardData)へ変換するクライアント。
 // ccusage の生 JSON 構造はレポート毎に形が違うため、UI からは直接参照させない。
 
+import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { ParadisWarmLeaseController, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS } from '../../../common/paradisWarmLease.js';
 import {
 	IParadisCcusageBlock,
 	IParadisCcusageDailyRow,
@@ -21,6 +26,7 @@ import {
 	PARADIS_CCUSAGE_CHANNEL,
 	ParadisCcusageAgent,
 	ParadisCcusageProjects,
+	ParadisCcusageWarmTarget,
 	paradisCcusageAgentForModel
 } from '../common/paradisCcusage.js';
 
@@ -104,7 +110,17 @@ export function paradisCcusageProjectDisplayName(rawName: string): string {
 	return name.length > 0 ? name : rawName;
 }
 
+type ParadisCcusageRouteId = 'local' | `remote:${number}`;
+
+interface IParadisCcusageRoute {
+	readonly routeId: ParadisCcusageRouteId;
+	readonly channel: IChannel;
+}
+
 export class ParadisCcusageClient {
+	private readonly remoteRouteIds = new WeakMap<object, number>();
+	private readonly warmLeaseRoutes = new Map<string, IParadisCcusageRoute>();
+	private nextRemoteRouteId = 0;
 
 	constructor(
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
@@ -116,10 +132,97 @@ export class ParadisCcusageClient {
 		// SSH で繋いでいる間、エージェントは接続先で動くので、使った量も接続先のホームに
 		// 記録される。手元で数えるとその分がまるごと抜けるため、繋いでいる先へ聞く
 		// （同じチャネルを REH 側にも生やしてある）。
+		return this.resolveRoute().channel;
+	}
+
+	/** status表示が必要な間、daily targetのwarm leaseを維持する。 */
+	createStatusWarmLease(): IDisposable {
+		return this.createWarmLease(() => this.statusWarmTargets());
+	}
+
+	/** dashboard表示が必要な間、4 reportのwarm leaseを維持する。 */
+	createDashboardWarmLease(): IDisposable {
+		return this.createWarmLease(() => this.dashboardWarmTargets());
+	}
+
+	/** mobile providerのowner-scoped dashboard leaseを1回更新する。 */
+	setDashboardWarmLease(ownerId: string, active: boolean): Promise<void> {
+		return this.setWarmLeaseOnRoute(ownerId, active, active ? this.dashboardWarmTargets() : []);
+	}
+
+	private createWarmLease(targetFactory: () => readonly ParadisCcusageWarmTarget[]): IDisposable {
+		const store = new DisposableStore();
+		const controller = store.add(new ParadisWarmLeaseController(
+			ownerId => this.setWarmLeaseOnRoute(ownerId, true, targetFactory()),
+			ownerId => this.setWarmLeaseOnRoute(ownerId, true, targetFactory()),
+			ownerId => this.setWarmLeaseOnRoute(ownerId, false, []),
+			runner => new RunOnceScheduler(runner, PARADIS_WARM_LEASE_RENEW_INTERVAL_MS),
+			() => `ccusage:${generateUuid()}`,
+		));
+		store.add(this.configurationService.onDidChangeConfiguration(() => controller.refresh()));
+		controller.setEnabled(true);
+		return store;
+	}
+
+	private async setWarmLeaseOnRoute(ownerId: string, active: boolean, targets: readonly ParadisCcusageWarmTarget[]): Promise<void> {
+		const previousRoute = this.warmLeaseRoutes.get(ownerId);
+		if (!active) {
+			const releaseRoute = previousRoute ?? this.resolveRoute();
+			this.warmLeaseRoutes.delete(ownerId);
+			await releaseRoute.channel.call<void>('setWarmLease', [{ ownerId, active: false, targets: [] }]);
+			return;
+		}
+
+		const currentRoute = this.resolveRoute();
+		if (previousRoute?.routeId === currentRoute.routeId) {
+			await previousRoute.channel.call<void>('setWarmLease', [{ ownerId, active: true, targets }]);
+			return;
+		}
+		if (previousRoute) {
+			this.warmLeaseRoutes.delete(ownerId);
+			try {
+				await previousRoute.channel.call<void>('setWarmLease', [{ ownerId, active: false, targets: [] }]);
+			} catch {
+				// 切断済みrouteのrelease失敗は、新routeのacquireを妨げない。
+			}
+		}
+		await currentRoute.channel.call<void>('setWarmLease', [{ ownerId, active: true, targets }]);
+		this.warmLeaseRoutes.set(ownerId, currentRoute);
+	}
+
+	private resolveRoute(): IParadisCcusageRoute {
 		const remoteConnection = this.remoteAgentService.getConnection();
-		return remoteConnection
-			? remoteConnection.getChannel(PARADIS_CCUSAGE_CHANNEL)
-			: this.sharedProcessService.getChannel(PARADIS_CCUSAGE_CHANNEL);
+		if (!remoteConnection) {
+			return { routeId: 'local', channel: this.sharedProcessService.getChannel(PARADIS_CCUSAGE_CHANNEL) };
+		}
+		let routeNumber = this.remoteRouteIds.get(remoteConnection);
+		if (routeNumber === undefined) {
+			routeNumber = ++this.nextRemoteRouteId;
+			this.remoteRouteIds.set(remoteConnection, routeNumber);
+		}
+		return { routeId: `remote:${routeNumber}`, channel: remoteConnection.getChannel(PARADIS_CCUSAGE_CHANNEL) };
+	}
+
+	private statusWarmTargets(): readonly ParadisCcusageWarmTarget[] {
+		return [{ kind: 'daily', options: this.warmOptions(FETCH_WINDOW_DAYS) }];
+	}
+
+	private dashboardWarmTargets(): readonly ParadisCcusageWarmTarget[] {
+		const datedOptions = this.warmOptions(FETCH_WINDOW_DAYS);
+		return [
+			{ kind: 'daily', options: datedOptions },
+			{ kind: 'blocks', options: this.warmOptions(undefined) },
+			{ kind: 'session', options: datedOptions },
+			{ kind: 'projects', options: datedOptions },
+		];
+	}
+
+	private warmOptions(sinceDays: number | undefined): ParadisCcusageWarmTarget['options'] {
+		const options = this.execOptions(sinceDays);
+		return {
+			...(options.executablePath === undefined ? {} : { executablePath: options.executablePath }),
+			...(options.since === undefined ? {} : { since: options.since }),
+		};
 	}
 
 	private execOptions(sinceDays: number | undefined, bypassCache?: boolean): IParadisCcusageExecOptions {
