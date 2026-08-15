@@ -197,6 +197,25 @@ Claude Code / Codex の動作完了・要対応通知（Workspacesアイコン�
 
 あわせて二次問題2件を修正: (1) `paradisNotificationTrigger.contribution.ts` — スコープ未解決（Workspacesビュー未登録フォルダ/エディタ領域ターミナル）でも、ウィンドウが可視+フォーカス中でなければワークスペースフォルダ名をプレースホルダに音+OS通知+Aivisを発火（アイコン変化はスコープ概念依存のため対象外のまま）。(2) `paradisAgentStatus.contribution.ts` — アクティブスコープの review 即acknowledge に「ウィンドウが可視かつフォーカス中」条件を追加（非フォーカス時に通知トリガーの遷移検知を先食いして握り潰す競合の解消）。
 
+## 内蔵ブラウザの前面オーバーレイ機構（overlayManager、2026-08-15整備）
+
+内蔵ブラウザ（`src/vs/platform/browserView/`）はElectronのネイティブ `WebContentsView` として実装されている。ネイティブビューはOS合成レイヤーで描画されるため、通常のDOM要素はCSSの `z-index` では絶対に上書きできない。
+
+これを回避しているのが `src/vs/workbench/contrib/browserView/electron-browser/overlayManager.ts` の `BrowserOverlayManager` で、`OVERLAY_DEFINITIONS`（決め打ちのDOMクラス名ホワイトリスト）に載っている要素がブラウザ領域に重なったことを検知すると、ネイティブビューを一時的に `setVisible(false)` で隠してスクリーンショットに差し替える。DOM側のダイアログはその隠れた瞬間に自然と「上」に描画される、というトリック。
+
+**重要**: この重なり検知は汎用的なz-index判定ではなく、**クラス名の決め打ちホワイトリスト方式**。標準の `monaco-dialog-modal-block` / `quick-input-widget`（`IDialogService`/`IQuickInputService`経由）は最初から登録済みで無条件に機能するが、fork独自の「自前DOM + backdrop方式」のダイアログは、それぞれ固有のbackdropクラス名を持ち、**そのクラス名を `OVERLAY_DEFINITIONS` に個別追加しない限りブラウザの背後に隠れる**。
+
+- 登録済み（問題なし）: `paradis-binding-dialog-backdrop`、`paradis-bookmark-dialog-backdrop`
+- 2026-08-15時点で判明した未登録（＝ブラウザ表示中に開くと背後に隠れる）:
+  1. `paradis-preset-editor-backdrop`（カスタムプリセットコマンドのモーダル、`src/vs/paradis/contrib/terminalPresets/browser/paradisPresetEditorDialog.ts`）
+  2. `paradis-create-worktree-backdrop`（ワークスペース切替/worktree作成ダイアログ）
+  3. `paradis-notif-settings-backdrop`（通知設定ダイアログ）
+  4. `paradis-notif-nested-backdrop`（Aivis辞書設定・YouTubeインポートの入れ子ダイアログ）
+  5. `paradis-limits-setup-overlay`（利用上限コード登録ダイアログ）
+  - 境界事例（アンカー式ポップオーバーで全画面モーダルではないため優先度低）: `.paradis-limits-panel`、`.paradis-resource-monitor-panel`
+
+**運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。
+
 ## 機能1: ワークスペース即時切り替え（workspaceSwitch、2026-07-02追加）
 
 `src/vs/paradis/contrib/workspaceSwitch/` に実装。単一ウィンドウ・単一 `.code-workspace`（identity固定）のまま `updateFolders` で folders を丸ごと入れ替え、エディタ/ターミナル/ブラウザの状態をリポジトリごとに退避・復元する（Superset方式: 破棄せず隠す）。実装時に判明した落とし穴:
