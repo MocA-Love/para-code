@@ -7,12 +7,19 @@
 
 import type { ParadisSentryScope } from './paradisSentryCommon.js';
 
+/**
+ * Sentry's own `SeverityLevel` without importing the SDK into this Electron-agnostic module.
+ * Defaults to `'error'` everywhere below, so existing call sites keep their current behavior.
+ */
+export type ParadisDiagnosticSeverity = 'info' | 'warning' | 'error';
+
 export type ParadisDiagnosticReporter = (
 	scope: Exclude<ParadisSentryScope, 'unknown'>,
 	feature: string,
 	operation: string,
 	error: unknown,
 	safeExtra?: Record<string, unknown>,
+	severity?: ParadisDiagnosticSeverity,
 ) => void;
 
 let reporter: ParadisDiagnosticReporter | undefined;
@@ -118,8 +125,9 @@ export function reportParadisDiagnosticError(
 	operation: string,
 	error: unknown,
 	safeExtra?: Record<string, unknown>,
+	severity?: ParadisDiagnosticSeverity,
 ): void {
-	reporter?.(scope, feature, operation, error, safeExtra);
+	reporter?.(scope, feature, operation, error, safeExtra, severity);
 }
 
 /**
