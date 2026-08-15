@@ -129,20 +129,11 @@ function isParadisSafeContextKey(key: string): boolean {
  */
 export class ParadisSentryRateLimiter {
 	private readonly entries = new Map<string, IParadisSentryRateLimitEntry>();
-	private nextSweepAt = 0;
 
 	constructor(private readonly now: () => number = Date.now) { }
 
 	consume(fingerprint: string): IParadisSentryRateLimitResult {
 		const currentTime = this.now();
-		if (currentTime >= this.nextSweepAt) {
-			for (const [entryFingerprint, entry] of this.entries) {
-				if (entryFingerprint !== fingerprint && currentTime - entry.windowStartedAt >= PARADIS_SENTRY_RATE_LIMIT_WINDOW_MS) {
-					this.entries.delete(entryFingerprint);
-				}
-			}
-			this.nextSweepAt = currentTime + PARADIS_SENTRY_RATE_LIMIT_WINDOW_MS;
-		}
 		const existing = this.entries.get(fingerprint);
 		if (!existing || currentTime - existing.windowStartedAt >= PARADIS_SENTRY_RATE_LIMIT_WINDOW_MS) {
 			const suppressed = existing?.suppressed ?? 0;
