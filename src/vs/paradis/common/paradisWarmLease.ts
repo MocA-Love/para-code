@@ -7,6 +7,7 @@
 
 import { Emitter, Event } from '../../base/common/event.js';
 import { IDisposable } from '../../base/common/lifecycle.js';
+import { hasKey } from '../../base/common/types.js';
 
 export const PARADIS_WARM_LEASE_DURATION_MS = 900_000;
 export const PARADIS_WARM_LEASE_RENEW_INTERVAL_MS = 300_000;
@@ -22,11 +23,10 @@ export interface IParadisWarmLeaseTargetSnapshot<TTarget> {
 	readonly generation: number;
 }
 
-export interface IParadisWarmLeaseLimits<TTarget> {
-	readonly cloneTarget: (target: TTarget) => TTarget;
+export interface IParadisWarmLeaseLimits {
 	readonly maxOwners: number;
 	readonly maxTargetsPerOwner: number;
-	readonly maxDistinctKeys: number;
+	readonly maxDistinctTargets: number;
 	readonly maxTotalMemberships: number;
 	readonly maxTotalCost: number;
 }
@@ -39,6 +39,96 @@ interface IParadisWarmLeaseOwner<TTarget> {
 }
 
 type SchedulerFactory = (runner: () => void) => IParadisWarmLeaseScheduler;
+
+const cloneRejected = Symbol('cloneRejected');
+
+function cloneAndFreezeJsonLike<TTarget>(target: TTarget): TTarget | typeof cloneRejected {
+	try {
+		const clone = cloneJsonLike(target, new Set<object>());
+		return clone === cloneRejected ? cloneRejected : clone as TTarget;
+	} catch {
+		return cloneRejected;
+	}
+}
+
+function cloneJsonLike(value: unknown, ancestors: Set<object>): unknown | typeof cloneRejected {
+	if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+		return value;
+	}
+	if (typeof value === 'number') {
+		return Number.isFinite(value) ? value : cloneRejected;
+	}
+	if (typeof value !== 'object') {
+		return cloneRejected;
+	}
+	if (ancestors.has(value)) {
+		return cloneRejected;
+	}
+
+	ancestors.add(value);
+	const clone = Array.isArray(value)
+		? cloneJsonArray(value, ancestors)
+		: cloneJsonObject(value, ancestors);
+	ancestors.delete(value);
+	return clone === cloneRejected ? cloneRejected : Object.freeze(clone);
+}
+
+function cloneJsonArray(value: readonly unknown[], ancestors: Set<object>): unknown | typeof cloneRejected {
+	for (const key of Reflect.ownKeys(value)) {
+		if (typeof key !== 'string') {
+			return cloneRejected;
+		}
+		if (key === 'length') {
+			continue;
+		}
+		const index = Number(key);
+		if (!Number.isSafeInteger(index) || index < 0 || index >= value.length || String(index) !== key) {
+			return cloneRejected;
+		}
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor || !descriptor.enumerable || !hasKey(descriptor, { value: true })) {
+			return cloneRejected;
+		}
+	}
+
+	const clone: unknown[] = [];
+	for (let index = 0; index < value.length; index++) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+		if (!descriptor || !descriptor.enumerable || !hasKey(descriptor, { value: true })) {
+			return cloneRejected;
+		}
+		const item = cloneJsonLike(descriptor.value, ancestors);
+		if (item === cloneRejected) {
+			return cloneRejected;
+		}
+		clone.push(item);
+	}
+	return clone;
+}
+
+function cloneJsonObject(value: object, ancestors: Set<object>): unknown | typeof cloneRejected {
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) {
+		return cloneRejected;
+	}
+
+	const clone = Object.create(prototype) as Record<string, unknown>;
+	for (const key of Reflect.ownKeys(value)) {
+		if (typeof key !== 'string') {
+			return cloneRejected;
+		}
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor || !descriptor.enumerable || !hasKey(descriptor, { value: true })) {
+			return cloneRejected;
+		}
+		const property = cloneJsonLike(descriptor.value, ancestors);
+		if (property === cloneRejected) {
+			return cloneRejected;
+		}
+		Object.defineProperty(clone, key, { value: property, enumerable: true, writable: true, configurable: true });
+	}
+	return clone;
+}
 
 /**
  * 複数の owner が保持する warm 対象を合成し、最新の renewal を有効値として公開する。
@@ -61,7 +151,7 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 		private readonly costOf: (target: TTarget) => number,
 		private readonly now: () => number,
 		schedulerFactory: SchedulerFactory,
-		private readonly limits: IParadisWarmLeaseLimits<TTarget>,
+		private readonly limits: IParadisWarmLeaseLimits,
 	) {
 		this.scheduler = schedulerFactory(() => {
 			if (this.disposed) {
@@ -90,7 +180,10 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 
 		const ownerTargets = new Map<string, TTarget>();
 		for (const target of targets) {
-			const clonedTarget = this.cloneAndFreeze(target);
+			const clonedTarget = cloneAndFreezeJsonLike(target);
+			if (clonedTarget === cloneRejected) {
+				return;
+			}
 			ownerTargets.set(this.keyOf(clonedTarget), clonedTarget);
 		}
 		const cost = this.costOfTargets(ownerTargets.values());
@@ -199,7 +292,7 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 		}
 
 		return membershipCount <= this.limits.maxTotalMemberships
-			&& distinctKeys.size <= this.limits.maxDistinctKeys
+			&& distinctKeys.size <= this.limits.maxDistinctTargets
 			&& totalCost <= this.limits.maxTotalCost;
 	}
 
@@ -213,14 +306,6 @@ export class ParadisWarmLeaseTracker<TTarget> implements IDisposable {
 			totalCost += cost;
 		}
 		return totalCost;
-	}
-
-	private cloneAndFreeze(target: TTarget): TTarget {
-		const clone = this.limits.cloneTarget(target);
-		if (clone !== null && (typeof clone === 'object' || typeof clone === 'function')) {
-			return Object.freeze(clone);
-		}
-		return clone;
 	}
 
 	private purgeExpiredLeases(syncScheduler = true): boolean {

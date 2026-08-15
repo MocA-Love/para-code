@@ -15,6 +15,18 @@ interface Target {
 	cost: number;
 }
 
+interface NestedTarget {
+	key: string;
+	value: {
+		label: string;
+		details: {
+			state: string;
+		};
+	};
+	tags: string[];
+	cost: number;
+}
+
 suite('ParadisWarmLeaseTracker', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -128,7 +140,7 @@ suite('ParadisWarmLeaseTracker', () => {
 		perOwnerTracker.setLease('owner-a', [target('a', 'kept')]);
 		perOwnerTracker.setLease('owner-a', [target('a', 'blocked'), target('b', 'blocked')]);
 
-		const keyTracker = store.add(createTracker(new TestClock(), new TestScheduler(), { maxDistinctKeys: 1 }));
+		const keyTracker = store.add(createTracker(new TestClock(), new TestScheduler(), { maxDistinctTargets: 1 }));
 		keyTracker.setLease('owner-a', [target('a', 'kept')]);
 		keyTracker.setLease('owner-b', [target('b', 'blocked')]);
 
@@ -196,21 +208,20 @@ suite('ParadisWarmLeaseTracker', () => {
 	test('does not resume after an expiry listener disposes the tracker during public or queued timer purges', () => {
 		const publicClock = new TestClock();
 		const publicScheduler = new TestScheduler();
-		const clonedKeys: string[] = [];
+		const observedKeys: string[] = [];
 		const publicTracker = store.add(new ParadisWarmLeaseTracker(
-			target => target.key,
+			target => {
+				observedKeys.push(target.key);
+				return target.key;
+			},
 			(left, right) => left.value === right.value,
 			target => target.cost,
 			() => publicClock.now,
 			runner => { publicScheduler.setRunner(runner); return publicScheduler; },
 			{
-				cloneTarget: target => {
-					clonedKeys.push(target.key);
-					return { ...target };
-				},
 				maxOwners: 4,
 				maxTargetsPerOwner: 4,
-				maxDistinctKeys: 4,
+				maxDistinctTargets: 4,
 				maxTotalMemberships: 8,
 				maxTotalCost: 8,
 			},
@@ -220,7 +231,7 @@ suite('ParadisWarmLeaseTracker', () => {
 		publicClock.now = PARADIS_WARM_LEASE_DURATION_MS;
 
 		assert.doesNotThrow(() => publicTracker.setLease('owner-b', [target('b', 'must-not-register')]));
-		assert.deepStrictEqual([clonedKeys, active(publicTracker), publicScheduler.activeTimerCount], [['a'], [], 0]);
+		assert.deepStrictEqual([observedKeys, active(publicTracker), publicScheduler.activeTimerCount], [['a'], [], 0]);
 
 		const timerClock = new TestClock();
 		const timerScheduler = new TestScheduler();
@@ -233,7 +244,7 @@ suite('ParadisWarmLeaseTracker', () => {
 		assert.deepStrictEqual([active(timerTracker), timerScheduler.activeTimerCount], [[], 0]);
 	});
 
-	test('uses the six-argument constructor and limits cloneTarget to own target aliases', () => {
+	test('uses the six-argument constructor to own target aliases', () => {
 		const clock = new TestClock();
 		const scheduler = new TestScheduler();
 		const tracker = store.add(new ParadisWarmLeaseTracker(
@@ -245,10 +256,9 @@ suite('ParadisWarmLeaseTracker', () => {
 			{
 				maxOwners: 4,
 				maxTargetsPerOwner: 4,
-				maxDistinctKeys: 4,
+				maxDistinctTargets: 4,
 				maxTotalMemberships: 8,
 				maxTotalCost: 1,
-				cloneTarget: target => ({ ...target }),
 			},
 		));
 		let changes = 0;
@@ -271,6 +281,68 @@ suite('ParadisWarmLeaseTracker', () => {
 			retained.generation,
 			changes,
 		], [[['a', 'kept']], 'a', 1, first.generation, 1]);
+	});
+
+	test('owns nested plain targets with only the five documented limit fields', () => {
+		const clock = new TestClock();
+		const scheduler = new TestScheduler();
+		const tracker = store.add(new ParadisWarmLeaseTracker<NestedTarget>(
+			target => target.key,
+			(left, right) => left.value.label === right.value.label,
+			target => target.cost,
+			() => clock.now,
+			runner => { scheduler.setRunner(runner); return scheduler; },
+			{
+				maxOwners: 4,
+				maxTargetsPerOwner: 4,
+				maxDistinctTargets: 4,
+				maxTotalMemberships: 8,
+				maxTotalCost: 1,
+			},
+		));
+		let changes = 0;
+		store.add(tracker.onDidChange(() => changes++));
+		const source = nestedTarget('a', 'kept', 'kept', ['one'], 1);
+
+		tracker.setLease('owner-a', [source]);
+		const first = tracker.activeTargets()[0];
+		mutateNestedTarget(source, 'source', 'source', 'source-tag', 0);
+		mutateNestedTarget(first.target, 'returned', 'returned', 'returned-tag', 0);
+		tracker.setLease('owner-b', [nestedTarget('b', 'blocked', 'blocked', ['two'], 1)]);
+		const retained = tracker.activeTargets()[0];
+
+		assert.deepStrictEqual([
+			retained.key,
+			retained.target.value.label,
+			retained.target.value.details.state,
+			retained.target.tags,
+			retained.target.cost,
+			retained.generation,
+			changes,
+		], ['a', 'kept', 'kept', ['one'], 1, first.generation, 1]);
+	});
+
+	test('rejects cyclic targets without changing state', () => {
+		const scheduler = new TestScheduler();
+		const tracker = store.add(createNestedTracker(new TestClock(), scheduler));
+		let changes = 0;
+		store.add(tracker.onDidChange(() => changes++));
+		const cyclic = { ...nestedTarget('a', 'cyclic', 'cyclic', [], 1), self: undefined as unknown };
+		cyclic.self = cyclic;
+
+		assert.doesNotThrow(() => tracker.setLease('owner-a', [cyclic]));
+		assert.deepStrictEqual([tracker.activeTargets(), changes, scheduler.activeTimerCount], [[], 0, 0]);
+	});
+
+	test('rejects function-bearing targets without changing state', () => {
+		const scheduler = new TestScheduler();
+		const tracker = store.add(createNestedTracker(new TestClock(), scheduler));
+		let changes = 0;
+		store.add(tracker.onDidChange(() => changes++));
+		const withCallback = { ...nestedTarget('a', 'callback', 'callback', [], 1), callback: () => { } };
+
+		assert.doesNotThrow(() => tracker.setLease('owner-a', [withCallback]));
+		assert.deepStrictEqual([tracker.activeTargets(), changes, scheduler.activeTimerCount], [[], 0, 0]);
 	});
 });
 
@@ -538,7 +610,7 @@ suite('ParadisWarmLeaseController', () => {
 	});
 });
 
-function createTracker(clock: TestClock, scheduler: TestScheduler, overrides: Partial<IParadisWarmLeaseLimits<Target>> = {}): ParadisWarmLeaseTracker<Target> {
+function createTracker(clock: TestClock, scheduler: TestScheduler, overrides: Partial<IParadisWarmLeaseLimits> = {}): ParadisWarmLeaseTracker<Target> {
 	return new ParadisWarmLeaseTracker(
 		target => target.key,
 		(left, right) => left.value === right.value,
@@ -546,10 +618,9 @@ function createTracker(clock: TestClock, scheduler: TestScheduler, overrides: Pa
 		() => clock.now,
 		runner => { scheduler.setRunner(runner); return scheduler; },
 		{
-			cloneTarget: target => ({ ...target }),
 			maxOwners: 4,
 			maxTargetsPerOwner: 4,
-			maxDistinctKeys: 4,
+			maxDistinctTargets: 4,
 			maxTotalMemberships: 8,
 			maxTotalCost: 8,
 			...overrides,
@@ -557,8 +628,29 @@ function createTracker(clock: TestClock, scheduler: TestScheduler, overrides: Pa
 	);
 }
 
+function createNestedTracker(clock: TestClock, scheduler: TestScheduler): ParadisWarmLeaseTracker<NestedTarget> {
+	return new ParadisWarmLeaseTracker(
+		target => target.key,
+		(left, right) => left.value.label === right.value.label,
+		target => target.cost,
+		() => clock.now,
+		runner => { scheduler.setRunner(runner); return scheduler; },
+		{
+			maxOwners: 4,
+			maxTargetsPerOwner: 4,
+			maxDistinctTargets: 4,
+			maxTotalMemberships: 8,
+			maxTotalCost: 8,
+		},
+	);
+}
+
 function target(key: string, value: string, cost = 1): Target {
 	return { key, value, cost };
+}
+
+function nestedTarget(key: string, label: string, state: string, tags: string[], cost: number): NestedTarget {
+	return { key, value: { label, details: { state } }, tags, cost };
 }
 
 function active(tracker: ParadisWarmLeaseTracker<Target>): Array<[string, string]> {
@@ -586,6 +678,29 @@ function mutateTarget(target: Target, value: string, cost: number): void {
 		target.cost = cost;
 	} catch {
 		// The tracker freezes returned clones; the observable assertions are above.
+	}
+}
+
+function mutateNestedTarget(target: NestedTarget, label: string, state: string, tag: string, cost: number): void {
+	try {
+		target.value.label = label;
+	} catch {
+		// The tracker freezes nested returned clones.
+	}
+	try {
+		target.value.details.state = state;
+	} catch {
+		// The tracker freezes nested returned clones.
+	}
+	try {
+		target.tags.push(tag);
+	} catch {
+		// The tracker freezes nested returned clones.
+	}
+	try {
+		target.cost = cost;
+	} catch {
+		// The tracker freezes nested returned clones.
 	}
 }
 
