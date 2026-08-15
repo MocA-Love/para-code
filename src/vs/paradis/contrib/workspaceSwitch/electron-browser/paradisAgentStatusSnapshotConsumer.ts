@@ -36,6 +36,7 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 	private readonly _tokenScopeMemory = new ParadisAgentTokenScopeMemory();
 	private _latestSnapshot: IParadisAgentStatusSnapshot | undefined;
 	private _consecutivePollFailures = 0;
+	private _disposed = false;
 
 	constructor(private readonly _options: IParadisAgentStatusSnapshotConsumerOptions) {
 		super();
@@ -57,7 +58,17 @@ export class ParadisAgentStatusSnapshotConsumer extends Disposable {
 	}
 
 	requestRefresh(): void {
-		this._options.snapshotService.requestRefresh();
+		if (!this._disposed) {
+			this._options.snapshotService.requestRefresh();
+		}
+	}
+
+	override dispose(): void {
+		if (this._disposed) {
+			return;
+		}
+		this._disposed = true;
+		super.dispose();
 	}
 
 	private _handlePollFailure(error: unknown): void {

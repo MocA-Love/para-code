@@ -52,7 +52,7 @@ const STR_TITLE_PERMISSION = 'エージェントが対応を求めています';
 /**
  * ペイン単位の 'review' / 'permission' 遷移を検知して通知をトリガーする workbench contribution。
  */
-class ParadisNotificationTrigger extends Disposable implements IWorkbenchContribution {
+export class ParadisNotificationTrigger extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisNotificationTrigger';
 
