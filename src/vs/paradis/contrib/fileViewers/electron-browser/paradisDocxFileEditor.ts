@@ -76,6 +76,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _editorVisible = false;
 	private _currentResource: URI | undefined;
 	private _renderGeneration = 0;
+	private _inputEpoch = 0;
+	private _disposed = false;
 	private readonly _inputDisposables = this._register(new MutableDisposable<DisposableStore>());
 
 	constructor(
@@ -102,7 +104,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		const invocationEpoch = ++this._inputEpoch;
 		await super.setInput(input, options, context, token);
+		if (this._disposed || invocationEpoch !== this._inputEpoch || token.isCancellationRequested) {
+			return;
+		}
 
 		const resource = (input as ParadisDocxInput).resource;
 		this._currentResource = resource;
@@ -380,6 +386,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._inputEpoch++;
 		this._inputDisposables.clear();
 		this._currentResource = undefined;
 		if (this._webview && this._webviewClaimed) {
@@ -387,6 +394,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._webviewClaimed = false;
 		}
 		super.clearInput();
+	}
+
+	override dispose(): void {
+		this._disposed = true;
+		this._inputEpoch++;
+		super.dispose();
 	}
 
 	protected override setEditorVisible(visible: boolean): void {
