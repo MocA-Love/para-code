@@ -74,7 +74,7 @@ export interface MobileDisposable {
 	dispose(): void;
 }
 
-interface MobileWarmLeaseController {
+export interface MobileWarmLeaseController {
 	createWarmLease(resource: MobileWarmLeaseResource): MobileDisposable;
 	releaseAllWarmLeases(): void;
 }

@@ -8,7 +8,7 @@
 import { AppState as RNAppState } from 'react-native';
 import { create } from 'zustand';
 import { decodePairingUri, deriveNotifyKey, type Identity, type NotifyPayload, type PairingPayload } from '@para/protocol';
-import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
+import { MobileController, MobileWarmLeaseControllerRegistry, createEmptyStoreState, loadOrCreateIdentity, reserveOperationRun, revokeSelfOnRelay, isAgentWaiting, type AgentActivityDetailMessage, type AgentMessageSendResult, type AgentQuestionAnswer, type AgentToolImage, type BrowserTargetsResult, type FsDocxResult, type FsFindResult, type FsMediaResult, type FsGrepResult, type FsHighlightResult, type FsListResult, type FsResolveLinkResult, type FsUploadResult, type FsPdfResult, type FsReadResult, type FsXlsxResult, type MobileDisposable, type MobileWarmLeaseController, type ScmCommitFilesResult, type ScmCommitResult, type ScmDiffResult, type ScmLogResult, type ScmStatusResult, type ScmXlsxDiffResult, type SpaceDiskResult, type PresetDef, type PresetListResult, type PresetRunResult, type SpaceNoteResult, type StoreState, type SystemResourcesResult, type TermStreamEvent, type GithubUsageResult, type RateLimitsResult, type RtkSavingsResult, type UsageDashboardResult, type WorktreeCreateResult, type WorktreeFormResult } from './store.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -386,15 +386,35 @@ let activePcId: string | undefined;
  * （切り替えのたびに付け替えるので、各アクションは常にアクティブなPCへ届く）。
  */
 let controller: MobileController | undefined;
-const warmLeaseControllers = new MobileWarmLeaseControllerRegistry();
+
+/** active controller と Zustand へ公開する revision を同じ遷移で更新する appState 境界。 */
+export class MobileWarmLeaseAppStateBridge<T extends MobileWarmLeaseController = MobileWarmLeaseController> {
+	private controller: T | undefined;
+	private readonly controllers = new MobileWarmLeaseControllerRegistry();
+
+	replace(next: T | undefined): { readonly controller: T | undefined; readonly controllerRevision: number } {
+		if (this.controller !== next) {
+			this.controllers.replace(next);
+			this.controller = next;
+		}
+		return { controller: this.controller, controllerRevision: this.controllers.revision };
+	}
+
+	acquireUsageWarmLease(): MobileDisposable {
+		return this.controllers.acquire('ccusage');
+	}
+
+	acquireSpaceDiskWarmLease(): MobileDisposable {
+		return this.controllers.acquire('spaceDisk');
+	}
+}
+
+const warmLeaseAppState = new MobileWarmLeaseAppStateBridge<MobileController>();
 
 function replaceActiveController(next: MobileController | undefined): number {
-	if (controller === next) {
-		return warmLeaseControllers.revision;
-	}
-	const revision = warmLeaseControllers.replace(next);
-	controller = next;
-	return revision;
+	const transition = warmLeaseAppState.replace(next);
+	controller = transition.controller;
+	return transition.controllerRevision;
 }
 /** ピン留め・アーカイブのPC別記録（保存形はPC ID → キー配列）。 */
 let pinnedRecord: ScopedKeyRecord = {};
@@ -932,11 +952,11 @@ export const useAppStore = create<AppState>(set => ({
 	},
 
 	acquireUsageWarmLease() {
-		return warmLeaseControllers.acquire('ccusage');
+		return warmLeaseAppState.acquireUsageWarmLease();
 	},
 
 	acquireSpaceDiskWarmLease() {
-		return warmLeaseControllers.acquire('spaceDisk');
+		return warmLeaseAppState.acquireSpaceDiskWarmLease();
 	},
 
 	async init() {
