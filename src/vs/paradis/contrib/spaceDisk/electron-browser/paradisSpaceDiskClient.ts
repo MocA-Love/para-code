@@ -29,8 +29,14 @@ import {
 interface IWarmLeaseGeneration {
 	generation: number;
 	active: boolean;
-	pendingBarrierCount: number;
+	releaseRequested: boolean;
+	processedGeneration: number;
+	running: Promise<void> | undefined;
+	cancelBarrier: (() => void) | undefined;
+	cancellation: AbortSignal | undefined;
 }
+
+const WARM_LEASE_MAX_OPERATIONS = 128;
 
 export class ParadisSpaceDiskClient {
 
@@ -60,29 +66,9 @@ export class ParadisSpaceDiskClient {
 	}
 
 	/** mobile provider などが owner-scoped lease を1回更新する。 */
-	async setWarmLease(ownerId: string, active: boolean): Promise<void> {
-		const state = this.updateWarmLeaseGeneration(ownerId, active);
-		const generation = state.generation;
-		if (!active) {
-			try {
-				await this.sendWarmLease({ ownerId, active: false, targets: [] });
-			} finally {
-				this.cleanupWarmLeaseGeneration(ownerId, state);
-			}
-			return;
-		}
-
-		state.pendingBarrierCount++;
-		try {
-			await this.worktreeService.initializationBarrier.catch(() => { /* 一覧が取れなくても本体は温める */ });
-		} finally {
-			state.pendingBarrierCount--;
-		}
-		if (this.warmLeaseGenerations.get(ownerId) !== state || state.generation !== generation || !state.active) {
-			this.cleanupWarmLeaseGeneration(ownerId, state);
-			return;
-		}
-		await this.sendWarmLease({ ownerId, active: true, targets: this.collectTargets() });
+	setWarmLease(ownerId: string, active: boolean, cancellation?: AbortSignal): Promise<void> {
+		const state = this.updateWarmLeaseGeneration(ownerId, active, true, cancellation);
+		return state ? this.startWarmLeaseReconcile(ownerId, state) : Promise.resolve();
 	}
 
 	/** desktop consumer が生存する間、5分ごとに current target snapshot を renew する。 */
@@ -103,7 +89,7 @@ export class ParadisSpaceDiskClient {
 			}
 			disposed = true;
 			// barrier 待機中の acquire を無効化してから controller の補償 release へ渡す。
-			this.updateWarmLeaseGeneration(ownerId, false);
+			this.updateWarmLeaseGeneration(ownerId, false, false);
 			controller.dispose();
 		});
 	}
@@ -112,19 +98,85 @@ export class ParadisSpaceDiskClient {
 		return this.channel.call<void>('setWarmLease', [payload]);
 	}
 
-	private updateWarmLeaseGeneration(ownerId: string, active: boolean): IWarmLeaseGeneration {
+	private updateWarmLeaseGeneration(ownerId: string, active: boolean, releaseRequested: boolean, cancellation?: AbortSignal): IWarmLeaseGeneration | undefined {
 		let state = this.warmLeaseGenerations.get(ownerId);
 		if (!state) {
-			state = { generation: 0, active, pendingBarrierCount: 0 };
+			if (this.warmLeaseGenerations.size >= WARM_LEASE_MAX_OPERATIONS) {
+				return undefined;
+			}
+			state = { generation: 0, active, releaseRequested, processedGeneration: 0, running: undefined, cancelBarrier: undefined, cancellation: undefined };
 			this.warmLeaseGenerations.set(ownerId, state);
 		}
 		state.generation = ++this.nextWarmLeaseGeneration;
 		state.active = active;
+		state.releaseRequested = releaseRequested && !active;
+		state.cancellation = active ? cancellation : undefined;
+		if (!active) {
+			state.cancelBarrier?.();
+		}
 		return state;
 	}
 
+	private startWarmLeaseReconcile(ownerId: string, state: IWarmLeaseGeneration): Promise<void> {
+		if (state.running) {
+			return state.running;
+		}
+		const running = this.reconcileWarmLease(ownerId, state).finally(() => {
+			if (state.running === running) {
+				state.running = undefined;
+				this.cleanupWarmLeaseGeneration(ownerId, state);
+			}
+		});
+		state.running = running;
+		return running;
+	}
+
+	private async reconcileWarmLease(ownerId: string, state: IWarmLeaseGeneration): Promise<void> {
+		while (state.processedGeneration !== state.generation) {
+			let generation = state.generation;
+			if (state.active) {
+				const cancellation = state.cancellation;
+				const initialized = await this.waitForInitialization(state, cancellation);
+				if (!initialized || this.warmLeaseGenerations.get(ownerId) !== state || !state.active) {
+					if (!initialized && cancellation?.aborted && state.generation === generation) {
+						state.active = false;
+						state.releaseRequested = false;
+						state.cancellation = undefined;
+					}
+					state.processedGeneration = generation;
+					continue;
+				}
+				generation = state.generation;
+				await this.sendWarmLease({ ownerId, active: true, targets: this.collectTargets() });
+			} else if (state.releaseRequested) {
+				await this.sendWarmLease({ ownerId, active: false, targets: [] });
+			}
+			state.processedGeneration = generation;
+		}
+	}
+
+	private waitForInitialization(state: IWarmLeaseGeneration, cancellation: AbortSignal | undefined): Promise<boolean> {
+		if (cancellation?.aborted) {
+			return Promise.resolve(false);
+		}
+		let cancel!: () => void;
+		const cancelled = new Promise<boolean>(resolve => cancel = () => resolve(false));
+		const onAbort = () => cancel();
+		cancellation?.addEventListener('abort', onAbort, { once: true });
+		state.cancelBarrier = cancel;
+		return Promise.race([
+			this.worktreeService.initializationBarrier.then(() => true, () => true),
+			cancelled,
+		]).finally(() => {
+			cancellation?.removeEventListener('abort', onAbort);
+			if (state.cancelBarrier === cancel) {
+				state.cancelBarrier = undefined;
+			}
+		});
+	}
+
 	private cleanupWarmLeaseGeneration(ownerId: string, state: IWarmLeaseGeneration): void {
-		if (this.warmLeaseGenerations.get(ownerId) === state && !state.active && state.pendingBarrierCount === 0) {
+		if (this.warmLeaseGenerations.get(ownerId) === state && !state.active && state.running === undefined && state.cancelBarrier === undefined) {
 			this.warmLeaseGenerations.delete(ownerId);
 		}
 	}

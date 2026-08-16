@@ -131,6 +131,42 @@ suite('ParadisWarmLeaseTracker', () => {
 		assert.deepStrictEqual(active(tracker), [['shared', 'b']]);
 	});
 
+	test('preserves every legal falsy target through authority handoff and fallback generations', () => {
+		const falsyTargets: readonly ParadisWarmLeaseTargetValue[] = [undefined, null, false, 0, '', Number.NaN];
+
+		for (const falsyTarget of falsyTargets) {
+			const scheduler = new TestScheduler();
+			const tracker = store.add(new ParadisWarmLeaseTracker<ParadisWarmLeaseTargetValue>(
+				() => 'shared',
+				Object.is,
+				() => 1,
+				() => 0,
+				runner => { scheduler.setRunner(runner); return scheduler; },
+				{
+					maxOwners: 2,
+					maxTargetsPerOwner: 1,
+					maxDistinctTargets: 1,
+					maxTotalMemberships: 2,
+					maxTotalCost: 2,
+				},
+			));
+
+			tracker.setLease('owner-fallback', ['fallback']);
+			const fallbackGeneration = tracker.activeTargets()[0].generation;
+			tracker.setLease('owner-latest', [falsyTarget]);
+			const latest = tracker.activeTargets();
+			tracker.release('owner-latest');
+			const restored = tracker.activeTargets();
+
+			assert.strictEqual(latest.length, 1);
+			assert.ok(Object.is(latest[0].target, falsyTarget));
+			assert.ok(latest[0].generation > fallbackGeneration);
+			assert.strictEqual(restored.length, 1);
+			assert.strictEqual(restored[0].target, 'fallback');
+			assert.ok(restored[0].generation > latest[0].generation);
+		}
+	});
+
 	test('clears the final target and pending expiry timer on the last release', () => {
 		const scheduler = new TestScheduler();
 		const tracker = store.add(createTracker(new TestClock(), scheduler));
@@ -509,11 +545,12 @@ suite('ParadisWarmLeaseController', () => {
 				async ownerId => { acquireOperations.push(`renew:${ownerId}`); },
 				async ownerId => { acquireOperations.push(`release:${ownerId}`); },
 				runner => { acquireScheduler.setRunner(runner); return acquireScheduler; },
-				ownerIds('acquire-first', 'acquire-second'),
+				ownerIds('acquire-owner'),
 			));
 			acquireController.setEnabled(true);
 			await waitForMacrotask();
-			acquireController.setEnabled(true);
+			assert.strictEqual(acquireScheduler.activeTimerCount, 1);
+			acquireScheduler.run();
 			await waitForMacrotask();
 
 			const renewScheduler = new TestScheduler();
@@ -566,8 +603,8 @@ suite('ParadisWarmLeaseController', () => {
 				releaseOperations,
 				rejectionReasons,
 			], [[
-				'acquire:acquire-first',
-				'acquire:acquire-second',
+				'acquire:acquire-owner',
+				'acquire:acquire-owner',
 			], [
 				'acquire:renew-owner',
 				'renew:renew-owner',
@@ -580,6 +617,58 @@ suite('ParadisWarmLeaseController', () => {
 		} finally {
 			globalThis.removeEventListener('unhandledrejection', onUnhandledRejection);
 		}
+	});
+
+	test('runs refresh immediately while an acquire retry is waiting on the one scheduler', async () => {
+		const scheduler = new TestScheduler();
+		const operations: string[] = [];
+		const controller = store.add(new ParadisWarmLeaseController(
+			async ownerId => { operations.push(`acquire:${ownerId}`); throw new Error('ambiguous acquire'); },
+			async ownerId => { operations.push(`renew:${ownerId}`); },
+			async ownerId => { operations.push(`release:${ownerId}`); },
+			runner => { scheduler.setRunner(runner); return scheduler; },
+			ownerIds('owner-a'),
+		));
+
+		controller.setEnabled(true);
+		await waitForMacrotask();
+		assert.deepStrictEqual([operations, scheduler.activeTimerCount], [['acquire:owner-a'], 1]);
+
+		controller.refresh();
+		await waitForMacrotask();
+		assert.deepStrictEqual([operations, scheduler.activeTimerCount], [[
+			'acquire:owner-a',
+			'acquire:owner-a',
+		], 1]);
+	});
+
+	test('best-effort releases an ambiguously rejected acquire after its desired owner retires', async () => {
+		const scheduler = new TestScheduler();
+		const acquireGate = new Deferred();
+		const operations: string[] = [];
+		const backendOwners = new Set<string>();
+		const controller = store.add(new ParadisWarmLeaseController(
+			async ownerId => {
+				operations.push(`acquire:${ownerId}`);
+				backendOwners.add(ownerId);
+				await acquireGate.promise;
+				throw new Error('response lost after acquire');
+			},
+			async ownerId => { operations.push(`renew:${ownerId}`); },
+			async ownerId => { operations.push(`release:${ownerId}`); backendOwners.delete(ownerId); },
+			runner => { scheduler.setRunner(runner); return scheduler; },
+			ownerIds('owner-a'),
+		));
+
+		controller.setEnabled(true);
+		controller.setEnabled(false);
+		acquireGate.resolve();
+		await flushMicrotasks();
+
+		assert.deepStrictEqual([operations, [...backendOwners], scheduler.activeTimerCount], [[
+			'acquire:owner-a',
+			'release:owner-a',
+		], [], 0]);
 	});
 
 	test('waits for a slow acquire before sending its trailing release on disable and dispose', async () => {

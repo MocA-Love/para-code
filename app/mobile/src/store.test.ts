@@ -188,6 +188,22 @@ function desktopState(terminals: { id: number; title: string; agentToken?: strin
 	};
 }
 
+async function readyWarmLeaseHarness() {
+	const mobile = generateIdentity();
+	const pc = generateIdentity();
+	const pair = new FakePair();
+	const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+	const controller = new MobileController(mobile, () => pair.client, () => { });
+	const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+	controller.connect(creds);
+	pair.fireOpen();
+	const pcMux = await pcMuxPromise;
+	await flush();
+	pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+	await flush();
+	return { controller, pair, pcMux };
+}
+
 describe('MobileController', () => {
 	it('increments controller revision and hands the active lease to the replacement controller', () => {
 		const events: string[] = [];
@@ -246,6 +262,82 @@ describe('MobileController', () => {
 		} finally {
 			vi.useRealTimers();
 			controller.disconnect();
+		}
+	});
+
+	it('keeps an initial warm lease registered when the synchronous send throws so its heartbeat retries', async () => {
+		const { controller, pair } = await readyWarmLeaseHarness();
+		vi.useFakeTimers();
+		try {
+			pair.transportEvents.length = 0;
+			pair.clientSendFailures = 1;
+			expect(() => controller.createWarmLease('ccusage')).not.toThrow();
+			await vi.advanceTimersByTimeAsync(300_000);
+			expect(pair.transportEvents).toEqual(['send:throw', 'send']);
+		} finally {
+			pair.clientSendFailures = 0;
+			controller.disconnect();
+			vi.useRealTimers();
+		}
+	});
+
+	it('keeps heartbeat retries alive after a synchronous warm lease send throws', async () => {
+		const { controller, pair } = await readyWarmLeaseHarness();
+		vi.useFakeTimers();
+		try {
+			controller.createWarmLease('ccusage');
+			await vi.advanceTimersByTimeAsync(0);
+			pair.transportEvents.length = 0;
+			pair.clientSendFailures = 1;
+			await vi.advanceTimersByTimeAsync(300_000);
+			await vi.advanceTimersByTimeAsync(300_000);
+			expect(pair.transportEvents).toEqual(['send:throw', 'send']);
+		} finally {
+			pair.clientSendFailures = 0;
+			controller.disconnect();
+			vi.useRealTimers();
+		}
+	});
+
+	it('isolates the old-target release from the new-target acquire when retargeting throws', async () => {
+		const { controller, pair, pcMux } = await readyWarmLeaseHarness();
+		const lease = controller.createWarmLease('spaceDisk');
+		await flush();
+		pair.transportEvents.length = 0;
+		pair.clientSendFailures = 1;
+		const nextState = {
+			...desktopState([], 2),
+			renderers: [{ windowId: 2, rendererGeneration: 2, ready: true }],
+			activeWs: '2:w2',
+			workspaces: [{ id: '2:w2', sourceId: 'w2', windowId: 2, name: 'other' }],
+		};
+		try {
+			pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(nextState)));
+			await expect(flush()).resolves.toBeUndefined();
+			expect(pair.transportEvents.slice(0, 2)).toEqual(['send:throw', 'send']);
+		} finally {
+			pair.clientSendFailures = 0;
+			lease.dispose();
+			controller.disconnect();
+		}
+	});
+
+	it('detaches a directly disposed warm lease even when its release send throws', async () => {
+		const { controller, pair } = await readyWarmLeaseHarness();
+		vi.useFakeTimers();
+		try {
+			const lease = controller.createWarmLease('spaceDisk');
+			await vi.advanceTimersByTimeAsync(0);
+			pair.transportEvents.length = 0;
+			pair.clientSendFailures = 1;
+			expect(() => lease.dispose()).not.toThrow();
+			expect(() => lease.dispose()).not.toThrow();
+			await vi.advanceTimersByTimeAsync(600_000);
+			expect(pair.transportEvents).toEqual(['send:throw']);
+		} finally {
+			pair.clientSendFailures = 0;
+			controller.disconnect();
+			vi.useRealTimers();
 		}
 	});
 

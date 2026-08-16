@@ -1496,10 +1496,13 @@ export class MobileController {
 		if (lease.disposed) {
 			return;
 		}
-		lease.disposed = true;
-		clearInterval(lease.timer);
-		this.warmLeases.delete(lease.leaseId);
-		this.sendWarmLease(lease, false);
+		try {
+			this.sendWarmLease(lease, false);
+		} finally {
+			lease.disposed = true;
+			clearInterval(lease.timer);
+			this.warmLeases.delete(lease.leaseId);
+		}
 	}
 
 	private sendWarmLease(lease: MobileWarmLease, active: boolean): void {
@@ -1528,14 +1531,18 @@ export class MobileController {
 	}
 
 	private sendWarmLeasePayload(client: RelayClient, lease: MobileWarmLease, active: boolean, target: RendererRequestTarget): void {
-		client.send('fs', encoder.encode(JSON.stringify({
-			t: lease.resource === 'ccusage' ? 'usageWarmLease' : 'spaceDiskWarmLease',
-			leaseId: lease.leaseId,
-			active,
-			desktopEpoch: target.desktopEpoch,
-			windowId: target.windowId,
-			rendererGeneration: target.rendererGeneration,
-		})));
+		try {
+			client.send('fs', encoder.encode(JSON.stringify({
+				t: lease.resource === 'ccusage' ? 'usageWarmLease' : 'spaceDiskWarmLease',
+				leaseId: lease.leaseId,
+				active,
+				desktopEpoch: target.desktopEpoch,
+				windowId: target.windowId,
+				rendererGeneration: target.rendererGeneration,
+			})));
+		} catch {
+			// Warm leases are best-effort. Keep active leases registered so the next heartbeat can retry.
+		}
 	}
 
 	private warmLeaseTarget(): RendererRequestTarget | undefined {
