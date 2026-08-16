@@ -2,7 +2,7 @@
 
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, decodeBinaryFsUpload, encodeBinaryTerminalData, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { acquireCapturedWarmLease, clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type FsReadResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
+import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, MobileWarmLeaseControllerRegistry, MobileWarmLeaseLifecycle, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type FsReadResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 
 class MemoryKeyStore implements KeyStore {
@@ -113,13 +113,23 @@ describe('revokeSelfOnRelay', () => {
 class FakePair {
 	readonly client: SocketLike;
 	readonly transportEvents: string[] = [];
+	clientSendFailures = 0;
 	private h: Partial<SocketLike> = {};
 	private peer: ((d: string | ArrayBuffer) => void) | null = null;
 	constructor() {
 		const self = this;
 		this.client = {
 			binaryType: 'arraybuffer',
-			send(d) { self.transportEvents.push('send'); const b = typeof d === 'string' ? d : ab(d); queueMicrotask(() => self.peer?.(b)); },
+			send(d) {
+				if (self.clientSendFailures > 0) {
+					self.clientSendFailures--;
+					self.transportEvents.push('send:throw');
+					throw new Error('socket send failed');
+				}
+				self.transportEvents.push('send');
+				const b = typeof d === 'string' ? d : ab(d);
+				queueMicrotask(() => self.peer?.(b));
+			},
 			close() { self.transportEvents.push('close'); queueMicrotask(() => self.h.onclose?.()); },
 			get onopen() { return self.h.onopen ?? null; }, set onopen(v) { self.h.onopen = v ?? undefined; },
 			get onclose() { return self.h.onclose ?? null; }, set onclose(v) { self.h.onclose = v ?? undefined; },
@@ -179,20 +189,28 @@ function desktopState(terminals: { id: number; title: string; agentToken?: strin
 }
 
 describe('MobileController', () => {
-	it('binds cleanup to the captured controller across an active PC switch', () => {
+	it('increments controller revision and hands the active lease to the replacement controller', () => {
 		const events: string[] = [];
-		const oldController = { createWarmLease: (resource: string) => { events.push(`old:acquire:${resource}`); return { dispose: () => events.push(`old:release:${resource}`) }; } };
-		const newController = { createWarmLease: (resource: string) => { events.push(`new:acquire:${resource}`); return { dispose: () => events.push(`new:release:${resource}`) }; } };
-		let current = oldController;
-		const oldLease = acquireCapturedWarmLease(() => current, 'ccusage');
-		current = newController;
-		oldLease.dispose();
-		const newLease = acquireCapturedWarmLease(() => current, 'ccusage');
-		newLease.dispose();
+		const oldController = {
+			createWarmLease: (resource: string) => { events.push(`old:acquire:${resource}`); return { dispose: () => events.push(`old:release:${resource}`) }; },
+			releaseAllWarmLeases: () => { events.push('old:release-all'); throw new Error('old release failed'); },
+		};
+		const newController = {
+			createWarmLease: (resource: string) => { events.push(`new:acquire:${resource}`); return { dispose: () => events.push(`new:release:${resource}`) }; },
+			releaseAllWarmLeases: () => events.push('new:release-all'),
+		};
+		const registry = new MobileWarmLeaseControllerRegistry();
+		const lifecycle = new MobileWarmLeaseLifecycle();
+		expect(registry.replace(oldController)).toBe(1);
+		lifecycle.update(true, () => registry.acquire('ccusage'), registry.revision);
+		expect(() => registry.replace(newController)).not.toThrow();
+		expect(registry.revision).toBe(2);
+		lifecycle.update(true, () => registry.acquire('ccusage'), registry.revision);
 		expect(events).toEqual([
-			'old:acquire:ccusage', 'old:release:ccusage',
-			'new:acquire:ccusage', 'new:release:ccusage',
+			'old:acquire:ccusage', 'old:release-all', 'old:release:ccusage', 'new:acquire:ccusage',
 		]);
+		lifecycle.dispose();
+		expect(events.at(-1)).toBe('new:release:ccusage');
 	});
 
 	it('sends exact warm lease acquire, 300 second heartbeat and unmount release payloads', async () => {
@@ -258,6 +276,40 @@ describe('MobileController', () => {
 			await flush();
 			expect(events).toEqual(['acquire', 'release']);
 			controller.disconnect();
+		});
+	}
+
+	for (const teardown of [
+		{ name: 'disconnect', run: (controller: MobileController) => controller.disconnect() },
+		{ name: 'suspend', run: (controller: MobileController) => controller.suspendForBackground() },
+		{ name: 'reset', run: (controller: MobileController) => controller.reset() },
+		{ name: 'dispose', run: (controller: MobileController) => controller.dispose() },
+	] as const) {
+		it(`isolates a throwing owner release and continues ${teardown.name} transport teardown`, async () => {
+			const mobile = generateIdentity();
+			const pc = generateIdentity();
+			const pair = new FakePair();
+			const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+			const controller = new MobileController(mobile, () => pair.client, () => { });
+			const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+			controller.connect(creds);
+			pair.fireOpen();
+			const pcMux = await pcMuxPromise;
+			await flush();
+			pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify(desktopState([]))));
+			await flush();
+			controller.createWarmLease('ccusage');
+			controller.createWarmLease('spaceDisk');
+			await flush();
+			pair.transportEvents.length = 0;
+			pair.clientSendFailures = 1;
+			try {
+				await expect(Promise.resolve().then(() => teardown.run(controller))).resolves.toBeUndefined();
+				expect(pair.transportEvents.slice(0, 3)).toEqual(['send:throw', 'send', 'close']);
+			} finally {
+				pair.clientSendFailures = 0;
+				controller.disconnect();
+			}
 		});
 	}
 

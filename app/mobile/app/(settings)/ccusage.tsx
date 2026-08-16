@@ -13,7 +13,7 @@ import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
-import { MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type UsageAgent, type UsageDashboardResult } from '../../src/store.js';
+import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type UsageAgent, type UsageDashboardResult } from '../../src/store.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
 
 /** モデル・プロジェクト別バーの表示上限件数。 */
@@ -141,6 +141,7 @@ export default function CcusageScreen() {
 	})));
 	const isFocused = useIsFocused();
 	const isAppActive = useAppIsActive();
+	const warmLeaseOwnerRevision = mobileWarmLeaseOwnerRevision(activePcId, controllerRevision);
 	const warmLeaseLifecycle = useRef<MobileWarmLeaseLifecycle | undefined>(undefined);
 	warmLeaseLifecycle.current ??= new MobileWarmLeaseLifecycle();
 	useEffect(() => {
@@ -150,9 +151,9 @@ export default function CcusageScreen() {
 			appActive: isAppActive,
 			online: connection === 'online',
 			volumeAxis: false,
-		}), acquireUsageWarmLease);
+		}), acquireUsageWarmLease, warmLeaseOwnerRevision);
 		return () => lifecycle.update(false, acquireUsageWarmLease);
-	}, [isFocused, isAppActive, connection, activePcId, controllerRevision, acquireUsageWarmLease]);
+	}, [isFocused, isAppActive, connection, warmLeaseOwnerRevision, acquireUsageWarmLease]);
 
 	const [data, setData] = useState<UsageDashboardResult | undefined>();
 	const [loading, setLoading] = useState(false);
