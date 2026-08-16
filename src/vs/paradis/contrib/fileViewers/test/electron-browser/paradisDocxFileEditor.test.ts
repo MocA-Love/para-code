@@ -200,9 +200,10 @@ suite('ParadisDocxFileEditor', () => {
 
 		return {
 			editor,
-			fire(resource: URI, eventResource = resource): void {
+			fire(resource: URI, eventResource = resource, watcherGeneration?: number): void {
 				const emitters = watcherEmitters.get(resource.toString());
-				emitters?.[emitters.length - 1]?.fire(new FileChangesEvent([{ resource: eventResource, type: FileChangeType.UPDATED }], false));
+				const emitter = watcherGeneration === undefined ? emitters?.[emitters.length - 1] : emitters?.[watcherGeneration];
+				emitter?.fire(new FileChangesEvent([{ resource: eventResource, type: FileChangeType.UPDATED }], false));
 			},
 			queueHeader(resource: URI, result: Uint8Array | DeferredPromise<VSBuffer> | Error): void {
 				const queue = queuedHeaders.get(resource.toString()) ?? [];
@@ -669,6 +670,32 @@ suite('ParadisDocxFileEditor', () => {
 
 	suite('preflight publication fence', () => {
 
+		test('does not publish the old input after a newer setInput invocation starts before adoption', async () => {
+			const fixture = createDocxEditorFixture();
+			const resourceA = URI.file('/workspace/a.docx');
+			const resourceB = URI.file('/workspace/b.docx');
+			const oldHeader = new DeferredPromise<VSBuffer>();
+			fixture.queueHeader(resourceA, oldHeader);
+			try {
+				await fixture.editor.setInput(fixture.createInput(resourceA), undefined, Object.create(null), CancellationToken.None);
+				fixture.resetObservations();
+
+				void oldHeader.complete(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)));
+				await Promise.resolve();
+				await Promise.resolve();
+				const pendingB = fixture.editor.setInput(fixture.createInput(resourceB), undefined, Object.create(null), CancellationToken.None);
+				await pendingB;
+				await fixture.settleCurrentRender();
+
+				deepStrictEqual(fixture.renderSnapshot(), {
+					reads: [resourceB.toString()],
+					html: [expectedViewerSnapshot('https://file+.vscode-resource.vscode-cdn.net/workspace/b.docx')],
+				});
+			} finally {
+				await oldHeader.complete(VSBuffer.wrap(Uint8Array.of(0x50, 0x4b, 0x03, 0x04)));
+			}
+		});
+
 		test('publishes only a newer valid result when same-URI preflights resolve in reverse order', () => runWithFakedTimers({ useFakeTimers: true, maxTaskCount: 10_000 }, async () => {
 			const fixture = createDocxEditorFixture();
 			const resource = URI.file('/workspace/document.docx');
@@ -809,6 +836,30 @@ suite('ParadisDocxFileEditor', () => {
 				reset: [resourceA.toString()],
 				switched: [resourceB.toString()],
 				disposed: [],
+			});
+		}));
+
+		test('ignores an old same-URI watcher generation after reset and accepts the latest generation', () => runWithFakedTimers({ useFakeTimers: true, maxTaskCount: 10_000 }, async () => {
+			const fixture = createDocxEditorFixture();
+			const resource = URI.file('/workspace/document.docx');
+			await fixture.editor.setInput(fixture.createInput(resource), undefined, Object.create(null), CancellationToken.None);
+			await fixture.settleCurrentRender();
+			await fixture.editor.setInput(fixture.createInput(resource), undefined, Object.create(null), CancellationToken.None);
+			await fixture.settleCurrentRender();
+			fixture.resetObservations();
+
+			fixture.fire(resource, resource, 0);
+			await timeout(50);
+			await fixture.settleCurrentRender();
+			deepStrictEqual(fixture.renderSnapshot(), { reads: [], html: [] });
+
+			fixture.fire(resource, resource, 1);
+			await timeout(50);
+			await fixture.settleCurrentRender();
+
+			deepStrictEqual(fixture.renderSnapshot(), {
+				reads: [resource.toString()],
+				html: [expectedViewerSnapshot('https://file+.vscode-resource.vscode-cdn.net/workspace/document.docx')],
 			});
 		}));
 
