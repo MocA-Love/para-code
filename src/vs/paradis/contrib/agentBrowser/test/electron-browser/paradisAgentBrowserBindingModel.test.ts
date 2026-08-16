@@ -6,14 +6,15 @@
 import * as assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
-import { ITerminalGroupService, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisCommitBindResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult } from '../../common/paradisAgentBrowser.js';
 import { IParadisAgentBrowserAuthoritySyncService } from '../../electron-browser/paradisAgentBrowserAuthoritySyncService.js';
-import { ParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
+import { IParadisAgentBrowserBindingModelOptions, IParadisAgentBrowserBindingPollTimer, ParadisAgentBrowserBindingModel, ParadisAgentBrowserBindingPoller, ParadisAgentBrowserBindingTokenRefreshCoalescer } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisBrowserScopeService, IParadisTerminalScopeService, ParadisBindingScope } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 
 async function eventually(predicate: () => boolean): Promise<void> {
@@ -26,6 +27,76 @@ async function eventually(predicate: () => boolean): Promise<void> {
 	assert.fail('condition was not reached');
 }
 
+const nextTask = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+
+class DeterministicPollTimer implements IParadisAgentBrowserBindingPollTimer {
+	private now = 0;
+	private nextHandle = 1;
+	private readonly entries = new Map<number, { deadline: number; callback: () => void }>();
+	fireCount = 0;
+	setCallCount = 0;
+
+	set(callback: () => void, delayMs: number): unknown {
+		this.setCallCount++;
+		const handle = this.nextHandle++;
+		this.entries.set(handle, { deadline: this.now + delayMs, callback });
+		return handle;
+	}
+
+	clear(handle: unknown): void {
+		this.entries.delete(handle as number);
+	}
+
+	advance(ms: number): void {
+		const target = this.now + ms;
+		for (let next = this.nextDue(target); next; next = this.nextDue(target)) {
+			this.now = next.deadline;
+			this.entries.delete(next.handle);
+			this.fireCount++;
+			next.callback();
+		}
+		this.now = target;
+	}
+
+	private nextDue(target: number): { handle: number; deadline: number; callback: () => void } | undefined {
+		return [...this.entries].map(([handle, entry]) => ({ handle, ...entry }))
+			.filter(entry => entry.deadline <= target)
+			.sort((left, right) => left.deadline - right.deadline || left.handle - right.handle)[0];
+	}
+
+	get pendingHandleCount(): number {
+		return this.entries.size;
+	}
+
+	get nextDelay(): number | undefined {
+		const deadline = Math.min(...[...this.entries.values()].map(entry => entry.deadline));
+		return Number.isFinite(deadline) ? deadline - this.now : undefined;
+	}
+}
+
+function deferredQueue<T>() {
+	const reads: DeferredPromise<T>[] = [];
+	return {
+		reads,
+		read: () => {
+			const read = new DeferredPromise<T>();
+			reads.push(read);
+			return read.p;
+		},
+		complete: async (index: number, value: T) => {
+			assert.ok(reads[index]);
+			await reads[index].complete(value);
+		},
+		reject: async (index: number, error: Error) => {
+			assert.ok(reads[index]);
+			await reads[index].error(error);
+		},
+	};
+}
+
+const bindingListCommands = (commands: readonly { command: string }[]) =>
+	commands.filter(call => call.command === 'listBindings' || call.command === 'listSeenTokens').map(call => call.command);
+
 suite('ParadisAgentBrowserBindingModel transactions', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -33,16 +104,22 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		prepare?: (request: IParadisPrepareBindRequest) => Promise<IParadisPrepareBindResult>;
 		commit?: (ticketId: string, request: IParadisPrepareBindRequest) => Promise<IParadisCommitBindResult>;
 		listBindings?: () => Promise<IParadisPaneBinding[]>;
+		listSeenTokens?: () => Promise<string[]>;
 		hasPaneTokens?: boolean;
+		pollTimer?: DeterministicPollTimer;
+		tokenRefreshTimer?: DeterministicPollTimer;
+		store?: DisposableStore;
 	}) {
-		const terminalScopeChanged = store.add(new Emitter<{ instanceId: number; scope?: unknown }>());
-		const browserScopeChanged = store.add(new Emitter<{ viewId: string; scope?: unknown }>());
-		const browserViewsChanged = store.add(new Emitter<void>());
-		const paneTokensChanged = store.add(new Emitter<void>());
-		const terminalInstancesChanged = store.add(new Emitter<void>());
-		const terminalTitlesChanged = store.add(new Emitter<unknown>());
-		const instance = { instanceId: 1, title: 'shell', isDisposed: false, processId: 101 };
-		const secondInstance = { instanceId: 2, title: 'shell', isDisposed: false, processId: 102 };
+		const fixtureStore = options?.store ?? store;
+		const terminalScopeChanged = fixtureStore.add(new Emitter<{ instanceId: number; scope?: unknown }>());
+		const browserScopeChanged = fixtureStore.add(new Emitter<{ viewId: string; scope?: unknown }>());
+		const browserViewsChanged = fixtureStore.add(new Emitter<void>());
+		const paneTokensChanged = fixtureStore.add(new Emitter<void>());
+		const terminalInstancesChanged = fixtureStore.add(new Emitter<void>());
+		const terminalTitlesChanged = fixtureStore.add(new Emitter<ITerminalInstance>());
+		const instance = { instanceId: 1, title: 'shell', isDisposed: false, processId: 101 } as ITerminalInstance;
+		const secondInstance = { instanceId: 2, title: 'shell', isDisposed: false, processId: 102 } as ITerminalInstance;
+		const paneTokens = new Map<number, string>(options?.hasPaneTokens === false ? [] : [[1, 'token'], [2, 'token-b']]);
 		let terminalScope: ParadisBindingScope = { kind: 'managed', stateKey: 'space-a' };
 		let browserScope: ParadisBindingScope = { kind: 'managed', stateKey: 'space-a' };
 		let terminalRevision = 1;
@@ -69,7 +146,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 				commands.push({ command, args });
 				switch (command) {
 					case 'listBindings': return [...(await (options?.listBindings?.() ?? Promise.resolve(backendBindings)))] as T;
-					case 'listSeenTokens': return [] as T;
+					case 'listSeenTokens': return await (options?.listSeenTokens?.() ?? Promise.resolve([])) as T;
 					case 'prepareBind': {
 						order.push('prepare');
 						const request = args[0] as IParadisPrepareBindRequest;
@@ -125,40 +202,49 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 				return acceptedRevision;
 			},
 		} as IParadisAgentBrowserAuthoritySyncService;
-		const bindingModel = store.add(new ParadisAgentBrowserBindingModel(
-			{ getChannel: () => channel } as unknown as ISharedProcessService,
-			{
-				instances: [instance, secondInstance], onDidChangeInstances: terminalInstancesChanged.event,
-				onAnyInstanceTitleChange: terminalTitlesChanged.event,
-			} as unknown as ITerminalService,
-			{ paradisParkedGroups: [] } as unknown as ITerminalGroupService,
-			{
-				getTokenForInstance: (instanceId: number) => instanceId === 1 ? 'token' : instanceId === 2 ? 'token-b' : undefined,
-				getInstanceForToken: (token: string) => token === 'token' ? 1 : token === 'token-b' ? 2 : undefined,
-				listPaneTokens: () => options?.hasPaneTokens === false
-					? []
-					: [{ instanceId: 1, token: 'token' }, { instanceId: 2, token: 'token-b' }],
-				onDidChange: paneTokensChanged.event,
-			} as unknown as IParadisPaneTokenService,
-			{
-				getKnownBrowserViews: () => knownBrowserViews,
-				onDidChangeBrowserViews: browserViewsChanged.event,
-			} as unknown as IBrowserViewWorkbenchService,
-			{
-				get revision() { return terminalRevision; },
-				resolveScope: () => terminalScope,
-				onDidChangeStableScope: terminalScopeChanged.event,
-			} as unknown as IParadisTerminalScopeService,
-			{
-				get revision() { return browserRevision; },
-				resolveScope: () => browserScope,
-				onDidChangeStableScope: browserScopeChanged.event,
-			} as unknown as IParadisBrowserScopeService,
-			authoritySyncService,
-		));
+		const sharedProcessService = { getChannel: () => channel } as unknown as ISharedProcessService;
+		const terminalService = {
+			instances: [instance, secondInstance], onDidChangeInstances: terminalInstancesChanged.event,
+			onAnyInstanceTitleChange: terminalTitlesChanged.event,
+		} as unknown as ITerminalService;
+		const terminalGroupService = { paradisParkedGroups: [] } as unknown as ITerminalGroupService;
+		const paneTokenService = {
+			getTokenForInstance: (instanceId: number) => paneTokens.get(instanceId),
+			getInstanceForToken: (token: string) => [...paneTokens].find(([, candidate]) => candidate === token)?.[0],
+			listPaneTokens: () => [...paneTokens].map(([instanceId, token]) => ({ instanceId, token })),
+			onDidChange: paneTokensChanged.event,
+		} as unknown as IParadisPaneTokenService;
+		const browserViewWorkbenchService = {
+			getKnownBrowserViews: () => knownBrowserViews,
+			onDidChangeBrowserViews: browserViewsChanged.event,
+		} as unknown as IBrowserViewWorkbenchService;
+		const terminalScopeService = {
+			get revision() { return terminalRevision; },
+			resolveScope: () => terminalScope,
+			onDidChangeStableScope: terminalScopeChanged.event,
+		} as unknown as IParadisTerminalScopeService;
+		const browserScopeService = {
+			get revision() { return browserRevision; },
+			resolveScope: () => browserScope,
+			onDidChangeStableScope: browserScopeChanged.event,
+		} as unknown as IParadisBrowserScopeService;
+		const pollTimer = options?.pollTimer;
+		const tokenRefreshTimer = options?.tokenRefreshTimer;
+		const modelOptions: IParadisAgentBrowserBindingModelOptions | undefined = pollTimer || tokenRefreshTimer ? {
+			pollTimerFactory: pollTimer ? () => pollTimer : undefined,
+			tokenRefreshTimerFactory: tokenRefreshTimer ? () => tokenRefreshTimer : undefined,
+		} : undefined;
+		const bindingModel = fixtureStore.add(new ParadisAgentBrowserBindingModel(modelOptions,
+			sharedProcessService, terminalService, terminalGroupService, paneTokenService,
+			browserViewWorkbenchService, terminalScopeService, browserScopeService, authoritySyncService));
+		let changeCount = 0;
+		fixtureStore.add(bindingModel.onDidChange(() => changeCount++));
 
 		return {
 			bindingModel, model, order, commands, sharingCalls, terminalScopeChanged, browserScopeChanged,
+			paneTokens, paneTokensChanged, terminalTitlesChanged, instances: { first: instance, second: secondInstance },
+			get changeCount() { return changeCount; },
+			resetChangeCount: () => changeCount = 0,
 			set terminalScope(value: ParadisBindingScope) { terminalScope = value; terminalRevision++; },
 			set browserScope(value: ParadisBindingScope) { browserScope = value; browserRevision++; },
 			set acceptedRevision(value: number) { acceptedRevision = value; },
@@ -173,6 +259,155 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 			generation, boundAt: 1, scope: { kind: 'managed', stateKey: 'space-a' },
 		};
 	}
+
+	test('polls clean idle twice and fast state twenty times per minute', () => {
+		for (const [idle, expected] of [[true, 2], [false, 20]] as const) {
+			const timer = new DeterministicPollTimer();
+			let refreshes = 0;
+			const poller = new ParadisAgentBrowserBindingPoller(() => refreshes++, () => idle, timer);
+			try {
+				poller.start();
+				refreshes = 0;
+				timer.advance(60_000);
+				assert.deepStrictEqual({ refreshes, fires: timer.fireCount }, { refreshes: expected, fires: expected });
+			} finally {
+				poller.dispose();
+				assert.strictEqual(timer.pendingHandleCount, 0);
+			}
+		}
+	});
+
+	test('moves an idle deadline to the fast cadence when state changes', () => {
+		const timer = new DeterministicPollTimer();
+		let idle = true;
+		const poller = new ParadisAgentBrowserBindingPoller(() => undefined, () => idle, timer);
+		try {
+			poller.start();
+			assert.strictEqual(timer.nextDelay, 30_000);
+			idle = false;
+			poller.stateChanged();
+			assert.deepStrictEqual({ delay: timer.nextDelay, pending: timer.pendingHandleCount }, { delay: 3_000, pending: 1 });
+		} finally {
+			poller.dispose();
+			assert.strictEqual(timer.pendingHandleCount, 0);
+		}
+	});
+
+	test('moves a fast deadline to the idle cadence when state changes', () => {
+		const timer = new DeterministicPollTimer();
+		let idle = false;
+		const poller = new ParadisAgentBrowserBindingPoller(() => undefined, () => idle, timer);
+		try {
+			poller.start();
+			assert.strictEqual(timer.nextDelay, 3_000);
+			idle = true;
+			poller.stateChanged();
+			assert.deepStrictEqual({ delay: timer.nextDelay, pending: timer.pendingHandleCount }, { delay: 30_000, pending: 1 });
+		} finally {
+			poller.dispose();
+			assert.strictEqual(timer.pendingHandleCount, 0);
+		}
+	});
+
+	test('does not postpone a deadline for same-cadence state changes', () => {
+		const timer = new DeterministicPollTimer();
+		const poller = new ParadisAgentBrowserBindingPoller(() => undefined, () => false, timer);
+		try {
+			poller.start();
+			timer.advance(1_000);
+			for (let event = 0; event < 100; event++) {
+				poller.stateChanged();
+			}
+			assert.deepStrictEqual({ delay: timer.nextDelay, sets: timer.setCallCount }, { delay: 2_000, sets: 1 });
+		} finally {
+			poller.dispose();
+			assert.strictEqual(timer.pendingHandleCount, 0);
+		}
+	});
+
+	test('keeps one handle when refresh synchronously changes poll state or throws', () => {
+		for (const action of ['stateChanged', 'throw'] as const) {
+			const timer = new DeterministicPollTimer();
+			const poller = new ParadisAgentBrowserBindingPoller(() => {
+				if (action === 'stateChanged') {
+					poller.stateChanged();
+				} else {
+					throw new Error('sync refresh');
+				}
+			}, () => false, timer);
+			try {
+				if (action === 'throw') {
+					assert.throws(() => poller.start(), /sync refresh/);
+				} else {
+					poller.start();
+				}
+				assert.strictEqual(timer.pendingHandleCount, 1);
+				if (action === 'stateChanged') {
+					timer.advance(3_000);
+					assert.strictEqual(timer.pendingHandleCount, 1);
+				}
+			} finally {
+				poller.dispose();
+				assert.strictEqual(timer.pendingHandleCount, 0);
+			}
+		}
+	});
+
+	test('synchronous refresh disposal leaves no poll handle', () => {
+		const timer = new DeterministicPollTimer();
+		let requests = 0;
+		const poller = new ParadisAgentBrowserBindingPoller(() => {
+			if (++requests === 2) {
+				poller.dispose();
+			}
+		}, () => false, timer);
+		poller.start();
+		assert.strictEqual(timer.pendingHandleCount, 1);
+		timer.advance(3_000);
+		assert.strictEqual(timer.pendingHandleCount, 0);
+	});
+
+	test('coalesces one hundred schedule calls into one zero millisecond dispatch', () => {
+		const timer = new DeterministicPollTimer();
+		let dispatches = 0;
+		const coalescer = new ParadisAgentBrowserBindingTokenRefreshCoalescer(() => dispatches++, timer);
+		try {
+			for (let event = 0; event < 100; event++) {
+				coalescer.schedule();
+			}
+			assert.deepStrictEqual(
+				{ sets: timer.setCallCount, pending: timer.pendingHandleCount, dispatches },
+				{ sets: 1, pending: 1, dispatches: 0 },
+			);
+			timer.advance(0);
+			assert.deepStrictEqual({ pending: timer.pendingHandleCount, dispatches }, { pending: 0, dispatches: 1 });
+		} finally {
+			coalescer.dispose();
+			assert.strictEqual(timer.pendingHandleCount, 0);
+		}
+	});
+
+	test('cancels a pending coalesced refresh on disposal', () => {
+		const timer = new DeterministicPollTimer();
+		let dispatches = 0;
+		const coalescer = new ParadisAgentBrowserBindingTokenRefreshCoalescer(() => dispatches++, timer);
+		coalescer.schedule();
+		coalescer.dispose();
+		timer.advance(0);
+		assert.deepStrictEqual({ sets: timer.setCallCount, pending: timer.pendingHandleCount, dispatches }, { sets: 1, pending: 0, dispatches: 0 });
+	});
+
+	test('disposes the injected model poll timer', () => {
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		try {
+			createFixture({ pollTimer, store: fixtureStore });
+			assert.strictEqual(pollTimer.pendingHandleCount, 1);
+		} finally {
+			fixtureStore.dispose();
+			assert.strictEqual(pollTimer.pendingHandleCount, 0);
+		}
+	});
 
 	test('uses only sync, prepare, and commit after page sharing', async () => {
 		const fixture = createFixture();
@@ -231,6 +466,308 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		await new Promise<void>(resolve => setTimeout(resolve, 0));
 
 		assert.strictEqual(fixture.bindingModel.getBindingForToken('token')?.generation, 2);
+	});
+
+	test('coalesces one hundred pane token events into one binding-list pair', async () => {
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		const tokenTimer = new DeterministicPollTimer();
+		try {
+			const fixture = createFixture({ pollTimer, tokenRefreshTimer: tokenTimer, store: fixtureStore });
+			await eventually(() => bindingListCommands(fixture.commands).length === 2);
+			fixture.commands.length = 0;
+			for (let event = 0; event < 100; event++) {
+				fixture.paneTokensChanged.fire();
+			}
+			assert.deepStrictEqual({ sets: tokenTimer.setCallCount, pending: tokenTimer.pendingHandleCount }, { sets: 1, pending: 1 });
+			tokenTimer.advance(0);
+			await nextTask();
+			assert.deepStrictEqual(bindingListCommands(fixture.commands), ['listBindings', 'listSeenTokens']);
+			assert.strictEqual(tokenTimer.pendingHandleCount, 0);
+		} finally {
+			fixtureStore.dispose();
+			assert.deepStrictEqual({ poll: pollTimer.pendingHandleCount, token: tokenTimer.pendingHandleCount }, { poll: 0, token: 0 });
+		}
+	});
+
+	test('refreshes at zero milliseconds and switches idle polling to fast when a token appears', async () => {
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		const tokenTimer = new DeterministicPollTimer();
+		try {
+			const fixture = createFixture({ hasPaneTokens: false, pollTimer, tokenRefreshTimer: tokenTimer, store: fixtureStore });
+			await nextTask();
+			assert.deepStrictEqual({ commands: bindingListCommands(fixture.commands), delay: pollTimer.nextDelay }, { commands: [], delay: 30_000 });
+			fixture.paneTokens.set(fixture.instances.first.instanceId, 'token');
+			fixture.paneTokensChanged.fire();
+			assert.deepStrictEqual({ pollDelay: pollTimer.nextDelay, tokenDelay: tokenTimer.nextDelay }, { pollDelay: 3_000, tokenDelay: 0 });
+			tokenTimer.advance(0);
+			await nextTask();
+			assert.deepStrictEqual(bindingListCommands(fixture.commands), ['listBindings', 'listSeenTokens']);
+		} finally {
+			fixtureStore.dispose();
+			assert.deepStrictEqual({ poll: pollTimer.pendingHandleCount, token: tokenTimer.pendingHandleCount }, { poll: 0, token: 0 });
+		}
+	});
+
+	test('keeps fast cadence until a token removal refresh adopts an empty snapshot', async () => {
+		const bindingReads = deferredQueue<IParadisPaneBinding[]>();
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		const tokenTimer = new DeterministicPollTimer();
+		try {
+			const fixture = createFixture({
+				listBindings: bindingReads.read,
+				pollTimer,
+				tokenRefreshTimer: tokenTimer,
+				store: fixtureStore,
+			});
+			await eventually(() => bindingReads.reads.length === 1);
+			await bindingReads.complete(0, [binding()]);
+			await eventually(() => fixture.bindingModel.bindings.length === 1);
+			fixture.paneTokens.clear();
+			fixture.paneTokensChanged.fire();
+			assert.strictEqual(tokenTimer.pendingHandleCount, 1);
+			tokenTimer.advance(0);
+			await eventually(() => bindingReads.reads.length === 2);
+			assert.strictEqual(pollTimer.nextDelay, 3_000);
+			await bindingReads.complete(1, []);
+			await eventually(() => fixture.bindingModel.bindings.length === 0);
+			assert.strictEqual(pollTimer.nextDelay, 30_000);
+		} finally {
+			fixtureStore.dispose();
+			assert.deepStrictEqual({ poll: pollTimer.pendingHandleCount, token: tokenTimer.pendingHandleCount }, { poll: 0, token: 0 });
+		}
+
+		const seenStore = new DisposableStore();
+		const seenPollTimer = new DeterministicPollTimer();
+		const seenTokenTimer = new DeterministicPollTimer();
+		let seenTokens = ['seen-token'];
+		try {
+			const fixture = createFixture({
+				listSeenTokens: async () => seenTokens,
+				pollTimer: seenPollTimer,
+				tokenRefreshTimer: seenTokenTimer,
+				store: seenStore,
+			});
+			await eventually(() => bindingListCommands(fixture.commands).length === 2);
+			await nextTask();
+			fixture.paneTokens.clear();
+			fixture.paneTokensChanged.fire();
+			assert.strictEqual(seenPollTimer.nextDelay, 3_000);
+			seenTokens = [];
+			seenTokenTimer.advance(0);
+			await nextTask();
+			assert.strictEqual(seenPollTimer.nextDelay, 30_000);
+		} finally {
+			seenStore.dispose();
+			assert.deepStrictEqual({ poll: seenPollTimer.pendingHandleCount, token: seenTokenTimer.pendingHandleCount }, { poll: 0, token: 0 });
+		}
+	});
+
+	test('does not single-flight token, force, and poll refreshes', async () => {
+		const bindingReads = deferredQueue<IParadisPaneBinding[]>();
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		const tokenTimer = new DeterministicPollTimer();
+		try {
+			const fixture = createFixture({ listBindings: bindingReads.read, pollTimer, tokenRefreshTimer: tokenTimer, store: fixtureStore });
+			await eventually(() => bindingReads.reads.length === 1);
+			await bindingReads.complete(0, []);
+			await nextTask();
+			fixture.commands.length = 0;
+			fixture.paneTokensChanged.fire();
+			assert.strictEqual(tokenTimer.pendingHandleCount, 1);
+			tokenTimer.advance(0);
+			await eventually(() => bindingReads.reads.length === 2);
+			const forceRefresh = fixture.bindingModel.unbindToken('missing-token');
+			await eventually(() => bindingReads.reads.length === 3);
+			pollTimer.advance(3_000);
+			await eventually(() => bindingReads.reads.length === 4);
+			assert.deepStrictEqual(bindingListCommands(fixture.commands), [
+				'listBindings', 'listSeenTokens',
+				'listBindings', 'listSeenTokens',
+				'listBindings', 'listSeenTokens',
+			]);
+			await Promise.all([
+				bindingReads.complete(1, []),
+				bindingReads.complete(2, []),
+				bindingReads.complete(3, []),
+			]);
+			await forceRefresh;
+			await nextTask();
+		} finally {
+			fixtureStore.dispose();
+			assert.deepStrictEqual({ poll: pollTimer.pendingHandleCount, token: tokenTimer.pendingHandleCount }, { poll: 0, token: 0 });
+		}
+	});
+
+	test('retries a failed force read after three seconds before returning to idle', async () => {
+		const bindingReads = deferredQueue<IParadisPaneBinding[]>();
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		try {
+			const fixture = createFixture({ hasPaneTokens: false, listBindings: bindingReads.read, pollTimer, store: fixtureStore });
+			await nextTask();
+			fixture.commands.length = 0;
+			const forceRefresh = fixture.bindingModel.unbindToken('missing-token');
+			await eventually(() => bindingReads.reads.length === 1);
+			await bindingReads.reject(0, new Error('authority unavailable'));
+			await forceRefresh;
+			assert.strictEqual(pollTimer.nextDelay, 3_000);
+			pollTimer.advance(3_000);
+			await eventually(() => bindingReads.reads.length === 2);
+			assert.deepStrictEqual(bindingListCommands(fixture.commands), [
+				'listBindings', 'listSeenTokens', 'listBindings', 'listSeenTokens',
+			]);
+			await bindingReads.complete(1, []);
+			await nextTask();
+			assert.strictEqual(pollTimer.nextDelay, 30_000);
+		} finally {
+			fixtureStore.dispose();
+			assert.strictEqual(pollTimer.pendingHandleCount, 0);
+		}
+	});
+
+	test('ignores an older rejection after a newer success', async () => {
+		const bindingReads = deferredQueue<IParadisPaneBinding[]>();
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		try {
+			const fixture = createFixture({ listBindings: bindingReads.read, pollTimer, store: fixtureStore });
+			await eventually(() => bindingReads.reads.length === 1);
+			await bindingReads.complete(0, []);
+			await nextTask();
+			const older = fixture.bindingModel.refresh();
+			const newer = fixture.bindingModel.refresh();
+			await eventually(() => bindingReads.reads.length === 3);
+			fixture.paneTokens.clear();
+			await bindingReads.complete(2, []);
+			await newer;
+			const before = {
+				changeCount: fixture.changeCount,
+				delay: pollTimer.nextDelay,
+				pending: pollTimer.pendingHandleCount,
+				sets: pollTimer.setCallCount,
+			};
+			await bindingReads.reject(1, new Error('older failed'));
+			await older;
+			assert.deepStrictEqual({
+				changeCount: fixture.changeCount,
+				delay: pollTimer.nextDelay,
+				pending: pollTimer.pendingHandleCount,
+				sets: pollTimer.setCallCount,
+			}, before);
+		} finally {
+			fixtureStore.dispose();
+			assert.strictEqual(pollTimer.pendingHandleCount, 0);
+		}
+	});
+
+	test('does not let an older success clear a newer retry requirement', async () => {
+		const bindingReads = deferredQueue<IParadisPaneBinding[]>();
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		try {
+			const fixture = createFixture({ listBindings: bindingReads.read, pollTimer, store: fixtureStore });
+			await eventually(() => bindingReads.reads.length === 1);
+			await bindingReads.complete(0, []);
+			await nextTask();
+			const older = fixture.bindingModel.refresh();
+			const newer = fixture.bindingModel.refresh();
+			await eventually(() => bindingReads.reads.length === 3);
+			fixture.paneTokens.clear();
+			await bindingReads.reject(2, new Error('newer failed'));
+			await newer;
+			await bindingReads.complete(1, []);
+			await older;
+			assert.strictEqual(pollTimer.nextDelay, 3_000);
+			fixture.commands.length = 0;
+			pollTimer.advance(3_000);
+			await nextTask();
+			assert.strictEqual(bindingReads.reads.length, 4);
+			assert.deepStrictEqual(bindingListCommands(fixture.commands), ['listBindings', 'listSeenTokens']);
+			await bindingReads.complete(3, []);
+			await nextTask();
+		} finally {
+			fixtureStore.dispose();
+			assert.strictEqual(pollTimer.pendingHandleCount, 0);
+		}
+	});
+
+	test('does not publish a late refresh resolve after disposal', async () => {
+		const bindingReads = deferredQueue<IParadisPaneBinding[]>();
+		const seenReads = deferredQueue<string[]>();
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		const fixture = createFixture({
+			listBindings: bindingReads.read,
+			listSeenTokens: seenReads.read,
+			pollTimer,
+			store: fixtureStore,
+		});
+		await eventually(() => bindingReads.reads.length === 1 && seenReads.reads.length === 1);
+		const before = {
+			bindings: fixture.bindingModel.bindings,
+			binding: fixture.bindingModel.getBindingForToken('token'),
+			changeCount: fixture.changeCount,
+		};
+		fixtureStore.dispose();
+		await Promise.all([
+			bindingReads.complete(0, [binding(91)]),
+			seenReads.complete(0, ['token']),
+		]);
+		await nextTask();
+		assert.deepStrictEqual({
+			bindings: fixture.bindingModel.bindings,
+			binding: fixture.bindingModel.getBindingForToken('token'),
+			changeCount: fixture.changeCount,
+			pending: pollTimer.pendingHandleCount,
+		}, { ...before, pending: 0 });
+	});
+
+	test('does not recreate retry timers after a late refresh rejection', async () => {
+		const bindingReads = deferredQueue<IParadisPaneBinding[]>();
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		const fixture = createFixture({ hasPaneTokens: false, listBindings: bindingReads.read, pollTimer, store: fixtureStore });
+		await nextTask();
+		const forceRefresh = fixture.bindingModel.unbindToken('missing-token');
+		await eventually(() => bindingReads.reads.length === 1);
+		fixtureStore.dispose();
+		await bindingReads.reject(0, new Error('late rejection'));
+		await forceRefresh;
+		await nextTask();
+		fixture.commands.length = 0;
+		const postDisposeRefresh = fixture.bindingModel.refresh();
+		await nextTask();
+		const commandsAfterDisposal = bindingListCommands(fixture.commands);
+		if (bindingReads.reads.length === 2) {
+			await bindingReads.complete(1, []);
+		}
+		await postDisposeRefresh;
+		assert.deepStrictEqual({
+			changeCount: fixture.changeCount,
+			pending: pollTimer.pendingHandleCount,
+			commands: commandsAfterDisposal,
+		}, { changeCount: 0, pending: 0, commands: [] });
+	});
+
+	test('cancels a pending zero millisecond token refresh on disposal', async () => {
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		const tokenTimer = new DeterministicPollTimer();
+		const fixture = createFixture({ hasPaneTokens: false, pollTimer, tokenRefreshTimer: tokenTimer, store: fixtureStore });
+		await nextTask();
+		fixture.commands.length = 0;
+		fixture.paneTokens.set(fixture.instances.first.instanceId, 'token');
+		fixture.paneTokensChanged.fire();
+		assert.strictEqual(tokenTimer.pendingHandleCount, 1);
+		fixtureStore.dispose();
+		assert.deepStrictEqual({ poll: pollTimer.pendingHandleCount, token: tokenTimer.pendingHandleCount }, { poll: 0, token: 0 });
+		tokenTimer.advance(0);
+		await nextTask();
+		assert.deepStrictEqual(bindingListCommands(fixture.commands), []);
 	});
 
 	test('rolls back only a definite pre-commit failure after a fresh empty binding read', async () => {
@@ -351,6 +888,62 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		await eventually(() => fixture.sharingCalls.includes(false));
 
 		assert.deepStrictEqual(fixture.sharingCalls, [true, false]);
+	});
+
+	test('keeps pending unshare recovery fast until sharing cleanup succeeds', async () => {
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		let failBindingReads = false;
+		let rejectUnshare = true;
+		let backendSnapshot: IParadisPaneBinding[] = [];
+		try {
+			const fixture = createFixture({
+				pollTimer,
+				store: fixtureStore,
+				listBindings: async () => {
+					if (failBindingReads) {
+						throw new Error('refresh unavailable');
+					}
+					return backendSnapshot;
+				},
+				commit: async () => {
+					backendSnapshot = [binding(61)];
+					fixture.backendBindings = backendSnapshot;
+					failBindingReads = true;
+					throw new Error('commit response lost');
+				},
+			});
+			await assert.rejects(fixture.bindingModel.bindPageToPane(fixture.model, 'token'), /commit response lost/);
+			await fixture.bindingModel.unbindToken('token');
+			fixture.paneTokens.clear();
+			assert.strictEqual(pollTimer.nextDelay, 3_000);
+
+			failBindingReads = false;
+			pollTimer.advance(3_000);
+			await eventually(() => fixture.bindingModel.bindings.length === 1);
+			assert.strictEqual(pollTimer.nextDelay, 3_000);
+
+			(fixture.model as { setSharedWithAgent(shared: boolean): Promise<boolean> }).setSharedWithAgent = async shared => {
+				fixture.sharingCalls.push(shared);
+				if (!shared && rejectUnshare) {
+					throw new Error('sharing cleanup failed');
+				}
+				return true;
+			};
+			backendSnapshot = [];
+			pollTimer.advance(3_000);
+			await eventually(() => fixture.sharingCalls.filter(shared => !shared).length === 1);
+			assert.strictEqual(pollTimer.nextDelay, 3_000);
+
+			rejectUnshare = false;
+			pollTimer.advance(3_000);
+			await eventually(() => fixture.sharingCalls.filter(shared => !shared).length === 2);
+			await nextTask();
+			assert.strictEqual(pollTimer.nextDelay, 30_000);
+		} finally {
+			fixtureStore.dispose();
+			assert.strictEqual(pollTimer.pendingHandleCount, 0);
+		}
 	});
 
 	test('manual unbindPage cannot overtake an in-flight rebind for the same token', async () => {
