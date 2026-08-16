@@ -246,7 +246,7 @@ export class ParadisNotificationsSettingsService extends Disposable implements I
 		if (until !== undefined && until <= Date.now()) {
 			// 期限切れ。次回以降の読み取りで再判定しなくて済むよう、ここで保存済みの状態を捨てる。
 			// onDidChange は発火しない（getter からの再入で購読側の再描画が走るのを避けるため）。
-			// UI 側はステータスバーの分刻みの更新で追従する。
+			// UI 側は各 surface の deadline-aware refresh で追従する。
 			this.storageService.remove(KEY_DO_NOT_DISTURB, StorageScope.APPLICATION);
 			this.storageService.remove(KEY_DO_NOT_DISTURB_UNTIL, StorageScope.APPLICATION);
 			return { enabled: false, until: undefined };
