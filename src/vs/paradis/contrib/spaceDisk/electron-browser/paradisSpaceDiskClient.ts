@@ -137,8 +137,8 @@ export class ParadisSpaceDiskClient {
 			if (state.active) {
 				const cancellation = state.cancellation;
 				const initialized = await this.waitForInitialization(state, cancellation);
-				if (!initialized || this.warmLeaseGenerations.get(ownerId) !== state || !state.active) {
-					if (!initialized && cancellation?.aborted && state.generation === generation) {
+				if (!initialized || cancellation?.aborted || this.warmLeaseGenerations.get(ownerId) !== state || state.generation !== generation || !state.active) {
+					if (cancellation?.aborted && state.generation === generation) {
 						state.active = false;
 						state.releaseRequested = false;
 						state.cancellation = undefined;
