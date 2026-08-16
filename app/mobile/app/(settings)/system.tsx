@@ -15,7 +15,7 @@ import { useTabBarSpacer } from '../../src/hooks/useTabBarSpacer.js';
 import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { hapticSelection } from '../../src/haptics.js';
-import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type SpaceDiskResult, type SystemResourcesResult } from '../../src/store.js';
+import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable, type SpaceDiskResult, type SystemResourcesResult } from '../../src/store.js';
 import {
 	CPU_THRESHOLDS, MEMORY_THRESHOLDS, buildProcessRows, buildScopeRows, diskLevel, formatBytes, formatCpu,
 	buildSpaceDiskRows, sortRowsBy, usageLevel, usagePercent, type ResourceRow, type UsageLevel,
@@ -37,6 +37,25 @@ const REFRESH_INTERVAL_MS = 6_000;
 const MAX_ROWS = 12;
 
 type AxisKey = 'process' | 'scope' | 'volume';
+
+export interface SystemSpaceDiskWarmLeaseScreenState {
+	readonly focused: boolean;
+	readonly appActive: boolean;
+	readonly online: boolean;
+	readonly volumeAxis: boolean;
+	readonly activePcId: string | undefined;
+	readonly controllerRevision: number;
+}
+
+/** System screen effect が所有する spaceDisk lease の全入力を一度に適用する production seam。 */
+export function updateSystemSpaceDiskWarmLeaseLifecycle(
+	lifecycle: MobileWarmLeaseLifecycle,
+	state: SystemSpaceDiskWarmLeaseScreenState,
+	acquire: () => MobileDisposable,
+): void {
+	lifecycle.update(shouldMaintainMobileWarmLease('spaceDisk', state), acquire,
+		mobileWarmLeaseOwnerRevision(state.activePcId, state.controllerRevision));
+}
 
 function levelColor(level: UsageLevel, normal: string): string {
 	return level === 'critical' ? colors.red : level === 'warn' ? colors.yellow : normal;
@@ -147,19 +166,20 @@ export default function SystemScreen() {
 	// 固まった数字を出し続けないようにする（画面を離れる・アプリが背面に回ったら止める）。
 	const isFocused = useIsFocused();
 	const isAppActive = useAppIsActive();
-	const warmLeaseOwnerRevision = mobileWarmLeaseOwnerRevision(activePcId, controllerRevision);
 	const warmLeaseLifecycle = useRef<MobileWarmLeaseLifecycle | undefined>(undefined);
 	warmLeaseLifecycle.current ??= new MobileWarmLeaseLifecycle();
 	useEffect(() => {
 		const lifecycle = warmLeaseLifecycle.current!;
-		lifecycle.update(shouldMaintainMobileWarmLease('spaceDisk', {
+		updateSystemSpaceDiskWarmLeaseLifecycle(lifecycle, {
 			focused: isFocused,
 			appActive: isAppActive,
 			online: connection === 'online',
 			volumeAxis: axis === 'volume',
-		}), acquireSpaceDiskWarmLease, warmLeaseOwnerRevision);
+			activePcId,
+			controllerRevision,
+		}, acquireSpaceDiskWarmLease);
 		return () => lifecycle.update(false, acquireSpaceDiskWarmLease);
-	}, [isFocused, isAppActive, connection, axis, warmLeaseOwnerRevision, acquireSpaceDiskWarmLease]);
+	}, [isFocused, isAppActive, connection, axis, activePcId, controllerRevision, acquireSpaceDiskWarmLease]);
 	useEffect(() => {
 		if (!isFocused || !isAppActive || connection !== 'online') {
 			return;

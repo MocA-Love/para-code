@@ -13,7 +13,7 @@ import { useContentColumnStyle } from '../../src/ipad/useContentColumn.js';
 import { colors, radius, squircle } from '../../src/theme.js';
 import { formatRelativeTime, useNow } from '../../src/time.js';
 import { hapticImpact, hapticSelection } from '../../src/haptics.js';
-import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type UsageAgent, type UsageDashboardResult } from '../../src/store.js';
+import { mobileWarmLeaseOwnerRevision, MobileWarmLeaseLifecycle, shouldMaintainMobileWarmLease, type MobileDisposable, type UsageAgent, type UsageDashboardResult } from '../../src/store.js';
 import { useAppIsActive } from '../../src/hooks/useAppIsActive.js';
 
 /** モデル・プロジェクト別バーの表示上限件数。 */
@@ -27,6 +27,28 @@ const PERIOD_OPTIONS = [7, 30, 90] as const;
 type PeriodDays = typeof PERIOD_OPTIONS[number];
 /** エージェント絞り込み。'all' は絞り込みなし。 */
 type AgentFilter = UsageAgent | 'all';
+
+export interface CcusageWarmLeaseScreenState {
+	readonly focused: boolean;
+	readonly appActive: boolean;
+	readonly online: boolean;
+	readonly activePcId: string | undefined;
+	readonly controllerRevision: number;
+}
+
+/** Ccusage screen effect が所有する lease の全入力を一度に適用する production seam。 */
+export function updateCcusageWarmLeaseLifecycle(
+	lifecycle: MobileWarmLeaseLifecycle,
+	state: CcusageWarmLeaseScreenState,
+	acquire: () => MobileDisposable,
+): void {
+	lifecycle.update(shouldMaintainMobileWarmLease('ccusage', {
+		focused: state.focused,
+		appActive: state.appActive,
+		online: state.online,
+		volumeAxis: false,
+	}), acquire, mobileWarmLeaseOwnerRevision(state.activePcId, state.controllerRevision));
+}
 
 const AGENT_LABEL: Record<UsageAgent, string> = {
 	claude: 'Claude',
@@ -141,19 +163,19 @@ export default function CcusageScreen() {
 	})));
 	const isFocused = useIsFocused();
 	const isAppActive = useAppIsActive();
-	const warmLeaseOwnerRevision = mobileWarmLeaseOwnerRevision(activePcId, controllerRevision);
 	const warmLeaseLifecycle = useRef<MobileWarmLeaseLifecycle | undefined>(undefined);
 	warmLeaseLifecycle.current ??= new MobileWarmLeaseLifecycle();
 	useEffect(() => {
 		const lifecycle = warmLeaseLifecycle.current!;
-		lifecycle.update(shouldMaintainMobileWarmLease('ccusage', {
+		updateCcusageWarmLeaseLifecycle(lifecycle, {
 			focused: isFocused,
 			appActive: isAppActive,
 			online: connection === 'online',
-			volumeAxis: false,
-		}), acquireUsageWarmLease, warmLeaseOwnerRevision);
+			activePcId,
+			controllerRevision,
+		}, acquireUsageWarmLease);
 		return () => lifecycle.update(false, acquireUsageWarmLease);
-	}, [isFocused, isAppActive, connection, warmLeaseOwnerRevision, acquireUsageWarmLease]);
+	}, [isFocused, isAppActive, connection, activePcId, controllerRevision, acquireUsageWarmLease]);
 
 	const [data, setData] = useState<UsageDashboardResult | undefined>();
 	const [loading, setLoading] = useState(false);
