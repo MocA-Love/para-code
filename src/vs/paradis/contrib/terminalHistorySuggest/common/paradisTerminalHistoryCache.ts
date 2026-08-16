@@ -11,29 +11,71 @@ import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { TerminalShellType } from '../../../../platform/terminal/common/terminal.js';
 
+/** A completed value (including negative `undefined`) or cancellation of this waiter only. */
 export type ParadisTerminalHistoryWaitResult<T> =
 	| { readonly kind: 'completed'; readonly value: T | undefined }
 	| { readonly kind: 'cancelled' };
 
-interface IParadisTerminalHistoryWaiter<T> {
-	settled: boolean;
-	cancellationListener: IDisposable | undefined;
-	readonly owner: Set<IParadisTerminalHistoryWaiter<T>>;
-	readonly resolve: (result: ParadisTerminalHistoryWaitResult<T>) => void;
-	readonly reject: (error: unknown) => void;
+/** Detaches one waiter and its cancellation listener exactly once when it settles. */
+class ParadisTerminalHistoryWaiter<T> {
+	private _settled = false;
+	private _cancellationListener: IDisposable | undefined;
+	private _resolvePromise!: (result: ParadisTerminalHistoryWaitResult<T>) => void;
+	private _rejectPromise!: (error: unknown) => void;
+	readonly promise: Promise<ParadisTerminalHistoryWaitResult<T>>;
+
+	constructor(
+		private readonly _owner: Set<ParadisTerminalHistoryWaiter<T>>,
+		token: CancellationToken,
+	) {
+		this.promise = new Promise((resolve, reject) => {
+			this._resolvePromise = resolve;
+			this._rejectPromise = reject;
+		});
+		this._owner.add(this);
+		const listener = token.onCancellationRequested(() => this.resolve({ kind: 'cancelled' }));
+		this._cancellationListener = listener;
+		if (this._settled) {
+			listener.dispose();
+		}
+		if (token.isCancellationRequested) {
+			this.resolve({ kind: 'cancelled' });
+		}
+	}
+
+	resolve(result: ParadisTerminalHistoryWaitResult<T>): void {
+		this._settle(() => this._resolvePromise(result));
+	}
+
+	reject(error: unknown): void {
+		this._settle(() => this._rejectPromise(error));
+	}
+
+	private _settle(settlePromise: () => void): void {
+		if (this._settled) {
+			return;
+		}
+		this._settled = true;
+		this._owner.delete(this);
+		this._cancellationListener?.dispose();
+		settlePromise();
+	}
 }
 
+/** A SharedValue loader generation and the waiters attached to that generation. */
 interface IParadisTerminalHistorySharedGeneration<T> {
 	readonly id: number;
-	readonly waiters: Set<IParadisTerminalHistoryWaiter<T>>;
+	readonly waiters: Set<ParadisTerminalHistoryWaiter<T>>;
 }
 
+/** One keyed loader generation, retained independently when it becomes stale. */
 interface IParadisTerminalHistoryFlight<T> {
 	readonly generation: number;
 	readonly startedAt: number;
-	readonly waiters: Set<IParadisTerminalHistoryWaiter<T>>;
+	readonly waiters: Set<ParadisTerminalHistoryWaiter<T>>;
 }
 
+/** Provider-lifetime cached value and the active flights for one complete cache key. */
 interface IParadisTerminalHistoryCacheState<T> {
 	cached: { readonly value: T | undefined; readonly expiresAt: number } | undefined;
 	readonly activeFlights: Set<IParadisTerminalHistoryFlight<T>>;
@@ -41,12 +83,17 @@ interface IParadisTerminalHistoryCacheState<T> {
 	nextGeneration: number;
 }
 
+/** Returns a stable key from the shell type and the URI's complete canonical string. */
 export function paradisTerminalHistoryCacheKey(shellType: TerminalShellType, resource: URI): string {
 	return JSON.stringify([shellType, resource.toString()]);
 }
 
+/**
+ * Shares one lazy loader for the owner's lifetime, or only while pending when completed caching is disabled.
+ * Cancellation detaches only that waiter; rejection reaches current waiters and a later `get` retries.
+ */
 export class ParadisTerminalHistorySharedValue<T> extends Disposable {
-	private _waiters = new Set<IParadisTerminalHistoryWaiter<T>>();
+	private _waiters = new Set<ParadisTerminalHistoryWaiter<T>>();
 	private _isDisposed = false;
 	private _nextGeneration = 0;
 	private _pendingGeneration: IParadisTerminalHistorySharedGeneration<T> | undefined;
@@ -95,24 +142,7 @@ export class ParadisTerminalHistorySharedValue<T> extends Disposable {
 	}
 
 	private _waitForGeneration(generation: IParadisTerminalHistorySharedGeneration<T>, token: CancellationToken): Promise<ParadisTerminalHistoryWaitResult<T>> {
-		return new Promise((resolve, reject) => {
-			const waiter: IParadisTerminalHistoryWaiter<T> = {
-				settled: false,
-				cancellationListener: undefined,
-				owner: generation.waiters,
-				resolve,
-				reject,
-			};
-			generation.waiters.add(waiter);
-			const listener = token.onCancellationRequested(() => this._resolveWaiter(waiter, { kind: 'cancelled' }));
-			waiter.cancellationListener = listener;
-			if (waiter.settled) {
-				listener.dispose();
-			}
-			if (token.isCancellationRequested) {
-				this._resolveWaiter(waiter, { kind: 'cancelled' });
-			}
-		});
+		return new ParadisTerminalHistoryWaiter(generation.waiters, token).promise;
 	}
 
 	private _settleGeneration(generation: IParadisTerminalHistorySharedGeneration<T>, value: T | undefined): void {
@@ -127,7 +157,7 @@ export class ParadisTerminalHistorySharedValue<T> extends Disposable {
 			this._value = value;
 		}
 		for (const waiter of settledWaiters) {
-			this._resolveWaiter(waiter, { kind: 'completed', value });
+			waiter.resolve({ kind: 'completed', value });
 		}
 	}
 
@@ -139,28 +169,8 @@ export class ParadisTerminalHistorySharedValue<T> extends Disposable {
 		this._waiters = new Set();
 		this._pendingGeneration = undefined;
 		for (const waiter of settledWaiters) {
-			this._rejectWaiter(waiter, error);
+			waiter.reject(error);
 		}
-	}
-
-	private _resolveWaiter(waiter: IParadisTerminalHistoryWaiter<T>, result: ParadisTerminalHistoryWaitResult<T>): void {
-		if (waiter.settled) {
-			return;
-		}
-		waiter.settled = true;
-		waiter.owner.delete(waiter);
-		waiter.cancellationListener?.dispose();
-		waiter.resolve(result);
-	}
-
-	private _rejectWaiter(waiter: IParadisTerminalHistoryWaiter<T>, error: unknown): void {
-		if (waiter.settled) {
-			return;
-		}
-		waiter.settled = true;
-		waiter.owner.delete(waiter);
-		waiter.cancellationListener?.dispose();
-		waiter.reject(error);
 	}
 
 	override dispose(): void {
@@ -174,12 +184,16 @@ export class ParadisTerminalHistorySharedValue<T> extends Disposable {
 		this._hasValue = false;
 		this._value = undefined;
 		for (const waiter of waiters) {
-			this._resolveWaiter(waiter, { kind: 'cancelled' });
+			waiter.resolve({ kind: 'cancelled' });
 		}
 		super.dispose();
 	}
 }
 
+/**
+ * Shares keyed loads for the owner's lifetime and caches positive plus rejected/`undefined` negative results for the configured TTL from finish time.
+ * An aged authoritative flight may be replaced once, limiting each key to two flights; waiter cancellation never cancels a flight.
+ */
 export class ParadisTerminalHistoryCache<T> extends Disposable {
 	private readonly _states = new Map<string, IParadisTerminalHistoryCacheState<T>>();
 	private _isDisposed = false;
@@ -256,24 +270,7 @@ export class ParadisTerminalHistoryCache<T> extends Disposable {
 	}
 
 	private _waitForFlight(flight: IParadisTerminalHistoryFlight<T>, token: CancellationToken): Promise<ParadisTerminalHistoryWaitResult<T>> {
-		return new Promise((resolve, reject) => {
-			const waiter: IParadisTerminalHistoryWaiter<T> = {
-				settled: false,
-				cancellationListener: undefined,
-				owner: flight.waiters,
-				resolve,
-				reject,
-			};
-			flight.waiters.add(waiter);
-			const listener = token.onCancellationRequested(() => this._resolveWaiter(waiter, { kind: 'cancelled' }));
-			waiter.cancellationListener = listener;
-			if (waiter.settled) {
-				listener.dispose();
-			}
-			if (token.isCancellationRequested) {
-				this._resolveWaiter(waiter, { kind: 'cancelled' });
-			}
-		});
+		return new ParadisTerminalHistoryWaiter(flight.waiters, token).promise;
 	}
 
 	private _settleFlight(
@@ -284,23 +281,13 @@ export class ParadisTerminalHistoryCache<T> extends Disposable {
 	): void {
 		state.activeFlights.delete(flight);
 		for (const waiter of flight.waiters) {
-			this._resolveWaiter(waiter, { kind: 'completed', value });
+			waiter.resolve({ kind: 'completed', value });
 		}
 		if (this._isDisposed || this._states.get(key) !== state || state.authoritativeFlight !== flight) {
 			return;
 		}
 		state.authoritativeFlight = undefined;
 		state.cached = { value, expiresAt: this._now() + this._ttlMs };
-	}
-
-	private _resolveWaiter(waiter: IParadisTerminalHistoryWaiter<T>, result: ParadisTerminalHistoryWaitResult<T>): void {
-		if (waiter.settled) {
-			return;
-		}
-		waiter.settled = true;
-		waiter.owner.delete(waiter);
-		waiter.cancellationListener?.dispose();
-		waiter.resolve(result);
 	}
 
 	override dispose(): void {
@@ -311,7 +298,7 @@ export class ParadisTerminalHistoryCache<T> extends Disposable {
 		for (const state of this._states.values()) {
 			for (const flight of state.activeFlights) {
 				for (const waiter of flight.waiters) {
-					this._resolveWaiter(waiter, { kind: 'cancelled' });
+					waiter.resolve({ kind: 'cancelled' });
 				}
 			}
 		}

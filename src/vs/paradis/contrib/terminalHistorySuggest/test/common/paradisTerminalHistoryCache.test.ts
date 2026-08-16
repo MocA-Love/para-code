@@ -80,6 +80,7 @@ class CountingCancellationToken implements CancellationToken {
 	cancelFireCount = 0;
 	onListenerDispose: (() => void) | undefined;
 	cancelOnRegistration = false;
+	cancelOnListenerDispose = false;
 
 	get isCancellationRequested(): boolean {
 		return this._isCancellationRequested;
@@ -97,14 +98,19 @@ class CountingCancellationToken implements CancellationToken {
 		}
 		return {
 			dispose: () => {
+				this.disposeCount++;
 				if (disposed) {
 					return;
 				}
 				disposed = true;
+				if (this.cancelOnListenerDispose) {
+					this._isCancellationRequested = true;
+					this.cancelFireCount++;
+					callback(undefined);
+				}
 				if (this._listeners.delete(callback)) {
 					this.activeListeners--;
 				}
-				this.disposeCount++;
 				this.onListenerDispose?.();
 			},
 		};
@@ -194,6 +200,63 @@ suite('ParadisTerminalHistoryCache', () => {
 		retried.resolve('retried value');
 		assert.deepStrictEqual(await retryWait, { kind: 'completed', value: 'retried value' });
 		retryingShared.dispose();
+	});
+
+	test('settles a shared value waiter once when cancellation wins the same-tick race', async () => {
+		// Catches deletion of the waiter settled gate after cancellation wins before loader completion.
+		const deferred = new TrackedDeferred<string | undefined>();
+		const token = new CountingCancellationToken();
+		token.cancelOnListenerDispose = true;
+		const shared = new ParadisTerminalHistorySharedValue(() => deferred.promise);
+		const tracked = trackSettlement(shared.get(token));
+
+		token.cancel();
+		deferred.resolve('late completed value');
+		const result = await tracked.promise;
+		await flushMicrotasks();
+
+		assert.deepStrictEqual({
+			result,
+			settlementCallbacks: tracked.count(),
+			listenerDisposeCalls: token.disposeCount,
+			cancelCallbacks: token.cancelFireCount,
+			waiters: getSharedBoundary(shared)._waiters.size,
+		}, {
+			result: { kind: 'cancelled' },
+			settlementCallbacks: 1,
+			listenerDisposeCalls: 1,
+			cancelCallbacks: 2,
+			waiters: 0,
+		});
+		shared.dispose();
+	});
+
+	test('settles a shared value waiter once when completion wins the same-tick race', async () => {
+		// Catches reentrant cancellation from listener disposal after completion settlement starts.
+		const deferred = new TrackedDeferred<string | undefined>();
+		const token = new CountingCancellationToken();
+		token.cancelOnListenerDispose = true;
+		const shared = new ParadisTerminalHistorySharedValue(() => deferred.promise);
+		const tracked = trackSettlement(shared.get(token));
+
+		deferred.resolve('completed value');
+		const result = await tracked.promise;
+		await flushMicrotasks();
+
+		assert.deepStrictEqual({
+			result,
+			settlementCallbacks: tracked.count(),
+			listenerDisposeCalls: token.disposeCount,
+			cancelCallbacks: token.cancelFireCount,
+			waiters: getSharedBoundary(shared)._waiters.size,
+		}, {
+			result: { kind: 'completed', value: 'completed value' },
+			settlementCallbacks: 1,
+			listenerDisposeCalls: 1,
+			cancelCallbacks: 1,
+			waiters: 0,
+		});
+		shared.dispose();
 	});
 
 	test('disposes pending shared waiters and ignores late settlement', async () => {
@@ -511,6 +574,67 @@ suite('ParadisTerminalHistoryCache', () => {
 			activeListeners: 0,
 			disposeCount: 1,
 			settlements: 1,
+		});
+		cache.dispose();
+	});
+
+	test('settles a keyed cache waiter once when cancellation wins the same-tick race', async () => {
+		// Catches deletion of the waiter settled gate after cancellation wins before loader completion.
+		const cache = new ParadisTerminalHistoryCache<string>(30_000, 30_000);
+		const deferred = new TrackedDeferred<string | undefined>();
+		const token = new CountingCancellationToken();
+		token.cancelOnListenerDispose = true;
+		const tracked = trackSettlement(cache.get('cancel-first race', token, () => deferred.promise));
+		const flight = getCacheBoundary(cache)._states.get('cancel-first race')?.authoritativeFlight;
+		assert.ok(flight);
+
+		token.cancel();
+		deferred.resolve('late completed value');
+		const result = await tracked.promise;
+		await flushMicrotasks();
+
+		assert.deepStrictEqual({
+			result,
+			settlementCallbacks: tracked.count(),
+			listenerDisposeCalls: token.disposeCount,
+			cancelCallbacks: token.cancelFireCount,
+			waiters: flight.waiters.size,
+		}, {
+			result: { kind: 'cancelled' },
+			settlementCallbacks: 1,
+			listenerDisposeCalls: 1,
+			cancelCallbacks: 2,
+			waiters: 0,
+		});
+		cache.dispose();
+	});
+
+	test('settles a keyed cache waiter once when completion wins the same-tick race', async () => {
+		// Catches reentrant cancellation from listener disposal after completion settlement starts.
+		const cache = new ParadisTerminalHistoryCache<string>(30_000, 30_000);
+		const deferred = new TrackedDeferred<string | undefined>();
+		const token = new CountingCancellationToken();
+		token.cancelOnListenerDispose = true;
+		const tracked = trackSettlement(cache.get('completion-first race', token, () => deferred.promise));
+		const flight = getCacheBoundary(cache)._states.get('completion-first race')?.authoritativeFlight;
+		assert.ok(flight);
+
+		deferred.resolve('completed value');
+		const result = await tracked.promise;
+		await flushMicrotasks();
+
+		assert.deepStrictEqual({
+			result,
+			settlementCallbacks: tracked.count(),
+			listenerDisposeCalls: token.disposeCount,
+			cancelCallbacks: token.cancelFireCount,
+			waiters: flight.waiters.size,
+		}, {
+			result: { kind: 'completed', value: 'completed value' },
+			settlementCallbacks: 1,
+			listenerDisposeCalls: 1,
+			cancelCallbacks: 1,
+			waiters: 0,
 		});
 		cache.dispose();
 	});
