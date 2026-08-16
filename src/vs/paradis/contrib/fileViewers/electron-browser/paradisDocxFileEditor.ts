@@ -189,10 +189,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	protected _renderResource(resource: URI): void {
 		const generation = ++this._renderGeneration;
-		void this._renderResourceAfterPreflight(resource, generation);
+		const inputEpoch = this._inputEpoch;
+		void this._renderResourceAfterPreflight(resource, generation, inputEpoch);
 	}
 
-	private async _renderResourceAfterPreflight(resource: URI, generation: number): Promise<void> {
+	private async _renderResourceAfterPreflight(resource: URI, generation: number, inputEpoch: number): Promise<void> {
 		const webview = this._ensureWebview(resource);
 		webview.contentOptions = {
 			allowScripts: true,
@@ -200,7 +201,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		};
 		const isValid = await readParadisDocxHeader(this._fileService, resource);
 		const decision = getParadisDocxRenderDecision(isValid, resource, this._currentResource, generation, this._renderGeneration);
-		if (decision === 'stale' || !this._webviewClaimed) {
+		if (decision === 'stale' || inputEpoch !== this._inputEpoch || !this._webviewClaimed) {
 			return;
 		}
 		switch (decision) {
