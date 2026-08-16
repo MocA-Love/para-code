@@ -551,6 +551,24 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		});
 	});
 
+	test('adopts row identities from a JSON-equivalent newest snapshot', async () => {
+		const fixture = createFixture();
+		const first = bindingRow('token', 'view-a', 7);
+		fixture.backendBindings = [first];
+		await fixture.bindingModel.refresh();
+		const second = bindingRow('token', 'view-a', 7);
+		fixture.backendBindings = [second];
+		await fixture.bindingModel.refresh();
+
+		assert.deepStrictEqual({
+			jsonEqual: JSON.stringify(first) === JSON.stringify(second),
+			differentRows: first !== second,
+			getter: fixture.bindingModel.bindings[0] === second,
+			token: fixture.bindingModel.getBindingForToken('token') === second,
+			page: fixture.bindingModel.getBindingsForPage('view-a')[0] === second,
+		}, { jsonEqual: true, differentRows: true, getter: true, token: true, page: true });
+	});
+
 	test('does not reread binding keys during indexed lookups or pane descriptor assembly', async () => {
 		let tokenAccesses = 0;
 		let pageAccesses = 0;
@@ -614,6 +632,31 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 			tokenTimer.advance(0);
 			await nextTask();
 			assert.deepStrictEqual(bindingListCommands(fixture.commands), ['listBindings', 'listSeenTokens']);
+		} finally {
+			fixtureStore.dispose();
+			assert.deepStrictEqual({ poll: pollTimer.pendingHandleCount, token: tokenTimer.pendingHandleCount }, { poll: 0, token: 0 });
+		}
+	});
+
+	test('skips binding-list IPC and returns to idle after the last token is removed from clean state', async () => {
+		const fixtureStore = new DisposableStore();
+		const pollTimer = new DeterministicPollTimer();
+		const tokenTimer = new DeterministicPollTimer();
+		try {
+			const fixture = createFixture({ pollTimer, tokenRefreshTimer: tokenTimer, store: fixtureStore });
+			await eventually(() => bindingListCommands(fixture.commands).length === 2);
+			await nextTask();
+			fixture.commands.length = 0;
+			fixture.paneTokens.clear();
+			fixture.paneTokensChanged.fire();
+			assert.strictEqual(tokenTimer.pendingHandleCount, 1);
+			tokenTimer.advance(0);
+			await nextTask();
+			assert.deepStrictEqual({
+				commands: bindingListCommands(fixture.commands),
+				pollDelay: pollTimer.nextDelay,
+				tokenPending: tokenTimer.pendingHandleCount,
+			}, { commands: [], pollDelay: 30_000, tokenPending: 0 });
 		} finally {
 			fixtureStore.dispose();
 			assert.deepStrictEqual({ poll: pollTimer.pendingHandleCount, token: tokenTimer.pendingHandleCount }, { poll: 0, token: 0 });
@@ -820,6 +863,12 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		const before = {
 			bindings: fixture.bindingModel.bindings,
 			binding: fixture.bindingModel.getBindingForToken('token'),
+			pageBindings: fixture.bindingModel.getBindingsForPage('view-a'),
+			panes: fixture.bindingModel.getPanes().map(pane => ({
+				token: pane.token,
+				binding: pane.binding,
+				mcpConnected: pane.mcpConnected,
+			})),
 			changeCount: fixture.changeCount,
 		};
 		fixtureStore.dispose();
@@ -831,6 +880,12 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		assert.deepStrictEqual({
 			bindings: fixture.bindingModel.bindings,
 			binding: fixture.bindingModel.getBindingForToken('token'),
+			pageBindings: fixture.bindingModel.getBindingsForPage('view-a'),
+			panes: fixture.bindingModel.getPanes().map(pane => ({
+				token: pane.token,
+				binding: pane.binding,
+				mcpConnected: pane.mcpConnected,
+			})),
 			changeCount: fixture.changeCount,
 			pending: pollTimer.pendingHandleCount,
 		}, { ...before, pending: 0 });
