@@ -60,12 +60,11 @@ interface IFileHistoryResult {
 	readonly commands: readonly string[];
 }
 
-/** Provider-lifetime pure seams for observing production keying and parser wiring; callers retain ownership. */
+/** Provider-lifetime pure decoder/parser seams; callers retain ownership. */
 export interface IParadisTerminalHistoryCompletionProviderOptions {
 	readonly decodeZshHistory?: (bytes: Uint8Array) => string;
 	readonly parseZshHistory?: (content: string) => readonly string[];
 	readonly parseBashHistory?: (content: string) => readonly string[];
-	readonly cacheKey?: (shellType: TerminalShellType, resource: URI) => string;
 }
 
 /**
@@ -82,7 +81,6 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 	private readonly _decodeZshHistory: (bytes: Uint8Array) => string;
 	private readonly _parseZshHistory: (content: string) => readonly string[];
 	private readonly _parseBashHistory: (content: string) => readonly string[];
-	private readonly _cacheKey: (shellType: TerminalShellType, resource: URI) => string;
 	private readonly _location: ParadisTerminalHistorySharedValue<IParadisTerminalHistoryLocation>;
 	private readonly _fileHistoryCache: ParadisTerminalHistoryCache<IFileHistoryResult>;
 	private readonly _fallbackHistory: DisposableMap<TerminalShellType | undefined, ParadisTerminalHistorySharedValue<IFileHistoryResult>>;
@@ -99,7 +97,6 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 		this._decodeZshHistory = options?.decodeZshHistory ?? paradisDecodeZshHistory;
 		this._parseZshHistory = options?.parseZshHistory ?? paradisParseZshHistory;
 		this._parseBashHistory = options?.parseBashHistory ?? paradisParseBashHistory;
-		this._cacheKey = options?.cacheKey ?? paradisTerminalHistoryCacheKey;
 		this._location = this._register(new ParadisTerminalHistorySharedValue(() => this._resolveLocation()));
 		this._fileHistoryCache = this._register(new ParadisTerminalHistoryCache(FILE_HISTORY_TTL_MS, FILE_HISTORY_TTL_MS));
 		this._fallbackHistory = this._register(new DisposableMap());
@@ -181,7 +178,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 				return { kind: 'completed', value: undefined };
 			}
 			const request = this._createFileRequest(shellType, locationResult.value);
-			return this._fileHistoryCache.get(this._cacheKey(shellType, request.resource), token, () => this._loadFileHistory(request));
+			return this._fileHistoryCache.get(paradisTerminalHistoryCacheKey(shellType, request.resource), token, () => this._loadFileHistory(request));
 		}
 		let shared = this._fallbackHistory.get(shellType);
 		if (!shared) {

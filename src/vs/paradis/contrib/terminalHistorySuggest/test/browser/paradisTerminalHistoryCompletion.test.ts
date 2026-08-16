@@ -22,7 +22,7 @@ import { clearShellFileHistory, getCommandHistory, getShellFileHistory, ITermina
 import { ITerminalCompletion, TerminalCompletionItemKind } from '../../../../../workbench/contrib/terminalContrib/suggest/browser/terminalCompletionItem.js';
 import { ITerminalCompletionProvider, ITerminalCompletionService } from '../../../../../workbench/contrib/terminalContrib/suggest/browser/terminalCompletionService.js';
 import { IRemoteAgentConnection, IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { paradisDecodeZshHistory, paradisParseBashHistory, paradisParseZshHistory, paradisTerminalHistoryCacheKey } from '../../common/paradisTerminalHistoryCache.js';
+import { paradisDecodeZshHistory, paradisParseBashHistory, paradisParseZshHistory } from '../../common/paradisTerminalHistoryCache.js';
 import { IParadisTerminalHistoryCompletionProviderOptions, ParadisTerminalHistoryCompletionContribution, ParadisTerminalHistoryCompletionProvider } from '../../browser/paradisTerminalHistoryCompletion.contribution.js';
 
 class Deferred<T> {
@@ -155,8 +155,6 @@ interface ITestHarness {
 	readonly provider: ParadisTerminalHistoryCompletionProvider;
 	readonly counters: ITestCounters;
 	readonly resources: URI[];
-	readonly keyResources: URI[];
-	readonly cacheKeys: string[];
 	readonly readTokens: (CancellationToken | undefined)[];
 	readonly instantiationService: Pick<IInstantiationService, 'invokeFunction' | 'createInstance'>;
 	readonly terminalService: Pick<ITerminalService, 'activeInstance'>;
@@ -224,8 +222,6 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 	let shellType: TerminalShellType | undefined = options.shellType ?? PosixShellType.Zsh;
 	let persistedCommands = options.persistedCommands ?? [];
 	const resources: URI[] = [];
-	const keyResources: URI[] = [];
-	const cacheKeys: string[] = [];
 	const readTokens: (CancellationToken | undefined)[] = [];
 	const counters: ITestCounters = { persisted: 0, environment: 0, read: 0, decodeZsh: 0, parseZsh: 0, parseBash: 0, fallback: 0 };
 	const environment = options.environment ?? createRemoteEnvironment('/home/test');
@@ -291,12 +287,6 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 			counters.parseBash++;
 			return options.parseBashHistory ? options.parseBashHistory(content) : paradisParseBashHistory(content);
 		},
-		cacheKey: (type: TerminalShellType, resource: URI) => {
-			keyResources.push(resource);
-			const key = paradisTerminalHistoryCacheKey(type, resource);
-			cacheKeys.push(key);
-			return key;
-		},
 	};
 	const provider = new ParadisTerminalHistoryCompletionProvider(
 		providerOptions,
@@ -309,8 +299,6 @@ function createHarness(options: ITestHarnessOptions = {}): ITestHarness {
 		provider,
 		counters,
 		resources,
-		keyResources,
-		cacheKeys,
 		readTokens,
 		instantiationService,
 		terminalService,
@@ -548,12 +536,45 @@ suite('ParadisTerminalHistoryCompletion', () => {
 	test('uses the exact same full URI object for the cache key and file read', async () => {
 		// Catches cloning/truncating the resource between key construction and I/O wiring.
 		const harness = createHarness({ shellType: PosixShellType.Bash, remoteAuthority: 'authority' });
+		type FileRequest = {
+			readonly shellType: PosixShellType.Bash | PosixShellType.Zsh;
+			readonly sourceLabel: string;
+			readonly resource: URI;
+		};
+		type Location = { readonly scheme: string; readonly authority: string | undefined; readonly home: string };
+		const boundary = harness.provider as unknown as {
+			_createFileRequest(shellType: PosixShellType.Bash | PosixShellType.Zsh, location: Location): FileRequest;
+		};
+		const createFileRequest = boundary._createFileRequest.bind(harness.provider);
+		let directKeyResource: URI | undefined;
+		let directKeyString: string | undefined;
+		let proxiedResource: URI | undefined;
+		boundary._createFileRequest = (shellType, location) => {
+			const request = createFileRequest(shellType, location);
+			const resource = new Proxy(request.resource, {
+				get: (target, property, receiver) => {
+					if (property === 'toString') {
+						return (skipEncoding?: boolean): string => {
+							const value = target.toString(skipEncoding);
+							if (new Error().stack?.includes('paradisTerminalHistoryCacheKey')) {
+								directKeyResource = receiver as URI;
+								directKeyString = value;
+							}
+							return value;
+						};
+					}
+					return Reflect.get(target, property, receiver);
+				},
+			});
+			proxiedResource = resource;
+			return Object.freeze({ ...request, resource });
+		};
 		await harness.provider.provideCompletions('e', 1, CancellationToken.None);
-		assert.strictEqual(harness.keyResources.length, 1);
 		assert.strictEqual(harness.resources.length, 1);
-		assert.strictEqual(harness.keyResources[0], harness.resources[0]);
-		assert.deepStrictEqual({ key: harness.cacheKeys[0], resource: harness.resources[0].toString(), environment: harness.counters.environment }, {
-			key: '["bash","vscode-remote://authority/home/test/.bash_history"]',
+		assert.strictEqual(directKeyResource, proxiedResource);
+		assert.strictEqual(directKeyResource, harness.resources[0]);
+		assert.deepStrictEqual({ keyResource: directKeyString, resource: harness.resources[0].toString(), environment: harness.counters.environment }, {
+			keyResource: 'vscode-remote://authority/home/test/.bash_history',
 			resource: 'vscode-remote://authority/home/test/.bash_history',
 			environment: 1,
 		});
