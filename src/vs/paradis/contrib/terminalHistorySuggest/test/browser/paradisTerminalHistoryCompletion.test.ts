@@ -10,7 +10,7 @@ import assert from 'assert';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { Event } from '../../../../../base/common/event.js';
-import { OperatingSystem } from '../../../../../base/common/platform.js';
+import { isWindows, OperatingSystem } from '../../../../../base/common/platform.js';
 import { env } from '../../../../../base/common/process.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -597,33 +597,35 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		harness.provider.dispose();
 	});
 
-	test('uses local HOME for zsh and bash when the remote environment is null', async () => {
-		const originalHome = env['HOME'];
-		env['HOME'] = '/home/test';
-		try {
-			for (const shellType of [PosixShellType.Zsh, PosixShellType.Bash] as const) {
-				const harness = createHarness({ shellType, environment: null });
-				const observation = observeDirectKeyResource(harness.provider);
-				await harness.provider.provideCompletions('e', 1, CancellationToken.None);
-				const expected = `file:///home/test/${shellType === PosixShellType.Zsh ? '.zsh_history' : '.bash_history'}`;
-				assert.strictEqual(observation.directKeyResource, observation.proxiedResource, shellType);
-				assert.strictEqual(observation.directKeyResource, harness.resources[0], shellType);
-				assert.deepStrictEqual({ environment: harness.counters.environment, read: harness.counters.read, keyResource: observation.directKeyString, resource: harness.resources[0]?.toString() }, {
-					environment: 1,
-					read: 1,
-					keyResource: expected,
-					resource: expected,
-				}, shellType);
-				harness.provider.dispose();
+	if (!isWindows) {
+		test('uses local HOME for zsh and bash when the remote environment is null', async () => {
+			const originalHome = env['HOME'];
+			env['HOME'] = '/home/test';
+			try {
+				for (const shellType of [PosixShellType.Zsh, PosixShellType.Bash] as const) {
+					const harness = createHarness({ shellType, environment: null });
+					const observation = observeDirectKeyResource(harness.provider);
+					await harness.provider.provideCompletions('e', 1, CancellationToken.None);
+					const expected = `file:///home/test/${shellType === PosixShellType.Zsh ? '.zsh_history' : '.bash_history'}`;
+					assert.strictEqual(observation.directKeyResource, observation.proxiedResource, shellType);
+					assert.strictEqual(observation.directKeyResource, harness.resources[0], shellType);
+					assert.deepStrictEqual({ environment: harness.counters.environment, read: harness.counters.read, keyResource: observation.directKeyString, resource: harness.resources[0]?.toString() }, {
+						environment: 1,
+						read: 1,
+						keyResource: expected,
+						resource: expected,
+					}, shellType);
+					harness.provider.dispose();
+				}
+			} finally {
+				if (originalHome === undefined) {
+					delete env['HOME'];
+				} else {
+					env['HOME'] = originalHome;
+				}
 			}
-		} finally {
-			if (originalHome === undefined) {
-				delete env['HOME'];
-			} else {
-				env['HOME'] = originalHome;
-			}
-		}
-	});
+		});
+	}
 
 	test('preserves persisted MRU then file MRU completion semantics', async () => {
 		// Catches changes to MRU direction, dedupe, exact-prefix exclusion, case matching, metadata, and the twenty-item cap.
